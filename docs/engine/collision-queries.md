@@ -1,16 +1,18 @@
 # Collision queries
 
-The native collision world answers point and location queries (A/B).
-The vector queries and instance trace (C–E) run lifted with entry FP
-observers. The differential harness also exercises the C/D kernels. The entry adapters live in
+The collision switch selects the native collision world. Point and location
+queries, MOPP boxes and J’s object-reference sphere pretest answer admitted
+calls in Rust. The vector walk, instance trace, cluster flood and object
+visit also have native exits. Their admission rules appear below.
+The Havok collector ray and the whole query keep the lifted return while
+Rust predicts the walk or result. The adapters live in
 `crates/rewrites/engine/src/sim_collision`, the kernels in
 `crates/rewrites/sim-collision` and the installer in
-`crates/rewrites/sim-bridge/src/sim_native.rs`. See the
-[switch table](../runtime/switches.md) and the [phase 2 design](sim-rewrite-collision.md).
+`crates/rewrites/sim-bridge/src/sim_native.rs`.
+[Switch table](../runtime/switches.md) · [Phase 2 design](sim-rewrite-collision.md)
 
-The adapter gathers inputs, checks that the guest writes can succeed and
-computes the complete answer before it changes a register or guest byte.
-A declined query resumes the lifted entry from its original state.
+An answering adapter gathers the inputs and checks the writable ranges
+before committing. On a decline the lifted entry runs from the original state.
 
 ## Entries
 
@@ -21,11 +23,16 @@ A declined query resumes the lifted entry from its original state.
 | C | `0x1de630` vector test | `COLLISION_VECTOR_TEST` | `eax` R, `ecx` query bits, `edx` BSP, `xmm0` limit; stack: breakable count (`u16`), breakable mask, start, delta; `ret 0x10`; hit in `al` | R, `al`, x87 PE |
 | D | `0x1de6d0` vector walk | `COLLISION_BSP_SEGMENT` | stack: context, node, `t0`, `t1`; `ret 0x10`; hit in `al` | R, the context's `+0x1c`, `+0x20`, `+0x24`, `al`, x87 PE |
 | E | `0x244980` instance trace | `COLLISION_INSTANCE_TRACE` | `eax` cluster, `esi` start, `edi` delta, three stack arguments, `ret 0xc` | `al`, terminal marks and hit-result fields described below |
+| F | `0x300150` MOPP box query | `COLLISION_MOPP_BOX` | `ecx` box VM; stack: code, AABB, key array; `ret 0xc` | the VM's `+0`, `+0x10..+0x28`, `+0x30`; keys at `data[size..]` and `size` (below) |
+| G | `0x14a5b0` cluster flood | `COLLISION_CLUSTER_FLOOD` | stack: cluster (`i16`), centre, radius, capacity, out; `ret 0x14`; count in `ax` | the `u16` cluster list, the cluster marks |
+| H | `0xbb050` object spatial visit | `OBJECT_SPATIAL_VISIT` | stack: list bits, type mask, location, centre, radius, out, capacity; `ret 0x1c`; count in `ax` | the handle list, the epochs, active bytes and marks described below |
+| I | `0x301800` MOPP ray | `COLLISION_MOPP_RAY` | `ecx` ray VM; stack: collection, code, ray input, parent body, collector; `ret 0x14` | the guest runs the callbacks and updates the VM |
+| J | `0x1697c0` whole query | `SIM_COLLISION_QUERY` | stack: flags, start, delta, ignore A, ignore B, result; `ret 0x18`; hit in `al` | result, flags argument, generations, active bytes and visit marks |
 
-The installer gives both implementations and the three observers to the collision switch. The implementations use the owning executor because they update shared caches and subscriptions. The older
-per-function switches (`native_point_to_leaf`, `native_bsp_segment`) are
-skipped at these points while the collision switch is on. Their bodies stay
-as differential oracles.
+The per-function point, sphere, BSP segment, whole query, ray, visit and
+portal ports serve as differential oracles. The subsystem owns runtime
+dispatch. The hooks that update world caches, subscriptions and parity
+counters run on the owning executor.
 
 ### Entry B
 
@@ -45,13 +52,21 @@ unusable, B reads the selected cluster word directly.
 
 ### Entry E — instance trace of one cluster
 
-Entry E runs lifted. The ABI at `0x244980` is a cluster index in `eax`, a
+Entry E answers the signed count ≤ 0 exit in Rust. It replays the saved
+frame, scratch registers and final compare flags without reading any query
+argument. The positive path runs lifted at E. Its return comparison covers the
+hit byte, the result record and instance marks. The ABI at `0x244980` is a cluster index in `eax`, a
 start pointer in `esi`, a delta pointer in `edi`, and three stack words
 at entry ESP +4, +8 and +12 (query flags, BSP filter bits, result pointer).
 `al` returns whether any terminal hit. Both exits pop the three arguments.
-The cluster record is at `[[0x4e0348] + 0xa0] + 0xb0 * cluster`. A signed
-count at cluster +0xa8 less than or equal to zero returns false before
-reading the ray, result or code object.
+The cluster record is at `[[0x4e0348] + 0xa0] + 0xb0 * cluster`. The signed
+count is at cluster +0xa8.
+
+The whole-query predictor follows the positive path through the cluster
+MOPP, live breakable words, inverse placement transform and definition
+BSP. It carries terminal marks and fraction changes across clusters in
+visit order. A populated cluster at E still has callback lifetime and
+volatile-state obligations at its own ABI.
 
 With a positive count, E uses the code object at cluster +0xac. It sets
 the ray endpoints to start and start + delta (one binary32 add per axis),
@@ -111,6 +126,208 @@ below that address. A successful native E therefore needs a depth bound
 for its actual traversal and an alias check spanning both walks. E's
 three argument words are read-only. The status-save sites are catalogued below. The precision controls reached in a running match require an entry histogram.
 
+### Entry F — MOPP box query
+
+The only direct caller is the MOPP shape's slot `+0x30` (`0x2df640`,
+call at `0x2df659`), which passes its code pointer, the AABB and the
+`hkArray` of keys, with the VM on its own stack. F writes the array
+pointer at VM `+0`, the code pointer at `+0x30`, then for x, y, z
+converts the minimum and the maximum coordinate. Each conversion is
+`fld p; fsub origin; fmul scale; fstp m32; fld m32; fistp; dec`, with the
+origin at code `+0x00` and the scale at `+0x0c`. The minimum corner goes
+to VM `+0x20..+0x28` and the maximum to `+0x10..+0x18`; the fourth lanes
+are not written. F then builds the interpreter's root state on its stack
+(`H = (hi >> 16) + 1`, `L = lo >> 16`, zero offsets, key offset,
+bits and property) and calls `0x2ff8b0` on the bytecode at code `+0x30`.
+
+The kernel is `sim_collision::mopp`. `CollisionWorld::mopp` decodes a
+program once, by code pointer, into a tree of splits, diagonals, bounds,
+terminals and traps with the interpreter state folded into full-precision
+thresholds (the table in [the design](sim-rewrite-collision.md#43-mopp-tree)).
+`Tree::query_box` walks it low side first and returns the keys in the
+interpreter's order with the deepest nesting of its self-calls. The
+adapter (`engine::sim_collision::mopp_box`) appends the keys at
+`data + 4 * size` and stores the new size when there is at least one key.
+The interpreter appends one key at a time and calls the array's grow
+routine `0x2d91d0` when `size == capacity & 0x7fffffff`; an answer that
+does not fit the room left bails with `grow` before any write. The key
+write span must also be physically disjoint from the VM, array descriptor,
+return slot and guest frame.
+
+Two conditions keep the folded thresholds exact and are checked per call.
+Every full-precision corner lies in `[-2^28, 2^28)`, so no 32-bit frame
+value or diagonal sum the interpreter forms can wrap. Every axis has
+`lo <= hi`, because the one-plane split takes its low side whenever
+`H <= S` without looking at `L`. A box outside either is `data`. A
+reached opcode the interpreter faults or asserts on (outside its table, a
+property slot past its state, an operand past the program's size, a
+rescale past shift 0) is a trap node and bails `data`. Property 0 writes
+(`60`, `64`, `68`) land in the stack state and never reach a key, so
+they fold away. A program that unfolds past 16 nodes per bytecode byte is
+held as `guest_only` and every query on it bails `data`.
+
+The world keys each tree by code pointer and compares the origin, scale
+and size words on every call; the reference count at `+0x24` is not part
+of it. The runtime adapter watches the pages under each program with its
+own subscription (`collision-mopp-sources`). The reference count shares
+those pages and moves whenever the engine wraps the code in a shape, so a
+dirty page does not drop the trees: it moves a generation, and a held
+tree compares its bytes with the guest's before its next use. A changed
+program decodes again.
+
+### Entry I — general MOPP ray
+
+The tree shape's ray slot (`0x2df720`) builds the ray VM on its stack and
+calls I with the shape's collection and code and its own three arguments.
+I fills the VM (sim-rewrite-collision.md, "Ray VM at entry I"), computes
+the root frame and segment, and calls the float interpreter `0x3009e0`
+with `ecx` the VM and the stack holding the frame, the bytecode pointer
+(`code + 0x30 + pc`) and the segment; `ret 0xc`. Each terminal calls the
+optional filter (input `+0x24`), the collection's child method (vtable
+slot `+0x34`, `key` and a buffer, `ret 8`) and the child's ray method
+(slot `+0x24`, `ret 0xc`), then reloads the fraction from the collector.
+
+The kernel is `sim_collision::mopp::ray`. `Ray::root` is the setup:
+`one / scale` stored, the root scale `scale * [0x45dcac]` stored, and both
+ends as `(p - origin) * root_scale` in packed binary32. `RayWalk` walks the
+bytecode the world holds for the code pointer (the same `Tree` and
+revision as F) and yields each interpreter call (`Event::Enter`: pc, frame,
+segment) and each terminal key; the caller passes the fraction the VM
+holds before each step. It replays the original's float sequences in the
+guest's x87 precision (single or double; extended declines) and bails
+`float` on any operand or result off the exact path (NaN, infinity,
+subnormal, an underflowed product or quotient).
+
+I is not answered natively: the callbacks are guest code the walk would
+have to await between steps. Its parity arm (`engine::sim_collision::mopp_ray`)
+observes the query and leaves every register and byte to the guest:
+
+1. Before I: check MXCSR, the x87 environment (three free registers) and
+   the precision, read the arguments, the code's tree, the constants, the
+   ray, the filter and the collector's fraction, and start a walk.
+2. At each interpreter entry whose `ecx` is the query's VM: the frame, pc
+   and segment must equal the walk's next call, given the VM's fraction.
+   The first also compares the complete 0x68-byte VM image, including its padding.
+3. At `0x244bb0` whose `ecx` is the query's collection, when the query has
+   no filter and that is the collection's child method: the key must equal
+   the walk's next key.
+4. After I returns: the walk must have ended too.
+
+Without observed keys the arm compares calls only, until the fraction
+moves; that query counts as `fraction_moved`. Queries nest (a child shape
+can run its own ray), so the open ones form a stack per thread and each
+observation goes to the innermost. `collision.stats` reports the outcomes
+under `ray`: matched, mismatched with the first mismatch described,
+unverified by bail reason, and `fraction_moved`.
+
+The differential also drives `CollectorCast` over private guest memory.
+It calls the selected filter, looks up the child, calls the child’s ray
+method and reloads the collector fraction. A callback can mutate guest
+state. A decline after that boundary requires a continuation at the
+matching interpreter state before this candidate can answer live calls.
+
+### Entries G and H — cluster flood and object visit
+
+G floods from a cluster through the portals a sphere reaches, depth first.
+The cluster record is `[[0x4e0348]+0xa0] + 0xb0c·i`: `+0x8c` portal
+count, `+0x90` the `i16` portal indices. A portal is 36 bytes at
+`[sbsp+0x60]`: `+0` and `+2` its two clusters, `+4` its plane index,
+`+8` a bounding sphere, `+0x1c` the vertex count, `+0x20` the vertices.
+The far cluster is the second when the first is the current one, else the
+first. G marks each cluster it enters with the current flood epoch
+(`[0x4e7418 + 4·cluster] = [0x4e7414]`), writes it to `out[k]` while the
+low half of `capacity − k` is positive, and counts it even when the
+output is full. A far cluster already marked is skipped. Otherwise the
+portal test `0x14a370` decides:
+
+1. The plane distance on x87, `((ny·cy + nz·cz) + cx·nx) − d`, the plane
+   taken from the structure's plane block; the comparison is
+   `r > |dist|` on the unrounded value.
+2. The bounding sphere on SSE, `((dz² + dx²) + dy²) < (r_p + r)²`.
+3. Only then the projection: the normal's dominant axis (`0x120850`: z
+   when `|z| ≥ |y|` and `|z| ≥ |x|`, else y when `|y| ≥ |x|`, else x),
+   the projection row `2·axis + (n[axis] > 0)`, the foot
+   `n·(0 − dist) + c` and the cross radius `sqrt(r·r − d·d)` on x87,
+   stored single.
+4. The polygon test `0x23a160` over the vertices copied into a
+   128-entry frame array: per edge `len2 = ex² + ey²`, skipped when 0,
+   `cross = x0·ey − y0·ex`; outside when `cross > 0` and
+   `cross² > len2·rr`. A count of 0 or less passes.
+
+G returns the count in EAX and restores the active structure pointer in ECX. Its
+flags come from `test ecx, ecx` when that count is 0 or less, and
+otherwise from the loop's last compare of the count with itself.
+
+H reads the location's cluster word (`+4`). When it is not `0xffff` and
+the radius is above the guest's zero (`0x45dbd8`), H bumps the flood
+epoch, sets `[0x4e7411]`, floods with capacity 512 into a local array and
+clears the byte. Otherwise it visits the location's one cluster, or none.
+It bumps the visit generation `[0x4de2fc]` and holds `[0x4de2f8]` at 1
+for the walk. Zero list bits or type mask means all. Per cluster the
+collideable list (heads `[0x4de2e0]`, array `[0x4de2e4]`) runs before the
+second list (`[0x4de2d4]`, `[0x4de2d8]`). A record is
+`data(+0x44) + (datum & 0xffff)·size(+0x24)`: `+4` handle, `+8` next,
+`+0xc` type byte, `+0x10` centre, `+0x1c` radius. A reference passes the
+type mask `1 << (type & 31)`, then its object is tested and marked at
+`0x4de300 + 4·(handle & 0xffff)` before the overlap test, so a missed
+object is not tested again through another reference. The overlap is
+`(r_ref + r)² ≥ sum`, the collideable list summing `(zz + yy) + xx` and
+the second `(zz + xx) + yy`. A full output stops the walk and returns
+`(handle & 0xffff0000) | count`; otherwise H returns the count. A next
+record whose handle is −1 ends a list. The flags come from
+`add esp, 0x420`.
+
+The kernel (`sim_collision::flood`, `sim_collision::objects`) decodes the
+portal graph once per structure and version, and reads the reference
+lists live on every call. It bounds clusters below 512 and object slots
+below 0x800, so the marks it writes cannot reach other globals.
+
+G answers when traversal needs no portal test, including a cluster with
+no portals and one whose far neighbours are all marked. H answers a
+location with cluster −1. These exits replay registers, scratch stack
+words, flags and output writes. Other admitted paths compare the lifted
+return register, list and mark tables. H also compares the generations
+and active bytes. Recursive G calls belong to their outer prediction.
+
+### Entry J — whole segment query
+
+`engine::sim_collision::query` follows the structure BSP, liquid boundaries,
+instance terminals and live object references in guest order. In
+`sim_collision::model`, `169510` visits an accepted object’s children
+before its next sibling. Its model ray (`1eff40`) selects the live damage
+permutation and transforms the ray into each part’s node space. A nearer
+part supplies the material and world-space plane. J then computes the
+position and applies the requested relocation.
+
+At J’s return, the comparison checks AL, the flags argument, all 0x5c
+result bytes and the visit state. `collision.trace` runs the same planner
+read-only and returns the ordered mark lists. Trace and return comparison
+both decline on unsupported arithmetic or data. See the
+[query order](sim-rewrite-collision.md#54-the-collision-query-entry-j-e) and the
+[agent methods](../runtime/agent-api.md#collision-the-native-collision-world).
+
+### Object-reference sphere pretest
+
+The call at `0x169d3a` in J passes the sphere centre in EAX, the segment
+start in ECX, the delta in EDX and the radius at ESP+4. The result is AL
+and the function pops the radius. The adapter in
+`crates/rewrites/engine/src/sim_collision/sphere.rs` selects this call by
+its return PC. Other callers use the lifted function.
+
+`crates/rewrites/sim-collision/src/sphere.rs` computes the relative start
+and the squared distance from the sphere, with products summed in Z, Y, X
+order. A start strictly inside accepts without reading the delta. From
+outside, the projection, discriminant and endpoint comparisons keep the
+guest's rounding order and reject tangency and first contact exactly at
+the endpoint. The adapter restores the scratch registers and epilogue
+flags and replays the three direction spills when the delta is read.
+Unsupported float inputs, unreadable arguments and unsafe spill frames
+decline before any writes.
+
+Synthetic unit tests cover the strict boundaries and rounding order. The
+engine tests compare the transfer, CPU and memory with the per-function
+port and check that declined calls leave both CPU and memory intact.
+
 ### Records
 
 R, the result record (`layout::record`): `+0` fraction, `+4` the hit
@@ -157,8 +374,10 @@ compare:
   `|ny| >= |nx|`, else x. The `u`, `v` axes come from the guest's table at
   `0x440b94`, read at decode time. The breakable check is inside it:
   `mask != 0`, surface flag 8, and `(breakable as i16) < (count as i16)`,
-  with bit `mask[b >> 5] & (1 << (b & 31))`. Edges are visited in retail
-  order, scalar. The 8-lane form is not built yet.
+  with bit `mask[b >> 5] & (1 << (b & 31))`. Short cached rings use
+  four-edge groups with precomputed deltas and the reference's projection
+  row. A packed range failure replays the scalar test in guest order to
+  preserve early rejection. Long or uncached rings use the scalar test.
 
 ## Floats
 
@@ -181,6 +400,11 @@ The bridge first checks the MXCSR and x87 exception masks, the x87 error summary
 - MXCSR has every exception masked, rounds to nearest, and already has PE
   set. PE is sticky, so the kernel's SSE work cannot leave it different
   from retail's. FTZ and DAZ do not matter because no operand is subnormal.
+- For F: the x87 control word masks every exception, rounds to nearest
+  and selects single or double precision (`det::Chain`; extended bails
+  `float`), one register below the top is free, and the status word
+  already has PE. The six conversions set PE whenever one is inexact, and
+  the adapter models nothing else of the status word.
 - For the C and D candidate adapters: the x87 control word masks every exception,
   rounds to nearest and does not use the reserved precision setting; the
   status word has no error summary; and at least two registers below the
@@ -194,6 +418,9 @@ declines the smallest normal to cover differences in tininess detection.
 `det::Chain` keeps a single- or double-precision x87 working value
 through arithmetic, comparison and conversion. Reserved and extended
 precision decline general chains. A–D use the narrower range proof above.
+F runs its six conversions as chains inside one checked region: an
+operand that is not zero or normal, a non-normal result, or a value
+`fistp` cannot represent bails `float`.
 
 `collision.stats` reports the complete MXCSR and x87 control words
 observed at A–E, including calls declined at dispatch. Differences between
@@ -224,11 +451,23 @@ slots. The frame exclusions are bounded as follows.
 |---|---|---|
 | C | 0x3c to D plus D's bound | first argument at ESP+4 |
 | D | 0x28 per nested near-child call, plus 0x90 at the deepest matcher and ring test | within ESP+4 through ESP+0x13 |
+| F | 4 for EBP, up to 15 of alignment, 0xa4 to the root interpreter's saved registers, 0x54 per self-call | none |
+| G | 0x14, or 0x460 + 0x2c·k when a portal test ran at depth k | within ESP+4 through ESP+0x17 |
+| H | 0x448, plus G's figure when it floods | within ESP+4 through ESP+0x1f |
 
 A handled D call has at most 255 nested calls beneath its initial frame.
 The deepest leaf has 0x30 bytes through entry to the matcher, another
 0x48 through entry to the ring test and 0x18 in that test. The four-byte
 return slot remains in the comparison for both entries.
+
+F preserves EBX, EBP, ESI and EDI and returns with ESP 0x10 above its
+entry value. Its epilogue (`pop esi; mov esp, ebp; pop ebp; ret 0xc`)
+changes no flags, so EFLAGS are those of the root interpreter's
+`add esp, 0x38` at `A − 0x94`, where A is the entry ESP − 4 rounded down
+to 16. The adapter replays them. EAX, ECX, EDX and the x87 condition
+codes hold the interpreter's last scratch values and are not replayed.
+A native query nests at most 256 self-calls (`depth` beyond that). The adapter
+checks the window for the nesting the query actually reaches.
 
 `preflight::Outputs` checks the writable output ranges and the span used
 by the lifted stack, and gathers the return address before commit. It
@@ -248,6 +487,9 @@ Direct calls in the executable text, identified by instruction address:
 | C | 1693c0, 16987c, 1f52a7, 1f5358, 221ed9, 221f3d |
 | D | 1de6b8, 1de7d8, 1f01e4 |
 | E | 169c71 |
+| F | 2df659 |
+| G | bb0e4, 132dbc, 14a68b (itself), 17e4e9, 180bb8, 1cace3 |
+| H | d6d09, 1095c2, 1155ff, 119cf3, 11c757, 150954, 1511b7, 1ac697, 2c0f4e |
 
 All six direct C callers test AL immediately. The outer vector wrapper
 at `0x1de6b8` forwards D's AL and restores its frame. The recursive
@@ -258,9 +500,22 @@ through `0x16942b` into the callback that returns at `0x244c9b`.
 The audio path can forward XMM1–7 through `0x222146` and `0x221d99`.
 D's model trace can forward EDX and XMM registers through `0x1f0228`.
 A whitelist of these direct return addresses would still admit those
-paths. The collision installer keeps C/D lifted until all surviving
-state is replayed or proved dead through their outer callers. A/B
-have no caller-liveness prerequisite.
+paths. C and D answer an unsplit walk when the leaf transition needs no
+surface lookup. The adapter replays all registers and stack writes for
+that exit. A direct D leaf preserves the incoming XMM values. The
+crossing and matcher paths retain the lifted return and compare AL and
+the result record, plus the outer context for D. A/B have no
+caller-liveness prerequisite. G and H likewise require exact scratch
+replay beyond the exits described above.
+
+F's direct caller `0x2df640` returns at once through `mov esp, ebp; pop
+ebp; ret 8`, which reads none of F's scratch state. It is a virtual
+method: the shape vtable slots at `0x455ee8` and `0x455f88` hold it, and
+the structure shape's override `0x1eea50` (slot at `0x456190`) calls it
+directly at `0x1eea6d` and next reads only EDI, which F preserves. Callers
+through the vtable follow the thiscall convention of a method with no
+result, under which EAX, ECX, EDX, EFLAGS and the x87 condition codes do
+not survive the call. F is installed on that basis.
 
 ### Status-instruction census
 
@@ -308,11 +563,12 @@ through every indirect caller or exception path.
 | `env` | MXCSR or the x87 environment is outside the checks above |
 | `float` | an arithmetic operand outside `Fp`'s range |
 | `fault` | an unreadable input, unwritable output or unusable stack range |
-| `data` | invalid block sizes or indices, a ring that cannot be decoded, a walk exceeding the available node count, or an epoch change during decode |
-| `depth` | the walk went deeper than 256 levels |
+| `data` | invalid block sizes or indices, a ring that cannot be decoded, a walk exceeding the available node count, or an epoch change during decode; for F, a bad program size, a reached trap, a `guest_only` program, or an inverted or far box |
+| `depth` | the walk went deeper than 256 levels, or F's query nests more than 256 self-calls |
 | `alias` | overlap, or a physically contiguous span cannot be established |
 | `trap` | the debugger observes guest memory accesses and needs the lifted instruction sequence |
-| `budget` | the essential decoded BSP and its index entry exceed the remaining map budget, or the index is full |
+| `budget` | the essential decoded BSP and its index entry exceed the remaining map budget, or the index is full; for F, the decoded tree does not fit or 4,096 programs are held |
+| `grow` | F's answer has more keys than the array has room for: the original grows it |
 
 `CollisionWorld` decodes each BSP on first use and keys it by address. It
 compares the 16 header words on every lookup. The runtime adapter watches
@@ -327,8 +583,8 @@ bytes per allocated address record and 512 per retained BSP owner. Both
 cover the host layout, including padding and Arc bookkeeping. The index
 grows geometrically to at most 8,192 named BSP addresses per generation.
 
-`Stats.bytes` adds these charges to the allocated array capacities and
-the packed cluster table. The 8 MiB limit covers live map allocations
+`Stats.bytes` adds these charges to the allocated array capacities, the
+packed cluster table and the MOPP trees (nodes and the kept bytecode). The 8 MiB limit covers live map allocations
 owned by the cache. Decode scratch, completed generations held by callers,
 process-wide counters and runtime write-watch infrastructure are separate.
 The first overflow drops expanded ring arrays across the active world.
@@ -349,8 +605,15 @@ cargo test -p sim-collision
 cargo test -p engine --features runtime-glue --lib sim_collision::
 cargo test -p sim-bridge sim_native
 cargo test -p agent collision
+cargo test -p guest-layout
 H2_XBE=/path/to/default.xbe cargo test -p engine --features differential --test it sim_collision_differential::
+H2_XBE=/path/to/default.xbe cargo test -p engine --features differential --test it sim_collision_differential::mopp_ray -- --nocapture
 ```
+
+The G and H cases (`cluster_flood_matches_the_guest`,
+`cluster_flood_ties_match_the_guest`, `object_visit_matches_the_guest`)
+run the `sim_physics` spatial ports as a third arm, with the lifted entry
+calling the port on a copy of the guest.
 
 The synthetic differential runs each entry against the lifted instructions
 on the IR interpreter, with a cold and a warm world and the earlier
@@ -358,17 +621,56 @@ per-function port where one exists. It verifies that a declined call
 preserves the entire CPU and memory. Cases exercise plane ties, unusual
 float inputs, all precision controls and a partially occupied x87 stack.
 
-The ignored disc sweep compares points on each structure and object BSP
-and locations on structure BSPs. It reports per-map decoded storage and
+F's cases are random programs over every opcode class
+(`sim_collision::synth::random_mopp`) and `mopp::build` programs, boxes
+on frame-cell edges, and each decline path: PE clear, extended or
+directed rounding, NaN, inverted and far boxes, a full array, and a key
+area over the VM, the code or the dead stack.
+
+I's cases run the setup and the interpreter lifted, with the arm's
+observers where the installer puts them and invented callbacks answered
+by the run loop: the instanced collection method or one whose keys the
+arm cannot see, a child ray method that lowers the collector's fraction
+for some keys, and a filter that rejects some. Programs are random and
+hand-written over every opcode family, with rays on and across their
+thresholds, in single, double and extended precision. Each case must
+match or be unverified for a stated reason, and the collection must get
+the keys a native-only walk gives. A last case changes the bytecode under
+a warm world, and the arm must report the mismatch.
+
+The ignored BSP sweeps compare points and segments on structure and object
+BSPs, and locations on structure BSPs. The segment sweep compares the C
+record, samples D’s full context, and checks all registers and frame bytes
+on a straight native exit. It reports per-map decoded storage and
 bails and compares the largest active structure plus all local object BSPs against the map budget. Give the test the owner's disc and XBE. No disc payload is emitted.
 
 ```sh
 H2_DISC=/path/to/halo2.iso H2_XBE=/path/to/default.xbe cargo test --release -p engine --features differential --test it sim_collision_differential::disc::every_disc_bsp_point_matches_the_guest -- --exact --ignored --nocapture
 ```
 
+The MOPP sweep covers structure, cluster, `coll` and `phmo` programs. It compares 400 boxes per
+program with `mopp::boxvm` (the mopp.md sampling) and runs one box in ten
+through the adapter and the lifted entry. It prints each program's
+bytecode and node counts and the bails by reason.
+
+```sh
+H2_DISC=/path/to/halo2.iso H2_XBE=/path/to/default.xbe cargo test --release -p engine --features differential --test it sim_collision_differential::mopp_box::every_disc_mopp_box_matches_the_guest -- --exact --ignored --nocapture
+```
+
+The owner-disc ray sweep compares 400 rays per cluster program. The
+placement sweep checks each instance’s inverse against the lifted helper.
+Run the ignored collision suite with the owner’s ISO and XBE.
+
+```sh
+cargo test --release -p engine --features differential --test it sim_collision_differential:: -- --ignored --nocapture
+```
+
 ## Gaps
 
-The segment and MOPP disc sweeps, debug round-robin source checks and
-packed ring test are later slices. Runtime verification includes arena
-parity, cache-cold runs, FP distributions and cross-architecture bail
-counts.
+Full authority for crossing BSP segments, populated instance clusters,
+portal tests and nonempty object visits needs the surviving volatile
+registers and frame bytes reproduced or proved dead. The general ray
+also needs callback continuation on a mid-walk decline. J needs its
+stack and alias contract closed before it can scatter the planned writes.
+Run parity, cache-cold runs, FP distributions, the bail audit, timing and
+cross-architecture comparisons are the phase exit gates.

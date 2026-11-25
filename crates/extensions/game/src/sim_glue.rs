@@ -19,6 +19,9 @@
 //!   tick's player snapshot and guest census ([`crate::sim_census`]), the
 //!   shots, the damage reports, the kills and the end latch, into a
 //!   [`sim_bench::metrics::Tally`].
+//! - **The spatial trace** (`detail = "spatial"`): the same observers
+//!   feed a [`sim_bench::spatial::Recorder`] beside the tally
+//!   ([`spatial`]), and [`Sim::finish`] writes it beside the report.
 //! - **The RNG seed** is written once, before the match's
 //!   first tick ([`SimMetrics`]'s one writing hook).
 //! - **The end**: the game's end latch, the match's tick limit, its wall
@@ -54,7 +57,9 @@ use crate::level_boot;
 use std::collections::BTreeMap;
 mod film_state;
 pub mod hosted;
+pub mod spatial;
 mod state_hash;
+pub(crate) mod voices;
 
 /// The engine's shared random seed: a pointer to the struct whose first
 /// word it is.
@@ -151,6 +156,66 @@ struct State {
     pages: Pages,
     /// The end-of-run census and lean fields ([`Sim::note_lean`]).
     lean: WallLean,
+    /// The spatial trace, with `detail = "spatial"`; taken by
+    /// [`Sim::finish`].
+    spatial: Option<sim_bench::spatial::Recorder>,
+}
+
+impl State {
+    /// A kill, into the tally and the trace alike.
+    fn kill(
+        &mut self,
+        tick: u32,
+        killer: Option<u8>,
+        victim: u8,
+        betrayal: bool,
+        ground: &dyn sim_bench::spatial::Ground,
+    ) {
+        self.tally.kill(tick, killer, victim, betrayal);
+        if let Some(r) = self.spatial.as_mut() {
+            r.kill(tick, killer, victim, betrayal, ground);
+        }
+    }
+
+    /// A damage report, into the tally and, against a player, the trace;
+    /// `tick` is the hook's, else the tick after the last sample.
+    fn hit(
+        &mut self,
+        tick: Option<u64>,
+        attacker: Option<u8>,
+        victim: Option<u8>,
+        damage: f32,
+        team_play: bool,
+        ground: &dyn sim_bench::spatial::Ground,
+    ) {
+        self.tally.hit(attacker, victim, damage, team_play);
+        let tick = tick
+            .map(|t| (t & 0xffff_ffff) as u32)
+            .or_else(|| self.tally.last().map(|l| l.tick.wrapping_add(1)))
+            .unwrap_or(0);
+        if let (Some(r), Some(v)) = (self.spatial.as_mut(), victim) {
+            r.damage(tick, attacker, v, damage, ground);
+        }
+    }
+
+    /// The trace's side of a tick: spawns, pickups and the samples.
+    fn trace_tick(
+        &mut self,
+        tick: u32,
+        snap: &telemetry::Snapshot,
+        ground: &dyn sim_bench::spatial::Ground,
+    ) {
+        if let Some(r) = self.spatial.as_mut() {
+            r.tick(tick, &spatial::poses(snap), ground);
+        }
+    }
+
+    /// The match (re)starts for the tally's sake: so does the trace.
+    fn trace_start(&mut self, tick: u32) {
+        if let Some(r) = self.spatial.as_mut() {
+            r.start(tick);
+        }
+    }
 }
 
 /// The page census's state: the page hashes of the first counted tick.
@@ -348,6 +413,50 @@ pub fn practice_event(e: &bots::mind::PracticeEvent) -> (u32, sim_bench::bounce:
                 why: why.map(str::to_string),
             },
         ),
+        P::Intent {
+            site,
+            tick,
+            monster,
+            links,
+            fumble,
+            again,
+        } => (
+            *tick,
+            Event::Intent {
+                site: *site,
+                monster: *monster,
+                links: *links,
+                fumble: fumble.map(str::to_string),
+                again: *again,
+            },
+        ),
+        P::Chained {
+            site,
+            tick,
+            tried,
+            made,
+        } => (
+            *tick,
+            Event::Chained {
+                site: *site,
+                tried: *tried,
+                made: *made,
+            },
+        ),
+        P::Yielded {
+            site,
+            tick,
+            waited,
+            gave_up,
+        } => (
+            *tick,
+            Event::Yielded {
+                site: *site,
+                waited: *waited,
+                gave_up: *gave_up,
+            },
+        ),
+        P::SteppedAside { tick } => (*tick, Event::SteppedAside),
     }
 }
 
@@ -355,7 +464,7 @@ pub fn practice_event(e: &bots::mind::PracticeEvent) -> (u32, sim_bench::bounce:
 /// award's slot), its game tick and the event. A Bounced award ends a
 /// chain; every other is a bounce `chain` into its chain.
 pub fn award_event(a: &crate::superbounce_chain::Award) -> (u8, u32, sim_bench::bounce::Event) {
-    use hud_kit_core::huds::superbounce::Medal;
+    use hud_kit_core::views::superbounce::Medal;
     let e = if a.medals.contains(&Medal::Bounced) {
         sim_bench::bounce::Event::Bounced { chain: a.chain }
     } else {
@@ -516,7 +625,17 @@ impl Sim {
             .on_skip(crate::d3d_diag::note_skipped_present);
         let created = Instant::now();
         let mut tally = Tally::new();
-        tally.set_detail(matched.config.detail());
+        let detail = matched.config.detail();
+        tally.set_detail(detail.tally());
+        let spatial = detail.traces().then(|| {
+            sim_bench::spatial::Recorder::new(sim_bench::spatial::Header {
+                map: matched.config.map.clone(),
+                game_type: matched.game_type_name().into(),
+                seed: matched.config.seed,
+                team_play: matched.team_play,
+                ..Default::default()
+            })
+        });
         Sim(Arc::new(Inner {
             path,
             hosted_map: Default::default(),
@@ -544,6 +663,7 @@ impl Sim {
                 setup: SetupClock::new(created),
                 pages: Pages::default(),
                 lean: WallLean::default(),
+                spatial,
             }),
             stop: AtomicBool::new(false),
             created,
@@ -554,7 +674,8 @@ impl Sim {
         &self.0.matched
     }
 
-    /// Resolve the match's multiplayer map for the System Link lobby.
+    /// Resolve the match's multiplayer map for the System Link lobby: a
+    /// disc map, else an installed Firefight kit package ([`kit_request`]).
     pub fn select_map(&self, disc: &Path, data_root: &Path) -> Result<()> {
         let m = &self.0.matched;
         let req = level_boot::resolve_in(
@@ -563,6 +684,7 @@ impl Sim {
             &m.config.map,
             level_boot::Difficulty::Normal,
         )
+        .or_else(|e| kit_request(&m.config.map).ok_or(e))
         .with_context(|| format!("sim: map {:?}", m.config.map))?;
         if req.kind != level_boot::Kind::Multiplayer {
             bail!(
@@ -585,11 +707,28 @@ impl Sim {
     /// host console runs the game playerless.
     pub fn add_bots(&self) -> Result<()> {
         bots::phantom::global().set_playerless_host(true);
+        if let Some(f) = &self.0.matched.firefight {
+            // Firefight (docs/runtime/sim.md, "Firefight"): the runtime
+            // reads the match file's choices as it reads Game Setup's page,
+            // from a store of their own; the bots sit on the player teams
+            // the match file resolved.
+            let shared = crate::firefight::feature::AgentSource::installed()
+                .0
+                .context("sim: a Firefight match needs the firefight feature, which is off")?;
+            let store = Arc::new(firefight_store(f)?);
+            shared
+                .lock()
+                .set_options(crate::firefight::options::source(&store));
+            *lock_ended() = None;
+        }
         if self.0.matched.superbounce {
             // Bounce practice (docs/runtime/sim.md, "Bounce practice"): the
-            // mode on in this game whatever the variant, the bots' route
-            // reads its pair word, and the tally counts the bounces.
-            crate::superbounce_mode::set_override(Some(true));
+            // game plays the Superbounce script, which turns the mode on;
+            // the bots' route reads its pair word, and the tally counts
+            // the bounces.
+            let sb = crate::community_variants::listed_named("Superbounce")
+                .context("sim: the built-in Superbounce script is not listed")?;
+            crate::game_variants::inject::set_sim_block(Some(sb.block()));
             crate::superbounce_mode::collect_awards(true);
             crate::sim_bots::install_pair_reader();
             self.0.lock().tally.track_bounces();
@@ -609,6 +748,38 @@ impl Sim {
                 budget: t.budget,
                 seed: t.seed,
             }));
+        }
+        if let Some(d) = &self.0.matched.config.drops {
+            // Seam drops (docs/runtime/sim.md, "Seam drops"): every seat
+            // is placed, primed and dropped by the "sim: drops" hook, its
+            // pad held, its brain ignored.
+            let map = &self.0.matched.config.map;
+            let job = sim_bench::drops::Job::new(d, map, self.0.matched.bots.len() as u32)
+                .map_err(anyhow::Error::msg)?;
+            eprintln!(
+                "sim: drops: {} planned on {} targets, {} seats, control {}",
+                job.planned(),
+                job.targets().len(),
+                self.0.matched.bots.len(),
+                job.gate().name()
+            );
+            crate::sim_drops::set(map, job);
+        }
+        if let Some(b) = &self.0.matched.config.bounces {
+            // The bounce search (docs/runtime/bounce-search.md): every
+            // seat is driven by the "sim: bounces" hook, its pad held, its
+            // brain ignored.
+            let map = &self.0.matched.config.map;
+            let job = sim_bench::bounces::Job::new(b, map, self.0.matched.bots.len() as u32)
+                .map_err(anyhow::Error::msg)?;
+            eprintln!(
+                "sim: bounces: at most {} trials on {} sites in {} batches, {} seats",
+                job.planned(),
+                job.sites(),
+                job.batches(),
+                self.0.matched.bots.len()
+            );
+            crate::sim_bounces::set(map, job);
         }
         for b in &self.0.matched.bots {
             let brain = bots::Brain::new(skill(b.skill), b.seed)
@@ -656,15 +827,59 @@ impl Sim {
     pub fn install_with_film(
         &self, features: &mut hooks::Registry, film_playback: Option<bool>,
     ) -> Result<()> {
+        self.install_with_audio(features, film_playback, None)
+    }
+
+    /// Include the actual DirectSound scheduling and delivery sequence in
+    /// the arena verification arm's full component series.
+    pub fn install_with_audio(
+        &self,
+        features: &mut hooks::Registry,
+        film_playback: Option<bool>,
+        audio: Option<Arc<dsound::Hle>>,
+    ) -> Result<()> {
         features
-            .add(&SimMetrics { sim: Arc::clone(&self.0), film_playback })
+            .add(&SimMetrics { sim: Arc::clone(&self.0), film_playback, audio })
             .map_err(|e| anyhow::anyhow!("sim metrics: {e}"))?;
+        if self.0.matched.config.bounces.is_some() {
+            // The search's teleports go the drops' way.
+            match crate::superbounce_verify::calls() {
+                Some(q) => crate::sim_bounces::set_calls(q.clone()),
+                None => {
+                    let q = agent::sim::calls::shared();
+                    match features.add(&agent::sim::calls::CallsFeature(q.clone())) {
+                        Ok(true) => crate::sim_bounces::set_calls(q),
+                        Ok(false) => eprintln!(
+                            "sim: bounces: agent-calls is switched off by H2_FEATURES; no trial can be placed"
+                        ),
+                        Err(e) => bail!("sim: bounces: agent-calls: {e}"),
+                    }
+                }
+            }
+        }
+        if self.0.matched.config.drops.is_some() {
+            // The drops teleport through the agent's guest calls: its
+            // queue when the agent is on, else one of our own.
+            match crate::superbounce_verify::calls() {
+                Some(q) => crate::sim_drops::set_calls(q.clone()),
+                None => {
+                    let q = agent::sim::calls::shared();
+                    match features.add(&agent::sim::calls::CallsFeature(q.clone())) {
+                        Ok(true) => crate::sim_drops::set_calls(q),
+                        Ok(false) => eprintln!(
+                            "sim: drops: agent-calls is switched off by H2_FEATURES; no drop can be placed"
+                        ),
+                        Err(e) => bail!("sim: drops: agent-calls: {e}"),
+                    }
+                }
+            }
+        }
         eprintln!(
             "sim: {} on {}, {} bot(s), {} ({})",
             self.0.path.display(),
             self.0.matched.config.map,
             self.0.matched.bots.len(),
-            self.0.matched.game_type.name(),
+            self.0.matched.game_type_name(),
             self.0.matched.pace.label()
         );
         Ok(())
@@ -733,6 +948,8 @@ impl Sim {
             player.combat = bots::phantom::global().combat_stats(handle)
                 .map(|stats| json!(stats));
         }
+        report.drops = crate::sim_drops::report();
+        report.bounces = crate::sim_bounces::report();
         report
     }
 
@@ -791,7 +1008,21 @@ impl Sim {
     /// The report at the end of the run, written to `H2_SIM_REPORT` when
     /// set, and its summary on stderr.
     pub fn finish(&self) -> Result<Report> {
-        let r = self.report();
+        // The drops' proven targets into the run's verified file, before
+        // the report says where.
+        if let Some(note) = crate::sim_drops::save() {
+            eprintln!("sim: {note}");
+            self.0.lock().notes.push(note);
+        }
+        if let Some(note) = crate::sim_bounces::save() {
+            eprintln!("sim: {note}");
+            self.0.lock().notes.push(note);
+        }
+        let mut r = self.report();
+        if let Some(note) = self.write_trace(&r) {
+            eprintln!("sim: {note}");
+            r.notes.push(note);
+        }
         eprintln!(
             "sim: {} after {} ticks ({:.0} game s) in {:.1} s: {:.2}x real time ({:.2}x with the boot)",
             r.result.end.name(),
@@ -821,6 +1052,14 @@ impl Sim {
         // A read recording (H2_SIM_STORE_RECORD) is written with the
         // report, merged into what the file already holds.
         vfs::sim_store::record::flush();
+        // A control that did not bounce: the run's named error.
+        if let Some(e) = crate::sim_drops::error() {
+            bail!("sim: drops: {e}");
+        }
+        // A fork that failed: the search's named error.
+        if let Some(e) = crate::sim_bounces::error() {
+            bail!("sim: bounces: {e}");
+        }
         if self.0.lock().bindings.len() != self.matched().bots.len() {
             bail!(
                 "sim: match ended before all {} seats had a player and a spawned unit",
@@ -828,6 +1067,31 @@ impl Sim {
             );
         }
         Ok(r)
+    }
+
+    /// The spatial trace, written beside the report
+    /// ([`sim_bench::spatial::trace_path`]) and checked against its kills;
+    /// what happened, as a note. `None` when the run does not trace.
+    fn write_trace(&self, report: &Report) -> Option<String> {
+        let recorder = self.0.lock().spatial.take()?;
+        let Some(report_path) = &self.0.report_path else {
+            return Some("spatial: no report path, so no trace was written".into());
+        };
+        let ground = spatial::MapGround::current();
+        let trace = recorder.finish(&ground, ground.mesh());
+        let path = sim_bench::spatial::trace_path(report_path);
+        if let Err(e) = trace.write(&path) {
+            return Some(format!("spatial: {e}"));
+        }
+        Some(match trace.agrees_with(&report.kills) {
+            Ok(()) => format!(
+                "spatial trace {} ({} events; its {} kills are the report's)",
+                path.display(),
+                trace.events.len(),
+                report.kills.len()
+            ),
+            Err(e) => format!("spatial trace {}: {e}", path.display()),
+        })
     }
 
     /// `match.status`, `match.report`, `match.stop` and `sim.guest_census`
@@ -874,7 +1138,7 @@ impl Sim {
         json!({
             "match": inner.path.display().to_string(),
             "map": inner.matched.config.map,
-            "game_type": inner.matched.game_type.name(),
+            "game_type": inner.matched.game_type_name(),
             "bots": inner.matched.bots.len(),
             "phase": s.phase.name(),
             "lobby": lobby,
@@ -892,6 +1156,8 @@ impl Sim {
                 "stub_faults": f.stub_faults,
             },
             "end": s.end.map(End::name),
+            "drops": crate::sim_drops::status(),
+            "bounces": crate::sim_bounces::status(),
         })
     }
 }
@@ -1014,7 +1280,93 @@ fn build_report(inner: &Inner, s: &State) -> Report {
     let mut lean = s.lean.clone();
     lean.setup = Some(s.setup.phases(s.first_tick.unwrap_or_else(Instant::now)));
     report.set_lean(lean);
+    if let Some(f) = &inner.matched.firefight {
+        use sim_bench::firefight::FirefightReport;
+        report.firefight = Some(match lock_ended().as_ref() {
+            Some(ended) => FirefightReport::ended(ended),
+            None => FirefightReport::unfinished(f, &report.result.teams),
+        });
+    }
     report
+}
+
+// ---- Firefight (docs/runtime/sim.md, "Firefight") ----
+
+/// The result the Firefight runtime reported this run ([`note_firefight`]).
+static FIREFIGHT_ENDED: Mutex<Option<live_proto::firefight::FirefightEnded>> = Mutex::new(None);
+
+fn lock_ended() -> MutexGuard<'static, Option<live_proto::firefight::FirefightEnded>> {
+    FIREFIGHT_ENDED.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Keeps the Firefight runtime's result for a sim report's `firefight`
+/// section. Boot's report sink passes every report here as well as to Live
+/// telemetry; only the result is kept, the last one.
+pub fn note_firefight(report: &crate::firefight::runtime::Report) {
+    if let crate::firefight::runtime::Report::Ended(ended) = report {
+        *lock_ended() = Some(ended.clone());
+    }
+}
+
+/// The Firefight page's choices for a match file's `[firefight]`, in a
+/// store of their own over the page's settings
+/// (`crate::firefight::options::DEFS`).
+fn firefight_store(f: &sim_bench::firefight::Firefight) -> Result<settings::Store> {
+    use sim_bench::firefight::Choice;
+    let store = settings::Store::defaults(&crate::firefight::options::DEFS[..]);
+    for (key, choice) in f.settings() {
+        if store.def(key).is_none() {
+            // The set's own teams needs no setting.
+            if key == "firefight.teams" && choice == Choice::Int(0) {
+                continue;
+            }
+            bail!("sim: this build has no {key} setting for the match's [firefight] table");
+        }
+        let value = match choice {
+            Choice::Bool(b) => settings::Value::Bool(b),
+            Choice::Int(i) => settings::Value::Int(i),
+        };
+        store
+            .set(key, value)
+            .map_err(|e| anyhow::anyhow!("sim: [firefight] as {key}: {e:?}"))?;
+    }
+    Ok(store)
+}
+
+/// The installed Firefight kit package a match file names, as the lobby's
+/// map select lists it: by its package directory (`firefight-<map>`, as
+/// `h2 firefight kit` installs it) or its list name (`Firefight – <map>`).
+/// The request is its map list slot.
+fn kit_request(name: &str) -> Option<level_boot::Request> {
+    let catalogue = crate::map_select::current()?;
+    let map = kit_map_named(catalogue.all(), name)?;
+    Some(level_boot::Request {
+        name: map.short_name(),
+        // The game options' scenario path for a package is its slot path.
+        scenario: map.path.clone(),
+        campaign: u32::MAX,
+        map: map.id,
+        difficulty: level_boot::Difficulty::Normal,
+        kind: level_boot::Kind::Multiplayer,
+        variant: None,
+    })
+}
+
+/// The kit map among `maps` that `name` names ([`kit_request`]).
+fn kit_map_named<'a>(
+    mut maps: impl Iterator<Item = &'a crate::map_select::Map>,
+    name: &str,
+) -> Option<&'a crate::map_select::Map> {
+    let name = name.trim().trim_end_matches(".map");
+    let lower = name.to_ascii_lowercase();
+    let listed = lower
+        .strip_prefix("firefight-")
+        .map(|base| format!("{}{base}", crate::lobby_start::KIT_NAME_PREFIX));
+    maps.find(|m| {
+        crate::lobby_start::is_kit_map(m)
+            && (m.name.eq_ignore_ascii_case(name)
+                || listed.as_deref().is_some_and(|l| m.name.eq_ignore_ascii_case(l)))
+    })
 }
 
 /// The process's running cost totals, for the report's costs.
@@ -1062,6 +1414,17 @@ impl PadSource for Metered {
         self.brain.reset_input();
         self.last_tick = None;
         self.thinking = None;
+    }
+
+    fn order(&mut self, order: Option<bots::brain::Order>) -> bool {
+        self.brain.set_order(order);
+        true
+    }
+
+    // The seam drops and `superbounce.verify` drive a seat by holding its
+    // pad (`sim_drops`); without this the brain's own pad goes out.
+    fn hold_pad(&mut self, pad: Option<HostPadState>) -> bool {
+        self.brain.hold_pad(pad)
     }
 
     fn phantom_latency(&self) -> bots::tuning::PhantomLatency {
@@ -1134,11 +1497,17 @@ impl Metered {
             } else {
                 Vec::new()
             };
+            let traces = self.sim.matched.config.detail().traces();
+            let toward = self.brain.mind.stuck.goal();
+            let ground = spatial::MapGround::when(traces);
             let mut s = self.sim.lock();
             if s.phase == Phase::Playing
                 && let Some(&player) = s.bindings.get(&self.seat)
             {
                 s.tally.brain_for_player(player, b);
+                if let Some(r) = s.spatial.as_mut() {
+                    r.brain(player, b.stuck, b.repaths, toward, &ground);
+                }
                 for e in &events {
                     let (tick, e) = practice_event(e);
                     s.tally.bounce_event(player, tick, e);
@@ -1153,6 +1522,7 @@ impl Metered {
 struct SimMetrics {
     sim: Arc<Inner>,
     film_playback: Option<bool>,
+    audio: Option<Arc<dsound::Hle>>,
 }
 
 impl hooks::Feature for SimMetrics {
@@ -1168,6 +1538,15 @@ impl hooks::Feature for SimMetrics {
             None => hooks::SnapshotPolicy::Stateless,
         };
         b.snapshot(policy);
+        let audio = self.audio.clone().filter(|_| {
+            b.switches().implementation("sim.arena-hash", false)
+                && self.sim.matched.config.detail().tally() == Detail::Full
+                && self.sim.matched.config.components != Some(false)
+        });
+        if let Some(hle) = &audio {
+            voices::install(b, hle);
+        }
+        let start_audio = audio.clone();
         let me = Arc::clone(&self.sim);
         b.game().on_start("sim: match start", move |o| {
             let g = o.guest();
@@ -1183,10 +1562,31 @@ impl hooks::Feature for SimMetrics {
                     return;
                 }
             }
+            // The scenario's places, for the trace's spawns and pickups.
+            let places = me
+                .matched
+                .config
+                .detail()
+                .traces()
+                .then(|| spatial::places(&*g));
             drop(g);
+            if let Some(hle) = &start_audio {
+                hle.begin_voice_trace();
+            }
             let mut s = me.lock();
             s.bindings.clear();
             s.tally.start((tick & 0xffff_ffff) as u32);
+            s.trace_start((tick & 0xffff_ffff) as u32);
+            if let Some(r) = s.spatial.as_mut() {
+                match places {
+                    Some(Ok((starts, items))) => r.set_places(starts, items),
+                    Some(Err(e)) => eprintln!(
+                        "sim: spatial: the scenario's places faulted at {:#x}",
+                        e.addr
+                    ),
+                    None => {}
+                }
+            }
             s.phase = Phase::Binding;
             s.set_up = false;
             s.fired.clear();
@@ -1207,7 +1607,12 @@ impl hooks::Feature for SimMetrics {
         let projected = b.switches().implementation("sim.metrics-projection", true);
         let page_census = b.switches().implementation("sim.page-census", true);
         me.lock().pages.enabled = page_census;
-        let full_detail = me.matched.config.detail() == Detail::Full;
+        let full_detail = me.matched.config.detail().tally() == Detail::Full;
+        let traces = me.matched.config.detail().traces();
+        // The Havok heap walk (docs/engine/sim-rewrite-havok.md §9.2): the
+        // arena hash cannot cover the heap, so its digest joins the named
+        // components when the report has them.
+        let havok_digest = full_detail && me.matched.config.components != Some(false);
         b.frame().on_tick("sim: tick sample", move |o| {
             if !matches!(me.lock().phase, Phase::Playing | Phase::Binding) {
                 return;
@@ -1220,6 +1625,11 @@ impl hooks::Feature for SimMetrics {
             if me.lock().phase == Phase::Binding
                 && bots::phantom::session::host_session(&*g).is_err()
             {
+                if let Some(hle) = &audio {
+                    let tick = telemetry::game_tick(&g).unwrap_or(0) as u32;
+                    drop(g);
+                    let _ = hle.direct_sound().voice_events(tick);
+                }
                 return;
             }
             let snap = if projected {
@@ -1257,7 +1667,18 @@ impl hooks::Feature for SimMetrics {
             };
             // A handful of reads (docs/runtime/sim.md §6, `guest_census`).
             let census = crate::sim_census::read(&*g);
+            let voice_tick = audio.as_ref().map(|_| {
+                snap.as_ref()
+                    .map(|s| s.tick)
+                    .unwrap_or_else(|_| telemetry::game_tick(&g).unwrap_or(0)) as u32
+            });
+            let havok = havok_digest
+                .then(|| live_telemetry::havok_agents::digest::read(&*g).ok())
+                .flatten();
             drop(g);
+            let voice_events = audio.as_ref().zip(voice_tick)
+                .and_then(|(hle, tick)| hle.direct_sound().voice_events(tick));
+            let ground = spatial::MapGround::when(traces);
             let mut s = me.lock();
             if let Some(hashes) = page_base {
                 s.pages.base = Some(hashes);
@@ -1281,6 +1702,7 @@ impl hooks::Feature for SimMetrics {
                         s.setup.enter(SetupStage::Done, now);
                         s.pages.wanted = s.pages.enabled;
                         s.tally.start(sample.tick);
+                        s.trace_start(sample.tick);
                         s.dispatch_start = o.runtime.dispatch_counts();
                         s.costs_start = Some(costs_now());
                     }
@@ -1291,10 +1713,25 @@ impl hooks::Feature for SimMetrics {
                     s.tally.tick_census(tick, &census);
                     // `components = false` in the match file leaves the
                     // breakdown out (a timing arm); the digests above stay.
-                    // `detail = "training"` leaves it out too, with all but a
-                    // sparse few of the digests.
+                    // `detail = "training"` or "spatial" leaves it out too,
+                    // with all but a sparse few of the digests.
                     if full_detail && me.matched.config.components != Some(false) {
-                        let components = state_hash::components(&snap, rng);
+                        let mut components = state_hash::components(&snap, rng);
+                        if let Some(events) = voice_events {
+                            components.push(("sound.voices".into(), events));
+                        }
+                        // The Havok walk names the first tick where physics
+                        // differs when the arena hash cannot.
+                        let havok = havok.map_or_else(
+                            || "unreadable".to_owned(),
+                            |d| {
+                                format!(
+                                    "hash={:016x} bodies={} constraints={} pairs={} heap={}",
+                                    d.hash, d.bodies, d.constraints, d.pairs, d.heap_used
+                                )
+                            },
+                        );
+                        components.push(("havok.world".into(), havok));
                         s.tally
                             .tick_components_blocks(tick, arena_base, components, &arena_blocks);
                     }
@@ -1314,6 +1751,7 @@ impl hooks::Feature for SimMetrics {
                         s.set_up = false;
                         s.pages.base = None;
                         s.pages.wanted = s.pages.enabled;
+                        s.trace_start(tick);
                         eprintln!(
                             "sim: the tick jumped to {tick} (a snapshot load); counting from here"
                         );
@@ -1321,6 +1759,7 @@ impl hooks::Feature for SimMetrics {
                     for p in shooters(&snap, &fired) {
                         s.tally.shot(p);
                     }
+                    s.trace_tick(tick, &snap, &ground);
                     if me.matched.superbounce {
                         for (index, z) in heights(&snap) {
                             s.tally.bounce_height(index, tick, z);
@@ -1328,6 +1767,13 @@ impl hooks::Feature for SimMetrics {
                         for a in crate::superbounce_mode::take_awards() {
                             let (player, at, e) = award_event(&a);
                             s.tally.bounce_event(player, at, e);
+                            if a.monster() {
+                                s.tally.bounce_event(
+                                    player,
+                                    at,
+                                    sim_bench::bounce::Event::Monster,
+                                );
+                            }
                         }
                     }
                 }
@@ -1404,16 +1850,19 @@ impl hooks::Feature for SimMetrics {
                 let Ok(hit) = telemetry::hit(&o.guest(), report, victim) else {
                     return;
                 };
+                let ground = spatial::MapGround::when(traces);
                 let mut s = me.lock();
                 if s.phase != Phase::Playing {
                     return;
                 }
                 let target = player_of_unit(s.tally.last(), hit.victim);
-                s.tally.hit(
+                s.hit(
+                    hit.tick,
                     player_of_datum(hit.owner_player),
                     target,
                     hit.body + hit.shield,
                     me.matched.team_play,
+                    &ground,
                 );
             })
             .optional();
@@ -1442,13 +1891,15 @@ impl hooks::Feature for SimMetrics {
                 let Some(v) = player_of_datum(victim) else {
                     return;
                 };
+                let ground = spatial::MapGround::when(traces);
                 let mut s = me.lock();
                 if s.phase == Phase::Playing {
-                    s.tally.kill(
+                    s.kill(
                         (tick & 0xffff_ffff) as u32,
                         player_of_datum(attacker),
                         v,
                         betrayal,
+                        &ground,
                     );
                 }
             });
@@ -1540,6 +1991,107 @@ impl hooks::Feature for SimMetrics {
                         }
                     }
                     Ok(Flow::Continue)
+                })
+                .last();
+        }
+        if self.sim.matched.config.drops.is_some() {
+            // Seam drops (docs/runtime/sim.md, "Seam drops"): every bound
+            // seat's body and level pairs read, and its act (the word, the
+            // pad, a teleport) carried out, before each tick. Last: after
+            // the guest calls have made last tick's teleports.
+            let me = Arc::clone(&self.sim);
+            b.raw()
+                .before(&points::GAME_TICK, "sim: drops", move |c| {
+                    let seats: Vec<crate::sim_drops::Seat> = {
+                        let s = me.lock();
+                        if s.phase != Phase::Playing {
+                            return Ok(Flow::Continue);
+                        }
+                        s.bindings
+                            .iter()
+                            .map(|(&seat, &player)| crate::sim_drops::Seat {
+                                seat,
+                                player,
+                                handle: s
+                                    .machines
+                                    .get(&seat)
+                                    .copied()
+                                    .and_then(bots::phantom::handle_of),
+                            })
+                            .collect()
+                    };
+                    let rt = Arc::clone(c.ctx.runtime());
+                    let mut g = rt.memory();
+                    let done = crate::sim_drops::tick(&mut g, &seats);
+                    drop(g);
+                    if done {
+                        let mut s = me.lock();
+                        if let Some(e) = crate::sim_drops::error() {
+                            let note = format!("drops: {e}");
+                            if !s.notes.contains(&note) {
+                                eprintln!("sim: {note}");
+                                s.notes.push(note);
+                            }
+                        }
+                        me.end(&mut s, End::Stopped);
+                    }
+                    Ok(Flow::Continue)
+                })
+                .last();
+        }
+        if self.sim.matched.config.bounces.is_some() {
+            // The bounce search (docs/runtime/bounce-search.md): the
+            // drops' reads and acts before the tick, and a fork when the
+            // job asks, after it (below).
+            let me = Arc::clone(&self.sim);
+            b.raw()
+                .before(&points::GAME_TICK, "sim: bounces", move |c| {
+                    let seats: Vec<crate::sim_drops::Seat> = {
+                        let s = me.lock();
+                        if s.phase != Phase::Playing {
+                            return Ok(Flow::Continue);
+                        }
+                        s.bindings
+                            .iter()
+                            .map(|(&seat, &player)| crate::sim_drops::Seat {
+                                seat,
+                                player,
+                                handle: s
+                                    .machines
+                                    .get(&seat)
+                                    .copied()
+                                    .and_then(bots::phantom::handle_of),
+                            })
+                            .collect()
+                    };
+                    let rt = Arc::clone(c.ctx.runtime());
+                    let mut g = rt.memory();
+                    let ticked = crate::sim_bounces::tick(&mut g, &seats);
+                    drop(g);
+                    if ticked.done {
+                        let mut s = me.lock();
+                        if let Some(e) = crate::sim_bounces::error() {
+                            let note = format!("bounces: {e}");
+                            if !s.notes.contains(&note) {
+                                eprintln!("sim: {note}");
+                                s.notes.push(note);
+                            }
+                        }
+                        me.end(&mut s, End::Stopped);
+                    }
+                    Ok(Flow::Continue)
+                })
+                .last();
+            // The fork's slice ends after the tick returned, where
+            // `state.save` acts (docs/runtime/snapshots.md, "The rule"):
+            // inside the tick the game thread is in the tick chain's
+            // after-hooks continuation, which no save can carry, so a
+            // fork asked from the `before` above was refused every time.
+            b.frame()
+                .on_tick("sim: bounces fork", |o| {
+                    if crate::sim_bounces::fork_due() {
+                        o.runtime.request_preempt(runtime::preempt::REQUEST);
+                    }
                 })
                 .last();
         }
@@ -1662,7 +2214,7 @@ mod tests {
     #[test]
     fn practice_events_and_awards_reach_the_bounce_tally() {
         use bots::mind::PracticeEvent as P;
-        use hud_kit_core::huds::superbounce::Medal;
+        use hud_kit_core::views::superbounce::Medal;
         use sim_bench::bounce::Event;
         let site = [1.0, 2.0, 3.0];
         assert_eq!(
@@ -1700,6 +2252,62 @@ mod tests {
                     why: Some("too_slow".into())
                 }
             )
+        );
+        assert_eq!(
+            practice_event(&P::Intent {
+                site,
+                tick: 8,
+                monster: true,
+                links: 2,
+                fumble: Some("off_line"),
+                again: false
+            }),
+            (
+                8,
+                Event::Intent {
+                    site,
+                    monster: true,
+                    links: 2,
+                    fumble: Some("off_line".into()),
+                    again: false
+                }
+            )
+        );
+        assert_eq!(
+            practice_event(&P::Chained {
+                site,
+                tick: 9,
+                tried: 2,
+                made: 1
+            }),
+            (
+                9,
+                Event::Chained {
+                    site,
+                    tried: 2,
+                    made: 1
+                }
+            )
+        );
+        assert_eq!(
+            practice_event(&P::Yielded {
+                site,
+                tick: 10,
+                waited: 45,
+                gave_up: true
+            }),
+            (
+                10,
+                Event::Yielded {
+                    site,
+                    waited: 45,
+                    gave_up: true
+                }
+            )
+        );
+        assert_eq!(
+            practice_event(&P::SteppedAside { tick: 11 }),
+            (11, Event::SteppedAside)
         );
         let award = |chain, medals: Vec<Medal>| crate::superbounce_chain::Award {
             seq: 1,
@@ -1997,10 +2605,204 @@ mod tests {
         assert_ne!(seed32(1), seed32(2));
     }
 
+    /// A match file names a kit package by its directory or its list name;
+    /// the disc map it is built on and the probe are not it.
+    #[test]
+    fn a_firefight_match_finds_its_kit_package() {
+        use crate::map_select::Map;
+        let map = |id, name: &str| Map {
+            id,
+            name: name.into(),
+            sort: 0,
+            path: format!("t:\\$C\\0000000{id}\\m-{id:08x}"),
+        };
+        let maps = [
+            map(1, "Beaver Creek"),
+            map(2, "Firefight Probe \u{2013} beavercreek"),
+            map(3, "Firefight \u{2013} beavercreek"),
+            map(4, "Firefight \u{2013} lockout"),
+        ];
+        for name in [
+            "firefight-beavercreek",
+            "Firefight-BeaverCreek.map",
+            "Firefight \u{2013} beavercreek",
+        ] {
+            assert_eq!(kit_map_named(maps.iter(), name).map(|m| m.id), Some(3), "{name}");
+        }
+        assert!(kit_map_named(maps.iter(), "beavercreek").is_none());
+        assert!(kit_map_named(maps.iter(), "firefight-midship").is_none());
+    }
+
+    /// The `[firefight]` table becomes the page's choices, which the
+    /// runtime reads as it reads Game Setup's.
+    #[test]
+    fn a_firefight_table_becomes_the_pages_choices() {
+        let sim = sim_with(
+            "map = 'firefight-beavercreek'\ngame_type = 'firefight'\n\
+             [firefight]\nset = 'attrition'\ndifficulty = 'heroic'\nlives = 8\nskulls = false\n\
+             [[bot]]\n[[bot]]\n",
+        );
+        let store = firefight_store(sim.matched().firefight.as_ref().unwrap()).unwrap();
+        let o = crate::firefight::options::Options::read(&store).unwrap();
+        assert!(o.enabled);
+        assert_eq!(o.wave_set, 1);
+        assert_eq!(o.difficulty, ::firefight::Difficulty::Heroic);
+        assert_eq!((o.lives, o.skulls, o.teams), (Some(8), false, None));
+        // Crossfire, and Holdout played by two teams.
+        for (table, wave_set) in [("set = 'crossfire'", 3), ("teams = 2", 0)] {
+            let sim = sim_with(&format!(
+                "map = 'firefight-beavercreek'\ngame_type = 'firefight'\n[firefight]\n{table}\n\
+                 [[bot]]\n[[bot]]\n"
+            ));
+            let store = firefight_store(sim.matched().firefight.as_ref().unwrap()).unwrap();
+            let o = crate::firefight::options::Options::read(&store).unwrap();
+            assert_eq!(o.wave_set, wave_set, "{table}");
+            let teams = if wave_set == 3 { None } else { Some(2) };
+            assert_eq!(o.teams, teams, "{table}");
+        }
+    }
+
     fn sim_with(text: &str) -> Sim {
+        sim_reporting(text, None)
+    }
+
+    fn sim_reporting(text: &str, report: Option<PathBuf>) -> Sim {
         let c = sim_bench::config::parse_match(text, false).unwrap();
         let m = sim_bench::config::resolve(c, &|_| Err("no files".into())).unwrap();
-        Sim::new(PathBuf::from("/tmp/m.toml"), m, None)
+        Sim::new(PathBuf::from("/tmp/m.toml"), m, report)
+    }
+
+    /// Forty ticks of a two-player match through the observers' state
+    /// helpers: inside tick 19 player 0 hits and kills player 1, who is
+    /// back at 25.
+    fn play_forty(s: &Sim) {
+        let ground = sim_bench::spatial::NoGround;
+        let mut st = s.0.lock();
+        st.phase = Phase::Playing;
+        st.tally.start(0);
+        st.trace_start(0);
+        for tick in 0..40u32 {
+            let mut a = object(Some(0xa1), None, 1.0, 2);
+            a.pos = [f64::from(tick) * 0.5, 0.0, 0.0];
+            let down = (19..25).contains(&tick);
+            let mut b = object(Some(0xa2), None, if down { 0.0 } else { 1.0 }, 2);
+            b.pos = [8.0, 0.0, 0.0];
+            let snap = telemetry::Snapshot {
+                tick: u64::from(tick),
+                players: vec![player(0, None, 0xe001), player(1, None, 0xe002)],
+                objects: vec![Some(a), Some(b)],
+                ..Default::default()
+            };
+            st.tally.tick_hashed(
+                tick_sample(&snap),
+                state_hash::gameplay(&snap, Some(7)),
+                None,
+            );
+            st.trace_tick(tick, &snap, &ground);
+            if tick == 18 {
+                st.hit(Some(19), Some(0), Some(1), 0.6, true, &ground);
+                st.kill(19, Some(0), 1, false, &ground);
+            }
+        }
+    }
+
+    #[test]
+    fn the_tally_is_unchanged_with_the_trace_on() {
+        let text = |detail: &str| {
+            format!(
+                "map = \"lockout\"\nteam_play = true\ndetail = \"{detail}\"\n\
+                 [[bot]]\nteam = 0\n[[bot]]\nteam = 1\n"
+            )
+        };
+        let off = sim_with(&text("training"));
+        let on = sim_with(&text("spatial"));
+        assert!(off.0.lock().spatial.is_none());
+        assert!(on.0.lock().spatial.is_some());
+        play_forty(&off);
+        play_forty(&on);
+        let (a, b) = (off.report(), on.report());
+        let strip = |r: &Report| {
+            let mut v = serde_json::to_value(r).unwrap();
+            let o = v.as_object_mut().unwrap();
+            o.remove("wall");
+            o.remove("match");
+            v
+        };
+        assert_eq!(strip(&a), strip(&b));
+        assert_eq!(b.kills.len(), 1);
+        assert_eq!(a.match_["detail"], "training");
+        assert_eq!(b.match_["detail"], "spatial");
+        // The trace's kill is the report's, with both places.
+        let t = on
+            .0
+            .lock()
+            .spatial
+            .take()
+            .unwrap()
+            .finish(&sim_bench::spatial::NoGround, None);
+        t.agrees_with(&b.kills).unwrap();
+        use sim_bench::spatial::Event;
+        assert_eq!(t.count(|e| matches!(e, Event::Spawn { .. })), 3);
+        assert_eq!(t.count(|e| matches!(e, Event::Damage { .. })), 1);
+        let Some(Event::Kill {
+            killer: Some(k),
+            victim,
+            ..
+        }) = t.events.iter().find(|e| matches!(e, Event::Kill { .. }))
+        else {
+            panic!("no kill");
+        };
+        assert_eq!(k.at.unwrap().pos, [9.0, 0.0, 0.0]);
+        assert_eq!(victim.at.unwrap().pos, [8.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_spatial_match_writes_a_trace_whose_kills_are_the_reports() {
+        let dir = std::env::temp_dir().join(format!("h2-sim-spatial-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let report = dir.join("report.json");
+        let s = sim_reporting(
+            "map = \"lockout\"\ndetail = \"spatial\"\n[[bot]]\n[[bot]]\n",
+            Some(report),
+        );
+        play_forty(&s);
+        let r = s.report();
+        let note = s.write_trace(&r).unwrap();
+        assert!(note.contains("are the report's"), "{note}");
+        let t = sim_bench::spatial::Trace::read(&dir.join("spatial.bin")).unwrap();
+        t.agrees_with(&r.kills).unwrap();
+        assert_eq!(t.kills().len(), 1);
+        assert_eq!(t.header.map, "lockout");
+        // Taken: a second call has nothing to write.
+        assert!(s.write_trace(&r).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_sim_seat_sends_the_pad_held_over_its_brain() {
+        let s = sim_with("map = \"lockout\"\n[[bot]]\n");
+        s.0.lock().phase = Phase::Playing;
+        let mut seat = Metered {
+            seat: 0,
+            brain: bots::Brain::default(),
+            sim: Arc::clone(&s.0),
+            last_tick: None,
+            thinking: None,
+        };
+        let mut held = HostPadState::default();
+        held.left_stick = (0.25, -0.5);
+        assert!(seat.hold_pad(Some(held)));
+        let g = engine::testing::FakeGuest::new();
+        let f = Frame {
+            frame: 0,
+            tick: 1,
+            machine: [7; 6],
+            guest: &g,
+        };
+        assert_eq!(seat.pad(&f), held);
+        assert_eq!(seat.observe(&f), Sampled::Pad(held));
+        assert!(seat.hold_pad(None));
+        assert_eq!(seat.pad(&f), HostPadState::default());
     }
 
     #[test]

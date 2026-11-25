@@ -631,6 +631,7 @@ mod tests {
             map: "lockout".to_string(),
             map_id: None,
             variant: Some("slayer".to_string()),
+            firefight: None,
             hopper: Some(3),
             max_players: 8,
             roster: vec![Xuid(1), Xuid(2)],

@@ -20,6 +20,7 @@ use engine::memory::GuestMemory;
 use engine::points;
 use timeline::native::{Metric, Stage};
 use native_render::camera::{GuestRead, GuestWrite};
+use native_render::object_walk;
 use native_render::objects::{
     self, ClearedObjects, FIRST_PERSON_LAYER3_RETURN, ItemDraw, ItemKey, ObjectFrame, RECORD_MODEL,
     RecordOwner,
@@ -35,6 +36,8 @@ use hooks::{BuildError, Builder, Feature, Manifest};
 
 pub const ID: &str = "native-first-person";
 pub(crate) const FIRST_PERSON_ITEMS: u32 = 0x004c_8740;
+
+const FIRST_PERSON_RECORD_COUNT: u32 = 0x0050_943c;
 
 pub fn on(switches: &hooks::Switches) -> bool {
     hooks::switches::native_render_on(switches)
@@ -75,8 +78,10 @@ impl ItemMasks {
 
 /// What draws first-person objects: boot's glue over the object programs.
 pub trait Host: Send + Sync {
-    /// Drain preceding work and return the models and materials for this load.
-    fn native(&self, mem: &mut dyn GuestMemory) -> Option<Arc<NativeSet>>;
+    fn retire_map(&self) {}
+
+    /// Activate the model set. Capture the draw entry only for a sole layer-3 item.
+    fn native(&self, mem: &mut dyn GuestMemory, prepare_draw: bool) -> Option<Arc<NativeSet>>;
     /// Load a record's mode met in the first-person list (cheap to repeat).
     fn want(&self, model: u32);
     /// Plan every item and reserve every required copy before applying the
@@ -104,6 +109,15 @@ pub fn set_host(host: Arc<dyn Host>) {
     *HOST.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
 }
 
+pub(crate) fn forget_pending() {
+    CLEARED.lock().unwrap_or_else(|e| e.into_inner()).take();
+}
+
+pub(crate) fn retire_map() {
+    let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(host) = host { host.retire_map(); }
+}
+
 /// First-person layer-3 calls, native draws, objects and suppressed items,
 /// and calls for which the host drew none of the offered items.
 pub fn counts() -> (u64, u64, u64, u64, u64) {
@@ -126,7 +140,6 @@ fn record_model(m: &dyn GuestRead, record: u16) -> Option<u32> {
 /// entire call; an unsupported part simply keeps its own D3D draw.
 fn admission(m: &dyn GuestRead, set: &NativeSet, host: &dyn Host) -> Option<HashMap<u16, u32>> {
     const MAX_ITEMS: u32 = 1 << 16;
-    const FIRST_PERSON_RECORD_COUNT: u32 = 0x0050_943c;
     let list = m.read_u32(CURRENT_LIST)?;
     if list == 0 {
         return None;
@@ -174,6 +187,17 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     if ret != FIRST_PERSON_LAYER3_RETURN || m.read_u32(CURRENT_LAYER) != Some(LIGHTMAP_LAYER) {
         return;
     }
+    count_call();
+    let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
+        return;
+    };
+    let Some(set) = host.native(m.0, true) else {
+        return;
+    };
+    draw_layer(m, host, set);
+}
+
+fn count_call() {
     let calls = CALLS.fetch_add(1, Ordering::Relaxed) + 1;
     if calls % 1800 == 1 {
         let (_, drawn, objects, items, refused) = counts();
@@ -181,12 +205,9 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
             "native-first-person: {drawn} native draws of {calls} first-person layer-3 calls, {objects} objects, {items} items skipped, {refused} refused calls"
         );
     }
-    let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
-        return;
-    };
-    let Some(set) = host.native(m.0) else {
-        return;
-    };
+}
+
+fn draw_layer(m: Mem<'_>, host: Arc<dyn Host>, set: Arc<NativeSet>) {
     let Some(models) = admission(&m, &set, &*host) else {
         return;
     };
@@ -229,11 +250,21 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         let (Some(object), Ok(rows)) = (object, rows) else {
             continue;
         };
+        // What the record makes the geometry draw do, as the world layers
+        // read it: the topology and subparts it draws, or the item keeps
+        // its D3D draw.
+        let record = RENDER_RECORDS + RENDER_RECORD_SIZE * u32::from(key.record);
+        let Ok((flags, subparts)) = object_walk::layer_part(&m, LIGHTMAP_LAYER as u8, cleared.items[i], record, *key)
+        else {
+            continue;
+        };
         items.push(ItemDraw {
             index: i,
             object,
             key: *key,
             rows,
+            flags,
+            subparts,
         });
     }
     if items.is_empty() {
@@ -277,10 +308,10 @@ pub fn restore_pending(mem: &mut dyn GuestMemory) {
     }
 }
 
-/// The guest builds and sorts the layer list before calling its draws.
-/// Hoisting more than one candidate across that sort requires its sort keys
-/// and knowledge of the neighbouring fallbacks. A single item can be moved.
-fn single_layer_item(m: &dyn GuestRead) -> Option<bool> {
+/// Inventory the record models even when the guest must sort layer 3. The
+/// other first-person layers share these uploads and can name models that
+/// have no item in layer 3.
+fn layer_inventory(m: &dyn GuestRead) -> Option<(bool, Vec<u32>)> {
     let list = m.read_u32(CURRENT_LIST)?;
     if list == 0 {
         return None;
@@ -291,18 +322,67 @@ fn single_layer_item(m: &dyn GuestRead) -> Option<bool> {
     if items != FIRST_PERSON_ITEMS || count.checked_sub(first)? > 1 << 16 {
         return None;
     }
-    let mut found = false;
+    let records = m.read_u32(FIRST_PERSON_RECORD_COUNT)?;
+    let mut layer3 = 0;
+    let mut models = Vec::new();
+    const LAYERS: u32 = (1 << 1) | (1 << 2) | (1 << 3) | (1 << 7) | (1 << 8) | (1 << 20);
     for i in first..count {
         let at = items.checked_add(ITEM_SIZE.checked_mul(i)?)?;
         let mask = m.read_u32(at.checked_add(0x10)?)?;
         if mask & (1 << LIGHTMAP_LAYER) != 0 {
-            if found {
-                return Some(false);
-            }
-            found = true;
+            layer3 += 1;
+        }
+        if mask & LAYERS == 0 || m.read_u32(at) != Some(GEOMETRY_BUILD) {
+            continue;
+        }
+        if let Some(key) = objects::item_key(m, at)
+            && u32::from(key.record) < records
+            && matches!(objects::item_owner(m, at), Some(RecordOwner::Object(_)))
+            && let Some(model) = record_model(m, key.record)
+            && !models.contains(&model)
+        {
+            models.push(model);
         }
     }
-    Some(found)
+    Some((layer3 == 1, models))
+}
+
+/// Discover models in mixed lists without moving any draw ahead of the
+/// guest sort. Only a sole layer-3 item can commit a mask edit here.
+pub fn observe_layer(mem: &mut dyn GuestMemory, ret: u32) {
+    restore_pending(mem);
+    let m = Mem(mem);
+    if ret != FIRST_PERSON_LAYER3_RETURN || m.read_u32(CURRENT_LAYER) != Some(LIGHTMAP_LAYER) {
+        return;
+    }
+    let Some((single, models)) = layer_inventory(&m) else { return };
+    let skipped = ITEMS.load(Ordering::Relaxed);
+    if single {
+        count_call();
+        Stage::FirstPerson.count(Metric::WalkExamined, 1);
+    }
+    let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if !models.is_empty()
+        && let Some(host) = host
+        && let Some(set) = host.native(m.0, single)
+    {
+        for model in models {
+            if !set.definitions.contains_key(&(model as u16)) {
+                host.want(model);
+            }
+        }
+        if single {
+            draw_layer(m, host, set);
+        }
+    }
+    if single {
+        let drawn = ITEMS.load(Ordering::Relaxed).saturating_sub(skipped);
+        if drawn > 0 {
+            Stage::FirstPerson.count(Metric::WalkSuppressed, drawn);
+        } else {
+            Stage::FirstPerson.count(Metric::WalkRefusedReservation, 1);
+        }
+    }
 }
 
 pub struct NativeFirstPerson;
@@ -323,20 +403,8 @@ impl Feature for NativeFirstPerson {
         b.raw()
             .observe_before(&points::LAYER_DRAW, "native_first_person_skip", |o| {
                 let mut guest = o.guest();
-                restore_pending(&mut *guest);
                 let ret = guest.u32(o.cpu.esp).unwrap_or(0);
-                let mem = Mem(&mut *guest);
-                if ret == FIRST_PERSON_LAYER3_RETURN && single_layer_item(&mem) == Some(true) {
-                    let skipped = ITEMS.load(Ordering::Relaxed);
-                    Stage::FirstPerson.count(Metric::WalkExamined, 1);
-                    before_layer(mem.0, ret);
-                    let drawn = ITEMS.load(Ordering::Relaxed).saturating_sub(skipped);
-                    if drawn > 0 {
-                        Stage::FirstPerson.count(Metric::WalkSuppressed, drawn);
-                    } else {
-                        Stage::FirstPerson.count(Metric::WalkRefusedReservation, 1);
-                    }
-                }
+                observe_layer(&mut *guest, ret);
             })
             .after_feature(crate::render_timing::ID)
             .after_feature(crate::native_world::ID)

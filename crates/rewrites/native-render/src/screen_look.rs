@@ -27,14 +27,16 @@
 
 use map::TagId;
 use tags::material::{
-    EngineInputs, EngineVertexConstant, INSTANCE_INTS, INSTANCE_SCALARS, InputReads, Material, Origin, Register, TextureSource,
-    VectorBinding, VectorTarget, engine_scalar, pack_engine_colour,
+    EngineInputs, EngineVertexConstant, INSTANCE_INTS, INSTANCE_SCALARS, InputReads, Material,
+    Origin, Register, TextureSource, VectorBinding, VectorTarget, engine_scalar,
+    pack_engine_colour,
 };
 use tags::shader::{PSDEF_SIZE, StageStates};
 
 use shaders::psh::{PixelUniforms, TextureDim};
 use shaders::vsh::VertexUniforms;
 
+use crate::engine_states::{EngineStateRefusal, apply_static};
 use crate::pass_state::{PassState, StateRefusal, pass_state};
 use crate::program::{PassParts, translate_pass};
 
@@ -92,7 +94,13 @@ impl ScreenConstants {
     /// scalar through its transform, `engine_scalar`, then
     /// `pack_engine_colour`) into its lanes, a vertex constant as
     /// `0x00019be0` writes it.
-    pub fn apply(&self, vertex: &mut VertexUniforms, pixel: &mut PixelUniforms, values: [u32; 4], sizes: [(u32, u32); 4]) {
+    pub fn apply(
+        &self,
+        vertex: &mut VertexUniforms,
+        pixel: &mut PixelUniforms,
+        values: [u32; 4],
+        sizes: [(u32, u32); 4],
+    ) {
         let mut inputs = EngineInputs::default();
         inputs.scalars[FIRST_VALUE_SCALAR] = f32::from_bits(values[0]);
         inputs.scalars[FIRST_VALUE_SCALAR + 1] = f32::from_bits(values[1]);
@@ -104,7 +112,9 @@ impl ScreenConstants {
             let Some(row) = row else { continue };
             let size = match usize::from(c.stage) {
                 0 => (1.0, 1.0),
-                k => sizes.get(k - 1).map_or((0.0, 0.0), |s| (s.0 as f32, s.1 as f32)),
+                k => sizes
+                    .get(k - 1)
+                    .map_or((0.0, 0.0), |s| (s.0 as f32, s.1 as f32)),
             };
             let mut v = *row;
             if c.eval(&mut v, size, &inputs).is_err() {
@@ -117,12 +127,26 @@ impl ScreenConstants {
             }
         }
         for b in &self.pixel {
-            let VectorTarget::Pixel { c1, slot, mask, half, transform } = b.target else { continue };
-            let Some(&x) = inputs.scalars.get(usize::from(b.source)) else { continue };
+            let VectorTarget::Pixel {
+                c1,
+                slot,
+                mask,
+                half,
+                transform,
+            } = b.target
+            else {
+                continue;
+            };
+            let Some(&x) = inputs.scalars.get(usize::from(b.source)) else {
+                continue;
+            };
             let x = engine_scalar(x, usize::from(transform));
             let bank = if c1 { &mut pixel.c1 } else { &mut pixel.c0 };
             if let Some(c) = bank.get_mut(usize::from(slot)) {
-                *c = shaders::psh::argb((crate::light_look::repack(*c) & !mask) | (pack_engine_colour([x; 4], half) & mask));
+                *c = shaders::psh::argb(
+                    (crate::light_look::repack(*c) & !mask)
+                        | (pack_engine_colour([x; 4], half) & mask),
+                );
             }
         }
     }
@@ -131,11 +155,18 @@ impl ScreenConstants {
 /// Of `externals` (an implementation's engine vertex constants in order,
 /// `tags::material::engine_vertex_constants`), the ones a call puts in
 /// ([`ScreenConstants::vertex`]) for stages `textures`.
-fn call_vertex_constants(externals: &[EngineVertexConstant], textures: &[ScreenStage; 4]) -> Vec<(EngineVertexConstant, u8)> {
+fn call_vertex_constants(
+    externals: &[EngineVertexConstant],
+    textures: &[ScreenStage; 4],
+) -> Vec<(EngineVertexConstant, u8)> {
     let per_call = |c: &EngineVertexConstant| match c.mode {
         0..=3 => SCREEN_SCALARS & 1u64 << (c.source & 63) != 0,
         _ if c.reads_size() => {
-            c.stage != 0 && matches!(textures.get(usize::from(c.stage) - 1), Some(ScreenStage::Engine(_)))
+            c.stage != 0
+                && matches!(
+                    textures.get(usize::from(c.stage) - 1),
+                    Some(ScreenStage::Engine(_))
+                )
         }
         _ => false,
     };
@@ -161,7 +192,10 @@ fn call_vertex_constants(externals: &[EngineVertexConstant], textures: &[ScreenS
 pub enum ScreenStage {
     Empty,
     /// A bitmap of the shader's.
-    Bitmap { bitmap: TagId, image: u32 },
+    Bitmap {
+        bitmap: TagId,
+        image: u32,
+    },
     /// An engine texture (a render target: the view's colour, a glow
     /// target), supplied by the draw.
     Engine(u8),
@@ -175,7 +209,7 @@ pub enum ScreenStage {
 pub enum EngineTexture {
     /// A bitmap reference in the rasterizer data, at this offset (1:
     /// `+0xc`, the normalization cube; 9: `+4`, the attenuation volume;
-    /// 14 and 15: `+0x14`).
+    /// 14 and 15: `+0x14`, image 0 and image 1).
     Rasterizer(u32),
     /// Render target `n` (2 and 3: 1; 6: 3; 8: 10; 13: 9; 17: `0x13`; 19:
     /// `0x15`; 20: `0x16`; 21: 13; 22: `0x11`; 23: `0x17`).
@@ -278,8 +312,9 @@ pub enum ScreenRefusal {
     Lightmap,
     /// Its render states do not fit the native pass.
     State(StateRefusal),
-    /// It reads engine-driven render or stage states.
-    EngineStates,
+    /// Its engine-driven render or stage states do not fit
+    /// ([`crate::engine_states::apply_static`]).
+    EngineStates(EngineStateRefusal),
     /// A vertex register resolved from the engine that none of the
     /// engine vertex constants given names (not this implementation's).
     EngineVertexConstants,
@@ -308,7 +343,11 @@ pub fn screen_look(
         .find(|l| l.lod == 0 && l.layer == TEMPLATE_LAYER)
         .filter(|l| !l.passes.is_empty())
         .ok_or(ScreenRefusal::NoLayer)?;
-    let pass = l.passes.iter().find(|p| p.index == layer_pass).ok_or(ScreenRefusal::NoPass(layer_pass))?;
+    let pass = l
+        .passes
+        .iter()
+        .find(|p| p.index == layer_pass)
+        .ok_or(ScreenRefusal::NoPass(layer_pass))?;
     let imp = pass
         .implementations
         .iter()
@@ -327,13 +366,17 @@ pub fn screen_look(
     if unsupplied != InputReads::default() {
         return Err(ScreenRefusal::Reads(unsupplied));
     }
-    if !imp.engine_render_states.is_empty() || !imp.engine_stage_states.is_empty() {
-        return Err(ScreenRefusal::EngineStates);
-    }
+    // Engine-driven states over the pass's own, from the instance's
+    // inputs in `material`'s.
+    let applied = apply_static(imp, &material.inputs).map_err(ScreenRefusal::EngineStates)?;
     // Every register the resolver took from the engine is one of these.
     let index = |c: &EngineVertexConstant| if c.bank == 1 { 18 + c.reg } else { c.reg };
     let named = |bank: u8, i: u8| externals.iter().any(|c| c.bank == bank && index(c) == i);
-    let engine = |regs: &[Register], bank: u8| regs.iter().filter(|r| r.origin == Origin::Engine).all(|r| named(bank, r.index));
+    let engine = |regs: &[Register], bank: u8| {
+        regs.iter()
+            .filter(|r| r.origin == Origin::Engine)
+            .all(|r| named(bank, r.index))
+    };
     if !engine(&imp.vertex_constants, 1) || !engine(&imp.vertex_defaults, 0) {
         return Err(ScreenRefusal::EngineVertexConstants);
     }
@@ -341,7 +384,9 @@ pub fn screen_look(
     for (stage, t) in textures.iter_mut().zip(&imp.textures) {
         *stage = match t.map(|t| t.source) {
             None | Some(TextureSource::None) => ScreenStage::Empty,
-            Some(TextureSource::Bitmap { bitmap, image, .. }) => ScreenStage::Bitmap { bitmap, image },
+            Some(TextureSource::Bitmap { bitmap, image, .. }) => {
+                ScreenStage::Bitmap { bitmap, image }
+            }
             Some(TextureSource::Engine(id)) => match engine_texture(id) {
                 EngineTexture::Light | EngineTexture::Dynamic | EngineTexture::Invalid => {
                     return Err(ScreenRefusal::EngineTexture(id));
@@ -353,7 +398,7 @@ pub fn screen_look(
             Some(TextureSource::Lightmap) => return Err(ScreenRefusal::Lightmap),
         };
     }
-    let state = pass_state(&imp.render_states).map_err(ScreenRefusal::State)?;
+    let state = pass_state(&applied.render_states).map_err(ScreenRefusal::State)?;
     if state.depth_write || state.depth_compare != wgpu::CompareFunction::Always {
         return Err(ScreenRefusal::Depth);
     }
@@ -362,17 +407,23 @@ pub fn screen_look(
     let pixel = imp
         .scalar_bindings
         .iter()
-        .filter(|b| matches!(b.target, VectorTarget::Pixel { .. }) && SCREEN_SCALARS & 1u64 << (b.source & 63) != 0)
+        .filter(|b| {
+            matches!(b.target, VectorTarget::Pixel { .. })
+                && SCREEN_SCALARS & 1u64 << (b.source & 63) != 0
+        })
         .copied()
         .collect();
-    let constants = ScreenConstants { pixel, vertex: call_vertex_constants(externals, &textures) };
+    let constants = ScreenConstants {
+        pixel,
+        vertex: call_vertex_constants(externals, &textures),
+    };
     Ok(ScreenLook {
         pass: pass.pass,
         layer_pass,
         implementation,
         vertex_shader,
         textures,
-        stage_states: imp.stage_states.clone(),
+        stage_states: applied.stage_states,
         pixel_shader: imp.pixel_shader,
         vertex_constants: imp.vertex_constants.clone(),
         vertex_defaults: imp.vertex_defaults.clone(),
@@ -392,11 +443,33 @@ pub struct ScreenProgram {
     pub signed: [[bool; 4]; 4],
     pub vertex: VertexUniforms,
     pub pixel: PixelUniforms,
+    pub combiner_inputs: CombinerInputs,
+    /// Translation inputs for alpha-test and stipple pipeline variants.
+    pub raster_shader: Option<std::sync::Arc<ScreenRasterShader>>,
     /// `v<n>` the program reads (within [`STRIP_INPUTS`]).
     pub inputs: u16,
     /// What the call puts in ([`ScreenConstants::apply`]).
     pub constants: ScreenConstants,
     pub state: PassState,
+}
+
+#[derive(Clone, Debug)]
+pub struct ScreenRasterShader {
+    vertex: shaders::vsh::wgsl::VertexShader,
+    def: shaders::PixelShaderDef,
+    options: shaders::psh::PixelOptions,
+}
+
+impl ScreenRasterShader {
+    pub(crate) fn translate(
+        &self,
+        alpha_test: Option<shaders::psh::AlphaFunc>,
+        stipple: bool,
+    ) -> Result<String, String> {
+        let options = shaders::psh::PixelOptions { alpha_test, stipple, ..self.options };
+        let pixel = shaders::psh::translate(&self.def, &options);
+        shaders::link(&self.vertex, &pixel).map_err(|error| error.to_string())
+    }
 }
 
 /// Every bound stage is 2D: the shader's bitmaps and the render targets.
@@ -407,20 +480,40 @@ pub fn stage_dim(stage: ScreenStage) -> Option<TextureDim> {
     }
 }
 
-/// Whether the pixel side reads the vertex colours or fog (a general or
-/// final combiner input `v0`, `v1`, fog or the final `v1 + r0`), or
-/// leaves its final combiner to D3D (built from the fog and specular
-/// states the pass inherits).
+/// Inputs that can make inherited fog or vertex-colour raster state observable.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CombinerInputs {
+    pub colours: bool,
+    pub fog: bool,
+}
+
+impl CombinerInputs {
+    pub fn read(def: &shaders::PixelShaderDef) -> Self {
+        use shaders::psh::Reg;
+        let c = def.decode();
+        let Some(f) = c.final_combiner else {
+            // D3D synthesizes the final combiner from live fog and specular state.
+            return Self { colours: true, fog: true };
+        };
+        let mut result = Self::default();
+        for input in c.stages
+            .iter()
+            .flat_map(|s| s.rgb.inputs.iter().chain(&s.alpha.inputs))
+            .chain(&[f.a, f.b, f.c, f.d, f.e, f.f, f.g])
+        {
+            result.colours |= matches!(input.reg, Reg::V0 | Reg::V1 | Reg::V1R0Sum);
+            result.fog |= input.reg == Reg::Fog;
+        }
+        result
+    }
+}
+
+/// Whether omitted vertex attributes can affect the pixel shader.
 pub fn reads_vertex_colours(pixel_shader: &[u8; PSDEF_SIZE]) -> Result<bool, String> {
-    use shaders::psh::Reg;
-    let def = shaders::PixelShaderDef::from_bytes(pixel_shader).map_err(|e| format!("pixel shader: {e:?}"))?;
-    let c = def.decode();
-    let Some(f) = c.final_combiner else { return Ok(true) };
-    Ok(c.stages
-        .iter()
-        .flat_map(|s| s.rgb.inputs.iter().chain(&s.alpha.inputs))
-        .chain(&[f.a, f.b, f.c, f.d, f.e, f.f, f.g])
-        .any(|i| matches!(i.reg, Reg::V0 | Reg::V1 | Reg::Fog | Reg::V1R0Sum)))
+    let def = shaders::PixelShaderDef::from_bytes(pixel_shader)
+        .map_err(|e| format!("pixel shader: {e:?}"))?;
+    let inputs = CombinerInputs::read(&def);
+    Ok(inputs.colours || inputs.fog)
 }
 
 /// Translates `look` with its vertex program `microcode` over the strips'
@@ -445,7 +538,9 @@ pub fn compile_screen(look: &ScreenLook, microcode: &[u8]) -> Result<ScreenProgr
         microcode,
         pixel_shader: &look.pixel_shader,
         dims: look.textures.map(stage_dim),
-        biased: look.textures.map(|s| matches!(s, ScreenStage::Bitmap { .. })),
+        biased: look
+            .textures
+            .map(|s| matches!(s, ScreenStage::Bitmap { .. })),
         stage_states: &look.stage_states,
         vertex_constants: &look.vertex_constants,
         vertex_defaults: &defaults,
@@ -453,6 +548,7 @@ pub fn compile_screen(look: &ScreenLook, microcode: &[u8]) -> Result<ScreenProgr
         provided_inputs: STRIP_INPUTS,
         input_fetch: [shaders::vsh::InputFetch::Float; 16],
         w_buffer: false,
+        shadow: [None; 4],
     })?;
     Ok(ScreenProgram {
         wgsl: t.wgsl,
@@ -462,6 +558,12 @@ pub fn compile_screen(look: &ScreenLook, microcode: &[u8]) -> Result<ScreenProgr
         signed: t.signed,
         vertex: t.vertex,
         pixel: t.pixel,
+        combiner_inputs: CombinerInputs::read(&t.def),
+        raster_shader: Some(std::sync::Arc::new(ScreenRasterShader {
+            vertex: t.vertex_shader,
+            def: t.def,
+            options: t.pixel_options,
+        })),
         inputs: t.inputs,
         constants: look.constants.clone(),
         state: look.state,
@@ -473,11 +575,17 @@ mod tests {
     use super::*;
     use gfx::state::RenderStateType;
     use gfx::xdk::{HALO2_BUILD, RenderStateTable};
-    use tags::material::{EngineInputs, ResolvedImplementation, ResolvedLayer, ResolvedPass, StageTexture};
+    use tags::material::{
+        EngineInputs, ResolvedImplementation, ResolvedLayer, ResolvedPass, StageTexture,
+    };
     use tags::shader::RenderStateValue;
 
     fn texture(source: TextureSource) -> Option<StageTexture> {
-        Some(StageTexture { source, size: None, stage_size: None })
+        Some(StageTexture {
+            source,
+            size: None,
+            stage_size: None,
+        })
     }
 
     fn state(t: RenderStateType, value: u32) -> RenderStateValue {
@@ -491,7 +599,10 @@ mod tests {
     /// A screen effect's states (`effects\screen_effects\desaturate`'s
     /// shape): no blending, the depth buffer off.
     fn screen_states() -> Vec<RenderStateValue> {
-        vec![state(RenderStateType::AlphaBlendEnable, 0), state(RenderStateType::ZEnable, 0)]
+        vec![
+            state(RenderStateType::AlphaBlendEnable, 0),
+            state(RenderStateType::ZEnable, 0),
+        ]
     }
 
     /// A blur's shape: the view's colour (an engine texture) and a bitmap.
@@ -501,7 +612,11 @@ mod tests {
             vertex_shader: Some(TagId(0xe000_0010 + index as u32)),
             textures: [
                 texture(TextureSource::Engine(5)),
-                texture(TextureSource::Bitmap { bitmap: TagId(0xe000_0001), image: 0, lod_offset: 0.0 }),
+                texture(TextureSource::Bitmap {
+                    bitmap: TagId(0xe000_0001),
+                    image: 0,
+                    lod_offset: 0.0,
+                }),
                 None,
                 None,
             ],
@@ -517,7 +632,12 @@ mod tests {
             input_reads: InputReads::default(),
             vector_bindings: Vec::new(),
             scalar_bindings: Vec::new(),
-            vertex_constants: vec![Register { index: 18, value: [0.5, 0.5, 0.0, 0.0], written: 0xf, origin: Origin::Instance }],
+            vertex_constants: vec![Register {
+                index: 18,
+                value: [0.5, 0.5, 0.0, 0.0],
+                written: 0xf,
+                origin: Origin::Instance,
+            }],
             vertex_defaults: Vec::new(),
             animated: Vec::new(),
             engine_render_states: Vec::new(),
@@ -544,7 +664,8 @@ mod tests {
                             .iter()
                             .cloned()
                             .map(|mut m| {
-                                m.vertex_shader = m.vertex_shader.map(|v| TagId(v.0 + 0x100 * i as u32));
+                                m.vertex_shader =
+                                    m.vertex_shader.map(|v| TagId(v.0 + 0x100 * i as u32));
                                 m
                             })
                             .collect(),
@@ -556,12 +677,22 @@ mod tests {
 
     #[test]
     fn the_template_pass_names_its_stages() {
-        let m = material(TEMPLATE_LAYER, 1, vec![implementation(0), implementation(1)]);
+        let m = material(
+            TEMPLATE_LAYER,
+            1,
+            vec![implementation(0), implementation(1)],
+        );
         let look = screen_look(&m, 0, 1, &[]).expect("a look");
         assert_eq!((look.layer_pass, look.implementation), (0, 1));
         assert_eq!(look.vertex_shader, TagId(0xe000_0011));
         assert_eq!(look.textures[0], ScreenStage::Engine(5));
-        assert_eq!(look.textures[1], ScreenStage::Bitmap { bitmap: TagId(0xe000_0001), image: 0 });
+        assert_eq!(
+            look.textures[1],
+            ScreenStage::Bitmap {
+                bitmap: TagId(0xe000_0001),
+                image: 0
+            }
+        );
         assert_eq!(look.engine_textures(), vec![5]);
         assert!(!look.state.depth_write && look.state.blend.is_none());
     }
@@ -573,9 +704,18 @@ mod tests {
         let m = material(TEMPLATE_LAYER, 2, vec![implementation(0)]);
         let first = screen_look(&m, 0, 0, &[]).expect("pass 0");
         let second = screen_look(&m, 1, 0, &[]).expect("pass 1");
-        assert_eq!((first.pass, second.pass), (TagId(0xe000_0200), TagId(0xe000_0201)));
-        assert_eq!((first.vertex_shader, second.vertex_shader), (TagId(0xe000_0010), TagId(0xe000_0110)));
-        assert_eq!(screen_look(&m, 2, 0, &[]).unwrap_err(), ScreenRefusal::NoPass(2));
+        assert_eq!(
+            (first.pass, second.pass),
+            (TagId(0xe000_0200), TagId(0xe000_0201))
+        );
+        assert_eq!(
+            (first.vertex_shader, second.vertex_shader),
+            (TagId(0xe000_0010), TagId(0xe000_0110))
+        );
+        assert_eq!(
+            screen_look(&m, 2, 0, &[]).unwrap_err(),
+            ScreenRefusal::NoPass(2)
+        );
     }
 
     #[test]
@@ -591,27 +731,94 @@ mod tests {
         }
     }
 
+    /// A blend colour whose alpha the engine drives from the instance's
+    /// scalar 21 over the pass's own colour; a driven value from a draw's
+    /// input keeps the D3D draws.
+    #[test]
+    fn engine_driven_states_take_the_instances_scalar() {
+        let mut imp = implementation(0);
+        imp.render_states
+            .push(state(RenderStateType::BlendColor, 0x00ff_ffff));
+        imp.input_reads.scalars = 1 << 21;
+        imp.engine_render_states = vec![tags::shader::ExternalBinding {
+            bytes: [0, 1, 0, 21],
+        }];
+        let mut m = material(TEMPLATE_LAYER, 1, vec![imp.clone()]);
+        m.inputs.scalars[21] = 1.0;
+        let look = screen_look(&m, 0, 0, &[]).expect("a look");
+        assert_eq!(look.state.blend_constant, wgpu::Color::WHITE);
+        imp.engine_render_states = vec![tags::shader::ExternalBinding {
+            bytes: [0, 1, 0, 3],
+        }];
+        let m = material(TEMPLATE_LAYER, 1, vec![imp]);
+        assert_eq!(
+            screen_look(&m, 0, 0, &[]).unwrap_err(),
+            ScreenRefusal::EngineStates(EngineStateRefusal::PerDraw {
+                state: 0x4b,
+                stage: None
+            })
+        );
+    }
+
     #[test]
     fn what_keeps_the_d3d_draws() {
-        let refusal = |imp: ResolvedImplementation| screen_look(&material(TEMPLATE_LAYER, 1, vec![imp]), 0, 0, &[]).unwrap_err();
-        assert_eq!(screen_look(&material(12, 1, vec![implementation(0)]), 0, 0, &[]).unwrap_err(), ScreenRefusal::NoLayer);
+        let refusal = |imp: ResolvedImplementation| {
+            screen_look(&material(TEMPLATE_LAYER, 1, vec![imp]), 0, 0, &[]).unwrap_err()
+        };
+        assert_eq!(
+            screen_look(&material(12, 1, vec![implementation(0)]), 0, 0, &[]).unwrap_err(),
+            ScreenRefusal::NoLayer
+        );
         let m = material(TEMPLATE_LAYER, 1, vec![implementation(0)]);
-        assert_eq!(screen_look(&m, 0, 3, &[]).unwrap_err(), ScreenRefusal::NoImplementation(3));
+        assert_eq!(
+            screen_look(&m, 0, 3, &[]).unwrap_err(),
+            ScreenRefusal::NoImplementation(3)
+        );
         let mut imp = implementation(0);
-        imp.input_reads = InputReads { scalars: 0, vectors: 1 << 5, ints: 0 };
-        assert_eq!(refusal(imp), ScreenRefusal::Reads(InputReads { scalars: 0, vectors: 1 << 5, ints: 0 }));
+        imp.input_reads = InputReads {
+            scalars: 0,
+            vectors: 1 << 5,
+            ints: 0,
+        };
+        assert_eq!(
+            refusal(imp),
+            ScreenRefusal::Reads(InputReads {
+                scalars: 0,
+                vectors: 1 << 5,
+                ints: 0
+            })
+        );
         let mut imp = implementation(0);
         imp.textures[2] = texture(TextureSource::Engine(10));
-        assert_eq!(refusal(imp), ScreenRefusal::EngineTexture(10), "the light's texture");
+        assert_eq!(
+            refusal(imp),
+            ScreenRefusal::EngineTexture(10),
+            "the light's texture"
+        );
         let mut imp = implementation(0);
         imp.textures[2] = texture(TextureSource::Lightmap);
         assert_eq!(refusal(imp), ScreenRefusal::Lightmap);
         let mut imp = implementation(0);
         imp.vertex_constants[0].origin = Origin::Engine;
-        assert_eq!(refusal(imp), ScreenRefusal::EngineVertexConstants, "c18 from externals not given");
+        assert_eq!(
+            refusal(imp),
+            ScreenRefusal::EngineVertexConstants,
+            "c18 from externals not given"
+        );
         let mut imp = implementation(0);
-        imp.input_reads = InputReads { scalars: 1 << 40, vectors: 0, ints: 0 };
-        assert_eq!(refusal(imp), ScreenRefusal::Reads(InputReads { scalars: 1 << 40, vectors: 0, ints: 0 }));
+        imp.input_reads = InputReads {
+            scalars: 1 << 40,
+            vectors: 0,
+            ints: 0,
+        };
+        assert_eq!(
+            refusal(imp),
+            ScreenRefusal::Reads(InputReads {
+                scalars: 1 << 40,
+                vectors: 0,
+                ints: 0
+            })
+        );
         let mut imp = implementation(0);
         imp.render_states = vec![
             state(RenderStateType::AlphaBlendEnable, 0),
@@ -626,29 +833,94 @@ mod tests {
     /// `c21` its two engine stages' sizes (modes 14 and 15, stages 1 and 2).
     #[test]
     fn the_call_puts_in_its_values_and_its_stages_sizes() {
-        let size = |reg, mode, stage| EngineVertexConstant { bank: 1, reg, mode, stage, source: 0 };
-        let externals = [size(0, 14, 1), size(1, 15, 1), size(2, 14, 2), size(3, 15, 2)];
+        let size = |reg, mode, stage| EngineVertexConstant {
+            bank: 1,
+            reg,
+            mode,
+            stage,
+            source: 0,
+        };
+        let externals = [
+            size(0, 14, 1),
+            size(1, 15, 1),
+            size(2, 14, 2),
+            size(3, 15, 2),
+        ];
         let mut imp = implementation(0);
-        imp.textures = [texture(TextureSource::Engine(24)), texture(TextureSource::Engine(3)), None, None];
-        imp.input_reads = InputReads { scalars: 1 << 41, vectors: 0, ints: 0 };
+        imp.textures = [
+            texture(TextureSource::Engine(24)),
+            texture(TextureSource::Engine(3)),
+            None,
+            None,
+        ];
+        imp.input_reads = InputReads {
+            scalars: 1 << 41,
+            vectors: 0,
+            ints: 0,
+        };
         imp.pixel_constants_from_engine = true;
-        let alpha = VectorTarget::Pixel { c1: false, slot: 0, mask: 0xff00_0000, half: false, transform: 0 };
-        imp.scalar_bindings = vec![VectorBinding { source: 41, target: alpha }];
-        imp.vertex_constants =
-            (18..22).map(|index| Register { index, value: [0.0; 4], written: 0xf, origin: Origin::Engine }).collect();
+        let alpha = VectorTarget::Pixel {
+            c1: false,
+            slot: 0,
+            mask: 0xff00_0000,
+            half: false,
+            transform: 0,
+        };
+        imp.scalar_bindings = vec![VectorBinding {
+            source: 41,
+            target: alpha,
+        }];
+        imp.vertex_constants = (18..22)
+            .map(|index| Register {
+                index,
+                value: [0.0; 4],
+                written: 0xf,
+                origin: Origin::Engine,
+            })
+            .collect();
         let m = material(TEMPLATE_LAYER, 1, vec![imp]);
-        assert_eq!(screen_look(&m, 0, 0, &externals[..3]).unwrap_err(), ScreenRefusal::EngineVertexConstants, "c21 unnamed");
+        assert_eq!(
+            screen_look(&m, 0, 0, &externals[..3]).unwrap_err(),
+            ScreenRefusal::EngineVertexConstants,
+            "c21 unnamed"
+        );
         let look = screen_look(&m, 0, 0, &externals).expect("the call supplies it");
-        assert_eq!(look.constants.pixel, vec![VectorBinding { source: 41, target: alpha }]);
-        assert_eq!(look.constants.vertex, externals.map(|c| (c, 0b1111)).to_vec());
+        assert_eq!(
+            look.constants.pixel,
+            vec![VectorBinding {
+                source: 41,
+                target: alpha
+            }]
+        );
+        assert_eq!(
+            look.constants.vertex,
+            externals.map(|c| (c, 0b1111)).to_vec()
+        );
         let mut vertex = VertexUniforms::default();
         let mut pixel = PixelUniforms::default();
         pixel.c0[0] = [0.2, 0.4, 0.6, 1.0];
         let values = [0.5f32.to_bits(), 0, 0, 0];
-        look.constants.apply(&mut vertex, &mut pixel, values, [(160, 120), (320, 240), (0, 0), (0, 0)]);
+        look.constants.apply(
+            &mut vertex,
+            &mut pixel,
+            values,
+            [(160, 120), (320, 240), (0, 0), (0, 0)],
+        );
         let rows: [[f32; 4]; 4] = vertex.constants[18..22].try_into().unwrap();
-        assert_eq!(rows, [[160.0, 0.0, 0.0, 0.0], [0.0, 120.0, 0.0, 0.0], [320.0, 0.0, 0.0, 0.0], [0.0, 240.0, 0.0, 0.0]]);
-        assert_eq!(crate::light_look::repack(pixel.c0[0]), 0x8033_6699, "alpha 0.5 of 255, rounded; rgb kept");
+        assert_eq!(
+            rows,
+            [
+                [160.0, 0.0, 0.0, 0.0],
+                [0.0, 120.0, 0.0, 0.0],
+                [320.0, 0.0, 0.0, 0.0],
+                [0.0, 240.0, 0.0, 0.0]
+            ]
+        );
+        assert_eq!(
+            crate::light_look::repack(pixel.c0[0]),
+            0x8033_6699,
+            "alpha 0.5 of 255, rounded; rgb kept"
+        );
     }
 
     /// A call's constant keeps only what no later binding of its register
@@ -656,25 +928,58 @@ mod tests {
     /// call does not supply, stay as loaded.
     #[test]
     fn a_calls_constants_are_the_ones_it_changes() {
-        let c = |reg, mode, stage, source| EngineVertexConstant { bank: 1, reg, mode, stage, source };
-        let bitmap = ScreenStage::Bitmap { bitmap: TagId(1), image: 0 };
-        let stages = [ScreenStage::Engine(5), bitmap, ScreenStage::Empty, ScreenStage::Empty];
-        let externals = [c(0, 13, 1, 0), c(0, 6, 0, 0), c(1, 13, 2, 0), c(2, 3, 0, 42), c(3, 3, 0, 21)];
-        assert_eq!(call_vertex_constants(&externals, &stages), vec![(c(0, 13, 1, 0), 0b1101), (c(2, 3, 0, 42), 0b1000)]);
+        let c = |reg, mode, stage, source| EngineVertexConstant {
+            bank: 1,
+            reg,
+            mode,
+            stage,
+            source,
+        };
+        let bitmap = ScreenStage::Bitmap {
+            bitmap: TagId(1),
+            image: 0,
+        };
+        let stages = [
+            ScreenStage::Engine(5),
+            bitmap,
+            ScreenStage::Empty,
+            ScreenStage::Empty,
+        ];
+        let externals = [
+            c(0, 13, 1, 0),
+            c(0, 6, 0, 0),
+            c(1, 13, 2, 0),
+            c(2, 3, 0, 42),
+            c(3, 3, 0, 21),
+        ];
+        assert_eq!(
+            call_vertex_constants(&externals, &stages),
+            vec![(c(0, 13, 1, 0), 0b1101), (c(2, 3, 0, 42), 0b1000)]
+        );
     }
 
     /// `dp4 oPos, v0, c[0..3]; mov oT0, v1; mov oT1, v<texcoord>`.
     fn strip_program(texcoord: u8) -> Vec<u8> {
         use shaders::vsh::encode::{Inst, Operand as O, program};
         use shaders::vsh::{MacOp, OutReg};
-        let row = |c, mask| Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(O::c(c)), None).to_out(false, OutReg::Pos, mask);
+        let row = |c, mask| {
+            Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(O::c(c)), None).to_out(
+                false,
+                OutReg::Pos,
+                mask,
+            )
+        };
         program(&[
             row(0, 8),
             row(1, 4),
             row(2, 2),
             row(3, 1),
             Inst::mac(MacOp::Mov, Some(O::v(1)), None, None).to_out(false, OutReg::T(0), 0xf),
-            Inst::mac(MacOp::Mov, Some(O::v(texcoord)), None, None).to_out(false, OutReg::T(1), 0xf),
+            Inst::mac(MacOp::Mov, Some(O::v(texcoord)), None, None).to_out(
+                false,
+                OutReg::T(1),
+                0xf,
+            ),
         ])
     }
 
@@ -682,7 +987,8 @@ mod tests {
     /// final combiner, reading fog with `fog`.
     fn look(fog: bool) -> ScreenLook {
         use shaders::psh::bits::{TEX_NONE, TEX_PROJECT2D, texture_modes};
-        let (final_inputs_abcd, final_inputs_efg) = shaders::psh::d3d_default_final_combiner(fog, false);
+        let (final_inputs_abcd, final_inputs_efg) =
+            shaders::psh::d3d_default_final_combiner(fog, false);
         let def = shaders::PixelShaderDef {
             texture_modes: texture_modes([TEX_PROJECT2D, TEX_PROJECT2D, TEX_NONE, TEX_NONE]),
             final_inputs_abcd,
@@ -690,17 +996,43 @@ mod tests {
             ..Default::default()
         };
         let m = material(TEMPLATE_LAYER, 1, vec![implementation(0)]);
-        ScreenLook { pixel_shader: def.to_bytes(), ..screen_look(&m, 0, 0, &[]).unwrap() }
+        ScreenLook {
+            pixel_shader: def.to_bytes(),
+            ..screen_look(&m, 0, 0, &[]).unwrap()
+        }
     }
 
     #[test]
     fn the_pass_compiles_over_the_strips_inputs() {
         let p = compile_screen(&look(false), &strip_program(2)).expect("compiles");
         shaders::validate(&p.wgsl).expect("valid WGSL");
-        assert!(!p.wgsl.contains("frag_depth"), "colour-only: no W-buffered depth");
-        assert_eq!(p.dims, [Some(TextureDim::D2), Some(TextureDim::D2), None, None]);
+        assert!(
+            !p.wgsl.contains("frag_depth"),
+            "colour-only: no W-buffered depth"
+        );
+        assert_eq!(
+            p.dims,
+            [Some(TextureDim::D2), Some(TextureDim::D2), None, None]
+        );
         assert_eq!(p.inputs & !STRIP_INPUTS, 0);
-        assert_eq!(p.vertex.constants[18], [0.5, 0.5, 0.0, 0.0], "instance constants");
+        assert_eq!(
+            p.vertex.constants[18],
+            [0.5, 0.5, 0.0, 0.0],
+            "instance constants"
+        );
+    }
+
+    #[test]
+    fn live_fragment_raster_links_with_the_screen_vertex_program() {
+        use shaders::psh::AlphaFunc;
+
+        let program = compile_screen(&look(false), &strip_program(2)).unwrap();
+        let source = program.raster_shader.unwrap()
+            .translate(Some(AlphaFunc::GreaterEqual), true).unwrap();
+        shaders::validate(&source).expect("valid WGSL");
+        assert!(source.contains("xps.alpha_ref.x"));
+        assert!(source.contains("let cell ="));
+        assert!(!program.wgsl.contains("let cell ="));
     }
 
     /// `screen_xform_4` moves `v5`..`v7` into the colours and fog, which

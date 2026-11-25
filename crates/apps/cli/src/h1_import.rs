@@ -4,22 +4,15 @@
 //! (docs/halo1/campaign.md "Importing", docs/halo1/multiplayer.md
 //! "Importing").
 //!
-//! - campaign levels: `<data>/campaigns/halo1/<level>.map` and
-//!   `campaign.toml`, which the campaign picker lists and
-//!   `vfs::CampaignMapsBackend` serves as `maps\<level>.map`, and each
-//!   level's Halo 2-assets variant, `<data>/campaigns/halo1/h2/<level>.map`
-//!   (`boot::h1_variants::campaign_alternate`), served instead when the
-//!   game's campaign assets are Halo 2's;
-//! - multiplayer maps: the package `<data>/maps/h1_<map>/` with both
-//!   variants, which `boot::new_maps` puts in the map list.
-//!
-//! [`STAMP_FILE`] in `<data>/campaigns/halo1/` records the disc (SHA-256,
-//! size, modification time), [`CONVERTER_VERSION`] and each map's outcome,
-//! written after every map, so a rerun (or the next `h2 play`) does only
-//! what is missing, and an interrupted import resumes.
+//! Both sandboxes and both campaign asset variants are converted levels
+//! in the tag store. Campaign manifests, cards and HUD data stay under
+//! `<data>/campaigns/halo1`; the multiplayer list metadata lives in the store.
+//! The import stamp records the source and the outcome of each job.
 //!
 //! `h2 play`, `h2 run`, `h2 serve` and `h2 play --follow` run it before
-//! booting when `halo1.iso` is next to the Halo 2 disc ([`auto_import`]).
+//! booting when `halo1.iso` is next to the Halo 2 disc: the `halo1`
+//! package's `convert` item, through [`package::Halo1`] and
+//! `crate::package_prepare`.
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -31,11 +24,14 @@ use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use h1convert::convert::{Sandbox, known, map_name, structure_mopp, variant_file};
+use h1convert::convert::{Sandbox, known, map_name, structure_mopp};
 use h1map::H1Map;
 use h1map::disc::{CAMPAIGN_LEVELS, Disc, map_stem};
 use sha2::{Digest, Sha256};
 use xiso::Xiso;
+use workspace::converted::{
+    halo1_campaign_stem, halo1_metadata, halo1_mp_stem, marker_path, store_converted,
+};
 
 use crate::h1_cmd;
 use crate::safe_out::OutDir;
@@ -46,7 +42,7 @@ use crate::safe_out::OutDir;
 /// use) changes the maps they write**: every import stamped with an older
 /// version is converted again at the next `h2 play`, so `--follow` users
 /// get the new maps after the merge.
-pub const CONVERTER_VERSION: u32 = 101;
+pub const CONVERTER_VERSION: u32 = 102;
 
 /// The stamp's file, in `<data>/campaigns/halo1/`.
 pub const STAMP_FILE: &str = "import.stamp";
@@ -103,18 +99,17 @@ impl Job<'_> {
         }
     }
 
-    /// The map file it writes under the data root.
-    pub fn output(&self, data: &Path) -> PathBuf {
+    pub fn stem(&self) -> String {
         match self {
-            Job::Campaign(l) => campaign_dir(data).join(h1campaign::manifest::map_file(l)),
-            Job::CampaignHalo2(l) => {
-                let level = Job::Campaign(l).output(data);
-                boot::h1_variants::campaign_alternate(&level).unwrap_or(level)
-            }
-            Job::Multiplayer(m, s) => content::store::maps_dir(data)
-                .join(map_name(m))
-                .join(variant_file(m, *s)),
+            Job::Campaign(l) => halo1_campaign_stem(l, "h1"),
+            Job::CampaignHalo2(l) => halo1_campaign_stem(l, "h2"),
+            Job::Multiplayer(m, sandbox) => halo1_mp_stem(&map_name(m), sandbox.name()),
         }
+    }
+
+    /// The store marker written when the level is complete.
+    pub fn output(&self, data: &Path) -> PathBuf {
+        marker_path(&boot::store_status::root(data), &self.stem())
     }
 }
 
@@ -814,6 +809,14 @@ impl DiscConverter {
     }
 }
 
+impl workspace::BaseMaps for DiscConverter {
+    fn read(&self, name: &str) -> Result<Vec<u8>, String> {
+        self.h2_base_file(name)
+            .map(|bytes| bytes.as_ref().clone())
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
 impl Converter for DiscConverter {
     fn convert(&self, job: &Job) -> Result<()> {
         // Its Halo 1 map let go however the job ends, a panic included.
@@ -829,22 +832,24 @@ impl Converter for DiscConverter {
 }
 
 impl DiscConverter {
+    fn store(&self, job: &Job, bytes: &[u8]) -> Result<()> {
+        store_converted(
+            &boot::store_status::root(&self.data),
+            &job.stem(),
+            bytes,
+            self,
+            "halo1",
+        )
+        .map_err(anyhow::Error::msg)?;
+        Ok(())
+    }
+
     fn convert_job(&self, job: &Job) -> Result<()> {
         match *job {
             Job::CampaignHalo2(level) => {
                 let done = self.campaign(level, h1campaign::h2assets::Assets::Halo2)?;
-                // Beside the level's map, in `h2/`: no HUD pairs (its
-                // player and weapons are Halo 2's) and no manifest (the
-                // level is listed once, by its Halo 1 map).
-                let file = Job::CampaignHalo2(level).output(&self.data);
-                let dir = file.parent().context("the variant's folder")?;
-                let name = file.file_name().context("the variant's file")?;
                 let _w = self.lock_write();
-                h1map::phase::time("write", || -> Result<()> {
-                    self.out(dir.to_path_buf())?
-                        .write(&[name.to_string_lossy().into_owned()], &done.bytes)?;
-                    Ok(())
-                })?;
+                self.store(job, &done.bytes)?;
             }
             Job::Campaign(level) => {
                 let done = self.campaign(level, h1campaign::h2assets::Assets::Halo1)?;
@@ -855,11 +860,10 @@ impl DiscConverter {
                 let dir = campaign_dir(&self.data);
                 let _w = self.lock_write();
                 h1map::phase::time("write", || -> Result<()> {
-                    h1_cmd::write_campaign_level(
+                    h1_cmd::write_campaign_metadata(
                         &self.out(dir.clone())?,
                         &dir,
                         level,
-                        &done.bytes,
                         &done.report.scenario.hud_swaps,
                         done.report.scenario.hud_sensor,
                     )?;
@@ -870,7 +874,7 @@ impl DiscConverter {
                         self.out(dir.clone())?
                             .write(&[boot::campaign_cards::CARDS_DIR.to_owned(), name], &png)?;
                     }
-                    Ok(())
+                    self.store(job, &done.bytes)
                 })?;
             }
             Job::Multiplayer(name, sandbox) => {
@@ -883,16 +887,17 @@ impl DiscConverter {
                 let card = self
                     .card_ui()
                     .and_then(|ui| h1convert::ui::mp_card(ui, name).ok().flatten());
-                let root = content::store::maps_dir(&self.data);
+                let root = halo1_metadata(&boot::store_status::root(&self.data));
                 let _w = self.lock_write();
                 h1map::phase::time("write", || {
-                    h1_cmd::write_mp_package(
+                    h1_cmd::write_mp_metadata(
                         &self.out(root.clone())?,
                         &root,
                         sandbox,
                         &done,
                         card.as_ref(),
-                    )
+                    )?;
+                    self.store(job, &done.bytes)
                 })?;
             }
         }
@@ -1012,7 +1017,7 @@ pub fn import(r: &Request, say: &mut dyn FnMut(String)) -> Result<Summary> {
 }
 
 // ---------------------------------------------------------------------------
-// Automatic import before the game starts.
+// Automatic import before the game starts (`package::Halo1`).
 
 /// Whether the automatic import runs: not with `--no-halo1`, and not with
 /// `H2_HALO1` set to `0`, `false`, `no` or `off`.
@@ -1067,57 +1072,8 @@ pub fn discover(game_disc: &Path) -> Option<PathBuf> {
         .find(|p| is_halo1(p))
 }
 
-/// Before the game starts: finds the Halo 1 disc beside `game_disc` and
-/// imports what is missing or stale into `data`, a line per map. Never
-/// fails: a problem is a warning and the game starts anyway.
-pub fn auto_import(game_disc: &Path, data: &Path) {
-    let r = catch_unwind(AssertUnwindSafe(|| try_auto(game_disc, data)))
-        .unwrap_or_else(|p| Err(anyhow!("panicked: {}", panic_text(&p))));
-    if let Err(e) = r {
-        eprintln!("halo1: not imported: {e:#}");
-    }
-}
-
-fn try_auto(game_disc: &Path, data: &Path) -> Result<()> {
-    let Some(h1) = discover(game_disc) else {
-        return Ok(());
-    };
-    // The bases come from the Halo 2 disc image; a bare default.xbe has
-    // none.
-    let is_iso = File::open(game_disc)
-        .ok()
-        .is_some_and(|f| Xiso::open(BufReader::new(f)).is_ok());
-    if !is_iso {
-        bail!(
-            "{} is not a disc image, and the conversion needs the Halo 2 disc's maps",
-            game_disc.display()
-        );
-    }
-    let name = h1
-        .file_name()
-        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-    let mut say = |s: String| eprintln!("halo1: {s}");
-    let sum = import(
-        &Request {
-            h1_iso: &h1,
-            h2_disc: game_disc,
-            data,
-            force: false,
-            dry_run: false,
-        },
-        &mut say,
-    )?;
-    if sum.converted == 0 && sum.failed == 0 {
-        println!("halo1: up to date ({} maps from {name})", sum.skipped);
-    } else {
-        println!(
-            "halo1: {} maps converted, {} failed, {} already there (from {name}); \
-             Campaign -> Halo: Combat Evolved, and h1_* maps in the multiplayer list",
-            sum.converted, sum.failed, sum.skipped
-        );
-    }
-    Ok(())
-}
+#[path = "h1_import_package.rs"]
+pub mod package;
 
 #[cfg(test)]
 #[path = "h1_import_tests.rs"]

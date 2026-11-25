@@ -13,7 +13,7 @@ Evidence labels, as in map-format.md:
   `ustr` and `hmt ` on every map: 10 campaign levels, 13 multiplayer
   maps and `ui.map`, `$H1_ISO`) and
   `real_disc_a30_converts_and_reads_back_through_halo_2`.
-- **S — unverified:** not yet independently checked here.
+- **S — unverified:** not independently checked here.
 - **Design:** an implementation choice.
 
 No game text, string dumps or community definition files are included in
@@ -245,10 +245,10 @@ pickup notification names the rifle in text. The multiplayer globals'
 weapon list selects starting weapons and placement substitutions. The
 resolved object's tag supplies its HUD string IDs.
 
-The converted Blood Gulch assault rifle and shotgun had zeroes in
-these fields, and the scenario carried no `hmt `. Halo 1 has the
+The converted weapons' fields would be zero, and the scenario would
+carry no `hmt `. Halo 1 has the
 templates in `hudg +0xf0`, the item text list in `hudg +0x94` and the
-weapon icon atlas in `hudg +0xa4` (V). `PickupText` now builds a
+weapon icon atlas in `hudg +0xa4` (V). `PickupText` builds a
 shared event `hmt ` from those resources. It attaches the tag to
 `scnr +0x208` before pruning and binds the route IDs to the rebuilt
 item slots. Both the pinned and fresh writers carry that reference.

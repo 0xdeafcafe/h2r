@@ -1,20 +1,34 @@
-//! A local Forge host. The caller supplies the loaded map's palette, bounds
-//! and teleporters, and invokes edits at a game boundary after checking
+//! A local Forge host. The caller supplies the loaded map's palette, bounds,
+//! teleporters and rows, and invokes edits at a game boundary after checking
 //! session access.
 #![forbid(unsafe_code)]
 
+mod budget;
 pub mod camera;
-mod files;
+pub mod files;
+#[cfg(test)]
+mod file_tests;
+pub mod kit;
 mod links;
 pub mod look;
+pub mod net;
+pub mod props;
 mod scene;
 mod session;
+mod things;
 pub mod tool;
 
-pub use files::{load_saved, saved_names};
-pub use forge_doc::{BlockKind, OpId, TagKey};
+pub use budget::{Binds, Budget, noun};
+pub use files::load_prefabs;
+pub use forge_doc::{BlockKind, Endpoint, OpId, TagKey, Value};
+pub use forge_doc::{GroundLabel, GroundRecipe, Label, MIN_GROUP_MEMBERS, Prefab};
 pub use links::{Linkable, Teleporter};
-pub use session::Session;
+pub use session::{
+    Goal, GroundBuilder, GroundProblem, GroundReceipt, GroundReport, GroundState, GroupInfo,
+    NavBuilder, NavLine, NavProblem, NavReport, NavState, Outgoing, PlacedMarker, SHARED_PROPOSE,
+    SHARED_REDO, Session, SessionAdmit, flag_label,
+};
+pub use things::{BaseRow, BaseRows, LEFT_OUT_SENTENCE, Thing, ThingKind};
 
 /// Position in world units, and yaw, pitch and roll in radians, in scenario order.
 #[derive(Clone, Copy, Debug, Default)]
@@ -50,6 +64,12 @@ pub struct PlacedObject {
 
 /// Game-boundary operations. A refused call must leave the world untouched.
 /// Handles are local to the current map and never enter the document or log.
+///
+/// The base calls edit the map's own entries
+/// (docs/game/forge-map-variants.md, "Applying an edit in a session"). They
+/// name an entry by its block and the index the base map has it at: a
+/// loaded block is never reordered under a running game, so the index holds
+/// for the session. A world without them refuses each by name.
 pub trait World {
     fn place(&mut self, item: &PaletteItem, frame: Frame) -> Result<u32, String>;
     fn move_object(&mut self, handle: u32, frame: Frame) -> Result<(), String>;
@@ -61,7 +81,75 @@ pub trait World {
         let _ = (flag, channel);
         Err("This game cannot change teleporter channels.".into())
     }
+    /// Move and turn own entry `index` of `block`: its position and
+    /// orientation in the loaded scenario, and its live object when the
+    /// block makes objects.
+    fn base_move(&mut self, block: BlockKind, index: u32, frame: Frame) -> Result<(), String> {
+        let _ = (block, index, frame);
+        Err(NO_BASE.into())
+    }
+    /// Set one typed, editable field of the entry in the loaded scenario.
+    fn base_field(
+        &mut self,
+        block: BlockKind,
+        index: u32,
+        field: &str,
+        value: &Value,
+    ) -> Result<(), String> {
+        let _ = (block, index, field, value);
+        Err(NO_BASE.into())
+    }
+    /// Make the entry's row inert and delete its live object.
+    fn base_inert(&mut self, block: BlockKind, index: u32) -> Result<(), String> {
+        let _ = (block, index);
+        Err(NO_BASE.into())
+    }
+    /// Write the kept `row` back and make the entry's object again.
+    fn base_restore(&mut self, block: BlockKind, index: u32, row: &[u8]) -> Result<(), String> {
+        let _ = (block, index, row);
+        Err(NO_BASE.into())
+    }
+    /// Add an entry of a kit block ([`kit::BLOCKS`]) as its row `index`,
+    /// the first spare row: write the row, a zeroed one with `fields`, and
+    /// raise the block's count to `index + 1`. A map without the kit has no
+    /// spare row, and the call is refused by name.
+    fn kit_add(
+        &mut self,
+        block: BlockKind,
+        index: u32,
+        fields: &[(&'static str, Value)],
+    ) -> Result<(), String> {
+        let _ = (block, index, fields);
+        Err(NO_KIT.into())
+    }
+    /// Take the last entry of a kit block, row `index`, away: write the
+    /// spare form back and lower the block's count to `index`.
+    fn kit_drop(&mut self, block: BlockKind, index: u32) -> Result<(), String> {
+        let _ = (block, index);
+        Err(NO_KIT.into())
+    }
 }
+
+const NO_BASE: &str = "This game cannot edit the map's own entries.";
+const NO_KIT: &str = "This map has no kit, so this game cannot add entries to it.";
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod base_tests;
+
+#[cfg(test)]
+mod ground_tests;
+
+#[cfg(test)]
+mod nav_tests;
+
+#[cfg(test)]
+mod budget_tests;
+
+#[cfg(test)]
+mod props_tests;
+
+#[cfg(test)]
+mod kit_tests;

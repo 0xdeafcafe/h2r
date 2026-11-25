@@ -1,0 +1,29 @@
+# The superbounce HUD (docs/game/hud-kit.md, "The superbounce HUD on the
+# kit"): the arming bar, the game's prompt line, its notification list, a
+# navpoint and its training box. Elements in draw order.
+name: superbounce
+elements:
+  # Assault's arming bar, at the bottom left fullscreen and where split
+  # screen has room; it gives way to retail's own in an Assault game
+  # (word D bit 0x400).
+  - id: sb.arm
+    kind: meter
+    art: {type: widget, hud: 'ui\hud\scoreboard', name: bomb_defusal}
+    at: {anchor: top-left, full: [160, 325], half: [272, 67], quarter: [129, 67], registration: [0.5, 0.5]}
+    hide_when_d: 1024
+  - id: sb.prompt
+    kind: prompt
+    longest: "Find a crouch spot to charge again"
+  - id: sb.message
+    kind: message
+    longest: "Charge lost: you stood still"
+  - id: sb.medal
+    kind: message
+    longest: "\uE2A8 Monster bounce!"
+  - id: sb.navpoint
+    kind: navpoint
+    longest: "999"
+    at: {anchor: top-left, full: [0, 0], half: [0, 0], quarter: [0, 0]}
+  - id: sb.tutorial
+    kind: training
+    longest: "Follow the navpoint. Jump from the\nJump mark onto the Land mark."

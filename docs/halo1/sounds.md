@@ -185,7 +185,7 @@ sound. 53 sounds have more than one pitch range (engines); 258 promote.
 ## The Halo 2 gestalt (`ugh!`)
 
 sound.md describes the four blocks `crates/formats/tags` reads. A converter has to
-rewrite the whole tag, so `h1sounds::gestalt` knows all eleven, including the
+rewrite the whole tag, so `h1_assets::sounds::gestalt` knows all eleven, including the
 three with child blocks. **V:** on all 30 maps of the Halo 2 disc the model
 accounts for every byte of the tag exactly once (`SoundGestalt::decode`
 refuses anything else), and a map rebuilt with its gestalt as a built tree
@@ -228,12 +228,12 @@ What a converted sound adds (Design, checked by read-back):
   and every one has `0x1000` (all retail cones are the whole sphere). A
   Halo 1 distance of 0 is the class default (13,149 of 15,698 Halo 1
   sounds), so it gets the class bits; whole-sphere cones (every Halo 1
-  sound) get `0x1000`. Before converter version 47 the bits were left
-  clear, and the engine took the zeros as distances: the minimum is raised
-  to 0.001 and the gain is `min / distance` inside a fade that a maximum
-  of 0 leaves at 1 (**E:** `0x0012aff0`), so a positioned converted sound
-  was at -60 dB a world unit away (`distance_and_cone_flags_follow_the_retail_rule`,
-  `tests/fields_disc.rs`).
+  sound) get `0x1000`. Left clear, the engine would take the zeros as
+  distances: the minimum is raised to 0.001 and the gain is
+  `min / distance` inside a fade that a maximum of 0 leaves at 1
+  (**E:** `0x0012aff0`), so a positioned sound would be at -60 dB a world
+  unit away (`distance_and_cone_flags_follow_the_retail_rule`,
+  `crates/tools/h1-assets/tests/sounds/fields_disc.rs`).
 - One playback element and one scale element, shared with any identical
   existing element (scales are indexed by a byte).
 - Import names: each range and permutation name, interned as a string ID.
@@ -285,19 +285,19 @@ bounds, all `i16` cents.
 ## API
 
 ```rust
-use h1sounds::{convert_sound, install_sounds, h1::Sound};
+use h1_assets::sounds::{convert_sound, install_sounds, h1::Sound};
 
 let s = Sound::read(&h1, tag)?;                 // Halo 1 tag, via h1map
-let pcm = h1sounds::decode_all(&s, h1.bytes())?; // (range, permutation, Pcm)
+let pcm = h1_assets::sounds::decode_all(&s, h1.bytes())?; // (range, permutation, Pcm)
 let c = convert_sound(&s, h1.bytes())?;         // ConvertedSound: map-independent
-h1sounds::convert::make_index_room(&mut set);   // a set from TagSet::from_map only
+h1_assets::sounds::convert::make_index_room(&mut set); // a set from TagSet::from_map only
 let ids = install_sounds(&mut set, vec![(name, c)])?;
 ```
 
 - `ConvertedSound` holds the header with its indices unset, the playback and
   scale elements, and per range its parameters and permutations with their
   chunks, and the source impulse promotion rule when present.
-- `ConvertedSound::add_to(gestalt, set) -> h1models::Converted` appends the
+- `ConvertedSound::add_to(gestalt, set) -> h1_assets::models::Converted` appends the
   entries to a `SoundGestalt`, adds the chunks to the set as raw resources,
   and returns the 20-byte `snd!` in the `Converted { group, root, raw }`
   shape; `Converted::install` adds it.
@@ -306,13 +306,14 @@ let ids = install_sounds(&mut set, vec![(name, c)])?;
   slot (same datum, so references to it hold), or adds one.
 - `install_sounds` does the three for a list.
 
-### Looping sounds and sound environments (`h1sounds::looping`)
+### Looping sounds and sound environments (`h1_assets::sounds::looping`)
 
 ```rust
-let l = h1sounds::looping::read_looping(&h1, lsnd_tag)?;   // its sounds converted too
-let ids = h1sounds::looping::install_looping(&mut set, &[l])?;
-let e = h1sounds::looping::read_environment(&h1, snde_tag)?;
-h1sounds::looping::install_environment(&mut set, &snde_tag.name, &e)?;
+use h1_assets::sounds::looping;
+let l = looping::read_looping(&h1, lsnd_tag)?;   // its sounds converted too
+let ids = looping::install_looping(&mut set, &[l])?;
+let e = looping::read_environment(&h1, snde_tag)?;
+looping::install_environment(&mut set, &snde_tag.name, &e)?;
 ```
 
 Layouts of both games' `lsnd` (header, tracks, detail sounds) and `snde`
@@ -323,7 +324,7 @@ gains and 16-byte references at `+0x30` (start), `+0x40` (loop), `+0x50`
 bytes in both, with four intensities linear in Halo 1 and decibels in Halo
 2. `install_looping` installs every sound the looping sounds play in one
 gestalt pass, skipping paths the set already has, and reuses an `lsnd` of
-the same path. `tests/looping_disc.rs`: every `lsnd` (734) and `snde` (63)
+the same path. `crates/tools/h1-assets/tests/sounds/looping_disc.rs`: every `lsnd` (734) and `snde` (63)
 on the Halo 1 disc converts, every named sound with it.
 
 ### Campaign loops and cache slots (**Built**)
@@ -347,7 +348,7 @@ lifepod variants have no engine attachment in the source.
 520 MiB and calls `0x214ed0` to look up the lower per-type limit. Campaign
 slots 4 and 5 have a 280 MiB capacity in the row at `0x448fc8`. The allocator
 at `0x2139d4` and selector at `0x214bd0` both read that row. At boot,
-`boot::campaign_cache` takes the largest converted campaign map installed
+`crates/extensions/game/src/campaign_cache.rs` takes the largest converted campaign map installed
 across both asset variants and loose overrides. For a level over 280 MiB
 it sizes both slots to the next whole MiB, up to 520 MiB, and supplies that
 capacity to the validator for Halo 1 campaign headers. The utility volume
@@ -359,8 +360,7 @@ The synthetic test `two_unreferenced_loops_share_one_sample_and_keep_existing_da
 covers shared samples, stable references and a corrupted detail datum. The
 ignored campaign disc audit follows every source loop back through the built
 tracks and details, then compares each sound's permutation bytes. The cache
-table and header selection have separate synthetic and disc checks. The
-integration build and playback check are pending.
+table and header selection have separate synthetic and disc checks.
 
 ### Proof (V)
 
@@ -376,7 +376,7 @@ matches; the base's own sounds still resolve to the same chunks.
 | beavercreek, every sound | 316 | 902 | 21,532,928 | 837.7 s |
 | a30 dialogue (classes 19, 44, 46, 47; every 4th) | 257 | 1,283 | 36,806,272 | 1,669.2 s |
 
-### Every sound of a built map (`h1sounds::audit`)
+### Every sound of a built map (`h1_assets::sounds::audit`)
 
 `audit(built, h1, retail)` follows every `snd!` of a built map through
 its gestalt as the engine does and checks it plays what it was made
@@ -391,13 +391,13 @@ pointing at the wrong or too few bytes plays as a short repeating buzz.
 `every_campaign_sound_plays_what_it_was_made_from` (h1campaign,
 `H1_LEVELS`, default all ten) and `every_multiplayer_sound_plays_what_it_was_made_from`
 (h1convert, `H1_MAPS`, default bloodgulch) run it on converted maps.
-**V (2026-11-17):** a10 on 05a_deltaapproach, 3,988 sounds: 175 from
-Halo 1 (602.4 s), 3,813 the base's and donors', 14,667 permutations, no
-problem. The bytes were never the fault behind a10's "repeated
-wurrrring" (`docs/halo1/campaign.md`, Sounds).
+**V:** a10 on the Delta Approach base passes with no problem; the counts
+and the run are in [notes/sounds.md](notes/sounds.md). The bytes were never
+the fault behind a10's "repeated wurrrring" ([campaign.md](campaign.md),
+Sounds).
 
 **What a10's opening cinematic plays** (`level_loops_and_their_character`
-in `tests/looping_disc.rs`, `$H1_LEVEL`, default a10; prints the length,
+in `crates/tools/h1-assets/tests/sounds/looping_disc.rs`, `$H1_LEVEL`, default a10; prints the length,
 RMS, zero crossings and the difference-to-RMS ratio `hf` of every
 permutation, near 0 for a low drone). The cinematic `x10` starts
 `sound\sinomatixx\x10_music01` (one stereo 44.1 kHz track, 114 s,
@@ -410,9 +410,9 @@ the space BSP's (`a10_space`: one cluster, -1). No sound is a drone
 where Halo 1's is not. The whirr was a script: Halo 1's `(sleep -1)`
 did nothing in Halo 2 (scripts.md, Sleeping forever), so the
 continuous `dialog_flavor_captain` started eight captain lines every
-tick (converter version 67 fixes it).
+tick; the converter keeps a `(sleep -1)` asleep until its `wake`.
 
-## Merging a moved sound (`h1sounds::merge_sound`)
+## Merging a moved sound (`h1_assets::sounds::merge_sound`)
 
 A `snd!` moved to another map (`tags::schema::transplant`) still holds
 indices into its source map's gestalt.
@@ -433,25 +433,24 @@ new indices:
 - promotions carry their original rules, timers and initial state into
   a fresh destination entry. The `snd! +0xc` index points to that entry.
 
-**Built.** Halo 2's `0x126f60` updates the timer for each rule. At
+Halo 2's `0x126f60` updates the timer for each rule. At
 `0x218f10` the selected rule supplies a pitch range relative to the
 sound, with `-1` selecting range zero. `0x219070` adds the sound's first
 pitch range in the gestalt. The merge rebuilds the pitch ranges and their
 permutations in source order, so the rule still selects the same samples.
 The destination gets a separate timer block for each copied sound. Invalid
 targets or timer blocks and promotion indices outside the signed-byte
-range produce errors. A read-only survey of 30 retail maps found 231
-promoted sounds among 65,309 sound headers. Every promotion had one
-owner, one timer per rule and sound-relative targets inside its owner.
+range produce errors. On the 30 retail maps, 231 of 65,309 sound
+headers are promoted, and every promotion has one owner, one timer per
+rule and sound-relative targets inside its owner.
 
 `native_promotion_selects_the_same_samples_after_its_sound_moves`
 checks the selected chunk after both indices change.
 `every_retail_sound_merges` checks all retail rules and timers alongside
 the existing playback, range, permutation and chunk comparisons.
-Integration execution is pending.
 
 ```sh
-H2_DISC=disc/halo2.iso cargo test -p h1sounds --release --test real_disc -- --ignored every_retail_sound_merges --nocapture
+H2_DISC=disc/halo2.iso cargo xtask test --disc -p h1-assets
 ```
 
 ### A gestalt cut to its sounds (`h1convert::compact`)
@@ -465,9 +464,9 @@ merge to place the promotion entry beside its rebuilt ranges.
 `compact::entries` describes a sound's entries without an index in them,
 so a map and its cut compare sound by sound.
 
-### A whole tree with its sounds (`h1sounds::transplant`)
+### A whole tree with its sounds (`h1_assets::sounds::transplant`)
 
-`h1sounds::transplant(schema, src, src_gestalt, root, dst_set,
+`h1_assets::sounds::transplant(schema, src, src_gestalt, root, dst_set,
 dst_gestalt)` runs `tags::schema::transplant::transplant` and then merges
 every `snd!` the tree copied into `dst_gestalt`, which the caller installs
 once at the end (`SoundGestalt::install`). The `MergeMap` maps import
@@ -485,13 +484,16 @@ first, then the converted script sounds (`h1campaign`).
 
 The ignored `a_transplanted_tree_takes_its_sounds` check transplants 04b's
 flood combat elite onto 05a and compares the 42 moved sounds after
-reopening the map, including the promotion previously cut. The synthetic
+reopening the map, including its promotion rule. The synthetic
 `a_reused_donor_sound_must_keep_its_promotion` check covers a same-name
 sound whose destination lacks the rule.
 
 ```sh
-H2_DISC=disc/halo2.iso cargo test -p h1sounds --release --test real_disc -- --ignored a_transplanted_tree_takes_its_sounds --nocapture
+H2_DISC=disc/halo2.iso cargo xtask test --disc -p h1-assets
 ```
+
+The disc tier runs every `#[ignore]`d test of the package, both sound disc
+files included (`H1_ISO` and `H2_DISC`).
 
 ## Classes
 
@@ -544,6 +546,9 @@ music, Cortana, UI.
 - **Class 45** holds the Halo 1 multiplayer announcer as well as scripted
   effects; whether Halo 2's mixer treats `scripted_cinematic_foley` well for
   announcer lines is unchecked.
+- **Campaign loops in play.** The loop conversion is checked against the
+  disc and by read-back; a converted level with every loop has not been
+  played in the running game.
 - **Gestalt limits:** pitch range, permutation and chunk indices are 16
   bits. A campaign base already holds up to 19,963 chunks; a whole Halo 1
   campaign level's sounds on top may not fit (`install_sounds` fails cleanly

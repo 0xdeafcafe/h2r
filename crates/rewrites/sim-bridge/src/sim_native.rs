@@ -1,24 +1,53 @@
 //! Independently selectable simulation replacements for the base Xbox image.
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
+use engine::sim_anim::manager;
 use engine::sim_collision::{Bail, Entry};
 use engine::{points, sim_native as sim};
 use runtime::{CpuAbi, ExecCtx, Guest, GuestFault, TransferAbi};
+use std::sync::Arc;
+
+mod manager_arm;
+mod manager_fusion;
+#[cfg(test)]
+mod hs_differential;
+mod hs_dispatch;
+mod hs_eval;
+mod hs_globals;
+pub mod hs_parity;
+mod hs_scheduler;
+mod hs_thread;
+
+const HS: &str = "sim.native.hs";
+const HS_POINTS: &[&points::Point] = &[
+    &points::SCRIPT_UPDATE,
+    &points::HS_THREAD_EXECUTE,
+    &points::HS_GLOBAL_READ,
+    &points::HS_GLOBAL_STORED,
+    &points::HS_EVALUATE,
+    &points::HS_EVALUATE_ARGUMENTS,
+    &points::HS_NEW_MAP,
+];
 
 pub struct SimNative {
-    ray_dispatch: bool,
+    missing_hs_entries: Vec<&'static str>,
+    exported_anim: Vec<AnimBody>,
 }
 
 impl SimNative {
     pub fn new(runtime: &runtime::Runtime) -> Self {
-        Self {
-            ray_dispatch: runtime.read_dispatch(|d| d.has_resume(sim::mopp_query::RAY_DISPATCH)),
-        }
+        runtime.read_dispatch(|d| Self {
+            missing_hs_entries: HS_POINTS.iter().filter(|p| !d.has_generated(p.base))
+                .map(|p| p.name).collect(),
+            exported_anim: ANIM_BODIES.iter().copied().filter(|body| {
+                d.has_generated(body.point.base) && body.sites.iter().all(|&pc| d.has_resume(pc))
+            }).collect(),
+        })
     }
 
-    /// As if the image had the ray dispatch loop's selector.
+    /// An image with all animation resume selectors.
     #[cfg(test)]
     pub(crate) fn for_tests() -> Self {
-        Self { ray_dispatch: true }
+        Self { missing_hs_entries: Vec::new(), exported_anim: ANIM_BODIES.to_vec() }
     }
 }
 
@@ -41,49 +70,14 @@ pub(crate) const ENTRIES: &[(&points::Point, &str, Body)] = &[
         sim::pose_matrix,
     ),
     (
-        &points::COLLISION_POINT_TO_LEAF,
-        "sim.native_point_to_leaf",
-        sim::point_to_leaf,
-    ),
-    (
-        &points::COLLISION_GEOMETRY_TEST,
-        "sim.native_geometry_test",
-        sim::geometry_test,
-    ),
-    (
         &points::SIM_UNIT_POSE,
         "sim.native_unit_pose",
         sim::unit::pose,
     ),
     (
-        &points::SIM_GRAPH_RESOLVE,
-        "sim.native_graph_resolve",
-        sim::graph::resolve,
-    ),
-    (
         &points::SIM_MARKER_TRANSFORMS,
         "sim.native_marker_transforms",
         sim::marker::transforms,
-    ),
-    (
-        &points::COLLISION_BSP_SEGMENT,
-        "sim.native_bsp_segment",
-        sim::bsp::segment,
-    ),
-    (
-        &points::SIM_COLLISION_QUERY,
-        "sim.native_collision_query",
-        sim::collision::query,
-    ),
-    (
-        &points::SIM_MOPP_BOX,
-        "sim.native_mopp_box",
-        sim::mopp_query::box_query,
-    ),
-    (
-        &points::SIM_MOPP_RAY,
-        "sim.native_mopp_ray",
-        sim::mopp_query::ray_query,
     ),
 ];
 
@@ -101,27 +95,23 @@ impl Feature for SimNative {
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         sim::set_simd(simd_on(b.switches()));
-        let query_on = b
-            .switches()
-            .implementation("sim.native_collision_query", false);
+        engine::sim_anim::skeleton::set_enabled(skeleton_on(b.switches()));
+        let anim = anim_on(b.switches());
+        engine::sim_anim::markers::set_enabled(anim);
+        engine::sim_anim::palette::set_enabled(anim);
+        engine::sim_anim::filter::set_enabled(anim);
         let collision = collision_on(b.switches());
         for &(point, name, body) in ENTRIES {
-            // The subsystem switch owns its entries; their per-function
-            // ports stay as test oracles.
-            if collision
-                && (COLLISION_ENTRIES.iter().any(|(p, _, _)| p.base == point.base)
-                    || point.base == points::COLLISION_BSP_SEGMENT.base)
-            {
+            if owns_anim(b.switches(), point.base) {
                 continue;
             }
             if crate::sim_objects::owns(b.switches(), point.base) {
                 continue;
             }
-            let completes_query = query_on && point.base == points::COLLISION_BSP_SEGMENT.base;
-            // Long programs yield at the float VM dispatch loop. Some
-            // generated images omit loop selectors.
-            let installed = b.switches().implementation(name, false)
-                && (point.base != points::SIM_MOPP_RAY.base || self.ray_dispatch);
+            if crate::sim_seats::owns(b.switches(), point.base) {
+                continue;
+            }
+            let installed = b.switches().implementation(name, false);
             crate::shadow::register(name, crate::shadow::SIM_NATIVE, point, installed);
             if installed {
                 b.raw()
@@ -133,15 +123,7 @@ impl Feature for SimNative {
                                 cpu,
                                 &mut mem,
                                 addr,
-                                &mut |cpu: &mut CpuAbi, mem: &mut Guest| {
-                                    let transfer = body(cpu, mem)?;
-                                    if completes_query {
-                                        return sim::collision::complete_segment(
-                                            cpu, mem, transfer,
-                                        );
-                                    }
-                                    Ok(transfer)
-                                },
+                                &mut |cpu, mem| body(cpu, mem),
                             );
                         }
                         original(cpu, ctx, addr)
@@ -149,16 +131,32 @@ impl Feature for SimNative {
                     .context_only();
             }
         }
-        let anim = anim_on(b.switches());
+        if b.switches().implementation(HS, false) {
+            if self.missing_hs_entries.is_empty() {
+                hs_scheduler::install(b);
+                hs_thread::install(b);
+                hs_eval::install(b);
+                hs_globals::install(b);
+                hs_dispatch::install(b);
+            } else {
+                eprintln!("HaloScript parity requires these generated entries: {}",
+                    self.missing_hs_entries.join(", "));
+            }
+        }
         if anim {
-            install_anim(b);
+            install_anim(b, &self.exported_anim);
         }
         if collision {
             install_collision(b);
         }
-        if crate::sim_objects::on(b.switches()) {
-            crate::sim_objects::install(b);
-        }
+        crate::sim_objects::install(b);
+        // Registers the effect ports with the shadow registry whatever
+        // the switch says; installs them when it is on.
+        crate::sim_effects::install(b);
+        // Phase 7: the seats, as the shadow's guest-authoritative arm
+        // first (crate::sim_seats). Registers every seat with the shadow
+        // whatever the switch says; installs them when it is on.
+        crate::sim_seats::install(b);
         // The clip store and the collision world are derived from guest
         // memory and hold no state of their own; a load only has to
         // invalidate them.
@@ -193,14 +191,25 @@ fn original(cpu: &mut CpuAbi, ctx: &mut ExecCtx, addr: u32) -> Result<TransferAb
     Ok(TransferAbi::fault(event))
 }
 
-/// `impl.sim.native.anim`: animation sampling, phase 1a of the simulation
-/// rewrite (docs/engine/anim-sampling.md). It replaces the stream call
-/// `0x2798a0` and everything under it, so the per-function codec,
-/// evaluator and stream ports it covers are test oracles only.
+/// Animation sampling and pose (docs/engine/sim-rewrite.md). The group
+/// owns the channel manager, graph resolve, stream, marker, unit pose, unit
+/// aim and first-person filter entries and enables the palette and filter
+/// kernels. It compares the graph walk at each call and the six phase 1d
+/// manager and graph entries at each generated transfer.
 pub const ANIM: &str = "sim.native.anim";
 
-fn anim_on(switches: &hooks::Switches) -> bool {
+pub(crate) fn anim_on(switches: &hooks::Switches) -> bool {
     switches.implementation(ANIM, false)
+}
+
+/// `impl.sim.native.anim.skeleton`: the skeleton walk of `bd090` as one
+/// Rust call, phase 1b (docs/engine/skeleton-walk.md). On by default. It
+/// runs wherever `bd090` runs natively: the `impl.sim.native.objects` body
+/// or the `impl.sim.native_pose_matrix` port. Unset, it follows
+/// `impl.sim.native.anim`, so `-impl.sim.native.anim` and
+/// `-impl.sim.native` turn it off too.
+fn skeleton_on(switches: &hooks::Switches) -> bool {
+    switches.implementation("sim.native.anim.skeleton", true)
 }
 
 /// Points after which guest memory no longer matches the clip store: map
@@ -212,7 +221,90 @@ const ANIM_INVALIDATE: [(&points::Point, &str); 3] = [
     (&points::GAME_STATE_RESTORE, "anim-invalidate-restore"),
 ];
 
-fn install_anim(b: &mut Builder) {
+#[derive(Clone, Copy)]
+enum AnimRun {
+    Pose(fn(&mut CpuAbi, &mut Guest, u32) -> Result<Option<TransferAbi>, GuestFault>),
+    Manager,
+    // Its segments always dispatch. Fusion only indexes Manager rows.
+    ManagerArm,
+}
+
+#[derive(Clone, Copy)]
+struct AnimBody {
+    point: &'static points::Point,
+    sites: &'static [u32],
+    run: AnimRun,
+}
+
+const POSE_BODIES: [AnimBody; 3] = [
+    AnimBody {
+        point: &points::SIM_UNIT_POSE,
+        sites: sim::unit::SITES,
+        run: AnimRun::Pose(sim::unit::run),
+    },
+    AnimBody {
+        point: &points::UNIT_AIM_UPDATE,
+        sites: engine::sim_anim::UNIT_AIM_SITES,
+        run: AnimRun::Pose(engine::sim_anim::unit_aim),
+    },
+    AnimBody {
+        point: &points::FIRST_PERSON_FILTER_UPDATE,
+        sites: engine::sim_anim::FIRST_PERSON_FILTER_SITES,
+        run: AnimRun::Pose(engine::sim_anim::first_person_filters),
+    },
+];
+
+// A manager row owns its static point. When the hook catalogue already
+// names the entry, use that point's signature and image-map name.
+static ANIM_BODIES: std::sync::LazyLock<Vec<AnimBody>> = std::sync::LazyLock::new(|| {
+    POSE_BODIES.into_iter().chain(manager::bodies().map(|body| AnimBody {
+        point: points::by_base(body.entry).unwrap_or(&body.point),
+        sites: body.sites,
+        run: if manager::arm::ENTRIES.contains(&body.entry) {
+            AnimRun::ManagerArm
+        } else {
+            AnimRun::Manager
+        },
+    })).collect()
+});
+
+/// The per-function ports stand down even on an older image: without a
+/// complete set of selectors its generated implementation owns this point.
+pub(crate) fn owns_anim(switches: &hooks::Switches, addr: u32) -> bool {
+    anim_on(switches) && (addr == points::SIM_MARKER_TRANSFORMS.base
+        || ANIM_BODIES.iter().any(|body| body.point.base == addr))
+}
+
+fn install_anim(b: &mut Builder, exports: &[AnimBody]) {
+    let fusion = Arc::new(manager_fusion::Fusion::new(exports));
+    for &body in exports {
+        let run_fusion = Arc::clone(&fusion);
+        let hook = b.raw()
+            .implement(body.point, ANIM, move |cpu, ctx, pc| {
+                let transfer = match body.run {
+                    AnimRun::Pose(run) => run(cpu, &mut *ctx.memory(), pc)?,
+                    AnimRun::ManagerArm => {
+                        return manager_arm::run(cpu, ctx, pc, pc != body.point.base);
+                    }
+                    AnimRun::Manager => {
+                        let available = run_fusion.available(ctx.runtime());
+                        manager::drive(cpu, &mut ctx.memory(), pc, |next| available(next.entry))?
+                    }
+                };
+                if let Some(transfer) = transfer {
+                    return Ok(transfer);
+                }
+                crate::sim_objects::original(cpu, ctx, pc, body.sites.contains(&pc))
+            })
+            .resumes(body.sites)
+            .context_only();
+        if matches!(body.run, AnimRun::Manager) {
+            let guard_fusion = Arc::clone(&fusion);
+            hook.optional().when_shared(move |entry| guard_fusion.guard(entry));
+        } else if matches!(body.run, AnimRun::ManagerArm) {
+            hook.optional();
+        }
+    }
     let point = &points::SIM_ANIMATION_STREAM;
     b.raw()
         .implement(point, ANIM, move |cpu, ctx, addr| {
@@ -227,16 +319,47 @@ fn install_anim(b: &mut Builder) {
             original(cpu, ctx, addr)
         })
         .context_only();
+    // The marker lookup, run by the register-level port with the Rust
+    // kernel inside it (phase 1c). Its per-function switch stays for the
+    // oracle; this entry wins when both are on.
+    let marker = &points::SIM_MARKER_TRANSFORMS;
+    b.raw()
+        .implement(marker, ANIM, move |cpu, ctx, addr| {
+            if addr == marker.base && sim::supported(cpu) {
+                let mut mem = ctx.memory();
+                return sim::marker::transforms(cpu, &mut *mem);
+            }
+            original(cpu, ctx, addr)
+        })
+        .context_only();
+    // The graph walk `1dd1c0` runs as its arm: the guest answers, and the
+    // Rust plan made at the entry is compared with what the guest left
+    // (docs/engine/skeleton-walk.md, "The graph walk `1dd1c0`").
+    let walk = &points::ANIM_GRAPH_MATRICES;
+    b.raw()
+        .before(walk, "plan the graph walk", |c| {
+            let thread = c.ctx.thread_id;
+            let mem = c.ctx.memory();
+            engine::sim_anim::graph_walk::arm_before(thread, c.cpu, &*mem);
+            Ok(hooks::Flow::Continue)
+        })
+        .optional();
+    b.raw()
+        .after(walk, "compare the graph walk with the guest", |c| {
+            let thread = c.ctx.thread_id;
+            let mem = c.ctx.memory();
+            engine::sim_anim::graph_walk::arm_after(thread, c.cpu, &*mem);
+            Ok(())
+        })
+        .optional();
     for (point, label) in ANIM_INVALIDATE {
         b.raw()
             .observe_before(point, label, |_| engine::sim_anim::invalidate());
     }
 }
 
-/// `impl.sim.native.collision`: the collision world, phase 2 of the
-/// simulation rewrite (docs/engine/collision-queries.md). It takes over
-/// point to leaf and the structure location. Vector and instance traces
-/// execute their original bodies while we measure their float environments.
+/// Phase two collision queries and their return comparisons.
+/// See docs/engine/collision-queries.md for the admission rules.
 pub const COLLISION: &str = "sim.native.collision";
 
 fn collision_on(switches: &hooks::Switches) -> bool {
@@ -249,7 +372,7 @@ type CollisionBody = fn(
     &engine::sim_collision::CollisionWorld,
 ) -> Result<Option<TransferAbi>, GuestFault>;
 
-const COLLISION_ENTRIES: [(&points::Point, Entry, CollisionBody); 2] = [
+const COLLISION_ENTRIES: [(&points::Point, Entry, CollisionBody); 5] = [
     (
         &points::COLLISION_POINT_TO_LEAF,
         Entry::PointToLeaf,
@@ -260,14 +383,42 @@ const COLLISION_ENTRIES: [(&points::Point, Entry, CollisionBody); 2] = [
         Entry::Location,
         engine::sim_collision::location,
     ),
+    (
+        &points::COLLISION_INSTANCE_TRACE,
+        Entry::InstanceTrace,
+        engine::sim_collision::instance::empty_cluster,
+    ),
+    (
+        &points::COLLISION_MOPP_BOX,
+        Entry::MoppBox,
+        engine::sim_collision::mopp_box,
+    ),
+    (
+        &points::COLLISION_GEOMETRY_TEST,
+        Entry::ObjectSphere,
+        engine::sim_collision::object_sphere_pretest,
+    ),
 ];
 
-/// These entries have a contract and a precision census. The vector kernels
-/// still need transitive register liveness or exact scratch replay.
-const COLLISION_OBSERVED: [(&points::Point, Entry, &str); 3] = [
-    (&points::COLLISION_VECTOR_TEST, Entry::VectorTest, "collision-vector-fp"),
-    (&points::COLLISION_BSP_SEGMENT, Entry::VectorContext, "collision-walk-fp"),
-    (&points::COLLISION_INSTANCE_TRACE, Entry::InstanceTrace, "collision-instance-fp"),
+// Each body answers exact exits, then compares admitted lifted calls at their
+// real returns. A return continuation in guest RAM could alias query inputs.
+const COLLISION_PARTIAL: [(&points::Point, Entry); 4] = [
+    (&points::COLLISION_VECTOR_TEST, Entry::VectorTest),
+    (&points::COLLISION_BSP_SEGMENT, Entry::VectorContext),
+    (&points::COLLISION_CLUSTER_FLOOD, Entry::ClusterFlood),
+    (&points::OBJECT_SPATIAL_VISIT, Entry::ObjectVisit),
+];
+
+const COLLISION_OBSERVED: [(&points::Point, Entry, &str); 2] = [
+    (&points::COLLISION_MOPP_RAY, Entry::MoppRay, "collision-ray-fp"),
+    (&points::SIM_COLLISION_QUERY, Entry::Query, "collision-query"),
+];
+
+/// The rest of the general MOPP ray's parity arm: each interpreter call,
+/// each key the instanced collection accepts, and the setup's return.
+const RAY_PARITY: [(&points::Point, &str); 2] = [
+    (&points::SIM_MOPP_RAY, "collision-ray-enter"),
+    (&points::COLLISION_INSTANCE_CHILD, "collision-ray-key"),
 ];
 
 /// Points after which the collision BSPs in guest memory may differ from
@@ -285,7 +436,7 @@ fn install_collision(b: &mut Builder) {
                 if addr != point.base {
                     return original(cpu, ctx, addr);
                 }
-                let world = &engine::sim_collision::WORLD;
+                let world: &'static engine::sim_collision::CollisionWorld = &engine::sim_collision::WORLD;
                 world.observe_environment(entry, cpu.mxcsr, cpu.x87.control);
                 if sim::supported(cpu) {
                     let mut mem = ctx.memory();
@@ -293,6 +444,17 @@ fn install_collision(b: &mut Builder) {
                         world.record::<()>(entry, &Err(Bail::Trap));
                     } else if let Some(transfer) = body(cpu, &mut mem, world)? {
                         return Ok(transfer);
+                    } else if entry == Entry::InstanceTrace {
+                        let prediction = engine::sim_collision::instance::ReturnPrediction::gather(cpu, &mut *mem, world);
+                        drop(mem);
+                        match prediction {
+                            Ok(p) => {
+                                ctx.observe_guest_return(cpu, 12, move |c, ctx| {
+                                    world.record_instance(p.compare(c, &*ctx.runtime().memory()));
+                                });
+                            }
+                            Err(why) => world.record_instance(Err(why)),
+                        }
                     }
                 } else {
                     world.record::<()>(entry, &Err(Bail::Env));
@@ -302,11 +464,100 @@ fn install_collision(b: &mut Builder) {
     }
     // This family updates shared decode caches, write watches and counters.
     // The hook registry keeps these calls on the owning executor.
+    use engine::sim_collision::{WORLD, mopp_ray, query, spatial_parity, vector_parity};
+    for (point, entry) in COLLISION_PARTIAL {
+        let points::Sig::Fn { pop, .. } = point.sig else {
+            unreachable!()
+        };
+        let pop = u32::from(pop);
+        b.raw()
+            .implement(point, COLLISION, move |cpu, ctx, addr| {
+                if addr != point.base {
+                    return original(cpu, ctx, addr);
+                }
+                let mut g = ctx.memory();
+                // The pending prediction is compared at this call's own
+                // guest return, so each arm owns its comparison.
+                enum Pending {
+                    Vector(vector_parity::Prediction),
+                    Spatial(spatial_parity::Prediction),
+                }
+                let (transfer, pending) = match entry {
+                    Entry::VectorTest | Entry::VectorContext => {
+                        WORLD.observe_environment(entry, cpu.mxcsr, cpu.x87.control);
+                        let (t, p) = if entry == Entry::VectorTest {
+                            vector_parity::dispatch_vector(cpu, &mut g, &WORLD)?
+                        } else {
+                            vector_parity::dispatch_context(cpu, &mut g, &WORLD)?
+                        };
+                        (t, p.map(Pending::Vector))
+                    }
+                    _ => {
+                        let (t, p) = spatial_parity::dispatch(entry, cpu, &mut g, &WORLD)?;
+                        (t, p.map(Pending::Spatial))
+                    }
+                };
+                if let Some(transfer) = transfer {
+                    return Ok(transfer);
+                }
+                drop(g);
+                if let Some(pending) = pending {
+                    ctx.observe_guest_return(cpu, pop, move |c, ctx| {
+                        let g = ctx.runtime().memory();
+                        let g = &*g;
+                        match pending {
+                            Pending::Vector(p) if entry == Entry::VectorTest => {
+                                WORLD.record_vector(p.compare(c.eax as u8, g))
+                            }
+                            Pending::Vector(p) => WORLD.record_context(p.compare(c.eax as u8, g)),
+                            Pending::Spatial(p) => WORLD.record_spatial(entry, p.compare(c, g)),
+                        }
+                    });
+                }
+                original(cpu, ctx, addr)
+            })
+            .optional();
+    }
     for (point, entry, label) in COLLISION_OBSERVED {
+        let points::Sig::Fn { pop, .. } = point.sig else {
+            unreachable!()
+        };
+        let pop = u32::from(pop);
+        b.raw()
+            .before(point, label, move |call| {
+                if call.addr == point.base {
+                    WORLD.observe_environment(entry, call.cpu.mxcsr, call.cpu.x87.control);
+                    let thread = call.ctx.thread_id;
+                    if entry == Entry::MoppRay {
+                        let observation =
+                            mopp_ray::begin_observed(thread, call.cpu, &mut *call.ctx.memory(), &WORLD);
+                        call.ctx.observe_guest_return(call.cpu, pop, move |_, ctx| {
+                            observation.finish(&*ctx.runtime().memory(), &WORLD);
+                        });
+                    } else if let Some(pending) = {
+                        let mut mem = call.ctx.memory();
+                        query::observe(call.cpu, &mut *mem, &WORLD)
+                    } {
+                        call.ctx.observe_guest_return(call.cpu, pop, move |c, ctx| {
+                            pending.finish(c, &ctx.runtime().memory(), &WORLD);
+                        });
+                    }
+                }
+                Ok(hooks::Flow::Continue)
+            })
+            .optional();
+    }
+    for (point, label) in RAY_PARITY {
         b.raw()
             .observe_before(point, label, move |o| {
-                if o.addr == point.base {
-                    engine::sim_collision::WORLD.observe_environment(entry, o.cpu.mxcsr, o.cpu.x87.control);
+                if o.addr != point.base {
+                    return;
+                }
+                let g = o.guest();
+                if point.base == points::SIM_MOPP_RAY.base {
+                    engine::sim_collision::mopp_ray::enter(o.thread_id, o.cpu, &*g);
+                } else {
+                    engine::sim_collision::mopp_ray::key(o.thread_id, o.cpu, &*g);
                 }
             })
             .optional();
@@ -330,7 +581,7 @@ mod tests {
                 switches = switches.with(&format!("impl.{key}"), true);
             }
             let mut registry = Registry::new(switches);
-            registry.add(&SimNative { ray_dispatch: true }).unwrap();
+            registry.add(&SimNative::for_tests()).unwrap();
             let plan = registry.build(&Base).unwrap();
             // A switch installs every entry that shares it, and only those.
             let sharing: Vec<_> = enabled
@@ -347,23 +598,218 @@ mod tests {
     }
 
     #[test]
+    fn hs_switch_installs_guest_observers_for_the_complete_image() {
+        let plan_for = |spec, feature: SimNative| {
+            let mut registry = Registry::new(Switches::parse(spec).unwrap());
+            registry.add(&feature).unwrap();
+            registry.build(&Base).unwrap()
+        };
+        for (spec, installed) in [
+            ("", false),
+            ("impl.sim.native.hs", true),
+            ("-impl.sim.native", false),
+            ("impl.sim.native,-impl.sim.native.hs", false),
+            ("-impl.sim.native,impl.sim.native.hs", true),
+        ] {
+            let plan = plan_for(spec, SimNative::for_tests());
+            for point in HS_POINTS {
+                let observed = plan.chains.get(&point.base).is_some_and(|chain| {
+                    chain.implement.is_none() && !chain.observe_before.is_empty()
+                });
+                assert_eq!(observed, installed, "{spec}: {}", point.name);
+            }
+        }
+        let mut incomplete = SimNative::for_tests();
+        incomplete.missing_hs_entries.push(points::HS_THREAD_EXECUTE.name);
+        assert!(plan_for("impl.sim.native.hs", incomplete).chains.is_empty());
+    }
+
+    #[test]
     fn anim_replaces_the_stream_call_and_invalidates_on_reload() {
         let mut registry = Registry::new(Switches::defaults().with(&format!("impl.{ANIM}"), true));
-        registry.add(&SimNative { ray_dispatch: true }).unwrap();
+        registry.add(&SimNative::for_tests()).unwrap();
         let plan = registry.build(&Base).unwrap();
         let stream = &plan.chains[&points::SIM_ANIMATION_STREAM.base];
         assert_eq!(stream.implement.as_ref().unwrap().label, ANIM);
+        // The marker lookup runs under the subsystem switch too.
+        let marker = &plan.chains[&points::SIM_MARKER_TRANSFORMS.base];
+        assert_eq!(marker.implement.as_ref().unwrap().label, ANIM);
         for (point, label) in ANIM_INVALIDATE {
             let chain = &plan.chains[&point.base];
             assert!(chain.implement.is_none());
             assert_eq!(chain.observe_before.len(), 1, "{label}");
         }
-        assert_eq!(plan.chains.len(), 1 + ANIM_INVALIDATE.len());
+        let pose = plan.chains[&points::SIM_UNIT_POSE.base].implement.as_ref().unwrap();
+        assert_eq!(pose.label, ANIM);
+        assert_eq!(pose.continuation_sites().0, sim::unit::SITES);
+        // The graph walk is checked, not replaced: the guest still answers.
+        let walk = &plan.chains[&points::ANIM_GRAPH_MATRICES.base];
+        assert!(walk.implement.is_none());
+        assert_eq!((walk.before.len(), walk.after.len()), (1, 1));
+        assert!(walk.before[0].optional && walk.after[0].optional);
+        assert_eq!(plan.chains.len(), 3 + ANIM_BODIES.len() + ANIM_INVALIDATE.len());
         assert_eq!(plan.save_sections(), vec![("sim-native", Vec::new())]);
 
+        // The subsystem owns both shared points when their individual
+        // port switches are also enabled.
+        let switches = Switches::defaults()
+            .with(&format!("impl.{ANIM}"), true)
+            .with("impl.sim.native_marker_transforms", true)
+            .with("impl.sim.native_unit_pose", true);
+        let mut registry = Registry::new(switches);
+        registry.add(&SimNative::for_tests()).unwrap();
+        let plan = registry.build(&Base).unwrap();
+        let marker = &plan.chains[&points::SIM_MARKER_TRANSFORMS.base];
+        assert_eq!(marker.implement.as_ref().unwrap().label, ANIM);
+        let pose = plan.chains[&points::SIM_UNIT_POSE.base].implement.as_ref().unwrap();
+        assert_eq!(pose.label, ANIM);
+        assert_eq!(pose.continuation_sites().0, sim::unit::SITES);
+        assert_eq!(plan.chains.len(), 3 + ANIM_BODIES.len() + ANIM_INVALIDATE.len());
+
         // The retired per-function switches are gone from the table.
-        for key in ["sim.native_rotation_codec", "sim.native_animation_stream"] {
+        for key in ["sim.native_rotation_codec", "sim.native_animation_stream", "sim.native_graph_resolve"] {
             assert!(Switches::parse(&format!("impl.{key}")).is_err(), "{key}");
+        }
+    }
+
+    fn legacy_ports_and_objects() -> Switches {
+        Switches::defaults()
+            .with("impl.sim.native.objects", true)
+            .with("impl.sim.native_unit_aim", true)
+            .with("impl.sim.native_first_person_filters", true)
+    }
+
+    #[test]
+    fn animation_owns_aim_and_filters_even_for_fused_object_calls() {
+        for anim in [false, true] {
+            let switches = legacy_ports_and_objects().with("impl.sim.native.anim", anim);
+            assert_eq!(crate::sim_objects::owns(&switches, points::UNIT_AIM_UPDATE.base), !anim);
+            let mut registry = Registry::new(switches);
+            registry.add(&SimNative::for_tests()).unwrap();
+            registry.add(&crate::sim_physics::NativePhysics).unwrap();
+            let plan = registry.build(&Base).unwrap();
+            for (point, sites, legacy) in [
+                (&points::UNIT_AIM_UPDATE, engine::sim_anim::UNIT_AIM_SITES, crate::sim_objects::OBJECTS),
+                (&points::FIRST_PERSON_FILTER_UPDATE, engine::sim_anim::FIRST_PERSON_FILTER_SITES, "sim.native_first_person_filters"),
+            ] {
+                let hook = plan.chains[&point.base].implement.as_ref().unwrap();
+                assert_eq!(hook.label, if anim { ANIM } else { legacy });
+                if anim {
+                    assert_eq!(hook.continuation_sites().0, sites);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_declined_animation_segment_invokes_the_original_selector() {
+        let mut dispatch = runtime::Dispatch::default();
+        // The return PCs can belong to another generated entry. Give it
+        // different selectors so a raw return PC cannot pass this check.
+        let owner = 0x14000;
+        dispatch.register_generated_rust(owner, |_, _, selector| Ok(TransferAbi::ret(selector))).unwrap();
+        for body in ANIM_BODIES.iter() {
+            dispatch.register_generated_rust(body.point.base, |_, _, selector| Ok(TransferAbi::jump(selector))).unwrap();
+            for &pc in body.sites {
+                dispatch.register_resume(pc, owner, pc - body.point.base).unwrap();
+            }
+        }
+        let mut guest = Guest::new();
+        guest.install_trap(4);
+        let rt = runtime::Runtime::new(guest, dispatch);
+        let mut registry = Registry::new(Switches::defaults().with("impl.sim.native.anim", true));
+        registry.add(&SimNative::new(&rt)).unwrap();
+        let plan = registry.build(&Base).unwrap();
+        let mut ctx = ExecCtx::new(rt, 1);
+        let mut cpu = CpuAbi { mxcsr: 0, ..CpuAbi::default() };
+        let initial = cpu;
+        for body in ANIM_BODIES.iter() {
+            let entry = body.point.base;
+            let hook = plan.chains[&entry].implement.as_ref().unwrap();
+            let hooks::Run::Implement(run) = &hook.run else { unreachable!() };
+            assert_eq!(run(&mut cpu, &mut ctx, entry).unwrap(), TransferAbi::jump(entry), "{entry:#x}");
+            assert_eq!(cpu, initial);
+            for &pc in body.sites {
+                assert_eq!(run(&mut cpu, &mut ctx, pc).unwrap(), TransferAbi::ret(pc - entry), "{pc:#x}");
+                assert_eq!(cpu, initial);
+            }
+        }
+    }
+
+    #[test]
+    fn manager_uses_exported_points_and_owns_the_graph_port() {
+        let graph = manager::bodies().find(|b| b.entry == points::SIM_GRAPH_RESOLVE.base).unwrap();
+        let leaf = manager::bodies()
+            .find(|b| b.sites.is_empty() && points::by_base(b.entry).is_none())
+            .unwrap();
+        let last = *graph.sites.last().unwrap();
+        for have_last in [false, true] {
+            let mut dispatch = runtime::Dispatch::default();
+            for (point, _) in ANIM_INVALIDATE {
+                dispatch.register_generated_rust(point.base, |_, _, _| panic!("registration only")).unwrap();
+            }
+            for entry in [leaf.entry, graph.entry] {
+                dispatch.register_generated_rust(entry, |_, _, _| panic!("registration only")).unwrap();
+            }
+            for &site in graph.sites {
+                if have_last || site != last {
+                    dispatch.register_resume(site, graph.entry, site).unwrap();
+                }
+            }
+            let rt = runtime::Runtime::new(Guest::new(), dispatch);
+            let switches = Switches::defaults().with("impl.sim.native.anim", true);
+            let mut registry = Registry::new(switches);
+            registry.add(&SimNative::new(&rt)).unwrap();
+            let plan = registry.build(&Base).unwrap();
+            let installed = plan.chains.get(&graph.entry).and_then(|c| c.implement.as_ref());
+            assert_eq!(installed.is_some(), have_last);
+            if let Some(graph_hook) = installed {
+                assert_eq!(graph_hook.label, ANIM);
+                assert!(std::ptr::eq(graph_hook.point, &points::SIM_GRAPH_RESOLVE));
+                assert_eq!(graph_hook.continuation_sites().0, graph.sites);
+            }
+            let leaf_hook = plan.chains[&leaf.entry].implement.as_ref().unwrap();
+            assert_eq!(leaf_hook.label, ANIM);
+            assert_eq!(leaf_hook.continuation_sites().0, leaf.sites);
+            for body in manager::bodies().filter(|b| b.entry != leaf.entry && b.entry != graph.entry) {
+                assert!(!plan.chains.contains_key(&body.entry), "{:#x}", body.entry);
+            }
+            let installed = plan.install(&rt).unwrap();
+            assert_eq!(installed.off_reason("sim-native"), None);
+            assert!(installed.placed.contains(&leaf.entry));
+            assert_eq!(installed.placed.contains(&graph.entry), have_last);
+        }
+    }
+
+    #[test]
+    fn one_missing_export_only_disables_its_animation_body() {
+        for missing in POSE_BODIES {
+            let mut dispatch = runtime::Dispatch::default();
+            for body in POSE_BODIES {
+                let entry = body.point.base;
+                dispatch.register_generated_rust(entry, |_, _, _| panic!("registration only")).unwrap();
+                for &site in body.sites {
+                    if entry != missing.point.base || site != missing.sites[0] {
+                        dispatch.register_resume(site, entry, site).unwrap();
+                    }
+                }
+            }
+            let rt = runtime::Runtime::new(Guest::new(), dispatch);
+            let switches = legacy_ports_and_objects()
+                .with("impl.sim.native_unit_pose", true)
+                .with("impl.sim.native.anim", true);
+            let mut registry = Registry::new(switches);
+            registry.add(&SimNative::new(&rt)).unwrap();
+            registry.add(&crate::sim_physics::NativePhysics).unwrap();
+            let plan = registry.build(&Base).unwrap();
+            assert!(!plan.chains.contains_key(&missing.point.base));
+            for body in POSE_BODIES.into_iter().filter(|b| b.point.base != missing.point.base) {
+                let hook = plan.chains[&body.point.base].implement.as_ref().unwrap();
+                assert_eq!(hook.label, ANIM);
+                assert_eq!(hook.continuation_sites().0, body.sites);
+            }
+            assert!(plan.chains.contains_key(&points::SIM_ANIMATION_STREAM.base));
+            assert!(plan.chains.contains_key(&points::SIM_MARKER_TRANSFORMS.base));
         }
     }
 
@@ -371,7 +817,7 @@ mod tests {
     fn collision_takes_its_entries_and_invalidates_on_reload() {
         let key = format!("impl.{COLLISION}");
         let mut registry = Registry::new(Switches::defaults().with(&key, true));
-        registry.add(&SimNative { ray_dispatch: true }).unwrap();
+        registry.add(&SimNative::for_tests()).unwrap();
         let plan = registry.build(&Base).unwrap();
         for (point, entry, _) in COLLISION_ENTRIES {
             assert_eq!(point.base, entry.addr());
@@ -389,36 +835,38 @@ mod tests {
             assert_eq!(chain.addr, entry.addr());
             assert!(chain.implement.is_none());
             assert!(chain.shadow.is_none());
-            assert_eq!(chain.observe_before.len(), 1);
-            assert!(chain.observe_before[0].optional);
+            assert_eq!(chain.before.len(), 1);
+            assert!(chain.before[0].optional);
+        }
+        for (point, entry) in COLLISION_PARTIAL {
+            let chain = &plan.chains[&point.base];
+            assert_eq!(chain.addr, entry.addr());
+            let body = chain.implement.as_ref().unwrap();
+            assert_eq!(body.label, COLLISION);
+            assert!(body.optional);
+            assert!(chain.shadow.is_none());
+        }
+        // The ray parity arm also observes each interpreter call and
+        // each instanced key.
+        for (point, label) in RAY_PARITY {
+            let chain = &plan.chains[&point.base];
+            assert!(chain.implement.is_none(), "{label}");
+            assert_eq!(chain.observe_before.len(), 1, "{label}");
+            assert!(chain.observe_before[0].optional, "{label}");
         }
         assert_eq!(
             plan.chains.len(),
-            COLLISION_ENTRIES.len() + COLLISION_INVALIDATE.len() + COLLISION_OBSERVED.len()
+            COLLISION_ENTRIES.len()
+                + COLLISION_INVALIDATE.len()
+                + COLLISION_PARTIAL.len()
+                + COLLISION_OBSERVED.len()
+                + RAY_PARITY.len()
         );
         assert_eq!(plan.save_sections(), vec![("sim-native", Vec::new())]);
 
-        // With the per-function ports also on, the subsystem owns the
-        // shared points and the other ports still install.
-        let switches = Switches::defaults()
-            .with(&key, true)
-            .with("impl.sim.native_point_to_leaf", true)
-            .with("impl.sim.native_bsp_segment", true)
-            .with("impl.sim.native_geometry_test", true);
-        let mut registry = Registry::new(switches);
-        registry.add(&SimNative { ray_dispatch: true }).unwrap();
-        let plan = registry.build(&Base).unwrap();
-        assert_eq!(plan.chains[&points::COLLISION_POINT_TO_LEAF.base].implement.as_ref().unwrap().label, COLLISION);
-        assert!(plan.chains[&points::COLLISION_BSP_SEGMENT.base].implement.is_none());
-        let geometry = &plan.chains[&points::COLLISION_GEOMETRY_TEST.base];
-        assert_eq!(
-            geometry.implement.as_ref().unwrap().label,
-            "sim.native_geometry_test"
-        );
-
         // Off by default.
         let mut registry = Registry::new(Switches::defaults());
-        registry.add(&SimNative { ray_dispatch: true }).unwrap();
+        registry.add(&SimNative::for_tests()).unwrap();
         assert!(registry.build(&Base).unwrap().chains.is_empty());
     }
 
@@ -426,7 +874,7 @@ mod tests {
     fn collision_entries_count_the_environment_before_declining() {
         let switches = Switches::defaults().with(&format!("impl.{COLLISION}"), true);
         let mut registry = Registry::new(switches);
-        registry.add(&SimNative { ray_dispatch: true }).unwrap();
+        registry.add(&SimNative::for_tests()).unwrap();
         let plan = registry.build(&Base).unwrap();
         let rt = runtime::Runtime::new(Guest::new(), runtime::Dispatch::default());
         let mut ctx = ExecCtx::new(rt.clone(), 1);
@@ -443,18 +891,16 @@ mod tests {
             };
             run(&mut cpu, &mut ctx, point.base).unwrap();
         }
+        for (point, _) in COLLISION_PARTIAL {
+            let hook = plan.chains[&point.base].implement.as_ref().unwrap();
+            let hooks::Run::Implement(run) = &hook.run else { unreachable!() };
+            run(&mut cpu, &mut ctx, point.base).unwrap();
+        }
         for (point, _, _) in COLLISION_OBSERVED {
-            let hook = &plan.chains[&point.base].observe_before[0];
-            let hooks::Run::ObserveBefore(observe) = &hook.run else {
-                unreachable!()
-            };
-            observe(&hooks::Obs {
-                thread_id: 1,
-                cpu: &cpu,
-                runtime: &rt,
-                addr: point.base,
-                point,
-            });
+            let hook = &plan.chains[&point.base].before[0];
+            let hooks::Run::Before(run) = &hook.run else { unreachable!() };
+            let flow = run(&mut hooks::Call { cpu: &mut cpu, ctx: &mut ctx, addr: point.base, point }).unwrap();
+            assert!(matches!(flow, hooks::Flow::Continue));
         }
         let after = engine::sim_collision::stats();
         for entry in Entry::ALL {
@@ -471,7 +917,8 @@ mod tests {
             let env = Bail::Env as usize;
             assert_eq!(
                 new.bails[env] - old.bails[env],
-                u64::from(matches!(entry, Entry::PointToLeaf | Entry::Location))
+                u64::from(COLLISION_ENTRIES.iter().any(|(_, native, _)| *native == entry)
+                    || COLLISION_PARTIAL.iter().any(|(_, native)| *native == entry))
             );
         }
     }
@@ -480,7 +927,7 @@ mod tests {
     fn collision_leaves_memory_traps_to_the_lifted_instructions() {
         let switches = Switches::defaults().with(&format!("impl.{COLLISION}"), true);
         let mut registry = Registry::new(switches);
-        registry.add(&SimNative { ray_dispatch: true }).unwrap();
+        registry.add(&SimNative::for_tests()).unwrap();
         let plan = registry.build(&Base).unwrap();
         let mut guest = Guest::new();
         guest.install_trap(4);
@@ -500,6 +947,17 @@ mod tests {
             let trap = Bail::Trap as usize;
             assert!(after.entries[entry as usize].bails[trap] > before.entries[entry as usize].bails[trap]);
         }
+    }
+
+    #[test]
+    fn the_skeleton_walk_is_on_by_default_and_follows_the_anim_group() {
+        let on = |text: &str| skeleton_on(&Switches::parse(text).unwrap());
+        assert!(on(""));
+        assert!(!on("-impl.sim.native.anim.skeleton"));
+        assert!(!on("-impl.sim.native.anim"));
+        assert!(!on("-impl.sim.native"));
+        assert!(on("impl.sim.native.anim"));
+        assert!(on("-impl.sim.native.anim,impl.sim.native.anim.skeleton"));
     }
 
     #[test]

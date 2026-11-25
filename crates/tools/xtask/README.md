@@ -38,6 +38,8 @@ The modules:
 - `ledger`: passes keyed on a package's inputs, shared by every
   checkout on the machine.
 - `xml`: just enough XML for the JUnit report.
+- `prune`: after a run, deletes the test executables it made stale
+  (other hashes of the executables nextest listed).
 - `git`, `proc`: the git questions it asks, and running commands.
 
 How the affected set, the ledger and the test run work is in

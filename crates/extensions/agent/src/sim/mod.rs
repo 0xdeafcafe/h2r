@@ -18,10 +18,14 @@
 //!   ([`objects`]).
 //! - `sim.events`: the last tick's simulation events from `sim-state`
 //!   ([`events`]).
+//! - `player.mark` / `player.recall`: a player's position and facing saved
+//!   under a slot, and put back through `sim.state.set`'s teleport.
 //!
 //! They are game methods ([`crate::Agent::add_game_method`]): answered on
 //! the game's thread at a tick boundary while the game ticks, with guest
-//! memory at hand.
+//! memory at hand. `host.pause` and `host.step` ([`pause`]) are installed
+//! with them but answered on the connection's thread, as is `host.quit`
+//! ([`quit`]).
 
 pub mod bots;
 pub mod calls;
@@ -33,15 +37,21 @@ pub use edits::active_options;
 pub mod events;
 pub mod hashes;
 pub mod objects;
+pub mod pause;
+pub mod recording;
+pub mod quit;
+pub mod shot;
 pub mod state;
+pub mod window;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use agent_proto::expect;
 use agent_proto::sim::{
-    self as wire, AddParams, DriveParams, ExpectParams, GiveParams, PlayerKind, RemoveParams,
-    SessionKind, SessionView, SetParams, SimPlayer, SourceKind, SpawnParams, ViewParams, method,
+    self as wire, AddParams, DriveParams, ExpectParams, GiveParams, Mark, MarkParams, PlayerKind,
+    RemoveParams, SessionKind, SessionView, SetParams, SimPlayer, SourceKind, SpawnParams,
+    ViewParams, method,
 };
 use agent_proto::{Boundary, Kind, ObjectId, RpcError, code};
 use engine::GuestMemory;
@@ -90,6 +100,8 @@ pub struct Sim {
     adopt_editor: Option<Box<dyn Fn() -> Result<(), String> + Send>>,
     /// Tag names for `sim.give` and `sim.spawn`.
     tags: Option<Box<dyn Tags>>,
+    /// `player.mark`'s saved places, by slot.
+    marks: BTreeMap<String, Mark>,
 }
 
 /// A handle on the installed `sim.*` state.
@@ -197,6 +209,7 @@ pub fn install(agent: &Agent, bots: Box<dyn Bots>, probe: Option<SessionProbe>) 
         map_rebind: None,
         adopt_editor: None,
         tags: None,
+        marks: BTreeMap::new(),
     })));
     let add = |name: &str, access: Access, f: fn(&mut Sim, Value, &mut GameCtx<'_>) -> R| {
         let h = h.clone();
@@ -212,8 +225,17 @@ pub fn install(agent: &Agent, bots: Box<dyn Bots>, probe: Option<SessionProbe>) 
     add(method::SESSION, Access::Read, Sim::session_method);
     add(method::GIVE, Access::Act, Sim::give);
     add(method::SPAWN, Access::Act, Sim::spawn);
+    add(method::AUDIO_PLAY, Access::Act, Sim::audio_play);
+    add(method::OBJECT_ANIMATE, Access::Act, Sim::object_animate);
+    add(method::RECORDING_PLAY, Access::Act, Sim::recording_play);
     add(method::OBJECTS, Access::Read, Sim::objects_method);
     add(method::EVENTS, Access::Read, Sim::events_method);
+    add(method::PLAYER_MARK, Access::Act, Sim::player_mark);
+    add(method::PLAYER_RECALL, Access::Act, Sim::player_recall);
+    pause::install(agent, agent_proto::host_pause::hub());
+    quit::install(agent, agent_proto::host_quit::hub());
+    shot::install(agent, agent_proto::host_shot::hub());
+    window::install(agent, agent_proto::host_window::hub());
     h
 }
 
@@ -402,15 +424,26 @@ impl Sim {
 
     fn state_set(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
         let p: SetParams = params(v)?;
+        self.set_state(p, ctx, Map::new())
+    }
+
+    /// `sim.state.set` with `p`; `extra`'s fields join the answer.
+    fn set_state(&mut self, p: SetParams, ctx: &mut GameCtx<'_>, extra: Map<String, Value>) -> R {
         state::validate(&p)?;
         let session = self.host_write(ctx)?;
         let index = self.target(&p.player)?;
         let facing = p.facing_vector().map_err(invalid)?;
+        let with_extra = move |mut v: Value| {
+            if let Some(o) = v.as_object_mut() {
+                o.extend(extra.clone());
+            }
+            v
+        };
         if p.pos.is_none() && facing.is_none() {
             let wrote = ctx.with_guest(|m| state::apply(m, index, &p))?;
-            return Ok(
+            return Ok(with_extra(
                 json!({ "player": format!("player.{index}"), "wrote": wrote, "session": session }),
-            );
+            ));
         }
         // A teleport: the game's own, at the next tick (calls).
         let q = self.calls()?;
@@ -440,16 +473,105 @@ impl Sim {
             Box::new(move |_: &mut GameCtx<'_>| {
                 let out = ticket.outcome()?;
                 Some(out.map(|t| {
-                    json!({
+                    with_extra(json!({
                         "player": format!("player.{index}"),
                         "wrote": wrote,
                         "teleport": t,
                         "session": session,
-                    })
+                    }))
                 }))
             }),
         );
         Ok(Value::Null)
+    }
+
+    /// The player a mark method means: `who`, else the player on local
+    /// user 0 (`world.query`'s `local_user`).
+    fn mark_player(who: Option<&str>, objects: &[agent_proto::Object]) -> Result<String, RpcError> {
+        if let Some(w) = who {
+            return Ok(w.to_owned());
+        }
+        objects
+            .iter()
+            .find(|o| o.kind == Kind::Player && o.local_user == Some(0))
+            .map(|o| o.id.clone())
+            .ok_or_else(|| RpcError::new(code::GONE, "no local player (give player)"))
+    }
+
+    /// `player.mark {slot?, player?}`: the player's position and aim now,
+    /// kept under the slot (replacing what it held).
+    fn player_mark(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
+        let p: MarkParams = params(v)?;
+        let slot = p.slot_name().map_err(invalid)?;
+        if !self.marks.contains_key(&slot) && self.marks.len() >= wire::MAX_MARKS {
+            return Err(invalid(format!(
+                "{} marks already: reuse a slot ({})",
+                wire::MAX_MARKS,
+                self.marks.keys().cloned().collect::<Vec<_>>().join(", ")
+            )));
+        }
+        let objects = ctx
+            .reader
+            .objects()
+            .map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
+        let who = Self::mark_player(p.player.as_deref(), &objects)?;
+        // A simulated player's sim.<n> is the game's player.<i>.
+        let id = format!("player.{}", self.target(&who)?);
+        let o = objects
+            .iter()
+            .find(|o| o.kind == Kind::Player && o.id == id)
+            .ok_or_else(|| RpcError::new(code::GONE, format!("no {who} in the game")))?;
+        let pos = o.pos.ok_or_else(|| {
+            RpcError::new(code::GONE, format!("{who} has no position (between lives?)"))
+        })?;
+        let mark = Mark {
+            slot: slot.clone(),
+            player: id,
+            pos,
+            forward: o.forward,
+            yaw: o.yaw,
+            pitch: o.pitch,
+            map: ctx.at.map.clone(),
+        };
+        self.marks.insert(slot, mark.clone());
+        let mut v = serde_json::to_value(&mark).expect("serialises");
+        v["slots"] = json!(self.marks.keys().collect::<Vec<_>>());
+        Ok(v)
+    }
+
+    /// `player.recall {slot?, player?}`: the slot's mark put back through
+    /// `sim.state.set`'s teleport, answered after the next tick.
+    fn player_recall(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
+        let p: MarkParams = params(v)?;
+        let slot = p.slot_name().map_err(invalid)?;
+        let mark = self.marks.get(&slot).cloned().ok_or_else(|| {
+            RpcError::new(
+                code::GONE,
+                format!("no mark {slot:?} (player.mark makes one)"),
+            )
+        })?;
+        if let (Some(at), Some(here)) = (&mark.map, &ctx.at.map)
+            && !at.eq_ignore_ascii_case(here)
+        {
+            return Err(RpcError::new(
+                code::INVALID_REQUEST,
+                format!("mark {slot:?} is on {at}; this is {here}"),
+            ));
+        }
+        let who = match p.player.as_deref() {
+            Some(w) => w.to_owned(),
+            None => {
+                let objects = ctx
+                    .reader
+                    .objects()
+                    .map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
+                Self::mark_player(None, &objects).unwrap_or_else(|_| mark.player.clone())
+            }
+        };
+        let mut extra = Map::new();
+        extra.insert("slot".into(), json!(slot));
+        extra.insert("mark".into(), serde_json::to_value(&mark).expect("serialises"));
+        self.set_state(mark.recall(who), ctx, extra)
     }
 
     /// The calls queue, or why there is none.
@@ -542,6 +664,112 @@ impl Sim {
                         "held": held.as_deref() == Some(object.as_str()),
                         "session": session,
                     }))
+                }))
+            }),
+        );
+        Ok(Value::Null)
+    }
+
+    /// `audio.play`: queue the game's own sound start for a sound tag at
+    /// a player's unit. Presentation only, so a co-op session may ask.
+    fn audio_play(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
+        let p: wire::PlayParams = params(v)?;
+        let index = self.target(p.player.as_deref().unwrap_or("player.0"))?;
+        let q = self.calls()?;
+        let tag = self.find_tag(&p.sound, &["snd!"])?;
+        if tag.group != "snd!" {
+            return Err(invalid(format!(
+                "{}: a {} tag, not a sound (snd!)",
+                p.sound, tag.group
+            )));
+        }
+        let unit = ctx.with_guest(|m| state::unit_handle(m, index))?;
+        let ticket = calls::submit(
+            &q,
+            Call::Sound {
+                unit,
+                sound: tag.datum,
+            },
+        )
+        .map_err(unavailable)?;
+        ctx.defer(
+            CALL_TICKS,
+            Box::new(move |_ctx: &mut GameCtx<'_>| {
+                let out = ticket.outcome()?;
+                Some(out.map(|made| {
+                    json!({
+                        "player": format!("player.{index}"),
+                        "sound": tag.json(),
+                        "instance": made["instance"],
+                    })
+                }))
+            }),
+        );
+        Ok(Value::Null)
+    }
+
+    /// `world.object.animate`: queue the start of a named animation of an
+    /// object's own graph. Host only: the object's pose is simulation
+    /// state.
+    fn object_animate(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
+        let p: wire::AnimateParams = params(v)?;
+        let id = edits::object_id(&p.id)?;
+        let session = self.host_write(ctx)?;
+        let q = self.calls()?;
+        let name = self
+            .tags
+            .as_mut()
+            .and_then(|tags| tags.string_id(&p.animation))
+            .ok_or_else(|| {
+                invalid(format!("loaded map has no unique string ID for {:?}", p.animation))
+            })?;
+        let ticket = calls::submit(&q, Call::Animate { id, name }).map_err(unavailable)?;
+        let session = serde_json::to_value(session).expect("serialises");
+        ctx.defer(
+            CALL_TICKS,
+            Box::new(move |_: &mut GameCtx<'_>| {
+                let out = ticket.outcome()?;
+                Some(out.map(|mut made| {
+                    made["object"] = json!(id.to_string());
+                    made["session"] = session.clone();
+                    made
+                }))
+            }),
+        );
+        Ok(Value::Null)
+    }
+
+    /// `recording.play`: queue the engine's recording player for a named
+    /// recording on a player's unit. The unit moves as the recording's
+    /// control stream drives it, so a co-op session may not ask.
+    fn recording_play(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
+        let p: wire::RecordingPlayParams = params(v)?;
+        self.host_write(ctx)?;
+        let flags = recording::flags(p.mode.as_deref())?;
+        let index = self.target(p.player.as_deref().unwrap_or("player.0"))?;
+        let q = self.calls()?;
+        let (slot, name) = ctx.with_guest(|m| recording::find(m, &p.recording))?;
+        let unit = ctx.with_guest(|m| state::unit_handle(m, index))?;
+        let ticket = calls::submit(
+            &q,
+            Call::Recording {
+                unit,
+                index: slot,
+                flags,
+            },
+        )
+        .map_err(unavailable)?;
+        ctx.defer(
+            CALL_TICKS,
+            Box::new(move |_ctx: &mut GameCtx<'_>| {
+                let out = ticket.outcome()?;
+                Some(out.map(|started| {
+                    json!({
+                        "player": format!("player.{index}"),
+                        "recording": name,
+                        "index": slot,
+                        "unit": started["unit"],
+                    })
                 }))
             }),
         );

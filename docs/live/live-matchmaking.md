@@ -218,11 +218,9 @@ per-title storage facility 4 (envelope and delivery:
 [live-motd.md](live-motd.md) §2 and §5).
 What matters for matchmaking:
 
-- The tag `matchmaking_hopper_descriptions` defines the universe of
-  playlists; the file's 16 hopper entries (0x614-byte descriptors) each
-  reference up to 100 records in it by id and supply live-tunable
-  parameters (0x15cb8-byte blocks). Unknown record ids mark the slot as
-  error, so **the server may only advertise playlists the tag knows**.
+- Descriptor titles and descriptions come from the file. Rotation entries
+  reference multiplayer map IDs in the loaded globals tag. Retail marks a
+  descriptor in error if an entry cannot resolve (§6.5).
 - The playlist UI (`0x00065530`) iterates the descriptors filtering types
   {2, 4, 5}; Quickmatch's start (`0x00231066`, the profile's last
   hopper) and the playlist screen's press (`0x002b2149` → `0x002b2181`,
@@ -369,7 +367,21 @@ one machine, not production.
 The server itself is easy by design: it needs only its HTTP(S) port, since
 game traffic never relays through it. The assumptions for phase 1:
 
-- **Same LAN:** works today, unchanged (System Link recipe).
+- **Same LAN:** works with no forwarded port. Two consoles behind one
+  NAT share a public address, and most home routers do not loop traffic
+  for their own public address back inside (no hairpin NAT), so the
+  public endpoint is unreachable from the host's own network. A session
+  read by a signed-in console whose public address (as the server sees
+  it, `PublicUrl::client_ip`) is the host's endpoint address carries
+  `lan`: the LAN address and port from the host's XNADDR
+  (`Session::lan_for`, [live-api.md](live-api.md), "Network
+  addresses"). The HLE writes the LAN address into the result XNADDR's
+  `ina` and the public one into `inaOnline`
+  (`crates/live/live-hle/src/sessions.rs` `encode_result`). XNet probes
+  `ina` first and `inaOnline` second, and sends game traffic to the one
+  that answered the QoS lookup (`crates/live/live-hle/src/network.rs`
+  `endpoints`, `reach`). A matchmade join's readiness check uses the
+  same order (`Session::reach_order`, `qos::ready_at`).
 - **Across the internet, phase 1 (direct):** the host must be reachable on
   UDP base..base+6 (3074–3080 by default); that means a forwarded port or
   a routable address. Joiners need only outbound UDP to the host and
@@ -382,11 +394,17 @@ game traffic never relays through it. The assumptions for phase 1:
   as a fallback — the source address the server observed on the host's
   HTTP requests (right IP for non-symmetric NATs; the port must still be
   declared). `SessionCreated.endpoint.source` records which.
-- **Later phases:** server-coordinated UDP hole-punch (the stream
-  WebSocket already reaches both sides to coordinate a simultaneous
-  open), or an opt-in relay. Live.md's open NAT question stands; nothing
-  in the event design depends on which is chosen, because the endpoint is
-  data in the session record.
+- **Host without a forwarded port, joiner on another network:** not
+  reachable. Both direct probes fail, and the browser shows no game.
+  The planned fallback is the session relay
+  (`GET /v1/sessions/{id}/relay`, [live-api.md](live-api.md), "Co-op
+  relay"), carrying the title's UDP channels when direct QoS fails. It
+  is not built: the relay admits only the two members of a co-op or
+  Forge session, and a listed host does not hold a relay socket.
+  Server-coordinated UDP hole-punching (the stream WebSocket reaches
+  both sides) is the other option. Live.md's open NAT question stands;
+  nothing in the event design depends on which is chosen, because the
+  endpoint is data in the session record.
 
 `XOnlineGetNatType` keeps returning the retail unknown value (0); no NAT
 probing is claimed.
@@ -593,6 +611,22 @@ variant (`0x00212f40`, 28 of them), then clear settings 12..14
 (`0x00193010`). `variant.rs` ports the stock record and the clean-up
 limits (`0x0019d650`) a variant is held to.
 
+Our default entries write the same records as scripts. Each of the ten
+built-in matchmaking variants is a `uses` script of its type
+(`rules::builtin::MATCHMAKING`): the settings block holds the changes and
+the three settings the defaults writer clears (`setting_twelve`,
+`setting_thirteen`, `join_in_progress`). `defaults::variants` builds the
+record of each with `variants::portable::record_for`, so every default
+entry is mode 2 and names its script by hash. Live and the game both find
+the script by that prefix among their compiled-in scripts. A hopper takes
+scripted variants only ([live-admin.md](live-admin.md), "`PUT /v1/titles/{title}/hopper`").
+
+With a profile signed in to local Live at the Xbox Live menu, run
+`python3 scripts/repro-mm-hopper.py` against the default lineup. It chooses
+Clanker Doubles, checks descriptor 10 and phantom membership in
+`live.matchmaking.trace`, and waits for gameplay. Pass `--socket PATH` to
+select the running game.
+
 ### 6.6 The game's own defaults
 
 With no file, `0x001940d0` builds seven hoppers (`0x00193c70`): free for
@@ -618,57 +652,69 @@ is separate and goes to stats; an entry's "record id" is a map id. So
 
 ### 6.8 The default set
 
-`HopperFile::default_set()` builds a complete file from nothing: eleven
-playlists in hoppers 0..10, playlist ids 1..11 (eight human playlists, then
-three clanker ones), status 0, the game's skill
-ceiling and wait/timeout values, the game's start-wait table, maps from
-the Halo 2 disc, and variants from the stock records.
+`HopperFile::default_set()` builds a complete file from nothing: sixteen
+playlists in hoppers 0..15, playlist ids 1..16 (eight human playlists, then
+eight clanker ones), status 0, the game's skill ceiling and wait/timeout
+values, the game's start-wait table, maps from the Halo 2 disc and
+Multiplayer Map Pack, and variants that are the records of scripts (6.5,
+6.6). Clanker Big Team Battle combines Slayer and the big-map objective
+variants in one playlist rather than having a separate Big Team Objective.
 
-| # | Title | Type | Size | Entries |
-|---|---|---|---|---|
-| 0 | Rumble Pit | 2 | 4..8 players, alone | Rumble Slayer, Oddball, King of the Hill |
-| 1 | Team Slayer | 4 | 2 x 3..4, parties 1..4 (3..4 kept as a team) | Team Slayer |
-| 2 | Team Skirmish | 4 | 2 x 2, parties 1..2 (2 kept as a team) | Team Slayer, Teamball |
-| 3 | Team Snipers | 4 | 2 x 3..4, parties 1..4 | Team Snipers |
-| 4 | Big Team Battle | 4 | 2 x 5..8, parties 1..5 | Team Slayer, Classic CTF, Assault, Territories |
-| 5 | Team Objective | 4 | 2 x 3..4, parties 1..4 (3..4 kept as a team) | Classic CTF, Assault, Territories, Team King, Teamball |
-| 6 | Free for All | 1 | 2..8, parties welcome | Rumble Slayer, Oddball, King of the Hill |
-| 7 | Unranked Teams | 3 | 2 x 2..4, uneven allowed | Team Slayer, Classic CTF, Team King, Teamball |
-| 8 | Clanker Slayer | 1 | 2..8, the rest bots | Rumble Slayer |
-| 9 | Clanker Teams | 3 | 2 x 1..4, uneven allowed, the rest bots | Team Slayer |
-| 10 | Clanker Doubles | 3 | 2 x 1..2, uneven allowed, the rest bots | Team Slayer |
+| # | Title | Kind | Type | Size | Entries |
+|---|---|---|---|---|---|
+| 0 | Rumble Pit | Human, ranked | 2 | 4..8 players, alone | Rumble Slayer, Oddball, King of the Hill |
+| 1 | Team Slayer | Human, ranked | 4 | 2 x 3..4, parties 1..4 (3..4 kept as a team) | Team Slayer |
+| 2 | Team Skirmish | Human, ranked | 4 | 2 x 2, parties 1..2 (2 kept as a team) | Team Slayer, Teamball |
+| 3 | Team Snipers | Human, ranked | 4 | 2 x 3..4, parties 1..4 | Team Snipers |
+| 4 | Big Team Battle | Human, ranked | 4 | 2 x 5..8, parties 1..5 | Team Slayer, Classic CTF, Assault, Territories |
+| 5 | Team Objective | Human, ranked | 4 | 2 x 3..4, parties 1..4 (3..4 kept as a team) | Classic CTF, Assault, Territories, Team King, Teamball |
+| 6 | Free for All | Human, unranked | 1 | 2..8, parties welcome | Rumble Slayer, Oddball, King of the Hill |
+| 7 | Unranked Teams | Human, unranked | 3 | 2 x 2..4, uneven allowed | Team Slayer, Classic CTF, Team King, Teamball |
+| 8 | Clanker Rumble | Clanker, ranked | 1 | 2..8, the rest bots | Rumble Slayer, Oddball, King of the Hill |
+| 9 | Clanker Slayer | Clanker, ranked | 3 | 2 x 1..4, uneven allowed, the rest bots | Team Slayer |
+| 10 | Clanker Doubles | Clanker, ranked | 3 | 2 x 1..2, uneven allowed, the rest bots | Team Slayer, Teamball |
+| 11 | Clanker Snipers | Clanker, ranked | 3 | 2 x 1..4, uneven allowed, the rest bots | Team Snipers |
+| 12 | Clanker BTB | Clanker, ranked | 3 | 2 x 1..8, uneven allowed, the rest bots | Team Slayer, Classic CTF, Assault, Territories |
+| 13 | BTB Heavies | Clanker, ranked | 3 | 2 x 1..8, uneven allowed, the rest bots | Team Heavies |
+| 14 | Solo Training | Clanker, unranked | 1 | 2..8, the rest bots | Rumble Slayer, Oddball, King of the Hill |
+| 15 | Team Training | Clanker, unranked | 3 | 2 x 1..4, uneven allowed, the rest bots | Team Slayer, Classic CTF, Team King, Teamball |
 
-Hoppers 8..10 are **clanker hoppers** (Clankermatch, docs/game/bots.md
-§8): one human or a party, and bots the host runs in every other seat.
-Titles fit the descriptor's 16-byte title slot (15 bytes and a NUL), so
-"Clanker Doubles" stands for 2 x 2. They are unranked types because the
-ranked types' rules are for filling a game with people (ranked teams need
-two a team and bound parties; ranked free for all is solo); a lone human
-with bots needs a team of one and uneven teams while the bots join. The
-server still ranks a Clankermatch game from its record (below). The mark
-is not a game field: it is `Playlist::clankers` in the server's source
-(`Clankers { ranks_as }`, bots.md §9.4 item 1), all three with their own
-standing (`ranks_as` unset).
+Hoppers 8..15 are **clanker hoppers** (Clankermatch, docs/game/bots.md
+§8): one human or a party, and bots the host runs in every other seat. Titles shared with human modes carry a Clanker prefix in the combined picker and
+fit the descriptor's 16-byte title slot (15 bytes and a NUL). Their
+descriptions say **Ranked Clanker** or **Unranked Clanker**. Every clanker
+descriptor is an unranked type because the ranked types' rules are for
+filling a game with people (ranked teams need two a team and bound parties;
+ranked free for all is solo); a lone human with bots needs a team of one
+and uneven teams while the bots join.
+
+Ranking is a separate server-side mark, not the descriptor type:
+`Playlist::clankers` holds `Clankers { ranked, ranks_as }` (bots.md §9.4
+item 1). Hoppers 8..13 have `ranked: true` and each keeps a standing of its
+own (`ranks_as` unset), separate from the human playlists. Training hoppers
+14 and 15 have `ranked: false` and never change a standing.
 
 `GET /v1/hoppers/clankers` (read like `/v1/hoppers/pins`) serves the marks
 as `ClankerHoppers` (`crates/live/live-proto/src/hopper/clankers.rs`):
-`{"hoppers": [{"hopper_id", "playlist_id", "players", "teams",
+`{"hoppers": [{"hopper_id", "playlist_id", "players", "teams", "ranked",
 "ranks_as"?}]}`, by descriptor index, for the hopper file served now. A
-published file keeps a mark only where it has the default's playlist id
-at that index; with no file, or one that does not parse, the list is
-empty. live-hle reads it for the Clankermatch row's filter, the search
-and the lobby fill. A game recorded with `kind: "clankermatch"` (and the
-hopper's `playlist_id`) is its own kind in the read model and the stats
-totals (`clankermatch`, apart from `matchmaking`), counts in its playlist
-and every career number, and ranks like a ranked matchmaking game
-(§8.4, the same arbitration round) in its clanker hopper's playlist, or
-`ranks_as`'s; the game's stats read (§8.3) answers a clanker hopper's
-playlist id with that standing.
+published file keeps a mark only where it has the default's playlist id at
+that index; with no file, or one that does not parse, the list is empty.
+live-hle reads it for the Clankermatch row's filter, the search and the
+lobby fill. A game recorded with `kind: "clankermatch"` (and the hopper's
+`playlist_id`) is its own kind in the read model and the stats totals
+(`clankermatch`, apart from `matchmaking`) and counts in its playlist and
+every career number. When its mark is ranked it also ranks like a ranked
+matchmaking game (§8.4, the same arbitration round) in its clanker hopper's
+playlist, or `ranks_as`'s; the game's stats read (§8.3) answers a ranked
+clanker hopper's playlist id with that standing and an unranked one's with
+no rows.
 
 Tests check it against the validator port, the per-entry checks
-(`HopperFile::problems`: retail map ids, weights, the variant clean-up),
-a byte-exact build → parse → build, and that every field reads back from
-its offset. The server serves it while no file is published (§6.9);
+(`HopperFile::problems`: base-disc and Map Pack map ids, weights, the
+variant clean-up), the base-disc compatibility rotation, a byte-exact
+build → parse → build, and that every field reads back from its offset. The
+server serves it while no file is published (§6.9);
 `h2 live hopper defaults --out FILE [--raw]` writes it.
 
 ### 6.9 Serving
@@ -682,9 +728,10 @@ a fresh server. Nothing is written to the log until someone publishes;
 
 ### 6.10 Building playlists, and custom maps in them
 
-The 16 slots are fixed; a slot of type 0 is no hopper, and the default
-set leaves indexes 11..15 so (playlists 12..16 in the builders). The web builder (`web/src/admin/HopperBuilder.tsx`)
-and the editor's playlist tool (`hopper_edit::model`) work the same way:
+The 16 slots are fixed; a slot of type 0 is no hopper. The default set fills
+every slot, so a new default playlist first clears the slot it replaces. The
+web builder (`web/src/admin/HopperBuilder.tsx`) and the editor's playlist
+tool (`hopper_edit::model`) work the same way:
 
 - **A new playlist** is made in an unused slot from a template
   (`defaults::templates`, the eight human playlists of §6.8): its whole
@@ -701,8 +748,8 @@ and the editor's playlist tool (`hopper_edit::model`) work the same way:
   shown at its playlist with a revert or discard action.
 - **An entry's game variant** is picked per entry: a built-in one
   (`defaults::builtin_variants`, keyed; the server writes its 0x130 bytes)
-  or one already in the file (its slot is copied with `from`/
-  `from_hopper`). The map is a Halo 2 disc map or a Multiplayer Map Pack
+  or one already in the file that runs a rules script (its slot is copied
+  with `from`/`from_hopper`). A variant with no script is not offered. The map is a Halo 2 disc map or a Multiplayer Map Pack
   map from the catalog. The builder labels Map Pack maps and requires at
   least one disc map in the rotation.
 - **Custom maps** are allowed per playlist by pins (`HopperPinsSet`,
@@ -992,16 +1039,17 @@ filter, not a migration. Career totals count them as well; `kind:
 "clankermatch"` keeps those games apart in the games log.
 
 **Clanker playlists.** The server publishes clanker playlists as their
-own hoppers (bots.md §8.3), each with a playlist id of its own. The
-mark is in the server's hopper source, not in the game's descriptor:
-`clankers: { ranks_as: Option<u32> }` (bots.md §9.4). `ranks_as` is
-the playlist id of the human hopper whose standing it shares; that
-hopper is its *rank playlist*. A clankermatch game is ranked under the
-rank playlist, and `GET /v1/rank-stats` answers the clanker playlist's
-id with the rank playlist's standing, so the lobby shows one rank for
-both (rule 1). With `ranks_as: None` the clanker hopper is its own rank
-playlist. (An earlier draft shared the descriptor id `+0x08` instead;
-two descriptors with one id is untested against the game's validator.)
+own hoppers (bots.md §8.3), each with a playlist id of its own. The mark is
+in the server's hopper source, not in the game's descriptor: `clankers:
+{ ranked: bool, ranks_as: Option<u32> }` (bots.md §9.4). Only a mark with
+`ranked: true` ranks games or answers rank-stat reads. `ranks_as` is the
+playlist id of the human hopper whose standing it shares; that hopper is its
+*rank playlist*. A clankermatch game is ranked under the rank playlist, and
+`GET /v1/rank-stats` answers the clanker playlist's id with the rank
+playlist's standing, so the lobby shows one rank for both (rule 1). With
+`ranks_as: None` the clanker hopper is its own rank playlist. (An earlier
+draft shared the descriptor id `+0x08` instead; two descriptors with one id
+is untested against the game's validator.)
 
 **Matched to yours (rule 2).** The roster picks bots for the human's
 standing in the rank playlist:
@@ -1055,11 +1103,6 @@ that is not rostered, so `rank_game` sees only accepted bots.
    carry `bot: true` for a bot, with the bot's gamertag; a bot's xuid
    or gamertag finds its pages.
 
-**Still to build, once the bots lane has them:** `kind:
-"clankermatch"` (not yet in `GAME_KINDS`) ranked under its rank
-playlist, and clanker playlist ids answered on `GET /v1/rank-stats`
-with the `ranks_as` standing (the mark is not in the hopper source yet).
-
 #### Arbitration (built)
 
 A round is linked to a server game by its session, so this does not
@@ -1079,7 +1122,20 @@ lowercase hex digits.
    console:
    `POST /v1/arbitration/{session}/{round}/register` `{duration, flags}`,
    `.../extend` `{duration}` and `.../report` `{flags, procedures}` (the
-   procedure ids only, until their data is decoded). The task reports 0
+   procedure ids only, until their data is decoded).
+   - The round's first 8 bytes are the target session's key id (target
+     `+0x1c`, read by `0x72170` → `0x73bc0` → `0x924e0`). A matchmaking
+     host makes that key itself (`XNetCreateKey`) and registers it beside
+     the Live session it advertises, so the id is not a Live session.
+     The HLE posts a round that names one of this console's registered
+     keys under the Live session the console plays in
+     (`State::game_session`, the id the game record carries) and logs
+     `live: arbitration: round <id> names the title's network key <key>;
+     registering it under Live session <id>`. Any other id is posted as
+     the game named it (`arbitration::live_session`). Extend and Report
+     go to the Live session their round was registered under
+     (`Arbiter::posted`): the host deletes the lobby's advertisement once
+     the match session takes over, before the game ends. The task reports 0
    until the server answers. It then succeeds, or completes with the
    failure's status as the Live worker maps it (an unreachable server is
    `CANNOT_ACCESS_SERVICE`). With no server (System Link, offline), the
@@ -1140,7 +1196,9 @@ ranked matchmaking game on two consoles. Each console logs
 `live arbitration: session <id> round <id> (advertising <id>): …` for
 Register, and again for Report.
 
-- On the host, `session` should equal `advertising`.
+- On the host, `session` is its own network key, not `advertising`; the
+  next line names the Live session the round is registered under, which
+  should equal `advertising`.
 - On the joining console, `session` should be the host's `advertising`
   id.
 - The game's record on the server should carry that same `session_id`,
@@ -1264,8 +1322,12 @@ Each write uses a fresh `sessions.write` token.
 
 ### Map Pack rotations
 
-The playlist catalog reads map IDs from the owner's Map Pack. The same
-hopper and playlist ID serve every player. The server offers older
+The playlist catalog reads map IDs from the owner's Map Pack. The default
+rotations include all nine in suitable human and clanker playlists:
+Containment (1000), Warlock (1010), Sanctuary (1020), Turf (1030), Backwash
+(1040), Elongation (1050), Relic (1060), Terminal (1070) and Gemini (1080).
+Every such playlist keeps base-disc entries too. The same hopper and
+playlist ID serve every player. The server offers older
 clients a disc-only file. The HLE requests the full rotation, detects
 hoppers with add-on entries and supplies a disc-only download to a
 console without the pack. Solo searches on those hoppers enter the QoS
@@ -1283,6 +1345,7 @@ cohort. Mixed cohorts can still match on eligible peers
 
 `live_proto::hopper::retain_block_maps` compacts full entry records so
 their weights, variants and opaque fields stay intact. The native hook
+checks each map ID against the active menu’s multiplayer level list when available and
 filters the result of the hopper block read before the picker consumes
 the count and weights. Capability uses the installed content, as
 `h2 import-mappack` lays it out, and covers every local seat on that

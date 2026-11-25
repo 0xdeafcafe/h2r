@@ -1,0 +1,30 @@
+screen: kit.dialog
+kind: dialog
+layout: settings
+backing: over
+opener: main-menu
+states:
+  focus-0:
+    focus: 0
+  focus-1:
+    focus: 1
+settings:
+  host: menu
+  icon: question
+  name: "Name"
+  about: "What this window is for."
+widgets:
+  title:
+    component: title
+    text: "CHOICES"
+rows:
+  row.0:
+    kind: value
+    text: "Count"
+    help: "How many join the game."
+    setting: kit.example_count
+  row.1:
+    kind: value
+    text: "Difficulty"
+    help: "How well they play."
+    setting: kit.example_level

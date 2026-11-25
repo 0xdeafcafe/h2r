@@ -144,6 +144,10 @@ pub(crate) enum Reply {
         /// Tokens for the counted manifest GET (the download count).
         reader: Option<crate::maps::Reader>,
     },
+    /// A session's co-op relay URL (ws or wss) and the bearer token for
+    /// its upgrade ([`Work::CoopRelay`]); why not, when this console
+    /// cannot serve one.
+    CoopRelay(Result<(String, String), u32>),
 }
 #[derive(Default)]
 struct Completion {
@@ -277,7 +281,20 @@ pub(crate) enum MatchRequest {
 pub(crate) enum SocialRequest {
     Refresh,
     Send { to: Vec<Xuid>, session_id: String },
+    /// A text message to friends, as the generic message send makes it.
+    Text { to: Vec<Xuid>, text: String },
+    /// The player deletes a text message from their mailbox.
+    TextDelete(live_proto::mailbox::TextDeleted),
     Answer(live_proto::mailbox::Answered),
+    /// The signed-in player answers a pending friend request: accepted, or
+    /// declined (also for XDK's "never", which the server has no event for).
+    FriendAnswer { from: Xuid, accept: bool },
+    /// The signed-in player removes a friend, or withdraws a pending request.
+    FriendRemove { friend: Xuid },
+    /// A friend request from the signed-in player to `to`.
+    FriendRequest { to: Xuid },
+    /// The same, to the account with this gamertag (resolved on the server).
+    FriendRequestByName(String),
     Join { from: Xuid, session_id: String },
     JoinLink(String),
 }
@@ -291,6 +308,7 @@ pub(crate) struct ReportRequest {
 pub(crate) struct SocialSnapshot {
     pub friends: live_proto::Friends,
     pub invites: Vec<live_proto::mailbox::Invite>,
+    pub messages: Vec<live_proto::mailbox::TextMessage>,
     pub sessions: Vec<live_proto::session::Session>,
 }
 enum Work {
@@ -337,6 +355,10 @@ enum Work {
     RulesIr(String),
     /// `GET /v1/variants?author=<xuid>`, the first signed-in account's.
     GameVariants,
+    /// The co-op relay of a session (docs/live/live-api.md, "Co-op relay"):
+    /// the WebSocket URL and a `sessions.relay` token for its upgrade,
+    /// both made locally; nothing is sent to the server.
+    CoopRelay(String),
     Wake,
 }
 /// Called on the worker with a command's result, once it has one.
@@ -627,6 +649,12 @@ impl Service {
         self.submit_then(s, Work::ContentApi, Some(then))
             .map(|_| ())
     }
+    /// The co-op relay of `session`: its WebSocket URL and a
+    /// `sessions.relay` token for its upgrade, both minted on the worker
+    /// (nothing is sent to the server); the reply carries them.
+    pub fn coop_relay(&self, s: &Session, session: String) -> Result<Pending, u32> {
+        self.submit(s, Work::CoopRelay(session))
+    }
     pub fn cancel(&self, s: &Session) {
         s.cancel();
         let _ = self.submit(s, Work::Wake);
@@ -787,6 +815,18 @@ fn refused(result: u32) -> bool {
 }
 fn now() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()
+}
+
+/// The co-op relay's WebSocket URL of `session`: the API base with its
+/// scheme made a WebSocket one (`https` → `wss`, `http` → `ws`) and the
+/// relay path on it. None for an empty session or an API base that is
+/// neither scheme.
+fn relay_url(api: &str, session: &str) -> Option<String> {
+    let ws = api
+        .strip_prefix("https")
+        .map(|rest| format!("wss{rest}"))
+        .or_else(|| api.strip_prefix("http").map(|rest| format!("ws{rest}")))?;
+    (!session.is_empty()).then(|| format!("{ws}/sessions/{session}/relay"))
 }
 /// What the persistent connection task reports when a request made while
 /// signed in fails: a ban as the account-management result the game
@@ -1355,12 +1395,14 @@ impl Worker {
             return Err(Error::Protocol);
         }
         let kid = crate::sessions::wire_id(session_id).ok_or(Error::Protocol)?;
-        let address = std::net::SocketAddrV4::new(row.endpoint.addr, row.endpoint.port);
         let retry = Step::Retry(Vec::new());
         if !self.map_ready(&row, true) {
             return Ok(retry);
         }
-        let ready = crate::qos::ready_to_join(address, kid, self.replication.get());
+        // The host's LAN address first when the read gave one (this console
+        // is behind the host's NAT), then its public endpoint.
+        let (_, ready) =
+            crate::qos::ready_at(&row.reach_order(), kid, self.replication.get());
         Ok(Step::after_qos(ready, retry, || Outcome::Join {
             rows: vec![row],
             frames_from_host,
@@ -1715,10 +1757,39 @@ impl Worker {
         kind: &str,
         data: serde_json::Value,
     ) -> Result<(), Error> {
+        self.signed_event(user, &live_proto::mailbox::stream(recipient), kind, data)
+    }
+    fn friend_requested(&self, user: &Identity, to: Xuid) -> Result<(), Error> {
+        self.account_event(
+            user,
+            types::FRIEND_REQUESTED,
+            serde_json::to_value(live_proto::FriendEventData {
+                from: Xuid(user.xuid),
+                to,
+            })
+            .map_err(|_| Error::Protocol)?,
+        )
+    }
+    /// A friend event on the player's own account stream.
+    fn account_event(
+        &self,
+        user: &Identity,
+        kind: &str,
+        data: serde_json::Value,
+    ) -> Result<(), Error> {
+        self.signed_event(user, &streams::account(Xuid(user.xuid)), kind, data)
+    }
+    fn signed_event(
+        &self,
+        user: &Identity,
+        stream: &str,
+        kind: &str,
+        data: serde_json::Value,
+    ) -> Result<(), Error> {
         let body = EventBody::new(
             &user.key,
             &self.author(user),
-            &live_proto::mailbox::stream(recipient),
+            stream,
             kind,
             data,
             time::OffsetDateTime::now_utc(),
@@ -1734,8 +1805,18 @@ impl Worker {
         )?;
         Ok(())
     }
-    fn mailbox(&self, user: &Identity) -> Result<Vec<live_proto::mailbox::Invite>, Error> {
-        let page: live_proto::Page<live_proto::mailbox::Invite> = self.team_json(
+    /// The player's pending invitations and text messages.
+    fn mailbox(
+        &self,
+        user: &Identity,
+    ) -> Result<
+        (
+            Vec<live_proto::mailbox::Invite>,
+            Vec<live_proto::mailbox::TextMessage>,
+        ),
+        Error,
+    > {
+        let page: live_proto::mailbox::Mailbox = self.team_json(
             user,
             &format!("/accounts/by-xuid/{}/mailbox", Xuid(user.xuid)),
         )?;
@@ -1749,7 +1830,17 @@ impl Worker {
         {
             return Err(Error::Protocol);
         }
-        Ok(page.items)
+        if page.messages.len() > live_proto::mailbox::TEXT_BOX_MAX
+            || page.messages.iter().any(|v| {
+                v.to != Xuid(user.xuid)
+                    || v.gamertag.len() > 15
+                    || !v.gamertag.is_ascii()
+                    || !live_proto::mailbox::valid_text(&v.text)
+            })
+        {
+            return Err(Error::Protocol);
+        }
+        Ok((page.items, page.messages))
     }
     fn friends_for(&self, user: &Identity) -> Result<live_proto::Friends, Error> {
         self.team_json(
@@ -1765,7 +1856,7 @@ impl Worker {
         match request {
             SocialRequest::Refresh => {
                 let friends = self.friends_for(user)?;
-                let invites = self.mailbox(user)?;
+                let (invites, messages) = self.mailbox(user)?;
                 let sessions = self.matches_request(
                     user,
                     MatchRequest::Search {
@@ -1777,6 +1868,7 @@ impl Worker {
                 Ok(Reply::Social(SocialSnapshot {
                     friends,
                     invites,
+                    messages,
                     sessions,
                 }))
             }
@@ -1791,9 +1883,36 @@ impl Worker {
                 }
                 Ok(Reply::Done)
             }
+            SocialRequest::Text { to, text } => {
+                let text: String = text.chars().take(live_proto::mailbox::TEXT_MAX).collect();
+                for recipient in to {
+                    self.social_event(
+                        user,
+                        *recipient,
+                        mailbox::TEXT_SENT,
+                        json!({"from":Xuid(user.xuid),"text":text}),
+                    )
+                    // Only friends may message: say so as an unknown friend.
+                    .map_err(|e| match e {
+                        Error::Status(403) => Error::Status(404),
+                        e => e,
+                    })?;
+                }
+                Ok(Reply::Done)
+            }
+            SocialRequest::TextDelete(deleted) => {
+                self.social_event(
+                    user,
+                    Xuid(user.xuid),
+                    mailbox::TEXT_DELETED,
+                    serde_json::to_value(deleted).map_err(|_| Error::Protocol)?,
+                )?;
+                Ok(Reply::Done)
+            }
             SocialRequest::Answer(answer) => {
                 let invite = self
                     .mailbox(user)?
+                    .0
                     .into_iter()
                     .find(|v| v.id == answer.invite_id && v.session_id == answer.session_id)
                     .ok_or(Error::Status(404))?;
@@ -1808,6 +1927,55 @@ impl Worker {
                 } else {
                     Reply::Done
                 })
+            }
+            SocialRequest::FriendAnswer { from, accept } => {
+                self.account_event(
+                    user,
+                    if *accept {
+                        types::FRIEND_ACCEPTED
+                    } else {
+                        types::FRIEND_DECLINED
+                    },
+                    serde_json::to_value(live_proto::FriendEventData {
+                        from: *from,
+                        to: Xuid(user.xuid),
+                    })
+                    .map_err(|_| Error::Protocol)?,
+                )?;
+                Ok(Reply::Done)
+            }
+            SocialRequest::FriendRequest { to } => {
+                self.friend_requested(user, *to)?;
+                Ok(Reply::Done)
+            }
+            SocialRequest::FriendRequestByName(tag) => {
+                #[derive(serde::Deserialize)]
+                struct Found {
+                    xuid: Xuid,
+                }
+                let found: Found = self.team_json(
+                    user,
+                    &format!(
+                        "/accounts/{}",
+                        url::form_urlencoded::byte_serialize(tag.as_bytes())
+                            .collect::<String>()
+                            .replace('+', "%20")
+                    ),
+                )?;
+                self.friend_requested(user, found.xuid)?;
+                Ok(Reply::Done)
+            }
+            SocialRequest::FriendRemove { friend } => {
+                self.account_event(
+                    user,
+                    types::FRIEND_REMOVED,
+                    serde_json::to_value(live_proto::FriendRemovedData {
+                        by: Xuid(user.xuid),
+                        friend: *friend,
+                    })
+                    .map_err(|_| Error::Protocol)?,
+                )?;
+                Ok(Reply::Done)
             }
             SocialRequest::Join { from, session_id } => {
                 let friends = self.friends_for(user)?;
@@ -2319,6 +2487,28 @@ impl Worker {
                     reader: self.reader(),
                 })
             }
+            Work::CoopRelay(session) => {
+                self.active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                let user = self
+                    .active
+                    .as_ref()
+                    .and_then(|a| a.users.values().next())
+                    .ok_or(NO_USER)?;
+                let connection = self.connection.as_ref().ok_or(NO_SESSION)?;
+                let url = relay_url(&connection.api, &session)
+                    .ok_or(SERVICE_TEMPORARILY_UNAVAILABLE)?;
+                let token = issue_token(
+                    &user.key,
+                    &self.author(user),
+                    &connection.id,
+                    lxm::SESSIONS_RELAY,
+                    now(),
+                );
+                Ok(Reply::CoopRelay(Ok((url, token))))
+            }
             Work::Wake => Ok(Reply::Done),
         }
     }
@@ -2704,9 +2894,9 @@ mod tests {
 
         let (full, hoppers) = console_hopper_file(bytes.clone(), true).unwrap();
         assert_eq!(full, bytes);
-        assert_eq!(hoppers, 1);
+        assert_eq!(hoppers, 0xffff, "every default playlist has pack entries");
         let (disc, hoppers) = console_hopper_file(bytes, false).unwrap();
-        assert_eq!(hoppers, 1, "the client still sees which slot needs the queue");
+        assert_eq!(hoppers, 0xffff, "the client still sees which slots need the queue");
         let disc = HopperFile::parse(&disc).unwrap();
         assert_eq!(disc.entry_count(0).unwrap(), 1);
         assert_eq!(disc.slot(0, 0).unwrap(), file.slot(0, 1).unwrap());
@@ -2717,6 +2907,20 @@ mod tests {
         let query = json!({"hopper": 2, "party": 1, "has_map_pack": true});
         let retry = without_map_pack(&query).ok().unwrap();
         assert_eq!(serde_json::from_str::<serde_json::Value>(&retry).unwrap(), json!({"hopper": 2, "party": 1}));
+    }
+
+    #[test]
+    fn the_relay_url_makes_the_api_base_a_websocket_one() {
+        assert_eq!(
+            relay_url("https://live.example/v1", "0123456789abcdef").as_deref(),
+            Some("wss://live.example/v1/sessions/0123456789abcdef/relay")
+        );
+        assert_eq!(
+            relay_url("http://127.0.0.1:8074/v1", "0123456789abcdef").as_deref(),
+            Some("ws://127.0.0.1:8074/v1/sessions/0123456789abcdef/relay")
+        );
+        assert_eq!(relay_url("https://live.example/v1", ""), None);
+        assert_eq!(relay_url("ftp://live.example/v1", "0123456789abcdef"), None);
     }
 
     #[test]

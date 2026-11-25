@@ -43,6 +43,11 @@ pub struct Scenario {
     /// `round_time_left()` at tick 0, counted down one a tick to 0.
     #[serde(default)]
     pub round_time_left: i32,
+    /// Pairs of objects with nothing solid between them, `[from, to]`: what
+    /// `sees(from, to)` answers true once traced (the fake's sight test).
+    /// Any other pair is blocked.
+    #[serde(default)]
+    pub sight: Vec<[u32; 2]>,
     #[serde(default)]
     pub ticks: Vec<ScenarioTick>,
 }
@@ -63,6 +68,22 @@ pub struct ScenarioPlayer {
     /// `leave` naming it moves the player in or out of the zone.
     #[serde(default)]
     pub unit: Option<u32>,
+    /// What the player's biped is doing at the start: what `airborne`,
+    /// `crouching` and `primed` read until a `touchdown` lands it.
+    #[serde(default)]
+    pub body: ScenarioBody,
+}
+
+/// A biped's physics reads in a scenario.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScenarioBody {
+    #[serde(default)]
+    pub airborne: bool,
+    #[serde(default)]
+    pub crouching: bool,
+    #[serde(default)]
+    pub primed: bool,
 }
 
 /// One thing of the map: a labelled object, zone or starting location.
@@ -114,7 +135,7 @@ impl ScenarioLabel {
                 .iter()
                 .find(|d| d.text == self.label)
                 .map_or(Class::Object, |d| match d.kind {
-                    LabelKind::Object => Class::Object,
+                    LabelKind::Object | LabelKind::Path => Class::Object,
                     LabelKind::Zone => Class::Volume,
                     LabelKind::Spawn => Class::Spawn,
                 })
@@ -192,6 +213,20 @@ fn one() -> u32 {
 pub struct ScenarioTick {
     #[serde(default)]
     pub events: Vec<ScenarioEvent>,
+    /// Picks the players made in the pickers the script offered, reported
+    /// after the tick runs ([`crate::vm::Vm::choose`]), as the host reports
+    /// them from its own UI.
+    #[serde(default)]
+    pub picks: Vec<ScenarioPick>,
+}
+
+/// One player's pick: row `row` of picker `slot`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScenarioPick {
+    pub player: u8,
+    pub slot: u8,
+    pub row: u8,
 }
 
 /// One event the host reports within a tick.
@@ -258,6 +293,32 @@ pub enum ScenarioEvent {
         assist: Option<u8>,
         class: String,
     },
+    /// `object` took `amount` (a `fixed` raw value, 65536 is all of its
+    /// vitality) of damage, credited to `by`.
+    Damage {
+        object: u32,
+        #[serde(default)]
+        by: Option<u8>,
+        amount: i32,
+    },
+    /// `player`'s biped touched down, falling at `down` and rising at `up`
+    /// (`fixed` raw values, world units a second).
+    Touchdown {
+        player: u8,
+        down: i32,
+        up: i32,
+    },
+    /// A landing the host judged a superbounce off strip `spot` (`none`
+    /// when absent), launching at `speed` (a `fixed` raw value, world
+    /// units a second up).
+    Launch {
+        player: u8,
+        #[serde(default)]
+        spot: Option<u32>,
+        speed: i32,
+    },
+    /// `player`'s run of bounces with no ground between them ended.
+    Grounded(u8),
     RoundEnd,
 }
 
@@ -298,6 +359,10 @@ impl ScenarioEvent {
                 assist,
                 class,
             },
+            ScenarioEvent::Damage { object, by, amount } => Input::Damage { object, by, amount },
+            ScenarioEvent::Touchdown { player, down, up } => Input::Touchdown { player, down, up },
+            ScenarioEvent::Launch { player, spot, speed } => Input::Launch { player, spot, speed },
+            ScenarioEvent::Grounded(p) => Input::Grounded(p),
             ScenarioEvent::RoundEnd => Input::RoundEnd,
         }
     }
@@ -346,12 +411,17 @@ fn due_timers(vm: &Vm) -> Vec<String> {
 /// One tick of a run over the fake game, as every scenario runner steps
 /// it: the VM's tick begins and the round clock counts down, the queued
 /// calls are made, `init` and `round_start` fire on tick 0 when `start`,
-/// each event is applied to the game ([`FakeGame::apply`]) and its handler
-/// runs ([`FakeGame::after`] then removes a player who quit), and last the
-/// per-tick group runs.
+/// each event is applied to the game ([`FakeGame::apply`]) and, when the
+/// game took it, its handler runs ([`FakeGame::after`] then removes a
+/// player who quit; a spawn the engine holds, out of lives, runs
+/// nothing), and last the per-tick group runs.
 pub fn step(vm: &mut Vm, game: &mut FakeGame, tick: u32, start: bool, inputs: &[Input]) -> Stepped {
     vm.begin_tick(tick);
     game.begin_tick(tick);
+    // The host's boundary: a put the world refused is told to the VM first.
+    for (object, at) in std::mem::take(&mut game.refused_steps) {
+        vm.put_refused(object, at.map(|v| (f64::from(v) / 65536.0) as f32));
+    }
     vm.flush_queue(game);
     let mut out = Stepped::default();
     if tick == 0 && start {
@@ -361,9 +431,10 @@ pub fn step(vm: &mut Vm, game: &mut FakeGame, tick: u32, start: bool, inputs: &[
         }
     }
     for input in inputs {
-        game.apply(input);
-        let fired = vm.fire(game, input.clone());
-        out.fired.push((input.event().name(), fired));
+        if game.apply(input) {
+            let fired = vm.fire(game, input.clone());
+            out.fired.push((input.event().name(), fired));
+        }
         game.after(input);
     }
     if vm.ext().stopped.is_none() {
@@ -401,12 +472,68 @@ pub struct RunResult {
     /// The tick the script called `end_round`, if it did.
     pub ended_at: Option<u32>,
     pub script_error: Option<ScriptError>,
+    /// The picks the VM refused, with the tick each was reported at: a
+    /// picker the script had not offered, a row it does not hold or a
+    /// player outside the roster.
+    pub refused_picks: Vec<(u32, ScenarioPick)>,
 }
 
 impl RunResult {
     /// Every action made, in order.
     pub fn total_calls(&self) -> usize {
         self.ticks.iter().map(|t| t.calls.len()).sum()
+    }
+
+    /// How the run ended, in a sentence: a script error, the round ended
+    /// by the script, or still running.
+    pub fn outcome(&self) -> String {
+        match (self.script_error, self.ended_at) {
+            (Some(e), _) => format!(
+                "script error {:?} at tick {}, handler {}, op {}",
+                e.kind, e.tick, e.handler, e.pc
+            ),
+            (None, Some(t)) => format!("the script ended the round at tick {t}"),
+            (None, None) => "the round was still running".to_owned(),
+        }
+    }
+
+    /// The run as `h2 rules run` prints it, and Studio's `rules.run`
+    /// answers: each tick's calls (with `trace`, each event and call), the
+    /// totals, every player and team, and the outcome.
+    pub fn printout(&self, trace: bool) -> String {
+        use std::fmt::Write;
+        let mut s = String::new();
+        for t in &self.ticks {
+            let _ = writeln!(s, "tick {}: {} calls", t.tick, t.calls.len());
+            if trace {
+                for (event, fired) in &t.fired {
+                    let _ = writeln!(s, "  on {event}: {fired:?}");
+                }
+                for c in &t.calls {
+                    let args: Vec<String> = c.args.iter().map(|a| format!("{a:?}")).collect();
+                    let _ = writeln!(s, "  {}({})", c.entry, args.join(", "));
+                }
+            }
+        }
+        let _ = writeln!(s, "total: {} calls over {} ticks", self.total_calls(), self.ticks.len());
+        for (slot, p) in &self.game.players {
+            let _ = writeln!(
+                s,
+                "player {slot}: team {}, score {}, lives {}, {}",
+                p.team,
+                p.score,
+                p.lives,
+                if p.alive { "alive" } else { "dead" }
+            );
+        }
+        let mut teams = self.game.teams.clone();
+        teams.sort_unstable();
+        for t in teams {
+            let total: i32 = self.game.players.values().filter(|p| p.team == t).map(|p| p.score).sum();
+            let _ = writeln!(s, "team {t}: score {total}");
+        }
+        let _ = writeln!(s, "result: {}", self.outcome());
+        s
     }
 }
 
@@ -460,7 +587,10 @@ pub fn game_of(ir: &Ir, scenario: &Scenario) -> Result<FakeGame, RunError> {
         if let Some(unit) = p.unit {
             game.units.insert(unit, p.slot);
         }
+        let b = p.body;
+        game.set_body(p.slot, b.airborne, b.crouching, b.primed);
     }
+    game.clear_sight.extend(scenario.sight.iter().map(|&[a, b]| (a, b)));
     Ok(game)
 }
 
@@ -471,12 +601,13 @@ pub fn game_of(ir: &Ir, scenario: &Scenario) -> Result<FakeGame, RunError> {
 pub fn run(ir: Ir, scenario: &Scenario) -> Result<RunResult, RunError> {
     let options = scenario.options.unwrap_or_else(|| ir.default_options());
     let mut game = game_of(&ir, scenario)?;
-    game.carrier = ir.header.carrier;
+    game.carrier = ir.header.engine();
     let mut vm = Vm::new(ir, options, scenario.seed)?;
     let end_name = caps::entry(caps::id::END_ROUND, caps::API_VERSION).map(|e| e.name);
     let mut ticks = Vec::new();
     let mut ended_at = None;
     let mut made = 0usize;
+    let mut refused_picks = Vec::new();
     let count = scenario.ticks.len().max(1);
     for t in 0..count {
         let tick = t as u32;
@@ -486,6 +617,11 @@ pub fn run(ir: Ir, scenario: &Scenario) -> Result<RunResult, RunError> {
             .map(|st| st.events.iter().map(ScenarioEvent::input).collect())
             .unwrap_or_default();
         let stepped = step(&mut vm, &mut game, tick, true, &inputs);
+        for pick in scenario.ticks.get(t).map(|st| st.picks.as_slice()).unwrap_or_default() {
+            if !vm.choose(pick.player, pick.slot, pick.row) {
+                refused_picks.push((tick, *pick));
+            }
+        }
         if t + 1 == count {
             vm.flush_queue(&mut game);
         }
@@ -511,6 +647,7 @@ pub fn run(ir: Ir, scenario: &Scenario) -> Result<RunResult, RunError> {
         script_error: game.script_error,
         ended_at,
         game,
+        refused_picks,
     })
 }
 
@@ -520,7 +657,7 @@ mod tests {
 
     const SRC: &str = r#"
 rules "Count" 1
-carrier slayer
+type slayer
 
 on kill(victim, killer) {
     if killer == none or killer == victim { score(victim, -1) } else { score(killer, 1) }
@@ -539,6 +676,7 @@ on kill(victim, killer) {
             score: 0,
             lives: 0,
             unit: None,
+            body: ScenarioBody::default(),
         }
     }
 
@@ -606,12 +744,13 @@ on kill(victim, killer) {
         let s = Scenario {
             players: (0..2).map(|slot| seat(slot, slot)).collect(),
             ticks: vec![
-                ScenarioTick { events: vec![] },
+                ScenarioTick::default(),
                 ScenarioTick {
                     events: vec![ScenarioEvent::Kill {
                         victim: 1,
                         killer: Some(0),
                     }],
+                    ..ScenarioTick::default()
                 },
             ],
             ..Scenario::default()
@@ -626,7 +765,7 @@ on kill(victim, killer) {
 
     #[test]
     fn a_kill_counts_kills_deaths_and_alive() {
-        let src = "rules \"K\" 1\ncarrier slayer\nglobal var seen: int = 0\n\
+        let src = "rules \"K\" 1\ntype slayer\nglobal var seen: int = 0\n\
                    on kill(victim, killer) { if killer != none and not victim.alive { seen = killer.kills * 10 + victim.deaths } }\n";
         let s = Scenario {
             players: vec![seat(0, 0), seat(1, 1)],
@@ -635,6 +774,7 @@ on kill(victim, killer) {
                     victim: 1,
                     killer: Some(0),
                 }],
+                ..ScenarioTick::default()
             }],
             ..Scenario::default()
         };
@@ -650,7 +790,7 @@ on kill(victim, killer) {
 
     #[test]
     fn variant_fields_and_the_round_clock_read_the_scenario() {
-        let src = "rules \"V\" 1\ncarrier slayer\nglobal var limit: int = 0\nglobal var left: time = 0t\n\
+        let src = "rules \"V\" 1\ntype slayer\nglobal var limit: int = 0\nglobal var left: time = 0t\n\
                    on tick { limit = variant.score_limit; left = round_time_left() }\n";
         let s = Scenario {
             round_time_left: 10,
@@ -660,7 +800,7 @@ on kill(victim, killer) {
         let ir = crate::build(src).unwrap().0;
         let mut vm = Vm::new(ir.clone(), 0, 0).unwrap();
         let mut g = game_of(&ir, &s).unwrap();
-        g.carrier = ir.header.carrier;
+        g.carrier = ir.header.engine();
         for t in 0..4 {
             step(&mut vm, &mut g, t, true, &[]);
         }
@@ -677,7 +817,7 @@ on kill(victim, killer) {
 
     #[test]
     fn ticks_held_counts_a_zone_held_alone() {
-        let src = "rules \"Z\" 1\ncarrier slayer\nlabel zone: zone\nglobal var held: time = 0t\n\
+        let src = "rules \"Z\" 1\ntype slayer\nlabel zone: zone\nglobal var held: time = 0t\n\
                    on tick { held = ticks_held(zone, team 0) }\n";
         let mut s = Scenario {
             players: vec![seat(0, 0), seat(1, 1)],

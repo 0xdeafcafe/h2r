@@ -1,6 +1,6 @@
 //! Retail virtual keyboard bridge. The host queues text; only the guest thread
 //! inspects screens and calls the game's own edit/validation handlers.
-use film::tape::{Call, TEXT, Tap};
+use film::tape::{Call, Tap};
 use input::backend::keyboard::{KeyboardMouse, TextAction};
 use runtime::{CpuAbi, ExecCtx, Guest, GuestFault, Runtime, TransferAbi, guest::Permissions};
 use std::{collections::VecDeque, sync::Arc};
@@ -180,7 +180,6 @@ fn next_edit(
             Some(Edit::Insert(unit)) => 0x10000 | u32::from(unit),
         };
         tape.record(
-            TEXT,
             Call {
                 index: 0,
                 op: op.into(),

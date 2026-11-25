@@ -70,15 +70,16 @@ a second checkout can be served the first one's build.
 
 ### Dev profile (`Cargo.toml`)
 
-- `[profile.dev.package."*"] debug = false`. Dependencies had line
-  tables; now they carry no debug info. About 670 crates' rlibs shrink
-  and every link reads less. A panic inside a dependency still prints its
-  file and line (that comes from the panic location, not debug info); a
-  backtrace still names the dependency's functions but not their lines.
-  Workspace crates keep `line-tables-only`.
-- Cargo selects the platform default for split debug info. macOS keeps
-  debug info in object files (unpacked). Windows MSVC writes a PDB
-  (packed), the format supported by its linker.
+- `[profile.dev] debug = false`: no crate carries debug info in a dev
+  build, workspace crates included. Every rlib is smaller and every link
+  reads less. A panic still prints its file and line (that comes from the
+  panic location, not debug info); a backtrace names functions but not
+  their lines.
+- With line tables, macOS keeps debug info unpacked: each codegen unit's
+  object file stays in `deps` beside the rlib, and test executables got
+  `.dSYM` bundles. In the `main` target that was 6.9 GB of objects (4,208
+  of them `game`'s) and 5.4 GB of bundles, none of it shared through
+  kache. With no debug info there are neither.
 - `opt-level = 3` for `miniz_oxide`, `zlib-rs`, `flate2`, `fdeflate`,
   `png`, `zune-jpeg`, `ruzstd`, `crc32fast`, `adler2`, `simd-adler32`
   and `sha2`: small codec and checksum crates that tests push whole
@@ -128,8 +129,8 @@ named `it`. 96 executables become 4.
   (`scripts/it_guard.rs`): it fails, with the line to add, when a file
   under `tests/` is neither a module of `it.rs` nor a `[[test]]` in
   `Cargo.toml`.
-- A test's name gains its file's name: `cargo test -p d3d --test interp`
-  is now `cargo test -p d3d --test it interp::`. The filter is a
+- A test's name gains its file's name: `cargo test -p d3d --test it
+  scene_camera::` runs `tests/scene_camera.rs`. The filter is a
   substring, so a name that ends another name needs a skip:
   `--test it -- disc:: --skip _disc::`. The commands in the docs and
   file headers were rewritten.
@@ -158,11 +159,29 @@ its own process.
 `kernel`, `runtime`, `emit` and `xapi` have process-wide state that
 tests in different files set: `hooks`'s installed hosts and draw
 counters, `boot::fallback::set_recovery`, `kernel/tests/files.rs`'s
-global allocator, `emit/tests/pgo.rs` and `boot/tests/headless_interp.rs`
-setting environment variables, the runtime's signal handler and its 16
+global allocator, `emit/tests/pgo.rs` setting environment variables, the runtime's signal handler and its 16
 protection regions per process. Merging those needs a test run to
 settle which files can share a process (follow-up 2). `live-server`
 (40 files, the largest saving) belongs to another session.
+
+### The offline tools in their own binary (`h2-tools`)
+
+The map, tag and script tools (`firefight kit`, `forge build`, `rules`,
+`variants`, `tags`, `hud`, `shader` and the rest) are a second binary,
+`crates/apps/h2-tools`, which depends on format and tool crates only: no
+runtime, renderer, audio or agent server
+([cli-tools.md](../runtime/cli-tools.md)). `h2 <tool>` runs it with the
+same words. A change to a tool, or to a crate only the tools use
+(`firefight-kit`, `forge-build`, `hud-kit`, `superbounce`, `lsp-server`),
+relinks `h2-tools` and leaves `h2` alone.
+
+`cargo h2-tools <tool>` builds and runs that binary only. `cargo h2 <tool>`
+builds `h2` first, then runs `cargo run -p h2-tools`: cheap when nothing
+`h2` links changed, the whole `h2` link when something did. `firefight-kit`
+and `scenario-edit` are still under `h2` through `boot`'s `test-maps`
+feature (the agent's `maps.test.*`), so after a change to either, `cargo
+h2-tools firefight kit <map>` is the command that skips the game's link.
+The saving is not measured.
 
 ### nextest (`.config/nextest.toml`)
 
@@ -275,9 +294,9 @@ The layout on the build machine, as of 2026-11-20:
 
 - Every worktree's `target` is a link to
   `/Volumes/Builds/targets/h2recomp/<worktree name>`, made by the
-  post-checkout hook when the worktree is created. The same hook then
-  removes the targets of worktrees that no longer exist, when nothing
-  has files open in them.
+  post-checkout hook when the worktree is created. The hook then seeds
+  it (`seed-target.py`, below) and removes the targets of worktrees that
+  no longer exist, when nothing has files open in them.
 - The coordinator's sweeps do not use those: they export
   `CARGO_TARGET_DIR` to one shared directory (`coord-target`, 70 GB,
   still on the system volume), which every branch is built into in
@@ -292,7 +311,7 @@ Three ways to give many worktrees somewhere to build:
 | | Each worktree's own target (the hook's default) | One shared target, a lock (`coord-target`) | A pool of leased slots |
 |---|---|---|---|
 | A stale artifact from another tree | cannot happen | **happens**: same file names, freshness by file time | cannot happen |
-| First build of a new branch | every crate restored from the cache (1.2 s each, more if copied) or compiled, every test binary linked | whatever has a newer file time, plus what the last tree left wrong | only what differs from the slot's last commit |
+| First build of a new branch | only what differs from the closest worktree's sources: the hook seeds the target (below) | whatever has a newer file time, plus what the last tree left wrong | only what differs from the slot's last commit |
 | Builds at once | as many as there are worktrees | one | one per slot |
 | Disk | one target per worktree that ever built; the hook removes it with the worktree | one directory that never shrinks | bounded: slots times one target |
 | Edit rebuilds uncached | no | yes, constantly | yes, but the incremental state is reused, because successive commits in a slot are near each other |
@@ -303,11 +322,25 @@ missing-symbol errors and one false benchmark result came from. The
 "never build two trees at once" rule does not fix it; building them one
 after the other is enough to go wrong.
 
-Each worktree's own target is safe, and now the default for anything
-that does not set `CARGO_TARGET_DIR`. It suits agents that build their
-own branch. It does not suit a coordinator that builds 20 branches a
-day: each is a cold start, and each leaves a full set of test
-executables until its worktree is removed.
+Each worktree's own target is safe, and the default for anything that
+does not set `CARGO_TARGET_DIR`.
+
+**Seeding a new worktree's target.** A new target starts as a copy of
+a warm one. The hook's `seed-target.py` (machine-local, beside the hook
+in `.git/hooks`) picks the worktree whose working tree differs least
+from the new `HEAD` and has at least 300 debug fingerprints, and clones
+its target with `cp -cR`: an APFS clone, about five seconds, no disk
+until a file changes. Then every tracked file whose content matches the
+seed's (everything outside `git -C <seed> diff --name-only <new HEAD>`)
+gets the seed's file time. Cargo judges a workspace crate's freshness by
+its sources' file times against its fingerprints, so a file with the
+seed's content and the seed's time gets the decision the seed would
+get, and a file that differs keeps its checkout time and rebuilds its
+crate and everything above it. A first `cargo check -p cli` in a new
+worktree two commits from its seed rechecked 35 crates in 31 s; a cold
+one builds about 700. A cold existing worktree is seeded by hand:
+`.git/hooks/seed-target.py <worktree> [<seed worktree>]`; it only fills
+an empty target.
 
 **Recommendation: a pool of two slots for the coordinator, on top of
 the hook.** A slot is a lock and a worktree that exists only to be
@@ -340,9 +373,22 @@ deleting it returns 70 GB, and the pool costs less than half of that.
 Lane worktrees whose agents do not compile keep empty targets and cost
 nothing.
 
-**Prune policy.** Cleaning disk is a job for the machine's cleanup
-tooling and the hook, not for this repository. What the cleanup should
-do:
+#### Stale test executables
+
+Cargo names a test executable `deps/<stem>-<hash>`; the hash changes
+with features, dependencies and profile, so each merge of master or flag
+change links a new one beside the old. After its nextest run,
+`cargo xtask test` deletes them (`crates/tools/xtask/src/prune.rs`):
+nextest's list names the current executables, and every other
+`<stem>-<hash>` executable of the same stem in the same `deps`, with its
+`.d` and `.dSYM`, goes when it is over an hour old. Dev builds carry no
+debug info, so every object file (`*.o`) and `.dSYM` bundle in those
+`deps` over an hour old is a leftover and goes too. Libraries are never
+touched; kache's unit clean-up drops unused ones after a day
+(`auto_clean_unused_units_days` in `~/.config/kache/config.toml`). The
+run's summary prints a `prune` line when anything went.
+
+**Prune policy.** Beyond that, what a cleanup of the pool should do:
 
 1. Lane targets: leave them to the hook. A lane target over a gigabyte
    means a lane compiled, which the rules say it should not.
@@ -493,6 +539,29 @@ What is left to the machine: a pool of build slots (section 2) is not
 part of xtask, which builds in the checkout it runs in, into that
 checkout's target directory.
 
+### 6. Agents and the caches
+
+Coding agents can't skip the caches. `.claude/settings.json` runs
+`scripts/agent-cargo-guard.py` before every shell command an agent
+runs in any worktree, and it refuses:
+
+- `cargo test` and `cargo nextest`: tests go through `cargo xtask test`
+  (with `-p` for named packages, or none for what the branch changed), so
+  they use the affected set and the shared ledger above;
+- `cargo install`: it builds in a throwaway target. `cargo h2 <command>`
+  (and `cargo h2-tools <tool>` for the map, tag and script tools) builds
+  incrementally in the worktree's own target instead;
+- setting `RUSTC_WRAPPER`, `CARGO_BUILD_RUSTC_WRAPPER`, `SCCACHE_DIR` or
+  `CARGO_TARGET_DIR` on a command: kache is the machine-wide wrapper
+  (`~/.cargo/config.toml`) and each worktree keeps its own target.
+
+`cargo check`, `cargo clippy`, `cargo h2` and `cargo h2-tools` pass. Before one runs in a
+worktree with no `target` yet, the guard links and seeds it with the
+hooks directory's `target-on-builds.sh` and `seed-target.py` (section 2):
+an agent harness that makes its worktrees without the post-checkout hook
+would otherwise build cold onto the source volume. People at a shell are
+not affected. Tests: `python3 scripts/agent_cargo_guard_test.py`.
+
 ## Measurement plan
 
 Run on a quiet machine, in one checkout moved between the two commits
@@ -548,9 +617,9 @@ These are estimates from the counts above.
 - **`PATH`.** When two shells differ, this removed a full `boot` and
   `cli` recompile per switch, the most expensive thing in the
   workspace. When they do not differ, nothing.
-- **Dependencies without debug info.** Smaller `deps` (line tables are
-  typically a tenth to a fifth of an unoptimised rlib) and shorter
-  links. Modest.
+- **No debug info.** Smaller `deps` (line tables are typically a tenth
+  to a fifth of an unoptimised rlib), shorter links, and no kept object
+  files or `.dSYM` bundles: about 12 GB less per target directory.
 - **One command for a full sweep.** Removes the duplicate compiles of
   `boot`, `hooks`, `input`, `agent`, `dsound` and `bink-hle`, and of
   the 79 third-party crates with several feature sets. Likely the

@@ -228,6 +228,7 @@ pub fn base_program(material: u16, lit: bool) -> Result<FogProgram, String> {
         look,
         state: state(),
         fog: FogWords::default(),
+        planar: None,
     };
     let extra = base_coordinates();
     FogProgram::compile_rigid_pass(
@@ -246,8 +247,8 @@ pub fn base_programs(
     let mut out = HashMap::new();
     for (material, lit) in draws {
         let key = PassKey::Base { material, lit };
-        if !out.contains_key(&key) {
-            out.insert(key, vec![base_program(material, lit)?]);
+        if let std::collections::hash_map::Entry::Vacant(slot) = out.entry(key) {
+            slot.insert(vec![base_program(material, lit)?]);
         }
     }
     Ok(out)

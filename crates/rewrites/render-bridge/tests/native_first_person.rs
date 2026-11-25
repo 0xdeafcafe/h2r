@@ -15,6 +15,8 @@ use native_render::objects::{
     SCENE_LAYER3_RETURN,
 };
 use native_render::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, RENDER_RECORDS};
+use native_render::object_walk::RECORD_STRIP;
+use frame_scene::PartFlags;
 
 #[test]
 fn the_plan_places_a_render_thread_observer_only_when_on() {
@@ -50,6 +52,11 @@ const ITEMS: u32 = 0x004c_8740;
 const DEF_A: u32 = 0xe000_0100;
 const DEF_B: u32 = 0xe000_0200;
 const MATRIX: u32 = 0x0060_1000;
+const TAGS: u32 = 0x005a_0000;
+const SHADER: u32 = 0x005b_0000;
+/// Per definition, its model's record, its one section and its geometry
+/// with parts 0 and 1, both triangle lists ([`model`]).
+const MODEL: u32 = 0x005c_0000;
 
 #[derive(Default)]
 struct Stub {
@@ -60,7 +67,7 @@ struct Stub {
 }
 
 impl Host for Stub {
-    fn native(&self, _mem: &mut dyn GuestMemory) -> Option<Arc<NativeSet>> {
+    fn native(&self, _mem: &mut dyn GuestMemory, _prepare_draw: bool) -> Option<Arc<NativeSet>> {
         Some(Arc::new(self.set.lock().unwrap().clone()))
     }
 
@@ -117,6 +124,31 @@ fn object(m: &mut FlatMemory, slot: u32, definition: u32, nodes: u32) -> u32 {
     handle
 }
 
+/// The tag table entries the geometry draw's record read goes through
+/// (`object_walk::layer_part`): shaders 0x10 and 0x11, and models A and
+/// B, each with one section of two triangle-list parts. Returns the
+/// address of `definition`'s part `part`.
+fn model(m: &mut FlatMemory, definition: u32) -> u32 {
+    use native_render::object_nodes::{MODEL_SECTIONS, TAG_INSTANCES};
+    m.set_u32(TAG_INSTANCES, TAGS).unwrap();
+    for shader in [0x10u32, 0x11] {
+        m.set_u32(TAGS + 16 * shader, u32::from_be_bytes(*b"shad")).unwrap();
+        m.set_u32(TAGS + 16 * shader + 8, SHADER).unwrap();
+    }
+    let at = MODEL + 0x1000 * ((definition >> 8) & 0xf);
+    let (section, geometry, parts) = (at + 0x100, at + 0x200, at + 0x300);
+    m.set_u32(TAGS + 16 * (definition & 0xffff) + 8, at).unwrap();
+    m.set_u32(at + MODEL_SECTIONS - 4, 1).unwrap();
+    m.set_u32(at + MODEL_SECTIONS, section).unwrap();
+    m.set_u32(section + 0x34, geometry).unwrap();
+    m.set_u32(geometry, 2).unwrap();
+    m.set_u32(geometry + 4, parts).unwrap();
+    for part in 0..2 {
+        m.set_u32(parts + 0x48 * part, 8 << 16).unwrap();
+    }
+    parts
+}
+
 fn lighting(handle: u32) -> u32 {
     CACHE_DATA + CACHE_RECORD_SIZE * ((handle & 0xffff) + 5) + CACHE_LIGHTING
 }
@@ -144,6 +176,8 @@ fn guest() -> (FlatMemory, u32, u32) {
     m.set_u32(CACHE + 0x44, CACHE_DATA).unwrap();
     let a = object(&mut m, 1, 0xdead_0001, 2);
     let b = object(&mut m, 2, 0xdead_0002, 1);
+    model(&mut m, DEF_A);
+    model(&mut m, DEF_B);
     m.set_u32(CURRENT_LAYER, 3).unwrap();
     m.set_u32(CURRENT_LIST, LIST).unwrap();
     m.set_u32(LIST + 4, 4).unwrap();
@@ -162,7 +196,7 @@ fn guest() -> (FlatMemory, u32, u32) {
         let at = ITEMS + 0x18 * i as u32;
         m.set_u32(at, GEOMETRY_BUILD).unwrap();
         m.set_u32(at + 8, 0xe000_0000 | shader).unwrap();
-        m.set_u32(at + 0xc, record << 8).unwrap();
+        m.set_u32(at + 0xc, record << 8 | u32::from(record == 2)).unwrap();
         m.set_u32(at + 0x10, 0b1010).unwrap();
         let at = RENDER_RECORDS + 0x20 * record;
         let (model, light) = owner.map_or((u32::MAX, 0), |handle| {
@@ -177,6 +211,7 @@ fn guest() -> (FlatMemory, u32, u32) {
         .unwrap();
         m.set_u32(at + RECORD_IMPLEMENTATION, 0).unwrap();
         m.set_u32(at + RECORD_MATRIX, MATRIX).unwrap();
+        m.set_u32(at + 0x18, 0xff << 16).unwrap(); // fade byte +0x1a
     }
     for word in 0..13u32 {
         m.set_u32(MATRIX + 4 * word, (word as f32).to_bits())
@@ -201,6 +236,21 @@ fn first_person_plans_items_and_restores_exactly_the_unplanned_ones() {
     assert_eq!(masks(&m), all, "no host");
 
     let stub = Arc::new(Stub::default());
+    native_first_person::set_host(stub.clone());
+    for layer in [1, 2, 7, 8, 20] {
+        // B appears only in this layer. Two layer-3 items still require
+        // the guest sort. A non-geometry neighbour cannot block discovery.
+        m.set_u32(ITEMS + 2 * 0x18 + 0x10, 1 << layer).unwrap();
+        m.set_u32(ITEMS + 3 * 0x18, 0).unwrap();
+        let before = masks(&m);
+        native_first_person::observe_layer(&mut m, FIRST_PERSON_LAYER3_RETURN);
+        assert_eq!(*stub.wanted.lock().unwrap(), [DEF_A, DEF_B]);
+        stub.wanted.lock().unwrap().clear();
+        assert!(stub.offered.lock().unwrap().is_empty());
+        assert_eq!(masks(&m), before);
+    }
+    m.set_u32(ITEMS + 2 * 0x18 + 0x10, 0b1010).unwrap();
+    m.set_u32(ITEMS + 3 * 0x18, GEOMETRY_BUILD).unwrap();
     {
         let mut set = stub.set.lock().unwrap();
         set.definitions.insert(DEF_A as u16, 2);
@@ -208,8 +258,6 @@ fn first_person_plans_items_and_restores_exactly_the_unplanned_ones() {
         set.parts
             .extend([native_part(DEF_A, 0, 0x10), native_part(DEF_B, 0, 0x10)]);
     }
-    native_first_person::set_host(stub.clone());
-
     native_first_person::before_layer(&mut m, SCENE_LAYER3_RETURN);
     assert_eq!(masks(&m), all, "the base layer-3 caller is not owned");
     native_first_person::before_layer(&mut m, FIRST_PERSON_LAYER3_RETURN);
@@ -332,4 +380,28 @@ fn first_person_plans_items_and_restores_exactly_the_unplanned_ones() {
         3,
         "the owner's mixed record modes are planned independently"
     );
+    assert_eq!((items[0].flags, items[0].subparts), (PartFlags::NONE, None));
+    drop(offered);
+
+    // The record's flags as the geometry draw reads them: bit 9 on A's
+    // part 0 made a strip part draws a strip; the record's fade byte
+    // keeps the item on D3D.
+    native_first_person::restore_pending(&mut m);
+    let a_parts = model(&mut m, DEF_A);
+    m.set_u32(a_parts, 0).unwrap();
+    let record_1 = RENDER_RECORDS + 0x20;
+    m.set_u32(record_1, RECORD_STRIP).unwrap();
+    native_first_person::before_layer(&mut m, FIRST_PERSON_LAYER3_RETURN);
+    {
+        let offered = stub.offered.lock().unwrap();
+        let (_, items, _) = offered.last().unwrap();
+        assert_eq!((items[0].key.record, items[0].flags), (1, PartFlags::STRIP));
+    }
+    native_first_person::restore_pending(&mut m);
+    m.set_u32(record_1 + 0x18, 0x80 << 16).unwrap();
+    native_first_person::before_layer(&mut m, FIRST_PERSON_LAYER3_RETURN);
+    assert_eq!(masks(&m), vec![0b1010, 0b0010, 0b0010, 0b1010], "a fade byte keeps its item on D3D");
+    let offered = stub.offered.lock().unwrap();
+    let (_, items, _) = offered.last().unwrap();
+    assert!(items.iter().all(|item| item.key.record != 1));
 }

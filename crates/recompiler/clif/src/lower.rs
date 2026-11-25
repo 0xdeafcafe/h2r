@@ -12,7 +12,7 @@ use cranelift_codegen::ir::{
 };
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::{FunctionBuilder, Switch, Variable};
-use cranelift_module::{DataDescription, FuncId, Linkage, Module};
+use cranelift_module::{DataDescription, DataId, Linkage, Module};
 use ir::{
     Addr, Atomic, AtomicOp, BinOp, CastOp, CmpOp, Control, Dest, Expr, Fault, Flag, FlagValue, Gpr, Intrinsic,
     IrFunction, IrInsn, RepKind, Segment, Slice, Stmt, StopReason, Target, Temp, UnOp, Value, Width,
@@ -30,25 +30,21 @@ fn unsupported<T>(what: impl Into<String>) -> R<T> {
     Err(Unsupported(what.into()))
 }
 
-/// Imports a module's functions call, declared once per module.
+/// What a module's handlers reach outside themselves: the import table
+/// ([`IMPORTS`], defined by `module::bridge`), declared once per module.
+/// A handler calls every helper through it, so a shard object has no
+/// undefined function symbols.
 #[derive(Default)]
 pub struct Imports {
-    ids: HashMap<String, FuncId>,
+    table: Option<DataId>,
 }
 
 impl Imports {
-    /// The module's id for `name` with `params` (all `i32`/`i64`) and
-    /// `ret`, declaring it on first use.
-    pub fn get(&mut self, m: &mut dyn Module, name: &str, params: &[Type], ret: Option<Type>) -> FuncId {
-        if let Some(id) = self.ids.get(name) {
-            return *id;
-        }
-        let mut sig = m.make_signature();
-        sig.params.extend(params.iter().map(|t| AbiParam::new(*t)));
-        sig.returns.extend(ret.map(AbiParam::new));
-        let id = m.declare_function(name, Linkage::Import, &sig).expect("import declaration");
-        self.ids.insert(name.to_owned(), id);
-        id
+    /// The module's id for the import table, declaring it on first use.
+    pub fn table(&mut self, m: &mut dyn Module) -> DataId {
+        *self
+            .table
+            .get_or_insert_with(|| m.declare_data(IMPORTS, Linkage::Import, true, false).expect("import table declaration"))
     }
 }
 
@@ -133,7 +129,9 @@ pub struct Lower<'a, 'b> {
     pub(crate) b: FunctionBuilder<'b>,
     pub(crate) m: &'a mut dyn Module,
     pub(crate) imports: &'a mut Imports,
-    refs: HashMap<FuncId, cir::FuncRef>,
+    /// Each import's call signature, and the import table's address.
+    sigs: HashMap<String, cir::SigRef>,
+    table: Option<cir::GlobalValue>,
     pub(crate) cpu: cir::Value,
     pub(crate) ctx: cir::Value,
     gpr: [Variable; 8],
@@ -189,7 +187,8 @@ impl<'a, 'b> Lower<'a, 'b> {
             b,
             m,
             imports,
-            refs: HashMap::new(),
+            sigs: HashMap::new(),
+            table: None,
             cpu,
             ctx,
             gpr,
@@ -331,17 +330,35 @@ impl<'a, 'b> Lower<'a, 'b> {
         }
     }
 
+    /// Call the import `name` ([`slot`]) with `params` (all `i32`/`i64`,
+    /// narrower values extended by the caller) and `ret`: its address
+    /// loaded from the import table, then an indirect call in the C
+    /// convention.
     pub(crate) fn call(&mut self, name: &str, params: &[Type], ret: Option<Type>, args: &[cir::Value]) -> Option<cir::Value> {
-        let id = self.imports.get(&mut *self.m, name, params, ret);
-        let r = match self.refs.get(&id) {
-            Some(r) => *r,
+        let slot = slot(name).unwrap_or_else(|| panic!("{name}: not in the fast tier's import table"));
+        let sig = match self.sigs.get(name) {
+            Some(s) => *s,
             None => {
-                let r = self.m.declare_func_in_func(id, self.b.func);
-                self.refs.insert(id, r);
+                let mut s = self.m.make_signature();
+                s.params.extend(params.iter().map(|t| AbiParam::new(*t)));
+                s.returns.extend(ret.map(AbiParam::new));
+                let r = self.b.import_signature(s);
+                self.sigs.insert(name.to_owned(), r);
                 r
             }
         };
-        let c = self.b.ins().call(r, args);
+        let gv = match self.table {
+            Some(g) => g,
+            None => {
+                let id = self.imports.table(&mut *self.m);
+                let g = self.m.declare_data_in_func(id, self.b.func);
+                self.table = Some(g);
+                g
+            }
+        };
+        let base = self.b.ins().symbol_value(types::I64, gv);
+        let f = self.b.ins().load(types::I64, mf(), base, (slot * 8) as i32);
+        let c = self.b.ins().call_indirect(sig, f, args);
         self.b.inst_results(c).first().copied()
     }
 
@@ -1084,11 +1101,14 @@ impl<'a, 'b> Lower<'a, 'b> {
                     let v = self.val(a)?;
                     self.slot_store(16 + 16 * k as i32, v);
                 }
+                // ir::interp::sse_helper(&cpu->mxcsr, op, args, out): the
+                // interpreter's own SSE code, 0 or H2SHIM_SIMD_EXCEPTION.
                 let ap = self.slot_addr(16);
                 let op_ = self.slot_addr(0);
-                let name = format!("h2clif_sse_{}", s.name());
-                let q = types::I64;
-                let st = self.call(&name, &[q, q, q], Some(types::I32), &[self.cpu, ap, op_]).unwrap();
+                let mx = self.b.ins().iadd_imm_u(self.cpu, OFF_MXCSR as i64);
+                let n = self.i32c(s as u32);
+                let (q, i) = (types::I64, types::I32);
+                let st = self.call(SSE, &[q, i, q, q], Some(i), &[mx, n, ap, op_]).unwrap();
                 self.if_leave(st, |l| raise_status(l, st, pc));
                 let v = self.slot_load(ty(dsts[0].width), 0);
                 self.set(dsts[0], v);

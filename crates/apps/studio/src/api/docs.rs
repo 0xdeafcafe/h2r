@@ -16,7 +16,7 @@ use super::scenario::refused;
 use super::{P, Reply, err};
 use crate::App;
 use crate::app::map_cards::MapEntry;
-use crate::app::{Action, SaveTarget, ToolKind};
+use crate::app::{Action, Doc, SaveTarget, ToolKind};
 
 /// A `doc` param as a tool (default: the tool shown).
 pub fn doc_kind(app: &App, p: &P) -> Result<ToolKind, RpcError> {
@@ -36,10 +36,11 @@ pub fn parse_doc(d: &str) -> Result<ToolKind, RpcError> {
         "hud" => ToolKind::Hud,
         "scripts" => ToolKind::Scripts,
         "bitmaps" | "textures" => ToolKind::Textures,
+        "package" => ToolKind::Package,
         other => {
             return Err(err(
                 code::INVALID_PARAMS,
-                format!("no document {other:?} (map, tags, scripts, bitmaps, variant, playlists, ui, hud)"),
+                format!("no document {other:?} (map, tags, scripts, bitmaps, variant, playlists, ui, hud, package)"),
             ));
         }
     })
@@ -55,6 +56,7 @@ pub fn doc_name(t: ToolKind) -> &'static str {
         ToolKind::Hud => "hud",
         ToolKind::Scripts => "scripts",
         ToolKind::Textures => "bitmaps",
+        ToolKind::Package => "package",
     }
 }
 
@@ -68,6 +70,7 @@ fn is_open(app: &App, t: ToolKind) -> bool {
         ToolKind::Hud => app.hud.session.is_some(),
         ToolKind::Scripts => app.scripts_loaded().is_ok(),
         ToolKind::Textures => app.session.is_open(),
+        ToolKind::Package => app.package_document.id().is_some(),
     }
 }
 
@@ -84,7 +87,16 @@ fn can(app: &App, t: ToolKind) -> (bool, bool) {
             .as_ref()
             .map_or((false, false), |e| (e.can_undo(), e.can_redo())),
         ToolKind::Playlists => (app.hoppers.can_undo(), app.hoppers.can_redo()),
-        ToolKind::UiScreens | ToolKind::Scripts => (false, false),
+        ToolKind::UiScreens | ToolKind::Package => (false, false),
+        // The compiles into the map's scripts are the Scripts surface's stack.
+        ToolKind::Scripts => app
+            .scripts
+            .edit
+            .as_ref()
+            .map_or((false, false), |d| {
+                let (undo, redo) = d.depth();
+                (undo > 0, redo > 0)
+            }),
         ToolKind::Tags => (app.tags.can_undo(), app.tags.can_redo()),
         ToolKind::Textures => (app.textures.can_undo(), app.textures.can_redo()),
         ToolKind::Hud => app
@@ -117,14 +129,31 @@ fn name_of(app: &App, t: ToolKind) -> Option<String> {
         }),
         ToolKind::Scripts => app.scripts_loaded().ok().map(|l| l.map.clone()),
         ToolKind::Textures => app.loaded_map().map(str::to_owned),
+        ToolKind::Package => app.package_document.name().map(str::to_owned),
     }
 }
 
-/// `doc.list`.
+/// `doc.list`: each tool's document, then each tag tab's.
 pub fn list(app: &App) -> Value {
+    let tags = app.tabs().iter().filter_map(|tab| match tab.doc {
+        Doc::Tag(_) => {
+            let (u, r) = app.doc_can(tab.doc);
+            Some(json!({
+                "doc": app.doc_id(tab.doc),
+                "open": true,
+                "name": app.doc_title(tab.doc),
+                "dirty": app.doc_dirty(tab.doc),
+                "can_undo": u,
+                "can_redo": r,
+                "shown": app.front_doc() == Some(tab.doc) && app.tool == app.doc_tool(tab.doc),
+            }))
+        }
+        _ => None,
+    });
     Value::Array(
         ToolKind::ALL
             .into_iter()
+            .chain(app.package_document.id().map(|_| ToolKind::Package))
             .map(|t| {
                 let (u, r) = can(app, t);
                 let mut v = json!({
@@ -147,8 +176,21 @@ pub fn list(app: &App) -> Value {
                 }
                 v
             })
+            .chain(tags)
             .collect(),
     )
+}
+
+/// A `doc` param naming an open tag tab (`group:path` or `0x...`).
+fn tag_tab(app: &mut App, p: &P) -> Result<Option<Doc>, RpcError> {
+    let Some(id) = p.opt_str("doc")? else {
+        return Ok(None);
+    };
+    if parse_doc(id).is_ok() {
+        return Ok(None);
+    }
+    app.sync_tabs();
+    Ok(app.find_doc(id).filter(|d| matches!(d, Doc::Tag(_))))
 }
 
 fn run(app: &mut App, a: Action, discard: bool) -> Result<Vec<String>, RpcError> {
@@ -213,15 +255,34 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
         }
         m::DOC_LIST => Ok(list(app)),
         m::DOC_OPEN => open(app, p),
-        m::DOC_SAVE => save(app, map_for_tags(doc_kind(app, p)?)),
+        m::DOC_SAVE => match p.opt_str("doc")? {
+            Some("rules") => super::game_script::save_item(app, p),
+            None if app.front_doc() == Some(Doc::Rules) => super::game_script::save_item(app, p),
+            _ => save(app, map_for_tags(doc_kind(app, p)?)),
+        },
         m::DOC_SAVE_AS => {
             let t = map_for_tags(doc_kind(app, p)?);
             save_as(app, t, PathBuf::from(p.str("path")?))
         }
         m::DOC_DIFF => diff(app, map_for_tags(doc_kind(app, p)?)),
         m::DOC_UNDO | m::DOC_REDO => {
-            let t = doc_kind(app, p)?;
             let undo = method == m::DOC_UNDO;
+            if let Some(doc) = tag_tab(app, p)? {
+                let before = app.doc_can(doc);
+                let action = if undo {
+                    Action::UndoDoc(doc)
+                } else {
+                    Action::RedoDoc(doc)
+                };
+                let log = app.perform(action, false).map_err(|r| match r {
+                    crate::app::Refused::Failed(e) => err(code::REFUSED, e),
+                    other => refused(other),
+                })?;
+                let done = if undo { before.0 } else { before.1 };
+                let (u, r) = app.doc_can(doc);
+                return Ok(json!({ "done": done, "can_undo": u, "can_redo": r, "log": log }));
+            }
+            let t = doc_kind(app, p)?;
             let before = can(app, t);
             let action = if undo {
                 Action::UndoIn(t)
@@ -234,7 +295,15 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
             Ok(json!({ "done": done, "can_undo": u, "can_redo": r, "log": log }))
         }
         m::DOC_CLOSE => {
+            if let Some(doc) = tag_tab(app, p)? {
+                run(app, Action::CloseDoc(doc), false)?;
+                return Ok(json!({ "closed": true }));
+            }
             let t = parse_doc(p.str("doc")?)?;
+            if t == ToolKind::Package {
+                run(app, Action::CloseDoc(Doc::Package), false)?;
+                return Ok(json!({ "closed": true }));
+            }
             if app.tool_dirty(t) && !p.bool("discard")? {
                 return Err(err(
                     code::UNSAVED,
@@ -245,6 +314,7 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 ));
             }
             app.close_tool(t);
+            app.sync_tabs();
             Ok(json!({ "closed": true }))
         }
         _ => Err(err(code::METHOD_NOT_FOUND, format!("no method {method}"))),
@@ -320,10 +390,26 @@ fn open(app: &mut App, p: &P) -> Reply {
                 Action::OpenVariant(Origin::Saved(dir))
             } else if let Some(t) = q.opt_str("new")? {
                 Action::NewVariant(game_type(t)?)
+            } else if let Some(s) = q.opt_str("script")? {
+                // A starter by name, or "open" for the script open in the
+                // script editor: a new variant of it (`record_for`).
+                let source = if s == "open" {
+                    app.rules.text.clone()
+                } else {
+                    crate::app::rules_edit::find_starter(s)
+                        .map(|(_, src)| src.to_string())
+                        .ok_or_else(|| {
+                            err(
+                                code::INVALID_PARAMS,
+                                format!("no built-in or example script named {s} (rules.get's starters), or \"open\""),
+                            )
+                        })?
+                };
+                Action::NewVariantFromScript(source)
             } else {
                 return Err(err(
                     code::INVALID_PARAMS,
-                    "variant: one of builtin, saved, new",
+                    "variant: one of builtin, saved, new, script",
                 ));
             };
             (ToolKind::Variants, run(app, action, discard)?)
@@ -370,10 +456,6 @@ pub fn game_type(t: &str) -> Result<GameType, RpcError> {
 /// The Scripts tool writes nothing (docs/editor/rich-editors.md, slice H3).
 const SCRIPTS_READ_ONLY: &str = "the Scripts tool is read only: it saves nothing";
 
-/// Bitmap edits are kept in the editor until the encoder slice writes them.
-const BITMAPS_NOT_WRITTEN: &str =
-    "refused: bitmap edits are not written to the map yet: bitmap.export writes a PNG";
-
 /// Tag edits save and diff with the map: the session writes them.
 fn map_for_tags(t: ToolKind) -> ToolKind {
     match t {
@@ -396,7 +478,9 @@ fn need_open(app: &App, t: ToolKind) -> Result<(), RpcError> {
 fn save(app: &mut App, t: ToolKind) -> Reply {
     need_open(app, t)?;
     match t {
-        ToolKind::Scenario | ToolKind::Tags => {
+        // The bitmaps are the map's: its save encodes the edited images
+        // and writes them with the rest (`App::push_bitmap_changes`).
+        ToolKind::Scenario | ToolKind::Tags | ToolKind::Textures => {
             let target = app.save_target();
             let log = run(app, Action::Save, false)?;
             match target {
@@ -409,31 +493,31 @@ fn save(app: &mut App, t: ToolKind) -> Reply {
                 SaveTarget::Package(dir) => Ok(json!({
                     "saved": true, "path": dir.display().to_string(), "log": log,
                 })),
-                SaveTarget::PackageForm { .. } => {
-                    let form = app.package_form.as_ref().expect("Save opened the package form");
-                    Ok(json!({
-                        "saved": false, "package_form": {"name": form.name, "dir": form.dir}, "log": log,
-                    }))
-                }
+                SaveTarget::EditTarget(Some(id)) => Ok(json!({
+                    "saved": true, "edit_target": id, "log": log,
+                })),
+                SaveTarget::EditTarget(None) => Err(err(
+                    code::NO_TARGET,
+                    crate::app::edit_target::NO_TARGET,
+                )),
                 SaveTarget::Nothing => Err(err(code::NO_DOCUMENT, "no map is open")),
             }
         }
-        ToolKind::Variants => {
-            let log = run(app, Action::SaveVariant, false)?;
-            Ok(json!({ "saved": true, "log": log }))
-        }
-        ToolKind::Playlists => {
-            let log = run(app, Action::SaveHopper, false)?;
-            Ok(
-                json!({ "saved": true, "path": app.hoppers.path().map(|p| p.display().to_string()), "log": log }),
-            )
+        ToolKind::Variants | ToolKind::Playlists => {
+            let target = super::packages::save_target(app, None)?;
+            let path = match t {
+                ToolKind::Variants => app.save_variant_item(&target),
+                _ => app.save_playlist_item(&target),
+            }
+            .map_err(super::packages::refuse)?;
+            Ok(json!({"saved": true, "edit_target": target, "path": path, "log": [format!("saved {}", path.display())]}))
         }
         ToolKind::UiScreens => Err(err(
             code::REFUSED,
             "UI screens have nothing to save: ui.render writes a PNG",
         )),
         ToolKind::Scripts => Err(err(code::REFUSED, SCRIPTS_READ_ONLY)),
-        ToolKind::Textures => Err(err(code::REFUSED, BITMAPS_NOT_WRITTEN)),
+        ToolKind::Package => Err(err(code::REFUSED, "package changes save immediately")),
         ToolKind::Hud => match app.hud.session.as_ref().and_then(|s| s.saved_path.clone()) {
             Some(path) => save_as(app, t, path),
             None => Err(err(
@@ -448,7 +532,7 @@ fn save_as(app: &mut App, t: ToolKind, path: PathBuf) -> Reply {
     need_open(app, t)?;
     let action = match t {
         ToolKind::Hud => return super::hud::save_as(app, path),
-        ToolKind::Scenario | ToolKind::Tags => {
+        ToolKind::Scenario | ToolKind::Tags | ToolKind::Textures => {
             outside_git(&path)?;
             if let Some(src) = app.session.source()
                 && same_file(&src.path, &path)
@@ -460,7 +544,7 @@ fn save_as(app: &mut App, t: ToolKind, path: PathBuf) -> Reply {
             }
             Action::SaveMapAs(path.clone())
         }
-        ToolKind::Playlists => Action::SaveHopperAs(path.clone()),
+        ToolKind::Playlists => Action::ExportPlaylist(path.clone()),
         ToolKind::Variants => Action::ExportVariant(path.clone()),
         ToolKind::UiScreens => {
             return Err(err(
@@ -469,7 +553,7 @@ fn save_as(app: &mut App, t: ToolKind, path: PathBuf) -> Reply {
             ));
         }
         ToolKind::Scripts => return Err(err(code::REFUSED, SCRIPTS_READ_ONLY)),
-        ToolKind::Textures => return Err(err(code::REFUSED, BITMAPS_NOT_WRITTEN)),
+        ToolKind::Package => return Err(err(code::REFUSED, "use package.export")),
     };
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir)
@@ -596,6 +680,7 @@ fn diff(app: &mut App, t: ToolKind) -> Reply {
         ToolKind::Scripts => Ok(json!({ "doc": "scripts", "dirty": false })),
         ToolKind::Textures => Ok(super::bitmaps::diff(app)),
         ToolKind::Hud => super::hud::diff(app),
+        ToolKind::Package => Ok(json!({ "doc": "package", "dirty": false })),
     }
 }
 

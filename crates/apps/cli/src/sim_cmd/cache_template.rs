@@ -256,6 +256,7 @@ pub enum Populated {
 
 /// What [`Template::save`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)] // `Saved::Saved` reads as the outcome it is.
 pub enum Saved {
     Saved {
         files: usize,
@@ -947,7 +948,7 @@ mod tests {
         let menu = t.part_dir(&Part::Menu);
         let lockout = t.part_dir(&Part::Map("lockout".into()));
         assert_eq!(t.seed("lockout"), [menu.clone(), lockout.clone()]);
-        assert_eq!(t.seed("midship"), [menu.clone()]);
+        assert_eq!(t.seed("midship"), std::slice::from_ref(&menu));
         assert_eq!(t.missing("lockout"), [Part::Utility]);
         assert_eq!(
             t.missing("midship"),

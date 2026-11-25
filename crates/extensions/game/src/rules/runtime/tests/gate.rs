@@ -86,6 +86,7 @@ fn a_map_that_lacks_a_label_blocks_the_game_and_ends_it_in_its_first_tick() {
             tick: TICK + 1,
             ask_authority: true,
             calls: vec![Call::End],
+            sight: Vec::new(),
         }
     );
     assert_eq!(s.lock().pre_tick(&m), None, "one end_round");
@@ -251,15 +252,37 @@ fn the_script_reads_the_labelled_things() {
 }
 
 #[test]
-fn label_reads_and_labelled_sets_are_hostable_and_zone_tests_are_not() {
-    for name in ["label_number", "label_of", "zone_id", "object_team"] {
+fn label_reads_labelled_sets_and_zone_tests_are_hostable() {
+    for name in ["label_number", "label_of", "zone_id", "object_team", "inside", "player_of"] {
         let e = caps::entry_named(name).unwrap();
         assert!(e.status.hostable(), "{name}");
         assert!(READS.contains(&e.id), "{name}");
     }
-    for name in ["inside", "ticks_held"] {
-        assert!(!caps::entry_named(name).unwrap().status.hostable(), "{name}");
-    }
+    // `ticks_held` is the VM's, over the host's zone test.
+    assert!(caps::entry_named("ticks_held").unwrap().status.hostable());
+    let loadout = caps::entry_named("set_loadout").unwrap();
+    assert!(loadout.status.hostable());
+    assert!(ACTIONS.contains(&loadout.id));
     // A script with labels is no longer refused for them.
     assert_eq!(host_refusal(&needing("goal")), None);
+}
+
+#[test]
+fn objects_in_motion_are_hostable() {
+    for name in ["object_pos", "object_vel"] {
+        let e = caps::entry_named(name).unwrap();
+        assert!(e.status.hostable(), "{name}");
+        assert!(READS.contains(&e.id), "{name}");
+    }
+    for name in ["teleport", "move_to", "stop", "set_open"] {
+        let e = caps::entry_named(name).unwrap();
+        assert!(e.status.hostable(), "{name}");
+        assert!(ACTIONS.contains(&e.id), "{name}");
+    }
+    assert!(DELIVERED.contains(&Event::Arrive));
+    let src = "rules \"M\" 1\ntype slayer\nrequires objects.move\nlabel pad: object\n\
+               on arrive(o) { stop(o) }\n\
+               on tick { move_to(pad, pad.position + vec(0.0, 0.0, 1.0), 5t)\n teleport(pad, vec(0.0, 0.0, 0.0))\n set_open(pad, true) }\n";
+    let ir = ::rules::compile(src).unwrap();
+    assert_eq!(host_refusal(&ir), None);
 }

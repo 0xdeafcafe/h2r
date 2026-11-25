@@ -13,9 +13,10 @@ pub const MAX_TRIALS: usize = 400;
 /// out) and the distances outside the lip a trial starts at.
 pub const TURNS: [f32; 3] = [0.0, 25.0, -25.0];
 pub const DISTANCES: [f32; 2] = [0.3, 0.6];
-/// Drop: offsets across the slot from its midline (toward the drift) and
-/// along it from its middle, and the heights fallen from.
-pub const ACROSS: [f32; 5] = [-0.05, 0.0, 0.05, 0.1, 0.15];
+/// Drop: offsets across from the spot's target line, the seam (toward
+/// the drift), centred on it, and along it from its middle, and the
+/// heights fallen from.
+pub const ACROSS: [f32; 5] = [-0.1, -0.05, 0.0, 0.05, 0.1];
 pub const ALONG: [f32; 1] = [0.0];
 pub const HEIGHTS: [f32; 3] = [1.5, 2.5, 3.5];
 /// Tick defaults ([`VerifyParams`]'s fields of those names).
@@ -32,9 +33,8 @@ pub const MAX_OUT: u32 = 300;
 pub const MAX_FALL: u32 = 600;
 pub const MAX_ROUTE: u32 = 36_000;
 pub const MAX_REPEAT: u32 = 20;
-/// An explicit drop point's defaults: slot width, touchdown speed needed,
-/// and the length of the midline drawn through `stand`.
-pub const POINT_WIDTH: f32 = 0.2;
+/// An explicit drop point's defaults: touchdown speed needed, and the
+/// length of the edge drawn through `stand`.
 pub const POINT_NEED: f32 = 4.3;
 pub const POINT_EDGE: f32 = 0.3;
 /// A route's default target: this far straight up from the strip's stand,
@@ -274,17 +274,15 @@ pub fn point_spot(p: &VerifyPoint, kind: Kind) -> Result<Spot, String> {
                     ]
                 }
             };
-            let width = p.width.unwrap_or(POINT_WIDTH);
             let need = p.need.unwrap_or(POINT_NEED);
-            if !(width.is_finite() && width > 0.0 && need.is_finite() && need >= 0.0) {
-                return Err("points: width must be over 0 and need at least 0".into());
+            if !(need.is_finite() && need >= 0.0) {
+                return Err("points: need must be at least 0".into());
             }
             Ok(Spot {
                 kind,
                 edge,
                 stand: p.stand,
                 drift,
-                width,
                 need,
                 score: 0.0,
                 ..Spot::default()
@@ -527,7 +525,7 @@ pub fn crouch_trial(spot: usize, s: &Spot, turn_by: f32, distance: f32, offset: 
     }
 }
 
-/// A drop trial: the point `across` the slot's midline toward the drift
+/// A drop trial: the point `across` the spot's target line toward the drift
 /// and `along` it from its middle, fallen onto from `height` over the
 /// strip's stand height.
 pub fn drop_trial(spot: usize, s: &Spot, across: f32, along: f32, height: f32) -> Trial {
@@ -558,9 +556,11 @@ pub fn drop_trial(spot: usize, s: &Spot, across: f32, along: f32, height: f32) -
 pub const IN_TICKS: u32 = 60;
 pub const CROUCH_FIRST_MAX: u32 = 20;
 pub const RELEASE_TICKS: u32 = 6;
-/// Ticks a teleport is waited for, and the landing read after contact.
+/// Ticks a teleport is waited for.
 pub const TELEPORT_TICKS: u32 = 30;
-pub const AFTER_TICKS: u32 = 3;
+/// Ticks after contact read for the launch: the landing classifier's
+/// window (`superbounce_charge::LAUNCH_TICKS`), the sim's too.
+pub const AFTER_TICKS: u32 = crate::superbounce_charge::LAUNCH_TICKS;
 
 /// A guess at the batch's length in game ticks: each trial at its most.
 pub fn estimate(plan: &Plan) -> u64 {

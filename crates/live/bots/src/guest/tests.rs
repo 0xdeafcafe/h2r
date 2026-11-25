@@ -92,6 +92,7 @@ fn perception_finds_the_bot_and_the_living_others() {
             team: 1,
             shield: 0.0,
             health: 0.0,
+            shield_full: 1.0,
             arms: Some(Default::default()),
         })
     );
@@ -107,6 +108,29 @@ fn perception_finds_the_bot_and_the_living_others() {
     // The bot dead: no `me`.
     ps[1].3 = true;
     assert_eq!(perceive(&game(&ps, true), machine(1)).unwrap().me, None);
+}
+
+/// The full shield is `0x1588b0`'s: the variant's shields times the
+/// handicap's factor, so a bot's shield thresholds can read a fraction of it.
+#[test]
+fn the_full_shield_follows_the_variant_and_the_handicap() {
+    let ps = vec![(0, [0.0; 3], X, false), (1, [5.0, 0.0, 0.0], X, false)];
+    let full = |shields: u32, handicap: u8| {
+        let mut g = game(&ps, false);
+        g.put_u32(GAME + GAME_SHIELDS, shields)
+            .put_u8(PLAYERS_DATA + 0x21c + PLAYER_HANDICAP, handicap);
+        g.map(OVERSHIELD_SCALE & !0xfff, 0x1000)
+            .put_f32(OVERSHIELD_SCALE, 3.0);
+        perceive(&g, machine(1)).unwrap().me.unwrap().shield_full
+    };
+    assert_eq!(full(0, 0), 1.0);
+    assert_eq!(full(0, 1), 0.75);
+    assert_eq!(full(0, 2), 0.5);
+    assert_eq!(full(0, 3), 0.25);
+    assert_eq!(full(1, 0), 0.0, "no shields");
+    assert_eq!(full(1, 3), 0.0);
+    assert_eq!(full(2, 0), 3.0, "overshields: the image's scale");
+    assert_eq!(full(2, 3), 0.75);
 }
 
 #[test]
@@ -707,20 +731,68 @@ fn hidden_motion_makes_an_anonymous_horizontal_blip_only_while_the_sensor_can_sh
         assert!(p.observations.contacts.is_empty());
         p.observations.radar
     };
-    assert_eq!(observed(&g), Some([0., 4.5, 0.]));
+    let none: Vec<[f32; 3]> = vec![];
+    assert_eq!(observed(&g), [[0., 4.5, 0.]]);
     g.put_u32(flags, MOTION_SENSOR);
-    assert_eq!(observed(&g), Some([0., 1., 0.]), "FFA uses the nearer dot");
+    assert_eq!(
+        observed(&g),
+        [[0., 1., 0.], [0., 4.5, 0.]],
+        "FFA: both, nearer first"
+    );
     g.put_u32(flags, TEAM_PLAY | MOTION_SENSOR)
         .put_u32(enemy + BIPED_UNIT_FLAGS, BIPED_CROUCH_REQUEST);
-    assert_eq!(observed(&g), None);
+    assert_eq!(observed(&g), none);
     g.put_u32(enemy + BIPED_UNIT_FLAGS, 0).put_f32(enemy + 0x88, 0.25);
-    assert_eq!(observed(&g), None);
+    assert_eq!(observed(&g), none);
     g.put_f32(enemy + 0x88, 3.0).put_f32(HUD + 0x290, 4.0);
-    assert_eq!(observed(&g), None);
+    assert_eq!(observed(&g), none);
     g.put_f32(HUD + 0x290, 6.0).put_u8(BODIES + radar::UNIT_ZOOM, 0);
-    assert_eq!(observed(&g), None);
+    assert_eq!(observed(&g), none);
     g.put_u8(BODIES + radar::UNIT_ZOOM, u8::MAX).put_u32(flags, TEAM_PLAY);
-    assert_eq!(observed(&g), None);
+    assert_eq!(observed(&g), none);
+}
+
+#[test]
+fn a_firing_stander_shows_and_a_crouch_walker_does_not() {
+    use live_proto::hopper::variant::flag::{MOTION_SENSOR, TEAM_PLAY};
+
+    let mut g = game(
+        &[(0, [0.; 3], X, false), (1, [0., 4.3, 0.], X, false)],
+        true,
+    );
+    const HUD: u32 = 0x006b_0000;
+    const MATG: u32 = 0x006c_0000;
+    const CONTROLS: u32 = 0x006d_0000;
+    let enemy = BODIES + 0x400;
+    g.put_u32(GAME + OPTIONS + VARIANT_FLAGS, TEAM_PLAY | MOTION_SENSOR)
+        .put_u32(points::HUD_GLOBALS_TAG.base, HUD)
+        .put_f32(HUD + 0x290, 6.0)
+        .put_u32(points::GLOBALS_TAG.base, MATG)
+        .put_u32(MATG + 0x134, CONTROLS)
+        .put_f32(CONTROLS + 0x3c, 1.0)
+        .put_f32(0x0045_e1f0, 0.5)
+        .put_f32(0x0045_e1f4, 0.5)
+        .put_u8(BODIES + radar::UNIT_ZOOM, u8::MAX);
+    let observed = |g: &FakeGuest, firing: fn(u32) -> u16| {
+        let mut p = Perception::default();
+        perception_with(g, machine(0), false, &mut p, &mut Vec::new(), None, firing).unwrap();
+        crate::perceive::observe(&mut p, &mut Default::default(), &mut [], None);
+        assert_eq!(p.observations.radar_range, Some(6.0));
+        p.observations.radar
+    };
+    let none: Vec<[f32; 3]> = vec![];
+    // Standing still: no dot until it fires.
+    assert_eq!(observed(&g, |_| 0), none);
+    assert_eq!(observed(&g, |_| 1 << 1), [[0., 4.5, 0.]]);
+    // Another slot's fire shows nothing of this one.
+    assert_eq!(observed(&g, |_| 1 << 3), none);
+    // A crouch-walker at walking speed: no dot while it holds its fire.
+    g.put_f32(enemy + 0x88, 1.0)
+        .put_u32(enemy + BIPED_UNIT_FLAGS, BIPED_CROUCH_REQUEST);
+    assert_eq!(observed(&g, |_| 0), none);
+    // Upright at the same speed it shows.
+    g.put_u32(enemy + BIPED_UNIT_FLAGS, 0);
+    assert_eq!(observed(&g, |_| 0), [[0., 4.5, 0.]]);
 }
 
 #[test]

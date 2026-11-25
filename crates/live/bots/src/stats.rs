@@ -1,5 +1,5 @@
 //! Diagnostics for one phantom brain. The controller never reads the counters or clock.
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
 
 use input::host::HostPadState;
@@ -10,6 +10,14 @@ use crate::brain::Perception;
 use crate::mind::{Doing, MELEE, RELOAD, SWITCH};
 
 const RECENT: usize = 8;
+/// A left stick under this stands the bot still.
+const STAND_STICK: f32 = 0.2;
+/// A right stick over this asks for a turn the aim shows by the next
+/// decision.
+const TURN_STICK: f32 = 0.3;
+/// Aims no component of which differs by this have not moved (under
+/// 0.01°).
+const SAME_AIM: f32 = 1e-4;
 
 pub fn goal_name(doing: Doing) -> &'static str {
     match doing {
@@ -73,6 +81,15 @@ pub struct CombatStats {
     pub think_ms: Option<f64>,
     pub total_think_ms: f64,
     pub think_ticks: u64,
+    /// Decisions by goal ([`goal_name`]), for the whole match.
+    pub goal_decisions: BTreeMap<&'static str, u32>,
+    /// Of those, the ones whose left stick stood the bot still.
+    pub standing_decisions: BTreeMap<&'static str, u32>,
+    /// Decisions after one whose right stick asked for a turn.
+    pub look_asked: u32,
+    /// Of those, the ones whose observed aim had not moved since: the look
+    /// did not reach the unit (docs/game/bots.md §5.1, "The facing release").
+    pub look_stalled: u32,
 }
 
 #[derive(Default)]
@@ -82,6 +99,8 @@ pub(crate) struct Recorder {
     acquired: Option<u32>,
     throwing: bool,
     last_arms: Option<Arms>,
+    /// The observed aim at the last decision.
+    last_aim: Option<crate::brain::Vec3>,
 }
 
 impl Recorder {
@@ -98,6 +117,7 @@ impl Recorder {
         self.acquired = None;
         self.throwing = false;
         self.last_arms = None;
+        self.last_aim = None;
         self.view.goal = None;
         self.view.weapon = None;
         self.view.weapon_role = None;
@@ -142,6 +162,21 @@ impl Recorder {
             self.note(now, goal);
         }
         self.view.goal = Some(goal);
+        *self.view.goal_decisions.entry(goal).or_default() += 1;
+        if pad.left_stick.0.hypot(pad.left_stick.1) < STAND_STICK {
+            *self.view.standing_decisions.entry(goal).or_default() += 1;
+        }
+        let aim = p.me.map(|me| me.aim);
+        let (rx, ry) = self.last_pad.right_stick;
+        if let (Some(before), Some(now)) = (self.last_aim, aim)
+            && rx.hypot(ry) > TURN_STICK
+        {
+            self.view.look_asked += 1;
+            if before.iter().zip(now).all(|(a, b)| (a - b).abs() < SAME_AIM) {
+                self.view.look_stalled += 1;
+            }
+        }
+        self.last_aim = aim;
         let target = match doing {
             Doing::Fight(id) => p.others.iter().find(|o| o.id == id),
             _ => None,
@@ -265,5 +300,40 @@ mod tests {
         assert_eq!(r.view.weapon_switches, 1);
         assert_eq!(r.view.grenade_requests, 1);
         assert_eq!(r.view.grenades_used, 1);
+    }
+
+    #[test]
+    fn standing_and_a_look_that_never_lands_are_counted() {
+        let mut r = Recorder::default();
+        let at = |tick, aim| Perception {
+            tick,
+            me: Some(Me { aim, ..Default::default() }),
+            ..Default::default()
+        };
+        let pad = |left: (f32, f32), right: (f32, f32)| HostPadState {
+            left_stick: left,
+            right_stick: right,
+            ..Default::default()
+        };
+        let x = [1.0, 0.0, 0.0];
+        r.decision(1, &at(1, x), Doing::Roam, pad((0.0, 1.0), (0.8, 0.0)), false);
+        // Asked to turn, the aim has not moved: stalled. It stands.
+        r.decision(2, &at(2, x), Doing::Recover(x), pad((0.0, 0.1), (0.8, 0.0)), false);
+        // Asked again, and this time it turned.
+        r.decision(3, &at(3, [0.0, 1.0, 0.0]), Doing::Recover(x), pad((0.0, 0.0), (0.0, 0.0)), false);
+        // Not asked: an unmoved aim is no stall.
+        r.decision(4, &at(4, [0.0, 1.0, 0.0]), Doing::Recover(x), pad((0.5, 0.0), (0.0, 0.0)), false);
+        assert_eq!(r.view.look_asked, 2);
+        assert_eq!(r.view.look_stalled, 1);
+        assert_eq!(r.view.goal_decisions.get("recover"), Some(&3));
+        assert_eq!(r.view.goal_decisions.get("roam"), Some(&1));
+        assert_eq!(r.view.standing_decisions.get("recover"), Some(&2));
+        assert_eq!(r.view.standing_decisions.get("roam"), None);
+        // A new life has no aim to compare against.
+        r.decision(5, &at(5, x), Doing::Roam, pad((0.0, 1.0), (0.8, 0.0)), false);
+        r.release();
+        r.decision(6, &at(6, x), Doing::Roam, pad((0.0, 1.0), (0.8, 0.0)), false);
+        assert_eq!((r.view.look_asked, r.view.look_stalled), (2, 1), "nothing across a death");
+        assert_eq!(r.view.goal_decisions.get("roam"), Some(&3), "match totals");
     }
 }

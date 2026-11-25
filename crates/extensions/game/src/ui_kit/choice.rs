@@ -1,21 +1,23 @@
-//! A row of many choices over a setting of the profile store: the sibling
-//! of the Halo 1 options' two-choice [`crate::h1_options::OptionRow`], for
-//! pages such as a bots page's Count and Difficulty (docs/game/ui-screens.md
-//! "Choice rows").
+//! A row of many choices over a setting of the profile store
+//! (docs/game/ui-screens.md "Choice rows").
 //!
-//! A [`ChoiceRow`] names a [`Def`] and how the row reads. Its choices come
-//! from the setting: a [`Kind::Choice`]'s labels, a [`Kind::Int`]'s steps
-//! (else every whole number of its range), or Off and On for a
-//! [`Kind::Bool`]. On a kit screen it is a value row ([`ChoiceRow::row`]):
-//! left and right step through the choices and wrap, A opens the value
-//! picker on them (`crate::ui_kit::picker`, retail's `low_level_settings`),
-//! as every value row of the kit does, and each change is saved at once
-//! like any setting (the store's change callbacks see it).
+//! A setting's choices come from its [`Def`]: a [`Kind::Choice`]'s labels,
+//! a [`Kind::Int`]'s steps (else every whole number of its range), or Off
+//! and On for a [`Kind::Bool`] ([`choices`]). A settings dialog's
+//! `setting:` row is one of these with no Rust of its own
+//! (`crate::ui_kit::settings`): left and right step through the choices
+//! and wrap ([`step`]), A opens the value picker on them
+//! (`crate::ui_kit::picker`, retail's `low_level_settings`), and each
+//! change is saved at once like any setting ([`set`]; the store's change
+//! callbacks see it).
+//!
+//! A [`ChoiceRow`] is the same row for a kit screen that is not a settings
+//! dialog (the kit's list examples):
 //!
 //! ```ignore
 //! static COUNT: ChoiceRow = ChoiceRow::new(&BOTS_COUNT, "Count", "How many bots join.");
-//! let page = KitScreen::new(FEATURE, SCREEN, IDS, "Clankers")
-//!     .layout(skulls_menu::LIST_LAYOUT, ValueStyle::Inline)
+//! // Its title, layout and legend: content/ui/screens/<SCREEN>.yaml.
+//! let page = KitScreen::new(FEATURE, SCREEN, IDS)
 //!     .row(COUNT.row(Arc::clone(&store)))
 //!     .row(DIFFICULTY.row(store));
 //! ```
@@ -26,22 +28,81 @@ use settings::{Def, Kind, Store, Value};
 
 use crate::ui_kit::screen::Row;
 
+/// Setting `def`'s choices in order: each value and how a row shows it.
+pub fn choices(def: &Def) -> Vec<(Value, String)> {
+    match &def.kind {
+        Kind::Bool => vec![
+            (Value::Bool(false), "Off".into()),
+            (Value::Bool(true), "On".into()),
+        ],
+        Kind::Int { valid, steps, .. } => {
+            let all: Vec<i64> = if steps.is_empty() {
+                valid.clone().collect()
+            } else {
+                steps.to_vec()
+            };
+            all.into_iter()
+                .map(|v| (Value::Int(v), v.to_string()))
+                .collect()
+        }
+        Kind::Resolution(_) => vec![(def.default, def.label(def.default))],
+        Kind::Choice(cs) => cs
+            .iter()
+            .map(|c| (Value::Int(c.value), c.label.to_string()))
+            .collect(),
+    }
+}
+
+/// The choice of `def` that `store` holds (the first when its value is
+/// none of them).
+pub fn index(def: &Def, store: &Store) -> usize {
+    let now = store.get(def.key);
+    choices(def)
+        .iter()
+        .position(|(v, _)| Some(v) == now.as_ref())
+        .unwrap_or(0)
+}
+
+/// Sets choice `i` of `def`, saved at once; what to log.
+pub fn set(def: &Def, store: &Store, i: usize) -> String {
+    let cs = choices(def);
+    let Some((v, name)) = cs.get(i) else {
+        return format!("{}: no choice {i}", def.key);
+    };
+    match store.set(def.key, *v) {
+        Ok(o) if !o.changed && index(def, store) != i => format!(
+            "{}: stays {} (locked by its variable)",
+            def.key,
+            cs[index(def, store)].1
+        ),
+        Ok(o) => match o.not_saved {
+            None => format!("{} -> {name}", def.key),
+            Some(why) => format!("{} -> {name}; not saved: {why}", def.key),
+        },
+        Err(e) => format!("{}: {e}", def.key),
+    }
+}
+
+/// One step right (or left) through `def`'s choices, wrapping; what to
+/// log.
+pub fn step(def: &Def, store: &Store, right: bool) -> String {
+    let n = choices(def).len().max(1);
+    let i = index(def, store);
+    set(def, store, if right { (i + 1) % n } else { (i + n - 1) % n })
+}
+
 /// One row of many choices: a setting, its label and what it does.
 #[derive(Debug)]
 pub struct ChoiceRow {
     pub def: &'static Def,
     /// The row's name, before its value ("Count: 4").
     pub label: &'static str,
-    /// The description pane's text while the row has the focus: one line
-    /// on a Quick Options page.
+    /// The description pane's text while the row has the focus.
     pub description: &'static str,
     /// What the value picker A opens says about the setting: what it does
     /// and what its choices mean, in a few short sentences. The
     /// description when empty.
     pub explain: &'static str,
-    /// The row's icon in its page's header picture while it has the focus
-    /// (`crate::ui_kit::dialog::icon`), on a page with one.
-    pub icon: Option<u16>,
 }
 
 impl ChoiceRow {
@@ -51,17 +112,11 @@ impl ChoiceRow {
             label,
             description,
             explain: "",
-            icon: None,
         }
     }
     /// The value picker's text ([`ChoiceRow::explain`]).
     pub const fn explain(mut self, text: &'static str) -> Self {
         self.explain = text;
-        self
-    }
-    /// The row's icon ([`ChoiceRow::icon`]).
-    pub const fn icon(mut self, icon: u16) -> Self {
-        self.icon = Some(icon);
         self
     }
     /// What the value picker says: [`ChoiceRow::explain`], else the
@@ -74,66 +129,25 @@ impl ChoiceRow {
         }
     }
 
-    /// The choices in order: each value and how the row shows it.
+    /// The choices in order: each value and how the row shows it
+    /// ([`choices`]).
     pub fn choices(&self) -> Vec<(Value, String)> {
-        match &self.def.kind {
-            Kind::Bool => vec![
-                (Value::Bool(false), "Off".into()),
-                (Value::Bool(true), "On".into()),
-            ],
-            Kind::Int { valid, steps, .. } => {
-                let all: Vec<i64> = if steps.is_empty() {
-                    valid.clone().collect()
-                } else {
-                    steps.to_vec()
-                };
-                all.into_iter()
-                    .map(|v| (Value::Int(v), v.to_string()))
-                    .collect()
-            }
-            Kind::Resolution(_) => vec![(self.def.default, self.def.label(self.def.default))],
-            Kind::Choice(cs) => cs
-                .iter()
-                .map(|c| (Value::Int(c.value), c.label.to_string()))
-                .collect(),
-        }
+        choices(self.def)
     }
 
-    /// The choice `store` holds (the first when its value is none of
-    /// them).
+    /// The choice `store` holds ([`index`]).
     pub fn index(&self, store: &Store) -> usize {
-        let now = store.get(self.def.key);
-        self.choices()
-            .iter()
-            .position(|(v, _)| Some(v) == now.as_ref())
-            .unwrap_or(0)
+        index(self.def, store)
     }
 
-    /// Sets choice `i`, saved at once; what to log.
+    /// Sets choice `i`, saved at once; what to log ([`set`]).
     pub fn set(&self, store: &Store, i: usize) -> String {
-        let cs = self.choices();
-        let Some((v, name)) = cs.get(i) else {
-            return format!("{}: no choice {i}", self.def.key);
-        };
-        match store.set(self.def.key, *v) {
-            Ok(o) if !o.changed && self.index(store) != i => format!(
-                "{}: stays {} (locked by its variable)",
-                self.def.key,
-                cs[self.index(store)].1
-            ),
-            Ok(o) => match o.not_saved {
-                None => format!("{} -> {name}", self.def.key),
-                Some(why) => format!("{} -> {name}; not saved: {why}", self.def.key),
-            },
-            Err(e) => format!("{}: {e}", self.def.key),
-        }
+        set(self.def, store, i)
     }
 
-    /// One step right (or left), wrapping; what to log.
+    /// One step right (or left), wrapping; what to log ([`step`]).
     pub fn step(&self, store: &Store, right: bool) -> String {
-        let n = self.choices().len().max(1);
-        let i = self.index(store);
-        self.set(store, if right { (i + 1) % n } else { (i + n - 1) % n })
+        step(self.def, store, right)
     }
 
     /// The row on a kit screen over `store`.
@@ -149,7 +163,6 @@ impl ChoiceRow {
         )
         .describe(self.description)
         .explain(self.picker_text())
-        .icon_opt(self.icon)
     }
 }
 

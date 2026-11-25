@@ -5,6 +5,7 @@
 
 use crate::Mode;
 use crate::motion::Motion;
+use crate::world::{Pose, Shape};
 
 /// A HUD of ours.
 #[derive(Clone, Debug, PartialEq)]
@@ -59,17 +60,20 @@ impl Hud {
         out
     }
 
-    /// Whether any element is a text widget (and needs the text template).
+    /// Whether any element is a text widget, a text or a gauge (and needs
+    /// the text template).
     pub fn has_text(&self) -> bool {
         self.elements
             .iter()
-            .any(|e| matches!(e.kind, Kind::Text { .. }))
+            .any(|e| matches!(e.kind, Kind::Text { .. } | Kind::Gauge { .. }))
     }
 
     /// Whether any element is placed in the grenade row (and needs the
     /// row's template).
     pub fn uses_grenade_row(&self) -> bool {
-        self.elements.iter().any(|e| e.at.origin != Origin::Anchor)
+        self.elements.iter().any(|e| {
+            e.at.origin != Origin::Anchor || e.at.split_origin.is_some_and(|o| o != Origin::Anchor)
+        })
     }
 }
 
@@ -91,6 +95,12 @@ pub struct Element {
     /// runtime's gate reads the word (E `0x0013ac87`, its third stack
     /// argument); the record's own words stay zero.
     pub hide_when_d: u16,
+    /// HUD pixels it may sit outside the view's HUD frame, in the
+    /// screen's margin: 0 for every element but one placed round retail
+    /// art that is on the frame's edge itself (the motion tracker's rim).
+    /// The frame check lets it out this far and no further, and never off
+    /// the screen.
+    pub outside: i16,
 }
 
 impl Element {
@@ -111,6 +121,7 @@ impl Element {
             at,
             over: None,
             hide_when_d: 0,
+            outside: 0,
         }
     }
     pub fn meter(id: &'static str, art: Art, at: Place) -> Self {
@@ -120,6 +131,7 @@ impl Element {
             at,
             over: None,
             hide_when_d: 0,
+            outside: 0,
         }
     }
     pub fn icon(id: &'static str, art: Art, at: Place) -> Self {
@@ -129,6 +141,19 @@ impl Element {
             at,
             over: None,
             hide_when_d: 0,
+            outside: 0,
+        }
+    }
+    /// A gauge of `glyphs` ([`Kind::Gauge`]): its top-left corner at the
+    /// place.
+    pub fn gauge(id: &'static str, glyphs: Glyphs, at: Place) -> Self {
+        Element {
+            id,
+            kind: Kind::Gauge { glyphs },
+            at,
+            over: None,
+            hide_when_d: 0,
+            outside: 0,
         }
     }
     pub fn pointer(id: &'static str, art: Art, at: Place) -> Self {
@@ -138,11 +163,12 @@ impl Element {
             at,
             over: None,
             hide_when_d: 0,
+            outside: 0,
         }
     }
     /// A channel element: [`Kind::Message`], [`Kind::Prompt`],
-    /// [`Kind::Training`] or [`Kind::Navpoint`], fullscreen only
-    /// ([`Place::GAME`]).
+    /// [`Kind::Training`], [`Kind::Banner`], [`Kind::Navpoint`] or
+    /// [`Kind::WorldMark`], fullscreen only ([`Place::GAME`]).
     pub fn channel(id: &'static str, kind: Kind) -> Self {
         debug_assert!(kind.is_channel());
         Element {
@@ -151,6 +177,7 @@ impl Element {
             at: Place::GAME,
             over: None,
             hide_when_d: 0,
+            outside: 0,
         }
     }
     /// Drawn on `id` by design (see [`Element::over`]).
@@ -162,6 +189,11 @@ impl Element {
     /// [`Element::hide_when_d`]).
     pub fn hidden_on_d(mut self, bits: u16) -> Self {
         self.hide_when_d = bits;
+        self
+    }
+    /// Let `pixels` outside the HUD frame (see [`Element::outside`]).
+    pub fn outside(mut self, pixels: i16) -> Self {
+        self.outside = pixels;
         self
     }
 }
@@ -181,6 +213,12 @@ pub enum Kind {
     Icon { art: Art },
     /// An icon turned to [`Value::angle`] about its centre.
     Pointer { art: Art },
+    /// A picture of ours that fills with [`Value::fill`], 0 to 1, in
+    /// steps: a text widget in [`GAUGE_FONT`] whose one character is the
+    /// picture of [`Glyphs`] for the fill, in the HUD's text colour. For a
+    /// shape no retail bitmap has, as an arc: the pictures are drawn in
+    /// code and served in the fonts (`font::ring`).
+    Gauge { glyphs: Glyphs },
     /// A notification in the pickup list, top left, that fades (the
     /// notification queue, `0x0024cbbf`).
     Message { longest: &'static str },
@@ -190,22 +228,116 @@ pub enum Kind {
     /// The framed box in the middle of the screen (the scripted training
     /// text).
     Training { longest: &'static str },
+    /// The timed centred line of the message routine, 40 pixels above the
+    /// frame's bottom (the user's timed text, `+0x454`, E `0x0024cc73`):
+    /// one line, shown for [`BANNER_TICKS`] from when its value's text
+    /// changes and fading as it goes. A state value, not an event: a new
+    /// shown text starts the line again, the same text keeps it, and
+    /// hiding the value lets it run out.
+    Banner { longest: &'static str },
     /// A navpoint over a point of the world: the `hudg` waypoint marker
     /// and arrow (E `0x0024e59f`), with the value's text, a whole number,
     /// under them in [`NAVPOINT_FONT`]. Its screen point is the runtime's
     /// (the preview's is a sample).
     Navpoint { longest: &'static str },
+    /// A mark lying on the level's geometry (`crate::world`): `shape`'s
+    /// lines at the element's [`Pose`], drawn by the window's world-line
+    /// pass under the HUD, with the value's text as a label over it in
+    /// [`WORLD_FONT`]. Its pose is the runtime's, as a navpoint's point
+    /// is (the preview's is the HUD's sample, [`Describe::world`]).
+    /// `longest` is the widest label any state gives it, empty for a mark
+    /// with none.
+    WorldMark {
+        shape: Shape,
+        longest: &'static str,
+    },
 }
+
+/// The font a gauge's pictures are drawn in: the HUD font, a text
+/// widget's font byte 0.
+pub const GAUGE_FONT: Font = Font::Hud;
+
+/// A gauge's pictures ([`Kind::Gauge`]): a run of `steps + 1` characters
+/// of ours in the fonts, the first the empty picture and the last the
+/// full one, each the same size with its top-left corner at the text's
+/// point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Glyphs {
+    /// The UTF-16 unit of the empty picture; step `k`'s is `first + k`.
+    pub first: u16,
+    /// The fill's steps: a fill of 1 is step `steps`.
+    pub steps: u8,
+    /// The pictures' size in HUD pixels, wide and tall.
+    pub size: (i16, i16),
+}
+
+impl Glyphs {
+    /// The step that shows `fill`: the nearest of 0 to `steps`. A fill
+    /// that is not a number is empty.
+    pub fn step(&self, fill: f32) -> u8 {
+        if fill.is_nan() {
+            return 0;
+        }
+        (fill.clamp(0.0, 1.0) * f32::from(self.steps)).round() as u8
+    }
+    /// The UTF-16 unit of the picture that shows `fill`.
+    pub fn unit(&self, fill: f32) -> u16 {
+        self.first + u16::from(self.step(fill))
+    }
+    /// Every picture's unit, the empty one first.
+    pub fn units(&self) -> impl Iterator<Item = u16> + use<> {
+        let first = self.first;
+        (0..=u16::from(self.steps)).map(move |k| first + k)
+    }
+    /// The text the widget draws at `fill`: the one character.
+    pub fn text(&self, fill: f32) -> String {
+        char::from_u32(u32::from(self.unit(fill)))
+            .map(String::from)
+            .unwrap_or_default()
+    }
+    /// The picture that shows `fill`, as the code that draws it gives it
+    /// (`font::ring::picture`): what the fonts are served with. `None`
+    /// for a unit no code of ours draws.
+    pub fn picture(&self, fill: f32) -> Option<font::ring::Picture> {
+        font::ring::picture(self.unit(fill))
+    }
+}
+
+/// The font a world mark's label is in: the HUD font, engine font 6, at
+/// the size the world labels use.
+pub const WORLD_FONT: Font = Font::Hud;
 
 /// The font a navpoint's number is in: the grenade counts' (font byte 0,
 /// engine font 6).
 pub const NAVPOINT_FONT: Font = Font::Hud;
 
-/// The UTF-16 units of a notification the game keeps: the insert copies 63
-/// (E `0x0024cbee`, `push 3Fh`). A [`Kind::Message`] text longer than
-/// this is refused by the prompt check and by the runtime's
+/// The UTF-16 units of a notification the game keeps: the insert copies
+/// through `0x0013fac0` with 63 (E `0x0024cc24`), which keeps one fewer and
+/// ends the text with a zero, as the banner's copy does ([`BANNER_UNITS`]).
+/// A [`Kind::Message`] text longer than this is refused by the prompt check and by the runtime's
 /// `Handle::notify`.
-pub const MESSAGE_UNITS: usize = 63;
+pub const MESSAGE_UNITS: usize = 62;
+
+/// The UTF-16 units of a banner the game keeps: its copy (E `0x0013fac0`,
+/// called with 63 by `0x0024cc73`) keeps one fewer than it is given and
+/// ends the text with a zero.
+pub const BANNER_UNITS: usize = 62;
+
+/// How long a banner shows, in game ticks: three seconds at 30 (Design).
+pub const BANNER_TICKS: u32 = 90;
+
+/// Why `text` cannot be a banner, if it cannot: more than
+/// [`BANNER_UNITS`] UTF-16 units, or a line break (the line is one).
+pub fn banner_fault(text: &str) -> Option<String> {
+    let units = text.encode_utf16().count();
+    if units > BANNER_UNITS {
+        Some(format!("{units} characters, over {BANNER_UNITS}"))
+    } else if text.contains(['\n', '\r']) {
+        Some("more than one line".into())
+    } else {
+        None
+    }
+}
 
 /// Why `text` cannot be a notification, if it cannot: more than
 /// [`MESSAGE_UNITS`] UTF-16 units, or a line break (a notification is one
@@ -229,10 +361,13 @@ impl Kind {
             Kind::Meter { .. } => "meter",
             Kind::Icon { .. } => "icon",
             Kind::Pointer { .. } => "pointer",
+            Kind::Gauge { .. } => "gauge",
             Kind::Message { .. } => "message",
             Kind::Prompt { .. } => "prompt",
             Kind::Training { .. } => "training",
+            Kind::Banner { .. } => "banner",
             Kind::Navpoint { .. } => "navpoint",
+            Kind::WorldMark { .. } => "world mark",
         }
     }
     /// A channel into the message or training parts, not a widget.
@@ -242,15 +377,27 @@ impl Kind {
             Kind::Message { .. }
                 | Kind::Prompt { .. }
                 | Kind::Training { .. }
+                | Kind::Banner { .. }
                 | Kind::Navpoint { .. }
+                | Kind::WorldMark { .. }
         )
     }
-    /// A channel into the game's text lines: a message, the prompt or the
-    /// training box (the prompt check's).
+    /// A mark on the level's geometry, and its shape.
+    pub fn world(&self) -> Option<Shape> {
+        match self {
+            Kind::WorldMark { shape, .. } => Some(*shape),
+            _ => None,
+        }
+    }
+    /// A channel into the game's text lines: a message, the prompt, the
+    /// training box or the banner (the prompt check's).
     pub fn is_lines(&self) -> bool {
         matches!(
             self,
-            Kind::Message { .. } | Kind::Prompt { .. } | Kind::Training { .. }
+            Kind::Message { .. }
+                | Kind::Prompt { .. }
+                | Kind::Training { .. }
+                | Kind::Banner { .. }
         )
     }
     pub fn art(&self) -> Option<Art> {
@@ -265,7 +412,9 @@ impl Kind {
             | Kind::Message { longest }
             | Kind::Prompt { longest }
             | Kind::Training { longest }
-            | Kind::Navpoint { longest } => Some(longest),
+            | Kind::Banner { longest }
+            | Kind::Navpoint { longest }
+            | Kind::WorldMark { longest, .. } => Some(longest),
             _ => None,
         }
     }
@@ -295,6 +444,12 @@ pub struct Place {
     pub registration: [f32; 2],
     /// What the offsets are from.
     pub origin: Origin,
+    /// What the half and quarter offsets are from, when it is not
+    /// `origin`: an element beside the motion tracker fullscreen that
+    /// sits in the grenade row in split screen. A widget has one anchor,
+    /// so with a row origin in split screen `anchor` is the row's
+    /// (`records::placed` refuses another).
+    pub split_origin: Option<Origin>,
 }
 
 /// What a [`Place`]'s offsets are from.
@@ -325,6 +480,7 @@ impl Place {
             quarter: None,
             registration: [0.0, 0.0],
             origin: Origin::Anchor,
+            split_origin: None,
         }
     }
     /// Offsets from `origin` in the grenade row, in every screen mode the
@@ -337,6 +493,19 @@ impl Place {
     pub const fn from(mut self, origin: Origin) -> Self {
         self.origin = origin;
         self
+    }
+    /// The half and quarter offsets from `origin`, the fullscreen one
+    /// as it was ([`Place::split_origin`]).
+    pub const fn split_from(mut self, origin: Origin) -> Self {
+        self.split_origin = Some(origin);
+        self
+    }
+    /// What `mode`'s offset is from.
+    pub fn origin_in(&self, mode: Mode) -> Origin {
+        match (mode, self.split_origin) {
+            (Mode::Half | Mode::Quarter, Some(o)) => o,
+            _ => self.origin,
+        }
     }
     pub const fn registered(mut self, registration: [f32; 2]) -> Self {
         self.registration = registration;
@@ -455,6 +624,22 @@ pub enum Style {
     Inactive,
     /// Run through a `hudg` flash record.
     Flash(Pulse),
+    /// The go green (`world::GO_GREEN`), for a world mark alone: "this
+    /// will work", as the approach guide's will-bounce call. A
+    /// widget or a text channel in it is a finding of the `world` check
+    /// and is not drawn.
+    Go,
+    /// Team `n`'s colour (`0..world::TEAMS`), as the game gives it
+    /// (docs/game/hud-kit.md, "Colours"), for a world mark alone: a
+    /// widget or a text channel in it, or a team outside the game's, is a
+    /// finding of the `world` check. Where the game has no colour for the
+    /// team the mark is in the user's HUD colour.
+    Team(u8),
+    /// Axis `n`'s colour (`0..world::AXES`: X, Y, Z, `world::AXIS_COLOURS`),
+    /// for a world mark alone, as a gizmo's three segments: a widget or a
+    /// text channel in it, or an axis outside the three, is a finding of
+    /// the `world` check.
+    Axis(u8),
 }
 
 impl Style {
@@ -464,6 +649,9 @@ impl Style {
             Style::Dim => "dim".into(),
             Style::Inactive => "inactive".into(),
             Style::Flash(p) => format!("flash {}", p.name()),
+            Style::Go => "go".into(),
+            Style::Team(n) => format!("team {n}"),
+            Style::Axis(n) => format!("axis {n}"),
         }
     }
 }
@@ -499,7 +687,7 @@ impl Pulse {
 pub struct Value {
     pub shown: bool,
     pub text: String,
-    /// A meter's fill, 0 to 1.
+    /// A meter's or a gauge's fill, 0 to 1.
     pub fill: f32,
     /// A pointer's turn, radians clockwise from straight up.
     pub angle: f32,
@@ -591,6 +779,13 @@ impl Values {
     }
 }
 
+/// The retail bitmap widgets, by name string, a user in monitor mode
+/// still draws: the motion tracker's background (V: `ui\hud\masterchief`
+/// bitmap widgets 5 and 7, docs/halo1/hud.md, "The motion sensor's
+/// centre"). Its blips are the game's own draw (`0x1a2823`), not a widget,
+/// and stay with it (docs/game/forge-firefight-ui.md, decision 3).
+pub const MONITOR_KEEPS: &[&str] = &["motion_sensor"];
+
 /// A HUD of ours and the named states its preview sheet draws.
 pub trait Describe {
     fn hud(&self) -> Hud;
@@ -602,5 +797,31 @@ pub trait Describe {
     /// `00a_introduction`) is no failure of it.
     fn multiplayer_only(&self) -> Option<&'static str> {
         None
+    }
+    /// The HUDs, by `Hud::name`, that never show together with this one:
+    /// two that declare each other cannot meet on the screen (one is for
+    /// a monitor, the other for a biped), so the `own` check does not
+    /// compare them. The runtime hides the one whose user is not in its
+    /// mode.
+    fn never_with(&self) -> &'static [&'static str] {
+        &[]
+    }
+    /// The HUD is a monitor's: shown only for a user in monitor mode
+    /// (docs/game/forge-firefight-ui.md, "The monitor HUD"). The retail
+    /// widgets are off for that user but the ones named in
+    /// [`MONITOR_KEEPS`] (the runtime's `Handle::retail`), so the HUD is
+    /// compiled and checked against those alone, and its grenade row
+    /// origins resolve to the row's first place
+    /// (`templates::Templates::for_monitor`).
+    fn monitor(&self) -> bool {
+        false
+    }
+    /// The sample poses of the HUD's world marks in the state `state`,
+    /// for the preview and the checks: world units in a scene of the
+    /// state's own, whose origin the preview puts at its world sample.
+    /// The runtime gives the real ones (`Handle::world_mark`). A world
+    /// mark a state shows needs one.
+    fn world(&self, _state: &str) -> Vec<(&'static str, Pose)> {
+        Vec::new()
     }
 }

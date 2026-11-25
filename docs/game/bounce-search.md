@@ -36,7 +36,7 @@ to the aim, "side" its left.
 
 | Key | Unit | Range searched | Default (the route's own) | Used by |
 |---|---|---|---|---|
-| `how` | `runoff`, `jump`, `stand` | every one the site allows | `bounce_route::drop_takeoff`'s choice; `stand` for `Site::standing` | all |
+| `how` | `runoff`, `jump`, `stand` | every one the site allows: a site with no measured drop (`Site::drop_known`, every scanned one) allows the stand and both drops | `bounce_route::drop_takeoff`'s choice; `stand` for `Site::standing` | all |
 | `fx` `fy` `fz` | point | ±0.5 to the side of the default | the launch point: `bounce_route::launch_from` | drop |
 | `ax` `ay` | point | ±0.4 along, ±0.3 to the side of the default | `Site::target` | all |
 | `yaw` | degrees | ±20 | 0: the run heads along the launch-to-aim line | drop |
@@ -75,7 +75,9 @@ moving the aim moves the miss (`learn::Try::from_leap`):
 | no touchdown by the strip (`no_drop`, `no_landing`, `timeout`) | 0 |
 | the bot died before it stood again (a Bounced fall, a fall out of the map) | the above, minus 1 |
 
-`need` is the site's (`Site::need`; unknown: the speed term is 0.2). Any
+`need` is the site's (`Site::need`): a measured one, else the one
+threshold every seam shares, 5.4 units/s
+([superbounce.md, "Speed"](superbounce.md#speed)). Any
 bounce outscores any landing that did not bounce, a deadly bounce scores
 under a clean miss, and among misses the score rises as the miss shrinks
 and the landing speeds up: that slope is what the search climbs before a
@@ -170,8 +172,21 @@ A match with `superbounce = true` and a `[train]` table is a training run
 (`sim::train::TrainConfig`, refused without `superbounce`, as a `[drill]`
 is). Its bots share one board, `learn::Board` (process-wide, as
 `practice::CLAIMS` is), built from the map's bounce sites and its
-`.learned` at the first pick:
+`.learned` at the first pick. Every known site is on it, the scan's
+candidates (single creases, Vs and busy points, `Site::candidate`)
+too: the training is what proves them. A site with no measured drop
+(`mind::practice::site_in`) allows the stand first, then a run-off and a
+running jump from its launch floor: the nav floor whose takeoff gives a
+3.45 apex-to-floor drop (`bounce_route::DROP_AIM`), within the 3.35 to
+3.60 window. A floor at that height is a run-off; failing that, one a
+jump's rise lower is a running jump (`bounce_route::launch_floor`). An
+old measured fall height does not choose the floor; an explicit learned
+or measured takeoff still wins.
 
+- **Vs.** A V's arm (`Site::arm`, [superbounce.md,
+  "Vs"](superbounce.md#single-creases)) is on the board twice
+  (`mind::practice::sites_in`); see [Vs: the mirror and its
+  control](#vs-the-mirror-and-its-control).
 - **Shards.** A run owns the sites whose spot id modulo `shards` is its
   `shard`. Runs of one batch never fly the same site, so their files merge
   without conflict and the result does not depend on `--parallel`.
@@ -200,6 +215,33 @@ closed sites are skipped, open ones carry on from their line's cursor
 (`stage`, `axis`, `shrink`, `moved`, `scattered`, `tries`). Running the
 same command again continues; nothing else is kept between batches.
 
+### Vs: the mirror and its control
+
+The landing on a V mirrors the approach: a player coming in from one
+side of the V's bisector lands on the arm across it. Each arm's spot
+records that side (`superbounce::Arm::from`), and the board flies the
+arm twice:
+
+- **The mirror**: the arm as the scan gives it. Its standing approach is
+  behind it along its drift, which points across the bisector onto the
+  arm, so the walk ends on the far side; its launch floor is looked for
+  half `LEDGE_REACH` that way, within half the reach, and a floor on the
+  arm's own side is none (`bounce_route::launch_floor`, a void
+  `no_launch_floor` try). Its id and line are the arm's own.
+- **The control**: the same arm from its own side (`Site::same_side`:
+  `from` and the drift turned round, the mirror's learned knobs dropped),
+  flown as a site of its own (`SiteIn::control`). Its id is
+  `learned::control_id`, FNV-1a 64 of `"<map> <x> <y> <z> control"`, and
+  its line is a control line (`control=1`), merged and replaced apart
+  from the arm's line at the same position. A control line is evidence
+  only: `entry_for`, `knobs_for` and `learned::apply` never take it, so
+  it never steers play or moves a spot's aim.
+
+The arm's line against its control's says whether the mirror holds: the
+mirror bouncing and the control not confirms it; the control bouncing as
+well refutes it. A V's tip or bottom line is one site, flown as any
+other.
+
 ### How the route uses a line
 
 - **Loading.** `spots::learned_for(map)` reads and keeps the file as
@@ -225,6 +267,15 @@ same command again continues; nothing else is kept between batches.
   numbers; `air_stick` takes the let-go distance as an argument. The
   search's centre for a site with no line is `Flown` turned back into
   `Knobs`, so a search starts from what the route plays.
+- **The flight net.** The nav worker also publishes the map's floor
+  polygons (`spots::read_floors`, `spots::publish_floors`). Before a
+  real drop runs or jumps, `bounce_route::judge_takeoff` flies its
+  takeoff on the flight model, then hands the last part of the fall to
+  `superbounce::rule::predict`. The aim is at most 0.05 from the nearest
+  floor-polygon edge (moved to 0.02 from it when needed), with 0.3 units/s
+  held across that edge. A takeoff the rule does not call a bounce is
+  rejected as `takeoff_rejected` before the run. Training tries fly their
+  knobs unjudged, so the search can measure failed takeoffs too.
 - **Training.** A try's site is the known site with the board's knobs
   over its own (`Site::knobs`), so the route flies it as it flies a line.
   `mind::practice` has the training loop beside the drill's
@@ -235,9 +286,13 @@ same command again continues; nothing else is kept between batches.
   is a scored try, not a dropped one), hand it to the board. Each try
   still logs its `bots: bounce try:` line, with the knobs appended.
 - **Practice and play.** The practice's pick weighs a `learned` site +1
-  (`practice::weight`). Nothing else changes: `.verified` and `.ghosts`
+  (`practice::weight`). A route or a show-off never takes a candidate
+  until a game run proved it (`Site::plays`). `.verified` and `.ghosts`
   still say what a real primed run did, and a `learned` site becomes
-  proven only by one.
+  proven only by one. The game's spot list takes a `learned` or
+  `partial` line's aim over the scan's (`superbounce::learned::apply`,
+  [superbounce.md, "Bounce"](superbounce.md#bounce)), and leaves its
+  status alone.
 
 ## Interfaces
 
@@ -263,6 +318,9 @@ state  = "open" | "learned" | "partial" | "dead" | "blocked"
 
 - `x y z` is the site's `stand` as the scan gave it; a line is about the
   bounce spot within `verified::MATCH` and `MATCH_Z` of it.
+- **`control=1`**, first after the position when set: a V arm's control
+  line ([Vs: the mirror and its control](#vs-the-mirror-and-its-control)),
+  a site of its own beside the arm's line at the same `x y z`.
 - **Knob keys**: the table in "The knobs". One left out is the route's
   own. `to_text` writes every knob the line's `how` uses.
 - **Evidence keys**: `tries` (scored tries), `hits` (of them, bounced),

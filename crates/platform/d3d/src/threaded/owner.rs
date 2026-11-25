@@ -76,6 +76,20 @@ pub trait OwnerEvents: Send + Sync {
 
 impl OwnerEvents for () {}
 
+/// Display frames between owned presents (docs/graphics/framescene.md,
+/// section 7 and slice 8). The render thread asks whenever nothing is
+/// queued, so the guest's commands always go first. A frame drawn here is
+/// host-only: it never touches the guest's attachments, tickets or
+/// sampled textures.
+pub trait DisplayRate<B: Backend>: Send {
+    /// Draws a display frame if one is due at `now`. Returns when to ask
+    /// again; `None` waits for the next command.
+    fn idle(&mut self, backend: &mut B, now: Instant) -> Option<Instant>;
+    /// A Swap went out without the graph: the scenes no longer follow on
+    /// from what is on screen.
+    fn declined(&mut self) {}
+}
+
 pub struct FrameOwner<B: Backend> {
     /// Guest Swap ordinal and the owner's generation at submission.
     pub select: Box<dyn FnMut(u64, u64) -> Option<Submission<B>> + Send>,
@@ -121,7 +135,6 @@ pub fn stats() -> Option<OwnerStats> {
 pub(super) struct Present<B: Backend> {
     pub n: u64,
     pub surface: u32,
-    pub at: Instant,
     pub flags: u32,
     pub gamma: Option<Box<[u8; 768]>>,
     pub candidate: Option<Submission<B>>,
@@ -133,6 +146,9 @@ pub(super) struct Present<B: Backend> {
 
 pub(super) enum RenderOp {
     Stage(Box<crate::SceneStage<u32>>),
+    /// Match this as a stage if the graph owns the frame. On fallback
+    /// submit its already verified recordings exactly once.
+    SealedStage { stage: Box<crate::SceneStage<u32>>, copies: Vec<crate::ExternalRecording> },
     BeginQuery,
     EndQuery { proxy: u64 },
     Clear { color: u32, depth: Option<u32>, clear: Box<Clear> },
@@ -145,6 +161,10 @@ impl RenderOp {
     pub fn issue<B: Backend>(self, w: &mut Worker<B>) -> Result<(), String> {
         match self {
             Self::Stage(stage) => stage::issue(*stage, w),
+            Self::SealedStage { copies, .. } => {
+                for copy in copies { w.inner.commit_external(copy); }
+                Ok(())
+            }
             Self::BeginQuery => w.inner.clear_pixel_count(),
             Self::EndQuery { proxy } => w.issue_report(proxy),
             Self::Clear { color, depth, clear } => {
@@ -213,6 +233,16 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
             });
         }
         self.frame_owner = Some(owner);
+        self
+    }
+
+    /// Draw display frames between owned presents on the render thread
+    /// ([`DisplayRate`]).
+    pub fn with_display_rate(self, rate: Box<dyn DisplayRate<B>>) -> Self {
+        self.post(move |w| {
+            w.display_rate = Some(rate);
+            Ok(())
+        });
         self
     }
 }
@@ -289,11 +319,16 @@ fn target_map<B: Backend>(
             }
         };
         match (op, command) {
-            (ReplayOp::Sample { of, id, how }, Cmd::Sample(sample)) if how == &sample.how => {
+            (ReplayOp::Sample { of, id, how, into }, Cmd::Sample(sample)) if how == &sample.how => {
                 bind(&mut targets, *of, Some(sample.surface))?;
+                // A refill names the sample whose texture it reuses: the
+                // same proxy, refilled in place on the device's side.
+                if into.is_some_and(|prev| samples.get(&prev) != Some(&sample.proxy)) { return None; }
                 if samples.insert(*id, sample.proxy).is_some() { return None; }
             }
-            (ReplayOp::Stage(kept), Cmd::Render(RenderOp::Stage(queued))) => {
+            (ReplayOp::Stage(kept), Cmd::Render(
+                RenderOp::Stage(queued) | RenderOp::SealedStage { stage: queued, .. }
+            )) => {
                 stage::bind_targets(&mut targets, kept, queued)?;
             }
             (ReplayOp::BeginFlareQuery, Cmd::Render(RenderOp::BeginQuery)) => {}
@@ -367,7 +402,11 @@ impl<B: Backend> Worker<B> {
             for (_, ticket) in outputs.tickets { self.inner.drop_pixel_count(ticket); }
             return Err("native sampled targets do not match the submitted textures".into());
         }
-        for (id, handle) in outputs.samples {
+        // A pooled frame-buffer copy is one proxy sampled several times
+        // (`Backend::snapshot_surface_into`): it keeps its last sample.
+        let mut outputs_by_id: Vec<_> = outputs.samples.into_iter().collect();
+        outputs_by_id.sort_unstable_by_key(|&(id, _)| id);
+        for (id, handle) in outputs_by_id {
             self.textures.insert(samples[&id], handle);
         }
         self.tickets.extend(outputs.tickets);
@@ -376,8 +415,23 @@ impl<B: Backend> Worker<B> {
         Ok(game_queries)
     }
 
+    /// The display-rate loop's turn while nothing is queued. A refused
+    /// transaction runs the guest's commands on the device as they come,
+    /// so no display frame is drawn in the middle of one.
+    pub(super) fn display_idle(&mut self) -> Option<Instant> {
+        if self.transaction.as_ref().is_some_and(|t| t.refused) {
+            return None;
+        }
+        let rate = self.display_rate.as_mut()?;
+        rate.idle(&mut self.inner, Instant::now())
+    }
+
     pub(super) fn owner_present(&mut self, present: Present<B>) {
-        let Present { n, surface, at, flags, gamma, candidate, generation, events, metadata: _ } = present;
+        // The metadata is this thread's present around this call
+        // (`Worker::exec`): the draw and a display-rate loop read the
+        // guest's image from it (`present_camera::guest_image`) to place
+        // the marks of the display frames they show.
+        let Present { n, surface, flags, gamma, candidate, generation, events, metadata: _ } = present;
         let transaction = self.transaction.replace(Transaction::new()).expect("owner installed");
         let accepted = candidate.and_then(|submission| {
             if self.shared.failed.load(Ordering::Acquire) {
@@ -431,7 +485,6 @@ impl<B: Backend> Worker<B> {
         use crate::scene_sink::window::DisplayResult;
         let mut outcome = DisplayResult::Failed;
         let raster = self.measure_present_raster(surface);
-        self.inner.stamp_present(at);
         if let Some((frame, draw, targets, samples)) = accepted {
             // The worker owns this scene and all of its original commands.
             // A locked producer can queue the next scene while this draws.
@@ -462,6 +515,9 @@ impl<B: Backend> Worker<B> {
                 }
             }
         } else {
+            if let Some(rate) = self.display_rate.as_mut() {
+                rate.declined();
+            }
             for cmd in transaction.commands {
                 self.exec_original(cmd);
             }

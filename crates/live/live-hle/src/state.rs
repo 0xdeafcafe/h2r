@@ -187,8 +187,9 @@ pub(crate) struct State {
     /// The guest's system time for the call in progress, when it is the
     /// accepted-invitation read ([`State::set_guest_now`]).
     guest_now: Option<u64>,
-    /// The network's registered keys for the stat read in progress
-    /// ([`State::set_read_keys`]): they name the session joined.
+    /// The network's registered keys for the stat read or arbitration
+    /// call in progress ([`State::set_read_keys`]): they name the session
+    /// joined.
     read_keys: Option<Vec<[u8; 8]>>,
     /// The bot accounts the server leased to this console for this logon
     /// (docs/game/bots.md §9.5): every bot of each roster it answered
@@ -200,6 +201,9 @@ pub(crate) struct State {
     /// The clanker hoppers the server served last (docs/game/bots.md §8),
     /// for the Clankermatch row's playlists, the search and the lobby fill.
     clankers: crate::clankermatch::Marks,
+    /// The co-op relay asked of the worker and not answered yet: the
+    /// session it is for ([`State::coop_relay`]).
+    relay_ask: Option<(String, Pending)>,
 }
 
 /// The bot accounts leased to this console ([`State::roster_bots`]).
@@ -247,6 +251,7 @@ impl State {
             read_keys: None,
             leased: Leased::default(),
             clankers: Default::default(),
+            relay_ask: None,
         }
     }
     pub fn set_accounts(&mut self, accounts: Vec<Account>) {
@@ -789,6 +794,11 @@ impl State {
         self.sessions
             .set_variant_ext(ext, self.service.as_ref(), session.as_ref());
     }
+    pub fn set_session_firefight(&mut self, firefight: Option<live_proto::session::Firefight>) {
+        let session = self.session();
+        self.sessions
+            .set_firefight(firefight, self.service.as_ref(), session.as_ref());
+    }
     pub fn set_session_rules(&mut self, rules: Option<String>) {
         let session = self.session();
         self.sessions
@@ -817,6 +827,43 @@ impl State {
         self.sessions
             .set_coop(campaign, skulls, self.service.as_ref(), session.as_ref());
         let _ = self.set_activity(activity.as_deref());
+    }
+    /// Mark (Some) or unmark (None) this console's open advertisements as
+    /// a Forge-mode lobby's (`flags: "forge"`): a shared Forge session's
+    /// machines may use the co-op relay
+    /// ([`Sessions::set_forge`], docs/game/forge-design.md).
+    pub fn set_forge(&mut self, on: bool) {
+        let session = self.session();
+        self.sessions
+            .set_forge(on, self.service.as_ref(), session.as_ref());
+    }
+    /// Takes this console's unanswered ask for `session`'s co-op relay, if
+    /// it is the session asked ([`State::ask_relay`]). The caller waits on
+    /// the returned [`Pending`] with no state lock held.
+    pub(crate) fn take_relay_ask(&mut self, session: &str) -> Option<Pending> {
+        self.relay_ask
+            .take_if(|(asked, _)| asked == session)
+            .map(|(_, pending)| pending)
+    }
+
+    /// Asks the Live worker for `session`'s co-op relay (its URL and a
+    /// `sessions.relay` token, minted on the worker; nothing is sent to
+    /// the server), unless one is asked for already.
+    pub(crate) fn ask_relay(&mut self, session: &str) {
+        if self.relay_ask.as_ref().is_some_and(|(asked, _)| asked == session) {
+            return;
+        }
+        let connection = self.session();
+        let asked = self.service.as_ref().and_then(|service| {
+            service
+                .coop_relay(connection.as_ref()?, session.to_owned())
+                .ok()
+        });
+        if let Some(pending) = asked {
+            self.relay_ask = Some((session.to_owned(), pending));
+        } else {
+            self.relay_ask = None;
+        }
     }
     pub fn sync_squad_slots(&mut self, slots: crate::SessionSlots) {
         let connection = self.session();
@@ -1511,6 +1558,76 @@ impl State {
                 );
                 self.outbox.attach(m.u32(a[8])?, pending);
             }
+            // A friend request made in the game reaches the server as a
+            // signed event on the player's account stream; the outbox
+            // capture stays for the title's view of the send.
+            if result == 0
+                && matches!(
+                    op,
+                    crate::outbox::Op::FriendRequest | crate::outbox::Op::FriendRequestByName
+                )
+                && let (Some(service), Some(session)) = (&self.service, self.session())
+            {
+                let capture = self.outbox.last().unwrap();
+                let request = match capture.recipients.first() {
+                    Some(crate::outbox::MessageRecipient::User(u)) => {
+                        client::SocialRequest::FriendRequest {
+                            to: live_proto::Xuid(u.xuid),
+                        }
+                    }
+                    Some(crate::outbox::MessageRecipient::Gamertag(tag)) => {
+                        client::SocialRequest::FriendRequestByName(tag.clone())
+                    }
+                    None => unreachable!(),
+                };
+                let out = if op == crate::outbox::Op::FriendRequest {
+                    a[6]
+                } else {
+                    a[4]
+                };
+                let pending = service.social(&session, sender, request);
+                self.outbox.attach(m.u32(out)?, pending);
+            }
+            // A plain text message (the generic send) reaches each friend's
+            // server mailbox as a signed `MessageSent`; the task reports the
+            // server's answer. Voice attachments are not sent, and a message
+            // with no text property stays a local capture.
+            if result == 0
+                && op == crate::outbox::Op::Send
+                && let (Some(service), Some(session)) = (&self.service, self.session())
+            {
+                let capture = self.outbox.last().unwrap();
+                let text = match capture
+                    .message
+                    .properties
+                    .get(&TEXT_PROPERTY)
+                    .filter(|_| capture.message.message_type == 1)
+                {
+                    Some(crate::outbox::MessageProperty {
+                        value: crate::outbox::MessageValue::String(t),
+                        ..
+                    }) if !t.trim().is_empty() => Some(t.clone()),
+                    _ => None,
+                };
+                if let Some(text) = text {
+                    let to = capture
+                        .recipients
+                        .iter()
+                        .filter_map(|r| match r {
+                            crate::outbox::MessageRecipient::User(u) => {
+                                Some(live_proto::Xuid(u.xuid))
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    let pending = service.social(
+                        &session,
+                        sender,
+                        client::SocialRequest::Text { to, text },
+                    );
+                    self.outbox.attach(m.u32(a[5])?, pending);
+                }
+            }
             return Ok(result);
         }
         if let Arbitration(op) = op {
@@ -1522,6 +1639,8 @@ impl State {
             }
             let session = self.session();
             let advertising = self.sessions.current_id();
+            let keys = self.read_keys.take().unwrap_or_default();
+            let game_session = self.game_session(&keys);
             return self.arbitration.invoke(
                 op,
                 a,
@@ -1531,6 +1650,8 @@ impl State {
                     service: self.service.as_ref(),
                     session: session.as_ref(),
                     advertising,
+                    game_session,
+                    keys,
                 },
             );
         }
@@ -2450,6 +2571,9 @@ fn bot_record(xuid: u64, gamertag: &str) -> [u8; USER_SIZE] {
     r[12..12 + tag.len()].copy_from_slice(tag);
     r
 }
+
+/// The message property that holds a text message's text (a UTF-16 string).
+const TEXT_PROPERTY: u16 = 0x6c4;
 
 /// Presence's words for a co-op campaign on `level` (cut to fit).
 pub fn coop_activity(level: &str) -> String {

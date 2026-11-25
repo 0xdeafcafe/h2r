@@ -2,18 +2,23 @@
 //! game's script and state, and what each moment of the game does with it
 //! (docs/game/rules-engine.md, "The host runtime").
 //!
-//! The feature (`super::feature`) and the superbounce mode call in at six
+//! The feature (`super::feature`) and the superbounce mode call in at eight
 //! moments:
 //!
 //! - [`Runtime::start`] after a successful `GAME_ACTIVATE`: read the
 //!   record's script reference, find the blob, verify it, refuse what no
 //!   host can run, check the map's labels (the start gate), refuse what
-//!   this host cannot run yet by name, start the VM, run `on init` and set
-//!   the `RULES` record. A refusal is kept with its reason and logged; the
-//!   game then plays as the carrier engine's lifted rules. A map the gate
+//!   this host cannot run yet by name, start the VM, run `on init` and the
+//!   first round's `on round_start`, and set the `RULES` record. A
+//!   refusal is kept with its reason and logged; the game then plays as
+//!   record's engine's lifted rules. A map the gate
 //!   blocks plays no rules at all: [`Status::Blocked`] keeps every problem,
 //!   no VM is made, and the first tick boundary ends the game
-//!   (docs/game/rules-start-gate.md, "What a blocked start shows").
+//!   (docs/game/rules-start-gate.md, "What a blocked start shows"). A
+//!   script with a `uses` line, after the policy check, runs that
+//!   type's built-in script under the record ([`used_builtin`],
+//!   [`Carried`]): every step after that is the built-in's, and a
+//!   refusal names both.
 //! - [`Runtime::pre_tick`] before each game tick: the VM's tick begins and
 //!   its queued calls join the calls the handlers made since the last
 //!   boundary. The feature makes them, in order, in an async body
@@ -21,10 +26,18 @@
 //!   also asks `GAME_ENGINE_AUTHORITATIVE`; a machine that is not the
 //!   authority drops the script and its record.
 //! - [`Runtime::kill`] at `PLAYER_KILLED`'s entry: `on kill`.
-//! - [`Runtime::bounces`] after each game tick, from the superbounce
-//!   mode's medal chain: `on bounce` and `on bounced`, each bounce and
-//!   Bounced on the tick its chain files it.
-//! - [`Runtime::post_tick`] after each game tick: timers, then `on tick`.
+//! - [`Runtime::round_start`] at the engine's round reset
+//!   (`ENGINE_ROUND_RESET`) as each later round begins: `on round_start`.
+//! - [`Runtime::quit`] at the engine's player-left notice
+//!   (`ENGINE_PLAYER_LEFT`): `on quit`.
+//! - [`Runtime::physics`] and then [`Runtime::bounces`] after each game
+//!   tick, from the superbounce mode's medal chain: `on touchdown`, `on
+//!   launch` and `on grounded` for what the chain saw of each player's
+//!   physics (`super::world::physics`), then `on bounce` and `on bounced`,
+//!   each bounce and Bounced on the tick its chain files it.
+//! - [`Runtime::post_tick`] after each game tick: the roster's and the
+//!   zones' changes (`on death`, `on spawn`, `on leave`, `on enter`;
+//!   `super::world::zones`), then timers, then `on tick`.
 //! - [`Runtime::ended`] after `GAME_END`: the record is removed.
 //!
 //! The agent API's `rules.reload` (`super::reload`) calls
@@ -37,8 +50,9 @@
 //! `GAME_TICK`, through the mechanism Firefight's tick hook uses, ahead of
 //! the VM's queued calls. A score therefore lands at the next tick
 //! boundary rather than inside the kill, and a read in the same handler
-//! does not see it. The carrier's own scoring does not run beside it
-//! (`super::scoring`).
+//! does not see it. On the script index no retail engine scores beside
+//! it: the engine object's kill slot is an empty body
+//! (`super::engine_object`).
 //!
 //! **State.** The VM's state is the `RULES` record of the `SimExt` blob
 //! ([`Store`]), written after every run that changed it. Before each run
@@ -47,13 +61,14 @@
 //! that is gone (a full restore) stops the script with a refusal.
 
 use std::collections::VecDeque;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use ::rules::caps::{self, Kind, Status as EntryStatus, id};
-use ::rules::ir::{Event, Ir, Op};
-use ::rules::vm::{Arg, Call as VmCall, Game, Input, Placed, RulesExt, ScriptError, TICK_BUDGET, Vm};
+use ::rules::ir::{Event, Ir, Op, TagGroup};
+use ::rules::vm::{Arg, Call as VmCall, Fired, Game, Input, Placed, RulesExt, ScriptError, TICK_BUDGET, Vm};
 use ::rules::policy::{self, Context};
 use ::rules::{Sha256, verify};
+use ::rules::types::Type;
 use agent_proto::rules as wire;
 use engine::GuestMemory;
 use engine::entry::{Cx, EntryError, GuestCall, Ret};
@@ -62,15 +77,19 @@ use variants::ext::{Ext, Mode};
 
 use super::census::{self, Table};
 use super::guest;
+use super::world::data;
+use super::world::map_tags::{self, TagIndex};
+use super::world::zones::{self, Change, Seen, Zones};
+use sim_state::SimEvent;
 use crate::firefight::runtime::read_players;
 use forge_doc::LabelledThing;
 
 /// The match seed until the session data carries one (as Firefight's).
 pub const SEED: u64 = 0;
-/// Engine indices whose built-in script has passed parity and so runs for
-/// a record with no script mode (rules-engine.md, "A record with no
-/// mode"). Empty: Slayer stays lifted until its port passes.
-pub const PORTED: &[u8] = &[];
+/// Engine indices whose built-in script runs for a record with no script
+/// mode (rules-engine.md, "A record with no mode"): Juggernaut (7), whose
+/// events and entries this host all delivers and makes.
+pub const PORTED: &[u8] = &[7];
 /// The engine refusals `rules.state` keeps.
 pub const ERRORS_KEPT: usize = 16;
 /// The options mode of a multiplayer game (`[GAME_GLOBALS] + 8`).
@@ -80,11 +99,29 @@ pub const MODE_MULTIPLAYER: u32 = 2;
 /// refused at load by the event's name.
 pub const DELIVERED: &[Event] = &[
     Event::Init,
+    Event::RoundStart,
     Event::Kill,
+    Event::Quit,
     Event::Timer,
     Event::Tick,
     Event::Bounce,
     Event::Bounced,
+    // From the superbounce mode's medal chain, while it runs
+    // (`super::world::physics`).
+    Event::Touchdown,
+    Event::Launch,
+    Event::Grounded,
+    // From the roster and the zones at each tick's end
+    // (`super::world::zones`).
+    Event::Spawn,
+    Event::Death,
+    Event::Enter,
+    Event::Leave,
+    // The VM's own, when a mover ends (`Vm::update`).
+    Event::Arrive,
+    // From the tick's `SimEvent::Damage` events (`Runtime::post_tick`,
+    // `super::world::data::damage_inputs`).
+    Event::Damage,
 ];
 /// The read entries this runtime answers.
 pub const READS: &[u16] = &[
@@ -94,6 +131,9 @@ pub const READS: &[u16] = &[
     id::DEATHS,
     id::ALIVE,
     id::TEAM_OF,
+    // A HUD widget's side and slot (`super::world::hud`).
+    id::SIDE_OF,
+    id::SLOT_OF,
     id::LIVES,
     id::ROUND_TIME_LEFT,
     id::IS_OBJECTIVE,
@@ -103,6 +143,22 @@ pub const READS: &[u16] = &[
     id::LABEL_OF,
     id::ZONE_ID,
     id::OBJECT_TEAM,
+    // The zone test and the roster's units (`super::world::zones`).
+    id::INSIDE,
+    id::PLAYER_OF,
+    // An object's position and velocity (`super::world::objects`).
+    id::OBJECT_POS,
+    id::OBJECT_VEL,
+    // A unit's vitality (`super::world::data::vitality`).
+    id::OBJECT_HEALTH,
+    id::OBJECT_SHIELD,
+    // A field of a tag the map holds (`super::world::map_tags::read`).
+    id::TAG_INT,
+    id::TAG_FIXED,
+    // The superbounce chain's biped snapshot (super::world::physics).
+    id::AIRBORNE,
+    id::CROUCHING,
+    id::PRIMED,
 ];
 /// The action entries this runtime makes.
 pub const ACTIONS: &[u16] = &[
@@ -112,6 +168,62 @@ pub const ACTIONS: &[u16] = &[
     id::RESPAWN,
     id::ROLE_TRAITS,
     id::RESET_OBJECTIVE,
+    id::HOVER,
+    id::UNLOAD,
+    id::BOT_GO,
+    id::BOT_HOLD,
+    id::BOT_FOLLOW,
+    id::BOT_ATTACK,
+    id::BOT_FREE,
+    // Shown to this machine's local users and sent as show cues
+    // (`super::world::show`).
+    id::MESSAGE,
+    id::MESSAGE_TEAM,
+    id::MESSAGE_ALL,
+    // The multiplayer list's weapons (`super::world::loadout`).
+    id::SET_LOADOUT,
+    // Played at the audience's units and sent as sound cues
+    // (`super::world::audio`).
+    id::SOUND_TO,
+    id::SOUND_TO_TEAM,
+    id::SOUND_TO_ALL,
+    // Kept in the VM's state; the spawn chooser's hooks read it
+    // (`super::world::spawns`), so no call is made at the boundary.
+    id::SPAWN_AREAS,
+    id::SPAWN_NEAR,
+    // Kept in the VM's state; the spawn's hooks read it
+    // (`super::world::body`).
+    id::SET_BODY,
+    // Kept in the VM's state; the walls are drawn from it every tick
+    // (`super::world::walls`), so no call is made at the boundary.
+    id::SHOW_AREA,
+    id::HIDE_AREA,
+    // Kept in the VM's state (`RulesExt::show`); the objective HUDs are
+    // fed from it every tick (`super::world::hud`), so no call is made at
+    // the boundary.
+    id::HUD_VALUE,
+    id::HUD_VALUE_FOR,
+    id::HUD_FILL,
+    id::HUD_STYLE,
+    id::HUD_TEXT,
+    id::HUD_SHOW,
+    id::MARK,
+    id::MARK_PLAYER,
+    id::MARK_TEAM,
+    id::UNMARK,
+    // Put at the boundary (`super::world::objects`); the VM keeps a mover
+    // and tells the game each tick's step.
+    id::TELEPORT,
+    id::MOVE_TO,
+    id::STOP,
+    // The VM keeps the open barriers and steps each to its place
+    // ([`step_object`](Game::step_object)), so no call is made of its own.
+    id::SET_OPEN,
+    // Kept in the VM's state (`RulesExt::picks`); the boundary opens the
+    // picker for each local player from it (`super::world::pick`), so no
+    // call is made of the entry's own.
+    id::OFFER_PICK,
+    id::PICK_ROW,
 ];
 
 /// Where the `RULES` record lives: the process's `SimExt` blob in the
@@ -155,6 +267,12 @@ pub type LocalScripts = dyn Fn([u8; 8]) -> Option<Vec<u8>> + Send + Sync;
 /// script's label reads. In the game it is [`census::things`]: the loaded
 /// scenario's netgame flags and starting locations in guest memory.
 pub type CensusSource = dyn Fn(&dyn GuestMemory) -> Result<Vec<LabelledThing>, String> + Send + Sync;
+
+/// The loaded map's tag paths, for the start gate's tag reads and the
+/// script's `tag_int` and `tag_fixed`. In the game it is
+/// [`map_tags::current`]: the index read from the map file at
+/// `GAME_ACTIVATE`.
+pub type TagSource = dyn Fn() -> Arc<TagIndex> + Send + Sync;
 
 /// No fetch: refused by name.
 pub fn no_fetch(prefix: [u8; 8]) -> Result<Vec<u8>, String> {
@@ -209,7 +327,7 @@ pub fn examples() -> &'static [Builtin] {
         for &(name, src) in ::rules::builtin::examples() {
             match ::rules::compile(src) {
                 Ok(ir) => out.push(Builtin {
-                    engine: ir.header.carrier,
+                    engine: ir.header.engine(),
                     blob: ir.encode(),
                     id: ir.id(),
                 }),
@@ -220,12 +338,63 @@ pub fn examples() -> &'static [Builtin] {
     })
 }
 
+/// Every listed script (`rules::builtin::LISTED`, the built-in list's
+/// community variants), compiled once, each with its carrier as
+/// `engine`. A built-in entry's record names one by its prefix
+/// (`crate::community_variants::write_blocks`), so a game on it, or on a
+/// copy of it, runs it (docs/game/rules-variants.md, "Built-in list
+/// entries"). Superbounce and Siege are examples too; [`compiled_in`]
+/// finds them there first.
+pub fn listed() -> &'static [Builtin] {
+    static BUILT: OnceLock<Vec<Builtin>> = OnceLock::new();
+    BUILT.get_or_init(|| {
+        let mut out = Vec::new();
+        for b in crate::community_variants::scripts() {
+            match ::rules::compile(&b.source) {
+                Ok(ir) => out.push(Builtin {
+                    engine: ir.header.engine(),
+                    blob: ir.encode(),
+                    id: ir.id(),
+                }),
+                Err(e) => eprintln!("rules: the listed {} script does not compile: {e}", b.name),
+            }
+        }
+        out
+    })
+}
+
+/// Every script of the default Live lineup
+/// (`rules::builtin::MATCHMAKING`), compiled once, each with its carrier as
+/// `engine`. A default hopper entry's record names one by its prefix
+/// (`live_proto::hopper::defaults`), so a match on it runs it, as the
+/// built-in game each `uses`.
+pub fn matchmaking() -> &'static [Builtin] {
+    static BUILT: OnceLock<Vec<Builtin>> = OnceLock::new();
+    BUILT.get_or_init(|| {
+        let mut out = Vec::new();
+        for m in ::rules::builtin::MATCHMAKING {
+            match ::rules::compile(m.source) {
+                Ok(ir) => out.push(Builtin {
+                    engine: ir.header.engine(),
+                    blob: ir.encode(),
+                    id: ir.id(),
+                }),
+                Err(e) => eprintln!("rules: the matchmaking {} script does not compile: {e}", m.key),
+            }
+        }
+        out
+    })
+}
+
 /// The compiled-in script whose hash starts with `prefix`: a port
-/// ([`builtins`]) or an example ([`examples`]).
+/// ([`builtins`]), an example ([`examples`]), a listed script
+/// ([`listed`]) or a default-lineup script ([`matchmaking`]).
 pub fn compiled_in(prefix: [u8; 8]) -> Option<&'static Builtin> {
     builtins()
         .iter()
         .chain(examples())
+        .chain(listed())
+        .chain(matchmaking())
         .find(|b| b.id.0[..8] == prefix)
 }
 
@@ -249,8 +418,9 @@ impl Source {
 }
 
 /// One engine call a handler made, made at the next tick boundary.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Call {
+    StartLine(Type),
     Score { player: u8, delta: i32 },
     SetLives { player: u8, lives: i32 },
     Respawn(u8),
@@ -259,26 +429,75 @@ pub enum Call {
     /// `reset_objective`: the objective (a salted datum) returned
     /// (`super::objectives`).
     ResetObjective(u32),
+    Vehicle(super::world::vehicles::Action, Option<u32>),
+    /// `bot_go`, `bot_hold`, `bot_follow`, `bot_attack` and `bot_free`: an
+    /// outside order to the phantom in `player`'s seat, or `None` to free
+    /// it (`super::world::bots`).
+    BotOrder {
+        player: u8,
+        order: Option<bots::brain::Order>,
+    },
     /// `end_round`, or the round end of a script error.
     End,
+    /// `message`, `message_team` or `message_all`: not an engine call but
+    /// a show cue, made at the boundary by [`Runtime::pre_tick`]
+    /// (`super::world::show`).
+    Message(super::world::show::Outgoing),
+    /// `sound_to`, `sound_to_team` or `sound_to_all`: a sound cue and a play
+    /// for this machine's players, made at the boundary by
+    /// [`Runtime::pre_tick`] (`super::world::audio`).
+    SoundTo { to: ::rules::show::To, path: String },
+    /// The play of a sound the boundary published: the sound's tag path to
+    /// this machine's own players in the audience.
+    Play {
+        audience: ::rules::show::Audience,
+        path: String,
+    },
+    /// `set_loadout`: the player's living unit gets the weapons, by tag
+    /// path (`super::world::loadout`).
+    SetLoadout {
+        player: u8,
+        primary: Option<String>,
+        secondary: Option<String>,
+    },
+    /// `teleport`, or a mover's step: the object put at a place
+    /// (`super::world::objects`).
+    Put(super::world::objects::Place),
+    /// `offer_pick`: the value picker opened for one local player with the
+    /// offer's rows (`super::world::pick`).
+    OfferPick(super::world::pick::Ask),
 }
 
 impl Call {
     /// The API entry's name.
     pub fn name(&self) -> &'static str {
         match self {
+            Call::StartLine(_) => "start_line",
             Call::Score { .. } => "score",
             Call::SetLives { .. } => "set_lives",
             Call::Respawn(_) => "respawn",
             Call::RoleTraits { .. } => "role_traits",
+            Call::Vehicle(action, _) => action.name(),
             Call::ResetObjective(_) => "reset_objective",
+            Call::BotOrder { order, .. } => match order {
+                Some(bots::brain::Order::Go(_)) => "bot_go",
+                Some(bots::brain::Order::Hold(..)) => "bot_hold",
+                Some(bots::brain::Order::Follow(_)) => "bot_follow",
+                Some(bots::brain::Order::Attack(_)) => "bot_attack",
+                None => "bot_free",
+            },
             Call::End => "end_round",
+            Call::Message(_) => "message",
+            Call::SoundTo { .. } | Call::Play { .. } => "sound",
+            Call::SetLoadout { .. } => "set_loadout",
+            Call::Put(_) => "put_object",
+            Call::OfferPick(_) => "offer_pick",
         }
     }
 }
 
 /// What the async body before a tick does.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Work {
     /// The tick about to run.
     pub tick: u32,
@@ -286,6 +505,8 @@ pub struct Work {
     /// it says yes.
     pub ask_authority: bool,
     pub calls: Vec<Call>,
+    /// Ordered object pairs to trace after the calls, before the tick.
+    pub sight: Vec<super::world::physics::SightQuery>,
 }
 
 /// Why a script is not hostable here, by the first thing this runtime
@@ -297,37 +518,65 @@ pub fn host_refusal(ir: &Ir) -> Option<String> {
     unhostable_refusal(ir).or_else(|| runtime_refusal(ir))
 }
 
-/// An entry no host can make on the script's carrier
-/// (`verify::unhostable`), in words.
+/// An unavailable script entry, in words.
 pub fn unhostable_refusal(ir: &Ir) -> Option<String> {
-    if let Some(e) = verify::unhostable(ir) {
+    ir.handlers.iter().flat_map(|h| &h.code).find_map(|op| {
+        let Op::Call { entry, .. } = op else { return None };
+        let e = caps::entry(*entry, ir.header.api_version)?;
         let status = match e.status {
             EntryStatus::Traced => "traced but not a named point",
             EntryStatus::Untraced => "untraced",
             EntryStatus::NotBuilt => "not built",
-            EntryStatus::Named | EntryStatus::VmOnly => "not hostable",
+            EntryStatus::Named | EntryStatus::VmOnly => return None,
         };
-        // A call one engine's routine makes, in a script on another carrier.
-        if let Some(hosts) = e.hosts.filter(|_| e.status.hostable()) {
-            let name = |c: u8| caps::carrier_name(c).map_or_else(|| format!("engine {c}"), str::to_string);
-            let on: Vec<String> = hosts.iter().map(|&c| name(c)).collect();
-            return Some(format!(
-                "the script calls {}, which a host makes only on {}, and the script rides {}",
-                caps::spelled(e),
-                on.join(", "),
-                name(ir.header.carrier)
-            ));
-        }
-        return Some(format!(
+        Some(format!(
             "the script calls {}, whose engine entry is {status}",
             caps::spelled(e)
-        ));
+        ))
+    })
+}
+
+/// The retail ball return looks up a spawn in Oddball's engine globals.
+pub(super) fn record_refusal(ir: &Ir, engine: i32) -> Option<String> {
+    if matches!(variants::GameType::from_engine(engine), variants::GameType::Other(_)) {
+        return Some(format!("the record has unsupported engine index {engine}"));
+    }
+    if engine != variants::GameType::Oddball.engine()
+        && ir.handlers.iter().flat_map(|h| &h.code)
+            .any(|op| matches!(op, Op::Call { entry, .. } if *entry == id::RESET_OBJECTIVE))
+    {
+        return Some("reset_objective needs the active Oddball record's ball spawns".into());
     }
     None
 }
 
 /// What this runtime does not do yet, of a script every host could run.
 fn runtime_refusal(ir: &Ir) -> Option<String> {
+    // `set_loadout` gives only the multiplayer list's weapons
+    // (`super::world::loadout`): a script that calls it and names another
+    // weapon is refused at the start, by the weapon's path.
+    let loads = ir
+        .handlers
+        .iter()
+        .flat_map(|h| &h.code)
+        .any(|op| matches!(op, Op::Call { entry, .. } if *entry == id::SET_LOADOUT));
+    if loads
+        && let Some(t) = ir
+            .tags
+            .iter()
+            .find(|t| t.group == TagGroup::Weapon && ::rules::weapons::of_path(&t.path).is_none())
+    {
+        return Some(format!(
+            "the script names the weapon {}, and set_loadout gives only the multiplayer list's weapons",
+            t.path
+        ));
+    }
+    // A sound is found by its tag path in the loaded map's file: a host with
+    // no lookup, or a map without the sound, refuses the script by its path.
+    if let Some(why) = super::world::audio::refusal(ir) {
+        return Some(why);
+    }
+    let superbounce = super::header::asks_superbounce(ir);
     for hd in &ir.handlers {
         if !DELIVERED.contains(&hd.event) {
             return Some(format!(
@@ -342,6 +591,14 @@ fn runtime_refusal(ir: &Ir) -> Option<String> {
                         continue;
                     };
                     match e.kind {
+                        Kind::Read if matches!(e.id, id::AIRBORNE | id::CROUCHING | id::PRIMED)
+                            && !superbounce =>
+                        {
+                            return Some(format!(
+                                "the script reads {}, which needs the superbounce mode (add `requires {}`)",
+                                e.name, super::header::SUPERBOUNCE
+                            ));
+                        }
                         Kind::Read if !READS.contains(&e.id) => {
                             return Some(format!(
                                 "the script reads {}, which this host runtime does not answer yet",
@@ -385,10 +642,23 @@ fn runtime_refusal(ir: &Ir) -> Option<String> {
 pub struct GuestGame<'a> {
     pub m: &'a dyn GuestMemory,
     pub calls: &'a mut Vec<Call>,
+    start_line: Option<Type>,
     /// The script error the VM stopped on, if it did.
     pub error: Option<ScriptError>,
     /// The map's labelled things; none reads as a map with none.
     pub table: Option<&'a Table>,
+    /// This run plays a film back: a bot order is not replayed (the seat's
+    /// recorded pad plays), so none is made (docs/game/rules-world-api.md,
+    /// "Films and Theater").
+    film: bool,
+    /// The map's zones, for `inside` and `ticks_held`; none reads as a map
+    /// with none (`super::world::zones`).
+    pub zones: Option<&'a Zones>,
+    /// The map's tag paths, for `tag_int` and `tag_fixed`; none reads 0.
+    pub tags: Option<&'a TagIndex>,
+    /// The players' bodies at the last superbounce chain step, for
+    /// `airborne`, `crouching` and `primed` (`super::world::physics`); none reads false.
+    pub bodies: &'a [crate::superbounce_chain::Body],
 }
 
 impl<'a> GuestGame<'a> {
@@ -396,14 +666,43 @@ impl<'a> GuestGame<'a> {
         Self {
             m,
             calls,
+            start_line: None,
             error: None,
             table: None,
+            film: false,
+            zones: None,
+            tags: None,
+            bodies: &[],
         }
+    }
+
+    /// The same game whose players' bodies are `bodies`.
+    pub fn with_bodies(mut self, bodies: &'a [crate::superbounce_chain::Body]) -> Self {
+        self.bodies = bodies;
+        self
+    }
+
+    /// The same game whose tag paths are `tags`.
+    pub fn with_tags(mut self, tags: &'a TagIndex) -> Self {
+        self.tags = Some(tags);
+        self
+    }
+
+    /// The same game whose zones are `zones`.
+    pub fn with_zones(mut self, zones: &'a Zones) -> Self {
+        self.zones = Some(zones);
+        self
     }
 
     /// The same game whose labelled things are `table`.
     pub fn with_table(mut self, table: &'a Table) -> Self {
         self.table = Some(table);
+        self
+    }
+
+    /// The same game for a run that plays a film back, or not.
+    pub fn with_film(mut self, film: bool) -> Self {
+        self.film = film;
         self
     }
 
@@ -431,6 +730,15 @@ fn player(call: &VmCall, n: usize) -> Option<u8> {
 }
 
 impl Game for GuestGame<'_> {
+    fn trace_sight(&mut self, _from: u32, _to: u32) -> Option<bool> {
+        // The VM keeps the pair and its previous answer until run_work.
+        None
+    }
+
+    fn start_line(&mut self, ty: Type) {
+        self.start_line = Some(ty);
+    }
+
     fn players(&self) -> Vec<u8> {
         self.roster().into_iter().map(|(slot, _, _)| slot).collect()
     }
@@ -440,6 +748,16 @@ impl Game for GuestGame<'_> {
         teams.sort_unstable();
         teams.dedup();
         teams
+    }
+
+    /// The roster slots seated on `team`, for a waypoint's audience
+    /// (`mark(wp, at, team)`).
+    fn players_of_team(&self, team: u8) -> Vec<u8> {
+        self.roster()
+            .into_iter()
+            .filter(|&(_, _, t)| t == team)
+            .map(|(slot, _, _)| slot)
+            .collect()
     }
 
     /// The map's things with this label ([`Table::labelled`]).
@@ -455,6 +773,13 @@ impl Game for GuestGame<'_> {
         guest::variant(self.m, field).unwrap_or(0)
     }
 
+    /// The one team whose living players alone are inside `zone`
+    /// ([`Zones::holder`]).
+    fn zone_holder(&self, zone: u32) -> Option<u8> {
+        let zones = self.zones?;
+        zones.holder(zone, &zones::bodies(self.m))
+    }
+
     fn read(&mut self, call: &VmCall) -> i32 {
         let m = self.m;
         let p = player(call, 0);
@@ -466,6 +791,7 @@ impl Game for GuestGame<'_> {
             id::KILLS => on_player(guest::kills),
             id::DEATHS => on_player(guest::deaths),
             id::LIVES => on_player(guest::lives),
+            id::OBJECT_POS | id::OBJECT_VEL => super::world::objects::read(m, call),
             id::TEAM_SCORE => match call.args.first() {
                 Some(Arg::Team(Some(t))) => guest::team_score(m, *t).unwrap_or(0),
                 _ => 0,
@@ -475,6 +801,16 @@ impl Game for GuestGame<'_> {
             id::TEAM_OF => p
                 .and_then(|p| self.roster().into_iter().find(|&(s, _, _)| s == p))
                 .map_or(::rules::ty::NONE, |(_, _, t)| i32::from(t)),
+            id::SLOT_OF => p.map_or(::rules::ty::NONE, i32::from),
+            id::SIDE_OF => match p {
+                None => ::rules::ty::NONE,
+                Some(p) if self.variant("team_play") == 0 => 16 + i32::from(p),
+                Some(p) => self
+                    .roster()
+                    .into_iter()
+                    .find(|&(s, _, _)| s == p)
+                    .map_or(::rules::ty::NONE, |(_, _, t)| i32::from(t)),
+            },
             id::ROUND_TIME_LEFT => guest::round_time_left(m).unwrap_or(guest::NO_TIME_LIMIT),
             id::IS_OBJECTIVE => match call.args.first() {
                 Some(Arg::Object(Some(o))) => guest::is_objective(m, *o).unwrap_or(false) as i32,
@@ -505,6 +841,43 @@ impl Game for GuestGame<'_> {
                 }
                 _ => ::rules::ty::NONE,
             },
+            // The player's living unit inside the zone.
+            id::INSIDE => match (p, call.args.get(1), self.zones) {
+                (Some(p), Some(Arg::Object(Some(zone))), Some(z)) => zones::bodies(m)
+                    .iter()
+                    .any(|b| b.slot == p && z.contains(*zone, b.at))
+                    as i32,
+                _ => 0,
+            },
+            // A fraction of full, 0 to 1; an object that is gone reads 0.
+            id::OBJECT_HEALTH | id::OBJECT_SHIELD => match call.args.first() {
+                Some(Arg::Object(Some(o))) => super::world::data::vitality(m, *o).map_or(0, |(health, shield)| {
+                    if call.entry.id == id::OBJECT_HEALTH { health } else { shield }
+                }),
+                _ => 0,
+            },
+            // A field of a tag the map holds, from the tag's data in guest
+            // memory; a tag or field the map lacks reads 0 (the start gate
+            // blocked a script that names one).
+            id::TAG_INT | id::TAG_FIXED => match (call.args.first(), call.args.get(1), self.tags) {
+                (Some(Arg::Tag(Some(tag))), Some(Arg::Text(field)), Some(index)) => super::world::map_tags::read(
+                    m,
+                    index,
+                    tags::defs::Defs::builtin(),
+                    call.entry.id,
+                    tag,
+                    field,
+                )
+                .unwrap_or(0),
+                _ => 0,
+            },
+            id::AIRBORNE | id::CROUCHING | id::PRIMED => {
+                p.is_some_and(|p| super::world::physics::read(self.bodies, call.entry.id, p)) as i32
+            }
+            id::PLAYER_OF => match call.args.first() {
+                Some(Arg::Object(Some(o))) => zones::player_of(m, *o).map_or(::rules::ty::NONE, i32::from),
+                _ => ::rules::ty::NONE,
+            },
             _ => 0,
         }
     }
@@ -520,21 +893,84 @@ impl Game for GuestGame<'_> {
             id::SCORE => p.zip(int(1)).map(|(player, delta)| Call::Score { player, delta }),
             id::SET_LIVES => p.zip(int(1)).map(|(player, lives)| Call::SetLives { player, lives }),
             id::RESPAWN => p.map(Call::Respawn),
+            // The VM holds the role on every record. The retail Juggernaut
+            // setter also posts the announcement and updates its team mask.
             id::ROLE_TRAITS => match call.args.get(1) {
-                Some(Arg::Bool(on)) => p.map(|player| Call::RoleTraits { player, on: *on }),
+                Some(Arg::Bool(on)) if guest::engine_index(self.m).ok().flatten() == Some(super::roles::JUGGERNAUT) => {
+                    p.map(|player| Call::RoleTraits { player, on: *on })
+                }
                 _ => None,
             },
+            id::HOVER | id::UNLOAD => super::world::vehicles::plan(self.m, self.table, call),
             id::RESET_OBJECTIVE => match call.args.first() {
                 Some(Arg::Object(Some(o))) => Some(Call::ResetObjective(*o)),
                 _ => None,
             },
+            // Shown and sent as a show cue at the boundary
+            // (`super::world::show::publish`), not made as an engine call.
+            id::MESSAGE | id::MESSAGE_TEAM | id::MESSAGE_ALL => {
+                super::world::show::outgoing(call).map(Call::Message)
+            }
+            // Played and sent as a sound cue at the boundary
+            // (`super::world::audio::publish`).
+            id::SOUND_TO | id::SOUND_TO_TEAM | id::SOUND_TO_ALL => {
+                super::world::audio::outgoing(call).map(|(to, path)| Call::SoundTo { to, path })
+            }
             // The winner is not passed: naming one is not traced.
             id::END_ROUND => Some(Call::End),
+            // The VM keeps the rule in its state, which the spawn chooser's
+            // hooks read at each spawn (`super::world::spawns`).
+            id::SPAWN_AREAS | id::SPAWN_NEAR => None,
+            // The VM keeps the body in its state, which the spawn's hooks
+            // read (`super::world::body`).
+            id::SET_BODY => None,
+            // The VM keeps the shown areas in its state; the walls are
+            // drawn from it (`super::world::walls`).
+            id::SHOW_AREA | id::HIDE_AREA => None,
+            // The VM keeps the show state; the HUDs are drawn from it
+            // (`super::world::hud`).
+            id::HUD_VALUE | id::HUD_FILL | id::HUD_STYLE | id::HUD_TEXT | id::HUD_SHOW
+            | id::MARK | id::MARK_PLAYER | id::MARK_TEAM | id::UNMARK => None,
+            // The VM keeps the mover; each tick's step is `step_object`.
+            id::MOVE_TO | id::STOP | id::SET_OPEN => None,
+            // The VM keeps the offers; the boundary asks the players
+            // (`super::world::pick::plan`).
+            id::OFFER_PICK | id::PICK_ROW => None,
+            id::TELEPORT => super::world::objects::plan(call).map(Call::Put),
+            id::SET_LOADOUT => {
+                let tag = |n: usize| match call.args.get(n) {
+                    Some(Arg::Tag(t)) => t.clone(),
+                    _ => None,
+                };
+                let (primary, secondary) = (tag(1), tag(2));
+                p.filter(|_| primary.is_some() || secondary.is_some())
+                    .map(|player| Call::SetLoadout {
+                        player,
+                        primary,
+                        secondary,
+                    })
+            }
+            // A bot order is a hint to a phantom's brain on the host. It is
+            // not replayed: a film plays each seat's recorded pad instead.
+            id::BOT_GO | id::BOT_HOLD | id::BOT_FOLLOW | id::BOT_ATTACK | id::BOT_FREE => {
+                if self.film {
+                    None
+                } else {
+                    super::world::bots::plan(self.m, self.table, call)
+                        .map(|(player, order)| Call::BotOrder { player, order })
+                }
+            }
             _ => None,
         };
         if let Some(c) = made {
             self.calls.push(c);
         }
+    }
+
+    /// A mover's step is made at the boundary like a `teleport`.
+    fn step_object(&mut self, object: u32, at: [i32; 3], _velocity: [i32; 3]) {
+        self.calls
+            .push(Call::Put(super::world::objects::Place::of_fixed(object, at)));
     }
 
     fn script_error(&mut self, error: &ScriptError) {
@@ -545,7 +981,15 @@ impl Game for GuestGame<'_> {
 
 /// One game's script.
 pub struct Running {
+    /// The physical record, including the script index.
+    pub(super) record_engine: i32,
+    /// The identity peers see in the record, also across in-place reloads.
+    pub(super) record_prefix: [u8; 8],
     pub vm: Vm,
+    /// The type of the record's script, including a settings-only variant.
+    game_type: Type,
+    /// Wait for the players' machines to enter the round before posting it.
+    start_line: Option<Type>,
     pub hash: Sha256,
     pub source: Source,
     pub options: u32,
@@ -561,10 +1005,20 @@ pub struct Running {
     post: Option<u32>,
     /// The map's labelled things the script reads.
     pub table: Table,
+    /// The zones of the map's flags (`super::world::zones`).
+    pub zones: Zones,
+    /// What the VM was last told of the roster and the zones.
+    seen: Seen,
     /// What the start gate checked, and for which teams: a swap is checked
     /// against them again.
     census: ::rules::labels::Census,
     teams: Vec<u8>,
+    /// The map's tag paths at the start: a swapped-in script's tag reads
+    /// are checked against them, and the VM's reads go through them.
+    tags: Arc<TagIndex>,
+    /// The `uses` script the record names, when `vm` runs the built-in it
+    /// uses.
+    pub carried: Option<Carried>,
 }
 
 impl Running {
@@ -572,6 +1026,75 @@ impl Running {
     pub fn pending(&self) -> &[Call] {
         &self.pending
     }
+}
+
+/// The `uses` script a game's record names
+/// (docs/game/rules-variants.md, "A script that keeps its carrier's
+/// rules"): settings and a header, no handlers. The game runs the built-in
+/// script of the type it uses ([`used_builtin`]) under the record, and
+/// this keeps what the record named. The header's `requires` turn their
+/// modes on through the record's script reference (`super::header`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Carried {
+    pub hash: Sha256,
+    pub source: Source,
+    pub name: String,
+}
+
+/// Whether `hash` is one of the built-in ports ([`builtins`]).
+fn is_builtin(hash: &Sha256) -> bool {
+    builtins().iter().any(|b| b.id == *hash)
+}
+
+/// The built-in script a `uses` script's game runs: the one of the type
+/// it uses ([`builtins`], `rules::builtin::of_type`). A type with none is
+/// refused by name.
+pub fn used_builtin(ir: &Ir) -> Result<Ir, String> {
+    let Some(uses) = ir.header.uses else {
+        return Err(format!("{} uses no built-in game", ir.header.name));
+    };
+    let engine = uses.engine();
+    let Some(b) = builtins().iter().find(|b| b.engine == engine).filter(|_| uses.is_retail()) else {
+        return Err(format!(
+            "{} uses {}, which has no built-in script",
+            ir.header.name,
+            uses.name()
+        ));
+    };
+    verify::load(&b.blob)
+        .map(|(ir, _)| ir)
+        .map_err(|e| format!("the built-in {} script does not verify: {e}", uses.name()))
+}
+
+/// A refusal of the script that runs, in words that name the `uses`
+/// script it runs for, if any.
+fn for_carried(carried: Option<&Carried>, running: &Ir, why: String) -> String {
+    match carried {
+        Some(c) => format!(
+            "{} uses the built-in {} script, which this host cannot run yet: {why}",
+            c.name, running.header.name
+        ),
+        None => why,
+    }
+}
+
+/// The problems the map's tags give a script's `tag_int` and `tag_fixed`
+/// reads (`::rules::fields::check`): a tag the map lacks, a group or field
+/// our definitions lack, a field of the wrong kind. A map whose tag paths
+/// could not be read is one problem for a script that reads any.
+fn tag_problems(ir: &Ir, index: &TagIndex) -> Vec<String> {
+    if ::rules::fields::uses(ir).is_empty() {
+        return Vec::new();
+    }
+    if index.is_empty() {
+        return vec![format!(
+            "the map's tag paths could not be read, and {} reads tag fields",
+            ir.header.name
+        )];
+    }
+    let defs = tags::defs::Defs::builtin();
+    let schema = data::DefsSchema { group: |tag: &str| index.definition(defs, tag) };
+    ::rules::fields::check(ir, &schema).into_iter().map(|p| p.text).collect()
 }
 
 /// Whether a script runs in this game, and why not.
@@ -606,12 +1129,45 @@ pub struct Runtime {
     context: Context<'static>,
     /// The map's labelled things at a start.
     census: Box<CensusSource>,
+    /// The map's tag paths at a start.
+    tags: Box<TagSource>,
     /// This run plays a film back (Theater): the start gate does not run,
     /// since the film's host passed it.
     film: bool,
     /// The next start is a Forge session's (`lobby_start::Mode::Forge`):
     /// a block refuses the script and does not end the game.
     forge: bool,
+    /// The last tick published walls: the next tick with none clears them.
+    walled: bool,
+    /// The last tick fed the objective HUDs: the next tick with no script
+    /// feeding them hides them.
+    hud_on: bool,
+    /// The walls cue last sent on the actor channel, and the tick it was
+    /// sent: the list is sent when it changes and again every
+    /// `::rules::show::WALLS_REPEAT` ticks while it is not empty, so a
+    /// machine that joins late has it (`super::world::show::walls`).
+    wall_cue: Option<(Vec<(u32, Option<u8>)>, u32)>,
+    /// The pickers' offers last sent as `Pick` cues on the actor channel,
+    /// and the tick they were sent: sent when they change and again every
+    /// `::rules::show::PICK_REPEAT` ticks while any stands, so a machine
+    /// that joins late has them (`super::world::show::pick_offer`).
+    pick_cue: Option<(Vec<::rules::vm::PickOffer>, u32)>,
+    /// The players' bodies at the superbounce chain's last step: what
+    /// `airborne` and `primed` read (`super::world::physics`).
+    bodies: Vec<crate::superbounce_chain::Body>,
+}
+
+/// Whether the authority sends the walls cue now: the list changed since
+/// the last one (an emptied list included), or it is not empty and the
+/// last one is `WALLS_REPEAT` ticks old. Nothing shown and nothing sent is
+/// nothing to say.
+fn walls_due(last: Option<&(Vec<(u32, Option<u8>)>, u32)>, shown: &[(u32, Option<u8>)], tick: u32) -> bool {
+    match last {
+        None => !shown.is_empty(),
+        Some((sent, at)) => {
+            sent != shown || (!shown.is_empty() && tick.wrapping_sub(*at) >= ::rules::show::WALLS_REPEAT)
+        }
+    }
 }
 
 fn describe(e: &ScriptError) -> String {
@@ -657,8 +1213,14 @@ impl Runtime {
             fetch,
             context: Context::Custom,
             census: Box::new(census::things),
+            tags: Box::new(map_tags::current),
             film: false,
             forge: false,
+            walled: false,
+            hud_on: false,
+            wall_cue: None,
+            pick_cue: None,
+            bodies: Vec::new(),
         }
     }
 
@@ -671,6 +1233,12 @@ impl Runtime {
     /// The same runtime with `census` for the map's labelled things.
     pub fn with_census(mut self, census: Box<CensusSource>) -> Self {
         self.census = census;
+        self
+    }
+
+    /// The same runtime with `tags` for the map's tag paths.
+    pub fn with_tags(mut self, tags: Box<TagSource>) -> Self {
+        self.tags = tags;
         self
     }
 
@@ -780,13 +1348,57 @@ impl Runtime {
         }
     }
 
+    /// The starting locations the spawn of player `handle` (the chooser's
+    /// ECX) may pick, by its team's spawn rule (`super::world::spawns`):
+    /// none while no script makes the game's rules here, when the team has
+    /// no rule, or when the map has none of the rule's locations.
+    pub fn spawn_filter(&self, m: &dyn GuestMemory, handle: u32) -> Option<super::world::spawns::Filter> {
+        let r = self.running().filter(|r| r.authority == Some(true))?;
+        let slot = (handle & 0xffff) as u8;
+        let team = read_players(m)
+            .ok()?
+            .into_iter()
+            .find(|(p, _)| p.slot == slot)?
+            .0
+            .team;
+        let rule = r.vm.spawn_rule(team)?;
+        let starts = super::world::spawns::starts(m).ok()?;
+        super::world::spawns::filter(Some(rule), &starts, &r.table, &r.zones)
+    }
+
+    /// The body player `handle` (`PLAYER_SPAWN`'s argument) spawns in, by
+    /// its team's `set_body` (`super::world::body`), with its roster slot:
+    /// none while no script makes the game's rules here, or when the team
+    /// has no body.
+    pub fn spawn_body(&self, m: &dyn GuestMemory, handle: u32) -> Option<(u8, ::rules::bodies::Body)> {
+        let r = self.running().filter(|r| r.authority == Some(true))?;
+        let slot = (handle & 0xffff) as u8;
+        let team = read_players(m)
+            .ok()?
+            .into_iter()
+            .find(|(p, _)| p.slot == slot)?
+            .0
+            .team;
+        Some((slot, r.vm.body(team)?))
+    }
+
+    /// Whether a script runs here and this machine is the game's
+    /// authority, so the carrier's round-start line is the script's to
+    /// make (`super::start_line::replace_carrier`). Before the first tick
+    /// boundary asks for the authority, the engine keeps its line.
+    pub fn has_authority(&self) -> bool {
+        matches!(&self.status, Status::Running(r) if r.authority == Some(true))
+    }
+
     /// The running blob's full hash, for the Live session's `rules` field.
+    /// A `uses` script's game names the built-in it uses, which every
+    /// build has.
     pub fn hash(&self) -> Option<String> {
         self.running().map(|r| r.hash.to_string())
     }
 
     fn refuse(&mut self, hash: Option<String>, why: String) -> String {
-        let line = format!("rules: refused, the game plays the carrier engine's own rules: {why}");
+        let line = format!("rules: refused, the game plays the record engine's own rules: {why}");
         self.store.remove();
         self.status = Status::Refused { hash, why };
         line
@@ -796,6 +1408,7 @@ impl Runtime {
     /// which runs only the built-in scripts. Returns the line to log.
     pub fn start(&mut self, m: &dyn GuestMemory, system_link: bool) -> String {
         self.errors.clear();
+        self.bodies.clear();
         self.store.remove();
         if bots::guest::game_mode(m) != Some(MODE_MULTIPLAYER) {
             self.status = Status::Idle("not a multiplayer game");
@@ -852,15 +1465,6 @@ impl Runtime {
             );
         }
         let full = Some(hash.to_string());
-        if i32::from(ir.header.carrier) != engine {
-            return self.refuse(
-                full,
-                format!(
-                    "the script rides engine {}, and the record is engine {engine}",
-                    ir.header.carrier
-                ),
-            );
-        }
         // The policy first: a refusal by kind of game names the capability.
         if let Some(d) = policy::check(self.context, &ir.header.requires, ir.header.api_version)
             .into_iter()
@@ -868,8 +1472,37 @@ impl Runtime {
         {
             return self.refuse(full, d.to_string());
         }
-        if let Some(why) = unhostable_refusal(&ir) {
-            return self.refuse(full, why);
+        // `uses`: the record's script is settings only, so the game runs
+        // the built-in script of the type it uses under the record
+        // (its settings, its score limit). From here on `ir` is the
+        // built-in's; every refusal names the carried script too.
+        let game_type = ir.header.game_type;
+        let (ir, hash, source, carried) = match ir.header.uses {
+            None => (ir, hash, source, None),
+            Some(_) => match used_builtin(&ir) {
+                Ok(builtin) => {
+                    let carried = Carried {
+                        hash,
+                        source,
+                        name: ir.header.name.clone(),
+                    };
+                    let id = builtin.id();
+                    (builtin, id, Source::Builtin, Some(carried))
+                }
+                Err(why) => return self.refuse(full, why),
+            },
+        };
+        if let Some(why) = record_refusal(&ir, engine).or_else(|| unhostable_refusal(&ir)) {
+            return self.refuse(full, for_carried(carried.as_ref(), &ir, why));
+        }
+        // A carried script's built-in is refused for what this host cannot
+        // run yet before the gate: the variant names no labels, so a map
+        // that lacks the built-in's must not end a game the host would
+        // refuse anyway.
+        if carried.is_some()
+            && let Some(why) = runtime_refusal(&ir)
+        {
+            return self.refuse(full, for_carried(carried.as_ref(), &ir, why));
         }
         // The start gate: the final authority on the map's labels. Theater
         // skips it (`film`): the film's host passed it.
@@ -878,19 +1511,42 @@ impl Runtime {
         } else {
             Vec::new()
         };
-        let (things, problems) = self.gate(m, &ir, &teams);
+        let tags = (self.tags)();
+        let (things, mut problems) = self.gate(m, &ir, &teams);
+        if !self.film {
+            problems.extend(tag_problems(&ir, &tags));
+        }
         let table = Table::new(&things, &ir);
         if !problems.is_empty() {
             return self.block(hash, problems, table);
         }
         if let Some(why) = runtime_refusal(&ir) {
-            return self.refuse(full, why);
+            return self.refuse(full, for_carried(carried.as_ref(), &ir, why));
         }
         let census = census::census(&things);
-        let options = if script.mode == Mode::Rules {
+        let zones = Zones::read(m, &table);
+        // The bots read a hill from the same areas (`bots::objective`).
+        ::bots::objective::set_flag_areas(table.flag_areas());
+        // The record's option bits are its script's; a carried script has
+        // no options, so the built-in plays its own defaults. A built-in under a retail record (no script, or a `uses` script's
+        // settings) takes its type-area settings as options
+        // ([`guest::retail_options`]); a record on the script index has no
+        // type area and keeps the record's options.
+        let base = if script.mode == Mode::Rules && carried.is_none() {
             script.options
         } else {
             ir.default_options()
+        };
+        let options = if is_builtin(&hash) {
+            match guest::retail_options(m, &ir) {
+                Ok(Some(options)) => options,
+                Ok(None) => base,
+                Err(why) => {
+                    return self.refuse(full, format!("the record's settings do not fit the built-in: {why}"));
+                }
+            }
+        } else {
+            base
         };
         let name = ir.header.name.clone();
         let mut vm = match Vm::new(ir, options, SEED) {
@@ -898,13 +1554,33 @@ impl Runtime {
             Err(e) => return self.refuse(full, format!("the VM refused the blob: {e}")),
         };
         let mut pending = Vec::new();
-        let error = {
-            let mut g = GuestGame::new(m, &mut pending).with_table(&table);
+        let (error, start_line) = {
+            let mut g = GuestGame::new(m, &mut pending)
+                .with_table(&table)
+                .with_zones(&zones)
+                .with_tags(&tags)
+                .with_film(self.film)
+                .with_bodies(&self.bodies);
+            // The first round began inside `GAME_ACTIVATE` (its round
+            // reset, `ENGINE_ROUND_RESET`, ran before this observer), so
+            // its `on round_start` follows `on init` here; each later
+            // round's comes from [`Runtime::round_start`].
             vm.fire(&mut g, Input::Init);
-            g.error
+            if g.error.is_none() {
+                vm.round_start_as(&mut g, game_type);
+            }
+            (g.error, g.start_line)
         };
         let mut running = Running {
+            record_engine: engine,
+            record_prefix: if script.mode == Mode::Rules {
+                script.prefix
+            } else {
+                hash.0[..8].try_into().unwrap()
+            },
             vm,
+            game_type,
+            start_line,
             hash,
             source,
             options,
@@ -914,21 +1590,41 @@ impl Runtime {
             pre: None,
             post: None,
             table,
+            zones,
+            seen: Seen::default(),
             census,
             teams,
+            tags,
+            carried,
         };
         if let Err(why) = save(&mut running, &mut *self.store) {
             return self.refuse(full, why);
         }
+        let line = format!(
+            "rules: {name} ({}) from {} on engine {engine}, options {options:#010x}",
+            hash,
+            source.name()
+        );
+        let line = match &running.carried {
+            Some(c) => format!(
+                "{line}, for {} ({}) from {}, which uses it",
+                c.name,
+                c.hash,
+                c.source.name()
+            ),
+            None => line,
+        };
         self.status = Status::Running(Box::new(running));
         if let Some(e) = error {
             self.error(0, "init", describe(&e));
         }
-        format!(
-            "rules: {name} ({}) from {} on engine {engine}, options {options:#010x}",
-            hash,
-            source.name()
-        )
+        line
+    }
+
+    /// The `uses` script whose game runs the built-in it uses here, if
+    /// any.
+    pub fn carried(&self) -> Option<&Carried> {
+        self.running().and_then(|r| r.carried.as_ref())
     }
 
     /// Stops the running script with `why`, removing its record.
@@ -953,6 +1649,7 @@ impl Runtime {
                 tick,
                 ask_authority: true,
                 calls: vec![Call::End],
+                sight: Vec::new(),
             });
         }
         let Status::Running(r) = &mut self.status else {
@@ -967,23 +1664,91 @@ impl Runtime {
             return None;
         }
         r.vm.begin_tick(tick);
+        // The picks the local players made since the last boundary
+        // (`super::world::pick`); one for a picker the script no longer
+        // offers is refused by the VM and dropped.
+        for pick in super::world::pick::take() {
+            r.vm.choose(pick.player, pick.slot, pick.row);
+        }
         {
             let Running {
-                vm, pending, table, ..
+                vm,
+                pending,
+                table,
+                zones,
+                tags,
+                ..
             } = &mut **r;
-            let mut g = GuestGame::new(m, pending).with_table(table);
+            let mut g = GuestGame::new(m, pending)
+                .with_table(table)
+                .with_zones(zones)
+                .with_tags(tags)
+                .with_film(self.film)
+                .with_bodies(&self.bodies);
             vm.flush_queue(&mut g);
         }
         if let Err(why) = save(r, &mut *self.store) {
             self.stop(why);
             return None;
         }
+        // The boundary's messages: shown to this machine's local users and
+        // queued for the show channel here, on the authority only; they
+        // make no engine call, so they are never in the work. Until the
+        // authority answer is in they wait, as the engine calls do; a
+        // machine that is not the authority shows none.
+        let (messages, rest): (Vec<Call>, Vec<Call>) = std::mem::take(&mut r.pending)
+            .into_iter()
+            .partition(|c| matches!(c, Call::Message(_) | Call::SoundTo { .. }));
+        let mut plays = Vec::new();
+        let held = match r.authority {
+            Some(true) => {
+                let mut outgoing = Vec::new();
+                let mut sounds = Vec::new();
+                for c in messages {
+                    match c {
+                        Call::Message(o) => outgoing.push(o),
+                        Call::SoundTo { to, path } => sounds.push((to, path)),
+                        _ => {}
+                    }
+                }
+                super::world::show::publish(m, r.vm.ir(), tick, outgoing);
+                plays = super::world::audio::publish(m, r.vm.ir(), tick, sounds);
+                Vec::new()
+            }
+            None => messages,
+            Some(false) => Vec::new(),
+        };
         let ask_authority = r.authority.is_none();
-        let calls = std::mem::take(&mut r.pending);
-        (ask_authority || !calls.is_empty()).then_some(Work {
+        let mut calls = rest;
+        calls.extend(plays);
+        // The next local player to ask for a pick, on the authority and
+        // never in a film, which replays the picks it recorded.
+        if r.authority == Some(true)
+            && !self.film
+            && let Some(ask) = super::world::pick::plan(&r.vm, &super::world::pick::seats(m), tick)
+        {
+            calls.push(Call::OfferPick(ask));
+        }
+        if let Some(ty) = r.start_line
+            && super::start_line::players_ready(m)
+        {
+            calls.push(Call::StartLine(ty));
+            r.start_line = None;
+        }
+        r.pending = held;
+        let sight: Vec<_> = if r.vm.ext().stopped.is_none() {
+            r.vm.sight()
+                .iter()
+                .map(|p| super::world::physics::SightQuery::plan(m, &r.table, p.from, p.to))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        (ask_authority || !calls.is_empty() || !sight.is_empty()).then_some(Work {
             tick,
             ask_authority,
             calls,
+            sight,
         })
     }
 
@@ -1002,12 +1767,26 @@ impl Runtime {
         let tick = r.vm.ext().tick;
         let error = {
             let Running {
-                vm, pending, table, ..
+                vm,
+                pending,
+                table,
+                zones,
+                tags,
+                ..
             } = &mut **r;
-            let mut g = GuestGame::new(m, pending).with_table(table);
+            let mut g = GuestGame::new(m, pending)
+                .with_table(table)
+                .with_zones(zones)
+                .with_tags(tags)
+                .with_film(self.film)
+                .with_bodies(&self.bodies);
             f(vm, &mut g);
-            g.error
+            (g.start_line, g.error)
         };
+        let (start_line, error) = error;
+        if let Some(ty) = start_line {
+            r.start_line = Some(ty);
+        }
         let saved = save(r, &mut *self.store);
         if let Some(e) = error {
             self.error(tick, "script", describe(&e));
@@ -1022,6 +1801,42 @@ impl Runtime {
     pub fn kill(&mut self, m: &dyn GuestMemory, victim: u8, killer: Option<u8>) {
         self.run(m, |vm, g| {
             vm.fire(g, Input::Kill { victim, killer });
+        });
+    }
+
+    /// A later round began (the engine's round reset,
+    /// `ENGINE_ROUND_RESET`): `on round_start`, with its calls kept for
+    /// the next tick boundary. The first round's is [`Runtime::start`]'s.
+    pub fn round_start(&mut self, m: &dyn GuestMemory) {
+        let Some(r) = self.running() else { return };
+        let ty = r.game_type;
+        let projects_role = r.record_engine == super::roles::JUGGERNAUT;
+        self.run(m, |vm, g| {
+            let before = vm.ext().role_mask;
+            vm.clear_roles();
+            let first_call = g.calls.len();
+            vm.round_start_as(g, ty);
+            // Retail Juggernaut keeps its native mask across round resets.
+            // Release any old holder the new round's handler did not clear
+            // explicitly or crown again.
+            if projects_role {
+                let expired = before & !vm.ext().role_mask;
+                for player in 0u8..16 {
+                    let clear = Call::RoleTraits { player, on: false };
+                    if expired & (1 << player) != 0 && !g.calls[first_call..].contains(&clear) {
+                        g.calls.push(clear);
+                    }
+                }
+            }
+        });
+    }
+
+    /// Player `player` left the game (`ENGINE_PLAYER_LEFT`, after the
+    /// engine took it off the roster): `on quit`, with its calls kept for
+    /// the next tick boundary.
+    pub fn quit(&mut self, m: &dyn GuestMemory, player: u8) {
+        self.run(m, |vm, g| {
+            vm.fire(g, Input::Quit(player));
         });
     }
 
@@ -1051,6 +1866,35 @@ impl Runtime {
         });
     }
 
+    /// The players' bodies at the medal chain's step, replacing the last
+    /// set for a script's biped reads.
+    pub fn bodies(&mut self, bodies: &[crate::superbounce_chain::Body]) {
+        self.bodies.clear();
+        self.bodies.extend_from_slice(bodies);
+    }
+
+    /// What one tick's medal chain saw of the players' physics
+    /// (`superbounce_chain::Medals::physics`), in order: `on touchdown`,
+    /// `on launch` and `on grounded` (`super::world::physics::inputs`),
+    /// with their calls kept for the next tick boundary.
+    pub fn physics(&mut self, m: &dyn GuestMemory, physics: &[(u8, crate::superbounce_chain::Physics)]) {
+        let wants = |r: &Running| {
+            r.vm.ir()
+                .handlers
+                .iter()
+                .any(|h| matches!(h.event, Event::Touchdown | Event::Launch | Event::Grounded))
+        };
+        if physics.is_empty() || !self.running().is_some_and(wants) {
+            return;
+        }
+        let inputs = super::world::physics::inputs(physics);
+        self.run(m, |vm, g| {
+            for input in inputs {
+                vm.fire(g, input);
+            }
+        });
+    }
+
     /// One tick's medal awards (`superbounce_chain::Medals::step`), in
     /// order: each bounce as [`Runtime::bounce`] with its chain's count
     /// and whether it was a Monster, each Bounced as [`Runtime::bounced`].
@@ -1061,7 +1905,7 @@ impl Runtime {
         m: &dyn GuestMemory,
         awards: &[crate::superbounce_chain::Award],
     ) {
-        use hud_kit_core::huds::superbounce::Medal;
+        use hud_kit_core::views::superbounce::Medal;
         for a in awards {
             if let Some(spot) = a.spot {
                 self.bounce(m, a.slot, spot, a.chain, a.monster());
@@ -1071,25 +1915,163 @@ impl Runtime {
         }
     }
 
-    /// After the game tick: timers, then `on tick`.
-    pub fn post_tick(&mut self, m: &dyn GuestMemory) {
+    /// After the game tick: what changed on the roster and in the zones
+    /// since the VM was last told (`on death`, `on spawn`, `on leave`, `on
+    /// enter`; [`zones::events`]), then timers, then `on tick`. A script
+    /// with no handler for an event has none of it worked out. `events` is
+    /// the tick's sim events: its damage (`on damage`, the first
+    /// [`data::MAX_DAMAGE`], in the order the game applied it) is told
+    /// before the roster's changes, so before `on tick`.
+    pub fn post_tick(&mut self, m: &dyn GuestMemory, events: &[SimEvent]) {
+        if self.hud_on && !matches!(self.status, Status::Running(_)) {
+            self.publish_hud(None);
+        }
         let Some(tick) = bots::guest::game_tick(m) else {
             return;
         };
-        match &mut self.status {
-            Status::Running(r) if r.post != Some(tick) => r.post = Some(tick),
+        let mut seen = match &mut self.status {
+            Status::Running(r) if r.post != Some(tick) => {
+                r.post = Some(tick);
+                std::mem::take(&mut r.seen)
+            }
             _ => return,
-        }
+        };
+        let wants_damage = matches!(&self.status, Status::Running(r) if r.vm.ir().handlers.iter().any(|h| h.event == Event::Damage));
+        let damage = if wants_damage { data::damage_inputs(events) } else { Vec::new() };
         self.run(m, |vm, g| {
+            for input in damage {
+                vm.fire(g, input);
+            }
+            tell(vm, g, &mut seen);
             vm.update(g);
         });
+        if let Status::Running(r) = &mut self.status {
+            r.seen = seen;
+        }
+        self.publish_walls();
+        self.publish_hud(Some(m));
+        self.send_show();
+        self.send_walls(tick);
+        self.send_picks(tick);
+    }
+
+    /// Offers the running script's show state to the actor channel's
+    /// `Show` record (`super::world::show::offer_state`), from the
+    /// authority that runs the script. A film's run offers none: it has
+    /// no channel. Anything else forgets what was offered, so the channel
+    /// retracts the last state from its peers.
+    fn send_show(&mut self) {
+        if matches!(
+            &self.status,
+            Status::Running(r) if r.authority == Some(true) && !self.film
+        ) {
+            let Status::Running(r) = &self.status else {
+                unreachable!("matched above")
+            };
+            super::world::show::offer_state(r.vm.show().encode());
+        } else {
+            super::world::show::forget_state();
+        }
+    }
+
+    /// Feeds the objective HUDs from the running script's show state, for
+    /// each local user (`super::world::hud`), and hides them once no
+    /// script feeds them. `None` for a game with no guest to read.
+    fn publish_hud(&mut self, m: Option<&dyn GuestMemory>) {
+        let on = match (&self.status, m) {
+            (Status::Running(r), Some(m)) => super::world::hud::publish(m, r.vm.ir(), r.vm.show(), &r.zones),
+            _ => false,
+        };
+        if self.hud_on && !on {
+            super::world::hud::clear();
+        }
+        self.hud_on = on;
+    }
+
+    /// Sends the areas the script shows to the clients as a walls cue
+    /// (`::rules::show::Cue::Walls`), from the authority that runs the
+    /// script. A film's run sends none: it has no channel.
+    fn send_walls(&mut self, tick: u32) {
+        let shown = match &self.status {
+            Status::Running(r) if r.authority == Some(true) && !self.film => r.vm.shown_areas().to_vec(),
+            _ => return,
+        };
+        if walls_due(self.wall_cue.as_ref(), &shown, tick) {
+            super::world::show::walls(tick, shown.clone());
+            self.wall_cue = Some((shown, tick));
+        }
+    }
+
+    /// Sends the pickers' offers to the clients as `Pick` cues
+    /// (`::rules::show::Cue::Pick`), one per picker, from the authority
+    /// that runs the script: again when the offers change and every
+    /// `::rules::show::PICK_REPEAT` ticks while any stands, so a machine
+    /// that joins late has them. A picker taken away goes as an empty
+    /// one, which takes the asking on the clients off. A film's run
+    /// sends none: it has no channel.
+    fn send_picks(&mut self, tick: u32) {
+        let offers = match &self.status {
+            Status::Running(r) if r.authority == Some(true) && !self.film => r.vm.picks().to_vec(),
+            _ => return,
+        };
+        let (sent, at) = match self.pick_cue.as_ref() {
+            Some((sent, at)) => (Some(sent), *at),
+            None => (None, tick),
+        };
+        let changed = sent != Some(&offers);
+        let repeat = !offers.is_empty() && tick.wrapping_sub(at) >= ::rules::show::PICK_REPEAT;
+        if !changed && !repeat {
+            return;
+        }
+        for old in sent.into_iter().flatten() {
+            if !offers.iter().any(|o| o.slot == old.slot) {
+                super::world::show::pick_offer(
+                    tick,
+                    ::rules::vm::PickOffer {
+                        slot: old.slot,
+                        title: old.title,
+                        rows: Vec::new(),
+                    },
+                );
+            }
+        }
+        for offer in &offers {
+            super::world::show::pick_offer(tick, offer.clone());
+        }
+        self.pick_cue = Some((offers, tick));
+    }
+
+    /// The walls the running script shows in play (`show_area`), in the
+    /// order it showed them; none when no script runs
+    /// (`super::world::walls`).
+    pub fn walls(&self) -> Vec<crate::forge_glue::markers_world::Wall> {
+        match self.running() {
+            Some(r) => super::world::walls::of(r.vm.shown_areas(), &r.zones),
+            None => Vec::new(),
+        }
+    }
+
+    /// Hands the walls to the window's world-line source: after each
+    /// tick, and once more with none when the script's end took them off.
+    fn publish_walls(&mut self) {
+        let walls = self.walls();
+        if !walls.is_empty() || self.walled {
+            self.walled = !walls.is_empty();
+            crate::forge_glue::markers_world::publish_walls(walls);
+        }
     }
 
     /// The async body's outcome: what the authority check answered, and
     /// the calls the engine refused (entry name, error).
-    pub fn finish(&mut self, tick: u32, authority: Option<bool>, refused: Vec<(String, String)>) {
-        for (call, error) in refused {
-            self.error(tick, &call, error);
+    pub fn finish(&mut self, tick: u32, authority: Option<bool>, refused: Vec<Refused>) {
+        for r in refused {
+            self.error(tick, &r.call, &r.error);
+            // A put the world refused did not move the barrier the VM
+            // thinks it opened: the VM closes it in its state again
+            // (`Vm::put_refused`), saved with the next tick's state.
+            if let (Some(place), Status::Running(run)) = (r.put, &mut self.status) {
+                run.vm.put_refused(place.object, place.at);
+            }
         }
         // A machine that is not the authority ends no blocked game: its host
         // decides.
@@ -1115,13 +2097,39 @@ impl Runtime {
         }
     }
 
+    /// Store the boundary's sight answers before any of the tick's handlers.
+    fn finish_sight(&mut self, tick: u32, sight: Vec<(u32, u32, bool)>) {
+        let Status::Running(r) = &mut self.status else {
+            return;
+        };
+        if r.pre != Some(tick) || sight.is_empty() {
+            return;
+        }
+        if let Err(why) = sync(r, &*self.store) {
+            self.stop(why);
+            return;
+        }
+        for (from, to, clear) in sight {
+            r.vm.record_sight(from, to, clear);
+        }
+        if let Err(why) = save(r, &mut *self.store) {
+            self.stop(why);
+        }
+    }
+
     /// The game ended: the record is removed and the script stops.
     pub fn ended(&mut self) {
-        if let Status::Running(r) = &self.status {
-            eprintln!("rules: {} ended with the game", r.vm.ir().header.name);
-            self.store.remove();
-            self.status = Status::Idle("the game ended");
-        }
+        let name = match &self.status {
+            Status::Running(r) => r.vm.ir().header.name.clone(),
+            _ => return,
+        };
+        eprintln!("rules: {name} ended with the game");
+        self.store.remove();
+        self.status = Status::Idle("the game ended");
+        self.wall_cue = None;
+        self.pick_cue = None;
+        self.publish_walls();
+        self.publish_hud(None);
     }
 
     /// Swaps the running script's program between ticks, keeping every
@@ -1129,9 +2137,21 @@ impl Runtime {
     /// synced first and written after. An error keeps the old program.
     pub fn swap(&mut self, ir: Ir) -> Result<Sha256, String> {
         let film = self.film;
-        let Status::Running(r) = &mut self.status else {
-            return Err("no script runs in this game".into());
+        let r = match &mut self.status {
+            Status::Running(r) => r,
+            _ => return Err("no script runs in this game".into()),
         };
+        // A program with no handlers would score nowhere: the engine's
+        // routines stay answered in place. A `uses` script's game runs the
+        // built-in it uses, which a restart picks.
+        if ir.header.uses.is_some() {
+            return Err(
+                "the new script has a uses line and no handlers to swap in; restart the game with it".into(),
+            );
+        }
+        if let Some(why) = record_refusal(&ir, r.record_engine) {
+            return Err(why);
+        }
         if let Err(why) = sync(r, &*self.store) {
             self.stop(why.clone());
             return Err(why);
@@ -1148,10 +2168,25 @@ impl Runtime {
                 ));
             }
         }
+        if !film {
+            let problems = tag_problems(&ir, &r.tags);
+            if !problems.is_empty() {
+                return Err(format!(
+                    "the map does not have what the script needs: {}",
+                    problems.join("; ")
+                ));
+            }
+        }
         let hash = ir.id();
         let mut table = r.table.clone();
         table.relabel(&ir);
         r.vm.swap_program(ir).map_err(|e| e.to_string())?;
+        if r.carried.is_none() {
+            r.game_type = r.vm.ir().header.game_type;
+            if r.start_line.is_some() {
+                r.start_line = Some(r.game_type);
+            }
+        }
         r.table = table;
         r.hash = hash;
         if let Err(why) = save(r, &mut *self.store) {
@@ -1171,6 +2206,37 @@ impl Runtime {
                 r.pending.len()
             )
         })
+    }
+
+    /// `rules.zones`: the running script's zones; none when no script
+    /// runs.
+    pub fn zones(&self) -> wire::Zones {
+        let Some(r) = self.running() else {
+            return wire::Zones::default();
+        };
+        let mut out = Vec::new();
+        for (handle, z) in r.zones.iter() {
+            let Some(t) = r.table.get(handle) else { continue };
+            let zones::Shape::Area { at, area } = &z.shape;
+            let mut plain = serde_json::Map::new();
+            match &area.shape {
+                game_markers::Shape::Radius(radius) => plain.insert("radius".into(), (*radius).into()),
+                game_markers::Shape::Path(points) => plain.insert("path".into(), serde_json::json!(points)),
+            };
+            plain.insert("below".into(), area.below.into());
+            plain.insert("above".into(), area.above.into());
+            out.push(wire::Zone {
+                id: t.id(),
+                label: t.text.clone(),
+                number: t.number,
+                shape: z.source.name().into(),
+                area: plain.into(),
+                at: *at,
+                reports: z.reporter == handle,
+            });
+        }
+        out.sort_by_key(|z| z.id);
+        wire::Zones { zones: out }
     }
 
     /// `rules.state`.
@@ -1216,7 +2282,8 @@ impl Runtime {
                     version: Some(ir.header.version),
                     hash: Some(r.hash.to_string()),
                     source: Some(r.source.name().into()),
-                    carrier: Some(ir.header.carrier),
+                    carrier: u8::try_from(r.record_engine).ok(),
+                    scoring: Some(wire::Scoring::Script),
                     options: Some(r.options),
                     authority: r.authority,
                     stopped: ext.stopped.as_ref().map(describe),
@@ -1242,16 +2309,61 @@ impl Runtime {
     }
 }
 
+/// Tells the VM what changed since `seen`, in [`zones::events`]' order,
+/// marking each change it heard. A zone event the VM carries to the next
+/// tick stays unmarked, so it is told again.
+fn tell(vm: &mut Vm, g: &mut GuestGame<'_>, seen: &mut Seen) {
+    let wants = |e: Event| vm.ir().handlers.iter().any(|h| h.event == e);
+    let roster = wants(Event::Spawn) || wants(Event::Death);
+    let zoned = wants(Event::Enter) || wants(Event::Leave);
+    if !roster && !zoned {
+        return;
+    }
+    let (alive, listed) = zones::alive_mask(g.m);
+    seen.keep_listed(listed);
+    let now = match (zoned, g.zones, g.table) {
+        (true, Some(z), Some(t)) => {
+            let bodies = zones::bodies(g.m);
+            z.occupancy(&bodies, |h| t.get(h).is_some_and(|thing| thing.label.is_some()))
+        }
+        _ => Default::default(),
+    };
+    for change in zones::events(seen, alive, listed, &now) {
+        let input = match change {
+            Change::Death(p) => Input::Death(p),
+            Change::Spawn(p) => Input::Spawn(p),
+            Change::Leave { zone, unit } => Input::Leave { zone, object: unit },
+            Change::Enter { zone, unit } => Input::Enter { zone, object: unit },
+        };
+        if vm.fire(g, input) != Fired::Carried {
+            seen.told(change);
+        }
+    }
+}
+
+/// A call the engine refused: the entry's name and the reason, and for a put
+/// the place it was refused at.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Refused {
+    pub call: String,
+    pub error: String,
+    pub put: Option<super::world::objects::Place>,
+}
+
 /// Before the tick: the authority check when asked, then each call in
 /// order. Returns the answer and the calls the engine refused.
-pub async fn make_calls(cx: &Cx, work: &Work) -> (Option<bool>, Vec<(String, String)>) {
+pub async fn make_calls(cx: &Cx, work: &Work) -> (Option<bool>, Vec<Refused>) {
     let mut refused = Vec::new();
     let mut authority = None;
     if work.ask_authority {
         match guest::authoritative(cx).await {
             Ok(a) => authority = Some(a),
             Err(e) => {
-                refused.push(("authority".to_string(), e.to_string()));
+                refused.push(Refused {
+                    call: "authority".to_string(),
+                    error: e.to_string(),
+                    put: None,
+                });
                 authority = Some(false);
             }
         }
@@ -1261,30 +2373,74 @@ pub async fn make_calls(cx: &Cx, work: &Work) -> (Option<bool>, Vec<(String, Str
     }
     for call in &work.calls {
         let result = match *call {
+            Call::StartLine(ty) => super::start_line::post(cx, work.tick, ty).await,
             Call::Score { player, delta } => guest::score(cx, player, delta).await,
             Call::SetLives { player, lives } => guest::set_lives(cx, player, lives).await,
             Call::Respawn(player) => crate::firefight::guest::respawn(cx, player).await,
             Call::RoleTraits { player, on } => super::roles::set(cx, player, on).await,
+            Call::Vehicle(action, object) => action.apply(cx, object).await,
             Call::ResetObjective(object) => super::objectives::reset(cx, object).await,
+            Call::BotOrder { player, order } => {
+                if super::world::bots::deliver(player, order) {
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!("player {player} is no bot"))
+                }
+            }
             Call::End => crate::firefight::guest::end_game(cx).await,
+            // Messages are made at the boundary by `Runtime::pre_tick`
+            // (`super::world::show::publish`); one reaching this far makes
+            // no engine call.
+            Call::Message(_) | Call::SoundTo { .. } => Ok(()),
+            Call::Play { audience, ref path } => super::world::audio::play(cx, audience, path).await,
+            Call::SetLoadout {
+                player,
+                ref primary,
+                ref secondary,
+            } => super::world::loadout::give(cx, player, primary.as_deref(), secondary.as_deref()).await,
+            Call::Put(place) => super::world::objects::put(cx, place).await,
+            Call::OfferPick(ref ask) => super::world::pick::open(cx, ask).await,
         };
         if let Err(e) = result {
-            refused.push((call.name().to_string(), e.to_string()));
+            // The VM is told a refused put, so a barrier it holds open at a
+            // place the world would not take is closed in its state again.
+            let put = match call {
+                Call::Put(place) => Some(*place),
+                _ => None,
+            };
+            refused.push(Refused {
+                call: call.name().to_string(),
+                error: e.to_string(),
+                put,
+            });
         }
     }
     (authority, refused)
 }
 
-/// The async body before a tick with work: the calls, then the tick itself
-/// (its chain runs again; `reentry` lets the hook pass).
+/// The async body runs the boundary calls, traces sight, then re-enters
+/// the tick with `reentry` set so the hook lets it pass.
 pub async fn run_work(
     cx: Cx,
     shared: std::sync::Arc<super::feature::Shared>,
     work: Work,
+    sight_scratch: u32,
 ) -> Result<Ret, EntryError> {
     use std::sync::atomic::Ordering;
     let (authority, refused) = make_calls(&cx, &work).await;
-    shared.lock().finish(work.tick, authority, refused);
+    let mut sight = Vec::new();
+    if authority != Some(false) {
+        for query in work.sight {
+            let (from, to) = query.pair;
+            let clear = super::world::physics::trace_sight(&cx, sight_scratch, query).await;
+            sight.push((from, to, clear));
+        }
+    }
+    {
+        let mut rt = shared.lock();
+        rt.finish(work.tick, authority, refused);
+        rt.finish_sight(work.tick, sight);
+    }
     shared.reentry.store(true, Ordering::SeqCst);
     let r = cx.call(GuestCall::new(points::GAME_TICK.base)).await;
     shared.reentry.store(false, Ordering::SeqCst);

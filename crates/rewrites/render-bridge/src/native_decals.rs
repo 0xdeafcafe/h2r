@@ -2,37 +2,30 @@
 //! `d3d::DrawAdmission` in boot. On with the native renderer
 //! (`impl.render.native`).
 //!
-//! The observers do not suppress guest code. `0x00044040` still binds every
-//! texture, writes every duplicate marker and emits every draw. The admission
-//! replaces only a fully resolved D3D draw packet, after two-copy recording
-//! succeeds. Sorted handlers `0x00041cc0` and `0x000423c0` are object/layer
-//! replays, not decals, and are deliberately left alone.
+//! The callback at `0x00044040` binds textures, marks duplicates and issues
+//! one array draw per visible record. That call resolves once for ordered
+//! native admission and the original D3D fallback.
 //!
-//! Refusals are tallied by reason.
+//! The stderr tally reports resolved draws per present and guest pool
+//! occupancy, with the process totals labelled separately. `render.stats`
+//! counts committed draws after all attachment copies have recorded.
 
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
+use engine::datum::{DatumArray, SIGNATURE, layout};
 use engine::memory::GuestMemory;
 use engine::points;
 use native_render::decal::Mode;
 
-use hooks::{BuildError, Builder, Feature, Flow, Manifest};
-use runtime::abi::TransferAbi;
+use hooks::{BuildError, Builder, Feature, Manifest};
 use timeline::native::{Metric, Stage};
 
 pub const ID: &str = "native-decals";
-pub trait WalkHost: Send + Sync {
-    fn draw(&self, mem: &mut dyn GuestMemory, start: u32, count: u32) -> bool;
-}
-
-static WALK: Mutex<Option<Arc<dyn WalkHost>>> = Mutex::new(None);
-
-pub fn set_walk_host(host: Arc<dyn WalkHost>) {
-    *WALK.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
-}
 
 const CURRENT_MODE: u32 = 0x004c_8790;
 
@@ -43,50 +36,115 @@ pub fn on(switches: &hooks::Switches) -> bool {
 thread_local! {
     /// The guest callback currently emitting on this render thread.
     static CURRENT: Cell<Option<(Mode, i16)>> = const { Cell::new(None) };
+    static LAST_PRESENT: Cell<Option<u64>> = const { Cell::new(None) };
 }
 
 static EXAMINED: AtomicU64 = AtomicU64::new(0);
-static ADMITTED: AtomicU64 = AtomicU64::new(0);
-static REFUSALS: Mutex<BTreeMap<&'static str, u64>> = Mutex::new(BTreeMap::new());
+static CANDIDATES: AtomicU64 = AtomicU64::new(0);
+static REFUSALS: Mutex<BTreeMap<Cow<'static, str>, u64>> = Mutex::new(BTreeMap::new());
 
-/// `(examined draws, admitted)` and the running refusal tally.
-pub fn counts() -> ((u64, u64), BTreeMap<&'static str, u64>) {
+#[derive(Clone, Copy)]
+struct PresentSample {
+    present: u64,
+    examined: u64,
+}
+
+impl PresentSample {
+    fn since(self, earlier: Self) -> Option<(u64, u64)> {
+        let presents = self.present.checked_sub(earlier.present)?;
+        let draws = self.examined.checked_sub(earlier.examined)?;
+        (presents != 0).then_some((presents, draws))
+    }
+}
+
+static LAST_LOG: Mutex<Option<(Instant, PresentSample)>> = Mutex::new(None);
+const LOG_EVERY: Duration = Duration::from_secs(10);
+const DECAL_DATUM_ARRAY: u32 = 0x004e_a950;
+
+/// `(examined draws, native candidates)` and the running refusal tally.
+pub fn counts() -> ((u64, u64), BTreeMap<Cow<'static, str>, u64>) {
     (
         (
             EXAMINED.load(Ordering::Relaxed),
-            ADMITTED.load(Ordering::Relaxed),
+            CANDIDATES.load(Ordering::Relaxed),
         ),
         REFUSALS.lock().unwrap_or_else(|e| e.into_inner()).clone(),
     )
+}
+
+fn pool_counts(mem: &dyn GuestMemory) -> Option<(i32, i32)> {
+    let header = mem.u32(DECAL_DATUM_ARRAY).ok()?;
+    if header == 0 || mem.u32(header.checked_add(layout::SIGNATURE)?).ok()? != SIGNATURE {
+        return None;
+    }
+    let array = DatumArray::at(header);
+    let live = array.header_field(mem, layout::ACTIVE_COUNT).ok()?;
+    let capacity = array.header_field(mem, layout::MAXIMUM_COUNT).ok()?;
+    (0..=capacity).contains(&live).then_some((live, capacity))
+}
+
+fn log_completed_presents(mem: &dyn GuestMemory, present: u64) {
+    let mut last = LAST_LOG.lock().unwrap_or_else(|e| e.into_inner());
+    let now = Instant::now();
+    let sample = PresentSample {
+        present,
+        examined: EXAMINED.load(Ordering::Relaxed),
+    };
+    let Some((time, earlier)) = *last else {
+        *last = Some((now, sample));
+        return;
+    };
+    if now.duration_since(time) < LOG_EVERY {
+        return;
+    }
+    let Some((presents, draws)) = sample.since(earlier) else {
+        return;
+    };
+    *last = Some((now, sample));
+    drop(last);
+    let per_present = draws as f64 / presents as f64;
+    let pool = pool_counts(mem)
+        .map_or_else(|| "unavailable".into(), |(live, max)| format!("{live}/{max}"));
+    let ((examined, candidates), refusals) = counts();
+    eprintln!(
+        "native-decals: {draws} resolved draws in {presents} presents ({per_present:.1}/present), guest pool {pool}. Lifetime: {candidates} native candidates of {examined} resolved draws, refusals {refusals:?}"
+    );
+}
+
+/// The stage metric for an admission rejected before the backend sees it.
+fn refused_metric(why: &str) -> Metric {
+    match why.split_once(':').map_or(why, |(reason, _)| reason) {
+        "geometry" | "vertex streams" | "vertex declaration" | "vertex bytes" => {
+            Metric::RefusedInputs
+        }
+        "texture kind" | "texture view" | "texture is the target" | "texture group" => {
+            Metric::RefusedResources
+        }
+        _ => Metric::RefusedValidation,
+    }
 }
 
 pub fn note_examined() {
     EXAMINED.fetch_add(1, Ordering::Relaxed);
 }
 
-pub fn note_admitted() {
-    let admitted = ADMITTED.fetch_add(1, Ordering::Relaxed) + 1;
-    if admitted % 1800 == 1 {
-        let ((examined, admitted), refusals) = counts();
-        eprintln!(
-            "native-decals: {admitted} of {examined} resolved draws native; refusals {refusals:?}"
-        );
-    }
+pub fn note_candidate() {
+    CANDIDATES.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The backend accounts for candidates it receives. Account for early
+/// refusals here so each draw contributes one stage examination.
+pub fn note_admission_refusal(why: impl Into<Cow<'static, str>>) {
+    let why = why.into();
+    Stage::Decals.count(Metric::Examined, 1);
+    Stage::Decals.count(refused_metric(&why), 1);
+    note_refusal(why);
 }
 
 /// Adds an admission or recording failure to the same tally.
-pub fn note_refusal(why: &'static str) {
-    let total = {
-        let mut refusals = REFUSALS.lock().unwrap_or_else(|e| e.into_inner());
-        *refusals.entry(why).or_default() += 1;
-        refusals.values().sum::<u64>()
-    };
-    if total % 1800 == 1 {
-        let ((examined, admitted), refusals) = counts();
-        eprintln!(
-            "native-decals: {admitted} of {examined} resolved draws native; refusals {refusals:?}"
-        );
-    }
+pub fn note_refusal(why: impl Into<Cow<'static, str>>) {
+    let mut refusals = REFUSALS.lock().unwrap_or_else(|e| e.into_inner());
+    *refusals.entry(why.into()).or_default() += 1;
 }
 
 /// The callback emitting on this thread, if any.
@@ -100,46 +158,14 @@ fn begin(mem: &dyn GuestMemory, list: i16) {
         .ok()
         .and_then(|v| Mode::from_guest(v as i16));
     CURRENT.with(|c| c.set(mode.map(|m| (m, list))));
+    let present = timeline::frames();
+    if LAST_PRESENT.with(|last| last.replace(Some(present)) != Some(present)) {
+        log_completed_presents(mem, present);
+    }
 }
 
 fn end() {
     CURRENT.with(|c| c.set(None));
-}
-
-use points::scene_effects::{DECAL_ITEM_GEOMETRY, DECAL_RENDER_END};
-const DECAL_ITEM_NEXT: u32 = 0x0004_4195;
-const GEOMETRY_ALLOCATOR: u32 = 0x0050_9448;
-
-fn item_range(mem: &dyn GuestMemory, record: u32) -> Option<(u32, u32)> {
-    let index = mem.u32(record.checked_add(4)?).ok()? & 0xffff;
-    let quads = i16::try_from(mem.u16(record.checked_add(0x2a)?).ok()?).ok()?;
-    if quads <= 0 {
-        return None;
-    }
-    let allocator = mem.u32(GEOMETRY_ALLOCATOR).ok()?;
-    let array = mem.u32(allocator.checked_add(0x64)?).ok()?;
-    let elements = mem.u32(array.checked_add(0x44)?).ok()?;
-    if allocator == 0 || array == 0 || elements == 0 {
-        return None;
-    }
-    let offset = mem.u32(elements.checked_add(index * 24 + 8)?).ok()?;
-    let shift = mem.u32(allocator.checked_add(0x34)?).ok()? & 31;
-    Some(((offset << shift) >> 4, u32::try_from(quads).ok()? * 4))
-}
-
-fn draw_item(mem: &mut dyn GuestMemory, record: u32) -> bool {
-    if current().is_none() {
-        return false;
-    }
-    Stage::Decals.count(Metric::WalkExamined, 1);
-    let Some((start, count)) = item_range(mem, record) else {
-        Stage::Decals.count(Metric::WalkRefusedInputs, 1);
-        return false;
-    };
-    let host = WALK.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let drawn = host.is_some_and(|host| host.draw(mem, start, count));
-    Stage::Decals.count(if drawn { Metric::WalkSuppressed } else { Metric::WalkRefusedReservation }, 1);
-    drawn
 }
 
 pub struct NativeDecals;
@@ -164,19 +190,8 @@ impl Feature for NativeDecals {
             })
             .context_only();
         b.raw()
-            .observe_before(&DECAL_RENDER_END, "native_decals_end", |_| end())
+            .observe_before(&points::scene_effects::DECAL_RENDER_END, "native_decals_end", |_| end())
             .context_only();
-        b.raw().before(&DECAL_ITEM_GEOMETRY, "native_decals_walk_item", |c| {
-            let runtime = Arc::clone(c.ctx.runtime());
-            if !runtime.read_dispatch(|dispatch| dispatch.has_resume(DECAL_ITEM_NEXT)) {
-                return Ok(Flow::Continue);
-            }
-            if draw_item(&mut *runtime.memory(), c.cpu.esi) {
-                Ok(Flow::Return(TransferAbi::resume(DECAL_ITEM_NEXT)))
-            } else {
-                Ok(Flow::Continue)
-            }
-        }).context_only().optional();
         b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
     }
@@ -187,22 +202,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn item_range_uses_the_live_allocator_and_signed_quad_count() {
+    fn completed_present_window_reports_only_draws_in_that_window() {
+        let first = PresentSample {
+            present: 1_000,
+            examined: 30_000,
+        };
+        let middle = PresentSample {
+            present: 1_100,
+            examined: 33_000,
+        };
+        let last = PresentSample {
+            present: 1_200,
+            examined: 36_000,
+        };
+        assert_eq!(middle.since(first), Some((100, 3_000)));
+        assert_eq!(last.since(middle), Some((100, 3_000)));
+        assert_eq!(last.since(last), None);
+    }
+
+    #[test]
+    fn decal_pool_reports_only_valid_live_and_capacity_counts() {
         use engine::memory::FlatMemory;
-        let mut mem = FlatMemory::new(0x0050_9000, 0x4000);
-        let record = 0x0050_a000;
-        let allocator = 0x0050_a100;
-        let array = 0x0050_a200;
-        let elements = 0x0050_a300;
-        mem.set_u32(record + 4, 0x9999_0002).unwrap();
-        mem.set_u16(record + 0x2a, 3).unwrap();
-        mem.set_u32(GEOMETRY_ALLOCATOR, allocator).unwrap();
-        mem.set_u32(allocator + 0x34, 5).unwrap();
-        mem.set_u32(allocator + 0x64, array).unwrap();
-        mem.set_u32(array + 0x44, elements).unwrap();
-        mem.set_u32(elements + 2 * 24 + 8, 17).unwrap();
-        assert_eq!(item_range(&mem, record), Some((34, 12)));
-        mem.set_u16(record + 0x2a, u16::MAX).unwrap();
-        assert_eq!(item_range(&mem, record), None);
+        let mut mem = FlatMemory::new(DECAL_DATUM_ARRAY, 0x100);
+        let header = DECAL_DATUM_ARRAY + 0x40;
+        assert_eq!(pool_counts(&mem), None);
+        mem.set_u32(DECAL_DATUM_ARRAY, header).unwrap();
+        mem.set_u32(header + layout::SIGNATURE, SIGNATURE).unwrap();
+        mem.set_i32(header + layout::MAXIMUM_COUNT, 10).unwrap();
+        mem.set_i32(header + layout::ACTIVE_COUNT, 4).unwrap();
+        assert_eq!(pool_counts(&mem), Some((4, 10)));
+        mem.set_i32(header + layout::ACTIVE_COUNT, 11).unwrap();
+        assert_eq!(pool_counts(&mem), None);
+    }
+
+    #[test]
+    fn refusal_reasons_map_to_stage_metrics() {
+        assert!(matches!(refused_metric("geometry"), Metric::RefusedInputs));
+        assert!(matches!(refused_metric("vertex streams"), Metric::RefusedInputs));
+        assert!(matches!(refused_metric("vertex declaration: synthetic layout"), Metric::RefusedInputs));
+        assert!(matches!(refused_metric("vertex bytes"), Metric::RefusedInputs));
+        assert!(matches!(refused_metric("texture kind"), Metric::RefusedResources));
+        assert!(matches!(refused_metric("texture is the target"), Metric::RefusedResources));
+        assert!(matches!(refused_metric("blend state"), Metric::RefusedValidation));
+        assert!(matches!(refused_metric("vertex program"), Metric::RefusedValidation));
     }
 }

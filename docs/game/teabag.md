@@ -114,7 +114,11 @@ files are `medals/incel.webp` and `@2x` (`web/public/art/medals/`, in
 **In the game.** No line shows it. The medal is worked out in the film and
 on Live at `GameEnded`, when the game's HUD has gone to the post-game
 screen, and the superbounce medal line (`superbounce_hud`) shows only that
-mode's awards while it is on.
+mode's awards while it is on. There is an announcer line for it,
+`art/announcer/incel.wav` (an AI-generated placeholder), but the announcer
+speaks only the medal lines the HUD shows
+([audio.md](../audio/audio.md#our-medals-announcer-lines)), so Incel is
+silent and the clip is not compiled in.
 
 ## Not verified
 

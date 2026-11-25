@@ -1,6 +1,6 @@
 [package]
 name = "firefight-kit"
-description = "Offline stage-one Firefight map kit"
+description = "Offline Firefight map kit"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -9,6 +9,9 @@ license.workspace = true
 anyhow.workspace = true
 bots = { path = "../../live/bots" }
 content.workspace = true
+# The kit version the game and session data share.
+firefight = { path = "../../formats/firefight" }
+h1-assets = { path = "../h1-assets" }
 h1campaign = { path = "../h1campaign" }
 h1convert = { path = "../h1convert" }
 hs.workspace = true
@@ -18,6 +21,11 @@ pathfind = { path = "../../formats/pathfind" }
 scenario-edit = { path = "../scenario-edit", default-features = false }
 serde.workspace = true
 tags.workspace = true
+
+[features]
+# `testkit`: an invented map the kit builds on, for other crates' tests
+# (host data's kit bundle, the server-map strip).
+testkit = []
 
 [lints]
 workspace = true

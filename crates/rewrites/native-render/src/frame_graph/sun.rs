@@ -8,6 +8,11 @@
 //! such stage also draws the frame's tiles into the atlas. Every other
 //! shadow keeps its ops and retail's mask, and its cause is named
 //! ([`SunSkip`]). Retail never plans any of this.
+//!
+//! Receivers are the objects and structure parts the shadow's layer 11
+//! draws on. An object's mesh is uploaded for the frame; a structure
+//! part's is uploaded once per device and kept while its world is loaded
+//! ([`WorldMeshes`]).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -21,7 +26,9 @@ use frame_scene::{D24_SCALE, FrameScene, TargetRef};
 use gfx::D3DFormat;
 use gfx::external::ExternalEncoded;
 
-use crate::sun_casters::{self, CasterModels, CasterRefusal, ReceiverMesh};
+use crate::sun_casters::{
+    self, CasterMesh, CasterModels, CasterRefusal, ReceiverKey, ReceiverMesh, WorldReceivers,
+};
 use crate::sun_tiles::{ATLAS_EDGE, SunCaster, SunPlan, SunWork};
 use crate::sun_tiles_gpu::{SunFrame, SunMesh, SunReceiver, SunShadows};
 
@@ -57,7 +64,7 @@ pub(crate) struct SunReplay {
     /// Ops not applied: the admitted shadows' marked ops, binds kept.
     pub skip: Vec<bool>,
     /// A sun stage to apply after the op at each index.
-    pub after: HashMap<usize, ReplayOp>,
+    pub after: HashMap<usize, Vec<ReplayOp>>,
     /// Every marked shadow that keeps retail's mask, by scene index. Not
     /// reported yet: the E3 report counts only the planner's refusals.
     #[allow(dead_code)]
@@ -120,6 +127,43 @@ fn shadows_for(device: &wgpu::Device) -> Arc<Mutex<SunShadows>> {
     let made = Arc::new(Mutex::new(SunShadows::new(device, ATLAS_EDGE)));
     all.push((device.clone(), Arc::clone(&made)));
     made
+}
+
+/// One device's uploads of structure receivers, by the address of the
+/// world's mesh, which the entry holds so the address is not reused.
+#[derive(Default)]
+struct WorldMeshes(HashMap<usize, (Arc<CasterMesh>, SunMesh)>);
+
+/// Each device's [`WorldMeshes`], kept across frames.
+static WORLD_MESHES: Mutex<Vec<(wgpu::Device, WorldMeshes)>> = Mutex::new(Vec::new());
+
+/// A structure part's `mesh` on `device`, uploaded at its first frame.
+pub(super) fn world_mesh(device: &wgpu::Device, mesh: &Arc<CasterMesh>) -> Result<SunMesh, SunSkip> {
+    let mut all = WORLD_MESHES.lock().unwrap_or_else(|e| e.into_inner());
+    let at = match all.iter().position(|(d, _)| d == device) {
+        Some(at) => at,
+        None => {
+            all.push((device.clone(), WorldMeshes::default()));
+            all.len() - 1
+        }
+    };
+    let cache = &mut all[at].1.0;
+    let key = Arc::as_ptr(mesh) as usize;
+    if let Some((_, uploaded)) = cache.get(&key) {
+        return Ok(uploaded.clone());
+    }
+    let uploaded = SunMesh::new(device, &mesh.positions, &mesh.normals, &mesh.indices)
+        .map_err(|_| SunSkip::Caster(CasterRefusal::Empty))?;
+    cache.insert(key, (Arc::clone(mesh), uploaded.clone()));
+    Ok(uploaded)
+}
+
+/// Drops the uploads whose world is gone: only the cache holds the mesh.
+fn forget_unloaded_world_meshes() {
+    let mut all = WORLD_MESHES.lock().unwrap_or_else(|e| e.into_inner());
+    for (_, cache) in all.iter_mut() {
+        cache.0.retain(|_, (mesh, _)| Arc::strong_count(mesh) > 1);
+    }
 }
 
 /// One marked object shadow: the ops between its mark and the next.
@@ -241,7 +285,7 @@ fn kept_inside(op: &ReplayOp) -> bool {
 
 /// World to clip as the sun program's rows: the camera's column-major
 /// view-projection, transposed.
-fn clip_rows(m: &frame_scene::Mat4) -> [[f32; 4]; 4] {
+pub(super) fn clip_rows(m: &frame_scene::Mat4) -> [[f32; 4]; 4] {
     let mut rows = [[0.0; 4]; 4];
     for (r, row) in rows.iter_mut().enumerate() {
         for (c, v) in row.iter_mut().enumerate() {
@@ -252,19 +296,22 @@ fn clip_rows(m: &frame_scene::Mat4) -> [[f32; 4]; 4] {
 }
 
 /// Plans the sun for one E3 draw of `frame` from `scene` at `scale` on
-/// `device`, with `models` the scene's map's caster models. `None` when
-/// the frame marks no object shadow.
+/// `device`, with `models` the scene's map's caster models and `world`
+/// its BSP's structure parts. Returns early when the frame has neither
+/// a marked shadow nor an offscreen caster.
 pub(crate) fn plan(
     device: &wgpu::Device,
     scene: &FrameScene,
     frame: &ReplayFrame,
     scale: u32,
     models: Option<&dyn CasterModels>,
+    world: Option<&dyn WorldReceivers>,
 ) -> Option<SunReplay> {
     let marks = marked(frame);
-    if marks.is_empty() {
+    if marks.is_empty() && scene.nearby_casters.is_empty() {
         return None;
     }
+    forget_unloaded_world_meshes();
     let mut kept = Vec::new();
     let Some(models) = models else {
         kept.extend(marks.iter().map(|m| (m.shadow, SunSkip::NoModels)));
@@ -319,8 +366,8 @@ pub(crate) fn plan(
                     .iter()
                     .find(|a| a.shadow == m.shadow)
                     .ok_or(SunSkip::Caster(CasterRefusal::NoInstance))?;
-                let on =
-                    sun_casters::receivers(scene, m.shadow, models).map_err(SunSkip::Caster)?;
+                let on = sun_casters::receivers(scene, m.shadow, models, world)
+                    .map_err(SunSkip::Caster)?;
                 check_ops(frame, &bound, &m.ops)?;
                 Ok((admitted.caster, on, admitted.mesh.clone()))
             })();
@@ -329,11 +376,76 @@ pub(crate) fn plan(
             Err(cause) => kept.push((m.shadow, cause)),
         }
     }
-    if accepted.is_empty() {
+    let mut nearby = Vec::new();
+    if depth_ok
+        && !scene.nearby_casters.is_empty()
+        && let Some(world) = world.filter(|w| w.current())
+    {
+        let mut opaque_ends = HashMap::new();
+        for (index, (at, _)) in frame.ops.iter().enumerate() {
+            if at.slot == frame_scene::Slot::Opaque {
+                opaque_ends.insert(at.view, index);
+            }
+        }
+        // A ranked call can return before submitting any shadow passes.
+        // Preserve a drawn mask even when its replacement was refused.
+        let drawn_masks: HashSet<_> = marks
+            .iter()
+            .filter_map(|m| {
+                let o = scene.object_shadows.get(m.shadow)?;
+                let drew = m
+                    .ops
+                    .clone()
+                    .any(|i| matches!(&frame.ops[i].1, ReplayOp::Draw { .. } | ReplayOp::Stage(_)));
+                drew.then_some((o.view, o.caster().0))
+            })
+            .collect();
+        for (view, source) in &scene.nearby_casters {
+            let Some(v) = scene.views.get(*view as usize) else {
+                continue;
+            };
+            if drawn_masks.contains(&(*view, source.handle))
+                || source.strength <= sun_casters::DRAW_THRESHOLD
+            {
+                continue;
+            }
+            let Some(&anchor) = opaque_ends.get(&v.key.view) else {
+                continue;
+            };
+            let Some(model) = models.model(source.definition) else {
+                continue;
+            };
+            let (centre, radius) = source.sphere;
+            let [top, _, bottom, _] = v.camera.viewport;
+            let height = (i32::from(bottom) - i32::from(top)).max(0) as u32 * scale;
+            let caster = SunCaster {
+                id: (1u64 << 63) | (u64::from(*view) << 32) | u64::from(source.handle),
+                centre,
+                radius,
+                towards_light: source.towards_light,
+                strength: source.strength.min(1.0),
+                screen_diameter: sun_casters::view_diameter(v, height, centre, radius),
+                rows: crate::sun_tiles::floats_hash(bytemuck::cast_slice(&source.nodes)),
+            };
+            let on = world.shadow_parts(scene.clusters_of(v), &caster);
+            if on.is_empty() {
+                continue;
+            }
+            let mesh = sun_casters::skin(model, &source.nodes);
+            if !mesh.indices.is_empty() {
+                nearby.push((anchor, *view, caster, on, mesh));
+            }
+        }
+    }
+    if accepted.is_empty() && nearby.is_empty() {
         return Some(SunReplay::keep(frame, kept));
     }
     let shadows = shadows_for(device);
-    let casters: Vec<SunCaster> = accepted.iter().map(|a| a.1).collect();
+    let casters: Vec<SunCaster> = accepted
+        .iter()
+        .map(|a| a.1)
+        .chain(nearby.iter().map(|a| a.2))
+        .collect();
     let planned = shadows
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -348,14 +460,34 @@ pub(crate) fn plan(
     let mut skip = vec![false; frame.ops.len()];
     let mut after = HashMap::new();
     for (m, caster, on, mesh) in accepted {
-        match sun_stage(device, scene, frame, m, &caster, &on, &mesh, &tiled, &state) {
+        match sun_stage(
+            device,
+            scene,
+            frame,
+            scene.object_shadows[m.shadow].view,
+            &caster,
+            &on,
+            &mesh,
+            &tiled,
+            &state,
+        ) {
             Ok(stage) => {
                 for i in m.ops.clone() {
                     skip[i] = !kept_inside(&frame.ops[i].1);
                 }
-                after.insert(m.ops.end - 1, stage);
+                after
+                    .entry(m.ops.end - 1)
+                    .or_insert_with(Vec::new)
+                    .push(stage);
             }
             Err(cause) => kept.push((m.shadow, cause)),
+        }
+    }
+    for (anchor, view, caster, on, mesh) in nearby {
+        if let Ok(stage) = sun_stage(
+            device, scene, frame, view, &caster, &on, &mesh, &tiled, &state,
+        ) {
+            after.entry(anchor).or_default().push(stage);
         }
     }
     Some(SunReplay {
@@ -366,12 +498,12 @@ pub(crate) fn plan(
     })
 }
 
-/// The sun stage that stands in for marked shadow `m`'s ops.
+/// Draw one tile’s receivers on its view of the scene.
 fn sun_stage(
     device: &wgpu::Device,
     scene: &FrameScene,
     frame: &ReplayFrame,
-    m: &Marked,
+    view: u32,
     caster: &SunCaster,
     on: &[ReceiverMesh],
     mesh: &sun_casters::CasterMesh,
@@ -381,8 +513,7 @@ fn sun_stage(
     if !tiled.contains(&caster.id) {
         return Err(SunSkip::NoTile);
     }
-    let o = &scene.object_shadows[m.shadow];
-    let camera = &scene.views[o.view as usize].camera;
+    let camera = &scene.views[view as usize].camera;
     let [top, left, bottom, right] = camera.viewport.map(|x| u32::try_from(x).unwrap_or(0));
     let width = right
         .checked_sub(left)
@@ -398,8 +529,13 @@ fn sun_stage(
         SunMesh::new(device, &mesh.positions, &mesh.normals, &mesh.indices).map_err(|_| empty)?;
     let mut receivers = Vec::with_capacity(on.len());
     for r in on {
-        let g = SunMesh::new(device, &r.mesh.positions, &r.mesh.normals, &r.mesh.indices)
-            .map_err(|_| empty)?;
+        let g = match r.key {
+            ReceiverKey::World(..) => world_mesh(device, &r.mesh)?,
+            ReceiverKey::Object(_) => {
+                SunMesh::new(device, &r.mesh.positions, &r.mesh.normals, &r.mesh.indices)
+                    .map_err(|_| empty)?
+            }
+        };
         receivers.push((g, r.centre, r.radius));
     }
     state
@@ -410,6 +546,10 @@ fn sun_stage(
     let pass = SunStage {
         state: Arc::clone(state),
         tile: caster.id,
+        offscreen: scene
+            .nearby_casters
+            .iter()
+            .any(|(v, c)| *v == view && c.handle == caster.id as u32),
         receivers,
         frame: SunFrame {
             clip: clip_rows(&camera.view_projection()),
@@ -433,7 +573,7 @@ fn sun_stage(
         },
         plan: ExternalPlan {
             stage: timeline::native::Stage::Shadows,
-            view: o.view,
+            view,
             ranges: 1,
             slots: vec![],
         },
@@ -446,6 +586,7 @@ fn sun_stage(
 struct SunStage {
     state: Arc<Mutex<FrameSun>>,
     tile: u64,
+    offscreen: bool,
     receivers: Vec<(SunMesh, [f32; 3], f32)>,
     frame: SunFrame,
 }
@@ -523,6 +664,9 @@ impl SunStage {
             Some(self.tile),
             &receivers,
         );
+        if self.offscreen && lit.is_some() {
+            frame_plan.work.sun_tiles_offscreen += 1;
+        }
         let draws = tiles.as_ref().map_or(0, |t| t.draws()) + lit.as_ref().map_or(0, |r| r.draws());
         let passes = usize::from(tiles.is_some()) + usize::from(lit.is_some());
         let (colour, depth) = (target.color.clone(), target.depth.clone());

@@ -13,18 +13,31 @@
 //! roots, and [`build::to_tag_set`] turns the tags into a
 //! [`map::build::TagSet`] the builder lays out from scratch. The file format
 //! and the repository layout are in `docs/formats/tag-repo.md`.
+//!
+//! An asset's identity is two things: its key, and its content as
+//! [`normal`] gives it without the map it was read from, hashed into the
+//! asset hash. [`catalogue`] lists, for a store, each asset by that hash
+//! and the maps reading it (docs/engine/asset-store.md).
 
 use map::FourCC;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 pub mod build;
+pub mod catalogue;
+pub mod compile;
+pub mod converted;
 pub mod extract;
 pub mod format;
+pub mod normal;
+pub mod skeleton;
 pub mod store;
 
 pub use build::{BuildOptions, to_tag_set};
-pub use extract::{MapSource, SharedFiles, compare, store_map};
-pub use store::TagRepo;
+pub use extract::{
+    EXTRACT_VERSION, Layouts, MapSource, Plan, SharedFiles, compare, plan, store_map, update,
+};
+pub use skeleton::StoreFile;
+pub use store::{ExtractRecord, TagRepo};
 
 /// What can go wrong reading, writing or building tags.
 #[derive(Debug, thiserror::Error)]
@@ -39,6 +52,15 @@ pub enum Error {
     Invalid(String),
     #[error("tag file: {0}")]
     Format(String),
+    /// A raw file a map's extent table names is not in the store
+    /// ([`skeleton::StoreFile`]).
+    #[error("store map {map}: raw {hash} ({len} bytes at {offset:#x}) is missing from the store")]
+    MissingRaw {
+        map: String,
+        hash: String,
+        offset: u64,
+        len: u64,
+    },
 }
 
 /// Result for the repository.

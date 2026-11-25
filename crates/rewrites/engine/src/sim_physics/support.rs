@@ -72,27 +72,85 @@ pub(super) fn vertices(c: &mut CpuAbi, g: &mut Guest, pc: u32) -> Result<Transfe
         c.edx = c.edx.wrapping_sub(c.ecx);
         c.ebx = count;
         c.eax = g.u32(c.ebp+16)?;
-        loop {
-            let v = vector(g,c.ecx)?;
-            let m = &mut c.mxcsr;
-            let x = simd::mulps(m,vector(g,c.eax)?,splat(v as u32)).map_err(simd_fault)?;
-            let y = simd::mulps(m,vector(g,c.eax+16)?,splat((v>>32) as u32)).map_err(simd_fault)?;
-            let z = simd::mulps(m,vector(g,c.eax+32)?,splat((v>>64) as u32)).map_err(simd_fault)?;
-            let t = vector(g,c.eax+48)?;
-            let zt = simd::addps(m,z,t).map_err(simd_fault)?;
-            let xy = simd::addps(m,x,y).map_err(simd_fault)?;
-            let result = simd::addps(m,xy,zt).map_err(simd_fault)?;
-            put_vector(g,c.edx.wrapping_add(c.ecx),result)?;
-            for (dst,val) in c.xmm.iter_mut().zip([zt,result,t,y]) { *dst = val.to_le_bytes(); }
-            c.ecx = arithmetic(c,c.ecx,16,false);
-            let carry = c.eflags & 1;
-            c.ebx = arithmetic(c,c.ebx,1,true);
-            c.eflags = c.eflags & !1 | carry;
-            if c.ebx == 0 { break; }
+        if !transform_simplex(c, g, count)? {
+            transform_ordered(c, g)?;
         }
     }
     g.set_u32(c.esp+32,0)?;
     advance(c,g,Iteration)
+}
+
+// The two vertex arrays are adjacent in a valid simplex. A caller can
+// still alias a transform column to the destination through a second
+// virtual mapping, or supply a non-simplex count. Keep the guest's
+// per-vertex loads and stores for both cases.
+fn transform_simplex(c: &mut CpuAbi, g: &mut Guest, count: u32) -> Result<bool> {
+    use runtime::guest::Access;
+    use sim_havok::support::{self, MAX_VERTICES};
+    if !(1..=MAX_VERTICES as u32).contains(&count) { return Ok(false); }
+    let src = c.ecx;
+    let dst = src.wrapping_add(c.edx);
+    let len = count * 16;
+    let Some(output) = physical_span(g, dst, len) else { return Ok(false) };
+    for (addr, size) in [(src, len), (c.eax, 64)] {
+        let Some(input) = physical_span(g, addr, size) else { return Ok(false) };
+        if overlap(&output, &input) || g.check(addr, size as usize, Access::Read, 16).is_err() {
+            return Ok(false);
+        }
+    }
+    if g.check(dst, len as usize, Access::Write, 16).is_err() { return Ok(false); }
+
+    let mut matrix = [0; 64];
+    let mut input = [0; MAX_VERTICES * 16];
+    g.read_bytes(c.eax, &mut matrix, 16)?;
+    g.read_bytes(src, &mut input[..len as usize], 16)?;
+    let decode = |bytes: &[u8], i: usize| std::array::from_fn(|j| {
+        let at = 16*i + 4*j;
+        u32::from_le_bytes(bytes[at..at+4].try_into().unwrap())
+    });
+    let columns = std::array::from_fn(|i| decode(&matrix, i));
+    let vertices: [_; MAX_VERTICES] = std::array::from_fn(|i| decode(&input, i));
+    let Some(result) = support::transform(columns, &vertices[..count as usize], &mut c.mxcsr) else {
+        return Ok(false);
+    };
+    let encode = |v: [u32; 4]| v.into_iter().rev().fold(0u128, |p,w| p << 32 | u128::from(w));
+    let mut bytes = [0; MAX_VERTICES * 16];
+    for (chunk, v) in bytes.chunks_exact_mut(16).zip(result.vertices) {
+        chunk.copy_from_slice(&encode(v).to_le_bytes());
+    }
+    g.write_bytes(dst, &bytes[..len as usize], 16)?;
+    for (reg, v) in c.xmm.iter_mut().zip([
+        result.translated_z, result.vertices[count as usize - 1], columns[3], result.scaled_y,
+    ]) {
+        *reg = encode(v).to_le_bytes();
+    }
+    c.ecx = arithmetic(c, src.wrapping_add(len-16), 16, false);
+    let carry = c.eflags & 1;
+    c.ebx = arithmetic(c, 1, 1, true);
+    c.eflags = c.eflags & !1 | carry;
+    Ok(true)
+}
+
+fn transform_ordered(c: &mut CpuAbi, g: &mut Guest) -> Result<()> {
+    loop {
+        let v = vector(g,c.ecx)?;
+        let m = &mut c.mxcsr;
+        let x = simd::mulps(m,vector(g,c.eax)?,splat(v as u32)).map_err(simd_fault)?;
+        let y = simd::mulps(m,vector(g,c.eax+16)?,splat((v>>32) as u32)).map_err(simd_fault)?;
+        let z = simd::mulps(m,vector(g,c.eax+32)?,splat((v>>64) as u32)).map_err(simd_fault)?;
+        let t = vector(g,c.eax+48)?;
+        let zt = simd::addps(m,z,t).map_err(simd_fault)?;
+        let xy = simd::addps(m,x,y).map_err(simd_fault)?;
+        let result = simd::addps(m,xy,zt).map_err(simd_fault)?;
+        put_vector(g,c.edx.wrapping_add(c.ecx),result)?;
+        for (dst,val) in c.xmm.iter_mut().zip([zt,result,t,y]) { *dst = val.to_le_bytes(); }
+        c.ecx = arithmetic(c,c.ecx,16,false);
+        let carry = c.eflags & 1;
+        c.ebx = arithmetic(c,c.ebx,1,true);
+        c.eflags = c.eflags & !1 | carry;
+        if c.ebx == 0 { break; }
+    }
+    Ok(())
 }
 
 use super::spatial::{finish_fpu,fp_error,load_fpu};

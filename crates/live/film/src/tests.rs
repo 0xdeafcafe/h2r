@@ -15,7 +15,11 @@ impl Drop for Temp {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
-pub(super) fn header(id: u64) -> Header {
+/// One batch of calls, as the recorder writes it.
+pub(super) fn tape_chunk<W: Write + Seek>(w: &mut Writer<W>, calls: &[Call]) {
+    w.chunk_bytes(tape::TAPE, &tape::encode_batch(calls).unwrap()).unwrap();
+}
+pub(crate) fn header(id: u64) -> Header {
     Header {
         version: 1,
         meta: FilmMeta {
@@ -48,8 +52,11 @@ pub(super) fn header(id: u64) -> Header {
         telemetry: false,
         telemetry_hooks: None,
         render_hooks: None,
+        inputs_in_film: false,
         live_service: false,
         features: String::new(),
+        player_features: false,
+        tape_id: None,
     }
 }
 #[test]
@@ -98,20 +105,18 @@ fn render_hook_profiles_round_trip_and_require_the_recorders_groups() {
 fn encoded() -> Vec<u8> {
     let mut w = Writer::new(Cursor::new(Vec::new()), &header(1)).unwrap();
     w.chunk(DATA, &manifest::Manifest::default()).unwrap();
-    for (i, (tag, op)) in [(NETR, "Recv"), (RAND, "Random")].into_iter().enumerate() {
-        w.chunk(
-            tag,
-            &vec![Call {
-                index: i as u64,
-                op: op.into(),
-                thread: 7,
-                args: vec![2],
-                result: Ok(1),
-                outputs: vec![vec![42]],
-            }],
-        )
-        .unwrap();
-    }
+    let calls: Vec<Call> = [(0, "Recv"), (1, "Random")]
+        .into_iter()
+        .map(|(index, op)| Call {
+            index,
+            op: op.into(),
+            thread: 7,
+            args: vec![2],
+            result: Ok(1),
+            outputs: vec![vec![42]],
+        })
+        .collect();
+    tape_chunk(&mut w, &calls);
     w.chunk(KEYF, &vec![1, 2, 3]).unwrap();
     w.chunk(
         HASH,
@@ -143,7 +148,7 @@ fn round_trip_all_chunks_index_and_wrong_stamp() {
     assert!(r.finalized);
     assert_eq!(
         r.entries.iter().map(|e| e.tag).collect::<Vec<_>>(),
-        vec![HEAD, DATA, NETR, RAND, KEYF, HASH, MARK]
+        vec![HEAD, DATA, tape::TAPE, KEYF, HASH, MARK]
     );
     for e in &r.entries {
         assert_eq!(b[e.offset as usize..][..4], e.tag);
@@ -217,6 +222,16 @@ fn library_keeps_25_recent_plus_pins_by_header_id() {
     reopened.unsave("0").unwrap();
     assert_eq!(reopened.list().unwrap().len(), 25);
     reopened.save("26").unwrap();
+    let mut menus = header(100);
+    menus.meta.source = Source::Local;
+    menus.meta.map.clear();
+    menus.meta.players.clear();
+    Writer::new(File::create(dir.0.join("menus.h2film")).unwrap(), &menus)
+        .unwrap().finish().unwrap();
+    let rows = reopened.list().unwrap();
+    assert_eq!(rows.len(), 26, "25 recent games plus the pin");
+    assert!(rows.iter().all(LibraryEntry::is_game));
+    assert_eq!(rows.last().unwrap().meta.id, "1");
     reopened.delete("26").unwrap();
     assert_eq!(reopened.list().unwrap()[0].meta.id, "25");
     assert!(!dir.0.join("other-26.h2film.saved").exists());
@@ -337,6 +352,24 @@ fn upload_posts_the_exact_bytes_then_advances_without_resending_them() {
 }
 
 #[test]
+fn a_film_file_beside_the_stats_stream_follows_it_as_its_own_object() {
+    let dir = Temp::new();
+    let path = dir.0.join("host.h2film");
+    let stats = encoded();
+    fs::write(&path, &stats).unwrap();
+    let film = b"H2FILM4! stands in for the film file".to_vec();
+    fs::write(crate::file::beside(&path), &film).unwrap();
+    run_upload(&path, move |listener| {
+        let (stream, body) = film_request(&listener, "POST /v1/games/a%2Fb/film");
+        assert_eq!(body, stats);
+        film_reply(stream, "204 No Content");
+        let (stream, body) = film_request(&listener, "POST /v1/games/a%2Fb/film?object=film");
+        assert_eq!(body, film);
+        film_reply(stream, "204 No Content");
+    });
+}
+
+#[test]
 fn multipart_upload_advances_each_part_before_uploading_the_next_and_waits_for_publication() {
     use live_proto::film::{PART_BYTES, SINGLE_UPLOAD_BYTES};
     use sha2::{Digest, Sha256};
@@ -452,7 +485,7 @@ fn machine_seek_resumes_at_next_hle_call_and_lobby_boundary() {
         params: serde_json::Value::Null,
     };
     w.chunk(DATA, &manifest::Manifest::default()).unwrap();
-    w.chunk(RAND, &vec![call(0)]).unwrap();
+    tape_chunk(&mut w, &[call(0)]);
     w.chunk(MARK, &lobby(9)).unwrap();
     w.chunk(
         HASH,
@@ -471,12 +504,12 @@ fn machine_seek_resumes_at_next_hle_call_and_lobby_boundary() {
         .unwrap();
     w.chunk(MARK, &lobby(10)).unwrap();
     w.chunk(MARK, &Mark::D3dBarrier { slices: 64, tick: 31, saved: true }).unwrap();
-    w.chunk(RAND, &vec![call(1)]).unwrap();
+    tape_chunk(&mut w, &[call(1)]);
     let size = Call {
         index: 2, op: tape::VIDEO_MENU_SIZE.into(), thread: 0, args: vec![],
         result: Ok((3440 << 16) | 1440), outputs: vec![],
     };
-    w.chunk(tape::VSIZ, &[&size]).unwrap();
+    tape_chunk(&mut w, &[size.clone()]);
     w.chunk(
         MARK,
         &Mark::End {
@@ -528,7 +561,7 @@ fn ring_cursor_replays_partial_call_batch_hash_lobby_and_barrier_twice() {
     };
     let check = Check { tick: 30, calls: 2, sim: Some(7) };
     writer.chunk(DATA, &manifest::Manifest::default()).unwrap();
-    writer.chunk(RAND, &[call(0), call(1)]).unwrap();
+    tape_chunk(&mut writer, &[call(0), call(1)]);
     writer.chunk(MARK, &Mark::D3dBarrier { slices: 40, tick: 22, saved: true }).unwrap();
     writer.chunk(MARK, &Mark::Lobby {
         boundary: 15, method: "host.lobby.state".into(), params: serde_json::Value::Null,
@@ -548,6 +581,57 @@ fn ring_cursor_replays_partial_call_batch_hash_lobby_and_barrier_twice() {
         assert!(tape.exhausted());
         tape.resume_cursor(cursor).unwrap();
     }
+}
+
+#[test]
+fn streams_interleave_in_one_batch_and_a_json_batch_is_refused() {
+    let dir = Temp::new();
+    let call = |index: u64, op: &str| Call {
+        index,
+        op: op.into(),
+        thread: 1,
+        args: vec![index as u32 % 2],
+        result: Ok(0),
+        outputs: vec![vec![index as u8; 4]],
+    };
+    let ops = ["XInputGetState", "Recv", "XInputGetState", "Random", "XInputGetState"];
+    let make = |name: &str, json: bool| {
+        let path = dir.0.join(name);
+        let mut header = header(0);
+        header.version = 2;
+        let mut writer = Writer::new(File::create(&path).unwrap(), &header).unwrap();
+        writer.chunk(DATA, &manifest::Manifest::default()).unwrap();
+        if json {
+            let calls: Vec<Call> = ops.iter().enumerate().map(|(i, op)| call(i as u64, op)).collect();
+            writer.chunk(tape::TAPE, &calls).unwrap();
+        } else {
+            let mut batch = tape::Batch::default();
+            for (i, op) in ops.iter().enumerate() {
+                batch.append(&mut writer, call(i as u64, op)).unwrap();
+            }
+            batch.flush(&mut writer).unwrap();
+        }
+        writer.chunk(HASH, &Check { tick: 30, calls: 5, sim: Some(1) }).unwrap();
+        writer.chunk(MARK, &Mark::End { slices: 10, tick: 30, calls: 5 }).unwrap();
+        writer.finish().unwrap();
+        path
+    };
+    let path = make("binary.h2film", false);
+    let reader = Reader::open(&path).unwrap();
+    // Pad reads, socket calls and entropy share one chunk: no stream
+    // change closes a batch.
+    assert_eq!(reader.entries.iter().filter(|e| e.tag == tape::TAPE).count(), 1);
+    let mut playback = Playback::load(reader).unwrap();
+    for (i, op) in ops.iter().enumerate() {
+        assert_eq!(playback.call(i as u64, op, &[i as u32 % 2], 1).unwrap(), call(i as u64, op));
+    }
+    // The calls are used up; the hash check is a separate row.
+    assert!(playback.call(5, ops[0], &[1], 1).is_err());
+
+    let path = make("json.h2film", true);
+    let mut playback = Playback::load(Reader::open(&path).unwrap()).unwrap();
+    let error = playback.call(0, ops[0], &[0], 1).unwrap_err().to_string();
+    assert!(error.contains("JSON encoding"), "{error}");
 }
 
 #[test]
@@ -586,4 +670,308 @@ fn a_single_chunk_cannot_hide_a_second_zstd_frame() {
     data.extend_from_slice(&packed);
     let e = Entry { tag: *b"TICK", offset: 0, size };
     assert!(read_bytes(&mut Cursor::new(data), &e, 256).is_err());
+}
+
+/// One game cut from a running v3 tape (docs/game/film-format.md, "One film
+/// per game"): the copy of the tape so far, closed as a film of its own,
+/// while the tape records on and seals as itself.
+#[test]
+fn a_cut_of_a_running_tape_reads_as_a_film_of_its_own() {
+    use blam::{MatchHeader, Summary, Tick, TrackWriter};
+    let tick = |n| Tick {
+        tick: n,
+        inputs: vec![],
+        events: vec![],
+        closing_events: vec![],
+        post_hash: None,
+        forge: vec![],
+        firefight: vec![],
+    };
+    let mut tape_header = header(7);
+    tape_header.version = 3;
+    tape_header.meta.source = Source::Local;
+    tape_header.player_features = true;
+    let mut tape = Writer::new(Cursor::new(Vec::new()), &tape_header).unwrap();
+    tape.chunk(DATA, &manifest::Manifest::default()).unwrap();
+    let mut track = TrackWriter::default();
+    for n in 1..=40 {
+        track.push(&mut tape, tick(n)).unwrap();
+    }
+
+    let mut cut_header = tape_header.clone();
+    cut_header.meta.id = "8".into();
+    cut_header.meta.started_ms = 9_000;
+    cut_header.meta.length_ticks = 40;
+    cut_header.tape_id = Some("7".into());
+    // A cut names its tape, has an ID of its own and starts from the
+    // tape's every byte.
+    let so_far = tape.out.get_ref().clone();
+    let mut stranger = cut_header.clone();
+    stranger.tape_id = Some("other".into());
+    assert!(tape.fork(Cursor::new(so_far.clone()), &stranger).is_err());
+    let mut same_id = cut_header.clone();
+    same_id.meta.id = "7".into();
+    assert!(tape.fork(Cursor::new(so_far.clone()), &same_id).is_err());
+    assert!(tape.fork(Cursor::new(so_far[..so_far.len() - 1].to_vec()), &cut_header).is_err());
+
+    let mut cut = tape.fork(Cursor::new(so_far), &cut_header).unwrap();
+    let mut cut_track = track.clone();
+    cut.chunk(HEAD, &cut_header).unwrap();
+    let game = MatchHeader {
+        match_start_tick: Some(10),
+        ..Default::default()
+    };
+    cut_track.finish(&mut cut, &game, &Summary::default()).unwrap();
+    cut.chunk(MARK, &Mark::End { slices: 80, tick: 40, calls: 0 }).unwrap();
+    let bytes = cut.finish().unwrap().into_inner();
+    let reader = Reader::new(Cursor::new(bytes)).unwrap();
+    assert_eq!(reader.header.meta.id, "8");
+    assert_eq!(reader.header.tape_id.as_deref(), Some("7"));
+    let front = reader.front.as_ref().unwrap();
+    assert_eq!((front.id.as_str(), front.started_ms), ("8", 9_000));
+    assert_eq!(front.match_start_tick, Some(10));
+    assert_eq!(reader.ranges.as_ref().unwrap().chunks.last().unwrap().last, 40);
+
+    // The tape records on past the cut and is a film of its own when sealed.
+    for n in 41..=50 {
+        track.push(&mut tape, tick(n)).unwrap();
+    }
+    tape.chunk(HEAD, &tape_header).unwrap();
+    track.finish(&mut tape, &MatchHeader::default(), &Summary::default()).unwrap();
+    let bytes = tape.finish().unwrap().into_inner();
+    let reader = Reader::new(Cursor::new(bytes)).unwrap();
+    assert_eq!(reader.header.meta.id, "7");
+    assert_eq!(reader.ranges.as_ref().unwrap().chunks.last().unwrap().last, 50);
+}
+
+/// An unsealed v3 tape, as a hard kill leaves it: the envelopes written so
+/// far and no indexes. Capture marks at ticks 50, 200 and 280; the track
+/// writer holds ticks 257..=300 unflushed, so the tape's last flushed tick
+/// is 256 and the last mark it can end at is 200.
+fn dead_tape(path: &std::path::Path) -> Vec<Entry> {
+    use blam::{Tick, TrackWriter};
+    let mut tape_header = header(7);
+    tape_header.version = 3;
+    tape_header.meta.source = Source::Local;
+    tape_header.player_features = true;
+    let mut tape = Writer::new(fs::File::create(path).unwrap(), &tape_header).unwrap();
+    tape.chunk(DATA, &manifest::Manifest::default()).unwrap();
+    let mut track = TrackWriter::default();
+    for n in 1..=300u64 {
+        track
+            .push(
+                &mut tape,
+                Tick {
+                    tick: n,
+                    inputs: vec![],
+                    events: vec![],
+                    closing_events: vec![],
+                    post_hash: None,
+                    forge: vec![],
+                    firefight: vec![],
+                },
+            )
+            .unwrap();
+        if n.is_multiple_of(30) {
+            tape.chunk(
+                HASH,
+                &Check {
+                    tick: n,
+                    sim: Some(n),
+                    calls: 0,
+                },
+            )
+            .unwrap();
+        }
+        if matches!(n, 50 | 200 | 280) {
+            // The recorder flushes its call batch, then writes the mark.
+            tape_chunk(&mut tape, &[Call {
+                index: match n {
+                    50 => 0,
+                    200 => 1,
+                    _ => 2,
+                },
+                op: "Recv".into(),
+                thread: 7,
+                args: vec![2],
+                result: Ok(1),
+                outputs: vec![],
+            }]);
+            tape.chunk(
+                MARK,
+                &Mark::D3dBarrier {
+                    slices: n * 2,
+                    tick: n,
+                    saved: true,
+                },
+            )
+            .unwrap();
+        }
+    }
+    let index = tape.index.clone();
+    drop(tape);
+    index
+}
+
+#[test]
+fn an_unsealed_tape_is_sealed_to_its_last_flushed_capture() {
+    let dir = Temp::new();
+    let path = dir.0.join("auto-tape.h2film");
+    let index = dead_tape(&path);
+    // The tape's own view of itself fails: no footer, no front.
+    assert!(Reader::open(&path).is_err());
+
+    assert!(recover_tape(&path).unwrap());
+    let reader = Reader::open(&path).unwrap();
+    assert_eq!(reader.header.meta.id, "7");
+    assert_eq!(reader.header.meta.length_ticks, 200);
+    assert!(reader.header.tape_id.is_none());
+    let front = reader.front.as_ref().unwrap();
+    assert_eq!((front.id.as_str(), front.started_ms), ("7", 7));
+    assert!(front.summary.players.is_empty(), "no descriptor survived");
+    // The end falls back past the mark whose chunk never flushed (280) to
+    // the last one the tape holds whole (200), inside the chunk 129..=256.
+    let playback = Playback::load(reader).unwrap();
+    assert_eq!(playback.end, Some((400, 200, 2)));
+    assert_eq!(playback.capture_points(), [50, 200]);
+    let chunks = &playback.reader.ranges.as_ref().unwrap().chunks;
+    assert_eq!(chunks.first().unwrap().scene, 1);
+    let last = chunks.last().unwrap();
+    assert!((last.first..=last.last).contains(&200), "the end's chunk stays whole");
+    assert_eq!(last.last, 256);
+    // The staged copy is gone and the tape's bytes end where the film does.
+    assert!(staging_files(&path).is_empty());
+}
+
+#[test]
+fn a_tape_cut_mid_frame_seals_to_the_capture_before_the_torn_chunk() {
+    let dir = Temp::new();
+    let path = dir.0.join("auto-tape.h2film");
+    let index = dead_tape(&path);
+    // Cut inside the second time chunk's envelope, so the tape's last
+    // flushed tick falls to 128 and the mark at 200 cannot end a film.
+    let second = index
+        .iter()
+        .filter(|e| e.tag == range::TICK)
+        .nth(1)
+        .unwrap();
+    let len = fs::metadata(&path).unwrap().len();
+    let tape = fs::File::options().write(true).open(&path).unwrap();
+    tape.set_len(second.offset + 4).unwrap();
+    drop(tape);
+    assert!(len > second.offset + 4);
+
+    assert!(recover_tape(&path).unwrap());
+    let reader = Reader::open(&path).unwrap();
+    assert_eq!(reader.header.meta.length_ticks, 50);
+    let playback = Playback::load(reader).unwrap();
+    assert_eq!(playback.end, Some((100, 50, 1)));
+    assert_eq!(playback.capture_points(), [50]);
+    // The checkpoint at 60 sits before the kept chunk in the file; it is
+    // past the end and must not survive into the film.
+    let chunks = &playback.reader.ranges.as_ref().unwrap().chunks;
+    assert_eq!(chunks.last().unwrap().last, 128);
+}
+
+#[test]
+fn a_tape_with_a_truncated_tail_seals_where_the_whole_chunks_end() {
+    let dir = Temp::new();
+    let path = dir.0.join("auto-tape.h2film");
+    dead_tape(&path);
+    // The dead session's last write is torn: everything after the last
+    // capture mark loses its tail. The recovery ignores the partial bytes.
+    let len = fs::metadata(&path).unwrap().len();
+    let tape = fs::File::options().write(true).open(&path).unwrap();
+    tape.set_len(len - 3).unwrap();
+    drop(tape);
+
+    assert!(recover_tape(&path).unwrap());
+    let reader = Reader::open(&path).unwrap();
+    assert_eq!(reader.header.meta.length_ticks, 200);
+    let playback = Playback::load(reader).unwrap();
+    assert_eq!(playback.end, Some((400, 200, 2)));
+}
+
+#[test]
+fn a_tape_with_no_capture_to_end_at_is_not_a_film() {
+    let dir = Temp::new();
+    // Nothing but the boot header and the start manifest.
+    let bare = dir.0.join("auto-bare.h2film");
+    let mut tape_header = header(9);
+    tape_header.version = 3;
+    let mut tape = Writer::new(fs::File::create(&bare).unwrap(), &tape_header).unwrap();
+    tape.chunk(DATA, &manifest::Manifest::default()).unwrap();
+    drop(tape);
+    assert!(!recover_tape(&bare).unwrap());
+
+    // Ticks and checkpoints, but no game ever captured: a session that
+    // died in the menus leaves no film.
+    let menus = dir.0.join("auto-menus.h2film");
+    let mut tape = Writer::new(fs::File::create(&menus).unwrap(), &tape_header).unwrap();
+    tape.chunk(DATA, &manifest::Manifest::default()).unwrap();
+    let mut track = blam::TrackWriter::default();
+    for n in 1..=40u64 {
+        track
+            .push(
+                &mut tape,
+                blam::Tick {
+                    tick: n,
+                    inputs: vec![],
+                    events: vec![],
+                    closing_events: vec![],
+                    post_hash: None,
+                    forge: vec![],
+                    firefight: vec![],
+                },
+            )
+            .unwrap();
+    }
+    drop(tape);
+    assert!(!recover_tape(&menus).unwrap());
+    // A failed or empty recovery leaves the file as it was.
+    assert!(menus.is_file());
+    assert!(staging_files(&menus).is_empty());
+}
+
+/// The recovery staging files beside `path` (each test's own directory).
+fn staging_files(path: &std::path::Path) -> Vec<std::path::PathBuf> {
+    fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "recover"))
+        .collect()
+}
+
+/// Only a cut's final header may name another boot header: a v3 film whose
+/// boot `HEAD` has another ID is still refused.
+#[test]
+fn a_film_whose_boot_header_differs_without_naming_its_tape_is_refused() {
+    use blam::{MatchHeader, Summary, Tick, TrackWriter};
+    let mut boot = header(7);
+    boot.version = 3;
+    let mut w = Writer::new(Cursor::new(Vec::new()), &boot).unwrap();
+    let mut track = TrackWriter::default();
+    track
+        .push(
+            &mut w,
+            Tick {
+                tick: 1,
+                inputs: vec![],
+                events: vec![],
+                closing_events: vec![],
+                post_hash: None,
+                forge: vec![],
+                firefight: vec![],
+            },
+        )
+        .unwrap();
+    // Forge a final header with another ID, without `tape_id`.
+    let mut other = boot.clone();
+    other.meta.id = "8".into();
+    w.ranges.as_mut().unwrap().front.id = "8".into();
+    w.chunk(HEAD, &other).unwrap();
+    track.finish(&mut w, &MatchHeader::default(), &Summary::default()).unwrap();
+    let bytes = w.finish().unwrap().into_inner();
+    let error = Reader::new(Cursor::new(bytes)).err().unwrap().to_string();
+    assert!(error.contains("headers differ"), "{error}");
 }

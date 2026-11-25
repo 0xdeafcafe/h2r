@@ -154,9 +154,10 @@ impl PixelReport {
             .lock()
             .map_err(|_| "pixel count poisoned")?
             .take()
-            .ok_or("pixel-count readback dropped")?
-            .recv()
-            .map_err(|_| "pixel-count readback dropped".to_owned())?;
+            .and_then(|r| r.recv().ok());
+        let Some(outcome) = outcome else {
+            return Ok(*v.insert(dropped()));
+        };
         let count = self.take_mapped(outcome)?;
         *v = Some(count);
         Ok(count)
@@ -176,15 +177,11 @@ impl PixelReport {
             .poll(wgpu::PollType::Poll)
             .map_err(|e| format!("polling for the pixel count: {e}"))?;
         let mut guard = rx.lock().map_err(|_| "pixel count poisoned")?;
-        let outcome = match guard
-            .as_ref()
-            .ok_or("pixel-count readback dropped")?
-            .try_recv()
-        {
-            Ok(r) => r,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return Ok(None),
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                return Err("pixel-count readback dropped".to_owned());
+        let outcome = match guard.as_ref().map(|r| r.try_recv()) {
+            Some(Ok(r)) => r,
+            Some(Err(std::sync::mpsc::TryRecvError::Empty)) => return Ok(None),
+            None | Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                return Ok(Some(*v.insert(dropped())));
             }
         };
         guard.take();
@@ -308,6 +305,16 @@ fn sum_pipeline(
         cache: None,
     });
     (bgl, pipeline)
+}
+
+/// What a count whose readback was dropped answers: the GPU let go of the
+/// mapping (a device reset, a surface reconfigured under it), so nothing
+/// was counted. Zero hides what the query guarded (a flare, a sun) for that
+/// frame; the game asks again next frame. Logged once.
+fn dropped() -> u64 {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| eprintln!("gfx: a pixel-count readback was dropped; it counts 0 (logged once)"));
+    0
 }
 
 impl PixelCounter {

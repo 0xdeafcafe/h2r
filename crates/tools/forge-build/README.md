@@ -2,9 +2,10 @@
 
 Materialises a Forge document against the user's own Halo 2 multiplayer
 map. The builder verifies every named source hash and the pinned builder
-versions. It applies placement and typed tag-field edits through the
-scenario editor's command and save path, then the document's links, then
-checks the expected MapId and geometry. Output is deterministic for the same input bytes and
+versions. It checks the print of every base entry the document names
+with one against the disc's row, then applies placement, entry and typed
+tag-field edits through the scenario editor's command and save path, then
+the document's links, then checks the expected MapId and geometry. Output is deterministic for the same input bytes and
 versions.
 
 ## Where it sits
@@ -21,8 +22,9 @@ session is outside this crate's scope.
 h2 forge check map.h2forge --disc halo2.iso
 ```
 
-This verifies the result in memory and prints its MapId and any kit
-reservations.
+This verifies the result in memory and prints its MapId, one line for
+each entry print it compared (`print <block> <index> <print>: matches`)
+and any kit reservations.
 
 ```sh
 h2 forge build map.h2forge --disc halo2.iso
@@ -49,7 +51,37 @@ limited by each known engine maximum and by the writer's tag memory and
 file size bounds. Blocks are allocated in ascending scenario root offset,
 with fewer slots when a block would exceed a bound. A normal play
 document omits this recipe. Other generators, transplants, variants and
-imports return named errors pending their own slices.
+imports return named errors pending their own slices. The `ai_ground`
+generator is built as the next section says.
+
+## AI ground
+
+A document whose recipes include `ai_ground` (`forge_doc::GroundRecipe`)
+has the Firefight kit's ground built over the materialised map: each
+ground label of `forge_doc::GroundLabel` on a netgame flag gives the
+build a marker from the finished scenario's flag (position, facing, team;
+the label's number is a `siege_line`'s phase), and
+`firefight_kit::ground::build` makes the bytes, which are the map.
+`Built::ground` reports its zones, squad slots, problems and receipt.
+The document stores only the labels and the recipe, so each machine builds
+its own from its own disc. A kit of another version, a team that is not
+red or blue, a map with no room, or `ai_ground` beside `forge_kit` stops
+the build as `Error::Ground` or `Error::Recipe`. Labels of any other
+sort are accepted and kept by nothing: they are document data.
+
+## Entry ops
+
+`forge_doc::replay` hands the materialiser each entry op lowered to the
+placement op of its target's running index (`forge_doc::resolve`), so an
+entry set is a field write and an entry removal is the editor's
+swap-remove, which repoints the scenario's object names. Before the
+first edit, every base entry an entry op, link or label names with a
+print is checked against the disc's own row (`base_fields`,
+`base_print`): its typed fields in the layout's order, a palette index
+as the key of the palette entry it selects and a tag reference as its
+key. A print that differs stops the build as `Error::Print`
+(`variant_print`) with the block and index, and nothing is built.
+`Built::prints` lists the prints compared.
 
 ## Links
 
@@ -74,6 +106,11 @@ An unlinked entry keeps the bytes it would have had without the link.
 output, kit byte isolation, stale-base and expectation refusals, typed
 field writes, resolution through `content::Library`, and links: a linked
 teleporter pair, a device group, and unlinking back to the same bytes.
+`tests/entry.rs` checks the materialiser's print against the editor's
+decoded fields for every fixture entry, that moving an own entry changes
+its bytes and the checksum only, that a removal matches the editor's
+bytes and name repointing, that a wrong print is `variant_print` with
+no build, and that two builds of entry ops are byte-equal.
 
 ## Docs
 

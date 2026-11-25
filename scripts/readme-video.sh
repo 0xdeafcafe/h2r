@@ -5,8 +5,10 @@
 #
 #   scripts/readme-video.sh --out-image <dir> [--disc <iso>]
 #       [--only <name>[,<name>]] [--dest <dir>] [--settle <seconds>]
-#       [--fps 30|60|120] [--size WxH] [--scale 2-6]
+#       [--size WxH] [--scale 2-6]
 #
+# Clips are one frame per tick (30 fps): display frames between scenes
+# are not captured into clip slots (docs/graphics/framescene.md, section 7).
 # The image must be built with the same H2_OPT (default 2).
 # Requires h2 (or $H2), jq and a GPU. Pass --dest to keep the frame folders
 # somewhere else, then pass that directory to scripts/readme-art.sh --frames.
@@ -22,14 +24,13 @@ usage() {
   cat <<'EOT'
 Usage: scripts/readme-video.sh --out-image <dir> [--disc <iso>] [--only <names>]
                                [--dest <dir>] [--settle <seconds>]
-                               [--fps 30|60|120] [--size WxH] [--scale 2-6]
+                               [--size WxH] [--scale 2-6]
 
   --out-image <dir>  game image built with the same H2_OPT (default: 2), required
   --disc <iso>       your disc image (default: $H2_DISC, else disc/halo2.iso)
   --only <names>     comma-separated names (oldmombasa, deltaapproach, ascension)
   --dest <dir>       where to save frame folders (default: docs/images/readme/frames)
   --settle <s>       gameplay seconds before the move (default: 20)
-  --fps 30|60|120    display samples per second (default: 30)
   --size WxH        exact crop and output size, e.g. 3840x2160
   --scale 2-6       render scale (default: $H2_RENDER_SCALE or enough for --size, at least 2)
 EOT
@@ -53,7 +54,6 @@ while (($# > 0)); do
     --dest) dest="${2:?--dest needs a directory}"; shift 2 ;;
     --settle) settle="${2:?--settle needs seconds}"; shift 2 ;;
     --scale) scale="${2:?--scale needs a render scale}"; shift 2 ;;
-    --fps) fps="${2:?--fps needs a frame rate}"; shift 2 ;;
     --size) size="${2:?--size needs WxH}"; shift 2 ;;
     -h | --help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
@@ -62,7 +62,6 @@ done
 
 [[ -n "$image" && -d "$image" ]] || fail "pass the built image with --out-image <dir>"
 [[ -f "$disc" ]] || fail "no disc image at $disc (set H2_DISC or pass --disc)"
-case "$fps" in 30 | 60 | 120) ;; *) fail "--fps must be 30, 60 or 120" ;; esac
 required_scale=2
 if [[ -n "$size" ]]; then
   [[ "$size" =~ ^([1-9][0-9]{0,3})x([1-9][0-9]{0,3})$ ]] || fail "--size must be WxH"
@@ -91,10 +90,6 @@ image="$(cd "$image" && pwd)"
 settle_ticks="$(jq -n --argjson seconds "$settle" '($seconds * 30) | round')"
 clip_frames=$((clip_ticks * fps / 30))
 features="${H2_FEATURES:-}"
-if ((fps > 30)); then
-  features="${features:+$features,}impl.render.native=off"
-  features+=",impl.render.interpolate=on,impl.render.reproject=off,impl.render.reproject_ahead=off"
-fi
 
 mkdir -p "$dest"
 # Stage the raw PNGs outside the checkout until the clip is complete.
@@ -161,7 +156,6 @@ capture() {
     cd "$scratch"
     unset H2_BOOT_GFX_SIZE
     if [[ -n "$size" ]]; then export H2_BOOT_GFX_SIZE="$size"; fi
-    if ((fps > 30)); then export H2_RENDER_THREAD=1 H2_SINGLE_COPY=true; fi
     exec env H2_OPT="${H2_OPT:-2}" H2_LEVEL="$level" H2_RENDER_SCALE="$scale" H2_FPS="$fps" \
       H2_FEATURES="$features" H2_BOTS_NAV_AUTO=0 \
       H2_BOOT_GFX="$gfx" H2_BOOT_GFX_EVERY=never H2_BOOT_GFX_LIGHTING_AB=0 \
@@ -186,8 +180,6 @@ capture() {
   tick="$(agent "$socket" status | jq -er '.at.tick')"
   start_tick=$((tick + 60))
   capture_tick="$start_tick"
-  # Interpolation starts at the previous tick's pose.
-  if ((fps > 30)); then capture_tick=$((start_tick + 1)); fi
   armed="$(agent "$socket" render.capture_clip "$(jq -cn --argjson tick "$capture_tick" \
     --argjson ticks "$clip_ticks" --argjson fps "$fps" '{$tick, $ticks, $fps}')")"
   clip_id="$(jq -ce '{id}' <<< "$armed")"

@@ -77,8 +77,9 @@ impl Arbitration {
             | Self::Reported { round, .. } => *round,
         }
     }
-    /// The server call: its path under `/arbitration/` and its body.
-    fn call(&self) -> (String, String) {
+    /// The server call under Live session `session`: its path under
+    /// `/arbitration/` and its body.
+    fn call(&self, session: &str) -> (String, String) {
         let r = self.round();
         let (action, body) = match self {
             Self::Registered {
@@ -107,7 +108,7 @@ impl Arbitration {
             ),
         };
         (
-            format!("{}/{}/{action}", r.session_hex(), r.round_hex()),
+            format!("{session}/{}/{action}", r.round_hex()),
             body.expect("serializes"),
         )
     }
@@ -119,6 +120,29 @@ pub(crate) struct Context<'a> {
     pub session: Option<&'a Session>,
     /// The session this console advertises, for the log.
     pub advertising: Option<[u8; 8]>,
+    /// The Live session this console plays in: the one it advertises,
+    /// else the one it joined (`State::game_session`, as a stat read
+    /// names it). The game record carries the same id.
+    pub game_session: Option<String>,
+    /// The XNKIDs the title registered with `XNetRegisterKey`.
+    pub keys: Vec<[u8; 8]>,
+}
+
+/// The Live session a round is posted under. A matchmaking host's target
+/// session runs on a network key of its own (`XNetCreateKey`, target
+/// `+0x1c`), registered beside the Live session it advertises, and the
+/// round names that key (`0x72170` -> `0x73bc0` -> `0x924e0`). A round
+/// naming one of this console's registered keys that is not its Live
+/// session is posted under its Live session; any other id is posted as
+/// the game named it.
+fn live_session(round: &ArbitrationRound, ctx: &Context<'_>) -> String {
+    let named = round.session_hex();
+    match &ctx.game_session {
+        Some(live) if *live != named && ctx.keys.contains(&round.session_id.to_le_bytes()) => {
+            live.clone()
+        }
+        _ => named,
+    }
 }
 
 enum Task {
@@ -130,6 +154,12 @@ enum Task {
 pub(crate) struct Arbiter {
     tasks: BTreeMap<u32, Task>,
     kept: VecDeque<Arbitration>,
+    /// Each registered round and the Live session it was posted under:
+    /// its extensions and report go there too. A matchmaking host's
+    /// lobby advertisement is deleted before the game ends, so the
+    /// session worked out again at report time is no longer the one
+    /// the round was registered in.
+    posted: VecDeque<(ArbitrationRound, String)>,
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -235,9 +265,33 @@ impl Arbiter {
                 ctx.advertising.map_or("none".into(), |id| hex(&id)),
             );
         }
+        let round = record.round();
+        let registered = self
+            .posted
+            .iter()
+            .rev()
+            .find(|(r, _)| *r == round)
+            .map(|(_, s)| s.clone());
+        let posted = match (op, registered) {
+            (Op::Extend | Op::Report, Some(session)) => session,
+            _ => live_session(&round, &ctx),
+        };
+        if op == Op::Register {
+            if self.posted.len() == MAX_KEPT {
+                self.posted.pop_front();
+            }
+            self.posted.push_back((round, posted.clone()));
+        }
+        if posted != record.round().session_hex() && op == Op::Register {
+            eprintln!(
+                "live: arbitration: round {} names the title's network key {}; registering it under Live session {posted}",
+                record.round().round_hex(),
+                record.round().session_hex(),
+            );
+        }
         let task = match (ctx.service, ctx.session) {
             (Some(service), Some(session)) => {
-                let (path, body) = record.call();
+                let (path, body) = record.call(&posted);
                 match service.arbitrate(session, path, body) {
                     Ok(p) => Task::Waiting(p),
                     Err(hr) => return Ok(hr),

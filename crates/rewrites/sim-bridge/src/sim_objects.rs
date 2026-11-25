@@ -26,7 +26,7 @@
 use hooks::Builder;
 use engine::points;
 use engine::sim_objects::{self as objects, Table, damage};
-use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
+use runtime::{CpuAbi, ExecCtx, Guest, GuestFault, TransferAbi};
 
 /// The switch, without its `impl.` prefix, and the label of the bodies'
 /// implementations.
@@ -39,16 +39,92 @@ pub fn on(switches: &hooks::Switches) -> bool {
 /// Whether the per-function port at `addr` stands down: the switch is on
 /// and a body owns the point.
 pub fn owns(switches: &hooks::Switches, addr: u32) -> bool {
-    owns_in(on(switches), &objects::TABLE, addr)
+    owns_in(on(switches), table(switches), addr)
 }
 
 fn owns_in(on: bool, table: &Table, addr: u32) -> bool {
     on && table.owns(addr)
 }
 
+// Both registration and the fused call/return driver must agree on who
+// handles c7840. Removing it from this table also sends its callers
+// through normal dispatch when the image lacks the animation selectors.
+fn table(switches: &hooks::Switches) -> &'static Table {
+    static WITHOUT_AIM: std::sync::LazyLock<Table> = std::sync::LazyLock::new(|| {
+        Table::new(objects::BODIES.iter().filter(|b| b.point.base != points::UNIT_AIM_UPDATE.base))
+            .expect("BODIES is consistent")
+    });
+    if crate::sim_native::anim_on(switches) { &WITHOUT_AIM } else { &objects::TABLE }
+}
+
+// Each listed segment reads or writes only its CpuAbi and Guest. Bodies
+// with host-visible effects (e.g. finalize records a deletion) run once on
+// the live path, including when reached by a checked segment.
+pub(crate) const SHADOW_POINTS: &[&points::Point] = &[
+    &points::OBJECTS_PRE_PHYSICS,
+    &points::OBJECTS_POST_PHYSICS,
+    &points::OBJECT_FUNCTION_VALUE,
+    &points::LIGHT_RECORD_UPDATE,
+    &points::UNIT_CLAMP_DIRECTION,
+    &points::UNIT_ACTIONS_UPDATE,
+];
+
 pub(crate) fn install(b: &mut Builder) {
-    install_table(b, &objects::TABLE);
-    install_events(b);
+    let installed = on(b.switches());
+    let bodies = table(b.switches());
+    for point in SHADOW_POINTS {
+        crate::shadow::register(point.name, OBJECTS, point, installed && bodies.owns(point.base));
+    }
+    if installed {
+        install_table(b, bodies, OBJECTS, |_| &[]);
+        install_events(b);
+        install_curve_arm(b);
+    }
+}
+
+/// The object function evaluator's capture arm: the guest answers every
+/// call of the tag-function curve evaluator `13b390` (`FUNCTION_EVALUATE`),
+/// and the idiomatic kernel's prediction is compared with the result
+/// (`engine::sim_objects::functions::parity`, the pattern of phase 5's
+/// physics arms).
+fn install_curve_arm(b: &mut Builder) {
+    let point = &points::FUNCTION_EVALUATE;
+    b.raw()
+        .observe_before(point, "objects-curve-begin", move |o| {
+            if o.addr == point.base {
+                let guest = o.guest();
+                engine::sim_objects::functions::parity::curve_begin(o.thread_id, o.cpu, &*guest);
+            }
+        })
+        .optional();
+    b.raw()
+        .observe_after(point, "objects-curve-end", move |o| {
+            if o.addr == point.base {
+                engine::sim_objects::functions::parity::curve_end(o.thread_id, o.cpu);
+            }
+        })
+        .optional();
+}
+
+fn drive(
+    cpu: &mut CpuAbi,
+    g: &mut Guest,
+    table: &Table,
+    pc: u32,
+    shadow: &crate::shadow::Shadow,
+) -> objects::Result<TransferAbi> {
+    if !shadow.any_enabled() {
+        return objects::drive(cpu, g, table, pc);
+    }
+    objects::drive_with(cpu, g, table, pc, |body, cpu, g, pc| {
+        if SHADOW_POINTS.iter().any(|point| point.base == body.point.base) {
+            shadow.run(body.point.name, cpu, g, pc, crate::shadow::game_tick, &mut |cpu, g| {
+                body.segment(cpu, g, pc)
+            })
+        } else {
+            body.segment(cpu, g, pc)
+        }
+    })
 }
 
 /// The event observers. They write only the game thread's event buffer.
@@ -66,19 +142,25 @@ fn install_events(b: &mut Builder) {
     });
 }
 
-fn install_table(b: &mut Builder, table: &'static Table) {
+pub(crate) fn install_table(
+    b: &mut Builder,
+    table: &'static Table,
+    label: &'static str,
+    generated_sites: fn(u32) -> &'static [u32],
+) {
     for &body in table.bodies() {
         let point = body.point;
         b.raw()
-            .implement(point, OBJECTS, move |cpu, ctx, pc| {
+            .implement(point, label, move |cpu, ctx, pc| {
                 let site = pc != point.base && body.sites.contains(&pc);
-                if (pc == point.base || site) && objects::supported(cpu) {
+                if (pc == point.base || site) && table.supports(cpu) {
                     let mut mem = ctx.memory();
-                    return objects::drive(cpu, &mut mem, table, pc);
+                    return drive(cpu, &mut mem, table, pc, &crate::shadow::SHADOW);
                 }
                 original(cpu, ctx, pc, site)
             })
             .resumes(body.sites)
+            .generated_resumes(generated_sites(point.base))
             .context_only()
             // Another feature hooks this point too: calls go through the
             // chain (`hooks::install::guard_shared_bodies`).
@@ -89,7 +171,7 @@ fn install_table(b: &mut Builder, table: &'static Table) {
 }
 
 /// The original at an entry, or its resume at a site.
-fn original(cpu: &mut CpuAbi, ctx: &mut ExecCtx, pc: u32, site: bool) -> Result<TransferAbi, GuestFault> {
+pub(crate) fn original(cpu: &mut CpuAbi, ctx: &mut ExecCtx, pc: u32, site: bool) -> Result<TransferAbi, GuestFault> {
     let original = if site {
         ctx.runtime().resolve_original_resume(pc)
     } else {
@@ -126,6 +208,64 @@ mod tests {
         static T: std::sync::LazyLock<Table> =
             std::sync::LazyLock::new(|| Table::new(TEST_BODIES.iter()).unwrap());
         &T
+    }
+
+    #[test]
+    fn shadow_checks_a_fused_call_and_resume_without_replaying_the_callee() {
+        use engine::points::Sig;
+        use lifted::code::Assembled;
+        use runtime::guest::Permissions;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        const VALUE: u32 = points::OBJECT_FUNCTION_VALUE.base;
+        const SITE: u32 = VALUE + 5;
+        const STACK: u32 = 0x8100;
+        static START: Point = Point::new("START", VALUE + 32, Sig::Opaque, "");
+        static EFFECT: Point = Point::new("EFFECT", VALUE + 16, Sig::Opaque, "");
+        static CALLS: AtomicU32 = AtomicU32::new(0);
+        static BODIES: [Body; 3] = [
+            Body { point: &START, sites: &[], run: |_, _| Ok(Next::Tail { target: VALUE }) },
+            Body { point: &points::OBJECT_FUNCTION_VALUE, sites: &[SITE], run: |cx, pc| {
+                if pc == VALUE {
+                    Ok(Next::Call { target: EFFECT.base, site: SITE })
+                } else {
+                    cx.cpu.eax = 27;
+                    Ok(Next::Ret { pop: 0 })
+                }
+            } },
+            Body { point: &EFFECT, sites: &[], run: |_, _| {
+                CALLS.fetch_add(1, Ordering::Relaxed);
+                Ok(Next::Ret { pop: 0 })
+            } },
+        ];
+        let table = Table::new(BODIES.iter()).unwrap();
+        let shadow = crate::shadow::Shadow::new();
+        let value = &points::OBJECT_FUNCTION_VALUE;
+        shadow.register(value.name, OBJECTS, value.name, VALUE, true);
+
+        for answer in [27, 28] {
+            // Synthetic original: call EFFECT; mov eax,answer; ret.
+            let bytes = [0xe8, 11, 0, 0, 0, 0xb8, answer, 0, 0, 0, 0xc3];
+            shadow.set_code(Box::new(Assembled::new(VALUE, &bytes)));
+            shadow.enable(&[OBJECTS.into()], None, None).unwrap();
+            let mut g = Guest::new();
+            g.map_zeroed(0x8000, 0x1000, Permissions::RW).unwrap();
+            g.set_u32(STACK, 0xabcd).unwrap();
+            let mut cpu = CpuAbi { esp: STACK, ..Default::default() };
+            let before = CALLS.load(Ordering::Relaxed);
+            let transfer = drive(&mut cpu, &mut g, &table, START.base, &shadow).unwrap();
+            assert_eq!(CALLS.load(Ordering::Relaxed) - before, 1);
+            assert_eq!(transfer, TransferAbi::ret(0xabcd));
+            assert_eq!((cpu.esp, cpu.eax), (STACK + 4, 27));
+            let status = shadow.status();
+            assert_eq!((status.calls, status.checked, status.skipped), (2, 2, 0));
+            if answer == 27 {
+                assert_eq!(status.matched, 2);
+            } else {
+                assert_eq!((status.matched, status.mismatched), (1, 1));
+                assert_eq!(status.mismatches[0].pc, format!("{SITE:#010x}"));
+            }
+        }
     }
 
     #[test]
@@ -197,6 +337,24 @@ mod tests {
             let chain = &plan.chains[&point.base];
             assert!(chain.observe_before.iter().any(|h| h.label == label), "{}", point.name);
         }
+    }
+
+    #[test]
+    fn the_switch_installs_the_curve_evaluators_capture_arm() {
+        // On: the arm observes the curve evaluator's entry and return; it
+        // never implements the point.
+        let mut registry = Registry::new(Switches::defaults().with(&format!("impl.{OBJECTS}"), true));
+        registry.add(&SimNative::for_tests()).unwrap();
+        let plan = registry.build(&Base).unwrap();
+        let chain = &plan.chains[&points::FUNCTION_EVALUATE.base];
+        assert!(chain.implement.is_none(), "the arm observes, it does not answer");
+        assert_eq!((chain.observe_before.len(), chain.observe_after.len()), (1, 1));
+        assert!(chain.observe_before[0].optional && chain.observe_after[0].optional);
+        // Off: nothing installs.
+        let mut registry = Registry::new(Switches::defaults());
+        registry.add(&SimNative::for_tests()).unwrap();
+        let plan = registry.build(&Base).unwrap();
+        assert!(!plan.chains.contains_key(&points::FUNCTION_EVALUATE.base));
     }
 
     static DAMAGE_BODIES: [Body; 2] = [
@@ -387,7 +545,7 @@ mod tests {
         }
         fn build(&self, b: &mut Builder) -> Result<(), hooks::BuildError> {
             b.snapshot(hooks::SnapshotPolicy::Stateless);
-            install_table(b, self.0);
+            install_table(b, self.0, OBJECTS, |_| &[]);
             Ok(())
         }
     }

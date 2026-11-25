@@ -8,17 +8,25 @@ use super::GfxBackend;
 use crate::backend::{Backend, ExternalCopies, SceneStage, TargetCopy};
 
 impl GfxBackend {
-    pub(crate) fn record_replay_stage(&mut self, stage: &SceneStage<TargetRef>, surfaces: crate::ExternalSurfaces<gfx::surface::SurfaceId>) -> Result<(), String> {
+    pub(crate) fn record_replay_stage(
+        &mut self,
+        stage: &SceneStage<TargetRef>,
+        surfaces: crate::ExternalSurfaces<gfx::surface::SurfaceId>,
+        private_lighting: Option<crate::Lighting>,
+    ) -> Result<usize, String> {
         let mut pass = stage.pass.lock().map_err(|_| "scene stage poisoned")?;
         if !pass.replays_scene() {
             return Err("scene stage cannot be recorded again".into());
         }
-        let ExternalCopies::Ready(targets) = self.external_attachments(surfaces, [None; 4], TargetCopy::Display)? else {
+        let ExternalCopies::Ready(mut targets) = self.external_attachments(surfaces, [None; 4], TargetCopy::Display)? else {
             return Err("scene stage attachment is unavailable".into());
         };
-        let [target] = targets.as_slice() else {
+        let [target] = targets.as_mut_slice() else {
             return Err("expected one scene stage target copy".into());
         };
+        if let Some(lighting) = private_lighting {
+            target.lighting = lighting;
+        }
         // Stage uploads and commands belong to this submission. Never call
         // the guest reservation, skip, submission callback or drop counters.
         let ranges = stage.plan.ranges;
@@ -48,7 +56,12 @@ impl GfxBackend {
         self.stats.draws += draws as u64;
         self.retain_uploads(target.uploads.clone());
         self.submit_full_external_batch();
-        Ok(())
+        let relit = if private_lighting.is_some_and(crate::Lighting::is_relight) {
+            pass.relit_lightmap_ranges()
+        } else {
+            0
+        };
+        Ok(relit)
     }
 }
 
@@ -65,14 +78,18 @@ mod tests {
 
     /// The entire effect of this invented stage is copying its sampled
     /// level to its bound colour. All target handles come from the call.
-    struct CopyLevel;
+    struct CopyLevel {
+        modes: Arc<Mutex<Vec<crate::Lighting>>>,
+    }
 
     impl ExternalPass for CopyLevel {
         fn replays_scene(&self) -> bool { true }
+        fn relit_lightmap_ranges(&self) -> usize { 1 }
 
         fn record_encoded(
             &mut self, target: &ExternalAttachments, _request: ExternalPassRequest,
         ) -> Option<Result<ExternalEncoded, &'static str>> {
+            self.modes.lock().unwrap().push(target.lighting);
             let source = target.sampled[0].as_ref()?.view.texture().clone();
             let dest = target.color.texture().clone();
             let size = source.size();
@@ -98,13 +115,14 @@ mod tests {
         let clear = |colour, rgba| ReplayOp::Clear {
             colour, depth: TargetRef::None, clear: Clear { color: Some(rgba), ..Clear::NONE },
         };
+        let modes = Arc::new(Mutex::new(Vec::new()));
         let stage = SceneStage {
             surfaces: ExternalSurfaces {
                 color: dest, depth: dest, sampled: vec![source], slots: vec![], slot_sizes: vec![],
             },
             request: ExternalPassRequest { rect: (0, 0, 8, 4), surface_size: (8, 4), display_projection_factor: 1.0, z_scale: 1.0 },
             plan: ExternalPlan { stage: timeline::native::Stage::Water, view: 0, ranges: 1, slots: vec![] },
-            pass: Arc::new(Mutex::new(Box::new(CopyLevel))),
+            pass: Arc::new(Mutex::new(Box::new(CopyLevel { modes: Arc::clone(&modes) }))),
         };
         let frame = ReplayFrame {
             ops: vec![
@@ -117,8 +135,9 @@ mod tests {
             aux: vec![desc],
             ..Default::default()
         };
-        for scale in [1, 4] {
-            let mut pass = GuestDrawPass::new(&mut gpu, &frame, scale).unwrap();
+        use crate::Lighting::{RelightOff, RelightOn, Retail};
+        for (scale, lighting) in [(1, Retail), (4, RelightOn), (1, RelightOff), (4, Retail)] {
+            let mut pass = GuestDrawPass::new_lit(&mut gpu, &frame, scale, lighting).unwrap();
             for (_, op) in &frame.ops {
                 pass.apply(op).unwrap();
             }
@@ -127,5 +146,10 @@ mod tests {
             assert!(rgba.chunks_exact(4).all(|pixel| pixel == [255, 0, 0, 255]));
             assert!(gpu.last_presented().is_none());
         }
+        assert_eq!(*modes.lock().unwrap(), [Retail, RelightOn, RelightOff, Retail]);
+
+        let mut empty = GuestDrawPass::new_lit(&mut gpu, &frame, 1u32, RelightOff).unwrap();
+        empty.apply(&frame.ops[1].1).unwrap();
+        assert!(empty.read_rgba().unwrap_err().contains("no native world range"));
     }
 }

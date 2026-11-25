@@ -1,6 +1,6 @@
 # Animation graphs (`jmad`) and animation data
 
-Status: Built. Code: `crates/formats/tags/src/anim.rs`, `crates/formats/tags/src/anim_sample.rs`. Tests: `crates/formats/tags/src/anim_tests.rs`. Switch: none.
+Status: Built. Code: `crates/formats/tags/src/anim.rs`, `crates/formats/tags/src/anim_sample.rs`, encoder `crates/formats/tags/src/anim_write.rs`. Tests: `crates/formats/tags/src/anim_tests.rs`, `anim_write_tests.rs`. Switch: none.
 
 This describes `crates/formats/tags/src/anim.rs` (the `jmad` tag), `crates/formats/tags/src/anim_sample.rs`
 (decompression and sampling) and `h2 anim` in `crates/apps/cli`. Like
@@ -254,6 +254,31 @@ neighbouring frames (rotations along the shorter arc, then normalised; the engin
 itself does not flip the sign in this case, and no clip on the disc needs it).
 The engine's own interpolated functions are the same piecewise-linear blend.
 
+### Composing a pose
+
+These channels are the animation's own, in the node's local space; a caller
+composes them onto a skeleton. The rule (settled by the pose viewer,
+docs/editor/rich-editors.md slice M1, against the engine's own composition
+in [anim-sampling.md](../engine/anim-sampling.md) and the Halo 1
+converter's disc round-trip, [models.md](../halo1/models.md)):
+
+- A channel the animation supplies none for is the render model node's
+  own default (`mode` node `+0xc` translation, `+0x18` orientation):
+  `Pose::merged(&[NodeDefault])` fills them, keeping the animation's
+  `has_*` flags. The graph's nodes and the render model's are the same
+  list, indexed alike (the engine writes an animation's channels by node
+  index into the object's nodes), so the graph is refused over when the
+  counts disagree.
+- The merged locals compose up the render model's parent links, Halo 2's
+  rotation rule (the same as the converter's `mode::quat_matrix`):
+  `Pose::world_matrices(&parents)`; a viewer's node matrices take the
+  place of the rest pose (`scenario_edit::native_view::posed_nodes`).
+- An overlay applies over a base pose with the engine's scaled-add rule
+  (its mode 3, weight 0 to 1; 1 is the plain add, its mode 2):
+  `Pose::add_overlay(&overlay, weight)` composes rotations `r ⊗ s'`,
+  adds translations `weight·s`, scales `((s − 1)·weight + 1)·r`, per
+  channel the overlay supplies.
+
 ## Using the decoder
 
 ```rust
@@ -285,8 +310,10 @@ column-major world matrices. Check `clip.is_aim_grid()` before playing a clip
 (codec 8, see above). `NodeTransform` is plain data:
 `rotation: [f32; 4]` (x, y, z, w), `translation: [f32; 3]`, `scale: f32`.
 These are the animation's own channels in the node's *local* space, with
-the node tree given by `graph.nodes[i].parent`. The skeleton in the render model
-or the node block's base data is not combined here.
+the node tree given by `graph.nodes[i].parent`; the skeleton in the render
+model is not combined here — "Composing a pose" above is how a viewer
+does it (`Pose::merged`, `Pose::add_overlay`,
+`scenario_edit::native_view::posed_nodes`).
 
 ## `h2 anim`
 
@@ -344,7 +371,6 @@ not a proof of every value.
   weapon type are counted, not decoded.
 - Inline animation data (flag `0x10` clear) is rejected: no animation on the disc
   uses it, so its layout is unverified.
-- Overlay (type 1) animations are exposed as raw per-node channels; additive
-  application is a runtime concern and is not implemented here.
-- Quaternion handedness and the coordinate frame relative to the render model
-  skeleton are not established until a viewer draws a posed model.
+- Overlay (type 1) animations apply additively (`Pose::add_overlay`,
+  above); blending several animations at once by weight, as the game does
+  between states, is not implemented here.

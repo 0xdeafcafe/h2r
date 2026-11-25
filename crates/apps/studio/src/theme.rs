@@ -85,6 +85,8 @@ pub const TEXT: [f32; 4] = rgb(222, 224, 228);
 pub const STATUS_BG: [f32; 4] = rgb(19, 20, 23);
 pub const RULE: [f32; 4] = rgb(48, 50, 56);
 
+/// An image drawn as it is: no tint.
+pub const IMAGE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 pub const HUD_WIDGET: [f32; 4] = [0.35, 0.8, 1.0, 0.45];
 pub const SCREEN_WIDGET: [f32; 4] = [0.35, 0.8, 1.0, 0.55];
 pub const WIDGET_FOCUS: [f32; 4] = [1.0, 1.0, 1.0, 0.95];
@@ -161,8 +163,27 @@ pub fn layer_color(id: scenario_edit::layers::LayerId) -> [f32; 3] {
         LayerId::Pathfinding => [0.3, 0.85, 0.7],
         LayerId::BotNav => [0.5, 0.6, 1.0],
         LayerId::BotSpots => [1.0, 0.5, 0.85],
+        LayerId::Playtest(layer) => playtest_color(layer),
         LayerId::Halo1 => [1.0, 0.55, 0.15],
         LayerId::Live => [0.42, 0.8, 0.55],
+    }
+}
+
+/// The playtest layers' colours: heat in red and violet, spawns graded
+/// green to red by the layer itself (this is its base), traffic and flow
+/// in blues, the lines in gold and white.
+pub fn playtest_color(layer: scenario_edit::layers::PlaytestLayer) -> [f32; 3] {
+    use scenario_edit::layers::PlaytestLayer as L;
+    match layer {
+        L::Kills => [1.0, 0.3, 0.2],
+        L::Deaths => [0.7, 0.3, 1.0],
+        L::Spawns => [0.4, 0.95, 0.4],
+        L::Traffic => [0.25, 0.65, 1.0],
+        L::Flow => [0.6, 0.9, 1.0],
+        L::Unvisited => [0.8, 0.8, 0.3],
+        L::Sightlines => [1.0, 0.85, 0.3],
+        L::WeaponUse => [0.3, 1.0, 0.85],
+        L::Stuck => [1.0, 0.55, 0.1],
     }
 }
 
@@ -187,6 +208,10 @@ pub fn sector_color(flags: u16, floor: bool) -> [f32; 3] {
         shade.map(|c| c * 0.55)
     }
 }
+
+/// A bot nav polygon out of the map (only a glitch reaches it): a dim
+/// grey-blue beside the layer's blue.
+pub const BOT_OUT_OF_MAP: [f32; 3] = [0.3, 0.32, 0.42];
 
 /// A bot link's colour by how it is crossed.
 pub fn bot_link_color(kind: scenario_edit::nav_view::BotLinkKind) -> [f32; 3] {
@@ -627,6 +652,8 @@ pub mod icon {
     pub const SHIELD: &str = "\u{e158}";
     pub const USERS: &str = "\u{e1a4}";
     pub const SOUND: &str = "\u{e1ab}";
+    /// A posed model (the Animation window).
+    pub const RUN: &str = "\u{e566}";
     pub const COG: &str = "\u{e30b}";
     pub const KNIFE: &str = "\u{e4a0}";
     pub const ZAP: &str = "\u{e1b4}";

@@ -363,3 +363,18 @@ fn a_fault_in_a_body_is_returned_with_the_frame_as_it_was() {
     assert_eq!(fault.addr, STACK - 4);
     assert_eq!(cpu.esp, STACK);
 }
+
+#[test]
+fn a_fused_callee_returns_to_the_lifted_remainder_of_its_caller() {
+    fn prefix(cx: &mut Cx<'_>, _: u32) -> Result<Next> {
+        cx.cpu.eax = 3;
+        Ok(Next::CallOriginalResume { target: INNER.base, site: 0x1010 })
+    }
+    static PARTIAL: Body = Body { point: &OUTER, sites: &[], run: prefix };
+    let t = Table::new([&PARTIAL, &BODIES_T[1]]).unwrap();
+    let (mut cpu, mut g) = guest();
+    let out = drive(&mut cpu, &mut g, &t, OUTER.base).unwrap();
+    assert_eq!(out, TransferAbi::ret(0x1010));
+    assert_eq!(cpu.esp, STACK);
+    assert_eq!(g.u32(STACK + 4).unwrap(), 6);
+}

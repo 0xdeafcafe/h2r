@@ -49,7 +49,7 @@ pub(super) fn capture(
     let Some(tag) = body.definition(m)? else {
         return Ok(None);
     };
-    let index = tag.index() as u16;
+    let index = tag.index();
     if local_creature_tag(m, index)? != Some(tag.raw()) {
         return Ok(None);
     }

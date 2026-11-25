@@ -107,7 +107,7 @@ fn reaction_delays_are_bounded_variable_and_scale_by_skill() {
 fn a_once_per_pull_trigger_is_pulled_and_let_go() {
     let mut t = Tactics::new(12);
     let pull = Pull::Tap(6);
-    let down: Vec<_> = (0..75).map(|k| t.trigger(k, pull, true)).collect();
+    let down: Vec<_> = (0..75).map(|k| t.trigger(k, pull, true, true)).collect();
     let starts: Vec<_> = (1..down.len())
         .filter(|&k| !down[k - 1] && down[k])
         .collect();
@@ -117,26 +117,137 @@ fn a_once_per_pull_trigger_is_pulled_and_let_go() {
         assert!((2..=3).contains(&down[k..].iter().take_while(|d| **d).count()));
     }
     let mut t = Tactics::default();
-    assert!(t.trigger(0, pull, true));
-    assert!(t.trigger(1, pull, false), "finishes an allowed pull");
+    assert!(t.trigger(0, pull, true, true));
+    assert!(t.trigger(1, pull, false, false), "finishes an allowed pull");
     t.stop_trigger(2);
-    assert!(!t.trigger(2, pull, false));
+    assert!(!t.trigger(2, pull, false, false));
 }
 
 #[test]
 fn a_held_trigger_bursts_and_a_blade_never_pulls() {
     let mut t = Tactics::default();
     let burst = Pull::Hold(Some((12, 8)));
-    let down: Vec<_> = (0..35).map(|k| t.trigger(k, burst, true)).collect();
+    let down: Vec<_> = (0..35).map(|k| t.trigger(k, burst, true, true)).collect();
     let on = down.iter().take_while(|d| **d).count();
     let off = down[on..].iter().take_while(|d| !**d).count();
     assert!((10..=14).contains(&on), "{down:?}");
     assert!((6..=10).contains(&off), "{down:?}");
     assert!(down[on + off]);
     let mut t = Tactics::default();
-    assert!(t.trigger(4, Pull::Hold(None), true));
-    assert!(!t.trigger(4, Pull::Hold(None), false));
-    assert!(!t.trigger(4, Pull::Never, true));
+    assert!(
+        !t.trigger(3, Pull::Hold(None), false, true),
+        "pressed on target only"
+    );
+    assert!(t.trigger(4, Pull::Hold(None), true, true));
+    t.stop_trigger(5);
+    assert!(!t.trigger(5, Pull::Hold(None), true, true), "let go");
+    assert!(!t.trigger(8, Pull::Never, true, true));
+}
+
+/// The longest run of trigger-down ticks.
+fn longest(down: &[bool]) -> usize {
+    down.split(|d| !d).map(<[bool]>::len).max().unwrap_or(0)
+}
+
+#[test]
+fn a_tick_off_target_does_not_drop_the_trigger() {
+    for pull in [Pull::Hold(None), Pull::Hold(Some((40, 8)))] {
+        // Off the cone and out of the wider one for three ticks mid-hold:
+        // still down.
+        let mut t = Tactics::new(3);
+        let on = |k| !(10..13).contains(&k);
+        let down: Vec<_> = (0..30).map(|k| t.trigger(k, pull, on(k), on(k))).collect();
+        assert!(down.iter().all(|&d| d), "{pull:?} {down:?}");
+        // For eight: it lets go after its grace, and presses again once
+        // back on.
+        let mut t = Tactics::new(3);
+        let on = |k| !(10..18).contains(&k);
+        let down: Vec<_> = (0..30).map(|k| t.trigger(k, pull, on(k), on(k))).collect();
+        let grace = 10 + HOLD_GRACE as usize;
+        assert!(down[..grace].iter().all(|&d| d), "{pull:?} {down:?}");
+        assert!(!down[grace..18].iter().any(|&d| d), "{pull:?} {down:?}");
+        assert!(down[20..].iter().all(|&d| d), "{pull:?} {down:?}");
+        // Off the cone but near it, however long: held.
+        let mut t = Tactics::new(3);
+        let down: Vec<_> = (0..30).map(|k| t.trigger(k, pull, k < 5, true)).collect();
+        assert!(down.iter().all(|&d| d), "{pull:?} {down:?}");
+    }
+    // A burst let go early is finished on the next press, with no gap.
+    let mut t = Tactics::new(3);
+    let pull = Pull::Hold(Some((20, 30)));
+    let on = |k| !(5..12).contains(&k);
+    let down: Vec<_> = (0..40).map(|k| t.trigger(k, pull, on(k), on(k))).collect();
+    let second = down[9..].iter().position(|&d| d).map(|k| k + 9);
+    assert_eq!(second, Some(12), "{down:?}");
+    let total = down[..40].iter().filter(|&&d| d).count();
+    assert!((18..=26).contains(&total), "one burst: {total} {down:?}");
+    // The pattern changing as the target crosses the band's end keeps
+    // the hold down.
+    let mut t = Tactics::new(3);
+    assert!(t.trigger(0, Pull::Hold(None), true, true));
+    assert!(t.trigger(1, Pull::Hold(Some((12, 8))), true, true));
+}
+
+#[test]
+fn an_automatic_is_held_inside_its_band() {
+    for skill in Skill::ALL {
+        let aim = skill.aim();
+        for spray in [0.0, 1.0] {
+            // An SMG at 4 units: inside its band at every skill.
+            let hold = hold_pattern(4.0, 9.0, aim.burst, spray);
+            assert_eq!(hold, None, "{skill:?}");
+            let smg = gun(Trigger::Automatic, 0, 15.0, 300.0, 60);
+            let shot = Shot::of(Some(smg), true, &Style::of(skill), hold, 90.0);
+            assert_eq!(shot.pull, Pull::Hold(None));
+            // A thumb that wanders round the cone's edge: on four ticks
+            // in five, near all but one in thirty.
+            let mut t = Tactics::new(skill as u64 + 1);
+            let down: Vec<_> = (0..120u32)
+                .map(|k| t.trigger(k, shot.pull, k % 5 != 0, k % 30 != 29))
+                .collect();
+            assert!(longest(&down) >= 45, "{skill:?} {down:?}");
+        }
+    }
+}
+
+#[test]
+fn at_range_a_disciplined_name_bursts_and_easy_sprays() {
+    let burst = Skill::Normal.aim().burst;
+    assert!(burst.is_some());
+    // Past the band, a disciplined name bursts shorter than a sprayer.
+    let calm = hold_pattern(14.0, 9.0, burst, 0.0).unwrap();
+    let wild = hold_pattern(14.0, 9.0, burst, 1.0).unwrap();
+    assert!(calm.0 < burst.unwrap().0 && wild.0 > burst.unwrap().0);
+    assert_eq!((calm.1, wild.1), (burst.unwrap().1, burst.unwrap().1));
+    let run = |pattern| {
+        let mut t = Tactics::new(9);
+        let down: Vec<_> = (0..150u32)
+            .map(|k| t.trigger(k, Pull::Hold(pattern), true, true))
+            .collect();
+        (longest(&down), down.iter().filter(|&&d| !d).count())
+    };
+    let (calm_burst, calm_gaps) = run(Some(calm));
+    let (wild_burst, _) = run(Some(wild));
+    assert!(calm_burst < wild_burst, "{calm_burst} {wild_burst}");
+    assert!(calm_gaps > 0);
+    // Easy holds at range too, and so does any skill with bursts tuned off.
+    for spray in [0.0, 1.0] {
+        let easy = Skill::Easy.aim().burst;
+        assert_eq!(hold_pattern(14.0, 9.0, easy, spray), None);
+        assert_eq!(run(None), (150, 0));
+    }
+    // Heroic and Legendary burst at range as well.
+    for skill in [Skill::Heroic, Skill::Legendary] {
+        assert!(hold_pattern(14.0, 9.0, skill.aim().burst, 0.5).is_some());
+    }
+    // The name's spray: its aggression and reaction jitter.
+    let w = |aggression, reaction_jitter| crate::name_profile::Weights {
+        aggression,
+        reaction_jitter,
+        ..crate::name_profile::Weights::from([0.5; 12])
+    };
+    assert_eq!(spray(None), 0.5);
+    assert!(spray(Some(w(0.1, 0.2))) < spray(Some(w(0.9, 0.8))));
 }
 
 #[test]
@@ -165,6 +276,8 @@ fn the_shot_follows_the_gun_and_the_skill() {
     let smg = gun(Trigger::Automatic, 0, 15.0, 0.0, 60);
     let s = Shot::of(Some(smg), true, &normal, Some((24, 8)), 90.0);
     assert_eq!((s.pull, s.speed), (Pull::Hold(Some((24, 8))), 90.0));
+    let s = Shot::of(Some(smg), true, &normal, None, 90.0);
+    assert_eq!(s.pull, Pull::Hold(None));
     // Rockets at the feet, from Heroic; never at point blank.
     let rockets = gun(Trigger::Single, 1, 1.0, 30.0, 2);
     let s = Shot::of(Some(rockets), true, &heroic, None, 90.0);
@@ -185,10 +298,11 @@ fn the_shot_follows_the_gun_and_the_skill() {
         !Shot::of(None, true, &normal, None, 90.0).ready,
         "nothing in hand"
     );
-    // Arms not read: as before, held, ready, to 25.
+    // Arms not read: held, ready, to the weapon-blind band's fire range
+    // (the rule every gun fires by: 15 times FIRE_PAST_BAND).
     let blind = Shot::of(None, false, &normal, Some((24, 8)), 90.0);
     assert_eq!(blind.pull, Pull::Hold(Some((24, 8))));
-    assert!(blind.ready && blind.in_range(24.0) && !blind.in_range(25.0));
+    assert!(blind.ready && blind.in_range(18.0) && !blind.in_range(19.0));
 }
 
 #[test]
@@ -261,6 +375,25 @@ fn a_melee_finisher_requires_reach_and_facing() {
     assert!(melee_window(1.1, 0.1, Some(plasma), false, false));
     assert!(!melee_window(1.1, 1.5, Some(plasma), true, false));
     assert!(!melee_window(1.8, 0.1, Some(plasma), true, false));
+}
+
+#[test]
+fn a_softened_target_is_run_down_with_a_short_gun_but_not_a_long_one() {
+    let mut plasma = gun(Trigger::Automatic, 0, 10.0, 60.0, 36);
+    plasma.profile.dual = Some(crate::arms::DualGun::PlasmaRifle);
+    // Shield down within a few metres: in for the beatdown.
+    assert!(finish_push(Some(plasma), 4.0, true));
+    assert!(!finish_push(Some(plasma), 4.0, false), "full shield: keep strafing");
+    assert!(!finish_push(Some(plasma), FINISH_PUSH + 0.5, true), "too far to run down");
+    // A rifle's headshot finishes at range; only point blank is a beatdown.
+    assert!(!finish_push(Some(rifle()), 4.0, true));
+    assert!(finish_push(Some(rifle()), 2.0, true));
+    // Nothing loaded: running in is all it has.
+    let empty = gun(Trigger::Single, 1, 3.0, 400.0, 0);
+    assert!(finish_push(Some(empty), 4.0, true));
+    // A sniper or a splash gun never runs in.
+    assert!(!finish_push(Some(gun(Trigger::Single, 2, 1.0, 900.0, 4)), 2.0, true));
+    assert!(!finish_push(Some(gun(Trigger::Single, 0, 1.0, 40.0, 4)), 2.0, true));
 }
 
 #[test]

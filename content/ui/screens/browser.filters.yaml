@@ -1,0 +1,64 @@
+screen: browser.filters
+kind: dialog
+layout: settings
+backing: over
+opener: xbox-live-menu
+states:
+  focus-0:
+    focus: 0
+  focus-4:
+    focus: 4
+  focus-7:
+    focus: 7
+settings:
+  host: menu
+  icon: squares
+  name: "Custom games list"
+  about: "Show only the games that match these filters."
+  actions:
+    - { button: X, words: "CLEAR FILTERS", bind: browser.clear }
+widgets:
+  title:
+    component: title
+    text: "GAME FILTERS"
+rows:
+  row.0:
+    kind: pick
+    text: "Type"
+    help: "Choose what to play."
+    bind: browser.kind
+  row.1:
+    kind: pick
+    text: "Clankers"
+    help: "Choose games with or without bots."
+    bind: browser.clankers
+  row.2:
+    kind: pick
+    text: "Game type"
+    help: "Choose a multiplayer game type."
+    bind: browser.game_type
+  row.3:
+    kind: pick
+    text: "Variant"
+    help: "Choose a variant from open games."
+    bind: browser.variant
+  row.4:
+    kind: pick
+    text: "Map category"
+    help: "Choose where maps come from."
+    bind: browser.map_category
+  row.5:
+    kind: pick
+    text: "Player spaces"
+    help: "Find a game with a public seat."
+    bind: browser.space
+  row.6:
+    kind: pick
+    text: "Campaign"
+    help: "Choose a co-op campaign."
+    bind: browser.campaign
+  row.7:
+    kind: pick
+    text: "Difficulty"
+    help: "Choose a co-op difficulty."
+    bind: browser.difficulty

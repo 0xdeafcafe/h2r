@@ -20,7 +20,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::gpu::Image;
-use crate::look::{implementation_look, PassLook, Refusal, Stage};
+use crate::look::{implementation_look_with_rasterizer, PassLook, Refusal, Stage};
 use crate::pass_state::{pass_state, PassState, StateRefusal};
 use crate::program::{
     compile_pass, described_pipeline, world_constants_read, Gpu, MaterialProgram, PipelineUse, Rigid, RigidProgram, ViewInputs,
@@ -29,7 +29,8 @@ use crate::world::{LightmapKey, ModelRows, Owner, World};
 use gfx::state::RenderStateType;
 use gfx::xdk::{HALO2_BUILD, RenderStateTable};
 use shaders::psh::{self, PixelShaderDef, TexMode};
-use tags::material::Material;
+use tags::material::{Material, Register, ResolvedImplementation};
+use shaders::vsh::VertexUniforms;
 use tags::shader::RenderStateValue;
 
 /// The render-state slots that set the fog a draw takes: `D3DRS_FOGENABLE`
@@ -110,6 +111,62 @@ pub struct FogPass {
     pub look: PassLook,
     pub state: PassState,
     pub fog: FogWords,
+    pub planar: Option<PlanarBindings>,
+}
+
+/// Pixel registers written by the planar implementation's engine externals.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlanarBindings {
+    vectors: Vec<tags::material::VectorBinding>,
+    scalars: Vec<tags::material::VectorBinding>,
+}
+
+impl PlanarBindings {
+    fn from_implementation(imp: &ResolvedImplementation) -> Option<Self> {
+        use tags::material::VectorTarget;
+        let reads = imp.input_reads;
+        if reads.ints != 0 || reads.vectors & !(1u64 << 31) != 0
+            || reads.scalars & !((1u64 << 35) | (1u64 << 36)) != 0
+            || imp.variant || !imp.pixel_constants_from_engine
+            || !imp.vector_bindings.iter().all(|b| b.source == 31)
+            || !imp.scalar_bindings.iter().all(|b| matches!(b.source, 35 | 36))
+            || !imp.vector_bindings.iter().chain(&imp.scalar_bindings)
+                .all(|b| matches!(b.target, VectorTarget::Pixel { slot: 0..=8, .. }))
+        {
+            return None;
+        }
+        Some(Self { vectors: imp.vector_bindings.clone(), scalars: imp.scalar_bindings.clone() })
+    }
+
+    pub fn sample(&self, base: &psh::PixelUniforms, inputs: &PlanarInputs) -> LayerConstants {
+        use tags::material::{VectorTarget, engine_scalar, pack_engine_colour};
+        let mut pixel = *base;
+        for (bindings, vector) in [(&self.vectors, true), (&self.scalars, false)] {
+            for b in bindings {
+                let VectorTarget::Pixel { c1, slot, mask, half, transform } = b.target else { unreachable!() };
+                let value = if vector {
+                    [inputs.colour[0], inputs.colour[1], inputs.colour[2], 0.0]
+                } else {
+                    [engine_scalar(inputs.weights[usize::from(b.source - 35)], usize::from(transform)); 4]
+                };
+                crate::object_program::put_packed(&mut pixel, c1, slot, mask, pack_engine_colour(value, half));
+            }
+        }
+        LayerConstants { vertex: Vec::new(), defaults: Vec::new(), c0: pixel.c0, c1: pixel.c1 }
+    }
+}
+
+/// The two fade weights and colour in the current view's render context.
+pub struct PlanarInputs {
+    colour: [f32; 3],
+    weights: [f32; 2],
+}
+
+impl PlanarInputs {
+    pub fn read(mem: &dyn crate::camera::GuestRead) -> Option<Self> {
+        use scene_extract::layout::layer_inputs::{scalar, vector};
+        Some(Self { colour: vector(mem, 31, None)?, weights: [scalar(mem, 35)?, scalar(mem, 36)?] })
+    }
 }
 
 /// Why a material's layer stays on the D3D path.
@@ -118,8 +175,9 @@ pub enum FogRefusal {
     /// Its template draws nothing in the layer at the first level of
     /// detail.
     NoPass { layer: usize },
-    /// Pass `pass` has more than one implementation (S: which one the
-    /// engine binds for a fog item is not traced).
+    /// Pass `pass` has `count` implementations and the caller did not
+    /// say which the draw binds, or named one it lacks
+    /// ([`Selection::implementation`]).
     Implementations { pass: usize, count: usize },
     /// Pass `pass`'s implementation does not fit ([`Refusal`]).
     Look { pass: usize, refusal: Refusal },
@@ -127,9 +185,10 @@ pub enum FogRefusal {
     /// `pass_state` decodes them but for its `Fog` refusal: the fog unit
     /// is resolved per view here, [`FogWords`], not a refusal).
     State { pass: usize, refusal: StateRefusal },
-    /// Pass `pass` does not set `CULLMODE`: layer 16 inherits whatever
-    /// the previous draw left (a later slice can take the device's cull
-    /// at the call, as the world's layer 3 does; first slice refused).
+    /// Pass `pass` does not set `CULLMODE`, and some pass of the layer
+    /// sets a cull other than the layer's start ([`layer_cull`]), so what
+    /// the pass draws with depends on the draw before it
+    /// ([`Selection::layer_cull`]).
     InheritsCull { pass: usize },
     /// Pass `pass`'s definition has no final combiner of its own: D3D
     /// builds one from the fog and specular states, which the native
@@ -170,15 +229,122 @@ impl FogRefusal {
     }
 }
 
+/// What the caller knows of the draw that the material alone does not
+/// say.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Selection {
+    /// The implementation the engine binds for the item, which every pass
+    /// with more than one takes (a pass with one takes it, whatever this
+    /// says: the layer-draw rule `layer_pass::passes_of` applies). `None`:
+    /// a pass with more than one is refused.
+    pub implementation: Option<usize>,
+    /// Every pass of the layer sets the cull the layer starts with or
+    /// none ([`layer_sets_other_cull`] is false), so a pass that leaves
+    /// `CULLMODE` unset draws with [`layer_cull`]. `false`: such a pass
+    /// is refused ([`FogRefusal::InheritsCull`]).
+    pub layer_cull: bool,
+    /// The bitmap of the globals' rasterizer data at `+0x14`, which
+    /// engine textures 14 and 15 bind (`0x00019530`). `None`: a stage
+    /// naming one refuses the material.
+    pub rasterizer: Option<map::TagId>,
+}
+
+/// The cull a layer's draws start with, and keep until a pass sets
+/// another: the shader draw begin `0x0001bbf0` runs the layer setup on the
+/// first draw after a layer draw (`[0x004670bc]`, set by the layer draw),
+/// which calls `0x003f53d0` with `0x900` (`SET_CULL_FACE_ENABLE`,
+/// `0x40308`: `CULLMODE` `CW`) and `0x003f5450` with `0x900`
+/// (`SET_FRONT_FACE`, `0x403a0`: `FRONTFACE` `CW`). Nothing restores the
+/// cull between the draws, so an unset pass takes the draw before's.
+pub fn layer_cull() -> (gfx::state::CullMode, gfx::state::FrontFace) {
+    (gfx::state::CullMode::Cw, gfx::state::FrontFace::Cw)
+}
+
+/// [`layer_cull`] as the primitive state's cull and winding.
+fn layer_cull_primitive() -> (Option<wgpu::Face>, wgpu::FrontFace) {
+    let (cull_mode, front_face) = layer_cull();
+    let rs = gfx::state::RenderState { cull_mode, front_face, ..Default::default() };
+    let p = gfx::translate::primitive_state(
+        &rs,
+        wgpu::PrimitiveTopology::TriangleList,
+        gfx::translate::Capabilities::from_features(wgpu::Features::empty()),
+    );
+    (p.cull_mode, p.front_face)
+}
+
+/// Whether any implementation of any pass of `material`'s `layer` (first
+/// level of detail) sets `CULLMODE` or `FRONTFACE` to something other
+/// than [`layer_cull`]'s: then a pass that leaves them unset may draw
+/// after it and inherit it. Conservative: the implementations'
+/// `restore_states` are not credited with putting the cull back, and a
+/// value `gfx` does not decode counts. A host asks every material of the
+/// world it draws the layer for, and sets [`Selection::layer_cull`] when
+/// none does.
+pub fn layer_sets_other_cull(material: &Material, layer: usize) -> bool {
+    use gfx::state::{CullMode, FrontFace};
+    let table = RenderStateTable::for_build(HALO2_BUILD);
+    let start = layer_cull();
+    material
+        .layers
+        .iter()
+        .filter(|l| l.lod == 0 && l.layer == layer)
+        .flat_map(|l| &l.passes)
+        .flat_map(|p| &p.implementations)
+        .any(|imp| {
+            // The states the pass applies, its engine-driven ones over
+            // its own where they resolve.
+            let states = crate::engine_states::apply_static(imp, &material.inputs)
+                .map(|a| a.render_states)
+                .unwrap_or_else(|_| imp.render_states.clone());
+            let (mut cull, mut front) = start;
+            for s in &states {
+                match RenderStateType::from_guest_index(&table, u32::from(s.state)) {
+                    Some(RenderStateType::CullMode) => match CullMode::from_xbox(s.value) {
+                        Some(c) => cull = c,
+                        None => return true,
+                    },
+                    Some(RenderStateType::FrontFace) => match FrontFace::from_xbox(s.value) {
+                        Some(f) => front = f,
+                        None => return true,
+                    },
+                    _ => {}
+                }
+            }
+            (cull, front) != start
+        })
+}
+
+/// Whether any pass of `material`'s `layer` (first level of detail) has
+/// more than one implementation: then which draws depends on the item
+/// ([`Selection::implementation`]).
+pub fn layer_has_choice(material: &Material, layer: usize) -> bool {
+    material
+        .layers
+        .iter()
+        .filter(|l| l.lod == 0 && l.layer == layer)
+        .flat_map(|l| &l.passes)
+        .any(|p| p.implementations.len() > 1)
+}
+
 /// Every pass of `material`'s `layer` (first level of detail), with its
 /// look and state, in the order the layer draws them, or why not. All or
 /// nothing per material: an item is drawn natively only when every pass
 /// is. The compilation itself is the glue's (it owns the `vrtx` tag's
 /// microcode, [`compile_pass`]). The look refuses engine-texture stages
 /// ([`Refusal::EngineTexture`]); [`supplied_layer_passes`] is the same
-/// with the per-view supplied ones kept.
+/// with the per-view supplied ones kept. A pass with more than one
+/// implementation, or one that leaves `CULLMODE` to the draw before,
+/// refuses here; [`layer_passes_selected`] takes them where the caller
+/// knows which.
 pub fn layer_passes(material: &Material, layer: usize) -> Result<Vec<FogPass>, FogRefusal> {
-    passes_of(material, layer, false)
+    passes_of(material, layer, false, Selection::default(), None)
+}
+
+/// [`layer_passes`] for a draw that binds [`Selection::implementation`]
+/// and, with [`Selection::layer_cull`], takes the layer's start cull for a
+/// pass that leaves `CULLMODE` unset.
+pub fn layer_passes_selected(material: &Material, layer: usize, selection: Selection) -> Result<Vec<FogPass>, FogRefusal> {
+    passes_of(material, layer, false, selection, None)
 }
 
 /// [`layer_passes`] with the engine-texture stages a per-view supply
@@ -186,11 +352,22 @@ pub fn layer_passes(material: &Material, layer: usize) -> Result<Vec<FogPass>, F
 /// the render targets (`crate::screen_look::engine_texture`'s `Target`s),
 /// what the water edge blend binds. An id nothing supplies refuses the
 /// material ([`FogRefusal::Unsupplied`]).
-pub fn supplied_layer_passes(material: &Material, layer: usize) -> Result<Vec<FogPass>, FogRefusal> {
-    passes_of(material, layer, true)
+pub fn supplied_layer_passes(material: &Material, layer: usize, rasterizer: Option<map::TagId>) -> Result<Vec<FogPass>, FogRefusal> {
+    passes_of(material, layer, true, Selection { rasterizer, ..Selection::default() }, None)
 }
 
-fn passes_of(material: &Material, layer: usize, supplied: bool) -> Result<Vec<FogPass>, FogRefusal> {
+/// Compiles the same pass shape the layer planner samples at draw time.
+/// A sample supplies the registers and defaults for vertex input validation.
+pub(crate) fn sampled_layer_passes(
+    material: &Material, layer: usize, selection: Selection, properties: &[tags::shader::AnimatedProperty],
+) -> Result<Vec<FogPass>, FogRefusal> {
+    passes_of(material, layer, false, selection, Some(properties))
+}
+
+fn passes_of(
+    material: &Material, layer: usize, supplied: bool, selection: Selection,
+    properties: Option<&[tags::shader::AnimatedProperty]>,
+) -> Result<Vec<FogPass>, FogRefusal> {
     let layer = material
         .layers
         .iter()
@@ -199,10 +376,23 @@ fn passes_of(material: &Material, layer: usize, supplied: bool) -> Result<Vec<Fo
         .ok_or(FogRefusal::NoPass { layer })?;
     let mut out = Vec::with_capacity(layer.passes.len());
     for (n, pass) in layer.passes.iter().enumerate() {
-        let [imp] = pass.implementations.as_slice() else {
-            return Err(FogRefusal::Implementations { pass: n, count: pass.implementations.len() });
+        let imp = match pass.implementations.as_slice() {
+            [imp] => imp,
+            all => selection
+                .implementation
+                .and_then(|i| all.get(i))
+                .ok_or(FogRefusal::Implementations { pass: n, count: all.len() })?,
         };
-        let look = if supplied {
+        let sampled;
+        let imp = if let Some(properties) = properties.filter(|_| !imp.animated.is_empty()) {
+            sampled = crate::layer_pass::PassAnimation::baseline(imp, properties, false, n)
+                .map_err(|reason| FogRefusal::Compile { pass: n, reason: format!("{}: {reason:?}", reason.name()) })?
+                .0;
+            &sampled
+        } else {
+            imp
+        };
+        let mut look = if supplied {
             // `implementation_look` with the engine stages kept when a
             // per-view supply resolves them.
             let mut textures = [Stage::Empty; 4];
@@ -211,6 +401,12 @@ fn passes_of(material: &Material, layer: usize, supplied: bool) -> Result<Vec<Fo
                     None | Some(tags::material::TextureSource::None) => Stage::Empty,
                     Some(tags::material::TextureSource::Bitmap { bitmap, image, .. }) => Stage::Bitmap { bitmap, image },
                     Some(tags::material::TextureSource::Lightmap) => Stage::Lightmap,
+                    Some(tags::material::TextureSource::Engine(id @ (14 | 15))) if selection.rasterizer.is_some() => {
+                        Stage::Bitmap {
+                            bitmap: selection.rasterizer.unwrap_or(map::TagId::NULL),
+                            image: crate::look::rasterizer_image(id),
+                        }
+                    }
                     Some(tags::material::TextureSource::Engine(id)) => {
                         match crate::screen_look::engine_texture(id) {
                             crate::screen_look::EngineTexture::View | crate::screen_look::EngineTexture::Target(_) => {
@@ -241,7 +437,8 @@ fn passes_of(material: &Material, layer: usize, supplied: bool) -> Result<Vec<Fo
                 per_draw_inputs: imp.per_draw_inputs,
             }
         } else {
-            implementation_look(pass.pass, imp).map_err(|refusal| FogRefusal::Look { pass: n, refusal })?
+            implementation_look_with_rasterizer(pass.pass, imp, selection.rasterizer)
+                .map_err(|refusal| FogRefusal::Look { pass: n, refusal })?
         };
         if !imp.animated.is_empty() {
             return Err(FogRefusal::Look { pass: n, refusal: Refusal::Animated });
@@ -249,11 +446,22 @@ fn passes_of(material: &Material, layer: usize, supplied: bool) -> Result<Vec<Fo
         if let Some(r) = imp.vertex_constants.iter().find(|r| r.origin == tags::material::Origin::Engine) {
             return Err(FogRefusal::Look { pass: n, refusal: Refusal::EngineVertexConstant(r.index) });
         }
-        if !imp.engine_render_states.is_empty() {
-            return Err(FogRefusal::Look { pass: n, refusal: Refusal::EngineRenderStates });
-        }
-        if !imp.engine_stage_states.is_empty() {
-            return Err(FogRefusal::Look { pass: n, refusal: Refusal::EngineStageStates });
+        // Engine-driven states over the pass's own, from the instance's
+        // inputs (a driven fog colour with the fog on refuses: the fog
+        // words are the pass's own, [`FogWords`]).
+        let applied = crate::engine_states::apply_static(imp, &material.inputs)
+            .map_err(|r| FogRefusal::Look { pass: n, refusal: Refusal::EngineStates(r) })?;
+        look.stage_states = applied.stage_states;
+        let states = applied.render_states;
+        // Input masks also request evaluations whose result is never bound.
+        // The states above are resolved. Without a register write or a
+        // dynamic fragment selector, the shader itself is view-independent.
+        if layer.layer == crate::fog::FOG_LAYER
+            && !imp.pixel_constants_from_engine
+            && imp.vertex_defaults.iter().all(|r| r.origin != tags::material::Origin::Engine)
+            && (!imp.variant || imp.input_reads.ints & !tags::material::INSTANCE_INTS == 0)
+        {
+            look.per_draw_inputs = false;
         }
         match fog_parity(&look) {
             Ok(()) => {}
@@ -265,11 +473,23 @@ fn passes_of(material: &Material, layer: usize, supplied: bool) -> Result<Vec<Fo
         // ([`FogWords`]). The rest of the pipeline state must be the
         // implementation's own (a pass that leaves blend or depth to the
         // previous draw stays on the D3D path, as the transparents').
-        let state = state_without_fog(&imp.render_states).map_err(|refusal| FogRefusal::State { pass: n, refusal })?;
-        if !sets_cull(&imp.render_states) {
-            return Err(FogRefusal::InheritsCull { pass: n });
+        let mut state = state_without_fog(&states, matches!(layer.layer, 1 | 3 | 5 | 6 | 7 | 8 | 16 | 20)).map_err(|refusal| FogRefusal::State { pass: n, refusal })?;
+        if !sets_cull(&states) {
+            if !selection.layer_cull {
+                return Err(FogRefusal::InheritsCull { pass: n });
+            }
+            // `pass_state` leaves an unset cull at `RenderState`'s default;
+            // the layer's draws start with [`layer_cull`].
+            (state.primitive.cull_mode, state.primitive.front_face) = layer_cull_primitive();
         }
-        out.push(FogPass { look, state, fog: FogWords::from_states(&imp.render_states) });
+        let planar = if layer.layer == crate::fog::FOG_LAYER && look.per_draw_inputs {
+            let bindings = PlanarBindings::from_implementation(imp).ok_or_else(|| FogRefusal::Compile {
+                pass: n, reason: format!("unsupported planar engine inputs {:?}", imp.input_reads),
+            })?;
+            look.per_draw_inputs = false;
+            Some(bindings)
+        } else { None };
+        out.push(FogPass { look, state, fog: FogWords::from_states(&states), planar });
     }
     Ok(out)
 }
@@ -277,13 +497,13 @@ fn passes_of(material: &Material, layer: usize, supplied: bool) -> Result<Vec<Fo
 /// [`pass_state`] over the implementation's states without the words that
 /// set the fog (they are [`FogWords`]'s, not the pipeline's): the same
 /// decode with the `Fog` refusal not taken.
-fn state_without_fog(states: &[RenderStateValue]) -> Result<PassState, StateRefusal> {
+fn state_without_fog(states: &[RenderStateValue], geometry: bool) -> Result<PassState, StateRefusal> {
     let without: Vec<RenderStateValue> = states
         .iter()
         .copied()
         .filter(|s| !FOG_WORD_SLOTS.contains(&u32::from(s.state)))
         .collect();
-    pass_state(&without)
+    if geometry { crate::pass_state::geometry_pass_state(&without) } else { pass_state(&without) }
 }
 
 /// Whether `states` set `CULLMODE` (build 5849's slots).
@@ -331,9 +551,38 @@ fn fog_parity(look: &PassLook) -> Result<(), FogParity> {
     Ok(())
 }
 
+/// The stencil a world layer's native draws take: the device's at the
+/// layer call, as it is (`0x00015370`'s mode there: 0, the test off, or 1,
+/// `ALWAYS` writing reference 0 on pass, which the scene's layers 1 and 3
+/// begin in; `object_state::structure_stencil`). A pass never sets one of
+/// its own (`pass_state` refuses it), and the structure items a layer's
+/// native pass takes come before any object item that switches it
+/// (`layer_pass::clear_prefix`), so every one of them draws under that
+/// state. The pipelines' stencil state (the packets set its reference,
+/// [`FogSet::draws_stencil`]); `None` when the state tests or writes the
+/// stencil and `depth` has no stencil aspect.
+pub fn layer_stencil(device: &gfx::state::StencilState, depth: wgpu::TextureFormat) -> Option<wgpu::StencilState> {
+    if !device.enable {
+        return Some(wgpu::StencilState::default());
+    }
+    if !depth.has_stencil_aspect() {
+        return None;
+    }
+    let rs = gfx::state::RenderState { stencil: *device, ..Default::default() };
+    Some(gfx::translate::depth_stencil_state(&rs, Some(depth), wgpu::PrimitiveTopology::TriangleList)?.stencil)
+}
+
+/// Whether drawing under `device`'s stencil changes the stencil buffer:
+/// the test on, a write mask, and an operation other than `KEEP`.
+pub fn stencil_writes(device: &gfx::state::StencilState) -> bool {
+    use gfx::state::StencilOp::Keep;
+    device.enable && device.write_mask != 0 && [device.fail, device.depth_fail, device.pass].iter().any(|&op| op != Keep)
+}
+
 /// One compiled layer-16 pass of a material.
 #[derive(Clone, Debug)]
 pub struct FogProgram {
+    pub planar: Option<PlanarBindings>,
     pub program: MaterialProgram,
     pub state: PassState,
     /// The fog words the pass's implementation sets itself.
@@ -372,8 +621,73 @@ impl FogProgram {
         let rigid = rigid_microcode
             .map(|code| crate::program::compile_pass_rigid(&pass.look, pass.state.alpha_test, code))
             .transpose()?;
-        Ok(FogProgram { program, state: pass.state, words: pass.fog, rigid })
+        Ok(FogProgram { program, state: pass.state, words: pass.fog, planar: pass.planar.clone(), rigid })
     }
+}
+
+/// Constants from one sampled implementation, in hardware register order.
+/// View inputs, placement rows and fog still come from the draw.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayerConstants {
+    vertex: Vec<Register>,
+    defaults: Vec<Register>,
+    c0: [[f32; 4]; 9],
+    c1: [[f32; 4]; 9],
+}
+
+impl LayerConstants {
+    pub fn from_implementation(imp: &ResolvedImplementation) -> Self {
+        let def = PixelShaderDef::from_bytes(&imp.pixel_shader).expect("fixed-size pixel shader definition");
+        let (c0, c1) = def.embedded_constants();
+        Self { vertex: imp.vertex_constants.clone(), defaults: imp.vertex_defaults.clone(), c0, c1 }
+    }
+
+    /// `base` with the sampled vertex constants and attribute defaults.
+    pub(crate) fn vertex(&self, base: &VertexUniforms) -> VertexUniforms {
+        let mut vertex = base.clone();
+        for r in &self.vertex {
+            crate::program::put(&mut vertex.constants, r);
+        }
+        for r in &self.defaults {
+            crate::program::put(&mut vertex.defaults, r);
+        }
+        vertex
+    }
+
+    /// `base` with the sampled combiner constants (C0 and C1, the final
+    /// combiner's included); fog and the view's words stay `base`'s.
+    pub(crate) fn pixel(&self, base: &psh::PixelUniforms) -> psh::PixelUniforms {
+        let mut pixel = *base;
+        (pixel.c0, pixel.c1) = (self.c0, self.c1);
+        pixel
+    }
+}
+
+/// The sampled registers over a compiled pass's uniforms, followed by the fog
+/// words for this draw. Vertex classification and per-view state survive.
+fn layer_uniforms<'a>(
+    sample: Option<&LayerConstants>, base: &'a MaterialProgram, fog: &psh::fog::Fog, color: [f32; 4],
+) -> (std::borrow::Cow<'a, VertexUniforms>, psh::PixelUniforms) {
+    let (vertex, mut pixel) = match sample {
+        Some(s) => (std::borrow::Cow::Owned(s.vertex(&base.vertex)), s.pixel(&base.pixel)),
+        None => (std::borrow::Cow::Borrowed(&base.vertex), base.pixel),
+    };
+    pixel.fog = fog.uniform();
+    pixel.fog_color = color;
+    (vertex, pixel)
+}
+
+/// One layer's time sample, per material and in compiled pass order.
+pub type LayerSamples = HashMap<u16, Vec<Option<LayerConstants>>>;
+
+pub fn sampled_constants(draw: &crate::layer_pass::LayerDraw) -> Option<Vec<Option<LayerConstants>>> {
+    if !draw.passes.iter().any(|p| draw.implementation(p).is_some_and(|i| !i.animated.is_empty())) {
+        return None;
+    }
+    Some(draw.passes.iter().map(|p| {
+        let imp = draw.implementation(p)?;
+        (!imp.animated.is_empty()).then(|| LayerConstants::from_implementation(imp))
+    }).collect())
 }
 
 struct FogMaterial {
@@ -388,13 +702,42 @@ struct FogMaterial {
 /// The fog materials the native pass draws, and each part's index range
 /// (the glue's parts list, in the world's draw order).
 pub struct FogSet {
-    ready_formats: HashSet<(wgpu::TextureFormat, wgpu::TextureFormat)>,
+    ready_formats: HashSet<(wgpu::TextureFormat, wgpu::TextureFormat, wgpu::StencilState)>,
     materials: HashMap<u16, FogMaterial>,
     /// Index range, lightmap page and material for each eligible part.
     parts: HashMap<(Owner, u8), (u32, u32, Option<LightmapKey>, u16)>,
+    /// The lightmap page textures the groups bind, by page, for a live
+    /// edit's rewrite ([`FogSet::page_textures`]).
+    pages: HashMap<LightmapKey, wgpu::Texture>,
 }
 
 impl FogSet {
+    /// Every texture the passes' stages sample as image `image` of
+    /// `bitmap`, with the stage and its signed channels, each once.
+    pub fn held(&self, bitmap: map::TagId, image: u32) -> Vec<crate::gpu::Held> {
+        self.held_stage(Stage::Bitmap { bitmap, image })
+    }
+
+    /// Every texture the passes' stages sample as `want`, with the stage
+    /// and its signed channels, each once: [`FogSet::held`] for a stage
+    /// no tag names (the editor's base maps, `HostStage::BaseMap`).
+    pub fn held_stage(&self, want: Stage) -> Vec<crate::gpu::Held> {
+        let mut materials: Vec<_> = self.materials.iter().collect();
+        materials.sort_by_key(|(m, _)| **m);
+        let mut out = Vec::new();
+        for (_, m) in materials {
+            for (g, _, _) in &m.passes {
+                g.held(want, &mut out);
+            }
+        }
+        out
+    }
+
+    /// The textures that hold lightmap page `key`.
+    pub fn page_textures(&self, key: LightmapKey) -> Vec<wgpu::Texture> {
+        self.pages.get(&key).cloned().into_iter().collect()
+    }
+
     /// Uploads `programs` (each material's layer-16 passes in order) for
     /// `parts` (the load's parts list: owner and part, index range,
     /// lightmap page and material, in the world's draw order).
@@ -492,7 +835,8 @@ impl FogSet {
             materials.remove(&material);
         }
         out.retain(|(_, (_, _, _, mat))| materials.contains_key(mat));
-        Self { ready_formats: HashSet::new(), materials, parts: out.into_iter().collect() }
+        let pages = crate::gpu::page_textures_of(&pages);
+        Self { ready_formats: HashSet::new(), materials, parts: out.into_iter().collect(), pages }
     }
 
     /// How many materials draw natively.
@@ -521,15 +865,25 @@ impl FogSet {
         view: &ViewInputs,
         fogs: &HashMap<u16, (psh::fog::Fog, [f32; 4])>,
     ) {
+        self.prepare_layer(uploads, view, fogs, &LayerSamples::new());
+    }
+
+    pub(crate) fn prepare_layer(
+        &self, uploads: &mut gfx::ring::EncoderUploads<'_>, view: &ViewInputs,
+        fogs: &HashMap<u16, (psh::fog::Fog, [f32; 4])>, samples: &LayerSamples,
+    ) {
         for (&material, m) in &self.materials {
             let Some((fog, color)) = fogs.get(&material) else { continue };
-            for (g, _, rigid) in &m.passes {
-                let mut pixel = g.program.pixel;
-                pixel.fog = fog.uniform();
-                pixel.fog_color = *color;
-                g.prepare_with(uploads, view, &pixel);
+            for (n, (g, _, rigid)) in m.passes.iter().enumerate() {
+                let sample = samples.get(&material).and_then(|p| p.get(n)).and_then(Option::as_ref);
+                let (vertex, pixel) = layer_uniforms(sample, &g.program, fog, *color);
+                g.prepare_with(uploads, view, &vertex, &pixel);
                 if let Some(r) = rigid {
-                    r.prepare(uploads, view);
+                    if let Some(s) = sample {
+                        r.prepare_sampled(uploads, view, &s.vertex(&r.program.vertex));
+                    } else {
+                        r.prepare(uploads, view);
+                    }
                 }
             }
         }
@@ -542,7 +896,7 @@ impl FogSet {
     /// part per pass in reservation order, with the pass's pipeline, its
     /// uniform group (a placement's at its slot's dynamic offset), the
     /// part's texture group, the pass's blend constant, the part's index
-    /// range and the whole target as viewport and scissor. The writes are
+    /// range and the whole target as viewport and the player view as scissor. The writes are
     /// the selected materials' blocks (and the selected placements'
     /// slots) only: nothing else is read. `cache` holds the described
     /// pipelines ([`crate::gpu::GpuWorld::fog_draws`]); the pipelines
@@ -558,14 +912,41 @@ impl FogSet {
         color: wgpu::TextureFormat,
         depth: wgpu::TextureFormat,
         target_size: (u32, u32),
+        scissor: gfx::ScissorRect,
         selected: &[(Owner, u8)],
         view: &ViewInputs,
         fogs: &HashMap<u16, (psh::fog::Fog, [f32; 4])>,
+        samples: &LayerSamples,
     ) -> Result<d3d::backend::ExternalDraws, &'static str> {
-        use gfx::{BoundGroup, RecordedDraw, ScissorRect};
-        let stencil = wgpu::StencilState::default();
-        let scissor = ScissorRect::full(target_size.0, target_size.1);
-        let render = gfx::state::RenderState::default();
+        let off = gfx::state::StencilState::default();
+        self.draws_stencil(cache, vertices, indices, color, depth, target_size, scissor, selected, view, fogs, &off, samples)
+    }
+
+    /// [`FogSet::draws`] under the device's stencil at the layer call
+    /// ([`layer_stencil`]): the pipelines made with its state
+    /// ([`FogSet::prepare_pipelines_stencil`]), each packet setting its
+    /// reference. Refused when the state needs a stencil `depth` lacks.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::mutable_key_type)]
+    pub(crate) fn draws_stencil(
+        &self,
+        cache: &mut HashMap<wgpu::RenderPipeline, std::sync::Arc<gfx::compile::PendingPipeline>>,
+        vertices: &wgpu::Buffer,
+        indices: &wgpu::Buffer,
+        color: wgpu::TextureFormat,
+        depth: wgpu::TextureFormat,
+        target_size: (u32, u32),
+        scissor: gfx::ScissorRect,
+        selected: &[(Owner, u8)],
+        view: &ViewInputs,
+        fogs: &HashMap<u16, (psh::fog::Fog, [f32; 4])>,
+        device_stencil: &gfx::state::StencilState,
+        samples: &LayerSamples,
+    ) -> Result<d3d::backend::ExternalDraws, &'static str> {
+        use gfx::{BoundGroup, RecordedDraw};
+        let stencil = layer_stencil(device_stencil, depth).ok_or("the layer's stencil needs a stencil attachment")?;
+        // The packets set the stencil reference from the render state.
+        let render = gfx::state::RenderState { stencil: *device_stencil, ..Default::default() };
         let mut packets = Vec::new();
         // The materials the selection reads, and per material the
         // placements it draws.
@@ -628,13 +1009,13 @@ impl FogSet {
         for (material, slots) in &used {
             let m = &self.materials[material];
             let (fog, color) = &fogs[material];
-            for (g, _, rigid) in &m.passes {
-                let mut pixel = g.program.pixel;
-                pixel.fog = fog.uniform();
-                pixel.fog_color = *color;
-                writes.extend(g.prepare_writes(view, &pixel));
+            for (n, (g, _, rigid)) in m.passes.iter().enumerate() {
+                let sample = samples.get(material).and_then(|p| p.get(n)).and_then(Option::as_ref);
+                let (vertex, pixel) = layer_uniforms(sample, &g.program, fog, *color);
+                writes.extend(g.prepare_writes(view, &vertex, &pixel));
                 if let Some(r) = rigid {
-                    writes.extend(r.prepare_writes(view, slots.iter().copied()));
+                    let vertex = sample.map(|s| s.vertex(&r.program.vertex));
+                    writes.extend(r.prepare_writes(view, slots.iter().copied(), vertex.as_ref()));
                 }
             }
         }
@@ -650,8 +1031,17 @@ impl FogSet {
     pub(crate) fn prepare_pipelines(
         &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, usage: PipelineUse,
     ) -> bool {
-        if self.ready_formats.contains(&(color, depth)) { return true; }
-        let stencil = wgpu::StencilState::default();
+        self.prepare_pipelines_stencil(device, color, depth, &wgpu::StencilState::default(), usage)
+    }
+
+    /// [`FogSet::prepare_pipelines`] with `stencil` (a world layer's,
+    /// [`layer_stencil`]) in every pipeline.
+    pub(crate) fn prepare_pipelines_stencil(
+        &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat,
+        stencil: &wgpu::StencilState, usage: PipelineUse,
+    ) -> bool {
+        if self.ready_formats.contains(&(color, depth, stencil.clone())) { return true; }
+        let stencil = stencil.clone();
         let mut ready = true;
         for m in self.materials.values_mut() {
             for (g, state, rigid) in &mut m.passes {
@@ -664,7 +1054,7 @@ impl FogSet {
         // Only an admission check observes the frame boundary. Direct rendering
         // can use a pipeline as soon as the compiler finishes.
         if ready && matches!(usage, PipelineUse::Preflight) {
-            self.ready_formats.insert((color, depth));
+            self.ready_formats.insert((color, depth, stencil));
         }
         ready
     }
@@ -721,6 +1111,30 @@ pub(crate) mod tests {
 
     pub(crate) const SIZE: u32 = 32;
 
+    pub(crate) fn player_viewport(split: bool) -> [f32; 4] {
+        // A guest boundary at 10 / 19 of the screen falls between physical texels.
+        let request = d3d::ExternalPassRequest {
+            rect: if split { (10, 0, 9, 19) } else { (0, 0, 19, 19) },
+            surface_size: (19, 19),
+            display_projection_factor: 0.75,
+            z_scale: 1.0,
+        };
+        d3d::external_viewport(&request, (SIZE, SIZE))
+    }
+
+    pub(crate) fn assert_split_images(images: &[(Vec<u8>, Vec<u8>)]) {
+        assert_eq!(images[0], images[1], "full-view packet and direct draws");
+        assert_eq!(images[2], images[3], "split-view packet and direct draws");
+        let boundary = 17; // round(32 * 10 / 19)
+        let mut covered = [false; 2];
+        for (i, (full, split)) in images[0].0.chunks_exact(4).zip(images[2].0.chunks_exact(4)).enumerate() {
+            let in_view = i % SIZE as usize >= boundary;
+            covered[usize::from(in_view)] |= full.iter().any(|&byte| byte != 0);
+            assert_eq!(split, if in_view { full } else { &[0; 4] }, "texel {i}");
+        }
+        assert_eq!(covered, [true, true], "geometry crosses the split");
+    }
+
     pub(crate) fn look(stage0: Stage) -> PassLook {
         PassLook {
             pass: map::TagId(0xe000_0001),
@@ -736,7 +1150,7 @@ pub(crate) mod tests {
     }
 
     /// `dp4 oPos, v0, c[0..3]; mov oT0, v1`.
-    fn cluster_code() -> Vec<u8> {
+    pub(super) fn cluster_code() -> Vec<u8> {
         let row = |c, mask| Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(O::c(c)), None).to_out(false, OutReg::Pos, mask);
         program(&[
             row(0, 8),
@@ -787,9 +1201,36 @@ pub(crate) mod tests {
         let rigid = compile_pass_rigid(&look, None, &rigid_code()).expect("rigid compiles");
         let state = state();
         (
-            FogPass { look, state, fog: FogWords::default() },
-            FogProgram { program, state, words: FogWords::default(), rigid: Some(rigid) },
+            FogPass { look, state, fog: FogWords::default(), planar: None },
+            FogProgram { program, state, words: FogWords::default(), planar: None, rigid: Some(rigid) },
         )
+    }
+
+    #[test]
+    fn a_layer_sample_reaches_both_uniform_blocks_and_keeps_the_placement_rows() {
+        let (_, p) = pass(Stage::Empty);
+        let mut imp = crate::engine_states::tests::implementation(Vec::new(), 0);
+        let reg = Register { index: 21, value: [3.0, 5.0, 7.0, 9.0], written: 0b1010, origin: tags::material::Origin::Instance };
+        imp.vertex_constants.push(reg);
+        imp.vertex_defaults.push(Register { index: 7, ..reg });
+        let mut def = PixelShaderDef::default();
+        def.constant0[2] = 0x8060_4020;
+        def.final_constant1 = 0x2244_6688;
+        imp.pixel_shader = def.to_bytes();
+        let sample = LayerConstants::from_implementation(&imp);
+        let color = [0.3, 0.5, 0.7, 1.0];
+        let (v, psh) = layer_uniforms(Some(&sample), &p.program, &psh::fog::Fog::OFF, color);
+        assert_eq!(v.constants[21], [0.0, 5.0, 0.0, 9.0]);
+        assert_eq!(v.defaults[7], [0.0, 5.0, 0.0, 9.0]);
+        assert_eq!(psh.c0[2], shaders::psh::argb(def.constant0[2]));
+        assert_eq!(psh.c1[8], shaders::psh::argb(def.final_constant1));
+        assert_eq!(psh.fog_color, color);
+        let rigid = sample.vertex(&p.rigid.as_ref().unwrap().vertex);
+        let rows = [[2.0; 4], [3.0; 4], [4.0; 4]];
+        let placed = crate::program::rigid_vertex(&rigid, &view(), &rows);
+        assert_eq!(placed.constants[21], v.constants[21]);
+        assert_eq!(placed.constants[MODEL_ROWS..MODEL_ROWS + 3], rows);
+        assert_eq!(p.program.vertex.constants[21], [0.0; 4]);
     }
 
     /// A cluster (material 0) at x = 10 and a placement of the same
@@ -895,9 +1336,12 @@ pub(crate) mod tests {
         let (selected, view, fogs) = (selected(), view(), fogs());
         let mut images = Vec::new();
         // Packets first: the uniforms they read are only those written ahead.
-        for packets in [true, false] {
+        for (packets, split) in [(true, false), (false, false), (true, true), (false, true)] {
             images.push(render(&ctx, |enc, arena, target| {
-                let draws = gpu.fog_draws(&ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), &selected, &view, &fogs).unwrap();
+                let draws = gpu.fog_draws(
+                    &ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), player_viewport(split),
+                    &selected, &view, &fogs, &LayerSamples::new(),
+                ).unwrap();
                 assert_eq!((draws.ranges, draws.packets.len()), (2, 2), "one pass each, cluster and placement");
                 assert_eq!(draws.writes.len(), 2 + 2, "the pass's two blocks, the placement's view prefix and tail");
                 if packets {
@@ -907,17 +1351,109 @@ pub(crate) mod tests {
                     gfx::Renderer::encode_pass(&ctx, enc, target, gfx::Clear::NONE, &draws.packets, None).unwrap();
                 } else {
                     let mut uploads = gfx::ring::EncoderUploads { device: &ctx.device, queue: &ctx.queue, arena, encoder: enc };
-                    gpu.prepare_fog(&mut uploads, &view, &fogs);
+                    gpu.prepare_fog(&mut uploads, &view, &fogs, &LayerSamples::new());
                     assert!(draws.writes.iter().all(|(buffer, ..)| arena.wrote_in_order(buffer)));
                     let recorded = gpu.encode_fog(
-                        &ctx.device, enc, target.color, F::Rgba8Unorm, target.depth.unwrap(), F::Depth32Float, (SIZE, SIZE), &selected,
+                        &ctx.device, enc, target.color, F::Rgba8Unorm, target.depth.unwrap(), F::Depth32Float, (SIZE, SIZE), player_viewport(split), &selected,
                     );
                     assert_eq!(recorded, 2);
                 }
             }));
         }
         assert!(images[0].0.iter().any(|&b| b != 0), "the fog drew something");
-        assert_eq!(images[0], images[1]);
+        assert_split_images(&images);
+    }
+
+    /// A world layer's draws take the device's stencil at the layer call:
+    /// off as it is, the scene's layer-1 mode 1 (`ALWAYS`, `REPLACE` on
+    /// pass, masks `0xff`) as its pipeline state, and only a state that is
+    /// on needs the depth's stencil aspect.
+    #[test]
+    fn a_layers_stencil_is_the_devices_and_needs_a_stencil_aspect_only_when_on() {
+        use gfx::state::{CompareFunc, StencilOp, StencilState};
+        let off = StencilState::default();
+        assert_eq!(layer_stencil(&off, F::Depth32Float), Some(wgpu::StencilState::default()));
+        assert!(!stencil_writes(&off), "the test off writes nothing");
+        let mode1 = crate::object_state::structure_stencil(0);
+        let state = layer_stencil(&mode1, F::Depth24PlusStencil8).expect("a stencil aspect holds mode 1");
+        assert_eq!((state.read_mask, state.write_mask), (0xff, 0xff));
+        for face in [state.front, state.back] {
+            assert_eq!(face.compare, wgpu::CompareFunction::Always);
+            assert_eq!((face.fail_op, face.depth_fail_op, face.pass_op), (
+                wgpu::StencilOperation::Keep, wgpu::StencilOperation::Keep, wgpu::StencilOperation::Replace,
+            ));
+        }
+        assert!(stencil_writes(&mode1), "mode 1 writes its reference on pass");
+        assert_eq!(layer_stencil(&mode1, F::Depth32Float), None, "no stencil aspect: refused, not drawn without it");
+        let test_only = StencilState { enable: true, func: CompareFunc::Equal, reference: 3, ..off };
+        assert_eq!(layer_stencil(&test_only, F::Depth24PlusStencil8).map(|s| s.front.compare), Some(wgpu::CompareFunction::Equal));
+        assert!(!stencil_writes(&test_only), "a test that keeps every value writes nothing");
+        assert!(!stencil_writes(&StencilState { write_mask: 0, pass: StencilOp::Replace, ..test_only }), "no write mask");
+    }
+
+    /// A layer's packets under a stencil that writes draw the colour they
+    /// draw with the stencil off and leave the reference in the stencil
+    /// of what they cover, and nothing elsewhere; without a stencil
+    /// aspect they are refused.
+    #[test]
+    fn layer_packets_under_the_devices_stencil_write_its_reference_where_they_draw() {
+        use crate::gpu::GpuWorld;
+        use gfx::state::StencilState;
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let world = world();
+        let parts = parts(&world);
+        let mut gpu = GpuWorld::new(&ctx.device, &ctx.queue, world, &mut |_| None, &mut |_| None);
+        let (_, program) = pass(Stage::Bitmap { bitmap: map::TagId(7), image: 1 });
+        let set = FogSet::new(
+            &ctx.device, &ctx.queue, gpu.world(), parts, [(0, vec![program])].into(),
+            &mut |_| Some(Image::solid([200, 100, 50, 255])), &mut |_| None,
+        );
+        gpu.set_layer(1, set);
+        let (selected, view, fogs) = (selected(), view(), fogs());
+        let marking = StencilState { reference: 0x80, ..crate::object_state::structure_stencil(0) };
+        assert!(
+            gpu.layer_draws(1, &ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), &selected, &view, &fogs, &marking, &LayerSamples::new()).is_err(),
+            "a stencil that is on needs the attachment's stencil"
+        );
+        let depth_format = F::Depth24PlusStencil8;
+        let mut out = Vec::new();
+        for stencil in [StencilState::default(), marking] {
+            let texture = |format| ctx.device.create_texture(&wgpu::TextureDescriptor {
+                label: None, size: wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
+                mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format,
+                usage: U::RENDER_ATTACHMENT | U::COPY_SRC, view_formats: &[],
+            });
+            let (color, depth) = (texture(F::Rgba8Unorm), texture(depth_format));
+            let (cv, dv) = (color.create_view(&Default::default()), depth.create_view(&Default::default()));
+            let target = gfx::RenderTarget {
+                color: &cv, color_format: F::Rgba8Unorm, depth: Some(&dv), depth_format: Some(depth_format),
+                size: (SIZE, SIZE), samples: 1,
+            };
+            let draws = gpu
+                .layer_draws(1, &ctx.device, F::Rgba8Unorm, depth_format, (SIZE, SIZE), &selected, &view, &fogs, &stencil, &LayerSamples::new())
+                .expect("the layer draws under the device's stencil");
+            assert_eq!((draws.ranges, draws.packets.len()), (2, 2), "one pass each, cluster and placement");
+            let arena = gfx::ring::UploadPool::default().begin();
+            let mut enc = ctx.device.create_command_encoder(&Default::default());
+            for (buffer, offset, bytes) in &draws.writes {
+                arena.write_front(&ctx.device, &ctx.queue, buffer, *offset, bytes);
+            }
+            gfx::Renderer::encode_pass(&ctx, &mut enc, &target, gfx::Clear::all([0.0; 4]), &draws.packets, None).unwrap();
+            let front = arena.upload_commands(&ctx.queue);
+            ctx.queue.submit(front.into_iter().chain([enc.finish()]));
+            ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let colour = gfx::readback::read_texture(&ctx, &color, wgpu::TextureAspect::All, 4, (SIZE, SIZE));
+            let marks = gfx::readback::read_texture(&ctx, &depth, wgpu::TextureAspect::StencilOnly, 1, (SIZE, SIZE));
+            out.push((colour, marks));
+        }
+        let [(plain, unmarked), (colour, marks)] = <[_; 2]>::try_from(out).unwrap();
+        assert!(plain.iter().any(|&b| b != 0), "the layer drew something");
+        assert_eq!(plain, colour, "the stencil changes no colour");
+        assert!(unmarked.iter().all(|&s| s == 0), "the test off writes no stencil");
+        for (texel, &mark) in marks.iter().enumerate() {
+            let drawn = colour[texel * 4..texel * 4 + 4] != [0; 4];
+            assert_eq!(mark, if drawn { 0x80 } else { 0 }, "texel {texel}: the reference where drawn, zero elsewhere");
+        }
     }
 
     #[test]
@@ -935,11 +1471,222 @@ pub(crate) mod tests {
         gpu.set_fog(set);
         let (view, fogs) = (view(), fogs());
         let draws = |gpu: &mut GpuWorld, selected: &[(Owner, u8)], fogs: &HashMap<u16, (psh::fog::Fog, [f32; 4])>| {
-            gpu.fog_draws(&ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), selected, &view, fogs)
+            gpu.fog_draws(
+                &ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), player_viewport(false),
+                selected, &view, fogs, &LayerSamples::new(),
+            )
         };
         assert!(draws(&mut gpu, &selected(), &fogs).is_ok());
         assert!(draws(&mut gpu, &[(Owner::Cluster(9), 0)], &fogs).is_err(), "a part the set does not hold");
         assert!(draws(&mut gpu, &[], &fogs).is_err(), "nothing to draw");
         assert!(draws(&mut gpu, &selected(), &HashMap::new()).is_err(), "a material with no resolved fog");
+    }
+}
+
+/// Which implementation a layer's pass draws and what cull a pass that
+/// leaves `CULLMODE` unset takes: synthetic materials, no game data.
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+    use crate::engine_states::tests::implementation;
+    use map::TagId;
+    use tags::material::{EngineInputs, ResolvedImplementation, ResolvedLayer, ResolvedPass};
+
+    const ALPHA_BLEND_ENABLE: u32 = 59;
+    const Z_WRITE_ENABLE: u32 = 64;
+    const FRONT_FACE: u32 = 146;
+    const CULL_MODE: u32 = 147;
+    const CW: u32 = 0x900;
+    const CCW: u32 = 0x901;
+
+    fn state(canonical: u32, value: u32) -> RenderStateValue {
+        let table = RenderStateTable::for_build(HALO2_BUILD);
+        RenderStateValue { state: table.canonical_to_guest(canonical).expect("a 5849 slot") as u8, value }
+    }
+
+    /// Implementation `index` with its own final combiner, blending and
+    /// depth write off, and `extra` states after them.
+    fn imp(index: usize, extra: &[RenderStateValue]) -> ResolvedImplementation {
+        let mut i = implementation(vec![state(ALPHA_BLEND_ENABLE, 0), state(Z_WRITE_ENABLE, 0)], 0);
+        i.index = index;
+        i.pixel_shader = PixelShaderDef::default().with_default_final_combiner(false, false).to_bytes();
+        i.render_states.extend_from_slice(extra);
+        i
+    }
+
+    /// A material whose `layer` has one pass per entry, each with the
+    /// implementations given.
+    fn material(layer: usize, passes: Vec<Vec<ResolvedImplementation>>) -> Material {
+        Material {
+            shader: TagId(0xe000_0001),
+            template: TagId(0xe000_0002),
+            inputs: EngineInputs::default(),
+            layers: vec![ResolvedLayer {
+                lod: 0,
+                layer,
+                passes: passes
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, implementations)| ResolvedPass { index, pass: TagId(0xe000_0200 + index as u32), implementations })
+                    .collect(),
+            }],
+        }
+    }
+
+    fn four(extra: &[RenderStateValue]) -> Vec<ResolvedImplementation> {
+        (0..4).map(|i| imp(i, extra)).collect()
+    }
+
+    const FRONT: Option<wgpu::Face> = Some(wgpu::Face::Front);
+
+    #[test]
+    fn planar_pass_samples_the_current_views_combiner_constants() {
+        use scene_extract::layout::layer_inputs::{FADE, MATERIAL, ONE};
+        use scene_extract::testing::Mem;
+        use tags::material::{VectorBinding, VectorTarget};
+
+        let mut i = imp(0, &[state(CULL_MODE, CW)]);
+        i.per_draw_inputs = true;
+        i.pixel_constants_from_engine = true;
+        i.input_reads.scalars = (1 << 35) | (1 << 36);
+        i.input_reads.vectors = 1 << 31;
+        let binding = |source, slot, mask| VectorBinding {
+            source, target: VectorTarget::Pixel { c1: false, slot, mask, half: false, transform: 0 },
+        };
+        i.vector_bindings.push(binding(31, 0, 0x00ff_ffff));
+        i.scalar_bindings.extend([binding(35, 0, 0xff00_0000), binding(36, 1, 0xff00_0000)]);
+        let mut unsupported = i.clone();
+        unsupported.input_reads.ints = 1;
+        assert!(layer_passes(&material(16, vec![vec![unsupported]]), 16).is_err());
+        let mat = material(16, vec![vec![i]]);
+        let pass = layer_passes(&mat, 16).unwrap().remove(0);
+        let program = FogProgram::compile(&pass, &super::tests::cluster_code()).unwrap();
+        let mut mem = Mem::default();
+        mem.f(ONE, 1.0);
+        mem.f(FADE, 0.25);
+        mem.f(MATERIAL + 0x90, 0.5);
+        for (n, value) in [1.0, 0.5, 0.0].into_iter().enumerate() {
+            mem.f(MATERIAL + 0x84 + 4 * n as u32, value);
+        }
+        let sample = |mem: &Mem| program.planar.as_ref().unwrap()
+            .sample(&program.program.pixel, &PlanarInputs::read(mem).unwrap());
+        assert_eq!(sample(&mem).c0[0], psh::argb(0x60ff_8000));
+        assert_eq!(sample(&mem).c0[1][3], psh::argb(0x2000_0000)[3]);
+        mem.f(FADE, 1.0);
+        assert_eq!(sample(&mem).c0[0], psh::argb(0x00ff_8000));
+        mem.0.remove(&ONE);
+        assert!(PlanarInputs::read(&mem).is_none());
+    }
+
+    #[test]
+    fn water_binds_both_images_of_the_supplied_rasterizer_bitmap() {
+        use tags::material::{StageTexture, TextureSource};
+        let mut pass = imp(0, &[state(CULL_MODE, CW)]);
+        for (slot, id) in [14, 15].into_iter().enumerate() {
+            pass.textures[slot] = Some(StageTexture { source: TextureSource::Engine(id), size: None, stage_size: None });
+        }
+        let water = material(6, vec![vec![pass]]);
+        let bitmap = TagId(42);
+        let passes = crate::water_gpu::water_passes(&water, Some(bitmap)).unwrap();
+        assert_eq!(passes[0].look.textures[0], Stage::Bitmap { bitmap, image: 0 });
+        assert_eq!(passes[0].look.textures[1], Stage::Bitmap { bitmap, image: 1 });
+        assert!(crate::water_gpu::water_passes(&water, None).is_err());
+    }
+
+    #[test]
+    fn fog_ignores_an_unbound_input_and_retains_dynamic_bindings() {
+        use tags::material::{VectorBinding, VectorTarget};
+
+        let mut pass = imp(0, &[state(CULL_MODE, CW)]);
+        pass.per_draw_inputs = true;
+        pass.input_reads.vectors = 1;
+        let resolve = |i| layer_passes(&material(16, vec![vec![i]]), 16);
+        let static_pass = resolve(pass.clone()).unwrap().remove(0);
+        assert!(!static_pass.look.per_draw_inputs);
+        assert!(static_pass.planar.is_none());
+
+        pass.input_reads.vectors = 1 << 31;
+        pass.pixel_constants_from_engine = true;
+        pass.vector_bindings.push(VectorBinding {
+            source: 31,
+            target: VectorTarget::Pixel { c1: false, slot: 0, mask: 0x00ff_ffff, half: false, transform: 0 },
+        });
+        assert!(resolve(pass.clone()).unwrap()[0].planar.is_some());
+        pass.variant = true;
+        assert!(resolve(pass).is_err());
+    }
+
+    #[test]
+    fn a_pass_with_four_implementations_draws_the_one_selected() {
+        let m = material(16, vec![four(&[state(CULL_MODE, CW)])]);
+        assert_eq!(layer_passes(&m, 16).unwrap_err(), FogRefusal::Implementations { pass: 0, count: 4 });
+        for wanted in 0..4 {
+            let sel = Selection { implementation: Some(wanted), layer_cull: false, rasterizer: None };
+            let passes = layer_passes_selected(&m, 16, sel).expect("the selected implementation fits");
+            assert_eq!(passes.len(), 1);
+            assert_eq!(passes[0].look.implementation, wanted, "the look is the selected implementation's");
+        }
+        let past = Selection { implementation: Some(4), layer_cull: false, rasterizer: None };
+        assert_eq!(layer_passes_selected(&m, 16, past).unwrap_err(), FogRefusal::Implementations { pass: 0, count: 4 });
+        assert!(layer_has_choice(&m, 16));
+        assert!(!layer_has_choice(&m, 7), "another layer has no pass");
+    }
+
+    #[test]
+    fn a_pass_with_one_implementation_ignores_the_selection() {
+        let m = material(16, vec![vec![imp(0, &[state(CULL_MODE, CW)])], four(&[state(CULL_MODE, CW)])]);
+        let sel = Selection { implementation: Some(2), layer_cull: false, rasterizer: None };
+        let passes = layer_passes_selected(&m, 16, sel).unwrap();
+        let chosen: Vec<_> = passes.iter().map(|p| p.look.implementation).collect();
+        assert_eq!(chosen, vec![0, 2], "the single takes 0, the other the selection");
+        let only = material(16, vec![vec![imp(0, &[state(CULL_MODE, CW)])]]);
+        assert!(layer_passes(&only, 16).is_ok());
+        assert!(!layer_has_choice(&only, 16));
+    }
+
+    #[test]
+    fn an_unset_cull_takes_the_layers_start_only_when_the_layer_allows_it() {
+        let m = material(1, vec![vec![imp(0, &[])]]);
+        assert_eq!(layer_passes(&m, 1).unwrap_err(), FogRefusal::InheritsCull { pass: 0 });
+        let refused = Selection { implementation: None, layer_cull: false, rasterizer: None };
+        assert_eq!(layer_passes_selected(&m, 1, refused).unwrap_err(), FogRefusal::InheritsCull { pass: 0 });
+        let allowed = Selection { implementation: None, layer_cull: true, rasterizer: None };
+        let passes = layer_passes_selected(&m, 1, allowed).unwrap();
+        // `CULLMODE` CW with `FRONTFACE` CW culls the front face of the
+        // primitive state (`gfx::translate::primitive_state`), where
+        // `RenderState`'s own default (CCW) culls the back.
+        assert_eq!(passes[0].state.primitive.cull_mode, FRONT);
+        assert_eq!(passes[0].state.primitive.front_face, wgpu::FrontFace::Cw);
+        // A pass that sets its own keeps it.
+        let own = material(1, vec![vec![imp(0, &[state(CULL_MODE, 0)])]]);
+        let kept = layer_passes_selected(&own, 1, allowed).unwrap();
+        assert_eq!(kept[0].state.primitive.cull_mode, None);
+        assert!(layer_passes(&own, 1).is_ok(), "an explicit cull needs no layer rule");
+    }
+
+    #[test]
+    fn the_layers_start_is_the_layer_setups() {
+        assert_eq!(layer_cull(), (gfx::state::CullMode::Cw, gfx::state::FrontFace::Cw));
+        assert_eq!(layer_cull().0.xbox_value(), CW, "the `0x900` the setup passes both calls");
+        assert_eq!(layer_cull().1.xbox_value(), CW);
+        assert_eq!(layer_cull_primitive(), (FRONT, wgpu::FrontFace::Cw));
+    }
+
+    #[test]
+    fn a_layer_sets_another_cull_when_any_implementation_does() {
+        let sets = |extra: &[RenderStateValue]| layer_sets_other_cull(&material(16, vec![four(extra)]), 16);
+        assert!(!sets(&[]), "nothing set");
+        assert!(!sets(&[state(CULL_MODE, CW), state(FRONT_FACE, CW)]), "the start itself");
+        assert!(sets(&[state(CULL_MODE, CCW)]));
+        assert!(sets(&[state(CULL_MODE, 0)]), "no cull");
+        assert!(sets(&[state(FRONT_FACE, CCW)]));
+        assert!(sets(&[state(CULL_MODE, 5)]), "a value gfx does not decode counts");
+        // One implementation among the pass's is enough, and another
+        // layer's states do not count.
+        let mut passes = four(&[]);
+        passes[3] = imp(3, &[state(CULL_MODE, CCW)]);
+        let m = material(16, vec![passes]);
+        assert!(layer_sets_other_cull(&m, 16));
+        assert!(!layer_sets_other_cull(&m, 7));
     }
 }

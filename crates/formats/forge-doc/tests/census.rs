@@ -51,7 +51,7 @@ fn label(target: Endpoint, text: &str, number: Option<i32>) -> Edit {
 }
 
 fn base(block: BlockKind, index: u32) -> Endpoint {
-    Endpoint::Base { block, index }
+    Endpoint::base(block, index)
 }
 
 /// The fixture's document: the first starting location is `"attack"` 0,
@@ -99,9 +99,13 @@ fn a_map_file_and_the_game_rows_of_it_give_one_census() {
         flags: vec![FlagRow { kind: 2, team: 1 }],
         starts: vec![1, 1],
         tags: BTreeMap::from([("objects/test/blaster".to_string(), ObjectType::Weapon)]),
+        sounds: None,
     };
     let from_game = Census::of_game(&rows, Some(&doc)).unwrap();
-    assert_eq!(from_file, from_game);
+    // The file names its sounds (none here); the game has no tag paths.
+    assert_eq!(from_file.sounds, Some(Default::default()));
+    assert_eq!(from_game.sounds, None);
+    assert_eq!(Census { sounds: None, ..from_file }, from_game);
     let member = |class, number, team| Member { class, number, team };
     assert_eq!(
         from_game.labels,

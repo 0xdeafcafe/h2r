@@ -7,73 +7,154 @@ fn ray(yaw: f32) -> Vec3 {
 }
 
 #[test]
-fn the_stick_curve_has_a_deadzone_and_a_radial_limit() {
-    assert_eq!(turn_rate((0.1, 0.0)), (0.0, 0.0));
-    let (_, mut prev) = turn_rate((0.0, DEADZONE));
+fn the_response_has_a_deadzone_a_slow_half_stick_and_a_slower_pitch() {
+    assert_eq!(turn_rate((0.1, 0.1)), (0.0, 0.0));
+    for (table, axis) in [(RESPONSE.yaw, 0), (RESPONSE.pitch, 1)] {
+        let rate = |s: f32| {
+            let stick = if axis == 0 { (s, 0.0) } else { (0.0, s) };
+            let (x, y) = turn_rate(stick);
+            if axis == 0 { x } else { y }
+        };
+        let mut prev = rate(DEADZONE);
+        assert_eq!(prev, 0.0);
+        for i in 14..=100 {
+            let r = rate(i as f32 / 100.0);
+            assert!(r > prev, "{axis} {i}");
+            prev = r;
+        }
+        assert!((prev - table[table.len() - 1].1).abs() < 1e-5);
+        // Odd: the other way is the same turn the other way.
+        assert_eq!(rate(-0.7), -rate(0.7));
+        // The inverse lands on the asked-for rate, past the quiet band.
+        for wanted in [0.02, 0.1, 0.157, 0.5, 1.2, prev] {
+            let rates = if axis == 0 {
+                [wanted, 0.0]
+            } else {
+                [0.0, wanted]
+            };
+            let [x, y] = RESPONSE.stick(rates);
+            assert!(
+                (rate(if axis == 0 { x } else { y }) - wanted).abs() < 1e-4,
+                "{axis} {wanted}"
+            );
+        }
+        assert_eq!(RESPONSE.stick([0.5 * QUIET, -0.5 * QUIET]), [0.0, 0.0]);
+    }
+    // The measured half-stick point: about 9°/s in yaw, 5°/s in pitch,
+    // and pitch slower than yaw at every deflection.
+    assert!((turn_rate((0.5, 0.0)).0 - 9f32.to_radians()).abs() < 1e-4);
+    assert!((turn_rate((0.0, 0.5)).1 - 5f32.to_radians()).abs() < 1e-4);
     for i in 14..=100 {
-        let stick = i as f32 / 100.0;
-        let (_, rate) = turn_rate((0.0, stick));
-        assert!(rate > prev);
-        prev = rate;
+        let s = i as f32 / 100.0;
+        assert!(turn_rate((0.0, s)).1 < turn_rate((s, 0.0)).0);
     }
-    assert_eq!(prev, TURN_RATE);
+    // Each axis keeps its own curve; the stick stays in its circle.
     let (x, y) = turn_rate((1.0, 1.0));
-    assert!((x.hypot(y) - TURN_RATE).abs() < 1e-5);
-    for fraction in [0.01, 0.1, 0.3, 0.6, 1.0] {
-        let [x, y] = deflection([fraction, 0.0]);
-        assert!((turn_rate((x, y)).0 / TURN_RATE - fraction).abs() < 1e-5);
-    }
+    assert!(x > y && x < TURN_RATE);
+    let [x, y] = RESPONSE.stick([10.0, 10.0]);
+    assert!((x.hypot(y) - 1.0).abs() < 1e-5);
 }
 
-fn flick(skill: Skill, seed: u64) -> Vec<f32> {
-    let target = 0.95;
-    let mut hand = Hand::new(seed);
-    let mut yaw = 0.0;
-    let mut stick = (0.0f32, 0.0f32);
-    let mut pitch = 0.0;
-    (0..90)
-        .map(|tick| {
-            let error = hand.track(
-                skill,
-                1,
-                tick,
-                (yaw, pitch),
-                [ray(target), ray(target)],
-                0.0,
-            );
-            let next = hand.steer(skill, Some(error), 1);
-            assert!(next.0.hypot(next.1) <= 1.000_001);
-            assert!(
-                (next.0 - stick.0).hypot(next.1 - stick.1) <= Handling::of(skill).engage + 1e-6
-            );
-            stick = next;
+/// The test plant: a scene a tick at a time (the eye, the aim point and
+/// its velocity), the game turning by the response table, and the hand's
+/// view as late as the skill's perception and motor delays. For each tick
+/// it gives the true yaw and pitch error once that tick's turn is made,
+/// against the scene as it stands then, the distance, and the stick.
+struct Plant {
+    errors: Vec<[f32; 2]>,
+    distances: Vec<f32>,
+    sticks: Vec<(f32, f32)>,
+}
+
+type Scene<'a> = &'a dyn Fn(u32) -> (Vec3, Vec3, Vec3);
+
+/// One run of the code aim against `scene`, leading the aim point by the
+/// hand's own delay when `lead`, with the skill's spread or `error`.
+fn plant(
+    skill: Skill,
+    seed: u64,
+    ticks: u32,
+    scene: Scene<'_>,
+    lead: bool,
+    error: Option<f32>,
+) -> Plant {
+    let tuning = crate::tuning::Tuning {
+        aim_model: Some(AimModel::Code),
+        error,
+        ..Default::default()
+    };
+    crate::tuning::with(Some(tuning), || {
+        let late = latency(skill);
+        let mut hand = Hand::new(seed);
+        let (mut yaw, mut pitch) = (0.0f32, 0.0f32);
+        let mut views = Vec::new();
+        let mut out = Plant {
+            errors: Vec::new(),
+            distances: Vec::new(),
+            sticks: Vec::new(),
+        };
+        for tick in 0..ticks {
+            let (eye, at, vel) = scene(tick);
+            views.push(((yaw, pitch), eye, at, vel));
+            let (aim, eye, at, vel) = views[views.len().saturating_sub(late + 1)];
+            let raw = sub(at, eye);
+            let ahead = if lead {
+                lead_time(skill, len(raw), 0.0)
+            } else {
+                0.0
+            };
+            let led = std::array::from_fn(|i| raw[i] + vel[i] * ahead);
+            let error = hand.track(skill, 1, tick, aim, [raw, led], 0.0);
+            let stick = hand.steer(skill, Some(error), 1);
+            assert!(stick.0.hypot(stick.1) <= 1.000_001);
             let (x, y) = turn_rate(stick);
             yaw -= x / TICKS;
             pitch += y / TICKS;
-            target - yaw
-        })
+            let (eye, at, _) = scene(tick + 1);
+            let to = sub(at, eye);
+            out.errors.push(angle_error((yaw, pitch), angles(to)));
+            out.distances.push(len(to));
+            out.sticks.push(stick);
+        }
+        out
+    })
+}
+
+/// A still target 8 units away, 0.95 rad to the left.
+fn flick_scene(_: u32) -> (Vec3, Vec3, Vec3) {
+    ([0.0; 3], ray(0.95).map(|c| c * 8.0), [0.0; 3])
+}
+
+fn flick(skill: Skill, seed: u64) -> Vec<f32> {
+    plant(skill, seed, 90, &flick_scene, true, None)
+        .errors
+        .iter()
+        .map(|e| e[0])
         .collect()
 }
 
 #[test]
-fn flick_error_falls_overshoots_then_settles_with_micro_jitter() {
+fn flick_error_falls_overshoots_a_little_then_settles_and_rests() {
     let curves: Vec<_> = (0..32).map(|seed| flick(Skill::Legendary, seed)).collect();
     assert_eq!(curves[0], flick(Skill::Legendary, 0));
     let mut final_legendary = 0.0;
     let mut final_easy = 0.0;
+    let mut past = 0;
     for (seed, curve) in curves.iter().enumerate() {
-        assert!((0.92..0.95).contains(&curve[0]), "{curve:?}");
+        assert!((0.9..0.95).contains(&curve[0]), "{curve:?}");
         assert!(curve[8] < 0.6, "{curve:?}");
-        assert!(curve[8..35].iter().any(|&e| e < -0.02), "{curve:?}");
+        past += usize::from(curve[8..35].iter().any(|&e| e < -0.02));
+        // Within the body's half width at 8 units once settled.
         let settled = &curve[55..];
-        assert!(settled.iter().any(|&e| e.abs() < 0.03), "{curve:?}");
-        assert!(settled.windows(2).any(|w| w[0] != w[1]));
+        assert!(settled.iter().any(|&e| e.abs() < 0.045), "{curve:?}");
         final_legendary += settled.iter().map(|e| e.abs()).sum::<f32>();
         final_easy += flick(Skill::Easy, seed as u64)[55..]
             .iter()
             .map(|e| e.abs())
             .sum::<f32>();
     }
+    // Most flicks carry a little past before they come back.
+    assert!(past >= 24, "{past} of 32");
     assert!(final_legendary / (32.0 * 35.0) < 0.035, "{final_legendary}");
     assert!(
         final_easy > final_legendary * 2.0,
@@ -81,8 +162,200 @@ fn flick_error_falls_overshoots_then_settles_with_micro_jitter() {
     );
 }
 
+/// The share of ticks after the first second that the stick turns the
+/// view not at all, over seeds.
+fn resting(skill: Skill, scene: Scene<'_>) -> f32 {
+    let (mut still, mut all) = (0, 0);
+    for seed in 0..24 {
+        let run = plant(skill, seed, 150, scene, true, None);
+        for &stick in &run.sticks[30..] {
+            still += usize::from(turn_rate(stick) == (0.0, 0.0));
+            all += 1;
+        }
+    }
+    still as f32 / all as f32
+}
+
 #[test]
-fn tracking_lags_faster_bearings_more_and_crosses_the_wrap() {
+fn on_a_still_target_the_thumb_rests_and_on_a_moving_one_it_tracks() {
+    // Already on a still target 8 units ahead: a steady hand lets the
+    // stick go, a shaky one keeps correcting. (A player's median turn
+    // rate in a match is 0.)
+    let ahead = |_: u32| ([0.0; 3], [8.0, 0.0, 0.0], [0.0; 3]);
+    let still: Vec<f32> = Skill::ALL.iter().map(|&s| resting(s, &ahead)).collect();
+    assert!(still[3] > 0.85 && still[2] > 0.7, "{still:?}");
+    assert!(still[0] < still[3], "{still:?}");
+    // Crossing at 2.25 units a second, 6 or 12 units out: no rest.
+    for distance in [6.0, 12.0] {
+        let across = move |tick: u32| {
+            let y = -3.0 + 2.25 * tick as f32 / TICKS;
+            ([0.0; 3], [distance, y, 0.0], [0.0, 2.25, 0.0])
+        };
+        for skill in Skill::ALL {
+            let moving = resting(skill, &across);
+            assert!(moving < 0.1, "{skill:?} at {distance}: {moving}");
+        }
+    }
+}
+
+#[test]
+fn a_large_flick_takes_the_thumb_to_full_stick_at_once() {
+    for skill in Skill::ALL {
+        let mut halves = 0;
+        for seed in 0..32 {
+            let run = plant(skill, seed, 60, &flick_scene, true, None);
+            let mut last = (0.0f32, 0.0f32);
+            for &stick in &run.sticks {
+                let travel = (stick.0 - last.0).hypot(stick.1 - last.1);
+                assert!(travel <= FLICK_STEP + 1e-6, "{skill:?} {seed}: {travel}");
+                last = stick;
+            }
+            let full = run.sticks.iter().position(|s| s.0.hypot(s.1) >= 0.99);
+            assert!(full.is_some_and(|t| t <= 3), "{skill:?} {seed}: {full:?}");
+            let first = run.errors[0][0];
+            let half = run.errors.iter().position(|e| e[0] < 0.5 * first).unwrap();
+            assert!(half <= 8, "{skill:?} {seed}: {half}");
+            halves += half;
+        }
+        // Halfway in under a quarter of a second on average, Easy too.
+        assert!(halves as f32 / 32.0 < 7.5, "{skill:?}: {halves}");
+    }
+}
+
+#[test]
+fn a_flick_on_a_late_view_does_not_swing_past() {
+    for skill in Skill::ALL {
+        for seed in 0..24 {
+            // The skill's own wandering hand: no swing past by a quarter.
+            let c = flick(skill, seed);
+            let first = c[0];
+            let past = c[..60]
+                .iter()
+                .map(|e| -e * first.signum())
+                .fold(0.0, f32::max);
+            assert!(past < 0.25 * first.abs(), "{skill:?} {seed}: {past} {c:?}");
+            // A steady hand settles inside 0.05 rad by tick 45 and stays.
+            let steady = plant(skill, seed, 120, &flick_scene, true, Some(0.0));
+            let yaw: Vec<f32> = steady.errors.iter().map(|e| e[0]).collect();
+            assert!(
+                yaw[45..].iter().all(|e| e.abs() < 0.05),
+                "{skill:?} {seed}: {yaw:?}"
+            );
+        }
+    }
+}
+
+/// A target `height` above the eye 6 units ahead, the bot strafing at
+/// 2.25 units a second, one way then the other every 1.2 s.
+fn strafing_eye(height: f32) -> impl Fn(u32) -> (Vec3, Vec3, Vec3) {
+    move |tick| {
+        let leg = tick / 36;
+        let into = (tick % 36) as f32;
+        let side = if leg % 2 == 0 { into } else { 36.0 - into };
+        (
+            [0.0, 2.25 * side / TICKS, 0.0],
+            [6.0, 0.0, height],
+            [0.0; 3],
+        )
+    }
+}
+
+#[test]
+fn pitch_tracks_as_well_as_yaw_on_the_retail_curve() {
+    for skill in Skill::ALL {
+        let mean_pitch = |height: f32| {
+            let scene = strafing_eye(height);
+            (0..24)
+                .map(|seed| {
+                    let run = plant(skill, seed, 180, &scene, true, None);
+                    run.errors[30..].iter().map(|e| e[1].abs()).sum::<f32>() / 150.0
+                })
+                .sum::<f32>()
+                / 24.0
+        };
+        let level = mean_pitch(0.0);
+        let above = mean_pitch(1.5);
+        assert!(above < 1.5 * level, "{skill:?}: {above} against {level}");
+    }
+}
+
+#[test]
+fn the_error_shrinks_with_range() {
+    // Dead on a still target, `track` returns the hand's own error alone.
+    let rms = |skill: Skill, distance: f32| {
+        let mut hand = Hand::new(21);
+        let sum: f32 = (0..300)
+            .map(|tick| {
+                let to = [distance, 0.0, 0.0];
+                let e = hand.track(skill, 1, tick, (0.0, 0.0), [to, to], 0.0);
+                e[0] * e[0] + e[1] * e[1]
+            })
+            .sum();
+        (sum / 300.0).sqrt()
+    };
+    let code = crate::tuning::Tuning {
+        aim_model: Some(AimModel::Code),
+        ..Default::default()
+    };
+    crate::tuning::with(Some(code), || {
+        for skill in Skill::ALL {
+            let (near, far) = (rms(skill, SPREAD_AT), rms(skill, 20.0));
+            assert!(near >= 2.49 * far, "{skill:?}: {near} {far}");
+            // Closer than the spread's distance it is the whole spread.
+            assert_eq!(rms(skill, 2.0), near);
+        }
+        for distance in [SPREAD_AT, 20.0] {
+            assert!(rms(Skill::Easy, distance) > 2.0 * rms(Skill::Legendary, distance));
+        }
+    });
+}
+
+#[test]
+fn a_strafing_target_is_led_for_the_hands_own_delay() {
+    // Strafing across at 2.25 units a second, one way.
+    let across = |distance: f32| {
+        move |tick: u32| {
+            let y = -3.0 + 2.25 * tick as f32 / TICKS;
+            ([0.0; 3], [distance, y, 0.0], [0.0, 2.25, 0.0])
+        }
+    };
+    // The mean miss along the strafe (units, positive behind it) and the
+    // mean size of the miss, once tracking, over seeds.
+    let miss = |skill: Skill, distance: f32, lead: bool| {
+        let scene = across(distance);
+        let (mut behind, mut size) = (0.0, 0.0);
+        for seed in 0..24 {
+            let run = plant(skill, seed, 240, &scene, lead, None);
+            for (e, d) in run.errors[90..].iter().zip(&run.distances[90..]) {
+                behind += e[0] * d;
+                size += e[0].abs() * d;
+            }
+        }
+        let n = 24.0 * 150.0;
+        (behind / n, size / n)
+    };
+    for distance in [6.0, 18.0] {
+        for (skill, most) in [(Skill::Legendary, 0.25), (Skill::Normal, 0.5)] {
+            let (behind, size) = miss(skill, distance, true);
+            assert!(size < most, "{skill:?} at {distance}: {size}");
+            assert!(behind.abs() < 0.12, "{skill:?} at {distance}: {behind}");
+        }
+    }
+    // Without the lead for its own delay it trails the target.
+    for skill in [Skill::Normal, Skill::Heroic, Skill::Legendary] {
+        let (led, _) = miss(skill, 18.0, true);
+        let (trailing, _) = miss(skill, 18.0, false);
+        assert!(
+            trailing > 0.15 && trailing > led.abs() + 0.1,
+            "{skill:?}: {trailing} {led}"
+        );
+    }
+}
+
+#[test]
+fn tracking_aims_where_it_sees_with_no_lag_and_crosses_the_wrap() {
+    // A bearing that moved and one that did not: the same error once it is
+    // there. The lead is the aim point's job (lead_time), not the hand's.
     let error = |before| {
         let mut hand = Hand::new(17);
         hand.track(
@@ -102,9 +375,43 @@ fn tracking_lags_faster_bearings_more_and_crosses_the_wrap() {
             0.0,
         )[0]
     };
-    assert!(error(0.25) < error(0.38) - 0.14);
+    assert_eq!(error(0.25), error(0.4));
     let d = angle_error((3.13, 0.0), (-3.13, 0.0));
     assert!((0.01..0.04).contains(&d[0]), "{d:?}");
+}
+
+#[test]
+fn it_counts_the_turn_the_view_does_not_show_yet() {
+    let code = crate::tuning::Tuning {
+        aim_model: Some(AimModel::Code),
+        ..Default::default()
+    };
+    crate::tuning::with(Some(code), || {
+        let skill = Skill::Normal;
+        let mut hand = Hand::new(4);
+        let (yaw, pitch) = hand.ahead(skill, (0.3, 0.1));
+        assert!((yaw - 0.3).abs() < 1e-6 && pitch == 0.1);
+        let mut turned = 0.0;
+        let mut sticks = Vec::new();
+        for _ in 0..12 {
+            let stick = hand.steer(skill, Some([0.5, 0.0]), 1);
+            sticks.push(stick);
+        }
+        // The last `latency` reports' turn, by the response table.
+        for stick in sticks.iter().rev().take(latency(skill)) {
+            turned -= turn_rate(*stick).0 / TICKS;
+        }
+        let (yaw, pitch) = hand.ahead(skill, (0.0, 0.0));
+        assert!(
+            (yaw - turned).abs() < 1e-5 && turned > 0.1,
+            "{yaw} {turned}"
+        );
+        assert_eq!(pitch, 0.0);
+        // Gone with the hand.
+        hand.release();
+        let (yaw, pitch) = hand.ahead(skill, (0.0, 0.0));
+        assert!(yaw.abs() < 1e-6 && pitch == 0.0);
+    });
 }
 
 #[test]
@@ -137,13 +444,34 @@ fn the_hand_checks_the_opening_as_it_passes_a_doorway() {
     };
     let mut hand = Hand::new(1);
     assert_eq!(
-        hand.travel([0.0, 0.0, 0.6], [1.0, 0.0], 0, Some(&map), None),
+        hand.travel([0.0, 0.0, 0.6], [1.0, 0.0], 0, Some(&map), None, None),
         (0.45, 0.0)
     );
     assert_eq!(
-        hand.travel([0.0, 0.0, 0.6], [1.0, 0.0], 10, None, None),
+        hand.travel([0.0, 0.0, 0.6], [1.0, 0.0], 10, None, None, None),
         (0.0, 0.0)
     );
+}
+
+#[test]
+fn on_a_ramp_the_look_pitches_toward_the_next_waypoint() {
+    let mut hand = Hand::new(1);
+    let eye = [0.0, 0.0, 0.6];
+    // Level ground: level eyes.
+    let (_, level) = hand.travel(eye, [1.0, 0.0], 0, None, None, Some([4.0, 0.0, 0.0]));
+    assert!(level.abs() < 1e-6, "{level}");
+    // Up a ramp: 1 up over 4 along, the slope's pitch.
+    let (yaw, up) = hand.travel(eye, [1.0, 0.0], 0, None, None, Some([4.0, 0.0, 1.0]));
+    assert!(yaw.abs() < 1e-6);
+    assert!((up - 0.25f32.atan()).abs() < 1e-3, "{up}");
+    // Down one, and a steep one capped.
+    let (_, down) = hand.travel(eye, [1.0, 0.0], 0, None, None, Some([4.0, 0.0, -1.0]));
+    assert!(down < -0.2, "{down}");
+    let (_, steep) = hand.travel(eye, [1.0, 0.0], 0, None, None, Some([1.0, 0.0, 5.0]));
+    assert_eq!(steep, SLOPE_PITCH);
+    // Standing on the waypoint gives no slope.
+    let (_, close) = hand.travel(eye, [1.0, 0.0], 0, None, None, Some([0.2, 0.0, 1.0]));
+    assert_eq!(close, 0.0);
 }
 
 #[test]
@@ -168,7 +496,8 @@ fn a_muffled_shot_draws_a_delayed_bearing_and_a_distant_one_does_not() {
             Some(&map),
             &[ShotSound {
                 at: [0.0, 9.0, 0.6],
-                tick: 100
+                tick: 100,
+                shooter: None,
             }]
         ),
         None
@@ -176,6 +505,7 @@ fn a_muffled_shot_draws_a_delayed_bearing_and_a_distant_one_does_not() {
     let shot = [ShotSound {
         at: [0.0, 4.0, 0.6],
         tick: 104,
+        shooter: None,
     }];
     assert_eq!(hand.sound(eye, 104, Some(&map), &shot), None);
     for tick in 105..109 {
@@ -219,8 +549,9 @@ fn temperament_aim_noise_changes_only_the_tracking_error() {
 
 // ---- the aim net against the code aim (docs/game/bots.md §3.4.1) ----
 
-/// One chase in the nominal stick model, with the view as late as the
-/// skill's perception and motor delays make it in a game.
+/// One chase with the view as late as the skill's perception and motor
+/// delays make it in a game: the code aim on the response table, the net
+/// on the nominal curve its weights were designed against.
 struct Chase {
     /// The true yaw error after each tick, radians.
     errors: Vec<f32>,
@@ -241,6 +572,10 @@ fn chase(
     crate::tuning::with(Some(tuning), || {
         let limits = tuning.input_limits(skill);
         let late = (limits.perception_ticks + limits.motor_ticks) as usize;
+        let game = match model {
+            AimModel::Net => nominal_turn_rate,
+            _ => turn_rate,
+        };
         let mut hand = Hand::new(seed);
         let (mut yaw, mut pitch) = (0.0f32, 0.0f32);
         let mut stick = (0.0f32, 0.0f32);
@@ -259,12 +594,16 @@ fn chase(
             // Both models move the same thumb: in the stick's circle, at
             // most the skill's travel a tick.
             assert!(next.0.hypot(next.1) <= 1.000_001, "{model:?}");
+            let step = match model {
+                AimModel::Net => Handling::of(skill).engage,
+                _ => Handling::of(skill).engage.max(FLICK_STEP),
+            };
             assert!(
-                (next.0 - stick.0).hypot(next.1 - stick.1) <= Handling::of(skill).engage + 1e-6,
+                (next.0 - stick.0).hypot(next.1 - stick.1) <= step + 1e-6,
                 "{model:?}"
             );
             stick = next;
-            let (x, y) = turn_rate(stick);
+            let (x, y) = game(stick);
             yaw -= x / TICKS;
             pitch += y / TICKS;
             out.errors.push(at - yaw);
@@ -353,7 +692,7 @@ fn the_net_is_deterministic_and_leaves_the_code_aim_alone() {
             plain.steer(Skill::Normal, Some(e), 1)
         };
         assert_eq!(a, b);
-        assert!(named.net.is_none() && named.turns == [[0.0; 2]; REMEMBERED]);
+        assert!(named.net.is_none());
         yaw -= turn_rate(a).0 / TICKS;
     }
 }
@@ -509,8 +848,9 @@ fn both_models_run_the_same_chases() {
                 // The same start, the same first move, and both get there.
                 assert!((0.93..0.951).contains(&c.errors[0]), "{model:?}");
                 assert!(
-                    c.sticks[0].0 < 0.0 && c.sticks[0].1.abs() < 0.1,
-                    "{model:?}"
+                    c.sticks[0].0 < 0.0 && c.sticks[0].1.abs() < 0.25,
+                    "{model:?} {skill:?} {seed}: {:?}",
+                    c.sticks[0]
                 );
                 let nearest = c.errors[..60].iter().map(|e| e.abs()).fold(1.0, f32::min);
                 assert!(nearest < 0.1, "{model:?} {skill:?} {seed}: {nearest}");
@@ -524,8 +864,10 @@ fn both_models_run_the_same_chases() {
                 jitter[i] += m.jitter / SEEDS as f32;
             }
         }
-        // The net's thumb is no busier than the code's.
-        assert!(jitter[1] < 1.5 * jitter[0], "{skill:?}: {jitter:?}");
+        // The code's thumb, which rests on a still target, is no busier
+        // than the net's, and the net's is not wild.
+        assert!(jitter[0] < 1.25 * jitter[1], "{skill:?}: {jitter:?}");
+        assert!(jitter[1] < 3.0 * jitter[0], "{skill:?}: {jitter:?}");
     }
 }
 
@@ -566,11 +908,59 @@ fn temperament_scales_the_nets_error_as_it_does_the_codes() {
 fn a_twitchy_hand_flicks_faster_with_the_selected_skill_accuracy() {
     for skill in Skill::ALL {
         let steady = Handling::of(skill);
-        let t = crate::tuning::Tuning { twitchy: true, ..Default::default() };
+        let t = crate::tuning::Tuning {
+            twitchy: true,
+            ..Default::default()
+        };
         let twitchy = crate::tuning::with(Some(t), || Handling::of(skill));
         assert!(twitchy.engage > steady.engage);
         assert!(twitchy.overshoot > steady.overshoot);
         assert_eq!(twitchy.misread, steady.misread);
         assert_eq!(t.aim(skill.base_aim()), skill.base_aim());
     }
+}
+
+// ---- a camouflaged target (docs/game/bots.md §3.1, "Visual range") ----
+
+#[test]
+fn a_camouflaged_target_is_tracked_with_more_error_at_every_skill() {
+    for skill in Skill::ALL {
+        let mut plain = Hand::new(11);
+        let mut cloaked = Hand::new(11);
+        let (mut a, mut b) = (0.0, 0.0);
+        for tick in 0..240 {
+            let target = [ray(0.0).map(|c| c * 6.0); 2];
+            plain.obscure(skill, false);
+            cloaked.obscure(skill, true);
+            let e = plain.track(skill, 1, tick, (0.0, 0.0), target, 0.0);
+            let f = cloaked.track(skill, 1, tick, (0.0, 0.0), target, 0.0);
+            a += e[0].hypot(e[1]);
+            b += f[0].hypot(f[1]);
+        }
+        assert!(b > 1.3 * a, "{skill:?}: {a} vs {b}");
+    }
+    // The better hand loses less to the shimmer.
+    assert!(camo_aim(Skill::Legendary) < camo_aim(Skill::Easy));
+}
+
+#[test]
+fn a_camouflaged_target_is_locked_onto_more_slowly() {
+    let skill = Skill::Normal;
+    let mut plain = Hand::new(3);
+    let mut cloaked = Hand::new(3);
+    plain.obscure(skill, false);
+    cloaked.obscure(skill, true);
+    let fast = plain.steer(skill, Some([0.5, 0.0]), 1);
+    let slow = cloaked.steer(skill, Some([0.5, 0.0]), 1);
+    assert!(slow.0.abs() < fast.0.abs(), "{slow:?} vs {fast:?}");
+    assert!((slow.0.abs() - CAMO_ENGAGE * fast.0.abs()).abs() < 1e-4);
+    // Plain again once the target shows.
+    cloaked.obscure(skill, false);
+    let mut again = Hand::new(3);
+    again.obscure(skill, false);
+    cloaked.release();
+    assert_eq!(
+        cloaked.steer(skill, Some([0.5, 0.0]), 1),
+        again.steer(skill, Some([0.5, 0.0]), 1)
+    );
 }

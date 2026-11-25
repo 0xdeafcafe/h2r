@@ -48,9 +48,13 @@ pub enum Purpose {
     Take { id: u64, at: u32 },
     Teleport(u64),
     Spawn(Instant),
+    /// One call of the subject's object in the own game (`play::subject`).
+    Subject(u64),
     Control(&'static str),
     /// The script editor's `rules.reload`.
     Rules,
+    /// The Shader tab's `render.reload` for one program's override.
+    ShaderOverride(u64),
     /// A call the user asked for by hand.
     Other,
 }

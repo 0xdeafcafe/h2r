@@ -27,10 +27,24 @@
 //! `MapEditor::append_metadata`. See docs/editor/rich-editors.md, "Data
 //! that changes length".
 //!
+//! Every write, block change, resize, string add, undo and redo reports a
+//! [`Change`] with its class (Field, or Shape where the layout or the
+//! strings change), which the fan-out takes each frame
+//! ([`TagDoc::take_changes`], docs/editor/live-editors.md, "One write,
+//! three deliveries").
+//!
+//! Every step is numbered as it is made ([`TagDoc::next_step`]), and the
+//! editors of a tag whose edits are not writes of its bytes (a sound's
+//! mouth curve, a bitmap's pixels, an animation graph's documents) number
+//! theirs on the same counter. A tag's tab undoes and redoes all of them in
+//! the order they were made, whichever stack holds them
+//! (docs/editor/studio-flow.md, "Shared patterns").
+//!
 //! [`App`]: crate::App
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Seek};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use map::{AddressSpace, FourCC, Map, TagId};
 use scenario_edit::{
@@ -38,6 +52,8 @@ use scenario_edit::{
     layout::{BLOCKS, BlockDef},
 };
 use tags::registry::{Kind, Layout, Registry};
+
+use super::live::{Change, Class};
 
 /// Why a tag's bytes can be read but not written.
 pub const SCENARIO_OWNED: &str = "the scenario tag's bytes belong to the Scenario tool (edit \
@@ -142,6 +158,13 @@ pub enum TagAction {
     /// Show a tag's fields.
     Select(TagId),
     Write(TagWrite),
+    /// Edit a physics primitive or hull as one fixed-size tag edit.
+    SetPhysicsShape {
+        tag: TagId,
+        kind: tags::collision::ShapeType,
+        index: usize,
+        edit: tags::collision::shape_edit::ShapeEdit,
+    },
     /// Change the elements of the block whose `(count, address)` pair is
     /// at `pair`, with `layout` its element.
     Block {
@@ -186,6 +209,21 @@ impl TagEntry {
     }
 }
 
+/// A block a block operation changed, and whether a running game can be
+/// given the result by an `edit.batch` move (docs/editor/realtime-edits.md,
+/// "The editor"): the tag is a live one, the pair lies in the
+/// loaded metadata, and the operation shifts no element another block may
+/// index (an append, or the removal or copy of the last element).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockEdit {
+    pub tag: TagId,
+    /// The `(count, address)` pair's address.
+    pub pair: u32,
+    /// Bytes per element.
+    pub size: u32,
+    pub live: bool,
+}
+
 #[derive(Clone, Debug, Default)]
 struct Step {
     label: String,
@@ -195,6 +233,52 @@ struct Step {
     reload: Vec<(String, Vec<(u32, u32)>)>,
     /// String IDs this step added (the last of the document's).
     strings: Vec<String>,
+    /// The step changed a block's count or a data reference's length.
+    shape: bool,
+    /// The tag the step edits: its document's undo stack
+    /// ([`TagDoc::undo_tag`]). `None` for a step over several tags (an
+    /// import squashed into one).
+    tag: Option<TagId>,
+    /// The block a block operation changed ([`TagDoc::live_blocks`]).
+    blocks: Vec<BlockEdit>,
+    /// When the step was made beside every other step of the open map's
+    /// tags ([`TagDoc::next_step`]): a tab's undo takes the newest.
+    serial: u64,
+}
+
+impl Step {
+    /// The fan-out's class of the step: Shape when it changed a layout or
+    /// added strings, else Field.
+    fn class(&self) -> Class {
+        if self.shape || !self.reload.is_empty() || !self.strings.is_empty() {
+            Class::Shape
+        } else {
+            Class::Field
+        }
+    }
+
+    fn ranges(&self) -> Vec<(u32, u32)> {
+        self.writes
+            .iter()
+            .map(|((_, a), _, after)| (*a, after.len() as u32))
+            .collect()
+    }
+}
+
+/// Two steps that may not be undone or redone out of order: one writes
+/// bytes the other writes, or both add strings (string IDs are numbered
+/// in the order they were added).
+fn conflicts(a: &Step, b: &Step) -> bool {
+    if !a.strings.is_empty() && !b.strings.is_empty() {
+        return true;
+    }
+    a.writes.iter().any(|((ra, aa), _, wa)| {
+        b.writes.iter().any(|((rb, ab), _, wb)| {
+            let (a0, a1) = (u64::from(*aa), u64::from(*aa) + wa.len() as u64);
+            let (b0, b1) = (u64::from(*ab), u64::from(*ab) + wb.len() as u64);
+            ra == rb && a0 < b1 && b0 < a1
+        })
+    })
 }
 
 /// The open map's tags and the edits over them.
@@ -271,10 +355,18 @@ pub struct TagDoc {
     /// Bumped whenever block counts or addresses may have changed (load,
     /// block changes, undo, redo): what [`Self::homes_cache`] is keyed by.
     shape_rev: u64,
+    /// Numbers every step of the open map's tags as it is made
+    /// ([`Self::next_step`]).
+    steps: Arc<AtomicU64>,
     /// Each tag's raw pointers by map, as counted for `shape_rev`
     /// (`shared_refs::TagDoc::homes`).
     pub(super) homes_cache:
         std::cell::RefCell<(u64, HashMap<TagId, Option<super::shared_refs::Homes>>)>,
+    /// The reverse reference index over the map's tags, as built for
+    /// `rev` ([`Self::reverse_index`], read by `tag_api::uses`).
+    pub(super) uses_cache: std::cell::RefCell<(u64, std::sync::Arc<super::tag_api::UsesIndex>)>,
+    /// Writes not yet taken by the fan-out ([`Self::take_changes`]).
+    changes: Vec<Change>,
 }
 
 impl Default for TagDoc {
@@ -313,8 +405,101 @@ impl TagDoc {
             error: None,
             allow_growth: false,
             shape_rev: 0,
+            steps: Arc::new(AtomicU64::new(0)),
             homes_cache: Default::default(),
+            uses_cache: Default::default(),
+            changes: Vec::new(),
         }
+    }
+
+    /// The writes since the last call, oldest first, each with its class.
+    pub fn take_changes(&mut self) -> Vec<Change> {
+        std::mem::take(&mut self.changes)
+    }
+
+    /// The number of the next step of the open map's tags, whoever makes
+    /// it: a write of this document, or the edit of a tag's editor that is
+    /// not a write of its bytes. A tag's tab undoes the steps of its
+    /// document in the order of these numbers, whichever stack they are in
+    /// (`App::undo_redo_doc`).
+    pub fn next_step(&self) -> u64 {
+        self.steps.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// The counter [`Self::next_step`] numbers steps on, for a tool's own
+    /// documents to share (`AnimDoc::share_steps`).
+    pub fn step_clock(&self) -> Arc<AtomicU64> {
+        self.steps.clone()
+    }
+
+    /// The number of `tag`'s newest step not undone.
+    pub fn step_serial(&self, tag: TagId) -> Option<u64> {
+        self.undo
+            .iter()
+            .rev()
+            .find(|s| s.tag == Some(tag))
+            .map(|s| s.serial)
+    }
+
+    /// The number of `tag`'s oldest undone step, the next a redo of the
+    /// tag takes ([`Self::redo_tag`]).
+    pub fn redo_serial(&self, tag: TagId) -> Option<u64> {
+        self.redo
+            .iter()
+            .rev()
+            .find(|s| s.tag == Some(tag))
+            .map(|s| s.serial)
+    }
+
+    /// Reports a write of `ranges` to `tag`. Consecutive writes of one
+    /// tag, class and label (every frame of a drag) are one change, and
+    /// a document nobody drains keeps the last [`super::live::KEEP`].
+    fn changed(
+        &mut self,
+        class: Class,
+        tag: Option<TagId>,
+        ranges: Vec<(u32, u32)>,
+        label: &str,
+    ) {
+        if let Some(last) = self.changes.last_mut()
+            && last.class == class
+            && last.tag == tag
+            && last.label == label
+        {
+            for r in ranges {
+                if !last.ranges.contains(&r) {
+                    last.ranges.push(r);
+                }
+            }
+            return;
+        }
+        if self.changes.len() >= super::live::KEEP {
+            self.changes.remove(0);
+        }
+        self.changes.push(Change::new(class, tag, ranges, label));
+    }
+
+    /// Reports an undone or redone step's writes, in its class. The tag is
+    /// the one owning its last write (a block's pair, in its tag's root
+    /// or elements; a grown block's copy lies past the metadata).
+    fn changed_step(&mut self, step: &Step) {
+        let tag = step.writes.iter().rev().find_map(|(at, _, _)| self.owner(*at));
+        self.changed(step.class(), tag, step.ranges(), &step.label);
+    }
+
+    /// Reports a new step of `tag`'s, in its class.
+    fn changed_tag_step(&mut self, tag: TagId, step: &Step) {
+        self.changed(step.class(), Some(tag), step.ranges(), &step.label);
+    }
+
+    /// The loaded tag whose payload holds `address` in `region`.
+    fn owner(&self, (region, address): (Region, u32)) -> Option<TagId> {
+        self.tags()
+            .iter()
+            .find(|t| {
+                t.region() == region && address.checked_sub(t.address).is_some_and(|o| o < t.size)
+            })
+            .map(|t| t.id)
     }
 
     pub fn registry(&self) -> &'static Registry {
@@ -453,6 +638,25 @@ impl TagDoc {
     pub fn shape_rev(&self) -> u64 {
         self.shape_rev
     }
+    /// The reverse reference index over the map's tags, cached by the
+    /// document's revision: what `tag_api::uses` walks up from a tag.
+    /// `skip` leaves a tag out of it (the scenario's, whose references
+    /// are the placements').
+    pub(crate) fn reverse_index(
+        &self,
+        skip: Option<TagId>,
+    ) -> std::sync::Arc<super::tag_api::UsesIndex> {
+        let rev = self.rev();
+        {
+            let cache = self.uses_cache.borrow();
+            if cache.0 == rev {
+                return cache.1.clone();
+            }
+        }
+        let index = std::sync::Arc::new(super::tag_api::build_uses_index(self, skip));
+        *self.uses_cache.borrow_mut() = (rev, index.clone());
+        index
+    }
     pub fn tags(&self) -> &[TagEntry] {
         self.loaded.as_ref().map_or(&[], |l| &l.tags)
     }
@@ -518,6 +722,21 @@ impl TagDoc {
         self.loaded
             .as_ref()?
             .src_range(self.tag(tag)?.region(), address, len)
+    }
+
+    /// The loaded file's bytes of a structure BSP region (`space`) at a
+    /// virtual address in it.
+    pub(crate) fn read_bsp_source(&self, space: AddressSpace, address: u32, len: u32) -> Option<&[u8]> {
+        self.loaded.as_ref()?.src_range(Region::Bsp(space), address, len)
+    }
+
+    /// The scenario's structure BSP index of the region `space`.
+    pub(crate) fn bsp_index(&self, space: AddressSpace) -> Option<usize> {
+        self.tags()
+            .iter()
+            .filter_map(|t| t.bsp)
+            .find(|b| b.space == space)
+            .and_then(|b| b.index)
     }
 
     pub(crate) fn read_metadata_source(&self, address: u32, len: u32) -> Option<&[u8]> {
@@ -665,11 +884,13 @@ impl TagDoc {
             return Ok(());
         }
         self.put(at, &w.bytes);
-        self.redo.clear();
+        let label = format!("set {}", w.label);
+        self.changed(Class::Field, Some(w.tag), vec![(w.address, len)], &label);
         if let Some(last) = self.undo.last_mut()
             && !self.sealed
             && w.merge.is_some()
             && last.merge == w.merge
+            && last.tag == Some(w.tag)
             && last
                 .writes
                 .first()
@@ -684,14 +905,43 @@ impl TagDoc {
                 None => last.writes.push((at, before, w.bytes)),
             }
         } else {
+            let serial = self.next_step();
             self.undo.push(Step {
                 label: format!("set {}", w.label),
                 writes: vec![(at, before, w.bytes)],
                 merge: w.merge,
+                tag: Some(w.tag),
+                serial,
                 ..Step::default()
             });
         }
+        self.forget_redo_against_last();
         self.sealed = w.merge.is_none();
+        Ok(())
+    }
+
+    /// Apply disjoint, fixed-size words as a single tag edit.
+    pub(crate) fn write_words(
+        &mut self,
+        tag: TagId,
+        label: String,
+        words: Vec<(u32, [u8; 4])>,
+    ) -> Result<(), String> {
+        if words.is_empty() {
+            return Ok(());
+        }
+        let mut step = Step { label, ..Step::default() };
+        for (address, word) in words {
+            let region = self.check(tag, address, 4)?;
+            let before = self.read_in(region, address, 4).expect("checked");
+            step.writes.push(((region, address), before, word.to_vec()));
+        }
+        for (at, _, after) in &step.writes {
+            self.put(*at, after);
+        }
+        self.changed_tag_step(tag, &step);
+        self.push_step(tag, step);
+        self.seal();
         Ok(())
     }
 
@@ -718,6 +968,7 @@ impl TagDoc {
                 BlockOp::Duplicate(i) => format!("duplicate {} {i}", layout.name),
                 BlockOp::Remove(i) => format!("remove {} {i}", layout.name),
             },
+            shape: true,
             ..Step::default()
         };
         let (from, bytes, count) = match *op {
@@ -758,7 +1009,13 @@ impl TagDoc {
         for (at, _, after) in &step.writes {
             self.put(*at, after);
         }
-        if self.tag(tag).is_some_and(|t| t.bsp.is_none()) {
+        step.blocks.push(BlockEdit {
+            tag,
+            pair,
+            size,
+            live: self.block_live(tag, pair, op, n),
+        });
+        if self.tag(tag).is_some_and(|t| t.bsp.is_none()) && !step.blocks[0].live {
             step.reload.push((
                 step.label.clone(),
                 step.writes
@@ -767,11 +1024,39 @@ impl TagDoc {
                     .collect(),
             ));
         }
-        self.undo.push(step);
-        self.redo.clear();
+        self.changed_tag_step(tag, &step);
+        self.push_step(tag, step);
         self.sealed = true;
         self.shape_rev += 1;
         Ok(())
+    }
+
+    /// Whether a running game can be given `op`'s result as a block move:
+    /// a live tag's block in the loaded metadata, and an operation that
+    /// leaves every element's index where it was (the definitions do not
+    /// say which blocks other blocks index, so only an append and the
+    /// removal or copy of the last element qualify).
+    fn block_live(&self, tag: TagId, pair: u32, op: &BlockOp, n: u32) -> bool {
+        self.tag(tag).is_some_and(|t| {
+            t.bsp.is_none() && !matches!(&t.group.0, b"sbsp" | b"ltmp" | b"coll" | b"phmo")
+        }) && !self.is_grown_room(pair)
+            && match *op {
+                BlockOp::Add => true,
+                BlockOp::Duplicate(i) | BlockOp::Remove(i) => i + 1 == n,
+            }
+    }
+
+    /// The blocks the undo stack's block operations changed, once each; a
+    /// block is live when every operation on it is.
+    pub fn live_blocks(&self) -> Vec<BlockEdit> {
+        let mut blocks: BTreeMap<(u32, u32), BlockEdit> = BTreeMap::new();
+        for b in self.undo.iter().flat_map(|s| &s.blocks) {
+            blocks
+                .entry((b.tag.0, b.pair))
+                .and_modify(|held| held.live &= b.live)
+                .or_insert(*b);
+        }
+        blocks.into_values().collect()
     }
 
     /// Add or duplicate past the block's room: copy its elements, with the
@@ -819,8 +1104,16 @@ impl TagDoc {
         l.grown.insert(pair, size);
         let mut pair_bytes = (n + 1).to_le_bytes().to_vec();
         pair_bytes.extend(at.to_le_bytes());
+        let live = self.block_live(tag, pair, op, n);
         let mut step = Step {
             label,
+            shape: true,
+            blocks: vec![BlockEdit {
+                tag,
+                pair,
+                size,
+                live,
+            }],
             ..Step::default()
         };
         for (to, after) in [(at, bytes), (pair, pair_bytes)] {
@@ -833,15 +1126,17 @@ impl TagDoc {
         for (to, _, after) in &step.writes {
             self.put(*to, after);
         }
-        step.reload.push((
-            step.label.clone(),
-            step.writes
-                .iter()
-                .map(|((_, a), _, b)| (*a, b.len() as u32))
-                .collect(),
-        ));
-        self.undo.push(step);
-        self.redo.clear();
+        if !live {
+            step.reload.push((
+                step.label.clone(),
+                step.writes
+                    .iter()
+                    .map(|((_, a), _, b)| (*a, b.len() as u32))
+                    .collect(),
+            ));
+        }
+        self.changed_tag_step(tag, &step);
+        self.push_step(tag, step);
         self.sealed = true;
         self.shape_rev += 1;
         Ok(())
@@ -955,6 +1250,7 @@ impl TagDoc {
                     label
                 }
             ),
+            shape: true,
             ..Step::default()
         };
         let mut writes: Vec<(u32, Vec<u8>)> = Vec::new();
@@ -1000,8 +1296,8 @@ impl TagDoc {
                 .map(|((_, a), _, b)| (*a, b.len() as u32))
                 .collect(),
         ));
-        self.undo.push(step);
-        self.redo.clear();
+        self.changed_tag_step(tag, &step);
+        self.push_step(tag, step);
         self.sealed = true;
         self.shape_rev += 1;
         Ok(())
@@ -1028,10 +1324,18 @@ impl TagDoc {
     }
     /// Undo the last step; returns its label.
     pub fn undo(&mut self) -> Option<String> {
-        let step = self.undo.pop()?;
+        let last = self.undo.len().checked_sub(1)?;
+        Some(self.undo_at(last))
+    }
+
+    /// Undo step `i` of the undo stack: the last, or one whose later
+    /// steps write none of its bytes ([`Self::undo_tag`]).
+    fn undo_at(&mut self, i: usize) -> String {
+        let step = self.undo.remove(i);
         for (at, before, _) in step.writes.iter().rev() {
             self.put(*at, before);
         }
+        self.changed_step(&step);
         if let Some(l) = self.loaded.as_mut() {
             let keep = l.new_strings.len().saturating_sub(step.strings.len());
             l.new_strings.truncate(keep);
@@ -1040,13 +1344,21 @@ impl TagDoc {
         self.redo.push(step);
         self.sealed = true;
         self.shape_rev += 1;
-        Some(label)
+        label
     }
     pub fn redo(&mut self) -> Option<String> {
-        let step = self.redo.pop()?;
+        let last = self.redo.len().checked_sub(1)?;
+        Some(self.redo_at(last))
+    }
+
+    /// Redo step `i` of the redo stack: the last, or one that no step
+    /// undone after it writes the same bytes as ([`Self::redo_tag`]).
+    fn redo_at(&mut self, i: usize) -> String {
+        let step = self.redo.remove(i);
         for (at, _, after) in &step.writes {
             self.put(*at, after);
         }
+        self.changed_step(&step);
         if let Some(l) = self.loaded.as_mut() {
             l.new_strings.extend(step.strings.iter().cloned());
         }
@@ -1054,8 +1366,63 @@ impl TagDoc {
         self.undo.push(step);
         self.sealed = true;
         self.shape_rev += 1;
-        Some(label)
+        label
     }
+
+    /// Undo `tag`'s last step, leaving every other tag's edits as they
+    /// are: each tag's document has its own undo stack over the map's
+    /// one overlay (docs/editor/studio-redesign.md, "The shell"). Refused
+    /// while a later step of another tag writes the same bytes, or adds a
+    /// string after one this step added: that one is undone first.
+    /// `Ok(None)` when the tag has nothing to undo.
+    pub fn undo_tag(&mut self, tag: TagId) -> Result<Option<String>, String> {
+        let Some(i) = self.undo.iter().rposition(|s| s.tag == Some(tag)) else {
+            return Ok(None);
+        };
+        if let Some(later) = self.undo[i + 1..].iter().find(|l| conflicts(l, &self.undo[i])) {
+            return Err(format!(
+                "a later edit ({}) writes the same bytes: undo it first",
+                later.label
+            ));
+        }
+        Ok(Some(self.undo_at(i)))
+    }
+
+    /// Redo `tag`'s last undone step. Refused while a step undone after it
+    /// (made before it) writes the same bytes and is still undone.
+    pub fn redo_tag(&mut self, tag: TagId) -> Result<Option<String>, String> {
+        let Some(i) = self.redo.iter().rposition(|s| s.tag == Some(tag)) else {
+            return Ok(None);
+        };
+        if let Some(earlier) = self.redo[i + 1..].iter().find(|e| conflicts(e, &self.redo[i])) {
+            return Err(format!(
+                "an earlier edit ({}) writes the same bytes and is undone: redo it first",
+                earlier.label
+            ));
+        }
+        Ok(Some(self.redo_at(i)))
+    }
+
+    /// Push a new step of `tag`'s and drop the redo steps it makes wrong.
+    fn push_step(&mut self, tag: TagId, mut step: Step) {
+        step.tag = Some(tag);
+        step.serial = self.next_step();
+        self.undo.push(step);
+        self.forget_redo_against_last();
+    }
+
+    /// A new edit drops the redo steps of its own tag, and any other's it
+    /// conflicts with (the same bytes, or both adding strings); the rest
+    /// keep their redo. A step over several tags drops every redo step.
+    fn forget_redo_against_last(&mut self) {
+        let Some(new) = self.undo.last() else {
+            return;
+        };
+        self.redo.retain(|r| {
+            new.tag.is_some() && r.tag.is_some() && r.tag != new.tag && !conflicts(r, new)
+        });
+    }
+
     pub fn seal(&mut self) {
         self.sealed = true;
     }
@@ -1086,9 +1453,16 @@ impl TagDoc {
         let steps: Vec<Step> = self.undo.drain(mark..).collect();
         let mut one = Step {
             label,
+            // Numbered past the steps it stands for: it is the newest.
+            serial: self.next_step(),
             ..Step::default()
         };
+        one.tag = steps.first().and_then(|s| s.tag);
         for s in steps {
+            if s.tag != one.tag {
+                one.tag = None;
+            }
+            one.shape |= s.shape;
             one.reload.extend(s.reload);
             one.writes.extend(s.writes);
             one.strings.extend(s.strings);
@@ -1311,8 +1685,8 @@ impl TagDoc {
             }
             self.rev += 1;
         }
-        self.undo.push(step);
-        self.redo.clear();
+        self.changed_tag_step(tag, &step);
+        self.push_step(tag, step);
         self.sealed = true;
         Ok(())
     }
@@ -1340,5 +1714,71 @@ impl TagDoc {
             Some(t) => format!("{}: {}", tags::defs::fourcc_text(t.group), t.name),
             None => format!("missing {id:#010x}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::*;
+
+    fn step(tag: u32, at: u32, len: usize) -> Step {
+        Step {
+            label: format!("step of {tag}"),
+            writes: vec![((Region::Metadata, at), vec![0; len], vec![1; len])],
+            tag: Some(TagId(tag)),
+            ..Step::default()
+        }
+    }
+
+    /// Steps of two tags may be undone out of order only when neither
+    /// writes the other's bytes and they do not both add strings.
+    #[test]
+    fn steps_conflict_on_shared_bytes_or_two_new_strings() {
+        assert!(conflicts(&step(1, 0x10, 4), &step(2, 0x12, 4)));
+        assert!(!conflicts(&step(1, 0x10, 4), &step(2, 0x14, 4)));
+        let space = AddressSpace {
+            virtual_base: 0,
+            file_offset: 0x100,
+            size: 0x100,
+        };
+        let bsp = Step {
+            writes: vec![((Region::Bsp(space), 0x10), vec![0; 4], vec![1; 4])],
+            ..step(2, 0x10, 4)
+        };
+        assert!(!conflicts(&step(1, 0x10, 4), &bsp), "another region");
+        let mut a = step(1, 0x10, 4);
+        a.strings.push("a".into());
+        let mut b = step(2, 0x40, 4);
+        b.strings.push("b".into());
+        assert!(conflicts(&a, &b));
+        assert!(!conflicts(&a, &step(2, 0x40, 4)));
+    }
+
+    /// A tag's undo under a later step that writes its bytes is refused,
+    /// naming that step; so is a redo over an earlier step still undone.
+    #[test]
+    fn an_out_of_order_step_over_the_same_bytes_is_refused() {
+        let mut doc = TagDoc::default();
+        assert_eq!(doc.undo_tag(TagId(1)), Ok(None));
+        doc.undo.push(step(1, 0x10, 4));
+        doc.undo.push(step(2, 0x12, 4));
+        assert!(
+            doc.step_serial(TagId(1)).is_some() && doc.step_serial(TagId(2)).is_some(),
+            "both tags have a step not undone"
+        );
+        let e = doc.undo_tag(TagId(1)).unwrap_err();
+        assert!(e.contains("step of 2"), "{e}");
+        assert_eq!(doc.undo.len(), 2, "nothing undone");
+
+        let mut doc = TagDoc::default();
+        // Undone in order: the later step first.
+        doc.redo.push(step(2, 0x12, 4));
+        doc.redo.push(step(1, 0x10, 4));
+        let e = doc.redo_tag(TagId(2)).unwrap_err();
+        assert!(e.contains("step of 1"), "{e}");
+        assert!(
+            doc.redo_serial(TagId(2)).is_some() && doc.step_serial(TagId(2)).is_none(),
+            "tag 2's step is still undone"
+        );
     }
 }

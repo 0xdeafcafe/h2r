@@ -5,17 +5,11 @@ use super::*;
 const FLAGS: BlockKind = BlockKind::NetgameFlags;
 
 fn base(index: u32) -> Endpoint {
-    Endpoint::Base {
-        block: FLAGS,
-        index,
-    }
+    Endpoint::base(FLAGS, index)
 }
 
 fn machine(index: u32) -> Endpoint {
-    Endpoint::Base {
-        block: BlockKind::Machines,
-        index,
-    }
+    Endpoint::base(BlockKind::Machines, index)
 }
 
 fn forge(id: u32, edit: Forge) -> Op {

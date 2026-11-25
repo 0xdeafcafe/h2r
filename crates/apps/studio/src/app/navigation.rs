@@ -3,7 +3,7 @@
 use map::TagId;
 use scenario_edit::{BlockKind, Session};
 
-use super::{App, Selection, SelectionRevision, tag_api};
+use super::{App, Doc, Selection, SelectionRevision, tag_api};
 
 const HISTORY_LIMIT: usize = 128;
 
@@ -66,6 +66,57 @@ impl NavLocation {
 
     pub fn tag(&self) -> Option<TagId> {
         self.trail.last().copied()
+    }
+}
+
+/// The documents brought to the front, in order. The tag history above
+/// keeps the selection inside tags; this keeps the way between documents
+/// of every kind, so Back from a tag returns to the variant that led to it.
+#[derive(Default)]
+pub struct DocTrail {
+    entries: Vec<Doc>,
+    cursor: usize,
+    replay: bool,
+}
+
+impl DocTrail {
+    /// A document came to the front. A visit made by Back or Forward only
+    /// moves the cursor to the document's nearest entry.
+    pub(super) fn visit(&mut self, doc: Doc) {
+        if self.entries.get(self.cursor) == Some(&doc) {
+            return;
+        }
+        if self.replay {
+            let at = |i: &usize| self.entries[*i] == doc;
+            let near = (0..self.cursor).rev().find(at).or_else(|| (self.cursor..self.entries.len()).find(at));
+            if let Some(i) = near {
+                self.cursor = i;
+            }
+            return;
+        }
+        if !self.entries.is_empty() {
+            self.entries.truncate(self.cursor + 1);
+        }
+        self.entries.push(doc);
+        if self.entries.len() > HISTORY_LIMIT {
+            self.entries.remove(0);
+        }
+        self.cursor = self.entries.len() - 1;
+    }
+
+    /// The nearest entry in a direction that is open and not in front.
+    fn target(&self, forward: bool, front: Option<Doc>, open: impl Fn(Doc) -> bool) -> Option<usize> {
+        let ok = |i: &usize| Some(self.entries[*i]) != front && open(self.entries[*i]);
+        if forward {
+            (self.cursor + 1..self.entries.len()).find(ok)
+        } else {
+            (0..self.cursor.min(self.entries.len())).rev().find(ok)
+        }
+    }
+
+    /// The documents visited, oldest first, and the one the cursor is on.
+    pub fn visited(&self) -> (&[Doc], usize) {
+        (&self.entries, self.cursor)
     }
 }
 
@@ -141,7 +192,33 @@ impl App {
     }
 
     pub fn can_navigate(&self, forward: bool) -> bool {
-        self.nav.target(forward, &self.session).is_some()
+        self.nav.target(forward, &self.session).is_some() || self.trail_target(forward).is_some()
+    }
+
+    fn trail_target(&self, forward: bool) -> Option<usize> {
+        self.doc_trail
+            .target(forward, self.front_doc(), |d| self.tabs.has(d))
+    }
+
+    /// Back or Forward to the nearest earlier or later document.
+    fn step_doc_trail(&mut self, forward: bool) {
+        if let Some(i) = self.trail_target(forward) {
+            let doc = self.doc_trail.entries[i];
+            self.show_replayed(doc);
+            self.doc_trail.cursor = i;
+        }
+    }
+
+    /// Bring a document to the front without recording a visit.
+    fn show_replayed(&mut self, doc: Doc) {
+        self.doc_trail.replay = true;
+        self.open_doc(doc);
+        self.doc_trail.replay = false;
+    }
+
+    /// The documents visited and the cursor, for tests and `shell` readers.
+    pub fn doc_trail(&self) -> (&[Doc], usize) {
+        self.doc_trail.visited()
     }
 
     pub(super) fn record_placement_selection(&mut self, before: NavLocation) {
@@ -167,6 +244,11 @@ impl App {
                 }
                 self.tags.selected = destination.tag();
                 self.tags.seal();
+                if let Some(tag) = self.tags.selected {
+                    self.show_replayed(Doc::Tag(tag));
+                }
+            } else {
+                self.step_doc_trail(action == NavAction::Forward);
             }
             return Ok(());
         }
@@ -335,5 +417,48 @@ mod tests {
         let before = app.selection_revision();
         app.session.select(Some(b));
         assert_ne!(app.selection_revision(), before);
+    }
+}
+
+#[cfg(test)]
+mod trail_tests {
+    use super::*;
+    use map::TagId;
+
+    fn tag(n: u32) -> Doc {
+        Doc::Tag(TagId(n))
+    }
+
+    #[test]
+    fn the_trail_keeps_documents_of_every_kind_in_order_and_cuts_ahead_on_a_new_visit() {
+        let mut t = DocTrail::default();
+        for d in [Doc::Variant, tag(1), Doc::Playlists] {
+            t.visit(d);
+        }
+        t.visit(Doc::Playlists);
+        assert_eq!(t.visited(), (&[Doc::Variant, tag(1), Doc::Playlists][..], 2));
+        let open = |_: Doc| true;
+        assert_eq!(t.target(false, Some(Doc::Playlists), open), Some(1));
+        assert_eq!(t.target(true, Some(Doc::Playlists), open), None);
+        // A document that is closed is skipped, as is the one in front.
+        let no_tag = |d: Doc| d != tag(1);
+        assert_eq!(t.target(false, Some(Doc::Playlists), no_tag), Some(0));
+        t.cursor = 0;
+        t.visit(Doc::Rules);
+        assert_eq!(t.visited(), (&[Doc::Variant, Doc::Rules][..], 1));
+    }
+
+    #[test]
+    fn a_replayed_visit_moves_the_cursor_and_never_the_entries() {
+        let mut t = DocTrail::default();
+        for d in [Doc::Variant, tag(1), Doc::Hud] {
+            t.visit(d);
+        }
+        t.replay = true;
+        t.visit(tag(1));
+        assert_eq!(t.visited(), (&[Doc::Variant, tag(1), Doc::Hud][..], 1));
+        t.visit(tag(9));
+        assert_eq!(t.visited().0.len(), 3);
+        assert_eq!(t.target(true, Some(tag(1)), |_| true), Some(2));
     }
 }

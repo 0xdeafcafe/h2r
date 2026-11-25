@@ -1,0 +1,24 @@
+screen: forge.question
+kind: dialog
+layout: large
+backing: over
+opener: main-menu
+states:
+  delete-linked:
+    focus: 1
+  overwrite:
+    focus: 1
+  leave:
+    focus: 1
+  load:
+    focus: 1
+  delete-variant:
+    focus: 1
+widgets:
+  title:
+    component: title
+  body:
+    component: body
+  legend:
+    component: legend
+    prompts: [[A, "SELECT"], [B, "BACK"]]

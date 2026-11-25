@@ -3,9 +3,33 @@
 //! admits individual packets when those handlers execute, for each of a
 //! light's layers 12 and 13 its passes draw. At the passes' entry the
 //! light and its steps (`scene_extract::layout::light_passes`) go into
-//! the frame step's open view. On with the native renderer
-//! (`impl.render.native`, on by default).
+//! the frame step's open view. The light frame body ([`frame`]) runs
+//! `RENDER_DYNAMIC_LIGHTS` itself, [`items`] a light's item lists at
+//! `SCENE_ITEMS`, and [`passes`] a light's passes at
+//! `RENDER_LIGHT_PASSES`. Under the body the scene's light is made from its
+//! hand-off and the item body's lists ([`handoff`]); the guest loop's
+//! lights are read at their constants call. The first-person lights
+//! (`0x000404b0`) and each slot's record replay run as bodies too
+//! ([`first_person`]); a first-person light goes into the first person's
+//! view at its first layer draw, its groups are of their own site
+//! (`GroupSite::FirstPerson`), and its layers 12 and 13 whose groups the
+//! scene holds whole are drawn from it alone ([`FIRST_PERSON_LAYERS`]).
+//! On with the native renderer (`impl.render.native`, on by default).
+mod additional;
+pub mod chosen;
+mod first_person;
+pub mod slot_visibility;
+mod frame;
+mod handoff;
+pub mod host;
+mod items;
+mod object_shadows;
+mod passes;
+mod typed;
+mod typed_groups;
 pub mod walk;
+
+pub use handoff::Source;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -17,7 +41,7 @@ use engine::memory::GuestMemory;
 use engine::points;
 use engine::render::light;
 use native_render::camera::GuestRead;
-use native_render::light_list::{self, SortedLayer};
+use native_render::light_list::{self, SortedCall};
 use native_render::light_passes;
 use native_render::lights::{Light, LightConstants};
 use native_render::skip;
@@ -42,20 +66,41 @@ pub const LIGHT_LIST: u32 = 0x004c_1a60;
 /// (`0x000314ca`). The gathered walk takes any of them; the resolved-draw
 /// path takes 12 and 13 ([`RESOLVED_LAYERS`]). Layers 10 and 11 are the
 /// shadow stage's (`native_render::shadows::site`); the first-person
-/// lights' draws on the same list (`0x000404b0`) are not taken.
+/// lights' draws on the same list are [`FIRST_PERSON_LAYERS`].
 pub const SPLIT_LAYERS: [(u32, u32); 3] = [(14, 0x0003_13e2), (12, 0x0003_144f), (13, 0x0003_14cf)];
+
+/// The first-person lights' (`0x000404b0`) draws of the light's list, by
+/// the layer draw's return address, in their order: 11 (`0x00040642`),
+/// 14 (`0x000406ab`), 12 (`0x00040718`) and 13 (`0x0004079c`). Their 12
+/// and 13 are drawn from the scene alone when the scene holds the group
+/// whole (`walk`); every other draw, and a group the host refuses, keeps
+/// its handlers. The resolved-draw path takes none of them. Under the
+/// first-person body ([`first_person`]) the draw's caller is read through
+/// `passes::caller`.
+pub const FIRST_PERSON_LAYERS: [(u32, u32); 4] = [
+    (11, 0x0004_0642),
+    (14, 0x0004_06ab),
+    (12, 0x0004_0718),
+    (13, 0x0004_079c),
+];
+
+/// Whether a layer draw returning to `ret` is the first-person lights'
+/// draw of `layer`.
+pub fn first_person_site(layer: u32, ret: u32) -> bool {
+    FIRST_PERSON_LAYERS.contains(&(layer, ret))
+}
 
 /// The layers the resolved-draw path admits: diffuse and specular.
 pub const RESOLVED_LAYERS: u32 = 1 << 12 | 1 << 13;
 
-pub struct Dispatch<'a> {
+pub struct Dispatch {
     pub light: Light,
     pub serial: u64,
     /// The layer being drawn, 12 or 13.
     pub layer: u32,
     pub shader_gel: Option<(u32, u32)>,
     pub view_target: [u32; 8],
-    pub sorted: &'a SortedLayer,
+    pub sorted: SortedCall,
 }
 
 /// A gathered group as the scene holds it (`frame_scene::LightGroup`),
@@ -71,7 +116,11 @@ pub struct SceneGroup {
 impl SceneGroup {
     /// The node rows of `entry`, one of [`Self::entries`].
     pub fn rows_of(&self, entry: &frame_scene::LightEntry) -> &[frame_scene::Row] {
-        self.entries.iter().position(|e| std::ptr::eq(e, entry)).and_then(|n| self.rows.get(n)).map_or(&[], Vec::as_slice)
+        self.entries
+            .iter()
+            .position(|e| std::ptr::eq(e, entry))
+            .and_then(|n| self.rows.get(n))
+            .map_or(&[], Vec::as_slice)
     }
 }
 
@@ -88,11 +137,42 @@ pub struct Alone<'a> {
     pub group: &'a SceneGroup,
 }
 
+/// A shadow layer whose whole gathered group is in the scene.
+pub struct ShadowAlone<'a> {
+    pub view: u32,
+    pub group: &'a SceneGroup,
+    /// The running dynamic light's static gel, when it has one.
+    pub light: Option<LightConstants>,
+}
+
+/// A single invocation's ordered passes and the corresponding whole groups.
+/// Both the target and view belong to this frame.
+pub struct TypedPasses<'a> {
+    pub graph: native_render::light_graph::Pass<'a>,
+    /// Guest-visible stores journaled together with the device tail.
+    pub writes: &'a engine::render::light_gather::Writes,
+    /// The programmable depth range restored after this invocation.
+    pub clip: [u32; 2],
+    /// The image's simple render-state method for a changed clip mode.
+    pub clip_header: Option<u32>,
+    pub groups: &'a [SceneGroup],
+    pub view_target: [u32; 8],
+    pub view: u32,
+}
+
 pub trait Host: Send + Sync {
+    fn retire_map(&self) {}
+
+    /// Reserve the entire sequence on every copy before issuing any of it.
+    /// A refusal leaves the caller at the start of its ordinary passes.
+    fn draw_typed(&self, _mem: &mut dyn GuestMemory, _batch: &TypedPasses<'_>) -> bool {
+        false
+    }
+
     /// Plan a sorted prefix of one layer. The handlers still emit their
     /// D3D packets so each native draw can fall back in the same queue
     /// slot. A light asks once per layer it draws.
-    fn submit(&self, mem: &mut dyn GuestMemory, dispatch: Dispatch<'_>) -> bool;
+    fn submit(&self, mem: &mut dyn GuestMemory, dispatch: Dispatch) -> bool;
     fn clear_admission(&self);
     /// Before the guest constants or gel quad for this invocation.
     fn checkpoint_gel(&self, serial: u64);
@@ -102,6 +182,42 @@ pub trait Host: Send + Sync {
     /// them, nothing issued.
     fn draw_alone(&self, _mem: &mut dyn GuestMemory, _alone: Alone<'_>) -> bool {
         false
+    }
+    /// Draw the host's own lights' layers 12 and 13 ([`host`]) in the view
+    /// whose light pass is over: each [`host::HostLight`] a sphere of its
+    /// constants, the geometry it touches the host's to choose. Returns
+    /// the lights drawn; a light it keeps draws nothing.
+    fn draw_host(&self, _mem: &mut dyn GuestMemory, _draw: host::HostDraw<'_>) -> usize {
+        0
+    }
+    /// Draw E3's chosen lights beyond the guest's ([`chosen`]) in the view
+    /// whose light pass is over: each [`chosen::ChosenLight`]'s layers 12
+    /// and 13 over the geometry its sphere meets, queued as a scene stage
+    /// of E3 alone (`d3d::ExternalPass::lighting_only`). Returns the
+    /// lights queued; a light it keeps draws nothing.
+    fn draw_chosen(&self, _mem: &mut dyn GuestMemory, _draw: chosen::ChosenDraw<'_>) -> usize {
+        0
+    }
+    /// Draw E3's chosen first-person lights that retail's first-person
+    /// pass did not record ([`chosen::first_person`]): each light's layers
+    /// 12 and 13 over the first-person view's object parts, posed by
+    /// their node rows, queued as a scene stage of E3 alone. Returns the
+    /// lights queued; a light it keeps draws nothing.
+    fn draw_first_person(
+        &self,
+        _mem: &mut dyn GuestMemory,
+        _draw: chosen::first_person::FirstPersonDraw<'_>,
+    ) -> usize {
+        0
+    }
+    /// Draw a caster group from the scene, or return the refusal category
+    /// the shadow stage counts. No draw is issued on refusal.
+    fn draw_shadow_alone(
+        &self,
+        _mem: &mut dyn GuestMemory,
+        _alone: ShadowAlone<'_>,
+    ) -> Result<(), &'static str> {
+        Err("device")
     }
 }
 
@@ -116,14 +232,51 @@ struct Candidate {
     shader_gel: Option<(u32, u32)>,
     layers: u32,
     inside: Option<u32>,
+    /// A first-person light's (`0x000404b0`): its layers are drawn only
+    /// alone, and the object shadows do not read its constants.
+    first_person: bool,
 }
 thread_local! {
     static CANDIDATE: RefCell<Option<Candidate>> = const { RefCell::new(None) };
     static VIEW_TARGET: Cell<Option<[u32; 8]>> = const { Cell::new(None) };
+    /// The first-person light whose layers draw: its entry's datum
+    /// address in `light_passes::FIRST_PERSON_LIGHTS` and the order (in
+    /// [`FIRST_PERSON_LAYERS`]) of its last layer draw.
+    static FIRST_PERSON: Cell<Option<(u32, usize)>> = const { Cell::new(None) };
 }
 
 pub fn set_host(host: Arc<dyn Host>) {
     *HOST.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
+}
+
+pub(crate) fn retire_map() {
+    let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(host) = host {
+        host.retire_map();
+    }
+}
+
+/// Forward a scene caster group to the light material and geometry owner.
+pub fn draw_shadow_alone(
+    mem: &mut dyn GuestMemory,
+    view: u32,
+    group: &SceneGroup,
+) -> Result<(), &'static str> {
+    if Stage::Lights.standing_down() {
+        return Err("device");
+    }
+    let light = CANDIDATE.with_borrow(|candidate| {
+        candidate
+            .as_ref()
+            .filter(|c| !c.first_person)
+            .and_then(|c| c.light.constants)
+    });
+    let host = HOST
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .ok_or("device")?;
+    host.draw_shadow_alone(mem, ShadowAlone { view, group, light })
 }
 
 struct Ro<'a>(&'a dyn GuestMemory);
@@ -153,8 +306,33 @@ fn leave_layer() -> Option<u32> {
     })
 }
 
+/// The dynamic light at an indexed emission from its diffuse or specular
+/// layer. The sorted reservation may already have consumed the layer bit.
+pub struct IndexedLight {
+    pub targets: [u32; 2],
+    pub serial: u64,
+    pub shader_gel: Option<(u32, u32)>,
+}
+
+pub fn indexed_light(layer: u32, caller: u32, list: u32) -> Option<IndexedLight> {
+    if !matches!(layer, 12 | 13) || list != LIGHT_LIST || !SPLIT_LAYERS.contains(&(layer, caller)) {
+        return None;
+    }
+    CANDIDATE.with_borrow(|candidate| {
+        let current = candidate.as_ref().filter(|c| !c.first_person)?;
+        let [color, depth, ..] = VIEW_TARGET.get()?;
+        Some(IndexedLight {
+            targets: [color, depth],
+            serial: current.serial,
+            shader_gel: current.shader_gel,
+        })
+    })
+}
+
 pub fn new_view() {
+    handoff::new_view();
     finish_candidate();
+    FIRST_PERSON.set(None);
     SERIAL.fetch_add(1, Ordering::Relaxed);
     let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let target = host.and_then(|h| {
@@ -169,8 +347,13 @@ pub fn new_view() {
 /// not the memory they were read from. Takes no device lock (unlike
 /// [`new_view`], which asks the host for the next view's target).
 pub fn forget_runs() {
+    slot_visibility::forget();
+    passes::forget();
+    first_person::forget();
+    handoff::forget();
     CANDIDATE.take();
     VIEW_TARGET.set(None);
+    FIRST_PERSON.set(None);
     if let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         host.clear_admission();
     }
@@ -221,49 +404,70 @@ pub struct Entry {
     pub x87_control: u16,
 }
 
-/// The light's constants as `0x00031170` would set them: the call it makes
-/// to `0x0004a1e0` (`engine::light_constants`, with the definition from
-/// the tag table and the shadow word kept under scene flag bit 10), then
-/// its flag code (`engine::light_passes::pass_flags`). Reads guest memory,
-/// writes none. `None` when a read faults or the arithmetic would raise an
-/// unmasked exception. The sphere's screen bounds (`0x001650a0`) are not
-/// asked: they set the scissor in the original body, before our geometry dispatch. S: `0x00040e90` (called with EAX 0 before `0x0004a1e0`) is
-/// taken to leave what `0x0004a1e0` reads alone.
-pub fn light_constants(mem: &dyn GuestMemory, e: &Entry) -> Option<LightConstants> {
+impl Entry {
+    fn fpu(&self) -> engine::light_constants::Fpu {
+        engine::light_constants::Fpu {
+            mxcsr: self.mxcsr,
+            x87_control: self.x87_control,
+        }
+    }
+}
+
+/// The light's constants as `0x00031170` sets them for `source`: its call
+/// to `0x0004a1e0` (`engine::light_constants`), then its flag code
+/// (`engine::light_passes::pass_flags`). Reads guest memory, writes none.
+/// `None` when a read faults or the arithmetic would raise an unmasked
+/// exception. The per-layer candidate needs only the frame and flags.
+/// Whole-pass admission also computes the sphere's six projected words. S: the item lists `0x00040e90` (the passes' first call)
+/// leave what `0x0004a1e0` reads alone, but for the casters' layer 10,
+/// which `source`'s shadow word carries.
+pub fn source_constants(
+    mem: &dyn GuestMemory,
+    source: &Source,
+    fpu: engine::light_constants::Fpu,
+) -> Option<LightConstants> {
     use engine::light_constants as lc;
     use engine::light_passes as lp;
-    let arg = |offset: u32| mem.u32(e.esp.wrapping_add(offset)).ok();
-    let table = mem.u32(engine::tags::TAG_ENTRIES_GLOBAL).ok()?;
-    let definition = mem
-        .u32(table.wrapping_add((e.eax & 0xffff) << 4).wrapping_add(8))
-        .ok()?;
-    let scene = mem.u32(lp::global::SCENE_FLAGS).ok()?;
-    let shadow = lp::shadow_argument(arg(0xc)?, scene);
-    let call = lc::Call {
-        frame: arg(8)?,
-        context: e.ecx,
-        light: arg(4)?,
-        definition,
-        shadow,
-        weight: arg(0x10)?,
-    };
-    let fpu = lc::Fpu {
-        mxcsr: e.mxcsr,
-        x87_control: e.x87_control,
-    };
-    let g = lc::light_globals(mem, &call, fpu, &mut |_| None).ok()?;
-    let f = lp::pass_flags(mem, &g, shadow as u8, e.mxcsr).ok()?;
+    let g = lc::light_globals(mem, &source.call, fpu, &mut |_| None).ok()?;
+    let f = lp::pass_flags(mem, &g, source.call.shadow as u8, fpu.mxcsr).ok()?;
+    constants_of(mem, &g, f.flags, source.call.definition)
+}
+
+/// The constants of the light whose `0x0004a1e0` call has run and whose
+/// flags are set: the globals as the call left them
+/// (`engine::light_constants::LightGlobals::stored`) and the flags at
+/// `[0x004ba014]`. The first-person lights' (`0x000404b0`): their call's
+/// light volume is a local of the loop's frame, and the loop sets the
+/// flags itself (`light_passes::first_person_steps`), so they are read,
+/// not computed. `None` when a read faults.
+pub fn stored_light_constants(mem: &dyn GuestMemory) -> Option<LightConstants> {
+    let g = engine::light_constants::LightGlobals::stored(mem).ok()?;
+    let flags = mem.u32(engine::light_passes::global::PASS_FLAGS).ok()?;
+    constants_of(mem, &g, flags, g.definition)
+}
+
+/// [`LightConstants`] of the globals `g` with the passes' `flags` and the
+/// `ligh` definition at `definition`.
+fn constants_of(
+    mem: &dyn GuestMemory,
+    g: &engine::light_constants::LightGlobals,
+    flags: u32,
+    definition: u32,
+) -> Option<LightConstants> {
+    use engine::light_passes as lp;
     let definition_flags = mem.u32(definition).ok()?;
-    let gel_shader = mem.u32(definition.wrapping_add(lp::DEFINITION_GEL_SHADER)).ok()?;
+    let gel_shader = mem
+        .u32(definition.wrapping_add(lp::DEFINITION_GEL_SHADER))
+        .ok()?;
     let gel = lp::gel(
-        f.flags,
+        flags,
         definition_flags,
         gel_shader,
         mem.u32(definition.wrapping_add(lp::DEFINITION_GEL)).ok()?,
     );
     Some(LightConstants {
         frame: g.frame_constants(mem).ok()?,
-        flags: f.flags,
+        flags,
         colour_a: g.colour_a_input(),
         colour_b: g.colour_b_input(),
         mode: g.mode,
@@ -276,46 +480,89 @@ pub fn light_constants(mem: &dyn GuestMemory, e: &Entry) -> Option<LightConstant
     })
 }
 
-fn begin_light(mem: &dyn GuestMemory, entry: Entry) {
+/// A light's passes begin: the last light's candidate ends, the scene's
+/// light closes until this one is in it, and the light takes its serial.
+fn enter_light() -> u64 {
     finish_candidate();
     crate::scene_step::light_entry();
     if let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         host.clear_admission();
     }
-    let serial = SERIAL.fetch_add(1, Ordering::Relaxed);
-    let esp = entry.esp;
-    let (Ok(handle), Ok(shadow), Ok(weight)) = (mem.u32(esp.wrapping_add(4)),
-        mem.u8(esp.wrapping_add(12)), mem.u32(esp.wrapping_add(16))) else {
+    SERIAL.fetch_add(1, Ordering::Relaxed)
+}
+
+/// The light whose passes run with the registers `entry`, read from
+/// guest memory ([`Source::observed`]): the guest loop's lights at their
+/// constants call, and a hand-off's whose lists the guest makes.
+fn observe(mem: &dyn GuestMemory, entry: Entry, serial: u64) {
+    let Some(source) = Source::observed(mem, &entry) else {
         refused("unreadable light arguments");
         return;
     };
-    let Some(mut light) = read_light(mem, handle, shadow != 0, f32::from_bits(weight)) else {
+    open_light(mem, &source, entry.fpu(), serial);
+}
+
+/// The light of `source` into the scene with its steps, and its layers
+/// 12 and 13 that draw become the candidate's.
+fn open_light(
+    mem: &dyn GuestMemory,
+    source: &Source,
+    fpu: engine::light_constants::Fpu,
+    serial: u64,
+) {
+    let call = &source.call;
+    let Some(mut light) = read_light(
+        mem,
+        call.light,
+        call.shadow & 0xff != 0,
+        f32::from_bits(call.weight),
+    ) else {
         refused("invalid or unreadable light record");
         return;
     };
-    light.constants = light_constants(mem, &entry);
+    light.constants = source_constants(mem, source, fpu);
     let prepare = || {
         let c = light.constants.ok_or("unreadable light constants")?;
-        let inputs = light_passes::read(&Ro(mem), c.flags, c.definition_flags).ok_or("unreadable light layer mask")?;
+        let inputs = source
+            .inputs(mem, c.flags, c.definition_flags)
+            .ok_or("unreadable light layer mask")?;
         let steps = light_passes::steps(&inputs);
-        crate::scene_step::light(mem, scene_light(&light, &inputs), steps.as_slice());
+        crate::scene_step::light(mem, scene_light(&light, &inputs), steps.as_slice(), call);
         let shader_gel = if c.animated_gel {
-            if light.definition != entry.eax { return Err("light definition differs from the constants call"); }
-            let table = mem.u32(engine::tags::TAG_ENTRIES_GLOBAL).map_err(|_| "unreadable light tag table")?;
-            let ptr = mem.u32(table.wrapping_add((entry.eax & 0xffff) << 4).wrapping_add(8))
-                .map_err(|_| "unreadable gel definition")?;
-            let shader = mem.u32(ptr.wrapping_add(engine::light_passes::DEFINITION_GEL_SHADER))
+            if light.definition != source.definition {
+                return Err("light definition differs from the constants call");
+            }
+            let shader = mem
+                .u32(
+                    call.definition
+                        .wrapping_add(engine::light_passes::DEFINITION_GEL_SHADER),
+                )
                 .map_err(|_| "unreadable gel shader")?;
-            let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or("no light host")?;
+            let host = HOST
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+                .ok_or("no light host")?;
             host.checkpoint_gel(serial);
-            Some((ptr, shader))
-        } else { None };
+            Some((call.definition, shader))
+        } else {
+            None
+        };
         Ok((steps.drawn() & RESOLVED_LAYERS, shader_gel))
     };
     match prepare() {
         Ok((0, _)) => {}
-        Ok((layers, shader_gel)) => CANDIDATE.set(Some(Candidate { light, serial, layers, shader_gel, inside: None })),
-        Err(why) => { refused(why); }
+        Ok((layers, shader_gel)) => CANDIDATE.set(Some(Candidate {
+            light,
+            serial,
+            layers,
+            shader_gel,
+            inside: None,
+            first_person: false,
+        })),
+        Err(why) => {
+            refused(why);
+        }
     }
 }
 
@@ -332,12 +579,114 @@ fn scene_light(light: &Light, inputs: &light_passes::Inputs) -> frame_scene::Sce
     }
 }
 
+/// The first-person light entry whose layers the loop `0x000404b0` draws,
+/// read from its frame at a layer draw (`esp` the layer draw's: the
+/// return address, then the loop's frame, its light index at `+0x14` and
+/// its entry pointer at `+0x18`): the address of the entry's datum
+/// (`light_passes::FIRST_PERSON_LIGHT_DATUM`). `None` when they do not
+/// read or do not agree with the table.
+pub fn first_person_entry(mem: &dyn GuestMemory, esp: u32) -> Option<u32> {
+    use light_passes::{
+        FIRST_PERSON_LIGHT_COUNT, FIRST_PERSON_LIGHT_DATUM, FIRST_PERSON_LIGHT_SIZE,
+        FIRST_PERSON_LIGHTS,
+    };
+    let index = mem.u32(esp.wrapping_add(4 + 0x14)).ok()?;
+    let at = mem.u32(esp.wrapping_add(4 + 0x18)).ok()?;
+    let count = mem.u32(FIRST_PERSON_LIGHT_COUNT).ok()? as i32;
+    let expected = FIRST_PERSON_LIGHTS
+        .checked_add(index.checked_mul(FIRST_PERSON_LIGHT_SIZE)?)?
+        .checked_add(FIRST_PERSON_LIGHT_DATUM)?;
+    ((index as i32) < count.min(8) && at == expected).then_some(at)
+}
+
+/// Before a layer draw returning to `ret`: when it is one of
+/// [`FIRST_PERSON_LAYERS`] on the light's list, the first of a light's
+/// (another entry, or a layer not after the last one drawn) begins it
+/// ([`begin_first_person`]).
+fn first_person_layer(mem: &dyn GuestMemory, esp: u32, ret: u32) {
+    let Some(order) = FIRST_PERSON_LAYERS.iter().position(|&(_, at)| at == ret) else {
+        return;
+    };
+    let layer = FIRST_PERSON_LAYERS[order].0;
+    if mem.u32(skip::CURRENT_LAYER).ok() != Some(layer)
+        || mem.u32(skip::CURRENT_LIST).ok() != Some(LIGHT_LIST)
+    {
+        return;
+    }
+    let Some(entry) = first_person_entry(mem, esp) else {
+        FIRST_PERSON.set(None);
+        refused("unreadable first-person light entry");
+        return;
+    };
+    let new = first_person_begins(FIRST_PERSON.get(), entry, order);
+    FIRST_PERSON.set(Some((entry, order)));
+    if new {
+        begin_first_person(mem, entry);
+    }
+}
+
+/// Whether the layer draw of order `order` (in [`FIRST_PERSON_LAYERS`])
+/// for `entry` begins a light after `last`: another entry, or the same
+/// entry's layers over again (the next view's, or the loop's next pass).
+fn first_person_begins(last: Option<(u32, usize)>, entry: u32, order: usize) -> bool {
+    last.is_none_or(|(at, before)| at != entry || order <= before)
+}
+
+/// A first-person light's layers begin: its record (weight 1, no shadow,
+/// as the loop's call), its constants as the call left them
+/// ([`stored_light_constants`]) and its steps
+/// (`light_passes::first_person_steps`) go into the first person's view,
+/// and its layers 12 and 13 that draw become the candidate's.
+fn begin_first_person(mem: &dyn GuestMemory, entry: u32) {
+    finish_candidate();
+    if let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        host.clear_admission();
+    }
+    let serial = SERIAL.fetch_add(1, Ordering::Relaxed);
+    let Ok(handle) = mem.u32(entry) else {
+        refused("unreadable first-person light datum");
+        return;
+    };
+    let Some(mut light) = read_light(mem, handle, false, 1.0) else {
+        refused("invalid or unreadable first-person light record");
+        return;
+    };
+    light.constants = stored_light_constants(mem);
+    let prepare = || {
+        let c = light
+            .constants
+            .ok_or("unreadable first-person light constants")?;
+        if c.animated_gel {
+            return Err("a first-person light's shader gel draws through its handler");
+        }
+        let inputs = light_passes::read(&Ro(mem), c.flags, c.definition_flags)
+            .ok_or("unreadable light layer mask")?;
+        let steps = light_passes::first_person_steps(&inputs);
+        crate::scene_step::first_person_light(mem, scene_light(&light, &inputs), steps.as_slice());
+        Ok(steps.drawn() & RESOLVED_LAYERS)
+    };
+    match prepare() {
+        Ok(0) => {}
+        Ok(layers) => CANDIDATE.set(Some(Candidate {
+            light,
+            serial,
+            layers,
+            shader_gel: None,
+            inside: None,
+            first_person: true,
+        })),
+        Err(why) => {
+            refused(why);
+        }
+    }
+}
+
 /// The layer of [`SPLIT_LAYERS`] a layer draw returning to `ret` runs,
 /// when the candidate is to draw it and the current layer and list are
 /// that layer and the light's.
 fn enter_layer(mem: &dyn GuestMemory, ret: u32) {
     CANDIDATE.with_borrow_mut(|candidate| {
-        if let Some(c) = candidate {
+        if let Some(c) = candidate.as_mut().filter(|c| !c.first_person) {
             c.inside = SPLIT_LAYERS
                 .iter()
                 .find(|&&(layer, at)| at == ret && c.layers & 1 << layer != 0)
@@ -350,23 +699,52 @@ fn enter_layer(mem: &dyn GuestMemory, ret: u32) {
     });
 }
 
-fn geometry(mem: &mut dyn GuestMemory, esp: u32, esi: u32, port_caller: impl FnOnce(u32) -> bool) -> Option<()> {
+fn geometry(
+    mem: &mut dyn GuestMemory,
+    esp: u32,
+    esi: u32,
+    port_caller: impl FnOnce(u32) -> bool,
+) -> Option<()> {
     let (light, serial, shader_gel) = CANDIDATE.with_borrow(|slot| {
-        slot.as_ref().filter(|c| c.inside.is_some()).map(|c| (c.light, c.serial, c.shader_gel))
+        slot.as_ref()
+            .filter(|c| c.inside.is_some())
+            .map(|c| (c.light, c.serial, c.shader_gel))
     })?;
     let layer = leave_layer()?;
     let caller = mem.u32(esp).ok();
     let caller = match caller {
         Some(pc) if pc == light_list::HANDLER_RETURN || port_caller(pc) => pc,
-        _ => { refused("outside the sorted light geometry call"); return None; }
+        _ => {
+            refused("outside the sorted light geometry call");
+            return None;
+        }
     };
     let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let Some(host) = host else { refused("no light host"); return None; };
-    let Some(view_target) = VIEW_TARGET.get() else { refused("light view target unavailable"); return None; };
-    let accepted = match light_list::sorted_at(&Ro(mem), LIGHT_LIST, layer, esp, esi, caller) {
-        Ok(sorted) => host.submit(mem, Dispatch { light, serial, layer, shader_gel, view_target, sorted: &sorted }),
-        Err(why) => refused(why),
+    let Some(host) = host else {
+        refused("no light host");
+        return None;
     };
+    let Some(view_target) = VIEW_TARGET.get() else {
+        refused("light view target unavailable");
+        return None;
+    };
+    let accepted = host.submit(
+        mem,
+        Dispatch {
+            light,
+            serial,
+            layer,
+            shader_gel,
+            view_target,
+            sorted: SortedCall {
+                list: LIGHT_LIST,
+                layer,
+                esp,
+                esi,
+                caller,
+            },
+        },
+    );
     accepted.then_some(())
 }
 
@@ -379,14 +757,30 @@ pub fn draw_alone(mem: &mut dyn GuestMemory, layer: u32, group: &SceneGroup) -> 
     if !matches!(layer, 12 | 13) || Stage::Lights.standing_down() {
         return false;
     }
-    let Some((light, serial, shader_gel)) = CANDIDATE.with_borrow(|slot| {
-        slot.as_ref().filter(|c| c.layers & 1 << layer != 0).map(|c| (c.light, c.serial, c.shader_gel))
+    let Some((light, serial, shader_gel, first_person)) = CANDIDATE.with_borrow(|slot| {
+        slot.as_ref()
+            .filter(|c| c.layers & 1 << layer != 0)
+            .map(|c| (c.light, c.serial, c.shader_gel, c.first_person))
     }) else {
         return false;
     };
-    let Some(view_target) = VIEW_TARGET.get() else { return refused("light view target unavailable") };
-    let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return refused("no light host") };
-    if !host.draw_alone(mem, Alone { light, serial, layer, shader_gel, view_target, group }) {
+    let Some(view_target) = VIEW_TARGET.get() else {
+        return refused("light view target unavailable");
+    };
+    let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
+        return refused("no light host");
+    };
+    if !host.draw_alone(
+        mem,
+        Alone {
+            light,
+            serial,
+            layer,
+            shader_gel,
+            view_target,
+            group,
+        },
+    ) {
         return false;
     }
     CANDIDATE.with_borrow_mut(|slot| {
@@ -396,17 +790,30 @@ pub fn draw_alone(mem: &mut dyn GuestMemory, layer: u32, group: &SceneGroup) -> 
         }
     });
     ALONE.fetch_add(1, Ordering::Relaxed);
-    let objects = group.entries.iter().filter(|e| matches!(e.owner, frame_scene::LayerOwner::Object(_))).count();
+    if first_person {
+        FIRST_PERSON_ALONE.fetch_add(1, Ordering::Relaxed);
+    }
+    let objects = group
+        .entries
+        .iter()
+        .filter(|e| matches!(e.owner, frame_scene::LayerOwner::Object(_)))
+        .count();
     ALONE_OBJECTS.fetch_add(objects as u64, Ordering::Relaxed);
     true
 }
 
 static ALONE: AtomicU64 = AtomicU64::new(0);
 static ALONE_OBJECTS: AtomicU64 = AtomicU64::new(0);
+static FIRST_PERSON_ALONE: AtomicU64 = AtomicU64::new(0);
 
 /// Light layers drawn from the scene alone, no handler run.
 pub fn drawn_alone() -> u64 {
     ALONE.load(Ordering::Relaxed)
+}
+
+/// Of those layers, the first-person lights'.
+pub fn first_person_drawn_alone() -> u64 {
+    FIRST_PERSON_ALONE.load(Ordering::Relaxed)
 }
 
 /// Object entries of those layers: model parts drawn from the scene.
@@ -418,8 +825,11 @@ pub struct NativeLights;
 
 impl Feature for NativeLights {
     fn manifest(&self) -> Manifest {
-        Manifest::new(ID, "Dynamic lights and their shadows drawn by the native GPU renderer")
-            .doc("docs/graphics/native-renderer.md")
+        Manifest::new(
+            ID,
+            "Dynamic lights and their shadows drawn by the native GPU renderer",
+        )
+        .doc("docs/graphics/native-renderer.md")
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
@@ -433,12 +843,23 @@ impl Feature for NativeLights {
         }
         if b.switches().feature(crate::render_timing::ID, false) {
             b.snapshot(hooks::SnapshotPolicy::Stateless);
-            eprintln!("native-lights: not placed with render-timing on (its light passes' timer needs their end)");
+            eprintln!(
+                "native-lights: not placed with render-timing on (its light passes' timer needs their end)"
+            );
             return Ok(());
         }
+        frame::install(b);
+        items::install(b);
+        passes::install(b);
+        additional::install(b);
+        first_person::install(b);
+        object_shadows::install(b);
         b.raw()
-            .observe_before(&points::RENDER_DYNAMIC_LIGHTS, "native_lights_view", |_| {
+            .observe_before(&points::RENDER_DYNAMIC_LIGHTS, "native_lights_view", |o| {
                 if !Stage::Lights.standing_down() {
+                    let mem = o.guest();
+                    crate::native_world::load_active_bsp(&*mem);
+                    slot_visibility::begin(&*mem);
                     new_view();
                 }
             })
@@ -448,8 +869,20 @@ impl Feature for NativeLights {
                 if Stage::Lights.standing_down() {
                     return;
                 }
-                begin_light(&*o.guest(), Entry { eax: o.cpu.eax, ecx: o.cpu.ecx, esp: o.cpu.esp,
-                    mxcsr: o.cpu.mxcsr, x87_control: o.cpu.x87.control });
+                let entry = Entry {
+                    eax: o.cpu.eax,
+                    ecx: o.cpu.ecx,
+                    esp: o.cpu.esp,
+                    mxcsr: o.cpu.mxcsr,
+                    x87_control: o.cpu.x87.control,
+                };
+                let mem = o.guest();
+                let serial = enter_light();
+                // The frame body's light waits for its item lists
+                // (`handoff`); the guest loop's waits for its constants call.
+                if !handoff::entered(&*mem, entry, serial) {
+                    handoff::defer(entry, serial);
+                }
             })
             .context_only();
         b.raw()
@@ -458,27 +891,35 @@ impl Feature for NativeLights {
                     return;
                 }
                 let mem = o.guest();
-                enter_layer(&*mem, mem.u32(o.cpu.esp).unwrap_or(0));
+                // The passes body's layer draws name the guest's site.
+                let ret = engine::render::light_gather::passes::caller(&*mem, o.cpu.esp)
+                    .unwrap_or(0);
+                enter_layer(&*mem, ret);
+                first_person_layer(&*mem, o.cpu.esp, ret);
             })
             .after_feature(crate::native_world::ID)
             .after_feature(crate::native_objects::ID)
             .context_only();
         b.raw()
-            .before(&points::LIGHT_GEOMETRY_DRAW, "native_lights_geometry", |c| {
-                if Stage::Lights.standing_down() {
-                    return Ok(Flow::Continue);
-                }
-                if walk::waiting() {
-                    // The gathered walk will verify the actual first emission.
-                    // On refusal its entire original sorted suffix still runs.
-                    // The light's other layer stays the candidate's.
-                    leave_layer();
-                    return Ok(Flow::Continue);
-                }
-                let rt = Arc::clone(c.ctx.runtime());
-                let _ = geometry(&mut *rt.memory(), c.cpu.esp, c.cpu.esi, |_| false);
-                Ok(Flow::Continue)
-            })
+            .before(
+                &points::LIGHT_GEOMETRY_DRAW,
+                "native_lights_geometry",
+                |c| {
+                    if Stage::Lights.standing_down() {
+                        return Ok(Flow::Continue);
+                    }
+                    if walk::waiting() {
+                        // The gathered walk will verify the actual first emission.
+                        // On refusal its entire original sorted suffix still runs.
+                        // The light's other layer stays the candidate's.
+                        leave_layer();
+                        return Ok(Flow::Continue);
+                    }
+                    let rt = Arc::clone(c.ctx.runtime());
+                    let _ = geometry(&mut *rt.memory(), c.cpu.esp, c.cpu.esi, |_| false);
+                    Ok(Flow::Continue)
+                },
+            )
             .context_only();
         b.raw()
             .observe_before(&points::LAYER_END, "native_lights_end", |_| {
@@ -525,7 +966,14 @@ mod tests {
             weight: 1.0,
             constants: None,
         };
-        Candidate { light, serial: 1, shader_gel: None, layers, inside: None }
+        Candidate {
+            light,
+            serial: 1,
+            shader_gel: None,
+            layers,
+            inside: None,
+            first_person: false,
+        }
     }
 
     fn drawing(layer: u32, list: u32) -> FlatMemory {
@@ -540,6 +988,30 @@ mod tests {
     }
 
     #[test]
+    fn indexed_light_is_scoped_to_the_dynamic_layers_after_reservation() {
+        CANDIDATE.set(Some(candidate(RESOLVED_LAYERS)));
+        VIEW_TARGET.set(Some([10, 20, 0, 0, 0, 0, 0, 0]));
+        enter_layer(&drawing(12, LIGHT_LIST), DIFFUSE_RETURN);
+        assert_eq!(leave_layer(), Some(12));
+        let light = indexed_light(12, DIFFUSE_RETURN, LIGHT_LIST).unwrap();
+        assert_eq!(light.targets, [10, 20]);
+        assert_eq!(light.serial, 1);
+        for (layer, caller, list) in [
+            (13, DIFFUSE_RETURN, LIGHT_LIST),
+            (14, TARGET_1_RETURN, LIGHT_LIST),
+            (12, DIFFUSE_RETURN, 0),
+            (12, FIRST_PERSON_LAYERS[2].1, LIGHT_LIST),
+        ] {
+            assert!(indexed_light(layer, caller, list).is_none());
+        }
+        CANDIDATE.set(Some(Candidate { first_person: true, ..candidate(RESOLVED_LAYERS) }));
+        assert!(indexed_light(12, DIFFUSE_RETURN, LIGHT_LIST).is_none());
+        CANDIDATE.take();
+        VIEW_TARGET.take();
+        assert!(indexed_light(12, DIFFUSE_RETURN, LIGHT_LIST).is_none());
+    }
+
+    #[test]
     fn a_light_drawing_both_sorted_layers_is_the_candidate_of_each_in_turn() {
         CANDIDATE.set(Some(candidate(RESOLVED_LAYERS)));
         // Layer 14 runs first; the resolved path does not take it.
@@ -547,9 +1019,17 @@ mod tests {
         assert_eq!(layers(), Some((RESOLVED_LAYERS, None)));
         enter_layer(&drawing(12, LIGHT_LIST), DIFFUSE_RETURN);
         assert_eq!(layers(), Some((RESOLVED_LAYERS, Some(12))));
-        assert_eq!(leave_layer(), Some(12), "the first geometry call takes the layer");
+        assert_eq!(
+            leave_layer(),
+            Some(12),
+            "the first geometry call takes the layer"
+        );
         assert_eq!(leave_layer(), None, "and only the first");
-        assert_eq!(layers(), Some((1 << 13, None)), "the specular layer is still to come");
+        assert_eq!(
+            layers(),
+            Some((1 << 13, None)),
+            "the specular layer is still to come"
+        );
         enter_layer(&drawing(13, LIGHT_LIST), SPECULAR_RETURN);
         assert_eq!(leave_layer(), Some(13));
         assert_eq!(layers(), Some((0, None)));
@@ -561,7 +1041,11 @@ mod tests {
     fn a_layer_is_entered_only_at_its_draw_on_the_lights_list() {
         CANDIDATE.set(Some(candidate(1 << 12)));
         enter_layer(&drawing(13, LIGHT_LIST), SPECULAR_RETURN);
-        assert_eq!(layers(), Some((1 << 12, None)), "not a layer the light draws");
+        assert_eq!(
+            layers(),
+            Some((1 << 12, None)),
+            "not a layer the light draws"
+        );
         enter_layer(&drawing(12, LIGHT_LIST + 0x18), DIFFUSE_RETURN);
         assert_eq!(layers(), Some((1 << 12, None)), "another list");
         enter_layer(&drawing(13, LIGHT_LIST), DIFFUSE_RETURN);
@@ -578,10 +1062,14 @@ mod tests {
     struct Stub(bool);
 
     impl Host for Stub {
-        fn submit(&self, _: &mut dyn GuestMemory, _: Dispatch<'_>) -> bool { false }
+        fn submit(&self, _: &mut dyn GuestMemory, _: Dispatch) -> bool {
+            false
+        }
         fn clear_admission(&self) {}
         fn checkpoint_gel(&self, _: u64) {}
-        fn target(&self) -> Option<[u32; 8]> { None }
+        fn target(&self) -> Option<[u32; 8]> {
+            None
+        }
         fn draw_alone(&self, _: &mut dyn GuestMemory, alone: Alone<'_>) -> bool {
             self.0 && alone.group.entries.is_empty()
         }
@@ -591,7 +1079,13 @@ mod tests {
     fn a_whole_scene_group_is_drawn_alone_only_for_a_layer_the_light_still_draws() {
         let group = SceneGroup {
             group: frame_scene::LightGroup {
-                light: 0, layer: 12, site: frame_scene::GroupSite::Light, projection: None, entries: 0..0, remainder: 0,
+                light: 0,
+                layer: 12,
+                site: frame_scene::GroupSite::Light,
+                projection: None,
+                pass: None,
+                entries: 0..0,
+                remainder: 0,
             },
             entries: Vec::new(),
             rows: Vec::new(),
@@ -601,16 +1095,89 @@ mod tests {
         CANDIDATE.set(Some(candidate(RESOLVED_LAYERS)));
         VIEW_TARGET.set(Some([1; 8]));
         set_host(Arc::new(Stub(false)));
-        assert!(!draw_alone(&mut m, 12, &group), "the host keeps it on its handlers");
+        assert!(
+            !draw_alone(&mut m, 12, &group),
+            "the host keeps it on its handlers"
+        );
         assert_eq!(layers(), Some((RESOLVED_LAYERS, None)));
         set_host(Arc::new(Stub(true)));
-        assert!(!draw_alone(&mut m, 14, &group), "not a layer drawn from the scene");
+        assert!(
+            !draw_alone(&mut m, 14, &group),
+            "not a layer drawn from the scene"
+        );
         enter_layer(&m, 0x0003_144f);
         assert!(draw_alone(&mut m, 12, &group));
-        assert_eq!(layers(), Some((1 << 13, None)), "the layer leaves the candidate, its specular stays");
+        assert_eq!(
+            layers(),
+            Some((1 << 13, None)),
+            "the layer leaves the candidate, its specular stays"
+        );
         assert!(!draw_alone(&mut m, 12, &group), "drawn once");
         CANDIDATE.take();
         VIEW_TARGET.set(None);
         *HOST.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn the_first_person_entry_is_read_from_the_loops_frame() {
+        use light_passes::{
+            FIRST_PERSON_LIGHT_COUNT, FIRST_PERSON_LIGHT_DATUM, FIRST_PERSON_LIGHT_SIZE,
+            FIRST_PERSON_LIGHTS,
+        };
+        const ESP: u32 = 0x1000;
+        let second = FIRST_PERSON_LIGHTS + FIRST_PERSON_LIGHT_SIZE + FIRST_PERSON_LIGHT_DATUM;
+        let mut m = FlatMemory::new(0, 0x0060_0000);
+        m.set_u32(FIRST_PERSON_LIGHT_COUNT, 2).unwrap();
+        m.set_u32(ESP + 4 + 0x14, 1).unwrap();
+        m.set_u32(ESP + 4 + 0x18, second).unwrap();
+        assert_eq!(first_person_entry(&m, ESP), Some(second));
+        m.set_u32(ESP + 4 + 0x18, second + 4).unwrap();
+        assert_eq!(first_person_entry(&m, ESP), None, "not the index's entry");
+        m.set_u32(ESP + 4 + 0x18, second).unwrap();
+        m.set_u32(FIRST_PERSON_LIGHT_COUNT, 1).unwrap();
+        assert_eq!(first_person_entry(&m, ESP), None, "past the count");
+    }
+
+    #[test]
+    fn a_first_person_light_begins_at_its_first_layer_draw_only() {
+        const A: u32 = 0x004c_6b00;
+        const B: u32 = A + 0x408;
+        assert!(
+            first_person_begins(None, A, 2),
+            "the first draw, whichever layer"
+        );
+        assert!(
+            !first_person_begins(Some((A, 0)), A, 2),
+            "its layer 12 after its 11"
+        );
+        assert!(!first_person_begins(Some((A, 2)), A, 3));
+        assert!(first_person_begins(Some((A, 3)), B, 0), "the next entry");
+        assert!(
+            first_person_begins(Some((A, 2)), A, 2),
+            "the same entry drawn over again"
+        );
+        assert!(first_person_site(12, 0x0004_0718) && first_person_site(13, 0x0004_079c));
+        assert!(
+            !first_person_site(12, 0x0004_079c),
+            "13's return names only 13"
+        );
+        assert!(!SPLIT_LAYERS.iter().any(|&(l, at)| first_person_site(l, at)));
+    }
+
+    #[test]
+    fn a_first_person_candidate_is_not_the_resolved_draw_paths() {
+        CANDIDATE.set(Some(Candidate {
+            first_person: true,
+            ..candidate(RESOLVED_LAYERS)
+        }));
+        enter_layer(&drawing(12, LIGHT_LIST), 0x0003_144f);
+        assert_eq!(
+            layers(),
+            Some((RESOLVED_LAYERS, None)),
+            "a dynamic light's layer draw does not enter a first-person light's layer"
+        );
+        enter_layer(&drawing(12, LIGHT_LIST), 0x0004_0718);
+        assert_eq!(layers(), Some((RESOLVED_LAYERS, None)), "nor its own");
+        CANDIDATE.take();
     }
 }

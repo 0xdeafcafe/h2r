@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, sync::Mutex};
 
 use live_hle::{
     Hle,
-    actor_net::{Budget, Packet, WireError},
+    actor_net::{Budget, Packet, Stats, WireError},
 };
 
 #[derive(Default)]
@@ -36,6 +36,17 @@ impl HostLink {
         Ok(())
     }
 
+    /// Each connected peer's budget counters and its bytes in the last
+    /// 30 ticks, for `actors.net`.
+    pub fn peers(&self) -> Vec<(u32, Stats, usize)> {
+        self.budgets
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(&peer, budget)| (peer, budget.stats(), budget.window_bytes()))
+            .collect()
+    }
+
     pub fn reset(&self) {
         self.budgets.lock().unwrap().clear();
     }
@@ -53,4 +64,28 @@ pub fn pre_tick(hle: Option<&Hle>, mut receive: impl FnMut(Packet)) {
 
 pub fn request_key(hle: Option<&Hle>) -> bool {
     hle.is_some_and(Hle::request_actor_tunnel_key)
+}
+
+/// The upstream pick messages the tunnel received since the last call,
+/// each with the roster slots the sending peer's players sit in, for
+/// `super::pick::receive`. The client-to-host actor frame is not built:
+/// the tunnel's only upstream frame is the key request, which holds no
+/// payload (docs/game/rules-world-api.md, "Pickers"), so this stays
+/// empty until Live carries the frame.
+pub fn take_picks(_hle: Option<&Hle>) -> Vec<(Vec<u8>, Vec<u8>)> {
+    Vec::new()
+}
+
+/// Sends one upstream pick message on the tunnel's client-to-host actor
+/// frame; whether it went out. The frame is not built yet (see
+/// [`take_picks`]), so nothing goes out and the pick is dropped.
+pub fn send_pick(_hle: Option<&Hle>, _pick: &[u8]) -> bool {
+    false
+}
+
+/// Whether the tunnel carries the upstream pick frame (see
+/// [`take_picks`]). A client asks its local players only while it does,
+/// so nobody is offered a pick that cannot travel.
+pub fn pick_upstream(_hle: Option<&Hle>) -> bool {
+    false
 }

@@ -2,10 +2,11 @@
 //! docs/engine/havok-runtime.md for the retail addresses behind this walk.
 
 mod cache;
+pub mod digest;
 
 pub use cache::{Cache, Child, Convex, Tree};
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use engine::view::objects;
 use engine::{DatumHandle, GuestMemory, MemFault};
@@ -245,6 +246,126 @@ pub fn fixed_pair_word(m: &dyn GuestMemory, datum: u32) -> Result<Option<u32>, M
         }
     }
     Ok(found)
+}
+
+/// One of an object's pairs against a fixed body (the level), as
+/// [`level_pairs`] finds it: the pair's entry, its agent (a rebuilt pair
+/// gets a new one) and its word.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LevelPair {
+    pub entry: u32,
+    pub agent: u32,
+    pub word: u32,
+}
+
+/// An object's pairs against fixed bodies, and whether it sleeps.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LevelPairs {
+    pub pairs: Vec<LevelPair>,
+    /// One of its bodies, or a pair of its, is in an inactive island.
+    pub asleep: bool,
+}
+
+/// The entity's island (`0x0030d2b9`).
+const ENTITY_ISLAND: u32 = 0x44;
+
+/// Every pair against a fixed body of each of `datums`, in their order,
+/// by one minimal walk of the islands (the checks [`fixed_pair_word`]
+/// makes, no cache or tree decoded), so many objects can be read every
+/// tick. All of an object's level pairs, not only a single one: near
+/// instanced geometry a body has more than one. An object with no
+/// physics gets none.
+pub fn level_pairs(m: &dyn GuestMemory, datums: &[u32]) -> Result<Vec<LevelPairs>, MemFault> {
+    let mut out = vec![LevelPairs::default(); datums.len()];
+    let world = m.u32(layout::HAVOK_WORLD_PTR)?;
+    if world == 0 {
+        return Ok(out);
+    }
+    let mut owner: HashMap<u32, usize> = HashMap::new();
+    let mut entities = Vec::new();
+    for (i, &d) in datums.iter().enumerate() {
+        let Ok(found) = object_entities(m, d) else {
+            continue;
+        };
+        for e in found {
+            owner.insert(e + HANDLE_IN_ENTITY, i);
+            entities.push((e, i));
+        }
+    }
+    if owner.is_empty() {
+        return Ok(out);
+    }
+    span(world, layout::WORLD_FIXED_ISLAND + 4)?;
+    let fixed = m.u32(world + layout::WORLD_FIXED_ISLAND)?;
+    let islands = havok::islands(m, world)?;
+    let mut remaining_pairs = MAX_PAIRS;
+    for &(island, state) in &islands {
+        span(island, ISLAND_PAIRS + 12)?;
+        let (ptr, count) = array(m, island + ISLAND_PAIRS, remaining_pairs, 16)?;
+        remaining_pairs -= count;
+        for i in 0..count {
+            let entry = ptr + 16 * i;
+            let sides = [m.u32(entry)?, m.u32(entry + 4)?];
+            let Some((side, &who)) = sides
+                .iter()
+                .enumerate()
+                .find_map(|(k, h)| owner.get(h).map(|w| (k, w)))
+            else {
+                continue;
+            };
+            let agent = m.u32(entry + 8)?;
+            if agent == 0 || fixed == 0 {
+                continue;
+            }
+            let other = sides[1 - side]
+                .checked_sub(0x10)
+                .ok_or_else(|| bad(sides[1 - side]))?;
+            span(other, 0x24)?;
+            if m.u32(other + 0x18)? != 1 {
+                continue;
+            }
+            let body = m.u32(other + 0x20)?;
+            span(body, 0x48)?;
+            if m.u32(body + ENTITY_ISLAND)? != fixed {
+                continue;
+            }
+            out[who].pairs.push(LevelPair {
+                entry,
+                agent,
+                word: m.u32(entry + PAIR_WORD)?,
+            });
+            if state == havok::IslandState::Inactive {
+                out[who].asleep = true;
+            }
+        }
+    }
+    let inactive: HashSet<u32> = islands
+        .iter()
+        .filter(|(_, s)| *s == havok::IslandState::Inactive)
+        .map(|(i, _)| *i)
+        .collect();
+    for (e, i) in entities {
+        if m.u32(e + ENTITY_ISLAND).is_ok_and(|isl| inactive.contains(&isl)) {
+            out[i].asleep = true;
+        }
+    }
+    Ok(out)
+}
+
+/// Writes `word` over each of `pairs` whose word differs, as
+/// [`level_pairs`] found them this tick (nothing has run since, so the
+/// entries are the pairs still). How many it wrote.
+pub fn set_level_words(
+    m: &mut dyn GuestMemory,
+    pairs: &[LevelPair],
+    word: u32,
+) -> Result<u32, MemFault> {
+    let mut n = 0;
+    for p in pairs.iter().filter(|p| p.word != word) {
+        m.write(p.entry + PAIR_WORD, &word.to_le_bytes())?;
+        n += 1;
+    }
+    Ok(n)
 }
 
 /// Writes `word` over the pair word of `entry`, which must be one of the

@@ -4,6 +4,9 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
+[package.metadata.h2]
+status = "decoding done, VM checks supported campaign script executions against the guest"
+
 [features]
 # Invented script tables and an invented executable for tests (src/fixture.rs).
 fixture = []
@@ -12,6 +15,9 @@ fixture = []
 map.workspace = true
 xbe.workspace = true
 thiserror.workspace = true
+# `ide`: the context file and the language server's result types.
+serde.workspace = true
+serde_json.workspace = true
 # Decoding builtin evaluator bodies to recognize retail stub shapes.
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info"] }
 

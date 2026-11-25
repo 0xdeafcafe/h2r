@@ -29,11 +29,12 @@ String ids come from one registry, `ui_kit::ids::FAMILIES`, checked at compile t
 `ui_kit::input::Input::from_event` is the one place an event is read. The screen's event slot (screen slot 10) is handed an event whose kind word (`+0`) is a direction or a button: the controller update raises kind 1 up, 2 left, 3 down and 4 right (d-pad or left stick), first when pushed and then every 250 ms while held. Buttons are kind 5 with the button in `+8` (A 0, B 1, X 2, Y 3, Start 12, Back 13), raised only on the frame the button goes down. Directions never arrive as buttons 8 to 11.
 
 - **The opener's press.** The press that opens a screen can be seen again by it. `input::OpenerGuard` drops a confirm that comes within 50 ms of opening (`input::OPENER_GUARD`).
+- **The closing press.** A closing screen keeps its window until it is freed, and the dispatcher gives the first window holding a screen every press. A press on a closing screen of ours goes to the screen beneath it (`lifecycle::while_closing`), except one within 50 ms of the close starting (`lifecycle::CLOSE_GUARD`), which is the closing press seen again and is dropped. The lobby takes input as soon as a dialog of ours starts closing (docs/game/ui-builder.md "Behaviour").
 - **Glyphs.** Prompts are `Glyph`s, not raw code points (U+E100 A, U+E101 B, U+E102 X, U+E103 Y, U+E108 to U+E10B the d-pad, U+E10C Start, U+E10D Back). `input::footer_legend` lays them out as retail's footers do (below).
 
 ## Lifecycle
 
-`ui_kit::lifecycle` opens a screen with `0x149f1e(player mask, loader)` and closes one with `0x14800c` (EAX the screen's slot `+0x78`, ECX its window `+0x74`), as the generic back handler closes on B. The close starts the out transition; the stack frees the screen when that ends, calling the destructor (screen slot 0) first.
+`ui_kit::lifecycle` opens a screen with `0x149f1e(player mask, loader)` and closes one with `0x14800c` (EAX the screen's slot `+0x78`, ECX its window `+0x74`), as the generic back handler closes on B. The close starts the out transition; the stack frees the screen when that ends, calling the destructor (screen slot 0) first. A screen of ours comes in within 333 ms and goes out within 200 ms (`lifecycle::cap_transition`, `animation::OPEN_TICKS` and `CLOSE_TICKS`; docs/game/ui-builder.md "Transitions").
 
 Anything that must run on the screen underneath (a retail press, a level start) waits for the destructor: `lifecycle::AfterClose`, which `Then::CloseThen` uses for every kit screen. Running it while the page is still closing lets the closing page's teardown undo it (the skulls page's difficulty press stored the difficulty and the teardown reset it, so Start seemed stuck).
 
@@ -52,10 +53,19 @@ queues Game Setup with a return request, so the window initializes the
 replacement and sends the outgoing selector its normal Back message.
 The supported selectors are **Change Map**, **Change Game Type**, the
 lobby's **Select Level**, and the lobby's **Difficulty**. The feature uses
-the selector's normal confirmation path for A. Profile and sign-in
+the selector's normal confirmation path for A. A variant list opened
+from Change Game Type remembers the category row and its Game Setup return.
+Back rebuilds the category list and restores focus using the new list's
+datum handle. The channel free hook drops each outgoing instance's return. Profile and sign-in
 flows, variant editors, controller settings, and other dialogs with
 their own commit or navigation paths use retail behavior. The game-shell
 channel uses its own reopen history.
+
+The Xbox Live menu's screen-tag lookup serves a private copy of the
+screen header and panes. Other screens resolving the same tag see the
+map's original list and text blocks. Forwarded Live row presses pass a
+private retail datum handle and preserve the selected display row. Building
+the Live or main menu clears pending lobby mode requests and playlist scope.
 
 The [map picker](map-select.md) also restores the folder list when Back
 dismisses a category's maps, independent of the lobby Back switch. Use
@@ -76,20 +86,26 @@ A screen is data a check can read. `ui_kit::spec::ScreenSpec` says what a screen
    `KitScreen` needs `2 + 3 × rows` slots (the title, a label, a value and
    a description per row, then the footer legend); `KitScreen::class` panics
    at install if the family is too small.
-2. **Declare it.**
+2. **Declare it.** Its presentation is its doc,
+   `content/ui/screens/<name>.yaml` ([ui-builder.md](ui-builder.md)
+   "Screens in YAML"): the title, the legend, the kind and layout (the
+   Controls list, the level select's, or a dialog on Quick Options or the
+   large dialog over a named opener), the description block, whether it
+   scrolls, and the fixed rows' labels and descriptions.
+   `KitScreen::new(feature, name, ids)` reads it, and panics with the
+   doc's named error when the screen has none; the tests load every doc
+   first. Write a new screen's doc before its Rust (copy a like screen's:
+   `kit.example.yaml` for a list, `kit.dialog.yaml` for a settings
+   dialog); the converter builds the screen to write it, so it can't make
+   the first one. The Rust is the rows and what they do:
 
    ```rust
    const IDS: Family = ids::family("kit.example");
-   let screen = KitScreen::new("kit-example", "kit.example", IDS, "Example")
+   let screen = KitScreen::new("kit-example", "kit.example", IDS)
        .row(Row::value("Grunts", &["On", "Off"], get, set).describe("Grunts' heads pop."))
        .row(Row::info("Status", || "Ready".into()))
        .row(Row::text("Name", 15, get_name, |t| format!("typed {t:?}")))
-       .row(Row::action("Start", || Then::close_then(start_level)).describe("Start the level."))
-       .prompts(&[
-           Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
-           Prompt::new(&[Glyph::A], "Start"),
-           Prompt::new(&[Glyph::B], "Back"),
-       ]);
+       .row(Row::action("Start", || Then::close_then(start_level)).describe("Start the level."));
    let screen = Arc::new(screen);
    registry.add(&KitTexts(Arc::clone(&screen)))?; // its texts, as a locale source (feature ui-kit-texts.<name>)
    registry.add(&screen.class())?;                 // the list class
@@ -101,56 +117,73 @@ A screen is data a check can read. `ui_kit::spec::ScreenSpec` says what a screen
    the value picker on them, retail's `low_level_settings`, see
    [ui-builder.md](ui-builder.md) "The value picker"; a toggle is two values), `Row::info` (read-only), and `Row::text`
    (A opens the game's keyboard; the typed text comes back once the keyboard
-   closes). `.layout(ListLayout, ValueStyle::Inline)` moves the list onto a
-   one-text skin and puts values in the label (`Mythic: On`), as the skulls
-   page does. `.description(TextBlock)` adds the focused row's description.
-   Use `.live_help(block, get_text)` for a line shared by all rows, such as
-   the Clanker profile. It redraws when the text changes even if focus stays
-   on the same row.
-   `.dialog(DialogBase::QuickOptions, opener)` makes the screen a dialog of its
-   rows over whatever opened it, Quick Options inside and out: its panel and
-   header, its own list (`setting_lists`, eleven rows from (-254, 87)), each
-   row's name left and its value alone in the value column
-   (`ValueStyle::Setting`: `Count  4`, no arrows), and the focused row's
-   description in its one-line help line (`dialog::QUICK_HELP_TEXT`, 52
-   units at most) unless `.description` names another block. A settings
-   page that should look like the game's own (Clankers, Halo 1 Options)
-   is this and nothing more: no `.layout`, no `.description`, plus
-   `.header(icon)` for Quick Options' game type picture, which shows the
-   focused row's `Row::icon` ([ui-builder.md](ui-builder.md) "A page's
-   header"). `Row::explain` is what the value picker says about a value
-   row, when it should say more than the one-line description. Or
-   `DialogBase::Large`, the one the game maps have; see
-   [ui-builder.md](ui-builder.md) "The Dialog kind". The prompts go in the footer
-   (below). `.scrolls()` says more rows than the list shows is meant.
-   **Choice rows.** A row of many choices over a setting is a
-   `ui_kit::choice::ChoiceRow`, the sibling of the Halo 1 options'
-   two-choice `OptionRow`. It names a settings `Def`, a label and a
-   description; its choices come from the setting (a `Kind::Choice`'s
-   labels, a `Kind::Int`'s steps or else every number of its range, Off and
-   On for a `Kind::Bool`). `ChoiceRow::row(store)` gives the value row:
-   left and right step and wrap, A opens the value picker, and each change
-   is saved in the store at once, so its change callbacks see it.
-   `.explain(text)` gives the value picker its fuller text and
-   `.icon(icon)` the row's header icon. A bots page's Count and
-   Difficulty are two of them:
+   closes). A doc row (`row.N`) gives the row in that place its label, and
+   its description when it has one. `layout: level_select` moves the list
+   onto the level select's one-text skin and puts values in the label
+   (`Mythic: On`), as the skulls page does. A `description` widget adds
+   the focused row's description in its block. Use `.live_help(get_text)`
+   for a line in that block shared by all rows, such as the Clanker
+   profile; `.description_animation(track)` gives the block a widget
+   animation of its own. It redraws when the text changes even if focus
+   stays on the same row.
+   `kind: dialog`, `layout: large`, `backing: over` and an `opener`
+   (`DialogBase::Large`, the one the game maps have) make the screen a
+   dialog of its rows over whatever opened it; see
+   [ui-builder.md](ui-builder.md) "The Dialog kind". The legend's
+   prompts go in the footer (below). `scrolls: true` says more rows than
+   the list shows is meant.
+
+   **A settings page** is `layout: settings` and a `settings:` block: a
+   YAML file and a one-line `page` ([ui-builder.md](ui-builder.md) "The
+   settings dialog"). The doc gives the header (icon, name, and what the
+   window is for, or the Game Setup row that opens it), each row's label,
+   help and picker text, and the setting or binding behind it; the kit
+   lays it out as Quick Options, derives the legend, and shows the
+   focused row's help under the rows:
+
+   ```yaml
+   # content/ui/screens/bots.yaml
+   screen: bots
+   kind: dialog
+   layout: settings
+   backing: over
+   opener: game-setup.clankers
+   settings:
+     host: menu
+     icon: spartan
+     name: "Bots in this game"
+     about: "Add bots to this game."
+   widgets:
+     title:
+       component: title
+       text: "BOTS"
+   rows:
+     row.0:
+       kind: value
+       text: "Count"
+       help: "How many bots join."
+       setting: bots.count
+       explain: "How many bots join this game, from 1 to 15."
+   ```
 
    ```rust
-   static COUNT: ChoiceRow = ChoiceRow::new(&BOTS_COUNT, "Count", "How many bots join.")
-       .explain("How many bots join this game, from 1 to 15.")
-       .icon(icon::SQUARES);
-   static LEVEL: ChoiceRow = ChoiceRow::new(&BOTS_LEVEL, "Difficulty", "How well they play.")
-       .icon(icon::SKULL);
-   let page = KitScreen::new("bots", "bots", ids::family("bots"), "CLANKERS")
-       .dialog(DialogBase::QuickOptions, Opener::GAME_SETUP_CLANKERS)
-       .header(icon::SPARTAN)
-       .row(COUNT.row(Arc::clone(&store)))
-       .row(LEVEL.row(store))
-       .prompts(&[
-           Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
-           Prompt::new(&[Glyph::B], "Back"),
-       ]);
+   pub fn page(store: Arc<Store>) -> KitScreen {
+       settings::screen("bots", "bots", ids::family("bots"), Some(store), Bindings::new())
+           .unwrap_or_else(|e| panic!("{e}"))
+   }
    ```
+
+   A row whose behaviour is the feature's (`bind: bots.reset`) takes one
+   closure registered by name (`Bindings::new().action("bots.reset",
+   || Then::Stay(...))`).
+
+   **Choice rows.** A `setting:` row's choices come from the setting's
+   `Def` through `ui_kit::choice` (a `Kind::Choice`'s labels, a
+   `Kind::Int`'s steps or else every number of its range, Off and On for
+   a `Kind::Bool`); `values:` in the doc names them. Left and right step
+   and wrap, A opens the value picker, and each change is saved in the
+   store at once, so its change callbacks see it. Outside a settings
+   doc, `ChoiceRow::row(store)` gives the same value row in Rust.
 
    The kit's own example is `kit.choices` (`h2 ui preview kit.choices`,
    over example settings no profile holds); its table test is
@@ -162,7 +195,8 @@ A screen is data a check can read. `ui_kit::spec::ScreenSpec` says what a screen
    window and slot instead, or it ends up under the lobby. For that, a
    `Rows::press` returns `Chosen::Push(name)` (`list_class::push`), with a
    request built the way the Halo 1 Options row builds its own.
-4. **Check it.** Add the screen to `ui_kit::screens::NAMES` and `sample`. The
+4. **Check it.** Add the screen to `ui_kit::screens::NAMES` and `sample`,
+   and to `ui_kit::data::FROM_DOC`. The
    tests then check it without the disc, and against the disc when it's
    there (below).
 5. **Preview it.**
@@ -200,6 +234,10 @@ Before a game run (all of these are tests):
       rectangle at the font's line height (`Finding::Description`).
 - [ ] **Footer**: the legend fits the header layout's second rectangle in
       the header font (`Finding::Footer`).
+- [ ] **Settings**: a page of settings is a `settings:` doc, or is in
+      `ui_kit::settings::NOT_SHARED` with why; its header is the same at
+      every focus and its help under the rows is the focused row's
+      (`settings::tests`, the consistency rule `settings`).
 - [ ] **Glyphs**: every character is drawn by the font. The icon range's
       filler record counts as missing (`Finding::Glyph`).
 - [ ] **Presses**: an action row does something, a value row has at least two
@@ -314,7 +352,7 @@ Drawn beside a 640 by 480 frame of the game, the co-op screen focused on row 4 l
 - the game fills above and below `framing_center` with dark blue (we leave it black), and the track lines scroll;
 - unfocused rows' dimming is a guess (55%);
 - the D-pad left and right glyphs are drawn from the header font as the font has them (a white diamond each);
-- the skulls page's picture and the list's scroll arrows are not drawn.
+- the skulls page's picture is not drawn, and its scroll arrows are drawn at the default skin's places ([ui-builder.md](ui-builder.md) "Scroll arrows"), not the page's own (`skulls_menu::SCROLL_ARROWS`).
 
 ## Not verified
 
@@ -325,6 +363,10 @@ Drawn beside a 640 by 480 frame of the game, the co-op screen focused on row 4 l
   widget per row, six with the co-op row, laid out in its own tag's room
   ([live-custom-games.md](../live/live-custom-games.md) §5). The checks use the 5 seen; what
   takes one away is not found.
+- In a game run: our list slot 19 (`list_class::item_count`) linking the
+  laid-out rows only, and the scroll arrows on a moved list sitting by
+  its last row ([ui-builder.md](ui-builder.md) "Item count", "Scroll
+  arrows"). Both are read from the code and held by tests, not seen.
 - Whether the footer widget keeps our legend, or the screen's tag string
   (`0x2300cf`) overwrites it after the pane is set up.
 - Whether an overlong description clips or runs past its rectangle.

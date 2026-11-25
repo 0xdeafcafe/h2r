@@ -1065,6 +1065,7 @@ fn unpinned_sinks_fall_back_to_signalling_the_handle() {
 #[test]
 fn host_driven_clock_completes_packets_and_defers_callbacks() {
     let mut w = world();
+    w.hle.begin_voice_trace();
     let out = w.scratch(4);
     w.ok(0x0037_d797, &[0, out, 0]);
     let ds = w.u32(out);
@@ -1100,7 +1101,13 @@ fn host_driven_clock_completes_packets_and_defers_callbacks() {
     assert_eq!(*w.signals.lock().unwrap(), [0xa1]);
     assert_eq!(w.hle.pending_callbacks(), 1);
     assert!(w.callbacks.lock().unwrap().is_empty());
+    let first = w.hle.direct_sound().voice_events(7).unwrap();
+    assert_eq!(first.lines().filter(|line| line.starts_with("100 complete ")).count(), 2);
+    assert!(first.lines().any(|line| line.starts_with("100 event a1 ")));
+    assert!(!first.contains("callback"));
     w.ok(0x0037_b844, &[]);
+    let second = w.hle.direct_sound().voice_events(8).unwrap();
+    assert_eq!(second, format!("100 callback {CALLBACK:x} c0c0 b2 0\n"));
     assert_eq!(
         *w.callbacks.lock().unwrap(),
         [[0xc0c0, 0xb2, XMEDIAPACKET_STATUS_SUCCESS]]

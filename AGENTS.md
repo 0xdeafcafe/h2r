@@ -13,6 +13,13 @@ UI with synthetic input, or add one-off debug hooks.
 
 See the [agent API skill](.claude/skills/h2-agent-api/SKILL.md) for running-game checks and the [lab skill](.claude/skills/h2-lab/SKILL.md) for runs on another Mac.
 
+Content (models, weapons, objects, sounds, UI screens, HUD pieces) goes
+through Studio, the content workbench: open it there, render it
+(`model.render`, `ui.render`, `hud.render`), run `check.run`, and preview
+it on a running game with `pair.preview` and `pair.audio`. A content
+lane's report attaches the render paths, the check output and the
+preview results. See the [Studio content skill](.claude/skills/h2-studio-content/SKILL.md).
+
 See the [rules skill](.claude/skills/h2-rules/SKILL.md) to write, check, test and ship a game type script (`h2 rules`, `h2 variants port`); scenarios are its test, not the game.
 
 If the API can't do what you need, don't route around it. Decide whether
@@ -38,6 +45,13 @@ Use the agent API whenever it can do the job, before anything else.
   C changed are rebuilt. Reuse the same `--out` for repeated builds too, so
   the emit receipt skips lifting and C emission
   ([docs/lifter/BUILD-CACHE.md](docs/lifter/BUILD-CACHE.md)).
+- **Game checks run on the fast tier.** `.claude/settings.json` sets
+  `H2_TIER=fast` for every agent command, so `h2 run`, `h2 sim`, `h2 serve`
+  and `h2 build` use the Cranelift module, built in under a minute, and
+  never wait on or start a clang build ([docs/lifter/cranelift-tier.md](docs/lifter/cranelift-tier.md)).
+  Pass `--tier clang` only when the check is about frame time or clang's
+  code itself; perf numbers come from `h2 lab`, which builds on its host.
+  Agents in other harnesses set `H2_TIER=fast` themselves.
 - **`H2_OPT` must match** between `h2 build` and `h2 run`/`h2 sim`, or the
   image silently recompiles.
 - **Rust:** kache is the machine-wide `rustc-wrapper` (`~/.cargo/config.toml`),
@@ -45,6 +59,10 @@ Use the agent API whenever it can do the job, before anything else.
   worktree for a whole session, rather than deleting it between runs. Check
   before testing (`cargo check -p <crate> --tests`), and test only the crates
   a change touches (`cargo test -p a -p b`), not the workspace.
+- **Forced for agents:** `scripts/agent-cargo-guard.py` (a hook in
+  `.claude/settings.json`) refuses `cargo test`, `cargo install` and cache
+  overrides; test with `cargo xtask test -p <crate>`
+  ([docs/dev/build-speed.md](docs/dev/build-speed.md), "6. Agents and the caches").
 - **Headless host:** `cargo check -p cli --no-default-features --features host`
   covers the Linux host's feature set without a cross build.
 - **Parallel work:** hand the code to several subagents at once, then build

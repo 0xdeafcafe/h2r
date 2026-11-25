@@ -9,9 +9,10 @@ use serde_json::{Value, json};
 
 use super::{Ack, Change, Frame, Key, LayoutIndex, Op, Rows, SampleIndex, diff, document, respawn};
 use crate::app::App;
-use crate::play::{Play, PUSH_EVERY, link::ObjectDispatch, tag_sync};
+use crate::play::{Play, PUSH_EVERY, link::{ObjectDispatch, Purpose}, tag_sync};
 
 mod outcome;
+mod placements;
 mod wire;
 use outcome::Failure;
 
@@ -64,6 +65,7 @@ pub(in crate::play) struct State {
     last_move: HashMap<ObjectId, Instant>,
     release: BTreeSet<Key>,
     rows: Vec<Value>,
+    placements: placements::Placements,
     pub(in crate::play) waiting_for_sample: Option<&'static str>,
 }
 
@@ -80,6 +82,32 @@ impl State {
         self.writable && !self.eligible.is_empty()
     }
 
+    /// The game applied placement transaction `t`: object receipts of its
+    /// block follow the new numbering, and those of removed placements end.
+    /// The baseline's rows and the slot index were rebuilt by the caller.
+    fn placed(&mut self, app: &mut App, t: &crate::play::sync::Transaction) {
+        let keys: Vec<Key> = self.ack.keys().chain(self.failed.keys())
+            .filter(|key| key.block == t.block)
+            .copied()
+            .collect();
+        for key in keys {
+            match t.slot_of(key.id) {
+                Some(slot) => {
+                    if let Some(Ack::Set { index, .. } | Ack::Spawn { index, .. }) = self.ack.get_mut(&key) {
+                        *index = slot;
+                    }
+                }
+                None => {
+                    self.ack.remove(&key);
+                    self.failed.remove(&key);
+                }
+            }
+            self.sync_preview(app, key);
+        }
+        self.doc_revision = None;
+        self.dirty = true;
+    }
+
     fn set_rows(&mut self, app: &mut App, rows: Vec<Value>) {
         if self.rows != rows {
             self.rows = rows;
@@ -88,6 +116,7 @@ impl State {
     }
 
     pub(in crate::play) fn publish(&self, pending: &mut Vec<Value>) {
+        self.placements.publish(pending);
         pending.retain(|row| row["doc"] != "object");
         for row in &mut *pending {
             if row["object_note"] == true {
@@ -181,7 +210,11 @@ impl Play {
     pub(in crate::play) fn reset_objects(&mut self, app: &mut App) {
         self.objects.cancel_unsent();
         let next_ticket = self.objects.next_ticket;
-        self.objects = State { next_ticket, ..Default::default() };
+        // Placement transactions keep their own map scope: a lost reply's
+        // hold outlives a new pairing on the same map activation.
+        let mut placements = std::mem::take(&mut self.objects.placements);
+        placements.transport_lost();
+        self.objects = State { next_ticket, placements, ..Default::default() };
         app.pairing.previews.clear();
         self.objects.publish(&mut app.pairing.pending);
     }
@@ -198,6 +231,7 @@ impl Play {
                 self.objects.layout = LayoutIndex::new(base.object_rows());
             }
         }
+        self.update_placements(app);
 
         let writable = self.object_gate(app).is_ok() && scope == self.objects.scope;
         if self.objects.writable != writable {
@@ -315,10 +349,14 @@ impl Play {
                 force.insert(key);
             }
         }
-        let changes = diff(
+        let mut changes = diff(
             loaded, doc, &self.objects.layout, &self.objects.changed,
             &self.objects.sample, &self.objects.ack, &force,
         );
+        // A placement transaction deletes, creates and relinks the objects of
+        // a block it owns. Only moves of existing objects stay here.
+        let placements = &self.objects.placements;
+        changes.retain(|c| !placements.owns(c.key.block) || matches!(c.op, Op::Set { .. }));
         let mut rows = Vec::new();
         // The first eligible call wins this frame. Every other candidate is
         // resolved from the latest document, session and bindings on reply.
@@ -332,7 +370,9 @@ impl Play {
         }
         candidates.extend(self.objects.failed.iter().filter_map(|(&key, f)| f.is_partial().then_some(key)));
         for key in candidates {
-            if tick.is_none() || !writable || !methods[2] || self.objects.flight.contains_key(&key) {
+            if tick.is_none() || !writable || !methods[2] || self.objects.flight.contains_key(&key)
+                || self.objects.placements.owns(key.block)
+            {
                 continue;
             }
             if let Some(change) = respawn(loaded, doc, key, &self.objects.sample, &self.objects.ack)
@@ -466,6 +506,7 @@ impl Play {
         self.objects.set_rows(app, rows);
         if let Some((change, manual)) = call
             && self.objects.flight.is_empty()
+            && !self.objects.placements.in_flight()
             && self.send_object(change, manual, app, now)
         {
             if let Op::Set { .. } = change.op {
@@ -473,6 +514,40 @@ impl Play {
             }
             self.objects.requested.remove(&change.key);
         }
+    }
+
+    /// The object definitions the Pending tab's `next_spawn` rows change.
+    pub(crate) fn can_respawn_definitions(&self, app: &App) -> bool {
+        self.live_edits
+            && self.has_method(method::OBJECT_RESPAWN)
+            && !super::definitions::definitions(&app.tags, &app.pairing.pending).is_empty()
+    }
+
+    /// One `world.object.respawn {definition}` per object definition the
+    /// pending `next_spawn` rows change; the count sent.
+    pub(in crate::play) fn respawn_definitions(&mut self, app: &App) -> Result<usize, String> {
+        let defs = super::definitions::definitions(&app.tags, &app.pairing.pending);
+        if defs.is_empty() {
+            return Ok(0);
+        }
+        if !self.live_edits {
+            return Err("View mode".into());
+        }
+        if self.reload_copy.is_some() {
+            return Err("waiting for the play copy to load".into());
+        }
+        if let Some(why) = self.map_refusal(app).or_else(|| self.session_refusal(app)) {
+            return Err(why);
+        }
+        self.require_method(method::OBJECT_RESPAWN)?;
+        for tag in &defs {
+            self.call(
+                method::OBJECT_RESPAWN,
+                json!({ "definition": format!("{:08x}", tag.0) }),
+                Purpose::Control("respawn.definition"),
+            );
+        }
+        Ok(defs.len())
     }
 
     pub(in crate::play) fn respawn_objects(&mut self, app: &App) -> Result<(), String> {

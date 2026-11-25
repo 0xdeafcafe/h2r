@@ -1,18 +1,24 @@
 # Native shadow layers from the scene
 
-Status: Design. Nothing here is built: the shadow stage records layers 10, 11 and 14 from the guest's resolved draws ([native-shadows.md](native-shadows.md)).
-Code: `native_render::shadow_look` (the compiler), `native_render::shadow_scene` (the plan), `render_bridge::native_shadows::draw_alone` and `boot::native_shadows_glue` (the recorder). Tests: `crates/rewrites/native-render/tests/shadow_gpu.rs`, `crates/rewrites/render-bridge/tests/native_shadows.rs`.
+Status: Built. Layers 10, 11 and 14 draw from their whole scene groups with no guest geometry handler. An object mask drawn alone goes into a private chain, with its filter over the stage's own pair; the guest's begin, end and filter call still run, the disc census is not built, and parity with D3D is not verified.
+Code: `crates/rewrites/native-render/src/shadow_look.rs`, `shadow_scene.rs`, `shadow_filter_gpu.rs`, `shadow_chain.rs`, `light_models.rs`, `light_gpu.rs`, `crates/rewrites/scene-extract/src/light_groups.rs`, `crates/rewrites/render-bridge/src/native_shadows.rs`, `native_lights/walk.rs`, `crates/extensions/game/src/native_lights_glue.rs`, `native_shadows_glue.rs`, `native_shadow_chain.rs`. Tests: `native_render::shadow_look`, `shadow_scene`, `shadow_filter_gpu`, `shadow_chain`, `boot::native_shadow_chain`, `light_gpu`, `scene_extract::light_groups`, `render_bridge::native_shadows`, `crates/rewrites/native-render/tests/shadow_gpu.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
-The shadow stage draws a shadow layer from its gathered group in the frame
-scene (`frame_scene::LightGroup`) with no guest geometry handler run, as the
-light stage draws layers 12 and 13 ([native-lights.md](native-lights.md),
-"Gathered groups in the scene"). It needs a compiler for the shadow passes
-from tags, the device state the layer's begin sets, and an answer for the
-guest render targets the casters go into. The one rule: at every point a
-guest draw or the freeze reads target 9 or 10, that target holds what the
-guest's own casters would have left there, until a whole chain is native
-and takes targets of its own.
+The shadow stage draws layers 10, 11 and 14 from their gathered groups
+in the frame scene (`frame_scene::LightGroup`) with no guest geometry
+handler run, as the light stage draws layers 12 and 13
+([native-lights.md](native-lights.md), "Gathered groups in the scene").
+`native_render::shadow_look` compiles the passes from tags,
+`shadow_scene` plans the group, and `native_lights_glue::shadow_alone`
+reserves the packets on the guest target before the walk empties the
+entry loop. Receivers take their frozen depth or colour-mask map from
+the boundary's `ReceiverTerm`. The guest's begin, clear and end still
+run. The object filter goes through `native_render::shadow_filter_gpu`
+inside a swallow at `0x000222a0`, so its guest quads are dropped after
+validation. The one rule: at every point a guest draw or the freeze
+reads target 9 or 10, that target holds what the guest's own casters and
+filter would have left there. A private chain keeps it by having no such
+reader, or by copying its mask back first.
 
 Evidence labels as in [docs-style.md](../meta/docs-style.md): **E**
 (`h2 disasm`), **Code**, **S**, **Design**.
@@ -77,7 +83,7 @@ Three callers draw the layers, each through the layer begin `0x00044370`
 
 ### The compiler
 
-`native_render::shadow_look` compiles one program per layer,
+`native_render::shadow_look` compiles layers 10, 11 and 14 by
 implementation, vertex shader and vertex classification, the way
 `native_render::light_look::compile_light` does for layers 12 and 13: the
 template pass's vertex microcode over the stream's declaration, its
@@ -112,16 +118,19 @@ pixel side through `shaders::psh`, and its state block.
   material selects it; unselected, it compiles from its template like
   the rest).
 - **Layer 14** compiles as a receiver without shadow inputs, into the
-  view's target with depth writes.
+  colour surface of target 1 with the view's shared depth surface. Its
+  geometry carries no shadow projection, so `shadow_look` keeps a shader
+  that reads `c[40..48]` on the guest path.
 - **Geometry.** Structure entries draw from the world's parts
-  (`boot::native_lights_glue`'s `Structure`). Model entries draw from
-  the per-map model parts the light passes build
-  (`native_render::light_models`); the map worker adds the vertex
-  shaders that layers 10, 11 and 14 of each part's material name, so
-  each has a vertex buffer for its classification.
-- **Refusals** are named (`shadow_look::Refusal`): a program that does
-  not translate, an engine texture other than 8, 10 and 13, a state the
-  pipeline does not model, a classification with no buffer.
+  (`native_lights_glue`'s `Held`). Model entries draw from the per-map
+  model parts the light passes build (`native_render::light_models`);
+  the map worker adds the vertex shaders that layers 10, 11 and 14 of
+  each part's material name, so each has a vertex buffer for its
+  classification.
+- **Refusals** are named (`light_look::LightRefusal`,
+  `shadow_scene::Refusal`): a program that does not translate, any engine
+  texture in a caster, a state the pipeline does not model, or a
+  classification with no buffer.
 
 ### The plan and the state
 
@@ -131,8 +140,8 @@ kept, adjacent list ranges of one stream, binding, class and pose joined.
 A group with a remainder is refused; its layer keeps its handlers.
 
 The scene carries what the layer's begin decided, so the plan needs no
-device (**Design**). `frame_scene::LightGroup` gains `pass:
-Option<ShadowPass>` for layers 10, 11 and 14:
+device. `frame_scene::LightGroup` holds `pass: Option<ShadowPass>` for
+layers 10, 11 and 14:
 
 - the bound target (`0x004858b4`) and, for layer 10, its kind (depth or
   colour mask, by the pass flags) and size;
@@ -202,7 +211,8 @@ At the layer's build, with the group in the scene and whole,
    build every pipeline. A missing one refuses.
 4. For layer 11, take the receiver term's frozen map
    (`ReceiverTerm::sampled`); `None` refuses.
-5. Issue one pass (`Device::external_pass_now`). `false` refuses.
+5. Reserve one sealed packet run on every required target copy
+   (`Device::prepare_external_bound`). `None` refuses.
 6. Hand the guest's entry loop no entries.
 
 A refusal at 1 to 5 issues nothing and leaves the layer on the gathered
@@ -217,54 +227,87 @@ cause. Step 3 makes that a device loss or a bug.
 
 ### The filter, native
 
-The blur is ported: `engine::glow::blur` gives the quads of
-`0x000211a0` from its stack words, and `native_render::glow` draws
-quads with the game's combiner block. The shadow filter adds two
-things:
-
-- the quad with `0x00034a90`'s tenth argument set, which
-  `native_render::glow::quad` does not cover (**S**: it takes the
-  target's rectangle in place of Halo's window; a trace of
-  `0x00034a90`'s first block settles it, and the port gets a
-  differential beside `crates/rewrites/engine/tests/glow_differential.rs`);
-- a caller: an observer on `0x000211a0` whose return address is the
-  object filter's reads the ten stack words and EAX there, so no
-  argument of the call is written down in the repository.
+`engine::glow::blur` gives the quads of `0x000211a0` from the step
+count, scale and growth words in the filter wrapper's three pushes.
+The wrapper passes zero strength and zero `y` to
+`engine::glow::blur_combiner`. `scene_extract::light_groups::shadow_filter` puts
+the quads, final copy, signs and target size in the current
+`frame_scene::ObjectShadow` (`filter`). The observer at the blur
+(`0x000211a0`) accepts the filter wrapper's return site `0x000222c7`.
+The wrapper pushes this address in guest code on either executor.
+Its ten stack arguments put the wrapper's own return slot at the
+blur's entry `ESP + 44`. The device uses this slot to track the
+swallow through the wrapper's return. The native pass
+uses a full-target rectangle, as `0x00034a90`'s tenth argument selects,
+and each source's own size for its taps.
 
 While the entry is the guest's, the guest's call runs and its quads are
-swallowed (`Device::swallow`, as the post stage swallows the glow's);
-the native quads go into the same guest targets, sampling the levels in
-place (`ExternalPass::sampled`). The device state the call leaves is the
-guest's own, which a D3D receiver after it may depend on. This saves no
-guest time. It is there so the native filter is checked against the
-guest's on real masks, and so nothing under `OBJECT_SHADOW` reaches the
-D3D backend.
+swallowed (`Device::swallow`, as the post stage swallows the glow's).
+`native_render::shadow_filter_gpu` draws the same combiner into the
+guest's targets 10 and 11 and performs the final copy back to 10.
+`ShadowFilterPass::validate` checks every original quad's colour state
+and source headers before the guest draws are dropped. The device state
+the call leaves is the guest's own, which the receiver after it may
+depend on.
 
 ### A private chain
 
-When a site's entry is replaced (framescene.md, slice 4), its chain is:
-the casters into a `Producer` map of the group's kind and size, cleared
-as the begin clears; for an object shadow the filter over a private
-pair; the receivers sampling the `SampledMap`. `Freeze` and the copy it
-makes go for that site. The depth map still passes through
-`gfx::depth_bits::DepthBits`, so the receiver compares the same 24 bits.
-Object shadows of one view may share a pass; each map keeps its own
-texture or a gutter the filter's taps cannot cross (**Design**, decided
-when measured).
+An object mask whose layer-10 group draws alone takes a private chain
+(`boot::native_shadow_chain`). Its casters, its filter and its receivers
+use a `native_render::shadow_chain::Pair` the stage owns: the mask, the
+filter's other target and the casters' depth, at target 10's format and
+size.
+
+1. **Offer.** At the layer's build, `native_shadows_glue`'s `draw_alone`
+   offers a `Chain` when the group is an object's colour mask and the
+   layer-10 call is the boundary's own. `native_lights_glue::shadow_alone`
+   claims it as it reserves the pass and wraps the planned casters in
+   `PrivateCasters`. A group that refuses, or a reservation that fails,
+   leaves the offer unclaimed and the layer as option A.
+2. **Casters.** `PrivateCasters` records the planned packets with the
+   bound target's formats, makes the pair, and encodes them into the
+   mask with the begin's clear (white, zero alpha; depth 1, stencil 0).
+   The guest's begin still clears target 10; no caster writes it.
+3. **Filter.** The swallow at `0x000222a0` is the same as slice 5, but
+   `ShadowFilterPass` draws its quads over the pair and makes the final
+   copy into the private mask. It then publishes the mask into the
+   layer-10 call's output.
+4. **Receivers.** At layer 11 the boundary requests no freeze; the
+   receiver term resolves to the published mask, both for a group drawn
+   alone and for a resolved receiver the gate admits.
+
+**Spill.** A filter the stage does not take (refused before or by the
+host, or a layer-10 end that does not match its call) runs the guest's
+quads, which read target 10. Before they do, `Spill` copies the private
+mask into target 10 and the chain becomes the guest's again: the guest's
+filter writes targets 10 and 11, and the freeze runs at layer 11.
+
+A pass that fails while recording after its reservation (the pair cannot
+be made, the filter finds no pair, a spill does not fit target 10) draws
+no shadow for that generation. It is counted in
+`scene_dropped_shadow_layers` with one log line for its cause.
+
+Still to come, with the guest calls they remove: the caster body skips
+the layer-10 begin, clear and end and the filter call once their writes
+are mirrored (framescene.md, 5.2), so a committed chain binds no guest
+target at all. Light chains (depth maps on target 9) keep option A: their
+freeze shares the map with additional casters. Object shadows of one
+view may share a pass; each map keeps its own texture or a gutter the
+filter's taps cannot cross (**Design**, decided when measured).
 
 ### Slices
 
 Each slice lands under `impl.render.native`. The checks are the
 coordinator's; lanes write code and tests.
 
-| Slice | Built | Draws change |
+| Slice | Status | Draws change |
 |---|---|---|
-| 1 | `ShadowPass` in the scene and its extraction | no |
-| 2 | `shadow_look`, the model parts' shadow buffers, the tag census | no |
-| 3 | layer 10 alone, all three sites | casters from the scene |
-| 4 | layers 11 and 14 alone | receivers from the scene |
-| 5 | the object filter native, swallowed | the filter's quads |
-| 6 | private chains with the entries' replacement | targets |
+| 1 | Built: `ShadowPass` in the scene and its extraction | no |
+| 2 | Partly built: `shadow_look` and the model parts' shadow buffers; the tag census is not built | no |
+| 3 | Built: layer 10 alone at all three sites, with parity unverified | casters from the scene |
+| 4 | Built: layers 11 and 14 alone, with parity unverified | receivers from the scene |
+| 5 | Built: the object filter native, swallowed, with parity unverified | the filter's quads |
+| 6 | Partly built: object-mask chains private, with spill; the guest's begin, end and filter call not yet skipped | targets |
 
 **Slice 1.**
 - Tests (synthetic memory): `scene_extract::light_groups` reads each
@@ -277,25 +320,22 @@ coordinator's; lanes write code and tests.
   over the gate corpus (extraction only reads).
 
 **Slice 2.**
-- Tests: each row of the compiler's table from an invented template;
-  the receiver's stage 13 gives the WGSL of the golden
-  `crates/formats/shaders/tests/golden/shadow_retail.wgsl`; each
-  refusal by name.
-- Disc census (`#[ignore]`, counters only): over every map, each
-  shader, layer, implementation and classification the materials name
-  compiles or is counted by refusal; which implementations occur per
-  layer and geometry; how many passes set a stencil or offset state.
-  It answers the two **S** items on implementations and stencil.
-- `render.scene` counters: `scene_shadow_programs`,
-  `scene_shadow_program_refused_<cause>`.
+- Tests: an invented caster pass compiles valid WGSL with the projection
+  in `c[40..48]`, a receiver pass compiles its D24 compare stage, and a
+  material that overwrites those registers is refused
+  (`native_render::shadow_look`).
+- Disc census: not built. It still needs to cover every map, shader,
+  layer, implementation and classification, count each refusal, and
+  answer the two **S** items on implementations and stencil. Its proposed
+  `scene_shadow_program*` counters are not present.
 
 **Slice 3.**
-- GPU differential (`crates/rewrites/native-render/tests/shadow_gpu.rs`):
-  the same casters as a planned group and as resolved draws, depth map
-  and colour mask, all four channels and stencil equal; with the offset
-  on and off; a W-depth program.
-- Bridge tests: every refusal of steps 1 to 5 leaves the entry loop's
-  count; a whole group empties it.
+- Tests: `native_render::light_gpu` renders a tiny caster scene and checks
+  its pixels and projection uniforms; `native_render::shadow_scene`
+  checks pass-state refusals; `render_bridge::native_shadows` checks that
+  a whole group commits and a refusal keeps the handlers. The planned
+  differential of a planned group against resolved draws, including depth,
+  colour mask, stencil and bias, is not run here.
 - `render.scene` counters: `scene_shadow_layers_alone_10`,
   `scene_shadow_alone_refused_<cause>` (`remainder`, `stream`, `pose`,
   `program`, `state`, `target`, `callback`, `device`),
@@ -311,10 +351,10 @@ coordinator's; lanes write code and tests.
 - `light_walk_handlers_skipped` rises by the casters' handlers.
 
 **Slice 4.**
-- GPU differential: the mixed fixture of
-  [native-shadows.md](native-shadows.md), "Rules and limits", with the
-  shadowed receiver planned from a group; implementations 0 to 4 and 6
-  each against its resolved draw; layer 14.
+- Tests: `native_render::light_gpu` samples a frozen map and checks every
+  pixel, and the bridge commits receiver and opacity groups. The mixed
+  differential against resolved draws for implementations 0 to 4 and 6
+  and layer 14 is not run here.
 - `render.scene` counters: `scene_shadow_layers_alone_11` and `_14`.
 - Census: `layer.light.11`, `layer.light.14` and
   `layer.object_shadow.11` count no backend draw; `light_passes` counts
@@ -324,10 +364,9 @@ coordinator's; lanes write code and tests.
   the stage must still refuse the scaled copies.
 
 **Slice 5.**
-- Differential for the quad with the tenth argument set, against the
-  lifted original.
-- GPU differential: the native filter and the guest's resolved quads
-  over one mask, every pixel of targets 10 and 11 equal.
+- Tests: `native_render::shadow_filter_gpu` copies a tiny mask through
+  target 11 and back to target 10 and checks every pixel. The lifted
+  quad differential and resolved-quad comparison are not run here.
 - `render.scene` counters: `scene_shadow_filters_native`,
   `scene_shadow_filter_refused_<cause>`.
 - Census: `object_shadow` counts no backend draw.
@@ -335,6 +374,19 @@ coordinator's; lanes write code and tests.
   launch's.
 
 **Slice 6.**
+- Tests: `native_render::shadow_chain` clears a pair as the begin does,
+  filters an invented mask through it and back, and spills only into a
+  matching texture; `boot::native_shadow_chain` checks the offer is
+  claimed once and the filter publishes into the receivers' output;
+  `render_bridge::native_shadows` checks the chain and drop counters and
+  that a filter refused before the host lets it spill.
+- `render.scene` counters: `scene_shadow_chains_private` (object chains
+  whose casters went private) and `scene_shadow_chains_spilled` (of
+  those, chains handed back to target 10).
+- Census: `object_shadow` counts no backend draw, as slice 5;
+  `scene_shadow_chains_spilled` is zero over the gate corpus.
+- `render.capture {pass}` of the receivers against the D3D launch's.
+- Still to come, the entry's own rules:
 - The four rules of framescene.md 8.2 for `light_passes` and
   `object_shadow`, with the census of this page's counters at zero
   refusals over the census corpus.
@@ -349,16 +401,17 @@ coordinator's; lanes write code and tests.
   with `LightGroup::pass` and `projection`; the world's parts and
   `native_render::light_models`; the receiver term of
   `boot::native_shadows_glue`.
-- **Out.** External passes on the D3D device (`external_pass_now`,
-  `swallow`) through slice 5; a `Producer` and `SampledMap` per
-  generation from slice 6.
+- **Out.** Sealed external packet runs on the D3D device
+  (`prepare_external_bound`) and the filter's swallowed quads; for an
+  object mask, a private `Pair` and its `SampledMap` per generation.
 - **Guest points.** `LAYER_BUILD` (where a group is drawn alone),
   `LIGHT_GEOMETRY_DRAW` (`0x0004d0b0`, not run for a layer drawn
-  alone), `RENDER_LIGHT_PASSES`, `OBJECT_SHADOW`, and one new point for
-  the blur `0x000211a0` in `engine::points`.
-- **What the guest still writes** through slice 5: the target binds
-  and clears, the raster state and its restore, the filter's device
-  state. From slice 6: the tick-visible writes of framescene.md 5.2
+  alone), `RENDER_LIGHT_PASSES`, `OBJECT_SHADOW`,
+  `SCREEN_CONVOLUTION_BLUR` (the filter's call, return `0x000222c7`)
+  and `OBJECT_SHADOW_FILTER` (the wrapper returning to `0x00032966`).
+- **What the guest still writes**: the target binds and clears, the
+  raster state and its restore, the filter's device state. With the
+  entry's calls skipped: the tick-visible writes of framescene.md 5.2
   only.
 - **Agent API.** No new method. The counters above are rows of
   `render.scene`'s `counters`, documented in
@@ -372,8 +425,9 @@ coordinator's; lanes write code and tests.
 - A layer never draws alone into a target the device does not have
   bound, and never with a resolved fallback: every refusal is before
   the issue.
-- Through slice 5 no private target is used for a chain that has a
-  guest reader.
+- A private chain has no guest reader of target 10 or 11. A guest draw
+  that would read target 10 (the guest's filter) runs only after a
+  spill has copied the private mask there.
 - Scaled and E3 display copies and interpolated replay keep the
   original renderer until the renderer draws the frame once
   (framescene.md, slice 6).
@@ -416,9 +470,14 @@ coordinator's; lanes write code and tests.
   depth map is checked only through the frame and the GPU differential.
 - That no template pass of the three layers sets a stencil state, and
   which receiver implementations the disc's materials select.
-- The rectangle of the filter's quads.
+- The filter's exact pixels against its lifted original and against D3D.
 - That nothing but the filter, layer 11 and the freeze reads targets 9,
   10 and 11.
+- That the backend gives a colour-only pass's `record_encoded` a scratch
+  depth of the format its packets were recorded with, and that a swallow
+  the device aborts after accepting a private filter is rare: its
+  replayed quads read a target 10 holding only the clear, and that
+  generation draws no shadow.
 - Pixel parity and timing of every slice.
 
 ## Related

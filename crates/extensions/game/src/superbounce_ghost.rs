@@ -1,7 +1,8 @@
 //! Ghost runs (docs/game/superbounce.md, "Ghost runs"): a recorded run
-//! that bounced off a spot, replayed in the world on request as an outline
-//! figure in the HUD's colour, with the button the run pressed shown where
-//! it pressed it, a dotted trail and a ring where it touched down.
+//! that bounced off a spot, replayed in the world on request as one faint
+//! outline figure in the HUD's colour, and nothing else: no trail, no
+//! ring, no button glyphs. Showing one is the `superbounce-ghost` feature,
+//! off by default ([`enabled`]); the recording runs either way.
 //!
 //! **Recording.** `superbounce_mode` calls [`tick`] once a game tick with
 //! every player's reads and the medal chain's awards. Each bot's ticks
@@ -15,8 +16,9 @@
 //! for it, then the shortest wins. A kept run also proves its spot in the
 //! verified file, as a verifier's trial that bounced does.
 //!
-//! **Showing.** The first local player looks at a spot that has a run
-//! ([`looked_at`]: in range and near the middle of the view), and the
+//! **Showing.** With the feature on, the first local player looks at the
+//! chosen strip (the navpoint's while primed, [`showable`]) when it has a
+//! run ([`looked_at`]: in range and near the middle of the view), and the
 //! prompt line offers [`BUTTON`] (or [`BUTTON_BUMPER_JUMPER`]) ([`hud_verb`]). A press plays the run
 //! once; a press while it plays stops it; a press after it has ended plays
 //! it again. The playback runs on the clock, not on game ticks
@@ -35,13 +37,14 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 use engine::GuestMemory;
-use gfx::world_lines::{Glow, ImageMarks, ImageValidity, LineStyle, Pulse, WorldLine};
-use hud_kit_core::huds::superbounce::{Medal, Verb};
+use gfx::world_lines::{ImageMarks, ImageValidity, LineStyle, WorldLine};
+use hud_kit_core::views::superbounce::{Medal, Verb};
 use superbounce::ghost::{self as file, Button, Frame, Ghost, MAX_FRAMES, Source, TICK_HZ};
 use superbounce::verified::Entry;
 use superbounce::{Kind, Spot, Status, Vec3};
 
 use crate::superbounce_chain::{Award, CLEAR_FROM, SLOTS, Seen, TELEPORT};
+use crate::superbounce_charge::LAUNCH_TICKS;
 use crate::superbounce_font::Look;
 
 // ---- the control ----
@@ -55,7 +58,7 @@ use crate::superbounce_font::Look;
 /// [`BUTTON_BUMPER_JUMPER`] ([`button_for`]).
 pub const BUTTON: u8 = 2;
 /// [`BUTTON`]'s glyph in the HUD font (docs/input/button-icons.md); the
-/// prompts in `hud_kit_core::huds::superbounce` write the same one.
+/// prompts in `hud_kit_core::views::superbounce` write the same one.
 pub const BUTTON_GLYPH: char = '\u{e102}';
 /// The ghost button on the Bumper Jumper layout: B (1), on the ground.
 pub const BUTTON_BUMPER_JUMPER: u8 = 1;
@@ -134,17 +137,16 @@ pub const MARK_RADIUS: f32 = 0.4;
 pub const EYE_HEIGHT: f32 = 0.62;
 /// After the last frame the figure holds there this long (seconds).
 pub const END_HOLD: f32 = 1.0;
-/// A pressed button's glyph shows for this many ticks of the playback.
-pub const PRESS_SHOW: usize = 30;
-/// The trail takes every this many ticks.
-pub const TRAIL_STEP: usize = 2;
+/// The figure's strength: faint, so it reads as a hint beside the one
+/// marked strip.
+pub const FIGURE_ALPHA: f32 = 0.35;
+/// A run is the chosen strip's when its spot is within this of the
+/// strip's stand point.
+pub const CHOSEN_NEAR: f32 = 0.3;
+/// The feature that shows ghosts, off by default.
+pub const FEATURE: &str = "superbounce-ghost";
 /// Bots' slots are looked up again every this many ticks.
 pub const BOT_REFRESH: u32 = 30;
-/// The touchdown ring's radius: the capsule's.
-pub const RING_RADIUS: f32 = superbounce::RADIUS;
-const RING_SEGMENTS: usize = 24;
-/// The glyphs float this far over the figure's head.
-pub const LABEL_RAISE: f32 = 0.2;
 
 // ---- recording ----
 
@@ -169,7 +171,7 @@ pub struct Sample {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Flight {
     spot: Vec3,
-    /// The bounce tick's place in the buffer.
+    /// The touchdown tick's place in the buffer.
     touchdown: usize,
     launch: f32,
 }
@@ -187,9 +189,10 @@ fn distance(a: Vec3, b: Vec3) -> f32 {
 }
 
 impl Track {
-    /// Where the player was at the last tick.
-    pub fn last_at(&self) -> Option<Vec3> {
-        self.buf.back().map(|s| s.at)
+    /// Where the player was `n` ticks before the last.
+    pub fn at_back(&self, n: usize) -> Option<Vec3> {
+        let i = self.buf.len().checked_sub(n + 1)?;
+        Some(self.buf[i].at)
     }
 
     /// The facing at the last tick.
@@ -212,7 +215,10 @@ impl Track {
     }
 
     /// One tick: `s` is the player's (`None` without a unit), `bounce` the
-    /// spot's `stand` when the chain filed a bounce this tick. A teleport,
+    /// spot's `stand` when the chain filed a bounce this tick: the chain
+    /// files it when its launch window closes, [`LAUNCH_TICKS`] after the
+    /// touchdown, so the flight is counted from that many ticks back, its
+    /// launch the best vertical speed since. A teleport,
     /// a new unit or a gap in the ticks starts the track again. Returns
     /// the run once a bounce reaches its top.
     pub fn step(
@@ -239,11 +245,18 @@ impl Track {
         self.buf.push_back(s);
         let i = self.buf.len() - 1;
         if let Some(spot) = bounce {
-            if self.flight.is_none() && i > 0 {
+            let window = LAUNCH_TICKS as usize;
+            if self.flight.is_none() && i > window {
+                let touchdown = i - window;
+                let launch = self
+                    .buf
+                    .range(touchdown..)
+                    .map(|s| s.vz)
+                    .fold(f32::NEG_INFINITY, f32::max);
                 self.flight = Some(Flight {
                     spot,
-                    touchdown: i,
-                    launch: s.vz,
+                    touchdown,
+                    launch,
                 });
             }
             return None;
@@ -526,12 +539,8 @@ const CHEST: [[f32; 2]; 2] = [[-0.09, 0.56], [0.09, 0.74]];
 
 fn figure_style() -> LineStyle {
     LineStyle {
-        width: 2.0,
-        alpha: 0.9,
-        glow: Some(Glow {
-            width: 4.0,
-            alpha: 0.35,
-        }),
+        width: 1.5,
+        alpha: FIGURE_ALPHA,
         ..LineStyle::default()
     }
 }
@@ -595,112 +604,68 @@ pub fn figure(pose: &Pose, viewer: Option<Vec3>) -> Vec<[Vec3; 2]> {
     edges
 }
 
-/// The ring where the run touched down.
-pub fn ring(centre: Vec3) -> Vec<[Vec3; 2]> {
-    let point = |i: usize| {
-        let a = std::f32::consts::TAU * (i % RING_SEGMENTS) as f32 / RING_SEGMENTS as f32;
-        [
-            centre[0] + RING_RADIUS * a.cos(),
-            centre[1] + RING_RADIUS * a.sin(),
-            centre[2] + 0.02,
-        ]
-    };
-    (0..RING_SEGMENTS)
-        .map(|i| [point(i), point(i + 1)])
-        .collect()
-}
-
-/// The run's path, every [`TRAIL_STEP`] ticks and its last, a little over
-/// the origins.
-pub fn trail(g: &Ghost) -> Vec<[Vec3; 2]> {
-    let lift = |a: Vec3| [a[0], a[1], a[2] + 0.05];
-    let mut pts: Vec<Vec3> = g
-        .frames
-        .iter()
-        .step_by(TRAIL_STEP)
-        .map(|f| lift(f.at))
-        .collect();
-    if let Some(last) = g.frames.last()
-        && (g.frames.len() - 1) % TRAIL_STEP != 0
-    {
-        pts.push(lift(last.at));
-    }
-    pts.windows(2).map(|w| [w[0], w[1]]).collect()
-}
-
-/// A pressed button as label text: its glyph, or its name without the
-/// HUD font.
-pub fn press_text(button: Button, glyphs: bool) -> String {
-    match (button, glyphs) {
-        (Button::Jump, true) => JUMP_GLYPH.to_string(),
-        (Button::Crouch, true) => CROUCH_GLYPH.to_string(),
-        (Button::Jump, false) => "A".into(),
-        (Button::Crouch, false) => "Crouch".into(),
-    }
-}
-
 /// Everything drawn `seconds` into a playback of `g` for a viewer at
-/// `viewer`: the dotted trail, the touchdown ring, the figure, and the
-/// glyph of each button pressed in the last [`PRESS_SHOW`] ticks, over
-/// where it was pressed. Empty once the playback is over.
-pub fn marks(g: &Ghost, seconds: f32, viewer: Option<Vec3>, look: &Look) -> Vec<Mark> {
+/// `viewer`: the figure, faint, and nothing else. Empty once the playback
+/// is over.
+pub fn marks(g: &Ghost, seconds: f32, viewer: Option<Vec3>) -> Vec<Mark> {
     let Some(pose) = pose_at(g, seconds) else {
         return Vec::new();
     };
-    let mut out = Vec::with_capacity(6);
-    let path = trail(g);
-    if let Some(first) = path.first() {
-        out.push(Mark {
-            anchor: first[0],
-            edges: path,
-            dashed: true,
-            label: None,
-            style: LineStyle {
-                width: 1.5,
-                alpha: 0.6,
-                ..LineStyle::default()
-            },
-        });
-    }
-    let landing = g.landing();
-    out.push(Mark {
-        edges: ring(landing),
-        anchor: landing,
-        dashed: false,
-        label: None,
-        style: LineStyle {
-            pulse: Some(Pulse {
-                period: 1.2,
-                depth: 0.4,
-            }),
-            ..figure_style()
-        },
-    });
-    out.push(Mark {
+    vec![Mark {
         edges: figure(&pose, viewer),
         anchor: pose.at,
         dashed: false,
         label: None,
         style: figure_style(),
-    });
-    for p in g.presses() {
-        if p.frame <= pose.index && pose.index - p.frame < PRESS_SHOW {
-            let at = g.frames[p.frame].at;
-            out.push(Mark {
-                edges: Vec::new(),
-                anchor: [at[0], at[1], at[2] + superbounce::STANDING + LABEL_RAISE],
-                dashed: false,
-                label: Some(press_text(p.button, look.glyphs)),
-                style: LineStyle {
-                    label_scale: 2.0,
-                    label_centered: true,
-                    label_face: look.face,
-                    ..LineStyle::default()
-                },
-            });
-        }
-    }
-    out
+    }]
+}
+
+/// The runs a player may be shown: with the feature `on`, those of the
+/// `chosen` strip (within [`CHOSEN_NEAR`] of its stand point), by index
+/// in `ghosts`. None with the feature off or no chosen strip.
+pub fn showable(ghosts: &[Ghost], chosen: Option<Vec3>, on: bool) -> Vec<usize> {
+    let Some(c) = chosen.filter(|_| on) else {
+        return Vec::new();
+    };
+    ghosts
+        .iter()
+        .enumerate()
+        .filter(|(_, g)| distance(g.spot, c) <= CHOSEN_NEAR)
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Where a run left the floor for its bounce: the approach guide's lip
+/// (`superbounce_guide::Lip`, docs/game/superbounce.md, "The takeoff").
+/// The last ground frame before the flight that touched down, the way
+/// and the ground speed of its first tick in the air, and whether that
+/// tick was a jump's (`file::JUMP`) or a walk-off's. `None` for a run
+/// with no ground frame before its touchdown, or one that left it
+/// standing still (no heading).
+pub fn lip(g: &Ghost) -> Option<crate::superbounce_guide::Lip> {
+    use crate::superbounce_guide::{Leave, Lip};
+    let end = g.touchdown.min(g.frames.len().checked_sub(1)?);
+    let k = (0..end)
+        .rev()
+        .find(|&k| !g.frames[k].airborne() && g.frames[k + 1].airborne())?;
+    let (on, off) = (g.frames[k], g.frames[k + 1]);
+    let d = [off.at[0] - on.at[0], off.at[1] - on.at[1]];
+    let step = d[0].hypot(d[1]);
+    (step > 1e-4 && step.is_finite()).then(|| Lip {
+        at: on.at,
+        heading: [d[0] / step, d[1] / step],
+        speed: Some(step * TICK_HZ),
+        run: Some(if off.jump() { Leave::Jump } else { Leave::Drop }),
+    })
+}
+
+/// The lip of the kept run of the strip at `stand` on `map` ([`lip`]):
+/// the first run within [`CHOSEN_NEAR`] of it that has one.
+pub fn lip_for(map: &str, stand: Vec3) -> Option<crate::superbounce_guide::Lip> {
+    ghosts_for(map)
+        .iter()
+        .filter(|g| distance(g.spot, stand) <= CHOSEN_NEAR)
+        .find_map(lip)
 }
 
 /// One playback as the window draws it: the run, when it started, where
@@ -718,7 +683,7 @@ pub struct GhostSample {
 impl GhostSample {
     fn draw(&self, now: Instant, visitor: &mut dyn FnMut(WorldLine<'_>)) {
         let seconds = now.saturating_duration_since(self.started).as_secs_f32();
-        for m in marks(&self.ghost, seconds, self.viewer, &self.look) {
+        for m in marks(&self.ghost, seconds, self.viewer) {
             visitor(WorldLine {
                 edges: &m.edges,
                 anchor: m.anchor,
@@ -815,6 +780,16 @@ fn kept(map: &str) -> Kept {
 /// then kept; empty without a directory or a file.
 pub fn ghosts_for(map: &str) -> Arc<Vec<Ghost>> {
     kept(map).ghosts
+}
+
+/// Forgets what was kept of `map`'s ghosts file and reads it again
+/// (`superbounce.reload`). The run counts before and after.
+pub fn reload(map: &str) -> (usize, usize) {
+    let before = ghosts_for(map).len();
+    if let Some(maps) = lock(&STORE).as_mut() {
+        maps.remove(&map.to_ascii_lowercase());
+    }
+    (before, ghosts_for(map).len())
 }
 
 /// Keeps `g` for `map` if it beats the run of its spot, and writes the
@@ -1005,6 +980,8 @@ fn yaw_of(aim: Vec3) -> Option<f32> {
 /// One game tick of the mode (`superbounce_mode`): records the bots' and
 /// the verifier's runs from `players` and the chain's `awards`, finds the
 /// spot the first local player looks at, and takes a press of [`BUTTON`] on the ground.
+/// Only the `chosen` strip's run is offered, and only with the feature on
+/// ([`showable`]).
 pub fn tick(
     m: &dyn GuestMemory,
     tick: u32,
@@ -1012,6 +989,7 @@ pub fn tick(
     awards: &[Award],
     map: Option<&str>,
     spots: &[Spot],
+    chosen: Option<Vec3>,
 ) {
     let mut guard = lock(&RUNTIME);
     let rt = guard.get_or_insert_with(Runtime::new);
@@ -1067,8 +1045,13 @@ pub fn tick(
                 && !a.medals.is_empty()
                 && !a.medals.contains(&Medal::Bounced)
         });
+        // The chain files a bounce when its window closes: the origin
+        // judged is the tick before the touchdown, LAUNCH_TICKS before the
+        // last one kept.
         let bounce = if bounced {
-            track.last_at().and_then(|p| spot_at(spots, p))
+            track
+                .at_back(LAUNCH_TICKS as usize)
+                .and_then(|p| spot_at(spots, p))
         } else {
             None
         };
@@ -1092,13 +1075,19 @@ pub fn tick(
     let ghosts = map.map(ghosts_for).unwrap_or_default();
     let eye = local.map(|t| [t.position[0], t.position[1], t.position[2] + EYE_HEIGHT]);
     rt.viewer = eye;
+    let on = enabled();
+    let offered = showable(&ghosts, chosen, on);
     rt.looked = match (eye, local.and_then(|t| read_unit(m, t.unit))) {
-        (Some(eye), Some((_, aim))) if !ghosts.is_empty() => {
-            let points: Vec<Vec3> = ghosts.iter().map(|g| g.spot).collect();
-            looked_at(eye, aim, &points)
+        (Some(eye), Some((_, aim))) if !offered.is_empty() => {
+            let points: Vec<Vec3> = offered.iter().map(|&i| ghosts[i].spot).collect();
+            looked_at(eye, aim, &points).map(|k| offered[k])
         }
         _ => None,
     };
+    // Off: nothing plays, whoever asked.
+    if !on && rt.playback.is_some() {
+        rt.set_playback(None);
+    }
     let now = Instant::now();
     if rt.playback.as_ref().is_some_and(|p| p.over(now)) {
         rt.set_playback(None);
@@ -1224,7 +1213,15 @@ pub fn ghost_show(
 ) -> Result<agent_proto::superbounce::GhostShow, String> {
     use agent_proto::superbounce as wire;
     if !crate::superbounce_mode::active() {
-        return Err("the superbounce mode is off (superbounce.set {\"on\":true})".into());
+        return Err(
+            "the superbounce mode is off (play a game whose script requires hud.superbounce)"
+                .into(),
+        );
+    }
+    if !enabled() && !p.stop {
+        return Err(format!(
+            "ghosts are off: start the game with H2_FEATURES={FEATURE}"
+        ));
     }
     let mut g = lock(&RUNTIME);
     let rt = g.get_or_insert_with(Runtime::new);
@@ -1256,6 +1253,45 @@ pub fn ghost_show(
         index: Some(index),
         ticks: Some(ticks),
     })
+}
+
+// ---- the feature ----
+
+static ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Whether ghosts are shown: the `superbounce-ghost` feature is on. It is
+/// off unless asked for (`H2_FEATURES=superbounce-ghost`).
+pub fn enabled() -> bool {
+    ENABLED.load(Ordering::Relaxed)
+}
+
+/// The feature: a switch for showing ghost runs. The drawing is the
+/// window's; it has no guest hooks.
+pub struct SuperbounceGhost;
+
+impl hooks::Feature for SuperbounceGhost {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(FEATURE, "Superbounce ghost runs shown in the world")
+            .doc("docs/game/superbounce.md")
+            .presentation_only()
+            .off_by_default()
+    }
+
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
+        // The playback is asked for again after a load.
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
+        Ok(())
+    }
+}
+
+/// Adds the feature to `registry`; ghosts show only with
+/// `H2_FEATURES=superbounce-ghost`.
+pub fn install_feature(registry: &mut hooks::Registry) -> anyhow::Result<()> {
+    let on = registry
+        .add(&SuperbounceGhost)
+        .map_err(|e| anyhow::anyhow!("superbounce ghost: {e}"))?;
+    ENABLED.store(on, Ordering::Relaxed);
+    Ok(())
 }
 
 /// Registers the methods with the agent (`agent_glue`).

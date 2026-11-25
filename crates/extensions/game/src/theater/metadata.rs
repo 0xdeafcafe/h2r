@@ -16,6 +16,15 @@ use crate::{
     telemetry::{self, layout},
 };
 
+/// A game's name for the tape's header (docs/game/film-format.md, "An exit
+/// without a teardown still seals").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Described {
+    pub(super) map: String,
+    pub(super) variant: String,
+    pub(super) players: Vec<film::Player>,
+}
+
 pub(super) struct Capture {
     descriptor: MatchHeader,
     map_digest: Option<std::thread::JoinHandle<Result<MapIdentity>>>,
@@ -28,13 +37,25 @@ pub(super) struct Capture {
     quitting: BTreeSet<u32>,
     result_order: Vec<u32>,
     host_machine: Option<String>,
-    live_service: bool,
-    pub(super) archived_on_live: bool,
     lease_mode: Option<Mode>,
+    /// A default recording cuts each game into a film of its own and keeps
+    /// recording ([`super::autorecord`]): it describes one game after another.
+    games: bool,
+    /// The last game ended and its film is cut; the next game starts once
+    /// the guest leaves it (a map unload, or a new game's globals).
+    between_games: bool,
+    /// A game left in play (a campaign mission, a multiplayer game): the
+    /// recorder cuts its film at the next slice's check, so the next game
+    /// describes itself instead of inheriting this one's start and map.
+    cut_left: bool,
+    /// The described game was read off a mounted map. Only a game the
+    /// guest was seen in can be left.
+    on_map: bool,
 }
 
 impl Capture {
     pub(super) fn new(header: &film::Header) -> Self {
+        let games = header.player_features;
         let lease_mode = header.lease_id.as_ref().and_then(|id| {
             let json = std::env::var("H2_HOST_LEASE_JSON").ok()?;
             let lease: live_proto::hosts::HostLease = serde_json::from_str(&json).ok()?;
@@ -50,7 +71,6 @@ impl Capture {
         });
         Self {
             descriptor: MatchHeader::default(),
-            archived_on_live: false,
             map_digest: None,
             lease_mode,
             variant_name: String::new(),
@@ -62,7 +82,10 @@ impl Capture {
             vfs: None,
             live: Weak::new(),
             sim_bots: vec![],
-            live_service: header.live_service,
+            games,
+            between_games: false,
+            cut_left: false,
+            on_map: false,
         }
     }
 
@@ -70,11 +93,74 @@ impl Capture {
         &self.descriptor
     }
 
+    /// Forget the game just cut (or left before its end) and describe the
+    /// next one from its start. The match sources stay.
+    pub(super) fn next_game(&mut self) {
+        self.descriptor = MatchHeader::default();
+        self.map_digest = None;
+        self.variant_name.clear();
+        self.active.clear();
+        self.results.clear();
+        self.quitting.clear();
+        self.result_order.clear();
+        self.host_machine = None;
+        self.between_games = true;
+        self.on_map = false;
+    }
+
+    /// The guest still shows the game whose film was just cut.
+    pub(super) fn between_games(&self) -> bool {
+        self.between_games
+    }
+
+    /// Whether a game was left in play since the last call: its film is
+    /// cut as it stands, a campaign mission and a multiplayer game alike.
+    pub(super) fn take_cut_left(&mut self) -> bool {
+        std::mem::take(&mut self.cut_left)
+    }
+
+    #[cfg(test)]
+    pub(super) fn start_for_test(&mut self, tick: u64, level: &str, mode: Mode) {
+        self.descriptor.match_start_tick = Some(tick);
+        self.descriptor.map.name = level.into();
+        self.descriptor.mode = mode;
+        self.variant_name = "Slayer".into();
+    }
+
+    /// The fixture's stand-in for the game having been observed on a
+    /// mounted map, without which leaving it cannot be seen.
+    #[cfg(test)]
+    pub(super) fn on_map_for_test(&mut self) {
+        self.on_map = true;
+    }
+
     pub(super) fn finish_map(&mut self) -> Result<()> {
         if let Some(job) = self.map_digest.take() {
             self.descriptor.map = job.join().map_err(|_| anyhow::anyhow!("film map digest worker panicked"))??;
         }
         Ok(())
+    }
+
+    /// The game on the tape as a session's header names it: its map,
+    /// variant and the players seen so far (scores are left out; they are
+    /// in the cut's own header). None outside a game.
+    pub(super) fn description(&self) -> Option<Described> {
+        let map = &self.descriptor.map.name;
+        if map.is_empty() {
+            return None;
+        }
+        Some(Described {
+            map: map.clone(),
+            variant: self.variant_name.clone(),
+            players: self
+                .result_order
+                .iter()
+                .map(|id| {
+                    let p = &self.results[id];
+                    film::Player { name: p.name.clone(), team: p.team, score: 0 }
+                })
+                .collect(),
+        })
     }
 
     pub(super) fn summary(&self, tick: u64) -> Summary {
@@ -104,8 +190,24 @@ impl Capture {
     ) -> Result<Vec<Event>> {
         let mut events = Vec::new();
         let Some(options) = active_options(g) else {
+            self.between_games = false;
+            if self.games && self.on_map && self.descriptor.match_start_tick.is_some() {
+                // A game left in play (the guest is out of it with no
+                // game-over) keeps its descriptor for the cut: a left
+                // multiplayer game is a film of what was played, as a left
+                // mission is. Only a game seen on a mounted map can be
+                // left, and only a default recording cuts one.
+                self.cut_left = true;
+            }
             return Ok(events);
         };
+        if self.between_games {
+            if game_ended(g) {
+                return Ok(events);
+            }
+            self.between_games = false;
+        }
+        self.on_map = true;
         let s = bots::lobby::game_session(g).ok().filter(|&s| {
             s != 0
                 && g.u32(s.wrapping_add(net::STATE))
@@ -131,7 +233,6 @@ impl Capture {
                 &mut self.descriptor.variant_blob,
                 1,
             )?;
-            self.archived_on_live = s.is_some() && self.live.upgrade().is_some_and(|h| h.archived_session());
             self.descriptor.match_start_tick = Some(tick);
             self.descriptor.ticks_per_second = Some(info.tick_rate.max(1));
 
@@ -161,9 +262,12 @@ impl Capture {
                 || self.live.upgrade().is_some_and(|h| h.matchmade().is_some())
             {
                 Mode::Matchmaking
-            } else if !self.live_service
-                && s.is_some_and(|s| g.u32(s.wrapping_add(net::PROTOCOL)).is_ok_and(|p| matches!(p, 1 | 2)))
-            {
+            } else if s.is_some_and(|s| {
+                system_link(
+                    g.u32(s.wrapping_add(net::PROTOCOL)).ok(),
+                    g.u32(s.wrapping_add(crate::variant_ext::SESSION_NETWORK_CLASS)).ok(),
+                )
+            }) {
                 Mode::SystemLink
             } else {
                 Mode::Custom
@@ -361,6 +465,16 @@ impl Capture {
             bot_params,
         })
     }
+}
+
+/// The retail game-over latch of the loaded game.
+pub(super) fn game_ended(g: &Guest) -> bool {
+    g.u32(layout::GAME_GLOBALS_PTR)
+        .ok()
+        .filter(|p| *p != 0)
+        .and_then(|p| p.checked_add(layout::GAME_ENDED))
+        .and_then(|p| g.u8(p).ok())
+        .is_some_and(|v| v != 0)
 }
 
 fn active_options(g: &Guest) -> Option<u32> {
@@ -605,7 +719,8 @@ pub(super) fn install(session: &Arc<super::Session>, b: &mut hooks::Builder) {
                 && rec.meta.descriptor.seed.is_none()
             {
                 let g = o.guest();
-                if active_options(&g).is_some() {
+                // After a cut, the next game's seed, not the ended game's.
+                if active_options(&g).is_some() && !(rec.meta.between_games() && game_ended(&g)) {
                     rec.meta.descriptor.seed = g
                         .u32(crate::sim_glue::RANDOM_SEED_PTR)
                         .ok()
@@ -700,9 +815,25 @@ pub(super) fn verify_events(g: &Guest, events: &[Event]) -> Result<()> {
     Ok(())
 }
 
+/// A networked game's session is System Link: a networked protocol (1 or
+/// 2) and the network class 1 (`crate::variant_ext::SESSION_NETWORK_CLASS`;
+/// a Live game's is 2, whichever Live service it runs on).
+fn system_link(protocol: Option<u32>, class: Option<u32>) -> bool {
+    matches!(protocol, Some(1 | 2)) && class == Some(crate::variant_ext::SYSTEM_LINK)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_link_is_the_network_class_not_the_service() {
+        assert!(system_link(Some(2), Some(1)));
+        assert!(system_link(Some(1), Some(1)));
+        assert!(!system_link(Some(2), Some(2)), "a Live game");
+        assert!(!system_link(Some(0), Some(1)), "a local protocol");
+        assert!(!system_link(Some(2), None), "an unreadable class");
+    }
 
     #[test]
     fn checks_the_mounted_map_bytes_and_only_allows_guest_map_slots() {

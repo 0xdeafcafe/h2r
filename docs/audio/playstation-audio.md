@@ -247,7 +247,7 @@ the output thread that returns the controller's sink, or `None` when the
 device is absent, and an `on_live` callback.
 
 - While the side sink is open and `AudioSink::connected` (a `DeviceSink`
-  says false once its stream errors, until it is reopened), the mixer renders
+  says false once its stream fails fatally, until it is reopened), the mixer renders
   with `render_split`: logical pacing in `Output::advance_to`, device pacing
   through `audio::Pump::pump_split`. The side mix goes to a queue of its own
   and a resampler to the side device's rate, played by the output thread.

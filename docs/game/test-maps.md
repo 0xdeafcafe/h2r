@@ -28,9 +28,14 @@ user's data and cache directories.
    `Recipes::build`. In `boot::test_maps_recipes`, the default builder
    applies placement edits through `recipe::build_package_with_replace`.
    A recipe with `builder = "firefight-probe"` calls
-   `firefight_kit::build_package` in probe mode on the same base bytes.
+   `firefight_kit::ground::build` in probe mode (no labels) on the same base
+   bytes, installed with `Ground::install`.
    Both save package `test-<name>` under `<data>/maps/` and write the
-   build report to `<cache>/test-maps/<MapId>.json`.
+   build report to `<cache>/test-maps/<MapId>.json`. A placement recipe is
+   also a content package: `test_maps_recipes::recipe_package` runs it on
+   the base's bytes and returns an `onto` `map` item with an `edits` item
+   for the scenario, which `workspace::prepare` builds like any other map
+   ([studio-redesign.md](../editor/studio-redesign.md), "Contents").
 3. **Publish.** The offers are installed again
    (`map_select::packages_changed`, else `new_maps::install_at_boot`) and
    the VFS rescans, as for a Live download ([maps.md](maps.md#3-realtime)).
@@ -52,7 +57,8 @@ user's data and cache directories.
    point, facing, tag path, team, whether it reached a floor) and an
    `expect` list for `sim.expect`: the spawn's point when the rig has one
    starting location, then the recipe's own `expect` lines. The Firefight
-   probe reports the zone and squad counts, the kit's byte costs and the
+   probe reports the zone and squad counts, the kit's byte costs, the two
+   bases it armed (`bases`: points, source and home team) and the
    recipe's `expect` lines.
 
 ### The build
@@ -161,7 +167,8 @@ fields = { team = 1 }
   A type must be in the base's palette or, for netgame items, in its tag
   index. A rig requiring geometry, lighting or tags beyond these edits is
   `approximate`, with the missing part in its `note`.
-- The Firefight probe samples the base's own geometry and spawn points.
+- The Firefight probe samples the base's own geometry, spawn points and
+  CTF flag stands, with red's base as the home base.
   Its builder chooses the squad locations and refuses placement edits or
   anchors in the recipe. To build the same package offline, run
   `h2 firefight kit coagulation --probe`.

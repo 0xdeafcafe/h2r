@@ -18,6 +18,33 @@
 //! original. The family's scratch globals (`0x504410..0x5044c4`,
 //! `0x55e530..0x55e590`, `0x55ebb8..0x55ebe8`) and the dead stack slots
 //! are left unwritten: nothing outside the family reads them.
+//!
+//! [`skeleton`] is phase 1b: the skeleton walk of `bd090`, the node records
+//! turned into node matrices by `sim_anim::build_matrices`
+//! (docs/engine/skeleton-walk.md).
+//!
+//! [`markers`](markers) is phase 1c's marker slice: `b8d30`'s marker lookup
+//! with the group scan and transform fill of `1d8f00` and `1d8f50` by
+//! `sim_anim::model_markers` (docs/engine/markers.md).
+//! [`palette`](palette) is phase 1c's first-person slice: the bone
+//! palette of `16760c` by `sim_anim::palette` (docs/engine/palette.md).
+//! [`unit_aim`] and [`first_person_filters`] run the complete caller
+//! segments at `c7840` and `166d75`. The latter inlines the [`filter`]
+//! step `11eed0` for the seat axes and weapon slots.
+//!
+//! [`graph_walk`] is phase 1b's other loop: the animation graph's node
+//! walk `1dd1c0` by `sim_anim::graph_matrices`, checked against the guest
+//! at every call by its arm (docs/engine/skeleton-walk.md, "The graph walk
+//! `1dd1c0`").
+mod segments;
+pub use segments::{FIRST_PERSON_FILTER_SITES, UNIT_AIM_SITES, first_person_filters, unit_aim};
+pub mod filter;
+pub mod graph_walk;
+pub mod manager;
+pub mod markers;
+pub mod palette;
+pub mod skeleton;
+
 use crate::function_eval::constant::{ONE, SMALL};
 use crate::sim_native::Memory;
 use ::sim_anim::{

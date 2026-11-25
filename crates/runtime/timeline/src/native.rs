@@ -5,17 +5,77 @@ use std::sync::OnceLock;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(usize)]
-pub enum Stage { World, Objects, Transparents, Lights, Post, Particles, Decals, Hud, Gels, Fog, Water, Shadows, FirstPerson, Effects, Ui }
+pub enum Stage {
+    World,
+    Objects,
+    Transparents,
+    Lights,
+    Post,
+    Particles,
+    Decals,
+    Hud,
+    Gels,
+    Fog,
+    Water,
+    Shadows,
+    FirstPerson,
+    Effects,
+    Ui,
+    Flares,
+    Sky,
+}
 
-const STAGES: [&str; 15] = ["world", "objects", "transparents", "lights", "post", "particles", "decals", "hud", "gels", "fog", "water", "shadows", "first_person", "effects", "ui"];
+const STAGES: [&str; Stage::Sky as usize + 1] = [
+    "world",
+    "objects",
+    "transparents",
+    "lights",
+    "post",
+    "particles",
+    "decals",
+    "hud",
+    "gels",
+    "fog",
+    "water",
+    "shadows",
+    "first_person",
+    "effects",
+    "ui",
+    "flares",
+    "sky",
+];
 #[derive(Clone, Copy, Debug)]
 #[repr(usize)]
 pub enum Metric {
-    Examined, Suppressed, RefusedOwnership, RefusedResources, RefusedRanges, RefusedMasks, RefusedInputs, RefusedValidation, RefusedReplay,
-    PrepareNs, EncodeNs, Buffers, BindGroups, UploadBytes, PipelineMisses,
-    WorkerRoundTrips, ReferencePasses, DisplayPasses,
-    WalkExamined, WalkSuppressed, WalkRefusedInputs, WalkRefusedReservation,
-    BuildsSkipped, WalkSections, EntryPassesSkipped, SectionsPrepared, StateCallsSkipped, CacheHits, CacheMisses,
+    Examined,
+    Suppressed,
+    RefusedOwnership,
+    RefusedResources,
+    RefusedRanges,
+    RefusedMasks,
+    RefusedInputs,
+    RefusedValidation,
+    RefusedReplay,
+    PrepareNs,
+    EncodeNs,
+    Buffers,
+    BindGroups,
+    UploadBytes,
+    PipelineMisses,
+    WorkerRoundTrips,
+    ReferencePasses,
+    DisplayPasses,
+    WalkExamined,
+    WalkSuppressed,
+    WalkRefusedInputs,
+    WalkRefusedReservation,
+    BuildsSkipped,
+    WalkSections,
+    EntryPassesSkipped,
+    SectionsPrepared,
+    StateCallsSkipped,
+    CacheHits,
+    CacheMisses,
     /// Committed recordings with a private command buffer (`record_ranges`):
     /// each also ends the open encoder and adds a render pass of its own.
     CommandBuffers,
@@ -32,30 +92,84 @@ pub enum Metric {
     /// was told to skip their items: a named error, not a fallback.
     SceneDropped,
 }
-const METRICS: [&str; 34] = ["examined", "suppressed", "refused_ownership", "refused_resources", "refused_ranges",
-    "refused_masks", "refused_inputs", "refused_validation", "refused_replay", "prepare_ns", "encode_ns", "buffers", "bind_groups", "upload_bytes", "pipeline_misses",
-    "worker_round_trips", "reference_passes", "display_passes",
-    "walk_examined", "walk_suppressed", "walk_refused_inputs", "walk_refused_reservation",
-    "builds_skipped", "walk_sections", "entry_passes_skipped", "sections_prepared", "state_calls_skipped", "cache_hits", "cache_misses",
-    "command_buffers", "extract_ns", "render_prepare_ns", "scene_stages", "scene_dropped"];
+const METRICS: [&str; 34] = [
+    "examined",
+    "suppressed",
+    "refused_ownership",
+    "refused_resources",
+    "refused_ranges",
+    "refused_masks",
+    "refused_inputs",
+    "refused_validation",
+    "refused_replay",
+    "prepare_ns",
+    "encode_ns",
+    "buffers",
+    "bind_groups",
+    "upload_bytes",
+    "pipeline_misses",
+    "worker_round_trips",
+    "reference_passes",
+    "display_passes",
+    "walk_examined",
+    "walk_suppressed",
+    "walk_refused_inputs",
+    "walk_refused_reservation",
+    "builds_skipped",
+    "walk_sections",
+    "entry_passes_skipped",
+    "sections_prepared",
+    "state_calls_skipped",
+    "cache_hits",
+    "cache_misses",
+    "command_buffers",
+    "extract_ns",
+    "render_prepare_ns",
+    "scene_stages",
+    "scene_dropped",
+];
 
 // Four Xbox player views and a bucket for non-player views.
 const VIEWS: usize = 5;
 const VIEW_METRICS: [&str; 9] = [
-    "reference_ranges", "display_ranges", "invariants", "reference_recorded", "display_recorded",
-    "reference_invariants", "display_invariants", "reference_refused", "display_refused",
+    "reference_ranges",
+    "display_ranges",
+    "invariants",
+    "reference_recorded",
+    "display_recorded",
+    "reference_invariants",
+    "display_invariants",
+    "reference_refused",
+    "display_refused",
 ];
 const STRIDE: usize = METRICS.len() + VIEWS * VIEW_METRICS.len();
 const STAGE_COLUMNS: usize = STAGES.len() * STRIDE;
-const OBJECT_WALK_COLUMNS: [&str; 13] = [
-    "walk_native", "walk_fallback", "walk_unsupported", "walk_order", "walk_unreadable",
-    "walk_model", "walk_inputs", "walk_state", "walk_reservation",
-    "walk_part_aux_state", "walk_part_subparts", "walk_part_topology", "walk_unresident",
+const OBJECT_WALK_COLUMNS: [&str; 12] = [
+    "walk_native",
+    "walk_fallback",
+    "walk_unsupported",
+    "walk_order",
+    "walk_unreadable",
+    "walk_model",
+    "walk_inputs",
+    "walk_state",
+    "walk_reservation",
+    "walk_part_aux_state",
+    "walk_part_subparts",
+    "walk_unresident",
 ];
 const WORLD_OPAQUE_COLUMNS: [&str; 11] = [
-    "prereserved_draws", "prereserved_sections", "guest_indexed_draws", "guest_indexed_sections",
-    "handlers_taken", "handlers_fallback", "handler_draws", "handlers_indexed", "handler_indexed_draws",
-    "gpu_draws", "backend_draws",
+    "prereserved_draws",
+    "prereserved_sections",
+    "guest_indexed_draws",
+    "guest_indexed_sections",
+    "handlers_taken",
+    "handlers_fallback",
+    "handler_draws",
+    "handlers_indexed",
+    "handler_indexed_draws",
+    "gpu_draws",
+    "backend_draws",
 ];
 const WORLD_OPAQUE_BASE: usize = STAGE_COLUMNS + OBJECT_WALK_COLUMNS.len();
 const WORLD_SECTION_COLUMNS: [&str; 2] = ["taken_sections", "fallback_sections"];
@@ -64,11 +178,17 @@ const WORLD_SECTION_BASE: usize = WORLD_OPAQUE_BASE + WORLD_OPAQUE_COLUMNS.len()
 /// Count at the front-end boundary, independently of which backend
 /// records the GPU draw. Section counts are deduplicated by the caller.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum WorldOpaque { Prereserved, GuestIndexed }
+pub enum WorldOpaque {
+    Prereserved,
+    GuestIndexed,
+}
 
 impl WorldOpaque {
     pub fn count(self, draws: u64, sections: u64) {
-        let offset = match self { Self::Prereserved => 0, Self::GuestIndexed => 2 };
+        let offset = match self {
+            Self::Prereserved => 0,
+            Self::GuestIndexed => 2,
+        };
         let start = phase::Counter::ALL.len() + WORLD_OPAQUE_BASE + offset;
         phase::count_index(start, draws);
         phase::count_index(start + 1, sections);
@@ -84,14 +204,20 @@ pub enum WorldSection {
 
 impl WorldSection {
     pub fn taken(self) {
-        phase::world_section(|frame, _| { frame.taken_sections.insert(self); });
+        phase::world_section(|frame, _| {
+            frame.taken_sections.insert(self);
+        });
     }
 
     pub fn fallback(self, shader: u32, reason: &'static str) {
         phase::world_section(|frame, details| {
             frame.fallback_sections.insert(self);
             if details {
-                frame.sections_by_refusal.entry((shader, reason)).or_default().insert(self);
+                frame
+                    .sections_by_refusal
+                    .entry((shader, reason))
+                    .or_default()
+                    .insert(self);
             }
         });
     }
@@ -110,7 +236,9 @@ pub fn world_handler_indexed(shader: u32, reason: &str, draws: usize) {
 }
 
 fn consumed_handler(shader: u32, draws: usize, indexed: Option<&str>) {
-    if !phase::enabled() { return; }
+    if !phase::enabled() {
+        return;
+    }
     let start = phase::Counter::ALL.len() + WORLD_OPAQUE_BASE;
     phase::count_index(start + 4, 1);
     phase::count_index(start + 6, draws as u64);
@@ -131,11 +259,15 @@ fn consumed_handler(shader: u32, draws: usize, indexed: Option<&str>) {
 
 /// Physical routing of packets produced by the native sorted handler.
 pub fn world_packet(shader: u32, fallback: Option<&str>) {
-    if !phase::enabled() { return; }
+    if !phase::enabled() {
+        return;
+    }
     let offset = if fallback.is_some() { 10 } else { 9 };
     phase::count_index(phase::Counter::ALL.len() + WORLD_OPAQUE_BASE + offset, 1);
     if let Some(reason) = fallback {
-        phase::world_material(|counts| count_reason(&mut counts.rows.entry(shader).or_default().backend, reason));
+        phase::world_material(|counts| {
+            count_reason(&mut counts.rows.entry(shader).or_default().backend, reason)
+        });
     }
 }
 
@@ -149,7 +281,9 @@ fn count_reason(reasons: &mut BTreeMap<String, u64>, reason: &str) {
 
 /// Charge the ordinary shader datum once, when its sorted handler goes to the guest.
 pub fn world_handler_fallback(shader: u32, reason: &str) {
-    if !phase::enabled() { return; }
+    if !phase::enabled() {
+        return;
+    }
     phase::count_index(phase::Counter::ALL.len() + WORLD_OPAQUE_BASE + 5, 1);
     phase::world_material(|counts| {
         count_reason(&mut counts.rows.entry(shader).or_default().refused, reason);
@@ -185,7 +319,9 @@ impl WorldMaterials {
         }
     }
 
-    pub(crate) fn is_empty(&self) -> bool { self.rows.is_empty() }
+    pub(crate) fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
 
     /// A worker may finish before its game sample. Union identities until
     /// all contributors have arrived at the same frame boundary.
@@ -193,7 +329,10 @@ impl WorldMaterials {
         self.taken_sections.append(&mut other.taken_sections);
         self.fallback_sections.append(&mut other.fallback_sections);
         for (key, mut sections) in other.sections_by_refusal {
-            self.sections_by_refusal.entry(key).or_default().append(&mut sections);
+            self.sections_by_refusal
+                .entry(key)
+                .or_default()
+                .append(&mut sections);
         }
         if self.rows.is_empty() {
             self.rows = other.rows;
@@ -204,8 +343,12 @@ impl WorldMaterials {
             dst.taken += src.taken;
             dst.draws += src.draws;
             dst.indexed_draws += src.indexed_draws;
-            for (target, reasons) in [(&mut dst.refused, src.refused), (&mut dst.indexed, src.indexed), (&mut dst.backend, src.backend),
-                (&mut dst.refused_sections, src.refused_sections)] {
+            for (target, reasons) in [
+                (&mut dst.refused, src.refused),
+                (&mut dst.indexed, src.indexed),
+                (&mut dst.backend, src.backend),
+                (&mut dst.refused_sections, src.refused_sections),
+            ] {
                 for (reason, n) in reasons {
                     *target.entry(reason).or_default() += n;
                 }
@@ -222,7 +365,11 @@ impl WorldMaterials {
         self.taken_sections.clear();
         self.fallback_sections.clear();
         for ((shader, why), sections) in std::mem::take(&mut self.sections_by_refusal) {
-            self.rows.entry(shader).or_default().refused_sections.insert(why.to_owned(), sections.len() as u64);
+            self.rows
+                .entry(shader)
+                .or_default()
+                .refused_sections
+                .insert(why.to_owned(), sections.len() as u64);
         }
     }
 }
@@ -230,8 +377,14 @@ impl WorldMaterials {
 impl std::fmt::Display for WorldMaterials {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for (index, (shader, count)) in self.rows.iter().enumerate() {
-            if index > 0 { f.write_str("; ")?; }
-            write!(f, "{shader:#010x} taken={} draws={}", count.taken, count.draws)?;
+            if index > 0 {
+                f.write_str("; ")?;
+            }
+            write!(
+                f,
+                "{shader:#010x} taken={} draws={}",
+                count.taken, count.draws
+            )?;
             for (why, n) in &count.refused {
                 write!(f, " refused[{why:?}]={n}")?;
             }
@@ -253,17 +406,49 @@ impl std::fmt::Display for WorldMaterials {
 }
 
 const SCENE_LIST_START: usize = WORLD_SECTION_BASE + WORLD_SECTION_COLUMNS.len();
-const SCENE_LISTS: [&str; 14] = [
-    "view_objects", "light_objects", "object_order", "object_setup", "object_record",
-    "view_geometry", "light_geometry_gather", "visible_lights", "light_geometry",
-    "light_extra_caster", "transparent_effect", "transparent_polygon",
-    "transparent_geometry", "transparents",
+const SCENE_LISTS: [&str; 28] = [
+    "view_objects",
+    "light_objects",
+    "object_order",
+    "object_setup",
+    "object_record",
+    "view_geometry",
+    "light_geometry_gather",
+    "visible_lights",
+    "light_geometry",
+    "light_extra_caster",
+    "transparent_effect",
+    "transparent_polygon",
+    "transparent_geometry",
+    "transparents",
+    "light_frame",
+    "light_volume",
+    "light_records",
+    "light_items",
+    "light_handoff",
+    "light_passes",
+    "first_person_lights",
+    "first_person_records",
+    "object_shadow_list",
+    "object_shadow_rows",
+    "object_shadow_caster",
+    "light_additional_casters",
+    "typed_light_passes",
+    "typed_first_person",
 ];
 const SCENE_LIST_RESULTS: [&str; 11] = [
-    "native", "fallback", "memory", "layout", "unsupported", "residency", "lighting",
-    "palette", "object_model", "compared", "mismatch",
+    "native",
+    "fallback",
+    "memory",
+    "layout",
+    "unsupported",
+    "residency",
+    "lighting",
+    "palette",
+    "object_model",
+    "compared",
+    "mismatch",
 ];
-
 
 #[derive(Clone, Copy)]
 #[repr(usize)]
@@ -282,6 +467,40 @@ pub enum SceneList {
     TransparentPolygon,
     TransparentGeometry,
     Transparents,
+    /// One call of `0x00031c80` by the light frame body
+    /// (docs/graphics/native-light-gather.md, slice L2).
+    LightFrame,
+    /// One light's volume (`0x000c17f0`) in the frame body.
+    LightVolume,
+    /// One of a light's record walks (`0x00133390`, `0x00133520`) in the
+    /// frame body (slice L3).
+    LightRecords,
+    /// One record of a light's item lists (`0x00040e90` in the light's
+    /// kind, slice L4), or a call the body declines.
+    LightItems,
+    /// One light the frame body hands to the scene at its passes (slice
+    /// L5): native when the scene's light is made from the hand-off and
+    /// the light's item lists, the fallback and its reason when the scene
+    /// reads it at the passes' entry; `compared` and `mismatch` check the
+    /// hand-off against guest memory after the lists are made.
+    LightHandoff,
+    /// One light's passes (`0x00031170`) by the passes body (slice L5).
+    LightPasses,
+    /// One call of the first-person lights (`0x000404b0`) by their body
+    /// (slice L6).
+    FirstPersonLights,
+    /// One record of a first-person light's slot that passes the mode's
+    /// filter (`0x000402b0`, slice L6), or a call the body declines.
+    FirstPersonRecords,
+    /// Calls of the object-shadow outer loop, its row gather and its caster.
+    ObjectShadowList,
+    ObjectShadowRows,
+    ObjectShadowCaster,
+    LightAdditionalCasters,
+    /// One whole dynamic pass after its item lists are made (slice L8).
+    TypedLightPasses,
+    /// One first-person slot after its records are replayed.
+    TypedFirstPerson,
 }
 
 #[derive(Clone, Copy)]
@@ -303,26 +522,130 @@ pub enum SceneListResult {
 impl SceneList {
     pub fn count(self, result: SceneListResult) {
         phase::count_index(
-            phase::Counter::ALL.len() + SCENE_LIST_START + self as usize * SCENE_LIST_RESULTS.len()
+            phase::Counter::ALL.len()
+                + SCENE_LIST_START
+                + self as usize * SCENE_LIST_RESULTS.len()
                 + result as usize,
             1,
         );
     }
 }
 
-const UI_COLUMNS: [&str; Ui::OutlineReservation as usize + 1] = [
-    "items", "item_refused", "fallback_geometry", "fallback_order", "fallback_target",
-    "fallback_state", "fallback_shader", "fallback_texture", "fallback_upload",
-    "fallback_reservation", "guest_builder_draw", "model_guest_builder_draw",
-    "backdrop_native", "backdrop_fallback_entry",
-    "backdrop_fallback_inputs", "backdrop_fallback_reservation", "model_idle",
-    "model_native_group", "model_fallback_widget", "model_fallback_entry",
-    "model_fallback_camera", "model_fallback_caller", "model_fallback_geometry",
-    "model_fallback_range_limit", "model_fallback_texture_commit", "model_fallback_reservation",
-    "outline_native", "outline_fallback_entry", "outline_fallback_inputs", "outline_fallback_reservation",
+const UI_COLUMNS: [&str; Ui::OverlayModalBlurRefusedTargets as usize + 1] = [
+    "items",
+    "item_refused",
+    "fallback_geometry",
+    "fallback_order",
+    "fallback_target",
+    "fallback_state",
+    "fallback_shader",
+    "fallback_texture",
+    "fallback_upload",
+    "fallback_reservation",
+    "guest_builder_draw",
+    "model_guest_builder_draw",
+    "backdrop_native",
+    "backdrop_fallback_entry",
+    "backdrop_fallback_inputs",
+    "backdrop_fallback_reservation",
+    "model_idle",
+    "model_native_group",
+    "model_fallback_widget",
+    "model_fallback_entry",
+    "model_fallback_camera",
+    "model_fallback_caller",
+    "model_fallback_geometry",
+    "model_fallback_range_limit",
+    "model_fallback_texture_commit",
+    "model_fallback_reservation",
+    "outline_native",
+    "outline_fallback_entry",
+    "outline_fallback_inputs",
+    "outline_fallback_reservation",
+    "overlay_items",
+    "overlay_quads",
+    "overlay_text_runs",
+    "overlay_fills",
+    "overlay_glyphs",
+    "overlay_batches",
+    "overlay_refused_material",
+    "overlay_refused_clip",
+    "overlay_refused_glyph",
+    "overlay_refused_texture",
+    "overlay_blurs",
+    "overlay_model_views",
+    "overlay_refused_model_view",
+    "overlay_refused_blur",
+    "overlay_hud_tag_quads",
+    "overlay_hud_tag_fallback",
+    "overlay_hud_tag_recorded",
+    "overlay_hud_tag_record_failed",
+    "overlay_hud_text_quads",
+    "overlay_hud_text_fallback",
+    "overlay_menu_shader_quads",
+    "overlay_menu_shader_fallback",
+    "overlay_fade_quads",
+    "overlay_bar_quads",
+    "overlay_loading_quads",
+    "overlay_widget_quads",
+    "overlay_screen_fallback",
+    "overlay_menu_claimed",
+    "overlay_menu_skipped",
+    "overlay_menu_passes",
+    "overlay_menu_mismatch",
+    "overlay_menu_refused_frame",
+    "overlay_menu_refused_mismatched",
+    "overlay_menu_refused_bitmap_meter",
+    "overlay_menu_refused_bitmap_scroll",
+    "overlay_menu_refused_bitmap_state",
+    "overlay_menu_refused_text",
+    "overlay_menu_refused_model",
+    "overlay_menu_refused_draw",
+    "overlay_menu_refused_unreadable",
+    "overlay_menu_refused_unlisted",
+    "overlay_menu_refused_pass",
+    "overlay_modal_blurs",
+    "overlay_modal_blur_replayed",
+    "overlay_modal_blur_refused_pass",
+    "overlay_modal_blur_refused_arguments",
+    "overlay_modal_blur_refused_steps",
+    "overlay_modal_blur_refused_combiner",
+    "overlay_modal_blur_refused_targets",
 ];
 const UI_OFFSET: usize = SCENE_LIST_START + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len();
-pub(crate) const COLUMNS: usize = UI_OFFSET + UI_COLUMNS.len();
+const ANIMATION_OFFSET: usize = UI_OFFSET + UI_COLUMNS.len();
+const ANIMATION_COLUMNS: [&str; ShaderAnimation::Layer3Refused as usize + 1] = [
+    "layers_drawn",
+    "layers_refused",
+    "objects_drawn",
+    "objects_refused",
+    "layer3_drawn",
+    "layer3_refused",
+];
+pub(crate) const COLUMNS: usize = ANIMATION_OFFSET + ANIMATION_COLUMNS.len();
+
+/// Material passes with animated constants (`shad +0x3c`, sampled at the
+/// render clock, docs/formats/shader-instances.md "Animated constants"),
+/// by the native path that planned them with their sampled registers or
+/// refused them: the structure's layer planner (`layers`), the object
+/// passes of layer 3 and the world layers (`objects`), and the world's
+/// layer 3 (`layer3`, per selected material).
+#[derive(Clone, Copy, Debug)]
+#[repr(usize)]
+pub enum ShaderAnimation {
+    LayersDrawn,
+    LayersRefused,
+    ObjectsDrawn,
+    ObjectsRefused,
+    Layer3Drawn,
+    Layer3Refused,
+}
+
+impl ShaderAnimation {
+    pub fn count(self, n: u64) {
+        phase::count_index(phase::Counter::ALL.len() + ANIMATION_OFFSET + self as usize, n);
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 #[repr(usize)]
@@ -357,11 +680,104 @@ pub enum Ui {
     OutlineEntry,
     OutlineInputs,
     OutlineReservation,
+    /// The overlay stage (docs/graphics/retire-d3d.md, slice R6): items in
+    /// the scene's list by kind, and its glyphs.
+    OverlayItems,
+    OverlayQuads,
+    OverlayTextRuns,
+    OverlayFills,
+    OverlayGlyphs,
+    /// Draws `native_render::ui_gpu::OverlayGpu` recorded.
+    OverlayBatches,
+    /// Items dropped, by reason (`native_render::overlay::OverlayStats`):
+    /// there is no guest draw behind them.
+    OverlayRefusedMaterial,
+    OverlayRefusedClip,
+    OverlayRefusedGlyph,
+    OverlayRefusedTexture,
+    /// The menus' items (slice R7): blurs under a dialog and model
+    /// widgets' views.
+    OverlayBlurs,
+    OverlayModelViews,
+    /// Model views: no stage draws one yet.
+    OverlayRefusedModelView,
+    /// Blurs over a target the GPU cannot copy or sample.
+    OverlayRefusedBlur,
+    OverlayHudTagQuads,
+    OverlayHudTagFallback,
+    /// Display-copy overlay recordings (bitmap and glyph).
+    OverlayHudTagRecorded,
+    /// Failed overlay recordings, per attempted copy.
+    OverlayHudTagRecordFailed,
+    /// Glyph quads admitted with the text widget's evaluated pixel shader.
+    OverlayHudTextQuads,
+    OverlayHudTextFallback,
+    /// Menu shader bitmaps' quads drawn from the overlay with their tag
+    /// shader's combiner, and those the UI fan path kept.
+    OverlayMenuShaderQuads,
+    OverlayMenuShaderFallback,
+    /// The fade's, the bars' and the loading screen's draws drawn from the
+    /// overlay with the guest's combiner and blend at the draw, and those
+    /// the UI fan path kept.
+    OverlayFadeQuads,
+    OverlayBarQuads,
+    OverlayLoadingQuads,
+    OverlayWidgetQuads,
+    OverlayScreenFallback,
+    /// Menu widget draws the overlay claimed at their sorted list
+    /// (docs/graphics/native-post-hud.md, "The menus on the overlay").
+    OverlayMenuClaimed,
+    /// The game's widget draws left out because the overlay drew them.
+    OverlayMenuSkipped,
+    /// Overlay passes placed for runs of claimed widgets with items.
+    OverlayMenuPasses,
+    /// Lists whose left-out draws did not match their claim; that screen
+    /// is not claimed again on the map.
+    OverlayMenuMismatch,
+    /// Lists the game draws whole: the screen quads' viewport not the
+    /// full screen; a screen that mismatched before.
+    OverlayMenuRefusedFrame,
+    OverlayMenuRefusedMismatched,
+    /// Drawn bitmap widgets the game keeps: a meter; a scrolling bitmap;
+    /// one whose state the overlay does not draw as the game does (the
+    /// debug labels on, an image set from elsewhere, a texture not
+    /// resident, a tint constant not white).
+    OverlayMenuRefusedBitmapMeter,
+    OverlayMenuRefusedBitmapScroll,
+    OverlayMenuRefusedBitmapState,
+    /// Drawn widgets the game keeps, by the draw not read yet: text, a
+    /// model scene, another draw (a list's, a button's); one that did not
+    /// read; one the overlay refused.
+    OverlayMenuRefusedText,
+    OverlayMenuRefusedModel,
+    OverlayMenuRefusedDraw,
+    OverlayMenuRefusedUnreadable,
+    OverlayMenuRefusedUnlisted,
+    /// Lists or runs whose pass the host did not place.
+    OverlayMenuRefusedPass,
+    /// The blur under a dialog (docs/graphics/native-post-hud.md, "The
+    /// blur under a dialog"): calls whose draws the overlay's blur
+    /// replaced; calls armed whose draws were given back (a draw off the
+    /// plan, a pass that did not record); calls the host did not arm.
+    OverlayModalBlurs,
+    OverlayModalBlurReplayed,
+    OverlayModalBlurRefusedPass,
+    /// Calls the game draws, by what did not read: a word not the one
+    /// `0x00235756` pushes, endless steps, a combiner the blur step does
+    /// not draw, a draw outside targets 0 and 1.
+    OverlayModalBlurRefusedArguments,
+    OverlayModalBlurRefusedSteps,
+    OverlayModalBlurRefusedCombiner,
+    OverlayModalBlurRefusedTargets,
 }
 
 impl Ui {
     pub fn count(self) {
-        phase::count_index(phase::Counter::ALL.len() + UI_OFFSET + self as usize, 1);
+        self.count_n(1);
+    }
+
+    pub fn count_n(self, n: u64) {
+        phase::count_index(phase::Counter::ALL.len() + UI_OFFSET + self as usize, n);
     }
 }
 
@@ -379,11 +795,10 @@ pub enum ObjectWalk {
     Reservation,
     /// Parts (not objects) the walk refused by a named cause of
     /// `walk_unsupported` (`scene_extract::layout::object_walk::Refusal`):
-    /// the record's depth-scale toggle, its visible-subpart ranges, a
-    /// strip part drawn as a list. Counted with [`ObjectWalk::count`].
+    /// the record's depth-scale toggle and its visible-subpart ranges,
+    /// whose inputs do not read. Counted with [`ObjectWalk::count`].
     PartAuxState,
     PartSubparts,
-    PartTopology,
     /// Objects returned to the guest in a run whose validated native model
     /// had no uploaded GPU model. The run has not been consumed.
     Unresident,
@@ -391,7 +806,10 @@ pub enum ObjectWalk {
 
 impl ObjectWalk {
     pub fn count(self, n: usize) {
-        phase::count_index(phase::Counter::ALL.len() + STAGE_COLUMNS + self as usize, n as u64);
+        phase::count_index(
+            phase::Counter::ALL.len() + STAGE_COLUMNS + self as usize,
+            n as u64,
+        );
     }
 
     pub fn fallback(self, n: usize) {
@@ -404,7 +822,9 @@ pub(crate) fn labels() -> &'static [String] {
     LABELS.get_or_init(|| {
         let mut out = Vec::with_capacity(COLUMNS);
         for stage in STAGES {
-            for name in METRICS { out.push(format!("native_{stage}_{name}")); }
+            for name in METRICS {
+                out.push(format!("native_{stage}_{name}"));
+            }
             for view in ["0", "1", "2", "3", "other"] {
                 for name in VIEW_METRICS {
                     out.push(format!("native_{stage}_v{view}_{name}"));
@@ -420,22 +840,32 @@ pub(crate) fn labels() -> &'static [String] {
             }
         }
         out.extend(UI_COLUMNS.map(|name| format!("native_ui_{name}")));
+        out.extend(ANIMATION_COLUMNS.map(|name| format!("native_shader_animation_{name}")));
         out
     })
 }
 
 impl Stage {
+    /// Number of stages with timeline counter columns.
+    pub const COUNT: usize = STAGES.len();
+
     /// The stage's name in its counters (`native_<name>_...`).
     pub fn name(self) -> &'static str {
         STAGES[self as usize]
     }
 
     pub fn count(self, metric: Metric, n: u64) {
-        phase::count_index(phase::Counter::ALL.len() + self as usize * STRIDE + charged(metric) as usize, n);
+        phase::count_index(
+            phase::Counter::ALL.len() + self as usize * STRIDE + charged(metric) as usize,
+            n,
+        );
     }
 
     fn view_index(self, view: u32) -> usize {
-        phase::Counter::ALL.len() + self as usize * STRIDE + METRICS.len() + (view as usize).min(VIEWS - 1) * VIEW_METRICS.len()
+        phase::Counter::ALL.len()
+            + self as usize * STRIDE
+            + METRICS.len()
+            + (view as usize).min(VIEWS - 1) * VIEW_METRICS.len()
     }
 
     pub fn recorded(self, view: u32, display: bool, ranges: usize) {
@@ -443,7 +873,10 @@ impl Stage {
     }
 
     pub fn attempted(self, view: u32, display: bool, ranges: usize) {
-        phase::count_index(self.view_index(view) + 3 + usize::from(display), ranges as u64);
+        phase::count_index(
+            self.view_index(view) + 3 + usize::from(display),
+            ranges as u64,
+        );
     }
 
     pub fn copy_refused(self, view: u32, display: bool) {
@@ -486,7 +919,9 @@ pub fn on_render_thread() -> bool {
 /// on this thread. A shared device may serve more than one backend.
 #[inline]
 pub fn resource(metric: Metric, n: u64) {
-    if phase::enabled() && let Some(stage) = ACTIVE.with(std::cell::Cell::get) {
+    if phase::enabled()
+        && let Some(stage) = ACTIVE.with(std::cell::Cell::get)
+    {
         stage.count(metric, n);
     }
 }
@@ -495,7 +930,14 @@ pub struct Timer(Option<(Stage, Metric, std::time::Instant, Option<Stage>)>);
 
 impl Timer {
     pub fn start(stage: Stage, metric: Metric) -> Self {
-        Self(phase::enabled().then(|| (stage, metric, std::time::Instant::now(), ACTIVE.with(|a| a.replace(Some(stage))))))
+        Self(phase::enabled().then(|| {
+            (
+                stage,
+                metric,
+                std::time::Instant::now(),
+                ACTIVE.with(|a| a.replace(Some(stage))),
+            )
+        }))
     }
 }
 
@@ -515,10 +957,20 @@ mod tests {
     fn capture_columns_identify_each_view_and_copy() {
         let columns: Vec<_> = phase::counter_columns().collect();
         assert_eq!(columns.len(), phase::COUNTERS);
-        for (i, (slot, _)) in columns.iter().enumerate() { assert_eq!(*slot, i); }
-        for (metric, label) in [(Metric::WorkerRoundTrips, "native_lights_worker_round_trips"),
-            (Metric::ReferencePasses, "native_lights_reference_passes"), (Metric::DisplayPasses, "native_lights_display_passes")] {
-            assert_eq!(columns[phase::Counter::ALL.len() + Stage::Lights as usize * STRIDE + metric as usize].1, label);
+        for (i, (slot, _)) in columns.iter().enumerate() {
+            assert_eq!(*slot, i);
+        }
+        for (metric, label) in [
+            (Metric::WorkerRoundTrips, "native_lights_worker_round_trips"),
+            (Metric::ReferencePasses, "native_lights_reference_passes"),
+            (Metric::DisplayPasses, "native_lights_display_passes"),
+        ] {
+            assert_eq!(
+                columns
+                    [phase::Counter::ALL.len() + Stage::Lights as usize * STRIDE + metric as usize]
+                    .1,
+                label
+            );
         }
         let i = Stage::Objects.view_index(2);
         assert_eq!(columns[i].1, "native_objects_v2_reference_ranges");
@@ -528,22 +980,93 @@ mod tests {
         assert_eq!(columns[lists].1, "native_scene_lists_view_objects_native");
         let ui = phase::Counter::ALL.len() + UI_OFFSET;
         assert_eq!(ui, lists + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len());
-        assert_eq!(columns[ui - 1].1, "native_scene_lists_transparents_mismatch");
+        assert_eq!(
+            columns[ui - 1].1,
+            "native_scene_lists_typed_first_person_mismatch"
+        );
+        for (stage, label) in [
+            (SceneList::LightAdditionalCasters, "native_scene_lists_light_additional_casters_native"),
+            (SceneList::TypedLightPasses, "native_scene_lists_typed_light_passes_native"),
+            (SceneList::TypedFirstPerson, "native_scene_lists_typed_first_person_native"),
+            (SceneList::ObjectShadowList, "native_scene_lists_object_shadow_list_native"),
+            (SceneList::ObjectShadowRows, "native_scene_lists_object_shadow_rows_native"),
+            (SceneList::ObjectShadowCaster, "native_scene_lists_object_shadow_caster_native"),
+        ] {
+            assert_eq!(columns[lists + stage as usize * SCENE_LIST_RESULTS.len()].1, label);
+        }
+        let first_person = lists + SceneList::FirstPersonLights as usize * SCENE_LIST_RESULTS.len();
+        assert_eq!(
+            columns[first_person].1,
+            "native_scene_lists_first_person_lights_native"
+        );
+        let frame = lists + SceneList::LightFrame as usize * SCENE_LIST_RESULTS.len();
+        assert_eq!(columns[frame].1, "native_scene_lists_light_frame_native");
         assert_eq!(columns[ui].1, "native_ui_items");
-        assert_eq!(columns[phase::Counter::ALL.len() + COLUMNS - 1].1, "native_ui_outline_fallback_reservation");
+        let animation = phase::Counter::ALL.len() + ANIMATION_OFFSET;
+        assert_eq!(
+            columns[animation - 1].1,
+            "native_ui_overlay_modal_blur_refused_targets"
+        );
+        assert_eq!(columns[animation].1, "native_shader_animation_layers_drawn");
+        assert_eq!(
+            columns[animation + ShaderAnimation::ObjectsRefused as usize].1,
+            "native_shader_animation_objects_refused"
+        );
+        assert_eq!(
+            columns[phase::Counter::ALL.len() + COLUMNS - 1].1,
+            "native_shader_animation_layer3_refused"
+        );
+        assert_eq!(columns[ui + Ui::OverlayMenuClaimed as usize].1, "native_ui_overlay_menu_claimed");
+        assert_eq!(
+            columns[ui + Ui::OverlayMenuRefusedPass as usize].1,
+            "native_ui_overlay_menu_refused_pass"
+        );
+        assert_eq!(columns[ui + Ui::OverlayRefusedTexture as usize].1, "native_ui_overlay_refused_texture");
+        assert_eq!(columns[ui + Ui::OverlayModelViews as usize].1, "native_ui_overlay_model_views");
+        assert_eq!(columns[ui + Ui::OverlayRefusedBlur as usize].1, "native_ui_overlay_refused_blur");
+        assert_eq!(columns[ui + Ui::OverlayHudTagQuads as usize].1, "native_ui_overlay_hud_tag_quads");
+        assert_eq!(
+            columns[ui + Ui::OutlineReservation as usize].1,
+            "native_ui_outline_fallback_reservation"
+        );
+        assert_eq!(columns[ui + Ui::OverlayItems as usize].1, "native_ui_overlay_items");
+        assert_eq!(columns[ui + Ui::OverlayBatches as usize].1, "native_ui_overlay_batches");
         let walk = phase::Counter::ALL.len() + STAGE_COLUMNS;
-        assert_eq!(columns[walk + ObjectWalk::Native as usize].1, "native_objects_walk_native");
-        assert_eq!(columns[walk + ObjectWalk::Reservation as usize].1, "native_objects_walk_reservation");
-        assert_eq!(columns[walk + ObjectWalk::PartAuxState as usize].1, "native_objects_walk_part_aux_state");
-        assert_eq!(columns[walk + ObjectWalk::PartTopology as usize].1, "native_objects_walk_part_topology");
-        assert_eq!(columns[walk + ObjectWalk::Unresident as usize].1, "native_objects_walk_unresident");
-        assert_eq!(columns[walk + ObjectWalk::Unresident as usize + 1].1, "native_world_opaque_prereserved_draws");
+        assert_eq!(
+            columns[walk + ObjectWalk::Native as usize].1,
+            "native_objects_walk_native"
+        );
+        assert_eq!(
+            columns[walk + ObjectWalk::Reservation as usize].1,
+            "native_objects_walk_reservation"
+        );
+        assert_eq!(
+            columns[walk + ObjectWalk::PartAuxState as usize].1,
+            "native_objects_walk_part_aux_state"
+        );
+        assert_eq!(
+            columns[walk + ObjectWalk::Unresident as usize].1,
+            "native_objects_walk_unresident"
+        );
+        assert_eq!(
+            columns[walk + ObjectWalk::Unresident as usize + 1].1,
+            "native_world_opaque_prereserved_draws"
+        );
         let world = phase::Counter::ALL.len() + Stage::World as usize * STRIDE;
-        for (metric, label) in [(Metric::ExtractNs, "native_world_extract_ns"),
-            (Metric::RenderPrepareNs, "native_world_render_prepare_ns"), (Metric::SceneStages, "native_world_scene_stages"),
-            (Metric::SceneDropped, "native_world_scene_dropped")] {
+        for (metric, label) in [
+            (Metric::ExtractNs, "native_world_extract_ns"),
+            (Metric::RenderPrepareNs, "native_world_render_prepare_ns"),
+            (Metric::SceneStages, "native_world_scene_stages"),
+            (Metric::SceneDropped, "native_world_scene_dropped"),
+        ] {
             assert_eq!(columns[world + metric as usize].1, label);
         }
+    }
+
+    #[test]
+    fn flares_have_a_stage_of_their_own() {
+        assert_eq!(Stage::Flares.name(), "flares");
+        assert_eq!(STAGES[Stage::Flares as usize], "flares");
     }
 
     #[test]
@@ -552,7 +1075,10 @@ mod tests {
         std::thread::spawn(|| {
             mark_render_thread();
             assert!(on_render_thread());
-            assert!(matches!(charged(Metric::PrepareNs), Metric::RenderPrepareNs));
+            assert!(matches!(
+                charged(Metric::PrepareNs),
+                Metric::RenderPrepareNs
+            ));
             assert!(matches!(charged(Metric::EncodeNs), Metric::EncodeNs));
         })
         .join()

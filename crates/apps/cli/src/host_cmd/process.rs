@@ -164,6 +164,14 @@ impl Game {
         // The bundle's nav meshes and visibility grids go where the game
         // loads them (docs/live/dedicated-host.md, Game data bundle).
         host_data::install_bot_data(disc, data).context("placing the host data's bot nav data")?;
+        if let Some(firefight) = &lease.firefight {
+            // A Firefight match plays the map's kit package: the bundle's,
+            // built from the owner's disc as each player builds theirs
+            // (docs/game/firefight.md, "Live").
+            firefight.validate().map_err(anyhow::Error::msg)?;
+            host_data::install_firefight_kit(disc, data, &lease.map, firefight.kit, lease.map_id.as_deref())
+                .context("placing the host data's Firefight kit")?;
+        }
         if let Some(stores) = host_data::bundled_store_dir(disc)? {
             // The bundle carries only the physical cache header for a store-backed map.
             cmd.env(vfs::sim_store::STORE_ENV, stores);

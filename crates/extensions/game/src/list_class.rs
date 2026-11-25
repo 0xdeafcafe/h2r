@@ -52,6 +52,8 @@ use engine::view::ui::{self, Item, Screen, list_slot, screen_slot};
 use runtime::guest::Permissions;
 
 use crate::ui::{Chosen, List, Model};
+
+pub mod game_list;
 use crate::ui_kit::animation::TransitionStyle;
 use crate::ui_kit::{dialog::DialogBase, dialog_tag};
 
@@ -117,6 +119,8 @@ pub struct Entries {
     pub row_chosen: u32,
     pub setup_pane: u32,
     pub loader_slot: u32,
+    /// List slot 19 of ours ([`item_count`]); 0 keeps the Controls one.
+    pub item_count: u32,
     /// Screen slot 10 of ours (a class with an action or a sideways step),
     /// else 0.
     pub event: u32,
@@ -165,6 +169,12 @@ pub trait Rows: Send + Sync {
     fn tint(&self, _row: i16) -> Option<[f32; 3]> {
         None
     }
+    /// The skull the native renderer draws in place of the picture for
+    /// row `row` (`crate::skulls_model`, docs/game/skulls.md "The model
+    /// picture"); `None` leaves the game's picture.
+    fn model_picture(&self, _row: i16) -> Option<crate::skulls_model::Look> {
+        None
+    }
     /// The picture's bitmap for row `row`, a `bitm` datum handle of the
     /// loaded map, for a class with a picture ([`ListClass::picture`]);
     /// `None` leaves it. The bitmap widget reads its block's reference
@@ -186,17 +196,11 @@ pub trait Rows: Send + Sync {
     }
     /// The image of its bitmap the picture shows, set once as the screen
     /// opens ([`set_image`]), for a class with a picture
-    /// ([`ListClass::picture`]): a page's own icon in Quick Options'
-    /// game type picture (`crate::ui_kit::dialog::QUICK_PICTURE`). The
-    /// widget's constructor starts it at image 0. `None` leaves it.
+    /// ([`ListClass::picture`]): a settings dialog's icon in Quick
+    /// Options' game type picture (`crate::ui_kit::dialog::QUICK_PICTURE`),
+    /// the same in every state. The widget's constructor starts it at
+    /// image 0. `None` leaves it.
     fn picture_image(&self) -> Option<u16> {
-        None
-    }
-    /// The image of its bitmap the picture shows while row `row` has the
-    /// focus ([`set_image`] as the focus moves), for a class with a
-    /// picture: each row's own icon in Quick Options' game type picture
-    /// (the Clankers and Halo 1 Options pages). `None` leaves it.
-    fn row_image(&self, _row: i16) -> Option<u16> {
         None
     }
     /// Text that changes while the screen is up, asked at each row text:
@@ -558,10 +562,130 @@ impl ListLayout {
 }
 
 /// Top-left offsets from the list's animated anchor, in UI units.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScrollArrows {
     pub up: [i16; 2],
     pub down: [i16; 2],
+}
+
+/// A list skin's scroll arrows as the skin tag has them, and the list they
+/// were drawn for (docs/game/ui-builder.md "Scroll arrows").
+///
+/// The list draw (`0x24bda2`) places both arrows from the list's animated
+/// rectangle's top-left: the up arrow at the skin's `+0xc` point, the down
+/// arrow at its `+0x10` point, each the size of its image (0 and 1) of the
+/// skin's `bitm` (`+4`). The draw shows the up arrow while the first item
+/// widget's row has a row before it (`0x24c63e`) and the down arrow while
+/// the last item widget's row has one after it (`0x24c676`). The down
+/// point is fixed, so it sits where it should only on a list of the
+/// skin's own length ([`SkinArrows::rows`]): the `default` family puts it
+/// beside the last row, `(rows - 2) * 22` below the anchor (`default5`'s
+/// -66 for its five, `default6`'s -88 for its six, so `default`'s -44
+/// is a four-row list's). On a list of ours of another length,
+/// [`SkinArrows::placed`] moves the down arrow by the difference, so it
+/// keeps its place against the last row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SkinArrows {
+    /// The skin index (`wigl +0x138`).
+    pub skin: i16,
+    pub up: [i16; 2],
+    pub down: [i16; 2],
+    /// Rows of the list the down point was drawn for.
+    pub rows: i16,
+    /// The skin's item height (docs/game/ui-screens.md "Item spacing").
+    pub item_height: i16,
+    /// The arrow images' size (both images are one size), from the skin's
+    /// `bitm`.
+    pub size: [u16; 2],
+}
+
+/// The skins our lists use, read off the disc (`mainmenu.map`'s `skin`
+/// tags, `+0xc` and `+0x10`; the arrows' `bitm` images): `default` (0,
+/// `ui\list_skins\default\arrows`, 27 by 17), `setting_lists` (2, the
+/// Controls list's six rows of 26, `setting_lists\arrows`, 37 by 23),
+/// `default5` (21, the in-game Controller Settings' five) and `default6`
+/// (22, the value picker's six), both on `default\arrows`.
+pub const SKIN_ARROWS: [SkinArrows; 4] = [
+    SkinArrows {
+        skin: 0,
+        up: [-30, 24],
+        down: [-30, -44],
+        rows: 4,
+        item_height: 22,
+        size: [27, 17],
+    },
+    SkinArrows {
+        skin: 2,
+        up: [467, 25],
+        down: [467, -184],
+        rows: 6,
+        item_height: 26,
+        size: [37, 23],
+    },
+    SkinArrows {
+        skin: 21,
+        up: [-27, 24],
+        down: [-27, -66],
+        rows: 5,
+        item_height: 22,
+        size: [27, 17],
+    },
+    SkinArrows {
+        skin: 22,
+        up: [-27, 24],
+        down: [-27, -88],
+        rows: 6,
+        item_height: 22,
+        size: [27, 17],
+    },
+];
+
+impl SkinArrows {
+    /// Skin `skin`'s arrows, when it is one of [`SKIN_ARROWS`].
+    pub fn of(skin: i16) -> Option<SkinArrows> {
+        SKIN_ARROWS.iter().copied().find(|a| a.skin == skin)
+    }
+
+    /// The arrows on a list of this skin whose rectangle is `height` units
+    /// tall (laid-out rows times the item height): the up arrow where the
+    /// skin puts it, the down arrow moved by the rows the list has more
+    /// (or fewer) than the skin's own. On a list of the skin's own length
+    /// both are the skin's.
+    pub fn placed(&self, height: i32) -> ScrollArrows {
+        let own = i32::from(self.rows) * i32::from(self.item_height);
+        let y = i32::from(self.down[1]) - (height - own);
+        ScrollArrows {
+            up: self.up,
+            down: [
+                self.down[0],
+                y.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
+            ],
+        }
+    }
+
+    /// [`SkinArrows::placed`] for `rows` laid-out rows.
+    pub fn for_rows(&self, rows: usize) -> ScrollArrows {
+        let rows = i32::try_from(rows).unwrap_or(i32::MAX / 64);
+        self.placed(rows * i32::from(self.item_height))
+    }
+}
+
+/// Where a registered class's arrows go: its own, or its skin's moved to
+/// its length.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArrowPlace {
+    Fixed(ScrollArrows),
+    Skin(SkinArrows),
+}
+
+impl ArrowPlace {
+    /// The offsets for a list rectangle `height` units tall.
+    pub fn at(&self, height: i32) -> ScrollArrows {
+        match self {
+            ArrowPlace::Fixed(a) => *a,
+            ArrowPlace::Skin(s) => s.placed(height),
+        }
+    }
 }
 
 /// The two calls to UI_QUAD_TO_SCREEN in the stock list draw (0x24bda2).
@@ -571,7 +695,7 @@ const SCROLL_DOWN_RETURN: u32 = 0x0024_bfed;
 fn place_scroll_arrow(
     m: &mut dyn GuestMemory,
     cpu: &runtime::CpuAbi,
-    arrows_for: impl FnOnce(u32) -> Option<ScrollArrows>,
+    arrows_for: impl FnOnce(u32) -> Option<ArrowPlace>,
 ) -> Result<(), MemFault> {
     let up = match m.u32(cpu.esp)? {
         SCROLL_UP_RETURN => true,
@@ -579,14 +703,16 @@ fn place_scroll_arrow(
         _ => return Ok(()),
     };
     // The caller saved the list at EBP-0xc and its animated rectangle at
-    // EBP-0x24. List layout stores the anchor at the left and upper edges
-    // (rectangle words 1 and 2, respectively).
+    // EBP-0x24. List layout (`0x24bc12`) stores the rows' bottom, then the
+    // anchor's left and upper edges (rectangle words 0, 1 and 2).
     let list = m.u32(cpu.ebp.wrapping_sub(0xc))?;
-    let Some(arrows) = arrows_for(m.u32(list)?) else {
+    let Some(place) = arrows_for(m.u32(list)?) else {
         return Ok(());
     };
-    let [dx, dy] = if up { arrows.up } else { arrows.down };
     let word = |offset| m.u16(cpu.ebp.wrapping_sub(offset)).map(|v| f32::from(v as i16));
+    let height = (word(0x20)? - word(0x24)?) as i32;
+    let arrows = place.at(height);
+    let [dx, dy] = if up { arrows.up } else { arrows.down };
     // Keep the viewport adjustment the drawer made for split screen
     // (0x2363d4 writes X at EBP-8 and Y at EBP-4).
     let x = word(0x22)? + f32::from(dx) + word(8)?;
@@ -621,7 +747,7 @@ impl hooks::Feature for ScrollArrowLayout {
                     .unwrap_or_else(|e| e.into_inner())
                     .iter()
                     .find(|layout| layout.list_vtable == vtable)
-                    .and_then(|layout| layout.scroll_arrows)
+                    .and_then(RegisteredLayout::arrows)
             })
             .map_err(|m| runtime::GuestFault {
                 addr: m.addr,
@@ -680,6 +806,155 @@ pub fn extra_items(handler: u32, list_vtable: u32) -> Vec<u32> {
     (0..e.extra)
         .map(|i| slot + i * crate::speaker_row::ITEM_SIZE)
         .collect()
+}
+
+/// How many item widgets of ours the list whose vtable is `list_vtable`
+/// gets after its embedded ones ([`extra_items`]): 0 for none.
+pub fn extra_count(list_vtable: u32) -> u32 {
+    EXTRA_ITEMS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|e| e.list_vtable == list_vtable)
+        .map_or(0, |e| e.extra)
+}
+
+// ---- the item widgets a list of ours links (list slot 19) ----
+//
+// A list shows one row per item widget linked to its handler as a child
+// (docs/formats/ui.md "Item widgets, scrolling and spacing"). "Add items"
+// (`0x24bb60`, slot 17) links as many of the handler's embedded items
+// (slot 18, `+0x88`) as slot 19 says: the Controls list's slot 19
+// (`0x2b198a`) says six, whatever its tag lays out. The layout
+// (`0x24bc12`, called by the pane builder at `0x22f828` with its "drop
+// the rest" argument 0) places the first children up to the list block's
+// visible count and leaves the rest where they are. Rows go to every
+// child in order (`0x24c0c4`), so a child past the visible count still
+// gets a row: it is never placed, so it isn't seen, but Down moves onto it
+// (`0x24c1c5` steps to the next child that has a row, `0x24ac76`), A
+// presses its row (`0x24c024` reads the focused child's row), and past it
+// the list scrolls (`0x24c515`: more rows than children). That was the
+// "one extra item at the end": every list of ours laid out shorter than
+// six rows with more rows than it lays out, such as each one built on the
+// in-game Controller Settings tag (screen 200 lays out 5).
+//
+// Our list vtable's slot 19 ([`item_count`]) says the list's own laid-out
+// count instead, read from the tag its pane was built from, so every
+// child is placed: rows past them scroll in, and Down on the last row
+// stops or wraps as the list block's flag bit 0 says (`0x24c1c5`).
+
+/// A screen's current pane index (`i16`, -1 for none), as `0x22f899`
+/// reads it, and a widget's parent.
+pub const SCREEN_PANE_INDEX: u32 = 0x5f0;
+pub const WIDGET_PARENT: u32 = 0x10;
+const WIDGET_CHILD: u32 = 0x14;
+const WIDGET_NEXT: u32 = 0x18;
+const WIDGET_PREV: u32 = 0x1c;
+const WIDGET_INDEX: u32 = 0x0c;
+/// The screen-tag function (`0x22f871`, EAX the screen, the tag in EAX):
+/// `layout_glue` serves our tag copies through it.
+pub const SCREEN_TAG_FN: u32 = 0x0022_f871;
+
+/// The visible count of the first list of pane `pane` of the `wgit` at
+/// `tag`: what the layout (`0x24bc12`) places, as `0x24bbf3` finds the
+/// block (`None` for no tag, pane or list).
+pub fn laid_out(m: &dyn GuestMemory, tag: u32, pane: i16) -> Result<Option<i16>, MemFault> {
+    if tag == 0 || pane < 0 {
+        return Ok(None);
+    }
+    let (panes, at) = (m.u32(tag + SCREEN_PANES)?, m.u32(tag + SCREEN_PANES + 4)?);
+    if pane as u32 >= panes {
+        return Ok(None);
+    }
+    let p = at.wrapping_add(pane as u32 * PANE_SIZE);
+    let (lists, list) = (m.u32(p + PANE_LISTS)?, m.u32(p + PANE_LISTS + 4)?);
+    if lists as i32 <= 0 {
+        return Ok(None);
+    }
+    Ok(Some(m.u16(list + LIST_VISIBLE)? as i16))
+}
+
+/// What our slot 19 says for a list that lays out `laid_out` rows and gets
+/// `extra` item widgets of ours after its embedded ones: the embedded ones
+/// to link, so that the children are exactly the rows laid out (at most
+/// the [`EMBEDDED_ITEMS`] there are).
+pub fn item_widgets(laid_out: i16, extra: u32) -> u32 {
+    let laid = u32::from(laid_out.max(0) as u16);
+    laid.saturating_sub(extra).min(EMBEDDED_ITEMS as u32)
+}
+
+/// `0x22eb43`: unlink `child` from `parent`'s children (nothing when it is
+/// not one of them).
+pub fn unlink_child(m: &mut dyn GuestMemory, parent: u32, child: u32) -> Result<(), MemFault> {
+    let mut c = m.u32(parent + WIDGET_CHILD)?;
+    let mut guard = 0;
+    while c != child {
+        if c == 0 || guard > 256 {
+            return Ok(());
+        }
+        c = m.u32(c + WIDGET_NEXT)?;
+        guard += 1;
+    }
+    let (prev, next) = (m.u32(child + WIDGET_PREV)?, m.u32(child + WIDGET_NEXT)?);
+    if prev != 0 {
+        m.set_u32(prev + WIDGET_NEXT, next)?;
+    }
+    if next != 0 {
+        m.set_u32(next + WIDGET_PREV, prev)?;
+    }
+    if m.u32(parent + WIDGET_CHILD)? == child {
+        m.set_u32(parent + WIDGET_CHILD, next)?;
+    }
+    m.set_u32(child + WIDGET_PARENT, 0)?;
+    m.set_u32(child + WIDGET_NEXT, 0)?;
+    m.set_u32(child + WIDGET_PREV, 0)?;
+    m.set_u32(child + WIDGET_INDEX, u32::MAX)
+}
+
+/// Our list slot 19 for the handler at `list` whose tag lays out
+/// `laid_out` rows (`None`: unknown, the Controls list's six): the count
+/// "add items" links. Embedded items past it that an earlier call linked
+/// are unlinked first ("add items" appends what it links and leaves the
+/// rest), so the children stay the laid-out rows, in order.
+pub fn items_for(m: &mut dyn GuestMemory, list: u32, laid_out: Option<i16>) -> Result<u32, MemFault> {
+    let Some(laid) = laid_out else {
+        return Ok(EMBEDDED_ITEMS as u32);
+    };
+    let n = item_widgets(laid, extra_count(m.u32(list)?));
+    for i in n..EMBEDDED_ITEMS as u32 {
+        let item = list.wrapping_add(ui::ITEMS + i * Item::SIZE);
+        if m.u32(item + WIDGET_PARENT)? == list {
+            unlink_child(m, list, item)?;
+        }
+    }
+    Ok(n)
+}
+
+/// The "item count" entry (list slot 19; thiscall, the list in ECX, plain
+/// `ret`): [`items_for`] with the visible count of the list block the
+/// list's pane was built from ([`laid_out`] of the tag [`SCREEN_TAG_FN`]
+/// gives its screen).
+async fn item_count(cx: Cx) -> Result<Ret, EntryError> {
+    let list = cx.entry().ecx;
+    let (screen, pane) = cx.read(|m| -> Result<_, MemFault> {
+        let screen = m.u32(list.wrapping_add(WIDGET_PARENT))?;
+        let pane = if screen == 0 {
+            -1
+        } else {
+            m.u16(screen.wrapping_add(SCREEN_PANE_INDEX))? as i16
+        };
+        Ok((screen, pane))
+    })?;
+    let tag = if pane < 0 {
+        0
+    } else {
+        cx.call(GuestCall::new(SCREEN_TAG_FN).eax(screen)).await?.eax
+    };
+    let n = cx.write(|m| {
+        let laid = laid_out(m, tag, pane)?;
+        items_for(m, list, laid)
+    })?;
+    Ok(Ret::new(n, 0))
 }
 
 /// A `wgit` root's size, and its panes block (count, address).
@@ -781,6 +1056,9 @@ pub fn copy_tag(
     Ok(Some(at))
 }
 
+/// A screen widget's screen id (`0x22f871` reads it).
+const SCREEN_ID_OFFSET: u32 = 0x70;
+
 /// The screen vtable is also the base of the class's table page.
 struct RegisteredLayout {
     screen: &'static str,
@@ -789,6 +1067,20 @@ struct RegisteredLayout {
     list: Option<ListLayout>,
     style: TransitionStyle,
     scroll_arrows: Option<ScrollArrows>,
+}
+
+impl RegisteredLayout {
+    /// Where the class's arrows go: its own ([`ListClass::scroll_arrows`]),
+    /// else, for a moved list on a skin of [`SKIN_ARROWS`], the skin's
+    /// moved to the list's length. A list left where its tag has it keeps
+    /// the game's.
+    fn arrows(&self) -> Option<ArrowPlace> {
+        self.scroll_arrows.map(ArrowPlace::Fixed).or_else(|| {
+            self.list
+                .and_then(|l| SkinArrows::of(l.skin))
+                .map(ArrowPlace::Skin)
+        })
+    }
 }
 
 static LAYOUTS: Mutex<Vec<RegisteredLayout>> = Mutex::new(Vec::new());
@@ -821,6 +1113,13 @@ pub fn served_tag(
         return Ok(Some(tag));
     }
     if retail == 0 {
+        return Ok(None);
+    }
+    // A screen opened on its own tag in the map (docs/game/ui-in-maps.md):
+    // what the lookup found is the tag, already placed and skinned.
+    if m.u16(screen + SCREEN_ID_OFFSET)
+        .is_ok_and(|id| crate::ui_kit::inject::is_injected_id(id as i16))
+    {
         return Ok(None);
     }
     let Some((layout, style)) = LAYOUTS
@@ -1442,6 +1741,9 @@ pub fn write_vtables(m: &mut dyn GuestMemory, e: &Entries) -> Result<(), MemFaul
     m.set_u32(e.screen_vtable + 4 * screen_slot::SETUP_PANE, e.setup_pane)?;
     m.set_u32(e.screen_vtable + 4 * screen_slot::LOADER, e.loader_slot)?;
     m.set_u32(e.list_vtable + 4 * list_slot::ROW_TEXT, e.row_text)?;
+    if e.item_count != 0 {
+        m.set_u32(e.list_vtable + 4 * list_slot::ITEM_COUNT, e.item_count)?;
+    }
     if e.event != 0 {
         m.set_u32(e.screen_vtable + 4 * SCREEN_EVENT_SLOT, e.event)?;
     }
@@ -1540,6 +1842,37 @@ pub async fn load(
     name: &'static str,
     style: TransitionStyle,
 ) -> Result<Ret, EntryError> {
+    load_with(cx, e, rows, name, style, None).await
+}
+
+/// The injected screen id class `screen` opens on, when the interface the
+/// game is in holds its tag: the id's lookup (`SCREEN_TAG_BY_ID`) finds
+/// one. `None` for a screen that is not a `list` screen, or whose map was
+/// served without our screens (the copy path builds it, then).
+async fn injected_id(cx: &Cx, screen: &str) -> Result<Option<u32>, EntryError> {
+    let Some(id) = crate::ui_kit::inject::list_id(screen) else {
+        return Ok(None);
+    };
+    let id = u32::from(id as u16);
+    let handle = cx
+        .call(GuestCall::new(points::SCREEN_TAG_BY_ID.base).args([id]))
+        .await?
+        .eax;
+    Ok((handle != u32::MAX).then_some(id))
+}
+
+/// [`load`] for class `screen` (its screen name, [`ListClass::screen`]): a
+/// list screen whose tag is in the interface's map is built on that tag
+/// (`construct_on` with its id), the rest on the base screen's
+/// ([`base_screen_id`]).
+pub async fn load_with(
+    cx: Cx,
+    e: Entries,
+    rows: Arc<dyn Rows>,
+    name: &'static str,
+    style: TransitionStyle,
+    screen_name: Option<&'static str>,
+) -> Result<Ret, EntryError> {
     // The rows are counted with no guest memory held.
     let count = rows.count();
     let described = rows.describe(count);
@@ -1549,7 +1882,12 @@ pub async fn load(
     let request = cx.arg(0)?;
     // Unreadable (no game kind byte): the main menu's.
     let base = cx.read(|m| m.u8(UI_GAME_KIND).map_or(CONTROLS_SCREEN_ID, base_screen_id));
-    if let Some(d) = crate::ui_kit::dialog_tag::by_vtable(e.screen_vtable) {
+    let dialog = crate::ui_kit::dialog_tag::by_vtable(e.screen_vtable);
+    let injected = match (screen_name, &dialog) {
+        (Some(screen), None) => injected_id(&cx, screen).await?,
+        _ => None,
+    };
+    if let Some(d) = dialog {
         dialog_tag::prepare(&cx, &d, base, name, style).await?;
     }
     let screen = cx
@@ -1569,7 +1907,10 @@ pub async fn load(
     })?;
     {
         let _building = Building::start(capacity);
-        if base == CONTROLS_SCREEN_ID {
+        if let Some(id) = injected {
+            eprintln!("{name}: built on its own tag (screen {id:#x})");
+            construct_on(&cx, screen, id, a, b, player).await?;
+        } else if base == CONTROLS_SCREEN_ID {
             cx.call(
                 GuestCall::new(points::CONTROLS_SCREEN_CTOR.base)
                     .edi(screen)
@@ -1731,6 +2072,17 @@ pub async fn row_text(
     lines: Option<Arc<Lines>>,
 ) -> Result<Ret, EntryError> {
     let item = cx.arg(0)?;
+    // A screen of ours comes in and goes out within the kit's budgets
+    // (`ui_kit::lifecycle::cap_transition`); asked at each draw, as the
+    // screen's transition words are set once it is drawn. One opening
+    // again at an address a closed one had is not that one.
+    {
+        use crate::ui_kit::{animation::Transition, lifecycle};
+        let screen = cx.entry().ecx.wrapping_sub(ui::LIST);
+        if let Ok(Some(Transition::Open)) = cx.write(|m| lifecycle::cap_transition(m, screen)) {
+            lifecycle::forget_closing(screen);
+        }
+    }
     let live = rows.live_text();
     if !live.writes.is_empty() {
         cx.write(|m| -> Result<(), MemFault> {
@@ -1835,18 +2187,6 @@ pub async fn row_text(
             ) {
                 cx.write(|m| set_tint(m, picture, tint))?;
             }
-            if let (Some(picture), Some(image), Some(_)) = (
-                shown.picture(screen),
-                focused.and_then(|r| rows.row_image(r)),
-                moved,
-            ) {
-                if !cx.write(|m| set_image(m, picture, image))? {
-                    once(
-                        &PICTURE_MISSING,
-                        &format!("list class: the picture has no image {image}"),
-                    );
-                }
-            }
             if let Some((picture, original)) = shown.picture_block(screen) {
                 let datum = focused
                     .and_then(|r| rows.picture(r))
@@ -1854,6 +2194,11 @@ pub async fn row_text(
                 if let Some(datum) = datum {
                     cx.write(|m| set_picture(m, picture, datum))?;
                 }
+            }
+            if let Some(picture) = shown.picture(screen) {
+                let look = focused.and_then(|r| rows.model_picture(r));
+                let block = cx.read(|m| m.u32(picture.wrapping_add(WIDGET_BLOCK)).ok());
+                crate::skulls_model::note(screen, picture, block, look);
             }
         }
     }
@@ -1948,7 +2293,13 @@ pub async fn event(
     event_with(cx, original, action, &ACTION_BUTTONS, buttons, sideways).await
 }
 
-/// [`event`] with the buttons that run the action given.
+/// [`event`] with the buttons that run the action given. While the
+/// screen closes, a press is the screen beneath's
+/// (docs/game/ui-builder.md "Behaviour", `ui_kit::lifecycle::while_closing`):
+/// the closing press itself is dropped, every later one handed down, so
+/// the lobby takes input from the moment the close starts. A press that
+/// closes the screen starts the close's clock and holds the close to the
+/// kit's budget (`ui_kit::lifecycle::cap_transition`).
 pub async fn event_with(
     cx: Cx,
     original: u32,
@@ -1957,8 +2308,45 @@ pub async fn event_with(
     buttons: Option<Buttons>,
     sideways: Option<Arc<dyn Rows>>,
 ) -> Result<Ret, EntryError> {
+    use crate::ui_kit::lifecycle;
     let screen = cx.entry().ecx;
     let ev = cx.arg(0)?;
+    let now = std::time::Instant::now();
+    // A screen whose state can't be read is taken as not closing.
+    match cx.read(|m| lifecycle::while_closing(m, screen, now)).unwrap_or(None) {
+        Some(Some(to)) => {
+            let eax = lifecycle::hand_down(&cx, to, ev).await?;
+            return Ok(Ret::new(eax, 4));
+        }
+        Some(None) => return Ok(Ret::new(1, 4)),
+        None => {}
+    }
+    let r = event_on(cx.clone(), screen, ev, original, action, action_buttons, buttons, sideways)
+        .await?;
+    cx.write(|m| {
+        if m
+            .u8(screen + lifecycle::SCREEN_STATE)
+            .is_ok_and(|s| s & lifecycle::STATE_OUT != 0)
+        {
+            lifecycle::started_closing(screen, now);
+            let _ = lifecycle::cap_transition(m, screen);
+        }
+    });
+    Ok(r)
+}
+
+/// [`event_with`] on a screen that is not closing.
+#[allow(clippy::too_many_arguments)]
+async fn event_on(
+    cx: Cx,
+    screen: u32,
+    ev: u32,
+    original: u32,
+    action: Option<Action>,
+    action_buttons: &[u32],
+    buttons: Option<Buttons>,
+    sideways: Option<Arc<dyn Rows>>,
+) -> Result<Ret, EntryError> {
     let (kind, button) =
         cx.read(|m| -> Result<_, MemFault> { Ok((m.u32(ev)?, m.u32(ev + 8)?)) })?;
     if let Some(buttons) = &buttons
@@ -2021,6 +2409,7 @@ pub async fn destructor(cx: Cx, original: u32, on_free: OnFree) -> Result<Ret, E
     let r = cx
         .call(GuestCall::new(original).ecx(screen).args([flags]))
         .await?;
+    crate::skulls_model::forget(screen);
     on_free(cx.clone(), screen).await?;
     Ok(Ret::new(r.eax, 4))
 }
@@ -2190,7 +2579,20 @@ pub async fn setup_pane_footer(
             animation: motion.pane,
             ..d.block
         };
-        cx.write(|m| m.write(d.at, &block.bytes()))?;
+        let mut bytes = block.bytes();
+        // On a dialog's copy, over the base's backing
+        // (`dialog_tag::description_bias`): at bias 0 the panel covers it.
+        let bias = cx.read(|m| {
+            m.u32(screen)
+                .ok()
+                .and_then(|vt| dialog_tag::served_description_bias(m, vt).ok().flatten())
+        });
+        if let Some(bias) = bias {
+            let at = dialog_tag::TEXT_BIAS as usize;
+            bytes[at..at + 2].copy_from_slice(&bias.to_le_bytes());
+            eprintln!("{name}: description at render depth bias {bias}, over the dialog's backing");
+        }
+        cx.write(|m| m.write(d.at, &bytes))?;
         let widget = cx
             .call(
                 GuestCall::new(points::PANE_TEXT_ADD.base)
@@ -2239,7 +2641,7 @@ pub async fn setup_pane_footer(
                 };
                 add_picture(&cx, screen, &spec, d.frame_at, None, name).await?;
             }
-            add_panel(&cx, screen, &d, name, motion).await?;
+            add_panel(&cx, screen, &d, name, motion, bias).await?;
         }
     }
     Ok(Ret::new(r.eax, 4))
@@ -2247,13 +2649,18 @@ pub async fn setup_pane_footer(
 
 /// The class's panel ([`ListClass::panel`]): its art as bitmap widgets
 /// (backings first), then each text block a text widget with its string
-/// set ([`Rows::panel_text`], the rows' texts written first).
+/// set ([`Rows::panel_text`], the rows' texts written first). On a
+/// dialog's copy (`bias` is the description's, `dialog_tag::description_bias`)
+/// each text is drawn at that bias at least, over the base's backing: at a
+/// lower one the panel covers it (a settings dialog's header lines over
+/// Quick Options' `fs_dialog`).
 async fn add_panel(
     cx: &Cx,
     screen: u32,
     d: &Description,
     name: &str,
     motion: dialog_tag::PaneTracks,
+    bias: Option<i16>,
 ) -> Result<(), EntryError> {
     if d.panel.art.is_empty() && d.panel.texts.is_empty() {
         return Ok(());
@@ -2271,13 +2678,17 @@ async fn add_panel(
     }
     let texts_at = d.panel_at + MAX_PANEL_ART as u32 * BITMAP_BLOCK_SIZE;
     let mut widgets = Vec::with_capacity(d.panel.texts.len());
+    if let Some(bias) = bias.filter(|b| d.panel.texts.iter().any(|t| t.bias < *b)) {
+        eprintln!("{name}: panel texts at render depth bias {bias} at least, over the dialog's backing");
+    }
     for (i, t) in d.panel.texts.iter().enumerate() {
         let at = texts_at + i as u32 * TEXT_BLOCK_SIZE;
         let block = TextBlock {
             animation: motion.pane,
             ..t.block
         };
-        cx.write(|m| m.write(at, &PanelText { block, ..*t }.bytes()))?;
+        let bias = bias.map_or(t.bias, |b| t.bias.max(b));
+        cx.write(|m| m.write(at, &PanelText { block, bias, ..*t }.bytes()))?;
         let widget = cx
             .call(
                 GuestCall::new(points::PANE_TEXT_ADD.base)
@@ -2416,6 +2827,7 @@ impl hooks::Feature for ListClass {
         // and left other plans pointing at memory they never allocated.
         set_push_request(tables + PUSH_BLOCK);
         let name = self.id;
+        let screen_name = self.screen;
         let animation = self.animation;
         let description_block = self.description_block();
         let shown = description_block.map(|_| Arc::new(Shown::default()));
@@ -2427,7 +2839,14 @@ impl hooks::Feature for ListClass {
             let rows = Arc::clone(&rows);
             b.entry("loader", move |cx| -> EntryFuture {
                 let e = *cell.get().expect("entries are set at build");
-                Box::pin(load(cx, e, Arc::clone(&rows), name, animation))
+                Box::pin(load_with(
+                    cx,
+                    e,
+                    Arc::clone(&rows),
+                    name,
+                    animation,
+                    Some(screen_name),
+                ))
             })?
         };
         let lines = match self.lines.then(|| Lines::of(self.id)).flatten() {
@@ -2522,12 +2941,15 @@ impl hooks::Feature for ListClass {
         let loader_slot = b.entry("loader slot", move |_| -> EntryFuture {
             Box::pin(async move { Ok(Ret::new(loader, 0)) })
         })?;
+        let item_count_at =
+            b.entry("item count", move |cx| -> EntryFuture { Box::pin(item_count(cx)) })?;
         let e = Entries {
             loader,
             row_text: row_text_at,
             row_chosen: row_chosen_at,
             setup_pane: setup_pane_at,
             loader_slot,
+            item_count: item_count_at,
             event: event_at,
             destructor: destructor_at,
             screen_vtable: tables,
@@ -2622,6 +3044,7 @@ mod tests {
             row_chosen: 0xa0f0_0020,
             setup_pane: 0xa0f0_0030,
             loader_slot: 0xa0f0_0040,
+            item_count: 0xa0f0_0070,
             event: 0,
             destructor: 0,
             screen_vtable: TABLES,
@@ -2768,7 +3191,7 @@ mod tests {
         let read_quad = |g: &FakeGuest| {
             [0, 4, 8, 12].map(|offset| f32::from_bits(g.u32(quad + offset).unwrap()))
         };
-        let arrows_for = |vtable| (vtable == vt).then_some(SCROLL_ARROWS);
+        let arrows_for = |vtable| (vtable == vt).then_some(ArrowPlace::Fixed(SCROLL_ARROWS));
         for (return_pc, top, expected) in [
             (SCROLL_UP_RETURN, 154.0_f32, [9.0, 36.0, 176.0, 159.0]),
             (SCROLL_DOWN_RETURN, 86.0, [9.0, 36.0, -142.0, -159.0]),
@@ -2795,6 +3218,182 @@ mod tests {
         g.put_u32(STACK, 0x1234).put_u16(frame - 8, 0);
         place_scroll_arrow(&mut g, &cpu, arrows_for).unwrap();
         assert_eq!(read_quad(&g), [29.0, 56.0, -158.0, -175.0], "another draw");
+    }
+
+    /// The list draw's down arrow on a moved list of a skin of ours: the
+    /// skin's own place on a list of the skin's length, beside the last
+    /// row on a shorter or longer one; the up arrow stays the skin's.
+    #[test]
+    fn a_moved_lists_down_arrow_keeps_its_place_by_the_last_row() {
+        let mut g = guest();
+        let frame = STACK + 0x80;
+        let quad = frame - 0x34;
+        let vt = 0x0077_0070;
+        let skin = SkinArrows::of(0).unwrap();
+        let place = |vtable| (vtable == vt).then_some(ArrowPlace::Skin(skin));
+        let [left, top] = [-235_i16, 30];
+        g.put_u32(TABLES, vt)
+            .put_u32(frame - 0xc, TABLES)
+            .put_u16(frame - 0x22, left as u16)
+            .put_u16(frame - 0x20, top as u16);
+        let cpu = runtime::CpuAbi {
+            esp: STACK,
+            ebp: frame,
+            esi: quad,
+            ..Default::default()
+        };
+        let draw = |g: &mut FakeGuest, pc: u32, rows: i16| {
+            g.put_u32(STACK, pc)
+                .put_u16(frame - 0x24, (top - rows * 22) as u16);
+            for (offset, value) in [0, 4, 8, 12].into_iter().zip([0.0_f32, 27.0, 17.0, 0.0]) {
+                g.put_u32(quad + offset, value.to_bits());
+            }
+            place_scroll_arrow(g, &cpu, place).unwrap();
+            [0, 4, 8, 12].map(|o| f32::from_bits(g.u32(quad + o).unwrap()))
+        };
+        // The skin's own four rows: where the skin puts both.
+        assert_eq!(draw(&mut g, SCROLL_UP_RETURN, 4), [-265.0, -238.0, 54.0, 37.0]);
+        assert_eq!(draw(&mut g, SCROLL_DOWN_RETURN, 4), [-265.0, -238.0, -14.0, -31.0]);
+        // Two rows: the down arrow by the second row (its top at that
+        // row's top, the anchor), not two rows below the list.
+        assert_eq!(draw(&mut g, SCROLL_DOWN_RETURN, 2), [-265.0, -238.0, 30.0, 13.0]);
+        assert_eq!(draw(&mut g, SCROLL_UP_RETURN, 2), [-265.0, -238.0, 54.0, 37.0]);
+        // Thirteen rows: by the thirteenth.
+        let down = draw(&mut g, SCROLL_DOWN_RETURN, 13);
+        assert_eq!(down[2], f32::from(top - 11 * 22));
+    }
+
+    #[test]
+    fn every_skin_of_ours_keeps_its_arrows_on_its_own_length() {
+        for s in SKIN_ARROWS {
+            let own = s.for_rows(s.rows as usize);
+            assert_eq!((own.up, own.down), (s.up, s.down), "skin {}", s.skin);
+            let longer = s.for_rows(s.rows as usize + 3);
+            assert_eq!(longer.down[1], s.down[1] - 3 * s.item_height, "skin {}", s.skin);
+            assert_eq!(longer.up, s.up);
+        }
+        // The default family's down arrow sits by its last row.
+        for skin in [0, 21, 22] {
+            let s = SkinArrows::of(skin).unwrap();
+            assert_eq!(i32::from(s.down[1]), -(i32::from(s.rows) - 2) * 22, "skin {skin}");
+        }
+        assert_eq!(SkinArrows::of(7), None);
+    }
+
+    /// A list tag with one pane whose list lays out `visible` rows.
+    fn list_tag(g: &mut FakeGuest, at: u32, visible: i16) {
+        let pane = at + 0x100;
+        let list = at + 0x200;
+        g.map(at, 0x300);
+        g.put_u32(at + SCREEN_PANES, 1)
+            .put_u32(at + SCREEN_PANES + 4, pane)
+            .put_u32(pane + PANE_LISTS, 1)
+            .put_u32(pane + PANE_LISTS + 4, list)
+            .put_u16(list + LIST_VISIBLE, visible as u16);
+    }
+
+    #[test]
+    fn the_laid_out_count_is_read_off_the_panes_list() {
+        let mut g = guest();
+        const TAG: u32 = 0x0070_0000;
+        list_tag(&mut g, TAG, 5);
+        assert_eq!(laid_out(&g, TAG, 0), Ok(Some(5)));
+        assert_eq!(laid_out(&g, TAG, 1), Ok(None), "no second pane");
+        assert_eq!(laid_out(&g, TAG, -1), Ok(None), "no pane");
+        assert_eq!(laid_out(&g, 0, 0), Ok(None), "no tag");
+        g.put_u32(TAG + 0x100 + PANE_LISTS, 0);
+        assert_eq!(laid_out(&g, TAG, 0), Ok(None), "no list");
+    }
+
+    /// The handler's six embedded items linked in order, as "add items"
+    /// leaves them.
+    fn link_all(g: &mut FakeGuest, list: u32) -> Vec<u32> {
+        let items: Vec<u32> = (0..EMBEDDED_ITEMS as u32)
+            .map(|i| list + ui::ITEMS + i * Item::SIZE)
+            .collect();
+        g.put_u32(list + WIDGET_CHILD, items[0]);
+        for (k, &it) in items.iter().enumerate() {
+            let prev = if k == 0 { 0 } else { items[k - 1] };
+            let next = items.get(k + 1).copied().unwrap_or(0);
+            g.put_u32(it + WIDGET_PARENT, list)
+                .put_u32(it + WIDGET_PREV, prev)
+                .put_u32(it + WIDGET_NEXT, next);
+        }
+        items
+    }
+
+    /// Our slot 19 on a list built on the in-game Controller Settings tag
+    /// (five laid out): five embedded items, the sixth unlinked from an
+    /// earlier "add items", so every child is placed.
+    #[test]
+    fn our_item_count_entry_links_only_the_rows_the_tag_lays_out() {
+        let mut g = guest();
+        const TAG: u32 = 0x0070_0000;
+        g.map(SCREEN, ui::CONTROLS_SCREEN_SIZE);
+        list_tag(&mut g, TAG, 5);
+        let list = SCREEN + ui::LIST;
+        g.put_u32(list, 0x0077_1070)
+            .put_u32(list + WIDGET_PARENT, SCREEN)
+            .put_u16(SCREEN + SCREEN_PANE_INDEX, 0);
+        let items = link_all(&mut g, list);
+        let f = |cx| -> EntryFuture { Box::pin(item_count(cx)) };
+        let regs = Regs {
+            ecx: list,
+            esp: STACK,
+            ..Default::default()
+        };
+        let run = testing::run(&f, g, regs, |c, _| Regs {
+            eax: if c.target == SCREEN_TAG_FN { TAG } else { 0 },
+            ..Default::default()
+        });
+        assert_eq!(run.calls, [Gc::new(SCREEN_TAG_FN).eax(SCREEN)]);
+        assert_eq!(run.result, Ok(Ret::new(5, 0)));
+        let g = run.guest;
+        assert_eq!(
+            crate::speaker_row::children(&crate::layout_glue::ReadGm(&g), list),
+            Some(items[..5].to_vec())
+        );
+        assert_eq!(g.u32(items[5] + WIDGET_PARENT), Ok(0));
+        assert_eq!(g.u32(items[4] + WIDGET_NEXT), Ok(0));
+    }
+
+    /// Before the pane is built (no pane yet) the count is the Controls
+    /// list's six and no guest call is made.
+    #[test]
+    fn with_no_pane_our_item_count_is_the_controls_six() {
+        let mut g = guest();
+        g.map(SCREEN, ui::CONTROLS_SCREEN_SIZE);
+        let list = SCREEN + ui::LIST;
+        g.put_u32(list, 0x0077_2070)
+            .put_u32(list + WIDGET_PARENT, SCREEN)
+            .put_u16(SCREEN + SCREEN_PANE_INDEX, u16::MAX);
+        let f = |cx| -> EntryFuture { Box::pin(item_count(cx)) };
+        let regs = Regs {
+            ecx: list,
+            esp: STACK,
+            ..Default::default()
+        };
+        let run = testing::run(&f, g, regs, |_, _| Regs::default());
+        assert!(run.calls.is_empty());
+        assert_eq!(run.result, Ok(Ret::new(EMBEDDED_ITEMS as u32, 0)));
+    }
+
+    #[test]
+    fn unlinking_a_child_mends_its_siblings() {
+        let mut g = guest();
+        g.map(SCREEN, ui::CONTROLS_SCREEN_SIZE);
+        let list = SCREEN + ui::LIST;
+        let items = link_all(&mut g, list);
+        unlink_child(&mut g, list, items[0]).unwrap();
+        unlink_child(&mut g, list, items[3]).unwrap();
+        // Not a child: nothing.
+        unlink_child(&mut g, list, items[3]).unwrap();
+        assert_eq!(
+            crate::speaker_row::children(&crate::layout_glue::ReadGm(&g), list),
+            Some(vec![items[1], items[2], items[4], items[5]])
+        );
+        assert_eq!(g.u32(items[4] + WIDGET_PREV), Ok(items[2]));
+        assert_eq!(g.u32(items[3] + WIDGET_INDEX), Ok(u32::MAX));
     }
 
     /// What the Controls constructor leaves: vtables, the press record, and
@@ -2846,7 +3445,7 @@ mod tests {
         assert_eq!(slot(TABLES, 0), 0x5000);
         assert_eq!(slot(TABLES, 27), 0x5000 + 27);
         assert_eq!(slot(TABLES + 0x70, list_slot::ROW_TEXT), e.row_text);
-        assert_eq!(slot(TABLES + 0x70, list_slot::ITEM_COUNT), 0x6000 + 19);
+        assert_eq!(slot(TABLES + 0x70, list_slot::ITEM_COUNT), e.item_count);
         assert_eq!(slot(TABLES + 0x70, list_slot::ADD_ITEMS), 0x6000 + 17);
         assert_eq!(slot(TABLES + 0x70, 21), 0x6000 + 21);
         // A second screen finds the tables written and changes nothing.
@@ -2958,6 +3557,143 @@ mod tests {
         // after, as asked.
         assert_eq!(*during.lock().unwrap(), Some((video_rows().count() as u32, 7)));
         assert_eq!(array_count(crate::speaker_row::LIST_NAME, 7), 7);
+    }
+
+    /// A list screen whose tag is in the interface's map (the id's lookup
+    /// finds it) is built on that tag, with our class adopting it as it
+    /// adopts a Controls-built one; with no tag in the map (the map was
+    /// served without our screens) it is built on Controls as before.
+    #[test]
+    fn a_list_screen_with_its_own_tag_in_the_map_is_built_on_it() {
+        let _serial = LOADING.lock().unwrap_or_else(|e| e.into_inner());
+        let id = u32::from(crate::ui_kit::inject::id_of("coop").unwrap() as u16);
+        assert_eq!(crate::ui_kit::inject::list_id("coop"), Some(id as i16));
+        for found in [0x1234_0005, u32::MAX] {
+            let mut g = guest();
+            g.map(SCREEN, ui::CONTROLS_SCREEN_SIZE)
+                .map(ROWS - 0x20, 0x200);
+            g.put_u16(REQUEST + 2, 0x4)
+                .put_u32(REQUEST + 4, 5)
+                .put_u32(REQUEST + 8, 4);
+            g.put_u32(STACK, 0xdead).put_u32(STACK + 4, REQUEST);
+            let e = entries();
+            let f = move |cx| -> EntryFuture {
+                Box::pin(load_with(
+                    cx,
+                    e,
+                    video_rows(),
+                    "test",
+                    TransitionStyle::Default,
+                    Some("coop"),
+                ))
+            };
+            let regs = Regs {
+                esp: STACK,
+                ..Default::default()
+            };
+            let run = testing::run(&f, g, regs, |c, m| {
+                if c.target == points::CONTROLS_SCREEN_CTOR.base || c.target == CONTROLS_LIST_CTOR {
+                    construct(m, 7);
+                }
+                Regs {
+                    eax: if c.target == points::UI_ALLOC.base {
+                        SCREEN
+                    } else if c.target == points::SCREEN_TAG_BY_ID.base {
+                        found
+                    } else {
+                        0
+                    },
+                    ..Default::default()
+                }
+            });
+            let list = SCREEN + ui::LIST;
+            let push = Gc::new(points::SCREEN_PUSH.base).edi(SCREEN).ebx(REQUEST);
+            assert_eq!(
+                run.calls[0],
+                Gc::new(points::SCREEN_TAG_BY_ID.base).args([id])
+            );
+            assert_eq!(run.calls[1].target, points::UI_ALLOC.base);
+            if found != u32::MAX {
+                assert_eq!(run.calls.len(), 5, "{:?}", run.calls);
+                assert_eq!(
+                    run.calls[2],
+                    Gc::new(GENERIC_SCREEN_CTOR)
+                        .eax(SCREEN)
+                        .edi(SCREEN)
+                        .esi(list)
+                        .args([id, 5, 4, 4, list]),
+                    "the generic constructor, on our screen's id"
+                );
+                assert_eq!(
+                    run.calls[3],
+                    Gc::new(CONTROLS_LIST_CTOR).esi(list).edi(SCREEN).args([4])
+                );
+                assert_eq!(run.calls[4], push);
+            } else {
+                assert_eq!(run.calls.len(), 4, "{:?}", run.calls);
+                assert_eq!(
+                    run.calls[2],
+                    Gc::new(points::CONTROLS_SCREEN_CTOR.base)
+                        .edi(SCREEN)
+                        .args([5, 4, 4]),
+                    "no tag in this map: built on Controls"
+                );
+                assert_eq!(run.calls[3], push);
+            }
+            assert_eq!(run.result, Ok(Ret::new(SCREEN, 4)));
+            assert_eq!(
+                Screen::at(SCREEN).vtable(&run.guest),
+                Ok(TABLES),
+                "adopted as ours either way"
+            );
+        }
+    }
+
+    /// A dialog class, or a class asked for with no screen name, never
+    /// looks for an injected tag.
+    #[test]
+    fn only_a_list_class_with_a_screen_name_looks_for_its_tag() {
+        let _serial = LOADING.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(crate::ui_kit::inject::list_id("kit.dialog"), None, "a dialog doc");
+        assert_eq!(crate::ui_kit::inject::list_id("no such screen"), None);
+        let mut g = guest();
+        g.map(SCREEN, ui::CONTROLS_SCREEN_SIZE)
+            .map(ROWS - 0x20, 0x200);
+        g.put_u16(REQUEST + 2, 0x4)
+            .put_u32(REQUEST + 4, 5)
+            .put_u32(REQUEST + 8, 4);
+        g.put_u32(STACK, 0xdead).put_u32(STACK + 4, REQUEST);
+        let e = entries();
+        let f = move |cx| -> EntryFuture {
+            Box::pin(load_with(
+                cx,
+                e,
+                video_rows(),
+                "test",
+                TransitionStyle::Default,
+                Some("kit.dialog"),
+            ))
+        };
+        let regs = Regs {
+            esp: STACK,
+            ..Default::default()
+        };
+        let run = testing::run(&f, g, regs, |c, m| {
+            if c.target == points::CONTROLS_SCREEN_CTOR.base {
+                construct(m, 7);
+            }
+            Regs {
+                eax: if c.target == points::UI_ALLOC.base { SCREEN } else { 0 },
+                ..Default::default()
+            }
+        });
+        assert!(
+            run.calls
+                .iter()
+                .all(|c| c.target != points::SCREEN_TAG_BY_ID.base),
+            "{:?}",
+            run.calls
+        );
     }
 
     /// The Controls tag (screen 39) is available in the main menu. In a
@@ -3553,13 +4289,13 @@ mod tests {
     }
 
     #[test]
-    fn the_class_places_five_entries_and_one_table_page() {
+    fn the_class_places_six_entries_and_one_table_page() {
         let mut r = hooks::Registry::new(hooks::Switches::defaults());
         let class = ListClass::new("video-screen", video_screen::SCREEN, model());
         assert_eq!(class.loader(), 0);
         r.add(&class).unwrap();
         let plan = r.build(&hooks::Base).unwrap();
-        assert_eq!(plan.entries.len(), 5);
+        assert_eq!(plan.entries.len(), 6);
         assert_eq!(class.loader(), plan.entries[0].addr);
         let text = plan.text();
         for l in [
@@ -3568,6 +4304,7 @@ mod tests {
             "row chosen",
             "set up pane",
             "loader slot",
+            "item count",
         ] {
             assert!(text.contains(&format!("entry video-screen:{l}")), "{text}");
         }
@@ -3970,7 +4707,7 @@ mod tests {
             });
         r.add(&class).unwrap();
         let plan = r.build(&hooks::Base).unwrap();
-        assert_eq!(plan.entries.len(), 5);
+        assert_eq!(plan.entries.len(), 6);
         assert_eq!(class.loader(), plan.entries[0].addr);
     }
 
@@ -4577,6 +5314,20 @@ mod tests {
             .retain(|layout| layout.screen_vtable != TABLES);
     }
 
+    #[test]
+    fn a_screen_built_on_its_own_tag_is_served_what_the_lookup_found() {
+        let mut g = guest();
+        let retail = controls_tag(&mut g);
+        const OURS: u32 = 0x00a2_0000;
+        g.map(OURS, 0x100);
+        g.put_u32(OURS, TABLES).put_u16(
+            OURS + SCREEN_ID_OFFSET,
+            crate::ui_kit::inject::id_of("coop").unwrap() as u16,
+        );
+        assert_eq!(served_tag(&mut g, OURS, retail), Ok(None), "no copy of it");
+        assert_eq!(g.u32(TABLES + TAG_SOURCE), Ok(0), "none was made");
+    }
+
     /// Slot 10 of a class with an action: Start runs it and is handled;
     /// anything else goes to the Controls handler.
     #[test]
@@ -4616,6 +5367,60 @@ mod tests {
         assert_eq!(run.calls, [Gc::new(0x2300ea).ecx(SCREEN).args([EVENT])]);
         assert_eq!(run.result, Ok(Ret::new(7, 4)));
         assert_eq!(ran.load(Ordering::SeqCst), 0, "B is not Start");
+    }
+
+    /// The lobby taking input as a dialog of ours closes: a press on the
+    /// closing dialog (window 1) goes to Game Setup beneath it (window 3)
+    /// through Game Setup's own event slot, once the close guard has
+    /// passed; the press that closed it is dropped, and neither reaches
+    /// the dialog's own handler.
+    #[test]
+    fn a_press_while_a_dialog_closes_goes_to_the_screen_beneath() {
+        use crate::ui_kit::lifecycle as lc;
+        use std::time::{Duration, Instant};
+        const EVENT: u32 = 0x0061_0000;
+        const BENEATH: u32 = 0x0062_0000;
+        const BENEATH_VTABLE: u32 = 0x0063_0000;
+        const HANDLER: u32 = 0x0077_7000;
+        let slot = crate::ui_watch::SHARED;
+        let w3 = crate::ui_watch::channel(3, slot).unwrap();
+        let run_with = |closed_ago: Duration| {
+            let mut g = guest();
+            g.map(SCREEN, 0x1000)
+                .map(BENEATH, 0x1000)
+                .map(BENEATH_VTABLE, 0x100)
+                .map(0x0054_d000, 0x1000);
+            g.put_u32(EVENT, BUTTON_EVENT).put_u32(EVENT + 8, 0);
+            g.put_u32(STACK + 4, EVENT);
+            g.put_u8(SCREEN + lc::SCREEN_STATE, lc::STATE_OUT)
+                .put_u32(SCREEN + lc::SCREEN_WINDOW, 1)
+                .put_u32(SCREEN + lc::SCREEN_SLOT, slot)
+                .put_u16(SCREEN + 8, 1);
+            g.put_u32(BENEATH, BENEATH_VTABLE)
+                .put_u16(BENEATH + 8, 1)
+                .put_u32(BENEATH_VTABLE + 4 * SCREEN_EVENT_SLOT, HANDLER);
+            g.put_u32(w3 + 8, BENEATH).put_u32(w3 + 0x34, BENEATH);
+            lc::forget_closing(SCREEN);
+            lc::started_closing(SCREEN, Instant::now().checked_sub(closed_ago).unwrap());
+            let f = move |cx| -> EntryFuture { Box::pin(event(cx, 0x2300ea, None, None, None)) };
+            let regs = Regs {
+                esp: STACK,
+                ecx: SCREEN,
+                ..Default::default()
+            };
+            let run = testing::run(&f, g, regs, |_, _| Regs {
+                eax: 9,
+                ..Default::default()
+            });
+            lc::forget_closing(SCREEN);
+            run
+        };
+        let run = run_with(Duration::from_millis(500));
+        assert_eq!(run.calls, [Gc::new(HANDLER).ecx(BENEATH).args([EVENT])]);
+        assert_eq!(run.result, Ok(Ret::new(9, 4)));
+        let run = run_with(Duration::ZERO);
+        assert_eq!(run.calls, [], "the closing press is dropped");
+        assert_eq!(run.result, Ok(Ret::new(1, 4)));
     }
 
     /// A class's own event hook comes first: a handled event stops there

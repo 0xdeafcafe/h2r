@@ -1,4 +1,5 @@
 use super::*;
+use crate::Status;
 
 fn learned_line() -> Entry {
     Entry {
@@ -23,6 +24,7 @@ fn learned_line() -> Entry {
         best: 20.9,
         deaths: 1,
         why: None,
+        control: false,
         stage: Stage::Compass,
         axis: 2,
         shrink: 1,
@@ -50,6 +52,7 @@ fn dead_line() -> Entry {
         best: 0.0,
         deaths: 0,
         why: Some("budget".into()),
+        control: false,
         stage: Stage::Compass,
         axis: 1,
         shrink: 2,
@@ -76,7 +79,7 @@ fn text_round_trips() {
     odd.knobs.aim = Some([-10.54321, 4.0999]);
     odd.score = 1.2137;
     let c = odd.canonical();
-    assert_eq!(parse(&to_text(&[c.clone()])).unwrap(), vec![c.clone()]);
+    assert_eq!(parse(&to_text(std::slice::from_ref(&c))).unwrap(), vec![c.clone()]);
     assert_eq!(c.knobs.aim, Some([-10.543, 4.100]));
     // No negative zero in the bytes.
     let mut z = learned_line();
@@ -269,7 +272,7 @@ fn merge_keeps_the_better_line_whole() {
     assert_eq!(
         m,
         merge(
-            &merge(&[far.clone()], &[a.clone()]),
+            &merge(&[far.clone()], std::slice::from_ref(&a)),
             &[open.clone(), better.clone()]
         )
     );
@@ -301,4 +304,145 @@ fn spot_ids_are_fixed_and_differ() {
     assert_ne!(a, spot_id("lockout", [-10.62, 3.88, -3.19]));
     // FNV-1a 64 of the empty-map string, a fixed value.
     assert_eq!(spot_id("", [0.0, 0.0, 0.0]), spot_id("", [-0.0, 0.0, 0.0]));
+}
+
+// ---- the sim's answer over the scan's (`apply`) ----
+
+/// The Ascension slot as the scan gives it: on its seam at y 4.0.
+fn scanned_slot() -> Spot {
+    Spot {
+        kind: Kind::Bounce,
+        edge: [[-11.10, 4.0, -3.2], [-9.98, 4.0, -3.2]],
+        stand: [-10.54, 4.0, -3.19],
+        score: 0.97,
+        ..Spot::default()
+    }
+}
+
+#[test]
+fn a_learned_line_s_aim_overrides_the_scan_s_aim() {
+    // The line stands where an older scan put the site (y 3.88), 0.14 from
+    // this one's: the same site. Its aim is (-10.54, 4.09).
+    let crouch = Spot {
+        kind: Kind::Crouch,
+        ..scanned_slot()
+    };
+    let far = Spot {
+        stand: [-10.54, 6.0, -3.19],
+        ..scanned_slot()
+    };
+    let mut spots = vec![scanned_slot(), crouch, far];
+    apply(&mut spots, &[learned_line()]);
+    let s = spots[0];
+    assert_eq!(s.stand, [-10.54, 4.09, -3.19]);
+    assert!(s.landed, "a learned aim is a measured landing");
+    // The edge is the collision edge: the aim moves, the edge does not.
+    assert_eq!(s.edge, scanned_slot().edge);
+    // A line proves nothing: the status and score are the scan's.
+    assert_eq!((s.status, s.score), (Status::Likely, 0.97));
+    // Not a bounce spot, or too far: as they were.
+    assert_eq!(spots[1], crouch);
+    assert_eq!(spots[2], far);
+}
+
+#[test]
+fn only_a_line_with_a_hit_moves_the_aim() {
+    let at = scanned_slot().stand;
+    let aim = |state: State, hits: u32| Entry {
+        state,
+        at,
+        hits,
+        knobs: Knobs {
+            how: Some(How::Stand),
+            aim: Some([-10.5, 4.05]),
+            ..Knobs::default()
+        },
+        ..Entry::default()
+    };
+    // A partial line with hits is the sim's answer too.
+    let mut spots = vec![scanned_slot()];
+    apply(&mut spots, &[aim(State::Partial, 5)]);
+    assert_eq!(spots[0].stand, [-10.5, 4.05, -3.19]);
+    // Dead, open or blocked lines, and a learned one with no hit, are not.
+    for e in [
+        aim(State::Dead, 0),
+        aim(State::Open, 3),
+        aim(State::Blocked, 0),
+        aim(State::Learned, 0),
+    ] {
+        let mut spots = vec![scanned_slot()];
+        apply(&mut spots, &[e]);
+        assert_eq!(spots[0], scanned_slot());
+    }
+    // A failed spot stays failed, and still takes the aim.
+    let mut spots = vec![Spot {
+        status: Status::Failed,
+        ..scanned_slot()
+    }];
+    apply(&mut spots, &[aim(State::Learned, 2)]);
+    assert_eq!(
+        (spots[0].stand, spots[0].status),
+        ([-10.5, 4.05, -3.19], Status::Failed)
+    );
+}
+
+#[test]
+fn a_line_belongs_to_the_spot_whose_target_its_aim_is_on() {
+    // The slot on its seam (y 4.0) and the crease candidate on its own
+    // joint (y 3.8), 0.2 apart: both within reach of a line standing at
+    // y 3.88, nearer the crease. Its aim, y 3.985, is on the seam.
+    let crease = Spot {
+        edge: [[-11.10, 3.8, -3.2], [-9.98, 3.8, -3.2]],
+        stand: [-10.54, 3.8, -3.19],
+        shape: crate::Shape::Crease,
+        score: 0.6,
+        ..scanned_slot()
+    };
+    let line = Entry {
+        state: State::Learned,
+        at: [-10.62, 3.88, -3.19],
+        hits: 9,
+        knobs: Knobs {
+            how: Some(How::Jump),
+            from: Some([-8.4, 2.5, -0.76]),
+            aim: Some([-10.45, 3.985]),
+            ..Knobs::default()
+        },
+        ..Entry::default()
+    };
+    let mut spots = vec![scanned_slot(), crease];
+    apply(&mut spots, &[line]);
+    assert_eq!(spots[0].stand, [-10.45, 3.985, -3.19]);
+    assert_eq!(spots[1], crease);
+    assert!(spots[1].candidate());
+}
+
+#[test]
+fn a_control_line_is_a_site_of_its_own_and_never_steers_a_spot() {
+    let arm = learned_line();
+    let control = Entry {
+        control: true,
+        knobs: Knobs {
+            aim: Some([-10.60, 3.70]),
+            ..arm.knobs
+        },
+        ..learned_line()
+    };
+    // It round-trips with its flag, after the position.
+    let text = line(&control);
+    assert!(text.starts_with("bounce learned -10.620 3.880 -3.190 control=1 how="), "{text}");
+    assert_eq!(parse_line(&text).unwrap(), control.canonical());
+    assert!(!parse_line(&line(&arm)).unwrap().control);
+    // Two sites at one `at`: merging and replacing keep both.
+    assert_eq!(merge(std::slice::from_ref(&arm), std::slice::from_ref(&control)).len(), 2);
+    assert_eq!(replace(std::slice::from_ref(&arm), control.clone()).len(), 2);
+    assert_ne!(spot_id("ascension", arm.at), control_id("ascension", arm.at));
+    // Only the arm's own line is found for the spot, and applied.
+    let both = [control.clone(), arm.clone()];
+    assert_eq!(entry_for(&both, arm.at), Some(&arm));
+    assert_eq!(control_for(&both, arm.at), Some(&control));
+    let mut spots = vec![scanned_slot()];
+    apply(&mut spots, std::slice::from_ref(&control));
+    assert_eq!(spots[0], scanned_slot());
+    assert_eq!(knobs_for(&[control], arm.at), Knobs::default());
 }

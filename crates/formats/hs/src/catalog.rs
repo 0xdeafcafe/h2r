@@ -58,71 +58,26 @@ impl Catalog {
         {
             return Err(invalid("unsupported XBE: retail HaloScript anchors differ"));
         }
-        let read_names = |base, count| -> Result<Vec<String>> {
-            (0..count)
-                .map(|i| cstring(x, word(x.bytes_at(base + i * 4, 4)?, 0)))
-                .collect()
-        };
-        let types = read_names(TYPE_NAMES, 62)?;
-        let script_kinds = read_names(SCRIPT_KIND_NAMES, 6)?;
-        let mut functions = Vec::with_capacity(911);
-        for i in 0..911 {
-            let address = word(x.bytes_at(FUNCTION_TABLE + i * 4, 4)?, 0);
-            let h = x.bytes_at(address, 14)?;
-            let return_type = short(h, 0);
-            let count = short(h, 12) as usize;
-            if return_type >= 62 || count > 32 {
-                return Err(invalid(format!(
-                    "builtin {i}: invalid type/parameter count"
-                )));
-            }
-            let parameters: Vec<_> = x
-                .bytes_at(address + 14, count * 2)?
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|b| short(b, 0))
-                .collect();
-            if parameters.iter().any(|&p| p >= 62) {
-                return Err(invalid(format!("builtin {i}: invalid parameter type")));
-            }
-            let evaluate = word(h, 4);
-            if evaluate != 0
-                && !x
-                    .section_containing(evaluate)
-                    .is_some_and(|s| s.flags.executable())
-            {
-                return Err(invalid(format!(
-                    "builtin {i}: evaluation pointer is not executable"
-                )));
-            }
-            functions.push(Builtin {
-                descriptor: address,
-                return_type,
-                flags: short(h, 2),
-                evaluate,
-                usage: (word(h, 8) != 0)
-                    .then(|| cstring(x, word(h, 8)))
-                    .transpose()?,
-                parameters,
-                name: None,
-            });
+        read_tables(
+            &|at, len| Ok(x.bytes_at(at, len)?.to_vec()),
+            &|at| x.section_containing(at).is_some_and(|s| s.flags.executable()),
+        )
+    }
+
+    /// Read the same tables from a running game's memory: `read` gives
+    /// `len` bytes at a guest address, `executable` says whether an
+    /// address is in the program's code. The data tables are the
+    /// executable's own, so the result equals [`Self::from_xbe`]'s. The
+    /// builtin count anchors it; the code anchor `from_xbe` also checks
+    /// is not read, since a recompiled image need not keep the code bytes.
+    pub fn from_memory(
+        read: &dyn Fn(u32, usize) -> Result<Vec<u8>>,
+        executable: &dyn Fn(u32) -> bool,
+    ) -> Result<Self> {
+        if word(&read(FUNCTION_COUNT, 4)?, 0) != 911 {
+            return Err(invalid("unsupported image: retail HaloScript anchors differ"));
         }
-        let mut external_global_types = Vec::with_capacity(0x41d);
-        for i in 0..0x41d {
-            let address = word(x.bytes_at(EXTERNAL_GLOBAL_TABLE + i * 4, 4)?, 0);
-            let t = short(x.bytes_at(address, 2)?, 0);
-            if t >= 62 {
-                return Err(invalid("invalid external-global type"));
-            }
-            external_global_types.push(t);
-        }
-        Ok(Self {
-            functions,
-            types,
-            script_kinds,
-            external_global_types,
-        })
+        read_tables(read, executable)
     }
 
     pub fn type_name(&self, ty: u16) -> Result<&str> {
@@ -165,19 +120,22 @@ impl Catalog {
             .collect()
     }
 }
-fn cstring(x: &xbe::Xbe<'_>, address: u32) -> Result<String> {
+fn cstring(
+    bytes_at: &dyn Fn(u32, usize) -> Result<Vec<u8>>,
+    address: u32,
+) -> Result<String> {
     let mut out = Vec::new();
     for i in 0..4096 {
         let at = address
             .checked_add(i)
-            .ok_or_else(|| invalid("XBE string address overflow"))?;
-        let byte = x.bytes_at(at, 1)?[0];
+            .ok_or_else(|| invalid("string address overflow"))?;
+        let byte = bytes_at(at, 1)?[0];
         if byte == 0 {
-            return String::from_utf8(out).map_err(|_| invalid("non-UTF-8 XBE string"));
+            return String::from_utf8(out).map_err(|_| invalid("non-UTF-8 string"));
         }
         out.push(byte);
     }
-    Err(invalid("unterminated XBE string"))
+    Err(invalid("unterminated string"))
 }
 
 impl Builtin {
@@ -203,4 +161,68 @@ impl Builtin {
     pub fn evaluate(&self) -> u32 {
         self.evaluate
     }
+}
+
+fn read_tables(
+    bytes_at: &dyn Fn(u32, usize) -> Result<Vec<u8>>,
+    executable: &dyn Fn(u32) -> bool,
+) -> Result<Catalog> {
+    let read_names = |base: u32, count: u32| -> Result<Vec<String>> {
+        (0..count)
+            .map(|i| cstring(bytes_at, word(&bytes_at(base + i * 4, 4)?, 0)))
+            .collect()
+    };
+    let types = read_names(TYPE_NAMES, 62)?;
+    let script_kinds = read_names(SCRIPT_KIND_NAMES, 6)?;
+    let mut functions = Vec::with_capacity(911);
+    for i in 0..911 {
+        let address = word(&bytes_at(FUNCTION_TABLE + i * 4, 4)?, 0);
+        let h = bytes_at(address, 14)?;
+        let return_type = short(&h, 0);
+        let count = short(&h, 12) as usize;
+        if return_type >= 62 || count > 32 {
+            return Err(invalid(format!("builtin {i}: invalid type/parameter count")));
+        }
+        let parameters: Vec<_> = bytes_at(address + 14, count * 2)?
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| short(b, 0))
+            .collect();
+        if parameters.iter().any(|&p| p >= 62) {
+            return Err(invalid(format!("builtin {i}: invalid parameter type")));
+        }
+        let evaluate = word(&h, 4);
+        if evaluate != 0 && !executable(evaluate) {
+            return Err(invalid(format!(
+                "builtin {i}: evaluation pointer is not executable"
+            )));
+        }
+        functions.push(Builtin {
+            descriptor: address,
+            return_type,
+            flags: short(&h, 2),
+            evaluate,
+            usage: (word(&h, 8) != 0)
+                .then(|| cstring(bytes_at, word(&h, 8)))
+                .transpose()?,
+            parameters,
+            name: None,
+        });
+    }
+    let mut external_global_types = Vec::with_capacity(0x41d);
+    for i in 0..0x41d {
+        let address = word(&bytes_at(EXTERNAL_GLOBAL_TABLE + i * 4, 4)?, 0);
+        let t = short(&bytes_at(address, 2)?, 0);
+        if t >= 62 {
+            return Err(invalid("invalid external-global type"));
+        }
+        external_global_types.push(t);
+    }
+    Ok(Catalog {
+        functions,
+        types,
+        script_kinds,
+        external_global_types,
+    })
 }

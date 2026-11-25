@@ -143,6 +143,7 @@ impl Embedded {
             epoch: Instant::now(),
             pace_stats: Arc::clone(&pace_stats),
             _source: None,
+            _picture: None,
             _discard: None,
         };
         let worker = GuestWorker::spawn(host, guest, || {})?;
@@ -215,7 +216,7 @@ impl Embedded {
 
     /// The layer's drawable size changed (pixels).
     pub fn resize(&mut self, size: (u32, u32)) {
-        self.surface.resize(size);
+        self.surface.resize(size, false);
     }
 
     /// Pauses or resumes the guest (the app left or regained the screen).

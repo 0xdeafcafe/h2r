@@ -52,6 +52,22 @@ pub(crate) enum Op {
     QosLookup,
 }
 impl Op {
+    /// Computed from the arguments and guest memory alone. Playback
+    /// computes them again, so they are never taped and take no call
+    /// index (docs/game/input-film.md, "What the replay depends on").
+    fn pure(self) -> bool {
+        matches!(self, Op::Htonl | Op::Htons | Op::FdIsSet)
+    }
+    /// Operations on a socket the guest names. Before the guest has made
+    /// a socket there is none to name.
+    fn on_socket(self) -> bool {
+        use Op::*;
+        matches!(
+            self,
+            Bind | ConnectSocket | Send | SendTo | Recv | RecvFrom | Ioctl | SetOption | GetOption
+                | Shutdown | Close
+        )
+    }
     fn winsock(self) -> bool {
         use Op::*;
         matches!(
@@ -154,6 +170,32 @@ fn endpoint(xna: &[u8; 36]) -> Result<SocketAddrV4> {
     }
     Ok(SocketAddrV4::new(ip, port))
 }
+/// Where the host of `xna` is reached, in the order to try: its `ina`,
+/// then its `inaOnline` when that is another usable address, on the one
+/// port. A session read for a console behind the host's NAT puts the
+/// host's LAN address in `ina` and its public one in `inaOnline`
+/// (`sessions::encode_result`); every other XNADDR has the same address
+/// in both, so one endpoint.
+fn endpoints(xna: &[u8; 36]) -> Result<Vec<SocketAddrV4>> {
+    let first = endpoint(xna)?;
+    let online = Ipv4Addr::new(xna[4], xna[5], xna[6], xna[7]);
+    let mut order = vec![first];
+    if online != *first.ip()
+        && !online.is_unspecified()
+        && !online.is_broadcast()
+        && !online.is_multicast()
+    {
+        order.push(SocketAddrV4::new(online, first.port()));
+    }
+    Ok(order)
+}
+/// Where traffic for the host of `xna` goes: the endpoint its last QoS
+/// lookup answered on when that was not its first ([`endpoints`]), else
+/// its first.
+fn reach(s: &State, xna: &[u8; 36]) -> Result<SocketAddrV4> {
+    let first = endpoint(xna)?;
+    Ok(s.reach.get(&first).copied().unwrap_or(first))
+}
 fn ip_word(ip: Ipv4Addr) -> u32 {
     u32::from_le_bytes(ip.octets())
 }
@@ -175,6 +217,9 @@ struct Socket {
 }
 #[derive(Default)]
 struct State {
+    /// The guest has made a socket. Until it has, the network is the null
+    /// network: no peers, nothing to receive ([`Network::dark`]).
+    opened: bool,
     net: u32,
     wsa: u32,
     next: u32,
@@ -183,6 +228,9 @@ struct State {
     errors: BTreeMap<u32, u32>,
     keys: BTreeMap<[u8; 8], [u8; 16]>,
     peers: BTreeMap<u32, Peer>,
+    /// A host's first endpoint (its XNADDR's `ina`) to the one its QoS
+    /// lookup answered on instead ([`reach`]).
+    reach: BTreeMap<SocketAddrV4, SocketAddrV4>,
     qos: QosMemory,
     responder: Option<qos::Responder>,
     /// Game traffic already said in the log: (peer IN_ADDR, guest port,
@@ -247,6 +295,7 @@ impl Network {
                 s.tunnel = None;
                 s.keys.clear();
                 s.peers.clear();
+                s.reach.clear();
                 s.traffic.clear();
                 s.qos.clear();
                 lock(&self.listeners).clear();
@@ -304,6 +353,30 @@ impl Network {
             .map(|(a, (ms, _))| (*a, *ms))
             .collect()
     }
+
+    /// The co-op channel endpoints of the other machines this console's
+    /// XNet knows (`coop::link` binds the base port plus
+    /// [`NetworkConfig::COOP_PORT_OFFSET`]): the guests of a host, the host
+    /// of a guest. This console's own address is left out; a peer whose
+    /// address cannot be read is skipped.
+    pub fn coop_endpoints(&self) -> Vec<SocketAddrV4> {
+        let own = self.config.address;
+        let s = lock(&self.state);
+        s.peers
+            .values()
+            .filter_map(|p| reach(&s, &p.xna).ok())
+            .filter(|address| *address != own)
+            .map(|address| {
+                SocketAddrV4::new(
+                    *address.ip(),
+                    address
+                        .port()
+                        .checked_add(crate::network_config::COOP_PORT_OFFSET)
+                        .unwrap_or(u16::MAX),
+                )
+            })
+            .collect()
+    }
     pub fn registered_keys(&self) -> Vec<[u8; 8]> {
         lock(&self.state).keys.keys().copied().collect()
     }
@@ -315,8 +388,10 @@ impl Network {
     }
     pub fn invoke(&self, op: Op, a: &[u32], thread: u32, rt: &Runtime) -> u32 {
         let result = match self.tap.get() {
-            Some(tap) => self.filmed(tap.as_ref(), op, a, thread, rt),
-            None => self.run(op, a, thread, rt),
+            Some(tap) if !op.pure() && !self.dark(op) => {
+                self.filmed(tap.as_ref(), op, a, thread, rt)
+            }
+            _ => self.run(op, a, thread, rt),
         };
         match result {
             Ok(v) => v,
@@ -327,6 +402,15 @@ impl Network {
             Err(e) => e,
         }
     }
+    /// The null network. A game that has made no socket has none for an
+    /// operation to name, so an operation on a socket is refused by the
+    /// guest's own state alone: the same answer in recording and in
+    /// playback, with nothing for the film to hold. The first `Socket`
+    /// call ends it, and every call after is taped. A dedicated host's
+    /// tunnel answers before the socket table, so it is never dark.
+    fn dark(&self, op: Op) -> bool {
+        op.on_socket() && !lock(&self.state).opened && !tunnel_host::active(self)
+    }
     fn socket(&self, id: u32) -> Result<Arc<Socket>> {
         lock(&self.state).sockets.get(&id).cloned().ok_or(10038)
     }
@@ -335,7 +419,7 @@ impl Network {
         match s
             .peers
             .get(&ip_word(*a.ip()))
-            .and_then(|p| endpoint(&p.xna).ok())
+            .and_then(|p| reach(&s, &p.xna).ok())
         {
             Some(peer) => SocketAddrV4::new(
                 *peer.ip(),
@@ -350,15 +434,16 @@ impl Network {
     /// 31020 on 10.0.3.7), when one is made from the port
     /// ([`NetworkConfig::shared_ip_in_addr`]). Peers are told apart by
     /// IP and port, so each game on a Mac is a player of its own.
-    fn in_addr(&self, peers: &BTreeMap<u32, Peer>, remote: SocketAddrV4) -> u32 {
-        if let Some((ina, _)) = peers
+    fn in_addr(&self, s: &State, remote: SocketAddrV4) -> u32 {
+        if let Some((ina, _)) = s
+            .peers
             .iter()
-            .find(|(_, p)| endpoint(&p.xna).ok() == Some(remote))
+            .find(|(_, p)| reach(s, &p.xna).ok() == Some(remote))
         {
             return *ina;
         }
         let real = ip_word(*remote.ip());
-        if remote.ip() != self.config.address.ip() && !peers.contains_key(&real) {
+        if remote.ip() != self.config.address.ip() && !s.peers.contains_key(&real) {
             return real;
         }
         ip_word(NetworkConfig::shared_ip_in_addr(remote.port()))
@@ -375,7 +460,7 @@ impl Network {
             {
                 let mut s = lock(&self.state);
                 let from = SocketAddrV4::new(*a.ip(), base);
-                let ina = self.in_addr(&s.peers, from);
+                let ina = self.in_addr(&s, from);
                 // A peer heard first on a game channel is joining the
                 // session it asked QoS about: the title asks for its key
                 // (XNetInAddrToXnAddr) to tell its own session's players.
@@ -575,11 +660,12 @@ impl Network {
             RegisterKey | UnregisterKey => self.register_key(op, a, rt),
             XnToIn => {
                 let xna: [u8; 36] = read(rt, a[0], 36)?.try_into().unwrap();
-                let remote = endpoint(&xna)?;
+                endpoint(&xna)?;
                 let kid: [u8; 8] = read(rt, a[1], 8)?.try_into().unwrap();
                 writable(rt, a[2], 4)?;
                 let mut s = lock(&self.state);
-                let ip = self.in_addr(&s.peers, remote);
+                let remote = reach(&s, &xna)?;
+                let ip = self.in_addr(&s, remote);
                 if !s.keys.contains_key(&kid) {
                     eprintln!(
                         "live: join: {remote} for session {}: no key registered for it",
@@ -595,7 +681,7 @@ impl Network {
                     );
                 }
                 if let Some(old) = s.peers.get(&ip)
-                    && endpoint(&old.xna).ok().is_some_and(|old| old != remote)
+                    && reach(&s, &old.xna).ok().is_some_and(|old| old != remote)
                 {
                     return Err(10048);
                 }
@@ -638,15 +724,17 @@ impl Network {
             }
             ConnectAddress => {
                 let mut s = lock(&self.state);
-                let p = s.peers.get_mut(&a[0]).ok_or(10022u32)?;
+                let p = s.peers.get(&a[0]).ok_or(10022u32)?;
                 if !p.connected {
                     eprintln!(
                         "live: join: connecting to {} for session {}",
-                        endpoint(&p.xna).map_or_else(|_| "?".to_owned(), |e| e.to_string()),
+                        reach(&s, &p.xna).map_or_else(|_| "?".to_owned(), |e| e.to_string()),
                         hex(&p.kid)
                     );
                 }
-                p.connected = true;
+                if let Some(p) = s.peers.get_mut(&a[0]) {
+                    p.connected = true;
+                }
                 Ok(0)
             }
             ConnectStatus => Ok(lock(&self.state)
@@ -1065,38 +1153,56 @@ impl Network {
         let xnas = pointers(rt, a[1], a[0])?;
         let kids = pointers(rt, a[2], a[0])?;
         let keys = pointers(rt, a[3], a[0])?;
-        let mut targets = Vec::new();
+        // Each target: the endpoints to try, in order ([`endpoints`]).
+        let mut targets: Vec<(Vec<SocketAddrV4>, [u8; 8])> = Vec::new();
         for ((xna, kid), key) in xnas.into_iter().zip(kids).zip(keys) {
             let xna: [u8; 36] = read(rt, xna, 36)?.try_into().unwrap();
-            let endpoint = endpoint(&xna)?;
+            let order = endpoints(&xna)?;
             let kid: [u8; 8] = read(rt, kid, 8)?.try_into().unwrap();
             read(rt, key, 16)?;
-            targets.push((endpoint, kid));
+            targets.push((order, kid));
         }
         let ips = pointers(rt, a[5], a[4])?;
         read(rt, a[6], a[4] as usize * 4)?;
         for ip in ips {
-            let peer = lock(&self.state).peers.get(&ip).cloned();
-            if let Some(peer) = peer {
-                targets.push((endpoint(&peer.xna)?, peer.kid));
+            let s = lock(&self.state);
+            if let Some(peer) = s.peers.get(&ip) {
+                targets.push((vec![reach(&s, &peer.xna)?], peer.kid));
             } else {
                 targets.push((
-                    SocketAddrV4::new(Ipv4Addr::from(ip.to_le_bytes()), 3074),
+                    vec![SocketAddrV4::new(Ipv4Addr::from(ip.to_le_bytes()), 3074)],
                     [0; 8],
                 ));
             }
         }
         // All guest input is copied and outputs checked before the bounded I/O.
         let local = self.version.get();
-        let results: Vec<_> = targets
-            .iter()
-            .map(|&(address, kid)| {
-                qos::query_why(self.qos_target(address), kid, a[7] as u16, local)
-            })
-            .collect();
-        self.say_lookup(&targets, &results);
-        let infos: Vec<_> = results
+        let mut tried = Vec::new();
+        let mut results = Vec::new();
+        let mut last = Vec::with_capacity(targets.len());
+        for (order, kid) in &targets {
+            let (answered, tries) = qos::first_answer(order, |address| {
+                qos::query_why(self.qos_target(address), *kid, a[7] as u16, local)
+            });
+            if let Some(at) = answered {
+                let mut s = lock(&self.state);
+                if at == 0 {
+                    s.reach.remove(&order[0]);
+                } else {
+                    s.reach.insert(order[0], order[at]);
+                }
+            }
+            last.push(results.len() + tries.len() - 1);
+            for (address, result) in order.iter().zip(tries) {
+                tried.push((*address, *kid));
+                results.push(result);
+            }
+        }
+        self.say_lookup(&tried, &results);
+        let mut results: Vec<_> = results.into_iter().map(Some).collect();
+        let infos: Vec<_> = last
             .into_iter()
+            .map(|i| results[i].take().expect("one result per try"))
             .map(|r| {
                 r.unwrap_or_else(|e| qos::Info {
                     flags: if qos::version_refusal(&e).is_some() {
@@ -1211,6 +1317,28 @@ fn fdset(rt: &Runtime, p: u32) -> Result<Vec<u32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_xnaddr_is_reached_at_its_lan_address_then_its_public_one() {
+        let lan = SocketAddrV4::new(Ipv4Addr::new(10, 0, 3, 7), 3074);
+        let public = SocketAddrV4::new(Ipv4Addr::new(203, 0, 113, 8), 3074);
+        // What a session read for a console behind the host's NAT gives.
+        let mut xna = xnaddr(lan);
+        xna[4..8].copy_from_slice(&public.ip().octets());
+        assert_eq!(endpoints(&xna), Ok(vec![lan, public]));
+        // Every other XNADDR: one endpoint.
+        assert_eq!(endpoints(&xnaddr(public)), Ok(vec![public]));
+        xna[4..8].fill(0);
+        assert_eq!(endpoints(&xna), Ok(vec![lan]));
+
+        // Traffic follows the endpoint the lookup answered on.
+        let mut xna = xnaddr(lan);
+        xna[4..8].copy_from_slice(&public.ip().octets());
+        let mut s = State::default();
+        assert_eq!(reach(&s, &xna), Ok(lan));
+        s.reach.insert(lan, public);
+        assert_eq!(reach(&s, &xna), Ok(public));
+    }
 
     #[test]
     fn a_lookup_says_per_target_whether_the_host_answered() {

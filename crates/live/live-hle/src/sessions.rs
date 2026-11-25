@@ -67,6 +67,9 @@ pub struct LocalSession {
     /// next game runs (docs/game/rules-engine.md, "Carrying a script"), when
     /// the host set one.
     pub rules: Option<String>,
+    /// The Firefight match the host's next game plays (docs/game/
+    /// firefight.md, "Live"), when it is one.
+    pub firefight: Option<live_proto::session::Firefight>,
     /// The host's current multiplayer setup for Live browser filters.
     pub browser: Option<BrowserMetadata>,
 }
@@ -180,12 +183,19 @@ pub(crate) struct Sessions {
     /// The host's rules IR hash for its next game, for new and updated
     /// advertisements.
     rules: Option<String>,
+    /// The Firefight match of the host's next game, for new and updated
+    /// advertisements; None when it is not Firefight.
+    firefight: Option<live_proto::session::Firefight>,
     /// Reads them afresh (boot: the signed-in profiles' choice) each time
     /// the game advertises or updates a lobby.
     skulls_probe: Option<SkullsProbe>,
     /// The co-op campaign the host set up on its co-op screen, for new and
     /// updated advertisements.
     coop: Option<live_proto::session::Campaign>,
+    /// The lobby is in Forge mode, for new and updated advertisements
+    /// ([`Sessions::set_forge`]); a co-op campaign armed with
+    /// [`Sessions::set_coop`] wins over it.
+    forge: bool,
     /// The host's campaign skulls for that campaign; they replace the
     /// multiplayer ones while a co-op campaign is armed.
     coop_skulls: Option<Vec<u8>>,
@@ -426,6 +436,39 @@ impl Sessions {
             record.session.rules = Some(rules.clone());
         }
     }
+    /// The Firefight match of the game the host is starting, or None when
+    /// it is not Firefight: new advertisements carry it, and open ones are
+    /// updated now (`clear_firefight` when it went), so guests that look
+    /// again play the same match.
+    pub fn set_firefight(
+        &mut self,
+        firefight: Option<live_proto::session::Firefight>,
+        service: Option<&Service>,
+        connection: Option<&Session>,
+    ) {
+        self.firefight = firefight;
+        self.background.retain(|p| p.take().is_none());
+        for (id, record) in &mut self.records {
+            if record.session.firefight == self.firefight {
+                continue;
+            }
+            if let (Some(service), Some(connection)) = (service, connection) {
+                let request = MatchRequest::Update {
+                    id: live_proto::sign::hex(id),
+                    update: live_proto::session::Update {
+                        firefight: self.firefight.clone(),
+                        clear_firefight: self.firefight.is_none(),
+                        ..Default::default()
+                    },
+                };
+                match service.match_request(connection, request) {
+                    Ok(p) => self.background.push(p),
+                    Err(_) => continue,
+                }
+            }
+            record.session.firefight = self.firefight.clone();
+        }
+    }
     /// The host's variant options for the game it is starting (boot, at
     /// each multiplayer start as a Live host): new advertisements carry
     /// them, and open ones are updated now, so guests that look again find
@@ -545,7 +588,13 @@ impl Sessions {
                 let request = MatchRequest::Update {
                     id: live_proto::sign::hex(id),
                     update: live_proto::session::Update {
-                        flags: coop.is_none().then(|| "custom".to_owned()),
+                        flags: coop.is_none().then(|| {
+                            if self.forge {
+                                live_proto::session::FORGE.to_owned()
+                            } else {
+                                "custom".to_owned()
+                            }
+                        }),
                         campaign: coop.clone(),
                         visibility: (record.session.visibility != want).then_some(want),
                         skulls: (record.session.skulls != skulls)
@@ -572,6 +621,41 @@ impl Sessions {
             }
             record.session.visibility = want;
             record.session.skulls = skulls.clone();
+        }
+    }
+    /// Mark (or unmark) this console's open advertisements as a Forge-mode
+    /// lobby's (`flags: "forge"`, docs/game/forge-design.md): a shared
+    /// Forge session's machines may use the co-op relay. A co-op campaign
+    /// armed with [`Sessions::set_coop`] keeps its own flag; a lobby
+    /// advertised while Forge is on is updated here, since the lobby itself
+    /// advertises as a custom game.
+    pub fn set_forge(&mut self, on: bool, service: Option<&Service>, connection: Option<&Session>) {
+        if self.forge == on {
+            return;
+        }
+        self.forge = on;
+        self.background.retain(|p| p.take().is_none());
+        if self.coop.is_some() {
+            return;
+        }
+        let flags = if on {
+            live_proto::session::FORGE
+        } else {
+            "custom"
+        };
+        for (id, _record) in &mut self.records {
+            if let (Some(service), Some(connection)) = (service, connection) {
+                let request = MatchRequest::Update {
+                    id: live_proto::sign::hex(id),
+                    update: live_proto::session::Update {
+                        flags: Some(flags.to_owned()),
+                        ..Default::default()
+                    },
+                };
+                if let Ok(pending) = service.match_request(connection, request) {
+                    self.background.push(pending);
+                }
+            }
         }
     }
     /// A co-op host's measured round trip to its guest (None: no guest or
@@ -1092,6 +1176,7 @@ impl Sessions {
                             ping_ms: self.coop.as_ref().and(self.coop_ping),
                             variant_ext: self.variant_ext.clone(),
                             rules: self.rules.clone(),
+                            firefight: self.firefight.clone(),
                             browser: None,
                         },
                     )
@@ -1111,6 +1196,9 @@ impl Sessions {
                 if self.rules.is_some() {
                     session.rules = self.rules.clone();
                 }
+                // The host's own choice, which may be none: a lobby that
+                // left Firefight stops advertising it.
+                session.firefight = self.firefight.clone();
                 let was_coop = session.campaign.clone();
                 session.campaign = self.coop.clone();
                 session.map_id = map_id;
@@ -1206,6 +1294,17 @@ impl Sessions {
                                         .get(&id)
                                         .is_none_or(|r| r.session.rules.as_ref() != Some(v))
                                 }),
+                                // Only a change; clear when it went.
+                                firefight: session.firefight.clone().filter(|v| {
+                                    self.records
+                                        .get(&id)
+                                        .is_none_or(|r| r.session.firefight.as_ref() != Some(v))
+                                }),
+                                clear_firefight: session.firefight.is_none()
+                                    && self
+                                        .records
+                                        .get(&id)
+                                        .is_some_and(|r| r.session.firefight.is_some()),
                                 browser: {
                                     // A background selection update may already be ahead
                                     // of this title update in the worker.
@@ -1812,6 +1911,7 @@ fn advertisement(s: &LocalSession) -> live_proto::session::NewSession {
         ping_ms: s.ping_ms,
         variant_ext: s.variant_ext.clone(),
         rules: s.rules.clone(),
+        firefight: s.firefight.clone(),
         browser: s.browser.clone(),
     }
 }
@@ -1885,9 +1985,18 @@ fn encode_result(s: &live_proto::session::Session, retail: bool) -> Result<Vec<u
         return hr(MATCH_INVALID_SESSION);
     }
     bytes[12..48].copy_from_slice(&s.advertisement.host_address);
-    bytes[12..16].copy_from_slice(&s.endpoint.addr.octets());
+    // The XNADDR's `ina` is where the joiner's XNet reaches the host first,
+    // `inaOnline` where it falls back to (`network::endpoints`): the host's
+    // LAN address when the server saw this console behind the host's NAT
+    // (`Session::lan`), else the public endpoint in both.
+    let (ina, port) = s
+        .lan
+        .as_ref()
+        .filter(|lan| lan.port == s.endpoint.port)
+        .map_or((s.endpoint.addr, s.endpoint.port), |lan| (lan.addr, lan.port));
+    bytes[12..16].copy_from_slice(&ina.octets());
     bytes[16..20].copy_from_slice(&s.endpoint.addr.octets());
-    bytes[20..22].copy_from_slice(&s.endpoint.port.to_be_bytes());
+    bytes[20..22].copy_from_slice(&port.to_be_bytes());
     // XNKEY +0x30 stays zero. HLE sockets use no encryption; the host key
     // never appears in a public event or read response.
     let slots = s.advertisement.slots;
@@ -2024,6 +2133,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_result_xnaddr_puts_the_lan_address_first_and_the_public_one_second() {
+        let mut xna = vec![0u8; 36];
+        xna[..4].copy_from_slice(&[10, 0, 3, 7]);
+        xna[4..8].copy_from_slice(&[10, 0, 3, 7]);
+        xna[8..10].copy_from_slice(&3074u16.to_be_bytes());
+        let mut row: live_proto::session::Session = serde_json::from_value(serde_json::json!({
+            "session_id": "8000000000000001",
+            "host": "host-account",
+            "host_xuid": "0009000000000001",
+            "host_gamertag": "Host",
+            "xnkid": "8000000000000001",
+            "endpoint": { "addr": "203.0.113.8", "port": 3074, "source": "observed" },
+            "advertisement": {
+                "port": 3074,
+                "host_address": xna,
+                "slots": { "public_open": 7, "public_filled": 1, "private_open": 0, "private_filled": 0 },
+                "attributes": {}
+            },
+            "since": "2026-11-23T00:00:00Z",
+            "last_activity": 0,
+            "state": "open",
+            "lan": { "addr": "10.0.3.7", "port": 3074, "source": "lan" }
+        }))
+        .unwrap();
+        // Behind the host's NAT: ina is the LAN address, inaOnline the public.
+        let bytes = encode_result(&row, true).ok().unwrap();
+        assert_eq!(bytes[12..16], [10, 0, 3, 7]);
+        assert_eq!(bytes[16..20], [203, 0, 113, 8]);
+        assert_eq!(bytes[20..22], 3074u16.to_be_bytes());
+        // Elsewhere: the public endpoint in both.
+        row.lan = None;
+        let bytes = encode_result(&row, true).ok().unwrap();
+        assert_eq!(bytes[12..16], [203, 0, 113, 8]);
+        assert_eq!(bytes[16..20], [203, 0, 113, 8]);
+    }
+
+    #[test]
     fn the_picker_requires_a_live_pack_assignment_for_its_hopper() {
         use std::time::{Duration, Instant};
 
@@ -2069,6 +2215,7 @@ mod tests {
                 ping_ms: None,
                 variant_ext: None,
                 rules: None,
+                firefight: None,
                 browser: None,
             }),
             key: [0; 16],

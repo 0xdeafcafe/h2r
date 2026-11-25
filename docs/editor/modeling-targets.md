@@ -44,7 +44,7 @@ class that holds it, and the status bar and `geometry.check` name it.
 |---|---|---|---|
 | **In place** | no element count changes: verts moved, coordinates or normals changed | `raw_patches` over the old block, `tag_patches` for bounds | Allow unverified geometry writes, until a game run has loaded one |
 | **Grown raw** | vertex, index or part counts change | a new raw block in `raw_new`; `tag_patches` for the block info, resource entries and counts | Allow unverified geometry writes, until a game run has loaded one |
-| **Grown blocks** | a tag block gets more elements (collision, a new material) | `raw_new` as needed, and the block appended to the ordinary metadata with its `(count, address)` pointed there (`Changes::tag_grown`) | Allow growing full blocks, and for a block of an `sbsp` also Allow unverified geometry writes |
+| **Grown blocks** | a tag block gets more elements (collision, a new material) | `raw_new` as needed, and the block appended to the ordinary metadata with its `(count, address)` pointed there (`Changes::tag_grown`; a structure's level collision through `Changes::geometry_grown`, whose pair may lie in a BSP region) | Allow growing full blocks, and for a block of an `sbsp` also Allow unverified geometry writes |
 
 A package of such a map is a BPS patch when the length changed, as for
 grown scenario blocks, and its `[result] geometry` hash
@@ -153,18 +153,21 @@ steps of rising risk.
    path on the side its flip bit says; and for a set of random segments
    the first hit of `vector` equals a brute-force ray against the
    polygons.
-2. **Adding solids** to a level. A closed mesh compiles to its own small
-   `Bsp` and unites with the level's through
-   `scenery_collision::merge`, which appends and so keeps every existing
-   plane, surface and leaf index. Each added leaf takes the cluster of
-   the leaf it stands in (`Merged::stand_ins`), in the per-leaf block at
-   `sbsp+0x2c`. Then the structure's MOPP is rebuilt
-   (`mopp::build_structure` plus retail's other keys, as the test
-   `replaced_retail_levels` does) and written over the old program when
-   it fits, else as a grown block. A level with pathfinding (`sbsp+0xc4`)
-   keeps its sectors; the new solid has none. This is the grown-blocks
-   class: all eight collision blocks and the leaf block move to the
-   ordinary metadata.
+2. **Adding solids** to a level (`collision_build::{merge, level}` and
+   `geometry_edit::level_collision`, built; modeling.md, "The collision
+   compiler"). A closed mesh compiles to its own small `Bsp` and unites
+   with the level's through `collision_build::merge::merge` (the method of
+   `h1convert::scenery_collision::merge`), which appends and so keeps
+   every existing plane, surface and leaf index. Each added leaf takes the
+   cluster of the leaf it stands in (`Merged::stand_ins`): its element of
+   the per-leaf block at `sbsp+0x2c` is a copy of the stand-in's. Then
+   the structure's MOPP is rebuilt (`mopp::build` over every structure
+   surface plus retail's other keys, as the test `replaced_retail_levels`
+   does) and written over the old program when it fits, else as a grown
+   block. A level with pathfinding (`sbsp+0xc4`) keeps its sectors; the
+   new solid has none. This is the grown-blocks class: every collision
+   block that gains elements and the per-leaf block move to the ordinary
+   metadata.
 3. **Rebuilding** a level's collision from its edited surfaces (moving or
    deleting a wall). Every table that indexes the collision must follow:
    the per-leaf block (cluster per leaf, by locating each new leaf's
@@ -268,7 +271,9 @@ only (above). Rewriting bucket streams is deferred.
   every part as a strip, [sky.md](../halo1/sky.md)).
 - **LODs.** An edit changes one section. The others are stale, and the
   session offers **Use for lower LODs**
-  (`GeometrySession::set_use_for_lower_lods`, one undo step): in each
+  (`GeometrySession::set_use_for_lower_lods`, one undo step; the
+  section's checkbox in the window and `geometry.lower_lods` in the agent
+  API): in each
   permutation whose highest level naming the section is `k`, every
   present level below `k` is pointed at it, as fixed patches of the
   permutation's LOD indices (`+4`); a level that is -1 stays -1.
@@ -294,13 +299,18 @@ only (above). Rewriting bucket streams is deferred.
   `bsp_mopp` write them for converted objects). The object's small trees
   make this the compiler's first user. **From render** makes a
   collision mesh from a render section's faces, welded and joined into
-  convex polygons.
-- **`phmo`.** Spheres, pills and boxes are edited as primitives, in
-  place: radius, half extents, end points, the transform
-  (`tags::collision::PhysicsModel`). A polyhedron's vertices move while
-  it stays convex; its planes and box are recomputed, its counts kept.
-  Mass, centre of mass and inertia are kept and the check says they are
-  stale. New shapes, rigid bodies and constraints are out of scope.
+  convex polygons. The session opens a BSP as `coll_bsp:<tag>:<n>`
+  (`geometry-edit/src/coll_target.rs`); modeling.md, "The collision
+  compiler", has its write.
+- **`phmo`.** The Modeling panel and `model.physics.set` edit the local
+  physics model's spheres, pills, boxes and polyhedra. A primitive edit
+  patches the selected radius, half extents, capsule endpoint or
+  transform. A hull vertex edit patches its transposed slot and refits
+  the affected planes and AABB. The face layout and all block counts
+  stay fixed. A shape referenced by a MOPP requires a rebuild. The
+  editor reports that rigid-body bounds and mass properties may be
+  stale and preserves those fields. The patches save with the map and
+  form one step in the tag document's undo history.
 
 ## Evidence
 

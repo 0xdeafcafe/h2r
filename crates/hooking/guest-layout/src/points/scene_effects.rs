@@ -10,16 +10,34 @@ const RENDERER: &str = "docs/graphics/native-renderer.md";
 const PARTICLES: &str = "docs/graphics/native-particles.md";
 const DECALS: &str = "docs/graphics/native-decals-research.md";
 
-// The per-record duplicate marker, bitmap and default registers have
-// already been set. ESI still names the record about to build a draw.
-pub const DECAL_ITEM_GEOMETRY: Point = Point::new("DECAL_ITEM_GEOMETRY", 0x0004_4161, Sig::Site, DECALS);
 pub const DECAL_RENDER_END: Point = Point::new("DECAL_RENDER_END", 0x0004_41aa, Sig::Site, DECALS);
 
 // The contiguous-range branch of the standard geometry emitter, after
 // state commit. EDI holds the index array, ESI its count, BL its topology.
 pub const GEOMETRY_RANGE_READY: Point = Point::new("SCENE_GEOMETRY_RANGE_READY", 0x0004_dad0, Sig::Site, RENDERER);
+/// Subpart branches of the geometry emitter, at DrawIndexedVertices
+/// after the texture flush and the three argument pushes. Each successful
+/// replacement continues immediately after its own call.
+pub const SUBPART_STRIP_DRAW: Point = Point::new("SUBPART_STRIP_DRAW", 0x0004_db40, Sig::Site, RENDERER);
+pub const SUBPART_LIST_DRAW: Point = Point::new("SUBPART_LIST_DRAW", 0x0004_dbdc, Sig::Site, RENDERER);
+pub const SUBPART_LIST_LAST: Point = Point::new("SUBPART_LIST_LAST", 0x0004_dc3a, Sig::Site, RENDERER);
+pub const SUBPART_DRAWS: [(&Point, u32); 3] = [
+    (&SUBPART_STRIP_DRAW, 0x0004_db45),
+    (&SUBPART_LIST_DRAW, 0x0004_dbe1),
+    (&SUBPART_LIST_LAST, 0x0004_dc3f),
+];
 // All exits from the sorted loop join here, before the guest view cleanup.
 pub const SCENE_TRANSPARENTS_END: Point = Point::new("SCENE_TRANSPARENTS_END", 0x0001_e406, Sig::Site, RENDERER);
+
+/// The shared indexed wrapper, just after its state commit. The water
+/// composite is identified by the wrapper's own return address.
+/// The commit (`call 0x0001cf50` at 0x0001c8a0) returns to 0x0001c8a5,
+/// where a return resumes the wrapper's generated code and no hook runs;
+/// the site is the next instruction. 0x0001c8a5 (`mov eax, [esp+8]`)
+/// writes only EAX and falls through, so `[esp]` is still the wrapper's
+/// return address and its three arguments are at `esp+4..+0xc`.
+pub const WATER_INDEX_READY: Point = Point::new("WATER_INDEX_READY", 0x0001_c8a9, Sig::Site, RENDERER);
+pub const WATER_INDEX_END: u32 = 0x0001_c8b9;
 
 pub const HUD_QUAD_READY: Point = Point::new("HUD_QUAD_READY", 0x0022_a7f6, Sig::Site, RENDERER);
 
@@ -54,9 +72,37 @@ const fn leaf(begin: u32, end: u32) -> EffectLeaf {
 
 pub const EFFECT_BILLBOARD: EffectLeaf = leaf(0x0004_8497, 0x0004_849d);
 pub const EFFECT_DEPTH_BILLBOARD: EffectLeaf = leaf(0x0004_8ae5, 0x0004_8aeb);
+// Its BEGIN (the End call) is the continuation of the last
+// `SetVertexData4f` call, so it never runs, as with two flare leaves below.
 pub const EFFECT_WEATHER_LAYER: EffectLeaf = leaf(0x0003_8342, 0x0003_8349);
 pub const EFFECT_WEATHER_PARTICLES: EffectLeaf = leaf(0x0003_96f7, 0x0003_96f9);
 pub const EFFECT_MATERIAL_STRIP: EffectLeaf = leaf(0x0019_fc3e, 0x0019_fc40);
+
+// Immediately before the XDK End call, and the first instruction after
+// the one End returns to: a return resumes the caller's generated code at
+// the continuation and never runs a hook there. Each continuation writes
+// no stack slot or register the RETURN hook reads and falls through to
+// it: mask `xor edx, edx` (0x0004730b), mask sample `lea eax, [esp+0x24]`
+// (0x00047517), filter source `xor eax, eax` (0x000467a0), filter
+// `inc ebx` (0x00046e49), composite `dec dword [esp+0x20]` (0x00047859,
+// the loop count, before its `jnz`). The shared reflection billboard
+// already has a pair above.
+//
+// The mask sample's and the composite's End calls are themselves the
+// continuations of the last `SetVertexData4f` call, so their BEGIN never
+// runs: no instruction lies between that return and End. The plan
+// refuses those hooks at install (`hooks::verify`).
+const fn flare_leaf(begin: u32, end: u32) -> EffectLeaf {
+    EffectLeaf {
+        begin: Point::new("FLARE_DRAW_END", begin, Sig::Site, RENDERER),
+        end: Point::new("FLARE_DRAW_RETURN", end, Sig::Site, RENDERER),
+    }
+}
+pub const FLARE_MASK: EffectLeaf = flare_leaf(0x0004_7306, 0x0004_730d);
+pub const FLARE_MASK_SAMPLE: EffectLeaf = flare_leaf(0x0004_7512, 0x0004_751b);
+pub const FLARE_FILTER_SOURCE: EffectLeaf = flare_leaf(0x0004_679b, 0x0004_67a2);
+pub const FLARE_FILTER: EffectLeaf = flare_leaf(0x0004_6e44, 0x0004_6e4a);
+pub const FLARE_COMPOSITE: EffectLeaf = flare_leaf(0x0004_7854, 0x0004_785d);
 
 pub const EFFECT_QUERY: Point = Point::new("EFFECT_QUERY", 0x0002_e9b6, Sig::Site, PARTICLES);
 pub const EFFECT_LAYERED_A: Point = Point::new("EFFECT_LAYERED_A", 0x0004_1cc0, Sig::Site, PARTICLES);
@@ -71,12 +117,18 @@ pub fn instruction_entries() -> impl Iterator<Item = u32> {
         &EFFECT_WEATHER_LAYER,
         &EFFECT_WEATHER_PARTICLES,
         &EFFECT_MATERIAL_STRIP,
+        &FLARE_MASK,
+        &FLARE_MASK_SAMPLE,
+        &FLARE_FILTER_SOURCE,
+        &FLARE_FILTER,
+        &FLARE_COMPOSITE,
     ];
     [
-        DECAL_ITEM_GEOMETRY.base,
         DECAL_RENDER_END.base,
         GEOMETRY_RANGE_READY.base,
         SCENE_TRANSPARENTS_END.base,
+        WATER_INDEX_READY.base,
+        WATER_INDEX_END,
         HUD_QUAD_READY.base,
         SCREEN_STRIP_READY.base,
         PARTICLE_EMIT_READY.base,
@@ -96,12 +148,18 @@ pub fn instruction_entries() -> impl Iterator<Item = u32> {
         LAYERS_RETURN.base,
         ITEM_CALL.base,
         ITEM_RETURN.base,
+        LIST_READY.base,
+        LIST_DONE.base,
         HUD_RETURN.base,
         HUD_HIDDEN_RETURN.base,
         LOADING_RETURN.base,
         LOADING_EMPTY_RETURN.base,
         SCREEN_QUAD_READY.base,
         FADE_FAN_READY.base,
+        TAIL_COPY.base,
+        TAIL_COPY_END.base,
+        TAIL_COMPOSITE.base,
+        TAIL_COMPOSITE_END.base,
         FADE_RETURN.base,
         OVERLAY_RECT_RETURN.base,
         LOADING_SPINNER_READY.base,
@@ -116,6 +174,7 @@ pub fn instruction_entries() -> impl Iterator<Item = u32> {
         MODEL_GEOMETRY_CALL.base,
     ]
     .into_iter()
+    .chain(SUBPART_DRAWS.into_iter().flat_map(|(point, resume)| [point.base, resume]))
     .chain(leaves.into_iter().flat_map(|l| [l.begin.base, l.end.base]))
 }
 
@@ -128,5 +187,6 @@ mod tests {
             assert!(seen.insert(address), "duplicate entry {address:#010x}");
         }
         assert!(seen.contains(&super::EFFECT_QUAD_READY.base));
+        assert!(seen.contains(&super::DECAL_RENDER_END.base));
     }
 }

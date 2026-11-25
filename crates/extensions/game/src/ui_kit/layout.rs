@@ -30,6 +30,20 @@
 //!   which buttons do what.
 //! - **focus**: the focused element is drawn, on screen, brighter than the
 //!   rest.
+//!
+//! The checks on what was drawn ([`drawn`]) read each widget's
+//! [`crate::ui_kit::preview::Footprint`], the pixels the preview really
+//! touched:
+//!
+//! - **on drawn**: a text's glyphs over another group's drawn row or cell
+//!   art, picture or text.
+//! - **panel shared**: a panel that holds a list's rows holds another
+//!   group's texts too, unless [`drawn::SHARED_PANELS`] says why it may.
+//! - **covers under**: a modal over a kit screen draws its text over that
+//!   screen's content (its pictures, status, roster), unless [`drawn::COVERS`]
+//!   says why it may.
+//! - **drawn outside**: art drawn past its declared rectangle by more than
+//!   [`Rules::max_outside`].
 
 use std::fmt;
 
@@ -41,6 +55,8 @@ use crate::ui_kit::input::Input;
 use crate::ui_kit::preview::{Canvas, Source, overflows, render_view_where};
 use crate::ui_kit::spec::ScreenSpec;
 use crate::ui_kit::view::{Art, Backing, Justify, Kind, Layer, Metrics, View, Widget};
+
+pub mod drawn;
 
 /// What a view is held to.
 #[derive(Clone, Debug, PartialEq)]
@@ -67,6 +83,8 @@ pub struct Rules {
     /// its content stays inside, and what it covers of a reserved area is
     /// not held against it.
     pub panel: Option<Rect>,
+    /// How far, in UI units, art may draw past its declared rectangle.
+    pub max_outside: i32,
 }
 
 pub const SAFE: Rect = Rect {
@@ -85,6 +103,7 @@ impl Default for Rules {
             max_covered: 24,
             needs_legend: false,
             panel: None,
+            max_outside: 2,
         }
     }
 }
@@ -163,9 +182,42 @@ pub enum Issue {
     FocusNotBrighter {
         id: String,
     },
+    /// Text `text`'s glyphs over `on`'s drawn pixels, `on` being another
+    /// group's row or cell art, picture or text ([`drawn`]).
+    OnDrawn {
+        text: String,
+        on: String,
+        pixels: usize,
+    },
+    /// Panel `panel` holds the list's rows (`rows`, the first) and the
+    /// texts of other groups (`with`).
+    PanelShared {
+        panel: String,
+        rows: String,
+        with: Vec<String>,
+    },
+    /// The modal's text is drawn over `pixels` of the drawn content `under`
+    /// of the kit screen beneath it.
+    CoversUnder {
+        under: String,
+        pixels: usize,
+    },
+    /// Art `id` drew `by` UI units past its declared rectangle.
+    DrawnOutside {
+        id: String,
+        by: i32,
+    },
 }
 
 impl Issue {
+    /// Its kind as the JSON names it (`text_overlap`, `panel_shared`).
+    pub fn kind(&self) -> String {
+        serde_json::to_value(self)
+            .ok()
+            .and_then(|v| v["kind"].as_str().map(String::from))
+            .unwrap_or_default()
+    }
+
     /// The widgets it names, for a tool to mark (the editor's UI Screens).
     pub fn ids(&self) -> Vec<&str> {
         match self {
@@ -177,7 +229,15 @@ impl Issue {
             | Issue::Placement { id, .. }
             | Issue::Contrast { id, .. }
             | Issue::FocusHidden { id }
-            | Issue::FocusNotBrighter { id } => vec![id],
+            | Issue::FocusNotBrighter { id }
+            | Issue::DrawnOutside { id, .. } => vec![id],
+            Issue::OnDrawn { text, on, .. } => vec![text, on],
+            Issue::PanelShared { panel, rows, with } => {
+                let mut ids = vec![panel.as_str(), rows.as_str()];
+                ids.extend(with.iter().map(String::as_str));
+                ids
+            }
+            Issue::CoversUnder { under, .. } => vec![under],
             Issue::TextOverlap { a, b } => vec![a, b],
             Issue::OnOtherArt { text, art } => vec![text, art],
             Issue::Covered { art, by, .. } => vec![art, by],
@@ -223,6 +283,22 @@ impl fmt::Display for Issue {
             Issue::FocusNotBrighter { id } => {
                 write!(f, "{id}: the focused row is no brighter than the others")
             }
+            Issue::OnDrawn { text, on, pixels } => write!(
+                f,
+                "{text} is drawn over {on} ({pixels} pixels), which it doesn't belong with"
+            ),
+            Issue::PanelShared { panel, rows, with } => write!(
+                f,
+                "{panel} holds the list ({rows}) and {} too: one panel, one group",
+                with.join(", ")
+            ),
+            Issue::CoversUnder { under, pixels } => write!(
+                f,
+                "the modal's text is drawn over {pixels} pixels of the screen beneath's {under}"
+            ),
+            Issue::DrawnOutside { id, by } => {
+                write!(f, "{id}: drawn {by} units past its declared rectangle")
+            }
         }
     }
 }
@@ -262,11 +338,11 @@ impl fmt::Display for Note {
 }
 
 /// `r`'s area, Y up.
-fn area(r: Rect) -> i32 {
+pub(crate) fn area(r: Rect) -> i32 {
     (r.right - r.left).max(0) as i32 * (r.top - r.bottom).max(0) as i32
 }
 
-fn intersect(a: Rect, b: Rect) -> Rect {
+pub(crate) fn intersect(a: Rect, b: Rect) -> Rect {
     Rect {
         top: a.top.min(b.top),
         left: a.left.max(b.left),
@@ -376,7 +452,7 @@ pub fn ink(w: &Widget, m: &dyn Metrics) -> Option<Rect> {
 
 /// The row or entry cell a widget belongs to (`row.3.label` is row 3's,
 /// `cell.2.text` cell 2's).
-fn row_of(id: &str) -> Option<&str> {
+pub(crate) fn row_of(id: &str) -> Option<&str> {
     let n = ["row.", "cell."].iter().find_map(|p| {
         id.strip_prefix(p)
             .map(|rest| p.len() + rest.find('.').unwrap_or(rest.len()))
@@ -710,6 +786,8 @@ pub fn check(v: &View, src: &dyn Source, rules: &Rules) -> Report {
             }
         }
     }
+    let found = drawn::check(v, src, rules, &rep.issues);
+    rep.issues.extend(found);
     rep
 }
 
@@ -889,6 +967,7 @@ mod tests {
             })
         }
         fn backing(&self, _c: &mut Canvas, _b: crate::ui_kit::view::Backing) {}
+        fn backdrop(&self, _c: &mut Canvas) {}
         fn text(&self, _: &mut Canvas, _: i16, _: &str, _: Rect, _: Justify, _: [u8; 3], _: u8) {}
         fn list_of(&self, _: i16, _: u16) -> Option<Option<crate::ui_kit::view::ListAt>> {
             Some(None)

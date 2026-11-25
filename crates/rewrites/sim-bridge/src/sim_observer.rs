@@ -26,7 +26,12 @@ impl Feature for ObserverResources {
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         b.snapshot(SnapshotPolicy::Stateless);
-        if b.switches().implementation("sim.observer-resources", true) {
+        // The seats' resource walk (`sim.seats.predict_resources`) covers
+        // this point whole, so with `impl.sim.native.seats` on the trim
+        // stands down. It stays the default until the seats are promoted.
+        if b.switches().implementation("sim.observer-resources", true)
+            && !crate::sim_seats::on(b.switches())
+        {
             b.raw()
                 .before(
                     &points::PREDICT_RESOURCES,
@@ -158,6 +163,15 @@ mod tests {
             .put_u32(sp + 4, HEADER);
         assert_eq!(trim_tail(&mut mem, sp, 1), None);
         assert_eq!(mem.u32(sp + 4).unwrap(), HEADER);
+    }
+
+    #[test]
+    fn the_seats_take_the_prediction_point_over() {
+        let switches = Switches::defaults().with("impl.sim.native.seats", true);
+        let mut registry = Registry::new(switches);
+        registry.add(&ObserverResources).unwrap();
+        let plan = registry.build(&Base).unwrap();
+        assert!(!plan.chains.contains_key(&points::PREDICT_RESOURCES.base));
     }
 
     #[test]

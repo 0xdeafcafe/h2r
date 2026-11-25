@@ -3,24 +3,39 @@
 //! go back to [`App`] as [`Action`]s.
 
 mod bar;
+pub mod browser;
+mod doc_tabs;
+mod doc_header;
+#[cfg(test)]
+pub(crate) use doc_header::crumbs as doc_header_crumbs;
+mod game_view;
 mod layout;
 mod toolbar;
 pub(crate) mod inspector;
 mod layers;
 pub mod map_list;
 mod modeling;
-pub mod map_pack;
 mod outliner;
 mod palette;
+mod package;
 mod play;
 mod playlists;
+pub mod playtest;
+pub mod problems;
+mod preview_switch;
 mod sound;
+pub(crate) mod sky;
+pub(crate) mod anim;
+mod voices;
 pub mod scripts;
 pub mod tags;
 mod ui_screens;
 mod hud;
+mod image_gen;
 mod textures;
 mod variants;
+/// The tag workspace's start page and status-line bar.
+mod workspace;
 /// The game type script window (`app::rules_edit`).
 mod game_script;
 
@@ -31,24 +46,22 @@ use dear_imgui_rs::{
     WindowFlags, WindowHoveredFlags,
 };
 use editor_core::Status;
-use editor_core::map_groups::MapGroup;
 use scenario_edit::BlockKind;
 
-use crate::app::map_cards::MapEntry;
 use crate::app::commands::MenuCommand;
-use crate::app::{Action, Answer, App, NavAction, SaveTarget, ToolKind};
+use crate::app::{Action, Answer, App, EditChoice, NavAction, SaveTarget, Surface};
 use crate::theme::{self, Fonts, icon};
 use crate::viewport::{GizmoOp, Gpu, ViewportView};
 use layout::Keys;
 
 const UNSAVED: &str = "Unsaved changes###unsaved";
-const SAVE_PACKAGE: &str = "Save as package###save-package";
+const EDIT_TARGET: &str = "Edit target###edit-target";
 const OPEN_PACKAGE: &str = "Open package###open-package";
 
 /// A tab of the Map workspace's left dock node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MapTab {
-    Maps,
+    Browser,
     Scene,
     Tags,
     Scripts,
@@ -73,7 +86,7 @@ pub struct Studio {
     focus_game: bool,
     /// The Map tab asked to the front, with the frames left to ask.
     want_tab: Option<(MapTab, u8)>,
-    previous_tool: Option<ToolKind>,
+    previous_surface: Option<Surface>,
     previous_map: Option<String>,
     hint: Option<String>,
     /// Log lines already seen (to scroll to new ones).
@@ -95,10 +108,22 @@ pub struct Studio {
     pub tags: tags::TagsUi,
     /// The Scripts tab's searches.
     pub scripts: scripts::ScriptsUi,
-    /// The Maps list's pictures, and what each group drew.
+    /// The browser panel's state.
+    pub browser: browser::BrowserUi,
+    package: package::PackageUi,
+    /// The Problems panel's state.
+    pub problems: problems::ProblemsUi,
+    /// The map grid's pictures.
     pub map_list: map_list::MapListUi,
     /// The Sound window over the Tags tool's selected `snd!`.
     sound: sound::SoundUi,
+    /// The Animation window over the Tags tool's selected `jmad`.
+    anim: anim::AnimUi,
+    /// The voice document (`Doc::Voice`): the announcer and the clones.
+    voices: voices::VoicesUi,
+    /// The tag workspace's start page and status-line bar
+    /// (`app::workspace`).
+    workspace: workspace::WorkspaceUi,
 }
 
 impl Studio {
@@ -115,7 +140,7 @@ impl Studio {
             reset_layout: false,
             focus_game: false,
             want_tab: None,
-            previous_tool: None,
+            previous_surface: None,
             previous_map: None,
             hint: None,
             log_seen: 0,
@@ -131,8 +156,14 @@ impl Studio {
             play: play::PlayUi::default(),
             tags: tags::TagsUi::default(),
             scripts: scripts::ScriptsUi::default(),
+            browser: browser::BrowserUi::default(),
+            package: package::PackageUi::default(),
+            problems: problems::ProblemsUi::default(),
             map_list: map_list::MapListUi::default(),
-            sound: sound::SoundUi::default(),
+            sound: sound::SoundUi::new(),
+            anim: anim::AnimUi::default(),
+            voices: voices::VoicesUi::default(),
+            workspace: workspace::WorkspaceUi::default(),
         }
     }
 
@@ -140,11 +171,18 @@ impl Studio {
     pub fn frame(&mut self, ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>) {
         app.poll_convert();
         app.poll_cards();
+        app.poll_voice_batch();
         app.poll_bot_nav();
+        app.poll_ground();
+        // The workspace's background extraction, before the status bar
+        // reads its progress.
+        app.poll_workspace();
         // An outside editor's saves of the game type script, before the
         // game link sends the reload they queue.
         game_script::poll(app);
         self.play.update(app);
+        // What the agent API opened or closed since the last frame.
+        app.sync_tabs();
         let mut actions = Vec::new();
         self.shortcuts(ui, app, &mut actions);
         if !self.palette.is_open(ui) {
@@ -152,33 +190,34 @@ impl Studio {
         }
         self.menu_bar(ui, app, &mut actions);
         // Asked for by the frame before (once its tabs exist).
+        self.focus_game |= std::mem::take(&mut app.preview.focus_game);
         let focus_game = self.focus_game;
         bar::draw(ui, app, &mut self.play, &self.fonts, &mut actions);
         let reset = self.dockspace(ui);
-        if !bar::is_map(app.tool) {
+        if !app.surface().is_map() {
             self.want_tab = None;
         }
         self.hint = None;
-        self.map_list.begin();
-        match app.tool {
-            ToolKind::Scenario | ToolKind::Tags | ToolKind::Scripts => {
-                let changed = self.previous_tool != Some(app.tool);
+        match app.surface() {
+            Surface::Scene | Surface::Tags | Surface::Scripts => {
+                let surface = app.surface();
+                let changed = self.previous_surface != Some(surface);
                 let open = map_is_visible(app);
                 let map = app.loaded_map().or_else(|| app.loaded_halo1());
-                let opened = self.previous_tool.is_some() && self.previous_map.as_deref() != map;
-                let focus_tags = app.tool == ToolKind::Tags && (changed || reset);
-                let focus_scripts = app.tool == ToolKind::Scripts && (changed || reset);
-                let focus_scene = app.tool == ToolKind::Scenario
+                let opened = self.previous_surface.is_some() && self.previous_map.as_deref() != map;
+                let focus_tags = surface == Surface::Tags && (changed || reset);
+                let focus_scripts = surface == Surface::Scripts && (changed || reset);
+                let focus_scene = surface == Surface::Scene
                     && open
                     && (reset
                         || opened
-                        || matches!(self.previous_tool, Some(ToolKind::Tags | ToolKind::Scripts)));
-                let focus_maps = !open
+                        || matches!(self.previous_surface, Some(Surface::Tags | Surface::Scripts)));
+                let focus_browser = !open
                     && !focus_tags
                     && !focus_scripts
-                    && (reset || (changed && self.previous_tool.is_some()) || opened);
+                    && (reset || (changed && self.previous_surface.is_some()) || opened);
                 let asked = [
-                    (focus_maps, MapTab::Maps),
+                    (focus_browser, MapTab::Browser),
                     (focus_scene, MapTab::Scene),
                     (focus_tags, MapTab::Tags),
                     (focus_scripts, MapTab::Scripts),
@@ -198,13 +237,13 @@ impl Studio {
                 // even behind another tab, hidden, so "shows" is the window's
                 // own Hidden flag, not whether its contents ran.
                 let want = self.want_tab.map(|(tab, _)| tab);
-                self.maps_window(ui, app, gpu, want == Some(MapTab::Maps), &mut actions);
+                self.browser_window(ui, app, want == Some(MapTab::Browser), &mut actions);
                 self.outliner_window(ui, app, want == Some(MapTab::Scene), &mut actions);
                 self.tags_window(ui, app, want == Some(MapTab::Tags), &mut actions);
                 self.scripts_window(ui, app, want == Some(MapTab::Scripts), &mut actions);
                 if let Some((tab, tries)) = self.want_tab {
                     let key = match tab {
-                        MapTab::Maps => &self.keys.maps,
+                        MapTab::Browser => &self.keys.browser,
                         MapTab::Scene => &self.keys.outliner,
                         MapTab::Tags => &self.keys.tags,
                         MapTab::Scripts => &self.keys.scripts,
@@ -213,33 +252,49 @@ impl Studio {
                     self.want_tab = (!done && tries > 1).then_some((tab, tries - 1));
                 }
                 self.viewport_window(ui, app, gpu, &mut actions);
-                self.inspector_window(ui, app, &mut actions);
+                self.inspector_window(ui, app, gpu, &mut actions);
             }
-            ToolKind::Variants => self.variant_windows(ui, app, &mut actions),
-            ToolKind::Playlists => self.playlist_windows(ui, app, &mut actions),
-            ToolKind::UiScreens => self.ui_screen_windows(ui, app, gpu, &mut actions),
-            ToolKind::Hud => self.hud_windows(ui, app, gpu, &mut actions),
-            ToolKind::Textures => self.textures_windows(ui, app, gpu, &mut actions),
+            Surface::Package => {
+                self.browser_window(ui, app, false, &mut actions);
+                package::window(ui, app, &self.keys.package, &mut self.package, &mut self.browser, self.dialogs, &mut actions);
+            }
+            Surface::Variants => self.variant_windows(ui, app, &mut actions),
+            Surface::Playlists => self.playlist_windows(ui, app, &mut actions),
+            Surface::UiScreens => self.ui_screen_windows(ui, app, gpu, &mut actions),
+            Surface::Hud => self.hud_windows(ui, app, gpu, &mut actions),
+            Surface::Textures => self.textures_windows(ui, app, gpu, &mut actions),
         }
-        self.play.window(ui, app, &self.keys.game);
-        self.previous_tool = Some(app.tool);
+        self.play.window(ui, app, &self.keys.game, gpu);
+        self.previous_surface = Some(app.surface());
         self.previous_map = app.loaded_map().or_else(|| app.loaded_halo1()).map(str::to_owned);
         self.play.pending_window(ui, app, &self.keys.pending_edits);
         self.log_window(ui, app);
-        if bar::is_map(app.tool) {
+        self.problems_window(ui, app, &mut actions);
+        ui.window(&self.keys.playtest).build(|| playtest::draw(ui, app, &mut actions));
+        if app.surface().is_map() {
             ui.window(&self.keys.bytes).build(|| {
                 tags::hex(ui, app, &self.tags, &self.fonts, gpu, &mut self.map_list, &mut actions);
             });
         }
         // The seam for sound audition until the tag view tabs exist
         // (docs/editor/rich-editors.md, "One seam for every rich view").
-        sound::window(ui, app, &mut self.sound);
+        sound::window(ui, app, gpu, &mut self.sound);
+        // The same seam for model poses (that page's slice M1).
+        anim::window(ui, app, gpu, &mut self.anim);
+        voices::window(ui, app, &mut self.voices, self.dialogs);
+        // The tag workspace's first-start page (a floating window; the
+        // shell is another lane's).
+        workspace::start_page(ui, app, &mut self.workspace, &self.fonts, self.dialogs);
+        // Image generation: the Generate window over any tool, opened from
+        // a bitmap's slot (app::image_gen).
+        image_gen::window(ui, app, self.dialogs, &mut actions);
         // After the Map tab: Game in the same frame would take its focus.
         if focus_game && self.want_tab.is_none() {
             self.focus_game = false;
             ui.set_window_focus(Some("###game"));
         }
         self.status_bar(ui, app);
+        self.browser.create_modal(ui, &mut actions);
         self.modals(ui, app, &mut actions);
         actions.extend(self.palette.draw(ui, app));
         dispatch_actions(app, actions);
@@ -253,7 +308,7 @@ impl Studio {
         let cmd = io.key_ctrl() || io.key_super();
         if cmd && ui.is_key_pressed(Key::P)
             && app.pending().is_none()
-            && app.package_form.is_none()
+            && app.edits.picker.is_none()
             && !ui.is_popup_open(OPEN_PACKAGE)
         {
             self.palette.open();
@@ -273,35 +328,19 @@ impl Studio {
             self.open_source_dialog(actions);
         }
         if cmd && ui.is_key_pressed(Key::S) {
-            match app.tool {
-                ToolKind::Scenario | ToolKind::Tags | ToolKind::Scripts if shift => {
-                    self.save_map_dialog(app, actions)
-                }
-                ToolKind::Scenario | ToolKind::Tags | ToolKind::Scripts => {
-                    actions.extend(MenuCommand::Save.item(app).action);
-                }
-                ToolKind::Variants => actions.push(Action::SaveVariant),
-                ToolKind::Playlists if app.hoppers.is_open() => {
-                    if shift {
-                        if let Some(path) = playlists::save_dialog(self.dialogs, app) {
-                            actions.push(Action::SaveHopperAs(path));
-                        }
-                    } else {
-                        playlists::save(app, self.dialogs, actions);
-                    }
-                }
-                ToolKind::Hud => {
-                    if let Some(p) = hud::save_dialog(self.dialogs, app) {
-                        actions.push(Action::HudSaveAs(p));
-                    }
-                }
-                ToolKind::Playlists | ToolKind::UiScreens | ToolKind::Textures => {}
+            if shift && app.surface().is_map() {
+                self.save_map_dialog(app, actions);
+            } else if !shift {
+                actions.extend(app.front_doc().and_then(|doc| app.doc_save_action(doc)));
             }
         }
         if cmd && ui.is_key_pressed(Key::Q) {
             actions.push(Action::Quit);
         }
-        if !bar::is_map(app.tool) {
+        if cmd && ui.is_key_pressed(Key::Enter) {
+            actions.push(Action::PreviewInGame(None));
+        }
+        if !app.surface().is_map() {
             return;
         }
         if app.session.is_open() {
@@ -316,10 +355,10 @@ impl Studio {
                 actions.push(Action::Navigate(NavAction::Forward));
             }
         }
-        if app.tool == ToolKind::Scenario && cmd && ui.is_key_pressed(Key::D) {
+        if app.surface() == Surface::Scene && cmd && ui.is_key_pressed(Key::D) {
             actions.push(Action::Duplicate);
         }
-        if app.tool == ToolKind::Scenario
+        if app.surface() == Surface::Scene
             && (ui.is_key_pressed(Key::Delete) || ui.is_key_pressed(Key::Backspace))
             && !cmd
             && app.session.selected().is_some()
@@ -372,7 +411,7 @@ impl Studio {
             return None;
         }
         rfd::FileDialog::new()
-            .set_title("Save map as")
+            .set_title("Export map")
             .add_filter("Map", &["map"])
             .set_file_name(app.suggested_save_name())
             .save_file()
@@ -405,22 +444,18 @@ impl Studio {
             ui.separator();
             self.tool_file_menu(ui, app, actions);
             ui.separator();
-            let map_tool = bar::is_map(app.tool);
-            menu_action(ui, app, MenuCommand::Save, Some(icon::SAVE), false, actions);
+            let map_tool = app.surface().is_map();
+            let save = app.front_doc().and_then(|doc| app.doc_save_action(doc));
+            if ui.menu_item_enabled_selected_with_shortcut("Save", "Cmd+S", false, save.is_some()) {
+                actions.extend(save);
+            }
             if ui.menu_item_enabled_selected_with_shortcut(
-                "Save as...",
+                "Export map...",
                 if map_tool { "Shift+Cmd+S" } else { "" },
                 false,
                 open,
             ) {
                 self.save_map_dialog(app, actions);
-            }
-            if ui.menu_item_enabled_selected_no_shortcut(
-                format!("{} Save as package...", icon::PACKAGE),
-                false,
-                open,
-            ) {
-                app.open_package_form();
             }
             if ui.menu_item_enabled_selected_no_shortcut(
                 format!("{} Open package...", icon::PACKAGE_OPEN),
@@ -515,6 +550,9 @@ impl Studio {
                 self.reset_layout = true;
             }
         }
+        if let Some(_m) = ui.begin_menu("Preview") {
+            preview_switch::menu(ui, app, actions);
+        }
         self.play.menu(ui, app);
     }
 
@@ -543,7 +581,7 @@ impl Studio {
             DockLayoutApply::IfMissing
         };
         let fresh = !layout::has_dock_node(root.raw());
-        if self.previous_tool.is_none() && !fresh && apply == DockLayoutApply::IfMissing {
+        if self.previous_surface.is_none() && !fresh && apply == DockLayoutApply::IfMissing {
             self.keys.seed_saved_layout();
         }
         let layout = &self.layout;
@@ -578,12 +616,12 @@ impl Studio {
 
     /// The File menu's items for the variant and playlist tools.
     fn tool_file_menu(&mut self, ui: &Ui, app: &App, actions: &mut Vec<Action>) {
-        match app.tool {
-            ToolKind::Hud => {
+        match app.surface() {
+            Surface::Hud => {
                 let can = app.hud.session.as_ref().is_some_and(|s| !s.edited().is_empty());
                 if ui.menu_item_enabled_selected_with_shortcut(
-                    format!("{} Save map with HUD edits as...", icon::SAVE),
-                    "Cmd+S",
+                    format!("{} Export map with HUD edits...", icon::SAVE),
+                    "",
                     false,
                     can,
                 ) && let Some(p) = hud::save_dialog(self.dialogs, app)
@@ -591,17 +629,16 @@ impl Studio {
                     actions.push(Action::HudSaveAs(p));
                 }
             }
-            ToolKind::Textures => textures::file_menu(ui, app, self.dialogs, actions),
-            ToolKind::Scenario | ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => {}
-            ToolKind::Variants => {
-                menu_action(ui, app, MenuCommand::SaveVariant, Some(icon::SAVE), false, actions);
+            Surface::Textures => textures::file_menu(ui, app, self.dialogs, actions),
+            Surface::Scene | Surface::UiScreens | Surface::Tags | Surface::Scripts | Surface::Package => {}
+            Surface::Variants => {
                 if ui.menu_item(format!("{} Import variant...", icon::PACKAGE_OPEN))
                     && let Some(p) = variants::import_dialog(self.dialogs)
                 {
                     actions.push(Action::ImportVariantFile(p));
                 }
             }
-            ToolKind::Playlists => {
+            Surface::Playlists => {
                 menu_action(ui, app, MenuCommand::NewPlaylist, Some(icon::PLUS), false, actions);
                 menu_action(ui, app, MenuCommand::DefaultPlaylist, None, false, actions);
                 if ui.menu_item(format!("{} Open playlist file...", icon::FOLDER_OPEN))
@@ -610,23 +647,14 @@ impl Studio {
                     actions.push(Action::OpenHopper(p));
                 }
                 let open = app.hoppers.is_open();
-                let save = MenuCommand::SavePlaylist.item(app);
                 if ui.menu_item_enabled_selected_with_shortcut(
-                    format!("{} {}", icon::SAVE, save.label),
-                    save.shortcut,
-                    false,
-                    open,
-                ) {
-                    playlists::save(app, self.dialogs, actions);
-                }
-                if ui.menu_item_enabled_selected_with_shortcut(
-                    "Save playlist file as...",
-                    "Shift+Cmd+S",
+                    "Export playlist file...",
+                    "",
                     false,
                     open,
                 ) && let Some(p) = playlists::save_dialog(self.dialogs, app)
                 {
-                    actions.push(Action::SaveHopperAs(p));
+                    actions.push(Action::ExportPlaylist(p));
                 }
             }
         }
@@ -639,14 +667,24 @@ impl Studio {
         ui.window(&keys.list)
             .build(|| variants::list(ui, app, st, fonts, actions));
         ui.window(&keys.center)
-            .build(|| variants::settings(ui, app, st, fonts, actions));
+            .build(|| {
+                if app.front_doc() != Some(crate::app::Doc::Rules) {
+                    doc_header::draw(ui, app, actions, &mut self.browser);
+                }
+                variants::settings(ui, app, st, fonts, actions);
+            });
         ui.window(&keys.inspector)
             .build(|| variants::inspector(ui, app, st, fonts, self.dialogs, actions));
         // Docked beside the settings, but never takes the tab from them
         // when it first appears; it is opened by picking its tab.
         ui.window(&self.keys.rules)
             .flags(dear_imgui_rs::WindowFlags::NO_FOCUS_ON_APPEARING)
-            .build(|| game_script::window(ui, app, fonts, self.dialogs));
+            .build(|| {
+                if app.front_doc() == Some(crate::app::Doc::Rules) {
+                    doc_header::draw(ui, app, actions, &mut self.browser);
+                }
+                game_script::window(ui, app, fonts, self.dialogs);
+            });
         // Opening a script (from its toolbar or `rules.open`) picks its tab,
         // asked each frame until the window's body has drawn: a request
         // made before the dock layout exists is lost.
@@ -663,7 +701,10 @@ impl Studio {
         ui.window(&keys.list)
             .build(|| playlists::list(ui, app, fonts, dialogs, actions));
         ui.window(&keys.center)
-            .build(|| playlists::entries(ui, app, fonts, actions));
+            .build(|| {
+                doc_header::draw(ui, app, actions, &mut self.browser);
+                playlists::entries(ui, app, fonts, actions);
+            });
         let st = &mut self.playlists;
         ui.window(&keys.inspector)
             .build(|| playlists::inspector(ui, app, st, fonts, dialogs, actions));
@@ -683,7 +724,10 @@ impl Studio {
             .build(|| ui_screens::tree(ui, app, st, fonts, actions));
         ui.window(&keys.center)
             .flags(WindowFlags::HORIZONTAL_SCROLLBAR)
-            .build(|| ui_screens::preview(ui, app, st, gpu));
+            .build(|| {
+                doc_header::draw(ui, app, actions, &mut self.browser);
+                ui_screens::preview(ui, app, st, gpu, actions);
+            });
         ui.window(&keys.inspector)
             .build(|| ui_screens::inspector(ui, app, st, fonts, self.dialogs, actions));
     }
@@ -696,7 +740,10 @@ impl Studio {
             .build(|| hud::tree(ui, app, st, fonts, actions));
         ui.window(&keys.center)
             .flags(WindowFlags::HORIZONTAL_SCROLLBAR)
-            .build(|| hud::preview(ui, app, st, fonts, gpu, actions));
+            .build(|| {
+                doc_header::draw(ui, app, actions, &mut self.browser);
+                hud::preview(ui, app, st, fonts, gpu, actions);
+            });
         ui.window(&keys.inspector)
             .build(|| hud::inspector(ui, app, st, fonts, self.dialogs, actions));
     }
@@ -709,7 +756,10 @@ impl Studio {
             .build(|| textures::list(ui, app, st, actions));
         ui.window(&keys.center)
             .flags(WindowFlags::HORIZONTAL_SCROLLBAR)
-            .build(|| textures::canvas(ui, app, st, fonts, gpu, actions));
+            .build(|| {
+                doc_header::draw(ui, app, actions, &mut self.browser);
+                textures::canvas(ui, app, st, fonts, gpu, actions);
+            });
         ui.window(&keys.inspector)
             .build(|| textures::inspector(ui, app, st, self.dialogs, actions));
     }
@@ -729,10 +779,10 @@ impl Studio {
             .focused(focus);
         window.build(|| {
             if ui.is_window_focused()
-                && app.tool != ToolKind::Tags
-                && self.previous_tool == Some(app.tool)
+                && app.surface() != Surface::Tags
+                && self.previous_surface == Some(app.surface())
             {
-                actions.push(Action::SetTool(ToolKind::Tags));
+                actions.push(Action::Show(Surface::Tags));
             }
             tags::tree(ui, app, st, fonts, actions);
         });
@@ -748,16 +798,16 @@ impl Studio {
         let fonts = &self.fonts;
         let st = &mut self.scripts;
         let dialogs = self.dialogs;
-        let previous = self.previous_tool;
+        let previous = self.previous_surface;
         let window = ui.window(&self.keys.scripts)
             .flags(WindowFlags::NO_FOCUS_ON_APPEARING)
             .focused(focus);
         window.build(|| {
             if ui.is_window_focused()
-                && app.tool != ToolKind::Scripts
-                && previous == Some(app.tool)
+                && app.surface() != Surface::Scripts
+                && previous == Some(app.surface())
             {
-                actions.push(Action::SetTool(ToolKind::Scripts));
+                actions.push(Action::Show(Surface::Scripts));
             }
             // Read only while the tab shows: the tables are read when a
             // map opens and this tab is first drawn for it.
@@ -766,16 +816,12 @@ impl Studio {
         });
     }
 
-    fn maps_window(
-        &mut self,
-        ui: &Ui,
-        app: &App,
-        gpu: &mut Gpu<'_>,
-        focus: bool,
-        actions: &mut Vec<Action>,
-    ) {
-        let mut list = std::mem::take(&mut self.map_list);
-        ui.window(&self.keys.maps).focused(focus).build(|| {
+    /// The browser: every tag of the tree by path, the packages and Live
+    /// (`ui/browser.rs`), beside the Open and Folder buttons that choose
+    /// the source the tree's maps are read from.
+    fn browser_window(&mut self, ui: &Ui, app: &App, focus: bool, actions: &mut Vec<Action>) {
+        let mut st = std::mem::take(&mut self.browser);
+        ui.window(&self.keys.browser).focused(focus).build(|| {
             if ui.button(format!("{} Open...", icon::FOLDER_OPEN)) {
                 self.open_source_dialog(actions);
             }
@@ -791,52 +837,10 @@ impl Studio {
                 };
                 ui.text_disabled(format!("{kind} {}", src.path().display()));
             }
-            let mut halo2 = app.halo2_map_entries();
-            let mut halo1 = app.halo1_map_entries();
-            let mut shared = MapEntry::take_shared(&mut halo2);
-            shared.extend(MapEntry::take_shared(&mut halo1));
-            MapEntry::sort(&mut shared);
-            map_list::source_rows(ui, app, &mut list, gpu, &halo2, actions);
-            map_pack::group(ui, app, &mut list, gpu, actions);
-            self.library_lists(ui, app, &mut list, gpu, &halo1, actions);
-            map_list::source_rows(ui, app, &mut list, gpu, &shared, actions);
+            st.import_buttons(ui, self.dialogs);
+            browser::draw(ui, app, &mut st, actions);
         });
-        self.map_list = list;
-    }
-
-    /// The user packages, converted variants and read-only Halo 1 maps.
-    fn library_lists(
-        &self,
-        ui: &Ui,
-        app: &App,
-        st: &mut map_list::MapListUi,
-        gpu: &mut Gpu<'_>,
-        halo1: &[MapEntry<'_>],
-        actions: &mut Vec<Action>,
-    ) {
-        let opened = app.opened_package();
-        let mut last = None;
-        for e in app.packages() {
-            let group = e.map_group();
-            map_list::section(ui, &mut last, group);
-            let rows = match group {
-                MapGroup::Halo1Sandbox => map_list::Group::Halo1Sandbox,
-                _ => map_list::Group::Packages,
-            };
-            package_row(ui, app, st, gpu, rows, e, opened, actions);
-        }
-        if let Some(src) = app.halo1_source()
-            && !halo1.is_empty()
-        {
-            ui.spacing();
-            theme::section(ui, "Halo 1");
-            ui.text_disabled(format!(
-                "{} {} (read only)",
-                icon::DISC,
-                src.path().display()
-            ));
-            map_list::source_rows(ui, app, st, gpu, halo1, actions);
-        }
+        self.browser = st;
     }
 
     fn outliner_window(
@@ -851,10 +855,10 @@ impl Studio {
             .focused(focus);
         window.build(|| {
             if ui.is_window_focused()
-                && matches!(app.tool, ToolKind::Tags | ToolKind::Scripts)
-                && self.previous_tool == Some(app.tool)
+                && matches!(app.surface(), Surface::Tags | Surface::Scripts)
+                && self.previous_surface == Some(app.surface())
             {
-                actions.push(Action::SetTool(ToolKind::Scenario));
+                actions.push(Action::Show(Surface::Scene));
             }
             if ui.is_window_hovered_with_flags(WindowHoveredFlags::CHILD_WINDOWS) && map_is_visible(app) {
                 self.hint = Some("Click to select · Cmd/Ctrl toggles · Shift selects a range".into());
@@ -864,7 +868,6 @@ impl Studio {
                 return;
             }
             if !app.session.is_open() {
-                layers::section(ui, app, actions);
                 theme::empty_card(ui, &self.fonts, "Open a map to see its scene", || {});
                 return;
             }
@@ -908,6 +911,7 @@ impl Studio {
             }
             ui.separator();
             let filter = app.filter.trim().to_owned();
+            let ground_state = app.ground_state();
             let session = &app.session;
             let Some(scenario) = session.scenario() else {
                 return;
@@ -915,8 +919,8 @@ impl Studio {
             let io = ui.io();
             let (toggle, range) = (io.key_ctrl() || io.key_super(), io.key_shift());
             let mut place = None;
+            let mut label_place = None;
             theme::panel_body(ui, "##outliner-body", || {
-                layers::section(ui, app, actions);
                 for b in &scenario.blocks {
                     let kind = b.def.kind;
                     let shown: Vec<usize> = (0..b.len())
@@ -972,9 +976,15 @@ impl Studio {
                     }
                 }
                 volume_outliner(ui, session, &filter, &mut self.volume_shown, actions);
+                label_place = ground_outliner(ui, session, &filter, ground_state, actions);
         });
                 if place.is_some() {
                     self.viewport.placing = place;
+                    self.viewport.placing_label = None;
+                }
+                if label_place.is_some() {
+                    self.viewport.placing_label = label_place;
+                    self.viewport.placing = None;
                 }
             });
     }
@@ -994,14 +1004,24 @@ impl Studio {
         ui.window(&self.keys.viewport)
             .flags(WindowFlags::NO_SCROLLBAR | WindowFlags::NO_SCROLL_WITH_MOUSE)
             .build(|| {
+                doc_header::draw(ui, app, actions, &mut self.browser);
+                if let Some(doc) = app.front_doc()
+                    && app.source_asset(doc).is_some()
+                {
+                    browser::source_view(ui, app, doc);
+                    return;
+                }
                 if map_is_visible(app) {
                     toolbar::draw(ui, app, viewport, actions, &mut self.hint);
                     viewport.draw(ui, app, gpu, actions);
                     play.overlay(ui, app, viewport.shown().map(|(r, _)| r));
                     if viewport.hovered() || viewport.looking() {
-                        self.hint = Some(match viewport.placing {
-                            Some((kind, _)) => format!("Click the level to place {kind:?} · Esc cancels"),
-                            None => "RMB look and fly · Alt+LMB orbit · MMB pan · Wheel dolly".into(),
+                        self.hint = Some(match (viewport.placing, viewport.placing_label) {
+                            (Some((kind, _)), _) => format!("Click the level to place {kind:?} · Esc cancels"),
+                            (None, Some(label)) => {
+                                format!("Click the level to place {} · Esc cancels", label.text())
+                            }
+                            (None, None) => "RMB look and fly · Alt+LMB orbit · MMB pan · Wheel dolly".into(),
                         });
                     }
                 } else if app.source().is_some() || app.halo1_source().is_some() {
@@ -1019,7 +1039,13 @@ impl Studio {
         padding.pop();
     }
 
-    fn inspector_window(&mut self, ui: &Ui, app: &mut App, actions: &mut Vec<Action>) {
+    fn inspector_window(
+        &mut self,
+        ui: &Ui,
+        app: &mut App,
+        gpu: &mut Gpu<'_>,
+        actions: &mut Vec<Action>,
+    ) {
         let mut state = std::mem::take(&mut self.inspector);
         // The closure borrows the whole shell, so the key is its own value.
         let key = self.keys.inspector.clone();
@@ -1034,12 +1060,21 @@ impl Studio {
                     ui.set_item_tooltip(why);
                 }
             }
-            if app.tool == ToolKind::Tags {
-                tags::fields(ui, app, &mut self.tags, &self.fonts, self.dialogs, actions);
+            if app.surface() == Surface::Tags {
+                tags::fields(
+                    ui,
+                    app,
+                    &mut self.tags,
+                    &self.fonts,
+                    self.dialogs,
+                    gpu,
+                    &mut self.map_list,
+                    actions,
+                );
                 return;
             }
-            if app.tool == ToolKind::Scripts {
-                scripts::source(ui, app, &self.fonts, actions);
+            if app.surface() == Surface::Scripts {
+                scripts::source(ui, app, &mut self.scripts, &self.fonts, actions);
                 return;
             }
             if let Some(view) = app.halo1_view() {
@@ -1077,6 +1112,22 @@ impl Studio {
         });
     }
 
+    /// The Problems panel (`ui/problems.rs`). A row that opens a package
+    /// shows it in the browser.
+    fn problems_window(&mut self, ui: &Ui, app: &mut App, actions: &mut Vec<Action>) {
+        if let Some(asset) = app.problems.reveal.take() {
+            self.browser.reveal(&asset);
+            ui.set_window_focus(Some("###browser"));
+        }
+        let mut st = std::mem::take(&mut self.problems);
+        let focus = st.focus > 0;
+        st.focus = st.focus.saturating_sub(1);
+        ui.window(&self.keys.problems).focused(focus).build(|| {
+            problems::draw(ui, app, &mut st, actions);
+        });
+        self.problems = st;
+    }
+
     fn status_bar(&mut self, ui: &Ui, app: &App) {
         let vp = ui.main_viewport();
         let (pos, size) = (vp.work_pos(), vp.work_size());
@@ -1112,7 +1163,19 @@ impl Studio {
                 };
                 theme::clipped_text(ui, &message, tone, message_end - 8.0);
                 let hint_start = message_end + 8.0;
-                if let Some(hint) = &self.hint
+                // The workspace's extraction bar takes the hint's slot
+                // while it runs; the hint waits.
+                let line = ui.text_line_height();
+                if app.workspace.progress().is_some() {
+                    workspace::status_progress(
+                        ui,
+                        app,
+                        x + hint_start,
+                        y,
+                        fps_start - hint_start - 8.0,
+                        line,
+                    );
+                } else if let Some(hint) = &self.hint
                     && fps_start - hint_start > 16.0
                 {
                     ui.set_cursor_screen_pos([x + hint_start, y]);
@@ -1131,7 +1194,7 @@ impl Studio {
 
     fn modals(&mut self, ui: &Ui, app: &mut App, actions: &mut Vec<Action>) {
         // Unsaved changes.
-        if app.pending().is_some() && !ui.is_popup_open(UNSAVED) {
+        if app.pending().is_some() && app.edits.picker.is_none() && !ui.is_popup_open(UNSAVED) {
             ui.open_popup(UNSAVED);
         }
         if let Some(_m) = ui
@@ -1141,7 +1204,12 @@ impl Studio {
         {
             let what = match app.pending() {
                 Some(Action::Quit) => "quitting",
-                Some(Action::SelectMap(_) | Action::OpenMapPack(_) | Action::SelectHalo1Map(_)) => {
+                Some(
+                    Action::SelectMap(_)
+                    | Action::OpenMapPack(_)
+                    | Action::SelectHalo1Map(_)
+                    | Action::OpenAsset { .. },
+                ) => {
                     "opening another map"
                 }
                 Some(Action::OpenPackageEntry(_)) => "opening another package",
@@ -1153,34 +1221,35 @@ impl Studio {
                 Some(Action::EditEntryVariant(..)) => "opening the entry's variant",
                 _ => "opening another variant",
             };
-            let tool = app.pending_tool().unwrap_or(ToolKind::Scenario);
+            let tool = app.pending_surface().unwrap_or(Surface::Scene);
             let who = match tool {
-                ToolKind::Scenario => app.loaded_map().unwrap_or("The map").to_owned(),
-                ToolKind::Variants => "The open game variant".to_owned(),
-                ToolKind::Playlists => "The playlist file".to_owned(),
-                ToolKind::UiScreens => "The UI screen".to_owned(),
-                ToolKind::Hud => "The HUD map".to_owned(),
-                ToolKind::Tags => "The map's tags".to_owned(),
-                ToolKind::Scripts => "The map's scripts".to_owned(),
-                ToolKind::Textures => "The map's bitmaps".to_owned(),
+                Surface::Scene => app.loaded_map().unwrap_or("The map").to_owned(),
+                Surface::Variants => "The open game variant".to_owned(),
+                Surface::Playlists => "The playlist file".to_owned(),
+                Surface::UiScreens => "The UI screen".to_owned(),
+                Surface::Hud => "The HUD map".to_owned(),
+                Surface::Tags => "The map's tags".to_owned(),
+                Surface::Scripts => "The map's scripts".to_owned(),
+                Surface::Textures => "The map's bitmaps".to_owned(),
+                Surface::Package => "The package".to_owned(),
             };
             ui.text(format!("{} {who} has unsaved edits.", icon::ALERT));
             ui.text_disabled(format!("Save them before {what}?"));
             ui.spacing();
             let mut answer = None;
             match tool {
-                ToolKind::Scenario => {
-                    if matches!(app.save_target(), SaveTarget::File(_) | SaveTarget::Package(_)) {
+                Surface::Scene => {
+                    if matches!(app.save_target(), SaveTarget::File(_) | SaveTarget::Package(_) | SaveTarget::EditTarget(Some(_))) {
                         if ui.button(format!("{} Save", icon::SAVE)) {
                             answer = Some(Answer::Save);
                         }
-                    } else if ui.button(format!("{} Save as...", icon::SAVE))
+                    } else if ui.button(format!("{} Export map...", icon::SAVE))
                         && let Some(p) = self.save_path_dialog(app)
                     {
                         answer = Some(Answer::SaveAs(p));
                     }
                 }
-                ToolKind::Variants => {
+                Surface::Variants => {
                     let can = app.variants.as_ref().is_some_and(|e| !e.is_read_only());
                     let d = ui.begin_disabled_with_cond(!can);
                     if ui.button(format!("{} Save", icon::SAVE)) {
@@ -1188,25 +1257,19 @@ impl Studio {
                     }
                     d.end();
                 }
-                ToolKind::Playlists => {
-                    if app.hoppers.path().is_some() {
-                        if ui.button(format!("{} Save", icon::SAVE)) {
-                            answer = Some(Answer::Save);
-                        }
-                    } else if ui.button(format!("{} Save as...", icon::SAVE))
-                        && let Some(p) = playlists::save_dialog(self.dialogs, app)
-                    {
-                        answer = Some(Answer::SaveAs(p));
+                Surface::Playlists => {
+                    if ui.button(format!("{} Save", icon::SAVE)) {
+                        answer = Some(Answer::Save);
                     }
                 }
-                ToolKind::Hud => {
+                Surface::Hud => {
                     if ui.button(format!("{} Save as...", icon::SAVE))
                         && let Some(p) = hud::save_dialog(self.dialogs, app)
                     {
                         answer = Some(Answer::SaveAs(p));
                     }
                 }
-                ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts | ToolKind::Textures => {}
+                Surface::UiScreens | Surface::Tags | Surface::Scripts | Surface::Textures | Surface::Package => {}
             }
             ui.same_line();
             if ui.button("Discard") {
@@ -1218,58 +1281,55 @@ impl Studio {
             }
             if let Some(a) = answer {
                 app.resolve(a);
-                if app.pending().is_none() {
+                if app.pending().is_none() || app.edits.picker.is_some() {
                     ui.close_current_popup();
                 }
             }
         }
 
-        // Save as package.
-        if app.package_form.is_some() && !ui.is_popup_open(SAVE_PACKAGE) {
-            ui.open_popup(SAVE_PACKAGE);
+        // The first edit's target: a local package, or a new one.
+        if app.edits.picker.is_some() && !ui.is_popup_open(EDIT_TARGET) {
+            ui.open_popup(EDIT_TARGET);
         }
         if let Some(_m) = ui
-            .begin_modal_popup_config(SAVE_PACKAGE)
+            .begin_modal_popup_config(EDIT_TARGET)
             .flags(WindowFlags::ALWAYS_AUTO_RESIZE)
             .begin()
         {
-            match app.package_form.take() {
+            match app.edits.picker.take() {
                 None => ui.close_current_popup(),
-                Some(mut form) => {
-                    ui.text_disabled(format!("in {}", app.session.maps_dir().display()));
-                    ui.set_next_item_width(320.0);
-                    ui.input_text("Name", &mut form.name).build();
-                    ui.set_next_item_width(320.0);
-                    ui.input_text("Author", &mut form.author).build();
-                    ui.set_next_item_width(320.0);
-                    ui.input_text("Description", &mut form.description).build();
-                    ui.set_next_item_width(320.0);
-                    ui.input_text("Image (PNG/JPEG)", &mut app.package_image)
-                        .hint("optional, at most 512 KB")
-                        .build();
-                    ui.set_next_item_width(320.0);
-                    ui.input_text("Directory", &mut form.dir).build();
-                    ui.checkbox(
-                        "Make it the active package for this map",
-                        &mut form.activate,
-                    );
-                    if app.session.package_dir() == Some(form.dir.as_str()) {
-                        ui.text_disabled("Replaces this package's patch.");
+                Some(mut picker) => {
+                    ui.text("Which package gets your edits?");
+                    ui.spacing();
+                    let mut answer = None;
+                    for (id, name) in app.local_packages() {
+                        if ui.button(format!("{id}##edit-target-{id}")) {
+                            answer = Some(EditChoice::Existing(id.clone()));
+                        }
+                        ui.same_line();
+                        ui.text_disabled(name);
                     }
                     ui.spacing();
-                    let save = ui.button(format!("{} Save package", icon::PACKAGE));
+                    ui.set_next_item_width(240.0);
+                    ui.input_text("##new-package-name", &mut picker.new_name)
+                        .hint("New package name")
+                        .build();
                     ui.same_line();
-                    let cancel = ui.button("Cancel") || ui.is_key_pressed(Key::Escape);
-                    if save {
-                        let image = app.package_image.trim();
-                        form.image = (!image.is_empty()).then(|| PathBuf::from(image));
-                        actions.push(Action::SavePackage(form.clone()));
+                    let d = ui.begin_disabled_with_cond(picker.new_name.trim().is_empty());
+                    if ui.button(format!("{} New package...", icon::PACKAGE)) {
+                        answer = Some(EditChoice::New(picker.new_name.clone()));
                     }
-                    if cancel {
-                        ui.close_current_popup();
-                    } else {
-                        // Saving closes it (App::run clears the form) on success.
-                        app.package_form = Some(form);
+                    d.end();
+                    ui.spacing();
+                    if ui.button("Cancel") || ui.is_key_pressed(Key::Escape) {
+                        answer = Some(EditChoice::Cancel);
+                    }
+                    match answer {
+                        Some(choice) => {
+                            ui.close_current_popup();
+                            actions.push(Action::ChooseEditTarget(choice));
+                        }
+                        None => app.edits.picker = Some(picker),
                     }
                 }
             }
@@ -1313,7 +1373,7 @@ impl Studio {
 /// Dispatch the window's frame queue in order, including the placement inspector switch.
 pub(crate) fn dispatch_actions(app: &mut App, actions: Vec<Action>) {
     for a in actions {
-        if app.tool == ToolKind::Tags
+        if app.surface() == Surface::Tags
             && matches!(
                 a,
                 Action::Select(_)
@@ -1324,7 +1384,7 @@ pub(crate) fn dispatch_actions(app: &mut App, actions: Vec<Action>) {
                     | Action::SelectNav(_)
             )
         {
-            app.dispatch(Action::SetTool(ToolKind::Scenario));
+            app.dispatch(Action::Show(Surface::Scene));
         }
         app.dispatch(a);
     }
@@ -1399,49 +1459,6 @@ fn entry_menu(
     }
     let what = if index.is_some() { "a copy" } else { "new" };
     item(format!("{} Place {what} with the mouse", icon::PLUS), add).then_some((kind, index))
-}
-
-/// A package's row in the Maps list: its name, its `[package] image` and
-/// `description` when it has them, and what it is an edit of.
-fn package_row(
-    ui: &Ui,
-    app: &App,
-    st: &mut map_list::MapListUi,
-    gpu: &mut Gpu<'_>,
-    group: map_list::Group,
-    e: &editor_core::packages::PackageEntry,
-    opened: Option<&str>,
-    actions: &mut Vec<Action>,
-) {
-    let key = e.key();
-    let label = e.label();
-    let from = format!(
-        "{}\nin <data>/maps/{}{}",
-        if !e.derived && let Some(m) = app.pack_map_named(&e.map) {
-            format!("an edit of the Map Pack's {} ({})", m.name, e.map)
-        } else if e.derived {
-            format!("a new map, loaded as {}", e.map)
-        } else {
-            format!("an edit of {}", e.map)
-        },
-        e.dir,
-        match &e.halo1 {
-            Some(o) => format!("\nconverted from Halo 1's {}", o.map),
-            None => String::new(),
-        }
-    );
-    let row = map_list::Row {
-        key: format!("pkg-{key}"),
-        label: &label,
-        icon: icon::PACKAGE,
-        selected: opened == Some(key.as_str()),
-        picture: app.package_picture(&e.dir),
-        description: e.description.as_deref().unwrap_or(""),
-        from: &from,
-    };
-    if st.row(ui, gpu, group, &row) {
-        actions.push(Action::OpenPackageEntry(key.clone()));
-    }
 }
 
 /// The Volumes group's menu: add a trigger volume, or make a kill volume,
@@ -1534,6 +1551,95 @@ fn volume_outliner(
     }
 }
 
+/// The Scene tab's AI and objectives group
+/// (docs/game/game-types-without-carriers.md, "In Studio"): each ground
+/// label with how many are placed, a **Place new with the mouse** row for
+/// it, and the placed ones as rows that select their flag. **Build AI
+/// ground** and where the ground stands are at its head. Answers the label
+/// the next click is to place.
+fn ground_outliner(
+    ui: &Ui,
+    session: &scenario_edit::Session,
+    filter: &str,
+    state: crate::app::ground::GroundState,
+    actions: &mut Vec<Action>,
+) -> Option<scenario_edit::LabelKind> {
+    use scenario_edit::{BlockKind, LabelKind};
+    let scenario = session.scenario()?;
+    let labels = scenario.flag_labels();
+    let shown: Vec<LabelKind> = LabelKind::ALL
+        .into_iter()
+        .filter(|k| outliner::matches(filter, "AI and objectives", k.title(), 0))
+        .collect();
+    if !filter.is_empty() && shown.is_empty() {
+        return None;
+    }
+    let mut node = ui
+        .tree_node_config("block-ground")
+        .label(format!("{}  AI and objectives  ({})", icon::FLAG, labels.len()))
+        .span_avail_width(true);
+    if !filter.is_empty() {
+        node = node.opened(true, Condition::Always);
+    }
+    let _node = node.push()?;
+    let mut place = None;
+    let building = state == crate::app::ground::GroundState::Building;
+    let d = ui.begin_disabled_with_cond(building);
+    if ui.button(format!("{} Build AI ground##build-ground", icon::FLAG)) {
+        actions.push(Action::BuildGround);
+    }
+    d.end();
+    ui.same_line();
+    ui.text_disabled(match state {
+        crate::app::ground::GroundState::NoMap => "no map",
+        crate::app::ground::GroundState::Never => "not built",
+        crate::app::ground::GroundState::Building => "building...",
+        crate::app::ground::GroundState::Current => "built",
+        crate::app::ground::GroundState::Stale(_) => "stale: build again",
+        crate::app::ground::GroundState::Failed => "the build failed",
+    });
+    let flags = BlockKind::NetgameFlags;
+    for kind in shown {
+        let mine: Vec<usize> = labels
+            .iter()
+            .filter(|(_, l)| l.kind == kind)
+            .map(|(i, _)| *i)
+            .collect();
+        let Some(_row) = ui
+            .tree_node_config(format!("ground-{}", kind.text()))
+            .label(format!("{}  ({})", kind.title(), mine.len()))
+            .span_avail_width(true)
+            .push()
+        else {
+            continue;
+        };
+        if ui
+            .selectable_config(format!("Place new with the mouse##place-{}", kind.text()))
+            .build()
+        {
+            place = Some(kind);
+        }
+        for i in mine {
+            let name = match scenario.flag_label(i) {
+                Some(l) if l.kind.has_phase() => format!("{} {i}, phase {}", kind.text(), l.phase),
+                _ => format!("{} {i}", kind.text()),
+            };
+            if ui
+                .selectable_config(format!("{name}###label-{i}"))
+                .selected(session.is_selected((flags, i)))
+                .allow_double_click(true)
+                .build()
+            {
+                actions.push(Action::Select(Some((flags, i))));
+                if ui.is_mouse_double_clicked(dear_imgui_rs::MouseButton::Left) {
+                    actions.push(Action::FocusSelected);
+                }
+            }
+        }
+    }
+    place
+}
+
 /// The outliner of a Halo 1 map shown read-only: its placements by kind.
 fn halo1_outliner(
     ui: &Ui,
@@ -1546,7 +1652,6 @@ fn halo1_outliner(
     ui.separator();
     let sel = app.session.selected();
     theme::panel_body(ui, "##h1-outliner-body", || {
-        layers::section(ui, app, actions);
         for kind in editor_core::halo1::H1Kind::ALL {
             let block = block_of(kind);
             let n = view.of(kind).count();
@@ -1617,7 +1722,7 @@ impl Studio {
         );
         ui.text_wrapped(
             "Halo 1 maps are shown as they are on the disc. Edit a converted copy \
-             (Maps > Halo 1) instead.",
+             instead.",
         );
         convert_controls(ui, app, view, actions);
         for n in &view.notes {

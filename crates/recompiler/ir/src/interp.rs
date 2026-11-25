@@ -267,9 +267,16 @@ fn x87_wait(cpu: &Cpu) -> Result<(), Fault> {
 /// [`Intrinsic::Sse`]: the reference semantics, argument shapes per
 /// [`SseOp::signature`].
 fn sse(cpu: &mut Cpu, op: SseOp, args: &[u128]) -> Result<Vec<u128>, Fault> {
+    sse_op(&mut cpu.mxcsr, op, args).map(|v| vec![v]).map_err(|_| Fault::SimdException)
+}
+
+/// One [`SseOp`] under `mxcsr`, by the `simd` crate: the interpreter's
+/// semantics, and the fast tier's through [`sse_helper`]. `args` are the
+/// operands of [`SseOp::signature`], each zero-extended.
+pub fn sse_op(mxcsr: &mut u32, op: SseOp, args: &[u128]) -> Result<u128, simd::Xm> {
     use simd as s;
     use SseOp::*;
-    let m = &mut cpu.mxcsr;
+    let m = mxcsr;
     let a = args[0];
     let b32 = || args[1] as u32;
     let r: Result<u128, s::Xm> = match op {
@@ -302,7 +309,47 @@ fn sse(cpu: &mut Cpu, op: SseOp, args: &[u128]) -> Result<Vec<u128>, Fault> {
         Cvtps2pi => s::cvtps2pi(m, a as u64).map(u128::from),
         Cvttps2pi => s::cvttps2pi(m, a as u64).map(u128::from),
     };
-    r.map(|v| vec![v]).map_err(|_| Fault::SimdException)
+    r
+}
+
+/// `H2SHIM_SIMD_EXCEPTION`, the event an unmasked SSE exception raises
+/// (h2abi.h), and `H2SHIM_UNMODELLED` for an operation number out of range.
+const SHIM_SIMD_EXCEPTION: u32 = 13;
+const SHIM_UNMODELLED: u32 = 12;
+
+/// The Cranelift fast tier's SSE helper (docs/lifter/cranelift-tier.md
+/// section 3.9), which the host installs into the module with
+/// `h2clif_install_v1`: operation `op` ([`SseOp::ALL`]'s index) by
+/// [`sse_op`], the same code the interpreter runs. Operand `k` is at
+/// `args + 16 * k`, little-endian, at its [`SseOp::signature`] width (the
+/// rest of its 16 bytes is not read); the result goes to `out` at its
+/// width. Returns 0, or `H2SHIM_SIMD_EXCEPTION` with `out` untouched, as
+/// the C tier's `h2i_sse_*` do.
+///
+/// # Safety
+/// `mxcsr` points to the guest's MXCSR, `args` to 16 bytes per operand
+/// and `out` to the result's width, as the fast tier's handlers pass them.
+pub unsafe extern "C" fn sse_helper(mxcsr: *mut u32, op: u32, args: *const u8, out: *mut u8) -> u32 {
+    let Some(&op) = SseOp::ALL.get(op as usize) else { return SHIM_UNMODELLED };
+    let (ins, outs) = op.signature();
+    let mut operands = [0u128; 3];
+    for (k, w) in ins.iter().enumerate() {
+        let mut b = [0u8; 16];
+        // SAFETY: the caller's buffer holds 16 bytes per operand.
+        unsafe { std::ptr::copy_nonoverlapping(args.add(16 * k), b.as_mut_ptr(), w.bytes() as usize) };
+        operands[k] = u128::from_le_bytes(b);
+    }
+    // SAFETY: the caller's MXCSR.
+    let m = unsafe { &mut *mxcsr };
+    match sse_op(m, op, &operands[..ins.len()]) {
+        Ok(v) => {
+            let n = outs[0].bytes() as usize;
+            // SAFETY: `out` holds the result's width.
+            unsafe { std::ptr::copy_nonoverlapping(v.to_le_bytes().as_ptr(), out, n) };
+            0
+        }
+        Err(simd::Xm) => SHIM_SIMD_EXCEPTION,
+    }
 }
 
 impl Cpu {
@@ -726,6 +773,42 @@ pub fn step<M: Memory>(cpu: &mut Cpu, mem: &mut M, insn: &IrInsn) -> Result<Flow
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sse_numbers_are_declaration_order() {
+        for (i, op) in SseOp::ALL.iter().enumerate() {
+            assert_eq!(*op as usize, i, "{}", op.name());
+        }
+    }
+
+    #[test]
+    fn the_sse_helper_reads_operands_at_their_width_and_matches_the_interpreter() {
+        // addss: a = lanes 1.0, 2.0, 3.0, 4.0; b = 0.5 with garbage above
+        // its 32 bits, which the helper must not read.
+        let a: u128 = (0x4080_0000u128 << 96) | (0x4040_0000u128 << 64) | (0x4000_0000u128 << 32) | 0x3f80_0000;
+        let mut args = [0xa5u8; 48];
+        args[..16].copy_from_slice(&a.to_le_bytes());
+        args[16..20].copy_from_slice(&0x3f00_0000u32.to_le_bytes());
+        let mut out = [0u8; 16];
+        let mut mxcsr = simd::MXCSR_DEFAULT;
+        let st = unsafe { sse_helper(&mut mxcsr, SseOp::AddSs as u32, args.as_ptr(), out.as_mut_ptr()) };
+        assert_eq!(st, 0);
+        let mut m2 = simd::MXCSR_DEFAULT;
+        let want = sse_op(&mut m2, SseOp::AddSs, &[a, 0x3f00_0000]).unwrap();
+        assert_eq!(u128::from_le_bytes(out), want);
+        assert_eq!(want as u32, 0x3fc0_0000);
+        assert_eq!(mxcsr, m2);
+        // comiss writes 4 bytes; an unmasked exception writes none.
+        let mut out = [0xeeu8; 16];
+        args[..4].copy_from_slice(&0x7fc0_0000u32.to_le_bytes());
+        let mut mxcsr = simd::MXCSR_DEFAULT & !(simd::IE << simd::MASK_SHIFT);
+        let st = unsafe { sse_helper(&mut mxcsr, SseOp::Comiss as u32, args.as_ptr(), out.as_mut_ptr()) };
+        assert_eq!(st, SHIM_SIMD_EXCEPTION);
+        assert_eq!(out, [0xee; 16]);
+        assert_ne!(mxcsr & simd::IE, 0);
+        let st = unsafe { sse_helper(&mut mxcsr, 28, args.as_ptr(), out.as_mut_ptr()) };
+        assert_eq!(st, SHIM_UNMODELLED);
+    }
 
     fn t(id: u32, width: Width) -> Temp {
         Temp { id, width }

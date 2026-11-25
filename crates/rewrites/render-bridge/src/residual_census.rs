@@ -64,6 +64,10 @@ pub struct Tally {
     pub state_words: u64,
     pub copies: u64,
     pub uploads: u64,
+    pub native_guest_binds: u64,
+    pub guest_bind_refused_destroy: u64,
+    pub native_rect_clears: u64,
+    pub clear_refused_rect_count: u64,
 }
 
 /// One guest call of a D3D entry, as the adapter files it.
@@ -127,6 +131,10 @@ pub struct Work {
     pub binds: u64,
     pub copies: u64,
     pub uploads: u64,
+    pub native_guest_binds: u64,
+    pub guest_bind_refused_destroy: u64,
+    pub native_rect_clears: u64,
+    pub clear_refused_rect_count: u64,
     pub locks: u64,
     pub queries: u64,
     pub presents: u64,
@@ -143,6 +151,10 @@ impl Work {
         self.state_words += t.state_words;
         self.copies += t.copies;
         self.uploads += t.uploads;
+        self.native_guest_binds += t.native_guest_binds;
+        self.guest_bind_refused_destroy += t.guest_bind_refused_destroy;
+        self.native_rect_clears += t.native_rect_clears;
+        self.clear_refused_rect_count += t.clear_refused_rect_count;
     }
 
     /// A drain outside every entry (a producer boundary's).
@@ -189,6 +201,11 @@ pub struct Site {
 pub enum Status {
     /// Replaced: its guest code no longer runs.
     Native,
+    /// Partly replaced: a native stage draws some of its items from the
+    /// scene and their guest draws are skipped; the rest, and the
+    /// producer's own guest code, still run through `d3d`
+    /// ([`layer_status`]).
+    Partial,
     /// Still drawn by the guest front-end through `d3d`.
     D3d,
     /// No registered producer was open.
@@ -199,6 +216,7 @@ impl Status {
     pub fn name(self) -> &'static str {
         match self {
             Status::Native => "native",
+            Status::Partial => "partial",
             Status::D3d => "d3d",
             Status::Unknown => "unknown",
         }
@@ -218,9 +236,10 @@ pub struct Row {
 
 /// The fixed producers, by the inventory in docs/graphics/retire-d3d.md
 /// ("By caller"). The layer draw is a producer per site and layer
-/// ([`Producer::Layer`]). Every row is `d3d` until the slice that replaces
-/// it changes it, in the same commit as its test. Callers the inventory
-/// names that have no point yet (movies, the flares, target selection,
+/// ([`Producer::Layer`], its status [`layer_status`]). Every row is `d3d`
+/// until the slice that replaces it changes it, in the same commit as its
+/// test. Callers the inventory
+/// names that have no point yet (movies, the flares,
 /// the untraced `Begin` callers, the first person's own entry) are filed
 /// under the producer around them or `unknown`, and the `callers` table
 /// names their functions.
@@ -228,103 +247,129 @@ pub const REGISTRY: &[Row] = &[
     Row {
         name: "game_view",
         entry: 0x0002_b790,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "opaque",
     },
     Row {
         name: "alternate_view",
         entry: 0x0002_c790,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "opaque",
     },
     Row {
         name: "scene_passes",
         entry: 0x0002_bcd0,
-        status: Status::D3d,
+        status: Status::Partial,
+        slot: "opaque",
+    },
+    Row {
+        name: "sky",
+        entry: engine::points::RENDER_SKY.base,
+        status: Status::Partial,
+        slot: "after_lights",
+    },
+    Row {
+        name: "scene_clear",
+        entry: 0x0001_4b60,
+        status: Status::Partial,
+        slot: "opaque",
+    },
+    Row {
+        name: "target_select",
+        entry: 0x0001_cd30,
+        status: Status::Partial,
         slot: "opaque",
     },
     Row {
         name: "object_shadows",
         entry: 0x0003_35e0,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "opaque",
     },
     Row {
         name: "object_shadow",
         entry: 0x0003_2350,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "opaque",
+    },
+    Row {
+        name: "water_teardown",
+        entry: 0x0003_c3c0,
+        status: Status::Partial,
+        slot: "after_lights",
     },
     Row {
         name: "decals",
         entry: 0x0004_4040,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "opaque",
     },
     Row {
         name: "dynamic_lights",
         entry: 0x0003_1c80,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "after_opaque",
     },
     Row {
         name: "light_passes",
         entry: 0x0003_1170,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "after_opaque",
     },
+    // Includes sorted layer-15 pool surfaces. Layer 6 and the teardown
+    // composite run outside this dispatcher.
     Row {
         name: "transparents",
         entry: 0x0001_e370,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "transparents",
     },
     Row {
         name: "screen_effects",
         entry: 0x0001_3870,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "transparents",
     },
     Row {
         name: "colour_pass",
         entry: 0x0002_14f0,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "transparents",
     },
     Row {
         name: "screen_effect",
         entry: 0x0002_d140,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "transparents",
     },
     Row {
         name: "hud",
         entry: 0x0019_17eb,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "overlay",
     },
     Row {
         name: "ui",
         entry: 0x0014_7af1,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "overlay",
     },
     Row {
         name: "fade",
         entry: 0x0004_0890,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "overlay",
     },
     Row {
         name: "frame_tail",
         entry: 0x0001_3b90,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "overlay",
     },
     Row {
         name: "loading",
         entry: 0x0002_89e0,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "outside",
     },
 ];
@@ -344,6 +389,35 @@ pub const LAYER_SITES: [&str; 6] = [
     "object_shadow",
     "other",
 ];
+
+/// The layer draws a native stage draws items of from the scene, skipping
+/// those items' guest draws (slice R1, docs/graphics/retire-d3d.md, "By
+/// caller"), by [`LAYER_SITES`] index: the scene's layers 1, 2, 5, 7, 8,
+/// 17 and 20 (`frame-scene.layers`) and 3 (`native_objects`,
+/// `native_world`, the decorators), 6 (water) and 16 (fog), the alternate
+/// view's 1, 2, 3 and 5, and the first person's 1, 2, 7, 8 and 20 (`frame-scene.layers`)
+/// and 3 (`native_first_person`), layer 16 when confirmed at an indexed fog range, the light passes’ 12 and 13, and the
+/// object shadow's caster and receiver layers 10 and 11. Each is
+/// [`Status::Partial`]: what its stages refuse stays the guest's.
+pub const PARTIAL_LAYERS: [(u8, &[u8]); 5] = [
+    (0, &[1, 2, 3, 5, 6, 7, 8, 16, 17, 20]),
+    (1, &[1, 2, 3, 5]),
+    (2, &[1, 2, 3, 7, 8, 16, 20]),
+    (3, &[12, 13]),
+    (4, &[10, 11]),
+];
+
+/// The status of the layer draw at site `at` ([`LAYER_SITES`]) of `layer`.
+pub fn layer_status(at: u8, layer: u8) -> Status {
+    let partial = PARTIAL_LAYERS
+        .iter()
+        .any(|&(site, layers)| site == at && layers.contains(&layer));
+    if partial {
+        Status::Partial
+    } else {
+        Status::D3d
+    }
+}
 
 /// Who the work is filed under.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -376,7 +450,8 @@ impl Producer {
     pub fn status(self) -> Status {
         match self {
             Producer::Fixed(i) => REGISTRY.get(i).map_or(Status::Unknown, |r| r.status),
-            Producer::Layer { .. } | Producer::OutsideRender => Status::D3d,
+            Producer::Layer { at, layer } => layer_status(at, layer),
+            Producer::OutsideRender => Status::D3d,
             Producer::Unknown => Status::Unknown,
         }
     }
@@ -384,6 +459,7 @@ impl Producer {
     pub fn slot(self) -> &'static str {
         match self {
             Producer::Fixed(i) => REGISTRY.get(i).map_or("", |r| r.slot),
+            Producer::Layer { at: 0, layer: 6 | 16 } => "after_lights",
             Producer::Layer { at, .. } => match LAYER_SITES.get(usize::from(at)) {
                 Some(&"light") => "after_opaque",
                 _ => "opaque",
@@ -902,6 +978,30 @@ pub fn install(b: &mut hooks::Builder) {
             "residual_census_scene_passes_end",
         ),
         (
+            &points::WATER_TEARDOWN,
+            "water_teardown",
+            "residual_census_water_teardown",
+            "residual_census_water_teardown_end",
+        ),
+        (
+            &points::RENDER_SKY,
+            "sky",
+            "residual_census_sky",
+            "residual_census_sky_end",
+        ),
+        (
+            &points::SCENE_CLEAR,
+            "scene_clear",
+            "residual_census_scene_clear",
+            "residual_census_scene_clear_end",
+        ),
+        (
+            &points::SCENE_TARGET_SELECT,
+            "target_select",
+            "residual_census_target_select",
+            "residual_census_target_select_end",
+        ),
+        (
             &points::OBJECT_SHADOW_LIST,
             "object_shadows",
             "residual_census_object_shadows",
@@ -1149,6 +1249,10 @@ mod tests {
         let layer = r.producers.unwrap()[&Producer::Layer { at: 0, layer: 3 }].work;
         assert_eq!((layer.claimed, layer.residual), (1, 1));
         assert_eq!(Producer::Layer { at: 0, layer: 3 }.name(), "layer.scene.3");
+        assert_eq!(
+            Producer::Layer { at: 0, layer: 3 }.status(),
+            Status::Partial
+        );
         assert_eq!(r.sites[&0x0004_5000].residual, 1);
     }
 
@@ -1258,6 +1362,130 @@ mod tests {
         c.frame_end();
         let r = close(c, 8);
         assert_eq!(r.unbalanced, 3);
+    }
+
+    #[test]
+    fn the_layer_draws_r1_draws_items_of_are_partial_and_the_rest_d3d() {
+        let status = |at: u8, layer: u8| Producer::Layer { at, layer }.status().name();
+        for layer in [1, 2, 3, 5, 7, 8, 17, 20] {
+            assert_eq!(status(0, layer), "partial", "the scene's layer {layer}");
+        }
+        for layer in [1, 2, 3, 7, 8, 16, 20] {
+            assert_eq!(
+                status(2, layer),
+                "partial",
+                "the first person's layer {layer}"
+            );
+        }
+        assert_eq!(status(2, 5), "d3d", "the first person draws no layer 5");
+        for layer in [6, 16] {
+            assert_eq!(status(0, layer), "partial");
+            assert_eq!(status(5, layer), "d3d", "a different caller keeps its draw");
+        }
+        assert_eq!(status(1, 2), "partial", "an alternate view's layer 2");
+        for layer in [1, 3, 5] {
+            assert_eq!(status(1, layer), "partial");
+        }
+        assert_eq!(status(1, 7), "d3d");
+        for layer in [12, 13] {
+            assert_eq!(status(3, layer), "partial", "the light passes'");
+        }
+        assert_eq!(status(4, 10), "partial");
+        assert_eq!(status(4, 11), "partial");
+        assert_eq!(status(4, 14), "d3d");
+        for r in REGISTRY {
+            assert_eq!(
+                r.status,
+                if matches!(
+                    r.name,
+                    "game_view"
+                        | "alternate_view"
+                        | "scene_passes"
+                        | "object_shadow"
+                        | "object_shadows"
+                        | "water_teardown"
+                        | "sky"
+                        | "scene_clear"
+                        | "target_select"
+                        | "transparents"
+                        | "screen_effects"
+                        | "colour_pass"
+                        | "screen_effect"
+                        | "hud"
+                        | "ui"
+                        | "fade"
+                        | "loading"
+                        | "decals"
+                        | "dynamic_lights"
+                        | "light_passes"
+                        | "frame_tail"
+                ) {
+                    Status::Partial
+                } else {
+                    Status::D3d
+                },
+                "unexpected fixed producer status for {}",
+                r.name
+            );
+        }
+        let sky = Producer::Fixed(row("sky").unwrap());
+        assert_eq!(sky.status(), Status::Partial);
+        assert_eq!(sky.slot(), "after_lights");
+    }
+
+    #[test]
+    fn scene_attachment_helpers_count_device_entries_under_the_open_helper() {
+        let mut c = open(true, 1);
+        c.frame_begin();
+        for (name, device_entry, tally) in [
+            ("scene_clear", "D3DDevice_Clear", Tally { native_rect_clears: 1, ..Tally::default() }),
+            ("target_select", "D3DDevice_SetRenderTarget", Tally { guest_bind_refused_destroy: 1, ..Tally::default() }),
+        ] {
+            let helper = Producer::Fixed(row(name).unwrap());
+            c.enter(helper);
+            c.call(&entry(device_entry, 0x1100, tally), None);
+            c.leave(|p| p == helper);
+        }
+        c.frame_end();
+        let rows = close(c, 8).producers.unwrap();
+        let clear = rows[&Producer::Fixed(row("scene_clear").unwrap())].work;
+        let bind = rows[&Producer::Fixed(row("target_select").unwrap())].work;
+        assert_eq!((clear.clears, clear.binds, clear.native_rect_clears), (1, 0, 1));
+        assert_eq!((bind.clears, bind.binds, bind.guest_bind_refused_destroy), (0, 1, 1));
+    }
+
+    #[test]
+    fn screen_effects_charge_claimed_and_guest_draws_to_the_partial_producer() {
+        let producer = |name| Producer::Fixed(row(name).unwrap());
+        let parent = producer("screen_effects");
+        let mut c = open(true, 1);
+        c.frame_begin();
+        c.enter(parent);
+        for name in ["colour_pass", "screen_effect"] {
+            let child = producer(name);
+            c.enter(child);
+            c.call(&entry(DRAW, 0x1200, tally(3, 2, 1, 0)), None);
+            c.leave(|p| p == child);
+        }
+        c.call(&entry(DRAW, 0x1300, tally(1, 0, 1, 0)), None);
+        c.leave(|p| p == parent);
+        let fade = producer("fade");
+        c.enter(fade);
+        c.call(&entry(DRAW, 0x1400, tally(1, 1, 0, 0)), None);
+        c.leave(|p| p == fade);
+        c.frame_end();
+        let rows = close(c, 8).producers.unwrap();
+        for (name, expected) in [
+            ("screen_effects", (1, 0, 1)),
+            ("colour_pass", (3, 2, 1)),
+            ("screen_effect", (3, 2, 1)),
+            ("fade", (1, 1, 0)),
+        ] {
+            let p = producer(name);
+            let w = rows[&p].work;
+            assert_eq!(p.status(), Status::Partial, "{name}");
+            assert_eq!((w.draws, w.claimed, w.residual), expected, "{name}");
+        }
     }
 
     #[test]

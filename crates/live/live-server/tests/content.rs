@@ -186,6 +186,7 @@ fn session(flags: &str, hopper: Option<u32>, map_id: Option<MapId>) -> NewSessio
         ping_ms: None,
         variant_ext: None,
         rules: None,
+        firefight: None,
         browser: None,
     }
 }
@@ -965,7 +966,7 @@ async fn a_ranked_session_names_a_script_the_ranked_policy_takes() {
     assert_eq!(advertise(&h, &u, &with("custom", &unknown)).await.status, StatusCode::CREATED);
 
     // A saved script that grants Forge edits plays custom games, never ranked.
-    let builder = "rules \"Builder\" 1\ncarrier slayer\nrequires forge.move\n\non kill(victim, killer) { if killer != none { score(killer, 1) } }\n";
+    let builder = "rules \"Builder\" 1\ntype slayer\nrequires forge.move\n\non kill(victim, killer) { if killer != none { score(killer, 1) } }\n";
     let saved = h
         .call(
             Method::POST,

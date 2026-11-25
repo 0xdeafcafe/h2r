@@ -10,8 +10,14 @@ The offline stage-one Firefight map kit: it builds a Firefight package from the 
 
 - `src/lib.rs`: package assembly.
 - `src/ai.rs`, `src/ai/`: the AI data the package carries.
-- `src/nav.rs`, `src/nav/`: pathfinding data for the package.
+- `src/nav.rs`, `src/nav/`: pathfinding data, drop zones and base zones for the package.
+- `src/bases.rs`, `src/bases/`: the map's two bases (CTF flag stands, team starts or start clusters) and the `--home` option.
+- `src/testkit.rs`: `court`, the invented map the tests build on, and `court_kit`, its kit map; `src/nav/fixture.rs`: its collision.
 - `src/tests.rs`: tests on invented maps.
+
+## Features
+
+- `testkit`: `firefight_kit::testkit` for other crates' tests (`host-data`'s kit bundle, `cli`'s server-map strip).
 
 ## Tests
 

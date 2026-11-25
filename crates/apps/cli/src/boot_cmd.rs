@@ -24,7 +24,7 @@ disables kernel tracing and paces to real time. Requires --system-link.
 const USAGE: &str = "usage:
   h2 build <disc.iso|default.xbe> [--out DIR] [--jobs N] [--check] [--tier fast|clang] [--arch TARGET]
            [--profile host --coverage FILE]
-  h2 run   <disc.iso> [--out DIR] [--tier auto|fast|clang] [--data DIR] [--fresh-data] [--slices N] [--transfers N] [--no-stopgaps] [--no-d3d] [--no-bink] [--no-dsound] [--no-xapi] [--no-mappack] [--no-halo1]
+  h2 run   <disc.iso> [--out DIR] [--tier auto|bridge|fast|clang] [--data DIR] [--fresh-data] [--slices N] [--transfers N] [--no-stopgaps] [--no-d3d] [--no-bink] [--no-dsound] [--no-xapi] [--no-mappack] [--no-halo1]
            [--movies DIR | --no-movies] [--settings DIR] [--film FILE]
   h2 serve <disc.iso> [--socket PATH] [--system-link [--host-light [--host-bots]]] [run's options]
 
@@ -35,13 +35,14 @@ const USAGE: &str = "usage:
   select clang's native owners. Use a separate --out directory.
 --tier (or H2_TIER): `build` builds clang's optimised module by default, or
   with `fast` the Cranelift fast tier in --out/fast/ in seconds
-  (docs/lifter/cranelift-tier.md). `run` defaults to `auto`: clang's module
-  when it is current, else the fast tier (built first if need be) with
-  clang's build started in the background at low priority (log
-  --out/clang-build.log), used from the next start. `fast` runs the fast
-  tier only; `clang` builds clang's in the foreground, as before tiers.
-  `build --background` is that background build: low priority, and gone at
-  once when another holds --out.
+  (docs/lifter/cranelift-tier.md). `run` defaults to `auto`: clang's module,
+  built in the foreground when it is not current (after a background build
+  of it already running, if one is). `bridge` runs the fast tier (built
+  first if need be) with clang's build started in the background at low
+  priority (log --out/clang-build.log), used from the next start. `fast`
+  runs the fast tier only; `clang` is `auto` by name. `build --background`
+  is that background build: low priority, and gone at once when another
+  holds --out.
 --data defaults to `data` in the app data directory (docs/runtime/storage.md), or $H2_DATA (host root of the hard-disk partitions).
 --fresh-data empties it first: the cache partitions, profiles and saves a
   run leaves behind change what the next run does, so runs compared frame
@@ -260,6 +261,12 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             };
             boot::build_for(&xbe, &out, jobs, arch)?;
         }
+        // The store is extracted on compile, once the image is built
+        // (docs/engine/asset-store.md, "Extraction on compile"). A host
+        // slim build has no data root of its own to fill.
+        if !slim {
+            crate::store_prepare::on_build(&disc, &data)?;
+        }
         return Ok(());
     }
     // `serve` never builds, and runs clang's module unless told otherwise.
@@ -301,14 +308,10 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             std::fs::remove_dir_all(&d).with_context(|| format!("emptying {}", d.display()))?;
         }
     }
+    // The packages' convert items: the Map Pack and Halo 1 discs beside
+    // the game disc (docs/editor/studio-redesign.md, "Conversions").
     #[cfg(feature = "desktop")]
-    if crate::mappack_cmd::auto_enabled(no_mappack) {
-        crate::mappack_cmd::auto_install(&disc, &data);
-    }
-    #[cfg(feature = "desktop")]
-    if crate::h1_import::auto_enabled(no_halo1) {
-        crate::h1_import::auto_import(&disc, &data);
-    }
+    crate::package_prepare::before_boot(&disc, &data, no_halo1, no_mappack);
     let host = boot::Host {
         film_out: film,
         #[cfg(unix)]
@@ -416,7 +419,7 @@ fn settings_store(cmd: &str, dir: &Path) -> Arc<settings::Store> {
 #[cfg(feature = "desktop")]
 fn background_lock(out: &Path) -> Result<Option<std::fs::File>> {
     std::fs::create_dir_all(out)?;
-    let path = out.join("clang-build.lock");
+    let path = boot::tier::background_lock_path(out);
     let f = std::fs::File::options()
         .create(true)
         .truncate(false)
@@ -618,7 +621,7 @@ mod tests {
 
     /// `--settings DIR` reads DIR's settings.toml, and the store has what
     /// the settings-gated menus look for (the skulls' settings, which put
-    /// the Game Options page on the plan).
+    /// the Skulls page on the plan).
     #[test]
     fn settings_come_from_the_given_directory() {
         let dir = scratch("settings");

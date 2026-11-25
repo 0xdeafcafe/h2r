@@ -145,6 +145,8 @@ describe("game art keys", () => {
     expect(weaponKey("rocket")).toBe("weapon/rocket_launcher");
     expect(weaponKey("smg")).toBe("weapon/smg");
     expect(weaponKey("Submachine Gun")).toBe("weapon/smg");
+    for (const w of ["melee", "Melee", "beat down", "Beat-Down"]) expect(weaponKey(w)).toBe("weapon/melee");
+    expect(weaponKey("energy sword melee")).toBe("weapon/energy_sword");
     for (const w of ["rifle", "shotgun", "grenade", "pistol", "blaster", "", null]) expect(weaponKey(w)).toBeNull();
   });
 

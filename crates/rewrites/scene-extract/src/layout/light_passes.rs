@@ -63,11 +63,14 @@ pub struct Inputs {
     pub additional_casters: bool,
 }
 
-/// The light's lists and the additional casters' inputs, read at the
-/// passes' entry, with the flags its constants computed. `None` when a
-/// word does not read. **S**: the passes write neither list mask nor
-/// [`ADDITIONAL_COUNT`] before they read them (none of the passes' own
-/// writes is to them; the shadow setup's callees are not read).
+/// The light's lists and the additional casters' inputs, with the flags
+/// its constants computed. `None` when a word does not read. The passes'
+/// first call (`0x00040e90` at `0x00031192`) makes both lists, so the
+/// masks are the light's only after it; at the passes' entry they are the
+/// last light's (`render_bridge::native_lights::handoff` takes them from
+/// the item body instead). **S**: the passes write no list mask after
+/// that call and not [`ADDITIONAL_COUNT`] before they read them (the
+/// shadow setup's callees are not read).
 pub fn read(mem: &dyn GuestRead, flags: u32, definition_flags: u32) -> Option<Inputs> {
     let receivers = mem.read_u32(LIGHT_LIST + MASK)?;
     let casters = mem.read_u32(CASTERS + MASK)?;
@@ -122,6 +125,46 @@ pub fn steps(i: &Inputs) -> Steps {
         thirteen.then(|| receivers(13, LightTarget::View)),
     ];
     let mut out = Steps { steps: [receivers(12, LightTarget::View); 5], len: 0 };
+    for s in reached.into_iter().flatten() {
+        out.steps[out.len] = s;
+        out.len += 1;
+    }
+    out
+}
+
+/// The first-person lights' table (`0x000404b0`, docs/graphics/native-lights.md):
+/// an entry per light the gather records for them, at most eight, each
+/// [`FIRST_PERSON_LIGHT_SIZE`] bytes: the light's render records
+/// (`0x20` bytes each), then the light datum at
+/// [`FIRST_PERSON_LIGHT_DATUM`] and the record count (`i16`) after it.
+pub const FIRST_PERSON_LIGHTS: u32 = 0x004c_6700;
+pub const FIRST_PERSON_LIGHT_SIZE: u32 = 0x408;
+pub const FIRST_PERSON_LIGHT_DATUM: u32 = 0x400;
+/// The number of entries in [`FIRST_PERSON_LIGHTS`].
+pub const FIRST_PERSON_LIGHT_COUNT: u32 = 0x0050_9440;
+
+/// The first-person lights' steps. **Code**, `h2 disasm`: `0x000404b0`
+/// (called at `0x0002c2b9`, after the first-person draw) runs, per entry
+/// of [`FIRST_PERSON_LIGHTS`] with records: the light's list rebuilt from
+/// the entry's records (`0x000402b0`), the light's constants
+/// (`0x0004a1e0` at `0x0004057e`, shadow 0, weight 1), then flags of its
+/// own: [`CONTEXT_ZERO`] when the light volume's first word is 0,
+/// [`SPECULAR`] when a colour B global is above 0, no shadow bits. Then,
+/// each after stencil mode 0 and drawn when [`LIGHT_LIST`]'s mask has its
+/// layer: 11 on the view's target, 14 on target 1, 12 on the view's
+/// target, and 13 on the view's target with flag bits 0 and 1. No layer
+/// 10 and no additional casters.
+pub fn first_person_steps(i: &Inputs) -> Steps {
+    let f = i.flags;
+    let step = |layer: u8, target| LightStep { layer, stencil: Some(0), target, draws: i.receivers & 1 << layer != 0 };
+    let thirteen = f & CONTEXT_ZERO != 0 && f & SPECULAR != 0;
+    let reached = [
+        Some(step(11, LightTarget::View)),
+        Some(step(14, LightTarget::Target(1))),
+        Some(step(12, LightTarget::View)),
+        thirteen.then(|| step(13, LightTarget::View)),
+    ];
+    let mut out = Steps { steps: [step(12, LightTarget::View); 5], len: 0 };
     for s in reached.into_iter().flatten() {
         out.steps[out.len] = s;
         out.len += 1;
@@ -197,5 +240,18 @@ mod tests {
         assert!(!read(&m, SHADOW, 0).unwrap().additional_casters, "byte 5 clear");
         m.w(OVERRIDE, 0);
         assert!(!read(&m, SHADOW, 0).unwrap().additional_casters, "no override");
+    }
+
+    #[test]
+    fn the_first_person_lights_reach_11_14_and_12_and_13_with_both_flags() {
+        let all = Inputs { receivers: ALL, casters: ALL, ..Inputs::default() };
+        let fp = |i: &Inputs| first_person_steps(i).iter().map(|s| s.layer).collect::<Vec<_>>();
+        assert_eq!(fp(&all), [11, 14, 12], "layer 11 is reached without a flag");
+        assert_eq!(fp(&Inputs { flags: CONTEXT_ZERO | SPECULAR, ..all }), [11, 14, 12, 13]);
+        assert_eq!(fp(&Inputs { flags: SHADOW | CONTEXT_ZERO | SPECULAR, ..all }), [11, 14, 12, 13], "no casters");
+        let s = first_person_steps(&Inputs { flags: CONTEXT_ZERO | SPECULAR, receivers: 1 << 12 | 1 << 13, ..all });
+        assert_eq!(s.drawn(), 1 << 12 | 1 << 13, "each by the light's list's mask");
+        assert_eq!(s.of(14).unwrap().target, LightTarget::Target(1));
+        assert!(s.iter().all(|s| s.stencil == Some(0)));
     }
 }

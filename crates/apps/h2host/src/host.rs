@@ -39,7 +39,7 @@ fn guest(layout: Layout, store: Arc<settings::Store>) -> app::worker::GuestFn {
         };
         let (gfx, view) = boot::d3d_glue::window_targets(
             &store,
-            Arc::new(host.native_size()), host.display_size(),
+            Arc::new(host.native_target()), host.display_size(),
             || configure(d3d::GfxBackend::new(host.gfx_context())),
             || configure(d3d::GfxBackend::new(host.gfx_context()).on_present(host.present_hook())),
         );
@@ -70,6 +70,8 @@ fn guest(layout: Layout, store: Arc<settings::Store>) -> app::worker::GuestFn {
             pad_speaker: None,
             debug_menu: None,
             perf_overlay: None,
+            cheat_line: None,
+            game_code: None,
             discoverable_agent: false,
             settings: Some(store),
             trace_limit: Some(TRACE_LIMIT),

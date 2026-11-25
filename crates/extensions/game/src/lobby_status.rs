@@ -1,9 +1,10 @@
 //! The custom lobby's status line: the expired countdown while the host is
 //! bringing up its phantoms, why Start Game is refused (the start gate's
-//! first problem, `crate::lobby_mode::gate_text_id`, or a Forge lobby with
-//! a member on another console, `crate::lobby_mode::start_refused`), and
-//! the mode strip's reason line (`crate::lobby_tabs::notice_now`): why a
-//! bumper press did not move, for four seconds.
+//! first problem, `crate::lobby_mode::gate_text_id`, or the lobby's own
+//! refusal, `crate::lobby_mode::start_refusal`: a Forge lobby with a member
+//! on another console, a Firefight lobby on a map without the kit), and
+//! the lobby modes' reason line (`crate::lobby_tabs::notice_now`): why a
+//! mode picked in the GAME MODE picker did not switch, for four seconds.
 
 use bots::{lobby, phantom};
 use engine::GuestMemory;
@@ -12,11 +13,7 @@ use phantom::session::{self, at::*};
 
 const SETUP_TEXT: &str = "Setting up bots…";
 const SETTING_UP_BOTS: u32 = crate::ui_kit::ids::family("lobby status").id(0);
-const FORGE_REFUSED: u32 = crate::ui_kit::ids::family("lobby status").id(1);
-pub(crate) const STRINGS: [(u32, &str); 2] = [
-    (SETTING_UP_BOTS, SETUP_TEXT),
-    (FORGE_REFUSED, crate::lobby_mode::REMOTE_REFUSAL),
-];
+pub(crate) const STRINGS: [(u32, &str); 1] = [(SETTING_UP_BOTS, SETUP_TEXT)];
 
 /// The status widget write at the end of `0x24ffc9`. These IDs carry
 /// the countdown token (U+E413). The other status IDs describe separate
@@ -32,8 +29,8 @@ pub(crate) fn custom_game_text(m: &mut dyn GuestMemory, return_pc: u32, id: u32)
     if return_pc != CUSTOM_STATUS_RETURN {
         return None;
     }
-    // A bumper press toward a tab that is off, or a switch refused: its
-    // reason, over every other text, while it shows.
+    // A mode picked that is off, or a switch refused: its reason, over
+    // every other text, while it shows.
     if let Some(reason) = crate::lobby_tabs::notice_now() {
         return Some(reason.id());
     }
@@ -43,12 +40,18 @@ pub(crate) fn custom_game_text(m: &mut dyn GuestMemory, return_pc: u32, id: u32)
     if let Some(gate) = crate::lobby_mode::gate_text_id(m) {
         return Some(gate);
     }
-    let m: &dyn GuestMemory = m;
-    // A Forge lobby with a member on another console: its start state is
-    // held off ready, and the line says why in place of retail's text.
-    if crate::lobby_mode::start_refused(m) {
-        return Some(FORGE_REFUSED);
+    // A Forge lobby with a member on another console, or a Firefight lobby
+    // on a map without the kit: its start state is held off ready, and the
+    // line says why in place of retail's text (the lobby modes' reasons,
+    // `crate::lobby_tabs::strings`).
+    if let Some(reason) = crate::lobby_mode::start_refusal(m) {
+        return Some(reason.id());
     }
+    // The lobby's map variant builds, or failed a check: its sentence.
+    if let Some(id) = crate::lobby_mode::variant_text_id(m) {
+        return Some(id);
+    }
+    let m: &dyn GuestMemory = m;
     if !CUSTOM_COUNTDOWN_IDS.contains(&id) {
         return None;
     }

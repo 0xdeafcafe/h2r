@@ -21,14 +21,18 @@ use snapshot::codec::{Reader, Writer};
 use snapshot::{Codec, Snapshot, SnapshotWriter, Tag};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
-use vfs::{SavedFile, VfsState};
+use vfs::{FileReference, SavedFile, VfsState};
 
 pub use snapshot::Error as CodecError;
 
 pub const KCORE: Tag = Tag::new("kcore");
 pub const MACHINE: Tag = Tag::new("machine");
 /// 2: the raw disk's written sectors follow the periodic schedules.
-const KCORE_VERSION: u32 = 2;
+/// 3: open files carry their changed flag and, open for writing, their
+/// contents.
+/// 4: a file open for writing past `vfs::MAX_CARRIED_BYTES` carries a
+/// reference (length, write generation, fingerprint) instead.
+const KCORE_VERSION: u32 = 4;
 const MACHINE_VERSION: u32 = 1;
 
 #[derive(Debug, thiserror::Error)]
@@ -280,6 +284,15 @@ persist_struct!(SavedFile {
     position,
     directory,
     search,
+    changed,
+    contents,
+    reference,
+});
+persist_struct!(FileReference {
+    instance,
+    generation,
+    length,
+    fingerprint,
 });
 persist_struct!(VfsState {
     next_handle,

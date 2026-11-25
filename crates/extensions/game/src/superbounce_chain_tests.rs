@@ -1,10 +1,21 @@
 //! The chain's rule on lists of ticks: bounces in a row, what ends a
 //! chain, the medals at each count, Bounced, and the bots.
+//!
+//! With the `rules` feature, every scenario's [`Chain`] is the twin of
+//! `superbounce_chain_twin.rs`: the Rust chain with the built-in
+//! Superbounce script beside it, fed the chain's physics events, which
+//! must score and count as the chain does on every tick.
 
-use hud_kit_core::huds::superbounce::Medal::*;
+use hud_kit_core::views::superbounce::Medal::*;
 use superbounce::Kind;
 
 use super::*;
+
+#[cfg(feature = "rules")]
+#[path = "superbounce_chain_twin.rs"]
+mod twin;
+#[cfg(feature = "rules")]
+use twin::Chain;
 
 const MINUS_3: u32 = 0xffff_fffd;
 const UNIT: u32 = 0xe001_0007;
@@ -36,6 +47,7 @@ fn tick(at: Vec3, vz: f32, airborne: bool) -> PlayerTick {
         position: at,
         velocity: [0.0, 0.0, vz],
         airborne,
+        crouching: false,
         word: Some(MINUS_3),
     }
 }
@@ -154,6 +166,8 @@ fn a_launch_over_the_monster_speed_is_a_monster_bounce() {
         falling(STRIP),
         tick(STRIP, MONSTER_VZ, false),
         tick(STRIP, MONSTER_VZ - 0.2, false),
+        tick(STRIP, MONSTER_VZ - 0.4, true),
+        tick(STRIP, MONSTER_VZ - 0.6, true),
     ];
     let got = run(&mut c, &at);
     assert!(matches!(got[..], [Event::Bounce { monster: false, .. }]), "{got:?}");
@@ -230,7 +244,7 @@ fn a_landing_off_the_strip_ends_the_chain() {
     let mut ticks = bounces(2);
     // Down on the floor beside the strip: a touchdown, not a bounce.
     ticks.push(falling(BESIDE));
-    ticks.push(tick(BESIDE, 0.0, false));
+    ticks.extend((0..=LAUNCH_TICKS).map(|_| tick(BESIDE, 0.0, false)));
     ticks.extend(bounces(1));
     let counts: Vec<u32> = run(&mut c, &ticks).iter().map(|e| e.chain()).collect();
     assert_eq!(counts, [1, 2, 1]);
@@ -242,6 +256,7 @@ fn a_landing_on_the_strip_that_does_not_bounce_ends_it() {
     let mut ticks = bounces(1);
     ticks.push(falling(STRIP));
     ticks.push(tick(STRIP, 2.0, false));
+    ticks.extend((0..LAUNCH_TICKS).map(|_| tick(STRIP, 0.0, false)));
     ticks.extend(bounces(1));
     let counts: Vec<u32> = run(&mut c, &ticks).iter().map(|e| e.chain()).collect();
     assert_eq!(counts, [1, 1]);
@@ -249,23 +264,80 @@ fn a_landing_on_the_strip_that_does_not_bounce_ends_it() {
 
 #[test]
 fn the_airborne_bit_clear_from_the_third_tick_ends_it() {
-    // Clear on the launch tick and the two after: still live.
+    // Clear on the touchdown tick and the two after: the launch's, and
+    // the bounce is not judged yet.
     let mut c = Chain::default();
     let ticks = vec![
         falling(STRIP),
         tick(STRIP, 12.0, false),
         tick(STRIP, 11.8, false),
+        tick(STRIP, 11.5, false),
     ];
-    run(&mut c, &ticks);
-    assert!(c.live(), "the launch's ticks");
-    // The second tick after the bounce, clear: still the launch's.
-    run(&mut c, &[tick(STRIP, 11.5, false)]);
-    assert!(c.live(), "the second tick after");
-    // The third, clear and rising (no touchdown): the chain ends.
-    run(&mut c, &[tick(STRIP, 11.2, false)]);
+    assert!(run(&mut c, &ticks).is_empty(), "the window is open");
+    // The third tick after, airborne: the bounce is filed and live.
+    let mut flying = c.clone();
+    let got = run(&mut flying, &[tick(STRIP, 11.2, true)]);
+    assert_eq!(got.len(), 1);
+    assert!(flying.live(), "airborne on the third tick");
+    // The third, clear and rising (no touchdown): filed, and the chain
+    // ends there.
+    let got = run(&mut c, &[tick(STRIP, 11.2, false)]);
+    assert_eq!(got.iter().map(|e| e.chain()).collect::<Vec<_>>(), [1]);
     assert!(!c.live());
     let counts: Vec<u32> = run(&mut c, &bounces(1)).iter().map(|e| e.chain()).collect();
     assert_eq!(counts, [1]);
+}
+
+/// The push can show a tick or two after the contact: a touchdown that
+/// reads about 0 and launches on the next tick or the one after is a
+/// bounce, filed when the window closes.
+#[test]
+fn a_launch_a_tick_or_two_after_touchdown_is_a_bounce() {
+    for late in 1..=2usize {
+        let mut c = Chain::default();
+        let mut vz = [0.0f32; 4];
+        vz[late] = 11.0;
+        let mut ticks = vec![falling(STRIP)];
+        ticks.extend(vz.iter().map(|v| tick(STRIP, *v, true)));
+        ticks.extend((0..8).map(|i| tick(STRIP, 10.0 - i as f32, true)));
+        let events = run(&mut c, &ticks);
+        assert_eq!(events.len(), 1, "late {late}: {events:?}");
+        assert_eq!(events[0].chain(), 1);
+        assert_eq!(events[0].spot(), Some(spot_id(&spots()[0])));
+    }
+    // A launch of 4, under the old 8 a tick: still a bounce.
+    let mut c = Chain::default();
+    let mut ticks = vec![falling(STRIP)];
+    ticks.extend([0.0, 4.0, 3.9, 3.8].map(|v| tick(STRIP, v, true)));
+    assert_eq!(run(&mut c, &ticks).len(), 1);
+}
+
+/// A primed bounce off a seam no marked strip is near is a bounce all the
+/// same, with no strip to name.
+#[test]
+fn a_bounce_off_an_unmarked_seam_earns_its_medal_with_no_strip() {
+    const SEAM: Vec3 = [40.0, 0.0, 2.0];
+    let mut c = Chain::default();
+    let mut ticks = vec![falling(SEAM), tick(SEAM, 0.0, true)];
+    ticks.extend((0..10).map(|i| tick(SEAM, 9.0 - i as f32, true)));
+    let events = run(&mut c, &ticks);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert!(matches!(
+        events[0],
+        Event::Bounce {
+            chain: 1,
+            spot: None,
+            strips: 0,
+            ..
+        }
+    ));
+    assert_eq!(events[0].medals(), [Superbounce]);
+    // A landing there that does not launch is nothing, and ends no chain
+    // it was not in.
+    let mut c = Chain::default();
+    let mut ticks = vec![falling(SEAM)];
+    ticks.extend((0..6).map(|_| tick(SEAM, 0.0, false)));
+    assert!(run(&mut c, &ticks).is_empty());
 }
 
 #[test]
@@ -292,7 +364,9 @@ fn an_unprimed_landing_by_the_strip_is_no_bounce() {
     let mut c = Chain::default();
     let mut fall = falling(STRIP);
     fall.word = Some(0);
-    let events = run(&mut c, &[fall, tick(STRIP, 12.0, false)]);
+    let mut ticks = vec![fall];
+    ticks.extend([12.0, 11.8, 11.5, 11.2].map(|v| tick(STRIP, v, false)));
+    let events = run(&mut c, &ticks);
     assert!(events.is_empty());
     assert!(!c.live());
 }
@@ -493,4 +567,328 @@ fn only_the_console_whose_simulation_is_the_games_records() {
     assert!(records(Some(1)));
     assert!(!records(Some(WORLD_SYNC_CLIENT)));
     assert!(!records(Some(WORLD_DIST_CLIENT)));
+}
+
+// ---- a fall through the strip's floor ----
+
+/// A primed fall onto the strip at -4.3 units/s (the video's): the origin
+/// over its edge, 0.18 under the edge on the last tick, short of `SINK`.
+fn fall_onto_strip() -> Vec<PlayerTick> {
+    [-2.62, -2.76, -2.9, -3.04, -3.18]
+        .map(|z| tick([10.0, 0.0, z], -4.3, true))
+        .to_vec()
+}
+
+/// Under the map, 0.4 under the edge: the first tick is the crossing.
+/// Not airborne, no fall speed and no pair (the body rests or slides on
+/// something under the world), moving sideways.
+fn under_map(n: usize) -> Vec<PlayerTick> {
+    (0..n)
+        .map(|i| PlayerTick {
+            unit: UNIT,
+            position: [10.0 + 0.06 * i as f32, 0.0, -3.4],
+            velocity: [1.8, 0.0, 0.0],
+            airborne: false,
+            crouching: false,
+            word: None,
+        })
+        .collect()
+}
+
+/// The video's case: a primed fall onto the strip goes through its floor,
+/// a second under the map with nothing read of a fall, then the Guardians
+/// kill: one Bounced, no chain.
+#[test]
+fn a_primed_fall_through_the_strips_floor_is_bounced_when_the_unit_goes() {
+    let spots = spots();
+    let mut c = Chain::default();
+    let mut ticks = fall_onto_strip();
+    ticks.extend(under_map(31));
+    assert!(run(&mut c, &ticks).is_empty());
+    assert!(c.armed(), "went through");
+    assert_eq!(c.step(None, &spots), Some(Event::Bounced { chain: 0 }));
+    assert!(!c.armed());
+    // One death, one Bounced.
+    assert_eq!(c.step(None, &spots), None);
+}
+
+/// In a live chain of two, the Bounced carries the chain.
+#[test]
+fn a_fall_through_in_a_chain_is_bounced_with_its_count() {
+    let spots = spots();
+    let mut c = Chain::default();
+    let mut ticks = bounces(2);
+    ticks.extend(fall_onto_strip());
+    ticks.extend(under_map(31));
+    let counts: Vec<u32> = run(&mut c, &ticks).iter().map(|e| e.chain()).collect();
+    assert_eq!(counts, [1, 2]);
+    assert!(!c.live(), "the fall through ends the chain");
+    assert_eq!(c.step(None, &spots), Some(Event::Bounced { chain: 2 }));
+}
+
+/// The touchdown tick first (the fall stops for a tick and a touchdown
+/// opens), then the origin sinks through: the touchdown is the seam hit,
+/// dropped, and the death is one Bounced.
+#[test]
+fn a_touchdown_that_then_sinks_through_is_bounced() {
+    let spots = spots();
+    let mut c = Chain::default();
+    let mut ticks = vec![
+        tick([10.0, 0.0, -2.76], -4.3, true),
+        tick([10.0, 0.0, -2.9], -4.3, true),
+        tick([10.0, 0.0, -3.05], 0.0, false),
+    ];
+    ticks.extend(under_map(31));
+    assert!(run(&mut c, &ticks).is_empty());
+    assert!(c.armed());
+    assert_eq!(c.step(None, &spots), Some(Event::Bounced { chain: 0 }));
+}
+
+/// A real bounce dips 0.2 under the edge and launches: a bounce, never a
+/// fall through, and a death long after on the floor earns nothing.
+#[test]
+fn a_bounces_dip_is_no_fall_through() {
+    let spots = spots();
+    let mut c = Chain::default();
+    let mut ticks = vec![
+        tick([10.0, 0.0, -2.6], -6.0, true),
+        tick([10.0, 0.0, -2.8], -6.0, true),
+        tick([10.0, 0.0, -3.2], 9.0, true),
+        tick([10.0, 0.0, -2.9], 8.8, true),
+        tick([10.0, 0.0, -2.6], 8.6, true),
+        tick([10.0, 0.0, -2.3], 8.4, true),
+    ];
+    let events = run(&mut c, &ticks);
+    assert!(matches!(events[..], [Event::Bounce { chain: 1, .. }]), "{events:?}");
+    assert!(!c.armed());
+    ticks = (0..100).map(|_| tick([10.0, 0.0, -2.3], 0.0, false)).collect();
+    assert!(run(&mut c, &ticks).is_empty());
+    assert_eq!(c.step(None, &spots), None);
+}
+
+/// Armed for `BOUNCED_TICKS`: alive past it, the player dropped to a floor
+/// below and lived; a bounce after it, or a teleport, disarms it.
+#[test]
+fn a_fall_through_survived_or_bounced_out_of_is_no_bounced() {
+    let spots = spots();
+    // Alive 299 ticks after the crossing: still armed.
+    let mut c = Chain::default();
+    let mut ticks = fall_onto_strip();
+    ticks.extend(under_map(1 + 299));
+    run(&mut c, &ticks);
+    assert!(c.armed());
+    assert_eq!(c.step(None, &spots), Some(Event::Bounced { chain: 0 }));
+    // Alive 301: disarmed, and the death is a plain one.
+    let mut c = Chain::default();
+    let mut ticks = fall_onto_strip();
+    ticks.extend(under_map(1 + 301));
+    run(&mut c, &ticks);
+    assert!(!c.armed());
+    assert_eq!(c.step(None, &spots), None);
+    // Through, then down to a floor below and a primed bounce off it.
+    let mut c = Chain::default();
+    let mut ticks = fall_onto_strip();
+    ticks.extend(under_map(5));
+    let below = |z: f32, vz: f32| tick([10.3, 0.0, z], vz, true);
+    ticks.extend([-3.6, -3.8, -4.0, -4.2, -4.4, -4.6, -4.8].map(|z| below(z, -6.0)));
+    ticks.extend([(-5.0, 9.0), (-4.7, 8.8), (-4.4, 8.6), (-4.1, 8.4)].map(|(z, vz)| below(z, vz)));
+    let events = run(&mut c, &ticks);
+    assert!(
+        matches!(events[..], [Event::Bounce { chain: 1, spot: None, .. }]),
+        "{events:?}"
+    );
+    assert!(!c.armed(), "the bounce disarms");
+    assert_eq!(c.step(None, &spots), None);
+    // Through, then moved: a teleport disarms.
+    let mut c = Chain::default();
+    let mut ticks = fall_onto_strip();
+    ticks.extend(under_map(3));
+    ticks.push(tick([20.0, 0.0, 0.0], 0.0, false));
+    run(&mut c, &ticks);
+    assert!(!c.armed());
+    assert_eq!(c.step(None, &spots), None);
+}
+
+/// A drop past the strip 0.6 to the side of its edge (a ledge beside it)
+/// is no fall through.
+#[test]
+fn a_drop_beside_the_strip_is_no_fall_through() {
+    let spots = spots();
+    let mut c = Chain::default();
+    let mut ticks: Vec<PlayerTick> = [-2.62, -2.76, -2.9, -3.04, -3.18, -3.4]
+        .map(|z| tick([10.6, 0.0, z], -4.3, true))
+        .to_vec();
+    assert!(run(&mut c, &ticks).is_empty());
+    assert!(!c.armed());
+    // Down on the ledge's floor below, standing, then a death.
+    ticks = (0..10).map(|_| tick([10.6, 0.0, -3.5], 0.0, false)).collect();
+    assert!(run(&mut c, &ticks).is_empty());
+    assert_eq!(c.step(None, &spots), None);
+}
+
+/// Neither primed nor in a chain: going through the floor is no attempt.
+#[test]
+fn an_unprimed_fall_through_is_no_bounced() {
+    let spots = spots();
+    let mut c = Chain::default();
+    let mut ticks: Vec<PlayerTick> = fall_onto_strip()
+        .into_iter()
+        .map(|t| PlayerTick { word: Some(0), ..t })
+        .collect();
+    ticks.extend(under_map(31));
+    assert!(run(&mut c, &ticks).is_empty());
+    assert!(!c.armed());
+    assert_eq!(c.step(None, &spots), None);
+}
+
+/// Through the floor and still falling primed when the unit goes: both
+/// rules hold, and the death is one Bounced, with the chain it was in.
+#[test]
+fn both_rules_on_one_death_give_one_bounced() {
+    let spots = spots();
+    let falling_under = [
+        tick([10.0, 0.0, -3.4], -4.3, true),
+        tick([10.0, 0.0, -3.55], -4.3, true),
+    ];
+    let mut c = Chain::default();
+    let mut ticks = fall_onto_strip();
+    ticks.extend(falling_under);
+    assert!(run(&mut c, &ticks).is_empty());
+    assert!(c.armed());
+    assert_eq!(c.step(None, &spots), Some(Event::Bounced { chain: 0 }));
+    assert_eq!(c.step(None, &spots), None);
+    // In a chain of two.
+    let mut c = Chain::default();
+    let mut ticks = bounces(2);
+    ticks.extend(fall_onto_strip());
+    ticks.extend(falling_under);
+    assert_eq!(run(&mut c, &ticks).len(), 2);
+    assert_eq!(c.step(None, &spots), Some(Event::Bounced { chain: 2 }));
+    // Gone and back as a new unit on one tick: one Bounced too.
+    let mut c = Chain::default();
+    let mut ticks = fall_onto_strip();
+    ticks.extend(falling_under);
+    ticks.push(PlayerTick {
+        unit: UNIT + 0x10000,
+        ..tick(FLOOR, 0.0, false)
+    });
+    assert_eq!(run(&mut c, &ticks), [Event::Bounced { chain: 0 }]);
+    assert!(!c.armed());
+}
+
+// ---- the physics a script hears ----
+
+/// A bounce's ticks give its touchdown, then its launch when the window
+/// closes; a landing off the strip after it gives a touchdown and the end
+/// of the run.
+#[test]
+fn a_step_says_what_it_saw_of_the_physics() {
+    let spots = spots();
+    let mut c = Chain::default();
+    let mut seen = Vec::new();
+    let mut ticks = bounce_and_fly();
+    ticks.push(falling(BESIDE));
+    ticks.extend((0..=LAUNCH_TICKS).map(|_| tick(BESIDE, 0.0, false)));
+    for t in &ticks {
+        c.step(Some(t), &spots);
+        seen.extend(c.physics().iter().copied());
+    }
+    let id = spot_id(&spots[0]);
+    assert_eq!(
+        seen,
+        [
+            Physics::Touchdown {
+                down: 6.0,
+                up: 12.0
+            },
+            Physics::Launch {
+                spot: Some(id),
+                speed: 12.0
+            },
+            Physics::Touchdown {
+                down: 6.0,
+                up: 0.0
+            },
+            Physics::Grounded,
+        ]
+    );
+    // Each step's list is its own.
+    c.step(Some(&tick(BESIDE, 0.0, false)), &spots);
+    assert!(c.physics().is_empty());
+}
+
+/// A launch whose run ends on the same step (the third tick clear) gives
+/// the launch, then the end; a death in a run gives the end.
+#[test]
+fn the_end_of_a_run_follows_its_last_launch() {
+    let spots = spots();
+    let mut c = Chain::default();
+    for t in [
+        falling(STRIP),
+        tick(STRIP, 12.0, false),
+        tick(STRIP, 11.8, false),
+        tick(STRIP, 11.5, false),
+    ] {
+        c.step(Some(&t), &spots);
+    }
+    c.step(Some(&tick(STRIP, 11.2, false)), &spots);
+    assert!(matches!(
+        c.physics(),
+        [Physics::Launch { .. }, Physics::Grounded]
+    ));
+    let mut c = Chain::default();
+    for t in bounces(2) {
+        c.step(Some(&t), &spots);
+    }
+    c.step(Some(&falling(BELOW)), &spots);
+    assert!(c.physics().is_empty());
+    c.step(None, &spots);
+    assert_eq!(c.physics(), [Physics::Grounded]);
+    // A fall through a strip's floor in a run ends it too.
+    let mut c = Chain::default();
+    let mut ticks = bounces(1);
+    ticks.extend(fall_onto_strip());
+    ticks.extend(under_map(2));
+    let mut ends = 0;
+    for t in &ticks {
+        c.step(Some(t), &spots);
+        ends += c.physics().iter().filter(|p| **p == Physics::Grounded).count();
+    }
+    assert_eq!(ends, 1);
+}
+
+/// The medals' step gives every player's physics, slot by slot.
+#[test]
+fn every_players_physics_is_heard_by_slot() {
+    let spots = spots();
+    let mut m = Medals::new();
+    let mut heard = Vec::new();
+    for (i, t) in bounce_and_fly().into_iter().enumerate() {
+        let seen = [
+            Seen {
+                slot: 5,
+                user: None,
+                tick: Some(PlayerTick {
+                    unit: UNIT + 5,
+                    ..t
+                }),
+            },
+            Seen {
+                slot: 0,
+                user: Some(0),
+                tick: Some(t),
+            },
+        ];
+        m.step(i as u32, &seen, &spots);
+        heard.extend(m.physics().iter().map(|(slot, p)| (*slot, std::mem::discriminant(p))));
+    }
+    let touchdown = std::mem::discriminant(&Physics::Touchdown { down: 0.0, up: 0.0 });
+    let launch = std::mem::discriminant(&Physics::Launch {
+        spot: None,
+        speed: 0.0,
+    });
+    assert_eq!(
+        heard,
+        [(0, touchdown), (5, touchdown), (0, launch), (5, launch)]
+    );
 }

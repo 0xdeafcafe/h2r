@@ -531,23 +531,28 @@ pub struct RecordDoc {
     pub builtin: Option<String>,
 }
 
-/// A record's game variant: name, game-engine index, team play.
+/// A record's game variant: name, game-engine index, team play, and whether
+/// it runs a rules script (mode 2). A hopper plays scripted variants only, so
+/// the builder offers no entry that does not.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VariantDoc {
     pub name: String,
     pub engine: u32,
     pub team: bool,
+    #[serde(default)]
+    pub scripted: bool,
 }
 
 /// A built-in game variant an entry can be given by `key` (`variant` in a
-/// record of the PUT body): the stock record of its game type with the
-/// default lineup's changes ([`defaults::builtin_variants`]).
+/// record of the PUT body): the record of one of the default lineup's
+/// scripts ([`defaults::builtin_variants`]), so always scripted.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct BuiltinVariantDoc {
     pub key: String,
     pub name: String,
     pub engine: u32,
     pub team: bool,
+    pub scripted: bool,
 }
 
 /// A playlist template (`template` in the PUT body): a default playlist
@@ -607,6 +612,8 @@ pub fn builtin_variant_docs() -> Vec<BuiltinVariantDoc> {
             name: v.name(),
             engine: v.engine(),
             team: v.team(),
+            scripted: variants::record::GameVariant::from_bytes(v.bytes())
+                .is_ok_and(|g| unscripted(&g).is_none()),
         })
         .collect()
 }
@@ -657,6 +664,13 @@ fn hoppers_doc(live: &Live, file: &HopperFile) -> ApiResult<HoppersDoc> {
                 .enumerate()
                 .map(|(j, r)| {
                     let v = file.variant(i, j).map_err(hopper_error)?;
+                    let scripted = file
+                        .slot(i, j)
+                        .ok()
+                        .and_then(|slot| {
+                            variants::record::GameVariant::from_bytes(&slot[VARIANT_AT..RECORD]).ok()
+                        })
+                        .is_some_and(|g| unscripted(&g).is_none());
                     Ok(RecordDoc {
                         id: r.id,
                         string: r.string,
@@ -666,6 +680,7 @@ fn hoppers_doc(live: &Live, file: &HopperFile) -> ApiResult<HoppersDoc> {
                             name: v.name,
                             engine: v.engine,
                             team: v.team,
+                            scripted,
                         }),
                         builtin: record_builtin(file, i, j),
                     })
@@ -934,20 +949,84 @@ pub fn apply_patch(file: &mut HopperFile, patch: &HoppersPatch) -> ApiResult<()>
     Ok(())
 }
 
-/// Every entry of each playlist a patch names whose variant runs a rules
-/// script, against the script policy of the playlist's kind
-/// (`rules::policy`): a ranked type (2, 4 and 5) takes the ranked
-/// policy, an unranked one a hopper's, with no deny list (a hopper keeps
-/// none). `check` answers for one script by its record's hash prefix
-/// (16 hex digits); [`Live::check_slot_script`] is the routes'.
+/// Why an entry's variant is not one a hopper may carry, or `None` when it
+/// runs a rules script (mode 2). A hopper plays scripted variants only: the
+/// record's mode names its own game type (0), Firefight (1) or a mode this
+/// build does not know, and each is refused by the variant's name.
+fn unscripted(v: &variants::record::GameVariant) -> Option<String> {
+    use variants::ext::{Block, Mode};
+    let mode = match v.ext_state() {
+        Block::Ext(e) => e.script.mode,
+        Block::None | Block::Ignored(_) => Mode::None,
+    };
+    let what = match mode {
+        Mode::Rules => return None,
+        Mode::None => "mode 0, no rules script".to_string(),
+        Mode::Firefight => match firefight_set(v) {
+            Some(def) if def.teams > 1 && !v.team_play() => {
+                return Some(format!(
+                    "the variant \"{}\" plays the Firefight wave set {}, which has two player \
+                     teams, so it needs team play",
+                    v.name(),
+                    def.name
+                ));
+            }
+            Some(_) => return None,
+            None => "mode 1, Firefight, naming no built-in wave set".to_string(),
+        },
+        Mode::Unknown(n) => format!("mode {n}, a mode this build does not know"),
+    };
+    Some(format!(
+        "the variant \"{}\" has {what}; a hopper plays only variants that run a rules script \
+         (mode 2: build one with `h2 variants port` or `bundle_for_script`) or a built-in \
+         Firefight wave set (mode 1)",
+        v.name()
+    ))
+}
+
+/// The built-in Firefight wave set a mode-1 variant names by its hash
+/// prefix (`firefight::builtin::by_prefix`); none for another mode or an
+/// unknown prefix. Such an entry runs no rules script, so the script
+/// policy and the map census have nothing to check.
+fn firefight_set(v: &variants::record::GameVariant) -> Option<firefight::Def> {
+    match v.ext_state() {
+        variants::ext::Block::Ext(e) if e.script.mode == variants::ext::Mode::Firefight => {
+            firefight::builtin::by_prefix(e.script.prefix)
+        }
+        _ => None,
+    }
+}
+
+/// Every entry of each playlist a patch names: its variant must run a
+/// rules script ([`unscripted`]), and the script is held to the script
+/// policy of the playlist's kind (`rules::policy`): a ranked type (2, 4
+/// and 5) takes the ranked policy, an unranked one a hopper's, with no
+/// deny list (a hopper keeps none). `check` answers for one script by its
+/// record's hash prefix (16 hex digits); [`Live::check_slot_script`] is
+/// the routes'.
 pub fn check_scripts(
     file: &HopperFile,
     patch: &HoppersPatch,
     check: impl Fn(&str, rules::policy::Context<'static>) -> ApiResult<()>,
 ) -> ApiResult<()> {
-    use variants::ext::{Block, Mode};
-    for h in patch.hoppers.iter().filter(|h| !h.clear) {
-        let hopper = file.hopper(h.index).map_err(hopper_error)?;
+    let hoppers: Vec<usize> = patch
+        .hoppers
+        .iter()
+        .filter(|h| !h.clear)
+        .map(|h| h.index)
+        .collect();
+    check_scripts_of(file, &hoppers, check)
+}
+
+/// [`check_scripts`] for the playlists at `hoppers`.
+pub fn check_scripts_of(
+    file: &HopperFile,
+    hoppers: &[usize],
+    check: impl Fn(&str, rules::policy::Context<'static>) -> ApiResult<()>,
+) -> ApiResult<()> {
+    use variants::ext::Block;
+    for &i in hoppers {
+        let hopper = file.hopper(i).map_err(hopper_error)?;
         let ranked = live_proto::hopper::HopperType::from_raw(hopper.hopper_type)
             .is_some_and(|t| t.ranked());
         let context = if ranked {
@@ -956,20 +1035,23 @@ pub fn check_scripts(
             rules::policy::Context::Hopper { deny: &[] }
         };
         for j in 0..(hopper.record_count as usize).min(MAX_RECORDS) {
-            let slot = file.slot(h.index, j).map_err(hopper_error)?;
+            let slot = file.slot(i, j).map_err(hopper_error)?;
             let Ok(v) = variants::record::GameVariant::from_bytes(&slot[VARIANT_AT..RECORD]) else {
                 continue;
             };
+            if let Some(why) = unscripted(&v) {
+                return Err(invalid(format!("playlist {} entry {}: {why}", i + 1, j + 1)));
+            }
             let Block::Ext(e) = v.ext_state() else {
                 continue;
             };
-            if e.script.mode != Mode::Rules {
+            if firefight_set(&v).is_some() {
                 continue;
             }
             let prefix: String = e.script.prefix.iter().map(|b| format!("{b:02x}")).collect();
             check(&prefix, context).map_err(|err| ApiError {
                 code: err.code,
-                message: format!("playlist {} entry {}: {}", h.index + 1, j + 1, err.message),
+                message: format!("playlist {} entry {}: {}", i + 1, j + 1, err.message),
             })?;
         }
     }
@@ -994,7 +1076,7 @@ pub fn blocked_pairs(
     ir_of: impl Fn(&str) -> ApiResult<rules::ir::Ir>,
     census_of: impl Fn(u32) -> Option<rules::labels::Census>,
 ) -> ApiResult<Vec<live_proto::map_census::BlockedEntry>> {
-    use variants::ext::{Block, Mode};
+    use variants::ext::Block;
     let mut out = Vec::new();
     for &i in hoppers {
         let hopper = file.hopper(i).map_err(hopper_error)?;
@@ -1003,14 +1085,23 @@ pub fn blocked_pairs(
             let Ok(v) = variants::record::GameVariant::from_bytes(&slot[VARIANT_AT..RECORD]) else {
                 continue;
             };
+            let map_id = file.record(i, j).map_err(hopper_error)?.id;
+            if only_map.is_some_and(|m| m != map_id) {
+                continue;
+            }
+            if let Some(why) = unscripted(&v) {
+                out.push(live_proto::map_census::BlockedEntry {
+                    hopper: i + 1,
+                    entry: j + 1,
+                    map_id,
+                    problems: vec![why],
+                });
+                continue;
+            }
             let Block::Ext(e) = v.ext_state() else {
                 continue;
             };
-            if e.script.mode != Mode::Rules {
-                continue;
-            }
-            let map_id = file.record(i, j).map_err(hopper_error)?.id;
-            if only_map.is_some_and(|m| m != map_id) {
+            if firefight_set(&v).is_some() {
                 continue;
             }
             let prefix: String = e.script.prefix.iter().map(|b| format!("{b:02x}")).collect();
@@ -1088,6 +1179,19 @@ pub fn check_pairs(
         "the script does not fit the map: {}",
         lines.join(" | ")
     )))
+}
+
+/// The script checks of a hopper edit on a whole file, for a publish
+/// (`Live::publish_file`, `h2 live hopper import`): every playlist in use
+/// is held to [`check_scripts_of`], so an entry with no rules script is
+/// refused by name, as an edit's is. The map pairs are not checked: a map's
+/// census may be set after the file, and a new census lists the entries it
+/// blocks ([`blocked_by_census`]).
+pub fn check_file(live: &Live, file: &HopperFile) -> ApiResult<()> {
+    let used: Vec<usize> = (0..HOPPERS)
+        .filter(|&i| file.is_unused(i).is_ok_and(|u| !u))
+        .collect();
+    check_scripts_of(file, &used, |prefix, context| live.check_slot_script(prefix, context))
 }
 
 /// The published hopper entries on `map_id` that the census Live holds
@@ -1520,6 +1624,7 @@ mod tests {
     fn a_playlists_script_entries_are_held_to_its_kinds_policy() {
         use std::cell::RefCell;
         let mut file = base_file();
+        script_slot(&mut file, 0, 0, [0xcd; 8]);
         script_slot(&mut file, 0, 1, [0xab; 8]);
         let mut p = patch(0, vec![]);
         p.hoppers[0].records = None;
@@ -1528,25 +1633,124 @@ mod tests {
             seen.borrow_mut().push((prefix.to_string(), c.name()));
             Ok(())
         };
-        // Type 4 is ranked; entry 0 names no script and is not asked about.
+        // Type 4 is ranked.
         check_scripts(&file, &p, record).unwrap();
-        assert_eq!(*seen.borrow(), [("ab".repeat(8), "ranked")]);
+        assert_eq!(
+            *seen.borrow(),
+            [("cd".repeat(8), "ranked"), ("ab".repeat(8), "ranked")]
+        );
         // An unranked type is a hopper's.
         let mut h = file.hopper(0).unwrap();
         h.hopper_type = 3;
         file.set_hopper(0, &h).unwrap();
         seen.borrow_mut().clear();
         check_scripts(&file, &p, record).unwrap();
-        assert_eq!(*seen.borrow(), [("ab".repeat(8), "hopper")]);
+        assert_eq!(
+            *seen.borrow(),
+            [("cd".repeat(8), "hopper"), ("ab".repeat(8), "hopper")]
+        );
         // A refusal names the entry.
         let err = check_scripts(&file, &p, |_, _| Err(invalid("capability forge.move is not allowed")))
             .unwrap_err();
-        assert_eq!(err.message, "playlist 1 entry 2: capability forge.move is not allowed");
+        assert_eq!(err.message, "playlist 1 entry 1: capability forge.move is not allowed");
         // A playlist the patch clears has nothing to check.
         let mut cleared = patch(0, vec![]);
         cleared.hoppers[0].records = None;
         cleared.hoppers[0].clear = true;
         assert!(check_scripts(&file, &cleared, |_, _| Err(invalid("no"))).is_ok());
+    }
+
+    #[test]
+    fn a_hopper_takes_scripted_variants_only() {
+        // The blank entries are mode 0: refused by playlist, entry and
+        // variant name, with nothing asked of the script policy.
+        let mut file = base_file();
+        let mut p = patch(0, vec![]);
+        p.hoppers[0].records = None;
+        let err = check_scripts(&file, &p, |_, _| panic!("no script to ask about")).unwrap_err();
+        assert!(err.message.starts_with("playlist 1 entry 1: the variant "), "{}", err.message);
+        assert!(err.message.contains("mode 0, no rules script"), "{}", err.message);
+        // An entry that names a script passes, and the next unscripted one
+        // is the refusal.
+        script_slot(&mut file, 0, 0, [0xab; 8]);
+        let err = check_scripts(&file, &p, |_, _| Ok(())).unwrap_err();
+        assert!(err.message.starts_with("playlist 1 entry 2: "), "{}", err.message);
+        // Firefight (mode 1) is named as such, with the variant's name.
+        let mut v = variants::record::GameVariant::from_bytes(
+            VariantRecord::stock(live_proto::hopper::variant::GameType::Slayer, "Fire").bytes(),
+        )
+        .unwrap();
+        let mut e = v.ext();
+        e.script.mode = variants::ext::Mode::Firefight;
+        e.script.prefix = [0x5a; 8];
+        v.set_ext(&e).unwrap();
+        let why = unscripted(&v).unwrap();
+        assert!(why.contains("mode 1, Firefight, naming no built-in"), "{why}");
+        assert!(why.contains("\"Fire\""), "{why}");
+        // The map gate names the same entry.
+        let slayer = || Ok(rules::compile(rules::builtin::SLAYER).unwrap());
+        let hit = blocked_pairs(&file, &[0], None, |_| slayer(), |_| None).unwrap();
+        assert_eq!((hit.len(), hit[0].entry), (1, 2));
+        assert!(hit[0].problems[0].contains("mode 0"), "{:?}", hit[0].problems);
+        // The default lineup is all scripted: every entry passes.
+        let file = HopperFile::default_set();
+        let all: Vec<usize> = (0..defaults::playlists().len()).collect();
+        check_scripts_of(&file, &all, |_, _| Ok(())).unwrap();
+    }
+
+    /// Entry `j` of playlist `i` as the built-in Firefight set `n`: a Slayer
+    /// record whose extension is mode 1 with the set's hash prefix, team
+    /// play as given.
+    fn firefight_slot(file: &mut HopperFile, i: usize, j: usize, n: usize, team_play: bool) {
+        use live_proto::hopper::variant::GameType;
+        let def = &firefight::builtin::definitions()[n];
+        let stock = VariantRecord::stock(GameType::Slayer, &def.name);
+        let mut v = variants::record::GameVariant::from_bytes(stock.bytes()).unwrap();
+        let mut e = v.ext();
+        e.script = variants::ext::Script {
+            mode: variants::ext::Mode::Firefight,
+            prefix: def.id().unwrap().0[..8].try_into().unwrap(),
+            options: 0,
+        };
+        v.set_ext(&e).unwrap();
+        let mut bytes = v.to_bytes();
+        let at = variants::record::FLAGS_AT;
+        bytes[at] = (bytes[at] & !1) | u8::from(team_play);
+        let mut slot = file.slot(i, j).unwrap().to_vec();
+        set_slot_entry(
+            &mut slot,
+            &Entry {
+                map_id: 10,
+                weight: 1,
+                map_name: String::new(),
+                variant: VariantRecord::from_bytes(&bytes).unwrap(),
+            },
+        )
+        .unwrap();
+        file.set_slot(i, j, &slot).unwrap();
+    }
+
+    /// A hopper takes a built-in Firefight set (mode 1 naming its hash
+    /// prefix), Crossfire among them, with no script to hold to the policy
+    /// or the census; Crossfire needs team play, and an unknown prefix is
+    /// refused (`a_hopper_takes_scripted_variants_only`).
+    #[test]
+    fn a_hopper_takes_the_builtin_firefight_sets() {
+        let mut file = base_file();
+        let mut p = patch(0, vec![]);
+        p.hoppers[0].records = None;
+        firefight_slot(&mut file, 0, 0, 0, false);
+        firefight_slot(&mut file, 0, 1, 3, true);
+        check_scripts(&file, &p, |_, _| panic!("a Firefight set has no rules script")).unwrap();
+        let no_ir = |_: &str| -> ApiResult<rules::ir::Ir> { panic!("no IR") };
+        let hit = blocked_pairs(&file, &[0], None, no_ir, |_| None).unwrap();
+        assert!(hit.is_empty(), "{hit:?}");
+        // Crossfire has two player teams: without team play it is refused.
+        firefight_slot(&mut file, 0, 1, 3, false);
+        let err = check_scripts(&file, &p, |_, _| Ok(())).unwrap_err();
+        assert!(err.message.starts_with("playlist 1 entry 2: "), "{}", err.message);
+        assert!(err.message.contains("Crossfire"), "{}", err.message);
+        assert!(err.message.contains("needs team play"), "{}", err.message);
     }
 
     #[test]
@@ -1560,6 +1764,7 @@ mod tests {
         };
         let ir = || rules::compile(source("Territories")).unwrap();
         let mut file = base_file();
+        script_slot(&mut file, 0, 0, [0xab; 8]);
         script_slot(&mut file, 0, 1, [0xab; 8]);
         let mut p = patch(0, vec![]);
         p.hoppers[0].records = None;
@@ -1590,7 +1795,7 @@ mod tests {
         assert!(check_pairs(&file, &other, |_| Ok(ir()), |_| None).is_ok());
         // The census's own recheck sees one map's entries only.
         let hit = blocked_pairs(&file, &[0], Some(10), |_| Ok(ir()), |_| None).unwrap();
-        assert_eq!((hit.len(), hit[0].entry), (1, 2));
+        assert_eq!((hit.len(), hit[0].entry), (2, 1));
         assert!(blocked_pairs(&file, &[0], Some(99), |_| Ok(ir()), |_| None).unwrap().is_empty());
     }
 
@@ -1846,7 +2051,8 @@ mod tests {
     #[test]
     fn an_unused_slot_becomes_a_playlist_the_game_loads_from_a_template() {
         let mut file = HopperFile::default_set();
-        let i = defaults::playlists().len();
+        let i = HOPPERS - 1;
+        file.clear_hopper(i).unwrap();
         assert!(file.is_unused(i).unwrap());
         // Untouched unused slots never block an edit elsewhere.
         let mut other = patch(0, vec![keep(&file, 0, 0)]);
@@ -1876,7 +2082,7 @@ mod tests {
         let d = file.descriptor(i).unwrap();
         assert_eq!(check_descriptor(&d), vec![]);
         assert_eq!(d.hopper_type, 4);
-        assert_eq!(d.playlist_id, 12);
+        assert_eq!(d.playlist_id, 16);
         assert_eq!(file.text(i).unwrap().title, "Modtacular");
         let entries = file.entries(i).unwrap();
         assert_eq!(entries.len(), 2);
@@ -1931,7 +2137,9 @@ mod tests {
     #[test]
     fn clearing_a_playlist_leaves_an_unused_slot_and_valid_ones_stay_valid() {
         let mut file = HopperFile::default_set();
-        let i = defaults::playlists().len();
+        let i = HOPPERS - 1;
+        file.clear_hopper(i).unwrap();
+        let blank = file.image().to_vec();
         apply_patch(
             &mut file,
             &create(i, 1, "Solo", vec![record(10, 1, "rumble_slayer")]),
@@ -1941,7 +2149,7 @@ mod tests {
         clear.hoppers[0].records = None;
         clear.hoppers[0].clear = true;
         apply_patch(&mut file, &clear).unwrap();
-        assert!(file.image() == HopperFile::default_set().image());
+        assert_eq!(file.image(), blank);
         // `clear` with anything else is refused.
         let mut both = patch(0, vec![keep(&file, 0, 0)]);
         both.hoppers[0].clear = true;
@@ -1969,6 +2177,7 @@ mod tests {
             v.iter()
                 .any(|d| d.key == "team_slayer" && d.name == "Team Slayer" && d.team)
         );
+        assert!(v.iter().all(|d| d.scripted), "every built-in runs its script");
         let t = template_docs();
         assert_eq!(t.len(), 8);
         for d in &t {
@@ -1982,7 +2191,8 @@ mod tests {
         // What the web builder sends for a new playlist: the template and
         // its own fields back, which change nothing.
         let mut file = HopperFile::default_set();
-        let i = defaults::playlists().len();
+        let i = HOPPERS - 1;
+        file.clear_hopper(i).unwrap();
         for d in &t {
             let p = HoppersPatch {
                 hoppers: vec![HopperPatch {
@@ -2119,7 +2329,7 @@ mod tests {
 
     #[test]
     fn clanker_marks_follow_the_served_file() {
-        // The built-in lineup: its three clanker playlists, by index.
+        // The built-in lineup: its eight clanker playlists, by index.
         let defaults = HopperFile::default_set();
         let marks = clanker_hoppers(Some(&defaults));
         let ids: Vec<(u32, u32)> = marks
@@ -2127,7 +2337,19 @@ mod tests {
             .iter()
             .map(|h| (h.hopper_id, h.playlist_id))
             .collect();
-        assert_eq!(ids, [(8, 9), (9, 10), (10, 11)]);
+        assert_eq!(
+            ids,
+            [
+                (8, 9),
+                (9, 10),
+                (10, 11),
+                (11, 12),
+                (12, 13),
+                (13, 14),
+                (14, 15),
+                (15, 16),
+            ]
+        );
         // No file: none; nor a blank one.
         assert_eq!(clanker_hoppers(None), ClankerHoppers::default());
         assert_eq!(

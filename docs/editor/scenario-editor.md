@@ -73,7 +73,14 @@ little-endian FourCC, then the full salted tag ID.
 **Player starting locations** (`0x34`): position `+0x00` (E `0x0023cec7`),
 facing `+0x0c` f32 (E `0x0023cee1`), team `+0x10` i16 (V, C), player type
 `+0x2c` i16 (E: `0x0014bcb0` and `0x001529d9` compare it with -1 and 1;
-read-only here).
+read-only here). No engine reader of `+0x12` to `+0x2b` was found, where
+the public layout puts game types and spawn types (C): every load of the
+block (`0x0014bcaa`, `0x0014ef90`, `0x0014f154`, `0x0014f3da`,
+`0x0014f4c6`, `0x001526ad`, `0x001529ce`, `0x0023ceba`) reads only the
+position, the facing or the player type, and the spawn chooser
+`0x0014ef00` weighs every entry by position (E,
+[notes](../game/notes/2026-11-23-item-game-types.md)). Those bytes are
+kept and not typed.
 
 **Netgame flags** (`0x20`): position `+0x00` (E `0x0019cbce`..`0x0019cbd9`),
 facing `+0x0c` (E `0x0019cf65`), type `+0x10` u16, team `+0x12` u16
@@ -87,13 +94,39 @@ its tick `0x0015ae70`:
 | Offset | Field | Evidence |
 |---|---|---|
 | `+0x00` | flags (u32; bit 0 read at spawn) | E |
+| `+0x04`..`+0x0b` | game types: four i16 slots, passed to the matcher `0x0015a090`; an entry whose slots do not match the running engine is skipped that tick (below) | E `0x0015af2b`..`0x0015af3a` |
 | `+0x0e` | respawn time, i16; 0 = the collection's own (`itmc`/`vehc` `+8`) | E `0x0015ac6d` |
 | `+0x10` | abandon limit, i16: the tick counts an object away from its spot and respawns past this | E `0x0015af7d`, `0x0015b020` |
-| `+0x12` | respawn mode, i16: 0 and 1 take different paths | E `0x0015b05d` |
+| `+0x12` | respawn mode, i16: what starts the respawn countdown while the entry's object exists (below) | E `0x0015b05d` |
 | `+0x14` | type byte: 0, 1..7, 8..9 pick the definition | E `0x0015b0ef` |
 | `+0x40` | position | E `0x0015afa8`..`0x0015afbc` |
 | `+0x4c` | orientation, 3 × f32 | E (offset); V |
 | `+0x58` | item: tag reference, a collection or an object | E `0x0015ac83` |
+
+**The matcher** `0x0015a090` takes the slots and the running engine's
+code, slot `+0x00` of the engine's vtable (King of the Hill 0, CTF 1,
+Slayer 2, Oddball 3, Juggernaut 7, Territories 8, Assault 9;
+[engine-vtables](../engine/notes/2026-11-21-engine-vtables.md)), and
+returns the first slot that matches, or -1. A slot matches when it equals
+the code; when code and slot are each 1 or 9; when it is 12; or when it is
+13 or 14 and the code is neither 1 nor 9. With no engine object only a
+slot of 0 matches. Its only other caller is the starting equipment pass,
+for the slots at its own `+0x04` (E; `map::scenario_layout::game_types`,
+tested by `game_type_matcher_follows_the_engine_routine`).
+
+**The respawn mode.** Each entry has a state of object, countdown and
+abandon count (`[0x4e9ae8]+0x7dc`, 8 bytes an entry). The reset
+`0x0015ad30`, called from `0x00157ae0`, deletes every entry's object and
+sets each countdown to 1, so every entry whose slots match spawns at the
+start whatever its mode. In the tick, an entry with no countdown running
+and no object arms the countdown at once; with an object, mode 0 arms it
+when the object is of type 2 to 4 with bit 0 or 1 of its byte `+0x12c`
+set, or lies farther from the entry than the distance at `0x0045dbc0`;
+mode 1 arms it when bit 2 of the object's byte `+0x10a` is set; any other
+mode never arms it. The countdown is the respawn time (`0x0015ac50`)
+scaled by the game options for the type byte (`0x0015b0ef`). When it runs
+out the entry spawns again, deleting its old object first when flags bit
+1 is set and the object is not a weapon (`0x0015b156`) (E).
 
 The item may be retargeted to any tag in the map whose group is `itmc`,
 `vehc`, or a placeable object group; the reference must name a tag that
@@ -101,8 +134,9 @@ exists with that group.
 
 **Starting equipment** (`0x9c`): five tag references at `+0x3c + 8k`
 (k = 0..4). The loop at `0x0019efe1` reads the ID half (`+0x40 + 8k`) and
-rolls each with `collection_select`. Shown, not editable: the other bytes
-(game-type matching at `+0x04`, passed to `0x0015a090`) are not decoded.
+rolls each with `collection_select`. Shown, not editable. Four game-type
+slots at `+0x04` go to the same matcher (`0x0019ef8a`); the first entry
+that matches is used (E). They are not typed here.
 
 ### Scenario tag inspection
 
@@ -295,18 +329,17 @@ from `tags::object` (editor.md, "What the viewport shows").
 
 ## 5. How a patched map reaches the game
 
-### As a map package (the default)
+### In the edit target (the default)
 
-**Save as package...** writes a map package ([maps.md](../game/maps.md) §1, §8)
-into `<data>/maps/<dir>/`, where `<data>` is the runtime's data root
-(`h2-editor --data`, default `~/Library/Application Support/h2recomp/data`, as `h2 play`). The
-form asks for a name (required), author, description, an optional image
-(PNG or JPEG, at most 512 KB, checked before anything is written), the
-directory (default `<map>-edit`). The editor can still write its legacy
-`active.toml` selection. The current runtime allocates slots independently
-of that selection.
-
-The package contains
+Every change to a base map is an edit line in the edit target, a local
+package under `<data>/packages/` (`app::edit_target`,
+[studio-redesign.md](studio-redesign.md), "Editing a disc asset"), where
+`<data>` is the runtime's data root (`h2-editor --data`, default
+`~/Library/Application Support/h2recomp/data`, as `h2 play`). **Save**
+writes the package's files. The first edit asks which package takes it;
+there is no package form. A map package ([maps.md](../game/maps.md) §1,
+§8) that **Open package...** lists, and that
+`scenario_edit::package` writes, contains
 
 - `manifest.toml`: `[base]` the disc map's name and SHA-256; one
   `[[patch]]`; `[result] geometry` (maps.md, "The geometry hash");
@@ -469,8 +502,9 @@ grow in guest memory after the load.
 - The placement head beyond scale (`+0x24` onward: transform flags, BSP
   policy, unique ID, editor folder in the public layout) is preserved but
   not typed.
-- The netgame equipment game-type bytes at `+0x04` and the meaning of
-  respawn mode 0 and 1 are not decoded.
+- What the object bits that arm a respawn mode's countdown mean (byte
+  `+0x12c` bits 0 and 1 for mode 0, byte `+0x10a` bit 2 for mode 1), and
+  what the netgame equipment flags' bit 0 does at spawn.
 - The AI, device-group and trigger-volume readers have not been checked
   for placement indices (§6, S).
 - The trigger volume, kill trigger and BSP switch layouts rest on this

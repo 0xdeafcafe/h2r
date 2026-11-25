@@ -49,6 +49,9 @@ pub struct RunReport {
 pub struct Host {
     /// Record this boot to a new film file. Falls back to H2_FILM_OUT.
     pub film_out: Option<PathBuf>,
+    /// A player session with no `film_out` records into the film library
+    /// (`theater::autorecord`). `h2 play` sets it; other hosts leave it off.
+    pub film_auto: crate::theater::autorecord::Request,
     /// Local media controls and the offline clip sink belong to separate players.
     pub film_media: Option<crate::theater::Media>,
     pub film_capture: Option<Arc<crate::theater::ClipCapture>>,
@@ -135,6 +138,12 @@ pub struct Host {
     pub embedded_live: bool,
     /// The perf overlay's on/off switch, for `perf.overlay`.
     pub perf_overlay: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// The watermark's active-cheats line, which the debug menu glue keeps
+    /// filled from `cheat.list` (docs/runtime/debug-menu.md).
+    pub cheat_line: Option<Arc<std::sync::Mutex<Vec<String>>>>,
+    /// This start's game code (tier, module, background build), for
+    /// `game.code` (crate::game_code).
+    pub game_code: Option<Arc<crate::game_code::GameCode>>,
     /// Shared with the registered debug-view world-line producer on a windowed run.
     pub debug_views: Option<Arc<agent::debug_views::DebugViews>>,
     /// The window consumer for the paired-editor plate and focus requests.
@@ -166,16 +175,21 @@ pub type VfsReady = Box<dyn FnOnce(&Arc<std::sync::Mutex<vfs::Vfs>>) + Send>;
 /// [`Host::between_slices`]: true to keep running.
 pub type BetweenSlices = Box<dyn FnMut(&kernel::Kernel) -> bool>;
 
-/// Physical drawable pixels, read when sizing the view or opening the Video picker.
+/// A live extent in render or display pixels.
 pub type NativeSize = Arc<dyn Fn() -> (u32, u32) + Send + Sync>;
+
+/// The host's physical drawable, fitted viewport and fullscreen mode.
+pub type NativeTarget = Arc<dyn Fn() -> settings::NativeTarget + Send + Sync>;
 
 #[cfg(feature = "gpu")]
 pub struct DisplayView {
     /// Absent when both resolution and lighting are locked to retail.
     pub backend: Option<d3d::GfxBackend>,
-    pub native_size: NativeSize,
+    pub native_target: NativeTarget,
     /// Playback uses the viewer's chosen raster while the guest uses its recorded settings.
     pub viewer_output: Option<NativeSize>,
+    /// Theater display geometry follows the viewer’s Video setting.
+    pub viewer_lod: Option<settings::Setting<u32>>,
     /// Physical presentation rectangle for an internal render resolution.
     pub display_size: Arc<dyn Fn((u32, u32)) -> (u32, u32) + Send + Sync>,
 }

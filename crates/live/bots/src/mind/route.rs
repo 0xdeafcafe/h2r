@@ -55,7 +55,7 @@ impl RoutePad {
         let desired = (motion.speed > 0.0).then_some(motion.dir);
         // Follow the checked steering direction on turns, without
         // smoothing across the edge of the walkable corridor.
-        let walk = self.feet.step(desired, 1, motion.speed, jump, |_| false);
+        let walk = self.feet.step(desired, 1, motion.speed, 0.0, jump, |_| false);
         let mut pad = HostPadState {
             left_stick: movement_stick(walk, facing.0),
             right_stick: self.hand.steer(Skill::Legendary, look, 1),

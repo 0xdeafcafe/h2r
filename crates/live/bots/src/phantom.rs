@@ -225,11 +225,18 @@ pub struct Maintenance {
     pub props_writes: u64,
     /// Phantom names or looks written back into the session's player records.
     pub identity_writes: u64,
+    /// Phantom handicaps put back to none in the session's player records.
+    pub handicap_writes: u64,
     /// Phantoms moved to keep the lobby's teams even.
     pub team_moves: u64,
     /// The 8-byte chunks of the `0xc8` peer properties that differed on any
     /// properties rewrite (bit `i`: bytes `8i..8i + 8`).
     pub props_diff_chunks: u32,
+    /// Built actions after which the action path cleared the phantom
+    /// biped's facing-set flag, as retail's control update does for a local
+    /// player ([`guest::BIPED_FACING_SET`]; counted on the action gather,
+    /// not the render frame).
+    pub facing_releases: u64,
 }
 
 /// Consecutive membership-writing frames after which the log says the game
@@ -242,8 +249,8 @@ pub const CHURN_FRAMES: u32 = 30;
 pub fn churn_line(frames: u32, m: &Maintenance) -> String {
     format!(
         "bots: phantoms: the session's membership was rewritten on {frames} frames in a row \
-         (totals: properties {}, identities {}, team moves {}; property chunks {:#x})",
-        m.props_writes, m.identity_writes, m.team_moves, m.props_diff_chunks
+         (totals: properties {}, identities {}, handicaps {}, team moves {}; property chunks {:#x})",
+        m.props_writes, m.identity_writes, m.handicap_writes, m.team_moves, m.props_diff_chunks
     )
 }
 
@@ -479,6 +486,22 @@ impl Phantoms {
     /// Where phantom `handle`'s bounce route stands.
     pub fn order_view(&self, handle: PhantomHandle) -> Option<crate::mind::OrderView> {
         lock_source(&self.source(handle)?).order_view()
+    }
+
+    /// Gives the joined phantom whose player is `player` an outside order
+    /// (docs/game/rules-world-api.md, "Bots"), or frees it (`None`);
+    /// `false` when no phantom has the seat or its source takes no orders.
+    pub fn order_player(&self, player: u32, order: Option<crate::brain::Order>) -> bool {
+        let handle = self
+            .lock()
+            .list
+            .iter()
+            .find(|p| p.made && p.info.player == Some(player))
+            .map(|p| p.info.handle);
+        let Some(handle) = handle else {
+            return false;
+        };
+        self.source(handle).is_some_and(|s| lock_source(&s).order(order))
     }
 
     /// Holds phantom `handle`'s pad at `pad` (`None` lets go); `false` for
@@ -788,6 +811,7 @@ impl Phantoms {
                     p.peer_hint = Some(peer);
                     repairs.props(session::write_peer(m, s, peer, host.as_ref(), &p.peer_identity)?);
                     repairs.identity(session::write_identity(m, s, peer, &p.peer_identity)?);
+                    repairs.handicap(session::write_no_handicap(m, s, peer)?);
                 }
                 None => {
                     p.made = false;
@@ -835,6 +859,7 @@ impl Phantoms {
                     p.peer_hint = Some(stale);
                     repairs.props(session::write_peer(m, s, stale, host.as_ref(), &p.peer_identity)?);
                     repairs.identity(session::write_identity(m, s, stale, &p.peer_identity)?);
+                    repairs.handicap(session::write_no_handicap(m, s, stale)?);
                     p.made = true;
                     p.waiting = None;
                     log.push(format!(
@@ -929,6 +954,7 @@ struct Repairs {
     props_writes: u64,
     props_chunks: u32,
     identity_writes: u64,
+    handicap_writes: u64,
     team_moves: u64,
 }
 
@@ -944,14 +970,19 @@ impl Repairs {
         self.identity_writes += u64::from(wrote);
     }
 
+    fn handicap(&mut self, wrote: bool) {
+        self.handicap_writes += u64::from(wrote);
+    }
+
     fn any(&self) -> bool {
-        self.props_writes + self.identity_writes + self.team_moves > 0
+        self.props_writes + self.identity_writes + self.handicap_writes + self.team_moves > 0
     }
 
     fn count(&self, m: &mut Maintenance) {
         m.props_writes += self.props_writes;
         m.props_diff_chunks |= self.props_chunks;
         m.identity_writes += self.identity_writes;
+        m.handicap_writes += self.handicap_writes;
         m.team_moves += self.team_moves;
     }
 }
@@ -1008,6 +1039,12 @@ pub fn list() -> Vec<PhantomInfo> {
 /// `phantom_player`).
 pub fn player(handle: PhantomHandle) -> Option<u32> {
     global().player(handle)
+}
+
+/// Gives the joined phantom whose player is `player` an outside order
+/// (docs/game/rules-world-api.md, "Bots"), or frees it (`None`).
+pub fn order(player: u32, order: Option<crate::brain::Order>) -> bool {
+    global().order_player(player, order)
 }
 
 mod action;

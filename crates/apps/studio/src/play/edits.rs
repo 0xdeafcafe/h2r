@@ -25,6 +25,10 @@ pub(super) struct Batch {
     id: u64,
     tags: Vec<tag_sync::Write>,
     placements: Vec<sync::Write>,
+    /// Block moves go in a batch of their own.
+    moves: Vec<tag_sync::BlockMove>,
+    /// Regions of BSPs the game has not loaded (`raw` with `bsp` owners).
+    regions: Vec<tag_sync::RegionWrite>,
 }
 
 const RELOAD_TIMEOUT: Duration = Duration::from_secs(30);
@@ -42,6 +46,7 @@ pub(super) struct ReloadCopy {
     pub(super) resume_edits: bool,
     pub(super) check_identity: bool,
     deadline: Instant,
+    raw: raw_sync::RawBaseline,
 }
 
 impl ReloadCopy {
@@ -83,7 +88,9 @@ pub(super) struct Edits {
     pub map_requested: bool,
     pub(super) epoch: Option<u64>,
     loaded: Option<std::sync::Arc<HashSet<TagId>>>,
-    last_diff: Option<(u64, u64, u64, bool)>,
+    /// World, placement, tag and raw document revisions, and whether the
+    /// diff could send.
+    pub(super) last_diff: Option<(u64, u64, u64, u64, bool)>,
     pub(super) checksum: Option<u32>,
     name: Option<String>,
     pub(super) world: Option<u64>,
@@ -93,26 +100,45 @@ pub(super) struct Edits {
     pub(super) journal_ready: bool,
     journal_requested: bool,
     reverting: bool,
-    restore_after_batch: bool,
+    pub(super) restore_after_batch: bool,
     taking: Option<u64>,
     tags: TagBaseline,
+    /// The game's loaded BSP and the BSP regions it refused.
+    pub(super) bsp: tag_sync::BspLive,
     pub(super) sent: Option<Batch>,
     next: u64,
     conflicts: Vec<Value>,
     refused: issues::Refusals,
+    /// Block moves the game refused.
+    refused_moves: tag_sync::MoveRefusals,
+    /// Geometry and pixels (`raw_sync`).
+    pub(super) raw: raw_sync::RawSync,
+    /// Level collision (`collision_sync`).
+    pub(super) collision: collision_sync::CollisionSync,
 }
 
 impl Edits {
     pub(super) fn interrupted_write(&self) -> bool {
-        self.sent.is_some() || self.reverting || self.restore_after_batch
+        self.sent.is_some()
+            || self.raw.busy()
+            || self.collision.busy()
+            || self.reverting
+            || self.restore_after_batch
     }
 
     pub(super) fn document_changed(&self, app: &App) -> bool {
-        self.last_diff.is_none_or(|(world, placements, tags, _)| {
+        self.last_diff.is_none_or(|(world, placements, tags, raw, _)| {
             world != app.session.world_rev()
                 || placements != app.session.markers_rev()
                 || tags != app.tags.rev()
+                || raw != raw_sync::doc_rev(app)
         })
+    }
+
+    /// Diff the document again on the next frame: the baseline changed
+    /// without the document (a placement transaction's receipt).
+    pub(super) fn rediff(&mut self) {
+        self.last_diff = None;
     }
 
     pub(super) fn transport_lost(&mut self) {
@@ -121,6 +147,8 @@ impl Edits {
         self.reverting = false;
         self.taking = None;
         self.sent = None;
+        self.raw.transport_lost();
+        self.collision.transport_lost();
         self.last_diff = None;
     }
 }
@@ -138,6 +166,10 @@ impl Play {
 
     pub(super) fn retry_refused_fields(&mut self) {
         self.edits.refused = issues::Refusals::default();
+        self.edits.refused_moves = Default::default();
+        self.edits.bsp.refused.clear();
+        self.edits.raw.retry();
+        self.edits.collision.retry();
         self.edits.last_diff = None;
     }
 
@@ -150,12 +182,14 @@ impl Play {
             rev == app.session.world_rev() && Some(sum) == self.edits.checksum
         });
         let launch = self.launch_baseline.as_ref().filter(|_| copy);
-        self.edits.tags = launch.map(|(_, tags)| tags.clone()).unwrap_or_default();
+        self.edits.tags = launch.map(|(_, tags, _)| tags.clone()).unwrap_or_default();
+        self.edits.raw.reset(launch.map(|(_, _, raw)| raw.clone()).unwrap_or_default());
+        self.edits.collision.reset();
         self.baseline = app.loaded_map().zip(app.session.scenario()).map(|(m, s)| {
             (
                 m.into(),
                 launch
-                    .map(|(b, _)| b.clone())
+                    .map(|(b, _, _)| b.clone())
                     .unwrap_or_else(|| Baseline::source(s)),
             )
         });
@@ -197,7 +231,7 @@ impl Play {
         }
         let resume_edits = self.reload_copy.take().map(|copy| {
             app.pairing.play_copy = Some((copy.world, copy.checksum));
-            self.launch_baseline = Some((copy.placements, copy.tags));
+            self.launch_baseline = Some((copy.placements, copy.tags, copy.raw));
             self.launched_copy = self.endpoint().cloned().map(|ep| (ep, copy.world, copy.checksum));
             copy.resume_edits
         });
@@ -217,6 +251,12 @@ impl Play {
             self.abandon_spawn(app, "the loaded map changed before the player could be moved");
         }
         self.scenario_tag = v["scenario"].as_str().map(str::to_owned);
+        let bsp = v["bsp"].as_i64().and_then(|n| i16::try_from(n).ok());
+        if self.edits.bsp.loaded != bsp {
+            // A switch: the regions it refused may take writes now.
+            self.edits.bsp = tag_sync::BspLive { loaded: bsp, ..Default::default() };
+            self.edits.last_diff = None;
+        }
         let session =
             serde_json::from_value::<SessionView>(v["session"].clone()).unwrap_or_default();
         self.session = Some(session.kind);
@@ -274,6 +314,8 @@ impl Play {
             }
             self.edits.conflicts.clear();
             self.edits.refused = issues::Refusals::default();
+            self.edits.refused_moves = Default::default();
+            self.edits.bsp.refused.clear();
             self.edits.confirmed = None;
             self.edits.journal_ready = false;
             self.edits.reverting = false;
@@ -438,6 +480,7 @@ impl Play {
             app.session.world_rev(),
             app.session.markers_rev(),
             app.tags.rev(),
+            raw_sync::doc_rev(app),
             writable,
         );
         if self.edits.last_diff.replace(revisions) == Some(revisions) {
@@ -465,16 +508,19 @@ impl Play {
         self.reload = d.reload;
         if self.edits.world != Some(app.session.world_rev()) {
             self.edits.refused = issues::Refusals::default();
+            self.edits.refused_moves = Default::default();
+            self.edits.bsp.refused.clear();
             self.edits.conflicts.clear();
         }
         let empty = TagBaseline::default();
-        let (mut tags, mut pending) = tag_sync::diff(
+        let (mut tags, regions, mut pending) = tag_sync::diff_live(
             if base.is_some() {
                 &self.edits.tags
             } else {
                 &empty
             },
             &app.tags,
+            &self.edits.bsp,
         );
         let tag = json!(self.scenario_tag);
         for b in &self.reload {
@@ -485,6 +531,7 @@ impl Play {
                 Effect::Reload,
                 "placement layout changed",
             );
+            tag_sync::set_class(&mut row, crate::app::live::Class::Shape);
             row["target"] = json!({"panel": "pending"});
             pending.push(row);
         }
@@ -511,6 +558,16 @@ impl Play {
             !absent
         });
         self.edits.refused.hold(&mut pending, &mut tags, &mut d.writes);
+        let (mut moves, move_rows) = tag_sync::block_moves(
+            if base.is_some() {
+                &self.edits.tags
+            } else {
+                &empty
+            },
+            &app.tags,
+        );
+        pending.extend(move_rows);
+        self.edits.refused_moves.hold(&mut moves, &mut pending);
         for c in &self.edits.conflicts {
             if let Err(why) = self.check_conflict(app, c) {
                 let mut stale = c.clone();
@@ -533,11 +590,35 @@ impl Play {
                 pending.push(c.clone());
             }
         }
+        let raw = self.raw_pending(app, &mut pending);
+        let collision = self.collision_pending(app, &mut pending);
         self.objects.publish(&mut pending);
         *app.pairing.pending = pending;
-        if !writable || self.edits.sent.is_some() || self.edits.taking.is_some()
-            || !self.edits.conflicts.is_empty()
+        if !writable || self.edits.sent.is_some() || self.edits.raw.busy()
+            || self.edits.collision.busy()
+            || self.edits.taking.is_some() || !self.edits.conflicts.is_empty()
         {
+            return;
+        }
+        if !moves.is_empty() {
+            // Moves go alone: a refusal or a mismatch names them, and the
+            // field writes follow on the next diff.
+            self.edits.next += 1;
+            let id = self.edits.next;
+            let wire: Vec<_> = moves.iter().map(tag_sync::BlockMove::wire).collect();
+            self.call(
+                hot::EDIT_BATCH,
+                json!({"epoch":self.edits.epoch,"confirm_peers":self.edits.confirmed,
+                    "writes":[],"moves":wire}),
+                Purpose::Edit(id),
+            );
+            self.edits.sent = Some(Batch {
+                id,
+                tags: Vec::new(),
+                placements: Vec::new(),
+                moves,
+                regions: Vec::new(),
+            });
             return;
         }
         let mut writes: Vec<_> = tags.iter().map(tag_sync::Write::wire).collect();
@@ -546,20 +627,32 @@ impl Play {
                 |w| json!({"tag":tag,"group":"scnr","path":w.path,"value":w.value,"was":w.was}),
             ),
         );
-        if writes.is_empty() {
+        if writes.is_empty() && regions.is_empty() {
+            // Geometry and pixels go when no field write is waiting, and
+            // level collision when neither is.
+            match raw {
+                Some(plan) if !plan.is_empty() => self.send_raw(plan),
+                _ => {
+                    if let Some(step) = collision {
+                        self.send_collision(step);
+                    }
+                }
+            }
             return;
         }
         self.edits.next += 1;
         let id = self.edits.next;
-        self.call(
-            hot::EDIT_BATCH,
-            json!({"epoch":self.edits.epoch,"confirm_peers":self.edits.confirmed,"writes":writes}),
-            Purpose::Edit(id),
-        );
+        let mut params = json!({"epoch":self.edits.epoch,"confirm_peers":self.edits.confirmed,"writes":writes});
+        if !regions.is_empty() {
+            params["raw"] = regions.iter().flat_map(tag_sync::RegionWrite::wire).collect();
+        }
+        self.call(hot::EDIT_BATCH, params, Purpose::Edit(id));
         self.edits.sent = Some(Batch {
             id,
             tags,
             placements: d.writes,
+            moves: Vec::new(),
+            regions,
         });
     }
 
@@ -574,13 +667,25 @@ impl Play {
             self.edits.restore_after_batch = false;
             return;
         }
+        let runs: usize = batch.regions.iter().map(|r| r.runs.len()).sum();
+        let refuse_regions = |bsp: &mut tag_sync::BspLive, why: &str| {
+            for r in &batch.regions {
+                bsp.refused.insert(r.space.file_offset, why.to_owned());
+            }
+        };
         match result {
             Ok(v)
                 if v["applied"].as_u64()
-                    == Some((batch.tags.len() + batch.placements.len()) as u64) =>
+                    == Some((batch.tags.len() + batch.placements.len()) as u64)
+                    && v["moves"].as_array().map_or(0, Vec::len) == batch.moves.len()
+                    && v["raw"].as_array().map_or(0, Vec::len) == runs =>
             {
+                self.edits.tags.moved(&batch.moves, &v);
                 for w in batch.tags {
                     self.edits.tags.wrote(w.at, &w.value);
+                }
+                for r in batch.regions {
+                    self.edits.tags.took_bsp(r.space, r.patches);
                 }
                 if let Some((_, base)) = &mut self.baseline {
                     for w in batch.placements {
@@ -592,8 +697,11 @@ impl Play {
                     self.finish_playtest(app);
                 }
             }
-            Err(e) if e.code == agent_proto::code::MISMATCH => {
+            Err(e) if e.code == agent_proto::code::MISMATCH && batch.moves.is_empty() => {
                 self.waiting = Waiting::Idle;
+                if e.data.as_ref().is_some_and(|d| d["raw"].as_array().is_some_and(|a| !a.is_empty())) {
+                    refuse_regions(&mut self.edits.bsp, "the game's file holds other bytes in this BSP region");
+                }
                 let message = e.message;
                 self.edits.conflicts = e
                     .data
@@ -639,12 +747,17 @@ impl Play {
                     |e| e.data.as_ref().and_then(|data| data["why"].as_str())
                         .map(str::to_owned).unwrap_or(e.message),
                 );
-                self.edits.refused.record(&batch.tags, &batch.placements, &why);
+                if batch.moves.is_empty() {
+                    self.edits.refused.record(&batch.tags, &batch.placements, &why);
+                    refuse_regions(&mut self.edits.bsp, &why);
+                } else {
+                    self.edits.refused_moves.record(&batch.moves, &why);
+                }
                 self.feedback.problem(app, format!("edit.batch: {why}"));
             }
         }
         self.edits.last_diff = None;
-        self.next_push = Instant::now();
+        self.next_push = None;
         if std::mem::take(&mut self.edits.restore_after_batch)
             && let Err(why) = self.apply_edits(app, Apply::Restore)
         {
@@ -702,8 +815,11 @@ impl Play {
                 }
                 self.edits.conflicts.clear();
                 self.edits.refused = issues::Refusals::default();
+                self.edits.refused_moves = Default::default();
+                self.edits.bsp.refused.clear();
+                self.edits.raw.reverted();
                 self.edits.last_diff = None;
-                self.next_push = Instant::now();
+                self.next_push = None;
                 app.pairing.journal.clear();
                 self.edits.journal_ready = false;
                 self.request_journal(epoch);
@@ -732,7 +848,7 @@ impl Play {
             }
             self.edits.confirmed = Some(scope.peers);
             self.objects.confirm_objects();
-            self.next_push = Instant::now();
+            self.next_push = None;
             return Ok(());
         }
         if action == Apply::Keep {
@@ -745,7 +861,7 @@ impl Play {
         if action == Apply::Restore && self.is_paired() {
             self.request_leave(app);
             self.edits.taking = None;
-            if self.edits.sent.is_some() {
+            if self.edits.sent.is_some() || self.edits.raw.busy() || self.edits.collision.busy() {
                 self.edits.restore_after_batch = true;
                 return Ok(());
             }
@@ -753,7 +869,12 @@ impl Play {
         if let Some(why) = self.map_refusal(app) {
             return Err(why);
         }
-        if self.edits.sent.is_some() || self.edits.reverting || self.edits.taking.is_some() {
+        if self.edits.sent.is_some()
+            || self.edits.raw.busy()
+            || self.edits.collision.busy()
+            || self.edits.reverting
+            || self.edits.taking.is_some()
+        {
             return Err("waiting for the game to acknowledge the previous write".into());
         }
         match action {
@@ -841,7 +962,12 @@ impl Play {
                 }
                 if action == Apply::Respawn {
                     self.require_method(agent_proto::sim::method::OBJECT_RESPAWN)?;
-                    self.respawn_objects(app)?;
+                    let sent = self.respawn_definitions(app)?;
+                    if let Err(why) = self.respawn_objects(app)
+                        && sent == 0
+                    {
+                        return Err(why);
+                    }
                 } else {
                     self.remember_place(app);
                     let route = playtest::Reload::route(
@@ -854,7 +980,7 @@ impl Play {
             Apply::Keep | Apply::Confirm(_) => unreachable!(),
         }
         self.edits.last_diff = None;
-        self.next_push = Instant::now();
+        self.next_push = None;
         Ok(())
     }
 
@@ -938,6 +1064,8 @@ impl Play {
         if self.paused && let Some(why) = self.controls().resume {
             return Err(why.into());
         }
+        // What the copy holds of the geometry, taken before the save.
+        let raw = raw_sync::RawBaseline::of_copy(app);
         let level = app.loaded_map().ok_or("open a map first")?;
         let scenario = app.session.scenario().ok_or("open a map first")?;
         let before_epoch = self.edits.epoch.ok_or("waiting for the loaded map epoch")?;
@@ -960,6 +1088,7 @@ impl Play {
             resume_edits: self.live_edits,
             check_identity: false,
             deadline: Instant::now() + RELOAD_TIMEOUT,
+            raw,
         });
         self.play_world = app.session.world_rev();
         self.pending_spawn = self.destination(app);
@@ -1020,7 +1149,7 @@ impl Play {
             self.accept_game_bytes(app, &field, true)?;
             self.edits.conflicts.remove(i);
             self.edits.last_diff = None;
-            self.next_push = Instant::now();
+            self.next_push = None;
             Ok(())
         })();
         if let Err(why) = outcome {

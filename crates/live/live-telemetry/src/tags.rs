@@ -16,10 +16,14 @@ use std::io::{BufReader, Read, Seek};
 
 /// A host region for the telemetry worker. A private source can supply a
 /// guard to keep its path alive until the worker has finished with it.
+///
+/// A map the VFS rewrites in memory (the pogo kit, the screens) has no host
+/// region; [`MapFile::memory`] carries its bytes instead.
 pub struct MapFile {
     pub path: std::path::PathBuf,
     pub offset: u64,
     pub len: u64,
+    bytes: Option<std::sync::Arc<[u8]>>,
     _guard: Option<Box<dyn Send + Sync>>,
 }
 
@@ -34,7 +38,19 @@ impl MapFile {
             path,
             offset,
             len,
+            bytes: None,
             _guard: guard.map(|g| Box::new(g) as Box<dyn Send + Sync>),
+        }
+    }
+
+    /// A map served from memory; `label` names it in messages.
+    pub fn memory(label: impl Into<std::path::PathBuf>, bytes: std::sync::Arc<[u8]>) -> Self {
+        Self {
+            path: label.into(),
+            offset: 0,
+            len: bytes.len() as u64,
+            bytes: Some(bytes),
+            _guard: None,
         }
     }
 }
@@ -194,10 +210,21 @@ impl TagNames {
     }
 
     pub fn load(file: &MapFile) -> Result<Self, String> {
-        let reader = File::open(&file.path).map_err(|e| format!("{}: {e}", file.path.display()))?;
-        let mut map = map::Map::from_region(BufReader::new(reader), file.offset, file.len)
-            .map_err(|e| format!("{}: {e}", file.path.display()))?;
-        Self::from_map(&mut map).ok_or_else(|| format!("{}: no scenario tag", file.path.display()))
+        let fail = |e: &dyn std::fmt::Display| format!("{}: {e}", file.path.display());
+        let no_scenario = || format!("{}: no scenario tag", file.path.display());
+        match &file.bytes {
+            Some(bytes) => {
+                let mut map = map::Map::from_region(std::io::Cursor::new(bytes.clone()), 0, file.len)
+                    .map_err(|e| fail(&e))?;
+                Self::from_map(&mut map).ok_or_else(no_scenario)
+            }
+            None => {
+                let reader = File::open(&file.path).map_err(|e| fail(&e))?;
+                let mut map = map::Map::from_region(BufReader::new(reader), file.offset, file.len)
+                    .map_err(|e| fail(&e))?;
+                Self::from_map(&mut map).ok_or_else(no_scenario)
+            }
+        }
     }
 
     /// Whether this table is for the map whose scenario datum the guest's

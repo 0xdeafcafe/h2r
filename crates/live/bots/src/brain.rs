@@ -37,6 +37,10 @@ pub struct Me {
     /// shield can go over 1 with an overshield.
     pub shield: f32,
     pub health: f32,
+    /// The shield a spawn gives it (`0x1588b0`, the spawn writes it at
+    /// `0x14cc79`): the variant's shields times its handicap's factor. 0
+    /// with no shields; over 1 with overshields.
+    pub shield_full: f32,
     /// What it carries (docs/game/bots.md section 3.6); `None` when not
     /// read, and then the brain never acts on ammunition.
     pub arms: Option<Arms>,
@@ -50,6 +54,7 @@ impl Default for Me {
             team: 0,
             shield: 1.0,
             health: 1.0,
+            shield_full: 1.0,
             arms: None,
         }
     }
@@ -65,9 +70,19 @@ pub struct Observations {
     pub player: Option<(u32, i16)>,
     /// Cues on living players. Enemy cues only inform decisions in view.
     pub contacts: Vec<Contact>,
-    /// Approximate horizontal world position of the nearest hostile motion
-    /// tracker blip, at the observer's own height. Carries no player identity.
-    pub radar: Option<Vec3>,
+    /// Approximate horizontal world positions of the hostile motion
+    /// tracker dots, nearest first, at most four, each at the observer's
+    /// own height. A dot carries no player identity and no height.
+    pub radar: Vec<Vec3>,
+    /// The tracker disc's horizontal radius while the tracker shows.
+    pub radar_range: Option<f32>,
+    /// The player slots (`perceive::player_bit`) moving faster than the
+    /// motion tracker's threshold, and those that fired within
+    /// `sound::HEARD_TICKS`: what shows through active camouflage
+    /// (docs/game/bots.md section 3.1, "Visual range"). Read for every
+    /// living player; perception keeps only what it sees.
+    pub moving: u16,
+    pub firing: u16,
     /// Loose frag/plasma equipment that the observer can see.
     pub ground_grenades: Vec<(Vec3, crate::grenades::Kind)>,
     /// An empty successful pickup scan can indicate that a weapon was taken.
@@ -100,13 +115,47 @@ pub struct Contact {
     pub crouching: bool,
 }
 
+/// An outside order (docs/game/rules-world-api.md, "Bots"): a hint a rules
+/// script gives a phantom's brain on the host. The order is the bot's goal
+/// while it stands, in place of the objective's; the brain fights from it
+/// as it would from any goal. It returns nothing to whoever gave it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Order {
+    /// `bot_go`: walk to this point.
+    Go(Vec3),
+    /// `bot_hold`: stay within the radius of this point and fight from it.
+    Hold(Vec3, f32),
+    /// `bot_follow`: stay near this player (its slot, as [`Seen::id`]).
+    Follow(u32),
+    /// `bot_attack`: kill this player (its slot, as [`Seen::id`]).
+    Attack(u32),
+}
+
+impl Order {
+    /// The goal the order asks ([`crate::objective::Goal`]), with a
+    /// followed or attacked player's position from the roster. `None`
+    /// while that player has no living unit: the order asks nothing then,
+    /// and the bot plays on.
+    pub fn goal(&self, others: &[Seen]) -> Option<crate::objective::Goal> {
+        use crate::objective::Goal;
+        let at = |id: u32| others.iter().find(|o| o.id == id).map(|o| o.position);
+        match *self {
+            Order::Go(at) => Some(Goal::Go(at)),
+            Order::Hold(at, radius) => Some(Goal::Hold(at, radius)),
+            Order::Follow(q) => at(q).map(Goal::Escort),
+            Order::Attack(q) => at(q).map(|p| Goal::Hunt(q, p)),
+        }
+    }
+}
+
 /// What the bot knows this tick.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Perception {
     pub observations: Observations,
     /// `None` while the bot has no living unit (dead, or not in a game).
     pub me: Option<Me>,
-    /// The other players with living units.
+    /// The other players with living units, and in Firefight the AI's
+    /// actors, with ids from [`crate::firefight::ACTOR_ID_BASE`].
     pub others: Vec<Seen>,
     /// A team game: same-team players are friends. In free-for-all
     /// everyone is an enemy.
@@ -345,6 +394,29 @@ mod tests {
             objective: None,
         };
         assert_eq!(target(&p), Some(2));
+    }
+
+    #[test]
+    fn an_order_is_its_goal_with_the_rosters_positions() {
+        use crate::objective::Goal;
+        let others = vec![seen(7.0, 8.0, 0), seen(3.0, 4.0, 1)];
+        assert_eq!(
+            Order::Go([1.0, 2.0, 0.0]).goal(&others),
+            Some(Goal::Go([1.0, 2.0, 0.0]))
+        );
+        assert_eq!(
+            Order::Hold([3.0, 4.0, 0.0], 2.0).goal(&others),
+            Some(Goal::Hold([3.0, 4.0, 0.0], 2.0))
+        );
+        // `seen` gives id 0: followed or attacked, its position is the goal's.
+        assert_eq!(Order::Follow(0).goal(&others), Some(Goal::Escort([7.0, 8.0, 0.2])));
+        assert_eq!(
+            Order::Attack(0).goal(&others),
+            Some(Goal::Hunt(0, [7.0, 8.0, 0.2]))
+        );
+        // A followed or attacked player with no living unit: nothing asked.
+        assert_eq!(Order::Follow(9).goal(&others), None);
+        assert_eq!(Order::Attack(9).goal(&others), None);
     }
 
     #[test]

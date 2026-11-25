@@ -55,9 +55,9 @@ stage gate follows it. There are no per-stage switches.
 | Stage 2: objects and skinning | [native-objects.md](native-objects.md) | `native-render`: `model`, `model_load`, `model_gpu`, `models`, `objects`, `object_walk`, `object_lighting`, `object_nodes`, `object_program`, `object_program_gpu`, `object_state`, `object_streams`. `feature`: `native_objects`, `native_first_person` | Layer-3 object draws and the guest's object setup |
 | Stage 3: transparents | [native-transparents.md](native-transparents.md) | `native-render`: `transparent`, `transparent_streams`. `feature`: `native_transparents` | Indexed submission of the guest's sorted geometry |
 | Particles, decals, effects | [native-particles.md](native-particles.md), [native-decals-research.md](native-decals-research.md) | `native-render`: `particles`, `particle_gpu`, `decal`, `decal_gpu`, `effect_geometry`, `effect_immediate`, `glow`. `feature`: `native_particles`, `native_decals`, `native_effects` | Quad, decal and contrail submission |
-| Stage 4: lights and shadows | [native-lights.md](native-lights.md), [native-shadows.md](native-shadows.md), [native-gels.md](native-gels.md) | `native-render`: `lights`, `light_gpu`, `light_list`, `light_look`, `shadows`, `shadow_gpu`, `gels`, `gels_gpu`. `feature`: `native_lights`, `native_shadows`, `native_gels` | The per-light passes, shadow maps and shader gels |
-| Stage 4b: water, fog and camouflage | [native-water-fog.md](native-water-fog.md) | `native-render`: `fog`, `fog_gpu`, `water_gpu`. `feature`: `native_fog`, `native_water` | Layer 16 fog and layer 6 water edge blend |
-| Stage 5: post and HUD | [native-post-hud.md](native-post-hud.md) | `native-render`: `post`, `screen_gpu`, `screen_look`, `hud`, `ui_gpu`. `feature`: `native_post`, `native_hud` | Screen effects, bloom, the HUD and UI quads |
+| Stage 4: lights and shadows | [native-lights.md](native-lights.md), [native-shadows.md](native-shadows.md), [native-shadow-layers.md](native-shadow-layers.md), [native-gels.md](native-gels.md) | `native-render`: `lights`, `light_gpu`, `light_list`, `light_look`, `light_scene`, `shadows`, `shadow_gpu`, `shadow_look`, `shadow_scene`, `shadow_filter_gpu`, `gels`, `gels_gpu`. `feature`: `native_lights`, `native_shadows`, `native_gels` | The per-light passes, shadow maps and shader gels |
+| Stage 4b: water, fog and camouflage | [native-water-fog.md](native-water-fog.md) | `native-render`: `fog`, `fog_gpu`, `water_gpu`, `object_program_gpu`. `feature`: `native_fog`, `native_water`, `native_layers` | Layer 16 fog, layer 6 water edge blend on clusters and rigid placements, sorted late geometry ranges, the indexed water composite, layers 18 and 19 camouflage and layer 21 hologram |
+| Stage 5: post and HUD | [native-post-hud.md](native-post-hud.md) | `native-render`: `post`, `screen_gpu`, `screen_look`, `flares`, `hud`, `ui_gpu`. `render-bridge`: `native_post`, `native_flares`, `native_hud` | Screen effects, bloom, lens-flare colour fans, the HUD and UI quads |
 | Scene list builders | this page | `feature`: `native_scene_lists` | The engine's visibility gathers, object setup and render records |
 
 Shared modules: `native-render`: `program`, `look`, `pass_state`, `instances`. Sections that code comments cite and on the stage pages: "Object lighting" and "Object programs" in [native-objects.md](native-objects.md); "Skip only the replaced work" in [native-world.md](native-world.md). "What a world pass reads" is a subsection of "Next: matching the look" in the same page.
@@ -65,6 +65,31 @@ Shared modules: `native-render`: `program`, `look`, `pass_state`, `instances`. S
 Stage 1: the static world, Stage 2: objects and skinning, Stage 3:
   transparents, Stage 4: lights and shadows, Stage 4b: water, fog and
   camouflage, Stage 5: post and HUD are the table rows above.
+## Map resource lifetime
+
+`render_bridge::native_map_work::reset` invalidates the prior generation and
+detaches its BSP, object, light-model, viewmodel, screen-effect and indexed
+draw caches before requesting the next BSP. A same-map BSP switch or revert
+also detaches the old BSP and its indexed and packed draw caches through
+`reload_bsp`. Object and screen data for the map remain available. The packed
+transparent binding cache holds up to 4,096 bindings and 16 MiB of payload
+(`game::native_transparents_glue::Cache`). A queued draw can retain its own resources
+until it finishes. A late loader can publish only to its own generation
+and mailbox.
+
+The native map loader workers serialize their bulk decode and upload work
+through `game::native_map::begin_load`. They wait for queued retirement on
+the worker thread. First-person loading opens the map for a batch of model
+requests and releases its map readers and decoded images when the batch
+ends. Material images share their backing allocation across passes. Object
+and shader readers share ordinary tag metadata within a model load. Sun
+caster and receiver lookup holds weak references to the owning map state.
+
+Memory probes and loader scopes are listed in
+[Explain memory growth](../runtime/agent-api.md#explain-memory-growth).
+The play-run measurements are in
+[Map-load memory](notes/2026-11-24-map-load-memory.md).
+
 ## Admission
 
 World and objects use the device reservation below. Held post packets can pass their saved slots and viewport to the same transaction. Geometry
@@ -74,6 +99,15 @@ in registration order at the resolved draw, for immediate, inline, indexed and
 array geometry. Scope ownership to the current producer and match the complete
 state. Returning `None` leaves the draw available to the next admission. A
 failed preparation of a claimed draw falls through to the original D3D draw.
+
+The decal callback at `0x00044040` owns list order, duplicate stamps,
+bitmap selection and attribute defaults. Each array draw enters
+`crates/extensions/game/src/native_decals_glue.rs` once through
+`DrawAdmission`. An admitted packet uses the live depth comparison and
+write state, the resolved W clip and polygon offset, and the live sampler's
+border addressing. Reference and display copies select their
+own vertex constants, UI transform and scissors. A refusal draws the
+same ordered packet through D3D.
 
 For a helper that emits one quad, call
 `Device::begin_draw_scope(mem, Arc<dyn DrawAdmission>) -> Result<Option<DrawScope>, D3dError>`
@@ -120,8 +154,7 @@ cannot be resolved on one required copy refuses the entire replacement.
 
 Recording takes place during prepare. Partial recordings are discarded.
 Commit splices only previously sealed command buffers into the D3D submission
-order. Commit has no remaining stage callbacks or target lookups. With interpolated
-presentation active, confirmed replacements keep the guest draw for replay.
+order. Commit has no remaining stage callbacks or target lookups.
 
 A confirmed admission on the threaded backend needs a synchronous worker
 round trip. `encode_pending` closes the preceding merged D3D pass, and each
@@ -170,7 +203,9 @@ and indirect arguments. Its upload arena reserves a fresh source range for
 each write and records a copy immediately before the consuming draw. Target
 copies and multiple runs may share a submission. The queue completion callback
 returns the leased storage to its pool after the last submission using it.
-World placement transforms are initialized once at map load.
+World placement transforms and layer-3 lighting implementations are resolved
+at map load. The accumulation texture sampled by combined materials is
+resolved on each target copy at the draw. See [the static world](native-world.md).
 
 ## Frame counters
 
@@ -193,6 +228,15 @@ World placement transforms are initialized once at map load.
 | `command_buffers` | Committed recordings with a private command buffer (`record_ranges`). Each also ends the open encoder and adds a render pass. Packets (`record_draws`), encoded commands (`record_encoded`) and bundles add none. |
 | `v<V>_<C>_recorded`, `v<V>_<C>_ranges` | Ranges the stage recorded on this copy, including discarded attempts, and ranges committed. |
 | `v<V>_invariants`, `v<V>_<C>_invariants`, `v<V>_<C>_refused` | Range-count mismatches across copies, mismatches on this copy, and transactions refused by this copy. Each stage/view/copy mismatch logs once. |
+
+`native_shader_animation_{layers,objects,layer3}_{drawn,refused}` count
+material passes with animated constants
+([shader-instances.md](../formats/shader-instances.md#animated-constants))
+per path: the structure layer planner's items, the object passes' draws
+(layer 3 and the world layers) and the world layer-3 selection's
+materials. `drawn` counts passes planned with their registers sampled at
+the render clock; `refused` counts those the sampler refused, which stay
+on the D3D path.
 
 The frame-wide `command_buffers` counter counts every command buffer the
 wgpu backend hands to `queue.submit`, next to `submits` and `passes`.
@@ -224,7 +268,7 @@ frusta, live datum arrays and current tag definitions.
 | Camera and light visibility | `0x00134390` publishes visible BSP clusters and placements. `0x00132220` walks both object reference partitions and the light reference partition. Both start after the portal or sphere cluster pass. |
 | Object order and setup | `0x00134240` promotes model-linked entries with the original swaps of all four columns. Rust returns directly from accepted `OBJECT_RENDER_SETUP` calls (`0x00133790`). It calculates the projection, opacity and flags, selects sections and handles residency (`0x0004b5d0`), builds palettes and walks children (`0x00133ab0`), then publishes the visibility bit and AL retry result. |
 | Object render records | Whole-call setup uses the same Rust writer as the standalone append hook at `0x001341d0`. It publishes the model arm of `0x0002cbf0`, including attachment and group slots, projected scissors, lighting bytes and subpart allocation. The standalone hook also serves guest setup calls that reach the append after a refusal. |
-| Dynamic light order and affected geometry | The pass at `0x0002c03e` calls `0x00031910`, which collects candidates, updates per-view history, ranks lights and fades their weights. Rust replaces this call and its helpers `0x0004a7c0` and `0x0004ac30`. After the per-light visibility pass, Rust applies the caster and receiver flags from `0x00031660` and the optional owner append from `0x00031c20`. |
+| Dynamic light order and affected geometry | The pass at `0x0002c03e` calls `0x00031910`, which collects candidates, updates per-view history, ranks lights and fades their weights. Rust replaces this call and its helpers `0x0004a7c0` and `0x0004ac30`. After the per-light visibility pass, Rust applies the caster and receiver flags from `0x00031660` and the optional owner append from `0x00031c20`. The three are `engine::render::light_gather` ([native-light-gather.md](native-light-gather.md)); the seams here call them. |
 | Transparent and effect lists | Rust publishes the geometry append at `0x00041381` and the effect and polygon records from `0x0001e4e0` and `0x0001e5e0`. In the pass at `0x0002c19a`, Rust fills the active u16 index interval and skips `TRANSPARENT_SORT` at `0x0001e3b2`. The original comparator's plane rules, partition swaps and short-sort ties determine the order, including entries with a null callback. |
 
 The object walk uses the live salt, original partition order and visit
@@ -251,8 +295,10 @@ the original entry with the incoming registers and memory. New resource
 I/O, synchronous waits, request reprioritization, resource relocation,
 live light-probe work, animated pose evaluation, and auxiliary model
 materials use that path. Portal traversal and dynamic light frustum
-setup (`0x000c1d90`) supply the inputs to the Rust gathers. Effect
-producers decide when effects are ready to queue.
+setup (`0x000c1d90`) supply the inputs to the Rust gathers. The main
+view's traversal and object set also run in Rust beside the guest's and
+are compared with them ([native-visibility.md](native-visibility.md)).
+Effect producers decide when effects are ready to queue.
 
 Frame stats record `native_scene_lists_<stage>_native`, `_fallback` and
 the associated `_memory`, `_layout` or `_unsupported` reason. Object
@@ -272,8 +318,12 @@ needs a matching A/B. See [render-loop.md](render-loop.md).
 
 The world stands down when its BSP loads yield no drawable native parts.
 The lights stand down when the native world is disabled or its BSPs yield
-no native lit parts. Fog and water stand down when their translated passes
-yield no drawable parts. A BSP-backed stage stays eligible while any BSP
+no native lit parts. Fog and the layer-6 water edge blend stand down when their
+translated passes yield no drawable parts. This applies to whole-list
+replacement. Indexed fog ranges stay eligible at
+their indexed draws, using the live shader and geometry after the guest
+handler sets them up. Planar world passes sample the current view’s combiner
+colour and fade weights. A BSP-backed stage stays eligible while any BSP
 has work or has yet to be checked.
 
 Objects stand down only when the map's tag index contains no object
@@ -281,19 +331,37 @@ definitions. Model loads and uploads stay lazy when definitions exist.
 An empty map result logs once per stage. The hooks then return at an
 atomic flag check until the next map activation or snapshot restore.
 
+The structure's layer-3 pass accepts an explicit One/Zero/Add blend as
+opaque. Layer-3 object and first-person draws also accept that combination
+when the live device supplies its inherited fields. Scene object packets
+carry the resolved stencil reference. Object templates can leave blend and
+depth writes to the live state check. They take render and
+sampler bindings driven by the shader instance's scalar input. The model
+loader retains the effective state writes for the device-state checks.
+
+Structure, scene layer-3 objects, decorators, water and fog can issue a
+pass with all colour writes masked even when its blend enable or factors
+are inherited. Depth writes and alpha testing still use the pass state.
+Layers 6 and 16 check the stencil enable word at issue. When stencil is
+off, unread comparison or operation words leave those layers eligible.
+
+Layer 5 accepts a PRT declaration with the compiled registers and compatible
+fetches. A three-component packed byte, short or normalized short can feed
+a four-component input by supplying the encoded one in W. A shader that
+forces W to one also accepts a narrower input with the same numeric type.
+
 ## Native scene walks for effects and overlays
 
 The walks are on whenever the native renderer is. The effects walk shares the particles renderer.
 
 | Stage | Instruction boundary and guest work skipped |
 | --- | --- |
-| Transparents | At `0x00041020` the saved sorted-loop ordinal resolves through the live u16 order array. The data pointer must match the handler argument. At `0x0004dad0` the standard emitter has a contiguous range in EDI/ESI. Skip the indexed submission and resume at `0x0004dae0`. |
-| First person | At the layer-3 call returning to `0x00040136` the model pass can suppress the sole in-layer item before its build. Mixed lists keep the guest sort. At `0x0004dad0`, the ordinary sorted draw stack and the first-person list can supply contiguous ranges in layers 1, 3, 7, 8 and 20. |
-| Decals | At `0x00044161` ESI names one record in the callback's linked list. Read its live allocation and quad count, then skip the array submission through `0x00044190`. The guest has already marked duplicates and selected the bitmap and attribute defaults. |
+| Transparents | At `0x00041020` the saved sorted-loop ordinal resolves through the live u16 order array. The data pointer must match the handler argument. At `0x0004dad0` the standard emitter has a contiguous range in EDI/ESI. The subrange branches at `0x0004db40`, `0x0004dbdc` and `0x0004dc3a` supply topology, count and indices on the stack. The resolved indexed draw also covers an object whose lighting owner is unavailable. The hook checks the live handler, shader and part arguments. Each admitted range skips one indexed call and resumes at its return address. A refusal runs that call in sorted order. |
+| First person | At the layer-3 call returning to `0x00040136` the model pass can suppress the sole in-layer item before its build. Mixed lists keep the guest sort and request uploads for their record models across layers 1, 2, 3, 7, 8 and 20. A part can use a compiled pass when a sibling material fails. At `0x0004dad0`, the ordinary sorted draw stack and the first-person list supply both full parts and sorted subranges in layers 1, 2, 3, 7, 8 and 20. |
 | Particles | At `0x0023ed5c` the guest allocator has succeeded and the emitter inputs are still live. Replace the one quad and skip its attribute writes and geometry publication in the guest. Restore EBP and return with the original stack cleanup. |
 | Effects | The four-vertex copy callback's source is available at `0x0004b252`. Read it directly and skip the copy and publication. For contrails, read the completed callback output at `0x0004b28c` and skip publication. Both use the live inline declaration, then return `-1` with the original stack cleanup. |
-| UI and HUD | The sorted widget dispatch, HUD and loading callbacks delimit ownership. Known fans and inline rectangles bypass their guest submission as described under “Native UI”. |
-| Post | At `0x0002d565` the screen strip's Begin is published. Read the active pass and two corner rows and evaluate them with the call's MXCSR. Supply those vertices to the ordered post transaction and resume at `0x0002d8b2`. |
+| UI and HUD | The sorted widget dispatch, HUD and loading callbacks delimit ownership. The HUD, UI and loading census rows are partial. The overlay takes supported widget fans and inline screen quads with their bound textures. Shared quads inside the loading callback count as loading draws. Refused draws follow the ordered UI packet or guest path. |
+| Post | At `0x0002d565` the screen strip's Begin is published. Read the active pass and two corner rows and evaluate them with the call's MXCSR. Each sampled framebuffer stage reads the alpha interpretation selected by its binding. Glow quads take their blend, blend constant and channel mask from the resolved packets. Supply the strip vertices to the ordered post transaction and resume at `0x0002d8b2`. |
 
 A direct native draw drains preceding work and resolves the same streams,
 program, sampler inputs, depth and colour attachment as the guest issue
@@ -324,6 +392,10 @@ It still requires the compiled alpha test to match, and checks the actual
 strip attributes against the plan by bits. Each strip in one pass must
 have the same raster state. Other shaders, effects and raster states keep
 their original draws when the native pass cannot reproduce them.
+The replacement uses one depth scale across its pinned targets. A change
+in scale between held draws replays the call, including its side-target writes.
+A call that only writes side targets can run without a framebuffer slot when
+its stages and convolutions are independent of framebuffer pixels and size.
 
 A linear X8 alias of the framebuffer samples alpha as one. The native
 feedback copy applies that alpha rule on its own scratch texture, as
@@ -367,6 +439,12 @@ counted once; runtime counts depend on visibility and admissions):
 | Alternate view | view setup `0x0002c863`, UI call `0x0002c884`, view finish `0x0002c889` |
 | Outside game views | fallback-view call `0x0022326a`, 2 frame-finish calls, present `0x00223296` |
 
+The frame tail at `0x00013b90` conditionally copies the view target and composites it.
+The bridge scopes each helper by its caller and drains pending draws at entry and
+return. Its four-vertex pushed fans use the native screen-space pass with the
+resolved shader, textures, viewport and target. Refused draws use the original
+packet. State setup, optional surface readback and `Swap` run on the guest path.
+
 The five base target sites are `0x0002bde2`, `0x0002be83`, `0x0002bf0e`,
 `0x0002bf7f` and `0x0002bfe3`. The direct clear is `0x0002be01`; the clear
 helper calls `D3DDevice_Clear` at `0x00014bb2`. Target changes converge on
@@ -381,17 +459,49 @@ the count with inline NV2A methods, draws its callback and ends the test at
 timestamps for both. That report is separate from the previous-frame depth
 grid used for object culling.
 
-**Residual geometry.** The sky model's indexed strip (`0x0004c976`) and
-standard layer-2 geometry at the main-scene and alternate-scene layer sites
-are admitted. Guest order, transforms, shader inputs and stencil setup stay.
+**Lens-flare colour draws.** At each researched End call the bridge checks the saved caller and admits one fan. The guest supplies the projected corners, visibility fade, shader state and target order. The native pass uses the resolved stream and bindings for that draw, including the alternating filter targets. A failed preparation leaves the original packet available. There is no separate scene-list extraction. The [retail trace](notes/2026-11-24-lens-flares.md) identifies the six colour draw sites and the visibility callback.
+
+With a flare in view, sample `h2 agent render.scene` twice. An increase in `counters.scene_submitted_flares_reference_draws` or `counters.scene_submitted_flares_display_draws` counts committed native colour fans on that copy. One flare can contribute several fans. Private captures also contribute, so take the live samples during ordinary gameplay. The same stage also submits the position-only visibility fan to the GPU sample counter inside the guest's query.
+
+**Alternate scene.** The layer planner draws admitted structure and object items in layers 1, 5 and 2. Layer 3 uses the BSP mask reservation and the sorted object walk with an alternate view key and the current render camera. First-person calls use their own camera and models. View setup, target selection, composition and finish still run in guest order.
+
+**Object shadows.** With `impl.render.native`, the caster call identifies its object and fade from the ranked row in its own stack frame. A matching row admits the object to the existing shadow path. Layer 10 draws the mask and layer 11 applies it to admitted receivers. The guest sets up the targets and draws unsupported geometry. See [native-shadow-layers.md](native-shadow-layers.md).
+
+**Residual geometry.** Layer 2's items at the main scene's call
+(`0x0002c05b`), the alternate view's (`0x0002bda3`) and the first person's (`0x00040284`) draw from the scene's
+plan as layers 1, 5, 7, 8 and 20 do (`frame-scene.layers`,
+`layer_pass::OVERLAY_LAYER`; [framescene.md](framescene.md), slice 4); its
+outcomes are `layer_plan_2_*`, `layer_plan_alt2_*` and `layer_plan_fp2_*` in `render.scene`.
+The standard layer-2 geometry the plan leaves at the main-scene and alternate-scene sites is admitted with its resolved inputs.
 The pass records the full range on both live target copies before the device
 drops the D3D draw. Other layer-2 handlers and unknown callers stay on D3D.
 
-**Clears, binds and visibility.** A whole-viewport, unmasked clear uses the
-attachment load operations directly; partial or channel-masked clears use the
-rectangle renderer. Target binds among device-owned surfaces skip reference
-staging but keep surface lookup, write-back order and viewport behaviour;
-title-owned surfaces keep the usual rules. Visibility issuance and results
+**Sky.** At the indexed strip call in the sky model renderer (`0x0004c976`),
+`scene_extract::layout::sky::SkyItem` resolves the scenario sky for this view,
+its model section, part, shader and pass ordinal. It reads the section's rigid
+node or the region's remapped palette from the current view's node block, and
+reconstructs position and UV decompression from the model bounds and section flags.
+`IndexedPass::for_sky` checks those rows against the draw's vertex constants
+and supplies them to the vertex program. The material uses the program,
+textures and other evaluated constants bound at issue. The scene sets stencil
+mode 2 before the sky call at `0x0002c0bc` and restores mode 0 afterwards.
+The native strip requires the mode-2 state and a stencil attachment, and
+replaces stencil on passing fragments. Replay retains the sky pass beside its
+original strip and records it against the replay's own attachments and textures.
+If extraction, admission or recording fails, the original strip draws in order.
+
+**Clears, binds and visibility.** A whole-viewport, unmasked clear uses an
+attachment load. For up to eight explicit colour rectangles, the native
+planner clips their union to the viewport and target. A full union can use
+a load, and a masked clear writes only its selected channels. Depth and
+stencil tiles keep their individual scissors because the depth surface may
+extend beyond the colour target. Longer lists use the linear rectangle path.
+
+Device-owned targets skip reference staging. Title-owned surfaces reuse
+transaction storage while reading current guest reference counts, parent
+links and GPU lock stamps on each bind. Final releases queue the original
+resource destructor. Both bind forms retain their viewport behaviour.
+Visibility issuance and results
 use the GPU pixel counter and report slots; the inline begin still drains
 before the counted draw, and finish and result calls keep index validation,
 pending answers, timestamps and write order. A one-use marker lets these
@@ -407,11 +517,10 @@ through the common adapter.
   BSPs, which it was not run over
   ([high-resolution.md](high-resolution.md), "Subpixel snapping and cracks").
 - What reads the stencil marks of modes 1 and 2.
-- Reprojected frames: a replayed frame must redraw the native pass with its
-  warped camera; the interpolating backend records draws, not passes.
+- Display frames between scenes (framescene.md, section 7): typed
+  stages other than the indexed world, object and transparent passes are
+  drawn at their tick's camera (`render.stats`' `display_rate.held_stages`).
 - Split screen: one native pass per view with the view's camera.
-- Which 03a templates have a layer-1 texaccum pass that layer 3 samples in
-  screen space; those need the texaccum target bound to the native pass.
 - All-stage runtime counts of the residual callers
   ([retire-d3d.md](retire-d3d.md), "Measurement plan").
 

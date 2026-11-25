@@ -55,6 +55,7 @@ async fn session(h: &Harness, host: &User, flags: &str) -> String {
         ping_ms: None,
         variant_ext: None,
         rules: None,
+        firefight: None,
         browser: None,
     };
     let r = h
@@ -271,6 +272,24 @@ async fn only_the_two_members_of_an_open_coop_session_get_in() {
     let mut c = open(&h, addr, &id, &late).await;
     expect_close(&mut c, CLOSE_CONFLICT).await;
     assert_eq!(h.live.relays().forwarded(), 0, "nothing was ever relayed");
+}
+
+#[tokio::test]
+async fn a_forge_sessions_host_opens_a_relay() {
+    let (h, addr) = serve(Policy::default()).await;
+    let host = h.create("ForgeHost").await;
+    assert_eq!(h.sign_in(&host).await.status, StatusCode::CREATED);
+    let id = session(&h, &host, "forge").await;
+    let mut ws = open(&h, addr, &id, &host).await;
+    assert_eq!(h.live.relays().rooms(), 1);
+    ws.send(Message::Close(None)).await.unwrap();
+    for _ in 0..200 {
+        if h.live.relays().rooms() == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(h.live.relays().rooms(), 0, "the room closed with the socket");
 }
 
 #[tokio::test]

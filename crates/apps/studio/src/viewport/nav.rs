@@ -15,10 +15,10 @@ use crate::app::App;
 use crate::theme;
 
 /// Pushes line segments of one colour.
-struct Lines(Vec<render::Vertex>);
+pub(super) struct Lines(pub(super) Vec<render::Vertex>);
 
 impl Lines {
-    fn segment(&mut self, a: Vec3, b: Vec3, color: [f32; 3]) {
+    pub(super) fn segment(&mut self, a: Vec3, b: Vec3, color: [f32; 3]) {
         for position in [a, b] {
             self.0.push(render::Vertex {
                 position,
@@ -30,7 +30,7 @@ impl Lines {
     }
 
     /// `a` to `b` with an arrowhead at `b`.
-    fn arrow(&mut self, a: Vec3, b: Vec3, color: [f32; 3]) {
+    pub(super) fn arrow(&mut self, a: Vec3, b: Vec3, color: [f32; 3]) {
         self.segment(a, b, color);
         let d = sub(b, a);
         let len = dot(d, d).sqrt();
@@ -61,7 +61,7 @@ fn faces(ring: &[Vec3], normal: Vec3, color: [f32; 3]) -> Vec<render::Vertex> {
     render::overlay_vertices(&tris, color)
 }
 
-fn ring_lines(lines: &mut Lines, ring: &[Vec3], color: [f32; 3]) {
+pub(super) fn ring_lines(lines: &mut Lines, ring: &[Vec3], color: [f32; 3]) {
     for i in 0..ring.len() {
         lines.segment(ring[i], ring[(i + 1) % ring.len()], color);
     }
@@ -102,9 +102,10 @@ fn pathfinding(
     (tris, lines.0)
 }
 
-/// The bots' polygons as translucent floor, and their links coloured by
-/// kind with an arrowhead on each one-way link (drops, mostly); the
-/// selected polygon or link in the selection colour.
+/// The bots' polygons as translucent floor, those out of the map (only a
+/// glitch reaches them) in a dim grey; their links coloured by kind with
+/// an arrowhead on each one-way link (drops, mostly); the selected
+/// polygon or link in the selection colour.
 fn bot_mesh(b: &BotNav, selected: Option<NavPick>) -> (Vec<render::Vertex>, Vec<render::Vertex>) {
     let color = theme::layer_color(LayerId::BotNav);
     let (mut tris, mut lines) = (Vec::new(), Lines(Vec::new()));
@@ -112,7 +113,11 @@ fn bot_mesh(b: &BotNav, selected: Option<NavPick>) -> (Vec<render::Vertex>, Vec<
         tris.extend(faces(
             &nav_view::lifted(&p.verts, p.normal, BOT_LIFT),
             p.normal,
-            color,
+            if p.out_of_map {
+                theme::BOT_OUT_OF_MAP
+            } else {
+                color
+            },
         ));
     }
     for (i, l) in b.links.iter().enumerate() {
@@ -259,6 +264,7 @@ mod tests {
             poly: 0,
             normal: nav_view::ring_normal(&verts),
             verts,
+            out_of_map: false,
         }
     }
 
@@ -300,5 +306,12 @@ mod tests {
         // Selecting the drop draws it in the selection colour.
         let (_, picked) = bot_mesh(&nav, Some(NavPick::BotLink(2)));
         assert_eq!(picked[4].color, theme::VOLUME_SELECTED);
+        // A polygon out of the map draws dim; the rest keep the layer's blue.
+        nav.polys[2].out_of_map = true;
+        let (tris, _) = bot_mesh(&nav, None);
+        let near = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-4);
+        let blue = theme::layer_color(LayerId::BotNav);
+        assert!(tris[..12].iter().all(|v| near(v.color, blue)));
+        assert!(tris[12..].iter().all(|v| near(v.color, theme::BOT_OUT_OF_MAP)));
     }
 }

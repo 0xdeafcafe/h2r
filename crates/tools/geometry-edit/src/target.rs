@@ -4,6 +4,7 @@ use std::fmt;
 use std::io::{Read, Seek};
 
 use map::{FourCC, Map, ResourceFile, TagId};
+use tags::collision::Collision;
 use tags::geometry::RawSource;
 use tags::model::RenderModelGeometry;
 use tags::structure::StructureRender;
@@ -17,10 +18,18 @@ pub enum TargetKind {
     InstanceDef,
     /// One section of a render model (`mode+0x24`).
     ModeSection,
+    /// One collision BSP of a `coll` tag, counted over its regions,
+    /// permutations and BSPs in order.
+    Coll,
 }
 
 impl TargetKind {
-    pub const ALL: [TargetKind; 3] = [Self::Cluster, Self::InstanceDef, Self::ModeSection];
+    pub const ALL: [TargetKind; 4] = [
+        Self::Cluster,
+        Self::InstanceDef,
+        Self::ModeSection,
+        Self::Coll,
+    ];
 
     /// The name the agent API and target ids use.
     pub const fn name(self) -> &'static str {
@@ -28,6 +37,7 @@ impl TargetKind {
             Self::Cluster => "cluster",
             Self::InstanceDef => "instance_def",
             Self::ModeSection => "mode_section",
+            Self::Coll => "coll_bsp",
         }
     }
 
@@ -37,6 +47,7 @@ impl TargetKind {
             Self::Cluster => "Cluster",
             Self::InstanceDef => "Instanced geometry",
             Self::ModeSection => "Model section",
+            Self::Coll => "Collision BSP",
         }
     }
 
@@ -106,7 +117,7 @@ fn tag_name<R: Read + Seek>(map: &Map<R>, id: TagId) -> String {
 }
 
 /// Every cluster and instanced geometry definition with a raw block, of
-/// every `sbsp` in the map, from the block infos alone (no raw data is
+/// every `sbsp` in the map, and every collision BSP of every `coll`, from the block infos alone (no raw data is
 /// read). A BSP that does not decode is skipped.
 pub fn list<R: Read + Seek>(map: &mut Map<R>) -> Vec<TargetInfo> {
     let bsps: Vec<TagId> = map
@@ -144,6 +155,29 @@ pub fn list<R: Read + Seek>(map: &mut Map<R>) -> Vec<TargetInfo> {
                 triangles: usize::from(g.info.total_triangle_count),
                 parts: usize::from(g.info.total_part_count),
                 local: pointer.file == ResourceFile::Local,
+            });
+        }
+    }
+    // Collision models: one target per BSP, from the decoded tag.
+    let colls: Vec<TagId> = map
+        .tags()
+        .iter()
+        .filter(|t| t.group == tags::collision::COLL && t.location.is_some())
+        .map(|t| t.id)
+        .collect();
+    for coll in colls {
+        let Ok(c) = Collision::read(map, coll) else {
+            continue;
+        };
+        let name = tag_name(map, coll);
+        for (i, bsp) in c.bsps().enumerate() {
+            out.push(TargetInfo {
+                target: Target::new(TargetKind::Coll, coll, i as u32),
+                tag_name: name.clone(),
+                vertices: bsp.vertices.len(),
+                triangles: bsp.surfaces.len(),
+                parts: 1,
+                local: true,
             });
         }
     }

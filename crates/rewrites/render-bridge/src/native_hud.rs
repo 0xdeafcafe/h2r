@@ -4,23 +4,28 @@
 //! walk keeps the game's order, state setup and layout callbacks.
 
 mod backdrop;
+pub mod hud_overlay;
+pub mod modal_blur;
 mod model;
 mod outline;
 mod ui;
+pub mod ui_overlay;
 
 use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
 use engine::points;
 use runtime::abi::TransferAbi;
-use timeline::native::{Metric, Stage};
+use timeline::native::{Metric, Stage, Ui};
 
 use hooks::{BuildError, Builder, Feature, Flow, Manifest};
 
 pub const ID: &str = "native-hud";
 
+pub use hud_overlay::HudTagQuad;
 pub use outline::{PUSH_BYTES as OUTLINE_PUSH_BYTES, Vertices as OutlineVertices};
 pub use ui::UiScope;
+pub use ui_overlay::MenuRefusal;
 
 /// Whether the native UI and HUD are on.
 pub fn on(switches: &hooks::Switches) -> bool {
@@ -64,14 +69,39 @@ fn walk_quad(mem: &mut dyn GuestMemory, frame: u32, colour: u32) -> bool {
         Stage::Ui.count(Metric::WalkRefusedInputs, 1);
         return false;
     };
-    let drawn = host().is_some_and(|host| host.draw_quad(mem, &vertices));
+    let drawn = host().is_some_and(|host| {
+        if let Some(at) = hud_overlay::tag_quad(mem, frame) {
+            if host.draw_tag_quad(mem, &at, &vertices) {
+                timeline::native::Ui::OverlayHudTagQuads.count();
+                return true;
+            }
+            timeline::native::Ui::OverlayHudTagFallback.count();
+        } else if let Some(at) = hud_overlay::menu_shader_quad(mem, frame) {
+            // A menu shader bitmap: the game's draw at the sorted list
+            // (`ui_overlay::plan`), its quad from the overlay here.
+            if host.draw_tag_quad(mem, &at, &vertices) {
+                timeline::native::Ui::OverlayMenuShaderQuads.count();
+                return true;
+            }
+            timeline::native::Ui::OverlayMenuShaderFallback.count();
+        }
+        host.draw_quad(mem, &vertices)
+    });
     ui::record(drawn);
     drawn
 }
 
 /// What the screen draws become: boot's glue over the GPU and the device.
 pub trait Host: Send + Sync {
+    fn draw_tag_quad(&self, _mem: &mut dyn GuestMemory, _at: &HudTagQuad, _vertices: &HudVertices) -> bool {
+        false
+    }
+
     fn draw_quad(&self, _mem: &mut dyn GuestMemory, _vertices: &HudVertices) -> bool {
+        false
+    }
+
+    fn draw_text_quad(&self, _mem: &mut dyn GuestMemory, _shader: u32, _vertices: &HudVertices) -> bool {
         false
     }
 
@@ -85,6 +115,12 @@ pub trait Host: Send + Sync {
 
     fn loading_bitmap_fan(&self, _mem: &mut dyn GuestMemory, _vertices: &[[(u8, [f32; 4]); 2]; 4]) -> bool {
         false
+    }
+
+    /// The loading screen's spinner fan: a screen draw as
+    /// [`Self::draw_quad`]'s unless the host takes it apart.
+    fn loading_spinner(&self, mem: &mut dyn GuestMemory, vertices: &HudVertices) -> bool {
+        self.draw_quad(mem, vertices)
     }
 
     fn backdrop_wash(&self, _mem: &mut dyn GuestMemory, _vertices: &HudVertices) -> bool {
@@ -111,6 +147,53 @@ pub trait Host: Send + Sync {
         false
     }
 
+    /// The UI walk is about to draw `widget` (a validated sorted item):
+    /// true when the host has drawn it itself, in order, so the game's
+    /// draw is skipped (the Skulls page's model picture,
+    /// docs/game/skulls.md "The model picture").
+    fn replace_widget(&self, _mem: &mut dyn GuestMemory, _widget: u32) -> bool {
+        false
+    }
+
+    /// A screen's sorted widget list is ready ([`ui_overlay`]): whether the
+    /// host may place overlay passes in it now. `None`: the host does not
+    /// draw menus. `Some(false)`: not now (counted as `Pass`); the game
+    /// draws the list.
+    fn ui_overlay(&self, _mem: &mut dyn GuestMemory) -> Option<bool> {
+        None
+    }
+
+    /// Whether the host has its own sorted-draw replacement for this widget.
+    fn ui_custom_widget(&self, _mem: &dyn GuestMemory, _widget: u32) -> bool {
+        false
+    }
+
+    /// The loaded map's menu font layout and shared overlay glyph pages.
+    fn ui_text(&self, _mem: &dyn GuestMemory) -> Option<Box<dyn ui_overlay::UiText>> {
+        None
+    }
+
+    /// Draws `part`, the items of a run of a list's widgets, from the
+    /// overlay stage, placed at this point in the frame. True: placed, and
+    /// the run's widget draws are left out; false: the game draws them.
+    fn ui_pass(&self, _mem: &mut dyn GuestMemory, _part: &frame_scene::Overlay) -> bool {
+        false
+    }
+
+    /// The blur under a dialog is about to run (`modal_blur`): true when
+    /// the host has armed its draws to be left out and `call.blur` drawn
+    /// from the overlay in their place at the wrapper's return.
+    fn modal_blur(&self, _mem: &mut dyn GuestMemory, _call: &modal_blur::ModalBlur) -> bool {
+        false
+    }
+
+    /// The armed blur's wrapper returned (`esp` its return slot): true when
+    /// the overlay's blur replaced its draws; false when the game's draws
+    /// were given back.
+    fn finish_modal_blur(&self, _mem: &mut dyn GuestMemory, _esp: u32) -> bool {
+        false
+    }
+
     fn enter_ui(&self, _mem: &mut dyn GuestMemory, _scope: UiScope, _stack: u32, _eligible: bool) {}
 
     fn leave_ui(&self, _mem: &mut dyn GuestMemory, _scope: UiScope, _stack: u32) {}
@@ -126,6 +209,72 @@ pub fn set_host(host: Arc<dyn Host>) {
 fn host() -> Option<Arc<dyn Host>> {
     // HOST is only held to clone the host: never across its calls.
     HOST.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// A screen's sorted list at [`ui_overlay::LIST_READY`]: its claim, when
+/// the host draws menus, or why the game draws it.
+fn menu_list(mem: &mut dyn GuestMemory, ebp: u32, edi: u32) {
+    let Some(host) = host() else { return };
+    match host.ui_overlay(mem) {
+        Some(true) => {}
+        Some(false) => {
+            MenuRefusal::Pass.counter().count();
+            return;
+        }
+        None => return,
+    }
+    if let Err(why) = ui_overlay::check_frame(mem, edi) {
+        why.counter().count();
+        return;
+    }
+    let _extract = timeline::native::Timer::start(Stage::Ui, Metric::ExtractNs);
+    let Some(list) = ui_overlay::at_list(&*mem, ebp, edi) else { return };
+    let claim = ui_overlay::claim_list(mem, &list, host.as_ref());
+    Ui::OverlayMenuClaimed.count_n(u64::from(claim.claimed()));
+    // A list at this frame left open is closed (and checked) first.
+    ui_overlay::open(claim);
+}
+
+/// The sorted widget call (`points::ui_render::ITEM_CALL`, the argument
+/// pushed, `stack` above it) of a claimed entry: the run's pass placed at
+/// its first, then the draw left out, resuming after the call as a
+/// host-drawn widget does.
+pub(crate) fn menu_item(c: &mut hooks::Call<'_>, mem: &mut dyn GuestMemory, stack: u32) -> Option<TransferAbi> {
+    use engine::points::ui_render::ITEM_CONTINUATION;
+    use ui_overlay::Item;
+    let (frame, ordinal) = (c.cpu.ebp, c.cpu.ebx);
+    match ui_overlay::at_item(frame, ordinal) {
+        Item::Game => return None,
+        Item::Skip => {}
+        Item::Place(run) => {
+            let part = {
+                let _extract = timeline::native::Timer::start(Stage::Ui, Metric::ExtractNs);
+                ui_overlay::run_part(frame, run, mem)
+            };
+            let Some(part) = part else {
+                ui_overlay::placed(frame, run, false);
+                MenuRefusal::Pass.counter().count();
+                return None;
+            };
+            // A run of containers has nothing to draw: it needs no pass.
+            let placed = part.is_empty() || host().is_some_and(|host| host.ui_pass(mem, &part));
+            ui_overlay::placed(frame, run, placed);
+            if !placed {
+                MenuRefusal::Pass.counter().count();
+                return None;
+            }
+            if !part.is_empty() {
+                Ui::OverlayMenuPasses.count();
+                if crate::scene_step::with_overlay(|o| o.append(&part).is_ok()) == Some(false) {
+                    eprintln!("ui overlay: the scene's overlay refused a menu run's items");
+                }
+            }
+        }
+    }
+    Ui::OverlayMenuSkipped.count();
+    Stage::Ui.count(Metric::BuildsSkipped, 1);
+    c.cpu.esp = stack;
+    Some(TransferAbi::resume(ITEM_CONTINUATION))
 }
 
 pub struct NativeHud;
@@ -144,6 +293,29 @@ impl Feature for NativeHud {
             return Ok(());
         }
         ui::place(b);
+        modal_blur::place(b);
+        // The menus on the overlay (`ui_overlay`): a list's claim opens
+        // when it is sorted and closes, checked, when its draws are done.
+        // A claimed draw is left out by resuming after its call: without
+        // that, nothing is claimed.
+        b.raw().before(&ui_overlay::LIST_READY, "native_ui_overlay_list", |c| {
+            let rt = Arc::clone(c.ctx.runtime());
+            let continuation = engine::points::ui_render::ITEM_CONTINUATION;
+            if !rt.read_dispatch(|dispatch| dispatch.has_resume(continuation)) {
+                return Ok(Flow::Continue);
+            }
+            if c.cpu.x87.control & 0x0c00 != 0 || c.cpu.mxcsr & 0x6000 != 0 {
+                MenuRefusal::Frame.counter().count();
+                return Ok(Flow::Continue);
+            }
+            let mut mem = rt.memory();
+            menu_list(&mut *mem, c.cpu.ebp, c.cpu.edi);
+            Ok(Flow::Continue)
+        }).context_only().optional();
+        b.raw().before(&ui_overlay::LIST_DONE, "native_ui_overlay_list_done", |c| {
+            ui_overlay::close(c.cpu.ebp);
+            Ok(Flow::Continue)
+        }).context_only().optional();
         b.raw().before(&HUD_QUAD_READY, "native_hud_walk_quad", |c| {
             let rt = Arc::clone(c.ctx.runtime());
             if !rt.read_dispatch(|dispatch| dispatch.has_resume(HUD_QUAD_TAIL)) {
@@ -151,9 +323,7 @@ impl Feature for NativeHud {
             }
             let Some(esp) = c.cpu.esp.checked_add(4) else { return Ok(Flow::Continue) };
             let mut mem = rt.memory();
-            if mem.u32(c.cpu.esp).ok() != Some(7)
-                || !walk_quad(&mut *mem, c.cpu.ebp, c.cpu.ebx)
-            {
+            if mem.u32(c.cpu.esp).ok() != Some(7) || !walk_quad(&mut *mem, c.cpu.ebp, c.cpu.ebx) {
                 return Ok(Flow::Continue);
             }
             // The fan primitive word is already on the stack.

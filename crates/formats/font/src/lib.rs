@@ -17,6 +17,7 @@
 //! of range, or allocate more than a few hundred KiB beyond the font itself.
 use std::fmt;
 
+pub mod arrows;
 pub mod encode;
 pub mod gear;
 pub mod icons;
@@ -24,8 +25,9 @@ pub mod medals;
 pub mod mod_marks;
 pub mod patch;
 pub mod raster;
+pub mod ring;
 
-pub use raster::{Bitmap, RenderOptions, render};
+pub use raster::{Bitmap, GlyphAt, Layout, RenderOptions, layout, render};
 
 /// File offset of the header.
 pub const HEADER_OFFSET: usize = 0x200;

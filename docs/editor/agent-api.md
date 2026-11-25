@@ -11,10 +11,10 @@ object per line, short forms on the command line, scripts on stdin, and a
 `session.methods` call that lists every method with its params and result.
 
 Status: first slice built (`crates/apps/studio/src/api`, `crates/apps/studio-proto`).
-The Tags tool (`tag.*`) and the HUD tool (`hud.*`) answer through
-providers. `model.*` and `custom.*` are planned namespaces: listed by
-`session.methods` as `planned` and answering `NOT_YET` until their tools
-register.
+The Tags tool (`tag.*`), the HUD tool (`hud.*`) and the models provider
+(`model.*`) answer through providers. `model.colors`, `model.emblem` and
+`custom.*` are planned: listed by `session.methods` as `planned` and
+answering `NOT_YET` until their tools register.
 
 ## Running it
 
@@ -73,11 +73,11 @@ What goes through actions, from both sides:
 
 | Edit | Action | Window | API |
 |---|---|---|---|
-| Open a source, map, package, Halo 1 map | `OpenSource`, `SelectMap`, `OpenPackageEntry` | menus, Maps list | `source.open`, `doc.open` |
+| Open a source, map, package, Halo 1 map | `OpenSource`, `SelectMap`, `OpenPackageEntry` | menus, Browser, map grid | `source.open`, `doc.open` |
 | A placement's field | `EditSelection {field, edit, merge}` (every selected placement), `SetField {block, index, field, value, merge}` (one), `SealEdit` | the inspector dispatches `EditSelection` (a drag merges under one key, sealed when it ends) | `scenario.set`, `tag.set` |
-| Any tag's field or block | `Tag(TagAction)` built by `app::tag_api::{set_field, block}` | the Tags tool | `tag.set`, `tag.block.*` |
+| Any tag's field or block | `Tag(TagAction)` built by `app::tag_api::{set_field, block}`; each change is then written as an edit line to the edit target | the Tags tool | `tag.set`, `tag.block.*` |
 | Inspect tag fields | read the registry layout | Tags panel and inspector | `tag.fields {tag, path?, unnamed?}` |
-| Show unnamed fields, Show as, focus a field | `App::tag_fields` (`fields::Settings`), `Navigate(Go)` | the Tags tool's **Show unnamed fields** and **Show as** | `tag.view` |
+| Show unnamed fields, Show as, focus a field, the filter row | `App::tag_fields` (`fields::Settings`), `Navigate(Go)`, `fields::find` | the Tags tool's **Show unnamed fields**, **Show as**, **Search fields** and **Changed only** | `tag.view`, `tag.find` |
 | What a field's pick dialog lists | `fields::picker::{values, bits, kinds, tags, views}` | the field panel's pick dialog | `tag.choices {tag, path, query?, kind?, limit?}` |
 | An element's or field's bytes; put a field back to the file's value | `tag_api::{bytes_of, reset}` | Data and bytes: **Bytes**, **Reset to file value** | `tag.bytes {tag, path?}`, `tag.reset {tag, path}` |
 | Move and turn a placement | `MovePlacement` (one step); `GestureSet {position, ypr}`, `GestureScale`, `EndGesture` (a drag: one step, a multi-selection riding along) | the viewport gizmo dispatches the gesture actions every frame of a drag | `scenario.move` |
@@ -89,15 +89,16 @@ What goes through actions, from both sides:
 | Select a pathfinding sector, bot polygon, bot link or spot | `SelectNav` (clears the placements, the volume and the surface), `FocusSelected` | a click on what a Navigation layer shows when no placement or volume is under the cursor | `nav.pick {kind, index, focus?}`, `nav.pick {..., select: true}` |
 | Add a trigger volume, make a kill volume, remove either | `AddVolume {frame, kill}` (with `kill`, the volume and a kill trigger naming it in one step), `RemoveVolume(kind, index)`; `Delete` on a selected volume | the Scene tab's Volumes menu, the inspector's Delete and a kill trigger's Remove, the Delete key | `volume.add`, `volume.remove` |
 | Set fly speed | `SetFlySpeed` | viewport toolbar, wheel while flying | `view.camera {fly_speed}` |
-| Show or hide viewport layers | `SetLayers`, `SetOverlay` | Show popover, Scene legend, View > Halo 1 overlay | `view.layers` |
+| Show or hide viewport layers | `SetLayers`, `SetOverlay` | Show popover, View > Halo 1 overlay | `view.layers` |
 | Choose what the level is drawn with | `SetLighting` | the toolbar's Lighting menu | `view.lighting` |
 | Navigate tag fields | `Navigate` | inspector links and breadcrumbs | `nav.go`, `nav.back`, `nav.forward` |
-| Undo, redo | `Undo`, `Redo` (the tool shown), `UndoIn(tool)`, `RedoIn(tool)` | Edit menu, keys | `doc.undo`, `doc.redo` |
+| Undo, redo | `Undo`, `Redo` (the front document: the tool's, or the tag tab in front), `UndoDoc(doc)`, `RedoDoc(doc)`, `UndoIn(tool)`, `RedoIn(tool)` | Edit menu, keys, every editor's Undo and Redo button | `doc.undo`, `doc.redo` |
 | Save | `Save`, `SaveMapAs`, `SaveVariant`, `SaveHopper(As)`, `ExportVariant` | File menu, shortcuts, prompt | `doc.save`, `doc.save_as` |
-| Go to anything | `GoTo` for tags and placements, existing map-open and menu actions for the other entries | Edit menu, Cmd/Ctrl+P | `ui.palette {query, run?}` |
-| Variant edits | `OpenVariant`, `NewVariant`, `CopyBuiltin`, `SetVariantName`, `SetSetting`, `ImportVariant*`, `DeleteVariant` | the variant tool | `doc.open`, `variant.*` |
+| Go to anything | `OpenAsset` for tags, packages and items, `GoTo` for placements, existing map-open and menu actions for the other entries | Edit menu, Cmd/Ctrl+P | `ui.palette {query, run?}` |
+| Variant edits | `OpenVariant`, `NewVariant`, `NewVariantFromScript`, `CopyBuiltin`, `SetVariantName`, `SetSetting`, `SetScriptOption`, `ImportVariant*`, `DeleteVariant` | the variant tool | `doc.open`, `variant.*` |
 | Playlist edits | `EditPlaylist(PlaylistEdit)`, `SetEntryVariant` | the title and description fields, the table's row buttons, weights, Add, the unused slot's "Make a … playlist" buttons and "Remove playlist" apply the same `PlaylistEdit`s | `playlist.set`, `playlist.entry`, `playlist.entry_variant` |
-| UI screens | `UiPick`, `UiPress` | the UI Screens tool | `ui.pick`, `ui.press` |
+| UI screens | `UiPick`, `UiPress`, `UiBrowse` | the UI Screens tool | `ui.pick`, `ui.press`, `ui.select_folder` |
+| UI screen edits | `UiEdit(EditAction)`, `UndoIn(UiScreens)`, `RedoIn(UiScreens)` | the UI Screens tool's canvas drags, handles, nudges, inline text, Selected section and Save | `ui.select`, `ui.move`, `ui.set_rect`, `ui.set_text`, `ui.hide`, `ui.duplicate`, `ui.set_string`, `ui.revert`, `ui.undo`, `ui.redo`, `ui.save` |
 | Playtest | `play::playtest::decide` | F5, Play button, Game menu and confirmation dialog | `pair.playtest {confirm?, prompt?}` |
 | Playtest settings | `play::pair::Bridge` | Game menu and Game tab spawn picker | `pair.settings {spawn?, pause_while_editing?}` |
 | Live selection | `play::select` | click a live object, Aim select in the bar or Game menu | `mirror.pick`, `mirror.aim_select` |
@@ -123,16 +124,64 @@ A `doc` param names one: `map` (the scenario tool's map), `tags` (the
 Tags tool's edits to the same map: their own undo stack; they save and
 diff with the map), `variant`, `playlists`, `ui`, `hud` (the HUD tool's
 map: its widget edits, with their own undo stack and save), `scripts`
-(the Scripts tool's view of the open map: read only, never dirty;
-`doc.save` and `doc.save_as` refuse it). Without one, a `doc.*` call means the tool shown.
+(the Scripts tool's view of the open map: read only, never dirty, and
+`doc.save` and `doc.save_as` refuse it; its undo stack is the compiles,
+as `script.undo`'s). Without one, a `doc.*` call means the tool shown.
 `doc.list` says, for each, whether it is open, its name, dirty, and
-whether it can undo and redo.
+whether it can undo and redo. An open tag tab (below) is a document too:
+its id is a `doc`, and `doc.list` lists it after the tools' documents.
 
-`doc.save_as` takes a path. `doc.save` writes a variant to its save
-storage under the data root or a playlist file to its own path. For a
-map, `App::save_target` chooses the open package or the last standalone
-output. For a base map it opens the package form and returns
-`{saved: false, package_form: {name, dir}}`. The API keeps map outputs outside Git
+### Document tabs
+
+Every open document is a tab in the bar (`app/shell.rs`,
+`ui/doc_tabs.rs`). A tool's document (`map`, `variant`, `playlists`,
+`ui`, `hud`) gets its tab when its tool opens it and loses it when the
+tool closes it. A tag of the open map gets a tab from `shell.open` or a
+double-click in the Tags tree; its id is its `group:path`, as `tag.*`
+takes it, and its editor is the one its group's row of the kind registry
+names (`tag.kinds`): bitmaps open in the Textures tool, the scenario tag
+is the map's own tab, the rest open in the Tags tool's field panel. A
+tag tab belongs to the map it was opened on and closes with it.
+
+Each tab has its own undo stack. A tag's holds its steps in the order
+they were made, wherever each is kept: its writes in the map's tag
+document (`TagDoc::undo_tag`), a sound's mouth curves (`sound.mouth`), a
+bitmap's pixels and shape (`bitmap.*`), an animation graph's documents
+(`anim.*`). Two tag tabs undo and redo their own in any order, and a new
+edit drops its own tag's redo and keeps the others'. Undo takes the
+newest step not undone. Redo takes the oldest undone one, unless a newer
+step of the document was made after it was undone: that step made it
+wrong. An undo is `REFUSED` while a later
+edit of another tag writes the same bytes, or both added strings; that
+one is undone first. Undo and Redo in the window, and every editor's
+Undo and Redo button, take the front tab's stack while the Tags tool
+shows its tag, or the canvas bitmap's in the Textures tool; else the
+tool's. Closing a tag tab keeps its edits: they are the map's, saved or
+dropped with it.
+
+| Method | Does |
+|---|---|
+| `shell.tabs` | the tabs in order and the `front` one; per tab its `doc` id, `kind`, `title`, the `tool` it shows in, `dirty`, `can_undo`, `can_redo`, and for a tag its `editor`, `id`, `group` and `map` |
+| `shell.open {asset?, tag?, map?, discard?}` | opens a tag of the open map (with `map`, that map opens first; refused over unsaved edits unless `discard`), or brings a map's tab forward; `asset` takes a `tag:`, `voice:`, `item:` or `package:` id. A package opens in the `package` tab. A voice opens on Setup while it has no dataset. A package item opens the editor of what it builds, with `item:` tab IDs for scripts and variants. A local authored tag, WAV or model can open in a source tab before its tag is available in a map. Playlist fragments are refused. The call answers the `tab`, the `front` and the `log` |
+| `shell.focus {doc}` | brings a tab forward: its document shows in its editor |
+| `shell.close {doc, discard?}` | closes a tab: a tool's document closes (`UNSAVED` over edits unless `discard`), a tag's tab closes keeping its edits; the nearest tab left open, to its left first, comes forward |
+
+The tab strip's clicks run the same commands (`Action::OpenDoc`,
+`FocusDoc`, `CloseDoc`, `UndoDoc`, `RedoDoc`), so the window and the API
+leave the same tabs
+(`api::tests::shell_tests::the_window_commands_and_shell_calls_leave_the_same_state`,
+`headless::tests::the_tab_strip_clicks_and_shell_calls_leave_the_same_state`).
+Short forms: `tabs`, `focus <doc>`, `close <doc>`.
+
+`doc.save_as` takes a path. `doc.save` writes the variant, game type
+script or playlist to the edit target as a package item and returns
+`{saved: true, path, edit_target}`. With no target it answers `NO_TARGET`.
+For a map, `App::save_target` chooses the open package, the last standalone
+output (**Export map...**) or the edit target. For a base map the edits
+are already lines in the edit target (`app::edit_target`), and `doc.save`
+returns `{saved: true, edit_target}`; with no target it answers
+`NO_TARGET`. `tag.set` and `tag.block.*` answer `NO_TARGET` the same way
+with no edit target, where the window asks for one. The API keeps map outputs outside Git
 checkouts and uses a destination separate from the base source. Renders
 (`ui.render`, `view.snapshot`) default to `studio/` in the cache directory
 and refuse paths in Git checkouts.
@@ -158,14 +207,94 @@ group. `maps` remains the array of Halo 2 file stems in source order.
 ## Go to anything
 
 `ui.palette {query}` returns `{entries, totals}` from `app::commands::palette`.
+The asset rows are what `asset.list` answers for the query — every tag
+of the tags tree, the set's packages and the items of each package that
+is on (`app::commands::palette_assets`), with no map open. The commands
+are the menus' own, one `Open editor: <name>` per editor of View >
+Editors. Voices are `voice` entries (`voice:<id>` assets of the **Voices**
+kind), which open the voice document.
 Entries are `{kind, label, detail}` in the order shown by Cmd/Ctrl+P:
-`map`, `tag`, `placement`, then `command`. Each kind has at most 20
-entries. `totals` counts all matches by kind before that cap. Each word
-of the query must match and case is ignored.
+`map`, then the asset rows `tag`, `package`, `item`, `voice`, then `placement`
+and `command`. Each kind has at most 20 entries. `totals` counts all
+matches by kind before that cap. Each word of the query must match the
+commands' labels and details, and is the same search `asset.list` runs
+on the asset rows.
 
 Pass `run` with a zero-based index into the displayed entries to run the
 action and return its index as `ran`. An out-of-range index returns
-`INVALID_PARAMS`. Actions that would discard edits return `UNSAVED`.
+`INVALID_PARAMS`. Actions that would discard edits return `UNSAVED`. A
+tag entry opens on the map that holds it (`Action::OpenAsset`); a
+package's and an item's rows carry the same action, which opens their
+documents as the slices of docs/editor/studio-flow.md teach it to.
+
+## The design system
+
+`ui.components` returns the catalogue of `content/ui/design.yaml`
+(`ui_kit::components::catalogue_json`): `components` (each with `name`,
+`role`, `font`, `colour`, `justify`, `variants` and its `specimen` page),
+`layouts` (each `layout.<name>` page with its `kind` and `states`),
+`palette` (`{name, rgb}`) and `fonts` (role to font index).
+
+`ui.consistency {screen?}` checks our screens, or one, in every state
+against the design system (`ui_kit::consistency::check`;
+docs/game/ui-builder.md "Consistency") and returns
+`{findings: [{screen, state, ids, rule, text}], checked}`: the findings
+`consistency::ALLOWED` doesn't excuse, and how many screen states were
+checked. A screen not in `NAMES` is `INVALID_PARAMS`. Both read the kit
+alone: no disc and no window state. The rules include the pattern rules
+(`button`, `handled`, `arrows`) and the settings dialog's (`settings`,
+drawn at every focus, and `help`; docs/game/ui-builder.md "The settings
+dialog"). The `settings` component in `components` is the shared
+settings dialog, its parts `settings.name`, `settings.about` and
+`settings.help`.
+
+`ui.widgets` answers `{widgets, findings: [{text, ids}], from_disc}` for
+the picked screen in its state. The findings are
+`ui_kit::findings::of_state`'s, the list `h2 ui preview` prints: each
+line starts with its check (`check`, `content`, `layout`, `consistency`)
+and covers the checks on what was drawn (`on_drawn`, `panel_shared`,
+`covers_under`, `drawn_outside`; docs/game/ui-builder.md "The checks").
+
+## UI Screens folders
+
+`ui.screens` also returns `folders`: `ours` and `retail` are trees of
+`{id, label, count, items: [{name, label}], folders: [...]}` (the
+outliner's folders, from `app::ui_screens::browse`), and `browse` is the
+grid the centre panel shows (`{root, folder, path}`, else `null`). Ours
+group by the first dotted segment of the screen name (`design` and
+`layout` are labelled "Design system" and "Layouts" and list first);
+retail groups by tag path with the folders every tag shares stripped
+(`retail.stripped`), and is `null` without a disc. A folder's text form is
+`<root>/<id>`: `ours/forge`, `retail/game_shell/settings`.
+
+`ui.select_folder {folder | root}` shows that folder's (or `ours` /
+`retail`'s) grid of previews in the editor, as clicking it in the outliner
+does, so `view.snapshot` of the window shows it. `folder` is the text form,
+or an id under `root` when both are given. It answers `{browse, tiles,
+states}`; an unknown folder is `INVALID_PARAMS`, retail without a disc
+`FAILED`. `ui.pick` shows the picture again.
+
+`ui.pick {screen, state?}` shows one of our screens in a state (default
+its first); `ui.pick {retail, sample?}` shows a retail screen by tag
+name, in its plain sample state or the sample variant `sample` names
+(`variant:` in `assets/ui/retail-samples/`, docs/game/ui-builder.md
+"Retail screens in a believable state"). It answers `{pick, summary}`;
+`pick` is `{screen, state}` or `{retail}`, with `sample` when one is
+named. An unknown screen or state, a `sample` the screen has no variant
+of (the message lists the ones it has), or a `sample` with `screen` is
+`INVALID_PARAMS`.
+
+`ui.sheet {folder?, root?, states?, columns?, out?}` writes that grid to
+one labelled contact-sheet PNG (default: the grid shown; `states` draws
+every state of our screens, not only each one's first; `columns` defaults
+to 4; `out` defaults to `studio/ui/sheet-<path>.png` and is refused in a
+Git checkout). It answers `{path, width, height, tiles: [{pick, name, x,
+y, w, h, findings, found, checked, error?}]}`: each tile's picture
+rectangle in the PNG, its finding count and `found`, one line per finding
+as `ui.widgets` gives them (`checked` is false for retail screens, which
+are drawn but not checked), and why it did not draw. Cells are drawn on
+the CPU like `ui.render`, with the same checks, and never disturb the page
+shown.
 
 ## Methods
 
@@ -181,25 +310,36 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `session` | `status`, `methods`, `log` |
 | `host` | `memory {report?}`, `memory.history {since_ms?}`, `memory.heap {top?}`, `memory.gpu`, `memory.diff {from_ms}`, `memory.postmortem {pid?}`: the editor process's watchdog and flight recorder, answered on the connection thread as the game answers them ([Finding a leak after the fact](../runtime/agent-api.md#finding-a-leak-after-the-fact)) |
 | `source` | `open {path}`, `maps` |
-| `doc` | `list`, `open {map \| path \| package \| variant \| playlists}`, `save`, `save_as {path}`, `diff`, `undo`, `redo`, `close` |
-| `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `fields {tag, path?}`, `tree {root?, depth?}`, `refs {tag, limit?}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
-| `sound` | `read {tag, range?, permutation?, bins?}`, `play {tag, range?, permutation?, from_ms?}`, `stop` |
-| `scenario` | `blocks`, `list {block}`, `get`, `set {block, index, field, value}`, `add {block, like, position}`, `move {block, index, position, ypr}`, `delete`, `duplicate`, `select` |
+| `workspace` | `status`, `extract {disc?, maps?, verify?, root?}`, `prune {dry_run?}` ([The tag workspace](#the-tag-workspace)); `import {map \| path, name}` (planned) |
+| `doc` | `list`, `open {map \| path \| package \| variant \| playlists}` (`variant` is `{builtin}`, `{saved}`, `{new}` or `{script}`), `save`, `save_as {path}`, `diff`, `undo`, `redo`, `close` (`undo`, `redo` and `close` also take a tag tab's id) |
+| `shell` | `tabs`, `open {tag?, map?, discard?}`, `focus {doc}`, `close {doc, discard?}`: the document tabs ([Document tabs](#document-tabs)) |
+| `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `fields {tag, path?}`, `tree {root?, depth?}`, `refs {tag, limit?}`, `kinds {group?}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
+| `sound` | `read {tag, range?, permutation?, bins?}`, `play {tag, range?, permutation?, from_ms?}`, `stop`, `measure {tag \| clip \| path, range?, permutation?, class?, limit?}` ([Content checks](#content-checks)) |
+| `scenario` | `blocks`, `list {block}`, `get`, `set {block, index, field, value}`, `add {block, like, position}` (or `add {block: "label", label, position, facing?, team?, phase?}`: a ground label, [AI ground](#ai-ground)), `move {block, index, position, ypr}`, `delete`, `duplicate`, `select` |
 | `volume` | `list {kind?}` (short form `volumes [kind]`), `select {index?, focus?}`, `set {index, origin?, center?, forward?, up?, size?}`, `add {kill?, center?, origin?, forward?, up?, size?}`, `remove {kind?, index}` |
 | `collision` | `surfaces {class?, bsp?, offset?, limit?}`, `at {origin, dir}` or `at {point, within?}` (with `select?`), `select {index?, focus?}`, `objects {block?, index?}` |
+| `markers` | `list {kind?, layer?}`, `render {kind?, team?, area?, view?, size?, out?}`, `area.set {id, area}`, `area.convert {id}`: the game type markers of the open map, their areas, and the marker shapes drawn on a grid ([Game type markers](#game-type-markers)) |
 | `nav` | `status`, `back`, `forward`, `go` (the inspector's history); `pathfinding {bsp?, offset?, limit?}`, `bots {wait?, polys?, links?, spots?, offset?, limit?}`, `pick {origin, dir}` or `pick {point, within?}` (with `layer?`, `shown?`, `select?`) or `pick {kind, index, focus?}` (the Navigation layers) |
-| `variant` | `list`, `get`, `set {setting, value}`, `rename`, `copy`, `export`, `import`, `delete` |
+| `ground` | `status {offset?, limit?}`, `build {wait?, offset?, limit?}`: the open map's AI ground ([AI ground](#ai-ground)) |
+| `playtest` | `static {wait?}`: the open map's static checks and each built-in game type's readiness ([playtest.md](playtest.md#static-checks)); `run {preset?, game_types?, seeds?, minutes?, bots?, compare_to?}`, `status {run?}`, `result {run?, game_type?, measure?}`, `compare {a?, b?, game_type?}`, `cancel {run?}`: headless bot matches on the open map and their measures ([playtest.md](playtest.md#what-a-run-is)) |
+| `variant` | `list`, `get` (with `script`), `set {setting \| option, value}`, `rename`, `copy`, `export`, `import`, `delete` |
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
-| `ui` | `palette {query, run?}`, `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}` |
-| `pair` | `list`, `status`, `connect {socket?}`, `disconnect {leave?}`, `auto {enabled?}`, `play`, `stop`, `control {action, ticks?}`, `edit {enabled}` |
+| `ui` | `palette {query, run?}`, `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}`, `select_folder {folder \| root}`, `sheet {folder?, root?, states?, columns?, out?}`; the shown screen's edits, of our screens or a retail one: `select {id?}`, `move {id, dx, dy}`, `set_rect {id, rect}`, `set_text {id, text}`, `revert {id?}`, `undo`, `redo`, `edits`, `save`, `animate {phase, frames?, out?}` ([ui-builder.md](../game/ui-builder.md#editing-in-the-editor)); `check {screen?, state?, aspect?}` ([Content checks](#content-checks)) |
+| `preview` | `target {doc?, target?}`: a document's preview switch and what Preview in game asks of the game ([The preview switch](#the-preview-switch)) |
+| `pair` | `list`, `status`, `connect {socket?}`, `disconnect {leave?}`, `auto {enabled?}`, `play`, `stop`, `control {action, ticks?}`, `edit {enabled}`, `preview {what, target?, ...}`, `audio {seconds?, every_ms?, call?}`, `result {id?}` ([Previewing content in the paired game](#previewing-content-in-the-paired-game)) |
 | `mirror` | `status`, `objects {kind?, near?, limit?, at_tick?}`, `pick {from? \| ray?}`, `aim_select {enabled?}`, `camera {mode?, target?}`, `player {to, facing?}`, `pending`, `apply {what, at?, peers?}` |
 | `view` | `camera {yaw, pitch, distance, target, focus, all, fly_speed}`, `snapshot {out, size, camera}`, `stats`, `layers {set?, preset?, xray?}` |
 | `script` | `list {filter?}`, `source {name?}`, `follow {name?, link}`, `uses {kind, name}`, `builtins {filter?, unnamed?}`, `doc {path}` ([rich-editors.md](rich-editors.md#scripts)) |
+| `recording` | `list`, `read {name, limit?, offset?}`: the open map's recorded animations and each stream, typed ([rich-editors.md](rich-editors.md#recordings)) |
+| `strings` | `list {tag?, language?, query?, limit?, offset?}`: every `unic` string of the open map by name and language ([rich-editors.md](rich-editors.md#strings)) |
 | `rules` | `open {path? \| starter? \| source?, discard?}`, `get {text?}`, `set {source}`, `save {path?, reload?}`, `format`, `reload {mode?}`: the game type script editor ([editor-guide.md](editor-guide.md#game-type-scripts)) |
 | `hud` | `list {map \| package}`, `read {hud, state}`, `set {hud, widget, field, value, merge}`, `move {hud, widget, x, y, mode, merge}`, `render {hud, state, out}`, `check {hud, state}`, `save_as {path}` |
 | `geometry` | `list {model?}`, `open {target}`, `close {target?}`, `read {target?}`, `check {target?}` |
+| `check` | `run {what?, target?}`: every content check in one list ([Content checks](#content-checks)) |
+| `image` | `generate {prompt, references, bitmap?, image?, size?, alpha?, out?, from?}`, `result {id?}`, `apply {id}`, `accept {id, save?}`, `discard {id}`: a picture made for a bitmap image from a prompt and the references the user picks ([Generating images](#generating-images)) |
 | `mesh` | `mode {mode}`, `select {ids, op \| all \| none \| invert}`, `transform {translate \| matrix, pivot?, merge?}`, `ops`, `apply {ops}`; each with `target?` |
-| `model` (planned) | `list`, `read`, `render`, `colors`, `emblem` |
+| `model` | `list {group?}`, `read {tag, variant?}`, `render {tag, view?, variant?, character?, biped?, hands?, size?, camera?, out?}`, `check {tag, variant?}`, each with `map?` and `pogo?` ([Models and customisation](#models-and-customisation)); `colors`, `emblem` (planned) |
+| `anim` | `list {tag}`, `pose {tag, animation, frame?, overlay?, model?, size?, out?}` ([Model poses](#model-poses)) |
 | `custom` (planned) | `list`, `set` |
 
 `view.camera` returns `fly_speed` in world units per second. Its optional
@@ -216,32 +356,120 @@ Notes on some:
   (`{script}`, `{global}`, `{block, index}`, `{volume}`, `{tag}`) or
   `null` and `why`. `script.follow` does what a click on the link does
   and is `REFUSED` with the same `why` for a link that goes nowhere.
-  `script.uses {kind: "recording"}` is `REFUSED` until recordings are
-  read. `script.builtins` gives each builtin's `name` and `from` (`map`,
+  `script.uses {kind: "recording"}` gives the scripts that name the
+  recording (a value of type `cutscene_recording`, by name or index).
+  `script.builtins` gives each builtin's `name` and `from` (`map`,
   `doc` or `null`), its `label` (the name or `#builtin:<index>`) and its
   call form. `script.doc {path}` names builtins from the user's script
   documentation listing, read from that path now and not stored
   (`null` drops it); its `doc` says how many entries read, agreed with
-  the map's names, disagreed and named.
+  the map's names, disagreed and named. `script.external` writes the
+  working copy VS Code and Zed edit (`<data>/scripts/<map>/<map>.hsc`,
+  with `h2hs.json`, the context `h2 hs lsp` reads, beside it; a copy
+  holding edits is kept) and opens it in `editor` (`code`, `zed`, or
+  `auto`, the default) at the definition `name` (default: the one
+  shown). Its answer has the `path`, the `context` file, the 1-based
+  `line`, the `commands` that open it (`{program, args, line}`) and
+  `working`. `launch: false` starts nothing; launching with no such
+  editor is `REFUSED`, and an unknown `name` is `INVALID_PARAMS`.
+  `script.working` reads the copy now and answers which definitions
+  differ from the map's (`changed`, `added`, `removed`), its `problems`
+  against the context (`line`, `col` from 1, `severity`, `message`,
+  `code`), and `stale` when the map's scripts changed while it held
+  edits; `{open: false}` when none is open. It needs no map. It writes
+  nothing into the map ([editor-guide.md, "Scripts in VS Code and
+  Zed"](editor-guide.md#scripts-in-vs-code-and-zed)).
+  `script.compile {source?, working?, name?, apply?}` compiles source into
+  the map's script tables (`hs::compile`): a definition named as one the
+  map has replaces it, any other is added, and only those definitions'
+  nodes change. `source` is the text; `working: true` takes the working
+  copy's changed and added definitions (it is `REFUSED` with no working
+  copy or no edits; give one of the two, else `INVALID_PARAMS`); `name`
+  requires the source to define it (`INVALID_PARAMS` otherwise). Without
+  `apply` nothing changes and the answer says what would. Problems are
+  an answer, not an error: `{ok: false, applied: false, errors: [{line,
+  column, span: [start, end], code, text}]}` (a compile past the node
+  limit has both counts in its `text`). Otherwise `{ok: true, applied,
+  definitions: [{name, item}], nodes, freed, reused, grown, new_strings,
+  grows, free_nodes, depth: {undo, redo}}`: nodes the definitions use,
+  slots freed and reused, slots added, string bytes added, whether a
+  table outgrows the map's (`grows`) and the free nodes left. With
+  `apply` the compile is one undo step, the Scripts tab and the unsaved
+  count follow, and a table that grows is `REFUSED` while **Allow growing
+  full blocks** is off. With no executable it is `REFUSED` with the
+  tool's sentence, and with no map `NO_DOCUMENT`. Names the map's scripts
+  do not already use do not resolve (`name.unresolved`).
+  `script.undo {redo?}` takes back (or redoes) the last applied compile:
+  `{changed, free_nodes, depth}`.
+  `script.eval {expression, type?}` sends an expression to the paired
+  game's `hs.eval` ([runtime/agent-api.md](../runtime/agent-api.md#hseval))
+  and returns `{ok: true, type, type_index, value, bits}`. Problems in the
+  text are an answer, as in `script.compile`: `{ok: false, errors: [{line,
+  column, code, text}], error}`, counted in the expression; so is the
+  evaluator's refusal, `{ok: false, error}`. `REFUSED` without a paired
+  game, with the game paused (the call answers on its next tick) or with a
+  game that does not list `hs.eval`. The Scripts tab's expression box sends
+  the same call.
+- **Variants of a script.** `doc.open {variant: {script: <starter>}}` (a
+  `rules.get` starter's name, or `open` for the script in the script
+  window) opens a new, unsaved variant of it: the record
+  `variants::portable::record_for` builds. `variant.get`'s `script` is
+  `null` for a record naming none, `{prefix, found: false}` when the
+  editor lacks the script, else `{name, about, scoring_carrier, options,
+  quick}`: each option has `index`, `name`, `label`, `description`,
+  `kind` (`bool`, `int`, `enum`), `value`, `text`, `default` and `quick`,
+  and each `quick` row `label`, `option` and `text`. `variant.set
+  {option, value}` sets one option by its name in the script (a bool as
+  0 or 1, an enum's value as its position from the option's low end); a
+  run of edits to one option is one `doc.undo` step. An unknown option
+  or a value out of range is `INVALID_PARAMS`, a built-in `REFUSED`.
+- **Suggested map variants.** `variant.maps` lists this machine's map
+  variants a game variant may suggest (`{map, name, base, variant,
+  source}`, by map and name). `variant.export {path, maps: [variant id]}`
+  writes a version-2 file whose `maps` are those, in that order, and
+  answers how many; an id not on the list is `INVALID_PARAMS`, and more than
+  eight, or a record that names a script, is refused by name. Without `maps` the file is
+  the version-1 text.
 - **Game type scripts.** `rules.*` drive the one script the Game type
   script window shows (`app/rules_edit.rs`). Each answers its state:
   `title`, `path`, `dirty`, `problems` (each `line`, `col` from 1,
   `severity`, `message`, `code`; errors first), `check` (the
   [workbench](../game/rules-engine.md#workbench) report: `ok`, `hash`,
   `errors`, and `report` with the worst tick against the budget, the
-  handlers, slots, IR size and capabilities), `mode`, `reload_on_save`,
+  handlers, slots, IR size, capabilities, and the `settings` the
+  script's block names and the `quick` rows it marks), `mode`, `reload_on_save`,
   `reload` and the `starters` `rules.open {starter}` takes (a built-in's
   or example's name, any case). `rules.get {text: true}` adds the text.
   `rules.open` is `UNSAVED` over unsaved edits without `discard`, and
   picks the window's tab. `rules.set` reaches the text widget even while
   someone is typing in it, and leaves the keyboard where it is.
-  `rules.save` with no `path` on a script that has no file is `REFUSED`.
+  `rules.save` and `doc.save {doc: "rules"}` write a `rules` item in the
+  edit target and answer `NO_TARGET` when it is unset. A `path` in
+  `rules.save` exports a copy. For a package save, `reload` overrides
+  the editor's Reload on save checkbox.
   `rules.reload` compiles and verifies the text here, queues the blob for
   the game link and answers `{queued: hash}`; the game's answer arrives as
   `rules.get`'s `reload`: `{state: sending}`, then `{state: done, mode:
   in_place | restarted, hash, tick, reasons}` or `{state: refused, why}`
   (not paired, a game without `rules.reload`, or the game's refusal;
   [Rules scripts](../runtime/agent-api.md#rules-scripts)).
+  `rules.reload {path}` is an outside editor's save: when `path` is the
+  open script's file it is read first (`UNSAVED` when Studio has other
+  unsaved edits; the window then asks which to keep); another file is
+  opened and watched, `UNSAVED` over unsaved edits without `discard`.
+  `rules.external {editor?, line?, launch?}` saves the script to its
+  file (or a new one under `<data>/scripts/`), watches it both ways and
+  opens it in `editor` (`code`, `zed`, `auto`) at `line` (default: the
+  cursor's); it answers `path`, `line`, `col`, `editor`, `commands` and
+  `launched`, as `script.external` does. `rules.run {scenario, source?,
+  path?, label?, trace?}` runs a script over a
+  [scenario](../game/rules-engine.md#workbench) on the fake game, as `h2
+  rules run` does: `scenario` is a file's path or the scenario object,
+  and the script is `source`, else the file at `path`, else the open
+  one. It answers `ok` (no script error), `result` (how the run ended),
+  `text` (the printout), `ticks`, `calls` and `label`; a script that
+  does not build is `REFUSED`. The VS Code and Zed commands call these
+  ([rules-editors.md, "Commands that talk to Studio"](rules-editors.md#commands-that-talk-to-studio)).
 - **Tags.** A `tag` param is an id (`"0xe1230045"` or a number), a full
   name, `name.group`, or a group alone when the map has one tag of it
   (`"scnr"`, `"matg"`).
@@ -267,7 +495,17 @@ Notes on some:
   - `label` (the name in words), `named`, `type` (the type in words:
     `Whole number`, `Decimal number`, `Angle`, `Colour`, `Range`,
     `Choice`, `Switches`, `Name`, `Tag reference`, `List`, `Bytes`,
-    `Internal value`, `Unnamed value`, `Padding`) and `unit` (or null);
+    `Internal value`, `Unnamed value`, `Padding`), `unit` (or null) and
+    `view` (the definition's `view=` word, such as `rgb` or `function`,
+    else null; [rich-editors.md](rich-editors.md)); a `function` view's
+    row also carries `function: {type, ranged, range, length}`, its
+    curve's shape (null when the data is not a function blob, and the
+    row says why); a colour row (a colour `view=` word, or three floats
+    whose name says colour) carries `colour: {form, by, hex, rgba,
+    intensity?}`: the stored form (`rgb`, `argb`, `rgb8`, `argb8`,
+    `xrgb8`, `hdr_rgb`), `by` (`view` or `name`), the colour as
+    `#aarrggbb`, its channels in 0 to 1, and an `hdr_rgb` colour's
+    intensity (the hex and channels are at intensity 1);
   - `editable`, and `read_only`, the reason as a sentence when not;
   - `edited` (the value differs from the loaded file) and `file_value`
     (the file's value when edited, else null);
@@ -291,35 +529,184 @@ Notes on some:
     list, and `show_as` (`decimal`, `whole_number` or `hex`) for an
     unnamed value.
 
+  A colour field's `tag.set` value may also be `"#aarrggbb"`,
+  `"#rrggbb"` or `{rgba: [r, g, b, a], intensity?}`, converted to the
+  field's form as the colour picker writes it (a form without alpha drops
+  it, a packed form without alpha keeps its top byte, an `hdr_rgb` field
+  keeps its intensity unless one is given); channels outside 0 to 1, an
+  intensity below 0 or on another form are `INVALID_PARAMS`.
+  `tag.colours {tag}` lists every colour row of the tag, every element of
+  every list walked as `tag.find` walks: `{colours: [{path, label, form,
+  by, hex, rgba, intensity?}], truncated}`
+  ([rich-editors.md](rich-editors.md), "Colours"; `api/colours.rs`).
+
   An offset path in `tag.set` addresses the typed field that starts
   there. Its row gives the width accepted for an integer or enum value.
   A block's value is its element count. Scalar values follow
   `tag.read`. The rows use the open or browsed tag document and include
   its pending edits (`api/tag_fields.rs`).
-- **The field panel.** `tag.view {tag?, path?, field?, unnamed?,
-  show_as?}` drives the Tags tool's panel and returns what it shows.
-  `tag` selects the tag in the Tags tool. `path`, a list element
-  (`parts[1]`, or by offset `+0x8[1]`), shows that element as the whole
-  panel, as its **Open alone** does; empty shows the root. `field`, a
-  `tag.set` path, focuses that field through the navigation (as
-  `nav.go`), which opens its lists and its Unnamed fields group; on its
-  own it is shown from the root. `unnamed` sets **Show unnamed fields**.
-  `show_as: {path, as}` sets how an unnamed value is shown (`decimal`,
-  `whole_number`, `hex`, or null for the guess from its bits), kept for
-  that field of every tag of the group and saved with the layout. With no
-  params it only reads. The result is `{tag, path, breadcrumbs, field,
-  search, changed, unnamed, rows, unnamed_hidden, header}`: `path` is
-  the element shown (by field names, empty for the root), `breadcrumbs`
-  its crumbs as drawn (`weap: objects\test\blaster`, then `Parts 1
-  scope` per list step), `rows` the element's `tag.fields` rows the
-  panel shows, `unnamed_hidden` the
-  unnamed rows in a folded group (`unnamed: true` adds them to `rows`),
-  `field` the focused path, and `header` the header's lines as drawn,
-  without icons: the kind and name, the path with the unsaved count, any
-  browsed, BSP, shared-map and read-only notes, and how a change reaches
-  the game (`Changes are saved with the map.` with no game). The datum
-  and address are not in it. The panel has no search yet, so `search` is
-  null and `changed` false, and those params are refused.
+- **Shaders.** `shader.read {tag, time?}` reads a `shad` as the Shader tab shows
+  it ([rich-editors.md](rich-editors.md), "Shaders"; `api/shader.rs`):
+  the template, the level of detail shown (0) and how many there are, the
+  bitmap, colour and vector slots of the compiled postprocess (each with
+  its `tag.set` path, value, and `used_by`: the layer, pass,
+  implementation and register or stage the template's binding puts it
+  in), the animated properties (each with the `path` of its function
+  curve, which `function.read`, `function.set` and `function.sample`
+  take, the kinds of target it drives, a `refusal` when it drives a
+  target the layer plan does not animate, and its `value` at `time` on
+  the preview clock or `no_value` with the reason, such as a missing
+  object function, an invalid period or a wave requiring an engine table), `time` and `clock_length`,
+  the passes per layer, `names_known` (false until the template's parameter names are
+  read), `read_only` and the bindings that did not read (`refusals`).
+  `shader.set {tag, slot: {kind, index}, value}` writes one slot: the
+  `tag.set` at the slot's path with the same value, one undo step,
+  refused as `tag.set` refuses; a slot past the shader's is
+  `INVALID_PARAMS`. `shader.preview {tag, shape?, object?, size?, time?, out?}`
+  draws the shader alone on a sphere (the default), a flat square
+  (`quad`) or an object tag's model, unlit, to a PNG outside Git; it
+  answers `passes_drawn`, each left-out layer in `refusals` with its pass
+  count and reason, `base` when the base look does not draw, and
+  `covered`. `time` (0 to 86400 seconds, default 0) is the preview
+  clock: the answer repeats it and lists each animated property's value
+  there in `animation`. The drawn layer passes use the pixel constants,
+  vertex constants and vertex defaults sampled at that time. A bitmap
+  frame change or a missing texture-transform input appears in `refusals`.
+  With no renderer `png` is null and the counts
+  still answer.
+  `shader.code {tag, pass?, implementation?}` reads one pass's programs
+  as text (`native_view::code`, the Shader tab's Code section): `pass`
+  counts the passes across the layers of the first level of detail in
+  layer order (default 0), `implementation` picks one of the pass's
+  (default 0). The answer gives `passes`, `layer`, `pass_in_layer`,
+  `pass_tag`, `implementations`, and for `vertex` (the world
+  classification, `classification: "world"`) and `pixel` each
+  `{listing, wgsl, warnings}`: the disassembly, the WGSL the translator
+  makes of it and the translator's warnings. A state program has its
+  listing, a null `wgsl` and the refusal in `warnings`; a program that
+  does not decode has a null `listing` too. A pass or implementation the
+  shader lacks, or a tag that is not a `shad`, is `REFUSED`. It reads
+  with the document's edits and writes nothing.
+  `shader.override {tag, pass?, implementation?, text?}` reads or edits the
+  WGSL of a pass's program (slice S5; `app::shader_override`): `base` is the
+  vertex and pixel programs linked into one module (`vs_main`, `fs_main`;
+  default options), `text` the draft (a string sets it, null discards it),
+  `check` the draft as the game parses it (`{ok: true}`, or `{ok: false,
+  error, line, column}`; null with no draft), `edited` whether it differs
+  from `base` and `pushed` the overrides sent from it, each
+  `{program, file, state, why}` with `state` one of `queued`, `sent`,
+  `loaded`, `refused` and `reverting`. `shader.push {tag, pass?,
+  implementation?, program, dir?}` queues the draft as the override of the
+  game program `program` (16 hex digits from `render.programs`): a missing
+  or unparsable draft is `REFUSED` with its line; the link then writes
+  `<program>_studio.wgsl` in `dir` (default the game's default override
+  directory on this machine) and calls `render.reload {dir}` on the paired
+  game. Not paired, or a game without `render.reload`, ends as `refused` and
+  writes no file. `shader.revert {tag, pass?, implementation?, program?}`
+  queues deleting the pass's pushed files (or the one `program`) and the
+  same reload; a program with no override pushed from here is `REFUSED`.
+  An override changes the game's renderer only; nothing is written into a
+  map.
+- **Curves.** `function.read {tag, path}` reads the function blob a
+  `view=function` data field points at
+  ([rich-editors.md](rich-editors.md), "Curves"; `api/curves.rs`):
+  the type word (`identity`, `constant`, `transition`, `periodic`,
+  `linear`, `linear_key`, `multi_linear_key`, `spline`, `multi_spline`,
+  `exponent`, `spline_2`, `unknown_<byte>`), whether it is ranged, the
+  two sub-type bytes (set 0's and set 1's wave or shape), the output
+  range, the blob's length, and `sets`: the two sets' typed values, the
+  words the engine's evaluator reads named as the curve editor's
+  handles (`shape`, `from`, `to` for a transition; `wave`,
+  `frequency`, `phase`, `minimum`, `maximum` for a periodic; `slope`,
+  `intercept`; `base` and three `keys` of `value`, `position`,
+  `inverse_span`; `points` and `coefficients`; `minimum`, `maximum`,
+  `power`; a constant's, type 6's and type 8's words as `words`; `{}`
+  for identity), null for a type with no layout. `editable` is false
+  and `read_only` says why for a type the game evaluates as 0 or a
+  tag that may not be written. `function.set {tag, path, type?,
+  ranged?, range?, sets?}` edits the curve as one undo step through the
+  Tags tool's own command: `type` changes the type (any of `identity`,
+  `constant`, `transition`, `periodic`, `linear`, `linear_key`,
+  `spline`, `spline_2`, `exponent`), rebuilding the blob at the new
+  type's `blob_len` with defaults (`Function::with_kind`: a transition
+  from 0 to 1, a periodic cosine of one cycle, a line of slope 1, a
+  ramp, a cubic that is `t`, an exponent that is `x`, a constant of 0,
+  the flags, output range and unread header bytes kept) and writing it
+  as a resize of the data, so a longer blob grows the tag only when
+  growth is on and is refused by name when it is off; `sets` in the
+  same call apply to the new type. `ranged` turns the second
+  set on or off, `range` sets the output range, and each set object's
+  keys present are written (its `shape` or `wave` writes the header
+  byte, as the dialog's picker rows do); the answer is the new
+  `function.read`. A change to a type the game evaluates as 0 (`multi_linear_key`,
+  `multi_spline`, an unknown byte) is refused, and so is anything the
+  Curves section refuses.
+  `function.sample {tag, path, inputs, range_input?}` returns
+  `{outputs}` from `Function::evaluate` itself (the ported engine
+  evaluator) at each input, `range_input` blending the two sets of a
+  ranged function (default 0, set 0); types the engine does not
+  evaluate give 0. A path that is not a function curve field is
+  `REFUSED`.
+- **The field panel.** `tag.view {tag?, path?, field?, search?,
+  changed?, unnamed?, show_as?}` drives the Tags tool's panel and
+  returns what it shows. `tag` selects a tag in the Tags tool. `path`,
+  a list element (`parts[1]`, or by offset `+0x8[1]`), shows that
+  element as the whole panel, as its **Open alone** does; empty shows
+  the root. `field`, a `tag.set` path, focuses that field through the
+  navigation (as `nav.go`), which opens its lists and its Unnamed
+  fields group; on its own it is shown from the root, and it clears the
+  filters. `search` sets the filter row's **Search fields** (empty
+  clears it) and `changed` sets **Changed only**; with either on, the
+  hit list replaces the rows, as `tag.find` describes. `unnamed` sets
+  **Show unnamed fields**. `show_as: {path, as}` sets how an unnamed
+  value is shown (`decimal`, `whole_number`, `hex`, or null for the
+  guess from its bits), kept for that field of every tag of the group
+  and saved with the layout. With no params it only reads. The result
+  is `{tag, tabs, tab, path, breadcrumbs, field, search, changed,
+  unnamed, rows, unnamed_hidden, header}`: `tabs` is `[{id, label}]`,
+  **Fields** first then the tag views of its group
+  (`fields::rich::TAG_VIEWS`), and `tab` the one shown; the `tab` param
+  shows one (`fields`, or a view of the group), refused by name when the
+  group has none; `path` is the element shown (by field
+  names, empty for the root), `breadcrumbs` its crumbs as drawn
+  (`weap: objects\test\blaster`, then `Parts 1 scope` per list step),
+  `rows` the element's `tag.fields` rows the panel shows — with a
+  search or **Changed only** on, the hit list's rows, each a
+  `tag.fields` row of the field it found — `unnamed_hidden` the
+  unnamed rows in a folded group (`unnamed: true` adds them to `rows`;
+  0 with a filter on), `field` the focused path, `search` the panel's
+  search text (empty when none) and `changed` its **Changed only**, and
+  `header` the header's lines as drawn, without icons: the kind and
+  name, the path with the unsaved count, any browsed, BSP, shared-map
+  and read-only notes, how a change reaches the game (`Changes are
+  saved with the map.` with no game), and the search budget's sentence
+  last when the walk stopped. The datum and address are not in it.
+- **Field search.** `tag.find {tag, query?, path?, changed?, unnamed?,
+  limit?}` returns the fields the panel's filter row finds
+  (`fields::find`): `{hits: [{path, breadcrumbs, label, type, value,
+  matched}], truncated, why}`. `query`'s words (case-insensitive) match
+  the label, the name, the description, the type words, the choice and
+  switch names, and the referenced tag's row text; every word must
+  match somewhere, and `matched` names the first candidate that alone
+  holds them all (the label for an empty query and in **Changed
+  only**). The walk covers every element of every list from `path` (a
+  list element to search within; the root by default), to 12 lists
+  below it and 5,000 list items, in the panel's order; reaching the
+  budget sets `truncated` with the sentence in `why`. `changed` keeps
+  only the fields that differ from the loaded file, lists included
+  (with `query`, both must hold). `unnamed` leaves the unnamed rows
+  out; `limit` cuts the hits and sets `truncated`, with `why` only for
+  the budget. A `path` that names no element is refused with
+  `INVALID_PARAMS`.
+- **Names.** `tag.names {group?}` returns `{groups: [{group, title,
+  named, unnamed, described, with_unit, with_effect}]}`, one line per tag
+  group (`api/tag_names.rs`): the fields the definitions name, the typed
+  or unknown fields they do not (padding is not counted), and how many
+  fields have a description, a `unit=` and an `applies=`. A block's
+  element is counted once. With `group` (a group code) the one line also
+  has `unnamed_fields: [{path, type, size}]`, the largest first, with each
+  path from the root (`+0x14`, `parts[].+0x6`). A code that is not a
+  group is refused with `INVALID_PARAMS`.
 - **List elements.** `tag.elements {tag, path, filter?, offset?, limit?}`
   returns a list's elements as the panel's rows show them (`1  scope`):
   `{count, capacity, elements: [{index, title, path}], truncated}`. The
@@ -367,6 +754,41 @@ Notes on some:
   scenario reference edits. `incomplete` marks a partial reachability
   walk and leaves `unreachable` empty. `truncated` indicates that an
   object chain hit its display walk budget.
+- **Kinds.** `tag.kinds {group?}` reads the kind registry
+  ([live-editors.md](live-editors.md), "The registry";
+  `app::kinds::KINDS`). It returns `{kinds, default, groups, target}`:
+  `kinds` has one row per kind with `label`, `groups`, `editor`
+  (`field_panel`, `scenario`, `modeling`, `textures`, `audition`,
+  `hud`, `ui_screens`, `scripts`, `animation`), `preview` (`none`, `viewport`,
+  `model_render`, `thumbnails`, `waveform`, `tool`, `reports`),
+  `subject` (`none`, `level`, `placement`, `swatch`, `loop`, `play`),
+  `classes` (`field`, `raw`, `shape`, `host`) and `missing`; `default`
+  is the row a group without one gets (the field panel, no preview,
+  `field` and `shape`); `groups` lists every group the registry or the
+  open map has, each with `group`, `kind`, `default`, `editor`,
+  `preview`, `subject` and `classes`; `target` is where the game view's
+  changes go now (`off`, `own`, `attached`, `attached_edit`). With
+  `group` (up to four characters, as `tag.list` writes it) the reply is
+  that group's line alone; a group no row names gets the default. It
+  needs no open map.
+- **Subject.** `tag.open {tag}` opens the tag in the editor its kind
+  gets (as `shell.open` does) and makes it the subject
+  ([live-editors.md](live-editors.md), "The subject"). It returns `tag`,
+  `group`, `name`, `kind`, `editor`, `preview`, `front` and `subject`,
+  the place the subject has in the scene Studio's play last saw:
+  `{rule, show, scene, at, yaw, note}`. `scene` is `level` (an own game
+  runs the open level; `at` is the viewport camera's focus), `stage` (the
+  own game runs the content stage; `at` is its flat bay's subject pad and
+  `yaw` faces the spawn) or `nowhere`; `show` is `object`, `swatch`,
+  `loop`, `play` or `nothing`; `note` says what is missing. The own game
+  stands an object subject at its next frame and plays a sound subject.
+  `tag.subject` reads what the own game holds: `own`, `tag`, `place`,
+  `object` (the standing object's id), `owed` (`respawn`, `retrigger`:
+  follow-ups waiting for the write's batch), `unread` (fields written
+  that no definition says when the game reads), `refusal` (why no object
+  stands), `failure` (the last call the game refused), `busy` (the call
+  in flight) and `calls` (the spawns, deletes, respawns and retriggers
+  made). With no own game `own` is false and the rest is the registry's.
 - **References.** `tag.refs {tag, limit?}` lists direct links in the
   open map, including in-memory tag edits and current scenario-owned
   reference fields. Each result has `to` (the target ID),
@@ -387,10 +809,26 @@ Notes on some:
   Each node has `tag` (ID), `group`, `name`, `via` (the field path),
   `label` (a named shortcut, or null), `where` (`here` or `shared`),
   `cache` (the shared cache name, or null), `variant` (model variant
-  name or ID, if known), `cycle` and `children`. A missing target keeps
-  its ID and path with null tag metadata. Cycles stop the current branch.
+  name or ID, if known), `cycle`, `uses` (the placements and tags that
+  use it, as `tag.uses` counts them) and `children`. A missing target
+  keeps its ID and path with null tag metadata. Cycles stop the current
+  branch.
   `truncated` means a traversal limit beyond the requested depth cuts
   the result short. Live handles belong to the [click-to-edit design](click-to-edit.md).
+- **Where a tag is used.** `tag.uses {tag, highlight?}` answers from the
+  reverse reference index of the open map's tags, cached in the document
+  (a reference edit rebuilds it): `{tags, placements, objects}`. `tags`
+  are the tags that refer to it, transitively, so the object tags whose
+  chains run through it are named, in the map's tag order, each with
+  `via`, the field path one step closer to it (the scenario's own
+  references are not a tag's; they are the placements'). `placements`
+  are the placements whose palette entry reaches it, in block-name order
+  then index. `objects`, the live objects whose definition reaches it,
+  is empty until a game is paired (the click-to-edit design, C5).
+  `highlight: true` outlines the placements in the viewport (a square on
+  the ground each) until the next highlight or selection;
+  `highlight: false` clears them. `tag.chain`'s nodes carry the count as
+  `uses: {placements, tags}`.
 - **Inspector navigation.** `scenario.select {"tag":"weap"}` makes
   a tag the inspector's selection and clears the placement selection.
   `nav.go {"tag":"hlmt","path":"render_model"}` focuses a tag and,
@@ -432,17 +870,45 @@ Notes on some:
   (`encoded_bytes`, `chunks`), and for the permutation asked for (range 0,
   permutation 0 by default) its decoded `channels`, `rate`, `frames`,
   `duration_ms` and `bins` waveform columns of `[low, high]` 16-bit
-  peaks. A permutation that cannot be decoded gives `refusal` in place of
-  those (a codec stream without the game's executable says `This sound
-  needs the game's executable to decode.`) or `error` (a bad length, a
-  missing resource file). It also gives `playback`: whether something
-  plays, which, `position_ms` and the `output`. `sound.play` plays a
-  permutation from `from_ms` through the host's default audio output,
-  opened on the first call, and returns at once; a refusal is `REFUSED`,
-  no device or an unreadable resource `FAILED`. `sound.stop` stops it. The
+  peaks, and its `mouth` curve. A permutation that cannot be decoded
+  gives `refusal` in place of those (a codec stream without the game's
+  executable says `This sound needs the game's executable to decode.`)
+  or `error` (a bad length, a missing resource file); `mouth` is given
+  either way, because the curve needs no executable. It also gives
+  `playback`: whether something plays, which, `position_ms` and the
+  `output`. `sound.play` plays a permutation from `from_ms` through the
+  host's default audio output, opened on the first call, and returns at
+  once; a refusal is `REFUSED`, no device or an unreadable resource
+  `FAILED`. `sound.stop` stops it. `sound.mouth` reads one permutation's
+  mouth curve from the sound's extra-info resource in the map's `ugh!`:
+  `{ticks, curve}` with one aperture value, 0 to 1, per 30 Hz tick, or
+  `curve: null` for an unvoiced permutation (the sound has no extra
+  info, its descriptor index is negative, or the mouth entry is
+  zero-length). With `curve` (one value 0 to 1 per tick, exactly the
+  stored count), `from_sound` (`{gain?, smoothing?}`: the curve of the
+  sound's own loudness), `revert` or `undo` (the last redraw of the shown
+  map; no `tag` needed; the reply's `undone` names it or is null)
+  `sound.mouth` redraws the curve in place: one undo step, shown by every
+  read at once (`edited` is true while it differs from the file), saved
+  with the map as a patch of those bytes in the raw data, the checksum
+  aside. `written` is `{ticks, changed, edited}`. It is `REFUSED`, by
+  name, for a sound whose data is in a shared cache, a permutation that
+  is a split chain, an unvoiced one, a curve of another length and a
+  browsed map; `INVALID_PARAMS` for a value outside 0 to 1 or more than
+  one of `curve`, `from_sound` and `revert`. The window's Sound window
+  draws the same curve under the waveform, draws with a drag on it and
+  calls the same `App::sound_*` methods. `sound.face`
+  is the face preview: the weight the curve gives `at_ms` into a
+  permutation (the byte of that 30 Hz tick over 255, 0 past the end;
+  the playhead by default while that permutation plays), or a `weight`
+  given in place of the sound, and with `on` (an object, a biped) the
+  object posed with its graph's `talk` overlay at that weight over its
+  `idle`, answered as `anim.pose` answers and drawn to a PNG outside
+  Git. `overlay` names another of the graph's animations in place of
+  `talk`; a graph with no `talk` at `combat:any:any` or `any:any:any`
+  is `REFUSED` by name. The
   executable comes from the source: the disc's `default.xbe`, or the one
-  beside a loose map or folder (`H2_XBE` names another). The window's
-  Sound window calls the same `App::sound_*` methods.
+  beside a loose map or folder (`H2_XBE` names another).
 - **Placements.** `scenario.set` takes a number, `[x, y, z]`, or for a tag
   reference `{"id": "0x..."}` (or `null` for none). The scenario checks it
   first: read-only fields, integer ranges, finite floats, palette indices,
@@ -514,13 +980,32 @@ Notes on some:
   together in one `edit.batch`, each with its expected `was` value. Tags use
   the `at` form with hex bytes. The optional `known_epoch` on `edit.map`
   refreshes the loaded datum table used to check reference targets. Undo and redo use the same check.
-  `mirror.pending` returns `pending` rows with `doc,path,effect,text,why` and an optional
-  `tag` and `label`: `effect` is when the change takes effect (`now`, `next_use`,
+  `mirror.pending` returns `pending` rows with `doc,path,class,effect,text,why` and an optional
+  `tag` and `label`: `class` is the change's fan-out class (`field`, `raw`, `shape` or
+  `host`, `app::live::Class`, [live-editors.md](live-editors.md)): `raw` for `geometry`,
+  `bitmaps` and `collision` rows, `shape` for a block layout or a new map string, `host`
+  for a `host` row (a Host change the game has no reload for, or one an attached game
+  in View waits to take, with `host` naming its source), else `field`;
+  `effect` is when the change takes effect (`now`, `next_use`,
   `next_spawn`, `reload` or `not_known`, `play::tag_sync::Effect`) and `text` its sentence,
   the game’s existing `journal` from `edit.changes`, and `leaving`.
   A placement block with a different layout revision from the loaded copy
-  appears as one `Reload` row. Its fields stay out of the batch until undo,
-  redo, or loading a Play copy brings the revisions into agreement.
+  goes to a game that offers `world.placement.edit` as one transaction in
+  Edit; its row is a `now` row while the transaction is out and leaves on
+  the receipt. Otherwise, or when the game refuses or its answer is lost,
+  the block appears as one `Reload` row with the reason (`refused`, and
+  `unknown` for a lost answer), and its fields stay out of the batch until
+  a transaction, undo, redo, or loading a Play copy brings the revisions
+  into agreement. An entry the game wrote without making its object is a
+  `Reload` row of its own (`path` `block[index]`). Rows of this path carry
+  `placement_edit: true`.
+  A structure's level collision edit is one row with `doc` `collision`,
+  `path` `structure_collision:<tag>:0` and `rebuild` (whether the commit
+  changes indices). In Edit it goes as `edit.collision.stage`, then
+  `edit.collision.commit` (realtime-edits.md, "The editor"); a refusal
+  makes it a `reload` row with the game's reason, and a `MISMATCH` marks
+  it `conflict` with `resolvable:false` until the documents change or
+  the user sends again.
   `mirror.apply {what:"send"}` enters Edit. On MISMATCH, `take` and
   `overwrite` require the row’s numeric `at`. `take` reads the field at the
   current game boundary before applying the bytes to the document and baseline.
@@ -544,6 +1029,45 @@ Notes on some:
   waits for an outstanding batch, reverts the journal, and disconnects on
   acknowledgement. Omitting `leave` opens the prompt in the window. Both `edit.set` and
   `edit.revert` enforce the same game-side session check as `edit.batch`.
+- **Game picture.** The Game panel shows the paired game's own frames,
+  read from the game's `render.picture` ring ([game-view.md](game-view.md),
+  `play/picture.rs`). `game.status` answers `{mode, camera, own, attached,
+  picture}`: `mode` is `own` or `attached` (which game the panel follows,
+  `game.mode`) and `camera` is `player` (`game.camera` is not built); `own`
+  is `{state: "none"}`, or `{state: "starting" | "running", map, socket,
+  editor}` for the game this editor started (`running` once its link is up;
+  `editor` is whether it was started with `--editor`); `attached` repeats `pair.status`'s socket, map, phase
+  and tick with the link plate's state and text, and is null before the
+  window has run its game link; `picture` is null with no pairing. Its
+  `state` is `connecting`, `open`, `stalled` (no new frame for two
+  seconds; `age_ms` says how long), `closed` (the game closed the picture)
+  or `failed` (`why`: a game over `tcp://`, whose JPEG stream Studio does
+  not decode, a game with no frame source, a lost connection). It also has
+  `size` of the newest frame, `asked_fps`, the frames taken, `dropped`
+  (frames the game published that no poll took), `fps` over the last
+  second, `age_ms`, the frame's game `tick`, `tick_lag` (the game's tick at
+  the link's last poll minus the frame's) and `events` (the `picture`
+  events the game sent). Reading it takes the newest frame, so the numbers
+  are those of a reader that polls once per call.
+  `game.snapshot {out?}` takes the newest frame and writes it as a PNG at
+  the size the game published (default under the output directory,
+  `game/<map>.png`), answering `{path, width, height, frame, tick}`. It is
+  `REFUSED` with no picture, with no frame yet, after a failed or closed
+  picture, and for a path inside a Git checkout. The picture is opened when
+  the pairing learns the game offers `render.picture.open`, and again when
+  the game closed it; it ends with the pairing.
+  `game.start` leaves a request for the window (or `h2-editor --serve`) to
+  start the editor's own game on the open document, as `h2 play --editor`,
+  and answers `{requested: true}`; it replaces a game this editor started
+  before, and sets the panel to `own` when it starts. It is `REFUSED` with
+  no game link yet, with no map open, or while the link is connecting or a
+  playtest runs. `game.stop` asks the same for the end of that game
+  (`REFUSED` when the editor started none). `game.mode {mode}` is `own` or
+  `attached`; `own` is `REFUSED` while there is no own game. The window
+  follows it with the mirror and the picture: `own` pairs the game this
+  editor started, `attached` pairs the game last paired that it did not
+  start (one link, so the other is left). F5 and the Play button go
+  through the same start as `game.start`, and set the panel to `own`.
 - **Live mirror.** The paired editor reads the game's `objects`,
   `players` and `camera` stream. `mirror.status.stream.refused.camera`
   says why a game has no camera layer. `mirror.status` reports the stream state, layers,
@@ -620,8 +1144,8 @@ Notes on some:
   Counts include hidden entries. For example,
   `view.layers {"preset":"everything","set":{"fog":false},"xray":true}`
   shows every layer except fog and draws occluded overlays at quarter
-  strength. Presets are `art`, `gameplay`, `collision`, `navigation` and
-  `everything`.
+  strength. Presets are `art`, `gameplay`, `collision`, `navigation`,
+  `playtest` and `everything`.
   Individual switches apply after the preset. An invalid name or value
   rejects the entire request. The window and `view.snapshot` share these
   settings.
@@ -637,6 +1161,21 @@ Notes on some:
   `kill_volumes`. The Navigation rows are `pathfinding`, `bot_nav` and
   `bot_spots`, counting sectors, bot polygons and spots; the bot rows
   count 0 until the bots' data has loaded (`nav.bots`).
+  The Playtest rows are `playtest_kills`, `playtest_deaths`,
+  `playtest_spawns`, `playtest_traffic`, `playtest_flow`,
+  `playtest_unvisited`, `playtest_sightlines`, `playtest_weapon_use` and
+  `playtest_stuck`; they start hidden and the Playtest and Everything
+  presets show them. Each `count` is its marks in the result `playtest.*`
+  last published (below), 0 with none; a row also has `refused`, the
+  measure's refusal text when it had too few events, else null.
+  `diff` draws them as differences: `true` compares the shown run with
+  its `compare_to`, else the baseline; a run id or `baseline` names the
+  other side; `false` draws the result itself. The reply's `diff` is
+  `{a, b, game_type}` while one is drawn, else null; each playtest row's
+  `count` is then its difference marks and `refused` says why a layer has
+  none (the sightlines have no difference layer). With nothing to compare
+  (only the baseline is shown, or no run) the call is `REFUSED` and
+  changes nothing.
 - **Trigger volumes.** `volume.list {}` returns `{volumes, kill_triggers,
   bsp_switches, selected, error}`. Each volume has its `index` in the
   scenario's trigger volume block, `name` (the string ID's text, or null),
@@ -708,12 +1247,14 @@ Notes on some:
   (a mesh built in memory on a large map takes a while). `state` is
   `no_map`, `idle`, `loading`, `ready` or `failed` (with `error`);
   `origins` names each BSP's cache file, or `built`; `counts` has the
-  polygons, links, wall triangles and spots; `links_by_kind`,
+  polygons, those out of the map (`out_of_map`), links, wall triangles
+  and spots; `links_by_kind`,
   `spots_by_kind` (bounce, strip, crouch) and `spots_by_state` (proven,
   failed, dead, learned, training, likely) count them; `notes` says what
   was built or scanned instead of read, and which file did not read.
   `polys`, `links` and `spots` list them, each paged by `offset` and
-  `limit`. `nav.pick {origin, dir}` or `{point, within}` (0.3 units)
+  `limit`; a polygon row's `out_of_map` is true for one only a glitch
+  reaches ([bots.md](../game/bots.md) §3.2, "In the map"). `nav.pick {origin, dir}` or `{point, within}` (0.3 units)
   returns what a ray meets or a point names: a bot spot or link first,
   else the nearer bot polygon or pathfinding sector, whatever layers are
   shown unless `shown`; `layer` keeps one layer's. `select` selects it;
@@ -721,6 +1262,82 @@ Notes on some:
   or `spot`, indices as the lists give them). The three layers
   (`pathfinding`, `bot_nav`, `bot_spots`) start hidden; the Navigation
   and Everything presets show them.
+- **Playtest's static checks.** (`studio::app::playtest_static`;
+  [playtest.md](playtest.md#static-checks).) `playtest.static` checks the
+  open map as edited, saved or not, with no match. It starts the bots'
+  mesh load as `nav.bots` does, and `wait` blocks until it is done; `nav`
+  is that load's state. `problems` lists each finding as `{kind, text,
+  target}`: `no_mesh` (no mesh to check against, and why), `off_mesh` (a
+  starting location, netgame item or netgame flag over no polygon, from
+  0.1 units under its floor to 1 over it), `unreachable` (a starting
+  location the mesh's links do not lead from to another), `island`
+  (polygons no starting location reaches, grouped by their links, 1
+  square unit or more), `one_way` (a link from the reached mesh into
+  polygons with no way back, one per trap) and `in_sight` (two starting
+  locations not of one team with a clear line between their eyes, 0.6
+  units up and at most 40 apart, through the level collision). A
+  `target` is `{block, index}` for `nav.go`, `{kind: "poly", index}` for
+  `nav.pick`, or `null`. `ok` is true when there is no problem. `ready`
+  has one row per built-in game type (`rules::builtin::ALL`): its
+  `game_type`, `engine` and `ok`, and `missing`: the start gate's
+  problems with the map's census for teams 0 and 1, two starting
+  locations on the mesh, and for Capture the Flag a `ctf_flag_spawn`
+  flag per team, for Assault an `assault_bomb_spawn` flag per team (or a
+  neutral one) and an `assault_bomb_return` flag per team, and for both a
+  starting location each team can use (its own or one with no team).
+  Without a map it is `NO_DOCUMENT`.
+- **Playtest's runs.** (`studio::app::playtest`;
+  [playtest.md](playtest.md#what-a-run-is).) `playtest.run` plays the
+  open map through a sim runner: it checks the map as `playtest.static`
+  does, builds the project, makes the bots' mesh for the build, writes
+  `match.json` and `batch.json` under `<cache>/playtest/<run>/` and
+  starts the batch, then answers at once with `{run, build, matches,
+  parallel, cached}`. `preset` is `probe` (the default: seeds 1 to 4 of
+  the first ready game type, 2 game minutes), `standard` (seeds 1 to 8
+  of every ready game type, 5 minutes) or `soak` (seeds 1 to 32 of every
+  ready game type, each played twice with the sides swapped, to the
+  score limit). `seeds` (1 to 256) replaces the count, `minutes` (1 to
+  120) the length, `bots` (2 to 16, default 4) the seats, and
+  `game_types` names the ones to play (any name `h2 sim` takes); one
+  that is not ready is refused. A run with the same build, match, seeds,
+  bots' version and image as a finished run with no failed match answers
+  with that run and `cached: true`, and starts nothing. A newer run
+  cancels one still going. With no sim runner connected (none is wired
+  to the window yet) it is `REFUSED`; with no game type ready it is
+  `FAILED` and says what each lacks; a bad param is `INVALID_PARAMS`.
+  `playtest.status` gives `{run, state, preset, build, compare_to, done, total,
+  speedup, stale, coarse, failed}`: `state` is `none` (no run yet),
+  `running`, `done`, `failed` (every match failed) or `cancelled`;
+  `speedup` is game seconds played per wall second; `stale` is true once
+  a newer run's build is another build; `coarse` is true under 8 seeds;
+  `failed` lists `{game_type, seed, swapped, why}`. `playtest.result`
+  answers over the matches that ended so far, for one `game_type` (the
+  first played by default): the run's `build`, `map`, `match_file`,
+  `seeds` and `game_types`, `traces` and `seconds` counted, `partial`
+  while matches are still to come, and `measures`: each of `heat`,
+  `spawns`, `flow`, `sight`, `items` and `stuck` as `{ok: true}` or
+  `{ok: false, refused: {measure, what, have, need}}` when its events are
+  too few. With `measure` it answers that one in full: `ok` and `value`
+  (its bins) or `refused`. `playtest.cancel` stops the running run, or
+  the one named, and answers `{cancelled}`; what came back stays. `compare_to` on `run` is a run's
+  id or `baseline` (the first run of the session with a match that
+  ended), kept on the run. `playtest.compare` compares two runs over the
+  same seeds, length, seats and sides (otherwise `INVALID_PARAMS`): `a`
+  defaults to the newest run's `compare_to`, else `baseline`, `b` to the
+  newest run, `game_type` to the first both played. It answers `measures`
+  (each scalar's `a` and `b` means over seeds, `spread`, `n_a`, `n_b` and
+  `changed`, true only when the means differ by more than the spread; the
+  spread is null with fewer than two seeds), `changed` (their names),
+  `layers` (each difference layer's `marks`, the five biggest as `top`,
+  or `refused`) and `static` (`gained` and `lost` problems), or
+  `{compared: false, why}` when the newest run is the baseline or no
+  match has ended. A call
+  names a run by its id (`r1`), or the newest. Each of `run`, `status`,
+  `result` and `cancel` publishes the newest run's result (for the
+  `game_type` of a `result` call, else the one already shown, else the
+  first played) to the viewport's playtest layers and the Playtest panel
+  (`app::playtest_shown`); `view.layers` counts them and `view.snapshot`
+  draws them.
 - **Renders.** `ui.render` draws on the CPU (no GPU needed); `view.snapshot`
   renders the open map offscreen through the viewport's own renderer
   (wgpu, no window) and answers `NO_GPU` on a machine without an adapter.
@@ -730,7 +1347,8 @@ Notes on some:
   `lightmap of another BSP`, `lightmap does not decode`), the world's
   `triangles` by blend with `solid_triangles` and `lightmapped_triangles`,
   every material (`shader`, `template`, `blend`, `blend_from_passes`,
-  `emissive`, `base`, `details`), the `sky` drawn and the `atmosphere`
+  `emissive`, `base`, `details`, and `mask`: the coverage mask a
+  see-through layer multiplies in, or null), the `sky` drawn and the `atmosphere`
   read from it (`sun` direction, colour and power; `fog` colour, density,
   start and opaque distance; `fallback_rgb`). `{"scene": false}` while
   the viewport shows the grey world (no art built). `native` is the
@@ -749,7 +1367,7 @@ Notes on some:
   cause with how many, `refused`, as `cause: detail`: `program` for the
   load's refusals, such as a view constant the camera does not give or
   a layer-3 stage bitmap that is not 2D, then the plan's causes,
-  `animated`, `fog`, and for layer 1 `layer 1: stencil mode not checked
+  `animation` for an unsupported target, `fog`, and for layer 1 `layer 1: stencil mode not checked
   against the game`; and `parts_refused`, layer 3's parts of a drawn
   material that its pass does not take, by cause with how many, which
   draw the base look; they draw in the `game` mode only), the `errors` of BSPs that
@@ -766,6 +1384,658 @@ Notes on some:
   map: `h2 studio open mainmenu`, `h2 studio render-stats`, then
   `h2 studio snapshot` and look at the PNG.
 
+### The preview switch
+
+`preview.target {doc?, target?}` reads or sets where a document's preview
+shows (docs/editor/studio-redesign.md, "Preview and the paired game";
+`app/preview_switch.rs`, `api/preview.rs`). `doc` is a `shell.tabs` id
+(the front tab without it). `target` is `studio` (the native view or the
+kind's own renderer, the default), `game` (a game Studio started) or
+`attached` (a game someone else started). A game target needs a paired
+game of that kind, else it is `REFUSED` with the reason. The answer is
+`{doc, target, targets: [{id, label, available, why?}], game, why?, in_game: {available, why?}}`.
+`game` is the `pair.preview` params the document's kind takes, or null
+with `why`:
+
+| Document | `game` |
+|---|---|
+| a `weap` tag | `{what: "weapon", target: <tag name>}` |
+| a `vehi`, `bipd`, `scen` or `eqip` tag | `{what: "object", target: "<group>:<tag name>"}` |
+| a `wgit` or `wgtz` tag, or the screen in the UI Screens tool | `{what: "ui", target: <screen name>}` |
+| a `nhdt` tag, or the HUD tool's document | `{what: "hud"}` |
+| a `snd!` tag | `{what: "sound", target: <tag name>}` |
+| any other tag (`lsnd` and `ugh!` too), the map, a script, a variant or a playlist file | null, with why |
+
+The header and **Preview** menu both hold the three targets and **In
+game** (Cmd/Ctrl+Enter). `pair.preview {doc?}` runs that action on a tab
+from `shell.tabs`, or the front tab without `doc`. The document form
+takes only `doc`; use the explicit `{what, ...}` form to customize a
+paired preview. `preview.target` gives its paired params in `game` and
+the availability of **In game** in `in_game`.
+
+- A paired preview answers with its job id. The Game panel shows the
+  state and any refusal or warning from `pair.result`.
+- A variant queues the same own-game launch as `game.start`, on the open
+  multiplayer map with the variant's unsaved record. A named rules
+  script travels with the record when Studio has its IR.
+- A script compiles the open buffer and queues `rules.reload` on Studio's
+  own game. If needed, Studio starts an own game on the open multiplayer
+  map with a record for the script's carrier. The reload waits for the
+  own game's gameplay phase and uses the editor's reload mode.
+
+The variant and script forms answer `{requested: true}`. The Game
+panel, `game.status` and `rules.get` show the launch or reload outcome.
+
+```sh
+h2 studio preview.target '{"target":"attached"}'
+h2 studio pair.preview '{}'
+```
+
+The tests are `api/preview/tests.rs`' `switch` module, on the invented
+game.
+
+### Previewing content in the paired game
+
+`pair.preview` puts content into the paired game and reads it back, so a
+weapon, an object, a menu screen or the HUD is checked in the running game
+rather than found in play (`crates/apps/studio/src/api/preview.rs`). It
+answers at once with `{id, state}`. `pair.result {id?}` reads the job
+(the latest one without `id`). One job runs at a time and the last eight
+are kept.
+
+| `what` | `target` | The game calls, in order |
+|---|---|---|
+| `weapon` | a `weap` tag's name or datum (required) | `sim.give` to `player` (default 0; `keep: true` adds it as a spare), `session.wait`, `world.object` for the held weapon, `pogo.state`, `render.scene`, the capture |
+| `object` | an object tag's name or datum (required; `vehi:<name>` names the group) | `world.object` for the player, `sim.spawn` at `pos`, else `distance` (default 3) world units in front of the player and facing them, `session.wait`, `world.query` near it, `render.scene`, the capture |
+| `animation` | an object tag with its group (required: `scen:<name>`, `vehi:`, `mach:`, `bloc:` or `crea:`), and `animation`, a name in the object's own graph (required) | `world.object` for the player, `sim.spawn` as for `object`, `world.object.animate`, `session.wait`, `world.query` near it, `render.scene`, the capture |
+| `ui` | the screen expected (optional) | `ui.audit`, `ui.stack` and `ui.screen` where listed, the capture |
+| `hud` | a `<name>.state` method to read with it (optional: `superbounce`, `pogo`) | `cheat.list`, `cheat.set hide_hud false` when it was on, `session.wait`, the state, `render.scene`, the capture, then `hide_hud` back on |
+| `sound` | a `snd!` tag's name or datum (required) | `audio.play` to `player`, `audio.voices` every 100 ms for `seconds` (0.1 to 30, default 2), `audio.loops` |
+
+An `animation` preview checks the game lists `world.object.animate`
+before it spawns anything, and fails the job when it does not. `ticks`
+is the wait between the animation's start and the one capture; the
+result's `applied` holds the `spawn` and `animate` answers, and `reads`
+the object's `world.query` row and the animation's start
+([`world.object.animate`](../runtime/agent-api.md#worldobjectanimate)).
+
+A `sound` preview has no picture. Beside the game's readings (`applied`,
+the answer of `audio.play`, and `audio`, as `pair.audio` gives it) the
+result has `editor`: Studio's own `sound.measure` of the tag (levels and
+verdict against the open map's sounds), or `{why}` when the tag is not in
+the map the Tags tool shows. A game that does not list `audio.play` fails
+the job. The sound starts at the player's unit through the game's own sound
+start ([`audio.play`](../runtime/agent-api.md#audioplay)).
+
+The other params are `ticks` to let run before the reads (0 to 600;
+default 30, and 0 for `ui`), `view` for the picture, `out` to copy the
+PNG to, and `edits` (`send`, the default, or `skip`). `view` is `render`
+(the default: `render.capture`, falling back to `host.screenshot`) or
+`screen` (`host.screenshot`, the window's frame as the player sees it).
+
+Pending edits reach the game first, through the pairing's own path. With
+edits waiting and the editor in View, the job queues `mirror.apply
+send`'s request. It is `sending` until the window has sent every waiting
+row (up to 15 s, else `failed`). A conflict, a refused write or an edit
+that needs a reload stays in Pending. The result lists those rows under
+`edits.left`, with a warning. A preview of a paused game is `REFUSED`,
+except for `ui`.
+
+The game calls run on a thread and a socket connection of their own, so
+the window keeps drawing. A method the game does not list is skipped.
+A missing method the preview needs (`sim.give`, `sim.spawn`, `ui.audit`
+or `ui.stack`) fails the job, and so does a game refusal, with the game's
+message in `why`.
+
+`pair.result` gives `state` (`sending`, `running`, `done`, `failed`),
+`why`, `elapsed_ms`, `steps` (the game calls made so far) and `edits
+{pending, sent, left}`. Once the job is done it also gives:
+
+- `applied`: the game's answer to `sim.give` or `sim.spawn`.
+- `reads.weapon`: `object`, `tag`, `name`, `held` (the player's held
+  weapon's tag is the given one after the wait) and `held_tag`.
+- `reads.pogo`, where `pogo.state` is listed: `stick` (the weapon is one
+  of the kit's three), `active`, the `rider` holding it and the chase
+  `camera` (`on`, `drawn`, `room`, `share`).
+- `reads.camera`, where `render.scene` is listed: the last sealed scene's
+  `views` (`key`, `instances`, `cut`) and `first_person {views, drawn}`.
+  `drawn` is true when a `first_person:` view drew an instance.
+- `reads.object`: the spawned object as `world.query` lists it, or null.
+- `reads.ui`: `shown` (the names and ids of `ui.audit`'s active surface
+  and menu, and `ui.screen`'s class and screen), `matches`, and the raw
+  `audit`, `stack` and `screen`.
+- `reads.hud {hidden_before, shown}` and `reads.state`.
+- `capture`: `path`, `method`, `tick`, `present`, `width`, `height`,
+  `mean_luma` (Rec. 709, 0 to 1), `dark_share` (pixels below 4% luma) and
+  `black` (a `dark_share` of 98% or more).
+- `warnings`: a black frame, a weapon not held, no first-person view
+  drawn (except while the Pogo chase camera draws), no rider for a Pogo
+  stick, a chase camera asked for and not drawn, a spawned object not
+  found, another screen shown, `ui.audit` issues, edits left in Pending.
+
+`pair.preview` does not open a menu screen. The game API has no call that
+opens a screen by name: the guest opens screens from its own UI code
+(`game::ui_kit::dialog_tag::open_over`), and a host call into it would
+need a guest call queue like `sim.give`'s. Drive the menu to the screen
+with the game's `ui.press`, then preview `ui`.
+
+`pair.audio {seconds?, every_ms?, call?}` makes `call` (`{method,
+params?}`, a game method that makes the sound, such as `pogo.test`),
+samples the game's `audio.voices` every `every_ms` (20 to 1000, default
+100) for `seconds` (0.1 to 30, default 3), then reads `audio.loops`.
+`pair.result` gives `audio`:
+
+- `samples`, `voices` (distinct voice ids) and `most_at_once`.
+- `peak_gain` and `peak_db`: the largest `applied_gain`, the level a
+  voice's direct path leaves the mixer with, before bin volumes and pan.
+- `loudest`: the eight loudest voices, with `id`, `kind`, `peak_gain`,
+  `peak_db`, `volume_mb`, `distance_units` and `samples`.
+- `loops`: the looping sounds playing, with `tag_name`, `tag_datum` and
+  `segment`.
+
+These are mixer gains, not the samples' own level. The game has no output
+meter (`H2_AUDIO_STATS` reports playout health, not level), so a sample
+that is too loud at full gain shows here only as a voice at 0 dB. A
+sound's own level is read in the editor from its tag.
+
+```sh
+h2 studio pair.preview '{"what":"weapon","target":"objects\\weapons\\multiplayer\\pogo\\unsc\\pogo_unsc","out":"/tmp/pogo.png"}'
+h2 studio pair.result '{"id":1}'
+h2 studio pair.audio '{"seconds":3,"call":{"method":"pogo.test","params":{"trick":"backflip"}}}'
+h2 studio pair.result
+```
+
+### Generating images
+
+`image.generate` makes a picture for an image of a bitmap from a prompt
+and reference pictures, and the `image.*` calls after it put the
+picture into the image through the Textures tool's own edits
+(`crates/apps/studio/src/api/image_gen.rs`, `src/app/image_gen.rs`,
+`src/imagegen.rs`). The window's Generate button does the same
+([editor-guide.md](editor-guide.md#generating-an-image)). A generation
+takes a minute or more, so it runs as a job: `image.generate` answers at
+once with `{id, state: "running", generator, slot}` (`slot` is
+`{bitmap, image}` or null) and `image.result {id?}`
+reads the job (the newest without `id`). One job runs at a time and the
+last sixteen are kept.
+
+`image.generate`'s params:
+
+- `prompt`: what the picture is.
+- `references`: a list, empty for none. Each is a PNG path, or
+  `{bitmap, image?}`, an image of the open map's bitmap, exported as a
+  PNG into the job's directory for the generator. The references are
+  the user's choice: an agent passes the ones the user named (for a menu
+  icon, the other icons of the same bitmap), and never picks disc images
+  of its own accord.
+- `bitmap` and `image` (default 0): the slot, named as `bitmap.*` names
+  a bitmap. The picture is fitted to the slot. `image: "new"` (which
+  needs `bitmap`) first adds an image to the bitmap (`bitmap.image.add`),
+  shaped like image `like` (default 0) or made at `size`, and makes it
+  the slot; the answer's `slot` names it. Without a slot, `size
+  [w, h]` fits it to that size as 32-bit RGBA; with neither, it is kept
+  as it came. A slot and a size together are `INVALID_PARAMS` (a `new`
+  slot is the one case that takes both).
+- `alpha`: `auto` (the default: the picture's own alpha, except that an
+  opaque picture going into an `A8` or `AY8` image takes its
+  brightness), `image`, `luma` or `opaque`.
+- `out`: a path to copy the fitted PNG to.
+- `from`: the job this one regenerates, with the same or a tweaked
+  prompt. The result and the provenance name it.
+
+The job gives the source the prompt with the slot's needs added
+(`imagegen::compose_prompt`): its size, a transparent background when the
+format keeps alpha, and how the references are meant (match their style,
+palette, line weight and framing, not their subject). It keeps the
+source's picture as `generated.png`, then fits it (`imagegen::fit`). The
+picture is resampled with the Textures tool's filter: stretched when the
+aspects are within a tenth, else centred on transparent pixels. Then
+each pixel is rounded to what the slot's format stores and its decoder
+gives back. The uncompressed formats round as `assets::encode` stores
+them and `gfx::convert` reads them. The DXT formats encode each 4 by 4
+block with `assets::encode::encode_block` and decode it with `gfx::dxt`.
+The fitted picture, `fitted.png`, is what the game shows. A slot of a
+format that is not a picture (`P8`, bump, float) is `REFUSED`, and so is
+a cube map or a volume. A slot with a `bitmap.reshape` asked for is
+fitted to the reshape's format.
+
+`image.result` gives `state` (`running`, `done` or `failed`),
+`generator`, `elapsed_ms`, `prompt`, `references` (each with its `path`
+and `origin`, `file` or `map` with its `bitmap` and `image`), `slot`,
+`size`, `dir` (the job's directory, in the cache's `studio/imagegen/`),
+`from`, and `applied`, `accepted` (the files written, or null) and
+`discarded`. A done job adds `raw {path, width, height}`, `fitted {path,
+width, height, format, alpha}`, `revised_prompt` and `out`. A failed one
+adds `why`, the source's message, and `error`:
+
+| `error` | Meaning |
+|---|---|
+| `missing` | the generator is not installed (`codex` not on `PATH`); `why` says how to install it and sign in |
+| `unauthenticated` | Codex is not signed in; `why` says to run `codex login` and sign in with ChatGPT |
+| `quota` | the ChatGPT account's allowance is used up; `why` has Codex's message, with when it renews |
+| `no_image` | the run finished without a picture |
+| `failed` | anything else, with the generator's message |
+
+Then:
+
+- `image.apply {id}` writes the fitted picture into its slot as one
+  `BitmapAction::Import`, one undo step, after keeping the slot's pixels
+  as `original.png` in the job's directory. The picture then shows
+  wherever the image is used: the Textures canvas, `bitmap.pixels`, the
+  UI Screens tool's pictures and `ui.render` (the disc's picture of the
+  bitmap, `UiScreens::show_image`), and a paired game through the
+  Textures tool's live sync ([realtime-edits.md](realtime-edits.md)).
+  `pair.preview {what: "ui"}` captures the menu with it. A job without a
+  slot, or one that failed, is `REFUSED`.
+- `image.accept {id, save?}` keeps it, applying it first if it is not in
+  its slot. The picture stays as the bitmap's edit and saves with the
+  map (`doc.save {doc: "bitmaps"}`), like any texture edit. It writes `provenance.json` in
+  the job's directory and logs a line naming the bitmap, the generator,
+  the references and the prompt. With `save` (a directory) it copies
+  `<bitmap>-<image>.png` (the generator's picture),
+  `<bitmap>-<image>.fitted.png` and `<bitmap>-<image>.provenance.json`
+  there. A job made to a `size` has no slot: accepting it keeps the art
+  and its provenance (`image-<id>.png`, `image-<id>.fitted.png`,
+  `image-<id>.provenance.json` under `save`) for an image made later,
+  and changes no bitmap.
+- `image.discard {id}` takes it out: the import's undo step while it is
+  still the newest step of that bitmap, else the original pixels
+  imported back.
+
+The provenance names the prompt, the prompt sent, the generator's
+rewrite of it, every reference with its origin, the generator (`codex-cli
+0.170.0 (ChatGPT image generation)`), the slot, the alpha, the job it
+regenerates, and whether it was accepted. Generated art is original
+AI-made art and may go in the repository with its provenance; every PNG
+there is stored in LFS.
+
+**The source.** `imagegen::ImageSource` makes the picture.
+`H2_IMAGEGEN` picks it: `codex` (the default) or `fake`. An OpenAI API key
+source, with the key in the Keychain under the service `openai`, is
+another implementation of the trait; it is not built.
+
+- **Codex** (`imagegen::codex::CodexCli`) uses ChatGPT's image generation
+  on the user's ChatGPT sign-in to the Codex CLI, with no API key. It
+  first runs `codex --version` and `codex login status`. Then it runs
+  `codex exec --image <ref>... --json --skip-git-repo-check --sandbox
+  workspace-write --cd <job dir> --output-last-message <job
+  dir>/codex-last-message.txt` once, with the prompt on stdin (`--image`
+  takes many values, so a prompt argument after it would be read as an
+  image). The prompt asks Codex to make one image with its image
+  generation tool and copy it to `out.png` in the job's directory. The
+  picture is `out.png`, else a `saved_path` in the run's events, else
+  the newest PNG in `$CODEX_HOME/generated_images/<thread id>/` (Codex
+  saves each picture there, the thread id from the `thread.started`
+  event), else a PNG path in the last message. The events are kept as
+  `codex-events.jsonl` in the job's directory. A run may take up to ten
+  minutes. Studio never reads Codex's credentials.
+- **The fake** (`imagegen::fake::FakeSource`) draws a disc on a
+  transparent ground, its colour from the prompt. The tests use it, and
+  `H2_IMAGEGEN=fake` tries the flow with no generator.
+
+Into an image the map has (here `mp_games2`'s last icon), then into no
+slot, at the icons' size, for an image made later, then into an image
+the bitmap did not have, added first:
+
+```sh
+h2 studio image.generate '{"prompt":"a radar dish","references":[{"bitmap":"mp_games2","image":0},{"bitmap":"mp_games2","image":3}],"bitmap":"mp_games2","image":10}'
+h2 studio image.result '{"id":1}'
+h2 studio image.apply '{"id":1}'
+h2 studio pair.preview '{"what":"ui"}'
+h2 studio image.accept '{"id":1,"save":"art/ui-icons"}'
+h2 studio doc.save '{"doc":"bitmaps"}'
+h2 studio image.generate '{"prompt":"a radar dish","references":[{"bitmap":"mp_games2","image":0}],"size":[40,40]}'
+h2 studio image.accept '{"id":2,"save":"art/ui-icons"}'
+h2 studio image.generate '{"prompt":"a radar dish","references":[{"bitmap":"mp_games2","image":0},{"bitmap":"mp_games2","image":3}],"bitmap":"mp_games2","image":"new"}'
+h2 studio image.apply '{"id":3}'
+h2 studio doc.save '{"doc":"bitmaps"}'
+```
+
+### The tag workspace
+
+The tags tree (docs/editor/tag-workspace.md): every tag of the disc as
+loose files under the data root, what every map is built from.
+`workspace.status` reports it: the root (the `tags_root` setting,
+`<data>/tags/` unless set, saved with the window layout), the maps
+extracted with their lossy and refused counts, the plan's stale parts,
+an extraction in progress and what the last one did, the sizes of
+everything the workspace holds (the tree, each layer under
+`<data>/workspace/`, each project's build cache, each package under
+`<data>/maps/`), and `start_page`, whether the first start's window is
+showing. `workspace.extract {disc}` runs the plan: `disc` is an image, a
+`.map` file or a folder of maps (the recorded disc, `H2_DISC` or
+`disc/halo2.iso` when not given), `maps` limits it to those, `verify`
+reads every stored file back, and `root` sets the tree's root — refused
+inside a Git checkout, for the tree is game data and never sits in a
+repository. It answers at once with the maps it will read; the progress
+is in `workspace.status` and the window's status line, and work
+continues while the tree fills. An unchanged disc is a no-op, and a
+later start of the editor runs the plan against the recorded disc in the
+background. `workspace.prune {dry_run}` removes raw resources no tag
+file or manifest names, generated layers no project asks for and build
+caches unused for a week — with `dry_run`, what would go; the outputs of
+deleted projects are the projects' and are not pruned. The tree itself
+is never pruned in part: it is deleted whole and extracted again.
+`workspace.import` (planned) stores a map as an import layer (W9).
+
+The window's first start — no tree, no source open other than a disc
+image — is one step: choose the disc (`H2_DISC` and `disc/halo2.iso`
+offered), see the size and the time, extract every map with the status
+line's progress bar. It makes the same calls.
+
+```sh
+h2 studio workspace
+h2 studio workspace.extract '{"disc":"/Volumes/halo2.iso"}'
+h2 studio workspace
+h2 studio workspace.prune '{"dry_run": true}'
+```
+
+The first start and the plan run headless on an invented map
+(`app::workspace::tests`: a root inside a Git checkout refused, the
+background plan extracting a changed disc, the sizes walked, prune
+keeping what a tag file or a manifest names); the API's tests
+(`api/tests.rs`) do the same through the dispatcher, and every method's
+example runs in `every_method_in_methods_has_a_test`.
+
+### The browser
+
+`asset.*` is the browser's data (docs/editor/studio-redesign.md, "The
+browser"; `app/assets.rs`). An asset is named by an id: `tag:<group>:<path>`
+(a tag of the tree, or one a package adds), `package:<id>` or
+`item:<package>:<n>` (the n-th item of a package's manifest).
+
+`asset.list {root?, package?, kind?, map?, query?, limit?}` answers
+`{rows, total, limit, truncated, maps, kinds, problems}`. With `root`
+`tags` (the default) a row is one tag path of the tags tree: a tag every
+map holds alike is one row with `variants: []`; where maps hold
+different versions the row's `variants` lists each (`variant`, null for
+the main file, and its `maps`). A tag a package adds is in the same list
+(`new: true`, `origin: "package"`, badge `new in <package>`); a tag an
+edit line of a package on touches has badge `edited by <package>` and
+the packages in `packages`. `kind` is one of `kinds` (Maps, Objects,
+Models, Animations, Bitmaps, Shaders, Effects, Sounds, Screens, HUDs,
+Strings, Other, Voices) or a tag group; the kind `Voices` lists a
+`voice:<id>` row for each character and the announcer, with `state` (`no
+dataset`, `dataset`, `fine-tuned` or `announcer`), `minutes`,
+`pending_asr` and `tuned`; `map` keeps what that map's manifest
+holds, with the tags a package adds for it; every word of `query` must
+match the path, group, kind or a package id; `package` keeps what that
+package adds or edits. `root` `packages` lists the set (baked, then
+`<data>/packages/`) with on or off and why; with `package` it lists that
+package's items. On item rows, `kind` is the Browser kind of what the
+item builds (including **Game types** and **Playlists**), and `item_kind`
+is its manifest kind. Use `kind` to filter those rows. `root` `live` answers `offline: true`: the server's
+offer is not held. A missing tree is refused with the way to make it
+(`workspace.extract`).
+
+`asset.thumb {asset, out?}` writes a PNG and answers its path: for a
+package's bitmap item with a PNG source. A tag's own picture (a bitmap,
+a model through `model.render`, a waveform, a screen) is not drawn yet
+and answers `not-yet`.
+
+`asset.copy {asset, package?, to?}` is **New from this...**. It writes
+`tags/<path>.<group>.yaml` holding only `like: '<group>:<path>'`, adds a
+`tag` item to the package's `package.toml` and rewrites its
+`package.lock`. The package is one under `<data>/packages/` (a baked one
+is refused); the new path is `to`, or the source's with `_copy`; a path
+the tree or the package already has is refused. The reply gives the
+new source tab's `item:` id as `doc`. With no `package`, the method uses
+the edit target or returns `NO_TARGET`.
+
+`asset.links {asset}` answers what the asset uses, what uses it and which
+editors open it (docs/editor/studio-flow.md, "Links"; `app/links.rs`):
+`{asset, uses, used_by, changed_by, editors, problems}`. A link is `{asset, role, via}`;
+`role` groups it (Model, Animations, Sounds, HUD, Projectile, Variant,
+Voice, Package, or the target's kind). A tag's `uses` are the tags its file
+references (`via` is `node <n> +<offset>`) and, for a dialogue sound, the
+voice that says it (`voice:<character>`); its `used_by` are the tags that
+reference it and the packages that add or edit it; its `changed_by` is every
+package with a patch on it in load order, each `{package, item, asset, change,
+maps, forked, blocks, fields: [{path, value, from?, wins}]}` (`change` is
+`edit`, `patch` for a `tag-delta` or `replaces`; `wins` is false for a field
+a later package sets or an asset a later package overrides whole;
+`app/mods.rs`). A `variant` item uses the
+`rules` item of its script key, which lists the variant under `used_by`.
+An item lists the tag it adds or edits and its package; a package lists its
+items and `requires`. `editors` is `[{id, label, why_not}]`. A tag file that
+does not decode, or a missing tree, is named in `problems`. A bad id is
+`INVALID_PARAMS`; an unknown package or item number is `REFUSED`.
+
+```sh
+h2 studio asset.list '{"kind":"Objects","query":"rifle"}'
+h2 studio asset.list '{"root":"packages","package":"pogo"}'
+h2 studio asset.copy '{"asset":"tag:weap:objects\\weapons\\rifle","package":"my-pack"}'
+h2 studio asset.links '{"asset":"tag:weap:objects\\weapons\\rifle"}'
+```
+
+`asset.fork {tag, map, package?, set?}` is Fork for this map
+(docs/engine/asset-store.md, "In Studio"; `app/mods.rs`). `tag` is
+`<group>:<path>` or `tag:<group>:<path>`; `package` is a local package, else
+the edit target (`NO_TARGET`). The tag's lines go into `edits/<map>.yaml` of
+the package, an `edits` item whose `maps` names `map` alone, so every other
+level reads the asset as it was. Without `set` the lines are the ones the
+package's other `edits` items that reach `map` have for the tag (the last to
+set a path wins); with `set`, a list of `{path, value, from?}`, those lines are
+put in by path. The answer is `{package, tag, map, file, item, lines,
+from_items, created}`. A tag with no line to fork, a tag forked for the map
+already (without `set`) and a built-in package are `REFUSED`; a map that cannot
+name a file (letters, digits, `_` and `-`) or a tag that is not one is
+`INVALID_PARAMS`. The lock is rewritten.
+
+`asset.revert {tag, map?, package?}` takes the tag's lines out of the
+package's `edits` items: with `map` only the item that names that map alone,
+without every `edits` item with an entry for the tag. An item left with no
+entry goes with its file. The answer is `{package, tag, map, removed: [{item,
+file, maps, lines, item_removed}]}`; a tag with no line is `REFUSED`.
+
+The tests (`api/tests/assets_tests.rs`, `api/tests/links_tests.rs`,
+`api/tests/mods_tests.rs`) run over an invented tree and local packages.
+
+### Packages
+
+`package.*` is the package document (docs/editor/studio-redesign.md,
+"Packages"; `app/package_doc.rs`, `api/packages.rs`). A package is a folder
+under `<data>/packages/<id>/` with `package.toml`, its files and
+`package.lock`; the built-in packages are listed and read but never written
+(`REFUSED`, "built in"). The load order and what is off are
+`<data>/packages/set.toml`; the edit target is `<data>/packages/target.txt`.
+
+| Method | Answers |
+|---|---|
+| `package.list` | the set in load order, then the packages that are off, each `{id, name, package_id, origin, dir?, on, why?, always_on, signed, features, items, scopes, target, editable}`, with `problems`, `content_hash` and `target` |
+| `package.read {id}` | the manifest as `package` and `credit`, each item with `index`, `asset`, `builder`, `builds`, `scope` and `changes_map`, the lock, and `problems` |
+| `package.new {id, name}` | an empty package with its manifest and lock; a taken, malformed or always-on id is refused |
+| `package.set {id, path, value?}` | a `[package]` field (`name`, `description`, `image`, `requires`, `after`, `features`) or `credit.<field>`; no value removes an optional one; `id` and `format` are not edited |
+| `package.item.add {id?, item, at?}` | an item in its manifest form; its files are in the folder already, with no `..` or absolute path |
+| `package.item.set {id?, index, path, value?}` | one field of an item (`kind`, `source`, `inputs`, `tag`, `maps`) |
+| `package.item.remove {id?, index}` | the item leaves the manifest; its files stay |
+| `package.target {id?, clear?}` | the edit target, read, set to a local package, or cleared |
+| `package.enable {id, on}` | `set.toml`'s `off`; `left_out` lists the packages that `require` the one switched off |
+| `package.order {ids}` | `set.toml`'s `order`; `loaded` is the resulting load order |
+| `package.check {id?}` | `{ok, count, findings: [{kind, message, item?, file?, line?}]}`: `lock` (missing or stale), `files` (a cache map, a `.h2tag` bundle, disc files, model weights or a dataset folder), `store` (a file that is a raw resource or a tag file of the user's tag store, by SHA-256; `package.read`'s `problems` and Problems list it too), `item` (no builder, a missing or oversize source, a source its builder refuses), `set` (a requirement missing or off), `conflict` (a tag path another package adds) |
+| `package.build {id?, map?, out?}` | for each map of the open source the package has an item for (or `map`), `{map, scope, touched, took_ms, tags, added, changed, overrides, bytes, problems}`; with `out`, each built map is written to `<out>/<map>.map` |
+| `package.play {id, map}` | the build for `map`, then `game.load` on the paired game |
+| `package.export {id, out}` | `{id, out, files}`; creates a new folder outside Git with the local package manifest, generated lock and named sources; refuses an existing destination, forbidden package files and tag-store bytes |
+| `package.diff {id?, map?}` | `{id, map, assets, counts, levels, built, conflicts, problems}`: `assets` is one row per asset the package changes or adds, `{asset, item, item_asset, change, maps, forked, ...}` where `change` is `edit` (with `fields: [{path, to, from?}]`, `blocks: [{path, op}]` and `was?`), `patch` (a `tag-delta`, with `was`), `override` (a `replaces`, with its hash) or `added`; `counts` counts them and the forks; `levels` are the maps the package changes (the open source's maps by class, else the maps its items name). With `map` (of the open source) the whole set is built over it and `conflicts` is the conflict table's rows `{map, kind: refused \| override, package, why, involves, other?, tag?, path?}`; `built` is false, with the reason in `problems`, when the build did not run. A read that built keeps its rows as that level's in Problems |
+
+Each write puts the new manifest through the set before it keeps it: a
+manifest that does not read, a source that is not in the folder, a
+`requires` cycle or a set `content::package::Set` refuses leaves the old
+manifest in place and answers `REFUSED` with the reason. `package.enable`
+and `package.order` refuse by name: `core` and `ui` cannot be switched off
+(`SetError::AlwaysOn`), and an order that puts a package before one it
+`requires` or follows names both. A `set.toml` written by hand that turns
+`core` off is named in `package.list`'s `problems` and stops every write to
+the set file. The edit calls that default `id` to the edit target answer
+`NO_TARGET` when none is set. `package.build` needs a source (`NO_DOCUMENT`) and
+refuses a package that is off; `package.diff` needs one only for a `map`. `package.play` needs a pairing and
+refuses a game whose content hash (`packages.list`) differs from
+`package.list`'s: the game reads its set at boot.
+
+```sh
+h2 studio package.new '{"id":"my-pack","name":"My pack"}'
+h2 studio package.target '{"id":"my-pack"}'
+h2 studio package.order '{"ids":["my-pack","pogo"]}'
+h2 studio package.check '{"id":"my-pack"}'
+h2 studio package.build '{"map":"lockout"}'
+```
+
+The tests (`api/tests/packages_tests.rs`) run over invented packages under
+a temporary data root.
+
+### Problems
+
+`problems.list {source?, asset?}` is the Problems panel's list
+(docs/editor/studio-redesign.md, "The shell"; `app/problems.rs`,
+`api/problems.rs`), read again on every call. A row is
+`{source, area, code, severity, message, target, path?, asset?, field?,
+tool?, line?, col?}`, worst first. The sources:
+
+| `source` | Rows from |
+|---|---|
+| `check` | `check.run`'s `models` and `sounds` checks, and the diagnostics of the script open in the script editor (area `scripts`, code `script.<code>`, target `<title>:<line>`, with `line` and `col`; the row opens the editor with the cursor there) |
+| `ui` | `ui.check` |
+| `hud` | `hud.check` and the HUD kit's check |
+| `package` | the manifest checks `h2 package check` runs over the packages under `<data>/packages/`: an item with no builder, a missing or oversize source, a source its builder refuses, two items that add one tag path, a file that is a raw resource or a tag file of the user's tag store (`workspace::store_findings`), and the conflict rows of the last `package.diff` with a `map` for each level (`package.refused`, a warning: the package is off for that level, with the reason; `package.override`, a note: a later package's value for a field or an asset wins; target `<map>: <package>`, asset `package:<id>`). A refresh keeps those rows; the next diff of the level replaces them |
+| `build` | what the game's package set refuses to load, as the boot log says it: an unreadable package, a refused id, a `requires` that is missing, a set that cannot be ordered |
+| `ground` | the last AI ground build of the open map: a label it could not honour (`ground.label`, a warning, target `<label>[<index>]`) or why it failed (`ground.build`, an error); the tool is the scenario ([AI ground](#ai-ground)) |
+
+Each row names what opens it: `asset` (`tag:<group>:<path>` for a tag of
+the open map, `package:<id>` or `item:<package>:<n>`), `field` (the field
+of the tag the finding names, from a model finding's `tag.set path`), or
+`tool` (`ui-screens` or `hud` for a screen or a HUD, which are not
+assets). The answer is `{problems, counts: {error, warning, note, total,
+by_source}, ran: [{source, check, findings}], skipped: [{source, check,
+why}]}`; a check that cannot run is under `skipped`. With `source` only
+that source is read and the panel's other rows stay. The panel's
+double-click on a row is `Action::OpenProblem`: a tag opens in its editor
+with the field shown, a package or item shows in the browser, a screen or
+a HUD shows its tool.
+
+`asset` (an asset id) keeps the rows about that asset: those whose
+`asset` is it, and for the HUD, a screen at its state and the open script
+the rows their tool holds (`App::asset_problems`, `App::doc_problems`). The
+number on the header's **Check** is the same rows' count
+(`App::doc_problem_count`), so it equals this call's `counts.total` for
+the document's asset. A HUD document has no asset id of its own when it
+was opened from a map; its count is the `hud` rows.
+
+```sh
+h2 studio problems.list '{"source":"package"}'
+```
+
+The tests are `app/problems_tests.rs` (findings of two invented sources
+list together, a row opens its document and field), `api/tests/problems_tests.rs`
+and `headless::tests::the_problems_panel_lists_rows_and_a_double_click_opens_them`.
+
+### Sounds into a package
+
+`import.sound {file, package?, tag, class?}` (`api/import.rs`,
+`app/sound_import.rs`) adds a WAV to a local package as a `sound` item that
+writes the `snd!` `tag`. The WAV (16-bit PCM, mono or stereo, any rate) is
+copied unchanged to `sounds/<last segment of tag>.wav`, the item is added to
+`package.toml` and `package.lock` is rewritten. `class` is a sound class by
+name (`weapon_fire`, `ui`) or number; the default is `ui` (51), and any
+other is written to `sounds/<name>.sound.yaml`, a `data` item beside the
+WAV. The answer is what the build will write: `rate` (22,050, 32,000 or
+44,100 Hz, the nearest not below the clip's), `frames` at that rate,
+`duration_ms` and the `bytes` of Xbox ADPCM, with `from` the clip's own
+rate, channels and frames. The sound source tab shows the waveform and
+plays the WAV. Its `item:` id is `doc` in the reply. With no `package`,
+the method uses the edit target or returns `NO_TARGET`. A package that is baked, a tag the package adds
+already or a file that is not a 16-bit PCM WAV is refused; a class that is
+not one is `invalid params`.
+
+```sh
+h2 studio import.sound '{"file":"/tmp/boing.wav","package":"my-pack","tag":"sounds\\boing"}'
+```
+
+The build is `workspace::build` (`h2 package build`); the tests
+(`api/tests/import_tests.rs`, `workspace/src/import_tests.rs`) run over
+invented tones and an invented map.
+
+### Models into a package
+
+`import.model {file, package?, tag}` adds a primitive model YAML and the
+sibling atlas PNG it names to a local package as `model` and `data`
+items. The model builder checks both files before Studio writes them.
+The destination tag is a path such as `models/invented/box`. The
+result includes the package, the `tag:hlmt:` asset id, the YAML's
+relative `source`, the model item's index and the package directory.
+The model source tab shows the mesh as a wireframe and the result
+includes its `item:` id as `doc`. With no `package`, the method uses
+the edit target or returns `NO_TARGET`.
+
+### Sound edits
+
+`sound.edit`, `sound.render` and `sound.permutation` (`api/sound_edit.rs`,
+`app/sound_edit.rs`, the `sound-edit` crate) change what a package's `sound`
+item sounds like without touching its WAV. A sound is named by `package`
+(a local package's id) and `source` (the item's WAV, e.g.
+`sounds/boing.wav`, as `import.sound` answers it); a package that is built
+in is refused, and so is a `source` that is not a `sound` item of it.
+
+`sound.edit {package, source, op, ...}` changes the list of edits kept in
+`<source>.sound.yaml` (a `data` item of the package, added with the first
+edit, the lock rewritten). `op` is an edit to add (at `at`, the end by
+default): `trim {start_ms, end_ms?}`, `fade_in {ms}`, `fade_out {ms}`,
+`gain {db}`, `normalise {lufs, ceiling_dbfs?}` (the default ceiling is -1
+dBFS) or `silence {start_ms, end_ms}`; or `remove {index}`,
+`move {from, to}`, `undo` (drops the last edit and answers it as
+`removed`), `clear` or `list`. Times are milliseconds into what the edits
+before left. The list is rendered before it is written: an edit that does
+not apply (a trim that leaves nothing, normalising silence, a gain past 60
+dB) is refused by its place (`edit 1: ...`) and the package is left as it
+was; a param the edit does not take is `invalid params`. With
+`permutation: n` the edits are that permutation's. The answer is the list,
+`changed` and the levels of the render (as `sound.measure`'s).
+
+`sound.render {package, source, permutation?, upto?, out?, bins?}` renders
+the WAV through the first `upto` edits (all by default) and answers the
+levels `before` and in `render`, and the waveform `peaks`; with `out` it
+writes a 16-bit PCM WAV there. `out` is refused inside the package, whose
+WAVs are the sources, and nothing in the package is written.
+
+`sound.permutation {package, source, op}` keeps the sound's other
+permutations, `permutations:` of the same file: `add {file, weight?,
+gain_db?, skip_fraction?}` (the file must be a WAV of the package, and
+becomes a `sound` item of it), `remove {index}`, `set {index, weight?,
+gain_db?, skip_fraction?}`, `move {from, to}` or `list`. Each row carries
+the loudness of its file after its edits, or why it does not render, with
+`source_row` for the source's own. The build writes the source's own
+permutation; encoding the listed files into the `snd!` is not built.
+
+```sh
+h2 studio sound.edit '{"package":"my-pack","source":"sounds/boing.wav","op":"fade_out","ms":40}'
+h2 studio sound.render '{"package":"my-pack","source":"sounds/boing.wav","out":"/tmp/boing.wav"}'
+```
+
+The tests are `api/tests/sound_edit_tests.rs` (each op over an invented
+ramp, the source's bytes unchanged, undo and reorder, the refusals),
+`workspace/src/import_tests.rs` (the build renders the list) and the
+`sound-edit` crate's own.
+
+### Pictures into a package
+
+`import.bitmap {file, package, tag}` (`api/import.rs`,
+`app/bitmap_import.rs`) adds a PNG to a local package as a `bitmap` item
+that writes the new `bitm` `tag`. The PNG (any bit depth and colour type) is
+copied unchanged to `bitmaps/<last segment of tag>.png`, the item is added
+to `package.toml` and `package.lock` is rewritten. The answer is what the
+`bitmap` builder writes (`workspace::bitmap`): one linear `argb8888` image
+of the PNG's `width` and `height` with one mip, `bytes` of pixels, and
+`class: "shape"`, because a new tag reaches a game by a build and a load,
+never by a push ([live-editors.md](live-editors.md)). A package that is
+baked, a tag the package adds already or a file that is not a PNG is
+refused; a tag that is not a path is `invalid params`. A bitmap with mips or
+another format is made by `bitmap.reshape` on the built tag.
+
+```sh
+h2 studio import.bitmap '{"file":"/tmp/icon.png","package":"my-pack","tag":"ui\\icon"}'
+```
+
+The tests are in `api/tests/import_tests.rs`, over an invented PNG.
+
 ### Errors
 
 The JSON-RPC codes (`-32700` parse, `-32601` no such method, `-32602`
@@ -779,6 +2049,254 @@ bad params), and ours (`studio_proto::code`):
 | 13 | `NOT_YET` | a planned method; `data.lane` says who builds it |
 | 14 | `FAILED` | it ran and failed (I/O, a map that doesn't read) |
 | 15 | `NO_GPU` | nothing renders here |
+| 16 | `NO_TARGET` | the call writes to the edit target and none is set (`package.target`) |
+
+## Content checks
+
+An agent building content (the Pogo Stick's sounds, a screen of ours, a
+HUD kit element) measures and checks it here before handing it back:
+`sound.measure`, `ui.check`, `hud.check`, and `check.run` for all of
+them at once.
+
+**`sound.measure`** (`api/sound_measure.rs`) takes one of `tag` (a
+`snd!` of the map the Tags tool shows, decoded by the audition as
+`sound.read` decodes it), `clip` (one of our WAV clips as the game
+embeds them: `pogo/compress`, `pogo/spring`, `pogo/settle` from
+`boot::pogo_sound::CLIPS`, `announcer/<medal>` from
+`boot::medal_announcer::CLIPS`) or `path` (a WAV file, such as one
+`scripts/pogo-sounds.py` just wrote). WAVs are read by the game's
+`parse_wav`: 16-bit PCM, one or two channels; a Git LFS pointer is
+`FAILED` and names `git lfs pull`. A tag is measured in every
+permutation of `range` (default 0), or the one `permutation` names;
+the loudest is the one compared. It answers:
+
+- `levels`: `peak_dbfs` (the largest sample, full scale 32768),
+  `rms_dbfs` (every sample of every channel), `lufs` (integrated
+  loudness), `max_momentary_lufs` (the loudest 400 ms block),
+  `duration_ms`, `clipped` (samples at 32767 or -32768), `frames`,
+  `rate`, `channels`. Levels are to one decimal place; silence is -120.
+- `reference`: the open map's `snd!` tags of the same class (the
+  header's `+2` byte, unnamed: [sound.md](../formats/sound.md)), or of
+  every class for a clip or file, or of `class`. Up to `limit` (default
+  32, at most 512) of them, spread evenly over the map's tag order, are
+  decoded (range 0, permutation 0) and measured. It gives the class,
+  how many there are (`considered`), `decoded`, `skipped` (a codec
+  stream without the game's executable), the `lufs` and `peak_dbfs`
+  spreads (`p10`, `p50`, `p90`, `max`, nearest rank) and the three
+  loudest. With no map open it gives `why`.
+- `verdict`: `loud` when the loudness is over the reference's p90 by
+  more than 1 dB, `quiet` when under its p10 by more than 6 dB, else
+  `ok`; `no_reference` with nothing decoded. `over_p90_db` and
+  `peak_over_p90_db` are the margins, and `text` says it ("louder than
+  the p90 of the map's sounds by 7.2 dB").
+
+The loudness is ITU-R BS.1770-4's (`crates/platform/audio/src/meter.rs`,
+shared with the game's `audio.meter`): each
+channel K-weighted (the high shelf and high pass, their coefficients
+derived for the clip's rate from the 48 kHz design, as libebur128 does),
+mean square over 400 ms blocks stepped 100 ms, blocks under -70 LUFS
+dropped, then blocks more than 10 LU under the remaining mean,
+`-0.691 + 10 log10` of the mean of the rest. Each channel weighs 1, so
+a mono 997 Hz sine reads its RMS level and a stereo one 3 dB more. A
+clip shorter than 400 ms is one block. Clips and tags are compared
+sample for sample: the game's gain, distance and mixing are not
+applied.
+
+**`ui.check`** (`api/ui_check.rs`) checks our screens (`screen`, and
+`state`, narrow it) in every state with the unsaved edits
+(`UiScreens::check_state`: the edited docs in scope, the disc's art
+and fonts when a disc is open, else the synthetic source). The checks
+are the kit's (`boot::ui_kit::findings::of_state`;
+[ui-builder.md](../game/ui-builder.md) "The checks"): text overflowing
+its rect (`fit`), overlapping texts, widgets outside the title-safe
+area (`unsafe`), contrast under 2.5, missing glyphs and unregistered
+string ids, art drawn past its rect or off screen, and the design
+system's rules. Each finding has `code` `ui.<check>.<kind>`
+(`ui.layout.unsafe`, `ui.layout.fit`, `ui.layout.text_overlap`,
+`ui.content.missing_glyph`), `severity` (`error`; `warning` for the
+design system's `consistency`; `note` for a layout note), `message`,
+`target` (`screen/state`), `path` (the screen's file under
+`content/ui/screens/`), and the `screen`, `state`, `check`, `kind` and
+widget `ids`. A state that does not draw is `ui.draw`. `checked` lists
+each state with its count and the checks the source could not run
+(`skipped`). `aspect` is `4:3`, `16:9` or `both` (the default); the
+host fits a menu uniformly into a centred 4:3 area at any window
+aspect ([high-resolution.md](../graphics/high-resolution.md), "HUD and
+UI"), so the layout checked is the 640 by 480 one and `aspects` says
+which fit each aspect asked is.
+
+**`hud.check`** gives each finding's `code` beside its text:
+`off_screen`, `outside_frame`, `art_overlap`, `text_overlap` or
+`text_spills` (`hud_edit::checks`).
+
+**`check.run {what?, target?, asset?}`** (`api/checks.rs`) runs every check of
+`CHECKS` (or one area's: `models`, `sounds`, `ui`, `hud`, `markers`) and answers
+`{findings, counts, ran, skipped}`. A finding is `{area, code,
+severity, message, target, path?}`, worst first; `counts` has `error`,
+`warning`, `note`, `total` and `by_area`; `ran` names each check with
+its count; `skipped` each check that could not run and why, and each
+area with no check registered. `target` narrows every check to one
+thing; a check it does not fit is skipped. With `asset` (an asset id)
+the Problems list is read again and the answer is
+`{asset, findings, counts, ran, skipped}` for only the rows about that
+asset (the rows of `problems.list {asset}`, with `source`, `asset` and the
+rest); `what` and `target` are not used. For a package item, both calls
+refresh package checks and open-script diagnostics, which are the sources
+that can report a finding on an item. The checks:
+
+| Area | Check | What it checks |
+|---|---|---|
+| `models` | `model.check` | every biped, vehicle and weapon of the scenario tool's map (or the source's only map), or the tag `target` names, read without the Pogo kit: `model.<code>` for each `model.check` finding (`model.no_first_person`, ...), the tag as `target` and the `tag.set` path in the message; `model.tag_memory` once (`api/models.rs`, `check`) |
+| `sounds` | `sound.measure` | each of our clips (or the clip id, id prefix such as `pogo`, or `snd!` tag `target` names) against the open map's sounds: `sound.loud` (a warning, an error past 6 dB over the p90), `sound.clipping`, `sound.unreadable`, `sound.no_reference` (a note) |
+| `ui` | `ui.check` | every state of our screens, or `target` (`screen` or `screen/state`) |
+| `hud` | `hud.check` | the HUD the HUD tool shows, at its state (`hud.<code>`); skipped with no map open there |
+| `hud` | `hud.kit` | every kit HUD (or `target`) in every state and screen mode over the kit's synthetic map, as `h2 hud sheet --synthetic` checks them (`hud_kit::check::all`): `hud.kit.<check>` errors, and a note for each check the synthetic map cannot run |
+| `markers` | `markers.check` | the open map's markers (`api/markers_check.rs`): `markers.area.invalid` (error), `markers.hill.corners_and_area` (error), `markers.area.no_floor` and `markers.area.overlap` (warnings, the second naming the pair); no map is no findings |
+
+A check is a row of `CHECKS`: `ContentCheck { area, name, run }`,
+`run` being `fn(&mut App, Option<&str>) -> Result<Vec<Finding>,
+String>`.
+
+## Announcer
+
+`voice.say`, `voice.list` and `voice.commit` (`api/voice.rs`, over
+`app/announcer.rs`) make announcer lines from text with a Fish Audio voice.
+The design, the key and the steps are in [announcer.md](announcer.md).
+
+**`voice.say {text, voice?, model?, speed?, out?, clip?, play?,
+target_lufs?, fresh?}`** says `text` (at most 500 characters) in `voice`
+(a Fish Audio model id; default `86126c4c4dad4911979556b4569802cd`), trims
+the silence, measures the line against the open map's retail announcer
+lines and brings it to their median loudness (`target_lufs` instead), saves
+44.1 kHz mono 16-bit PCM under `<data root>/announcer`, and plays it
+(`play` defaults to true). The same text, voice, `model` and `speed` reuse
+the earlier file: `cached` is true and the service is not called, so no key
+is needed. `fresh` asks again. It answers `file`, `raw` (the voice's own
+file in the cache), `levels` and `raw_levels` (as `sound.measure`),
+`trimmed_ms`, `gain_db`, `limited` (the -1 dBFS peak ceiling held the gain
+back), `target` (`lufs`, `from`: `given`, `retail`, `our clips` or
+`fallback`, and `why` when not retail), `verdict` (as `sound.measure`),
+`playback`, and with `clip` a `ready` object: the checkout path
+`art/announcer/<clip>.wav`, the `CLIPS` entry to add, and whether the clip
+exists. With no key in the Keychain the error is `REFUSED`, its message
+says to add the key with the exact command, and its `data` is
+`{step: "add_key", service, command}`. A bad param is `INVALID_PARAMS`
+before the service is asked; the service's errors and a silent line are
+`FAILED`.
+
+**`voice.list`** answers the voice source, the default voice, the voices
+kept lines used, whether the key item exists (`key.state`: `present`,
+`missing` with the command, or `unreadable`; the key is not read), the
+cache's directory and size, and the lines most recently said. It asks
+nothing of the service.
+
+**`voice.commit {tag, package?, class?, from?}`** adds a saved line
+(`from`, else the last one made, by `voice.say` or `voice.clone.say`) to
+`package` (default the edit target; `NO_TARGET` with none) as a `sound` item
+that writes the `snd!` `tag`. The WAV is copied in unchanged and the
+package's build encodes it, the way `import.sound` does (its reply, with
+`class` as there). A `from` inside a character's `dataset` or `model`
+folder is `REFUSED`, and only a `.wav` is taken, so a dataset clip or a
+weight file never reaches a package.
+
+**`voice.commit {clip, from?, repo?, replace?}`** saves a standalone
+`sound` item in the edit target. An explicit `repo` exports the WAV to
+`art/announcer/<clip>.wav` in that checkout. Use `replace` to overwrite
+an exported clip. The export's `next` field gives the steps for
+`boot::medal_announcer::CLIPS` and Git. `clip`, `repo` and `replace`
+are refused with `tag`.
+
+## Voices
+
+`voice.characters`, `voice.dataset.build`, `voice.dataset.status`,
+`voice.clone.train`, `voice.clone.say` and the batch (`voice.say_batch`,
+`voice.batch.status`, `voice.batch.run`, `voice.batch.save`) (`api/voice_clone.rs`, over
+`app/voices.rs` and `app/announcer.rs`) clone a game character's voice from
+the user's own disc and say new lines with it, all on this machine. The
+design, the dataset, the sidecar and the models are in
+[voice-cloning.md](voice-cloning.md).
+
+**`voice.characters {map?}`** lists the characters Studio knows: `id`,
+`name`, the tag-path `rules`, how many dialogue sounds of the source's maps
+(or `map`) they pick (`tags`), their `dataset` summary (or null) and
+whether they are `trained`. `speakers` lists the groups the maps' dialogue
+tags fall into (`kind: code` for the letters at the end of a tag name,
+`folder` for the first folders under `sound\dialog\`) with a count and a
+sample tag, to check the rules against. Nothing is decoded.
+
+**`voice.dataset.build {character, paths?, maps?, asr?, min_ms?, max_ms?,
+keep_radio?, limit?, max_permutations?}`** builds the character's dataset
+under `<data root>/voices/<character>`: 24 kHz mono clips and
+`manifest.jsonl`. `paths` (pieces of tag paths) replaces the character's
+rules and allows a new id. It answers `kept`, `tags`, `decoded`, `dropped`
+by reason (`too_short`, `too_long`, `silent`, `clipped`, `radio`,
+`decode`) with a few `dropped_examples`, `maps_read`, `maps_failed`, the
+`dataset` summary (`lines`, `usable`, `minutes`, `from_subtitle`,
+`from_asr`, `pending_asr`, `no_text`, `lufs`, `peak_dbfs`), and `asr_job`:
+the background transcription started for clips without a subtitle (`asr`
+defaults to true). An unknown character without `paths` is
+`INVALID_PARAMS`; no map read, or a job still running, is `REFUSED`.
+
+**`voice.dataset.status {character?, job?}`** answers the `sidecar`
+(`backend`, `state`: `installed`, `installing` or `missing`, `dir`,
+`trains`), the latest `job` (or `job`'s) and the last few `jobs` (`id`,
+`kind`: `install`, `transcribe` or `train`, `state`: `running`, `done` or
+`failed`, `stage`, `done`, `total`, `text`, `log`, `result` or `why`), and
+each built character's `dataset`, last `build` and `model` (`trained`,
+`checkpoint`).
+
+**`voice.clone.train {character, steps?, min_minutes?, backend?}`** starts
+the fine-tune on the character's lines with text as a background job
+(installing the model first when needed) and answers `{job, state:
+"running", lines, minutes}`. It is `REFUSED` under `min_minutes` of speech
+(default 10), without a dataset, or while a job runs, and
+`INVALID_PARAMS` for a backend that does not train.
+
+**`voice.clone.say {character, text, reference?, speed?, out?, clip?,
+play?, target_lufs?, fresh?, backend?}`** says `text` with the clone,
+copying the delivery of `reference` (a dataset clip id, or a source tag
+with an optional `#<permutation>`; default a subtitled line near 7 s), and
+answers as `voice.say` does plus `engine: "clone"`, `character`,
+`backend`, `model` (the backend, and the fine-tune's digest when there is
+one) and the `reference` used (null for a cached line). `target.from` is
+`character`: the median loudness of the character's own lines. Before the
+model is installed it starts the install and is `REFUSED` with
+`data.step: "install"`; without a dataset, or with no line that has text,
+`data.step` is `dataset`. A model failure is `FAILED` with the sidecar's
+message. To hear a committed clip in the game, `voice.commit` it and use
+`pair.audio` as for any announcer clip.
+
+**`voice.say_batch {character?, rows?, lines?, file?, append?, wait?,
+backend?}`** says many lines as the Voices window's **Say all** does, each
+row as `voice.clone.say` says a line (cached, levelled, saved under
+`<data root>/voices/<character>`, never played). `rows` is a list of
+`{text, character?, clip?, tag?}` (`character` defaults to the batch's;
+`clip` is the output name; `tag` a `snd!` path for the edit target
+package), `lines` one row per line of a text (a tab splits an output name
+from the text) and `file` a text file of at most 1 MB. The previous batch
+is replaced unless `append`; while rows are queued or running it is
+`REFUSED`. A bad param adds nothing. A row with a problem fails at once with
+`why`; the others are queued. With `wait` the call returns when every row
+has ended; without it the window's frames say one row each, so poll
+`voice.batch.status`. It answers `added`, `queued`, `counts` (`idle`,
+`queued`, `running`, `done`, `failed`), `active` and `rows`.
+
+**`voice.batch.status {ids?}`** answers the same without asking the model:
+each row's `id`, `text`, `character`, `clip`, `tag`, `state` (`idle`,
+`queued`, `running`, `done`, `failed` with `why`), and once said its `file`,
+`levels` (`lufs`, `peak_dbfs`, `duration_ms`), `verdict` and `cached`;
+`saved` or `save_failed` after a save.
+
+**`voice.batch.run {ids?, wait?, backend?}`** says the idle and failed rows
+again, or `ids` (a done row too, asking the model again, not the cache).
+
+**`voice.batch.save {ids?, repo?, package?, replace?}`** saves done rows
+as `sound` items in the edit target or an explicit `package`. A row's
+`tag` or `clip` identifies the item to add or update. A row with neither
+fails with a reason. With neither a target nor a destination the call
+answers `NO_TARGET`. An explicit `repo` exports untagged rows to
+`art/announcer/<clip>.wav`, overwriting an exported clip with `replace`.
+The reply contains `saved`, `failed` and each row's result.
 
 ## Extension points
 
@@ -808,16 +2326,150 @@ the window and the API stay one path.
   (`TagIo`, after it) answers `tag.list` (replacing the built-in one),
   `tag.browse`, `tag.resources`, `tag.export` and `tag.import` through
   `Action::BrowseTags`, `Action::TagExport` and `Action::TagImport`.
-  `api/tags.rs` registers `TagGraph` for `tag.tree` and `tag.refs`.
+  `api/tags.rs` registers `TagGraph` for `tag.tree`, `tag.refs` and
+  `tag.kinds` (over `app/kinds.rs`), `tag.open` and `tag.subject` (over
+  `app/subject.rs` and `play/subject.rs`).
   The tree and `tag.follow` share the reference reader with `tag.refs`.
+- **Strings (rich editors N1).** `api/strings.rs` registers `Strings` for
+  `strings.list`, a read of `tags::Localization` over the open map's
+  `unic` tags. It returns `{languages, tags, total, offset, limit,
+  truncated, strings, problems}`. `languages` lists the nine codes (`en`,
+  `ja`, `de`, `fr`, `es`, `it`, `ko`, `zh`, `pt`). `tags` has one row per
+  `unic` tag, `{tag, name, counts}`, with the number of strings each
+  language's span holds. `strings` has one row per string key of a tag,
+  `{tag, tag_name, id, name, texts}`: `id` is the packed string ID in hex,
+  `name` the identifier it resolves to (`null` when the map's name list
+  has none), and `texts` maps a language code to the text in that
+  language's span (a language without the key is absent). `tag` picks one
+  `unic` tag (an ID or name; another group is refused), `language` shows
+  one language's strings only, and `query` keeps the keys whose name, ID
+  or shown text contains it, case-insensitively. `limit` (default 200,
+  at most 5000) and `offset` page the rows; `truncated` says more follow.
+  A span that falls outside its table is named in `problems` and its
+  language is left out of that tag. A map with no readable locale tables
+  answers with no rows and `unavailable` giving the reason.
+- **Recordings (rich editors K1).** `api/recordings.rs` registers
+  `Recordings` for `recording.list` and `recording.read`, over
+  `hs::recording` and `app/recordings.rs`; both are reads and need a
+  map (`NO_DOCUMENT` without one). `recording.list` answers
+  `{recordings}`, one row per element of the scenario's recorded
+  animations: `name`, `ticks`, `version`, `control_version`,
+  `stream_bytes`, `events` (the count, `null` when the stream does not
+  read, with `problem` saying why and at which offset) and `played_by`
+  (`[{name, item, count}]` of the scripts that name it, `null` when the
+  scripts do not read, with `played_by_unavailable` giving the reason).
+  An empty block answers `note: "This map has no recordings."`.
+  `recording.read {name}` (case-insensitive) answers the stream as
+  Halo 2's player reads it: `initial.fields` (the unit control state the
+  stream starts from, by field) and `initial.trailer` (the twelve bytes
+  copied as they are, hex), then `events`: `tick` (since the start),
+  `at` (the header's offset in the stream), `delay`, `kind`, `name`,
+  `fields` and `payload` (hex). `limit` (default 1000, at most 20000)
+  and `offset` page the events and `truncated` says more follow;
+  `walked_ticks` is the stream's own length, `ticks` the element's. A
+  stream that does not read, or whose version is not 4, is `REFUSED`
+  with the reason; an unknown name is `INVALID_PARAMS`.
+  **Playing (rich editors K2).** `recording.play {name, unit?, mode?}`
+  asks the paired game to play the recording on `unit` (`player.<n>`,
+  default `player.0`; `mode` `play`, `delete` or `hover`) through the
+  game's [`recording.play`](../runtime/agent-api.md#recordingplay), on a
+  connection of its own, and starts the path: the unit's position from
+  each streamed tick (`play::recording_path`), which the Scene viewport
+  draws. It is `REFUSED` with no pairing, a paused game, a game that
+  does not list the method, or the game's own refusal (its reason in
+  the message); an unknown name, a unit that is no `player.<n>` and a
+  bad mode are `INVALID_PARAMS`. `recording.path {clear?, limit?}` reads
+  the path (`recording`, `player`, `count`, the last `limit` `points`,
+  `truncated`) and with `clear` drops it.
+  **Writing (rich editors K3).** `recording.write {name, initial?,
+  trailer?, events?}` edits one stream, all or nothing, as one undo
+  step: `initial` sets unit control fields by the names `recording.read`
+  gives (integers, or an array of reals), `trailer` the twelve bytes
+  (hex), and `events` is a list applied in order of `{op: "set", index,
+  delay?, payload?}` (move the event, the later ones keep their ticks,
+  and/or replace its payload), `{op: "insert", index, kind, delay?,
+  payload?|fields?}` (before event `index`, the end event included) and
+  `{op: "remove", index}`; `fields` names a payload's values as
+  `recording.read` does (`value`, or `a` and `b`). It answers `{name,
+  ticks, stream_bytes, events, grows}`; `grows` says the stream is longer
+  than the source's, which saves as an appended copy and needs **Allow
+  growing full blocks** (`REFUSED` otherwise, as it is for a stream that
+  does not read or is not version 4). An edit that does not fit (an event
+  that is not there, a value past its width, the end event removed) is
+  `INVALID_PARAMS` with the number of the failing edit. The result is an
+  unsaved change of the map (`session.status`). `recording.remove {name}`
+  answers `{removed, recordings}` and is `REFUSED` while a script plays
+  the recording or a later one by its number, and when the scripts do not
+  read. `recording.undo {redo?}` answers `{changed}`.
 - **Scripts (rich editors H1).** `api/scripts.rs` registers `Scripts`
   for `script.*`, over `app/scripts.rs`'s `Loaded`; `script.source`,
   `script.follow` and `script.doc` are `Action::Script` through
   `App::perform`.
+- **Curves (rich editors F1).** `api/curves.rs` registers `Curves` for
+  `function.read`, `function.set` and `function.sample`, over
+  `tags::effects::function` (`Set`, `Function::set_values`,
+  `Function::write_set`) and the curve editor's own helpers
+  (`fields/curve.rs`); `function.set` is a `TagAction::Write` of the
+  same length at the data's start through `App::perform`, or, for a
+  type change, a `TagAction::ResizeData` (rich editors F2), one undo
+  step, exactly as the dialog's drags and type picker write.
+- **Colours (rich editors C1).** `api/colours.rs` registers `Colours`
+  for `tag.colours`, over the field panel's rows (`fields::find`) and
+  the colour picker's helpers (`fields/colour.rs`); a colour's `tag.set`
+  is `app::tag_api::set_field` with `fields::colour::from_json`, a
+  `TagAction::Write` of the field's own length, as the dialog writes.
+- **Shaders (rich editors S1, S2).** `api/shader.rs` registers `Shader` for
+  `shader.read`, `shader.set`, `shader.preview`, `shader.code`,
+  `shader.override`, `shader.push` and `shader.revert` (S5; the link sends
+  the queued push in `play::send_shader_overrides`), over
+  `app/shader.rs` (the Shader tab's read, on the shown map with the
+  document's edits), `native_view::preview::material_at` (the preview clock),
+  `native_view::animate` (the properties' values at a time) and
+  `native_view::code::pass_code` (S4); `shader.set` is `tag.set` at the
+  slot's path (`SlotKind::path`) through `tag_fields::perform`, one undo
+  step.
 - **Game type scripts.** `api/game_script.rs` registers `GameScript` for
   `rules.*`, over `App::rules` (`app/rules_edit.rs`), the state the
   window draws; `rules.reload` leaves the blob in its outbox and
   `play.rs` sends it on the game link.
+- **UI screen edits.** `api/ui_edit.rs` registers `UiEdit` for the
+  `ui.*` edit methods over `Action::UiEdit` (`app/ui_screens/edit.rs`),
+  the same edits the canvas makes. Our screens' edits change their YAML
+  docs and `ui.save` writes the sources named in the checkout’s UI package; a retail screen's
+  are tag writes on the open `mainmenu` map, undone with it and saved by
+  `doc.save`. Each edit answers with the widget and the checks' findings
+  on the edited view; `ui.animate` writes a transition's filmstrip PNG
+  (docs/game/ui-builder.md "Editing in the editor").
+- **Retail tag edits.** `api/ui_retail.rs` registers `UiRetail` for
+  `ui.hide {id}`, `ui.duplicate {id, rect?, grow?}` and `ui.set_string
+  {id, string, shows?}`, over the same `Action::UiEdit`
+  (`app/ui_screens/edit/retail_tag.rs`). They edit the retail screen
+  `ui.pick {retail}` shows, in the open `mainmenu` map's tag document:
+  `ui.hide` parks a text or bitmap block off screen, `ui.duplicate`
+  appends a copy of a text, button or bitmap block to the end of its
+  block and answers its id as `copy`, and `ui.set_string` sets the
+  string ID of the title, a text or a button to a string by name, added
+  to the map when it has none. `shows` is the stand-in text the picture
+  draws for a string the game's code answers at run time; it is the
+  tool's and is not saved. `grow: true` turns on Edit > Allow growing
+  full blocks first, which a copy into a full block needs. A screen of
+  ours, a button to hide, and a widget with no string ID answer
+  `REFUSED` with the owner. `ui.edits` lists the blocks added and edited
+  (`retail_blocks`) and the stand-ins (`stand_ins`); `ui.revert` puts a
+  block back as the loaded map has it and removes a copy
+  (docs/game/ui-builder.md "Retail tag edits").
+- **Retail edits as data.** `api/ui_export.rs` registers `UiExport` for
+  `ui.export_edits {path, screen?}`: the open map's retail screen edits
+  (the tag document's writes to each screen tag's panes and header, as
+  loaded against as edited) written as retail edit files, one per edited
+  pane, into the directory `path` (`boot::ui_kit::retail_edits::diff_pane`,
+  `to_yaml`). It answers `{map, written: [{path, screen, pane, edits}],
+  skipped}`; `skipped` names each change the format cannot hold. No map
+  open is `NO_DOCUMENT`, and a `screen` the map lacks `INVALID_PARAMS`.
+  The files are ours, so `path` may be the checkout's
+  `content/ui/retail-edits/`. The game applies files named by
+  `screen-edits` items in the UI package at boot
+  (docs/game/ui-in-maps.md "Retail edits as data").
 - **HUDs (studio-hud, landed).** `api/hud.rs`: `hud.list` opens a map of
   the source (or a package) in the HUD tool and lists its `nhdt` tags
   and who names them; `hud.read` shows one and gives its widgets
@@ -834,8 +2486,8 @@ the window and the API stay one path.
   IDs are the Tags tool's to edit (`REFUSED`).
 - **Modeling (studio-modeling, landed in part).** `api/geometry.rs`:
   `geometry.list` gives the open map's structure clusters and instanced
-  definitions (and a render model's sections with `model`) as target ids
-  `kind:tag:index` (`cluster:e1000004:0`); `geometry.open` enters edit
+  definitions, every `coll` BSP (`coll_bsp:…`) and, with `model`, a render
+  model's sections as target ids `kind:tag:index` (`cluster:e1000004:0`); `geometry.open` enters edit
   mode on one, after which a `target` param may be left out.
   `geometry.read` gives the mesh (positions by vertex id, faces, the
   selection); `mesh.*` are `Action::Model(ModelAction::Apply)`, one undo
@@ -844,82 +2496,498 @@ the window and the API stay one path.
   edit mode, `doc.undo` and `doc.redo` with `"doc": "map"` are its undo.
   `geometry.check` gives each open target's write class and
   `save_refusal`, why a save would be refused (Allow unverified geometry
-  writes off, `allow_unverified`, or an edit that changes a count);
+  writes off, `allow_unverified`, or an edit that changes a count).
+  `geometry.lower_lods {target?, on?}` is **Use for lower LODs** on an
+  open model section (`Action::Model(ModelAction::UseForLowerLods)`, one
+  undo step; `on` defaults to true) and answers `changed`; any other
+  target is refused. `model.collision_from_render` runs Modeling's
+  **From render** action and records a replayable `replace_polygons` op.
+  `geometry.collision.add_box {structure, lo, hi, material?}` adds a
+  closed box solid inside `[lo, hi]` to a structure's level collision
+  (`structure` its tag id), onto the boxes added before, as
+  `Action::Model(ModelAction::AddCollisionBox)`, and answers its counts
+  (`surfaces`, `planes`, `leaves`, `file_surfaces`); a box with no volume,
+  outside the level's open space or on a tag that is not a structure is
+  refused with the reason. `geometry.collision.clear {structure}` drops the
+  structure's boxes (`cleared` whether it had any). A paired game gets
+  both live as the `collision` row; the save writes the boxes;
   docs/editor/modeling.md, "Interfaces".
-- **Textures (studio-modeling slice 5).** `api/bitmaps.rs`:
+- **Textures (studio-modeling slices 5 and 6).** `api/bitmaps.rs`:
   `bitmap.list {name?}` gives the map's bitmap tags and their images;
-  `bitmap.read` one bitmap's images (size, format, mips, write class);
+  `bitmap.read` one bitmap's images (size, format, mips, write class)
+  and its sequences (label, first image, count, sprites), with `grown`
+  saying a save writes the whole tag again and `movable` null or why the
+  bitmap cannot gain an image;
   `bitmap.pixels {bitmap, image?, rect}` the RGBA of a rectangle (at most
-  65,536 pixels); `bitmap.paint`, `bitmap.fill` and `bitmap.adjust`
-  (invert, levels, hsv) and `bitmap.import` (a PNG, resampled to the
-  rectangle) are `Action::Bitmap`, one undo step each; `bitmap.export
+  65,536 pixels); `bitmap.paint`, `bitmap.fill`, `bitmap.adjust`
+  (invert, levels, hsv), `bitmap.channel_copy`, `bitmap.turn` and
+  `bitmap.import` (a PNG, resampled to the rectangle) are
+  `Action::Bitmap`, one undo step each; `bitmap.export
   {bitmap, image?, mip?, out}` writes a PNG and is refused inside a Git
-  checkout. A bitmap is named by hex tag id, path, `\key` path tail or a
-  unique substring. Edits are kept in the editor only: the write class is
-  `memory`, or `none` for P8, P8Bump, V8U8 and G8B8, and `doc.save` with
-  `"doc": "bitmaps"` (alias `textures`) is `REFUSED`. `doc.undo`, `doc.redo`
-  and `doc.diff` work on that doc. docs/editor/modeling.md, "Interfaces".
-- **Player models (planned, not started).** See "Planned: player
-  models and customisation" below.
-- **Customisation (later).** Same section.
+  checkout. `bitmap.paint {bitmap, image?, points, color, size, ...}`
+  stamps at every point and at most `spacing` apart between them, so two
+  points are a line; with `source` ([x, y]) it is a clone stroke, each
+  stamp the pixels at the offset from `source` to the first point, read
+  from the layer `from` (`{image?, face?, slice?}`; the layer painted
+  without it) as it was when the stroke began, and `color` is not
+  needed. `bitmap.channel_copy {bitmap, image?, from, to, rect?}` writes
+  a channel (`r`, `g`, `b`, `a`, `luma`) into the channels `to` (letters
+  of rgba); `bitmap.turn {bitmap, image?, by, rect?}` is
+  `flip_horizontal`, `flip_vertical`, `quarter`, `half` or
+  `three_quarters` of the rectangle, in place (a quarter turn needs a
+  square). An edit that changes no pixel is no undo step. A bitmap is
+  named by hex tag id, path, `\key` path tail or a
+  unique substring. `bitmap.reshape {bitmap, image?, width?, height?,
+  format?}` and `bitmap.image.resize {bitmap, image?, size? | width?,
+  height?, format?}` ask for a new size and/or format (`dxt1`,
+  `argb8888`, ...) for an image, or `auto` (the format it has when that
+  holds the painted alpha, else `dxt1` or `dxt5`, or a linear format at a
+  size DXT refuses), refused at once when a save would refuse it;
+  `bitmap.image.add {bitmap, from?, size?, format?}` appends an image
+  after the bitmap's last, its record copied from image `from` (default
+  0; a 2D image) at `size` and `format` or the source's, its pixels
+  transparent black until painted, imported or generated into; it
+  answers the new index;
+  `bitmap.sequence.add {bitmap, first, count?, label?}` appends a
+  sequence entry over `count` images from `first`, labelled `label`,
+  shaped like the bitmap's first sequence;
+  `bitmap.sequence.set {bitmap, sequence, label?, first?, count?}`
+  changes a sequence (its own or an added one), keeping its sprites;
+  `bitmap.sprites {bitmap, sequence?}` lists each sequence's sprites
+  (`image`, `left`, `right`, `top`, `bottom` as fractions of the image,
+  `registration` `[x, y]`); `bitmap.sprite.add {bitmap, sequence, image?,
+  bounds?, registration?}` appends one (a copy of the last, or over all of
+  the first image), `bitmap.sprite.set {bitmap, sequence, sprite, ...}`
+  changes one and `bitmap.sprite.remove {bitmap, sequence, sprite}` drops
+  one; an inverted or non-finite bound, an image the bitmap lacks or a
+  sprite that is not there is refused and changes nothing;
+  each of these is one undo step, and any edit to a sequence makes the
+  bitmap `grown` (a save moves the tag);
+  `bitmap.spans {bitmap, image?, face?, slice?, rect?}` gives the stored
+  bytes the edits change (per LOD: offset, length, hex) without writing
+  anything: the spans a save patches in place and a live push sends. Edits
+  stay in the editor until a save. `doc.save_as` (and `doc.save`, for a map
+  with a save target) with `"doc": "bitmaps"` (alias `textures`) is the
+  map's save: it encodes every edited image and writes it with the rest,
+  by the write class `bitmap.read` names for the image: `in_place`
+  (bytes patched in the map's own raw blocks), `appended` (a LOD in a
+  shared cache is copied into the map as a new raw block, or the image has
+  a reshape), `new` (an added image: the whole tag is written again at
+  the end of the metadata and the tag's index entry pointed at the copy,
+  the other tags keeping their bytes), or `none` for P8, P8Bump, V8U8 and
+  G8B8, which are read only.
+  A save the map cannot take (a new raw block where the metadata does not
+  end the file) is `REFUSED` with the reason. `doc.diff` lists the edited
+  layers by tile and the pending reshapes; `doc.list` says the doc is
+  `dirty` until its edits have been saved. `doc.undo`, `doc.redo` work on
+  that doc (a reshape, an added image, an added sequence and a sequence or sprite
+  edit are one undo step each). docs/editor/modeling.md, "Texture editing" and "Interfaces".
+- **Models.** `api/models.rs`: `model.list`, `model.read`,
+  `model.render` and `model.check`, read-only over a map of their own
+  (no actions, no undo); see "Models and customisation" below.
+  `model.colors`, `model.emblem` and `custom.*` are planned there.
+  `api/geometry/physics.rs` serves the open map’s `model.physics.*`.
+- **Image generation.** `api/image_gen.rs` registers `ImageGenApi`:
+  `image.generate`, `image.result`, `image.apply`, `image.accept` and
+  `image.discard` over the jobs on the app (`App::imagegen`, shared with
+  the window's Generate window). Apply, accept and discard run the
+  commands `Action::Image` runs, which write through the Textures tool's
+  `BitmapAction`s ([Generating images](#generating-images)).
 
-## Planned: player models and customisation
+## AI ground
 
-Design notes for the `model.*` and `custom.*` providers. Nothing here is
-built; the table's stubs answer `NOT_YET`. Each part
-says what it reads, what it edits, through which action, and what is
-still to establish.
+`ground.*` (`api/ground.rs`, a provider over `app/ground.rs`) is the agent's
+view of the AI ground of the open map
+([game-types-without-carriers.md](../game/game-types-without-carriers.md),
+"In Studio"): the labels placed on it, **Build AI ground** and what the
+build made. Nothing builds at open or while placing.
 
-### What there is to build on
+- **Labels.** `scenario.add {block: "label", label, position?, facing?,
+  team?, phase?}` places a ground label (`ff_drop`, `ff_base`, `ff_cover`,
+  `siege_site`, `siege_goal` or `siege_line`) as one netgame flag of a
+  type the game reads no marker for, with the label attached, in one undo
+  step; `facing` is radians, `team` 0 (red) or 1 (blue; a base and a siege
+  line read it), `phase` a siege line's. It answers `{index}`, the flag's.
+  The Scene tab's **AI and objectives** group and its **Place new with the
+  mouse** place by the same action (`Action::PlaceLabelAt`), so a label
+  placed in the window and one placed here are one document. The label
+  belongs to its flag, as an area does, so a swap-removal moves it with the
+  flag and an undo brings it back.
+- `ground.status {offset?, limit?}` answers `{state, stale, job, error,
+  labels, built, shown, matching, sectors}`. `state` is `no_map`, `never`
+  (not built for this map), `building`, `current`, `stale` or `failed`;
+  `stale` says why: `labels` (one was placed, moved or removed),
+  `collision` (a placed solid object or a Modeling write changed),
+  `recipe` or `kit_version`. A move of a spawn, a rename or a script edit
+  leaves the ground current. `labels` counts the placed ones by label and
+  in `total`. `built` is `{zones, squads, sectors, links, problems,
+  costs, headroom: {tag_growth, available, fits}, bases}` for the last
+  build, and `problems` are the labels the build could not honour
+  (`{label, index, position, reason}`). `sectors` lists the built ground's
+  pathfinding sectors as `nav.pathfinding` does (`matching` is how many),
+  empty until a build.
+- `ground.build {wait?, offset?, limit?}` builds over the open map as
+  edited (`firefight_kit::ground::build`) on its own thread and answers
+  `{job, status}` at once, or when it is done with `wait`. A build
+  already running is `REFUSED`; a failed one is in `status.error` and in
+  Problems. The built ground's pathfinding then draws in the Navigation
+  layers and `nav.pathfinding` reads it in place of the map's own.
 
-- `tags::object` resolves an object to its model: `Context::resolve_object`
-  gives the object's `hlmt` and `Context::resolve_model(id, variant)` a
-  variant's regions and the permutations each picks (`RegionChoice`,
-  `PermutationChoice`), with the render, collision, physics and animation
-  tags linked.
-- `native-render::model_load` loads a `mode` and picks a variant's
-  sections (`pick_sections`): what a preview draws.
-- `bots::guest::bot_look` builds the eight player look bytes the game
-  checks (`0x153750`; `crates/live/bots/src/phantom/session.rs`): four colour indices (armour primary and secondary,
-  emblem primary and secondary, each below 18), the model (below 4), the
-  emblem foreground (below 0x40), background (below 0x20) and flags.
-- The Tags tool (`app::tag_doc`) writes any tag field with undo and saves
-  with the map; the scenario viewport renders offscreen (`view.snapshot`).
+The labels and the built ground live in the open session; they are not yet
+written with the map's package.
+
+The tests are `app/ground_tests.rs` (the window's placing and
+`scenario.add` make one document, a build on the kit's invented court
+lists its sectors, the stale rule, a failed build in Problems) and
+`scenario-edit/src/ground_tests.rs`.
+
+## Game type markers
+
+`markers.*` (`api/markers.rs`, a provider) is the agent's view of the
+shapes Studio draws for a game type's parts
+([gametype-markers.md](../game/gametype-markers.md)): player spawns, the
+netgame flags the game reads (flag, bomb, ball, teleporter, territory,
+hill), item spawners and trigger volumes, all from the shared
+`game_markers` set through `scenario_edit::marker_view`.
+
+- `markers.list {kind?, layer?}`: every marker of the open map, whatever
+  the layers show, as `{id, kind, layer, team, position, facing, label,
+  number, area, area_from, members, bounds, lines, triangles}`, with
+  `counts` by kind. `id` is the placement as `scenario.*` names it
+  (`netgame_flags[3]`), or `volume[2]` for a trigger volume (one row a
+  kind it draws as: trigger, kill, BSP switch); a hill of three or more
+  corner flags is one row, `id` its first corner, `members` all of them,
+  `area` the path of their hull and `area_from: "corners"`. `area` is
+  written as the document writes it (floats as hex bits) and `area_from:
+  "default"` marks a flag with no shaped area. `kind` is a name of
+  `markers.render`'s `kinds`; `layer` one of `spawn_points`, `flags`,
+  `netgame_items`, `trigger_volumes`, `kill_volumes`, `bsp_switches`. A
+  name that is neither is `INVALID_PARAMS`. A flag of a type the game
+  does not read has no row. `NO_DOCUMENT` with no map open.
+- `markers.render {kind?, team?, area?, view?, size?, out?}`: the shapes
+  drawn offscreen through the viewport's renderer on a floor grid, to a
+  PNG under the cache directory's `studio/markers/`, never into a Git
+  checkout (`REFUSED`). It needs no map and no disc. With no `kind` it is
+  the contact sheet of every kind in red, blue and neutral (a kind of one
+  fixed colour once); `team` (0 to 7) draws one. `area` (`{radius,
+  below?, above?}` or `{path: [[x, y], ...], below?, above?}`, plain
+  numbers) replaces the area of a hill, territory or siege site, and a
+  refused area gives `Area::validate`'s sentence. `view` is `angled`
+  (default), `top` or `front`, +x to the right; `size` defaults to
+  `[1280, 720]`. The answer is `{path, width, height, view, covered,
+  kinds}`: `covered` counts the pixels that are not the corner's
+  background, and each of `kinds` has its `cell`, its `center` in pixels
+  and its mesh's `lines`, `triangles` and `bounds`, so a picture is read
+  against the list. `NO_GPU` where there is no adapter.
+- `markers.area.set {id, area}`: sets the area of the netgame flag `id`
+  (`netgame_flags[3]`) from `{radius, below?, above?}` or `{path: [[x,
+  y], ...], below?, above?}` in plain numbers, or clears it with `null`
+  (a missing `area` is `INVALID_PARAMS`). One undo step. Answers `{id,
+  area}` as stored. `Area::validate`'s sentence is `REFUSED` and leaves
+  the document as it was.
+- `markers.area.convert {id}`: a retail hill's corner flag `id` becomes
+  one flag with `Area::of_corners`' path, the other corners removed, in
+  one undo step. Answers `{id, area, position}` of the kept flag; a flag
+  that is not a hill's corner, or a hull `Area::validate` refuses, is
+  `REFUSED`.
+
+`view.layers` shows the markers' layers (`spawn_points`, `flags`,
+`netgame_items`, the volume layers) and `view.snapshot` draws them.
+`api/tests/markers_tests.rs` runs the list over the invented cache (each
+block's kind and team, a hill of corners, the volumes), the refusals, the
+sheet with every kind, and a snapshot whose spawn pixels all lie in the
+spawns' projected boxes.
+
+## Models and customisation
+
+`model.*` is where a content author (an agent building a weapon, an
+object or a player model) sees and checks the content before handing it
+back: the objects of a map and their models, the model drawn the ways
+the game draws it, and the checks that find what would break in play.
+`custom.*` and `model.colors`/`model.emblem` are planned: their stubs
+answer `NOT_YET`.
 
 ### `model.*`
 
-A Models tool (`ToolKind::Models`, its state beside the HUD tool's) over
-the map open in the scenario tool, and a provider in `api/models.rs`:
+The provider (`api/models.rs`) reads one map, read-only, and keeps it
+between calls:
 
-- `model.list {group?}`: bipeds (and with `group`, any object group)
-  with their `hlmt`, variant names and region count, from
-  `Catalog::from_map` and `resolve_object`. Read-only.
-- `model.read {tag, variant?}`: the variant's regions, each with its
-  permutations and probabilities, the change colours the object's
-  shaders take, and the render model's node count. Read-only.
-- `model.render {tag, variant?, colors?, camera?, out?}`: the variant
-  drawn offscreen with the scenario viewport's renderer (wgpu headless,
-  `NO_GPU` where there is none) at the player colours given, to a PNG
-  under `studio/model/`, never into a Git checkout. The preview state
-  (variant, colours, camera) is an action (`ModelPreview`), not an edit:
-  no undo, no dirty mark.
-- `model.colors {player?, colors?}` and `model.emblem {player?, emblem?}`:
-  read or set a player's four colour indices and emblem. These are not
-  tag edits: they are the profile's look bytes, so they edit a profile
-  document (`doc: "profile"`) with its own undo and a save into the
-  user's save storage under the data root, never the map. The bounds are
-  `0x153750`'s, refused with `INVALID_PARAMS` and the range.
+- With no `map`, the map the scenario tool has open (followed when the
+  scenario tool opens another).
+- `map: "<name>"`: that map of the source (`source.maps` lists them),
+  opened as the HUD tool opens one.
+- `pogo: true`: that map with the Pogo Stick's kit added
+  (`pogo_kit::inject::add_pogo`, which the `pogo` package's build equals,
+  uncached). A map the kit cannot go into is `REFUSED` with
+  `data.reason: "pogo_refused"` and the kit's reason. A map that already
+  holds the kit (its `pogo_kit_v<n>` string) is read as it is. `pogo`
+  left out keeps the open map's choice.
 
-To establish first: where the profile's look bytes live in a save (the
-variant store's save layout covers game variants only), and which
-shader parameters take the change colours (so a render matches the
-game).
+Every method takes `map?` and `pogo?`. `tag` is a `0x...` id,
+`group:name`, a tag's name, a lone group with one object tag, or a
+unique part of an object tag's name (`pogo_unsc`). A name that fits
+several tags is `INVALID_PARAMS` with the candidates.
+
+- `model.list {group?}`: the object tags of `group` (`bipd` by default;
+  `weap`, `vehi`, ... or `all`) with each one's `hlmt`, render model,
+  variant names, region count and, for a `weap`, how many first-person
+  entries it has. With it: `pogo` (the kit's three `weap` tags, and what
+  adding the kit cost when Studio added it) and `tag_memory` (`used`,
+  `limit`, `free` bytes: the map header's `+0x1c` against
+  `map::writer::max_metadata_size` for its cache type).
+- `model.read {tag, variant?}`: the object's `hlmt` and its linked
+  render, collision, physics and animation tags; the variant drawn (the
+  object's `default_variant` unless `variant` names one) and every
+  variant's name; the variant's regions with each permutation, its
+  probability, whether the render model has it, and its `tag.set` path
+  on the `hlmt` (`variants[v].regions[r].permutations[p].probability`);
+  the node count; the render model's markers (`mode +0x58`, name and
+  node); the object's change-colour count; and for a `weap` its
+  `first_person` entries with their `model` and `animations` and paths.
+- `model.collision_from_render {render, target?, materials?}`: replace
+  a collision BSP with polygons made from the current mesh of a render
+  section. Open both with `geometry.open` and pass their target ids
+  (source `mode_section`, `cluster` or `instance_def`; destination
+  `coll_bsp`, defaults to the active target). Choose meshes in the same
+  coordinate space. The BSP keeps its existing node binding. Each entry
+  in `materials` is the collision material index for the render material
+  at that position. An omitted or empty array assigns every face
+  collision material 0. The call answers `{target, verts, faces}` and
+  creates one map undo step. An unopened target is `NO_DOCUMENT`.
+  Unusable geometry, missing material mappings and compiler failures are
+  `REFUSED` and leave the mesh unchanged. The edit saves with the map
+  when Allow unverified geometry writes is on.
+- `model.physics.shapes {tag}` reads a local `phmo` tag from the open
+  map with unsaved edits applied. The result has `spheres`, `pills`,
+  `boxes` and `polyhedra` arrays in tag block order. Entries give the
+  editable fields for each shape. Polyhedra also report their vertices,
+  plane equations and AABB centre and half extents.
+- `model.physics.set {tag, kind, index, field, value, vertex?}` edits one
+  shape in place. Use `sphere`, `pill`, `box` or `polyhedron` for
+  `kind` and the zero-based array index. Fields are `radius` for
+  primitives, `half_extents` for boxes, `bottom` and `top` for pills,
+  `translation` and `rotation` for spheres and boxes, and `vertex` for
+  polyhedra. Rotation takes three right-handed orthonormal rows. For a
+  vertex, pass its zero-based `vertex` index and a position as `value`.
+  The editor returns `REFUSED` for a shape under a MOPP or a vertex move
+  that breaks the convex faces. A change saves with the map. Use
+  `doc.undo` and `doc.redo` with `"doc": "tags"` to undo or redo it in
+  one step. The result's `warning` flags stale rigid-body bounds and
+  mass properties on a change and is null if the value matches.
+- `model.render {tag, view?, variant?, character?, biped?, hands?,
+  size?, camera?, out?}`: the model drawn offscreen through the
+  viewport's native object renderer
+  (`scenario_edit::native_view::preview`, wgpu headless) to a PNG under
+  the cache directory's `studio/model/`, never into a Git checkout
+  (`REFUSED`). `NO_GPU` where there is no adapter. `view` is one of:
+  - `ground` (the default): the object's world model at its variant,
+    orbited to fit (`camera` takes `yaw`, `pitch` in degrees, `distance`,
+    `target`).
+  - `third_person`: on a player biped (the globals' player
+    representation `character`, default 0, or `biped`), the weapon at the
+    biped's right-hand marker (`unit right_hand_node`), both in their
+    rest pose.
+  - `first_person`: the `weap`'s `first_person[character].model` and the
+    globals' first-person hands for that character (`hands: false` leaves
+    them out), seen from the first-person camera: the eye at the
+    first-person models' origin looking along +x, +z up, at the game's
+    default 70 degrees across (`camera.fov`), the models in their rest
+    pose (no first-person animation).
+
+  A view that cannot be drawn is `REFUSED` with `data.reason` and no
+  picture: `no_first_person` (the `weap` has no `first_person` entry,
+  `data.path: "first_person"`), `first_person_no_model` (the entry's
+  model is null), `first_person_model_fails`, `not_a_weapon`,
+  `no_player_biped`, `biped_fails`, `hand_marker_missing`, `model_fails`.
+  A material whose shader names no base map the renderer decodes is drawn
+  grey (`untextured` in the piece). The answer gives `covered`, how many
+  pixels differ from the background, and `notes`; a first-person picture
+  with nothing in view says so.
+- `model.check {tag, variant?}`: the content's findings, each
+  `{code, severity, message, tag, path}`: `severity` is `error`,
+  `warning` or `note`, `tag` the tag to edit as `group:name`, and `path`
+  its `tag.set` path when one field is the fix (null otherwise). The
+  answer also gives `counts`, `tag_memory`, `pogo` and `editable` (false
+  when Studio added the kit: the kit's tags are fixed in
+  `crates/tools/pogo-kit`, not with `tag.set`). The codes:
+
+  | Code | Severity | Finding |
+  |---|---|---|
+  | `no_first_person` | error | the `weap` has no `first_person` entry (`path: first_person`): the first-person view has no weapon model |
+  | `first_person_no_model` | error | `first_person[i].model` is null |
+  | `first_person_model_fails` | error | the first-person `mode` does not load |
+  | `first_person_no_animations` | warning | `first_person[i].animations` is null: the model is not posed |
+  | `first_person_missing_character` | warning | fewer `first_person` entries than the globals have player characters |
+  | `unresolved_link` | error, warning | a reference names a tag the map does not have (the object's own references, the `hlmt`'s, `first_person`, `hud`) |
+  | `wrong_group` | error | a first-person model that is not a `mode` |
+  | `no_model`, `no_render_model` | error | the object names no `hlmt`, or the `hlmt` no `mode` |
+  | `variant_missing` | error | the variant asked for, or the object's `default_variant`, is not in the `hlmt` |
+  | `no_sections` | error, warning | a permutation the variant picks has no section in the render model (`path` on the `hlmt`), or a render-model region has none at all |
+  | `node_count_mismatch` | error | the `hlmt` and its `mode` disagree on the node count |
+  | `missing_marker` | error, warning | a barrel's `optional_barrel_marker_name` the weapon's model lacks; a player unit's `right_hand_node` its model lacks |
+  | `untextured` | warning | materials with no decodable base map |
+  | `model_fails`, `render_model_unreadable`, `model_invalid`, `unreadable` | error | the model, its geometry or the tag does not read |
+  | `tag_memory` | note, warning, error | the map's tag memory used and free (with the kit in it, when added); a warning under 64 KiB free, an error over the limit |
 
 Edits to a model's tags (a variant's permutation pick, a region's
-probability) are not new methods: they are `tag.set` on the `hlmt`
-through the Tags tool, so they share its undo and save. `model.read`
-returns the `tag.set` path of each editable value so an agent can go
-straight there.
+probability, a weapon's first-person entry) are `tag.set` and
+`tag.block.add` on the map the Tags tool edits, so they share its undo
+and save; each `path` above is that call's. The provider re-reads its
+map when the scenario tool opens another; after a save, `model.list`
+with the saved map's name reads the edit.
+
+### Model poses
+
+`anim.*` reads a `jmad` tag of the map the Tags tool shows, poses it
+on the model that uses it (slice M1 of rich-editors.md) and
+lists a clip's channels as keys. The Animation window and the API share
+the same editable documents in `app::anim`. See the animation editor
+in [studio-redesign.md](studio-redesign.md) (AN1, AN3 and AN4). `tag` takes
+the same form as `sound.*`. Document IDs last for the Studio session,
+and edits live in memory.
+
+- `anim.list {tag}`: the graph's animations, each
+  `{index, name, type (base|overlay|replacement|unknown), frames,
+  codecs: [static, animated] (the engine's codec names, null where a
+  stream is absent), aim_grid, error}` — `aim_grid` marks codec 8, whose
+  "frames" are the cells of an aim grid, not points in time; `error`
+  names why a damaged clip does not build (inline data is refused by
+  name). With them: `nodes`, and `users`, the map's objects whose `hlmt`
+  names the graph.
+- `anim.pose {tag, animation, frame?, overlay?, model?, size?, out?}`:
+  one animation sampled at `frame` (a fractional frame blends the
+  neighbours; the default 0; a frame past the end holds the last) and
+  posed on the model. `animation` is its name or index. `overlay` is
+  `{animation, weight}`: a second animation applied over the base at
+  `weight` 0 to 1 with the engine's scaled-add rule
+  (anim-sampling.md, "Evaluators"; 0 changes nothing, 1 is the plain
+  add). `model` names which user to pose (by tag name or `0x...` id)
+  when several use the graph; without it the only one is posed, and
+  when none does, the answer still gives the animation's own channels
+  with a note saying so. The reply: `nodes`, each
+  `{index, name, parent, rotation [x,y,z,w], translation, scale, has
+  {rotation, translation, scale}, world}` — the local transform that
+  composes (the animation's channel where it has one, the render model
+  node's default where it does not, which `has` says), and the posed
+  world matrix, column-major `T·R·S` (null without a model). The
+  composition is the engine's own: the graph's nodes and the render
+  model's are the same list, and the merged locals compose up the model
+  node tree (animation.md, "Composing a pose"; a node-count
+  disagreement is refused by name). The model is also drawn offscreen
+  through the viewport's native object renderer to a PNG (`out`, or the
+  cache directory's `studio/anim/`; never into a Git checkout), with
+  `width`, `height`, `covered` as `model.render` gives them; without a
+  renderer the transforms still answer and a note names why.
+- `anim.pose {doc, frame?, base?, overlay?, model?, size?, out?}`:
+  the same reply sampled from an editable document using its key
+  interpolation. For an overlay document, `base` names or indexes a
+  base animation in the same graph. Without `base` the overlay applies
+  over rest. A base document accepts the `overlay` parameter described
+  above. The Tags tool must show the document's map for posing.
+- `anim.read {tag, animation, tolerance?, keys?}`: one decoded
+  animation's source reduction. `nodes` has a row per node, `{index, name, parent,
+  channels}`, with the channels the clip drives, each `{kind (rotation,
+  translation or scale), moves, key_count, keys: [{frame, value}]}`. A
+  rotation's value is a quaternion `[x, y, z, w]`, a translation's
+  `[x, y, z]`, a scale's `[s]`. The keys are the clip's dense decoded
+  frames reduced (`tags::anim_keys::reduce`): between two keys the value
+  is linear (a rotation along the shorter arc, re-normalised, as
+  `anim.pose` blends), before the first and after the last it holds, and
+  every frame bakes back within `tolerance`. The default tolerance is a
+  tenth of a degree of turn, a thousandth of a unit of translation and a
+  thousandth of scale; `tolerance` is `{rotation_degrees?, translation?,
+  scale?}`, none negative. A channel with one key does not change
+  (`moves` false): the static stream's channels, and any that sit within
+  tolerance of their first frame. `reduction` says what it cost:
+  `{channels, dense_values, keys, max_error: {rotation_degrees,
+  translation, scale}}`, the error measured at every frame against the
+  decoded clip. `keys: false` lists the counts only. Also `animation`
+  (the `anim.list` row), `frame_rate` (30), `frames`, `duration`
+  (seconds), `tolerance`, `events {frame, sound, effect, decoded}` and
+  `notes`. Events are counted, not decoded (`decoded` is false), and a
+  note says so when there are any; so is a root movement
+  (`frame_info_type` other than none). An aim grid (codec 8) is not a
+  time series: its nodes list without channels and a note says so.
+  `doc` identifies the same editable clip used by the window, seeded
+  with the default tolerance even when this reply uses a custom
+  tolerance. It is null when the source clip cannot open as a document,
+  including aim grids.
+- `anim.read {doc, keys?}` returns `{doc, name, frame_rate, frames,
+  duration, revision, nodes}` for the document's current keys. Each
+  key includes `{frame, value, interp, tangent}`. A tangent has the
+  channel's width and uses stored coordinates per frame (quaternion
+  components for rotation).
+- `anim.new {tag, name, frames}` creates an empty base clip on the
+  graph's skeleton. The name must contain a non-space character.
+  `frames` is an integer from 1 to 32767.
+- `anim.duplicate {tag, animation, name}` creates a document from a
+  decoded clip. `anim.duplicate {doc, name}` copies an open document's
+  current keys. Both forms and `anim.new` return `{doc, name, frames,
+  nodes, revision}` with a node count and a fresh revision of zero.
+- `anim.key {doc, node, channel, frame, value?, interp?, remove?}`
+  edits one key. `node` is an index or a unique exact node name.
+  `channel` is `rotation`, `translation` or `scale`. A zero-based
+  `frame` must fit the clip. Set `value` as above or supply just
+  `interp` to change an existing key. `step`, `linear` and `smooth`
+  govern the segment to the next key. A new key defaults to linear.
+  `remove: true` takes neither `value` nor `interp`. The reply is
+  `{doc, revision, changed, key}` with the current key or null.
+- `anim.save {doc, package?, mode?, class?, weapon_type?, action?}`
+  writes an `animation` item for the Tags tool's current map. It uses
+  the edit target by default and answers `NO_TARGET` when no package
+  is specified and the target is unset. A document opened from a source clip replaces that clip
+  and keeps its action. New and duplicate documents require an
+  `action`. Their mode, class and weapon type each default to `any`.
+  The reply is `{doc, package, tag, map, source, item}`, with the
+  package-relative `.anim.yaml` path and the zero-based manifest item
+  index. Saving the same clip again updates its item and lock. The
+  package builder checks the graph and writes its records and raw
+  stream when the package builds. The game takes the rebuilt graph on
+  map load.
+- `anim.check {doc, model?}` returns `{doc, nodes, feet_checked,
+  feet_below_ground, loop_seam}`. Each `nodes` row has
+  `{node, rotation_degrees, translation, scale}` and records the
+  largest quantisation error across all baked frames for codecs 1
+  and 3. `loop_seam` uses the same row shape for the difference in
+  local transforms between the first and last frames. When a model
+  and a named foot node are available, `feet_checked` is true and
+  `feet_below_ground` lists `{node, frame, z}` for each foot below
+  model-space `z = 0`. Overlay diagnostics use full weight over rest.
+  `model` and the shown map follow the rules for posing.
+
+- `anim.retarget {from, to, map?, name?, from_model?, to_model?,
+  preview?}` copies open document `from` onto the skeleton of the jmad
+  tag `to` in the shown map as a new document. Nodes pair by unique name;
+  `map` is `[{source, target}]` with a `null` target to drop a node, and
+  wins over names. `from_model` and `to_model` name the model whose rest
+  skeleton applies when several use a graph. The reply is `{doc, name,
+  nodes, unmatched_source, unmatched_target, dropped_channels, notes}`;
+  `nodes` has `{source, source_name, target, target_name}` for every
+  source node. With `preview: true`, `doc` is null and nothing opens. A
+  node outside either skeleton or a node mapped twice is `REFUSED`; a
+  malformed `map` is `INVALID_PARAMS`.
+- `anim.import {file, to?, clip?, map?, name?, to_model?, preview?}`
+  reads a local `.gltf` or `.glb` and places one animation on the graph
+  `to` (default: the selected jmad) by the same rules and reply. `clip` is
+  an animation name or index and is required when the file has several;
+  the `INVALID_PARAMS` error then lists them in `data.clips`. An
+  unreadable or unsupported file is `REFUSED`; skipped channels are in
+  `notes`.
+
+### `model.colors` and `model.emblem` (planned)
+
+`model.colors {player?, colors?}` and `model.emblem {player?, emblem?}`
+read or set a player's four colour indices and emblem. These are not
+tag edits: they are the profile's look bytes (`bots::guest::bot_look`
+builds the eight bytes the game checks at `0x153750`: four colour
+indices below 18, the model below 4, the emblem foreground below 0x40,
+background below 0x20, and flags), so they edit a profile document
+(`doc: "profile"`) with its own undo and a save into the user's save
+storage under the data root, never the map. The bounds are `0x153750`'s,
+refused with `INVALID_PARAMS` and the range. To establish first: where
+the profile's look bytes live in a save (the variant store's save layout
+covers game variants only), and which shader parameters take the change
+colours (so a render matches the game).
 
 ### `custom.*`
 
@@ -940,14 +3008,59 @@ permutation from the profile instead of by probability, and the network
 carrying the choice. Until that lands the methods stay planned; the
 editor side is small once the profile document exists.
 
-### Tests the providers need
+### Tests
 
-As the HUD provider's: every method runs its example in
-`every_method_in_methods_has_a_test` (on an invented map with a biped,
-`hlmt` and `mode`, no game data); `model.render` refused in a Git
-checkout; colour and emblem bounds refused; profile edits undone and
-redone as their document; and the window's actions and the API's make
-identical profiles.
+`model.*` runs its examples in `every_method_in_methods_has_a_test` on
+the Pogo kit's invented map with the kit in it (`pogo_kit::fixture`, no
+game data). `api/models/tests.rs` checks the kit's weapons listed, a
+look with its first-person block taken out found by `model.check` and
+refused by a first-person render, the first-person view the kit copies
+from the fixture pistol checked (its invented models do not load:
+`first_person_model_fails`), a weapon held in its own model checked and
+drawn (the picture only where there is a GPU), a render refused in a
+Git checkout, and `pogo: true` refused by name on a map the kit cannot
+go into. The planned methods need: colour and emblem bounds refused;
+profile edits undone and redone as their document; and the window's
+actions and the API's make identical profiles.
+
+`anim.*` runs its examples on an invented two-bone map (a body box and
+an arm box, their graph and the `bipd` that uses them, built with the
+Halo 1 converter's writers in `api/anim/tests.rs`). That suite is the
+slice's accepted test: posed at the last frame of the base clip, the
+arm's transforms are the expected quarter turn and the body's are the
+rest pose — the pose differs from the rest where the clip moves it and
+nowhere else. It also checks the list (names, codecs, the user), the
+overlay at weights 0 and 1 (0 changes nothing; 1 composes the base's
+quarter about z with the overlay's about x), a frame past the end
+holding the last, and the refusals: a tag that is not a `jmad`, an
+animation that is not there, a model that does not use the graph, and a
+graph nothing uses (the channels answer with a note).
+
+`anim.read` runs on its own invented map (`api/anim/read_tests.rs`: the
+Pogo kit's map with a two-bone graph in it, built with the Halo 1
+converter's writers): a base clip of six frames whose arm turns 0, 45,
+90, 90, 45, 0 degrees while it slides, and an overlay. The slice's
+accepted test: the clip lists its channels (the body's three as one key
+each, the arm's turn as four keys at frames 0, 2, 3 and 5, its slide as
+two, its scale as one), and the keys played back by the stated rule sit
+within the tolerance of `anim.pose` at every frame, at the default and
+at a looser one. It also checks that a wide tolerance collapses a
+channel to one key with the measured error, `keys: false`, an overlay's
+single channel, and the refusals (a tag that is not a `jmad`, an
+animation that is not there, a negative or unknown tolerance).
+`tags::anim_keys`' own tests (`anim_keys_tests.rs`) cover the reduction:
+keys within tolerance at every frame on a noisy clip, a flipped
+quaternion sign, undriven channels, one frame, none. The timeline's
+transport (scrub, play, step, loop, speed) is `app::anim::Transport`,
+tested in `app/anim.rs`. The same invented graph tests animation
+documents, including gizmo/RPC equivalence and single-step drag undo.
+`crates/tools/anim-edit/src/tests.rs` covers interpolation, history,
+diagnostics and angle display. `ui/anim/edit.rs` tests that plotting
+the rotation leaves its stored quaternions unchanged.
+`api/tests/anim_save_tests.rs` verifies source clip replacement,
+map scoping, lock updates and key round-trips through `anim.save`.
+`api/anim/transfer_tests.rs` covers `anim.retarget` and `anim.import`
+on the invented graph and an invented glTF file.
 
 ## Code
 
@@ -957,10 +3070,32 @@ identical profiles.
 - `crates/apps/studio/src/api/mod.rs`: `METHODS` (every method's shape and
   example), `Api::call` (shape check, providers, built-ins),
   `Api::pump` (the window's between-frames answer).
-- `api/server.rs`: the socket. `api/{docs,scenario,tags,variants,playlists,ui_screens,view}.rs`:
+- `api/server.rs`: the socket. `api/{docs,scenario,tags,variants,playlists,ui_screens,ui_browse,view}.rs`:
   the namespaces (`volume.*` is in `api/scenario.rs`, `collision.*` in `api/collision.rs`). `api/seams.rs`: providers; `api/tag_fields.rs`,
   `api/tag_io.rs`, `api/sound.rs`, `api/hud.rs` and `api/scripts.rs` the Tags,
-  sound, HUD and Scripts tools', `api/geometry.rs` the Modeling tool's.
+  sound, HUD and Scripts tools', `api/geometry.rs` the Modeling tool's,
+  `api/ui_edit.rs` the UI Screens tool's edits, `api/preview.rs` and
+  `api/preview/run.rs` the previews in a paired game (tested in
+  `api/preview/tests.rs` against the agent's real server with invented
+  host methods). `api/sound_measure.rs` (with `sound_measure/meter.rs`,
+  the verdict over the audio crate's meter), `api/ui_check.rs` and
+  `api/checks.rs`: the content checks. `api/models.rs`: `model.*` (its
+  renders through `scenario_edit::native_view::preview`).
+  `api/markers.rs`: `markers.*`, over `scenario_edit::marker_view`.
+  `api/anim.rs` and `api/anim/edit.rs`: `anim.*` over `app/anim.rs` and
+  `app/anim/document.rs`. The Animation window in `ui/anim.rs` draws
+  the same poses and edits the same `anim-edit::AnimDoc` tracks.
+  `api/playtest.rs`: the playtest checks (`app/playtest_static.rs`) and
+  the runner's methods (`app/playtest.rs`). `api/workspace.rs` (with
+  `app/workspace.rs`: the tree's root, the plan, the extraction thread,
+  the sizes and prune; `ui/workspace.rs`: the first start's page and the
+  status line's bar): the tag workspace.
+  host methods). `api/sound_measure.rs` (with `sound_measure/meter.rs`),
+  `api/ui_check.rs` and `api/checks.rs`: the content checks. `api/voice.rs`
+  (with `app/announcer.rs` and `src/voice*`): the Announcer.
+  `api/voice_clone.rs` (with `app/voices.rs`, `voice/dataset.rs`,
+  `voice/clone.rs`, `voice/sidecar.rs` and `sidecar/voice_clone.py`):
+  Voices, tested in `api/voice_clone/tests.rs` with a fake sidecar.
 - `app/commands.rs`: the actions added for the API and the window
   (`SetField`, `EditSelection`, `MovePlacement`, `EditPlaylist`,
   `UndoIn`), `PlaylistEdit`, and `App::perform`. The viewport gizmo
@@ -997,6 +3132,15 @@ system temp directory):
   document, render (refused in a Git checkout), save as and re-open; and
   the window's actions and the API's make identical patches;
 - a registered provider answers a planned method;
+- the content checks on invented signals and layouts: a half-scale
+  997 Hz sine reads -6.02 dBFS peak and -9.03 dBFS RMS and LUFS, a
+  stereo one 3 dB louder, silence -120, a full-scale square every sample
+  clipped, a WAV file against the invented map's sound `loud`
+  (`api::sound_measure::tests`); a text past the title-safe area, one
+  too long for its rect and two on each other named `ui.layout.unsafe`,
+  `ui.layout.fit` and `ui.layout.text_overlap` (`api::ui_check::tests`);
+  `check.run`'s order, counts and skips over invented checks
+  (`api::checks::tests`);
 - `view.layers` validates changes atomically, shares the Halo 1 menu switch,
   and changes the invented map’s snapshot pixels on a machine with a GPU;
 - `volume.list` reads the invented map's two volumes, kill trigger and BSP
@@ -1033,6 +3177,30 @@ system temp directory):
   (`api::tests::nav_bots_reads_an_invented_cache_and_its_spot_files`);
   with no cache it builds the mesh in memory and writes nothing
   (`api::tests::nav_bots_builds_the_mesh_when_there_is_no_cache`);
+- `playtest.static` over the invented map with sectors and an invented
+  bots' mesh finds an off-mesh starting location, item and flag, an
+  island, two opposing starting locations in sight and the missing
+  Capture the Flag flags; with both starts on the mesh Slayer is ready;
+  a start moved onto the island cannot reach the other and the room's
+  wall hides it
+  (`api::tests::playtest_tests::playtest_static_finds_each_problem_on_the_invented_map`);
+  the checks themselves on invented layouts: islands, slivers, one-way
+  drops, sight through a wall and by team, each game type's needs
+  (`app::playtest_static::tests`);
+- `playtest.compare` and `view.layers {diff}` over a fake sim: the
+  baseline, a second run on a new build compared with it, the problems
+  gained and lost, other seeds refused, a difference refused with nothing
+  to compare, and the layers counting and drawing the marks
+  (`api::tests::playtest_tests`, `app::playtest::tests`,
+  `sim::spatial::compare::tests`, `viewport::playtest::tests`);
+- `playtest.run`, `status`, `result` and `cancel` over a fake sim: the
+  files written and read back by `h2 sim`'s batch planner, the presets'
+  matches and seeds, only ready game types run, partial and whole
+  results with their refused measures, a failed match listed, a repeat
+  answered from the cache, a newer run cancelling the old one, and the
+  refusal with no runner (`api::tests::playtest_tests`); the runner
+  itself, its stale mark on a new build key and its cache keys
+  (`app::playtest::tests`);
 - `view.stats` of an invented scene reports its BSP's lighting, its
   triangles by blend, its materials and its sky's sun and fog
   (`api::view::tests`);

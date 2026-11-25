@@ -1,0 +1,20 @@
+// Jousting: pairs in Warthogs charge each other.
+// docs/game/community-gametypes.md.
+rules "Jousting" 1
+type party
+points "Kills"
+uses slayer
+about "Pairs in Warthogs charge each other: one drives, one rides with a shotgun. Best on Coagulation."
+quick score_limit, time_limit, light_vehicle, starting_weapon, respawn_time
+
+settings {
+    light_vehicle = warthog
+    second_light_vehicle = none
+    heavy_vehicle = none
+    flying_vehicle = none
+    starting_weapon = shotgun
+    secondary_weapon = none
+    starting_grenades = false
+    weapons_on_map = none
+    grenades_on_map = false
+}

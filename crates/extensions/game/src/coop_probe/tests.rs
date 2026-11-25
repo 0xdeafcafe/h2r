@@ -104,6 +104,7 @@ fn only_a_campaign_level_with_ids_is_wanted() {
         map: 5,
         difficulty: Difficulty::Heroic,
         kind: level_boot::Kind::Campaign,
+        variant: None,
     };
     assert_eq!(
         Want::from_request(&req),

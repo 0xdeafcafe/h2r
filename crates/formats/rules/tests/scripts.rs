@@ -9,7 +9,7 @@ use rules::{Fired, Input, Ir, Refusal, RulesExt, Vm, build, builtin, compile, ve
 
 const INFECTION: &str = r#"
 rules "Infection" 1
-carrier slayer
+type slayer
 teams 2
 requires player.team, player.weapons
 
@@ -43,7 +43,7 @@ on tick {
 
 const HOLDOUT: &str = r#"
 rules "Holdout" 1
-carrier slayer
+type slayer
 teams 1
 requires ai.squads
 
@@ -77,7 +77,7 @@ on death(p) {
 
 const VIP: &str = r#"
 rules "VIP" 1
-carrier slayer
+type slayer
 requires forge.move, forge.place, forge.delete
 palette "vip" = ["objects/blocks/wall", "objects/blocks/ramp"]
 enum Role { none, vip }
@@ -337,7 +337,7 @@ fn holdout_runs_waves_from_its_tables() {
 
 const SPIN: &str = r#"
 rules "Spin" 1
-carrier slayer
+type slayer
 global var n: int = 0
 on tick {
     for each players a { for each players b { for each players c { for each players d { n = n + 1 } } } }
@@ -477,7 +477,7 @@ fn a_call_or_grant_outside_requires_is_refused() {
 
     let not_grantable = r#"
 rules "X" 1
-carrier slayer
+type slayer
 requires hud.message
 on join(p) { grant(p, hud.message, budget 1) }
 "#;
@@ -516,28 +516,28 @@ fn a_blob_naming_an_unknown_capability_is_refused_by_that_name() {
         rules::load(&bytes).unwrap_err(),
         Refusal::UnknownCapability("net.socket".into())
     );
-    assert!(compile_error("rules \"X\" 1\ncarrier slayer\nrequires net.socket\n").contains("unknown capability net.socket"));
+    assert!(compile_error("rules \"X\" 1\ntype slayer\nrequires net.socket\n").contains("unknown capability net.socket"));
 }
 
 #[test]
 fn compile_errors_carry_line_and_column() {
-    let e = compile("rules \"X\" 1\ncarrier slayer\non tick {\n    score(nobody, 1)\n}\n").unwrap_err();
+    let e = compile("rules \"X\" 1\ntype slayer\non tick {\n    score(nobody, 1)\n}\n").unwrap_err();
     assert_eq!((e.line, e.col), (4, 11));
     assert!(e.message.contains("unknown name nobody"));
 
-    let e = compile("rules \"X\" 1\ncarrier slayer\nfn a() { a() }\non tick { a() }\n").unwrap_err();
+    let e = compile("rules \"X\" 1\ntype slayer\nfn a() { a() }\non tick { a() }\n").unwrap_err();
     assert!(e.message.contains("recursion"));
 
-    let e = compile("rules \"X\" 1\ncarrier slayer\non tick { let x = 1 + true }\n").unwrap_err();
+    let e = compile("rules \"X\" 1\ntype slayer\non tick { let x = 1 + true }\n").unwrap_err();
     assert!(e.message.contains("expected bool, found int"), "{e}");
 
     let e = compile("rules \"X\" 1\non tick { }\n").unwrap_err();
-    assert!(e.message.contains("carrier"));
+    assert!(e.message.contains("a script names its game type"));
 
-    let e = compile("rules \"X\" 1\ncarrier slayer\nplayer var t: timer\n").unwrap_err();
+    let e = compile("rules \"X\" 1\ntype slayer\nplayer var t: timer\n").unwrap_err();
     assert!(e.message.contains("timer is a global"));
 
-    let e = compile("rules \"X\" 1\ncarrier slayer\noption a: int 0..65535 = 0\noption b: int 0..65535 = 0\noption c: bool = false\n")
+    let e = compile("rules \"X\" 1\ntype slayer\noption a: int 0..65535 = 0\noption b: int 0..65535 = 0\noption c: bool = false\n")
         .unwrap_err();
     assert!(e.message.contains("33 bits"), "{e}");
 }
@@ -546,7 +546,7 @@ fn compile_errors_carry_line_and_column() {
 
 const BOUNCES: &str = r#"
 rules "Bounces" 1
-carrier slayer
+type slayer
 player var last_chain: int = 0
 player var monsters: int = 0
 player var falls: int = 0
@@ -596,13 +596,13 @@ fn on_bounce_hears_its_chain_and_monster_and_on_bounced_its_player() {
 /// gives.
 #[test]
 fn a_bounce_handler_with_too_many_parameters_is_refused() {
-    compile("rules \"X\" 1\ncarrier slayer\non bounce(p, spot) { score(p, 1) }\n").unwrap();
-    let e = compile_error("rules \"X\" 1\ncarrier slayer\non bounce(p, spot, chain, monster, extra) { }\n");
+    compile("rules \"X\" 1\ntype slayer\non bounce(p, spot) { score(p, 1) }\n").unwrap();
+    let e = compile_error("rules \"X\" 1\ntype slayer\non bounce(p, spot, chain, monster, extra) { }\n");
     assert!(
         e.contains("on bounce gives 4 arguments (player, zone, int, bool); this handler names 5."),
         "{e}"
     );
-    let e = compile_error("rules \"X\" 1\ncarrier slayer\non bounced(p, spot) { }\n");
+    let e = compile_error("rules \"X\" 1\ntype slayer\non bounced(p, spot) { }\n");
     assert!(e.contains("on bounced gives 1 argument (player); this handler names 2."), "{e}");
     // The verifier refuses a blob whose bounce handler lacks the count.
     let (mut ir, _) = build(BOUNCES).unwrap();
@@ -637,7 +637,7 @@ fn compiled_scripts_round_trip_and_hash_stably() {
 fn division_by_zero_gives_zero_and_a_warning() {
     let src = r#"
 rules "Div" 1
-carrier slayer
+type slayer
 global var zero: int = 0
 global var out: int = 9
 on tick { out = 7 / zero + 7 % zero }
@@ -655,7 +655,7 @@ on tick { out = 7 / zero + 7 % zero }
 fn zone_events_past_64_a_tick_carry_over() {
     let src = r#"
 rules "Zones" 1
-carrier slayer
+type slayer
 global var n: int = 0
 on enter(zone, o) { n = n + 1 }
 "#;
@@ -679,7 +679,7 @@ on enter(zone, o) { n = n + 1 }
 fn for_each_visits_players_by_slot_and_objects_by_placement() {
     let src = r#"
 rules "Order" 1
-carrier slayer
+type slayer
 label flag: objects
 global var n: int = 0
 on tick {
@@ -709,21 +709,24 @@ on tick {
 }
 
 #[test]
-fn a_list_line_files_the_script_under_a_named_row() {
-    use rules::ir::List;
-    let plain = compile("rules \"X\" 1\ncarrier slayer\n").unwrap();
-    assert_eq!(plain.header.list, List::GameType);
-    let listed = compile("rules \"X\" 1\ncarrier slayer\nlist tweakers\n").unwrap();
-    assert_eq!(listed.header.list, List::Tweakers);
-    assert_ne!(plain.id(), listed.id());
+fn a_type_line_files_the_script_and_changes_no_rule() {
+    use rules::types::Type;
+    let plain = compile("rules \"X\" 1\ntype slayer\non tick { }\n").unwrap();
+    assert_eq!(plain.header.game_type, Type::Slayer);
+    let research = compile("rules \"X\" 1\ntype research\non tick { }\n").unwrap();
+    assert_eq!(research.header.game_type, Type::Research);
+    let party = compile("rules \"X\" 1\ntype party\non tick { }\n").unwrap();
+    assert_eq!(party.header.game_type, Type::Party);
+    assert_ne!(plain.id(), research.id());
+    assert_eq!(plain.handlers, party.handlers);
     assert!(
-        compile_error("rules \"X\" 1\ncarrier slayer\nlist slayer\n")
-            .contains("unknown list slayer: a list is tweakers")
+        compile_error("rules \"X\" 1\ntype tetris\non tick { }\n")
+            .contains("unknown type tetris: a type is slayer, ctf")
     );
     assert!(
-        compile_error("rules \"X\" 1\ncarrier slayer\nlist tweakers\nlist tweakers\n")
-            .contains("the list is named twice")
+        compile_error("rules \"X\" 1\ntype slayer\ntype party\non tick { }\n").contains("the type is named twice")
     );
+    assert!(compile_error("rules \"X\" 1\ncarrier slayer\non tick { }\n").contains("write `type slayer`"));
 }
 
 // ---- Messages ----
@@ -732,7 +735,7 @@ fn a_list_line_files_the_script_under_a_named_row() {
 fn a_message_reaches_the_game_with_its_holes_values() {
     let src = r#"
 rules "Callout" 1
-carrier slayer
+type slayer
 requires hud.message
 
 enum Phase { warmup, fight }
@@ -791,4 +794,211 @@ fn op_cost() {
         best = best.min(ns);
     }
     println!("{best:.2} ns per op; a full {TICK_BUDGET}-op tick is {:.3} ms", best * f64::from(TICK_BUDGET) / 1e6);
+}
+
+// ---- the listed built-in variants (docs/game/rules-variants.md, "Built-in list entries") ----
+
+/// What one listed script is: its name, the engine index its record is on,
+/// its type, the built-in game it uses (none for a script that scores),
+/// and the `(setting number, value)`
+/// pairs the old `community_variants::VARIANTS` table set for it
+/// (`Setting::encode`). Written out so the table can go.
+struct Expected {
+    name: &'static str,
+    engine: u8,
+    ty: rules::types::Type,
+    uses: Option<rules::types::Type>,
+    pairs: &'static [(u32, i32)],
+}
+
+const BOUNCE_PAIRS: &[(u32, i32)] = &[
+    (2, 0),
+    (10, 0),
+    (17, 3),
+    (18, 0),
+    (19, 2),
+    (105, 1),
+    (89, 4),
+    (94, 1),
+    (83, 1),
+    (86, 0),
+];
+
+fn expected() -> Vec<Expected> {
+    use rules::types::Type::{Juggernaut, Koth, Oddball, Party, Research, Siege, Slayer};
+    let e = |name, engine, ty, uses, pairs| Expected { name, engine, ty, uses, pairs };
+    vec![
+        e("Zombies", 2, Party, Some(Slayer), &[
+            (91, 1), (89, 9), (94, 17), (88, 0), (86, 0), (83, 3), (20, 0), (84, 0), (85, 0),
+            (76, 7), (77, 7), (78, 4), (79, 4), (2, 0),
+        ]),
+        e("Hide and Seek", 7, Party, Some(Juggernaut), &[
+            (89, 17), (94, 1), (88, 0), (83, 1), (86, 0), (21, 1), (20, 0), (72, 0), (73, 1),
+            (96, 2), (16, 1), (10, 300),
+        ]),
+        e("Jousting", 2, Party, Some(Slayer), &[
+            (76, 1), (77, 7), (78, 4), (79, 4), (89, 9), (94, 1), (88, 0), (83, 1), (86, 0),
+        ]),
+        e("SWAT", 2, Slayer, Some(Slayer), &[
+            (91, 1), (19, 1), (20, 0), (89, 3), (94, 4), (83, 1), (86, 0), (88, 0), (84, 0),
+            (85, 0), (2, 50),
+        ]),
+        e("Duel", 2, Slayer, Some(Slayer), &[(90, 2), (89, 4), (94, 2), (83, 1), (2, 15)]),
+        e("Clint Eastwood", 7, Juggernaut, Some(Juggernaut), &[
+            (19, 1), (89, 9), (94, 4), (83, 1), (108, 1), (96, 2),
+        ]),
+        e("Sun King", 4, Koth, Some(Koth), &[
+            (91, 1), (19, 1), (17, 3), (18, 0), (89, 8), (94, 1), (83, 2), (4, 180), (10, 720),
+        ]),
+        e("Tower of Power", 2, Slayer, Some(Slayer), &[
+            (91, 1), (19, 1), (17, 3), (76, 7), (81, 1), (89, 9), (94, 1), (83, 3), (88, 0),
+            (86, 0), (84, 0), (85, 0), (2, 100),
+        ]),
+        e("Wheeeeee!", 3, Oddball, Some(Oddball), &[
+            (91, 1), (19, 1), (104, 1), (45, 2), (102, 1), (89, 8), (83, 2), (87, 3), (3, 30),
+        ]),
+        e("Cops and Robbers", 2, Party, Some(Slayer), &[
+            (91, 1), (16, 3), (19, 1), (84, 0), (85, 0), (89, 9), (94, 6), (83, 1),
+        ]),
+        e("Bounce Practice", 2, Research, Some(Slayer), BOUNCE_PAIRS),
+        e("Glitch Hunt", 2, Research, Some(Slayer), &[
+            (2, 0), (10, 0), (17, 3), (18, 0), (19, 2), (105, 1), (89, 17), (94, 8), (24, 0),
+        ]),
+        e("Bumper Cars", 2, Party, Some(Slayer), &[
+            (89, 1), (94, 1), (88, 0), (83, 1), (86, 0), (84, 0), (85, 0), (76, 1), (77, 3),
+            (78, 4), (79, 4), (81, 6), (82, 6), (2, 25),
+        ]),
+        e("Superbounce", 2, Research, None, BOUNCE_PAIRS),
+        e("Siege", 2, Siege, None, &[(91, 1), (2, 0), (10, 0), (16, 1), (89, 1), (94, 1)]),
+        e("Gun Game", 2, Party, None, &[(89, 1), (94, 1), (83, 1), (2, 0)]),
+        e("Race", 2, Party, None, &[(2, 0)]),
+        e("VIP", 2, Party, None, &[(91, 1), (2, 25)]),
+    ]
+}
+
+#[test]
+fn every_listed_script_compiles_and_verifies() {
+    assert_eq!(builtin::LISTED.len(), 18);
+    for b in builtin::LISTED {
+        let ir = compile(b.source).unwrap_or_else(|e| panic!("{}: {e:?}", b.name));
+        assert_eq!(ir.header.name, b.name);
+        assert_eq!(ir.header.engine(), b.engine, "{}", b.name);
+        let report = verify::verify(&ir).unwrap_or_else(|e| panic!("{}: {e:?}", b.name));
+        assert!(report.fits(), "{}: worst tick {}", b.name, report.worst_tick);
+        assert!(!ir.header.about.is_empty(), "{} has no about", b.name);
+        assert!(ir.quick.len() <= rules::ir::MAX_QUICK, "{}", b.name);
+        assert!(!ir.quick.is_empty(), "{} marks nothing for Quick Options", b.name);
+        // A settings script has no handlers; the listed ones that do not
+        // score are checked against the expected table below.
+        if ir.header.uses.is_some() {
+            assert!(ir.handlers.is_empty(), "{}", b.name);
+        }
+    }
+}
+
+#[test]
+fn listed_names_are_unique_and_fit_the_keyboard() {
+    let mut seen = std::collections::HashSet::new();
+    for b in builtin::LISTED {
+        // The keyboard allows 16 characters; a copy starts from the name.
+        assert!(b.name.chars().count() <= 16, "{}", b.name);
+        assert!(seen.insert(b.name), "{} is listed twice", b.name);
+        // The description is at most 150 UTF-16 units.
+        let ir = compile(b.source).unwrap();
+        assert!(ir.header.about.encode_utf16().count() <= rules::ir::MAX_ABOUT_UNITS, "{}", b.name);
+    }
+    // The examples are not listed.
+    for (name, _) in builtin::examples() {
+        assert!(!seen.contains(name), "{name}");
+    }
+}
+
+#[test]
+fn each_listed_script_sets_what_the_table_set() {
+    let table = expected();
+    assert_eq!(table.len(), builtin::LISTED.len());
+    for (want, b) in table.iter().zip(builtin::LISTED) {
+        assert_eq!(want.name, b.name, "list order");
+        let ir = compile(b.source).unwrap();
+        assert_eq!(ir.header.engine(), want.engine, "{}", want.name);
+        assert_eq!(ir.header.game_type, want.ty, "{}", want.name);
+        assert_eq!(ir.header.uses, want.uses, "{}", want.name);
+        let mut got: Vec<(u32, i32)> = ir
+            .settings
+            .iter()
+            .map(|s| {
+                let row = rules::settings::row_at(s.index).unwrap();
+                let number = row
+                    .setting(ir.header.engine())
+                    .unwrap_or_else(|| panic!("{}: {} is not a record setting", want.name, row.name));
+                (number, s.value)
+            })
+            .collect();
+        let mut pairs = want.pairs.to_vec();
+        got.sort_unstable();
+        pairs.sort_unstable();
+        assert_eq!(got, pairs, "{}", want.name);
+        // Every quick mark is a record setting or an option, at most five.
+        assert!(ir.quick.len() <= 5, "{}", want.name);
+    }
+}
+
+// ---- Labels the scripts read ----
+
+/// A script that needs placed drops is refused on a map with none, by the
+/// label's name and the script's; a map with enough passes, and the wave
+/// is placed at the label the map's drops carry.
+#[test]
+fn a_map_with_no_placed_drop_is_refused_by_name() {
+    use rules::labels::{Census, Class, Member, check};
+
+    let src = HOLDOUT.replace("label ff_drop: objects", "label ff_drop: objects at least 2");
+    let ir = compile(&src).unwrap();
+    let drop = Member { class: Class::Flag, number: None, team: None };
+
+    let problems = check(&ir, &Census::default(), &[0]);
+    assert_eq!(problems.len(), 1);
+    assert!(
+        problems[0].text.contains("\"ff_drop\"") && problems[0].text.contains("Holdout"),
+        "{}",
+        problems[0].text
+    );
+
+    let mut census = Census::default();
+    census.labels.insert("ff_drop".into(), vec![drop]);
+    let one = check(&ir, &census, &[0]);
+    assert_eq!(one.len(), 1, "one drop is short of two: {one:?}");
+    census.labels.insert("ff_drop".into(), vec![drop, drop]);
+    assert_eq!(check(&ir, &census, &[0]), vec![]);
+}
+
+/// The drops a map places are what a wave is placed at: the fake game
+/// holds two placed `ff_drop` objects, the gate passes them, and the wave
+/// goes to the label they carry, which the host resolves to them.
+#[test]
+fn a_wave_lands_at_the_drops_the_map_places() {
+    use rules::labels::{Class, Member, check, Census};
+
+    let src = HOLDOUT.replace("label ff_drop: objects", "label ff_drop: objects at least 2");
+    let (ir, report) = build(&src).unwrap();
+    assert!(report.fits());
+    let mut census = Census::default();
+    let drop = Member { class: Class::Flag, number: None, team: None };
+    census.labels.insert("ff_drop".into(), vec![drop, drop]);
+    assert_eq!(check(&ir, &census, &[0]), vec![]);
+
+    let mut g = FakeGame::with_players(3);
+    g.label("ff_drop", 7, 0, 7);
+    g.label("ff_drop", 9, 0, 9);
+    let mut vm = Vm::new(ir, 0, 3).unwrap();
+    for tick in 1..=2 {
+        vm.begin_tick(tick);
+        vm.update(&mut g);
+    }
+    vm.flush_queue(&mut g);
+    let wave = g.calls_to("place_squad");
+    assert_eq!(wave.len(), 1);
+    assert_eq!(wave[0][3], Arg::Label("ff_drop".into()));
+    let placed = rules::vm::Game::labelled(&g, "ff_drop");
+    assert_eq!(placed.iter().map(|p| p.object).collect::<Vec<_>>(), vec![9, 7]);
 }

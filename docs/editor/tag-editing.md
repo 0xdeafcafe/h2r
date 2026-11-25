@@ -1,7 +1,7 @@
 # Tag editing: the field panel in plain words
 
-Status: Design. T1 (effect words, `play::tag_sync::Effect`), T2 (the row model, `fields::rows`, and the extended `tag.fields`), T3 (the Unnamed fields group, **Show unnamed fields**, **Show as** and `tag.view`), T4 (`label=`, `unit=`, `title=`, `axes=` and section titles in the definitions), T6 (the pick dialog, `fields::picker`, the switches summary and unnamed bits, and `tag.choices`), T8 (Data and bytes following the selected row, **Reset to file value**, **Show bytes**, `tag.bytes` and `tag.reset`), T9 (the header's kind title, path and unsaved count, the link lines, the changed rows' `Sent`, `Waiting`, `Not sent` and `Sent · Not known`, the developer facts folded, and section titles) and T5 (element rows with titles, one open at a time, the filter, **Open alone** and breadcrumbs, `element` in `nav.*`, `tag.elements`) are built; the rest is not. A switches field's hex word is in Field details, under Developer details. `tag.view` takes `tag`, `path`, `field`, `unnamed` and `show_as` and refuses `search` and `changed` until T7. "The built panel" describes the panel before T1, the code the slices replace.
-Code: `crates/apps/studio/src/fields.rs` (`panel_with_marks`), `crates/apps/studio/src/fields/row.rs` (`rows`), `crates/apps/studio/src/ui/tags.rs` (`fields`, `hex`), `crates/apps/studio/src/play/tag_sync.rs` (`effect`), `crates/apps/studio/src/api/tag_fields.rs`. Tests: `crates/apps/studio/src/app/tag_tests.rs`, `headless::tests::the_tags_tool_edits_a_field_through_its_widgets`.
+Status: Design. T1 (effect words, `play::tag_sync::Effect`), T2 (the row model, `fields::rows`, and the extended `tag.fields`), T3 (the Unnamed fields group, **Show unnamed fields**, **Show as** and `tag.view`), T4 (`label=`, `unit=`, `title=`, `axes=` and section titles in the definitions), T6 (the pick dialog, `fields::picker`, the switches summary and unnamed bits, and `tag.choices`), T7 (the filter row, the hit list, the budget message and `tag.find`), T8 (Data and bytes following the selected row, **Reset to file value**, **Show bytes**, `tag.bytes` and `tag.reset`), T9 (the header's kind title, path and unsaved count, the link lines, the changed rows' `Sent`, `Waiting`, `Not sent` and `Sent · Not known`, the developer facts folded, and section titles), T10's `tag.names` (`api/tag_names.rs`; no group's names are written yet) T5 (element rows with titles, one open at a time, the filter, **Open alone** and breadcrumbs, `element` in `nav.*`, `tag.elements`) T11 for `shad` (a bitmap slot's `image` and `lod_offset` with the `bitmap` datum; every other group has no `applies` yet) and T13 (`theme::panel_body`, `theme::bounded_list` and every panel in "Panels on short windows") are built; the rest is not. A switches field's hex word is in Field details, under Developer details. `tag.view` takes `tag`, `path`, `field`, `search`, `changed`, `unnamed` and `show_as`. "The built panel" describes the panel before T1, the code the slices replace.
+Code: `crates/apps/studio/src/fields.rs` (`panel_with_marks`), `crates/apps/studio/src/fields/row.rs` (`rows`), `crates/apps/studio/src/fields/find.rs` (`find`), `crates/apps/studio/src/ui/tags.rs` (`fields`, `hex`), `crates/apps/studio/src/play/tag_sync.rs` (`effect`), `crates/apps/studio/src/api/tag_fields.rs`. Tests: `crates/apps/studio/src/app/tag_tests.rs`, `headless::tests::the_tags_tool_edits_a_field_through_its_widgets`.
 Switch: none.
 
 The field panel shows a tag as rows a person can read: a name in words, a
@@ -110,7 +110,7 @@ Type words, shown in tooltips, details and `tag.fields`:
 | `Int` | `Whole number` (with `0 to 65535` style range in details) |
 | `Float`, plain | `Decimal number` |
 | `Float`, `Hint::Angle` | `Angle` |
-| `Float`, `Hint::Colour`; packed colour | `Colour` |
+| `Float`, `Hint::Colour`; any field with a colour `view=` word | `Colour` |
 | `Float`, `Hint::Bounds` | `Range` |
 | `Enum` | `Choice` |
 | `Flags` | `Switches` |
@@ -305,7 +305,7 @@ Two facts, kept apart everywhere:
 
 - **Saved** is about the map file. An edit changes the document and is an
   undo step ([editor.md](editor.md), "The document"). The file changes on
-  Save, Save as... or Save as package.... A changed field has a dot until
+  Save or Export map... A changed field has a dot until
   the map is saved; the header counts them (`3 unsaved changes`).
 - **Sent** is about a running game. It needs a game connected on the same
   map with Edit on ([live-mirror.md](live-mirror.md), "How an edit
@@ -370,22 +370,22 @@ of `child_window` in `ui/`. A panel whose whole content is one surface
 (the log, the map grid, a preview picture) is a body with nothing above
 it and passes rule 2.
 
-The built panels against the rule (**Code**; each is named by its child
-window id or function, and `rg -n 'child_window|content_region_avail' crates/apps/studio/src/ui crates/apps/studio/src/ui.rs`
-lists them):
+The panels against the rule (**Code**; `rg -n 'child_window' crates/apps/studio/src`
+lists the callers, and `headless::tests::child_windows_come_from_the_panel_helpers`
+fails on any outside `theme.rs`):
 
-| Panel | Built | Fails | Fix |
-|---|---|---|---|
-| UI Screens outliner, `ui_screens::tree` | `##ui-retail` takes what is left under the Our screens tree; its filter sits between the two lists | 2, 3 | one filter at the top, both lists under folding headers, no child |
-| HUD outliner, `hud::tree` | `##hud-list` is a third of what is left, clamped to 48 to 220 points; `##hud-widgets` takes the rest | 2 | HUDs and Widgets as folding headers in the body; a filter over both |
-| Scene outliner, `Studio::outliner_window` | `scene-layers` (`layers::section`) is half of what is left; `##outliner-tree` takes the rest; the filter sits under Layers | 2, 3 | filter and the Duplicate and Delete row pinned; Layers a folding header in the body, drawn at its content height; no tree child |
-| Tags fields, `tags::fields` | fixed: no child; the header scrolls with the rows in the window | | when the filter row lands (T7), it is the only pinned row, over a `theme::panel_body` |
-| Tags tree, `tags::tree` | no child, but the tag filter is inside All tags, under the scenario tree, and Not reachable from the scenario is last | 3 | the filter at the top over all three sections; each section a folding header |
-| Data and bytes, `tags::hex` | fixed: Field details, then Bytes, then Data and resources, each a folding header | | |
-| Pending, `PlayUi::pending_window` | Send, Reload map and Respawn now come after every pending row | 3 | the buttons first, then the rows |
-| Variant pages, `variants::settings` | `##variant-pages` takes what is left under a header of four to six lines | 2 | the header scrolls with the pages |
-| Variants list, Playlists list, Halo 1 outliner | `##variant-list`, `##playlist-list`, `##h1-outliner-tree` take what is left under one to four fixed rows | 2 (mild) | `theme::panel_body`; the fixed rows are the pinned rows |
-| Command palette, `palette.rs` | `##palette-results` is always seven rows tall, whatever the window | 4 | `theme::bounded_list` |
+| Panel | Built | Rule |
+|---|---|---|
+| UI Screens outliner, `ui_screens::tree` | one filter at the top, both lists under folding headers, no child | 2, 3 |
+| HUD outliner, `hud::tree` | HUDs and Widgets as folding headers (`##hud-huds-header`, `##hud-widgets-header`) in the body | 2 |
+| Scene outliner, `Studio::outliner_window` | filter and the Duplicate and Delete row pinned over `##outliner-body` | 2, 3 |
+| Tags fields, `tags::fields` | no child; the header scrolls with the rows in the window | 1 |
+| Tags tree, `tags::tree` | the Groups and Paths choice and the tag filter at the top over three folding headers: Scenario, All tags, Not reachable from the scenario; a filter narrows all three | 2, 3 |
+| Data and bytes, `tags::hex` | Field details, Bytes, then Data and resources, each a folding header | 2 |
+| Pending, `PlayUi::pending_window` | Send, Reload map and Respawn now come before the pending rows | 3 |
+| Variant pages, `variants::settings` | the header and the pages are one scroll | 1, 2 |
+| Variants list, Playlists list, Halo 1 outliner | `##variant-list`, `##playlist-list`, `##h1-outliner-body` are `theme::panel_body` under the pinned rows | 3 |
+| Command palette, `palette.rs` | `##palette-results` is `theme::bounded_list` | 4 |
 
 `##log-lines`, `##map-grid` and `##bsp-bytes` are whole-surface bodies
 and pass. The field panel's pickers and the search hit list of this

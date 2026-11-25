@@ -150,21 +150,33 @@ impl Fixture {
         let record = self.record(host);
         record.start_measurements(std::time::Instant::now(), None);
         self.mount(&record, &self.build);
+        start_game(&record, 1);
         let guest = arena();
         let mut machine = device.machine(&self.dir, &self.build);
         assert!(!record.capture_point_due());
         for tick in 1..=901 {
             record.checkpoint(&guest);
             if tick == 900 {
-                record.record(film::RAND, random(1));
+                record.record(random(1));
             }
             assert_eq!(record.capture_point_due(), tick % 150 == 0);
             if record.capture_point_due() {
                 record.try_capture_point(tick * 2, 0, &mut machine);
             }
             if tick == 900 {
-                record.record(film::RAND, random(2));
+                record.record(random(2));
             }
+        }
+        // The fake game opened the capture gate; the sealed film must not
+        // describe it. The synthetic guest never presents an active match,
+        // so a DESC that claimed one would fail playback's verification of
+        // the recorded match start (`metadata::verify_start`).
+        {
+            let mut s = record.lock();
+            let Mode::Record(rec) = &mut s.mode else {
+                panic!("a recording")
+            };
+            rec.meta.next_game();
         }
         record.finish(1803, true).unwrap();
         assert!(record.lock().complete);
@@ -214,6 +226,18 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+/// A game on the tape from `tick`, as the descriptor's match start says.
+/// Campaign, so a default recording does not treat the guest's absence
+/// from a map as leaving the game.
+fn start_game(film: &Session, tick: u64) {
+    let mut s = film.lock();
+    let Mode::Record(rec) = &mut s.mode else {
+        panic!("a recording")
+    };
+    rec.meta
+        .start_for_test(tick, "zanzibar", film::blam::Mode::Campaign);
 }
 
 fn random(value: u32) -> Call {
@@ -410,4 +434,82 @@ fn seek_restores_machine_and_replays_only_the_remaining_ticks() {
     assert!(seek.lock().paused);
     seek.finish(40, true).unwrap();
     assert!(seek.lock().complete);
+}
+
+#[test]
+fn captures_wait_for_a_game_and_start_again_after_a_cut() {
+    let fixture = Fixture::new();
+    let record = Session::open(
+        Some(fixture.path.clone()),
+        None,
+        Facts {
+            light: false,
+            player_features: true,
+            ..host_facts()
+        },
+        b"xbe",
+        &fixture.opts,
+    )
+    .unwrap()
+    .unwrap();
+    let guest = arena();
+    let device = SyntheticDevice::default();
+    let mut machine = device.machine(&fixture.dir, &fixture.build);
+
+    // Menus, a lobby, pregame: no game, so no capture is attempted and
+    // the tape takes no capture marks, whatever the cadence says.
+    for tick in 1..=300 {
+        record.checkpoint(&guest);
+        assert!(!record.capture_point_due(), "tick {tick}");
+    }
+    assert_eq!(device.attempts.get(), 0);
+
+    // A game starts at tick 301. Its first ticks sit in a capture window,
+    // so the first barrier lands at the game's start.
+    start_game(&record, 301);
+    for tick in 301..=450 {
+        record.checkpoint(&guest);
+        let due = matches!(tick, 301 | 450);
+        assert_eq!(record.capture_point_due(), due, "tick {tick}");
+        if due {
+            record.try_capture_point(tick * 2, 0, &mut machine);
+        }
+    }
+    assert_eq!(device.attempts.get(), 2);
+
+    // The game ends: the film is cut, and captures wait for the next game.
+    {
+        let mut s = record.lock();
+        let Mode::Record(rec) = &mut s.mode else {
+            panic!("a recording")
+        };
+        rec.match_over = true;
+    }
+    record.finish(900, false).unwrap();
+    for tick in 451..=600 {
+        record.checkpoint(&guest);
+        assert!(!record.capture_point_due(), "tick {tick}");
+    }
+    assert_eq!(device.attempts.get(), 2);
+
+    // The next game starts and captures again.
+    start_game(&record, 601);
+    record.checkpoint(&guest);
+    assert!(record.capture_point_due());
+    record.try_capture_point(1202, 0, &mut machine);
+    assert_eq!(device.attempts.get(), 3);
+
+    record.finish(1203, true).unwrap();
+    assert!(!fixture.path.exists(), "the tape goes at the session's end");
+    let cuts = std::fs::read_dir(&fixture.dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "h2film"))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("auto-"))
+        })
+        .count();
+    assert_eq!(cuts, 2, "one film per game");
 }

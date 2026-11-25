@@ -9,6 +9,11 @@
 //! <repo>/raw/<hh>/<hash>           raw resource bytes, by SHA-256
 //! <repo>/maps/<map>.txt            what a retail map holds (manifest)
 //! <repo>/maps/<map>.header         its 0x800-byte header
+//! <repo>/maps/<map>.skel           its skeleton: the bytes not in raw files (skeleton.rs)
+//! <repo>/maps/<map>.extents        its extent table: every other range by raw hash
+//! <repo>/extract.toml              versions and disc identity ([`ExtractRecord`])
+//! <repo>/assets.idx                the asset catalogue (catalogue.rs): each asset by hash
+//! <repo>/conflicts.txt             keys with variants and the maps that differ
 //! ```
 //!
 //! Path backslashes become directories. A group whose bytes are not all
@@ -17,6 +22,10 @@
 //! file. A manifest names, for each tag of its map, which content the map
 //! has, so a repository opened for that map ([`TagRepo::for_map`]) reads
 //! the map's own variants.
+//!
+//! The main file of a key is the content of the first map, in
+//! [`extraction_order`], that lists the key. A partial re-extraction can
+//! leave it otherwise; [`TagRepo::settle`] puts it back.
 use super::format::{decode, encode};
 use super::{Error, LooseTag, RawRes, Result, TagKey, TagSource, hex, sha256};
 use map::{CacheType, FourCC, TagGroup};
@@ -82,13 +91,13 @@ fn parse_group(s: &str) -> Option<FourCC> {
 }
 
 /// Escape a string for one line of a text file.
-fn esc(s: &str) -> String {
+pub(super) fn esc(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('\n', "\\n")
         .replace('\t', "\\t")
 }
 
-fn unesc(s: &str) -> String {
+pub(super) fn unesc(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut it = s.chars();
     while let Some(c) = it.next() {
@@ -110,7 +119,7 @@ fn key_line(k: &TagKey) -> String {
     format!("{}\t{}", group_ext(k.group), esc(&k.path))
 }
 
-fn parse_key(g: &str, p: &str) -> Result<TagKey> {
+pub(super) fn parse_key(g: &str, p: &str) -> Result<TagKey> {
     let group = parse_group(g).ok_or_else(|| Error::Invalid(format!("bad group {g:?}")))?;
     Ok(TagKey::new(group, unesc(p)))
 }
@@ -185,6 +194,213 @@ impl Manifest {
     pub fn cache_type(&self) -> CacheType {
         CacheType::from(self.cache_type)
     }
+}
+
+/// File name of the extraction record.
+pub const EXTRACT_FILE: &str = "extract.toml";
+
+/// Whether `stem` is one of the shared caches.
+pub fn is_shared_cache(stem: &str) -> bool {
+    matches!(stem, "mainmenu" | "shared" | "single_player_shared")
+}
+
+/// Sort map stems in extraction order: the shared caches first, then the
+/// other maps by name. A key's main file is the first of these to hold it.
+pub fn extraction_order(stems: &mut [String]) {
+    stems.sort_by(|a, b| (!is_shared_cache(a), a).cmp(&(!is_shared_cache(b), b)));
+}
+
+/// What the tree was extracted from and under which versions
+/// (`<repo>/extract.toml`). Written by the extractor only.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExtractRecord {
+    /// [`super::extract::EXTRACT_VERSION`] the tree was extracted with.
+    pub extractor: u32,
+    /// [`super::format::VERSION`] of its tag files.
+    pub format: u16,
+    /// Every extracted map, by stem.
+    pub maps: BTreeMap<String, MapRecord>,
+}
+
+/// One extracted map.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MapRecord {
+    /// SHA-256 of the map file (lowercase hex): the disc's identity.
+    pub file: String,
+    /// Every group the map has tags of.
+    pub groups: BTreeMap<FourCC, GroupRecord>,
+}
+
+/// One group of one extracted map.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GroupRecord {
+    /// The layout hash its tags were extracted under (hex).
+    pub layout: String,
+    /// Tags of the group in the map.
+    pub tags: u32,
+    /// Of those, taken with losses.
+    pub lossy: u32,
+    /// Of those, refused.
+    pub refused: u32,
+}
+
+impl MapRecord {
+    /// Lossy tags over every group.
+    pub fn lossy(&self) -> u32 {
+        self.groups.values().map(|g| g.lossy).sum()
+    }
+}
+
+/// A string as TOML (basic string).
+fn toml_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// A TOML basic string at the start of `s`: (its value, the rest).
+fn toml_take_str(s: &str) -> Option<(String, &str)> {
+    let s = s.strip_prefix('"')?;
+    let mut out = String::new();
+    let mut it = s.char_indices();
+    while let Some((i, c)) = it.next() {
+        match c {
+            '"' => return Some((out, &s[i + 1..])),
+            '\\' => match it.next()?.1 {
+                'n' => out.push('\n'),
+                't' => out.push('\t'),
+                o => out.push(o),
+            },
+            c => out.push(c),
+        }
+    }
+    None
+}
+
+impl ExtractRecord {
+    /// TOML text: top-level versions, then `[maps."<stem>"]` with the file
+    /// hash and `[maps."<stem>".groups]` with one inline table per group.
+    pub fn to_text(&self) -> String {
+        let mut s = String::from(
+            "# h2 tags extract: what this tree was extracted from, under which\n\
+             # versions (docs/formats/tag-repo.md). Game data: never commit it.\n",
+        );
+        s.push_str(&format!("extractor = {}\n", self.extractor));
+        s.push_str(&format!("format = {}\n", self.format));
+        for (stem, m) in &self.maps {
+            s.push_str(&format!("\n[maps.{}]\n", toml_str(stem)));
+            s.push_str(&format!("file = {}\n", toml_str(&m.file)));
+            s.push_str(&format!("\n[maps.{}.groups]\n", toml_str(stem)));
+            for (g, r) in &m.groups {
+                s.push_str(&format!(
+                    "{} = {{ layout = {}, tags = {}, lossy = {}, refused = {} }}\n",
+                    toml_str(&group_ext(*g)),
+                    toml_str(&r.layout),
+                    r.tags,
+                    r.lossy,
+                    r.refused
+                ));
+            }
+        }
+        s
+    }
+
+    /// Parse [`ExtractRecord::to_text`] (that shape of TOML only).
+    pub fn parse(text: &str) -> Result<Self> {
+        enum At {
+            Top,
+            Map(String),
+            Groups(String),
+        }
+        let mut rec = ExtractRecord::default();
+        let mut at = At::Top;
+        for (n, line) in text.lines().enumerate() {
+            let bad = || Error::Invalid(format!("{EXTRACT_FILE} line {}: {line:?}", n + 1));
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some(head) = line.strip_prefix("[maps.") {
+                let (stem, rest) = toml_take_str(head).ok_or_else(bad)?;
+                rec.maps.entry(stem.clone()).or_default();
+                at = match rest {
+                    "]" => At::Map(stem),
+                    ".groups]" => At::Groups(stem),
+                    _ => return Err(bad()),
+                };
+                continue;
+            }
+            match &at {
+                At::Top => {
+                    let (k, v) = line.split_once('=').ok_or_else(bad)?;
+                    let v = v.trim();
+                    match k.trim() {
+                        "extractor" => rec.extractor = v.parse().map_err(|_| bad())?,
+                        "format" => rec.format = v.parse().map_err(|_| bad())?,
+                        _ => return Err(bad()),
+                    }
+                }
+                At::Map(stem) => {
+                    let (k, v) = line.split_once('=').ok_or_else(bad)?;
+                    if k.trim() != "file" {
+                        return Err(bad());
+                    }
+                    let (file, _) = toml_take_str(v.trim()).ok_or_else(bad)?;
+                    rec.maps.get_mut(stem).expect("entered").file = file;
+                }
+                At::Groups(stem) => {
+                    let (g, rest) = toml_take_str(line).ok_or_else(bad)?;
+                    let group = parse_group(&g).ok_or_else(bad)?;
+                    let table = rest
+                        .trim()
+                        .strip_prefix('=')
+                        .map(str::trim)
+                        .and_then(|t| t.strip_prefix('{'))
+                        .and_then(|t| t.strip_suffix('}'))
+                        .ok_or_else(bad)?;
+                    let mut r = GroupRecord::default();
+                    for kv in table.split(',') {
+                        let (k, v) = kv.split_once('=').ok_or_else(bad)?;
+                        let v = v.trim();
+                        match k.trim() {
+                            "layout" => r.layout = toml_take_str(v).ok_or_else(bad)?.0,
+                            "tags" => r.tags = v.parse().map_err(|_| bad())?,
+                            "lossy" => r.lossy = v.parse().map_err(|_| bad())?,
+                            "refused" => r.refused = v.parse().map_err(|_| bad())?,
+                            _ => return Err(bad()),
+                        }
+                    }
+                    rec.maps
+                        .get_mut(stem)
+                        .expect("entered")
+                        .groups
+                        .insert(group, r);
+                }
+            }
+        }
+        Ok(rec)
+    }
+}
+
+/// What [`TagRepo::settle`] changed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Settled {
+    /// Keys whose main file became the first map's content.
+    pub promoted: usize,
+    /// Manifests rewritten.
+    pub manifests: usize,
+    /// Keys with variants (lines of `conflicts.txt`).
+    pub conflicts: usize,
 }
 
 /// How [`TagRepo::put`] stored a tag.
@@ -272,7 +488,7 @@ impl TagRepo {
         p
     }
 
-    fn raw_path(&self, hash: &str) -> PathBuf {
+    pub(crate) fn raw_path(&self, hash: &str) -> PathBuf {
         self.root.join("raw").join(&hash[..2]).join(hash)
     }
 
@@ -352,15 +568,185 @@ impl TagRepo {
 
     /// Record a map's manifest and header.
     pub fn put_manifest(&mut self, m: &Manifest, header: &[u8]) -> Result<()> {
-        write_atomic(
-            &self.root.join("maps").join(format!("{}.txt", m.map)),
-            m.to_text().as_bytes(),
-        )?;
+        // The header first: a map is extracted once its manifest exists.
         write_atomic(
             &self.root.join("maps").join(format!("{}.header", m.map)),
             header,
         )?;
-        Ok(())
+        self.write_manifest(m)
+    }
+
+    /// Rewrite a map's manifest (its header stays).
+    pub fn write_manifest(&self, m: &Manifest) -> Result<()> {
+        write_atomic(
+            &self.root.join("maps").join(format!("{}.txt", m.map)),
+            m.to_text().as_bytes(),
+        )
+    }
+
+    /// Whether a map's manifest exists.
+    pub fn has_manifest(&self, map: &str) -> bool {
+        self.root.join("maps").join(format!("{map}.txt")).is_file()
+    }
+
+    /// The extraction record, if the tree has one.
+    pub fn extract_record(&self) -> Result<Option<ExtractRecord>> {
+        match fs::read_to_string(self.root.join(EXTRACT_FILE)) {
+            Ok(t) => ExtractRecord::parse(&t).map(Some),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Write the extraction record.
+    pub fn put_extract_record(&self, r: &ExtractRecord) -> Result<()> {
+        write_atomic(&self.root.join(EXTRACT_FILE), r.to_text().as_bytes())
+    }
+
+    /// Record one map as extracted (after its manifest is written, so an
+    /// interrupted map is never recorded).
+    pub fn record_map(&self, stem: &str, m: MapRecord) -> Result<()> {
+        let mut r = self.extract_record()?.unwrap_or_default();
+        r.maps.insert(stem.to_owned(), m);
+        self.put_extract_record(&r)
+    }
+
+    /// Empty the tree for a re-extraction under new versions: tag files,
+    /// manifests, the group and string tables, `conflicts.txt` and the
+    /// asset catalogue go; raw resources (by hash) stay. Then the record
+    /// says `extractor` and `format` with no map, so an interrupted reset
+    /// runs again only if it did not get that far.
+    pub fn reset(&mut self, extractor: u32, format: u16) -> Result<()> {
+        for d in ["tags", "maps"] {
+            let p = self.root.join(d);
+            match fs::remove_dir_all(&p) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+            fs::create_dir_all(&p)?;
+        }
+        for f in [
+            "groups.txt",
+            "strings.txt",
+            "conflicts.txt",
+            super::catalogue::CATALOGUE_FILE,
+        ] {
+            match fs::remove_file(self.root.join(f)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        self.groups.clear();
+        self.variants.clear();
+        self.put_extract_record(&ExtractRecord {
+            extractor,
+            format,
+            maps: BTreeMap::new(),
+        })
+    }
+
+    /// Make each key's main file the content of the first map (in
+    /// [`extraction_order`]) that lists it, and rewrite `conflicts.txt`
+    /// from the manifests. Every map reads the same content before and
+    /// after. Safe to interrupt and run again: maps that read the old main
+    /// file are moved to a variant of it first, then the main file is
+    /// replaced, then the first map's entries name it.
+    pub fn settle(&mut self) -> Result<Settled> {
+        let mut stems = self.maps()?;
+        extraction_order(&mut stems);
+        let mut mans = Vec::with_capacity(stems.len());
+        for s in &stems {
+            mans.push(self.manifest(s)?);
+        }
+        // Each key's entries, (manifest, slot), in extraction order.
+        let mut by_key: BTreeMap<TagKey, Vec<(usize, usize)>> = BTreeMap::new();
+        for (mi, m) in mans.iter().enumerate() {
+            for (ti, (k, _)) in m.tags.iter().enumerate() {
+                by_key.entry(k.clone()).or_default().push((mi, ti));
+            }
+        }
+        let mut changed = vec![false; mans.len()];
+        let mut promote = Vec::new();
+        // 1. Maps reading a main file that is not the first content move to
+        //    a variant of it.
+        for (key, entries) in &by_key {
+            let (fm, ft) = entries[0];
+            let Some(v) = mans[fm].tags[ft].1.clone() else {
+                continue;
+            };
+            let readers: Vec<_> = entries
+                .iter()
+                .copied()
+                .filter(|&(mi, ti)| mans[mi].tags[ti].1.is_none())
+                .collect();
+            if !readers.is_empty() {
+                let old = fs::read(self.path_of(key, None))?;
+                let h = hex(&sha256(&old)[..6]);
+                let p = self.path_of(key, Some(h.as_str()));
+                if !p.exists() {
+                    write_atomic(&p, &old)?;
+                }
+                for (mi, ti) in readers {
+                    mans[mi].tags[ti].1 = Some(h.clone());
+                    changed[mi] = true;
+                }
+            }
+            promote.push((key.clone(), v));
+        }
+        let mut written = 0;
+        for (mi, m) in mans.iter().enumerate() {
+            if changed[mi] {
+                self.write_manifest(m)?;
+                written += 1;
+            }
+        }
+        // 2. The first content becomes the main file, and every entry
+        //    naming it reads the main file.
+        let mut changed = vec![false; mans.len()];
+        for (key, v) in &promote {
+            let bytes = fs::read(self.path_of(key, Some(v.as_str())))?;
+            write_atomic(&self.path_of(key, None), &bytes)?;
+            for &(mi, ti) in &by_key[key] {
+                if mans[mi].tags[ti].1.as_deref() == Some(v.as_str()) {
+                    mans[mi].tags[ti].1 = None;
+                    changed[mi] = true;
+                }
+            }
+        }
+        for (mi, m) in mans.iter().enumerate() {
+            if changed[mi] {
+                self.write_manifest(m)?;
+                written += 1;
+            }
+        }
+        for (key, v) in &promote {
+            let _ = fs::remove_file(self.path_of(key, Some(v.as_str())));
+        }
+        // 3. Keys with variants and the maps that have them.
+        let mut lines = String::new();
+        let mut conflicts = 0;
+        for (key, entries) in &by_key {
+            let maps: Vec<&str> = entries
+                .iter()
+                .filter(|&&(mi, ti)| mans[mi].tags[ti].1.is_some())
+                .map(|&(mi, _)| mans[mi].map.as_str())
+                .collect();
+            if !maps.is_empty() {
+                lines.push_str(&format!("{key}\t{}\n", maps.join(",")));
+                conflicts += 1;
+            }
+        }
+        let path = self.root.join("conflicts.txt");
+        if fs::read_to_string(&path).ok().as_deref() != Some(lines.as_str()) {
+            write_atomic(&path, lines.as_bytes())?;
+        }
+        Ok(Settled {
+            promoted: promote.len(),
+            manifests: written,
+            conflicts,
+        })
     }
 
     /// A map's manifest.
@@ -526,7 +912,7 @@ impl TagRepo {
     }
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(d) = path.parent() {
         fs::create_dir_all(d)?;
     }
@@ -587,4 +973,7 @@ pub struct PutReport {
     pub refused: Vec<(TagKey, String)>,
     /// Raw resources new to the store, and their bytes.
     pub raw_new: (usize, u64),
+    /// The map's skeleton and extent table, when the whole map was taken
+    /// ([`super::extract::store_skeleton`]).
+    pub skeleton: Option<super::skeleton::SkeletonReport>,
 }

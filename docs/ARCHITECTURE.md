@@ -81,11 +81,12 @@ the workspace checks are in
 | `h1-contract` | formats | The names both Halo 1 halves share: what the converters write and the game's Halo 1 hooks read (tag layouts, markers, script slots, function names) | [text.md](halo1/text.md), [script-builtins.md](halo1/script-builtins.md), [crate-structure.md](dev/crate-structure.md) |  |
 | `host-dirs` | formats | The per-user data, cache and config directories under each host's convention (docs/runtime/storage.md) | [storage.md](runtime/storage.md) |  |
 | `host-log` | formats | Canonical hash-chained command entries for Forge and Firefight |  |  |
-| `hs` | formats | HaloScript scenario tables, builtin catalog, typed expression API, and a native VM ([haloscript.md](formats/haloscript.md), [engine/hs_vm.md](engine/hs_vm.md)) † | [haloscript.md](formats/haloscript.md), [engine/hs_vm.md](engine/hs_vm.md) | decoding done; the VM is not wired into the game yet |
+| `hs` | formats | HaloScript scenario tables, builtin catalog, typed expression API, and a native VM ([haloscript.md](formats/haloscript.md), [engine/hs_vm.md](engine/hs_vm.md)) † | [haloscript.md](formats/haloscript.md), [engine/hs_vm.md](engine/hs_vm.md) | decoding done, VM checks supported campaign script executions against the guest |
 | `map` | formats | Reader for retail cache v8 `.map` files, with no game data ([map-format.md](formats/map-format.md)) † | [map-format.md](formats/map-format.md) | done |
 | `mopp` | formats | Havok MOPP code for Halo 2 structure BSPs: the engine's interpreter semantics as a query model, and an offline compiler over collision surfaces | [mopp.md](formats/mopp.md) | done |
 | `movies` | formats | Manifest, hashing and naming for optional Bink-to-MP4 conversion with the user's ffmpeg ([movies.md](audio/movies.md)) † | [movies.md](audio/movies.md) | done |
 | `pathfind` | formats | Halo 2 AI pathfinding data: decode retail sbsp pathfinding, generate it from a structure BSP's collision geometry, compare, and emit map::build blocks | [pathfinding.md](formats/pathfinding.md) | in progress |
+| `pogo` | formats | The Pogo Stick's looks, rig and placed weapon tags, shared by the kit and the game |  |  |
 | `rules` | formats | Scripted game types: the rules language, verified IR, capabilities and VM |  |  |
 | `settings` | formats | Our host settings as a schema: definitions, one store, atomic handles, one writer for settings.toml | [feature-engine.md](engine/feature-engine.md) | done |
 | `shaders` | formats | Xbox (NV2A) vertex microcode and register-combiner translation to WGSL | [shaders.md](graphics/shaders.md) | done |
@@ -142,6 +143,7 @@ the workspace checks are in
 | `sim-core` | rewrites | Shared math, exact SSE-order lanes and float rules for the native simulation subsystems |  |  |
 | `sim-ext` | rewrites | SimExt: the versioned side arena of extension records saved with checkpoints, snapshots and film keyframes and folded into the sim hash (docs/engine/sim-rewrite.md section 2) | [sim-rewrite.md](engine/sim-rewrite.md) | in progress |
 | `sim-objects` | rewrites | The object update in Rust: typed views over the object pool, the definition table and the object kernels (docs/engine/sim-rewrite-objects.md) | [sim-rewrite-objects.md](engine/sim-rewrite-objects.md) |  |
+| `sim-sound` | rewrites | Sound source, scheduling and environment kernels for the native simulation | [sim-rewrite.md](engine/sim-rewrite.md), [dsound.md](audio/dsound.md) | in progress |
 | `sim-state` | rewrites | Typed, read-only views of the simulation for theater, stats, Live and the agent API (docs/engine/sim-rewrite-objects.md section 8) | [sim-rewrite-objects.md](engine/sim-rewrite-objects.md) |  |
 | `actor-net` | live | Versioned actor presentation records and per-client scheduling for distributed games | [ai-networking.md](game/ai-networking.md) |  |
 | `bots` | live | Multiplayer bots (Clankers): the brain that turns what a bot sees into controller input, and the phantom peers that play through the host simulation (docs/game/bots.md) | [bots.md](game/bots.md) |  |
@@ -165,7 +167,7 @@ the workspace checks are in
 | `hot-tags` | extensions | Live edits of the running game's tags in guest memory, by field path from the tag definitions, with a journal to list and revert them (docs/graphics/hot-iteration.md) | [hot-iteration.md](graphics/hot-iteration.md) |  |
 | `lockstep` | extensions | Determinism harness: per-tick guest-RAM hashes, run traces and their comparison (docs/game/high-framerate.md) | [high-framerate.md](game/high-framerate.md) | done |
 | `bitmap-edit` | tools | The Textures tool's canvas of h2-editor: tiled RGBA8 layers with shared-tile undo snapshots, brush, fill and adjust tools, resampling, PNG in and out and dirty-rectangle tracking (docs/editor/modeling.md) | [modeling.md](editor/modeling.md) | in progress |
-| `collision-build` | tools | Compiles convex polygons to a Halo 2 collision BSP (planes, 3D and 2D trees, leaves, surfaces, winged edges, vertices), opens coll BSPs as editable meshes, rebuilds their BSP physics slots, and makes collision from render faces (docs/editor/modeling.md) | [modeling.md](editor/modeling.md), [modeling-targets.md](editor/modeling-targets.md) | in progress |
+| `collision-build` | tools | Compiles convex polygons to a Halo 2 collision BSP (planes, 3D and 2D trees, leaves, surfaces, winged edges, vertices), opens coll BSPs as editable meshes, rebuilds their BSP physics slots, makes collision from render faces, and adds solids to a structure's level collision with its per-leaf block and MOPP (docs/editor/modeling.md) | [modeling.md](editor/modeling.md), [modeling-targets.md](editor/modeling-targets.md) | in progress |
 | `editor-core` | tools | UI-free parts of h2-editor shared by its tools: map sources, the snapshot undo stack, status messages, where game variants come from | [editor.md](editor/editor.md) | in progress |
 | `firefight-kit` | tools | Offline stage-one Firefight map kit |  |  |
 | `forge-build` | tools | Deterministic local Forge map materialisation over the user's Halo 2 maps |  |  |
@@ -180,12 +182,17 @@ the workspace checks are in
 | `hud-kit` | tools | HUD elements of ours drawn by Halo 2's own HUD: the element model, the compiler to nhdt widget records, the offline preview over the retail player HUD and its checks (docs/game/hud-kit.md) | [hud-kit.md](game/hud-kit.md) | in progress |
 | `mesh-edit` | tools | The modeling kernel of h2-editor: a radial-edge mesh in index arenas, selection, MeshOp operations as values, import and stable export (docs/editor/modeling.md) | [modeling.md](editor/modeling.md) | in progress |
 | `perf` | tools | Performance tooling: guest-aware sampling profiler, timeline capture, benchmark harness | [profiling.md](perf/profiling.md) | done |
+| `pogo-kit` | tools | The Pogo Stick's models, built from content/pogo into each multiplayer map |  |  |
 | `scenario-edit` | tools | Sapien-style scenario placement editor: typed scnr placement blocks, undoable edits written as patched .map files, a UI-free session and an offscreen wgpu viewport | [scenario-editor.md](editor/scenario-editor.md) | in progress |
+| `stage-kit` | tools | The content stage: Studio's test map of ours, its layout, geometry, collision and textures built from art/stage (docs/editor/content-stage.md) | [content-stage.md](editor/content-stage.md) | in progress |
+| `workspace` | tools | The package build: the builder registry, Layered tag sources and the build of a package set onto a map's TagSet (docs/editor/studio-redesign.md, "Packages") | [studio-redesign.md](editor/studio-redesign.md), [tag-workspace.md](editor/tag-workspace.md) | in progress |
 | `xtask` (bin `xtask`) | tools | The workspace's test and check runner, `cargo xtask`: a branch's affected crates in one nextest run, their doctests, the disc tier, the web tests and the pre-merge checks (docs/dev/build-speed.md) | [build-speed.md](dev/build-speed.md), [crate-structure.md](dev/crate-structure.md) |  |
 | `app` (bin `h2-app-demo`) | apps | Host shell for h2recomp: window, presentation, live input, audio device and guest-thread lifecycle (macOS first) | [app.md](runtime/app.md) | done; `h2 play` runs the game in it |
 | `app-icon` | apps | The app icon for the unbundled Mac windows (h2 play, h2-editor) from art/app-icon |  |  |
 | `boot` | apps | The composition root: a built module run on the runtime with the kernel HLE, the hooks and every feature attached | [BOOT.md](runtime/BOOT.md) | done |
 | `cli` (bin `h2`) | apps | `h2` binary: `build`, `run`, `play`, `info`, `ls`, `extract`, `analyze`, `symbols`, `lift`, `emit`, the tag decoders and more (`cargo h2` lists them) † |  | done |
+| `cli-common` | apps | What the h2 and h2-tools binaries share: the default disc, opening it and its maps, and no-clobber exporter output (docs/runtime/cli-tools.md) | [cli-tools.md](runtime/cli-tools.md) |  |
+| `h2-tools` (bin `h2-tools`) | apps | The h2-tools binary: the offline map, tag and script tools `h2 <tool>` runs, linked without the game (docs/runtime/cli-tools.md) | [cli-tools.md](runtime/cli-tools.md) |  |
 | `h2host` (staticlib `h2host`) | apps | The tvOS and iOS apps' Rust half: a static library the UIKit hosts (platform/tvos, platform/ios) call to boot the game into their CAMetalLayer | [tvos.md](runtime/tvos.md), [ios.md](runtime/ios.md) | in progress |
 | `live-mirror` | apps | The editor's live object and player stream, sample store and interpolation |  |  |
 | `studio` (bin `h2-editor`) | apps | h2-editor: the editor suite on Dear ImGui (docking) + wgpu + winit: scenario placements, game variants, playlists | [editor.md](editor/editor.md) | in progress |

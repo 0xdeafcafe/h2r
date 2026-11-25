@@ -36,9 +36,11 @@ impl Reader for Game {
     }
 }
 
-/// A runtime in one role, recording the commands it is given.
+/// A runtime in one role, recording the commands it is given. `teams`
+/// is the match's player teams.
 struct Fake {
     role: Option<Role>,
+    teams: u8,
     held: Mutex<bool>,
     seq: Mutex<u32>,
     got: Mutex<Vec<CommandParams>>,
@@ -46,8 +48,12 @@ struct Fake {
 
 impl Fake {
     fn new(role: Option<Role>) -> Arc<Fake> {
+        Fake::with_teams(role, 1)
+    }
+    fn with_teams(role: Option<Role>, teams: u8) -> Arc<Fake> {
         Arc::new(Fake {
             role,
+            teams,
             held: Mutex::new(false),
             seq: Mutex::new(0),
             got: Mutex::new(Vec::new()),
@@ -81,7 +87,9 @@ impl Source for Fake {
                 phase: "warmup".into(),
                 phase_tick: Some(300),
                 reserve: 4,
-                pool: 7,
+                teams: self.teams,
+                pools: [7, 5][..usize::from(self.teams)].to_vec(),
+                scores: [300, 150][..usize::from(self.teams)].to_vec(),
                 cap: 8,
                 players: 1,
                 held: *self.held.lock().unwrap(),
@@ -149,8 +157,9 @@ impl Source for Fake {
                 starts: 3,
             }],
             classes: [("elite".to_string(), 0)].into(),
+            bases: vec![[4.0, 5.0, 6.0], [-4.0, -5.0, 6.0]],
             characters: 1,
-            hunt_order: Some(0),
+            hunt_orders: vec![Some(0), None],
         })
     }
 }
@@ -209,6 +218,9 @@ fn state_reports_the_director() {
         assert_eq!(s["director"]["phase"], "warmup");
         assert_eq!(s["director"]["phase_tick"], 300);
         assert_eq!(s["director"]["reserve"], 4);
+        assert_eq!(s["director"]["teams"], 1);
+        assert_eq!(s["director"]["pools"], json!([7]));
+        assert_eq!(s["director"]["scores"], json!([300]));
         assert_eq!(s["director"]["cap"], 8);
         assert_eq!(s["director"]["held"], false);
         assert_eq!(s["log"]["seq"], 0);
@@ -217,6 +229,50 @@ fn state_reports_the_director() {
     }
     let e = h.err(&mut g, method::STATE, json!({"verbose": true}));
     assert_eq!(e["code"], code::INVALID_PARAMS);
+}
+
+/// With two teams the state carries each team's pool and points.
+#[test]
+fn state_reports_each_teams_pool_and_score() {
+    let (h, mut g) = (
+        Harness::new(Fake::with_teams(Some(Role::Host), 2)),
+        game(),
+    );
+    let s = h.ok(&mut g, method::STATE, Value::Null);
+    assert_eq!(s["director"]["teams"], 2);
+    assert_eq!(s["director"]["pools"], json!([7, 5]));
+    assert_eq!(s["director"]["scores"], json!([300, 150]));
+}
+
+/// The two-team commands pass the method's checks to the runtime in the
+/// host log's shape.
+#[test]
+fn command_takes_the_two_team_commands() {
+    let fake = Fake::new(Some(Role::Host));
+    let (h, mut g) = (Harness::new(Arc::clone(&fake)), game());
+    for value in [
+        json!({"target": {"slot": 2, "team": 1}}),
+        json!({"team_lives": {"team": 0, "pool": 4}}),
+        json!({"finish": {"outcome": {"team_won": {"team": 1}}}}),
+        json!({"finish": {"outcome": "draw"}}),
+    ] {
+        h.ok(&mut g, method::COMMAND, json!({ "command": value }));
+    }
+    let got = fake.got.lock().unwrap();
+    assert_eq!(got[0].command, Some(Command::Target { slot: 2, team: 1 }));
+    assert_eq!(got[1].command, Some(Command::TeamLives { team: 0, pool: 4 }));
+    assert_eq!(
+        got[2].command,
+        Some(Command::Finish {
+            outcome: agent_proto::firefight::Outcome::TeamWon { team: 1 }
+        })
+    );
+    assert_eq!(
+        got[3].command,
+        Some(Command::Finish {
+            outcome: agent_proto::firefight::Outcome::Draw
+        })
+    );
 }
 
 #[test]
@@ -318,7 +374,8 @@ fn kit_reads_the_loaded_scenario() {
         json!({"index": 1, "point": [1.0, 2.0, 3.0], "starts": 3})
     );
     assert_eq!(k["classes"], json!({"elite": 0}));
-    assert_eq!(k["hunt_order"], 0);
+    assert_eq!(k["bases"], json!([[4.0, 5.0, 6.0], [-4.0, -5.0, 6.0]]));
+    assert_eq!(k["hunt_orders"], json!([0, null]));
     let e = h.err(&mut g, method::KIT, json!({"zone": 1}));
     assert_eq!(e["code"], code::INVALID_PARAMS);
     // A fault reading the scenario.

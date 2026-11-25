@@ -99,7 +99,7 @@ const TRAITS: [Trait; 12] = [
     /*retreat*/ axis( 0.24, [(0.05,0.90),(0.16,0.88),(0.30,0.84),(0.46,0.82)], -0.8, 0.0),
 ];
 
-fn draw(seed: u64, lane: u64) -> f32 {
+pub(crate) fn draw(seed: u64, lane: u64) -> f32 {
     let mut n = seed.wrapping_add(lane.wrapping_mul(0x9e37_79b9_7f4a_7c15));
     n = (n ^ (n >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     n = (n ^ (n >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);

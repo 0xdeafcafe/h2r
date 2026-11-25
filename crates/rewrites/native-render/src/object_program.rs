@@ -18,19 +18,32 @@
 //! record draws is the build's (`0x0004cbf0`, [`record_implementation`]);
 //! its vertex streams are the game's declaration
 //! ([`crate::object_streams`]).
+//!
+//! A pass with animated constants (`shad +0x3c`) compiles from its
+//! registers at clock 0 and keeps its animation ([`ObjectPass::animation`]):
+//! each draw samples it at the render clock through the structure
+//! planner's sampler ([`crate::layer_pass::PassAnimation`]) before the
+//! object's lighting goes in ([`animated_blocks`]).
 
 use shaders::psh::PixelUniforms;
 use shaders::vsh::{self, VertexUniforms};
 use tags::material::{Origin, ResolvedImplementation, VectorTarget, pack_engine_colour};
+use tags::shader::AnimatedProperty;
 
-pub use crate::object_nodes::{
-    Compression, IMPLEMENTATIONS, MAX_PALETTE, POSITION_DECOMPRESSION, Row, decompression_rows, node_rows, record_implementation,
-};
+use crate::layer_pass::PassAnimation;
 use crate::look::{PassLook, Refusal, implementation_look};
 use crate::object_lighting::{
-    Defaults, LIGHTING_SCALARS, LIGHTING_VECTORS, Lighting, ShaderValues, scalar_input, vector_input,
+    Defaults, LIGHTING_SCALARS, LIGHTING_VECTORS, Lighting, ShaderValues, scalar_input,
+    vector_input,
 };
-use crate::program::{MODEL_ROWS, MaterialProgram, PassParts, TEXCOORD_DECOMPRESSION, VIEW_CONSTANTS, translate_pass_with_pixel};
+pub use crate::object_nodes::{
+    Compression, IMPLEMENTATIONS, MAX_PALETTE, POSITION_DECOMPRESSION, Row, decompression_rows,
+    node_rows, record_implementation,
+};
+use crate::program::{
+    MODEL_ROWS, MaterialProgram, PassParts, TEXCOORD_DECOMPRESSION, VIEW_CONSTANTS,
+    translate_pass_with_pixel,
+};
 
 /// The scalar inputs every draw of a shader holds the same
 /// (`0x0001bbf0` copies them from the `shad`), and the integer ones.
@@ -43,14 +56,31 @@ const SHADER_INTS: u32 = 1 << 4 | 1 << 5;
 /// object, [`object_pixel_uniforms`]). The first input that is not given,
 /// as the reason the object stays on D3D.
 pub fn inputs_supported(imp: &ResolvedImplementation) -> Result<(), String> {
+    check_inputs(imp, false)
+}
+
+fn check_inputs(imp: &ResolvedImplementation, has_layer_inputs: bool) -> Result<(), String> {
+    use scene_extract::layout::layer_inputs::{VIEW_SCALARS, VIEW_VECTORS_GIVEN};
+
     let r = imp.input_reads;
-    let v = r.vectors & !LIGHTING_VECTORS;
+    let (view_vectors, view_scalars) = if has_layer_inputs {
+        (VIEW_VECTORS_GIVEN, VIEW_SCALARS)
+    } else {
+        (0, 0)
+    };
+    let v = r.vectors & !(LIGHTING_VECTORS | view_vectors);
     if v != 0 {
-        return Err(format!("reads vector input {}, which is not the object's lighting", v.trailing_zeros()));
+        return Err(format!(
+            "reads vector input {}, which is not the object's lighting",
+            v.trailing_zeros()
+        ));
     }
-    let s = r.scalars & !LIGHTING_SCALARS & !SHADER_SCALARS;
+    let s = r.scalars & !(LIGHTING_SCALARS | SHADER_SCALARS | view_scalars);
     if s != 0 {
-        return Err(format!("reads scalar input {}, which is not the object's lighting", s.trailing_zeros()));
+        return Err(format!(
+            "reads scalar input {}, which is not the object's lighting",
+            s.trailing_zeros()
+        ));
     }
     let i = r.ints & !SHADER_INTS;
     if i != 0 {
@@ -61,7 +91,9 @@ pub fn inputs_supported(imp: &ResolvedImplementation) -> Result<(), String> {
 
 /// The one layer-3 pass (first level of detail) of an object material, or
 /// why not.
-pub fn object_layer3(material: &tags::material::Material) -> Result<&tags::material::ResolvedPass, String> {
+pub fn object_layer3(
+    material: &tags::material::Material,
+) -> Result<&tags::material::ResolvedPass, String> {
     let layer = material
         .layers
         .iter()
@@ -75,20 +107,33 @@ pub fn object_layer3(material: &tags::material::Material) -> Result<&tags::mater
 
 /// The pipeline state of an object pass's implementation, or why not:
 /// its render states as [`crate::look::layer3_pass`] takes a world pass's
-/// (no engine-driven render or stage states, no blending); where it does
+/// (state bindings resolved, layer 3 opaque); where it does
 /// not set the cull mode it culls nothing, unless the pass is given the
 /// device's cull, which it inherits ([`sets_cull`],
 /// `MaterialProgram::inherits_cull`; the pass resolves every field it
 /// leaves at the layer-3 call, `object_state::resolve`).
-pub fn object_pass_state(imp: &ResolvedImplementation) -> Result<crate::pass_state::PassState, String> {
+pub fn object_pass_state(
+    imp: &ResolvedImplementation,
+) -> Result<crate::pass_state::PassState, String> {
+    object_pass_state_with(imp, false)
+}
+
+/// [`object_pass_state`], a blend the implementation sets kept when
+/// `blends` (a world layer's pass other than layer 3's,
+/// [`object_layer_pass`]).
+fn object_pass_state_with(
+    imp: &ResolvedImplementation,
+    blends: bool,
+) -> Result<crate::pass_state::PassState, String> {
     if !imp.engine_render_states.is_empty() {
         return Err("engine-driven render states".into());
     }
     if !imp.engine_stage_states.is_empty() {
         return Err("engine-driven stage states".into());
     }
-    let mut state = crate::pass_state::pass_state_with_fog(&imp.render_states, true).map_err(|e| format!("{e:?}"))?;
-    if state.blend.is_some() {
+    let mut state = crate::pass_state::object_program_state(&imp.render_states)
+        .map_err(|e| format!("{e:?}"))?;
+    if !blends && state.blend.is_some_and(|b| b != wgpu::BlendState::REPLACE) {
         return Err("the pass blends".into());
     }
     if !sets_cull(imp) {
@@ -102,7 +147,8 @@ pub fn object_pass_state(imp: &ResolvedImplementation) -> Result<crate::pass_sta
 pub fn sets_cull(imp: &ResolvedImplementation) -> bool {
     let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
     imp.render_states.iter().any(|s| {
-        gfx::state::RenderStateType::from_guest_index(&table, u32::from(s.state)) == Some(gfx::state::RenderStateType::CullMode)
+        gfx::state::RenderStateType::from_guest_index(&table, u32::from(s.state))
+            == Some(gfx::state::RenderStateType::CullMode)
     })
 }
 
@@ -112,10 +158,19 @@ pub fn sets_cull(imp: &ResolvedImplementation) -> bool {
 #[derive(Clone, Debug)]
 pub struct ObjectPass {
     pub program: MaterialProgram,
+    /// The material leaves hardware c[18] untouched and the program reads it.
+    pub inherits_c18: bool,
     /// The object program supplies D3D's default final combiner using
     /// the fog and specular uniforms.
     pub default_final: bool,
+    /// Layer 18's engine-driven blend constant, evaluated for each item.
+    pub(crate) blend_color: Option<std::sync::Arc<crate::object_state::LayerBlendColor>>,
+    /// The implementation as compiled: its animated constants at clock 0,
+    /// its animated targets cleared.
     pub implementation: ResolvedImplementation,
+    /// The pass's animated constants, sampled per draw
+    /// ([`animated_blocks`]); `None` when it animates nothing.
+    pub animation: Option<PassAnimation>,
     /// The stages that sample the vector normalization cube (empty in
     /// `program.stages`; the host binds the cube).
     pub normalization: [bool; 4],
@@ -123,67 +178,173 @@ pub struct ObjectPass {
     /// ([`TEXACCUM_TEXTURE`]; empty in `program.stages`; the host binds the
     /// level the D3D path drew, in texel coordinates).
     pub texaccum: [bool; 4],
+    /// The stages that sample the view's own target ([`VIEW_TEXTURE`];
+    /// empty in `program.stages`; the host binds a copy of the bound
+    /// colour made before the pass, in texel coordinates).
+    pub view: [bool; 4],
     /// The vertex program's instruction words (four per instruction, no
     /// header) and the translation's options: what the D3D path's draw of
     /// the same part binds.
     pub words: Vec<u32>,
     pub options: shaders::vsh::VertexOptions,
+    /// A layer-5 PRT variant: what its PRT stream feeds
+    /// (`object_program_gpu::compile_layer_sections`); `None` otherwise.
+    pub prt: Option<crate::object_program_gpu::PrtInput>,
 }
 
 /// Compiles `imp` of `pass` with `microcode` for a vertex buffer
 /// supplying `provided` (bit `n`: `v<n>`), or says why not. `lightmap`:
 /// whether a stage may sample the lightmap (the host binds what an
-/// object's draw binds there, [`OBJECT_LIGHTMAP`]).
+/// object's draw binds there, [`OBJECT_LIGHTMAP`]). `properties`: the
+/// shader instance's animated properties, which `imp`'s animated targets
+/// read ([`ObjectPass::animation`]).
 pub fn object_pass(
     pass: map::TagId,
     imp: &ResolvedImplementation,
+    properties: &[AnimatedProperty],
     microcode: &[u8],
     provided: u16,
     fetch: [shaders::vsh::InputFetch; 16],
     lightmap: bool,
 ) -> Result<ObjectPass, String> {
-    let state = object_pass_state(imp)?;
-    let (look, EngineBound { normalization, texaccum }) = object_look_stages(pass, imp)?;
+    object_pass_with(pass, imp, properties, microcode, provided, fetch, lightmap, false)
+}
+
+/// The passes of an object material's world layer `layer` (first level
+/// of detail, in the order `0x00016610` draws them), or why none: the
+/// layers an object item draws besides layer 3 (`object_program_gpu::OBJECT_LAYERS`).
+pub fn object_layer_passes(
+    material: &tags::material::Material,
+    layer: u8,
+) -> Result<&[tags::material::ResolvedPass], String> {
+    material
+        .layers
+        .iter()
+        .find(|l| l.lod == 0 && l.layer == usize::from(layer))
+        .map(|l| l.passes.as_slice())
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| format!("no layer {layer}"))
+}
+
+/// [`object_pass`] for one pass of a world layer other than 3: its blend
+/// kept (the pipeline's, `object_state::resolve_layer` resolving what it
+/// inherits), and no lightmap stage, since outside layer 3 the geometry
+/// draw binds no lightmap page and adds no coordinate stream
+/// (`0x0004d28b`).
+pub fn object_layer_pass(
+    pass: map::TagId,
+    imp: &ResolvedImplementation,
+    properties: &[AnimatedProperty],
+    microcode: &[u8],
+    provided: u16,
+    fetch: [shaders::vsh::InputFetch; 16],
+) -> Result<ObjectPass, String> {
+    object_pass_with(pass, imp, properties, microcode, provided, fetch, false, true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn object_pass_with(
+    pass: map::TagId,
+    imp: &ResolvedImplementation,
+    properties: &[AnimatedProperty],
+    microcode: &[u8],
+    provided: u16,
+    fetch: [shaders::vsh::InputFetch; 16],
+    lightmap: bool,
+    blends: bool,
+) -> Result<ObjectPass, String> {
+    let (baseline, animation) = PassAnimation::baseline(imp, properties, true, 0)
+        .map_err(|r| format!("animated constants: {}: {r:?}", r.name()))?;
+    let imp = &baseline;
+    let state = object_pass_state_with(imp, blends)?;
+    let (
+        look,
+        EngineBound {
+            normalization,
+            texaccum,
+            view,
+        },
+    ) = object_look_stages_with(pass, imp, blends)?;
     if !lightmap && look.textures.contains(&crate::look::Stage::Lightmap) {
+        if blends {
+            return Err(
+                "a stage samples the lightmap, which the draw binds only in layer 3".into(),
+            );
+        }
         return Err("a stage samples the lightmap, and the object's (the globals' default) is not uniform or does not load".into());
     }
-    let mut program = compile_object_stages(&look, EngineBound { normalization, texaccum }, microcode, state.alpha_test, provided, fetch)?;
+    let (mut program, inherits_c18) = compile_with_layer_constants(
+        &look,
+        EngineBound {
+            normalization,
+            texaccum,
+            view,
+        },
+        microcode,
+        state.alpha_test,
+        provided,
+        fetch,
+        blends,
+    )?;
     let default_final = !program.def.has_final_combiner();
     program.state = Some(state);
     program.inherits_cull = !sets_cull(imp);
-    let count = vsh::Program::parse(microcode).map_err(|e| format!("vertex program: {e:?}"))?.instructions.len();
+    let count = vsh::Program::parse(microcode)
+        .map_err(|e| format!("vertex program: {e:?}"))?
+        .instructions
+        .len();
     let words = microcode
         .get(4..4 + 16 * count)
         .unwrap_or_default()
         .chunks_exact(4)
         .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect();
-    let options = shaders::vsh::VertexOptions { provided_inputs: provided, input_fetch: fetch, ..Default::default() };
-    Ok(ObjectPass { program, default_final, implementation: imp.clone(), normalization, texaccum, words, options })
+    let options = shaders::vsh::VertexOptions {
+        provided_inputs: provided,
+        input_fetch: fetch,
+        ..Default::default()
+    };
+    Ok(ObjectPass {
+        program,
+        inherits_c18,
+        default_final,
+        blend_color: None,
+        implementation: baseline.clone(),
+        animation,
+        normalization,
+        texaccum,
+        view,
+        words,
+        options,
+        prt: None,
+    })
 }
 
-/// Why objects' parts with `material` stay on D3D, or `None` when an
-/// implementation of its layer-3 passes (first level of detail) reads only
-/// what the object path gives: the program path then draws the
-/// implementations that compile, and an object whose records draw another
-/// stays on D3D. Every opaque material goes this way, whether or not it
-/// reads the object's lighting: a stand-in (the models' base map and fixed
-/// light, posed from the object's own nodes) matches neither the game's
-/// shading nor, for an animated object, the rows its draw uploads. A
-/// material without a layer-3 pass is not drawn at layer 3 at all.
-pub fn program_refusal(material: &tags::material::Material) -> Option<String> {
-    let layers = material.layers.iter().filter(|l| l.lod == 0 && l.layer == crate::look::LIGHTMAP_LAYER);
-    let mut reasons = Vec::new();
-    for imp in layers.flat_map(|l| &l.passes).flat_map(|p| &p.implementations) {
-        match inputs_supported(imp) {
-            Ok(()) => return None,
-            Err(e) => reasons.push(format!("implementation {}: {e}", imp.index)),
+/// The blocks an object's draw of `pass` starts from: the compiled
+/// pass's, or for an animated pass its registers sampled at `time` (the
+/// render clock) over them ([`PassAnimation::sample`]), counted in
+/// `native_shader_animation_objects_*`. The object's lighting and rows go
+/// in after ([`object_vertex_uniforms`], [`object_pixel_uniforms`]), so a
+/// lighting binding wins a lane an animation also writes. An error names
+/// the sampler's refusal; the item keeps its D3D draw.
+pub fn animated_blocks(
+    pass: &ObjectPass,
+    time: Option<f64>,
+) -> Result<(std::borrow::Cow<'_, VertexUniforms>, PixelUniforms), String> {
+    use timeline::native::ShaderAnimation;
+    let Some(animation) = &pass.animation else {
+        return Ok((std::borrow::Cow::Borrowed(&pass.program.vertex), pass.program.pixel));
+    };
+    match animation.sample(time) {
+        Ok(at) => {
+            ShaderAnimation::ObjectsDrawn.count(1);
+            Ok((std::borrow::Cow::Owned(at.vertex(&pass.program.vertex)), at.pixel(&pass.program.pixel)))
+        }
+        Err(r) => {
+            ShaderAnimation::ObjectsRefused.count(1);
+            Err(format!("animated constants: {}: {r:?}", r.name()))
         }
     }
-    if reasons.is_empty() {
-        return Some("it has no layer-3 pass".into());
-    }
-    Some(reasons.join("; "))
 }
 
 /// `pass`'s implementation `imp` as an object draws it, or why not: what
@@ -231,6 +392,14 @@ pub const TEXACCUM_TEXTURE: u8 = 3;
 /// [`crate::object_nodes::texaccum_bound`]).
 pub const TEXACCUM_HEADER: u32 = crate::object_nodes::TEXACCUM_HEADER;
 
+/// The engine texture of the view's own target (Code): the engine-texture
+/// table (`0x00019530`, the jump table at `0x00019b68`) binds for 5 the
+/// render target the view is drawing into
+/// (`crate::screen_look::EngineTexture::View`). The camouflage layers'
+/// passes sample it as the scene behind the object; a render target is a
+/// linear texture, read in texels as the texture accumulation target is.
+pub const VIEW_TEXTURE: u8 = 5;
+
 /// The stages of an object pass the host binds an engine texture at
 /// (empty in the look).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -240,23 +409,44 @@ pub struct EngineBound {
     pub normalization: [bool; 4],
     /// The texture accumulation target (engine texture 3, 2D, unbiased).
     pub texaccum: [bool; 4],
+    /// The view's own target (engine texture 5, 2D, unbiased): a copy of
+    /// the bound colour.
+    pub view: [bool; 4],
 }
 
 /// [`object_look`] with the stages that sample the vector normalization
-/// cube or the texture accumulation target, which the host binds; in the
-/// look those stages are empty.
-pub fn object_look_stages(pass: map::TagId, imp: &ResolvedImplementation) -> Result<(PassLook, EngineBound), String> {
-    inputs_supported(imp)?;
+/// cube, the texture accumulation target or the view's own target, which
+/// the host binds; in the look those stages are empty.
+pub fn object_look_stages(
+    pass: map::TagId,
+    imp: &ResolvedImplementation,
+) -> Result<(PassLook, EngineBound), String> {
+    object_look_stages_with(pass, imp, false)
+}
+
+fn object_look_stages_with(
+    pass: map::TagId,
+    imp: &ResolvedImplementation,
+    has_layer_inputs: bool,
+) -> Result<(PassLook, EngineBound), String> {
+    check_inputs(imp, has_layer_inputs)?;
     let mut instance = imp.clone();
-    for r in instance.vertex_constants.iter_mut().chain(instance.vertex_defaults.iter_mut()) {
+    for r in instance
+        .vertex_constants
+        .iter_mut()
+        .chain(instance.vertex_defaults.iter_mut())
+    {
         r.origin = Origin::Instance;
     }
     let mut bound = EngineBound::default();
     for (n, t) in instance.textures.iter_mut().enumerate() {
         let Some(t) = t else { continue };
         let slot = match t.source {
-            tags::material::TextureSource::Engine(NORMALIZATION_TEXTURE) => &mut bound.normalization[n],
+            tags::material::TextureSource::Engine(NORMALIZATION_TEXTURE) => {
+                &mut bound.normalization[n]
+            }
             tags::material::TextureSource::Engine(TEXACCUM_TEXTURE) => &mut bound.texaccum[n],
+            tags::material::TextureSource::Engine(VIEW_TEXTURE) => &mut bound.view[n],
             _ => continue,
         };
         *slot = true;
@@ -274,7 +464,10 @@ fn object_sets(look: &PassLook, c: usize) -> bool {
     c < VIEW_CONSTANTS
         || (MODEL_ROWS..MODEL_ROWS + 3).contains(&c)
         || (POSITION_DECOMPRESSION..=TEXCOORD_DECOMPRESSION).contains(&c)
-        || look.vertex_constants.iter().any(|r| usize::from(r.index) == c && r.written != 0)
+        || look
+            .vertex_constants
+            .iter()
+            .any(|r| usize::from(r.index) == c && r.written != 0)
 }
 
 /// Translates an object pass with its vertex program `microcode`, or says
@@ -287,7 +480,14 @@ pub fn compile_object(
     alpha_test: Option<(wgpu::CompareFunction, u8)>,
     provided_inputs: u16,
 ) -> Result<MaterialProgram, String> {
-    compile_object_stages(look, EngineBound::default(), microcode, alpha_test, provided_inputs, [shaders::vsh::InputFetch::Float; 16])
+    compile_object_stages(
+        look,
+        EngineBound::default(),
+        microcode,
+        alpha_test,
+        provided_inputs,
+        [shaders::vsh::InputFetch::Float; 16],
+    )
 }
 
 /// [`compile_object`] with the stages the host binds an engine texture at
@@ -300,44 +500,74 @@ pub fn compile_object_stages(
     provided_inputs: u16,
     input_fetch: [shaders::vsh::InputFetch; 16],
 ) -> Result<MaterialProgram, String> {
+    compile_with_layer_constants(look, engine, microcode, alpha_test, provided_inputs, input_fetch, false)
+        .map(|(program, _)| program)
+}
+
+fn compile_with_layer_constants(
+    look: &PassLook,
+    engine: EngineBound,
+    microcode: &[u8],
+    alpha_test: Option<(wgpu::CompareFunction, u8)>,
+    provided_inputs: u16,
+    input_fetch: [shaders::vsh::InputFetch; 16],
+    inherits_material_constants: bool,
+) -> Result<(MaterialProgram, bool), String> {
+    let mut inherits_c18 = false;
     let program = vsh::Program::parse(microcode).map_err(|e| format!("vertex program: {e:?}"))?;
     for i in &program.instructions {
         for s in i.sources() {
             if let vsh::SrcReg::Const { index, relative } = s.reg {
                 let c = usize::from(index);
                 if relative && !(MODEL_ROWS..POSITION_DECOMPRESSION).contains(&c) {
-                    return Err(format!("vertex program reads c[a0.x + {c}], outside the node rows"));
+                    return Err(format!(
+                        "vertex program reads c[a0.x + {c}], outside the node rows"
+                    ));
                 }
                 if !relative && !object_sets(look, c) {
-                    return Err(format!("vertex program reads c[{c}], which the object pass does not set"));
+                    if c == 18 && inherits_material_constants {
+                        inherits_c18 = true;
+                        continue;
+                    }
+                    return Err(format!(
+                        "vertex program reads c[{c}], which the object pass does not set"
+                    ));
                 }
             }
         }
     }
-    let t = translate_pass_with_pixel(&PassParts {
-        microcode,
-        pixel_shader: &look.pixel_shader,
-        dims: std::array::from_fn(|n| {
-            if engine.normalization[n] {
-                Some(shaders::psh::TextureDim::Cube)
-            } else if engine.texaccum[n] {
-                Some(shaders::psh::TextureDim::D2)
-            } else {
-                (look.textures[n] != crate::look::Stage::Empty).then_some(shaders::psh::TextureDim::D2)
-            }
-        }),
-        biased: look.textures.map(|s| matches!(s, crate::look::Stage::Bitmap { .. })),
-        stage_states: &look.stage_states,
-        vertex_constants: &look.vertex_constants,
-        vertex_defaults: &look.vertex_defaults,
-        alpha_test,
-        provided_inputs,
-        input_fetch,
-        w_buffer: true,
-    }, shaders::psh::translate_with_default_final_uniform)?;
+    let t = translate_pass_with_pixel(
+        &PassParts {
+            microcode,
+            pixel_shader: &look.pixel_shader,
+            dims: std::array::from_fn(|n| {
+                if engine.normalization[n] {
+                    Some(shaders::psh::TextureDim::Cube)
+                } else if engine.texaccum[n] || engine.view[n] {
+                    Some(shaders::psh::TextureDim::D2)
+                } else {
+                    (look.textures[n] != crate::look::Stage::Empty)
+                        .then_some(shaders::psh::TextureDim::D2)
+                }
+            }),
+            biased: look
+                .textures
+                .map(|s| matches!(s, crate::look::Stage::Bitmap { .. })),
+            stage_states: &look.stage_states,
+            vertex_constants: &look.vertex_constants,
+            vertex_defaults: &look.vertex_defaults,
+            alpha_test,
+            provided_inputs,
+            input_fetch,
+            w_buffer: true,
+            shadow: [None; 4],
+        },
+        shaders::psh::translate_with_default_final_uniform,
+    )?;
     let mut vertex = t.vertex;
-    vertex.constants[POSITION_DECOMPRESSION..=TEXCOORD_DECOMPRESSION].copy_from_slice(&decompression_rows(&Compression::default()));
-    Ok(MaterialProgram {
+    vertex.constants[POSITION_DECOMPRESSION..=TEXCOORD_DECOMPRESSION]
+        .copy_from_slice(&decompression_rows(&Compression::default()));
+    Ok((MaterialProgram {
         wgsl: t.wgsl,
         stages: look.textures,
         samplers: t.samplers,
@@ -351,7 +581,9 @@ pub fn compile_object_stages(
         state: None,
         inherits_cull: false,
         rigid: None,
-    })
+        animation: None,
+        texaccum_dimensions: Vec::new(),
+    }, inherits_c18))
 }
 
 /// Puts the texture accumulation target's size (`guest_size`, what
@@ -359,10 +591,17 @@ pub fn compile_object_stages(
 /// vertex constants of `imp` that read the size of a stage in `stages`
 /// (`ResolvedImplementation::dimension_bindings`): the resolver knew no
 /// size for an engine texture and left 0 by 0 there.
-pub fn texaccum_dimensions(u: &mut VertexUniforms, imp: &ResolvedImplementation, stages: [bool; 4], guest_size: (u32, u32)) {
+pub fn texaccum_dimensions(
+    u: &mut VertexUniforms,
+    imp: &ResolvedImplementation,
+    stages: [bool; 4],
+    guest_size: (u32, u32),
+) {
     let size = (guest_size.0 as f32, guest_size.1 as f32);
     for c in &imp.dimension_bindings {
-        let Some(stage) = usize::from(c.stage).checked_sub(1) else { continue };
+        let Some(stage) = usize::from(c.stage).checked_sub(1) else {
+            continue;
+        };
         if !stages.get(stage).copied().unwrap_or(false) {
             continue;
         }
@@ -379,14 +618,37 @@ pub fn texaccum_dimensions(u: &mut VertexUniforms, imp: &ResolvedImplementation,
 /// One drawn object's inputs.
 #[derive(Clone, Copy, Debug)]
 pub struct ObjectInputs<'a> {
+    /// Material inputs captured at this layer's begin, including the fog
+    /// coefficients. Base and first-person submissions carry lighting only.
+    pub layer: Option<&'a frame_scene::LayerInputs>,
     pub lighting: Option<&'a Lighting>,
     pub defaults: &'a Defaults,
     pub shader: ShaderValues,
 }
 
+impl ObjectInputs<'_> {
+    fn vector(&self, source: u8) -> Result<[u32; 3], String> {
+        if source < 64 && LIGHTING_VECTORS >> source & 1 != 0 {
+            return vector_input(u32::from(source), self.lighting, self.defaults, self.shader)
+                .ok_or_else(|| format!("lighting vector {source} is not given for this object"));
+        }
+        self.layer.and_then(|v| v.vector(usize::from(source))).map(|v| v.map(f32::to_bits))
+            .ok_or_else(|| format!("view vector {source} is not given for this layer"))
+    }
+
+    fn scalar(&self, source: u8) -> Result<u32, String> {
+        if source < 64 && LIGHTING_SCALARS >> source & 1 != 0 {
+            return scalar_input(u32::from(source), self.lighting)
+                .ok_or_else(|| format!("lighting scalar {source} is not given for this object"));
+        }
+        self.layer.and_then(|v| v.scalar(usize::from(source))).map(f32::to_bits)
+            .ok_or_else(|| format!("view scalar {source} is not given for this layer"))
+    }
+}
+
 /// The vertex block an object's draw of `imp` reads: `base` (the
 /// compiled pass's, [`compile_object`]) with the engine constants that
-/// read the lighting evaluated for this object, its node rows at `c[50]`
+/// read the lighting or layer inputs evaluated for this draw, its node rows at `c[50]`
 /// and its decompression at `c[170]`. The view's `c[0..18]` are put in
 /// per frame. An error names a lighting input the port cannot give for
 /// this object (then it stays on D3D) or rows that do not fit.
@@ -411,21 +673,31 @@ pub fn object_vertex_uniforms(
         }
     };
     for b in &imp.vector_bindings {
-        let VectorTarget::Vertex { bank, reg, components } = b.target else { continue };
-        if b.source >= 64 || LIGHTING_VECTORS & (1u64 << b.source) == 0 {
+        let VectorTarget::Vertex {
+            bank,
+            reg,
+            components,
+        } = b.target
+        else {
             continue;
-        }
-        let v = vector_input(u32::from(b.source), inputs.lighting, inputs.defaults, inputs.shader)
-            .ok_or_else(|| format!("lighting vector {} is not given for this object", b.source))?;
+        };
+        let v = inputs.vector(b.source)?;
         put(bank, reg, components & 0b0111, v, false);
     }
     for b in &imp.scalar_bindings {
-        let VectorTarget::Vertex { bank, reg, components } = b.target else { continue };
-        if b.source >= 64 || LIGHTING_SCALARS & (1u64 << b.source) == 0 {
+        let VectorTarget::Vertex {
+            bank,
+            reg,
+            components,
+        } = b.target
+        else {
+            continue;
+        };
+        // The shader's scalar was resolved with the material at load.
+        if b.source < 64 && SHADER_SCALARS >> b.source & 1 != 0 {
             continue;
         }
-        let s = scalar_input(u32::from(b.source), inputs.lighting)
-            .ok_or_else(|| format!("lighting scalar {} is not given for this object", b.source))?;
+        let s = inputs.scalar(b.source)?;
         put(bank, reg, components, [s, s, s], true);
     }
     if nodes.len() > 3 * MAX_PALETTE {
@@ -438,31 +710,57 @@ pub fn object_vertex_uniforms(
 
 /// The pixel block an object's draw of `imp` reads: `base` (the compiled
 /// pass's, the view's parts put in) with each combiner constant that reads
-/// a lighting input packed for this object as `0x00019ca0` packs it
+/// a lighting or layer input packed for this object as `0x00019ca0` packs it
 /// (`tags::material::pack_engine_colour`: a vector with alpha 0, a scalar
 /// through its binding's transform, `tags::material::engine_scalar`, in
 /// its one channel; halved first when the binding says so) into the byte
 /// lanes the binding keeps. An error names an input the port cannot give
 /// for this object.
-pub fn object_pixel_uniforms(base: &PixelUniforms, imp: &ResolvedImplementation, inputs: &ObjectInputs<'_>) -> Result<PixelUniforms, String> {
+pub fn object_pixel_uniforms(
+    base: &PixelUniforms,
+    imp: &ResolvedImplementation,
+    inputs: &ObjectInputs<'_>,
+) -> Result<PixelUniforms, String> {
     let mut u = *base;
     for b in &imp.vector_bindings {
-        let VectorTarget::Pixel { c1, slot, mask, half, .. } = b.target else { continue };
-        if b.source >= 64 || LIGHTING_VECTORS & (1u64 << b.source) == 0 {
+        let VectorTarget::Pixel {
+            c1,
+            slot,
+            mask,
+            half,
+            ..
+        } = b.target
+        else {
             continue;
-        }
-        let v = vector_input(u32::from(b.source), inputs.lighting, inputs.defaults, inputs.shader)
-            .ok_or_else(|| format!("lighting vector {} is not given for this object", b.source))?;
-        let packed = pack_engine_colour([f32::from_bits(v[0]), f32::from_bits(v[1]), f32::from_bits(v[2]), 0.0], half);
+        };
+        let v = inputs.vector(b.source)?;
+        let packed = pack_engine_colour(
+            [
+                f32::from_bits(v[0]),
+                f32::from_bits(v[1]),
+                f32::from_bits(v[2]),
+                0.0,
+            ],
+            half,
+        );
         put_packed(&mut u, c1, slot, mask, packed);
     }
     for b in &imp.scalar_bindings {
-        let VectorTarget::Pixel { c1, slot, mask, half, transform } = b.target else { continue };
-        if b.source >= 64 || LIGHTING_SCALARS & (1u64 << b.source) == 0 {
+        let VectorTarget::Pixel {
+            c1,
+            slot,
+            mask,
+            half,
+            transform,
+        } = b.target
+        else {
+            continue;
+        };
+        // The shader's scalar was resolved with the material at load.
+        if b.source < 64 && SHADER_SCALARS >> b.source & 1 != 0 {
             continue;
         }
-        let s = scalar_input(u32::from(b.source), inputs.lighting)
-            .ok_or_else(|| format!("lighting scalar {} is not given for this object", b.source))?;
+        let s = inputs.scalar(b.source)?;
         // The scalar lands in the one channel of its mode; the binding's
         // mask is that channel.
         let x = tags::material::engine_scalar(f32::from_bits(s), usize::from(transform));
@@ -472,7 +770,7 @@ pub fn object_pixel_uniforms(base: &PixelUniforms, imp: &ResolvedImplementation,
 }
 
 /// `packed`'s lanes in `mask` into combiner constant `slot` of C1 or C0.
-fn put_packed(u: &mut PixelUniforms, c1: bool, slot: u8, mask: u32, packed: u32) {
+pub(crate) fn put_packed(u: &mut PixelUniforms, c1: bool, slot: u8, mask: u32, packed: u32) {
     let bank = if c1 { &mut u.c1 } else { &mut u.c0 };
     if let Some(c) = bank.get_mut(usize::from(slot)) {
         *c = shaders::psh::argb((crate::light_look::repack(*c) & !mask) | (packed & mask));
@@ -491,8 +789,17 @@ pub(crate) mod tests {
     /// The registers `v0..v6` from the vertex buffer.
     const WORLD: u16 = crate::program::INPUT_MASK;
 
-    fn implementation(reads: InputReads, vectors: Vec<VectorBinding>, scalars: Vec<VectorBinding>) -> ResolvedImplementation {
-        let reg = |index, origin| Register { index, value: [7.0; 4], written: 0xf, origin };
+    fn implementation(
+        reads: InputReads,
+        vectors: Vec<VectorBinding>,
+        scalars: Vec<VectorBinding>,
+    ) -> ResolvedImplementation {
+        let reg = |index, origin| Register {
+            index,
+            value: [7.0; 4],
+            written: 0xf,
+            origin,
+        };
         ResolvedImplementation {
             index: 0,
             vertex_shader: Some(map::TagId(0xe000_0002)),
@@ -509,7 +816,11 @@ pub(crate) mod tests {
             input_reads: reads,
             vector_bindings: vectors,
             scalar_bindings: scalars,
-            vertex_constants: vec![reg(18, Origin::Engine), reg(19, Origin::Engine), reg(20, Origin::Instance)],
+            vertex_constants: vec![
+                reg(18, Origin::Engine),
+                reg(19, Origin::Engine),
+                reg(20, Origin::Instance),
+            ],
             vertex_defaults: Vec::new(),
             animated: Vec::new(),
             engine_render_states: Vec::new(),
@@ -519,19 +830,36 @@ pub(crate) mod tests {
     }
 
     fn vertex(reg: u8, components: u8) -> VectorTarget {
-        VectorTarget::Vertex { bank: 1, reg, components }
+        VectorTarget::Vertex {
+            bank: 1,
+            reg,
+            components,
+        }
     }
 
     /// A lit object implementation: vector 15 into `c[18].xyz`, vector 40
     /// into `c[19].xyz`, scalar 23 into `c[19].w`.
     pub(crate) fn lit() -> ResolvedImplementation {
         implementation(
-            InputReads { vectors: 1 << 15 | 1 << 40, scalars: 1 << 23 | 1 << 21, ints: 1 << 4 },
+            InputReads {
+                vectors: 1 << 15 | 1 << 40,
+                scalars: 1 << 23 | 1 << 21,
+                ints: 1 << 4,
+            },
             vec![
-                VectorBinding { source: 15, target: vertex(0, 0b0111) },
-                VectorBinding { source: 40, target: vertex(1, 0b0111) },
+                VectorBinding {
+                    source: 15,
+                    target: vertex(0, 0b0111),
+                },
+                VectorBinding {
+                    source: 40,
+                    target: vertex(1, 0b0111),
+                },
             ],
-            vec![VectorBinding { source: 23, target: vertex(1, 0b1000) }],
+            vec![VectorBinding {
+                source: 23,
+                target: vertex(1, 0b1000),
+            }],
         )
     }
 
@@ -539,23 +867,52 @@ pub(crate) mod tests {
     fn the_texture_accumulation_target_is_a_stage_the_host_binds_with_its_size() {
         use tags::material::{EngineVertexConstant, StageTexture, TextureSource};
         let mut imp = lit();
-        imp.textures[2] = Some(StageTexture { source: TextureSource::Engine(TEXACCUM_TEXTURE), size: None, stage_size: None });
+        imp.textures[2] = Some(StageTexture {
+            source: TextureSource::Engine(TEXACCUM_TEXTURE),
+            size: None,
+            stage_size: None,
+        });
         // The combiners sample t2 (PROJECT2D, 5 bits a stage).
-        imp.pixel_shader = shaders::PixelShaderDef { texture_modes: 1 << 10, ..Default::default() }.to_bytes();
+        imp.pixel_shader = shaders::PixelShaderDef {
+            texture_modes: 1 << 10,
+            ..Default::default()
+        }
+        .to_bytes();
         // c[20].xy the size of stage 2's texture (mode 9; stage 3 names
         // texture 2), which the resolver left 0 by 0 for an engine texture.
-        imp.dimension_bindings = vec![EngineVertexConstant { bank: 1, reg: 2, mode: 9, stage: 3, source: 0 }];
-        assert!(crate::look::implementation_look(map::TagId(0xe000_0001), &imp).is_err(), "the world's look refuses it");
+        imp.dimension_bindings = vec![EngineVertexConstant {
+            bank: 1,
+            reg: 2,
+            mode: 9,
+            stage: 3,
+            source: 0,
+        }];
+        assert!(
+            crate::look::implementation_look(map::TagId(0xe000_0001), &imp).is_err(),
+            "the world's look refuses it"
+        );
         let (look, bound) = object_look_stages(map::TagId(0xe000_0001), &imp).unwrap();
         assert_eq!(bound.texaccum, [false, false, true, false]);
         assert_eq!(bound.normalization, [false; 4]);
         assert_eq!(look.textures[2], Stage::Empty, "bound by the host");
-        let p = compile_object_stages(&look, bound, &rigid_program(), None, WORLD, [shaders::vsh::InputFetch::Float; 16]).unwrap();
+        let p = compile_object_stages(
+            &look,
+            bound,
+            &rigid_program(),
+            None,
+            WORLD,
+            [shaders::vsh::InputFetch::Float; 16],
+        )
+        .unwrap();
         assert_eq!(p.dims[2], Some(shaders::psh::TextureDim::D2));
         let mut u = p.vertex.clone();
         texaccum_dimensions(&mut u, &imp, bound.texaccum, (640, 480));
         assert_eq!(u.constants[20][..2], [640.0, 480.0]);
-        assert_eq!(u.constants[20][2..], p.vertex.constants[20][2..], "mode 9 writes x and y");
+        assert_eq!(
+            u.constants[20][2..],
+            p.vertex.constants[20][2..],
+            "mode 9 writes x and y"
+        );
         // A binding of another stage's size is left as resolved.
         let mut other = p.vertex.clone();
         texaccum_dimensions(&mut other, &imp, [true, false, false, false], (640, 480));
@@ -563,29 +920,67 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn every_opaque_material_goes_through_its_programs_lit_or_not() {
-        use tags::material::{Material, ResolvedLayer, ResolvedPass};
-        let of = |layer: usize, implementations: Vec<ResolvedImplementation>| Material {
-            shader: map::TagId(0xe000_0010),
-            template: map::TagId(0xe000_0011),
-            inputs: Default::default(),
-            layers: vec![ResolvedLayer {
-                lod: 0,
-                layer,
-                passes: vec![ResolvedPass { index: 0, pass: map::TagId(0xe000_0001), implementations }],
-            }],
+    fn the_views_own_target_is_a_stage_the_host_binds_as_a_copy() {
+        use gfx::state::RenderStateType as R;
+        use tags::material::{StageTexture, TextureSource};
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let state = |t: R, value: u32| tags::shader::RenderStateValue {
+            state: (0..=255u8)
+                .find(|&s| R::from_guest_index(&table, u32::from(s)) == Some(t))
+                .expect("a slot"),
+            value,
         };
-        let layer3 = crate::look::LIGHTMAP_LAYER;
-        // Reading none of the object's lighting: the programs still draw
-        // it (no base-map stand-in).
-        let unlit = implementation(InputReads::default(), Vec::new(), Vec::new());
-        assert_eq!(program_refusal(&of(layer3, vec![unlit.clone()])), None);
-        assert_eq!(program_refusal(&of(layer3, vec![lit()])), None);
-        let mut time = unlit.clone();
-        time.input_reads.scalars |= 1 << 2;
-        assert!(program_refusal(&of(layer3, vec![time.clone()])).unwrap().contains("implementation 0: reads scalar input 2"));
-        assert_eq!(program_refusal(&of(layer3, vec![time, unlit.clone()])), None, "one implementation is enough");
-        assert_eq!(program_refusal(&of(layer3 + 1, vec![unlit])).as_deref(), Some("it has no layer-3 pass"));
+        let mut imp = lit();
+        // A layer pass names the states it draws with.
+        imp.render_states = vec![state(R::AlphaBlendEnable, 0), state(R::ZWriteEnable, 0)];
+        imp.textures[1] = Some(StageTexture {
+            source: TextureSource::Engine(VIEW_TEXTURE),
+            size: None,
+            stage_size: None,
+        });
+        // The combiners sample t1 (PROJECT2D, 5 bits a stage).
+        imp.pixel_shader = shaders::PixelShaderDef {
+            texture_modes: 1 << 5,
+            ..Default::default()
+        }
+        .to_bytes();
+        assert_eq!(
+            crate::screen_look::engine_texture(VIEW_TEXTURE),
+            crate::screen_look::EngineTexture::View
+        );
+        assert!(
+            crate::look::implementation_look(map::TagId(0xe000_0001), &imp).is_err(),
+            "the world's look refuses it"
+        );
+        let (look, bound) = object_look_stages(map::TagId(0xe000_0001), &imp).unwrap();
+        assert_eq!(bound.view, [false, true, false, false]);
+        assert_eq!(
+            (bound.texaccum, bound.normalization),
+            ([false; 4], [false; 4])
+        );
+        assert_eq!(look.textures[1], Stage::Empty, "bound by the host");
+        let p = compile_object_stages(
+            &look,
+            bound,
+            &rigid_program(),
+            None,
+            WORLD,
+            [shaders::vsh::InputFetch::Float; 16],
+        )
+        .unwrap();
+        assert_eq!(p.dims[1], Some(shaders::psh::TextureDim::D2));
+        let fetch = [shaders::vsh::InputFetch::Float; 16];
+        let pass = object_layer_pass(
+            map::TagId(0xe000_0001),
+            &imp,
+            &[],
+            &rigid_program(),
+            WORLD,
+            fetch,
+        )
+        .unwrap();
+        assert_eq!(pass.view, [false, true, false, false]);
+        assert_eq!(pass.texaccum, [false; 4]);
     }
 
     #[test]
@@ -593,20 +988,43 @@ pub(crate) mod tests {
         assert_eq!(inputs_supported(&lit()), Ok(()));
         let mut time = lit();
         time.input_reads.scalars |= 1 << 2;
-        assert_eq!(inputs_supported(&time).unwrap_err(), "reads scalar input 2, which is not the object's lighting");
+        assert_eq!(
+            inputs_supported(&time).unwrap_err(),
+            "reads scalar input 2, which is not the object's lighting"
+        );
         let mut camera = lit();
         camera.input_reads.vectors |= 1 << 5;
-        assert!(inputs_supported(&camera).unwrap_err().starts_with("reads vector input 5"));
+        assert!(
+            inputs_supported(&camera)
+                .unwrap_err()
+                .starts_with("reads vector input 5")
+        );
         let mut pixel = lit();
         pixel.vector_bindings.push(VectorBinding {
             source: 15,
-            target: VectorTarget::Pixel { c1: false, slot: 0, mask: 0x00ff_ffff, half: false, transform: 0 },
+            target: VectorTarget::Pixel {
+                c1: false,
+                slot: 0,
+                mask: 0x00ff_ffff,
+                half: false,
+                transform: 0,
+            },
         });
         pixel.scalar_bindings.push(VectorBinding {
             source: 23,
-            target: VectorTarget::Pixel { c1: false, slot: 1, mask: 0xff00_0000, half: false, transform: 1 },
+            target: VectorTarget::Pixel {
+                c1: false,
+                slot: 1,
+                mask: 0xff00_0000,
+                half: false,
+                transform: 1,
+            },
         });
-        assert_eq!(inputs_supported(&pixel), Ok(()), "lighting inputs in combiner constants are packed per object");
+        assert_eq!(
+            inputs_supported(&pixel),
+            Ok(()),
+            "lighting inputs in combiner constants are packed per object"
+        );
     }
 
     #[test]
@@ -617,14 +1035,25 @@ pub(crate) mod tests {
         for (i, v) in [0.5f32, 0.25, 0.125].iter().enumerate() {
             words[12 + i] = v.to_bits();
         }
-        let l = Lighting { words, root: Some(0.75f32.to_bits()) };
+        let l = Lighting {
+            words,
+            root: Some(0.75f32.to_bits()),
+        };
         let d = Defaults::default();
-        let inputs = ObjectInputs { lighting: Some(&l), defaults: &d, shader: ShaderValues::default() };
+        let inputs = ObjectInputs {
+            layer: None,
+            lighting: Some(&l),
+            defaults: &d,
+            shader: ShaderValues::default(),
+        };
         let imp = lit();
         let look = object_look(map::TagId(0xe000_0001), &imp).unwrap();
         let p = compile_object(&look, &rigid_program(), None, WORLD).unwrap();
         let nodes = rows_of(3);
-        let decompression = decompression_rows(&Compression { position: Some([0.0, 2.0, 0.0, 2.0, 0.0, 2.0]), texcoord: None });
+        let decompression = decompression_rows(&Compression {
+            position: Some([0.0, 2.0, 0.0, 2.0, 0.0, 2.0]),
+            texcoord: None,
+        });
         let u = object_vertex_uniforms(&p.vertex, &imp, &inputs, &nodes, decompression).unwrap();
         // What the game would hold: c[18] = vector 15 (w the resolved value),
         // c[19] = vector 40 broadcast and scalar 23 in w, c[20] the instance's.
@@ -636,8 +1065,20 @@ pub(crate) mod tests {
         assert_eq!(u.constants[170..173], decompression[..]);
         // No root value (a parent cycle): not drawn.
         let stale = Lighting { root: None, ..l };
-        let e = object_vertex_uniforms(&p.vertex, &imp, &ObjectInputs { lighting: Some(&stale), ..inputs }, &nodes, decompression);
-        assert_eq!(e.unwrap_err(), "lighting vector 40 is not given for this object");
+        let e = object_vertex_uniforms(
+            &p.vertex,
+            &imp,
+            &ObjectInputs {
+                lighting: Some(&stale),
+                ..inputs
+            },
+            &nodes,
+            decompression,
+        );
+        assert_eq!(
+            e.unwrap_err(),
+            "lighting vector 40 is not given for this object"
+        );
     }
 
     #[test]
@@ -647,21 +1088,65 @@ pub(crate) mod tests {
         for (i, v) in [0.5f32, 0.25, 0.125].iter().enumerate() {
             words[12 + i] = v.to_bits();
         }
-        let l = Lighting { words, root: Some(0) };
+        let l = Lighting {
+            words,
+            root: Some(0),
+        };
         let d = Defaults::default();
-        let inputs = ObjectInputs { lighting: Some(&l), defaults: &d, shader: ShaderValues::default() };
+        let inputs = ObjectInputs {
+            layer: None,
+            lighting: Some(&l),
+            defaults: &d,
+            shader: ShaderValues::default(),
+        };
         let mut imp = lit();
         imp.vector_bindings = vec![
             // c0[0] RGB, its alpha the instance's.
-            VectorBinding { source: 15, target: VectorTarget::Pixel { c1: false, slot: 0, mask: 0x00ff_ffff, half: false, transform: 0 } },
+            VectorBinding {
+                source: 15,
+                target: VectorTarget::Pixel {
+                    c1: false,
+                    slot: 0,
+                    mask: 0x00ff_ffff,
+                    half: false,
+                    transform: 0,
+                },
+            },
             // c1[1] green only, halved: (x + 1) / 2.
-            VectorBinding { source: 15, target: VectorTarget::Pixel { c1: true, slot: 1, mask: 0x0000_ff00, half: true, transform: 0 } },
+            VectorBinding {
+                source: 15,
+                target: VectorTarget::Pixel {
+                    c1: true,
+                    slot: 1,
+                    mask: 0x0000_ff00,
+                    half: true,
+                    transform: 0,
+                },
+            },
         ];
         imp.scalar_bindings = vec![
             // Scalar 23 (the luminance of vector 15) complemented into
             // c0[2]'s alpha, and through the cosine wave into c1[3]'s blue.
-            VectorBinding { source: 23, target: VectorTarget::Pixel { c1: false, slot: 2, mask: 0xff00_0000, half: false, transform: 1 } },
-            VectorBinding { source: 23, target: VectorTarget::Pixel { c1: true, slot: 3, mask: 0x0000_00ff, half: false, transform: 2 } },
+            VectorBinding {
+                source: 23,
+                target: VectorTarget::Pixel {
+                    c1: false,
+                    slot: 2,
+                    mask: 0xff00_0000,
+                    half: false,
+                    transform: 1,
+                },
+            },
+            VectorBinding {
+                source: 23,
+                target: VectorTarget::Pixel {
+                    c1: true,
+                    slot: 3,
+                    mask: 0x0000_00ff,
+                    half: false,
+                    transform: 2,
+                },
+            },
         ];
         let mut base = PixelUniforms::default();
         base.c0[0] = shaders::psh::argb(0x8011_2233);
@@ -677,13 +1162,23 @@ pub(crate) mod tests {
         // 0.3105; 1 - 0.3105 -> 175.8 of 255, 0xb0; (cos(2π·0.3105) + 1) / 2
         // -> 80.2 of 255, 0x50.
         let luma = (0.125f32 * 0.114 + 0.25 * 0.587 + 0.5 * 0.299).clamp(0.0, 1.0);
-        assert_eq!(scalar_input(23, Some(&l)), Some(luma.to_bits()), "the scalar the test assumes");
+        assert_eq!(
+            scalar_input(23, Some(&l)),
+            Some(luma.to_bits()),
+            "the scalar the test assumes"
+        );
         assert_eq!(u.c0[2], shaders::psh::argb(0xb055_6677));
         assert_eq!(u.c1[3], shaders::psh::argb(0x9988_7750));
         assert_eq!(u.c0[1], base.c0[1], "the rest as compiled");
         assert_eq!(u.c0[3..], base.c0[3..]);
-        let none = ObjectInputs { lighting: None, ..inputs };
-        assert!(object_pixel_uniforms(&base, &imp, &none).is_ok(), "vector 15 falls back on the default without a lighting");
+        let none = ObjectInputs {
+            lighting: None,
+            ..inputs
+        };
+        assert!(
+            object_pixel_uniforms(&base, &imp, &none).is_ok(),
+            "vector 15 falls back on the default without a lighting"
+        );
     }
 
     /// Shaped like a `lightmap_dynamic` object program: decompress the
@@ -704,8 +1199,13 @@ pub(crate) mod tests {
             Inst::mac(MacOp::Dp4, Some(r(1)), Some(O::c(1)), None).to_out(false, OutReg::Pos, 4),
             Inst::mac(MacOp::Dp4, Some(r(1)), Some(O::c(2)), None).to_out(false, OutReg::Pos, 2),
             Inst::mac(MacOp::Dp4, Some(r(1)), Some(O::c(3)), None).to_out(false, OutReg::Pos, 1),
-            Inst::mac(MacOp::Mad, Some(O::v(1)), Some(O::c(172).swz("xyxy")), Some(O::c(172).swz("zwzw")))
-                .to_out(false, OutReg::T(0), 0xf),
+            Inst::mac(
+                MacOp::Mad,
+                Some(O::v(1)),
+                Some(O::c(172).swz("xyxy")),
+                Some(O::c(172).swz("zwzw")),
+            )
+            .to_out(false, OutReg::T(0), 0xf),
             Inst::mac(MacOp::Dp3, Some(O::v(2)), Some(O::c(18)), None).to_temp(2, 0xf),
             Inst::mac(MacOp::Mul, Some(r(2)), Some(O::c(19)), None).to_out(false, OutReg::D0, 0xf),
         ])
@@ -739,34 +1239,78 @@ pub(crate) mod tests {
     fn an_object_pass_that_does_not_set_its_cull_takes_the_devices() {
         use gfx::state::{CompareFunc, CullMode, RenderStateType as R};
         let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
-        let slot = |t: R| (0..=255u8).find(|&s| R::from_guest_index(&table, u32::from(s)) == Some(t)).unwrap();
+        let slot = |t: R| {
+            (0..=255u8)
+                .find(|&s| R::from_guest_index(&table, u32::from(s)) == Some(t))
+                .unwrap()
+        };
         // The states every opaque pass sets (`pass_state` refuses one
         // without ALPHABLENDENABLE or ZWRITEENABLE), then `extra`.
         let with = |extra: &[(R, u32)]| {
             let mut imp = lit();
-            imp.render_states = [(R::ColorWriteEnable, 0x0101_0101), (R::AlphaBlendEnable, 0), (R::ZWriteEnable, 1)]
-                .iter()
-                .chain(extra)
-                .map(|&(t, value)| tags::shader::RenderStateValue { state: slot(t), value })
-                .collect();
+            imp.render_states = [
+                (R::ColorWriteEnable, 0x0101_0101),
+                (R::AlphaBlendEnable, 0),
+                (R::ZWriteEnable, 1),
+            ]
+            .iter()
+            .chain(extra)
+            .map(|&(t, value)| tags::shader::RenderStateValue {
+                state: slot(t),
+                value,
+            })
+            .collect();
             imp
         };
         let fetch = [shaders::vsh::InputFetch::Float; 16];
         // The rebar's shape: depth equal, no writes, CULLMODE unset.
-        let equal = with(&[(R::ZFunc, CompareFunc::Equal.xbox_value()), (R::ZWriteEnable, 0)]);
+        let equal = with(&[
+            (R::ZFunc, CompareFunc::Equal.xbox_value()),
+            (R::ZWriteEnable, 0),
+        ]);
         assert!(!sets_cull(&equal));
-        let p = object_pass(map::TagId(0xe000_0001), &equal, &rigid_program(), WORLD, fetch, true).unwrap_or_else(|e| panic!("{e}"));
-        assert!(p.program.inherits_cull, "CULLMODE unset: the device's at the pass");
-        assert_eq!(p.program.state.unwrap().primitive.cull_mode, None, "its own state culls nothing");
+        let p = object_pass(
+            map::TagId(0xe000_0001),
+            &equal,
+            &[],
+            &rigid_program(),
+            WORLD,
+            fetch,
+            true,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        assert!(
+            p.program.inherits_cull,
+            "CULLMODE unset: the device's at the pass"
+        );
+        assert_eq!(
+            p.program.state.unwrap().primitive.cull_mode,
+            None,
+            "its own state culls nothing"
+        );
         // Drawn as `LitObjects` draws it: the device's cull and winding.
         let device = (Some(wgpu::Face::Back), wgpu::FrontFace::Cw);
-        let (primitive, depth) = crate::program::pipeline_state(p.program.state.as_ref(), Some(device));
+        let (primitive, depth) =
+            crate::program::pipeline_state(p.program.state.as_ref(), Some(device));
         assert_eq!((primitive.cull_mode, primitive.front_face), device);
-        assert_eq!(depth, (false, wgpu::CompareFunction::Equal), "the depth state is its own");
+        assert_eq!(
+            depth,
+            (false, wgpu::CompareFunction::Equal),
+            "the depth state is its own"
+        );
         // One that sets it keeps its own.
         let own = with(&[(R::CullMode, CullMode::Cw.xbox_value())]);
         assert!(sets_cull(&own));
-        let p = object_pass(map::TagId(0xe000_0001), &own, &rigid_program(), WORLD, fetch, true).unwrap_or_else(|e| panic!("{e}"));
+        let p = object_pass(
+            map::TagId(0xe000_0001),
+            &own,
+            &[],
+            &rigid_program(),
+            WORLD,
+            fetch,
+            true,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
         assert!(!p.program.inherits_cull);
         assert!(p.program.state.unwrap().primitive.cull_mode.is_some());
     }
@@ -776,30 +1320,190 @@ pub(crate) mod tests {
         let imp = lit();
         let look = object_look(map::TagId(0xe000_0001), &imp).unwrap();
         assert_eq!(look.textures, [Stage::Empty; 4]);
-        for (name, microcode) in [("lightmap_dynamic", rigid_program()), ("sh_dynamic", skinned_program())] {
-            let p = compile_object(&look, &microcode, None, WORLD).unwrap_or_else(|e| panic!("{name}: {e}"));
+        for (name, microcode) in [
+            ("lightmap_dynamic", rigid_program()),
+            ("sh_dynamic", skinned_program()),
+        ] {
+            let p = compile_object(&look, &microcode, None, WORLD)
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
             shaders::validate(&p.wgsl).unwrap_or_else(|e| panic!("{name}: {e:?}"));
-            assert_eq!(p.vertex.constants[170..173], decompression_rows(&Compression::default())[..], "{name}");
-            assert_eq!(p.vertex.constants[20], [7.0; 4], "{name}: the instance constant");
+            assert_eq!(
+                p.vertex.constants[170..173],
+                decompression_rows(&Compression::default())[..],
+                "{name}"
+            );
+            assert_eq!(
+                p.vertex.constants[20], [7.0; 4],
+                "{name}: the instance constant"
+            );
         }
         let p = compile_object(&look, &skinned_program(), None, WORLD).unwrap();
-        assert!(p.wgsl.contains("a0"), "the palette is read relative to a0.x");
+        assert!(
+            p.wgsl.contains("a0"),
+            "the palette is read relative to a0.x"
+        );
     }
 
     #[test]
     fn an_object_program_reading_what_the_pass_does_not_set_is_refused() {
         let look = object_look(map::TagId(0xe000_0001), &lit()).unwrap();
         let reads = |src: O| {
-            program(&[Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(src), None).to_out(false, OutReg::Pos, 0xf)])
+            program(&[
+                Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(src), None).to_out(
+                    false,
+                    OutReg::Pos,
+                    0xf,
+                ),
+            ])
         };
         for c in [0, 17, 18, 19, 20, 50, 52, 170, 171, 172] {
-            assert!(compile_object(&look, &reads(O::c(c)), None, WORLD).is_ok(), "c[{c}] is set");
+            assert!(
+                compile_object(&look, &reads(O::c(c)), None, WORLD).is_ok(),
+                "c[{c}] is set"
+            );
         }
         for c in [21, 31, 53, 173] {
             let e = compile_object(&look, &reads(O::c(c)), None, WORLD).unwrap_err();
-            assert_eq!(e, format!("vertex program reads c[{c}], which the object pass does not set"));
+            assert_eq!(
+                e,
+                format!("vertex program reads c[{c}], which the object pass does not set")
+            );
         }
         let e = compile_object(&look, &reads(O::c_rel(18)), None, WORLD).unwrap_err();
-        assert_eq!(e, "vertex program reads c[a0.x + 18], outside the node rows");
+        assert_eq!(
+            e,
+            "vertex program reads c[a0.x + 18], outside the node rows"
+        );
     }
+
+    #[test]
+    fn object_templates_can_leave_blend_and_depth_writes_to_the_device() {
+        let mut imp = lit();
+        imp.render_states.clear();
+        assert!(object_pass_state(&imp).is_ok());
+        assert!(crate::pass_state::pass_state(&imp.render_states).is_err());
+        assert!(crate::object_state::resolve(&imp.render_states, &Default::default(), None).is_err());
+    }
+
+    #[test]
+    fn a_world_layers_pass_keeps_its_blend_and_cannot_sample_the_lightmap() {
+        use gfx::state::{BlendFactor, RenderStateType as R};
+        use tags::material::{StageTexture, TextureSource};
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let state = |t: R, value: u32| tags::shader::RenderStateValue {
+            state: (0..=255u8)
+                .find(|&s| R::from_guest_index(&table, u32::from(s)) == Some(t))
+                .expect("a slot"),
+            value,
+        };
+        let mut imp = lit();
+        imp.render_states = vec![
+            state(R::AlphaBlendEnable, 1),
+            state(R::SrcBlend, BlendFactor::One.xbox_value()),
+            state(R::DestBlend, BlendFactor::One.xbox_value()),
+            // Its own blend op, so layer 3's state reads its blend.
+            state(R::BlendOp, 0x8006),
+            state(R::ZWriteEnable, 0),
+        ];
+        let fetch = [shaders::vsh::InputFetch::Float; 16];
+        let pass = map::TagId(0xe000_0001);
+        let e = object_pass(pass, &imp, &[], &rigid_program(), WORLD, fetch, true).unwrap_err();
+        assert!(e.contains("blends"), "layer 3's refuse it: {e}");
+        let p = object_layer_pass(pass, &imp, &[], &rigid_program(), WORLD, fetch).unwrap();
+        assert!(
+            p.program.state.as_ref().unwrap().blend.is_some(),
+            "the pipeline's blend"
+        );
+        // Outside layer 3 the draw binds no lightmap page.
+        imp.textures[3] = Some(StageTexture {
+            source: TextureSource::Lightmap,
+            size: None,
+            stage_size: None,
+        });
+        imp.pixel_shader = shaders::PixelShaderDef {
+            texture_modes: 1 << 15,
+            ..Default::default()
+        }
+        .to_bytes();
+        let e = object_layer_pass(pass, &imp, &[], &rigid_program(), WORLD, fetch).unwrap_err();
+        assert!(e.contains("only in layer 3"), "{e}");
+    }
+
+    #[test]
+    fn a_materials_world_layer_passes_are_its_first_level_of_details() {
+        use tags::material::{ResolvedLayer, ResolvedPass};
+        let layer = |lod, layer, passes: usize| ResolvedLayer {
+            lod,
+            layer,
+            passes: (0..passes)
+                .map(|index| ResolvedPass {
+                    index,
+                    pass: map::TagId(0xe000_0001),
+                    implementations: vec![lit()],
+                })
+                .collect(),
+        };
+        let material = tags::material::Material {
+            shader: map::TagId(0xe000_0010),
+            template: map::TagId(0xe000_0011),
+            inputs: Default::default(),
+            layers: vec![
+                layer(0, 3, 1),
+                layer(0, 7, 2),
+                layer(1, 8, 1),
+                layer(0, 20, 0),
+            ],
+        };
+        assert_eq!(object_layer_passes(&material, 7).unwrap().len(), 2);
+        assert_eq!(
+            object_layer_passes(&material, 8).unwrap_err(),
+            "no layer 8",
+            "only a lower level of detail's"
+        );
+        assert_eq!(
+            object_layer_passes(&material, 20).unwrap_err(),
+            "no layer 20",
+            "no passes"
+        );
+        assert_eq!(object_layer_passes(&material, 1).unwrap_err(), "no layer 1");
+    }
+
+    /// An object pass whose constants animate compiles from its clock-0
+    /// registers, and each draw samples them at its clock.
+    #[test]
+    fn an_animated_object_pass_compiles_and_samples_its_constants_per_draw() {
+        use gfx::state::RenderStateType as R;
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let slot = |t: R| {
+            (0..=255u8)
+                .find(|&s| R::from_guest_index(&table, u32::from(s)) == Some(t))
+                .unwrap()
+        };
+        let (mut target, props) = crate::layer_pass::tests::animated_z();
+        target.binding.target = 0x55; // c[23].z
+        let mut imp = lit();
+        imp.render_states = [(R::ColorWriteEnable, 0x0101_0101), (R::AlphaBlendEnable, 0), (R::ZWriteEnable, 1)]
+            .iter()
+            .map(|&(t, value)| tags::shader::RenderStateValue { state: slot(t), value })
+            .collect();
+        let still = object_pass(map::TagId(0xe000_0001), &imp, &[], &rigid_program(), WORLD, [shaders::vsh::InputFetch::Float; 16], true)
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(still.animation.is_none());
+        let (vertex, _) = animated_blocks(&still, None).unwrap();
+        assert_eq!(*vertex, still.program.vertex, "nothing animates: the compiled block, no clock needed");
+
+        imp.animated = vec![target];
+        let fetch = [shaders::vsh::InputFetch::Float; 16];
+        let e = object_pass(map::TagId(0xe000_0001), &imp, &[], &rigid_program(), WORLD, fetch, true).unwrap_err();
+        assert!(e.contains("animated constants: property"), "{e}");
+        let p = object_pass(map::TagId(0xe000_0001), &imp, &props, &rigid_program(), WORLD, fetch, true)
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(p.implementation.animated.is_empty() && p.animation.is_some());
+        let (vertex, _) = animated_blocks(&p, Some(11.0)).unwrap();
+        assert_eq!(vertex.constants[23][2], 1.5, "11 s over 4 s: 0.75 of 0..2");
+        assert_eq!(p.program.vertex.constants[23][2], 0.0, "the compiled block holds clock 0");
+        let e = animated_blocks(&p, None).unwrap_err();
+        assert!(e.contains("time"), "no clock: the item keeps its D3D draw: {e}");
+    }
+
 }

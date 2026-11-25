@@ -56,8 +56,8 @@ Event types so far (payload fields):
 | `game-<id>` | `PlayerJoined`, `PlayerLeft` | `player` (below) / `index` |
 | `game-<id>` | `PlayerKilled` | `tick`, `victim`, `killer?`, `weapon?`, `headshot?`, `pos?`, `kind` (`kill`/`suicide`/`betrayal`/`world`; `betrayal` only for a teammate killed in a team game or campaign, `live_proto::game::is_betrayal`, and readers settle a stored `kill` or `betrayal` again by the teams, since older hosts sent free-for-all kills as betrayals) |
 | `game-<id>` | `ActorKilled` | `tick`, `unit` (salted unit object datum), `character?` (salted character tag datum), `killer?` (credited player slot), `weapon?` (damage-source key). Published by the host. |
-| `game-<id>` | `FirefightScore` | `tick`, `player` (credited roster slot), `points`, `reason` (`kill`/`assist`), `class?` (the kit class killed; on a kill only). Published by the host ([Firefight](../game/firefight.md#scoring-and-stats)). |
-| `game-<id>` | `FirefightEnded` | `tick`, `set` (the wave set's name), `outcome` (`won`/`lost`), `rounds_cleared`, `lives_used`. Published by the host, once, before `GameEnded`. |
+| `game-<id>` | `FirefightScore` | `tick`, `player` (credited roster slot), `points`, `reason` (`kill`/`assist`/`player_kill`; `player_kill` is a player of the other team killed, with two teams), `class?` (the kit class killed; on a kill only). Published by the host ([Firefight](../game/firefight.md#scoring-and-stats)). |
+| `game-<id>` | `FirefightEnded` | `tick`, `set` (the wave set's name), `teams` (1 or 2), `outcome` (one team: `won`/`lost`; two teams: `team_won`, `draw` or `lost`), `team?` (the winning team, on `team_won` only), `scores` (each team's points, one per team), `rounds_cleared`, `lives_used`. Published by the host, once, before `GameEnded`. |
 | `game-<id>` | `Superbounce` | `tick`, `player` (a slot of the game), `chain` (the bounce's place in its chain, 1 and up), `monster` (true for a bounce that launches well above a normal one, the `monster-bounce` medal; absent reads as false, and a host leaves it out when false). Published by the host, for every player it watches, bots included ([superbounce.md](../game/superbounce.md#recording)). |
 | `game-<id>` | `Bounced` | `tick`, `player`, `chain` (the count of the chain it ended, 0 if none; absent reads as 0): a death falling out of or through the map while trying a bounce, beside its `PlayerKilled`. Published by the host. |
 | `game-<id>` | `Teabag` | `tick`, `player` (the crouching player's slot), `victim` (the slot of the player whose body it was; not `player`): a teabag. Published by the host, for every player it watches, bots included ([teabag.md](../game/teabag.md#recording)). |
@@ -436,18 +436,18 @@ reference the canonical game ID and the original tick range.
 | `PUT /v1/films/{id}?object=film\|stats&part=<n>` | owner, `films.write` | Store numbered parts, starting at zero. Repeating a part is safe. |
 | `POST /v1/films/{id}?continue=1` | owner, `films.write` | Verify and publish. Continue on 202 until 201. Quota refusals return 413 and a displayable reason. |
 | `GET /v1/films/{id}` | visible reader | Film detail. |
-| `GET /v1/films/{id}/film` | visible reader | A ranged read selects admitted stats extents. Signed-in readers can request `?object=film` for exact film ranges with a revision ETag. |
+| `GET /v1/films/{id}/film` | visible reader | A ranged read selects admitted stats extents. Signed-in readers can request `?object=film` for the film's exact bytes, whole or by range with a revision ETag. For a host game a player can also request `?object=stats` for the whole stats container. |
 | `PUT /v1/films/{id}/visibility` | owner, `films.write` | Set `{visibility}` to `private`, `link` or `public`. |
 | `DELETE /v1/films/{id}` | `films.write` | Remove an upload as owner or admin. A participant can remove a host game from their own library. |
 | `GET /v1/films?player=<xuid>&kind=recent` | public or `read` | Up to 25 of the player's visible games, newest first. |
 | `GET /v1/films?player=<xuid>&kind=saved` | public or `read` | Games pinned by that player, newest game first. |
 | `GET /v1/films?player=<xuid>&kind=clips` | public or `read` | Clips authored by that player across all games, newest clip first. Each item is `{clip, film}`. |
 | `GET /v1/games/{game}/film` | public or `read` | Fetch one permitted range of a visible version 3 film. Returns 206. |
-| `POST /v1/games/{game}/film` | lease `telemetry.ingest` | Upload or finish the authoritative host recording. Returns 202 while work remains and 204 on publication. |
-| `PUT /v1/games/{game}/film?part=<n>` | lease `telemetry.ingest` | Submit the next numbered part. Returns 202 while processing and 204 when ready for the next part. |
+| `POST /v1/games/{game}/film` | lease `telemetry.ingest` | Upload or finish the authoritative host recording's stats stream. Returns 202 while work remains and 204 on publication. With `?object=film`, the film file instead; it returns 204. |
+| `PUT /v1/games/{game}/film?part=<n>` | lease `telemetry.ingest` | Submit the next numbered part. Returns 202 while processing and 204 when ready for the next part. With `?object=film`, a part of the film file. |
 | `POST /v1/films/{game}/save` | `films.write` | Save the game for the caller. The caller must have played in it. Returns 204, including a repeated save. |
 | `DELETE /v1/films/{game}/save` | `films.write` | Remove the caller's own pin. The caller must have played in the game. Returns 204 even if the pin is already absent. |
-| `GET /v1/games/{game}/film` without a range | `read`, game participant | Streams the private exact host recording (up to 2 GiB). |
+| `GET /v1/games/{game}/film` without a range | `read` | Streams the host's film file, or the container when the host sent none (up to 2 GiB). The container and a film file with a machine part go only to the game's players; a film file without one goes to any account that can see the game. |
 | `GET /v1/films/{game}/clips` | public or `read` | The game's clips, newest first. |
 | `POST /v1/films/{game}/clips` | `films.write` | An account that can see the game can create a clip. Returns the clip with 201. |
 | `GET /v1/clips/{id}` | public or `read` | The clip. |
@@ -539,6 +539,18 @@ recording under `films/<game>/`. A multipart receipt identifies a
 manifest of immutable parts that together hold the original file.
 A retry after publication preserves the selected bytes and summary.
 Older receipts resolve to `films/<game>.h2film`.
+
+A host sends its film file (`.h2f`, [input-film.md](../game/input-film.md#layout))
+as a second object, with `?object=film` on the same routes: one POST up
+to 64 MiB, or numbered 16 MiB parts and a completion with the size and
+SHA-256. The film file and the stats stream can arrive in either order.
+Live checks the header, inflates the seed once to match its `game_id` to
+the game, and walks the block lengths and the trailer; it inflates no
+tick chunk (`films/upload/film_file.rs`). It stores the bytes as sent
+under `input-films/<game>/` and signs a `HostFilmFileStored` receipt. The
+first film file of a game is kept: a retry with the same bytes returns
+204 and a different file 409. A pinned host game counts both objects
+against the account's quota.
 
 ### Switching a host to film ingestion
 
@@ -654,21 +666,27 @@ UTC days, today included) or `all`; anything else is 400.
   "playlists": [ { "playlist": "Team Slayer", "games": 14 } ],
   "skulls":    [ { "skull": 4, "games": 3 } ],
   "activity":  [ { "hour": "2026-11-16T14:00:00Z", "games": 3, "kills": 95 } ],
-  "firefight": { "games": 4, "won": 3, "rounds_cleared": 9, "lives_used": 14, "score": 5250,
+  "firefight": { "games": 4, "won": 2, "rounds_cleared": 9, "lives_used": 14, "score": 5250,
+                 "player_kills": 6,
+                 "versus": { "games": 1, "wins": [ 0, 1 ], "draws": 0 },
                  "sets": [ { "set": "Holdout", "games": 3, "won": 2, "rounds_cleared": 7 } ],
                  "kills_by_class": [ { "class": "grunt", "kills": 61 } ],
                  "players": [ { "xuid": "...", "name": "Sneaky Pete", "score": 3100, "kills": 41,
-                                "assists": 6, "games": 4 } ] } }
+                                "assists": 6, "player_kills": 2, "games": 4 } ] } }
 ```
 
 `firefight` folds the host's `FirefightScore` and `FirefightEnded` events
 (`live_proto::firefight`, [firefight.md](../game/firefight.md#scoring-and-stats)):
-matches (counted at the result, once a game), wins, rounds cleared, lives
-used and points over everyone; matches and wins by wave set (at most 64
-rows, by matches); kills by enemy class (at most 64, by kills); and a row
-per account, by score (at most 64). A bot has no row but its points and
-kills count in the totals and classes. A Firefight game is not
-multiplayer's kills or deaths, and it ranks nobody.
+matches (counted at the result, once a game, of one team or two), one
+team's wins against the AI (`won`), rounds cleared, lives used, points and
+players of the other team killed over everyone; the two-team matches
+again in `versus`, with each team's wins (team 0, then team 1) and the
+draws (a match both teams lost counts in its `games` alone); matches and
+one-team wins by wave set (at most 64 rows, by matches); kills by enemy
+class (at most 64, by kills); and a row per account, by score (at most
+64). A bot has no row but its points and kills count in the totals and
+classes. A Firefight game is not multiplayer's kills or deaths, and it
+ranks nobody.
 
 The rules match the web app's: `kills` (kind `kill` with a killer other
 than the victim), `deaths` (every death), `betrayals`, `suicides`, `wins`
@@ -1185,7 +1203,7 @@ public API. HLE keys stay local while sockets use unencrypted host traffic.
 
 | endpoint | authentication | result |
 |---|---|---|
-| `POST /v1/sessions` | account token, `lxm: sessions.write` | 201 `{session_id, session, position}` |
+| `POST /v1/sessions` | account token, `lxm: sessions.write`; or a lease token | 201 `{session_id, session, position}`; a leased host's also has `identifiers`, the seat and machine slots of its game (as `POST /v1/games` returns) |
 | `POST /v1/sessions/{id}/events` | host token, `lxm: sessions.write`; batch JWS | 201 `{position}` |
 | `GET /v1/sessions` | public, or `read` on a private server | `{items, next, position}` |
 | `GET /v1/sessions/{id}` | same read rule | `{session, position}`; 404 if unknown |
@@ -1194,7 +1212,9 @@ Create takes `addr` (IPv4 or null), `port`, `host_address` (36 XNADDR bytes),
 `slots` (`public_filled`, `public_open`, `private_filled`, `private_open`),
 `attributes` (an object keyed by decimal attribute ID), `flags` (default
 `custom`, also `hopper`, `ranked` or `coop`), and optional `hopper_id`, `map`, `name`,
-`language`. Attribute values are `{type: "integer", value: <u64>}`,
+`language`. Attribute values are `{type: "integer", value: <u64>}` (a
+number up to 2^53 and a decimal string above it, since signed events use
+canonical JSON whose numbers are doubles; a reader takes either),
 `{type: "string", value: "..."}`, `{type: "blob", value: [bytes]}` or
 `{type: "null"}`, and optional `visibility` (`public`, the default and
 omitted on the wire; `friends`; `invite`) and `map_id` (64 hex digits,
@@ -1205,7 +1225,12 @@ when none; docs/game/skulls.md "In multiplayer") and `variant_ext`
 game, 72 lowercase hex digits, and the variant's key, 16; omitted when the
 host sends none; docs/game/game-options.md section 3) and `rules` (the
 SHA-256 of the rules IR blob the host's next game runs, 64 lowercase hex
-digits; omitted when none; docs/game/rules-engine.md "Carrying a script").
+digits; omitted when none; docs/game/rules-engine.md "Carrying a script")
+and `firefight` (`{set, id, teams, difficulty, kit}`: the Firefight match
+the host's next game plays, its wave set's name, the definition's SHA-256
+as 64 lowercase hex digits, 1 or 2 player teams, difficulty 0 to 3 and
+the kit version from 1; omitted when the next game is not Firefight;
+docs/game/firefight.md "Live").
 A session whose flags are `ranked` and whose `rules` is set names a saved
 or built-in script that the ranked policy takes
 (docs/game/rules-engine.md "Roles, powers and capabilities"): an unknown
@@ -1236,8 +1261,10 @@ fields.
 Only the authenticated host may append events, signed with its registered key:
 
 - `SessionUpdated`: optional slots, attributes (full replacement), name, map,
-  visibility, `map_id`, `skulls`, `variant_ext` or `rules` (absent keeps
-  the current one). Use `clear_map_id: true` when a host returns to retail.
+  visibility, `map_id`, `skulls`, `variant_ext`, `rules` or `firefight`
+  (absent keeps the current one). Use `clear_map_id: true` when a host
+  returns to retail, and `clear_firefight: true` when its next game is not
+  Firefight (with `firefight` in the same update it is refused).
   `skulls: []` turns them all off. A `variant_ext` replaces the last.
   A server from before `skulls` refuses an update that has it, so the HLE
   sends it only when the host's set changed. The same applies to
@@ -1255,7 +1282,11 @@ add no event. These streams are reserved: `POST /v1/events` cannot bypass their
 host checks or forge creation/expiry. `PlayerJoined/Left` are available to the
 host API; this HLE slice does not infer those events from UDP traffic.
 
-Presence pings refresh the host's open advertisements in memory. Five minutes
+Presence pings refresh, in memory, the open advertisements the host created
+since its last `SignedIn` (`Model::touch_host_sessions` in
+`crates/live/live-server/src/model.rs`); one left by an earlier run of the
+game gets no refresh. A `SignedIn` starts a new run: presence `since` resets
+to its time, while `PresenceChanged` keeps it. Five minutes
 without a ping or changed session event produces a server-signed
 `SessionExpired`. Pings are not persisted; after restart the deadline comes
 from the last recorded event. Deleted/expired sessions remain readable by ID
@@ -1314,6 +1345,18 @@ are what a game joins by, so `GET /v1/sessions` and `GET /v1/sessions/{id}`
 give them to a signed-in reader (a `read` bearer: the game's matchmaking
 and join calls) and leave them out for an anonymous one.
 
+A signed-in reader whose address, as the server sees it
+(`policy.public.client_ip`, an IPv4-mapped IPv6 address counting as its
+IPv4), is the session's `endpoint.addr` also gets
+`lan: {addr, port, source: "lan"}`: the address and port in the host's
+XNADDR (`host_address` bytes 0–3 and 8–9). The two consoles sit behind
+one NAT, which seldom loops a public address back inside, so the joiner
+reaches the host at its LAN address. `lan` is given only when that
+address is a private, link-local or shared (100.64/10) one other than
+the endpoint, the port is 1..65529, and the endpoint itself is not a
+local address (`Session::lan_for`). It is computed for each read and is
+never stored or logged; an anonymous reader never gets it.
+
 The log never shows them to anyone but the operator (a server-key token).
 Every other reader of `GET /v1/events`, `/v1/stream` and the snapshot's
 event tail, anonymous, signed in or an admin account, gets each event with
@@ -1335,6 +1378,8 @@ event tail). The stored log is unchanged.
 | Events | Who reads them |
 |---|---|
 | `GameInviteSent`, `GameInviteAnswered` | the invitation's sender and recipient |
+| `MessageSent` | the message's sender and recipient |
+| `MessageDeleted` | the recipient |
 | `FriendRequested`, `FriendAccepted`, `FriendDeclined`, `FriendRemoved` | the two accounts and the current friends of either |
 | `ContentReported` | admins only |
 | `PlayerReported`, `ReportReviewed` | admins only ([Player reports](#player-reports)) |
@@ -1503,6 +1548,11 @@ for 1 vCPU and 2 GiB, `large` for 2 vCPUs and 4 GiB), `map`, `map_id`,
 `variant`, `hopper`, `max_players` (1–16), `roster` (XUIDs), `bots`
 (seat names), `transport` (`udp` or `tunnel`) and `created_ms` (Unix
 milliseconds). `idle_timeout_s` defaults to 120 and `max_match_s` to 1800.
+A Firefight match's lease also carries `firefight`, the match as a
+session advertises it (`set`, `id`, `teams`, `difficulty`, `kit`); it is
+left out otherwise. Its pack runs nothing beside it, and the host plays
+the map's kit from its game data
+([Packed hosts](dedicated-host.md#packed-hosts)).
 
 A `HostEndpoint` contains `transport`, `udp` (address and base port),
 `tunnel_url`, `xnaddr` (hex of the advertised XNADDR) and `session_id`.
@@ -1565,7 +1615,7 @@ stored: players use their own disc for the base.
 | `PUT /v1/mappacks/{id}` | admin or operator token, `lxm: content.moderate`; a pack `{name, description?, authors?, released?, source_url?, images?}`, or `null` to clear | 200 `{ok, position}`; ids are 1 to 64 of a-z, 0-9 and -; 400 when malformed |
 | `GET /v1/mappacks/{id}/images/{n}` | read rule | the pack's `n`th image; 404 if none |
 | `GET /v1/hoppers/pins` | read rule | `{pins: [{hopper_id, map_ids}], position}` |
-| `GET /v1/hoppers/clankers` | read rule | `{hoppers: [{hopper_id, playlist_id, players, teams, ranks_as?}]}`: the served file's clanker hoppers (live-matchmaking.md §6.8) |
+| `GET /v1/hoppers/clankers` | read rule | `{hoppers: [{hopper_id, playlist_id, players, teams, ranked, ranks_as?}]}`: the served file's clanker hoppers and which ones rank their games (live-matchmaking.md §6.8) |
 
 Uploads (`PUT /v1/content`) stream to `<data>/tmp`, hashed as they
 arrive, and the SHA-256 of the body must be the path's (400 otherwise).
@@ -1939,6 +1989,16 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
   label, description, kind, lo, hi, default, values?}]`, omitted when it
   declares none), for the game variant form ([Game
   variants](#game-variants)).
+- A check that is `ok` also says what a variant of the script starts
+  from: `scoring` (`script`, or `carrier` for a script with a `uses`
+  line, whose built-in game scores), `about` (the script's description; omitted when it
+  has none), `settings` (`[{name, label, value}]`, the `settings` block
+  in table order, `value` as text: `15`, `Magnum`, `On`, `5 minutes`;
+  omitted when empty) and `quick` (`[{kind, name, label}]`, the Quick
+  Options marks in the script's order, `kind` `setting` or `option`;
+  omitted when empty). Both homes serve the same fields from the same
+  code (`game_variants::script_settings`, `quick_views`), and the parity
+  suite runs the check on each (`tests/support/variant_scripts.rs`).
 - `report` holds `worst_tick_ops` and `budget`, `fits`, `costliest`,
   `handlers: [{event, worst_ops}]`, `slots: [{scope, used, limit}]` (global,
   player, team, object), `ir_bytes` and `ir_limit`, `capabilities: [{name,
@@ -1964,7 +2024,7 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
   label's kind suggests when absent). Without a `map` the run is played
   on the script's minimal map; with one, the script's labels check it
   first, and a run it fails answers `{ok: false, errors: [], map:
-  ["the map has no zone labelled \"goal\"; Siege needs exactly 1", ...]}`
+  ["the map has no zone labelled \"territory\"; Siege needs at least 1", ...]}`
   and runs nothing. A `variant` field left out reads the stock record of the script's
   carrier. An event is `{type, ...}` with the handler's event name:
   `kill {victim, killer}`, `spawn`, `death`, `join`, `quit {player}`,
@@ -2085,7 +2145,7 @@ routes (`crates/live/live-server/src/game_variants.rs`, wire types in
 - `Variant` is `{id, name, description, author: {xuid, gamertag}, engine,
   game_type, record_hex, script_hash, script_name, visibility, created,
   bundle_url, settings: [{label, value}], eligible}`. `engine` is the record's
-  retail engine index and `game_type` our label of it; `script_hash` and
+  engine index (including 6 for a script record) and `game_type` our label of it; `script_hash` and
   `script_name` are null for an unscripted variant; `created` is RFC 3339;
   `bundle_url` is the file's path; `settings` is the record's settings in
   words (each setting of its game type we have a name for, then the
@@ -2108,16 +2168,23 @@ routes (`crates/live/live-server/src/game_variants.rs`, wire types in
   the record decodes and the game would keep it, the name and description
   keep the name rules (1 to 31 characters, at most 150 for a
   description), and a named script hashes to its hash, starts with the
-  prefix, verifies, fits the tick budget and the IR cap (`rules::fits`)
-  and rides the record's engine. A refusal is 400 with the reason. The file's id is the SHA-256 of its canonical bytes, author
+  prefix, verifies and fits the tick budget and the IR cap (`rules::fits`).
+  A retail record must match the script's template. A script attached to
+  an index-6 record may write common settings and extension fields. A
+  variant whose record runs no script
+  (mode 0, or Firefight's mode 1) is refused by name: Live lists scripted
+  variants only. A refusal is 400 with the reason. The file's id is the SHA-256 of its canonical bytes, author
   included, so the same file published again answers 200 with the same
   variant, and the file from `/bundle` (which has no author) gets another
   id once published.
 - `from-script` and `bundle` take `{script_hash | source, name,
-  description, visibility, options}`. The record is the stock record of
-  the script's carrier engine (`hopper::variant::VariantRecord::stock`),
-  named, with mode 2, the IR's prefix and `options` packed into the 32
-  option bits in declaration order. `options` maps an option's name to a
+  description, visibility, options}`. The record is the script's own
+  (`variants::portable::record_for`). When the script uses Slayer's
+  template and writes no type-area setting, the record has index 6 and
+  a zero type area. Other scripts keep their retail templates. The
+  record carries the requested name, the script's settings, its mode-2
+  reference and the options packed in declaration order. A `description` left out or blank is the script's
+  `about`. `options` maps an option's name to a
   number, a bool or an enum value's name; one left out takes its default;
   an unknown name or a value out of range is 400. A `script_hash` is a
   saved script or a built-in; a `source` must verify. `POST
@@ -2186,7 +2253,9 @@ port + 4.
   `lxm: sessions.relay`. A missing, wrong or expired token gets HTTP 401.
   After the upgrade, `{ "kind": "auth", "token": "<jwt>" }` from the same
   account refreshes the socket. Expiry closes it with 4401.
-- The session must be open and created with `flags: "coop"`. The account
+- The session must be open and created with `flags: "coop"` or
+  `flags: "forge"` (a shared Forge session, [forge-design.md](../game/forge-design.md)).
+  The account
   must be its host or a guest who accepted an invitation. The upgrade
   gets HTTP 403 if membership is refused or 404 if the session is missing.
   The relay rechecks membership after connection and closes with 4403
@@ -2211,7 +2280,7 @@ port + 4.
 | `POST /v1/hosts/{lease}/report` | Lease's host bearer, `hosts.report` | Takes `{state, players, reason?, pack_usage?}` JSON up to 1 KiB. A packed supervisor includes its usage in the ended report. Live bounds slot time by elapsed time since the lease request, requires a container share from one tenth of slot time (rounded down to whole microseconds) through the full slot time, and bounds CPU time by slot time times allocated vCPUs. A zero duration or out-of-bounds reading ends the lease with a full-class estimate. `state` is `"playing"` or `"ended"`, `players` is the player count and `reason` is an optional `EndReason`. Records `HostPlaying` or `HostEnded` and returns `204`. |
 | `GET /v1/hosts/{lease}` | Roster member or admin with a `read` bearer | Returns `200` with `{lease, state, endpoint}`. The endpoint is available after registration. |
 | `GET /v1/admin/hosts` | Admin with an `admin.read` bearer | Returns `200` with running and recent hosts and their costs. |
-| `POST /v1/admin/hosts` | Admin with an `admin.write` bearer | Takes `{map, variant?, max_players? (1–16, default 8), class? ("small"\|"large", default "small"), region?, transport? ("udp"\|"tunnel", default per provider), launch? (default `true`)}` JSON up to 1 KiB, with `map` 1–64 ASCII characters. Reserves a `custom-<id>` lease with an empty roster through the same budget, `LIVE_MAX_HOSTS` cap and cost rows as a match. With `launch` the configured provider starts it and the reply is `201` with `{lease}`; with `launch: false` no provider is started, the lease stays `Requested` until the operator's container registers, and the reply is `201` with `{lease, token}` — the **only** route that returns the host token. With no provider configured the reply is `503`. |
+| `POST /v1/admin/hosts` | Admin with an `admin.write` bearer | Takes `{map, variant?, max_players? (1–16, default 8), class? ("small"\|"large", default "small"), region?, transport? ("udp"\|"tunnel", default per provider), bots? (0 to `max_players` − 1, default 0), launch? (default `true`)}` JSON up to 1 KiB, with `map` 1–64 ASCII characters. Reserves a `custom-<id>` lease with an empty roster and `bots` Clanker names in its `bots` through the same budget, `LIVE_MAX_HOSTS` cap and cost rows as a match. With `launch` the configured provider starts it and the reply is `201` with `{lease}`; with `launch: false` no provider is started, the lease stays `Requested` until the operator's container registers, and the reply is `201` with `{lease, token}` — the **only** route that returns the host token. With no provider configured the reply is `503`. |
 | `POST /v1/admin/hosts/{lease}/stop` | Admin with an `admin.write` bearer | Takes no body, stops the host with reason `stopped` and returns `204`. |
 | `GET /v1/hosts/{lease}/tunnel` | Roster member with a `sessions.relay` bearer on upgrade | Reserved for the [WebSocket datagram tunnel](dedicated-host-build.md#6-tunnel-wire-live-proto-owned-by-dh-tunnel-client). The native stub returns `501`. |
 
@@ -2268,14 +2337,39 @@ lock, preventing duplicate concurrent answers or a race with session deletion.
 
 `GET /v1/accounts/by-xuid/{xuid}/mailbox` always requires a `read` token signed
 by that recipient, including on a public server. It returns
-`{items, next: null, position}` with at most 100 pending invitations to open
-sessions, newest first. Each item is
+`{items, messages, next: null, position}` with at most 100 pending invitations to open
+sessions, newest first, and at most 100 text messages ([below](#text-messages)). Each item is
 `{id, from, to, gamertag, session_id, sent_at, answer: null}`; `sent_at` is Unix
 seconds. Sender names come from the account projection. Answered or
 closed/expired-session invitations disappear from this list. The projection
 rebuilds from the log on restart. As with the rest of this service, raw events
 follow the server's general public/private log policy; mailbox authorization is
 not a promise of encrypted or secret event contents.
+
+### Text messages
+
+Friends message each other through the same mailboxes, as signed events on
+`mailbox-<recipient xuid>` with an `events.write` token.
+
+| event | signed data | authority |
+|---|---|---|
+| `MessageSent` | `{from, text}` | A signed-in account messaging a friend of its own |
+| `MessageDeleted` | `{by, message_id}` | The mailbox owner deleting one message |
+
+`text` is 1 to 512 characters (`live_proto::mailbox::TEXT_MAX`), not blank, with no
+control characters but newline and tab. The sent time is the signed event's own
+time. `from` is the signing account and not the recipient, and the two are
+friends (`State::is_friends`): otherwise 403. Bad text or an unknown field is
+400, a recipient with 100 messages waiting is 409, a Clanker recipient 403.
+`message_id` is the sent event's log position; a message that is not in the
+owner's mailbox is 400. Voice messages are not supported.
+
+The mailbox read lists each waiting message as
+`{id, from, to, gamertag, text, sent_at}` (`sent_at` is Unix seconds), newest
+first. Deleted messages disappear; the projection rebuilds from the log on
+restart. The log shows `MessageSent` only to its sender and recipient and
+`MessageDeleted` only to the recipient (admins and the operator see both),
+like the invitation events.
 
 The HLE fetches this mailbox with the current account's key. Successful delivery
 is not acceptance or a joined player: an accepted invite becomes a local launch

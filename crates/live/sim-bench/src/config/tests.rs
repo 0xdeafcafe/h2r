@@ -106,7 +106,7 @@ fn every_problem_is_listed() {
     let c = parse_match(
         r#"
 map = ""
-game_type = "firefight"
+game_type = "hide and seek"
 pace = "warp"
 max_ticks = 0
 [settings]
@@ -911,6 +911,43 @@ fn the_ground_truth_drill_loads() {
     assert_eq!((d.site, d.start), ([-10.62, 3.88, -3.19], None));
 }
 
+/// The seam drops example in docs/runtime/sim-examples stays valid.
+#[test]
+fn the_seam_drops_example_loads() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/runtime/sim-examples");
+    let m = load_match(&dir.join("superbounce-drops.toml")).unwrap();
+    assert!(!m.superbounce);
+    assert_eq!(m.bots.len(), crate::drops::SEATS as usize);
+    assert!(m.team_play);
+    let d = m.config.drops.unwrap();
+    let s = d.settings("ascension").unwrap();
+    assert_eq!(s.heights, crate::drops::HEIGHTS.to_vec());
+    assert_eq!(s.across.len(), 13);
+    assert!(s.control.is_some());
+}
+
+/// The bounce search example in docs/runtime/sim-examples stays valid.
+#[test]
+fn the_bounce_search_example_loads() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/runtime/sim-examples");
+    let m = load_match(&dir.join("ascension-bounces.toml")).unwrap();
+    assert!(!m.superbounce);
+    assert_eq!(m.config.map, "ascension");
+    assert_eq!(m.bots.len(), crate::drops::SEATS as usize);
+    assert!(m.team_play);
+    let b = m.config.bounces.unwrap();
+    assert_eq!(b.max_targets, Some(60));
+    assert!(b.targets.is_scan());
+    let s = b.settings().unwrap();
+    assert_eq!(s.variants.len(), 3);
+    // 60 sites: over 100,000 trials.
+    assert!(60 * s.trials_per_site() > 100_000);
+    // A file with both tables is refused by name.
+    let both = "map = \"ascension\"\n[drops]\n[bounces]\n";
+    let e = resolve(parse_match(both, false).unwrap(), &no_files).unwrap_err();
+    assert!(e.contains("bounces: a [drill], a [train] or a [drops]"), "{e}");
+}
+
 #[test]
 fn think_and_component_keys() {
     let ok = |extra: &str| {
@@ -943,7 +980,11 @@ fn the_detail_key_is_full_or_training() {
     // The run's own report says which it was, by name.
     assert_eq!(m.resolved_json()["detail"], "training");
     assert!(ok("").unwrap().resolved_json().get("detail").is_none());
-    assert!(ok("detail = \"sparse\"").unwrap_err().contains("\"full\" or \"training\""));
+    assert!(
+        ok("detail = \"sparse\"")
+            .unwrap_err()
+            .contains("\"full\", \"training\" or \"spatial\"")
+    );
     // A training report has no components to ask for.
     assert!(
         ok("detail = \"training\"\ncomponents = true")
@@ -952,6 +993,33 @@ fn the_detail_key_is_full_or_training() {
     );
     assert!(ok("detail = \"training\"\ncomponents = false").is_ok());
     assert_eq!(Detail::parse(" TRAINING ").unwrap().name(), "training");
+}
+
+#[test]
+fn a_spatial_run_keeps_the_training_tally_and_traces() {
+    let ok = |extra: &str| {
+        let text = format!("map = \"lockout\"\n{extra}\n[[bot]]\n");
+        resolve(parse_match(&text, false).unwrap(), &no_files)
+    };
+    let m = ok("detail = \"spatial\"").unwrap();
+    assert_eq!(m.config.detail(), Detail::Spatial);
+    assert_eq!(m.resolved_json()["detail"], "spatial");
+    assert_eq!(Detail::Spatial.tally(), Detail::Training);
+    assert_eq!(Detail::Full.tally(), Detail::Full);
+    assert!(Detail::Spatial.traces());
+    assert!(!Detail::Training.traces() && !Detail::Full.traces());
+    // Its tally is a training one: no components to ask for.
+    assert!(
+        ok("detail = \"spatial\"\ncomponents = true")
+            .unwrap_err()
+            .contains("no components")
+    );
+    let b = batch(
+        &format!("detail = \"spatial\"\n{BATCH}"),
+        "map = 'lockout'\n[[bot]]\n[[bot]]\n",
+    )
+    .unwrap();
+    assert!(b.runs.iter().all(|r| r.config.detail() == Detail::Spatial));
 }
 
 #[test]
@@ -964,4 +1032,212 @@ fn a_batch_detail_applies_to_every_run_over_the_match_files() {
     assert!(b.runs.iter().all(|r| r.config.detail() == Detail::Training));
     let e = batch(&format!("detail = \"nope\"\n{BATCH}"), matched).unwrap_err();
     assert!(e.contains("detail"), "{e}");
+}
+
+// ---- Firefight (docs/runtime/sim.md, "Firefight") ----
+
+fn firefight(text: &str) -> Result<Match, String> {
+    resolve(parse_match(text, false).unwrap(), &no_files)
+}
+
+fn teams_of(m: &Match) -> Vec<Option<u8>> {
+    m.bots.iter().map(|b| b.team).collect()
+}
+
+#[test]
+fn a_firefight_match_toml_parses() {
+    let m = firefight(
+        r#"
+map = "firefight-beavercreek"
+game_type = "Firefight"
+[firefight]
+set = "Last Stand"
+difficulty = "legendary"
+lives = 5
+skulls = false
+[[bot]]
+[[bot]]
+"#,
+    )
+    .unwrap();
+    // A Slayer game with team play on and no time limit.
+    assert_eq!(m.game_type, GameType::Slayer);
+    assert!(m.team_play);
+    assert!(m.variant.contains(&(TIME_LIMIT_SETTING, 0)));
+    assert!(m.variant.contains(&(TEAM_PLAY_SETTING, 1)));
+    let f = m.firefight.unwrap();
+    assert_eq!(f.set, crate::firefight::Set::LastStand);
+    assert_eq!((f.teams, f.lives, f.skulls), (1, Some(5), false));
+    // One team: every bot on team 0.
+    assert_eq!(teams_of(&m), [Some(0), Some(0)]);
+    // The game reads these choices when the match starts.
+    use crate::firefight::Choice::{Bool, Int};
+    assert_eq!(
+        f.settings(),
+        [
+            ("firefight.enabled", Bool(true)),
+            ("firefight.waveset", Int(2)),
+            ("firefight.difficulty", Int(3)),
+            ("firefight.lives", Int(5)),
+            ("firefight.skulls", Bool(false)),
+            ("firefight.teams", Int(0)),
+        ]
+    );
+    // The report says what was played.
+    let j = m.resolved_json();
+    assert_eq!(j["game_type"], "firefight");
+    assert_eq!(j["firefight"]["set"], "last_stand");
+    assert_eq!(j["firefight"]["teams"], 1);
+    // The defaults: Holdout, Normal, the set's own lives and teams.
+    let d = firefight("map = 'x'\ngame_type = 'firefight'\n[[bot]]\n").unwrap();
+    let f = d.firefight.unwrap();
+    assert_eq!(f.set, crate::firefight::Set::Holdout);
+    assert_eq!(f.difficulty, crate::firefight::Difficulty::Normal);
+    assert_eq!((f.teams, f.lives, f.skulls), (1, None, true));
+    // Crossfire has two teams of its own; a table may play any set as two.
+    let c = firefight(
+        "map = 'x'\ngame_type = 'firefight'\n[firefight]\nset = 'crossfire'\n[[bot]]\n",
+    );
+    assert_eq!(c.unwrap().firefight.unwrap().teams, 2);
+    let two = firefight("map = 'x'\ngame_type = 'firefight'\n[firefight]\nteams = 2\n[[bot]]\n");
+    let f = two.unwrap().firefight.unwrap();
+    assert_eq!(f.teams, 2);
+    assert!(f.settings().contains(&("firefight.teams", Int(2))));
+    // Every problem with the table is listed, and a table needs the type.
+    let e = firefight(
+        "map = 'x'\ngame_type = 'firefight'\nteam_play = false\nsuperbounce = true\n\
+         [firefight]\nset = 'endless'\ndifficulty = 'mythic'\nteams = 3\nlives = 4\n[[bot]]\n",
+    )
+    .unwrap_err();
+    for want in [
+        "team_play = false",
+        "superbounce: not in a Firefight match",
+        "firefight.set",
+        "firefight.difficulty",
+        "firefight.teams = 3",
+        "firefight.lives = 4",
+    ] {
+        assert!(e.contains(want), "{want:?} missing from:\n{e}");
+    }
+    let e = firefight("map = 'x'\n[firefight]\nset = 'holdout'\n[[bot]]\n").unwrap_err();
+    assert!(e.contains("needs game_type"), "{e}");
+    assert!(parse_match("map = 'x'\n[firefight]\nwaves = 3\n", false).is_err());
+}
+
+#[test]
+fn firefight_bots_are_on_player_teams_only() {
+    // One team: team 0 only, never the AI's team.
+    let e = firefight(
+        "map = 'x'\ngame_type = 'firefight'\n[[bot]]\nteam = 0\n[[bot]]\nteam = 1\n",
+    )
+    .unwrap_err();
+    assert!(
+        e.contains("bot 2: team 1: Firefight seats are on the player team 0"),
+        "{e}"
+    );
+    // Two teams: 0 or 1; a third team is the AI's and never a seat.
+    let e = firefight(
+        "map = 'x'\ngame_type = 'firefight'\n[firefight]\nset = 'crossfire'\n\
+         [[bot]]\nteam = 0\n[[bot]]\nteam = 1\n[[bot]]\nteam = 2\n",
+    )
+    .unwrap_err();
+    assert!(
+        e.contains("bot 3: team 2: Firefight seats are on the player teams 0..1"),
+        "{e}"
+    );
+    // Every bot on team 0 is no problem in Firefight, unlike team Slayer.
+    let m = firefight(
+        "map = 'x'\ngame_type = 'firefight'\n[[bot]]\nteam = 0\n[[bot]]\nteam = 0\n",
+    )
+    .unwrap();
+    assert_eq!(teams_of(&m), [Some(0), Some(0)]);
+    // The documented examples: Holdout with two on team 0, Crossfire with
+    // two on each team.
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/runtime/sim-examples");
+    let one = load_match(&dir.join("firefight-beavercreek.toml")).unwrap();
+    assert_eq!(one.config.map, "firefight-beavercreek");
+    assert_eq!(one.firefight.unwrap().set, crate::firefight::Set::Holdout);
+    assert_eq!(teams_of(&one), [Some(0), Some(0)]);
+    let two = load_match(&dir.join("firefight-beavercreek-crossfire.toml")).unwrap();
+    let f = two.firefight.unwrap();
+    assert_eq!((f.set, f.teams), (crate::firefight::Set::Crossfire, 2));
+    assert_eq!(teams_of(&two), [Some(0), Some(1), Some(0), Some(1)]);
+}
+
+#[test]
+fn two_team_firefight_balances_omitted_teams() {
+    // Omitted teams go to the team with fewer bots, the lower on a tie,
+    // after the named ones.
+    let m = firefight(
+        "map = 'x'\ngame_type = 'firefight'\n[firefight]\nset = 'crossfire'\n\
+         [[bot]]\nteam = 0\n[[bot]]\nteam = 0\n[[bot]]\n[[bot]]\n[[bot]]\n",
+    )
+    .unwrap();
+    assert_eq!(teams_of(&m), [Some(0), Some(0), Some(1), Some(1), Some(0)]);
+    let all = firefight(
+        "map = 'x'\ngame_type = 'firefight'\n[firefight]\nteams = 2\n\
+         [[bot]]\n[[bot]]\n[[bot]]\n[[bot]]\n",
+    )
+    .unwrap();
+    assert_eq!(teams_of(&all), [Some(0), Some(1), Some(0), Some(1)]);
+    // One team: every omitted bot is on team 0.
+    let one = firefight("map = 'x'\ngame_type = 'firefight'\n[[bot]]\n[[bot]]\n[[bot]]\n").unwrap();
+    assert_eq!(teams_of(&one), [Some(0), Some(0), Some(0)]);
+}
+
+/// The Firefight examples in docs/runtime/sim-examples stay valid: Holdout
+/// with two Clankers on team 0, and Crossfire with two on each team.
+#[test]
+fn the_firefight_examples_load() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/runtime/sim-examples");
+    let one = load_match(&dir.join("firefight-beavercreek.toml")).unwrap();
+    let f = one.firefight.unwrap();
+    assert_eq!((f.set, f.teams), (crate::firefight::Set::Holdout, 1));
+    assert_eq!(teams_of(&one), [Some(0), Some(0)]);
+    let two = load_match(&dir.join("firefight-beavercreek-crossfire.toml")).unwrap();
+    let f = two.firefight.unwrap();
+    assert_eq!((f.set, f.teams), (crate::firefight::Set::Crossfire, 2));
+    assert!(two.team_play);
+    assert_eq!(teams_of(&two), [Some(0), Some(1), Some(0), Some(1)]);
+}
+
+#[test]
+fn the_report_has_rounds_and_score() {
+    use crate::firefight::FirefightReport;
+    use crate::metrics::TeamResult;
+    // A match the director ended: its result as the host reported it.
+    let ended = live_proto::firefight::FirefightEnded {
+        tick: 9000,
+        set: "Crossfire".into(),
+        teams: 2,
+        outcome: "team_won".into(),
+        team: Some(1),
+        scores: vec![1200, 1450],
+        rounds_cleared: 2,
+        lives_used: 7,
+    };
+    assert_eq!(
+        serde_json::to_value(FirefightReport::ended(&ended)).unwrap(),
+        serde_json::json!({
+            "set": "Crossfire", "teams": 2, "ended": true, "outcome": "team_won", "team": 1,
+            "rounds_cleared": 2, "scores": [1200, 1450], "lives_used": 7
+        })
+    );
+    // A match a limit stopped: the player teams' scores as the game last
+    // showed them, the AI's team left out, and no result.
+    let m = firefight(
+        "map = 'x'\ngame_type = 'firefight'\n[firefight]\nset = 'crossfire'\n[[bot]]\n[[bot]]\n",
+    )
+    .unwrap();
+    let teams = [
+        TeamResult { team: 1, score: 300 },
+        TeamResult { team: 0, score: 500 },
+        TeamResult { team: 2, score: 9 },
+    ];
+    let r = FirefightReport::unfinished(&m.firefight.unwrap(), &teams);
+    assert!(!r.ended);
+    assert_eq!(r.scores, [500, 300]);
+    assert_eq!((r.set.as_str(), r.rounds_cleared), ("Crossfire", 0));
+    let v = serde_json::to_value(&r).unwrap();
+    assert!(v.get("outcome").is_none() && v.get("team").is_none());
 }

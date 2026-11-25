@@ -20,12 +20,14 @@ use tags::ui::{
 };
 use tags::wire::StringId;
 
-const USAGE: &str = "usage: h2 ui <map-name-or-file> <screen tag> [--disc disc.iso]\n       h2 ui preview <screen|list> [--state NAME|all] [--focus N] [--press up,a,...] [--animation all|in:TICK|out:TICK] [--synthetic] [--disc disc.iso] [--out DIR]\n       h2 ui sheet [--synthetic] [--disc disc.iso] [--out DIR]\n       h2 ui --all <map-name-or-file|all> [--disc disc.iso]\n\nPrints the widget tree of a wgit screen: widget kinds, rectangles as\n[top left bottom right] in UI units (origin at the screen centre, Y up),\nbitmap tag paths and string IDs. Localized text is never printed.\nWith --all, decodes every wgit, wgtz, wigl and skin tag of the map (or of\nevery disc map with `all`) and runs the engine index cross-checks; prints\ncounts and exits non-zero on any failure, on a map without UI tags, or on a\nmap that does not hold exactly one wigl.";
+const USAGE: &str = "usage: h2 ui <map-name-or-file> <screen tag> [--disc disc.iso]\n       h2 ui preview <screen|list> [--state NAME|all] [--focus N] [--press up,a,...] [--animation all|in:TICK|out:TICK] [--synthetic] [--strict] [--disc disc.iso] [--out DIR]\n       h2 ui sheet [--synthetic] [--disc disc.iso] [--out DIR]\n       h2 ui export-yaml [--out content/ui]\n       h2 ui inject [--map mainmenu|shared|single_player_shared] [--disc disc.iso] [--data DIR]\n       h2 ui --all <map-name-or-file|all> [--disc disc.iso]\n\nPrints the widget tree of a wgit screen: widget kinds, rectangles as\n[top left bottom right] in UI units (origin at the screen centre, Y up),\nbitmap tag paths and string IDs. Localized text is never printed.\nWith --all, decodes every wgit, wgtz, wigl and skin tag of the map (or of\nevery disc map with `all`) and runs the engine index cross-checks; prints\ncounts and exits non-zero on any failure, on a map without UI tags, or on a\nmap that does not hold exactly one wigl.";
 
 pub(super) fn run(args: Vec<String>) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("preview") => return preview(args[1..].to_vec()),
         Some("sheet") => return sheet(args[1..].to_vec()),
+        Some("export-yaml") => return export_yaml(&args[1..]),
+        Some("inject") => return inject(&args[1..]),
         _ => {}
     }
     let mut args = args.into_iter();
@@ -436,14 +438,18 @@ impl<'a> Printer<'a> {
     }
 }
 
-const PREVIEW_USAGE: &str = "usage: h2 ui preview <screen|list> [--state NAME|all] [--focus N] [--press up,a,...] [--animation all|in:TICK|out:TICK] [--synthetic] [--disc disc.iso] [--out DIR]\n\nDraws one of our screens (boot::ui_kit::screens::NAMES) in its named\nstates (boot::ui_kit::screens::states; default all), or its sample with\nthe focus on row N, or stepped from --state (default its first) through
+const PREVIEW_USAGE: &str = "usage: h2 ui preview <screen|list> [--state NAME|all] [--focus N] [--press up,a,...] [--animation all|in:TICK|out:TICK] [--synthetic] [--strict] [--disc disc.iso] [--out DIR]\n\nDraws one of our screens (boot::ui_kit::screens::NAMES) in its named\nstates (boot::ui_kit::screens::states; default all), or its sample with\nthe focus on row N, or stepped from --state (default its first) through
 the presses (up, down, left, right, a, b, x, y, start, back; each
 effect printed, the end state drawn as <state>-pressed). --animation
 samples the opening or closing transition at a tick, or five frames with all.
 Draws from the disc's tags, art and fonts (or with --synthetic, from layout
 numbers and block text). Writes <screen>-<state>.png and .json into DIR
 (default $TMPDIR). Transition samples append their phase to the filenames.
-Prints the kit's layout checks for the resting view. docs/game/ui-builder.md.";
+Prints every finding of the kit's checks for each resting state (the spec
+against the disc, content, layout, what was drawn, consistency), and puts
+them in the state's JSON as `findings`, with each widget's drawn footprint
+as `drawn`. --strict exits non-zero when any state has a finding.
+docs/game/ui-builder.md.";
 
 const SHEET_USAGE: &str = "usage: h2 ui sheet [--synthetic] [--disc disc.iso] [--out DIR]\n\nEvery screen of ours in every state, as `h2 ui preview` draws them, and\nsheet.png with all of them on one page, into DIR (default\n$RUSH_KEEP/ui-builder). docs/game/ui-builder.md.";
 
@@ -456,6 +462,7 @@ struct DrawArgs {
     press: Option<String>,
     animation: Option<Vec<boot::ui_kit::animation::Phase>>,
     synthetic: bool,
+    strict: bool,
     disc: Option<PathBuf>,
     out: Option<PathBuf>,
 }
@@ -474,6 +481,7 @@ fn draw_args(args: Vec<String>, usage: &str) -> Result<Option<DrawArgs>> {
                 )?);
             }
             "--synthetic" => d.synthetic = true,
+            "--strict" => d.strict = true,
             "--disc" => {
                 d.disc = Some(PathBuf::from(
                     args.next().context("--disc needs an ISO path")?,
@@ -513,6 +521,83 @@ fn animation_phases(value: &str) -> Result<Vec<boot::ui_kit::animation::Phase>> 
         _ => bail!("animation direction must be in or out"),
     };
     Ok(vec![phase])
+}
+
+const INJECT_USAGE: &str = "usage: h2 ui inject [--map mainmenu|shared|single_player_shared] [--disc disc.iso] [--data DIR]\n\nBuilds the map with its retail edits (content/ui/retail-edits) and our screens\nthrough the baked UI package, caches it under DATA/packages/cache/ and runs\nthe h2 ui --all checks on it. The editor can open the result as a loose map. docs/game/ui-in-maps.md.";
+
+/// `h2 ui inject`: the map with our screens in it, built or read from the
+/// host cache, and checked the way `h2 ui --all` checks a map.
+fn inject(args: &[String]) -> Result<()> {
+    let (mut stem, mut disc, mut data) = ("mainmenu".to_owned(), None, None);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--map" => stem = it.next().context(INJECT_USAGE)?.clone(),
+            "--disc" => disc = Some(PathBuf::from(it.next().context(INJECT_USAGE)?)),
+            "--data" => data = Some(PathBuf::from(it.next().context(INJECT_USAGE)?)),
+            "-h" | "--help" => {
+                println!("{INJECT_USAGE}");
+                return Ok(());
+            }
+            _ => bail!("unknown option {a}\n{INJECT_USAGE}"),
+        }
+    }
+    let data = data.unwrap_or_else(content::store::default_data_root);
+    let mut source = super::maps::load_map(&stem, disc)?;
+    let size = u64::from(source.header().file_size);
+    let original = source.read_file_range(0, size)?;
+    let stem = stem.to_ascii_lowercase();
+    let mut rewrite = boot::packages::ui_rewrite(&data).map_err(|e| anyhow!(e))?;
+    let built = rewrite
+        .rebuild(&stem, &original)
+        .map_err(|e| anyhow!(e))?
+        .with_context(|| format!("the UI package does not target {stem}"))?;
+    let served = rewrite.served();
+    let served = served.lock().unwrap_or_else(|e| e.into_inner());
+    let record = &served[&stem];
+    println!(
+        "{} screens added, {} tags changed in {stem}{}{}",
+        record.added,
+        record.changed,
+        if built.from_cache { " (from cache)" } else { "" },
+        built
+            .file
+            .as_ref()
+            .map(|f| format!(", {}", f.display()))
+            .unwrap_or_default()
+    );
+    let mut checked = Map::from_reader(std::io::Cursor::new(built.bytes))?;
+    let check = check_map(&mut checked);
+    print!("{}", report(1, &check));
+    for f in &check.failures {
+        eprintln!("{f}");
+    }
+    if !check.failures.is_empty() {
+        bail!("{} UI failures", check.failures.len());
+    }
+    Ok(())
+}
+
+const EXPORT_USAGE: &str = "usage: h2 ui export-yaml [--out DIR]\n\nWrites every screen of ours (boot::ui_kit::screens::NAMES) as its doc,\nDIR/screens/<name>.yaml, and DIR/design.yaml with the tokens and presets\nthe screens use, starting from DIR/design.yaml (default DIR content/ui).\ndocs/game/ui-builder.md \"Screens in YAML\".";
+
+/// `h2 ui export-yaml`: the screens' presentation, from their Rust, as the
+/// files in `content/ui/` (`boot::ui_kit::data::export`).
+fn export_yaml(args: &[String]) -> Result<()> {
+    let mut out = PathBuf::from("content/ui");
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--out" => out = it.next().context(EXPORT_USAGE)?.into(),
+            "-h" | "--help" => {
+                println!("{EXPORT_USAGE}");
+                return Ok(());
+            }
+            _ => bail!("unknown option {a}\n{EXPORT_USAGE}"),
+        }
+    }
+    let written = boot::ui_kit::data::export::export(&out)?;
+    println!("wrote {} files under {}", written.len(), out.display());
+    Ok(())
 }
 
 /// `h2 ui preview`: a screen of ours drawn offline in its states
@@ -583,24 +668,13 @@ fn preview(args: Vec<String>) -> Result<()> {
         None => preview::From::Synthetic,
     };
     let dir = a.out.unwrap_or_else(std::env::temp_dir);
+    let mut reports = Vec::new();
     for (state, spec) in &states {
         println!("{state}: {}", spec.log_line());
-        if let Some(d) = &disc {
-            for f in d.check(spec)? {
-                println!("{state}: check: {f}");
-            }
-        }
         let view = from.view(spec, state)?;
-        for finding in boot::ui_kit::content::check_with_source(spec, &view, from.source()) {
-            println!("{state}: content: {finding}");
-        }
-        let r = boot::ui_kit::layout::check(
-            &view,
-            from.source(),
-            &boot::ui_kit::layout::Rules::for_spec(spec),
-        );
-        for i in &r.issues {
-            println!("{state}: layout: {i}");
+        let r = boot::ui_kit::findings::of_state(&from, spec, &view)?;
+        for f in &r.findings {
+            println!("{state}: {f}");
         }
         for n in &r.notes {
             println!("{state}: note: {n}");
@@ -611,7 +685,10 @@ fn preview(args: Vec<String>) -> Result<()> {
                 r.skipped.join(", ")
             );
         }
+        let drawn = preview::render_traced(&view, from.source()).footprints;
+        reports.push((state.clone(), r, drawn));
     }
+    let animated = a.animation.is_some();
     let written = if let Some(phases) = a.animation {
         preview::write_animation_states(&from, &dir, &name, &states, &phases)?
     } else {
@@ -624,6 +701,41 @@ fn preview(args: Vec<String>) -> Result<()> {
         let file = label.replace('/', "-");
         println!("wrote {}", dir.join(format!("{file}.png")).display());
     }
+    record_findings(&dir, &name, &reports, animated, a.strict)
+}
+
+/// Each state's findings, notes and drawn footprints into its JSON beside
+/// the picture, the count printed; `strict` fails on any finding.
+fn record_findings(
+    dir: &std::path::Path,
+    name: &str,
+    reports: &[(String, boot::ui_kit::findings::StateReport, Vec<boot::ui_kit::preview::Footprint>)],
+    animated: bool,
+    strict: bool,
+) -> Result<()> {
+    let mut found = 0;
+    for (state, r, drawn) in reports {
+        found += r.findings.len();
+        if animated {
+            continue;
+        }
+        let path = dir.join(format!("{name}-{state}.json"));
+        let mut json: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&path).with_context(|| path.display().to_string())?,
+        )?;
+        json["findings"] = serde_json::to_value(&r.findings)?;
+        json["notes"] = serde_json::to_value(&r.notes)?;
+        json["drawn"] = serde_json::to_value(drawn)?;
+        std::fs::write(&path, serde_json::to_string_pretty(&json)?)?;
+    }
+    println!(
+        "{found} finding(s) in {} state(s){}",
+        reports.len(),
+        if found > 0 && !strict { " (--strict fails on them)" } else { "" }
+    );
+    if strict && found > 0 {
+        bail!("{found} finding(s) in {name}");
+    }
     Ok(())
 }
 
@@ -633,7 +745,12 @@ fn sheet(args: Vec<String>) -> Result<()> {
     let Some(a) = draw_args(args, SHEET_USAGE)? else {
         return Ok(());
     };
-    if a.name.is_some() || a.state.is_some() || a.focus.is_some() || a.animation.is_some() {
+    if a.name.is_some()
+        || a.state.is_some()
+        || a.focus.is_some()
+        || a.animation.is_some()
+        || a.strict
+    {
         bail!("{SHEET_USAGE}");
     }
     let dir = match a.out {
@@ -705,6 +822,49 @@ mod tests {
         assert!(out.join("signin-code-code-pressed.png").exists());
         assert!(run(args(&["--press", "up,jump"])).is_err());
         assert!(run(args(&["--state", "nope", "--press", "a"])).is_err());
+        let _ = std::fs::remove_dir_all(&out);
+    }
+
+    /// Every finding goes in the state's JSON with the drawn footprints;
+    /// `--strict` fails on any, and passes a clean screen.
+    #[test]
+    fn preview_strict_fails_on_findings_and_writes_them() {
+        let out = std::env::temp_dir().join(format!("h2-ui-strict-{}", std::process::id()));
+        let args = |screen: &str, extra: &[&str]| {
+            let mut v: Vec<String> = ["preview", screen, "--synthetic", "--out"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            v.push(out.display().to_string());
+            v.extend(extra.iter().map(|s| s.to_string()));
+            v
+        };
+        // A state with a finding (no screen of ours keeps one): its JSON
+        // takes the findings and the footprints, and --strict fails on it.
+        use boot::ui_kit::findings::{Found, StateReport};
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("t-s.json"), "{}").unwrap();
+        let faulty = StateReport {
+            findings: vec![Found {
+                check: "layout",
+                kind: "unsafe".into(),
+                ids: vec!["stray".into()],
+                text: "stray: outside the title-safe area".into(),
+            }],
+            ..StateReport::default()
+        };
+        let reports = vec![("s".to_string(), faulty, Vec::new())];
+        assert!(record_findings(&out, "t", &reports, false, true).is_err());
+        record_findings(&out, "t", &reports, false, false).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(out.join("t-s.json")).unwrap()).unwrap();
+        assert_eq!(json["findings"][0]["check"], "layout");
+        assert_eq!(json["findings"][0]["kind"], "unsafe");
+        assert!(json["drawn"].as_array().unwrap().is_empty());
+        let clean = vec![("s".to_string(), StateReport::default(), Vec::new())];
+        record_findings(&out, "t", &clean, false, true).unwrap();
+        assert!(run(args("kit.example", &["--strict"])).is_ok());
+        assert!(run(vec!["sheet".into(), "--strict".into()]).is_err());
         let _ = std::fs::remove_dir_all(&out);
     }
 

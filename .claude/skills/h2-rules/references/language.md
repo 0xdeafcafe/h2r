@@ -9,8 +9,10 @@ the same source. Where this page and
 
 ```text
 rules "Name" 1            // name 1 to 128 bytes, version 0 to 65535
-carrier slayer            // required
+type slayer               // required: the game type
 teams 2                   // optional, 1 to 8
+points "Kills"            // optional, 1 to 32 bytes; the type's word by default
+uses slayer               // optional: play that built-in game's rules
 requires player.weapons, hud.message   // optional, at most 32, no repeats
 ```
 
@@ -21,15 +23,26 @@ take `\"`, `\\` and `\n`. A number with a fraction (`0.5`, `1.25`) is a
 `fixed`; a whole number is an `int`. A number followed by `s` or `t` is a
 `time`: `5s`, `300t`, `1.5s` (a whole number of ticks, 30 a second).
 
-Keywords (not usable as names): `rules carrier teams requires option
+Keywords (not usable as names): `rules teams requires option
 palette enum global var table fn on if else for each where let and or not
 const match true false none label is text budget`. Field and enum-variant names may be
 keywords (`enum Role { none, vip }`). Type and kind words (`zone`,
 `weapon`, `objects`, `numbered`, `per`) are read by place and stay names.
 
-Carriers (`caps::CARRIERS`): `ctf` 1, `slayer` 2, `oddball` 3, `king` 4,
-`juggernaut` 7, `territories` 8, `assault` 9. `variant.engine` is a `carrier`:
-compare it with `carrier.assault`, not `9`.
+Types (`rules::types::TABLE`): `slayer ctf assault oddball koth juggernaut
+territories` (the retail ones, each with a built-in script `uses` may name)
+and `research party firefight siege`. `type`, `uses` and `points` are header
+words only at the start of a line; in a handler they are names. A script
+with `uses` holds header lines, `settings`, `quick` and `about` only.
+`carrier`, `list` and `scoring` lines are refused (`header.retired`).
+
+Modules: `use "waves.rules"` alone on a top-level line reads that file's
+lines in at that point, so two files give the blob of the same text in
+one. Names are flat (`name.rules`, no directory), a module has no `rules`
+header, a file is read once, a cycle is an error naming both files, and
+the most is 32 files and 256 KiB in all. `h2 rules check|build|run|sim|
+settings` and `h2 rules lsp` read the files beside the script; an error
+in a module prints with the module's path and its line.
 
 ## Types
 
@@ -43,9 +56,10 @@ compare it with `carrier.assault`, not `9`.
 | `squad` | a kit squad slot 0 to 15, `squad(n)` |
 | `time` | a duration in ticks: `5s`, `300t`; `seconds(n)` from an `int`, `whole_seconds(t)` and `ticks(t)` to an `int` |
 | `timer` | a global variable of ticks left; 0 is stopped; read and written as `time` |
-| `carrier` | the built-in enum of `variant.engine`: `carrier.ctf`, `carrier.assault`, ... |
 | `tag` | a tag path string (a table column or `set_loadout` argument) |
 | `weapon` | a tag path that must be a weapon's (checked against the weapon group at load); goes where a `tag` is wanted |
+| `sound` | a tag path that must be a sound's (`snd!`); the start gate blocks a map that lacks it, by name; goes where a `tag` is wanted |
+| `vec` | a point or an offset in world units: `vec(x, y, z)` of three `fixed`, `a + b`, `a - b`, `v * k`, `v.x`, `o.position`, `o.velocity`, `length(v)`, `distance(a, b)`. The value of an expression or a `let`; never stored in a variable, option, table, parameter or result, and no `==`, order or `/` |
 | `T?` | `player?`, `team?`, `object?`, `zone?`, `tag?`, `weapon?`: a handle that may be `none` |
 | `Class` | a kit class name string, for `place_squad` and `on actor_kill` |
 | `text` | a string-table index: `text 3` or a string |
@@ -99,6 +113,7 @@ label barrier: objects                      // a set; `zones`, `spawns` likewise
 label capture: zones numbered 0..1 = "zone" // map text "zone"; numbers 0 and 1 each present
 label flag_spawn: zones at most 16 per team
 label race_start: spawns                    // starting locations, for spawn_areas only
+label run_in: path                          // a flight: points numbered from 0, at least 2, for fly only
 ```
 
 Requirements on a set: `at least n`, `at most n`, `exactly n`, `n..m`,
@@ -137,7 +152,7 @@ for each objectives o { ... }                 // the objective registry, at most
 for each barrier o where cond { ... }        // a declared objects or zones label
 if let k = killer and k != victim { ... }    // binds a T? as T, then tests
 for each pick(players, n) p { ... }           // n members, drawn with the VM generator
-match victim.role {                           // an enum or carrier value
+match victim.role {                           // an enum value
     Role.vip { ... }
     Role.a, Role.b { ... }                    // several variants in one arm
     else { ... }                              // the rest; without it every variant needs an arm
@@ -168,7 +183,7 @@ Fields (read through an owner):
 | `team` | `score` |
 | `object` | `number`, `id`, `carrier` (`player?`), `team` (`team?`) |
 | `squad` | `alive` |
-| `variant` | `team_play`, `score_limit`, `time_limit`, `lives`, `respawn_time`, `friendly_fire`, `rounds`, `engine`, `oddball_ball_count`, `king_moving_hill`, `ctf_flag_type`, `ctf_reset_time`, `ctf_touch_return`, `ctf_flag_at_home`, `assault_arm_time`, `territories_count`, `territories_contest_time` |
+| `variant` | `team_play`, `score_limit`, `time_limit`, `lives`, `respawn_time`, `friendly_fire`, `rounds`, `oddball_ball_count`, `king_moving_hill`, `ctf_flag_type`, `ctf_reset_time`, `ctf_touch_return`, `ctf_flag_at_home`, `assault_arm_time`, `territories_count`, `territories_contest_time` |
 
 `variant.<field>` types are bool for `team_play`, `friendly_fire`,
 `ctf_touch_return`, `ctf_flag_at_home` and int for the rest. A read through
@@ -176,7 +191,7 @@ Fields (read through an owner):
 
 ## Events
 
-An `on` handler names its arguments in order; the count must match.
+An `on` handler names its arguments in order and may leave out trailing ones; naming more is an error.
 
 | Handler | Arguments | When |
 |---|---|---|
@@ -196,6 +211,10 @@ An `on` handler names its arguments in order; the count must match.
 | `on actor_assist(killer, assist, class)` | player?, player?, Class | after its kill |
 | `on bounce(p, spot, chain, monster)` | player, zone, int, bool | `chain` is its place in its chain (1 a single bounce); `monster` a Monster Bounce |
 | `on bounced(p)` | player | a fall out of the map during a bounce |
+| `on arrive(o)` | object | a `move_to` reached its end, on its end tick, after the timers and before `on tick` |
+| `on touchdown(p, down, up)` | player, fixed, fixed | a player's biped landed: the speed it fell at on the tick before (`down`, positive) and its vertical speed now (`up`, positive for rising), world units a second; at most 16 a tick. The host delivers it while the superbounce mode runs (`requires hud.superbounce`); the fake lands the player |
+| `on launch(p, spot, speed)` | player, zone?, fixed | a landing the host judged a superbounce, as its launch window closed (3 ticks after the touchdown): the strip (`none` off every marked strip) and the launch, world units a second up; over 16 is a Monster. Superbounce keeps its chain on it; at most 16 a tick |
+| `on grounded(p)` | player | the run of bounces with no ground between them ended (a landing that did not bounce, the ground from the third tick after a bounce, a teleport, a new unit, a fall through a strip); follows the run's last `launch`; at most 16 a tick |
 | `on edit(p, o)` | player, object | a granted power was used |
 
 A handler runs to completion. `on timer` handlers run in slot order, then
@@ -218,11 +237,11 @@ a host refuse the script) or `vm`.
 | `squad_alive(s)` | squad -> int | named |
 | `carrier_of(o)` | object -> player | named |
 | `zone_seen(o)`, `zone_distance(o)` | object -> bool, int | named (Firefight's `ff_drop` zones) |
-| `object_team(o)` | object -> team | traced |
-| `player_of(o)` | object -> player | traced |
-| `label_number(o)`, `zone_id(o)` | object -> int | not built |
-| `ticks_held(o, t)` | object, team -> time | vm, not built on a host (below) |
-| `inside(p, o)` | player, object -> bool | not built |
+| `object_team(o)` | object -> team | named |
+| `player_of(o)` | object -> player | named |
+| `label_number(o)`, `zone_id(o)` | object -> int | named |
+| `ticks_held(o, t)` | object, team -> time | vm (below) |
+| `inside(p, o)` | player, object -> bool | named (the host's zone test, below) |
 
 The field forms (`p.score`, `o.number`, `o.id`, `o.carrier`,
 `o.team`, `s.alive`) call these.
@@ -230,8 +249,11 @@ The field forms (`p.score`, `o.number`, `o.id`, `o.carrier`,
 `ticks_held(zone, team)` is counted by the VM: from the first tick the
 script names the zone, each tick the team holds it alone adds one. The
 counts clear at the round's end; at most 32 zones are counted. `none` or
-a team out of range reads 0. A host refuses a script that calls it until
-the host has a zone test; a scenario's fake game answers it.
+a team out of range reads 0. On a host the zone test is
+`game::rules::world::zones`: a labelled flag is an upright cylinder
+(radius 1.0, 0.5 under to 1.5 over), and three or more flags sharing a
+label and a number (a hill's corners) are one polygon. A scenario's fake
+game answers it from its `enter` and `leave` events.
 
 ## Entries: actions
 
@@ -247,16 +269,56 @@ the host has a zone test; a scenario's fake game answers it.
 | `role_traits` | player, bool | core | now | untraced |
 | `set_gravity` | fixed | `game.traits` | now | named |
 | `set_team` | player, team | `player.team` | now | untraced |
-| `set_loadout` | player, tag, tag | `player.weapons` | now | traced |
+| `set_loadout` | player, tag, tag | `player.weapons` | now | named (the multiplayer weapon list's tags only, `rules::weapons`) |
 | `give` | player, tag | `player.weapons` | now | untraced |
 | `take` | player, object | `player.weapons` | now | traced |
 | `create` | tag, object | `objects.create` | queued | traced |
 | `delete` | object | `objects.delete` | queued | named |
-| `spawn_areas` | team, label, int | `player.spawn` | now | untraced |
+| `spawn_areas` | team, spawns label, int | `player.spawn` | now | named (labelled starting locations; a retail map has none) |
+| `spawn_near` | team, zone (may be `none`), int | `player.spawn` | now | named (the `n` starting locations nearest the zone; `none` or 0 lifts it) |
+| `set_body` | team, tag (may be `none`) | `player.disguise` | now | named (`objects/characters/masterchief/masterchief_mp` or `objects/characters/elite/elite_mp`; `none` gives the players their own) |
+| `show_area` | zone, team (may be `none`) | none | now | named (the zone's boundary drawn in play in the team's colour, neutral for `none`; at most eight at once, a ninth is a script error; the round's end clears them) |
+| `hide_area` | zone | none | now | named (takes the zone's boundary off) |
+| `hud_value`, `hud_style` | widget (an `int`: a `hud` declaration's name), int | none | now | named (the widget's value or style in the show state; the objective HUDs read them, [rules-world-api.md](../../../../docs/game/rules-world-api.md#the-huds-a-script-feeds)); needs `hud.widgets` |
+| `hud_value_for` | widget, player, int | none | now | named (the widget's value for that player, 0 to 255: each viewer reads its own; one widget per script) |
+| `hud_fill` | widget, fixed | none | now | named (0 to 1, kept as a byte) |
+| `hud_text` | widget, text | none | now | named (a literal; no holes) |
+| `hud_show` | widget, bool | none | now | named |
+| `mark`, `unmark` | waypoint (an `int`: a `waypoint` declaration's name), object; waypoint | none | now | named (a navpoint over the object, a carried one over its carrier, with the distance); needs `hud.waypoints` |
+| `mark(wp, at, to)` | as `mark` with `to` a player, a team or `all` (everyone), which names the waypoint's audience; `all` is the two-argument form | none | now | named (the player's slot's bit, or the team's seated players' bits from the roster) |
+| `side_of`, `slot_of` | player | int | now | named (the team's index in a game with teams, 16 and the slot in one without; the slot) |
+| `object_pos`, `object_vel` | object, int axis (0 x, 1 y, 2 z) | none | read, fixed | named (`o.position`, `o.velocity` and `o.speed` are three reads each and a `vec_length`) |
+| `vec_length` | fixed, fixed, fixed | none | VM, fixed | `length(v)`, `distance(a, b)`, `o.speed`; exact over any 16.16 vector |
+| `teleport` | object, vec, or object, or object and vec offset | `objects.move` | queued | named (a position outside the world is a refused call, recorded, that moves nothing) |
+| `move_to` | object, vec or object, time | `objects.move` | now | named (a mover in the VM's state, at most 16, one a second for an object, stepped each tick, `on arrive(o)` on its end tick; a time of 0 is one tick) |
+| `stop` | object | `objects.move` | now | named (ends the object's mover with no `on arrive`) |
+| `set_open` | object, bool | `objects.move` | now | named (a barrier put 64 units below its place and back; a put the world refuses closes it again in the state) |
+| `offer_pick`, `pick_row` | int picker (0 or 1), text | `player.pick` | now | named (a picker of at most 6 rows the host opens for each local player at the round's start; the round's end takes it) |
+| `picked` | player, int picker | none | VM, int | named (the row the player picked, or -1: none made, none offered, or a player on another machine) |
+| `airborne`, `crouching`, `primed` | player | none | read, bool | named (`p.airborne`, `p.crouching`, `p.primed` read the biped's airborne bit, crouch request or primed pair word; the host needs `requires hud.superbounce`; the fake answers from the scenario's `body`) |
+| `sees` | object, object | none | VM, bool | named (`sees(a, b)`: nothing solid between two live objects. The first request reads false. The host traces retained pairs at the next tick boundary before handlers run, so the first answer takes one tick. The VM drops a pair after 30 ticks without a request. A 33rd pair is a script error.) |
+
+`push`, `launch` and `set_velocity` have no entry: they wait on R9 (how a
+client's own predicted biped takes a host-set velocity), so a script that
+names one is a compile error.
+
+`hud name: text at koth.hill` declares a widget at a HUD kit element (kinds
+`text`, `banner`, `meter`; at most 16), `waypoint name [at koth.mark]` a
+waypoint (at most 8), and `section "Name"` splits the script for the
+outline and folding. A name is the declaration's number, a `const`.
 | `message` | player, team or `all`; text | `hud.message` | now | untraced |
+| `sound_to`, `sound_to_team`, `sound_to_all` | sound, player; sound, team; sound | `audio.play` | queued | named (played at each audience player's unit, and sent to every machine as a cue; a host with no sound-tag lookup refuses the script by the sound's path) |
+| `say`, `sound_at`, `music`, `music_stop`, `announce` | | `audio.play` | queued | not built, traced or untraced: refused by name (research R4, R5) |
 | `place_squad` | squad, Class, int, label | `ai.squads` | queued | named |
 | `place_squad_at` | squad, Class, int, int, int | `ai.squads` | queued | named |
 | `hunt`, `erase_squad` | squad | `ai.squads` | queued | named |
+| `fly` | object, path label, time | `vehicles.drive` | queued | not built (a vehicle flown along a `path` label in the stated ticks, facing its tangent; the host refuses it, by name) |
+| `hover` | object, bool | `vehicles.drive` | queued | untraced |
+| `seat` | player, object | `vehicles.drive` | queued | traced (the vehicle's first free seat, the driver's first) |
+| `eject` | player | `vehicles.drive` | queued | traced |
+| `place_squad_in` | squad, Class, int, object | `vehicles.drive` | queued | traced (`place_squad` seating the squad in the vehicle's free seats) |
+| `unload` | object | `vehicles.drive` | queued | untraced |
+| `vehicle_riders`, `vehicle_driver` | object | none | now | traced (reads: everyone aboard; the driver's player or `none`) |
 | `forge_move` | object, object | `forge.move` | queued | named |
 | `forge_delete` | object | `forge.delete` | queued | named |
 | `forge_place` | tag, object | `forge.place` | queued | named |
@@ -291,7 +353,9 @@ The VM stops, the round ends with "script error", the same op every run:
 the tick's 100,000 ops ran out (`Budget`), a table row out of range
 (`TableRow`), more than 256 objects with object variables (`Objects`), more
 than 128 queued calls (`Queue`), `squad(n)` outside 0 to 15 (`Squad`),
-more than 32 zones asked about by `ticks_held` (`Zones`).
+more than 32 zones asked about by `ticks_held` (`Zones`), a `set_body` tag
+that is no player body (`Body`; one written in the call is a compile
+error, `body.unknown`), more than 16 movers at once (`Movers`), more than 32 sight pairs asked within 30 ticks (`Sight`).
 `h2 rules run` prints `script error <kind> at tick T, handler H, op P` and
 exits 1.
 
@@ -299,13 +363,18 @@ exits 1.
 
 | Message | Cause |
 |---|---|
-| `a script names its carrier: carrier slayer` | no `carrier` line |
+| `a script names its game type: type slayer` | no `type` line |
+| ``carrier is gone: write `type koth`...`` | a retired `carrier`, `list` or `scoring` line |
+| `with uses X the built-in game scores, ...` | handlers, variables or options in a `uses` script |
 | `unknown capability X` / `capability X is not in requires` | misspelled name, or a `grant` of one not declared |
 | `<entry> needs capability <cap>: add it to requires` | call without the declaration |
 | `capability X cannot be granted` | only `forge.*` can be |
 | `unknown name`, `unknown function`, `unknown variable` | a typo, or a name out of scope (inside a `fn`, handler locals are not visible) |
 | `X is a let or a parameter and cannot be assigned` / `option X is read-only` | assigned a `let`, a parameter or an option |
 | `a set is only allowed in for each, count, first and pick` | a set used as a value |
+| `a vec is the value of an expression, not a type to store` | a `vec` variable, option, column, parameter or result: keep x, y and z as `fixed` |
+| `<move_along, face, attach, detach> is not built: ...` | a name of the objects slice that waits on research or the drop-ship slice |
+| `teleport moves an object, and x is a player ... (R9)` | `teleport` or `move_to` of a player |
 | `fn x calls itself; recursion is not allowed` | recursion |
 | `an int option needs a range: int 1..5` | `option n: int = 3` |
 | `can't compare time with int in "p.held >= 1". Write 1s for a second or 30t for ticks.` (`unit.mix`) | a `time` mixed with an `int`; also a `timer` set from an `int` option |

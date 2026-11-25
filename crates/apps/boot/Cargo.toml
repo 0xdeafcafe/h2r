@@ -28,6 +28,12 @@ content.workspace = true
 # The controller-speaker sound index reads the player's map files (pad_speaker).
 tags.workspace = true
 hs.workspace = true
+# The pogo stick's models, added to each multiplayer map as it is served.
+pogo-kit = { path = "../../tools/pogo-kit" }
+# The game's content packages and their one rewrite (packages.rs).
+workspace = { path = "../../tools/workspace" }
+# The stage, a baked package's `fresh` map (packages::prepare_maps).
+stage-kit = { path = "../../tools/stage-kit" }
 coop = { path = "../../live/coop" }
 map.workspace = true
 # What the Halo 1 converters write and the Halo 1 hooks read (h1_*.rs);
@@ -90,9 +96,16 @@ hot-tags = { path = "../../extensions/hot-tags" }
 serde_json.workspace = true
 # `H2_PERF_FROM`: a profiler/timeline session over part of a run.
 perf = { path = "../../tools/perf", optional = true }
+# The Forge session's trait for that builder, and the document it builds over.
+forge.workspace = true
+forge-doc.workspace = true
 # Test-map recipes built into packages (test_maps_recipes.rs).
 scenario-edit = { path = "../../tools/scenario-edit", optional = true }
 firefight-kit = { path = "../../tools/firefight-kit", optional = true }
+# The AI ground builder Forge's rows run (ground_builder.rs).
+forge-build = { path = "../../tools/forge-build", optional = true }
+# The nav generator Forge's Generate nav row runs (nav_builder.rs).
+forge-nav = { path = "../../tools/forge-nav", optional = true }
 
 [features]
 default = ["gpu", "movie-playback", "local-io", "test-maps", "rules"]
@@ -103,9 +116,9 @@ local-io = ["desktop-runtime", "dep:voice", "dsound/playback", "game/local-io"]
 perf = ["dep:perf", "game/perf"]
 # maps.test.* on the agent: test maps built from recipes (test_maps.rs,
 # docs/game/test-maps.md). The scenario editor's crate pulls in wgpu.
-test-maps = ["game/test-maps", "dep:scenario-edit", "dep:firefight-kit"]
-# The rules host runtime (docs/game/rules-engine.md); H2_FEATURES=rules
-# turns it on.
+test-maps = ["game/test-maps", "dep:scenario-edit", "dep:firefight-kit", "dep:forge-build", "dep:forge-nav"]
+# The rules host runtime (docs/game/rules-engine.md); on at run time
+# unless H2_FEATURES=-rules.
 rules = ["game/rules"]
 
 [dev-dependencies]
@@ -117,10 +130,6 @@ libc = { workspace = true }
 
 [[example]]
 name = "menu_cpu"
-required-features = ["gpu"]
-
-[[test]]
-name = "headless_interp"
 required-features = ["gpu"]
 
 [lints]

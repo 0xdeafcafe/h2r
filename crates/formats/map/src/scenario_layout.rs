@@ -429,6 +429,24 @@ pub static BLOCKS: &[BlockDef] = &[
         fields: &[
             f("flags", 0x00, U32, Plain, true, "E: bit 0 at 0x0015aad0"),
             f(
+                "game type 1",
+                0x04,
+                I16,
+                Plain,
+                true,
+                "E: 0x0015af2b passes +0x04, 4 slots, to the matcher 0x0015a090",
+            ),
+            f("game type 2", 0x06, I16, Plain, true, "E: slot 2 of 0x0015a090"),
+            f("game type 3", 0x08, I16, Plain, true, "E: slot 3 of 0x0015a090"),
+            f(
+                "game type 4",
+                0x0a,
+                I16,
+                Plain,
+                true,
+                "E: slot 4 of 0x0015a090 (push 4 at 0x0015af2e)",
+            ),
+            f(
                 "respawn time",
                 0x0e,
                 I16,
@@ -450,7 +468,7 @@ pub static BLOCKS: &[BlockDef] = &[
                 I16,
                 Plain,
                 true,
-                "E: 0x0015b05d switches on 0/1",
+                "E: 0x0015b05d: what starts the respawn countdown while the object exists; 0 or 1, any other never",
             ),
             f(
                 "type",
@@ -547,5 +565,72 @@ impl BlockDef {
     /// The first field with a role.
     pub fn role(&self, role: Role) -> Option<&'static FieldDef> {
         self.fields.iter().find(|f| f.role == role)
+    }
+}
+
+/// The values of a netgame equipment entry's `respawn mode` the tick
+/// `0x0015ae70` acts on (E: `0x0015b05d`). While the entry's object exists
+/// and no countdown runs, mode 0 starts the countdown when the object is of
+/// type 2 to 4 with bit 0 or 1 of its byte `+0x12c` set, or lies farther
+/// from the entry's position than the distance at `0x0045dbc0`; mode 1
+/// starts it when bit 2 of the object's byte `+0x10a` is set; any other
+/// value never starts it. An entry without an object, and every entry
+/// after the reset `0x0015ad30`, respawns whatever its mode.
+pub const RESPAWN_MODES: std::ops::RangeInclusive<i16> = 0..=1;
+
+/// A netgame equipment entry's game-type slots and the engine's matcher
+/// `0x0015a090`. Its only callers are the netgame equipment tick
+/// (`0x0015af32`) and the starting equipment pass (`0x0019ef91`, slots at
+/// the same `+0x04`) (E, a search of `.text`). No reader of a starting
+/// location's bytes past `+0x10` but `+0x2c` was found:
+/// docs/editor/scenario-editor.md §2.
+pub mod game_types {
+    /// Offset of the first slot in a netgame equipment entry (E: `lea
+    /// edi,[ebp+4]` at `0x0015af2b`). Each slot is an `i16`.
+    pub const ITEM_SLOTS: u32 = 0x04;
+    /// How many slots the matcher reads (E: `push 4` at `0x0015af2e`).
+    pub const SLOT_COUNT: usize = 4;
+    /// The codes the engines pass: slot `+0x00` of each engine's vtable
+    /// (E, docs/engine/notes/2026-11-21-engine-vtables.md). King of the
+    /// Hill 0, CTF 1, Slayer 2, Oddball 3, Juggernaut 7, Territories 8,
+    /// Assault 9.
+    pub const ENGINE_CODES: [i32; 7] = [0, 1, 2, 3, 7, 8, 9];
+    /// A slot that matches every engine (E: `0x0015a0db`).
+    pub const ALL: i16 = 12;
+    /// Slots that match every engine but codes 1 and 9 (E: `0x0015a0e6`,
+    /// `0x0015a0fd`; the two take the same path).
+    pub const ALL_BUT_1_AND_9: [i16; 2] = [13, 14];
+    /// The highest value the matcher names. Values outside `0..=MAX`, and
+    /// 4, 5, 6, 10 and 11, match no engine's code.
+    pub const MAX: i16 = 14;
+
+    /// Whether one slot matches: `engine` is the running engine's code, or
+    /// `None` when the engine table holds no object for the game, where
+    /// only a slot of 0 matches (E: `0x0015a0ae`, `0x0015a126`).
+    pub fn slot_matches(slot: i16, engine: Option<i32>) -> bool {
+        let Some(code) = engine else {
+            return slot == 0;
+        };
+        let flag = |v: i32| v == 1 || v == 9;
+        i32::from(slot) == code
+            || (flag(code) && flag(i32::from(slot)))
+            || slot == ALL
+            || (ALL_BUT_1_AND_9.contains(&slot) && !flag(code))
+    }
+
+    /// The first matching slot, as `0x0015a090` returns it; `None` (the
+    /// routine's -1) leaves the entry out of the game.
+    pub fn first_match(slots: &[i16], engine: Option<i32>) -> Option<usize> {
+        slots.iter().position(|&s| slot_matches(s, engine))
+    }
+
+    /// The slots in a netgame equipment entry's bytes, or `None` when the
+    /// entry is too short.
+    pub fn item_slots(entry: &[u8]) -> Option<[i16; SLOT_COUNT]> {
+        let at = ITEM_SLOTS as usize;
+        let bytes = entry.get(at..at + 2 * SLOT_COUNT)?;
+        Some(std::array::from_fn(|k| {
+            i16::from_le_bytes([bytes[2 * k], bytes[2 * k + 1]])
+        }))
     }
 }

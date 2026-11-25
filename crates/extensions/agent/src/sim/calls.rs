@@ -19,7 +19,8 @@
 //!   (`PLAYER_PLACE_NEAR`, `0x14e970`, EBX the player, ESI the point, the
 //!   anchor -1, as `0x2a01ec..0x2a01f0` calls it), which takes the unit out
 //!   of a vehicle (`0xe68c0` action `0x1e`) and places it through
-//!   `0x14e200` a little above the point (`[0x4687b0]` times `[0x47f05c]`),
+//!   `0x14e200` a little above the point (`[0x4687b0]`, the up vector,
+//!   times `[0x47f05c]`, 0.0328),
 //!   so its physics hear of the move. A write of the body's position alone
 //!   (`+0x64`) is undone by the biped's physics at the next tick. The
 //!   facing: the unit's desired facing, aiming and looking vectors (`+0x150`,
@@ -66,6 +67,18 @@
 //!   ([`SCRATCH_OPTIONS`]). The game loads the queued options at its next
 //!   transition, as it does the main menu's own start. `maps.test.load`
 //!   uses it (docs/game/test-maps.md).
+//! - **Reactivate the structure** is the second half of a BSP switch to
+//!   the BSP already loaded, which `BSP_SWITCH` (`0x11c1b0`) itself skips
+//!   (it returns at once when the asked BSP is both the loaded one,
+//!   `0x4686c4`, and the active one, game globals `+2`):
+//!   `STRUCTURE_BSP_DEACTIVATE` (`0x137da0`, every game system's
+//!   dispose-from-old-BSP callback) then `STRUCTURE_BSP_ACTIVATE`
+//!   (`0x137d40`, every initialize-for-new-BSP callback: physics' Havok
+//!   world over the structure, objects' locations), both `fn() ret 0`.
+//!   The BSP's tag data is not loaded again, so a live collision commit's
+//!   pairs stay. `edit.collision.commit` runs it
+//!   (`crate::hot::collision::QueuedActivation`;
+//!   docs/editor/realtime-edits.md, "Collision").
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -91,6 +104,17 @@ pub mod addr {
     /// object's `+0x1a` (`0x000b7c87`); `placement_data_new` leaves -1.
     pub const PLACEMENT_INDEX: u32 = 0x10;
     pub const OBJECT_NEW: u32 = 0x000b_7b40;
+    /// `sound_start_at_marker`: EAX the marker, ESI the object, one stack
+    /// argument pointing to (permutation hint, sound, scale, flags).
+    pub const SOUND_START_AT_MARKER: u32 = engine::points::SOUND_START_AT_MARKER.base;
+    /// The head marker's name id.
+    pub const HEAD_MARKER: u32 = 0x0400_0095;
+    /// The recording player: EAX the unit, CX the recording's index in
+    /// `scnr +0x110`, one stack argument (the play flags: 0 play, 8 and
+    /// delete, `0x10` and hover, as the evaluators at `0x2a2d1c`,
+    /// `0x2a2d7c` and `0x2a2ddc` push them), `ret 4`, AL 0 when it starts
+    /// nothing.
+    pub const RECORDING_PLAYER: u32 = 0x001f_b360;
     pub const OBJECT_DELETE: u32 = 0x000b_8540;
     pub const UNIT_ADD_WEAPON: u32 = 0x000c_d0c0;
     pub const PLAYER_PLACE_NEAR: u32 = engine::points::PLAYER_PLACE_NEAR.base;
@@ -99,6 +123,12 @@ pub mod addr {
     /// Unit: desired facing, aiming and looking vectors, which the
     /// teleport writes (`0x2a01a2`, `0x2a01b8`, `0x2a01ce`).
     pub const UNIT_FACINGS: [u32; 3] = [0x150, 0x15c, 0x180];
+    /// The loaded structure BSP's index (`i16`, -1 for none), which
+    /// `BSP_SWITCH` sets and `STRUCTURE_BSP_ACTIVATE` copies into the game
+    /// globals.
+    pub const LOADED_STRUCTURE_BSP: u32 = engine::sim_collision::layout::BSP_INDEX;
+    /// The game globals' active structure BSP index (`i16`).
+    pub const GAME_GLOBALS_ACTIVE_BSP: u32 = 0x2;
     /// `unit_add_weapon` modes (module doc).
     pub const MODE_ADD: u32 = 1;
     pub const MODE_REPLACE: u32 = 2;
@@ -191,6 +221,9 @@ pub enum ForgeStep {
     /// Set the identifier of the loaded scenario's netgame flag `flag`, a
     /// teleporter sender or receiver, to `channel`.
     Channel { flag: u32, channel: i16 },
+    /// An edit of one of the map's own scenario entries (`forge::base`),
+    /// after the other steps: checked with the batch, then done.
+    Base(crate::forge::base::BaseStep),
 }
 
 /// The guest address of the loaded scenario's netgame flag `flag`, checked
@@ -254,6 +287,15 @@ pub enum Call {
         to: [f32; 3],
         shield: Option<f32>,
     },
+    /// Start the animation `name` (a string ID) of the object's own graph
+    /// on its first channel (`world.object.animate`).
+    Animate { id: ObjectId, name: u32 },
+    /// Start the `snd!` tag `sound` at `unit`'s head marker
+    /// (`audio.play`).
+    Sound { unit: u32, sound: u32 },
+    /// Play recording `index` on `unit` with the player's `flags`
+    /// (`recording.play`).
+    Recording { unit: u32, index: u16, flags: u32 },
     /// Make an object from `tag` at `pos`.
     Spawn {
         tag: u32,
@@ -270,6 +312,9 @@ pub enum Call {
     },
     ObjectDelete { id: ObjectId },
     ObjectRespawn { target: RespawnTarget },
+    /// Remake every placed object of the tag datum `definition`, linked
+    /// (`world.object.respawn {definition}`).
+    ObjectRespawnDefinition { definition: u32 },
     /// One transaction on a scenario placement block (`world.placement.edit`).
     PlacementEdit { plan: Box<PlacementPlan> },
     /// One local Forge edit's engine work, rechecking its admission and
@@ -281,6 +326,10 @@ pub enum Call {
     /// Build game options with `steps` and queue them: a new game loads
     /// at the game's next transition.
     QueueGame { steps: Vec<GameStep> },
+    /// Deactivate and activate the loaded structure BSP again, so every
+    /// game system rebuilds its per-BSP state over the BSP's tag data as
+    /// it is now (module doc, "Reactivate the structure").
+    ReactivateStructure,
 }
 
 /// What came of a call: the answer's fields, or why not.
@@ -303,6 +352,9 @@ pub struct Queue {
     previews: placement::Previews,
     /// The blocks `world.placement.edit` has edited this activation.
     blocks: BTreeMap<String, placement::edit::BlockState>,
+    /// The edit arena `world.placement.edit` grows blocks into, shared with
+    /// `edit.batch`'s moves (`hot_glue::install`).
+    arena: Option<hot_tags::arena::Link>,
     active_scenario: Option<(String, u32)>,
     game_ticket: Option<u64>,
     reload: Option<Reload>,
@@ -528,9 +580,26 @@ impl Queue {
     }
 
     pub fn preview_refusal(&self) -> Option<String> {
-        (!self.previews.is_empty()).then(|| {
-            "snapshots cannot reproduce an unlinked editor preview; change maps first".into()
-        })
+        if !self.previews.is_empty() {
+            return Some(
+                "snapshots cannot reproduce an unlinked editor preview; change maps first".into(),
+            );
+        }
+        // The arena's allocations are host state a snapshot does not hold.
+        self.arena
+            .as_ref()
+            .is_some_and(|l| !hot_tags::arena::lock(&l.arena).is_empty())
+            .then(|| "snapshots cannot hold blocks moved into the edit arena; change maps first".into())
+    }
+
+    /// The edit arena placement blocks grow into
+    /// (docs/editor/realtime-edits.md, "Four write primitives").
+    pub fn set_arena(&mut self, arena: hot_tags::arena::Link) {
+        self.arena = Some(arena);
+    }
+
+    pub(crate) fn arena(&self) -> Option<hot_tags::arena::Link> {
+        self.arena.clone()
     }
 
     fn preview_deleted(&mut self, id: ObjectId) {
@@ -907,6 +976,50 @@ async fn object_delete(cx: &Cx, queue: &Shared, id: ObjectId) -> Result<Outcome,
     Ok(Ok(json!({ "deleted": id.to_string() })))
 }
 
+/// [`Call::ReactivateStructure`]: refused unless a structure is loaded
+/// and active, then the deactivate and activate pair, then the active
+/// index read back.
+async fn reactivate_structure(cx: &Cx) -> Result<Outcome, EntryError> {
+    let state = cx.read(|m| -> Result<(i16, i16), engine::MemFault> {
+        let loaded = m.u16(addr::LOADED_STRUCTURE_BSP)? as i16;
+        let globals = m.u32(engine::points::GAME_GLOBALS.base)?;
+        let active = m.u16(globals.wrapping_add(addr::GAME_GLOBALS_ACTIVE_BSP))? as i16;
+        Ok((loaded, active))
+    });
+    let (loaded, active) = match state {
+        Ok(s) => s,
+        Err(e) => {
+            return Ok(Err(unavailable(format!(
+                "cannot read the structure BSP state at {:#x}",
+                e.addr
+            ))));
+        }
+    };
+    if loaded < 0 || active != loaded {
+        return Ok(Err(refused(format!(
+            "no structure BSP is loaded and active (loaded {loaded}, active {active})"
+        ))));
+    }
+    cx.call(GuestCall::new(engine::points::STRUCTURE_BSP_DEACTIVATE.base))
+        .await?;
+    cx.call(GuestCall::new(engine::points::STRUCTURE_BSP_ACTIVATE.base))
+        .await?;
+    let after = cx.read(|m| -> Result<i16, engine::MemFault> {
+        let globals = m.u32(engine::points::GAME_GLOBALS.base)?;
+        Ok(m.u16(globals.wrapping_add(addr::GAME_GLOBALS_ACTIVE_BSP))? as i16)
+    });
+    match after {
+        Ok(bsp) if bsp == loaded => Ok(Ok(json!({ "bsp": bsp }))),
+        Ok(bsp) => Ok(Err(unavailable(format!(
+            "the structure BSP activation left BSP {bsp} active, not {loaded}"
+        )))),
+        Err(e) => Ok(Err(unavailable(format!(
+            "cannot read the active structure BSP at {:#x}",
+            e.addr
+        )))),
+    }
+}
+
 /// A stale Forge handle is a named refusal, so the session reports it and
 /// keeps its document. Memory faults stay as they are.
 fn forge_gone(e: RpcError, id: ObjectId) -> RpcError {
@@ -972,6 +1085,14 @@ async fn run_forge(
             ForgeStep::Channel { flag, .. } => {
                 if let Err(e) = cx.read(|m| teleporter_flag(m, guard.scenario, *flag)) {
                     return Ok(Err(super::invalid(e)));
+                }
+                (None, None)
+            }
+            ForgeStep::Base(base_step) => {
+                if let Err(e) =
+                    cx.read(|m| crate::forge::base::plan_ahead(m, guard.scenario, base_step))
+                {
+                    return Ok(Err(e));
                 }
                 (None, None)
             }
@@ -1064,7 +1185,75 @@ async fn run_forge(
             cx.write(|m| m.write(at + teleporter_identifier(), &channel.to_le_bytes()))?;
         }
     }
+    for step in steps {
+        if let ForgeStep::Base(step) = step
+            && let Err(e) = run_base(cx, scratch, queue, guard.scenario, step).await?
+        {
+            unwind_made(cx, &made, &deleted).await?;
+            return Ok(Err(e));
+        }
+    }
     Ok(Ok(json!({ "handles": made })))
+}
+
+/// One edit of an own scenario entry (`forge::base`). The step is checked
+/// again here, so a change since the batch's checks is a refusal and the
+/// row stays as it was. An object block's live object is moved or deleted
+/// with the `world.object` bodies, and a restored row's object is made by
+/// `world.placement.edit`'s linked create.
+async fn run_base(
+    cx: &Cx,
+    scratch: u32,
+    queue: &Shared,
+    scenario: u32,
+    step: &crate::forge::base::BaseStep,
+) -> Result<Result<(), RpcError>, EntryError> {
+    use crate::forge::base::{BaseStep, object_kind, plan, write};
+    let planned = match cx.read(|m| plan(m, scenario, step)) {
+        Ok(planned) => planned,
+        Err(e) => return Ok(Err(e)),
+    };
+    if let BaseStep::Inert { .. } = step
+        && let Some(id) = planned.object
+        && let Err(e) = object_delete(cx, queue, id).await?
+    {
+        return Ok(Err(forge_gone(e, id)));
+    }
+    if let Err(e) = cx.write(|m| write(m, scenario, step, planned)) {
+        return Ok(Err(e));
+    }
+    match *step {
+        BaseStep::Move { frame, .. } => {
+            if let Some(id) = planned.object {
+                let (forward, up) = forge_axes(&frame);
+                let out =
+                    object_set(cx, scratch, id, Some(frame.position), Some(forward), Some(up))
+                        .await?;
+                if let Err(e) = out {
+                    return Ok(Err(forge_gone(e, id)));
+                }
+            }
+        }
+        BaseStep::Restore { block, index, .. } if object_kind(block).is_some() => {
+            let spec = placement::edit::BlockSpec::named(block.name());
+            let made = match (spec, u16::try_from(index)) {
+                (Some(spec), Ok(index)) => {
+                    placement::edit::create(cx, scratch, queue, &spec, index).await?
+                }
+                _ => return Ok(Err(super::invalid("the block cannot make its objects"))),
+            };
+            if !made.created {
+                // Leave the row as the map's removal had it.
+                let inert = BaseStep::Inert { block, index };
+                let _ = cx.write(|m| write(m, scenario, &inert, planned));
+                return Ok(Err(refused(made.why.unwrap_or_else(|| {
+                    "the restored entry's object was not made".into()
+                }))));
+            }
+        }
+        _ => {}
+    }
+    Ok(Ok(()))
 }
 
 /// Makes one call. A guest call that faults ends the tick's work
@@ -1089,6 +1278,13 @@ async fn run_call(
     match *call {
         Call::Animation { unit, path, overlay } => {
             crate::probe::animation::lookup(cx, scratch, unit, path, overlay).await
+        }
+        Call::Animate { id, name } => {
+            let body = match cx.read(|m| placement::resolve(m, id)) {
+                Ok(body) => body,
+                Err(e) => return Ok(Err(e)),
+            };
+            Ok(cx.write(|m| crate::probe::animation::start(m, body.addr, name)))
         }
         Call::Projectile { tag, target, node, from, to, shield } => {
             let line = cx.read(|m| crate::probe::line(m, target, node, from, to))?;
@@ -1185,6 +1381,50 @@ async fn run_call(
             }
             out.insert("unit".into(), json!(hex(unit)));
             Ok(Ok(Value::Object(out)))
+        }
+        Call::Sound { unit, sound } => {
+            if cx.read(|m| body_of(m, unit)).is_none() {
+                return Ok(Err(unavailable("the unit is gone (it died?)")));
+            }
+            // One stack argument points to the four parameter words just
+            // above it, as the dialogue line's start passes them.
+            let parameters = cx.entry().esp.wrapping_sub(16);
+            let instance = cx
+                .call(
+                    GuestCall::new(addr::SOUND_START_AT_MARKER)
+                        .esi(unit)
+                        .eax(addr::HEAD_MARKER)
+                        .args([parameters, u32::MAX, sound, 1.0f32.to_bits(), 0]),
+                )
+                .await?
+                .eax;
+            if instance == u32::MAX {
+                return Ok(Err(unavailable(format!(
+                    "the game started no sound from tag {sound:#010x} (sound_start_at_marker, 0x1891d0, answered none: a tag with no permutation, or a full sound table)"
+                ))));
+            }
+            Ok(Ok(json!({ "instance": hex(instance), "unit": hex(unit) })))
+        }
+        Call::Recording { unit, index, flags } => {
+            if cx.read(|m| body_of(m, unit)).is_none() {
+                return Ok(Err(unavailable("the unit is gone (it died?)")));
+            }
+            let started = cx
+                .call(
+                    GuestCall::new(addr::RECORDING_PLAYER)
+                        .eax(unit)
+                        .ecx(u32::from(index))
+                        .args([flags]),
+                )
+                .await?
+                .eax
+                & 0xff;
+            if started == 0 {
+                return Ok(Err(unavailable(format!(
+                    "the game started no recording {index} (the recording player, 0x1fb360, answered no: the unit is already playing one, or the game has no free slot)"
+                ))));
+            }
+            Ok(Ok(json!({ "unit": hex(unit), "index": index })))
         }
         Call::Give { unit, weapon, mode } => {
             if cx.read(|m| body_of(m, unit)).is_none() {
@@ -1300,8 +1540,12 @@ async fn run_call(
             lock(queue).previews.remember(&entry, object);
             Ok(Ok(json!({ "old": old, "object": object.to_string(), "linked": false })))
         }
+        Call::ObjectRespawnDefinition { definition } => {
+            placement::definition::run(cx, scratch, queue, definition).await
+        }
         Call::PlacementEdit { ref plan } => placement::edit::run(cx, scratch, queue, plan).await,
         Call::Forge { guard, ref steps } => run_forge(cx, scratch, queue, guard, steps).await,
+        Call::ReactivateStructure => reactivate_structure(cx).await,
         Call::QueueGame { ref steps } => {
             let options = scratch + SCRATCH_OPTIONS;
             let mut out = serde_json::Map::new();

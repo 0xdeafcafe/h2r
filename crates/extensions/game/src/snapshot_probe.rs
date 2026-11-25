@@ -179,6 +179,39 @@ mod tests {
         assert_eq!(plan.snapshot_blockers(), vec![], "{policies:?}");
     }
 
+    /// The Halo 1 effects boot registers on every map refused the bounce
+    /// search's first fork as "not audited": their state is all guest
+    /// memory (tags, the cloth array, the mixer's clock).
+    #[test]
+    fn halo1_effects_are_stateless() {
+        let mut r = hooks::Registry::new(hooks::Switches::defaults());
+        for f in [
+            &crate::h1_flag::H1Flag as &dyn hooks::Feature,
+            &crate::h1_glow::H1Glow,
+            &crate::h1_lightning::H1Lightning,
+            &crate::h1_sound_promotion::H1SoundPromotion,
+        ] {
+            assert!(r.add(f).unwrap());
+        }
+        let plan = r.build(&hooks::Base).unwrap();
+        let mut policies: Vec<_> = plan
+            .snapshot
+            .iter()
+            .map(|f| (f.id, f.policy.name()))
+            .collect();
+        policies.sort();
+        assert_eq!(
+            policies,
+            vec![
+                ("h1-flag", "stateless"),
+                ("h1-glow", "stateless"),
+                ("h1-lightning", "stateless"),
+                ("h1-sound-promotion", "stateless"),
+            ]
+        );
+        assert_eq!(plan.snapshot_blockers(), vec![]);
+    }
+
     /// The render features boot always registers, switched off (the native
     /// ones go with `impl.render.native=off`):
     /// each declares its policy before it returns, so none is left

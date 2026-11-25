@@ -18,6 +18,7 @@ crate_tree(
     name = "lib-tree",
     files = [
         ":src",
+        "//:content",
     ],
 )
 
@@ -25,6 +26,7 @@ crate_tree(
     name = "test-tree",
     files = [
         ":all",
+        "//:content",
     ],
 )
 
@@ -40,6 +42,7 @@ workspace_library(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/game-markers:game-markers",
         "//third-party/rust:serde",
         "//third-party/rust:thiserror",
     ],
@@ -57,9 +60,30 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/game-markers:game-markers",
         "//third-party/rust:serde",
         "//third-party/rust:serde_json",
         "//third-party/rust:thiserror",
+    ],
+)
+
+workspace_test(
+    name = "area_zones",
+    crate = "area_zones",
+    crate_root = "crates/formats/rules/tests/area_zones.rs",
+    description = "Scripted game types: the rules language, verified IR, capabilities and VM",
+    features = [],
+    manifest = "crates/formats/rules",
+    package = "rules",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/formats/content:content",
+        "//crates/formats/game-markers:game-markers",
+        "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
+        "//third-party/rust:thiserror",
+        ":rules",
     ],
 )
 
@@ -75,6 +99,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/game-markers:game-markers",
         "//third-party/rust:serde",
         "//third-party/rust:serde_json",
         "//third-party/rust:thiserror",
@@ -94,6 +119,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/game-markers:game-markers",
         "//third-party/rust:serde",
         "//third-party/rust:serde_json",
         "//third-party/rust:thiserror",
@@ -113,6 +139,67 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/game-markers:game-markers",
+        "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
+        "//third-party/rust:thiserror",
+        ":rules",
+    ],
+)
+
+workspace_test(
+    name = "hud_marks",
+    crate = "hud_marks",
+    crate_root = "crates/formats/rules/tests/hud_marks.rs",
+    description = "Scripted game types: the rules language, verified IR, capabilities and VM",
+    features = [],
+    manifest = "crates/formats/rules",
+    package = "rules",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/formats/content:content",
+        "//crates/formats/game-markers:game-markers",
+        "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
+        "//third-party/rust:thiserror",
+        ":rules",
+    ],
+)
+
+workspace_test(
+    name = "modes",
+    crate = "modes",
+    crate_root = "crates/formats/rules/tests/modes.rs",
+    description = "Scripted game types: the rules language, verified IR, capabilities and VM",
+    features = [],
+    manifest = "crates/formats/rules",
+    package = "rules",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/formats/content:content",
+        "//crates/formats/game-markers:game-markers",
+        "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
+        "//third-party/rust:thiserror",
+        ":rules",
+    ],
+)
+
+workspace_test(
+    name = "modules",
+    crate = "modules",
+    crate_root = "crates/formats/rules/tests/modules.rs",
+    description = "Scripted game types: the rules language, verified IR, capabilities and VM",
+    features = [],
+    manifest = "crates/formats/rules",
+    package = "rules",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/formats/content:content",
+        "//crates/formats/game-markers:game-markers",
         "//third-party/rust:serde",
         "//third-party/rust:serde_json",
         "//third-party/rust:thiserror",
@@ -132,6 +219,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/game-markers:game-markers",
         "//third-party/rust:serde",
         "//third-party/rust:serde_json",
         "//third-party/rust:thiserror",
@@ -151,6 +239,87 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/game-markers:game-markers",
+        "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
+        "//third-party/rust:thiserror",
+        ":rules",
+    ],
+)
+
+workspace_test(
+    name = "vehicles",
+    crate = "vehicles",
+    crate_root = "crates/formats/rules/tests/vehicles.rs",
+    description = "Scripted game types: the rules language, verified IR, capabilities and VM",
+    features = [],
+    manifest = "crates/formats/rules",
+    package = "rules",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/formats/content:content",
+        "//crates/formats/game-markers:game-markers",
+        "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
+        "//third-party/rust:thiserror",
+        ":rules",
+    ],
+)
+
+workspace_test(
+    name = "world_data",
+    crate = "world_data",
+    crate_root = "crates/formats/rules/tests/world_data.rs",
+    description = "Scripted game types: the rules language, verified IR, capabilities and VM",
+    features = [],
+    manifest = "crates/formats/rules",
+    package = "rules",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/formats/content:content",
+        "//crates/formats/game-markers:game-markers",
+        "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
+        "//third-party/rust:thiserror",
+        ":rules",
+    ],
+)
+
+workspace_test(
+    name = "world_objects",
+    crate = "world_objects",
+    crate_root = "crates/formats/rules/tests/world_objects.rs",
+    description = "Scripted game types: the rules language, verified IR, capabilities and VM",
+    features = [],
+    manifest = "crates/formats/rules",
+    package = "rules",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/formats/content:content",
+        "//crates/formats/game-markers:game-markers",
+        "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
+        "//third-party/rust:thiserror",
+        ":rules",
+    ],
+)
+
+workspace_test(
+    name = "world_physics",
+    crate = "world_physics",
+    crate_root = "crates/formats/rules/tests/world_physics.rs",
+    description = "Scripted game types: the rules language, verified IR, capabilities and VM",
+    features = [],
+    manifest = "crates/formats/rules",
+    package = "rules",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/formats/content:content",
+        "//crates/formats/game-markers:game-markers",
         "//third-party/rust:serde",
         "//third-party/rust:serde_json",
         "//third-party/rust:thiserror",

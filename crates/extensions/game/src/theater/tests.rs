@@ -330,6 +330,7 @@ pub(super) fn host_facts() -> Facts {
         live_service: false,
         telemetry_hooks: live_proto::film::TelemetryHooks::UNIFIED,
         render_hooks: crate::run_plan::compiled_render_hooks(),
+        player_features: false,
     }
 }
 
@@ -404,40 +405,52 @@ fn a_completed_host_match_is_listed_and_uploads_under_its_lease() {
     assert!(session.upload.lock().unwrap().is_none());
 
     let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut reader = BufReader::new(&mut stream);
-        let mut line = String::new();
-        reader.read_line(&mut line).unwrap();
-        assert_eq!(line.trim_end(), "POST /v1/games/hl-fixture/film HTTP/1.1");
-        let mut length = None;
-        let mut authorised = false;
-        loop {
-            line.clear();
-            let bytes = reader.read_line(&mut line).unwrap();
-            if bytes == 0 || line.trim_end().is_empty() {
-                break;
+        // The stats stream, then the film file beside it.
+        let mut bodies = Vec::new();
+        for target in [
+            "POST /v1/games/hl-fixture/film HTTP/1.1",
+            "POST /v1/games/hl-fixture/film?object=film HTTP/1.1",
+        ] {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(&mut stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            assert_eq!(line.trim_end(), target);
+            let mut length = None;
+            let mut authorised = false;
+            loop {
+                line.clear();
+                let bytes = reader.read_line(&mut line).unwrap();
+                if bytes == 0 || line.trim_end().is_empty() {
+                    break;
+                }
+                let (name, value) = line.split_once(':').unwrap();
+                if name.eq_ignore_ascii_case("content-length") {
+                    length = Some(value.trim().parse().unwrap());
+                }
+                if name.eq_ignore_ascii_case("authorization") {
+                    authorised = value.trim() == "Bearer test-token";
+                }
             }
-            let (name, value) = line.split_once(':').unwrap();
-            if name.eq_ignore_ascii_case("content-length") {
-                length = Some(value.trim().parse().unwrap());
-            }
-            if name.eq_ignore_ascii_case("authorization") {
-                authorised = value.trim() == "Bearer test-token";
-            }
+            assert!(authorised);
+            let mut body = vec![0; length.unwrap()];
+            reader.read_exact(&mut body).unwrap();
+            drop(reader);
+            stream
+                .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            bodies.push(body);
         }
-        assert!(authorised);
-        let mut body = vec![0; length.unwrap()];
-        reader.read_exact(&mut body).unwrap();
-        let uploaded = Reader::new(Cursor::new(body)).unwrap();
+        let film_bytes = bodies.pop().unwrap();
+        let uploaded = Reader::new(Cursor::new(bodies.pop().unwrap())).unwrap();
         assert!(uploaded.finalized);
+        assert!(uploaded.header.inputs_in_film);
         assert_eq!(uploaded.header.meta.map, "lockout");
         assert_eq!(uploaded.header.meta.length_ticks, 30);
-        stream
-            .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
-            .unwrap();
+        assert!(film::file::FilmReader::open(Cursor::new(film_bytes)).unwrap().sealed);
     });
     // A disconnect can close the match without the retail game-end latch.
     // Feed the observer the same final event as Telemetry::close_film.
@@ -806,7 +819,8 @@ fn malformed_viewer_observations_leave_a_seekable_film_and_count_at_seal() {
     assert!(observed.contains(&1) && !observed.contains(&2) && observed.contains(&3));
     assert!((poses.scene().hill.unwrap().corners[0][0] - 2.0).abs() < 0.002);
     assert_eq!(poses.extras().unwrap().tick, 3);
-    let mut replay = film::blam::TrackReader::open(path).unwrap();
+    // A host's actions are in the film file beside its stats stream.
+    let mut replay = film::blam::TrackReader::open_with_film(path).unwrap();
     for tick in 1..=3 {
         assert_eq!(replay.step().unwrap().unwrap().tick, tick);
     }
@@ -934,7 +948,7 @@ fn camera_rig_survives_the_seek_presentation_round_trip() {
 }
 
 #[test]
-fn camera_motion_and_private_render_rng_leave_synthetic_replay_digests_unchanged() {
+fn camera_motion_and_display_lod_leave_film_and_netgame_digests_unchanged() {
     let dir = std::env::temp_dir().join(format!("film-camera-{}", live_proto::sign::random_id()));
     std::fs::create_dir(&dir).unwrap();
     let path = dir.join("synthetic.h2film");
@@ -946,8 +960,28 @@ fn camera_motion_and_private_render_rng_leave_synthetic_replay_digests_unchanged
     let pointer = crate::sim_glue::RANDOM_SEED_PTR;
     guest.map_zeroed(pointer & !4095, 4096, Permissions::RW).unwrap();
     guest.set_u32(pointer, SEED).unwrap();
+    #[cfg(feature = "gpu")]
+    let change_lod = |guest: &mut runtime::Guest, highest| {
+        use render_bridge::native_scene_lists::{LodDetail, ViewLodScale};
+        const VIEW_LOD: u32 = 0x10000;
+        let scale = ViewLodScale::new(VIEW_LOD + 4);
+        let display = if highest { LodDetail::Highest } else { LodDetail::Retail };
+        // A protected session's recorded geometry, and the local single-copy
+        // case with no reference at all: both keep the guest word — the walk
+        // the digests hash — at retail whatever the display choice.
+        crate::lod_distance::reset_view(guest, VIEW_LOD, 0x0003_1ef5, display, Some(1.0)).unwrap();
+        assert_eq!(scale.display(guest), display);
+        assert_eq!(scale.read(guest), LodDetail::Retail);
+        crate::lod_distance::reset_view(guest, VIEW_LOD, 0x0003_1ef5, display, None).unwrap();
+        assert_eq!(scale.display(guest), display);
+        assert_eq!(scale.read(guest), LodDetail::Retail);
+    };
+    #[cfg(feature = "gpu")]
+    guest.map_zeroed(0x10000, 4096, Permissions::RW).unwrap();
     for tick in 1..=60 {
         guest.set_u32(SEED, tick).unwrap();
+        #[cfg(feature = "gpu")]
+        change_lod(&mut guest, false);
         rec.checkpoint(&guest);
     }
     rec.finish(90, true).unwrap();
@@ -990,6 +1024,12 @@ fn camera_motion_and_private_render_rng_leave_synthetic_replay_digests_unchanged
                     draw.set_u32(SEED, 0xfeed).unwrap();
                     draw.set_u32(SEED + 4, 0xbeef).unwrap();
                 });
+            }
+            #[cfg(feature = "gpu")]
+            {
+                let before = lockstep::hash_sim(&guest, lockstep::SimRegion::HALO2).unwrap();
+                change_lod(&mut guest, moving_camera);
+                assert_eq!(lockstep::hash_sim(&guest, lockstep::SimRegion::HALO2), Some(before));
             }
             player.checkpoint(&guest);
         }

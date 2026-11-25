@@ -1,9 +1,28 @@
-# Simulation rewrite, phase 4: the Havok world
+# Simulation rewrite, phase 5: the Havok world
 
-Status: design, 2026-11-20. Nothing here is built. It is the phase 4 spec of
-[sim-rewrite.md](sim-rewrite.md), written after the user's decision 8.1:
-**physics stays bit-exact with retail** (bar E, a structural port). It
-replaces that page's phase 4 sketch, which assumed bar D.
+Status: phase 5 landing, 2026-11-25. Built, with unit tests only: the
+`sim-havok` kernels (motion, support, welding, the sweep, the solver, the
+pool, structure polygons, the accumulators) at
+`crates/rewrites/sim-havok`; the engine adapters — the oracle ports'
+fast paths (`sim_physics/support.rs`, `weld.rs`), the world entries and
+capture arms under `impl.sim.native.physics`
+(`crates/rewrites/engine/src/sim_physics/{world,broadphase,motion,parity}.rs`),
+installed by `sim-bridge/src/sim_physics.rs`; the heap digest
+(`live-telemetry`'s `havok_agents::digest`, `havok.digest`, the sim
+report's `havok.world` component); the shadow's `compare_only` arm for
+guest-authoritative candidates. The per-function `native_havok_solver`,
+`native_havok_support_vertices`, `native_havok_weld` and `native_mopp_box`
+switches are retired; their bodies are differential oracles. The ladder
+beyond step 1 (differential per entry, disc sweep, run parity, the
+behaviour suites) and the timing gate are open: the world step's inner
+phases (`30fcb0`, `30fef0`), the island solve entry (`31c100`) and the
+agent/narrowphase leaves still run lifted, and the solver kernel has no
+engine adapter yet.
+
+This is the phase 5 spec of [sim-rewrite.md](sim-rewrite.md), written
+after the user's decision 8.1: **physics stays bit-exact with retail**
+(bar E, a structural port). It replaces that page's phase 4 sketch, which
+assumed bar D.
 
 Read with [havok-runtime.md](havok-runtime.md) (layouts),
 [sim-budget.md](../perf/sim-budget.md) (the profile) and
@@ -323,30 +342,24 @@ validation of §7.3.
 ### 7.1 Crates and modules
 
 ```
-crates/sim-havok/               no runtime dependency; deps: sim-core, mopp, simd, x87
-  src/fp.rs                     Fp, Fast, Exact, V4, X, X87Cond
-  src/layout.rs                 retail offsets as named constants (from havok-runtime.md)
-  src/view.rs                   typed reads and writes over a GuestMem trait (bulk spans)
-  src/mem.rs                    the memory system: pool allocate/free, LIFO allocate/free
-  src/array.rs                  the pointer/count/capacity array: reserve, push, swap-remove
-  src/shape.rs                  ShapeRec decode with source bytes; aabb(), support()
-  src/structure.rs              StructureGeo
-  src/broadphase.rs             the sweep structure behind W+0xc4
-  src/agent/{bvtree,convex,t17,weld,sphere}.rs
-  src/gjk.rs                    cached-feature closest points (oracle: support.rs)
-  src/manifold.rs               the 4-slot manifold in a convex agent
-  src/contact.rs                contact manager and constraint: add, remove, id map
-  src/island.rs                 membership, merge, split, activate, deactivate
-  src/motion.rs                 the four motion kinds: forces, accumulator, integrate
-  src/jacobian.rs               row and schema builders per constraint class
-  src/solver.rs                 the schema interpreter (oracle: havok.rs, solver_*.rs)
-  src/step.rs                   the pipeline, as resumable stages
-  src/digest.rs                 canonical walk hash
-  src/fixture.rs                (test) synthetic worlds
-crates/rewrites/engine/src/sim_havok/    the adapter
-  mod.rs  boundary.rs  callbacks.rs  spec.rs
-crates/rewrites/engine/tests/sim_havok_differential.rs
-docs/engine/havok-step.md       the contract page (engine README format)
+crates/rewrites/sim-havok/      no runtime dependency; deps: sim-core, simd, x87
+  src/mem.rs                    the pool directory and LIFO overflow blocks
+  src/motion.rs                 unconstrained motion: forces, pose integration
+  src/jacobian.rs               motion accumulators on both sides of the solve
+  src/solver.rs                 the sequential-impulse schema interpreter
+  src/support.rs                the cached support simplex transform
+  src/structure.rs              a structure child's polygon and support feature
+  src/weld.rs                   the weld candidate selection from captured distances
+  src/broadphase.rs             the incremental three-axis endpoint sweep
+  (planned) fp, layout, view, array, shape, gjk, manifold, contact, island, step, fixture
+crates/rewrites/engine/src/sim_physics/   the adapters and the oracle ports
+  world.rs                      the step, island collide and island integrate entries
+  broadphase.rs                 the batch update's capture arm
+  motion.rs                     the two motion methods' capture arms
+  parity.rs                     the arms' open predictions and outcome counters
+  (planned)                     boundary.rs, callbacks.rs, spec.rs
+crates/rewrites/engine/tests/sim_havok_differential.rs (planned)
+docs/engine/havok-step.md       the contract page (engine README format; planned)
 ```
 
 Edited: `crates/hooking/guest-layout/src/points.rs`, `crates/rewrites/sim-bridge/src/sim_native.rs`,
@@ -680,13 +693,13 @@ pair (agent bytes, child list), each action pointer, then the memory
 system's bookkeeping words. Addresses are hashed as they are, so
 allocation order is covered.
 
-- Added to the agent API as `havok.digest` (read; `{}` → `{digest, bodies,
+- The agent API answers it as `havok.digest` (read; `{}` → `{digest, bodies,
   constraints, pairs, heap_used}`), documented in agent-api.md, with a
   fixture test. Decision under AGENTS.md: expand, because every later
   physics lane and test needs this check.
-- Added to the sim report as component `havok` in `state_components_v1`
-  when `impl.sim.arena-hash` is on, so `h2 sim diff` names the first tick
-  where physics differs. No new switch.
+- The sim report carries it as the `havok.world` row of
+  `state_components_v1` when the report has components, so `h2 sim diff`
+  names the first tick where physics differs. No new switch.
 - A strict variant hashes the whole heap block `[0x00479888]` for
   `0x105470` bytes. It holds while freed blocks carry the same stale
   bytes, which is true through slice 7 for everything but scratch-like
@@ -695,7 +708,7 @@ allocation order is covered.
 
 ### 9.3 Differential tests
 
-`crates/rewrites/engine/tests/sim_havok_differential.rs`, `differential` feature.
+`crates/rewrites/engine/tests/sim_physics_differential.rs` (a module of `tests/it.rs`), `differential` feature.
 
 - **Per entry.** From a fixture image, run the lifted entry on the
   interpreter and the Rust entry; compare all of memory outside the
@@ -774,7 +787,6 @@ Coordinator commands per slice (lanes run nothing):
 
 ```
 cargo test -p sim-havok
-cargo test -p engine --features differential --test sim_havok_differential
 cargo test -p engine --features differential --test it sim_physics_differential::
 cargo test -p agent havok
 ```

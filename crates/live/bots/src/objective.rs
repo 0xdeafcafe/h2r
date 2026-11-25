@@ -26,6 +26,18 @@ use engine::view::objects;
 
 use crate::brain::{Me, Seen, Vec3};
 
+pub mod belief;
+mod lean;
+
+pub use belief::{Belief, Outlook};
+pub use lean::Lean;
+mod zones;
+pub use zones::{
+    BALL_COVER, EDGE_CAUTION, FOOTWORK_ROOM, HILL_KEEP, HILL_KEEP_CAUTION, RUSHERS, SCREEN,
+    STAGE, TERRITORY_KEEP, TERRITORY_REACH, Temper,
+};
+pub(crate) use zones::within;
+
 type R<T> = Result<T, MemFault>;
 
 // ---- where it lives ----
@@ -89,14 +101,23 @@ pub struct Spot {
     pub position: Vec3,
 }
 
-/// The hill: its corners, in the scenario's order.
+/// The hill: its corners, in the scenario's order, or the area of its one
+/// flag (docs/game/gametype-markers.md, "In a script"): the zone a rules
+/// script scores.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Hill {
     pub corners: Vec<Vec3>,
+    /// The area round the hill's flag, the flag's place, when the hill is
+    /// shaped as one: it then decides [`Hill::contains`], [`Hill::center`]
+    /// and [`Hill::radius`].
+    pub area: Option<(Vec3, game_markers::Area)>,
 }
 
 impl Hill {
     pub fn center(&self) -> Vec3 {
+        if let Some((at, area)) = &self.area {
+            return area.middle(*at);
+        }
         let n = self.corners.len().max(1) as f32;
         let mut c = [0.0; 3];
         for p in &self.corners {
@@ -109,12 +130,24 @@ impl Hill {
     /// The corners' mean distance from the centre (XY).
     pub fn radius(&self) -> f32 {
         let c = self.center();
+        if let Some((at, area)) = &self.area {
+            let outline = area.outline();
+            let n = outline.len().max(1) as f32;
+            return outline
+                .iter()
+                .map(|o| dist_xy([at[0] + o[0], at[1] + o[1], c[2]], c))
+                .sum::<f32>()
+                / n;
+        }
         let n = self.corners.len().max(1) as f32;
         self.corners.iter().map(|p| dist_xy(*p, c)).sum::<f32>() / n
     }
     /// Whether `p` stands in the hill: inside the corners (taken round
     /// the centre by angle) and within [`HILL_HEIGHT`] of it.
     pub fn contains(&self, p: Vec3) -> bool {
+        if let Some((at, area)) = &self.area {
+            return area.contains(*at, p);
+        }
         if self.corners.len() < 3 {
             return false;
         }
@@ -143,6 +176,21 @@ impl Hill {
     }
 }
 
+/// The areas of the scenario's netgame flags, by flag index, as the host's
+/// census has them (`game::rules::world::zones`): the document's data,
+/// which no guest memory holds.
+static FLAG_AREAS: std::sync::Mutex<Vec<(u32, game_markers::Area)>> = std::sync::Mutex::new(Vec::new());
+
+/// Sets the flag areas the bots read a rules script's hill from: the host
+/// sets them with the census when a game starts, and they replace the last.
+pub fn set_flag_areas(areas: Vec<(u32, game_markers::Area)>) {
+    *FLAG_AREAS.lock().unwrap_or_else(|e| e.into_inner()) = areas;
+}
+
+fn flag_areas() -> Vec<(u32, game_markers::Area)> {
+    FLAG_AREAS.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 /// How far above or below a hill's centre still counts as in it.
 pub const HILL_HEIGHT: f32 = 2.0;
 
@@ -162,6 +210,10 @@ pub enum State {
         occupants: u16,
     },
     Territories(Vec<Territory>),
+    /// Territories without the engine's globals (a rules script that
+    /// keeps none): the markers alone. Who stands in one is judged by
+    /// distance; no owner is known.
+    Markers(Vec<Vec3>),
     Juggernauts(u16),
     Assault {
         defending: Option<i16>,
@@ -195,7 +247,11 @@ impl Objective {
         let Some(Goal::Go(at)) = goal else {
             return false;
         };
-        dist(me.position,at) < crate::mind::TAKE_RANGE && self.items.iter().any(|i|{
+        // Across a step or a lip, the object sits higher or lower than
+        // the unit's origin: in reach by XY with a little height.
+        dist_xy(me.position, at) < crate::mind::TAKE_RANGE
+            && (me.position[2] - at[2]).abs() < TAKE_HEIGHT
+            && self.items.iter().any(|i|{
             i.position==at && i.carrier.is_none() && match self.game {
                 Game::Oddball => true,
                 Game::Ctf => i.team!=me.team,
@@ -215,6 +271,16 @@ impl Objective {
     pub(crate) fn am_juggernaut(&self) -> bool {
         matches!(self.state, State::Juggernauts(mask) if member(mask,self.me))
     }
+    /// The games whose held zones keep the fight's footwork inside them
+    /// (`zones::within`): the ball, the hill and the territories.
+    pub(crate) fn zone_footwork(&self) -> bool {
+        matches!(self.game, Game::Oddball | Game::Koth | Game::Territories)
+    }
+    /// A ball carrier cannot shoot (it melees only): it is no gun in a
+    /// fight's count.
+    pub(crate) fn unarmed(&self, id: u32) -> bool {
+        self.game == Game::Oddball && self.items.iter().any(|i| i.carrier == Some(id))
+    }
     pub(crate) fn juggernaut_opponent(&self, id: u32) -> Option<bool> {
         match self.state {
             State::Juggernauts(mask) => Some(member(mask, id) != member(mask, self.me)),
@@ -222,6 +288,10 @@ impl Objective {
         }
     }
 }
+
+/// A loose flag, ball or bomb is in reach this far above or below the
+/// unit's origin.
+pub const TAKE_HEIGHT: f32 = 1.0;
 
 // ---- reading it ----
 
@@ -253,11 +323,26 @@ pub fn read(m: &dyn GuestMemory, me: u32) -> R<Option<Objective>> {
                 out.state = State::Juggernauts(m.u16(j)?);
             }
         }
-        Game::Territories => out.state = State::Territories(territories(m, &netgame_flags(m)?)?),
+        Game::Territories => {
+            out.state = if m.u32(points::TERRITORIES_GLOBALS.base)? == 0 {
+                State::Markers(zones::territory_markers(m)?)
+            } else {
+                State::Territories(territories(m, &netgame_flags(m)?)?)
+            }
+        }
         Game::Koth => read_hill(m, &netgame_flags(m)?, &mut out)?,
         Game::Oddball => {
             let balls = m.u32(points::ODDBALL_GLOBALS.base)?;
-            if balls != 0 {
+            if balls == 0 {
+                // No Oddball globals (a rules script): the neutral spawns.
+                for position in zones::ball_spawns(&netgame_flags(m)?) {
+                    out.spots.push(Spot {
+                        kind: kind::BALL_SPAWN,
+                        team: None,
+                        position,
+                    });
+                }
+            } else {
                 let flags = netgame_flags(m)?;
                 for i in 0..3 {
                     let index = m.u32(balls + 0xc + 4 * i)?;
@@ -352,12 +437,18 @@ fn read_assault(m: &dyn GuestMemory, out: &mut Objective) -> R<Vec<(u16, u16)>> 
 fn read_hill(m: &dyn GuestMemory, flags: &[(Vec3, u16, u16)], out: &mut Objective) -> R<()> {
     let k = m.u32(KOTH_GLOBALS)?;
     if k == 0 {
+        // No King globals (a rules script): the first hill's corners, and
+        // who stands in it judged by them.
+        out.hill = zones::first_hill(flags, &flag_areas());
         return Ok(());
     }
     out.state = State::Hill {
         occupants: m.u16(k + engine::objectives::HILL_OCCUPANTS)?,
     };
-    out.hill = engine::objectives::hill_corners(m, k, flags)?.map(|(_, corners)| Hill { corners });
+    out.hill = engine::objectives::hill_corners(m, k, flags)?.map(|(_, corners)| Hill {
+        corners,
+        area: None,
+    });
     Ok(())
 }
 
@@ -493,8 +584,6 @@ pub const HOME: f32 = 2.0;
 pub const RETURN_RANGE: f32 = 25.0;
 /// A defender keeps within this of our flag's spawn.
 pub const DEFEND_RADIUS: f32 = 4.0;
-/// A bot in the hill keeps within this part of its radius.
-pub const HILL_KEEP: f32 = 0.6;
 
 fn dist(a: Vec3, b: Vec3) -> f32 {
     let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -508,6 +597,20 @@ fn dist_xy(a: Vec3, b: Vec3) -> f32 {
 /// other living players and whether teams play. `None` when it asks
 /// nothing (no flag read, no hill): the bot plays as in Slayer.
 pub fn plan(o: &Objective, me: &Me, others: &[Seen], teams: bool) -> Option<Goal> {
+    plan_with(o, me, others, teams, &Outlook::default(), Temper::default())
+}
+
+/// [`plan`] for a bot of this temper (its name's traits), with what it
+/// believes besides what it sees: the flags or bombs it knows are missing
+/// ([`Belief`]).
+pub fn plan_with(
+    o: &Objective,
+    me: &Me,
+    others: &[Seen],
+    teams: bool,
+    outlook: &Outlook,
+    temper: Temper,
+) -> Option<Goal> {
     let mates: Vec<u32> = others
         .iter()
         .filter(|s| teams && s.team == me.team)
@@ -515,52 +618,20 @@ pub fn plan(o: &Objective, me: &Me, others: &[Seen], teams: bool) -> Option<Goal
         .collect();
     let friend = |id: u32| id == o.me || mates.contains(&id);
     match o.game {
-        Game::Ctf => flag_plan(o, me, &mates, &friend),
-        Game::Assault => bomb_plan(o, me, others, &mates, &friend),
-        Game::Oddball => ball_plan(o, me, &friend),
-        Game::Koth => {
-            let h = o.hill.as_ref()?;
-            let c = h.center();
-            if let State::Hill { occupants } = o.state {
-                return Some(if member(occupants, o.me) {
-                    Goal::Hold(me.position, 0.0)
-                } else {
-                    Goal::Go(c)
-                });
+        Game::Ctf => flag_plan(o, me, others, &mates, &friend, outlook),
+        Game::Assault => bomb_plan(o, me, others, &mates, &friend, outlook),
+        Game::Oddball => zones::ball(o, me, others, &mates, &friend, temper),
+        Game::Koth => Some(zones::hill(o, o.hill.as_ref()?, me, others, &friend, temper)),
+        Game::Territories => match &o.state {
+            State::Territories(sites) => {
+                zones::territory(o, sites, me, others, &mates, teams, &friend)
             }
-            if h.contains(me.position) {
-                Some(Goal::Hold(c, (h.radius() * HILL_KEEP).max(0.5)))
-            } else {
-                Some(Goal::Go(c))
+            State::Markers(markers) => {
+                let sites = zones::sites_from_markers(markers, o.me, me.position, others);
+                zones::territory(o, &sites, me, others, &mates, teams, &friend)
             }
-        }
-        Game::Territories => {
-            let State::Territories(sites) = &o.state else {
-                return None;
-            };
-            let allied =
-                |s: &Territory| s.owner == Some(o.me) || teams && s.owner_team == Some(me.team);
-            let priority = |s: &Territory| {
-                let hostile = others
-                    .iter()
-                    .any(|p| !friend(p.id) && member(s.occupants, p.id));
-                match (allied(s), hostile, member(s.occupants, o.me)) {
-                    (true, true, _) | (false, _, true) => 0,
-                    (false, _, _) => 1,
-                    _ => 2,
-                }
-            };
-            let site = sites.iter().min_by(|a, b| {
-                priority(a)
-                    .cmp(&priority(b))
-                    .then_with(|| dist(a.at, me.position).total_cmp(&dist(b.at, me.position)))
-            })?;
-            Some(if member(site.occupants, o.me) {
-                Goal::Hold(me.position, 0.0)
-            } else {
-                Goal::Go(site.at)
-            })
-        }
+            _ => None,
+        },
         Game::Juggernaut => {
             let State::Juggernauts(mask) = o.state else {
                 return None;
@@ -583,7 +654,15 @@ fn nearest<'a, T: 'a>(at: Vec3, it: impl Iterator<Item = (&'a T, Vec3)>) -> Opti
         .map(|(t, _)| t)
 }
 
-fn flag_plan(o: &Objective, me: &Me, mates: &[u32], friend: &dyn Fn(u32) -> bool) -> Option<Goal> {
+fn flag_plan(
+    o: &Objective,
+    me: &Me,
+    others: &[Seen],
+    mates: &[u32],
+    friend: &dyn Fn(u32) -> bool,
+    outlook: &Outlook,
+) -> Option<Goal> {
+    let lean = outlook.lean;
     let mine = |s: &&Spot| s.team == Some(me.team);
     let at = me.position;
     let spot = |ty: u16, ours: bool| {
@@ -605,6 +684,7 @@ fn flag_plan(o: &Objective, me: &Me, mates: &[u32], friend: &dyn Fn(u32) -> bool
     }
 
     let role = role_of(o.me, mates);
+    let guard = lean.guard_radius();
     let ours = |i: &&Item| i.team == me.team;
     let own = o.items.iter().find(ours);
     let theirs: Vec<&Item> = o.items.iter().filter(|i| !ours(i)).collect();
@@ -619,9 +699,12 @@ fn flag_plan(o: &Objective, me: &Me, mates: &[u32], friend: &dyn Fn(u32) -> bool
     if let Some(f) = own {
         match f.carrier {
             // 2. An enemy has our flag: kill the carrier. Defenders always;
-            // attackers when the carrier is nearer than their target.
+            // attackers when the carrier is nearer than their target (a
+            // focused attacker keeps on for the flag longer).
             Some(c) if !friend(c) => {
-                let nearer = target.is_none_or(|t| dist(f.position, at) < dist(t.position, at));
+                let nearer = target.is_none_or(|t| {
+                    dist(f.position, at) < dist(t.position, at) * lean.carrier_pull()
+                });
                 if role == Role::Defend || nearer {
                     return Some(Goal::Hunt(c, f.position));
                 }
@@ -630,10 +713,16 @@ fn flag_plan(o: &Objective, me: &Me, mates: &[u32], friend: &dyn Fn(u32) -> bool
             // 3. Our flag lies away from home: return it (touch it).
             None => {
                 let away = home.is_some_and(|h| dist(h, f.position) > HOME);
-                if away && (role == Role::Defend || dist(f.position, at) < RETURN_RANGE) {
+                if away && (role == Role::Defend || dist(f.position, at) < lean.return_range()) {
                     return Some(Goal::Go(f.position));
                 }
             }
+        }
+    } else if outlook.missing(me.team) && role == Role::Defend {
+        // Our flag is gone and its carrier out of sight: cut it off on
+        // its way to their base.
+        if let Some(p) = spot(kind::CTF_RETURN, false).or(spot(kind::CTF_SPAWN, false)) {
+            return Some(Goal::Go(p));
         }
     }
     // 4. A teammate has theirs: attackers escort, defenders guard.
@@ -649,7 +738,7 @@ fn flag_plan(o: &Objective, me: &Me, mates: &[u32], friend: &dyn Fn(u32) -> bool
             .filter(|&id| Some(id) != e.carrier)
             .collect();
         return Some(match (role_of(o.me, &free), home) {
-            (Role::Defend, Some(base)) => Goal::Hold(base, DEFEND_RADIUS),
+            (Role::Defend, Some(base)) => Goal::Hold(base, guard),
             _ => Goal::Escort(e.position),
         });
     }
@@ -657,31 +746,135 @@ fn flag_plan(o: &Objective, me: &Me, mates: &[u32], friend: &dyn Fn(u32) -> bool
         if let Some(t) = target {
             return Some(match t.carrier {
                 Some(c) => Goal::Hunt(c, t.position),
-                None => Goal::Go(t.position),
+                None => grab_or_escort(o, at, t.position, others, mates, lean),
             });
+        }
+        // Nothing known to take (their flag is missing): play as in
+        // Slayer until it turns up, rather than walking home to wait.
+        if home.is_some() {
+            return None;
         }
     }
     // 5. Guard our flag's spawn (or the flag itself).
-    let guard = home.or(own.filter(|f| f.carrier.is_none()).map(|f| f.position));
-    guard
-        .map(|g| Goal::Hold(g, DEFEND_RADIUS))
+    let base = home.or(own.filter(|f| f.carrier.is_none()).map(|f| f.position));
+    base.map(|g| Goal::Hold(g, guard))
         .or_else(|| target.map(|t| Goal::Go(t.position)))
 }
 
+/// An attacker takes the loose flag or bomb at `item`, unless it leans to
+/// escorting ([`Lean::escorts`]) and another attacker is nearer to it:
+/// then it covers them on the way. The nearest attacker always goes.
+fn grab_or_escort(
+    o: &Objective,
+    at: Vec3,
+    item: Vec3,
+    others: &[Seen],
+    mates: &[u32],
+    lean: Lean,
+) -> Goal {
+    if lean.escorts() {
+        let team: Vec<u32> = mates.iter().copied().chain([o.me]).collect();
+        let attacker = |id: u32| {
+            let rest: Vec<u32> = team.iter().copied().filter(|&m| m != id).collect();
+            role_of(id, &rest) == Role::Attack
+        };
+        let mine = (dist(at, item), o.me);
+        if let Some(m) = nearest(
+            item,
+            others
+                .iter()
+                .filter(|s| mates.contains(&s.id) && attacker(s.id))
+                .filter(|s| (dist(s.position, item), s.id) < mine)
+                .map(|s| (s, s.position)),
+        ) {
+            return Goal::Escort(m.position);
+        }
+    }
+    Goal::Go(item)
+}
+
+/// A planted bomb goes off where it lies: nobody stands within this of it
+/// (world units, XY).
+pub const BLAST_CLEAR: f32 = 6.0;
+/// Clear of the blast, a bot holds within this of its spot.
+pub const CLEAR_HOLD: f32 = 1.5;
+
+/// A spot clear of the blast of the bomb planted at `bomb`: out along the
+/// line from the bomb to the bot, or towards the nearest public spot
+/// outside the blast when the bot stands on the bomb.
+fn clear_of(bomb: Vec3, at: Vec3, spots: &[Spot]) -> Vec3 {
+    let unit = |p: Vec3| {
+        let d = [p[0] - bomb[0], p[1] - bomb[1]];
+        let l = d[0].hypot(d[1]);
+        (l >= 0.5).then(|| [d[0] / l, d[1] / l])
+    };
+    let away = nearest(
+        at,
+        spots
+            .iter()
+            .filter(|s| dist_xy(s.position, bomb) > BLAST_CLEAR)
+            .map(|s| (s, s.position)),
+    );
+    let dir = unit(at)
+        .or_else(|| away.and_then(|s| unit(s.position)))
+        .unwrap_or([-1.0, 0.0]);
+    let r = BLAST_CLEAR + CLEAR_HOLD;
+    [bomb[0] + dir[0] * r, bomb[1] + dir[1] * r, at[2]]
+}
+
 /// In Assault a team takes its own (or a neutral) bomb to the opposing
-/// plate. A dropped enemy bomb is not a flag we can touch to return.
+/// plate. A dropped enemy bomb is not a flag we can touch to return. A
+/// planted bomb is left alone and its blast kept clear of.
 fn bomb_plan(
     o: &Objective,
     me: &Me,
     others: &[Seen],
     mates: &[u32],
     friend: &dyn Fn(u32) -> bool,
+    outlook: &Outlook,
 ) -> Option<Goal> {
     let at = me.position;
+    let planted: Vec<Vec3> = match o.state {
+        State::Assault { planted, .. } => o
+            .items
+            .iter()
+            .filter(|i| i.carrier.is_none() && member(planted, i.team as u32))
+            .map(|i| i.position)
+            .collect(),
+        _ => Vec::new(),
+    };
+    let goal = bomb_goal(o, me, others, mates, friend, outlook);
+    let Some(bomb) = nearest(at, planted.iter().map(|p| (p, *p))).copied() else {
+        return goal;
+    };
+    let inside = |p: Vec3| dist_xy(p, bomb) < BLAST_CLEAR;
+    let to = match goal {
+        Some(Goal::Carry(_) | Goal::Keep) => return goal,
+        Some(Goal::Go(p) | Goal::Hold(p, _) | Goal::Escort(p) | Goal::Hunt(_, p)) => Some(p),
+        None => None,
+    };
+    if to.map_or(inside(at), inside) {
+        return Some(Goal::Hold(clear_of(bomb, at, &o.spots), CLEAR_HOLD));
+    }
+    goal
+}
+
+fn bomb_goal(
+    o: &Objective,
+    me: &Me,
+    others: &[Seen],
+    mates: &[u32],
+    friend: &dyn Fn(u32) -> bool,
+    outlook: &Outlook,
+) -> Option<Goal> {
+    let at = me.position;
+    let lean = outlook.lean;
     let defending = match o.state {
         State::Assault { defending, .. } => defending,
         _ => None,
     };
+    let is_planted =
+        |i: &Item| matches!(o.state, State::Assault { planted, .. } if member(planted, i.team as u32));
     let plate = |ours| {
         nearest(
             at,
@@ -720,13 +913,16 @@ fn bomb_plan(
     };
     let incoming = closest(&|i| i.carrier.is_some_and(|id| !friend(id)));
     let escort = closest(&|i| i.carrier.is_some_and(friend));
-    let bomb = closest(&|i| i.carrier.is_none() && (i.team == me.team || i.team == 8));
+    let bomb = closest(&|i| {
+        i.carrier.is_none() && (i.team == me.team || i.team == 8) && !is_planted(i)
+    });
     let defender = role_of(o.me, mates) == Role::Defend;
     let home = plate(true);
+    let guard = lean.guard_radius();
     if defending == Some(me.team) {
         return incoming
             .and_then(|b| b.carrier.map(|id| Goal::Hunt(id, b.position)))
-            .or_else(|| home.map(|p| Goal::Hold(p, DEFEND_RADIUS)));
+            .or_else(|| home.map(|p| Goal::Hold(p, guard)));
     }
     if let Some(b) = incoming
         && (defender
@@ -745,9 +941,6 @@ fn bomb_plan(
         return Some(Goal::Escort(b.position));
     }
     if let Some(b) = bomb {
-        if matches!(o.state, State::Assault { planted, .. } if member(planted,b.team as u32)) {
-            return Some(Goal::Hold(b.position, DEFEND_RADIUS));
-        }
         if let Some(plate) = theirs
             && dist(plate, b.position) <= HOME
         {
@@ -765,53 +958,14 @@ fn bomb_plan(
             });
         }
         if !defender || home.is_none() || defending.is_some() {
-            return Some(Goal::Go(b.position));
+            return Some(grab_or_escort(o, at, b.position, others, mates, lean));
         }
     }
-    home.map(|p| Goal::Hold(p, DEFEND_RADIUS))
+    home.map(|p| Goal::Hold(p, guard))
         .or_else(|| bomb.map(|b| Goal::Go(b.position)))
-}
-
-fn ball_plan(o: &Objective, me: &Me, friend: &dyn Fn(u32) -> bool) -> Option<Goal> {
-    if o.items.iter().any(|i| i.carrier == Some(o.me)) {
-        return Some(Goal::Keep);
-    }
-    let at = me.position;
-    // A free ball first, then an enemy carrier, then a teammate's.
-    if let Some(b) = nearest(
-        at,
-        o.items
-            .iter()
-            .filter(|i| i.carrier.is_none())
-            .map(|i| (i, i.position)),
-    ) {
-        return Some(Goal::Go(b.position));
-    }
-    if let Some(b) = nearest(
-        at,
-        o.items
-            .iter()
-            .filter(|i| i.carrier.is_some_and(|c| !friend(c)))
-            .map(|i| (i, i.position)),
-    ) && let Some(c) = b.carrier
-    {
-        return Some(Goal::Hunt(c, b.position));
-    }
-    o.items
-        .iter()
-        .find(|i| i.carrier.is_some_and(friend))
-        .map(|i| Goal::Escort(i.position))
-        .or_else(|| {
-            nearest(
-                at,
-                o.spots
-                    .iter()
-                    .filter(|s| s.kind == kind::BALL_SPAWN)
-                    .map(|s| (s, s.position)),
-            )
-            .map(|s| Goal::Go(s.position))
-        })
 }
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod team_tests;

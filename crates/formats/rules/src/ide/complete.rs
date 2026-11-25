@@ -7,11 +7,12 @@ use super::info::{self, LANG};
 use super::model::{self, DefKind, FieldTarget, Model, T};
 use super::scan::{self, K};
 use super::{CompletionItem, Markup, PLAIN_TEXT, SNIPPET, kind};
-use crate::caps::{self, CAPABILITIES, CARRIERS, ENTRIES, VARIANT_FIELDS};
+use crate::caps::{self, CAPABILITIES, ENTRIES, VARIANT_FIELDS};
 use crate::ir::{Event, Scope};
 use crate::lang::lower::FIELDS;
 use crate::lang::sig;
 use crate::lang::types::{Handle, Type};
+use crate::settings::{self, Kind as SettingKind};
 
 /// The netgame flags' built-in labels (`forge_doc::labels::builtin_label`),
 /// each with the kind and requirements the built-in scripts declare it
@@ -108,6 +109,24 @@ fn candidates(m: &Model, off: usize) -> Vec<CompletionItem> {
     let depth = braces.len();
     let in_requires = depth == 0 && first_on_line.is_some_and(|f| m.is_word(f, "requires"));
 
+    // Inside `settings { }`: the record's setting names, and the values
+    // of the setting before an `=`.
+    if let Some(open) = settings_open(m, i) {
+        return settings_block(m, open, i, off);
+    }
+    // The header lines `quick`, `type` and `uses`.
+    if depth == 0
+        && let Some(f) = first_on_line
+    {
+        if m.is_word(f, "quick") && (prev == Some(f) || ptext == ",") {
+            return quick_marks(m, f, i);
+        }
+        if m.is_word(f, "type") || m.is_word(f, "uses") {
+            let uses = m.is_word(f, "uses");
+            return if prev == Some(f) { game_types(uses) } else { Vec::new() };
+        }
+    }
+
     if let Some(dot) = prev
         && ptext == "."
     {
@@ -132,7 +151,7 @@ fn candidates(m: &Model, off: usize) -> Vec<CompletionItem> {
             let set = m
                 .code
                 .get(colon + 1)
-                .is_some_and(|t| matches!(m.text(t), "objects" | "zones" | "spawns"));
+                .is_some_and(|t| matches!(m.text(t), "objects" | "zones" | "spawns" | "path"));
             return requirements(set);
         }
         return Vec::new();
@@ -154,9 +173,6 @@ fn candidates(m: &Model, off: usize) -> Vec<CompletionItem> {
     }
     if depth == 0 && ptext == "on" {
         return events(m, "");
-    }
-    if ptext == "carrier" {
-        return carriers();
     }
     if in_requires {
         return capabilities("", false);
@@ -256,19 +272,6 @@ fn after_dot(m: &Model, dot: usize, off: usize, in_requires: bool) -> Vec<Comple
         return capabilities(&format!("{path}."), false);
     }
     if parts.len() == 1 && m.visible_locals(off).iter().all(|&d| m.defs[d].name != head) {
-        if head == "carrier" {
-            return CARRIERS
-                .iter()
-                .map(|(n, index)| {
-                    plain(
-                        n,
-                        kind::ENUM_MEMBER,
-                        "carrier",
-                        format!("The retail {n} engine (engine index {index}): `carrier.{n}`."),
-                    )
-                })
-                .collect();
-        }
         if head == "variant" {
             return VARIANT_FIELDS
                 .iter()
@@ -401,19 +404,204 @@ fn events(m: &Model, prefix: &str) -> Vec<CompletionItem> {
         .collect()
 }
 
-fn carriers() -> Vec<CompletionItem> {
-    CARRIERS
+/// The `{` of the `settings` block the code index `i` is inside, when it
+/// is directly inside one.
+fn settings_open(m: &Model, i: usize) -> Option<usize> {
+    let mut open: Vec<usize> = Vec::new();
+    for j in 0..i.min(m.code.len()) {
+        if m.is_punct(j, "{") {
+            open.push(j);
+        } else if m.is_punct(j, "}") {
+            open.pop();
+        }
+    }
+    let &last = open.last()?;
+    (open.len() == 1 && last >= 1 && m.is_word(last - 1, "settings")).then_some(last)
+}
+
+/// The names the block's other lines set: the first word of a line (or
+/// after a `;`) followed by `=`, leaving out the word at `skip`.
+fn block_names<'s>(m: &Model<'s>, open: usize, skip: usize) -> Vec<&'s str> {
+    let end = m.partner(open).unwrap_or(m.code.len());
+    let mut out = Vec::new();
+    for j in open + 1..end {
+        if j == skip || m.code[j].k != K::Ident || !m.is_punct(j + 1, "=") {
+            continue;
+        }
+        let starts = j == open + 1
+            || m.is_punct(j - 1, ";")
+            || m.li.line_of(m.code[j - 1].s) < m.li.line_of(m.code[j].s);
+        if starts {
+            out.push(m.text(&m.code[j]));
+        }
+    }
+    out
+}
+
+/// Inside the block: after an `=` the setting's values; where a setting
+/// starts (after `{`, a `;` or on a new line) the settings of the
+/// script's game that the block does not set yet.
+fn settings_block(m: &Model, open: usize, i: usize, off: usize) -> Vec<CompletionItem> {
+    // `open < i`, so there is a token before.
+    let prev = i - 1;
+    let ptext = m.text(&m.code[prev]);
+    if ptext == "=" {
+        return match prev.checked_sub(1).filter(|&j| j > open) {
+            Some(j) => setting_values(m.text(&m.code[j])),
+            None => Vec::new(),
+        };
+    }
+    let line = m.li.line_of(off);
+    let fresh = prev == open || ptext == ";" || m.li.line_of(m.code[prev].s) < line;
+    if !fresh {
+        return Vec::new();
+    }
+    let engine = m.engine();
+    let taken = block_names(m, open, i);
+    settings::TABLE
         .iter()
-        .map(|(n, index)| {
-            plain(
-                n,
-                kind::ENUM_MEMBER,
-                format!("engine index {index}"),
-                format!("The script rides the retail {n} engine."),
-            )
+        .enumerate()
+        .filter(|(_, r)| engine.is_none_or(|c| r.applies(c)) && !taken.contains(&r.name))
+        .map(|(index, r)| setting_item(index as u16, r, engine))
+        .collect()
+}
+
+/// One setting as a completion: it inserts `name = ` and the value place.
+fn setting_item(index: u16, r: &settings::Row, engine: Option<u8>) -> CompletionItem {
+    let value = match r.kind {
+        SettingKind::Bool => "${1|true,false|}".to_string(),
+        SettingKind::Choice { names, .. } if !names.is_empty() => {
+            let list: Vec<&str> = names.iter().map(|c| c.name).collect();
+            format!("${{1|{}|}}", list.join(","))
+        }
+        SettingKind::Seconds { lo, .. } => format!("${{1:{}}}s", lo.max(1)),
+        k => format!("${{1:{}}}", k.range().0),
+    };
+    item(
+        r.name,
+        kind::PROPERTY,
+        format!("{}: {}", r.label, r.kind.word()),
+        info::setting_markdown(index, engine),
+        format!("{} = {value}", r.name),
+        SNIPPET,
+    )
+}
+
+/// The values the setting called `name` takes: a bool's two, a choice's
+/// names, `none` where zero is none, and a number's place.
+fn setting_values(name: &str) -> Vec<CompletionItem> {
+    let Some((_, row)) = settings::named(name) else {
+        return Vec::new();
+    };
+    let (lo, hi) = row.kind.range();
+    let mut out = Vec::new();
+    match row.kind {
+        SettingKind::Bool => {
+            out.push(plain("true", kind::KEYWORD, row.label, format!("{} on.", row.label)));
+            out.push(plain("false", kind::KEYWORD, row.label, format!("{} off.", row.label)));
+        }
+        SettingKind::Choice { names, .. } => {
+            for c in names {
+                out.push(plain(
+                    c.name,
+                    kind::ENUM_MEMBER,
+                    c.label,
+                    format!("{}: {}. The record stores {}.", row.label, c.label, c.value),
+                ));
+            }
+        }
+        SettingKind::Int { .. } | SettingKind::Percent { .. } => {
+            out.push(item(
+                "number",
+                kind::SNIPPET,
+                format!("{lo} to {hi}"),
+                format!("{}: a number, {lo} to {hi}.", row.label),
+                format!("${{1:{lo}}}"),
+                SNIPPET,
+            ));
+        }
+        SettingKind::Seconds { .. } => {
+            out.push(item(
+                "seconds",
+                kind::SNIPPET,
+                format!("{lo}s to {hi}s"),
+                format!("{}: a time in whole seconds, {lo}s to {hi}s.", row.label),
+                format!("${{1:{}}}s", lo.max(1)),
+                SNIPPET,
+            ));
+        }
+    }
+    if row.zero_is_none && row.choice("none").is_none() {
+        out.push(plain("none", kind::KEYWORD, row.label, "No limit: the record stores 0."));
+    }
+    out
+}
+
+/// After `type`: every game type; after `uses`: the retail ones, each
+/// with a built-in game.
+fn game_types(uses: bool) -> Vec<CompletionItem> {
+    crate::types::TABLE
+        .iter()
+        .filter(|r| !uses || r.ty.is_retail())
+        .map(|r| {
+            let doc = if uses {
+                format!("Play the built-in {} game's rules under this script's settings.", r.label)
+            } else {
+                format!("Filed in the {} row; a point is called {}.", r.label, r.points)
+            };
+            plain(r.name, kind::ENUM_MEMBER, if uses { "uses" } else { "type" }, doc)
         })
         .collect()
 }
+
+/// After `quick` or a `,` on its line: the script's options, then the
+/// settings its block sets, then the other record settings of its
+/// script's game; each name once.
+fn quick_marks(m: &Model, first: usize, i: usize) -> Vec<CompletionItem> {
+    let marked: Vec<&str> = (first + 1..i)
+        .filter(|&j| m.code[j].k == K::Ident)
+        .map(|j| m.text(&m.code[j]))
+        .collect();
+    let engine = m.engine();
+    let mut out = Vec::new();
+    for (d, def) in m.defs.iter().enumerate() {
+        if def.kind == DefKind::Option && !marked.contains(&def.name.as_str()) {
+            out.push(plain(
+                &def.name,
+                kind::CONSTANT,
+                format!("option: {}", m.type_name(def.ty)),
+                info::def_markdown(m, d),
+            ));
+        }
+    }
+    // The settings the block sets, from the tokens: the line being edited
+    // may keep the tree from parsing.
+    let in_block = m
+        .header_words()
+        .into_iter()
+        .find(|&w| m.is_word(w, "settings"))
+        .map_or_else(Vec::new, |w| block_names(m, w + 1, usize::MAX));
+    let mut rows: Vec<(bool, u16, &settings::Row)> = Vec::new();
+    for (index, r) in settings::TABLE.iter().enumerate() {
+        if !r.is_record() || !engine.is_none_or(|c| r.applies(c)) || marked.contains(&r.name) {
+            continue;
+        }
+        let set = in_block.contains(&r.name);
+        rows.push((set, index as u16, r));
+    }
+    rows.sort_by_key(|&(set, index, _)| (!set, index));
+    for (set, index, r) in rows {
+        let origin = if set { "set in this script" } else { "setting" };
+        out.push(plain(
+            r.name,
+            kind::PROPERTY,
+            format!("{origin}: {}", r.label),
+            info::setting_markdown(index, engine),
+        ));
+    }
+    out
+}
+
 
 /// Capabilities whose names start with `prefix`, completed past it;
 /// only the grantable ones when `grantable`.
@@ -581,6 +769,7 @@ fn label_kinds() -> Vec<CompletionItem> {
         ("zone?", "One zone, or none on a map that has none."),
         ("object?", "One object, or none on a map that has none."),
         ("spawns", "Spawn areas, passed to spawn_areas."),
+        ("path", "A flight path: points numbered from 0, passed to fly."),
     ]
     .iter()
     .map(|(k, doc)| plain(k, kind::TYPE_PARAMETER, "label kind", *doc))
@@ -689,14 +878,25 @@ fn constants(m: &Model) -> Vec<CompletionItem> {
 }
 
 fn top_level(m: &Model) -> Vec<CompletionItem> {
-    let carriers: Vec<&str> = CARRIERS.iter().map(|(n, _)| *n).collect();
-    let carrier = format!("carrier ${{1|{}|}}", carriers.join(","));
+    let types: Vec<&str> = crate::types::TABLE.iter().map(|r| r.name).collect();
+    let ty = format!("type ${{1|{}|}}", types.join(","));
+    let retail: Vec<&str> = crate::types::TABLE.iter().filter(|r| r.ty.is_retail()).map(|r| r.name).collect();
+    let uses = format!("uses ${{1|{}|}}", retail.join(","));
     let snippets: Vec<(&str, String, &str)> = vec![
         ("rules", "rules \"${1:Name}\" ${2:1}".to_string(), "rules"),
-        ("carrier", carrier, "carrier"),
+        ("type", ty, "type"),
         ("teams", "teams ${1:2}".to_string(), "teams"),
-        ("list", "list ${1|tweakers|}".to_string(), "list"),
+        ("points", "points \"${1:Points}\"".to_string(), "points"),
         ("requires", "requires ${1:capability}".to_string(), "requires"),
+        ("uses", uses, "uses"),
+        ("use", "use \"${1:module}.rules\"".to_string(), "use"),
+        ("about", "about \"${1:Description}\"".to_string(), "about"),
+        ("quick", "quick ${1:score_limit}".to_string(), "quick"),
+        (
+            "settings",
+            "settings {\n\t${1:score_limit} = ${2:50}\n}".to_string(),
+            "settings",
+        ),
         (
             "label",
             "label ${1:name}: ${2|zone,zones,object,objects,spawns|}".to_string(),

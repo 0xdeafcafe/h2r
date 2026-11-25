@@ -1,7 +1,7 @@
 # Audio
 
 Status: Built. Code: `crates/platform/audio/src` (`mixer.rs`, `dsound.rs`, `output.rs`). Tests: `crates/platform/audio/tests`.
-Switch: none.
+Switch: none for the mixer; `medal-announcer` for [our medals' announcer lines](#our-medals-announcer-lines).
 
 `crates/platform/audio` replaces the Xbox SDK's DirectSound at the API level. The
 MCPX APU behind it is not emulated: there are no voice slots, no DSP
@@ -12,12 +12,13 @@ write on a Rust struct, and a software mixer renders the result.
 
 | Module | Role |
 |---|---|
-| `adpcm` | Xbox ADPCM decoder, pure functions. |
+| `adpcm` | Xbox ADPCM decoder and encoder (`encode`, for Studio's `import.sound`), pure functions. |
 | `format` | `WaveFormat`/`Codec`; decodes PCM8, PCM16, Xbox ADPCM to interleaved `f32`. |
-| `resample` | Linear resampling (whole clip, streaming). |
+| `resample` | Linear resampling (whole clip, streaming) and `resample_sinc`, a band-limited whole-clip path for clips converted once. |
 | `dsound` | `SoundBuffer` (Lock/Unlock, Play/Stop, loop region, position), `Stream` (packets), `MixIn` (an FX-send bus), `Listener`/`Source3d`/`Spatial`. |
 | `route` | Xbox mix bins folded to stereo (`dest`, `channel_of`); the table is below. |
 | `mixer` | `Mixer::render(&mut [f32])`: stereo f32 at the host rate. No device knowledge. |
+| `meter` | Peak, RMS and BS.1770-4 loudness of PCM; see "Metering the mixer". |
 | `hrtf` | Binaural filtering for positioned mix-ins (on by default). |
 | `sink` | Device-independent output plumbing: lock-free SPSC `ring`, `AudioSink` trait, headless `NullSink`, `Pump`. |
 | `devices` | Picks an output device by name (the DualSense speaker); no device access. |
@@ -60,9 +61,12 @@ loop {                                               // once per game frame
   The callback period must fit inside the target (see measurements).
 - **Sample rate and device change.** The sink opens the system default output
   at its native rate and the mixer renders at that rate (voices resample
-  per render). A stream error or a change of the default device id (polled
-  every 500 ms in `maintain`, which `pump` calls) rebuilds the stream; if it
-  has a new rate `Pump` calls `Mixer::set_sample_rate` before rendering, and
+  per render). A fatal stream error (the device went away) or a change of
+  the default device id or rate (polled every 500 ms in `maintain`, which
+  `pump` calls) rebuilds the stream; a route change cpal's backend already
+  followed (`DeviceChanged`) and transient overloads (`Xrun`) do not. If the
+  new stream has a new rate `Pump` calls `Mixer::set_sample_rate` before
+  rendering, and
   the old ring (a few ms) is dropped. With no device, reopening is retried
   once a second and `pump` keeps going into a ring nobody drains, so the game
   does not stall. `DeviceSink::reopen_count()` shows how often this happened.
@@ -316,6 +320,126 @@ change playback rate by design).
 
 `docs/audio/dsound.md`, "Voice effects", has the descriptor layouts and which
 parts are assumptions.
+
+## The announcer queue
+
+Read for this page (E, `h2 disasm 0x19e770 70`, `0x23ef80 40`,
+`0x23f000 70`, `0x23f0a0 60`). Names: `points::ANNOUNCER_QUEUE_UPDATE`
+and `points::announcer_queue` (`crates/hooking/guest-layout/src/points.rs`).
+
+Halo 2 speaks one announcer line at a time, each after the last has
+finished. A game event's sound ("Double kill", [hud-kit.md](../game/hud-kit.md#game-events-and-medals-0x0019de80))
+goes from `0x0019e770` to `0x0023ef80` with a delay in ticks (the
+response's `+0x3c` seconds). `0x0023ef80` checks a table of the last four
+events first (`0x0023f180`, not read in detail), then queues the sound
+tag through `0x0023f140`.
+
+- **The queue.** Five 12-byte lines from `0x00502350`: the sound tag
+  (`+0`), the sound playing (`+4`), a playing byte (`+8`) and an i16 delay
+  in ticks (`+0xa`). The count, the head included, is the i32 at
+  `0x005023ec`. `0x0023f140` drops a line when five are queued.
+  `0x0023f0a0` empties it (a count of 1, a head with no sound).
+- **The update** (`0x0023f000`, no arguments, `ret`). While the head's
+  delay is 0 or more it counts down; at -1 it plays the head's sound
+  (`0x00189710`) and sets the playing byte. With the delay below zero and
+  the playing byte clear, the head is dropped and the next line becomes
+  the head. Its caller is not traced here (S: once a tick).
+- **The end.** `0x0023f120`, given a sound that ended, clears the playing
+  byte when that sound is the head's.
+
+So the queue is idle when it is empty, or holds only a head whose delay
+has run out and whose sound has ended. Whether the game lowers other
+sounds under an announcer line is not read.
+
+## Metering the mixer
+
+Code: `crates/platform/audio/src/meter.rs` (the maths),
+`crates/extensions/game/src/mixer_meter.rs` (the tap and `audio.meter`),
+the tap's wiring in boot's `lib.rs`. Tests: `meter.rs`'s own and
+`mixer_meter/tests.rs`.
+
+`audio.meter` ([agent-api.md](../runtime/agent-api.md#audiometer))
+reads the level of the mixer's output bus: the interleaved stereo `f32`
+DirectSound's output thread renders in logical time, handed to
+`dsound::Output::tap_samples` before the device queue. The same tap
+carries a recording film's sound. A run with no audio device renders
+into a `NullSink` and meters the same samples a speaker would get. A
+clock-only run (a light host or sim) renders no samples, so the meter is
+not connected and the method answers `UNAVAILABLE`.
+
+- **Capture.** Nothing is kept until the first request. Then the last
+  10 seconds of output (`KEEP_SECONDS`) stay in a ring, counted in frames
+  from that request.
+- **Levels.** `audio::meter::measure_f32` gives the sample peak and RMS
+  in dBFS, integrated loudness after ITU-R BS.1770-4 (K-weighting, 400 ms
+  blocks stepped 100 ms, gated at -70 LUFS and 10 LU under the gated
+  mean) and the loudest block. Each channel weighs 1. Studio's
+  `sound.measure` meters 16-bit clips with the same code
+  (`audio::meter::measure`), so a clip's own level and its level after
+  the mixer compare on one scale.
+- **Host clips.** `play` starts one of our embedded clips as a plain 2D
+  buffer in the mixer, as the game does: `pogo/compress`, `pogo/spring`,
+  `pogo/settle` ([pogo-stick.md](../game/pogo-stick.md)) and
+  `announcer/<medal id>`. No game sound tag carries these, so only this
+  bus shows their level. The reply meters from the call to the clip's end
+  plus 20 ms (`TAIL_MS`), with whatever else the game plays in that span,
+  and the buffer leaves the mixer when it answers. A clip that is still
+  a Git LFS pointer answers `UNAVAILABLE`.
+
+## Our medals' announcer lines
+
+Code: `crates/extensions/game/src/medal_announcer.rs`. Tests:
+`medal_announcer_tests.rs`. Switch: the `medal-announcer` feature (on;
+`H2_FEATURES=-medal-announcer` keeps the medals silent).
+
+Our medals (the superbounce ones, [superbounce.md](../game/superbounce.md#medals))
+have announcer lines of their own, AI-generated placeholders:
+`art/announcer/<medal id>.wav`, 16-bit PCM, matched offline to the retail announcer's loudness
+(`art/announcer/README.md`). When the HUD shows one of our medal lines
+(`superbounce_hud`, [hud-kit.md](../game/hud-kit.md#the-medals)), its
+clip is queued; one line per HUD line, so a chain of three bounces says
+Superbounce, Double bounce and Triple bounce in that order, and a Monster
+says Monster bounce. Bounced has no clip and is silent.
+
+Firefight and Siege use the same queue for their round-start lines.
+The build renders two synthetic voice clips from
+`art/announcer/start_lines.rs`. A published Studio take at
+`art/announcer/firefight.wav` or `art/announcer/siege.wav` replaces its
+corresponding generated clip. Studio's Sound tool can measure the
+embedded clips as `announcer/firefight` and `announcer/siege`.
+
+- **Taking turns with the game.** Our clips have no sound tag, so they
+  cannot be lines in the game's queue. A clip of ours starts only when the
+  game's queue is idle (`game_idle`, read each tick). While it plays, a
+  `before` hook on `ANNOUNCER_QUEUE_UPDATE` skips the update, so a retail
+  line queued meanwhile waits, its delay held, and plays once ours ends.
+  Retail lines already waiting go before our next one. A line that holds
+  the game's queue for 150 ticks (`MAX_HOLD_TICKS`, five seconds, over
+  twice the longest clip) lets it go, so a stalled mixer cannot silence
+  the game's announcer.
+- **Our queue.** One line at a time, in the HUD's order. At most four wait
+  behind the one playing (five in all, the game's length); past that the
+  oldest waiting line is dropped, so the newest medal is spoken. A new
+  game drops the waiting lines. In split screen each local player's line
+  is queued, as the game queues a multi-kill for each local player who
+  earned it.
+- **Playback.** A clip plays as a 2D buffer in DirectSound's mixer, on no
+  mix bins (both speakers), under the mixer's master volume. Halo 2 has
+  no announcer or dialogue volume setting; the gain the game's sound
+  classes give its own dialogue is not applied, and our lines neither
+  duck nor are ducked. Boot connects the mixer whenever audio renders
+  samples, into a device or a `NullSink`; clock-only runs (a light host
+  or sim) drop the lines.
+- **Embedded.** The clips are compiled in with `include_bytes!`, so the
+  installed `h2` needs no repository next to it. They are in Git LFS: a
+  checkout without them (the lab's `GIT_LFS_SKIP_SMUDGE`) still builds,
+  and each clip that is an LFS pointer is named once at run time
+  (`announcer: art/announcer/<id>.wav: a Git LFS pointer ...`) and stays
+  silent. `git lfs pull` and a rebuild bring them in.
+
+The Incel medal has a clip too (`incel.wav`), not compiled in: no line in
+the game shows that medal ([teabag.md](../game/teabag.md)), so nothing
+speaks it.
 
 ## Unsupported: the MCPX DSP
 

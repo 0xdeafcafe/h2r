@@ -11,6 +11,9 @@ use crate::app::App;
 use crate::play::pair::{Request, relation_text};
 use crate::play::{self, LinkState, LinkTone, LinkView, Play, Spawn, launch, phase_label};
 use crate::theme::{self, icon};
+use crate::viewport::Gpu;
+
+use super::game_view::GameViewUi;
 
 const LINK_POPUP: &str = "##game-link-popup";
 
@@ -21,6 +24,7 @@ pub struct PlayUi {
     step_ticks: i32,
     open_link_popup: bool,
     picking_game: bool,
+    pub game_view: GameViewUi,
 }
 
 impl Default for PlayUi {
@@ -31,6 +35,7 @@ impl Default for PlayUi {
             step_ticks: 1,
             open_link_popup: false,
             picking_game: false,
+            game_view: GameViewUi::default(),
         }
     }
 }
@@ -284,10 +289,29 @@ impl PlayUi {
         self.play.request(Request::Step(self.step_ticks as u64));
     }
 
-    pub fn window(&mut self, ui: &Ui, app: &mut App, key: &WindowKey) {
+    pub fn window(&mut self, ui: &Ui, app: &mut App, key: &WindowKey, gpu: &mut Gpu<'_>) {
         ui.window(key).build(|| {
             let view = self.play.displayed_link(app);
             self.pill(ui, app, &view, false);
+            if view.paired {
+                theme::section(ui, "Picture");
+                let header = self.picture_header(&view);
+                self.game_view.draw(ui, app, &header, gpu);
+            }
+            if let Some(report) = &app.preview.report {
+                theme::section(ui, "Preview");
+                let state = report["state"].as_str().unwrap_or("running");
+                let what = report["what"].as_str().unwrap_or("Preview");
+                ui.text(format!("{what} · {state}"));
+                if let Some(why) = report["why"].as_str() {
+                    ui.text_wrapped(why);
+                }
+                if let Some(warnings) = report["warnings"].as_array() {
+                    for warning in warnings.iter().filter_map(serde_json::Value::as_str) {
+                        ui.text_wrapped(warning);
+                    }
+                }
+            }
             theme::section(ui, "Session");
             self.session(ui, app, &view);
             theme::section(ui, "Player");
@@ -296,6 +320,17 @@ impl PlayUi {
                 self.advanced(ui, app);
             }
         });
+    }
+
+    /// The game's map and phase, and the link plate's state, above the picture.
+    fn picture_header(&self, view: &LinkView) -> String {
+        let at = self.play.status.as_ref().map(|s| &s.at);
+        format!(
+            "{} · {} · {}",
+            at.and_then(|a| a.map.as_deref()).unwrap_or("No map yet"),
+            at.map_or("", |a| phase_label(a.phase, a.paused)),
+            view.text,
+        )
     }
 
     fn session(&mut self, ui: &Ui, app: &mut App, view: &LinkView) {
@@ -519,7 +554,7 @@ impl PlayUi {
                     }
                 }
             }
-            if p.can_respawn() && ui.button("Respawn now") {
+            if (p.can_respawn() || p.can_respawn_definitions(app)) && ui.button("Respawn now") {
                 action = Some(Apply::Respawn);
             }
             if let Some(why) = move_refusal {

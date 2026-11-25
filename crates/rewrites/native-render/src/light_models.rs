@@ -4,19 +4,20 @@
 //! entry without the guest's geometry handler (`0x0004d0b0`).
 //!
 //! Per model section: its parts' triangles in one index list (the part's
-//! raw range decoded in its own topology, as the object path decodes it,
-//! `tags::geometry::Geometry::part_triangles`), its decompression rows,
+//! raw indices decoded as their authored topology and, for strips, also
+//! as lists for records that clear the strip bit), its decompression rows,
 //! and its vertices once per (vertex shader, classification) its parts'
-//! materials' layer-12 and layer-13 implementations name, gathered
-//! through the declaration that program's input semantics give over the
-//! section's streams ([`crate::object_streams::declaration`],
-//! [`crate::object_streams::gather`]). The pass itself is compiled per
-//! light inputs at run time with that declaration's registers and fetch
-//! ([`crate::light_look::compile_light_model`]).
+//! materials' shadow and light implementations name,
+//! gathered through the declaration that program's input semantics give
+//! over the section's streams ([`crate::object_streams::declaration`],
+//! [`crate::object_streams::gather`]). The pass itself is compiled with
+//! that declaration's registers and fetch
+//! ([`crate::light_look::compile_light_model`],
+//! [`crate::shadow_look::compile_shadow_model`]).
 //!
 //! An entry finds its part by its model, section and part
-//! ([`LightModels::part`]); its raw range and topology must be the
-//! part's, and its sorted vertex classification one a buffer was built
+//! ([`LightModels::part`]); its raw range must match and it must use an
+//! available topology, with a sorted vertex classification a buffer was built
 //! for ([`LightSection::buffer`]). Anything else is not resident, and the
 //! layer keeps its handlers (`light_scene::Refusal::Stream`).
 
@@ -29,34 +30,34 @@ use map::TagId;
 
 use crate::light_gpu::ModelLayout;
 use crate::object_program_gpu::attributes;
-use crate::object_streams::{Element, SLOT, StreamData, StreamFormats, declaration, gather, registers};
+use crate::object_streams::{
+    Element, SLOT, StreamData, StreamFormats, declaration, gather, registers,
+};
 
 /// One mode section as the light build reads it.
 #[derive(Clone)]
 pub struct ModelSection<'a> {
     pub index: u16,
-    /// Its geometry classification (`+0x18`) and node influences
-    /// (`+0x14`), which pick a program's classification
-    /// ([`crate::object_streams::classification`]).
+    /// Its geometry classification at `+0x18`.
     pub geometry: u16,
-    pub influences: u8,
     pub decompression: [Row; 3],
     /// Its streams by descriptor slot: (stream type, bytes).
     pub streams: Vec<Option<(u8, StreamData<'a>)>>,
     pub vertex_count: usize,
-    pub parts: Vec<SectionPart>,
+    pub parts: Vec<SectionPart<'a>>,
 }
 
 /// One part of a section: its index among the section's parts, its raw
-/// index range, whether that range is a list, its triangles, and the
+/// index range, whether that range is a list, and the
 /// vertex shaders its material's lit passes name.
 #[derive(Clone, Debug, PartialEq)]
-pub struct SectionPart {
+pub struct SectionPart<'a> {
     pub part: u8,
+    /// The section influence byte selected by this part's kind.
+    pub influences: u8,
     pub first_index: u32,
-    pub index_count: u32,
     pub list: bool,
-    pub triangles: Vec<[u16; 3]>,
+    pub raw_indices: &'a [u16],
     pub vertex_shaders: Vec<TagId>,
 }
 
@@ -76,7 +77,12 @@ pub struct DeviceBuffer {
 
 impl DeviceBuffer {
     pub fn new(bytes: Vec<u8>, usage: wgpu::BufferUsages, label: &'static str) -> Self {
-        Self { bytes, usage, label, held: Mutex::new(None) }
+        Self {
+            bytes,
+            usage,
+            label,
+            held: Mutex::new(None),
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -130,11 +136,16 @@ impl LightBuffer {
 /// A part as the light passes hold it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LightPart {
+    /// For a host light without a sorted classification: the class shared
+    /// by the resident programs this part uses.
+    pub vertex_class: Option<u16>,
     pub first_index: u32,
     pub index_count: u32,
     pub topology: Topology,
-    /// Its triangles in the section's index list.
+    /// The part drawn in its authored topology, also used by host lights.
     pub indices: Range<u32>,
+    /// The part drawn as a list, as a light record can request for a strip.
+    pub as_list: Range<u32>,
 }
 
 /// One section's parts, decompression and buffers.
@@ -149,7 +160,9 @@ impl LightSection {
     /// The buffer built for `vertex_shader`'s program of classification
     /// `classification`.
     pub fn buffer(&self, vertex_shader: TagId, classification: u32) -> Option<&LightBuffer> {
-        self.buffers.iter().find(|b| b.vertex_shader == vertex_shader && b.classification == classification)
+        self.buffers
+            .iter()
+            .find(|b| b.vertex_shader == vertex_shader && b.classification == classification)
     }
 }
 
@@ -174,25 +187,46 @@ pub fn layout_id(declaration: &[Element]) -> u64 {
 /// declaration `semantics` gives; a vertex shader without a program
 /// there, or whose declaration does not gather, has no buffer (its
 /// entries are not resident). Why each such was left out, as text.
-pub fn light_model(sections: &[ModelSection<'_>], formats: &StreamFormats, semantics: &Semantics<'_>) -> (LightModel, Vec<String>) {
+pub fn light_model(
+    sections: &[ModelSection<'_>],
+    formats: &StreamFormats,
+    semantics: &Semantics<'_>,
+) -> (LightModel, Vec<String>) {
     let mut out = LightModel::default();
     let mut why = Vec::new();
     for s in sections {
         let mut list: Vec<u32> = Vec::new();
         let mut parts = HashMap::new();
-        let mut shaders: Vec<TagId> = Vec::new();
+        let mut shaders = Vec::new();
         for p in &s.parts {
             let start = list.len() as u32;
-            list.extend(p.triangles.iter().flatten().map(|&i| u32::from(i)));
-            parts.insert(p.part, LightPart {
-                first_index: p.first_index,
-                index_count: p.index_count,
-                topology: if p.list { Topology::List } else { Topology::Strip },
-                indices: start..list.len() as u32,
-            });
-            for vs in &p.vertex_shaders {
-                if !shaders.contains(vs) {
-                    shaders.push(*vs);
+            let as_list = tags::geometry::list_triangles(p.raw_indices);
+            let as_strip = (!p.list).then(|| tags::geometry::strip_triangles(p.raw_indices));
+            let authored = as_strip.as_ref().unwrap_or(&as_list);
+            list.extend(authored.iter().flatten().map(|&i| u32::from(i)));
+            let indices = start..list.len() as u32;
+            let list_range = if authored == &as_list {
+                indices.clone()
+            } else {
+                let start = indices.end;
+                list.extend(as_list.iter().flatten().map(|&i| u32::from(i)));
+                start..list.len() as u32
+            };
+            parts.insert(
+                p.part,
+                LightPart {
+                    vertex_class: None,
+                    first_index: p.first_index,
+                    index_count: p.raw_indices.len() as u32,
+                    topology: if p.list { Topology::List } else { Topology::Strip },
+                    indices,
+                    as_list: list_range,
+                },
+            );
+            for &vs in &p.vertex_shaders {
+                let key = (vs, p.influences);
+                if !shaders.contains(&key) {
+                    shaders.push(key);
                 }
             }
         }
@@ -211,13 +245,22 @@ pub fn light_model(sections: &[ModelSection<'_>], formats: &StreamFormats, seman
                 continue;
             }
         };
-        let data: Vec<Option<StreamData<'_>>> = s.streams.iter().map(|t| t.map(|(_, d)| d)).collect();
+        let data: Vec<Option<StreamData<'_>>> =
+            s.streams.iter().map(|t| t.map(|(_, d)| d)).collect();
         let mut buffers: Vec<LightBuffer> = Vec::new();
-        for vs in shaders {
-            let Some((classification, sem)) = semantics(vs, s.geometry, s.influences) else {
-                why.push(format!("section {}: vertex shader {vs:?} has no program for its classification", s.index));
+        let mut classes = HashMap::new();
+        for (vs, influences) in shaders {
+            let Some((classification, sem)) = semantics(vs, s.geometry, influences) else {
+                why.push(format!(
+                    "section {}: vertex shader {vs:?} has no program for its classification",
+                    s.index
+                ));
                 continue;
             };
+            if buffers.iter().any(|b| b.vertex_shader == vs && b.classification == classification) {
+                classes.insert((vs, influences), classification);
+                continue;
+            }
             let decl = declaration(&sem, &streams);
             let vertices = match gather(&decl, &data, s.vertex_count) {
                 Ok(v) => v,
@@ -228,21 +271,47 @@ pub fn light_model(sections: &[ModelSection<'_>], formats: &StreamFormats, seman
             };
             let regs: Vec<u8> = decl.iter().map(|e| e.register).collect();
             let formats: Vec<_> = decl.iter().map(|e| e.format).collect();
-            let layout = ModelLayout { id: layout_id(&decl), stride: (SLOT * decl.len()) as u64, attributes: attributes(&regs, &formats) };
+            let layout = ModelLayout {
+                id: layout_id(&decl),
+                stride: (SLOT * decl.len()) as u64,
+                attributes: attributes(&regs, &formats),
+            };
+            classes.insert((vs, influences), classification);
             buffers.push(LightBuffer {
                 vertex_shader: vs,
                 classification,
                 declaration: decl,
                 layout,
-                vertices: DeviceBuffer::new(bytemuck::cast_slice(&vertices).to_vec(), wgpu::BufferUsages::VERTEX, "native light model vertices"),
+                vertices: DeviceBuffer::new(
+                    bytemuck::cast_slice(&vertices).to_vec(),
+                    wgpu::BufferUsages::VERTEX,
+                    "native light model vertices",
+                ),
             });
         }
-        out.sections.insert(s.index, LightSection {
-            decompression: s.decompression,
-            parts,
-            indices: DeviceBuffer::new(bytemuck::cast_slice(&list).to_vec(), wgpu::BufferUsages::INDEX, "native light model indices"),
-            buffers,
-        });
+        for part in &s.parts {
+            let mut found = part.vertex_shaders.iter()
+                .map(|&vs| classes.get(&(vs, part.influences)).copied());
+            if let Some(Some(first)) = found.next()
+                && found.all(|class| class == Some(first))
+                && let Some(held) = parts.get_mut(&part.part)
+            {
+                held.vertex_class = u16::try_from(first).ok();
+            }
+        }
+        out.sections.insert(
+            s.index,
+            LightSection {
+                decompression: s.decompression,
+                parts,
+                indices: DeviceBuffer::new(
+                    bytemuck::cast_slice(&list).to_vec(),
+                    wgpu::BufferUsages::INDEX,
+                    "native light model indices",
+                ),
+                buffers,
+            },
+        );
     }
     (out, why)
 }
@@ -255,15 +324,23 @@ pub struct LightModels {
 
 impl LightModels {
     /// `entry`'s section and part, when the entry is an object's whose
-    /// raw range and topology are the part's.
-    pub fn part(&self, entry: &LightEntry) -> Option<(&LightSection, &LightPart)> {
-        let section = self.models.get(&entry.model)?.sections.get(&entry.stream.section)?;
+    /// raw range matches, and the triangles for its record's topology.
+    pub fn part(&self, entry: &LightEntry) -> Option<(&LightSection, Range<u32>)> {
+        let section = self
+            .models
+            .get(&entry.model)?
+            .sections
+            .get(&entry.stream.section)?;
         let part = section.parts.get(&entry.stream.part)?;
-        (part.first_index == entry.stream.first_index
-            && part.index_count == entry.stream.index_count
-            && part.topology == entry.stream.topology
-            && !part.indices.is_empty())
-        .then_some((section, part))
+        if part.first_index != entry.stream.first_index || part.index_count != entry.stream.index_count {
+            return None;
+        }
+        let indices = match entry.stream.topology {
+            Topology::List => &part.as_list,
+            Topology::Strip if part.topology == Topology::Strip => &part.indices,
+            _ => return None,
+        };
+        (!indices.is_empty()).then(|| (section, indices.clone()))
     }
 
     /// The stream an entry's part is in, for [`crate::light_scene`]: its
@@ -293,25 +370,24 @@ mod tests {
         ModelSection {
             index: 2,
             geometry: 0,
-            influences: 0,
             decompression: [[1.0; 4], [0.0; 4], [1.0, 1.0, 0.0, 0.0]],
             streams: vec![Some((1, StreamData { bytes, stride: 20 }))],
             vertex_count: 4,
             parts: vec![
                 SectionPart {
                     part: 0,
+                    influences: 0,
                     first_index: 0,
-                    index_count: 6,
                     list: true,
-                    triangles: vec![[0, 1, 2], [2, 1, 3]],
+                    raw_indices: &[0, 1, 2, 2, 1, 3],
                     vertex_shaders: vec![TagId(0xe000_0010)],
                 },
                 SectionPart {
                     part: 1,
+                    influences: 0,
                     first_index: 6,
-                    index_count: 4,
                     list: false,
-                    triangles: vec![[0, 1, 2], [1, 3, 2]],
+                    raw_indices: &[0, 1, 2, 3],
                     vertex_shaders: vec![TagId(0xe000_0010), TagId(0xe000_0011)],
                 },
             ],
@@ -324,10 +400,109 @@ mod tests {
             record: 4,
             owner: LayerOwner::Object(InstanceKey(0xe1e1_0001)),
             model: 0xe100_0007,
-            stream: LightStream { section: 2, part, vertex_class: 0, first_index, index_count, topology },
+            stream: LightStream {
+                section: 2,
+                part,
+                vertex_class: 0,
+                first_index,
+                index_count,
+                topology,
+            },
             pose: LightPose::Rows(0..3),
-            binding: LightBinding { shader: 0xe200_0001, selector: 0, variant: 0, implementation: 0 },
+            binding: LightBinding {
+                shader: 0xe200_0001,
+                selector: 0,
+                variant: 0,
+                implementation: 0,
+            },
         }
+    }
+
+    #[test]
+    fn weighted_parts_with_the_same_shader_can_select_different_vertex_buffers() {
+        let bytes = [0; 80];
+        let mut section = section(&bytes);
+        section.geometry = 3;
+        section.parts[0].influences = 1;
+        section.parts[1].influences = 3;
+        section.parts[1].part = 23;
+        let vs = section.parts[0].vertex_shaders[0];
+        section.parts[1].vertex_shaders = vec![vs];
+        let semantics = |_, geom, influences| {
+            assert_eq!(geom, 3);
+            let registers = if influences == 1 { vec![0] } else { vec![0, 3] };
+            Some((u32::from(influences) + 2, registers))
+        };
+        let (model, why) = light_model(&[section], &formats(), &semantics);
+        assert!(why.is_empty(), "{why:?}");
+        let section = &model.sections[&2];
+        assert_eq!(section.parts[&23].indices, 6..12);
+        assert_eq!(section.parts[&0].vertex_class, Some(3));
+        assert_eq!(section.parts[&23].vertex_class, Some(5));
+        assert_eq!(section.buffer(vs, 3).unwrap().provided(), 1);
+        assert_eq!(section.buffer(vs, 5).unwrap().provided(), 3);
+    }
+
+    #[test]
+    fn record_topology_preserves_winding_and_never_crosses_a_part_boundary() {
+        let bytes = [0; 80];
+        let mut s = section(&bytes);
+        let mut adjacent = s.parts[1].clone();
+        s.parts[1].raw_indices = &[0, 1, 2, 2, 3, 1];
+        adjacent.part = 2;
+        adjacent.first_index = 12;
+        adjacent.raw_indices = &[0, 0, 1, 2];
+        s.parts.push(adjacent);
+        let (model, why) = light_model(&[s], &formats(), &|_, _, _| Some((0, vec![0])));
+        assert!(why.is_empty(), "{why:?}");
+        let mut models = LightModels::default();
+        models.models.insert(0xe100_0007, model);
+        let values = |part, first, count, topology| {
+            let (section, range) = models.part(&entry(part, first, count, topology))?;
+            let bytes = &section.indices.bytes[4 * range.start as usize..4 * range.end as usize];
+            Some(bytes.chunks_exact(4).map(|b| u32::from_ne_bytes(b.try_into().unwrap())).collect::<Vec<_>>())
+        };
+        assert_eq!(values(1, 6, 6, Topology::List).unwrap(), [0, 1, 2, 2, 3, 1]);
+        assert_eq!(values(1, 6, 6, Topology::Strip).unwrap(), [0, 1, 2, 2, 1, 3]);
+        assert_eq!(values(2, 12, 4, Topology::Strip).unwrap(), [0, 2, 1]);
+        assert_eq!(values(2, 12, 4, Topology::List), None);
+        assert_eq!(values(1, 7, 6, Topology::List), None);
+        assert_eq!(values(1, 6, 5, Topology::List), None);
+    }
+
+    #[test]
+    fn an_unsorted_part_needs_its_own_programs_to_agree_on_a_class() {
+        let bytes = [0; 80];
+        let section = section(&bytes);
+        let semantics = |vs: TagId, _, _| {
+            let class = if vs.0 == 0xe000_0010 { 0 } else { 3 };
+            Some((class, vec![0]))
+        };
+        let (model, why) = light_model(&[section], &formats(), &semantics);
+        assert!(why.is_empty(), "{why:?}");
+        assert_eq!(model.sections[&2].parts[&0].vertex_class, Some(0));
+        assert_eq!(model.sections[&2].parts[&1].vertex_class, None);
+    }
+
+    #[test]
+    fn a_program_missing_from_one_part_cannot_use_its_other_parts_class() {
+        let bytes = [0; 80];
+        let mut s = section(&bytes);
+        s.parts[0].influences = 1;
+        s.parts[1].influences = 2;
+        let other_shader = s.parts[1].vertex_shaders[1];
+        s.parts[0].vertex_shaders.push(other_shader);
+        let semantics = |vs, _, influences| {
+            if vs == other_shader && influences == 1 {
+                return None;
+            }
+            Some((3, vec![0]))
+        };
+        let (model, _) = light_model(&[s], &formats(), &semantics);
+        let section = &model.sections[&2];
+        assert!(section.buffer(other_shader, 3).is_some());
+        assert_eq!(section.parts[&0].vertex_class, None);
+        assert_eq!(section.parts[&1].vertex_class, Some(3));
     }
 
     #[test]
@@ -350,7 +525,7 @@ mod tests {
         let (model, why) = light_model(&[s], &formats(), &semantics);
         assert_eq!(why.len(), 1, "{why:?}");
         let section = &model.sections[&2];
-        assert_eq!(section.indices.len(), 12 * 4, "both parts' triangles");
+        assert_eq!(section.indices.len(), 15 * 4, "one list and both forms of the strip");
         assert_eq!(section.parts[&0].indices, 0..6);
         assert_eq!(section.parts[&1].indices, 6..12);
         assert_eq!(section.parts[&1].topology, Topology::Strip);
@@ -361,16 +536,30 @@ mod tests {
         let position = section.buffer(TagId(0xe000_0011), 0).expect("built");
         assert_eq!(position.provided(), 0b1);
         assert_ne!(both.layout.id, position.layout.id);
-        assert!(section.buffer(TagId(0xe000_0010), 1).is_none(), "another classification");
+        assert!(
+            section.buffer(TagId(0xe000_0010), 1).is_none(),
+            "another classification"
+        );
 
         let mut models = LightModels::default();
         models.models.insert(0xe100_0007, model);
         assert!(models.part(&entry(0, 0, 6, Topology::List)).is_some());
         assert!(models.part(&entry(1, 6, 4, Topology::Strip)).is_some());
-        // Drawn as a list by its record, or another range: not this part.
-        assert!(models.part(&entry(1, 6, 4, Topology::List)).is_none());
+        let (section, as_list) = models.part(&entry(1, 6, 4, Topology::List)).unwrap();
+        assert_eq!(as_list, 12..15);
+        // The list ignores the incomplete last triangle and never reads the adjacent part.
+        let words: Vec<_> = section.indices.bytes.chunks_exact(4)
+            .map(|b| u32::from_ne_bytes(b.try_into().unwrap())).collect();
+        assert_eq!(&words[6..12], &[0, 1, 2, 1, 3, 2]);
+        assert_eq!(&words[12..15], &[0, 1, 2]);
+        assert!(models.part(&entry(0, 0, 6, Topology::Strip)).is_none());
+        assert!(models.part(&entry(1, 7, 4, Topology::List)).is_none());
         assert!(models.part(&entry(0, 0, 3, Topology::List)).is_none());
         assert!(models.part(&entry(5, 0, 6, Topology::List)).is_none());
-        assert_ne!(LightModels::stream(&entry(0, 0, 6, Topology::List)), 0, "never the structure's stream");
+        assert_ne!(
+            LightModels::stream(&entry(0, 0, 6, Topology::List)),
+            0,
+            "never the structure's stream"
+        );
     }
 }

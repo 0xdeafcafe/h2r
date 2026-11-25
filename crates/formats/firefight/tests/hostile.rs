@@ -2,7 +2,7 @@ use firefight::{Count, Def, Drop, FORMAT, Limits, MAX_DOC_BYTES, Refusal, builti
 use serde_json::{Value, json};
 
 fn fixture() -> (String, Limits) {
-    let [def, _, _] = builtin::definitions();
+    let [def, ..] = builtin::definitions();
     (def.canonical_json().unwrap(), Limits::new(["elite"]))
 }
 
@@ -21,7 +21,7 @@ fn the_byte_limit_applies_before_parsing_and_hashing() {
 
     // An authored document can also exceed the byte limit while fitting its
     // individual collection bounds and the actor budget.
-    let [mut doc, _, _] = builtin::definitions();
+    let [mut doc, ..] = builtin::definitions();
     let class = "a".repeat(32);
     doc.scoring.by_class = [(class.clone(), 1)].into();
     doc.caps.live_actors_by_players = vec![(16, 16)];
@@ -48,8 +48,8 @@ fn the_byte_limit_applies_before_parsing_and_hashing() {
 fn malformed_documents_are_refused_at_the_wire_boundary() {
     let (base, limits) = fixture();
     let cases = [
-        base.replace("\"format\":1", "\"format\":1,\"format\":1"),
-        base.replace("\"format\":1", "\"format\":1,\"data\":[1,2,3]"),
+        base.replace("\"format\":2", "\"format\":2,\"format\":2"),
+        base.replace("\"format\":2", "\"format\":2,\"data\":[1,2,3]"),
         base.replace("\"max\":5", "\"max\":5,\"raw_count\":15"),
         base.replace("\"max\":5", "\"max\":-1"),
         base.replace("\"max\":5", "\"max\":5.0"),
@@ -87,7 +87,7 @@ fn malformed_documents_are_refused_at_the_wire_boundary() {
         );
     }
     let version = FORMAT + 1;
-    let bytes = base.replace("\"format\":1", &format!("\"format\":{version}"));
+    let bytes = base.replace("\"format\":2", &format!("\"format\":{version}"));
     assert_eq!(
         Def::from_bytes(bytes.as_bytes(), &limits),
         Err(Refusal::Format(version))

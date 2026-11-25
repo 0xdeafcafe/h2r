@@ -211,7 +211,7 @@ mod tests {
                 assert_eq!(args, c.args);
                 Some(c)
             }
-            fn record(&self, _: film::Tag, _: film::tape::Call) {
+            fn record(&self, _: film::tape::Call) {
                 panic!("record on playback")
             }
             fn fault(&self, why: String) {

@@ -304,6 +304,14 @@ fn block_at(b: &[u8], o: usize) -> Block {
         address: u32_at(b, o + 4),
     }
 }
+/// A tag reference as stored: its group and datum, unchecked.
+fn raw_tag_ref(b: &[u8], o: usize) -> TagRef {
+    let datum = u32_at(b, o + 4);
+    TagRef {
+        group: FourCC::from_u32(u32_at(b, o)),
+        id: (datum != u32::MAX).then_some(TagId(datum)),
+    }
+}
 fn field<T>(record: &'static str, name: &'static str, r: Result<T>) -> Result<T> {
     r.map_err(|e| Error::Field {
         record,
@@ -586,7 +594,8 @@ pub struct Button {
     /// +0x10, text colour (r, g, b).
     pub text_color: [f32; 3],
     pub rect: Rect,
-    /// +0x24, optional bitmap drawn at `rect` top-left plus `bitmap_offset`.
+    /// +0x24, optional bitmap drawn at `rect` top-left moved by
+    /// `bitmap_offset`: x added, y subtracted (`0x00253fb0`).
     pub bitmap: TagRef,
     pub bitmap_offset: Point,
     /// +0x30, label, resolved through the screen's `unic` tag.
@@ -597,23 +606,34 @@ pub struct Button {
     /// +0x38: bits 0 and 1 copied to the item's runtime flags.
     pub flags_38: u32,
 }
+impl Button {
+    pub const SIZE: usize = 0x3c;
+    /// One element's fields, its references as stored (not resolved): for
+    /// a reader that has the element's bytes and no map to check them
+    /// against, such as an editor's edited copy of the tag.
+    pub fn from_element(e: &[u8]) -> Option<Self> {
+        (e.len() >= Self::SIZE).then(|| Button {
+            flags: u32_at(e, 0),
+            animation: AnimationRef(u16_at(e, 4)),
+            unknown_06: u16_at(e, 6),
+            unknown_08: u16_at(e, 8),
+            font: i16_at(e, 0xa),
+            unknown_0c: u32_at(e, 0xc),
+            text_color: f32s(e, 0x10),
+            rect: rect_at(e, 0x1c),
+            bitmap: raw_tag_ref(e, 0x24),
+            bitmap_offset: point_at(e, 0x2c),
+            string: StringId(u32_at(e, 0x30)),
+            render_depth_bias: i16_at(e, 0x34),
+            unknown_36: u16_at(e, 0x36),
+            flags_38: u32_at(e, 0x38),
+        })
+    }
+}
 fn button(c: &mut Ctx, e: &[u8]) -> Result<Button> {
-    Ok(Button {
-        flags: u32_at(e, 0),
-        animation: AnimationRef(u16_at(e, 4)),
-        unknown_06: u16_at(e, 6),
-        unknown_08: u16_at(e, 8),
-        font: i16_at(e, 0xa),
-        unknown_0c: u32_at(e, 0xc),
-        text_color: f32s(e, 0x10),
-        rect: rect_at(e, 0x1c),
-        bitmap: c.tag_ref(e, 0x24, &[BITMAP], "Button", "bitmap")?,
-        bitmap_offset: point_at(e, 0x2c),
-        string: c.string_id(e, 0x30, "Button", "string")?,
-        render_depth_bias: i16_at(e, 0x34),
-        unknown_36: u16_at(e, 0x36),
-        flags_38: u32_at(e, 0x38),
-    })
+    c.tag_ref(e, 0x24, &[BITMAP], "Button", "bitmap")?;
+    c.string_id(e, 0x30, "Button", "string")?;
+    Button::from_element(e).ok_or(Error::Invalid("a button element is 0x3c bytes"))
 }
 
 /// Pane list, `0x18` bytes. The list widget reads only the pane's first list
@@ -664,20 +684,29 @@ pub struct TextBlock {
     pub render_depth_bias: i16,
     pub unknown_2a: u16,
 }
+impl TextBlock {
+    pub const SIZE: usize = 0x2c;
+    /// One element's fields, its string ID as stored (not resolved); see
+    /// [`Button::from_element`].
+    pub fn from_element(e: &[u8]) -> Option<Self> {
+        (e.len() >= Self::SIZE).then(|| TextBlock {
+            flags: u32_at(e, 0),
+            animation: AnimationRef(u16_at(e, 4)),
+            unknown_06: i16_at(e, 6),
+            unknown_08: u16_at(e, 8),
+            font: i16_at(e, 0xa),
+            unknown_0c: u32_at(e, 0xc),
+            text_color: f32s(e, 0x10),
+            rect: rect_at(e, 0x1c),
+            string: StringId(u32_at(e, 0x24)),
+            render_depth_bias: i16_at(e, 0x28),
+            unknown_2a: u16_at(e, 0x2a),
+        })
+    }
+}
 fn text_block(c: &mut Ctx, e: &[u8]) -> Result<TextBlock> {
-    Ok(TextBlock {
-        flags: u32_at(e, 0),
-        animation: AnimationRef(u16_at(e, 4)),
-        unknown_06: i16_at(e, 6),
-        unknown_08: u16_at(e, 8),
-        font: i16_at(e, 0xa),
-        unknown_0c: u32_at(e, 0xc),
-        text_color: f32s(e, 0x10),
-        rect: rect_at(e, 0x1c),
-        string: c.string_id(e, 0x24, "TextBlock", "string")?,
-        render_depth_bias: i16_at(e, 0x28),
-        unknown_2a: u16_at(e, 0x2a),
-    })
+    c.string_id(e, 0x24, "TextBlock", "string")?;
+    TextBlock::from_element(e).ok_or(Error::Invalid("a text block element is 0x2c bytes"))
 }
 
 /// Bitmap block, `0x38` bytes (widget type 8; constructor `0x002b01eb`,
@@ -708,6 +737,26 @@ pub struct BitmapBlock {
 }
 impl BitmapBlock {
     pub const METER: u32 = 4;
+    pub const SIZE: usize = 0x38;
+    /// One element's fields, its bitmap reference as stored (not
+    /// resolved); see [`Button::from_element`].
+    pub fn from_element(e: &[u8]) -> Option<Self> {
+        (e.len() >= Self::SIZE).then(|| BitmapBlock {
+            flags: u32_at(e, 0),
+            animation: AnimationRef(u16_at(e, 4)),
+            unknown_06: u16_at(e, 6),
+            draw_mode: i16_at(e, 8),
+            image: i16_at(e, 0xa),
+            top_left: point_at(e, 0xc),
+            scroll_rate: f32s(e, 0x10),
+            bitmap: raw_tag_ref(e, 0x18),
+            render_depth_bias: i16_at(e, 0x20),
+            unknown_22: u16_at(e, 0x22),
+            sprite_fps: f32_at(e, 0x24),
+            extent: point_at(e, 0x28),
+            unknown_2c: raw(e, 0x2c),
+        })
+    }
     /// The initial rectangle as the constructor computes it. `image_size` is
     /// `(width, height)` of the selected bitmap image, if one resolves.
     pub fn rect(&self, image_size: Option<(i16, i16)>) -> Rect {
@@ -733,21 +782,8 @@ impl BitmapBlock {
     }
 }
 fn bitmap_block(c: &mut Ctx, e: &[u8]) -> Result<BitmapBlock> {
-    Ok(BitmapBlock {
-        flags: u32_at(e, 0),
-        animation: AnimationRef(u16_at(e, 4)),
-        unknown_06: u16_at(e, 6),
-        draw_mode: i16_at(e, 8),
-        image: i16_at(e, 0xa),
-        top_left: point_at(e, 0xc),
-        scroll_rate: f32s(e, 0x10),
-        bitmap: c.tag_ref(e, 0x18, &[BITMAP], "BitmapBlock", "bitmap")?,
-        render_depth_bias: i16_at(e, 0x20),
-        unknown_22: u16_at(e, 0x22),
-        sprite_fps: f32_at(e, 0x24),
-        extent: point_at(e, 0x28),
-        unknown_2c: raw(e, 0x2c),
-    })
+    c.tag_ref(e, 0x18, &[BITMAP], "BitmapBlock", "bitmap")?;
+    BitmapBlock::from_element(e).ok_or(Error::Invalid("a bitmap block element is 0x38 bytes"))
 }
 
 /// A scenario object name, `0x20` bytes, NUL padded.
@@ -1185,6 +1221,14 @@ impl SharedGlobals {
     /// zero or an index past the list (the engine then skips it, `0x0022facd`).
     pub fn shape_group(&self, index: u16) -> Option<&ShapeGroup> {
         self.shape_groups.get(usize::from(index).checked_sub(1)?)
+    }
+    /// +0x6c, the colour a window stack fills the whole screen with under
+    /// a screen whose lower window holds one (a dialog over its opener),
+    /// as (a, r, g, b): `0x0023029a` scales its alpha by the screen's
+    /// transition fraction and fills with `0x00147cdb`. In
+    /// [`SharedGlobals::unknown_060`] at 12 to 28.
+    pub fn overlay_color(&self) -> [f32; 4] {
+        f32s(&self.unknown_060, 0x6c - 0x60)
     }
 }
 const SHARED: &str = "SharedGlobals";

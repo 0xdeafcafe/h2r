@@ -94,7 +94,7 @@ impl Exe {
         let mut strings = STRINGS;
         let mut string = |b: &mut Vec<u8>, s: &str| {
             let at = strings;
-            assert!(at + s.len() as u32 + 1 <= END, "invented strings overflow");
+            assert!((at + s.len() as u32) < END, "invented strings overflow");
             b[off(at)..off(at) + s.len()].copy_from_slice(s.as_bytes());
             strings += s.len() as u32 + 1;
             at
@@ -275,6 +275,12 @@ impl Tables {
         })
     }
 
+    /// Give node `d` the type `ty` its parent wants, keeping its own
+    /// (a literal's source type, a call's opcode): a cast.
+    pub fn retype(&mut self, d: Datum, ty: u16) {
+        self.scenario.nodes[d.slot()].value_type = ty;
+    }
+
     /// A call of builtin `index`, spelled `name`, of type `ty`.
     pub fn call(&mut self, index: u16, name: &str, ty: u16, args: &[Datum]) -> Datum {
         self.calls(index, name, ty, 8, args)
@@ -363,6 +369,40 @@ impl Tables {
             s.nodes.iter().flat_map(|x| x.encode()).collect(),
         );
     }
+}
+
+/// Write recordings into a scenario payload whose guest address is
+/// `base`: the elements at payload offset `at`, each stream after them,
+/// and the scenario's block descriptor (`+0x110`) pointing at the elements.
+pub fn write_recordings(
+    payload: &mut [u8],
+    base: u32,
+    at: usize,
+    rows: &[crate::recording::Recorded],
+) {
+    let at = at.next_multiple_of(4);
+    let mut cursor = at + rows.len() * crate::recording::ELEMENT;
+    for (i, r) in rows.iter().enumerate() {
+        let row = at + i * crate::recording::ELEMENT;
+        let e = &mut payload[row..row + crate::recording::ELEMENT];
+        e.fill(0);
+        e[..r.name.len()].copy_from_slice(r.name.as_bytes());
+        e[0x20] = r.version;
+        e[0x22] = r.control_version;
+        e[0x24..0x26].copy_from_slice(&r.ticks.to_le_bytes());
+        e[0x2c..0x30].copy_from_slice(&(r.stream.len() as u32).to_le_bytes());
+        if !r.stream.is_empty() {
+            let end = cursor + r.stream.len();
+            assert!(end <= payload.len(), "the recordings overrun the payload");
+            payload[cursor..end].copy_from_slice(&r.stream);
+            let e = &mut payload[row..row + crate::recording::ELEMENT];
+            e[0x30..0x34].copy_from_slice(&(base + cursor as u32).to_le_bytes());
+            cursor = end.next_multiple_of(4);
+        }
+    }
+    let address = if rows.is_empty() { 0 } else { base + at as u32 };
+    payload[0x110..0x114].copy_from_slice(&(rows.len() as u32).to_le_bytes());
+    payload[0x114..0x118].copy_from_slice(&address.to_le_bytes());
 }
 
 #[cfg(test)]

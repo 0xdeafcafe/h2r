@@ -85,7 +85,7 @@ impl ReplayFrame {
     }
 
     fn read_refusal(&self, reads: &[(usize, TargetRef)], feedback: bool, all: bool, supplied: &[(TargetRef, u8)]) -> Option<&'static str> {
-        let Some(&(end, _)) = reads.last() else { return None };
+        let &(end, _) = reads.last()?;
         if end > self.ops.len() { return Some("invalid_scene_read"); }
         let mut reads = reads.iter().copied().peekable();
         let mut state = Contents::default();
@@ -144,7 +144,7 @@ impl ReplayFrame {
                         state.forget(*to, self.aspects(*to));
                     }
                 }
-                ReplayOp::Sample { id, of, how } => {
+                ReplayOp::Sample { id, of, how, .. } => {
                     // A snapshot freezes this version. An in-place view reads
                     // the contents present when the draw binds it.
                     let mut mask = self.aspects(*of);

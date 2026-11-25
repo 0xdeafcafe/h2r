@@ -22,19 +22,23 @@ pub(super) fn model_distance(m: &dyn GuestMemory, hlmt: u32, distance: f32, scal
     if scale == 1.0 || !(scale.is_finite() && scale > 0.0 && distance.is_finite()) {
         return distance;
     }
-    let Some(mask) = hlmt.checked_add(POSE_SECTIONS) else {
-        return distance;
-    };
-    let mut sections = [0u8; 32];
-    if m.read(mask, &mut sections).is_err() {
-        return distance;
-    }
-    sections[31] &= 0x7f;
-    if sections == [0; 32] {
+    if pose_independent(m, hlmt) {
         (distance / scale).clamp(-f32::MAX, f32::MAX)
     } else {
         distance
     }
+}
+
+pub(super) fn pose_independent(m: &dyn GuestMemory, hlmt: u32) -> bool {
+    let Some(mask) = hlmt.checked_add(POSE_SECTIONS) else {
+        return false;
+    };
+    let mut sections = [0u8; 32];
+    if m.read(mask, &mut sections).is_err() {
+        return false;
+    }
+    sections[31] &= 0x7f;
+    sections == [0; 32]
 }
 
 /// The writer floors pixels * unit and saturates to a byte. Bound large
@@ -86,14 +90,24 @@ pub(super) fn install(b: &mut Builder, scale: ViewLodScale) {
             if c.addr != points::MODEL_LOD.base {
                 return Ok(Flow::Continue);
             }
-            let mem = c.ctx.runtime().memory();
-            let factor = scale.read(&*mem);
-            if factor != 1.0 && mem.u32(c.cpu.esp).ok() == Some(MODEL_LOD_RETURN)
+            let mut mem = c.ctx.runtime().memory();
+            let detail = scale.read(&*mem);
+            if detail != LodDetail::Retail && mem.u32(c.cpu.esp).ok() == Some(MODEL_LOD_RETURN)
                 && let Some(hlmt) = c.cpu.ecx.checked_sub(MODEL_DISTANCES)
             {
+                if detail == LodDetail::Highest && pose_independent(&*mem, hlmt) {
+                    // The caller consumes AL and the fraction through EBX.
+                    // The finest tier is independent of the distance, the
+                    // previous tier and the view's retail distance cap.
+                    let fraction = mem.f32(setup::LOD_FRACTION_MAX)?;
+                    mem.set_f32(c.cpu.ebx, fraction)?;
+                    c.cpu.eax = (c.cpu.eax & !0xff) | u32::from(setup::HIGHEST_LOD);
+                    drop(mem);
+                    return c.ret(4).map(Flow::Return);
+                }
                 let lane = &mut c.cpu.xmm[4][..4];
                 let raw = f32::from_le_bytes(lane[..].try_into().unwrap());
-                lane.copy_from_slice(&model_distance(&*mem, hlmt, raw, factor).to_le_bytes());
+                lane.copy_from_slice(&model_distance(&*mem, hlmt, raw, detail.pixel_multiplier()).to_le_bytes());
             }
             Ok(Flow::Continue)
         })
@@ -108,7 +122,7 @@ pub(super) fn install(b: &mut Builder, scale: ViewLodScale) {
                     return Ok(Flow::Continue);
                 }
                 let mut mem = c.ctx.runtime().memory();
-                let factor = scale.read(&*mem);
+                let factor = scale.read(&*mem).pixel_multiplier();
                 if let Some((arg, scaled)) = guest_record_argument(&*mem, c.cpu.esp, factor) {
                     mem.write_bytes_from(c.addr, arg, &scaled.to_le_bytes(), 1)?;
                 }

@@ -472,6 +472,16 @@ pub struct TagSet {
     /// harmless there): `h1convert`'s fresh build, whose final map has no
     /// pinned base and sizes its BSP space to its regions.
     pub check_bsp_space: bool,
+    /// When added tags outgrow a pinned map's entry table and the index
+    /// tail after it is in use, move the group table to the end of the
+    /// ordinary metadata and start the entries at the index header's end,
+    /// instead of moving the whole entry table (default false). The groups
+    /// (12 bytes each, 1.4 KB on a retail map) then cost tag memory in
+    /// place of the entries (16 bytes per slot, about 80 KB): see
+    /// docs/formats/map-builder.md, "Adding tags to a pinned map". Only
+    /// when the entries then fit before the tail; otherwise the entries
+    /// move as before.
+    pub relocate_groups: bool,
 }
 
 /// Where things went in a built map.
@@ -501,6 +511,10 @@ pub struct BuildLayout {
     pub string_count: u32,
     /// XOR checksum written at `+0x2d0`.
     pub checksum: u32,
+    /// Bytes of the tag index placed at the end of the ordinary metadata
+    /// (the entry table, or the group table with
+    /// [`TagSet::relocate_groups`]); 0 when the index keeps both.
+    pub index_in_metadata: u32,
 }
 
 /// Header bytes a map built from scratch still needs from a pinned source:
@@ -558,6 +572,7 @@ impl TagSet {
             check_tag_memory: true,
             check_file_size: true,
             check_bsp_space: true,
+            relocate_groups: false,
         }
     }
     /// Declare a group and its ancestors (no-op if already declared).
@@ -869,6 +884,7 @@ impl TagSet {
             check_tag_memory: true,
             check_file_size: true,
             check_bsp_space: true,
+            relocate_groups: false,
             header_template: None,
             low_detail: None,
             pinned: Some(PinnedImage {
@@ -1390,14 +1406,22 @@ impl<'a> Builder<'a> {
         // the tail where it is zero (e.g. after `clear_index_tail`);
         // otherwise the entry table moves to the end of the ordinary
         // metadata (the index header points at it), and the tail stays.
-        let entries_in_meta = pin.is_some_and(|p| {
+        let into_tail = |p: &PinnedImage, end: u64| {
             let old = u64::from(p.index_entries_end);
-            index_bytes > old
-                && (index_bytes > p.index.len() as u64
-                    || p.index[old as usize..index_bytes as usize]
-                        .iter()
-                        .any(|b| *b != 0))
-        });
+            end > old
+                && (end > p.index.len() as u64
+                    || p.index[old as usize..end as usize].iter().any(|b| *b != 0))
+        };
+        let outgrown = pin.is_some_and(|p| into_tail(p, index_bytes));
+        // With `relocate_groups`, moving the 12-byte group records is
+        // enough when the entries then fit from the header's end.
+        let groups_in_meta = outgrown
+            && set.relocate_groups
+            && pin.is_some_and(|p| !into_tail(p, 0x20 + entries_bytes));
+        let entries_in_meta = outgrown && !groups_in_meta;
+        if groups_in_meta {
+            index_bytes = 0x20 + entries_bytes;
+        }
         if entries_in_meta {
             if groups_end > pin.map_or(0, |p| u64::from(p.index_entries_end)) {
                 return Err(Error::Invalid(
@@ -1649,8 +1673,40 @@ impl<'a> Builder<'a> {
             }
             None => {}
         }
-        let groups_addr = INDEX_VIRTUAL_BASE + 0x20;
+        // The engine finds a group by binary search (`tag_group_find`,
+        // 0x122d00, comparing the stored words), so the records go out
+        // sorted whatever order they were declared in, as retail's are.
+        let mut groups = set.groups.clone();
+        groups.sort_by_key(|g| g.class.as_u32());
+        let group_record = |g: &TagGroup| -> [u32; 3] {
+            [
+                g.class.as_u32(),
+                g.parent.map_or(u32::MAX, FourCC::as_u32),
+                g.grandparent.map_or(u32::MAX, FourCC::as_u32),
+            ]
+        };
+        let mut groups_addr = INDEX_VIRTUAL_BASE + 0x20;
         let mut tags_addr = groups_addr + 12 * set.groups.len() as u32;
+        let mut index_in_metadata = 0;
+        if groups_in_meta {
+            // After every tag (and the old region's length), 16-aligned;
+            // the entries start where the groups were.
+            let end = meta
+                .bytes
+                .len()
+                .max(pin.map_or(0, |p| p.metadata_size as usize));
+            let at = round_up(end as u64, 16) as usize;
+            let len = 12 * groups.len();
+            meta.bytes.resize(at + len, 0);
+            for (i, g) in groups.iter().enumerate() {
+                for (k, v) in group_record(g).into_iter().enumerate() {
+                    put(&mut meta.bytes, at + i * 12 + k * 4, v);
+                }
+            }
+            groups_addr = metadata_base + u32::try_from(at).map_err(|_| Error::Limit)?;
+            tags_addr = INDEX_VIRTUAL_BASE + 0x20;
+            index_in_metadata = len as u32;
+        }
         let entry = |i: usize, slot: &Slot| -> [u32; 4] {
             let (class, id) = slot
                 .tag
@@ -1667,6 +1723,7 @@ impl<'a> Builder<'a> {
             let at = round_up(end as u64, 16) as usize;
             meta.bytes.resize(at + entries_bytes as usize, 0);
             tags_addr = metadata_base + u32::try_from(at).map_err(|_| Error::Limit)?;
+            index_in_metadata = entries_bytes as u32;
             for (i, slot) in set.slots.iter().enumerate() {
                 for (k, v) in entry(i, slot).into_iter().enumerate() {
                     put(&mut meta.bytes, at + i * 16 + k * 4, v);
@@ -1790,24 +1847,12 @@ impl<'a> Builder<'a> {
         put(&mut index, 0x14, set.index_word_14);
         put(&mut index, 0x18, set.slots.len() as u32);
         index[0x1c..0x20].copy_from_slice(b"sgat");
-        // The engine finds a group by binary search (`tag_group_find`,
-        // 0x122d00, comparing the stored words), so the records go out
-        // sorted whatever order they were declared in, as retail's are.
-        let mut groups = set.groups.clone();
-        groups.sort_by_key(|g| g.class.as_u32());
-        for (i, g) in groups.iter().enumerate() {
-            let at = 0x20 + i * 12;
-            put(&mut index, at, g.class.as_u32());
-            put(
-                &mut index,
-                at + 4,
-                g.parent.map_or(u32::MAX, FourCC::as_u32),
-            );
-            put(
-                &mut index,
-                at + 8,
-                g.grandparent.map_or(u32::MAX, FourCC::as_u32),
-            );
+        if !groups_in_meta {
+            for (i, g) in groups.iter().enumerate() {
+                for (k, v) in group_record(g).into_iter().enumerate() {
+                    put(&mut index, 0x20 + i * 12 + k * 4, v);
+                }
+            }
         }
         if !entries_in_meta {
             for (i, slot) in set.slots.iter().enumerate() {
@@ -1900,6 +1945,7 @@ impl<'a> Builder<'a> {
             bsps: bsp_layout.iter().map(|&(o, s, _)| (o, s)).collect(),
             string_count: self.strings.len() as u32,
             checksum,
+            index_in_metadata,
         };
         Ok((file, layout))
     }

@@ -3,8 +3,10 @@
 //! semantic tokens, with completion as you type, hover, signature help,
 //! underlined problems and their quick fixes, rename, go to definition,
 //! the uses of the name at the cursor, the check report, and the reload
-//! into the paired game. "Open in editor" hands the script's file to an
-//! outside editor and [`poll`] brings its saves back.
+//! into the paired game. "Open in VS Code", "Open in Zed" and "Open in
+//! editor" hand the script's file to an outside editor; [`poll`]
+//! (`App::poll_external`) brings its saves back and sends edits here to
+//! the file.
 //!
 //! The state and every pure helper live in `app::rules_edit`; this file
 //! only draws. The text widget draws its glyphs and its frame transparent
@@ -30,7 +32,7 @@ use dear_imgui_rs::{
 use agent_proto::rules::ReloadMode;
 
 use crate::app::App;
-use crate::app::rules_edit::{self, DiskPoll, Edit, HoverBlock, Mark, MenuKind, RulesEditor, Span};
+use crate::app::rules_edit::{self, Edit, HoverBlock, Mark, MenuKind, RulesEditor, Span};
 use crate::theme::{self, Fonts, icon};
 
 /// The most rows the list at the caret shows before it scrolls.
@@ -162,21 +164,54 @@ fn toolbar(ui: &Ui, app: &mut App, dialogs: bool) {
         open(app, &path);
     }
     ui.same_line();
-    if ui.button(format!("{} Save", icon::SAVE)) {
-        save(app, dialogs, false);
+    if ui.button("Export script...")
+        && let Some(path) = save_dialog(dialogs, &app.rules)
+    {
+        match std::fs::write(&path, &app.rules.text) {
+            Ok(()) => app.info(format!("Exported {}", path.display())),
+            Err(why) => app.error(format!("{}: {why}", path.display())),
+        }
     }
     ui.same_line();
-    if ui.button("Save as") {
-        save(app, dialogs, true);
-    }
-    ui.same_line();
-    if ui.button("Open in editor") {
-        open_in_editor(app);
+    if ui.button("Export game variant...") {
+        save_game_variant(app, dialogs);
     }
     if ui.is_item_hovered() {
         ui.tooltip_text(
-            "Save the script to a file and open it in your editor:\nh2 script-edit, $VISUAL, $EDITOR, VS Code, Zed or the default text editor.\nEach save there comes back here, and into the paired game\nwhile Reload on save is ticked.",
+            "Write the script's own variant as a .h2variant file: its settings, its\noption defaults and the script itself, as `h2 variants from-script` does.",
         );
+    }
+    ui.same_line();
+    if ui.button("Open in VS Code") {
+        open_in_editor(app, Some("code"));
+    }
+    if ui.is_item_hovered() {
+        ui.tooltip_text(
+            "Save the script to a file and open it in VS Code at the cursor's line.\nEach save there comes back here, and into the paired game while\nReload on save is ticked; edits here go to the file once you pause.\nThe extension (h2 rules editors install) adds checks, completion and\nthe Reload and Run scenario commands.",
+        );
+    }
+    ui.same_line();
+    if ui.button("Open in Zed") {
+        open_in_editor(app, Some("zed"));
+    }
+    if ui.is_item_hovered() {
+        ui.tooltip_text("As Open in VS Code, in Zed.");
+    }
+    ui.same_line();
+    if ui.button("Open in editor") {
+        open_in_editor(app, None);
+    }
+    if ui.is_item_hovered() {
+        ui.tooltip_text(
+            "Save the script to a file and open it in your editor: VS Code or Zed\nwith the extension, else $VISUAL, $EDITOR, VS Code, Zed or the\ndefault text editor.",
+        );
+    }
+    if app.rules.watch.is_some() {
+        ui.same_line();
+        ui.checkbox("Write edits to the file", &mut app.rules.sync_to_file);
+        if ui.is_item_hovered() {
+            ui.tooltip_text("Save edits made here to the file once typing pauses, so VS Code or Zed shows them.");
+        }
     }
     ui.same_line();
     if ui.button("Format")
@@ -195,10 +230,6 @@ fn toolbar(ui: &Ui, app: &mut App, dialogs: bool) {
     }
     if ui.is_item_hovered() {
         ui.tooltip_text("Rename the name at the cursor and every use of it (F2).");
-    }
-    ui.same_line();
-    if ui.button("Reload") {
-        reload(app);
     }
     ui.same_line();
     ui.set_next_item_width(110.0);
@@ -226,11 +257,8 @@ fn toolbar(ui: &Ui, app: &mut App, dialogs: bool) {
     let io = ui.io();
     let cmd = io.key_ctrl() || io.key_super();
     if app.rules.typing && ui.is_window_focused_with_flags(FocusedFlags::CHILD_WINDOWS) && cmd {
-        if ui.is_key_pressed(Key::S) {
-            save(app, dialogs, io.key_shift());
-        }
-        if ui.is_key_pressed(Key::R) {
-            reload(app);
+        if ui.is_key_pressed(Key::S) && !io.key_shift() {
+            app.dispatch(crate::app::Action::SaveRules);
         }
     }
 }
@@ -248,51 +276,41 @@ fn conflict_row(ui: &Ui, app: &mut App) {
     }
     ui.same_line();
     if ui.button("Take the file's##rules-take") && app.rules.take_conflict() {
-        took_from_disk(app);
+        app.rules_took_from_disk();
     }
 }
 
 /// Saves the script to a file (its own, or a new one under the data
-/// root) and opens it in an outside editor; [`poll`] watches the file.
-fn open_in_editor(app: &mut App) {
+/// root) and opens it in `only` (`code`, `zed`) or any editor at the
+/// cursor's line; [`poll`] watches the file.
+fn open_in_editor(app: &mut App, only: Option<&'static str>) {
     let root = app.data_root();
-    match app.rules.prepare_external(&root) {
-        Ok(path) => {
-            app.rules.launched = Some(rules_edit::launch(rules_edit::editor_launches_here(&path)));
-            app.info(format!("Opening {} in your editor", path.display()));
+    match app.rules.external_launches(&root, only, None) {
+        Ok((_, _, launches)) if launches.is_empty() => app.error(rules_edit::no_editor(only)),
+        Ok((path, _, launches)) => {
+            app.rules.launched = Some(rules_edit::launch(launches));
+            let extension = match only {
+                Some(e) => rules_edit::extension_installed_here(e),
+                None => ["code", "zed"].into_iter().any(rules_edit::extension_installed_here),
+            };
+            if extension {
+                app.info(format!("Opening {}", path.display()));
+            } else {
+                app.info(format!(
+                    "Opening {}. For checks, completion and the Studio commands there, run h2 rules editors install",
+                    path.display()
+                ));
+            }
         }
         Err(why) => app.error(format!("Not opened in an editor: {why}")),
     }
 }
 
-/// Once a frame, drawn or not: the outside editor's start, and the
-/// watched file's changes (docs/editor/editor-guide.md, "Game type
-/// scripts").
+/// Once a frame, drawn or not: the outside editors and the files they
+/// edit (`App::poll_external`; docs/editor/editor-guide.md, "Scripts in
+/// VS Code and Zed").
 pub fn poll(app: &mut App) {
-    if let Some(done) = app.rules.take_launched() {
-        match done {
-            Ok(how) => app.info(format!("Opened the script with {how}")),
-            Err(why) => app.error(why),
-        }
-    }
-    match app.rules.poll_disk(Instant::now()) {
-        DiskPoll::Nothing => {}
-        DiskPoll::Took => took_from_disk(app),
-        DiskPoll::Asked => app.info(
-            "The script's file changed on disk and here: pick which to keep in the Game type script window.",
-        ),
-    }
-}
-
-/// The buffer took the file's text: say so, and reload it into the
-/// paired game while reload on save is on.
-fn took_from_disk(app: &mut App) {
-    let name = app.rules.title.clone();
-    app.info(format!("{name}: took the changes saved on disk"));
-    let paired = app.pairing.link.as_ref().is_some_and(|l| l.paired);
-    if paired && app.rules.reload_on_save {
-        reload(app);
-    }
+    app.poll_external(Instant::now());
 }
 
 /// The rename field (F2), over the text while it is open.
@@ -351,24 +369,25 @@ fn open(app: &mut App, path: &std::path::Path) {
     }
 }
 
-/// Saves (as a new file when `as_new` or when it has none), then reloads
-/// it into the game when reload on save is on.
-fn save(app: &mut App, dialogs: bool, as_new: bool) {
-    let to = if as_new || app.rules.path.is_none() {
-        match save_dialog(dialogs, &app.rules) {
-            Some(p) => Some(p),
-            None => return,
-        }
-    } else {
-        None
+/// Writes the script's own variant to a `.h2variant` file the user picks.
+fn save_game_variant(app: &mut App, dialogs: bool) {
+    let (name, _) = match rules_edit::game_variant_file(&app.rules.text) {
+        Ok(f) => f,
+        Err(why) => return app.error(format!("Not saved as a game variant: {why}")),
     };
-    match app.rules.save(to.as_deref()) {
-        Ok(path) => {
-            app.info(format!("Saved {}", path.display()));
-            if app.rules.reload_on_save {
-                reload(app);
-            }
-        }
+    if !dialogs {
+        return;
+    }
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("Save the script as a game variant")
+        .add_filter("Game variant", &[variants::portable::EXTENSION])
+        .set_file_name(name)
+        .save_file()
+    else {
+        return;
+    };
+    match app.rules.save_game_variant(&path) {
+        Ok(path) => app.info(format!("Saved {}", path.display())),
         Err(why) => app.error(why),
     }
 }
@@ -395,7 +414,7 @@ fn save_dialog(dialogs: bool, r: &RulesEditor) -> Option<PathBuf> {
     }
     let name = rules_edit::script_file_name(&r.title);
     rfd::FileDialog::new()
-        .set_title("Save the game type script")
+        .set_title("Export the game type script")
         .add_filter("Game type script", &[rules_edit::EXTENSION])
         .set_file_name(name)
         .save_file()
@@ -825,17 +844,13 @@ fn doc_blocks(ui: &Ui, fonts: &Fonts, blocks: &[HoverBlock], width: f32) {
     }
 }
 
-/// Under the text: the signature, the problems, the check report and the
-/// reload.
+/// Under the text: the signature, the problems and the check report.
 fn below(ui: &Ui, app: &mut App) {
     if let Some(sig) = app.rules.typing.then(|| app.rules.signature()).flatten() {
         ui.text_colored(theme::DIM, sig);
     }
     problems(ui, &mut app.rules);
     report(ui, &app.rules);
-    if let Some((tone, line)) = app.rules.reload_line() {
-        ui.text_colored(theme::reload_colour(tone), line);
-    }
 }
 
 /// Every error and warning, errors first: a click puts the cursor on it,
@@ -931,6 +946,22 @@ fn report(ui: &Ui, r: &RulesEditor) {
             theme::WARN,
             format!("No host runs these yet: {}", rep.unhostable.join(", ")),
         );
+    }
+    if let Some(section) = rules_edit::script_section(check)
+        && ui.collapsing_header("Settings and Quick Options", TreeNodeFlags::DEFAULT_OPEN)
+    {
+        if !section.settings.is_empty() {
+            ui.text_disabled("Settings (a new variant starts with these)");
+            for line in &section.settings {
+                ui.bullet_text(line);
+            }
+        }
+        if !section.quick.is_empty() {
+            ui.text_disabled("Quick Options rows, in order");
+            for line in &section.quick {
+                ui.bullet_text(line);
+            }
+        }
     }
     if let Some(hash) = &check.hash {
         ui.text_disabled(format!("SHA-256 {hash}"));

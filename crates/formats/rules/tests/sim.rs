@@ -25,7 +25,7 @@ const ALL: [(&str, &str); 12] = [
     ("vip", builtin::VIP),
     ("siege", builtin::SIEGE),
     ("race", builtin::RACE),
-    ("bounce_practice", builtin::BOUNCE_PRACTICE),
+    ("bounce_hunt", builtin::BOUNCE_HUNT),
 ];
 
 fn setup(players: u8, teams: u8, seed: u64) -> Setup {
@@ -105,16 +105,23 @@ fn a_match_holds_only_events_the_script_can_notice() {
     }
     let events = |src: &str| sim::emits(&rules::compile(src).unwrap());
     assert_eq!(events(builtin::SLAYER), [Event::Kill, Event::Spawn]);
-    assert_eq!(events(builtin::BOUNCE_PRACTICE), [Event::Bounce]);
+    assert_eq!(events(builtin::BOUNCE_HUNT), [Event::Bounce]);
     assert_eq!(events(builtin::RACE), [Event::Enter, Event::Leave]);
     assert!(events(builtin::KING).contains(&Event::Enter));
     assert!(events(builtin::ODDBALL).contains(&Event::Pickup));
     assert!(!events(builtin::SLAYER).contains(&Event::Bounce));
 
-    let m = sim::simulate(builtin::BOUNCE_PRACTICE, &setup(4, 0, 1)).unwrap();
+    let m = sim::simulate(builtin::BOUNCE_HUNT, &setup(4, 0, 1)).unwrap();
     assert!(m.scenario.steps.iter().any(|s| matches!(s.input, Input::Bounce { .. })));
+    // Siege gives a loadout at each spawn, counts time in zones, and
+    // starts a respawn wave at each death.
+    assert_eq!(
+        events(builtin::SIEGE),
+        [Event::Kill, Event::Spawn, Event::Death, Event::Enter, Event::Leave]
+    );
     let m = sim::simulate(builtin::SIEGE, &setup(8, 0, 1)).unwrap();
-    assert!(m.scenario.steps.iter().any(|s| matches!(s.input, Input::Death(_))));
+    assert!(m.scenario.steps.iter().any(|s| matches!(s.input, Input::Spawn(_))));
+    assert!(m.scenario.steps.iter().any(|s| matches!(s.input, Input::Enter { .. })));
 }
 
 #[test]
@@ -143,10 +150,11 @@ fn every_builtin_reaches_an_end() {
     let m = end(builtin::INFECTION, 8, 0);
     assert_eq!(m.end, End::Script);
     assert!(matches!(m.winner, Winner::Team(_)));
-    // Siege's attackers take the generated map's zones, and each one
-    // restarts the phase clock: a long round lets the last one run out.
+    // Siege ends itself within its two phase clocks: the attackers take
+    // the flag stand, or a clock runs out and the defenders win.
     let m = sim::simulate(builtin::SIEGE, &Setup { length: Some(1200), ..setup(8, 0, 1) }).unwrap();
-    assert_eq!((m.end, m.winner), (End::Script, Winner::Team(1)));
+    assert_eq!(m.end, End::Script);
+    assert!(matches!(m.winner, Winner::Team(_)), "{:?}", m.winner);
     // Somebody scores in the modes that score.
     for src in [builtin::ODDBALL, builtin::KING, builtin::TERRITORIES, builtin::CTF, builtin::RACE] {
         let ir = rules::compile(src).unwrap();
@@ -223,7 +231,7 @@ fn a_batch_summarises_its_matches() {
 #[test]
 fn a_batch_flags_what_looks_wrong() {
     // Nothing scores, the only way out is a timer nothing starts.
-    let idle = "rules \"Idle\" 1\ncarrier slayer\nglobal var t: timer\non timer(t) { end_round(none) }\n";
+    let idle = "rules \"Idle\" 1\ntype slayer\nglobal var t: timer\non timer(t) { end_round(none) }\n";
     let s = Setup {
         length: Some(5),
         ..setup(4, 0, 1)
@@ -239,7 +247,7 @@ fn a_batch_flags_what_looks_wrong() {
     assert!(b.rows.iter().all(|r| r.winner == Winner::Draw));
 
     // Every death costs a point.
-    let cruel = "rules \"Cruel\" 1\ncarrier slayer\non kill(victim, killer) { score(victim, -1) }\n";
+    let cruel = "rules \"Cruel\" 1\ntype slayer\non kill(victim, killer) { score(victim, -1) }\n";
     let b = sim::batch(cruel, &setup(8, 0, 1), 2).unwrap();
     let f = b.summary.flags.iter().find(|f| f.kind == "negative_score").unwrap();
     assert_eq!((f.seed, f.matches), (1, 2));
@@ -271,13 +279,13 @@ fn the_scenario_file_holds_the_match() {
     assert_eq!(scores, m.trace.scores);
 
     // Labelled objects with their teams, and the events past the engine's.
-    const BASES: &str = "rules \"Bases\" 1\ncarrier slayer\nlabel bases: zones per team\non tick {\n    for each bases b { }\n}\n";
+    const BASES: &str = "rules \"Bases\" 1\ntype slayer\nlabel bases: zones per team\non tick {\n    for each bases b { }\n}\n";
     let m = sim::simulate(BASES, &setup(4, 2, 2)).unwrap();
     let (file, left) = sim::to_file(&m.scenario);
     assert!(left.is_empty(), "{left:?}");
     assert_eq!(file.map, m.scenario.map);
     assert!(file.map.iter().flatten().any(|l| l.team == Some(1)));
-    let m = sim::simulate(builtin::BOUNCE_PRACTICE, &setup(4, 0, 2)).unwrap();
+    let m = sim::simulate(builtin::BOUNCE_HUNT, &setup(4, 0, 2)).unwrap();
     let (file, left) = sim::to_file(&m.scenario);
     assert!(left.is_empty(), "{left:?}");
     let bounces = file
@@ -333,7 +341,7 @@ fn a_seated_score_limit_ends_the_run() {
 
 #[test]
 fn a_player_entering_a_labelled_object_is_inside_it() {
-    let src = "rules \"Pad\" 1\ncarrier slayer\nlabel pad: zones\non tick {\n    for each pad z {\n        for each players p where inside(p, z) { score(p, 1) }\n    }\n}\n";
+    let src = "rules \"Pad\" 1\ntype slayer\nlabel pad: zones\non tick {\n    for each pad z {\n        for each players p where inside(p, z) { score(p, 1) }\n    }\n}\n";
     let zone = |tick, enter: bool, slot: u8| Step {
         tick,
         input: if enter {

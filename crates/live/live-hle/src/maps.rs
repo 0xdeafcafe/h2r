@@ -250,8 +250,13 @@ impl MapGate {
     /// `maps_dir` is `<data>/maps`.
     pub fn new(maps_dir: impl Into<PathBuf>, bases: Arc<dyn Bases>) -> Self {
         let has_map_pack = bases.has_map_pack();
+        let maps_dir = maps_dir.into();
+        // The Library canonicalizes each package's dir: hold the maps dir
+        // the same way, or a downloaded package's dir does not compare as
+        // this gate's own (a symlinked path, like macOS's /var temp dirs).
+        let maps_dir = maps_dir.canonicalize().unwrap_or(maps_dir);
         MapGate {
-            maps_dir: maps_dir.into(),
+            maps_dir,
             bases,
             has_map_pack,
             installed: Mutex::new(None),
@@ -441,7 +446,11 @@ impl MapGate {
             .and_then(|n| n.to_str())
             .unwrap_or_default()
             .to_string();
-        if !name.starts_with(DIR_PREFIX) || dir.parent() != Some(self.maps_dir.as_path()) {
+        // The package's dir is the Library's (canonical); compare with the
+        // maps dir the same way (the gate may have been made before the
+        // dir existed, or under a symlink).
+        let maps = self.maps_dir.canonicalize().unwrap_or_else(|_| self.maps_dir.clone());
+        if !name.starts_with(DIR_PREFIX) || dir.parent() != Some(maps.as_path()) {
             return Err(format!(
                 "{} was not downloaded from Live; remove it by hand",
                 dir.display()
@@ -470,8 +479,12 @@ impl MapGate {
         let m: &Manifest = &answer.map.manifest;
         let id = MapId::of(m);
         let dir = self.package_dir(&id);
+        std::fs::create_dir_all(&dir).map_err(|e| Refusal::Download(format!("{}: {e}", dir.display())))?;
+        // Return the dir as the Library will have it (canonical): a first
+        // install and a later look-up then name the same path, even when
+        // the maps dir was made after this gate (or under a symlink).
+        let dir = dir.canonicalize().unwrap_or(dir);
         let io = |e: std::io::Error| Refusal::Download(format!("{}: {e}", dir.display()));
-        std::fs::create_dir_all(&dir).map_err(io)?;
         for (file, sha) in m
             .patches
             .iter()
@@ -620,7 +633,9 @@ mod tests {
             live_proto::sign::random_id()
         ));
         std::fs::create_dir_all(&d).unwrap();
-        d
+        // Work in the canonical dir (macOS's /var is a symlink), the
+        // spelling the Library's packages have.
+        d.canonicalize().unwrap()
     }
 
     fn modded(patch: &[u8]) -> Manifest {
@@ -701,6 +716,7 @@ mod tests {
             ping_ms: None,
             variant_ext: None,
             rules: None,
+            firefight: None,
             browser: None,
         }
     }

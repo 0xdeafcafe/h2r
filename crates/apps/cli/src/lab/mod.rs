@@ -30,7 +30,7 @@ const DEFAULT_MAX_JOBS: usize = 1;
 const USAGE: &str = "usage:
   h2 lab host [install] [--root DIR] [--socket PATH] [--repo DIR] [--disc ISO]
               [--h2 PATH] [--out DIR] [--data DIR] [--cargo PATH]
-              [--obj-cache-limit SIZE] [--target-limit SIZE]
+              [--obj-cache-limit SIZE] [--target-limit SIZE] [--disk-floor SIZE]
               [--listen IP:PORT] [--name NAME] [--max-jobs 1]
               [--takeover-timeout SECONDS] [--takeover-cooldown SECONDS]
                           serve on the private Unix socket; --listen enables LAN
@@ -66,8 +66,9 @@ const USAGE: &str = "usage:
         [--no-sync] [--feature F]... [--build-env KEY=VALUE]... [--mem-limit SIZE] [--note TEXT]
                           a dedicated System Link host: headless `h2 serve --system-link
                           --host-light` on the host's LAN IPv4 (the job's system_link),
-                          until `stop`; --map opens its lobby; XNet base 3074 unless
-                          --base-port; driven by `agent` like --serve
+                          until `stop`; --map opens its lobby; XNet base 3174 unless
+                          --base-port (never the player's 3074-3080); driven by
+                          `agent` like --serve
     agent <id> <method> [json-params] [--timeout S]
                           one `h2 agent` call against that run's game, run on the
                           host; its output and exit code come back unchanged
@@ -90,6 +91,11 @@ const USAGE: &str = "usage:
     build [--branch NAME | --rev REV] [--feature F]... [--build-env KEY=VALUE]... [--wait]
     wait <id> [--timeout SECONDS]
     stop <id>             SIGTERM, then SIGKILL after 5 s
+    clean [--all]         free the host's disk: old job runs, unused image work
+                          directories, the object cache to half its budget and the
+                          Cargo target; --all also empties the rest and the checkout.
+                          Never touches a running job's files. Prints bytes freed per
+                          category and the free disk before and after
     runs [--limit N] [--json]
     mem <id> [--to DIR]   fetch memory evidence and print its largest growers
     logs <id|current> [--follow]
@@ -184,6 +190,7 @@ fn parse_host_config(
     let mut cargo = None;
     let mut obj_cache_limit = build_cache::DEFAULT_OBJECT_LIMIT;
     let mut target_limit = build_cache::DEFAULT_TARGET_LIMIT;
+    let mut disk_floor = build_cache::DEFAULT_DISK_FLOOR;
     let mut max_jobs = DEFAULT_MAX_JOBS;
     let mut listen = None;
     let mut name = None;
@@ -205,13 +212,13 @@ fn parse_host_config(
             "--out" => out = Some(val()?),
             "--data" => data = Some(val()?),
             "--cargo" => cargo = Some(val()?),
-            "--obj-cache-limit" | "--target-limit" => {
+            "--obj-cache-limit" | "--target-limit" | "--disk-floor" => {
                 let size = it.next().with_context(|| format!("{a} needs a size"))?;
                 let bytes = mem_watch::parse_size(size).map_err(anyhow::Error::msg)?;
-                if a == "--obj-cache-limit" {
-                    obj_cache_limit = bytes;
-                } else {
-                    target_limit = bytes;
+                match a.as_str() {
+                    "--obj-cache-limit" => obj_cache_limit = bytes,
+                    "--target-limit" => target_limit = bytes,
+                    _ => disk_floor = bytes,
                 }
             }
             "--max-jobs" => {
@@ -300,12 +307,14 @@ fn parse_host_config(
         cargo: cargo.unwrap_or_else(|| "cargo".into()),
         obj_cache_limit,
         target_limit,
+        disk_floor,
         max_jobs,
         lan: listen.map(|addr| lan::Listen { addr, name }),
         explicit_h2,
         managed: false,
         grace: Duration::from_secs(5),
         takeover,
+        agents: agent_proto::discover::dir(),
     })
 }
 

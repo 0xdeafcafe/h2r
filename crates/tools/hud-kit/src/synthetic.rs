@@ -1,6 +1,6 @@
 //! The synthetic source's invented map, built with `map::build`: a player
-//! `nhdt` whose motion tracker, shield meter, grenade pills and counts are
-//! flat boxes on the retail rectangles ([`crate::rects`]), the strip
+//! `nhdt` whose motion tracker is a flat disc and whose shield meter,
+//! grenade pills and counts are flat boxes on the retail rectangles ([`crate::rects`]), the strip
 //! meter's bitmap and shader under the retail names, a `hudg` with a
 //! waypoint arrow and marker, the biped naming the HUD, and a scoreboard
 //! `nhdt` with Assault's arming bar (`bomb_defusal`, at its retail place)
@@ -197,13 +197,21 @@ pub fn build() -> Result<Vec<u8>> {
     for g in [b"bitm", b"shad", b"nhdt", b"bipd", b"hudg"] {
         set.add_group(FourCC(*g), None, None);
     }
-    // The tracker's rim: a grey ring box, 83 by 83.
+    // The tracker: a grey disc, 83 across, clear outside its rim as the
+    // retail one is round (the charge segments' arcs pass its corners).
     let tracker = bitmap(
         &mut set,
         "synthetic\\hud\\tracker",
         (128, 128),
         (83, 83),
-        |_, _| [70, 110, 90, 220],
+        |x, y| {
+            let (dx, dy) = (x as f32 + 0.5 - 41.5, y as f32 + 0.5 - 41.5);
+            if dx.hypot(dy) <= 41.5 {
+                [70, 110, 90, 220]
+            } else {
+                [0; 4]
+            }
+        },
     )?;
     // The shield meter: what shows of it is its top-left 83 by 25.
     let shield = bitmap(

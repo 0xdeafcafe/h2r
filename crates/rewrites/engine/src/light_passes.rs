@@ -151,15 +151,48 @@ impl PassFlags {
 /// the caller's MXCSR. Reads the override pointer, the definition's words
 /// `+4` and `+0x14` and the threshold from memory.
 pub fn pass_flags(m: &dyn GuestMemory, g: &LightGlobals, shadow: u8, mxcsr: u32) -> Result<PassFlags, Error> {
+    let inputs = FlagInputs { definition: g.definition, context_word: g.context_word, colour_b: g.colour_b, falloff_4: g.falloff[4] };
+    flags_of(m, &inputs, shadow, mxcsr)
+}
+
+/// What the flag code reads besides the override and the definition's
+/// words: the definition's address (ESI), the context's first word
+/// (`[edi]`), colour B (`[0x00485950]`..) and falloff word 4
+/// (`[0x00485a40]`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FlagInputs {
+    pub definition: u32,
+    pub context_word: u16,
+    pub colour_b: [u32; 3],
+    pub falloff_4: u32,
+}
+
+impl FlagInputs {
+    /// As the flag code reads them after the constants call has run: the
+    /// definition at `definition`, the context at `context` (`0x0003121d`),
+    /// colour B and the falloff word from the globals block.
+    pub fn read(m: &dyn GuestMemory, definition: u32, context: u32) -> Result<Self, MemFault> {
+        use crate::light_constants::global::{COLOUR_B, FALLOFF};
+        Ok(Self {
+            definition,
+            context_word: m.u16(context)?,
+            colour_b: [m.u32(COLOUR_B)?, m.u32(COLOUR_B + 4)?, m.u32(COLOUR_B + 8)?],
+            falloff_4: m.u32(FALLOFF + 16)?,
+        })
+    }
+}
+
+/// [`pass_flags`] of the flag code's own reads ([`FlagInputs`]).
+pub fn flags_of(m: &dyn GuestMemory, i: &FlagInputs, shadow: u8, mxcsr: u32) -> Result<PassFlags, Error> {
     let mut sse = Sse { mxcsr };
     let zero = 0u32;
 
     let over = m.u32(global::OVERRIDE)?;
     let kept = over != 0 && m.u8(over.wrapping_add(5))? != 0;
-    let colour_b_zeroed = !kept && m.u16(g.definition.wrapping_add(4))? == 0;
-    let colour_b = if colour_b_zeroed { [zero; 3] } else { g.colour_b };
+    let colour_b_zeroed = !kept && m.u16(i.definition.wrapping_add(4))? == 0;
+    let colour_b = if colour_b_zeroed { [zero; 3] } else { i.colour_b };
 
-    let mut flags = (g.context_word == 0) as u32;
+    let mut flags = (i.context_word == 0) as u32;
     let threshold = m.u32(constant::SPECULAR)?;
     let mut above = false;
     for c in colour_b {
@@ -176,8 +209,8 @@ pub fn pass_flags(m: &dyn GuestMemory, g: &LightGlobals, shadow: u8, mxcsr: u32)
 
     if shadow != 0 && flags & flag::CONTEXT_ZERO == 0 {
         flags |= flag::SHADOW | flag::SHADOW_B;
-        let falloff = g.falloff[4];
-        if sse.above(falloff, zero)? && m.u16(g.definition.wrapping_add(0x14))? != 2 {
+        let falloff = i.falloff_4;
+        if sse.above(falloff, zero)? && m.u16(i.definition.wrapping_add(0x14))? != 2 {
             flags |= flag::SHADOW_FALLOFF;
         } else {
             flags &= !flag::SHADOW_FALLOFF;

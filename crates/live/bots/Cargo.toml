@@ -11,6 +11,10 @@ serde.workspace = true
 live-proto.workspace = true
 input = { path = "../../platform/input", default-features = false }
 engine = { path = "../../rewrites/engine" }
+# A hill's area, the zone a script scores (bots::objective::Hill).
+game-markers = { path = "../../formats/game-markers" }
+# The actor pool Firefight's bots read their enemies from (bots::firefight).
+guest-layout = { path = "../../hooking/guest-layout" }
 # The nav mesh's polygons come from the pathfinding generator's sectors,
 # made from the structure BSP's collision.
 tags = { path = "../../formats/tags" }

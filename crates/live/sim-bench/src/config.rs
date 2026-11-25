@@ -660,6 +660,10 @@ pub enum Detail {
     /// No components; one digest row a game second and a rolling digest
     /// over every tick (`h2 sim diff` compares those).
     Training,
+    /// The training tally, and the spatial trace beside the report
+    /// ([`crate::spatial`]): where players were, spawned, fought, picked
+    /// up and got stuck.
+    Spatial,
 }
 
 impl Detail {
@@ -667,7 +671,10 @@ impl Detail {
         match s.trim().to_ascii_lowercase().as_str() {
             "full" => Ok(Detail::Full),
             "training" => Ok(Detail::Training),
-            other => Err(format!("detail = \"{other}\": \"full\" or \"training\"")),
+            "spatial" => Ok(Detail::Spatial),
+            other => Err(format!(
+                "detail = \"{other}\": \"full\", \"training\" or \"spatial\""
+            )),
         }
     }
 
@@ -675,7 +682,23 @@ impl Detail {
         match self {
             Detail::Full => "full",
             Detail::Training => "training",
+            Detail::Spatial => "spatial",
         }
+    }
+
+    /// What the tally records: a spatial run's tally is a training
+    /// run's, so the trace changes nothing in the report but its
+    /// `detail`.
+    pub fn tally(self) -> Detail {
+        match self {
+            Detail::Spatial => Detail::Training,
+            d => d,
+        }
+    }
+
+    /// The run writes the spatial trace ([`crate::spatial::trace_path`]).
+    pub fn traces(self) -> bool {
+        self == Detail::Spatial
     }
 }
 
@@ -712,7 +735,9 @@ impl BotThreads {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MatchConfig {
-    /// A multiplayer map on the disc, by file name (`lockout`).
+    /// A multiplayer map on the disc, by file name (`lockout`). A drops
+    /// file may name it in its `[drops]` table instead.
+    #[serde(default)]
     pub map: String,
     #[serde(default = "default_game_type")]
     pub game_type: String,
@@ -753,8 +778,9 @@ pub struct MatchConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub components: Option<bool>,
     /// How much of the state a report records: `"full"` (the default: the
-    /// per-tick digests and components) or `"training"` (no components;
-    /// sparse digests and a rolling digest over every tick).
+    /// per-tick digests and components), `"training"` (no components;
+    /// sparse digests and a rolling digest over every tick) or
+    /// `"spatial"` (the training report, and the spatial trace beside it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     /// Bot think workers for this process (`H2_BOT_THREADS`'s values): a
@@ -780,6 +806,18 @@ pub struct MatchConfig {
     /// (docs/runtime/sim.md, "Training the bounce sites").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub train: Option<crate::train::TrainConfig>,
+    /// Seam drops: every seat dropped onto candidate collision edges with
+    /// the pair word held at -3 (docs/runtime/sim.md, "Seam drops").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drops: Option<crate::drops::DropsConfig>,
+    /// The forked bounce search: trials on each seam from a saved machine
+    /// (docs/runtime/bounce-search.md).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bounces: Option<crate::bounces::BouncesConfig>,
+    /// With `game_type = "firefight"`: the wave set, difficulty, teams,
+    /// lives and skulls (docs/runtime/sim.md, "Firefight").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firefight: Option<crate::firefight::FirefightConfig>,
     #[serde(default, rename = "bot")]
     pub bots: Vec<BotSpec>,
 }
@@ -824,15 +862,37 @@ pub struct Match {
     pub team_play: bool,
     /// The bots practise superbounces ([`MatchConfig::superbounce`]).
     pub superbounce: bool,
+    /// A Firefight match (`game_type = "firefight"`): a Slayer game with
+    /// team play on, the bots on the player teams.
+    pub firefight: Option<crate::firefight::Firefight>,
 }
 
 impl Match {
+    /// The game type's name as the report and Live name it: `firefight`
+    /// for a Firefight match (played as Slayer), else the type's own.
+    pub fn game_type_name(&self) -> &'static str {
+        if self.firefight.is_some() {
+            crate::firefight::GAME_TYPE
+        } else {
+            self.game_type.name()
+        }
+    }
+
     /// The match as JSON for the report: the file with every bot's tuning
     /// resolved inline (no paths), so a report says what was played.
     pub fn resolved_json(&self) -> serde_json::Value {
         let mut c = self.config.clone();
-        c.game_type = self.game_type.name().into();
+        c.game_type = self.game_type_name().into();
         c.team_play = Some(self.team_play);
+        if let Some(f) = &self.firefight {
+            c.firefight = Some(crate::firefight::FirefightConfig {
+                set: Some(f.set.key().into()),
+                difficulty: Some(f.difficulty.name().into()),
+                teams: Some(f.teams),
+                lives: f.lives,
+                skulls: Some(f.skulls),
+            });
+        }
         if c.detail.is_some() {
             c.detail = Some(self.config.detail().name().into());
         }
@@ -895,17 +955,108 @@ pub fn load_match(path: &Path) -> Result<Match, String> {
 /// Checks `config` and resolves its bots; `read` loads a tuning file by
 /// the path the match file gives. Every problem is listed.
 pub fn resolve(
-    config: MatchConfig,
+    mut config: MatchConfig,
     read: &dyn Fn(&Path) -> Result<BotParams, String>,
 ) -> Result<Match, String> {
     let mut problems = Vec::new();
+    if let Some(d) = &config.drops {
+        // A drops file names its map in the table or the match, has a
+        // seat for every phantom unless it lists bots, plays with no
+        // time limit as teams and keeps the report light.
+        if config.map.trim().is_empty()
+            && let Some(m) = &d.map
+        {
+            config.map = m.clone();
+        }
+        if config.bots.is_empty() {
+            config.bots = d.seat_bots();
+        }
+        if config.time_limit_s.is_none() {
+            config.time_limit_s = Some(0);
+        }
+        // Free-for-all sims end at tick 0 (a sim bug), so team play.
+        if config.team_play.is_none() {
+            config.team_play = Some(true);
+        }
+        if config.detail.is_none() {
+            config.detail = Some(Detail::Training.name().into());
+        }
+    }
+    if let Some(b) = &config.bounces {
+        // A bounce search file is filled in as a drops file is.
+        if config.map.trim().is_empty()
+            && let Some(m) = &b.map
+        {
+            config.map = m.clone();
+        }
+        if config.bots.is_empty() {
+            config.bots = b.seat_bots();
+        }
+        if config.time_limit_s.is_none() {
+            config.time_limit_s = Some(0);
+        }
+        if config.team_play.is_none() {
+            config.team_play = Some(true);
+        }
+        if config.detail.is_none() {
+            config.detail = Some(Detail::Training.name().into());
+        }
+    }
     if config.map.trim().is_empty() {
         problems.push("map: empty".to_string());
     }
-    let game_type = GameType::parse(&config.game_type).unwrap_or_else(|e| {
-        problems.push(format!("game_type: {e}"));
-        GameType::Slayer
+    // Firefight is a Slayer game with team play on and no time limit
+    // unless the file sets one (docs/runtime/sim.md, "Firefight").
+    let is_firefight = crate::firefight::is_game_type(&config.game_type);
+    let firefight = if is_firefight {
+        if config.team_play == Some(false) {
+            problems.push(
+                "team_play = false: Firefight plays as teams (the AI is a team of its own)".into(),
+            );
+        }
+        config.team_play = Some(true);
+        if config.time_limit_s.is_none() {
+            config.time_limit_s = Some(0);
+        }
+        let others = [
+            ("superbounce", config.superbounce == Some(true)),
+            ("drill", config.drill.is_some()),
+            ("train", config.train.is_some()),
+            ("drops", config.drops.is_some()),
+            ("bounces", config.bounces.is_some()),
+        ];
+        for (name, _) in others.iter().filter(|(_, on)| *on) {
+            problems.push(format!("{name}: not in a Firefight match"));
+        }
+        match config.firefight.clone().unwrap_or_default().resolve() {
+            Ok(f) => Some(f),
+            Err(e) => {
+                problems.extend(e);
+                None
+            }
+        }
+    } else {
+        if config.firefight.is_some() {
+            problems.push("firefight: needs game_type = \"firefight\"".into());
+        }
+        None
+    };
+    // The seat rule's teams; with a bad table, both player teams, so the
+    // table's own problems are not repeated per bot.
+    let seats = firefight.or_else(|| {
+        is_firefight.then_some(crate::firefight::Firefight {
+            teams: 2,
+            ..Default::default()
+        })
     });
+    let game_type = if is_firefight {
+        GameType::Slayer
+    } else {
+        GameType::parse(&config.game_type).unwrap_or_else(|e| {
+            problems.push(format!("game_type: {e}"));
+            GameType::Slayer
+        })
+    };
     let pace = Pace::parse(&config.pace).unwrap_or_else(|e| {
         problems.push(format!("pace: {e}"));
         Pace::Unpaced
@@ -926,7 +1077,7 @@ pub fn resolve(
     {
         problems.push(e);
     }
-    if config.detail() == Detail::Training && config.components == Some(true) {
+    if config.detail().tally() == Detail::Training && config.components == Some(true) {
         problems.push("components = true: a training report has no components".into());
     }
     if config.bots.is_empty() {
@@ -987,15 +1138,29 @@ pub fn resolve(
         problems.extend(params.problems(&at));
         let skill = params.skill();
         params.skill = Some(skill.name().into());
-        if let Some(t) = spec.team
-            && t >= 8
-        {
-            problems.push(format!("{at}: team {t}: 0 to 7"));
-        }
-        let team = if team_play {
-            Some(spec.team.unwrap_or(seat % 2))
-        } else {
-            spec.team
+        let team = match &seats {
+            // Firefight: a player team or none yet (balanced below); the
+            // AI's team is never a seat.
+            Some(f) => match spec.team.map(|t| (t, f.seat_problem(t))) {
+                Some((_, Some(why))) => {
+                    problems.push(format!("{at}: {why}"));
+                    None
+                }
+                Some((t, None)) => Some(t),
+                None => None,
+            },
+            None => {
+                if let Some(t) = spec.team
+                    && t >= 8
+                {
+                    problems.push(format!("{at}: team {t}: 0 to 7"));
+                }
+                if team_play {
+                    Some(spec.team.unwrap_or(seat % 2))
+                } else {
+                    spec.team
+                }
+            }
         };
         bots.push(Bot {
             seat,
@@ -1011,7 +1176,13 @@ pub fn resolve(
             seed: bot_seed(config.seed, seat),
         });
     }
-    if team_play && bots.len() >= 2 {
+    if let Some(f) = &seats {
+        let mut teams: Vec<Option<u8>> = bots.iter().map(|b| b.team).collect();
+        f.balance(&mut teams);
+        for (b, t) in bots.iter_mut().zip(teams) {
+            b.team = t;
+        }
+    } else if team_play && bots.len() >= 2 {
         let first = bots[0].team;
         if bots.iter().all(|b| b.team == first) {
             problems.push("team_play: every bot is on one team; nobody to fight".to_string());
@@ -1039,6 +1210,29 @@ pub fn resolve(
             return Err(problems.join("\n"));
         }
     }
+    if let Some(d) = &config.drops {
+        problems.extend(d.problems(
+            &config.map,
+            superbounce,
+            config.drill.is_some(),
+            config.train.is_some(),
+        ));
+        if !problems.is_empty() {
+            return Err(problems.join("\n"));
+        }
+    }
+    if let Some(b) = &config.bounces {
+        problems.extend(b.problems(
+            &config.map,
+            superbounce,
+            config.drill.is_some(),
+            config.train.is_some(),
+            config.drops.is_some(),
+        ));
+        if !problems.is_empty() {
+            return Err(problems.join("\n"));
+        }
+    }
     Ok(Match {
         config,
         game_type,
@@ -1047,6 +1241,7 @@ pub fn resolve(
         variant,
         team_play,
         superbounce,
+        firefight,
     })
 }
 
@@ -1130,8 +1325,8 @@ pub struct BatchConfig {
     pub skills: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
-    /// `detail` for every run (`"full"` or `"training"`); over the match
-    /// file's own.
+    /// `detail` for every run (`"full"`, `"training"` or `"spatial"`);
+    /// over the match file's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     /// Legacy batch option. Only false is accepted.

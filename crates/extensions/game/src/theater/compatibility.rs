@@ -1,7 +1,9 @@
 //! Compatibility is a guest contract. Host UI, codecs, dependency versions and
 //! snapshot serializers have their own versioning and do not identify a match.
 use super::{Mode, Session};
-use agent_proto::theater::{Compatibility, CompatibilityState, FilmContract, InstalledImage};
+use agent_proto::theater::{
+    Compatibility, CompatibilityState, FilmContract, InstalledImage, MonitorLookSource,
+};
 use anyhow::{Result, ensure};
 use engine::points::{self, Loc, Sig};
 use film::image::{GuestImage, ImageMatch};
@@ -10,7 +12,10 @@ use std::path::PathBuf;
 
 /// Bump for a backwards-incompatible change in scheduler, input or HLE
 /// semantics that is not already identified by the image or installed hooks.
-pub(super) const SIMULATION_ABI: &str = "h2-sim/1";
+/// `h2-sim/2`: the call tape is the binary stream, the pure network
+/// operations take no call index, and a game that has made no socket holds
+/// no socket call (docs/game/input-film.md, "What the replay depends on").
+pub(super) const SIMULATION_ABI: &str = "h2-sim/2";
 const BREAKING_CHANGE: &str = "Film predates a breaking simulation change.";
 
 /// Check an installed, current module against the recording. The launcher also
@@ -94,9 +99,18 @@ impl Installation {
     }
 
     pub fn compatibility(&self, entry: &film::LibraryEntry) -> Compatibility {
-        self.check(entry, recomp::host_triple(), || {
+        let mut report = self.check(entry, recomp::host_triple(), || {
             entry.check_initial_files(&self.data)
-        })
+        });
+        // A film of a Forge session names the monitor looks this machine
+        // draws as markers; they are not reasons the film is unavailable.
+        if entry.version >= 2 {
+            note_monitor_looks(
+                &mut report,
+                &super::forge_film::unseen_in(&entry.path, &crate::forge_glue::can_draw()),
+            );
+        }
+        report
     }
 
     fn check(
@@ -185,8 +199,30 @@ impl Installation {
             reasons,
             film,
             installed,
+            monitor_looks: Vec::new(),
         }
     }
+}
+
+/// Note the recorded monitor looks this machine cannot draw
+/// (`monitor_look_source`). They do not make the film unavailable: the
+/// simulation is whole and the seat draws the marker in the look's colours.
+pub fn note_monitor_looks(report: &mut Compatibility, unseen: &[forge::look::film::Unseen]) {
+    report.monitor_looks = monitor_look_sources(unseen);
+}
+
+/// The looks a machine cannot draw as the agent API names them.
+pub(super) fn monitor_look_sources(
+    unseen: &[forge::look::film::Unseen],
+) -> Vec<MonitorLookSource> {
+    unseen
+        .iter()
+        .map(|u| MonitorLookSource {
+            seat: u.seat,
+            map: u.map.clone(),
+            reason: u.reason.clone(),
+        })
+        .collect()
 }
 
 fn location(loc: Loc) -> [u8; 2] {
@@ -220,7 +256,10 @@ fn signature(sig: Sig) -> Vec<u8> {
     bytes
 }
 
-fn hook_digest(plan: &hooks::Plan, installed: &hooks::Installed) -> String {
+/// The film's simulation hooks: what a replay's installed plan must equal
+/// (`Session::check_simulation_hooks`). Features marked presentation-only,
+/// and features install turned off, are left out.
+pub fn hook_digest(plan: &hooks::Plan, installed: &hooks::Installed) -> String {
     let placed = installed.placed.iter().copied().collect::<BTreeSet<_>>();
     let presentation = plan.features.iter().filter(|f| f.presentation_only)
         .map(|f| f.id).collect::<BTreeSet<_>>();
@@ -297,13 +336,27 @@ impl Session {
         plan: &hooks::Plan,
         installed: &hooks::Installed,
     ) -> Result<()> {
+        let actual = hook_digest(plan, installed);
+        self.set_simulation_hooks(actual)
+    }
+
+    /// Record mode takes `actual` as the film's digest and puts it on the
+    /// tape, whose boot header was written before the hooks were installed;
+    /// every film cut from the tape, and a tape sealed after a hard kill,
+    /// read it from there. Replay requires the film's digest to equal it.
+    pub(super) fn set_simulation_hooks(&self, actual: String) -> Result<()> {
         let mut state = self.lock();
         if state.header.version < 3 {
             return Ok(());
         }
-        let actual = hook_digest(plan, installed);
         if matches!(&state.mode, Mode::Record(_)) {
             state.header.simulation_hooks = Some(actual);
+            let header = state.header.clone();
+            if let Mode::Record(rec) = &mut state.mode
+                && let Some(out) = rec.out.as_mut()
+            {
+                out.chunk(film::HEAD, &header)?;
+            }
         } else {
             ensure!(
                 state.header.simulation_hooks.as_ref() == Some(&actual),
@@ -472,6 +525,22 @@ mod tests {
         assert_eq!(report.installed[1].state, Unavailable);
         assert_eq!(report.reasons, ["Install the original map."]);
 
+        // A look this machine cannot draw is listed beside the state, not
+        // a reason against it.
+        let mut report = installation.check(&film, MAC, || Ok(()));
+        let state = report.state;
+        note_monitor_looks(
+            &mut report,
+            &[forge::look::film::Unseen {
+                seat: 2,
+                map: "invented_map".into(),
+                reason: forge::look::film::REASON.into(),
+            }],
+        );
+        assert_eq!(report.state, state);
+        assert_eq!(report.monitor_looks[0].seat, 2);
+        assert_eq!(report.monitor_looks[0].reason, "monitor_look_source");
+
         installation.xbe = film::xbe_digest(b"different synthetic XBE");
         let report = installation.check(&film, MAC, || panic!("unavailable at the header"));
         assert_eq!(report.state, Unavailable);
@@ -524,8 +593,11 @@ mod tests {
             telemetry: false,
             telemetry_hooks: None,
             render_hooks: None,
+            inputs_in_film: false,
             live_service: false,
             features: String::new(),
+            player_features: false,
+            tape_id: None,
         };
         header.meta.image_stamp = STAMP.into();
         for (id, abi) in [("old", "h2-sim/0"), ("current", SIMULATION_ABI)] {
@@ -569,6 +641,13 @@ mod tests {
                 .unwrap()
                 .contains(&json!(api::COMPAT))
         );
+        assert_eq!(call(api::EXIT, json!({}))["error"]["code"], code::UNAVAILABLE);
+        assert_eq!(call(api::STATE, json!({}))["result"]["active"], false);
+        let films = call(api::LIST, json!({}));
+        let rows = films["result"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().any(|row| row["id"] == "current" && row["saved"] == false));
+        assert_eq!(call(api::LIST, json!({"unknown": 1}))["error"]["code"], code::INVALID_PARAMS);
         let bad = call(api::COMPAT, json!({}));
         assert_eq!(bad["error"]["code"], code::INVALID_PARAMS);
 

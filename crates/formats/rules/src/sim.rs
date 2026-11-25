@@ -185,7 +185,7 @@ struct Wants {
     /// alive or the kill counts, or has things to carry.
     combat: bool,
     /// Players walk into and out of the labelled objects: it reads
-    /// `inside`, or handles `enter` or `leave`.
+    /// `inside` or `ticks_held`, or handles `enter` or `leave`.
     zones: bool,
     /// Players pick objectives up and drop them: it handles `pickup` or
     /// `drop`, or reads an objective's carrier.
@@ -205,7 +205,10 @@ impl Wants {
             || calls(ir, id::KILLS)
             || calls(ir, id::DEATHS)
             || carry;
-        let zones = on(Event::Enter) || on(Event::Leave) || calls(ir, id::INSIDE);
+        let zones = on(Event::Enter)
+            || on(Event::Leave)
+            || calls(ir, id::INSIDE)
+            || calls(ir, id::TICKS_HELD);
         Wants {
             combat,
             zones,
@@ -233,6 +236,9 @@ pub fn emits(ir: &Ir) -> Vec<Event> {
         Event::ActorAssist,
         Event::Bounce,
         Event::Edit,
+        Event::Touchdown,
+        Event::Launch,
+        Event::Grounded,
         Event::Quit,
     ] {
         if w.on(e) {
@@ -269,7 +275,7 @@ fn teams_for(ir: &Ir, setup: &Setup) -> u8 {
         ir.header.teams.min(8)
     } else if setup.teams >= 2 {
         setup.teams
-    } else if matches!(ir.header.carrier, 1 | 9) {
+    } else if matches!(ir.header.engine(), 1 | 9) {
         2
     } else {
         0
@@ -279,7 +285,7 @@ fn teams_for(ir: &Ir, setup: &Setup) -> u8 {
 /// The record a match is played under: the carrier's usual limits, sized
 /// so a match ends in a few minutes.
 fn variant(ir: &Ir, setup: &Setup, teams: u8) -> BTreeMap<String, i32> {
-    let carrier = ir.header.carrier;
+    let carrier = ir.header.engine();
     let team_play = teams >= 2;
     let score = setup.score_limit.unwrap_or(match carrier {
         1 | 9 => 5,
@@ -297,7 +303,6 @@ fn variant(ir: &Ir, setup: &Setup, teams: u8) -> BTreeMap<String, i32> {
     set("score_limit", score);
     set("time_limit", setup.length.unwrap_or(DEFAULT_LENGTH) as i32);
     set("respawn_time", RESPAWN_SECONDS as i32);
-    set("engine", i32::from(carrier));
     match carrier {
         1 | 9 => {
             set("ctf_reset_time", 10);
@@ -329,7 +334,7 @@ fn objects(ir: &Ir, teams: u8) -> Vec<ScenarioLabel> {
     for def in ir.labels.iter().filter(|d| d.max >= 1) {
         census.labels.entry(def.text.clone()).or_insert_with(|| {
             let class = match def.kind {
-                LabelKind::Object => Class::Object,
+                LabelKind::Object | LabelKind::Path => Class::Object,
                 LabelKind::Zone => Class::Volume,
                 LabelKind::Spawn => Class::Spawn,
             };
@@ -398,7 +403,7 @@ impl Director {
             // Apart from the VM's own stream, which the match seed also
             // starts.
             rng: scenario.seed ^ 0x6d61_7463_685f_6765,
-            carrier: ir.header.carrier,
+            carrier: ir.header.engine(),
             team_play: field("team_play") != 0,
             respawn_ticks: match u32::try_from(field("respawn_time")) {
                 Ok(s) if s > 0 => s * TPS,
@@ -724,6 +729,33 @@ impl Director {
             && let Some(i) = self.any(&living)
         {
             out.push(Input::Bounced(self.bots[i].slot));
+        }
+        if self.wants.on(Event::Touchdown)
+            && self.below(6 * u64::from(TPS)) < n
+            && let Some(i) = self.any(&living)
+        {
+            // A fall of 2 to 11 world units a second, landing at 0 to 13
+            // up.
+            let down = crate::ty::fixed::from_int(2 + self.below(10) as i32);
+            let up = crate::ty::fixed::from_int(self.below(14) as i32);
+            out.push(Input::Touchdown { player: self.bots[i].slot, down, up });
+        }
+        if self.wants.on(Event::Launch)
+            && self.below(8 * u64::from(TPS)) < n
+            && let Some(i) = self.any(&living)
+        {
+            // Most launches come off a marked strip; one in six off a seam
+            // no strip accounts for. 8 to 17 world units a second up, so
+            // now and then over a Monster's 16.
+            let spot = (self.below(6) != 0).then(|| SPOT_BASE + self.below(6) as u32);
+            let speed = crate::ty::fixed::from_int(8 + self.below(10) as i32);
+            out.push(Input::Launch { player: self.bots[i].slot, spot, speed });
+        }
+        if self.wants.on(Event::Grounded)
+            && self.below(12 * u64::from(TPS)) < n
+            && let Some(i) = self.any(&living)
+        {
+            out.push(Input::Grounded(self.bots[i].slot));
         }
         if self.wants.on(Event::Edit)
             && self.below(15 * u64::from(TPS)) < n
@@ -1187,6 +1219,10 @@ pub fn to_file(s: &Scenario) -> (file::Scenario, Vec<String>) {
                 assist,
                 class,
             },
+            Input::Damage { object, by, amount } => file::ScenarioEvent::Damage { object, by, amount },
+            Input::Touchdown { player, down, up } => file::ScenarioEvent::Touchdown { player, down, up },
+            Input::Launch { player, spot, speed } => file::ScenarioEvent::Launch { player, spot, speed },
+            Input::Grounded(player) => file::ScenarioEvent::Grounded(player),
         };
         if let Some(t) = ticks.get_mut(step.tick as usize) {
             t.events.push(event);
@@ -1205,12 +1241,14 @@ pub fn to_file(s: &Scenario) -> (file::Scenario, Vec<String>) {
                 score: 0,
                 lives: p.lives,
                 unit: p.unit,
+                body: Default::default(),
             })
             .collect(),
         teams: (!s.teams.is_empty()).then(|| s.teams.clone()),
         variant: s.variant.clone(),
         map: s.map.clone(),
         round_time_left: s.round_time,
+        sight: Vec::new(),
         ticks,
     };
     (scenario, left.into_iter().collect())

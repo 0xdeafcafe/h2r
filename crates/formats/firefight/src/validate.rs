@@ -2,7 +2,8 @@ use std::collections::BTreeSet;
 
 use crate::{
     Caps, Def, Drop, FORMAT, MAX_CLASSES, MAX_DOC_BYTES, MAX_PLAYERS, MAX_ROUNDS, MAX_SKULLS,
-    MAX_SQUADS, MULTIPLIER_SCALE, Refusal, Result, Scoring, WAVES_PER_ROUND, Wave, wire,
+    MAX_SQUADS, MAX_TEAMS, MULTIPLIER_SCALE, Refusal, Result, Scoring, WAVES_PER_ROUND, Wave,
+    wire,
 };
 
 /// The provisional host budget in the AI networking design, by inclusive
@@ -17,6 +18,7 @@ const MAX_GAP_TICKS: u32 = 5 * 60 * 30;
 const MAX_DROP_ZONES: u8 = 12;
 const MAX_WEAPON_TIER: u8 = 3;
 const MAX_CLASS_POINTS: u16 = 1_000;
+const MAX_PLAYER_KILL_POINTS: u16 = 1_000;
 const MAX_MULTIPLIER: u16 = 2 * MULTIPLIER_SCALE;
 
 /// Classes provided by the target kit. An empty kit admits no definitions.
@@ -55,6 +57,7 @@ pub(crate) fn definition(def: &Def) -> Result<()> {
             "must contain text without control characters",
         ));
     }
+    teams(def)?;
     wire::check_size(def.rounds.len(), "rounds", MAX_ROUNDS)?;
     if def.rounds.is_empty() {
         return Err(invalid("rounds", "at least one round is required"));
@@ -103,6 +106,36 @@ pub(crate) fn definition(def: &Def) -> Result<()> {
                 }
             }
         }
+    }
+    Ok(())
+}
+
+/// One or two player teams; points for a player kill only with two, and
+/// two teams need a lobby of at least two.
+fn teams(def: &Def) -> Result<()> {
+    if !(1..=MAX_TEAMS as u8).contains(&def.teams) {
+        return Err(invalid("teams", "a definition has one or two player teams"));
+    }
+    if def.scoring.player_kill > MAX_PLAYER_KILL_POINTS {
+        return Err(invalid("player_kill", "must be in 0..=1,000"));
+    }
+    if def.teams == 1 && def.scoring.player_kill != 0 {
+        return Err(invalid(
+            "player_kill",
+            "player kills score only with two teams",
+        ));
+    }
+    if def.teams > 1
+        && def
+            .caps
+            .live_actors_by_players
+            .last()
+            .is_some_and(|&(players, _)| players < 2)
+    {
+        return Err(invalid(
+            "teams",
+            "two teams need an actor cap tier for at least two players",
+        ));
     }
     Ok(())
 }

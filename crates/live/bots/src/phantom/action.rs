@@ -420,6 +420,12 @@ impl Phantoms {
         if let Some((sample, gated)) = sample {
             let (tick, unit) = (sample.tick, sample.unit);
             let candidate = if let Some(bytes) = build(sample).await {
+                // The builder's guest writes are discarded, so its control
+                // update's clear of the facing flag is made here on the
+                // live biped (docs/game/bots.md §5.1, "The facing release").
+                if cx.write(|m| release_facing(m, unit))? {
+                    self.lock().maintenance.facing_releases += 1;
+                }
                 Some((bytes, Publication::Built))
             } else if !gated
                 && state.publication == Publication::Built
@@ -483,6 +489,27 @@ struct SlotSeat {
     player_addr: u32,
     mac: [u8; 6],
     unit: DatumHandle,
+}
+
+/// Clears the facing-set bit of the biped `unit`, as retail's control
+/// update does for a local player once it has reseeded the look from the
+/// unit's aim (`0x0018700b`). While the bit stays set, every build reseeds
+/// the look from the aim and drops the look stick. Returns whether it was
+/// set.
+fn release_facing(m: &mut dyn GuestMemory, unit: DatumHandle) -> Result<bool, MemFault> {
+    let Some((kind, body)) = objects::get(m, unit)? else {
+        return Ok(false);
+    };
+    if kind != objects::BIPED {
+        return Ok(false);
+    }
+    let at = body.addr + guest::BIPED_FLAGS;
+    let flags = m.u8(at)?;
+    if flags & guest::BIPED_FACING_SET == 0 {
+        return Ok(false);
+    }
+    m.set_u8(at, flags & !guest::BIPED_FACING_SET)?;
+    Ok(true)
 }
 
 fn seat_at(m: &dyn GuestMemory, slot: u32) -> Result<Option<SlotSeat>, MemFault> {

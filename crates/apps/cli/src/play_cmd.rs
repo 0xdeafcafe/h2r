@@ -17,7 +17,7 @@ use input::backend::scripted::{ScriptedInput, Timeline};
 use input::bindings::{Bindings, Control, Input};
 
 const USAGE: &str = "usage:
-  h2 play <disc.iso> [--out DIR] [--tier auto|fast|clang] [--data DIR] [--transfers N] [--slices N]
+  h2 play <disc.iso> [--out DIR] [--tier auto|bridge|fast|clang] [--data DIR] [--transfers N] [--slices N]
           [--aspect source|4:3|16:9] [--scaling fit|integer|stretch] [--nearest] [--fullscreen]
           [--title TEXT] [--tile I/N]
           [--no-audio] [--no-gamepads] [--no-vsync] [--unpaced] [--bindings FILE] [--status]
@@ -29,16 +29,19 @@ const USAGE: &str = "usage:
            [--live-tunnel-url https://HOST]] [--no-tunnel-setup]]
           [--icons auto|xbox|xbox360|playstation|keyboard|remote]
           [--level MAP [--difficulty easy|normal|heroic|legendary]] [--set KEY=VALUE]...
+          [--editor [--window] [--game-variant FILE]]
   h2 play --follow [--repo PATH] [--branch B] [--remote R] [--no-fetch] [--poll SECS]
           [--fresh-data] [--cache DIR] <the arguments above>
+  h2 play --watch [--repo PATH] [--quiet MS] [--fresh-data] [--cache DIR] <the arguments above>
 
 Opens a window and runs the recompiled game live (builds the dylib first when
 --out has none, or one built from another image or generator). --out and
 --data default to $TMPDIR/h2boot and `data` in the app data directory
 (docs/runtime/storage.md; $H2_DATA if set; saves live there), as for `h2 run`.
---tier (or H2_TIER) as for `h2 run`: by default clang's module when current,
-else the Cranelift fast tier (built in seconds) with clang's build started in
-the background for the next start. --slices is unlimited by default. When
+--tier (or H2_TIER) as for `h2 run`: by default clang's module, built first
+when it is not current; `bridge` starts on the Cranelift fast tier (built in
+seconds) with clang's build in the background for the next start. --slices
+is unlimited by default. When
 the guest returns, the window stays up with the outcome in its title, except
 for a run with --slices or H2_BOOT_STOP_AT_PRESENT, or a lab job: those close
 it and exit.
@@ -78,13 +81,19 @@ accepts native or WIDTHxHEIGHT; H2_RENDER_SCALE accepts a legacy multiplier.
 --set KEY=VALUE sets any of our settings for this run only, as its environment
 variable would: it wins over the variable and the file and locks its row
 (`h2 settings list` shows them; docs/game/settings-menu.md).
---level MAP (or H2_LEVEL) starts that level instead of the main menu, with one
+--editor starts the game for a tool to hold (Studio's own game): it needs
+--level, has no window unless --window is given, and is a local game with no
+Live, film or --input-timeline (docs/editor/game-view.md). --level MAP (or H2_LEVEL) starts that level instead of the main menu, with one
 default player: no title, profile or menus. MAP is a map file name from the
 disc: a campaign level (03a_oldmombasa) at --difficulty (or H2_DIFFICULTY;
 normal by default), or a multiplayer map (ascension) as a local Slayer game
-with the default variant. A name the disc lacks lists them (docs/runtime/level-boot.md).
+with the default variant. --game-variant FILE supplies a portable .h2variant
+for an --editor multiplayer level. A name the disc lacks lists them (docs/runtime/level-boot.md).
 --follow keeps the game running while it builds each new commit of the
-branch, then offers a restart (`h2 play --follow --help`).
+branch, then offers a restart (`h2 play --follow --help`). --watch watches your
+checkout instead: once a burst of edits or a git pull settles it reloads rules
+scripts into the game, rebuilds h2 (and the game code when it must), then
+offers the same restart (`h2 play --watch --help`).
 
 With no Live flag it plays offline and contacts nothing (--offline or
 --no-live says so explicitly). --live signs the game in to Xbox Live at
@@ -126,7 +135,7 @@ arrows d-pad, WASD left stick, mouse look (click to capture). Cmd+Q quits,
 Cmd+F fullscreen, Cmd+P pause, F3 the watermark, ` (backquote) the debug menu
 (a touchpad click on a DualSense or DualShock 4; H2_DEBUG_MENU=0 turns it off;
 `h2 agent hostpads` shows what the pads report;
-docs/runtime/debug-menu.md). With --follow, F5 restarts into a ready update
+docs/runtime/debug-menu.md). With --follow or --watch, F5 restarts into a ready update
 and F6 hides the banner. --bindings reads a TOML table (docs/input/input.md).
 --icons (or H2_ICONS) picks the button pictures in prompts: auto, the default,
 follows the device last used (docs/input/button-icons.md).";
@@ -339,10 +348,10 @@ fn hosted(
             None => gfx,
         }
     };
-    let native_size: boot::run_opts::NativeSize = Arc::new(host.native_size());
+    let native_target: boot::run_opts::NativeTarget = Arc::new(host.native_target());
     let (gfx, view) = boot::d3d_glue::window_targets(
         &store,
-        native_size, host.display_size(),
+        native_target, host.display_size(),
         || configure(d3d::GfxBackend::new(host.gfx_context())),
         || {
             let present = host
@@ -361,6 +370,7 @@ fn hosted(
     }
     boot::Host {
         film_out: None,
+        film_auto: Default::default(),
         film_view: None,
         film_media: None,
         film_capture: None,
@@ -379,6 +389,8 @@ fn hosted(
         theater: None,
         theater_playback: None,
         perf_overlay: None,
+        cheat_line: None,
+        game_code: None,
         editor_link: None,
         debug_views: None,
         world_line_sources: Vec::new(),
@@ -419,6 +431,19 @@ fn hosted(
         })),
         // `run` sets it when cloud saves are on.
         on_vfs: None,
+    }
+}
+
+/// A player session records into the film library unless it runs as a lab
+/// job (its frame times stay comparable with earlier jobs; `H2_FILM_OUT`
+/// records one on purpose). A session link joined at launch or later is
+/// noted and the recording carries on (`Session::outside_change`).
+fn film_auto_request(lab_job: bool) -> boot::theater::autorecord::Request {
+    use boot::theater::autorecord::Request;
+    if lab_job {
+        Request::Skip("a lab job records a film only with H2_FILM_OUT")
+    } else {
+        Request::On
     }
 }
 
@@ -500,6 +525,7 @@ fn watch_signals(_: app::Closer) -> Arc<AtomicBool> {
     Arc::new(AtomicBool::new(false))
 }
 
+mod editor;
 mod forge;
 pub(crate) mod theater;
 
@@ -511,6 +537,10 @@ pub(crate) fn run_with_theater(
     args: Vec<String>,
     open_library: Option<boot::theater_ui::adapter::OpenLibrary>,
 ) -> Result<()> {
+    #[cfg(unix)]
+    if args.iter().any(|a| a == "--watch") {
+        return crate::watch::run(args);
+    }
     #[cfg(unix)]
     if args.iter().any(|a| a == "--follow") {
         return crate::follow::run(args);
@@ -537,15 +567,19 @@ pub(crate) fn run_with_theater(
     let mut live = crate::play_live::LiveOpts::default();
     let mut film_out = None;
     let mut level_flag: Option<String> = None;
+    let mut game_variant = None;
     let mut difficulty_flag: Option<String> = None;
     let mut tier: Option<boot::tier::Choice> = None;
+    let mut editor_flag = false;
+    let mut window_flag = false;
     let mut config = app::AppConfig {
         // boot's DirectSound output owns the device; the shell's own
         // AudioOut would open it a second time (its discard renderer only
         // consumes the unused `GuestHost::mixer`).
         audio: false,
         title: "Halo 2".into(),
-        aspect: app::DisplayAspect::Source,
+        aspect: app::DisplayAspect::Drawable,
+        window_matches_monitor_aspect: true,
         bindings: play_bindings(),
         // The run prints its report before the guest thread returns.
         shutdown_timeout: Duration::from_secs(10),
@@ -619,7 +653,10 @@ pub(crate) fn run_with_theater(
             }
             "--set" => flags.push(crate::settings_cmd::set_flag(&val()?)?),
             "--film" => film_out = Some(PathBuf::from(val()?)),
+            "--editor" => editor_flag = true,
+            "--window" => window_flag = true,
             "--level" => level_flag = Some(val()?),
+            "--game-variant" => game_variant = Some(PathBuf::from(val()?)),
             "--difficulty" => difficulty_flag = Some(val()?),
             "--follow-status" => follow_status = Some(PathBuf::from(val()?)),
             "--input-timeline" => {
@@ -663,6 +700,26 @@ pub(crate) fn run_with_theater(
         std::env::var_os("H2_LAB_JOB_ID").is_some_and(|v| !v.is_empty()),
     );
     live.check()?;
+    let env_set = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
+    let editor = editor::check(editor::Asked {
+        editor: editor_flag,
+        window: window_flag,
+        level: level_flag.as_deref().is_some_and(|l| !l.trim().is_empty()) || env_set("H2_LEVEL"),
+        live: live.enabled || live.local || live.join.is_some(),
+        film: film_out.is_some() || env_set("H2_FILM_OUT"),
+        timeline: config.scripted_input.is_some(),
+    })?;
+    if let Some(mode) = editor {
+        // A tool holds this game: no window of its own unless asked, and
+        // a focus change never pauses it.
+        config.hidden = !mode.window;
+        config.pause_on_focus_loss = false;
+    }
+    let film_auto = if editor.is_some() {
+        boot::theater::autorecord::Request::Skip("editor mode records no film")
+    } else {
+        film_auto_request(std::env::var_os("H2_LAB_JOB_ID").is_some_and(|v| !v.is_empty()))
+    };
     if live.join.is_some()
         && (film_out.is_some() || std::env::var_os("H2_FILM_OUT").is_some_and(|p| !p.is_empty()))
     {
@@ -711,14 +768,16 @@ pub(crate) fn run_with_theater(
         },
         gamepads: config.gamepads,
     };
-    // Before the level is resolved, so `--level a30` finds a level this
-    // converts.
-    if crate::h1_import::auto_enabled(no_halo1) {
-        crate::h1_import::auto_import(&disc, &data);
+    if game_variant.is_some() && editor.is_none() {
+        bail!("--game-variant needs --editor");
     }
+    // The packages' convert items (the Map Pack and Halo 1 discs beside
+    // the game disc), before the level is resolved so `--level a30` finds
+    // a level this converts.
+    crate::package_prepare::before_boot(&disc, &data, no_halo1, no_mappack);
     // Before the build and the window, so a bad name stops here with the
     // disc's list.
-    let level = match level_choice(
+    let mut level = match level_choice(
         level_flag,
         difficulty_flag,
         std::env::var("H2_LEVEL").ok(),
@@ -727,6 +786,12 @@ pub(crate) fn run_with_theater(
         Some((name, difficulty)) => Some(boot::level_boot::resolve_in(&disc, Some(&data), &name, difficulty)?),
         None => None,
     };
+    if let Some(path) = game_variant {
+        let req = level.as_mut().context("--game-variant needs --level")?;
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        req.set_variant(&text)?;
+    }
     if let Some(l) = &level {
         eprintln!("play: starting {} {} ({})", l.name, l.game(), l.scenario);
     }
@@ -741,9 +806,15 @@ pub(crate) fn run_with_theater(
     // A start on the fast tier while clang builds runs slowly: say so on
     // screen, and say when the full-speed image is ready.
     let building_clang = tier_plan.background_clang.then(|| out.clone());
-    if crate::mappack_cmd::auto_enabled(no_mappack) {
-        crate::mappack_cmd::auto_install(&disc, &data);
-    }
+    // What the debug menu's Game > Game code page and `game.code` show.
+    let game_code = Arc::new(boot::game_code::GameCode {
+        tier: tier_plan.tier.name(),
+        module: lib.clone(),
+        stamp: boot::stamp_path(&lib),
+        background_log: building_clang.as_deref().map(boot::tier::background_log),
+        full_speed_module: boot::tier::clang_dylib(&out),
+        restart: restart_in_place(),
+    });
     let opts = boot::RunOpts {
         disc,
         data_root: data,
@@ -782,6 +853,9 @@ pub(crate) fn run_with_theater(
     config.closer = Some(closer.clone());
     let interrupted = watch_signals(closer);
     crate::boot_cmd::start_memory_watch(&opts.data_root);
+    // Under `h2 follow`, a restart exits for the follower to start the
+    // next build; on its own, `h2 play` starts itself again.
+    let followed = follow_status.is_some();
     // After the signal mask is set, so the reader thread inherits it.
     #[cfg(unix)]
     if let Some(path) = follow_status {
@@ -795,10 +869,8 @@ pub(crate) fn run_with_theater(
             std::env::var("H2_RENDER_THREAD").ok().as_deref(),
         )));
     }
-    if config.banner.is_none()
-        && let Some(out) = building_clang
-    {
-        config.banner = Some(tier_banner(out));
+    if config.banner.is_none() && building_clang.is_some() {
+        config.banner = Some(tier_banner(Arc::clone(&game_code)));
     }
     if let Some(c) = frame_stats {
         timeline::phase::start(c).context("starting frame stats")?;
@@ -816,11 +888,14 @@ pub(crate) fn run_with_theater(
     let debug_menu = debug_menu_on(std::env::var("H2_DEBUG_MENU").ok().as_deref())
         .then(debug_menu::Shared::default);
     config.debug_menu = debug_menu.clone();
+    // host.screenshot's default directory.
+    config.screenshots = Some(opts.data_root.join("screenshots"));
     let perf_overlay = config.watermark.as_ref().map(app::Watermark::switch);
+    let cheat_line = config.watermark.as_ref().map(app::Watermark::cheats_handle);
     let editor_link = EditorLink::default();
     config.editor_link = Some(Arc::new(EditorPlateSource(editor_link.clone())));
     if boot::forge_glue::requested().map_err(anyhow::Error::msg)? {
-        config.forge = Some(forge::overlay(&opts.disc).context("loading Forge UI assets")?);
+        config.forge = Some(forge::overlay());
     }
     let theater = open_library.map(|open| (boot::theater_ui::Theater::default(), open));
     if let Some((controller, _)) = &theater {
@@ -845,6 +920,9 @@ pub(crate) fn run_with_theater(
             store,
             steam,
         );
+        // With no --film or H2_FILM_OUT, the session records into the film
+        // library (docs/game/film-format.md, "Recording every game").
+        host.film_auto = film_auto;
         host.film_out = film_out;
         host.level = level;
         host.on_vfs = on_vfs;
@@ -854,6 +932,11 @@ pub(crate) fn run_with_theater(
             if let Some(menu) = &debug_menu {
                 input.set_gate(Box::new(menu.gate()));
             }
+            // Editor mode: Start goes to the tool, so the in-game pause menu
+            // never opens (docs/editor/game-view.md).
+            if editor.is_some() {
+                input.add_gate(Box::new(self::editor::NoStart));
+            }
         }
         host.theater = theater;
         host.debug_menu = debug_menu;
@@ -862,8 +945,11 @@ pub(crate) fn run_with_theater(
         host.discoverable_agent = true;
         host.embedded_live = live.local;
         host.perf_overlay = perf_overlay;
+        host.cheat_line = cheat_line;
+        host.game_code = Some(game_code);
         host.editor_link = Some(editor_link);
         boot::debug_views::register(&mut host);
+        boot::forge_glue::markers_world::register(&mut host);
         boot::superbounce_mode::register(&mut host);
         let r = boot::run_hosted_with_live(&xbe, &lib, &opts, host, &live_config);
         // As `h2 run` does: the kernel's storage may outlive the run (or never
@@ -896,9 +982,18 @@ pub(crate) fn run_with_theater(
     drop(session);
     #[cfg(unix)]
     if report.restart_requested {
-        println!("play: restarting into the update");
-        std::process::exit(crate::follow::RESTART_EXIT);
+        if followed {
+            println!("play: restarting into the update");
+            std::process::exit(crate::follow::RESTART_EXIT);
+        }
+        // F5 on the window's "the game stopped" notice.
+        if let Some(restart) = restart_in_place() {
+            println!("play: starting the game again");
+            restart().map_err(anyhow::Error::msg)?;
+        }
     }
+    #[cfg(not(unix))]
+    let _ = followed;
     Ok(())
 }
 
@@ -1182,7 +1277,7 @@ fn mark_frame() -> app::overlay::marks::FrameMarks {
 }
 
 /// Each view's mark camera, moved by its shift where a made frame drew it
-/// with another camera than the image's own (`d3d::interp::marks`).
+/// with another camera than the image's own (`d3d::present_camera`).
 fn mark_cameras(
     views: &[Option<d3d::present_camera::View>; 4],
     reference: bool,
@@ -1275,21 +1370,28 @@ impl app::EditorPlateSource for EditorPlateSource {
 
 /// The window's banner while clang builds the full-speed image in the
 /// background (`boot::tier::background_build`): this start runs on the
-/// slow fast tier until the next one.
-fn tier_banner(out: PathBuf) -> app::Banner {
+/// slower fast tier until the next one. The text is
+/// `boot::game_code::banner_text`, the state the debug menu's Game code
+/// page shows.
+fn tier_banner(code: Arc<boot::game_code::GameCode>) -> app::Banner {
+    use boot::game_code::{BuildState, banner_text};
     let banner = app::Banner::new();
     let b = banner.clone();
-    b.set(tier_notice(TierBuild::Building));
+    let notice = |state: BuildState, elapsed: Duration| {
+        banner_text(state, elapsed).map(|text| app::Notice {
+            kind: if state == BuildState::Failed { app::NoticeKind::Error } else { app::NoticeKind::Info },
+            text,
+        })
+    };
+    b.set(notice(BuildState::Building, Duration::ZERO));
     std::thread::Builder::new()
         .name("tier-status".into())
         .spawn(move || {
-            let log = boot::tier::background_log(&out);
             loop {
                 std::thread::sleep(Duration::from_secs(2));
-                let text = std::fs::read_to_string(&log).unwrap_or_default();
-                let state = tier_build_state(&text);
-                b.set(tier_notice(state));
-                if state != TierBuild::Building {
+                let (state, elapsed, _) = code.build();
+                b.set(notice(state, elapsed.unwrap_or_default()));
+                if state != BuildState::Building {
                     return;
                 }
             }
@@ -1298,42 +1400,47 @@ fn tier_banner(out: PathBuf) -> app::Banner {
     banner
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TierBuild {
-    Building,
-    Ready,
-    Failed,
+/// Starts `h2 play` again in this process (the same executable and
+/// arguments), so the new start picks clang's module when it is current.
+/// Files Rust opens close on exec; the window and the GPU go with the old
+/// image.
+#[cfg(unix)]
+fn restart_in_place() -> Option<boot::game_code::Restart> {
+    use std::os::unix::process::CommandExt;
+    let exe = std::env::current_exe().ok()?;
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    Some(Arc::new(move || {
+        let mut c = std::process::Command::new(&exe);
+        c.args(&args);
+        // SAFETY: only async-signal-safe libc calls on a local set. The
+        // signal mask survives exec, and `watch_signals` blocked SIGINT and
+        // SIGTERM; the new start must begin with them unblocked.
+        unsafe {
+            c.pre_exec(|| {
+                let mut set: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut set);
+                libc::sigaddset(&mut set, libc::SIGINT);
+                libc::sigaddset(&mut set, libc::SIGTERM);
+                libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
+                Ok(())
+            });
+        }
+        // The agent socket is named for this pid, which exec keeps: free
+        // the path so the new start can listen on it again.
+        for sock in [boot::agent_glue::socket_from_env(), Some(agent_proto::discover::process_socket())]
+            .into_iter()
+            .flatten()
+        {
+            let _ = std::fs::remove_file(sock);
+        }
+        let err = c.exec();
+        Err(format!("exec {}: {err}", exe.display()))
+    }))
 }
 
-/// Where clang's background build is, from its log: its summary line
-/// (`clang (...): N compiled, ...`) ends a good build, `Error:` a failed
-/// one.
-fn tier_build_state(log: &str) -> TierBuild {
-    if log.lines().any(|l| l.starts_with("Error:") || l.starts_with("error:")) {
-        TierBuild::Failed
-    } else if log.lines().any(|l| l.starts_with("clang (") && l.contains(" compiled, ")) {
-        TierBuild::Ready
-    } else {
-        TierBuild::Building
-    }
-}
-
-fn tier_notice(state: TierBuild) -> Option<app::Notice> {
-    let (kind, text) = match state {
-        TierBuild::Building => (
-            app::NoticeKind::Info,
-            "Slow start: building the full-speed game in the background. Restart when it's ready.",
-        ),
-        TierBuild::Ready => (
-            app::NoticeKind::Info,
-            "Full-speed game built. Quit and start h2 play again to use it.",
-        ),
-        TierBuild::Failed => (
-            app::NoticeKind::Error,
-            "The full-speed build failed; see clang-build.log. This start stays slow.",
-        ),
-    };
-    Some(app::Notice { kind, text: text.into() })
+#[cfg(not(unix))]
+fn restart_in_place() -> Option<boot::game_code::Restart> {
+    None
 }
 
 /// Whether `h2 play` renders on a render thread, from `H2_RENDER_THREAD`
@@ -1345,6 +1452,13 @@ fn render_thread(value: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_play_session_records_by_default_launch_join_included_but_not_a_lab_job() {
+        use boot::theater::autorecord::Request;
+        assert_eq!(film_auto_request(false), Request::On);
+        assert!(matches!(film_auto_request(true), Request::Skip(why) if why.contains("lab")));
+    }
 
     #[test]
     fn editor_marks_reject_world_cameras_outside_the_guest_image() {
@@ -1439,25 +1553,6 @@ mod tests {
             .unwrap();
         let (plate, _) = source.current(now).unwrap();
         assert_eq!(plate.lines().collect::<Vec<_>>(), ["Editor · viewing"]);
-    }
-
-    #[test]
-    fn the_tier_banner_follows_clang_s_log() {
-        assert_eq!(tier_build_state(""), TierBuild::Building);
-        assert_eq!(
-            tier_build_state("lift: 0.2s\nemit: 2.6s, 18662 owners\n"),
-            TierBuild::Building
-        );
-        assert_eq!(
-            tier_build_state("emit: 2.6s\nclang (O1): 965 compiled, 42 reused, 1.0s keying\n"),
-            TierBuild::Ready
-        );
-        assert_eq!(tier_build_state("emit: 2.6s\nError: clang failed\n"), TierBuild::Failed);
-        let text = tier_notice(TierBuild::Building).unwrap().text;
-        assert!(text.len() <= 96, "fits the banner: {text}");
-        for s in [TierBuild::Ready, TierBuild::Failed] {
-            assert!(tier_notice(s).unwrap().text.len() <= 96);
-        }
     }
 
     /// `h2 play`, `h2 run` and the editor's variant store share one default
@@ -1572,6 +1667,26 @@ mod tests {
                 "hard",
             ]);
             assert!(e.contains("unknown difficulty"), "{e}");
+        }
+    }
+
+    #[test]
+    fn play_parses_the_editor_flags() {
+        let run_err = |a: &[&str]| {
+            run(a.iter().map(|s| s.to_string()).collect())
+                .unwrap_err()
+                .to_string()
+        };
+        // Each stops before the disc is read.
+        if std::env::var_os("H2_LEVEL").is_none() && std::env::var_os("H2_FILM_OUT").is_none() {
+            let e = run_err(&["/nonexistent/halo2.iso", "--editor"]);
+            assert!(e.contains("--editor needs --level"), "{e}");
+            let e = run_err(&["/nonexistent/halo2.iso", "--window", "--level", "a10"]);
+            assert!(e.contains("--window is for --editor"), "{e}");
+            let e = run_err(&["/nonexistent/halo2.iso", "--editor", "--level", "a10", "--live-local"]);
+            assert!(e.contains("local game"), "{e}");
+            let e = run_err(&["/nonexistent/halo2.iso", "--editor", "--level", "a10", "--film", "x.h2film"]);
+            assert!(e.contains("no film"), "{e}");
         }
     }
 

@@ -93,9 +93,23 @@ A type-5 widget switches to the previous or next enabled page on navigation
 events 2 and 4 (`0x002b41ea`). The Live social screen embeds three such
 child screens. Each carries its pane index at `+0x5f0` (`0x0022f965`).
 
-Draw order: `0x002353a5` collects up to 256 widgets and sorts them with
-`0x002356d8` by depth (`+0x60`, the Z of the animated offset, copied by `0x0022e9aa`; values within 0.001 tie),
-then by render depth bias, then by widget type, ascending.
+Draw order: `0x002353a5` collects up to 256 shown widgets, each after its
+children (`0x0023566a`), and sorts them with the C runtime's `qsort`
+(`0x00321460`, not stable) and `0x002356d8`: by depth (`+0x60`, the Z of
+the animated offset, copied by `0x0022e9aa`), the deeper first; depths
+within 0.001 tie and sort by render depth bias, smaller first, then by
+widget type, larger first. Only widgets whose depth is inside the
+window from `0x0054d5ac` to `0x0054d5b4` (each less `0x0054d5b0`) are
+drawn ([native-post-hud.md](../graphics/native-post-hud.md#the-menus-on-the-overlay)).
+
+Under a screen whose lower window holds a screen (a dialog over its
+opener), the window stack's render (`0x0023029a`, the stacks' render
+slot `0x00234f8c`) first fills the whole screen (`0x00147cdb`) with the
+shared globals' colour at `+0x6c`, its alpha times the screen's
+transition fraction, and calls `0x00235756`, which blurs the screen
+with the Kawase blur `0x000211a0` (`3.75 * fraction` steps,
+`[0x0045de14]`); then it draws the screen's widgets. No dialog tag
+carries that backdrop.
 
 ### Coordinates
 
@@ -143,6 +157,76 @@ text interface at `+0x74` (`0x0022f561`, `0x0022f583`), a pane button at
 with 32 or 256 units including the terminator (`0x0022f50d`, `0x0022f545`).
 [The UI audit](../runtime/agent-api.md#ui-what-the-menus-show) reads these
 buffers after row binding and localization.
+
+### Substitution units
+
+A string can hold units the game replaces before it measures and draws
+the text (`0x0022d2ee`, called from the widget's draw at `0x0022d18a`).
+The routine looks each unit from U+E000 to U+F8FF up in a table of 131
+entries of 12 bytes at `0x00470200`: a name, the unit and a handler
+(`0x0022d336`). The entries with a handler are U+E408 to U+E45E: the
+handler writes the text in (a gamertag, a count, a map's name), so the
+unit itself is never drawn and no font has a glyph for it. The others
+(`&`, U+E100 to U+E12B) have none; the fonts have pictures for those
+units ([button icons](../input/button-icons.md)).
+
+A string that is only a unit (`level_format`), or a sentence around one,
+is therefore the game's code's to fill: the tag alone does not say what
+it reads. The units the pregame lobby and Game Setup use, by what their
+strings are for:
+
+| Unit | Stands for |
+|---|---|
+| U+E408 | the map's name |
+| U+E40A | the game variant's name |
+| U+E413 | the countdown's seconds |
+| U+E414 | a player's name |
+| U+E416 | the party leader's name |
+| U+E41F | the network the party is on |
+| U+E425 | the number of players in the party |
+| U+E426, U+E427, U+E428 | the campaign level's name, its description, the difficulty |
+| U+E43A, U+E43B | the matchmaking playlist's name, its description |
+| U+E45D | a percentage |
+
+### Text layout
+
+A text widget draws its string in its rectangle (E; `text_layout` in
+`crates/extensions/game/src/ui_kit/preview/` implements this):
+
+- **It wraps.** The widget's text request is made with its wrap word
+  set to 1 (`0x0022ccc9`), which the draw copies to the font renderer's
+  flags (`0x0022d1a1`); bit 0 turns the break test on (`0x0013f4a1`).
+- **A line takes glyphs while they fit.** The line measure
+  (`0x0013ef40`) adds each glyph's kerning, x offset and advance while
+  the rectangle's right edge is beyond the pen (`0x0013f04c`). A line's
+  first glyph always joins it.
+- **It breaks at the last allowed place.** The first glyph that does not
+  fit ends the line at the last break the scanner allowed, and the next
+  line starts with the glyph after that break; the space before it stays
+  on the line and in its width. With no allowed break in the line, the
+  line ends after the glyph that did not fit: it is drawn, and not
+  counted in the width.
+- **Where a break is allowed** (`0x0013fd20`): after a space (the 12
+  ranges at `0x004536cc`: U+0009 to U+000D, U+0020, U+0085, U+00A0,
+  U+1680, U+180E, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F,
+  U+3000), or beside a character of the wide scripts (`0x0013fd90`:
+  U+1100 to U+11FF, U+3000 to U+D7AF, U+F900 to U+FAFF, U+FF00 to
+  U+FFDC); never before a character that may not start a line
+  (`0x0013fde0`: `! " % ) , . : ; ? ] }`, U+00B0, U+00B7, U+2013,
+  U+2014, U+2019, U+201D, U+2022, U+2026, U+2027, U+2032, U+2033,
+  U+2103 and the wide scripts' closing marks) nor after one that may not
+  end a line (`0x00140260`: `" $ ( [ \ {`, U+2018, U+201C, U+2035 and
+  the wide scripts' opening marks).
+- **Justification is per line** (`0x0013f2d7`): left at the rectangle's
+  left, right with the line's width against its right, centred with half
+  the room left over on each side.
+- **Lines under the rectangle are not drawn.** Line `n`'s baseline is the
+  rectangle's top plus `n` line heights plus the font's ascent; the line
+  is drawn only while the rectangle's bottom is below it (`0x0013f331`).
+  A rectangle one line high therefore shows the first line of a text
+  that wraps, and nothing of the rest.
+- `0x0d` ends a line and `0x0a` is skipped (`0x0013f5a0`), so the
+  strings' `\r\n` is one break.
 
 ## Layouts
 
@@ -208,7 +292,7 @@ nonzero `+0x28` index fall outside it and `0x0022facd` skips them.
 | 10 | text colour, three floats (r, g, b) | E |
 | 1c | rectangle | E |
 | 24 | bitmap (`bitm`) | E `0x00253ea8`, `0x00254173`; V |
-| 2c | bitmap offset (point) from the rectangle | E `0x00253ea8` |
+| 2c | bitmap offset (point) from the rectangle's top-left: x is added to the left, y subtracted from the top (`subss` at `0x00253fb0`), so a negative y raises the art | E `0x00253ea8` |
 | 30 | label string ID | E; V |
 | 34 | `i16` render depth bias | E |
 | 38 | flags: bits 0, 1 copied to the item | E |
@@ -336,6 +420,7 @@ arithmetic instead and returns `None` for a skipped cell or a result outside
 |---|---|---|
 | 4c | float applied to flag-8 text blocks | E `0x00253765` |
 | 50 | meter fill colour (a, r, g, b) | E `0x002b07e2` |
+| 6c | overlay colour (a, r, g, b): the backdrop under a dialog (Draw order above) | E `0x0023029a` |
 | 88 | block, element layout not reviewed; populated on the disc | E `0x0023661f` reads it; raw, untrusted |
 | 90 | sixteen UI sound references (`snd!`) | E `0x00236299`; V |
 | 110 | bitmap (`bitm`) | E `0x00236235`; V |
@@ -351,7 +436,7 @@ arithmetic instead and returns `None` for a skipped cell or a result outside
 | 168 | header text colour (a, r, g, b) | E `0x0022fda6` |
 | 178 | four header layouts, 16 bytes each: header rectangle, second rectangle | E `0x0022fda6`, `0x0022ff53` |
 | 1b8 | looping sound (`lsnd`) | E `0x00235b46`; V |
-| 00–4b, 60–87, 1c0 | — | raw |
+| 00–4b, 60–6b, 7c–87, 1c0 | — | raw |
 
 The three raw blocks are nonempty in all 30 `wigl` tags, so they cannot
 use the empty-block guard. They are kept as untrusted `Block` descriptors:
@@ -454,7 +539,9 @@ The handler links its embedded items as children in "add items" (slot 17,
 `0x24bb60`), so a row can be added without scrolling by linking one more
 item after that runs: a zeroed 0x80 bytes, the item constructor
 `0x24abae`, the local player (`0x22ee92`), then `0x22eb18`
-(`speaker_row`, `custom_games`). `0x24bc12` then lays the children out from
+(`speaker_row`, `custom_games`). "Add items" links as many of the
+embedded items (slot 18) as slot 19 says; the Controls list's slot 19
+(`0x2b198a`) says six. `0x24bc12` then lays the children out from
 the list's anchor, up to the list block's visible count, each one item
 height lower. The height is the item's bounding box (`0x2bafa4`, top minus
 bottom) over its children, leaving out bitmaps whose definition has flag
@@ -462,7 +549,21 @@ bit 0 set (`0x2b0a48`; shader bitmaps have their own test, `0x2b12ba`, not
 read). An item's bitmap covers its point's `y` up to `y` plus its
 height (Y up), so the Controls skin's items are 26 units apart (its row
 bar), as the game draws them, and the default skin's 22
-(docs/game/ui-screens.md "Item spacing").
+(docs/game/ui-screens.md "Item spacing"). `0x2bacbc` places an item's
+children at a point: for each of the skin's bitmaps (`+0x24`, `0x38`
+bytes each) and then each of its shader bitmaps (`+0x2c`, `0x24` bytes
+each) it takes the widget's rectangle (`0x22e9c6`), adds the
+rectangle's own height (top minus bottom, as a magnitude) to its top
+and bottom, adds the point, and writes it back (`+0x20`). A shader
+bitmap's rectangle is so moved up by its height like a bitmap's. Its
+loop over the skin's text blocks (`+0x1c`, through `0x2baeb1`) is not
+read.
+Children past the visible count stay linked unless the layout's argument
+is set (then `0x24c102` removes them); the pane builder (`0x22f828`)
+passes 0. Rows go to every child in order (`0x24c0c4`), so a child past
+the visible count gets a row it never shows, and the focus (`0x24c1c5`,
+to the next child with a row, `0x24ac76`) and A (`0x24c024`) reach it
+([ui-builder.md](../game/ui-builder.md) "Item count").
 Anything the tag draws under a list does not move with it, so a screen
 whose hint text sits under its list needs its tag adjusted, as
 `custom_games::extend_tag` does for the Xbox Live menu.

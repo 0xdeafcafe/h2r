@@ -21,10 +21,19 @@ pub(super) fn e3_report(frame: &FrameReport) -> Option<E3Report> {
         lights_lit: work.lights_lit,
         lights_shadowed: work.lights_shadowed,
         lights_over_cap: work.lights_over_cap,
+        lights_beyond_guest: work.lights_beyond_guest,
         sun_tiles: work.sun_tiles,
+        sun_tiles_offscreen: work.sun_tiles_offscreen,
         sun_tiles_redrawn: work.sun_tiles_redrawn,
         atlas_halved: work.atlas_halved,
         tiles_refused: work.tiles_refused,
+        cones_shadowed: work.cones_shadowed,
+        cones_flagged_off: work.cones_flagged_off,
+        flashlight_shadowed: work.flashlight_shadowed,
+        shadows_over_cap: work.shadows_over_cap,
+        cones_refused: work.cones_refused,
+        cones_drawn: work.cones_drawn,
+        cones_kept: work.cones_kept,
     })
 }
 
@@ -68,10 +77,19 @@ mod tests {
             lights_lit: 5,
             lights_shadowed: 3,
             lights_over_cap: 2,
+            lights_beyond_guest: 1,
             sun_tiles: 4,
+            sun_tiles_offscreen: 2,
             sun_tiles_redrawn: 1,
             atlas_halved: 2,
             tiles_refused: 1,
+            cones_shadowed: 2,
+            cones_flagged_off: 2,
+            flashlight_shadowed: 1,
+            shadows_over_cap: 3,
+            cones_refused: 0,
+            cones_drawn: 1,
+            cones_kept: 0,
         });
         assert_eq!(
             json!(e3_report(&frame)),
@@ -83,9 +101,11 @@ mod tests {
                     {"name":"e3.marks", "draws":3, "gpu_ns":null},
                     {"name":"e3.lights", "draws":4, "gpu_ns":17}
                 ],
-                "lights_lit":5, "lights_shadowed":3, "lights_over_cap":2,
-                "sun_tiles":4, "sun_tiles_redrawn":1, "atlas_halved":2,
-                "tiles_refused":1
+                "lights_lit":5, "lights_shadowed":3, "lights_over_cap":2, "lights_beyond_guest":1,
+                "sun_tiles":4, "sun_tiles_offscreen":2, "sun_tiles_redrawn":1, "atlas_halved":2,
+                "tiles_refused":1,
+                "cones_shadowed":2, "cones_flagged_off":2, "flashlight_shadowed":1,
+                "shadows_over_cap":3, "cones_refused":0, "cones_drawn":1, "cones_kept":0
             })
         );
     }

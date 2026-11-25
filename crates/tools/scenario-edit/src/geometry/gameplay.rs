@@ -1,7 +1,5 @@
-//! Authored fields used by the gameplay glyphs, labels and outlines.
-use std::collections::BTreeMap;
-
-use super::{Marker, Vec3};
+//! Authored fields used by the gameplay markers and labels.
+use super::Marker;
 use crate::{BlockKind, Scenario, Value};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -88,33 +86,6 @@ pub fn flag_type_name(kind: i64) -> Option<&'static str> {
         11..=18 => "Hill marker",
         _ => return None,
     })
-}
-
-/// Join the authored points of each hill or territory in scenario order.
-/// Two points make a segment. Three or more make a closed outline when drawn.
-pub fn flag_outlines(markers: &[Marker], data: impl Fn(&Marker) -> Gameplay) -> Vec<Vec<Vec3>> {
-    let mut outlines = BTreeMap::<(i64, i64), Vec<Vec3>>::new();
-    for marker in markers
-        .iter()
-        .filter(|m| m.block == BlockKind::NetgameFlags)
-    {
-        let Gameplay {
-            flag_type: Some(kind @ 10..=18),
-            identifier: Some(id),
-            ..
-        } = data(marker)
-        else {
-            continue;
-        };
-        outlines
-            .entry((kind, id))
-            .or_default()
-            .push(marker.position);
-    }
-    outlines
-        .into_values()
-        .filter(|points| points.len() >= 2)
-        .collect()
 }
 
 #[cfg(test)]
@@ -244,42 +215,6 @@ mod tests {
         assert_eq!(
             unknown.label().as_deref(),
             Some("Flag type 41 · ID 3 · Team 30")
-        );
-    }
-
-    #[test]
-    fn flag_outlines_join_only_matching_type_and_identifier_in_authored_order() {
-        let fields = [
-            (11, 4),
-            (10, 4),
-            (11, 1),
-            (8, 4),
-            (11, 4),
-            (10, 4),
-            (8, 4),
-            (11, 4),
-        ];
-        let markers: Vec<_> = (0..fields.len())
-            .map(|i| marker(BlockKind::NetgameFlags, i))
-            .collect();
-        let outlines = flag_outlines(&markers, |m| {
-            let (kind, id) = fields[m.index];
-            Gameplay {
-                flag_type: Some(kind),
-                identifier: Some(id),
-                ..Default::default()
-            }
-        });
-        assert_eq!(
-            outlines,
-            [
-                vec![markers[1].position, markers[5].position],
-                vec![
-                    markers[0].position,
-                    markers[4].position,
-                    markers[7].position
-                ],
-            ],
         );
     }
 }

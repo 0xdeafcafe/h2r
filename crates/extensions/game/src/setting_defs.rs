@@ -90,7 +90,7 @@ pub(crate) const LEGACY_SCALE: settings::LegacyScale = settings::LegacyScale {
 pub static RESOLUTION: Def = Def {
     key: "graphics.resolution",
     label: "Resolution",
-    help: "Native follows the window up to the pixel count of 4K. Pick a size to render at that resolution.",
+    help: "Native follows the window in pixels. Fullscreen Native uses up to 4K pixels. Pick a size to fix the resolution.",
     kind: Kind::Resolution(LEGACY_SCALE),
     default: Value::Int(0),
     env: Some("H2_RESOLUTION"),
@@ -153,13 +153,12 @@ pub static HUD_POSITION: Def = Def {
     }),
 };
 
-/// Render-distance multipliers in half units. Zero selects the guest's
-/// original pixel scale independently of the output resolution.
+/// The distance choices use half units. Highest is a separate selection.
+pub const LOD_HIGHEST: u32 = 9;
 pub static LOD_DISTANCE: Def = Def {
     key: "graphics.lod_distance",
     label: "LOD Distance",
-    help: "Choose how far away models keep their detail. 1x matches the rendering resolution. \
-           Network play and film recording use retail distances.",
+    help: "Highest selects the finest model detail at any distance. 1x matches the rendering resolution.",
     kind: Kind::Choice(&[
         Choice { value: 0, name: "retail", label: "Retail" },
         Choice { value: 1, name: "0.5", label: "0.5x" },
@@ -168,8 +167,9 @@ pub static LOD_DISTANCE: Def = Def {
         Choice { value: 4, name: "2.0", label: "2x" },
         Choice { value: 6, name: "3.0", label: "3x" },
         Choice { value: 8, name: "4.0", label: "4x" },
+        Choice { value: LOD_HIGHEST as i64, name: "highest", label: "Highest" },
     ]),
-    default: Value::Int(2),
+    default: Value::Int(LOD_HIGHEST as i64),
     env: Some("H2_LOD_DISTANCE"),
     flag: None,
     aliases: &[
@@ -215,23 +215,17 @@ pub static SINGLE_COPY: Def = Def {
 pub const LIGHTING_RETAIL: i64 = 0;
 pub const LIGHTING_E3: i64 = 1;
 
-pub static LIGHTING: Def = Def {
+const LIGHTING_RELIGHT_ON: i64 = 2;
+const LIGHTING_RELIGHT_OFF: i64 = 3;
+const RETAIL: Choice = Choice { value: LIGHTING_RETAIL, name: "retail", label: "Retail" };
+const E3: Choice = Choice { value: LIGHTING_E3, name: "e3", label: "E3" };
+
+const LIGHTING_DEF: Def = Def {
     key: "graphics.lighting",
     label: "Lighting",
     help: "The scaled D3D renderer sharpens shadow edges in E3. The native frame renderer \
            uses the game's retail lighting in both modes. Changes apply at the next frame.",
-    kind: Kind::Choice(&[
-        Choice {
-            value: LIGHTING_RETAIL,
-            name: "retail",
-            label: "Retail",
-        },
-        Choice {
-            value: LIGHTING_E3,
-            name: "e3",
-            label: "E3",
-        },
-    ]),
+    kind: Kind::Choice(&[RETAIL, E3]),
     default: Value::Int(LIGHTING_RETAIL),
     env: Some("H2_LIGHTING"),
     flag: None,
@@ -246,12 +240,36 @@ pub static LIGHTING: Def = Def {
     }),
 };
 
+pub static LIGHTING: Def = LIGHTING_DEF;
+
+// Only runs explicitly launched for private BSP review expose these arms.
+// The environment locks the row and its label identifies the active arm.
+static RELIGHT_LIGHTING: Def = Def {
+    kind: Kind::Choice(&[
+        RETAIL,
+        E3,
+        Choice { value: LIGHTING_RELIGHT_ON, name: "relight-on", label: "Baked lamp on" },
+        Choice { value: LIGHTING_RELIGHT_OFF, name: "relight-off", label: "Baked lamp off" },
+    ]),
+    help: "Review the private BSP bake. The launch setting selects the lamp state.",
+    ..LIGHTING_DEF
+};
+
+fn lighting_def(startup: Option<&str>) -> &'static Def {
+    if startup.and_then(d3d::Lighting::relight_from_name).is_some() {
+        &RELIGHT_LIGHTING
+    } else {
+        &LIGHTING
+    }
+}
+
 /// [`LIGHTING`]'s value as the view backend takes it.
 pub fn lighting_of(value: u32) -> d3d::Lighting {
-    if value as i64 == LIGHTING_E3 {
-        d3d::Lighting::E3
-    } else {
-        d3d::Lighting::Retail
+    match i64::from(value) {
+        LIGHTING_E3 => d3d::Lighting::E3,
+        LIGHTING_RELIGHT_ON => d3d::Lighting::RelightOn,
+        LIGHTING_RELIGHT_OFF => d3d::Lighting::RelightOff,
+        _ => d3d::Lighting::Retail,
     }
 }
 
@@ -780,14 +798,14 @@ const HALO_CHOICES: &[Choice] = &[
 ];
 
 /// Which assets a Halo 1 campaign level is played with (the level variant,
-/// docs/halo1/campaign.md §5). On the campaign's Game Options page
+/// docs/halo1/campaign.md §5). On the campaign's Skulls page
 /// (crate::h1_options).
 pub static HALO1_ASSETS: Def = Def {
     key: "campaign.halo1_assets",
     label: "Assets",
     help: "Which characters, weapons and vehicles a Halo 1 campaign level plays \
-           with: Halo 1's own, converted, or Halo 2's. Chosen on the Game Options \
-           page before the level; applies at the level's load \
+           with: Halo 1's own, converted, or Halo 2's. Chosen on the Skulls page \
+           before the level; applies at the level's load \
            (docs/halo1/campaign.md).",
     kind: Kind::Choice(HALO_CHOICES),
     default: Value::Int(HALO1),
@@ -887,37 +905,6 @@ pub static THEATER_RING_MIB: Def = Def {
     },
     default: Value::Int(256),
     env: Some(THEATER_RING_MIB_ENV),
-    flag: None,
-    aliases: &[],
-    parse_env: None,
-    apply: Apply::Restart,
-    scope: Scope::Host,
-    tier: Tier::User,
-    menu: None,
-};
-
-/// How saved variants are ported into the game-variant store at boot
-/// (`crate::game_variants::port`): `keep` their retail rules, or attach the
-/// built-in script of their engine.
-pub static VARIANTS_PORT_SCRIPT: Def = Def {
-    key: "variants.port.script",
-    label: "Ported Variants' Script",
-    help: "What a saved variant ported into the game-variant store at boot runs: \
-           keep (its engine's own rules) or builtin (the engine's built-in rules script).",
-    kind: Kind::Choice(&[
-        Choice {
-            value: 0,
-            name: "keep",
-            label: "Keep",
-        },
-        Choice {
-            value: 1,
-            name: "builtin",
-            label: "Built-in Script",
-        },
-    ]),
-    default: Value::Int(0),
-    env: Some("H2_VARIANTS_PORT_SCRIPT"),
     flag: None,
     aliases: &[],
     parse_env: None,
@@ -1033,7 +1020,6 @@ pub static ALL: &[&Def] = &[
     &COOP_JOIN_IN_PROGRESS,
     &COOP_LOOK_PREDICTION,
     &THEATER_RING_MIB,
-    &VARIANTS_PORT_SCRIPT,
     &AIM_ASSIST,
     &TOUCH_LOOK,
     &TOUCH_CROUCH,
@@ -1102,6 +1088,7 @@ pub static ALL: &[&Def] = &[
     // (crate::firefight::options, docs/game/firefight.md).
     &crate::firefight::options::ENABLED,
     &crate::firefight::options::WAVE_SET,
+    &crate::firefight::options::TEAMS,
     &crate::firefight::options::DIFFICULTY,
     &crate::firefight::options::LIVES,
     &crate::firefight::options::SKULLS,
@@ -1112,8 +1099,10 @@ pub static ALL: &[&Def] = &[
 /// ([`crate::voice_settings::use_host_devices`]).
 pub fn defs() -> Vec<&'static Def> {
     let [input, output] = crate::voice_settings::device_defs();
+    let lighting = lighting_def(std::env::var("H2_LIGHTING").ok().as_deref());
     ALL.iter()
         .map(|d| match d.key {
+            k if k == LIGHTING.key => lighting,
             k if k == input.key => input,
             k if k == output.key => output,
             _ => *d,
@@ -1373,11 +1362,9 @@ mod tests {
                 ("H2_VOICE_INPUT_VOLUME", "50"),
                 ("H2_VOICE_OUTPUT_VOLUME", "80"),
                 ("H2_THEATER_RING_MIB", "128"),
-                ("H2_VARIANTS_PORT_SCRIPT", "builtin"),
             ],
         );
         assert_eq!(s.get(THEATER_RING_MIB.key), Some(Value::Int(128)));
-        assert_eq!(s.get(VARIANTS_PORT_SCRIPT.key), Some(Value::Int(1)));
         {
             use crate::voice_settings::*;
             let h = VoiceHandles::new(&s);
@@ -1587,14 +1574,14 @@ mod tests {
     }
 
     #[test]
-    fn lod_distance_matches_output_by_default_and_retail_is_independent_of_output() {
+    fn lod_distance_defaults_to_highest_and_persists_the_distance_choices() {
         let data = tmp("lod-distance");
         let (store, problems) = with_env(&data, &[]);
         assert!(problems.is_empty());
         let setting = store.handle::<u32>(LOD_DISTANCE.key);
-        assert_eq!(lod_pixel_multiplier(480, setting.get()), 1.0);
-        assert_eq!(lod_pixel_multiplier(1920, setting.get()), 4.0);
-        assert_eq!(lod_pixel_multiplier(2160, setting.get()), 4.5);
+        assert_eq!(setting.get(), LOD_HIGHEST);
+        assert_eq!(LOD_DISTANCE.parse("highest").unwrap(), LOD_DISTANCE.default);
+        assert_eq!(LOD_DISTANCE.to_toml(LOD_DISTANCE.default).as_str(), Some("highest"));
         for (name, scale_at_4x) in [
             ("0.5", 2.0), ("1", 4.0), ("1.0", 4.0), ("1.5", 6.0),
             ("2", 8.0), ("3", 12.0), ("4", 16.0), ("retail", 1.0),
@@ -1612,6 +1599,22 @@ mod tests {
         assert!(LOD_DISTANCE.parse("NaN").is_err());
         assert_eq!(RESOLUTION.scope, Scope::Host);
         assert_eq!(LOD_DISTANCE.scope, Scope::View);
+    }
+
+    #[test]
+    fn relight_choices_require_a_startup_arm_and_report_its_name() {
+        assert!(lighting_def(None).parse("relight-on").is_err());
+        for (name, mode) in [("relight-on", d3d::Lighting::RelightOn), ("relight-off", d3d::Lighting::RelightOff)] {
+            let def = lighting_def(Some(name));
+            let (store, problems) = Store::load(&[def], None, &|_| Some(name.into()), &[]);
+            assert!(problems.is_empty(), "{problems:?}");
+            let row = store.state(def.key).unwrap();
+            assert!(row.locked);
+            assert_eq!(def.name(row.shown), name);
+            assert_eq!(lighting_of(store.handle::<u32>(def.key).get()), mode);
+            #[cfg(feature = "gpu")]
+            assert!(!crate::d3d_glue::single_copy(Some(&store), false).unwrap());
+        }
     }
 
     #[test]

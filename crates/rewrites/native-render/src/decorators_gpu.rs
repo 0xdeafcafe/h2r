@@ -63,26 +63,35 @@ pub struct Bound {
     pub blend_constant: wgpu::Color,
 }
 
+/// The device's state at the layer-3 call that a material's pipeline
+/// draws under: the draw `0x0004e260` sets neither (only
+/// `TwoSidedLighting`), so its placements test and write the stencil the
+/// layer holds (`fog_gpu::layer_stencil`) and a pass that sets no
+/// `CULLMODE` culls as the device does
+/// (`decorators_load::DecoratorLook::inherits_cull`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct DrawKey {
+    pub stencil: gfx::state::StencilState,
+    /// `None`: the device's cull did not read; a pass that inherits it
+    /// has no pipeline.
+    pub cull: Option<crate::program::Cull>,
+}
+
 /// Where a plan is drawn.
 pub struct DecoratorTarget<'a> {
     pub color: &'a wgpu::TextureView,
     pub depth: &'a wgpu::TextureView,
     /// Whether the depth format has a stencil aspect to keep.
     pub stencil: bool,
+    /// The stencil reference the draws test and write with
+    /// ([`DrawKey::stencil`]).
+    pub stencil_reference: u32,
     /// The targets' size in texels: the viewport. The game's programs
     /// place vertices in the whole surface's pixels.
     pub size: (u32, u32),
     /// The view's rectangle `(x, y, width, height)` in texels: the
     /// scissor, as the D3D path clips the layer's draws to the viewport.
     pub viewport: [f32; 4],
-}
-
-/// The scissor of `viewport` in a target of `size`, `None` when empty.
-fn scissor(viewport: [f32; 4], size: (u32, u32)) -> Option<[u32; 4]> {
-    let [x, y, w, h] = viewport.map(|v| v.max(0.0).round() as u32);
-    let (x, y) = (x.min(size.0), y.min(size.1));
-    let (w, h) = (w.min(size.0 - x), h.min(size.1 - y));
-    (w != 0 && h != 0).then_some([x, y, w, h])
 }
 
 /// Records `plan` with `bound` (one per batch) into its own render pass on
@@ -98,7 +107,7 @@ pub fn encode(
     if plan.instances.is_empty() {
         return Ok(plan.slots.len());
     }
-    let Some([sx, sy, sw, sh]) = scissor(target.viewport, target.size) else {
+    let Some([sx, sy, sw, sh]) = crate::gpu::viewport_scissor(target.viewport, target.size) else {
         return Err("the view's rectangle is empty");
     };
     let (instances, offset) = uploads.stage(device, queue, plan.instance_bytes());
@@ -121,6 +130,9 @@ pub fn encode(
     });
     pass.set_viewport(0.0, 0.0, target.size.0 as f32, target.size.1 as f32, 0.0, 1.0);
     pass.set_scissor_rect(sx, sy, sw, sh);
+    if target.stencil {
+        pass.set_stencil_reference(target.stencil_reference);
+    }
     let span = plan.instance_bytes().len() as u64;
     for (batch, b) in plan.batches.iter().zip(bound) {
         pass.set_pipeline(&b.pipeline);
@@ -145,13 +157,16 @@ pub struct MaterialGpu {
     program: DecoratorProgram,
     uniforms_layout: wgpu::BindGroupLayout,
     textures: wgpu::BindGroup,
+    /// The stage textures `textures` binds, by stage, for a live edit's
+    /// rewrite ([`MaterialGpu::held`]).
+    stage_textures: Vec<(usize, wgpu::Texture)>,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     index_count: u32,
     attributes: Vec<wgpu::VertexAttribute>,
     stride: u64,
     pipelines: crate::pipelines::Pipelines,
-    formats: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat), Arc<PendingPipeline>>,
+    formats: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, DrawKey), Arc<PendingPipeline>>,
 }
 
 impl MaterialGpu {
@@ -225,6 +240,7 @@ impl MaterialGpu {
             group.push(wgpu::BindGroupEntry { binding: 2 * *n as u32, resource: wgpu::BindingResource::TextureView(view) });
             group.push(wgpu::BindGroupEntry { binding: 2 * *n as u32 + 1, resource: wgpu::BindingResource::Sampler(sampler) });
         }
+        let stage_textures: Vec<(usize, wgpu::Texture)> = views.iter().map(|(n, v)| (*n, v.texture().clone())).collect();
         let textures = gfx::churn::create_bind_group(device, &wgpu::BindGroupDescriptor {
             label: Some("native decorator textures"),
             layout: &textures_layout,
@@ -248,6 +264,7 @@ impl MaterialGpu {
             program,
             uniforms_layout,
             textures,
+            stage_textures,
             vertices,
             indices,
             index_count,
@@ -256,10 +273,29 @@ impl MaterialGpu {
         })
     }
 
-    fn pipeline(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) -> &Arc<PendingPipeline> {
-        self.formats.entry((color, depth)).or_insert_with(|| {
+    /// The textures this material's stages sample as image `image` of
+    /// `bitmap`, with the stage and its signed channels: what a live edit
+    /// rewrites ([`crate::gpu::rewrite_held`]).
+    pub fn held(&self, bitmap: map::TagId, image: u32) -> Vec<crate::gpu::Held> {
+        let want = Stage::Bitmap { bitmap, image };
+        self.stage_textures
+            .iter()
+            .filter(|(n, _)| self.program.stages[*n] == want)
+            .map(|(n, t)| (t.clone(), *n, self.program.signed[*n]))
+            .collect()
+    }
+
+    /// The pipeline for `color` and `depth` under `draw`, `None` when the
+    /// stencil tests or writes on a depth with no stencil aspect, or the
+    /// pass inherits a cull that did not read.
+    fn pipeline(
+        &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, draw: DrawKey,
+    ) -> Option<&Arc<PendingPipeline>> {
+        let stencil = crate::fog_gpu::layer_stencil(&draw.stencil, depth)?;
+        let cull = if self.program.inherits_cull { Some(draw.cull?) } else { None };
+        Some(self.formats.entry((color, depth, draw)).or_insert_with(|| {
             let state = &self.program.state;
-            let (primitive, (depth_write, depth_compare)) = pipeline_state(Some(state), None);
+            let (primitive, (depth_write, depth_compare)) = pipeline_state(Some(state), cull);
             let key = PipelineKey {
                 shader: ShaderId(0),
                 vertex_buffers: vec![
@@ -269,19 +305,24 @@ impl MaterialGpu {
                 primitive,
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: depth, depth_write_enabled: Some(depth_write), depth_compare: Some(depth_compare),
-                    stencil: wgpu::StencilState::default(), bias: wgpu::DepthBiasState::default(),
+                    stencil, bias: wgpu::DepthBiasState::default(),
                 }),
                 color_target: wgpu::ColorTargetState { format: color, blend: state.blend, write_mask: state.color_writes },
                 samples: 1,
             };
             self.pipelines.request(device, &key)
-        })
+        }))
     }
 
     /// Request the target-specific pipeline before the host clears any
     /// slots. If a view misses, its siblings also use D3D for this frame.
-    pub fn pipeline_ready(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) -> bool {
-        self.pipeline(device, color, depth).previous_frame().is_some_and(Option::is_some)
+    pub fn pipeline_ready(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, draw: DrawKey) -> bool {
+        self.pipeline(device, color, depth, draw).is_some_and(|p| p.previous_frame().is_some_and(Option::is_some))
+    }
+
+    /// Whether the pass sets no `CULLMODE` ([`DrawKey::cull`]).
+    pub fn inherits_cull(&self) -> bool {
+        self.program.inherits_cull
     }
 
     /// Whether the pass writes depth.
@@ -297,7 +338,7 @@ impl MaterialGpu {
 /// not uploaded or its index range is past the set's.
 pub fn bind(
     device: &wgpu::Device, materials: &mut HashMap<Material, MaterialGpu>, plan: &Plan, view: &ViewInputs,
-    color: wgpu::TextureFormat, depth: wgpu::TextureFormat,
+    color: wgpu::TextureFormat, depth: wgpu::TextureFormat, draw: DrawKey,
 ) -> Result<Vec<Bound>, &'static str> {
     if plan.batches.is_empty() {
         return Ok(Vec::new());
@@ -326,7 +367,7 @@ pub fn bind(
     let mut out = Vec::with_capacity(plan.batches.len());
     for (k, batch) in plan.batches.iter().enumerate() {
         let m = materials.get_mut(&batch.material).ok_or("a batch's material is not uploaded")?;
-        let pipeline = m.pipeline(device, color, depth).try_get().and_then(Option::as_ref)
+        let pipeline = m.pipeline(device, color, depth, draw).and_then(|p| p.try_get()).and_then(Option::as_ref)
             .cloned().ok_or("decorator pipeline unavailable")?;
         let at = stride * k as u64;
         let binding = |offset: u64, size: u64| {
@@ -496,7 +537,8 @@ struct Out { @builtin(position) pos: vec4f, @location(0) c: vec4f }
         let arena = gfx::ring::UploadPool::default().begin();
         let bound = [Bound { pipeline, bind_groups: Vec::new(), streams: vec![(vertices, 0)], indices, blend_constant: wgpu::Color::BLACK }];
         let target = DecoratorTarget {
-            color: &cv, depth: &dv, stencil: false, size: (SIZE, SIZE), viewport: [0.0, 0.0, SIZE as f32, SIZE as f32],
+            color: &cv, depth: &dv, stencil: false, stencil_reference: 0, size: (SIZE, SIZE),
+            viewport: [0.0, 0.0, SIZE as f32, SIZE as f32],
         };
         assert_eq!(encode(device, &ctx.queue, &arena, &mut enc, &target, &plan, &bound), Ok(1));
         assert_eq!(encode(device, &ctx.queue, &arena, &mut enc, &target, &plan, &[]), Err("a decorator batch has no pipeline"));
@@ -549,13 +591,24 @@ struct Out { @builtin(position) pos: vec4f, @location(0) c: vec4f }
         // The synthetic test owns the compile deadline. A live view
         // leaves its slots on D3D while the same pipeline is pending.
         let gpu = materials.get_mut(&material).unwrap();
-        assert!(gpu.pipeline(device, F::Rgba8Unorm, F::Depth32Float).get().is_some());
-        let bound = bind(device, &mut materials, &plan, &view, F::Rgba8Unorm, F::Depth32Float).unwrap();
+        let draw = DrawKey::default();
+        assert!(gpu.pipeline(device, F::Rgba8Unorm, F::Depth32Float, draw).unwrap().get().is_some());
+        // A stencil the depth cannot hold has no pipeline.
+        let stenciled = DrawKey { stencil: crate::object_state::structure_stencil(0), ..draw };
+        assert!(gpu.pipeline(device, F::Rgba8Unorm, F::Depth32Float, stenciled).is_none());
+        assert!(gpu.pipeline(device, F::Rgba8Unorm, F::Depth24PlusStencil8, stenciled).unwrap().get().is_some());
+        // A pass that inherits the cull needs the device's.
+        gpu.program.inherits_cull = true;
+        assert!(gpu.pipeline(device, F::Rgba8Unorm, F::Depth32Float, draw).is_none(), "the cull did not read");
+        let culled = DrawKey { cull: Some((Some(wgpu::Face::Back), wgpu::FrontFace::Cw)), ..draw };
+        assert!(gpu.pipeline(device, F::Rgba8Unorm, F::Depth32Float, culled).unwrap().get().is_some());
+        gpu.program.inherits_cull = false;
+        let bound = bind(device, &mut materials, &plan, &view, F::Rgba8Unorm, F::Depth32Float, draw).unwrap();
         assert_eq!(bound.len(), 1);
         let mut short = plan.clone();
         short.batches[0].index_count = 16;
-        assert!(bind(device, &mut materials, &short, &view, F::Rgba8Unorm, F::Depth32Float).is_err(), "past the set's indices");
-        assert!(bind(device, &mut HashMap::new(), &plan, &view, F::Rgba8Unorm, F::Depth32Float).is_err(), "not uploaded");
+        assert!(bind(device, &mut materials, &short, &view, F::Rgba8Unorm, F::Depth32Float, draw).is_err(), "past the set's indices");
+        assert!(bind(device, &mut HashMap::new(), &plan, &view, F::Rgba8Unorm, F::Depth32Float, draw).is_err(), "not uploaded");
         let texture = |format| device.create_texture(&wgpu::TextureDescriptor {
             label: None, size: wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
             mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format,
@@ -578,7 +631,8 @@ struct Out { @builtin(position) pos: vec4f, @location(0) c: vec4f }
         }));
         let arena = gfx::ring::UploadPool::default().begin();
         let target = DecoratorTarget {
-            color: &cv, depth: &dv, stencil: false, size: (SIZE, SIZE), viewport: [0.0, 0.0, SIZE as f32, SIZE as f32],
+            color: &cv, depth: &dv, stencil: false, stencil_reference: 0, size: (SIZE, SIZE),
+            viewport: [0.0, 0.0, SIZE as f32, SIZE as f32],
         };
         assert_eq!(encode(device, &ctx.queue, &arena, &mut enc, &target, &plan, &bound), Ok(1));
         let front = arena.upload_commands(&ctx.queue);

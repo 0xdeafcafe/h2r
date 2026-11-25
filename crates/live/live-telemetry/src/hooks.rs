@@ -156,7 +156,9 @@ impl Telemetry {
         self.configure(move |s| s.firefight_score(score));
     }
 
-    /// A Firefight match's result, sent before the game ends.
+    /// A Firefight match's result, sent before the game ends: the outcome
+    /// (a two-team match's winning team or a draw), the team count and
+    /// each team's score.
     pub fn firefight_ended(&self, end: live_proto::firefight::FirefightEnded) {
         self.configure(move |s| s.firefight_ended(end));
     }

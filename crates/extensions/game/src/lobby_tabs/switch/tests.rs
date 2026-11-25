@@ -69,34 +69,28 @@ fn switching_to_firefight_holds_the_setting_and_picks_a_kit_map() {
     assert_eq!(store.get(ff::ENABLED.key), Some(Value::Bool(true)));
     // Without a store, refused by name.
     assert_eq!(set_ours(&p, None), Err(Reason::NoSettings));
-    // No kit map installed: refused by the reason that dims the tab.
+    // No kit map installed: the switch goes ahead and the lobby keeps its
+    // map; Start Game says why it cannot start.
     let bare = Catalogue::new([map(10, "Lockout", r"d:\maps\lockout")]);
+    assert_eq!(map_for(Tab::Firefight, Some(10), Some(&bare)), Ok(None));
+    assert_eq!(map_for(Tab::Firefight, None, Some(&bare)), Ok(None));
     assert_eq!(
-        map_for(Tab::Firefight, Some(10), Some(&bare)),
-        Err(Reason::NoKitMap)
-    );
-    assert!(
-        Reason::NoKitMap.text().contains("h2 firefight kit"),
-        "it says how to get one"
+        map_for(Tab::Firefight, Some(10), None),
+        Ok(None),
+        "the map list not read yet"
     );
 }
 
 #[test]
-fn switching_to_forge_keeps_a_halo_2_map() {
+fn switching_to_forge_keeps_the_selected_map() {
     let c = catalogue();
     let p = plan(Tab::CustomGames, Tab::Forge);
     assert_eq!((p.mode, p.firefight, p.retail), (Mode::Forge, false, None));
     assert_eq!(map_for(Tab::Forge, Some(11), Some(&c)), Ok(None));
-    let from_kit = map_for(Tab::Forge, Some(12), Some(&c)).unwrap();
-    assert!(
-        from_kit.is_some_and(|id| id == 10 || id == 11),
-        "an original map in place of the kit map: {from_kit:?}"
-    );
-    assert!(
-        map_for(Tab::Forge, Some(13), Some(&c)).unwrap().is_some(),
-        "a mod is not an original"
-    );
-    assert_eq!(map_for(Tab::Forge, Some(11), None), Err(Reason::NoMapList));
+    for selected in [12, 13] {
+        assert_eq!(map_for(Tab::Forge, Some(selected), Some(&c)), Ok(None));
+    }
+    assert_eq!(map_for(Tab::Forge, Some(11), None), Ok(None));
     // CUSTOM GAMES, MULTIPLAYER and CO-OP take any map.
     for to in [Tab::CustomGames, Tab::Multiplayer, Tab::CoOp] {
         assert_eq!(map_for(to, Some(12), None), Ok(None), "{to:?}");
@@ -387,4 +381,85 @@ fn no_listed_playlist_turns_the_tab_off() {
     assert_eq!(clankermatch::scope(), Scope::All, "one page of both kinds");
     forget_playlists();
     assert!(!no_playlists_seen());
+}
+
+/// A mode picked in the GAME MODE picker (or asked for by a Live menu
+/// row) is the switch the tab strip made: the leader's only, from the
+/// lobby's mode, to a mode present and on here; a mode that is off is
+/// refused with its reason, and the lobby's own mode does nothing.
+#[test]
+fn a_picked_mode_switches_as_the_tab_did() {
+    use super::super::header::Shown;
+    use super::super::{Facts, Present, row};
+    let lobby = |leader: bool, selected: Tab| Shown {
+        place: Place::SplitScreen,
+        leader,
+        selected,
+        row: row(Present::ALL, Place::SplitScreen, Facts::default()),
+        clanker: None,
+    };
+    assert_eq!(
+        ask(&lobby(true, Tab::CustomGames), Tab::Forge),
+        Ask::Switch {
+            from: Tab::CustomGames,
+            to: Tab::Forge,
+            place: Place::SplitScreen
+        }
+    );
+    assert_eq!(
+        ask(&lobby(true, Tab::Forge), Tab::CoOp),
+        Ask::Switch {
+            from: Tab::Forge,
+            to: Tab::CoOp,
+            place: Place::SplitScreen
+        }
+    );
+    assert_eq!(ask(&lobby(false, Tab::CustomGames), Tab::Forge), Ask::Nothing, "a member");
+    assert_eq!(ask(&lobby(true, Tab::Forge), Tab::Forge), Ask::Nothing, "already there");
+    assert_eq!(
+        ask(&lobby(true, Tab::CustomGames), Tab::Multiplayer),
+        Ask::Refuse(Reason::MatchmakingNeedsLive)
+    );
+    let mut no_forge = lobby(true, Tab::CustomGames);
+    no_forge.row = row(
+        Present {
+            forge: false,
+            ..Present::ALL
+        },
+        Place::SplitScreen,
+        Facts::default(),
+    );
+    assert_eq!(ask(&no_forge, Tab::Forge), Ask::Nothing, "a mode not present");
+}
+
+/// `run_to` reads the lobby and runs the switch: a Split Screen custom
+/// lobby to FORGE checks the lock and sets the mode with no retail switch.
+/// FIREFIGHT is a game type, and MULTIPLAYER needs Xbox Live.
+#[test]
+fn run_to_reads_the_lobby_and_runs_the_switch() {
+    lobby_start::set_mode(Mode::Multiplayer);
+    let store = Arc::new(Store::defaults(&ff::DEFS));
+    store.set(ff::ENABLED.key, Value::Bool(false)).unwrap();
+    let run_to_tab = |tab| {
+        let store = Arc::clone(&store);
+        let entry = move |cx: Cx| -> EntryFuture {
+            let store = Arc::clone(&store);
+            Box::pin(async move {
+                run_to(&cx, tab, crate::lobby_tabs::Present::ALL, Some(store)).await?;
+                Ok(Ret::new(0, 0))
+            })
+        };
+        let run = testing::run(&entry, guest(0), Regs::default(), |_, _| Regs::default());
+        run.result.unwrap();
+        targets(&run.calls)
+    };
+
+    assert_eq!(run_to_tab(Tab::Forge), [points::LOBBY_START_STATE.base]);
+    assert_eq!(lobby_start::mode(), Mode::Forge);
+
+    for tab in [Tab::Firefight, Tab::Multiplayer] {
+        assert!(run_to_tab(tab).is_empty(), "{tab:?} made a guest call");
+        assert_eq!(lobby_start::mode(), Mode::Forge, "{tab:?} changed the mode");
+    }
+    assert_eq!(store.get(ff::ENABLED.key), Some(Value::Bool(false)));
 }

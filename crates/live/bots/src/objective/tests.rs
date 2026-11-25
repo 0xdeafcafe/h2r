@@ -220,6 +220,7 @@ fn square(c: Vec3, half: f32) -> Hill {
             [c[0] + half, c[1] - half, c[2]],
             [c[0] - half, c[1] + half, c[2]],
         ],
+        ..Default::default()
     }
 }
 
@@ -475,7 +476,7 @@ fn territories_capture_hold_and_relieve_a_contested_teammate() {
             }],
             true
         ),
-        Some(Goal::Hold(bot.position, 0.0))
+        Some(Goal::Hold(RED_HOME, TERRITORY_KEEP))
     );
 }
 
@@ -534,15 +535,18 @@ fn one_bomb_uses_the_designated_defender_through_arm_and_plant() {
         plan(&o, &me(near, 0), &[], true),
         Some(Goal::Carry(BLUE_HOME))
     );
+    // Planted, the bomb is left to go off: the planter heads home and the
+    // defender, whose plate it is, gets clear of the blast (out towards
+    // the nearest spot beyond it, its bomb spawn at X 88).
     o.items = vec![flag(0, BLUE_HOME, None)];
     o.state = state(1, 1);
     assert_eq!(
         plan(&o, &me(near, 0), &[], true),
-        Some(Goal::Hold(BLUE_HOME, DEFEND_RADIUS))
+        Some(Goal::Hold(RED_HOME, DEFEND_RADIUS))
     );
     assert_eq!(
         plan(&o, &me(near, 1), &[], true),
-        Some(Goal::Hold(BLUE_HOME, DEFEND_RADIUS))
+        Some(Goal::Hold([92.5, 0.0, 0.0], CLEAR_HOLD))
     );
 }
 

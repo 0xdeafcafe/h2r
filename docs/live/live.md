@@ -336,7 +336,8 @@ For the embedded server only, before starting, it builds the web app (`bun insta
 `bun run build`) when `web/dist` is missing or was built from a different
 `web/` tree (`web/dist/.h2-web-tree` records it; with uncommitted changes
 under `web/` an existing build is kept). `h2 play --follow` does the same
-in each commit's build, so the banner's "Update ready" includes it. Without
+in each commit's build, so the banner's "Update ready" includes it, and
+`h2 play --watch --live-local` rebuilds it in the checkout when `web/` changes. Without
 bun it says how to install it and runs without the web app; `H2_LIVE_WEB`
 points at a build of your own and skips this.
 
@@ -943,8 +944,10 @@ memory. Pending count is zero. Responding peers have COMPLETE, TARGET_CONTACTED
 and, when present, DATA_RECEIVED flags. The actual listener data follows the
 array with guest pointers; no host pointer escapes. RTT is a fixed 5 ms and
 bandwidth defaults to 10 Mbit/s. Disabled listeners report TARGET_DISABLED.
-An unreachable peer completes as uncontacted with no invented data, after at
-most 50 ms per query. This is a compact HLE side protocol, not an implementation
+An unreachable peer completes as uncontacted with no data. The guest caller
+waits while the HLE tries each endpoint in order. A silent endpoint can take
+three 100 ms receive timeouts before the next endpoint is tried
+(`crates/live/live-hle/src/qos.rs`). This is a compact HLE side protocol, not an implementation
 of the encrypted Xbox QoS protocol. Non-null work events and unknown flags
 return WSAEINVAL. Service QoS keeps its sign-in behavior from above.
 
@@ -1098,6 +1101,7 @@ through synthetic guest stacks; browsing every screen has not been run here.
 | `0x0008cc40`, `0x0008cd27`, `0x0008cddb`, disposer `0x0006b6a5` | FriendsStartup completes then idles, reporting RESULTS_AVAIL (`0x001500f1`) when its cached server snapshot changes. GetLatest returns 86-byte friend/request/invite records. EnumerateFinish lets the enumeration task finish before TaskClose. |
 | `0x0006d080` / `0x0006d0d3` | GetNotificationEx emits one packed type-3 notification per received game invite, then BOOL FALSE with cleared info/state. Title files are never notifications. No HRESULT is returned in this BOOL slot. |
 | `0x00058ab8`, `0x00058bd1` | MutelistStartup/Get complete; Get writes count 0. |
+| `0x0008ce2f`, `0x0008ce97` | FriendsAnswerRequest (answer 0 yes, 1 no, 2 never) and FriendsRemove read the friend's XUID from the first eight bytes of the 86-byte record, queue a signed `FriendAccepted`, `FriendDeclined` or `FriendRemoved` event on the player's account stream and return S_OK. Never is a decline: the server has no block event. The cached friends snapshot is re-read as soon as the event is sent. |
 | `0x0008d4d0` | OfferingIsNewContentAvailable reports NO_NEW_CONTENT. |
 | `0x0008c320` through `0x0008c59b` | PresenceInit/Add/Submit/Clear retain the bounded watch groups; GetLatest writes 61-byte records carrying the watched XUIDs and overlays cached friend/invite presence when available. |
 | `0x0006b59d`, `0x0008d1da`, title checks `0x0008c28e` / `0x0008d27a` | FriendsGetTitleName writes UTF-16 “Halo 2” for this title and an empty terminated name for uncached titles. SameTitle/SamePublisher return BOOL comparisons. |
@@ -1109,7 +1113,7 @@ through synthetic guest stacks; browsing every screen has not been run here.
 | `0x0022387b` | SaveLogonState writes the public 516-byte launch-state layout with users and service IDs; it contains no signing key. |
 | `0x0008e750`, manager `0x002c7410` | Message polling exposes pending game invitations. Title files use storage and never enter the player inbox. |
 
-These 4 entries still stop by API name because their backend behavior is not
+These 2 entries still stop by API name because their backend behavior is not
 implemented. Their menu/game fallbacks are a separate follow-up slice; the
 storage entries below no longer stop. Prefixes in the table are part of each
 listed API name.
@@ -1117,12 +1121,10 @@ listed API name.
 | Prefix | Remaining suffixes |
 |---|---|
 | `XOnline` | `TitleUpdate` |
-| `XOnlineFriends` | `Remove`, `AnswerRequest` |
 | `XNet` | `TsAddrToInAddr` |
 
 Server-backed sessions, invitation delivery, clans and cached friend presence are
-implemented in the Client HLE sections below. Friend mutations
-outside the existing capture path, comparing ranked arbitration reports
+implemented in the Client HLE sections below. Comparing ranked arbitration reports
 ([live-matchmaking.md](live-matchmaking.md) §8.4) and NAT traversal
 remain unfinished. Synthetic tests prove invitation discovery through bidirectional
 host UDP traffic; actual menu transitions and a full retail match are unconfirmed.
@@ -1749,9 +1751,23 @@ TeamMemberRecruitByName (`0x003a8399`/`0x003a83d4`), and GameInviteSend
 bounded ANSI gamertag, plus team/member properties or session ID as appropriate.
 A null optional message on a typed send becomes an empty message of that type.
 The sender must be signed in. With a server configured, GameInviteSend posts
-signed mailbox invitations and its task waits for acknowledgment. Other generic
-message/friend-request captures remain local; clan recruitment has its separate
-server-backed Teams path.
+signed mailbox invitations and its task waits for acknowledgment. FriendsRequestEx
+and FriendsRequestByNameEx post a signed `FriendRequested` event on the player's
+account stream (`SocialRequest::FriendRequest` / `FriendRequestByName` in
+`crates/live/live-hle/src/client.rs`); the by-name form first reads
+`/v1/accounts/{gamertag}` for the xuid. The task completes when the server has
+the event; an unknown gamertag or xuid completes it with FRIEND_NOT_FOUND
+(`0x80152008`), and a refused request (already friends or pending, a Clanker)
+with INVALID_ARGUMENT. A plain text message, the generic MessageSend of a type-1 message, posts a
+signed `MessageSent` event to each recipient's mailbox (`SocialRequest::Text`
+in `client.rs`, started from `state.rs`). The text is the `0x6c4` property,
+cut to `live_proto::mailbox::TEXT_MAX` characters. The task reports the
+server's answer: success once the event is stored, FRIEND_NOT_FOUND
+(`0x80152008`) when the recipient is not a friend or the account is unknown,
+INVALID_ARGUMENT for text the server refuses. A message with voice and text
+sends the text only; a message with no text stays a local capture. Voice
+attachments are not delivered. Other generic captures remain local; clan
+recruitment has its separate server-backed Teams path.
 
 Every accepted local send returns a task whose Continue result is
 XONLINETASK_S_SUCCESS (`0x001500f0`), rather than the running value S_OK. The game
@@ -1801,12 +1817,21 @@ These reads do not implement sending or accepting friend requests: establish the
 friendship through the existing CLI or web UI first.
 
 MessageEnumerate presents each pending invite as a type-3, 64-byte summary from
-the real inviter XUID/gamertag. GetNotificationEx returns one type-3 notification
+the real inviter XUID/gamertag, and each text message from a friend as a type-1
+summary from the sender, together newest first and at most 100
+(`Invites::inbox`). The summary's message flags word at +36 holds HAS_TEXT
+(`0x8`) for a text message and nothing for an invite; neither sets HAS_VOICE.
+The message screen's voice line does not read the summary: it shows when
+the account voice check `0x001906da` fails for the screen's controller, or
+when detail property `0x03c2` reads 1 and attachment `0x09c1` exists
+(`0x002c74f9`), and neither property is answered here. GetNotificationEx returns one type-3 notification
 per invite; repeated polls return FALSE with cleared output. Details owns a
 snapshot task, and DetailsGetResultsProperty returns the required session-ID
-property `0x0581`. Other properties report PROPERTY_NOT_FOUND and no attachment
-is invented. MessageDelete queues a remove (or block-sender) answer and hides
-the item; an already handled known ID is acknowledged. Title resources remain
+property `0x0581` of an invitation, or the text property `0x06c4` (a NUL-ended
+UTF-16 string) of a text message. Other properties report PROPERTY_NOT_FOUND and
+no attachment is invented. MessageDelete queues a remove (or block-sender)
+answer and hides the item; for a text message it posts a signed `MessageDeleted`
+and the server drops the message. An already handled known ID is acknowledged. Title resources remain
 on the storage path and never become inbox messages or notifications.
 
 FriendsAnswerGameInvite and GameInviteAnswer queue an authenticated recipient

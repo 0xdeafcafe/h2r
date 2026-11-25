@@ -14,11 +14,11 @@ use gfx::compile::{Pending, PendingPipeline};
 use gfx::pipeline::{PipelineKey, ShaderId, TargetFormats};
 use gfx::program::{ProgramBindings, StageDims};
 use gfx::repack::{FetchMode, RepackPlan, StreamPlan};
-use gfx::state::{DepthBufferMode, StencilOp};
 use gfx::texture::TextureKind;
 use gfx::translate::Capabilities;
-use gfx::{BoundGroup, RecordedDraw, ScissorRect};
-use gfx::vertex::PrimitiveType;
+use gfx::renderer::VertexBuffers;
+use gfx::{BoundGroup, RecordedDraw};
+use gfx::vertex::{PrimitiveType, VertexLayout};
 use shaders::{psh::PixelUniforms, vsh::VertexUniforms};
 
 use crate::pipelines::{self, Pipelines};
@@ -26,30 +26,66 @@ use crate::program::scaled_scissor;
 use crate::world_layers::{Geometry, Owner, Texaccum};
 
 const CACHE_BUDGET: u64 = 64 * 1024 * 1024;
+const SECTION_BYTES: u64 = 128 * 1024 * 1024;
+const SECTION_WINDOWS: u64 = 4096;
+const SECTION_FRAMES: u64 = 32;
+const LAYOUT_PLANS: usize = 256;
+const DRAW_SHADERS: usize = 1024;
 
 static BUFFER_BYTES: mem_watch::Counter = mem_watch::Counter::new("native.world_buffer_cache_bytes");
 static SECTIONS: mem_watch::Counter = mem_watch::Counter::new("native.world_section_windows");
+static SECTION_PAYLOAD: mem_watch::Counter = mem_watch::Counter::new("native.world_section_payload_bytes");
 
 pub struct Cache {
-    devices: Mutex<HashMap<wgpu::Device, DeviceCache>>,
+    pool_refusals: Mutex<HashMap<&'static str, u64>>,
+    device: Mutex<Option<(wgpu::Device, DeviceCache)>>,
     fetch: FetchMode,
 }
 
 impl Default for Cache {
     fn default() -> Self {
-        Self { devices: Mutex::default(), fetch: FetchMode::Gpu }
+        Self { pool_refusals: Mutex::default(), device: Mutex::default(), fetch: FetchMode::Gpu }
     }
 }
 
 struct DeviceCache {
     bindings: ProgramBindings,
     shaders: HashMap<NativeDrawKey, Shader>,
+    layouts: LayoutPlans,
     buffers: HashMap<BufferKey, (wgpu::Buffer, u64)>,
     buffer_bytes: mem_watch::Gauge,
     section_count: mem_watch::Gauge,
+    section_bytes: mem_watch::Gauge,
+    trimmed_at: u64,
     frame: u64,
     scope: Option<(u64, u32)>,
     sections: HashMap<SectionKey, Vec<ResidentSection>>,
+}
+
+#[derive(Default)]
+struct LayoutPlans {
+    layouts: HashMap<VertexLayout, Vec<(Vec<u32>, Arc<RepackPlan>)>>,
+    count: usize,
+}
+
+impl LayoutPlans {
+    // A DeviceCache belongs to one fetch mode.
+    fn get(&mut self, layout: &VertexLayout, streams: &[d3d::StreamBytes], fetch: FetchMode) -> Arc<RepackPlan> {
+        if let Some((_, plan)) = self.layouts.get(layout).and_then(|plans| {
+            plans.iter().find(|(strides, _)| strides.iter().copied().eq(streams.iter().map(|s| s.stride)))
+        }) {
+            return Arc::clone(plan);
+        }
+        if self.count == LAYOUT_PLANS {
+            self.layouts.clear();
+            self.count = 0;
+        }
+        let strides: Vec<_> = streams.iter().map(|s| s.stride).collect();
+        let plan = Arc::new(RepackPlan::with_mode(layout, &strides, fetch));
+        self.layouts.entry(layout.clone()).or_default().push((strides, Arc::clone(&plan)));
+        self.count += 1;
+        plan
+    }
 }
 
 struct TranslatedShader {
@@ -87,13 +123,16 @@ enum SectionOwner {
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-struct SectionKey {
-    owner: SectionOwner,
-    part: u8,
-    shader: u32,
-    variant: u8,
-    implementation: u8,
-    layer: u32,
+enum SectionKey {
+    Sky { model: u32, section: u32, part: u32, shader: u32, pass: u32 },
+    World {
+        owner: SectionOwner,
+        part: u8,
+        shader: u32,
+        variant: u8,
+        implementation: u8,
+        layer: u32,
+    },
 }
 
 impl SectionKey {
@@ -103,7 +142,7 @@ impl SectionKey {
             Owner::Placement(i) => SectionOwner::Placement(i),
             Owner::Object { model, section, .. } => SectionOwner::Model(model, section),
         };
-        Self { owner, part: geometry.part, shader: geometry.shader, variant: geometry.variant,
+        Self::World { owner, part: geometry.part, shader: geometry.shader, variant: geometry.variant,
             implementation: geometry.implementation, layer }
     }
 }
@@ -112,10 +151,22 @@ struct ResidentSection {
     last_used: u64,
     source: Arc<ResolvedDraw>,
     fetch: FetchMode,
-    repack: RepackPlan,
-    streams: Vec<BufferRange>,
+    repack: Arc<RepackPlan>,
+    streams: VertexBuffers,
     indices: BufferRange,
     material: Option<ResidentMaterial>,
+    charged_bytes: u64,
+}
+
+fn retain_windows(windows: &mut Vec<ResidentSection>, oldest: u64, count: &mut u64, bytes: &mut u64) {
+    windows.retain(|section| {
+        if section.last_used >= oldest {
+            return true;
+        }
+        *count -= 1;
+        *bytes -= section.charged_bytes;
+        false
+    });
 }
 
 struct ResidentMaterial {
@@ -176,19 +227,27 @@ impl DeviceCache {
         Self {
             bindings: ProgramBindings::new(device),
             shaders: HashMap::new(),
+            layouts: LayoutPlans::default(),
             buffers: HashMap::new(),
             buffer_bytes: BUFFER_BYTES.track(0),
             section_count: SECTIONS.track(0),
+            section_bytes: SECTION_PAYLOAD.track(0),
+            trimmed_at: 0,
             frame: 0, scope: None, sections: HashMap::new(),
         }
     }
 
     fn resolve_shader(
         &mut self, device: &wgpu::Device, draw: &ResolvedDraw, present: [bool; 4],
-        fetch: FetchMode, caps: Capabilities,
-    ) -> Option<(Arc<NativeDrawMaterial>, Program)> {
-        let program = Arc::new(NativeDrawMaterial::resolve(draw, present, caps, fetch).ok()?);
-        let new_id = ShaderId(self.shaders.len().try_into().ok()?);
+        plan: &RepackPlan, caps: Capabilities,
+    ) -> Result<(Arc<NativeDrawMaterial>, Program), &'static str> {
+        let program = NativeDrawMaterial::resolve_with_plan(draw, present, caps, plan)
+            .map_err(|_| "unresolved indexed material")?;
+        let program = Arc::new(program);
+        if self.shaders.len() == DRAW_SHADERS && !self.shaders.contains_key(&program.key) {
+            self.shaders.clear();
+        }
+        let new_id = ShaderId(self.shaders.len().try_into().map_err(|_| "shader id overflow")?);
         let shader = self.shaders.entry(program.key.clone()).or_insert_with_key(|key| {
             let key = key.clone();
             let device = device.clone();
@@ -205,7 +264,8 @@ impl DeviceCache {
             Shader::Translating { id: new_id, work }
         });
         if let Shader::Translating { id, work } = shader {
-            let TranslatedShader { linked, module } = work.try_get()?.as_ref()?;
+            let translated = work.try_get().ok_or("shader compiling")?;
+            let TranslatedShader { linked, module } = translated.as_ref().ok_or("shader translation failed")?;
             // These layouts must also own the texture and uniform bindings at draw time.
             let bindings = self.bindings.program(device, module.clone(), linked.dims);
             *shader = Shader::Ready(Program {
@@ -215,17 +275,18 @@ impl DeviceCache {
                 discards: linked.discards,
             });
         }
-        let Shader::Ready(shader) = shader else { return None };
-        Some((program, shader.clone()))
+        let Shader::Ready(shader) = shader else { return Err("shader unavailable") };
+        Ok((program, shader.clone()))
     }
 
     fn upload_section(
         &mut self, target: &ExternalAttachments, draw: &Arc<ResolvedDraw>,
-        fetch: FetchMode, repack: RepackPlan, resident: bool,
+        fetch: FetchMode, repack: Arc<RepackPlan>, charged_bytes: Option<u64>,
     ) -> Option<ResidentSection> {
+        let resident = charged_bytes.is_some();
         let indices = draw.indices.as_ref()?;
         if resident && indices.iter().any(|&index| index >= draw.vertex_count) { return None; }
-        let mut streams = Vec::with_capacity(draw.streams.len());
+        let mut streams = VertexBuffers::with_capacity(draw.streams.len());
         for (plan, stream) in repack.streams.iter().zip(&draw.streams) {
             if plan.identity {
                 plan.check(&stream.data, draw.vertex_count).ok()?;
@@ -238,8 +299,24 @@ impl DeviceCache {
         let indices = self.buffer(target, indices.cache_id().map(BufferKey::Indices),
             wgpu::BufferUsages::INDEX, resident, || Some(Cow::Borrowed(bytemuck::cast_slice(&indices[..]))))?;
         Some(ResidentSection {
-            last_used: self.frame, source: Arc::clone(draw), fetch, repack, streams, indices, material: None,
+            last_used: self.frame, source: Arc::clone(draw), fetch, repack, streams, indices,
+            material: None, charged_bytes: charged_bytes.unwrap_or(0),
         })
+    }
+
+    fn trim_sections(&mut self) {
+        let frame = self.frame;
+        if frame.saturating_sub(self.trimmed_at) < SECTION_FRAMES {
+            return;
+        }
+        self.trimmed_at = frame;
+        let (mut count, mut bytes) = (self.section_count.get(), self.section_bytes.get());
+        self.sections.retain(|_, windows| {
+            retain_windows(windows, frame.saturating_sub(SECTION_FRAMES), &mut count, &mut bytes);
+            !windows.is_empty()
+        });
+        self.section_count.set(count);
+        self.section_bytes.set(bytes);
     }
 
     fn buffer<'a>(
@@ -276,8 +353,8 @@ impl DeviceCache {
         if let Some(key) = key {
             let mut bytes = self.buffer_bytes.get() + buffer.size();
             if bytes > CACHE_BUDGET {
-                // Section entries retain their own buffers until the BSP changes.
-                // Trim only the shared snapshot index, oldest sightings first.
+                // Section windows are budgeted separately. Trim the shared
+                // snapshot index, oldest sightings first.
                 let mut age: Vec<_> = self.buffers.iter().map(|(k, (_, used))| (*used, k.clone())).collect();
                 age.sort_unstable_by_key(|(used, _)| *used);
                 for (_, old) in age {
@@ -292,17 +369,67 @@ impl DeviceCache {
     }
 }
 
-/// One unmodified indexed range from the standard geometry emitter.
+fn section_charge(count: u64, used: u64, payload: u64) -> Option<u64> {
+    (count < SECTION_WINDOWS && payload <= SECTION_BYTES.saturating_sub(used)).then_some(payload)
+}
+
+/// Section node matrices in hardware register order, scoped to one sky draw.
+#[derive(Clone)]
+struct SkyRows {
+    nodes: Arc<[frame_scene::Row]>,
+    decompression: [frame_scene::Row; 3],
+}
+
+impl SkyRows {
+    fn check(&self, constants: &[frame_scene::Row]) -> Result<(), &'static str> {
+        let start = crate::program::MODEL_ROWS;
+        let compression = crate::program::POSITION_DECOMPRESSION;
+        let same = |at: usize, rows: &[frame_scene::Row]| {
+            constants.get(at..at + rows.len()).is_some_and(|live|
+                live.iter().zip(rows).all(|(a, b)| a.map(f32::to_bits) == b.map(f32::to_bits)))
+        };
+        if self.nodes.is_empty() || self.nodes.len() % 3 != 0
+            || self.nodes.len() > compression - start || !same(start, &self.nodes)
+        {
+            return Err("transform");
+        }
+        if !same(compression, &self.decompression) {
+            return Err("material");
+        }
+        Ok(())
+    }
+
+    fn apply(&self, vertex: &mut VertexUniforms) {
+        let start = crate::program::MODEL_ROWS;
+        vertex.constants[start..start + self.nodes.len()].copy_from_slice(&self.nodes);
+        let compression = crate::program::POSITION_DECOMPRESSION;
+        vertex.constants[compression..compression + 3].copy_from_slice(&self.decompression);
+    }
+}
+
+/// A texture backed by an independently pinned colour surface. Both
+/// identities must name the same GPU texture on every target copy.
+#[derive(Clone, Copy)]
+struct SurfaceTexture {
+    header: u32,
+    size: (u32, u32),
+}
+
+/// One indexed range recorded at its original attachments.
 pub struct IndexedPass {
+    sorted_pool: bool,
+    sky: Option<SkyRows>,
     draw: Arc<ResolvedDraw>,
+    /// The guest quad packet when the native pass expands its topology.
+    original_quad: Option<Arc<ResolvedDraw>>,
     cache: Arc<Cache>,
     frame: u64,
     // Eligibility is fixed at guest extraction even if the render FIFO
     // records the candidate after a later swap.
     extracted_frame: u64,
     fetch: FetchMode,
-    texaccum: Option<Texaccum>,
-    texaccum_stages: [bool; 4],
+    pinned: Option<SurfaceTexture>,
+    sorted_layer: bool,
     section: Option<((u64, u32), SectionKey)>,
 }
 
@@ -314,7 +441,80 @@ impl IndexedPass {
         texaccum: Option<Texaccum>,
     ) -> Option<Self> {
         if draw.indices.as_ref()?.iter().any(|&i| i >= draw.vertex_count) { return None; }
-        Self::candidate(draw, cache, frame, texaccum, None)
+        Self::candidate(draw, cache, frame, texaccum, None, false)
+    }
+
+    /// A standalone sorted-layer range can be recorded on the scene's
+    /// attachments with the exact texture views captured for this packet.
+    pub fn for_sorted_layer(draw: &ResolvedDraw, cache: Arc<Cache>, frame: u64) -> Option<Self> {
+        if draw.indices.as_ref()?.iter().any(|&i| i >= draw.vertex_count) {
+            return None;
+        }
+        Self::candidate(draw, cache, frame, None, None, true)
+    }
+
+    /// The sorted handler resolved the ripple frame, bump matrices, reflection,
+    /// refraction sample and fog. Replay rebinds this packet's four stage views.
+    pub fn for_pool(draw: &ResolvedDraw, cache: Arc<Cache>, frame: u64) -> Option<Self> {
+        let mut pass = Self::new(draw, cache, frame, None)?;
+        pass.sorted_pool = true;
+        Some(pass)
+    }
+
+    /// Expand the indexed water composite using the Xbox quad diagonal.
+    /// Preserve vertex order within each quad, including repeated indices.
+    pub fn water_quads(draw: &ResolvedDraw, geometry: &frame_scene::late::WaterComposite, cache: Arc<Cache>, frame: u64) -> Option<Self> {
+        if draw.primitive != PrimitiveType::QuadList {
+            return None;
+        }
+        let triangles = geometry.triangles(draw.indices.as_ref()?)?;
+        let mut native = draw.clone();
+        native.primitive = PrimitiveType::TriangleList;
+        native.indices = Some(triangles.into());
+        let mut pass = Self::new(&native, cache, frame, None)?;
+        pass.original_quad = Some(Arc::new(draw.clone()));
+        Some(pass)
+    }
+
+    /// Layer 15, one material pass of one section part. The live pass
+    /// supplies its selected program, evaluated constants and stage images.
+    /// The node palette is the sky model's for the current view.
+    pub fn for_sky(
+        draw: &ResolvedDraw, cache: Arc<Cache>, frame: u64, generation: u64,
+        item: scene_extract::layout::sky::SkyItem,
+    ) -> Result<Self, &'static str> {
+        if draw.primitive != PrimitiveType::TriangleStrip
+            || draw.indices.as_ref().is_none_or(|indices| indices.iter().any(|&i| i >= draw.vertex_count))
+        {
+            return Err("geometry");
+        }
+        let mark = crate::object_state::structure_stencil(crate::object_state::STENCIL_MARK_REFERENCE);
+        if draw.state.render.stencil != mark
+            || !draw.target.depth_format.and_then(gfx::format::depth_format_to_wgpu)
+                .is_some_and(|format| format.has_stencil_aspect())
+        {
+            return Err("stencil");
+        }
+        if !matches!(&draw.shader.vertex, d3d::shader::VertexProcessing::Program { .. })
+            || draw.state.render.cull_mode != gfx::state::CullMode::None
+            || draw.sampled_texture_stages().iter().enumerate().any(|(n, &reads)|
+                reads && (draw.textures[n].is_none() || draw.texture_info[n].is_none()))
+        {
+            return Err("material");
+        }
+        let sky = SkyRows { nodes: item.rows.into(), decompression: item.decompression };
+        sky.check(&draw.shader.constants[..])?;
+        if let Some((constants, _)) = &draw.retail_constants {
+            sky.check(&constants[..])?;
+        }
+        let key = SectionKey::Sky {
+            model: item.model, section: item.section, part: item.part,
+            shader: item.shader, pass: item.pass,
+        };
+        let mut candidate = Self::candidate(draw, cache, frame, None, Some(((generation, 0), key)), false)
+            .ok_or("geometry")?;
+        candidate.sky = Some(sky);
+        Ok(candidate)
     }
 
     /// Sorted slots, render records, object handles and swap counters are
@@ -323,12 +523,13 @@ impl IndexedPass {
         draw: &ResolvedDraw, cache: Arc<Cache>, frame: u64, texaccum: Option<Texaccum>,
         scope: (u64, u32), geometry: Geometry, layer: u32,
     ) -> Option<Self> {
-        Self::candidate(draw, cache, frame, texaccum, Some((scope, SectionKey::new(geometry, layer))))
+        Self::candidate(draw, cache, frame, texaccum, Some((scope, SectionKey::new(geometry, layer))), false)
     }
 
     fn candidate(
         draw: &ResolvedDraw, cache: Arc<Cache>, frame: u64, texaccum: Option<Texaccum>,
         section: Option<((u64, u32), SectionKey)>,
+        sorted_layer: bool,
     ) -> Option<Self> {
         let indices = draw.indices.as_ref()?;
         if indices.len() < 3
@@ -336,57 +537,65 @@ impl IndexedPass {
                 draw.primitive,
                 PrimitiveType::TriangleList | PrimitiveType::TriangleStrip
             )
-            || draw.target.depth_format.is_none()
+            || (!sorted_layer && draw.target.depth_format.is_none())
             || draw.streams.len() != draw.layout.streams.len()
             || draw.hw.zpass_count_enable
         {
             return None;
         }
         Some(Self {
+            sorted_pool: false,
+            sky: None,
             draw: Arc::new(draw.clone()),
+            original_quad: None,
             fetch: cache.fetch,
             cache,
             frame,
             extracted_frame: timeline::frames(),
             section,
-            texaccum,
-            texaccum_stages: draw
-                .textures
-                .map(|header| texaccum.is_some_and(|t| header == Some(t.texture))),
+            sorted_layer,
+            pinned: texaccum.map(|t| SurfaceTexture { header: t.texture, size: t.size }),
         })
+    }
+
+    /// Require the first external slot's surface to back the sampled
+    /// stage. Used by generated lights whose target 13 is per invocation.
+    pub fn pin_sampled_surface(&mut self, header: u32, size: (u32, u32)) {
+        self.pinned = Some(SurfaceTexture { header, size });
     }
 
     fn prepare(
         &self,
         target: &ExternalAttachments,
         guest_size: (u32, u32),
-    ) -> Option<ExternalDraws> {
+    ) -> Result<ExternalDraws, &'static str> {
         let _scope = mem_watch::scope("native.world");
         // Both target copies retain the same geometry and material snapshot.
         let draw = &self.draw;
         let (width, height) = guest_size;
-        if target.targets.0 == target.targets.1 {
-            return None;
+        let depth = draw.target.depth_format.map(|_| target.depth_format);
+        if (target.targets.0 != target.targets.1) != depth.is_some() {
+            return Err("shared color and depth");
         }
-        let scale = d3d::scaled::RenderScale::between(guest_size, target.size)?;
+        let scale = d3d::scaled::RenderScale::between(guest_size, target.size).ok_or("zero raster extent")?;
         if (width, height) != (draw.target.width, draw.target.height)
-            || target.size
-                != (
-                    target.depth.texture().width(),
-                    target.depth.texture().height(),
-                )
-            || (draw.state.render.stencil.enable && !target.depth_format.has_stencil_aspect())
+            || depth.is_some_and(|format| {
+                target.size != (target.depth.texture().width(), target.depth.texture().height())
+                    || (draw.state.render.stencil.enable && !format.has_stencil_aspect())
+            })
         {
-            return None;
+            return Err("incompatible target or stencil");
         }
         let caps = Capabilities::from_features(target.device.features());
-        let mut cache = self.cache.devices.lock().ok()?;
-        let cache = cache
-            .entry(target.device.clone())
-            .or_insert_with(|| DeviceCache::new(&target.device));
-        if cache.frame != self.frame {
+        let mut active = self.cache.device.lock().map_err(|_| "device cache poisoned")?;
+        if active.as_ref().is_none_or(|(device, _)| device != &target.device) {
+            *active = Some((target.device.clone(), DeviceCache::new(&target.device)));
+        }
+        let (_, cache) = active.as_mut().ok_or("device cache unavailable")?;
+        if cache.frame < self.frame {
             cache.frame = self.frame;
             cache.bindings.end_frame();
+            cache.trim_sections();
         }
 
         let section_key = self.section.map(|(scope, key)| {
@@ -395,6 +604,7 @@ impl IndexedPass {
                 cache.buffers.clear();
                 cache.buffer_bytes.set(0);
                 cache.section_count.set(0);
+                cache.section_bytes.set(0);
                 cache.scope = Some(scope);
             }
             key
@@ -410,66 +620,58 @@ impl IndexedPass {
         let material = previous.and_then(|(key, i)| cache.sections.get(&key)?[i].material.as_ref())
             .filter(|m| m.matches(draw, present));
         let material_hit = material.is_some();
-        let formats = TargetFormats { color: target.color_format, depth: Some(target.depth_format), samples: 1 };
+        let formats = TargetFormats { color: target.color_format, depth, samples: 1 };
         let cached_pipeline = material.and_then(|m| m.pipelines.get(&formats)).cloned();
+        let repack = match previous {
+            Some((key, i)) => Arc::clone(&cache.sections[&key][i].repack),
+            None => cache.layouts.get(&draw.layout, &draw.streams, self.fetch),
+        };
         let (program, shader) = if let Some(material) = material {
             (Arc::clone(&material.program), material.shader.clone())
         } else {
-            cache.resolve_shader(&target.device, draw, present, self.fetch, caps)?
+            cache.resolve_shader(&target.device, draw, present, &repack, caps)?
         };
         let dims = shader.dims;
+        let mut consumed_surface = false;
         for (n, dim) in dims.iter().enumerate() {
             let Some(dim) = dim else { continue };
-            let view = target.stages[n].as_ref()?;
-            let have = match draw.texture_info[n]?.kind {
+            let view = target.stages[n].as_ref().ok_or("sample view missing")?;
+            let have = match draw.texture_info[n].ok_or("sample header missing")?.kind {
                 TextureKind::D2 => wgpu::TextureViewDimension::D2,
                 TextureKind::Volume => wgpu::TextureViewDimension::D3,
                 TextureKind::Cube => wgpu::TextureViewDimension::Cube,
             };
-            if *dim != have
-                || view.texture() == target.color.texture()
-                || view.texture() == target.depth.texture()
-                || !gfx::program::filterable(view.texture().format(), target.device.features())
+            if *dim != have { return Err("sample dimension disagrees with shader"); }
+            if view.texture() == target.color.texture()
+                || (depth.is_some() && view.texture() == target.depth.texture())
             {
-                return None;
+                return Err("sample aliases attachment");
             }
-            if self.texaccum_stages[n] {
-                let accum = self.texaccum?;
-                let info = draw.texture_info[n]?;
-                let sampled = target.sampled.first()?.as_ref()?;
-                let source = target.slots.first()?.as_ref()?;
-                if (info.width, info.height) != accum.size
+            if !gfx::program::filterable(view.texture().format(), target.device.features()) {
+                return Err("sample is unfilterable");
+            }
+            if let Some(pinned) = self.pinned.filter(|p| draw.textures[n] == Some(p.header)) {
+                consumed_surface = true;
+                let info = draw.texture_info[n].ok_or("sample header missing")?;
+                let sampled = target.sampled.first().and_then(Option::as_ref).ok_or("texaccum sample missing")?;
+                let source = target.slots.first().and_then(Option::as_ref).ok_or("texaccum slot missing")?;
+                if (info.width, info.height) != pinned.size
                     || info.format.layout() != gfx::format::Layout::Linear
-                    || source.guest_size != accum.size
+                    || source.guest_size != pinned.size
                     || source.size != sampled.size
                     || source.sample.texture() != sampled.view.texture()
                     || source.sample.texture() != view.texture()
                 {
-                    return None;
+                    return Err("texaccum binding mismatch");
                 }
             }
         }
-        // A header that was bound but unreferenced does not establish
-        // that this is a combined material's texture accumulation pass.
-        if self.texaccum.is_some()
-            && !self
-                .texaccum_stages
-                .iter()
-                .zip(dims)
-                .any(|(&accum, dim)| accum && dim.is_some())
-        {
-            return None;
+        // A bound but unsampled header cannot prove a surface dependency.
+        if self.pinned.is_some() && !consumed_surface {
+            return Err("unused texaccum binding");
         }
         // An unresolved native variant leaves this exact indexed range on D3D.
         // Check it before allocating streams, bind groups or submission uploads.
-        let mut new_repack = None;
-        let repack = match previous {
-            Some((key, i)) => &cache.sections[&key][i].repack,
-            None => {
-                let strides: Vec<_> = draw.streams.iter().map(|s| s.stride).collect();
-                new_repack.insert(RepackPlan::with_mode(&draw.layout, &strides, self.fetch))
-            }
-        };
         let mut state = draw.state.render;
         if program.writes_depth {
             // The same offset is already in the translated W-depth uniforms.
@@ -483,7 +685,7 @@ impl IndexedPass {
         } else {
             let mut key = PipelineKey::from_plan(
                 shader.id,
-                repack,
+                &repack,
                 draw.primitive,
                 &state,
                 formats,
@@ -495,7 +697,9 @@ impl IndexedPass {
             let pipeline = shader.pipelines.request(&target.device, &key);
             (key, pipeline)
         };
-        pipeline.visible_at_frame(self.extracted_frame)?.as_ref()?;
+        pipeline.visible_at_frame(self.extracted_frame)
+            .ok_or("pipeline unavailable at extraction")?
+            .as_ref().ok_or("pipeline compilation failed")?;
         let views = std::array::from_fn(|n| dims[n].and(target.stages[n].clone()));
         let cached_textures = previous.and_then(|(key, i)| cache.sections.get(&key)?[i].material.as_ref())
             .filter(|_| material_hit)
@@ -511,36 +715,54 @@ impl IndexedPass {
             [[false; 4]; 4],
         ));
         if textures.is_none() && dims.iter().any(Option::is_some) {
-            return None;
+            return Err("texture group unavailable");
         }
 
-        let indices = draw.indices.as_ref()?;
-        let index_count = indices.len().try_into().ok()?;
+        let indices = draw.indices.as_ref().ok_or("indices missing")?;
+        let index_count = indices.len().try_into().map_err(|_| "index count overflow")?;
+        let frame = cache.frame;
+        let charged_bytes = section_key.filter(|_| previous.is_none()).and_then(|key| {
+            if let std::collections::hash_map::Entry::Occupied(mut entry) = cache.sections.entry(key) {
+                // A streaming part should not keep each historical version
+                // until the sweep for sections that disappeared entirely.
+                let (mut count, mut bytes) = (cache.section_count.get(), cache.section_bytes.get());
+                retain_windows(entry.get_mut(), frame.saturating_sub(1), &mut count, &mut bytes);
+                if entry.get().is_empty() {
+                    entry.remove();
+                }
+                cache.section_count.set(count);
+                cache.section_bytes.set(bytes);
+            }
+            // Charge both the pinned snapshot and its uploaded buffers. Shared
+            // streams can be counted twice, which keeps the budget conservative.
+            let payload = indices.len() as u64 * 8 + repack.streams.iter().zip(&draw.streams)
+                .map(|(plan, stream)| stream.data.len() as u64
+                    + (plan.host_bytes(draw.vertex_count) as u64).next_multiple_of(4))
+                .sum::<u64>();
+            section_charge(cache.section_count.get(), cache.section_bytes.get(), payload)
+        });
+        let resident = previous.is_some() || charged_bytes.is_some();
         let mut fresh;
         let section = if let Some((key, i)) = previous {
-            let section = &mut cache.sections.get_mut(&key)?[i];
-            section.last_used = self.frame;
+            let section = &mut cache.sections.get_mut(&key).ok_or("resident section missing")?[i];
+            section.last_used = frame;
             // Promote the current snapshot IDs after an identical first-use copy.
             section.source = Arc::clone(draw);
             if material_hit {
-                section.material.as_mut()?.source = Arc::clone(draw);
+                section.material.as_mut().ok_or("resident material missing")?.source = Arc::clone(draw);
             }
             section
         } else {
-            fresh = cache.upload_section(target, draw, self.fetch, new_repack?, section_key.is_some())?;
-            if let Some(key) = section_key {
+            fresh = cache.upload_section(target, draw, self.fetch, repack, charged_bytes).ok_or("geometry upload failed")?;
+            if let Some((key, bytes)) = section_key.zip(charged_bytes) {
                 let windows = cache.sections.entry(key).or_default();
-                // A streaming part can change every frame. Keep its working set
-                // across swaps without retaining every retired resource version.
-                let previous_count = windows.len();
-                windows.retain(|s| self.frame.wrapping_sub(s.last_used) <= 1);
                 windows.push(fresh);
-                let retained = cache.section_count.get() - previous_count as u64 + windows.len() as u64;
-                cache.section_count.set(retained);
-                windows.last_mut()?
+                cache.section_count.set(cache.section_count.get() + 1);
+                cache.section_bytes.set(cache.section_bytes.get() + bytes);
+                windows.last_mut().ok_or("resident section missing")?
             } else { &mut fresh }
         };
-        if section_key.is_some() {
+        if resident {
             if !material_hit {
                 section.material = Some(ResidentMaterial {
                     source: Arc::clone(draw), present, program: Arc::clone(&program),
@@ -548,11 +770,11 @@ impl IndexedPass {
                 });
             }
             if !pipeline_hit {
-                section.material.as_mut()?.pipelines.insert(formats, (key.clone(), pipeline.clone()));
+                section.material.as_mut().ok_or("resident material missing")?.pipelines.insert(formats, (key.clone(), pipeline.clone()));
             }
         }
-        if section_key.is_some() && !bindings_hit {
-            let groups = &mut section.material.as_mut()?.groups;
+        if resident && !bindings_hit {
+            let groups = &mut section.material.as_mut().ok_or("resident material missing")?.groups;
             if groups.len() == 2 { groups.remove(0); }
             groups.push((views, textures.clone()));
         }
@@ -562,42 +784,43 @@ impl IndexedPass {
         let copy = draw.for_copy(target.copy);
         let draw = copy.as_ref();
         let clip = if draw.clip_rects.is_empty() {
-            std::slice::from_ref(draw.clip.as_ref()?)
+            std::slice::from_ref(draw.clip.as_ref().ok_or("clip unavailable")?)
         } else {
             &draw.clip_rects
         };
-        let clip: Vec<ScissorRect> = clip
-            .iter()
-            .map(|r| scaled_scissor(&draw.display_rect(*r), scale, target.size))
-            .collect::<Option<_>>()?;
+        let mut scissors = clip.iter().map(|r| scaled_scissor(&draw.display_rect(*r), scale, target.size));
+        let first_scissor = scissors.next().flatten().ok_or("invalid clip rectangle")?;
+        if scissors.clone().any(|scissor| scissor.is_none()) {
+            return Err("invalid clip rectangle");
+        }
         let streams = section.streams.clone();
         let indices = section.indices.clone();
-        let (vertex, pixel) = program.uniforms(draw, scale);
+        let (mut vertex, pixel) = program.uniforms(draw, scale);
+        if let Some(rows) = &self.sky { rows.apply(&mut vertex); }
         let sizes = [VertexUniforms::SIZE, PixelUniforms::SIZE];
         let fill = |_: usize, v: &mut [u8], p: &mut [u8]| {
             vertex.write_bytes(v);
             pixel.write_bytes(p);
         };
         let layout = cache.bindings.uniform_layout();
-        let params = if section_key.is_some() {
+        let params = if resident {
             gfx::churn::native_cache(pipeline_hit && bindings_hit);
             target.uploads.resident_uniform_run(&target.device, &target.queue, layout, sizes, 1, fill)
         } else {
             target.uploads.uniform_run(&target.device, &target.queue, layout, sizes, 1, fill)
-        }?;
+        }.ok_or("uniform upload failed")?;
         let offsets = params.offsets(0);
-        let mut groups = vec![BoundGroup { index: 0, group: params.group, offsets: offsets.to_vec() }];
-        groups.extend(textures.map(|group| BoundGroup::new(1, group)));
-        let mut clip = clip.into_iter();
+        let groups = std::iter::once(BoundGroup { index: 0, group: params.group, offsets: offsets.to_vec() })
+            .chain(textures.map(|group| BoundGroup::new(1, group)));
         let first = RecordedDraw::prepared_indexed(
-            &key, pipeline, streams, indices, index_count, groups, &state, target.size, clip.next()?,
+            &key, pipeline, streams, indices, index_count, groups, &state, target.size, first_scissor,
         );
-        let mut packets = Vec::with_capacity(clip.len() + 1);
+        let mut packets = Vec::with_capacity(clip.len());
         packets.push(first);
-        for scissor in clip {
-            packets.push(packets[0].clone().with_scissor(scissor, target.size));
+        for scissor in scissors {
+            packets.push(packets[0].clone().with_scissor(scissor.ok_or("invalid clip rectangle")?, target.size));
         }
-        Some(ExternalDraws { ranges: 1, packets, discards: shader.discards, writes: Vec::new() })
+        Ok(ExternalDraws { ranges: 1, packets, discards: shader.discards, writes: Vec::new() })
     }
 }
 
@@ -606,7 +829,10 @@ impl ExternalPass for IndexedPass {
         // An untextured standalone range owns its entire draw. prepare()
         // allocates its vertices and uniforms from each recording's arena.
         // Section caches and texture-stage bindings are outside this case.
-        self.section.is_none() && self.texaccum.is_none() && self.draw.texture_info.iter().all(Option::is_none)
+        // Sky material groups match the replay's actual stage views and
+        // formats. The immutable per-view palette is owned by this pass.
+        self.sorted_pool || self.sorted_layer || self.sky.is_some() || (self.section.is_none() && self.pinned.is_none()
+            && self.draw.texture_info.iter().all(Option::is_none))
     }
 
     fn uses_validated_resources(&self) -> bool { true }
@@ -614,24 +840,54 @@ impl ExternalPass for IndexedPass {
     fn encode(&mut self, _target: ExternalTarget<'_>) {}
 
     fn resolved_fallback(&self) -> Option<Arc<ResolvedDraw>> {
-        Some(Arc::clone(&self.draw))
+        Some(Arc::clone(self.original_quad.as_ref().unwrap_or(&self.draw)))
+    }
+
+    fn with_draw(&self, draw: Arc<ResolvedDraw>) -> Option<Box<dyn ExternalPass>> {
+        // A display frame between ticks changes the constants only
+        // (`d3d::scene_sink::Retarget`): the geometry and state the
+        // candidate checks accepted stay.
+        if draw.streams.len() != self.draw.streams.len() || self.sky.as_ref().is_some_and(|rows|
+            rows.check(&draw.shader.constants[..]).is_err() || draw.retail_constants.as_ref()
+                .is_some_and(|(c, _)| rows.check(&c[..]).is_err())) {
+            return None;
+        }
+        // A retargeted original quad needs its expanded index stream too.
+        let (draw, original_quad) = if self.original_quad.is_some() {
+            let mut native = (*draw).clone();
+            native.primitive = self.draw.primitive;
+            native.indices = self.draw.indices.clone();
+            (Arc::new(native), Some(draw))
+        } else {
+            (draw, None)
+        };
+        Some(Box::new(Self {
+            sorted_pool: self.sorted_pool,
+            sky: self.sky.clone(),
+            draw,
+            original_quad,
+            cache: Arc::clone(&self.cache),
+            frame: self.frame,
+            extracted_frame: self.extracted_frame,
+            fetch: self.fetch,
+            pinned: self.pinned,
+            sorted_layer: self.sorted_layer,
+            section: self.section,
+        }))
     }
 
     fn sampled(&self) -> Vec<u32> {
-        self.texaccum.iter().map(|target| target.texture).collect()
+        self.pinned.iter().map(|target| target.header).collect()
+    }
+
+    fn colour_only(&self) -> bool {
+        self.draw.target.depth_format.is_none()
     }
 
     fn writes(&self) -> ExternalWrites {
-        let r = &self.draw.state.render;
-        let stencil = &r.stencil;
         ExternalWrites {
-            color: !gfx::translate::color_writes(r.color_write).is_empty(),
-            depth_stencil: (r.depth_mode != DepthBufferMode::Disabled && r.depth_write)
-                || (stencil.enable
-                    && stencil.write_mask != 0
-                    && [stencil.fail, stencil.depth_fail, stencil.pass]
-                        .iter()
-                        .any(|&op| op != StencilOp::Keep)),
+            color: self.draw.state.render.color_write.xbox_value() != 0,
+            depth_stencil: self.draw.writes_depth_stencil(),
         }
     }
 
@@ -640,13 +896,76 @@ impl ExternalPass for IndexedPass {
         target: &ExternalAttachments,
         request: ExternalPassRequest,
     ) -> Option<Result<ExternalDraws, &'static str>> {
-        Some(self.prepare(target, request.surface_size).ok_or("opaque draw resources"))
+        let result = self.prepare(target, request.surface_size);
+        if self.sorted_pool && let Err(why) = &result {
+            let mut refusals = self.cache.pool_refusals.lock().unwrap_or_else(|e| e.into_inner());
+            let count = refusals.entry(*why).or_default();
+            *count += 1;
+            if count.is_power_of_two() {
+                eprintln!("native-water: sorted pool recording refusals for this BSP: {refusals:?}");
+            }
+        }
+        Some(result)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gfx::ScissorRect;
+
+    #[test]
+    fn indexed_layout_plans_reuse_exact_strides_and_bound_changing_draws() {
+        let layout = VertexLayout { streams: vec![Default::default()], pretransformed: false };
+        let mut cache = LayoutPlans::default();
+        let mut stream = [d3d::StreamBytes { stride: 4, data: vec![0; 4].into() }];
+        let reused = cache.get(&layout, &stream, FetchMode::Gpu);
+        assert!(Arc::ptr_eq(&reused, &cache.get(&layout, &stream, FetchMode::Gpu)));
+        stream[0].stride = 8;
+        let different = cache.get(&layout, &stream, FetchMode::Gpu);
+        assert!(!Arc::ptr_eq(&reused, &different));
+        assert_eq!(different.streams[0].guest_stride, 8);
+        for n in 3..=(LAYOUT_PLANS as u32 * 3) {
+            stream[0].stride = n * 4;
+            cache.get(&layout, &stream, FetchMode::Gpu);
+            assert!(cache.count <= LAYOUT_PLANS);
+        }
+        assert_eq!(cache.layouts.values().map(Vec::len).sum::<usize>(), cache.count);
+    }
+
+    #[test]
+    fn resident_windows_limit_both_geometry_bytes_and_snapshot_count() {
+        assert_eq!(section_charge(SECTION_WINDOWS - 1, SECTION_BYTES - 8, 8), Some(8));
+        assert_eq!(section_charge(0, SECTION_BYTES - 8, 9), None);
+        assert_eq!(section_charge(SECTION_WINDOWS, 0, 8), None);
+        assert_eq!(section_charge(0, 0, SECTION_BYTES + 1), None);
+    }
+
+    #[test]
+    fn water_quads_keep_the_indexed_corners_and_diagonal() {
+        let water = frame_scene::late::WaterComposite { quads: vec![[17, 10, 14, 21], [12, 12, 11, 13]] };
+        assert_eq!(water.triangles(&[7, 0, 4, 11, 2, 2, 1, 3]).unwrap(),
+            [7, 0, 4, 7, 4, 11, 2, 2, 1, 2, 1, 3]);
+        assert_eq!(water.triangles(&[1, 3, 9]), None);
+    }
+
+    #[test]
+    fn sky_palettes_and_section_compression_preserve_other_material_constants() {
+        let mut v = VertexUniforms::default();
+        v.constants.fill([7.0; 4]);
+        let first = SkyRows { nodes: vec![[3.5; 4]; 6].into(), decompression: [[2.0; 4]; 3] };
+        let second = SkyRows { nodes: vec![[-1.25; 4]; 6].into(), decompression: [[8.5; 4]; 3] };
+        first.apply(&mut v);
+        assert_eq!(first.check(&v.constants), Ok(()));
+        assert_eq!(second.check(&v.constants), Err("transform"));
+        second.apply(&mut v);
+        assert_eq!(second.check(&v.constants), Ok(()));
+        let start = crate::program::MODEL_ROWS;
+        assert_eq!(v.constants[start - 1], [7.0; 4]);
+        assert_eq!(v.constants[start + 6], [7.0; 4]);
+        v.constants[crate::program::TEXCOORD_DECOMPRESSION] = [0.0; 4];
+        assert_eq!(second.check(&v.constants), Err("material"));
+    }
 
     #[test]
     fn converted_streams_require_the_same_snapshot_count_and_repack_plan() {

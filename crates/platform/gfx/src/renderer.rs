@@ -27,13 +27,16 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use smallvec::SmallVec;
+
 use crate::clear::{Clearer, MaskedClear};
 use crate::compile::{Compiler, Pending, PendingPipeline, Priority};
 use crate::context::GfxContext;
 use crate::occlusion::{COUNT_FORMAT, COUNT_FRAGMENT_WGSL, PixelCounter};
 use crate::persistent::{PersistentStats, PersistentVertices};
 use crate::pipeline::{
-    PipelineCache, PipelineKey, ShaderId, ShaderProgram, TargetFormats, create_render_pipeline,
+    COUNT_PIPELINES, PipelineCache, PipelineKey, ShaderId, ShaderProgram, TargetFormats,
+    create_render_pipeline,
 };
 use crate::presenter::RenderTarget;
 use crate::repack::{FetchMode, RepackError, RepackPlan};
@@ -339,6 +342,7 @@ const BUILTIN_UNIFORM_SIZE: u64 = 48;
 const VERTEX_RING: u64 = 4 << 20;
 /// Initial size of the built-in uniform ring.
 const UNIFORM_RING: u64 = 1 << 20;
+static SHADER_ENTRIES: mem_watch::Counter = mem_watch::Counter::new("gfx.shader_cache_entries");
 
 /// The built-in shader's alpha-test code for a compare function (0 = test
 /// off); matches `alpha_passes` in `xyzrhw_diffuse.wgsl`.
@@ -362,6 +366,7 @@ fn builtin_alpha_func(rs: &RenderState) -> f32 {
 pub struct Renderer {
     _census: mem_watch::gpu::DeviceRegistration,
     shaders: HashMap<ShaderId, ShaderProgram>,
+    shader_entries: mem_watch::Gauge,
     builtin_bgl: wgpu::BindGroupLayout,
     cache: PipelineCache<Arc<PendingPipeline>>,
     clearer: Clearer,
@@ -404,11 +409,11 @@ pub struct RecordedDraw {
     /// Built on a compile worker if it was not cached; waited for (or built)
     /// when the draw is encoded.
     pipeline: Arc<PendingPipeline>,
-    vertex_buffers: Vec<(wgpu::Buffer, u64, u64)>,
+    vertex_buffers: VertexBuffers,
     indices: Option<(wgpu::Buffer, u64, u64)>,
     vertices: u32,
     builtin: Option<(wgpu::BindGroup, u32)>,
-    bind_groups: Vec<BoundGroup>,
+    bind_groups: SmallVec<[BoundGroup; 2]>,
     viewport: DrawViewport,
     scissor: ScissorRect,
     blend_constant: wgpu::Color,
@@ -430,6 +435,9 @@ pub struct RecordedDraw {
     )>,
 }
 
+/// Vertex buffers and ranges with inline room for the common indexed layouts.
+pub type VertexBuffers = SmallVec<[(wgpu::Buffer, u64, u64); 2]>;
+
 impl RecordedDraw {
     /// Build an ordered packet from an already validated indexed pipeline and
     /// its pinned bindings. The caller checks the target, buffer ranges and
@@ -437,21 +445,21 @@ impl RecordedDraw {
     pub fn prepared_indexed(
         key: &PipelineKey,
         pipeline: Arc<PendingPipeline>,
-        vertex_buffers: Vec<(wgpu::Buffer, u64, u64)>,
+        vertex_buffers: impl IntoIterator<Item = (wgpu::Buffer, u64, u64)>,
         indices: (wgpu::Buffer, u64, u64),
         vertices: u32,
-        bind_groups: Vec<BoundGroup>,
+        bind_groups: impl IntoIterator<Item = BoundGroup>,
         render: &crate::state::RenderState,
         size: (u32, u32),
         scissor: ScissorRect,
     ) -> Self {
         Self {
             pipeline,
-            vertex_buffers,
+            vertex_buffers: vertex_buffers.into_iter().collect(),
             indices: Some(indices),
             vertices,
             builtin: None,
-            bind_groups,
+            bind_groups: bind_groups.into_iter().collect(),
             viewport: DrawViewport::full(size.0, size.1),
             scissor: scissor.intersect(ScissorRect::full(size.0, size.1)),
             blend_constant: translate::blend_constant(render),
@@ -489,6 +497,19 @@ impl RecordedDraw {
     /// Whether the draw adds its samples to the pass's [`PixelCounter`].
     pub fn counts_samples(&self) -> bool {
         self.count.is_some()
+    }
+
+    /// Replay the prepared geometry into the pixel counter before drawing it.
+    /// The count pipeline uses the same vertex, primitive and depth state.
+    pub fn with_sample_count(mut self, pipeline: Arc<PendingPipeline>) -> Self {
+        self.count = Some((pipeline, self.state.2.as_ref().is_some_and(writes_depth_stencil)));
+        self
+    }
+
+    /// A physical target copy that does not own the report still draws the
+    /// packet, but contributes no samples.
+    pub fn disable_sample_count(&mut self) {
+        self.count = None;
     }
 
     /// Makes [`Renderer::encode_pass`] start a new render pass (on the same
@@ -615,6 +636,7 @@ impl Renderer {
         );
         Self {
             _census: census,
+            shader_entries: SHADER_ENTRIES.track(shaders.len() as u64),
             shaders,
             builtin_bgl: bgl,
             cache: PipelineCache::new(),
@@ -640,7 +662,7 @@ impl Renderer {
             uniform_align: (ctx.device.limits().min_uniform_buffer_offset_alignment as u64)
                 .max(4)
                 .next_power_of_two(),
-            count_cache: PipelineCache::new(),
+            count_cache: PipelineCache::with_limit(COUNT_PIPELINES),
             count_fragment: None,
             vertex_fetch: FetchMode::Gpu,
             scratch: Vec::new(),
@@ -677,9 +699,11 @@ impl Renderer {
             return false;
         }
         if self.shaders.insert(id, program).is_some() {
+            self.drop_prewarms();
             self.cache.clear();
             self.count_cache.clear();
         }
+        self.shader_entries.set(self.shaders.len() as u64);
         true
     }
 
@@ -696,6 +720,7 @@ impl Renderer {
     /// Builds pipelines on `compiler`'s workers instead of the global one
     /// (`Compiler::new(0)`: on the first draw that encodes them).
     pub fn set_compiler(&mut self, compiler: Arc<Compiler>) {
+        self.drop_prewarms();
         self.compiler = compiler;
     }
 
@@ -711,7 +736,7 @@ impl Renderer {
     /// later draw that needs it finds it built. A cached one that is not
     /// built, nor queued (its prewarm was dropped), is queued again.
     /// Returns `false` if it is built, being built or already queued, or
-    /// `key.shader` is not registered.
+    /// `key.shader` is not registered or the cache has no room for a new key.
     pub fn prewarm(&mut self, ctx: &GfxContext, key: &PipelineKey, count: bool) -> bool {
         let Some(program) = self.shaders.get(&key.shader) else {
             return false;
@@ -723,6 +748,9 @@ impl Renderer {
         };
         if let Some(cached) = cache.get(key) {
             return self.compiler.prewarm(cached, self.prewarm_owner);
+        }
+        if cache.is_full() {
+            return false;
         }
         let pending = if count {
             let fragment = count_fragment(&mut self.count_fragment, &ctx.device);
@@ -1021,7 +1049,7 @@ impl Renderer {
             indices,
             vertices,
             builtin,
-            bind_groups: d.bind_groups.to_vec(),
+            bind_groups: d.bind_groups.iter().cloned().collect(),
             viewport,
             scissor,
             blend_constant: translate::blend_constant(&d.state),
@@ -1274,6 +1302,12 @@ impl Renderer {
     }
 }
 
+impl Drop for Renderer {
+    fn drop(&mut self) {
+        self.drop_prewarms();
+    }
+}
+
 thread_local! {
     static SKIP_IDLE_COUNTED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
@@ -1290,6 +1324,29 @@ fn skip_idle_counted() -> bool {
 /// comparing the two.
 pub fn set_skip_idle_counted(skip: Option<bool>) {
     SKIP_IDLE_COUNTED.set(skip);
+}
+
+/// Encodes `draws` in order into `pass`, a render pass the caller opened
+/// on the attachments they were recorded for: for a stage whose commands
+/// must come between the frame's passes (a copy of the bound colour before
+/// draws that sample it). Draws that count their samples or ask for a pass
+/// of their own are refused, as is a draw whose pipeline did not build;
+/// nothing is encoded then.
+pub fn encode_in_pass(pass: &mut wgpu::RenderPass<'_>, draws: &[RecordedDraw]) -> Result<(), &'static str> {
+    if draws.iter().any(|d| d.counts_samples() || d.new_pass) {
+        return Err("a draw needs a pass of its own");
+    }
+    wait_for_pipelines(draws);
+    if draws.iter().any(|d| d.pipeline.get().is_none()) {
+        return Err("a draw's pipeline did not build");
+    }
+    let mut state = PassState::default();
+    for p in draws {
+        if let Some(pipeline) = p.pipeline.get() {
+            state.draw(pass, p, pipeline);
+        }
+    }
+    Ok(())
 }
 
 /// The state an open render pass has had set, so a draw only sets what
@@ -1439,6 +1496,21 @@ fn create_count_pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+/// Prepare the same sample-count pipeline as an ordinary counted draw
+/// for a native packet with an already translated shader.
+pub fn create_sample_count_pipeline(
+    device: &wgpu::Device,
+    key: &PipelineKey,
+    program: &ShaderProgram,
+) -> wgpu::RenderPipeline {
+    let fragment = if program.count_entry.is_some() {
+        program.module.clone()
+    } else {
+        count_fragment(&mut None, device)
+    };
+    create_count_pipeline(device, key, program, &fragment)
 }
 
 /// A draw pipeline for `key` to be built on a worker (or its first user).

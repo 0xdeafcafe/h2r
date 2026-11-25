@@ -1,21 +1,25 @@
 //! The Firefight host runtime (docs/game/firefight.md, "The host runtime").
 //!
 //! [`Host::start`] runs at map load: it refuses a map without the kit,
-//! admits the definition against the kit's classes, and picks a team no
-//! player holds for the actors. Each tick the caller runs
+//! admits the definition against the kit's classes, and picks a team for
+//! the actors that no player holds and that is not a player team (0, and 1
+//! with two teams). Each tick the caller runs
 //! [`Host::pre_tick`] before the game tick, which applies the host log's
 //! due entries in sequence order, and [`Host::post_tick`] after it, which
 //! builds [`Observed`], steps the director and appends its commands for the
 //! next tick. Only machines that run the simulation of record apply
-//! entries: a distributed client keeps the log for its digest and applies
-//! none. The director never touches the game; every change goes through a
+//! entries: a distributed client applies none and checks the actor
+//! channel's digest instead (`crate::actor_net::client`). The director never touches the game; every change goes through a
 //! [`Game`] entry.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ::firefight::director::{Kill, PlayerSeen, SQUAD_SLOTS, State, ZoneSeen};
+use ::firefight::director::{
+    Kill, PlayerSeen, SQUAD_SLOTS, State, ZoneSeen, firefight_team,
+};
 use ::firefight::{
-    Command, Def, Director, Limits, Observed, Outcome, ScoreReason, Settings, Skull,
+    Command, Def, Limits, MAX_TEAMS, Observed, Outcome, PlayerKill, ScoreReason, ScriptDirector,
+    Settings, Skull,
 };
 use host_log::{Entry, Log, LogHead, Sha256};
 
@@ -37,8 +41,9 @@ pub enum Role {
     /// A synchronous peer, or a film's playback: applies the entries it
     /// receives and never runs the director.
     Replica,
-    /// A distributed client: keeps the log for the digest and applies
-    /// nothing. Its bodies come from replication.
+    /// A distributed client: runs no director and applies nothing. Its
+    /// bodies come from replication, the mode state and the host's log
+    /// head from the actor channel.
     Client,
 }
 
@@ -67,6 +72,10 @@ pub struct Kit {
     pub classes: BTreeMap<String, u16>,
     /// The team the kit's squads are authored on.
     pub team: u8,
+    /// Each player team's base, by Firefight team: base 0 is the home
+    /// base, base 1 the second team's. A squad's cleanup hunt goes to its
+    /// target's base.
+    pub bases: Vec<[f32; 3]>,
 }
 
 /// One player in the match, read after the game tick.
@@ -108,10 +117,15 @@ pub trait Game: SquadEntry {
     fn sees(&self, point: [f32; 3]) -> bool;
     /// This tick's actor kills, in event order.
     fn kills(&self) -> Vec<KillSeen>;
+    /// This tick's players killed (`SimEvent::Kill`), in event order, with
+    /// the killer resolved to a roster slot.
+    fn player_kills(&self) -> Vec<PlayerKill>;
     /// Add `points` to the player's score through the engine's score entry.
     fn credit_score(&mut self, player: u8, points: u32) -> anyhow::Result<()>;
     /// The shared pool (`player` none) or one player's lives.
     fn set_lives(&mut self, player: Option<u8>, pool: u16) -> anyhow::Result<()>;
+    /// A team's shared pool, with two teams.
+    fn set_team_lives(&mut self, team: u8, pool: u16) -> anyhow::Result<()>;
     fn respawn(&mut self, player: u8) -> anyhow::Result<()>;
     fn skull(&mut self, skull: Skull, on: bool) -> anyhow::Result<()>;
     /// End the game through the engine's own game end.
@@ -131,8 +145,12 @@ pub enum Refusal {
     NoZones,
     /// The definition is invalid or names a class the kit lacks.
     Def(::firefight::Refusal),
-    /// Every team is held by a player.
+    /// The definition's rules script did not build or verify.
+    Script(String),
+    /// Every team is held by a player or is a player team.
     NoFreeTeam,
+    /// Two player teams, and the kit marks fewer bases than that.
+    Bases { have: usize, need: u8 },
     Log(String),
 }
 
@@ -142,7 +160,12 @@ impl std::fmt::Display for Refusal {
             Refusal::NoKit => f.write_str("the map does not carry the Firefight kit"),
             Refusal::NoZones => f.write_str("the map's Firefight kit has no drop zones"),
             Refusal::Def(refusal) => write!(f, "the Firefight definition: {refusal}"),
+            Refusal::Script(refusal) => write!(f, "the director script: {refusal}"),
             Refusal::NoFreeTeam => f.write_str("every team is held by a player"),
+            Refusal::Bases { have, need } => write!(
+                f,
+                "the map's Firefight kit marks {have} bases, and {need} player teams need one each"
+            ),
             Refusal::Log(error) => write!(f, "the host log: {error}"),
         }
     }
@@ -192,24 +215,45 @@ pub struct Ended {
     pub tick: u32,
     /// The definition's name.
     pub set: String,
+    /// With two teams the winner is in it (`TeamWon { team }`).
     pub outcome: Outcome,
     /// Rounds whose last wave was cleared.
     pub rounds_cleared: u32,
     /// Respawns the director has issued.
     pub lives_used: u32,
+    /// The definition's player teams: 1, or 2.
+    pub teams: u8,
+    /// Each Firefight team's points; the second is 0 with one team.
+    pub scores: [u32; MAX_TEAMS],
+}
+
+/// Where the match was when the director finished it, for [`Ended`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Progress {
+    /// The round it was in (zero-based) and the definition's rounds.
+    round: u32,
+    rounds: u32,
+    /// The last round's last wave is cleared: no actor of it is alive.
+    last_wave_cleared: bool,
+    respawns: u32,
+    teams: u8,
+    scores: [u32; MAX_TEAMS],
 }
 
 /// One match on one machine.
 pub struct Host {
     role: Role,
-    /// The host's director; none on a replica or a client.
-    director: Option<Director>,
+    /// The host's director (the definition's rules script on the VM); none
+    /// on a replica or a client.
+    director: Option<ScriptDirector>,
     log: Log<Command>,
     /// The sequence number of the last applied entry.
     applied: u32,
     kit: Kit,
     by_character: BTreeMap<u16, String>,
     team: u8,
+    /// The definition's player teams, on every role.
+    teams: u8,
     ai_checked: bool,
     /// The director is not stepped (`firefight.command`'s hold).
     held: bool,
@@ -221,6 +265,13 @@ pub struct Host {
     finished: bool,
     /// Respawn commands the director has issued.
     respawns: u32,
+    /// The Firefight team each squad slot was last sent at (`Target`; 0
+    /// with one team): its cleanup hunt goes to that team's base.
+    targets: [u8; SQUAD_SLOTS],
+    /// The mode blob of the last `ModeState` entry applied here.
+    mode: Option<Vec<u8>>,
+    /// The mode blob of the last `ModeState` entry the host appended.
+    mode_sent: Option<Vec<u8>>,
 }
 
 impl Host {
@@ -237,18 +288,22 @@ impl Host {
         }
         ::firefight::validate(&def, &Limits::new(kit.classes.keys().cloned()))
             .map_err(Refusal::Def)?;
+        if def.teams > 1 && kit.bases.len() < usize::from(def.teams) {
+            return Err(Refusal::Bases {
+                have: kit.bases.len(),
+                need: def.teams,
+            });
+        }
         let held: BTreeSet<u8> = game.players().iter().map(|p| p.team).collect();
-        let team = if held.contains(&kit.team) {
-            (0..TEAMS)
-                .find(|team| !held.contains(team))
-                .ok_or(Refusal::NoFreeTeam)?
-        } else {
-            kit.team
-        };
+        let team = actor_team(def.teams, kit.team, &held)?;
+        let teams = def.teams;
         let genesis = genesis(&def, settings.seed)?;
         let log = Log::new(LogHead::genesis(genesis)).map_err(|e| Refusal::Log(e.to_string()))?;
         let director = match role {
-            Role::Host => Some(Director::new(def, settings).map_err(Refusal::Def)?),
+            Role::Host => Some(
+                ScriptDirector::new(def, settings)
+                    .map_err(|refusal| Refusal::Script(refusal.to_string()))?,
+            ),
             Role::Replica | Role::Client => None,
         };
         let by_character = kit
@@ -264,12 +319,16 @@ impl Host {
             kit,
             by_character,
             team,
+            teams,
             ai_checked: false,
             held: false,
             credits: Vec::new(),
             ended: None,
             finished: false,
             respawns: 0,
+            targets: [0; SQUAD_SLOTS],
+            mode: None,
+            mode_sent: None,
         })
     }
 
@@ -282,6 +341,16 @@ impl Host {
         self.team
     }
 
+    /// The definition's player teams: 1, or 2.
+    pub fn teams(&self) -> u8 {
+        self.teams
+    }
+
+    /// The Firefight team each squad slot is sent at.
+    pub fn targets(&self) -> &[u8; SQUAD_SLOTS] {
+        &self.targets
+    }
+
     pub fn log(&self) -> &Log<Command> {
         &self.log
     }
@@ -291,18 +360,47 @@ impl Host {
     }
 
     /// The director's mode blob, on the host.
-    pub fn state(&self) -> Option<&State> {
-        self.director.as_ref().map(Director::state)
+    pub fn state(&self) -> Option<State> {
+        self.director.as_ref().map(ScriptDirector::state)
     }
 
     /// The director, on the host.
-    pub fn director(&self) -> Option<&Director> {
+    pub fn director(&self) -> Option<&ScriptDirector> {
         self.director.as_ref()
     }
 
     /// The sequence number of the last entry applied here.
     pub fn applied(&self) -> u32 {
         self.applied
+    }
+
+    /// The mode blob the last applied `ModeState` entry carried: what a
+    /// replica or a film's playback draws (docs/game/firefight.md, "The
+    /// HUD").
+    pub fn mode_state(&self) -> Option<&[u8]> {
+        self.mode.as_deref()
+    }
+
+    /// On the host, after [`Host::post_tick`]: append the step's mode blob
+    /// as a `ModeState` entry for the next tick, when it differs from the
+    /// last one appended. Returns whether it appended. Elsewhere nothing is
+    /// appended: the host writes the log.
+    pub fn note_mode(&mut self, tick: u32, blob: &[u8]) -> Result<bool, host_log::Error> {
+        if self.role != Role::Host || self.mode_sent.as_deref() == Some(blob) {
+            return Ok(false);
+        }
+        let head = self.log.head();
+        self.log.push(Entry {
+            seq: head.next_seq()?,
+            tick: tick.saturating_add(1).max(head.tick),
+            author: None,
+            op: Command::ModeState {
+                blob: blob.to_vec(),
+            },
+            prev_hash: head.hash,
+        })?;
+        self.mode_sent = Some(blob.to_vec());
+        Ok(true)
     }
 
     pub fn kit(&self) -> &Kit {
@@ -384,16 +482,14 @@ impl Host {
         if self.director.is_none() || self.held {
             return Ok(0);
         }
-        let seen = observe(&self.kit, &self.by_character, game);
+        let teams = self.director.as_ref().map_or(1, |d| d.def().teams);
+        let seen = observe(&self.kit, &self.by_character, teams, game);
         let Some(director) = self.director.as_mut() else {
             return Ok(0);
         };
         let commands = director.step(tick, &seen);
-        let (set, round, rounds) = (
-            director.def().name.clone(),
-            u32::from(director.state().round),
-            director.def().rounds.len() as u32,
-        );
+        let set = director.def().name.clone();
+        let progress = progress(director);
         let by_class = &director.def().scoring.by_class;
         self.credits.extend(credits(tick, &seen, &commands, |class| {
             by_class.contains_key(class)
@@ -402,8 +498,12 @@ impl Host {
             .iter()
             .filter(|op| matches!(op, Command::Respawn { .. }))
             .count() as u32;
+        let progress = Progress {
+            respawns: self.respawns,
+            ..progress
+        };
         if !self.finished
-            && let Some(ended) = result(tick, set, round, rounds, self.respawns, &commands)
+            && let Some(ended) = result(tick, set, progress, &commands)
         {
             self.finished = true;
             self.ended = Some(ended);
@@ -457,7 +557,7 @@ impl Host {
         Ok(())
     }
 
-    fn apply(&self, op: &Command, game: &mut impl Game) -> anyhow::Result<()> {
+    fn apply(&mut self, op: &Command, game: &mut impl Game) -> anyhow::Result<()> {
         match op {
             Command::PlaceSquad {
                 slot,
@@ -487,15 +587,54 @@ impl Host {
                     }),
                 )
             }
-            Command::Hunt { slot } => squad(game, SquadOp::Hunt { slot: *slot }),
+            Command::Target { slot, team } => {
+                anyhow::ensure!(
+                    usize::from(*team) < MAX_TEAMS && usize::from(*team) < self.kit.bases.len(),
+                    "the kit has no base for team {team}"
+                );
+                let target = self.targets.get_mut(usize::from(*slot)).ok_or_else(|| {
+                    anyhow::anyhow!("squad slot {slot} is outside the map's {SQUAD_SLOTS} slots")
+                })?;
+                *target = *team;
+                Ok(())
+            }
+            Command::Hunt { slot } => {
+                let base = self.targets.get(usize::from(*slot)).copied().unwrap_or(0);
+                squad(game, SquadOp::Hunt { slot: *slot, base })
+            }
             Command::EraseSquad { slot } => squad(game, SquadOp::Erase { slot: *slot }),
             // The HUD reads rounds and waves from the mode blob.
             Command::Round { .. } | Command::Wave { .. } => Ok(()),
             Command::Skull { id, on } => game.skull(*id, *on),
-            Command::Lives { player, pool } => game.set_lives(*player, *pool),
+            // The engine keeps no pool: the director's is the pool its
+            // respawns spend, so a `Lives` or `TeamLives` sets it there (the
+            // director's own set the pool it holds; an operator's changes
+            // it). Where no director runs the entry is the game's alone.
+            Command::Lives { player, pool } => {
+                if let Some(director) = self.director.as_mut() {
+                    director
+                        .set_lives(*player, *pool)
+                        .map_err(anyhow::Error::msg)?;
+                }
+                game.set_lives(*player, *pool)
+            }
+            Command::TeamLives { team, pool } => {
+                anyhow::ensure!(usize::from(*team) < MAX_TEAMS, "no player team {team}");
+                if let Some(director) = self.director.as_mut() {
+                    director
+                        .set_team_pool(*team, *pool)
+                        .map_err(anyhow::Error::msg)?;
+                }
+                game.set_team_lives(*team, *pool)
+            }
             Command::Score { player, points, .. } => game.credit_score(*player, *points),
             Command::Respawn { player } => game.respawn(*player),
             Command::Finish { outcome } => game.end_game(*outcome),
+            // The game takes no call: the HUD draws the blob.
+            Command::ModeState { blob } => {
+                self.mode = Some(blob.clone());
+                Ok(())
+            }
         }
     }
 }
@@ -535,11 +674,8 @@ fn credits(
         let Some(killer) = kill.killer.filter(|_| scored(&kill.class)) else {
             continue;
         };
-        if scores
-            .front()
-            .is_some_and(|s| s.2 == ScoreReason::Kill && s.0 == killer)
-        {
-            credit(scores.pop_front().expect("fronted"), Some(kill.class.clone()));
+        if let Some(s) = scores.pop_front_if(|s| s.2 == ScoreReason::Kill && s.0 == killer) {
+            credit(s, Some(kill.class.clone()));
         }
         if let Some(assist) = kill.assist.filter(|&assist| assist != killer)
             && scores
@@ -555,27 +691,63 @@ fn credits(
     out
 }
 
+/// Where the director is after a step: the round, whether the last
+/// round's last wave is cleared, and the teams' points. The respawns are
+/// the host's to fill in.
+fn progress(director: &ScriptDirector) -> Progress {
+    let (state, def) = (director.state(), director.def());
+    let rounds = def.rounds.len() as u32;
+    let round = u32::from(state.round);
+    let waves = def
+        .rounds
+        .get(usize::from(state.round))
+        .map_or(0, |r| r.waves.len());
+    Progress {
+        round,
+        rounds,
+        last_wave_cleared: round + 1 == rounds
+            && usize::from(state.wave) + 1 == waves
+            && director.live_actors() == 0,
+        respawns: 0,
+        teams: def.teams,
+        scores: state.scores,
+    }
+}
+
 /// The result a step's `Finish` makes: a won match cleared every round, a
-/// lost one the rounds before the one it was in.
-fn result(
-    tick: u32,
-    set: String,
-    round: u32,
-    rounds: u32,
-    respawns: u32,
-    commands: &[Command],
-) -> Option<Ended> {
+/// lost one the rounds before the one it was in. Two teams' result (a team
+/// won, or a draw) cleared every round when the last round's last wave was
+/// cleared, else the rounds before the one it was in.
+fn result(tick: u32, set: String, progress: Progress, commands: &[Command]) -> Option<Ended> {
     let outcome = commands.iter().find_map(|op| match op {
         Command::Finish { outcome } => Some(*outcome),
         _ => None,
     })?;
+    let all = match outcome {
+        Outcome::Won => true,
+        Outcome::Lost => false,
+        Outcome::TeamWon { .. } | Outcome::Draw => progress.last_wave_cleared,
+    };
     Some(Ended {
         tick,
         set,
         outcome,
-        rounds_cleared: if outcome == Outcome::Won { rounds } else { round },
-        lives_used: respawns,
+        rounds_cleared: if all { progress.rounds } else { progress.round },
+        lives_used: progress.respawns,
+        teams: progress.teams,
+        scores: progress.scores,
     })
+}
+
+/// The actors' team: the kit's, unless a player holds it or it is a player
+/// team (team 0, and team 1 with two teams), else the lowest team that is
+/// neither. With two player teams the actors are always a third.
+pub(crate) fn actor_team(teams: u8, kit: u8, held: &BTreeSet<u8>) -> Result<u8, Refusal> {
+    let taken = |team: u8| held.contains(&team) || team < teams.max(1);
+    if !taken(kit) {
+        return Ok(kit);
+    }
+    (0..TEAMS).find(|&team| !taken(team)).ok_or(Refusal::NoFreeTeam)
 }
 
 fn squad(game: &mut impl Game, op: SquadOp) -> anyhow::Result<()> {
@@ -591,26 +763,47 @@ fn genesis(def: &Def, seed: u64) -> Result<Sha256, Refusal> {
     Ok(Sha256::of(&bytes))
 }
 
-/// What the director sees this tick. A kill of a character the kit does not
-/// name scores nothing, so it is left out.
-fn observe(kit: &Kit, by_character: &BTreeMap<u16, String>, game: &impl Game) -> Observed {
-    let players = game.players();
-    let positions: Vec<[f32; 3]> = players.iter().filter_map(|p| p.position).collect();
-    let centre = (!positions.is_empty()).then(|| {
-        let mut sum = [0.0f32; 3];
-        for position in &positions {
-            for (total, value) in sum.iter_mut().zip(position) {
-                *total += value;
-            }
+/// The mean of `positions`, or none without one.
+fn centre<'a>(positions: impl IntoIterator<Item = &'a [f32; 3]>) -> Option<[f32; 3]> {
+    let mut sum = [0.0f32; 3];
+    let mut n = 0usize;
+    for position in positions {
+        for (total, value) in sum.iter_mut().zip(position) {
+            *total += value;
         }
-        sum.map(|total| total / positions.len() as f32)
+        n += 1;
+    }
+    (n > 0).then(|| sum.map(|total| total / n as f32))
+}
+
+/// What the director sees this tick, for a definition of `teams` player
+/// teams. A kill of a character the kit does not name scores nothing, so
+/// it is left out. Each zone's distance is from the centre of the players
+/// who have a unit, and from each Firefight team's such players
+/// (`u32::MAX` for a team with none).
+fn observe(
+    kit: &Kit,
+    by_character: &BTreeMap<u16, String>,
+    teams: u8,
+    game: &impl Game,
+) -> Observed {
+    let players = game.players();
+    let all = centre(players.iter().filter_map(|p| p.position.as_ref()));
+    let by_team: [Option<[f32; 3]>; MAX_TEAMS] = std::array::from_fn(|team| {
+        centre(
+            players
+                .iter()
+                .filter(|p| usize::from(firefight_team(teams, p.team)) == team)
+                .filter_map(|p| p.position.as_ref()),
+        )
     });
     let zones = kit
         .zones
         .iter()
         .map(|&zone| ZoneSeen {
             seen: game.sees(zone),
-            distance: centre.map_or(0, |centre| distance(centre, zone)),
+            distance: all.map_or(0, |centre| distance(centre, zone)),
+            team_distance: by_team.map(|c| c.map_or(u32::MAX, |centre| distance(centre, zone))),
         })
         .collect();
     let kills = game
@@ -630,11 +823,13 @@ fn observe(kit: &Kit, by_character: &BTreeMap<u16, String>, game: &impl Game) ->
             .map(|p| PlayerSeen {
                 slot: p.slot,
                 alive: p.alive,
+                team: p.team,
             })
             .collect(),
         actors_alive_by_squad: game.actors_by_squad(),
         zones,
         kills,
+        player_kills: game.player_kills(),
     }
 }
 

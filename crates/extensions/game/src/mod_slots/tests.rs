@@ -53,6 +53,7 @@ fn selected_path_reads_a_used_slot_without_the_catalogue() {
         .write_bytes(slot + MP_PATH as u32, path.as_bytes(), 1)
         .unwrap();
 
+    assert_eq!(listed_ids(&guest).unwrap().into_iter().collect::<Vec<_>>(), [12345]);
     assert_eq!(selected_path(&guest, 12345).as_deref(), Some(path));
     assert_eq!(selected_path(&guest, FREE), None);
     assert_eq!(selected_path(&guest, 12344), None);

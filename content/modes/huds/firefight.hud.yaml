@@ -1,0 +1,47 @@
+# The Firefight HUD (docs/game/forge-firefight-ui.md, "The Firefight HUD"):
+# the wave banner, the lives and enemies pills in the grenade row, and the
+# notification list. Elements in draw order.
+name: firefight
+elements:
+  - id: ff.banner
+    kind: banner
+    longest: "ROUND COMPLETE"
+    at: {anchor: top-left, full: [0, 0], half: [0, 0], quarter: [0, 0]}
+  # Each pill is two pieces of the frag pill's art and an LCD count, in the
+  # grenade row's next place.
+  - id: ff.lives.pill
+    kind: icon
+    art: {type: grenade-pill, part: body}
+    at: {anchor: top-left, full: [0, 0], half: [0, 0], quarter: [0, 0], origin: next-grenade-pill}
+  - id: ff.lives.end
+    kind: icon
+    art: {type: grenade-pill, part: end}
+    at: {anchor: top-left, full: [20, 0], half: [20, 0], quarter: [20, 0], origin: next-grenade-pill}
+  - id: ff.lives.count
+    kind: text
+    font: lcd
+    justify: centre
+    longest: "99"
+    at: {anchor: top-left, full: [0, 0], half: [0, 0], quarter: [0, 0], origin: next-grenade-count}
+    over: ff.lives.pill
+  # The enemies pill is the next place after the lives pill: 30 right, the
+  # kit pill's width (20 and 7) and a gap of 3.
+  - id: ff.enemies.pill
+    kind: icon
+    art: {type: grenade-pill, part: body}
+    at: {anchor: top-left, full: [30, 0], half: [30, 0], quarter: [30, 0], origin: next-grenade-pill}
+  - id: ff.enemies.end
+    kind: icon
+    art: {type: grenade-pill, part: end}
+    at: {anchor: top-left, full: [50, 0], half: [50, 0], quarter: [50, 0], origin: next-grenade-pill}
+  - id: ff.enemies.count
+    kind: text
+    font: lcd
+    justify: centre
+    longest: "99"
+    at: {anchor: top-left, full: [30, 0], half: [30, 0], quarter: [30, 0], origin: next-grenade-count}
+    over: ff.enemies.pill
+  - id: ff.note
+    kind: message
+    longest: "Round 12 of 12"
+    at: {anchor: top-left, full: [0, 0], half: [0, 0], quarter: [0, 0]}

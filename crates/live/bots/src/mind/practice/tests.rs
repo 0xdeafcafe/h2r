@@ -91,8 +91,8 @@ fn bot(shield: f32) -> Me {
         team: 0,
         shield,
         health: 1.0,
+        shield_full: 1.0,
         arms: Some(armed()),
-        ..Me::default()
     }
 }
 
@@ -149,19 +149,31 @@ fn practice_off_drops_its_route_and_its_view() {
     assert!(mind.practice_view().is_none());
 }
 
+/// The weight with nothing else weighing it, for the plain style.
+fn plain(s: &Site, at: Vec3) -> f32 {
+    weight(s, at, &Weigh::default(), &Style::default())
+}
+
 #[test]
 fn proven_sites_weigh_more_and_a_claimed_or_just_tried_one_less() {
     let at = [0.0; 3];
+    let style = Style::default();
     let likely = site([10.0, 0.0, 0.0], Status::Likely);
     let proven = site([10.0, 5.0, 0.0], Status::Proven);
-    assert!(weight(&proven, at, false, None) > weight(&likely, at, false, None));
-    assert!(weight(&likely, at, true, None) < weight(&likely, at, false, None) - 2.0);
-    assert!(
-        weight(&likely, at, false, Some(likely.bounce.stand)) < weight(&likely, at, false, None)
-    );
+    assert!(plain(&proven, at) > plain(&likely, at));
+    let claimed = Weigh {
+        crowd: 1.0,
+        ..Weigh::default()
+    };
+    assert!(weight(&likely, at, &claimed, &style) < plain(&likely, at) - 2.0);
+    let tried = Weigh {
+        recent: 1.0,
+        ..Weigh::default()
+    };
+    assert!(weight(&likely, at, &tried, &style) < plain(&likely, at) - 1.0);
     // Further is a little worse.
     let far = site([70.0, 0.0, 0.0], Status::Likely);
-    assert!(weight(&far, at, false, None) < weight(&likely, at, false, None));
+    assert!(plain(&far, at) < plain(&likely, at));
 }
 
 #[test]
@@ -243,7 +255,11 @@ fn the_practice_reports_each_route_it_starts_and_how_each_try_ended() {
     }
     let started = mind.take_practice_events();
     assert!(
-        matches!(started.as_slice(), [PracticeEvent::Started { site, .. }] if *site == [10.0, 0.0, 0.0]),
+        matches!(
+            started.as_slice(),
+            [PracticeEvent::Started { site, .. }, PracticeEvent::Intent { site: also, .. }]
+                if *site == [10.0, 0.0, 0.0] && also == site
+        ),
         "{started:?}"
     );
     assert!(mind.take_practice_events().is_empty(), "taken once");
@@ -349,12 +365,19 @@ fn a_site_whose_approach_is_just_off_the_mesh_is_picked_and_routed() {
         |e: &[PracticeEvent]| e.iter().any(|e| matches!(e, PracticeEvent::Started { .. }));
     let events = practise(&mut mind, &m, 200, started);
     assert!(
-        matches!(events.as_slice(), [PracticeEvent::Started { site, .. }] if *site == s.bounce.stand),
+        matches!(
+            events.as_slice(),
+            [PracticeEvent::Started { site, .. }, PracticeEvent::Intent { .. }]
+                if *site == s.bounce.stand
+        ),
         "started, and not failed: {events:?}"
     );
     let v = mind.order_view();
     assert_eq!(v.state, "running");
-    assert_eq!(v.steps, ["walk_crouched", "prime", "walk", "bounce", "fly"]);
+    // Then the ride down, after any links of a chain.
+    assert_eq!(v.steps[..4], ["walk_crouched", "prime", "walk", "bounce"]);
+    assert!(v.steps[4..v.steps.len() - 1].iter().all(|s| *s == "chain"));
+    assert_eq!(v.steps.last(), Some(&"fly"));
 }
 
 #[test]
@@ -819,14 +842,8 @@ fn a_learned_site_weighs_more() {
         line: Some(superbounce::learned::State::Open),
         ..likely
     };
-    assert_eq!(
-        weight(&learned, at, false, None),
-        weight(&likely, at, false, None) + W_LEARNED
-    );
-    assert_eq!(
-        weight(&open, at, false, None),
-        weight(&likely, at, false, None)
-    );
+    assert_eq!(plain(&learned, at), plain(&likely, at) + W_LEARNED);
+    assert_eq!(plain(&open, at), plain(&likely, at));
 }
 
 #[test]
@@ -946,4 +963,56 @@ fn a_training_bot_at_its_start_asks_for_the_word_with_no_drill_set() {
     }
     assert!(asked, "never asked for the word");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn training_plans_each_arm_from_the_mirror_side_and_once_from_its_own() {
+    // A V's +y arm, 0.3 off the bisector (y 0): approached from -y,
+    // drifting +y onto it.
+    let arm = superbounce::Arm {
+        pivot: [10.0, 0.0, 0.0],
+        bisector: [1.0, 0.0],
+        from: [0.0, -1.0],
+    };
+    let base = site([12.0, 0.3, 0.0], Status::Likely);
+    let s = Site {
+        bounce: Bounce {
+            drift: [0.0, 1.0],
+            ..base.bounce
+        },
+        candidate: true,
+        arm: Some(arm),
+        ..base
+    };
+    let plain = site([0.0, 0.0, 0.0], Status::Likely);
+    let m = map();
+    let ledge = |x: &Site| launch_floor(&m, x);
+    let tune = crate::tuning::BOUNCE_DEFAULT;
+    let ins = sites_in(&[plain, s], &ledge, &tune);
+    // The plain site once; the arm twice, the control second.
+    assert_eq!(ins.len(), 3, "{ins:?}");
+    assert_eq!(
+        ins.iter().map(|i| i.control).collect::<Vec<_>>(),
+        [false, false, true]
+    );
+    assert_eq!((ins[1].at, ins[2].at), (s.bounce.stand, s.bounce.stand));
+    // The mirror walks in from -y, across the bisector; the control from
+    // the arm's own side, +y.
+    let from = s.bounce.from();
+    assert!(from[1] < 0.0 && s.approached_from([from[0], from[1]]), "{from:?}");
+    let own = s.same_side();
+    let back = own.bounce.from();
+    assert!(back[1] > 0.0 && own.approached_from([back[0], back[1]]), "{back:?}");
+    assert!(!s.approached_from([back[0], back[1]]));
+    assert_eq!(own.arm.map(|a| a.from), Some([0.0, 1.0]));
+    // Both are on a training board, as two sites.
+    let train = Train {
+        shard: 0,
+        shards: 1,
+        budget: 60,
+        seed: 1,
+    };
+    let b = learn::Board::new("zanzibar", train, ins, &[]);
+    assert_eq!(b.sites().len(), 3);
+    assert_eq!(b.sites().iter().filter(|h| h.search.setup().control).count(), 1);
 }

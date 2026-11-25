@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use engine::entry::GuestCall;
 use engine::memory::{GuestMemory, MemFault};
 
-use super::sheet::{Act, Choice, Kind, Look, PickSpec, Sheet};
+use super::sheet::{Act, Choice, Kind, Look, NumberField, PickSpec, Sheet};
 use crate::list_class::{Action, ListClass, ListLayout, OnFree, Panel, PanelText, Rows, TextBlock};
 use crate::ui::{Chosen, LABEL_SLOT, VALUE_SLOT};
 use crate::ui_kit::dialog::{
@@ -166,6 +166,12 @@ impl ForgeScreen {
         self.close_after_pick.swap(false, Ordering::SeqCst)
     }
 
+    /// Asks this screen to close at the next UI update, as a closing pick
+    /// does: its dialog chose something that leaves it with nothing to show.
+    pub fn close_with_dialog(&self) {
+        self.close_after_pick.store(true, Ordering::SeqCst);
+    }
+
     /// The rows its text slots hold, and the in-game list's lines.
     pub fn max_rows(&self) -> usize {
         let slots = ((self.kind.family().len - ROWS) / 2) as usize;
@@ -187,10 +193,32 @@ impl ForgeScreen {
     }
 
     /// The legend: A acts on every screen but the Controls page, which
-    /// only lists.
+    /// only lists, and a sheet of facts alone (the Map variants page of a
+    /// map with none).
     pub fn prompts(&self) -> Vec<Prompt> {
+        self.prompts_at(None)
+    }
+
+    /// The legend with row `row` focused. On a dialog a fact row takes no
+    /// A, so its legend is Back alone; a list keeps the screen's legend.
+    /// `None` is the screen's legend as it opens.
+    pub fn prompts_at(&self, row: Option<usize>) -> Vec<Prompt> {
+        let sheet = self.sheet();
+        let on_fact = self.kind.look() != Look::List
+            && row
+                .or(Some(sheet.focus))
+                .and_then(|i| sheet.rows.get(i))
+                .is_some_and(|r| matches!(r.act, Act::Info));
+        if on_fact {
+            return vec![Prompt::new(&[Glyph::B], "Back")];
+        }
+        let facts_only = {
+            let rows = self.sheet().rows;
+            !rows.is_empty() && rows.iter().all(|r| matches!(r.act, Act::Info))
+        };
         match self.kind {
             Kind::Controls => vec![Prompt::new(&[Glyph::B], "Back")],
+            _ if facts_only => vec![Prompt::new(&[Glyph::B], "Back")],
             _ => vec![
                 Prompt::new(&[Glyph::A], "Select"),
                 Prompt::new(&[Glyph::B], "Back"),
@@ -200,7 +228,7 @@ impl ForgeScreen {
 
     fn inputs(&self) -> Vec<Input> {
         match self.kind {
-            Kind::Controls => vec![Input::Up, Input::Down, Input::B],
+            Kind::Controls | Kind::MapLimits => vec![Input::Up, Input::Down, Input::B],
             _ => vec![Input::Up, Input::Down, Input::A, Input::B],
         }
     }
@@ -300,6 +328,9 @@ impl ForgeScreen {
                 me.screen.store(0, Ordering::SeqCst);
                 me.up.store(false, Ordering::SeqCst);
             }
+            if me.kind == Kind::Coordinates {
+                super::send(super::sheet::Choice::CoordinatesDone);
+            }
             eprintln!("{}: {screen:#x} is freed", me.kind.screen());
             Box::pin(async { Ok(()) })
         });
@@ -329,6 +360,7 @@ impl ForgeScreen {
                     art: Vec::new(),
                     texts: vec![body_block()],
                 }),
+            Look::List if self.kind == Kind::Coordinates => c.lines().sideways(),
             Look::List => c.lines(),
         }
     }
@@ -344,6 +376,13 @@ impl Rows for ForgeScreen {
     }
     fn content_spec(&self) -> Option<ScreenSpec> {
         Some(self.spec())
+    }
+    /// The footer follows the focused row, as the description does: a fact
+    /// row on a dialog takes no A, so its footer reads Back alone.
+    fn focused_footer(&self, row: Option<i16>) -> Option<u32> {
+        let row = row.and_then(|r| usize::try_from(r).ok());
+        let legend = crate::ui_kit::input::footer_legend(&self.prompts_at(row));
+        Some(self.texts.set(FOOTER, &legend))
     }
     fn texts(&self, row: i16) -> Vec<(u32, u32)> {
         let s = lock(&self.sheet);
@@ -390,18 +429,86 @@ impl Rows for ForgeScreen {
                 Chosen::Act
             }
             Act::Choose(c) => {
+                if self.kind == Kind::Variant
+                    && matches!(c, Choice::Load(_) | Choice::DeleteVariant(_))
+                {
+                    super::screen(Kind::Variants).close_with_dialog();
+                }
                 lock(&self.outbox).push_back(c.clone());
                 self.closing.store(true, Ordering::SeqCst);
                 Chosen::Act
             }
             Act::Pick(p) => self.press_pick(i, &r.label, p),
+            Act::Tick(t) => {
+                let mut sheet = lock(&self.sheet);
+                super::games::tick(&mut sheet, *t);
+                let now = sheet.rows.get(i).and_then(|r| r.value.clone());
+                Chosen::Stepped(format!("{}: {}", r.label, now.unwrap_or_default()))
+            }
+            Act::Done => {
+                let verdict = super::games::done(&mut lock(&self.sheet));
+                match verdict {
+                    Ok(set) => {
+                        lock(&self.outbox).push_back(Choice::Games(set));
+                        self.closing.store(true, Ordering::SeqCst);
+                        Chosen::Act
+                    }
+                    Err(why) => Chosen::Stepped(format!("{}: {why}", self.kind.screen())),
+                }
+            }
+            Act::Variant(file, sheet) => {
+                super::target_variant(file.clone());
+                match super::push((**sheet).clone()) {
+                    Ok(chosen) => chosen,
+                    Err(why) => {
+                        Chosen::Stepped(format!("{}: not opened: {why}", sheet.kind.screen()))
+                    }
+                }
+            }
+            Act::Dialog(sheet) => match super::push((**sheet).clone()) {
+                Ok(chosen) => chosen,
+                Err(why) => Chosen::Stepped(format!("{}: not opened: {why}", sheet.kind.screen())),
+            },
+            Act::Type(spec) => super::ask_keyboard(spec.clone()),
             // Above this screen on its window and slot, so B comes back.
+            Act::Open(k) if *k == Kind::Coordinates => {
+                match super::push(super::screen(*k).sheet()) {
+                    Ok(chosen) => chosen,
+                    Err(why) => Chosen::Stepped(format!("{}: not opened: {why}", k.screen())),
+                }
+            }
             Act::Open(k) => match super::prepare(*k) {
                 Ok(()) => Chosen::Push(k.screen()),
                 Err(why) => Chosen::Stepped(format!("{}: not opened: {why}", k.screen())),
             },
         }
     }
+
+    fn sideways(&self, row: i16, right: bool) -> Option<String> {
+        let s = self.sheet();
+        let r = s.rows.get(usize::try_from(row).ok()?)?;
+        let Act::Type(spec) = &r.act else {
+            return None;
+        };
+        let NumberField::Coordinate(axis) = spec.field else {
+            return None;
+        };
+        let current = r.value.as_ref()?.parse::<f32>().ok()?;
+        let facts = super::facts();
+        let step = if axis.is_angle() {
+            super::sheet::ANGLE_STEPS[facts.rotation_snap].max(1.0)
+        } else {
+            super::sheet::MOVE_STEPS[facts.movement_snap].max(0.01)
+        };
+        let value = current + if right { step } else { -step };
+        lock(&self.sheet)
+            .rows
+            .get_mut(usize::try_from(row).ok()?)?
+            .value = Some(super::sheet::number(value));
+        lock(&self.outbox).push_back(Choice::Nudge(axis, right));
+        Some(format!("{}: {value}", axis.label()))
+    }
+
     fn description(&self, row: i16) -> Option<u32> {
         let s = lock(&self.sheet);
         let r = s.rows.get(usize::try_from(row).ok()?)?;
@@ -442,9 +549,24 @@ fn row_spec(r: &super::sheet::SheetRow, described: bool) -> RowSpec {
             RowSpec::value(&r.label, &[value.as_str()], 0).press(Press::Open(picker::NAME.into()))
         }
         Act::Pick(_) => RowSpec::action(&r.label).press(Press::Open(picker::NAME.into())),
+        Act::Type(_) if r.value.is_some() => {
+            RowSpec::value(&r.label, &[value.as_str()], 0).press(Press::Act)
+        }
+        Act::Type(_) => RowSpec::action(&r.label).press(Press::Act),
         Act::Open(k) => RowSpec::action(&r.label).press(Press::Open(k.screen().into())),
-        Act::Info => RowSpec::info(&r.label, &value),
-        Act::Choose(_) | Act::Close => RowSpec::action(&r.label).press(Press::Act),
+        Act::Dialog(sheet) => {
+            RowSpec::action(&r.label).press(Press::Open(sheet.kind.screen().into()))
+        }
+        Act::Variant(_, sheet) => RowSpec::value(&r.label, &[value.as_str()], 0)
+            .press(Press::Open(sheet.kind.screen().into())),
+        Act::Tick(_) => RowSpec::value(&r.label, &[value.as_str()], 0).press(Press::Act),
+        Act::Info => {
+            // A fact takes no A: its legend is Back alone.
+            let mut row = RowSpec::info(&r.label, &value);
+            row.prompts = Some(vec![Prompt::new(&[Glyph::B], "Back")]);
+            row
+        }
+        Act::Choose(_) | Act::Close | Act::Done => RowSpec::action(&r.label).press(Press::Act),
     };
     match (&r.description, described) {
         (Some(d), true) => row.describe(d),
@@ -458,13 +580,15 @@ impl Describe for ForgeScreen {
         let look = self.kind.look();
         let mut s = ScreenSpec::new(self.kind.screen(), &sheet.title);
         s.style = self.style();
-        s.rows = sheet
-            .rows
-            .iter()
-            .map(|r| row_spec(r, look == Look::Picker))
-            .collect();
+        for (i, row) in sheet.rows.iter().enumerate() {
+            if row.value_unavailable {
+                s.content.unavailable_values.push(format!("row.{i}.value"));
+            }
+            s.rows.push(row_spec(row, look == Look::Picker));
+        }
         s.focus = sheet.focus.min(s.rows.len().saturating_sub(1));
-        s.prompts = self.prompts();
+        // A dialog's legend follows its focused row: a fact takes no A.
+        s.prompts = self.prompts_at(Some(sheet.focus));
         s.inputs = self.inputs();
         s.footer = true;
         match look {

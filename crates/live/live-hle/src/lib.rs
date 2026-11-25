@@ -170,6 +170,22 @@ pub enum HostVariantExt {
     },
 }
 
+/// What a guest knows of its host's Firefight match ([`Hle::host_firefight`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostFirefight {
+    /// No session joined.
+    NotJoined,
+    /// Joined `session`, whose advertisement was never read.
+    Unknown { session: String },
+    /// Joined `session`, whose host advertised `firefight` (None: its next
+    /// game is not Firefight); `refreshed` when read just now.
+    Known {
+        session: String,
+        firefight: Option<live_proto::session::Firefight>,
+        refreshed: bool,
+    },
+}
+
 /// What a guest knows of its host's rules IR hash ([`Hle::host_rules`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostRules {
@@ -670,7 +686,6 @@ impl Hle {
         } else {
             let id = self.lock().hosted_session();
             tap.record(
-                film::NETR,
                 film::tape::Call {
                     index: 0,
                     op: NAME.into(),
@@ -716,7 +731,6 @@ impl Hle {
         }
         let exists = present();
         tap.record(
-            film::NETR,
             film::tape::Call {
                 op: op.into(),
                 args: args.into(),
@@ -808,6 +822,20 @@ impl Hle {
             Joined::Known { session, refreshed } => HostVariantExt::Known {
                 session: session.session_id.clone(),
                 ext: session.advertisement.variant_ext.clone(),
+                refreshed,
+            },
+        }
+    }
+    /// What the host of the session this console joined advertised as the
+    /// Firefight match of its next game (docs/game/firefight.md, "Live"):
+    /// [`Hle::joined`]'s answer.
+    pub fn host_firefight(&self, wait: std::time::Duration) -> HostFirefight {
+        match self.joined(wait) {
+            Joined::NotJoined => HostFirefight::NotJoined,
+            Joined::Unknown { session } => HostFirefight::Unknown { session },
+            Joined::Known { session, refreshed } => HostFirefight::Known {
+                session: session.session_id.clone(),
+                firefight: session.advertisement.firefight.clone(),
                 refreshed,
             },
         }
@@ -922,7 +950,6 @@ impl Hle {
         } else {
             let bytes = get();
             tap.record(
-                film::NETR,
                 film::tape::Call {
                     index: 0,
                     op: name.into(),
@@ -943,6 +970,16 @@ impl Hle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .set_session_variant_ext(ext)
+    }
+    /// The Firefight match of the game the host starts (docs/game/
+    /// firefight.md, "Live"), or None when it is not Firefight:
+    /// advertisements carry it from now, and open ones are updated at once
+    /// (cleared for None). No guest memory access.
+    pub fn set_session_firefight(&self, firefight: Option<live_proto::session::Firefight>) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_session_firefight(firefight)
     }
     /// The host's rules IR hash (64 lowercase hex digits) for the game it
     /// starts: advertisements carry it from now, and open ones are updated
@@ -983,6 +1020,46 @@ impl Hle {
             .unwrap_or_else(|e| e.into_inner())
             .set_coop(campaign, skulls)
     }
+    /// Marks (`true`) or unmarks this console's open advertisements as a
+    /// Forge-mode lobby's (`flags: "forge"`, docs/game/forge-design.md):
+    /// a shared Forge session's machines may use the co-op relay. A
+    /// co-op campaign armed with [`Hle::set_coop`] keeps its own flag.
+    /// No guest memory access.
+    pub fn set_forge(&self, on: bool) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_forge(on)
+    }
+    /// The co-op relay of `session` (docs/live/live-api.md, "Co-op relay"):
+    /// its WebSocket URL and the bearer token for its upgrade, or why this
+    /// console cannot serve one. Asks the Live worker (which mints the
+    /// token itself; nothing is sent to the server), waits up to `wait`
+    /// for its answer, and holds no state lock while it waits and no guest
+    /// memory at all.
+    pub fn coop_relay(
+        &self,
+        session: &str,
+        wait: std::time::Duration,
+    ) -> Option<Result<(String, String), u32>> {
+        let pending = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.take_relay_ask(session)
+        };
+        let Some(pending) = pending else {
+            self.state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .ask_relay(session);
+            return None;
+        };
+        let answer = pending.wait(wait)?;
+        Some(match answer {
+            Ok(client::Reply::CoopRelay(answer)) => answer,
+            Ok(_) => Err(status::TASK_BUSY),
+            Err(e) => Err(e),
+        })
+    }
     /// Co-op ping, the guest's side (docs/live/live-coop.md, "Ping"): one
     /// ping to the host's QoS responder (its XNet endpoint's port + 2),
     /// carrying `report`, our last round trip, for the host to show. The
@@ -1020,6 +1097,18 @@ impl Hle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .set_coop_ping(ms)
+    }
+    /// This console's own co-op channel endpoint: the XNet base port plus
+    /// `coop::link::COOP_PORT_OFFSET` (`live_hle::NetworkConfig`). The
+    /// co-op transport binds it itself; no guest memory access.
+    pub fn coop_endpoint(&self) -> std::net::SocketAddrV4 {
+        self.network.config.coop_endpoint()
+    }
+    /// The co-op channel endpoints of the other machines in this console's
+    /// XNet ([`Network::coop_endpoints`]): the guests of a co-op host, the
+    /// host of a guest. No guest memory access.
+    pub fn coop_endpoints(&self) -> Vec<std::net::SocketAddrV4> {
+        self.network.coop_endpoints()
     }
     /// The co-op campaign armed with [`Hle::set_coop`], if any.
     pub fn coop(&self) -> Option<live_proto::session::Campaign> {
@@ -1283,8 +1372,17 @@ fn invoke(
     // A stat read names the session this console is in; the joined one
     // comes from the network's keys, read before the state lock as
     // `Hle::matchmade` does.
-    let read_keys = matches!(e.operation, Operation::Stats(crate::stats::Op::Read))
-        .then(|| hle.network.registered_keys());
+    // Arbitration names the same session, so it reads them too.
+    let read_keys = matches!(
+        e.operation,
+        Operation::Stats(crate::stats::Op::Read)
+            | Operation::Arbitration(
+                crate::arbitration::Op::Register
+                    | crate::arbitration::Op::Extend
+                    | crate::arbitration::Op::Report
+            )
+    )
+    .then(|| hle.network.registered_keys());
     let guest_now = (e.operation == Operation::AcceptedInvite)
         .then(|| ctx.runtime().guest_time())
         .flatten();

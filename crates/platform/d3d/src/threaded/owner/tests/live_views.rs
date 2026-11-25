@@ -93,6 +93,7 @@ fn exercise_source(adopt_producer: bool, source: Source) {
                     of: aux,
                     id: 3,
                     how: ReplaySample::InPlace,
+                    into: None,
                 },
             ),
         ];
@@ -148,6 +149,7 @@ fn exercise_source(adopt_producer: bool, source: Source) {
         at,
         ReplayOp::Draw {
             camera: CameraUse::Screen,
+            external: None,
             draw: Arc::clone(&draw),
             textures: [
                 Some(ReplayTexture::Live {

@@ -231,7 +231,6 @@ pub(crate) fn spots(raw: serde_json::Value) -> Result<serde_json::Value, agent_p
             launch: l.spot.launch,
             drift: l.spot.drift,
             score: l.spot.score,
-            width: l.spot.width,
             need: l.spot.need,
             status: l.spot.status.name().into(),
             out: l.spot.out,
@@ -409,16 +408,14 @@ fn landing_view(
     t: &bots::bounce_route::Touchdown,
     site: Option<bots::spots::Site>,
 ) -> agent_proto::bot_bounce::BounceLanding {
-    let (width, need) = site.map_or((bots::spots::SLOT_WIDTH, 0.0), |s| {
-        (if s.width > 0.0 { s.width } else { bots::spots::SLOT_WIDTH }, s.need)
-    });
+    let need = site.map_or(0.0, |s| s.need);
     agent_proto::bot_bounce::BounceLanding {
         tick: t.tick,
         at: t.at,
         speed_in: t.speed_in,
         vz_out: t.vz_out,
         miss: t.miss,
-        result: t.result(width, need).into(),
+        result: t.result(need).into(),
     }
 }
 
@@ -508,8 +505,9 @@ mod tests {
         assert_eq!(stats(json!(null), &seats).unwrap(), json!({
             "bots": [], "maintenance": {
                 "frames": 0, "unchanged_lobby_frames": 0, "total_ns": 0, "max_ns": 0,
-                "write_frames": 0, "props_writes": 0, "identity_writes": 0, "team_moves": 0,
-                "props_diff_chunks": 0
+                "write_frames": 0, "props_writes": 0, "identity_writes": 0, "handicap_writes": 0,
+                "team_moves": 0,
+                "props_diff_chunks": 0, "facing_releases": 0
             }
         }));
         seats.add(

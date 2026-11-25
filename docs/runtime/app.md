@@ -80,7 +80,7 @@ Also public: `app::pump_input` (below), `frame::{channel, FrameSink,
 FrameSource, Compositor}`, `pacing::{Pacer, PacePolicy, VBlank}`,
 `scale::{place, fit, DisplayAspect, Scaling}`, `keymap`, `lifecycle`.
 
-`AppConfig` (all have defaults): `title`, `window_size` (1280x960 points),
+`AppConfig` (all have defaults): `title`, `window_size` (1280x960 points, fitted to the primary monitor aspect by `h2 play`),
 `fullscreen`, `aspect` (`Standard` 4:3), `scaling` (`Fit`, `Integer`,
 `Stretch`), `filter` (`Linear`, `Nearest`), `vsync` (true), `fps`
 (`fps::FpsTarget::Thirty`; `H2_FPS`, below), `pause_on_focus_loss`
@@ -101,13 +101,14 @@ $TMPDIR/app-play-target/release/h2 play /abs/path/to/disc/halo2.iso
 
 The default `--tier auto` uses a matching clang module from `--out`
 (default `$TMPDIR/h2boot`). When the module is missing or its build stamp
-differs, `crates/runtime/recomp/src/tier.rs` selects the Cranelift image
-and starts the clang build in the background. The window banner
+differs, `crates/runtime/recomp/src/tier.rs` builds it before the window
+opens. `--tier bridge` (or `H2_TIER=bridge`) instead selects the Cranelift
+image and starts the clang build in the background. The window banner
 (`play_cmd::tier_banner`) reports when the full-speed build is ready
 or has failed. Restart to use the finished clang build.
 
 Flags: `--out DIR`, `--data DIR`, `--slices N` (unlimited by
-default), `--transfers N`, `--aspect 4:3|16:9|source` (default `source` for play), `--scaling
+default), `--transfers N`, `--aspect 4:3|16:9|source` (default play shape follows the drawable), `--scaling
 fit|integer|stretch`, `--nearest`, `--fullscreen`, `--no-audio`,
 `--no-gamepads`, `--no-vsync`, `--unpaced`, `--fps 30|60|120|uncapped`,
 `--no-watermark`, `--no-mappack` (or `H2_MAPPACK=0`; a `mappack.iso` beside the
@@ -121,7 +122,7 @@ the slice count every 1000 slices), `--frame-stats` (frame-time stats, below),
 campaign level, or a local Slayer game on that multiplayer map, in place of
 the main menu, no title, profile or menus; a bad
 name lists the disc's levels before anything is built; `H2_LEVEL` and
-`H2_DIFFICULTY` do the same, see [level-boot.md](level-boot.md)), `--set
+`H2_DIFFICULTY` do the same, see [level-boot.md](level-boot.md)), `--editor [--window]` (the game a tool holds, Studio's own game: it needs `--level`, creates its window hidden unless `--window` is given, records no film, never pauses on a focus change, and refuses the Live flags, `--film` and `--input-timeline`; `play_cmd/editor.rs`, [game-view.md](../editor/game-view.md)), `--set
 KEY=VALUE` (any of our settings for this run, ahead of its variable and
 `<data>/settings.toml`, and its row locked; `h2 settings list` shows them,
 [settings-menu.md](../game/settings-menu.md) "Settings as a schema"), and Live: off
@@ -289,16 +290,17 @@ Both panels sit on the same bottom margin; the live panel grows upwards.
   the render thread, 0 with it off), and draws per frame (the render
   thread's included, joined to their frame by `timeline::phase::WorkerFrame`). The map is the level map the game
   opened last (`kernel::level::last_map`: `maps\<name>.map`, the shared
-  maps left out). Then the wgpu backend and whether the render thread is
-  on. With `--frame-stats` the window is its 5 s one; otherwise `h2 play`
+  maps left out). Then the wgpu backend, whether the render thread is on,
+  the raster of the frame being shown, and the drawable size, both in
+  physical pixels. With `--frame-stats` the window is its 5 s one; otherwise `h2 play`
   starts frame stats itself with a quiet 2 s window
   (`timeline::phase::Config::live`: no log, no CSV, no exit report). An
   embedder without frame stats gets fps and frame time from the shell's
   present count.
 - Drawing is host-side only, at present time, over the scaled game image
-  (inside any letterbox or pillarbox), never in guest memory. The text
-  changes at most four times a second; only then is it rasterised on the
-  CPU (`font8x8`, the banner's public-domain letters, with a soft
+  (inside any letterbox or pillarbox), never in guest memory. Timing
+  numbers refresh every 250 ms and the dimensions update with the
+  presented frame and drawable. Panel text is rasterised on the CPU (`font8x8`, the banner's public-domain letters, with a soft
   one-pixel shadow) into one texture a panel. Every present draws each as
   one alpha-blended quad. Glyphs are 8x8 font pixels, 2x from a target
   1600 pixels tall (Retina), and lines too long for their panel are cut
@@ -394,8 +396,11 @@ How it works (crates/apps/cli `follow.rs`):
   `info|ready|error<TAB>text`, replaced atomically). The child reads it
   twice a second into an `app::Banner`, which the shell draws in the
   top-left corner of the window over the game frame. It is the 8x8
-  public-domain font at 2x on a translucent plate, a second render pass
-  with alpha blending (`app::overlay`). The messages:
+  public-domain font at 2x on the debug menu's dark plate, with a strip in
+  the notice's colour down its left edge, a second render pass with alpha
+  blending (`app::overlay`). While the debug menu is open the notice is a
+  line inside the menu instead ([debug-menu.md](debug-menu.md#layout)).
+  The messages:
   "Building <hash>...";
   "Update ready: <subject, or N commits> - press F5 to restart" (with
   "(building <hash>...)" or "(<hash> failed to build)" when a newer commit
@@ -461,6 +466,137 @@ a scratch repository whose `cli` crate is a stand-in `h2`:
 `app::overlay` tests dismissal, the restart offer and rasterising. A GPU test
 draws the banner over a frame and reads back the blend.
 
+## Watching the checkout: `h2 play --watch`
+
+```sh
+h2 play --watch /abs/path/to/disc/halo2.iso
+```
+
+Plays as `h2 play` does, and meanwhile watches your own checkout: its
+working tree and its git state. When a burst of edits, or a `git pull`,
+has settled, it does only what the changed files need: a rules script is
+reloaded into the running game, the live web app is rebuilt, and a Rust or
+generator change rebuilds `h2` in the checkout (and the game code when the
+new `h2` says it must), then offers the same "Update ready" banner as
+`--follow`. F5 restarts into it; F6 hides the banner. Everything after the
+watch flags is passed to `h2 play` as is.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--repo PATH` | the checkout containing the current directory | Checkout to watch. |
+| `--quiet MS` | 1500 (minimum 200) | How long the files must be quiet before a change set is taken. |
+| `--fresh-data` | off | Each launch gets an empty data dir under the cache (otherwise the user's `--data`). |
+| `--cache DIR` | `watch/<hash of the checkout's path>` in the cache directory | Where logs, builds and generated games live. |
+
+`--watch` and `--follow` are separate supervisors; giving both is an
+error.
+
+What each changed path asks for (`watch::classify`, relative to the
+checkout's top; the first row that matches wins):
+
+| Paths | Action |
+| --- | --- |
+| any `target/`, `node_modules/`, `buck-out/`, `__pycache__/`, `.direnv/`, `.devenv*` component; `.claude/worktrees/`, `web/dist/`, `out/`, `extracted/`, `disc/`, `.tools/`; `.git/objects/`, `logs/`, `worktrees/`, `modules/`, `lfs/`; editor droppings (`*~`, `*.swp`, `.#*`, `4913`, `.DS_Store`) | ignored |
+| the rest of `.git` (HEAD, refs, the index, operation markers) | holds the settle timer open; builds nothing |
+| `content/core/rules/*.rules`, `content/modes/rules/**/*.rules` | hot: `rules.reload`; also rebuilds `h2`, which bakes it |
+| any other `*.rules` | hot: `rules.reload` |
+| `docs/`, `*.md` | nothing |
+| `web/test/`, `web/bench/`, `web/mock/` | nothing |
+| the rest of `web/` | hot: `bun install --frozen-lockfile`, `bun run build` (with `--live-local`) |
+| a `tests`, `benches` or `examples` component; `tests.rs`, `*_tests.rs`, `*_test.rs` | nothing |
+| `crates/formats/xbe/src/`, `crates/recompiler/`, `crates/runtime/runtime/include/`, `crates/runtime/recomp/c/`, `crates/runtime/recomp/build.rs`, `crates/runtime/recomp/src/render_entries.rs` | game image: rebuild `h2`, then the game code if its stamp moved |
+| the rest of `crates/`, `assets/`, `.cargo/`; `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml` | host: rebuild `h2` |
+| anything else (`scripts/`, `deploy/`, `editors/`, ...) | nothing |
+
+The game-image rows are the directories `crates/runtime/recomp/build.rs`
+hashes into the generator's stamp; the two lists are kept in step.
+
+How it works (crates/apps/cli `watch.rs`):
+
+- **Supervisor.** As `--follow`'s: the game runs as a child with
+  `--follow-status`, in its own process group, and the same Ctrl-C, close
+  and restart rules apply (`follow::ChildLauncher`, `follow::StatusFile`,
+  `follow::watch_signals`). The first child is the `h2` you started.
+- **Watching.** `notify` watches the checkout recursively: FSEvents on
+  macOS, inotify on Linux. A linked worktree's own git dir, which lies
+  outside it, is watched too (not recursively). Paths in the git dir count
+  as `.git/...`.
+- **Settling.** Every event that is not ignored, git's own included,
+  restarts a quiet period of `--quiet` milliseconds (`watch::Debounce`).
+  While the git dir holds `index.lock`, `HEAD.lock`, `MERGE_HEAD`,
+  `rebase-merge`, `rebase-apply`, `CHERRY_PICK_HEAD` or `REVERT_HEAD`,
+  nothing is taken, and the quiet period starts again once they are gone,
+  so a pull or a rebase settles once, after its last write. A merge left
+  with conflicts waits until it is committed or aborted. The changed paths
+  are then one change set, classified into a plan (`watch::Plan`). When the
+  watcher reports lost events (FSEvents' rescan flag), the plan rebuilds
+  `h2` and checks the game code.
+- **Hot, no restart.** One thread runs hot work in order, against the
+  game's agent socket: `$H2_AGENT` when it names one, none when it is off,
+  else the child's `agents/<pid>.sock`
+  ([agent-api.md](agent-api.md#finding-a-game)). A rules script is
+  compiled first (a compile error is the banner's), then, if the game's
+  `rules.state` runs a script of the same name, sent with `rules.reload`
+  (`{source, mode: auto}`): in place when its state keeps its shape, else
+  the game restarts on the same map and variant
+  ([rules-engine.md](../game/rules-engine.md#reloading-a-running-script)).
+  `ctf.rules` makes both Capture the Flag and Assault
+  (`rules::builtin::sources_of`). The banner says "Reloaded <name> (in
+  place)" or "(restarted)", or "Reload failed: <error>". A web change runs
+  bun in the checkout's `web/` when the game was started with
+  `--live-local` and no `H2_LIVE_WEB`; the embedded server reads
+  `web/dist` at each request, so the next page load has it ("Web app
+  rebuilt"). That is so only while the running `h2` serves this checkout's
+  `web/dist`: one built from this checkout does.
+- **Building.** One build at a time. Changes that arrive during a build
+  are merged into one queued plan, built when it finishes, and a failed
+  build's plan is carried into the next one. A build runs `nice -n 15 cargo
+  build --release -p cli` in the checkout, with its own target dir
+  (`CARGO_TARGET_DIR`, else `target`), so it is incremental and uses the
+  machine's rustc wrapper (kache); `CARGO_BUILD_JOBS` is half the cores
+  unless you have set it. The new `h2 build <disc> --out <current game>
+  --check` then says whether the current game code is still its own. If
+  not, it runs `nice h2 build <disc> --out <cache>/gen/<n>`: a new dir,
+  since the running game has the old dylib mapped, seeded with an APFS
+  clone of the last game's `src/` so the emit rewrites only changed files,
+  and with `H2_OBJ_CACHE` (default `obj` in the cache directory, shared
+  with your other builds), so only changed shards compile
+  ([BUILD-CACHE.md](../lifter/BUILD-CACHE.md)). `H2_OPT`, `H2_TIER` and the
+  rest of your environment pass through. The new `h2` is copied to
+  `<cache>/builds/<n>/` and offered: "Update ready: local changes (h2) -
+  press F5 to restart", or "(h2 and the game code)". A build that left
+  `h2` as it was and the game code current offers nothing. "Rebuilding
+  h2..." or "Rebuilding h2 and the game code..." shows meanwhile.
+- **Failures.** A failed build shows "Local build failed: <first error
+  line>" and the game keeps running; `logs/build-<n>.log` has the whole
+  output.
+- **Safety.** It never writes to the checkout's sources, index or refs; the
+  only writes there are cargo's target dir and, for the web app, `web/dist`
+  and `web/node_modules`. A lock file in the cache allows one watcher per
+  checkout. Its cache is not `--follow`'s, so the two can run side by side.
+  `logs/watch.log` holds the supervisor's events.
+
+Tests: `watch/tests.rs` covers the classifier table above, the plans, the
+paths of a linked worktree's git dir, the debounce (a burst, a git
+operation in progress, git or ignored events alone, a rescan), the
+operation markers, and the supervisor over fakes: docs only (nothing), a
+rules script (hot, no restart), a built-in script (hot and a build), a
+host change (build, offer, F5), a failure (the game keeps running; the
+plan is carried), changes merged into a queued build, an unchanged build,
+close and interrupt, and `drive` end to end. The watcher, cargo, `h2
+build` and the agent socket are not exercised by tests.
+
+Hot reloading `h2` or the game code in place is not built. The game code
+is a dylib whose functions the guest's threads are always inside, and
+whose static data (dispatch tables, the guest's code addresses) the host
+holds pointers into, so a swap needs every guest thread parked at a known
+point and the host's tables rebuilt; the boundary where that holds is the
+one machine snapshots use, between ticks with the guest parked
+([snapshots.md](snapshots.md)). Restoring a snapshot taken by the old
+module into a new one is only sound when the guest memory layout is the
+same, which the stamp does not promise. Host Rust has no stable ABI, so
+swapping it means a process restart or a narrow C-ABI plugin boundary.
+
 ## Presentation
 
 `D3DDevice_Swap` -> `GfxBackend::present` -> present hook -> `FrameSink`:
@@ -477,13 +613,16 @@ surface, clearing the rest to black.
 - **Ordering** comes from the single shared queue: the copy is submitted
   before the slot is published, and the window's read is submitted before
   the slot can return to the guest. No fences.
-- **Scaling** (`scale.rs`). Play uses square output pixels by default.
-  Native follows the drawable up to the default 4K pixel budget.
-  `GuestHost::native_size` publishes the physical drawable size for Native and
-  `GuestHost::display_size` reports where a given raster is presented.
-  `--aspect 4:3` and `16:9` fit those shapes inside the window. `Fit`
-  adds bars as needed. In Native resolution with Source aspect, Fit uses
-  the drawable's aspect for the game frame. `Integer` takes the largest
+- **Scaling** (`scale.rs`). Play renders for the drawable’s shape by default, including at fixed internal resolutions.
+  Native uses physical viewport pixels. Fullscreen targets larger than 4K
+  use a 3840 × 2160 pixel budget.
+  `GuestHost::native_target` publishes the physical drawable, fitted viewport
+  and fullscreen state together. `GuestHost::display_size` reports where a
+  given raster is presented.
+  With Fit scaling, `--aspect 4:3` and `16:9` fit those shapes inside
+  the window. `--aspect source` fits a fixed raster at its own aspect and
+  follows the drawable in Native resolution. The host loading picture
+  keeps its source shape by default. `Integer` takes the largest
   whole multiple of the frame height that fits, and `Stretch` fills the
   drawable.
 - **Resize** (`crates/apps/app/src/shell.rs`, `crates/apps/app/src/surface.rs`)
@@ -492,18 +631,23 @@ surface, clearing the rest to black.
   Both paths read the current backing size from the view. The Metal
   presenter uses aspect-preserving contents gravity and presents the
   resized drawable in a Core Animation transaction
-  (`crates/apps/app/src/metal_resize.rs`). The game reallocates its Native
-  raster after the drawable size holds steady for 150 ms. Minimizing
-  preserves the last nonzero size.
+  (`crates/apps/app/src/metal_resize.rs`). The game applies the latest
+  Native target at the next render frame boundary. DPI changes request a
+  redraw and minimizing preserves the last nonzero size.
 - **Vsync**: `AutoVsync` (Fifo) by default, `AutoNoVsync` with
   `vsync: false`. This only affects the window; guest pacing is separate.
 - **Display rate** (`AppConfig::fps`, `H2_FPS=30|60|120|uncapped`, `h2 play
   --fps`, the Video screen's Frame Rate row, `graphics.fps` in
   `settings::Store`; `fps.rs`): at 30, the default, the window redraws when the guest
-  presents. At 60 and 120 the window samples the mailbox on its
-  `DisplaySchedule`. Uncapped redraws every event-loop turn with vsync off.
-  Extra redraws repeat the newest picture unless the render thread supplies
-  an in-between frame. [Host replay and reprojection](../game/high-framerate.md).
+  presents. At 60 and 120 it also redraws at every publish, and its
+  `DisplaySchedule` adds a redraw only when no frame was published for
+  one interval (`DisplaySchedule::published` books the grid's next slot one
+  interval after each publish). Uncapped redraws every event-loop turn
+  with vsync off. A gap-filling redraw repeats the newest picture. The
+  render thread's display frames between scenes are each drawn once, at
+  their publish: a window grid of its own beside the render thread's
+  would beat against it and drop one made frame and repeat another
+  several times a second. [Display frames](../game/high-framerate.md).
 - Surface format: the first non-sRGB format (`Bgra8Unorm` on Metal). The Xbox
   pipeline is gamma-encoded throughout, so no conversion happens anywhere.
 
@@ -589,8 +733,25 @@ stays on the main thread.
   process exits by itself (`close_on_guest_exit` in
   `crates/apps/cli/src/play_cmd.rs`).
 
-The title bar shows guest presents per second, frames shown per second
-(one decimal), and frames dropped, all over the last 5 seconds
+### When the game stops
+
+When the guest thread ends and the window stays up, the window draws a
+red notice over the last frame (`overlay::stopped_notice`, set in
+`shell.rs` on `GuestExited`): "The game crashed." with the first six
+lines of the error, wrapped to 88 columns ("The game stopped." when the
+guest returned), and "Press F5 to start the game again, or close the
+window to quit." The full message stays in the terminal. F6 hides the
+notice. F5 closes the window with `ExitReport::restart_requested` set. Under
+`h2 play --follow` the process then exits with `RESTART_EXIT` for the
+follower to start again; on its own, `h2 play` starts itself again in place
+(`restart_in_place`: the same executable and arguments by `exec`, with the
+pid-named agent socket freed and SIGINT/SIGTERM unblocked first).
+
+The title bar shows guest presents per second, in-between frames the
+render thread made per second (`made`, only while there are any:
+publishes with present flags `frame::MADE_FRAME_FLAGS`, counted in
+`FrameStats::made`), frames shown per second (one decimal), and frames
+dropped, all over the last 5 seconds
 (`pacing::WindowedRate`), refreshed once a second. Lab game windows keep their
 job title throughout the run. In both modes `log_status` also prints
 it. A one-second window read 0.0 for a game presenting 1.4 times a second.

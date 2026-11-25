@@ -5,6 +5,7 @@
 //! widescreen setting is on). The display aspect is therefore a setting, not
 //! something derived from the back-buffer size.
 
+use settings::NativeTarget;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -15,6 +16,9 @@ pub enum DisplayAspect {
     Standard,
     /// 16:9 (the game's widescreen mode renders anamorphic 640x480).
     Widescreen,
+    /// Fit live game frames to the drawable, whose aspect the camera uses.
+    /// Integer scaling and the host loading picture keep the source shape.
+    Drawable,
     /// Square pixels: the frame's own width / height.
     Source,
     /// Any other width / height ratio. Non-finite or non-positive values
@@ -23,13 +27,15 @@ pub enum DisplayAspect {
 }
 
 impl DisplayAspect {
-    /// Width / height of the displayed image for a frame of `src` pixels.
-    pub fn ratio(self, src: (u32, u32)) -> f32 {
+    /// Aspect of the reference rectangle (source pixels or drawable pixels).
+    pub fn ratio(self, reference: (u32, u32)) -> f32 {
         let r = match self {
             DisplayAspect::Standard => 4.0 / 3.0,
             DisplayAspect::Widescreen => 16.0 / 9.0,
-            DisplayAspect::Source if src.0 > 0 && src.1 > 0 => src.0 as f32 / src.1 as f32,
-            DisplayAspect::Source => 4.0 / 3.0,
+            DisplayAspect::Source | DisplayAspect::Drawable if reference.0 > 0 && reference.1 > 0 => {
+                reference.0 as f32 / reference.1 as f32
+            }
+            DisplayAspect::Source | DisplayAspect::Drawable => 4.0 / 3.0,
             DisplayAspect::Custom(r) => r,
         };
         if r.is_finite() && r > 0.0 {
@@ -70,8 +76,8 @@ impl std::fmt::Debug for NativeFit {
     }
 }
 
-/// Physical render extent shared by the shell and the render thread. Publish
-/// both axes together so a reader cannot observe half of a resize.
+/// Drawable size and fullscreen state shared by the shell and render thread.
+/// Publish them together so a reader cannot observe half of a transition.
 #[derive(Clone)]
 pub(crate) struct NativeSize {
     aspect: DisplayAspect,
@@ -88,7 +94,7 @@ impl NativeSize {
             pixels: Arc::new(AtomicU64::new(0)),
             native_fit: None,
         };
-        size.update(drawable);
+        size.update(drawable, false);
         size
     }
 
@@ -97,48 +103,52 @@ impl NativeSize {
         self
     }
 
-    pub(crate) fn update(&self, (w, h): (u32, u32)) {
+    // Surface dimensions are bounded by MAX_FRAME_DIMENSION, leaving the
+    // high bit free to publish the window mode with the pixels.
+    const FULLSCREEN: u64 = 1 << 63;
+
+    pub(crate) fn update(&self, (w, h): (u32, u32), fullscreen: bool) {
         if w != 0 && h != 0 {
-            self.pixels.store((u64::from(w) << 32) | u64::from(h), Ordering::Relaxed);
+            let mode = if fullscreen { Self::FULLSCREEN } else { 0 };
+            self.pixels.store(mode | (u64::from(w) << 32) | u64::from(h), Ordering::Relaxed);
         }
     }
 
-    fn drawable(&self) -> Option<(u32, u32)> {
-        let size = self.pixels.load(Ordering::Relaxed);
-        (size != 0).then_some(((size >> 32) as u32, size as u32))
+    fn surface(&self) -> Option<((u32, u32), bool)> {
+        let sample = self.pixels.load(Ordering::Relaxed);
+        let pixels = sample & !Self::FULLSCREEN;
+        (pixels != 0).then_some((((pixels >> 32) as u32, pixels as u32), sample != pixels))
     }
 
-    /// Raster size for Native. Stretch fills the drawable, other modes
-    /// fit the requested aspect.
-    pub(crate) fn get(&self) -> (u32, u32) {
-        let Some(drawable) = self.drawable() else {
-            return (640, 480);
+    pub(crate) fn get(&self) -> NativeTarget {
+        let Some((drawable, fullscreen)) = self.surface() else {
+            return NativeTarget::windowed((640, 480));
         };
-        if self.aspect == DisplayAspect::Source || self.scaling == Scaling::Stretch {
-            return drawable;
-        }
-        let viewport = fit(self.aspect.ratio(drawable), drawable);
-        (viewport.width, viewport.height)
+        let viewport = if matches!(self.aspect, DisplayAspect::Source | DisplayAspect::Drawable)
+            || self.scaling == Scaling::Stretch
+        {
+            drawable
+        } else {
+            let fitted = fit(self.aspect.ratio(drawable), drawable);
+            (fitted.width, fitted.height)
+        };
+        NativeTarget { drawable, viewport, fullscreen }
     }
 
     pub(crate) fn viewport(&self, src: (u32, u32), drawable: (u32, u32), loading: bool) -> Viewport {
-        // Native Fit takes its aspect from the drawable. The cached frame
-        // can still have the aspect of the last accepted raster resize.
-        let scaling = if !loading
-            && self.aspect == DisplayAspect::Source
-            && self.scaling == Scaling::Fit
-            && self.native_fit.as_ref().is_some_and(|fit| (fit.0)())
-        {
-            Scaling::Stretch
-        } else {
-            self.scaling
+        let aspect = match self.aspect {
+            DisplayAspect::Drawable if loading => DisplayAspect::Source,
+            // Native can show a cached frame from before a drawable resize.
+            DisplayAspect::Source if !loading
+                && self.native_fit.as_ref().is_some_and(|fit| (fit.0)()) => DisplayAspect::Drawable,
+            aspect => aspect,
         };
-        place(src, self.aspect, scaling, drawable)
+        place(src, aspect, self.scaling, drawable)
     }
 
     /// Compositor's physical destination for a source of this size.
     pub(crate) fn display_size(&self, src: (u32, u32)) -> (u32, u32) {
-        let Some(drawable) = self.drawable() else {
+        let Some((drawable, _)) = self.surface() else {
             return src;
         };
         let viewport = self.viewport(src, drawable, false);
@@ -194,6 +204,16 @@ pub fn fit(aspect: f32, target: (u32, u32)) -> Viewport {
     }
 }
 
+/// Fit the opening play window in logical points using the monitor's shape.
+pub(crate) fn initial_monitor_window(bounds: (u32, u32), monitor: (u32, u32)) -> (u32, u32) {
+    if monitor.0 == 0 || monitor.1 == 0 {
+        return bounds;
+    }
+    let available = (bounds.0.min(monitor.0), bounds.1.min(monitor.1));
+    let window = fit(DisplayAspect::Source.ratio(monitor), available);
+    (window.width, window.height)
+}
+
 /// Where a frame of `src` pixels goes in a `target`-sized surface.
 pub fn place(
     src: (u32, u32),
@@ -201,7 +221,12 @@ pub fn place(
     scaling: Scaling,
     target: (u32, u32),
 ) -> Viewport {
-    let ratio = aspect.ratio(src);
+    let reference = if aspect == DisplayAspect::Drawable && scaling == Scaling::Fit {
+        target
+    } else {
+        src
+    };
+    let ratio = aspect.ratio(reference);
     match scaling {
         Scaling::Stretch if target.0 > 0 && target.1 > 0 => Viewport {
             x: 0,
@@ -241,6 +266,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn play_window_opens_at_the_monitor_aspect_in_logical_points() {
+        let bounds = (1280, 960);
+        assert_eq!(initial_monitor_window(bounds, (2560, 1440)), (1280, 720));
+        assert_eq!(initial_monitor_window(bounds, (1200, 1920)), (600, 960));
+        assert_eq!(initial_monitor_window(bounds, (800, 600)), (800, 600));
+        assert_eq!(initial_monitor_window(bounds, (0, 0)), bounds);
+    }
+
+    #[test]
     fn oversized_drawables_fit_the_texture_limit_in_both_axes() {
         assert_eq!(limit_drawable((11520, 2160), 8192), (8192, 1536));
         assert_eq!(limit_drawable((2160, 11520), 4096), (768, 4096));
@@ -248,46 +282,97 @@ mod tests {
         assert_eq!(limit_drawable((5120, 2880), 8192), (5120, 2880));
     }
 
+    #[cfg(not(any(target_os = "tvos", target_os = "ios")))]
     #[test]
-    fn native_drawable_tracks_physical_pixels_across_resizes() {
-        let size = NativeSize::new(DisplayAspect::Source, Scaling::Fit, (5120, 2880));
+    fn retina_native_target_tracks_physical_pixels_and_window_mode() {
+        use settings::Resolution;
+        use winit::dpi::LogicalSize;
+
+        let backing = |(w, h)| {
+            let pixels = LogicalSize::new(w, h).to_physical::<u32>(2.0);
+            (pixels.width, pixels.height)
+        };
+        let opening = initial_monitor_window((1280, 960), (2560, 1440));
+        let size = NativeSize::new(DisplayAspect::Source, Scaling::Fit, backing(opening))
+            .with_native_fit(Some(NativeFit::new(|| true)));
         let reader = size.clone();
-        assert_eq!(reader.get(), (5120, 2880));
-        size.update((3440, 1440));
-        assert_eq!(reader.get(), (3440, 1440));
-        size.update((0, 1440));
-        size.update((3440, 0));
-        assert_eq!(reader.get(), (3440, 1440));
-        size.update((1233, 857));
-        assert_eq!(reader.get(), (1233, 857));
+        assert_eq!(reader.get(), NativeTarget::windowed((2560, 1440)));
+        for (points, fullscreen, raster) in [
+            ((1392, 864), false, (2784, 1728)), // user resize
+            ((2560, 1400), false, (5120, 2800)), // maximize
+            ((2560, 1440), true, (3840, 2160)), // fullscreen
+            ((2560, 1440), false, (5120, 2880)), // mode-only change
+            ((1392, 864), false, (2784, 1728)), // restore
+        ] {
+            let drawable = backing(points);
+            size.update(drawable, fullscreen);
+            let sample = reader.get();
+            assert_eq!(
+                sample,
+                NativeTarget { drawable, viewport: drawable, fullscreen },
+            );
+            assert_eq!(Resolution::Native.size(sample), raster);
+            assert_eq!(reader.display_size(raster), drawable);
+        }
+        size.update((0, 1728), false);
+        assert_eq!(reader.get(), NativeTarget::windowed((2784, 1728)));
     }
 
     #[test]
     fn native_drawable_fits_an_explicit_aspect() {
         let size = NativeSize::new(DisplayAspect::Standard, Scaling::Fit, (0, 0));
-        assert_eq!(size.get(), (640, 480));
-        size.update((5120, 2880));
-        assert_eq!(size.get(), (3840, 2880));
+        assert_eq!(size.get(), NativeTarget::windowed((640, 480)));
+        size.update((5120, 2880), true);
+        assert_eq!(size.get(), NativeTarget {
+            drawable: (5120, 2880), viewport: (3840, 2880), fullscreen: true,
+        });
         let wide = NativeSize::new(DisplayAspect::Widescreen, Scaling::Fit, (2560, 1600));
-        assert_eq!(wide.get(), (2560, 1440));
+        assert_eq!(wide.get().viewport, (2560, 1440));
     }
 
     #[test]
     fn display_size_tracks_the_compositor_for_fixed_and_native_resolutions() {
         let wide = NativeSize::new(DisplayAspect::Widescreen, Scaling::Fit, (3440, 1440));
         assert_eq!(wide.display_size((640, 480)), (2560, 1440));
-        wide.update((1920, 1200));
-        assert_eq!(wide.display_size(wide.get()), (1920, 1080));
+        wide.update((1920, 1200), false);
+        assert_eq!(wide.display_size(wide.get().viewport), (1920, 1080));
 
         let stretched = NativeSize::new(DisplayAspect::Standard, Scaling::Stretch, (3440, 1440));
         assert_eq!(stretched.display_size((640, 480)), (3440, 1440));
-        assert_eq!(stretched.get(), (3440, 1440));
+        assert_eq!(stretched.get().viewport, (3440, 1440));
 
         let integer = NativeSize::new(DisplayAspect::Source, Scaling::Integer, (1920, 1080));
         assert_eq!(integer.display_size((640, 480)), (1280, 960));
 
         let headless = NativeSize::new(DisplayAspect::Source, Scaling::Fit, (0, 0));
         assert_eq!(headless.display_size((5120, 2880)), (5120, 2880));
+    }
+
+    #[test]
+    fn play_fits_the_drawable_independently_of_the_internal_raster() {
+        let raster = (5120, 2880);
+        for drawable in [(1920, 1080), (2520, 1080), (5120, 2648)] {
+            let size = NativeSize::new(DisplayAspect::Drawable, Scaling::Fit, drawable);
+            assert_eq!(size.get().viewport, drawable);
+            assert_eq!(size.display_size(raster), drawable);
+            assert_eq!(
+                size.viewport(raster, drawable, false),
+                Viewport { x: 0, y: 0, width: drawable.0, height: drawable.1 },
+            );
+            // A host bitmap has its own authored aspect and no game camera.
+            assert_eq!(size.viewport(raster, drawable, true), fit(16.0 / 9.0, drawable));
+        }
+
+        let drawable = (5120, 2648);
+        for aspect in [DisplayAspect::Source, DisplayAspect::Widescreen] {
+            let size = NativeSize::new(aspect, Scaling::Fit, drawable);
+            assert_eq!(size.viewport(raster, drawable, false), Viewport {
+                x: 206, y: 0, width: 4708, height: 2648,
+            });
+            assert_eq!(size.display_size(raster), (4708, 2648));
+        }
+        let size = NativeSize::new(DisplayAspect::Drawable, Scaling::Integer, drawable);
+        assert_eq!(size.display_size((640, 480)), (3200, 2400));
     }
 
     #[test]
@@ -301,7 +386,7 @@ mod tests {
             ((900, 1200), (900, 1200)),
             ((5120, 2880), (3840, 2160)),
         ] {
-            size.update(target);
+            size.update(target, false);
             let viewport = Viewport {
                 x: 0,
                 y: 0,

@@ -1,0 +1,18 @@
+{
+  "env": {
+    "H2_TIER": "fast"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/agent-cargo-guard.py\""
+          }
+        ]
+      }
+    ]
+  }
+}

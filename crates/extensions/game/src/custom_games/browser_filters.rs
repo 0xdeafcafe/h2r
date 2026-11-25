@@ -1,5 +1,8 @@
 //! The Live browser's filter choices and their presentation. The retail
-//! browser still owns discovery and joining. Its filter page is in the
+//! browser still owns discovery and joining. Its filter page is the shared
+//! settings dialog (`crate::ui_kit::settings`) its doc declares,
+//! `content/ui/screens/browser.filters.yaml`: a pick row per filter, bound
+//! here by name ([`bindings`]), and X CLEAR FILTERS. It is in the
 //! lobby-dialog window, leaving the higher dialogs window for each picker.
 
 mod guest;
@@ -9,37 +12,30 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 
-use engine::memory::{GuestMemory, MemFault};
 use live_hle::Hle;
 use live_proto::hopper::variant::GameType;
 use live_proto::session::{BrowserFilters, BrowserKind, CampaignTitle, MapCategory};
 
-use crate::list_class::{Button, ListClass, Rows};
-use crate::ui::{Chosen, LABEL_SLOT, VALUE_SLOT};
 use crate::ui_kit::{
-    dialog::{DialogBase, DialogSpec},
-    dialog_tag,
     ids::{self, Family},
-    input::{Glyph, Input, Prompt, footer_legend},
     page::{ListPage, described},
-    picker::{self, Pick},
-    screen::SlotTexts,
-    spec::{Describe, ListPlace, Press, RowSpec, ScreenSpec},
+    picker::Pick,
+    screen::{KitScreen, KitTexts, Then},
+    settings::Bindings,
     text_fit,
-    view::Opener,
 };
 
 pub const SCREEN: &str = "browser.filters";
 const FEATURE: &str = "browser-filters";
 const FILE: &str = "live-browser-filters.toml";
+/// The filter page's texts (its kit screen's slots).
 const TEXTS: Family = ids::family("browser filters");
-const BASE: DialogBase = DialogBase::QuickOptions;
-const PAGE_TITLE: u32 = 0;
-const PAGE_FOOTER: u32 = 1;
-const PAGE_ROWS: u32 = 2;
-const RETAIL_TITLE: u32 = PAGE_ROWS + 3 * FilterRow::ALL.len() as u32;
-const RETAIL_FOOTER: u32 = RETAIL_TITLE + 1;
-const _: () = assert!(RETAIL_FOOTER < TEXTS.len);
+/// The retail browser's header and footer, which this module rewrites
+/// (`guest::Presentation`).
+const CHROME: Family = ids::family("browser chrome");
+const RETAIL_TITLE: u32 = 0;
+const RETAIL_FOOTER: u32 = 1;
+const _: () = assert!(RETAIL_FOOTER < CHROME.len);
 
 static CURRENT: Mutex<Option<Arc<Browser>>> = Mutex::new(None);
 
@@ -75,8 +71,11 @@ pub fn install(
         }
     };
     let browser = Arc::new(Browser::new(filters.clone(), Some(path), Some(hle)));
-    let page = Arc::new(FilterPage::new(Arc::clone(&browser), Vec::new()));
-    if registry.add(&page.class())? && registry.add(&guest::Presentation(page))? {
+    let page = Arc::new(page(Arc::clone(&browser), Vec::new()));
+    if registry.add(&KitTexts(Arc::clone(&page)))?
+        && registry.add(&page.class())?
+        && registry.add(&guest::Presentation::new(Arc::clone(&browser)))?
+    {
         hle.set_browser_filters(filters);
         *lock(&CURRENT) = Some(browser);
     }
@@ -207,10 +206,21 @@ impl FilterRow {
         Self::Difficulty,
     ];
 
-    fn at(row: i16) -> Option<Self> {
-        Self::ALL.get(usize::try_from(row).ok()?).copied()
+    /// The binding its row names in the doc (`bind: browser.<filter>`).
+    fn bind(self) -> &'static str {
+        match self {
+            Self::Kind => "browser.kind",
+            Self::Clankers => "browser.clankers",
+            Self::GameType => "browser.game_type",
+            Self::Variant => "browser.variant",
+            Self::MapCategory => "browser.map_category",
+            Self::Space => "browser.space",
+            Self::Campaign => "browser.campaign",
+            Self::Difficulty => "browser.difficulty",
+        }
     }
 
+    /// Its name in the log (the page's label is its doc's).
     fn label(self) -> &'static str {
         match self {
             Self::Kind => "Type",
@@ -221,19 +231,6 @@ impl FilterRow {
             Self::Space => "Player spaces",
             Self::Campaign => "Campaign",
             Self::Difficulty => "Difficulty",
-        }
-    }
-
-    fn help(self) -> &'static str {
-        match self {
-            Self::Kind => "Choose what to play.",
-            Self::Clankers => "Choose games with or without bots.",
-            Self::GameType => "Choose a multiplayer game type.",
-            Self::Variant => "Choose a variant from open games.",
-            Self::MapCategory => "Choose where maps come from.",
-            Self::Space => "Find a game with a public seat.",
-            Self::Campaign => "Choose a co-op campaign.",
-            Self::Difficulty => "Choose a co-op difficulty.",
         }
     }
 
@@ -348,152 +345,67 @@ fn active_count(filters: &BrowserFilters) -> usize {
         .count()
 }
 
-fn prompts() -> Vec<Prompt> {
-    vec![
-        Prompt::new(&[Glyph::A], "Select"),
-        Prompt::new(&[Glyph::B], "Back"),
-        Prompt::new(&[Glyph::X], "Clear filters"),
-    ]
+/// What a filter row shows beside its label: the choice in force.
+fn shown(browser: &Browser, row: FilterRow) -> String {
+    let filters = browser.filters();
+    let choices = row.choices(&filters, &[]);
+    text_fit::line(&choices[selected(&choices, &filters)].label, text_fit::ROW)
 }
 
-struct FilterPage {
-    browser: Arc<Browser>,
-    sample_variants: Vec<String>,
-    texts: SlotTexts,
-}
-
-impl FilterPage {
-    fn new(browser: Arc<Browser>, sample_variants: Vec<String>) -> Self {
-        Self {
-            browser,
-            sample_variants,
-            texts: SlotTexts::new(TEXTS),
-        }
-    }
-
-    fn class(self: &Arc<Self>) -> ListClass {
-        let browser = Arc::clone(&self.browser);
-        let rows = Arc::clone(self) as Arc<dyn Rows>;
-        ListClass::with_rows(FEATURE, SCREEN, rows)
-            .dialog(BASE)
-            .layout(dialog_tag::base_layout(BASE, FilterRow::ALL.len()))
-            .description(BASE.help().expect("Quick Options has a help line"))
-            .footer(self.texts.set(PAGE_FOOTER, &footer_legend(&prompts())))
-            .buttons(Arc::new(move |kind, button| {
-                if Input::from_event(kind, button) != Some(Input::X) {
-                    return Button::Pass;
-                }
-                browser.clear();
-                Button::Handled
-            }))
-    }
-
-    fn pick(&self, row: FilterRow) -> Pick {
-        let filters = self.browser.filters();
-        let variants = self.browser.hle().map_or_else(
-            || self.sample_variants.clone(),
-            |hle| hle.browser_status().variants,
-        );
-        let choices = row.choices(&filters, &variants);
-        let current = selected(&choices, &filters);
-        let labels = choices
-            .iter()
-            .map(|c| text_fit::line(&c.label, text_fit::ROW))
-            .collect();
-        let browser = Arc::clone(&self.browser);
-        let set = Arc::new(move |i: usize| {
-            let Some(choice) = choices.get(i) else {
-                return String::new();
-            };
-            browser.update(|filters| row.apply(filters, &choice.filters));
-            format!("{}: {}", row.label(), choice.label)
-        });
-        Pick::new(row.label(), labels, current, row.help(), set)
-    }
-
-    fn row(row: FilterRow, filters: &BrowserFilters) -> RowSpec {
-        let choices = row.choices(filters, &[]);
-        let current = &choices[selected(&choices, filters)];
-        RowSpec::info(row.label(), &text_fit::line(&current.label, text_fit::ROW))
-            .press(Press::Open(picker::NAME.into()))
-            .describe(row.help())
-    }
-
-    fn page(self: Arc<Self>) -> ListPage {
-        ListPage::new(self.class(), described(&self))
-    }
-}
-
-impl Rows for FilterPage {
-    fn title(&self) -> u32 {
-        self.texts.set(PAGE_TITLE, "Game Filters")
-    }
-
-    fn count(&self) -> usize {
-        FilterRow::ALL.len()
-    }
-
-    fn texts(&self, row: i16) -> Vec<(u32, u32)> {
-        let Some(filter) = FilterRow::at(row) else {
-            return Vec::new();
+/// The value picker's pick for `row`: "Any" then the filter's choices,
+/// the one in force focused. Its title and text are the row's, set by the
+/// kit from the doc. The variants are Live's open games' (or `samples`
+/// with no Live).
+fn pick(browser: &Arc<Browser>, samples: &[String], row: FilterRow) -> Pick {
+    let filters = browser.filters();
+    let variants = browser
+        .hle()
+        .map_or_else(|| samples.to_vec(), |hle| hle.browser_status().variants);
+    let choices = row.choices(&filters, &variants);
+    let current = selected(&choices, &filters);
+    let labels = choices
+        .iter()
+        .map(|c| text_fit::line(&c.label, text_fit::ROW))
+        .collect();
+    let held = Arc::clone(browser);
+    let set = Arc::new(move |i: usize| {
+        let Some(choice) = choices.get(i) else {
+            return String::new();
         };
-        let s = Self::row(filter, &self.browser.filters());
-        let slot = PAGE_ROWS + 3 * row as u32;
-        vec![
-            (LABEL_SLOT, self.texts.set(slot, &s.label)),
-            (
-                VALUE_SLOT,
-                self.texts
-                    .set(slot + 1, &s.plain_value().unwrap_or_default()),
-            ),
-        ]
-    }
-
-    fn press(&self, row: i16) -> Chosen {
-        FilterRow::at(row)
-            .and_then(|filter| picker::offer_list(self.pick(filter)))
-            .map_or(Chosen::Nothing, Chosen::Open)
-    }
-
-    fn description(&self, row: i16) -> Option<u32> {
-        let filter = FilterRow::at(row)?;
-        Some(
-            self.texts
-                .set(PAGE_ROWS + 3 * row as u32 + 2, filter.help()),
-        )
-    }
-
-    fn write_texts(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
-        self.texts.write(m)
-    }
+        held.update(|filters| row.apply(filters, &choice.filters));
+        format!("{}: {}", row.label(), choice.label)
+    });
+    Pick::new(row.label(), labels, current, "", set)
 }
 
-impl Describe for FilterPage {
-    fn spec(&self) -> ScreenSpec {
-        let filters = self.browser.filters();
-        let mut s = ScreenSpec::new(SCREEN, "Game Filters");
-        s.list = ListPlace::from(Some(dialog_tag::base_layout(BASE, self.count())));
-        s.style = BASE.style();
-        s.rows = FilterRow::ALL.map(|row| Self::row(row, &filters)).into();
-        s.description = BASE.help().map(Into::into);
-        s.prompts = prompts();
-        s.inputs = vec![Input::Up, Input::Down, Input::A, Input::B, Input::X];
-        s.footer = true;
-        s.dialog = Some(DialogSpec {
-            base: BASE,
-            rows: s.rows.clone(),
-            ..DialogSpec::new("", Opener::XBOX_LIVE_MENU)
-        });
-        s
+/// The page's bindings: a pick per filter row, and X's clear.
+fn bindings(browser: &Arc<Browser>, samples: Vec<String>) -> Bindings {
+    let samples = Arc::new(samples);
+    let mut b = Bindings::new();
+    for row in FilterRow::ALL {
+        let (on, of, list) = (Arc::clone(browser), Arc::clone(browser), Arc::clone(&samples));
+        b = b.pick(row.bind(), move || shown(&on, row), move || Ok(pick(&of, &list, row)));
     }
+    let clear = Arc::clone(browser);
+    b.action("browser.clear", move || {
+        clear.clear();
+        Then::Stay("browser filters: cleared".into())
+    })
+}
+
+/// The filter page over `browser`, the shared settings dialog its doc
+/// declares. `samples` are the variants offered with no Live.
+fn page(browser: Arc<Browser>, samples: Vec<String>) -> KitScreen {
+    crate::ui_kit::settings::screen(FEATURE, SCREEN, TEXTS, None, bindings(&browser, samples))
+        .unwrap_or_else(|e| panic!("{e}"))
 }
 
 pub(crate) fn sample_page() -> ListPage {
-    Arc::new(FilterPage::new(
+    let s = Arc::new(page(
         Arc::new(Browser::new(BrowserFilters::default(), None, None)),
         vec!["Team Slayer".into(), "One Flag".into()],
-    ))
-    .page()
+    ));
+    ListPage::new(s.class(), described(&s))
 }
 
 pub(crate) use guest::handle_event;

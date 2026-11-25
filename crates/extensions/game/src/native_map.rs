@@ -3,15 +3,17 @@
 //! A live open serves every selector through the raw overlay
 //! ([`vfs::RawOverlay::global`], docs/editor/realtime-edits.md, "The edit
 //! overlay"), so a world, model or image loaded after a live raw edit
-//! decodes the edited bytes.
+//! decodes the edited bytes; and reads the `Map` itself through it, so the
+//! tag metadata it decodes holds every live tag write too.
 
 use std::fs::File;
-use std::io::{BufReader, Cursor, Read, Seek};
-use std::sync::{Arc, Mutex, Weak, mpsc};
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
+use std::sync::{Arc, Mutex, MutexGuard, Weak, mpsc};
 
 use assets::{Region, ResourceFiles};
 use map::{Map, ResourceFile, TagId};
 use native_render::load::Error;
+use native_render::world_layers_gpu::Cache as IndexedCache;
 use vfs::{FileSource, Vfs};
 
 use crate::pad_speaker::SHARED_MAPS;
@@ -26,6 +28,10 @@ pub type NativeMap = Map<Box<dyn MapReader>>;
 /// resources here to be destroyed away from the render thread.
 pub(crate) type RetireQueue = mpsc::Sender<(timeline::setup::Stage, Box<dyn Send>)>;
 
+thread_local! {
+    static RETIRING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 pub(crate) fn retire_queue() -> std::io::Result<RetireQueue> {
     static QUEUE: Mutex<Option<RetireQueue>> = Mutex::new(None);
     let mut queue = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
@@ -34,6 +40,7 @@ pub(crate) fn retire_queue() -> std::io::Result<RetireQueue> {
     }
     let (send, receive) = mpsc::channel::<(timeline::setup::Stage, Box<dyn Send>)>();
     background::spawn("native-map retire", move || {
+        RETIRING.set(true);
         for (stage, payload) in receive {
             let _timer = stage.worker();
             drop(payload);
@@ -43,10 +50,93 @@ pub(crate) fn retire_queue() -> std::io::Result<RetireQueue> {
     Ok(send)
 }
 
+struct RetiredPayload<T> {
+    _payload: T,
+    _pending: mem_watch::Gauge,
+}
+
+fn tracked_retirement(payload: impl Send + 'static) -> Box<dyn Send> {
+    static RETIRING_PAYLOADS: mem_watch::Counter =
+        mem_watch::Counter::new("native.map_retired_payloads");
+    Box::new(RetiredPayload { _payload: payload, _pending: RETIRING_PAYLOADS.track(1) })
+}
+
 /// Call from Drop after detaching the payload's sender so the worker
 /// destroys the payload directly.
 pub(crate) fn retire<T: Default + Send + 'static>(send: RetireQueue, stage: timeline::setup::Stage, payload: &mut T) {
-    let _ = send.send((stage, Box::new(std::mem::take(payload))));
+    if !RETIRING.try_with(std::cell::Cell::get).unwrap_or(false) {
+        let _ = send.send((stage, tracked_retirement(std::mem::take(payload))));
+    }
+}
+
+/// Disconnects a map slot on activation and destroys its payload on the
+/// retire worker. Passes already handed to the renderer keep their own pins.
+pub(crate) fn retire_owned(stage: timeline::setup::Stage, payload: impl Send + 'static) {
+    if let Ok(send) = retire_queue() {
+        let _ = send.send((stage, tracked_retirement(payload)));
+    }
+}
+
+struct RetireFence(mpsc::Sender<()>);
+
+impl Drop for RetireFence {
+    fn drop(&mut self) {
+        let _ = self.0.send(());
+    }
+}
+
+/// Map builds share scratch allocation headroom. Wait on a loader thread
+/// for an older build to leave and for detached resources to be destroyed.
+pub(crate) fn begin_load(
+    stage: timeline::setup::Stage,
+    current: impl Fn() -> bool,
+) -> Option<MutexGuard<'static, ()>> {
+    static LOADER: Mutex<()> = Mutex::new(());
+    let guard = LOADER.lock().unwrap_or_else(|e| e.into_inner());
+    if !current() {
+        return None;
+    }
+    let (done, wait) = mpsc::channel();
+    retire_queue().ok()?.send((stage, Box::new(RetireFence(done)))).ok()?;
+    wait.recv().ok()?;
+    current().then_some(guard)
+}
+
+type IndexedSlot = Mutex<Arc<IndexedCache>>;
+static INDEXED_CACHES: Mutex<Vec<Weak<IndexedSlot>>> = Mutex::new(Vec::new());
+
+/// A draw gets the current cache at admission. A queued draw can finish
+/// with that cache after activation, without refilling the next map's cache.
+pub(crate) struct MapIndexedCache(Arc<IndexedSlot>);
+
+impl Default for MapIndexedCache {
+    fn default() -> Self {
+        let slot = Arc::new(IndexedSlot::default());
+        let mut caches = INDEXED_CACHES.lock().unwrap_or_else(|e| e.into_inner());
+        caches.retain(|cache| cache.strong_count() != 0);
+        caches.push(Arc::downgrade(&slot));
+        Self(slot)
+    }
+}
+
+impl MapIndexedCache {
+    pub(crate) fn get(&self) -> Arc<IndexedCache> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+fn detach_indexed_cache(cache: &IndexedSlot) -> Arc<IndexedCache> {
+    std::mem::take(&mut *cache.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+pub(crate) fn retire_indexed_caches() {
+    let mut caches = INDEXED_CACHES.lock().unwrap_or_else(|e| e.into_inner());
+    caches.retain(|cache| {
+        let Some(cache) = cache.upgrade() else { return false };
+        let retired = detach_indexed_cache(&cache);
+        retire_owned(timeline::setup::Stage::World, retired);
+        true
+    });
 }
 
 /// Resolve a live datum by its map tag index when the salt differs.
@@ -62,6 +152,7 @@ pub fn tag_of(map: &NativeMap, datum: u32) -> Option<TagId> {
 
 /// Boot owns the mount. Render workers can borrow it until boot returns.
 pub struct MountedVfs {
+    data_root: std::path::PathBuf,
     vfs: Arc<Mutex<Vfs>>,
     rebind: Option<vfs::MapRebind>,
     active: Mutex<Option<ActiveSource>>,
@@ -77,14 +168,49 @@ struct ActiveSource {
 static SOURCES: Mutex<Weak<MountedVfs>> = Mutex::new(Weak::new());
 
 #[must_use]
-pub fn mount(vfs: Arc<Mutex<Vfs>>, rebind: Option<vfs::MapRebind>) -> Arc<MountedVfs> {
+pub fn mount(vfs: Arc<Mutex<Vfs>>, rebind: Option<vfs::MapRebind>, data_root: &std::path::Path) -> Arc<MountedVfs> {
     let sources = Arc::new(MountedVfs {
+        data_root: data_root.to_owned(),
         vfs,
         rebind,
         active: Mutex::new(None),
     });
     *SOURCES.lock().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(&sources);
     sources
+}
+
+/// The active boot's data root, including a command-line override.
+pub(crate) fn data_root() -> Option<std::path::PathBuf> {
+    let sources = SOURCES.lock().unwrap_or_else(|e| e.into_inner()).upgrade()?;
+    Some(sources.data_root.clone())
+}
+
+/// A file of the mounted VFS as the guest reads it, the disc's rewrites
+/// applied: `None` without a mount or for a file the VFS does not have.
+pub fn guest_file(path: &str) -> Option<Vec<u8>> {
+    let sources = SOURCES.lock().unwrap_or_else(|e| e.into_inner()).upgrade()?;
+    read_from(&sources.vfs, path)
+}
+
+/// A file of `vfs` as the guest reads it. The VFS is held only to find
+/// where the file is, never while it is read.
+fn read_from(vfs: &Mutex<Vfs>, path: &str) -> Option<Vec<u8>> {
+    let source = vfs.lock().unwrap_or_else(|e| e.into_inner()).file_source(path)?;
+    read_source(source)
+}
+
+/// A VFS file's bytes: a host file's region, or the memory it is served from.
+fn read_source(source: FileSource) -> Option<Vec<u8>> {
+    match source {
+        FileSource::Host(file) => {
+            let mut reader = File::open(&file.path).ok()?;
+            reader.seek(SeekFrom::Start(file.offset)).ok()?;
+            let mut bytes = vec![0; usize::try_from(file.len).ok()?];
+            reader.read_exact(&mut bytes).ok()?;
+            Some(bytes)
+        }
+        FileSource::Memory(bytes) => Some(bytes.to_vec()),
+    }
 }
 
 /// Only the editor's activation observer publishes a private generation.
@@ -180,14 +306,22 @@ fn open_resolved(
         // stops drawing. Its native jobs may use only the activated source.
         return Err("the editor map is waiting for guest activation".into());
     }
+    // A live open's metadata is the file's with the live tag writes over it.
+    let served = |reader: Box<dyn MapReader>, base: u64| -> std::io::Result<Box<dyn MapReader>> {
+        if !live {
+            return Ok(reader);
+        }
+        let name = crate::hot_glue::overlay_name(ResourceFile::Local, name);
+        Ok(Box::new(vfs::OverlaidReader::new(reader, vfs::RawOverlay::global().clone(), &name, base)?))
+    };
     let map = match &local {
         FileSource::Host(file) => {
             let reader: Box<dyn MapReader> = Box::new(BufReader::new(File::open(&file.path)?));
-            Map::from_region(reader, file.offset, file.len)?
+            Map::from_region(served(reader, file.offset)?, file.offset, file.len)?
         }
         FileSource::Memory(bytes) => {
             let reader: Box<dyn MapReader> = Box::new(Cursor::new(Arc::clone(bytes)));
-            Map::from_reader(reader)?
+            Map::from_reader(served(reader, 0)?)?
         }
     };
     let mut files = ResourceFiles::new();
@@ -257,6 +391,20 @@ mod tests {
     use crate::map_override::tests::{Temp, named_map};
 
     #[test]
+    fn a_displaced_indexed_cache_lives_only_as_long_as_already_admitted_draws() {
+        let slot = IndexedSlot::default();
+        let pass_cache = slot.lock().unwrap().clone();
+        let old = Arc::downgrade(&pass_cache);
+        let retired = detach_indexed_cache(&slot);
+        assert!(Arc::ptr_eq(&pass_cache, &retired));
+        assert!(!Arc::ptr_eq(&pass_cache, &slot.lock().unwrap()));
+        drop(retired);
+        assert!(old.upgrade().is_some());
+        drop(pass_cache);
+        assert!(old.upgrade().is_none());
+    }
+
+    #[test]
     fn a_private_source_is_visible_to_native_jobs_only_after_activation() {
         let temp = Temp::new();
         let path = format!("{}\\maps\\level.map", vfs::CDROM_DEVICE);
@@ -278,6 +426,34 @@ mod tests {
         old.generation = Some(generation);
         let (activated, _) = open_resolved(&vfs, "level", None, Some(old), true).unwrap();
         assert_eq!(activated.header().name, "level");
+    }
+
+    /// A guest file's bytes are the VFS's: a file of the disc's directory
+    /// read from the host, and a rewritten one as its rewrite serves it.
+    #[test]
+    fn a_guest_file_is_read_as_the_vfs_serves_it() {
+        struct Double;
+        impl vfs::Rewrite for Double {
+            fn wants(&self, path: &str) -> bool {
+                path.ends_with("doubled")
+            }
+            fn rewrite(&mut self, _path: &str, original: &[u8]) -> Option<Vec<u8>> {
+                Some(original.repeat(2))
+            }
+        }
+        let t = Temp::new();
+        let fonts = t.0.join("maps/fonts");
+        std::fs::create_dir_all(&fonts).unwrap();
+        std::fs::write(fonts.join("plain"), [1, 2, 3]).unwrap();
+        std::fs::write(fonts.join("doubled"), [4, 5]).unwrap();
+        let mut vfs = Vfs::new();
+        let disc = vfs::DirDiscBackend::open(&t.0).unwrap();
+        vfs.mount(vfs::CDROM_DEVICE, vfs::RewriteBackend::new(disc, Double)).unwrap();
+        let mounted = Mutex::new(vfs);
+        let path = |name: &str| format!("{}\\maps\\fonts\\{name}", vfs::CDROM_DEVICE);
+        assert_eq!(read_from(&mounted, &path("plain")).unwrap(), [1, 2, 3], "as the directory holds it");
+        assert_eq!(read_from(&mounted, &path("doubled")).unwrap(), [4, 5, 4, 5], "as the rewrite serves it");
+        assert_eq!(read_from(&mounted, &path("missing")), None);
     }
 
     /// A live open's resource files read through the overlay: a

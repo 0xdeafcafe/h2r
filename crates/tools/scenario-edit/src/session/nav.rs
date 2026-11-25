@@ -1,5 +1,6 @@
 //! The navigation the session shows with the map ([`crate::nav_view`];
-//! docs/editor/editor.md, "Navigation"): the structure BSPs' pathfinding
+//! docs/editor/editor.md, "What the viewport shows, and what it does not
+//! yet"): the structure BSPs' pathfinding
 //! data, read when the map opens, the bots' mesh and spots the editor
 //! hands over, a pick and a selection. Read only.
 use super::*;
@@ -7,8 +8,12 @@ use crate::nav_view::{self, BotNav, LevelPathfinding, NavPick};
 
 impl Session {
     /// The open map's pathfinding data.
+    /// While AI ground is shown ([`Self::set_ground_pathfinding`]) it is
+    /// the ground's.
     pub fn pathfinding(&self) -> Option<&LevelPathfinding> {
-        self.doc.as_ref().map(|d| &d.pathfinding)
+        self.doc
+            .as_ref()
+            .map(|d| d.ground_pathfinding.as_ref().unwrap_or(&d.pathfinding))
     }
 
     /// The bots' data for the open map, once the editor has given it.
@@ -241,6 +246,7 @@ mod tests {
                 poly: 0,
                 normal: nav_view::ring_normal(&verts),
                 verts,
+                out_of_map: false,
             }
         };
         let mut nav = BotNav {

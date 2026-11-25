@@ -27,6 +27,12 @@
 /// Largest size a ring grows to by doubling when it fills (a single larger
 /// push still gets a buffer of its own size).
 const MAX_GROWTH: u64 = 64 << 20;
+const IDLE_SUBMISSIONS: usize = 4;
+const IDLE_UPLOAD_BYTES: u64 = 128 << 20;
+static STAGING_BYTES: mem_watch::Counter = mem_watch::Counter::new("gfx.upload_ring_staging_bytes");
+static BUFFER_BYTES: mem_watch::Counter = mem_watch::Counter::new("gfx.upload_ring_buffer_bytes");
+static IDLE_CPU_BYTES: mem_watch::Counter = mem_watch::Counter::new("gfx.upload_idle_cpu_bytes");
+static IDLE_GPU_BYTES: mem_watch::Counter = mem_watch::Counter::new("gfx.upload_idle_gpu_bytes");
 
 /// A growable upload buffer for one usage (vertex/index, or uniforms).
 pub struct UploadRing {
@@ -38,6 +44,8 @@ pub struct UploadRing {
     /// Bytes staged since the last flush, for the ring range from
     /// `staged_at` (alignment gaps included, as zeros).
     staged: Vec<u8>,
+    staging_bytes: mem_watch::Gauge,
+    buffer_bytes: mem_watch::Gauge,
     staged_at: u64,
     generation: u64,
 }
@@ -59,6 +67,8 @@ impl UploadRing {
             capacity,
             cursor: 0,
             staged: Vec::new(),
+            staging_bytes: STAGING_BYTES.track(0),
+            buffer_bytes: BUFFER_BYTES.track(capacity),
             staged_at: 0,
             generation: 0,
         }
@@ -130,6 +140,7 @@ impl UploadRing {
                 .max(self.capacity)
                 .max(padded.next_power_of_two());
             self.buffer = Self::allocate(device, self.label, self.usage, self.capacity);
+            self.buffer_bytes.set(self.capacity);
             self.generation += 1;
             self.cursor = 0;
             offset = 0;
@@ -139,6 +150,7 @@ impl UploadRing {
         }
         let at = (offset - self.staged_at) as usize;
         self.staged.resize(at + padded as usize, 0);
+        self.staging_bytes.set(self.staged.capacity() as u64);
         fill(&mut self.staged[at..at + len]);
         self.cursor = offset + padded;
         (self.buffer.clone(), offset)
@@ -183,7 +195,53 @@ impl UploadRing {
 /// Native views and target copies share a forward-only upload arena until submit.
 /// Return the ring to this pool only after its last command buffer completes.
 #[derive(Clone, Default)]
-pub struct UploadPool(std::sync::Arc<std::sync::Mutex<Vec<SubmissionRing>>>);
+pub struct UploadPool(std::sync::Arc<std::sync::Mutex<IdleRings>>);
+
+#[derive(Clone, Copy)]
+struct IdleUsage {
+    cpu: u64,
+    gpu: u64,
+}
+
+struct IdleRings {
+    rings: Vec<(SubmissionRing, IdleUsage)>,
+    cpu_bytes: mem_watch::Gauge,
+    gpu_bytes: mem_watch::Gauge,
+    byte_limit: u64,
+}
+
+impl Default for IdleRings {
+    fn default() -> Self {
+        Self {
+            rings: Vec::new(),
+            cpu_bytes: IDLE_CPU_BYTES.track(0),
+            gpu_bytes: IDLE_GPU_BYTES.track(0),
+            byte_limit: IDLE_UPLOAD_BYTES,
+        }
+    }
+}
+
+impl IdleRings {
+    fn pop(&mut self) -> Option<SubmissionRing> {
+        let (ring, usage) = self.rings.pop()?;
+        self.cpu_bytes.set(self.cpu_bytes.get() - usage.cpu);
+        self.gpu_bytes.set(self.gpu_bytes.get() - usage.gpu);
+        Some(ring)
+    }
+
+    fn try_push(&mut self, ring: SubmissionRing) -> Option<SubmissionRing> {
+        let usage = ring.idle_usage();
+        let cpu = self.cpu_bytes.get() + usage.cpu;
+        let gpu = self.gpu_bytes.get() + usage.gpu;
+        if self.rings.len() == IDLE_SUBMISSIONS || cpu + gpu > self.byte_limit {
+            return Some(ring);
+        }
+        self.rings.push((ring, usage));
+        self.cpu_bytes.set(cpu);
+        self.gpu_bytes.set(gpu);
+        None
+    }
+}
 
 #[derive(Clone)]
 pub struct SubmissionUploads(std::sync::Arc<SubmissionStorage>);
@@ -226,6 +284,21 @@ struct UniformGroup {
     group: wgpu::BindGroup,
 }
 
+impl SubmissionRing {
+    /// Staging and resident contents can keep a large map's high-water mark
+    /// even when the ring is empty. Uniform groups pin the backing upload
+    /// buffer or their resident slot's buffer, which are counted once here.
+    fn idle_usage(&self) -> IdleUsage {
+        let mut cpu = self.upload.staged.capacity() as u64 + self.scratch.capacity() as u64;
+        let mut gpu = self.upload.capacity;
+        for slot in &self.resident {
+            cpu += slot.shadow.as_ref().map_or(0, |shadow| shadow.capacity()) as u64;
+            gpu += slot.buffer.size();
+        }
+        IdleUsage { cpu, gpu }
+    }
+}
+
 /// Dynamic offsets for two uniforms per draw in an immutable submission allocation.
 pub struct UniformRun {
     pub group: wgpu::BindGroup,
@@ -258,7 +331,8 @@ impl Drop for SubmissionStorage {
         ring.next_run = 0;
         ring.upload.staged.clear();
         ring.upload.reset();
-        self.pool.0.lock().unwrap_or_else(|e| e.into_inner()).push(ring);
+        let overflow = self.pool.0.lock().unwrap_or_else(|e| e.into_inner()).try_push(ring);
+        drop(overflow);
     }
 }
 
@@ -523,6 +597,50 @@ impl EncoderUploads<'_> {
 mod tests {
     use super::*;
     use crate::{GfxContext, program::ProgramBindings};
+
+    #[test]
+    fn upload_pool_keeps_only_a_fixed_number_of_returned_arenas() {
+        let Ok(ctx) = GfxContext::headless() else { return };
+        let pool = UploadPool::default();
+        let submissions: Vec<_> = (0..IDLE_SUBMISSIONS * 3).map(|_| {
+            let uploads = pool.begin();
+            uploads.stage(&ctx.device, &ctx.queue, &[1, 2, 3, 4]);
+            uploads
+        }).collect();
+        assert!(pool.0.lock().unwrap().rings.is_empty());
+        drop(submissions);
+        assert_eq!(pool.0.lock().unwrap().rings.len(), IDLE_SUBMISSIONS);
+        let uploads = pool.begin();
+        uploads.stage(&ctx.device, &ctx.queue, &[5, 6, 7, 8]);
+        assert_eq!(pool.0.lock().unwrap().rings.len(), IDLE_SUBMISSIONS - 1);
+    }
+
+    #[test]
+    fn upload_pool_caps_total_idle_capacity_including_cpu_scratch() {
+        let Ok(ctx) = GfxContext::headless() else { return };
+        let pool = UploadPool::default();
+        let first = pool.begin();
+        let second = pool.begin();
+        let large_scratch = pool.begin();
+        let usage = first.with_ring(&ctx.device, |ring| ring.idle_usage());
+        second.with_ring(&ctx.device, |_| {});
+        large_scratch.with_ring(&ctx.device, |ring| ring.scratch.reserve(1024));
+        pool.0.lock().unwrap().byte_limit = usage.gpu + 512;
+
+        drop(large_scratch);
+        assert!(pool.0.lock().unwrap().rings.is_empty());
+        drop(first);
+        drop(second);
+        {
+            let idle = pool.0.lock().unwrap();
+            assert_eq!(idle.rings.len(), 1);
+            assert_eq!(idle.gpu_bytes.get(), usage.gpu);
+            assert_eq!(idle.cpu_bytes.get(), 0);
+        }
+        let reused = pool.begin();
+        reused.with_ring(&ctx.device, |_| {});
+        assert_eq!(pool.0.lock().unwrap().gpu_bytes.get(), 0);
+    }
 
     #[test]
     fn resident_constant_patches_are_batched_and_cancelled_slots_refill() {

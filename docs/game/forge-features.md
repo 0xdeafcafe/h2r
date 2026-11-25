@@ -73,6 +73,9 @@ position, rotation and bounding-sphere outline until A confirms
 placement. Properties changes the heading or the rotation step.
 The wider properties design includes respawn time, team, game types,
 placed at start, physics (fixed or normal) and additional snapping modes.
+The design for editing the placements the map itself has (its objects,
+item spawners, starting points and goals), and for saving the result as
+a map variant, is [forge-map-variants.md](forge-map-variants.md).
 
 Budget: the object pool, each block's limit, the tag headroom and a
 Forge cost per item (**Design**; the limits are the engine's, the cost
@@ -170,6 +173,7 @@ Two consumers, two meshes.
 
 The overlay draws sectors, links by kind, and problems: a spawn off the
 mesh, an island no link reaches, an objective a team cannot path to.
+What of this is built, and how, is [forge-nav.md](forge-nav.md).
 Dynamic things (doors, movers, switched barriers) have no timed edges;
 a bot recovers by replanning, as on the retail maps with moving parts.
 

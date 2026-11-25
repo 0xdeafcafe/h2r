@@ -65,6 +65,64 @@ impl Unit {
     }
 }
 
+/// How a field is shown in a rich editor (`view=<word>`): the stored form
+/// of a colour, or a function blob. The list is closed; a field gets a
+/// word only with evidence of its form, which goes in its meaning text
+/// (`docs/editor/rich-editors.md`, "One seam for every rich view").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FieldView {
+    /// `f32[3]` colour, 0 to 1.
+    Rgb,
+    /// `f32[4]` colour, alpha first.
+    Argb,
+    /// Packed 32-bit colour, top byte unused.
+    Rgb8,
+    /// Packed 32-bit colour, alpha in the top byte.
+    Argb8,
+    /// Packed 32-bit colour, top byte unused (a tag's own `x` byte).
+    Xrgb8,
+    /// `f32[3]` colour with values above 1.
+    HdrRgb,
+    /// A function blob in a data reference.
+    Function,
+}
+
+impl FieldView {
+    /// Every word, in the order the docs list them.
+    pub const ALL: [FieldView; 7] = [
+        FieldView::Rgb,
+        FieldView::Argb,
+        FieldView::Rgb8,
+        FieldView::Argb8,
+        FieldView::Xrgb8,
+        FieldView::HdrRgb,
+        FieldView::Function,
+    ];
+
+    /// The word the definition files use.
+    pub fn word(self) -> &'static str {
+        match self {
+            FieldView::Rgb => "rgb",
+            FieldView::Argb => "argb",
+            FieldView::Rgb8 => "rgb8",
+            FieldView::Argb8 => "argb8",
+            FieldView::Xrgb8 => "xrgb8",
+            FieldView::HdrRgb => "hdr_rgb",
+            FieldView::Function => "function",
+        }
+    }
+
+    /// The view a definition word names.
+    pub fn from_word(word: &str) -> Option<FieldView> {
+        FieldView::ALL.into_iter().find(|v| v.word() == word)
+    }
+
+    /// Whether the view is a colour.
+    pub fn is_colour(self) -> bool {
+        !matches!(self, FieldView::Function)
+    }
+}
+
 /// What names an element of a block, or the kind of a group or struct
 /// (`title=`).
 #[derive(Clone, Debug, PartialEq, Eq)]

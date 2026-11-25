@@ -84,11 +84,20 @@ pub mod scenario {
 }
 
 /// The kit's squad and zone names (`crates/tools/firefight-kit/src/ai.rs`
-/// and `nav.rs`): `ff_slot_00` to `ff_slot_15`, `ff_drop_00` up.
+/// and `nav.rs`): `ff_slot_00` to `ff_slot_15`, drop zones `ff_drop_00`
+/// up, and one zone per base, `ff_base_00` (the home base) and
+/// `ff_base_01`.
 const SLOT_PREFIX: &str = "ff_slot_";
 const ZONE_PREFIX: &str = "ff_drop_";
-/// The order a kit authors for `Hunt`.
-pub const HUNT_ORDER: &str = "ff_hunt";
+const BASE_PREFIX: &str = "ff_base_";
+/// The orders a kit authors for `Hunt`: `ff_hunt_NN` sends a squad at
+/// base NN.
+pub const HUNT_PREFIX: &str = "ff_hunt_";
+
+/// The name of the order that hunts at `base`.
+pub fn hunt_order_name(base: u8) -> String {
+    format!("{HUNT_PREFIX}{base:02}")
+}
 /// The stage-one kit's classes by character palette index: it authors one
 /// palette row, the Elite (`firefight-kit`, `ai::prepare`).
 pub const KIT_CLASSES: &[(&str, u16)] = &[("elite", 0)];
@@ -110,13 +119,18 @@ pub struct KitZone {
 pub struct KitLayout {
     /// Each slot's scenario squad index.
     pub squads: [Option<u16>; SQUAD_SLOTS],
+    /// The drop zones, `ff_drop_NN`, in scenario order.
     pub zones: Vec<KitZone>,
+    /// The base zones by base, `ff_base_00` first: the run of base
+    /// ordinals from 0 the scenario holds.
+    pub bases: Vec<KitZone>,
     /// Rows in the character palette.
     pub characters: u16,
     /// The team of the first slot's squad.
     pub team: u8,
-    /// The scenario order named [`HUNT_ORDER`].
-    pub hunt_order: Option<u16>,
+    /// Each base's hunt order, `ff_hunt_NN`, by base: the scenario
+    /// order index, none where the scenario has no order of that name.
+    pub hunt_orders: Vec<Option<u16>>,
 }
 
 impl KitLayout {
@@ -124,6 +138,7 @@ impl KitLayout {
     pub fn kit(&self) -> Kit {
         Kit {
             zones: self.zones.iter().map(|z| z.point).collect(),
+            bases: self.bases.iter().map(|z| z.point).collect(),
             classes: KIT_CLASSES
                 .iter()
                 .filter(|(_, slot)| *slot < self.characters)
@@ -163,8 +178,9 @@ fn ordinal(name: &str, prefix: &str) -> Option<usize> {
 }
 
 /// The kit, or none on a map whose scenario has no `ff_slot_` squad. The
-/// `firefight_kit_v1` string ID the builder interns is not checked: the
-/// game has no reader for the loaded map's string IDs.
+/// `firefight_kit_vN` string ID the builder interns is not checked: the
+/// game has no reader for the loaded map's string IDs. A base zone's point
+/// is its first area's mean, as a drop zone's is.
 pub fn read_kit(m: &dyn GuestMemory) -> Result<Option<KitLayout>, MemFault> {
     let scnr = m.u32(points::SCENARIO.base)?;
     if scnr == 0 {
@@ -185,8 +201,11 @@ pub fn read_kit(m: &dyn GuestMemory) -> Result<Option<KitLayout>, MemFault> {
         return Ok(None);
     };
     let mut zones = Vec::new();
+    let mut bases = std::collections::BTreeMap::new();
     for (index, at) in block(m, scnr, scenario::ZONES)?.into_iter().enumerate() {
-        if ordinal(&name(m, at)?, ZONE_PREFIX).is_none() {
+        let zone_name = name(m, at)?;
+        let base = ordinal(&zone_name, BASE_PREFIX);
+        if ordinal(&zone_name, ZONE_PREFIX).is_none() && base.is_none() {
             continue;
         }
         let Some(&area) = block(m, at, scenario::ZONE_AREAS)?.first() else {
@@ -201,28 +220,44 @@ pub fn read_kit(m: &dyn GuestMemory) -> Result<Option<KitLayout>, MemFault> {
                 ))
             })
             .collect::<Result<_, MemFault>>()?;
-        zones.push(KitZone {
+        let zone = KitZone {
             index: index as u16,
             point: m.vec3(area + scenario::AREA_MEAN)?,
             starts,
-        });
+        };
+        match base {
+            Some(n) => {
+                bases.entry(n).or_insert(zone);
+            }
+            None => zones.push(zone),
+        }
     }
+    let bases = bases
+        .into_iter()
+        .enumerate()
+        .take_while(|(i, (n, _))| i == n)
+        .map(|(_, (_, zone))| zone)
+        .collect();
     let characters = m
         .u32(scnr + scenario::CHARACTER_PALETTE.0)?
         .min(u16::MAX.into()) as u16;
-    let mut hunt_order = None;
+    let mut hunt_orders: Vec<Option<u16>> = Vec::new();
     for (index, at) in block(m, scnr, scenario::ORDERS)?.into_iter().enumerate() {
-        if name(m, at)? == HUNT_ORDER {
-            hunt_order = Some(index as u16);
-            break;
+        let Some(base) = ordinal(&name(m, at)?, HUNT_PREFIX) else {
+            continue;
+        };
+        if hunt_orders.len() <= base {
+            hunt_orders.resize(base + 1, None);
         }
+        hunt_orders[base].get_or_insert(index as u16);
     }
     Ok(Some(KitLayout {
         squads,
         zones,
+        bases,
         characters,
         team,
-        hunt_order,
+        hunt_orders,
     }))
 }
 
@@ -307,12 +342,17 @@ pub async fn place_squad(cx: &Cx, kit: &KitLayout, p: Placement) -> anyhow::Resu
     Ok(())
 }
 
-/// Send a slot's squad at the players through the kit's hunt order.
-pub async fn hunt(cx: &Cx, kit: &KitLayout, slot: u8) -> anyhow::Result<()> {
+/// Send a slot's squad at base `base` (0 the home base) through the kit's
+/// hunt order for it, `ff_hunt_NN`. A kit without that order is an error
+/// naming it: no other order stands in.
+pub async fn hunt(cx: &Cx, kit: &KitLayout, slot: u8, base: u8) -> anyhow::Result<()> {
     let squad = squad_index(kit, slot)?;
     let order = kit
-        .hunt_order
-        .ok_or_else(|| anyhow::anyhow!("the kit has no {HUNT_ORDER} order"))?;
+        .hunt_orders
+        .get(usize::from(base))
+        .copied()
+        .flatten()
+        .ok_or_else(|| anyhow::anyhow!("the kit has no {} order", hunt_order_name(base)))?;
     call(
         cx,
         GuestCall::new(points::AI_SET_ORDERS.base)
@@ -474,14 +514,14 @@ pub async fn end_game(cx: &Cx) -> anyhow::Result<()> {
 }
 
 /// Whether the AI's clear-line test passes from `from` to `to`, ignoring
-/// `ignore` (an object datum, or `u32::MAX`). `scratch` is 24 bytes of
+/// the two `ignore` datums (`u32::MAX` for an unused slot). `scratch` is 24 bytes of
 /// guest memory the entry owns, for the two points.
 pub async fn line_of_sight(
     cx: &Cx,
     scratch: u32,
     from: [f32; 3],
     to: [f32; 3],
-    ignore: u32,
+    ignore: [u32; 2],
 ) -> anyhow::Result<bool> {
     cx.write(|m| {
         for (k, v) in from.into_iter().chain(to).enumerate() {
@@ -495,8 +535,8 @@ pub async fn line_of_sight(
         GuestCall::new(points::AI_LINE_OF_SIGHT.base)
             .esi(scratch)
             .edi(scratch + 12)
-            .edx(ignore)
-            .ecx(u32::MAX),
+            .edx(ignore[0])
+            .ecx(ignore[1]),
     )
     .await?;
     Ok(r.eax as u8 != 0)

@@ -1,0 +1,26 @@
+screen: layout.code-entry
+kind: code_entry
+layout: large
+backing: over
+opener: main-menu
+states:
+  cursor-0:
+    focus: 0
+    cursor: 0
+  cursor-5:
+    focus: 0
+    cursor: 5
+widgets:
+  title:
+    component: title
+    text: "TITLE"
+  body:
+    component: body
+    text: "Body text."
+  cells:
+    component: cells
+    digits: "000000"
+    gap_after: 2
+  legend:
+    component: legend
+    prompts: [[[Up, Down], "DIGIT"], [[Left, Right], "MOVE"], [A, "DONE"], [B, "BACK"]]

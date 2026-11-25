@@ -12,10 +12,11 @@ pub mod method {
     /// The current bytes inside one loaded tag: `{at, len, epoch}` →
     /// `{at, holds_bytes}` (numeric address, bytes in hex).
     pub const EDIT_READ: &str = "edit.read";
-    /// Field writes, and raw writes and evictions, at one boundary under one
-    /// journal id: `{writes, raw?: [{owner, offset, bytes, was?}], evict?:
-    /// [owner], label?, epoch, confirm_peers?}` (docs/runtime/agent-api.md,
-    /// "Raw edits").
+    /// Field writes, raw writes, evictions and block moves at one boundary
+    /// under one journal id: `{writes, raw?: [{owner, offset, bytes, was?}],
+    /// evict?: [owner], moves?: [{root, stride, count, capacity?, bytes,
+    /// was}], label?, epoch, confirm_peers?}` (docs/runtime/agent-api.md,
+    /// "Raw edits" and "Block moves").
     pub const EDIT_BATCH: &str = "edit.batch";
     /// An extent past the end of a map file, for a grown raw block:
     /// `{file?, bytes, align?, epoch}` → `{id, pointer, len}`.
@@ -26,6 +27,20 @@ pub mod method {
     /// What the raw overlay holds: `{entries, bytes, appended,
     /// appended_bytes, owners}`.
     pub const EDIT_OVERLAY: &str = "edit.overlay";
+    /// The edit arena: `{base, len, mapped, used, largest_free,
+    /// physical_free, physical_floor, moves}` (docs/runtime/agent-api.md,
+    /// "Block moves").
+    pub const EDIT_ARENA: &str = "edit.arena";
+    /// A collision BSP's new blocks written into the edit arena, nothing
+    /// pointing at them yet: `{target, blocks: {name: {count, bytes}},
+    /// leaves?, mopp?, epoch, confirm_peers?}` → `{stage, bytes, blocks,
+    /// arena: {used, largest_free}, activation}` (docs/runtime/agent-api.md,
+    /// "Collision edits").
+    pub const EDIT_COLLISION_STAGE: &str = "edit.collision.stage";
+    /// Repoints a staged BSP's pairs at one tick boundary: `{stage, mode:
+    /// "append" | "rebuild", activate?, was: {name: {count, address}},
+    /// epoch, confirm_peers?}` → `{at, mode, activated, pairs, freed}`.
+    pub const EDIT_COLLISION_COMMIT: &str = "edit.collision.commit";
     /// The loaded map's tags: `{"group"?: "shad", "name"?: "<substring>",
     /// "limit"?: 200}` → `{"scenario", "names", "total", "tags": [{"tag",
     /// "group", "name", "address", "size", "defined"}]}`.
@@ -68,6 +83,9 @@ pub mod method {
         EDIT_RAW_APPEND,
         EDIT_STAGE_PUT,
         EDIT_OVERLAY,
+        EDIT_ARENA,
+        EDIT_COLLISION_STAGE,
+        EDIT_COLLISION_COMMIT,
         EDIT_TAGS,
         EDIT_GET,
         EDIT_SET,
@@ -81,6 +99,18 @@ pub mod method {
         RENDER_TOGGLE,
     ];
 }
+
+/// The names of a collision BSP's eight blocks in `edit.collision.stage`'s
+/// `blocks` and `edit.collision.commit`'s `was`, in block order: the
+/// fields of `tags::collision::Bsp`.
+pub const COLLISION_BLOCKS: [&str; 8] = [
+    "nodes", "planes", "leaves", "refs", "nodes_2d", "surfaces", "edges", "vertices",
+];
+/// `was`'s name for a structure's per-leaf block (`sbsp+0x2c`, `leaves`
+/// in the stage), apart from the BSP's own `leaves`.
+pub const COLLISION_LEAF_CLUSTERS: &str = "leaf_clusters";
+/// `was`'s name for a structure's MOPP block (`sbsp+0x1e0`).
+pub const COLLISION_MOPP: &str = "mopp";
 
 /// Where overrides are read from when nothing says: `$H2_RENDER_OVERRIDES`,
 /// else `render-overrides` in the cache directory ([`crate::cache_dir`]).

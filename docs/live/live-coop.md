@@ -103,6 +103,10 @@ protocol 0; a session with **no variant gets protocol 1, synchronous**;
 otherwise `0x00161c90` maps the variant's game engine to a protocol. That
 map gives distributed for every engine that shipped and synchronous for
 the two deprecated ones (Race, Headhunter) and for anything out of range.
+With the `rules` feature, `variants::record::protocol` answers the map
+natively: the same table, but Headhunter's index, the script index,
+plays distributed
+([game-types-without-carriers.md](../game/game-types-without-carriers.md#no-retail-engine-object)).
 A new session also starts at protocol 1 (`0x00059d58`). The protocol and
 the difficulty are replicated session parameters: setters at `0x0005b8e0`
 and `0x0005bc10` (host only), applied from a parameters update near
@@ -737,19 +741,35 @@ that does not need the settings layer.
 
 - `wire`: the one datagram. It carries the sender's acknowledgements and
   repeats every pad frame and tick hash the other side has not
-  acknowledged (up to 32 of each, 859 bytes at most), so delivery is in
+  acknowledged (up to 32 of each), so delivery is in
   order whatever the link drops, and nothing is retransmitted on a timer.
+  The datagram (version 3, 1159 bytes at most, under the relay's cap) also
+  carries the Forge lane: a run of an ordered, acknowledged byte
+  stream that a shared Forge session sends its messages on — as many
+  bytes as fit beside the datagram's pads and hashes (`forge_room`, at
+  most `MAX_FORGE`, never past the wire cap), with `FORGE_WINDOW` runs a
+  flush so a welcome crosses in a few round trips — and the beat,
+  the 48 bytes of log head and stream position a machine reports in every
+  datagram as the session's keep-alive
+  ([forge-design.md](../game/forge-design.md), "F5 in detail").
   A datagram of another session, another version or another shape is
   counted and dropped.
 - `link`: `Link` is an unreliable datagram path. `UdpLink` is the direct
   one, on the XNet base port + 4 (`live_hle::NetworkConfig::coop_endpoint`;
   base+0, +1, +5, +6 are the title's channels and +2 is QoS, so a host
-  that opens base..base+6 for System Link already opens it). `Fallback`
+  that opens base..base+6 for System Link already opens it). `UdpPort` is
+  the many-peer form of it: one socket bound at the machine's own channel,
+  a `Link` to each peer, datagrams filed by their source address — the
+  form the game's Forge link serves a host's guests and a guest's host
+  through (`Hle::coop_endpoints` names them from XNet). `Fallback`
   sends on the direct path always and on the relay too while nothing has
   been heard on direct for a timeout. `sim_pair` is a simulated link on a
   fake clock: latency, jitter, loss, reordering, a switch to take it down,
   repeatable by seed.
-- `relay`: `RelayLink`, the relay path as a `Link`, on a thread of its own.
+- `relay`: `RelayLink`, the relay path as a `Link`, on a thread of its
+  own. The game's Forge co-op link serves one lane through it beside the
+  direct channel (`coop::link::Fallback`), for two machines that cannot
+  reach each other directly.
 - `schedule`: the two-port pad schedule of 2.2. A machine's sample taken
   when it starts frame *f* is frame *f + delay* of its port; the first
   `delay` frames are neutral; the delay is per machine and can change
@@ -758,7 +778,9 @@ that does not need the settings layer.
 - `peer`: one machine's end. `begin_frame` starts a frame only when both
   ports' pads are in hand (`Hold::Waiting` otherwise); `report_hash` takes
   a tick's hash, and the first tick whose hashes differ latches
-  `Hold::Desync` on both machines.
+  `Hold::Desync` on both machines. `forge_send`, `forge_recv` and
+  `forge_set_beat` are the Forge lane's ends; a queue of 24 MiB
+  unacknowledged refuses more bytes.
 - `tap`: `ScheduleTap`, an `xapi::tap::InputTap`. It overwrites the live
   packet for ports 0 and 1, answers "not connected" for anything else,
   and counts a read that came with no frame started.
@@ -770,7 +792,8 @@ a running game) instead of all of RAM.
 
 **Live server**: `GET /v1/sessions/{id}/relay` ([live-api.md](live-api.md),
 "Co-op relay"): a WebSocket for the two members of an open session
-advertised with `flags: "coop"`. The upgrade uses a `sessions.relay`
+advertised with `flags: "coop"` or `flags: "forge"` (a shared Forge
+session's lobby). The upgrade uses a `sessions.relay`
 bearer token. The relay caps messages at 1200 bytes and rate-limits each socket
 (`Policy::relay_rate`). It forwards bytes and never reads or stores them.
 
@@ -791,10 +814,16 @@ bearer token. The relay caps messages at 1200 bytes and rate-limits each socket
 
 **Left for the rest of phase 0 and after**
 
-- Wiring into `boot` and `app`: nothing calls `Peer` yet. The runner
-  needs the hold at the scheduler point after a present, the tap needs a
-  handle-to-port map from `xapi` (the tap is given a handle only), and
-  the tick observer has to feed `report_hash`.
+- Wiring into `boot` and `app`: the game's Forge co-op link runs a `Peer`
+  per other machine of a synchronous network game
+  (`game/src/forge_glue/link.rs`, pumping it each tick and offering its
+  Forge lane to a shared Forge session,
+  [forge-design.md](../game/forge-design.md) "F5 in detail"), over the
+  direct channel or the relay (`Fallback`), but no
+  runner holds a game's frames on a `Peer` yet: the hold at the scheduler
+  point after a present, the tap's handle-to-port map from `xapi` (the
+  tap is given a handle only), and the tick observer feeding
+  `report_hash` are all still to come.
 - The tap covers `XInputGetState` only. Device arrival and capabilities
   still come from the local backend (2.9).
 - The handshake of 2.3 (build, fingerprint, disc, epoch, start-state
@@ -1051,10 +1080,10 @@ screens, the session plumbing, the text and the web stay.
 ### 10.1 What a player sees
 
 **Host.** Xbox Live menu: Quickmatch, OptiMatch, Clankermatch, **Co-op
-Campaign**, Custom Game, Custom Game Browser, Content Download. The list still has five item
-widgets, so with six rows it scrolls: Content Download comes into view
-below the fifth row. Co-op Campaign has its own pane (the Custom Game
-picture, our help text). It opens the co-op screen:
+Campaign**, Custom Games, Forge, Firefight, Custom Game Browser, Mods
+([live-custom-games.md](live-custom-games.md) §5). Seven rows show and
+the list scrolls to the rest. Co-op Campaign has its own pane (the
+Custom Game picture, our help text). It opens the co-op screen:
 
 | row | value | press |
 |---|---|---|
@@ -1229,10 +1258,10 @@ Checklist (stderr lines in brackets):
 1. Both: sign in to Live. stderr: `coop-live: N campaign levels (M named)`
    (N about 15 on the retail disc; 0 means the disc read failed and the
    Level row says None).
-2. Host: Xbox Live menu. Co-op Campaign sits directly above Custom Game (row 3).
+2. Host: Xbox Live menu. Co-op Campaign sits directly above Custom Games (row 3).
    Moving onto Co-op Campaign shows the Custom Game
-   picture and our help line. [`custom games: xbox live menu tag has 6
-   panes and room for 5 rows`]
+   picture and our help line. [`custom games: xbox live menu tag has 10
+   panes and shows 7 of 9 rows`]
 3. Host: Co-op Campaign. The screen shows Level, Difficulty, Invite a
    Friend, Status, Ping (`-` for now), Start. [`coop-live: hosting a co-op
    campaign`]. Step the
@@ -1586,7 +1615,7 @@ Each step is now in the games' logs and `coop.log`:
 | `live: qos: listening for session <id> on <ip>:<port+2>: on, N bytes of data` | the host's QosListen, on each change |
 | `live: qos: <guest> asked about session <id>, which this console isn't listening for (listening: ...)` | the host, once per unknown session: the usual cause |
 | `live: join: find session <id>: <host> hosts it at <ip>:<port> ...` (or `no such session`, `the session is <state>`) | the guest's FindFromID |
-| `live: join: qos lookup: <ip>:<port+2> session <id>: contacted, N bytes of data` (or `no answer in 3 tries ...`, `nothing on that port`) | the guest's QoS probe |
+| `live: join: qos lookup: <ip>:<port+2> session <id>: contacted, N bytes of data` (or `no answer in 3 tries ...`, `nothing on that port`) | the guest's QoS probe; a host behind the guest's own NAT shows its LAN address first, then the public one if the LAN address did not answer |
 | `live: join: <ip>:<port> for session <id>: address made` / `connecting to ...` | XNetXnAddrToInAddr and XNetConnect |
 
 The 2026-11-18 (011442) run with these lines showed the failing step: the
@@ -1792,8 +1821,8 @@ without a press. The three parts of 12.5:
 | Game | Path |
 |---|---|
 | every game | No press until the main menu, which the coop-test data reaches by itself about 19 s after the agent socket is up (presses START, A, B only if it hasn't a minute after the first chance). Main menu: DOWN, A (Xbox Live). That opens the players' screen `0x1e` in mode 3; A there opens the Live menu. If what opened says the cursor was on another row (`0xee` for Campaign, mode 1 for Split Screen, mode 2 for System Link), the driver presses B and moves to Xbox Live. The guests come back to Xbox Live a second time with A, corrected the same way |
-| host | Live menu (`0xba`): from the restored row to row 3 (Co-op Campaign, directly above Custom Game), A. Wait for `coop-live: hosting`; `custom games: opening the browser` means it landed on row 5, so B and try again. Wait for every lobby guest's `coop-live: guest: joined`, then A on Start Game (the lobby's row 0, `0x250fb3` → `0x251050`). If `session start returned 1` or `simulation mode sync-server` doesn't follow, UP, A |
-| guest | Live menu: B back to the main menu, where the invitation reader runs (12.1). Once `coop-auto: accepting`: DOWN, UP (the reader runs on an event, perhaps a controller event). If the game hasn't joined 20 s after the acceptance (or 5 min with no acceptance), A for Xbox Live, row 5 (Custom Game Browser), A. Once the browser has probed a game (`live: join: qos lookup`) and 1.5 s have passed, A on the first game. Done at `coop-live: guest: joined` |
+| host | Live menu (`0xba`): from the restored row to row 3 (Co-op Campaign, directly above Custom Game), A. Wait for `coop-live: hosting`; `custom games: opening the browser` means it landed on row 7, so B and try again. Wait for every lobby guest's `coop-live: guest: joined`, then A on Start Game (the lobby's row 0, `0x250fb3` → `0x251050`). If `session start returned 1` or `simulation mode sync-server` doesn't follow, UP, A |
+| guest | Live menu: B back to the main menu, where the invitation reader runs (12.1). Once `coop-auto: accepting`: DOWN, UP (the reader runs on an event, perhaps a controller event). If the game hasn't joined 20 s after the acceptance (or 5 min with no acceptance), A for Xbox Live, row 7 (Custom Game Browser), A. Once the browser has probed a game (`live: join: qos lookup`) and 1.5 s have passed, A on the first game. Done at `coop-live: guest: joined` |
 | late guest | As a guest, but the browser fallback waits until 120 s after the host invited it, so it joins in progress |
 
 **What the first runs showed** (2026-11-18, 083611 and 092343, with

@@ -298,6 +298,17 @@ impl Localization {
             tables: tables.try_into().expect("nine locale tables"),
         })
     }
+    /// Tables built in memory (tools and tests), in `Language::ALL` order.
+    /// The descriptors are zero: they describe file offsets, which a table
+    /// that was never read from a map does not have.
+    pub fn from_tables(tables: [LocaleTable; 9]) -> Self {
+        Self {
+            descriptors: std::array::from_fn(|_| {
+                LocaleDescriptor::decode(&[0; LocaleDescriptor::SIZE]).expect("zero descriptor")
+            }),
+            tables,
+        }
+    }
     pub fn table(&self, language: Language) -> &LocaleTable {
         &self.tables[language as usize]
     }

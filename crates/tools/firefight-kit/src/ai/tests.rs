@@ -40,6 +40,19 @@ fn zone() -> Zone {
     }
 }
 
+/// Base N's zone: the invented zone moved along x, one area.
+fn base(n: usize) -> Zone {
+    let mut z = zone();
+    z.name = format!("ff_base_{n:02}");
+    let dx = 40.0 * (n + 1) as f32;
+    for p in &mut z.firing_positions {
+        p.position[0] += dx;
+    }
+    z.areas[0].name = "base".into();
+    z.areas[0].mean[0] += dx;
+    z
+}
+
 /// Both modes start with a ported multiplayer fixture. Its unrelated script
 /// and the previously placed weapon keep their original indices.
 fn kit_map(probe: bool) -> Map<Cursor<Vec<u8>>> {
@@ -78,12 +91,12 @@ fn kit_map(probe: bool) -> Map<Cursor<Vec<u8>>> {
         .add_tag(FourCC(*b"scnr"), r"invented\arena", TagPayload::Built(root))
         .unwrap();
     set.scenario = scnr;
-    let base = set.build().unwrap().0;
-    let mut map = Map::from_reader(Cursor::new(base)).unwrap();
+    let bytes = set.build().unwrap().0;
+    let mut map = Map::from_reader(Cursor::new(bytes)).unwrap();
     let elite = set
         .add_tag(FourCC(*b"char"), ELITE_PATH, TagPayload::Empty)
         .unwrap();
-    let kit = prepare(&mut map, vec![zone()], elite, probe).unwrap();
+    let kit = prepare(&mut map, vec![zone()], vec![base(0), base(1)], elite, &[], probe).unwrap();
     let TagPayload::Built(root) = &mut set.tag_mut(scnr).unwrap().payload else {
         unreachable!()
     };
@@ -104,7 +117,7 @@ fn squad_blocks_read_back_through_h1campaign() {
     let (bytes, address) = tag_bytes(&mut map, scenario);
     let view = TagView::new(&bytes, address);
     let ai = ScenarioAi::read(&view).unwrap();
-    assert_eq!(ai.zones, [zone()]);
+    assert_eq!(ai.zones, [zone(), base(0), base(1)]);
     let elite = map.tag(ELITE_PATH).unwrap().id;
     assert_eq!(ai.character_palette, [elite]);
     assert_eq!(ai.squads.len(), 16);
@@ -182,40 +195,58 @@ fn the_probe_recipe_places_one_squad() {
 }
 
 #[test]
-fn the_kit_authors_one_named_hunt_order_over_every_area() {
+fn each_base_has_a_hunt_order_over_its_area() {
     for probe in [false, true] {
         let mut map = kit_map(probe);
         let ai = ScenarioAi::read_map(&mut map).unwrap();
-        let [order] = ai.orders.as_slice() else {
-            panic!("expected one order")
-        };
-        assert_eq!(order.name, HUNT_ORDER);
-        assert_eq!(order.name, "ff_hunt");
-        assert_eq!(
-            (order.style, order.follow_squad, order.entry_script_index),
-            (-1, -1, -1)
+        assert_eq!(ai.orders.len(), 2);
+        for (n, order) in ai.orders.iter().enumerate() {
+            assert_eq!(order.name, hunt_name(n));
+            assert_eq!(order.name, format!("ff_hunt_{n:02}"));
+            assert_eq!(
+                (order.style, order.follow_squad, order.entry_script_index),
+                (-1, -1, -1)
+            );
+            // Base n's zone follows the one drop zone.
+            let zone = 1 + n;
+            assert_eq!(ai.zones[zone].name, format!("ff_base_{n:02}"));
+            let want: Vec<_> = (0..ai.zones[zone].areas.len())
+                .map(|area| AreaRef {
+                    kind: 0,
+                    zone: zone as i16,
+                    area: area as i16,
+                })
+                .collect();
+            assert_eq!(order.primary_areas, want);
+            assert!(order.secondary_areas.is_empty());
+        }
+        // Squads start only in drop zones.
+        assert!(
+            ai.squads
+                .iter()
+                .all(|s| s.initial_zone <= 0 && s.starting_locations.len() == 2)
         );
-        let want: Vec<_> = (0..ai.zones[0].areas.len())
-            .map(|area| AreaRef {
-                kind: 0,
-                zone: 0,
-                area: area as i16,
-            })
-            .collect();
-        assert_eq!(order.primary_areas, want);
-        assert!(order.secondary_areas.is_empty());
     }
 }
 
 #[test]
-fn hunt_spans_every_zone_and_refuses_an_arena_without_areas() {
-    let mut two = vec![zone(), zone()];
-    two[1].areas.clear();
-    two.push(zone());
-    let order = hunt_order(&two).unwrap();
-    let zones: Vec<i16> = order.primary_areas.iter().map(|a| a.zone).collect();
-    assert_eq!(zones, [0, 2]);
-    let mut none = zone();
-    none.areas.clear();
-    assert!(hunt_order(&[none]).unwrap_err().contains("Hunt"));
+fn a_hunt_order_spans_only_its_base_and_a_base_without_areas_is_refused() {
+    let mut zones = vec![zone(), base(0), zone(), base(1)];
+    let second = zones[1].areas[0].clone();
+    zones[1].areas.push(second);
+    let orders = hunt_orders(&zones, &[1, 3]).unwrap();
+    let spans: Vec<Vec<(i16, i16)>> = orders
+        .iter()
+        .map(|o| o.primary_areas.iter().map(|a| (a.zone, a.area)).collect())
+        .collect();
+    assert_eq!(spans, [vec![(1, 0), (1, 1)], vec![(3, 0)]]);
+    zones[3].areas.clear();
+    let error = hunt_orders(&zones, &[1, 3]).unwrap_err();
+    assert!(error.contains("ff_hunt_01"), "{error}");
+    assert!(hunt_orders(&zones, &[]).unwrap_err().contains("Hunt"));
+    assert!(
+        hunt_orders(&zones, &[9])
+            .unwrap_err()
+            .contains("ff_hunt_00")
+    );
 }

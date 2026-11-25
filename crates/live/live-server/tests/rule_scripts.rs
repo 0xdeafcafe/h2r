@@ -12,7 +12,7 @@ use live_server::store::{MemoryStore, Store};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-const BROKEN: &str = "rules \"Broken\" 1\ncarrier slayer\non kill(v, k) {\n    score(k, )\n}\n";
+const BROKEN: &str = "rules \"Broken\" 1\ntype slayer\non kill(v, k) {\n    score(k, )\n}\n";
 
 async fn post(h: &Harness, path: &str, body: Value, headers: &[(&str, String)]) -> Resp {
     let mut all = vec![("content-type", "application/json".to_string())];
@@ -47,7 +47,7 @@ async fn check_reports_the_hash_the_budget_and_errors_with_places() {
     assert_eq!(v["errors"][0]["line"], 4);
     assert!(v["report"].is_null());
 
-    let caps = "rules \"T\" 1\ncarrier slayer\nteams 2\nrequires player.team\non spawn(p) { set_team(p, team 1) }\n";
+    let caps = "rules \"T\" 1\ntype slayer\nteams 2\nrequires player.team\non spawn(p) { set_team(p, team 1) }\n";
     let v = post(&h, "/v1/rules/check", json!({"source": caps}), &[]).await.json();
     assert_eq!(v["report"]["capabilities"][0]["name"], "player.team");
     assert_eq!(v["report"]["capabilities"][0]["words"], "moves players between teams");
@@ -158,13 +158,13 @@ async fn builtins_are_listed_with_their_source() {
         let item = items.iter().find(|i| i["key"] == *key).expect("each example is listed");
         assert_eq!(item["source"], *source);
         let ir = rules::compile(source).unwrap();
-        assert_eq!(item["engine"], ir.header.carrier);
+        assert_eq!(item["engine"], ir.header.engine());
         assert_eq!(item["name"], ir.header.name.as_str());
         assert_eq!(item["hash"], ir.id().to_string());
     }
 }
 
-const IDE_SRC: &str = "rules \"T\" 1\ncarrier slayer\noption points: int 1..5 = 1\non kill(victim, killer) {\n    score(killer, points)\n    \n}\n";
+const IDE_SRC: &str = "rules \"T\" 1\ntype slayer\noption points: int 1..5 = 1\non kill(victim, killer) {\n    score(killer, points)\n    \n}\n";
 
 async fn ide(h: &Harness, body: Value) -> Value {
     let r = post(h, "/v1/rules/ide", body, &[]).await;
@@ -227,11 +227,11 @@ async fn ide_answers_each_op_in_lsp_shapes() {
     assert_eq!(names, ["T", "points", "on kill"]);
     assert!(v[2].get("selectionRange").is_some());
 
-    let messy = "rules \"T\" 1\ncarrier slayer\non kill(v,k){score(k,1)}\n";
+    let messy = "rules \"T\" 1\ntype slayer\non kill(v,k){score(k,1)}\n";
     let v = ide(&h, json!({"source": messy, "op": "format"})).await;
     assert_eq!(
         v,
-        json!({"text": "rules \"T\" 1\ncarrier slayer\non kill(v, k) {\n    score(k, 1)\n}\n"})
+        json!({"text": "rules \"T\" 1\ntype slayer\non kill(v, k) {\n    score(k, 1)\n}\n"})
     );
     // Source that does not parse is not formatted.
     let v = ide(&h, json!({"source": "rules \"T\" 1\non tick {\n", "op": "format"})).await;
@@ -531,4 +531,38 @@ async fn simulate_shares_the_workbench_bucket_and_a_batch_costs_more() {
     assert!(limited, "the burst runs out");
     // A batch takes two of the bucket's 20.
     assert!(batches <= live_server::rule_scripts::RATE.1 / 2 + 1, "{batches}");
+}
+
+#[tokio::test]
+async fn the_script_view_lists_settings_and_quick() {
+    let h = harness().await;
+    let r = post(&h, "/v1/rules/check", json!({"source": rules::builtin::DUEL}), &[]).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    let v = r.json();
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["scoring"], "carrier");
+    let ir = rules::compile(rules::builtin::DUEL).unwrap();
+    assert_eq!(v["about"], ir.header.about);
+    let settings = v["settings"].as_array().unwrap();
+    assert_eq!(settings.len(), ir.settings.len());
+    let score = settings.iter().find(|s| s["name"] == "score_limit").unwrap();
+    assert_eq!(score["value"], "15");
+    assert!(!score["label"].as_str().unwrap().is_empty());
+    // Value text is words: a choice is its label, not its number.
+    let weapon = settings.iter().find(|s| s["name"] == "starting_weapon").unwrap();
+    assert!(weapon["value"].as_str().unwrap().parse::<i32>().is_err());
+    let quick = v["quick"].as_array().unwrap();
+    assert_eq!(quick.len(), ir.quick.len());
+    assert_eq!(quick[0], json!({"kind": "setting", "name": "score_limit", "label": score["label"]}));
+
+    // A script that scores itself and declares no settings.
+    let v = post(&h, "/v1/rules/check", json!({"source": rules::builtin::SLAYER}), &[]).await.json();
+    assert_eq!(v["scoring"], "script");
+    assert!(v.get("settings").is_none());
+    assert!(v.get("quick").is_none());
+    // A script that does not build has none of it.
+    let v = post(&h, "/v1/rules/check", json!({"source": BROKEN}), &[]).await.json();
+    for k in ["scoring", "about", "settings", "quick"] {
+        assert!(v.get(k).is_none(), "{k}");
+    }
 }

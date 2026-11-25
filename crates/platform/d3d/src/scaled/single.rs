@@ -19,7 +19,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
             return if self.scale == RenderScale::ONE { self.guest(s) } else { self.live(s.view).unwrap_or_else(|| self.guest(s)) };
         }
         self.live(s.view).or_else(|| {
-            if self.lighting == Lighting::Retail { return None; }
+            if self.lighting != Lighting::E3 { return None; }
             self.shadow_at(&s.reference).and_then(|i| {
                 self.shadows[i].view.as_ref().filter(|v| !v.stale_depth && !v.stale_stencil).map(|v| v.depth)
             })
@@ -46,7 +46,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
     // Make an E3 shadow's scaled attachment current before its first draw
     // or clear. The unscaled level remains the source until this succeeds.
     fn shadow_attachment(&mut self, depth: Surf<R, V>) -> Result<Option<(V::Surface, V::Surface)>, String> {
-        if self.scene_active || self.lighting == Lighting::Retail { return Ok(None); }
+        if self.scene_active || self.lighting != Lighting::E3 { return Ok(None); }
         let Some(i) = self.shadow_at(&depth.reference) else { return Ok(None) };
         let guest = self.guest(depth);
         let Some(v) = self.shadow_view(i) else { return Ok(None) };

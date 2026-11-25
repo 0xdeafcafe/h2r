@@ -13,7 +13,8 @@
 //!   calls, and the sight pass, in an async body ([`run_work`]) and then
 //!   runs the tick itself.
 //! - [`Runtime::post_tick`] after each game tick: [`Host::post_tick`] over
-//!   what the guest shows, the tick's actor kills and the last sight pass.
+//!   what the guest shows, the tick's actor and player kills and the last
+//!   sight pass.
 //!
 //! Ticks are numbered as the tick a boundary belongs to: before a tick it
 //! is the game time's tick count plus one, after it the count, so the
@@ -22,13 +23,14 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use ::firefight::director::SQUAD_SLOTS;
-use ::firefight::{Command, Outcome, Settings, Skull};
+use ::firefight::{Command, MAX_TEAMS, Outcome, PlayerKill, Settings, Skull};
 use agent_proto::firefight as wire;
 use engine::entry::{Cx, EntryError, GuestCall, Ret};
 use engine::{GuestMemory, MemFault, points};
 use sim_state::SimEvent;
 
 use super::guest::{self, KitLayout};
+use super::film;
 use super::host::{AiGlobals, Game, Host, KillSeen, Kit, PlayerView, Role};
 use super::hud;
 use super::options::{self, Options};
@@ -76,22 +78,39 @@ fn score_report(credit: super::host::Credit) -> live_proto::firefight::Firefight
         reason: match credit.reason {
             ::firefight::ScoreReason::Kill => "kill",
             ::firefight::ScoreReason::Assist => "assist",
+            ::firefight::ScoreReason::PlayerKill => "player_kill",
         }
         .into(),
         class: credit.class,
     }
 }
 
-/// A result as the wire names it. The set's name is cut to the wire's 32.
-fn ended_report(ended: super::host::Ended) -> live_proto::firefight::FirefightEnded {
+/// The wire's name for an outcome: `won`, `lost`, `team_won` (the team is
+/// the wire's `team`) or `draw`.
+pub fn outcome_name(outcome: Outcome) -> &'static str {
+    match outcome {
+        Outcome::Won => "won",
+        Outcome::Lost => "lost",
+        Outcome::TeamWon { .. } => "team_won",
+        Outcome::Draw => "draw",
+    }
+}
+
+/// A result as the wire names it: the team count, the outcome with a
+/// winning team, and one score a team. The set's name is cut to the wire's
+/// 32.
+pub fn ended_report(ended: super::host::Ended) -> live_proto::firefight::FirefightEnded {
+    let teams = usize::from(ended.teams).clamp(1, MAX_TEAMS);
     live_proto::firefight::FirefightEnded {
         tick: u64::from(ended.tick),
         set: ended.set.chars().take(32).collect(),
-        outcome: match ended.outcome {
-            Outcome::Won => "won",
-            Outcome::Lost => "lost",
-        }
-        .into(),
+        teams: teams as u8,
+        outcome: outcome_name(ended.outcome).into(),
+        team: match ended.outcome {
+            Outcome::TeamWon { team } => Some(team),
+            _ => None,
+        },
+        scores: ended.scores[..teams].to_vec(),
         rounds_cleared: ended.rounds_cleared,
         lives_used: ended.lives_used,
     }
@@ -178,6 +197,93 @@ impl Assists {
     }
 }
 
+/// The tick's players killed (`SimEvent::Kill`, which the game credits
+/// only for players), each with its killer's and victim's roster slots as
+/// an actor kill's killer is resolved. A kill with no victim player is left
+/// out; one with no killer (a fall, the world) keeps none.
+pub fn player_kills(events: &[SimEvent]) -> Vec<PlayerKill> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            SimEvent::Kill(k) => Some(PlayerKill {
+                killer: k.attacker.get().map(|a| (a & 0xffff) as u8),
+                victim: (k.victim.get()? & 0xffff) as u8,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether the loaded multiplayer game's variant plays teams (its team play
+/// flag); none when the options cannot be read.
+pub fn team_play(m: &dyn GuestMemory) -> Option<bool> {
+    use bots::guest::{OPTIONS, VARIANT_FLAGS};
+    let globals = m.u32(points::GAME_GLOBALS.base).ok().filter(|&g| g != 0)?;
+    let flags = m.u32(globals + OPTIONS + VARIANT_FLAGS).ok()?;
+    Some(flags & live_proto::hopper::variant::flag::TEAM_PLAY != 0)
+}
+
+/// Why two player teams cannot play this game, if they cannot: the variant
+/// must be a team game, so the engine keeps each team's players together.
+pub fn teams_refusal(teams: u8, team_play: Option<bool>) -> Option<&'static str> {
+    match (teams > 1, team_play) {
+        (false, _) | (true, Some(true)) => None,
+        (true, Some(false)) => Some(
+            "two Firefight teams need a team game, and Team Play did not turn on for this game",
+        ),
+        (true, None) => Some("two Firefight teams need a team game, and the variant's team play could not be read"),
+    }
+}
+
+/// The options block's variant flags (`options + 0x134 + 0x48`), which
+/// the game copies into the globals at activation, team play in bit 0.
+pub const OPTIONS_VARIANT_FLAGS: u32 = bots::guest::VARIANT_FLAGS;
+
+/// Whether a multiplayer game about to start on a map that carries the kit
+/// (`kit`) must be a team game for Game Setup's Firefight choices: two
+/// player teams with Firefight on. One team plays whatever the variant
+/// says.
+pub fn wants_team_play(options: &Options, kit: bool) -> bool {
+    kit && options.enabled && options.player_teams() > 1
+}
+
+/// The variant flags `flags` with team play on, when `wanted` and it is
+/// off; none when nothing changes.
+pub fn with_team_play(flags: u32, wanted: bool) -> Option<u32> {
+    use live_proto::hopper::variant::flag::TEAM_PLAY;
+    (wanted && flags & TEAM_PLAY == 0).then_some(flags | TEAM_PLAY)
+}
+
+/// The Firefight match a game about to start plays, as the session data
+/// names it (`NewSession.firefight`, docs/game/firefight.md, "Live"): the
+/// definition Game Setup's choices give, its id, teams and difficulty, and
+/// the kit version. None when Firefight is off, the map lacks the kit, or
+/// the choices give no definition.
+pub fn session_firefight(options: &Options, kit: bool) -> Option<live_proto::session::Firefight> {
+    if !kit || !options.enabled {
+        return None;
+    }
+    let def = options.definition().ok()?;
+    let id = def.id().ok()?;
+    use ::firefight::Difficulty as D;
+    Some(live_proto::session::Firefight {
+        set: def.name.clone(),
+        id: id.to_string(),
+        teams: def.teams,
+        difficulty: match options.difficulty {
+            D::Easy => 0,
+            D::Normal => 1,
+            D::Heroic => 2,
+            D::Legendary => 3,
+        },
+        kit: ::firefight::KIT_VERSION,
+    })
+}
+
+/// Where the match a game about to start plays goes: on a Live host, its
+/// session's advertisement (`live_hle::Hle::set_session_firefight`).
+pub type SessionSink = dyn Fn(Option<live_proto::session::Firefight>) + Send + Sync;
+
 /// The character palette row whose tag is `character`.
 fn palette_row(m: &dyn GuestMemory, character: u32) -> Option<u16> {
     let scnr = m.u32(points::SCENARIO.base).ok().filter(|&s| s != 0)?;
@@ -247,6 +353,7 @@ pub struct GuestGame<'a> {
     /// The last sight pass, by kit zone.
     pub sight: &'a [bool],
     pub kills: Vec<KillSeen>,
+    pub player_kills: Vec<PlayerKill>,
     pub calls: Vec<(u32, Call)>,
     entry: u32,
     pub skulls: &'a mut BTreeSet<Skull>,
@@ -266,6 +373,7 @@ impl<'a> GuestGame<'a> {
             kit,
             sight,
             kills: Vec::new(),
+            player_kills: Vec::new(),
             calls: Vec::new(),
             entry: 0,
             skulls,
@@ -319,12 +427,22 @@ impl Game for GuestGame<'_> {
     fn kills(&self) -> Vec<KillSeen> {
         self.kills.clone()
     }
+    fn player_kills(&self) -> Vec<PlayerKill> {
+        self.player_kills.clone()
+    }
     fn credit_score(&mut self, player: u8, points: u32) -> anyhow::Result<()> {
         self.defer(Call::Score { player, points })
     }
-    /// The pool is the director's: the HUD reads it from the mode blob, and
-    /// the engine holds a respawn by the variant's lives setting.
+    /// The pool is the director's ([`Host`] sets it there): the HUD reads
+    /// it from the mode blob, and the engine holds every respawn by the
+    /// variant's lives setting until the director's `Respawn`.
     fn set_lives(&mut self, _player: Option<u8>, _pool: u16) -> anyhow::Result<()> {
+        Ok(())
+    }
+    /// As [`Game::set_lives`]: the engine keeps no team pool, so a team's is
+    /// the director's, which spends it on that team's respawns and holds
+    /// them at 0 (`ScriptDirector::set_team_pool`).
+    fn set_team_lives(&mut self, _team: u8, _pool: u16) -> anyhow::Result<()> {
         Ok(())
     }
     fn respawn(&mut self, player: u8) -> anyhow::Result<()> {
@@ -350,6 +468,10 @@ impl Game for GuestGame<'_> {
 pub struct Match {
     pub map: String,
     pub host: Host,
+    #[cfg(feature = "rules")]
+    pub(super) announce_type: bool,
+    #[cfg(feature = "rules")]
+    announced_round: Option<i32>,
     pub kit: KitLayout,
     sight: Vec<bool>,
     sight_due: u32,
@@ -362,6 +484,9 @@ pub struct Match {
     assists: Assists,
     /// The HUD's mode blob could not be made, and the runtime said so.
     hud_failed: bool,
+    /// What the Clankers were last told of the match
+    /// (`bots::firefight::set_context`), to tell them only of a change.
+    bots: Option<bots::firefight::Context>,
 }
 
 impl Match {
@@ -387,6 +512,8 @@ pub struct Runtime {
     options: Box<options::Source>,
     /// Where scores and the result go.
     reports: Box<ReportSink>,
+    /// Where the match a game about to start plays is published.
+    session: Box<SessionSink>,
 }
 
 /// The loaded map's name, from the cache header copy.
@@ -396,6 +523,50 @@ fn map_name(m: &dyn GuestMemory) -> String {
     };
     let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
     String::from_utf8_lossy(&bytes[..end]).into_owned()
+}
+
+/// Apply the wave set carried by the selected game variant to the match options.
+fn record_options(m: &dyn GuestMemory, at: u32, mut choices: Options) -> Result<Options, String> {
+    if crate::lobby_start::mode() == crate::lobby_start::Mode::Forge {
+        choices.enabled = false;
+        return Ok(choices);
+    }
+    let mut block = [0; variants::ext::LEN];
+    if m.read(at + variants::ext::AT as u32, &mut block).is_ok() {
+        let script = variants::ext::Ext::in_effect(&block).script;
+        match script.mode {
+            variants::ext::Mode::Firefight => {
+                let wave = ::firefight::builtin::variant(script.prefix)
+                    .ok_or_else(|| format!("unknown Firefight wave set {:02x?}", script.prefix))?;
+                if let Some(required) = wave.map
+                    && !map_name(m).eq_ignore_ascii_case(required)
+                {
+                    return Err(format!("{} requires the {required} kit map", wave.def.name));
+                }
+                choices.wave_set = wave.value;
+                choices.teams = None;
+                choices.enabled = true;
+            }
+            variants::ext::Mode::Rules => choices.enabled = false,
+            variants::ext::Mode::None if crate::lobby_start::state().lobby => choices.enabled = false,
+            _ => {}
+        }
+    }
+    Ok(choices)
+}
+
+/// The kit's director supplies the type for its legacy mode and its plain
+/// Slayer record. A record naming a rules variant has its own header.
+#[cfg(feature = "rules")]
+fn director_owns_line(m: &dyn GuestMemory) -> bool {
+    use crate::rules::guest::{block, engine_index};
+    use variants::ext::{Ext, Mode};
+    let Ok(Some(block)) = block(m) else { return false };
+    match Ext::in_effect(&block).script.mode {
+        Mode::Firefight => true,
+        Mode::None => engine_index(m).ok().flatten() == Some(variants::record::GameType::Slayer.engine()),
+        _ => false,
+    }
 }
 
 /// This machine's role: a film's playback replays the host's entries; the
@@ -421,12 +592,19 @@ impl Runtime {
             // is the settings' defaults: Holdout, Normal, skulls on.
             options: Box::new(|| Ok(Options::default())),
             reports: Box::new(|_| {}),
+            session: Box::new(|_| {}),
         }
     }
 
     /// Where the host's scores and result go (`Report`).
     pub fn set_reports(&mut self, reports: Box<ReportSink>) {
         self.reports = reports;
+    }
+
+    /// Where the match a game about to start plays is published
+    /// ([`SessionSink`]).
+    pub fn set_session(&mut self, session: Box<SessionSink>) {
+        self.session = session;
     }
 
     /// Where the match's choices come from (`options::source`).
@@ -460,16 +638,70 @@ impl Runtime {
         }
     }
 
+    /// A game is about to start (`GAME_ACTIVATE`, before the game copies
+    /// `options`, the options block, into its globals): two Firefight
+    /// teams on a kit map turn the variant's team play on there, so the
+    /// game plays as teams and [`teams_refusal`] has nothing to refuse.
+    /// Game Setup's Firefight choices decide, as they do the match. A
+    /// film's playback, another mode, a map without the kit and one team
+    /// leave the options as they are. It also publishes the match this
+    /// game plays ([`session_firefight`], none for any other game) to the
+    /// session sink. Returns the line to log when it wrote.
+    pub fn activate(&self, m: &mut dyn GuestMemory, options: u32, film: bool) -> Option<String> {
+        if film || m.u32(options).ok()? != MODE_MULTIPLAYER {
+            return None;
+        }
+        let chosen = (self.options)().and_then(|o| record_options(m, options + crate::variant_ext::OPTIONS_VARIANT, o)).ok();
+        // The match resolves the Wave set value on the map it starts on:
+        // a map-specific set plays only on its own (`builtin::resolve`).
+        let on_map = map_name(m);
+        let on_map = (!on_map.is_empty()).then_some(on_map);
+        let chosen = chosen.map(|mut o| {
+            o.map = on_map.clone();
+            o
+        });
+        let kit = guest::read_kit(&*m).ok().flatten().is_some();
+        // Every multiplayer start: a game that is not Firefight clears the
+        // last one's.
+        (self.session)(chosen.as_ref().and_then(|o| session_firefight(o, kit)));
+        let chosen = chosen?;
+        let at = options.wrapping_add(OPTIONS_VARIANT_FLAGS);
+        let flags = m.u32(at).ok()?;
+        let on = with_team_play(flags, wants_team_play(&chosen, kit))?;
+        Some(match m.set_u32(at, on) {
+            Ok(()) => "firefight: two teams: Team Play is on for this game".to_string(),
+            Err(e) => format!(
+                "firefight: two teams: Team Play could not be turned on: {}",
+                fault(e)
+            ),
+        })
+    }
+
     /// A game started. Returns the line to log.
     pub fn start(&mut self, m: &mut dyn GuestMemory, film: bool) -> String {
         self.errors.clear();
         hud::slot().set(None);
+        film::clear();
+        crate::actor_net::publish_log_head(None);
+        // No match for the Clankers until one runs.
+        bots::firefight::set_context(None);
         if bots::guest::game_mode(&*m) != Some(MODE_MULTIPLAYER) {
             self.status = Status::Idle("not a multiplayer game");
             return "firefight: idle: not a multiplayer game".into();
         }
         let map = map_name(&*m);
-        let chosen = match (self.options)().and_then(|o| o.definition().map(|d| (o, d))) {
+        let mut read = (self.options)().and_then(|o| {
+            match m.u32(points::GAME_GLOBALS.base).ok().filter(|g| *g != 0) {
+                Some(g) => record_options(m, g + bots::guest::OPTIONS + crate::variant_ext::OPTIONS_VARIANT, o),
+                None => Ok(o),
+            }
+        });
+        // The match resolves the Wave set value on this map (a
+        // map-specific set plays only on its own).
+        if let Ok(o) = read.as_mut() {
+            o.map = (!map.is_empty()).then(|| map.clone());
+        }
+        let chosen = match read.and_then(|o| o.definition().map(|d| (o, d))) {
             Ok(chosen) => chosen,
             Err(why) => {
                 let why = format!("reading Game Setup's Firefight choices: {why}");
@@ -482,6 +714,14 @@ impl Runtime {
         if !options.enabled {
             self.status = Status::Idle("Firefight is off in Game Setup");
             return "firefight: idle: Firefight is off in Game Setup".into();
+        }
+        if let Some(why) = teams_refusal(definition.teams, team_play(&*m)) {
+            let line = format!("firefight: off on {map}: {why}");
+            self.status = Status::Refused {
+                map,
+                why: why.into(),
+            };
+            return line;
         }
         let kit = match guest::read_kit(&*m) {
             Ok(kit) => kit,
@@ -514,7 +754,15 @@ impl Runtime {
                     kit.zones.len(),
                     host.team()
                 );
+                let context = bot_context(&host);
+                bots::firefight::set_context(context.clone());
+                #[cfg(feature = "rules")]
+                let announce_type = role == Role::Host && director_owns_line(m);
                 self.status = Status::Running(Box::new(Match {
+                    #[cfg(feature = "rules")]
+                    announce_type,
+                    #[cfg(feature = "rules")]
+                    announced_round: None,
                     map,
                     sight: vec![false; kit.zones.len()],
                     host,
@@ -526,6 +774,7 @@ impl Runtime {
                     skulls,
                     assists: Assists::default(),
                     hud_failed: false,
+                    bots: context,
                 }));
                 line
             }
@@ -550,6 +799,15 @@ impl Runtime {
             return None;
         }
         game.pre = Some(tick);
+        #[cfg(feature = "rules")]
+        if game.announce_type
+            && let Some(round) = game.host.director().and_then(|d| d.vm().global("round"))
+            && game.announced_round != Some(round)
+            && crate::rules::start_line::players_ready(m)
+        {
+            crate::rules::world::show::start_clip(tick, ::rules::types::Type::Firefight);
+            game.announced_round = Some(round);
+        }
         let Match {
             host,
             kit,
@@ -557,11 +815,35 @@ impl Runtime {
             skulls,
             ..
         } = &mut **game;
+        // A film's playback (or a peer) takes the entries handed over.
+        let mut film_errors = Vec::new();
+        if host.role() == Role::Replica {
+            for payload in film::take_played() {
+                if let Err(e) = film::parse(&payload)
+                    .and_then(|entry| host.receive(entry).map(drop).map_err(|e| e.to_string()))
+                {
+                    film_errors.push(e);
+                }
+            }
+        }
+        let before = host.applied();
         let (calls, errors) = {
             let mut g = GuestGame::new(m, Some(&*kit), sight, skulls, &*self.sink);
             let errors = host.pre_tick(tick, &mut g);
             (std::mem::take(&mut g.calls), errors)
         };
+        // The entries applied this tick, for the film being recorded.
+        let applied = host.applied();
+        film_errors.extend(film::record(
+            host.log()
+                .since(before)
+                .iter()
+                .take_while(|entry| entry.seq <= applied),
+        ));
+        // A replica draws the host's mode blob, from the log.
+        if host.role() == Role::Replica {
+            hud::slot().set(host.mode_state().map(<[u8]>::to_vec));
+        }
         let sight = (game.host.director().is_some() && !game.host.held() && tick >= game.sight_due)
             .then(|| {
                 game.sight_due = tick.saturating_add(SIGHT_EVERY);
@@ -578,6 +860,9 @@ impl Runtime {
         let kit = game.kit.clone();
         for e in errors {
             self.error(e.seq, e.tick, e.error);
+        }
+        for e in film_errors {
+            self.error(None, tick, e);
         }
         (!calls.is_empty() || sight.is_some()).then_some(Work {
             tick,
@@ -612,6 +897,7 @@ impl Runtime {
             return;
         }
         game.post = Some(tick);
+        let player_kills = player_kills(events);
         let kills: Vec<KillSeen> = game
             .assists
             .take(tick, events)
@@ -635,6 +921,7 @@ impl Runtime {
         let result = {
             let mut g = GuestGame::new(m, Some(&*kit), sight, skulls, &*self.sink);
             g.kills = kills;
+            g.player_kills = player_kills;
             *players = g.players().len().min(usize::from(u8::MAX)) as u8;
             host.post_tick(tick, &g)
         };
@@ -644,11 +931,26 @@ impl Runtime {
         if let Some(ended) = host.take_ended() {
             (self.reports)(Report::Ended(ended_report(ended)));
         }
+        // The Clankers' view of the match, when it changed.
+        let context = bot_context(&game.host);
+        if context != game.bots {
+            bots::firefight::set_context(context.clone());
+            game.bots = context;
+        }
+        // The host log's head, for the actor channel's digest: only the
+        // machine that writes the log publishes it.
+        if game.host.role() == Role::Host {
+            crate::actor_net::publish_log_head(Some(game.host.head().hash.0));
+        }
         // The HUD's mode blob, for the actor channel and the local draw.
         let mut announce = None;
         match mode_blob(&game.host, game.players) {
             Some(Ok(blob)) => {
                 game.hud_failed = false;
+                // In the log too, for replicas and films.
+                if let Err(e) = game.host.note_mode(tick, &blob) {
+                    announce = Some(format!("the mode state's entry: {e}"));
+                }
                 hud::slot().set(Some(blob));
             }
             Some(Err(e)) => {
@@ -722,17 +1024,33 @@ impl Runtime {
             }
         }
         let op = p.command.map(command).transpose()?;
-        if let Some(Command::PlaceSquad { class, zone, .. }) = &op {
-            let kit = game.host.kit();
-            if !kit.classes.contains_key(class) {
-                return Err(Refused::Invalid(format!("the kit has no class {class}")));
+        let kit = game.host.kit();
+        match &op {
+            Some(Command::PlaceSquad { class, zone, .. }) => {
+                if !kit.classes.contains_key(class) {
+                    return Err(Refused::Invalid(format!("the kit has no class {class}")));
+                }
+                if usize::from(*zone) >= kit.zones.len() {
+                    return Err(Refused::Invalid(format!(
+                        "the kit has no zone {zone} (it has {})",
+                        kit.zones.len()
+                    )));
+                }
             }
-            if usize::from(*zone) >= kit.zones.len() {
+            Some(Command::Target { team, .. })
+                if usize::from(*team) >= kit.bases.len().min(MAX_TEAMS) =>
+            {
                 return Err(Refused::Invalid(format!(
-                    "the kit has no zone {zone} (it has {})",
-                    kit.zones.len()
+                    "the kit has no base for team {team} (it has {})",
+                    kit.bases.len()
                 )));
             }
+            Some(Command::TeamLives { team, .. }) if usize::from(*team) >= MAX_TEAMS => {
+                return Err(Refused::Invalid(format!(
+                    "there is no player team {team} (a match has at most {MAX_TEAMS})"
+                )));
+            }
+            _ => {}
         }
         if let Some(run) = p.director {
             game.host
@@ -759,6 +1077,46 @@ impl Runtime {
             log: log(&game.host),
         })
     }
+}
+
+/// What the Clankers' brain is told of the match (`bots::firefight`,
+/// docs/game/bots.md): the player teams' engine teams (Firefight team 0's
+/// is game team 0, team 1's game team 1, the team the lobby seats a second
+/// team's Clankers on), the actors' team, each team's base and the drop
+/// zones, and on the host each team's pool (none when lives are not
+/// shared: each player's own count is not a team's) and whether a wave is
+/// on. A replica or client has no director: its lives are unknown and its
+/// phase is `Fighting`. None once the director has finished the match.
+pub fn bot_context(host: &Host) -> Option<bots::firefight::Context> {
+    use ::firefight::director::Phase;
+    use bots::firefight::{Context, Phase as BotPhase};
+    let teams = usize::from(host.teams()).clamp(1, MAX_TEAMS);
+    let (lives, phase) = match host.director() {
+        Some(d) => {
+            let s = d.state();
+            let phase = match s.phase {
+                Phase::Done => return None,
+                Phase::Warmup { .. } | Phase::Intermission { .. } => BotPhase::Between,
+                Phase::Spawning | Phase::Fighting | Phase::Cleanup { .. } => BotPhase::Fighting,
+            };
+            let shared = d.def().lives.shared;
+            let lives = s.pools[..teams]
+                .iter()
+                .map(|&pool| shared.then_some(pool))
+                .collect();
+            (lives, phase)
+        }
+        None => (vec![None; teams], BotPhase::Fighting),
+    };
+    let kit = host.kit();
+    Some(Context {
+        player_teams: (0..teams as i16).collect(),
+        ai_team: i16::from(host.team()),
+        bases: kit.bases.clone(),
+        lives,
+        phase,
+        drop_zones: kit.zones.clone(),
+    })
 }
 
 /// The HUD's mode blob for the director on this machine (`hud`); none where
@@ -791,8 +1149,9 @@ pub fn kit_reply(m: &dyn GuestMemory) -> Result<wire::Kit, MemFault> {
             })
             .collect(),
         classes: kit.kit().classes,
+        bases: kit.kit().bases,
         characters: kit.characters,
-        hunt_order: kit.hunt_order,
+        hunt_orders: kit.hunt_orders.clone(),
     })
 }
 
@@ -821,7 +1180,7 @@ fn log(host: &Host) -> wire::Log {
     }
 }
 
-fn director(d: &::firefight::Director, game: &Match) -> wire::Director {
+fn director(d: &::firefight::ScriptDirector, game: &Match) -> wire::Director {
     use ::firefight::director::Phase;
     let s = d.state();
     let (phase, phase_tick) = match s.phase {
@@ -832,13 +1191,16 @@ fn director(d: &::firefight::Director, game: &Match) -> wire::Director {
         Phase::Intermission { until } => ("intermission", Some(until)),
         Phase::Done => ("done", None),
     };
+    let teams = usize::from(d.def().teams).clamp(1, MAX_TEAMS);
     wire::Director {
         phase: phase.into(),
         phase_tick,
         round: s.round,
         wave: s.wave,
         reserve: d.reserve(game.players),
-        pool: s.pool,
+        teams: teams as u8,
+        pools: s.pools[..teams].to_vec(),
+        scores: s.scores[..teams].to_vec(),
         live_actors: d.live_actors(),
         cap: d.cap(game.players),
         players: game.players,
@@ -867,7 +1229,9 @@ pub async fn make_calls(
     for (seq, call) in &work.calls {
         let result = match *call {
             Call::Squad(SquadOp::Place(p)) => guest::place_squad(cx, &work.kit, p).await,
-            Call::Squad(SquadOp::Hunt { slot }) => guest::hunt(cx, &work.kit, slot).await,
+            Call::Squad(SquadOp::Hunt { slot, base }) => {
+                guest::hunt(cx, &work.kit, slot, base).await
+            }
             Call::Squad(SquadOp::Erase { slot }) => guest::erase_squad(cx, &work.kit, slot).await,
             Call::Score { player, points } => guest::credit_score(cx, player, points).await,
             Call::Respawn(player) => guest::respawn(cx, player).await,
@@ -883,7 +1247,7 @@ pub async fn make_calls(
             for (i, &zone) in s.zones.iter().enumerate() {
                 for &(from, unit) in &s.from {
                     // A failed test counts as no sight.
-                    if guest::line_of_sight(cx, scratch, from, zone, unit)
+                    if guest::line_of_sight(cx, scratch, from, zone, [unit, u32::MAX])
                         .await
                         .unwrap_or(false)
                     {

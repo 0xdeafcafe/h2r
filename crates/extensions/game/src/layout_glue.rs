@@ -22,9 +22,11 @@
 //! same Controls row text function and serve text through the same string
 //! lookup, and a function entry takes one override.
 //!
-//! It also registers the "Video Settings" row on the top-level Settings list (after
-//! Player Profiles and Game Variants) and the Video screen that row opens
-//! (`crate::video_screen`). Its display settings reuse the Controls layout,
+//! It also registers the "Video" and "Voice" rows on the top-level Settings
+//! list (after Player Profiles and Game Variants) and the Video screen the
+//! first opens (`crate::video_screen`); the Voice screen is
+//! `crate::voice_settings`'s. The list embeds room for three item widgets,
+//! so the fourth is one of ours, linked by the "add items" hook. Its display settings reuse the Controls layout,
 //! the screen header builder and the Settings list callbacks. The Field of
 //! View row also installs the first-person camera hook (`crate::fov_row`).
 //!
@@ -98,6 +100,10 @@ const SHADOW_BASE: u32 = 0xa2f1_0000;
 /// per open screen (`speaker_row::extra_slot`).
 const EXTRA_BASE: u32 = 0xa2f2_0000;
 const EXTRA_SIZE: u32 = 0x1000;
+/// The Settings list's added item widgets past the three it embeds, one
+/// slot per open screen (`video_screen::settings_extra_items`).
+const SETTINGS_EXTRA_BASE: u32 = 0xa2f3_0000;
+const SETTINGS_EXTRA_SIZE: u32 = 0x1000;
 
 pub const ADDED: [Layout; 3] = [Layout::BumperJumper, Layout::Recon, Layout::WalkieTalkie];
 
@@ -438,10 +444,10 @@ pub fn string_address(id: u32) -> Option<u32> {
         .find(|(i, _)| *i == id)
         .map(|(_, a)| *a)
 }
-/// The Xbox Live menu tag `custom_games::Menu::extend_tag` last extended (0:
-/// none yet). A map load replaces the tag, and the next screen build
-/// extends the new one before a pane is set.
-static LIVE_TAG: AtomicU32 = AtomicU32::new(0);
+// Within the Live menu's scratch page, after the pane and press arguments.
+const LIVE_SOURCE: u32 = 0x10;
+const LIVE_ROOT: u32 = 0x20;
+const _: () = assert!(LIVE_ROOT + crate::list_class::SCREEN_ROOT_SIZE <= 0x100);
 /// Live menu item widgets of ours: one set per open screen, this many
 /// slots, each of up to [`LIVE_MAX_EXTRA`] items.
 const LIVE_ITEM_SLOTS: u32 = 8;
@@ -565,6 +571,10 @@ pub fn install(
     });
     let with_fov = has(video_screen::LIST, RowKind::Setting(FOV.key));
     let with_video = has(List::Settings, RowKind::Open(video_screen::SCREEN));
+    // Any row of ours on the Settings list (Video, Voice) enables its hooks.
+    let with_settings = model
+        .as_ref()
+        .is_some_and(|m| !m.rows(List::Settings).is_empty());
     let with_campaigns = crate::campaign_menu::class().is_some();
     let with_voice = model
         .as_ref()
@@ -575,14 +585,13 @@ pub fn install(
     let want_rows = theater_menu::Rows {
         theater: with_theater,
     };
-    let live_menu = || custom_games::Menu {
-        coop: custom_games::coop_row_enabled(),
-    };
+    let live_menu = custom_games::Menu::now;
     let with_skulls = model
         .as_ref()
         .is_some_and(|m| skulls_menu::enabled(m.store()));
-    // The Halo 1 options' texts (crate::h1_options): the campaign page's
-    // option rows and the Game Setup row and screen, wherever settings are.
+    // The Halo 1 options' texts (crate::h1_options): the Skulls page's
+    // option rows, wherever settings are. The multiplayer page and its
+    // Game Setup row serve their own (`ui_kit::screen::KitTexts`).
     let with_h1_options = model.is_some();
     let with_aim_assist = has(List::Controls, RowKind::Setting(crate::setting_defs::AIM_ASSIST.key));
     let model = model.unwrap_or_else(|| {
@@ -611,7 +620,7 @@ pub fn install(
             Err(e) => eprintln!("video screen: {e}"),
         }
     }
-    // The Voice screen opens from Player Settings and Edit Profile.
+    // The Voice screen opens from the Settings list and Player Settings.
     let mut voice_on = false;
     if with_voice {
         // Opened from the pause menus too: one line a row in a game.
@@ -642,6 +651,11 @@ pub fn install(
     let extra_items = (model.count(List::Controls, speaker_row::VANILLA_ROWS)
         - speaker_row::VANILLA_ROWS)
         .min(max_visible_extra);
+    let settings_items = if with_settings {
+        video_screen::settings_extra_items(&model)
+    } else {
+        0
+    };
     // The Live menu's (tag copies, item widgets, pane word) in our data.
     let live: (u32, u32, u32);
     let theater_items;
@@ -652,6 +666,9 @@ pub fn install(
         mem.map_zeroed(SHADOW_BASE, 0x1000, Permissions::RX)?;
         if extra_items > 0 {
             mem.map_zeroed(EXTRA_BASE, EXTRA_SIZE, Permissions::RW)?;
+        }
+        if settings_items > 0 {
+            mem.map_zeroed(SETTINGS_EXTRA_BASE, SETTINGS_EXTRA_SIZE, Permissions::RW)?;
         }
         let mut served = served_strings(with_speaker, with_lightbar);
         served.extend(model.strings().iter().map(|(i, t)| (*i, t.as_str())));
@@ -738,7 +755,7 @@ pub fn install(
         .chain(layout_hooks)
         .chain(pause_lists.clone().flat_map(NativeList::hooks))
         .chain(fov_hooks.into_iter().filter(|_| with_fov))
-        .chain(video_hooks.into_iter().filter(|_| with_video))
+        .chain(video_hooks.into_iter().filter(|_| with_settings))
         .chain(text_hooks)
         // Also for our classes' taller lists (`list_class::extra_items`).
         .chain(controls_hooks)
@@ -797,6 +814,7 @@ pub fn install(
                     let mem = ctx.runtime().memory();
                     let name = mem.u32(cpu.esp + 4).unwrap_or(0);
                     let n = grown_count(&*mem, cpu.esp, cpu.eax, small_extra);
+                    let n = crate::tweakers::list_capacity(n);
                     let pages = NativeList::from_array(name, cpu.eax).map_or(0, |list| {
                         let kind = mem.u8(crate::list_class::UI_GAME_KIND).ok();
                         pause_pages.for_game(list, kind).count() as u32
@@ -805,21 +823,26 @@ pub fn install(
                 };
                 let n = if with_campaigns { crate::campaign_menu::options_capacity(name, n) } else { n };
                 let n = video_screen::list_count(&model, name, n);
-                if with_video && video_screen::settings_third_item(name, n) {
-                    // Slot 19 reports a third item widget for our row.
+                if with_settings && video_screen::settings_third_item(name, n) {
+                    // Slot 19 reports a third item widget for our rows.
                     ctx.runtime().memory().set_u8(cpu.esi + video_screen::SETTINGS_THIRD_ITEM, 1)?;
                 }
                 // The main menu or the Xbox Live menu built: the player has
                 // left any lobby, whose mode ends with it.
                 if name == theater_menu::LIST_NAME || name == custom_games::LIST_NAME {
                     crate::lobby_start::clear();
+                    crate::lobby_tabs::cancel_request();
+                    crate::clankermatch::set_scope(crate::clankermatch::Scope::Players);
+                }
+                if name == custom_games::LIST_NAME {
+                    ctx.runtime().memory().set_u32(live.2 + LIVE_SOURCE, 0)?;
                 }
                 let n = live_menu().count(name, n);
                 let n = menu_rows.count(name, n);
                 // GAME MENU's Forge rows, while a local Forge session runs.
                 let n = crate::forge_screens::game_menu_count(name, n);
-                // Edit Profile's Voice Chat row, while its hooks are on.
-                let n = crate::profile_voice_row::list_count(&model, name, n);
+                // GAME MENU's Game Setup row, for the party leader.
+                let n = crate::pause_change_map::list_count(name, n);
                 // The variant editor's categories get the multiplayer
                 // Skulls row and the More Options row.
                 let n = crate::variant_page::variant_count(
@@ -905,7 +928,6 @@ pub fn install(
             let sh = alias(d, &mut next_shadow, &o, PANE_SET);
             let seen = AtomicBool::new(false);
             let declined = Arc::new(AtomicBool::new(false));
-            let model = Arc::clone(&model);
             d.register_override(PANE_SET, "layouts:pane", move |cpu, ctx, _| {
                 announce(&seen, "layouts: pane");
                 let rt = Arc::clone(ctx.runtime());
@@ -922,37 +944,27 @@ pub fn install(
                 if crate::variant_page::skip_pane(id, row) {
                     return mem.ret(cpu, 4);
                 }
-                // Our Video row on the Settings list has none either.
-                if with_video && video_screen::skip_settings_pane(id, row) {
+                // Our rows on the Settings list have none either.
+                if with_settings && video_screen::skip_settings_pane(id, row) {
                     return mem.ret(cpu, 4);
                 }
-                // Edit Profile: the Voice Chat row keeps the shown pane; the
-                // retail rows past it ask for their own, in a word of ours.
-                match crate::profile_voice_row::pane(&model, id, row) {
-                    Some(crate::profile_voice_row::Pane::Keep) => return mem.ret(cpu, 4),
-                    Some(crate::profile_voice_row::Pane::Show(r)) => {
-                        mem.set_u16(live.2 + 4, r as u16)?;
-                        mem.set_u32(cpu.esp + 4, live.2 + 4)?;
-                    }
-                    None => {}
-                }
-                // The game type list's Tweakers row has no pane of its own:
-                // Slayer's, with our title and description over its texts.
-                if crate::tweakers::is_our_pane(&*mem, screen, id, row) {
+                // The game type list's rows of ours have no pane of their
+                // own: Slayer's, with the row's title and description over
+                // its texts.
+                if let Some(ours) = crate::tweakers::our_pane(&*mem, screen, id, row) {
                     let base = mem.u8(screen + 0x5f3)? as i8;
                     drop(mem);
                     let word = live.2 + 8;
                     return hooks::entry::start_with(cpu, ctx, PANE_SET, move |cx| {
-                        Box::pin(crate::tweakers::pane(cx, sh, screen, base, word))
+                        Box::pin(crate::tweakers::pane(cx, ours, sh, screen, base, word))
                     });
                 }
-                // The Xbox Live menu: our row shows our pane, Content
-                // Download (moved down one) its own. The row is handed over
-                // in our word, not written back through the caller's pointer.
+                // The Xbox Live menu: each row of ours shows its pane, Mods
+                // retail's Content Download pane. The row is handed over in
+                // our word, not written back through the caller's pointer.
                 if id == custom_games::SCREEN_ID {
-                    let tag = LIVE_TAG.load(Ordering::SeqCst);
-                    let panes = if tag != 0 && mem.u32(tag + 0x24).ok() == Some(live.0) {
-                        mem.u32(tag + 0x20).unwrap_or(0)
+                    let panes = if mem.u32(live.2 + LIVE_SOURCE)? != 0 {
+                        mem.u32(live.2 + LIVE_ROOT + 0x20)?
                     } else {
                         0
                     };
@@ -1019,6 +1031,7 @@ pub fn install(
                 let wanted = id == SCREEN_ID
                     || (extra_items > 0 && id == speaker_row::SCREEN_ID)
                     || id == custom_games::SCREEN_ID
+                    || id == custom_games::PLAYLIST_SCREEN
                     || ours;
                 if !wanted {
                     return Ok(o2.invoke(cpu, ctx, SCREEN_TAG));
@@ -1049,16 +1062,29 @@ pub fn install(
                         }
                         return Ok(());
                     }
+                    if id == custom_games::PLAYLIST_SCREEN {
+                        custom_games::playlist_header(&mut *mem, cpu.eax, crate::clankermatch::scope());
+                        return Ok(());
+                    }
                     if id == custom_games::SCREEN_ID {
-                        // Ours already (our pane array) or freshly extended.
-                        if mem.u32(cpu.eax + 0x24).ok() == Some(live.0) {
+                        let source = cpu.eax;
+                        let root = live.2 + LIVE_ROOT;
+                        if mem.u32(live.2 + LIVE_SOURCE)? == source {
+                            cpu.eax = root;
                             return Ok(());
                         }
+                        mem.set_u32(live.2 + LIVE_SOURCE, 0)?;
                         let menu = live_menu();
-                        match menu.extend_tag(&mut *mem, cpu.eax, live.0) {
+                        match menu.copy_tag(&mut *mem, source, root, live.0) {
                             Some(true) => {
-                                LIVE_TAG.store(cpu.eax, Ordering::SeqCst);
-                                eprintln!("custom games: xbox live menu tag has {} panes and shows {} rows", menu.rows(), menu.visible());
+                                mem.set_u32(live.2 + LIVE_SOURCE, source)?;
+                                cpu.eax = root;
+                                eprintln!(
+                                    "custom games: xbox live menu tag has {} panes and shows {} of {} rows",
+                                    custom_games::ALL_PANES,
+                                    menu.visible(),
+                                    menu.rows()
+                                );
                             }
                             Some(false) => eprintln!("custom games: the xbox live menu tag is not the retail one; left alone"),
                             None => eprintln!("custom games: could not extend the xbox live menu tag"),
@@ -1138,12 +1164,14 @@ pub fn install(
             let slots = Arc::new(std::sync::Mutex::new((Vec::new(), 0u32)));
             let live_slots = Arc::new(std::sync::Mutex::new((Vec::new(), 0u32)));
             let theater_slots = Arc::new(std::sync::Mutex::new((Vec::new(), 0u32)));
+            let settings_slots = Arc::new(std::sync::Mutex::new((Vec::new(), 0u32)));
             d.register_override(speaker_row::ADD_ITEMS, "speaker:add-items", move |cpu, ctx, _| {
                 announce(&seen, "speaker row: add items");
                 let handler = cpu.ecx;
                 let slots = Arc::clone(&slots);
                 let live_slots = Arc::clone(&live_slots);
                 let theater_slots = Arc::clone(&theater_slots);
+                let settings_slots = Arc::clone(&settings_slots);
                 let rt = Arc::clone(ctx.runtime());
                 let mut mem = rt.memory();
                 let ret_pc = mem.u32(cpu.esp)?;
@@ -1161,6 +1189,21 @@ pub fn install(
                             speaker_row::extra_slot(table, next, handler, EXTRA_BASE, EXTRA_SIZE, extra_items)
                         };
                         (0..extra_items).map(|i| slot + i * speaker_row::ITEM_SIZE).collect()
+                    } else if settings_items > 0 && vtable == video_screen::SETTINGS_VTABLE {
+                        // The Settings list's rows past its three widgets.
+                        let slot = {
+                            let mut g = settings_slots.lock().unwrap_or_else(|e| e.into_inner());
+                            let (table, next) = &mut *g;
+                            speaker_row::extra_slot(
+                                table,
+                                next,
+                                handler,
+                                SETTINGS_EXTRA_BASE,
+                                SETTINGS_EXTRA_SIZE,
+                                settings_items,
+                            )
+                        };
+                        (0..settings_items).map(|i| slot + i * speaker_row::ITEM_SIZE).collect()
                     } else if menu_rows.any() && vtable == theater_menu::VTABLE {
                         let mut g = theater_slots.lock().unwrap_or_else(|e| e.into_inner());
                         let (table, next) = &mut *g;
@@ -1411,7 +1454,7 @@ pub fn install(
                 announce(&seen, "custom games: row text");
                 // The Mods row drawn: its "N new" wants a fresh list (the
                 // reader asks at most every few seconds; nothing waits).
-                if row.map(|r| menu.row_kind(r)) == Some(custom_games::Row::Download)
+                if row.map(|r| menu.row_kind(r)) == Some(custom_games::Row::Mods)
                     && custom_games::mods_row_enabled()
                     && let Some(repo) = crate::mods_screen::repo()
                 {
@@ -1459,6 +1502,8 @@ pub fn install(
                 })
             });
         }
+        // One forwarded press record; 0x10 and up hold the copied Live menu tag.
+        let live_press = live.2 + 12;
         if let Some(o) = originals.remove(&custom_games::ROW_CHOSEN) {
             let seen = AtomicBool::new(false);
             let sh = alias(d, &mut next_shadow, &o, custom_games::ROW_CHOSEN);
@@ -1470,7 +1515,23 @@ pub fn install(
                 let kind = row.map_or(custom_games::Row::Retail, |r| live_menu().row_kind(r));
                 // The playlist screen OptiMatch's press opens lists the
                 // clanker hoppers only after the Clankermatch row's press.
-                crate::clankermatch::set_active(kind == custom_games::Row::Clankermatch);
+                use crate::clankermatch::Scope;
+                let quick = row == Some(custom_games::RETAIL_QUICKMATCH_ROW);
+                let optimatch = row == Some(custom_games::RETAIL_OPTIMATCH_ROW);
+                crate::clankermatch::set_scope(match kind {
+                    custom_games::Row::Retail if quick => Scope::QuickMatch,
+                    custom_games::Row::Retail if optimatch => Scope::All,
+                    custom_games::Row::Clankermatch => Scope::Clankers,
+                    _ => Scope::Players,
+                });
+                // Custom Games, Forge and Firefight ask for their mode, which
+                // the custom lobby switches to once it is up
+                // (docs/game/party-lobby.md); any other row drops one asked
+                // for and not taken.
+                match kind.mode() {
+                    Some(mode) => crate::lobby_tabs::request(mode),
+                    None => crate::lobby_tabs::cancel_request(),
+                }
                 // Any other Live menu row ends hosting a co-op campaign
                 // (crate::coop_live); no guest memory is held here.
                 if kind != custom_games::Row::Coop {
@@ -1479,24 +1540,45 @@ pub fn install(
                         lobby.leave();
                     }
                 }
-                if kind == custom_games::Row::Retail {
+                let quick_picker = quick && {
+                    let saved = mask.and_then(|mask| custom_games::quickmatch_selection(
+                        &*ctx.runtime().memory(), mask.trailing_zeros()
+                    ));
+                    saved.is_none_or(crate::lobby_tabs::header::clanker_playlist)
+                };
+                if optimatch || (quick && !quick_picker) {
                     return Ok(o.invoke(cpu, ctx, custom_games::ROW_CHOSEN));
                 }
-                // Clankermatch and the moved Custom Game: the retail press
-                // of their retail row (the press record rewritten, as the
-                // co-op row does below), then the cursor row left on ours
-                // (the retail press stored the retail row in it).
-                if let Some(retail) = kind.retail_press() {
+                // Clankermatch and the mode rows: the retail press of their
+                // retail row, then the cursor row left on ours (the retail
+                // press stored the retail row in it).
+                if kind == custom_games::Row::Retail && !quick_picker {
+                    return ctx.runtime().memory().ret(cpu, 8);
+                }
+                if let Some(retail) = kind.retail_press().or(quick_picker.then_some(custom_games::RETAIL_OPTIMATCH_ROW)) {
                     let shown = row.unwrap_or(retail);
                     {
                         let rt = Arc::clone(ctx.runtime());
                         let mut mem = rt.memory();
-                        let record = mem.u32(cpu.esp.wrapping_add(8))?;
-                        mem.set_u16(record, retail as u16)?;
+                        let player = mask.unwrap_or(1).trailing_zeros();
+                        let Some(handle) = custom_games::press_handle(&mem, cpu.ecx, player, retail) else {
+                            crate::lobby_tabs::cancel_request();
+                            eprintln!("Xbox Live: menu row {shown} could not resolve retail action {retail}");
+                            return mem.ret(cpu, 8);
+                        };
+                        let press = live_press;
+                        mem.set_u32(press, handle)?;
+                        mem.set_u32(cpu.esp + 8, press)?;
                     }
                     if kind == custom_games::Row::Clankermatch {
                         eprintln!(
                             "clankermatch: Live menu row {shown} runs OptiMatch's press (row {retail})"
+                        );
+                    }
+                    if let Some(mode) = kind.mode() {
+                        eprintln!(
+                            "custom games: Live menu row {shown} runs Custom Game's press (row {retail}) for {}",
+                            mode.label()
                         );
                     }
                     return call_then(cpu, ctx, sh, move |_, ctx| {
@@ -1509,7 +1591,7 @@ pub fn install(
                     eprintln!("custom games: no local player for the press; nothing opened");
                     return ctx.runtime().memory().ret(cpu, 8);
                 };
-                if kind == custom_games::Row::Download {
+                if kind == custom_games::Row::Mods {
                     let mods = custom_games::mods_row_enabled()
                         .then(crate::mods_screen::repo)
                         .flatten()
@@ -1529,13 +1611,19 @@ pub fn install(
                         eprintln!("coop-live: the co-op hooks are off; nothing opened");
                         return ctx.runtime().memory().ret(cpu, 8);
                     };
-                    lobby.open_retail();
                     let rt = Arc::clone(ctx.runtime());
                     {
                         let mut mem = rt.memory();
-                        let record = mem.u32(cpu.esp.wrapping_add(8))?;
-                        mem.set_u16(record, custom_games::RETAIL_CUSTOM_GAME_ROW as u16)?;
+                        let player = mask.trailing_zeros();
+                        let Some(handle) = custom_games::press_handle(&mem, cpu.ecx, player, custom_games::RETAIL_CUSTOM_GAME_ROW) else {
+                            eprintln!("Xbox Live: Co-op Campaign could not resolve the custom lobby action");
+                            return mem.ret(cpu, 8);
+                        };
+                        let press = live_press;
+                        mem.set_u32(press, handle)?;
+                        mem.set_u32(cpu.esp + 8, press)?;
                     }
+                    lobby.open_retail();
                     eprintln!(
                         "coop-live: Live menu row {} opens the custom game lobby (row {}) in co-op mode",
                         row.unwrap_or(-1),
@@ -1570,7 +1658,7 @@ pub fn install(
                 }
                 // The browser's row is past the rows the menu restores its
                 // cursor to; `custom_games::LiveMenuCursor` restores it.
-                remember(ctx, row.unwrap_or(custom_games::ROW));
+                remember(ctx, row.unwrap_or(custom_games::BROWSER_ROW));
                 open_screen(cpu, ctx, mask, custom_games::LIVE_BROWSER_LOADER, "custom games: opening the browser")
             });
         }
@@ -1629,8 +1717,8 @@ pub fn install(
             });
         }
     });
-    if with_video {
-        // Its row on the Settings list, as data on the plan.
+    if with_settings {
+        // Its rows on the Settings list, as data on the plan.
         let rows = crate::retail_rows::Extension {
             id: "settings-rows",
             title: "Our rows on the Settings list",
@@ -1645,21 +1733,6 @@ pub fn install(
             .map_err(|e| anyhow::anyhow!("settings rows: {e}"))?;
     }
     theater_menu::set_rows(menu_rows);
-    if with_voice {
-        // Its Voice Chat row on Edit Profile (crate::profile_voice_row):
-        // the list grows and its panes move only with these hooks on.
-        if !model.rows(List::Profile).is_empty() {
-            match registry.add(&crate::profile_voice_row::extension(Arc::clone(&model))) {
-                Ok(on) => {
-                    crate::profile_voice_row::set_on(on);
-                    if !on {
-                        eprintln!("profile voice row: features.profile-voice-row is off");
-                    }
-                }
-                Err(e) => eprintln!("profile voice row: {e}"),
-            }
-        }
-    }
     // The Skulls page: our own list class, opened after the difficulty when
     // the pressing profile has a skull (a plan hook on the difficulty
     // press), with the level select's layout.

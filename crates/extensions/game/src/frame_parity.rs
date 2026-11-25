@@ -493,7 +493,7 @@ mod tests {
         let _serial = RPC_RENDERER.lock().unwrap_or_else(|e| e.into_inner());
         let (mut retired, retired_generation) = {
             let old = crate::frame_owner::Service::new(GfxBackend::new(ctx.clone()), Mode::Locked).unwrap();
-            let owner = crate::frame_cutover::scaled_owner(old.display_device());
+            let owner = crate::frame_cutover::scaled_owner(old.display_device(), None);
             let generation = owner.events.generation();
             (owner, generation)
         };
@@ -504,7 +504,7 @@ mod tests {
 
         // Bound parity frames use the original renderer. The owner must
         // still receive their sealed pair to snapshot inherited pixels.
-        let owner = crate::frame_cutover::owner(service.display_device(), Box::new(|| panic!("expected a reference Swap")));
+        let owner = crate::frame_cutover::owner(service.display_device(), std::sync::Arc::new(|| panic!("expected a reference Swap")), None);
         let display = ThreadedBackend::new(display).unwrap().with_frame_owner(owner);
         let mut sink = SceneSink::new(display, || Some(SlotAt { slot: Slot::Opaque, view: 0 }))
             .with_replay(crate::frame_cutover::record(&service))

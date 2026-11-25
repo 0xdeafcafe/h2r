@@ -79,7 +79,7 @@ fn fixture(
         let call = call(tick - 1);
         let pad = (tick / 190) as u8 + 1;
         state = digest(state, pad, &call);
-        batch.append(&mut out, crate::RAND, call).unwrap();
+        batch.append(&mut out, call).unwrap();
         track
             .push(
                 &mut out,

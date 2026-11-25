@@ -11,6 +11,8 @@
 
 use std::collections::BTreeMap;
 
+pub mod anim;
+pub mod audio;
 mod client;
 pub mod discover;
 #[cfg(any(unix, windows))]
@@ -24,15 +26,23 @@ pub mod expect;
 pub mod firefight;
 pub mod forge;
 pub mod frame_graph;
+pub mod game_load;
 pub mod goto;
 pub mod havok;
+pub mod hs;
+pub mod pogo;
 pub mod superbounce;
 pub mod superbounce_view;
 pub mod host_lobby;
+pub mod host_pause;
+pub mod host_quit;
+pub mod host_window;
+pub mod host_shot;
 pub mod host_memory;
 pub mod memory_forensics;
 pub mod memory_serve;
 pub mod hot;
+pub mod picture;
 pub mod live;
 mod load;
 mod pad;
@@ -53,14 +63,15 @@ pub use endpoint::Endpoint;
 pub use load::{LoadParams, LoadRecord, LoadSegment, Loads};
 pub use pad::{AtTick, Now, PAD_BUTTONS, PadParams, PadStep};
 pub use render::{
-    CaptureCamera, CaptureLighting, CaptureReply, CaptureSource, CompareParams, CompareReply, DepthRecord,
-    DrawLayout, DrawRecord, FrameCaptureParams, FrameParams, FrameRecord, FrameReply, FrameTotals,
-    LayoutTexture, OpRecord, ParityParams, ParityReply, PassRecord, RenderStats, ResidualArm,
+    CaptureCamera, CaptureLighting, CurrentView, CurrentViewParams, CaptureReply, CaptureSource, CompareParams, CompareReply, DepthRecord,
+    DisplayRateStats, DrawLayout, DrawRecord, FrameCaptureParams, FrameParams, FrameRecord, FrameReply, FrameTotals,
+    LayoutTexture, MarkersParams, OpRecord, ParityParams, ParityReply, PassRecord, RenderStats, ResidualArm,
     ResidualCaller, ResidualParams, ResidualProducer, ResidualReply, ResidualTotals,
     ResidualUnattributed, ResidualWindow, SceneCarried,
     SceneEntries, SceneEntryRecord, SceneLateRecord, SceneOpCounts, SceneParams, ScenePostRecord,
     SceneReply, SceneCarriedCensus, SceneCensusActivation, SceneCensusCheckpoint, SceneReadUse,
     SceneSideTarget, SceneTargetUse, SceneUses, SceneViewRecord, SnapRecord, SpawnViewParams,
+    ViewParams, ViewRequest,
 };
 
 use serde::{Deserialize, Serialize};
@@ -218,6 +229,14 @@ pub mod method {
     pub const GAME_MENU: &str = "game.menu";
     /// Queue an installed multiplayer package by its complete MapId.
     pub const MAPS_LOAD: &str = "maps.load";
+    /// The game's content packages in load order, on or off and why, and
+    /// what each map read got from them (docs/editor/studio-redesign.md,
+    /// "How the game consumes packages"; `boot::packages`).
+    pub const PACKAGES_LIST: &str = "packages.list";
+    /// The tag store at `<data>/tags`: the maps it can serve and whether
+    /// this boot serves them (docs/engine/asset-store.md, `store-maps`;
+    /// `boot::store_status`).
+    pub const STORE_STATUS: &str = "store.status";
     /// Test maps (docs/game/test-maps.md, [`crate::test_maps`]): the
     /// built-in recipes and the test maps built.
     pub const MAPS_TEST_LIST: &str = "maps.test.list";
@@ -245,8 +264,9 @@ pub mod method {
     pub const UI_CAMPAIGN: &str = "ui.campaign";
     /// The pregame session's player slots, peer indices, names and connection bars.
     pub const UI_LOBBY_PLAYERS: &str = "ui.lobby.players";
-    /// The pregame lobby's mode strip: `{place, leader, selected, tabs:
-    /// [{tab, label, state, reason}], notice}` (docs/game/party-lobby.md).
+    /// The pregame lobby's modes: `{place, leader, selected, header,
+    /// clanker, tabs: [{tab, label, state, reason}], notice}`
+    /// (docs/game/party-lobby.md).
     pub const UI_LOBBY_TABS: &str = "ui.lobby.tabs";
     pub const UI_SCREEN: &str = "ui.screen";
     /// Active filters of the Live Custom Game Browser.
@@ -275,12 +295,21 @@ pub mod method {
     /// frame kind, a made frame's blend fraction and camera shift, and the
     /// first anchors' window pixels (no params; the first call arms it).
     pub const RENDER_MARKS: &str = "render.marks";
+    /// The game type markers the last present drew, and what the 256
+    /// budget left out ([`crate::MarkersParams`]).
+    pub const RENDER_MARKERS: &str = "render.markers";
     /// Two PNG files compared pixel by pixel ([`crate::CompareParams`]).
     pub const RENDER_COMPARE: &str = "render.compare";
     /// The frame of a sim tick as a PNG ([`crate::FrameCaptureParams`]).
     pub const RENDER_CAPTURE: &str = "render.capture";
     /// Position the world camera at a loaded player starting location.
     pub const RENDER_SPAWN_VIEW: &str = "render.spawn_view";
+    /// Position the world camera at an explicit eye and heading, or release
+    /// it ([`crate::ViewParams`]).
+    pub const RENDER_VIEW: &str = "render.view";
+    /// The pose of the view the game draws for a local player, in
+    /// `render.view`'s conventions ([`crate::CurrentViewParams`]).
+    pub const RENDER_VIEW_CURRENT: &str = "render.view.current";
     /// Arm a sequence of headless display presents, including in-between frames.
     pub const RENDER_CAPTURE_CLIP: &str = "render.capture_clip";
     /// Read the number of display frames written by a clip capture.
@@ -290,6 +319,9 @@ pub mod method {
     /// What the guest front-end still asks `d3d` to do, by caller and by
     /// producer, over a window of presents ([`crate::ResidualParams`]).
     pub const RENDER_RESIDUAL: &str = "render.residual";
+    /// The native particle path's geometry refusals by named check, each
+    /// with the first refused draw's shape (no params).
+    pub const RENDER_PARTICLES_REFUSALS: &str = "render.particles.refusals";
     /// Arm the in-process two-path comparison for one frame
     /// ([`crate::ParityParams`]); a diagnostic, deleted with the D3D
     /// backend.
@@ -301,6 +333,9 @@ pub mod method {
     pub const AUDIO_LISTENERS: &str = "audio.listeners";
     /// Active guest looping sounds, their transitions and host output health.
     pub const AUDIO_LOOPS: &str = "audio.loops";
+    /// The host mixer's output level over a window, or of a host clip it
+    /// starts ([`crate::audio::MeterParams`]).
+    pub const AUDIO_METER: &str = "audio.meter";
     /// Sim mode's match (`H2_SIM`, `boot::sim_glue`): the match file, the
     /// phase (`waiting`, `playing`, `over`), ticks, game and wall seconds,
     /// the speed-up so far, frames skipped, and the end once over.
@@ -600,6 +635,9 @@ pub enum EventKind {
     Map,
     Bsp,
     Pause,
+    /// `render.picture`'s per-frame events. They go to the connection that
+    /// opened the picture; subscribing adds nothing.
+    Picture,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -639,6 +677,8 @@ pub enum Event {
         /// (the controller let go or disconnected).
         why: String,
     },
+    /// A ring picture published a frame (`render.picture.open`).
+    Picture(picture::PictureEvent),
 }
 
 impl Event {
@@ -648,6 +688,7 @@ impl Event {
             Event::Map { .. } => EventKind::Map,
             Event::Bsp { .. } => EventKind::Bsp,
             Event::Paused { .. } | Event::Resumed { .. } => EventKind::Pause,
+            Event::Picture(_) => EventKind::Picture,
         }
     }
 }
@@ -1276,13 +1317,48 @@ pub enum InputMode {
 
 // ---- features ----
 
+/// One feature of the plan, as `features.list`'s `features` lists it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FeatureState {
     pub id: String,
     pub on: bool,
     /// Why it is off, when the plan turned it off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub why: Option<String>,
+    pub reason: Option<String>,
+}
+
+impl FeatureState {
+    /// The plan text's line for it (`hooks::Plan::text`'s form):
+    /// `feature <id>: on` or `feature <id>: off (<reason>)`.
+    pub fn plan_line(&self) -> String {
+        match (&self.reason, self.on) {
+            (_, true) => format!("feature {}: on", self.id),
+            (Some(r), false) => format!("feature {}: off ({r})", self.id),
+            (None, false) => format!("feature {}: off", self.id),
+        }
+    }
+
+    /// [`plan_line`](Self::plan_line) read back; `None` for any other line
+    /// of the plan (a chain, an entry, a note).
+    pub fn from_plan_line(line: &str) -> Option<FeatureState> {
+        let (id, state) = line.strip_prefix("feature ")?.split_once(": ")?;
+        if id.is_empty() || id.contains(char::is_whitespace) {
+            return None;
+        }
+        let (on, reason) = match state {
+            "on" => (true, None),
+            "off" => (false, None),
+            s => {
+                let r = s.strip_prefix("off (")?.strip_suffix(')')?;
+                (false, Some(r.to_owned()))
+            }
+        };
+        Some(FeatureState {
+            id: id.to_owned(),
+            on,
+            reason,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1290,6 +1366,24 @@ pub struct Features {
     pub at: At,
     /// The feature plan as the game printed it at start.
     pub plan: Vec<String>,
+    /// Each feature, on or off and why: the plan's feature lines, read.
+    #[serde(default)]
+    pub features: Vec<FeatureState>,
+}
+
+impl Features {
+    /// The answer for `plan`, its features read from its lines.
+    pub fn new(at: At, plan: Vec<String>) -> Features {
+        let features = features_of(&plan);
+        Features { at, plan, features }
+    }
+}
+
+/// The features a plan's lines name ([`FeatureState::from_plan_line`]).
+pub fn features_of(plan: &[String]) -> Vec<FeatureState> {
+    plan.iter()
+        .filter_map(|l| FeatureState::from_plan_line(l))
+        .collect()
 }
 
 /// `world.breakable`'s params: the structure BSP (default 0, the one the
@@ -1320,6 +1414,34 @@ pub struct Breakable {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn features_list_reads_the_plans_feature_lines_and_nothing_else() {
+        let states = [
+            FeatureState { id: "cheats".into(), on: true, reason: None },
+            FeatureState {
+                id: "lockstep".into(),
+                on: false,
+                reason: Some("switched off (H2_FEATURES)".into()),
+            },
+            FeatureState { id: "x".into(), on: false, reason: None },
+        ];
+        let mut plan: Vec<String> = states.iter().map(FeatureState::plan_line).collect();
+        assert_eq!(plan[0], "feature cheats: on");
+        assert_eq!(plan[1], "feature lockstep: off (switched off (H2_FEATURES))");
+        plan.push("0x00137fe0 game_tick: before [cheats:our cheats] -> original".into());
+        plan.push("0x00400000 entry agent:probe".into());
+        plan.push("featured note: not a feature line".into());
+        plan.push("feature two words: on".into());
+        let features = features_of(&plan);
+        assert_eq!(features, states);
+        let v = serde_json::to_value(&features).unwrap();
+        assert_eq!(v[1], json!({"id": "lockstep", "on": false, "reason": "switched off (H2_FEATURES)"}));
+        assert_eq!(v[0], json!({"id": "cheats", "on": true}));
+        for bad in ["feature : on", "feature a: maybe", "feature a: off (unclosed"] {
+            assert_eq!(FeatureState::from_plan_line(bad), None, "{bad}");
+        }
+    }
 
     #[test]
     fn breakable_params_default_to_bsp_0_and_refuse_strays() {

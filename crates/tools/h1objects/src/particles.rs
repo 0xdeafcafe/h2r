@@ -206,7 +206,7 @@ pub fn lod_offset(width: u16, height: u16) -> f32 {
 /// Read the compiled particle stems directly. Conversion only needs a
 /// stem's bindings; a base can supply a stem without any particle on it.
 pub fn particle_shaders(base: &crate::base::Base) -> Result<Vec<ParticleShader>> {
-    let meta = tags::shader::Metadata::new(base.meta.base, base.meta.bytes.clone());
+    let meta = base.meta.shader_view();
     let mut out = Vec::new();
     for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"stem")
         && t.2.rsplit('\\').next().is_some_and(|name| name.starts_with("particle_"))) {

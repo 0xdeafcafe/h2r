@@ -91,11 +91,25 @@ async fn the_firefight_summary_is_the_golden_one_and_players_cannot_write_it() {
     );
     assert_eq!(h.post_batch(&host, &id, bad).await.status, StatusCode::BAD_REQUEST);
 
-    let events = firefight_batch();
-    let pairs: Vec<(&str, serde_json::Value)> =
-        events.iter().map(|(k, d)| (k.as_str(), d.clone())).collect();
-    let jws = h.batch(&host, &id, &pairs);
-    assert_eq!(h.post_batch(&host, &id, jws).await.status, StatusCode::CREATED);
+    // A two-team result that names no winner is refused whole too.
+    let crossfire = h.start_game(&host, firefight_crossfire_game(&host)).await;
+    let bad = h.batch(
+        &host,
+        &crossfire,
+        &[(
+            "FirefightEnded",
+            json!({"tick": 5, "set": "Crossfire", "teams": 2, "outcome": "team_won", "scores": [1, 2], "rounds_cleared": 0, "lives_used": 0}),
+        )],
+    );
+    assert_eq!(h.post_batch(&host, &crossfire, bad).await.status, StatusCode::BAD_REQUEST);
+
+    // The one-team match, then the two-team one.
+    for (game, events) in [(&id, firefight_batch()), (&crossfire, firefight_crossfire_batch())] {
+        let pairs: Vec<(&str, serde_json::Value)> =
+            events.iter().map(|(k, d)| (k.as_str(), d.clone())).collect();
+        let jws = h.batch(&host, game, &pairs);
+        assert_eq!(h.post_batch(&host, game, jws).await.status, StatusCode::CREATED);
+    }
 
     let golden: serde_json::Value =
         serde_json::from_str(&FIREFIGHT_GOLDEN.replace("$HOST", &host.xuid.to_string())).unwrap();

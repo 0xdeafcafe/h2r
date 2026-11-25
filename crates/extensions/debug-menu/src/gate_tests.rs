@@ -155,7 +155,7 @@ fn swipes_move_and_change_a_click_selects_two_fingers_go_back() {
     r.sync(&[HostButton::Start], click());
     r.idle();
     assert!(r.s.is_open());
-    // Swipe down three rows to Cheats (one long drag, then a short one),
+    // Swipe down three rows to Time (one long drag, then a short one),
     // click into it.
     for y in [0.6, 0.0, -0.6] {
         r.sync(&[], finger(0.0, y));
@@ -171,16 +171,16 @@ fn swipes_move_and_change_a_click_selects_two_fingers_go_back() {
     r.idle();
     assert_eq!(
         r.s.lock().menu.current().map(|x| x.id.clone()),
-        Some("cheats".into())
+        Some("time".into())
     );
     r.s.lines();
-    // Swipe right on God mode: cheat.set.
+    // Swipe right on Game speed: cheat.set.
     for x in [-0.5, 0.1] {
         r.sync(&[], finger(x, 0.0));
     }
     r.idle();
     r.s.lines();
-    assert!(r.fake.game(|g| g.god));
+    assert_eq!(r.fake.game(|g| g.speed), 2.0);
     // Two fingers: back to the first page; again: closed.
     let two = Touchpad {
         primary: Some((0.0, 0.0)),
@@ -220,7 +220,7 @@ fn the_d_pad_and_face_buttons_work_and_circle_never_reaches_the_game() {
     r.idle();
     assert_eq!(
         r.s.lock().menu.current().map(|x| x.id.clone()),
-        Some("tags".into())
+        Some("game".into())
     );
     r.sync(&[HostButton::East], Touchpad::default());
     r.idle();
@@ -279,9 +279,11 @@ fn keys_drive_it_and_closed_keys_pass() {
 #[test]
 fn writes_are_only_what_the_user_asked() {
     let (s, fake) = menu();
-    enter(&s, "render");
-    enter(&s, "perf");
-    enter(&s, "features");
+    for id in [
+        "player", "world", "game", "time", "view", "perf", "settings", "dev",
+    ] {
+        enter(&s, id);
+    }
     assert!(fake.writes().is_empty(), "{:?}", fake.writes());
 }
 
@@ -380,4 +382,115 @@ fn a_touchpad_click_on_player_ones_pad_opens_it_through_the_input_manager() {
     assert!(r.pads[0].state.touchpad.is_some_and(|t| t.click));
     let (_, g) = s.gate_report();
     assert!(g.pads[0].touchpad && g.pads[0].click);
+}
+
+/// One sync of a pad with no touchpad (an Xbox or generic pad).
+fn plain(r: &mut Rig, buttons: &[HostButton]) -> HostPadState {
+    r.t += T;
+    let mut pads = [ds(buttons, Touchpad::default())];
+    pads[0].pad.state.touchpad = None;
+    r.gate.filter_at(&mut pads, r.t);
+    pads[0].pad.state
+}
+
+fn moves(r: &Rig) -> usize {
+    r.s.lock()
+        .menu
+        .log()
+        .iter()
+        .filter(|a| matches!(a, Action::Move(_)))
+        .count()
+}
+
+#[test]
+fn back_and_d_pad_down_held_open_it_on_any_pad() {
+    let both = [HostButton::Back, HostButton::DpadDown];
+    let mut r = Rig::new();
+    // Not yet: the game still has the pair while it is only held.
+    for _ in 0..20 {
+        let st = plain(&mut r, &both);
+        assert!(st.buttons.contains(HostButton::Back));
+    }
+    assert!(!r.s.is_open());
+    // Let go early: nothing opened, and the hold starts over.
+    plain(&mut r, &[]);
+    for _ in 0..20 {
+        plain(&mut r, &both);
+    }
+    assert!(!r.s.is_open());
+    plain(&mut r, &[]);
+    // Held past HOLD: it opens, and the game sees a neutral pad.
+    let mut st = plain(&mut r, &both);
+    for _ in 0..40 {
+        st = plain(&mut r, &both);
+    }
+    assert!(r.s.is_open());
+    assert_eq!(st.buttons, Default::default());
+    assert_eq!(r.s.lock().menu.device(), Device::Pad);
+    // The D-pad down that opened it does not move the cursor, held or not.
+    assert_eq!(r.s.lock().menu.cursor(), 0);
+    plain(&mut r, &[HostButton::DpadDown]);
+    assert_eq!(r.s.lock().menu.cursor(), 0, "still the same hold");
+    plain(&mut r, &[]);
+    plain(&mut r, &[HostButton::DpadDown]);
+    assert_eq!(r.s.lock().menu.cursor(), 1, "a new press moves");
+}
+
+#[test]
+fn a_held_d_pad_repeats_after_a_delay() {
+    let mut r = Rig::new();
+    r.s.key(Key::Toggle);
+    r.s.lock().menu.take_log();
+    // 19 syncs is ~300 ms: the press moved once and nothing repeated.
+    for _ in 0..19 {
+        plain(&mut r, &[HostButton::DpadDown]);
+    }
+    assert_eq!(moves(&r), 1);
+    // To ~1 s: a repeat every ~80 ms after the 350 ms delay.
+    for _ in 0..44 {
+        plain(&mut r, &[HostButton::DpadDown]);
+    }
+    let n = moves(&r);
+    assert!((8..=12).contains(&n), "{n} moves in a second");
+    // Let go: it stops; a different direction starts again at once.
+    plain(&mut r, &[]);
+    let before = moves(&r);
+    for _ in 0..10 {
+        plain(&mut r, &[]);
+    }
+    assert_eq!(moves(&r), before);
+    plain(&mut r, &[HostButton::DpadUp]);
+    assert_eq!(moves(&r), before + 1);
+}
+
+#[test]
+fn bumpers_page_and_y_stars_on_any_pad() {
+    let mut r = Rig::new();
+    r.s.key(Key::Toggle);
+    let last = r.s.lock().menu.rows().len() - 1;
+    plain(&mut r, &[HostButton::RightBumper]);
+    assert_eq!(
+        r.s.lock().menu.cursor(),
+        last.min(crate::model::PAGE),
+        "a page down"
+    );
+    plain(&mut r, &[]);
+    plain(&mut r, &[HostButton::LeftBumper]);
+    assert_eq!(r.s.lock().menu.cursor(), 0);
+    plain(&mut r, &[]);
+    plain(&mut r, &[HostButton::North]);
+    assert!(r.s.lock().menu.rows()[0].heading, "Favourites is pinned");
+    let starred = r.s.lock().menu.toast().is_some_and(|t| t.text.ends_with("starred"));
+    assert!(starred);
+    assert_eq!(r.s.lock().menu.device(), Device::Pad);
+}
+
+#[test]
+fn the_footer_follows_a_swipe_then_a_button() {
+    let mut r = Rig::new();
+    r.sync(&[], click());
+    r.idle();
+    assert_eq!(r.s.lock().menu.device(), Device::Touchpad);
+    plain(&mut r, &[HostButton::DpadDown]);
+    assert_eq!(r.s.lock().menu.device(), Device::Pad);
 }

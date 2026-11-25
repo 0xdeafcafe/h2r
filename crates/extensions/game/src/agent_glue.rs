@@ -203,6 +203,10 @@ impl AgentGlue {
             ),
             sim.calls(),
         );
+        // variants.quick: the lobby variant's Quick Options rows as its
+        // script marks them (docs/game/rules-variants.md, "Quick Options
+        // in the lobby").
+        agent::variants::install(&agent, std::sync::Arc::new(crate::variant_quick::AgentSource));
         let probes = agent::probe::Probes::default();
         if registry.add(&probes).map_err(|e| anyhow::anyhow!("agent-probes: {e}"))? {
             probes.install(&agent, &sim);
@@ -217,6 +221,9 @@ impl AgentGlue {
             ),
             Err(e) => anyhow::bail!("agent-net: {e}"),
         }
+        // actors.net: the actor channel's report of the last tick
+        // (docs/game/ai-networking.md, "Interfaces").
+        agent::actors::install(&agent, crate::actor_net::report::get);
         agent::net::install(
             &agent,
             || {
@@ -250,6 +257,8 @@ impl AgentGlue {
         agent::havok::install(&agent);
         // The native collision world's counters (impl.sim.native.collision).
         agent::collision::install(&agent);
+        // The animation graph walk's arm and body (impl.sim.native.anim).
+        agent::anim::install(&agent);
         agent::raw::install(&agent, &sim);
         agent::havok::install_writes(&agent, &sim);
         // `world.*`'s `physics.standing_fits`: the superbounce mode's
@@ -267,9 +276,8 @@ impl AgentGlue {
                     .expect("superbounce.state serialises"))
             },
         );
-        // Turns the superbounce mode on or off over the game type, so a
-        // run whose environment can't carry H2_SUPERBOUNCE (the lab) can
-        // still use it.
+        // Forces the superbounce mode off over the game type (it can't
+        // force it on: only a script that requires `hud.superbounce` does).
         agent.add_game_method(
             agent_proto::superbounce::method::SET,
             Access::Act,
@@ -280,9 +288,43 @@ impl AgentGlue {
                     serde_json::from_value(params)
                         .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?
                 };
-                let mode = crate::superbounce_mode::set_override(p.on).to_string();
+                let mode = crate::superbounce_mode::set_override(p.on)
+                    .map_err(|why| RpcError::new(code::INVALID_PARAMS, why))?
+                    .to_string();
                 Ok(serde_json::to_value(agent_proto::superbounce::Set { mode })
                     .expect("superbounce.set serialises"))
+            },
+        );
+        // Re-reads a map's spot files into the running game, and sets
+        // live overrides of the speed model (superbounce_reload.rs).
+        agent.add_game_method(
+            agent_proto::superbounce::method::RELOAD,
+            Access::Act,
+            |params, _ctx| {
+                let p: agent_proto::superbounce::ReloadParams = if params.is_null() {
+                    Default::default()
+                } else {
+                    serde_json::from_value(params)
+                        .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?
+                };
+                let r = crate::superbounce_reload::reload(&p)
+                    .map_err(|why| RpcError::new(code::INVALID_PARAMS, why))?;
+                Ok(serde_json::to_value(r).expect("superbounce.reload serialises"))
+            },
+        );
+        agent.add_game_method(
+            agent_proto::superbounce::method::TUNE,
+            Access::Act,
+            |params, _ctx| {
+                let p: agent_proto::superbounce::TuneParams = if params.is_null() {
+                    Default::default()
+                } else {
+                    serde_json::from_value(params)
+                        .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?
+                };
+                let r = crate::superbounce_reload::tune(&p)
+                    .map_err(|why| RpcError::new(code::INVALID_PARAMS, why))?;
+                Ok(serde_json::to_value(r).expect("superbounce.tune serialises"))
             },
         );
         // The superbounce fall assist (superbounce_assist.rs,
@@ -354,6 +396,9 @@ impl AgentGlue {
         // The bounce view on the flashlight and the tracker
         // (superbounce_view.rs, docs/game/superbounce.md, "The bounce view").
         crate::superbounce_view::install(&agent);
+        // The Pogo Stick's riders, camera and trick test (pogo_agent.rs,
+        // docs/game/pogo-stick.md, "Interfaces").
+        crate::pogo_agent::install(&agent);
         // Ghost runs of the spots (superbounce_ghost.rs,
         // docs/game/superbounce.md, "Ghost runs").
         crate::superbounce_ghost::install(&agent);
@@ -396,6 +441,8 @@ impl AgentGlue {
             Err(e) => anyhow::bail!("agent-frames: {e}"),
         }
         agent::sim::hashes::install(&agent, &agent::sim::hashes::HASHES);
+        // theater.start_point.capture and .load: slice 15's experiments.
+        crate::theater::start_point_agent::install(&agent);
         match xapi {
             Some(x) => {
                 let mut x = x.lock().unwrap_or_else(|e| e.into_inner());
@@ -455,24 +502,48 @@ impl AgentGlue {
         matchmaking::install(registry, &self.agent)
     }
 
-    /// The installed plan, for `features.list`.
+    /// The installed plan, for `features.list`. The feature lines are
+    /// written from the plan's features in `agent_proto::FeatureState`'s
+    /// own form, so the answer's `features` array reads them back exactly
+    /// (no client parses the text); the chains and notes follow.
     pub fn set_plan(&self, plan: &hooks::Plan, installed: &hooks::Installed) {
-        let mut lines: Vec<String> = plan.text().lines().map(str::to_owned).collect();
+        let mut lines: Vec<String> = plan
+            .features
+            .iter()
+            .map(|f| {
+                agent_proto::FeatureState {
+                    id: f.id.to_owned(),
+                    on: f.off.is_none(),
+                    reason: f.off.clone(),
+                }
+                .plan_line()
+            })
+            .collect();
+        lines.extend(
+            plan.text()
+                .lines()
+                .filter(|l| !l.starts_with("feature "))
+                .map(str::to_owned),
+        );
         lines.extend(installed.notes.iter().cloned());
         self.agent.set_plan(lines);
     }
 
     /// Windowed macOS games advertise an enabled agent to the lab even when
-    /// the player uses a custom endpoint.
+    /// the player uses a custom endpoint. `plan` registers the consent
+    /// dialog's hooks; `accept` also takes the lab's requests (boot's
+    /// `registration::lab_takeover`: a film's recording and its replay
+    /// plan the same hooks, and only the player's game accepts).
     pub fn configure_takeover(
         &mut self,
         features: &mut hooks::Registry,
         window: bool,
-        accepts_player_input: bool,
+        plan: bool,
+        accept: bool,
     ) -> Result<()> {
         crate::lab_takeover::add_info(&self.agent, window);
-        if window && accepts_player_input {
-            crate::lab_takeover::install(features, &self.agent)?;
+        if plan {
+            crate::lab_takeover::install(features, &self.agent, accept)?;
         }
         if cfg!(target_os = "macos")
             && window
@@ -500,6 +571,7 @@ impl AgentGlue {
         skulls: Option<std::sync::Arc<crate::skulls::Tracker>>,
         sources: Option<std::sync::Arc<crate::loaded_map::EditorSources>>,
         rebind: agent::sim::MapRebind,
+        before_edit: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
     ) {
         let Some(sim) = &self.sim else { return };
         let active = |feature: &str| plan.is_on(feature) && installed.off_reason(feature).is_none();
@@ -535,6 +607,10 @@ impl AgentGlue {
         }
         let runtime = std::sync::Arc::downgrade(rt);
         sim.on_first_edit(&self.agent, move |agent| {
+            // A default film recording cannot replay an outside write.
+            if let Some(before) = &before_edit {
+                before();
+            }
             let rt = runtime.upgrade().ok_or("the game has shut down")?;
             let mut registry = hooks::Registry::new(hooks::Switches::default());
             let sources = sources.clone().map(|sources| -> agent::EditorActivation {
@@ -584,9 +660,10 @@ impl agent::Sampler for BootSampler {
     }
 }
 
-/// The methods that read the runtime itself: `profile.faults`, the fault
-/// census (`runtime::fault_census`).
+/// Runtime fault counters and tick-boundary collision diagnostics.
 pub fn add_runtime_methods(agent: &agent::Agent, rt: &std::sync::Arc<runtime::Runtime>) {
+    agent::collision_trace_query::install(agent, rt);
+    agent::collision_sources::install(agent, rt);
     let rt = std::sync::Arc::clone(rt);
     agent.add_method(method::PROFILE_FAULTS, Access::Read, move |v| {
         let top = top_param(&v, 20)?;
@@ -794,7 +871,7 @@ pub fn add_host_methods(agent: &agent::Agent) {
                 "ui.lobby.tabs takes no parameters",
             ));
         }
-        ctx.read_guest(crate::lobby_tabs::strip::inspect)?
+        ctx.read_guest(crate::lobby_tabs::header::inspect)?
             .map_err(|why| RpcError::new(code::UNAVAILABLE, why))
     });
     agent.add_game_method(method::UI_LOBBY_PLAYERS, Access::Read, |params, ctx| {
@@ -983,6 +1060,7 @@ mod tests {
         glue.install_editor_methods(
             &plan, &installed, &rt, off != Some(agent::EDIT_LIFECYCLE), blocked, None, None,
             Box::new(|_, _, _, _| panic!("a playback or uninstalled hook must not prepare a map")),
+            None,
         );
         assert!(!plan.is_on(agent::EDIT_LIFECYCLE));
         assert!(rt.read_dispatch(|d| d.override_name(hooks::points::GAME_ACTIVATE.base).is_none()));

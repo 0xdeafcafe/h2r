@@ -38,10 +38,13 @@ What lives where:
   another), `coop-test/` (`h2 coop test`), and the root
   `Config::for_title` uses. Under the data root, `game-variants/` is the
   game-variant store ([rules-engine.md](../game/rules-engine.md#live-game-variants-in-the-game)).
+  `tags/` is the asset store `h2 build` and the pre-boot step keep current, and
+  `disc/` the disc's files that are not maps, copied once per image
+  ([asset-store.md](../engine/asset-store.md), "Extraction on compile").
 - Cache: the agent socket and its `inputs/` and `captures/`
   (`agent_proto::cache_dir`), the pipeline cache
   (`d3d::pipeline_store`), `snapshots/` (`H2_SNAPSHOTS` names another), the
-  bots' shared nav cache `bots/`, the lab socket and `lab/`, `follow/` and
+  bots' shared nav cache `bots/`, the lab socket and `lab/`, `follow/`, `watch/` and
   `xtask-ledger/`.
 - Config: the lab driver's paired hosts, `lab/peers/`.
 

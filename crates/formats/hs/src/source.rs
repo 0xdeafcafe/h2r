@@ -134,13 +134,19 @@ fn global_header(catalog: &Catalog, g: &crate::Global) -> Result<String> {
     ))
 }
 
+/// Whether a script of this kind (its index in `Catalog::script_kinds`)
+/// names its return type in its header: `(script <kind> <type> <name>`.
+pub fn script_kind_has_type(kind: u16) -> bool {
+    matches!(kind, 3 | 4)
+}
+
 fn script_header(catalog: &Catalog, s: &crate::Script) -> Result<String> {
     let kind = catalog
         .script_kinds
         .get(s.kind as usize)
         .ok_or_else(|| invalid("invalid script kind"))?;
     let mut header = format!("(script {}", symbol(kind));
-    if matches!(s.kind, 3 | 4) {
+    if script_kind_has_type(s.kind) {
         header.push_str(&format!(" {}", symbol(catalog.type_name(s.return_type)?)));
     }
     header.push_str(&format!(" {}\n", symbol(s.name()?)));

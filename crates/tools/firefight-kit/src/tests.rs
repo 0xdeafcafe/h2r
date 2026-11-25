@@ -1,59 +1,23 @@
 //! End-to-end fixtures. No input files, borrowed payloads or known disc hashes.
 use super::*;
+use crate::testkit::{self, STARTS};
 use content::Library;
 use h1campaign::ai::h2::ScenarioAi;
-use map::build::{BspField, FixupKind};
 use std::fs;
-use tags::pathfinding::PathfindingData;
+use tags::pathfinding::{PathfindingData, Ref};
+
+fn start_teams(map: &mut Map<Cursor<&[u8]>>) -> Vec<i16> {
+    let id = map.scenario().unwrap().id;
+    let root = map.read_tag_bytes(id).unwrap();
+    scenario_edit::scene::metadata_block(map, &root, 0x100, 0x34)
+        .unwrap()
+        .iter()
+        .map(|row| i16::from_le_bytes([row[0x10], row[0x11]]))
+        .collect()
+}
 
 fn fixture() -> Vec<u8> {
-    let mut set = TagSet::new(CacheType::Multiplayer, "court", r"invented\court");
-    for group in [b"scnr", b"bipd", b"weap", b"sbsp"] {
-        set.add_group(FourCC(*group), None, None);
-    }
-    // Make the scenario the metadata anchor, so moving it would break the map.
-    let scenario = set
-        .add_tag(FourCC(*b"scnr"), "court", TagPayload::Empty)
-        .unwrap();
-    set.scenario = scenario;
-    for (group, path) in [
-        (b"bipd", r"objects\characters\elite\elite_mp"),
-        (b"weap", r"objects\weapons\rifle\plasma_rifle\plasma_rifle"),
-    ] {
-        set.add_tag(FourCC(*group), path, TagPayload::Built(Block::zeroed(16)))
-            .unwrap();
-    }
-
-    let mut descriptors = Block::zeroed(2 * 0x44);
-    for i in 0..2u32 {
-        let mut floor = nav::test_floor();
-        floor.put_u32(8, 100 + i);
-        let id = set
-            .add_tag(
-                FourCC(*b"sbsp"),
-                &format!("court_{i}"),
-                TagPayload::Built(floor),
-            )
-            .unwrap();
-        let section = set.add_bsp(id, None);
-        let d = i * 0x44;
-        for (offset, field) in [
-            (0, BspField::FileOffset),
-            (4, BspField::Size),
-            (8, BspField::Address),
-        ] {
-            descriptors.fixup(d + offset, FixupKind::Bsp { section, field });
-        }
-        descriptors
-            .tag_id(d + 0x14, id)
-            .tag_id(d + 0x1c, TagId::NULL);
-    }
-    let mut root = Block::zeroed(0x3e0);
-    let mut start = Block::zeroed(0x34);
-    start.put_f32(0, 14.).put_f32(4, 14.);
-    root.block(0x100, 1, start).block(0x210, 2, descriptors);
-    set.tag_mut(scenario).unwrap().payload = TagPayload::Built(root);
-    set.build().unwrap().0
+    testkit::court()
 }
 
 #[test]
@@ -67,10 +31,14 @@ fn two_builds_of_one_map_are_byte_equal() {
             .unwrap()
             .as_nanos()
     ));
-    let first = build_package(&base, "court", Mode::Kit, &dir, "one", false).unwrap();
-    let second = build_package(&base, "court", Mode::Kit, &dir, "two", false).unwrap();
+    let config = Config::default();
+    let first = build_package(&base, "court", Mode::Kit, &config, &dir, "one", false).unwrap();
+    let second = build_package(&base, "court", Mode::Kit, &config, &dir, "two", false).unwrap();
     assert_eq!(first.id, second.id);
     assert_eq!(first.costs, second.costs);
+    assert_eq!(first.bases, second.bases);
+    assert_eq!(first.bases.source, Source::FlagStands);
+    assert_eq!(first.bases.points, [[2., 14., 0.], [26., 14., 0.]]);
     let lib = Library::open(&dir);
     assert_eq!(lib.packages().len(), 2);
     let manifest = &lib.packages()[0].manifest;
@@ -97,23 +65,54 @@ fn two_builds_of_one_map_are_byte_equal() {
     let ai = ScenarioAi::read_map(&mut map).unwrap();
     assert_eq!(ai.squads.len(), first.squads);
     assert_eq!(ai.squads.len(), 16);
-    assert_eq!(ai.zones.len(), first.zones);
+    // The drop zones, then one zone per base.
+    assert_eq!(ai.zones.len(), first.zones + 2);
     assert!((6..=12).contains(&first.zones));
+    for (i, zone) in ai.zones.iter().enumerate() {
+        let want = match i.checked_sub(first.zones) {
+            None => format!("ff_drop_{i:02}"),
+            Some(b) => format!("ff_base_{b:02}"),
+        };
+        assert_eq!(zone.name, want);
+    }
+    let orders: Vec<_> = ai.orders.iter().map(|o| o.name.as_str()).collect();
+    assert_eq!(orders, ["ff_hunt_00", "ff_hunt_01"]);
+    assert_eq!(start_teams(&mut map), [0, 1, 0]);
     assert!(
         ai.squads
             .iter()
             .all(|s| s.normal_count == 0 && s.insane_count == 0)
     );
     assert_eq!(ai.character_palette, [map.tag(ai::ELITE_PATH).unwrap().id]);
+    // Each floor has 51 walkable surfaces: the arena's 49, an island off
+    // its east edge and a floor no start reaches.
+    assert_eq!(first.costs.sectors_generated, 2 * 51);
+    assert!(first.costs.padding < 0x1100, "{}", first.costs);
+    let mut kept = 0;
     for index in 0..2 {
         let name = format!("court_{index}");
         let bsp = map.tag(name.as_str()).unwrap().id;
         let sectors = PathfindingData::read(&mut map, bsp).unwrap().unwrap();
         assert_eq!(sectors.checksum, 100 + index);
-        assert!(!sectors.sectors.is_empty());
-        assert!(sectors.validate(None).is_empty());
+        assert!(sectors.validate(Some(51)).is_empty());
+        // The far floor has no sector on either BSP. The arena's BSP keeps
+        // the arena alone; the other keeps what the starts reach.
+        assert_eq!(sectors.refs[50], Ref::NONE);
+        if index == 0 {
+            assert_eq!(sectors.sectors.len(), 49);
+        } else {
+            assert!((49..=50).contains(&sectors.sectors.len()));
+        }
+        kept += sectors.sectors.len();
     }
-    let probe = build_package(&base, "court", Mode::Probe, &dir, "probe", false).unwrap();
+    assert_eq!(first.costs.sectors_kept, kept);
+    // Every firing position names a kept sector.
+    for zone in &ai.zones {
+        for p in &zone.firing_positions {
+            assert!(p.sector < 49, "{}: sector {}", zone.name, p.sector);
+        }
+    }
+    let probe = build_package(&base, "court", Mode::Probe, &config, &dir, "probe", false).unwrap();
     assert_ne!(probe.id, first.id);
     let lib = Library::open(&dir);
     let p = lib.packages().iter().find(|p| p.id == probe.id).unwrap();
@@ -147,12 +146,16 @@ fn a_map_without_headroom_is_refused_with_the_cost() {
     pin.metadata_size += max - map.header().meta_size;
     let (full, layout) = set.build().unwrap();
     assert_eq!(layout.memory_size, max);
-    let error = build(&full, "court", Mode::Kit)
+    let error = build(&full, "court", Mode::Kit, &Config::default())
         .err()
         .expect("must refuse")
         .to_string();
     for part in [
-        "exceeds tag headroom",
+        "exceeds tag headroom by ",
+        "the biggest part is ",
+        "of 102 generated",
+        "tag index ",
+        "padding ",
         "sectors ",
         "zones ",
         "squads ",
@@ -172,9 +175,61 @@ fn a_base_without_its_own_elite_is_refused() {
     let id = map.tag(r"objects\characters\elite\elite_mp").unwrap().id;
     set.slots[id.index()].name = Some(r"invented\other_unit".into());
     let base = set.build().unwrap().0;
-    let error = build(&base, "court", Mode::Probe)
+    let error = build(&base, "court", Mode::Probe, &Config::default())
         .err()
         .unwrap()
         .to_string();
     assert!(error.contains("required Elite biped"), "{error}");
+}
+
+#[test]
+fn the_kit_writes_each_start_its_base_team() {
+    let base = fixture();
+    let mut map = Map::from_reader(Cursor::new(&base[..])).unwrap();
+    assert_eq!(start_teams(&mut map), [0, 1, 8]);
+    for (home, teams) in [(Team::Red, [0, 1, 0]), (Team::Blue, [1, 0, 0])] {
+        let built = build(&base, "court", Mode::Kit, &Config { home }).unwrap();
+        let mut map = Map::from_reader(Cursor::new(&built.bytes[..])).unwrap();
+        // The middle start is as near one base as the other: it takes
+        // the home base.
+        assert_eq!(start_teams(&mut map), teams, "{home:?}");
+        assert_eq!(built.bases.home, home);
+        // The other start fields are the base's.
+        let id = map.scenario().unwrap().id;
+        let root = map.read_tag_bytes(id).unwrap();
+        let rows = scenario_edit::scene::metadata_block(&mut map, &root, 0x100, 0x34).unwrap();
+        for (row, (x, y, _)) in rows.iter().zip(STARTS) {
+            assert_eq!(row[..4], x.to_le_bytes());
+            assert_eq!(row[4..8], y.to_le_bytes());
+        }
+    }
+    let red = build(&base, "court", Mode::Kit, &Config::default()).unwrap();
+    let blue = build(&base, "court", Mode::Kit, &Config { home: Team::Blue }).unwrap();
+    assert_eq!(
+        blue.bases.points,
+        [red.bases.points[1], red.bases.points[0]]
+    );
+    assert_ne!(red.bytes, blue.bytes);
+}
+
+#[test]
+fn a_live_index_tail_moves_only_the_group_table() {
+    // Retail maps have data right after their tag entries: the new
+    // character's entry cannot grow the table in place.
+    let base = fixture();
+    let mut map = Map::from_reader(Cursor::new(&base)).unwrap();
+    let mut set = TagSet::from_map(&mut map).unwrap();
+    let pin = set.pinned.as_mut().unwrap();
+    let end = pin.index_entries_end as usize;
+    pin.index[end] = 0x5a;
+    let base = set.build().unwrap().0;
+    let built = build(&base, "court", Mode::Kit, &Config::default()).unwrap();
+    // Five groups with `char`, 12 bytes each, instead of 16 bytes a tag.
+    assert_eq!(built.costs.index, 5 * 12);
+    let mut map = Map::from_reader(Cursor::new(&built.bytes[..])).unwrap();
+    map.validate_checksum().unwrap();
+    assert_eq!(map.groups().len(), 5);
+    let ai = ScenarioAi::read_map(&mut map).unwrap();
+    assert_eq!(ai.character_palette, [map.tag(ai::ELITE_PATH).unwrap().id]);
+    assert_eq!(ai.squads.len(), 16);
 }

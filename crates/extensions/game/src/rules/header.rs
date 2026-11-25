@@ -1,9 +1,10 @@
 //! What a script's header asks of the game outside its rules: the
-//! superbounce mode, and a place under Tweakers in the game type list
+//! superbounce mode, and a row of ours in the game type list
 //! (docs/game/rules-engine.md, "Firefight, AI and bounces";
 //! docs/game/community-gametypes.md, "Tweakers").
 
-use ::rules::ir::{Header, Ir, List};
+use ::rules::ir::Ir;
+use ::rules::types::Type;
 use variants::ext::{Ext, LEN, Mode, Script};
 
 use super::runtime;
@@ -18,13 +19,9 @@ pub fn asks_superbounce(ir: &Ir) -> bool {
     ir.header.requires.iter().any(|c| c == SUPERBOUNCE)
 }
 
-/// Whether a script's header files it under Tweakers: `list tweakers`.
-pub fn lists_tweakers(header: &Header) -> bool {
-    header.list == List::Tweakers
-}
-
 /// The script a record's prefix names, when this machine has it: a
-/// compiled-in one ([`runtime::compiled_in`], ports and examples) or the
+/// compiled-in one ([`runtime::compiled_in`]: ports, examples and the
+/// listed scripts) or the
 /// game-variant store's.
 fn named(prefix: [u8; 8]) -> Option<Ir> {
     let blob = match runtime::compiled_in(prefix) {
@@ -44,12 +41,15 @@ fn header_of(script: Script) -> Option<Ir> {
     (script.mode == Mode::Rules).then(|| named(script.prefix)).flatten()
 }
 
-/// Whether a block naming a rules script (mode 2) is listed under
-/// Tweakers: the script it names is on this machine and its header says
-/// so ([`lists_tweakers`]). A script this machine lacks is listed under
-/// its carrier's game type.
-pub fn block_is_tweaker(block: &[u8; LEN]) -> bool {
-    header_of(Ext::in_effect(block).script).is_some_and(|ir| lists_tweakers(&ir.header))
+/// The script a block names (mode 2), when this machine has it: what the
+/// lobby's Quick Options rows come from (`crate::variant_quick`).
+pub fn block_script(block: &[u8; LEN]) -> Option<Ir> {
+    header_of(Ext::in_effect(block).script)
+}
+
+/// The declared type of a rules script available on this machine.
+pub fn script_type(script: Script) -> Option<Type> {
+    header_of(script).map(|ir| ir.header.game_type)
 }
 
 /// Whether a record's script reference names a script that asks for the
@@ -58,6 +58,15 @@ pub fn block_is_tweaker(block: &[u8; LEN]) -> bool {
 /// running script.
 pub fn script_asks_superbounce(script: Script) -> bool {
     header_of(script).is_some_and(|ir| asks_superbounce(&ir))
+}
+
+/// The superbounce HUD's options a record's script reference gives: the
+/// script's, read by name from the reference's option bits
+/// ([`crate::superbounce_options::Options::from_ir`]); the defaults when
+/// this machine lacks the script.
+pub fn superbounce_options(script: Script) -> crate::superbounce_options::Options {
+    use crate::superbounce_options::Options;
+    header_of(script).map_or(Options::DEFAULT, |ir| Options::from_ir(&ir, script.options))
 }
 
 #[cfg(test)]
@@ -82,24 +91,20 @@ mod tests {
         p
     }
 
-    /// The superbounce script asks for the mode and lists under Tweakers;
-    /// no port and no other example does either.
     #[test]
-    fn only_the_superbounce_script_asks_for_the_mode_and_tweakers() {
+    fn every_compiled_in_script_files_under_its_declared_type() {
         let sb = ::rules::compile(::rules::builtin::SUPERBOUNCE).unwrap();
-        assert!(asks_superbounce(&sb));
-        assert!(lists_tweakers(&sb.header));
-        for b in runtime::builtins().iter().chain(runtime::examples()) {
+        let practice = ::rules::compile(::rules::builtin::BOUNCE_PRACTICE).unwrap();
+        for b in runtime::builtins().iter().chain(runtime::examples()).chain(runtime::listed()) {
             let (ir, _) = ::rules::verify::load(&b.blob).unwrap();
-            let is_sb = ir.id() == sb.id();
-            assert_eq!(asks_superbounce(&ir), is_sb, "{}", ir.header.name);
-            assert_eq!(lists_tweakers(&ir.header), is_sb, "{}", ir.header.name);
-            assert_eq!(block_is_tweaker(&rules_block(prefix(b))), is_sb, "{}", ir.header.name);
+            let asks = ir.id() == sb.id() || ir.id() == practice.id();
+            assert_eq!(asks_superbounce(&ir), asks, "{}", ir.header.name);
+            let block = rules_block(prefix(b));
+            assert_eq!(script_type(Ext::in_effect(&block).script), Some(ir.header.game_type));
         }
         assert!(runtime::examples().iter().any(|b| b.id == sb.id()));
-        // A block with no script, and one naming a script not here.
-        assert!(!block_is_tweaker(&[0; LEN]));
-        assert!(!block_is_tweaker(&rules_block([9; 8])));
+        assert_eq!(script_type(Script::default()), None);
+        assert_eq!(script_type(Ext::in_effect(&rules_block([9; 8])).script), None);
     }
 
     /// The built-in Superbounce variant's block turns the mode on through
@@ -107,8 +112,7 @@ mod tests {
     /// feature on or off.
     #[test]
     fn the_superbounce_block_asks_for_the_mode_through_its_script() {
-        let ext = crate::community_variants::superbounce_ext();
-        assert!(!ext.superbounce);
+        let ext = crate::community_variants::listed_named("Superbounce").unwrap().ext();
         assert!(script_asks_superbounce(ext.script));
         assert!(!script_asks_superbounce(Script::default()));
         let port = Script {
@@ -123,6 +127,70 @@ mod tests {
             ..Ext::RETAIL
         };
         assert!(!crate::variant_ext::decide(plain, None, false).superbounce());
+    }
+
+    /// A record written with the old superbounce flag (bit 2 of the
+    /// block's flag byte) and no script leaves the mode off; the same
+    /// record naming the Superbounce script turns it on.
+    #[test]
+    fn the_old_flag_without_a_script_leaves_the_mode_off() {
+        let with_flag = |e: Ext| {
+            let mut b = e.encode();
+            b[3] |= 0b100;
+            let crc = variants::ext::crc32(&b[..LEN - 4]);
+            b[LEN - 4..].copy_from_slice(&crc.to_le_bytes());
+            Ext::in_effect(&b)
+        };
+        let flagged = with_flag(Ext { gravity: 50, ..Ext::RETAIL });
+        assert_eq!(flagged.gravity, 50, "the block still reads");
+        assert!(!crate::variant_ext::decide(flagged, None, false).superbounce());
+        let scripted = with_flag(crate::community_variants::listed_named("Superbounce").unwrap().ext());
+        assert!(crate::variant_ext::decide(scripted, None, false).superbounce());
+    }
+
+    /// The built-in block's options are the defaults; a copy with a piece
+    /// off reads off, and a block naming no script reads the defaults.
+    #[test]
+    fn the_superbounce_blocks_options_reach_the_hud() {
+        use crate::superbounce_options::{Options, TargetMode};
+        let ext = crate::community_variants::listed_named("Superbounce").unwrap().ext();
+        assert_eq!(superbounce_options(ext.script), Options::DEFAULT);
+        let ir = ::rules::compile(::rules::builtin::SUPERBOUNCE).unwrap();
+        let bits = ir
+            .pack_options(&[
+                ("medals".into(), ::rules::ir::OptionValue::Bool(false)),
+                ("targets".into(), ::rules::ir::OptionValue::Name("all".into())),
+            ])
+            .unwrap();
+        let off = Script { options: bits, ..ext.script };
+        assert_eq!(
+            superbounce_options(off),
+            Options { medals: false, targets: TargetMode::All, ..Options::DEFAULT }
+        );
+        assert_eq!(superbounce_options(Script::default()), Options::DEFAULT);
+        assert_eq!(crate::variant_ext::decide(ext, None, false).script(), Some(ext.script));
+        assert_eq!(crate::variant_ext::Decision::Retail.script(), None);
+    }
+
+    /// Every listed script's block names a script this machine has, so a
+    /// built-in record, and a copy of it, lists under its header's row;
+    /// only Superbounce's and Bounce Practice's ask for the mode.
+    #[test]
+    fn each_listed_block_names_its_script_and_its_row() {
+        for b in ::rules::builtin::LISTED {
+            let ir = ::rules::compile(b.source).unwrap();
+            let l = crate::community_variants::listed_named(b.name).unwrap();
+            let block = l.block();
+            assert_eq!(Ext::in_effect(&block).script.prefix[..], ir.id().0[..8], "{}", b.name);
+            assert_eq!(script_type(Ext::in_effect(&block).script), Some(ir.header.game_type), "{}", b.name);
+            assert_eq!(
+                script_asks_superbounce(Ext::in_effect(&block).script),
+                b.source == ::rules::builtin::SUPERBOUNCE
+                    || b.source == ::rules::builtin::BOUNCE_PRACTICE,
+                "{}",
+                b.name
+            );
+        }
     }
 
     #[test]

@@ -185,6 +185,7 @@ impl App {
             LayerId::Pathfinding => self.session.pathfinding().map_or(0, |p| p.sectors.len()),
             LayerId::BotNav => self.session.bot_nav().map_or(0, |b| b.polys.len()),
             LayerId::BotSpots => self.session.bot_nav().map_or(0, |b| b.spots.len()),
+            LayerId::Playtest(layer) => crate::viewport::playtest::count_shown(layer, &self.playtest),
             LayerId::Halo1 => self.compare().and_then(|c| c.view.as_ref().ok())
                 .map_or(0, |v| v.tris.len() + v.placements.len()),
             LayerId::Live => self.pairing.shown.as_ref()

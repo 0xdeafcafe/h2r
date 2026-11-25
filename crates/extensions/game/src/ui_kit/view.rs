@@ -51,6 +51,9 @@ pub enum Art {
     Level { stem: String },
     /// Bitmap `index` of list skin `skin` (an index into `wigl +0x138`).
     Skin { skin: i16, index: u16, image: i16 },
+    /// List skin `skin`'s scroll arrow: image 0 up, 1 down of the skin's
+    /// own `bitm` (`+4`), as the list draw (`0x24bda2`) shows it.
+    Arrow { skin: i16, image: i16 },
 }
 
 /// What is drawn under the screen's own widgets.
@@ -62,12 +65,13 @@ pub enum Backing {
     /// The game shell's background screen (screen 5), as under every
     /// settings screen.
     GameShell,
-    /// A modal's: the screen that opened it, as it was, with nothing
-    /// between it and the panel. A dialog is an overlay on whatever was
-    /// open (the user, 2026-11-18, from a retail screenshot): no retail
-    /// dialog tag has a dim layer or any widget outside its panel and
-    /// corners (docs/game/ui-builder.md "Screen kinds"). The preview draws
-    /// the [`Opener`] there.
+    /// A modal's: the screen that opened it, as it was, dimmed. A dialog
+    /// is an overlay on whatever was open: no retail dialog tag has a
+    /// widget outside its panel and corners, and the window stack's
+    /// render fills the screen with the shared globals' overlay colour
+    /// under it (docs/game/ui-builder.md "A dialog is an overlay on its
+    /// opener"). The preview draws the [`Opener`] there, then the
+    /// backdrop (`Source::backdrop`).
     Over(Opener),
 }
 
@@ -133,26 +137,38 @@ impl Opener {
     pub const GAME_SETUP_FIREFIGHT: Opener = Opener {
         rows: &[
             "Change Map...",
+            crate::lobby_mode::MAP_VARIANT_LABEL,
             "Change Rules...",
             "Quick Options...",
             "Clanker Options...",
             "Firefight Options...",
         ],
-        focus: 4,
+        focus: 5,
         ..Opener::GAME_SETUP
     };
-    /// [`Opener::GAME_SETUP`] as a Forge lobby lists it, on the Forge Map
-    /// row: what the Forge Map picker opens over (`crate::lobby_mode`).
+    /// [`Opener::GAME_SETUP`] as a Forge lobby lists it, on the Map Variant
+    /// row: what the Map Variant picker opens over (`crate::lobby_mode`).
     pub const GAME_SETUP_FORGE: Opener = Opener {
         rows: &[
             "Change Map...",
-            crate::lobby_mode::FORGE_MAP_LABEL,
+            crate::lobby_mode::MAP_VARIANT_LABEL,
             "Change Rules...",
             "Quick Options...",
             "Clanker Options...",
         ],
         focus: 1,
         ..Opener::GAME_SETUP
+    };
+    /// The pregame lobby's custom game pane (`pregame_lobby`, pane 0) in
+    /// its sample state (`assets/ui/retail-samples/pregame_lobby.yaml`):
+    /// what the lobby's mode picker opens over (`kit.picker.mode`). It
+    /// has no list rows.
+    pub const LOBBY: Opener = Opener {
+        name: "lobby",
+        tag: r"ui\screens\game_shell\pregame_lobby\pregame_lobby",
+        pane: 0,
+        rows: &[],
+        focus: 0,
     };
     /// The Xbox Live menu (screen `0xba`) on Quickmatch, its rows as the
     /// list hooks show them (docs/live/live-custom-games.md "Rows").
@@ -163,9 +179,12 @@ impl Opener {
         rows: &[
             "Quickmatch",
             "OptiMatch",
-            "Custom Game",
+            "Clankermatch",
+            "Co-op Campaign",
+            "Custom Games",
+            "Forge",
             "Custom Game Browser",
-            "Content Download",
+            "Mods",
         ],
         focus: 0,
     };
@@ -209,6 +228,13 @@ pub enum Kind {
         /// The image's size the rectangle was made from.
         size: [u16; 2],
     },
+    /// A 3D scene the compositor places in the rect: the monitor look's
+    /// preview (docs/game/forge-monitor-appearance.md, ML6). The offline
+    /// preview has no GPU scene, so it draws the `name` in the rect; the
+    /// kit's checks treat the widget as art.
+    Scene3d {
+        name: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -241,7 +267,7 @@ impl Widget {
     pub fn text(&self) -> Option<&str> {
         match &self.kind {
             Kind::Text { text, .. } => Some(text),
-            Kind::Art { .. } => None,
+            Kind::Art { .. } | Kind::Scene3d { .. } => None,
         }
     }
 }
@@ -380,6 +406,56 @@ pub struct Geometry {
     pub item_art: Vec<ItemArt>,
     /// The Controls screen's frame art kept for this list.
     pub frame_art: Vec<PaneArt>,
+    /// The skin's scroll arrows where the game draws them on this list
+    /// (`None`: a skin whose arrows the kit doesn't know).
+    pub arrows: Option<Arrows>,
+}
+
+/// A list's scroll arrows: top-left offsets from the list's anchor and
+/// the images' size (docs/game/ui-builder.md "Scroll arrows").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Arrows {
+    pub skin: i16,
+    pub up: [i16; 2],
+    pub down: [i16; 2],
+    pub size: [u16; 2],
+}
+
+impl Arrows {
+    /// Skin `skin`'s arrows on a list of ours laying out `rows` rows
+    /// ([`crate::list_class::SkinArrows::for_rows`]); `own` keeps the
+    /// skin's place (a list left where its tag has it).
+    pub fn of(skin: i16, rows: usize, own: bool) -> Option<Arrows> {
+        let s = crate::list_class::SkinArrows::of(skin)?;
+        let at = if own {
+            crate::list_class::ScrollArrows {
+                up: s.up,
+                down: s.down,
+            }
+        } else {
+            s.for_rows(rows)
+        };
+        Some(Arrows {
+            skin,
+            up: at.up,
+            down: at.down,
+            size: s.size,
+        })
+    }
+
+    /// The up (`up`) or down arrow's rectangle on a list anchored at
+    /// `anchor`.
+    pub fn rect(&self, anchor: [i16; 2], up: bool) -> [i16; 4] {
+        let [dx, dy] = if up { self.up } else { self.down };
+        let top = anchor[1].saturating_add(dy);
+        let left = anchor[0].saturating_add(dx);
+        [
+            top,
+            left,
+            top.saturating_sub(self.size[1] as i16),
+            left.saturating_add(self.size[0] as i16),
+        ]
+    }
 }
 
 /// The Controls screen's id (its `wgit +4`).
@@ -454,6 +530,7 @@ impl Geometry {
                 },
             ],
             frame_art: controls_frame.to_vec(),
+            arrows: Arrows::of(2, 0, true),
         };
         match place {
             ListPlace::Controls => base,
@@ -471,6 +548,7 @@ impl Geometry {
                     .into_iter()
                     .filter(|a| a.at[0] < bitmaps_left_of)
                     .collect(),
+                arrows: Arrows::of(2, place.shown(), false),
                 ..base
             },
             // Any other skin is `default`'s or a copy of it (`default6`,
@@ -484,6 +562,11 @@ impl Geometry {
             } => Geometry {
                 anchor,
                 visible: place.shown(),
+                arrows: Arrows::of(
+                    if skin == PICKER_SKIN { skin } else { 0 },
+                    place.shown(),
+                    false,
+                ),
                 item_height: 22,
                 item_colour: [0.560784, 0.694118, 0.811765],
                 label: (rect(28, 20, 8, 210), 1, 0),
@@ -652,6 +735,7 @@ pub fn view_of(s: &ScreenSpec, g: &Geometry, m: &dyn Metrics, state: &str) -> Vi
             w.push(t);
         }
     }
+    w.extend(scroll_arrows(g, first, s.rows.len()));
     for (k, a) in s.shown_art().iter().enumerate() {
         w.push(Widget {
             id: format!("art.{k}"),
@@ -717,6 +801,37 @@ pub fn view_of(s: &ScreenSpec, g: &Geometry, m: &dyn Metrics, state: &str) -> Vi
     }
 }
 
+/// The list's scroll arrows as the list draw shows them (`0x24bda2`), for
+/// a list of `rows` rows whose first item shows row `first`: up while a
+/// row is above the first shown (`0x24c63e`), down while one is below the
+/// last (`0x24c676`). A list whose rows all fit shows neither.
+pub fn scroll_arrows(g: &Geometry, first: usize, rows: usize) -> Vec<Widget> {
+    let Some(a) = g.arrows else {
+        return Vec::new();
+    };
+    let shown = [
+        ("scroll.up", true, first > 0),
+        ("scroll.down", false, first + g.visible < rows),
+    ];
+    shown
+        .into_iter()
+        .filter(|(_, _, on)| *on)
+        .map(|(id, up, _)| Widget {
+            id: id.into(),
+            rect: a.rect(g.anchor, up),
+            layer: Layer::Content,
+            alpha: 255,
+            kind: Kind::Art {
+                art: Art::Arrow {
+                    skin: a.skin,
+                    image: i16::from(!up),
+                },
+                size: a.size,
+            },
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -755,6 +870,43 @@ mod tests {
         assert_eq!(v.widget("row.6.label").unwrap().alpha, UNFOCUSED_ALPHA);
         assert_eq!(v.widget("row.6.art.1").unwrap().alpha, FRAME_DIM);
         assert_eq!(v.widget("row.7.art.1").unwrap().alpha, 255);
+    }
+
+    /// The arrows show only while rows lie past the window: none on a
+    /// list whose rows all fit, down at the top of a longer one, up at
+    /// its end; the down arrow by the last laid-out row of a moved list.
+    #[test]
+    fn scroll_arrows_show_only_on_a_list_that_scrolls() {
+        let g = Geometry::fallback(ListPlace::Controls);
+        let ids = |v: &View| -> Vec<String> {
+            v.widgets
+                .iter()
+                .filter(|w| w.id.starts_with("scroll."))
+                .map(|w| w.id.clone())
+                .collect()
+        };
+        assert!(ids(&view_of(&spec(5, 4), &g, &Synthetic, "s")).is_empty());
+        assert_eq!(ids(&view_of(&spec(8, 0), &g, &Synthetic, "s")), ["scroll.down"]);
+        assert_eq!(ids(&view_of(&spec(8, 7), &g, &Synthetic, "s")), ["scroll.up"]);
+        assert_eq!(
+            ids(&view_of(&spec(9, 5), &g, &Synthetic, "s")),
+            ["scroll.up", "scroll.down"]
+        );
+        // The Controls list where its tag has it: the skin's own places.
+        let v = view_of(&spec(8, 0), &g, &Synthetic, "s");
+        assert_eq!(v.widget("scroll.down").unwrap().rect, [130 - 184, -254 + 467, 130 - 184 - 23, -254 + 467 + 37]);
+        // A moved default-skin list of three rows: by its third row.
+        let place = ListPlace::Moved {
+            skin: 0,
+            anchor: [-235, 30],
+            bitmaps_left_of: i16::MIN,
+            visible: 3,
+        };
+        let g = Geometry::fallback(place);
+        let v = view_of(&spec(6, 0), &g, &Synthetic, "s");
+        let down = v.widget("scroll.down").unwrap();
+        assert_eq!(down.rect, [30 - 22, -265, 30 - 22 - 17, -238]);
+        assert!(matches!(down.kind, Kind::Art { art: Art::Arrow { skin: 0, image: 1 }, .. }));
     }
 
     #[test]

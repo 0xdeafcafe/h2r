@@ -7,6 +7,11 @@
 //! fps 28.4  ·  35.2 ms (cpu 24 / gfx 5 / wait 6)  ·  draws 1104  ·  map 01a_tutorial  ·  metal, render thread on
 //! ```
 //!
+//! A third, small line at the bottom left lists the cheats that are on
+//! (`cheats: God mode, Fly, 0.5x`), and shows even with the perf overlay
+//! off (F3) while the debug menu is closed, so a forgotten god mode never
+//! goes unseen. Whoever applies the cheats sets it ([`Watermark::set_cheats`]).
+//!
 //! The first line is baked at compile time (`build.rs`: commit, branch,
 //! build time). The second is refreshed a few times a second from the
 //! frame stats' rolling window (`timeline::phase`), or from the shell's
@@ -17,6 +22,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use crate::overlay::Sprite;
 use crate::scale::Viewport;
@@ -169,6 +175,8 @@ pub struct Watermark {
     build: BuildInfo,
     note: String,
     map: Option<MapFn>,
+    /// The cheats that are on, as the cheat line lists them.
+    cheats: Arc<Mutex<Vec<String>>>,
 }
 
 impl std::fmt::Debug for Watermark {
@@ -195,6 +203,7 @@ impl Watermark {
             build: BuildInfo::baked(),
             note: String::new(),
             map: None,
+            cheats: Arc::default(),
         }
     }
 
@@ -234,6 +243,29 @@ impl Watermark {
         Arc::clone(&self.visible)
     }
 
+    /// Sets what the cheat line lists: each cheat that is on, as it should
+    /// read (`God mode`, `0.5x`). Empty hides the line.
+    pub fn set_cheats(&self, on: Vec<String>) {
+        *self.cheats.lock().unwrap_or_else(|e| e.into_inner()) = on;
+    }
+
+    /// The list [`set_cheats`](Watermark::set_cheats) writes, to hand to
+    /// whoever applies the cheats.
+    pub fn cheats_handle(&self) -> Arc<Mutex<Vec<String>>> {
+        Arc::clone(&self.cheats)
+    }
+
+    /// The cheat line: `cheats: God mode, Fly, 0.5x`, or nothing when none
+    /// is on.
+    pub fn cheat_panel(&self) -> Vec<String> {
+        let on = self.cheats.lock().unwrap_or_else(|e| e.into_inner());
+        if on.is_empty() {
+            Vec::new()
+        } else {
+            vec![format!("cheats: {}", on.join(", "))]
+        }
+    }
+
     /// Both panels, with `backend` (`metal`) as the renderer.
     pub fn panels(&self, stats: Option<&LiveStats>, backend: &str) -> Panels {
         let map = self.map.as_ref().and_then(|m| m());
@@ -245,16 +277,19 @@ impl Watermark {
         Panels {
             label: self.build.label(),
             live: stats_lines(stats, map.as_deref(), &renderer),
+            cheats: self.cheat_panel(),
         }
     }
 }
 
 /// What the watermark shows: a small build label centred near the bottom of
-/// the image, and the live run's numbers in its lower right.
+/// the image, the live run's numbers in its lower right, and the cheats
+/// that are on in its lower left.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Panels {
     pub label: Vec<String>,
     pub live: Vec<String>,
+    pub cheats: Vec<String>,
 }
 
 /// How a panel's lines line up, and where the panel sits.
@@ -264,6 +299,8 @@ pub enum Align {
     Centre,
     /// Right-aligned, in the lower right corner.
     Right,
+    /// Left-aligned, in the lower left corner.
+    Left,
 }
 
 /// Pixels per font pixel for a target `height` pixels tall: 1 up to 1599,
@@ -310,7 +347,7 @@ pub fn rasterize_aligned(lines: &[String], scale: u32, align: Option<Align>) -> 
         .map(|l| {
             let gap = cols as usize - l.chars().count();
             match align {
-                None => l.clone(),
+                None | Some(Align::Left) => l.clone(),
                 Some(Align::Right) => " ".repeat(gap) + l,
                 Some(Align::Centre) => " ".repeat(gap / 2) + l,
             }
@@ -405,6 +442,7 @@ pub fn place(lines: &[String], area: Viewport, align: Align) -> Placement {
     let x = match align {
         Align::Centre => area.x + area.width.saturating_sub(w) / 2,
         Align::Right => (area.x + area.width).saturating_sub(margin.saturating_sub(PAD * scale) + w),
+        Align::Left => area.x + margin.saturating_sub(PAD * scale),
     };
     let y = (area.y + area.height).saturating_sub(margin.saturating_sub(PAD * scale) + h);
     Placement {
@@ -419,6 +457,7 @@ pub fn place(lines: &[String], area: Viewport, align: Align) -> Placement {
 pub struct WatermarkRenderer {
     label: PanelSprite,
     live: PanelSprite,
+    cheats: PanelSprite,
 }
 
 struct PanelSprite {
@@ -466,6 +505,10 @@ impl WatermarkRenderer {
                 sprite: Sprite::new(device, "app watermark live"),
                 drawn: None,
             },
+            cheats: PanelSprite {
+                sprite: Sprite::new(device, "app watermark cheats"),
+                drawn: None,
+            },
         }
     }
 
@@ -497,6 +540,9 @@ impl WatermarkRenderer {
         );
         self.live.draw(
             device, queue, encoder, &panels.live, Align::Right, dst, dst_format, dst_size, area,
+        );
+        self.cheats.draw(
+            device, queue, encoder, &panels.cheats, Align::Left, dst, dst_format, dst_size, area,
         );
     }
 }
@@ -589,6 +635,31 @@ mod tests {
         assert!(!shared.toggle());
         assert!(!wm.visible());
         assert!(wm.toggle());
+    }
+
+    #[test]
+    fn active_cheats_make_a_line_at_the_lower_left() {
+        let wm = Watermark::new().with_build(BUILD);
+        assert!(wm.cheat_panel().is_empty());
+        assert!(wm.panels(None, "metal").cheats.is_empty());
+        wm.clone()
+            .set_cheats(vec!["God mode".into(), "Fly".into(), "0.5x".into()]);
+        assert_eq!(wm.cheat_panel(), vec!["cheats: God mode, Fly, 0.5x"]);
+        assert_eq!(wm.panels(None, "metal").cheats, wm.cheat_panel());
+        // Off again.
+        *wm.cheats_handle().lock().unwrap() = Vec::new();
+        assert!(wm.cheat_panel().is_empty());
+        // The panel sits at the left edge, bottom, as the others sit at
+        // theirs.
+        let area = Viewport {
+            x: 0,
+            y: 0,
+            width: 640,
+            height: 480,
+        };
+        let p = place(&["cheats: God mode".to_string()], area, Align::Left);
+        assert_eq!(p.at.0, MARGIN - PAD);
+        assert!(p.at.1 > 480 - 2 * (CELL + 2 * PAD + MARGIN));
     }
 
     #[test]
@@ -793,6 +864,7 @@ mod tests {
         let panels = Panels {
             label: vec!["x".repeat(300), "y".repeat(300)],
             live: vec!["z".repeat(300); 5],
+            ..Panels::default()
         };
         let Some(diff) = render((w, h), area, &panels) else {
             return;

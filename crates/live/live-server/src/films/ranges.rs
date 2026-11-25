@@ -274,7 +274,7 @@ pub(crate) async fn read_film(
         && query.span.is_none()
         && query.auth.is_none()
     {
-        return super::download_host_film(&live, &headers, &id).await;
+        return super::download_host_film(&live, &headers, &id, super::HostPart::Film).await;
     }
     let viewer = live.read_viewer(bearer(&headers))?;
     let (receipt, immutable_key, ended) = visible_game(&live.model.read(), &id, viewer)

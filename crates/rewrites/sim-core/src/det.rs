@@ -85,6 +85,19 @@ impl Fp {
         self.scalar(Op::Mul, a, b)
     }
 
+    /// `divss` of two ordinary values: one correctly rounded host division.
+    /// The quotient of ordinary values is zero or of magnitude in
+    /// `(2^-126, 2^126)`, so it is normal in binary32, only PE (already
+    /// sticky) can be raised, and the result cannot depend on FTZ or DAZ
+    /// (the argument [`x87_neg_quotient`] makes in every precision). A zero
+    /// divisor is excluded: its infinity is exact, but `0/0` is a NaN whose
+    /// payload the host picks.
+    #[inline]
+    pub fn div(&mut self, a: u32, b: u32) -> u32 {
+        self.ok &= lanes::ordinary1(a) & lanes::ordinary1(b) & (b & 0x7fff_ffff != 0);
+        (f32::from_bits(a) / f32::from_bits(b)).to_bits()
+    }
+
     #[inline]
     fn packed(&mut self, op: Op, a: Vec4, b: Vec4) -> Vec4 {
         if lanes::enabled() {
@@ -324,5 +337,18 @@ mod tests {
         assert!(truncates((-2147483520.0f32).to_bits()));
         assert!(!truncates(2147483648.0f32.to_bits()));
         assert_eq!(truncate((-2.75f32).to_bits()), -2);
+    }
+
+    #[test]
+    fn division_rounds_once_and_declines_zero_divisors() {
+        let mut fp = Fp::new();
+        assert_eq!(fp.div(1.0f32.to_bits(), 3.0f32.to_bits()), (1.0f32 / 3.0).to_bits());
+        assert_eq!(fp.div(0x8000_0000, 2.0f32.to_bits()), 0x8000_0000, "-0 / 2 = -0");
+        assert!(fp.exact());
+        fp.div(1.0f32.to_bits(), 0);
+        assert!(!fp.exact(), "0/0's NaN payload is the host's");
+        let mut fp = Fp::new();
+        fp.div(0x7f80_0000, 2.0f32.to_bits());
+        assert!(!fp.exact(), "an infinity operand is off the fast path");
     }
 }

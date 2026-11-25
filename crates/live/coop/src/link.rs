@@ -2,10 +2,12 @@
 //!
 //! A [`Link`] is an unreliable datagram path to the one other machine:
 //! [`UdpLink`] directly, `relay::RelayLink` through the Live server,
-//! [`Fallback`] over the pair, and [`sim_pair`] for tests. Nothing above a
-//! link assumes a datagram arrives, arrives once or arrives in order.
+//! [`Fallback`] over the pair, and [`sim_pair`] for tests. A host with
+//! several machines around it serves them all from one bound socket
+//! ([`UdpPort`]). Nothing above a link assumes a datagram arrives, arrives
+//! once or arrives in order.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::ErrorKind;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -106,6 +108,99 @@ impl Link for UdpLink {
                 Err(_) => return None,
             }
         }
+    }
+}
+
+/// Datagrams one [`UdpPort`] queue holds for a peer before new ones drop.
+const PORT_QUEUE: usize = 256;
+/// Datagrams one `recv` routes from the socket, so a busy peer cannot
+/// starve the others of their turn.
+const PORT_ROUTE: usize = 64;
+
+struct UdpShared {
+    socket: UdpSocket,
+    queues: Mutex<HashMap<SocketAddr, VecDeque<Vec<u8>>>>,
+}
+
+/// One UDP socket serving every peer of a session: the co-op channel's
+/// host end. Each [`link_to`](UdpPort::link_to) is a [`Link`] to one peer;
+/// a datagram from an address no link was made for is dropped, as
+/// [`UdpLink`] drops a stranger's.
+///
+/// The host binds its channel once (the XNet base port plus
+/// [`COOP_PORT_OFFSET`]); a peer's link sends to that peer's own channel.
+/// Any link's `recv` takes datagrams off the shared socket and files each
+/// by its source address, so every link is served as long as its peer is
+/// pumped.
+pub struct UdpPort {
+    shared: Arc<UdpShared>,
+}
+
+/// One peer's lane of a [`UdpPort`].
+pub struct UdpPortLink {
+    shared: Arc<UdpShared>,
+    peer: SocketAddr,
+}
+
+impl UdpPort {
+    /// Binds `local` (never blocks; the socket is non-blocking).
+    pub fn bind(local: SocketAddr) -> std::io::Result<UdpPort> {
+        let socket = UdpSocket::bind(local)?;
+        socket.set_nonblocking(true)?;
+        Ok(UdpPort {
+            shared: Arc::new(UdpShared {
+                socket,
+                queues: Mutex::new(HashMap::new()),
+            }),
+        })
+    }
+
+    /// The link to `peer`: its sends go out on the shared socket, and its
+    /// `recv` answers only with datagrams that came from `peer`.
+    pub fn link_to(&self, peer: SocketAddr) -> UdpPortLink {
+        self.shared
+            .queues
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(peer)
+            .or_default();
+        UdpPortLink {
+            shared: Arc::clone(&self.shared),
+            peer,
+        }
+    }
+
+    /// The bound address (a port of 0 was given to the OS to pick).
+    pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
+        self.shared.socket.local_addr()
+    }
+}
+
+impl Link for UdpPortLink {
+    fn send(&mut self, datagram: &[u8]) {
+        // An error here (no route, a full buffer) is a lost datagram.
+        let _ = self.shared.socket.send_to(datagram, self.peer);
+    }
+
+    fn recv(&mut self) -> Option<Vec<u8>> {
+        let mut buf = [0u8; 2048];
+        let mut queues = self.shared.queues.lock().unwrap_or_else(|e| e.into_inner());
+        for _ in 0..PORT_ROUTE {
+            match self.shared.socket.recv_from(&mut buf) {
+                Ok((n, from)) => {
+                    let queue = queues.entry(from).or_default();
+                    if queue.len() < PORT_QUEUE {
+                        queue.push_back(buf[..n].to_vec());
+                    }
+                }
+                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                // WouldBlock, or an ICMP error surfaced by the socket.
+                Err(_) => break,
+            }
+        }
+        queues
+            .get_mut(&self.peer)
+            .and_then(|queue| queue.pop_front())
     }
 }
 
@@ -432,6 +527,58 @@ mod tests {
         }
         assert_eq!(got.as_deref(), Some(&b"from b"[..]));
         assert_eq!(a.recv(), None, "the stranger's datagram was dropped");
+    }
+
+    /// The next datagram `recv` yields within a second (loopback UDP is
+    /// not there the instant it is sent).
+    fn await_recv(recv: &mut dyn FnMut() -> Option<Vec<u8>>) -> Option<Vec<u8>> {
+        for _ in 0..200 {
+            if let Some(d) = recv() {
+                return Some(d);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        None
+    }
+
+    #[test]
+    fn a_port_files_datagrams_by_their_source_and_drops_strangers() {
+        let any: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let port = UdpPort::bind(any).unwrap();
+        let mut to_first = port.link_to(any);
+        let mut to_second = port.link_to(any);
+        let mut first = UdpLink::bind(any, port.local_addr().unwrap()).unwrap();
+        let mut second = UdpLink::bind(any, port.local_addr().unwrap()).unwrap();
+        to_first.peer = first.local_addr().unwrap();
+        to_second.peer = second.local_addr().unwrap();
+        // Each peer's datagram answers only its own link, whoever recv'd.
+        first.send(b"one");
+        second.send(b"two");
+        let stranger = UdpSocket::bind(any).unwrap();
+        stranger.send_to(b"who", port.local_addr().unwrap()).unwrap();
+        assert_eq!(await_recv(&mut || to_second.recv()), Some(b"two".to_vec()));
+        assert_eq!(await_recv(&mut || to_first.recv()), Some(b"one".to_vec()));
+        assert_eq!(to_second.recv(), None);
+        // A link's send goes to its own peer, from the one shared socket.
+        to_first.send(b"back one");
+        to_second.send(b"back two");
+        assert_eq!(await_recv(&mut || first.recv()), Some(b"back one".to_vec()));
+        assert_eq!(await_recv(&mut || second.recv()), Some(b"back two".to_vec()));
+        assert_eq!(first.recv(), None);
+        assert_eq!(to_first.recv(), None, "the stranger's datagram was dropped");
+    }
+
+    #[test]
+    fn a_port_link_send_fits_the_datagram_limit() {
+        // One co-op datagram must cross a port link whole (wire::MAX_DATAGRAM).
+        let any: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let port = UdpPort::bind(any).unwrap();
+        let mut link = port.link_to(any);
+        let mut peer = UdpLink::bind(any, port.local_addr().unwrap()).unwrap();
+        link.peer = peer.local_addr().unwrap();
+        let datagram = vec![0xabu8; crate::wire::MAX_DATAGRAM];
+        link.send(&datagram);
+        assert_eq!(await_recv(&mut || peer.recv()), Some(datagram));
     }
 
     #[test]

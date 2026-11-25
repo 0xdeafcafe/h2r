@@ -44,6 +44,8 @@ replay parity on its invented cache.
   removed entry, the removal of a linked entry, a flag in two roles or on
   two channels, a repeated link and a device link whose lower endpoint is
   not first.
+- A group (`Forge::Group`) names 2 to 256 entries of any block by endpoint, with a name of 1 to 32 characters, a pivot flag and a lock flag; `Forge::Ungroup` ends it and `Forge::GroupLock` sets its lock. An entry is in one group, so the validator refuses a second group, a missing or removed member, a repeated member, and the removal of a grouped entry. `ForgeDoc::groups` resolves the active groups to final indices, `ForgeDoc::group_targets` by identity, and `replay` hands them to `Apply::groups`. A group has no scenario bytes, and a document with a group op is format 4 (`FORMAT_GROUPS`).
+- A prefab (`Prefab`, `prefab.rs`) is a file of pieces, each a placement block, a tag key, an optional label and a position and rotation from the pivot (the first piece, as if it faced yaw 0). It has its own number (`PREFAB_FORMAT`), a bounded reader (`Prefab::from_bytes`, 128 KiB, 256 pieces) and canonical JSON. `Prefab::missing` names the first tag a map lacks. `ForgeDoc::label_targets` gives the active labels by placement identity.
 - A label is a string of 1 to 32 bytes from lowercase ASCII, digits, `_`,
   `-` and `.`, plus an optional `i32` number. `Forge::Label` sets or
   clears one on a placement named by an endpoint, as links do, so it
@@ -60,11 +62,59 @@ replay parity on its invented cache.
   `assault_bomb_spawn` (2), `assault_bomb_return` (3), `oddball_spawn`
   (4), `teleporter_sender` (7), `teleporter_receiver` (8), `territory`
   (10) and `hill_corner` with the hill number (11 to 18).
-- The `format` is 1, or 2 when any op is a label op. `validate` refuses
-  the other number, so a document has one spelling: every document
-  without labels keeps its bytes and identity, and a fold that retracts
-  the last label returns to format 1. This build reads both; an older
-  build refuses a labelled document whole.
+- Entry ops (`Edit::Entry`, `EntryOp`) edit the map's own entries as
+  well as added ones: `Set` writes one typed, editable field, `Remove`
+  removes the entry and `Reset` drops the effect of every earlier entry
+  op on a base entry, so it is in the map again as the disc has it.
+  `Property` sets or clears a property with no retail field (an item
+  spawner's `team`, 0 to 7, `teams` reads it; a scenery, crate or
+  machine placement's `games`, engine indices in ascending order,
+  `object_games` reads it and `for_game` gives the document a build for
+  one engine makes); it lowers to nothing.
+  Game types are `games`: a set of engines and the item slots that name it.
+  Links and labels are their own ops and a reset leaves them. A target
+  is an endpoint, as for links and labels; a base target carries its
+  **print**, the first eight bytes (sixteen hex digits) of the SHA-256
+  of the canonical JSON `{"block": <name>, "fields": [...]}` of the
+  entry's typed fields as `Value`s in the layout's order, a tag
+  reference or palette index as its tag key. `print(block, fields)`
+  computes it, and an adapter calls `check_print` before its first
+  write to a base entry: a differing print is `Refusal::Print {block,
+  index}` and nothing is written. A link or label endpoint may carry a
+  print and need not. The validator refuses a base target without a
+  print, an index past the block's limit or the base count, an add ID
+  of 0 or of no add op, a field the block lacks or does not mark
+  editable, a value of another type or out of range or outside the
+  BSP bounds, a target an earlier op removed, the removal of a linked
+  or labelled entry, a reset of an added entry or of an entry with no
+  entry op since its last reset, and one entry named with two prints.
+  `resolve` lowers each entry op to the placement op of its target's
+  running index, following identities through appends and
+  swap-removes; a reset, and every entry op a later reset of the same
+  entry covers, lower to nothing. It also lists every base entry an
+  entry op, link or label names with a print (`Resolved::prints`).
+  `replay` hands the prints to `Apply::prints` before the first edit,
+  then the lowered ops to `Apply::placement` in op order; an adapter
+  without `prints` refuses a document with a print by name.
+  `ForgeDoc::links` and `labels` follow entry removals the same way,
+  and leave out a removal a later reset covers. `inverse` retracts an
+  entry op as it does any other.
+- `ForgeDoc::tier` is `Tier::Variant` when the document holds scenario
+  edits only (placement adds, entry ops, links, unlinks and labels, no
+  recipe but the session kit's `forge_kit`, no import slot or source
+  map), else `Tier::Map`. `play_form` drops the kit recipe and
+  `session_form` appends it, each dropping `expect` when it changes the
+  recipes; the play form of the session form is the document.
+  `variant_name` holds a map variant's name to 1 to 16 characters, not
+  blank and without control characters, and `ForgeDoc::check_variant`
+  refuses a document of the map tier as `Refusal::Tier`.
+- The `format` is the highest any op needs: 3 when any op is an entry
+  op or any endpoint has a print, else 2 when any op is a label op,
+  else 1. `validate` refuses any other number, so a document has one
+  spelling: every document without the newer ops keeps its bytes and
+  identity, and a fold that retracts the last of them returns to the
+  lower format. This build reads all three; an older build refuses a
+  newer document whole.
 - The sequence-zero log head hashes the starting document. An entry
   hashes its canonical JSON including the preceding hash. The host
   checks the proposal's author, conditions and map state and calls
@@ -85,13 +135,24 @@ replay parity on its invented cache.
 
 ## Tests
 
-`cargo test --locked -p forge-doc` covers document and entry hash
+`cargo xtask test -p forge-doc` covers document and entry hash
 vectors, chain integrity and inverses, validator refusals, a seeded
 10,000-document fuzz test, link identity and refusals, label rules, format
 1 and 2 vectors and the built-in table, and placement
-parity against `scenario_edit::Session`. All inputs are invented.
+parity against `scenario_edit::Session`. `src/tests/entry.rs` covers
+print and format 3 golden vectors, each entry op rule's refusal, final
+indices after an entry removal and a reset, a fold and undo of entry
+ops, replay's prints and lowered ops, and a seeded fuzz of entry
+documents. `tests/resolve.rs` checks `resolve` against hand replays of
+add, remove, set and reset orders, entry-op replay against the editor's
+session on its invented cache, a wrong print refused before any write,
+a reset giving the fixture's bytes back, and a fold then undo of entry
+ops giving the start. `tests/variant.rs` covers a table of documents and
+their tiers, the forms' round trip and `expect`, and the variant name
+rule. All inputs are invented.
 
 ## Docs
 
 - [Forge design](../../../docs/game/forge-design.md)
 - [Forge features](../../../docs/game/forge-features.md)
+- [Forge map variants](../../../docs/game/forge-map-variants.md)

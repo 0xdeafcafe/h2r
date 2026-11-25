@@ -9,6 +9,8 @@
 //!   retail and community built-ins, and their block put on the game at its
 //!   start;
 //! - [`port`]: the player's saved variants ported into the store at boot;
+//! - [`suggest`]: the map variants on this machine a bundle may suggest,
+//!   written by [`store::Store::set_maps`];
 //! - [`GameScripts`]: what the rules runtime asks for a blob the binary does
 //!   not have: the store first, then Live by full hash.
 //!
@@ -21,6 +23,7 @@ pub mod bundle;
 pub mod inject;
 pub mod port;
 pub mod store;
+pub mod suggest;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -66,8 +69,6 @@ pub struct Boot {
     /// saves `<data>/disk/Partition1/UDATA/4D530064`.
     pub data_root: PathBuf,
     pub live: Option<Arc<live_hle::Hle>>,
-    /// `variants.port.script`.
-    pub port: port::PortScript,
 }
 
 /// Opens the store, ports the saved variants on a thread of its own, and
@@ -94,7 +95,8 @@ pub fn install(registry: &mut hooks::Registry, boot: Boot) -> anyhow::Result<boo
         variants::save::SaveStore::root_under(&boot.data_root),
         None,
     );
-    let script = boot.port;
+    // Preserve a save's named script, or attach the retail type's built-in.
+    let script = port::PortScript::Builtin;
     let to = store();
     let _ = std::thread::Builder::new()
         .name("h2-game-variants-port".into())
@@ -338,6 +340,12 @@ impl hooks::Feature for StartHook {
             // Halo 1's scope reset only clears its own vision states, so
             // either order is right; this one names it.
             .after_feature("h1-scope-zoom");
+        // The listing the guest's list entries name goes with the guest
+        // memory. The store is files on disk and the Live refresh adds to
+        // it; neither is the machine's, and a load does not rewind them.
+        b.snapshot(hooks::SnapshotPolicy::section(inject::save_listed, |bytes, _| {
+            inject::load_listed(bytes)
+        }));
         Ok(())
     }
 }

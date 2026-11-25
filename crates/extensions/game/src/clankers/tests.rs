@@ -4,6 +4,11 @@ fn store() -> Arc<Store> {
     Arc::new(Store::defaults(&DEFS))
 }
 
+/// The page's doc: `content/ui/screens/clankers.yaml`.
+fn doc() -> Arc<crate::ui_kit::data::ScreenDoc> {
+    crate::ui_kit::data::require(SCREEN).unwrap_or_else(|e| panic!("{e}"))
+}
+
 fn on(store: &Store, count: i64, difficulty: i64) {
     store.set(COUNT.key, Value::Int(count)).unwrap();
     store.set(DIFFICULTY.key, Value::Int(difficulty)).unwrap();
@@ -239,7 +244,7 @@ fn glitches_are_off_by_default_and_reach_the_bots_already_there() {
     assert_eq!(ph.list().len(), 1, "the same bot");
     // The page has the row, last, with Off, Some and Lots.
     assert_eq!(DEFS.last().map(|d| d.key), Some("clankers.glitches"));
-    assert_eq!(ROWS.len(), DEFS.len());
+    assert_eq!(page(store()).count(), DEFS.len());
 }
 
 #[test]
@@ -702,7 +707,8 @@ fn the_page_has_a_row_per_setting_and_its_steps_are_saved() {
     let row = p.row_label_id();
     assert_ne!(row, p.title());
     assert!(IDS.owns(row) && IDS.owns(p.title()));
-    assert_eq!(ROW_LABEL, "Clanker Options...");
+    let caller = doc().settings.clone().and_then(|s| s.caller).expect("a caller");
+    assert_eq!(caller.label, "Clanker Options...");
     let line = p.sideways(0, true).unwrap();
     assert!(line.contains("clankers.enabled -> On"), "{line}");
     assert_eq!(s.get(ENABLED.key), Some(Value::Bool(true)));
@@ -733,6 +739,7 @@ fn the_row_goes_after_the_halo1_row_on_the_plan() {
     let mut r = hooks::Registry::new(hooks::Switches::defaults());
     r.add(&h1row::SetupRow {
         data_root: std::env::temp_dir(),
+        page: crate::h1_options_row::test_page(),
     })
     .unwrap();
     let page = Arc::new(page(store()));
@@ -784,6 +791,7 @@ fn hopper(hopper_id: u32, players: u32, teams: u32) -> live_proto::hopper::clank
         playlist_id: hopper_id + 1,
         players,
         teams,
+        ranked: true,
         ranks_as: None,
     }
 }
@@ -888,6 +896,36 @@ fn a_clankermatch_lobby_fills_phantoms_on_balanced_teams() {
     assert!(!d.on());
 }
 
+/// The game deletes a matchmaking lobby's advertisement once its match
+/// session takes over, well before the countdown ends: the bots stay for
+/// the whole game this console serves, and go `FILL_GONE` after it.
+#[test]
+fn a_clankermatchs_bots_outlive_the_advertisement_while_the_game_runs() {
+    use std::time::{Duration, Instant};
+    const SESSION: &str = "00000000000000c7";
+    let (live, ph, d) = clankermatch(SESSION, hopper(10, 4, 2));
+    let t0 = Instant::now();
+    d.tick_match(t0);
+    live.answer(0, Ok(roster(SESSION, 3, 0.5)));
+    d.tick_match(t0 + Duration::from_secs(60));
+    assert_eq!(ph.list().len(), 3);
+    // The advertisement goes; the countdown, the load and the game run on.
+    *live.clanker.lock().unwrap() = None;
+    *live.session.lock().unwrap() = None;
+    d.tick_match(t0 + Duration::from_secs(61));
+    d.set_hosts_game(true);
+    for s in [80, 120, 600] {
+        d.tick_match(t0 + Duration::from_secs(s));
+        assert_eq!(ph.list().len(), 3, "in the game at {s} s");
+    }
+    // The game is over: back in the menus, the bots go after the gap.
+    d.set_hosts_game(false);
+    d.tick_match(t0 + Duration::from_secs(601));
+    assert_eq!(ph.list().len(), 3, "not at once");
+    d.tick_match(t0 + Duration::from_secs(602) + FILL_GONE);
+    assert!(ph.list().is_empty());
+}
+
 #[test]
 fn a_clankermatch_balances_around_the_hosts_real_team() {
     use std::time::Instant;
@@ -947,6 +985,157 @@ fn a_clankermatch_of_two_v_two_is_three_phantoms() {
     );
 }
 
+/// Clanker Doubles for a party of two: the bots fill the two seats the
+/// party leaves, both on the other team. One bot per human less would
+/// leave the playlist short; one more would take the seat of the party's
+/// second console (its join refused, the match failed) or stand a third
+/// player on a team of two.
+#[test]
+fn a_clankermatch_of_two_v_two_for_a_party_of_two_is_two_phantoms() {
+    use std::time::{Duration, Instant};
+    const SESSION: &str = "00000000000000c6";
+    let (live, ph, d) = clankermatch(SESSION, hopper(10, 4, 2));
+    d.set_party(Some(2));
+    d.set_host_team(Some(0));
+    let t0 = Instant::now();
+    let log = d.tick_match(t0);
+    assert!(log.iter().any(|l| l.contains("2 bots join")), "{log:?}");
+    assert!(
+        log.iter()
+            .any(|l| l == "clankermatch: 4 seats, the party of 2 people, 2 bots"),
+        "{log:?}"
+    );
+    let asked = live.requests();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].count, 2, "the seats the party leaves");
+    assert_eq!(asked[0].playlist.as_deref(), Some("10"));
+    live.answer(0, Ok(roster(SESSION, 2, 0.5)));
+    d.tick_match(t0 + Duration::from_secs(60));
+    assert_eq!(ph.list().len(), 2);
+    // The party on red keeps together: both bots on blue, 2 v 2.
+    let teams: Vec<Option<u8>> = ph.list().iter().map(|p| p.team).collect();
+    assert_eq!(teams, vec![Some(1), Some(1)], "{teams:?}");
+}
+
+/// The party read after the fill began (or changed before any bot sat)
+/// plans the fill again, and a new roster is asked for the new count.
+#[test]
+fn a_clankermatch_follows_the_party_until_the_first_bot_sits() {
+    use std::time::Instant;
+    const SESSION: &str = "00000000000000c7";
+    let (live, ph, d) = clankermatch(SESSION, hopper(10, 4, 2));
+    let t0 = Instant::now();
+    let log = d.tick_match(t0);
+    assert!(log.iter().any(|l| l.contains("3 bots join")), "one human: {log:?}");
+    assert_eq!(live.requests()[0].count, 3);
+    d.set_party(Some(2));
+    let log = d.tick_match(t0);
+    assert!(
+        log.iter()
+            .any(|l| l == "clankermatch: 4 seats, the party of 2 people, 2 bots"),
+        "{log:?}"
+    );
+    let asked = live.requests();
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert_eq!(asked[1].count, 2);
+    // The first roster's late answer is dropped; the second seats two.
+    live.answer(0, Ok(roster(SESSION, 3, 0.5)));
+    live.answer(1, Ok(roster(SESSION, 2, 0.5)));
+    let schedule =
+        crate::clankermatch::schedule(2, u64::from_str_radix(SESSION, 16).unwrap() ^ 0xc1a4);
+    d.tick_match(t0 + *schedule.last().unwrap());
+    assert_eq!(ph.list().len(), 2);
+    // Once a bot sits, the plan is kept.
+    d.set_party(Some(1));
+    d.tick_match(t0 + *schedule.last().unwrap());
+    assert_eq!(ph.list().len(), 2);
+    assert_eq!(live.requests().len(), 2);
+}
+
+/// A Clankermatch lobby that sits with every bot due says why, once per
+/// reason (and again while it holds), and nothing once the game runs.
+#[test]
+fn a_clankermatch_that_does_not_start_says_why() {
+    use std::time::{Duration, Instant};
+    const SESSION: &str = "00000000000000c9";
+    let (live, _ph, d) = clankermatch(SESSION, hopper(10, 4, 2));
+    let t0 = Instant::now();
+    let never = || -> Option<(String, String)> { panic!("read before the wait is long") };
+    assert_eq!(d.stalled(t0, never), None, "no fill yet");
+    d.tick_match(t0);
+    live.answer(0, Ok(roster(SESSION, 3, 0.5)));
+    let schedule =
+        crate::clankermatch::schedule(3, u64::from_str_radix(SESSION, 16).unwrap() ^ 0xc1a4);
+    let due = t0 + *schedule.last().unwrap();
+    d.tick_match(due);
+    assert_eq!(d.stalled(due + Duration::from_secs(5), never), None);
+    fn held(r: &'static str) -> impl FnOnce() -> Option<(String, String)> {
+        move || Some((r.to_owned(), format!("{r} [facts]")))
+    }
+    let at = due + STALL_AFTER + Duration::from_secs(1);
+    let line = d.stalled(at, held("arbitration: still registering")).expect("a line");
+    assert_eq!(
+        line,
+        "clankermatch: clanker playlist 10's match has not started 21 s after its last bot was due: \
+         arbitration: still registering [facts]"
+    );
+    // The same reason: not again at once, again after the repeat.
+    assert_eq!(d.stalled(at + Duration::from_secs(1), held("arbitration: still registering")), None);
+    assert!(
+        d.stalled(at + STALL_REPEAT, held("arbitration: still registering"))
+            .is_some()
+    );
+    // Another reason: at once.
+    assert!(d.stalled(at + STALL_REPEAT + Duration::from_secs(1), held("peer 1 has not loaded")).is_some());
+    // The countdown or the game: nothing.
+    assert_eq!(d.stalled(at + STALL_REPEAT * 3, || None), None);
+}
+
+/// A fill still waiting for its roster says so before the lobby's reason.
+#[test]
+fn a_clankermatch_waiting_for_its_roster_says_so_when_it_stalls() {
+    use std::time::{Duration, Instant};
+    const SESSION: &str = "00000000000000ca";
+    let (_live, _ph, d) = clankermatch(SESSION, hopper(10, 4, 2));
+    let t0 = Instant::now();
+    d.tick_match(t0);
+    d.tick_match(t0 + Duration::from_secs(60));
+    let line = d
+        .stalled(t0 + Duration::from_secs(90), || {
+            Some(("1 of 4".into(), "the match session has 1 of 4 players".into()))
+        })
+        .expect("a line");
+    assert!(
+        line.contains("Live has not answered the bots' roster")
+            && line.ends_with("the match session has 1 of 4 players"),
+        "{line}"
+    );
+}
+
+/// A party as big as the playlist needs no bots, and says so.
+#[test]
+fn a_full_party_plays_a_clankermatch_without_bots() {
+    use std::time::{Duration, Instant};
+    const SESSION: &str = "00000000000000c8";
+    let (live, ph, d) = clankermatch(SESSION, hopper(10, 4, 2));
+    d.set_party(Some(4));
+    let t0 = Instant::now();
+    let log = d.tick_match(t0);
+    assert!(
+        log.iter().any(|l| l
+            == "clankermatch: the party of 4 people fills clanker playlist 10's 4 seats: no bots"),
+        "{log:?}"
+    );
+    d.tick_match(t0 + Duration::from_secs(60));
+    assert!(live.requests().is_empty());
+    assert!(ph.list().is_empty());
+    // In the game the party reads as none: no bots come then either.
+    d.set_party(None);
+    d.tick_match(t0 + Duration::from_secs(90));
+    assert!(live.requests().is_empty());
+    assert!(ph.list().is_empty());
+}
+
 #[test]
 fn a_clankermatch_refused_a_roster_seats_host_made_bots() {
     use std::time::{Duration, Instant};
@@ -1000,92 +1189,93 @@ fn a_opens_the_value_picker_and_the_row_has_a_description() {
     assert!(IDS.owns(help));
     assert_ne!(help, p.row_label_id());
     assert!(p.slots() <= IDS.len);
-    assert!(ROW_HELP.len() < 120, "a few lines under Game Setup's list");
+    let caller = doc().settings.clone().and_then(|s| s.caller).expect("a caller");
+    assert!(caller.help.len() < 120, "a few lines under Game Setup's list");
 }
 
-/// The page has Quick Options' header: the focused row's one line in the
-/// help line and its icon in the game type picture, both following the
-/// focus, in the game (`Rows::description`, `Rows::row_image`) and in the
-/// spec the preview draws.
+/// The page is the shared settings dialog: its rows are [`DEFS`] in
+/// order, its header the same whatever has the focus (a Spartan, its
+/// name, what the window is for), and the focused row's help under the
+/// rows, in the game (`Rows::description`) and in the spec the preview
+/// draws.
 #[test]
-fn the_header_follows_the_focused_row() {
+fn the_header_stays_and_the_help_follows_the_focused_row() {
     use crate::list_class::Rows;
-    use crate::ui_kit::dialog::{QUICK_HELP, QUICK_PICTURE, quick_icon};
+    use crate::ui_kit::dialog::{SETTINGS_HELP_TEXT, icon, quick_icon};
     use crate::ui_kit::spec::{Describe, ScreenSpec};
+    let d = doc();
+    let keys: Vec<&str> = d.rows.values().filter_map(|r| r.setting.as_deref()).collect();
+    let defs: Vec<&str> = DEFS.iter().map(|d| d.key).collect();
+    assert_eq!(keys, defs, "a row per setting, in the page's order");
     let p = page(store());
     assert!(p.slots() <= IDS.len);
     let s = p.spec();
     assert_eq!(s.help, None, "no page line in place of the rows'");
-    assert!(s.art.is_empty(), "the icon is the focused row's");
-    let room = i32::from(QUICK_HELP.right) - i32::from(QUICK_HELP.left);
+    assert_eq!(s.art, [quick_icon(icon::SPARTAN)]);
+    assert_eq!(Rows::picture_image(&p), Some(icon::SPARTAN));
+    let texts: Vec<&str> = s.texts.iter().map(|t| t.text.as_str()).collect();
+    // The about line is the Game Setup row's help: the two always agree.
+    let caller = d.settings.clone().and_then(|s| s.caller).expect("a caller");
+    assert_eq!(texts, ["Bots in this game", caller.help.as_str()]);
+    assert_eq!(
+        caller.help,
+        "Add bots: how many, how well they play and which team."
+    );
+    assert_eq!(s.description.map(|b| b.rect), Some(SETTINGS_HELP_TEXT.rect));
+    let header = (Rows::panel_text(&p, 0), Rows::panel_text(&p, 1));
     let mut lines = Vec::new();
-    for (row, r) in ROWS.iter().enumerate() {
-        let icon = r.icon.expect("every row has an icon");
-        assert_eq!(Rows::row_image(&p, row as i16), Some(icon), "{}", r.label);
+    for (row, r) in d.rows.values().enumerate() {
         let focused = ScreenSpec {
             focus: row,
             ..s.clone()
         };
-        assert_eq!(focused.description_text().as_deref(), Some(r.description));
-        let art = focused.shown_art();
-        assert_eq!(art, [quick_icon(icon)], "{}", r.label);
-        assert_eq!(art[0].at, QUICK_PICTURE.at);
-        let line = Rows::description(&p, row as i16).expect("the help line");
+        assert_eq!(focused.description_text(), r.help.clone());
+        assert_eq!(focused.art, s.art, "{}: the icon stays", r.text);
+        assert_eq!(focused.texts, s.texts, "{}: the header stays", r.text);
+        let line = Rows::description(&p, row as i16).expect("the help");
         assert!(IDS.owns(line));
         lines.push(line);
-        assert!(
-            crate::ui_kit::spec::fallback::width(r.description) <= room,
-            "{}: one line",
-            r.label
-        );
+        assert_eq!((Rows::panel_text(&p, 0), Rows::panel_text(&p, 1)), header);
     }
     lines.dedup();
-    assert_eq!(lines.len(), ROWS.len(), "a line per row");
+    assert_eq!(lines.len(), d.rows.len(), "a help per row");
     assert_ne!(Some(lines[0]), p.row_help_id());
-    assert_eq!(Rows::picture_image(&p), ROWS[0].icon, "the focus starts on row 0");
-    assert_eq!(Rows::row_image(&p, ROWS.len() as i16), None, "no such row");
     assert_eq!(Rows::description(&p, 99), None, "no such row");
 }
 
-/// Every row has an icon of Quick Options' picture, a one-line help and
-/// an explanation for the value picker that says more than the help and
-/// is player copy: what the option does and what its choices mean.
+/// Every row has a help that fits the block under the rows and an
+/// explanation for the value picker that says more than the help and is
+/// player copy: what the option does and what its choices mean.
 #[test]
-fn every_row_has_an_icon_a_line_and_real_picker_copy() {
+fn every_row_has_a_help_and_real_picker_copy() {
     use crate::ui::Chosen;
-    use crate::ui_kit::dialog::{PICKER_HELP_TEXT, icon};
+    use crate::ui_kit::dialog::{PICKER_HELP_TEXT, SETTINGS_HELP_TEXT};
     use crate::ui_kit::picker;
     use crate::ui_kit::spec::{fallback, wrap};
-    let width = i32::from(PICKER_HELP_TEXT.rect[3]) - i32::from(PICKER_HELP_TEXT.rect[1]);
-    let height = i32::from(PICKER_HELP_TEXT.rect[0]) - i32::from(PICKER_HELP_TEXT.rect[2]);
+    let room = |b: crate::list_class::TextBlock| {
+        (i32::from(b.rect[3]) - i32::from(b.rect[1]), i32::from(b.rect[0]) - i32::from(b.rect[2]))
+    };
+    let (help_width, help_height) = room(SETTINGS_HELP_TEXT);
+    let (width, height) = room(PICKER_HELP_TEXT);
     let p = page(store());
-    let mut icons = Vec::new();
-    for (row, r) in ROWS.iter().enumerate() {
-        let i = r.icon.unwrap_or_else(|| panic!("{}: an icon", r.label));
-        assert!(i < icon::COUNT, "{}", r.label);
-        icons.push(i);
-        assert!(!r.description.is_empty() && !r.description.contains('\n'));
-        assert!(
-            r.description.encode_utf16().count() <= crate::h1_options::HELP_UNITS,
-            "{}: one line",
-            r.label
-        );
-        let e = r.explain;
-        assert!(!e.is_empty() && e != r.description, "{}", r.label);
-        assert!(e.encode_utf16().count() <= crate::h1_options::EXPLAIN_UNITS, "{}: {e}", r.label);
+    for (row, r) in doc().rows.values().enumerate() {
+        let h = r.help.as_deref().unwrap_or_default();
+        assert!(!h.is_empty() && !h.contains('\n'), "{}", r.text);
+        let lines = wrap(h, help_width, &fallback::width).len() as i32;
+        assert!(lines * fallback::LINE <= help_height, "{}: {lines} lines", r.text);
+        let e = r.explain.as_deref().unwrap_or_default();
+        assert!(!e.is_empty() && e != h, "{}", r.text);
+        assert!(e.encode_utf16().count() <= crate::ui_kit::settings::EXPLAIN_UNITS, "{}: {e}", r.text);
         let lines = wrap(e, width, &fallback::width).len() as i32;
-        assert!(lines * fallback::LINE <= height, "{}: {lines} lines", r.label);
+        assert!(lines * fallback::LINE <= height, "{}: {lines} lines", r.text);
         let lower = e.to_lowercase();
         for bad in ["docs/", "todo", "placeholder", "lorem", "tbd", "phantom", "peer", "session"] {
-            assert!(!lower.contains(bad), "{}: {e}", r.label);
+            assert!(!lower.contains(bad), "{}: {e}", r.text);
         }
         // A opens the value picker with that explanation.
-        assert_eq!(p.press(row as i16), Chosen::Open(picker::NAME), "{}", r.label);
-        assert_eq!(picker::current().expect("a pick").description, e, "{}", r.label);
+        assert_eq!(p.press(row as i16), Chosen::Open(picker::NAME), "{}", r.text);
+        assert_eq!(picker::current().expect("a pick").description, e, "{}", r.text);
     }
-    icons.sort();
-    icons.dedup();
-    assert_eq!(icons.len(), ROWS.len(), "each row its own icon");
 }
 
 #[test]
@@ -1096,4 +1286,78 @@ fn a_rostered_phantom_uses_the_same_profile_as_every_other_seat_with_its_name() 
     assert_eq!(first.brain.view(), second.brain.view());
     let profile = bots::name_profile::NameProfile::for_name("Rusty Lugnut");
     assert_eq!(first.brain.view().profile, Some(profile));
+}
+
+// --- Firefight seats -------------------------------------------------------
+
+fn firefight_store(teams: i64) -> Arc<Store> {
+    let s = Arc::new(Store::defaults(&crate::firefight::options::DEFS));
+    s.set(crate::firefight::options::TEAMS.key, Value::Int(teams))
+        .unwrap();
+    s
+}
+
+/// Clankers sit on Firefight's player teams only: one team seats every
+/// Clanker on team 0, and the Firefight host gives the actors a team no
+/// player team uses. Outside Firefight the seat rule stays off.
+#[test]
+fn clankers_never_take_the_ai_team() {
+    use crate::lobby_start::Mode;
+    let one = firefight_store(1);
+    let read = |s: &Arc<Store>| crate::firefight::options::Options::read(s);
+    assert_eq!(firefight_seat_teams(Mode::Firefight, || read(&one)), Some(1));
+    assert_eq!(
+        firefight_seat_teams(Mode::Firefight, || Err("unreadable".into())),
+        Some(1),
+        "options that cannot be read seat on one team"
+    );
+    for mode in [Mode::Multiplayer, Mode::Forge] {
+        assert_eq!(firefight_seat_teams(mode, || read(&one)), None, "{mode:?}");
+    }
+    // However the lobby is held, a Clanker joins team 0.
+    let mut held = Vec::new();
+    for _ in 0..8 {
+        let team = bots::firefight::seat_team(held.iter().copied(), 1);
+        assert_eq!(team, 0);
+        held.push(team);
+    }
+    // The actors' team is clear of every player team, even when the kit
+    // names team 0 or a held one.
+    let players: std::collections::BTreeSet<u8> = held.iter().copied().collect();
+    for (teams, kit) in [(1, 0), (1, 3), (2, 0), (2, 1), (2, 5)] {
+        let ai = crate::firefight::host::actor_team(teams, kit, &players).unwrap();
+        assert!(ai >= teams, "{teams} teams, kit {kit}: the actors on {ai}");
+        assert!(!players.contains(&ai));
+    }
+}
+
+/// With two Firefight teams each new Clanker joins the team with fewer
+/// players, so the host and five Clankers make three a side.
+#[test]
+fn two_team_firefight_balances_clankers() {
+    use crate::lobby_start::Mode;
+    let two = firefight_store(2);
+    let teams = firefight_seat_teams(Mode::Firefight, || {
+        crate::firefight::options::Options::read(&two)
+    });
+    assert_eq!(teams, Some(2));
+    // Crossfire's own two teams seat the same way.
+    let crossfire = firefight_store(crate::firefight::options::DEFAULT_TEAMS);
+    crossfire
+        .set(crate::firefight::options::WAVE_SET.key, Value::Int(3))
+        .unwrap();
+    assert_eq!(
+        firefight_seat_teams(Mode::Firefight, || {
+            crate::firefight::options::Options::read(&crossfire)
+        }),
+        Some(2)
+    );
+    let mut held = vec![0u8];
+    for _ in 0..5 {
+        let team = bots::firefight::seat_team(held.iter().copied(), teams.unwrap());
+        assert!(team < 2, "a player team, not the AI's");
+        held.push(team);
+    }
+    let reds = held.iter().filter(|&&t| t == 0).count();
+    assert_eq!((reds, held.len() - reds), (3, 3), "{held:?}");
 }

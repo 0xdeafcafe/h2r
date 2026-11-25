@@ -1,0 +1,12 @@
+# No tree-sitter grammar for HaloScript yet: the language server's
+# semantic tokens and features still work.
+name = "HaloScript"
+path_suffixes = ["hsc"]
+line_comments = ["; "]
+tab_size = 2
+hard_tabs = false
+autoclose_before = ";:.,=)"
+brackets = [
+    { start = "(", end = ")", close = true, newline = true },
+    { start = "\"", end = "\"", close = true, newline = false, not_in = ["string", "comment"] },
+]

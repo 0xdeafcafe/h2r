@@ -74,6 +74,10 @@ fn totals(w: &Work) -> ResidualTotals {
         state_words: w.state_words,
         clears: w.clears,
         binds: w.binds,
+        native_guest_binds: w.native_guest_binds,
+        guest_bind_refused_destroy: w.guest_bind_refused_destroy,
+        native_rect_clears: w.native_rect_clears,
+        clear_refused_rect_count: w.clear_refused_rect_count,
         copies: w.copies,
         uploads: w.uploads,
         locks: w.locks,
@@ -114,6 +118,10 @@ pub fn reply(
                 state_words: w.work.state_words,
                 clears: w.work.clears,
                 binds: w.work.binds,
+                native_guest_binds: w.work.native_guest_binds,
+                guest_bind_refused_destroy: w.work.guest_bind_refused_destroy,
+                native_rect_clears: w.work.native_rect_clears,
+                clear_refused_rect_count: w.work.clear_refused_rect_count,
                 copies: w.work.copies,
                 uploads: w.work.uploads,
                 d3d_ms: ms(w.work.d3d_ns),
@@ -268,7 +276,7 @@ mod tests {
                 p[0].status.as_str(),
                 p[0].slot.as_str()
             ),
-            (4, 1, "d3d", "opaque")
+            (4, 1, "partial", "opaque")
         );
         assert_eq!(p[1].producer, "hud");
         assert_eq!(p[0].guest_ms, None, "null without render-timing");

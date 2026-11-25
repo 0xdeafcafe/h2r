@@ -13,8 +13,8 @@
 //!   (the user sees an agent's edits live), or `h2-editor --serve`.
 //! - [`seams`]: where the parallel tools plug in. A [`Provider`] answers
 //!   methods ahead of the built-in ones: the Tags tool's `tag.*` and the
-//!   HUD tool's `hud.*`; `model.*` and `custom.*` are planned namespaces
-//!   answering NOT_YET until one does.
+//!   HUD tool's `hud.*`, and `model.*`; `model.colors`, `model.emblem` and
+//!   `custom.*` are planned, answering NOT_YET until one does.
 //!
 //! [`Action`]: crate::app::Action
 //! [`App::dispatch`]: crate::App::dispatch
@@ -25,29 +25,61 @@ use studio_proto::{code, method as m};
 
 use crate::App;
 
+mod anim;
+mod assets;
 mod bitmaps;
+pub(crate) mod checks;
+mod problems;
 mod collision;
+mod colours;
+mod shader;
+mod curves;
 mod docs;
 mod game_script;
 mod geometry;
 mod hud;
+mod image_gen;
+mod import;
+mod markers;
+mod markers_check;
 mod mirror;
+mod models;
 mod nav;
+mod game;
+mod ground;
 mod nav_mesh;
 mod pair;
 mod params;
+pub(crate) mod packages;
+mod preview;
 mod playlists;
+mod playtest;
 mod scenario;
-mod scripts;
+pub(crate) mod recordings;
+pub(crate) mod scripts;
 pub mod seams;
+mod shell;
 pub mod server;
-mod sound;
+pub(crate) mod sound;
+mod strings;
+pub(crate) mod sound_edit;
+pub(crate) mod sound_measure;
 mod tag_fields;
 mod tag_io;
+mod tag_names;
 mod tags;
+mod ui_check;
+mod ui_kit;
+mod ui_browse;
+mod ui_export;
+mod ui_edit;
+mod ui_retail;
 mod ui_screens;
 mod variants;
 mod view;
+mod voice;
+mod voice_clone;
+mod workspace;
 
 #[cfg(test)]
 mod tests;
@@ -188,24 +220,199 @@ pub const METHODS: &[MethodDef] = &[
         "null",
     ),
     def(
-        m::DOC_LIST,
-        "Every document: open, its name, dirty, undo and redo",
+        m::ASSET_LIST,
+        "The browser's rows. root tags (the default): every tag of the tags tree by path, one row for a tag all its maps hold alike and `variants` (each with its maps) where they differ, plus the tags packages add (`new`, badge `new in <package>`); a tag an edit line touches has badge `edited by <package>`. root packages: the set (a package per row), or with `package` that package's items. root live: the server's offer (none is held offline). `kind` is Maps, Objects, Models, Animations, Bitmaps, Shaders, Effects, Sounds, Screens, HUDs, Strings, Other, a tag group, or Voices (a `voice:<id>` row for each character and the announcer, with `state` no dataset, dataset, fine-tuned or announcer, `minutes`, `pending_asr` and `tuned`); `map` keeps what that map holds; every word of `query` must match the path, group, kind or a package id",
+        r#"{"root?":"tags|packages|live","package?":"string","kind?":"string","map?":"string","query?":"string","limit?":"integer"}"#,
+        r#"{"root":"string","rows":"[{asset,root,kind,name,group?,path?,origin?,new?,badge?,packages?,maps?,variants?,...}]","total":"integer","limit":"integer","truncated":"boolean","maps":"[string]","kinds":"[string]","problems":"[string]"}"#,
+        r#"{"kind":"Objects","query":"rifle"}"#,
+    ),
+    def(
+        m::ASSET_THUMB,
+        "A thumbnail as a PNG path: for a package's bitmap item (item:<package>:<n>) with a PNG source. A tag's own picture (a bitmap, a model, a waveform, a screen) answers not-yet until the renderer draws it",
+        r#"{"asset":"string","out?":"string"}"#,
+        r#"{"asset":"string","path":"string","bytes":"integer","source":"string"}"#,
+        r#"{"asset":"item:kit-test:2"}"#,
+    ),
+    def(
+        m::ASSET_COPY,
+        "Copy into a package: a new `tag` item `like:` the tag of the tree, in a package under <data>/packages/ (the source file holds no bytes of the disc's tag; the lock is rewritten). The new path is `to`, or the tag's path with _copy added. Opens the authored source tab and answers its id in `doc`. The package defaults to the edit target",
+        r#"{"asset":"string (tag:<group>:<path>)","package?":"string","to?":"string"}"#,
+        r#"{"package":"string","from":"string","tag":"string","source":"string","item":"integer","dir":"string","doc":"string"}"#,
+        r#"{"asset":"tag:weap:objects\\weapons\\rifle","package":"kit-test"}"#,
+    ),
+    def(
+        m::ASSET_LINKS,
+        "What an asset uses, what uses it and which editors open it, read each time (docs/editor/studio-flow.md, \"Links\"). A tag: the tags it references (role = the target's kind: Model, Animations, Sounds, HUD, Projectile, Bitmaps, ...; `via` is `node <n> +<offset>` in its file), the voice that says it when it is a dialogue sound, and in used_by the tags that reference it and the packages that add or edit it. A `rules` or `variant` item: the other kind of its script key. Any other item: the tag it adds or edits, and its package. A package: its items and `requires`, and the packages that require it. A voice: in used_by the dialogue sounds its rules pick, in uses the target sounds of the lines it made. `editors` lists each editor with `why_not` when it cannot open. `problems` names what could not be read (a tag file that does not decode, a missing tree)",
+        r#"{"asset":"string (tag:<group>:<path>, package:<id>, item:<package>:<n> or voice:<id>)"}"#,
+        r#"{"asset":"string","uses":"[{asset,role,via}]","used_by":"[{asset,role,via}]","editors":"[{id,label,why_not}]","problems":"[string]"}"#,
+        r#"{"asset":"package:kit-test"}"#,
+    ),
+    def(
+        m::ASSET_FORK,
+        "Fork for this map: the lines of a tag as they are for one map, in an `edits` item of a package under <data>/packages/ (`package`, else the edit target) whose `maps` names that map alone (`edits/<map>.yaml`). It is never a copy of the tag: every other level reads the asset as it was. Without `set` the lines are the ones the package's other `edits` items that reach the map have for the tag (the last to set a path wins); a package with none is refused, and so is a tag already forked for the map. With `set`, those lines are put in by path. The lock is rewritten",
+        r#"{"tag":"string (<group>:<path> or tag:<group>:<path>)","map":"string","package?":"string","set?":"[{path,value,from?}]"}"#,
+        r#"{"package":"string","tag":"string","map":"string","file":"string","item":"integer|null","lines":"integer","from_items":"[integer]","created":"boolean"}"#,
+        r#"{"tag":"weap:objects\\weapons\\rifle","map":"example","package":"kit-test"}"#,
+    ),
+    def(
+        m::ASSET_REVERT,
+        "Take a tag's edit lines out of a package's `edits` items (`package`, else the edit target). With `map`, only the item that names that map alone (the fork `asset.fork` made); without, every `edits` item with an entry for the tag. An item left with no entry goes with its file, and the lock is rewritten. A tag with no line is refused",
+        r#"{"tag":"string (<group>:<path> or tag:<group>:<path>)","map?":"string","package?":"string"}"#,
+        r#"{"package":"string","tag":"string","map":"string|null","removed":"[{item,file,maps,lines,item_removed}]"}"#,
+        r#"{"tag":"weap:objects\\weapons\\rifle","map":"example","package":"kit-test"}"#,
+    ),
+    def(
+        m::PACKAGE_DIFF,
+        "What a package (`id`, else the edit target) does, per asset, for a map of the open source or for every map: `edit` rows hold each field's `to` (and `from` when the line names the value it replaces) and the block lines; `patch` (a tag-delta), `override` (a `replaces`) and `added` rows name the asset; `forked` marks an item that names maps. `levels` are the maps the package changes. With `map`, the whole set is built over that map and `conflicts` holds the conflict table's rows (a package off for the level with the reason, a field or an asset a later package takes), `involves` marking the ones that name this package; Problems lists them under `package` until the level is diffed again",
+        r#"{"id?":"string","map?":"string"}"#,
+        r#"{"id":"string","map":"string|null","assets":"[{asset,item,item_asset,change: edit|patch|override|added,maps,forked,fields?,blocks?,was?,replaces?}]","counts":"{edit,patch,override,added,forked}","levels":"[string]","built":"boolean","conflicts":"[{map,kind: refused|override,package,why,involves,other?,tag?,path?}]","problems":"[string]"}"#,
+        r#"{"id":"kit-test"}"#,
+    ),
+    def(
+        m::PACKAGE_LIST,
+        "The package set in load order, then the packages that are off: id, name, PackageId, origin (baked or local), dir, on or off and why, always_on, item counts by kind, scopes, whether it is the edit target and whether it is editable; the set's problems, its content hash and the edit target",
         "{}",
-        r#"[{"doc":"map|variant|playlists|ui","open":"boolean","name":"string|null","dirty":"boolean","can_undo":"boolean","can_redo":"boolean","path?":"string"}]"#,
+        r#"{"packages":"[{id,name,package_id,origin,dir?,on,why?,always_on,signed,features,items,scopes,target,editable}]","problems":"[string]","content_hash":"string|null","target":"string|null","dir":"string"}"#,
+        "null",
+    ),
+    def(
+        m::PACKAGE_READ,
+        "One package: its manifest (`package`, `credit`), each item with what it builds (`builder`, `builds`, `scope`, `changes_map`, `asset`), its lock and its findings (what package.check says)",
+        r#"{"id":"string"}"#,
+        r#"{"id":"string","package_id":"string","origin":"baked|local","dir":"string|null","editable":"boolean","on":"boolean","why":"string|null","target":"boolean","package":"object","credit":"object","items":"[{index,asset,kind,source?,inputs?,tag?,maps,builder,builds,scope,changes_map}]","lock":"[{file,sha256}]","problems":"[{kind,message,item?,file?,line?}]"}"#,
+        r#"{"id":"kit-test"}"#,
+    ),
+    def(
+        m::PACKAGE_NEW,
+        "A new empty package under <data>/packages/<id>/ with its manifest and lock. The id is lowercase letters, digits and '-', not taken (by a baked package too) and not always-on",
+        r#"{"id":"string","name":"string"}"#,
+        r#"{"id":"string","package_id":"string","items":"integer","dir":"string"}"#,
+        r#"{"id":"mine","name":"Mine"}"#,
+    ),
+    def(
+        m::PACKAGE_SET,
+        "Set a manifest field of a local package: name, description, image, requires, after, features, or credit.<field> (authors, notes, ...). A missing or null value removes an optional field. `id` and `format` are not edited. Refused when the manifest, its files or the set (a cycle, a missing always-on rule) would not read; the old manifest stays. The lock is rewritten",
+        r#"{"id":"string","path":"string","value?":"any"}"#,
+        r#"{"id":"string","package_id":"string","items":"integer","path":"string","value":"any"}"#,
+        r#"{"id":"kit-test","path":"description","value":"A kit for tests."}"#,
+    ),
+    def(
+        m::PACKAGE_ITEM_ADD,
+        "Add an item to a local package (`id`, else the edit target): `item` is its manifest form {kind, source?, inputs?, tag?, maps?}, put at `at` or last. Its files must already be in the package folder (no .. or absolute paths). Refused with the manifest's or the set's reason; the lock is rewritten",
+        r#"{"id?":"string","item":"object","at?":"integer"}"#,
+        r#"{"id":"string","package_id":"string","items":"integer","item":"integer","asset":"string"}"#,
+        r#"{"id":"kit-test","item":{"kind":"data","source":"data/note.txt"}}"#,
+    ),
+    def(
+        m::PACKAGE_ITEM_SET,
+        "Set one field of an item of a local package (`id`, else the edit target): kind, source, inputs, tag or maps; a missing or null value removes an optional one",
+        r#"{"id?":"string","index":"integer","path":"string","value?":"any"}"#,
+        r#"{"id":"string","package_id":"string","items":"integer","item":"integer","path":"string"}"#,
+        r#"{"id":"kit-test","index":0,"path":"maps","value":"all"}"#,
+    ),
+    def(
+        m::PACKAGE_ITEM_REMOVE,
+        "Remove an item from a local package's manifest (`id`, else the edit target); its files stay in the folder",
+        r#"{"id?":"string","index":"integer"}"#,
+        r#"{"id":"string","package_id":"string","items":"integer","index":"integer","removed":"object"}"#,
+        r#"{"id":"kit-test","index":0}"#,
+    ),
+    def(
+        m::PACKAGE_TARGET,
+        "Read the edit target (the package that receives every edit), set it to a local package, or clear it. A baked package is refused. With no target, the calls that write to it answer NO_TARGET",
+        r#"{"id?":"string","clear?":"boolean"}"#,
+        r#"{"target":"string|null","name?":"string","dir?":"string","stale?":"string","why?":"string"}"#,
+        r#"{"id":"kit-test"}"#,
+    ),
+    def(
+        m::PACKAGE_ENABLE,
+        "Switch a package on or off in <data>/packages/set.toml. `core` and `ui` are always on: turning one off is refused by name. The answer lists the packages the change leaves out because they require this one",
+        r#"{"id":"string","on":"boolean"}"#,
+        r#"{"id":"string","on":"boolean","off":"[string]","left_out":"[{package,why}]","order":"[string]"}"#,
+        r#"{"id":"kit-test","on":false}"#,
+    ),
+    def(
+        m::PACKAGE_ORDER,
+        "Write the user's load order to set.toml: package ids, first to load first (ties the dependencies leave). An order that puts a package before one it requires or follows is refused naming both; so is an unknown or repeated id or a set that cannot be ordered",
+        r#"{"ids":"[string]"}"#,
+        r#"{"order":"[string]","loaded":"[string]","left_out":"[{package,why}]"}"#,
+        r#"{"ids":["kit-test","pogo"]}"#,
+    ),
+    def(
+        m::PACKAGE_CHECK,
+        "What `h2 package check` says of one package (`id`, else the edit target): a missing or stale lock, a cache map, .h2tag bundle, disc file, voice dataset or model weights folder in its folder, an item with no builder, a missing or oversize source, a source its builder refuses, a requirement that is missing or off, a tag path another package adds too, and a file that is a raw resource or a tag file of the tag store (`store`)",
+        r#"{"id?":"string"}"#,
+        r#"{"id":"string","ok":"boolean","count":"integer","findings":"[{kind: lock|files|store|item|set|conflict, message, item?, file?, line?}]"}"#,
+        r#"{"id":"kit-test"}"#,
+    ),
+    def(
+        m::PACKAGE_BUILD,
+        "Build what a package (`id`, else the edit target) and the packages it requires give a map of the open source, or every map it has an item for; nothing is written unless `out` (a folder) is given. A package that is off is refused",
+        r#"{"id?":"string","map?":"string","out?":"string"}"#,
+        r#"{"id":"string","maps":"[{map,scope,touched,took_ms,tags,added,changed,overrides,bytes,problems}]"}"#,
+        r#"{"id":"kit-test"}"#,
+    ),
+    def(
+        m::PACKAGE_PLAY,
+        "Build the package for a map of the open source, then have the paired game load that map. Refused when not paired, when the build fails or when the paired game read another package set at boot (restart it)",
+        r#"{"id":"string","map":"string"}"#,
+        r#"{"id":"string","map":"string","build":"object","game":"any"}"#,
+        r#"{"id":"kit-test","map":"example"}"#,
+    ),
+    def(
+        m::PACKAGE_EXPORT,
+        "Export a local package manifest, lock, and named files to a new folder",
+        r#"{"id":"string","out":"string"}"#,
+        r#"{"id":"string","out":"string","files":"integer"}"#,
+        r#"{"id":"export-example","out":"$OUT/export-example"}"#,
+    ),
+    def(
+        m::PROBLEMS_LIST,
+        "The Problems panel's list, read again: every source or one. `check` is check.run's models and sounds, `ui` is ui.check, `hud` is hud.check and the HUD kit's, `package` is the manifest checks over the packages under <data>/packages/, `build` is what the game's package set refuses to load; the open script's diagnostics are `check` rows of area `scripts`, with their `line` and `col`. `asset` (an asset id) keeps the rows about that asset, as the count on the header's Check is. For a package item it refreshes package checks and open-script diagnostics. Worst first; each row names what opens it (`asset`: a tag, a package or an item; `field`; or the `tool` that holds a screen or a HUD). A check that cannot run is under `skipped`",
+        r#"{"source?":"check|ui|hud|package|build","asset?":"string"}"#,
+        r#"{"problems":"[{source,area,code,severity,message,target,path?,asset?,field?,tool?,line?,col?}]","counts":"{error,warning,note,total,by_source:{source:integer}}","ran":"[{source,check,findings}]","skipped":"[{source,check,why}]"}"#,
+        r#"{"source":"package"}"#,
+    ),
+    def(
+        m::WORKSPACE_STATUS,
+        "The tag workspace: the tree (root, maps, lossy counts), the plan's stale parts, an extraction in progress, the last one's outcome, the sizes of everything it holds, and whether the start page shows",
+        "{}",
+        r#"{"root":"path","has_tree":"boolean","tree":"{maps,tags,lossy,refused,variants,extractor,format}|null","disc":"path|null","stale":"{reset,maps:[{map,why,groups}]}|null","extracting":"{disc,root,maps_total,maps_done,last}|null","last":"object|{error}|null","sizes":"{tree,layers,projects,outputs,total}","start_page":"boolean"}"#,
+        "null",
+    ),
+    def(
+        m::WORKSPACE_EXTRACT,
+        "Run the plan against the disc (an image, a .map or a folder of maps; the recorded one, H2_DISC or disc/halo2.iso when not given) and extract every map, or only `maps` of it; `root` sets the tree's root (refused inside a Git checkout). Progress in workspace.status",
+        r#"{"disc?":"string","maps?":"[string]","verify?":"boolean","root?":"string"}"#,
+        r#"{"disc":"path","root":"path","maps":"[string]","verify":"boolean"}"#,
+        r#"{"disc":"$DISC"}"#,
+    ),
+    def(
+        m::WORKSPACE_PRUNE,
+        "Remove what the workspace no longer needs: raw resources no tag file or manifest names, generated layers no project asks for and build caches unused for a week; `dry_run` reports without removing",
+        r#"{"dry_run?":"boolean"}"#,
+        r#"{"dry_run":"boolean","raw_removed":"integer","raw":"[hash]","generated_removed":"[string]","generated_kept":"[string]","caches_removed":"[{name,unused_days}]","outputs_removed":"[string]","bytes":"integer"}"#,
+        r#"{"dry_run": true}"#,
+    ),
+    def(
+        m::DOC_LIST,
+        "Every document: each tool's, then each open tag tab's (its own undo stack); open, its name, dirty, undo and redo",
+        "{}",
+        r#"[{"doc":"map|variant|playlists|ui|... or a tag tab's group:path","open":"boolean","name":"string|null","dirty":"boolean","can_undo":"boolean","can_redo":"boolean","path?":"string"}]"#,
         "null",
     ),
     def(
         m::DOC_OPEN,
         "Open a document: a map of the source (or a .map path), a package, a variant (built-in, saved or new) or a playlist file (a path, default or blank). Refused over unsaved edits unless discard",
-        r#"{"map?":"string","path?":"string","package?":"string","variant?":{"builtin?":"integer","saved?":"integer","new?":"string (slayer, ctf, ...)"},"playlists?":"string (a path, default or blank)","discard?":"boolean"}"#,
+        r#"{"map?":"string","path?":"string","package?":"string","variant?":{"builtin?":"integer","saved?":"integer","new?":"string (slayer, ctf, ...)","script?":"string (a starter's name from rules.get, or open)"},"playlists?":"string (a path, default or blank)","discard?":"boolean"}"#,
         r#"{"doc":"string","name":"string|null","log":"[string]"}"#,
         r#"{"map":"example"}"#,
     ),
     def(
         m::DOC_SAVE,
-        "Save to the document's destination, or open the package form for a source map",
-        r#"{"doc?":"map|variant|playlists (default: the tool shown)"}"#,
-        r#"{"saved":"boolean","path?":"string","bytes?":"integer","package_form?":"{name,dir}","log":"[string]"}"#,
+        "Save a variant, rules script or playlist as an item of the edit target (NO_TARGET when unset). Save a map to its destination or record its edit lines in the edit target",
+        r#"{"doc?":"map|variant|rules|playlists (default: the tool shown)"}"#,
+        r#"{"saved":"boolean","path?":"string","bytes?":"integer","edit_target?":"string","log?":"[string]","reload?":"object|null"}"#,
         r#"{"doc":"map"}"#,
     ),
     def(
@@ -224,15 +431,15 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::DOC_UNDO,
-        "Undo the document's last edit",
-        r#"{"doc?":"map|variant|playlists (default: the tool shown)"}"#,
+        "Undo the document's last edit; a tag tab's id undoes in that tag's own stack",
+        r#"{"doc?":"map|variant|playlists|... or a tag tab's id (default: the tool shown)"}"#,
         r#"{"done":"boolean","can_undo":"boolean","can_redo":"boolean","log":"[string]"}"#,
         r#"{"doc":"map"}"#,
     ),
     def(
         m::DOC_REDO,
-        "Redo the document's last undone edit",
-        r#"{"doc?":"map|variant|playlists (default: the tool shown)"}"#,
+        "Redo the document's last undone edit; a tag tab's id redoes in that tag's own stack",
+        r#"{"doc?":"map|variant|playlists|... or a tag tab's id (default: the tool shown)"}"#,
         r#"{"done":"boolean","can_undo":"boolean","can_redo":"boolean","log":"[string]"}"#,
         r#"{"doc":"map"}"#,
     ),
@@ -242,6 +449,34 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"doc":"map|variant|playlists","discard?":"boolean"}"#,
         r#"{"closed":"boolean"}"#,
         r#"{"doc":"playlists","discard":true}"#,
+    ),
+    def(
+        m::SHELL_TABS,
+        "The document tabs in order and the one in front: each tab's id (what doc.* takes), kind, title, the tool it shows in, its editor for a tag, dirty, and its own undo and redo",
+        "{}",
+        r#"{"front":"string|null","tool":"string","tabs":"[{doc,kind,title,tool,dirty,can_undo,can_redo,front,editor?,id?,group?,map?}]"}"#,
+        "null",
+    ),
+    def(
+        m::SHELL_OPEN,
+        "Open a tag of the open map as a tab, in the editor its group gets (the scenario tag is the map's own tab), and bring it to the front. With map, that map opens first (refused over unsaved edits unless discard); a map alone brings its tab forward. `asset` takes an asset id: `voice:<id>` opens the voice document (tab `voice:<id>`, on Setup while the voice has no dataset, else Lines), `tag:<group>:<path>` opens the tag as the Browser does, `item:<package>:<n>` opens a package item, and `package:<id>` opens the package document",
+        r#"{"asset?":"string (voice:<id>, tag:<group>:<path>, item:<package>:<n> or package:<id>)","tag?":"string|integer (an id, group:path, path.group or a group with one tag)","map?":"string","discard?":"boolean"}"#,
+        r#"{"tab":"{doc,kind,title,tool,dirty,can_undo,can_redo,front,...}","front":"string|null","log":"[string]"}"#,
+        r#"{"tag":"itmc:objects\\test\\kit"}"#,
+    ),
+    def(
+        m::SHELL_FOCUS,
+        "Bring a tab to the front: its document shows in its editor, and Undo takes its own stack",
+        r#"{"doc":"string (a tab id from shell.tabs)"}"#,
+        r#"{"tab":"{doc,...}","front":"string|null","log":"[string]"}"#,
+        r#"{"doc":"map"}"#,
+    ),
+    def(
+        m::SHELL_CLOSE,
+        "Close a tab. A tool's document closes (refused over unsaved edits unless discard); a tag's tab closes and its edits stay the map's. The tab to its left comes to the front",
+        r#"{"doc":"string (a tab id from shell.tabs)","discard?":"boolean"}"#,
+        r#"{"closed":"boolean","front":"string|null","log":"[string]"}"#,
+        r#"{"doc":"map"}"#,
     ),
     def(
         m::TAG_LIST,
@@ -322,8 +557,8 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::SCENARIO_ADD,
-        "Add a placement: a copy of `like`, or a new one with the palette's first item, at `position` (default: the camera focus). Refused where the block can't grow safely",
-        r#"{"block":"string","like?":"integer","position?":"[x,y,z]"}"#,
+        "Add a placement: a copy of `like`, or a new one with the palette's first item, at `position` (default: the camera focus). Refused where the block can't grow safely. `block: \"label\"` places a ground label (ff_drop, ff_base, ff_cover, siege_site, siege_goal or siege_line, as `label`) as one netgame flag with its label, as the Scene tab's AI and objectives group does; `facing` is radians, `team` 0 or 1 (a base and a siege line), `phase` a siege line's",
+        r#"{"block":"string","like?":"integer","position?":"[x,y,z]","label?":"string","facing?":"number","team?":"integer","phase?":"integer"}"#,
         r#"{"index":"integer"}"#,
         r#"{"block":"starting_locations","like":0,"position":[1,1,1]}"#,
     ),
@@ -427,16 +662,16 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::VARIANT_GET,
-        "The open variant: name, type, origin, every setting with its value and label, and its issues",
+        "The open variant: name, type, origin, every setting with its value and label, its issues, and the script it names (when the editor has it)",
         "{}",
-        r#"{"name":"string","type":"string","origin":"string","read_only":"boolean","dirty":"boolean","settings":"[{id,title,value,label}]","issues":"[string]"}"#,
+        r#"{"name":"string","type":"string","origin":"string","read_only":"boolean","dirty":"boolean","settings":"[{id,title,value,label}]","issues":"[string]","script":"{name,about,scoring_carrier,options:[{index,name,label,description,kind,value,text,default,quick}],quick:[{label,option,text}]}|{prefix,found:false}|null"}"#,
         "null",
     ),
     def(
         m::VARIANT_SET,
-        "Set a setting of the open variant (built-ins are read-only: copy first)",
-        r#"{"setting":"integer","value":"integer"}"#,
-        r#"{"setting":"integer","value":"integer","label":"string"}"#,
+        "Set a setting of the open variant, or one option of its script by name (built-ins are read-only: copy first)",
+        r#"{"setting?":"integer","option?":"string","value":"integer"}"#,
+        r#"{"setting?":"integer","option?":"string","value":"integer","label":"string"}"#,
         r#"{"setting":"$SETTING","value":"$VALUE"}"#,
     ),
     def(
@@ -455,10 +690,17 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::VARIANT_EXPORT,
-        "Write the open variant as a portable .h2variant file",
-        r#"{"path":"string"}"#,
-        r#"{"path":"string"}"#,
+        "Write the open variant as a portable .h2variant file; with maps (variant ids from variant.maps, at most 8) a version-2 file that suggests them",
+        r#"{"path":"string","maps?":["string"]}"#,
+        r#"{"path":"string","maps":"number"}"#,
         r#"{"path":"$OUT/v.h2variant"}"#,
+    ),
+    def(
+        m::VARIANT_MAPS,
+        "List this machine's map variants a game variant may suggest (any map, saved then fetched)",
+        r#"{}"#,
+        r#"{"maps":[{"map":"string","name":"string","base":"sha256","variant":"sha256","source":"saved|live"}]}"#,
+        r#"{}"#,
     ),
     def(
         m::VARIANT_IMPORT,
@@ -520,13 +762,13 @@ pub const METHODS: &[MethodDef] = &[
         m::UI_SCREENS,
         "Our UI screens and their states (and the disc's retail screens when a disc is open)",
         "{}",
-        r#"{"screens":"[{screen,states}]","retail":"[string]","pick":"{screen,state}|{retail}|null"}"#,
+        r#"{"screens":"[{screen,states}]","retail":"[string]","pick":"{screen,state}|{retail}|null","folders":"{ours,retail,browse}"}"#,
         "null",
     ),
     def(
         m::UI_PICK,
-        "Show a screen in a state (default: its first), or a retail screen by tag",
-        r#"{"screen?":"string","state?":"string","retail?":"string"}"#,
+        "Show a screen in a state (default: its first), or a retail screen by tag (with a named sample variant)",
+        r#"{"screen?":"string","state?":"string","retail?":"string","sample?":"string"}"#,
         r#"{"pick":"any","summary":"string|null"}"#,
         r#"{"screen":"$SCREEN"}"#,
     ),
@@ -552,6 +794,34 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"out":"$OUT/screen.png"}"#,
     ),
     def(
+        m::UI_CONSISTENCY,
+        "Check our screens (or one) in every state against the design system: palette, fonts by role, title and legend places, legend format, capitals, row pitch, fit",
+        r#"{"screen?":"string"}"#,
+        r#"{"findings":"[{screen,state,ids,rule,text}]","checked":"integer"}"#,
+        r#"{"screen":"$SCREEN"}"#,
+    ),
+    def(
+        m::UI_COMPONENTS,
+        "The design system's catalogue: each component with its role, font, colour, variants and specimen page; each layout page; the palette and fonts",
+        "{}",
+        r#"{"components":"[{name,role,font,colour,justify,variants,specimen}]","layouts":"[{name,kind,states}]","palette":"[{name,rgb}]","fonts":"{role:integer}"}"#,
+        "null",
+    ),
+    def(
+        m::UI_SELECT_FOLDER,
+        "Show the grid of previews of a root or folder in the UI Screens tool (folder: ours/<name> or retail/<path>, as ui.screens lists under folders)",
+        r#"{"folder?":"string","root?":"ours|retail"}"#,
+        r#"{"browse":"{root,folder,path}","tiles":"integer","states":"boolean"}"#,
+        r#"{"root":"ours"}"#,
+    ),
+    def(
+        m::UI_SHEET,
+        "Render a folder's or root's previews to one labelled contact-sheet PNG (the grid's tiles; default: the grid shown; never into a Git checkout)",
+        r#"{"folder?":"string","root?":"ours|retail","states?":"boolean","columns?":"integer","out?":"string"}"#,
+        r#"{"path":"string","width":"integer","height":"integer","tiles":"[{pick,name,x,y,w,h,findings,checked}]"}"#,
+        r#"{"root":"ours","out":"$OUT/sheet.png"}"#,
+    ),
+    def(
         m::VIEW_CAMERA,
         "Read or set the viewport camera (degrees and world units), set fly speed, or frame a placement",
         r#"{"yaw?":"number","pitch?":"number","distance?":"number","target?":"[x,y,z]","focus?":{"block":"string","index":"integer"},"all?":"boolean","fly_speed?":"number (0.5..1000 units/s)"}"#,
@@ -560,9 +830,9 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::VIEW_LAYERS,
-        "Read the viewport legend, or apply a preset, layer switches and X-ray to the window and snapshots",
-        r#"{"set?":"{layer name: boolean}","preset?":"art|gameplay|collision|navigation|everything","xray?":"boolean"}"#,
-        r#"{"layers":"[{name,label,group,on,count,color}]","xray":"boolean"}"#,
+        "Read the viewport legend, or apply a preset, layer switches and X-ray to the window and snapshots. diff draws the playtest layers as the difference between the shown run and another (true: its compare_to, else the baseline; or a run id; false: the result itself); refused when there is nothing to compare, and the sightlines have no difference layer",
+        r#"{"set?":"{layer name: boolean}","preset?":"art|gameplay|collision|navigation|playtest|everything","xray?":"boolean","diff?":"boolean|run id|baseline"}"#,
+        r#"{"layers":"[{name,label,group,on,count,color,refused?}]","xray":"boolean","diff":"{a,b,game_type}|null"}"#,
         r#"{"preset":"everything","set":{"fog":false},"xray":true}"#,
     ),
     def(
@@ -583,28 +853,11 @@ pub const METHODS: &[MethodDef] = &[
         m::VIEW_STATS,
         "What the viewport draws for the open map: lightmap pages and each BSP's lighting, the world's triangles by blend, every material (template, blend, picture), the sky's sun and fog",
         "{}",
-        r#"{"scene":"boolean","lightmap_pages":"integer","bsps":"[{bsp,lighting,detail}]","triangles":"{blend: integer}","solid_triangles":"integer","lightmapped_triangles":"integer","materials":"[{shader,template,blend,blend_from_passes,emissive,base,details}]","sky":"string|null","atmosphere":"{sky,sun,fog,fallback_rgb}"}"#,
+        r#"{"scene":"boolean","lightmap_pages":"integer","bsps":"[{bsp,lighting,detail}]","triangles":"{blend: integer}","solid_triangles":"integer","lightmapped_triangles":"integer","materials":"[{shader,template,blend,blend_from_passes,emissive,base,details,mask}]","sky":"string|null","atmosphere":"{sky,sun,fog,fallback_rgb}"}"#,
         "null",
     ),
-    // Planned namespaces: designed seams with no provider yet.
-    planned(
-        m::MODEL_LIST,
-        "Bipeds and their model variants (hlmt, mode permutations)",
-        r#"{"group?":"string"}"#,
-        "player models (not started)",
-    ),
-    planned(
-        m::MODEL_READ,
-        "A model: regions, permutations, variants, change colours",
-        r#"{"tag":"string"}"#,
-        "player models (not started)",
-    ),
-    planned(
-        m::MODEL_RENDER,
-        "Render a model variant with colours from a camera to a PNG",
-        r#"{"tag":"string","variant?":"string","colors?":"any","camera?":"any","out?":"string"}"#,
-        "player models (not started)",
-    ),
+    // Planned namespaces: designed seams with no provider yet. `model.list`,
+    // `read`, `render` and `check` are the models provider's (api/models.rs).
     planned(
         m::MODEL_COLORS,
         "A player's primary, secondary, detail and emblem colours",
@@ -628,6 +881,12 @@ pub const METHODS: &[MethodDef] = &[
         "Pick an armour permutation for a region",
         r#"{"biped":"string","region":"string","permutation":"string"}"#,
         "customisation (later)",
+    ),
+    planned(
+        m::WORKSPACE_IMPORT,
+        "Store a map as an import layer, so only what differs from the tree is held",
+        r#"{"map?":"string (a .map file)","path?":"string (a folder of them)","name":"string"}"#,
+        "imports as layers (W9)",
     ),
 ];
 
@@ -757,13 +1016,21 @@ impl Api {
         match method.split('.').next().unwrap_or("") {
             "session" => self.session(app, method, &p),
             "source" | "doc" => docs::call(app, method, &p),
+            "shell" => shell::call(app, method, &p),
+            "asset" => assets::call(app, method, &p),
+            "package" => packages::call(app, method, &p),
+            "problems" => problems::call(app, method, &p),
             "tag" => tags::call(app, method, &p),
             "scenario" => scenario::call(app, method, &p),
             "volume" => scenario::volume(app, method, &p),
             "collision" => collision::call(app, method, &p),
             "variant" => variants::call(app, method, &p),
             "playlist" => playlists::call(app, method, &p),
+            "ui" if matches!(method, m::UI_CONSISTENCY | m::UI_COMPONENTS) => {
+                ui_kit::call(app, method, &p)
+            }
             "ui" => ui_screens::call(app, method, &p),
+            "workspace" => workspace::call(app, method, &p),
             "view" => self.view(app, method, &p),
             _ => Err(err(code::METHOD_NOT_FOUND, format!("no method {method}"))),
         }
@@ -840,7 +1107,32 @@ impl Api {
         }
         play.update(app);
         app.poll_bot_nav();
+        app.poll_ground();
+        // The workspace's background extraction, as the window polls it
+        // each frame.
+        app.poll_workspace();
+        // Outside editors' saves, as the window polls them each frame.
+        app.poll_external(std::time::Instant::now());
         true
+    }
+
+    /// Runs the window's preview action through the document form of
+    /// `pair.preview` and keeps its result visible in the Game panel.
+    pub fn run_preview_asks(&mut self, app: &mut App) {
+        if let Some(doc) = app.preview.ask.take() {
+            let id = app.doc_id(doc);
+            if let Err(e) = self.call(app, m::PAIR_PREVIEW, json!({"doc": id})) {
+                app.error(e.message);
+            }
+        }
+        if let Some(id) = app.preview.last_job
+            && app.preview.report.as_ref().is_some_and(|r| matches!(r["state"].as_str(), Some("sending" | "running")))
+        {
+            match self.call(app, m::PAIR_RESULT, json!({"id": id})) {
+                Ok(report) => app.preview.report = Some(report),
+                Err(e) => app.preview.report = Some(json!({"state": "failed", "why": e.message})),
+            }
+        }
     }
 
     /// Answers every request waiting on `rx`; returns how many.
@@ -849,6 +1141,7 @@ impl Api {
         app: &mut App,
         rx: &std::sync::mpsc::Receiver<server::Incoming>,
     ) -> usize {
+        self.run_preview_asks(app);
         let mut n = 0;
         while let Ok(inc) = rx.try_recv() {
             inc.answer(self.handle(app, inc.request.clone()));
@@ -927,5 +1220,6 @@ pub fn tool_name(t: crate::ToolKind) -> &'static str {
         crate::ToolKind::Hud => "hud",
         crate::ToolKind::Scripts => "scripts",
         crate::ToolKind::Textures => "textures",
+        crate::ToolKind::Package => "package",
     }
 }

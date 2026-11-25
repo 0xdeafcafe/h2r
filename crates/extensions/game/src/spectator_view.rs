@@ -4,11 +4,17 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) const PITCH_LIMIT: f32 = 1.55;
 const RENDER_CAMERA_BYTES: usize = 0x74;
-const WORLD_VIEW_RETURN: u32 = 0x0022_3719;
+pub(crate) const WORLD_VIEW_RETURN: u32 = 0x0022_3719;
+/// The game's view records, `VIEW_STRIDE` each, one per local screen
+/// (docs/graphics/native-visibility.md, "The view records"): `+0` is
+/// nonzero for a cinematic view, `+8` the local player (`-1` for none), and
+/// `+0xc` the render camera.
+const VIEW_RECORDS: u32 = 0x0047_f210;
+const VIEW_RECORD_COUNT: u32 = 4;
 const NEAR_CLIP: u32 = 0x0048_5ad4;
 const FAR_CLIP: u32 = 0x0048_5ad8;
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 pub(crate) struct Pose {
     pub(crate) position: [f32; 3],
     pub(crate) yaw: f32,
@@ -108,6 +114,27 @@ pub(crate) fn retail_view(guest: &dyn GuestMemory, view: u32) -> Option<(Pose, f
     (0.0 < fov && fov < std::f32::consts::PI).then_some((pose, horizontal_fov(fov)))
 }
 
+/// The pose of the view record the game draws for local player `seat`: the
+/// render camera's position, forward and vertical lens, as
+/// `render.view` takes them. A cinematic or unused record is not a seat's.
+pub(crate) fn drawn_view(guest: &dyn GuestMemory, seat: u8) -> Option<agent_proto::CurrentView> {
+    (0..VIEW_RECORD_COUNT).find_map(|i| {
+        let record = VIEW_RECORDS + VIEW_STRIDE * i;
+        (guest.u32(record).ok()? == 0 && guest.u32(record + 8).ok()? == u32::from(seat))
+            .then_some(())?;
+        let camera = record + 0x0c;
+        let vertical = guest.f32(camera + 0x28).ok()?;
+        if !(0.0 < vertical && vertical < std::f32::consts::PI) {
+            return None;
+        }
+        agent_proto::CurrentView::looking(
+            guest.vec3(camera).ok()?,
+            guest.vec3(camera + 0x0c).ok()?,
+            horizontal_fov(vertical),
+        )
+    })
+}
+
 /// Replaces the world renderer's argument with a private guest allocation.
 pub(crate) fn draw_world_view(
     call: &mut hooks::Call<'_>,
@@ -127,7 +154,7 @@ pub(crate) fn draw_world_view(
     drawn
 }
 
-fn replace_world_view<M: GuestMemory>(
+pub(crate) fn replace_world_view<M: GuestMemory>(
     guest: &mut M,
     esp: u32,
     count: u32,
@@ -218,5 +245,36 @@ mod tests {
             |_, _| Some((pose, None))
         ));
         assert_eq!(guest.u32(STACK + 12).unwrap(), ORIGINAL);
+    }
+
+    #[test]
+    fn reads_the_pose_the_game_draws_for_a_seat() {
+        let mut guest = FakeGuest::new();
+        let record = |i: u32| VIEW_RECORDS + VIEW_STRIDE * i;
+        // Record 0: a cinematic. Record 1: seat 1. Record 2: seat 0.
+        guest.put_u32(record(0), 1).put_u32(record(0) + 8, 0);
+        for (i, seat, eye) in [(1, 1, [1.0, 2.0, 3.0]), (2, 0, [4.0, -5.0, 6.0])] {
+            let camera = record(i) + 0x0c;
+            guest
+                .put_u32(record(i), 0)
+                .put_u32(record(i) + 8, seat)
+                .put_f32(camera, eye[0])
+                .put_f32(camera + 4, eye[1])
+                .put_f32(camera + 8, eye[2])
+                .put_f32(camera + 0x0c, 0.0)
+                .put_f32(camera + 0x10, 1.0)
+                .put_f32(camera + 0x14, 0.0)
+                .put_f32(camera + 0x28, vertical_fov(90.0));
+        }
+        let view = drawn_view(&guest, 0).unwrap();
+        assert_eq!(view.eye, [4.0, -5.0, 6.0]);
+        assert!((view.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        assert_eq!(view.pitch, 0.0);
+        assert!((view.fov - 90.0).abs() < 1e-3, "{}", view.fov);
+        assert_eq!(drawn_view(&guest, 1).unwrap().eye, [1.0, 2.0, 3.0]);
+        assert!(drawn_view(&guest, 2).is_none(), "no record for the seat");
+        // Without a lens or a heading there is nothing to report.
+        guest.put_f32(record(2) + 0x0c + 0x28, 0.0);
+        assert!(drawn_view(&guest, 0).is_none());
     }
 }

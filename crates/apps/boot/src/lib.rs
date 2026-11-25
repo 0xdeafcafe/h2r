@@ -11,14 +11,24 @@
 pub use game::*;
 mod controller_lights;
 mod idle_audio;
+// The game's content packages and `packages.list` (packages.rs).
+pub mod packages;
+// `store.status`: the tag store and the maps it serves (store_status.rs).
+pub mod store_status;
 // maps.test.*: test maps from recipes (docs/game/test-maps.md).
 pub mod registration;
+#[cfg(feature = "test-maps")]
+pub mod forge_maps;
+#[cfg(feature = "test-maps")]
+pub mod ground_builder;
+#[cfg(feature = "test-maps")]
+pub mod nav_builder;
 #[cfg(feature = "test-maps")]
 pub mod test_maps_recipes;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
@@ -71,14 +81,22 @@ pub fn perf_env_note(
     }
 }
 
-/// Register the retail image's hooked render sites with the image builder
-/// (`recomp::register_retail_entries`), so discovery makes them
+/// Register the retail image's hooked interior sites (the render sites and
+/// the script index's, `engine::points::game_types`) with the image
+/// builder (`recomp::register_retail_entries`), so discovery makes them
 /// instruction entries in both tiers. Every binary that builds, stamps,
 /// loads or analyses the image calls it first (`h2`'s `main`, the Apple
 /// hosts); [`run`] and its variants call it too. Idempotent.
 pub fn register_image_entries() {
-    use engine::points::{render_aspect, scene_effects};
-    recomp::register_retail_entries(render_aspect::instruction_entries().chain(scene_effects::instruction_entries()));
+    recomp::register_retail_entries(image_entries());
+}
+
+/// The list [`register_image_entries`] registers, in order.
+pub fn image_entries() -> impl Iterator<Item = u32> {
+    use engine::points::{game_types, render_aspect, scene_effects};
+    render_aspect::instruction_entries()
+        .chain(scene_effects::instruction_entries())
+        .chain(game_types::instruction_entries())
 }
 
 /// Map the image, attach the kernel, register the generated module and run
@@ -214,6 +232,10 @@ fn run_configured(
     #[cfg(not(feature = "desktop-runtime"))]
     anyhow::ensure!(host_light, "the host binary requires the light host profile");
     let coalesce_host_ticks = host_light && switches.feature("host-light.tick-pacing", false);
+    // `store-maps`: the disc's maps served from the tag store at
+    // <data>/tags (docs/engine/asset-store.md, AS2); off until AS2 is
+    // accepted.
+    let store_maps = switches.feature("store-maps", false);
     let replaying = replay.is_some();
     let render_every = replay.as_ref().map_or(0, |r| r.render_every);
     if host_audit::module_from_env().is_some() {
@@ -345,13 +367,56 @@ fn run_configured(
     } else {
         live_glue::install_configured(&loaded.runtime, &k, live, None, map_gate.clone(), publisher)?
     };
-    let film_path = host.film_out.take().or_else(|| {
+    let mut film_path = host.film_out.take().or_else(|| {
         std::env::var_os("H2_FILM_OUT").filter(|p| !p.is_empty()).map(PathBuf::from)
     });
     let film_dir = || {
         std::env::var_os("H2_FILM_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| opts.data_root.join("films"))
+    };
+    let lockstep_config = lockstep_glue::Config::from_env();
+    // A player session records into the film library by default
+    // (theater::autorecord, docs/game/film-format.md "Recording every game").
+    let autorecord = {
+        use theater::autorecord::{self, Decision};
+        let decision = autorecord::decide(&autorecord::Inputs {
+            request: host.film_auto,
+            feature_on: switches.feature(autorecord::FEATURE, true),
+            explicit: film_path.is_some(),
+            replaying,
+            host_light,
+            sim: sim_mode.is_some(),
+            lockstep: lockstep_config.enabled(),
+        });
+        match decision {
+            Decision::Record => {
+                let dir = film_dir();
+                let now = std::time::SystemTime::now();
+                // Tapes a hard-killed session left are sealed into films
+                // before this session records (autorecord::recover).
+                autorecord::recover(&dir, now);
+                let ready = std::fs::create_dir_all(&dir)
+                    .map_err(anyhow::Error::from)
+                    .and_then(|()| autorecord::prune(&dir, autorecord::KEEP, now));
+                match ready {
+                    Ok(_) => {
+                        film_path = Some(autorecord::destination(&dir, now));
+                        eprintln!("theater: recording this session; each game's film goes to {}", dir.display());
+                        true
+                    }
+                    Err(e) => {
+                        eprintln!("theater: not recording this session: the film library {}: {e:#}", dir.display());
+                        false
+                    }
+                }
+            }
+            Decision::Skip(why) => {
+                eprintln!("theater: not recording this session: {why}");
+                false
+            }
+            Decision::Quiet => false,
+        }
     };
     let viewer_cache = replay.as_ref().and_then(|r| r.cache.as_ref())
         .map(|c| (c.films_dir.clone(), c.cap_bytes));
@@ -373,6 +438,7 @@ fn run_configured(
                 address: _live
                     .as_ref()
                     .map_or_else(String::new, |h| h.film_address().to_string()),
+                player_features: autorecord,
             },
             xbe_bytes,
             opts,
@@ -406,29 +472,30 @@ fn run_configured(
         audit.is_none() || !switches.feature("render-census", false),
         "host audit and render-census both use the guest access trap"
     );
-    let lockstep_config = lockstep_glue::Config::from_env();
     let lockstep_on = lockstep_config.enabled();
     #[cfg(feature = "gpu")]
     let protected_readbacks = d3d_glue::protected_readbacks(_live.is_some(), film.is_some(), lockstep_on);
     let mut features = hooks::Registry::new(registration::profile_switches(switches, host_light));
     #[cfg(feature = "gpu")]
-    let native_size: run_opts::NativeSize = host.gfx_view.as_ref().map(|view| view.native_size.clone())
-        .unwrap_or_else(|| Arc::new(|| setting_defs::GUEST_FRAME));
+    let native_target: run_opts::NativeTarget = host.gfx_view.as_ref().map(|view| view.native_target.clone())
+        .unwrap_or_else(|| Arc::new(|| settings::NativeTarget::windowed(setting_defs::GUEST_FRAME)));
     #[cfg(not(feature = "gpu"))]
-    let native_size: run_opts::NativeSize = Arc::new(|| setting_defs::GUEST_FRAME);
+    let native_target: run_opts::NativeTarget = Arc::new(|| settings::NativeTarget::windowed(setting_defs::GUEST_FRAME));
     #[cfg(feature = "gpu")]
     let output_size = if opts.d3d && ((!host_light && sim_mode.is_none()) || rendered_replay)
         && (host.gfx_view.is_some() || (host.gfx.is_none() && std::env::var_os("H2_BOOT_GFX").is_some()))
     {
         match host.gfx_view.as_ref().and_then(|v| v.viewer_output.clone()) {
             Some(output) => Some(output),
-            None => Some(d3d_glue::output_size(host.settings.as_deref(), native_size.clone())?),
+            None => Some(d3d_glue::output_size(host.settings.as_deref(), native_target.clone())?),
         }
     } else {
         None
     };
     #[cfg(feature = "gpu")]
     let mut display_size = host.gfx_view.as_ref().map(|view| Arc::clone(&view.display_size));
+    #[cfg(feature = "gpu")]
+    let viewer_lod = host.gfx_view.as_ref().and_then(|view| view.viewer_lod.clone());
     #[cfg(feature = "gpu")]
     let mut active_size = output_size.as_ref().map(|output| {
         let initial = output();
@@ -438,6 +505,7 @@ fn run_configured(
     let mut cfg = vfs::Config::new(&opts.data_root, x.certificate.title_id);
     cfg.mmap_disc = host_light;
     cfg.map_guest_reads = options.map_guest_reads;
+    cfg.store_maps = store_maps.then(|| store_status::root(&opts.data_root));
     if host_light {
         cfg.server_maps = std::env::var_os("H2_SERVER_MAP_DIR")
             .filter(|path| !path.is_empty())
@@ -492,6 +560,22 @@ fn run_configured(
     let icons = icon_options
         .map(|o| Arc::new(icons::Icons::new(o, host.keyboard.as_ref())))
         .filter(|i| i.enabled());
+    // The game's content packages: their per-map items through one rewrite,
+    // after the others, cached under <data>/packages/cache
+    // (docs/editor/studio-redesign.md, "How the game consumes packages").
+    // The pogo stick is the `pogo` package (content/pogo), on while the
+    // `pogo` feature is.
+    // Read the set before preparing its maps. The mount gives the same set
+    // the kits' inputs once the campaigns and fonts are ready.
+    let content_set = {
+        let switches = features.switches();
+        packages::read_set(&opts.data_root, &|name| switches.feature(name, true))
+    };
+    // The maps those packages build (`map` and `map-patch` items) are written
+    // as map packages under <data>/maps before the content library reads
+    // that folder: a map built for the same inputs is left alone
+    // (docs/editor/studio-redesign.md, "How the game consumes packages").
+    packages::prepare_maps(&opts.data_root, &opts.disc, &content_set.loaded);
     // Packages for maps the disc doesn't have become content packages
     // under T:\$c, which the main menu reads for its map list
     // (docs/game/maps.md §4); before the VFS lists that folder.
@@ -515,8 +599,13 @@ fn run_configured(
         host.discoverable_agent.then(agent_glue::discoverable_socket).flatten()
     });
     let editor_hooks_on = features.switches().feature(agent::EDIT_LIFECYCLE, true);
-    let recording_or_playback =
-        agent_glue::reload_recording_refusal(replaying, film.is_some(), &lockstep_config);
+    // A default recording lets the editor write; the first write drops the
+    // game in play (`outside_change`, below) instead of being refused.
+    let recording_or_playback = agent_glue::reload_recording_refusal(
+        replaying,
+        film.as_ref().is_some_and(|f| !f.player_features()),
+        &lockstep_config,
+    );
     let reload_mount = if host_light {
         Err("the light host has no writable editor map mount")
     } else if let Some(reason) = recording_or_playback {
@@ -534,7 +623,7 @@ fn run_configured(
     campaign_cache::configure(
         &mut features, &loaded.runtime, &mut cfg, &campaign_maps, maps.as_deref(),
     )?;
-    let packages = map_override::packages_dir(&opts.data_root);
+    let packages = workspace::converted::halo1_metadata(&store_status::root(&opts.data_root));
     // Our campaigns' level pictures, added to mainmenu as the VFS serves it
     // (docs/halo1/campaign-picker.md, "Pictures").
     let cards = campaigns.as_ref().and_then(|s| {
@@ -548,22 +637,36 @@ fn run_configured(
         campaign_cards::CardRewrite::new(cards, s.cards.clone())
             .map(|r| r.with_cache(&opts.data_root))
     });
-    // Every font gets the bot mark's gear (docs/game/bots.md, "Clanker appearance and Live player options"), after
-    // the icon sets.
+    // The game's content packages: their per-map items and kits through the
+    // one rewrite, cached under <data>/packages/cache
+    // (docs/editor/studio-redesign.md, "How the game consumes packages").
+    // The pogo stick is the `pogo` package (content/pogo), on while the
+    // `pogo` feature is. The `campaign-cards` kit (content/halo1) adds our
+    // campaigns' level pictures to mainmenu and the `glyphs` kit (content/core)
+    // puts the button icon sets, then the bot mark's gear and the HUD's
+    // marks, in every font (docs/game/bots.md, "Clanker appearance and Live
+    // player options"); the superbounce world labels' font is read from
+    // them as served (docs/game/superbounce.md, "Crouch spots in the world").
     #[cfg(feature = "desktop-runtime")]
-    let fonts = vfs::Chain(
-        icons.as_ref().map(|i| i.font_rewrite()),
-        bot_mark::GearRewrite,
-    );
+    let font_icons: Option<Box<dyn vfs::Rewrite>> = icons
+        .as_ref()
+        .map(|i| Box::new(i.font_rewrite()) as Box<dyn vfs::Rewrite>);
     #[cfg(not(feature = "desktop-runtime"))]
-    let fonts = bot_mark::GearRewrite;
-    // The superbounce world labels keep the HUD font as the game reads it,
-    // after the font rewrites (docs/game/superbounce.md, "Crouch spots in
-    // the world").
-    let rewrites = Some(vfs::Chain(
-        vfs::Chain(fonts, cards),
-        superbounce_font::Capture,
-    ));
+    let font_icons: Option<Box<dyn vfs::Rewrite>> = None;
+    let content_packages = packages::at_boot(
+        &opts.data_root,
+        content_set,
+        workspace::KitInputs {
+            cards,
+            icons: font_icons,
+        },
+        cfg.store_maps.as_deref(),
+    );
+    // With `store-maps`, a level the set lays items over is served from its
+    // image under <data>/store/images (docs/engine/asset-store.md,
+    // "Runtime assembly").
+    cfg.store_levels = content_packages.levels.clone();
+    let rewrites = content_packages.rewrite;
     let mounted = map_override::mount_for_agent(
         cfg.clone(),
         &opts.disc,
@@ -643,17 +746,17 @@ fn run_configured(
             // The guest draws the picker's labels. Replay those observations
             // independently of the viewer's presentation size.
             let menu_size = match &film {
-                Some(session) => session.video_menu_size(native_size, &store)?,
-                None => native_size,
+                Some(session) => session.video_menu_size(native_target.clone(), &store)?,
+                None => native_target.clone(),
             };
-            Some(Arc::new(video_screen::model_with_native_size(
+            Some(Arc::new(video_screen::model_with_native_target(
                 store, video_screen::Switches::PLATFORM, menu_size,
             ).map_err(anyhow::Error::msg)?))
         }
         None => None,
     };
     // More than one campaign (docs/halo1/campaign-picker.md): campaigns
-    // installed under <data>/campaigns get their level lists and the
+    // with a manifest and available levels get their level lists and the
     // picker ahead of Campaign Options. None installed: nothing is
     // hooked and the disc is not read for it.
     let campaigns = campaigns.map(|c| campaign_menu::prepare(c, host.settings.clone()));
@@ -700,10 +803,6 @@ fn run_configured(
         // Resume queued uploads on sign-in, including a session which acquired
         // its account in the game after launch.
         let _ = theater.sync();
-        if let Some(recording) = &film {
-            let controller = theater.clone();
-            recording.sync_library(move || controller.sync());
-        }
         Some(theater)
     } else {
         None
@@ -734,7 +833,7 @@ fn run_configured(
             bots,
         },
         film.clone(),
-        replaying || host_light || sim_mode.is_some(),
+        registration::non_player(film.as_deref(), replaying, host_light, sim_mode.is_some()),
         map_rebind.clone(),
     )?;
     let (skulls, skulls_mp_on, skulls_custom_on, health_on) = (
@@ -828,28 +927,16 @@ fn run_configured(
         let binding = map_rebind.clone();
         t.set_map_locator(Box::new(move |guest| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-            map_override::active_map_file(&mut v, guest, binding.as_ref()).map(map_override::telemetry_file)
+            map_override::active_map_source(&mut v, guest, binding.as_ref())
         }));
     }
     // Sample the render thread too when profiling.
     #[cfg(all(feature = "perf", feature = "gpu"))]
     let _ = d3d::RENDER_THREAD_START.set(|| perf::register_current_thread("render"));
-    // In-between frames at the display rate (docs/game/high-framerate.md,
-    // "Phase 2" and "E1"): `impl.render.interpolate` or
-    // `impl.render.reproject`, render thread only; in a window, or on the
-    // headless GPU backend (`H2_BOOT_GFX`, paced on the wall clock).
+    // The frame rate for the frame owner's display frames between scenes
+    // (docs/graphics/framescene.md, section 7).
     #[cfg(feature = "gpu")]
-    let interp = if opts.d3d {
-        d3d_glue::interp_render_thread(
-            host.gfx.is_some(),
-            host.render_thread,
-            std::env::var_os("H2_BOOT_GFX").is_some(),
-            d3d_glue::render_thread_requested(),
-        )
-        .and_then(|render_thread| d3d_glue::interpolation(host.settings.as_ref(), render_thread))
-    } else {
-        None
-    };
+    let fps = opts.d3d.then(|| d3d_glue::frame_rate(host.settings.as_ref()));
     // No window: a headless run, which skips the movies by default.
     #[cfg(feature = "gpu")]
     let headless = host.gfx.is_none();
@@ -859,16 +946,28 @@ fn run_configured(
     let single = opts.d3d && host.gfx_view.is_some()
         && d3d_glue::single_copy(host.settings.as_deref(), protected_readbacks)?;
     #[cfg(feature = "gpu")]
+    // A legacy film's recorded geometry multiplier. The guest walk is retail
+    // otherwise, whatever the local display choice (lod_distance), so no
+    // run forces retail for the network, film or lockstep of it.
+    let reference_lod = legacy_lod;
+    #[cfg(feature = "gpu")]
+    // The display can draw different geometry than the copy the guest
+    // readbacks read: every non-single-copy drawing view.
+    let display_split = !single && host.gfx_view.is_some();
+    #[cfg(feature = "gpu")]
     if single && d3d_glue::locked_retail_target(host.settings.as_deref())
         && let Some(view) = &mut host.gfx_view && view.viewer_output.is_none()
         && let Some(display) = view.backend.take()
     {
+        let (width, height) = setting_defs::GUEST_FRAME;
+        let (dw, dh) = native_target().drawable;
+        eprintln!("d3d: rendering at {width}x{height}; drawable {dw}x{dh}; single copy {single}");
         host.gfx = Some(display.as_only_display());
     }
     #[cfg(feature = "gpu")]
     // Match the paired reference path even when a film has no visible copy.
     if !protected_readbacks && opts.d3d && host.gfx_view.as_ref().is_none_or(|view| view.backend.is_none())
-        && interp.is_none() && let Some(b) = &mut host.gfx
+        && let Some(b) = &mut host.gfx
     {
         native_shadows_glue::configure_single(b);
     }
@@ -883,7 +982,6 @@ fn run_configured(
     // A film export presents each frame before the next is encoded.
     #[cfg(feature = "gpu")]
     let render_thread = host.render_thread.then_some(d3d_glue::RenderThread {
-        clip_capture: false,
         synchronous_presents: host.film_capture.is_some(),
     });
     #[cfg(feature = "gpu")]
@@ -895,7 +993,11 @@ fn run_configured(
                 let (width, height) = output();
                 let scale = d3d::scaled::RenderScale::for_output(width, height).map_err(anyhow::Error::msg)?;
                 let mut b = d3d::ScaledBackend::with_resolution(b, view, scale, single).map_err(anyhow::Error::msg)?;
-                eprintln!("d3d: rendering at {width}x{height}; single copy {single}");
+                if display_split && hooks::switches::native_render_on(features.switches()) {
+                    b.keep_display_copy();
+                }
+                let (dw, dh) = native_target().drawable;
+                eprintln!("d3d: rendering at {width}x{height}; drawable {dw}x{dh}; single copy {single}");
                 // The Video screen's Resolution row changes the scale at the
                 // next frame boundary (docs/graphics/high-resolution.md).
                 // The Lighting row (docs/graphics/e3-lighting-setting.md)
@@ -920,16 +1022,16 @@ fn run_configured(
                     stats.lock().unwrap_or_else(|e| e.into_inner()).presentation
                 }));
                 d3d_glue::install_scaled_view(
-                    &loaded.runtime, b, interp, render_thread, render_hooks, private,
+                    &loaded.runtime, b, fps, render_thread, render_hooks, private,
                 )?
             }
             None => d3d_glue::install_game_view(
-                &loaded.runtime, b, interp, render_thread, render_hooks, private, host.settings.as_deref(),
+                &loaded.runtime, b, fps, render_thread, render_hooks, private, host.settings.as_deref(),
             )?,
         }),
         (true, None) if host_light => Some(d3d_glue::install_light_for_profile(&loaded.runtime, render_hooks)?),
         (true, None) => Some(d3d_glue::install_headless_with_scenes(
-            &loaded.runtime, interp, render_hooks, host.settings.as_deref(), protected_readbacks, private,
+            &loaded.runtime, fps, render_hooks, host.settings.as_deref(), protected_readbacks, private,
         )?),
     };
     #[cfg(all(not(feature = "gpu"), feature = "desktop-runtime"))]
@@ -963,7 +1065,15 @@ fn run_configured(
                 Arc::new(move || position)
             }
         };
-        render_aspect::install(&mut features, projected_size, hud, device.ui_layout.clone())?;
+        render_aspect::install(&mut features, projected_size, !lockstep_on, hud, device.ui_layout.clone())?;
+    }
+    // Every world frame of a one-machine game renders on its own random
+    // stream, so what the view draws (a wider guest camera, Theater's free
+    // camera) never chooses the simulation's random numbers
+    // (docs/graphics/high-resolution.md, "Determinism"). The same on the
+    // recording and its replay, whatever window either had.
+    if opts.d3d && !lockstep_on && !host_light {
+        render_rng::install(&mut features)?;
     }
     // Vblanks on the 60 Hz logical clock (docs/graphics/d3d.md "Vertical blank"),
     // delivered as DPCs; the frame wait above is the clocked one.
@@ -1009,28 +1119,42 @@ fn run_configured(
             (true, None) => Some(dsound_glue::install(&loaded.runtime, &k, xbe_bytes)?),
         }
     };
+    // The output's PCM tap: `audio.meter` (mixer_meter.rs) and, when a
+    // film records, its sound. A clock-only output renders no PCM.
     #[cfg(feature = "local-io")]
-    if let (Some(audio), Some(capture)) = (&mut ds, &host.film_capture) {
-        let capture = capture.clone();
-        audio.output.tap_samples(move |pcm| capture.audio(pcm));
+    if let Some(audio) = &mut ds {
+        let film = host.film_capture.clone();
+        audio.output.tap_samples(move |pcm| {
+            game::mixer_meter::feed(pcm);
+            if let Some(capture) = &film {
+                capture.audio(pcm);
+            }
+        });
     }
     if let Some(audio) = &ds {
         let mixer = audio.mixer();
-        let mut mixer = mixer.lock().unwrap_or_else(|e| e.into_inner());
         if clock_only_audio {
-            mixer.set_packet_clock(
-                (host_light || sim_mode.is_some())
-                    && features
-                        .switches()
-                        .implementation("audio.packet-clock", true),
-            );
+            mixer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .set_packet_clock(
+                    (host_light || sim_mode.is_some())
+                        && features
+                            .switches()
+                            .implementation("audio.packet-clock", true),
+                );
         } else {
-            mixer.set_hrtf(features.switches().audio_hrtf());
-            mixer.set_distance_reverb(features.switches().distance_reverb());
+            setup_audible_mixer(&mixer, features.switches());
         }
     }
-    let local_forge =
-        features.switches().feature("forge", true) && !host_light && !replaying && !lockstep_on;
+    // A default recording and its replay both plan Forge (registration::local_forge).
+    let local_forge = registration::local_forge(
+        features.switches(),
+        film.as_deref(),
+        replaying,
+        host_light,
+        lockstep_on,
+    );
     if local_forge
         && let Some(input) = &mut host.input
     {
@@ -1090,7 +1214,7 @@ fn run_configured(
     let watch_overrides = agent_glue::socket_from_env().is_some();
     let coop_probe = coop_probe::parse(|k| std::env::var(k).ok()).map_err(anyhow::Error::msg)?;
     #[cfg(feature = "gpu")]
-    let native_sources = k.vfs().map(|vfs| native_map::mount(vfs, map_rebind.clone()));
+    let native_sources = k.vfs().map(|vfs| native_map::mount(vfs, map_rebind.clone(), &opts.data_root));
     let editor_link = host.editor_link.take();
     // The live mirror's camera layer reads the sealed frame scene
     // (docs/editor/live-mirror.md, "Cameras"): why this run seals none.
@@ -1158,7 +1282,11 @@ fn run_configured(
             #[cfg(feature = "gpu")]
             view: d3d_calls.as_ref().and_then(|d| d.view.as_ref()),
             #[cfg(feature = "gpu")]
-            fixed_lod: protected_readbacks.then(|| legacy_lod.unwrap_or(1.0)),
+            reference_lod,
+            #[cfg(feature = "gpu")]
+            d3d_display: single,
+            #[cfg(feature = "gpu")]
+            viewer_lod,
             #[cfg(feature = "gpu")]
             world_line_present,
             rt: &loaded.runtime,
@@ -1184,16 +1312,38 @@ fn run_configured(
             k.vfs(),
             &opts.data_root,
             host.settings.clone(),
+            _live.clone(),
         )?;
+        // Build AI ground and Test waves: the build over this disc's maps
+        // (ground_builder.rs); it does not load the map it builds.
+        #[cfg(feature = "test-maps")]
+        forge_glue::ground::install(Box::new(ground_builder::AppGround::disc(
+            opts.disc.clone(),
+        )));
+        // Generate nav: the bots' nav over the same build (nav_builder.rs).
+        #[cfg(feature = "test-maps")]
+        forge_glue::nav::install(Box::new(nav_builder::AppNav::disc(opts.disc.clone())));
+        // The lobby's map variant builds the same way (forge_maps.rs).
+        #[cfg(feature = "test-maps")]
+        game::map_variant::install(Box::new(forge_maps::DiscMaps::new(
+            opts.disc.clone(),
+            opts.data_root.clone(),
+        )));
     }
     if let Some(a) = &mut agent {
-        a.configure_takeover(
-            &mut features,
-            !headless || observer_window,
-            !headless && opts.d3d && xa.is_some() && !replaying && !lockstep_on && !host_light
-                && sim_mode.is_none(),
-        )
-        .context("installing lab takeover consent")?;
+        // A film's replay plans the dialog as its recording did, window or
+        // none (theater::compatibility's hook digest), and takes no request.
+        let takeover = registration::lab_takeover(registration::TakeoverInputs {
+            window: !headless,
+            d3d: opts.d3d,
+            xapi: xa.is_some(),
+            lockstep: lockstep_on,
+            host_light,
+            sim: sim_mode.is_some(),
+            replaying,
+        });
+        a.configure_takeover(&mut features, !headless || observer_window, takeover.plan, takeover.accept)
+            .context("installing lab takeover consent")?;
     }
     if let (Some(theater), Some(a)) = (&theater, &agent) {
         theater.connect(&a.agent);
@@ -1201,6 +1351,10 @@ fn run_configured(
     #[cfg(feature = "local-io")]
     if let (Some(a), Some(audio)) = (&agent, &ds) {
         dsound_glue::add_agent_methods(&a.agent, audio.mixer());
+    }
+    // audio.meter: UNAVAILABLE where the mixer renders no samples.
+    if let Some(a) = &agent {
+        game::mixer_meter::add_agent_method(&a.agent);
     }
     let mut snapshot_probe = late.snapshot_probe;
     // edit.* and render.* on the agent (hot_glue.rs, docs/graphics/hot-iteration.md).
@@ -1229,7 +1383,7 @@ fn run_configured(
                 Some((vfs.map_id(&path)?, vfs.content_base_name(name)?))
             });
         }
-        hot_glue::install(
+        let arena = hot_glue::install(
             &a.agent,
             &loaded.runtime,
             maps(),
@@ -1243,9 +1397,23 @@ fn run_configured(
         // render.marks: where the window drew the world marks (world_lines.rs).
         #[cfg(feature = "gpu")]
         world_lines::add_marks_method(&a.agent);
+        // render.markers: the Forge game type markers the last present drew
+        // (forge_glue/markers_world.rs).
+        forge_glue::markers_world::add_method(&a.agent);
+        // render.particles.refusals: the native particle path's geometry
+        // refusals and a sample draw for each (native_particles_admission.rs).
+        #[cfg(feature = "gpu")]
+        game::native_particles_admission::add_refusals_method(&a.agent);
         // sim.give and sim.spawn find tags as edit.* does (agent_glue.rs).
         if let Some(sim) = &a.sim {
             sim.set_tags(Box::new(hot_glue::map_tags(&loaded.runtime, maps())));
+            // world.placement.edit grows blocks into edit.batch's arena.
+            if let Some(calls) = sim.calls() {
+                agent::sim::calls::lock(&calls).set_arena(arena);
+                // edit.collision.commit's BSP activation runs on the same
+                // guest calls (hot_glue.rs).
+                hot_glue::install_collision_activation(&a.agent, calls);
+            }
         }
         // world.* results name their tags the same way.
         a.agent.set_tag_names(Box::new(hot_glue::map_tags(&loaded.runtime, maps())));
@@ -1271,10 +1439,27 @@ fn run_configured(
             k.vfs(),
         );
     }
+    // packages.list: the content set and each map read (packages.rs).
+    if let Some(a) = &agent {
+        packages::install(&a.agent, content_packages.summary, content_packages.served);
+    }
+    // store.status: the tag store and whether its maps are served
+    // (store_status.rs).
+    if let Some(a) = &agent {
+        store_status::install(&a.agent, &opts.data_root, store_maps);
+    }
     // game.menu: leave the game for the main menu through the agent's
     // guest calls (game_menu.rs, docs/runtime/agent-api.md).
     if let Some(a) = &agent {
         game::game_menu::install(&a.agent, a.sim.as_ref().and_then(|s| s.calls()));
+        // game.load / game.levels: any disc level queued the same way
+        // (game_load.rs).
+        game::game_load::install(
+            &a.agent,
+            a.sim.as_ref().and_then(|s| s.calls()),
+            &opts.disc,
+            &opts.data_root,
+        );
     }
     // Paired editor presentation and the debug menu's host methods.
     if let Some(a) = &agent {
@@ -1289,7 +1474,11 @@ fn run_configured(
             &a.agent,
             host.settings.clone(),
             host.perf_overlay.clone(),
+            host.cheat_line.clone(),
         );
+        if let Some(code) = &host.game_code {
+            game::game_code::install(&a.agent, Arc::clone(code));
+        }
         if let Some(lights) = &controller_lights {
             lights.install(&a.agent);
         }
@@ -1339,7 +1528,7 @@ fn run_configured(
     // Sim match metrics and match.* on the agent.
     if let Some(s) = &sim_mode {
         let playback = film.as_ref().filter(|f| f.has_engine_track()).map(|_| replaying);
-        s.install_with_film(&mut features, playback)?;
+        s.install_with_audio(&mut features, playback, ds.as_ref().map(|a| Arc::clone(&a.hle)))?;
         if let Some(a) = &agent {
             s.add_methods(&a.agent);
         }
@@ -1461,7 +1650,7 @@ fn run_configured(
         audit.installed(&installed);
     }
     if film.is_some()
-        && let Some(why) = installed.off_reason("theater-film")
+        && let Some(why) = installed.off_reason(theater::OBSERVER_FEATURE)
     {
         bail!("film observer unavailable: {why}");
     }
@@ -1573,6 +1762,7 @@ fn run_configured(
         a.install_editor_methods(
             &plan, &installed, &loaded.runtime, editor_hooks_on, recording_or_playback,
             skulls.clone(), core.editor_sources.clone(), rebind,
+            theater::autorecord::stopper(film.as_ref(), "an editor changed the game", true),
         );
         if let Some(why) = installed.off_reason("agent") {
             a.agent.set_no_tick_hook();
@@ -1672,7 +1862,12 @@ fn run_configured(
     if let Some(tr) = &tr {
         rebuilders.add(trace::KERNEL_CALL_RETURN, trace::rebuilder(tr));
     }
-    let shelf = if agent.is_some() || film.is_some() {
+    // The bounce search forks the machine in memory, and its sections
+    // carry the build key (docs/runtime/bounce-search.md, "The fork").
+    let bounce_fork = sim_mode
+        .as_ref()
+        .is_some_and(|s| s.matched().config.bounces.is_some());
+    let shelf = if agent.is_some() || film.is_some() || bounce_fork {
         let key = snapshot_glue::build_key(running_stamp(), &switch_spec, &plan, &snap_host.names());
         if let Some(session) = &film {
             let (dir, cap) = viewer_cache.unwrap_or_else(|| {
@@ -1689,7 +1884,8 @@ fn run_configured(
         }
         // Film keyframes also need a build key without a standalone snapshot directory.
         let shelf = snapshot_glue::Shelf::from_env(key.clone()).or_else(|| {
-            film.as_ref().map(|_| snapshot_glue::Shelf::new(&opts.data_root, key))
+            (film.is_some() || bounce_fork)
+                .then(|| snapshot_glue::Shelf::new(&opts.data_root, key))
         });
         if let (Some(a), Some(shelf)) = (&agent, &shelf) {
             a.agent.set_snapshots(Box::new(shelf.clone()));
@@ -1751,6 +1947,10 @@ fn run_configured(
         0
     };
     let measure_recording = !replaying && std::env::var("H2_THEATER_MEASURE").as_deref() == Ok("1");
+    // Cut the game in play and discard the tape even when the loop below
+    // exits by error or panic, skipping its teardown
+    // (`theater::Session::seal_on_drop`).
+    let film_seal = film.as_ref().and_then(|f| f.seal_on_drop());
     let first_slice = film_slices;
     let mut next_slice = film_slices;
     while next_slice < opts.max_slices {
@@ -1808,6 +2008,9 @@ fn run_configured(
                 }
             }
             film_slices = slice + 1;
+            if let Some(seal) = &film_seal {
+                seal.advance(film_slices);
+            }
         }
         if stop_at.is_some_and(|n| d3d_diag::presents() >= n) {
             break;
@@ -1908,6 +2111,29 @@ fn run_configured(
             let mut machine =
                 snap_host.machine(&mut m, &plan, &rebuilders, shelf, d3d_diag::presents());
             a.agent.run_snapshots(&mut machine);
+        }
+        // The bounce search asked for a fork at this tick and its tick
+        // observer ended the slice after the tick: save the machine, or
+        // put it back as a variant's capture left it.
+        if let Some(shelf) = &shelf
+            && sim_bounces::fork_pending()
+        {
+            let forked = {
+                let mut machine =
+                    snap_host.machine(&mut m, &plan, &rebuilders, shelf, d3d_diag::presents());
+                sim_bounces::between_slices(&mut machine)
+            };
+            match forked {
+                sim_bounces::Forked::Restored => {
+                    plan.restore_presentation_pages(&loaded.runtime, &installed)?;
+                    audio_idle = 0;
+                }
+                sim_bounces::Forked::Broken => {
+                    host_stop = true;
+                    break;
+                }
+                sim_bounces::Forked::Nothing | sim_bounces::Forked::Captured => {}
+            }
         }
         if let Some(p) = &mut snapshot_probe {
             p.after_slice(&m, &plan, || snap_host.blockers());
@@ -2172,6 +2398,26 @@ fn run_configured(
     Ok(report)
 }
 
+/// Audible-audio setup on DirectSound's mixer: the audio switches, then the
+/// game extensions that play into it (our medals' announcer lines,
+/// medal_announcer.rs; the Pogo Stick's piston sounds, pogo_sound.rs) or
+/// meter it (`audio.meter`, mixer_meter.rs).
+///
+/// The mixer guard never spans a `connect` call: one that locked the mixer
+/// again on this thread would hang the boot for good (std mutexes are not
+/// re-entrant; cd68951b6 hung every audible boot until the guard was dropped
+/// first). `audible_mixer_setup_never_deadlocks` guards it.
+fn setup_audible_mixer(mixer: &Arc<Mutex<audio::Mixer>>, switches: &hooks::Switches) {
+    {
+        let mut m = mixer.lock().unwrap_or_else(|e| e.into_inner());
+        m.set_hrtf(switches.audio_hrtf());
+        m.set_distance_reverb(switches.distance_reverb());
+    }
+    game::medal_announcer::connect(Arc::clone(mixer));
+    game::pogo_sound::connect(Arc::clone(mixer));
+    game::mixer_meter::connect(Arc::clone(mixer));
+}
+
 #[cfg(feature = "gpu")]
 fn note_editor_scene_install(link: &agent::editor::EditorLink, installed: &hooks::Installed) {
     if installed.off_reason(render_bridge::scene_step::ID).is_some() {
@@ -2182,6 +2428,24 @@ fn note_editor_scene_install(link: &agent::editor::EditorLink, installed: &hooks
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// cd68951b6: the audible path locked the mixer and then called
+    /// `game::mixer_meter::connect`, which locked the same mutex again, and
+    /// every audible boot hung forever. Run the real setup sequence with a
+    /// real mixer on a thread with a timeout: a deadlock fails the test
+    /// instead of hanging it.
+    #[test]
+    fn audible_mixer_setup_never_deadlocks() {
+        let mixer = Arc::new(Mutex::new(audio::Mixer::new(48_000)));
+        let switches = hooks::Switches::default();
+        let (done, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            setup_audible_mixer(&mixer, &switches);
+            done.send(()).unwrap();
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the audible mixer setup deadlocked");
+    }
 
     #[cfg(feature = "gpu")]
     #[test]

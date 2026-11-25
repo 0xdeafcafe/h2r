@@ -42,9 +42,13 @@ settings = { path = "../../formats/settings" }
 snapshot = { path = "../../runtime/snapshot" }
 # render.compare reads and writes PNGs (src/compare.rs).
 png = { workspace = true }
+# render.picture's stream sends JPEGs (src/render/picture.rs).
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 
 background.workspace = true
 map.workspace = true
+# `hs.eval` compiles an expression against the loaded scenario (src/hs_eval.rs).
+hs.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
@@ -57,6 +61,8 @@ lifted = { path = "../../runtime/lifted" }
 sim-report = { package = "sim-bench", path = "../../live/sim-bench" }
 # Synthetic maps for src/hot/tests.rs.
 map.workspace = true
+# Invented script tables and an invented executable for src/hs_eval.rs.
+hs = { workspace = true, features = ["fixture"] }
 
 [lints]
 workspace = true

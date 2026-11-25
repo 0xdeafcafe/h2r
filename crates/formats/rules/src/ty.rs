@@ -198,11 +198,51 @@ pub mod fixed {
         }
         (((a as i64) << 16) / (b as i64)).clamp(i32::MIN as i64, i32::MAX as i64) as i32
     }
+
+    /// The length of a vector of three 16.16 components, as 16.16: the
+    /// square root of the sum of the raw squares, taken whole in 128 bits
+    /// so no square overflows, and saturated to the largest fixed value.
+    pub fn length(x: i32, y: i32, z: i32) -> i32 {
+        let sq = |v: i32| i128::from(v) * i128::from(v);
+        let sum = (sq(x) + sq(y) + sq(z)) as u128;
+        isqrt(sum).min(i32::MAX as u128) as i32
+    }
+
+    /// The floor of the square root, by Newton's steps down from a power of
+    /// two above it.
+    fn isqrt(n: u128) -> u128 {
+        if n < 2 {
+            return n;
+        }
+        let bits = 128 - n.leading_zeros();
+        let mut x = 1u128 << bits.div_ceil(2);
+        loop {
+            let y = (x + n / x) / 2;
+            if y >= x {
+                return x;
+            }
+            x = y;
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_vectors_length_is_exact_and_never_overflows() {
+        // 3-4-5 in world units.
+        assert_eq!(fixed::length(fixed::from_int(3), fixed::from_int(4), 0), fixed::from_int(5));
+        assert_eq!(fixed::length(0, 0, 0), 0);
+        assert_eq!(fixed::length(-fixed::ONE, 0, 0), fixed::ONE);
+        // 300 units on one axis: its square (90,000) is far past the 16.16
+        // range, and the length is still 300.
+        assert_eq!(fixed::length(fixed::from_int(300), 0, 0), fixed::from_int(300));
+        assert_eq!(fixed::length(i32::MAX, i32::MAX, i32::MAX), i32::MAX);
+        // The floor: 1 raw unit on two axes is 1.41 raw units.
+        assert_eq!(fixed::length(1, 1, 0), 1);
+    }
 
     #[test]
     fn codes_round_trip() {

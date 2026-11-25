@@ -1,0 +1,36 @@
+# A two-team Firefight sim match (docs/runtime/sim.md, "Firefight"):
+# `h2 sim run` this file. Crossfire on Beaver Creek: two Clankers on each
+# player team, each team fighting the waves and the other team. The AI is
+# a team of its own and never a seat. The map is the kit package
+# `h2 firefight kit beavercreek` builds.
+map = "firefight-beavercreek"
+game_type = "firefight"
+seed = 12
+max_ticks = 54000     # 30 minutes at 30 ticks a second
+max_wall_s = 1800
+pace = "unpaced"
+
+[firefight]
+set = "crossfire"
+difficulty = "normal"
+teams = 2
+
+[[bot]]
+name = "Red 1"
+skill = "heroic"
+team = 0
+
+[[bot]]
+name = "Blue 1"
+skill = "heroic"
+team = 1
+
+[[bot]]
+name = "Red 2"
+skill = "normal"
+team = 0
+
+[[bot]]
+name = "Blue 2"
+skill = "normal"
+team = 1

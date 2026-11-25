@@ -3,6 +3,7 @@
 //! "Other players").
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 /// The refusal codes, in the order the design lists them.
@@ -17,7 +18,8 @@ pub const CODES: [&str; 6] = [
 
 /// Why a look, or a change to one, was refused. The seat keeps its
 /// previous look.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Refusal {
     /// A field out of bounds, an unknown key, a variant the model lacks.
     Invalid { field: String, reason: String },

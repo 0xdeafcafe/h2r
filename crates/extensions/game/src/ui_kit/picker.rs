@@ -5,8 +5,10 @@
 //! focused, the setting's description on the right, and `(A) SELECT
 //! (B) CANCEL` in the footer. A sets the focused value through the row's
 //! own setter (the settings store, so it is saved and its change
-//! callbacks run) and closes; B closes and changes nothing. Left and right
-//! on the row itself still step, as a shortcut.
+//! callbacks run) and closes; a pick with an action of its own
+//! ([`Pick::after`], the lobby's mode switch) runs it once closed. B closes
+//! and changes nothing. Left and right on the row itself still step, as a
+//! shortcut.
 //!
 //! **Retail's.** The dialog is `low_level_settings` (screen 223,
 //! `ui\screens\game_shell\settings_screen\variant_settings\
@@ -91,10 +93,18 @@ pub struct Pick {
     /// place of `description` (the object menu's object lines). Empty:
     /// `description` for every value.
     pub details: Vec<String>,
+    /// Values that cannot be chosen (the map variant picker's unusable
+    /// ones): A on one stays in the picker and says its line. Empty or
+    /// shorter than `values`: the rest can be.
+    pub blocked: Vec<bool>,
     /// What the picker opened over, for the preview.
     pub opener: Opener,
     /// Stores value `i`; what to log.
     pub set: Arc<dyn Fn(usize) -> String + Send + Sync>,
+    /// Run once a value is set and the picker has closed, with the guest
+    /// (the lobby's mode switch, `crate::lobby_tabs::picker::after`):
+    /// what a value does that needs the game's own routines.
+    pub after: Option<Action>,
 }
 
 impl std::fmt::Debug for Pick {
@@ -123,18 +133,35 @@ impl Pick {
             values,
             description: description.into(),
             details: Vec::new(),
+            blocked: Vec::new(),
             opener: Opener::MAIN_MENU,
             set,
+            after: None,
         }
     }
     pub fn over(mut self, opener: Opener) -> Pick {
         self.opener = opener;
         self
     }
+    /// What runs once a value is set and the picker has closed
+    /// ([`Pick::after`]).
+    pub fn after(mut self, after: Action) -> Pick {
+        self.after = Some(after);
+        self
+    }
     /// A line per value ([`Pick::details`]).
     pub fn details(mut self, details: Vec<String>) -> Pick {
         self.details = details;
         self
+    }
+    /// The values that cannot be chosen ([`Pick::blocked`]).
+    pub fn blocked(mut self, blocked: Vec<bool>) -> Pick {
+        self.blocked = blocked;
+        self
+    }
+    /// Whether value `i` cannot be chosen.
+    pub fn is_blocked(&self, i: usize) -> bool {
+        self.blocked.get(i).copied().unwrap_or(false)
     }
     /// What the right side says while value `i` has the focus.
     pub fn line(&self, i: usize) -> &str {
@@ -313,6 +340,9 @@ impl Picker {
         if self.chosen.swap(false, Ordering::SeqCst) {
             eprintln!("{}: chosen; closing", self.name);
             crate::ui_kit::dialog_tag::close(cx, screen).await?;
+            if let Some(after) = current().and_then(|p| p.after) {
+                after(cx.clone(), screen).await?;
+            }
         }
         Ok(())
     }
@@ -398,6 +428,9 @@ impl Rows for Picker {
         let Some(i) = usize::try_from(row).ok().filter(|i| *i < p.values.len()) else {
             return Chosen::Nothing;
         };
+        if p.is_blocked(i) {
+            return Chosen::Stepped(format!("{}: {}", self.name, p.line(i)));
+        }
         eprintln!("{}: {}", self.name, (p.set)(i));
         with_pick(|held| {
             if let Some(held) = held.as_mut() {
@@ -457,7 +490,7 @@ pub(crate) fn playback_spec(title: &str, values: &[String], focus: usize, help: 
     picker_spec(GAME_NAME, DialogBase::Large, title, values, focus, help, Opener::MAIN_MENU)
 }
 
-fn picker_spec(
+pub(crate) fn picker_spec(
     name: &str,
     base: DialogBase,
     title: &str,

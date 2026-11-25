@@ -1,0 +1,24 @@
+# A Firefight sim match (docs/runtime/sim.md, "Firefight"): `h2 sim run`
+# this file. Two Clankers hold Beaver Creek as one team against Holdout's
+# waves. The map is the kit package `h2 firefight kit beavercreek` builds.
+map = "firefight-beavercreek"
+game_type = "firefight"
+seed = 11
+max_ticks = 54000     # 30 minutes at 30 ticks a second
+max_wall_s = 1800
+pace = "unpaced"
+
+[firefight]
+set = "holdout"
+difficulty = "normal"
+skulls = true
+
+[[bot]]
+name = "Clanker 1"
+skill = "heroic"
+team = 0
+
+[[bot]]
+name = "Clanker 2"
+skill = "heroic"
+team = 0

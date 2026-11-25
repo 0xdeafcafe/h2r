@@ -270,6 +270,8 @@ pub struct State {
     /// the session (`GET /v1/coop/games`, newest first by that position).
     pub coop_games: BTreeMap<u64, crate::sessions::CoopGame>,
     pub mailboxes: BTreeMap<Xuid, BTreeMap<u64, live_proto::mailbox::Invite>>,
+    /// Text messages by recipient, then by the sent event's position.
+    pub texts: BTreeMap<Xuid, BTreeMap<u64, live_proto::mailbox::TextMessage>>,
     pub games: HashMap<String, Game>,
     /// Consumed by the GameStarted appended together with each private link.
     pending_session_links: HashMap<String, String>,
@@ -459,9 +461,23 @@ impl Model {
         }
     }
 
+    /// A host's presence keeps alive the sessions it opened since it
+    /// signed in. One from an earlier sign-in belongs to a game that has
+    /// since quit or crashed without a SessionDeleted: it gets no renewal,
+    /// and the sweep expires it a `session_idle_s` after its last activity.
     pub fn touch_host_sessions(&self, xuid: Xuid, now: i64) {
-        for item in self.state.write().unwrap().sessions.values_mut() {
-            if item.host_xuid == xuid && item.state == "open" {
+        let mut s = self.state.write().unwrap();
+        let signed_in = s
+            .presence
+            .get(&xuid)
+            .and_then(|p| parse_time(&p.since))
+            .map(|t| t.unix_timestamp());
+        for item in s.sessions.values_mut() {
+            let current = match (signed_in, parse_time(&item.since)) {
+                (Some(from), Some(opened)) => opened.unix_timestamp() >= from,
+                _ => true,
+            };
+            if item.host_xuid == xuid && item.state == "open" && current {
                 item.last_activity = item.last_activity.max(now);
             }
         }
@@ -800,9 +816,11 @@ impl Model {
                 let Some(d) = data::<PresenceData>(e) else {
                     return;
                 };
+                // A SignedIn starts a new run of the game; a presence change
+                // keeps the run's start.
                 let since = match s.presence.get(&d.xuid) {
-                    Some(p) => p.since.clone(),
-                    None => b.at.clone(),
+                    Some(p) if b.kind != types::SIGNED_IN => p.since.clone(),
+                    _ => b.at.clone(),
                 };
                 let state = d.state.unwrap_or_else(|| "online".into());
                 let private_sessions = crate::sessions::private_sessions_of(&s, d.xuid);

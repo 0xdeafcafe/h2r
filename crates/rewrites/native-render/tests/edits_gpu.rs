@@ -147,7 +147,12 @@ fn a_replaced_section_draws_as_a_world_loaded_from_the_edited_bytes() {
     let (_, visible) = draw(&ctx, &mut live);
     assert_eq!(visible, 1, "before: only the side wall");
 
+    live.set_lights(native_render::light_gpu::LightSet::new(&ctx.device, &ctx.queue, None, None));
+    let (_, original_vertices, original_indices) = live.retain_light(&ctx.device, None).unwrap();
     let run = live.replace_section(&ctx.queue, Owner::Cluster(0), &edited).unwrap();
+    let (_, edited_vertices, edited_indices) = live.retain_light(&ctx.device, None).unwrap();
+    assert_ne!(original_vertices, edited_vertices, "retained scene still owns the old vertices");
+    assert_eq!(original_indices, edited_indices, "section edits preserve topology");
     assert_eq!((run.first_vertex, run.vertex_count), (0, 4));
     assert_eq!(live.world().vertices, loaded.world().vertices);
     assert_eq!(live.world().draws, loaded.world().draws, "draw bounds recomputed");
@@ -230,4 +235,40 @@ fn a_rewritten_texture_samples_its_new_texels_and_a_size_change_is_refused() {
         let other = one_level.with_blocks(wgpu::TextureFormat::Bc3RgbaUnorm, vec![vec![0; 16]]);
         assert_eq!(gpu::check_rewrite(&bc, &other), Err(ImageRefusal::Format));
     }
+}
+
+/// What every holder shares: a held texture is written once however many
+/// holders list it, a signed stage is biased as at load, a stage with no
+/// decode refuses the lot, and a size change writes nothing
+/// (docs/editor/realtime-edits.md, "The native refresh").
+#[test]
+fn held_textures_are_rewritten_all_or_nothing_and_each_once() {
+    let Ok(ctx) = gfx::GfxContext::headless() else {
+        eprintln!("no wgpu adapter; skipping");
+        return;
+    };
+    let (a, b) = (rgba_texture(&ctx, 1, 1, 1), rgba_texture(&ctx, 1, 1, 1));
+    let held: Vec<gpu::Held> = vec![
+        (a.clone(), 0, [false; 4]),
+        (a.clone(), 0, [false; 4]),
+        (b.clone(), 2, [true, false, false, false]),
+    ];
+    assert_eq!(gpu::held_stages(&held), vec![0, 2]);
+    let decoded = std::collections::HashMap::from([
+        (0, Image::solid([10, 20, 30, 40])),
+        (2, Image::solid([10, 20, 30, 40])),
+    ]);
+    assert_eq!(gpu::rewrite_held(&ctx.queue, &held, &decoded), Ok(2), "the shared texture once");
+    assert_eq!(read(&ctx, &a, 0), vec![10, 20, 30, 40]);
+    assert_eq!(read(&ctx, &b, 0), vec![10 ^ 0x80, 20, 30, 40], "the signed channel is biased");
+
+    let bigger = std::collections::HashMap::from([
+        (0, Image::solid([1, 1, 1, 1])),
+        (2, Image::level(2, 2, vec![9; 16]).unwrap()),
+    ]);
+    assert_eq!(gpu::rewrite_held(&ctx.queue, &held, &bigger), Err(ImageRefusal::Size));
+    assert_eq!(read(&ctx, &a, 0), vec![10, 20, 30, 40], "refused: the first texture is untouched too");
+    let missing = std::collections::HashMap::from([(0, Image::solid([1, 1, 1, 1]))]);
+    assert_eq!(gpu::rewrite_held(&ctx.queue, &held, &missing), Err(ImageRefusal::NotDecoded));
+    assert_eq!(gpu::rewrite_held(&ctx.queue, &[], &decoded), Ok(0));
 }

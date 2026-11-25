@@ -39,9 +39,12 @@ fn raised(mut p: Vec3, h: f32) -> Vec3 {
     p
 }
 
-fn traffic(routes: &[Vec<usize>]) -> Vec<usize> {
+fn traffic(routes: &[Vec<usize>], in_map: impl Fn(usize) -> bool) -> Vec<usize> {
     let mut visits = vec![0usize; routes.len()];
     for start in (0..routes.len()).step_by(routes.len().div_ceil(16).max(1)) {
+        if !in_map(start) {
+            continue;
+        }
         let mut parent = vec![usize::MAX; routes.len()];
         parent[start] = start;
         let mut order = Vec::new();
@@ -92,9 +95,11 @@ impl Places {
             exits.sort_unstable();
             exits.dedup();
         }
-        let visits = traffic(&routes);
+        // Lanes and vantages are in the map only (nav::NavMesh::in_map).
+        let in_map = |i: usize| nav.in_map(i as u32);
+        let visits = traffic(&routes, in_map);
         let mut indices: Vec<_> = (0..routes.len())
-            .filter(|&i| !routes[i].is_empty())
+            .filter(|&i| !routes[i].is_empty() && in_map(i))
             .collect();
         indices.sort_by_key(|&i| std::cmp::Reverse(visits[i]));
         let mut lanes = Vec::new();
@@ -121,7 +126,7 @@ impl Places {
             .polys
             .iter()
             .enumerate()
-            .filter(|(i, _)| routes[*i].len() >= 2)
+            .filter(|(i, _)| routes[*i].len() >= 2 && in_map(*i))
         {
             let slot = patches.entry(cell(p.center)).or_insert(i);
             if routes[i].len() > routes[*slot].len() {

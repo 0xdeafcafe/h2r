@@ -6,7 +6,9 @@ use super::App;
 use geometry_edit::mesh_edit::MeshOp;
 use geometry_edit::{GeometrySession, Preview, Target, TargetInfo};
 use scenario_edit::geometry::RawFiles;
-use scenario_edit::{BspPatch, GeometryChanges, RawPatch};
+use scenario_edit::{BspPatch, GeometryChanges, GeometryGrown, RawPatch};
+use tags::collision::shape_edit::{self, ShapeEdit};
+use tags::collision::{PHMO, PhysicsModel, ShapeType};
 
 /// Why a save with geometry edits is refused while the session switch is
 /// off.
@@ -20,6 +22,12 @@ pub struct Modeling {
     /// "Allow unverified geometry writes": off by default, and while off
     /// a save with geometry edits is refused.
     pub allow_unverified: bool,
+    /// Level collision edits by structure: the blocks a solid added to a
+    /// structure's collision makes (`geometry_edit::level_collision`).
+    /// Play sends them to a paired game (`play::collision_sync`).
+    pub level_collision: std::collections::BTreeMap<map::TagId, geometry_edit::level_collision::LevelEdit>,
+    /// Bumped on every change to [`Self::level_collision`].
+    pub level_collision_rev: u64,
     /// The map the session is over (`Session::world_rev`).
     for_rev: Option<u64>,
 }
@@ -38,20 +46,101 @@ pub enum ModelAction {
         ops: Vec<MeshOp>,
         merge: Option<u64>,
     },
+    /// Replace a collision BSP with the current mesh of a render section.
+    CollisionFromRender {
+        render: Target,
+        target: Target,
+        materials: Vec<u16>,
+    },
     /// End a merged run (a gizmo drag).
     Seal,
     Undo,
     Redo,
+    /// **Use for lower LODs** on a model section: point every lower level
+    /// of detail of each permutation that draws it at it (`on`), or leave
+    /// them as they were. One undo step, saved as patches of the
+    /// permutations' LOD indices
+    /// (`geometry_edit::GeometrySession::set_use_for_lower_lods`).
+    UseForLowerLods { target: Target, on: bool },
+    /// Add a closed box solid inside `[lo, hi]` to structure `structure`'s
+    /// level collision, onto the solids added before
+    /// (`geometry_edit::level_collision::LevelEdit::add_box`). A paired
+    /// game gets it live (`play::collision_sync`); a save writes it.
+    AddCollisionBox {
+        structure: map::TagId,
+        lo: [f32; 3],
+        hi: [f32; 3],
+        material: u16,
+    },
+    /// Drop every solid added to `structure`'s level collision: the file's
+    /// collision again, in the save and in a paired game.
+    ClearCollision { structure: map::TagId },
 }
 
 impl App {
+    fn physics_payload(&self, tag: map::TagId) -> Result<(u32, Vec<u8>), String> {
+        let entry = self
+            .tags
+            .tag(tag)
+            .filter(|t| t.group == PHMO)
+            .ok_or("select a physics model (phmo) tag in the open map")?;
+        let bytes = self
+            .tags
+            .read(tag, entry.address, entry.size)
+            .filter(|b| !b.is_empty())
+            .ok_or("physics model has no local payload")?;
+        Ok((entry.address, bytes))
+    }
+
+    pub(crate) fn physics_model(&self, tag: map::TagId) -> Result<PhysicsModel, String> {
+        let (base, bytes) = self.physics_payload(tag)?;
+        PhysicsModel::decode(&bytes, base).map_err(|e| e.to_string())
+    }
+
+    pub(super) fn edit_physics_shape(
+        &mut self,
+        tag: map::TagId,
+        kind: ShapeType,
+        index: usize,
+        edit: &ShapeEdit,
+    ) -> Result<(), String> {
+        let (base, bytes) = self.physics_payload(tag)?;
+        let words = shape_edit::plan(&bytes, base, kind, index, edit).map_err(|e| e.to_string())?;
+        if words.is_empty() {
+            return Ok(());
+        }
+        let writes = words
+            .into_iter()
+            .map(|(offset, word)| {
+                base.checked_add(offset as u32)
+                    .map(|at| (at, word))
+                    .ok_or("physics shape address overflows")
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.tags.write_words(tag, format!("edit physics {kind:?} {index}"), writes)?;
+        self.info("Physics shape updated. Rigid-body bounds and mass properties may be stale.");
+        Ok(())
+    }
+
     /// Drop the geometry session when another map (or none) opens.
     pub(crate) fn sync_modeling(&mut self) {
         let rev = Some(self.session.world_rev());
         if self.modeling.for_rev != rev {
             self.modeling.session.clear();
+            self.modeling.level_collision.clear();
+            self.modeling.level_collision_rev += 1;
             self.modeling.for_rev = rev;
         }
+    }
+
+    /// Set (or, with `None`, drop) structure `tag`'s level collision edit.
+    pub fn set_level_collision(&mut self, tag: map::TagId, edit: Option<geometry_edit::level_collision::LevelEdit>) {
+        self.sync_modeling();
+        match edit {
+            Some(e) => self.modeling.level_collision.insert(tag, e),
+            None => self.modeling.level_collision.remove(&tag),
+        };
+        self.modeling.level_collision_rev += 1;
     }
 
     /// The open map's structure targets, and a render model's sections
@@ -83,6 +172,12 @@ impl App {
                 .apply(target, &ops, merge)
                 .map(|_| ())
                 .map_err(|e| e.to_string()),
+            ModelAction::CollisionFromRender { render, target, materials } => self
+                .modeling
+                .session
+                .collision_from_render(render, target, &materials)
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
             ModelAction::Seal => {
                 self.modeling.session.seal();
                 Ok(())
@@ -103,11 +198,61 @@ impl App {
                 self.info(msg);
                 Ok(())
             }
+            ModelAction::UseForLowerLods { target, on } => self
+                .modeling
+                .session
+                .set_use_for_lower_lods(target, on)
+                .map(|changed| {
+                    self.info(match (changed, on) {
+                        (true, true) => format!("{}: lower levels of detail use this section", target.id()),
+                        (true, false) => format!("{}: lower levels of detail as the file has them", target.id()),
+                        (false, _) => format!("{}: no change to the levels of detail", target.id()),
+                    })
+                })
+                .map_err(|e| e.to_string()),
+            ModelAction::AddCollisionBox {
+                structure,
+                lo,
+                hi,
+                material,
+            } => self.add_collision_box(structure, lo, hi, material),
+            ModelAction::ClearCollision { structure } => {
+                let had = self.modeling.level_collision.contains_key(&structure);
+                self.set_level_collision(structure, None);
+                self.info(if had {
+                    format!("{:#010x}: level collision as the file holds it", structure.0)
+                } else {
+                    format!("{:#010x}: no level collision edit to clear", structure.0)
+                });
+                Ok(())
+            }
         };
         if let Err(e) = r {
             self.error(format!("modeling: {e}"));
         }
         self.push_geometry_changes();
+    }
+
+    /// [`ModelAction::AddCollisionBox`]: the structure's edit with the box
+    /// added, its level read from the open map the first time.
+    fn add_collision_box(&mut self, structure: map::TagId, lo: [f32; 3], hi: [f32; 3], material: u16) -> Result<(), String> {
+        let edit = match self.modeling.level_collision.get(&structure) {
+            Some(edit) => edit.add_box(lo, hi, material),
+            None => {
+                let source = self.session.source().cloned().ok_or("no map is open")?;
+                let mut map = source.open().map_err(|e| e.to_string())?;
+                geometry_edit::level_collision::read(&mut map, structure).and_then(|s| s.add_box(lo, hi, material))
+            }
+        }
+        .map_err(|e| e.to_string())?;
+        let surfaces = edit.added.level.bsp.surfaces.len();
+        let was = edit.source.level.bsp.surfaces.len();
+        self.set_level_collision(structure, Some(edit));
+        self.info(format!(
+            "{:#010x}: added a collision box ({} surfaces, {was} in the file)",
+            structure.0, surfaces
+        ));
+        Ok(())
     }
 
     fn open_model_target(&mut self, t: Target) -> Result<(), String> {
@@ -158,10 +303,13 @@ impl App {
         self.geometry_changes().refusal
     }
 
-    /// What [`Self::push_geometry_changes`] hands the save.
+    /// What [`Self::push_geometry_changes`] hands the save: the session's
+    /// writes and each level collision edit's (patches in place, grown
+    /// blocks in the metadata).
     fn geometry_changes(&self) -> GeometryChanges {
         let g = &self.modeling.session;
         let mut c = GeometryChanges::default();
+        let edited = g.has_changes() || !self.modeling.level_collision.is_empty();
         if g.has_changes() {
             match g.changes() {
                 Ok(p) => {
@@ -187,6 +335,13 @@ impl App {
                             }),
                         }
                     }
+                    c.grown.extend(p.grown.into_iter().map(|g| GeometryGrown {
+                        pair_space: g.pair_space,
+                        pair: g.pair,
+                        count: g.count,
+                        bytes: g.bytes,
+                        align: g.align,
+                    }));
                     c.raw_patches = p
                         .raw
                         .into_iter()
@@ -200,9 +355,29 @@ impl App {
                 }
                 Err(e) => c.refusal = Some(e.to_string()),
             }
-            if c.refusal.is_none() && !self.modeling.allow_unverified {
-                c.refusal = Some(UNVERIFIED_REFUSAL.to_owned());
+        }
+        for edit in self.modeling.level_collision.values() {
+            let w = edit.writes();
+            for p in w.patches {
+                match p.space {
+                    None => c.patches.push((p.address, p.bytes)),
+                    Some(space) => c.bsp_patches.push(BspPatch {
+                        space,
+                        address: p.address,
+                        bytes: p.bytes,
+                    }),
+                }
             }
+            c.grown.extend(w.grown.into_iter().map(|g| GeometryGrown {
+                pair_space: g.pair_space,
+                pair: g.pair,
+                count: g.count,
+                bytes: g.bytes,
+                align: g.align,
+            }));
+        }
+        if edited && c.refusal.is_none() && !self.modeling.allow_unverified {
+            c.refusal = Some(UNVERIFIED_REFUSAL.to_owned());
         }
         c
     }

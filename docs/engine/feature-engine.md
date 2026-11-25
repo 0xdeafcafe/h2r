@@ -154,7 +154,14 @@ install, a point with no generated original turns its features off the same
 way. Each point expects a shape at its address (a function start, a call,
 a frame prologue; `engine::point_shapes`); install checks it against the
 loaded image, and a point that is not what it says turns its features off
-with its name ([guest-layout.md](guest-layout.md)). A title update maps the table through `ImageAddrs`
+with its name ([guest-layout.md](guest-layout.md)). A `Sig::Site` is
+also refused when it is a call's continuation: the image's resume table
+holds it (`Dispatch::has_resume`) and a call instruction ends there
+(`point_shapes::call_ends_at`). A return resumes the caller's generated
+code at its continuation and never consults an override, so a hook there
+would never run. A site's hook goes on the next instruction reached by
+falling through, with the stack and the registers it reads unchanged
+(`hooks::verify`). A title update maps the table through `ImageAddrs`
 ([title-updates.md](../runtime/title-updates.md) section 3.3).
 Structure layouts for a title update would go through `engine::view`
 ([Guest data access](#guest-data-access)); no title-update map exists yet.
@@ -416,10 +423,7 @@ Rows of ours on a retail list are data on the plan
 (`crates/extensions/game/src/retail_rows.rs`): an `Extension` answers a retail list's
 extension rows from the `ui` model with `before` hooks at the list's row text
 and row chosen, and a retail row goes on to the original. The Settings list
-(the Video row), the Controls list (the speaker row) and Edit Profile
-(the Voice Chat row) use it. A list told apart by index
-can have ours among its rows (`ui::Extension::at`): a retail row shown past
-ours goes to the original with its own row's handle (`retail_rows::moved`).
+(the Video and Voice rows) and the Controls list (the speaker row) use it.
 
 The retail Controls row text is ported (`crates/extensions/game/src/controls_text.rs`,
 feature `controls-text`, an implementation). Every string id is read at run
@@ -445,8 +449,11 @@ phase with an exclusive split per stage
 ([gameplay-budget.md](../perf/notes/gameplay-budget.md)).
 `guest_layout::points::scene_effects::instruction_entries` lists the retail
 instruction boundaries those stages hook mid-function, and
-`render_aspect::instruction_entries` the aspect and HUD sites. The
-composition root registers both lists with the image builder
+`render_aspect::instruction_entries` the aspect and HUD sites;
+`game_types::instruction_entries` lists the spawn gather's site the
+`rules` feature answers for the script index, and its resume
+([game-types-without-carriers.md](../game/game-types-without-carriers.md)).
+The composition root registers the three lists with the image builder
 (`boot::register_image_entries`, calling `recomp::register_retail_entries`)
 before anything builds, stamps, loads or analyses the image: `h2`'s
 `main`, the Apple hosts and every `boot::run*`. Discovery for both image

@@ -1,7 +1,7 @@
 # Forge monitor appearance
 
-Status: Partly built (ML1 to ML3). The look, its profile keys, its refusals, the census, the marker's projection and the offline agent methods exist; no model is drawn, no page edits a look and nobody else can see a monitor.
-Code: `crates/extensions/forge/src/look.rs` and `look/` (the look, `census`, `saved`), `crates/apps/cli/src/forge_looks.rs` (the disc reader behind `h2 forge looks`), `crates/extensions/forge/src/look/monitors.rs` (the seat's look and the agent methods' rules), `crates/extensions/game/src/forge_glue/marker.rs` (the marker), `crates/extensions/game/src/forge_controls/render.rs` (the parked biped and the monitor's view), `crates/extensions/forge/src/camera.rs` (the pose), `crates/extensions/game/src/ui_kit/forge.rs` (the pages). Tests: `look/tests.rs`, `forge_looks.rs`, `forge_glue/marker.rs` and `crates/extensions/agent/src/forge/tests.rs`; each later slice names its own.
+Status: Partly built (ML1 to ML8). The look, its profile keys, its refusals, the census, the offline agent methods, the presentation body (ML4: the host model list and a seat's draw — pure, the renderer's object pass does not consume the draws yet, so a disc model still shows as the marker), the Appearance page's body (ML4b: its place beside the Spartan and `forge_glue::appearance_body` — pure, the model widget does not draw it yet), the host light (ML5: in each game view's light list and the E3 light choice, last, and drawn by the native light passes over the structure), the session channel (ML7: the hello's declaration, the host's table, `look` and `pose` on the session's lanes, the refusals, the join reset, interpolation and staleness) and the kit's `Scene3d` preview widget exist; film and Theater records (ML8: the record subtypes, the recorder and its checkpoint, the playback seats, the camera subjects and the `monitor_look_source` reason; the game writes the records, Theater's reader feeds them to the playback, and the camera rig, the bar, `theater.state`, `theater.compat` and the film's detail page read it; the renderer's object pass does not consume the draws yet, so a disc model still shows as the marker), the look's page (ML6, a Forge screen of the game's), the lobby row (ML9) and a real body (ML10) do not.
+Code: `crates/extensions/forge/src/look.rs` and `look/` (the look, `census`, `saved`), `crates/apps/cli/src/forge_looks.rs` (the disc reader behind `h2 forge looks`), `crates/extensions/forge/src/look/monitors.rs` (the seat's look and the agent methods' rules), `look/body.rs` and `look/appearance.rs` (the drawn body in the world and on the Appearance page), `crates/rewrites/frame-scene/src/light.rs` (`Light::host_light`), `crates/rewrites/render-bridge/src/scene_step.rs` (`set_host_lights`), `crates/rewrites/native-render/src/light_choice.rs`, `crates/extensions/game/src/forge_hud.rs` (`Points`, the navpoints over other monitors), `crates/extensions/game/src/forge_controls/render.rs` (the parked biped and the monitor's view), `crates/extensions/forge/src/camera.rs` (the pose), `crates/extensions/game/src/ui_kit/view.rs` (`Kind::Scene3d`). Tests: `look/tests.rs`, `forge_looks.rs`, `forge_hud_tests.rs` and `crates/extensions/agent/src/forge/tests.rs`; `look/appearance.rs` (ML4b); `forge_glue.rs`, `frame-scene/src/builder.rs` and `light_choice.rs` (ML5); each later slice names its own.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
 What a player looks like while they fly as a monitor in a Forge session:
@@ -29,9 +29,10 @@ Evidence labels are those of [docs-style.md](../meta/docs-style.md).
 - The monitor is a `forge::camera::Camera`: a position, a yaw and a
   pitch. It is published to the input bridge and to `forge.status`
   (**Code**, `forge_controls.rs`: `publish`, `eye`).
-- The only thing drawn at a world position is the Objects tool's gizmo,
-  projected to 2D through the frame's camera and drawn by the
-  compositor (**Code**, `forge_glue/gizmo.rs`: `Axes::from_frame`).
+- The only things drawn at a world position are the HUD kit's: the
+  Objects tool's gizmo, three world segments, and the navpoints over the
+  thing held or aimed at and over other monitors (**Code**,
+  `forge_glue/gizmo.rs`: `Axes::from_frame`, `forge_hud.rs`: `Points`).
 - A session is local. No other machine exists to see a monitor, and no
   film record holds its pose.
 
@@ -80,7 +81,7 @@ There are three sources, in the order they are built.
 
 | Source | What it is | Needs | Seen by a machine without it |
 |---|---|---|---|
-| **Marker** | a ring and the player's name, projected to 2D and drawn by the compositor, as the gizmo is | nothing: no disc tag, no renderer feature | cannot happen |
+| **Marker** | the HUD kit's navpoint over the monitor, with the distance as its number | nothing: no disc tag, no renderer feature | cannot happen |
 | **Disc model** | the render model of a flying biped on a campaign map of the user's own disc, read by the host process and drawn by the native renderer at the monitor's pose | that campaign map on this machine; the native renderer | the choice is refused (below) |
 | **Real body** (F10) | the biped itself, transplanted into the map; the player's unit | F10, tag headroom, a Rebuild | the document is refused at the gate (forge-design.md, "Saving and sharing on Live") |
 
@@ -136,16 +137,13 @@ probability, the first on a tie (**Design**; the game draws by
 `0x0016dad0`, which is not reproduced, objects.md). Damage states are
 never chosen.
 
-**The marker.** `forge_glue::marker::Marker` is the ring: its centre is
-the monitor's position projected through the frame's world camera by the
-function the gizmo's axes use (`gizmo::pixel_of`), its radius is a fixed
-world radius projected the same way, and its label point sits above the
-ring. `Marker::paint` draws the ring into the HUD canvas behind the
-reticle and panels, in the primary colour read from the map's player
-colours (`pad_lightbar::palette_rgb`). The name is drawn by the
-compositor's text path at the label point. Nothing draws a marker yet:
-a monitor never draws its own, and no other seat exists until the
-session channel (ML7).
+**The marker.** Another seat's monitor, whatever its look, has a navpoint
+of the monitor HUD over it (`forge.nav.monitor.1` and `.2`: the two
+nearest), the game's arrow and marker with the distance in metres as its
+number ([forge-firefight-ui.md](forge-firefight-ui.md), "Markers in the
+world"). The game draws a navpoint in one colour, so the seat's colour is
+not on it; the colour is on the body. A monitor never has one over its own
+body, and no other seat exists until the session channel (ML7).
 
 **Pose.** The body sits at the camera's position, turned to its yaw and
 pitch, in the model's rest pose, with a slow vertical bob computed from
@@ -156,7 +154,7 @@ the camera is inside it.
 
 | Part | Marker | Disc model |
 |---|---|---|
-| Primary, secondary | the ring and the name | the model's change colours, where the census found a change-colour map; otherwise the rows are locked with "This model has no colour areas" |
+| Primary, secondary | the ring and the name | the model's change colours, where the census found a change-colour map; otherwise the rows are locked with "No colour areas" |
 | Tint | none | the lit colour mixed towards primary by a fixed alpha a step (`ObjectInput::highlight`, the editor's selection mix, **Code**) |
 | Light | none | a host light at the body's origin: the palette colour, one of two fixed radii, no shadow |
 
@@ -164,13 +162,33 @@ the camera is inside it.
   where the change-colour map is empty and the colour where it is full,
   red primary and green secondary ([live-art.md](../live/live-art.md),
   "Vehicle colours"). Only primary and secondary are used.
-- The light is the renderer's, not the game's. It is a candidate added
-  to the scene's light list after extraction with no light datum and no
-  `ligh` tag (`frame_scene::LightCandidate` holds the position and
-  colours a candidate needs, **Code**). It lights the world and other
-  objects on machines that draw it and changes nothing in the sim. It
-  casts no shadow and is skipped first when a view is over its light
-  budget.
+- The light is the renderer's, not the game's. `frame_scene::Light::host_light`
+  makes it: no light datum and no `ligh` tag (`handle` and `definition`
+  are `NO_DATUM`, `host` the seat), a sphere at the body's origin of the
+  look's radius, both colours the palette colour, no guest steps, flag
+  bit 2 clear so no shadow map is made for it. `forge_glue::monitor_lights`
+  turns each drawn body (not a marker) into one, with the colour read from
+  the loaded map; a colour the map does not hold gives no light. The
+  frame step adds them to each game view after the game's candidates
+  (`render_bridge::scene_step::set_host_lights`, set by `frame_owner`).
+  The E3 light choice ranks them after every game light, so they are
+  skipped first when a view is over its light budget
+  ([e3-lighting.md](../graphics/e3-lighting.md), "Lights: which, and how
+  many"). It changes nothing in the sim.
+- The passes draw it without a guest record. Once the main view's light
+  pass is over (the hook where the frame step adds the lights),
+  `render_bridge::native_lights::host::constants` makes its constants:
+  the guest's own `0x0004a1e0` port and flag code, run on a sphere
+  volume, a frame block and a definition held at addresses past guest
+  RAM (`Call::light` of `u32::MAX`, a light without a record), so colour
+  B is zero, no gel and no shadow. `native_lights_glue::host` then draws
+  its layers 12 and 13 as one external pass at the view's target: the
+  structure and placement parts whose bounds meet the sphere, in the
+  world's order, each with the implementation the engine's chooser gives
+  the flags (layer 12 the sphere implementation, layer 13 only for a
+  colour B above the threshold). Object (model) parts are not lit.
+  `scene_host_lights_drawn`, `scene_host_lights_kept` and
+  `scene_host_lights_unread` count the outcomes.
 - In a team session the host may set **Monitor colours: team**. Primary
   is then the team's colour from the map's multiplayer globals (the
   block `pad_lightbar.rs` reads, **Code**) and the Primary row is
@@ -179,29 +197,28 @@ the camera is inside it.
 ### Choosing it
 
 The entry is a row, **Monitor look**, in two places: the Forge menu
-(Start while a monitor, the session's pause screen; **Code**,
-`ui_kit/forge/dialogs.rs`, `Parent::Menu`) and the Forge lobby (F14).
-Both open the same page, `forge.look`, a `Dialog` on the large base
-drawn `Over` by the compositor, as the Forge dialogs and Theater's
-pause menu are ([ui-builder.md](ui-builder.md), "Screen kinds", "The
-value picker").
+(Start while a monitor: the game's GAME MENU with the Forge rows,
+[forge-firefight-ui.md](forge-firefight-ui.md), "The screens") and the
+Forge lobby (F14). Both open the same page, `forge.look`, a Forge screen
+of the game's on the large dialog (`forge_screens`), as the object menu
+and Link are ([ui-builder.md](ui-builder.md), "Screen kinds", "The
+value picker"). Not built: the row joins the Forge menu with the page
+(`forge_screens::sheet`).
 
 ```text
  +----------------------------------------------------------+
  | MONITOR LOOK                                             |
- | Model             Sentinel               +-----------+   |
- | Variant           Default                |           |   |
- | Primary colour    <colour>               |  preview  |   |
- | Secondary colour  <colour>               |           |   |
- | Tint              Light                  +-----------+   |
- | Light             Dim                                    |
- | Light colour      <colour>                               |
- |                                                          |
+ | Model             Sentinel                               |
+ | Variant           Default                                |
+ | Primary colour    <colour>              (more rows scroll)|
+ | +------------------------------------------------------+ |
+ | |                      preview                         | |
+ | +------------------------------------------------------+ |
  | (A) Change   (X) Reset   (B) Done                        |
  +----------------------------------------------------------+
 ```
 
-- **Rows.** Each row shows its value in the second column; a colour's
+- **Rows.** The list shows three rows at a time and scrolls through the seven, over the preview strip: the large panel holds no more. Each row shows its value in the second column; a colour's
   name is the game's own string for that palette index, read at run
   time. A opens the
   kit's value picker over the page (`ui_kit::picker::offer_list`) with
@@ -214,7 +231,7 @@ value picker").
 - **Preview.** A new `View` widget, `Scene3d {id, rect}`: the look drawn
   by the native renderer into an offscreen target (the model, its
   colours, tint and light, a slow turn, a neutral backdrop) and placed
-  in the rect by the compositor. `h2 ui preview forge.look` draws the
+  in the rect by the window. `h2 ui preview forge.look` draws the
   rect with the model's name in it, since the offline preview has no
   GPU scene; the kit's checks treat the widget as art.
 - **Preview follows focus.** While a picker is open the preview shows
@@ -226,7 +243,15 @@ value picker").
   sentence in the dialog's description line and in the HUD strip.
 - **The game's Appearance page.** When the player's look is the Forge
   monitor, the page's own model preview draws the monitor beside the
-  Spartan (ML4b, decision 8).
+  Spartan (ML4b, decision 8). `forge::look::appearance::beside` places
+  it: the saved look of the profile on local slot 0, resolved against
+  the catalogue (`saved::resolve`), on the widget camera's right of the
+  biped, clear of its sphere by `GAP`, facing the camera, level, with
+  the look's colours, tint and light. No saved look, the marker, a model
+  or variant the catalogue lacks, or a camera with no right axis adds
+  nothing, so the page is retail's. `forge_glue::appearance_body` is the
+  call for the model widget; the widget's native path
+  (`render_bridge::native_hud::model`) does not draw it yet.
 - **Reset** (X) is the default look: the marker, the seat's colour, no
   tint, no light.
 
@@ -343,24 +368,67 @@ part of the game:
 
 A film of a Forge session already records each log entry under a Forge
 tag (forge-design.md, "Films and determinism"). That tag's payload
-starts with a subtype byte: 0 is a log entry, 1 a look, 2 a pose.
+starts with a subtype byte: 0 is the session's welcome and 1 a log
+item (`forge::net::film`); the look and the pose are 2 and 3
+(`forge::look::film`, `LOOK` and `POSE`).
 
-- The recorder writes a look record when the host's table changes and a
-  pose record for every monitor seat at 15 a second, its own included.
-  Each seek checkpoint repeats the table and each seat's last pose, as
-  tag 3's baselines do ([film-format.md](film-format.md), "Tag 3
-  presentation records").
-- Playback draws monitors from these records with the code the live
-  session uses. They are outside the gameplay digest, so a film
-  verifies the same with or without them.
-- `theater.camera {mode: "follow" | "orbit", seat}` on a monitor seat
-  follows its body; first person on that seat is the monitor's own
-  camera pose, with no body drawn.
+- The recorder (`look::film::Recorder`, fed by `forge_glue::net`) writes
+  a look record, JSON of `{seat, look, source}`, when the table changes
+  on the machine that records, and a pose record, 27 bytes of seat,
+  monitor flag, film tick and position, yaw and pitch, for every monitor
+  seat at most 15 a second (every second tick), its own included. A seat
+  stepping back into its biped writes its pose record at once. `source`
+  names the map the model was read from and its SHA-256, as the
+  recording machine's catalogue has them.
+- Each seek checkpoint repeats the table and each seat's last pose
+  (`Recorder::checkpoint`, written beside tag 3's baseline in
+  `theater/unified.rs`). A playback fed the checkpoint and the records
+  after it holds the table and every seat's pose that one fed the whole
+  film holds, at every tick from the checkpoint on.
+- Playback reads the records into the same `Seats` the live session
+  draws from (`look::film::Playback`), and draws with `Bodies::draw`.
+  Theater's reader hands each film tick's Forge entry records to
+  `theater::forge_film::deliver` as the tick is read, so the first tick
+  after a seek has its chunk's checkpoint. Only the look and pose
+  subtypes go to the playback; the welcome and the stream items are the
+  edit log, which the simulation's own state carries
+  (`net::film::Replay::feed` routes all four for a consumer that wants the
+  peer). A keyframe restore clears the playback and the checkpoint
+  rebuilds it; a ring entry keeps the playback it held
+  (`replay_cursor::ReplayCursor`). The film's tick is the render clock, 30
+  a second. The records are outside the gameplay digest, so a film
+  verifies the same with or without them, and a record that is not
+  readable is a named film error. The film reader accepts the subtypes
+  (`live_proto::film::stream::FORGE_LOOK`, `FORGE_POSE`); any other is
+  refused.
+- `Playback::subject(seat, tick, view)` gives the camera on a monitor
+  seat its subject: the body's pose for follow and orbit, the monitor's
+  own camera pose with no body drawn for first person
+  (`Playback::draws` hides that seat). A marker seat has a pose to
+  follow, though no body. `theater.camera` takes a monitor seat in follow,
+  orbit and first person by its seat number, even when the film's roster
+  does not name it (`theater/camera.rs`, `monitor_subject`): the rig's
+  offset and orbit work as on a body, a first-person camera looks from the
+  monitor's pose over the whole view, and a seat that is back in its biped
+  is the guest's player again. `forge_glue::playback_bodies` gives the
+  drawn bodies at the film tick and `forge_glue::monitor_lights` adds their
+  lights.
 - A playback machine that cannot draw a recorded look says so and draws
-  the marker in that look's colours: `theater.compat` gains the reason
-  `monitor_look_source` with the seat and the map, the film's detail
-  page lists it, and the Theater bar shows it once when the seat first
-  appears. Playback is not refused, because the simulation is whole.
+  the marker in that look's colours: `Playback::unseen` lists each
+  seat and the map it needs, `theater.compat` carries them as
+  `monitor_looks` entries with the reason `monitor_look_source`
+  (`agent_proto::theater::MonitorLookSource`,
+  `theater::compatibility::note_monitor_looks`). `Installation::compatibility`
+  reads the film's look records once per file (`forge_film::unseen_in`,
+  kept until the file changes), so the film's detail page names the count
+  (`FilmMeta::monitor_note`) and `theater.compat` lists them. `theater.state`
+  lists the looks read so far that this machine cannot draw
+  (`monitor_looks`); the bar says each seat's sentence once, for six
+  seconds of film, when the seat first appears (`Track::note_monitor_look`).
+  They are not reasons the film is unavailable: playback is not refused,
+  because the simulation is whole. `forge_glue::can_draw` is this
+  machine's declaration, from the running Forge driver's catalogue; with
+  no driver the catalogue is empty and a model look is drawn as the marker.
 - A real body needs nothing here: it is a unit in the film's own state.
 
 ## Interfaces
@@ -438,7 +506,7 @@ data.
 |---|---|---|---|---|
 | **ML1** | `forge::look`: the type, bounds, canonical bytes, `validate`, the refusal codes, the eight `Def`s and the profile read and write | S | nothing | every bound has a refusing case; canonical bytes have golden vectors; a profile round-trips through `settings::Store`; an unknown saved model is kept in the file and reported |
 | **ML2** | The census and `h2 forge looks`: species rule, source hashes, variants, colour and light capability, the cache | M | ML1 | on invented maps: one entry a key, the `choose_bipeds` tie rules, a variant with a weighted region picks by the stated rule, an entry's identity is unchanged when tag indices move |
-| **ML3** | The marker and `forge.look`, `forge.look.set`, `forge.status.monitors` offline | S | ML1 | over a fake game: set, reset and each local refusal; the marker's projection matches the gizmo's for the same frame |
+| **ML3** | The marker and `forge.look`, `forge.look.set`, `forge.status.monitors` offline | S | ML1 | over a fake game: set, reset and each local refusal; the navpoint over another seat's monitor is at its pose |
 | **ML4** | Disc models drawn: the host model list, a presentation instance at a pose, change colours, tint, the bob, hidden in the owner's view | L | ML2 | a scene built from an invented model holds one extra instance at the pose with the expected colour inputs; the owner's view has none; the sim hash of a run with and without a look is equal |
 | **ML4b** | The game's own Appearance page: when the player's look is the Forge monitor, the monitor is drawn beside the Spartan in the page's model preview | M | ML4 | in a widget view built from invented data, a monitor look adds one presentation instance beside the biped with the look's colours; any other look, or none, leaves the widget's draws as retail; the sim hash of a run with and without it is equal |
 | **ML5** | The host light | M | ML4 | a candidate with no datum is in the view's light list, last in budget order, with the palette colour; no shadow map is made for it |
@@ -448,9 +516,13 @@ data.
 | **ML9** | The lobby row and team colours | S | F14, ML6 | the lobby opens the page; the team lock holds and names itself |
 | **ML10** | A real body's look: the Bodies heading, the `body` op's colours, locked rows | M | F10, ML6 | the op writes the unit's change colours over a fake game and folds through the log; two fake peers hash alike |
 
-ML1, ML2 and ML3 are built. ML4 is the first that needs the
-native renderer's object path; ML4b follows it. ML7 and ML8 wait for F5; ML9 for F14;
-ML10 for F10.
+ML1 to ML8 are built, ML4, ML4b and ML5 as the data the renderer is
+handed: the object pass, the model widget and the light passes do not
+draw them yet. ML8 records and replays the look; drawing a body from
+another map's model waits for the shared asset store, so a playback
+machine draws the marker for a look whose model is not in its own map.
+The renderer's object pass does not consume Theater's draws yet.
+ML9 waits for F14; ML10 for F10.
 
 ## Decisions
 
@@ -521,8 +593,10 @@ Gaps, named:
   clip from the model's animation graph is not in these slices.
 - The Enforcer is a vehicle, not a biped (live-art.md, "Pipeline"), so
   the species rule does not offer it.
-- A light candidate without a guest record has no path in the native
-  light walk today.
+- A host light lights the structure and its placements, not objects:
+  the passes' model parts are chosen from guest lists a host light has
+  not. The light's near radius is zero and its far radius the look's, an
+  attenuation the retail `ligh` data does not give a body.
 - The native object path names a model by tag datum and map epoch
   (framescene.md 4.2). A model from another map file needs the host
   model list.

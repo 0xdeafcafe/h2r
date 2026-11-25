@@ -1,7 +1,7 @@
 //! The analysis every feature reads: the scan, the recovered syntax tree,
 //! the checker's reading of it (`lang::check::Checked`), each declaration
 //! with its exact span, and each name use resolved to its declaration or
-//! to an API entry, a variant field, an event, a capability or a carrier.
+//! to an API entry, a variant field, an event, a capability or a game type.
 //!
 //! Types come from the checker and from what a declaration states: an
 //! expression's type is `Checked::ty`, a handler argument's is the event's
@@ -25,6 +25,7 @@ use crate::lang::lower::FIELDS;
 use crate::lang::sig;
 use crate::lang::types::{Handle, Type};
 use crate::lang::{CompileError, Pos, lex, parse};
+use crate::settings;
 
 /// Byte offsets to LSP positions and back.
 pub(crate) struct LineIndex<'s> {
@@ -134,6 +135,9 @@ pub(crate) enum DefKind {
     Label,
     /// A `const`, of the type and value the checker folds.
     Const,
+    /// A setting named in the `settings` block, by its row in
+    /// `settings::TABLE`. The names are the game's: no rename.
+    Setting,
 }
 
 /// A declaration's type, as the checker or the declaration gives it.
@@ -176,15 +180,15 @@ pub(crate) enum Use {
     Field(usize),
     Capability,
     Event(Event),
-    Carrier,
+    /// The word a `type` or `uses` line names; `None` for a word that is
+    /// no game type.
+    GameType(Option<crate::types::Type>),
     Type,
     /// The word `variant`.
     Variant,
-    /// The word `carrier` before a dot: the built-in enum of carriers.
-    CarrierEnum,
-    /// A carrier as a value (`carrier.assault`), by index in `CARRIERS`;
-    /// `None` for a name that is not one.
-    CarrierValue(Option<usize>),
+    /// A setting named on the `quick` line that the `settings` block does
+    /// not set, by its index in `settings::TABLE`.
+    Setting(u16),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -430,9 +434,15 @@ impl<'s> Model<'s> {
         let script = self.script;
         let mut bounds: Vec<usize> = script.items.iter().map(|i| self.byte(item_pos(i))).collect();
         let mut header = vec![script.pos];
-        header.extend(script.carrier.iter().map(|c| c.1));
+        header.extend(script.game_type.iter().map(|c| c.1));
         header.extend(script.teams.iter().map(|t| t.1));
         header.extend(script.requires.iter().map(|r| r.1));
+        header.extend(script.points.iter().map(|p| p.1));
+        header.extend(script.uses.iter().map(|u| u.1));
+        header.extend(script.retired.iter().map(|r| r.2));
+        header.extend(script.about.iter().map(|a| a.1));
+        header.extend(script.quick.iter().map(|q| q.1));
+        header.extend(script.settings.iter().map(|b| b.pos));
         for p in header {
             bounds.push(self.li.line_start(self.li.line_of(self.byte(p))));
         }
@@ -558,14 +568,25 @@ impl<'s> Model<'s> {
 
     fn declare(&mut self) {
         let script: &'s Script = self.script;
-        if let Some((name, p)) = &script.carrier {
+        for (name, p) in script.game_type.iter().chain(&script.uses) {
             let span = self.name_after(*p, name);
-            self.add_use(span, Use::Carrier);
+            self.add_use(span, Use::GameType(crate::types::Type::named(name)));
         }
         for (_, p) in &script.requires {
             let s = self.byte(*p);
             let e = self.dotted_end(s);
             self.add_use((s, e), Use::Capability);
+        }
+        // Each setting the block names, once: a declaration the `quick`
+        // line, a hover and go to definition read.
+        if let Some(block) = &script.settings {
+            for line in &block.lines {
+                let known = settings::named(&line.name).is_some();
+                if known && self.top_kind(&line.name, DefKind::Setting).is_none() {
+                    let span = self.tok_at(line.pos);
+                    self.def(&line.name, DefKind::Setting, span, T::Unknown);
+                }
+            }
         }
         // Enums first, as the checker reads them, so a type may name one
         // declared further down.
@@ -659,12 +680,45 @@ impl<'s> Model<'s> {
                 Item::Enum { .. } => {}
             }
         }
+        // The `quick` line's names: an option or a setting the block sets
+        // is a use of its declaration (so a rename of the option renames
+        // its mark); another setting of the table is a use of the table's.
+        if let Some((names, _)) = &script.quick {
+            for (name, pos) in names {
+                let span = self.tok_at(*pos);
+                let found = self
+                    .top_kind(name, DefKind::Option)
+                    .or_else(|| self.top_kind(name, DefKind::Setting));
+                match (found, settings::named(name)) {
+                    (Some(d), _) => self.add_ref(span, d, None),
+                    (None, Some((index, _))) => self.add_use(span, Use::Setting(index)),
+                    (None, None) => {}
+                }
+            }
+        }
     }
 
     // ---- bodies ----
 
     fn bodies(&mut self) {
         let script: &'s Script = self.script;
+        // A `settings` value names a `const` and no variable: a bare name
+        // is a choice's value (`shields = none`) unless it is a `const`.
+        if let Some(block) = &script.settings {
+            let mut env = Env::default();
+            for line in &block.lines {
+                match &line.value.kind {
+                    ExprKind::Name(n) => {
+                        if let Some(d) = self.top_kind(n, DefKind::Const) {
+                            let span = self.tok_at(line.value.pos);
+                            let ty = self.checked.ty(&line.value);
+                            self.use_of(span, d, ty, &env);
+                        }
+                    }
+                    _ => self.expr(&line.value, &mut env),
+                }
+            }
+        }
         for (i, item) in script.items.iter().enumerate() {
             let end = self.items[i].1;
             let mut env = Env::default();
@@ -1131,13 +1185,6 @@ impl<'s> Model<'s> {
         if let ExprKind::Name(b) = &base.kind
             && self.local(b, env).is_none()
         {
-            if b == "carrier" {
-                let bspan = self.tok_at(base.pos);
-                self.add_use(bspan, Use::CarrierEnum);
-                let index = caps::CARRIERS.iter().position(|(n, _)| *n == f);
-                self.add_use(span, Use::CarrierValue(index));
-                return;
-            }
             if b == "variant" {
                 let bspan = self.tok_at(base.pos);
                 self.add_use(bspan, Use::Variant);
@@ -1289,6 +1336,69 @@ impl<'s> Model<'s> {
         }
     }
 
+    /// The engine index the script's record is on (`ir::Header::engine`):
+    /// the `uses` game's, else the type's, when the header names them.
+    pub fn engine(&self) -> Option<u8> {
+        use crate::types::Type;
+        let named = |w: Option<&str>| w.and_then(Type::named);
+        let (ty, uses) = if self.script.game_type.is_some() || self.script.uses.is_some() {
+            let w = |l: &Option<(String, Pos)>| l.as_ref().map(|(n, _)| n.clone());
+            (w(&self.script.game_type), w(&self.script.uses))
+        } else {
+            // A header that did not parse (a `settings` block left open)
+            // has no tree: read the `type` and `uses` lines from the
+            // tokens.
+            (self.line_word("type"), self.line_word("uses"))
+        };
+        match uses {
+            Some(u) => named(Some(u.as_str())).filter(|t| t.is_retail()).map(Type::engine),
+            None => named(ty.as_deref()).map(Type::engine),
+        }
+    }
+
+    /// The word after `word` where `word` starts a line.
+    fn line_word(&self, word: &str) -> Option<String> {
+        let i = (0..self.code.len()).find(|&i| {
+            self.is_word(i, word)
+                && (i == 0 || self.li.line_of(self.code[i - 1].s) < self.li.line_of(self.code[i].s))
+                && self.code.get(i + 1).is_some_and(|t| t.k == K::Ident)
+        })?;
+        Some(self.text(&self.code[i + 1]).to_string())
+    }
+
+    /// The code indices of the header words `settings`, `quick`, `type`,
+    /// `uses`, `scoring`, `points` and `about`: the first word of a
+    /// top-level line followed by what the parser looks for (a `{`, a name
+    /// or a string). Elsewhere they are names.
+    pub fn header_words(&self) -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut depth = 0i32;
+        for (i, t) in self.code.iter().enumerate() {
+            match t.k {
+                K::Punct => match self.text(t) {
+                    "{" | "(" | "[" => depth += 1,
+                    "}" | ")" | "]" => depth = (depth - 1).max(0),
+                    _ => {}
+                },
+                K::Ident if depth == 0 => {
+                    let first = i == 0 || self.li.line_of(self.code[i - 1].s) < self.li.line_of(t.s);
+                    let Some(next) = self.code.get(i + 1) else { continue };
+                    let ok = match self.text(t) {
+                        "settings" => next.k == K::Punct && self.text(next) == "{",
+                        "quick" | "type" | "uses" | "scoring" => next.k == K::Ident,
+                        "points" | "about" | "use" => next.k == K::Str,
+                        _ => false,
+                    };
+                    if first && ok {
+                        out.push(i);
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
     /// A type's name as the language writes it.
     pub fn type_name(&self, t: T) -> String {
         match t {
@@ -1393,7 +1503,7 @@ pub(crate) fn scope_of(h: Handle) -> Option<Scope> {
         Handle::Player => Some(Scope::Player),
         Handle::Team => Some(Scope::Team),
         Handle::Object | Handle::Zone => Some(Scope::Object),
-        Handle::Tag | Handle::Weapon => None,
+        Handle::Tag | Handle::Weapon | Handle::Sound => None,
     }
 }
 

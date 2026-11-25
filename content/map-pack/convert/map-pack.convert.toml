@@ -1,0 +1,4 @@
+# The Map Pack installer (crates/apps/cli/src/mappack_cmd.rs): the disc's
+# maps and, for the game disc's version, its title update
+# (docs/game/map-pack.md). It takes no settings.
+converter = "map-pack"

@@ -3,41 +3,43 @@
 //!
 //! **The blob.** [`Mode`] is what the HUD needs of the director's state:
 //! the stage, the round and wave with their totals, whether the wave is a
-//! boss wave, the enemies left, and the lives. It encodes to at most
+//! boss wave, the enemies left, the lives, and with two teams each team's
+//! points and which roster slots are on the second. It encodes to at most
 //! [`MAX_BLOB`] bytes, the actor channel's mode state (`State` and `Key`
 //! records, docs/game/ai-networking.md), so a distributed client holding
 //! nothing but those bytes draws what the host draws. The host builds it
 //! after each tick ([`Mode::of`], published through [`slot`]); the
 //! channel's capture sends it (`actor_net::host::Host::set_mode`) and a
-//! client reads it back (`actor_net::client::Client::mode_state`,
-//! [`Mode::decode`]).
+//! client extracts the HUD portion in `actor_net::roles` before [`Mode::decode`].
 //!
 //! **The view.** [`view`] is a pure function of a [`Mode`] and the viewing
 //! player's roster slot. It reads no game memory and no clock, so the host
 //! and a client agree by construction, and a test can show it.
 //!
-//! **The layout.** [`LAYOUT`] is one fixed list of elements, as the HUD
-//! kit describes a HUD (docs/game/hud-kit.md): a state never adds, removes
-//! or moves an element, it only shows, hides and words them. [`check`]
-//! runs the kit's layout rules over every state the mode can be in. The
-//! type names (`Element`, `Value`, `Values`, `Place`) are the kit's, so the
-//! day the kit's model is usable from this crate the layout moves over as
-//! it is.
-//!
-//! **Not drawn here.** The kit's runtime (its slices 3 to 5) is not on
-//! this branch, and nothing in the game draws a line of ours on Halo 2's
-//! HUD without it. Until it lands the view is published and checked but
-//! not drawn; the placements in [`LAYOUT`] are in HUD pixels from named
-//! anchors and take the retail rectangles' names (the kit's `rects.rs`)
-//! when those exist.
+//! **The HUD.** The HUD kit's `firefight` HUD
+//! (`hud_kit_core::views::firefight`, docs/game/forge-firefight-ui.md,
+//! "The Firefight HUD") draws it on Halo 2's own HUD: [`view_of`] turns a
+//! blob into the kit's `View` for one viewer, [`view`] into its `Values`.
+//! The kit's layout, its checks (`h2 hud preview firefight`) and its
+//! runtime (`crate::hud_kit`) are the kit's. [`install`] registers the HUD
+//! and adds its feed, which each tick publishes [`current`] for each local
+//! player, its own values for each split-screen player, and sends each
+//! the notes a change makes ([`Feed`], [`tick_all`]).
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
-use ::firefight::Outcome;
-use ::firefight::director::{Director, Phase};
+use ::firefight::director::Phase;
+use ::firefight::{MAX_TEAMS, Outcome, ScriptDirector, Skull};
+use engine::memory::{GuestMemory, MemFault};
+use hud_kit_core::views::firefight::{self as kit, Firefight};
+
+pub use hud_kit_core::views::firefight::{BANNER, ENEMIES_COUNT, LIVES_COUNT, NOTE, Stage, View};
+pub use hud_kit_core::model::{Style, Value, Values};
+
+use crate::hud_kit::{self, Handle};
 
 /// The blob's format.
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 3;
 /// The actor channel's mode state holds this many bytes at most.
 pub const MAX_BLOB: usize = 63;
 /// Players whose own lives the blob carries when lives are not shared.
@@ -46,51 +48,6 @@ pub const MAX_EACH: usize = 8;
 pub const MAX_ROUNDS: u8 = 12;
 pub const MAX_WAVES: u8 = 16;
 
-/// Where the match is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
-pub enum Stage {
-    /// Before the first wave.
-    Warmup = 0,
-    /// The wave's squads are being placed.
-    Spawning = 1,
-    Fighting = 2,
-    /// The last few actors hunt the players.
-    Cleanup = 3,
-    /// Between waves or rounds.
-    Intermission = 4,
-    Won = 5,
-    Lost = 6,
-    /// The director is done and no outcome was logged.
-    Over = 7,
-}
-
-impl Stage {
-    fn from_code(code: u8) -> Option<Stage> {
-        Some(match code {
-            0 => Stage::Warmup,
-            1 => Stage::Spawning,
-            2 => Stage::Fighting,
-            3 => Stage::Cleanup,
-            4 => Stage::Intermission,
-            5 => Stage::Won,
-            6 => Stage::Lost,
-            7 => Stage::Over,
-            _ => return None,
-        })
-    }
-
-    /// The wave is on: enemies are being placed, fought or hunted.
-    pub fn wave_on(self) -> bool {
-        matches!(self, Stage::Spawning | Stage::Fighting | Stage::Cleanup)
-    }
-
-    /// The match is over.
-    pub fn over(self) -> bool {
-        matches!(self, Stage::Won | Stage::Lost | Stage::Over)
-    }
-}
-
 /// The lives the HUD shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Lives {
@@ -98,6 +55,25 @@ pub enum Lives {
     Shared(u16),
     /// Each player's own count, by roster slot, in slot order.
     Each(Vec<(u8, u16)>),
+    /// Each Firefight team's shared pool, with two teams.
+    Teams([u16; MAX_TEAMS]),
+}
+
+/// What the blob carries of two teams.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Teams {
+    /// Each Firefight team's points.
+    pub scores: [u32; MAX_TEAMS],
+    /// The roster slots on the second team, one bit a slot; every other
+    /// slot is on the first.
+    pub second: u16,
+}
+
+impl Teams {
+    /// The Firefight team of the player at roster slot `slot`.
+    pub fn team_of(&self, slot: u8) -> usize {
+        usize::from(slot < 16 && self.second & (1 << slot) != 0)
+    }
 }
 
 /// What the HUD reads of the director: the mode blob.
@@ -113,7 +89,40 @@ pub struct Mode {
     pub boss: bool,
     /// Actors alive and still to be placed, while a wave is on; else 0.
     pub left: u16,
+    /// The skulls on, one bit a session skull index ([`skull_mask`]).
+    pub skulls: u32,
     pub lives: Lives,
+    /// Two teams' points and members; none with one team.
+    pub teams: Option<Teams>,
+}
+
+/// Every skull Firefight turns on, by its session skull index.
+pub const FIREFIGHT_SKULLS: [Skull; 9] = [
+    Skull::Assassins,
+    Skull::Thunderstorm,
+    Skull::Famine,
+    Skull::Blind,
+    Skull::Ghost,
+    Skull::Catch,
+    Skull::Mythic,
+    Skull::Angry,
+    Skull::LowGravity,
+];
+
+/// The bits a blob's skulls may have: [`FIREFIGHT_SKULLS`]'.
+pub const SKULL_BITS: u32 = {
+    let mut m = 0;
+    let mut i = 0;
+    while i < FIREFIGHT_SKULLS.len() {
+        m |= 1 << FIREFIGHT_SKULLS[i] as u8;
+        i += 1;
+    }
+    m
+};
+
+/// The skulls in `on` as the blob's bits.
+pub fn skull_mask<'a>(on: impl IntoIterator<Item = &'a Skull>) -> u32 {
+    on.into_iter().fold(0, |m, s| m | 1 << *s as u8)
 }
 
 /// Why a blob could not be made or read.
@@ -122,6 +131,8 @@ pub enum Error {
     /// Lives are not shared and more players hold lives than the blob has
     /// room for.
     TooManyPlayers(usize),
+    /// A player's roster slot is past the 16 the team bits hold.
+    Slot(u8),
     /// The format byte is not [`VERSION`].
     Version(u8),
     /// The blob ends early, runs on, or is over [`MAX_BLOB`].
@@ -137,6 +148,10 @@ impl std::fmt::Display for Error {
                 f,
                 "{n} players hold their own lives; the mode blob carries {MAX_EACH}"
             ),
+            Error::Slot(slot) => write!(
+                f,
+                "roster slot {slot} is past the mode blob's 16 team bits"
+            ),
             Error::Version(v) => write!(f, "mode blob version {v}, this build reads {VERSION}"),
             Error::Length { len, want } => {
                 write!(f, "mode blob is {len} bytes, its fields need {want}")
@@ -148,22 +163,35 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// Bytes before the lives: version, stage, round, rounds, wave, waves,
-/// flags, left (2), the lives kind.
-const HEAD: usize = 10;
+/// Bytes before the teams and lives: version, stage, round, rounds, wave,
+/// waves, flags, left (2), the skulls (4), the team count.
+const HEAD: usize = 14;
+/// Where the team count is.
+const TEAM_COUNT: usize = HEAD - 1;
+/// The two teams' part, when the team count is 2: each team's points (4
+/// each) and the second team's slot bits (2).
+const TEAMS: usize = 4 * MAX_TEAMS + 2;
 const FLAG_BOSS: u8 = 1;
 const LIVES_SHARED: u8 = 0;
 const LIVES_EACH: u8 = 1;
+const LIVES_TEAMS: u8 = 2;
 
 impl Mode {
     /// The blob for the director's state on the host. `players` is the
     /// player count the reserve is measured at, `finished` the outcome of
     /// the last `Finish` in the host log, if any.
-    pub fn of(director: &Director, players: u8, finished: Option<Outcome>) -> Result<Mode, Error> {
+    pub fn of(
+        director: &ScriptDirector,
+        players: u8,
+        finished: Option<Outcome>,
+    ) -> Result<Mode, Error> {
         let (state, def) = (director.state(), director.def());
+        let two = def.teams > 1;
         let stage = match (finished, state.phase) {
             (Some(Outcome::Won), _) => Stage::Won,
             (Some(Outcome::Lost), _) => Stage::Lost,
+            (Some(Outcome::TeamWon { team }), _) => Stage::team_won(team),
+            (Some(Outcome::Draw), _) => Stage::Draw,
             (None, Phase::Warmup { .. }) => Stage::Warmup,
             (None, Phase::Spawning) => Stage::Spawning,
             (None, Phase::Fighting) => Stage::Fighting,
@@ -172,13 +200,33 @@ impl Mode {
             (None, Phase::Done) => Stage::Over,
         };
         let round = def.rounds.get(usize::from(state.round));
-        let lives = if def.lives.shared {
-            Lives::Shared(state.pool)
+        let lives = if def.lives.shared && two {
+            Lives::Teams(state.pools)
+        } else if def.lives.shared {
+            Lives::Shared(state.pools[0])
         } else {
             if state.players.len() > MAX_EACH {
                 return Err(Error::TooManyPlayers(state.players.len()));
             }
             Lives::Each(state.players.iter().map(|(&s, p)| (s, p.lives)).collect())
+        };
+        let teams = if two {
+            let mut second = 0u16;
+            for (&slot, player) in &state.players {
+                if player.team == 0 {
+                    continue;
+                }
+                if slot >= 16 {
+                    return Err(Error::Slot(slot));
+                }
+                second |= 1 << slot;
+            }
+            Some(Teams {
+                scores: state.scores,
+                second,
+            })
+        } else {
+            None
         };
         Ok(Mode {
             stage,
@@ -196,7 +244,9 @@ impl Mode {
             } else {
                 0
             },
+            skulls: skull_mask(&state.skulls),
             lives,
+            teams,
         })
     }
 
@@ -212,10 +262,27 @@ impl Mode {
             if self.boss { FLAG_BOSS } else { 0 },
         ];
         out.extend_from_slice(&self.left.to_le_bytes());
+        out.extend_from_slice(&self.skulls.to_le_bytes());
+        match &self.teams {
+            None => out.push(1),
+            Some(teams) => {
+                out.push(MAX_TEAMS as u8);
+                for score in teams.scores {
+                    out.extend_from_slice(&score.to_le_bytes());
+                }
+                out.extend_from_slice(&teams.second.to_le_bytes());
+            }
+        }
         match &self.lives {
             Lives::Shared(pool) => {
                 out.push(LIVES_SHARED);
                 out.extend_from_slice(&pool.to_le_bytes());
+            }
+            Lives::Teams(pools) => {
+                out.push(LIVES_TEAMS);
+                for pool in pools {
+                    out.extend_from_slice(&pool.to_le_bytes());
+                }
             }
             Lives::Each(each) => {
                 out.push(LIVES_EACH);
@@ -230,7 +297,8 @@ impl Mode {
     }
 
     /// Reads a blob, refusing one it does not understand: a wrong version,
-    /// a wrong length, a field out of range.
+    /// a wrong length, a field out of range, or a part of two teams' (their
+    /// stages, their pools) in a blob of one.
     pub fn decode(bytes: &[u8]) -> Result<Mode, Error> {
         if bytes.len() > MAX_BLOB {
             return Err(Error::Length {
@@ -260,26 +328,62 @@ impl Mode {
             return Err(Error::Field("flags"));
         }
         let left = u16::from_le_bytes([bytes[7], bytes[8]]);
-        let (lives, want) = match bytes[9] {
-            LIVES_SHARED => {
-                if bytes.len() < HEAD + 2 {
-                    return Err(short(HEAD + 2));
+        let skulls = u32::from_le_bytes([bytes[9], bytes[10], bytes[11], bytes[12]]);
+        if skulls & !SKULL_BITS != 0 {
+            return Err(Error::Field("skulls"));
+        }
+        let (teams, at) = match bytes[TEAM_COUNT] {
+            1 => (None, HEAD),
+            2 => {
+                let end = HEAD + TEAMS;
+                if bytes.len() < end {
+                    return Err(short(end));
+                }
+                let part = &bytes[HEAD..end];
+                let score = |i: usize| {
+                    u32::from_le_bytes([part[4 * i], part[4 * i + 1], part[4 * i + 2], part[4 * i + 3]])
+                };
+                let teams = Teams {
+                    scores: std::array::from_fn(score),
+                    second: u16::from_le_bytes([part[TEAMS - 2], part[TEAMS - 1]]),
+                };
+                (Some(teams), end)
+            }
+            _ => return Err(Error::Field("teams")),
+        };
+        if teams.is_none() && stage.two_teams_only() {
+            return Err(Error::Field("stage"));
+        }
+        let kind = *bytes.get(at).ok_or_else(|| short(at + 1))?;
+        let at = at + 1;
+        let (lives, want) = match kind {
+            LIVES_SHARED if teams.is_none() => {
+                if bytes.len() < at + 2 {
+                    return Err(short(at + 2));
                 }
                 (
-                    Lives::Shared(u16::from_le_bytes([bytes[10], bytes[11]])),
-                    HEAD + 2,
+                    Lives::Shared(u16::from_le_bytes([bytes[at], bytes[at + 1]])),
+                    at + 2,
                 )
             }
-            LIVES_EACH => {
-                let n = usize::from(*bytes.get(HEAD).ok_or_else(|| short(HEAD + 1))?);
-                if n > MAX_EACH {
-                    return Err(Error::Field("lives"));
-                }
-                let want = HEAD + 1 + 3 * n;
+            LIVES_TEAMS if teams.is_some() => {
+                let want = at + 2 * MAX_TEAMS;
                 if bytes.len() < want {
                     return Err(short(want));
                 }
-                let each = bytes[HEAD + 1..want]
+                let pool = |i: usize| u16::from_le_bytes([bytes[at + 2 * i], bytes[at + 2 * i + 1]]);
+                (Lives::Teams(std::array::from_fn(pool)), want)
+            }
+            LIVES_EACH => {
+                let n = usize::from(*bytes.get(at).ok_or_else(|| short(at + 1))?);
+                if n > MAX_EACH {
+                    return Err(Error::Field("lives"));
+                }
+                let want = at + 1 + 3 * n;
+                if bytes.len() < want {
+                    return Err(short(want));
+                }
+                let each = bytes[at + 1..want]
                     .chunks_exact(3)
                     .map(|c| (c[0], u16::from_le_bytes([c[1], c[2]])))
                     .collect::<Vec<_>>();
@@ -301,7 +405,9 @@ impl Mode {
             waves,
             boss: bytes[6] & FLAG_BOSS != 0,
             left,
+            skulls,
             lives,
+            teams,
         })
     }
 }
@@ -344,451 +450,192 @@ pub fn received() -> &'static Slot {
 /// `local`: the host's own blob or else the one received, decoded and
 /// viewed the same way. None while no mode runs; an error is a blob this
 /// build cannot read.
-pub fn current(local: u8) -> Option<Result<Values, Error>> {
+pub fn current(local: u8) -> Option<Result<View, Error>> {
     let blob = slot().get().or_else(|| received().get())?;
-    Some(Mode::decode(&blob).map(|mode| view(&mode, local)))
+    Some(Mode::decode(&blob).map(|mode| view_of(&mode, local)))
 }
 
 // ---- the view ----
 
-/// A HUD font, as the kit names them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Font {
-    Hud,
-}
-
-/// Where a line sits from: a screen edge or its middle.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Anchor {
-    TopCenter,
-    TopRight,
-}
-
-/// A line's place in HUD pixels from its anchor, per screen mode; `None`
-/// hides it in that mode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Place {
-    pub anchor: Anchor,
-    pub full: (i16, i16),
-    pub half: Option<(i16, i16)>,
-    pub quarter: Option<(i16, i16)>,
-}
-
-/// One line of the HUD.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Element {
-    pub id: &'static str,
-    pub font: Font,
-    pub at: Place,
-    /// The widest text any state gives it.
-    pub longest: &'static str,
-}
-
-pub const BANNER: &str = "banner";
-pub const ROUND: &str = "round";
-pub const WAVE: &str = "wave";
-pub const ENEMIES: &str = "enemies";
-pub const LIVES: &str = "lives";
-
-/// The banner at the top centre; the round, wave, enemies and lives
-/// stacked at the top right, a line apart. Smaller screens show less.
-pub const LAYOUT: [Element; 5] = [
-    Element {
-        id: BANNER,
-        font: Font::Hud,
-        at: Place {
-            anchor: Anchor::TopCenter,
-            full: (0, 60),
-            half: Some((0, 48)),
-            quarter: None,
-        },
-        longest: "ROUND COMPLETE",
-    },
-    Element {
-        id: ROUND,
-        font: Font::Hud,
-        at: Place {
-            anchor: Anchor::TopRight,
-            full: (-24, 24),
-            half: None,
-            quarter: None,
-        },
-        longest: "ROUND 12 OF 12",
-    },
-    Element {
-        id: WAVE,
-        font: Font::Hud,
-        at: Place {
-            anchor: Anchor::TopRight,
-            full: (-24, 40),
-            half: Some((-20, 24)),
-            quarter: None,
-        },
-        longest: "WAVE 16 OF 16",
-    },
-    Element {
-        id: ENEMIES,
-        font: Font::Hud,
-        at: Place {
-            anchor: Anchor::TopRight,
-            full: (-24, 56),
-            half: Some((-20, 40)),
-            quarter: Some((-16, 20)),
-        },
-        longest: "ENEMIES 65535",
-    },
-    Element {
-        id: LIVES,
-        font: Font::Hud,
-        at: Place {
-            anchor: Anchor::TopRight,
-            full: (-24, 72),
-            half: Some((-20, 56)),
-            quarter: Some((-16, 34)),
-        },
-        longest: "LIVES 65535",
-    },
-];
-
-/// How a line is drawn.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Style {
-    #[default]
-    Normal,
-    /// The last life, or none.
-    Warn,
-}
-
-/// One element's state.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Value {
-    pub shown: bool,
-    pub text: String,
-    pub style: Style,
-}
-
-/// Every element's state, in [`LAYOUT`]'s order.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Values(pub Vec<(&'static str, Value)>);
-
-impl Values {
-    pub fn get(&self, id: &str) -> Option<&Value> {
-        self.0.iter().find(|(i, _)| *i == id).map(|(_, v)| v)
-    }
-}
-
-fn banner_text(m: &Mode) -> Option<String> {
-    Some(match m.stage {
-        Stage::Warmup => "GET READY".into(),
-        Stage::Spawning if m.boss => "BOSS WAVE".into(),
-        Stage::Spawning => format!("WAVE {}", u16::from(m.wave) + 1),
-        Stage::Fighting => return None,
-        Stage::Cleanup => "FINISH THEM".into(),
-        Stage::Intermission if m.wave == 0 && m.round > 0 => "ROUND COMPLETE".into(),
-        Stage::Intermission => "WAVE COMPLETE".into(),
-        Stage::Won => "VICTORY".into(),
-        Stage::Lost | Stage::Over => "GAME OVER".into(),
-    })
-}
-
-/// The lives the viewer at roster slot `local` sees, if any.
+/// The lives the viewer at roster slot `local` sees, if any: the pool, the
+/// viewer's own count, or the viewer's team's pool.
 fn lives_of(m: &Mode, local: u8) -> Option<u16> {
     match &m.lives {
         Lives::Shared(pool) => Some(*pool),
         Lives::Each(each) => each.iter().find(|(s, _)| *s == local).map(|&(_, n)| n),
+        Lives::Teams(pools) => {
+            let team = m.teams.map_or(0, |t| t.team_of(local));
+            pools.get(team).copied()
+        }
     }
 }
 
-/// The HUD for `mode`, as the player at roster slot `local` sees it. A pure
-/// function of the blob: the host and a client agree.
+/// What the player at roster slot `local` sees of `mode`: the kit's view.
+/// A pure function of the blob: the host and a client agree.
+pub fn view_of(mode: &Mode, local: u8) -> View {
+    View {
+        stage: mode.stage,
+        round: mode.round,
+        rounds: mode.rounds,
+        wave: mode.wave,
+        boss: mode.boss,
+        left: mode.left,
+        skulls: mode.skulls,
+        lives: lives_of(mode, local),
+    }
+}
+
+/// The HUD for `mode`, as the player at roster slot `local` sees it: the
+/// kit's values for [`view_of`].
 pub fn view(mode: &Mode, local: u8) -> Values {
-    let on = !mode.stage.over();
-    let line = |shown: bool, text: String, style: Style| Value { shown, text, style };
-    let hidden = || Value::default();
-    let banner = banner_text(mode).map_or_else(hidden, |t| line(true, t, Style::Normal));
-    let round = if on {
-        line(
-            true,
-            format!("ROUND {} OF {}", u16::from(mode.round) + 1, mode.rounds),
-            Style::Normal,
-        )
-    } else {
-        hidden()
-    };
-    let wave = match (on, mode.boss) {
-        (false, _) => hidden(),
-        (true, true) => line(true, "BOSS WAVE".into(), Style::Normal),
-        (true, false) => line(
-            true,
-            format!("WAVE {} OF {}", u16::from(mode.wave) + 1, mode.waves),
-            Style::Normal,
-        ),
-    };
-    let enemies = if mode.stage.wave_on() {
-        line(true, format!("ENEMIES {}", mode.left), Style::Normal)
-    } else {
-        hidden()
-    };
-    let lives = match lives_of(mode, local).filter(|_| on) {
-        Some(n) => line(
-            true,
-            format!("LIVES {n}"),
-            if n <= 1 { Style::Warn } else { Style::Normal },
-        ),
-        None => hidden(),
-    };
-    Values(vec![
-        (BANNER, banner),
-        (ROUND, round),
-        (WAVE, wave),
-        (ENEMIES, enemies),
-        (LIVES, lives),
-    ])
+    kit::values(&view_of(mode, local))
 }
 
-// ---- the checks ----
+// ---- the feed ----
 
-/// A screen mode of the kit's three: whole screen, half (two players) and
-/// quarter (three or four).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Screen {
-    Full,
-    Half,
-    Quarter,
+/// The feed's feature id in the plan.
+pub const FEED: &str = "firefight-hud";
+
+/// What the feed keeps from tick to tick: the last view, for the notes a
+/// change sends, and the last unreadable blob's reason, logged once.
+#[derive(Default)]
+pub struct Feed {
+    last: Option<View>,
+    error: Option<String>,
 }
 
-impl Screen {
-    pub const ALL: [Screen; 3] = [Screen::Full, Screen::Half, Screen::Quarter];
-}
-
-/// The HUD's base screen, in HUD pixels.
-pub const SCREEN_W: i32 = 640;
-/// Widths and heights the checks assume of the HUD font, in HUD pixels:
-/// generous, so a pass means room.
-pub const GLYPH_W: i32 = 10;
-pub const LINE_H: i32 = 14;
-
-/// What the checks found.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Finding {
-    /// A state's elements are not the layout's, in its order.
-    Layout { state: String },
-    /// A text is wider than its element's `longest`.
-    Wide {
-        state: String,
-        id: &'static str,
-        text: String,
-    },
-    /// A shown element has no text.
-    Empty { state: String, id: &'static str },
-    /// A text has a leading, trailing or doubled space.
-    Spacing {
-        state: String,
-        id: &'static str,
-        text: String,
-    },
-    /// A text has a character the HUD copy does not use.
-    Glyph {
-        state: String,
-        id: &'static str,
-        ch: char,
-    },
-    /// Two elements' widest texts overlap in a screen mode.
-    Overlap {
-        a: &'static str,
-        b: &'static str,
-        screen: Screen,
-    },
-    /// An element's widest text leaves the screen.
-    Off { id: &'static str, screen: Screen },
-}
-
-/// The characters HUD copy uses: capitals, digits and a space.
-fn copy_char(c: char) -> bool {
-    c.is_ascii_uppercase() || c.is_ascii_digit() || c == ' '
-}
-
-fn offset(at: &Place, screen: Screen) -> Option<(i16, i16)> {
-    match screen {
-        Screen::Full => Some(at.full),
-        Screen::Half => at.half,
-        Screen::Quarter => at.quarter,
+impl Feed {
+    /// One tick: the values to publish and the notes to send for `now`,
+    /// what [`current`] gives for the first local player. No match, no
+    /// local player and a blob this build cannot read hide every element
+    /// and forget the last view; the reason for an unreadable blob is
+    /// logged when it changes.
+    pub fn tick(&mut self, now: Option<Result<View, Error>>) -> (Values, Vec<String>) {
+        let view = match now {
+            Some(Ok(v)) => {
+                self.error = None;
+                Some(v)
+            }
+            Some(Err(e)) => {
+                let why = e.to_string();
+                if self.error.as_ref() != Some(&why) {
+                    eprintln!("firefight hud: not drawn: {why}");
+                }
+                self.error = Some(why);
+                None
+            }
+            None => None,
+        };
+        let notes = match &view {
+            Some(v) => kit::notes(self.last.as_ref(), v, skull_name),
+            None => Vec::new(),
+        };
+        let values = view.as_ref().map_or_else(kit::hidden, kit::values);
+        self.last = view;
+        (values, notes)
     }
 }
 
-/// An element's rectangle for its widest text, `[left, top, right,
-/// bottom]` in HUD pixels from the top left; none where it is hidden.
-pub fn rect(e: &Element, screen: Screen) -> Option<[i32; 4]> {
-    let (dx, dy) = offset(&e.at, screen)?;
-    let w = e.longest.chars().count() as i32 * GLYPH_W;
-    let (dx, dy) = (i32::from(dx), i32::from(dy));
-    let left = match e.at.anchor {
-        Anchor::TopCenter => SCREEN_W / 2 + dx - w / 2,
-        Anchor::TopRight => SCREEN_W + dx - w,
+/// A skull's name by its session skull index, as the skull menu and the
+/// pickup message name it (`crate::skulls::SKULLS`).
+pub fn skull_name(index: u8) -> Option<&'static str> {
+    crate::skulls::SKULLS.get(usize::from(index)).map(|d| d.label)
+}
+
+/// The roster slot of each local user's player the game lists, by local
+/// user (0 to 3).
+pub fn local_slots(m: &dyn GuestMemory) -> Result<[Option<u8>; USERS], MemFault> {
+    use engine::view::players;
+    let mut out = [None; USERS];
+    let Some(array) = players::array(m)? else {
+        return Ok(out);
     };
-    Some([left, dy, left + w, dy + LINE_H])
-}
-
-fn overlaps(a: [i32; 4], b: [i32; 4]) -> bool {
-    a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
-}
-
-/// The kit's layout rules over `all` the states: the layout is the same in each,
-/// each text fits its element, the copy is spaced and spelled as HUD copy
-/// is, and in every screen mode no two elements' widest texts overlap or
-/// leave the screen.
-pub fn check(all: &[(String, Values)]) -> Vec<Finding> {
-    let mut out = Vec::new();
-    for (name, values) in all {
-        let ids: Vec<_> = values.0.iter().map(|(i, _)| *i).collect();
-        if ids != LAYOUT.iter().map(|e| e.id).collect::<Vec<_>>() {
-            out.push(Finding::Layout {
-                state: name.clone(),
-            });
-            continue;
-        }
-        for (e, &(id, ref v)) in LAYOUT.iter().zip(&values.0) {
-            if !v.shown {
-                continue;
-            }
-            if v.text.is_empty() {
-                out.push(Finding::Empty {
-                    state: name.clone(),
-                    id,
-                });
-            }
-            if v.text.chars().count() > e.longest.chars().count() {
-                out.push(Finding::Wide {
-                    state: name.clone(),
-                    id,
-                    text: v.text.clone(),
-                });
-            }
-            if v.text.starts_with(' ') || v.text.ends_with(' ') || v.text.contains("  ") {
-                out.push(Finding::Spacing {
-                    state: name.clone(),
-                    id,
-                    text: v.text.clone(),
-                });
-            }
-            if let Some(ch) = v.text.chars().find(|&c| !copy_char(c)) {
-                out.push(Finding::Glyph {
-                    state: name.clone(),
-                    id,
-                    ch,
-                });
-            }
+    if m.u32(array.array.addr.wrapping_add(engine::datum::layout::DATA))? == 0 {
+        return Ok(out);
+    }
+    for (handle, p) in array.live(m, 16)? {
+        let user = p.local_user(m)?;
+        if p.listed(m)? && (0..USERS as i16).contains(&user) {
+            out[user as usize] = Some(handle.index() as u8);
         }
     }
-    for screen in Screen::ALL {
-        let rects: Vec<_> = LAYOUT
-            .iter()
-            .filter_map(|e| rect(e, screen).map(|r| (e.id, r)))
-            .collect();
-        for (i, &(a, ra)) in rects.iter().enumerate() {
-            if ra[0] < 0 || ra[2] > SCREEN_W || ra[1] < 0 {
-                out.push(Finding::Off { id: a, screen });
-            }
-            for &(b, rb) in &rects[i + 1..] {
-                if overlaps(ra, rb) {
-                    out.push(Finding::Overlap { a, b, screen });
+    Ok(out)
+}
+
+/// Local users the HUD kit draws for.
+const USERS: usize = hud_kit::USERS as usize;
+
+/// The feeds of the local users, one each.
+pub type Feeds = [Feed; USERS];
+
+/// One tick for every local user: user `u`'s view of the blob at its
+/// roster slot (`slots[u]`, through `current`), its values and its notes.
+/// A user with no slot is hidden and its feed forgets its last view.
+pub fn tick_all(
+    feeds: &mut Feeds,
+    slots: &[Option<u8>; USERS],
+    current: impl Fn(u8) -> Option<Result<View, Error>>,
+) -> [(Values, Vec<String>); USERS] {
+    std::array::from_fn(|u| feeds[u].tick(slots[u].and_then(&current)))
+}
+
+/// The feed on the plan: each tick, [`current`] for each local user's
+/// roster slot through its [`Feed`]: user 0's values are the HUD's shared
+/// ones (the banner, the channels), every other local user's its own
+/// (`Handle::publish_for`), so each split-screen player sees its own
+/// lives; each user's notes go to that user.
+struct FeedFeature {
+    handle: Handle,
+    feeds: Arc<Mutex<Feeds>>,
+}
+
+impl hooks::Feature for FeedFeature {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(FEED, "Firefight HUD on the HUD kit")
+            .doc("docs/game/firefight.md")
+            .presentation_only()
+    }
+
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
+        // Rebuilt from the mode blob each tick; the last view only words
+        // the next tick's notes.
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
+        let (handle, feeds) = (self.handle, Arc::clone(&self.feeds));
+        b.frame().on_tick("firefight hud: values", move |o| {
+            let slots = local_slots(&*o.guest()).unwrap_or_default();
+            let all = tick_all(
+                &mut feeds.lock().unwrap_or_else(|e| e.into_inner()),
+                &slots,
+                current,
+            );
+            for (user, (values, notes)) in all.into_iter().enumerate() {
+                let user = user as u32;
+                if user == 0 {
+                    handle.publish(values);
+                } else {
+                    handle.publish_for(user, slots[user as usize].map(|_| values));
+                }
+                for text in notes {
+                    handle.notify(user, &text);
                 }
             }
-        }
+        });
+        Ok(())
     }
-    out
 }
 
-/// Every state the HUD can be in, by name, for the checks and for a
-/// preview sheet: each stage, a boss wave, a round's end, the lives at
-/// their extremes and the viewer with and without a count of their own.
-pub fn states() -> Vec<(String, Values)> {
-    let base = Mode {
-        stage: Stage::Fighting,
-        round: 0,
-        rounds: 3,
-        wave: 1,
-        waves: 5,
-        boss: false,
-        left: 7,
-        lives: Lives::Shared(12),
-    };
-    let with = |f: &dyn Fn(&mut Mode)| {
-        let mut m = base.clone();
-        f(&mut m);
-        m
-    };
-    let modes = [
-        (
-            "warmup",
-            with(&|m| {
-                m.stage = Stage::Warmup;
-                m.wave = 0;
-                m.left = 0;
-            }),
-        ),
-        ("spawning", with(&|m| m.stage = Stage::Spawning)),
-        (
-            "boss",
-            with(&|m| {
-                m.stage = Stage::Spawning;
-                m.wave = 4;
-                m.boss = true;
-            }),
-        ),
-        ("fighting", base.clone()),
-        (
-            "cleanup",
-            with(&|m| {
-                m.stage = Stage::Cleanup;
-                m.left = 2;
-            }),
-        ),
-        (
-            "wave-complete",
-            with(&|m| {
-                m.stage = Stage::Intermission;
-                m.left = 0;
-            }),
-        ),
-        (
-            "round-complete",
-            with(&|m| {
-                m.stage = Stage::Intermission;
-                m.round = 1;
-                m.wave = 0;
-                m.left = 0;
-            }),
-        ),
-        ("won", with(&|m| m.stage = Stage::Won)),
-        ("lost", with(&|m| m.stage = Stage::Lost)),
-        ("over", with(&|m| m.stage = Stage::Over)),
-        ("last-life", with(&|m| m.lives = Lives::Shared(1))),
-        ("no-lives", with(&|m| m.lives = Lives::Shared(0))),
-        (
-            "widest",
-            with(&|m| {
-                m.round = 11;
-                m.rounds = 12;
-                m.wave = 15;
-                m.waves = 16;
-                m.left = u16::MAX;
-                m.lives = Lives::Shared(u16::MAX);
-            }),
-        ),
-        (
-            "own-lives",
-            with(&|m| m.lives = Lives::Each(vec![(0, 3), (2, 1)])),
-        ),
-        (
-            "no-own-lives",
-            with(&|m| m.lives = Lives::Each(vec![(1, 3)])),
-        ),
-    ];
-    modes
-        .into_iter()
-        .map(|(name, m)| (name.to_string(), view(&m, 0)))
-        .collect()
+/// Registers the Firefight HUD with the HUD kit, hidden, and adds the
+/// feed that publishes it.
+pub fn install(registry: &mut hooks::Registry) -> anyhow::Result<()> {
+    let handle = hud_kit::register(Arc::new(Firefight));
+    handle.publish(kit::hidden());
+    registry
+        .add(&FeedFeature {
+            handle,
+            feeds: Arc::new(Mutex::new(Default::default())),
+        })
+        .map(|_| ())
+        .map_err(|e| anyhow::anyhow!("{FEED}: {e}"))
 }
 
 #[cfg(test)]

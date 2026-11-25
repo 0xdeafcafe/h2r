@@ -1,9 +1,17 @@
 //! One local player's Objects and Links tools. Only confirming a preview or
 //! a link's second end produces an edit.
+//!
+//! The Objects tool aims at every thing of the session
+//! (docs/game/forge-map-variants.md, "Things"): the map's own objects and
+//! the added ones, and the marks of starting points, goals, teleporters and
+//! item spawners. The nearest thing along the view within its pick radius
+//! wins. A thing of another game type than the session's is aimed at only
+//! with [`Show::AllGameTypes`] ("Game types").
 use std::sync::Arc;
 
-use crate::{BlockKind, Frame, Linkable, Session, camera::Camera};
-use forge_doc::OpId;
+use crate::{BlockKind, Frame, Linkable, Session, Thing, ThingKind, camera::Camera};
+use forge_doc::{Endpoint, OpId, Value};
+use map::scenario_layout::game_types;
 
 /// Full stick deflection, in radians per second for look or object rotation.
 pub const TURN_RATE: f32 = 2.4;
@@ -23,6 +31,171 @@ pub const MIN_HOLD: f32 = 1.0;
 /// The gap kept between the camera and a held object's bounding sphere,
 /// in world units, so the near plane never cuts it.
 pub const NEAR_GAP: f32 = 0.25;
+
+/// The pick radius of a thing with no body of its own, in world units: a
+/// starting point, a goal, a teleporter and an item spawner are aimed at by
+/// their world mark. A spawner's object, when it has one out, lies on its
+/// mark, so the mark picks it too.
+pub const MARK_RADIUS: f32 = 0.5;
+/// The pick radius of a Links tool target, in world units.
+pub const LINK_RADIUS: f32 = 0.25;
+/// How much a pick radius widens per world unit of distance, so a far thing
+/// stays as wide as the central reticle.
+pub const RETICLE_SPREAD: f32 = 0.012;
+
+/// What the Objects tool aims at besides the things of the session's game
+/// type (`forge.show`, docs/game/forge-map-variants.md, "Game types").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Show {
+    /// Only the things the session's game type has.
+    #[default]
+    ThisGameType,
+    /// Every thing.
+    AllGameTypes,
+}
+
+impl Show {
+    /// The setting as `forge.status` names it.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::ThisGameType => "this_game_type",
+            Self::AllGameTypes => "all_game_types",
+        }
+    }
+}
+
+/// The basis movement snap and object rotation use.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Axes {
+    #[default]
+    World,
+    /// The object's axes as they were when it was picked up.
+    Local,
+}
+
+impl Axes {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::World => "world",
+            Self::Local => "local",
+        }
+    }
+}
+
+/// A drawing the monitor adds over the world, which the monitor's player
+/// turns on or off (docs/game/forge-editing.md, "Overlays"). Presentation
+/// only: never in the document, the log or the sim.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Overlay {
+    /// The game type markers: a spawn, flag, hill, teleporter, item
+    /// spawner and ground label each.
+    Markers,
+    /// The rings of the session's other monitors.
+    Monitors,
+    /// The axes and outline at the held or aimed object.
+    Gizmo,
+    /// The last **Generate nav**'s problems (docs/game/forge-nav.md).
+    Nav,
+}
+
+impl Overlay {
+    pub const ALL: [Overlay; 4] = [
+        Overlay::Markers,
+        Overlay::Monitors,
+        Overlay::Gizmo,
+        Overlay::Nav,
+    ];
+
+    /// The overlay as `forge.status` names it.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Markers => "markers",
+            Self::Monitors => "monitors",
+            Self::Gizmo => "gizmo",
+            Self::Nav => "nav",
+        }
+    }
+
+    const fn bit(self) -> u8 {
+        1 << self as u8
+    }
+}
+
+/// Which overlays are on. Every overlay is on until it is turned off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Overlays(u8);
+
+impl Default for Overlays {
+    fn default() -> Self {
+        Self(Overlay::ALL.iter().fold(0, |bits, o| bits | o.bit()))
+    }
+}
+
+impl Overlays {
+    pub const fn on(self, overlay: Overlay) -> bool {
+        self.0 & overlay.bit() != 0
+    }
+
+    pub fn set(&mut self, overlay: Overlay, on: bool) {
+        if on {
+            self.0 |= overlay.bit();
+        } else {
+            self.0 &= !overlay.bit();
+        }
+    }
+}
+
+/// Whether `thing` is one the game type with engine index `game` has (the
+/// variant record's `+0x44`: 1 CTF, 2 Slayer, 3 Oddball, 4 King of the Hill,
+/// 7 Juggernaut, 8 Territories, 9 Assault). With no game type known, every
+/// thing is.
+///
+/// - An item spawner is when one of its four game-type slots matches the
+///   engine, as the engine's matcher decides (`game_types::slot_matches`).
+/// - A goal is its flag type's game type's: CTF's flag spawn and return
+///   (0, 1), Assault's bomb spawn and return (2, 3), Oddball's ball spawn
+///   (4), a territory (10) and a hill corner (11 to 18). A flag type with no
+///   traced reader is in every game type.
+/// - A starting point, a teleporter and an object are in every game type:
+///   no retail reader of a starting point's game type was found, and an
+///   object's set is the `games` property (slice G1).
+pub fn in_game(thing: &Thing, game: Option<i32>) -> bool {
+    let Some(game) = game else {
+        return true;
+    };
+    match thing.kind {
+        ThingKind::ItemSpawner => {
+            // The matcher's code is the engine index but for King of the
+            // Hill, whose code is 0.
+            let code = if game == 4 { 0 } else { game };
+            let slots: Vec<i16> = (1..=game_types::SLOT_COUNT)
+                .filter_map(|n| match field(thing, &format!("game type {n}")) {
+                    Some(Value::Int(v)) => i16::try_from(*v).ok(),
+                    _ => None,
+                })
+                .collect();
+            slots.is_empty()
+                || slots
+                    .iter()
+                    .any(|&slot| game_types::slot_matches(slot, Some(code)))
+        }
+        ThingKind::Goal => match field(thing, "type") {
+            Some(Value::Int(ty)) => {
+                forge_doc::games::flag_games(*ty).is_none_or(|games| games.has(game))
+            }
+            _ => true,
+        },
+        ThingKind::StartingPoint | ThingKind::Teleporter | ThingKind::Object => true,
+    }
+}
+
+fn field<'a>(thing: &'a Thing, name: &str) -> Option<&'a Value> {
+    thing
+        .fields
+        .iter()
+        .find(|(field, _)| *field == name)
+        .map(|(_, value)| value)
+}
 
 /// A palette item's bounding sphere, from its object definition: the
 /// radius and the centre's offset from the object's origin in its own
@@ -64,6 +237,8 @@ impl Extent {
 pub enum Action {
     Toggle,
     Accept,
+    /// Toggle selection of an aimed, ungrouped thing with empty hands.
+    Select,
     Back,
     Delete,
     Palette,
@@ -79,6 +254,12 @@ pub enum Action {
     Tools,
     /// Open the Tool settings.
     Settings,
+    AreaShape,
+    AreaClose,
+    AreaGrab,
+    AreaRelease,
+    /// Open the Overlays page.
+    Overlays,
 }
 
 impl Action {
@@ -87,6 +268,7 @@ impl Action {
         Some(match name {
             "toggle" => Self::Toggle,
             "accept" => Self::Accept,
+            "select" => Self::Select,
             "back" => Self::Back,
             "delete" => Self::Delete,
             "palette" => Self::Palette,
@@ -99,6 +281,11 @@ impl Action {
             "link" => Self::Link,
             "tools" => Self::Tools,
             "settings" => Self::Settings,
+            "area_shape" => Self::AreaShape,
+            "area_close" => Self::AreaClose,
+            "area_grab" => Self::AreaGrab,
+            "area_release" => Self::AreaRelease,
+            "overlays" => Self::Overlays,
             _ => return None,
         })
     }
@@ -117,20 +304,127 @@ pub struct Input {
     pub click: Option<usize>,
 }
 
+/// What a tool's input asks of the session or the screens. `Move` and
+/// `Delete` name an added object; `MoveThing` (`Session::move_thing`) and
+/// `Remove` (`Session::remove`) a thing of the map's own.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
-    Place { item: usize, frame: Frame },
-    Move { id: OpId, frame: Frame },
-    Delete { id: OpId },
-    Link { from: Linkable, to: Linkable },
-    Unlink { link: OpId },
+    Place {
+        item: usize,
+        frame: Frame,
+    },
+    Move {
+        id: OpId,
+        frame: Frame,
+    },
+    Delete {
+        id: OpId,
+    },
+    MoveThing {
+        id: Endpoint,
+        frame: Frame,
+    },
+    /// Carry an existing thing without changing the document until the drop.
+    HoldThing {
+        id: Endpoint,
+        frame: Frame,
+    },
+    /// Set a decoded property by name.
+    SetField {
+        id: Endpoint,
+        name: &'static str,
+        value: Value,
+    },
+    /// Duplicate the object `id` names at `frame` and hold the copy
+    /// (Properties' **Duplicate** row, `Session::duplicate`).
+    Duplicate {
+        id: Endpoint,
+        frame: Frame,
+    },
+    Remove {
+        id: Endpoint,
+    },
+    Link {
+        from: Linkable,
+        to: Linkable,
+    },
+    Unlink {
+        link: OpId,
+    },
+    /// Group things under a name ([`crate::Session::group`]).
+    Group {
+        name: String,
+        members: Vec<Endpoint>,
+    },
+    /// End a group ([`crate::Session::ungroup`]).
+    Ungroup {
+        group: OpId,
+    },
+    /// Lock or unlock a group ([`crate::Session::set_group_locked`]).
+    LockGroup {
+        group: OpId,
+        locked: bool,
+    },
+    SetGroupPivot {
+        group: OpId,
+        pivot_first: bool,
+    },
+    /// Give a thing a label, or clear it ([`crate::Session::set_label`]).
+    SetLabel {
+        id: Endpoint,
+        label: Option<forge_doc::Label>,
+    },
+    /// Place a prefab with its pivot at a frame
+    /// ([`crate::Session::place_prefab`]).
+    PlacePrefab {
+        prefab: Box<forge_doc::Prefab>,
+        frame: Frame,
+    },
     Undo,
     Redo,
+    /// Label the object as a siege barrier of the phase it opens in
+    /// ([`crate::Session::label_barrier`]).
+    Barrier {
+        id: Endpoint,
+        phase: i32,
+    },
+    /// Place the next ground marker of this label at a frame
+    /// ([`crate::Session::place_marker_next`]).
+    Marker {
+        label: forge_doc::GroundLabel,
+        frame: Frame,
+    },
+    /// **Build AI ground**: build it now.
+    BuildGround,
+    Goal {
+        goal: crate::Goal,
+        frame: Frame,
+    },
+    /// Add a starting point for a team in a kit session
+    /// ([`crate::Session::place_spawn`]).
+    Spawn {
+        team: u8,
+        frame: Frame,
+    },
+    /// Add a teleporter sender or receiver in a kit session
+    /// ([`crate::Session::place_teleporter`]).
+    Teleporter {
+        sender: bool,
+        frame: Frame,
+    },
+    /// Add an item spawner of a kit item ([`crate::Session::place_item`]).
+    Item {
+        item: forge_doc::TagKey,
+        frame: Frame,
+    },
+    /// **Test waves**: build the ground if it is not current.
+    TestWaves,
     Palette,
     Properties,
     Menu,
     Tools,
     Settings,
+    Overlays,
     DialogUp,
     DialogDown,
     DialogAccept,
@@ -141,8 +435,25 @@ pub enum Command {
 pub struct Tool {
     pub monitor: bool,
     pub camera: Option<Camera>,
+    /// The added object aimed at, when the thing aimed at is one.
     pub aimed: Option<OpId>,
+    /// The added object held, when the thing held is one.
     pub held: Option<OpId>,
+    /// The thing aimed at, own or added.
+    pub aimed_thing: Option<Endpoint>,
+    /// The thing held, own or added.
+    pub held_thing: Option<Endpoint>,
+    /// The session's game type, as the variant record's engine index; none
+    /// when it is not known, and then every thing is this game type's.
+    pub game: Option<i32>,
+    /// What is aimed at besides this game type's things.
+    pub show: Show,
+    /// The basis for movement snap and turning.
+    pub axes: Axes,
+    /// The drawings added over the world that are on.
+    pub overlays: Overlays,
+    /// World units between movement snaps; 0 is off.
+    movement_step: f32,
     pub placing: Option<usize>,
     pub ghost: Option<Frame>,
     /// The Links tool is selected instead of the Objects tool.
@@ -151,20 +462,26 @@ pub struct Tool {
     pub aimed_link: Option<Linkable>,
     /// The first end of a link being made.
     pub link_from: Option<Linkable>,
+    /// The things chosen to be grouped, in the order chosen: tool state,
+    /// never in the document (docs/game/forge-editing.md, "Selection,
+    /// groups and prefabs").
+    selection: Vec<Endpoint>,
     /// Degrees between turn snaps.
     rotation_step: f32,
-    rotation: [f32; 3],
+    pub(crate) rotation: [f32; 3],
     /// Each palette item's bounding sphere, in palette order.
     extents: Arc<[Extent]>,
     /// Orientation on pickup. Snap the *delta* so picking up never changes orientation.
-    initial_rotation: [f32; 3],
+    pub(crate) initial_rotation: [f32; 3],
+    /// Position on pickup, the origin of a Local movement snap.
+    pub(crate) initial_position: [f32; 3],
     /// Offset from the aim point along the camera's forward, right and up,
     /// so a held object turns with the view and keeps its place in it.
-    offset: [f32; 3],
+    pub(crate) offset: [f32; 3],
     /// How far in front of the camera the object is carried: its
     /// [`Extent::hold`] for a new one, where it was taken for a picked-up
     /// one, then pushed and pulled.
-    distance: f32,
+    pub(crate) distance: f32,
 }
 
 impl Default for Tool {
@@ -174,15 +491,24 @@ impl Default for Tool {
             camera: None,
             aimed: None,
             held: None,
+            aimed_thing: None,
+            held_thing: None,
+            game: None,
+            show: Show::default(),
+            axes: Axes::default(),
+            overlays: Overlays::default(),
+            movement_step: 0.0,
             placing: None,
             ghost: None,
             links: false,
             aimed_link: None,
             link_from: None,
+            selection: Vec::new(),
             rotation_step: 15.0,
             rotation: [0.; 3],
             extents: Arc::from(Vec::new()),
             initial_rotation: [0.; 3],
+            initial_position: [0.; 3],
             offset: [0.; 3],
             distance: 4.0,
         }
@@ -190,6 +516,11 @@ impl Default for Tool {
 }
 
 impl Tool {
+    /// Where the held thing was picked up: the readout's `from` mark.
+    pub fn picked_up_at(&self) -> Option<[f32; 3]> {
+        self.held_thing.map(|_| self.initial_position)
+    }
+
     /// A tool whose palette items have these bounding spheres, in palette
     /// order. An item without one carries [`Extent::default`].
     pub fn with_extents(extents: Arc<[Extent]>) -> Self {
@@ -201,15 +532,74 @@ impl Tool {
 
     /// The bounding sphere of what is placed or held, if anything.
     pub fn extent(&self, session: &Session) -> Option<Extent> {
-        let index = match (self.placing, self.held) {
-            (Some(index), _) => index,
-            (None, Some(id)) => {
-                let obj = session.objects().iter().find(|o| o.id == id)?;
-                session.palette().iter().position(|p| *p == obj.item)?
-            }
-            (None, None) => return None,
+        match (self.placing, self.held_thing) {
+            (Some(index), _) => Some(self.extents.get(index).copied().unwrap_or_default()),
+            (None, Some(id)) => Some(self.thing_extent(session, &session.thing(id)?)),
+            (None, None) => None,
+        }
+    }
+
+    /// A thing's sphere: an object's palette item's, else its mark's, a
+    /// sphere of [`MARK_RADIUS`]. An object whose tag is not in the Objects
+    /// palette carries [`Extent::default`].
+    pub fn thing_extent(&self, session: &Session, thing: &Thing) -> Extent {
+        if thing.kind != ThingKind::Object {
+            return Extent {
+                radius: MARK_RADIUS,
+                offset: [0.; 3],
+            };
+        }
+        let Some(Value::Tag(Some(tag))) = field(thing, "palette index") else {
+            return Extent::default();
         };
-        Some(self.extents.get(index).copied().unwrap_or_default())
+        session
+            .palette()
+            .iter()
+            .position(|p| p.block == thing.block && p.tag == *tag)
+            .and_then(|i| self.extents.get(i))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Whether the Objects tool aims at `thing`: one of the session's game
+    /// type, or any with [`Show::AllGameTypes`].
+    pub fn shows(&self, thing: &Thing) -> bool {
+        self.show == Show::AllGameTypes || in_game(thing, self.game)
+    }
+
+    /// Choose what is aimed at besides this game type's things. What is
+    /// aimed at or held is let go.
+    pub fn set_show(&mut self, show: Show) {
+        if self.show != show {
+            self.show = show;
+            self.clear_selection();
+        }
+    }
+
+    /// The things chosen to be grouped, in the order chosen.
+    pub fn selection(&self) -> &[Endpoint] {
+        &self.selection
+    }
+
+    /// Add a thing to the selection, or take it out when it is in.
+    pub fn toggle_selected(&mut self, id: Endpoint) {
+        let id = id.identity();
+        match self.selection.iter().position(|s| *s == id) {
+            Some(i) => {
+                self.selection.remove(i);
+            }
+            None => self.selection.push(id),
+        }
+    }
+
+    /// Whether the thing is in the selection.
+    pub fn is_selected(&self, id: Endpoint) -> bool {
+        self.selection.contains(&id.identity())
+    }
+
+    /// Let the selection go (B with nothing held).
+    pub fn clear_selected(&mut self) {
+        self.selection.clear();
     }
 
     pub fn select(&mut self, index: usize) {
@@ -227,13 +617,32 @@ impl Tool {
     }
 
     pub fn set_rotation_step(&mut self, degrees: f32) {
-        if degrees.is_finite() && degrees > 0.0 {
+        if degrees.is_finite() && degrees >= 0.0 {
             self.rotation_step = degrees;
         }
     }
 
+    pub fn set_movement_step(&mut self, units: f32) {
+        if units.is_finite() && units >= 0.0 {
+            self.movement_step = units;
+        }
+    }
+
+    /// Change basis without moving what is held: its current frame is the
+    /// new Local baseline.
+    pub fn set_axes(&mut self, axes: Axes) {
+        if self.axes != axes {
+            self.axes = axes;
+            if let Some(ghost) = self.ghost {
+                self.initial_position = ghost.position;
+                self.initial_rotation = ghost.rotation;
+                self.rotation = [0.; 3];
+            }
+        }
+    }
+
     pub fn set_heading(&mut self, radians: f32) {
-        if radians.is_finite() && (self.placing.is_some() || self.held.is_some()) {
+        if radians.is_finite() && (self.placing.is_some() || self.held_thing.is_some()) {
             self.initial_rotation[0] = radians;
             self.rotation[0] = 0.;
             if let Some(ghost) = &mut self.ghost {
@@ -242,12 +651,73 @@ impl Tool {
         }
     }
 
+    /// Reset orientation (Properties): pitch and roll to zero and the yaw
+    /// to `radians`, which the caller rounds to the rotation snap. What is
+    /// placed or held turns to it at once; an aimed thing is sent as a
+    /// move, as a heading is.
+    pub fn set_orientation(&mut self, radians: f32) {
+        if radians.is_finite() && (self.placing.is_some() || self.held_thing.is_some()) {
+            self.initial_rotation = [radians, 0., 0.];
+            self.rotation = [0.; 3];
+            if let Some(ghost) = &mut self.ghost {
+                ghost.rotation = [radians, 0., 0.];
+            }
+        }
+    }
+
+    /// Carry `id` from `frame`: the state a pickup sets, so Duplicate's
+    /// copy is held at once where the add put it. `object` is the added
+    /// object's id, none for a thing of the map's own.
+    pub fn take_up(&mut self, session: &Session, id: Endpoint, object: Option<OpId>, frame: Frame) {
+        let thing = session.thing(id);
+        self.cancel();
+        self.held_thing = Some(id);
+        self.held = object;
+        self.distance = thing
+            .map(|t| self.thing_extent(session, &t).hold())
+            .unwrap_or(4.0);
+        self.offset = [0.; 3];
+        self.initial_rotation = frame.rotation;
+        self.initial_position = frame.position;
+        self.ghost = Some(frame);
+    }
+
+    /// The carried frame in the basis in force: movement snap is on the
+    /// world grid or the pickup's own grid, and turning is about those axes.
+    fn snapped_frame(&self, raw: [f32; 3]) -> Frame {
+        let turn = self
+            .rotation
+            .map(|v| snap(v, self.rotation_step.to_radians()));
+        let rotation = match self.axes {
+            Axes::World => std::array::from_fn(|i| self.initial_rotation[i] + turn[i]),
+            Axes::Local => to_euler(mat_mul(from_euler(turn), from_euler(self.initial_rotation))),
+        };
+        let position = match (self.axes, self.movement_step > 0.0) {
+            (_, false) => raw,
+            (Axes::World, true) => raw.map(|v| snap(v, self.movement_step)),
+            (Axes::Local, true) => {
+                let delta = to_local(
+                    from_euler(self.initial_rotation),
+                    sub(raw, self.initial_position),
+                );
+                let snapped = delta.map(|v| snap(v, self.movement_step));
+                add(
+                    self.initial_position,
+                    to_world(from_euler(self.initial_rotation), snapped),
+                )
+            }
+        };
+        Frame { position, rotation }
+    }
+
     fn cancel(&mut self) {
         self.link_from = None;
         self.held = None;
+        self.held_thing = None;
         self.placing = None;
         self.ghost = None;
         self.initial_rotation = [0.; 3];
+        self.initial_position = [0.; 3];
         self.rotation = [0.; 3];
         self.offset = [0.; 3];
         self.distance = 4.0;
@@ -257,6 +727,7 @@ impl Tool {
     pub fn clear_selection(&mut self) {
         self.cancel();
         self.aimed = None;
+        self.aimed_thing = None;
         self.aimed_link = None;
     }
 
@@ -266,12 +737,22 @@ impl Tool {
             Command::Place { .. }
                 | Command::Move { .. }
                 | Command::Delete { .. }
+                | Command::MoveThing { .. }
+                | Command::Remove { .. }
                 | Command::Link { .. }
                 | Command::Unlink { .. }
+                | Command::Goal { .. }
+                | Command::Spawn { .. }
+                | Command::Teleporter { .. }
+                | Command::Item { .. }
+                | Command::PlacePrefab { .. }
                 | Command::Undo
                 | Command::Redo
         ) {
             self.clear_selection();
+        }
+        if matches!(command, Command::Group { .. } | Command::Ungroup { .. }) {
+            self.selection.clear();
         }
     }
 
@@ -320,7 +801,17 @@ impl Tool {
             self.links = true;
             return Ok(None);
         }
-        let previewing = self.placing.is_some() || self.held.is_some();
+        let previewing = self.placing.is_some() || self.held_thing.is_some();
+        // Things leave the selection when they disappear or join a group.
+        let groups = session.groups();
+        self.selection
+            .retain(|id| session.thing(*id).is_some() && !groups.iter().any(|g| g.has(*id)));
+        // A locked group's things are not aimed at.
+        let locked: Vec<Endpoint> = groups
+            .iter()
+            .filter(|g| g.locked)
+            .flat_map(|g| g.members.iter().copied())
+            .collect();
         let extent = self.extent(session).unwrap_or_default();
         let mut hit = None;
         if let Some(camera) = &mut self.camera {
@@ -339,15 +830,29 @@ impl Tool {
             let surface = surface(*camera).filter(|d| d.is_finite() && *d >= 0.);
             let max_distance = surface.unwrap_or(MAX_HOLD).min(MAX_HOLD);
             let forward = camera.forward();
+            let eye = *camera;
+            let labels = session.labels().unwrap_or_default();
             hit = session
-                .objects()
-                .iter()
-                .filter_map(|obj| {
-                    aim(camera, forward, max_distance, obj.frame.position)
-                        .map(|along| (obj.id, along))
+                .things()
+                .into_iter()
+                .filter(|thing| {
+                    self.shows(thing)
+                        || (thing.block == BlockKind::NetgameFlags
+                            && labels.get(&thing.id.identity()).is_some_and(|label| {
+                                forge_doc::GroundLabel::of(&label.text).is_some()
+                            }))
                 })
-                .min_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-            self.aimed = hit.map(|(id, _)| id);
+                .filter(|thing| !locked.iter().any(|m| m.identity() == thing.id.identity()))
+                .filter_map(|thing| {
+                    let radius = self.thing_extent(session, &thing).radius;
+                    aim(&eye, forward, max_distance, thing.frame.position, radius)
+                        .map(|along| (thing, along))
+                })
+                // The nearest wins; at one distance, the first in the
+                // session's order of things.
+                .reduce(|best, next| if next.1 < best.1 { next } else { best });
+            self.aimed_thing = hit.as_ref().map(|(thing, _)| thing.id);
+            self.aimed = hit.as_ref().and_then(|(thing, _)| object_id(thing));
             if previewing {
                 // A new object is carried at its hold distance and a
                 // picked-up one where it was taken, each pushed and pulled
@@ -362,59 +867,69 @@ impl Tool {
                     self.distance = carried(carried(self.distance) + push);
                 }
                 let distance = carried(self.distance);
-                let pos = camera.point(distance);
-                let offset = camera.to_world(self.offset);
-                let step = self.rotation_step.to_radians();
-                self.ghost = Some(Frame {
-                    position: std::array::from_fn(|i| pos[i] + offset[i]),
-                    rotation: std::array::from_fn(|i| {
-                        self.initial_rotation[i] + (self.rotation[i] / step).round() * step
-                    }),
-                });
+                let pos = eye.point(distance);
+                let offset = eye.to_world(self.offset);
+                self.ghost = Some(self.snapped_frame(std::array::from_fn(|i| pos[i] + offset[i])));
             }
         }
         Ok(match input.action {
             Some(A::Palette) => Some(C::Palette),
-            Some(A::Properties) if self.aimed.is_some() || previewing => Some(C::Properties),
+            Some(A::Properties) if self.aimed_thing.is_some() || previewing => Some(C::Properties),
             Some(A::Menu) => Some(C::Menu),
             Some(A::Back) if previewing => {
                 self.cancel();
                 None
             }
-            // B with nothing held is nothing: the Forge menu is Start's.
-            Some(A::Back) => None,
+            // B with nothing held lets the selection go; the Forge menu is
+            // Start's.
+            Some(A::Back) => {
+                self.selection.clear();
+                None
+            }
             Some(A::Tools) => Some(C::Tools),
             Some(A::Settings) => Some(C::Settings),
+            Some(A::Overlays) => Some(C::Overlays),
             Some(A::Undo) => Some(C::Undo),
             Some(A::Redo) => Some(C::Redo),
-            Some(A::Delete) => self.held.or(self.aimed).map(|id| C::Delete { id }),
+            Some(A::Delete) => {
+                let (target, object) = if self.held_thing.is_some() {
+                    (self.held_thing, self.held)
+                } else {
+                    (self.aimed_thing, self.aimed)
+                };
+                target.map(|id| match object {
+                    Some(id) => C::Delete { id },
+                    None => C::Remove { id },
+                })
+            }
+            Some(A::Select) if !previewing => {
+                if let Some((thing, _)) = &hit
+                    && !groups.iter().any(|g| g.has(thing.id))
+                {
+                    self.toggle_selected(thing.id);
+                }
+                None
+            }
             Some(A::Accept) => {
                 if let (Some(item), Some(frame)) = (self.placing, self.ghost) {
                     Some(C::Place { item, frame })
-                } else if let (Some(id), Some(frame)) = (self.held, self.ghost) {
-                    Some(C::Move { id, frame })
-                } else if let (Some((id, distance)), Some(camera)) = (hit, self.camera) {
-                    let obj = session
-                        .objects()
-                        .iter()
-                        .find(|o| o.id == id)
-                        .ok_or("Object is no longer present")?;
-                    let near = session
-                        .palette()
-                        .iter()
-                        .position(|p| *p == obj.item)
-                        .and_then(|i| self.extents.get(i))
-                        .copied()
-                        .unwrap_or_default()
-                        .near();
+                } else if let (Some(id), Some(frame)) = (self.held_thing, self.ghost) {
+                    Some(match self.held {
+                        Some(id) => C::Move { id, frame },
+                        None => C::MoveThing { id, frame },
+                    })
+                } else if let (Some((thing, distance)), Some(camera)) = (hit, self.camera) {
+                    let near = self.thing_extent(session, &thing).near();
                     let distance = distance.max(near);
-                    self.held = Some(id);
+                    self.held_thing = Some(thing.id);
+                    self.held = object_id(&thing);
                     self.distance = distance;
                     let p = camera.point(distance);
                     self.offset =
-                        camera.to_local(std::array::from_fn(|i| obj.frame.position[i] - p[i]));
-                    self.initial_rotation = obj.frame.rotation;
-                    self.ghost = Some(obj.frame);
+                        camera.to_local(std::array::from_fn(|i| thing.frame.position[i] - p[i]));
+                    self.initial_rotation = thing.frame.rotation;
+                    self.initial_position = thing.frame.position;
+                    self.ghost = Some(thing.frame);
                     None
                 } else {
                     None
@@ -444,7 +959,9 @@ impl Tool {
                 .map(|o| (Linkable::Object(o.id), o.frame.position));
             self.aimed_link = flags
                 .chain(machines)
-                .filter_map(|(thing, at)| aim(&camera, forward, 80., at).map(|d| (thing, d)))
+                .filter_map(|(thing, at)| {
+                    aim(&camera, forward, 80., at, LINK_RADIUS).map(|d| (thing, d))
+                })
                 .min_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)))
                 .map(|(thing, _)| thing);
         }
@@ -479,6 +996,7 @@ impl Tool {
             Some(A::Back) => None,
             Some(A::Tools) => Some(C::Tools),
             Some(A::Settings) => Some(C::Settings),
+            Some(A::Overlays) => Some(C::Overlays),
             Some(A::Delete) if self.link_from.is_none() => {
                 let link = session.links_of(self.aimed_link?).last()?.id;
                 Some(C::Unlink { link })
@@ -494,15 +1012,84 @@ impl Tool {
     }
 }
 
-/// How far along the view `at` lies when it is under the reticle.
-fn aim(camera: &Camera, forward: [f32; 3], max_distance: f32, at: [f32; 3]) -> Option<f32> {
+fn object_id(thing: &Thing) -> Option<OpId> {
+    match thing.id {
+        Endpoint::Added(id) if thing.block != BlockKind::NetgameFlags => Some(id),
+        _ => None,
+    }
+}
+
+/// How far along the view `at` lies when it is under the reticle: the view
+/// passes within `radius` of it, widened by [`RETICLE_SPREAD`] per unit of
+/// distance so a far thing subtends the central reticle's small angle.
+fn aim(
+    camera: &Camera,
+    forward: [f32; 3],
+    max_distance: f32,
+    at: [f32; 3],
+    radius: f32,
+) -> Option<f32> {
     let d: [f32; 3] = std::array::from_fn(|i| at[i] - camera.position[i]);
     let along: f32 = (0..3).map(|i| d[i] * forward[i]).sum();
     if !(0.1..=max_distance).contains(&along) {
         return None;
     }
     let side: f32 = (0..3).map(|i| (d[i] - along * forward[i]).powi(2)).sum();
-    // The aim target is at least a quarter world unit wide, then grows with
-    // distance so it subtends the same small angle as the central reticle.
-    (side <= (0.25 + along * 0.012).powi(2)).then_some(along)
+    (side <= (radius + along * RETICLE_SPREAD).powi(2)).then_some(along)
+}
+
+fn snap(v: f32, step: f32) -> f32 {
+    if step > 0.0 {
+        (v / step).round() * step
+    } else {
+        v
+    }
+}
+
+fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|i| a[i] + b[i])
+}
+
+fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|i| a[i] - b[i])
+}
+
+/// `Rz(yaw) · Ry(−pitch) · Rx(roll)` as row vectors, the scenario's basis.
+fn from_euler([yaw, pitch, roll]: [f32; 3]) -> [[f32; 3]; 3] {
+    let (sy, cy) = yaw.sin_cos();
+    let (sp, cp) = pitch.sin_cos();
+    let (sr, cr) = roll.sin_cos();
+    [
+        [cy * cp, sy * cp, sp],
+        [-sy * cr - cy * sp * sr, cy * cr - sy * sp * sr, -cp * sr],
+        [sy * sr - cy * sp * cr, -cy * sr - sy * sp * cr, cp * cr],
+    ]
+}
+
+fn to_euler(m: [[f32; 3]; 3]) -> [f32; 3] {
+    let pitch = m[0][2].clamp(-1.0, 1.0).asin();
+    // With forward vertical, yaw is ambiguous: keep it zero and put the
+    // remaining turn in roll.
+    if pitch.abs() >= std::f32::consts::FRAC_PI_2 - 1e-6 {
+        return [0.0, pitch, (-pitch.signum() * m[1][0]).atan2(m[1][1])];
+    }
+    [
+        m[0][1].atan2(m[0][0]).rem_euclid(std::f32::consts::TAU),
+        pitch,
+        (-m[1][2]).atan2(m[2][2]),
+    ]
+}
+
+fn to_local(m: [[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
+    m.map(|axis| axis[0] * v[0] + axis[1] * v[1] + axis[2] * v[2])
+}
+
+fn to_world(m: [[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|i| m[0][i] * v[0] + m[1][i] * v[1] + m[2][i] * v[2])
+}
+
+fn mat_mul(a: [[f32; 3]; 3], b: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    std::array::from_fn(|r| {
+        std::array::from_fn(|c| a[r][0] * b[0][c] + a[r][1] * b[1][c] + a[r][2] * b[2][c])
+    })
 }

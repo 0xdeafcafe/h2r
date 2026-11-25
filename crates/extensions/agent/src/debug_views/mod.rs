@@ -27,6 +27,50 @@ type Point = [f32; 3];
 type Edge = [Point; 2];
 const MAX_LINES: usize = 2048;
 
+/// Level collision a live commit replaced (`edit.collision.commit`,
+/// docs/editor/realtime-edits.md, "Collision"), by structure BSP datum.
+/// The views are built from the map file, which does not hold it, so a
+/// built BSP layer has its structure collision lines replaced by these
+/// ([`StaticViews::replace_structure`]) instead of being read again.
+#[derive(Default)]
+pub struct CollisionEdits {
+    inner: Mutex<(u64, HashMap<u32, Arc<tags::collision::Bsp>>)>,
+}
+
+impl CollisionEdits {
+    fn lock(&self) -> MutexGuard<'_, (u64, HashMap<u32, Arc<tags::collision::Bsp>>)> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Structure `datum`'s level collision is now `bsp`.
+    pub fn replace(&self, datum: u32, bsp: tags::collision::Bsp) {
+        let mut inner = self.lock();
+        inner.0 += 1;
+        inner.1.insert(datum, Arc::new(bsp));
+    }
+
+    /// A new map: nothing is replaced.
+    pub fn clear(&self) {
+        let mut inner = self.lock();
+        if !inner.1.is_empty() {
+            inner.0 += 1;
+            inner.1.clear();
+        }
+    }
+
+    pub(crate) fn snapshot(&self) -> (u64, HashMap<u32, Arc<tags::collision::Bsp>>) {
+        self.lock().clone()
+    }
+}
+
+/// `views` with its structure's level collision replaced, when `edited`
+/// holds it.
+fn apply_edits(views: &mut Arc<StaticViews>, edited: &HashMap<u32, Arc<tags::collision::Bsp>>) {
+    if let Some(bsp) = views.structure.and_then(|s| edited.get(&s)) {
+        Arc::make_mut(views).replace_structure(bsp);
+    }
+}
+
 /// Opens the mounted cache and its shared resources on the loader thread.
 pub trait DebugMaps: Sync + Send {
     fn generation(&self) -> u64;
@@ -374,6 +418,9 @@ struct Cache {
     bsps: HashMap<usize, Result<Arc<StaticViews>, String>>,
     models: Option<Result<Arc<Hitboxes>, String>>,
     job: Option<Job>,
+    /// The [`CollisionEdits`] generation `bsps` has applied; `None` after
+    /// a layer loads, so the next refresh applies the edits to it.
+    edits: Option<u64>,
 }
 
 impl Cache {
@@ -423,6 +470,7 @@ impl Cache {
         reader: &mut dyn Reader,
         options: Options,
         traces: &CollisionTraces,
+        edits: &CollisionEdits,
     ) -> Frame {
         let generation = maps.map_or(0, |m| m.generation());
         let checksum = reader.live_metadata().1;
@@ -449,6 +497,14 @@ impl Cache {
                 .unwrap_or_else(|_| Err("debug geometry loader stopped".into()));
             if job.epoch == self.epoch {
                 self.store(job.layer, result);
+                self.edits = None;
+            }
+        }
+        let (generation, edited) = edits.snapshot();
+        if self.edits != Some(generation) {
+            self.edits = Some(generation);
+            for views in self.bsps.values_mut().filter_map(|r| r.as_mut().ok()) {
+                apply_edits(views, &edited);
             }
         }
         let index = game.bsp.map(|i| i as usize);
@@ -501,6 +557,7 @@ pub(crate) struct Observer {
     cache: Mutex<Cache>,
     maps: Option<Arc<dyn DebugMaps>>,
     traces: Arc<CollisionTraces>,
+    edits: Arc<CollisionEdits>,
 }
 
 impl Observer {
@@ -514,7 +571,7 @@ impl Observer {
             return;
         }
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        let mut frame = cache.refresh(self.maps.as_ref(), game, reader, options, &self.traces);
+        let mut frame = cache.refresh(self.maps.as_ref(), game, reader, options, &self.traces, &self.edits);
         if options.on(View::Traces)
             && let Some(tick) = game.tick
         {
@@ -659,6 +716,7 @@ pub fn install(
         cache: Mutex::default(),
         maps,
         traces,
+        edits: agent.collision_edits(),
     });
 }
 

@@ -47,6 +47,12 @@ const IMAGE_DIR: &str = "image";
 /// The files `image/` holds: the Linux module and its build stamp, as
 /// `h2 build --arch x86_64-linux` writes them.
 pub const IMAGE_FILES: [&str; 2] = ["libh2game.so", "libh2game.so.stamp"];
+/// Directory in the bundle holding the Firefight kit packages, one
+/// `firefight-<map>/` each (its `manifest.toml` and patch, as
+/// `h2 firefight kit` installs them), and [`KIT_INDEX`].
+const FIREFIGHT_DIR: &str = "firefight";
+/// The kit index in [`FIREFIGHT_DIR`]: a [`KitIndex`].
+const KIT_INDEX: &str = "kits.json";
 const CACHE_LOCK: &str = ".host-data.lock";
 const LAST_USED: &str = ".last-used";
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
@@ -112,6 +118,26 @@ pub enum Error {
     /// A path or filesystem entry cannot be used safely.
     #[error("unsafe host-data path: {0}")]
     UnsafePath(String),
+    /// A Firefight match's map has no kit in the bundle, or another version.
+    #[error("Firefight kit: {0}")]
+    Kit(String),
+}
+
+/// The Firefight kits a bundle carries (`firefight/kits.json`): the kit
+/// version that built them and each map's package.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KitIndex {
+    /// `firefight_kit::KIT_VERSION` of the `h2` that built the bundle.
+    pub kit: u32,
+    /// Lower-case map name (`beavercreek`) to its kit package's map ID,
+    /// the ID clients that build the kit from their own disc load.
+    pub maps: std::collections::BTreeMap<String, String>,
+}
+
+/// The package directory of `map`'s Firefight kit (`firefight-<map>`), as
+/// `h2 firefight kit` names it under `<data>/maps`.
+pub fn kit_dir(map: &str) -> String {
+    format!("firefight-{}", map.to_ascii_lowercase())
 }
 
 /// Knobs of [`provision_with`] that a supervisor or test may want to set;
@@ -217,6 +243,93 @@ pub fn install_bot_data(disc: &Path, data_root: &Path) -> Result<usize, Error> {
         result?;
     }
     Ok(files.len())
+}
+
+/// The verified bundle's Firefight kits, or `None` when it carries none.
+pub fn bundled_kits(disc: &Path) -> Result<Option<KitIndex>, Error> {
+    let manifest = read_embedded_manifest(disc)?;
+    let path = format!("{FIREFIGHT_DIR}/{KIT_INDEX}");
+    if !manifest.files.iter().any(|entry| entry.path == path) {
+        return Ok(None);
+    }
+    let index: KitIndex = serde_json::from_slice(&fs::read(disc.join(&path))?)
+        .map_err(|error| Error::Corrupt(format!("reading {path}: {error}")))?;
+    Ok(Some(index))
+}
+
+/// Place `map`'s Firefight kit package from the verified bundle at `disc`
+/// in `data_root`'s maps directory (`<data>/maps/firefight-<map>`), where
+/// the game finds installed packages, replacing an older copy whole.
+/// `kit` is the version the match was made for, and `map_id`, when the
+/// lease names one, the package its players load: both must be the
+/// bundle's. Returns the package's map ID.
+pub fn install_firefight_kit(
+    disc: &Path,
+    data_root: &Path,
+    map: &str,
+    kit: u32,
+    map_id: Option<&str>,
+) -> Result<String, Error> {
+    let index = bundled_kits(disc)?.ok_or_else(|| {
+        Error::Kit("the host data carries no Firefight kits; rebuild it with `h2 host bundle`".into())
+    })?;
+    if index.kit != kit {
+        return Err(Error::Kit(format!(
+            "the host data's kits are version {}, the match's is {kit}; rebuild it with `h2 host bundle`",
+            index.kit
+        )));
+    }
+    let key = map.to_ascii_lowercase();
+    let id = index
+        .maps
+        .get(&key)
+        .ok_or_else(|| Error::Kit(format!("the host data carries no kit for {map}")))?
+        .clone();
+    if let Some(want) = map_id.filter(|want| !want.eq_ignore_ascii_case(&id)) {
+        return Err(Error::Kit(format!(
+            "the match plays package {want} on {map}; the host data's kit is {id}"
+        )));
+    }
+    let dir = kit_dir(&key);
+    let prefix = format!("{FIREFIGHT_DIR}/{dir}/");
+    let manifest = read_embedded_manifest(disc)?;
+    let files: Vec<&str> = manifest
+        .files
+        .iter()
+        .filter_map(|entry| entry.path.strip_prefix(prefix.as_str()))
+        .collect();
+    if files.is_empty() {
+        return Err(Error::Corrupt(format!("{KIT_INDEX} names {map}, whose kit is missing")));
+    }
+    let maps = content::store::maps_dir(data_root);
+    fs::create_dir_all(&maps)?;
+    // The library skips dot directories, so a half-copied package is never read.
+    let temp = maps.join(format!(".{dir}.{}.new", unique_suffix()));
+    let old = maps.join(format!(".{dir}.{}.old", unique_suffix()));
+    let target = maps.join(&dir);
+    let result = (|| -> Result<(), Error> {
+        private_dir(&temp, false)?;
+        for name in &files {
+            let from = disc.join(FIREFIGHT_DIR).join(&dir).join(name);
+            if !fs::symlink_metadata(&from)?.is_file() {
+                return Err(Error::UnsafePath(from.display().to_string()));
+            }
+            let mut out = new_private_file(&temp.join(name))?;
+            io::copy(&mut File::open(&from)?, &mut out)?;
+            out.sync_all()?;
+        }
+        match fs::symlink_metadata(&target) {
+            Ok(metadata) if metadata.is_dir() => fs::rename(&target, &old)?,
+            Ok(_) => return Err(Error::UnsafePath(target.display().to_string())),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        fs::rename(&temp, &target)?;
+        Ok(())
+    })();
+    let _ = fs::remove_dir_all(&temp);
+    let _ = fs::remove_dir_all(&old);
+    result.map(|()| id)
 }
 
 /// [`provision`] with explicit [`Options`].
@@ -387,6 +500,15 @@ fn validate_payload_path(path: &str) -> Result<(), Error> {
             .strip_prefix(IMAGE_DIR)
             .and_then(|rest| rest.strip_prefix('/'))
             .is_some_and(|name| IMAGE_FILES.contains(&name))
+        || path.strip_prefix(FIREFIGHT_DIR).and_then(|rest| rest.strip_prefix('/')).is_some_and(|rest| {
+            rest == KIT_INDEX
+                || rest.split_once('/').is_some_and(|(dir, file)| {
+                    dir.starts_with("firefight-")
+                        && !file.is_empty()
+                        && !file.contains('/')
+                        && !file.starts_with('.')
+                })
+        })
         || path.strip_prefix("maps/").is_some_and(|name| {
             name.strip_prefix("fonts/").map_or_else(
                 || name.to_ascii_lowercase().ends_with(".map") && !name.contains('/'),

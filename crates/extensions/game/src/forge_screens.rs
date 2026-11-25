@@ -23,9 +23,13 @@
 //!   and the keys to the game's UI.
 
 pub mod game_menu;
+pub mod games;
+pub(crate) mod map_limits;
 pub mod pages;
+pub mod props;
 pub mod screen;
 pub mod sheet;
+pub mod variants;
 
 #[cfg(test)]
 mod tests;
@@ -48,7 +52,7 @@ use crate::ui_kit::picker::{self, Pick};
 use crate::ui_kit::screen::{SLOT_LEN, SlotTexts};
 use game_menu::MenuRow;
 use screen::ForgeScreen;
-use sheet::{Ask, Choice, Kind, Look, Sheet};
+use sheet::{Ask, Choice, Kind, Look, NumberField, Sheet, TypeSpec};
 
 /// What the session tells the screens it does not build each tick.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -58,17 +62,29 @@ pub struct Facts {
     /// Edits not saved: Leave Game asks first.
     pub dirty: bool,
     pub pending_rebuild: usize,
-    /// The rotation snap, an index into `ui_kit::forge::ANGLE_STEPS`.
+    /// The rotation snap, an index into `sheet::ANGLE_STEPS`.
     pub rotation_snap: usize,
+    /// The movement snap, an index into `sheet::MOVE_STEPS`.
+    pub movement_snap: usize,
+    /// Local rather than World axes.
+    pub local_axes: bool,
     pub tool: Option<sheet::Tool>,
-    /// The saved Forge maps, for Load.
-    pub saved: Vec<String>,
-    /// The saved map the session is, for Save as's keyboard.
+    /// The map variants of this map, for Load.
+    pub variants: Vec<variants::Row>,
+    /// The name of the variant the session is, for Save and Save as's
+    /// keyboard; none for a session opened from Original.
     pub filename: Option<String>,
+    /// The added objects, for the placed objects browser
+    /// ([`sheet::placed_rows`]).
+    pub placed: Vec<sheet::Placed>,
+    /// The active groups, listed first by the browser
+    /// ([`sheet::folder_rows`]).
+    pub folders: Vec<sheet::Folder>,
+    pub(crate) map_limits: map_limits::Usage,
 }
 
-/// The longest name Save as takes.
-pub const NAME_CHARS: u32 = 31;
+/// The longest name Save as takes: a map variant's.
+pub const NAME_CHARS: u32 = forge_doc::MAX_VARIANT_NAME as u32;
 
 struct Hub {
     screens: Vec<Arc<ForgeScreen>>,
@@ -82,6 +98,13 @@ struct Hub {
     menu_texts: SlotTexts,
     /// Save as's UTF-16 buffer, and whether the keyboard is on it.
     keyboard: AtomicU32,
+    /// A typed-number keyboard asked for and not yet opened.
+    keyboard_request: Mutex<Option<TypeSpec>>,
+    /// Which number a keyboard edits; Save as has none.
+    keyboard_field: Mutex<Option<NumberField>>,
+    /// The file stem of the map variant whose dialog is up: what Rename
+    /// and Duplicate act on.
+    variant_file: Mutex<Option<String>>,
     typing: AtomicBool,
     /// Yes to Leave Game: leave at the next UI update.
     leave: AtomicBool,
@@ -105,6 +128,9 @@ impl Hub {
             facts: Mutex::new(Facts::default()),
             menu_texts: SlotTexts::new(crate::ui_kit::ids::family("forge game menu")),
             keyboard: AtomicU32::new(0),
+            keyboard_request: Mutex::new(None),
+            keyboard_field: Mutex::new(None),
+            variant_file: Mutex::new(None),
             typing: AtomicBool::new(false),
             leave: AtomicBool::new(false),
             passing_update: AtomicBool::new(false),
@@ -208,6 +234,15 @@ pub fn open(sheet: Sheet) -> Result<(), String> {
     Ok(())
 }
 
+/// Shows `sheet` above the screen beneath: B comes back to it.
+pub(crate) fn push(sheet: Sheet) -> Result<crate::ui::Chosen, String> {
+    usable()?;
+    let kind = sheet.kind;
+    screen(kind).show(sheet)?;
+    *lock(&hub().request) = Some(kind);
+    Ok(crate::ui::Chosen::Push(kind.screen()))
+}
+
 /// Refused by name when nothing would open a screen: the driver is off.
 fn usable() -> Result<(), String> {
     if hub().built.load(Ordering::SeqCst) {
@@ -234,10 +269,18 @@ pub(crate) fn prepare(kind: Kind) -> Result<(), String> {
     let f = facts();
     let sheet = match kind {
         Kind::Tools => sheet::tools(f.tool.unwrap_or(sheet::Tool::Objects)),
-        Kind::Settings => sheet::settings(f.rotation_snap),
-        Kind::Options => sheet::options(),
+        Kind::Settings => sheet::settings(f.rotation_snap, f.movement_snap, f.local_axes),
+        Kind::Options => sheet::options_with_groups(&f.folders, &f.placed),
+        Kind::Variants => variants::list_sheet(&f.variants, f.filename.as_deref()),
         Kind::Controls => sheet::controls(),
-        Kind::Objects | Kind::Properties | Kind::Link | Kind::Question => {
+        Kind::MapLimits => map_limits::sheet(&f.map_limits),
+        Kind::Objects
+        | Kind::Properties
+        | Kind::Coordinates
+        | Kind::Link
+        | Kind::Question
+        | Kind::Games
+        | Kind::Variant => {
             return Err(format!(
                 "{} shows the session's objects; the session opens it",
                 kind.screen()
@@ -311,6 +354,22 @@ enum Step {
     Leave,
     Close(u32),
     Open(Kind),
+    Keyboard(TypeSpec),
+}
+
+/// A map variant's row on Map variants was pressed: its dialog's Rename
+/// and Duplicate act on `file`.
+fn target_variant(file: String) {
+    *lock(&hub().variant_file) = Some(file);
+}
+
+/// A Coordinates or item-property row asks for the game's keyboard.
+fn ask_keyboard(spec: TypeSpec) -> crate::ui::Chosen {
+    if hub().typing.load(Ordering::SeqCst) {
+        return crate::ui::Chosen::Stepped("A keyboard is already open.".into());
+    }
+    *lock(&hub().keyboard_request) = Some(spec);
+    crate::ui::Chosen::Act
 }
 
 fn step(m: &dyn GuestMemory) -> Option<Step> {
@@ -320,11 +379,15 @@ fn step(m: &dyn GuestMemory) -> Option<Step> {
     if hub().leave.swap(false, Ordering::SeqCst) {
         return Some(Step::Leave);
     }
-    let objects = screen(Kind::Objects);
-    if objects.take_close_after_pick()
-        && let Some(s) = objects.screen()
-    {
-        return Some(Step::Close(s));
+    // The object menu closes after a pick; Map variants after its dialog
+    // chose a Load or a Delete, whose question needs no screen of ours up.
+    for kind in [Kind::Objects, Kind::Variants] {
+        let beneath = screen(kind);
+        if beneath.take_close_after_pick()
+            && let Some(s) = beneath.screen()
+        {
+            return Some(Step::Close(s));
+        }
     }
     let g = ReadGm(m);
     let pending = (0..=crate::ui_watch::SHARED).any(|slot| {
@@ -333,10 +396,13 @@ fn step(m: &dyn GuestMemory) -> Option<Step> {
     if pending {
         return None;
     }
+    if let Some(spec) = lock(&hub().keyboard_request).take() {
+        return Some(Step::Keyboard(spec));
+    }
     lock(&hub().request).take().map(Step::Open)
 }
 
-/// Save as's keyboard, once it closed: its name for the session.
+/// A keyboard, once it closed: Save as's name or the typed number.
 fn poll_keyboard(m: &dyn GuestMemory) -> Result<(), MemFault> {
     let buffer = hub().keyboard.load(Ordering::SeqCst);
     if buffer == 0
@@ -346,23 +412,45 @@ fn poll_keyboard(m: &dyn GuestMemory) -> Result<(), MemFault> {
         return Ok(());
     }
     hub().typing.store(false, Ordering::SeqCst);
-    let name = crate::signin_keyboard::read_text(m, buffer, NAME_CHARS + 1)?;
-    let name = name.trim();
-    send(if name.is_empty() {
-        Choice::Notice("Not saved: the name was empty.".into())
+    let text = crate::signin_keyboard::read_text(m, buffer, NAME_CHARS + 1)?;
+    let text = text.trim();
+    if let Some(field) = lock(&hub().keyboard_field).take() {
+        let file = lock(&hub().variant_file).clone();
+        send(match (field, file) {
+            (NumberField::RenameVariant, Some(file)) => {
+                Choice::RenameVariant(file, text.to_string())
+            }
+            (NumberField::DuplicateVariant, Some(file)) => {
+                Choice::DuplicateVariant(file, text.to_string())
+            }
+            (NumberField::RenameVariant | NumberField::DuplicateVariant, None) => {
+                Choice::Notice("That map variant is gone.".into())
+            }
+            (field, _) => Choice::Number(field, text.into()),
+        });
     } else {
-        Choice::SaveAs(name.to_string())
-    });
+        send(if text.is_empty() {
+            Choice::Notice("Not saved: the name was empty.".into())
+        } else {
+            Choice::SaveAs(text.to_string())
+        });
+    }
     Ok(())
 }
 
-async fn open_keyboard(cx: &Cx) -> Result<(), EntryError> {
+async fn open_keyboard(cx: &Cx, spec: Option<TypeSpec>) -> Result<(), EntryError> {
     let buffer = hub().keyboard.load(Ordering::SeqCst);
     if buffer == 0 {
-        send(Choice::Notice("Save as has no keyboard memory.".into()));
+        send(Choice::Notice("The keyboard has no memory.".into()));
         return Ok(());
     }
-    let start = facts().filename.unwrap_or_default();
+    let start = match spec {
+        Some(spec) => {
+            *lock(&hub().keyboard_field) = Some(spec.field);
+            spec.initial
+        }
+        None => facts().filename.unwrap_or_default(),
+    };
     cx.write(|m| m.write(buffer, &crate::signin_keyboard::units(&start)))?;
     hub().typing.store(true, Ordering::SeqCst);
     cx.call(GuestCall::new(crate::signin_keyboard::OPEN).ecx(0).args([
@@ -379,33 +467,39 @@ async fn open_keyboard(cx: &Cx) -> Result<(), EntryError> {
 async fn menu_press(cx: &Cx, row: MenuRow, chain: u32, list: u32) -> Result<(), EntryError> {
     let f = facts();
     match row {
-        MenuRow::Save => send(Choice::Save),
-        MenuRow::SaveAs => open_keyboard(cx).await?,
-        MenuRow::Load if f.saved.is_empty() => {
-            send(Choice::Notice("No Forge maps are saved.".into()))
+        MenuRow::Save => match variants::save(f.filename.as_deref()) {
+            variants::SaveStep::Keyboard => open_keyboard(cx, None).await?,
+            variants::SaveStep::Write { .. } => send(Choice::Save),
+        },
+        MenuRow::SaveAs => open_keyboard(cx, None).await?,
+        MenuRow::Load if variants::loadable(&f.variants).is_empty() => {
+            send(Choice::Notice(variants::NONE_SAVED.into()))
         }
         MenuRow::Load => {
-            let names = f.saved.clone();
+            let rows: Vec<variants::Row> = variants::loadable(&f.variants)
+                .into_iter()
+                .cloned()
+                .collect();
+            let names: Vec<String> = rows.iter().map(|r| r.name.clone()).collect();
             let current = f
                 .filename
-                .as_ref()
-                .and_then(|n| names.iter().position(|x| x == n))
+                .as_deref()
+                .and_then(|n| rows.iter().position(|r| variants::same_name(&r.name, n)))
                 .unwrap_or(0);
-            let chosen = names.clone();
             let set = Arc::new(move |i: usize| -> String {
-                match chosen.get(i) {
-                    Some(n) => {
-                        send(Choice::Load(n.clone()));
-                        format!("forge: load {n}")
+                match rows.get(i) {
+                    Some(r) => {
+                        send(Choice::Load(r.file.clone()));
+                        format!("forge: load {}", r.name)
                     }
-                    None => format!("forge: no saved map {i}"),
+                    None => format!("forge: no map variant {i}"),
                 }
             });
             let pick = Pick::new(
                 "Load",
                 names,
                 current,
-                "A saved Forge map of this map.",
+                "A map variant of this map.",
                 set,
             )
             .over(screen::OPENER);
@@ -521,6 +615,7 @@ impl Feature for Driver {
                             }
                             Step::Close(s) => dialog_tag::close(&cx, s).await,
                             Step::Open(kind) => open_screen(&cx, kind).await,
+                            Step::Keyboard(spec) => open_keyboard(&cx, Some(spec)).await,
                         };
                         if let Err(e) = done {
                             eprintln!("forge screens: {e}");

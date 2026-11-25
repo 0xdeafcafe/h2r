@@ -20,6 +20,7 @@
 //! }
 //! ```
 
+pub mod game_types;
 pub mod render_aspect;
 pub mod scene_effects;
 
@@ -130,10 +131,16 @@ impl Point {
 
 /// Beginning and end of the index build within the sorted dispatcher.
 pub const TRANSPARENT_ORDER_BEGIN: Point = Point::new(
-    "TRANSPARENT_ORDER_BEGIN", 0x0001_e381, Sig::Site, "docs/graphics/native-renderer.md",
+    "TRANSPARENT_ORDER_BEGIN",
+    0x0001_e381,
+    Sig::Site,
+    "docs/graphics/native-renderer.md",
 );
 pub const TRANSPARENT_ORDER_READY: Point = Point::new(
-    "TRANSPARENT_ORDER_READY", 0x0001_e3bc, Sig::Site, "docs/graphics/native-renderer.md",
+    "TRANSPARENT_ORDER_READY",
+    0x0001_e3bc,
+    Sig::Site,
+    "docs/graphics/native-renderer.md",
 );
 
 /// Return sites on the retail depleting damage report's kill-credit path.
@@ -141,6 +148,24 @@ pub const TRANSPARENT_ORDER_READY: Point = Point::new(
 pub mod kill_credit {
     pub const RETURN_TO_ATTRIBUTION: u32 = 0x001e_a465;
     pub const RETURN_TO_DAMAGE_REPORT: u32 = 0x000d_9acf;
+}
+
+/// The game's announcer queue (docs/audio/audio.md, "The announcer
+/// queue"): up to five 12-byte lines from `QUEUE`,
+/// each a sound tag (`+0`), the playing sound (`+4`), a playing byte
+/// (`+8`) and an i16 delay in ticks (`+0xa`); the head is the line playing
+/// or next. `0x0023_ef80` queues a game event's sound through
+/// `0x0023_f140`, which drops a line when five wait.
+pub mod announcer_queue {
+    /// The head line; the others follow it, 12 bytes apart.
+    pub const QUEUE: u32 = 0x0050_2350;
+    /// The head's playing byte: set when its sound starts, cleared by the
+    /// sound's end callback (`0x0023_f120`).
+    pub const HEAD_PLAYING: u32 = 0x0050_2358;
+    /// The head's delay, i16 ticks: counted down to -1, which plays it.
+    pub const HEAD_DELAY: u32 = 0x0050_235a;
+    /// The lines queued, the head included (i32).
+    pub const COUNT: u32 = 0x0050_23ec;
 }
 
 /// Return addresses for the retail lobby leave and party leader queries.
@@ -156,17 +181,26 @@ pub mod party_leave {
 
 /// The object section loop's call to the shared record writer.
 pub const OBJECT_RECORD_APPEND: Point = Point::new(
-    "OBJECT_RECORD_APPEND", 0x0013_41d0, Sig::Site, "docs/graphics/native-renderer.md",
+    "OBJECT_RECORD_APPEND",
+    0x0013_41d0,
+    Sig::Site,
+    "docs/graphics/native-renderer.md",
 );
 /// Return from that call, routed through the generated resume table.
 pub const OBJECT_RECORD_APPENDED: u32 = 0x0013_41d5;
 
 /// The geometry submitter's transparent-only append branch and epilogue.
 pub const TRANSPARENT_GEOMETRY_ENTRY: Point = Point::new(
-    "TRANSPARENT_GEOMETRY_ENTRY", 0x0004_1381, Sig::Site, "docs/graphics/native-renderer.md",
+    "TRANSPARENT_GEOMETRY_ENTRY",
+    0x0004_1381,
+    Sig::Site,
+    "docs/graphics/native-renderer.md",
 );
 pub const TRANSPARENT_GEOMETRY_QUEUED: Point = Point::new(
-    "TRANSPARENT_GEOMETRY_QUEUED", 0x0004_1477, Sig::Site, "docs/graphics/native-renderer.md",
+    "TRANSPARENT_GEOMETRY_QUEUED",
+    0x0004_1477,
+    Sig::Site,
+    "docs/graphics/native-renderer.md",
 );
 
 /// Entry points of the UI render walk. The feature asks image analysis
@@ -179,11 +213,9 @@ pub mod ui_render {
     };
 
     const DOC: &str = "docs/graphics/native-renderer.md";
-    pub const BACKDROP_WASH: Point =
-        Point::new("UI_BACKDROP_WASH", 0x0025_4b95, Sig::Site, DOC);
+    pub const BACKDROP_WASH: Point = Point::new("UI_BACKDROP_WASH", 0x0025_4b95, Sig::Site, DOC);
     pub const BACKDROP_WASH_TAIL: u32 = 0x0025_4dc0;
-    pub const BACKDROP_TINT: Point =
-        Point::new("UI_BACKDROP_TINT", 0x0025_4e28, Sig::Site, DOC);
+    pub const BACKDROP_TINT: Point = Point::new("UI_BACKDROP_TINT", 0x0025_4e28, Sig::Site, DOC);
     pub const BACKDROP_TINT_TAIL: u32 = 0x0025_4ee0;
     pub const BACKDROP_COMPOSITE: Point =
         Point::new("UI_BACKDROP_COMPOSITE", 0x0025_5083, Sig::Site, DOC);
@@ -200,6 +232,13 @@ pub mod ui_render {
     pub const MODEL_GEOMETRY_EMITTER: u32 = 0x0004_daa0;
     pub const MODEL_TEXTURE_COMMIT: u32 = 0x0001_cf50;
     pub const ITEM_CONTINUATION: u32 = 0x0023_5448;
+    /// `0x002353a5` with its widget list sorted, the screen's pre-draw
+    /// callback run and the depth window at `[ebp-8]`, `[ebp-0xc]`:
+    /// before its first widget draw. Reached only with widgets listed.
+    pub const LIST_READY: Point = Point::new("UI_LIST_READY", 0x0023_5428, Sig::Site, DOC);
+    /// `0x002353a5`'s draws done, before its post-draw callback: the
+    /// empty list and the end of the loop join here.
+    pub const LIST_DONE: Point = Point::new("UI_LIST_DONE", 0x0023_545c, Sig::Site, DOC);
     pub const OUTLINE_VERTICES: Point =
         Point::new("UI_OUTLINE_VERTICES", 0x0001_ed98, Sig::Site, DOC);
     pub const OUTLINE_VERTICES_TAIL: u32 = 0x0001_ee3a;
@@ -210,6 +249,14 @@ pub mod ui_render {
     pub const HUD_RETURN: Point = Point::new("UI_HUD_RETURN", 0x0013_96b9, Sig::Site, DOC);
     pub const HUD_HIDDEN_RETURN: Point =
         Point::new("UI_HUD_HIDDEN_RETURN", 0x0013_96c6, Sig::Site, DOC);
+    // The frame tail calls both helpers with two stack arguments. Each
+    // return site is before RET 8, with ESP back at its entry value.
+    pub const TAIL_COPY: Point = Point::new("TAIL_COPY", 0x0003_51a0, Sig::Site, DOC);
+    pub const TAIL_COPY_END: Point = Point::new("TAIL_COPY_END", 0x0003_52da, Sig::Site, DOC);
+    pub const TAIL_COMPOSITE: Point = Point::new("TAIL_COMPOSITE", 0x0002_2070, Sig::Site, DOC);
+    pub const TAIL_COMPOSITE_END: Point = Point::new("TAIL_COMPOSITE_END", 0x0002_229d, Sig::Site, DOC);
+    pub const TAIL_COPY_CALLER: u32 = 0x0001_3bf7;
+    pub const TAIL_COMPOSITE_CALLER: u32 = 0x0001_3c16;
     pub const FADE_RETURN: Point = Point::new("UI_FADE_RETURN", 0x0004_0dbf, Sig::Site, DOC);
     pub const OVERLAY_RECT_RETURN: Point =
         Point::new("UI_OVERLAY_RECT_RETURN", 0x0013_c1db, Sig::Site, DOC);
@@ -322,19 +369,31 @@ points! { ALL;
     SIM_ANIMATION_STREAM @ 0x0027_98a0: [opaque], Hot; "docs/perf/sim-budget.md";
     SIM_GRAPH_RESOLVE @ 0x001d_d9d0: [fn(graph: edx, clip: stack 0) ret 4], Hot; "docs/perf/sim-budget.md";
     SIM_MARKER_TRANSFORMS @ 0x000b_8d30: [fn(out: ebx, object: stack 0, name: stack 1, capacity: stack 2) -> eax ret 12], Hot; "docs/perf/sim-budget.md";
-    COLLISION_BSP_SEGMENT @ 0x001d_e6d0: [fn(query: stack 0, node: stack 1, lo: stack 2, hi: stack 3) -> al ret 16], Hot; "docs/perf/sim-budget.md";
-    /// BSP vector test: one segment through a collision BSP into the result record.
+    COLLISION_BSP_SEGMENT @ 0x001d_e6d0: [fn(query: stack 0, node: stack 1, lo: stack 2, hi: stack 3) -> al ret 16], Hot; "docs/engine/collision-queries.md";
+    /// BSP vector test. The parity observers gather at entry and compare AL and the result record at return.
     COLLISION_VECTOR_TEST @ 0x001d_e630: [fn(out: eax, flags: ecx, bsp: edx, limit: xmm0, breakable_count: stack 0, breakable_mask: stack 1, start: stack 2, delta: stack 3) -> al ret 16], Hot; "docs/engine/collision-queries.md";
     /// The instanced-geometry trace in one cluster.
     COLLISION_INSTANCE_TRACE @ 0x0024_4980: [fn(cluster: eax, start: esi, delta: edi, flags: stack 0, filter: stack 1, out: stack 2) -> al ret 12], Hot; "docs/engine/collision-queries.md";
+    /// Sphere cluster flood: the clusters a sphere reaches through portals from `cluster`, written to `out` while `capacity` lasts; returns the count in AX.
+    COLLISION_CLUSTER_FLOOD @ 0x0014_a5b0: [fn(cluster: stack 0, center: stack 1, radius: stack 2, capacity: stack 3, out: stack 4) -> eax ret 20], Hot; "docs/engine/collision-queries.md";
     /// Location of a point in the structure BSP: leaf, cluster, BSP index.
     COLLISION_LOCATION @ 0x0011_bed0: [fn(point: edx, out: esi) ret 0], Hot; "docs/engine/collision-queries.md";
     SIM_COLLISION_QUERY @ 0x0016_97c0: [fn(flags: stack 0, start: stack 1, delta: stack 2, ignore_a: stack 3, ignore_b: stack 4, out: stack 5) -> al ret 24], Hot; "docs/perf/sim-budget.md";
     BASE_OBJECT_IMPORT @ 0x000b_cc20: [fn(object: stack 0, name: stack 1, value: stack 2, active: stack 3) -> al ret 16], Hot; "docs/perf/sim-budget.md";
+    /// The integer MOPP box query: setup, then the interpreter below.
+    COLLISION_MOPP_BOX @ 0x0030_0150: [fn(vm: ecx, code: stack 0, aabb: stack 1, array: stack 2) ret 12], Hot; "docs/engine/collision-queries.md";
+    /// The general MOPP ray: setup, then the float interpreter below; the result goes through the collector.
+    COLLISION_MOPP_RAY @ 0x0030_1800: [fn(vm: ecx, collection: stack 0, code: stack 1, input: stack 2, parent: stack 3, collector: stack 4) ret 20], Hot; "docs/engine/collision-queries.md";
+    /// The instanced-geometry collection's child method, called once per accepted MOPP key.
+    COLLISION_INSTANCE_CHILD @ 0x0024_4bb0: [fn(collection: ecx, key: stack 0, buffer: stack 1) -> eax ret 8], Hot; "docs/engine/collision-queries.md";
     SIM_MOPP_BOX @ 0x002f_f8b0: [fn(query: ecx, state: stack 0, program: stack 1) ret 8], Hot; "docs/perf/sim-budget.md";
     SIM_MOPP_RAY @ 0x0030_09e0: [fn(query: ecx, state: stack 0, program: stack 1, segment: stack 2) ret 12], Hot; "docs/perf/sim-budget.md";
     OBJECT_TRANSFORM_COMPOSE @ 0x0014_2a60: [fn(parent: ecx, child: edx, out: stack 0) -> eax ret 4], Hot; "docs/perf/sim-budget.md";
     OBJECT_POSE_MATRIX @ 0x0014_21f0: [fn(out: stack 0, pose: stack 1) ret 8], Hot; "docs/perf/sim-budget.md";
+    /// The animation graph's node walk: every node reached from node 0
+    /// through the child and sibling links posed and composed with its
+    /// parent's matrix (`root` for node 0) into `matrices`.
+    ANIM_GRAPH_MATRICES @ 0x001d_d1c0: [fn(graph: stack 0, matrices: stack 1, records: stack 2, root: stack 3) ret 16], Hot; "docs/engine/skeleton-walk.md";
     /// Root node transform from two axes, scale and an optional parent.
     OBJECT_ROOT_TRANSFORM @ 0x000b_dc40: [fn(forward: eax, up: ecx, position: stack 0, scale: stack 1, mirror: stack 2, parent: stack 3, out: stack 4) ret 20], Hot; "docs/perf/sim-budget.md";
     ANIM_ROTATION_CODEC @ 0x0028_c530: [fn() ret 0], Hot; "docs/perf/sim-budget.md";
@@ -373,6 +432,11 @@ points! { ALL;
     /// at actor +0x90 through the dispatch table at 0x46eeb8.
     AI_UPDATE_BEHAVIORS @ 0x001a_7cc0: [fn(actor: stack 0) ret 4], Hot; "docs/halo1/ai-control.md";
     HS_UNIT_GRENADE_COUNT @ 0x002a_4310: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
+    /// Scripted vehicle hold. The boolean is passed in CL.
+    VEHICLE_HOVER @ 0x000f_0fd0: [fn(vehicle: eax, on: ecx) ret 0], Optional; "docs/game/notes/2026-11-24-vehicle-actions.md";
+    /// Request exit from occupied seats matching the mapping (-1 for all).
+    /// The accepted action count occupies the low word of EAX.
+    VEHICLE_UNLOAD @ 0x0011_b2b0: [fn(vehicle: edx, mapping: ecx) -> eax ret 0], Optional; "docs/game/notes/2026-11-24-vehicle-actions.md";
     /// HaloScript's object awareness evaluator, index 305.
     HS_AI_SEE_OBJECT @ 0x002a_53b0: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
     /// HaloScript's two-argument `ai_place` evaluator (291): a squad and a
@@ -390,7 +454,7 @@ points! { ALL;
     /// actor at placement, from the start's character or else the squad's
     /// (`+0x36`). `location` -1 lets [`AI_CHOOSE_SQUAD_START`] pick each
     /// start; a given location places one actor. `force` (a byte) skips the
-    /// location's availability check and the vehicle-seat attempt;
+    /// location's availability check and the emitter's deferred placement action;
     /// `spawn_flags` goes to [`AI_SPAWN_AT_SQUAD_START`]. Returns at once
     /// while the AI globals' initialised byte is clear.
     AI_SQUAD_PLACE @ 0x0020_1520: [fn(count: eax, squad: stack 0, location: stack 1, force: stack 2, spawn_flags: stack 3) ret 16]; "docs/game/firefight.md";
@@ -480,6 +544,18 @@ points! { ALL;
     HAVOK_WELD_CONTACTS @ 0x002f_a2f0: [opaque], Hot; "docs/perf/sim-budget.md";
     HAVOK_SOLVER @ 0x0031_c940: [opaque], Hot; "docs/perf/sim-budget.md";
     HAVOK_SUPPORT_VERTICES @ 0x0030_48a0: [opaque], Hot; "docs/perf/sim-budget.md";
+    /// The Havok world step: collide, then integrate, each phase a guest
+    /// call resumed inside the wrapper (sim-rewrite-havok.md §2).
+    HAVOK_WORLD_STEP @ 0x0031_1100: [fn(world: ecx, step: stack 0) ret 4], Hot; "docs/engine/sim-rewrite-havok.md";
+    HAVOK_ISLAND_COLLIDE @ 0x0031_7d30: [fn(island: ecx, broadphase: stack 0, input: stack 1) ret 8], Hot; "docs/engine/sim-rewrite-havok.md";
+    HAVOK_ISLAND_INTEGRATE @ 0x0031_6a20: [fn(island: ecx, input: stack 0) ret 4], Hot; "docs/engine/sim-rewrite-havok.md";
+    /// The world broadphase's batch update, the sweep's virtual at slot
+    /// `+0x14` of the broadphase behind `W+0xc4`.
+    HAVOK_BROADPHASE_BATCH @ 0x002e_0350: [opaque], Hot; "docs/engine/sim-rewrite-havok.md";
+    /// The two shared unconstrained-motion methods, vtable slots `+0x04`
+    /// and `+0x08` of a dynamic motion.
+    HAVOK_MOTION_FORCES @ 0x0031_b060: [opaque], Hot; "docs/engine/sim-rewrite-havok.md";
+    HAVOK_MOTION_POSE @ 0x0031_b1c0: [opaque], Hot; "docs/engine/sim-rewrite-havok.md";
     OBJECT_SPATIAL_VISIT @ 0x000b_b050: [fn(lists: stack 0, types: stack 1, location: stack 2, center: stack 3, radius: stack 4, out: stack 5, capacity: stack 6) ret 28], Hot; "docs/perf/sim-budget.md";
     OBSERVER_RESULT @ 0x0017_1d90: [fn(observer: esi) ret 0], Hot; "docs/perf/sim-budget.md";
     OBJECT_SPATIAL_PORTAL @ 0x0014_a370: [fn(portal: eax, center: ecx, bsp: edx, radius: stack 0) -> al ret 4], Hot; "docs/perf/sim-budget.md";
@@ -560,6 +636,10 @@ points! { ALL;
     CREATURE_PROBE_OBJECT_POSITION @ 0x000b_75a0: [fn(position: eax, forward: ecx, up: edx, object: stack 0, a: stack 1, b: stack 2) ret 12], Optional; "docs/game/notes/creature-entity.md";
     /// Select replica physics for an object at its initial placement.
     CREATURE_PROBE_REPLICA_PHYSICS @ 0x000b_9b90: [fn(replica: edx, object: stack 0) ret 4], Optional; "docs/game/notes/creature-entity.md";
+    HS_THREAD_EXECUTE @ 0x0020_9850: [fn(thread: edi) ret 0], Optional; "docs/engine/hs_vm.md";
+    HS_EVALUATE @ 0x0020_99f0: [fn(thread: edx, expr: stack 0, dest: ebx) ret 4], Optional; "docs/engine/hs_vm.md";
+    HS_GLOBAL_READ @ 0x0020_9bc0: [fn(index: esi) -> eax ret 0], Optional; "docs/engine/hs_vm.md";
+    HS_EVALUATE_ARGUMENTS @ 0x0020_9d50: [fn(thread: stack 0, count: stack 1, parameters: stack 2, first: stack 3) -> eax ret 16], Optional; "docs/engine/hs_vm.md";
     SCRIPT_UPDATE @ 0x0020_9310: [opaque], Optional; "docs/engine/engine-map.md";
     EFFECT_PART_CREATE @ 0x0017_a8a0: [opaque], Optional; "docs/engine/engine-map.md";
     PARTICLE_SYSTEM_UPDATE @ 0x0024_7140: [opaque], Optional; "docs/engine/engine-map.md";
@@ -629,6 +709,13 @@ points! { ALL;
     /// then the engine's shared steps (`0x15c000` and on). No engine
     /// object, nothing.
     ENGINE_UPDATE @ 0x0015_c150: [fn() ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// The per-player movement-speed step (`0x15c000`, called from
+    /// `ENGINE_UPDATE` and from `0x162060`): for each player it asks the
+    /// engine's slot `+0x4c` for a target multiplier, then ramps the
+    /// player's `+0x19c` toward it (up by a fixed step a tick, snapping
+    /// down, never below 0 or above the target). `+0x19c` is what the
+    /// player's replicated state carries into the unit's movement.
+    ENGINE_PLAYER_SPEEDS @ 0x0015_c000: [fn() ret 0], Optional; "docs/game/game-options.md";
     /// Slayer's kill callback, vtable `0x45c6d8` slot `+0x78`, which
     /// `PLAYER_KILLED` calls last (`0x15d6a4`): thiscall with the engine
     /// object, then that routine's attacker, victim and flag, and a kill
@@ -653,6 +740,28 @@ points! { ALL;
     TERRITORIES_TICK @ 0x002c_0230: [fn(engine: ecx) ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
     /// Juggernaut's per-tick slot `+0x48`.
     JUGGERNAUT_TICK @ 0x0019_2530: [fn(engine: ecx) ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// The game engine's round reset: clears the engine globals' round
+    /// block (`E+0x74`, 27 dwords), resets each player's round bytes
+    /// (`0x157a80`) and ends in a tail jump to the engine's slot `+0x0c`.
+    /// No engine, nothing. Called once from the game's start inside
+    /// `GAME_ACTIVATE` (`0x18f05e` → `0x158530` → `0x158556`) and from
+    /// the round state machine `0x15c550` as each later round begins
+    /// (`0x15c5de`); neither call runs in a distributed client.
+    ENGINE_ROUND_RESET @ 0x0015_7ae0: [fn() ret 0], Optional; "docs/engine/notes/2026-11-23-round-start-and-player-quit.md";
+    /// The game engine's player-left notice: ESI the salted player datum
+    /// of a player `0x152df0` has just taken out of the game (its unit
+    /// detached, player `+2` bit 1 set, bit 0 cleared). It calls the
+    /// engine's slot `+0x1c` with the player (Juggernaut's `0x1921f0`
+    /// clears the player's role bit) and posts an engine event
+    /// (`0x19eb30`). No engine, nothing.
+    ENGINE_PLAYER_LEFT @ 0x0015_7de0: [fn(player: esi) ret 0], Optional; "docs/engine/notes/2026-11-23-round-start-and-player-quit.md";
+    /// Initialize an untargeted game-engine event in the caller's record.
+    GAME_EVENT_NEW @ 0x0019_ebb0: [fn(event: eax, kind: ecx, index: edx) ret 0]; "docs/game/notes/2026-11-24-game-type-engine-reads.md";
+    /// Posts an event to the simulation's remote machines and shows it locally.
+    GAME_EVENT_POST @ 0x0019_eb90: [fn(event: eax) ret 0]; "docs/game/notes/2026-11-24-game-type-engine-reads.md";
+    /// Network and local delivery of a game-engine event.
+    GAME_EVENT_SEND @ 0x000a_7c50: [fn(event: edx) ret 0]; "docs/game/notes/2026-11-24-game-type-engine-reads.md";
+    GAME_EVENT_SHOW @ 0x0019_eb30: [fn(event: edi) ret 0]; "docs/game/notes/2026-11-24-game-type-engine-reads.md";
     /// The per-tick slot `+0x48` that CTF and Assault share (vtable
     /// `0x459d18`). Their capture scoring `0x242e00` runs from the
     /// per-player slot `+0x3c` and from `0x242741`, not from here.
@@ -665,6 +774,44 @@ points! { ALL;
     /// (record flag bit 2), 2 extra damage (bit 12), 3 damage resistance
     /// (bit 13). The slot is called at `0x15b28e`, `0x2404ad`, `0x2bc967`.
     ENGINE_TRAIT_QUERY @ 0x0024_dda0: [fn(engine: ecx, player: stack 0, trait: stack 1) -> al ret 8], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    // Retail overrides of the same slot. CTF and Assault share their body.
+    CTF_TRAIT_QUERY @ 0x0024_2010: [fn(engine: ecx, player: stack 0, trait: stack 1) -> al ret 8], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    ODDBALL_TRAIT_QUERY @ 0x002b_cc90: [fn(engine: ecx, player: stack 0, trait: stack 1) -> al ret 8], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    KING_TRAIT_QUERY @ 0x002b_d9d0: [fn(engine: ecx, player: stack 0, trait: stack 1) -> al ret 8], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    JUGGERNAUT_TRAIT_QUERY @ 0x0019_26c0: [fn(engine: ecx, player: stack 0, trait: stack 1) -> al ret 8], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    TERRITORIES_TRAIT_QUERY @ 0x002c_02e0: [fn(engine: ecx, player: stack 0, trait: stack 1) -> al ret 8], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// The game variant record clean-up: EBX the `0x130`-byte record.
+    /// Clamps every field, the engine index (`+0x44`) to 1..9 and the type
+    /// area by engine (`0x19de54`; 5 and 6 always fail), then compares the
+    /// record with its copy from entry: unchanged, AL 1 (EAX 1, ECX and EDX
+    /// 0, `0x19de4b`); changed, the whole record becomes a default Slayer
+    /// record and AL 0. Called by the codec's decode (`0x7d9b7`), the
+    /// options copy at game start (`0x137e05`) and the content reads.
+    VARIANT_CLEAN_UP @ 0x0019_d650: [fn(record: ebx) -> al ret 0], Optional; "docs/game/notes/2026-11-24-game-type-engine-reads.md";
+    /// The variant record's wire encode: the bit stream (`+0` words, `+4`
+    /// size in bytes, `+0x10` bit position) and the record on the stack.
+    /// Writes the index (4 bits), then for a nonzero one the common fields
+    /// and the type area through a jump table with no bounds check
+    /// (`0x7d151`, table `0x7d4f8`): 5, 6 and anything out of 1..9 jump
+    /// through a zero or a stray entry.
+    VARIANT_ENCODE @ 0x0007_cc50: [fn(writer: stack 0, record: stack 1) ret 8], Optional; "docs/game/notes/2026-11-24-game-type-engine-reads.md";
+    /// The variant record's wire decode: EAX the record out, ECX the bit
+    /// stream. Reads the fields the encode writes, refuses 5, 6 and
+    /// anything out of 1..9 at the type area (`0x7d82a`), zeroes the
+    /// record for index 0 (AL 1), and otherwise answers the clean-up's AL
+    /// on a copy (`0x7d9b7`).
+    VARIANT_DECODE @ 0x0007_d520: [fn(record: eax, reader: ecx) -> al ret 0], Optional; "docs/game/notes/2026-11-24-game-type-engine-reads.md";
+    /// The lobby protocol map: ECX the variant record; EAX 2 (distributed)
+    /// for `+0x44` 1..4 and 7..9, 1 (synchronous) for 5, 6 and anything out
+    /// of range, through a byte table (`0x161cbc`). Called from the
+    /// protocol choice `0x64060` (`0x640a7`) and `0x71480` (`0x7155d`).
+    VARIANT_PROTOCOL @ 0x0016_1c90: [fn(record: ecx) -> eax ret 0], Optional; "docs/live/live-coop.md";
+    /// The content category a saved or listed variant is filed under: EAX
+    /// the record; EAX 7 CTF, 8 Assault, 1 Slayer, 4 Oddball, 2 KotH, 9
+    /// Territories, 5 Juggernaut, through a jump on `+0x44` with no bounds
+    /// check (table `0x216a88`, zero for 5 and 6). Called from `0x2170af`,
+    /// `0x2baa29`, `0x2ca45d` and `0x2ca49b`.
+    VARIANT_CATEGORY @ 0x0021_6a50: [fn(record: eax) -> eax ret 0], Optional; "docs/game/notes/2026-11-24-game-type-engine-reads.md";
     /// Juggernaut's role setter: sets (ECX's low byte nonzero) or clears
     /// the player's bit of the role mask `[JUGGERNAUT_GLOBALS]+0` (`u16`;
     /// EAX the salted player datum, its index the bit). Setting posts the
@@ -789,6 +936,14 @@ points! { ALL;
     RENDER_FRAME_TAIL @ 0x0001_3b90: [opaque]; "docs/graphics/native-renderer.md";
     /// `render_scene_passes`: the scene pass sequence of one view.
     RENDER_SCENE_PASSES @ 0x0002_bcd0: [opaque]; "docs/graphics/e3-lighting.md";
+    /// Water compositing after the scene's layer 6.
+    WATER_TEARDOWN @ 0x0003_c3c0: [opaque]; "docs/graphics/native-water-fog.md";
+    /// Selects the current view's sky and draws its model.
+    RENDER_SKY @ 0x0003_ede0: [opaque]; "docs/graphics/native-renderer.md";
+    /// Builds the viewport clear flags and issues the device clear.
+    SCENE_CLEAR @ 0x0001_4b60: [opaque]; "docs/graphics/native-renderer.md";
+    /// Selects the colour and depth targets, including cached selections.
+    SCENE_TARGET_SELECT @ 0x0001_cd30: [opaque]; "docs/graphics/native-renderer.md";
     /// Resets the record counters immediately before the two structure walks.
     RESET_SCENE_RECORDS @ 0x0002_cb30: [fn() ret 0]; "docs/graphics/occlusion-culling.md";
     /// Main view's visible structure cluster and placement record walks.
@@ -805,11 +960,13 @@ points! { ALL;
     /// after the last geometry, including on a light with no active layer.
     LIGHT_RESTORE_TARGET @ 0x0001_4bc0: [opaque]; "docs/graphics/native-renderer.md";
     /// The scene call that walks the object shadow list.
-    OBJECT_SHADOW_LIST @ 0x0003_35e0: [opaque]; "docs/graphics/native-shadows.md";
+    OBJECT_SHADOW_LIST @ 0x0003_35e0: [fn(mode: stack 0) ret 4]; "docs/graphics/native-shadows.md";
     /// Gathers the object shadow candidates.
-    GATHER_OBJECT_SHADOWS @ 0x0003_3400: [opaque]; "docs/graphics/native-shadows.md";
+    GATHER_OBJECT_SHADOWS @ 0x0003_3400: [fn(list: ebx, rows: stack 0, mode: stack 1) -> eax ret 8]; "docs/graphics/native-shadows.md";
     /// One object's shadow (caster and receiver layers).
-    OBJECT_SHADOW @ 0x0003_2350: [opaque]; "docs/graphics/native-shadows.md";
+    OBJECT_SHADOW @ 0x0003_2350: [fn(caster: stack 0, fade: stack 1) -> al ret 8]; "docs/graphics/native-shadows.md";
+    /// The colour-mask filter between an object shadow's layers 10 and 11.
+    OBJECT_SHADOW_FILTER @ 0x0002_22a0: [fn() ret 0]; "docs/graphics/native-shadow-layers.md";
     /// One dynamic decal callback: `0x00163cd0` calls it in stored list order
     /// after `0x00043a40` selects the mode and its state. Stack `(list, unused)`,
     /// `ret 8`; the only native decal replacement point.
@@ -830,6 +987,31 @@ points! { ALL;
     /// context, stack `(light datum, &position, shadow byte, weight)`,
     /// `ret 0x10`; its only caller is `RENDER_DYNAMIC_LIGHTS`.
     RENDER_LIGHT_PASSES @ 0x0003_1170: [fn(definition: eax, context: ecx, light: stack 0, position: stack 1, shadow: stack 2, weight: stack 3) ret 16]; "docs/graphics/e3-lighting.md";
+    /// `0x00040e90`: the item lists of the visibility struct the records
+    /// were written for (`[0x004c0b80]`); EAX the mode (0: every record).
+    /// In the main view's kind (`[vis+0x2a78]` 0) list 0; in a light's,
+    /// lists 1 and 2 and the first-person table. `RENDER_LIGHT_PASSES`
+    /// calls it first, with EAX 0.
+    SCENE_ITEMS @ 0x0004_0e90: [fn(mode: eax) ret 0]; "docs/graphics/native-light-gather.md";
+    /// `0x000404b0`: the first-person lights, from `0x0002c2b9` between
+    /// the two first-person draws. Per slot of the first-person table with
+    /// records: the light volume, the slot's lists
+    /// (`FIRST_PERSON_LIGHT_RECORDS`), the constants, the flags, layers
+    /// 11, 14, 12 and 13 on the light's list and the passes' tail. Stack
+    /// `(mode)`, `ret 4`.
+    FIRST_PERSON_LIGHTS @ 0x0004_04b0: [fn(mode: stack 0) ret 4]; "docs/graphics/native-light-gather.md";
+    /// `0x000402b0`: one first-person light's lists 1 and 2 from its
+    /// slot's records, copied after the main view's records. EDX the slot,
+    /// stack `(mode)`, `ret 4`; its only caller is `FIRST_PERSON_LIGHTS`.
+    FIRST_PERSON_LIGHT_RECORDS @ 0x0004_02b0: [fn(slot: edx, mode: stack 0) ret 4]; "docs/graphics/native-light-gather.md";
+    /// `0x0004a1e0`: one light's constants (`engine::light_constants`).
+    /// EAX the frame block, ECX the volume, EDX the light datum, stack
+    /// `(definition, unused, shadow, weight)`, `ret 0x10`.
+    /// `RENDER_LIGHT_PASSES` calls it from `0x000311c3` and
+    /// `FIRST_PERSON_LIGHTS` from `0x0004057e`. The typed light passes put
+    /// `before` hooks on it, each acting only when the return word is its
+    /// own caller's site, so several features share the point.
+    LIGHT_CONSTANTS @ 0x0004_a1e0: [fn(frame: eax, context: ecx, light: edx, definition: stack 0, unused: stack 1, shadow: stack 2, weight: stack 3) ret 16]; "docs/graphics/native-light-gather.md";
     /// `render_screen_effects`: the view's post passes, the last call of
     /// `render_scene_passes` (`0x0002c322`, after layer 17 and
     /// `0x00020770`): the colour pass over the view's target (`0x000214f0`,
@@ -851,6 +1033,11 @@ points! { ALL;
     /// Screen convolution blur, also called by the colour pass. From
     /// 0x0002da96, stack arguments 0 and 1 are the steps and tap spread.
     SCREEN_CONVOLUTION_BLUR @ 0x0002_11a0: [fn(source: eax, steps: stack 0, spread: stack 1, growth: stack 2, dest: stack 3, other: stack 4, last: stack 5, combine: stack 6, arg7: stack 7, arg8: stack 8, arg9: stack 9) -> eax ret 40]; "docs/graphics/native-renderer.md";
+    /// The blur under a dialog: XMM0 the screen's transition fraction,
+    /// times `[0x0045de14]` as the steps of one call of
+    /// [`SCREEN_CONVOLUTION_BLUR`] (returning to `0x00235794`), then a
+    /// bare RET. Called from the window stack's render at `0x00235128`.
+    UI_MODAL_BLUR @ 0x0023_5756: [fn(fraction: xmm0) ret 0]; "docs/graphics/native-post-hud.md";
     /// A unit's integrated-light update, called at the end of its tick.
     UNIT_LIGHT_UPDATE @ 0x000c_50a0: [fn(unit: eax) ret 0]; "docs/halo1/hud.md";
     /// A shader template's pass set up (`0x00016610`, called by
@@ -1049,15 +1236,6 @@ points! { ALL;
     /// and, with `builtins`, the built-in ones. The variant list's fill
     /// (`0x2ca0d9`, the list handler in EBX) calls it from `0x2ca10e`.
     VARIANTS_ENUMERATE @ 0x0021_5900: [fn(player: stack 0, category: stack 1, count: stack 2, handles: stack 3, builtins: stack 4) ret 20]; "docs/game/community-gametypes.md";
-    /// The Edit Profile list's row text (screen 38, `edit_profile_menu`):
-    /// switches on the item's row index, 0 to 5 (Controls, Appearance,
-    /// Voice Output, Voice Masking, Online Status, Subtitles); any other
-    /// row gets the null id.
-    EDIT_PROFILE_ROW_TEXT @ 0x002b_7990: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/game/settings-menu.md";
-    /// The Edit Profile list's row chosen: rows 0 to 5 by index (the
-    /// handle checked through `0x16bae0` first); any other row does
-    /// nothing.
-    EDIT_PROFILE_ROW_CHOSEN @ 0x002b_79f9: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/game/settings-menu.md";
     /// The Game Setup dialog's list handler constructor (screen 23,
     /// `squad_settings_dialog`): ESI the handler, one stack argument. Fills
     /// the "squad setting list" rows (action word at datum `+2`) for the
@@ -1250,6 +1428,12 @@ points! { ALL;
     /// Lobby: set the squad session's map (host only): stdcall `(campaign
     /// id)`, the map id in ESI, AL 1 when set.
     LOBBY_SET_MAP @ 0x0019_a6f2: [fn(map: esi, campaign: stack 0) -> al ret 4]; "docs/live/live-coop.md";
+    /// Lobby: set the squad session's game variant to the `0x130`-byte
+    /// record on the stack, AL nonzero when taken: the dedicated host's
+    /// call, the pause menu's Game Setup's and Quick Options' for a
+    /// script variant (docs/game/rules-variants.md "Quick Options in the
+    /// lobby").
+    LOBBY_SET_VARIANT @ 0x0019_a728: [fn(variant: stack 0) -> al ret 4]; "docs/game/rules-variants.md";
     /// Lobby: set the squad session's campaign difficulty (AX; `0xffff`
     /// none) and, for a difficulty, clear the variant (synchronous
     /// protocol). AL 1 when set.
@@ -1313,9 +1497,24 @@ points! { ALL;
     /// `PLAYER_SPAWN_LOCATION`, the unit; AL 0 when no location was free.
     /// Clears the first-spawn bit (`0x14f6c1`) when it spawned.
     PLAYER_SPAWN @ 0x0014_f2e0: [fn(player: stack 0) -> al ret 4]; "docs/live/live-coop.md";
+    /// The tag a starting weapon value names, for the spawn's weapon pass
+    /// (`0x19ef40`): 0 or over 20 the profile's own weapon, 1 none (-1),
+    /// 2 a random slot of the multiplayer globals' weapon list that is not
+    /// `other` (it calls itself, returning to `0x19ee18`), 3 to 20 slot
+    /// `value - 3`. The pass calls it for the secondary from `0x19f03d` and
+    /// `0x19f076` and for the primary from `0x19f051` and `0x19f05e`.
+    STARTING_WEAPON_PICK @ 0x0019_eda0: [fn(default: stack 0, value: stack 1, other: stack 2) -> eax ret 12]; "docs/game/pogo-stick.md";
     /// The best free starting location for a player (handle in ECX): AX the
     /// index into `scnr+0x100`, `0xffff` when every spot is blocked.
     PLAYER_SPAWN_LOCATION @ 0x0014_ef00: [fn(player: ecx, unit: stack 0, a: stack 1, b: stack 2) -> eax ret 12]; "docs/live/live-coop.md";
+    /// The spawn chooser's free-spot test, called only from
+    /// `PLAYER_SPAWN_LOCATION` (`0x14efce`), and only for a location that
+    /// weighs more than the best so far: ECX the starting location
+    /// (`scnr+0x104` + `0x34` × index), EAX the unit type the player spawns
+    /// as (-1 passes). AL 1 when the type's capsule fits there, 0 when
+    /// something stands in it, and the chooser then keeps its best. EDI
+    /// holds the chooser's player handle across the call.
+    SPAWN_LOCATION_FREE @ 0x0023_bb70: [fn(location: ecx, unit: eax) -> al ret 0]; "docs/game/notes/2026-11-24-siege-spawns-and-bodies.md";
     /// Retail co-op placement: move a player (EBX) next to a position (ESI,
     /// three floats) beside an anchor unit (stack). The co-op respawn's
     /// own call is at `0x14cffd`. AL 1 when placed.
@@ -1382,8 +1581,28 @@ points! { ALL;
     GAME_STATE_REVERT @ 0x0012_3f60: [opaque], Optional; "docs/runtime/checkpoints.md";
     /// Restore the whole game state from a saved image (header checked).
     GAME_STATE_RESTORE @ 0x0012_4380: [opaque], Optional; "docs/runtime/checkpoints.md";
-    /// Switch the structure BSP (prepare, dispose, load, publish).
-    BSP_SWITCH @ 0x0011_c1b0: [opaque], Optional; "docs/runtime/level-boot.md";
+    /// Switch the structure BSP (prepare, dispose, load, publish): stdcall
+    /// `(bsp, unload)`, the index an `i16` in the first word, `unload`
+    /// (a byte) whether the old BSP's tag data is released. Returns at
+    /// once, AL 1, when `bsp` is both the loaded BSP (`0x4686c4`) and the
+    /// active one (game globals `+2`), so it cannot rebuild the active BSP
+    /// in place; [`STRUCTURE_BSP_DEACTIVATE`] then
+    /// [`STRUCTURE_BSP_ACTIVATE`] do (docs/editor/realtime-edits.md,
+    /// "Collision").
+    BSP_SWITCH @ 0x0011_c1b0: [fn(bsp: stack 0, unload: stack 1) -> al ret 8], Optional; "docs/runtime/level-boot.md";
+    /// Each game system's dispose-from-old-structure-BSP callback (the
+    /// lifecycle table's column 5, `0x440dec + 0x24 n`, last to first),
+    /// then the active BSP (game globals `+2`) set to -1. `BSP_SWITCH`
+    /// calls it when the active BSP changes (`0x11c23a`).
+    STRUCTURE_BSP_DEACTIVATE @ 0x0013_7da0: [fn() ret 0], Optional; "docs/editor/realtime-edits.md";
+    /// Clears three `0x40`-byte tables of the game globals (`+0x1138`,
+    /// `+0x1178`, `+0x11b8`), sets the active BSP (`+2`) to the loaded one
+    /// (`0x4686c4`) and runs each game system's
+    /// initialize-for-new-structure-BSP callback (column 4, `0x440de8 +
+    /// 0x24 n`): physics builds its Havok world over the structure
+    /// (`0x1c2690`), objects find their locations again (`0xb6bb0`).
+    /// `BSP_SWITCH` calls it last (`0x11c345`).
+    STRUCTURE_BSP_ACTIVATE @ 0x0013_7d40: [fn() ret 0], Optional; "docs/editor/realtime-edits.md";
     /// HaloScript `cinematic_start`.
     CINEMATIC_START @ 0x002a_9740: [opaque], Optional; "docs/runtime/level-boot.md";
     /// HaloScript `cinematic_stop`.
@@ -1431,6 +1650,16 @@ points! { ALL;
     /// Fill a screen request (ECX): the player mask, two words and the
     /// loader; `OPEN_SCREEN` and the menus' own opens call it.
     SCREEN_REQUEST @ 0x0014_9f49: [fn(request: ecx, mask: stack 0, a: stack 1, b: stack 2, loader: stack 3) ret 16]; "docs/halo1/campaign-picker.md";
+    /// The action assembled for a local or remote slot becomes the unit's control.
+    PLAYER_ACTION_TO_UNIT_CONTROL @ 0x0015_05f0: [fn(player: eax, unit: stack 0, action: stack 1) ret 8]; "docs/engine/sim-rewrite.md";
+    PLAYER_NEUTRAL_UNIT_CONTROL @ 0x0015_0790: [fn(unit: edi) ret 0]; "docs/engine/sim-rewrite.md";
+    PLAYER_LOOK_CURVE @ 0x0018_5b30: [fn(samples: esi, count: eax, axis: stack 0) ret 4]; "docs/engine/sim-rewrite.md";
+    HUD_SEATS_UPDATE @ 0x0013_91ed: [fn() ret 0]; "docs/engine/sim-rewrite.md";
+    HUD_SEAT_UPDATE @ 0x0013_a838: [fn(user: stack 0) ret 4]; "docs/engine/sim-rewrite.md";
+    AIM_TARGET_UPDATE @ 0x001a_4900: [fn(user: eax, state: ebx, follow: stack 0) ret 4]; "docs/game/aim-assist.md";
+    AIM_TARGET_SEARCH @ 0x001a_5370: [fn(camera: ecx, params: stack 0, direction: stack 1, unit: stack 2, team: stack 3, output: stack 4) ret 20]; "docs/game/aim-assist.md";
+    AIM_TARGET_COMPARE @ 0x001a_66f0: [fn(lhs: stack 0, rhs: stack 1) -> eax ret 0]; "docs/game/aim-assist.md";
+    SEAT_SHOT_AIM @ 0x001a_4c00: [fn(direction: eax, origin: ebx, player: stack 0, aim: stack 1, hand: stack 2) -> al ret 12]; "docs/game/aim-assist.md";
     /// One local player's control update (look input to the player's
     /// action): stdcall, the local user index first of five stack words,
     /// the player's local controller index (player `+0x24`) in EDX. Its
@@ -1486,14 +1715,39 @@ points! { ALL;
     /// `0x24ba16`, `0x24ba5a`.
     SLOT_SIGN_OUT @ 0x0019_0d4b: [fn(slot: eax) ret 0]; "docs/game/bots.md";
     /// Allocates a one-shot sound after native playback admission.
-    SOUND_IMPULSE_ALLOCATE @ 0x0012_6000: [fn(source: stack 0, channel: stack 1, tag: stack 2, rule: stack 3) ret 16]; "docs/halo1/sounds.md";
+    SOUND_IMPULSE_ALLOCATE @ 0x0012_6000: [fn(tag: stack 0, channel: stack 1, source: stack 2, rule: stack 3) -> eax ret 16]; "docs/halo1/sounds.md";
+    /// Chooses the channel for a due instance. The low word of EAX is -1 when no channel is available.
+    SOUND_CHOOSE_CHANNEL @ 0x0012_8700: [fn(instance: stack 0, reason: stack 1) -> eax ret 8]; "docs/audio/dsound.md";
+    /// Unbinds the channel and notifies the owner before freeing the instance.
+    SOUND_FINISH_INSTANCE @ 0x0012_7320: [fn(instance: eax, reason: stack 0) ret 4]; "docs/audio/dsound.md";
+    /// Drops the instance's companion and returns its salted slot to the sound pool.
+    SOUND_FREE_INSTANCE @ 0x0012_7390: [fn(instance: edi) ret 0]; "docs/audio/dsound.md";
     /// Walks a block of predicted resources in the requested prediction mode.
     PREDICT_RESOURCES @ 0x0016_e5e0: [fn(mode: edi, resources: stack 0) -> al ret 4], Optional; "docs/perf/sim-budget.md";
+    /// Smooth a mix-in's position, obstruction and occlusion.
+    SOUND_SUBMIX_UPDATE @ 0x0022_0e00: [fn(source: edi, slot: stack 0) ret 4], Optional; "docs/audio/dsound.md";
     /// Sets source reverb and filter parameters on a DirectSound submix buffer.
     SOUND_SUBMIX_FX @ 0x0022_11e0: [fn(submix: eax, room: stack 0) ret 4], Optional; "docs/perf/sim-budget.md";
+    /// Convert the submix filter cutoff to its coefficient word.
+    SOUND_SUBMIX_CUTOFF @ 0x0021_e270: [fn(frequency: stack 0) ret 4], Optional; "docs/audio/dsound.md";
+    /// Convert the submix filter resonance to its coefficient word.
+    SOUND_SUBMIX_RESONANCE @ 0x0021_e2d0: [fn(resonance: stack 0) ret 4], Optional; "docs/audio/dsound.md";
+    /// Construct the spatial descriptor consumed by the channel mixer.
+    SOUND_CHANNEL_SPATIAL @ 0x0012_9aa0: [fn(channel: eax, gain: stack 0, output: stack 1) ret 8], Optional; "docs/audio/dsound.md";
+    /// Gather the sound instance parameters and submit the channel update.
+    SOUND_CHANNEL_UPDATE @ 0x0012_8ca0: [fn(channel: stack 0, gain: stack 1, listener: stack 2) ret 12], Optional; "docs/engine/sim-rewrite.md";
+    /// Collect a listener's cluster ambience candidates.
+    SOUND_CLUSTER_AMBIENCE @ 0x0018_d730: [fn(bsp: stack 0, cluster: stack 1, position: stack 2, fallback_radius: stack 3, palettes: stack 4, gains: stack 5, portals: stack 6, clusters: stack 7, count: stack 8) ret 36], Optional; "docs/formats/structure-bsp.md";
+    /// Compare two candidate distances during ambience selection.
+    SOUND_AMBIENCE_FARTHER @ 0x0018_ae50: [fn(a: stack 0, b: stack 1, distances: stack 2) -> eax ret 12], Optional; "docs/formats/structure-bsp.md";
     /// The sound frame service, once a frame after the render: among
     /// other things, one listener per mapped local user (`0x125c93`).
     SOUND_UPDATE @ 0x0012_5b40: [fn() ret 0]; "docs/engine/engine-map.md";
+    /// The announcer queue's update: counts the head line's delay down,
+    /// plays it when the delay runs out, and takes the next line once the
+    /// one playing has finished (`announcer_queue`). Skipping it holds
+    /// every queued line where it is.
+    ANNOUNCER_QUEUE_UPDATE @ 0x0023_f000: [fn() ret 0]; "docs/audio/audio.md";
     /// The sound listeners' update (stdcall, one argument, `ret 4`): for
     /// each local user mapped (`[0x4e8c20] + 0xc`) it sets the user's
     /// listener from its camera and marks it active (the byte at
@@ -1648,6 +1902,9 @@ points! { ALL;
     /// A seconds value times the tick rate, rounded by `fistp` (`ecx`
     /// returns the same integer).
     GAME_SECONDS_TO_TICKS @ 0x0014_69f0: [fn(seconds: stack 0) -> eax ret 4], Hot; "docs/engine/object-update.md";
+    /// Visit active unit actions in order. A callback returning zero clears
+    /// its action. Returns one if any callback returned nonzero.
+    UNIT_ACTIONS_UPDATE @ 0x000e_6830: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
     /// An action request for the unit: eight words on the stack, the action
     /// first, handed to `0xe6900`.
     BIPED_ACTION @ 0x000e_68c0: [fn(action: ecx, object: stack 0) ret 4], Hot; "docs/engine/object-update.md";
@@ -1739,21 +1996,69 @@ mod tests {
         assert_eq!(GAME_MEDAL.sig.arg("medal"), Some(Loc::Eax));
         assert_eq!(GAME_MEDAL.sig.arg("player"), Some(Loc::Ecx));
         assert_eq!(GAME_MEDAL.sig.arg("count"), Some(Loc::Ebx));
-        assert!(matches!(GAME_MEDAL.sig, Sig::Fn { ret: None, pop: 0, .. }));
+        assert!(matches!(
+            GAME_MEDAL.sig,
+            Sig::Fn {
+                ret: None,
+                pop: 0,
+                ..
+            }
+        ));
         assert_eq!(GAME_MEDAL.class, Class::Optional);
         // The engine vtable slots are thiscall: the engine object in ECX.
         assert_eq!(SLAYER_KILL.sig.arg("engine"), Some(Loc::Ecx));
         assert_eq!(SLAYER_KILL.sig.arg("victim"), Some(Loc::Stack(1)));
-        assert!(matches!(SLAYER_KILL.sig, Sig::Fn { ret: None, pop: 16, .. }));
-        assert!(matches!(ENGINE_TRAIT_QUERY.sig, Sig::Fn { ret: Some(Loc::Al), pop: 8, .. }));
+        assert!(matches!(
+            SLAYER_KILL.sig,
+            Sig::Fn {
+                ret: None,
+                pop: 16,
+                ..
+            }
+        ));
+        assert!(matches!(
+            ENGINE_TRAIT_QUERY.sig,
+            Sig::Fn {
+                ret: Some(Loc::Al),
+                pop: 8,
+                ..
+            }
+        ));
+        for query in [
+            &CTF_TRAIT_QUERY, &ODDBALL_TRAIT_QUERY, &KING_TRAIT_QUERY,
+            &JUGGERNAUT_TRAIT_QUERY, &TERRITORIES_TRAIT_QUERY,
+        ] {
+            assert_eq!(query.sig, ENGINE_TRAIT_QUERY.sig, "{}", query.name);
+        }
         // The routines a script's calls reach: register arguments, no pop.
         assert_eq!(JUGGERNAUT_ROLE_SET.sig.arg("player"), Some(Loc::Eax));
         assert_eq!(JUGGERNAUT_ROLE_SET.sig.arg("on"), Some(Loc::Ecx));
-        assert!(matches!(JUGGERNAUT_ROLE_SET.sig, Sig::Fn { ret: None, pop: 0, .. }));
+        assert!(matches!(
+            JUGGERNAUT_ROLE_SET.sig,
+            Sig::Fn {
+                ret: None,
+                pop: 0,
+                ..
+            }
+        ));
         assert_eq!(ODDBALL_BALL_RETURN.sig.arg("ball"), Some(Loc::Eax));
-        assert!(matches!(ODDBALL_BALL_RETURN.sig, Sig::Fn { ret: None, pop: 0, .. }));
+        assert!(matches!(
+            ODDBALL_BALL_RETURN.sig,
+            Sig::Fn {
+                ret: None,
+                pop: 0,
+                ..
+            }
+        ));
         assert_eq!(OBJECTIVE_RETURN.sig.arg("object"), Some(Loc::Esi));
-        assert!(matches!(OBJECTIVE_RETURN.sig, Sig::Fn { ret: None, pop: 4, .. }));
+        assert!(matches!(
+            OBJECTIVE_RETURN.sig,
+            Sig::Fn {
+                ret: None,
+                pop: 4,
+                ..
+            }
+        ));
         assert_eq!(by_base(0x0013_7fe0).map(|p| p.name), Some("GAME_TICK"));
     }
 }

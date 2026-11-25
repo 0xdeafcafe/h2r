@@ -6,16 +6,25 @@ Change 7 of the [architecture review](../reviews/2026-11-20-architecture.md)
 page is the spec: types, threads, the order of work, the tests and gates
 for each slice, the order of deletion and the commands that measure it.
 Slices 0 to 3 are built; their sections say how. Of slice 4 the entry
-census and the structure's layer draws from the plan are built, and its
+census and the layer draws of the structure's static items and the
+objects' items (layers 1, 5, 7, 8 and 20, layer 5's with the model's
+PRT stream; the first person's 1, 7, 8 and 20) from the plan, on by
+default, the caster and receiver groups of layers 10, 11 and 14 drawn
+from the scene with no geometry handler, and the object filter's native
+quads, are built, and its
 section says what the replacements wait on. Of slice 5 the extraction of
 the fog, the water and the post passes and the fog's and water's
 recording on the render thread are built; its section says what the
 replacements wait on. Slice 6 provides the carried census, private draws
-of sealed scenes and an opt-in display owner for eligible game views.
-Paced display still queues guest-visible writes in order. Default ownership
-depends on the scheduling, corpus, parity and timing gates
-in [slice 6](#slice-6-the-renderer-owns-game-view-frames). Slices 7 to 10
-are planned.
+of sealed scenes and a display owner for eligible game views, on by
+default for a paced display (a window with a render thread) and opt-in
+for a locked run. Paced display still queues guest-visible writes in
+order. The scheduling, corpus, parity and timing gates in
+[slice 6](#slice-6-the-renderer-owns-game-view-frames) are not yet
+measured. Of slice 8
+the pure blend (`frame-scene::blend`) and the frame owner's display-rate
+loop are built; the loop blends view cameras, and objects stay at the
+newer tick. Slices 7, 9 and 10 are planned.
 
 Evidence labels as in [feature-engine.md](../engine/feature-engine.md):
 **Code** (read in this repository or in the disassembly), **S**
@@ -45,8 +54,12 @@ game data.
 - `native-render` depends on `d3d`, reads guest memory through
   `dyn GuestRead` in about 19 of its modules, and is wrapped in about 30,000
   lines of glue in `boot` and `feature`.
-- 60 fps today is E1, reprojection inside `d3d::interp`
-  ([high-framerate.md](../game/high-framerate.md)). 120 is not built.
+- 60 and 120 fps are display frames between the last two sealed scenes,
+  drawn by the frame owner on the render thread (section 7, slice 8).
+  Without a paced frame owner (`frame-scene.sink=off`, a headless or
+  locked run, no render thread, a frame the owner declines: exact
+  readbacks for network play, films and lockstep, or a scaled display
+  without its single copy) every scene is shown once, at 30 fps.
 
 ## 2. Decisions
 
@@ -85,7 +98,7 @@ that and from the two reviews.
    then the switch goes too. Diagnostics are agent API methods.
 6. **Interpolation is a property of the renderer.** With two scenes in
    hand the render thread draws any number of frames between them.
-   `d3d::interp` (D and E1) is deleted when that works.
+   There is no D3D-side interpolation.
 7. **The open items are not patched on the tenant path unless they block
    a slice.** Deferring side passes above 1x is not done at all: slice 6
    removes the second copy, and with it the problem. The object-walk
@@ -220,7 +233,8 @@ hundred kilobytes at most (**Estimate**).
 | Gels | the template and quad sites | carried, then typed | 6, 9 |
 | Transparents | the sorted list `0x0001e370` dispatches | carried, then typed | 6, 9 |
 | Decals, particles, contrails, effects | the producers' draws | carried, then typed | 6, 9 |
-| Sky, layer 2, layers 15, 18, 19, 21 | their draws | carried | 6 |
+| Sky model | per-view node rows, section part and layer-15 material at its indexed strip (see [native-renderer.md](native-renderer.md)) | typed with packet fallback | 6 |
+| Other layer-15 draws, layers 18, 19, 21 | their draws | carried | 6 |
 | Lens flares and their visibility tests | the flare writer `0x00020bb0` and reader `0x00020770` | typed (a native query) | 6 |
 | HUD, menus, loading screens, movies | the UI dispatch `0x00147af1`, the fallback view `0x002232a0` | carried | 6 |
 
@@ -465,8 +479,24 @@ sample tick `B`'s scene copy.
 **Pacing.** One frame per vsync at the display's rate, capped by
 `graphics.fps` (`H2_FPS`, `h2 play --fps`); 30 means one frame per
 scene. Alpha is computed for the predicted display time. On a
-variable-refresh display, present when ready up to the cap. The
-predictor and its counters come over from `d3d::interp::pacing`.
+variable-refresh display, present when ready up to the cap. The pacer
+is `frame-scene::pace` (rate, schedule, headroom cap and alpha) and the
+loop over it `frame-scene::display::DisplayLoop`.
+
+**The loop.** It runs in the frame owner on the render thread
+(`native_render::frame_graph::display_rate`, through
+`d3d::threaded::owner::DisplayRate`), only for a paced owner
+(`frame-scene.sink`, mailbox `Paced`). At an owned Swap the newer scene
+`B` is drawn on the live attachments, so the guest's outputs are exact,
+and the window is shown a display frame toward it: `B`'s frame drawn
+again on private targets (`GuestDrawPass::new_lit`) with each game view's
+camera blended from `A` (`d3d::scene_sink::Retarget` rewrites the four
+view rows of carried draws with `CameraUse::View`, and moves a typed
+stage's draw through `ExternalPass::with_draw`). While nothing is queued
+the render thread asks the loop for the frames after, which it shows as
+host-only presents (`GfxBackend::show_between`). A Swap that goes out
+without the graph drops the pair. `render.stats`' `display_rate` reports
+the loop ([agent-api.md](../runtime/agent-api.md)).
 
 **Latency.** One tick, as D. Visual aim prediction (rotating the drawn
 camera by the turn the next tick will apply) stays optional and later;
@@ -485,7 +515,7 @@ costs the most guest time" where it is not.
 | 1 | Camera, world layer 3, objects | read guest at the layer hook, game-thread prepare, packets | typed; render-thread prepare | none yet (masks stay while there is a remainder) | 1, 2 |
 | 2 | Object-walk remainder | about 14 objects a frame through D3D | typed (`PartFlags`) | the layer-3 geometry handlers for objects | 3 |
 | 3 | First person | per-item replacement at issue | typed | the layer-3 call in `0x0003fdf0` | 3 |
-| 4 | World layers 1, 5, 7, 8, 20 | recorded at the resolved draw | typed | those layers' draws | 3 |
+| 4 | World layers 1, 5, 7, 8, 20, 2 and 17 | recorded at the resolved draw | typed | those layers' draws | 3 |
 | 5 | Lights and shadows | admitted per packet; some lights refused | typed, shadows batched in one pass sequence | the light pass `0x00031c80` and the shadow layers | 3 |
 | 6 | Opaque block as a whole | mask bits edited and restored | whole-call replacement | `LAYER_DRAW` for layers 1, 3, 5, 7, 8, 20 | 4 |
 | 7 | Fog, water | native passes at their layer hooks | typed | layers 16 and 6 | 5 |
@@ -670,7 +700,7 @@ commands are for the coordinator.
     `Device::queues_scene_stages(stage)` says whether one is taken now:
     a render thread whose backend records them
     (`Backend::runs_scene_stages`: `GfxBackend`, `ScaledBackend` when
-    both copies do, `InterpBackend` while it is not replaying), and the
+    both copies do), and the
     stage has not stood down. `Device::reserve_scene_stage` resolves the
     bound targets, the request and the view's constants and W clip, and
     makes here the checks that would refuse it on the render thread (the
@@ -698,8 +728,8 @@ commands are for the coordinator.
     stage stands down: from then on it reserves on the sim thread, where
     a refusal leaves the items to the guest. One frame at most is short
     of the stage's items.
-  - **Where nothing is queued.** Without a render thread, while
-    interpolation replays, and after a stand-down, the stages reserve on
+  - **Where nothing is queued.** Without a render thread and after a
+    stand-down, the stages reserve on
     the sim thread through `Device::prepare_external_bound`.
   - **Inputs by value.** A stage carries the inputs it reads (the
     world's camera and parts, the objects' planned draws), not an `Arc`
@@ -746,8 +776,8 @@ commits. The three parts are built.
 - **Objects.** The geometry draw `0x0004d0b0` reads four bits of the
   render record's `+0` in layer 3 (**Code**; the module notes of
   `scene_extract::layout::object_walk` give the addresses).
-  `object_walk::record_flags` turns them into `PartFlags` or a named
-  refusal:
+  `object_walk::record_flags` turns them into `PartFlags`; a part whose
+  flags' inputs do not read refuses by a named cause:
   - **Bit 14, stencil marking** (`PartFlags::STENCIL_MARK`). The
     prologue `0x0004d640` sets stencil mode 2 (`0x00015370`: `ALWAYS`,
     reference `0xff`, masks `0xff`, `REPLACE` on pass) and the
@@ -765,8 +795,20 @@ commits. The three parts are built.
   - **Bit 9, strip topology** (`PartFlags::STRIP`). The whole-part
     emitter `0x0004daa0` draws a part as a strip when the bit is set and
     the part's triangle-list flag is clear, as a list otherwise. The
-    native models decode a part without the list flag as a strip, so
-    that part without bit 9 refuses (`Refusal::Topology`).
+    lit models keep, after a strip part's triangles, its indices decoded
+    as a list (`object_program_gpu::lit_listed`, `LitPart::listed`: the
+    whole triangles, as D3D draws `n / 3` of `n` list indices), and a
+    strip part in the scene without the flag draws them
+    (`object_program_gpu::part_ranges`). Its chosen subparts draw as the
+    list loop `0x0004db68` joins them: each run of index-contiguous
+    chosen subparts (one starting one past the run's last index) is one
+    list of the section's indices, so a triangle can span two subparts
+    and a run's last `n % 3` indices draw nothing. The lit models keep,
+    after a strip part's subparts, the section's indices the subparts
+    span, verbatim, with each subpart's place in them
+    (`object_program_gpu::ListedSubparts`, `SubpartRanges::listed`), and
+    a planned draw issues each run's whole triangles
+    (`SubpartRanges::drawn_as_list`).
   - **Bit 6, conditional stream ranges** (`PartFlags::SUBPARTS`). With a
     visible-subpart mask (record `+0x14`, bit `s` of word `s >> 5` for
     the section's subpart `s`) and subparts in the section, the emitter
@@ -804,8 +846,8 @@ commits. The three parts are built.
     toggle's inputs do not read the part refuses
     (`Refusal::AuxState`).
 
-  Refused parts count by cause as `native_objects_walk_part_aux_state`,
-  `_part_subparts` and `_part_topology` (parts, where
+  Refused parts count by cause as `native_objects_walk_part_aux_state`
+  and `_part_subparts` (parts, where
   `walk_unsupported` counts objects). `render.scene` reports each view's
   parts by flag (`part_flags`).
 - **Lights.** The light passes `0x00031170` draw, per light, layer 10
@@ -818,13 +860,15 @@ commits. The three parts are built.
   through `0x00015370`, the test off; before layer 10 they set none. So
   no layer reads a stencil an earlier one wrote: a later layer reads
   the shadow map (target 9) and the destination alpha layer 11 writes,
-  both kept by the GPU's order. At the passes' entry
-  (`hooks::native_lights::begin_light`) `light_passes::read` takes the
-  flags the light's constants computed, its lists' masks and the
-  additional casters' inputs, `light_passes::steps` gives the layers in
-  order, each with its stencil change, target and whether it draws, and
-  the light goes into the open view (`frame_scene::SceneLight`,
-  `LightStep`; `View::lights`). The resolved-draw path takes each of
+  both kept by the GPU's order. When the passes' item lists are made
+  (`render_bridge::native_lights::handoff`), the light's constants give
+  its flags, the item body's lists give their layers, and
+  `light_passes::read` gives the additional casters' inputs;
+  `light_passes::steps` gives the layers in order, each with its stencil
+  change, target and whether it draws, and the light goes into the open
+  view (`frame_scene::SceneLight`, `LightStep`; `View::lights`). A light
+  of the guest's own loop is read at its passes' entry
+  ([native-light-gather.md](native-light-gather.md), L5). The resolved-draw path takes each of
   layers 12 and 13 the steps draw, one at a time, with the candidate
   kept from the entry to the next light; the gathered walk batches any
   layer the steps draw, each its own reservation
@@ -853,7 +897,21 @@ commits. The three parts are built.
   `LayerItem`; `View::layers`): each geometry item's key, its owner (a
   cluster's section, a placement, or an object by handle), its record's
   model (the first-person mode for a first-person item), an object
-  item's palette rows and its owner's lighting;
+  item's palette rows and its owner's lighting, and what its record
+  makes the geometry draw `0x0004d0b0` do (`object_walk::layer_part`,
+  research points in its module notes): its `PartFlags` (the stencil
+  mark only in layers 1 and 3, where the prologue `0x0004d640` sets a
+  stencil mode) and chosen subparts, or a named cause the scene cannot
+  reproduce it (`LayerObjectRefusal`: a fade byte, the shader's flag
+  bit 0, an argument the pass setup takes, layer 5's PRT stream left as
+  the draws before it left it, subparts or auxiliary state that do not
+  read). In layer 5 an object item whose model has a PRT
+  block carries what the draw adds for it (`frame_scene::PrtStream`,
+  read by `scene_extract::layout::prt`, research points in its module
+  notes): the stream's type, stride and the guest address of the item's
+  section's vertices at the object's level, and the constants from
+  `c[68]` on (the object's entry's vector, a fixed vector, then its
+  coefficients);
   the pass keeps the stencil-off flags and whether the texture
   accumulation target binds. Another build callback, or a record, owner
   or rows that do not read, is the pass's remainder. The first person
@@ -875,7 +933,9 @@ commits. The three parts are built.
   (`scene_extract::extract`),
   `a_marked_part_draws_in_mode_2_whatever_its_implementation_left`
   (`native_render::object_state`),
-  `chosen_subparts_draw_their_ranges_joined_where_adjacent` and
+  `chosen_subparts_draw_their_ranges_joined_where_adjacent`,
+  `a_strip_parts_chosen_subparts_draw_the_triangles_the_list_loop_draws`
+  (each choice against the list loop `0x0004db68` written out) and
   `an_auxiliary_depth_draw_takes_the_toggles_rows_and_clip_and_nothing_else`
   (`native_render::object_program_gpu`); for lights,
   `the_passes_order_is_10_11_14_12_13_and_each_flag_adds_its_layers`,
@@ -913,8 +973,9 @@ to the guest's draws (**Code**):
   `boot::native_world_layers_glue`; the first person's per item at
   issue). With the entry replaced nothing is resolved. What a stage
   needs to draw a layer pass from the scene alone is extracted and
-  planned, and the structure's static items draw from the plan
-  (`frame-scene.layers`, below).
+  planned, and the structure's items with resolved constants and the objects' items of
+  layers 1, 7, 8 and 20 draw from the plan (`frame-scene.layers`,
+  below).
   - **Material inputs** (`frame_scene::LayerInputs`, read at the layer
     draw's begin by `scene_extract::layout::layer_inputs`, research
     points in its module notes). The render time `0x004858a0`, which
@@ -948,50 +1009,152 @@ to the guest's draws (**Code**):
     (`0x00017550`: time over period, wrapped unless periodic, the
     function `0x0013b390`, mapped onto its range). An item that cannot
     be planned has a named cause (`LayerRefusal::name`): an input the
-    scene does not give, an animation driven by an object function or of
-    a bitmap or state, a material or pass that does not resolve.
-  - **The stage** (`frame-scene.layers`, an option with the native
-    renderer on; `render_bridge::native_layers`, its host
+    scene does not give, an object-function or state animation, an
+    unsupported bitmap property, or a material or pass that does not resolve.
+  - **The stage** (`frame-scene.layers`, on with the native renderer,
+    `=off` its off arm; `render_bridge::native_layers`, its host
     `boot::native_layers_glue`). At the world's load (only with the
-    option placed; `native_render::layers_load::load`, which reads the
+    stage placed; `native_render::layers_load::load`, which reads the
     map file alone, so the editor loads the same layers) each world
-    material's passes of each of the five
-    layers are compiled as the fog's layer 16 is (`fog_gpu::layer_passes`,
+    material's passes of each layer the plan takes (1, 5, 7, 8 and 20,
+    the overlay layer 2 and layer 17: `layer_pass::planned_layers`) are compiled as the fog's layer 16 is (`fog_gpu::layer_passes`,
     `FogProgram`), all or nothing per material and layer, and each
     material is resolved once with its instance's properties and input
     scales; `GpuWorld::set_layer` holds one `fog_gpu::FogSet` per layer.
+    The object models compile their materials' passes of layers 1, 2,
+    5, 7, 8, 17 and 20 at load with their layer-3 passes
+    (`object_program_gpu::lit_model`, `object_program::object_layer_pass`:
+    over the same buffers, the pass's blend kept for its pipeline, no
+    lightmap stage, since outside layer 3 the geometry draw binds no
+    lightmap page or stream, `0x0004d28b`), per pass the
+    implementations that compile (`LitLayerPart`, `LitLayerPass`; what
+    does not compile is `LitBuild::layer_refused`); the scene's models
+    (`native_objects_glue`) and the first person's
+    (`native_first_person_glue`) both build them, reading each world
+    layer's vertex programs with layer 3's. Each layer-5 implementation
+    also compiles a PRT variant (`LitLayerPass::prt`): the declaration
+    has the PRT stream of type `0x39` after the section's streams, as
+    the stream setup `0x0001c8c0` adds it (its format record read with
+    the rest, `object_streams::STREAM_TYPES`), the buffer holds the
+    section's registers only, and the program carries what the stream
+    feeds (`PrtInput`).
     Before a scene view's layer draw (`layer_site` is `Site::Scene`; the
-    first person's layers stay as they are) the bridge extracts the
-    layer's pass from guest memory and the host plans it. A planned item
-    is drawn when it is a cluster's or a placement's, its draw is static
-    (no animation, no per-draw inputs: what the compiled programs hold)
-    and the layer's set draws its part with its shader.
-    `layer_pass::clear_prefix` clears the layer's bit on the run of such
-    items from the list's first, since the native pass records before the
-    guest's draw; one external pass (`GpuWorld::layer_draws`, in the D3D
-    pass open on the bound attachments) draws them. Everything else keeps
-    its D3D draws and so the indexed-draw admission: the objects (their
-    recording over the model buffers, `object_program_gpu`, is not
-    built), animated or per-draw items, and every item after the first
-    one the stage cannot draw. Each ask's outcomes are counted in
-    `render.scene` as `layer_plan_<layer>_taken` and
-    `layer_plan_<layer>_refused_<cause>`: the plan's causes
+    overlay layer 2 after the dynamic lights at `0x0002c060`,
+    `layer_pass::OVERLAY_LAYER`, and the late layer 17 at `0x0002c30b`,
+    `layer_pass::BLOOM_LAYER`, among them), before the alternate view's layers 1, 5 and 2
+    (`Site::AlternateView`), before the first person's
+    layers 1, 7, 8, 20 and 2 (`Site::FirstPerson`, its layer 2 returning
+    to `0x00040289`; its layer 3 is `native_first_person`'s), and before the sorted
+    transparent list's camouflage layers 18 and 19 and hologram layer 21 (`sorted_site`,
+    [native-water-fog.md](native-water-fog.md)), the bridge extracts the
+    layer's pass from guest memory and the host plans it
+    (`render_bridge::native_layers::caller`). A structure item (the
+    main or alternate scene caller) is drawn when it is a cluster's or a
+    placement's and the layer's set draws its part with its shader.
+    The set compiles game-time constant bindings with a time-zero sample
+    to check the registers the program reads. At each layer call the
+    planner samples the material at the render time. The packet uploads
+    its vertex defaults, vertex constants and combiner colours alongside
+    the view constants, placement rows and fog. The compiled shader
+    modules and pipelines are shared across samples. Materials requiring
+    per-draw resolution of engine inputs stay on the D3D path. An object item is drawn when extraction names no
+    cause, its model is resident in the caller's set, and each of its
+    material's passes in the layer
+    plans (`LitObjects::plan_layer_item`, `plan_layer_part`: per pass
+    the implementation it draws for the item, the per-object constants
+    from the item's lighting, the pass's defaults and the item's rows,
+    its state over the device's at the call,
+    `object_state::resolve_layer`, blending kept) with its fog, sampling
+    no texture accumulation target; the device must draw W-buffered over
+    a single clip equal to the viewport. Packets use that viewport scaled to each target copy. An item toggling the
+    auxiliary state is refused (its values are read at layer 3). An item
+    with a PRT stream draws each pass's PRT variant with the stream's
+    constants from `c[68]` on, written over the item's own as the draw
+    sets them after its rows (`0x0004d269`), and is refused when its
+    program reads a constant past them below the section's decompression
+    (`c[170]` on, which the draw sets itself); at the hook its section's
+    vertices are read from the stream's address and gathered through the
+    declaration the stream's type gives (`LitObjects::fill_prt`), which
+    must feed the registers the variant was compiled for, fetched the
+    same way, and the encode binds them as a second vertex buffer from
+    the submission's uploads.
+    Skipping an item's guest draw must leave the device as drawing it
+    would, as layer 3's walk requires of the parts it skips
+    (`layer_pass::skip_holds`): a draw of another implementation than
+    the cached one (`0x00016b90`) restores the cached one's restore list
+    and sets its own render-state list without comparing (`0x00018900`),
+    every draw sets the engine-driven values (`0x0001a170`), and the next
+    layer's setup (`0x00016b10`) restores the cached implementation's
+    list. So a structure or object item is taken only when every state
+    of its passes' restore lists already holds at the call and every
+    state of their render-state lists already holds or is one the
+    restore list writes back (a blended pass that turns its blend on and
+    its restore list off again, over a device with it off, is taken).
+    A structure item's engine-driven render values the restore list does
+    not write back must hold too, evaluated from the item's inputs over
+    what its list leaves (`layer_pass::skip_holds_with`; refused when a
+    source slot is outside the implementation's input masks or its
+    inputs change per draw); an object item with any refuses. The first shader
+    begin's fixed states and cleared texture caches (`0x0001bbf0`) are
+    redone by the first one the guest keeps, or by the next layer's.
+    `layer_pass::clear_layer_prefix` clears the layer's bit on the run of
+    such items from the list's first, since the native pass records
+    before the guest's draw; one external pass draws them, run by run in
+    the list's order (`GpuWorld::layer_draws` and `LitObjects::draws`, in
+    the D3D pass open on the bound attachments). The stencil
+    (`layer_pass::item_stencil`): in layer 1 the geometry draw's prologue
+    sets mode 0 when the stencil-off flags are set and mode 2 for a
+    marked object's record, and its epilogue leaves mode 1 after either.
+    So with the stencil off the items draw with the stencil disabled and
+    the device must already hold mode 1 (else the layer stays on the D3D
+    path); a marked object item draws in mode 2
+    (`object_state::mark`) and needs the device in mode 1 (else the
+    marked items stay). Otherwise, and in layers 5, 7, 8 and 20, the items
+    draw under the stencil the device holds at the layer call
+    (`fog_gpu::layer_stencil`): no structure pass sets one (`pass_state`
+    refuses it), so the scene's layer 1, which begins in mode 1
+    (`ALWAYS`, reference 0, `REPLACE` on pass), takes that state in its
+    pipelines and its reference in its packets, and the pass reports a
+    depth-stencil write when a draw writes. Everything else keeps its D3D
+    draws and so the indexed-draw admission, including per-draw engine
+    inputs, unsupported animations and every item after the first one the
+    stage cannot draw. Each ask's outcomes are counted in `render.scene`
+    as `layer_plan_<layer>_taken` and
+    `layer_plan_<layer>_refused_<cause>` (the first person's as
+    `layer_plan_fp<layer>_*`, the alternate view's as `layer_plan_alt<layer>_*`, a sorted handler's as
+    `layer_plan_sorted<layer>_*`): the plan's causes
     (`LayerRefusal::name`, `per_draw` for a material resolved per draw),
-    `object`, `animated`, `stencil` (layers 1 and 3 begin in stencil mode
-    1), `palettes`, `device`, `program` (no material of the layer
-    compiled), `order` (planned and static, but from the first item the
-    layer's set cannot draw on) and `unread` (the layer's pass did not
-    read); `layer_plan_asked`, `layer_plan_drawn` and `layer_plan_items`
-    count the layer calls asked, those drawn natively and their items.
+    extraction's object causes (`LayerObjectRefusal::name`,
+    `object_fade` and the rest), `object_prt` (layer 5's PRT stream
+    does not read or is of a format the variant was not compiled for),
+    `object_layer` (a layer outside `object_program_gpu::OBJECT_LAYERS`),
+    `object_state` and `state` (an object or a structure item whose pass
+    would leave a render state other than the device holds:
+    `skip_holds`),
+    `object_models` (the caller's models are not resident or their
+    palettes changed), `viewport`, `object_w_buffer`,
+    `object_model` (the item's model is not uploaded), `object_plan`
+    (a pass does not plan; the first of each reason is logged),
+    `object_texaccum`, `object_fog`, `object_stencil`,
+    `object_warming` (an object pipeline not built yet),
+    `stencil` (the device's stencil does not read, tests or writes it on
+    a depth with no stencil aspect, or layer 1's stencil is off and the
+    device is not in mode 1), `warming`, `palettes`, `device`, `program`
+    (no material of the layer compiled), `first_person_structure`,
+    `sorted_structure`, `order`
+    (planned, but from the first item the sets cannot draw on) and
+    `unread` (the layer's pass did not read); `layer_plan_asked`,
+    `layer_plan_drawn` and `layer_plan_items` count the layer calls
+    asked, those drawn natively and their items.
   - **With no game** (the editor, `scenario_edit::native_view::NativeLayers`).
     The same load, with the view constants a camera gives
     (`layers_load::load_with` and `program::CAMERA_GIVEN`: a pass reading
     another is refused, named with the register) and no stage palettes.
     `layers_load::plan_without_game` plans each compiled material as one
     structure item over `layer_inputs::without_game`, and draws it when
-    the plan takes it, its draw is static and its own fog words leave fog
-    off; every other material is counted by cause (`program`, the plan's
-    names, `animated`, `fog`). `layers_load::upload_static` uploads the
+    the plan supplies the pass constants at the preview time and its own
+    fog words leave fog off. Every other material is counted by cause
+    (`program`, the plan's refusal names, `fog`). `layers_load::upload_static` uploads the
     drawn materials, and `GpuWorld::prepare_layer` and `encode_layer`
     draw them in a pass of their own.
   - **Tests** (synthetic). `every_view_input_reads_as_its_selector_computes_it`,
@@ -1009,10 +1172,37 @@ to the guest's draws (**Code**):
     `a_structure_item_draws_with_no_lighting_and_an_input_nothing_gives_is_named`,
     `a_game_time_property_wraps_its_time_over_its_period_and_maps_onto_its_range`,
     `constant_animations_take_their_values_and_other_kinds_are_named`,
-    `a_scene_layer_plans_its_items_in_order_and_names_the_rest` and
-    `the_skip_takes_the_accepted_structure_items_up_to_the_first_it_cannot`;
-    for the stage, `the_plans_outcomes_count_by_layer_and_cause`
+    `a_scene_layer_plans_its_items_in_order_and_names_the_rest`,
+    `the_skip_takes_the_accepted_structure_items_up_to_the_first_it_cannot`,
+    `the_skip_takes_object_items_the_plan_drew_in_the_same_run` and
+    `layer_1_items_draw_unstenciled_with_the_stencil_off_and_need_mode_1_to_skip`;
+    for the objects,
+    `a_world_layers_object_item_carries_its_records_flags_or_names_why_not`
+    (`scene_extract::layout::object_walk`),
+    `layer_5_reads_the_objects_constants_and_its_sections_stream_at_its_level`,
+    `a_model_without_a_prt_block_adds_nothing` and
+    `a_draw_that_leaves_its_stream_or_constants_as_they_were_is_named`
+    (`scene_extract::layout::prt`),
+    `a_skipped_pass_holds_when_what_it_sets_is_already_held_or_restored`,
+    `a_pass_whose_restore_list_writes_back_what_it_sets_holds`
+    (`native_render::layer_pass`),
+    `a_world_layers_draw_keeps_its_blend_and_inherits_what_it_leaves`
+    (`native_render::object_state`),
+    `a_world_layers_pass_keeps_its_blend_and_cannot_sample_the_lightmap`
+    and `a_materials_world_layer_passes_are_its_first_level_of_details`
+    (`native_render::object_program`),
+    `a_materials_world_layer_passes_compile_over_its_layer_3_buffers`,
+    `layer_5_compiles_a_prt_variant_whose_stream_feeds_its_registers`,
+    `a_prt_item_draws_its_passes_prt_variant_with_its_constants` and
+    `a_world_layers_object_item_draws_each_pass_with_the_implementation_it_picks`
+    (`native_render::object_program_gpu`);
+    for the stage, `the_plans_outcomes_count_by_layer_and_cause`,
+    `the_stage_takes_the_scenes_layers_and_the_first_persons_besides_layer_3`
+    and `the_stage_is_on_with_the_native_renderer_unless_turned_off`
     (`render_bridge::native_layers`),
+    `a_layers_stencil_is_the_devices_and_needs_a_stencil_aspect_only_when_on`
+    and `layer_packets_under_the_devices_stencil_write_its_reference_where_they_draw`
+    (`native_render::fog_gpu`),
     `a_per_draw_refusal_counts_apart_from_a_missing_material`,
     `the_plan_reads_only_what_the_load_resolved` and
     `a_game_free_plan_names_what_the_load_refused`
@@ -1020,20 +1210,24 @@ to the guest's draws (**Code**):
 - **Layer 3.** The decorators (build `0x0004de20`) are in the scene
   (`View::decorators`, each placement's draw with its instances'
   `v11..v15`), and the decorator stage draws a view's ready ones
-  instanced and skips their items; a draw whose material is not ready,
-  and a view the stage declines, stays the guest's
-  ([native-decorators.md](native-decorators.md)).
+  instanced and skips their items where skipping leaves the device's
+  render states as drawing them would (`decorators_load::skip_holds`,
+  the rule of `layer_pass::skip_holds` with the draw's
+  `TwoSidedLighting`); a draw whose material is not ready or whose skip
+  would change a state, and a view the stage declines, stays the guest's
+  ([native-decorators.md](native-decorators.md)). Tests:
+  `a_skipped_placement_holds_only_when_what_its_draw_leaves_already_holds`
+  and `a_placement_whose_restore_list_writes_back_what_it_sets_holds`
+  (`native_render::decorators_load`) and
+  `a_draw_whose_skip_would_change_a_state_stays_the_guests_and_counts_apart`
+  (`render_bridge::native_decorators`).
   The world keeps the draws of materials it does not translate and of
   parts that lack an input of their program ([native-world.md](native-world.md)),
   and the object walk the parts it refuses (`walk_unsupported`).
-- **The light passes and the shadow layers.** Models and rigid
-  placements keep their D3D handlers ([native-lights.md](native-lights.md),
-  "What a native light draws"), every layer keeps its handlers with the
-  additional casters' pair, and the gathered walk's GPU path takes a
-  group's live streams, pose, constants and bindings from the first
-  geometry handler, which the guest runs. The scene carries what that
-  handler supplies (built): at each layer build, the sorted entries the
-  walk builds (`render_bridge::native_lights::walk`) go into a group of
+- **The light passes and the shadow layers.** The gathered walk can draw
+  from a complete scene group or use the first guest geometry handler's
+  live streams, pose, constants and bindings. At each layer build, the
+  sorted entries from `render_bridge::native_lights::walk` go into a group of
   the light (`scene_extract::light_groups::push`,
   `frame_scene::LightGroup`, `LightEntry`; `FrameScene::groups_of`),
   each entry with its stream (section, part, vertex class, index range,
@@ -1043,25 +1237,32 @@ to the guest's draws (**Code**):
   block. The additional casters' layers 10 and 11 are groups of their
   own site (`GroupSite::AdditionalCasters`), and each object shadow's
   layers 10 and 11 groups of its `ObjectShadow` in the view
-  (`GroupSite::ObjectShadow`). An `ObjectShadow` also marks a creature
+  (`GroupSite::ObjectShadow`); a first-person light's layers 12 and 13
+  are groups of `GroupSite::FirstPerson`. An `ObjectShadow` also marks a creature
   caster, which takes the ground-shadow branch `0x00032ce0`, and keeps
   the light weight read at its layer 11, for E3's sun tiles
   ([e3-lighting.md](e3-lighting.md), "Sun shadows from objects"). The
   summary hash
   (`frame_scene::summary_hash`) covers the groups, their entries and the
-  object shadows. What the handler does
-  beyond binding and drawing (the auxiliary state toggle, state around
-  one part, visible subparts, a shader flag, a material animation, a
-  template callback) leaves the entry to the guest by named cause.
+  object shadows. For a visibility-masked part, the emitter's selected
+  index spans must form a single draw of the entire part. Contiguous
+  list spans can join, while separate strips require separate draws.
+  A partial or split span, an auxiliary state toggle, state around one
+  part, a shader flag, material animation or a template callback leaves
+  the entry to the guest by named cause.
   `native_render::light_scene::plan` turns a whole group into native
   draws from the scene alone, sorted order and duplicates kept,
   adjacent list ranges joined. A light's layer 12 or 13 whose group is
   whole is drawn from the scene with no handler run, its object entries
   from model parts the light passes build per map with their node rows
   ([native-lights.md](native-lights.md), "Gathered groups in the
-  scene"). Not built: a recorder for the shadow layers 10, 11 and 14
-  from the scene (the shadow stage records from resolved draws), so
-  those layers still run their handlers.
+  scene"). Whole groups of layers 10, 11 and 14 draw from the scene at
+  all three sites through `native_render::shadow_scene` and
+  `native_lights_glue::shadow_alone`; the guest's begin, clear and end
+  still run, and `ShadowPass` carries their target and raster words.
+  Receivers bind the boundary's frozen depth or colour-mask map. The
+  object shadow's `filter` carries its native quads and final copy into
+  `native_render::shadow_filter_gpu`, inside the guest call's swallow.
 
 The entry census (`render_bridge::entry_census`, built) measures both
 halves of 8.2's first two rules per entry, so the coordinator can tell
@@ -1119,7 +1320,11 @@ device's swallow. What is built (**Code**):
   items in the current list, each material the stage draws with and its
   words resolved over the device's (`LateMaterial`), the structure parts
   the stage draws in item order (`LatePart`), and whether the stage took
-  the layer. `View::post` is `PostParams`: what `render_screen_effects`
+  the layer. `View::water_composite` holds the teardown's four u16
+  corner indices per quad, in submitted order, independently of layer 6.
+  The indexed stage matches them to the rebased vertex window before
+  expanding the quads. The summary hash includes their order.
+  `View::post` is `PostParams`: what `render_screen_effects`
   was asked to draw (its two stack bytes, the view kind, the scenario's
   screen-effect count and the loop's gates, read as
   `scene_extract::layout::post::PostFrame` reads them), the colour pass
@@ -1136,7 +1341,10 @@ device's swallow. What is built (**Code**):
   then `render_bridge::scene_step::late_layer` writes the view's layer
   (with `scene_extract::late::layer_items`) and hands back the scene's
   copy, and the pass is built from that copy: the parts it draws and
-  each material's fog unit. A layer whose gate does not hold, with no
+  each material's fog unit. For mixed fog and water lists the guest sorts
+  all the entries and the native renderer offers indexed ranges at the
+  geometry emitter with the handler's state bound. The scene stage
+  clears masks only for a fully accepted layer. A layer whose gate does not hold, with no
   structure item, or that the glue leaves to the guest is written as
   the guest draws it (`late_kept`). The frame step observes
   `RENDER_SCREEN_EFFECTS` for `PostParams`; `native_post`'s colour-pass
@@ -1239,8 +1447,20 @@ D3D reference with all native stages disabled.
   draws, the sink also records repeatable typed stages at the point where
   they acquired their attachments. One-shot replacements decline admission
   before guest draws are released. A queued native draw
-  (`Backend::queue_external_draw`) is not carried, whether the render
-  thread records it or draws its D3D packet.
+  (`Backend::queue_external_draw`) is not carried: the render thread
+  records it or draws its D3D packet. A flare draw (`Stage::Flares`)
+  that is offered to its pass with an exact resolved fallback and is not
+  taken is still issued once, as the guest's own draw
+  (`Backend::draw_admitted`, `draw_owned` by default). A sink that
+  retains the frame keeps the admission (`RetainedExternal`) on that
+  draw's `ReplayOp::Draw` when its pass records repeatedly, it writes
+  only the draw's colour target, it samples no other surface, it equals
+  the submitted packet and no guest reference is requested. Replay
+  (`RetainedExternal::resolve`) prepares the admission on its own
+  attachments with the draw's own live, frozen or sampled texture inputs,
+  only for an unchanged draw bound to the attachments it was made for
+  (a private capture only at 1x), and draws the packet when any copy is
+  refused. Every other draw is carried as the guest's packet alone.
 - **Coverage.** `render.scene` reports, with the option, `carried`
   (the last frame's ops by slot, its side targets with the ops that
   named them by slot, and its readbacks in and outside a game view),
@@ -1335,9 +1555,12 @@ D3D reference with all native stages disabled.
   original-command fallback, visibility tickets, retained snapshots and
   a following menu frame. The parity RPC test changes a private clear
   to exercise the differing-pixel result.
-- **Cutover status.** Display adoption is opt-in. Eligibility, post-load
-  residency, pixel and hash parity and the delay through Swap require
-  measurement on the corpus. An unsupported frame runs the original path
+- **Cutover status.** Display adoption is on by default for a paced
+  display, because its display-rate loop is what 60 and 120 fps draw
+  (section 7); `frame-scene.sink=off` turns it off, and a locked run
+  asks for it with `frame-scene.sink`. Eligibility, post-load
+  residency, pixel and hash parity and the delay through Swap still
+  require measurement on the corpus. An unsupported frame runs the original path
   and appears in the decline count. The default path and the guest
   resource lifetime machinery are retained through this gate.
 - **Gate.** Pixels on the gate corpus against `native=off` (which
@@ -1368,23 +1591,106 @@ D3D reference with all native stages disabled.
 
 ### Slice 8: 60 and 120 fps
 
-- **Code.** `frame-scene::blend` (pure): matching, the blends and
-  snaps of section 7. The render thread's display-rate loop, alpha
-  from publish times, the pacer moved from `d3d::interp::pacing`. Cut
-  detection in extraction. `graphics.fps` drives it; no switch.
-  `d3d/src/interp`, `impl.render.interpolate`, `impl.render.reproject`
-  and `impl.render.reproject_ahead` are deleted.
+- **Built.** `frame-scene::blend` (pure, `crates/rewrites/frame-scene/src/blend.rs`).
+  `plan(a, b, due)` gives `Plan::Newest` (B's own values: `alpha >= 1`,
+  `ticks_run == 0`, a cut, another map epoch, no stamp, or a gap over
+  `MAX_GAP`, 45 ms) or `Plan::Blend(alpha)`. `blend(a, b, alpha)` returns
+  `Blended`: cameras parallel to `B.views`, node matrices to `B.nodes`,
+  palette rows to `B.rows` and light candidates to `B.lights`, with
+  `BlendCounts`. It follows section 7's table for cameras, instances, parts and
+  lights: positions and scales linear, rotations by shortest-path slerp,
+  a row that is sheared, mirrored or moved over `MAX_MOVE` (5 units) keeps B's
+  value, as does a teleported, unmatched, re-modelled or re-noded instance.
+  The first person view's nodes and rows blend in camera space and return
+  through the blended camera.
+- **Built.** The display-rate loop (section 7): `frame-scene::pace` (the
+  pacer), `frame-scene::display::DisplayLoop` (what to draw at a Swap and
+  between, alpha from publish stamps), `d3d::scene_sink::Retarget` (carried
+  draws' and indexed typed stages' view rows from the blended camera),
+  `d3d::threaded::owner::DisplayRate` (the render thread's idle turns) and
+  `native_render::frame_graph::display_rate` (the draws, `render.stats`'
+  `display_rate`). `graphics.fps` drives it; no switch. There is no
+  D3D-side interpolation. Each display frame is presented with
+  synthetic present metadata, so the window projects the world marks
+  with the cameras the frame drew ([high-framerate.md](../game/high-framerate.md),
+  "World marks on made frames"). Above 1x a frame with fixed-size
+  attachments beside the display grid draws them at their own size on
+  fresh targets (`d3d::scaled::private_scene::MixedPrivatePass::into_image`),
+  with no sun tile. The owner and the loop draw on any grid from 1x to
+  `MAX_SCALE` on each axis, whole or fractional ("Fractional grids"
+  below).
+- **Code to write.** Object palette rows, node matrices and lights from
+  `Blended` on the carried and typed draws (objects are drawn at `B`
+  today), visible-cluster unions, shadow re-rendering from blended
+  casters, typed stages other than the indexed world, object and
+  transparent passes, display frames into the agent's clip slots, and extraction's
+  scripted-cut and distance flags.
 - **Tests.** Blend: identity at 0 and 1 (bitwise at 1), slerp against
   known rotations, every snap rule, unmatched and re-ordered
-  instances, the union of cluster sets. Pacer: the existing interp
-  pacing tests, moved. A two-scene render at `alpha = 1` equals the
-  one-scene render.
+  instances. Pacer (`frame-scene/src/pace.rs`). The loop
+  (`frame-scene/src/display.rs`): 30 fps, the first scene, 60 and 120 fps
+  sequences, cuts and gaps, resets, the headroom cap. The render thread's
+  idle turns and the guest image a draw sees (`d3d`
+  `threaded/owner/tests/display_rate.rs`). The marks' metadata
+  (`d3d` `present_camera`, `native-render` `frame_graph::display_rate`).
+  A display frame on mixed-size targets at 2x against the private
+  capture (`native-render` `a_scaled_display_frame_draws_mixed_size_attachments`). Retargeting
+  (`d3d` `tests/scene_camera.rs`). Fractional grids: `gfx` `raster`
+  (`level`, `replayable`), an owned frame at 3/2 by 5/4 and a refused
+  minifying grid (`native-render`
+  `a_fractional_grid_owns_the_frame_on_its_rounded_targets`), display
+  frames at that grid with and without a fixed-size auxiliary
+  (`a_fractional_display_frame_draws_each_level_on_its_grid`). To add:
+  a two-scene render at `alpha = 1` equals the one-scene render.
 - **Gate.** Hash series identical at `--fps 30`, `60` and `120`. The
   super-bounce test passes at all three. `alpha = 1` captures are
   identical to 30 fps captures. Render-thread time per display frame
   under 16.7 ms at 60 and under 8.3 ms at 120 on the gate corpus at
   the user's play scale, p99, or the rate is not offered at that
   scale. `scene_held_draws` reported per level.
+
+#### Fractional grids
+
+A sealed scene replays on the grid of its display, a `RenderScale`
+(`crates/platform/gfx/src/raster.rs`): a reduced ratio per axis, so
+1366x768 is 683/320 across and 8/5 down. A whole number is the case
+where both ratios are `s/1`: every target is exactly `s` times its guest
+size and no edge rounds.
+
+- **Which grids.** `RenderScale::replayable(MAX_SCALE)`: neither axis
+  minifies or magnifies past `MAX_SCALE`. A window smaller than 640x480
+  is refused (`SceneRefusal::Grid`) and runs the guest's commands.
+- **Targets.** Each attachment the pass makes is
+  `grid.size(width, height)`: guest edges times the ratio, rounded half
+  up. A level whose edges round (an odd-sized auxiliary) has its own
+  reduced ratio, `RenderScale::level`, which the surface records.
+  `scene_target_matches` takes an existing target only with that size,
+  format, kind and level ratio, so a borrowed target and a fresh one
+  behave alike. Below the display grid's frame size, the scaled owner
+  and `MixedPrivatePass` keep a level at 1x as at whole numbers.
+- **Viewports and scissors.** Guest rectangles keep their guest
+  coordinates up to the device. `RenderScale::rect` maps each edge on
+  its own, so adjacent rectangles share their boundary, and the
+  window-coordinate shift (`window_shift`) is per axis. Typed stages map
+  their viewport the same way (`backend::external_viewport`).
+  [high-resolution.md](high-resolution.md) has the rounding rules.
+- **Depth.** Depth and colour of a frame-sized pair are on one grid. A
+  mixed pair (fixed-size colour over the scaled depth) goes through the
+  single-copy backend's guest-size intermediate, as at whole numbers.
+  32-bit depth aliases decode on the GPU; reinterpreted cube and volume
+  aliases decode at guest size.
+- **Sampled targets.** A live sample must name its attachment's image
+  on the grid that attachment has (`live_view_matches`). A frozen sample
+  uses its reference copy at 1x and its display copy on any other grid.
+  Uploads into a fractional target are staged at its guest size and
+  expanded on the GPU through the level's inverse ratio.
+- **Shadows and E3.** E3's shadow tiles and sun tiles follow the
+  grid's nearest whole vertical scale (`RenderScale::vertical_rounded`).
+- **Counters.** `ScaledBackend::scene_refusal` gives the first reason a
+  frame is refused (`SceneRefusal`); the frame owner counts each
+  (`check_scene`) next to the frames it owned on whole and fractional
+  grids, as `render.scene`'s `scene_owned_scaled_*` counters
+  ([agent-api.md](../runtime/agent-api.md), "FrameScene checks").
 
 ### Slice 9: type the carried stages that cost the most
 
@@ -1415,7 +1721,7 @@ uses move to `native-render` or `scene-extract` and stay.
 | Slice 5 | `boot/src/native_{fog,water,post}_glue.rs`, `feature/src/native_{fog,water,post}.rs` | 5,000 |
 | Slice 6 | `DrawAdmission`, `ExternalPass`, `ExternalPlan`, reservations and `device/admission_scope.rs`; `gfx_backend/native_runs.rs`; the scene-stage command of slice 2; the remaining `boot/src/native_*_glue.rs` and `feature/src/native_*` except the scene lists | 7,800 |
 | Slice 7 | nothing yet: the old stack is still what `native=off` selects | |
-| Slice 8 | `d3d/src/interp/` and its three switches | 5,600 |
+| Slice 8 | `d3d/src/interp/` and its three switches (deleted) | 5,600 |
 | Slice 10, step 1 | `impl.render.native` itself and everything only `=off` reaches: `d3d/src/threaded.rs`, `scaled.rs` and `scaled/` except the view mapping, the `Backend` implementations other than `SceneSink`, `gfx_backend.rs`'s surface, write-back and present code, `device/{mirror,display,snap}.rs`'s render-target half, lazy depth, alias mirrors, the visibility poll, and the "old-behaviour opt-out" variables of render-switches.md that configure them; `render.parity` | 8,000 |
 | Slice 10, step 2 | what is left of `engine/src/render_loop` that no typed stage uses | |
 | Slice 10, step 3 | the `Backend` trait, reduced to what `SceneSink` implements, then folded into `Device` | |
@@ -1490,7 +1796,7 @@ particle updates (rule 2), with `unbalanced` zero.
 Read per frame: `passes`, `command_buffers`, `draws`,
 `native_<stage>_{examined,suppressed,refused_*,prepare_ns,encode_ns,worker_round_trips,command_buffers}`,
 from slice 2 `native_<stage>_{extract_ns,render_prepare_ns,scene_stages,scene_dropped}`,
-`walk_unsupported` and from slice 3 `walk_part_{aux_state,subparts,topology}`, and from slice 1 `scene_dropped_*`,
+`walk_unsupported` and from slice 3 `walk_part_{aux_state,subparts}`, and from slice 1 `scene_dropped_*`,
 `scene_unresident`, `scene_readback`, `scene_held_draws`; from slice 5
 `render.scene`'s per-view `fog`, `water` and `post` and the counters
 `scene_{fog,water}_{views,gate_held,drawn,parts}`; from slice 6, with
@@ -1575,10 +1881,9 @@ for both arms, the counters above, the hash result.
 - **Change 5 (the layout crate) is not built.** `scene-extract` starts
   with a private `layout` module. If change 5 lands first, slice 1
   uses it directly.
-- **E1 was the user's choice for 60 fps.** Slice 8 replaces it with the
-  two-scene blend. E1 could be rebuilt on the native frame as a cheap
-  mode if the blend does not fit a display frame at some scale; it is
-  not planned.
+- **Display frames cost a whole draw of `B`.** The headroom cap
+  (`frame-scene::pace::Headroom`) holds the rate at 60 when a display
+  frame does not fit; `render.stats`' `display_rate.capped` says so.
 - **Sim mode and dedicated hosts** skip the frame step with stubs
   today. Running the step without extraction on a host is a follow-up
   for the session that owns hosts.

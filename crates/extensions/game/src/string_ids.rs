@@ -76,14 +76,14 @@ fn game_variant_ids() -> Vec<u32> {
 }
 
 fn families() -> Vec<Family> {
-    let community = (0..community_variants::VARIANTS.len())
+    let community = (0..community_variants::MAX_ENTRIES)
         .flat_map(|i| {
             [
                 community_variants::name_id(i),
                 community_variants::description_id(i),
             ]
         })
-        .chain(community_variants::TWEAKERS_IDS)
+        .chain(community_variants::row_ids())
         .collect();
     vec![
         Family {
@@ -186,6 +186,11 @@ fn every_served_id_is_in_its_registered_family() {
         .iter()
         .map(|(i, _)| *i)
         .partition(|i| family("ui model").owns(*i));
+    // The Live menu's texts: the rows' block is full, so the mode rows'
+    // and the Mods row's are a family of their own.
+    let live_ids: (Vec<u32>, Vec<u32>) = ids(custom_games::strings())
+        .into_iter()
+        .partition(|i| family("live menu rows").owns(*i));
     let checks: Vec<(&str, Vec<u32>)> = vec![
         ("layouts", ids(layout_glue::strings())),
         (
@@ -195,7 +200,8 @@ fn every_served_id_is_in_its_registered_family() {
                 crate::speaker_row::SMALL_OFF_ID,
             ],
         ),
-        ("live menu rows", ids(custom_games::strings())),
+        ("live menu rows", live_ids.0),
+        ("live menu modes", live_ids.1),
         (
             "lobby options",
             crate::lobby_options::strings()
@@ -223,14 +229,14 @@ fn every_served_id_is_in_its_registered_family() {
         ),
         (
             "community variants",
-            (0..community_variants::VARIANTS.len())
+            (0..::rules::builtin::LISTED.len())
                 .flat_map(|i| {
                     [
                         community_variants::name_id(i),
                         community_variants::description_id(i),
                     ]
                 })
-                .chain(community_variants::TWEAKERS_IDS)
+                .chain(community_variants::row_ids())
                 .collect(),
         ),
         ("game variants", game_variant_ids()),
@@ -249,7 +255,7 @@ fn every_served_id_is_in_its_registered_family() {
     }
     for id in skulls {
         assert!(
-            family("skulls").owns(id) || family("skull row labels").owns(id),
+            family("skulls").owns(id) || family("skull rows").owns(id),
             "{id:#x} of the skulls pages is outside both skulls families"
         );
     }

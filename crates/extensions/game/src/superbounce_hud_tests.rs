@@ -1,12 +1,11 @@
 //! The adapter from `superbounce_mode::State` to the HUD's view, and the
 //! values each state gives (docs/game/hud-kit.md, "States").
 
-use hud_kit_core::huds::superbounce::{
-    self as sb, ARM, CHARGE, LOW_CHARGE, Landed, Lost, MESSAGE, MESSAGE_LOST_CROUCHED,
-    MESSAGE_LOST_STOOD_STILL, Medal, NAVPOINT, Note, PILL, PILL_ICON, PROMPT, PROMPT_CHARGE_AGAIN,
+use hud_kit_core::views::superbounce::{
+    self as sb, ARM, LOW_CHARGE, Lost, MESSAGE, MESSAGE_LOST_CROUCHED,
+    MESSAGE_LOST_STOOD_STILL, Medal, NAVPOINT, Note, PROMPT, PROMPT_CHARGE_AGAIN,
     PROMPT_HELD, PROMPT_KEEP_MOVING, PROMPT_NEAR, PROMPT_UNDER, Phase, Scan, Target, Verb,
 };
-use hud_kit_core::model::{Pulse, Style};
 use hud_kit_core::motion::Motion;
 
 use super::*;
@@ -102,16 +101,13 @@ fn the_recipe_steps_give_their_verbs_and_fills() {
     let values = sb::values(&view(&held, None));
     assert_eq!(values.get(PROMPT).unwrap().text, PROMPT_HELD);
     // The recipe is on the arming bar, eased to each step's fill; the
-    // strip under the pill waits for primed.
+    // charge itself is the readout's segments'.
     let arm = values.get(ARM).unwrap();
     assert_eq!(
         (arm.shown, arm.fill, arm.motion),
         (true, 2.0 / 3.0, Motion::Ease)
     );
-    assert!(!values.get(CHARGE).unwrap().shown);
-    // Not primed: the pill is inactive, which the runtime does not draw
-    // yet.
-    assert_eq!(values.get(PILL).unwrap().style, Style::Inactive);
+    assert_eq!(view(&held, None).charge.map(|c| c.phase), Some(Phase::Held));
 }
 
 /// Tick to tick through the view: the steps ease, leaving early runs
@@ -181,15 +177,21 @@ fn primed_lights_the_pill_and_drains_the_meter() {
     assert!((m - METRES_PER_UNIT).abs() < 1e-4, "{m}");
     assert_eq!(sb::values(&v).get(NAVPOINT).unwrap().text, "3");
     let values = sb::values(&v);
-    assert_eq!(values.get(PILL).unwrap().style, Style::Normal);
-    assert_eq!(values.get(CHARGE).unwrap().fill, 0.25);
+    assert_eq!(
+        v.charge,
+        Some(sb::Charge {
+            phase: Phase::Primed,
+            fill: 0.25
+        })
+    );
     assert!(!values.get(PROMPT).unwrap().shown);
 }
 
-/// The prompt line's warning starts at the tick the icon starts to flash:
-/// 19 still ticks, half the fill.
+/// The prompt line's warning starts at the tick the charge segments start
+/// to flash: 19 still ticks, half the fill.
 #[test]
-fn the_warning_lines_up_with_the_icons_flash() {
+fn the_warning_lines_up_with_the_segments_flash() {
+    use hud_kit_core::views::superbounce_segments::{Stage, segments};
     assert_eq!(
         1.0 - WARN_STILL_TICKS as f32 / SLEEP_TICKS as f32,
         LOW_CHARGE
@@ -205,10 +207,7 @@ fn the_warning_lines_up_with_the_icons_flash() {
     assert_eq!(v.verb, Some(Verb::KeepMoving));
     let values = sb::values(&v);
     assert_eq!(values.get(PROMPT).unwrap().text, PROMPT_KEEP_MOVING);
-    assert_eq!(
-        values.get(PILL_ICON).unwrap().style,
-        Style::Flash(Pulse::TimeWarning)
-    );
+    assert_eq!(segments(v.charge).stage, Stage::Warning);
     // A tick before: no warning, and no flash.
     let before = State {
         charge: charge(
@@ -218,9 +217,9 @@ fn the_warning_lines_up_with_the_icons_flash() {
         verb: None,
         ..s
     };
-    let values = sb::values(&view(&before, None));
-    assert!(!values.get(PROMPT).unwrap().shown);
-    assert_eq!(values.get(PILL_ICON).unwrap().style, Style::Normal);
+    let v = view(&before, None);
+    assert!(!sb::values(&v).get(PROMPT).unwrap().shown);
+    assert_eq!(segments(v.charge).stage, Stage::Primed);
 }
 
 /// A loss says why in the message, and the prompt line asks for a new
@@ -255,14 +254,15 @@ fn a_loss_says_why_and_asks_for_a_new_charge() {
         // The reason is the notification's; the prompt line asks for a
         // new charge.
         assert_eq!(values.get(PROMPT).unwrap().text, PROMPT_CHARGE_AGAIN);
-        assert_eq!(values.get(CHARGE).unwrap().fill, 0.0);
+        assert_eq!(v.charge.map(|c| c.phase), Some(Phase::Lost));
     }
 }
 
-/// The loss and the last landing: the newer one is the note, and a loss
-/// the mode no longer carries keeps its place over an older landing.
+/// The loss is the note, at its tick: while the mode carries it, and
+/// after from the one the HUD kept. A landing since does not take its
+/// place.
 #[test]
-fn the_newer_of_the_loss_and_the_landing_is_the_note() {
+fn the_loss_is_the_note_whatever_landed_since() {
     let landing = |tick| {
         Some(Landing {
             result: LandingResult::Missed,
@@ -279,51 +279,34 @@ fn the_newer_of_the_loss_and_the_landing_is_the_note() {
         verb: Some(mode::Verb::ChargeAgain(lost)),
         ..ready()
     };
-    assert_eq!(
-        view(&after_landing, None).note,
-        Some((Note::ChargeLost(Lost::StoodStill), 100))
-    );
+    let want = Some((Note::ChargeLost(Lost::StoodStill), 100));
+    assert_eq!(view(&after_landing, None).note, want);
     let landed_since = State {
         last_landing: landing(120),
         ..after_landing.clone()
     };
-    assert_eq!(
-        view(&landed_since, None).note,
-        Some((Note::Landed(Landed::Missed), 120))
-    );
-    // Past the hint the state has no loss; the HUD's kept one still wins.
+    assert_eq!(view(&landed_since, None).note, want);
+    // Past the hint the state has no loss; the HUD's kept one is the note.
     let later = State {
         verb: None,
         ..after_landing
     };
-    assert_eq!(
-        view(&later, None).note,
-        Some((Note::Landed(Landed::Missed), 50))
-    );
-    assert_eq!(
-        note(&later, Some(lost)),
-        Some((Note::ChargeLost(Lost::StoodStill), 100))
-    );
+    assert_eq!(view(&later, None).note, None);
+    assert_eq!(note(Some(lost)), want);
+    assert_eq!(note(None), None);
 }
 
-/// A landing that did not bounce is a message at its tick; a bounce's
-/// line is its medal, so it has none.
+/// A landing is no message, bounce or not: a bounce's line is its medal,
+/// and why another did not bounce is the readout's line
+/// (superbounce_readout.rs).
 #[test]
-fn a_landing_is_a_message_at_its_tick() {
-    let bounce = State {
-        last_landing: Some(Landing {
-            result: LandingResult::Bounce,
-            tick: 77,
-            at: [0.0; 3],
-        }),
-        ..ready()
-    };
-    assert_eq!(view(&bounce, None).note, None);
-    for (result, landed) in [
-        (LandingResult::NotPrimed, Landed::NotPrimed),
-        (LandingResult::Missed, Landed::Missed),
-        (LandingResult::TooSlow, Landed::TooSlow),
-        (LandingResult::NoBounce, Landed::NoBounce),
+fn a_landing_is_no_message() {
+    for result in [
+        LandingResult::Bounce,
+        LandingResult::NotPrimed,
+        LandingResult::Missed,
+        LandingResult::TooSlow,
+        LandingResult::NoBounce,
     ] {
         let s = State {
             last_landing: Some(Landing {
@@ -334,9 +317,12 @@ fn a_landing_is_a_message_at_its_tick() {
             ..ready()
         };
         let v = view(&s, None);
-        assert_eq!(v.note, Some((Note::Landed(landed), 77)));
+        assert_eq!(v.note, None, "{result:?}");
         let m = sb::values(&v).get(MESSAGE).cloned().unwrap();
-        assert_eq!((m.shown, m.since_tick), (true, 77));
+        assert!(!m.shown, "{result:?}");
+        let mut sent = Sent::default();
+        assert!(sent.notes(Some(&ready()), None, true).is_empty());
+        assert!(sent.notes(Some(&s), None, true).is_empty(), "{result:?}");
     }
 }
 
@@ -413,22 +399,19 @@ fn each_notification_is_sent_once() {
         at: [0.0; 3],
     });
     s.medals.recent = vec![award(1, Some(0), 3, vec![Medal::Superbounce])];
-    assert!(sent.notes(Some(&s), None).is_empty(), "the first state");
+    assert!(sent.notes(Some(&s), None, true).is_empty(), "the first state");
 
-    // A recipe step begins: "Charging...", once; the next step is the
-    // same charge.
+    // A recipe step begins: no line; the arming bar and the prompt say
+    // it, and a "Charging..." would be over "Primed!" seconds later.
     s.charge = charge(ChargePhase::Near, 0.0);
-    assert_eq!(
-        sent.notes(Some(&s), None),
-        vec![(0, "Charging...".to_string())]
-    );
+    assert!(sent.notes(Some(&s), None, true).is_empty(), "a recipe step");
     s.charge = charge(ChargePhase::Under, 0.3);
-    assert!(sent.notes(Some(&s), None).is_empty(), "the same charge");
+    assert!(sent.notes(Some(&s), None, true).is_empty(), "the next step");
 
     s.word = Some(PRIMED_WORD as u32);
     s.charge = charge(ChargePhase::Primed, 1.0);
-    assert_eq!(sent.notes(Some(&s), None), vec![(0, "Primed!".to_string())]);
-    assert!(sent.notes(Some(&s), None).is_empty(), "primed again");
+    assert_eq!(sent.notes(Some(&s), None, true), vec![(0, "Primed!".to_string())]);
+    assert!(sent.notes(Some(&s), None, true).is_empty(), "primed again");
     s.charge = None;
 
     let lost = mode::Lost {
@@ -437,10 +420,10 @@ fn each_notification_is_sent_once() {
     };
     s.word = None;
     assert_eq!(
-        sent.notes(Some(&s), Some(lost)),
+        sent.notes(Some(&s), Some(lost), true),
         vec![(0, MESSAGE_LOST_CROUCHED.to_string())]
     );
-    assert!(sent.notes(Some(&s), Some(lost)).is_empty(), "the same loss");
+    assert!(sent.notes(Some(&s), Some(lost), true).is_empty(), "the same loss");
 
     s.last_landing = Some(Landing {
         result: LandingResult::Bounce,
@@ -457,31 +440,44 @@ fn each_notification_is_sent_once() {
         .recent
         .push(award(3, None, 30, vec![Medal::Superbounce]));
     assert_eq!(
-        sent.notes(Some(&s), None),
+        sent.notes(Some(&s), None, true),
         vec![(1, Medal::DoubleBounce.line())],
         "a bounce has no landing line; a bot's award is not sent"
     );
-    assert!(sent.notes(Some(&s), None).is_empty());
-
-    s.last_landing = Some(Landing {
-        result: LandingResult::TooSlow,
-        tick: 40,
-        at: [0.0; 3],
-    });
-    assert_eq!(
-        sent.notes(Some(&s), None),
-        vec![(0, Note::Landed(Landed::TooSlow).text())]
-    );
+    assert!(sent.notes(Some(&s), None, true).is_empty());
 
     // A new game: the awards count from 1 again.
     s.medals.recent = vec![award(1, Some(0), 2, vec![Medal::Superbounce])];
     assert_eq!(
-        sent.notes(Some(&s), None),
+        sent.notes(Some(&s), None, true),
         vec![(0, Medal::Superbounce.line())]
     );
 
-    assert!(sent.notes(None, None).is_empty());
+    assert!(sent.notes(None, None, true).is_empty());
     assert_eq!(sent, Sent::default());
+}
+
+/// With the variant's medals off no medal line is sent, and an award made
+/// then is not sent when they come back on; the other lines still go.
+#[test]
+fn medals_off_sends_no_medal_line() {
+    let mut sent = Sent::default();
+    let mut s = ready();
+    assert!(sent.notes(Some(&s), None, false).is_empty(), "the first state");
+    s.medals.recent = vec![award(1, Some(0), 3, vec![Medal::Superbounce])];
+    s.word = Some(PRIMED_WORD as u32);
+    assert_eq!(
+        sent.notes(Some(&s), None, false),
+        vec![(0, "Primed!".to_string())]
+    );
+    assert!(sent.notes(Some(&s), None, true).is_empty(), "made while off");
+    s.medals
+        .recent
+        .push(award(2, Some(0), 9, vec![Medal::Superbounce]));
+    assert_eq!(
+        sent.notes(Some(&s), None, true),
+        vec![(0, Medal::Superbounce.line())]
+    );
 }
 
 #[test]
@@ -498,13 +494,16 @@ fn the_reticle_locks_with_the_landing() {
     let landing = |verdict, speed| {
         Some(Predicted {
             at: [0.0; 3],
+            aim: [0.0; 2],
+            drift: [0.0; 2],
+            across: 0.0,
             verdict,
             speed,
             need: 5.0,
             edge: [[0.0, -1.0, 0.0], [0.0, 1.0, 0.0]],
             stand: [0.0; 3],
-            width: 0.2,
             fall: 1.0,
+            steer: [0.0; 2],
         })
     };
     let s = State {
@@ -581,7 +580,7 @@ fn the_locked_reticle_reads_autoaimed() {
 
 #[test]
 fn the_tutorial_counts_game_ticks_not_presents_or_wall_time() {
-    use hud_kit_core::huds::superbounce::{Change, STEP3_SECS, Tutorial, Watch};
+    use hud_kit_core::views::superbounce::{Change, STEP3_SECS, Tutorial, Watch};
     assert_eq!(tutorial_seconds(0), 0.0);
     assert_eq!(tutorial_seconds(30), 1.0);
     // Step 3 gives way after 600 ticks without a bounce, whatever the
@@ -609,4 +608,100 @@ fn the_tutorial_counts_game_ticks_not_presents_or_wall_time() {
     let after = tick - shown;
     assert!((limit..=limit + 1).contains(&after), "after {after} ticks");
     assert_eq!(t.step(), Some(4));
+}
+
+#[test]
+fn in_the_air_the_hud_keeps_the_pill_and_the_lines_and_drops_the_rest() {
+    let full = View {
+        primed: true,
+        charge: Some(sb::Charge {
+            phase: Phase::Primed,
+            fill: 1.0,
+        }),
+        arm: arm_for(Some(Phase::Held)),
+        verb: Some(Verb::KeepMoving),
+        nav: Some((Target::Strip, 3.0)),
+        note: Some((Note::Primed, 7)),
+        medal: None,
+        tutorial: Some(2),
+        ..View::idle()
+    };
+    assert!(full.arm.is_some());
+    let v = in_air(full.clone());
+    assert_eq!(
+        (v.charge, v.arm, v.verb, v.nav, v.tutorial),
+        (None, None, None, None, None)
+    );
+    assert!(v.primed);
+    assert_eq!(v.note, full.note);
+    assert_eq!(v.scan, full.scan);
+}
+
+/// The primed ending plays once per priming: after its run the bar is
+/// hidden, in the air or on the ground, until the charge is primed again.
+#[test]
+fn the_primed_ending_plays_once_per_priming() {
+    let ending = Some(Arm {
+        fill: 1.0,
+        motion: Motion::Ending,
+    });
+    let mut once = EndingOnce::default();
+    for i in 0..ENDING_TICKS {
+        assert_eq!(once.update(ending), ending, "tick {i}");
+    }
+    // The landing shows the bar again: it does not replay.
+    for _ in 0..200 {
+        assert_eq!(once.update(ending), None);
+    }
+    // A loss blinks (its own motion), and the next priming plays again.
+    let blink = Some(Arm {
+        fill: 0.0,
+        motion: Motion::Blink,
+    });
+    assert_eq!(once.update(blink), blink);
+    assert_eq!(once.update(ending), ending);
+    // A recipe step and the mode going off start it over too.
+    for _ in 0..ENDING_TICKS + 5 {
+        once.update(ending);
+    }
+    once.clear();
+    assert_eq!(once.update(ending), ending);
+    assert_eq!(once.update(None), None);
+    assert_eq!(once.update(ending), ending);
+}
+
+/// After a loss the reason shows first; the "charge again" prompt comes
+/// after it, not over it.
+#[test]
+fn the_prompt_waits_for_the_losss_reason() {
+    let lost = mode::Lost {
+        reason: LostReason::Crouched,
+        tick: 100,
+    };
+    let at = |tick| State {
+        tick: Some(tick),
+        verb: Some(mode::Verb::ChargeAgain(lost)),
+        ..ready()
+    };
+    for (tick, held) in [
+        (100, true),
+        (100 + REASON_TICKS - 1, true),
+        (100 + REASON_TICKS, false),
+        (100 + 140, false),
+    ] {
+        let s = at(tick);
+        let v = after_reason(view(&s, None), &s, Some(lost));
+        assert_eq!(v.verb.is_none(), held, "tick {tick}");
+        assert_eq!(v.note, Some((Note::ChargeLost(Lost::Crouched), 100)));
+    }
+    // Another prompt is not held, and with no loss nothing is.
+    let s = State {
+        tick: Some(101),
+        ..ready()
+    };
+    let mut v = view(&s, None);
+    v.verb = Some(Verb::KeepMoving);
+    assert_eq!(after_reason(v, &s, Some(lost)).verb, Some(Verb::KeepMoving));
+    let s = at(101);
+    assert!(after_reason(view(&s, None), &s, None).verb.is_some());
 }

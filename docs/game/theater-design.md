@@ -1,6 +1,6 @@
 # Theater: the full in-game player
 
-Status: Design. “What it builds on” describes the existing player. The session ring and warm restore are on by default; keyframe cost measurements and film replay verification are pending.
+Status: Design. “What it builds on” describes the existing player. The session ring and warm restore are on by default; keyframe cost measurements and film replay verification are pending. Slices 0 to 10, 12 to 14 and 16 are in code; slice 15 has the seat record in the recorder, the start point envelope (`theater/start_point.rs`), its capture and load agent methods and the start-from-a-start-point plan (`theater/start_play.rs`), and waits on its three experiments; slice 11 waits on `sim_state::Keyframe`.
 Code: `crates/extensions/game/src/theater.rs` (`Session`), `crates/extensions/game/src/theater/actions.rs` (the per-tick inputs), `crates/live/film/src/tape.rs` (the HLE tape), `crates/apps/cli/src/theater_cmd.rs` (the player process), `crates/live/film` (the container). Tests: `crates/extensions/game/src/theater/tests.rs`, `crates/live/film/src/tests.rs`.
 Switch: [Theater ring](../runtime/switches.md).
 
@@ -105,16 +105,20 @@ The same container also holds the film: the inputs (tag 1) and digests
 |---|---|---|
 | The `.h2film` container: time chunks, the private machine section, per-tick gameplay digests, arena hashes every 30 ticks | Built | [film-format.md](film-format.md), `crates/live/film` |
 | Per-tick inputs: the 92-byte retail action of every seat, read at the simulation-update boundary after pads, remote arrivals and phantom actions are resolved, and written back there in playback | Built | `capture` and `apply` in `crates/extensions/game/src/theater/actions.rs`; `SIM_UPDATE_APPLY` in `crates/hooking/guest-layout/src/points.rs` |
-| The HLE tape: every host answer the guest received, on one call index | Built | `crates/live/film/src/tape.rs` (`Call`, `Playback::call`); `impl Tap for Session` in `theater.rs` |
+| The HLE tape: every host answer the guest received, on one call index, in the binary encoding with pad deltas, pure operations computed in playback and a null network for a game with no socket | Built | `crates/live/film/src/tape.rs` (`Call`, `Playback::call`), `tape/codec.rs`; `Network::dark` in `crates/live/live-hle/src/network.rs`; `impl Tap for Session` in `theater.rs` |
 | Capture points every 150 ticks and local sidecar snapshots every sixth point | Recorder and player use the snapshot build key and recorded device boundaries | `crates/extensions/game/src/theater/record.rs`, `crates/live/film/src/sidecar.rs` |
 | Machine snapshots: guest RAM, kernel, D3D, audio, XAPI, feature sections, a RAM hash | Built, tested on synthetic machines | [snapshots.md](../runtime/snapshots.md) |
 | The player: an isolated child process per film with a warm rewind ring | Built | `crates/apps/cli/src/theater_cmd.rs` (`run`, the restart loop) |
 | A film without a usable keyframe plays from boot | Built | `EngineReplay::open` in `crates/extensions/game/src/theater/replay.rs` (`ImageMatch::FromBoot`) |
 | Transport over the agent API: `theater.play`, `state`, `pause`, `speed`, `seek`, `step`, `keyframes`, `camera`, `hud` | Built | `crates/extensions/agent-proto/src/theater.rs` |
-| Cameras: a view replaced in the guest's renderer with a private random seed; a separate GPU view for a playerless host film | Built | `crates/extensions/game/src/theater/camera.rs` (`Seeds`), `host_view.rs` |
+| Cameras: a view replaced in the guest's renderer with a private random seed; a separate GPU view for a playerless host film | Built | `crates/extensions/game/src/theater/camera.rs` and `render_rng.rs` (`Seeds`), `host_view.rs` |
 | The film selector and film page in the game's own menus | Built | [theater.md](theater.md#in-game-theater) |
-| Compatibility: XBE digest, guest image contract, `h2-sim/1`, the hook digest | Built | `crates/extensions/game/src/theater/compatibility.rs` (`hook_digest`), [film-format.md](film-format.md#determinism-and-verification) |
+| Compatibility: XBE digest, guest image contract, `h2-sim/2`, the hook digest | Built | `crates/extensions/game/src/theater/compatibility.rs` (`hook_digest`), [film-format.md](film-format.md#determinism-and-verification) |
 | Live: host film upload, film lists, pins, clips as tick ranges, public range reads for the web viewer | Built | [live-api.md](../live/live-api.md#theater) |
+| Live: a host's stats stream and film file as two objects, the film file stored as sent with no tick chunk inflated, the unranged read serving the film file, the game's identifiers on its lease's session | Built | `crates/live/live-server/src/films/upload/film_file.rs`, `film::upload`, `Live::session_identifiers` |
+| The action side stream: its frames, the host's forwarder and the client's assembler | Built; the tunnel frame kind that carries it and its pacing are not | `crates/live/film/src/side.rs`, [input-film.md](input-film.md#the-action-side-stream) |
+| The film file (`H2FILM4!`): seed, action-column chunks, machine envelopes and a trailer, written as a default recording is played and beside its stats container, which holds no actions | Built; playback reads the container and the film file together, and the machine part is in both | `crates/live/film/src/file.rs`, [input-film.md](input-film.md#layout) |
+| The action-column codec: `ChunkEncoder`, `ChunkDecoder` and `h2 film stat --fields`, a chunk of 256 ticks of 92-byte actions as predicted, grid-modelled planes under one zstd frame | Built; the film file that carries it (slice 12) is not | `crates/live/film/src/columns.rs`, [input-film.md](input-film.md#the-encoding) |
 | Engine-level playback (a film played without its machine section) and arena keyframes | Not built | "Before and after the sim rewrite"; [sim-rewrite.md](../engine/sim-rewrite.md) section 7 (`sim_state::Keyframe`) |
 
 Three gaps remain:
@@ -124,7 +128,7 @@ Three gaps remain:
    keyframes live in a local cache.
 2. **The replay depends on more than inputs.** Playback answers every HLE
    call from the tape, so a film carries received packets, account
-   observations and pad reads encoded as JSON.
+   observations and pad reads.
 3. **Only a leased dedicated host can upload a film**, and only a
    participant can download the exact recording.
 
@@ -227,6 +231,8 @@ writes a mark with the outcome after flushing the call batch. Every sixth
 mark is eligible for a whole-machine snapshot if that device capture
 succeeds. The 30 s cadence assumes every interval has an unblocked
 boundary. A dedicated host records the marks and omits the sidecar.
+Captures belong to games: outside one, no boundary is looked for at all
+(`record::Recording::in_game`).
 
 Captures take place between two slices, at a boundary the recording
 already has. The recorder never asks for an early slice end
@@ -325,7 +331,7 @@ reported in `theater.state`.
 
 | Film | Picture | Free, follow, orbit | First person | HUD |
 |---|---|---|---|---|
-| Local (the recorder rendered) | the guest's renderer | the rig replaces the renderer's view argument and can set its lens; a private seed is used for modified draws (`camera.rs`, `Seeds`) | a local seat's recorded viewport; any other player gets follow | the recorded HUD, hidden by `theater.hud {game: false}` |
+| Local (the recorder rendered) | the guest's renderer | the rig replaces the renderer's view argument and can set its lens; a private seed is used for modified draws (`camera.rs`; the render stream `render_rng::Seeds`, which a window-fitted guest camera shares) | a local seat's recorded viewport; any other player gets follow | the recorded HUD, hidden by `theater.hud {game: false}` |
 | Playerless host (the recorder drew nothing) | the independent view (`host_view.rs`): BSP, lightmaps, posed opaque models | the same rig | the unit's eye; no weapon model | none |
 
 The render hooks reserve private pages at the high end of the hook arena.
@@ -391,7 +397,7 @@ before entering the guest.
 
 | State | Condition | Playback |
 |---|---|---|
-| **Playable** | XBE digest, guest image contract, `h2-sim/1` and hook digest equal; the map and initial files present | from the seed with every digest checked; sidecar keyframes for this build |
+| **Playable** | XBE digest, guest image contract, `h2-sim/2` and hook digest equal; the map and initial files present | from the seed with every digest checked; sidecar keyframes for this build |
 | **Unavailable** | a different simulation contract or XBE, or a missing map or initial file | the reason: the film predates a breaking change to the simulation, or what to install |
 
 An equal native stamp earns no faster path, because no film carries
@@ -565,7 +571,7 @@ Existing methods keep their parameters.
 
 | Method | Parameters | Result |
 |---|---|---|
-| `theater.state` | `{}` | adds `speed_reached`, `compatibility` (`playable`, `unavailable`), `seek` (`{target, from_tick, source: "ring" \| "keyframe" \| "sidecar" \| "boot", warm, remaining_ticks, restore_ms}` or null), `verified_through` (the last tick whose digest matched), `divergence` (`{tick, kind}` or null), `camera_pose` (`{position, yaw, pitch, fov, radius}`), `hud`, `bar` |
+| `theater.state` | `{}` | adds `speed_reached`, `compatibility` (`playable`, `unavailable`), `seek` (`{target, from_tick, source: "ring" \| "keyframe" \| "sidecar" \| "boot", warm, remaining_ticks, restore_ms}` or null), `verified_through` (the last tick whose digest matched), `divergence` (`{tick, kind}` or null), `camera_pose` (`{position, yaw, pitch, fov, radius}`), `hud`, `bar`, `monitor_looks` (`[{seat, map, reason}]`, omitted when empty: recorded Forge monitor looks read so far that this machine draws as the marker) |
 | `theater.seek` | `{tick, source?: "boot" \| "keyframe"}` or `{cancel: true}` | transport state. A forced route selects boot or a compatible embedded keyframe. Cancel returns to the departure tick and holds |
 | `theater.step` | `{ticks: 1}` | runs that many ticks and holds |
 | `theater.keyframes` | `{}` | `{film: [tick], sidecar: [tick], ring: [tick], capture_points: [tick], ring_bytes, ring_cap, sidecar_bytes}` |
@@ -575,7 +581,7 @@ Existing methods keep their parameters.
 | `theater.screenshot` | `{scale?: 1..4, path?}` | `{path, width, height, tick}` |
 | `theater.clip.mark` | `{in?: tick, out?: tick, clear?: true}` | the marks |
 | `theater.clip.export` | `{from, to, fps: 30 \| 60, format: "png" \| "mp4", path?}` | `{job}`; `theater.clip.status {job}` gives `{frames_done, frames_total, path, error, finished}` |
-| `theater.compat` | `{id}` | `{state, reasons: [text], film: {xbe, contract, hooks, abi}, installed: [{stamp, state}]}` |
+| `theater.compat` | `{id}` | `{state, reasons: [text], film: {xbe, contract, hooks, abi}, installed: [{stamp, state}], monitor_looks?: [{seat, map, reason}]}`; `monitor_looks` lists recorded Forge monitor looks this machine cannot draw (`monitor_look_source`) and does not change `state` |
 | `theater.share` | `{id, visibility, clip?}` | `{film, url}` after the upload |
 | `theater.open` | `{url}` | the film page's `ui.screen`, or a refusal naming the field |
 
@@ -612,15 +618,19 @@ described in [film-format.md](film-format.md) when built:
   in the indexed input block. The column decoder in slice 13 extends this
   cursor with its film chunk and seat rows. A recorder's sidecar gets the
   digest when the film is sealed.
-- The machine part's call tape is one binary stream in call order: a
-  ULEB operation code from a table in the header, the thread, the
-  arguments and the result as ULEBs, and each output as a length and
-  bytes. A pad read is the bytes that differ from the handle's last
-  packet. Batches close at 128 calls, 64 KiB or an arena hash, never on
-  a change of stream.
+- The machine part's call tape is one binary stream in call order
+  (`film::tape::encode_batch`): per batch a table of operation names,
+  then for each call a ULEB operation code, the thread, the call index,
+  the result, the arguments and the outputs. An output is raw, a repeat,
+  or the bytes that differ from the last output of the same operation,
+  handle and slot, so a pad read is the bytes that differ from the
+  handle's last packet. Batches close at 128 calls, 64 KiB or an arena
+  hash, never on a change of stream.
 - The pure operations `Htonl`, `Htons` and `FdIsSet` are computed in
-  playback and take no call index. This changes the call cursor, so it
-  raises the simulation ABI.
+  playback and take no call index, and a game that has made no socket
+  holds no socket call (the null network). This changes the call cursor,
+  so the simulation ABI is `h2-sim/2`, and a film in the JSON encoding is
+  refused.
 
 ## Slices
 

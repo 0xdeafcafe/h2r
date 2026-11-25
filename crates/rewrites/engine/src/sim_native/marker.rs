@@ -160,6 +160,12 @@ pub fn transforms(c: &mut CpuAbi, g: &mut impl Memory) -> Result {
             flags(c, szp(c.edx) | carry, STATUS & !(0x800 | 0x10));
             g.set_u32(at(sp, 16), c.edx)?;
             g.set_u32(at(sp, 16), c.ecx)?;
+            // Phase 1c: the scan and the transform fill as one Rust call
+            // (engine::sim_anim::markers). The port's own path, with the
+            // guest `1d8f50`, runs when it declines.
+            if let Some(transfer) = crate::sim_anim::markers::run(c, g)? {
+                return Ok(transfer);
+            }
             return lookup(c, g);
         }
     }

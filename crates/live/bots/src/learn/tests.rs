@@ -29,6 +29,7 @@ fn setup(budget: u32) -> Setup {
         base: base(),
         run_off: 0.5,
         need: 5.0,
+        control: false,
     }
 }
 
@@ -134,7 +135,7 @@ fn search_finds_the_groove_on_a_fake_landing() {
         assert!(g < 0.05, "seed {seed}: lands {g} from the groove: {k:?}");
         // The line reads back as it is held.
         assert_eq!(
-            learned::parse(&learned::to_text(&[e.clone()])).unwrap(),
+            learned::parse(&learned::to_text(std::slice::from_ref(e))).unwrap(),
             vec![e.clone()]
         );
     }
@@ -422,6 +423,7 @@ fn site(at: Vec3) -> SiteIn {
         },
         run_off: 0.5,
         need: 5.0,
+        control: false,
     }
 }
 
@@ -508,6 +510,38 @@ fn shards_split_the_sites_and_the_pick_is_fewest_rounds_nearest_first() {
     );
     assert!(b.done());
     assert_eq!(b.clone().pick(1, [0.0; 3]), None);
+}
+
+#[test]
+fn an_arm_and_its_control_are_two_sites_with_two_lines() {
+    let at = [3.0, 1.0, 0.0];
+    let train = Train {
+        shard: 0,
+        shards: 1,
+        budget: 60,
+        seed: 1,
+    };
+    let control = SiteIn {
+        control: true,
+        ..site(at)
+    };
+    // The arm's line closed, its control never flown: the control is
+    // still open, and its line a control line.
+    let closed = Entry {
+        state: State::Learned,
+        at,
+        n: 10,
+        ok: 10,
+        ..Entry::default()
+    };
+    let b = Board::new("zanzibar", train, vec![site(at), control], &[closed]);
+    assert_eq!(b.sites().len(), 2);
+    let (arm, ctl) = (&b.sites()[0].search, &b.sites()[1].search);
+    assert_eq!(arm.setup().spot, spot_id("zanzibar", at));
+    assert_eq!(ctl.setup().spot, superbounce::learned::control_id("zanzibar", at));
+    assert_eq!((arm.state(), ctl.state()), (State::Learned, State::Open));
+    assert!(ctl.entry().control && !arm.entry().control);
+    assert!(!b.done());
 }
 
 #[test]

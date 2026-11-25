@@ -1,0 +1,185 @@
+screen: mods.detail
+kind: list
+layout: moved
+backing: shell
+states:
+  focus-0:
+    focus: 0
+  installed:
+    focus: 0
+  downloading:
+    focus: 0
+  failed:
+    focus: 0
+  confirm-remove:
+    focus: 0
+  remove-failed:
+    focus: 0
+  unavailable:
+    focus: 0
+  long-name:
+    focus: 0
+widgets:
+  title:
+    component: title
+  description:
+    component: description.kit.example.29
+    at: [-258, 75]
+    size: [303, 19]
+  legend:
+    component: legend
+  page.body:
+    component: text.label
+    text: "{page_body}"
+    at: [-258, 135]
+    size: [303, 57]
+  page.fact.0.label:
+    component: text.emphasis
+    text: "{page_fact_0_label}"
+    at: [76, 177]
+    size: [82, 20]
+  page.fact.0.value:
+    component: text.mods.detail.31
+    text: "{page_fact_0_value}"
+    at: [163, 177]
+    size: [109, 20]
+  page.fact.1.label:
+    component: text.emphasis
+    text: "{page_fact_1_label}"
+    at: [76, 155]
+    size: [82, 20]
+  page.fact.1.value:
+    component: text.mods.detail.31
+    text: "{page_fact_1_value}"
+    at: [163, 155]
+    size: [109, 20]
+  page.fact.2.label:
+    component: text.emphasis
+    text: "{page_fact_2_label}"
+    at: [76, 133]
+    size: [82, 20]
+  page.fact.2.value:
+    component: text.mods.detail.31
+    text: "{page_fact_2_value}"
+    at: [163, 133]
+    size: [109, 20]
+  page.fact.3.label:
+    component: text.emphasis
+    text: "{page_fact_3_label}"
+    at: [76, 111]
+    size: [82, 20]
+  page.fact.3.value:
+    component: text.mods.detail.31
+    text: "{page_fact_3_value}"
+    at: [163, 111]
+    size: [109, 20]
+  page.fact.4.label:
+    component: text.emphasis
+    text: "{page_fact_4_label}"
+    at: [76, 89]
+    size: [82, 20]
+  page.fact.4.value:
+    component: text.mods.detail.31
+    text: "{page_fact_4_value}"
+    at: [163, 89]
+    size: [109, 20]
+  page.fact.5.label:
+    component: text.emphasis
+    text: "{page_fact_5_label}"
+    at: [76, 67]
+    size: [82, 20]
+  page.fact.5.value:
+    component: text.mods.detail.31
+    text: "{page_fact_5_value}"
+    at: [163, 67]
+    size: [109, 20]
+  page.fact.6.label:
+    component: text.emphasis
+    text: "{page_fact_6_label}"
+    at: [76, 45]
+    size: [82, 20]
+  page.fact.6.value:
+    component: text.mods.detail.31
+    text: "{page_fact_6_value}"
+    at: [163, 45]
+    size: [109, 20]
+  page.fact.7.label:
+    component: text.emphasis
+    text: "{page_fact_7_label}"
+    at: [76, 23]
+    size: [82, 20]
+  page.fact.7.value:
+    component: text.mods.detail.31
+    text: "{page_fact_7_value}"
+    at: [163, 23]
+    size: [109, 20]
+  page.fact.8.label:
+    component: text.emphasis
+    text: "{page_fact_8_label}"
+    at: [76, 1]
+    size: [82, 20]
+  page.fact.8.value:
+    component: text.mods.detail.31
+    text: "{page_fact_8_value}"
+    at: [163, 1]
+    size: [109, 20]
+  page.fact.9.label:
+    component: text.emphasis
+    text: "{page_fact_9_label}"
+    at: [76, -21]
+    size: [82, 20]
+  page.fact.9.value:
+    component: text.mods.detail.31
+    text: "{page_fact_9_value}"
+    at: [163, -21]
+    size: [109, 20]
+  page.check.heading:
+    component: text.emphasis
+    text: "{page_check_heading}"
+    at: [40, -43]
+    size: [232, 20]
+  page.check.0.0:
+    component: text.label
+    text: "{page_check_0_0}"
+    at: [40, -65]
+    size: [112, 20]
+  page.check.0.1:
+    component: text.label
+    text: "{page_check_0_1}"
+    at: [157, -65]
+    size: [115, 20]
+  page.check.1.0:
+    component: text.label
+    text: "{page_check_1_0}"
+    at: [40, -87]
+    size: [112, 20]
+  page.check.1.1:
+    component: text.label
+    text: "{page_check_1_1}"
+    at: [157, -87]
+    size: [115, 20]
+  page.check.2.0:
+    component: text.label
+    text: "{page_check_2_0}"
+    at: [40, -109]
+    size: [112, 20]
+  page.check.2.1:
+    component: text.label
+    text: "{page_check_2_1}"
+    at: [157, -109]
+    size: [115, 20]
+  page.check.3.0:
+    component: text.label
+    text: "{page_check_3_0}"
+    at: [40, -131]
+    size: [112, 20]
+  page.check.3.1:
+    component: text.label
+    text: "{page_check_3_1}"
+    at: [157, -131]
+    size: [115, 20]
+  art.0:
+    component: art
+    at: [-258, 30]
+    size: [220, 207]
+    art: { screen: 14, pane: 0, index: 2, image: 0 }

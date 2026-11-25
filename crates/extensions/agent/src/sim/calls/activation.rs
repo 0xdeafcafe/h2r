@@ -171,9 +171,11 @@ mod tests {
         guest.put_u8(OPTIONS_PENDING, 1);
         guest.map(OPTIONS, OPTIONS_SIZE).map(PENDING_OPTIONS, OPTIONS_SIZE);
         guest.put_u32(START + 4, PENDING_OPTIONS);
-        let mut q = Queue::default();
-        q.next = 12;
-        q.transition = Some(Transition::queued(12, OPTIONS));
+        let mut q = Queue {
+            next: 12,
+            transition: Some(Transition::queued(12, OPTIONS)),
+            ..Queue::default()
+        };
 
         // An independent full start with the same map and options has its
         // own identity. Checkpoints bypass START_GAME altogether.

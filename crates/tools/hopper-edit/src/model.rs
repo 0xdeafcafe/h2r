@@ -111,15 +111,80 @@ fn describe(problems: &[Problem]) -> String {
         .join("; ")
 }
 
+/// What keeps a variant out of a hopper entry that the clean-up does not
+/// say: a hopper plays scripted variants only, so a record whose extension
+/// block names no rules script (mode 2) or built-in Firefight wave set
+/// (mode 1 with the 8-byte prefix of a [`firefight::builtin::definitions`]
+/// id, docs/game/rules-engine.md, "Carrying a script") has no place. A
+/// two-team set also needs team play. `None` for one it may take.
+pub fn needs_script(v: &GameVariant) -> Option<Problem> {
+    use variants::ext::{AT, Block, Mode};
+    // The script reference's mode byte and hash prefix (`variants::ext`,
+    // +0x11f and +0x120).
+    let (mode_at, prefix_at) = (AT + 0x13, AT + 0x14);
+    let script = match v.ext_state() {
+        Block::Ext(e) => e.script,
+        Block::None | Block::Ignored(_) => Default::default(),
+    };
+    let (offset, what) = match script.mode {
+        Mode::Rules => return None,
+        Mode::Firefight => match firefight_set(script.prefix) {
+            Some(def) if def.teams == 2 && !v.team_play() => {
+                return Some(Problem {
+                    offset: vrecord::FLAGS_AT,
+                    what: format!(
+                        "the Firefight wave set {} has two player teams, so it needs team play",
+                        def.name
+                    ),
+                });
+            }
+            Some(_) => return None,
+            None => (
+                prefix_at,
+                format!(
+                    "mode 1 (Firefight) naming {}, which is no built-in wave set",
+                    hex(&script.prefix)
+                ),
+            ),
+        },
+        Mode::None => (
+            mode_at,
+            "mode 0: the variant runs no rules script".to_string(),
+        ),
+        Mode::Unknown(n) => (
+            mode_at,
+            format!("mode {n}: a mode this build does not know"),
+        ),
+    };
+    Some(Problem {
+        offset,
+        what: format!(
+            "a hopper plays scripted variants and built-in Firefight sets only, and this one is {what}"
+        ),
+    })
+}
+
+/// The built-in Firefight wave set (docs/game/firefight.md, "Live") whose
+/// definition's SHA-256 starts with `prefix`, as a mode-1 variant names it.
+pub fn firefight_set(prefix: [u8; 8]) -> Option<firefight::Def> {
+    firefight::builtin::by_prefix(prefix)
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Links `v` to entry `r`: its record (`GameVariant::to_bytes`) becomes the
 /// slot's last 0x130 bytes. Refuses a record the game's clean-up would
-/// change, or one it keeps but cannot play (`variants::record::ours`).
+/// change, one it keeps but cannot play (`variants::record::ours`) and one
+/// with no rules script ([`needs_script`]).
 /// The editable fields that lie inside the variant (the raw string, flags
 /// and second dword) are re-read from the new bytes, so writing them back
 /// leaves the variant exactly as picked; the map id and
 /// weight stay.
 pub fn set_variant(r: &mut EditRecord, v: &GameVariant) -> Result<(), Rejected> {
-    let problems = vrecord::refused(v);
+    let mut problems = vrecord::refused(v);
+    problems.extend(needs_script(v));
     if !problems.is_empty() {
         return Err(Rejected(problems));
     }
@@ -820,6 +885,7 @@ mod tests {
         let e = variants::ext::Ext {
             gravity: 50,
             unlimited_grenades: true,
+            script: v.ext().script,
             ..Default::default()
         };
         v.set_ext(&e).unwrap();
@@ -845,6 +911,93 @@ mod tests {
         let v = good_variant("Swapped");
         set_variant(&mut m[0].records[1], &v).unwrap();
         assert_eq!(entry_variant(&f, &m[0].records[1]).unwrap(), v);
+    }
+
+    #[test]
+    fn a_variant_with_no_script_is_refused_by_its_mode() {
+        let f = sample();
+        let mut m = load(&f);
+        let was = m[0].records[0].clone();
+        let mut v = good_variant("Plain");
+        v.set_ext(&variants::ext::Ext::default()).unwrap();
+        let err = set_variant(&mut m[0].records[0], &v).unwrap_err();
+        assert!(err.to_string().contains("mode 0"), "{err}");
+        assert_eq!(m[0].records[0], was, "nothing changed");
+        assert!(needs_script(&good_variant("Scripted")).is_none());
+        // Mode 1 names a Firefight wave set; the fixture's prefix is none.
+        let mut e = v.ext();
+        e.script.mode = variants::ext::Mode::Firefight;
+        e.script.prefix = [0x5a; 8];
+        v.set_ext(&e).unwrap();
+        let p = needs_script(&v).unwrap();
+        assert!(p.what.contains("mode 1"), "{}", p.what);
+        assert!(p.what.contains("5a5a5a5a5a5a5a5a"), "{}", p.what);
+        assert_eq!(p.offset, variants::ext::AT + 0x14, "the prefix's offset");
+        // A mode this build does not know stays refused.
+        e.script.mode = variants::ext::Mode::Unknown(7);
+        v.set_ext(&e).unwrap();
+        assert!(needs_script(&v).unwrap().what.contains("mode 7"));
+    }
+
+    /// The `n`th built-in Firefight set as a mode-1 record on `good_variant`,
+    /// team play as given.
+    fn firefight_variant(n: usize, team: bool) -> GameVariant {
+        let def = &firefight::builtin::definitions()[n];
+        let mut v = good_variant(&def.name);
+        let mut e = v.ext();
+        e.script = variants::ext::Script {
+            mode: variants::ext::Mode::Firefight,
+            prefix: def.id().unwrap().0[..8].try_into().unwrap(),
+            options: 0,
+        };
+        v.set_ext(&e).unwrap();
+        let mut b = v.to_bytes();
+        b[vrecord::FLAGS_AT] = (b[vrecord::FLAGS_AT] & !1) | u8::from(team);
+        GameVariant::from_bytes(&b).unwrap()
+    }
+
+    #[test]
+    fn a_crossfire_variant_is_accepted_by_its_hash_prefix() {
+        let crossfire = firefight_variant(3, true);
+        assert_eq!(crossfire.name(), "Crossfire");
+        assert_eq!(
+            firefight_set(crossfire.ext().script.prefix).unwrap().name,
+            "Crossfire"
+        );
+        assert!(needs_script(&crossfire).is_none());
+        let f = sample();
+        let mut m = load(&f);
+        set_variant(&mut m[0].records[0], &crossfire).unwrap();
+        assert_eq!(m[0].records[0].variant.as_ref().unwrap().name, "Crossfire");
+        // Every built-in set is accepted the same way.
+        for n in 0..firefight::builtin::definitions().len() {
+            assert!(
+                needs_script(&firefight_variant(n, true)).is_none(),
+                "set {n}"
+            );
+        }
+        // A one-team set does not need team play; Crossfire does.
+        assert!(needs_script(&firefight_variant(0, false)).is_none());
+        let solo = firefight_variant(3, false);
+        let p = needs_script(&solo).unwrap();
+        assert!(p.what.contains("team play"), "{}", p.what);
+        assert_eq!(p.offset, vrecord::FLAGS_AT);
+        assert!(set_variant(&mut m[0].records[1], &solo).is_err());
+    }
+
+    #[test]
+    fn a_firefight_variant_with_an_unknown_prefix_is_refused() {
+        let mut v = firefight_variant(3, true);
+        let mut e = v.ext();
+        e.script.prefix[0] ^= 0xff;
+        v.set_ext(&e).unwrap();
+        assert!(firefight_set(e.script.prefix).is_none());
+        let f = sample();
+        let mut m = load(&f);
+        let was = m[0].records[0].clone();
+        let err = set_variant(&mut m[0].records[0], &v).unwrap_err();
+        assert!(err.to_string().contains("no built-in wave set"), "{err}");
+        assert_eq!(m[0].records[0], was, "nothing changed");
     }
 
     #[test]
@@ -939,9 +1092,10 @@ mod tests {
     #[test]
     fn an_unused_slot_becomes_a_playlist_the_game_loads() {
         use live_proto::hopper::check_descriptor;
-        let f = HopperFile::default_set();
+        let mut f = HopperFile::default_set();
+        let i = live_proto::hopper::HOPPERS - 1;
+        f.clear_hopper(i).unwrap();
         let base = load(&f);
-        let i = defaults::playlists().len();
         assert!(is_unused(&base[i]));
         // Untouched unused slots never block a save; a title alone in one
         // says what to do.
@@ -949,7 +1103,7 @@ mod tests {
         m[i].title = "Modtacular".into();
         let errs = errors(&base, &m);
         assert_eq!(errs.len(), 1, "{errs:?}");
-        assert!(errs[0].starts_with("Playlist 12: this slot is unused"));
+        assert!(errs[0].starts_with("Playlist 16: this slot is unused"));
         // From a template: one entry, the template's rules.
         let mut m = base.clone();
         assert!(!create_playlist(&mut m[i], 99));
@@ -961,7 +1115,7 @@ mod tests {
         let out = apply(&f, &m).unwrap();
         let d = out.descriptor(i).unwrap();
         assert_eq!(check_descriptor(&d), vec![]);
-        assert_eq!(d.playlist_id, 12);
+        assert_eq!(d.playlist_id, 16, "the lowest id no other playlist has");
         assert_eq!(out.text(i).unwrap().title, "Modtacular");
         assert_eq!(out.problems(&defaults::retail_map_ids()), vec![]);
         let e = out.entry(i, 0).unwrap();

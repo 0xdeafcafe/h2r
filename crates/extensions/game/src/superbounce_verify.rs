@@ -43,8 +43,10 @@ use trial::{Pad, Read, Run};
 
 /// The ticker's name.
 pub const TICKER: &str = "superbounce.verify";
-/// Where an object's position is in its body.
-const OBJECT_POSITION: u32 = 0x30;
+/// Where an object's origin is in its body: the point a teleport places
+/// and the frame of every spot's heights
+/// ([`crate::superbounce_mode::OBJECT_POSITION`]).
+const OBJECT_POSITION: u32 = crate::superbounce_mode::OBJECT_POSITION;
 /// The most trace rows kept.
 pub const MAX_TRACE: usize = 2_000;
 
@@ -289,15 +291,10 @@ impl RouteRun {
                 (s, None) => format!("{s} at {step}/{}", o.phase),
             });
             if let (Some(t), Some(site)) = (o.landing, o.site) {
-                let width = if site.width > 0.0 {
-                    site.width
-                } else {
-                    bots::spots::SLOT_WIDTH
-                };
                 v.speed_in = Some(t.speed_in);
                 v.vz_out = Some(t.vz_out);
                 v.landed_at = Some(t.at);
-                v.landing = Some(t.result(width, site.need).into());
+                v.landing = Some(t.result(site.need).into());
             }
             v.steps = o
                 .log
@@ -618,7 +615,7 @@ fn verify(v: Value, ctx: &mut GameCtx<'_>) -> Result<Value, RpcError> {
         let (map, spots) = crate::superbounce_mode::scanned_spots();
         if map.as_deref() != Some(loaded.as_str()) || spots.is_empty() {
             return Err(unavailable(
-                "no spot scan of this map: turn the mode on (superbounce.set {\"on\":true}) and \
+                "no spot scan of this map: turn the mode on (play a game whose script requires hud.superbounce) and \
                  wait for superbounce.state's scan.status to read ready",
             ));
         }

@@ -1,6 +1,6 @@
 //! Elements to `nhdt` widget records (docs/game/hud-kit.md, "The model"):
 //! a `0x64`-byte bitmap widget per meter, icon and pointer, a `0x54`-byte
-//! text widget per text, written at the field offsets of the game's
+//! text widget per text and gauge, written at the field offsets of the game's
 //! widget draw ([`bitmap`], [`text`]; `crates/formats/tags/src/defs/nhdt.txt`
 //! and `hud_edit::layout` name the same fields, and `hud-kit`'s tests read
 //! these bytes back through the HUD editor's model), with the
@@ -11,13 +11,14 @@
 //! zero, so the retail gate (E `0x0013ac87`) never draws a kit widget by
 //! itself; the inputs are [`KIT_INPUT`] (the hook answers `hud_input1`
 //! with [`Widget::input`]); a text's string is the template's (the hook
-//! answers the text). A text hidden in a screen mode has the font byte
+//! answers the text, a gauge's the character for its fill:
+//! [`Widget::text`]). A text hidden in a screen mode has the font byte
 //! [`NO_FONT`] there, so the game's own draw skips it (E `0x0022a85b`).
 
 use map::{FourCC, TagId};
 
 use crate::Mode;
-use crate::model::{Element, Hud, Kind, Origin, Place};
+use crate::model::{Element, GAUGE_FONT, Glyphs, Hud, Justify, Kind, Origin, Place, Value};
 use crate::templates::{BITM, Templates};
 
 /// A widget block's kind: the root's two blocks (E `0x0013a532`).
@@ -112,6 +113,9 @@ pub struct Widget {
     /// A cropped meter's `hud_input1` at fill 0 and 1
     /// ([`crate::templates::ArtTemplate::ramp`]).
     pub ramp: Option<[f32; 2]>,
+    /// A gauge's pictures ([`Kind::Gauge`]): not in the record; the
+    /// string hook gives the character for the fill ([`Widget::text`]).
+    pub glyphs: Option<Glyphs>,
 }
 
 impl Widget {
@@ -127,6 +131,16 @@ impl Widget {
         match self.ramp {
             Some([b0, b1]) => b0 + fill * (b1 - b0),
             None => fill,
+        }
+    }
+
+    /// The string the string hook gives a text widget at `v`: the value's
+    /// text, or for a gauge the character of its picture for the value's
+    /// fill ([`Glyphs::text`]).
+    pub fn text(&self, v: &Value) -> String {
+        match self.glyphs {
+            Some(g) => g.text(v.fill),
+            None => v.text.clone(),
         }
     }
 }
@@ -173,22 +187,37 @@ fn err<T>(why: impl Into<String>) -> Result<T, Error> {
 
 /// The anchor and the offset per mode `at` gives on `t` (a hidden mode
 /// keeps the fullscreen offset; the gate hides it). An offset from the
-/// grenade row is added to the row's point, in the row's anchor.
+/// grenade row is added to the row's point, in the row's anchor. A place
+/// from the row in some modes and from its own anchor in the others
+/// (`Place::split_origin`) has the row's anchor, the one a widget has;
+/// another is an error.
 pub fn placed(at: &Place, t: &Templates) -> Result<(u16, [(i16, i16); 3]), Error> {
     let own = Mode::ALL.map(|m| at.offset(m).unwrap_or(at.full));
-    if at.origin == Origin::Anchor {
+    if Mode::ALL.iter().all(|m| at.origin_in(*m) == Origin::Anchor) {
         return Ok((at.anchor as u16, own));
     }
     let row = match t.row.as_ref() {
         Ok(r) => r,
         Err(why) => return err(format!("the grenade row: {why}")),
     };
-    let mut anchor = 0;
+    let mut anchor = None;
+    let mut mixed = false;
     let mut out = own;
     for (i, m) in Mode::ALL.iter().enumerate() {
-        let (a, (x, y)) = row.at(at.origin, *m).expect("a row origin");
-        anchor = a;
-        out[i] = (x + own[i].0, y + own[i].1);
+        match row.at(at.origin_in(*m), *m) {
+            Some((a, (x, y))) => {
+                anchor = Some(a);
+                out[i] = (x + own[i].0, y + own[i].1);
+            }
+            None => mixed = true,
+        }
+    }
+    let anchor = anchor.expect("a row origin in some mode");
+    if mixed && anchor != at.anchor as u16 {
+        return err(format!(
+            "a place from anchor {} in some modes and the grenade row (anchor {anchor}) in others: a widget has one anchor",
+            at.anchor as u16
+        ));
     }
     Ok((anchor, out))
 }
@@ -252,13 +281,17 @@ fn bitmap_record(e: &Element, t: &Templates) -> Result<Widget, Error> {
         ramp: matches!(e.kind, Kind::Meter { .. })
             .then_some(a.ramp)
             .flatten(),
+        glyphs: None,
     })
 }
 
 fn text_record(e: &Element, t: &Templates) -> Result<Widget, Error> {
     use text as f;
-    let Kind::Text { font, justify, .. } = e.kind else {
-        unreachable!("a text element")
+    let (font, justify, glyphs) = match &e.kind {
+        Kind::Text { font, justify, .. } => (*font, *justify, None),
+        // A gauge's picture has its top-left corner at the widget's point.
+        Kind::Gauge { glyphs } => (GAUGE_FONT, Justify::Start, Some(*glyphs)),
+        _ => unreachable!("a text element"),
     };
     let tt = match t.text.as_ref() {
         Ok(tt) => tt,
@@ -283,6 +316,7 @@ fn text_record(e: &Element, t: &Templates) -> Result<Widget, Error> {
         bytes: b,
         crop: None,
         ramp: None,
+        glyphs,
     })
 }
 
@@ -299,7 +333,7 @@ pub fn compile(hud: &Hud, t: &Templates) -> Result<Compiled, Error> {
             Kind::Meter { .. } | Kind::Icon { .. } | Kind::Pointer { .. } => {
                 bitmaps.push(bitmap_record(e, t)?)
             }
-            Kind::Text { .. } => texts.push(text_record(e, t)?),
+            Kind::Text { .. } | Kind::Gauge { .. } => texts.push(text_record(e, t)?),
             _ => channels.push(e.id),
         }
     }

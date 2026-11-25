@@ -1,6 +1,8 @@
 //! Film transport and presentation controls. Ticks count from boot.
 use serde::{Deserialize, Serialize};
 
+pub const EXIT: &str = "theater.exit";
+pub const LIST: &str = "theater.list";
 pub const SHARE: &str = "theater.share";
 pub const OPEN: &str = "theater.open";
 #[derive(Debug, Serialize, Deserialize)]
@@ -33,10 +35,11 @@ pub const KEYFRAMES: &str = "theater.keyframes";
 pub const MEASUREMENTS: &str = "theater.measurements";
 pub const STEP: &str = "theater.step";
 pub const VERIFY: &str = "theater.verify";
+pub const STATUS: &str = "theater.status";
 pub const TRANSPORT_METHODS: [&str; 9] = [
     PLAY, STATE, PAUSE, SPEED, SEEK, CAMERA, HUD, KEYFRAMES, STEP,
 ];
-pub const METHODS: [&str; 15] = [
+pub const METHODS: [&str; 16] = [
     PLAY,
     STATE,
     PAUSE,
@@ -52,7 +55,96 @@ pub const METHODS: [&str; 15] = [
     CLIP_MARK,
     CLIP_EXPORT,
     CLIP_STATUS,
+    STATUS,
 ];
+
+/// Make a start point of the running game's arena and write it to a file
+/// (`theater.start_point.capture`). The game agent answers it at a tick
+/// boundary, so the state is the end of the tick in the reply.
+pub const START_POINT_CAPTURE: &str = "theater.start_point.capture";
+/// Read a start point, put its arena back into the running game and report
+/// whether the loaded state hashes as the tag says
+/// (`theater.start_point.load`).
+pub const START_POINT_LOAD: &str = "theater.start_point.load";
+pub const START_POINT_METHODS: [&str; 2] = [START_POINT_CAPTURE, START_POINT_LOAD];
+
+/// `theater.start_point.capture`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StartPointCapture {
+    /// The file to write; an existing file is replaced.
+    pub path: String,
+    /// The tag key, as text (the tunnel key in a Live game; any text for an
+    /// experiment).
+    pub key: String,
+    /// The per-game identifiers, as hex (at most 64 bytes). None: empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ids: Option<String>,
+}
+
+/// What `theater.start_point.capture` wrote.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartPointCaptured {
+    pub path: String,
+    /// The tick whose end the state is.
+    pub tick: u32,
+    /// `lockstep::hash_arena` of the arena and the extension records, as 16
+    /// hex digits.
+    pub arena_hash: String,
+    pub arena_bytes: u64,
+    pub ext_bytes: u64,
+    /// The file's size: tag, identifiers and both compressed frames.
+    pub stored_bytes: u64,
+}
+
+/// `theater.start_point.load`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StartPointLoad {
+    pub path: String,
+    pub key: String,
+    /// The arena hash the film names for the start tick, as hex. None: the
+    /// file's own, so only the tag and the digest are checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub film_hash: Option<String>,
+}
+
+/// What `theater.start_point.load` found. A refused file is an error and
+/// changes nothing; a file that loads but hashes differently is reported
+/// here with `matches: false`, and the game then holds the loaded state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartPointLoaded {
+    pub tick: u32,
+    pub arena_hash: String,
+    /// The hash of the state after the load.
+    pub loaded_hash: String,
+    /// `StartPoint::check_loaded` held.
+    pub matches: bool,
+    /// Why it did not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// What this session's film recording is doing and has kept
+/// (`theater.status`). It answers on any session; a playback or an
+/// explicit `--film` recording reports `default_recording: false`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Status {
+    /// The session records the games a player plays into the film library.
+    pub default_recording: bool,
+    /// The running tape's file while recording, as a path.
+    pub tape: Option<String>,
+    /// A game is on the tape now.
+    pub in_game: bool,
+    /// Films cut so far this session, oldest first, as paths.
+    pub games_cut: Vec<String>,
+    /// Why the last tape or game went without a film, if one did.
+    pub last_discard: Option<String>,
+    /// Changes from outside the tape the recording carried on through.
+    pub notes: Vec<String>,
+    /// The failure that stopped the recording, if one did.
+    pub failure: Option<String>,
+}
 
 /// Host wall-clock timings and write-watch counts for an instrumented run.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,6 +197,20 @@ pub struct Compatibility {
     pub reasons: Vec<String>,
     pub film: FilmContract,
     pub installed: Vec<InstalledImage>,
+    /// Monitor looks in the film this machine cannot draw. They are not
+    /// reasons: the film still plays, and the seat draws the marker.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub monitor_looks: Vec<MonitorLookSource>,
+}
+
+/// A recorded Forge monitor look this machine cannot draw.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MonitorLookSource {
+    pub seat: u8,
+    /// The source map the look's model needs.
+    pub map: String,
+    /// `monitor_look_source`.
+    pub reason: String,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -306,6 +412,10 @@ pub struct State {
     pub camera_pose: Option<CameraPose>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub camera_fallback: Option<CameraFallback>,
+    /// Monitor looks the film has recorded so far that this machine cannot
+    /// draw (`monitor_look_source`): the seat shows the marker.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub monitor_looks: Vec<MonitorLookSource>,
     #[serde(default = "shown")]
     pub hud: bool,
     #[serde(default = "shown")]
@@ -373,6 +483,33 @@ pub struct VerificationReport {
 mod tests {
     use super::*;
     use serde_json::{from_value, json, to_value};
+
+    #[test]
+    fn start_point_requests_and_replies_round_trip() {
+        for wire in [
+            json!({"path":"/tmp/a.sp","key":"k"}),
+            json!({"path":"/tmp/a.sp","key":"k","ids":"0a0b"}),
+        ] {
+            let p: StartPointCapture = from_value(wire.clone()).unwrap();
+            assert_eq!(to_value(p).unwrap(), wire);
+        }
+        for wire in [
+            json!({"path":"/tmp/a.sp","key":"k"}),
+            json!({"path":"/tmp/a.sp","key":"k","film_hash":"00000000000000ff"}),
+        ] {
+            let p: StartPointLoad = from_value(wire.clone()).unwrap();
+            assert_eq!(to_value(p).unwrap(), wire);
+        }
+        assert!(from_value::<StartPointCapture>(json!({"path":"p"})).is_err());
+        assert!(from_value::<StartPointLoad>(json!({"path":"p","key":"k","x":1})).is_err());
+        let loaded = json!({
+            "tick":9, "arena_hash":"0000000000000001", "loaded_hash":"0000000000000002",
+            "matches":false, "error":"differs"
+        });
+        let r: StartPointLoaded = from_value(loaded.clone()).unwrap();
+        assert_eq!(to_value(r).unwrap(), loaded);
+        assert!(!METHODS.iter().any(|m| START_POINT_METHODS.contains(m)));
+    }
 
     #[test]
     fn theater_seek_and_step_params_round_trip() {
@@ -579,7 +716,7 @@ mod compatibility_tests {
             let wire = json!({
                 "state": state,
                 "reasons": [],
-                "film": {"xbe": "synthetic", "contract": null, "hooks": null, "abi": "h2-sim/1"},
+                "film": {"xbe": "synthetic", "contract": null, "hooks": null, "abi": "h2-sim/2"},
                 "installed": [{"stamp": "synthetic build", "state": state}],
             });
             let result: Compatibility = serde_json::from_value(wire.clone()).unwrap();

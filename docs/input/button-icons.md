@@ -98,12 +98,12 @@ Style rules, taken from the retail glyphs:
   red, pink, green), 16 pixels wide, with the symbol in a light tint as the
   retail letters are. Options and Share are dark balls with a white mark, as
   the retail Start and Back are.
-- **Bumpers** (360 and PlayStation): both bumpers side by side with the one
-  meant lit, as the retail glyphs show triggers and sticks, in white at
-  the same alpha levels, so they take the text colour. The pair is 45 pixels
-  wide and carries LB/RB or L1/R1 labels; PlayStation triggers carry L2/R2.
-  The inactive side stays faint. Labels keep their orientation when the
-  active side changes.
+- **Bumpers** (360, PlayStation and Steam): both bumpers side by side with
+  the one meant lit, as the retail glyphs show triggers and sticks, in white
+  at the same alpha levels, so they take the text colour. The pair is 45
+  pixels wide and carries LB/RB or L1/R1 labels; PlayStation triggers carry
+  L2/R2. The inactive side stays faint. Labels keep their orientation when
+  the active side changes.
 - **Keys**: a light cap shaded like the retail White button, with a dark rim,
   a lip along the bottom and the key's name in a 5 x 7 letter set drawn for
   this project. **Mouse buttons**: a mouse from above in the same shading with
@@ -189,7 +189,10 @@ own, in the unused part of the icon range:
 The superbounce medals take U+E2A0 to U+E2A6, and the Incel medal
 ([teabag.md](../game/teabag.md)) U+E2A7, in `conduit-13` and
 `conduit-12` only (`font::medals`, [hud-kit.md](../game/hud-kit.md),
-"The medals"), through the same rewrite and `apply`.
+"The medals"), through the same rewrite and `apply`. The HUD's direction
+arrows take U+E2B0 to U+E2B7 (`font::arrows`) and the charge ring's arcs
+U+E2C0 to U+E2FE (`font::ring`, [hud-kit.md](../game/hud-kit.md),
+"Gauges"), in every font.
 
 `apply` gives each new code point a new record at the end of the record
 table, moves the pixel data up by the size of those records, fixes every

@@ -14,11 +14,14 @@ game-controller = ["input/game-controller"]
 
 [dependencies]
 gfx = { path = "../../platform/gfx" }
+settings = { path = "../../formats/settings" }
 input = { path = "../../platform/input", default-features = false }
 audio = { path = "../../platform/audio" }
 xapi = { path = "../../platform/xapi" }
 timeline = { path = "../../runtime/timeline" }
 debug-menu = { path = "../../extensions/debug-menu" }
+# host.pause's hub: the window pause and host.step's gate (src/lifecycle.rs).
+agent-proto = { path = "../../extensions/agent-proto" }
 wgpu = "30"
 cpal = "0.18"
 pollster = "1"

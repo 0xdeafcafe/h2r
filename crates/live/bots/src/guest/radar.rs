@@ -1,7 +1,8 @@
-//! A phantom has no local HUD slot. Reconstruct the movement-only dots of
-//! its motion sensor from the same variant, range and speed threshold as
-//! the HUD (0x1a1d55, 0x1a264e). Reduce a dot to a rough horizontal point
-//! before passing it to the brain; it can never supply a combat target.
+//! A phantom has no local HUD slot. Reconstruct the dots of its motion
+//! sensor from the same variant, range and speed threshold as the HUD
+//! (0x1a1d55, 0x1a264e): a hostile that moves fast enough or fired lately
+//! (`sound::firing`). Reduce each dot to a rough horizontal point before
+//! passing it to the brain; a dot can never supply a combat target.
 
 use super::{GuestMemory, OPTIONS, Perception, objects, points};
 use crate::brain::Vec3;
@@ -19,6 +20,8 @@ const VERTICAL_FACTOR: u32 = 0x0045_e1f4;
 const SPEED_FACTOR: u32 = 0x0045_e1f0;
 const VELOCITY: u32 = 0x88;
 const PHYSICS_FLAGS_HIGH: u32 = 0xc1;
+/// The brain is given at most this many dots, the nearest.
+pub(crate) const DOTS: usize = 4;
 
 pub(super) fn enabled(
     m: &dyn GuestMemory,
@@ -74,27 +77,45 @@ impl Sensor {
         })
     }
 
-    pub(super) fn contact(self, p: &Perception, moving: u16) -> Option<Vec3> {
-        let me = p.me?;
-        let contacts = p.others.iter().filter_map(|o| {
-            let enemy = p.objective.as_ref()
+    /// The disc's horizontal radius, world units.
+    pub(super) fn range(self) -> f32 {
+        self.range
+    }
+
+    /// The hostile dots inside the disc, nearest first, at most [`DOTS`]:
+    /// those in `shown` (moving, or firing lately).
+    pub(super) fn contacts(self, p: &Perception, shown: u16, out: &mut Vec<Vec3>) {
+        out.clear();
+        let Some(me) = p.me else { return };
+        let mut found = [(0.0f32, 0.0f32, f32::INFINITY); 16];
+        let mut n = 0;
+        for o in &p.others {
+            let enemy = p
+                .objective
+                .as_ref()
                 .and_then(|g| g.juggernaut_opponent(o.id))
                 .unwrap_or(!p.teams || o.team != me.team);
-            if !enemy || moving & crate::perceive::player_bit(o.id) == 0 {
-                return None;
+            if !enemy || shown & crate::perceive::player_bit(o.id) == 0 || n == found.len() {
+                continue;
             }
             let dx = o.position[0] - me.position[0];
             let dy = o.position[1] - me.position[1];
             let distance = dx.hypot(dy);
-            (distance < self.range).then_some((dx, dy, distance))
-        });
-        let (dx, dy, _) = contacts.min_by(|a, b| a.2.total_cmp(&b.2))?;
+            if distance < self.range {
+                found[n] = (dx, dy, distance);
+                n += 1;
+            }
+        }
+        let found = &mut found[..n];
+        found.sort_by(|a, b| a.2.total_cmp(&b.2));
         // Coarsen the sensor disc to half-unit steps. Two dots on the
         // same horizontal bearing have no separable floor or player ID.
-        Some([
-            me.position[0] + (2.0 * dx).round() * 0.5,
-            me.position[1] + (2.0 * dy).round() * 0.5,
-            me.position[2],
-        ])
+        out.extend(found.iter().take(DOTS).map(|&(dx, dy, _)| {
+            [
+                me.position[0] + (2.0 * dx).round() * 0.5,
+                me.position[1] + (2.0 * dy).round() * 0.5,
+                me.position[2],
+            ]
+        }));
     }
 }

@@ -1,10 +1,12 @@
 //! A read-only backend that serves some files with different contents.
 //!
 //! [`RewriteBackend`] wraps another backend. For a path the [`Rewrite`] wants,
-//! it reads the whole inner file once, hands the bytes to the rewrite, and
-//! from then on serves the result: its size from `stat` and directory
-//! listings, its bytes from `read_at`. Everything else passes through. The
-//! inner backend is never written; rewritten files live in memory only.
+//! it reads the whole inner file, hands the bytes to the rewrite, and
+//! serves the result: its size from `stat` and directory listings, its
+//! bytes from `read_at`. A level's rewritten bytes can be evicted once
+//! its file objects close. The shared resource maps stay available across
+//! level loads. Everything else passes through. The inner backend is never
+//! written.
 //!
 //! The boot runner uses it to swap button-icon glyphs in the disc's font
 //! files (`docs/input/button-icons.md`).
@@ -15,6 +17,24 @@ use crate::{Backend, DirectoryEntry, Error, FileSource, HostFile, Metadata, Resu
 
 /// Files larger than this are served as they are, without asking the rewrite.
 pub const MAX_REWRITE_BYTES: u64 = 64 * 1024 * 1024;
+/// A directory enumeration can visit every map before the game opens one.
+/// Retain only a bounded set of their rewritten payloads.
+const MAP_CACHE_BYTES: u64 = 64 * 1024 * 1024;
+static MAP_BYTES: mem_watch::Counter = mem_watch::Counter::new("assets.rewritten_map_cache_bytes");
+static SHARED_MAP_BYTES: mem_watch::Counter =
+    mem_watch::Counter::new("assets.rewritten_shared_map_cache_bytes");
+
+fn shared_map(name: &str) -> bool {
+    // Match the native renderer's fixed raw-resource selectors. Native map
+    // opens request these alongside their level, including in multiplayer.
+    ["mainmenu.map", "shared.map", "single_player_shared.map"]
+        .iter()
+        .any(|shared| name.eq_ignore_ascii_case(shared))
+}
+
+fn level_map(path: &str) -> bool {
+    crate::map_override::is_map_path(path).is_some_and(|name| !shared_map(name))
+}
 
 /// Decides which files change and produces their new contents.
 pub trait Rewrite: Send {
@@ -22,10 +42,11 @@ pub trait Rewrite: Send {
     /// rewritten. Must be cheap: it runs on every `stat` and `read_at`.
     fn wants(&self, path: &str) -> bool;
     /// New contents for `path`, or `None` to serve `original` unchanged.
-    /// Called at most once per file.
+    /// A rewritten map can be requested again after its cached bytes are
+    /// evicted, so rewriting the same input must produce the same bytes.
     fn rewrite(&mut self, path: &str, original: &[u8]) -> Option<Vec<u8>>;
     /// A wanted file exceeded the size limit and will be served unchanged.
-    /// Called once, just like `rewrite`, so dependent substitutions can stop.
+    /// Called once so dependent substitutions can stop.
     fn skipped(&mut self, _path: &str) {}
 }
 
@@ -76,12 +97,28 @@ impl<A: Rewrite, B: Rewrite> Rewrite for Chain<A, B> {
     }
 }
 
+enum Cached {
+    Unchanged,
+    Bytes(Arc<[u8]>),
+    /// Retain the directory listing size without rebuilding an idle map.
+    Evicted(usize),
+}
+
+struct Entry {
+    contents: Cached,
+    last_use: u64,
+}
+
 pub struct RewriteBackend<B, R> {
     inner: B,
     rewrite: R,
-    /// By lowercase path: the rewritten bytes, or `None` for a file the
-    /// rewrite declined (so it is not read and asked again).
-    files: HashMap<String, Option<Arc<[u8]>>>,
+    /// By lowercase path, including declined files so they are asked once.
+    files: HashMap<String, Entry>,
+    open_maps: HashMap<String, usize>,
+    access: u64,
+    map_bytes: mem_watch::Gauge,
+    shared_map_bytes: mem_watch::Gauge,
+    map_byte_limit: u64,
 }
 
 impl<B: Backend, R: Rewrite> RewriteBackend<B, R> {
@@ -90,17 +127,34 @@ impl<B: Backend, R: Rewrite> RewriteBackend<B, R> {
             inner,
             rewrite,
             files: HashMap::new(),
+            open_maps: HashMap::new(),
+            access: 0,
+            map_bytes: MAP_BYTES.track(0),
+            shared_map_bytes: SHARED_MAP_BYTES.track(0),
+            map_byte_limit: MAP_CACHE_BYTES,
         }
     }
 
-    /// The rewritten contents of `path`, loading and rewriting it on first
-    /// use. `None` when the file is served from the inner backend.
+    /// The rewritten contents of `path`, loading it when there is no cached
+    /// payload. `None` when the file is served from the inner backend.
     fn rewritten(&mut self, path: &str) -> Result<Option<&Arc<[u8]>>> {
         if path.is_empty() || !self.rewrite.wants(path) {
             return Ok(None);
         }
         let key = path.to_ascii_lowercase();
-        if !self.files.contains_key(&key) {
+        let map_name = crate::map_override::is_map_path(path);
+        let level = map_name.is_some_and(|name| !shared_map(name));
+        self.access += 1;
+        if self
+            .files
+            .get(&key)
+            .is_none_or(|entry| matches!(&entry.contents, Cached::Evicted(_)))
+        {
+            let _scope = mem_watch::scope(if map_name.is_some() {
+                "assets.map_rewrite"
+            } else {
+                "assets.file_rewrite"
+            });
             let meta = self.inner.stat(path)?;
             let new = if meta.is_directory() {
                 None
@@ -108,6 +162,10 @@ impl<B: Backend, R: Rewrite> RewriteBackend<B, R> {
                 self.rewrite.skipped(path);
                 None
             } else {
+                if level {
+                    // The source buffer is needed before we know the output size.
+                    self.trim_maps(None, meta.end_of_file);
+                }
                 let mut original = vec![0u8; meta.end_of_file as usize];
                 let mut done = 0;
                 while done < original.len() {
@@ -121,9 +179,81 @@ impl<B: Backend, R: Rewrite> RewriteBackend<B, R> {
                 }
                 self.rewrite.rewrite(path, &original)
             };
-            self.files.insert(key.clone(), new.map(Arc::from));
+            let contents = match new {
+                Some(bytes) => {
+                    if level {
+                        self.map_bytes.set(self.map_bytes.get() + bytes.len() as u64);
+                    } else if map_name.is_some() {
+                        self.shared_map_bytes
+                            .set(self.shared_map_bytes.get() + bytes.len() as u64);
+                    }
+                    Cached::Bytes(Arc::from(bytes))
+                }
+                None => Cached::Unchanged,
+            };
+            self.files.insert(
+                key.clone(),
+                Entry {
+                    contents,
+                    last_use: self.access,
+                },
+            );
+            if level {
+                self.trim_maps(Some(&key), 0);
+            }
         }
-        Ok(self.files[&key].as_ref())
+        let entry = self.files.get_mut(&key).expect("rewrite is cached");
+        entry.last_use = self.access;
+        match &entry.contents {
+            Cached::Bytes(bytes) => Ok(Some(bytes)),
+            Cached::Unchanged => Ok(None),
+            Cached::Evicted(_) => unreachable!("the current entry is retained"),
+        }
+    }
+
+    /// Keep open files and the payload serving the current lookup. Trim
+    /// idle maps before allocating an incoming source or when a file closes.
+    fn trim_maps(&mut self, current: Option<&str>, incoming: u64) {
+        while self.map_bytes.get() > self.map_byte_limit.saturating_sub(incoming) {
+            let Some((_, entry)) = self
+                .files
+                .iter_mut()
+                .filter(|(key, entry)| {
+                    current != Some(key.as_str())
+                        && level_map(key)
+                        && !self.open_maps.contains_key(key.as_str())
+                        && matches!(&entry.contents, Cached::Bytes(_))
+                })
+                .min_by_key(|(_, entry)| entry.last_use)
+            else {
+                break;
+            };
+            let Cached::Bytes(bytes) = &entry.contents else {
+                unreachable!("the eviction candidate has bytes");
+            };
+            let len = bytes.len();
+            entry.contents = Cached::Evicted(len);
+            self.map_bytes.set(self.map_bytes.get() - len as u64);
+        }
+    }
+
+    fn rewritten_size(&mut self, path: &str) -> Result<Option<usize>> {
+        if !self.rewrite.wants(path) {
+            return Ok(None);
+        }
+        let evicted_size = self
+            .files
+            .get(&path.to_ascii_lowercase())
+            .and_then(|entry| match &entry.contents {
+                Cached::Evicted(len) => Some(*len),
+                _ => None,
+            });
+        if evicted_size.is_some() {
+            return Ok(evicted_size);
+        }
+        let size = self.rewritten(path)?.map(|bytes| bytes.len());
+        self.trim_maps(None, 0);
+        Ok(size)
     }
 
     fn resize(meta: &mut Metadata, len: usize) {
@@ -140,9 +270,20 @@ impl<B: Backend, R: Rewrite> Backend for RewriteBackend<B, R> {
     }
 
     fn opened(&mut self, path: &str) {
+        if level_map(path) {
+            *self.open_maps.entry(path.to_ascii_lowercase()).or_default() += 1;
+        }
         self.inner.opened(path)
     }
     fn closed(&mut self, path: &str) {
+        let key = path.to_ascii_lowercase();
+        if let Some(count) = self.open_maps.get_mut(&key) {
+            *count -= 1;
+            if *count == 0 {
+                self.open_maps.remove(&key);
+                self.trim_maps(None, 0);
+            }
+        }
         self.inner.closed(path)
     }
     fn rescan(&mut self) {
@@ -161,7 +302,7 @@ impl<B: Backend, R: Rewrite> Backend for RewriteBackend<B, R> {
         self.inner.film_source(path)
     }
     fn map_ranges(&mut self, path: &str) -> Option<Vec<(u64, u64)>> {
-        if self.rewrite.wants(path) && self.rewritten(path).ok().flatten().is_some() {
+        if self.rewritten_size(path).ok().flatten().is_some() {
             None
         } else {
             self.inner.map_ranges(path)
@@ -175,8 +316,8 @@ impl<B: Backend, R: Rewrite> Backend for RewriteBackend<B, R> {
     }
     fn stat(&mut self, path: &str) -> Result<Metadata> {
         let mut meta = self.inner.stat(path)?;
-        if let Some(bytes) = self.rewritten(path)? {
-            Self::resize(&mut meta, bytes.len());
+        if let Some(len) = self.rewritten_size(path)? {
+            Self::resize(&mut meta, len);
         }
         Ok(meta)
     }
@@ -191,8 +332,8 @@ impl<B: Backend, R: Rewrite> Backend for RewriteBackend<B, R> {
             } else {
                 format!("{path}\\{}", e.name)
             };
-            if let Some(bytes) = self.rewritten(&child)? {
-                Self::resize(&mut e.metadata, bytes.len());
+            if let Some(len) = self.rewritten_size(&child)? {
+                Self::resize(&mut e.metadata, len);
             }
         }
         Ok(entries)
@@ -254,7 +395,8 @@ mod tests {
             true
         }
         fn stat(&mut self, path: &str) -> Result<Metadata> {
-            if path.is_empty() || path.eq_ignore_ascii_case("fonts") {
+            if path.is_empty() || path.eq_ignore_ascii_case("fonts") || path.eq_ignore_ascii_case("maps")
+            {
                 return Ok(meta(0, true));
             }
             self.files
@@ -378,6 +520,94 @@ mod tests {
                 ("no".to_owned(), 5)
             ]
         );
+    }
+
+    #[derive(Default)]
+    struct Maps(usize);
+    impl Rewrite for Maps {
+        fn wants(&self, path: &str) -> bool {
+            crate::map_override::is_map_path(path).is_some()
+        }
+        fn rewrite(&mut self, _path: &str, original: &[u8]) -> Option<Vec<u8>> {
+            self.0 += 1;
+            Some([original, original].concat())
+        }
+    }
+
+    const MAP_A: &str = "maps\\a.map";
+    const MAP_B: &str = "maps\\b.map";
+
+    fn map_backend() -> RewriteBackend<Mem, Maps> {
+        let files = vec![(MAP_A, b"ab".to_vec()), (MAP_B, b"cd".to_vec())];
+        let mut backend = RewriteBackend::new(Mem { files, reads: 0 }, Maps::default());
+        backend.map_byte_limit = 4;
+        backend
+    }
+
+    #[test]
+    fn directory_listing_remembers_evicted_sizes_without_retaining_the_maps() {
+        let mut backend = map_backend();
+        for _ in 0..2 {
+            let sizes: Vec<_> = backend
+                .read_directory("maps")
+                .unwrap()
+                .into_iter()
+                .map(|e| e.metadata.end_of_file)
+                .collect();
+            assert_eq!(sizes, [4, 4]);
+            assert_eq!(backend.map_bytes.get(), 4);
+        }
+        assert_eq!(backend.stat(MAP_A).unwrap().end_of_file, 4);
+        assert_eq!(backend.rewrite.0, 2);
+        assert_eq!(read_all(&mut backend, MAP_A), b"abab");
+        assert_eq!(backend.rewrite.0, 3);
+        assert_eq!(backend.map_bytes.get(), 4);
+    }
+
+    #[test]
+    fn an_oversized_listing_payload_is_released_after_reported() {
+        let mut backend = map_backend();
+        backend.map_byte_limit = 3;
+        let entries = backend.read_directory("maps").unwrap();
+        assert!(entries.iter().all(|e| e.metadata.end_of_file == 4));
+        assert_eq!(backend.map_bytes.get(), 0);
+    }
+
+    #[test]
+    fn shared_resources_do_not_displace_a_level() {
+        let mut backend = map_backend();
+        let shared = "maps\\mainmenu.map";
+        backend.inner.files.push((shared, b"ef".to_vec()));
+
+        assert_eq!(read_all(&mut backend, MAP_A), b"abab");
+        assert_eq!(read_all(&mut backend, shared), b"efef");
+        assert_eq!(read_all(&mut backend, MAP_A), b"abab");
+        assert_eq!(backend.rewrite.0, 2);
+        assert_eq!(backend.map_bytes.get(), 4);
+        assert_eq!(backend.shared_map_bytes.get(), 4);
+    }
+
+    #[test]
+    fn eviction_releases_the_backend_owner_after_the_last_file_object_closes() {
+        let mut backend = map_backend();
+        let Some(FileSource::Memory(first)) = backend.file_source(MAP_A) else {
+            panic!("the first map has no rewritten source");
+        };
+        backend.opened("MAPS\\A.MAP");
+        backend.opened(MAP_A);
+        assert_eq!(read_all(&mut backend, MAP_B), b"cdcd");
+        backend.opened(MAP_B);
+        assert_eq!(backend.map_bytes.get(), 8);
+
+        backend.closed(MAP_A);
+        assert_eq!(Arc::strong_count(&first), 2);
+        assert_eq!(read_all(&mut backend, MAP_A), b"abab");
+        assert_eq!(backend.rewrite.0, 2);
+        backend.closed(MAP_A);
+        assert_eq!(backend.map_bytes.get(), 4);
+        assert_eq!(Arc::strong_count(&first), 1);
+        assert_eq!(&*first, b"abab");
+        backend.closed(MAP_B);
     }
 
     #[test]

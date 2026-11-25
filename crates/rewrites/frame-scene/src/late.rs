@@ -77,6 +77,30 @@ pub type FogState = LateLayer;
 /// The water edge blend of a view: its layer 6.
 pub type WaterState = LateLayer;
 
+/// The water composite's index window in the bound stream, copied from
+/// the draw at 0x0003c598. Quad corners are in the guest's winding order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct WaterComposite {
+    pub quads: Vec<[u16; 4]>,
+}
+
+impl WaterComposite {
+    /// The device supplies vertices starting at the smallest index. Match
+    /// its live window before recording triangles from the scene's copy.
+    pub fn triangles(&self, window: &[u32]) -> Option<Vec<u32>> {
+        let first = *self.quads.iter().flatten().min()?;
+        let local = |i: u16| u32::from(i - first);
+        if !self.quads.iter().flatten().map(|&i| local(i)).eq(window.iter().copied()) {
+            return None;
+        }
+        Some(
+            self.quads.iter()
+                .flat_map(|&[a, b, c, d]| [a, b, c, a, c, d].map(local))
+                .collect(),
+        )
+    }
+}
+
 /// What a stage hands the builder for a late layer.
 #[derive(Clone, Copy, Debug)]
 pub struct LateInput<'a> {
@@ -186,6 +210,13 @@ impl View {
 }
 
 impl SceneBuilder {
+    /// Keep the composite independently of layer 6: the teardown may run
+    /// even when the edge-blend layer had no items.
+    pub fn set_water_composite(&mut self, key: ViewKey, composite: WaterComposite) -> Result<&WaterComposite, BuildError> {
+        let (scene, view) = self.keyed_mut(key)?;
+        Ok(scene.views[view].water_composite.insert(composite))
+    }
+
     /// The late layer `layer` (16 the fog, 6 the water) of the scene's last
     /// view of `key`, replacing one set before; not yet drawn
     /// ([`Self::late_drawn`]). The layers run after the view's opaque
@@ -325,6 +356,14 @@ pub(crate) fn summary_words(scene: &FrameScene, v: &View, word: &mut dyn FnMut(u
         }
         word(u32::from(l.drawn));
     }
+    if let Some(composite) = &v.water_composite {
+        word(composite.quads.len() as u32);
+        for quad in &composite.quads {
+            for &corner in quad {
+                word(u32::from(corner));
+            }
+        }
+    }
     let Some(p) = &v.post else {
         word(0);
         return;
@@ -445,6 +484,23 @@ mod tests {
         assert_eq!(datums, [0xe000_0001, 0xe000_0002]);
         let q = s.views[1].post.as_ref().unwrap();
         assert_eq!((q.colour_pass, s.post_effects_of(q).len()), (None, 1));
+    }
+
+    #[test]
+    fn the_water_composite_belongs_to_its_view_even_without_layer_six() {
+        let build = |quad| {
+            let mut b = SceneBuilder::default();
+            b.begin(SceneId::default());
+            b.open_view(key(0), camera()).unwrap();
+            b.open_view(key(1), camera()).unwrap();
+            b.set_water_composite(key(0), WaterComposite { quads: vec![quad] }).unwrap();
+            b.seal(Stamp::default()).unwrap()
+        };
+        let scene = build([3, 6, 7, 4]);
+        assert!(scene.views[0].water.is_none());
+        assert_eq!(scene.views[0].water_composite.as_ref().unwrap().quads, [[3, 6, 7, 4]]);
+        assert!(scene.views[1].water_composite.is_none());
+        assert_ne!(summary_hash(&scene), summary_hash(&build([3, 7, 6, 4])));
     }
 
     #[test]

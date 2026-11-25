@@ -174,6 +174,109 @@ impl Room {
         self.big.iter().for_each(&mut test);
         best
     }
+
+    /// The floor polygons within `r` of `xy` across the ground: the set
+    /// the bounce rule steps a flight over (`superbounce::rule::predict`,
+    /// `superbounce::rule::floors_near` on the grid's cells). Empty for a
+    /// point that is not a number.
+    pub fn floors_near(&self, xy: [f32; 2], r: f32) -> Vec<Poly> {
+        if !(xy.iter().all(|v| v.is_finite()) && r.is_finite() && r >= 0.0) {
+            return Vec::new();
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut near: Vec<Poly> = Vec::new();
+        let mut take = |i: &u32| {
+            if seen.insert(*i) {
+                let f = &self.faces[*i as usize];
+                near.push(Poly {
+                    verts: f.verts.clone(),
+                    normal: f.normal,
+                });
+            }
+        };
+        for x in cell(xy[0] - r)..=cell(xy[0] + r) {
+            for y in cell(xy[1] - r)..=cell(xy[1] + r) {
+                if let Some(v) = self.grid.get(&(x, y)) {
+                    v.iter().for_each(&mut take);
+                }
+            }
+        }
+        self.big.iter().for_each(&mut take);
+        superbounce::rule::floors_near(&near, xy, r)
+    }
+
+    /// Whether a polygon stands between `from` and `to`: the segment
+    /// between them crosses one, short of the last [`SIGHT_END`] before
+    /// `to` (the face a mark lies on, or the edge it is on, does not hide
+    /// it). The world marks' sight test from the eye to a mark's anchor
+    /// (`superbounce_world::occlude`). False for an empty room, a bad
+    /// point, or two points closer than [`SIGHT_END`].
+    pub fn blocked(&self, from: Vec3, to: Vec3) -> bool {
+        if self.faces.is_empty() || !from.iter().chain(&to).all(|v| v.is_finite()) {
+            return false;
+        }
+        let d = sub(to, from);
+        let length = len(d);
+        if length <= SIGHT_END {
+            return false;
+        }
+        let end = add(from, scale(d, 1.0 - SIGHT_END / length));
+        let (lo, hi) = (
+            std::array::from_fn::<f32, 3, _>(|k| from[k].min(end[k])),
+            std::array::from_fn::<f32, 3, _>(|k| from[k].max(end[k])),
+        );
+        let mut seen = std::collections::HashSet::new();
+        let mut crosses = |i: &u32| {
+            if !seen.insert(*i) {
+                return false;
+            }
+            let f = &self.faces[*i as usize];
+            (0..3).all(|k| f.min[k] <= hi[k] && f.max[k] >= lo[k])
+                && seg_crosses(from, end, &f.verts)
+        };
+        // The cells along the segment, a cell's length at a time.
+        let pieces = (length / CELL).ceil().max(1.0) as usize;
+        for p in 0..pieces {
+            let at = |t: f32| add(from, scale(sub(end, from), t));
+            let (a, b) = (
+                at(p as f32 / pieces as f32),
+                at((p + 1) as f32 / pieces as f32),
+            );
+            let (x0, x1) = (cell(a[0].min(b[0])), cell(a[0].max(b[0])));
+            let (y0, y1) = (cell(a[1].min(b[1])), cell(a[1].max(b[1])));
+            for x in x0..=x1 {
+                for y in y0..=y1 {
+                    if self
+                        .grid
+                        .get(&(x, y))
+                        .is_some_and(|v| v.iter().any(&mut crosses))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        self.big.iter().any(crosses)
+    }
+}
+
+/// [`Room::blocked`] leaves this much of the segment before its far end
+/// untested (world units).
+pub const SIGHT_END: f32 = 0.15;
+
+/// Whether segment `p0 p1` crosses the convex polygon `verts` (touching
+/// its plane inside it counts; lying in its plane does not).
+fn seg_crosses(p0: Vec3, p1: Vec3, verts: &[Vec3]) -> bool {
+    let Some(n) = winding_normal(verts) else {
+        return false;
+    };
+    let o = verts[0];
+    let (d0, d1) = (dot(n, sub(p0, o)), dot(n, sub(p1, o)));
+    if d0 * d1 > 0.0 || d0 == d1 {
+        return false;
+    }
+    let x = add(p0, scale(sub(p1, p0), d0 / (d0 - d1)));
+    inside3(verts, n, x)
 }
 
 /// A face looking up more than this is floor for [`Room::floor_at`]: walkable
@@ -405,6 +508,66 @@ mod tests {
         let r = Room::new(&[]);
         assert!(r.is_empty() && r.standing_fits([0.0; 3]));
         assert!(room(0.6).standing_fits([f32::NAN, 0.5, 0.0]));
+    }
+
+    /// The sight test: a wall between the eye and a mark blocks it; a
+    /// mark on the floor, or beside the wall, is seen; the face a mark
+    /// lies on does not hide it; a face wider than the grid blocks too.
+    #[test]
+    fn a_wall_between_the_eye_and_a_mark_blocks_it() {
+        let floor = quad(
+            [
+                [-5.0, -5.0, 0.0],
+                [5.0, -5.0, 0.0],
+                [5.0, 5.0, 0.0],
+                [-5.0, 5.0, 0.0],
+            ],
+            [0.0, 0.0, 1.0],
+        );
+        // A wall across x 2, y -1..1, up to z 2.
+        let wall = quad(
+            [
+                [2.0, -1.0, 0.0],
+                [2.0, 1.0, 0.0],
+                [2.0, 1.0, 2.0],
+                [2.0, -1.0, 2.0],
+            ],
+            [-1.0, 0.0, 0.0],
+        );
+        let r = Room::new(&[floor.clone(), wall]);
+        let eye = [0.0, 0.0, 0.62];
+        // Behind the wall: blocked; over its top or round its end: seen.
+        assert!(r.blocked(eye, [4.0, 0.0, 0.02]));
+        assert!(!r.blocked(eye, [4.0, 0.0, 5.0]));
+        assert!(!r.blocked(eye, [4.0, 3.0, 0.02]));
+        // In front of it, on the floor it lies on: seen.
+        assert!(!r.blocked(eye, [1.5, 0.0, 0.02]));
+        assert!(!r.blocked(eye, [1.5, 0.0, 0.0]));
+        // On the wall's own face, toward the eye: seen.
+        assert!(!r.blocked(eye, [2.0, 0.0, 1.0]));
+        // From under the floor every mark over it is hidden.
+        assert!(r.blocked([0.0, 0.0, -1.0], [1.0, 1.0, 0.5]));
+        // Far apart across many cells, the wall still blocks.
+        assert!(r.blocked([-40.0, 0.0, 0.62], [4.0, 0.0, 0.3]));
+        // Bad points, close points and an empty room block nothing.
+        assert!(!r.blocked([f32::NAN, 0.0, 0.0], [4.0, 0.0, 0.0]));
+        assert!(!r.blocked(eye, [0.0, 0.0, 0.62 + SIGHT_END / 2.0]));
+        assert!(!Room::new(&[]).blocked(eye, [4.0, 0.0, 0.02]));
+        // A wall wider than the grid (kept in the list every query tests).
+        let long = quad(
+            [
+                [2.0, -500.0, 0.0],
+                [2.0, 500.0, 0.0],
+                [2.0, 500.0, 2.0],
+                [2.0, -500.0, 2.0],
+            ],
+            [-1.0, 0.0, 0.0],
+        );
+        let r = Room::new(&[floor, long]);
+        assert_eq!(r.big.len(), 1);
+        assert!(r.blocked(eye, [4.0, 300.0, 0.5]));
+        assert!(r.blocked([0.0, 300.0, 0.62], [4.0, 300.0, 0.5]));
+        assert!(!r.blocked(eye, [4.0, 300.0, 5.0]));
     }
 
     #[test]

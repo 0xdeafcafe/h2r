@@ -100,7 +100,7 @@ async fn a_finished_ranked_game_ranks_both_players_once() {
     let host = h.create("Host").await;
     let s = host_session(&h, &host).await;
     let guest = h.create("Guest").await;
-    // The default playlists: 1 Team Slayer is ranked teams, 7 Unranked Teams.
+    // Descriptor 1 is the human Team Slayer playlist, ranked teams.
     let id = play(
         &h,
         &host,
@@ -166,7 +166,7 @@ async fn unranked_custom_and_lost_games_rank_nobody() {
         &h,
         &host,
         &guest,
-        duel(&s, &host, &guest, "7", "matchmaking"),
+        duel(&s, &host, &guest, "6", "matchmaking"),
         "finished",
     )
     .await;
@@ -507,6 +507,7 @@ async fn host_session(h: &Harness, u: &User) -> String {
         ping_ms: None,
         variant_ext: None,
         rules: None,
+        firefight: None,
         browser: None,
     };
     let r = h
@@ -789,7 +790,7 @@ async fn firefight_scores_do_not_touch_ranks() {
             ),
             (
                 "FirefightEnded",
-                json!({"tick": 800, "set": "Holdout", "outcome": "won", "rounds_cleared": 3, "lives_used": 4}),
+                json!({"tick": 800, "set": "Holdout", "teams": 1, "outcome": "won", "scores": [100], "rounds_cleared": 3, "lives_used": 4}),
             ),
             (
                 "ScoreChanged",

@@ -8,19 +8,19 @@ use frame_types::{Camera, Slot, SlotAt, ViewKey, ViewKind};
 
 use super::replay::{ReplayFrame, ReplayOp};
 use crate::backend::{ResolvedDraw, Viewport};
-use crate::interp::epilogue::{self, Position};
-use crate::interp::screen_space;
+use crate::clip_space::epilogue::{self, Position};
+use crate::clip_space::pass_through::pass_through;
 use crate::shader::{Microcode, VertexProcessing};
 
-struct ViewBlock {
-    index: u8,
+pub(super) struct ViewBlock {
+    pub(super) index: u8,
     rect: [u32; 4],
     // In hardware register order, including the sign of each zero.
-    words: [[u32; 4]; 4],
+    pub(super) words: [[u32; 4]; 4],
 }
 
 impl ViewBlock {
-    fn from_view((key, cam): (ViewKey, &Camera)) -> Option<Self> {
+    pub(super) fn from_view((key, cam): (ViewKey, &Camera)) -> Option<Self> {
         if key.kind != ViewKind::Game {
             return None;
         }
@@ -62,12 +62,14 @@ fn position(program: &Microcode) -> Position {
     match epilogue::position(program) {
         // Fixed also includes programs which never write a usable position.
         // Only label pixels passed straight through their input as screen.
-        Position::Fixed if screen_space::pass_through(program).is_none() => Position::Unknown,
+        Position::Fixed if pass_through(program).is_none() => Position::Unknown,
         other => other,
     }
 }
 
-fn classify(
+// `Microcode`'s interior cache takes no part in its Hash or Eq.
+#[allow(clippy::mutable_key_type)]
+pub(super) fn classify(
     draw: &ResolvedDraw,
     at: SlotAt,
     views: &[ViewBlock],
@@ -119,6 +121,9 @@ impl ReplayFrame {
     /// view proved.
     pub fn classify_cameras<'a>(&mut self, views: impl IntoIterator<Item = (ViewKey, &'a Camera)>) {
         let views: Vec<_> = views.into_iter().filter_map(ViewBlock::from_view).collect();
+        // `Microcode` hashes and compares its program words; its interior cache
+        // never takes part, so it is a sound key.
+        #[allow(clippy::mutable_key_type)]
         let mut programs = HashMap::new();
         for (at, op) in &mut self.ops {
             if let ReplayOp::Draw { draw, camera, .. } = op {

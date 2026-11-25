@@ -1,0 +1,34 @@
+screen: design.row.text
+kind: list
+layout: controls
+backing: shell
+states:
+  focused:
+    focus: 0
+  unfocused:
+    focus: 1
+  empty:
+    focus: 2
+widgets:
+  title:
+    component: title
+    text: "Text Rows"
+  legend:
+    component: legend
+    prompts: [[A, "SELECT"], [B, "BACK"]]
+rows:
+  row.0:
+    kind: text
+    text: "Text Row"
+    value: "Chief"
+    max_chars: 15
+  row.1:
+    kind: text
+    text: "Second Text Row"
+    value: "Spartan"
+    max_chars: 15
+  row.2:
+    kind: text
+    text: "Empty Text Row"
+    value: ""
+    max_chars: 15

@@ -1,14 +1,14 @@
-//! Scenarios shared by the director's tests and the script parity tests:
-//! invented definitions, a fake world that applies commands a tick later
-//! as the host runtime does, and seeded random matches.
+//! Scenarios shared by the director's tests: invented definitions, a fake
+//! world that applies commands a tick later as the host runtime does, and
+//! seeded random matches.
 #![allow(dead_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use firefight::director::{Kill, PlayerSeen, SQUAD_SLOTS, ZoneSeen};
 use firefight::{
-    Caps, Command, Count, Def, Difficulty, DifficultyMultipliers, Director, Drop, FORMAT, Lives,
-    Observed, Outcome, Round, Scoring, Skull, SquadSpec, Wave, builtin,
+    Caps, Command, Count, Def, Difficulty, DifficultyMultipliers, Drop, FORMAT, Lives, Observed,
+    Outcome, PlayerKill, Round, Scoring, ScriptDirector, Skull, SquadSpec, Wave, builtin,
 };
 
 /// One round of five one-actor waves, two ticks apart, with Famine on.
@@ -32,6 +32,7 @@ pub fn small_def(pool: u16, shared: bool) -> Def {
     Def {
         format: FORMAT,
         name: "Golden".into(),
+        teams: 1,
         rounds: vec![Round {
             waves,
             skulls_on: vec![Skull::Famine],
@@ -46,6 +47,7 @@ pub fn small_def(pool: u16, shared: bool) -> Def {
         },
         scoring: Scoring {
             by_class: [("elite".into(), 100)].into(),
+            player_kill: 0,
             difficulty_multiplier: DifficultyMultipliers {
                 easy: 1_000,
                 normal: 1_000,
@@ -56,6 +58,17 @@ pub fn small_def(pool: u16, shared: bool) -> Def {
             assist: 250,
         },
     }
+}
+
+/// [`small_def`] for two teams: a player kill scores 40, and the caps
+/// cover eight players.
+pub fn pair_def(pool: u16, shared: bool) -> Def {
+    let mut def = small_def(pool, shared);
+    def.name = "Golden Pair".into();
+    def.teams = 2;
+    def.scoring.player_kill = 40;
+    def.caps.live_actors_by_players = vec![(8, 8)];
+    def
 }
 
 pub fn settings(seed: u64) -> firefight::Settings {
@@ -70,6 +83,11 @@ pub fn settings(seed: u64) -> firefight::Settings {
 /// runtime does, and reports what it holds.
 pub struct World {
     pub players: BTreeMap<u8, bool>,
+    /// Each player's game team: even slots 0, odd slots 1.
+    pub teams: BTreeMap<u8, u8>,
+    pub player_kills: Vec<PlayerKill>,
+    /// Each placed squad's target, from `Target` (0 without one).
+    pub targets: [u8; SQUAD_SLOTS],
     pub squads: [(u16, u32); SQUAD_SLOTS],
     pub classes: [String; SQUAD_SLOTS],
     pub zones: Vec<ZoneSeen>,
@@ -84,6 +102,9 @@ impl World {
     pub fn new(players: u8, zones: Vec<ZoneSeen>) -> Self {
         Self {
             players: (0..players).map(|slot| (slot, true)).collect(),
+            teams: (0..players).map(|slot| (slot, slot % 2)).collect(),
+            player_kills: Vec::new(),
+            targets: [0; SQUAD_SLOTS],
             squads: [(0, 0); SQUAD_SLOTS],
             classes: Default::default(),
             zones,
@@ -104,7 +125,9 @@ impl World {
                     assert_eq!(self.squads[slot].0, 0, "placed into an occupied slot");
                     self.squads[slot] = (count, tick);
                     self.classes[slot] = class;
+                    self.targets[slot] = 0;
                 }
+                Command::Target { slot, team } => self.targets[usize::from(slot)] = team,
                 Command::EraseSquad { slot } => self.squads[usize::from(slot)].0 = 0,
                 Command::Respawn { player } => {
                     self.players.insert(player, true);
@@ -131,6 +154,12 @@ impl World {
         });
     }
 
+    /// `victim` dies to `killer` (none: a fall).
+    pub fn kill_player(&mut self, victim: u8, killer: Option<u8>) {
+        self.players.insert(victim, false);
+        self.player_kills.push(PlayerKill { killer, victim });
+    }
+
     pub fn live(&self) -> u16 {
         self.squads.iter().map(|&(alive, _)| alive).sum()
     }
@@ -140,11 +169,16 @@ impl World {
             players: self
                 .players
                 .iter()
-                .map(|(&slot, &alive)| PlayerSeen { slot, alive })
+                .map(|(&slot, &alive)| PlayerSeen {
+                    slot,
+                    alive,
+                    team: self.teams.get(&slot).copied().unwrap_or(0),
+                })
                 .collect(),
             actors_alive_by_squad: self.squads.map(|(alive, _)| alive),
             zones: self.zones.clone(),
             kills: std::mem::take(&mut self.kills),
+            player_kills: std::mem::take(&mut self.player_kills),
         }
     }
 }
@@ -158,17 +192,17 @@ pub fn kill_at_age_three(tick: u32, world: &mut World) {
     }
 }
 
+/// A zone the same distance from both teams.
+pub fn zone(seen: bool, distance: u32) -> ZoneSeen {
+    ZoneSeen {
+        seen,
+        distance,
+        team_distance: [distance; 2],
+    }
+}
+
 pub fn two_zones() -> Vec<ZoneSeen> {
-    vec![
-        ZoneSeen {
-            seen: false,
-            distance: 10,
-        },
-        ZoneSeen {
-            seen: true,
-            distance: 50,
-        },
-    ]
+    vec![zone(false, 10), zone(true, 50)]
 }
 
 pub struct Run {
@@ -178,11 +212,11 @@ pub struct Run {
 }
 
 pub fn run(
-    director: &mut Director,
+    director: &mut ScriptDirector,
     world: &mut World,
     limit: u32,
     mut script: impl FnMut(u32, &mut World),
-    mut check: impl FnMut(u32, &Director, &World, &Observed, &[Command]),
+    mut check: impl FnMut(u32, &ScriptDirector, &World, &Observed, &[Command]),
 ) -> Run {
     let mut commands = Vec::new();
     let mut observed = Vec::new();
@@ -223,7 +257,7 @@ impl TestRng {
 }
 
 /// The built-in sets with short gaps, so a match takes a few thousand ticks.
-pub fn quick_builtins() -> [Def; 3] {
+pub fn quick_builtins() -> [Def; 4] {
     builtin::definitions().map(|mut def| {
         for wave in def.rounds.iter_mut().flat_map(|round| &mut round.waves) {
             wave.gap_ticks = 10;
@@ -234,7 +268,9 @@ pub fn quick_builtins() -> [Def; 3] {
 
 /// Random kills, deaths and sight lines from a seed. Every fourth seed is
 /// lethal (players die far faster than the lives pools refill), so some
-/// matches are lost; the rest almost never drain the pool.
+/// matches are lost; the rest almost never drain the pool. Players also
+/// kill each other now and then, across teams and within one, and each
+/// zone's distance from each team varies.
 pub fn random_script(seed: u64) -> impl FnMut(u32, &mut World) {
     let mut rng = TestRng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     let death_one_in = if seed % 4 == 0 { 15 } else { 300 };
@@ -259,30 +295,32 @@ pub fn random_script(seed: u64) -> impl FnMut(u32, &mut World) {
                 *alive = false;
             }
         }
+        if alive.len() >= 2 && rng.one_in(death_one_in * 2) {
+            let victim = alive[(rng.next() % alive.len() as u64) as usize];
+            let killer = alive[(rng.next() % alive.len() as u64) as usize];
+            if world.players[&victim] {
+                world.kill_player(victim, Some(killer));
+            }
+        }
         for zone in &mut world.zones {
             zone.seen = rng.one_in(2);
             zone.distance = (rng.next() % 100) as u32;
+            zone.team_distance = [(rng.next() % 100) as u32, (rng.next() % 100) as u32];
         }
     }
 }
 
 pub fn eight_zones() -> Vec<ZoneSeen> {
-    vec![
-        ZoneSeen {
-            seen: false,
-            distance: 0,
-        };
-        8
-    ]
+    vec![zone(false, 0); 8]
 }
 
 pub fn random_match(
     index: u64,
-    check: impl FnMut(u32, &Director, &World, &Observed, &[Command]),
+    check: impl FnMut(u32, &ScriptDirector, &World, &Observed, &[Command]),
 ) -> (Def, Run) {
-    let def = quick_builtins()[(index % 3) as usize].clone();
+    let def = quick_builtins()[(index % 4) as usize].clone();
     let players = (index % 16) as u8 + 1;
-    let mut director = Director::new(def.clone(), settings(index)).unwrap();
+    let mut director = ScriptDirector::new(def.clone(), settings(index)).unwrap();
     let mut world = World::new(players, eight_zones());
     let run = run(
         &mut director,
@@ -313,6 +351,6 @@ pub fn six_zones() -> Vec<ZoneSeen> {
         (false, 60),
         (false, 2),
     ]
-    .map(|(seen, distance)| ZoneSeen { seen, distance })
+    .map(|(seen, distance)| zone(seen, distance))
     .to_vec()
 }

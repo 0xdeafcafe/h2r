@@ -1,6 +1,7 @@
 //! Blend controller layers into the first-person pose, then build the
 //! node matrices and the primary slot's camera attachment.
 use super::*;
+use crate::sim_native::Memory;
 use super::first_person::copy_node;
 use super::spatial::{finish_fpu,fp_error,load_fpu,scalar};
 use crate::light_constants::X87;
@@ -34,7 +35,7 @@ pub(super) fn float_arg(c:&mut CpuAbi,g:&mut Guest,v:Value,pc:u32)->Result<()> {
     g.set_u32(c.esp,x.fstp_m32().map_err(fp_error)?)?;
     finish_fpu(c,g,x,pc,c.esp)
 }
-pub(super) fn push_mem(c:&mut CpuAbi,g:&mut Guest,p:u32)->Result<()> {let v=g.u32(p)?;push(c,g,v)}
+pub(super) fn push_mem(c:&mut CpuAbi,g:&mut impl Memory,p:u32)->Result<()> {let v=g.u32(p)?;push(c,g,v)}
 fn cvt(c:&mut CpuAbi,r:usize,i:u32)->Result<()> {
     c.xmm[r]=simd::cvtsi2ss(&mut c.mxcsr,u128::from_le_bytes(c.xmm[r]),i)
         .map_err(super::havok::simd_fault)?.to_le_bytes();Ok(())

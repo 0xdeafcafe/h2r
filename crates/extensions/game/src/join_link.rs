@@ -442,6 +442,7 @@ async fn return_to_menu(cx: &Cx, job: &mut Job) -> Result<(), String> {
 struct Driver {
     live: Arc<Hle>,
     dialog: Arc<Dialog>,
+    before_join: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Feature for Driver {
@@ -477,10 +478,16 @@ impl Feature for Driver {
             },
         ));
         let (live, dialog) = (self.live.clone(), self.dialog.clone());
+        let before_join = self.before_join.clone();
         b.raw()
             .before(&points::UI_UPDATE, "process a Live join link", move |c| {
                 let job = match stage.load(Ordering::Acquire) {
-                    IDLE => join_link::take_pending().map(Job::new),
+                    IDLE => join_link::take_pending().map(|request| {
+                        if let Some(before) = &before_join {
+                            before();
+                        }
+                        Job::new(request)
+                    }),
                     WAITING => pending.lock().unwrap_or_else(|e| e.into_inner()).take(),
                     _ => None,
                 };
@@ -522,10 +529,14 @@ impl Feature for Driver {
     }
 }
 
+/// `before_join` runs as a link's join starts: a default film recording
+/// cannot replay a join that came from outside the game, so it stops
+/// (`theater::autorecord::stopper`).
 pub fn install(
     features: &mut hooks::Registry,
     live: Option<Arc<Hle>>,
     unsupported: bool,
+    before_join: Option<Arc<dyn Fn() + Send + Sync>>,
 ) -> anyhow::Result<()> {
     let Some(live) =
         live.filter(|h| !unsupported && h.config().enabled && h.config().server_url.is_some())
@@ -538,7 +549,7 @@ pub fn install(
         .add(&dialog.class())
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let has_driver = features
-        .add(&Driver { live, dialog })
+        .add(&Driver { live, dialog, before_join })
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     join_link::set_enabled(has_dialog && has_driver);
     Ok(())

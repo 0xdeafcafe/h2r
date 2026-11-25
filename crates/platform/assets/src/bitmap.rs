@@ -338,8 +338,13 @@ pub fn decode_image_blocks(image: &Image, files: &mut ResourceFiles) -> Result<(
     let _scope = mem_watch::scope("assets.bitmap");
     let (desc, lod, data, declared, layout_len) = read_image(image, files)?;
     let levels = decode_bytes(&desc, &data)?;
-    let blocks = decode_texture(&desc, &data, None, DecodeOptions { bc_supported: true, ..Default::default() })
-        .ok()
+    let can_keep_blocks = desc.format.block_bytes().is_some()
+        && desc.kind != TextureKind::Volume
+        && desc.width.is_multiple_of(4)
+        && desc.height.is_multiple_of(4);
+    let blocks = can_keep_blocks
+        .then(|| decode_texture(&desc, &data, None, DecodeOptions { bc_supported: true, ..Default::default() }).ok())
+        .flatten()
         .filter(|d| d.host.is_compressed())
         .map(|d| BlockLevels {
             host: d.host,

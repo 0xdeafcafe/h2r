@@ -1,0 +1,37 @@
+//! The pogo stick's kit: three looks of one stick, each built from a
+//! parametric source and a painted atlas under `content/pogo/` into the tags a
+//! map needs to hold it as a weapon.
+//!
+//! - [`source`]: the YAML sources and atlases, embedded, and their parser.
+//! - [`mesh`]: a source's lathes, sweeps and boxes as triangles.
+//! - [`texture`]: an atlas as a `bitm`.
+//! - [`kit`]: one look as `bitm`, `shad`, `mode`, `hlmt` and `weap` in a
+//!   map's tag set.
+//! - [`inject`]: the kit added to a multiplayer map's bytes (what the
+//!   `pogo` package's build is compared with).
+//! - [`served`]: which weapon tags a map the game was served holds.
+//! - [`placed`]: which weapon tags the map being played holds.
+//!
+//! Every look shares one rig ([`RIG`]): the same grips, pegs, foot and
+//! piston travel, so the code that poses a rider reads no look.
+
+pub mod inject;
+pub mod kit;
+pub mod mesh;
+pub mod served;
+pub mod source;
+pub mod texture;
+
+/// An invented map for other crates' tests (feature `fixture`).
+#[cfg(any(test, feature = "fixture"))]
+pub mod fixture;
+
+#[cfg(test)]
+mod inject_tests;
+#[cfg(test)]
+mod tests;
+
+/// The maps never asked for: they are not levels.
+pub(crate) const NEVER: [&str; 3] = ["mainmenu", "shared", "single_player_shared"];
+
+pub use pogo::*;

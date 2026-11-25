@@ -78,7 +78,7 @@ implementation switches. The render and simulation bridges are
 
 `crates/runtime/recomp` builds, selects and loads game modules.
 `crates/apps/boot` supplies the services those modules run against, and
-registers the retail image's hooked render sites with the builder
+registers the retail image's hooked interior sites with the builder
 (`boot::register_image_entries`), so `recomp` names no hook point.
 
 ### S5. `boot` keeps the root

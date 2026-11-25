@@ -66,10 +66,10 @@ describe("rank sums", () => {
 
   test("playlist names and win rates", () => {
     expect(playlistName("1")).toBe("Team Slayer");
-    expect(playlistName("12")).toBe("Playlist 12");
+    expect(playlistName("17")).toBe("Playlist 17");
     expect(playlistName("3", { "3": "Snipers Only" })).toBe("Snipers Only");
-    expect(Object.keys(DEFAULT_PLAYLISTS)).toHaveLength(11);
-    expect(playlistName("8")).toBe("Clanker Slayer");
+    expect(Object.keys(DEFAULT_PLAYLISTS)).toHaveLength(16);
+    expect(playlistName("8")).toBe("Clanker Rumble");
     expect(winRate(st({ games: 4, wins: 3 }))).toBe("75%");
     expect(winRate(st())).toBe("–");
   });
@@ -89,7 +89,10 @@ describe("the playlist menu", () => {
     expect(menu.filter((p) => p.group === "ranked").map((p) => p.name))
       .toEqual(["Rumble Pit", "Team Slayer", "Team Skirmish", "Team Snipers", "Big Team Battle", "Team Objective"]);
     expect(menu.filter((p) => p.group === "unranked").map((p) => p.name)).toEqual(["Free for All", "Unranked Teams"]);
-    expect(menu.filter((p) => p.group === "clanker").map((p) => p.name)).toEqual(["Clanker Slayer", "Clanker Teams", "Clanker Doubles"]);
+    expect(menu.filter((p) => p.group === "clanker").map((p) => p.name)).toEqual([
+      "Clanker Rumble", "Clanker Slayer", "Clanker Doubles", "Clanker Snipers", "Clanker BTB",
+      "BTB Heavies", "Solo Training", "Team Training",
+    ]);
     expect(menu[1]).toMatchObject({ id: "1", size: "2 teams of 3–4", games: ["Team Slayer"] });
     expect(menu[0]).toMatchObject({ id: "0", size: "4–8 players, free for all", games: ["Rumble Slayer", "Oddball", "King of the Hill"] });
     expect(menu[2]).toMatchObject({ size: "2 vs 2" });

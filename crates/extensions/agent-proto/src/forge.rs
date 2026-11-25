@@ -17,7 +17,138 @@ pub mod method {
     pub const LOOK: &str = "forge.look";
     pub const LOOK_SET: &str = "forge.look.set";
     pub const MONITORS: &str = "forge.status.monitors";
+    pub const THINGS: &str = "forge.things";
+    pub const GROUND: &str = "forge.ground";
+    pub const GROUND_BUILD: &str = "forge.ground.build";
+    pub const NAV: &str = "forge.nav";
 }
+
+/// The kinds of thing `forge.things` names, as its `kind` filter and each
+/// thing's `kind` spell them (docs/game/forge-map-variants.md, "Things").
+pub const THING_KINDS: [&str; 5] = [
+    "object",
+    "item_spawner",
+    "starting_point",
+    "goal",
+    "teleporter",
+];
+
+/// The names a refused Forge edit carries in its error's `data.code`
+/// (docs/runtime/agent-api.md, "Local Forge session").
+pub mod refusal {
+    /// The live object the edit names no longer resolves by kind and salt.
+    pub const OBJECT_GONE: &str = "forge_object_gone";
+    /// The edit names a block whose live objects `world.object.*` cannot
+    /// resolve.
+    pub const OBJECT_KIND: &str = "forge_object_kind";
+    /// The own entry's live object is held or attached.
+    pub const OBJECT_HELD: &str = "forge_object_held";
+    /// The map's entry is not the one the edit was made on: its print
+    /// differs.
+    pub const PRINT: &str = "forge_print";
+    /// The edit names an entry of a block the session could not read.
+    pub const LEFT_OUT: &str = "forge_left_out";
+    /// An add to the starting location, netgame flag or netgame equipment
+    /// block names a row the map's kit has not reserved: the map has no kit.
+    pub const NO_KIT: &str = "forge_no_kit";
+    /// The target's value is not the one `was` names.
+    pub const WAS: &str = "forge_was";
+    /// Any other refusal: the message says why.
+    pub const REFUSED: &str = "forge_refused";
+
+    // The host's refusals in a shared session (`forge::net::NetRefusal::code`).
+    // Their messages begin with the name and a colon, as the game calls' do.
+    /// This machine has not joined the session.
+    pub const NOT_JOINED: &str = "forge_not_joined";
+    /// The seat's role cannot edit.
+    pub const ROLE: &str = "forge_role";
+    /// Another seat holds the thing.
+    pub const HELD: &str = "forge_held";
+    /// The seat holds nothing, or not that thing.
+    pub const NOT_HOLDING: &str = "forge_not_holding";
+    /// The edit names an entry by index, and an add or a remove came first.
+    pub const STALE: &str = "forge_stale";
+    /// The edit was made at a log position the host has not reached.
+    pub const AHEAD: &str = "forge_ahead";
+    /// A new op's ID is outside the seat's lane.
+    pub const LANE: &str = "forge_lane";
+    /// The loaded map refuses the edit: palette, budget or bounds.
+    pub const MAP: &str = "forge_map";
+    /// The seat is out of range or taken.
+    pub const SEAT: &str = "forge_seat";
+    /// The name is taken or is not a name.
+    pub const NAME: &str = "forge_name";
+    /// This machine's log head is not the host's.
+    pub const HEAD_DIFFERS: &str = "forge_head_differs";
+    /// The host's clock went backwards.
+    pub const CLOCK: &str = "forge_clock";
+
+    /// Every name a shared session adds, with the three it shares with the
+    /// local session ([`WAS`], [`PRINT`], [`REFUSED`]).
+    pub const SHARED: [&str; 15] = [
+        NOT_JOINED,
+        ROLE,
+        HELD,
+        NOT_HOLDING,
+        STALE,
+        AHEAD,
+        LANE,
+        MAP,
+        SEAT,
+        NAME,
+        HEAD_DIFFERS,
+        CLOCK,
+        WAS,
+        PRINT,
+        REFUSED,
+    ];
+}
+
+/// `forge.status`'s `session` for a synchronous network game: the same
+/// reply as a local session's, with a `net` object
+/// (docs/runtime/agent-api.md, "Shared Forge session").
+pub const SHARED_SESSION: &str = "shared";
+
+/// `forge.things`: every thing of the session, or those of one kind, or
+/// only those the document changes. A netgame flag's row carries its
+/// document area, or null for an unshaped flag.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThingsParams {
+    /// One of [`THING_KINDS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// `true` lists only the changed things (own entries an entry op
+    /// changes, and every added one); `false` only the unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed: Option<bool>,
+}
+
+/// `forge.ground.build`: **Build AI ground**, or with `if_stale` **Test
+/// waves** (build only when the ground is stale or was never built).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GroundBuildParams {
+    #[serde(default)]
+    pub if_stale: bool,
+}
+
+/// How many game ticks `forge.ground.build` waits for its answer: a build
+/// reads the base map and builds the ground over it.
+pub const GROUND_WAIT_TICKS: u64 = 3600;
+
+/// `forge.nav`: the nav's state, counts, problems and overlay; with
+/// `generate`, **Generate nav** first.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NavParams {
+    #[serde(default)]
+    pub generate: bool,
+}
+
+/// How many game ticks `forge.nav {generate: true}` waits for its answer:
+/// a generation builds the play form and the bots' mesh over it.
+pub const NAV_WAIT_TICKS: u64 = 3600;
 
 /// One monitor input. Directions are normalized axes in camera space.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -129,6 +260,23 @@ pub enum ProbeReply {
 mod tests {
     use super::*;
     use serde_json::{from_value, json, to_value};
+
+    #[test]
+    fn things_params_take_a_kind_and_changed_and_nothing_else() {
+        for value in [
+            json!({}),
+            json!({"kind": "goal"}),
+            json!({"changed": true}),
+            json!({"kind": "object", "changed": false}),
+        ] {
+            assert_eq!(
+                to_value(from_value::<ThingsParams>(value.clone()).unwrap()).unwrap(),
+                value
+            );
+        }
+        assert!(from_value::<ThingsParams>(json!({"block": "weapons"})).is_err());
+        assert!(from_value::<ThingsParams>(json!({"changed": "yes"})).is_err());
+    }
 
     #[test]
     fn probe_params_allow_only_fields_of_the_selected_probe() {

@@ -7,7 +7,7 @@ use sim_collision::{
     Bail, Bsp,
     bsp::{HEADER_BYTES, block},
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
 
 const OWNER: &str = "collision-bsp-sources";
@@ -83,6 +83,79 @@ impl Sources {
     }
 }
 
+const MOPP_OWNER: &str = "collision-mopp-sources";
+const MAX_WATCHED_MOPPS: usize = 1024;
+
+struct MoppSubscription {
+    epoch: (u64, u64),
+    id: WatchId,
+    // Largest watched span at this address and the generation its size was checked in.
+    codes: HashMap<u32, (u32, u64)>,
+}
+
+/// A generation for the bytes under the MOPP programs the box query
+/// names. A program's reference count (`+0x24`) shares its page and moves
+/// whenever the engine wraps the code in a shape, so a write here does not
+/// drop the decoded trees: it moves the generation, and the world compares
+/// each held program's bytes with the guest's again before using it.
+#[derive(Default)]
+struct MoppSources {
+    active: Option<MoppSubscription>,
+    generation: u64,
+}
+
+impl MoppSources {
+    fn revision(&mut self, g: &mut Guest, code: u32) -> Result<u64, Bail> {
+        if g.has_trap() {
+            return Err(Bail::Fault);
+        }
+        let epoch = g.write_watch_epoch();
+        let reset = self.active.as_ref().is_none_or(|s| {
+            s.epoch != epoch
+                || (s.codes.len() >= MAX_WATCHED_MOPPS && !s.codes.contains_key(&code))
+        });
+        if reset {
+            for (id, owner) in g.write_watch_owners() {
+                if owner == MOPP_OWNER {
+                    g.unsubscribe_writes(id);
+                }
+            }
+            self.generation += 1;
+            self.active = Some(MoppSubscription {
+                epoch,
+                id: g.subscribe_writes(MOPP_OWNER),
+                codes: HashMap::new(),
+            });
+        }
+        let id = self.active.as_ref().expect("mopp subscription installed").id;
+        if g.has_dirty(id) {
+            g.take_dirty(id).map_err(|_| Bail::Fault)?;
+            self.generation += 1;
+        }
+        let s = self.active.as_mut().expect("mopp subscription installed");
+        let previous = s.codes.get(&code).copied();
+        if previous.is_none_or(|(_, generation)| generation != self.generation) {
+            let header = sim_collision::mopp::Header::read(&Read(&*g, (0, 0)), code)?;
+            let watched = previous.map_or(0, |(size, _)| size);
+            if header.size > watched {
+                g.watch_virtual_read(s.id, code, header.size as usize)
+                    .map_err(|_| Bail::Fault)?;
+            }
+            s.codes.insert(code, (watched.max(header.size), self.generation));
+        }
+        Ok(self.generation)
+    }
+}
+
+/// The version entry F passes to `CollisionWorld::mopp`.
+pub(super) fn mopp_revision(g: &mut Guest, code: u32) -> Result<u64, Bail> {
+    static SOURCES: LazyLock<Mutex<MoppSources>> = LazyLock::new(Mutex::default);
+    SOURCES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .revision(g, code)
+}
+
 /// The Guest guard excludes a write between arming/checking these pages
 /// and gathering or committing the call. The token travels with the
 /// reader, so switching Guests on another executor cannot relabel it.
@@ -105,6 +178,30 @@ mod tests {
         synth::{Builder, SOLID, leaf},
     };
     use sim_core::Epoch;
+
+    #[test]
+    fn growing_a_mopp_watches_its_new_tail_even_after_another_query() {
+        use sim_collision::mopp::{HEADER_BYTES, SIZE};
+        let code = 0x10000;
+        let other = code + 0x2000;
+        let alias = 0x20000;
+        let mut g = Guest::new();
+        g.map(code, 0x3000, 0, Permissions::RW).unwrap();
+        g.map(alias, 0x1000, 0x1000, Permissions::RW).unwrap();
+        for at in [code, other] {
+            g.set_u32(at + SIZE, HEADER_BYTES + 1).unwrap();
+        }
+        let mut sources = MoppSources::default();
+        let first = sources.revision(&mut g, code).unwrap();
+        sources.revision(&mut g, other).unwrap();
+        g.set_u32(code + SIZE, 0x1010).unwrap();
+        // This lookup consumes the dirty notification for the changed header.
+        let grown = sources.revision(&mut g, other).unwrap();
+        assert_ne!(first, grown);
+        assert_eq!(grown, sources.revision(&mut g, code).unwrap());
+        g.set_u8(alias + 0x0f, 1).unwrap();
+        assert_ne!(grown, sources.revision(&mut g, code).unwrap());
+    }
 
     #[test]
     fn decode_constants_are_watched_and_incomplete_subscriptions_retry() {

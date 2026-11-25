@@ -157,8 +157,10 @@ machines"):
   held weapon's first magazine gaining loaded rounds while its reserve
   drops is `reload`; fewer grenades is `grenade`, more is `pickup`; the
   physics mode going from ground (1) to flying (2) with the velocity's z
-  above 0 is `jump`; entering the melee mode (6), or dealing melee damage,
-  is `melee`.
+  above 0 is `jump`; entering the melee mode (6) is `melee`. One swing is
+  one `melee`: its damage lands a few ticks into it, so dealing melee
+  damage marks the swing only when no frame saw the entry (a hit within
+  15 ticks of a marked entry is the same swing).
 - `grenade`: the selected grenade type (`+0x23c`).
 - `hits`: a hook on the damage report function `0x000d9640` (custom ABI,
   `EDI` = report, the victim datum on the stack; always runs the original)
@@ -270,7 +272,10 @@ still read every other frame.
 Tag names are (likely) not in guest memory: nothing in the XBE refers to
 the cache header's tag-name fields, and the loader reads the tag index and
 metadata. On map activation telemetry asks boot for the active cache
-slot's file through the VFS. When the slot cannot identify an unbound
+slot's file through the VFS (`map_override::active_map_source`): its host
+region, or, for a map the VFS rewrites in memory (the pogo kit, the
+screens; such a map has no contiguous host file), those bytes
+(`MapFile::memory`). When the slot cannot identify an unbound
 map, the boot locator uses the cache name. Telemetry reads the tag names
 with `crates/formats/map` and keeps only `bipd` and `weap` rows. The table is used only if the file's scenario datum equals the
 guest's (tag index header `[0x00547f00]+0x0c`), since both indexes hold the

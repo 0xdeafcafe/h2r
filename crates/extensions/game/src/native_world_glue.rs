@@ -71,12 +71,18 @@ use setup::StageReady;
 #[derive(Default)]
 pub struct Ready {
     retire: Option<crate::native_map::RetireQueue>,
+    pub(super) sun_world: Option<native_render::sun_casters::SharedWorld>,
     opaque: opaque_materials::Library,
     gpu: Mutex<Option<GpuWorld>>,
+    /// Published with the GPU bindings. A live edit clears it under the
+    /// GPU lock. Testing scene ownership must never depend on lock contention.
+    relit: AtomicBool,
     pub(crate) upload_device: Option<(wgpu::Device, wgpu::Queue)>,
     /// The parts the native pass draws, with their shaders: what the skip
     /// clears.
     parts: Arc<PartSet>,
+    /// Resident layer-3 parts in each rigid placement or cluster, in section order.
+    section_parts: HashMap<Owner, Vec<u8>>,
     /// Each drawn part's world bounds, what the guest's admission culls
     /// by; a live edit's refresh recomputes an edited section's
     /// ([`refresh_world`]).
@@ -84,6 +90,10 @@ pub struct Ready {
     /// The structure BSP tag this world was loaded from: what a live
     /// edit's `Section` names.
     bsp_tag: Option<TagId>,
+    layer3: Layer3Materials,
+    /// The lightmap pages that decoded at the load, which the program
+    /// set holds: a refreshed program's parts may sample only these.
+    pages: HashSet<LightmapKey>,
     /// The fog of this load (`native_fog_glue`): the compiled layer-16
     /// passes, their fog words and the parts the fog pass draws.
     pub fog: OnceLock<(Arc<crate::native_fog_glue::FogView>, StagePalettes)>,
@@ -91,19 +101,22 @@ pub struct Ready {
     /// compiled layer-6 passes, their supplies and the parts the water
     /// pass draws.
     pub water: OnceLock<(Arc<crate::native_water_glue::WaterData>, StagePalettes)>,
-    /// The scene's layers 1, 5, 7, 8 and 20 of this load
+    /// The scene's layers 1, 2, 5, 7, 8, 17 and 20 of this load
     /// (`native_layers_glue`), when `frame-scene.layers` is placed.
     pub layers: OnceLock<(Arc<crate::native_layers_glue::LayersView>, StagePalettes)>,
     /// The model decorators' passes of this load (`native_decorators_glue`).
     pub decorators: OnceLock<Arc<crate::native_decorators_glue::DecoratorLooks>>,
     /// What the native lights draw over this world
-    /// (`native_lights_glue`; `None` when the world has no native
-    /// material).
+    /// (`native_lights_glue`), once the light resource worker publishes.
     pub lights: OnceLock<Arc<crate::native_lights_glue::LightsWorld>>,
     /// The device palettes the load expanded palettized stage bitmaps
     /// through, at the stages it used them (the rest `None`): each ask
     /// checks they are still bound.
     pub palettes: StagePalettes,
+    /// The BSP's lightmap bitmap and the palettes its pages expand
+    /// through, when it has pages: what a live edit of a page decodes
+    /// again ([`decode_pages`]).
+    lightmaps: Option<(TagId, Vec<[u32; 256]>)>,
 }
 
 impl Drop for Ready {
@@ -117,6 +130,10 @@ impl Drop for Ready {
 }
 
 impl Ready {
+    fn owns_display_lightmaps(&self) -> bool {
+        self.relit.load(Ordering::Acquire)
+    }
+
     pub(crate) fn gpu(&self) -> std::sync::MutexGuard<'_, Option<GpuWorld>> {
         self.gpu.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -145,7 +162,14 @@ pub struct BspKey {
 }
 
 impl BspKey {
-    fn current(&self) -> bool {
+    /// The name of the map this world loaded from: what a glue that
+    /// decodes a live edit's images again opens.
+    pub(crate) fn map(&self) -> &str {
+        &self.map
+    }
+
+    /// Whether the world this key made is still the loaded one.
+    pub(crate) fn current(&self) -> bool {
         self.generation == native_map_work::generation()
             && self.bsp_generation == native_map_work::bsp_generation()
     }
@@ -164,6 +188,14 @@ pub fn current_ready<'a>(state: &'a MapState, mem: &dyn GuestMemory) -> Option<&
         .then_some(ready)
 }
 
+/// [`current_ready`] with its key, for a glue that applies a live edit to
+/// the world's copies on a worker (it opens the key's map and checks
+/// [`BspKey::current`] before it writes).
+pub fn current_ready_keyed(state: &MapState, mem: &dyn GuestMemory) -> Option<(Arc<Ready>, BspKey)> {
+    let ready = current_ready(state, mem)?;
+    Some((Arc::clone(ready), state.key.clone()?))
+}
+
 /// The host: the device and the current world.
 pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
     watch: runtime::WatchId,
@@ -171,12 +203,18 @@ pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
     state: State,
     switches: hooks::Switches,
     ordered_scene_world: bool,
+    relight_requested: bool,
     /// A live edit's refresh is running ([`refresh_world`]); edits wait
     /// in the queue until it ends, so they apply in order.
     refreshing: Arc<AtomicBool>,
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
+    fn retire_bsp(&self) {
+        self.retire_stale_bsp();
+        crate::native_map::retire_indexed_caches();
+    }
+
     fn try_opaque_simple(&self, mem: &mut dyn GuestMemory, header: u32, value: u32) -> bool {
         let _phase = timeline::phase::enter(timeline::phase::Phase::D3d);
         self.device.lock().is_ok_and(|mut d| {
@@ -199,23 +237,22 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let (finished, pending) = mpsc::channel();
         let retired = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if !key.current() {
+                return false;
+            }
             if state.key.as_ref() == Some(&key) {
                 return true;
             }
             std::mem::replace(&mut *state, MapState::loading(key.clone(), pending))
         };
+        retired.retire();
         let inputs = self.device.lock().ok().and_then(|d| {
             Some((d.backend.upload_device()?, scene_load_palettes(&d, mem)))
         });
+        let relight_requested = self.relight_requested;
         let launched = background::spawn("native-world load", move || {
-            // Releasing all the previous BSP's resources can itself take a
-            // frame, including stages the guest never admitted.
-            {
-                let _retire = timeline::setup::Stage::World.worker();
-                drop(retired);
-            }
             if let Some((device, palettes)) = inputs
-                && let Err(e) = load_ready(&key, device, palettes, &finished)
+                && let Err(e) = load_ready(&key, device, palettes, relight_requested, &finished)
                 && key.current()
             {
                 eprintln!("native-world: {} BSP {} at {:#010x}: not loaded ({e}); the D3D path draws it", key.map, key.index, key.bsp);
@@ -230,12 +267,26 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     }
 
     fn begin_frame(&self) {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).publish();
+        let retired = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let retired = state.take_stale();
+            state.publish();
+            retired
+        };
+        if let Some(retired) = retired {
+            retired.retire();
+        }
         self.refresh_edits();
     }
 
-    fn use_resolved_scene(&self, _mem: &dyn GuestMemory, _bsp: u32) -> bool {
-        self.ordered_scene_world
+    fn use_resolved_scene(&self, mem: &dyn GuestMemory, _bsp: u32) -> bool {
+        // The sorted draw binds guest textures. Reserve the atlas-bound
+        // world pass instead when this BSP has a complete replacement.
+        if !self.ordered_scene_world || !self.relight_requested {
+            return self.ordered_scene_world;
+        }
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        !current_ready(&state, mem).is_some_and(|ready| ready.owns_display_lightmaps())
     }
 
     fn opaque_view(
@@ -258,13 +309,16 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }))
     }
 
-    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, scene_view: &frame_scene::View, plan: &StencilPlan) -> Option<native_render::skip::Cleared> {
+    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, scene_view: &frame_scene::View, plan: &StencilPlan, claim_guest: bool) -> Option<native_render::skip::Cleared> {
         let ready = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             Arc::clone(current_ready(&state, mem)?)
         };
         let mut d = self.device.lock().ok()?;
         if !d.can_external_pass() || !d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()? {
+            return None;
+        }
+        if !crate::native_layers_glue::viewport_clip(&d, &ReadMemory(mem)) {
             return None;
         }
         // With a render thread that records scene stages, everything here
@@ -320,10 +374,55 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let target = d.external_ready(&ReadMemory(mem), false).ok()?;
         // Admit the union of both lenses. Exact readback renders the retail
         // projection, and hardware clips a submitted part outside either copy.
-        let admission_camera = native_render::camera::display_camera(
-            scene_view.camera, d.projection_factor_for_target(target.surface_size).min(1.),
-        );
+        let factor = d.projection_factor_for_target(target.surface_size);
+        let admission_camera = native_render::camera::display_camera(scene_view.camera, factor.min(1.));
         let frustum = GpuWorld::draw_frustum(&admission_camera.view_projection(), true);
+        let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
+        let run = u64::from(d.swap_count()).wrapping_add(1);
+        let (device, color, depth) = d.external_pipeline_target(&ReadMemory(mem))?;
+        let time = native_render::layer_pass::render_time(&ReadMemory(mem));
+        let accumulation = if d.samples_levels_in_place() {
+            accumulation_target(&ReadMemory(mem), d.bound_target())
+        } else { None };
+        let select = |parts: &[(Owner, u8)], display_only| {
+            let mut guard = if display_only || ready.owns_display_lightmaps() {
+                ready.gpu()
+            } else {
+                ready.gpu.try_lock().ok()?
+            };
+            let gpu = guard.as_mut()?;
+            configure_world(gpu, depth, cull, &stencil);
+            let mut selection = gpu.select_parts(parts, &admission_camera)?;
+            if !gpu.select_texaccum(&mut selection, accumulation) { return None; }
+            gpu.animate_selection(&mut selection, time).ok()?;
+            gpu.prewarm_world(&device, color, depth, &selection).then(|| Arc::new(selection))
+        };
+        let world_pass = |selection, display_only| WorldPass {
+            selection, display_only,
+            ready: Arc::clone(&ready),
+            camera: scene_view.camera,
+            view: None,
+            w_clip: None,
+            stencil: stencil.clone(),
+            cull,
+            run,
+        };
+        if factor < 1.0 && let Some(visibility) = &scene_view.display_visibility && (!visibility.clusters.is_empty() || !visibility.placements.is_empty()) {
+            let sections = visibility.clusters.iter().map(|&id| Owner::Cluster(u32::from(id)))
+                .chain(visibility.placements.iter().copied().filter(|&id| {
+                    engine::render_loop::world_walk::fully_visible_placement(mem, bsp, id) == Some(true)
+                }).map(|id| Owner::Instance(u32::from(id))));
+            let parts = display_section_parts(sections, &ready.section_parts,
+                &ready.part_bounds.read().unwrap_or_else(|e| e.into_inner()), &frustum);
+            // Whole sections only, and none that samples an accumulation
+            // no display stage wrote (`GpuWorld::display_complete_parts`).
+            let parts = ready.gpu().as_ref().map(|gpu| gpu.display_complete_parts(&parts)).unwrap_or_default();
+            if !parts.is_empty() && let Some(selection) = select(&parts, true) {
+                let plan = d3d::ExternalPlan { stage: timeline::native::Stage::World, view, ranges: parts.len(), slots: accumulation_slots(&selection) };
+                let _ = d.draw_display_stage(&mut crate::native_lights_glue::DeviceMemory(mem), plan, Box::new(world_pass(selection, true)));
+            }
+        }
+        if !claim_guest { return None; }
         let (masks, cleared, selected) = {
             let bounds = ready.part_bounds.read().unwrap_or_else(|e| e.into_inner());
             render_bridge::native_world::plan_parts(
@@ -334,29 +433,16 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         };
         let ranges = selected.len();
         if ranges == 0 { return None; }
-        let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
-        let plan = d3d::ExternalPlan { stage: timeline::native::Stage::World, view, ranges, slots: Vec::new() };
         let counted = timeline::phase::enabled().then(|| selected.iter().map(|p| p.0).collect::<Vec<_>>());
-        let run = u64::from(d.swap_count()).wrapping_add(1);
-        let selection = ready.with_pipeline_target(&d, mem, |gpu, device, color, depth| {
-            configure_world(gpu, depth, cull, &stencil);
-            let selection = gpu.select_parts(&selected, &admission_camera)?;
-            gpu.prewarm_world(device, color, depth, &selection).then(|| Arc::new(selection))
-        })?;
-        let pass = || Box::new(WorldPass {
-            selection: Arc::clone(&selection),
-            ready: Arc::clone(&ready),
-            camera: scene_view.camera,
-            view: None,
-            w_clip: None,
-            stencil: stencil.clone(),
-            cull,
-            run,
-        });
+        let selection = select(&selected, false)?;
+        let plan = d3d::ExternalPlan { stage: timeline::native::Stage::World, view, ranges, slots: accumulation_slots(&selection) };
+        let pass = || Box::new(world_pass(Arc::clone(&selection), false));
         drop(planning);
         // A scene stage: queued now, prepared and recorded when the render
         // thread reaches it. Not taken, the pass is reserved here as before.
-        let staged = if scene {
+        // A combined pass also validates alias identity on both pinned copies.
+        // Complete that check before clearing any guest mask.
+        let staged = if scene && selection.texaccum.is_none() {
             let reserved = d.reserve_scene_stage(&mut crate::native_lights_glue::DeviceMemory(mem), plan.clone(), pass());
             match reserved {
                 Ok(Some(reservation)) => {
@@ -374,7 +460,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             false
         };
         if !staged {
-            let reservation = d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass(), Vec::new()).ok()??;
+            let mut memory = crate::native_lights_glue::DeviceMemory(mem);
+            let reservation = if selection.texaccum.is_some() {
+                d.prepare_external_pass(&mut memory, plan, pass())
+            } else {
+                d.prepare_external_bound(&mut memory, plan, pass(), Vec::new())
+            }.ok()??;
             if !masks.apply(&mut render_bridge::native_world::Mem(mem)) {
                 timeline::native::Stage::World.count(timeline::native::Metric::RefusedMasks, ranges as u64);
                 return None;
@@ -386,6 +477,15 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 timeline::native::WorldOpaque::Prereserved, owners);
         }
         Some(cleared)
+    }
+}
+
+impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+    fn retire_stale_bsp(&self) {
+        let retired = self.state.lock().unwrap_or_else(|e| e.into_inner()).take_stale();
+        if let Some(retired) = retired {
+            retired.retire();
+        }
     }
 }
 
@@ -437,13 +537,17 @@ struct RefreshPlan {
     sections: Vec<load::SectionOwner>,
     /// Images whose textures are rewritten in place.
     images: Vec<(TagId, u32)>,
+    /// Shader, template, pass and vertex shader tags whose programs are
+    /// refreshed ([`refresh_shaders`]).
+    shaders: Vec<u32>,
 }
 
 /// Sorts `edits` for the world loaded from `bsp`: a section of it is
 /// replaced in place, or reloads the world when its counts grew (or its
 /// kind is unknown); another BSP's section waits for that BSP's own load,
-/// which reads the edited file; an image is rewritten. Tags match by
-/// index, as `native_map::tag_of` does.
+/// which reads the edited file; an image is rewritten; an edited shader
+/// refreshes the programs built from it. Tags match by index, as
+/// `native_map::tag_of` does.
 fn refresh_plan(bsp: Option<TagId>, edits: &[render_bridge::native_edits::Edit]) -> RefreshPlan {
     use render_bridge::native_edits::{Edit, KIND_CLUSTER, KIND_INSTANCE_DEF};
     let ours = |tag: u32| bsp.is_some_and(|b| b.0 & 0xffff == tag & 0xffff);
@@ -462,10 +566,49 @@ fn refresh_plan(bsp: Option<TagId>, edits: &[render_bridge::native_edits::Edit])
                 plan.reload.get_or_insert(format!("section {kind}:{index} is of an unknown kind"));
             }
             Edit::Image { bitmap, image } => plan.images.push((TagId(bitmap), image)),
-            Edit::Model { .. } => {}
+            Edit::Shader { tag } => plan.shaders.push(tag),
+            // Models are the objects' copy. Another tag's field write
+            // changes nothing this copy reads from metadata live.
+            Edit::Model { .. } | Edit::Tag { .. } => {}
         }
     }
     plan
+}
+
+/// The pages of the BSP's lightmap bitmap that `images` edits, each
+/// decoded again through every palette the load held, as the load decodes
+/// them ([`decode_lightmap`]); a page that does not decode says why.
+/// Another bitmap's image is not a page.
+fn decode_pages<R: std::io::Read + std::io::Seek>(
+    map: &mut Map<R>, files: &mut assets::ResourceFiles, ready: &Ready, images: &[(TagId, u32)],
+) -> Vec<(LightmapKey, Result<Image, String>)> {
+    let Some((bitmap, palettes)) = ready.lightmaps.as_ref() else { return Vec::new() };
+    let edited: Vec<u16> = images
+        .iter()
+        .filter(|(tag, _)| tag.0 & 0xffff == bitmap.0 & 0xffff)
+        .filter_map(|&(_, image)| u16::try_from(image).ok())
+        .collect();
+    if edited.is_empty() {
+        return Vec::new();
+    }
+    let read = tags::DecodedTag::read(map, *bitmap)
+        .map_err(|e| format!("the BSP lightmap bitmap does not read ({e})"))
+        .and_then(|tag| match tag.data {
+            tags::TagData::Bitmap(b) => Ok(b),
+            _ => Err("the BSP lightmap tag is not a bitmap".to_owned()),
+        });
+    let mut out = Vec::new();
+    for page in edited {
+        for (n, palette) in palettes.iter().enumerate() {
+            let Ok(palette_index) = u8::try_from(n) else { break };
+            let decoded = read.as_ref().map_err(Clone::clone).and_then(|b| {
+                let image = b.images.get(usize::from(page)).ok_or("no such lightmap bitmap page")?;
+                decode_lightmap(image, palette, files, true)
+            });
+            out.push((LightmapKey { page, palette: palette_index }, decoded));
+        }
+    }
+    out
 }
 
 /// Applies one drain of live edits to `ready`, the world of `key`: the
@@ -476,19 +619,35 @@ fn refresh_plan(bsp: Option<TagId>, edits: &[render_bridge::native_edits::Edit])
 /// (`native_map_work::reload_bsp`): until the reload publishes, its parts
 /// keep their D3D draws from guest memory. An image whose size, levels or
 /// format changed keeps its pixels until the map reloads, and says so.
+/// Edited shaders go first ([`refresh_shaders`]).
 fn refresh_world(key: &BspKey, ready: &Ready, edits: &[render_bridge::native_edits::Edit]) {
     let reload = |why: String| {
         eprintln!("native-world: {} BSP {}: a live edit reloads the world ({why})", key.map, key.index);
         native_map_work::reload_bsp();
     };
     let plan = refresh_plan(ready.bsp_tag, edits);
+    if ready.owns_display_lightmaps()
+        && (plan.reload.is_some() || !plan.sections.is_empty() || !plan.shaders.is_empty() || !plan.images.is_empty())
+    {
+        let mut guard = ready.gpu();
+        if let Some(gpu) = guard.as_mut() {
+            gpu.discard_relight();
+        }
+        ready.relit.store(false, Ordering::Release);
+        eprintln!("native-world: {} BSP {}: live edit invalidates reconstructed pages, using retail", key.map, key.index);
+    }
     if let Some(why) = &plan.reload {
         return reload(why.clone());
+    }
+    if !plan.shaders.is_empty() {
+        if let Err(why) = refresh_shaders(key, ready, &plan.shaders) {
+            return reload(why);
+        }
     }
     if plan.sections.is_empty() && plan.images.is_empty() {
         return;
     }
-    let Some((_, queue)) = ready.upload_device.as_ref() else { return };
+    let Some((device, queue)) = ready.upload_device.as_ref() else { return };
     let (mut map, files) = match crate::native_map::open(&key.map) {
         Ok(opened) => opened,
         Err(e) => return reload(format!("the map does not open: {e}")),
@@ -513,6 +672,15 @@ fn refresh_world(key: &BspKey, ready: &Ready, edits: &[render_bridge::native_edi
         .map(|((bitmap, image), at)| {
             ((bitmap, image), native_render::stage_images::decode_stages(&mut map, &mut raw.0, &ready.palettes, bitmap, image, &at))
         })
+        .collect();
+    let pages = decode_pages(&mut map, &mut raw.0, ready, &plan.images);
+    // A gel is image 0 of its bitmap, uploaded as the lights' load decoded
+    // it (no palette).
+    let gels: Vec<(TagId, Image)> = plan
+        .images
+        .iter()
+        .filter(|&&(bitmap, image)| image == 0 && ready.lights.get().is_some_and(|l| l.has_gel(bitmap.0)))
+        .filter_map(|&(bitmap, _)| Some((bitmap, light_image(&mut map, &mut raw.0, bitmap, 0, 0, &None)?.0)))
         .collect();
     if !key.current() {
         return;
@@ -541,6 +709,35 @@ fn refresh_world(key: &BspKey, ready: &Ready, edits: &[render_bridge::native_edi
             );
         }
     }
+    for (page, decoded) in &pages {
+        match decoded {
+            Ok(pixels) => {
+                if let Err(why) = gpu.rewrite_page(queue, *page, pixels) {
+                    eprintln!(
+                        "native-world: {} BSP {}: lightmap page {} palette {} keeps its pixels until the map reloads ({why:?})",
+                        key.map, key.index, page.page, page.palette
+                    );
+                }
+            }
+            // It did not decode at load either, or no longer does: the
+            // D3D path draws what used it.
+            Err(why) if !gpu.page_textures(*page).is_empty() => {
+                eprintln!(
+                    "native-world: {} BSP {}: lightmap page {} palette {} does not decode ({why}); it keeps its pixels",
+                    key.map, key.index, page.page, page.palette
+                );
+            }
+            Err(_) => {}
+        }
+    }
+    for (bitmap, pixels) in &gels {
+        if let Err(why) = gpu.rewrite_gel(device, queue, bitmap.0, pixels) {
+            eprintln!(
+                "native-world: {} BSP {}: gel {:#010x} keeps its pixels until the map reloads ({why:?})",
+                key.map, key.index, bitmap.0
+            );
+        }
+    }
     if !edited.is_empty() {
         let mut bounds = ready.part_bounds.write().unwrap_or_else(|e| e.into_inner());
         for d in gpu.world().draws.iter().filter(|d| edited.contains(&d.owner)) {
@@ -550,6 +747,154 @@ fn refresh_world(key: &BspKey, ready: &Ready, edits: &[render_bridge::native_edi
     drop(guard);
     // Flush the writes before the next admitted draw.
     queue.submit([]);
+}
+
+/// Whether shader `shader` is built from one of the `edited` tags (matched
+/// by index): it is one, or its material uses one
+/// (`tags::material::Material::uses`). A shader that no longer resolves
+/// counts as built from them: the edit may be what broke it. Each answer
+/// is kept in `known`.
+pub(crate) fn shader_edited(
+    lib: &mut tags::material::ShaderLibrary,
+    known: &mut HashMap<TagId, bool>,
+    edited: &[TagId],
+    shader: TagId,
+) -> bool {
+    if let Some(&known) = known.get(&shader) {
+        return known;
+    }
+    let same = edited.iter().any(|t| t.0 & 0xffff == shader.0 & 0xffff);
+    let uses = same || lib.material(shader, None).map(|m| edited.iter().any(|&t| m.uses(t))).unwrap_or(true);
+    known.insert(shader, uses);
+    uses
+}
+
+/// The world materials (by index into `shaders`) whose shader `edited`
+/// says is built from an edited tag, ascending.
+fn edited_materials(shaders: &[TagId], edited: &mut dyn FnMut(TagId) -> bool) -> Vec<u16> {
+    shaders
+        .iter()
+        .enumerate()
+        .filter_map(|(m, &shader)| u16::try_from(m).ok().filter(|_| edited(shader)))
+        .collect()
+}
+
+/// Refreshes the world's material programs built from the edited
+/// `tags` (`Edit::Shader`: shaders, templates, passes, vertex shaders;
+/// docs/editor/realtime-edits.md, "The native refresh"). The shaders are
+/// read again from the map file, which the metadata overlay serves
+/// edited; each native material built from an edited tag is compiled
+/// again as the load compiled it and put in place
+/// (`GpuWorld::refresh_programs`): its uniform buffers rewritten when
+/// only constants changed, its programs rebuilt otherwise. Materials the
+/// load left on the D3D path stay there; their draws read the edit from
+/// guest memory. Err says why the world reloads instead: another of this
+/// load's consumers (the fog, the water, the layers, the lights, the
+/// decorators or the opaque pass) draws an edited shader, or a refreshed
+/// material would draw other parts than it does.
+fn refresh_shaders(key: &BspKey, ready: &Ready, tags: &[u32]) -> Result<(), String> {
+    let Some((device, queue)) = ready.upload_device.as_ref() else { return Ok(()) };
+    let (mut map, mut files) = crate::native_map::open(&key.map).map_err(|e| format!("the map does not open: {e}"))?;
+    let mut lib = tags::material::ShaderLibrary::read(&mut map).map_err(|e| format!("the shader tags do not read ({e})"))?;
+    let edited: Vec<TagId> = tags.iter().map(|&t| TagId(t)).collect();
+    let mut known = HashMap::new();
+    let affected = edited_materials(&ready.layer3.shaders, &mut |s| shader_edited(&mut lib, &mut known, &edited, s));
+    if affected.is_empty() {
+        return Ok(());
+    }
+
+    // The consumers that compile their own copy of a shader reload with
+    // the world.
+    let mut users = Vec::new();
+    let draws = |programs: &dyn Fn(u16) -> bool| affected.iter().any(|&m| programs(m));
+    if ready.fog.get().is_some_and(|(fog, _)| draws(&|m| fog.programs.contains_key(&m))) {
+        users.push("the fog");
+    }
+    if ready.water.get().is_some_and(|(water, _)| draws(&|m| water.programs.contains_key(&m))) {
+        users.push("the water");
+    }
+    if ready.layers.get().is_some_and(|(view, _)| draws(&|m| view.layers.values().any(|d| d.programs.contains_key(&m)))) {
+        users.push("the layers");
+    }
+    if ready.lights.get().is_some_and(|lights| draws(&|m| lights.draws_material(m))) {
+        users.push("the lights");
+    }
+    if let Some(decorators) = ready.decorators.get() {
+        let ids: Vec<TagId> = decorators
+            .shaders()
+            .into_iter()
+            .filter_map(|index| map.tags().get(usize::from(index)).map(|t| t.id))
+            .collect();
+        if ids.into_iter().any(|s| shader_edited(&mut lib, &mut known, &edited, s)) {
+            users.push("the decorators");
+        }
+    }
+    if !ready.opaque.is_empty() {
+        let mut shaders: Vec<TagId> = affected.iter().filter_map(|&m| ready.layer3.shaders.get(usize::from(m)).copied()).collect();
+        shaders.sort_unstable_by_key(|s| s.0);
+        shaders.dedup();
+        let fresh = opaque_materials::Library::load(&mut map, &shaders);
+        if shaders.iter().any(|s| !ready.opaque.same_for(&fresh, s.0)) {
+            users.push("the opaque pass");
+        }
+    }
+    if !users.is_empty() {
+        return Err(format!("{} draw an edited shader", users.join(", ")));
+    }
+
+    // The native materials among them, and the parts they draw.
+    let (world, native, before) = {
+        let gpu = ready.gpu();
+        let Some(gpu) = gpu.as_ref() else { return Ok(()) };
+        let native: HashSet<u16> = affected.iter().copied().filter(|&m| gpu.material_program(m).is_some()).collect();
+        let w = gpu.world();
+        let world = World {
+            draws: w.draws.iter().filter(|d| native.contains(&d.material)).cloned().collect(),
+            batches: w.batches.iter().filter(|b| native.contains(&b.material)).cloned().collect(),
+            placements: w.placements.clone(),
+            ..Default::default()
+        };
+        let before: HashSet<(Owner, u8)> = world.draws.iter().map(|d| (d.owner, d.part)).collect();
+        (world, native, before)
+    };
+    if native.is_empty() {
+        return Ok(());
+    }
+    let page_ready = |page| {
+        if ready.pages.contains(&page) {
+            Ok(())
+        } else {
+            Err("a part's lightmap page does not decode (page unavailable)".to_owned())
+        }
+    };
+    let mut decoder = StageDecoder::new(ready.palettes.clone());
+    let mut layered = LayeredImages::new();
+    let out = material_programs(&mut map, &mut files, &ready.layer3, &world, &page_ready, &mut decoder,
+        &mut layered, key, Some(&native));
+    if let Some((why, _)) = out.refused.iter().next() {
+        return Err(format!("an edited material no longer compiles ({why})"));
+    }
+    if out.parts != before {
+        return Err("an edited material would draw other parts".into());
+    }
+    if !key.current() {
+        return Ok(());
+    }
+    let images = out.images;
+    let mut guard = ready.gpu();
+    let Some(gpu) = guard.as_mut() else { return Ok(()) };
+    let done = gpu.refresh_programs(device, queue, out.programs, &mut |stage| match stage {
+        Stage::Bitmap { bitmap, image } => images.get(&(bitmap, image)).cloned(),
+        _ => None,
+    }, &layered)?;
+    drop(guard);
+    // Flush the writes before the next admitted draw.
+    queue.submit([]);
+    eprintln!(
+        "native-world: {} BSP {}: a shader edit refreshed {} materials' constants and rebuilt {} ({} unchanged)",
+        key.map, key.index, done.constants.len(), done.rebuilt.len(), done.unchanged.len()
+    );
+    Ok(())
 }
 
 /// The ordinary ABI takes dirty pages on entry. The sorted handler bypasses
@@ -666,10 +1011,11 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
         device: Arc::clone(device),
         state: Arc::clone(&state),
         ordered_scene_world: crate::native_world_layers_glue::owns_scene_world(&switches),
+        relight_requested: d3d::scaled::lighting().is_ok_and(d3d::Lighting::is_relight),
         switches,
         refreshing: Arc::default(),
     }));
-    crate::native_transparents_glue::install(device);
+    crate::native_transparents_glue::install(device, Arc::clone(&state));
     crate::native_fog_glue::install(device, Arc::clone(&state));
     crate::native_water_glue::install(device, Arc::clone(&state));
     crate::native_layers_glue::install(device, Arc::clone(&state));
@@ -683,8 +1029,44 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
     shadows
 }
 
+/// The flood supplies newly visible clusters and fully opaque rigid placements.
+fn display_section_parts(
+    sections: impl Iterator<Item = Owner>, resident: &HashMap<Owner, Vec<u8>>,
+    bounds: &HashMap<(Owner, u8), native_render::world::Aabb>, frustum: &native_render::cull::Frustum,
+) -> Vec<(Owner, u8)> {
+    let mut selected = Vec::new();
+    for owner in sections {
+        for &part in resident.get(&owner).into_iter().flatten() {
+            if bounds.get(&(owner, part)).is_some_and(|b| frustum.may_see(b)) {
+                selected.push((owner, part));
+            }
+        }
+    }
+    selected
+}
+
+/// Both headers identify target 1. The shader uses guest texel coordinates,
+/// so only a linear level of the descriptor's size can supply it.
+fn accumulation_target(mem: &ReadMemory<'_>, bound: [u32; 8]) -> Option<native_render::world_layers::Texaccum> {
+    use gfx::texture::{TextureDesc, TextureKind};
+    let target = native_render::world_layers::Texaccum::read(mem)?;
+    let surface = target.surface?;
+    if bound[..2].contains(&surface) { return None; }
+    let image = d3d::resource::PixelContainer::read(mem, target.texture).ok()?;
+    let desc = TextureDesc::from_header(image.format, image.size).ok()?;
+    (image.resource.kind() == d3d::resource::ResourceType::Texture
+        && desc.kind == TextureKind::D2 && desc.format.layout() == gfx::format::Layout::Linear
+        && desc.levels == 1 && (desc.width, desc.height) == target.size).then_some(target)
+}
+
+fn accumulation_slots(selection: &WorldSelection) -> Vec<Option<d3d::ExternalSlot>> {
+    selection.texaccum.and_then(|t| t.surface)
+        .map(|header| Some(d3d::ExternalSlot { header, written: false })).into_iter().collect()
+}
+
 /// One view's world pass.
 struct WorldPass {
+    display_only: bool,
     selection: Arc<WorldSelection>,
     ready: Arc<Ready>,
     camera: RenderCamera,
@@ -738,10 +1120,28 @@ fn configure_world(
     gpu.set_stencil(stencil);
 }
 
+/// The exact guest reference always binds the retail atlas. An ordinary
+/// display or a private capture can request either reconstructed atlas.
+fn world_lighting(copy: d3d::TargetCopy, lighting: d3d::Lighting) -> d3d::Lighting {
+    match copy {
+        d3d::TargetCopy::Reference => d3d::Lighting::Retail,
+        d3d::TargetCopy::Display => lighting,
+    }
+}
+
 impl d3d::ExternalPass for WorldPass {
+    fn display_only(&self) -> bool { self.display_only }
     // The selection and constants belong to this view. Ready pins the BSP,
     // and each recording binds the target copy passed to it by the renderer.
     fn replays_scene(&self) -> bool { true }
+
+    fn sampled(&self) -> Vec<u32> {
+        self.selection.texaccum.iter().map(|t| t.texture).collect()
+    }
+
+    fn relit_lightmap_ranges(&self) -> usize {
+        self.ready.gpu().as_ref().map_or(0, |gpu| gpu.relit_lightmap_ranges(&self.selection))
+    }
 
     /// Packets need no worker round trip; the pin holds while no other
     /// command intervenes (`d3d::ThreadedBackend`).
@@ -788,7 +1188,25 @@ impl d3d::ExternalPass for WorldPass {
         let view = ViewInputs {
             constants: request.view_constants(t.copy, constants), guest_size: request.surface_size, size: t.size, z_scale: request.z_scale, w_clip: self.w_clip,
         };
-        Some(gpu.selection_draws(t.color_format, t.depth_format, t.size, selection, &view))
+        let accumulation = if let Some(descriptor) = selection.texaccum {
+            let Some(level) = t.sampled.first().and_then(Option::as_ref) else {
+                return Some(Err("world accumulation level unavailable"));
+            };
+            let Some(source) = t.slots.first().and_then(Option::as_ref) else {
+                return Some(Err("world accumulation surface unavailable"));
+            };
+            if source.guest_size != descriptor.size || source.size != level.size
+                || source.sample.texture() != level.view.texture()
+                || level.view.texture() == t.color.texture() || level.view.texture() == t.depth.texture()
+                || !gfx::program::filterable(level.view.texture().format(), t.device.features())
+            {
+                return Some(Err("world accumulation target mismatch"));
+            }
+            Some((&t.device, &level.view))
+        } else { None };
+        let draws = gpu.selection_draws_bound(t.color_format, t.depth_format, t.size, selection, &view,
+            world_lighting(t.copy, t.lighting), accumulation);
+        Some(draws.and_then(|draws| crate::native_layers_glue::clip_packets(draws, request, t.size)))
     }
 
     fn encode(&mut self, t: d3d::ExternalTarget<'_>) { self.record_ranges(t); }
@@ -807,7 +1225,7 @@ impl d3d::ExternalPass for WorldPass {
             return 0;
         }
         let [x, y, width, height] = t.viewport;
-        let recorded = gpu.encode_selection(
+        let recorded = gpu.encode_selection_lit(
             t.encoder,
             t.color,
             t.color_format,
@@ -816,6 +1234,7 @@ impl d3d::ExternalPass for WorldPass {
             PassViewport { x, y, width, height },
             t.size,
             selection,
+            world_lighting(t.copy, t.lighting),
         );
         let unbound = gpu.unbound_batches();
         if unbound > 0 && !UNBOUND.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -945,11 +1364,15 @@ fn active_scenario_bsp(addresses: &[Option<u32>], index: u16, bsp: u32) -> Optio
 
 fn load_ready(
     key: &BspKey, (device, queue): (wgpu::Device, wgpu::Queue), palettes: StagePalettes,
-    finished: &mpsc::Sender<StageReady>,
+    relight_requested: bool, finished: &mpsc::Sender<StageReady>,
 ) -> Result<(), load::Error> {
     use timeline::setup::Stage as Setup;
+    let Some(_load) = crate::native_map::begin_load(Setup::World, || key.current()) else {
+        return Ok(());
+    };
     let started = std::time::Instant::now();
     let world_setup = Setup::World.worker();
+    let _scope = mem_watch::scope("native.world.load");
     if !key.current() { return Ok(()); }
     let retire = crate::native_map::retire_queue()?;
     let (mut map, files) = crate::native_map::open(&key.map)?;
@@ -962,7 +1385,9 @@ fn load_ready(
     let bsp_tag = bsps[index].0;
     let mut raw = Raw(files);
     let LoadedWorld {
-        world,
+        checksum,
+        mut world,
+        per_vertex_placements,
         shaders,
         lightmap_bitmap,
         lightmap_error,
@@ -1017,13 +1442,30 @@ fn load_ready(
     // whose streams and images supply that program.
     let mut decoder = StageDecoder::new(palettes);
     let mut layered_images = LayeredImages::new();
+    // The later shader walks use part descriptors and placement rows. Keep
+    // those before filtering layer 3, without copying any vertex or index data.
+    let stage_world = World {
+        light_parts: world.light_parts.clone(),
+        draws: world.draws.clone(),
+        batches: world.batches.clone(),
+        transparents: world.transparents.clone(),
+        placements: world.placements.clone(),
+        ..Default::default()
+    };
+    let opaque = opaque_materials::Library::load(&mut map, &shaders);
+    // Every opaque part, before the layer-3 filter: E3's sun tiles draw
+    // object shadows on the structure (docs/graphics/e3-lighting.md, "Sun
+    // shadows from objects"). Retail never reads it.
+    let sun_world = native_render::sun_casters::SunWorld::new(&world);
+    let layer3 = Layer3Materials::group(&mut world, &shaders, lightmap_bitmap.is_some(), &per_vertex_placements);
+    let declared = world.materials().len();
     let out = match lightmap_error {
         Some(reason) => Programs {
             refused: BTreeMap::from([(format!("lightmap group does not decode ({reason})"), world.materials())]),
             ..Default::default()
         },
-        None => material_programs(&mut map, &mut files, &shaders, &world, &page_ready, &mut decoder,
-            lightmap_bitmap.is_none(), &mut layered_images, key),
+        None => material_programs(&mut map, &mut files, &layer3, &world, &page_ready, &mut decoder,
+            &mut layered_images, key, None),
     };
     if !key.current() { return Ok(()); }
     let native: HashSet<u16> = out.programs.keys().copied().collect();
@@ -1033,7 +1475,7 @@ fn load_ready(
     let (programs, mut stage_images, refused) = (out.programs, out.images, out.refused);
     let accepts = |d: &WorldDraw| prepared_parts.contains(&(d.owner, d.part));
     if hooks::native_verbose() {
-        log_coverage(&mut map, &world, &shaders, &native, &refused, prepared_parts.len());
+        log_coverage(&mut map, &world, &layer3.shaders, &native, &refused, prepared_parts.len());
         let placed = world.draws.iter().filter(|d| native.contains(&d.material) && matches!(d.owner, Owner::Instance(_)));
         let (with, without) = placed.fold((0, 0), |(w, wo), d| if accepts(d) { (w + 1, wo) } else { (w, wo + 1) });
         eprintln!(
@@ -1055,28 +1497,43 @@ fn load_ready(
         }
     }
     if !key.current() { return Ok(()); }
-    // The later shader walks use part descriptors and placement rows. Keep
-    // those before filtering layer 3, without copying any vertex or index data.
-    let stage_world = World {
-        draws: world.draws.clone(),
-        batches: world.batches.clone(),
-        transparents: world.transparents.clone(),
-        placements: world.placements.clone(),
-        ..Default::default()
-    };
-    let opaque = opaque_materials::Library::load(&mut map, &shaders);
-    let declared = world.materials().len();
+    let missed_lit_parts = if relight_requested {
+        world.draws.iter().filter(|d| d.lightmap.is_some() && !accepts(d)).count()
+    } else { 0 };
     let world = keep_draws(world, &accepts);
-    let parts = part_set(&world, &shaders);
+    let parts = part_set(&world, &layer3.shaders);
+    let mut section_parts = HashMap::<Owner, Vec<u8>>::new();
+    for &(owner, part) in parts.keys() {
+        section_parts.entry(owner).or_default().push(part);
+    }
+    for group in section_parts.values_mut() { group.sort_unstable(); }
     let part_bounds = RwLock::new(world.draws.iter().map(|d| ((d.owner, d.part), d.bounds)).collect());
     let empty_world = parts.is_empty() && opaque.is_empty();
     let stage_bitmap = |images: &StageImages, stage: Stage| match stage {
         Stage::Bitmap { bitmap, image } => images.get(&(bitmap, image)).cloned(),
         _ => None,
     };
+    let page_set: HashSet<LightmapKey> = lightmaps.keys().copied().collect();
     let gpu = {
-        let set = ProgramSet::with_layered(&device, &queue, &world, programs, &mut |s| stage_bitmap(&stage_images, s),
+        let mut set = ProgramSet::with_layered(&device, &queue, &world, programs, &mut |s| stage_bitmap(&stage_images, s),
             &mut |k| lightmaps.get(&k).cloned(), &layered_images);
+        if relight_requested {
+            let header = map.header();
+            let loaded = crate::relight::load(&header.name, key.index, checksum, header.checksum, &lightmaps)
+                .and_then(|pages| {
+                    let Some(pages) = pages else { return Ok(false) };
+                    if failed_sections != 0 || missed_lit_parts != 0 || !rejected_pages.is_empty() {
+                        return Err(format!("{failed_sections} unread sections, {missed_lit_parts} unowned page-lit parts, {} unread pages", rejected_pages.len()));
+                    }
+                    set.install_relight(&device, &queue, &world, &pages).map_err(str::to_owned)?;
+                    Ok(true)
+                });
+            match loaded {
+                Ok(true) => eprintln!("native-world: {} BSP {}: both reconstructed display lightmaps ready", key.map, key.index),
+                Ok(false) => {},
+                Err(why) => eprintln!("native-world: {} BSP {}: using retail lightmaps ({why})", key.map, key.index),
+            }
+        }
         eprintln!(
             "native-world: {} BSP {} at {:#010x}: {} of {} materials native; {} draws in {} batches, {} parts, in {:.1} s; {} BSP material slots, {} geometry sections skipped; top material rejections: {:?}",
             key.map, key.index, key.bsp, native.len(), declared, world.draws.len(), world.batches.len(), parts.len(),
@@ -1090,22 +1547,27 @@ fn load_ready(
         queue.submit([]);
         finished.send(stage).is_ok()
     };
+    let bsp = key.clone();
+    let sun_world = Arc::new(sun_world.with_current(move || bsp.current()));
     if !send(StageReady::World(Arc::new(Ready {
-        retire: Some(retire), opaque, part_bounds, bsp_tag: Some(bsp_tag), gpu: Mutex::new(Some(gpu)), parts: Arc::new(parts),
+        sun_world: Some(sun_world),
+        relit: AtomicBool::new(gpu.has_relight()),
+        retire: Some(retire), opaque, part_bounds, bsp_tag: Some(bsp_tag), gpu: Mutex::new(Some(gpu)), parts: Arc::new(parts), section_parts,
+        layer3, pages: page_set,
         upload_device: Some((device.clone(), queue.clone())), palettes: decoder.used().clone(),
         fog: OnceLock::new(), water: OnceLock::new(), layers: OnceLock::new(),
         decorators: OnceLock::new(), lights: OnceLock::new(),
+        lightmaps: lightmap_bitmap.map(|bitmap| (bitmap, lightmap_palettes.clone())),
     }))) { return Ok(()); }
-
     drop(world_setup);
+    drop(layered_images);
 
     // Each result owns all of its GPU resources before it enters the mailbox.
     // No map walk or upload takes a lock used by an admitted draw.
     let empty_lights = {
+        let _scope = mem_watch::scope("native.lights.load");
         let _setup = Setup::Lights.worker();
-        let lights = if native.is_empty() { None } else {
-            crate::native_lights_glue::load(&mut map, &mut files, &shaders, &stage_world, &accepts, decoder.palettes())
-        };
+        let lights = crate::native_lights_glue::load(&mut map, &mut files, &shaders, &stage_world, decoder.palettes());
         if let Some(lights) = lights {
             let lights = Arc::new(lights);
             let set = lights.upload_engine_textures(&device, &queue);
@@ -1120,6 +1582,7 @@ fn load_ready(
     if !key.current() { return Ok(()); }
 
     let empty_fog = {
+        let _scope = mem_watch::scope("native.fog.load");
         let _setup = Setup::Fog.worker();
         let mut fog = crate::native_fog_glue::load(
             &mut map, &mut files, &shaders, &stage_world, &lightmaps, &mut stage_images, &mut decoder,
@@ -1139,17 +1602,18 @@ fn load_ready(
     if !key.current() { return Ok(()); }
 
     let empty_water = {
+        let _scope = mem_watch::scope("native.water.load");
         let _setup = Setup::Water.worker();
         let mut water = crate::native_water_glue::load(
             &mut map, &mut files, &shaders, &stage_world, &lightmaps, &mut stage_images, &mut decoder,
         );
         let mut empty = water.part_set.is_empty();
-        if !empty {
-            let set = crate::native_water_glue::upload_water(&water, &device, &queue,
+        if !empty || !water.pools.is_empty() {
+            let set = crate::native_water_glue::upload_water(&water, &device, &queue, &stage_world,
                 &mut |s| stage_bitmap(&stage_images, s), &mut |k| lightmaps.get(&k).cloned());
             water.part_set.retain(|&(owner, part), _| set.draws_part(owner, part));
             empty = water.part_set.is_empty();
-            if !empty && !send(StageReady::Water(Arc::new(water), decoder.used().clone(), Box::new(set))) {
+            if (!empty || !water.pools.is_empty()) && !send(StageReady::Water(Arc::new(water), decoder.used().clone(), Box::new(set))) {
                 return Ok(());
             }
         }
@@ -1158,6 +1622,7 @@ fn load_ready(
     if !key.current() { return Ok(()); }
 
     if render_bridge::native_layers::placed() {
+        let _scope = mem_watch::scope("native.layers.load");
         let _setup = Setup::Layers.worker();
         let mut layers = crate::native_layers_glue::load(
             &mut map, &mut files, &shaders, &stage_world, &lightmaps, &mut stage_images, &mut decoder,
@@ -1170,9 +1635,11 @@ fn load_ready(
     }
     if !key.current() { return Ok(()); }
 
+    drop(lightmaps);
     let decorators = {
+        let _scope = mem_watch::scope("native.decorators.load");
         let _setup = Setup::Decorators.worker();
-        crate::native_decorators_glue::load(&mut map, &mut files, &mut decoder)
+        crate::native_decorators_glue::load(&mut map, &mut files, &mut decoder, stage_images)
     };
     if key.current() && finished.send(StageReady::Decorators(decorators)).is_ok() {
         native_map_work::bsp_loaded(key.generation, &key.map, index, bsps.len(), [
@@ -1242,6 +1709,53 @@ fn log_coverage<R: std::io::Read + std::io::Seek>(
     }
 }
 
+/// Layer 3 batches by the program the render record selects. BSP material
+/// indices stay valid for the other passes and for live shader edits. Only
+/// a material drawn with both lighting modes needs an extra program slot.
+#[derive(Default)]
+struct Layer3Materials {
+    shaders: Vec<TagId>,
+    implementations: Vec<usize>,
+}
+
+impl Layer3Materials {
+    fn group(world: &mut World, shaders: &[TagId], has_group: bool, per_vertex: &[bool]) -> Self {
+        let mut slots = Self {
+            shaders: shaders.to_vec(),
+            implementations: vec![if has_group { 0 } else { look::UNLIT_BSP_IMPLEMENTATION }; shaders.len()],
+        };
+        if !has_group { return slots; }
+        let vertex_lit = |d: &WorldDraw| matches!(d.owner, Owner::Instance(i) if per_vertex.get(i as usize) == Some(&true));
+        let per_pixel: HashSet<_> = world.draws.iter().filter(|d| !vertex_lit(d)).map(|d| d.material).collect();
+        let mut mixed = HashMap::new();
+        for draw in &mut world.draws {
+            let m = usize::from(draw.material);
+            // Keep a malformed section index from aliasing an appended slot.
+            if m >= shaders.len() || draw.material == u16::MAX {
+                draw.material = u16::MAX;
+                continue;
+            }
+            if !vertex_lit(draw) { continue; }
+            if per_pixel.contains(&draw.material) {
+                draw.material = *mixed.entry(draw.material).or_insert_with(|| {
+                    // Leave only this variant to the sorted handler if all
+                    // representable material slots are occupied.
+                    let Ok(next) = u16::try_from(slots.shaders.len()) else { return u16::MAX };
+                    if next != u16::MAX {
+                        slots.shaders.push(shaders[m]);
+                        slots.implementations.push(1);
+                    }
+                    next
+                });
+            } else {
+                slots.implementations[m] = 1;
+            }
+        }
+        world.regroup_draws();
+        slots
+    }
+}
+
 /// What [`material_programs`] gives.
 #[derive(Default)]
 struct Programs {
@@ -1264,13 +1778,13 @@ struct Programs {
 fn material_programs<R: std::io::Read + std::io::Seek>(
     map: &mut Map<R>,
     files: &mut assets::ResourceFiles,
-    shaders: &[TagId],
+    layer3: &Layer3Materials,
     world: &World,
     page_ready: &dyn Fn(LightmapKey) -> Result<(), String>,
     decoder: &mut StageDecoder,
-    no_lightmap_group: bool,
     layered: &mut LayeredImages,
     key: &BspKey,
+    only: Option<&HashSet<u16>>,
 ) -> Programs {
     let mut out = Programs::default();
     let Programs {
@@ -1287,7 +1801,10 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
         .filter(|d| matches!(d.owner, Owner::Instance(_)))
         .map(|d| d.material)
         .collect();
-    let materials = world.materials();
+    let mut materials = world.materials();
+    if let Some(only) = only {
+        materials.retain(|m| only.contains(m));
+    }
     let mut lib = match tags::material::ShaderLibrary::read(map) {
         Ok(l) => l,
         Err(e) => {
@@ -1302,41 +1819,65 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
     for m in materials {
         if !key.current() { break; }
         let mut uses_palette = false;
-        let Some(&shader) = shaders.get(usize::from(m)) else {
-            refused.entry("no shader".into()).or_default().push(m);
+        let Some(&shader) = layer3.shaders.get(usize::from(m)).filter(|_| m != u16::MAX) else {
+            refused.entry("no layer 3 material slot".into()).or_default().push(m);
             continue;
         };
-        let pass = if no_lightmap_group {
-            let selection = tags::material::PassSelection { lod: 0, layer: look::LIGHTMAP_LAYER, pass: 0,
-                implementation: look::UNLIT_BSP_IMPLEMENTATION };
-            lib.selected_implementation(shader, selection, None, None).map_err(|e| format!("material: {e}"))
-                .and_then(|pass| look::unlit_bsp_pass(&pass, normalization).map_err(|r| format!("layer 3: {r:?}")))
-        } else {
-            lib.material(shader, None).map_err(|e| format!("material: {e}"))
-                .and_then(|mat| look::layer3_pass(&mat).map_err(|r| format!("layer 3: {r:?}")))
-        };
+        // An animated pass compiles at clock 0 and keeps its animation,
+        // sampled at the render clock each frame (`GpuWorld::animate_selection`).
+        let properties = native_render::layer_pass::instance_properties(&lib, shader);
+        let implementation = layer3.implementations[usize::from(m)];
+        let selection = tags::material::PassSelection { lod: 0, layer: look::LIGHTMAP_LAYER, pass: 0, implementation };
+        let pass = lib.shader(shader).map_err(|e| format!("material: {e}"))
+            .and_then(|s| {
+                // The flagged draw skips the bucket bind and runs the sorted
+                // handler's additional per-record shader setup.
+                if implementation == 1 && s.raw[0x16] & 1 != 0 {
+                    return Err("vertex-lit shader requires sorted BSP parameter setup".to_owned());
+                }
+                let inputs = tags::material::EngineInputs::for_shader(&s);
+                let pass = lib.selected_implementation(shader, selection, Some(&inputs), None)
+                    .map_err(|e| format!("material: {e}"))?;
+                look::selected_bsp_pass_sampled(&pass, &inputs, normalization, &properties)
+                    .map_err(|r| format!("layer 3: {r:?}"))
+            });
         let compiled = pass
-            .and_then(|pass| {
-                let code = look::world_program(map, lib.metadata(), pass.look.vertex_shader).ok_or("no world-space vertex program")?;
+            .and_then(|(pass, animation)| {
+                let vrtx = map.tag(pass.look.vertex_shader).ok().and_then(|t| t.location)
+                    .ok_or("vertex shader tag unavailable")?.address;
+                let code = look::vertex_program(lib.metadata(), vrtx, look::WORLD_CLASSIFICATION)
+                    .ok_or("no world-space vertex program")?;
                 let mut dims = [None; 4];
                 for (slot, stage) in dims.iter_mut().zip(pass.look.textures) {
                     *slot = match stage {
                         Stage::Bitmap { bitmap, image } => Some(*dimensions.entry((bitmap, image))
                             .or_insert_with(|| bitmap_dimension(map, files, bitmap, image, layered))
                             .as_ref().map_err(Clone::clone)?),
-                        Stage::Lightmap => Some(TextureDim::D2),
+                        Stage::Lightmap | Stage::Engine(native_render::object_program::TEXACCUM_TEXTURE) => Some(TextureDim::D2),
                         Stage::Empty => None,
                         Stage::Engine(id) => return Err(format!("unbound engine texture {id}")),
                         Stage::Host(h) => return Err(format!("a host stage in a tag's pass ({h:?})")),
                     };
                 }
+                let required_streams = |inputs, class| {
+                    if implementation != 1 { return Ok(inputs); }
+                    let semantics = look::vertex_semantics(lib.metadata(), vrtx, class)
+                        .ok_or_else(|| format!("unreadable vertex-lit input declaration for class {class}"))?;
+                    program::vertex_lit_inputs(inputs, &semantics)
+                };
                 let mut p = program::compile_section(&pass, &code, dims)?;
+                p.inputs = required_streams(p.inputs, look::WORLD_CLASSIFICATION)?;
+                p.animation = animation;
                 if placed.contains(&m) {
                     // Its placements: the pass with the rigid
                     // classification, or they stay on the D3D path.
-                    let rigid = look::rigid_program(map, lib.metadata(), pass.look.vertex_shader)
+                    let rigid = look::vertex_program(lib.metadata(), vrtx, look::RIGID_CLASSIFICATION)
                         .ok_or_else(|| "no rigid vertex program".to_string())
-                        .and_then(|code| program::compile_section_rigid(&pass.look, pass.state.alpha_test, &code, dims));
+                        .and_then(|code| {
+                            let mut rigid = program::compile_section_rigid(&pass.look, pass.state.alpha_test, &code, dims)?;
+                            rigid.inputs = required_streams(rigid.inputs, look::RIGID_CLASSIFICATION)?;
+                            Ok(rigid)
+                        });
                     match rigid {
                         Ok(r) => p.rigid = Some(r),
                         Err(why) => rigid_refused.entry(why).or_default().push(m),
@@ -1453,6 +1994,42 @@ mod tests {
     use super::*;
     use native_render::world::{Owner, PartInput, Placement, SectionInput, WorldBuilder};
 
+    #[test]
+    fn the_display_flood_selects_only_resident_parts_inside_its_frustum() {
+        use native_render::{cull::Frustum, world::Aabb};
+        let resident = HashMap::from([(Owner::Cluster(2), vec![0, 1, 2]), (Owner::Cluster(3), vec![0])]);
+        let point = |x| Aabb { min: [x, 0., 0.5], max: [x, 0., 0.5] };
+        let bounds = HashMap::from([
+            ((Owner::Cluster(2), 0), point(1.25)),
+            ((Owner::Cluster(2), 1), point(1.75)),
+            ((Owner::Cluster(3), 0), point(1.25)),
+        ]);
+        let frustum = |scale| Frustum::from_view_projection(&[
+            [scale, 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.], [0., 0., 0., 1.],
+        ]);
+        assert!(display_section_parts([Owner::Cluster(2)].into_iter(), &resident, &bounds, &frustum(1.)).is_empty());
+        assert_eq!(display_section_parts([Owner::Cluster(2)].into_iter(), &resident, &bounds, &frustum(0.75)), [(Owner::Cluster(2), 0)]);
+    }
+
+    #[test]
+    fn relit_bsp_ownership_survives_an_encoding_worker_holding_the_gpu() {
+        let ready = Ready::default();
+        ready.relit.store(true, Ordering::Release);
+        let _encoding = ready.gpu();
+        assert!(ready.owns_display_lightmaps());
+        ready.relit.store(false, Ordering::Release);
+        assert!(!ready.owns_display_lightmaps());
+    }
+
+    #[test]
+    fn replacement_arms_are_display_only() {
+        use d3d::{Lighting, TargetCopy};
+        for mode in [Lighting::Retail, Lighting::E3, Lighting::RelightOn, Lighting::RelightOff] {
+            assert_eq!(world_lighting(TargetCopy::Reference, mode), Lighting::Retail);
+            assert_eq!(world_lighting(TargetCopy::Display, mode), mode);
+        }
+    }
+
     /// A live edit's drain, sorted for the world of one BSP: its sections
     /// in place, another BSP's left for that BSP's load, a grown section
     /// (or one of an unknown kind) reloading the world, images rewritten,
@@ -1468,11 +2045,14 @@ mod tests {
             section(0xe2b4_0013, KIND_CLUSTER, 9, true),
             Edit::Image { bitmap: 0xe000_0100, image: 3 },
             Edit::Model { tag: 0xe000_0200 },
+            Edit::Shader { tag: 0xe000_0300 },
+            Edit::Tag { group: u32::from_be_bytes(*b"weap"), tag: 0xe000_0400 },
         ]);
         assert_eq!(plan, RefreshPlan {
             reload: None,
             sections: vec![load::SectionOwner::Cluster(4), load::SectionOwner::InstanceDefinition(2)],
             images: vec![(TagId(0xe000_0100), 3)],
+            shaders: vec![0xe000_0300],
         });
         let grown = refresh_plan(bsp, &[section(0xe2b4_0012, KIND_CLUSTER, 4, true)]);
         assert!(grown.reload.is_some());
@@ -1480,6 +2060,23 @@ mod tests {
         assert!(unknown.reload.is_some());
         assert_eq!(refresh_plan(None, &[section(0xe2b4_0012, KIND_CLUSTER, 4, true)]), RefreshPlan::default(),
             "no world loaded from a BSP: nothing of it to refresh");
+    }
+
+    /// A template edit picks every world material whose shader is built
+    /// from it, and only those, each shader asked once.
+    #[test]
+    fn an_edited_template_picks_the_materials_built_from_it() {
+        let shaders = [TagId(0xe000_0010), TagId(0xe000_0011), TagId(0xe000_0010), TagId(0xe000_0012)];
+        let mut asked = Vec::new();
+        let mut known = HashMap::new();
+        let picked = edited_materials(&shaders, &mut |s| {
+            *known.entry(s).or_insert_with(|| {
+                asked.push(s);
+                s.0 != 0xe000_0011
+            })
+        });
+        assert_eq!(picked, vec![0, 2, 3]);
+        assert_eq!(asked, vec![TagId(0xe000_0010), TagId(0xe000_0011), TagId(0xe000_0012)]);
     }
 
     /// Whether a native material's part was kept: a
@@ -1552,6 +2149,44 @@ mod tests {
             top.iter().map(|(why, count)| (why.as_str(), *count)).collect::<Vec<_>>(),
             [("no palette", 3), ("missing page", 2), ("no shader", 2), ("linear", 1), ("no program", 1)],
         );
+    }
+
+    #[test]
+    fn one_shader_batches_the_lightmap_and_vertex_lighting_implementations_separately() {
+        let tri = |material| SectionInput {
+            positions: vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]],
+            parts: vec![PartInput { material, triangles: vec![[0, 1, 2]], ..Default::default() }],
+            ..Default::default()
+        };
+        let mut builder = WorldBuilder::new();
+        // Absence of UVs itself never changes the implementation selected by the record.
+        builder.add_section(Owner::Cluster(3), &tri(0), &Placement::IDENTITY, None);
+        builder.add_section(Owner::Instance(0), &tri(0), &Placement::IDENTITY, None);
+        builder.add_section(Owner::Instance(1), &tri(0), &Placement::IDENTITY, None);
+        builder.add_section(Owner::Instance(2), &tri(1), &Placement::IDENTITY, None);
+        let mut world = builder.finish();
+        let mut menu = world.clone();
+        let shaders = [TagId(100), TagId(200)];
+        let modes = [false, true, true];
+        let slots = Layer3Materials::group(&mut world, &shaders, true, &modes);
+        assert_eq!(slots.shaders, [TagId(100), TagId(200), TagId(100)]);
+        assert_eq!(slots.implementations, [0, 1, 1]);
+        let draws: Vec<_> = world.draws.iter().map(|d| {
+            assert_eq!(world.batches[d.batch as usize].material, d.material);
+            (d.owner, slots.implementations[d.material as usize])
+        }).collect();
+        assert_eq!(draws, [(Owner::Cluster(3), 0), (Owner::Instance(0), 0),
+            (Owner::Instance(2), 1), (Owner::Instance(1), 1)]);
+        assert_eq!(part_set(&world, &slots.shaders)[&(Owner::Instance(1), 0)], shaders[0].0);
+        let mut full = menu.clone();
+        let all_slots = vec![TagId(100); usize::from(u16::MAX)];
+        let full_slots = Layer3Materials::group(&mut full, &all_slots, true, &modes);
+        assert_eq!(full_slots.shaders.len(), all_slots.len());
+        assert_eq!(full.draws.iter().find(|d| d.owner == Owner::Instance(1)).unwrap().material, u16::MAX);
+        assert_eq!(full.draws.iter().find(|d| d.owner == Owner::Cluster(3)).unwrap().material, 0);
+        let unlit = Layer3Materials::group(&mut menu, &shaders, false, &modes);
+        assert_eq!(unlit.shaders, shaders);
+        assert_eq!(unlit.implementations, [3, 3]);
     }
 
     #[test]
@@ -1648,6 +2283,31 @@ mod tests {
         assert_eq!(inherited_cull((CullMode::Cw, FrontFace::Cw)), (Some(wgpu::Face::Front), wgpu::FrontFace::Cw));
         assert_eq!(inherited_cull((CullMode::Ccw, FrontFace::Cw)), (Some(wgpu::Face::Back), wgpu::FrontFace::Cw));
         assert_eq!(inherited_cull((CullMode::None, FrontFace::Ccw)), (None, wgpu::FrontFace::Ccw));
+    }
+
+    #[test]
+    fn combined_world_draws_pin_the_linear_accumulation_level_at_its_guest_size() {
+        use d3d::resource::{ResourceType, common};
+        use native_render::object_nodes::{TEXACCUM_HEADER as header, TEXACCUM_TARGET as descriptor};
+        let mut mem = engine::memory::FlatMemory::new(descriptor, 0x98);
+        for (offset, word) in [(0x78, 1), (0x80, 8), (0x84, 3), (0x88, 1)] {
+            mem.set_u32(descriptor + offset, word).unwrap();
+        }
+        let format = |f: gfx::D3DFormat| (2 << 4) | (f.raw() << 8) | (1 << 16);
+        mem.set_u32(header, ResourceType::Texture.raw() << common::TYPE_SHIFT).unwrap();
+        mem.set_u32(header + 12, format(gfx::D3DFormat::LinA8R8G8B8)).unwrap();
+        mem.set_u32(header + 16, 7 | (2 << 12)).unwrap();
+        let bound = [0; 8];
+        let t = accumulation_target(&ReadMemory(&mem), bound).unwrap();
+        assert_eq!((t.texture, t.size), (header, (8, 3)));
+        let mut alias = bound;
+        alias[0] = t.surface.unwrap();
+        assert!(accumulation_target(&ReadMemory(&mem), alias).is_none());
+        mem.set_u32(descriptor + 0x80, 7).unwrap();
+        assert!(accumulation_target(&ReadMemory(&mem), bound).is_none());
+        mem.set_u32(descriptor + 0x80, 8).unwrap();
+        mem.set_u32(header + 12, format(gfx::D3DFormat::A8R8G8B8)).unwrap();
+        assert!(accumulation_target(&ReadMemory(&mem), bound).is_none());
     }
 
     #[test]

@@ -5,6 +5,7 @@
 mod git;
 mod ledger;
 mod proc;
+mod prune;
 mod report;
 mod workspace;
 mod xml;
@@ -377,6 +378,9 @@ struct NextestRun {
     ok: bool,
     cases: Option<Vec<report::Case>>,
     skipped: Option<BTreeMap<String, usize>>,
+    /// Stale test executables and debug-info leftovers deleted after the
+    /// run, and the bytes freed.
+    pruned: (usize, u64),
 }
 
 fn run_nextest(ws: &Workspace, packages: &BTreeSet<String>, tier: Tier, env: &BTreeMap<String, String>) -> Result<NextestRun> {
@@ -393,6 +397,7 @@ fn run_nextest(ws: &Workspace, packages: &BTreeSet<String>, tier: Tier, env: &BT
         Err(_) => None,
     };
     let mut skipped = None;
+    let mut pruned = (0, 0);
     if cases.is_some() {
         let mut l = nextest_command(ws, packages, tier, true);
         l.envs(env);
@@ -400,9 +405,10 @@ fn run_nextest(ws: &Workspace, packages: &BTreeSet<String>, tier: Tier, env: &BT
             && let Ok(v) = serde_json::from_str::<serde_json::Value>(&out)
         {
             skipped = Some(report::skipped_from_list(&v));
+            pruned = prune::prune(&prune::binaries_from_list(&v));
         }
     }
-    Ok(NextestRun { ok, cases, skipped })
+    Ok(NextestRun { ok, cases, skipped, pruned })
 }
 
 /// Adds a `cargo test` run's blocks to `summary` under `package_of`.
@@ -528,6 +534,10 @@ fn cmd_test(ws: &Workspace, o: &Opts) -> Result<bool> {
         steps.note("tests", if ledgered.is_empty() { "NOT NEEDED" } else { "LEDGER" }, "no package to run");
     } else {
         let r = run_nextest(ws, &to_run, Tier::Normal, &BTreeMap::new())?;
+        if r.pruned.0 > 0 {
+            let (n, b) = r.pruned;
+            steps.note("prune", "DONE", format!("{n} stale test executables and debug leftovers, {} MiB", b >> 20));
+        }
         match &r.cases {
             Some(cases) => {
                 add_cases(&mut summary, cases, r.skipped.as_ref());

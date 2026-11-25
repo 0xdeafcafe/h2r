@@ -35,6 +35,7 @@ pub enum Producer {
     Particle,
     Dynamic,
     Immediate(native_render::effect_immediate::Site),
+    Flare(native_render::flares::Site),
 }
 
 pub fn on(switches: &hooks::Switches) -> bool {
@@ -59,6 +60,7 @@ pub trait Host: Send + Sync {
     fn arm(&self, mem: &mut dyn GuestMemory, call: &Call) -> bool;
     fn arm_dynamic(&self, mem: &mut dyn GuestMemory, call: &DynamicCall) -> bool;
     fn arm_effect(&self, mem: &mut dyn GuestMemory, site: native_render::effect_immediate::Site) -> bool;
+    fn arm_flare(&self, mem: &mut dyn GuestMemory, site: native_render::flares::Site);
     fn publish(&self, mem: &mut dyn GuestMemory, producer: Producer, data: u32);
     fn finish(&self, mem: &mut dyn GuestMemory, producer: Producer);
 }
@@ -263,6 +265,7 @@ impl Feature for NativeParticles {
                 .optional();
         }
         crate::native_effects::build(b);
+        crate::native_flares::build(b);
         b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
     }

@@ -1,0 +1,16 @@
+// King of the Hill: a built-in matchmaking variant of the default Live lineup
+// (live_proto::hopper::defaults). The built-in game it uses scores the
+// game; the settings are the hopper defaults writer's (0x00193010: settings 12 to 14
+// cleared) and this variant's own. docs/live/live-matchmaking.md, "6.8 The default set".
+rules "King of the Hill" 1
+type koth
+uses koth
+about "Free for all King of the Hill, six minutes."
+
+settings {
+    team_play = false
+    time_limit = 360s
+    setting_twelve = false
+    setting_thirteen = false
+    join_in_progress = 0
+}

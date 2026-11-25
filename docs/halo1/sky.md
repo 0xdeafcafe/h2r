@@ -4,7 +4,7 @@
 ([map-format.md](map-format.md)), decodes Halo 2 `sky ` tags
 retail-side, and converts one into the other as a `map::build` block tree
 (the `Converted { group, root, raw }` pattern of [models.md](models.md),
-with the render model supplied by `h1models::model_from_map`). This page
+with the render model supplied by `h1_assets::models::model_from_map`). This page
 documents both layouts and the mapping. It is not an on-disk Rust struct
 ABI.
 
@@ -47,8 +47,8 @@ Every tag on the disc adds up exactly:
 ### The lighting scalars (`+0x48`, `f32 × 20`)
 
 Three colour-sized triples, fractions in 0..1 and distances, at fixed
-positions in one run. The run is kept whole in `h1sky::h1::Sky`; the
-positions (ours, from the values — **V** for the ranges):
+positions in one run. The run is kept whole in `h1_assets::sky::h1::Sky`; the
+positions (ours, from the values; **V** for the ranges):
 
 | Index | Seen as |
 |---|---|
@@ -62,7 +62,7 @@ The two fog runs have the shape of Halo 2's sky fog blocks (`+0x48` and
 retail sky their padding is zero, the density a fraction and the start no
 farther than the opaque distance (`real_h1_disc_every_sky_reads`). **V**
 for the shape; the names are ours. Indices `4–6` are also what
-`Sky::ambient_second_rgb` returns, from before the fog runs were read.
+`Sky::ambient_second_rgb` returns.
 
 #### Fog A is the outdoor fog, fog B the indoor one
 
@@ -79,7 +79,7 @@ clusters `0x68` bytes at `sbsp +0x134`). Which clusters name one, by map
   and Halo 1 draws fog A where the cluster names the sky. Halo 2 would
   draw it as total black fog: `0x001301c0` raises the opaque distance to
   the start plus `0.0001` (`0x45DBDC`) and a density above `0.9999`
-  (`0x45DC78`) to 1 (**E**), which is what a10 at version 60 showed.
+  (`0x45DC78`) to 1 (**E**), so a converted a10 would draw black.
 - **Fog B is not drawn outdoors.** Most multiplayer skies carry the
   same untuned fog B (purple `0.196, 0.173, 0.329` or black, density 0.9 to 1,
   opaque at 120), and on those maps every cluster names the sky: Blood
@@ -92,8 +92,8 @@ clusters `0x68` bytes at `sbsp +0x134`). Which clusters name one, by map
 The converter writes fog A as `fog_a` when its density is above zero and
 its opaque distance past its start (`Sky::outdoor_fog`), and writes no
 `fog_b`. Halo 2 blends `fog_b` from the same skies as `fog_a`
-(`0x00131030`), so it would lay Halo 1's indoor fog over the outdoors,
-as it did on Blood Gulch at version 60.
+(`0x00131030`), so it would lay Halo 1's indoor fog over the outdoors
+(the untuned purple fog B above).
 
 #### Indoor fog
 
@@ -109,7 +109,7 @@ opacity past its start (V).
 element `[+0x6f]` of the scenario's atmosphere block (`scnr +0x340`,
 `0xf4` bytes each) in place of the cluster's sky fog. The element's
 fields feed the accumulators the sky's fog elements do
-(`h1sky::atmosphere` has the offsets and addresses):
+(`h1_assets::sky::atmosphere` has the offsets and addresses):
 
 | Element | Meaning | Sky counterpart |
 |---|---|---|
@@ -125,7 +125,8 @@ fields feed the accumulators the sky's fog elements do
 
 V (every Halo 2 map): 10 maps fill the block, 34 elements; on 9 of them
 clusters index it, always inside it. 03a's first element is a brown fog,
-density 0.6, 5 to 200 units (`real_h2_disc_atmosphere_fog_reads_where_the_converter_writes`).
+density 0.6, 5 to 200 units (`real_h2_disc_atmosphere_fog_reads_where_the_converter_writes` in
+`crates/tools/h1-assets/src/sky/disc_tests.rs`).
 
 **Conversion.** A campaign level whose first sky has a fog B gets one
 atmosphere element, `h1_indoor`: fog B as its first fog, fade distance 0
@@ -183,7 +184,7 @@ unreferenced). Root sizes seen: `0xd0` (no lights), `0x144` (one), `0x1b8`
 
 The root struct is `0xac` bytes; the declared payload additionally covers
 the block elements, laid out after it. Root fields this crate reads
-(`h1sky::h2`), with the E rows from [lighting.md](../formats/lighting.md):
+(`h1_assets::sky::h2`), with the E rows from [lighting.md](../formats/lighting.md):
 
 | Offset | Field | Evidence |
 |---|---|---|
@@ -204,7 +205,7 @@ the block elements, laid out after it. Root fields this crate reads
 | `80` | Rotation angle, radians | E `0x0003ebd0`/`0x0003eec0`; V: 0.0 on 90 of 91 |
 
 Three retail skies point their lights block into another `sky ` tag's
-payload; `h1sky::h2` reads elements by address through the map rather than
+payload; `h1_assets::sky::h2` reads elements by address through the map rather than
 out of the payload, so those decode like any other (the same aliasing the
 atmosphere reader resolves, and a zero-sized identity resolves to a
 same-class payload at the same address).
@@ -238,12 +239,12 @@ second fog block.
 
 ## The conversion
 
-`h1sky::convert` builds the Halo 2 root above as a block tree. What maps,
+`h1_assets::sky::convert` builds the Halo 2 root above as a block tree. What maps,
 what is synthesised, and what has no Halo 2 home:
 
 | Halo 1 | Halo 2 | Rule |
 |---|---|---|
-| model | `+00` reference | the output of `h1models::model_from_map`, installed in the same set; null stays null |
+| model | `+00` reference | the output of `h1_assets::models::model_from_map`, installed in the same set; null stays null |
 | first ambient colour (`+48`) | `+34` fallback colour | copied |
 | light yaw/pitch (`+68/+6c`) | light `+0c/+10` | copied (which of the two angles is yaw follows Halo 2's engine order; the pairing itself is **Design**) |
 | light colour/power/falloff/cutoff | params `+08/+14/+18/+24` | copied |
@@ -252,6 +253,7 @@ what is synthesised, and what has no Halo 2 home:
 | — | camera translation scale `+18` | **Design:** `1.0`; the Halo 1 sky box stays centred on the camera |
 | fog A (scalars `4–11`) | `+48` `fog_a` | colour, density, start and opaque distance copied, one element, when the density is above zero and the opaque distance past the start |
 | fog B (scalars `12–19`) | scenario `+0x340` atmosphere element 0 | the first sky's only, when its density is above zero: colour, density, start and opaque distance as the element's first fog; every skyless cluster's `+0x6f` names it ("Indoor fog", above) |
+| lens flare (`+00`) | light `+14` | the converted Halo 1 `lens` (`h1convert::lens`); null when it does not install |
 | — | `+10` word, bitmap layers, `+58`, `+44`, rotation | **Design:** `0`, empty blocks, `0`, `0.0` — retail zeroes |
 
 ### The model scale
@@ -268,7 +270,7 @@ camera position `0x004b9da0`). At scale 1, a30's ground cut through the
 level wherever the level was more than 68 units away.
 
 Scaling a sky about the camera leaves its picture unchanged and only moves
-it back in depth. `h1sky::convert::model_scale` takes the nearest surface
+it back in depth. `h1_assets::sky::convert::model_scale` takes the nearest surface
 (`nearest_surface`: the least distance from the model's origin to any
 triangle, except triangles whose plane passes within one unit of the
 origin, which the camera sees edge-on as a line) and the level's reach
@@ -291,21 +293,19 @@ with the part's first index (`+6`) and count (`+8`). **E**. Object models
 go through another draw, which honours the list flag `0x8` (map-format.md,
 "Render-model geometry"), so converted models are lists everywhere else.
 
-Until converter version 93 the sky's parts were lists too. Drawn as strips,
-each triangle was joined to the next two, and `render.frame` on Blood
-Gulch showed the sky's five draws as `TriangleStrip`. The dome's extra
-triangles lie on the dome, so they did not show; the planets are one quad
-each and come out whole. The ring did: its long triangles span the white
-haze where it meets the horizon, its lit inner face and its dark sides, and
-the joins between them drew as white slabs with smeared streaks rising over
-the canyon, the sides as two thin bands crossing overhead. The ring's
-material was right all along (`sotr`, blend 0, one DXT3 atlas at scale 1,
-drawn by `sky_one_alpha_env` from stage 3 with source one and destination
-one minus source alpha: Halo 1's picture and blend).
+A sky's parts are therefore strips. Written as lists, each triangle would
+be joined to the next two. The dome's extra triangles lie on the dome, and
+the planets are one quad each, but the ring's long triangles span the haze
+at the horizon, its lit inner face and its dark sides, so the joins would
+draw as white slabs and smeared streaks over the level. The ring's material
+is `sotr`, blend 0, one DXT3 atlas at scale 1, drawn by `sky_one_alpha_env`
+from stage 3 with source one and destination one minus source alpha:
+Halo 1's picture and blend.
 
-A sky's model is now converted with `h1models::mode::ModelOptions::strips`:
-each part is Halo 1's own strip behind one repeat of its first index
-(`h1models::h1::h2_strip`). Halo 1's strips have the opposite parity to
+A sky's model is converted with
+`h1_assets::models::mode::ModelOptions::strips`: each part is Halo 1's own
+strip behind one repeat of its first index
+(`h1_assets::models::h1::h2_strip`). Halo 1's strips have the opposite parity to
 Halo 2's (models.md, "Strips"); the repeat shifts every window by one, so
 Halo 2 reads Halo 1's triangles in order and wound alike, and the first
 window repeats an index and is skipped. Each strip part keeps an empty
@@ -316,7 +316,7 @@ that every sky part is a strip of Halo 1's triangles.
 ### Edge-on triangles
 
 The triangles `nearest_surface` leaves out are dropped from the converted
-model (`h1sky::convert::drop_edge_on`, converter version 82). In Halo 1
+model (`h1_assets::sky::convert::drop_edge_on`). In Halo 1
 they are lines on screen, or slivers behind the level. In Halo 2 the eye is
 never exactly on their plane: the sky is moved to the camera position, and
 the view's own origin differs from it in the last bits. A triangle whose
@@ -326,41 +326,20 @@ changes no nearest surface, so no model scale. On the retail disc a50's
 `skynight0` has 12, b30's clear afternoon 20 and Damnation's dusk 1. a10's
 two skies have none: every surface is at least 6,829 units out.
 
-a10's grey slab has another cause, in the renderer, and is open. It only
-shows when the cryo bay's clusters, which have no sky, are forced to sky 0
+a10's grey slab has another cause, in the renderer, and is open. It shows
+only when the cryo bay's clusters, which have no sky, are forced to sky 0
 (`+0x6e` = 0 on all 33), so it is not what a player sees. It is
-`sky\space\space` drawn over walls 5 to 10 units away:
-
-- The sky's draws are W-buffered and depth-clamped, LessEqual with no depth
-  write, after the level. Their constants match the walls'.
-- At the slab's pixels the sky's fragments store w under 1,000 depth units
-  (about 0.06 world units at the level's 16,384 per unit). They come from
-  triangles with a vertex behind the eye (w < 0). Every vertex is over
-  10,000 units out, so a correct clip would leave no on-screen fragment
-  nearer than thousands of units.
-- With the depth clipped (before `unclipped_depth`), a clamped draw's clip
-  z is `w / 2` (`xvs_fixup`), so the host's near plane is w = 0. Moving it
-  out with a WGSL override, to z = (w - n) / 2, thinned the slab at
-  n = 256 and 10,000 and removed it at n = 1,000,000 (3,716 slab-grey
-  pixels left in pass 11, from 138,803).
-- A fixed n is no fix: the full-screen clamped fan drawn after the sky
-  (`inline Begin/End`, a pass-through program) sits at w of about 16,000
-  (1 unit) and would be culled.
-- Clamped draws now have `unclipped_depth` (see
-  [Shaders](../graphics/shaders.md)). That is emulation correctness for
-  the NV2A's depth clamp, not a fix for the slab: on a build with it the
-  slab is unchanged (138,803 pixels). With every program overridden to
-  clip z = `k * w - e`, k = -1 or e = 1e30 changes nothing, so the depth
-  really is unclipped. Yet z still changes coverage: e from 5,000 to
-  5,000,000 leaves about 88,400 slab pixels, and e of 5e7 or more the
-  full 138,803, though no vertex has w between 1e4 and 1e8.
-
-The open hypothesis: the host rasterizer mishandles the parts of these
+`sky\space\space` drawn over walls 5 to 10 units away: the sky's
+fragments, drawn W-buffered and depth-clamped after the level, store a
+depth under 1,000 units, from triangles with a vertex behind the eye. The
+open hypothesis is that the host rasterizer mishandles the parts of these
 triangles that lie far off screen near w = 0 (huge x / w), a guard-band
-problem rather than a depth-range one. If so, guard-band clip planes for
-clamped draws, clip distances `K w +- x` and `K w +- y` (wgpu
-`CLIP_DISTANCES`), would bound x / w and y / w without culling anything on
-screen, the fan included. Untested: it needs a build, not an override.
+problem rather than a depth-range one; guard-band clip planes for clamped
+draws (wgpu `CLIP_DISTANCES`) would bound x / w and y / w without culling
+anything on screen. Clamped draws leave depth unclipped
+(`PrimitiveState::unclipped_depth`, [Shaders](../graphics/shaders.md)),
+which is NV2A depth-clamp correctness and does not change the slab. The
+measurements are in [notes/sky.md](notes/sky.md).
 
 ### The model's shaders
 
@@ -391,7 +370,7 @@ Which template each becomes, all three drawn by the base's sky
 | `schi`, two maps, a 1×1 mask then a tiled one (the cloud layers) | `two_alpha_clouds` | the mask on stage 1, the tile on stage 2 |
 | anything else | `sky_one_alpha_env` | the least tiled map on stage 3 |
 
-**Built.** When a base lacks `two_alpha_clouds`, the converter
+When a base lacks `two_alpha_clouds`, the converter
 installs one shared `stem` and `spas` from their definitions. Coagulation
 and Beaver Creek have the same layer-15 pass. Delta Approach has the
 pass's `transparent_generic_reflection` vertex shader. The generated
@@ -411,7 +390,7 @@ sample white with their alpha, so `two_alpha_clouds`' `rgb = t1 × t2`
 keeps the tile's colour.
 
 A dome's picture is drawn opaque when its own alpha is not the shader's
-(`H1SkyShader::opaque_picture`, converter version 85). A `schi` map's
+(`H1SkyShader::opaque_picture`). A `schi` map's
 `u16` pair at `+0x2c` is how the next map combines with what the maps
 before made, colour then alpha: 0 keeps the current value, 1 takes the
 next map's, 2 multiplies, 3 doubles a multiply, 4 adds (our names, from
@@ -424,11 +403,12 @@ mask, is 0 over most of it (mean 53 of 255). `sky_one_alpha_env` draws
 `t3.rgb × t3.a` with alpha `t3.a`, so Blood Gulch's sky drew black with
 the planet and ring over it. The converted shader draws a copy of the
 picture named `<bitmap> opaque` (`h1convert::sky::opaque_name`), its
-alpha set to 255 in place (`h1bitmaps::convert::force_opaque`: the alpha
+alpha set to 255 in place (`h1_assets::bitmaps::convert::force_opaque`: the alpha
 byte, nibble or bit, DXT3's explicit alpha, DXT5's endpoints). A
 picture whose alpha is the shader's keeps it: the planets and rings
 (`sotr`), the horizon land's cut-out (alpha function 1), single-map
-clouds. `sky_pictures_disc` checks every sky on the disc.
+clouds. `sky_pictures_disc` (`crates/tools/h1convert/tests/sky_pictures_disc.rs`)
+checks every sky on the disc.
 
 The vectors come in pairs, `[su, 0, 0, 0]` then `[0, sv, 0, 0]`, and pair
 `p` scales bitmap parameter `p`: Coagulation's cloud cover tiles
@@ -439,13 +419,10 @@ other stages hold uniform default bitmaps). The masked star layers of the
 night and dusk domes, Halo 1's per-map colour functions and `schi`
 animation are not carried over. Only the bitmaps a copy draws are added
 (`SkyTemplates::drawn`): the picture, a cloud layer's mask and tile (its
-tile alone on the shared layout). Until then every map's bitmap was
-added, so Blood Gulch's clear afternoon added its dome's `detail star
-twinkle`, which nothing named: the pinned map held it and the fresh map
-left it out.
+tile alone on the shared layout). A bitmap no copy names, such as a dome's
+star detail map, is left out.
 
-Fields with **no Halo 2 home** (kept readable on the Halo 1 side, listed
-here for the next pass):
+Fields with **no Halo 2 home** (kept readable on the Halo 1 side):
 
 - the animation graph (`antr`): Halo 2's `+08` slot is null on every
   retail sky, so its group is unknown and nothing is written there;
@@ -453,9 +430,7 @@ here for the next pass):
 - fog B of every sky but the first (Halo 1 never draws it, "Indoor fog", above);
 - the shader-function elements;
 - the first ambient colour's fraction (scalar `3`);
-- each light's `0x006e7500` constant and flags;
-- lens flares: the Halo 1 `lens` tags have no converter yet, so converted
-  lights reference none.
+- each light's `0x006e7500` constant and flags.
 
 ## Commands
 
@@ -463,12 +438,13 @@ There is no CLI here; the crate is a library step of the campaign import
 ([campaign.md](campaign.md) §3 step 3). Checks:
 
 ```
-cargo test -p h1sky                                   # invented bytes
-H1_ISO=<iso> cargo test -p h1sky -- --ignored --nocapture real_h1
-H2_ISO=<iso> cargo test -p h1sky -- --ignored --nocapture real_h2
-H1_ISO=<iso> H2_DISC=<iso> cargo test --release -p h1convert --test it bloodgulch_ring:: -- --ignored --nocapture
+cargo xtask test -p h1-assets                  # invented bytes
+H1_ISO=<iso> H2_ISO=<iso> cargo xtask test --disc -p h1-assets
+H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo xtask test --disc -p h1convert
 ```
 
+The disc tier runs every `#[ignore]`d test of the package; the sky ones
+are in `crates/tools/h1-assets/src/sky/disc_tests.rs`.
 `real_h1_disc_a30_bloodgulch_round_trip` converts both skies with their
-models, builds each into a v8 map, and decodes it back through `h1sky::h2`:
-every field Halo 2 has comes back equal to its source.
+models, builds each into a v8 map, and decodes it back through
+`h1_assets::sky::h2`: every field Halo 2 has comes back equal to its source.

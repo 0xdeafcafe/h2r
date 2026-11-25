@@ -1,6 +1,7 @@
 //! Language intelligence for the rules language: diagnostics with their
 //! fixes, code actions, completion, hover, signature help, definitions,
-//! references, rename, semantic tokens, the outline and a formatter.
+//! references, highlights, rename, semantic tokens, the outline, folding
+//! ranges and a formatter (whole or by range).
 //!
 //! Pure over source text, like the rest of the crate: Live's
 //! `POST /v1/rules/ide`, `h2 rules lsp` and the web editor share it.
@@ -18,6 +19,7 @@ use serde::{Deserialize, Serialize, Serializer};
 
 mod complete;
 mod fix;
+mod fold;
 mod format;
 mod info;
 mod model;
@@ -25,7 +27,7 @@ mod scan;
 #[cfg(test)]
 mod tests;
 
-pub use format::format;
+pub use format::{format, format_range};
 
 /// A place in the source: a 0-based line and a UTF-16 column.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -287,6 +289,7 @@ impl Serialize for Token {
 /// LSP's `SymbolKind` numbers this module uses.
 pub mod symbol_kind {
     pub const MODULE: u8 = 2;
+    pub const NAMESPACE: u8 = 3;
     pub const PROPERTY: u8 = 7;
     pub const FIELD: u8 = 8;
     pub const ENUM: u8 = 10;
@@ -312,6 +315,58 @@ pub struct Symbol {
     pub children: Vec<Symbol>,
 }
 
+/// LSP's `DocumentHighlightKind` numbers this module uses.
+pub mod highlight_kind {
+    pub const READ: u8 = 2;
+    pub const WRITE: u8 = 3;
+}
+
+/// A use of the name at a place, in the same document: LSP's
+/// `DocumentHighlight`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct Highlight {
+    pub range: Range,
+    /// A [`highlight_kind`] number: [`highlight_kind::WRITE`] for the
+    /// declaration and an assignment, [`highlight_kind::READ`] otherwise.
+    pub kind: u8,
+}
+
+/// What a rename at a place would rename: LSP's `prepareRename` answer
+/// `{range, placeholder}`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PrepareRename {
+    /// The name under the place.
+    pub range: Range,
+    /// The name as declared.
+    pub placeholder: String,
+}
+
+/// LSP's `FoldingRangeKind` names.
+pub mod fold_kind {
+    pub const COMMENT: &str = "comment";
+    pub const REGION: &str = "region";
+}
+
+/// A span of whole lines an editor can fold: LSP's `FoldingRange`. The
+/// start line stays visible; the lines after it, through `end_line`,
+/// fold away.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FoldingRange {
+    pub start_line: u32,
+    pub end_line: u32,
+    /// A [`fold_kind`] name, or none for a bracketed block.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<&'static str>,
+}
+
+/// The byte offset in `src` of an LSP position (UTF-16 columns); past
+/// the end of a line is its end, past the last line the end of `src`.
+/// The language server applies incremental changes with it.
+pub fn offset(src: &str, pos: Position) -> usize {
+    model::LineIndex::new(src).offset(pos)
+}
+
 /// Reads `src` once and hands the analysis to `f`.
 fn with<R>(src: &str, f: impl FnOnce(&model::Model) -> R) -> R {
     let parsed = model::read(src);
@@ -330,6 +385,74 @@ pub fn diagnostics(src: &str) -> Vec<Diagnostic> {
     with(src, info::diagnostics)
 }
 
+/// [`diagnostics`] of a script of several files: `src` is the root, named
+/// `root`, and `read` gives another file's text by name for each `use`
+/// (`crate::lang::modules`). The files are read as the one text the
+/// checker sees. A problem in the root keeps its place and its fixes. A
+/// problem in a module is on the root's `use` line that read the module
+/// in, its message starting `file:line:column:`, with no fix. A script
+/// with no `use` is [`diagnostics`].
+pub fn diagnostics_with_files(src: &str, root: &str, read: &dyn Fn(&str) -> Option<String>) -> Vec<Diagnostic> {
+    use crate::lang::modules::{self, Expanded};
+    if !modules::mentions_use(src) {
+        return diagnostics(src);
+    }
+    let li = model::LineIndex::new(src);
+    let line_range = |root_line: u32| {
+        let l = root_line.max(1) as usize - 1;
+        li.range(li.line_start(l), li.line_end(l))
+    };
+    let x = match modules::expand(root, src, read) {
+        Ok(x) => x,
+        Err(errors) => {
+            return errors
+                .into_iter()
+                .map(|e| {
+                    let message = if e.file == root {
+                        e.message
+                    } else {
+                        format!("{}:{}:{}: {}", e.file, e.pos.line, e.pos.col, e.message)
+                    };
+                    info::diag(line_range(e.root_line), severity::ERROR, message, e.code)
+                })
+                .collect();
+        }
+    };
+    // A place of the expanded text, as the root file's, when it is there.
+    let home = |x: &Expanded, p: Position| -> Option<Position> {
+        let o = x.origin(p.line + 1).filter(|o| o.file == 0)?;
+        Some(Position::new(o.line - 1, p.character))
+    };
+    let mut out = Vec::new();
+    for mut d in diagnostics(&x.src) {
+        let Some(o) = x.origin(d.range.start.line + 1) else {
+            out.push(d);
+            continue;
+        };
+        if o.file != 0 {
+            d.message = format!("{}:{}:{}: {}", x.file_name(o), o.line, d.range.start.character + 1, d.message);
+            d.range = line_range(o.root_line);
+            d.fixes.clear();
+            out.push(d);
+            continue;
+        }
+        let start = Position::new(o.line - 1, d.range.start.character);
+        d.range.end = home(&x, d.range.end).unwrap_or(start);
+        d.range.start = start;
+        d.fixes.retain_mut(|f| {
+            f.edits.iter_mut().all(|e| match (home(&x, e.range.start), home(&x, e.range.end)) {
+                (Some(s), Some(en)) => {
+                    e.range = Range { start: s, end: en };
+                    true
+                }
+                _ => false,
+            })
+        });
+        out.push(d);
+    }
+    out
+}
+
 /// The fixes of every diagnostic whose range meets `range`, in the
 /// diagnostics' order (LSP's `textDocument/codeAction`).
 pub fn actions(src: &str, range: Range) -> Vec<CodeAction> {
@@ -346,8 +469,8 @@ pub fn rename(src: &str, pos: Position, new_name: &str) -> Result<Vec<TextEdit>,
 }
 
 /// The completions at `pos`, by context, ranked: declarations at the top
-/// level, event names after `on`, capabilities after `requires`, carriers
-/// after `carrier`, types after `:`, label kinds and requirements on a
+/// level, event names after `on`, capabilities after `requires`, game types
+/// after `type` and `uses`, types after `:`, label kinds and requirements on a
 /// `label` line, fields after `.`, labels after `is`, and in a body names,
 /// API entries and statements, those of the type the place wants first.
 pub fn complete(src: &str, pos: Position) -> Vec<CompletionItem> {
@@ -374,6 +497,26 @@ pub fn definition(src: &str, pos: Position) -> Vec<Location> {
 /// Every use of the name at `pos`, its declaration first.
 pub fn references(src: &str, pos: Position) -> Vec<Location> {
     with(src, |m| info::references(m, m.li.offset(pos)))
+}
+
+/// Every use of the name at `pos`, in source order, each marked as a
+/// write (the declaration, an assignment) or a read.
+pub fn highlights(src: &str, pos: Position) -> Vec<Highlight> {
+    with(src, |m| info::highlights(m, m.li.offset(pos)))
+}
+
+/// The name a rename at `pos` would rename, or why there is none: no
+/// name there, or a palette (named by its string).
+pub fn prepare_rename(src: &str, pos: Position) -> Result<PrepareRename, String> {
+    with(src, |m| fix::prepare_rename(m, m.li.offset(pos)))
+}
+
+/// The foldable spans: each bracketed block, table or list over more
+/// than one line, each run of two or more comment lines, and each
+/// `// region` ... `// endregion` pair. Sorted by start line, one per
+/// start line (the longest).
+pub fn folding_ranges(src: &str) -> Vec<FoldingRange> {
+    with(src, fold::folding_ranges)
 }
 
 /// Every comment, literal, keyword, name and operator, classified, in

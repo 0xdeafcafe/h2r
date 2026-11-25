@@ -165,14 +165,6 @@ pub fn default_model(geo: &RenderModelGeometry, resolved: &ResolvedModel) -> Res
     if resolved.node_count as usize != geo.nodes.len() {
         return Err(format!("hlmt has {} nodes, mode {}", resolved.node_count, geo.nodes.len()).into());
     }
-    let regions: Vec<RegionSections<'_>> = geo
-        .regions
-        .iter()
-        .map(|r| RegionSections {
-            name: r.name.as_deref(),
-            permutations: r.permutations.iter().map(|p| (p.name.as_deref(), p.lod_sections)).collect(),
-        })
-        .collect();
     let variant: Vec<VariantRegion<'_>> = resolved
         .regions
         .iter()
@@ -181,8 +173,24 @@ pub fn default_model(geo: &RenderModelGeometry, resolved: &ResolvedModel) -> Res
             permutations: v.permutations.iter().map(|p| p.name.as_deref()).collect(),
         })
         .collect();
-    let sections = pick_sections(&regions, &variant)?;
-    let lod_sections = pick_lod_sections(&regions, &variant)?;
+    variant_model(geo, &variant)
+}
+
+/// The render model `geo` with `variant`'s permutations picked
+/// ([`pick_sections`]); an empty `variant` draws each region's first
+/// permutation. A `mode` no `hlmt` names (a weapon's first-person model)
+/// is drawn this way, and no node count is compared.
+pub fn variant_model(geo: &RenderModelGeometry, variant: &[VariantRegion<'_>]) -> Result<DefaultModel, Error> {
+    let regions: Vec<RegionSections<'_>> = geo
+        .regions
+        .iter()
+        .map(|r| RegionSections {
+            name: r.name.as_deref(),
+            permutations: r.permutations.iter().map(|p| (p.name.as_deref(), p.lod_sections)).collect(),
+        })
+        .collect();
+    let sections = pick_sections(&regions, variant)?;
+    let lod_sections = pick_lod_sections(&regions, variant)?;
     let inverse_binds = geo
         .nodes
         .iter()

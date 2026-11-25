@@ -18,7 +18,7 @@ use super::ast::*;
 use super::check::{Checked, SECONDS_SUFFIX};
 use super::types::{Handle, Type};
 use super::{CompileError, Pos};
-use crate::caps::{self, CARRIERS, Kind, TICKS_PER_SECOND, VARIANT_FIELDS};
+use crate::caps::{self, Kind, TICKS_PER_SECOND, VARIANT_FIELDS};
 use crate::ir::*;
 use crate::ty::{NONE, Ty, fixed};
 
@@ -46,12 +46,17 @@ pub(crate) const FIELDS: &[(Ty, &str, u16)] = &[
     (Ty::Player, "kills", caps::id::KILLS),
     (Ty::Player, "deaths", caps::id::DEATHS),
     (Ty::Player, "lives", caps::id::LIVES),
+    (Ty::Player, "airborne", caps::id::AIRBORNE),
+    (Ty::Player, "crouching", caps::id::CROUCHING),
+    (Ty::Player, "primed", caps::id::PRIMED),
     (Ty::Team, "score", caps::id::TEAM_SCORE),
     (Ty::Object, "number", caps::id::LABEL_NUMBER),
     (Ty::Object, "id", caps::id::ZONE_ID),
     (Ty::Object, "carrier", caps::id::CARRIER_OF),
     (Ty::Object, "team", caps::id::OBJECT_TEAM),
     (Ty::Squad, "alive", caps::id::SQUAD_ALIVE),
+    (Ty::Object, "health", caps::id::OBJECT_HEALTH),
+    (Ty::Object, "shield", caps::id::OBJECT_SHIELD),
 ];
 
 struct VarInfo {
@@ -74,6 +79,8 @@ enum Local {
     Row(u8, Reg),
     /// A function's set parameter: the label it stands for.
     Set(u16),
+    /// A `let` of a `vec`: its x, y and z registers.
+    Vec([Reg; 3]),
 }
 
 #[derive(Default)]
@@ -125,6 +132,21 @@ impl Fun {
         if kept {
             self.live.push(keep);
         }
+    }
+
+    /// Like [`Fun::keep`] for several registers: frees what was allocated
+    /// since `mark` except `keep`, which stay live for the enclosing block.
+    fn keep_all(&mut self, mark: usize, keep: &[Reg]) {
+        let mut kept = Vec::new();
+        for &k in keep {
+            let from = mark.min(self.live.len());
+            if let Some(i) = self.live[from..].iter().position(|&r| r == k) {
+                self.live.remove(from + i);
+                kept.push(k);
+            }
+        }
+        self.release(mark);
+        self.live.extend(kept);
     }
 
     fn emit(&mut self, op: Op) -> usize {
@@ -246,20 +268,12 @@ impl<'s> Cx<'s> {
     fn script(&mut self, script: &'s Script) -> R<Ir> {
         let pos = script.pos;
         let version = u16::try_from(script.version).or_else(|_| internal(pos, "version"))?;
-        let Some((carrier_name, cpos)) = &script.carrier else {
-            return internal(pos, "no carrier");
-        };
-        let Some(carrier) = CARRIERS.iter().find(|(n, _)| n == carrier_name).map(|&(_, i)| i) else {
-            return internal(*cpos, "unknown carrier");
+        let Some(game_type) = self.c.game_type else {
+            return internal(pos, "no type");
         };
         let teams = script.teams.map_or(0, |(n, _)| n as u8);
-        let list = match &script.list {
-            None => List::GameType,
-            Some((name, lpos)) => match List::named(name) {
-                Some(l) => l,
-                None => return internal(*lpos, "unknown list"),
-            },
-        };
+        // What a point is: the script's, else the type's.
+        let points = script.points.as_ref().map_or(game_type.points(), |(p, _)| p.as_str()).to_string();
         self.requires = script.requires.iter().map(|(n, _)| n.clone()).collect();
 
         // Declarations first, so their order does not matter to handlers.
@@ -320,25 +334,52 @@ impl<'s> Cx<'s> {
                 code: g.f.code,
             })
             .collect();
+        let mut widgets = Vec::with_capacity(script.huds.len());
+        for h in &script.huds {
+            let Some(kind) = crate::ir::WidgetKind::ALL.into_iter().find(|k| k.word() == h.kind) else {
+                return err(h.pos, format!("{} is no hud kind", h.kind));
+            };
+            widgets.push(crate::ir::WidgetDef {
+                name: self.string(&h.name, h.pos)?,
+                kind,
+                slot: self.string(&h.slot, h.pos)?,
+            });
+        }
+        let mut waypoints = Vec::with_capacity(script.waypoints.len());
+        for w in &script.waypoints {
+            waypoints.push(crate::ir::WaypointDef {
+                name: self.string(&w.name, w.pos)?,
+                slot: match &w.slot {
+                    Some(slot) => Some(self.string(slot, w.pos)?),
+                    None => None,
+                },
+            });
+        }
         let ir = Ir {
             header: Header {
                 ir_version: IR_VERSION,
                 api_version: caps::API_VERSION,
                 name: script.name.clone(),
                 version,
-                carrier,
+                game_type,
+                uses: self.c.uses,
                 teams,
-                list,
+                points,
+                about: script.about.as_ref().map(|(a, _)| a.clone()).unwrap_or_default(),
                 requires: self.requires.clone(),
             },
             strings: std::mem::take(&mut self.strings),
             options: self.options.drain(..).map(|(_, o, _)| o).collect(),
+            settings: self.c.settings.clone(),
+            quick: self.c.quick.clone(),
             enums: enum_defs,
             slots: std::mem::take(&mut self.slots),
             labels: self.c.labels.iter().map(|l| l.def.clone()).collect(),
             tags: std::mem::take(&mut self.tags),
             palettes: self.palettes.drain(..).map(|(_, p)| p).collect(),
             tables: std::mem::take(&mut self.table_defs),
+            widgets,
+            waypoints,
             handlers,
         };
         let bytes = ir.encode().len();
@@ -370,15 +411,16 @@ impl<'s> Cx<'s> {
         Self::intern(&mut self.strings, &mut self.string_ix, s, pos)
     }
 
-    /// A tag path's index. A path named once as a weapon is a weapon's on
-    /// every map: its entry's group is [`TagGroup::Weapon`].
+    /// A tag path's index. A path named once as a weapon or a sound is
+    /// that group's on every map: its entry's group is [`TagGroup::Weapon`]
+    /// or [`TagGroup::Sound`].
     fn tag(&mut self, s: &str, group: TagGroup, pos: Pos) -> R<u16> {
         if s.is_empty() || s.len() > MAX_TAG_BYTES {
             return err(pos, "a tag path is 1 to 256 bytes");
         }
         if let Some(&i) = self.tag_ix.get(s) {
-            if group == TagGroup::Weapon {
-                self.tags[i as usize].group = TagGroup::Weapon;
+            if group != TagGroup::Any {
+                self.tags[i as usize].group = group;
             }
             return Ok(i);
         }
@@ -567,6 +609,7 @@ impl<'s> Cx<'s> {
             (ExprKind::None, Type::H(..)) => NONE,
             (ExprKind::Str(s), Type::H(Handle::Tag, _)) => self.tag(s, TagGroup::Any, pos)? as i32,
             (ExprKind::Str(s), Type::H(Handle::Weapon, _)) => self.tag(s, TagGroup::Weapon, pos)? as i32,
+            (ExprKind::Str(s), Type::H(Handle::Sound, _)) => self.tag(s, TagGroup::Sound, pos)? as i32,
             (ExprKind::Str(s), Type::Class | Type::Text) => self.string(s, pos)? as i32,
             (ExprKind::Team(inner), Type::H(Handle::Team, _)) => self.const_int(inner)?,
             (ExprKind::Field(_, v), Type::Enum(i)) => match self.enums[i as usize].1.iter().position(|x| x == v) {
@@ -682,6 +725,10 @@ impl<'s> Cx<'s> {
                     let (table, row) = self.row(f, base, index, *pos)?;
                     f.keep(mark, row);
                     f.bind(name, Local::Row(table, row));
+                } else if self.ty_of(value)? == Type::Vec {
+                    let v = self.vec_expr(f, value)?;
+                    f.keep_all(mark, &v);
+                    f.bind(name, Local::Vec(v));
                 } else {
                     let (r, t) = self.expr(f, value)?;
                     f.keep(mark, r);
@@ -1037,6 +1084,7 @@ impl<'s> Cx<'s> {
                 let (ty, index) = match self.ty_of(e)? {
                     Type::H(Handle::Tag, _) => (Ty::Tag, self.tag(s, TagGroup::Any, pos)?),
                     Type::H(Handle::Weapon, _) => (Ty::Tag, self.tag(s, TagGroup::Weapon, pos)?),
+                    Type::H(Handle::Sound, _) => (Ty::Tag, self.tag(s, TagGroup::Sound, pos)?),
                     Type::Class => (Ty::Class, self.string(s, pos)?),
                     Type::Text => (Ty::Text, self.string(s, pos)?),
                     _ => return internal(pos, "a string of no string type"),
@@ -1106,6 +1154,7 @@ impl<'s> Cx<'s> {
             Some(Local::Reg(r, t)) => return Ok((r, t)),
             Some(Local::Set(ix)) => return Ok((f.konst(Ty::Label, ix as i32, pos)?, Ty::Label)),
             Some(Local::Row(..)) => return internal(pos, "a row read as a value"),
+            Some(Local::Vec(..)) => return internal(pos, "a vec read as one value"),
             None => {}
         }
         if let Some(&(r, t)) = f.implicit.last()
@@ -1174,6 +1223,17 @@ impl<'s> Cx<'s> {
             });
             return Ok(Some((dst, ty.register())));
         }
+        if oty == Ty::Object && field == "speed" {
+            // The length of the velocity.
+            let v = self.object_vec(f, owner, caps::id::OBJECT_VEL, pos)?;
+            let dst = f.alloc(Ty::Fixed, pos)?;
+            f.emit(Op::Call {
+                entry: caps::id::VEC_LENGTH,
+                args: v.to_vec(),
+                dst: Some(dst),
+            });
+            return Ok(Some((dst, Ty::Fixed)));
+        }
         if let Some(&(_, _, id)) = FIELDS.iter().find(|&&(o, n, _)| o == oty && n == field) {
             let entry = &caps::ENTRIES[id as usize];
             let ty = entry.result.unwrap_or(Ty::Int);
@@ -1189,6 +1249,15 @@ impl<'s> Cx<'s> {
     }
 
     fn field(&mut self, f: &mut Fun, base: &'s Expr, field: &str, pos: Pos) -> R<(Reg, Ty)> {
+        if self.c.ty(base) == Some(Type::Vec) {
+            let v = self.vec_expr(f, base)?;
+            return match field {
+                "x" => Ok((v[0], Ty::Fixed)),
+                "y" => Ok((v[1], Ty::Fixed)),
+                "z" => Ok((v[2], Ty::Fixed)),
+                _ => internal(pos, "an unknown vec field"),
+            };
+        }
         match &base.kind {
             ExprKind::Name(b) => match f.lookup(b) {
                 Some(Local::Row(table, row)) => return self.column(f, table, row, field, pos),
@@ -1212,13 +1281,6 @@ impl<'s> Cx<'s> {
                         };
                         let ty = Ty::Enum(i as u8);
                         return Ok((f.konst(ty, k as i32, pos)?, ty));
-                    }
-                    // `carrier.assault`: the engine index, an int.
-                    if b == "carrier" {
-                        let Some(&(_, index)) = CARRIERS.iter().find(|(n, _)| *n == field) else {
-                            return internal(pos, "an unknown carrier");
-                        };
-                        return Ok((f.konst(Ty::Int, index as i32, pos)?, Ty::Int));
                     }
                 }
             },
@@ -1292,6 +1354,98 @@ impl<'s> Cx<'s> {
             col: col as u8,
         });
         Ok((dst, ty))
+    }
+
+    /// The three axis reads of an object's position or velocity (`entry`).
+    fn object_vec(&mut self, f: &mut Fun, object: Reg, entry: u16, pos: Pos) -> R<[Reg; 3]> {
+        let mut out = [0; 3];
+        for (axis, slot) in out.iter_mut().enumerate() {
+            let a = f.konst(Ty::Int, axis as i32, pos)?;
+            let dst = f.alloc(Ty::Fixed, pos)?;
+            f.emit(Op::Call {
+                entry,
+                args: vec![object, a],
+                dst: Some(dst),
+            });
+            *slot = dst;
+        }
+        Ok(out)
+    }
+
+    /// Component-wise `a op b` of two vecs, or of a vec and a fixed
+    /// register (`b` the same in all three).
+    fn vec_arith(&mut self, f: &mut Fun, op: ArithOp, a: [Reg; 3], b: [Reg; 3], pos: Pos) -> R<[Reg; 3]> {
+        let mut out = [0; 3];
+        for i in 0..3 {
+            let dst = f.alloc(Ty::Fixed, pos)?;
+            f.emit(Op::Arith {
+                op,
+                ty: NumTy::Fixed,
+                dst,
+                a: a[i],
+                b: b[i],
+            });
+            out[i] = dst;
+        }
+        Ok(out)
+    }
+
+    /// A `vec` expression's three registers: `vec(x, y, z)`, a `let` of
+    /// one, an object's `position` or `velocity`, `a + b`, `a - b` and
+    /// `v * k`.
+    fn vec_expr(&mut self, f: &mut Fun, e: &'s Expr) -> R<[Reg; 3]> {
+        let pos = e.pos;
+        match &e.kind {
+            ExprKind::Call(name, args) if name == "vec" => {
+                let [x, y, z] = &args[..] else {
+                    return internal(pos, "a vec of no three components");
+                };
+                Ok([self.expr(f, x)?.0, self.expr(f, y)?.0, self.expr(f, z)?.0])
+            }
+            ExprKind::Name(n) => match f.lookup(n) {
+                Some(Local::Vec(v)) => Ok(v),
+                _ => internal(pos, "a vec name of no vec"),
+            },
+            ExprKind::Field(base, field) if field == "position" || field == "velocity" => {
+                let (o, _) = self.expr(f, base)?;
+                let entry = if field == "position" {
+                    caps::id::OBJECT_POS
+                } else {
+                    caps::id::OBJECT_VEL
+                };
+                self.object_vec(f, o, entry, pos)
+            }
+            ExprKind::Binary(op @ (BinOp::Add | BinOp::Sub), a, b) => {
+                let va = self.vec_expr(f, a)?;
+                let vb = self.vec_expr(f, b)?;
+                let aop = if *op == BinOp::Add { ArithOp::Add } else { ArithOp::Sub };
+                self.vec_arith(f, aop, va, vb, pos)
+            }
+            ExprKind::Binary(BinOp::Mul, a, b) => {
+                let (v, k) = if self.ty_of(a)? == Type::Vec { (a, b) } else { (b, a) };
+                let rv = self.vec_expr(f, v)?;
+                let (rk, _) = self.expr(f, k)?;
+                self.vec_arith(f, ArithOp::Mul, rv, [rk; 3], pos)
+            }
+            _ => internal(pos, "a vec expression"),
+        }
+    }
+
+    /// The place `teleport` and `move_to` go to: a `vec`, or an object's
+    /// position, plus an offset.
+    fn place(&mut self, f: &mut Fun, at: &'s Expr, offset: Option<&'s Expr>, pos: Pos) -> R<[Reg; 3]> {
+        if self.ty_of(at)? == Type::Vec {
+            return self.vec_expr(f, at);
+        }
+        let (o, _) = self.expr(f, at)?;
+        let p = self.object_vec(f, o, caps::id::OBJECT_POS, pos)?;
+        match offset {
+            Some(off) => {
+                let vo = self.vec_expr(f, off)?;
+                self.vec_arith(f, ArithOp::Add, p, vo, pos)
+            }
+            None => Ok(p),
+        }
     }
 
     fn binary(&mut self, f: &mut Fun, op: BinOp, a: &'s Expr, b: &'s Expr, pos: Pos) -> R<(Reg, Ty)> {
@@ -1424,6 +1578,51 @@ impl<'s> Cx<'s> {
                 });
                 return Ok(Some((dst, Ty::Int)));
             }
+            // A `vec` is read through `vec_expr`; one named as a statement
+            // does nothing.
+            "vec" if !need_value => return Ok(None),
+            "length" => {
+                let v = self.vec_expr(f, &args[0])?;
+                let dst = f.alloc(Ty::Fixed, pos)?;
+                f.emit(Op::Call {
+                    entry: caps::id::VEC_LENGTH,
+                    args: v.to_vec(),
+                    dst: Some(dst),
+                });
+                return Ok(Some((dst, Ty::Fixed)));
+            }
+            "distance" => {
+                let va = self.vec_expr(f, &args[0])?;
+                let vb = self.vec_expr(f, &args[1])?;
+                let d = self.vec_arith(f, ArithOp::Sub, va, vb, pos)?;
+                let dst = f.alloc(Ty::Fixed, pos)?;
+                f.emit(Op::Call {
+                    entry: caps::id::VEC_LENGTH,
+                    args: d.to_vec(),
+                    dst: Some(dst),
+                });
+                return Ok(Some((dst, Ty::Fixed)));
+            }
+            // `teleport(o, at)`, `teleport(o, at, offset)` and
+            // `move_to(o, at, t)`: the entry takes the place as three
+            // fixed registers, read from an object or given as a `vec`.
+            "teleport" | "move_to" if !self.fns.contains_key(name) => {
+                let (o, _) = self.expr(f, &args[0])?;
+                let at = self.place(f, &args[1], args.get(2).filter(|_| name == "teleport"), pos)?;
+                let mut regs = vec![o, at[0], at[1], at[2]];
+                if name == "move_to" {
+                    regs.push(self.expr(f, &args[2])?.0);
+                }
+                let Some(entry) = caps::entry_named(name) else {
+                    return internal(pos, "an unknown function");
+                };
+                f.emit(Op::Call {
+                    entry: entry.id,
+                    args: regs,
+                    dst: None,
+                });
+                return Ok(None);
+            }
             "grant" => {
                 let (player, _) = self.expr(f, &args[0])?;
                 let cap = self.cap_arg(&args[1])?;
@@ -1466,6 +1665,9 @@ impl<'s> Cx<'s> {
         if name == "message" {
             return self.message(f, args, pos);
         }
+        if name == "mark" {
+            return self.mark(f, args, pos);
+        }
         let Some(entry) = caps::entry_named(name) else {
             return internal(pos, "an unknown function");
         };
@@ -1496,6 +1698,40 @@ impl<'s> Cx<'s> {
                 Ok(None)
             }
         }
+    }
+
+    /// `mark(wp, at)`: every viewer; `mark(wp, at, to)` with `to` a
+    /// player, a team or `all`, which picks the entry (`caps::spelled`);
+    /// `all` is the two-argument form.
+    fn mark(&mut self, f: &mut Fun, args: &'s [Expr], pos: Pos) -> R<Option<(Reg, Ty)>> {
+        let [wp, at, rest @ ..] = args else {
+            return internal(pos, "mark of no two arguments");
+        };
+        let mut regs = Vec::with_capacity(3);
+        regs.push(self.expr(f, wp)?.0);
+        regs.push(self.expr(f, at)?.0);
+        let entry = match rest {
+            [] => caps::id::MARK,
+            [to] => match &to.kind {
+                ExprKind::Name(n) if n == caps::EVERYONE => caps::id::MARK,
+                _ => {
+                    let (r, ty) = self.expr(f, to)?;
+                    regs.push(r);
+                    match ty {
+                        Ty::Player => caps::id::MARK_PLAYER,
+                        Ty::Team => caps::id::MARK_TEAM,
+                        _ => return internal(to.pos, "a mark for no player or team"),
+                    }
+                }
+            },
+            _ => return internal(pos, "mark of more than three arguments"),
+        };
+        f.emit(Op::Call {
+            entry,
+            args: regs,
+            dst: None,
+        });
+        Ok(None)
     }
 
     /// `message(to, text)`: `to` is a player, a team or `all` (everyone),

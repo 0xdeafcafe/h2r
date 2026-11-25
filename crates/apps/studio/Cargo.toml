@@ -29,6 +29,8 @@ anyhow.workspace = true
 app-icon = { path = "../app-icon" }
 rfd = "0.18"
 content.workspace = true
+# The browser's package set (src/app/assets.rs): `GameSet`, edit files.
+workspace = { path = "../../tools/workspace" }
 editor-core = { path = "../../tools/editor-core" }
 scenario-edit = { path = "../../tools/scenario-edit" }
 # The Modeling tool's targets, undo and in-place writes (docs/editor/modeling.md).
@@ -37,6 +39,13 @@ geometry-edit = { path = "../../tools/geometry-edit" }
 bitmap-edit = { path = "../../tools/bitmap-edit" }
 # The HUD tool's logic (docs/editor/hud-editor.md).
 hud-edit = { path = "../../tools/hud-edit" }
+# The HUD kit's checks over our kit HUDs (check.run; docs/game/hud-kit.md).
+hud-kit = { path = "../../tools/hud-kit" }
+# model.* on a map with the Pogo Stick's kit added as the game serves it
+# (api/models.rs). `boot` already depends on it.
+pogo-kit = { path = "../../tools/pogo-kit" }
+# The content stage's subject pad (src/app/subject.rs; docs/editor/live-editors.md).
+stage-kit = { path = "../../tools/stage-kit" }
 variants = { path = "../../formats/variants" }
 # The game type script editor: the language intelligence (`rules::ide`),
 # the check report and the compiler (src/app/rules_edit.rs).
@@ -56,8 +65,15 @@ map.workspace = true
 # tables come from the user's own default.xbe.
 audio = { path = "../../platform/audio" }
 wma = { path = "../../platform/wma" }
-# The tag editor's field registry (schema structure + definition names).
+# The tag editor's field registry (schema structure + definition names),
+# and the tags tree the workspace keeps (src/app/workspace.rs).
 tags.workspace = true
+# Sparse animation documents and edit history (docs/editor/studio-redesign.md).
+anim-edit.workspace = true
+# Waveform edits and the permutation list of a package sound (api/sound_edit.rs).
+sound-edit.workspace = true
+# The tag workspace's disc images (src/app/workspace.rs).
+xiso.workspace = true
 # The Scripts tool: the scenario's script tables, decompiled with the
 # source's own default.xbe (docs/editor/rich-editors.md, "Scripts").
 hs.workspace = true
@@ -70,9 +86,22 @@ boot.workspace = true
 # already depends on both, so they add no crate to the build.
 bots = { path = "../../live/bots" }
 superbounce = { path = "../../live/superbounce" }
+# Playtest's runner (src/app/playtest.rs): the match and batch files, the
+# spatial traces and their measures.
+sim-bench = { path = "../../live/sim-bench" }
 # The Map Pack's content directory (`T:\$c`) on the host.
 vfs.workspace = true
 serde_json.workspace = true
+# Playtest's static checks (src/app/playtest_static.rs): the start gate's
+# census of the open scenario (docs/game/rules-start-gate.md).
+forge-doc.workspace = true
+# The map variants on this machine a game variant may suggest
+# (`forge::files::variants::suggestable`; src/api/variants.rs).
+forge.workspace = true
+# AI ground built over the open map (src/app/ground.rs): GM1's build.
+firefight-kit = { path = "../../tools/firefight-kit" }
+# The announcer voice: Fish Audio's text to speech over HTTPS (src/voice/fish.rs).
+ureq = { version = "2", default-features = false, features = ["tls"] }
 
 # Play and pair (src/play.rs): the agent API's wire types and client.
 agent-proto = { path = "../../extensions/agent-proto" }
@@ -87,8 +116,15 @@ studio-proto = { path = "../studio-proto" }
 libc = { workspace = true }
 
 [dev-dependencies]
+# ground.*'s tests build on the kit's invented court (api/tests/ground_tests.rs).
+firefight-kit = { path = "../../tools/firefight-kit", features = ["testkit"] }
 # The HUD tool's tests draw the invented HUD map.
 hud-edit = { path = "../../tools/hud-edit", features = ["fixture"] }
+# model.*'s tests put the kit into the kit's invented map.
+pogo-kit = { path = "../../tools/pogo-kit", features = ["fixture"] }
+# anim.*'s tests build the invented two-bone model and its graph with the
+# Halo 1 converter's writers (api/anim/tests.rs).
+h1-assets = { path = "../../tools/h1-assets" }
 # The agent's real server behind an invented game (src/play/tests.rs).
 agent = { path = "../../extensions/agent" }
 # Invented script tables and an invented executable for the Scripts tool.

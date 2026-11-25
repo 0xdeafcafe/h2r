@@ -9,24 +9,38 @@
 //!   that opens it as the game opens its dialogs.
 //! - [`ids`]: the one registry of string-id families, checked at compile
 //!   time.
+//! - [`inject`]: our screens as real `wgit` tags in the maps
+//!   (docs/game/ui-in-maps.md).
+//! - [`retail_edits`]: retail screens' tag edits as data, applied to the
+//!   maps with our screens.
 //! - [`input`]: events as inputs, named glyphs and legends, the opener's
 //!   press guard.
 //! - [`lifecycle`]: close as B does, and work that waits for the free.
 //! - [`spec`]: a screen as data ([`spec::Describe`]) and the static checks.
 //! - [`screen`]: a declared screen ([`screen::KitScreen`]) on the list
 //!   class.
+//! - [`settings`]: the shared settings dialog, built from its doc.
 //! - [`screens`]: our existing screens described, with samples.
 //! - [`preview`]: a screen drawn offline from the disc's tags and fonts.
 //! - [`picker`]: the value picker, retail's `low_level_settings`.
 //! - [`page`]: a screen's behaviour as a pure state machine, table-tested.
+//! - [`data`]: our screens' presentation, in `assets/ui/` (YAML).
+//! - [`components`]: the design system, its specimens and the layout
+//!   gallery.
+//! - [`consistency`]: where screens drift from the design system.
+//! - [`findings`]: every check's findings for one screen state.
 
 pub mod animation;
 pub mod choice;
+pub mod components;
+pub mod consistency;
 pub mod content;
+pub mod data;
 pub mod dialog;
 pub mod dialog_tag;
-pub mod forge;
+pub mod findings;
 pub mod ids;
+pub mod inject;
 pub mod input;
 pub mod layout;
 pub(crate) mod level_art;
@@ -34,8 +48,10 @@ pub mod lifecycle;
 pub mod page;
 pub mod picker;
 pub mod preview;
+pub mod retail_edits;
 pub mod screen;
 pub mod screens;
+pub mod settings;
 pub mod spec;
 pub(crate) mod text;
 pub(crate) mod text_fit;

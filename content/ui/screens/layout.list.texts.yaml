@@ -1,0 +1,68 @@
+screen: layout.list.texts
+kind: list
+layout: controls
+backing: shell
+states:
+  focus-0:
+    focus: 0
+  focus-1:
+    focus: 1
+  focus-2:
+    focus: 2
+widgets:
+  title:
+    component: title
+    text: "Title"
+  description:
+    component: description
+  legend:
+    component: legend
+    prompts: [[A, "SELECT"], [B, "BACK"]]
+  text.heading:
+    component: text.heading
+    text: "Heading"
+    at: [-242, -70]
+    size: [362, 26]
+  text.label.0:
+    component: text.label
+    text: "Label 1"
+    at: [-242, -100]
+    size: [202, 20]
+  text.value.0:
+    component: text.value
+    text: "Value 1"
+    at: [-40, -100]
+    size: [160, 20]
+  text.label.1:
+    component: text.label
+    text: "Label 2"
+    at: [-242, -122]
+    size: [202, 20]
+  text.value.1:
+    component: text.value
+    text: "Value 2"
+    at: [-40, -122]
+    size: [160, 20]
+  text.label.2:
+    component: text.label
+    text: "Label 3"
+    at: [-242, -144]
+    size: [202, 20]
+  text.value.2:
+    component: text.value
+    text: "Value 3"
+    at: [-40, -144]
+    size: [160, 20]
+rows:
+  row.0:
+    kind: action
+    text: "Row 1"
+    help: "What row 1 does."
+  row.1:
+    kind: action
+    text: "Row 2"
+    help: "What row 2 does."
+  row.2:
+    kind: action
+    text: "Row 3"
+    help: "What row 3 does."

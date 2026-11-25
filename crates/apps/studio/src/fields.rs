@@ -9,17 +9,24 @@
 //! effect. `tag.fields` returns the same rows. Numbers drag; an enum
 //! shows its value's name and opens the pick dialog ([`picker`]);
 //! switches show how many are on and open to checkboxes, the unnamed bits
-//! folded; colours pick; angles show degrees; bounds drag as a pair;
+//! folded; a colour shows its swatch and numbers and opens the picker
+//! ([`colour`]); angles show degrees; bounds drag as a pair;
 //! string IDs edit as text (any string the map has); a tag reference
 //! shows its kind and name, with **Open** and **Change...** (the dialog,
 //! every tag of the allowed kinds); blocks list their elements with add,
-//! remove and duplicate; data shows (and edits) as hex. Counts, addresses
+//! remove and duplicate; data shows (and edits) as hex, a `view=function`
+//! data reference as its curve ([`curve`]). Counts, addresses
 //! and resource pointers are shown, never edited. Fields nothing names are
 //! labelled by type and offset and shown as their value suggests (a
 //! float, an integer or hex), with **Show as** (the dialog) to view them
 //! otherwise.
+pub mod colour;
+pub mod curve;
+pub mod find;
 pub mod picker;
+pub mod rich;
 pub mod row;
+pub mod shader;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -29,7 +36,7 @@ use dear_imgui_rs::{
 };
 use map::{FourCC, TagId};
 use scenario_edit::{Role, Scenario};
-use tags::registry::{Field, Hint, Kind, Layout};
+use tags::registry::{Field, FieldView, Hint, Kind, Layout};
 
 pub use row::{Drawn, Link, Row, rows};
 
@@ -75,13 +82,32 @@ impl View {
 }
 
 /// How the panel shows unnamed fields, kept in [`crate::App`] and saved
-/// with the layout (the `[Studio][Tags]` section of the editor's ini).
+/// with the layout (the `[Studio][Tags]` section of the editor's ini),
+/// with the filter row's state, which is not saved.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Settings {
     /// **Show unnamed fields**: every Unnamed fields group open.
     pub unnamed: bool,
     /// `Show as` per group and offset ([`show_as_key`]).
     pub show_as: BTreeMap<String, View>,
+    /// The filter row's **Search fields** text; empty shows the rows.
+    /// Not saved with the layout.
+    pub search: String,
+    /// The filter row's **Changed only**: the fields that differ from the
+    /// file. Not saved with the layout.
+    pub changed: bool,
+    /// The tab shown for a tag whose group has tag views
+    /// ([`rich::tab`]): `""` or `fields` for the field panel. Not saved
+    /// with the layout.
+    pub tab: String,
+    /// The colour picker's recent colours, newest first, as `#aarrggbb`
+    /// ([`colour::remember`]).
+    pub recent_colours: Vec<String>,
+    /// The colour picker's saved palette, as `#aarrggbb`.
+    pub saved_colours: Vec<String>,
+    /// The colour a swatch's **Copy** holds, as `#aarrggbb`, for any
+    /// colour field's **Paste**. Not saved with the layout.
+    pub colour_clip: String,
 }
 
 /// The ini section the settings are saved in, after Dear ImGui's own.
@@ -93,6 +119,12 @@ impl Settings {
         let mut out = format!("{INI_SECTION}\nShowUnnamed={}\n", u8::from(self.unnamed));
         for (key, view) in &self.show_as {
             out.push_str(&format!("ShowAs={key}={}\n", view.id()));
+        }
+        for hex in &self.recent_colours {
+            out.push_str(&format!("RecentColour={hex}\n"));
+        }
+        for hex in &self.saved_colours {
+            out.push_str(&format!("SavedColour={hex}\n"));
         }
         out
     }
@@ -117,6 +149,16 @@ impl Settings {
                 && let Some(view) = View::from_id(id)
             {
                 out.show_as.insert(key.to_owned(), view);
+            } else if let Some(v) = line.strip_prefix("RecentColour=")
+                && colour::parse_hex(v).is_some()
+                && out.recent_colours.len() < colour::RECENT
+            {
+                out.recent_colours.push(v.to_owned());
+            } else if let Some(v) = line.strip_prefix("SavedColour=")
+                && colour::parse_hex(v).is_some()
+                && out.saved_colours.len() < colour::SAVED
+            {
+                out.saved_colours.push(v.to_owned());
             }
         }
         out
@@ -192,6 +234,10 @@ pub struct PanelState {
     pub open_alone: bool,
     /// The pick dialog, while open.
     pick: Option<picker::Open>,
+    /// The curve dialog, while open.
+    curve: Option<curve::Open>,
+    /// The colour dialog, while open.
+    colour: Option<colour::Open>,
     /// The labels the pick dialog lists this frame (every one, clipped or
     /// not): what `tag.choices` returns.
     pub listed: Vec<String>,
@@ -272,7 +318,7 @@ impl PanelState {
 }
 
 /// Width of the label column, in points.
-const LABEL: f32 = 210.0;
+pub(crate) const LABEL: f32 = 210.0;
 /// Width of the edited dot's column, in points.
 const DOT: f32 = 12.0;
 /// Space between a widget and its unit or chip, in points.
@@ -390,6 +436,8 @@ pub(crate) fn panel_with_marks(
     let _id = ui.push_id(tag.0 as usize);
     cx.element(at, &layout);
     picker::draw(ui, doc, st, actions);
+    curve::draw(ui, doc, st, actions);
+    colour::draw(ui, doc, st, actions);
 }
 
 /// The `tag.set` path of the element at `path` with its trailing dot
@@ -769,6 +817,8 @@ impl Cx<'_, '_> {
         let is_ref = matches!(f.kind, Kind::TagRef { .. } | Kind::Datum { .. });
         let off = ui.begin_disabled_with_cond(r.read_only.is_some() && !is_ref);
         match &f.kind {
+            // A colour field: its swatch, numbers and picker.
+            _ if colour::form(f).is_some() => colour::row(self, r, &b),
             Kind::Int {
                 bytes,
                 signed,
@@ -814,7 +864,7 @@ impl Cx<'_, '_> {
             Kind::TagRef { groups } => self.reference(r, groups, le(&b, 4, 4) as u32),
             Kind::Datum { groups } => self.reference(r, groups, le(&b, 0, 4) as u32),
             Kind::Word => {
-                let mut v = le(&b, 0, 4) as u64;
+                let mut v = le(&b, 0, 4);
                 if Drag::<u64, _>::new("##v")
                     .range(0, 0xffff_ffff)
                     .display_format(fmt_hex("0x%08llx"))
@@ -914,11 +964,18 @@ impl Cx<'_, '_> {
     }
 
     /// A tag reference: its kind and name (the full path on hover), then
-    /// **Open** and **Change...** (the pick dialog).
+    /// **Open** and **Change...** (the pick dialog), on the next line when
+    /// the name leaves no room for them.
     fn reference(&mut self, r: &Row, groups: &[FourCC], id: u32) {
         let ui = self.ui;
         let doc = self.doc;
-        ui.text(r.summary.as_deref().unwrap_or_default());
+        let summary = r.summary.as_deref().unwrap_or_default();
+        let style = ui.clone_style();
+        let button = |label: &str| ui.calc_text_size(label)[0] + 2.0 * style.frame_padding()[0];
+        let gap = style.item_spacing()[0];
+        let buttons = button("Open") + button("Change...") + 2.0 * gap;
+        let fits = ui.calc_text_size(summary)[0] + buttons <= ui.content_region_avail()[0];
+        ui.text(summary);
         if ui.is_item_hovered() {
             let mut tip = doc.tag_label(id);
             if !groups.is_empty() {
@@ -927,7 +984,9 @@ impl Cx<'_, '_> {
             }
             ui.set_item_tooltip(tip);
         }
-        ui.same_line();
+        if fits {
+            ui.same_line();
+        }
         let target = doc.tag(TagId(id)).map(|t| t.id);
         {
             let _off = ui.begin_disabled_with_cond(target.is_none());
@@ -951,12 +1010,6 @@ impl Cx<'_, '_> {
             .collect();
         let deg = 180.0 / std::f32::consts::PI;
         let changed = match hint {
-            Hint::Colour if count == 3 => {
-                let mut c = [v[0], v[1], v[2]];
-                let ch = ui.color_edit3("##v", &mut c);
-                v.copy_from_slice(&c);
-                ch
-            }
             Hint::Bounds if count == 2 => {
                 let (mut lo, mut hi) = (v[0], v[1]);
                 let ch = DragRange::<f32, _>::new("##v")
@@ -1309,9 +1362,21 @@ impl Cx<'_, '_> {
         let ui = self.ui;
         let f = r.field;
         let (n, a) = (le(b, 0, 4) as u32, le(b, 4, 4) as u32);
+        // A function view: the curve row when the data parses as a
+        // function; else the bytes row, with the reason said.
+        if f.view == Some(FieldView::Function)
+            && n > 0
+            && let Some(bytes) = self.doc.read(self.tag, a, n)
+            && let Ok(fun) = tags::effects::function::Function::parse(&bytes)
+        {
+            return curve::row(self, at, layout, r, fun);
+        }
         let Some(_node) = self.node(at, layout, r, format!("dat{:x}", r.address)) else {
             return;
         };
+        if f.view == Some(FieldView::Function) {
+            ui.text_disabled(curve::not_a_function(self.doc, self.tag, n, a));
+        }
         if n == 0 {
             return;
         }
@@ -1467,6 +1532,7 @@ mod tests {
             label: None,
             unit: None,
             axes: Vec::new(),
+            view: None,
         };
         let key = show_as_key(weap, "", 0x6);
         assert_eq!(shown_as(&settings, &key, &word, 7), View::Hex);

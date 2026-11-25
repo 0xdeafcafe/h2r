@@ -129,6 +129,17 @@ observer, where the game thread's host stack still holds guest frames.
 That also means a save requested while the agent has the game paused
 inside the tick observer first steps to the slice end.
 
+The request must come from a tick observer (or later), not from a
+`before` on `GAME_TICK`. Once any feature observes the tick, the tick
+chain calls the original through its shadow with an after-hooks
+continuation (`hooks::install::AFTER_HOOKS`) that stays live until the
+original returns, so a slice a `before` ends stops inside the tick with
+that continuation live, and the quiescence check refuses it on every tick
+(`crates/hooking/hooks/tests/install.rs`,
+`a_slice_asked_before_the_tick_ends_inside_its_after_hooks`). The bounce
+search's fork keeps its ask from its `before` and ends the slice from its
+tick observer ([bounce-search.md, "The fork"](bounce-search.md#the-fork)).
+
 
 ## Inventory
 
@@ -183,10 +194,10 @@ otherwise), **Ignore** (diagnostics). Sources are **Code** unless marked.
 
 | State | Where | Decision | Why |
 |---|---|---|---|
-| Open files: path, mount, options, position, enumeration cursor, delete flag | `Vfs::objects: OpenFile`, `vfs/src/lib.rs` | Save | Re-open by device and path on load, keeping `vfs::Handle` and kernel handle numbers. Read-only objects only: a save refuses while one is open for writing or deletion. |
+| Open files: path, mount, options, position, enumeration cursor, changed flag | `Vfs::objects: OpenFile`, `vfs/src/lib.rs` | Save | Re-open by device and path on load, keeping `vfs::Handle` and kernel handle numbers. A file open for writing is saved whole and written back before the re-open: the title keeps `z:\preferences.dat` open for writing (GENERIC_READ and GENERIC_WRITE, FILE_OPEN_IF) from boot to exit and rewrites it in place. One over `vfs::MAX_CARRIED_BYTES` (1 MiB) is saved by reference and rewound through the VFS's journal: the game keeps its map cache slots (`cache00N.map`, 180 MB) open for writing while it plays. A save refuses an object that may delete. |
 | Delete-pending sets, next handle | `Vfs::pending`, `cleanup_pending`, `next_handle` | Save | `next_handle` built; a save refuses while a delete is pending. |
 | Host file descriptors, write-behind queue, reservations | `HostBackend`, `WriteBehind`, `vfs/src/host.rs`, `write_behind.rs` | Rebuild | Flush (`vfs::flush_pending_metadata`) before saving. |
-| Files on the host disk (saves, cache partitions) | the data root | Not in the snapshot | A load after the game wrote a save or a cache file sees the newer file. A save refuses while a file is open for writing (above); closed files are not recorded. |
+| Files on the host disk (saves, cache partitions) | the data root | Not in the snapshot | A load after the game wrote a save or a cache file sees the newer file. Only files open for writing at the save are carried or referenced (above); closed files are not recorded. |
 | Editor play copy | `MapOverrideBackend`, `vfs/src/state.rs` | Refuse | An active file preparation, reservation or published binding prevents save and restore, including snapshot-based rewind and film keyframe capture. Cancelling preparation releases its claim immediately. A closed DVD source can still supply a resident cache slot. Restart without the binding to use snapshots. Startup directory overrides resolve through the boot mount. |
 | Unlinked editor placement preview | `agent/src/sim/calls/placement.rs` | Refuse | An outstanding preview or an interrupted creation whose result is unknown prevents save and restore. A different scenario clears it. Deleting a multiplayer preview also clears it. A checkpoint may still hold a deleted campaign preview on the same mission. |
 
@@ -291,8 +302,9 @@ boundary that passes the quiescence check:
    into the guest's store).
 4. Runtime: TSC. Kernel: `Core` whole, then the machine's threads
    with fresh `ExecCtx`s carrying the saved CPU and continuation pool.
-5. VFS: close every open object, re-open the saved ones by path, seek
-   (read-only objects).
+5. VFS: close every open object, write back the files carried whole,
+   rewind the ones carried by reference, re-open the saved objects by
+   path, seek.
 6. Devices: D3D bindings and GPU-model state, surfaces; dsound objects,
    mixer, WMA sessions, re-pinned events.
 7. XAPI handles, input tap cursor (resume replay, or continue recording),
@@ -370,7 +382,7 @@ writes are atomic (temporary file, then rename).
 Code: `crates/runtime/kernel/src/snapshot.rs`; tests: `crates/runtime/kernel/tests/snapshot.rs`.
 
 - `Machine::save_snapshot` requires a quiescent machine. It writes the
-  sections `kcore` (version 2) and `machine` on the snapshot crate's
+  sections `kcore` (version 4) and `machine` on the snapshot crate's
   codec, and `load_snapshot` reads them. The `Persist` trait and
   `persist_struct!` destructure every saved struct without `..`, and
   `save_core` destructures `Core` whole, so a new field does not compile
@@ -396,11 +408,40 @@ Code: `crates/runtime/kernel/src/snapshot.rs`; tests: `crates/runtime/kernel/tes
   generation and the reuse order, so tokens made after a load are the
   saved run's. A live closure that is not rebuildable refuses the save; a
   load with no rebuilder for an origin changes nothing.
-- `vfs::Vfs::state` and `restore_state`: open objects by device and path
-  with handle numbers, options, position and search cursor (directory
-  entries are read again at load). Refuses while an object can write or
-  delete, or a delete is pending; a load looks every file up before it
-  closes anything.
+- `vfs::Vfs::state` and `restore_state` (`crates/runtime/vfs/src/state.rs`):
+  open objects by device and path with handle numbers, options, position,
+  search cursor (directory entries are read again at load) and changed
+  flag. A file object that can write, or wrote, carries the file's bytes
+  (`SavedFile::contents`, up to `MAX_CARRIED_BYTES`). Refuses an object
+  with delete access or delete-on-close, and a pending delete. A load
+  looks every file up before it closes anything; the apply closes the
+  open objects, writes each carried file back at its saved length
+  (creating it if it is gone, leaving it if it holds them already) and
+  re-opens the objects. A host write that fails there is logged and the
+  object is re-opened on what the file holds. Tests:
+  `crates/runtime/vfs/tests/state.rs`.
+- Larger writable files (`vfs/src/journal.rs`): a map cache slot is
+  180 MB and open for writing all the time the game plays, though the
+  game writes it only while it copies a map in. The save records it as a
+  `SavedFile::reference` (`vfs::FileReference`): the capturing VFS's
+  identity, the file's write generation, its length and a 64-bit content
+  fingerprint. The fingerprint is read once per generation and cached, so
+  a capture of an unchanged slot reads nothing. From the first capture
+  on, every change the VFS makes to the file (`Vfs::write`,
+  `set_end_of_file`, an overwriting open, a delete at close) takes a fresh
+  generation and first saves the bytes it overwrites and the old length
+  (copy-before-write). A restore in the same VFS undoes those changes
+  newest first back to the captured generation, and costs a `stat` when
+  nothing was written. The undo's own changes are journaled too, so a
+  later capture stays reachable after a restore to an earlier one. The
+  journal keeps at most `vfs::MAX_JOURNAL_BYTES` (32 MiB) across files; a
+  change past that drops the file's journal. A restore that the journal
+  no longer reaches, or into another VFS, accepts the file only if its
+  length and fingerprint match, and otherwise refuses with
+  `StateError::Unjournaled` before anything changes. A map copied into
+  the slot after a capture therefore refuses a restore to it, unless the
+  slot holds the captured map again. Formatting or seeding the volume
+  forgets its journals.
 - `xapi::snapshot` (`crates/platform/xapi/src/snapshot.rs`): the `xapi` section.
   Pad handles (token, port, last state), `next_handle`, the gamepad and
   communicator change words, each port's published state and polling
@@ -643,14 +684,20 @@ bytes and checks that damaged bytes change nothing. The kinds, and what
 each one holds:
 
 - **Stateless**: observers, and rewrites whose state is all in guest memory
-  or fixed at build (`engine-leaves`, `ui-strings`, `settings-rows`).
+  or fixed at build (`engine-leaves`, `ui-strings`, `settings-rows`, and
+  the Halo 1 effects `h1-flag`, `h1-glow`, `h1-lightning` and
+  `h1-sound-promotion`, whose panels, random seeds and promotion credits
+  come from guest memory and tags).
 - **Forbid while live**: host state that is live only between hooks or while
   a screen is up (`cheats` while a cheat is on, the co-op features while
   armed, `h1-health` while a damage update is between its hooks,
-  `render-timing` while a render stage is open).
+  `live-map-pack-rotation` while a hopper block read is between its
+  hooks, `render-timing` while a render stage is open).
 - **Section**: host state a load puts back (`skulls`, `skulls-custom`,
   `skulls-mp`, `hud`, `h1-hud`, `lockstep`'s counters, `agent`'s view of the
-  game, `loaded_map`, `aim-assist`, and `sim-ext`'s extension records with
+  game, `loaded_map`, `aim-assist`, `game-variants`' listing of the store
+  variants the guest's variant list names (not the store on disk, and not
+  the sim's script block, which is the run's setting), and `sim-ext`'s extension records with
   their checkpoint-slot copies, empty when there are none;
   [sim-rewrite.md](../engine/sim-rewrite.md), "The `SimExt` blob").
 
@@ -686,8 +733,10 @@ re-keys them.
 
 - A snapshot loads only into the same build and switches, into a machine
   that is already booted; a mismatch refuses and changes nothing.
-- **Host files**: the snapshot does not cover the data root. Loading after
-  the game wrote a save or a cache partition file can diverge.
+- **Host files**: the snapshot does not cover the data root, only the
+  files open for writing at the save (large ones by reference, rewound
+  through a journal of at most 32 MiB). Loading after the game wrote and
+  closed a save or a cache partition file can diverge.
 - **Run-time reservations**: an HLE crate that reserves physical memory on
   first use (a movie arena, say) makes earlier and later snapshots
   incompatible with a machine in the other state. The load refuses with the

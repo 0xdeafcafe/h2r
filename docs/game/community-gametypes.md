@@ -1,25 +1,32 @@
 # Community game variants
 
-Status: Built. 14 community variants (`community_variants::VARIANTS`) are added after the retail built-ins; the unit tests prove the entries land in the `goof` block, and what the game then does with them is in "Not done and risks".
+Status: Built. 18 variants, each built from a script in `rules::builtin::LISTED`, are added after the retail built-ins; the unit tests prove the entries land in the `goof` block and their records get their scripts' blocks, and what the game then does with them is in "Not done and risks".
 Switch: none.
 
 Halo 2 ships with 39 built-in game variants (Slayer, Rockets, Ninjanaut,
 Crazy King and so on). This adds thirteen classics the community set up by
-hand in custom games, and a practice mode (Superbounce), as extra built-ins. The classics are listed under
-their game types; Superbounce is listed under [Tweakers](#tweakers), a row
-of ours at the bottom of the game type list. In the variant list they carry a
+hand in custom games, a practice mode (Superbounce) and four scripted
+modes (Siege, Gun Game, Race and VIP), as extra built-ins.
+Each is a script compiled into the game
+([rules-variants.md](rules-variants.md#built-in-list-entries)): its list
+entry, its description and its row come from the script, and its record
+names the script. The script header files it in one of seven retail rows or four custom rows
+after Territories ([Tweakers](#tweakers)). Siege has its own row,
+Hide and Seek appears in Party Games, and Superbounce appears in
+Research and Devolution. Community variants carry a
 "two players" icon where the retail ones carry a padlock. Like the retail
 built-ins they cannot be edited in place: choosing Edit asks for a name and
 makes a copy, which is an ordinary saved variant.
 
-Code: `crates/extensions/game/src/community_variants.rs`, installed by the boot runner.
+Code: `crates/extensions/game/src/community_variants.rs`, installed by the boot runner; the scripts in `content/modes/rules/`, the `variant` items of the `modes` package (`rules::builtin::Registry::listed`, which a package off takes its entries out of).
 
 No game data is in the repository. Addresses are guest virtual addresses of
 the retail XBE (SHA-256 `03215919…935d`), named only as hook points. The
 layouts below were read from the XBE with `h2 disasm` and checked against
-`mainmenu.map` with a scratch reader in `$TMPDIR`. The setting and value
-numbers in the code are the encoding the editor uses. They are the values a
-player picks, written out per variant; no retail table was copied.
+`mainmenu.map` with a scratch reader in `$TMPDIR`. The settings are named
+in each variant's script (`rules::settings` maps the names to the
+editor's setting and value numbers). They are the values a player picks,
+written out per variant; no retail table was copied.
 
 ## How Halo 2 keeps its variants
 
@@ -78,9 +85,17 @@ every game font carries ([button-icons.md](../input/button-icons.md) on the
 `button-icons` branch lists the range). Built-in content is told apart from
 saved content by bit 21 of its content handle (tested at `0x148a2c` and
 `0x217300`), not by its name. A built-in can be played and copied but not
-edited or deleted: the game says "Built-in Variant (cannot edit)", refuses
-deletion, and Edit first asks for a name for a copy. A copy is written as a
-normal saved variant.
+edited or deleted: the game refuses deletion, and Edit first asks for a
+name for a copy. A copy is written as a normal saved variant.
+
+Under a focused built-in, the variant pickers (`mp_variant_select` and
+`mp_variant_select_lobby`) show the string `0x100001dc`, retail's
+"Built-in Variant (cannot edit)". The string hook answers it with the
+focused entry's origin, read from the description number the list last
+asked `0x19fd00` for (from `0x2ca1fd`): "Bungie Original" for retail's
+0 to 38, "Community Classic" for ours (from 40, one a listed script) and "Downloaded Content"
+for the store's (94 to 100). `community_variants::origin_text` holds the
+mapping.
 
 So a variant added to the tag block before `0x149f88` reads it is a
 built-in in every respect, including the lock and copy-on-edit. The icon is
@@ -112,11 +127,16 @@ the `button-icons` branch shows how to add one at an unused code point
 Halo 2's editor has no gravity, player speed or infinite ammo for everyone
 (only Juggernaut movement, ball speed and the carrier toggles change speed;
 see the source list). Every classic below is built from settings the editor
-offers, except Bumper Cars' unarmed start, one of our added choices
+offers, except the unarmed start of Bumper Cars, Siege and Gun Game, one of our added choices
 ([game-options.md](game-options.md)). Rules a variant cannot enforce (who may use which weapon, switching
 teams on death) were honour rules then and are in the description now.
 
-Settings not listed stay at the game type's default.
+Each row is one script in `content/modes/rules/` (a
+`settings` block, a `type` line, `uses <type>` but for Superbounce and the scripted modes, and its
+description as `about`). Settings a script does not name have the stock
+value of its game type (`GameVariant::stock`); the list entry carries
+every setting the editor offers, so the disc's per-type defaults never
+show through.
 
 | Name | Type | Settings |
 |---|---|---|
@@ -130,10 +150,14 @@ Settings not listed stay at the game type's default.
 | Tower of Power | Slayer | team play; no shields; 3 s respawn; no light vehicle; machine gun turret; shotgun, no secondary; shotguns on the map; no grenades; no pickups; 100 points |
 | Wheeeeee! | Oddball | team play; no shields; extra damage; fast and tough with the ball; rocket launcher; rockets on the map, respawning twice as often; 30 seconds |
 | Cops and Robbers | Slayer | team play; 3 lives; no shields; no pickups; shotgun and plasma pistol; nothing on the map |
-| Bounce Practice | Slayer | no score or time limit; 3 s respawn; no suicide penalty; overshields; damage resistance; a magnum and no secondary weapon; nothing on the map; no grenades |
+| Bounce Practice | Slayer | no score or time limit; 3 s respawn; no suicide penalty; overshields; damage resistance; a magnum and no secondary weapon; nothing on the map; no grenades; its script requires `hud.superbounce`, so the superbounce HUD, spot lines and practising bots are on ([superbounce.md](superbounce.md#the-superbounce-game-type)), and Slayer's scoring stays |
 | Glitch Hunt | Slayer | no score or time limit; 3 s respawn; no suicide penalty; overshields; damage resistance; energy sword and rocket launcher; no friendly fire |
 | Bumper Cars | Slayer | no starting weapon (one of our added choices) and no secondary; no grenades at start or on the map; nothing on the map; no pickups; Warthog and Ghost, no other vehicles or turrets; 25 points |
-| Superbounce | Slayer | Bounce Practice's rules, plus the superbounce HUD and spot lines ([superbounce.md](superbounce.md#the-superbounce-game-type)); listed under [Tweakers](#tweakers), not Slayer; its built-in record names the Superbounce rules script, whose header lists it under Tweakers and turns the mode on, and the mode also matches the variant's name |
+| Superbounce | Slayer | Bounce Practice's rules, scored by bounces, with the superbounce HUD's options ([superbounce.md](superbounce.md#the-superbounce-game-type)); listed under Research and Devolution ([Tweakers](#tweakers)), not Slayer; its built-in record names the Superbounce rules script, whose header lists it there (`type research`) and turns the mode on (as Bounce Practice's `requires hud.superbounce` does) |
+| Siege | Slayer | team play; no score or time limit; no starting weapon (our added choice) and no secondary, since its script gives each side a loadout at spawn; one life a round (our added choice), so each side's dead wait to respawn together on its wave; the attackers take the map's territories, then the defenders' CTF flag stand, each phase on its own clock, and a map with no stand stops at the sites ([rules-engine.md](rules-engine.md#phases-attack-and-defend)); scored by its script and listed under Siege (`type siege`) |
+| Gun Game | Slayer | no starting weapon (our added choice) and no secondary; nothing on the map; no score limit; its script gives each player the weapon of their rung at spawn and the next rung's on each kill, from the SMG to the energy sword, and the kill past the sword wins; a suicide demotes a rung (an option); listed under Party Games |
+| Race | Slayer | no score limit; the map's King of the Hill hills are the checkpoints, run in number order from the lowest and back for a lap, and the first to finish the laps (3 by default) wins; listed under Party Games |
+| VIP | Slayer | team play; 25 points; each team has a VIP, a kill scores a point and an enemy VIP 3 (an option), and when a VIP dies or quits a teammate takes the role; the script ends the round at the score limit; listed under Party Games |
 
 Why these, and the sources:
 
@@ -189,9 +213,10 @@ Why these, and the sources:
   the variant would be left out, as any variant with
   a value the game doesn't offer is.
 
-Considered and left out: Michael Jackson (the name), Fiesta and Dodgeball (retail names), Duck Hunt and
-Gun Game (no sourced Halo 2 setup, and Gun Game needs weapon progression
-the editor cannot express), Grifball (Halo 3).
+Considered and left out: Michael Jackson (the name), Fiesta and Dodgeball (retail names), Duck Hunt
+(no sourced Halo 2 setup), Grifball (Halo 3). Gun Game has no sourced
+Halo 2 setup either; its weapon progression is a script, and its
+ladder is ours.
 
 Names avoid the retail ones: Slayer, Team Slayer, Rockets, Swords, Snipers,
 Phantoms, Team Phantoms, Elimination, Phantom Elim, King, Team King,
@@ -219,13 +244,40 @@ their own, `0x00ffe200..=0x00ffe2ff` (`ui_kit::ids` family "game
 variants"): names at `+i`, descriptions at `+0x80 + i`, a shared line at
 `+0xff`. Description numbers 94 to 99 name the first six variants'
 descriptions and 100 the shared line ("A game variant from this
-machine's game-variant store."), since the game takes 0 to 100 and the
-community variants hold 80 to 93. The string and description wrappers
-answer these ids and numbers beside the community ones.
+machine's game-variant store."), since the game takes 0 to 100. The
+string and description wrappers answer these ids and numbers beside the
+community ones.
 
-The settings reach the game through the pairs; the record's `hx` block
-(extras and the script reference) is written at the game's start, as
-rules-engine.md "Live game variants in the game" says.
+A community variant's entry (`community_variants::entries`) is built
+the same way from its script (`rules::builtin::LISTED`, in that order;
+[rules-variants.md](rules-variants.md#built-in-list-entries)):
+
+| Part of the entry | From |
+|---|---|
+| name | the script's `rules` name, a space and U+E006, at name id `+i` |
+| game type | the record's retail loader template (`community_variants::goof_type`), Slayer for the script index |
+| pairs | the record of the script (`variants::portable::record_for`, default options): its value of every setting of its type the `sily` pages offer (`game_variants::inject::pairs`, the store's rule) |
+| description | the script's `about`, at description number `40 + i` (`community_variants::DESCRIPTION_BASE`) |
+| row | the script's `type` line ([Tweakers](#tweakers)) |
+
+A script with a value the editor does not offer is left out by name,
+with a line ("community variants: SWAT left out: setting 89 is 3, which
+the editor does not offer"); so is one that does not compile or makes
+no record. Description numbers: retail 0 to 38, the listed scripts 40
+to 93 (54 at most; 14 used), the store 94 to 100.
+
+The pairs cannot carry the record's `hx` block. When the original
+`0x149f88` returns, the wrapper writes each listed script's block (the
+record's: mode 2, the script's hash prefix and default options, and any
+extras its settings name) into its built-in record in the content list
+(`[0x51ea14]`, records of `0x1e4`; `community_variants::write_blocks`),
+found by its list name and engine. From then the built-in names its
+script, so a game on it runs the script (every listed script is compiled
+in, `rules::runtime::compiled_in`), and a copy Edit makes keeps the
+block. Store entries have their bundle blocks restored at the same point.
+For index 6 the loader uses the Slayer template. The wrapper puts index 6
+back on the record and clears the type area before a player can select,
+copy or edit it. Common settings and the display name survive.
 
 ## What the code does
 
@@ -233,14 +285,18 @@ All three hooks are wrappers at function entries
 (`register_override`/`resolve_original`, as in `d3d_glue.rs`).
 
 1. **The list.** `0x149f88` is wrapped. Before the original runs, the
-   wrapper reads the `sily` definitions the `goof` pages name and keeps each
-   variant whose every `(setting, value)` is one the editor offers; the rest
-   are left out with a log line. It copies the retail entries unchanged into
-   a page we map at `0xa0fd0000`, appends ours, writes our pairs next to
-   them, and points `goof +0x28` at the merged block (address first, then
-   the count). If the tag already points there (a second load of the same
-   tag memory) it changes nothing. The retail entries and the original
-   block are never written.
+   wrapper reads the `sily` definitions the `goof` pages name and builds
+   each listed script's entry whose every `(setting, value)` is one the
+   editor offers; the rest are left out with a log line each. It copies
+   the retail entries unchanged into a page we map at `0xa0fd0000`,
+   appends ours, writes our pairs next to them, and points `goof +0x28` at
+   the merged block (address first, then the count). If the tag already
+   points there (a second load of the same tag memory) it changes nothing.
+   The retail entries and the original block are never written. It then
+   calls the original through the dispatch (a flag sends that call
+   straight to it) with a continuation (`call_guest`), and on its return
+   writes the listed records' blocks and returns to the caller, the stack
+   as the original left it.
 2. **Names and descriptions.** Our string ids have the index range
    `0xffe000..=0xffe0ff` (the low 24 bits; retail ids are small indexes). The
    wrapper on `0x1a0180` answers those ids with our UTF-16 text in the
@@ -255,7 +311,7 @@ variants answer from their own range ("The merged block").
 3. **Description numbers.** The variant list turns the entry's description
    number into the string id of its decimal text with `0x19fd00`, from
    `0x2ca1fd`, and the list's `unic` holds the text under those ids
-   (retail uses 0 to 38). Ours are 80 to 93. The wrapper on `0x19fd00`
+   (retail uses 0 to 38). Ours are 40 to 53. The wrapper on `0x19fd00`
    returns our description id (the number is in ECX) only for a number of ours and only when the
    return address is `0x2ca1fd`; every other caller (numbers shown as
    text) gets the original.
@@ -265,82 +321,84 @@ it: a copied community variant would show its description while this runs
 and none in a build without it (not checked in a run). Its settings are
 ordinary values and play anywhere.
 
-Tests (`cargo test -p boot --lib community_variants`) run on synthetic
-memory: the encoding of each setting, that every variant is well formed
-(names fit the 16-character keyboard limit, no setting twice, never the
-padlock), the private id range, the UTF-16 buffer, the merged block (retail
-entries byte for byte, ours decode back to their symbolic settings, a
-second call is a no-op), a variant with a value the game does not offer
-being left out, and a failed read leaving the tag alone.
+Tests (`cargo xtask test -p game`, `community_variants::tests`) run on
+synthetic memory: the entries are built from the listed scripts (name,
+type, pairs, description number), every listed record gets its block at
+load (and a retail record, or a listed name on another engine, does
+not), a copy lists under its script's row, a script the disc does not
+offer is left out by name, Bumper Cars needs our added "None", the
+private id range and the description numbers, the UTF-16 buffer, the
+merged block (retail entries byte for byte, ours decode back to their
+entries, a second call is a no-op), and a failed read leaving the tag
+alone. The script tests (names fit the 16-character keyboard limit and
+are unique) are `crates/formats/rules/tests/scripts.rs`. Against the
+disc (`#[ignore]`, `$H2_DISC`):
+`every_listed_script_is_offered_on_the_retail_disc`.
 
 ## Tweakers
 
-Tweakers is a game type row of ours, last in the game type list (after
-Territories), for familiar game types with tweaked rules. Its label is
-"Tweakers", its pane title "TWEAKERS", and its description "Play familiar
-game types with tweaked rules, from bounce practice to new twists on the
-classics." Superbounce is the only tweaker. Choosing the row opens a
-variant list of the tweakers, built-in and saved; Slayer's list no longer
-shows them. The row is an ordinary list row, chosen with A like the game
-types above it.
+Four rows follow Territories in the lobby and Settings game type pickers.
+The pause menu lists each type that has a variant, in the same order.
 
-Code: `crates/extensions/game/src/tweakers.rs` (feature `tweakers`, on by
-default, [switches](../runtime/switches.md)). A variant is a tweaker when
-its block names a rules script (mode 2) whose header says
-`list tweakers` ([rules-engine.md](rules-engine.md#the-language)), or
-when its name is a Tweakers built-in's, for a built-in record before its
-block is written (`community_variants::is_tweaker`). The script is found
-by the record's prefix among the scripts compiled into the game (the
-ports and the examples) and in the game-variant store
-(`rules::header::block_is_tweaker`); one this machine lacks lists under
-its carrier's game type. The superbounce flag files nothing. Every
-tweaker is a Slayer variant underneath (`Category::Tweakers`, checked by
-a test), so the Tweakers list is Slayer's variant list filtered: its
-defaults, copies and saves are Slayer's. A Tweakers built-in's record
-carries its tweak's block (`Tweak::ext`; Superbounce's names the
-Superbounce script), and saving or editing a tweaker keeps the block, so
-the copy stays under Tweakers.
+| Type | Row | Examples |
+|---|---|---|
+| `research` | Research and Devolution | Bounce Practice, Glitch Hunt, Superbounce |
+| `party` | Party Games | Zombies, Gun Game, Hide and Seek |
+| `firefight` | Firefight | Director wave sets, including map-specific variants such as Basin on Beaver Creek |
+| `siege` | Siege | Siege |
+
+`community_variants::filed_type` reads the type of the script named by
+the record's hash prefix. A renamed save stays in the same row. During
+loading, the listed name with its icon identifies a built-in before it
+has a script reference. A record whose script is unavailable uses its
+retail template's row. The script index uses Slayer as that template.
+
+The game stores a save's physical content category when it writes the
+save. For each visible row, `tweakers` enumerates the seven categories
+and loads the records to select the variants of that type. A Hide and Seek
+save from Juggernaut storage consequently appears in Party Games. The
+custom lists use the existing Slayer list screens and hide Create New.
 
 Hooks, all on retail's own screens (static reading of the XBE, 2026-11-21):
 
 | Address | What it is | Ours |
 |---|---|---|
-| `0x2b1ab3` | the game type screen's constructor (screens 207, Change Rules, and 60, Settings, Game Variants); its list at `+0x614` holds one datum per row, the row's word at `+2` | `after`: add a datum with word 9 last, except in the create mode (`+0xb39`) |
-| `0x2c5823` | a row's text, by word | `before`: word 9 draws "Tweakers" |
-| `0x2c5897` | a row chosen | `before`: word 9 runs retail's press with Slayer's word, with a flag set that marks the variant list it opens |
-| `0x2c9ddb` | the variant list's constructor | `after`: write the mark at `+0x4fde` (a spare byte no code reads): 1 while the Tweakers press runs, else 0 |
-| `0x215900` | a content category's variants, called by the list's fill at `0x2ca113` | `before`, from that caller only, for Slayer's category: run the original, then keep the tweakers and drop Create New in a marked list, or drop the tweakers in an unmarked one. Each handle is read with `0x212bc0`, as the fill does. The first fill writes the ext block into the built-in Superbounce record (`[0x51ea14]`, records of `0x1e4`) |
-| `0x2cad45` | the variant list's per-frame update | `before` on a marked list: our title and description in the texts retail sets for Slayer's |
-| `0x2cac1a` | the loader a screen stack reopens the variant list with | `before` on a marked list: an entry of ours wrapping Slayer's loader for the same mode, which opens it marked |
-| pane set (`layout_glue`) | the row's pane | the Tweakers row shows Slayer's pane with our title and description over its texts |
+| `0x2b1ab3` | the game type screen's constructor (screens 207, Change Rules, and 60, Settings, Game Variants); its list at `+0x614` holds one datum per row, the row's word at `+2` | `after`: reserve room in the list allocator and append words 9 through 12, except in the create mode (`+0xb39`) |
+| `0x2c5823` | a row's text, by word | `before`: words 9 through 12 draw their row's label |
+| `0x2c5897` | a row chosen | `before`: words 9 through 12 run retail's press with a private press record containing Slayer's row handle, with the row set to mark the variant list it opens |
+| `0x2c9ddb` | the variant list's constructor | `after`: write the mark at `+0x4fde` (a spare byte no code reads): the row's number (`Row::mark`, 1 Research and Devolution, 2 Party Games, 3 Firefight, 4 Siege) while its press runs, else 0 |
+| `0x215900` | a content category's variants, called by the list's fill at `0x2ca113` | `before`, from that caller only, for a game type list, enumerate its category then the other six, load each handle with `0x212bc0` and retain matches to the selected type. A marked list hides Create New. |
+| `0x2cad45` | the variant list's per-frame update | `before` on a marked list: the row's title and description in the texts retail sets for Slayer's |
+| `0x2cac1a` | the loader a screen stack reopens the variant list with | `before` on a marked list: an entry of ours wrapping Slayer's loader for the same mode and row, which opens it marked |
+| pane set (`layout_glue`) | the row's pane | each row shows Slayer's pane with its title and description over its texts |
 
-Live browser filters have no Tweakers choice: a session advertises its
-base game type, so a Superbounce game is a Slayer game there, and the
-Variant filter finds it by name ([live-custom-games.md](../live/live-custom-games.md#filter-games)).
+Live browser filters have no choice for our rows: a session advertises its
+base game type, so a Superbounce or Zombies game is a Slayer game there,
+and the Variant filter finds it by name ([live-custom-games.md](../live/live-custom-games.md#filter-games)).
 
-Tests (`cargo test -p game --lib tweakers`) run on synthetic memory: the
-row is last, after Territories, added once, on both screens and not in the
-create mode; Superbounce is under Tweakers and no longer under Slayer;
-every tweaker is a Slayer variant; a renamed copy with the block stays
-under Tweakers, a block with only other changes or a bad check does not;
-the built-in records are patched once; a whole fill through the hook for
-Slayer's list and the Tweakers list, and another category's left alone;
-the pane and its texts; the reopen loader per mode; the hooks on the plan.
+The synthetic tests cover cross-category saves, index-6 records, row
+capacity, the pane and its texts, and reopening a marked screen. The
+invented `goof` includes the listed scripts and verifies their row
+against the declared type.
 
 Not verified in a game run:
 
-- the row and its label on both screens, and its pane with our texts;
-- the variant lists: Slayer's without Superbounce, Tweakers' with it and no
-  Create New, and our title and description;
-- a game started from Tweakers having the mode on through its script (the
-  ext block surviving from the built-in record into the active variant);
-- Edit on Superbounce saving a copy that lists under Tweakers;
-- Back from a game or a nested screen reopening the Tweakers list;
+- the four rows and their labels on both screens, and their panes with their
+  texts. "Research and Devolution" is the longest label on the list and
+  may not fit the row;
+- the variant lists: Slayer's without the rows' variants, each row's with
+  its own and no Create New, and the row's title and description;
+- a game started from Research and Devolution having the mode on through
+  its script (the ext block surviving from the built-in record into the
+  active variant);
+- Edit on Superbounce saving a copy that lists under Research and
+  Devolution;
+- Back from a game or a nested screen reopening the row's list;
 - that the lifter exposes the seven new points as hookable entries.
 
-Change Rules opens with Slayer focused when the lobby's variant is a
-tweaker: retail's `0x2c5782` focuses the row by game type, and ours is not
-mapped.
+Change Rules opens with Slayer focused when the lobby's variant is under
+one of our rows: retail's `0x2c5782` focuses the row by game type, and
+ours are not mapped.
 
 ## Not done and risks
 
@@ -350,7 +408,14 @@ mapped.
   two-players icon, with its description; Edit on one should ask for a name
   and save a copy; a custom game on one should play with its settings. The
   boot log says "community variants: 14 added to the built-in list", or names
-  any variant left out.
+  any variant left out, and then "community variants: 14 built-in records
+  given their script's block".
+- **The blocks at the loader's return.** That every built-in is filed in
+  the content list when `0x149f88` returns, and that the wrapper's call
+  of the original through `call_guest` returns to the game's caller as
+  the original would, is read from the disassembly, not checked in a run.
+  The by-name filing in `community_variants::script_type` keeps a built-in under its row until its
+  block is there.
 - **Copy and lock are the game's.** No hook decides them: an entry in the
   `goof` block becomes a built-in through `0x217080`, as the retail ones do.
   The tests prove our entries land in that block beside the retail ones, not

@@ -577,11 +577,23 @@ pub struct Moment<'a> {
 }
 
 impl Mark {
+    /// A seen enemy within [`CLOSING_RANGE`] walking at the bot: moving
+    /// faster than [`CLOSING_SPEED`] and its heading within about 37° of
+    /// the line to the bot's feet. A strafe at range is not a rush.
     pub(crate) fn closing_on(self, feet: Vec3) -> bool {
         let to = sub(feet, self.at);
-        self.seen && dot(self.vel, unit(to)) > 0.8
+        let speed = len(self.vel);
+        self.seen
+            && len(to) < CLOSING_RANGE
+            && speed > CLOSING_SPEED
+            && dot(self.vel, unit(to)) > 0.8 * speed
     }
 }
+
+/// An enemy closes on the bot only this near (world units)...
+pub const CLOSING_RANGE: f32 = 6.0;
+/// ...and faster than this (world units a second).
+pub const CLOSING_SPEED: f32 = 0.8;
 
 /// Throws at targets this far (world units).
 pub const RANGE: (f32, f32) = (3.0, 12.0);

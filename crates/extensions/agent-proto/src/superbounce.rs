@@ -14,8 +14,9 @@ pub mod method {
     /// ([`super::State`]; no params).
     pub const STATE: &str = "superbounce.state";
 
-    /// Turns the mode on or off in the running game, over the game type
-    /// and `H2_SUPERBOUNCE` ([`super::SetParams`], [`super::Set`]).
+    /// Forces the mode off in the running game, or lets the game decide
+    /// again; it never turns the mode on ([`super::SetParams`],
+    /// [`super::Set`]).
     pub const SET: &str = "superbounce.set";
 
     /// The spots the bots know for a map ([`super::SPOTS`]).
@@ -37,9 +38,19 @@ pub mod method {
     /// [`super::MedalTest`]).
     pub const MEDAL_TEST: &str = super::MEDAL_TEST;
 
+    /// Re-reads a map's spot files into the running game
+    /// ([`super::ReloadParams`], [`super::Reload`]).
+    pub const RELOAD: &str = super::RELOAD;
+
+    /// Live overrides of the model's constants ([`super::TuneParams`],
+    /// [`super::Tune`]).
+    pub const TUNE: &str = super::TUNE;
+
     pub const ALL: &[&str] = &[
         STATE,
         SET,
+        RELOAD,
+        TUNE,
         SPOTS,
         MEDAL_TEST,
         super::ASSIST,
@@ -83,11 +94,169 @@ pub struct Nearest {
     pub edge: [[f64; 3]; 2],
 }
 
+/// `superbounce.state`'s `options`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Options {
+    /// Which seams are targets: `common`, `likely` or `all`.
+    pub targets: String,
+    /// The speed line.
+    pub velocity: bool,
+    /// The fall's bar and steer line.
+    pub alignment: bool,
+    /// Why a landing did not bounce.
+    pub miss_info: bool,
+    /// The medal lines and their announcer.
+    pub medals: bool,
+    /// The second bounce's ranked targets.
+    #[serde(default)]
+    pub second_bounce: bool,
+    /// The approach guide: the pipper and the box on the seam.
+    #[serde(default)]
+    pub approach_guide: bool,
+    /// The charge segments round the motion tracker.
+    #[serde(default)]
+    pub charge_segments: bool,
+}
+
+/// `superbounce.state`'s `guide`: the approach guide on the seam the
+/// player is going for (docs/game/superbounce.md, "The approach guide").
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Guide {
+    /// The seam's landing point: the box's centre.
+    pub seam: [f64; 3],
+    /// What the box says of the landing: `off_line`, `lined_up`,
+    /// `too_shallow`, `too_high`, `off_edge`, `no_drift`, `crouching` or `will_bounce`.
+    pub call: String,
+    /// The landing is a jump's from where the player stands, not a flight
+    /// under way.
+    pub jump: bool,
+    /// The pipper: where the path touches down, on the seam's floor;
+    /// absent when it does not come down by the seam.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub impact: Option<[f64; 3]>,
+    /// The last free row: the body's position on the tick before the
+    /// contact tick.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row: Option<[f64; 3]>,
+    /// Game ticks from now to that row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticks: Option<u32>,
+    /// The fall speed on that row, world units a second down.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<f64>,
+    /// The landing is within the seam's catch.
+    pub caught: bool,
+    /// The last free row ends deep enough for the next tick to bounce;
+    /// absent with no landing, or on a seam with no drift.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deep: Option<bool>,
+    /// How far under the depth cut the last free row ends, world units
+    /// (negative: too shallow).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<f64>,
+    /// The last free row's place past the seam's edge along its drift,
+    /// world units (negative: before it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub past: Option<f64>,
+    /// The body's speed along the seam's drift, world units a second;
+    /// absent on a seam with none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub across: Option<f64>,
+    /// The bounce's predicted chance in a fall, 0 to 1, as the box and
+    /// the fall row show it in whole percent: how sure the call is, 0.5
+    /// on the depth cut or an end of the landing window, 0.95 deep and
+    /// centred. Absent on the ground (`jump`), while not primed, on a
+    /// seam with no drift, with no landing by the seam, and in a fall
+    /// slower than the depth rule is measured at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chance: Option<f64>,
+    /// The seam has no measured landing and `chance` was cut to the
+    /// scan-only cap, 0.6.
+    #[serde(default)]
+    pub chance_capped: bool,
+    /// On the ground, moving toward the takeoff line: game ticks until
+    /// the box says `Jump now` (0 on the line). Absent standing, moving
+    /// away, in the air and with no line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jump_in: Option<u32>,
+    /// The jump cue on the box as it reads, settled: `Walk to line`,
+    /// `Jump in 0.7 s` or `Jump now`. Absent in the air and with no line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cue: Option<String>,
+    /// On the ground while primed, where to press jump for the landing
+    /// to bounce; absent with no such place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub takeoff: Option<TakeoffLine>,
+    /// 0 to 1: the guide's fade with distance.
+    pub strength: f64,
+}
+
+/// `superbounce.state`'s `guide.takeoff`: the takeoff line
+/// (docs/game/superbounce.md, "The jump cue").
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TakeoffLine {
+    /// The line's centre on the ground: the middle of the band of places
+    /// to press jump on.
+    pub at: [f64; 3],
+    /// The run's direction, a flat unit; the line lies across it.
+    pub heading: [f64; 2],
+    /// Half the band's length along the run, world units.
+    pub half: f64,
+    /// The ground speed the line is for, world units a second: the
+    /// player's own, or the walk-up's 0.8.
+    pub speed: f64,
+    /// A walk-up's line, up the seam's drift: the player is standing or
+    /// not moving toward a line, and the box says `Walk to line`.
+    pub walk: bool,
+}
+
+/// `superbounce.state`'s `targets`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Targets {
+    /// Which seams are targets now: `options.targets`, or the kinds the
+    /// player switched to in the game (a double tap of the flashlight).
+    pub mode: String,
+    /// Seams `mode` shows on this map.
+    pub count: usize,
+    /// The tagged seam's point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<[f64; 3]>,
+    /// The seams with a target navpoint (two at most): the reachable
+    /// ones, nearest first; in the flight after a bounce, `second`'s.
+    pub marked: Vec<[f64; 3]>,
+    /// In the flight after a bounce, the seams it can reach, the best
+    /// first (two at most; docs/game/superbounce.md, "The second
+    /// bounce").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub second: Vec<SecondBounce>,
+}
+
+/// A seam the flight after a bounce can come down on.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SecondBounce {
+    /// The point of the seam to land on.
+    pub at: [f64; 3],
+    /// Seconds to touchdown at its height.
+    pub time: f64,
+    /// World units from the coasting landing to the point.
+    pub steer: f64,
+    /// World units the stick can move the landing in that time.
+    pub reach: f64,
+    /// The touchdown speed there and the speed the seam needs, units/s.
+    pub speed: f64,
+    pub need: f64,
+    /// The rank's cost, lower first.
+    pub cost: f64,
+    /// The coasting landing is within the seam's catch.
+    pub caught: bool,
+}
+
 /// `superbounce.state`'s result.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct State {
-    /// Whether the mode is on: the variant's flag, the built-in
-    /// Superbounce variant, or `H2_SUPERBOUNCE=1`.
+    /// Whether the mode is on: the game's script requires
+    /// `hud.superbounce` (the built-in Superbounce variant's does) and
+    /// `superbounce.set` has not forced it off.
     pub active: bool,
     /// The level pair's word is -3.
     pub primed: bool,
@@ -117,6 +286,17 @@ pub struct State {
     /// the first-person camera's yaw.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub yaw: Option<f64>,
+    /// The local player's velocity, world units a second.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub velocity: Option<[f64; 3]>,
+    /// The HUD's pieces this game: the Superbounce script's options, as
+    /// the variant set them (docs/game/superbounce.md, "The HUD's
+    /// options").
+    #[serde(default)]
+    pub options: Options,
+    /// The seam targets (docs/game/superbounce.md, "Targets").
+    #[serde(default)]
+    pub targets: Targets,
     /// The charge meter; absent while hidden (not primed, and not crouched
     /// by a crouch spot).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -145,9 +325,20 @@ pub struct State {
     /// a strip.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub landing: Option<Predicted>,
-    /// The last landing within 0.5 of a strip, filed at touchdown.
+    /// The approach guide; absent while it is not shown, and with the
+    /// variant's `approach_guide` option off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guide: Option<Guide>,
+    /// The last landing within 0.5 of a strip, or primed bounce anywhere,
+    /// filed when its launch window (the touchdown tick and the 3 after)
+    /// closes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_landing: Option<Landing>,
+    /// The local player's last bounces no marked strip accounts for (none
+    /// within 0.5, or the origin outside the catch of the one there is),
+    /// oldest first, at most 16 this game: seams to harvest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub off_spot: Vec<OffSpot>,
     /// Whether the standing capsule fits at the player's origin (the
     /// mode's capsule test against the scanned collision); absent before
     /// the scan is ready.
@@ -336,10 +527,11 @@ pub struct Predicted {
     pub speed: f64,
     /// The touchdown speed the strip needs, units/s.
     pub need: f64,
-    /// How far the landing is outside the slot, world units (0 inside).
+    /// How far the landing is outside the edge's catch
+    /// (`superbounce::CATCH`), world units (0 when caught).
     #[serde(default)]
     pub miss: f64,
-    /// In the slot and at least `need`: the lock-on is red.
+    /// Caught and at least `need`: the lock-on is red.
     #[serde(default)]
     pub locked: bool,
 }
@@ -348,7 +540,8 @@ pub struct Predicted {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LandingResult {
-    /// The vertical speed came out over 8 units/s.
+    /// The launch (the best vertical speed of the touchdown tick and the
+    /// 3 after) reached 3.5 units/s: by a strip, or primed anywhere.
     Bounce,
     /// The word was not -3 on the tick before.
     NotPrimed,
@@ -358,16 +551,37 @@ pub enum LandingResult {
     TooSlow,
     /// Primed, in the slot, fast enough, no bounce.
     NoBounce,
+    /// Went through the seam's floor: primed, by the edge, and no launch.
+    /// Filed on the tick the origin crossed 0.3 under the edge.
+    Through,
 }
 
-/// A landing filed at touchdown.
+/// A landing, filed when its launch window closes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Landing {
     pub result: LandingResult,
-    /// The game tick it was filed on.
+    /// The game tick of the touchdown; for `through`, the touchdown's it
+    /// followed, else the tick the origin crossed.
+    pub tick: u32,
+    /// The origin on the tick before `tick`, world units.
+    pub at: [f64; 3],
+}
+
+/// A primed bounce no marked strip accounts for.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OffSpot {
+    /// The game tick of the touchdown.
     pub tick: u32,
     /// The origin on the tick before touchdown, world units.
     pub at: [f64; 3],
+    /// The collision edge of the scanned bounce spot within 0.5 of `at`,
+    /// marked or not; absent with none that near.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge: Option<[[f64; 3]; 2]>,
+    /// The vertical speed in, units/s (positive).
+    pub speed_in: f64,
+    /// The launch, units/s up.
+    pub launch: f64,
 }
 
 // ---- superbounce.set ----
@@ -376,8 +590,9 @@ pub struct Landing {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SetParams {
-    /// `true` forces the mode on, `false` forces it off, `null` (or absent)
-    /// follows the game again: the variant, its flag and `H2_SUPERBOUNCE`.
+    /// `false` forces the mode off, `null` (or absent) follows the game
+    /// again: its script. `true` is refused: only a script that requires
+    /// `hud.superbounce` turns the mode on.
     #[serde(default)]
     pub on: Option<bool>,
 }
@@ -386,8 +601,107 @@ pub struct SetParams {
 /// on/off check runs every 30 ticks); `superbounce.state` says when.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Set {
-    /// The override now: `on`, `off` or `game`.
+    /// The override now: `off` or `game`.
     pub mode: String,
+}
+
+// ---- superbounce.reload ----
+
+/// `superbounce.reload`: re-reads a map's `<map>.spots`, `.learned`,
+/// `.verified` and `.ghosts` from the bots directory and republishes them
+/// to the mode, its marks, HUD, assist and tracker, and the bots. An act.
+pub const RELOAD: &str = "superbounce.reload";
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReloadParams {
+    /// The map's short name; default the loaded map.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map: Option<String>,
+}
+
+/// A tally of spots, as the bots know a map's (the scan with its
+/// verified and learned files applied).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpotCounts {
+    pub total: usize,
+    /// Crouch spots.
+    pub crouch: usize,
+    /// Bounce spots by shape: slots (two joints), single creases, Vs and
+    /// busy points.
+    pub slot: usize,
+    pub crease: usize,
+    pub vee: usize,
+    pub busy: usize,
+    /// All spots by status.
+    pub likely: usize,
+    pub proven: usize,
+    pub failed: usize,
+    /// How many the mode marks and steers onto.
+    pub marked: usize,
+}
+
+/// `superbounce.reload`'s result.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Reload {
+    pub map: String,
+    /// The bots directory the files were read from.
+    pub dir: String,
+    /// `read`, `absent` or `unread: <why>` (the scan stays as it was).
+    pub spots_file: String,
+    pub before: SpotCounts,
+    pub after: SpotCounts,
+    /// Lines of the verified and learned files now kept.
+    pub verified_entries: usize,
+    pub learned_entries: usize,
+    pub ghosts_before: usize,
+    pub ghosts_after: usize,
+    /// The mode's own copy of the loaded map's spots was refreshed (the
+    /// map is the loaded one and its scan is ready).
+    pub mode_updated: bool,
+}
+
+// ---- superbounce.tune ----
+
+/// `superbounce.tune`: live overrides of the model's constants. An act.
+pub const TUNE: &str = "superbounce.tune";
+
+/// Absent leaves a key as it is; `null` clears its override.
+fn set_or_clear<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<f32>>, D::Error> {
+    Option::<f32>::deserialize(d).map(Some)
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TuneParams {
+    /// The touchdown speed every seam needs (`superbounce::speed::BOUNCE_SPEED`),
+    /// above 0.
+    #[serde(default, deserialize_with = "set_or_clear", skip_serializing_if = "Option::is_none")]
+    pub bounce_speed: Option<Option<f32>>,
+    /// The catch (`superbounce::CATCH`), world units, 0 up to (not
+    /// including) 1.
+    #[serde(default, deserialize_with = "set_or_clear", skip_serializing_if = "Option::is_none")]
+    pub catch: Option<Option<f32>>,
+    /// Launch gained per unit/s over the threshold
+    /// (`superbounce::speed::EXCESS_GAIN`), 0 or more.
+    #[serde(default, deserialize_with = "set_or_clear", skip_serializing_if = "Option::is_none")]
+    pub launch_gain: Option<Option<f32>>,
+}
+
+/// One constant in effect.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Tuned {
+    pub value: f32,
+    /// `default` or `override`.
+    pub source: String,
+}
+
+/// `superbounce.tune`'s result: the values in effect.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Tune {
+    pub bounce_speed: Tuned,
+    pub catch: Tuned,
+    pub launch_gain: Tuned,
 }
 
 // ---- superbounce.spots ----
@@ -415,7 +729,8 @@ pub struct SpotRecord {
     /// `measured` (a game run bounced from it) or `scan` (found in the
     /// collision geometry).
     pub source: String,
-    /// The line to draw.
+    /// Bounce: the target, the collision edge's two end vertices to the
+    /// float (a busy point's vertex twice). Crouch: the line to draw.
     pub edge: [[f32; 3]; 2],
     /// Where a player stands to use it: a unit's origin, standing.
     pub stand: [f32; 3],
@@ -428,10 +743,6 @@ pub struct SpotRecord {
     pub drift: [f32; 2],
     /// 0..1: how sure the scan is; 1 for a measured spot.
     pub score: f32,
-    /// Bounce: the slot's width, the gap between its two joints. Crouch:
-    /// the widest the forced band measures.
-    #[serde(default)]
-    pub width: f32,
     /// Bounce: the downward speed (world units a second) the landing must
     /// touch down at; `fall` is worked from it. Crouch: 0.
     #[serde(default)]
@@ -505,11 +816,23 @@ pub struct Assist {
     pub test_hold: bool,
     /// The assist steered the player at its last pad read.
     pub engaged: bool,
-    /// The strip's stand point, world units; absent when not engaged.
+    /// Why: engaged, how the strip was chosen (`kept` from the read
+    /// before, `marked` by the HUD, or `nearest` to the coasting landing);
+    /// held and not engaged, `not_falling`, `no_strip`, `refused` or
+    /// `no_body`; else `not_held`, `off` (the setting) or `inactive` (the
+    /// mode).
+    #[serde(default)]
+    pub reason: String,
+    /// The chosen strip's stand point, world units; absent when not
+    /// engaged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<[f64; 3]>,
-    /// The point being aimed at: the stand point a little before along the
-    /// drift (X and Y).
+    /// The point of that strip being landed on: its stand point moved
+    /// along the strip to where the fall comes down.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub point: Option<[f64; 3]>,
+    /// The point being aimed at: `point`, a little before along the drift
+    /// (X and Y).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aim: Option<[f64; 2]>,
     /// Where the player lands if the stick is let go (X and Y).
@@ -521,6 +844,64 @@ pub struct Assist {
     /// The left stick sent to the guest, `[x (right), y (forward)]`, -1..1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stick: Option<[f64; 2]>,
+    /// The player's origin and velocity at the read; absent while the
+    /// button is up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<[f64; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub velocity: Option<[f64; 3]>,
+    /// The strips judged at the read, while the button is held: the chosen
+    /// one, the others in reach, then the refused, nearest first; at most
+    /// 12.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<AssistCandidate>,
+    /// The read the assist last engaged on: the choice at the press. Kept
+    /// after the button is let go, until the next engagement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chose: Option<AssistChoice>,
+}
+
+/// One strip the fall assist judged ([`Assist::candidates`]).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AssistCandidate {
+    /// The strip's stand point, world units.
+    pub stand: [f64; 3],
+    /// `chosen`; `passed` (in reach, another was chosen); or why it was
+    /// refused: `above` (not below the player), `long` (a fall over 3 s),
+    /// `far` (over 3 units sideways), `out_of_reach` (the stick cannot
+    /// bring the landing onto it in the time left), `covered` (a floor is
+    /// between) or `walled` (something solid is between).
+    pub verdict: String,
+    /// From the player to the strip's edge, sideways, world units.
+    pub distance: f64,
+    /// The touchdown speed the fall to it gives, and the speed it needs
+    /// (units/s, positive).
+    pub speed: f64,
+    pub need: f64,
+    /// In reach: the point of the strip to land on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub point: Option<[f64; 3]>,
+    /// In reach: seconds until touchdown at its height.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fall_time: Option<f64>,
+    /// In reach: how far the coasting landing misses the aim, world units.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub miss: Option<f64>,
+}
+
+/// The choice at the read the fall assist engaged on ([`Assist::chose`]).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AssistChoice {
+    /// The chosen strip's stand point and the point of it landed on.
+    pub target: [f64; 3],
+    pub point: [f64; 3],
+    /// `kept`, `marked` or `nearest` ([`Assist::reason`]).
+    pub reason: String,
+    /// The player's origin and velocity then.
+    pub from: [f64; 3],
+    pub velocity: [f64; 3],
+    /// The strips judged then ([`Assist::candidates`]).
+    pub candidates: Vec<AssistCandidate>,
 }
 
 /// `superbounce.assist_test`'s params.
@@ -569,10 +950,9 @@ pub struct VerifyPoint {
     /// Drop: across the strip from the crease; default +Y.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drift: Option<[f32; 2]>,
-    /// Drop: the slot's width (default 0.2) and the touchdown speed it
-    /// needs (default 4.3), for the landing classifier.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub width: Option<f32>,
+    /// Drop: the touchdown speed it needs (default 4.3), for the landing
+    /// classifier. How far off the edge still counts is the one catch,
+    /// `superbounce::CATCH`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub need: Option<f32>,
 }
@@ -1030,6 +1410,24 @@ mod tests {
             airborne: Some(true),
             vz: Some(-4.5),
             yaw: None,
+            velocity: Some([1.0, 0.0, -4.5]),
+            options: Options {
+                targets: "likely".into(),
+                velocity: true,
+                alignment: true,
+                miss_info: false,
+                medals: true,
+                second_bounce: true,
+                approach_guide: true,
+                charge_segments: true,
+            },
+            targets: Targets {
+                mode: "all".into(),
+                count: 12,
+                tag: None,
+                marked: vec![[4.0, 5.0, 6.0]],
+                second: Vec::new(),
+            },
             charge: Some(Charge {
                 phase: ChargePhase::Held,
                 fill: 0.5,
@@ -1052,11 +1450,38 @@ mod tests {
                 miss: 0.0,
                 locked: true,
             }),
+            guide: Some(Guide {
+                seam: [1.0, 2.0, -3.2],
+                call: "will_bounce".into(),
+                jump: false,
+                impact: Some([1.0, 1.95, -3.2]),
+                row: Some([1.0, 1.95, -2.83]),
+                ticks: Some(3),
+                speed: Some(5.3),
+                caught: true,
+                deep: Some(true),
+                depth: Some(0.04),
+                past: Some(-0.05),
+                across: None,
+                chance: Some(0.82),
+                chance_capped: false,
+                jump_in: None,
+                cue: None,
+                takeoff: None,
+                strength: 1.0,
+            }),
             last_landing: Some(Landing {
                 result: LandingResult::NotPrimed,
                 tick: 6753,
                 at: [1.0, 2.0, -3.0],
             }),
+            off_spot: vec![OffSpot {
+                tick: 7000,
+                at: [4.0, 5.0, 6.0],
+                edge: None,
+                speed_in: 6.0,
+                launch: 4.2,
+            }],
             standing_fits: Some(false),
             medals: Medals {
                 players: vec![MedalPlayer {
@@ -1094,9 +1519,56 @@ mod tests {
         assert_eq!(v["nav_target"]["kind"], "crouch");
         assert_eq!(v["landing"]["verdict"], "on_slot");
         assert_eq!(v["landing"]["locked"], true);
+        assert_eq!(v["guide"]["call"], "will_bounce");
+        assert_eq!(v["guide"]["deep"], true);
+        assert!(v["guide"].get("across").is_none());
+        assert_eq!(v["guide"]["chance"], 0.82);
+        assert_eq!(v["guide"]["chance_capped"], false);
+        // In a fall there is no jump cue or takeoff line.
+        for k in ["jump_in", "cue", "takeoff"] {
+            assert!(v["guide"].get(k).is_none(), "{k}");
+        }
+        // A reply without the chance reads as none.
+        let mut old = v["guide"].clone();
+        for k in ["chance", "chance_capped"] {
+            old.as_object_mut().unwrap().remove(k);
+        }
+        let back: Guide = serde_json::from_value(old).unwrap();
+        assert_eq!((back.chance, back.chance_capped, back.jump_in), (None, false, None));
+        // On the ground: the count, the cue as the box reads it, and the
+        // line.
+        let ground = Guide {
+            jump: true,
+            chance: None,
+            jump_in: Some(12),
+            cue: Some("Jump in 0.4 s".into()),
+            takeoff: Some(TakeoffLine {
+                at: [1.0, 1.2, 0.22],
+                heading: [0.0, 1.0],
+                half: 0.03,
+                speed: 0.3,
+                walk: false,
+            }),
+            ..s.guide.clone().unwrap()
+        };
+        let g = serde_json::to_value(&ground).unwrap();
+        assert_eq!((g["jump_in"].clone(), g["cue"].clone()), (12.into(), "Jump in 0.4 s".into()));
+        assert_eq!(g["takeoff"]["walk"], false);
+        assert_eq!(g["takeoff"]["half"], 0.03);
+        assert_eq!(serde_json::from_value::<Guide>(g).unwrap(), ground);
+        assert_eq!(v["options"]["approach_guide"], true);
         assert_eq!(v["nav_target"]["fall"], 0.0);
         assert_eq!(v["last_landing"]["result"], "not_primed");
+        assert_eq!(v["off_spot"][0]["launch"], 4.2);
+        assert!(v["off_spot"][0].get("edge").is_none());
         assert_eq!(v["standing_fits"], false);
+        assert_eq!(v["velocity"][2], -4.5);
+        assert_eq!(v["options"]["targets"], "likely");
+        assert_eq!(v["options"]["miss_info"], false);
+        assert_eq!(v["targets"]["mode"], "all");
+        assert_eq!(v["targets"]["count"], 12);
+        assert_eq!(v["targets"]["marked"][0][1], 5.0);
+        assert!(v["targets"].get("tag").is_none());
         let bare = serde_json::to_value(State::default()).unwrap();
         for absent in [
             "charge",
@@ -1106,6 +1578,7 @@ mod tests {
             "takeoff",
             "landing",
             "last_landing",
+            "off_spot",
             "standing_fits",
         ] {
             assert!(bare.get(absent).is_none(), "{absent}");
@@ -1115,6 +1588,7 @@ mod tests {
             (LandingResult::Missed, "missed"),
             (LandingResult::TooSlow, "too_slow"),
             (LandingResult::NoBounce, "no_bounce"),
+            (LandingResult::Through, "through"),
         ] {
             assert_eq!(serde_json::to_value(r).unwrap(), name);
         }
@@ -1149,6 +1623,32 @@ mod tests {
         };
         let v = serde_json::to_value(&a).unwrap();
         assert!(v.get("target").is_none() && v["stick"][1] == -1.0);
+        assert!(v.get("candidates").is_none() && v.get("chose").is_none());
+        assert_eq!(serde_json::from_value::<Assist>(v).unwrap(), a);
+        // The choice: each strip judged, and the read it engaged on.
+        let judged = AssistCandidate {
+            stand: [1.0, 2.0, 3.0],
+            verdict: "covered".into(),
+            distance: 0.5,
+            speed: 4.0,
+            need: 4.28,
+            ..AssistCandidate::default()
+        };
+        let a = Assist {
+            reason: "marked".into(),
+            candidates: vec![judged.clone()],
+            chose: Some(AssistChoice {
+                reason: "marked".into(),
+                candidates: vec![judged],
+                ..AssistChoice::default()
+            }),
+            ..a
+        };
+        let v = serde_json::to_value(&a).unwrap();
+        assert_eq!(v["reason"], "marked");
+        assert_eq!(v["candidates"][0]["verdict"], "covered");
+        assert!(v["candidates"][0].get("point").is_none());
+        assert_eq!(v["chose"]["candidates"][0]["need"], 4.28);
         assert_eq!(serde_json::from_value::<Assist>(v).unwrap(), a);
         // A reply without the field reads as off.
         let old = serde_json::json!({"active": true, "test_hold": false, "engaged": false});
@@ -1162,6 +1662,8 @@ mod tests {
             [
                 method::STATE,
                 method::SET,
+                method::RELOAD,
+                method::TUNE,
                 method::SPOTS,
                 MEDAL_TEST,
                 ASSIST,
@@ -1173,6 +1675,25 @@ mod tests {
                 GHOST_SHOW,
             ]
         );
+    }
+
+    #[test]
+    fn reload_and_tune_params_refuse_unknown_keys_and_tell_null_from_absent() {
+        assert!(serde_json::from_value::<ReloadParams>(serde_json::json!({"mapp": "x"})).is_err());
+        let r: ReloadParams = serde_json::from_value(serde_json::json!({"map": "zanzibar"})).unwrap();
+        assert_eq!(r.map.as_deref(), Some("zanzibar"));
+        let t: TuneParams =
+            serde_json::from_value(serde_json::json!({"launch_gain": null, "catch": 0.2})).unwrap();
+        assert_eq!((t.launch_gain, t.catch, t.bounce_speed), (Some(None), Some(Some(0.2)), None));
+        let v = serde_json::to_value(&t).unwrap();
+        assert!(v["launch_gain"].is_null() && v.get("bounce_speed").is_none());
+        assert!(serde_json::from_value::<TuneParams>(serde_json::json!({"nope": 1})).is_err());
+        let out = Tune {
+            bounce_speed: Tuned { value: 5.4, source: "default".into() },
+            ..Tune::default()
+        };
+        let value = serde_json::to_value(&out).unwrap()["bounce_speed"]["value"].as_f64().unwrap();
+        assert!((value - 5.4).abs() < 1e-6, "{value}");
     }
 
     #[test]

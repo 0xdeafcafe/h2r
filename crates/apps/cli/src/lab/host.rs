@@ -4,11 +4,12 @@
 
 mod dedicated;
 mod memory;
+mod player;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpListener};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
@@ -45,6 +46,8 @@ pub struct HostConfig {
     pub cargo: PathBuf,
     pub obj_cache_limit: u64,
     pub target_limit: u64,
+    /// Free bytes the lab disk keeps; zero turns the floor off.
+    pub disk_floor: u64,
     /// Always 1: the lab runs one build or game at a time. Kept so
     /// `--max-jobs 1` and status's `max_jobs` keep their meaning.
     pub max_jobs: usize,
@@ -54,6 +57,10 @@ pub struct HostConfig {
     /// SIGTERM to SIGKILL on stop.
     pub grace: Duration,
     pub takeover: takeover::Config,
+    /// Where the player's games publish their sockets
+    /// ([`agent_proto::discover::dir`] in production). Tests point it at a
+    /// temp directory so they never see a real game.
+    pub agents: PathBuf,
 }
 
 impl HostConfig {
@@ -76,7 +83,7 @@ pub struct Meta {
     pub state: String,
     pub request: Value,
     pub commit: Option<String>,
-    /// The build key stamped in `image/image.json`.
+    /// The build key stamped in `variants/<variant>/image.json`.
     pub image: Option<String>,
     /// The image was already built.
     pub cached: Option<bool>,
@@ -93,6 +100,9 @@ pub struct Meta {
     pub signal: Option<i32>,
     pub peak_footprint_bytes: Option<u64>,
     pub last_footprint_bytes: Option<u64>,
+    /// Free bytes on the lab disk when the job started.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk_free_bytes_at_start: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) postmortem: Option<Summary>,
     pub error: Option<String>,
@@ -113,6 +123,10 @@ pub struct Meta {
     /// joiner on another Mac needs (`h2 lab run --dedicated`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_link: Option<String>,
+    /// What the player chose when they opened a game during the job
+    /// (`host/player.rs`); also the summary's last lines.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub player: Vec<String>,
 }
 
 pub(super) fn is_final(state: &str) -> bool {
@@ -124,6 +138,9 @@ struct Active {
     pgid: Option<i32>,
     memory_wake: Option<std::sync::mpsc::Sender<memory::Event>>,
     stop: bool,
+    /// The player chose Stop and pause: the stopped job goes back to the
+    /// front of the queue.
+    pause: bool,
 }
 
 #[derive(Default)]
@@ -144,6 +161,9 @@ struct Shared {
     transfers: Transfers,
     checkout: Mutex<()>,
     takeover: takeover::Gate,
+    /// The player's games and their answers while jobs run. Never locked
+    /// while taking `inner`.
+    player: Mutex<takeover::PlayerGames>,
 }
 
 /// A job ended because it was asked to stop.
@@ -182,7 +202,7 @@ pub fn serve(cfg: HostConfig) -> Result<()> {
         (Some(name), Some(addr)) => Some(discovery::advertise(name, addr.port())?),
         _ => None,
     };
-    let takeover = takeover::Gate::new(cfg.takeover, &cfg.root, &cfg.h2);
+    let takeover = takeover::Gate::new(cfg.takeover, &cfg.root, &cfg.h2, &cfg.agents);
     let shared = Arc::new(Shared {
         cfg,
         listen_addr,
@@ -192,6 +212,7 @@ pub fn serve(cfg: HostConfig) -> Result<()> {
         transfers: Transfers::default(),
         checkout: Mutex::new(()),
         takeover,
+        player: Mutex::default(),
     });
     // Install/update may hold the activity lock across starting this service.
     // Verify an interrupted host has no children still writing job logs.
@@ -637,6 +658,7 @@ fn handle(sh: &Arc<Shared>, r: Request, requester: &str) -> Result<Value> {
         Request::Status => {
             let memory = mem_watch::snapshot();
             let pressure = mem_watch::pressure();
+            let held = sh.player.lock().unwrap().holds();
             let inner = sh.inner.lock().unwrap();
             let active = inner.active.as_ref().and_then(|a| inner.jobs.get(&a.id));
             // One job at a time: `jobs_active` holds at most the active job.
@@ -658,7 +680,12 @@ fn handle(sh: &Arc<Shared>, r: Request, requester: &str) -> Result<Value> {
                 "active": active,
                 "jobs_active": jobs_active,
                 "max_jobs": cfg.max_jobs,
+                // The lab root's volume; null when it can't be read.
+                "disk": build_cache::disk(&cfg.root),
+                "disk_floor_bytes": cfg.disk_floor,
                 "queued": inner.queue.iter().map(|p| &p.id).collect::<Vec<_>>(),
+                // The queue waits while the player's game is open.
+                "held_for_player": held,
             }))
         }
         Request::SyncBases { branch, commit } => {
@@ -684,6 +711,7 @@ fn handle(sh: &Arc<Shared>, r: Request, requester: &str) -> Result<Value> {
         Request::Build(b) => start(sh, Job::Build(b), requester),
         Request::Wait { id, timeout } => wait(sh, &id, timeout.map(Duration::from_secs_f64)),
         Request::Stop { id } => stop(sh, &id),
+        Request::Clean { all } => clean(sh, all),
         Request::Agent {
             id,
             args,
@@ -884,8 +912,9 @@ fn start(sh: &Arc<Shared>, job: Job, requester: &str) -> Result<Value> {
 
 fn drain_queue(sh: &Arc<Shared>) {
     loop {
-        let mut inner = sh.inner.lock().unwrap();
+        let inner = sh.inner.lock().unwrap();
         if inner.queue.is_empty() {
+            let mut inner = inner;
             inner.activity = None;
             return;
         }
@@ -893,15 +922,27 @@ fn drain_queue(sh: &Arc<Shared>) {
             drop(sh.cv.wait_timeout(inner, Duration::from_secs(2)).unwrap());
             continue;
         }
-        let pending = inner.queue.pop_front().unwrap();
+        drop(inner);
+        // The player's game comes first: the queue waits while one is open
+        // that didn't answer Keep running (host/player.rs).
+        if player::holds(sh) {
+            let inner = sh.inner.lock().unwrap();
+            drop(sh.cv.wait_timeout(inner, player::INTERVAL).unwrap());
+            continue;
+        }
+        let mut inner = sh.inner.lock().unwrap();
+        let Some(pending) = inner.queue.pop_front() else {
+            continue;
+        };
         inner.active = Some(Active {
             id: pending.id.clone(),
             pgid: None,
             stop: false,
+            pause: false,
             memory_wake: None,
         });
         drop(inner);
-        execute(sh, &pending.id, pending.job, pending.commit, &pending.requester);
+        execute(sh, pending);
     }
 }
 
@@ -1030,18 +1071,36 @@ struct Image {
 enum JobOutcome {
     Finished(Option<std::process::ExitStatus>),
     Skipped(&'static str),
+    /// The player allowed the job but the lab couldn't close their game:
+    /// the job goes back to the front of the queue, held until the game
+    /// closes. The note says why.
+    Held(String),
 }
 
-fn execute(
-    sh: &Arc<Shared>,
-    id: &str,
-    job: Job,
-    commit: Option<String>,
-    requester: &str,
-) {
+/// Runs the active job `pending` and records how it ended. A job the
+/// player paused, or allowed while the lab couldn't close their game, goes
+/// back to the front of the queue instead.
+fn execute(sh: &Arc<Shared>, pending: Pending) {
+    let Pending {
+        id,
+        job,
+        commit,
+        requester,
+    } = &pending;
+    let id = id.as_str();
     let t = Instant::now();
-    let (outcome, memory_error) = memory::supervise(sh, id, &job, || {
-        run_job(sh, id, &job, commit.as_deref(), requester, t)
+    sh.update(id, |m| {
+        m.disk_free_bytes_at_start = build_cache::disk(&sh.cfg.root).map(|d| d.free_bytes);
+    });
+    let watch = player::Watch::new(takeover_request(
+        job,
+        commit.as_deref(),
+        requester,
+        false,
+        sh.cfg.takeover.timeout_seconds,
+    ));
+    let (outcome, memory_error) = memory::supervise(sh, id, job, watch, || {
+        run_job(sh, id, job, commit.as_deref(), requester, t)
     });
     let (state, error) = match &outcome {
         Ok(JobOutcome::Finished(Some(st))) if st.success() => ("done", None),
@@ -1058,6 +1117,7 @@ fn execute(
         ),
         Ok(JobOutcome::Finished(None)) => ("done", None),
         Ok(JobOutcome::Skipped(_)) => ("skipped", None),
+        Ok(JobOutcome::Held(_)) => ("queued", None),
         Err(e) if e.is::<Stopped>() => ("stopped", None),
         Err(e) => ("failed", Some(format!("{e:#}"))),
     };
@@ -1072,9 +1132,14 @@ fn execute(
             .and_then(|log| summarize(BufReader::new(log)))
             .unwrap_or_default()
     };
+    let mut held = None;
     let (status, skip_reason) = match outcome {
         Ok(JobOutcome::Finished(status)) => (status, None),
         Ok(JobOutcome::Skipped(reason)) => (None, Some(reason.to_owned())),
+        Ok(JobOutcome::Held(note)) => {
+            held = Some(note);
+            (None, None)
+        }
         Err(_) => (None, None),
     };
     // A stopped game exits through its SIGTERM handler or the signal.
@@ -1088,6 +1153,21 @@ fn execute(
     let _ = fs::remove_dir_all(sh.cfg.dir("scratch").join(id));
     let _ = fs::remove_file(agent_socket_path(&sh.cfg, id));
     let mut inner = sh.inner.lock().unwrap();
+    let paused = state == "stopped"
+        && memory_error.is_none()
+        && inner.active.as_ref().is_some_and(|a| a.id == id && a.pause);
+    if paused || held.is_some() {
+        if let Some(m) = inner.jobs.get_mut(id) {
+            m.player.extend(held);
+            *m = requeued(m);
+            let _ = write_meta(&sh.cfg, m);
+        }
+        inner.active = None;
+        inner.queue.push_front(pending);
+        drop(inner);
+        sh.cv.notify_all();
+        return;
+    }
     if let Some(m) = inner.jobs.get_mut(id) {
         m.state = if memory_error.is_some() { "failed" } else { state }.into();
         m.error = memory_error.or(error);
@@ -1096,6 +1176,7 @@ fn execute(
         m.exit_code = status.and_then(|s| s.code());
         m.signal = status.and_then(|s| s.signal());
         m.summary = summary;
+        m.summary.extend(m.player.iter().cloned());
         m.postmortem = postmortem;
         if write_meta(&sh.cfg, m).is_ok() {
             inner.jobs.remove(id);
@@ -1106,6 +1187,25 @@ fn execute(
     }
     drop(inner);
     sh.cv.notify_all();
+}
+
+/// Job `m` back in the queue after the player paused it: its request and
+/// notes, none of the stopped attempt's progress.
+fn requeued(m: &Meta) -> Meta {
+    Meta {
+        id: m.id.clone(),
+        name: m.name.clone(),
+        kind: m.kind.clone(),
+        state: "queued".into(),
+        request: m.request.clone(),
+        commit: m.commit.clone(),
+        build_env: m.build_env.clone(),
+        level: m.level.clone(),
+        created: m.created,
+        notes: m.notes.clone(),
+        player: m.player.clone(),
+        ..Meta::default()
+    }
 }
 
 /// A coarse estimate for the player. A run without a frame limit can
@@ -1173,6 +1273,7 @@ fn takeover_request(
         _ => (None, false),
     };
     TakeoverRequest {
+        ask: Default::default(),
         requester: requester.to_owned(),
         name,
         operation,
@@ -1182,16 +1283,37 @@ fn takeover_request(
         own_data,
         estimate_seconds,
         timeout_seconds,
+        alongside: offers_alongside(job),
     }
 }
 
+/// Whether the player may start `job` next to their open game. A job whose
+/// numbers need a quiet machine (a sim benchmark, `h2 lab bench`, a
+/// profiled run) may not.
+fn offers_alongside(job: &Job) -> bool {
+    match job {
+        Job::Sim(_) => false,
+        Job::Run(run) => !(run.bench || run.perf),
+        Job::Build(_) => true,
+    }
+}
+
+/// The note a job gets when the player starts it next to their game.
+const ALONGSIDE_NOTE: &str = "player: kept their game open; the job ran alongside it";
+
+/// `kept`: the games this job already runs alongside, so its second consent
+/// doesn't ask about them again.
 fn request_takeover(
     sh: &Shared,
     id: &str,
     request: TakeoverRequest,
+    kept: &Mutex<Vec<takeover::GameKey>>,
 ) -> Result<Option<JobOutcome>> {
+    let name = request.name.clone();
+    let before = kept.lock().unwrap().clone();
     let outcome = sh.takeover.admit(
         request,
+        &before,
         |phase| sh.update(id, |m| m.state = phase.into()),
         || sh.stop_requested(id),
         |socket, pid| sh.owns_game(socket, pid),
@@ -1199,8 +1321,36 @@ fn request_takeover(
     match outcome {
         _ if sh.stop_requested(id) => Err(Stopped.into()),
         takeover::Outcome::Proceed => Ok(None),
+        takeover::Outcome::Alongside(games) => {
+            let fresh = games.iter().any(|g| !before.contains(g));
+            {
+                // The game counts as already asked: Keep running.
+                let mut player = sh.player.lock().unwrap();
+                for game in &games {
+                    player.keep_running(game.clone());
+                }
+            }
+            *kept.lock().unwrap() = games;
+            if fresh {
+                eprintln!("lab: job {id}: {ALONGSIDE_NOTE}");
+                sh.update(id, |m| m.player.push(ALONGSIDE_NOTE.into()));
+            }
+            Ok(None)
+        }
         takeover::Outcome::Skipped(reason) => Ok(Some(JobOutcome::Skipped(reason))),
         takeover::Outcome::Stopped => Err(Stopped.into()),
+        takeover::Outcome::Held { reason, game } => {
+            // The queue waits for that game to close (host/player.rs).
+            sh.player.lock().unwrap().hold(game);
+            let note = format!("player: {reason}");
+            eprintln!("lab: job {id}: {note}");
+            // The installed host tells the player on the Mac; a host run
+            // by hand (and the tests') has only its log.
+            if sh.cfg.managed {
+                player::tell(&name, &reason);
+            }
+            Ok(Some(JobOutcome::Held(note)))
+        }
     }
 }
 
@@ -1216,11 +1366,13 @@ fn run_job(
     let run_dir = cfg.dir("runs").join(id);
     let planned = commit.map(|c| plan_image(cfg, job.spec(), c)).transpose()?;
     let builds_image = planned.as_ref().is_some_and(|p| !p.cached);
+    let kept = Mutex::new(Vec::new());
     let consent = |builds_image| {
         request_takeover(
             sh,
             id,
             takeover_request(job, commit, requester, builds_image, cfg.takeover.timeout_seconds),
+            &kept,
         )
     };
     if (builds_image || !matches!(job, Job::Build(_))) && let Some(skipped) = consent(builds_image)? {
@@ -1541,6 +1693,16 @@ fn wait_game(
     }
 }
 
+/// Where a windowed lab game binds XNet: this Mac's LAN IPv4 (loopback
+/// without a route, as the XNet HLE picks) at [`proto::LAB_BASE_PORT`], off
+/// the ports of a game the player opens here.
+fn lab_xnet_addr() -> SocketAddrV4 {
+    SocketAddrV4::new(
+        dedicated::route_ipv4().unwrap_or(Ipv4Addr::LOCALHOST),
+        proto::LAB_BASE_PORT,
+    )
+}
+
 /// `h2 play` for `run` with `image`, its environment cleaned of the host's
 /// own `H2_*` variables so a run means the same whatever terminal the host
 /// started in. Writes the recording's manifest when it records.
@@ -1653,7 +1815,8 @@ fn play_command(
         .env("H2_LAB_JOB_NAME", &run.name)
         .env(agent_proto::ENV, &sock)
         .env(agent_proto::OUT_ENV, &run_dir)
-        .env("H2_MEM_REPORT_DIR", run_dir.join("mem"));
+        .env("H2_MEM_REPORT_DIR", run_dir.join("mem"))
+        .env("H2_XNET_ADDR", lab_xnet_addr().to_string());
     if let Some(l) = &level {
         cmd.arg("--level").arg(l);
         if let Some(d) = &difficulty {
@@ -1912,7 +2075,8 @@ fn plan_image(cfg: &HostConfig, spec: &BuildSpec, commit: &str) -> Result<ImageP
     features.sort();
     features.dedup();
     let key = image_key(commit, &features, &spec.env, &pgo_hash);
-    let dir = cfg.dir("image");
+    build_cache::ensure_dir(&cfg.dir("variants"))?;
+    let dir = build_cache::variant_dir(cfg, &build_cache::variant_key(&features, &spec.env, &pgo_hash));
     build_cache::ensure_dir(&dir)?;
     let image = Image {
         h2: dir.join("h2"),
@@ -1924,7 +2088,8 @@ fn plan_image(cfg: &HostConfig, spec: &BuildSpec, commit: &str) -> Result<ImageP
 }
 
 /// From the image cache when built before, else build a detached checkout
-/// with the requested features and shared object cache.
+/// with the requested features into the lab's one Cargo target, then the
+/// image in its variant's work directory with the shared object cache.
 fn ensure_image(
     sh: &Shared,
     id: &str,
@@ -1937,7 +2102,8 @@ fn ensure_image(
     let ImagePlan { image, key, dir, features, pgo_hash, cached } = plan;
     let mut w = log.try_clone()?;
     if cached {
-        writeln!(w, "lab: image {key} for {commit} is built")?;
+        writeln!(w, "lab: image {key} for {commit} is built in {}", dir.display())?;
+        build_cache::touch(&dir);
         sh.update(id, |m| {
             m.image = Some(key);
             m.cached = Some(true);
@@ -1949,34 +2115,47 @@ fn ensure_image(
         m.cached = Some(false);
     });
     let src = cfg.dir("src/current");
-    for cache in ["target", "obj-cache"] {
-        build_cache::ensure_dir(&cfg.dir(cache))?;
+    build_cache::ensure_dir(&build_cache::target_dir(cfg))?;
+    build_cache::ensure_dir(&build_cache::obj_cache_dir(cfg))?;
+    build_cache::ensure_free(
+        cfg,
+        &dir,
+        &mut || build_cache::disk(&cfg.root).map(|d| d.free_bytes),
+        &mut w,
+    )?;
+    let _building = build_cache::lock_variant(&dir)?;
+    match build_cache::stamped_commit(&dir) {
+        Some(last) => writeln!(
+            w,
+            "lab: image work directory {} last built {last}; only changed C is rewritten and recompiled",
+            dir.display()
+        )?,
+        None => writeln!(w, "lab: image work directory {} is new", dir.display())?,
     }
     let stamp = dir.join("image.json");
     if stamp.try_exists()? {
         fs::remove_file(&stamp)?;
     }
+    let log_path = cfg.dir("runs").join(id).join("build.log");
     let build = (|| -> Result<()> {
         let git = build_cache::checkout_command(cfg, commit)?;
         let status = sh.step(id, git, log)?;
         ensure!(status.success(), "checking out {commit} failed (build.log)");
 
         let jobs = build_cache::workers().to_string();
-        writeln!(w, "lab: cargo build at {commit}, {jobs} workers")?;
-        let target = cfg.dir("target");
-        let mut cargo = crate::follow::niced(&cfg.cargo);
-        cargo.args(["build", "--release", "-p", "cli", "--bin", "h2"]);
-        if !features.is_empty() {
-            cargo.arg("--features").arg(features.join(","));
-        }
-        cargo
-            .current_dir(&src)
-            .env("CARGO_BUILD_JOBS", &jobs)
-            .env("CARGO_TARGET_DIR", &target)
-            .envs(&image.env);
+        writeln!(
+            w,
+            "lab: cargo build at {commit} into {}, {jobs} workers",
+            build_cache::target_dir(cfg).display()
+        )?;
+        let wrapper = build_cache::rustc_wrapper(&src, |k| std::env::var(k).ok());
+        let from = log.metadata()?.len();
+        let cargo = build_cache::cargo_command(cfg, &src, &features);
         let st = sh.step(id, cargo, log)?;
         ensure!(st.success(), "cargo build failed (build.log)");
-        fs::copy(target.join("release/h2"), dir.join("h2.tmp")).context("copying the built h2")?;
+        let cargo_out = build_cache::log_since(&log_path, from);
+        writeln!(w, "{}", build_cache::cargo_summary(&cargo_out, wrapper.as_ref()))?;
+        fs::copy(build_cache::built_h2(cfg), dir.join("h2.tmp")).context("copying the built h2")?;
         fs::rename(dir.join("h2.tmp"), &image.h2)?;
         writeln!(w, "lab: h2 build into {}", dir.display())?;
         let mut build = crate::follow::niced(&image.h2);
@@ -1986,12 +2165,15 @@ fn ensure_image(
                 build.env_remove(k);
             }
         }
-        build.envs(&image.env).env("H2_OBJ_CACHE", cfg.dir("obj-cache")).current_dir(&dir);
+        build.envs(&image.env).env("H2_OBJ_CACHE", build_cache::obj_cache_dir(cfg)).current_dir(&dir);
+        let from = log.metadata()?.len();
         let st = sh.step(id, build, log)?;
         ensure!(st.success(), "h2 build failed (build.log)");
+        writeln!(w, "{}", build_cache::image_summary(&build_cache::log_since(&log_path, from)))?;
         Ok(())
     })();
-    let prune = build_cache::prune(cfg, &mut w);
+    let prune = build_cache::prune(cfg, &mut w)
+        .and_then(|()| build_cache::prune_variants(cfg, &dir, &mut w));
     if let Err(err) = build {
         if let Err(prune) = prune {
             writeln!(w, "lab: cache cleanup failed: {prune:#}")?;
@@ -2051,6 +2233,52 @@ fn wait(sh: &Shared, id: &str, timeout: Option<Duration>) -> Result<Value> {
     }
 }
 
+/// `h2 lab clean`: the disk floor's prune run on request, or with `all`
+/// everything but a running job's files and the host's own binary. While a
+/// job is active only finished runs go: its image, caches and checkout are
+/// in use.
+fn clean(sh: &Arc<Shared>, all: bool) -> Result<Value> {
+    let cfg = &sh.cfg;
+    let before = build_cache::disk(&cfg.root);
+    let lock = {
+        let inner = sh.inner.lock().unwrap();
+        if inner.activity.is_none() {
+            // Held to the end: a job admitted meanwhile is refused as busy.
+            Some(activity_lock(&cfg.root)?)
+        } else {
+            None
+        }
+    };
+    let goal = match (&lock, all) {
+        (None, _) => build_cache::Goal::Runs,
+        (Some(_), false) => build_cache::Goal::Default,
+        (Some(_), true) => build_cache::Goal::All,
+    };
+    let mut log = Vec::new();
+    let freed = build_cache::reclaim(
+        cfg,
+        goal,
+        None,
+        &mut || build_cache::disk(&cfg.root).map(|d| d.free_bytes),
+        &mut log,
+    )?;
+    drop(lock);
+    Ok(json!({
+        "all": all,
+        "freed_bytes": freed.total(),
+        "freed": freed,
+        "skipped": lock_skipped(goal),
+        "disk_before": before,
+        "disk_after": build_cache::disk(&cfg.root),
+        "log": String::from_utf8_lossy(&log).lines().collect::<Vec<_>>(),
+    }))
+}
+
+fn lock_skipped(goal: build_cache::Goal) -> Option<&'static str> {
+    (goal == build_cache::Goal::Runs)
+        .then_some("a job is active: only finished runs were removed; its image, caches and checkout are in use")
+}
+
 fn stop(sh: &Arc<Shared>, id: &str) -> Result<Value> {
     let mut inner = sh.inner.lock().unwrap();
     if let Some(index) = inner.queue.iter().position(|pending| pending.id == id) {
@@ -2072,6 +2300,8 @@ fn stop(sh: &Arc<Shared>, id: &str) -> Result<Value> {
         bail!("job {id} is not running ({})", m.state);
     };
     a.stop = true;
+    // A stop from the driver ends the job even if the player paused it.
+    a.pause = false;
     if let Some(pgid) = a.pgid {
         // SAFETY: the job's own process group.
         unsafe { libc::kill(-pgid, libc::SIGTERM) };
@@ -2229,12 +2459,14 @@ mod tests {
             cargo: "cargo".into(),
             obj_cache_limit: 0,
             target_limit: 0,
+            disk_floor: 0,
             max_jobs: 1,
             lan: None,
             managed: false,
             explicit_h2: true,
             grace: Duration::from_secs(1),
             takeover: takeover::Config::default(),
+            agents: root.join("agents"),
         }
     }
 
@@ -2259,6 +2491,74 @@ mod tests {
         run.own_data = true;
         assert!(!has_data(&args(&run)));
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn windowed_runs_bind_xnet_off_the_players_ports() {
+        let root = std::env::temp_dir().join(format!("h2lab-xnet-{}", std::process::id()));
+        let cfg = config(&root);
+        let image = Image {
+            h2: "/bin/true".into(),
+            out: None,
+            env: BTreeMap::new(),
+        };
+        let run = RunReq {
+            name: "Play".into(),
+            ..RunReq::default()
+        };
+        let cmd = play_command(&cfg, "0001", &run, &image, None).unwrap();
+        let addr: SocketAddrV4 = cmd
+            .get_envs()
+            .find(|(k, _)| *k == "H2_XNET_ADDR")
+            .and_then(|(_, v)| v)
+            .and_then(|v| v.to_str())
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(addr.port(), proto::LAB_BASE_PORT);
+        assert!(!proto::takes_player_ports(addr.port()));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_paused_job_goes_back_queued_with_its_request_and_notes_only() {
+        let m = Meta {
+            id: "0007".into(),
+            name: Some("Join test".into()),
+            kind: "run".into(),
+            state: "running".into(),
+            request: json!({"name": "Join test"}),
+            commit: Some("abc".into()),
+            created: 5,
+            run_elapsed_s: Some(3.0),
+            agent_socket: Some("/lab/a/0007.sock".into()),
+            system_link: Some("10.0.0.5:3174".into()),
+            notes: vec!["System Link host at 10.0.0.5:3174".into()],
+            player: vec!["player: opened a game and chose Stop and pause".into()],
+            ..Meta::default()
+        };
+        let q = requeued(&m);
+        assert_eq!(q.state, "queued");
+        assert_eq!(
+            (q.id.as_str(), q.name.as_deref(), q.kind.as_str()),
+            ("0007", Some("Join test"), "run")
+        );
+        assert_eq!(
+            (q.request, q.commit, q.created),
+            (m.request.clone(), m.commit.clone(), 5)
+        );
+        assert_eq!((q.notes, q.player), (m.notes.clone(), m.player.clone()));
+        assert_eq!(q.run_elapsed_s, None);
+        assert_eq!(q.agent_socket, None);
+        assert_eq!(q.system_link, None);
+    }
+
+    #[test]
+    fn only_jobs_that_need_a_quiet_machine_withhold_start_alongside() {
+        let ask = |run: RunReq| takeover_request(&Job::Run(run), None, "Lab", false, 60).alongside;
+        assert!(ask(RunReq { name: "Play".into(), ..RunReq::default() }));
+        assert!(!ask(RunReq { name: "Bench".into(), bench: true, ..RunReq::default() }));
+        assert!(!ask(RunReq { name: "Profile".into(), perf: true, ..RunReq::default() }));
     }
 
     #[test]

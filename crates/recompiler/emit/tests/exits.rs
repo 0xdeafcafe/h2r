@@ -1,11 +1,12 @@
 //! What a handler's way out calls, as the C compiler sees it: the emitted
 //! module preprocessed with the build's own flags (synthetic code, no game
 //! data). The shared epilogue settles with the runtime in one
-//! `h2abi_v1_exit`, after the spill; `H2_EXIT_CALL=0` is the pair it
-//! replaced, a charge before the spill and a release after it. With direct
-//! calls a handler may run on a view its direct caller lent it
-//! (`H2_DIRECT_VIEW`): it then makes the call only to charge its own count,
-//! and acquires nothing on entry.
+//! `h2abi_v1_exit`, after the spill; a counting handler with a view spends
+//! its count in the view instead (`h2_view_spend`), the call left only for
+//! no view. `H2_EXIT_CALL=0` is the pair the call replaced, a charge before
+//! the spill and a release after it. With direct calls a handler may run on
+//! a view its direct caller lent it (`H2_DIRECT_VIEW`): it then settles
+//! only a count of its own, and acquires nothing on entry.
 
 mod common;
 
@@ -145,15 +146,25 @@ fn a_handler_leaves_through_one_exit_call() {
                 usize::from(accounting),
                 "{case}: {o}"
             );
-            // The exit call is the last thing before the transfer, after the
-            // spill and the EIP store, and passes the handler's count.
-            // A handler on a lent view makes it only to charge its count.
+            // The exit's settle is the last thing before the transfer,
+            // after the spill and the EIP store, and passes the handler's
+            // count. A counting handler spends the count in its view, the
+            // call left only for no view. A handler on a lent view settles
+            // only a count of its own.
             if fastmem {
                 let count = if accounting { "h2acc" } else { "0u" };
-                let mut call = format!("h2abi_v1_exit(ctx, {count});");
-                if view {
-                    call = format!("if (!(h2_lent_ != 0) || {count}) {call} }} while (0);");
-                }
+                let settle = if accounting {
+                    "do { uint64_t n_ = (h2acc); if (!h2_mem_) h2abi_v1_exit(ctx, n_); \
+                     else if (n_) h2_view_spend(h2_mem_, n_); } while (0);"
+                        .to_string()
+                } else {
+                    format!("h2abi_v1_exit(ctx, {count});")
+                };
+                let call = if view {
+                    format!("if (!(h2_lent_ != 0) || {count}) {settle} }} while (0);")
+                } else {
+                    settle
+                };
                 let at = n.find(&call).unwrap_or_else(|| panic!("{case}: {n}"));
                 assert!(n.find("cpu->eip = x_eip;").unwrap() < at, "{case}: {n}");
                 // Only the (off) perf flush follows it.
@@ -196,11 +207,10 @@ fn a_handler_leaves_through_one_exit_call() {
                 (true, false, _) => {
                     "h2_exit: h2_gate_drop(h2_mem_, &h2g_); cpu->eip = x_eip; do { if (h2acc) { h2_gate_drop(h2_mem_, &h2g_); h2abi_v1_charge(ctx, h2acc)"
                 }
-                (true, true, false) => {
-                    "h2_exit: h2_gate_drop(h2_mem_, &h2g_); cpu->eip = x_eip; h2abi_v1_exit(ctx, h2acc)"
-                }
-                (true, true, true) => {
-                    "h2_exit: h2_gate_drop(h2_mem_, &h2g_); cpu->eip = x_eip; do { if (!(h2_lent_ != 0) || h2acc) h2abi_v1_exit(ctx, h2acc)"
+                (true, true, _) => {
+                    // The count is spent in the view: the call is left only
+                    // for no view (the lent-view wrapper is pinned above).
+                    "h2_exit: h2_gate_drop(h2_mem_, &h2g_); cpu->eip = x_eip; if (!h2_mem_) h2abi_v1_exit(ctx, n_)"
                 }
             };
             assert_eq!(shape(n), expect, "{case}: {n}");
@@ -260,28 +270,28 @@ fn a_direct_call_lends_the_callers_view() {
     };
     assert_eq!(
         features(&["H2_FASTMEM=1", "H2_DIRECT_CALLS=1"]),
-        "1u | (2u | 4u | 8u | 32u) | 0u"
+        "1u | (2u | 4u | 8u | 32u) | 128u | 0u"
     );
     assert_eq!(
         features(&["H2_FASTMEM=1", "H2_DIRECT_CALLS=1", "H2_DIRECT_VIEW=0"]),
-        "1u | (2u | 0u | 8u | 32u) | 0u"
+        "1u | (2u | 0u | 8u | 32u) | 128u | 0u"
     );
     assert_eq!(
         features(&["H2_FASTMEM=0", "H2_DIRECT_CALLS=1"]),
-        "1u | (2u | 0u | 8u | 32u) | 0u"
+        "1u | (2u | 0u | 8u | 32u) | 128u | 0u"
     );
     // Without direct calls the module still has the entry table (and its
     // polls still mask IRQ_QUEUED).
-    assert_eq!(features(&["H2_FASTMEM=1", "H2_DIRECT_CALLS=0"]), "1u | 8u | 0u");
+    assert_eq!(features(&["H2_FASTMEM=1", "H2_DIRECT_CALLS=0"]), "1u | 8u | 128u | 0u");
     // The flat model lends no view and declares itself (feature 16); off
     // without the inline path.
     assert_eq!(
         features(&["H2_FASTMEM=1", "H2_DIRECT_CALLS=1", "H2_FLAT_RAM=1"]),
-        "1u | (2u | 0u | 8u | 32u) | 16u"
+        "1u | (2u | 0u | 8u | 32u) | 128u | 16u"
     );
     assert_eq!(
         features(&["H2_FASTMEM=0", "H2_DIRECT_CALLS=1", "H2_FLAT_RAM=1"]),
-        "1u | (2u | 0u | 8u | 32u) | 0u"
+        "1u | (2u | 0u | 8u | 32u) | 128u | 0u"
     );
 }
 

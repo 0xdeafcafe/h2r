@@ -13,6 +13,8 @@ tags.workspace = true
 assets.workspace = true
 xiso.workspace = true
 font = { path = "../../formats/font" }
+# The overlay stage's items the HUD walk emits (src/overlay.rs).
+frame-scene = { path = "../../rewrites/frame-scene" }
 # The screen modes the HUD kit's model shares (`layout::Mode`).
 hud-kit-core.workspace = true
 png = { workspace = true }

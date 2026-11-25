@@ -11,14 +11,17 @@ use d3d::backend::{
     DrawAdmission, DrawSnapshot, ExternalAttachments, ExternalDraws, ExternalPlan, ExternalWrites,
 };
 use d3d::shader::VertexProcessing;
-use gfx::vertex::{PrimitiveType, VertexDataType, VertexRegister};
-use native_render::decal::{Mode, VERTEX_SIZE, Vertex};
+use gfx::vertex::{PrimitiveType, StreamLayout, VertexDataType, VertexRegister};
+use native_render::decal::{Mode, VERTEX_SIZE, Vertex, decode_packed};
 use native_render::decal_gpu::{
-    ClipRect, DecalCache, DecalClip, DecalGpu, DecalTarget, PacketTarget, Prepared, ShaderSnapshot,
-    StageExtras,
+    ClipRect, DecalCache, DecalClip, DecalGpu, DecalTarget, PacketTarget, Prepared, ReferenceCopy,
+    ShaderSnapshot, StageExtras,
 };
 use shaders::vsh::VertexUniforms;
 use timeline::native::Stage;
+
+const STIPPLE_ENABLE: usize = 83;
+const TWO_SIDED_LIGHTING: usize = 141;
 
 /// The per-device caches of the decals' programs, pipelines and texture
 /// groups, shared by every admitted draw.
@@ -29,8 +32,7 @@ struct Glue {
     caches: Caches,
 }
 
-/// Registers the admission with the device. No callback suppression or custom
-/// geometry/texture loader is installed.
+/// Register on the guest's ordered draw, which also owns its fallback.
 pub fn install<B: d3d::backend::Backend + Send + 'static>(
     device: &d3d::abi::SharedDevice<B>,
 ) {
@@ -38,31 +40,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(
         return;
     }
     let Ok(mut d) = device.lock() else { return };
-    let admission = Arc::new(Glue::default());
-    d.add_draw_admission(admission.clone());
-    render_bridge::native_decals::set_walk_host(Arc::new(Walk {
-        device: device.clone(),
-        admission,
-    }));
-}
-
-struct Walk<B: d3d::Backend> {
-    device: d3d::abi::SharedDevice<B>,
-    admission: Arc<Glue>,
-}
-
-impl<B: d3d::Backend + Send + 'static> render_bridge::native_decals::WalkHost for Walk<B> {
-    fn draw(&self, mem: &mut dyn engine::memory::GuestMemory, start: u32, count: u32) -> bool {
-        self.device.lock().is_ok_and(|mut device| {
-            device.try_native_array_draw(
-                &mut crate::native_lights_glue::DeviceMemory(mem),
-                PrimitiveType::QuadList,
-                start,
-                count,
-                self.admission.as_ref(),
-            ).ok() == Some(true)
-        })
-    }
+    d.add_draw_admission(Arc::new(Glue::default()));
 }
 
 fn clip(r: d3d::PixelRect) -> ClipRect {
@@ -74,47 +52,37 @@ fn clip(r: d3d::PixelRect) -> ClipRect {
     }
 }
 
-fn prepare(mode: Mode, snapshot: &DrawSnapshot<'_>) -> Result<Prepared, &'static str> {
-    let d = snapshot.draw;
-    // This producer freezes one uniform block for both attachment copies.
-    // The ordinary D3D draw owns a pair with different lenses or UI layout.
-    if d.retail_constants.is_some() || d.ui_fit.is_some() {
-        return Err("attachment copies need distinct vertex constants");
-    }
-    if d.primitive != PrimitiveType::QuadList
-        || d.indices.is_some()
-        || d.vertex_count == 0
-        || d.vertex_count % 4 != 0
-    {
-        return Err("geometry");
-    }
-    if d.layout.streams.len() != 1 || d.streams.len() != 1 {
-        return Err("vertex streams");
-    }
-    let layout = &d.layout.streams[0];
-    let stream = &d.streams[0];
+/// The resolved draw's vertices, decoded from its one stream. Halo 2's decal
+/// declaration (the attribute list at `0x0043f7b9`, bound with stride 16) is
+/// float3 position at `+0` in `v0` and `NORMPACKED3` at `+12` in the second declared register: an
+/// 11:11:10 signed normalised dword, decoded as the NV2A fetches it
+/// ([`decode_packed`]). Any other declaration is refused.
+fn decal_vertices(
+    layout: &StreamLayout,
+    stream: &d3d::backend::StreamBytes,
+    vertex_count: u32,
+) -> Result<Vec<Vertex>, &'static str> {
     if layout.stride != VERTEX_SIZE as u32
         || stream.stride != VERTEX_SIZE as u32
         || layout.attributes.len() != 2
     {
         return Err("vertex declaration");
     }
-    for (register, data_type, offset) in [
-        (VertexRegister::POSITION, VertexDataType::Float3, 0),
-        (VertexRegister::DIFFUSE, VertexDataType::D3dColor, 12),
-    ] {
-        if !layout
-            .attributes
-            .iter()
-            .any(|a| (a.register, a.data_type, a.offset) == (register, data_type, offset))
-        {
-            return Err("vertex declaration");
-        }
+    let position = layout.attributes.iter().any(|a| {
+        (a.register, a.data_type, a.offset) == (VertexRegister::POSITION, VertexDataType::Float3, 0)
+    });
+    let packed = layout.attributes.iter().any(|a| {
+        (1..16).contains(&a.register.0)
+            && a.data_type == VertexDataType::NormPacked3
+            && a.offset == 12
+    });
+    if !position || !packed {
+        return Err("vertex declaration");
     }
-    if stream.data.len() != d.vertex_count as usize * VERTEX_SIZE {
+    if stream.data.len() != vertex_count as usize * VERTEX_SIZE {
         return Err("vertex bytes");
     }
-    let vertices = stream
+    Ok(stream
         .data
         .as_chunks::<VERTEX_SIZE>()
         .0
@@ -125,9 +93,30 @@ fn prepare(mode: Mode, snapshot: &DrawSnapshot<'_>) -> Result<Prepared, &'static
                 f32::from_bits(u32::from_le_bytes(v[4..8].try_into().expect("position"))),
                 f32::from_bits(u32::from_le_bytes(v[8..12].try_into().expect("position"))),
             ],
-            color: v[12..16].try_into().expect("colour"),
+            diffuse: decode_packed(v[12..16].try_into().expect("packed")),
         })
-        .collect::<Vec<_>>();
+        .collect())
+}
+
+/// Filled quads use the live polygon mask. A pushed NV2A control word
+/// takes precedence over the D3D state shadow, as it does on the D3D path.
+fn decal_stipple(hw: &d3d::hw::HwState, raw_enable: u32) -> Option<[u32; 32]> {
+    (hw.stipple_control.unwrap_or(raw_enable) != 0).then_some(hw.stipple_pattern)
+}
+
+fn prepare(mode: Mode, snapshot: &DrawSnapshot<'_>) -> Result<Prepared, &'static str> {
+    let d = snapshot.draw;
+    if d.primitive != PrimitiveType::QuadList
+        || d.indices.is_some()
+        || d.vertex_count == 0
+        || d.vertex_count % 4 != 0
+    {
+        return Err("geometry");
+    }
+    if d.layout.streams.len() != 1 || d.streams.len() != 1 {
+        return Err("vertex streams");
+    }
+    let vertices = decal_vertices(&d.layout.streams[0], &d.streams[0], d.vertex_count)?;
     let VertexProcessing::Program { microcode, .. } = &d.shader.vertex else {
         return Err("vertex program");
     };
@@ -156,13 +145,7 @@ fn prepare(mode: Mode, snapshot: &DrawSnapshot<'_>) -> Result<Prepared, &'static
         bump_env_lscale: e.bump_env_lscale,
         bump_env_loffset: e.bump_env_loffset,
     });
-    native_render::decal_gpu::check_state(mode, &d.state.render, &d.state.stages, &extras)?;
-    if d.raw.render[83] != 0 || d.raw.render[141] != 0 {
-        return Err("lighting/stipple");
-    }
-    if d.raw.render[d3d::state::slot::ZBIAS as usize] != 0 {
-        return Err("ZBIAS");
-    }
+    native_render::decal_gpu::check_state(mode, &d.state.render, &extras)?;
     if d.texture_info[0]
         .is_some_and(|info| info.kind != gfx::texture::TextureKind::D2 || info.format.is_depth())
     {
@@ -179,13 +162,19 @@ fn prepare(mode: Mode, snapshot: &DrawSnapshot<'_>) -> Result<Prepared, &'static
         combiner,
         microcode: code,
         provided_inputs: d.shader.provided_inputs,
+        two_sided_lighting: d.raw.render[TWO_SIDED_LIGHTING] != 0,
+        stipple: decal_stipple(&d.hw, d.raw.render[STIPPLE_ENABLE]),
         vertex: VertexUniforms {
             constants: *d.shader.constants,
             defaults: d.shader.vertex_defaults,
             surface: [d.target.width as f32, d.target.height as f32],
             z_max: gfx::renderer::d3dz_max(d.target.depth_format),
+            ui_transform: d
+                .ui_fit
+                .map_or(d3d::backend::UiFit::IDENTITY.transform, |fit| fit.transform),
             ..Default::default()
         },
+        w_buffered: d3d::hw::w_buffered(d),
         integer_depth: !matches!(
             d.target.depth_format,
             Some(
@@ -197,17 +186,25 @@ fn prepare(mode: Mode, snapshot: &DrawSnapshot<'_>) -> Result<Prepared, &'static
         ),
         tex_scale,
     };
-    native_render::decal_gpu::check_program(mode, &shader)?;
     let clips = if d.clip_rects.is_empty() {
-        d.clip.into_iter().map(clip).collect()
+        d.clip.as_slice()
     } else {
-        d.clip_rects.iter().copied().map(clip).collect()
+        &d.clip_rects
     };
+    let reference = (d.retail_constants.is_some() || d.ui_fit.is_some()).then(|| ReferenceCopy {
+        constants: d
+            .retail_constants
+            .as_ref()
+            .map_or(&d.shader.constants, |(constants, _)| constants)
+            .clone(),
+        clips: clips.iter().copied().map(clip).collect(),
+    });
     Ok(Prepared {
         mode,
         vertices,
         shader,
-        clips,
+        clips: clips.iter().map(|&r| clip(d.display_rect(r))).collect(),
+        reference,
     })
 }
 
@@ -223,12 +220,20 @@ impl DrawAdmission for Glue {
         render_bridge::native_decals::note_examined();
         let prepared = match prepare(mode, snapshot) {
             Ok(p) => p,
+            Err(why @ ("vertex declaration" | "vertex streams")) => {
+                let d = snapshot.draw;
+                let strides: Vec<_> = d.streams.iter().map(|s| s.stride).collect();
+                render_bridge::native_decals::note_admission_refusal(format!(
+                    "{why}: {:?}, bound strides {strides:?}", d.layout
+                ));
+                return None;
+            }
             Err(why) => {
-                render_bridge::native_decals::note_refusal(why);
+                render_bridge::native_decals::note_admission_refusal(why);
                 return None;
             }
         };
-        render_bridge::native_decals::note_admitted();
+        render_bridge::native_decals::note_candidate();
         Some((
             ExternalPlan {
                 stage: Stage::Decals,
@@ -238,6 +243,7 @@ impl DrawAdmission for Glue {
             },
             Box::new(DecalPass {
                 prepared,
+                draw: Arc::new(snapshot.draw.clone()),
                 clip: None,
                 gpu: None,
                 caches: self.caches.clone(),
@@ -249,6 +255,7 @@ impl DrawAdmission for Glue {
 
 struct DecalPass {
     prepared: Prepared,
+    draw: Arc<d3d::ResolvedDraw>,
     clip: Option<d3d::DepthClip>,
     gpu: Option<DecalGpu>,
     caches: Caches,
@@ -270,10 +277,14 @@ impl DecalPass {
 }
 
 impl d3d::ExternalPass for DecalPass {
+    fn resolved_fallback(&self) -> Option<Arc<d3d::ResolvedDraw>> {
+        Some(Arc::clone(&self.draw))
+    }
+
     fn writes(&self) -> ExternalWrites {
         ExternalWrites {
             color: true,
-            depth_stencil: self.prepared.mode.w_buffered(),
+            depth_stencil: self.draw.writes_depth_stencil(),
         }
     }
 
@@ -318,6 +329,7 @@ impl d3d::ExternalPass for DecalPass {
             size: t.size,
             z_scale: request.z_scale,
             stage0,
+            copy: t.copy,
         };
         let mut caches = self.caches.lock().unwrap_or_else(|e| e.into_inner());
         let cache = caches.entry(t.device.clone()).or_default();
@@ -361,6 +373,7 @@ impl d3d::ExternalPass for DecalPass {
             guest_size: t.guest_size,
             size: t.size,
             stages: t.stages,
+            copy: t.copy,
         };
         usize::from(
             self.gpu
@@ -368,5 +381,130 @@ impl d3d::ExternalPass for DecalPass {
                 .expect("prepared above")
                 .encode(&mut target, clip),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use d3d::backend::{StreamBytes, StreamData};
+    use gfx::vertex::VertexAttribute;
+
+    /// Fixture for the v3 binding of the packed decal field:
+    /// `v0` float3 at +0, `v3` `NORMPACKED3` at +12, stride 16.
+    fn declaration() -> StreamLayout {
+        StreamLayout {
+            stream: 0,
+            attributes: vec![
+                VertexAttribute {
+                    register: VertexRegister::POSITION,
+                    data_type: VertexDataType::Float3,
+                    offset: 0,
+                },
+                VertexAttribute {
+                    register: VertexRegister::DIFFUSE,
+                    data_type: VertexDataType::NormPacked3,
+                    offset: 12,
+                },
+            ],
+            stride: 16,
+        }
+    }
+
+    fn stream(vertices: &[[u8; VERTEX_SIZE]], stride: u32) -> StreamBytes {
+        StreamBytes {
+            data: StreamData::Owned(vertices.concat()),
+            stride,
+        }
+    }
+
+    fn vertex(position: [f32; 3], packed: u32) -> [u8; VERTEX_SIZE] {
+        let mut v = [0; VERTEX_SIZE];
+        for (i, f) in position.iter().enumerate() {
+            v[4 * i..4 * i + 4].copy_from_slice(&f.to_le_bytes());
+        }
+        v[12..16].copy_from_slice(&packed.to_le_bytes());
+        v
+    }
+
+    #[test]
+    fn decal_stipple_uses_hardware_control_before_the_raw_state() {
+        let mut hw = d3d::hw::HwState::default();
+        hw.stipple_pattern[10] = 1 << 11;
+
+        assert_eq!(decal_stipple(&hw, 0), None);
+        assert_eq!(decal_stipple(&hw, 1), Some(hw.stipple_pattern));
+        hw.stipple_control = Some(0);
+        assert_eq!(decal_stipple(&hw, 1), None);
+        hw.stipple_control = Some(1);
+        assert_eq!(decal_stipple(&hw, 0), Some(hw.stipple_pattern));
+        hw.stipple_pattern = [0; 32];
+        assert_eq!(decal_stipple(&hw, 0), Some([0; 32]));
+    }
+
+    #[test]
+    fn halo2s_declaration_resolves_native_and_decodes() {
+        let vs = [
+            vertex([1.0, 2.0, 3.0], 0x0000_0000),
+            vertex([-4.0, 0.5, 1e3], 0x7fdf_fbff),
+            vertex([0.0, -1.0, 7.25], 0x8020_0400),
+        ];
+        let got = decal_vertices(&declaration(), &stream(&vs, 16), 3).unwrap();
+        assert_eq!(
+            got,
+            [
+                Vertex { position: [1.0, 2.0, 3.0], diffuse: [0.0, 0.0, 0.0] },
+                Vertex { position: [-4.0, 0.5, 1e3], diffuse: [1.0, 1.0, 1.0] },
+                Vertex { position: [0.0, -1.0, 7.25], diffuse: [-1.0, -1.0, -1.0] },
+            ]
+        );
+    }
+
+    #[test]
+    fn packed_semantic_decodes_at_each_non_position_register() {
+        let mut layout = declaration();
+        let bytes = stream(&[vertex([2., -1., 7.], 1)], 16);
+        for register in 1..16 {
+            layout.attributes[1].register = VertexRegister(register);
+            let got = decal_vertices(&layout, &bytes, 1).unwrap();
+            assert_eq!(got[0].position, [2., -1., 7.]);
+            assert_eq!(got[0].diffuse, [1. / 1023., 0., 0.]);
+        }
+        for register in [0, 16] {
+            layout.attributes[1].register = VertexRegister(register);
+            assert_eq!(decal_vertices(&layout, &bytes, 1), Err("vertex declaration"));
+        }
+    }
+
+    #[test]
+    fn other_declarations_are_refused() {
+        let vs = [vertex([0.0; 3], 0)];
+        // D3DCOLOR instead of NORMPACKED3 (the old assumption).
+        let mut layout = declaration();
+        layout.attributes[1].data_type = VertexDataType::D3dColor;
+        assert_eq!(
+            decal_vertices(&layout, &stream(&vs, 16), 1),
+            Err("vertex declaration")
+        );
+        // A third attribute on a wider vertex.
+        let mut layout = declaration();
+        layout.attributes.push(VertexAttribute {
+            register: VertexRegister::TEXCOORD0,
+            data_type: VertexDataType::Float2,
+            offset: 16,
+        });
+        layout.stride = 24;
+        assert_eq!(
+            decal_vertices(&layout, &stream(&vs, 24), 1),
+            Err("vertex declaration")
+        );
+        // The stream's own stride disagrees.
+        assert_eq!(
+            decal_vertices(&declaration(), &stream(&vs, 20), 1),
+            Err("vertex declaration")
+        );
+        // The bytes do not cover the vertices.
+        let short = StreamBytes { data: StreamData::Owned(vec![0; 12]), stride: 16 };
+        assert_eq!(decal_vertices(&declaration(), &short, 1), Err("vertex bytes"));
     }
 }

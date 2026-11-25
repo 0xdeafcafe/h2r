@@ -646,8 +646,20 @@ fn shared_blocks_are_placed_once() {
 
 /// Add `n` small built tags to a decomposed copy of the tiny map.
 fn grown(n: usize, dirty_tail: bool, clear_tail: bool) -> (Map<Cursor<Vec<u8>>>, Vec<TagId>) {
+    let (map, ids, _) = grown_with(n, dirty_tail, clear_tail, false);
+    (map, ids)
+}
+
+/// [`grown`], optionally with [`TagSet::relocate_groups`], and the layout.
+fn grown_with(
+    n: usize,
+    dirty_tail: bool,
+    clear_tail: bool,
+    relocate_groups: bool,
+) -> (Map<Cursor<Vec<u8>>>, Vec<TagId>, BuildLayout) {
     let mut source = read(tiny().set.build().unwrap().0);
     let mut set = TagSet::from_map(&mut source).unwrap();
+    set.relocate_groups = relocate_groups;
     let p = set.pinned.as_mut().unwrap();
     let end = p.index_entries_end as usize;
     if dirty_tail {
@@ -668,7 +680,8 @@ fn grown(n: usize, dirty_tail: bool, clear_tail: bool) -> (Map<Cursor<Vec<u8>>>,
             .unwrap()
         })
         .collect();
-    (read(set.build().unwrap().0), ids)
+    let (bytes, layout) = set.build().unwrap();
+    (read(bytes), ids, layout)
 }
 
 fn check_grown(map: &mut Map<Cursor<Vec<u8>>>, ids: &[TagId]) -> u32 {
@@ -718,6 +731,40 @@ fn a_pinned_index_with_a_live_tail_moves_its_entries_to_the_metadata() {
     let (mut map, ids) = grown(20, true, true);
     let t = check_grown(&mut map, &ids);
     assert!(t < INDEX_VIRTUAL_BASE + map.header().index_size);
+}
+
+#[test]
+fn a_live_tail_can_move_the_groups_instead_of_the_entries() {
+    // The tiny map's six groups (72 bytes) give room for four more entries.
+    let (mut map, ids, layout) = grown_with(4, true, false, true);
+    let t = check_grown(&mut map, &ids);
+    assert_eq!(t, INDEX_VIRTUAL_BASE + 0x20);
+    assert_eq!(layout.index_in_metadata, 6 * 12);
+    let h = map.header().clone();
+    let index = map
+        .read_file_range(h.index_offset.into(), h.index_size.into())
+        .unwrap();
+    assert!(word(&index, 0) >= INDEX_VIRTUAL_BASE + h.index_size);
+    assert!(index.contains(&0x5a));
+    let original = read(tiny().set.build().unwrap().0);
+    let mut sorted = original.groups().to_vec();
+    sorted.sort_by_key(|g| g.class.as_u32());
+    assert_eq!(map.groups(), sorted.as_slice());
+    // It decomposes and rebuilds to the same tags.
+    let mut set = TagSet::from_map(&mut map).unwrap();
+    set.relocate_groups = true;
+    let mut again = read(set.build().unwrap().0);
+    check_grown(&mut again, &ids);
+    // The default moves the entries, 16 bytes a slot.
+    let (mut map, ids, layout) = grown_with(4, true, false, false);
+    let t = check_grown(&mut map, &ids);
+    assert!(t >= INDEX_VIRTUAL_BASE + map.header().index_size);
+    assert_eq!(layout.index_in_metadata, 16 * map.index_slots());
+    // A fifth tag does not fit before the tail: the entries move.
+    let (mut map, ids, layout) = grown_with(5, true, false, true);
+    let t = check_grown(&mut map, &ids);
+    assert!(t >= INDEX_VIRTUAL_BASE + map.header().index_size);
+    assert_eq!(layout.index_in_metadata, 16 * map.index_slots());
 }
 
 #[test]

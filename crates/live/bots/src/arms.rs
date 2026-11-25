@@ -398,18 +398,17 @@ impl Role {
             Role::Blast => (5.0, 25.0),
         }
     }
-    /// Shoots at targets from `.0` to `.1` away, no further (wasted
-    /// rounds) and, with splash, no closer.
+    /// Shoots at targets from `.0` to `.1` away: to
+    /// [`crate::weapons::FIRE_PAST_BAND`] times its band's far end, the
+    /// rule every gun fires by (wasted rounds past it) and, with splash,
+    /// no closer than its own blast. A blade does not shoot.
     pub fn fire_range(self) -> (f32, f32) {
-        match self {
-            Role::Unknown => (0.0, 25.0),
-            Role::Blade => (0.0, 0.0),
-            Role::Scatter => (0.0, 8.0),
-            Role::Spray => (0.0, 18.0),
-            Role::Precise => (0.0, 40.0),
-            Role::Sniper => (0.0, 80.0),
-            Role::Blast => (2.5, 35.0),
-        }
+        let near = match self {
+            Role::Blade => return (0.0, 0.0),
+            Role::Blast => 2.5,
+            _ => 0.0,
+        };
+        (near, self.band().1 * crate::weapons::FIRE_PAST_BAND)
     }
     /// How much it is worth going for (power weapons 4 and up).
     pub fn rating(self) -> u8 {
@@ -659,6 +658,9 @@ pub const POWER_RANGE: f32 = 25.0;
 pub const MELEE_CHASE: f32 = 2.5;
 /// In a lull, reloads a magazine under this.
 pub const BREATHER_RELOAD: f32 = 0.6;
+/// Calm with no enemy in view, tops up a magazine under this: the tactical
+/// reload after a fight.
+pub const TACTICAL_RELOAD: f32 = 0.9;
 /// Required improvement in range fit for switching between two usable
 /// weapons on Normal and up. This keeps small range changes stable.
 pub const RANGE_SWITCH_MISFIT: f32 = 0.3;
@@ -681,7 +683,8 @@ fn dist(a: Vec3, b: Vec3) -> f32 {
 ///    other gun loaded and the enemy in its band, switch instead (faster);
 /// 4. prefer a ready sword or shotgun at close range, a sniper at the
 ///    far end of a rifle's band, or a gun that can reach the enemy;
-/// 5. calm with a magazine under [`RELOAD_BELOW`], or a lull with one under
+/// 5. calm with a magazine under [`RELOAD_BELOW`], or under
+///    [`TACTICAL_RELOAD`] with no enemy in view, or a lull with one under
 ///    [`BREATHER_RELOAD`], or the enemy beyond the gun's fire range with
 ///    one under [`RELOAD_BELOW`]: reload;
 /// 6. no enemy in view and no power weapon carried: a power weapon within
@@ -792,9 +795,13 @@ pub(crate) fn plan_with_personality(
     }
     let fire_to = held_gun.map_or(role.fire_range().1, |g| g.reach().fire.1);
     let out_of_reach = s.enemy.is_some_and(|d| d > fire_to);
-    let half = matches!(held, Ammo::Rounds { reserve, .. } if reserve > 0)
-        && held.magazine() < BREATHER_RELOAD;
-    if (held.wants_reload() && (s.calm || out_of_reach)) || (s.breather && half) {
+    let loadable = matches!(held, Ammo::Rounds { reserve, .. } if reserve > 0);
+    let half = loadable && held.magazine() < BREATHER_RELOAD;
+    let topped = loadable && held.magazine() < TACTICAL_RELOAD;
+    if (held.wants_reload() && (s.calm || out_of_reach))
+        || (s.breather && half)
+        || (s.calm && s.enemy.is_none() && topped)
+    {
         return Kit::Reload;
     }
     let has_power = [held_gun, other_gun]

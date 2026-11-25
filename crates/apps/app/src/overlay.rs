@@ -4,9 +4,13 @@
 //! [`Banner`] is a shared handle: any thread sets the notice, the window
 //! draws it. Text is rasterised on the CPU with the public-domain `font8x8`
 //! glyphs (ASCII; a few typographic characters are mapped to ASCII), scaled
-//! 2x, on a translucent plate, and drawn in the top-left corner of the
-//! window with alpha blending. F6 hides the current notice (a new notice
-//! shows again); F5 asks for a restart while the notice offers one.
+//! 2x, on the debug menu's dark plate with a strip in the notice's colour
+//! down its left edge, and drawn in the top-left corner of the window with
+//! alpha blending. While the debug menu is open the window shows the
+//! notice and the editor's status as lines inside the menu instead
+//! (`menu_overlay::notice_tone`). A notice's text may hold several lines
+//! (`\n`). F6 hides the current notice (a new notice shows again); F5 asks
+//! for a restart while the notice offers one.
 
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
@@ -22,6 +26,9 @@ pub enum NoticeKind {
     Ready,
     /// Something failed; the game keeps running as it is.
     Error,
+    /// The game itself stopped (the guest thread ended): what happened,
+    /// and F5 starts it again (docs/runtime/app.md "When the game stops").
+    Crashed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,9 +88,16 @@ impl Banner {
     }
 
     /// Show `notice` (or clear with `None`). A different notice than the
-    /// current one is shown even if the current one was dismissed.
+    /// current one is shown even if the current one was dismissed. Once the
+    /// game has stopped ([`NoticeKind::Crashed`]) only another such notice
+    /// replaces it, so a status thread (the tier build, `--follow`) can't
+    /// paint over the crash.
     pub fn set(&self, notice: Option<Notice>) {
         let mut s = self.lock();
+        let stopped = |n: &Option<Notice>| n.as_ref().is_some_and(|n| n.kind == NoticeKind::Crashed);
+        if stopped(&s.notice) && !stopped(&notice) {
+            return;
+        }
         if s.notice != notice {
             s.notice = notice;
             s.dismissed = false;
@@ -112,12 +126,78 @@ impl Banner {
         self.lock()
             .notice
             .as_ref()
-            .is_some_and(|n| n.kind == NoticeKind::Ready)
+            .is_some_and(|n| matches!(n.kind, NoticeKind::Ready | NoticeKind::Crashed))
     }
 
     pub fn generation(&self) -> u64 {
         self.lock().generation
     }
+}
+
+/// Lines of a crash message the stopped notice shows; the terminal has
+/// the rest.
+const STOPPED_LINES: usize = 6;
+/// Width the stopped notice wraps its message to.
+const STOPPED_WRAP: usize = 88;
+
+/// The notice the window shows when the game itself stops while the window
+/// stays open: what happened, and that F5 starts it again. `None` for an
+/// exit that isn't the game stopping on its own.
+pub fn stopped_notice(exit: &crate::GuestExit) -> Option<Notice> {
+    use crate::GuestExit;
+    let (head, message) = match exit {
+        GuestExit::Returned => ("The game stopped.", None),
+        GuestExit::Failed(m) => ("The game crashed.", Some(m.as_str())),
+        GuestExit::Panicked(m) => ("The game crashed (host panic).", Some(m.as_str())),
+        GuestExit::StillRunning | GuestExit::NotStarted => return None,
+    };
+    let mut lines = vec![head.to_owned()];
+    if let Some(m) = message {
+        let wrapped = wrap(m, STOPPED_WRAP);
+        let more = wrapped.len() > STOPPED_LINES;
+        lines.extend(wrapped.into_iter().take(STOPPED_LINES));
+        if more {
+            lines.push("... (the rest is in the terminal)".into());
+        }
+    }
+    lines.push(String::new());
+    lines.push("Press F5 to start the game again, or close the window to quit.".into());
+    Some(Notice {
+        kind: NoticeKind::Crashed,
+        text: lines.join("\n"),
+    })
+}
+
+/// `text` broken into lines of at most `width` characters, at spaces
+/// where it can be; an error chain's `: ` joins break there too.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for para in text.lines().map(str::trim_end).filter(|l| !l.is_empty()) {
+        let mut line = String::new();
+        for word in para.split(' ') {
+            let mut word = word.to_owned();
+            while word.chars().count() > width {
+                let head: String = word.chars().take(width).collect();
+                word = word.chars().skip(width).collect();
+                if !line.is_empty() {
+                    out.push(std::mem::take(&mut line));
+                }
+                out.push(head);
+            }
+            let need = line.chars().count() + usize::from(!line.is_empty()) + word.chars().count();
+            if need > width && !line.is_empty() {
+                out.push(std::mem::take(&mut line));
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(&word);
+        }
+        if !line.is_empty() {
+            out.push(line);
+        }
+    }
+    out
 }
 
 /// Glyph scale and padding, in window pixels.
@@ -128,6 +208,19 @@ const MAX_CHARS: usize = 96;
 const LINE_HEIGHT: u32 = 8 * SCALE;
 const LINE_GAP: u32 = 4;
 const MARGIN: u32 = 12;
+/// The plate: the debug menu's (`menu_overlay`), near black.
+const PLATE: [u8; 4] = [10, 12, 16, 215];
+/// The strip down the plate's left edge, in window pixels.
+const ACCENT_W: u32 = 2 * SCALE;
+
+/// A notice's strip colour: the debug menu's colours for the same tones.
+fn accent(tone: NoticeKind) -> [u8; 4] {
+    match tone {
+        NoticeKind::Info => [126, 172, 220, 255],
+        NoticeKind::Ready => [150, 226, 160, 255],
+        NoticeKind::Error | NoticeKind::Crashed => [255, 110, 100, 255],
+    }
+}
 
 /// Keep the middle dot and map common punctuation to the available ASCII glyphs.
 fn overlay_text(text: &str) -> String {
@@ -151,7 +244,7 @@ fn overlay_text(text: &str) -> String {
 
 /// The notice as straight-alpha RGBA: (width, height, pixels).
 pub fn rasterize(notice: &Notice) -> (u32, u32, Vec<u8>) {
-    rasterize_lines(notice.kind, std::iter::once(notice.text.as_str()))
+    rasterize_lines(notice.kind, notice.text.lines())
 }
 
 fn rasterize_lines<'a>(
@@ -169,17 +262,19 @@ fn rasterize_lines<'a>(
     let rows = lines.len().max(1) as u32;
     let w = cols.max(1) as u32 * 8 * SCALE + 2 * PAD;
     let h = rows * LINE_HEIGHT + (rows - 1) * LINE_GAP + 2 * PAD;
-    let plate: [u8; 4] = match tone {
-        NoticeKind::Info => [24, 32, 48, 210],
-        NoticeKind::Ready => [16, 72, 32, 225],
-        NoticeKind::Error => [96, 20, 20, 225],
-    };
-    let mut px: Vec<u8> = plate
+    let mut px: Vec<u8> = PLATE
         .iter()
         .copied()
         .cycle()
         .take((w * h * 4) as usize)
         .collect();
+    let strip = accent(tone);
+    for y in 0..h {
+        for x in 0..ACCENT_W.min(w) {
+            let o = ((y * w + x) * 4) as usize;
+            px[o..o + 4].copy_from_slice(&strip);
+        }
+    }
     for (line, text) in lines.iter().enumerate() {
         let top = PAD + line as u32 * (LINE_HEIGHT + LINE_GAP);
         for (i, c) in text.chars().enumerate() {
@@ -479,7 +574,8 @@ impl OverlayRenderer {
     }
 
     /// Records a pass drawing `notice` in the top-left of `dst` (size
-    /// `dst_size`), over what is there.
+    /// `dst_size`), over what is there. Returns where it went, so the
+    /// debug menu's lone result can keep clear of it.
     pub fn draw(
         &mut self,
         device: &wgpu::Device,
@@ -489,7 +585,7 @@ impl OverlayRenderer {
         dst: &wgpu::TextureView,
         dst_format: wgpu::TextureFormat,
         dst_size: (u32, u32),
-    ) {
+    ) -> crate::scale::Viewport {
         if self.cached.as_ref() != Some(notice) {
             let (w, h, px) = rasterize(notice);
             self.sprite.upload(device, queue, (w, h), &px);
@@ -497,6 +593,13 @@ impl OverlayRenderer {
         }
         self.sprite
             .draw(device, encoder, dst, dst_format, dst_size, (MARGIN, MARGIN));
+        let (width, height) = self.sprite.size().unwrap_or((0, 0));
+        crate::scale::Viewport {
+            x: MARGIN,
+            y: MARGIN,
+            width,
+            height,
+        }
     }
 }
 
@@ -525,15 +628,13 @@ impl EditorPlateRenderer {
         dst: &wgpu::TextureView,
         dst_format: wgpu::TextureFormat,
         dst_size: (u32, u32),
-    ) {
+    ) -> Option<crate::scale::Viewport> {
         if self.cached.as_ref() != Some(plate) {
             let (w, h, px) = rasterize_lines(plate.tone, plate.lines());
             self.sprite.upload(device, queue, (w, h), &px);
             self.cached = Some(plate.clone());
         }
-        let Some((width, _)) = self.sprite.size() else {
-            return;
-        };
+        let (width, height) = self.sprite.size()?;
         let x = dst_size.0.saturating_sub(width + MARGIN).max(MARGIN);
         // Reserve the banner's row when it is visible, even in narrow windows.
         let y = if banner_visible {
@@ -543,6 +644,12 @@ impl EditorPlateRenderer {
         };
         self.sprite
             .draw(device, encoder, dst, dst_format, dst_size, (x, y));
+        Some(crate::scale::Viewport {
+            x,
+            y,
+            width,
+            height,
+        })
     }
 }
 
@@ -623,8 +730,12 @@ mod tests {
         assert_eq!(px.len(), (w * h * 4) as usize);
         let white = px.chunks(4).filter(|p| *p == [240, 240, 240, 255]).count();
         assert!(white > 100, "{white} glyph pixels");
-        // Corners are the plate.
-        assert_eq!(&px[0..4], &[16, 72, 32, 225]);
+        // The menu's dark plate, with the tone's strip down the left edge.
+        let at = |x: u32, y: u32| &px[((y * w + x) * 4) as usize..][..4];
+        assert_eq!(at(w - 1, 0), &PLATE);
+        assert_eq!(at(0, 0), &accent(NoticeKind::Ready));
+        assert_eq!(at(ACCENT_W - 1, h - 1), &accent(NoticeKind::Ready));
+        assert_eq!(at(ACCENT_W, h - 1), &PLATE);
     }
 
     #[test]
@@ -673,7 +784,7 @@ mod tests {
             text: "Update failed".into(),
         };
         let mut overlay = OverlayRenderer::new(&ctx.device);
-        overlay.draw(
+        let drawn = overlay.draw(
             &ctx.device,
             &ctx.queue,
             &mut enc,
@@ -688,9 +799,22 @@ mod tests {
         // Outside the plate the frame shows through untouched.
         assert_eq!(at(2, 2), &[0, 0, 255, 255]);
         assert_eq!(at(w - 2, h - 2), &[0, 0, 255, 255]);
-        // Inside, the red plate blended over blue (alpha 225/255).
-        let p = at(14, 14);
-        assert!(p[0] > 70 && p[0] < 100 && p[2] > 20 && p[2] < 60, "{p:?}");
+        // Inside, the dark plate blended over blue (alpha 215/255), and
+        // the red strip down its left edge.
+        let p = at(MARGIN + ACCENT_W + 2, 14);
+        assert!(p[0] < 30 && p[2] > 30 && p[2] < 80, "{p:?}");
+        let strip = at(MARGIN, 14);
+        assert!(strip[0] > 240 && strip[1] > 95 && strip[1] < 125, "{strip:?}");
+        let (pw, ph, _) = rasterize(&notice);
+        assert_eq!(
+            drawn,
+            crate::scale::Viewport {
+                x: MARGIN,
+                y: MARGIN,
+                width: pw,
+                height: ph
+            }
+        );
     }
 
     #[test]
@@ -698,5 +822,41 @@ mod tests {
         let s = overlay_text(&"x".repeat(500));
         assert_eq!(s.len(), MAX_CHARS);
         assert!(s.ends_with("..."));
+    }
+
+    #[test]
+    fn a_crash_says_what_happened_and_offers_f5() {
+        use crate::GuestExit;
+        let long = format!("guest fault at 0x001c83d8: {}", "read of unmapped memory ".repeat(40));
+        let n = stopped_notice(&GuestExit::Failed(long)).unwrap();
+        assert_eq!(n.kind, NoticeKind::Crashed);
+        let lines: Vec<_> = n.text.lines().collect();
+        assert_eq!(lines[0], "The game crashed.");
+        assert!(lines[1].starts_with("guest fault at 0x001c83d8:"));
+        assert!(lines.iter().all(|l| l.chars().count() <= MAX_CHARS), "{lines:?}");
+        assert!(lines.contains(&"... (the rest is in the terminal)"));
+        assert!(lines.last().unwrap().starts_with("Press F5"));
+        assert!(lines.len() <= STOPPED_LINES + 4);
+
+        let b = Banner::new();
+        b.set(Some(n));
+        assert!(b.restart_offered());
+        let (_, h, _) = rasterize(&b.visible().unwrap());
+        assert!(h > 4 * LINE_HEIGHT, "draws every line");
+
+        b.set(Some(Notice { kind: NoticeKind::Info, text: "Running slower".into() }));
+        assert_eq!(b.visible().unwrap().kind, NoticeKind::Crashed, "a status thread can't paint over it");
+
+        let quit = stopped_notice(&GuestExit::Returned).unwrap();
+        assert!(quit.text.starts_with("The game stopped."));
+        assert!(stopped_notice(&GuestExit::StillRunning).is_none());
+        assert!(stopped_notice(&GuestExit::NotStarted).is_none());
+    }
+
+    #[test]
+    fn wrapping_breaks_at_spaces_and_splits_long_words() {
+        assert_eq!(wrap("aa bb cc", 5), ["aa bb", "cc"]);
+        assert_eq!(wrap("abcdefgh", 3), ["abc", "def", "gh"]);
+        assert_eq!(wrap("one\n\ntwo", 10), ["one", "two"]);
     }
 }

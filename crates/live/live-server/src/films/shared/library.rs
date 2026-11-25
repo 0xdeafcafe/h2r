@@ -1,11 +1,13 @@
 use super::*;
 
 pub(in crate::films) fn host_size(model: &Model, id: &str, source: Source<'_>) -> ApiResult<u64> {
+    // A pinned Live game holds its stats stream and its film file.
+    let film = model.films.film_files.get(id).map_or(0, |f| f.size);
     if let Some((size, _)) = model.films.downloads.get(id) {
-        return Ok(*size);
+        return Ok(*size + film);
     }
     if let Some(ranges) = source.ranges() {
-        return Ok(ranges.size);
+        return Ok(ranges.size + film);
     }
     if let Source::Game(g) = source
         && !g.has_host_film

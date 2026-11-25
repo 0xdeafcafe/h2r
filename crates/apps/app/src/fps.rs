@@ -9,19 +9,25 @@
 //! * `30` (the default) is exactly what the shell always did: a redraw when
 //!   the guest presents (and for the overlay and watermark), under the
 //!   `vsync` setting.
-//! * `60` and `120` redraw on their own clock ([`DisplaySchedule`]),
-//!   at that rate, under the `vsync` setting.
+//! * `60` and `120` redraw at every publish too, and on their own clock
+//!   ([`DisplaySchedule`]) only to fill a gap longer than one interval
+//!   since the last publish, under the `vsync` setting.
 //! * `uncapped` redraws as fast as the event loop turns, with vsync off.
 //!
-//! A scheduled redraw takes the newest published picture. Between guest
-//! frames this repeats the previous picture unless the host replay has
-//! published an interpolated frame.
+//! Above 30 the render thread publishes display frames between scenes
+//! (`native_render::frame_graph::display_rate`) on its own schedule. Each publish is drawn once: if the
+//! window sampled the mailbox on a grid of its own instead, two clocks at
+//! about the same rate would beat, dropping one made frame and repeating
+//! another several times a second (motion that stutters and lurches
+//! forward). A gap filler repeats the newest picture, so the overlay and
+//! marks still move at the display rate when no frame is made (menus,
+//! held frames, the display-rate loop off).
 //!
 //! The target can change while the window runs: [`FpsControl`] carries a
 //! new one from another thread (the Video screen's Frame Rate row), and
 //! the window picks it up at its next turn ([`follow`]): the schedule is
 //! retargeted and, when vsync must change (uncapped and back), the window
-//! surface is configured again.
+//! changes its display sync setting.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -225,11 +231,14 @@ impl DisplaySchedule {
         }
     }
 
-    /// At 30 the producer wakes the window to draw each new frame. Higher
-    /// rates sample the mailbox on the display grid, even if a new frame
-    /// arrives between slots.
-    pub fn redraw_on_publish(&self) -> bool {
-        self.interval.is_none()
+    /// A frame was published at `now` and the window draws it: the grid's
+    /// next redraw is one interval later, so the grid fills only gaps
+    /// between publishes and never draws a second picture into the same
+    /// slot. Nothing at 30 (no grid).
+    pub fn published(&mut self, now: Duration) {
+        if let Some(interval) = self.interval {
+            self.next = Some(now + interval);
+        }
     }
 
     /// Runs at `target` from the next call to [`due`](Self::due): the
@@ -346,18 +355,89 @@ mod tests {
     }
 
     #[test]
-    fn a_guest_publish_between_display_slots_waits_for_the_next_redraw() {
+    fn a_publish_moves_the_grid_so_it_only_fills_gaps() {
         let mut s = DisplaySchedule::new(FpsTarget::Thirty);
-        assert!(s.redraw_on_publish());
+        s.published(Duration::ZERO);
+        assert_eq!(s.next_due(), None, "30 has no grid");
         for target in [FpsTarget::Sixty, FpsTarget::OneTwenty] {
+            let interval = target.display_interval().unwrap();
             s.retarget(target);
             assert!(s.due(Duration::ZERO));
-            assert!(!s.redraw_on_publish());
-            assert!(!s.due(Duration::from_millis(4)));
-            assert!(s.due(target.display_interval().unwrap()));
+            // A publish 4 ms in is drawn at once; the grid's next slot is
+            // one interval after it, not at the old slot.
+            s.published(Duration::from_millis(4));
+            assert!(!s.due(interval));
+            assert!(s.due(Duration::from_millis(4) + interval));
         }
-        s.retarget(FpsTarget::Thirty);
-        assert!(s.redraw_on_publish());
+    }
+
+    /// Redraws a window makes in one second at `target` when frames are
+    /// published at `publish_hz` starting at `phase`, polled every 250 us:
+    /// (publish-driven, grid-filled after the first publish) redraws, and
+    /// the publishes that were never drawn on their own.
+    fn window(target: FpsTarget, publish_hz: u64, phase: Duration) -> (u64, u64, u64) {
+        let poll = Duration::from_micros(250);
+        let period = Duration::from_nanos(1_000_000_000 / publish_hz);
+        let mut s = DisplaySchedule::new(target);
+        let mut next_publish = phase;
+        let (mut on_publish, mut grid, mut unseen) = (0, 0, 0);
+        let mut pending = false;
+        let mut now = Duration::ZERO;
+        while now < Duration::from_secs(1) {
+            while next_publish <= now {
+                if pending {
+                    unseen += 1;
+                }
+                pending = true;
+                next_publish += period;
+            }
+            if pending {
+                // The window's wake: draw the new frame now.
+                s.published(now);
+                on_publish += 1;
+                pending = false;
+            } else if s.due(now) && on_publish > 0 {
+                grid += 1;
+            }
+            now += poll;
+        }
+        (on_publish, grid, unseen)
+    }
+
+    #[test]
+    fn every_made_frame_is_drawn_once_at_any_phase() {
+        // The replay publishing at 60 and 120 against windows at 60 and
+        // 120: no publish is replaced unseen and the grid adds nothing
+        // between publishes closer than its interval.
+        for phase_us in [0, 1_000, 4_000, 8_000, 12_500, 16_000] {
+            let phase = Duration::from_micros(phase_us);
+            let (shown, grid, unseen) = window(FpsTarget::Sixty, 60, phase);
+            assert_eq!(unseen, 0, "60 on 60, phase {phase_us} us");
+            assert!((59..=60).contains(&shown), "{shown}");
+            assert_eq!(grid, 0, "nothing between publishes");
+            let (shown, grid, unseen) = window(FpsTarget::OneTwenty, 120, phase);
+            assert_eq!(unseen, 0, "120 on 120, phase {phase_us} us");
+            assert!((119..=120).contains(&shown), "{shown}");
+            assert_eq!(grid, 0);
+        }
+    }
+
+    #[test]
+    fn the_grid_fills_between_slower_publishes_at_the_display_rate() {
+        // Guest frames alone (30 a second, no replay): 60 adds one repeat
+        // between them, 120 three, uncapped every turn.
+        let (shown, grid, unseen) = window(FpsTarget::Sixty, 30, Duration::ZERO);
+        assert_eq!((shown, unseen), (30, 0));
+        assert!((29..=30).contains(&grid), "{grid}");
+        let (shown, grid, _) = window(FpsTarget::OneTwenty, 30, Duration::ZERO);
+        assert_eq!(shown, 30);
+        assert!((89..=90).contains(&grid), "{grid}");
+        // The replay at 60 under a 120 window: one repeat between frames.
+        let (shown, grid, _) = window(FpsTarget::OneTwenty, 60, Duration::ZERO);
+        assert_eq!(shown, 60);
+        assert!((59..=60).contains(&grid), "{grid}");
+        // 30: publishes only.
+        assert_eq!(window(FpsTarget::Thirty, 30, Duration::ZERO), (30, 0, 0));
     }
 
     #[test]

@@ -16,7 +16,7 @@ use crate::map_select::Catalogue;
 use crate::new_maps::{Disc, IsoDisc};
 
 mod retail;
-pub(crate) use retail::LEAVE_SESSIONS;
+pub(crate) use retail::{CONTROLLER_COUNTDOWN, LEAVE_SESSIONS, SET_VARIANT};
 pub use retail::{Machine as PlayerlessLobby, SimStart};
 pub(crate) use retail::{SimOpen, SquadId};
 mod variants;

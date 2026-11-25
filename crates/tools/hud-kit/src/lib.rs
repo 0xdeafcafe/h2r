@@ -5,7 +5,7 @@
 //! `hud_kit_core`'s, shared with the game's runtime; this crate draws and
 //! checks them offline:
 //!
-//! - [`model`], [`huds`]: `hud_kit_core`'s, re-exported;
+//! - [`model`], [`views`]: `hud_kit_core`'s, re-exported;
 //! - [`rects`]: the retail rectangles an element sits beside;
 //! - [`hudg`]: the HUD globals the kit reads;
 //! - [`templates`]: the templates resolved through the HUD editor's
@@ -15,7 +15,7 @@
 //! - [`source`], [`synthetic`]: the disc and the invented map the
 //!   preview draws from;
 //! - [`preview`]: the 640 by 480 picture, its JSON, the sheet;
-//! - [`check`]: the ten checks.
+//! - [`check`]: the eleven checks.
 //!
 //! The kit draws nothing itself in the game: the runtime
 //! (`game::hud_kit`) hands the compiled records to the game's HUD. No
@@ -32,7 +32,7 @@ pub mod templates;
 
 pub use compile::{AsHudEdit, Compiled, compile};
 pub use hud_edit::Mode;
-pub use hud_kit_core::{huds, model};
+pub use hud_kit_core::{model, views};
 pub use model::{
     Anchor, Art, Describe, Element, Font, Hud, HudRef, Justify, Kind, Origin, PillPart, Place,
     Pulse, Style, Value, Values,

@@ -1,0 +1,787 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Rules",
+  "scopeName": "source.rules",
+  "fileTypes": [
+    "rules"
+  ],
+  "patterns": [
+    {
+      "include": "#comment"
+    },
+    {
+      "include": "#header"
+    },
+    {
+      "include": "#requires"
+    },
+    {
+      "include": "#header-lines"
+    },
+    {
+      "include": "#settings-block"
+    },
+    {
+      "include": "#label-declaration"
+    },
+    {
+      "include": "#declarations"
+    },
+    {
+      "include": "#expression"
+    }
+  ],
+  "repository": {
+    "comment": {
+      "patterns": [
+        {
+          "match": "(//)\\s*#?(?:end)?region\\b.*$",
+          "name": "comment.line.double-slash.region.rules",
+          "captures": {
+            "1": {
+              "name": "punctuation.definition.comment.rules"
+            }
+          }
+        },
+        {
+          "match": "(//).*$",
+          "name": "comment.line.double-slash.rules",
+          "captures": {
+            "1": {
+              "name": "punctuation.definition.comment.rules"
+            }
+          }
+        }
+      ]
+    },
+    "header": {
+      "comment": "rules \"Name\" 1: the script's name.",
+      "match": "\\b(rules)\\s+(\")((?:[^\"\\\\]|\\\\.)*)(\")",
+      "captures": {
+        "1": {
+          "name": "keyword.other.declaration.rules"
+        },
+        "2": {
+          "name": "string.quoted.double.rules punctuation.definition.string.begin.rules"
+        },
+        "3": {
+          "name": "string.quoted.double.rules entity.name.section.rules"
+        },
+        "4": {
+          "name": "string.quoted.double.rules punctuation.definition.string.end.rules"
+        }
+      }
+    },
+    "requires": {
+      "comment": "requires player.weapons, hud.message: the capability list runs to the end of the line.",
+      "begin": "\\b(requires)\\b",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.other.declaration.rules"
+        }
+      },
+      "end": "(?=//)|$",
+      "name": "meta.requires.rules",
+      "patterns": [
+        {
+          "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*\\b",
+          "name": "support.constant.capability.rules"
+        },
+        {
+          "match": ",",
+          "name": "punctuation.separator.comma.rules"
+        }
+      ]
+    },
+    "header-lines": {
+      "comment": "The header words type, uses, use, points, about and quick: words only at the start of a line, where the next token is what the parser looks for (a name, a string). In a handler they are names.",
+      "patterns": [
+        {
+          "comment": "type koth, uses slayer: the game type and the built-in game a script plays.",
+          "match": "^\\s*(type|uses)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.declaration.rules"
+            },
+            "2": {
+              "name": "support.constant.type.rules"
+            }
+          }
+        },
+        {
+          "comment": "points \"Laps\"",
+          "begin": "^\\s*(points)\\b(?=\\s*\")",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.other.declaration.rules"
+            }
+          },
+          "end": "(?=//)|$",
+          "name": "meta.points.rules",
+          "patterns": [
+            {
+              "include": "#string"
+            }
+          ]
+        },
+        {
+          "comment": "use \"waves.rules\": another file's declarations, read in at this line.",
+          "begin": "^\\s*(use)\\b(?=\\s*\")",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.other.declaration.rules"
+            }
+          },
+          "end": "(?=//)|$",
+          "name": "meta.use.rules",
+          "patterns": [
+            {
+              "include": "#string"
+            }
+          ]
+        },
+        {
+          "comment": "about \"No shields. 50 points to win.\"",
+          "begin": "^\\s*(about)\\b(?=\\s*\")",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.other.declaration.rules"
+            }
+          },
+          "end": "(?=//)|$",
+          "name": "meta.about.rules",
+          "patterns": [
+            {
+              "include": "#string"
+            }
+          ]
+        },
+        {
+          "comment": "quick score_limit, starting_weapon: the marks run to the end of the line.",
+          "begin": "^\\s*(quick)\\b(?=\\s+[A-Za-z_])",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.other.declaration.rules"
+            }
+          },
+          "end": "(?=//)|$",
+          "name": "meta.quick.rules",
+          "patterns": [
+            {
+              "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b",
+              "name": "variable.other.property.setting.rules"
+            },
+            {
+              "match": ",",
+              "name": "punctuation.separator.comma.rules"
+            }
+          ]
+        }
+      ]
+    },
+    "settings-block": {
+      "comment": "settings { name = value }: one setting a line, or ; between them. A bare name after = is a choice's value.",
+      "begin": "^\\s*(settings)\\s*(\\{)",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.other.declaration.rules"
+        },
+        "2": {
+          "name": "punctuation.section.braces.begin.rules"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.section.braces.end.rules"
+        }
+      },
+      "name": "meta.settings.rules",
+      "patterns": [
+        {
+          "include": "#comment"
+        },
+        {
+          "match": "(?<![A-Za-z0-9_.])([A-Za-z_][A-Za-z0-9_]*)\\s*(?==(?!=))",
+          "captures": {
+            "1": {
+              "name": "variable.other.property.setting.rules"
+            }
+          }
+        },
+        {
+          "match": "(=)\\s*(?!(?:true|false|none)\\b)([A-Za-z_][A-Za-z0-9_]*)\\s*(?=;|\\}|//|$)",
+          "captures": {
+            "1": {
+              "name": "keyword.operator.assignment.rules"
+            },
+            "2": {
+              "name": "variable.other.enummember.rules"
+            }
+          }
+        },
+        {
+          "include": "#expression"
+        }
+      ]
+    },
+    "label-declaration": {
+      "comment": "label name: kind requirements = \"map text\"; the requirement words are words only here.",
+      "begin": "\\b(label)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.other.declaration.rules"
+        },
+        "2": {
+          "name": "entity.name.label.rules"
+        }
+      },
+      "end": "(?=//)|$",
+      "name": "meta.label.rules",
+      "patterns": [
+        {
+          "match": "\\b(at|least|most|exactly|numbered|per)\\b",
+          "name": "keyword.other.requirement.rules"
+        },
+        {
+          "include": "#types"
+        },
+        {
+          "include": "#string"
+        },
+        {
+          "include": "#number"
+        },
+        {
+          "include": "#operators"
+        },
+        {
+          "include": "#punctuation"
+        }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "comment": "teams 2 (the header line; elsewhere teams is a set)",
+          "match": "\\b(teams)\\s+(?=[0-9])",
+          "captures": {
+            "1": {
+              "name": "keyword.other.declaration.rules"
+            }
+          }
+        },
+        {
+          "comment": "enum Name { a, b }",
+          "begin": "\\b(enum)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(\\{)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.other.declaration.rules"
+            },
+            "2": {
+              "name": "entity.name.type.enum.rules"
+            },
+            "3": {
+              "name": "punctuation.section.braces.begin.rules"
+            }
+          },
+          "end": "\\}",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.section.braces.end.rules"
+            }
+          },
+          "name": "meta.enum.rules",
+          "patterns": [
+            {
+              "include": "#comment"
+            },
+            {
+              "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b",
+              "name": "variable.other.enummember.rules"
+            },
+            {
+              "match": ",",
+              "name": "punctuation.separator.comma.rules"
+            }
+          ]
+        },
+        {
+          "match": "\\b(enum)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.declaration.rules"
+            },
+            "2": {
+              "name": "entity.name.type.enum.rules"
+            }
+          }
+        },
+        {
+          "comment": "fn name(a: type, b: type)",
+          "begin": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(\\()",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.other.declaration.rules"
+            },
+            "2": {
+              "name": "entity.name.function.rules"
+            },
+            "3": {
+              "name": "punctuation.section.parens.begin.rules"
+            }
+          },
+          "end": "\\)",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.section.parens.end.rules"
+            }
+          },
+          "name": "meta.function.parameters.rules",
+          "patterns": [
+            {
+              "include": "#comment"
+            },
+            {
+              "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=:)",
+              "captures": {
+                "1": {
+                  "name": "variable.parameter.rules"
+                }
+              }
+            },
+            {
+              "include": "#types"
+            },
+            {
+              "include": "#enum-type"
+            },
+            {
+              "include": "#operators"
+            },
+            {
+              "include": "#punctuation"
+            }
+          ]
+        },
+        {
+          "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.declaration.rules"
+            },
+            "2": {
+              "name": "entity.name.function.rules"
+            }
+          }
+        },
+        {
+          "comment": "on kill(victim, killer)",
+          "match": "\\b(on)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.declaration.rules"
+            },
+            "2": {
+              "name": "entity.name.function.event.rules"
+            }
+          }
+        },
+        {
+          "comment": "option name: int 1..5 = 1",
+          "match": "\\b(option)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.declaration.rules"
+            },
+            "2": {
+              "name": "variable.other.constant.option.rules"
+            }
+          }
+        },
+        {
+          "comment": "const name = expr",
+          "match": "\\b(const)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.declaration.rules"
+            },
+            "2": {
+              "name": "variable.other.constant.rules"
+            }
+          }
+        },
+        {
+          "comment": "global var x, player var x, team var x, object var x",
+          "match": "\\b(global|player|team|object)\\s+(var)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "storage.modifier.scope.rules"
+            },
+            "2": {
+              "name": "keyword.other.declaration.rules"
+            },
+            "3": {
+              "name": "variable.other.definition.rules"
+            }
+          }
+        },
+        {
+          "match": "\\b(var)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.declaration.rules"
+            },
+            "2": {
+              "name": "variable.other.definition.rules"
+            }
+          }
+        },
+        {
+          "comment": "table name: (c: type) = [...]",
+          "match": "\\b(table)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.declaration.rules"
+            },
+            "2": {
+              "name": "variable.other.table.rules"
+            }
+          }
+        },
+        {
+          "comment": "let name = expr, if let k = killer",
+          "match": "\\b(let)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.declaration.rules"
+            },
+            "2": {
+              "name": "variable.other.local.rules"
+            }
+          }
+        }
+      ]
+    },
+    "expression": {
+      "patterns": [
+        {
+          "include": "#comment"
+        },
+        {
+          "include": "#string"
+        },
+        {
+          "include": "#number"
+        },
+        {
+          "include": "#capability"
+        },
+        {
+          "include": "#enum-access"
+        },
+        {
+          "include": "#variant"
+        },
+        {
+          "include": "#is-label"
+        },
+        {
+          "include": "#keywords"
+        },
+        {
+          "include": "#types"
+        },
+        {
+          "include": "#api-call"
+        },
+        {
+          "include": "#function-call"
+        },
+        {
+          "include": "#operators"
+        },
+        {
+          "include": "#member-access"
+        },
+        {
+          "include": "#punctuation"
+        }
+      ]
+    },
+    "string": {
+      "begin": "\"",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.begin.rules"
+        }
+      },
+      "end": "\"|$",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.end.rules"
+        }
+      },
+      "name": "string.quoted.double.rules",
+      "patterns": [
+        {
+          "match": "\\\\[\"\\\\n]",
+          "name": "constant.character.escape.rules"
+        },
+        {
+          "match": "\\\\.",
+          "name": "invalid.illegal.unknown-escape.rules"
+        },
+        {
+          "match": "\\{\\{|\\}\\}",
+          "name": "constant.character.escape.brace.rules"
+        },
+        {
+          "include": "#template-hole"
+        }
+      ]
+    },
+    "template-hole": {
+      "comment": "A message hole: {name}. {{ and }} write a brace.",
+      "begin": "\\{",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.template-expression.begin.rules"
+        }
+      },
+      "end": "\\}|(?=\")|$",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.template-expression.end.rules"
+        }
+      },
+      "name": "meta.template.expression.rules",
+      "patterns": [
+        {
+          "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b",
+          "name": "variable.other.readwrite.rules"
+        }
+      ]
+    },
+    "number": {
+      "patterns": [
+        {
+          "comment": "A time literal: a unit s or t right after the number, with no name character after it.",
+          "match": "\\b[0-9]+(?:\\.[0-9]+)?[st]\\b",
+          "name": "constant.numeric.time.rules"
+        },
+        {
+          "match": "\\b[0-9]+\\.[0-9]+",
+          "name": "constant.numeric.fixed.rules"
+        },
+        {
+          "match": "\\b[0-9]+",
+          "name": "constant.numeric.integer.rules"
+        }
+      ]
+    },
+    "capability": {
+      "comment": "A known capability outside requires, as in grant(p, forge.place, budget 20).",
+      "match": "\\b(?:game\\.traits|player\\.(?:traits|team|spawn|weapons|disguise|camera)|objects\\.(?:create|delete|move)|ai\\.squads|hud\\.(?:message|superbounce)|firefight\\.director|forge\\.(?:move|delete|place|scale))\\b(?!\\s*\\()",
+      "name": "support.constant.capability.rules"
+    },
+    "enum-access": {
+      "comment": "Type.variant: an enum's name starts with a capital letter by convention.",
+      "match": "\\b([A-Z][A-Za-z0-9_]*)\\s*(\\.)\\s*([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": {
+          "name": "entity.name.type.enum.rules"
+        },
+        "2": {
+          "name": "punctuation.accessor.rules"
+        },
+        "3": {
+          "name": "variable.other.enummember.rules"
+        }
+      }
+    },
+    "enum-type": {
+      "match": "\\b[A-Z][A-Za-z0-9_]*\\b",
+      "name": "entity.name.type.rules"
+    },
+    "variant": {
+      "comment": "variant.<field>: the game variant's settings.",
+      "match": "\\b(variant)\\b(?:\\s*(\\.)\\s*([A-Za-z_][A-Za-z0-9_]*))?",
+      "captures": {
+        "1": {
+          "name": "variable.language.variant.rules"
+        },
+        "2": {
+          "name": "punctuation.accessor.rules"
+        },
+        "3": {
+          "name": "variable.other.property.variant.rules"
+        }
+      }
+    },
+    "is-label": {
+      "comment": "x is goal: a label membership test.",
+      "match": "\\b(is)\\s+(?!(?:not|none|true|false)\\b)([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": {
+          "name": "keyword.operator.word.is.rules"
+        },
+        "2": {
+          "name": "entity.name.label.rules"
+        }
+      }
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "match": "\\b(rules|teams|requires|option|palette|enum|global|var|table|fn|on|label|const|let)\\b",
+          "name": "keyword.other.declaration.rules"
+        },
+        {
+          "match": "\\b(if|else|match)\\b",
+          "name": "keyword.control.conditional.rules"
+        },
+        {
+          "match": "\\b(for|each|where)\\b",
+          "name": "keyword.control.loop.rules"
+        },
+        {
+          "match": "\\b(and|or|not)\\b",
+          "name": "keyword.operator.word.logical.rules"
+        },
+        {
+          "match": "\\b(is)\\b",
+          "name": "keyword.operator.word.is.rules"
+        },
+        {
+          "match": "\\b(true|false)\\b",
+          "name": "constant.language.boolean.rules"
+        },
+        {
+          "match": "\\b(none)\\b",
+          "name": "constant.language.none.rules"
+        },
+        {
+          "match": "\\b(text|budget)\\b",
+          "name": "keyword.other.rules"
+        },
+        {
+          "match": "\\b(all)\\b(?!\\s*[(.])",
+          "name": "constant.language.all.rules"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "match": "\\b(int|bool|fixed|time|timer|squad|Class|class|tag|weapon|zone|player|team|object)\\b",
+          "name": "storage.type.rules"
+        },
+        {
+          "match": "\\b(players|teams|objectives|objects|zones|spawns)\\b",
+          "name": "storage.type.set.rules"
+        }
+      ]
+    },
+    "api-call": {
+      "comment": "The game API's entries (caps::ENTRIES) and the language's built-in functions.",
+      "match": "\\b(alive|carrier_of|clamp|count|create|deaths|delete|end_round|erase_squad|ff_finish|ff_lives|ff_player_score|ff_respawn|ff_round|ff_score|ff_skull|ff_target|ff_team_finish|ff_team_lives|ff_wave|first|forge_delete|forge_move|forge_place|forge_scale|give|grant|granted|hide_area|hunt|inside|is_objective|kills|label_number|len|lives|max|message|min|now|object_team|pick|place_squad|place_squad_at|player_of|player_score|random|register_objective|reset_objective|respawn|revoke|role_traits|round_time_left|score|seconds|set_body|set_gravity|set_lives|set_loadout|set_team|show_area|spawn_areas|spawn_near|spawn_objective|squad|squad_alive|take|team_of|team_score|ticks|ticks_held|whole_seconds|zone_distance|zone_id|zone_seen|zone_team_distance)\\s*(?=\\()",
+      "captures": {
+        "1": {
+          "name": "support.function.rules"
+        }
+      }
+    },
+    "function-call": {
+      "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+      "captures": {
+        "1": {
+          "name": "entity.name.function.call.rules"
+        }
+      }
+    },
+    "member-access": {
+      "match": "(\\.)\\s*([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": {
+          "name": "punctuation.accessor.rules"
+        },
+        "2": {
+          "name": "variable.other.property.rules"
+        }
+      }
+    },
+    "operators": {
+      "patterns": [
+        {
+          "match": "->",
+          "name": "keyword.operator.arrow.rules"
+        },
+        {
+          "match": "\\.\\.",
+          "name": "keyword.operator.range.rules"
+        },
+        {
+          "match": "==|!=|<=|>=|<|>",
+          "name": "keyword.operator.comparison.rules"
+        },
+        {
+          "match": "=",
+          "name": "keyword.operator.assignment.rules"
+        },
+        {
+          "match": "[+*/%-]",
+          "name": "keyword.operator.arithmetic.rules"
+        },
+        {
+          "match": "\\?",
+          "name": "keyword.operator.optional.rules"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "match": "\\{",
+          "name": "punctuation.section.braces.begin.rules"
+        },
+        {
+          "match": "\\}",
+          "name": "punctuation.section.braces.end.rules"
+        },
+        {
+          "match": "\\(",
+          "name": "punctuation.section.parens.begin.rules"
+        },
+        {
+          "match": "\\)",
+          "name": "punctuation.section.parens.end.rules"
+        },
+        {
+          "match": "\\[",
+          "name": "punctuation.section.brackets.begin.rules"
+        },
+        {
+          "match": "\\]",
+          "name": "punctuation.section.brackets.end.rules"
+        },
+        {
+          "match": ",",
+          "name": "punctuation.separator.comma.rules"
+        },
+        {
+          "match": ":",
+          "name": "punctuation.separator.colon.rules"
+        },
+        {
+          "match": ";",
+          "name": "punctuation.terminator.statement.rules"
+        },
+        {
+          "match": "\\.",
+          "name": "punctuation.accessor.rules"
+        }
+      ]
+    }
+  }
+}

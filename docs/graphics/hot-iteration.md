@@ -83,6 +83,7 @@ by re-registering (pipelines); nothing else on the host caches tag data.
 |---|---|---|
 | a shader's postprocess colours (`postprocess[0].colors[n].color`) and vectors (`vectors[n].vector`) | next frame | read at each draw into pixel and vertex constants (E `0x0001717b`, `0x00017039`; docs/formats/shader-instances.md) |
 | a shader's bitmap (`postprocess[0].bitmaps[n].bitmap`, a `bitm` datum) | next frame | read at each draw (E `0x00016f60`); the texture is the other bitmap's, already resident or loaded by the game's own cache |
+| a shader bitmap slot's image and LOD offset (`postprocess[0].bitmaps[n].image`, `.lod_offset`) | next frame | read at each draw with the datum (E `0x00016f60`, `0x0001b15c`); `shad.txt` marks them `applies=frame` |
 | bytes the D3D device made a host copy of | next draw that samples them | the write barrier (above) |
 | an override file, a parameter, the `overrides` toggle | next frame | the provider's once-a-frame look at the hub |
 | the shader `parameters` block | never by itself | the draw path does not read it (shad.txt): edit the postprocess |

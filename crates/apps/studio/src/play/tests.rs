@@ -18,6 +18,36 @@ use super::testing::fake::{Game, PLAYER_AT, SCNR, UNIT, VEHICLE, until};
 use super::*;
 use crate::app::{Action, App};
 
+#[test]
+fn in_game_reloads_the_script_on_studios_paired_game() {
+    use crate::api::Api;
+    use crate::app::{Doc, rules_edit::ReloadState};
+
+    let (_temp, game, mut app, mut play) = paired("preview-rules", "example", SessionKind::Local);
+    let endpoint = Endpoint::Unix(game.path.clone());
+    play.child_endpoint = Some(endpoint.clone());
+    let mut link = play.link_view(&app);
+    link.own = Some(OwnGame {
+        level: "example".into(),
+        socket: endpoint.to_string(),
+        editor: true,
+        running: true,
+    });
+    app.pairing.link = Some(link.into());
+    app.rules.new_blank();
+    app.dispatch(Action::OpenDoc(Doc::Rules));
+    app.dispatch(Action::PreviewInGame(Some(Doc::Rules)));
+    Api::new().run_preview_asks(&mut app);
+
+    until(&mut play, &mut app, "script preview reply", |_, app| {
+        matches!(app.rules.reload, ReloadState::Done(_))
+    });
+    let (params, _) = crate::app::rules_edit::reload_params(&app.rules.text, app.rules.mode).unwrap();
+    assert_eq!(game.calls(agent_proto::rules::method::RELOAD), [params]);
+    assert_eq!(app.pairing.panel, pair::PanelMode::Own);
+    assert!(app.preview.focus_game);
+}
+
 /// The editor with the invented map open as `example`.
 pub(super) fn editor(t: &Temp) -> App {
     let mut app = App::new();
@@ -271,11 +301,42 @@ fn reloading_a_play_copy_uses_the_layout_at_save_time() {
             FieldValue::Vec3([3., 4., 5.]),
         ))
         .unwrap();
-    until(&mut play, &mut app, "the field in the reloaded block", |p, a| {
-        !game.calls("edit.batch").is_empty()
-            && p.edits.sent.is_none()
-            && a.pairing.pending.is_empty()
-    });
+    // The invented game streams no weapon objects, so the moved weapon has
+    // no live object to follow: its one Pending row says the change applies
+    // at its next creation. Not `until`: a timeout here says whether the
+    // batch never went out or another row stayed, and which.
+    let only_creation_row = |pending: &[Value]| {
+        matches!(pending, [row] if row["doc"] == "object"
+            && row["path"] == "weapons[0]"
+            && tag_sync::Effect::is_reload(row)
+            && row["why"].as_str().is_some_and(|why| why.contains("no live object")))
+    };
+    let end = Instant::now() + Duration::from_secs(25);
+    loop {
+        play.update(&mut app);
+        if !game.calls("edit.batch").is_empty()
+            && play.edits.sent.is_none()
+            && only_creation_row(app.pairing.pending.as_slice())
+        {
+            break;
+        }
+        if Instant::now() >= end {
+            let rows: Vec<String> = app.pairing.pending.iter()
+                .map(|row| format!("{} {} [{}]: {}", row["doc"], row["path"], row["effect"], row["why"]))
+                .collect();
+            panic!(
+                "timed out waiting for the field in the reloaded block; pending: {rows:?}; \
+                 edit.batch calls: {}; batch in flight: {}; live_edits: {}; \
+                 has world.placement.edit: {}; log: {:?}",
+                game.calls("edit.batch").len(),
+                play.edits.sent.is_some(),
+                play.live_edits,
+                play.has_method(agent_proto::sim::method::PLACEMENT_EDIT),
+                app.log().iter().map(|l| &l.status).collect::<Vec<_>>(),
+            );
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
     let calls = game.calls("edit.batch");
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0]["writes"].as_array().unwrap().len(), 1);
@@ -811,8 +872,10 @@ fn map_identity_accepts_case_differences_for_live_edits() {
     });
 }
 
+/// A copy of the first element shifts the second, which other blocks may
+/// index, so the block is not given to the game as a move.
 #[test]
-fn a_grown_tag_block_stays_under_reload() {
+fn a_grown_tag_block_that_shifts_elements_stays_under_reload() {
     use crate::app::tag_tests::{WEAP, weap_id};
     let (_t, game, mut app, mut play) = tag_pair("grow-tag");
     play.apply_edits(&mut app, Apply::Send).unwrap();
@@ -826,7 +889,7 @@ fn a_grown_tag_block_stays_under_reload() {
         tag: weap_id(),
         pair: WEAP + 8,
         layout: layout.clone(),
-        op: crate::app::BlockOp::Add,
+        op: crate::app::BlockOp::Duplicate(0),
     }));
     play.push_edits(&mut app);
     assert!(app.pairing.pending.iter().any(tag_sync::Effect::is_reload));
@@ -1477,7 +1540,7 @@ fn send_confirmation_covers_the_step_and_both_edit_revisions() {
         tag,
         pair: crate::app::tag_tests::WEAP + 8,
         layout: layout.clone(),
-        op: crate::app::BlockOp::Add,
+        op: crate::app::BlockOp::Duplicate(0),
     }));
     assert!(play.playtest(&mut app, Some((before_layout, "send".into()))).is_err());
     play.playtest(&mut app, None).unwrap();
@@ -1559,3 +1622,39 @@ fn playtest_reloads_for_failed_object_edits_and_resumes_for_receipts() {
 }
 
 mod conflict_paths;
+mod shader_override;
+
+#[test]
+fn the_mirror_follows_the_panel_mode_between_two_games() {
+    let (_t, attached, mut app, mut play) = paired("follow-mode", "example", SessionKind::Local);
+    let own = Game::start("follow-mode-own", "example", SessionKind::Local);
+    let (a, o) = (Endpoint::Unix(attached.path.clone()), Endpoint::Unix(own.path.clone()));
+    // The game this editor started, as `run_launch` records it.
+    play.child_endpoint = Some(o.clone());
+    assert_eq!(play.attached_endpoint.as_ref(), Some(&a));
+
+    play.follow(&mut app, pair::PanelMode::Own);
+    assert_eq!(app.pairing.panel, pair::PanelMode::Own);
+    // The switch leaves the attached game: answer its keep-or-restore.
+    assert!(app.pairing.leaving);
+    play.apply_edits(&mut app, Apply::Keep).unwrap();
+    until(&mut play, &mut app, "the mirror on the own game", |p, _| {
+        p.is_paired() && p.endpoint() == Some(&o) && p.session.is_some()
+    });
+    // The own game is not remembered as the attached one.
+    assert_eq!(play.attached_endpoint.as_ref(), Some(&a));
+
+    play.follow(&mut app, pair::PanelMode::Attached);
+    assert_eq!(app.pairing.panel, pair::PanelMode::Attached);
+    // Leaving the own game asks the same answer.
+    assert!(app.pairing.leaving);
+    play.apply_edits(&mut app, Apply::Keep).unwrap();
+    until(&mut play, &mut app, "the mirror back on the attached game", |p, _| {
+        p.is_paired() && p.endpoint() == Some(&a) && p.session.is_some()
+    });
+
+    // The own game ending leaves the panel on the attached game.
+    app.pairing.panel = pair::PanelMode::Own;
+    play.child_gone(&mut app);
+    assert_eq!(app.pairing.panel, pair::PanelMode::Attached);
+}

@@ -1,0 +1,18 @@
+// Assault: a built-in matchmaking variant of the default Live lineup
+// (live_proto::hopper::defaults). The built-in game it uses scores the
+// game; the settings are the hopper defaults writer's (0x00193010: settings 12 to 14
+// cleared) and this variant's own. docs/live/live-matchmaking.md, "6.8 The default set".
+rules "Assault" 1
+type assault
+uses assault
+about "Two rounds of one bomb, one score each, three minutes a round."
+
+settings {
+    rounds = 2
+    score_limit = 1
+    time_limit = 180s
+    ctf_flag_type = 1
+    setting_twelve = false
+    setting_thirteen = false
+    join_in_progress = 0
+}

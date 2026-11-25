@@ -1,6 +1,9 @@
 use std::sync::mpsc::{Receiver, sync_channel};
 use std::time::Duration;
 
+// The base calls are the session's `World` calls.
+use ::forge::World as _;
+
 use agent_proto::{
     Object,
     sim::{SessionKind, SessionView},
@@ -764,6 +767,9 @@ fn local_agent_reads_the_session_and_reports_a_refused_proposal() {
         fn status(&self) -> Result<Value, String> {
             Ok(json!({"session":"local"}))
         }
+        fn session(&self) -> Result<Arc<::forge::Session>, String> {
+            Err("Waiting for a local multiplayer map.".into())
+        }
         fn document(&self) -> Result<forge_doc::ForgeDoc, String> {
             Ok(draft())
         }
@@ -952,4 +958,1380 @@ fn a_teleporter_link_stages_one_channel_write_after_the_objects() {
     );
     assert!(result.unwrap_err().contains("not a teleporter"));
     assert_eq!(session.document().ops.len(), 1);
+}
+
+// ---- the base calls (docs/game/forge-map-variants.md, "Applying an edit in a session") ----
+
+/// A session with no objects of its own, to stage base calls over.
+fn base_session() -> ::forge::Session {
+    let limits = forge_doc::Limits {
+        world: Some(forge_doc::WorldBounds {
+            min: [-8.0; 3],
+            max: [8.0; 3],
+        }),
+        base_counts: [(::forge::BlockKind::Weapons, 4)].into(),
+        ..Default::default()
+    };
+    ::forge::Session::new(draft(), limits, vec![], 3).unwrap()
+}
+
+fn base_guard() -> local::Guard {
+    local::Guard {
+        scenario: SCENARIO,
+        generation: 1,
+        admitted: |_, _| true,
+    }
+}
+
+#[test]
+fn each_base_call_stages_one_step_on_the_call_queue() {
+    use ::forge::{BlockKind, Frame};
+    use base::{BaseStep, FieldValue, RowBytes};
+    use calls::ForgeStep;
+    let session = base_session();
+    let q = calls::shared();
+    calls::lock(&q).arm();
+    let frame = Frame {
+        position: [1.0, 2.0, 3.0],
+        rotation: [0.5, 0.0, 0.0],
+    };
+    let kept = vec![7; map::scenario_layout::block(BlockKind::Weapons).stride as usize];
+    let mut edit = stage(&session, &q, base_guard(), |_, w| {
+        w.base_move(BlockKind::Weapons, 2, frame)?;
+        w.base_field(
+            BlockKind::Weapons,
+            2,
+            "scale",
+            &forge_doc::Value::Float(forge_doc::F32::new(2.0).unwrap()),
+        )?;
+        // A tag key resolves to the datum the game holds when the edit is applied.
+        w.base_field(
+            BlockKind::Weapons,
+            2,
+            "palette index",
+            &forge_doc::Value::Tag(Some(forge_doc::TagKey {
+                group: "weap".into(),
+                path: "objects\\fixture".into(),
+            })),
+        )?;
+        w.base_inert(BlockKind::Weapons, 2)?;
+        w.base_restore(BlockKind::Weapons, 2, &kept)
+    });
+    let (steps, result) = answer(&q, &mut edit, Ok(json!({"handles":[]})));
+    assert!(result.is_ok());
+    let block = BlockKind::Weapons;
+    assert_eq!(
+        steps,
+        [
+            ForgeStep::Base(BaseStep::Move {
+                block,
+                index: 2,
+                frame
+            }),
+            ForgeStep::Base(BaseStep::Field {
+                block,
+                index: 2,
+                field: "scale",
+                value: FieldValue::Float(2.0),
+            }),
+            ForgeStep::Base(BaseStep::Field {
+                block,
+                index: 2,
+                field: "palette index",
+                value: FieldValue::Palette { datum: TAG },
+            }),
+            ForgeStep::Base(BaseStep::Inert { block, index: 2 }),
+            ForgeStep::Base(BaseStep::Restore {
+                block,
+                index: 2,
+                row: RowBytes::new(block, &kept).unwrap(),
+            }),
+        ]
+    );
+    assert!(!calls::lock(&q).has_pending());
+}
+
+#[test]
+fn a_base_call_the_layout_does_not_allow_is_refused_while_staging() {
+    use ::forge::{BlockKind, Frame};
+    let session = base_session();
+    let q = calls::shared();
+    calls::lock(&q).arm();
+    let float = forge_doc::Value::Float(forge_doc::F32::new(1.0).unwrap());
+    let refuse = |call: &dyn Fn(&mut local::ForgeWorld) -> Result<(), String>, says: &str| {
+        let error =
+            local::ForgeWorld::apply(&session, &q, base_guard(), |_| Ok(TAG), |_, w| call(w))
+                .err()
+                .unwrap();
+        assert!(error.contains(says), "{error} does not say {says}");
+    };
+    refuse(
+        &|w| w.base_field(BlockKind::Weapons, 0, "no such field", &float),
+        "no field",
+    );
+    refuse(
+        &|w| {
+            w.base_field(
+                BlockKind::Weapons,
+                0,
+                "name index",
+                &forge_doc::Value::Int(1),
+            )
+        },
+        "read-only",
+    );
+    refuse(
+        &|w| w.base_field(BlockKind::Weapons, 0, "scale", &forge_doc::Value::Int(1)),
+        "another kind of value",
+    );
+    refuse(
+        &|w| {
+            w.base_field(
+                BlockKind::Weapons,
+                0,
+                "placement flags",
+                &forge_doc::Value::Int(-1),
+            )
+        },
+        "another kind of value",
+    );
+    refuse(&|w| w.base_restore(BlockKind::Weapons, 0, &[0; 3]), "bytes");
+    refuse(
+        &|w| w.base_move(BlockKind::StartingEquipment, 0, Frame::default()),
+        "no position",
+    );
+    // Nothing was submitted by any of them.
+    assert!(!calls::lock(&q).has_pending());
+}
+
+#[test]
+// Each block lists its 0xff ranges; most have one.
+#[allow(clippy::single_range_in_vec_init)]
+fn the_inert_row_is_the_kits_spare_form_for_every_block() {
+    use ::forge::BlockKind::*;
+    // The marks `forge-build`'s `kit.rs` (`Block::entry`) gives a reserved
+    // row: the byte ranges that are 0xff; every other byte is zero.
+    let marks: &[(::forge::BlockKind, &[std::ops::Range<usize>])] = &[
+        (Scenery, &[0..4]),
+        (Vehicles, &[0..4]),
+        (Equipment, &[0..4]),
+        (Weapons, &[0..4]),
+        (Machines, &[0..4]),
+        (SoundScenery, &[0..4]),
+        (Crates, &[0..4]),
+        (StartingLocations, &[0x2c..0x2e]),
+        (NetgameFlags, &[0x10..0x12]),
+        (NetgameEquipment, &[0x58..0x60]),
+        (StartingEquipment, &[]),
+    ];
+    assert_eq!(marks.len(), map::scenario_layout::BLOCKS.len());
+    for (block, ranges) in marks {
+        let row = base::inert_row(*block);
+        assert_eq!(
+            row.len(),
+            map::scenario_layout::block(*block).stride as usize
+        );
+        assert!(row.len() <= base::ROW_MAX);
+        for (i, byte) in row.iter().enumerate() {
+            let marked = ranges.iter().any(|r| r.contains(&i));
+            assert_eq!(
+                *byte,
+                if marked { 0xff } else { 0 },
+                "{block:?} byte {i:#x}"
+            );
+        }
+    }
+}
+
+// ---- the map's things over the agent API (docs/game/forge-map-variants.md, slice M10) ----
+
+mod things {
+    use std::sync::{Arc, Mutex};
+
+    use ::forge::look::{Refusal, monitors::Who};
+    use ::forge::{BaseRow, BaseRows, BlockKind, Frame, PaletteItem, Session};
+    use agent_proto::forge::{THING_KINDS, refusal};
+    use forge_doc::{
+        Edit, Endpoint, Entry, EntryOp, F32, FieldWrite, ForgeDoc, Op, OpId, Print, Sha256, TagKey,
+        Value,
+    };
+    use serde_json::{Value as Json, json};
+
+    use super::{Harness, draft, game};
+    use crate::forge::local::{self, LocalApi, ProposalReply};
+    use agent_proto::{code, forge::method};
+
+    /// A world that takes every call, as the game does at its next tick.
+    #[derive(Default)]
+    struct Takes {
+        next: u32,
+        base: Vec<(BlockKind, u32)>,
+    }
+
+    impl ::forge::World for Takes {
+        fn place(&mut self, _: &PaletteItem, _: Frame) -> Result<u32, String> {
+            self.next += 1;
+            Ok(self.next)
+        }
+        fn move_object(&mut self, _: u32, _: Frame) -> Result<(), String> {
+            Ok(())
+        }
+        fn delete(&mut self, _: u32) -> Result<(), String> {
+            Ok(())
+        }
+        fn respawn(&mut self, i: &PaletteItem, f: Frame) -> Result<u32, String> {
+            self.place(i, f)
+        }
+        fn base_move(&mut self, block: BlockKind, index: u32, _: Frame) -> Result<(), String> {
+            self.base.push((block, index));
+            Ok(())
+        }
+        fn base_field(
+            &mut self,
+            block: BlockKind,
+            index: u32,
+            _: &str,
+            _: &Value,
+        ) -> Result<(), String> {
+            self.base.push((block, index));
+            Ok(())
+        }
+        fn base_inert(&mut self, block: BlockKind, index: u32) -> Result<(), String> {
+            self.base.push((block, index));
+            Ok(())
+        }
+        fn base_restore(&mut self, block: BlockKind, index: u32, _: &[u8]) -> Result<(), String> {
+            self.base.push((block, index));
+            Ok(())
+        }
+    }
+
+    /// The session's host: a session over two weapons of the map's own,
+    /// with the crates block left out, applying each proposal at once.
+    struct Host(Mutex<Arc<Session>>);
+
+    impl LocalApi for Host {
+        fn who(&self, _: Option<&dyn engine::GuestMemory>) -> Who {
+            Who {
+                profile: "default".into(),
+                colour: 0,
+            }
+        }
+        fn look(&self, _: &Who, _: Option<u64>) -> Result<Json, Refusal> {
+            unreachable!("the look is not this test's")
+        }
+        fn look_set(&self, _: &Who, _: Json) -> Result<Json, Refusal> {
+            unreachable!("the look is not this test's")
+        }
+        fn monitors(&self, _: &Who) -> Json {
+            json!({"monitors": []})
+        }
+        fn status(&self) -> Result<Json, String> {
+            let s = self.0.lock().unwrap();
+            Ok(json!({
+                "session": "local",
+                "variant": local::variant_status(s.document(), Some("Arena"), !s.log().is_empty()),
+            }))
+        }
+        fn session(&self) -> Result<Arc<Session>, String> {
+            Ok(self.0.lock().unwrap().clone())
+        }
+        fn document(&self) -> Result<ForgeDoc, String> {
+            Ok(self.0.lock().unwrap().document().clone())
+        }
+        fn log(&self, since: u32) -> Result<Vec<Entry>, String> {
+            let s = self.0.lock().unwrap();
+            Ok(s.log().iter().filter(|e| e.seq > since).cloned().collect())
+        }
+        fn input(
+            &self,
+            _: &dyn engine::GuestMemory,
+            _: ::forge::tool::Input,
+        ) -> Result<(), String> {
+            Err("Forge input requires the active local session.".into())
+        }
+        fn propose(&self, tick: u32, op: Op, was: Option<Sha256>) -> Result<ProposalReply, String> {
+            let mut held = self.0.lock().unwrap();
+            let mut session = Session::clone(&held);
+            let result = session.propose(&mut Takes::default(), tick, op, was);
+            if result.is_ok() {
+                *held = Arc::new(session);
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            tx.send(result).unwrap();
+            Ok(rx)
+        }
+    }
+
+    fn vec3(v: [f32; 3]) -> Value {
+        Value::Vec3(v.map(|c| F32::new(c).unwrap()))
+    }
+
+    fn weapon_fields(x: f32) -> Vec<Value> {
+        vec![
+            Value::Tag(Some(TagKey {
+                group: "weap".into(),
+                path: r"fixture\rifle".into(),
+            })),
+            Value::Int(-1),
+            Value::Int(0),
+            vec3([x, 0., 0.]),
+            vec3([0., 0., 0.]),
+            Value::Float(F32::new(0.).unwrap()),
+        ]
+    }
+
+    fn weapon(index: u32, x: f32) -> BaseRow {
+        let fields = weapon_fields(x);
+        BaseRow {
+            block: BlockKind::Weapons,
+            index,
+            raw: vec![
+                index as u8 + 1;
+                map::scenario_layout::block(BlockKind::Weapons).stride as usize
+            ],
+            print: forge_doc::print(BlockKind::Weapons, &fields).unwrap(),
+            fields,
+        }
+    }
+
+    fn host() -> Host {
+        let limits = forge_doc::Limits {
+            world: Some(forge_doc::WorldBounds {
+                min: [-8.0; 3],
+                max: [8.0; 3],
+            }),
+            base_counts: [(BlockKind::Weapons, 2), (BlockKind::Crates, 2)].into(),
+            ..Default::default()
+        };
+        let session = Session::new(draft(), limits, vec![], 3)
+            .unwrap()
+            .with_base(BaseRows {
+                rows: vec![weapon(0, -3.), weapon(1, 4.)],
+                left_out: vec!["crates: the loaded scenario has 1 rows, the map 2".into()],
+            });
+        Host(Mutex::new(Arc::new(session)))
+    }
+
+    fn set_position(id: u32, target: Endpoint, x: f32) -> Op {
+        Op {
+            id: OpId(id),
+            edit: Edit::Entry(EntryOp::Set {
+                target,
+                write: FieldWrite {
+                    field: "position".into(),
+                    value: vec3([x, 0., 0.]),
+                },
+            }),
+        }
+    }
+
+    /// Propose `params` and read the reply the tick after.
+    fn propose(h: &Harness, game: &mut super::Game, params: Json) -> Json {
+        h.send(method::PROPOSE, params);
+        h.agent.on_tick(game);
+        game.tick += 1;
+        h.agent.on_tick(game);
+        h.reply()
+    }
+
+    #[test]
+    fn things_entry_ops_and_the_variant_answer_and_a_refusal_carries_its_name() {
+        let h = Harness::new();
+        let mut game = game(1);
+        local::install(&h.agent, host());
+        let methods = h.ok(&mut game, agent_proto::method::METHODS, Json::Null);
+        for name in [method::THINGS, method::STATUS] {
+            assert!(methods.as_array().unwrap().contains(&json!(name)), "{name}");
+        }
+
+        // forge.things: every own entry with its endpoint, print and fields,
+        // and the blocks left out.
+        let listed = h.ok(&mut game, method::THINGS, Json::Null);
+        let things = listed["things"].as_array().unwrap();
+        assert_eq!(things.len(), 2);
+        let print = forge_doc::print(BlockKind::Weapons, &weapon_fields(-3.)).unwrap();
+        let target = Endpoint::Base {
+            block: BlockKind::Weapons,
+            index: 0,
+            print: Some(print),
+        };
+        assert_eq!(things[0]["id"], json!(target));
+        assert_eq!(things[0]["kind"], THING_KINDS[0]);
+        assert_eq!(things[0]["block"], "weapons");
+        assert_eq!(things[0]["own"], true);
+        assert_eq!(things[0]["changed"], false);
+        assert_eq!(things[0]["position"], json!([-3., 0., 0.]));
+        assert_eq!(things[0]["fields"]["position"], json!(vec3([-3., 0., 0.])));
+        assert_eq!(
+            listed["left_out"][0],
+            "crates: the loaded scenario has 1 rows, the map 2"
+        );
+        assert_eq!(
+            h.ok(&mut game, method::THINGS, json!({"kind": "goal"}))["things"],
+            json!([])
+        );
+        for bad in [json!({"kind": "flag"}), json!({"block": "weapons"})] {
+            assert_eq!(
+                h.call(&mut game, method::THINGS, bad)["error"]["code"],
+                code::INVALID_PARAMS
+            );
+        }
+
+        // forge.status: the variant, unchanged.
+        let status = h.ok(&mut game, method::STATUS, Json::Null);
+        assert_eq!(status["variant"]["name"], "Arena");
+        assert_eq!(status["variant"]["tier"], "variant");
+        assert_eq!(status["variant"]["dirty"], false);
+        assert_eq!(
+            status["variant"]["id"],
+            json!(forge_doc::play_form(&draft()).id().unwrap())
+        );
+
+        // forge.propose takes an entry op naming the thing by its endpoint.
+        let moved = propose(&h, &mut game, json!({"op": set_position(1, target, -2.)}));
+        assert!(moved["error"].is_null(), "{moved}");
+        assert_eq!(moved["result"]["entry"]["seq"], 1);
+        let changed = h.ok(&mut game, method::THINGS, json!({"changed": true}));
+        assert_eq!(changed["things"].as_array().unwrap().len(), 1);
+        assert_eq!(changed["things"][0]["id"], json!(target));
+        assert_eq!(changed["things"][0]["position"], json!([-2., 0., 0.]));
+        let status = h.ok(&mut game, method::STATUS, Json::Null);
+        assert_eq!(status["variant"]["dirty"], true);
+        assert_eq!(
+            status["variant"]["tier"], "variant",
+            "entry ops keep it a variant"
+        );
+        assert!(status["variant"]["id"].is_string(), "{status}");
+
+        // A print that is not the entry's is refused by name, and the log
+        // stays where it was.
+        let stranger = Endpoint::Base {
+            block: BlockKind::Weapons,
+            index: 1,
+            print: Some(Print([0; 8])),
+        };
+        let refused = propose(&h, &mut game, json!({"op": set_position(2, stranger, 1.)}));
+        assert_eq!(refused["error"]["code"], code::INVALID_REQUEST);
+        assert_eq!(
+            refused["error"]["data"]["code"],
+            refusal::PRINT,
+            "{refused}"
+        );
+        // A `was` that is not the value's.
+        let refused = propose(
+            &h,
+            &mut game,
+            json!({"op": set_position(3, target, 0.), "was": Sha256::of(b"another value")}),
+        );
+        assert_eq!(refused["error"]["data"]["code"], refusal::WAS, "{refused}");
+        // An entry of the block left out.
+        let crate_entry = Endpoint::Base {
+            block: BlockKind::Crates,
+            index: 0,
+            print: Some(Print([1; 8])),
+        };
+        let refused = propose(
+            &h,
+            &mut game,
+            json!({"op": set_position(4, crate_entry, 0.)}),
+        );
+        assert_eq!(
+            refused["error"]["data"]["code"],
+            refusal::LEFT_OUT,
+            "{refused}"
+        );
+        assert_eq!(
+            h.ok(&mut game, method::LOG, Json::Null)["entries"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn forge_proposes_and_lists_areas_on_own_and_added_flags() {
+        let h = Harness::new();
+        let mut game = game(1);
+        let block = BlockKind::NetgameFlags;
+        let limits = forge_doc::Limits {
+            world: Some(forge_doc::WorldBounds {
+                min: [-8.0; 3],
+                max: [8.0; 3],
+            }),
+            base_counts: [(block, 4)].into(),
+            ..Default::default()
+        };
+        let rows = [10, 11, 11, 11]
+            .into_iter()
+            .enumerate()
+            .map(|(index, kind)| {
+                let fields = vec![
+                    vec3([index as f32, 0., 0.]),
+                    Value::Float(F32::new(0.).unwrap()),
+                    Value::Int(kind),
+                    Value::Int(8),
+                    Value::Int(0),
+                ];
+                BaseRow {
+                    block,
+                    index: index as u32,
+                    raw: vec![0; map::scenario_layout::block(block).stride as usize],
+                    print: forge_doc::print(block, &fields).unwrap(),
+                    fields,
+                }
+            })
+            .collect();
+        let session = Session::new(draft(), limits, vec![], 0).unwrap().with_base(BaseRows {
+            rows,
+            left_out: vec![],
+        });
+        local::install(&h.agent, Host(Mutex::new(Arc::new(session))));
+
+        let listed = h.ok(&mut game, method::THINGS, json!({"kind": "goal"}));
+        let target = &listed["things"][0]["id"];
+        let hill = &listed["things"][1]["id"];
+        assert_eq!(listed["things"][0].get("area"), Some(&Json::Null));
+        let area = json!({"radius":{"radius":"40000000","below":"3f000000","above":"3fc00000"}});
+        let edit = |id, target: &Json, area: &Json| {
+            json!({"op":{"id":id,"edit":{"entry":{"area":{"target":target,"area":area}}}}})
+        };
+        let crossing = json!({"path":{
+            "points":[["00000000","00000000"],["40800000","40000000"],
+                      ["40800000","00000000"],["00000000","3f800000"]],
+            "below":"3f000000","above":"3fc00000"
+        }});
+        let refused = propose(&h, &mut game, edit(1, target, &crossing));
+        assert_eq!(refused["error"]["data"]["code"], refusal::REFUSED);
+        assert_eq!(
+            refused["error"]["message"],
+            "The path crosses itself: the edge after point 1 meets the edge after point 3."
+        );
+        let refused = propose(&h, &mut game, edit(2, hill, &area));
+        assert_eq!(refused["error"]["data"]["code"], refusal::REFUSED);
+        assert_eq!(refused["error"]["message"], "a hill with corners takes no area");
+        let accepted = propose(&h, &mut game, edit(3, target, &area));
+        assert_eq!(accepted["result"]["entry"]["seq"], 1, "{accepted}");
+        let changed = h.ok(&mut game, method::THINGS, json!({"changed":true}));
+        assert_eq!(changed["things"].as_array().unwrap().len(), 1);
+        assert_eq!(changed["things"][0]["area"], area);
+
+        let added = propose(&h, &mut game, json!({"op":{"id":4,"edit":{"placement":{"add":{
+            "block":"netgame_flags","fields":[{"field":"type","value":{"int":12}}]
+        }}}}}));
+        assert_eq!(added["result"]["entry"]["seq"], 2, "{added}");
+        let added_id = json!({"added":4});
+        let accepted = propose(&h, &mut game, edit(5, &added_id, &area));
+        assert_eq!(accepted["result"]["entry"]["seq"], 3, "{accepted}");
+        let cleared = propose(&h, &mut game, edit(6, target, &Json::Null));
+        assert_eq!(cleared["result"]["entry"]["seq"], 4, "{cleared}");
+        let changed = h.ok(&mut game, method::THINGS, json!({"kind":"goal","changed":true}));
+        assert_eq!(changed["things"].as_array().unwrap().len(), 1);
+        assert_eq!(changed["things"][0]["id"], added_id);
+        assert_eq!(changed["things"][0]["area"], area);
+    }
+
+    #[test]
+    fn each_refusal_sentence_has_its_name() {
+        for (sentence, name) in [
+            (
+                format!(
+                    "{}: crate.0000001f is no longer in the world",
+                    local::OBJECT_GONE
+                ),
+                refusal::OBJECT_GONE,
+            ),
+            (
+                format!(
+                    "{}: live sound scenery objects cannot be moved",
+                    local::OBJECT_KIND
+                ),
+                refusal::OBJECT_KIND,
+            ),
+            (
+                format!(
+                    "{}: the weapons 2 object is held or attached",
+                    local::OBJECT_HELD
+                ),
+                refusal::OBJECT_HELD,
+            ),
+            (
+                forge_doc::Refusal::Print {
+                    block: BlockKind::NetgameFlags,
+                    index: 12,
+                }
+                .to_string(),
+                refusal::PRINT,
+            ),
+            (forge_doc::Refusal::Mismatch.to_string(), refusal::WAS),
+            (
+                format!("The map's crates entries {}.", ::forge::LEFT_OUT_SENTENCE),
+                refusal::LEFT_OUT,
+            ),
+            ("Forge edit log is full.".to_owned(), refusal::REFUSED),
+        ] {
+            assert_eq!(local::refusal_name(&sentence), name, "{sentence}");
+        }
+    }
+
+    // ---- a shared session over the agent API (docs/game/forge-design.md, F5) ----
+
+    mod shared {
+        use std::sync::{Arc, Mutex};
+
+        use ::forge::SessionAdmit;
+        use ::forge::net::{
+            Admit, Beat, DocOnly, HOST_SEAT, Lane, NetRefusal, Node, Role, Seat, Step,
+        };
+
+        use super::*;
+        use crate::forge::net::{self as shared_net, Replies};
+
+        #[derive(Default)]
+        struct Pipe {
+            bytes: Vec<u8>,
+            beat: Option<Beat>,
+        }
+
+        /// One end of the session's reliable ordered channel.
+        #[derive(Clone)]
+        struct Wire {
+            out: Arc<Mutex<Pipe>>,
+            inn: Arc<Mutex<Pipe>>,
+        }
+
+        fn wires() -> (Wire, Wire) {
+            let (a, b) = (Arc::default(), Arc::default());
+            (
+                Wire {
+                    out: Arc::clone(&a),
+                    inn: Arc::clone(&b),
+                },
+                Wire { out: b, inn: a },
+            )
+        }
+
+        impl Lane for Wire {
+            fn send(&mut self, bytes: &[u8]) -> bool {
+                self.out.lock().unwrap().bytes.extend_from_slice(bytes);
+                true
+            }
+            fn recv(&mut self) -> Vec<u8> {
+                std::mem::take(&mut self.inn.lock().unwrap().bytes)
+            }
+            fn set_beat(&mut self, beat: Option<Beat>) {
+                self.out.lock().unwrap().beat = beat;
+            }
+            fn beat(&self) -> Option<Beat> {
+                self.inn.lock().unwrap().beat
+            }
+        }
+
+        struct Mach<A: Admit> {
+            node: Node<A, Wire>,
+            session: Session,
+            world: Takes,
+            name: &'static str,
+        }
+
+        impl<A: Admit> Mach<A> {
+            fn step(&mut self, tick: u32) -> Step {
+                let out = self.session.take_outgoing();
+                if !out.is_empty() {
+                    self.node.submit(out).unwrap();
+                }
+                let step = self.node.tick(tick).unwrap();
+                if let Some(state) = &step.joined {
+                    let seat = self.node.seat().unwrap();
+                    self.session = self.session.clone().share(seat, self.name);
+                    self.session.sync_to(&mut self.world, state).unwrap();
+                }
+                for item in &step.items {
+                    self.session.apply_item(&mut self.world, item).unwrap();
+                }
+                step
+            }
+        }
+
+        fn limits() -> forge_doc::Limits {
+            forge_doc::Limits {
+                world: Some(forge_doc::WorldBounds {
+                    min: [-8.0; 3],
+                    max: [8.0; 3],
+                }),
+                base_counts: [(BlockKind::Weapons, 2), (BlockKind::Crates, 2)].into(),
+                ..Default::default()
+            }
+        }
+
+        fn session() -> Session {
+            Arc::try_unwrap(host().0.into_inner().unwrap()).unwrap()
+        }
+
+        /// The host machine, one guest, and the proposals the guest has
+        /// sent to the agent API.
+        struct Machines {
+            host: Mach<SessionAdmit>,
+            guest: Mach<DocOnly>,
+            replies: Replies,
+            tick: u32,
+        }
+
+        impl Machines {
+            fn new() -> Self {
+                let host_session = session().share(HOST_SEAT, "Host");
+                let mut host = Mach {
+                    node: Node::host(
+                        host_session.document().clone(),
+                        limits(),
+                        host_session.admit(),
+                        "Host",
+                        0,
+                        ::forge::net::APPLY_DELAY,
+                    )
+                    .unwrap(),
+                    session: host_session,
+                    world: Takes::default(),
+                    name: "Host",
+                };
+                let (to_host, to_guest) = wires();
+                host.node.accept(Seat(1), to_guest, Role::Editor).unwrap();
+                let guest = Mach {
+                    node: Node::guest(limits(), "Guest", forge::look::session::CanDraw::default(), to_host).unwrap(),
+                    session: session(),
+                    world: Takes::default(),
+                    name: "Guest",
+                };
+                Self {
+                    host,
+                    guest,
+                    replies: Replies::default(),
+                    tick: 0,
+                }
+            }
+
+            fn step(&mut self) {
+                self.tick += 1;
+                self.host.step(self.tick);
+                self.guest.step(self.tick);
+                let settled = self.guest.node.take_settled();
+                self.replies.settle(settled);
+            }
+        }
+
+        /// The agent on the guest machine.
+        struct NetApi(Arc<Mutex<Machines>>);
+
+        impl LocalApi for NetApi {
+            fn who(&self, _: Option<&dyn engine::GuestMemory>) -> Who {
+                Who {
+                    profile: "default".into(),
+                    colour: 0,
+                }
+            }
+            fn look(&self, _: &Who, _: Option<u64>) -> Result<Json, Refusal> {
+                unreachable!("the look is not this test's")
+            }
+            fn look_set(&self, _: &Who, _: Json) -> Result<Json, Refusal> {
+                unreachable!("the look is not this test's")
+            }
+            fn monitors(&self, _: &Who) -> Json {
+                json!({"monitors": []})
+            }
+            fn status(&self) -> Result<Json, String> {
+                let m = self.0.lock().unwrap();
+                Ok(shared_net::status(
+                    json!({"session": "local"}),
+                    &m.guest.node.report(),
+                ))
+            }
+            fn session(&self) -> Result<Arc<Session>, String> {
+                Ok(Arc::new(self.0.lock().unwrap().guest.session.clone()))
+            }
+            fn document(&self) -> Result<ForgeDoc, String> {
+                Ok(self.0.lock().unwrap().guest.session.document().clone())
+            }
+            fn log(&self, since: u32) -> Result<Vec<Entry>, String> {
+                Ok(self.0.lock().unwrap().guest.node.log_since(since))
+            }
+            fn input(
+                &self,
+                _: &dyn engine::GuestMemory,
+                _: ::forge::tool::Input,
+            ) -> Result<(), String> {
+                Err("Forge input requires the active local session.".into())
+            }
+            fn propose(&self, _: u32, op: Op, was: Option<Sha256>) -> Result<ProposalReply, String> {
+                let mut m = self.0.lock().unwrap();
+                let nonce = m.guest.node.propose(op, was).map_err(|e| e.named())?;
+                Ok(m.replies.wait_for(nonce))
+            }
+            fn wait_ticks(&self) -> u64 {
+                shared_net::WAIT_TICKS
+            }
+        }
+
+        /// Send `params` and step the machines and the game until the
+        /// agent answers.
+        fn ask(
+            h: &Harness,
+            game: &mut super::super::Game,
+            net: &Arc<Mutex<Machines>>,
+            name: &str,
+            params: Json,
+        ) -> Json {
+            h.send(name, params);
+            for _ in 0..400 {
+                net.lock().unwrap().step();
+                game.tick += 1;
+                h.agent.on_tick(game);
+                if let Ok(raw) = h.replies.try_recv() {
+                    return serde_json::from_str(&raw).unwrap();
+                }
+            }
+            panic!("{name} was not answered");
+        }
+
+        fn weapon_target() -> Endpoint {
+            Endpoint::Base {
+                block: BlockKind::Weapons,
+                index: 0,
+                print: Some(forge_doc::print(BlockKind::Weapons, &weapon_fields(-3.)).unwrap()),
+            }
+        }
+
+        #[test]
+        fn status_log_and_propose_work_over_a_network_session() {
+            let h = Harness::new();
+            let mut game = game(2);
+            let net = Arc::new(Mutex::new(Machines::new()));
+            local::install(&h.agent, NetApi(net.clone()));
+            for _ in 0..12 {
+                net.lock().unwrap().step();
+            }
+
+            // forge.status: the session is shared, and says whose seat this is.
+            let status = ask(&h, &mut game, &net, method::STATUS, Json::Null)["result"].clone();
+            assert_eq!(status["session"], "shared");
+            assert_eq!(status["role"], "editor");
+            let report = &status["net"];
+            assert_eq!(
+                (report["host"].clone(), report["seat"].clone(), report["name"].clone()),
+                (json!(false), json!(1), json!("Guest"))
+            );
+            assert_eq!(report["members"].as_array().unwrap().len(), 2);
+            assert_eq!(report["members"][0]["name"], "Host");
+            assert_eq!(report["head"]["seq"], 0);
+            assert!(report["ended"].is_null());
+
+            // forge.propose goes to the host and answers with the entry the
+            // stream carried, once this machine has applied it.
+            let target = weapon_target();
+            let moved = ask(
+                &h,
+                &mut game,
+                &net,
+                method::PROPOSE,
+                json!({"op": set_position(2, target, -2.)}),
+            );
+            assert!(moved["error"].is_null(), "{moved}");
+            assert_eq!(moved["result"]["entry"]["seq"], 1);
+            assert_eq!(moved["result"]["entry"]["author"], "Guest");
+
+            // Every machine has it, and forge.log and forge.things say so.
+            {
+                let m = net.lock().unwrap();
+                assert_eq!(m.host.session.document(), m.guest.session.document());
+                assert_eq!(m.host.session.head(), m.guest.session.head());
+            }
+            let log = ask(&h, &mut game, &net, method::LOG, json!({"since": 0}));
+            assert_eq!(log["result"]["entries"].as_array().unwrap().len(), 1);
+            assert_eq!(log["result"]["entries"][0]["author"], "Guest");
+            let log = ask(&h, &mut game, &net, method::LOG, json!({"since": 1}));
+            assert_eq!(log["result"]["entries"], json!([]));
+            let changed = ask(&h, &mut game, &net, method::THINGS, json!({"changed": true}));
+            assert_eq!(changed["result"]["things"][0]["position"], json!([-2., 0., 0.]));
+            let status = ask(&h, &mut game, &net, method::STATUS, Json::Null)["result"].clone();
+            assert_eq!(status["net"]["head"]["seq"], 1);
+            assert_eq!(status["net"]["in_flight"], 0);
+
+            // The host's refusals keep their names.
+            let refused = ask(
+                &h,
+                &mut game,
+                &net,
+                method::PROPOSE,
+                json!({"op": set_position(3, target, 1.)}),
+            );
+            assert_eq!(refused["error"]["code"], code::INVALID_REQUEST);
+            assert_eq!(refused["error"]["data"]["code"], refusal::LANE, "{refused}");
+            let refused = ask(
+                &h,
+                &mut game,
+                &net,
+                method::PROPOSE,
+                json!({"op": set_position(18, target, 0.), "was": Sha256::of(b"another value")}),
+            );
+            assert_eq!(refused["error"]["data"]["code"], refusal::WAS, "{refused}");
+            net.lock()
+                .unwrap()
+                .host
+                .node
+                .set_role(Seat(1), Role::Player)
+                .unwrap();
+            let refused = ask(
+                &h,
+                &mut game,
+                &net,
+                method::PROPOSE,
+                json!({"op": set_position(18, target, 0.)}),
+            );
+            assert_eq!(refused["error"]["data"]["code"], refusal::ROLE, "{refused}");
+            for _ in 0..8 {
+                net.lock().unwrap().step();
+            }
+            let status = ask(&h, &mut game, &net, method::STATUS, Json::Null)["result"].clone();
+            assert_eq!(status["role"], "player");
+
+            // Nothing was added to the log by any of them.
+            assert_eq!(net.lock().unwrap().host.node.state().unwrap().log().len(), 1);
+        }
+
+        #[test]
+        fn a_proposal_before_the_session_has_joined_is_refused_by_name() {
+            let h = Harness::new();
+            let mut game = game(2);
+            let net = Arc::new(Mutex::new(Machines::new()));
+            local::install(&h.agent, NetApi(net.clone()));
+            // No tick has run: the welcome has not come.
+            h.send(method::PROPOSE, json!({"op": set_position(2, weapon_target(), 1.)}));
+            h.agent.on_tick(&mut game);
+            let reply = h.reply();
+            assert_eq!(reply["error"]["data"]["code"], refusal::NOT_JOINED, "{reply}");
+        }
+
+        #[test]
+        fn every_net_refusal_keeps_its_name_through_the_api() {
+            for r in [
+                NetRefusal::NotJoined,
+                NetRefusal::Role { role: Role::Player },
+                NetRefusal::Held { by: "A".into() },
+                NetRefusal::NotHolding,
+                NetRefusal::Stale { proposed: 1, head: 2 },
+                NetRefusal::Ahead { proposed: 3, head: 2 },
+                NetRefusal::Lane { id: OpId(3) },
+                NetRefusal::Doc(forge_doc::Refusal::Mismatch),
+                NetRefusal::Doc(forge_doc::Refusal::DuplicateOp(OpId(1))),
+                NetRefusal::Map("Object budget exceeded (2 / 1).".into()),
+                NetRefusal::Seat,
+                NetRefusal::Name,
+                NetRefusal::HeadDiffers { seat: Seat(1), seq: 1 },
+                NetRefusal::Clock { now: 1, was: 2 },
+            ] {
+                assert!(refusal::SHARED.contains(&r.code()), "{r:?}");
+                assert_eq!(local::refusal_name(&r.named()), r.code(), "{r:?}");
+            }
+        }
+
+        #[test]
+        fn proposals_waiting_when_the_session_ends_are_refused() {
+            let mut replies = Replies::default();
+            let one = replies.wait_for(1);
+            let two = replies.wait_for(2);
+            replies.settle(vec![::forge::net::Settled {
+                nonce: 1,
+                result: Err("forge_held: A is holding that.".into()),
+            }]);
+            assert_eq!(one.try_recv().unwrap().unwrap_err(), "forge_held: A is holding that.");
+            assert_eq!(replies.len(), 1);
+            replies.end("The host left.");
+            assert!(two.try_recv().unwrap().unwrap_err().starts_with("forge_not_joined: "));
+            assert!(replies.is_empty());
+        }
+    }
+}
+
+// ---- the AI ground over the agent API (docs/game/forge-map-variants.md, "AI ground") ----
+
+mod ground {
+    use std::sync::{Arc, Mutex};
+
+    use ::forge::look::{Refusal, monitors::Who};
+    use ::forge::{
+        BlockKind, Frame, GroundBuilder, GroundLabel, GroundProblem, GroundReceipt, GroundRecipe,
+        GroundReport, PaletteItem, Session,
+    };
+    use agent_proto::forge::method;
+    use forge_doc::{Entry, ForgeDoc, Op, Sha256};
+    use serde_json::{Value as Json, json};
+
+    use super::{Harness, draft, game};
+    use crate::forge::ground::NO_BUILDER;
+    use crate::forge::local::{self, GroundReply, LocalApi, ProposalReply};
+
+    /// A world that is never asked: a marker places nothing.
+    struct Quiet;
+
+    impl ::forge::World for Quiet {
+        fn place(&mut self, _: &PaletteItem, _: Frame) -> Result<u32, String> {
+            unreachable!("a marker places nothing")
+        }
+        fn respawn(&mut self, _: &PaletteItem, _: Frame) -> Result<u32, String> {
+            unreachable!("a marker places nothing")
+        }
+        fn move_object(&mut self, _: u32, _: Frame) -> Result<(), String> {
+            unreachable!("a marker places nothing")
+        }
+        fn delete(&mut self, _: u32) -> Result<(), String> {
+            unreachable!("a marker places nothing")
+        }
+    }
+
+    /// A builder that makes an invented report, or refuses.
+    struct Kit {
+        refuse: bool,
+    }
+
+    impl GroundBuilder for Kit {
+        fn recipe(&self) -> GroundRecipe {
+            GroundRecipe {
+                kit_version: 3,
+                home: 1,
+                probe: false,
+            }
+        }
+
+        fn build(&mut self, _: &ForgeDoc) -> Result<GroundReport, String> {
+            if self.refuse {
+                return Err("No room: the sectors take 9 KB too many.".into());
+            }
+            Ok(GroundReport {
+                zones: 2,
+                squads: 16,
+                problems: vec![GroundProblem {
+                    label: "ff_drop".into(),
+                    position: [1., 2., 0.],
+                    reason: "off the walkable area".into(),
+                }],
+                receipt: Some(GroundReceipt {
+                    base: "aa11".into(),
+                    labels: "bb22".into(),
+                    kit_version: 3,
+                }),
+            })
+        }
+    }
+
+    /// A session host that builds with [`Kit`] when `builds`, as the game's
+    /// does with its own builder, and answers at once.
+    struct Host {
+        session: Mutex<Arc<Session>>,
+        builds: Option<bool>,
+    }
+
+    impl LocalApi for Host {
+        fn who(&self, _: Option<&dyn engine::GuestMemory>) -> Who {
+            Who {
+                profile: "default".into(),
+                colour: 0,
+            }
+        }
+        fn look(&self, _: &Who, _: Option<u64>) -> Result<Json, Refusal> {
+            unreachable!("the look is not this test's")
+        }
+        fn look_set(&self, _: &Who, _: Json) -> Result<Json, Refusal> {
+            unreachable!("the look is not this test's")
+        }
+        fn monitors(&self, _: &Who) -> Json {
+            json!({"monitors": []})
+        }
+        fn status(&self) -> Result<Json, String> {
+            Ok(json!({"session": "local"}))
+        }
+        fn session(&self) -> Result<Arc<Session>, String> {
+            Ok(self.session.lock().unwrap().clone())
+        }
+        fn document(&self) -> Result<ForgeDoc, String> {
+            Ok(self.session.lock().unwrap().document().clone())
+        }
+        fn log(&self, _: u32) -> Result<Vec<Entry>, String> {
+            Ok(vec![])
+        }
+        fn input(
+            &self,
+            _: &dyn engine::GuestMemory,
+            _: ::forge::tool::Input,
+        ) -> Result<(), String> {
+            Err("Forge input requires the active local session.".into())
+        }
+        fn propose(&self, _: u32, _: Op, _: Option<Sha256>) -> Result<ProposalReply, String> {
+            Err("not this test's".into())
+        }
+        fn ground(&self) -> Result<Json, String> {
+            Ok(crate::forge::ground::reply(
+                &*self.session()?,
+                crate::forge::ground::Facts {
+                    available: self.builds.is_some(),
+                    ..Default::default()
+                },
+            ))
+        }
+        fn ground_build(&self, if_stale: bool) -> Result<GroundReply, String> {
+            let refuse = self.builds.ok_or(NO_BUILDER)?;
+            let mut held = self.session.lock().unwrap();
+            let mut session = Session::clone(&held);
+            let mut kit = Kit { refuse };
+            let result = if if_stale {
+                session.ensure_ground(&mut kit)
+            } else {
+                session.build_ground(&mut kit).map(|_| true)
+            }
+            .map(|built| {
+                let mut reply = crate::forge::ground::reply(
+                    &session,
+                    crate::forge::ground::Facts {
+                        available: true,
+                        ..Default::default()
+                    },
+                );
+                reply["built"] = json!(built);
+                *held = Arc::new(session);
+                reply
+            });
+            let (tx, rx) = std::sync::mpsc::channel();
+            tx.send(result).unwrap();
+            Ok(rx)
+        }
+    }
+
+    fn host(builds: Option<bool>, markers: usize) -> Host {
+        let limits = forge_doc::Limits {
+            world: Some(forge_doc::WorldBounds {
+                min: [-8.0; 3],
+                max: [8.0; 3],
+            }),
+            base_counts: [(BlockKind::NetgameFlags, 2)].into(),
+            ..Default::default()
+        };
+        let mut session = Session::new(draft(), limits, vec![], 3).unwrap();
+        for i in 0..markers {
+            session
+                .place_marker(
+                    &mut Quiet,
+                    1 + i as u32,
+                    GroundLabel::Drop,
+                    Frame {
+                        position: [1. + i as f32, 2., 0.],
+                        rotation: [0.5, 0., 0.],
+                    },
+                    0,
+                    None,
+                )
+                .unwrap();
+        }
+        Host {
+            session: Mutex::new(Arc::new(session)),
+            builds,
+        }
+    }
+
+    /// Send `params` and read the reply the tick after.
+    fn ask(h: &Harness, game: &mut super::Game, method: &str, params: Json) -> Json {
+        h.send(method, params);
+        h.agent.on_tick(game);
+        game.tick += 1;
+        h.agent.on_tick(game);
+        h.reply()
+    }
+
+    #[test]
+    fn the_ground_before_any_build_has_its_markers_and_no_report() {
+        let h = Harness::new();
+        let mut game = game(1);
+        local::install(&h.agent, host(None, 2));
+        let methods = h.ok(&mut game, agent_proto::method::METHODS, Json::Null);
+        for name in [method::GROUND, method::GROUND_BUILD] {
+            assert!(methods.as_array().unwrap().contains(&json!(name)), "{name}");
+        }
+
+        let ground = h.ok(&mut game, method::GROUND, Json::Null);
+        assert_eq!(ground["state"], "not_built");
+        assert_eq!(ground["available"], false);
+        assert_eq!(ground["building"], false);
+        assert_eq!(ground["recipe"], Json::Null);
+        assert_eq!(ground["report"], Json::Null);
+        assert_eq!(ground["problems"], json!([]));
+        assert_eq!(ground["counts"]["ff_drop"], 2);
+        assert_eq!(ground["counts"]["siege_site"], 0);
+        let markers = ground["markers"].as_array().unwrap();
+        assert_eq!(markers.len(), 2);
+        assert_eq!(markers[0]["label"], "ff_drop");
+        assert_eq!(markers[0]["position"], json!([1., 2., 0.]));
+        assert_eq!(markers[0]["facing"], 0.5);
+        assert_eq!(markers[0]["team"], 0);
+
+        // The call takes no parameters.
+        let bad = h.call(&mut game, method::GROUND, json!({"extra": 1}));
+        assert!(!bad["error"].is_null(), "{bad}");
+    }
+
+    #[test]
+    fn a_build_answers_with_the_report_its_problems_and_its_receipt() {
+        let h = Harness::new();
+        let mut game = game(1);
+        local::install(&h.agent, host(Some(false), 1));
+
+        let built = ask(&h, &mut game, method::GROUND_BUILD, Json::Null);
+        assert!(built["error"].is_null(), "{built}");
+        let built = &built["result"];
+        assert_eq!(built["built"], true);
+        assert_eq!(built["state"], "current");
+        assert_eq!(
+            built["recipe"],
+            json!({"kit_version": 3, "home": 1, "probe": false})
+        );
+        assert_eq!(built["report"]["zones"], 2);
+        assert_eq!(built["report"]["squads"], 16);
+        assert_eq!(built["report"]["problems"], 1);
+        assert_eq!(
+            built["report"]["receipt"],
+            json!({"base": "aa11", "labels": "bb22", "kit_version": 3})
+        );
+        assert_eq!(built["problems"][0]["label"], "ff_drop");
+        assert_eq!(built["problems"][0]["reason"], "off the walkable area");
+
+        // The read sees the same, and the session's build is what it reads.
+        let ground = h.ok(&mut game, method::GROUND, Json::Null);
+        assert_eq!(ground["state"], "current");
+        assert_eq!(ground["available"], true);
+        assert_eq!(ground["problems"], built["problems"]);
+
+        // Test waves: current ground is not built again, and a build
+        // that is asked for is.
+        let again = ask(
+            &h,
+            &mut game,
+            method::GROUND_BUILD,
+            json!({"if_stale": true}),
+        );
+        assert_eq!(again["result"]["built"], false);
+        let forced = ask(
+            &h,
+            &mut game,
+            method::GROUND_BUILD,
+            json!({"if_stale": false}),
+        );
+        assert_eq!(forced["result"]["built"], true);
+    }
+
+    #[test]
+    fn a_build_that_fails_or_has_no_builder_is_refused_by_name() {
+        let h = Harness::new();
+        let mut g = game(1);
+        local::install(&h.agent, host(Some(true), 1));
+        let failed = ask(&h, &mut g, method::GROUND_BUILD, Json::Null);
+        assert_eq!(failed["error"]["data"]["code"], "forge_refused");
+        assert!(
+            failed["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("No room"),
+            "{failed}"
+        );
+        let ground = h.ok(&mut g, method::GROUND, Json::Null);
+        assert_eq!(
+            ground["state"], "not_built",
+            "a failed build changes nothing"
+        );
+
+        let h = Harness::new();
+        let mut game = game(1);
+        local::install(&h.agent, host(None, 1));
+        let none = h.call(&mut game, method::GROUND_BUILD, Json::Null);
+        assert_eq!(none["error"]["message"], NO_BUILDER);
+        let bad = h.call(&mut game, method::GROUND_BUILD, json!({"unknown": true}));
+        assert!(!bad["error"].is_null(), "{bad}");
+    }
+
+    #[test]
+    fn nav_before_any_generation_is_not_built_and_generating_needs_a_generator() {
+        let h = Harness::new();
+        let mut game = game(1);
+        local::install(&h.agent, host(None, 0));
+        let methods = h.ok(&mut game, agent_proto::method::METHODS, Json::Null);
+        assert!(methods.as_array().unwrap().contains(&json!(method::NAV)));
+
+        let nav = h.ok(&mut game, method::NAV, Json::Null);
+        assert_eq!(nav["state"], "not_built");
+        assert_eq!(nav["available"], false);
+        assert_eq!(nav["counts"], Json::Null);
+        assert_eq!(nav["problems"], json!([]));
+        assert_eq!(nav["overlay"], json!([]));
+        let read = h.ok(&mut game, method::NAV, json!({"generate": false}));
+        // `at` carries the tick counters, which move with every call.
+        let (mut read, mut nav) = (read, nav);
+        read.as_object_mut().unwrap().remove("at");
+        nav.as_object_mut().unwrap().remove("at");
+        assert_eq!(read, nav);
+
+        let none = h.call(&mut game, method::NAV, json!({"generate": true}));
+        assert_eq!(none["error"]["message"], crate::forge::nav::NO_GENERATOR);
+        let bad = h.call(&mut game, method::NAV, json!({"unknown": true}));
+        assert!(!bad["error"].is_null(), "{bad}");
+    }
+
+    #[test]
+    fn nav_reply_carries_the_counts_problems_and_overlay_of_the_last_generation() {
+        struct Gen;
+        impl ::forge::NavBuilder for Gen {
+            fn generate(
+                &mut self,
+                _: &ForgeDoc,
+                _: &std::collections::BTreeMap<BlockKind, u32>,
+            ) -> Result<::forge::NavReport, String> {
+                Ok(::forge::NavReport {
+                    sectors: 40,
+                    links: [("jump".to_string(), 3)].into(),
+                    out_of_map: 2,
+                    solids: 1,
+                    problems: vec![::forge::NavProblem {
+                        kind: "start_off_mesh".into(),
+                        what: "start 1".into(),
+                        position: [0., -5., 4.],
+                        reason: "no floor under it".into(),
+                    }],
+                    lines: vec![::forge::NavLine {
+                        kind: "jump".into(),
+                        a: [0., 0., 0.],
+                        b: [1., 0., 1.],
+                    }],
+                })
+            }
+        }
+        let host = host(None, 0);
+        let mut session = Session::clone(&host.session.lock().unwrap());
+        session.generate_nav(&mut Gen).unwrap();
+        let reply = crate::forge::nav::reply(
+            &session,
+            crate::forge::nav::Facts {
+                available: true,
+                generating: false,
+            },
+        );
+        assert_eq!(reply["state"], "current");
+        assert_eq!(
+            reply["counts"],
+            json!({"sectors": 40, "links": {"jump": 3}, "out_of_map": 2, "solids": 1})
+        );
+        assert_eq!(reply["problems"][0]["kind"], "start_off_mesh");
+        assert_eq!(reply["problems"][0]["what"], "start 1");
+        assert_eq!(
+            reply["overlay"][0],
+            json!({"kind": "jump", "a": [0., 0., 0.], "b": [1., 0., 1.]})
+        );
+        let status = crate::forge::nav::status(&session, Default::default());
+        assert_eq!(status["sectors"], 40);
+        assert_eq!(status["problems"], 1);
+    }
 }

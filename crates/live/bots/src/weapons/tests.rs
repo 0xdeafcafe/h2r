@@ -54,11 +54,11 @@ fn the_aim_assist_reach_sets_where_a_gun_stops_being_good() {
     // The battle rifle's band ends at its reach, the magnum's sooner
     // (kept to half the role's at least), the SMG's at its own.
     assert_eq!(br().reach().band, (5.0, 20.0));
-    assert_eq!(br().reach().fire, (0.0, 32.0));
+    assert_eq!(br().reach().fire, (0.0, 25.0));
     assert_eq!(magnum().reach().band, (5.0, 14.0));
     assert!(magnum().reach().band.1 < br().reach().band.1);
     assert_eq!(smg().reach().band, (1.5, 8.0));
-    assert!((smg().reach().fire.1 - 12.8).abs() < 1e-4);
+    assert!((smg().reach().fire.1 - 10.0).abs() < 1e-4);
     // Nothing read: the role's.
     let blind = gun(profile(Trigger::Single, 1, 1, 400.0, 0.0), full());
     assert_eq!(blind.reach().band, Role::Precise.band());
@@ -247,34 +247,154 @@ fn a_melee_finishes_a_target_it_has_been_hitting() {
     assert!(!run(Skill::Easy, 10), "Easy never finishes");
 }
 
+/// The left hand's aim: in range, `on` the cone (and near it as well).
+fn aimed(on: bool) -> LeftAim {
+    LeftAim {
+        in_range: true,
+        on,
+        near: on,
+        pattern: None,
+        right: None,
+    }
+}
+
 #[test]
 fn the_left_hand_charges_taps_or_holds_by_its_trigger() {
     let mut l = LeftHand::default();
     let pp = pistol(0.9);
     // Charges for the charge time, then lets go on target.
-    let held: Vec<bool> = (0..40).map(|t| l.trigger(t, &pp, true)).collect();
+    let held: Vec<bool> = (0..40).map(|t| l.trigger(t, &pp, aimed(true))).collect();
     assert!(held[..CHARGE_TICKS as usize].iter().all(|&h| h));
     assert!(!held[CHARGE_TICKS as usize]);
-    // An automatic: while it wants to.
+    // An automatic: held, through a near miss, let go after the grace.
     let mut l = LeftHand::default();
-    assert!(l.trigger(0, &smg(), true) && !l.trigger(1, &smg(), false));
+    assert!(l.trigger(0, &smg(), aimed(true)));
+    let off: Vec<bool> = (1..10)
+        .map(|t| l.trigger(t, &smg(), aimed(false)))
+        .collect();
+    let grace = crate::tactics::HOLD_GRACE as usize;
+    assert!(
+        off[..grace].iter().all(|&d| d) && !off[grace..].iter().any(|&d| d),
+        "{off:?}"
+    );
+    // With the right trigger held on an automatic too, it goes with it.
+    let mut l = LeftHand::default();
+    let with = |right| LeftAim {
+        right: Some(right),
+        ..aimed(false)
+    };
+    assert!(l.trigger(0, &smg(), with(true)) && !l.trigger(1, &smg(), with(false)));
+    let out = LeftAim {
+        in_range: false,
+        ..with(true)
+    };
+    assert!(!l.trigger(2, &smg(), out), "not out of its own range");
     // Once per pull: pulled and let go.
     let mut l = LeftHand::default();
-    let pulls: Vec<bool> = (0..20).map(|t| l.trigger(t, &magnum(), true)).collect();
+    let pulls: Vec<bool> = (0..20)
+        .map(|t| l.trigger(t, &magnum(), aimed(true)))
+        .collect();
     assert!(pulls[0] && pulls[1] && !pulls[2], "{pulls:?}");
     // Empty: never.
     let mut l = LeftHand::default();
-    assert!(!l.trigger(0, &pistol(0.0), true));
+    assert!(!l.trigger(0, &pistol(0.0), aimed(true)));
 }
 
 #[test]
-fn an_identified_smg_closes_distance_past_its_effective_reach() {
+fn an_empty_left_magazine_with_rounds_left_is_pulled_once_to_reload() {
+    let empty = |reserve| {
+        let mut g = smg();
+        g.ammo = Ammo::Rounds {
+            loaded: 0,
+            capacity: 36,
+            reserve,
+            reserve_max: 108,
+        };
+        g
+    };
+    // Off target or on it, the same short pull, and again only if the
+    // magazine is still empty after the retry wait.
+    for on in [false, true] {
+        let mut l = LeftHand::default();
+        let down: Vec<bool> = (0..100)
+            .map(|t| l.trigger(t, &empty(40), aimed(on)))
+            .collect();
+        let pulls: Vec<usize> = (0..down.len())
+            .filter(|&t| down[t] && (t == 0 || !down[t - 1]))
+            .collect();
+        assert_eq!(pulls, [0, 45, 90], "{down:?}");
+        assert_eq!(
+            down.iter().filter(|&&d| d).count() as u32,
+            3 * crate::tactics::PULL_TICKS
+        );
+        // Loaded again: back to the automatic's hold.
+        assert!(l.trigger(100, &smg(), aimed(true)));
+    }
+    // Nothing to load: no pull.
+    let mut l = LeftHand::default();
+    assert!((0..60).all(|t| !l.trigger(t, &empty(0), aimed(true))));
+}
+
+#[test]
+fn an_smg_closes_to_its_band_and_fires_only_a_little_past_it() {
     let mut gun = smg();
     gun.profile.dual = Some(crate::arms::DualGun::Smg);
+    // The movement closes to the magnetism's reach; the trigger works a
+    // little past it, in bursts (tactics::hold_pattern), by the rule
+    // every gun fires by: no SMG of its own.
+    assert_eq!(gun.reach().band.1, 8.0);
+    assert!((gun.reach().fire.1 - 8.0 * FIRE_PAST_BAND).abs() < 1e-4);
+    assert_eq!(gun.reach(), smg().reach(), "identity changes nothing");
+    // A long magnetism reach is kept to its class's band.
+    let mut long = gun;
+    long.profile.cone_range = 25.0;
+    assert_eq!(long.reach().band.1, Role::Spray.band().1);
+    assert!(long.reach().fire.1 <= Role::Spray.fire_range().1);
+    let shot = |d: f32| (gun.reach().fire.0..gun.reach().fire.1).contains(&d);
+    assert!(shot(9.0), "a little past its band");
+    assert!(!shot(3.0 * 8.0), "never at three times its band");
+    assert!(!shot(40.0), "never across the map");
+    // A short projectile reach still caps it.
+    gun.profile.damage_reach = 8.0;
     assert_eq!(gun.reach().fire.1, 8.0);
-    gun.profile.cone_range = 25.0;
-    assert_eq!(gun.reach().fire.1, 9.0);
-    assert_eq!(gun.reach().band.1, 9.0);
+    assert!((gun.reach().band.1 - 8.0 / FIRE_PAST_BAND).abs() < 1e-4);
+}
+
+#[test]
+fn every_class_fires_to_the_same_multiple_of_its_own_band() {
+    let classes = [
+        ("shotgun", gun(profile(Trigger::Single, 0, 15, 400.0, 5.0), full())),
+        ("smg", smg()),
+        ("spray, unread reach", gun(profile(Trigger::Automatic, 0, 1, 300.0, 0.0), full())),
+        ("plasma rifle", gun(profile(Trigger::Automatic, 0, 1, 70.0, 12.0), Ammo::Battery(1.0))),
+        ("magnum", magnum()),
+        ("battle rifle", br()),
+        ("sniper", gun(profile(Trigger::Single, 2, 1, 900.0, 5.0), full())),
+        ("rockets", gun(profile(Trigger::Single, 1, 1, 20.0, 0.0), full())),
+        ("weapon-blind", Gun::default()),
+    ];
+    for (name, g) in classes {
+        let r = g.reach();
+        assert!(r.band.1 > 0.0, "{name}");
+        assert!(
+            (r.fire.1 - r.band.1 * FIRE_PAST_BAND).abs() < 1e-4,
+            "{name}: {r:?}"
+        );
+        // At three times its band no gun shoots.
+        assert!(!(r.fire.0..r.fire.1).contains(&(3.0 * r.band.1)), "{name}");
+        assert!(
+            (g.role().fire_range().1 - g.role().band().1 * FIRE_PAST_BAND).abs() < 1e-4,
+            "{name}"
+        );
+    }
+    // Short guns stop well short of a mid-size map's width.
+    for g in [smg(), gun(profile(Trigger::Single, 0, 15, 400.0, 5.0), full())] {
+        assert!(g.reach().fire.1 <= 12.0, "{:?}", g.reach());
+    }
+    // Splash keeps its own minimum.
+    let rockets = gun(profile(Trigger::Single, 1, 1, 20.0, 0.0), full());
+    assert_eq!(rockets.role(), Role::Blast);
+    assert_eq!(rockets.reach().fire.0, 2.5);
 }
 
 #[test]
@@ -338,4 +458,48 @@ fn a_broken_shield_switches_to_a_loaded_headshot_weapon_and_raises_the_aim() {
     let mut c = input(0, pistol(0.8), dry, 7.0, false);
     c.combo_chance = Some(1.0);
     assert!(!Combo::new(9).step(&c, Skill::Normal).busy);
+}
+
+#[test]
+fn plasma_bolts_keep_their_target_close_and_stop_firing_past_their_reach() {
+    // Round 1 on Midship: the plasma rifle hit 0.42 of its shots under 3
+    // units, 0.17 from 3 to 12 and almost none beyond.
+    let mut rifle = gun(profile(Trigger::Automatic, 0, 1, 400.0, 12.0), Ammo::Battery(1.0));
+    let fast = rifle.reach();
+    assert!(fast.band.1 > SLOW_BOLT_BAND && fast.fire.1 > SLOW_BOLT_FIRE);
+    rifle.profile.dual = Some(crate::arms::DualGun::PlasmaRifle);
+    assert_eq!(rifle.reach().band, (Role::Spray.band().0, SLOW_BOLT_BAND));
+    assert_eq!(rifle.reach().fire, (0.0, SLOW_BOLT_FIRE));
+    assert_eq!(SLOW_BOLT_FIRE, SLOW_BOLT_BAND * FIRE_PAST_BAND);
+    // Any automatic with a slow projectile, identified or not.
+    let slow = gun(profile(Trigger::Automatic, 0, 1, 70.0, 12.0), Ammo::Battery(1.0));
+    assert_eq!(slow.reach().fire.1, SLOW_BOLT_FIRE);
+    // An SMG's bullets and a rifle's are not bolts.
+    assert_eq!(smg().reach().band, (1.5, 8.0));
+    assert_eq!(br().reach().band, (5.0, 20.0));
+    assert_eq!(class(&rifle), Class::Short);
+}
+
+#[test]
+fn a_long_burst_on_one_target_counts_as_its_shield_being_down() {
+    let skill = Skill::Legendary;
+    let k = ComboSkill::of(skill);
+    let mut c = Combo::new(3);
+    let step = |c: &mut Combo, t: u32, target: u32| {
+        let mut i = input(t, smg(), br(), 4.0, true);
+        i.target = Some(target);
+        i.other = None;
+        c.step(&i, skill);
+    };
+    let needed = k.finish_pulls * 2 * SPRAY_PULLS;
+    for t in 0..needed {
+        step(&mut c, t, 7);
+        assert!(!c.softened(skill), "tick {t}");
+    }
+    step(&mut c, needed, 7);
+    assert!(c.softened(skill));
+    // A new target starts over; Easy never finishes.
+    step(&mut c, needed + 1, 8);
+    assert!(!c.softened(skill));
+    assert!(!c.softened(Skill::Easy));
 }

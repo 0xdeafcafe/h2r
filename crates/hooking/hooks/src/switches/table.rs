@@ -42,7 +42,7 @@ pub struct Switch {
 
 /// The most rows the table may hold. Raise it only with a reason in the
 /// commit; lower it when a switch goes.
-pub const BUDGET: usize = 43;
+pub const BUDGET: usize = 44;
 
 use Initial::{Group, Off, On};
 
@@ -71,12 +71,6 @@ pub const TABLE: &[Switch] = &[
     // Rendering.
     sw("impl.render.native", On, "render", "2026-11-14",
         "the native renderer owns the frame (review 4.3): delete with the D3D path"),
-    sw("impl.render.interpolate", On, "render", "2026-11-14",
-        "the presentation snapshot (sim-review lane 7) replaces it: delete"),
-    sw("impl.render.reproject", Off, "render", "2026-11-18",
-        "the presentation snapshot (sim-review lane 7) replaces it: delete"),
-    sw("impl.render.reproject_ahead", Off, "render", "2026-11-18",
-        "the presentation snapshot (sim-review lane 7) replaces it: delete"),
     // Engine leaves (the per-function keys are `crate::leaves`').
     sw("impl.engine", Group, "engine", "2026-11-16", "goes with its last group"),
     sw("impl.engine.locale", On, "engine", "2026-11-16", EXACT),
@@ -92,16 +86,27 @@ pub const TABLE: &[Switch] = &[
         "the parent of the subsystem rewrites (lane rules): each child goes when its subsystem defaults on"),
     sw("impl.sim.native.anim", Off, "sim", "2026-11-20",
         "animation sampling (sim-anim): on in the lane that lands it, then deleted"),
+    sw("impl.sim.native.anim.skeleton", On, "sim", "2026-11-23",
+        "the skeleton walk of bd090 in one Rust call (docs/engine/skeleton-walk.md): deleted when phase 1b's run ladder is clean"),
     sw("impl.sim.native.collision", Off, "sim", "2026-11-20",
         "collision queries (sim-collision): on in the lane that lands it, then deleted"),
+    sw("impl.sim.native.hs", Off, "sim", "2026-11-25",
+        "HaloScript VM: retire after the campaign parity and timing ladder"),
     sw("impl.sim.native.objects", Off, "sim", "2026-11-20",
         "the object update (sim-objects): on in the lane that lands it, then deleted"),
+    sw("impl.sim.native.seats", Off, "sim", "2026-11-25",
+        "seats and rules (sim-seats): on in the lane that lands it, then deleted"),
+    sw("impl.sim.native.sound", Off, "sim", "2026-11-25",
+        "phase 4 sound simulation: promote after voice, arena and timing parity"),
+    sw("impl.sim.native.physics", Off, "sim", "2026-11-25",
+        "the Havok world step (sim-havok, docs/engine/sim-rewrite-havok.md): on in the lane that lands it, then deleted"),
+    sw("impl.sim.native.effects", Off, "sim", "2026-11-25",
+        "effects, particles, contrails and decals (engine::sim_effects): on in the lane that lands it, then deleted"),
     sw("impl.sim.arena-hash", Off, "sim", "2026-11-20", DIAGNOSTIC),
     sw("impl.sim.metrics-projection", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.page-census", On, "sim", "2026-11-22",
         "the guest page census in the report (docs/perf/sim-light.md, L1): a timing arm turns it off; deleted when the page figures are measured for good"),
     sw("impl.sim.observer-resources", On, "sim", "2026-11-20", EXACT),
-    sw("impl.sim.submix-fx", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.native_simd", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.status-poll", On, "sim", "2026-11-22",
         "the map status poll answered from its last result (docs/perf/sim-10x.md, B2): deleted with its off path once a release has run with it on"),
@@ -110,25 +115,11 @@ pub const TABLE: &[Switch] = &[
     // Simulation: hand ports (`sim_bridge::sim_native`).
     sw("impl.sim.native_transform_compose", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_pose_matrix", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_point_to_leaf", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_geometry_test", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_unit_pose", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_graph_resolve", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_marker_transforms", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_bsp_segment", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_collision_query", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_mopp_box", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_mopp_ray", Off, "sim", "2026-11-20", SIM_PORT),
-    // Simulation: hand ports (`engine::sim_physics::PORTS`).
-    sw("impl.sim.native_havok_solver", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_havok_support_vertices", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_havok_weld", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_spatial_visit", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_spatial_portal", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_unit_aim", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_first_person_pose", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_first_person_filters", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_observer_camera", Off, "sim", "2026-11-20", SIM_PORT),
 ];
 
 /// The row named `name`.

@@ -3,23 +3,23 @@ use super::*;
 #[test]
 fn feet_accelerate_and_brake_on_a_reversal() {
     let mut feet = Feet::new(27);
-    let f = feet.step(Some([1.0, 0.0]), 1, 1.0, false, |_| true);
+    let f = feet.step(Some([1.0, 0.0]), 1, 1.0, 0.0, false, |_| true);
     assert!((0.3..0.5).contains(&f[0]));
     for _ in 0..4 {
-        assert!(feet.step(Some([1.0, 1.0]), 1, 1.0, false, |_| true)[0] > 0.5);
+        assert!(feet.step(Some([1.0, 1.0]), 1, 1.0, 0.0, false, |_| true)[0] > 0.5);
     }
-    let [x, y] = feet.step(Some([-1.0, -1.0]), 1, 1.0, false, |_| true);
+    let [x, y] = feet.step(Some([-1.0, -1.0]), 1, 1.0, 0.0, false, |_| true);
     assert!(x > 0.0 && y > 0.0, "{x}, {y}");
-    let [x, y] = feet.step(Some([-1.0, -1.0]), 1, 0.55, false, |_| true);
+    let [x, y] = feet.step(Some([-1.0, -1.0]), 1, 0.55, 0.0, false, |_| true);
     assert!(x.hypot(y) <= 0.550_001);
-    assert_eq!(feet.step(None, 1, 1.0, false, |_| true), [0.0; 2]);
+    assert_eq!(feet.step(None, 1, 1.0, 0.0, false, |_| true), [0.0; 2]);
 }
 
 #[test]
 fn eased_direction_gives_way_when_the_corner_is_blocked() {
     let mut feet = Feet::new(27);
-    feet.step(Some([1.0, 0.0]), 1, 1.0, true, |_| true);
-    let [x, y] = feet.step(Some([0.0, 1.0]), 1, 1.0, false, |d| {
+    feet.step(Some([1.0, 0.0]), 1, 1.0, 0.0, true, |_| true);
+    let [x, y] = feet.step(Some([0.0, 1.0]), 1, 1.0, 0.0, false, |d| {
         assert!(d[0] > 0.0 && d[1] > 0.0);
         false
     });

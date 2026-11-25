@@ -13,7 +13,7 @@
 about = "Disc, tag and file formats, ours and the game's: plain data, no guest, no host"
 uses = []
 crates = [
-    "asf", "content", "firefight", "font", "forge-doc", "h1-contract", "host-dirs", "host-log", "hs", "map",
+    "asf", "content", "firefight", "font", "forge-doc", "game-markers", "h1-contract", "host-dirs", "host-log", "hs", "map", "pogo",
     "mopp", "movies", "pathfind", "rules", "settings", "shaders", "tags", "variants", "xbe", "xiso",
 ]
 
@@ -55,7 +55,7 @@ about = "Rust that replaces a guest subsystem: the native simulation, FrameScene
 uses = ["formats", "recompiler", "runtime", "platform", "hooking"]
 crates = [
     "engine", "frame-scene", "hud-kit-core", "native-render", "render-bridge",
-    "scene-extract", "sim-anim", "sim-bridge", "sim-collision", "sim-core", "sim-ext", "sim-objects",
+    "scene-extract", "sim-anim", "sim-bridge", "sim-collision", "sim-core", "sim-ext", "sim-objects", "sim-sound",
     "sim-state",
 ]
 # Guest-free: these take typed values and may use only `formats`,
@@ -89,7 +89,7 @@ crates = [
     "editor-core", "firefight-kit", "forge-build", "geometry-edit", "h1-assets", "h1campaign",
     "h1convert", "h1map", "h1objects", "hopper-edit", "hud-edit", "hud-kit", "live-art", "mesh-edit",
     "perf",
-    "scenario-edit", "xtask",
+    "scenario-edit", "stage-kit", "xtask",
 ]
 live_owned = ["live-art"]
 
@@ -97,9 +97,9 @@ live_owned = ["live-art"]
 about = "What links a binary: the composition root, the desktop shell, the command line and its command crates, the editor, the embedded hosts"
 uses = ["formats", "recompiler", "runtime", "platform", "hooking", "rewrites", "live", "extensions", "tools"]
 crates = [
-    "app", "app-icon", "boot", "cli", "cmd", "cmd-dev",
+    "app", "app-icon", "boot", "cli", "cli-common", "cmd", "cmd-dev",
     "cmd-drive", "cmd-h1", "cmd-host", "cmd-live", "cmd-play", "cmd-recomp",
-    "cmd-tags", "h2host", "live-mirror", "studio", "studio-proto", "uwp-host",
+    "cmd-tags", "h2-tools", "h2host", "live-mirror", "studio", "studio-proto", "uwp-host",
 ]
 live_owned = ["cmd-drive", "cmd-live"]
 
@@ -121,3 +121,13 @@ until = "simd's exact SSE lanes move to a guest-free crate sim-core may use"
 from = "game"
 to = "perf"
 until = "the sampler is a hook boot installs: sampling.rs reaches the profiler behind `perf`, and agent_glue answers profile.sample.* with it"
+
+[[exception]]
+from = "workspace"
+to = "game"
+until = "the screen document parser, layout resolver and tag generator can be shared without constructing a game UI sample (docs/editor/studio-redesign.md, PK5)"
+
+[[exception]]
+from = "host-data"
+to = "firefight-kit"
+until = "a host bundle's Firefight kits are built by `h2 host bundle` in cli and handed to host-data as bytes: bundle/kits.rs calls firefight_kit::build_package behind the `firefight` feature"

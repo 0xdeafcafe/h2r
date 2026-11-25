@@ -11,9 +11,14 @@ use crate::wire::{
 
 pub const TICKS_PER_SECOND: u32 = 30;
 pub const BYTES_PER_SECOND: usize = 1_000;
+/// The most `Show` records a second, without a key
+/// (docs/game/rules-world-api.md, "The show channel": coalesced to the
+/// last state, at most 5 a second).
+pub const SHOWS_PER_SECOND: usize = 5;
 /// Room for a key, state, digest and several updates per actor in one host tick.
 pub const MAX_CANDIDATES: usize = 256;
-const LINE_COPIES: usize = 3;
+/// Copies a line or a cue is repeated in: this packet and the next two.
+const REPEAT_COPIES: usize = 3;
 const CONTROL_PERIOD: u32 = 3;
 const MAX_KEY_PACKET: usize = HEADER_LEN + MAX_KEY_RECORD_BYTES;
 
@@ -37,11 +42,12 @@ impl fmt::Display for BudgetError {
 impl std::error::Error for BudgetError {}
 
 /// The first slot is this packet. The other slots hold the next two
-/// packets' promised line copies. Each nonempty slot pays its header once.
+/// packets' promised line and cue copies. Each nonempty slot pays its
+/// header once.
 #[derive(Clone, Copy, Default)]
 struct Reservation {
-    bytes: [usize; LINE_COPIES],
-    records: [usize; LINE_COPIES],
+    bytes: [usize; REPEAT_COPIES],
+    records: [usize; REPEAT_COPIES],
 }
 
 impl Reservation {
@@ -75,9 +81,29 @@ impl Reservation {
 
 #[derive(Debug)]
 struct Repeat {
-    line: Record,
+    record: Record,
     len: usize,
     copies_left: usize,
+}
+
+/// What one budget has sent since its peer connected, for the agent
+/// API's `actors.net`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Stats {
+    /// Packets returned by [`Budget::schedule`].
+    pub packets: u64,
+    /// Their bytes, headers included.
+    pub bytes: u64,
+    /// Keys among their records.
+    pub keys: u64,
+    /// Digests among their records.
+    pub digests: u64,
+    /// Records sent, repeated copies of lines and cues included.
+    pub records: u64,
+    /// `Show` records among them.
+    pub shows: u64,
+    /// Offered records that missed admission and were dropped.
+    pub dropped: u64,
 }
 
 #[derive(Debug, Default)]
@@ -87,16 +113,21 @@ pub struct Budget {
     ticks_to_key: Option<u32>,
     // At most one send per tick in the rolling window.
     sent: VecDeque<(u32, usize)>,
+    // The ticks of the `Show` records admitted in the rolling window.
+    shows: VecDeque<u32>,
     repeats: Vec<Repeat>,
     // At most CONTROL_PERIOD packets of control IDs, even under entity churn.
     controls: VecDeque<(u32, u32)>,
+    stats: Stats,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Priority {
     Key,
+    Show,
     Actor,
     Line,
+    Cue,
     Posture,
     State,
     Digest,
@@ -106,8 +137,10 @@ enum Priority {
 fn priority(record: &Record) -> Priority {
     match record {
         Record::Key { .. } => Priority::Key,
+        Record::Show(_) => Priority::Show,
         Record::Actor(_) => Priority::Actor,
         Record::Line { .. } => Priority::Line,
+        Record::Cue { .. } => Priority::Cue,
         Record::Posture { .. } => Priority::Posture,
         Record::State(_) => Priority::State,
         Record::Digest { .. } => Priority::Digest,
@@ -115,7 +148,22 @@ fn priority(record: &Record) -> Priority {
     }
 }
 
+/// Whether the record repeats in three consecutive packets, as a `Line` is.
+fn repeats(record: &Record) -> bool {
+    matches!(priority(record), Priority::Line | Priority::Cue)
+}
+
 impl Budget {
+    pub fn stats(&self) -> Stats {
+        self.stats
+    }
+
+    /// Bytes charged in the rolling window that ends at the last scheduled
+    /// tick: the peer's rate in bytes a second.
+    pub fn window_bytes(&self) -> usize {
+        self.sent.iter().map(|&(_, len)| len).sum()
+    }
+
     /// A new peer needs its first key. Each admitted key, including a resync,
     /// starts a fresh period. Call with the tick about to be scheduled.
     pub fn key_due(&self, tick: u32) -> bool {
@@ -153,8 +201,9 @@ impl Budget {
 
     /// Call once per host tick for this client, including ticks with no new
     /// candidates. Consume the returned packet exactly once. Offer new lines
-    /// only once: admission reserves all three consecutive packet copies.
-    /// After a skipped tick, outstanding copies resume in the next packet.
+    /// and cues only once: admission reserves all three consecutive packet
+    /// copies. After a skipped tick, outstanding copies resume in the next
+    /// packet.
     ///
     /// Equal priorities retain input order. Offer controls nearest first,
     /// and omit them entirely when retail supplies the walk cycle. Reoffer
@@ -211,6 +260,13 @@ impl Budget {
         {
             self.controls.pop_front();
         }
+        while self
+            .shows
+            .front()
+            .is_some_and(|&at| tick.wrapping_sub(at) >= TICKS_PER_SECOND)
+        {
+            self.shows.pop_front();
+        }
         let available = BYTES_PER_SECOND - self.sent.iter().map(|&(_, len)| len).sum::<usize>();
 
         let mut delta_bytes = self.available_for_deltas(tick, available);
@@ -219,26 +275,35 @@ impl Budget {
             reserved.add(repeat.len, repeat.copies_left);
         }
         let mut records = Vec::new();
+        let mut admitted = 0;
         let mut waiting_for_key = false;
         for rank in [
             Priority::Key,
+            Priority::Show,
             Priority::Actor,
             Priority::Line,
+            Priority::Cue,
             Priority::Posture,
             Priority::State,
             Priority::Digest,
             Priority::Control,
         ] {
-            if rank == Priority::Line {
+            if matches!(rank, Priority::Line | Priority::Cue) {
+                let mut owed = Vec::new();
                 for mut repeat in std::mem::take(&mut self.repeats) {
+                    if priority(&repeat.record) != rank {
+                        owed.push(repeat);
+                        continue;
+                    }
                     repeat.copies_left -= 1;
                     if repeat.copies_left == 0 {
-                        records.push(repeat.line);
+                        records.push(repeat.record);
                     } else {
-                        records.push(repeat.line.clone());
-                        self.repeats.push(repeat);
+                        records.push(repeat.record.clone());
+                        owed.push(repeat);
                     }
                 }
+                self.repeats = owed;
             }
             if waiting_for_key {
                 continue;
@@ -252,11 +317,17 @@ impl Budget {
                 {
                     continue;
                 }
-                let copies = if rank == Priority::Line {
-                    LINE_COPIES
-                } else {
-                    1
-                };
+                // A `Show` rides every key whole; without one it is
+                // coalesced to at most [`SHOWS_PER_SECOND`] a second. One
+                // dropped state is the peer's next slot's, or the digest's
+                // mismatch asks for a key that carries it.
+                if matches!(record, Record::Show(_))
+                    && !has_key
+                    && self.shows.len() >= SHOWS_PER_SECOND
+                {
+                    continue;
+                }
+                let copies = if repeats(record) { REPEAT_COPIES } else { 1 };
                 let limit = if rank == Priority::Key {
                     available
                 } else {
@@ -272,24 +343,40 @@ impl Budget {
                     self.ticks_to_key = Some(crate::KEY_PERIOD_TICKS);
                     delta_bytes = available;
                 }
-                if rank == Priority::Line {
+                if repeats(record) {
                     self.repeats.push(Repeat {
-                        line: record.clone(),
+                        record: record.clone(),
                         len,
-                        copies_left: LINE_COPIES - 1,
+                        copies_left: REPEAT_COPIES - 1,
                     });
                 }
                 if let Record::Control { entity, .. } = record {
                     self.controls.push_back((tick, *entity));
                 }
+                if matches!(record, Record::Show(_)) {
+                    self.shows.push_back(tick);
+                }
+                admitted += 1;
                 records.push(record.clone());
             }
         }
 
+        self.stats.dropped += (offers.len() - admitted) as u64;
         if records.is_empty() {
             return Ok(None);
         }
         self.sent.push_back((tick, reserved.bytes[0]));
+        self.stats.packets += 1;
+        self.stats.bytes += reserved.bytes[0] as u64;
+        self.stats.records += records.len() as u64;
+        for record in &records {
+            match record {
+                Record::Key { .. } => self.stats.keys += 1,
+                Record::Digest { .. } => self.stats.digests += 1,
+                Record::Show(_) => self.stats.shows += 1,
+                _ => {}
+            }
+        }
         Ok(Some(Packet { tick, records }))
     }
 }

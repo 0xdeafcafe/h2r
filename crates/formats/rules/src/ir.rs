@@ -7,6 +7,7 @@
 use content::Sha256;
 
 use crate::ty::{Sizes, Ty};
+use crate::types::Type;
 
 /// The blob's first four bytes.
 pub const MAGIC: [u8; 4] = *b"H2RL";
@@ -37,6 +38,12 @@ pub const MAX_TABLE_COLS: usize = 16;
 pub const MAX_PALETTE_TAGS: usize = 64;
 /// Labels a script declares at most.
 pub const MAX_LABELS: usize = 64;
+/// Quick Options marks a script names at most: the pregame panel's rows
+/// (`lobby_options::PANEL_ROWS`).
+pub const MAX_QUICK: usize = 5;
+/// UTF-16 units of a script's `about` text at most: a variant's
+/// description (`variants::portable::MAX_DESCRIPTION_UNITS`).
+pub const MAX_ABOUT_UNITS: usize = 150;
 
 /// A register index within a handler's frame.
 pub type Reg = u8;
@@ -48,6 +55,12 @@ pub struct Ir {
     /// Names, option labels, class names and messages.
     pub strings: Vec<String>,
     pub options: Vec<OptionDef>,
+    /// The record settings the script's `settings` block names, in
+    /// ascending table index order ([`crate::settings::TABLE`]).
+    pub settings: Vec<Setting>,
+    /// The Quick Options marks, in the script's order; at most
+    /// [`MAX_QUICK`].
+    pub quick: Vec<Quick>,
     pub enums: Vec<EnumDef>,
     pub slots: Vec<Slot>,
     /// Forge labels the script declares, and what a map must hold of
@@ -58,7 +71,70 @@ pub struct Ir {
     pub tags: Vec<TagDef>,
     pub palettes: Vec<Palette>,
     pub tables: Vec<Table>,
+    /// The HUD widgets the script declares (`hud`), at most
+    /// [`MAX_WIDGETS`]: a widget's number is its index here.
+    pub widgets: Vec<WidgetDef>,
+    /// The waypoints the script declares (`waypoint`), at most
+    /// [`MAX_WAYPOINTS`]: a waypoint's number is its index here.
+    pub waypoints: Vec<WaypointDef>,
     pub handlers: Vec<Handler>,
+}
+
+/// HUD widgets a script declares at most (the show state's widget table,
+/// `crate::show::MAX_WIDGETS`).
+pub const MAX_WIDGETS: usize = 16;
+/// Waypoints a script declares at most (`crate::show::MAX_WAYPOINTS`).
+pub const MAX_WAYPOINTS: usize = 8;
+
+/// What a widget draws as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WidgetKind {
+    /// A line of text, or a number the HUD words.
+    Text,
+    /// The timed centred line.
+    Banner,
+    /// A bar with a fill.
+    Meter,
+}
+
+impl WidgetKind {
+    pub const ALL: [WidgetKind; 3] = [WidgetKind::Text, WidgetKind::Banner, WidgetKind::Meter];
+
+    pub fn code(self) -> u8 {
+        self as u8
+    }
+
+    pub fn from_code(c: u8) -> Option<WidgetKind> {
+        Self::ALL.into_iter().find(|k| k.code() == c)
+    }
+
+    /// The word a `hud` declaration spells it with.
+    pub fn word(self) -> &'static str {
+        match self {
+            WidgetKind::Text => "text",
+            WidgetKind::Banner => "banner",
+            WidgetKind::Meter => "meter",
+        }
+    }
+}
+
+/// A `hud <name>: <kind> at <slot>` declaration: a place in a HUD of the
+/// kit, named by the element's id (`koth.hill`), that the script words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WidgetDef {
+    /// The declared name, an index into the string table.
+    pub name: u16,
+    pub kind: WidgetKind,
+    /// The slot, an index into the string table.
+    pub slot: u16,
+}
+
+/// A `waypoint <name> [at <slot>]` declaration: a mark over a thing, drawn
+/// as the navpoint element `slot` names (none: the script's own list).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WaypointDef {
+    pub name: u16,
+    pub slot: Option<u16>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,58 +144,63 @@ pub struct Header {
     pub name: String,
     /// The script's own version number (`rules "Name" 1`).
     pub version: u16,
-    /// The retail engine index the game rides.
-    pub carrier: u8,
+    /// The game type (`type slayer`): the game type list's row, the
+    /// announcer's line at the start and the default of `points`.
+    pub game_type: Type,
+    /// The built-in game whose rules the script plays under its own record
+    /// (`uses slayer`): the script holds settings only. One of the retail
+    /// types. See `docs/game/game-types-without-carriers.md`, "The header".
+    pub uses: Option<Type>,
     /// Teams the script needs; 0 is any.
     pub teams: u8,
-    /// Where the game type list files a variant of the script (`list`).
-    pub list: List,
+    /// What a point is (`points "Captures"`), for the scoreboard and the
+    /// post-game: the type's default when the script names none. At most
+    /// [`crate::types::MAX_POINTS_BYTES`].
+    pub points: String,
+    /// The description (`about "..."`), at most [`MAX_ABOUT_UNITS`]
+    /// UTF-16 units; empty when the script has none.
+    pub about: String,
     /// Capability names, the most the script can ever do.
     pub requires: Vec<String>,
 }
 
-/// Where the game type list files a variant of a script: under its
-/// carrier's game type (no `list` line), or under a row the header names
-/// (`list tweakers`). See `docs/game/rules-engine.md`, "The language".
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum List {
-    #[default]
-    GameType,
-    /// The Tweakers row, after Territories.
-    Tweakers,
+impl Header {
+    /// The retail engine index the script's record is on: the `uses`
+    /// game's, else the type's ([`Type::engine`]). Every script record
+    /// moves to index 2 in GT2 of
+    /// `docs/game/game-types-without-carriers.md`.
+    pub fn engine(&self) -> u8 {
+        self.uses.unwrap_or(self.game_type).engine()
+    }
 }
 
-impl List {
-    /// The names a `list` line takes.
-    pub const NAMED: &'static [List] = &[List::Tweakers];
+/// The header byte of a script with no `uses` line.
+const NO_USES: u8 = 0xff;
 
-    fn code(self) -> u8 {
+/// One setting of the `settings` block: a [`crate::settings::TABLE`]
+/// index and the value the record stores.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Setting {
+    pub index: u16,
+    pub value: i32,
+}
+
+/// One Quick Options mark: a record setting of the table, or one of the
+/// script's options.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Quick {
+    /// A [`crate::settings::TABLE`] index.
+    Setting(u16),
+    /// An index into [`Ir::options`].
+    Option(u16),
+}
+
+impl Quick {
+    fn code(self) -> (u8, u16) {
         match self {
-            List::GameType => 0,
-            List::Tweakers => 1,
+            Quick::Setting(i) => (0, i),
+            Quick::Option(i) => (1, i),
         }
-    }
-
-    fn from_code(c: u8) -> Option<List> {
-        Some(match c {
-            0 => List::GameType,
-            1 => List::Tweakers,
-            _ => return None,
-        })
-    }
-
-    /// The name a `list` line gives; `None` for [`List::GameType`], which
-    /// has no line.
-    pub fn name(self) -> Option<&'static str> {
-        match self {
-            List::GameType => None,
-            List::Tweakers => Some("tweakers"),
-        }
-    }
-
-    /// The list a `list` line names.
-    pub fn named(name: &str) -> Option<List> {
-        List::NAMED.iter().copied().find(|l| l.name() == Some(name))
     }
 }
 
@@ -211,6 +292,10 @@ pub enum LabelKind {
     Zone,
     /// Starting locations: a set passed to `spawn_areas`, never visited.
     Spawn,
+    /// The points of a flight path: placements numbered from 0 with no
+    /// gap, at least two. Passed to `fly`, never visited
+    /// (docs/game/rules-world-api.md, "Vehicles and drop ships").
+    Path,
 }
 
 impl LabelKind {
@@ -219,6 +304,7 @@ impl LabelKind {
             LabelKind::Object => 1,
             LabelKind::Zone => 2,
             LabelKind::Spawn => 3,
+            LabelKind::Path => 4,
         }
     }
 
@@ -227,6 +313,7 @@ impl LabelKind {
             1 => LabelKind::Object,
             2 => LabelKind::Zone,
             3 => LabelKind::Spawn,
+            4 => LabelKind::Path,
             _ => return None,
         })
     }
@@ -315,6 +402,8 @@ pub enum TagGroup {
     #[default]
     Any,
     Weapon,
+    /// A sound (`snd!`): the map must hold it, which no object type says.
+    Sound,
 }
 
 impl TagGroup {
@@ -322,6 +411,7 @@ impl TagGroup {
         match self {
             TagGroup::Any => 0,
             TagGroup::Weapon => 1,
+            TagGroup::Sound => 2,
         }
     }
 
@@ -329,6 +419,7 @@ impl TagGroup {
         Some(match c {
             0 => TagGroup::Any,
             1 => TagGroup::Weapon,
+            2 => TagGroup::Sound,
             _ => return None,
         })
     }
@@ -417,10 +508,28 @@ pub enum Event {
     /// A fall out of the map during a bounce: the superbounce medal chain's
     /// Bounced (`superbounce_chain::Event::Bounced`).
     Bounced,
+    /// A mover reached the end of its `move_to` (`on arrive(o)`): the VM's
+    /// own event, fired on the tick the mover ends.
+    Arrive,
+    /// An object took damage: the object, the player it is credited to and
+    /// the amount as a fraction of full vitality (`SimEvent::Damage`).
+    Damage,
+    /// A player's biped touched down: the speed it fell at on the tick
+    /// before and its vertical speed now, both `fixed` world units a
+    /// second, `down` positive for a fall and `up` positive for rising.
+    Touchdown,
+    /// A landing the host judged a superbounce, on the tick its launch
+    /// window closed: the strip it came off (`none` off every marked
+    /// strip) and the launch, `fixed` world units a second up.
+    Launch,
+    /// A player's run of bounces with no ground between them ended: a
+    /// landing that did not bounce, the ground from the third tick after a
+    /// bounce, a teleport, a new unit or a fall through a strip's floor.
+    Grounded,
 }
 
 impl Event {
-    pub const ALL: [Event; 21] = [
+    pub const ALL: [Event; 26] = [
         Event::Init,
         Event::RoundStart,
         Event::Tick,
@@ -442,6 +551,11 @@ impl Event {
         Event::RoundEnd,
         Event::ActorAssist,
         Event::Bounced,
+        Event::Arrive,
+        Event::Damage,
+        Event::Touchdown,
+        Event::Launch,
+        Event::Grounded,
     ];
 
     pub fn code(self) -> u8 {
@@ -476,6 +590,11 @@ impl Event {
             Event::RoundEnd => "round_end",
             Event::ActorAssist => "actor_assist",
             Event::Bounced => "bounced",
+            Event::Arrive => "arrive",
+            Event::Damage => "damage",
+            Event::Touchdown => "touchdown",
+            Event::Launch => "launch",
+            Event::Grounded => "grounded",
         }
     }
 
@@ -488,15 +607,22 @@ impl Event {
     pub fn args(self) -> &'static [Ty] {
         match self {
             Event::Kill => &[Ty::Player, Ty::Player],
-            Event::Spawn | Event::Death | Event::Join | Event::Quit | Event::Bounced => {
-                &[Ty::Player]
-            }
+            Event::Spawn
+            | Event::Death
+            | Event::Join
+            | Event::Quit
+            | Event::Bounced
+            | Event::Grounded => &[Ty::Player],
             Event::Pickup | Event::Drop | Event::Press | Event::Edit => &[Ty::Player, Ty::Object],
             // The chain's count (1 for a single bounce, 2 for a double) and
             // whether it was a Monster Bounce.
             Event::Bounce => &[Ty::Player, Ty::Object, Ty::Int, Ty::Bool],
             Event::Enter | Event::Leave => &[Ty::Object, Ty::Object],
+            Event::Arrive => &[Ty::Object],
             Event::SquadDead => &[Ty::Squad],
+            Event::Damage => &[Ty::Object, Ty::Player, Ty::Fixed],
+            Event::Touchdown => &[Ty::Player, Ty::Fixed, Ty::Fixed],
+            Event::Launch => &[Ty::Player, Ty::Object, Ty::Fixed],
             Event::ActorKill => &[Ty::Player, Ty::Class],
             Event::ActorAssist => &[Ty::Player, Ty::Player, Ty::Class],
             Event::Init | Event::RoundStart | Event::Tick | Event::Timer | Event::RoundEnd => &[],
@@ -521,9 +647,15 @@ impl Event {
             | Event::Join
             | Event::Quit
             | Event::ActorKill
-            | Event::ActorAssist => 16,
+            | Event::ActorAssist
+            | Event::Damage
+            | Event::Touchdown
+            | Event::Launch
+            | Event::Grounded => 16,
             Event::Enter | Event::Leave => 64,
             Event::SquadDead => 16,
+            // One a mover, and a script has at most 16 movers.
+            Event::Arrive => 16,
             _ => 1,
         }
     }
@@ -691,9 +823,11 @@ impl Ir {
         w.u16(h.api_version);
         w.str(&h.name);
         w.u16(h.version);
-        w.u8(h.carrier);
+        w.u8(h.game_type.code());
+        w.u8(h.uses.map_or(NO_USES, Type::code));
         w.u8(h.teams);
-        w.u8(h.list.code());
+        w.str(&h.points);
+        w.str(&h.about);
         w.len(h.requires.len());
         for r in &h.requires {
             w.str(r);
@@ -708,6 +842,17 @@ impl Ir {
             w.i32(o.lo);
             w.i32(o.hi);
             w.i32(o.default);
+        }
+        w.len(self.settings.len());
+        for s in &self.settings {
+            w.u16(s.index);
+            w.i32(s.value);
+        }
+        w.len(self.quick.len());
+        for q in &self.quick {
+            let (kind, index) = q.code();
+            w.u8(kind);
+            w.u16(index);
         }
         w.len(self.enums.len());
         for e in &self.enums {
@@ -760,6 +905,17 @@ impl Ir {
                 w.i32(v);
             }
         }
+        w.len(self.widgets.len());
+        for d in &self.widgets {
+            w.u16(d.name);
+            w.u8(d.kind.code());
+            w.u16(d.slot);
+        }
+        w.len(self.waypoints.len());
+        for d in &self.waypoints {
+            w.u16(d.name);
+            w.opt_u16(d.slot);
+        }
         w.len(self.handlers.len());
         for hd in &self.handlers {
             w.u8(hd.event.code());
@@ -790,13 +946,21 @@ impl Ir {
         let api_version = r.u16("the header")?;
         let name = r.str("the header")?;
         let version = r.u16("the header")?;
-        let carrier = r.u8("the header")?;
-        let teams = r.u8("the header")?;
-        let list = r.u8("the header")?;
-        let list = List::from_code(list).ok_or(DecodeError::Invalid {
-            what: "the header's list",
-            value: list as u32,
+        let ty = r.u8("the header")?;
+        let game_type = Type::from_code(ty).ok_or(DecodeError::Invalid {
+            what: "the header's type",
+            value: ty as u32,
         })?;
+        let uses = match r.u8("the header")? {
+            NO_USES => None,
+            c => Some(Type::from_code(c).ok_or(DecodeError::Invalid {
+                what: "the header's uses",
+                value: c as u32,
+            })?),
+        };
+        let teams = r.u8("the header")?;
+        let points = r.str("the header")?;
+        let about = r.str("the header")?;
         let n = r.len("the requires list")?;
         let mut requires = Vec::with_capacity(n.min(64));
         for _ in 0..n {
@@ -807,9 +971,11 @@ impl Ir {
             api_version,
             name,
             version,
-            carrier,
+            game_type,
+            uses,
             teams,
-            list,
+            points,
+            about,
             requires,
         };
         let strings = r.strs("the string table")?;
@@ -824,6 +990,42 @@ impl Ir {
                 lo: r.i32("the option table")?,
                 hi: r.i32("the option table")?,
                 default: r.i32("the option table")?,
+            });
+        }
+        let n = r.len("the settings")?;
+        let mut settings: Vec<Setting> = Vec::with_capacity(n.min(64));
+        for _ in 0..n {
+            let index = r.u16("the settings")?;
+            let value = r.i32("the settings")?;
+            // Ascending, so a setting is named once and the order is one.
+            if settings.last().is_some_and(|s| s.index >= index) {
+                return Err(DecodeError::Invalid {
+                    what: "the settings' order",
+                    value: index as u32,
+                });
+            }
+            settings.push(Setting { index, value });
+        }
+        let n = r.len("the quick marks")?;
+        if n > MAX_QUICK {
+            return Err(DecodeError::Invalid {
+                what: "the quick marks' count",
+                value: n as u32,
+            });
+        }
+        let mut quick = Vec::with_capacity(n);
+        for _ in 0..n {
+            let kind = r.u8("the quick marks")?;
+            let index = r.u16("the quick marks")?;
+            quick.push(match kind {
+                0 => Quick::Setting(index),
+                1 => Quick::Option(index),
+                _ => {
+                    return Err(DecodeError::Invalid {
+                        what: "a quick mark's kind",
+                        value: kind as u32,
+                    });
+                }
             });
         }
         let n = r.len("the enum table")?;
@@ -927,6 +1129,41 @@ impl Ir {
                 cells,
             });
         }
+        let n = r.len("the widget table")?;
+        if n > MAX_WIDGETS {
+            return Err(DecodeError::Invalid {
+                what: "the widget count",
+                value: n as u32,
+            });
+        }
+        let mut widgets = Vec::with_capacity(n);
+        for _ in 0..n {
+            let name = r.u16("the widget table")?;
+            let kind = r.u8("the widget table")?;
+            let kind = WidgetKind::from_code(kind).ok_or(DecodeError::Invalid {
+                what: "a widget kind",
+                value: kind as u32,
+            })?;
+            widgets.push(WidgetDef {
+                name,
+                kind,
+                slot: r.u16("the widget table")?,
+            });
+        }
+        let n = r.len("the waypoint table")?;
+        if n > MAX_WAYPOINTS {
+            return Err(DecodeError::Invalid {
+                what: "the waypoint count",
+                value: n as u32,
+            });
+        }
+        let mut waypoints = Vec::with_capacity(n);
+        for _ in 0..n {
+            waypoints.push(WaypointDef {
+                name: r.u16("the waypoint table")?,
+                slot: r.opt_u16("the waypoint table")?,
+            });
+        }
         let n = r.len("the handler table")?;
         let mut handlers = Vec::with_capacity(n.min(64));
         for _ in 0..n {
@@ -960,12 +1197,16 @@ impl Ir {
             header,
             strings,
             options,
+            settings,
+            quick,
             enums,
             slots,
             labels,
             tags,
             palettes,
             tables,
+            widgets,
+            waypoints,
             handlers,
         })
     }
@@ -1008,6 +1249,23 @@ impl Ir {
             }
         }
         bits as u32
+    }
+
+    /// The value of the option named `name` in the record's option bits
+    /// `bits`, as the VM reads it (`lo` plus its raw field, at most `hi`);
+    /// `None` when the script declares no such option. A bool is 0 or 1,
+    /// an enum the index of its value ([`Ir::option_values`]). For a host
+    /// that reads a script's options without running it.
+    pub fn option_value(&self, bits: u32, name: &str) -> Option<i32> {
+        let index = (0..self.options.len()).find(|&i| self.option_name(i) == name)?;
+        let o = &self.options[index];
+        let off = self.option_offsets()[index];
+        let width = o.bits();
+        if width == 0 || off >= 64 {
+            return Some(o.lo);
+        }
+        let raw = (u64::from(bits) >> off) & ((1u64 << width) - 1);
+        Some((i64::from(o.lo) + raw as i64).min(i64::from(o.hi)) as i32)
     }
 
     /// An option's name, from the string table.
@@ -1569,9 +1827,11 @@ pub(crate) mod tests {
                 api_version: crate::caps::API_VERSION,
                 name: "Sample".into(),
                 version: 1,
-                carrier: 2,
+                game_type: Type::Research,
+                uses: None,
                 teams: 0,
-                list: List::Tweakers,
+                points: "Points".into(),
+                about: "A sample.".into(),
                 requires: vec!["forge.move".into()],
             },
             strings: vec!["kill_points".into(), "elite".into()],
@@ -1584,6 +1844,9 @@ pub(crate) mod tests {
                 hi: 5,
                 default: 1,
             }],
+            // score_limit 25, shields none.
+            settings: vec![Setting { index: 1, value: 25 }, Setting { index: 8, value: 1 }],
+            quick: vec![Quick::Setting(1), Quick::Option(0)],
             enums: vec![],
             slots: vec![Slot {
                 name: 0,
@@ -1619,6 +1882,12 @@ pub(crate) mod tests {
                 }],
                 cells: vec![3, -4],
             }],
+            widgets: vec![WidgetDef {
+                name: 0,
+                kind: WidgetKind::Text,
+                slot: 1,
+            }],
+            waypoints: vec![WaypointDef { name: 1, slot: Some(0) }],
             handlers: vec![Handler {
                 event: Event::Kill,
                 timer: None,
@@ -1665,31 +1934,114 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_list_round_trips_and_an_unknown_one_is_refused() {
+    fn the_type_and_uses_round_trip_and_an_unknown_one_is_refused() {
         let mut ir = sample();
-        for list in [List::GameType, List::Tweakers] {
-            ir.header.list = list;
-            let bytes = ir.encode();
-            assert_eq!(Ir::decode(&bytes).unwrap().header.list, list);
+        for row in crate::types::TABLE {
+            ir.header.game_type = row.ty;
+            ir.header.uses = Some(row.ty);
+            let back = Ir::decode(&ir.encode()).unwrap();
+            assert_eq!((back.header.game_type, back.header.uses), (row.ty, Some(row.ty)));
         }
         let mut other = sample();
-        other.header.list = List::GameType;
-        assert_ne!(sample().id(), other.id(), "the list is part of the hash");
-        // The list byte follows the name, version, carrier and teams.
+        other.header.game_type = Type::Party;
+        assert_ne!(sample().id(), other.id(), "the type is part of the hash");
+        let mut other = sample();
+        other.header.uses = Some(Type::Slayer);
+        assert_ne!(sample().id(), other.id(), "uses is part of the hash");
+        let mut other = sample();
+        other.header.points = "Laps".into();
+        assert_ne!(sample().id(), other.id(), "the points label is part of the hash");
+        // The type byte follows the name and version, then the uses byte.
+        let at = 4 + 2 + 2 + 2 + "Sample".len() + 2;
         let mut bytes = sample().encode();
-        let at = 4 + 2 + 2 + 2 + "Sample".len() + 2 + 1 + 1;
-        assert_eq!(bytes[at], 1);
-        bytes[at] = 7;
+        assert_eq!((bytes[at], bytes[at + 1]), (Type::Research.code(), NO_USES));
+        bytes[at] = 11;
         assert_eq!(
             Ir::decode(&bytes),
             Err(DecodeError::Invalid {
-                what: "the header's list",
-                value: 7
+                what: "the header's type",
+                value: 11
             })
         );
-        assert_eq!(List::named("tweakers"), Some(List::Tweakers));
-        assert_eq!(List::named("slayer"), None);
-        assert_eq!(List::GameType.name(), None);
+        let mut bytes = sample().encode();
+        bytes[at + 1] = 11;
+        assert_eq!(
+            Ir::decode(&bytes),
+            Err(DecodeError::Invalid {
+                what: "the header's uses",
+                value: 11
+            })
+        );
+    }
+
+    #[test]
+    fn the_engine_is_the_uses_games_else_the_types() {
+        let mut h = sample().header;
+        assert_eq!(h.engine(), 2);
+        h.game_type = Type::Ctf;
+        assert_eq!(h.engine(), 1);
+        h.game_type = Type::Party;
+        h.uses = Some(Type::Juggernaut);
+        assert_eq!(h.engine(), 7);
+    }
+
+    #[test]
+    fn settings_round_trip_and_decode_refuses_disorder() {
+        let ir = sample();
+        assert_eq!(crate::settings::TABLE[1].name, "score_limit");
+        assert_eq!(crate::settings::TABLE[8].name, "shields");
+        let back = Ir::decode(&ir.encode()).unwrap();
+        assert_eq!(back.settings, ir.settings);
+        assert_eq!(back.quick, ir.quick);
+        assert_eq!((back.header.uses, back.header.about.as_str()), (None, "A sample."));
+
+        // Out of order, and one index twice: the encoding is not canonical.
+        let mut disorder = sample();
+        disorder.settings.reverse();
+        assert_eq!(
+            Ir::decode(&disorder.encode()),
+            Err(DecodeError::Invalid {
+                what: "the settings' order",
+                value: 1
+            })
+        );
+        let mut twice = sample();
+        twice.settings[1].index = 1;
+        assert_eq!(
+            Ir::decode(&twice.encode()),
+            Err(DecodeError::Invalid {
+                what: "the settings' order",
+                value: 1
+            })
+        );
+        // Six marks.
+        let mut many = sample();
+        many.quick = (0..6).map(Quick::Setting).collect();
+        assert_eq!(
+            Ir::decode(&many.encode()),
+            Err(DecodeError::Invalid {
+                what: "the quick marks' count",
+                value: 6
+            })
+        );
+    }
+
+    #[test]
+    fn the_hash_covers_settings_marks_and_about() {
+        let base = sample().id();
+        let changes: [fn(&mut Ir); 6] = [
+            |ir| ir.settings[0].value = 26,
+            |ir| ir.settings.truncate(1),
+            |ir| ir.quick.reverse(),
+            |ir| ir.quick.clear(),
+            |ir| ir.header.about = "Another.".into(),
+            |ir| ir.header.uses = Some(Type::Slayer),
+        ];
+        for (i, change) in changes.iter().enumerate() {
+            let mut ir = sample();
+            change(&mut ir);
+            assert_ne!(ir.id(), base, "change {i}");
+        }
     }
 
     #[test]

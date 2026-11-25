@@ -127,6 +127,12 @@ and one `[[forge]]` layer. The layer names the document hash
 (`document`), the canonical `.h2forge` file (`document_file`), and the
 materialised `.map` (`file`, `sha256`). The ID hashes the canonical
 JSON `{"base":"<base hash>","forge":["<document hash>"],"format":2}`.
+A document whose objects have game types is built for one engine, and
+its layer names that engine's variant index (`game`, 0 to 15), which
+the canonical JSON carries after `format`:
+`{"base":"<base hash>","forge":["<document hash>"],"format":2,"game":2}`
+(`MapId::forge_game`; [forge-map-variants.md](forge-map-variants.md),
+"Game types"). Every other document has no `game` and keeps its id.
 The document hash omits the entire `expect` block. The resolver checks
 the document, the expected MapId when present, the disc's copy of the
 base, and the local map file. These packages require explicit selection
@@ -814,14 +820,36 @@ players need the same disc map to use it. A delta can carry bytes that
 also appear in some retail map (new content copied from another level);
 only a whole retail map is caught.
 
+### A mod as a package of tag patches
+
+A mod that changes tags and not the whole map is a package
+([studio-redesign.md](../editor/studio-redesign.md), "Packages";
+[asset-store.md](../engine/asset-store.md), "Mods and packages"), built as
+the game assembles the level: an `edits` item whose `set` lines name the
+value each replaces (`from`), `tag` items that override an asset whole
+(`replaces`), `tag-delta` items, and new assets. Each names the user's
+own asset by key and asset hash and holds only the change, so two such
+mods on different fields of one asset both apply; one made for other
+content is off for that level with its reason, and moves neither the
+level's `LevelId` nor its image.
+
+- **No retail bytes, by the publisher's own store.** `h2 package check
+  --store <data>/tags DIR...` refuses a file whose SHA-256 is a raw
+  resource or a tag file of that machine's tag store
+  (`workspace::store_findings`): the store is the retail list there, and
+  none is shipped. The server's list (section 5) stays the gate on upload.
+- **Still whole-map.** `h2 live maps import` writes the whole-map package
+  above; importing a patched map as a package of tag patches is later
+  (AS9).
+
 ### Mod downloads (in game)
 
 - **The row.** The Xbox Live menu's last row, where retail had Content
   Download, reads **Mods**, or **Mods (3 new)** when releases were published
   since the player last opened the screen. Its pane's help text says what
-  it is (`custom_games::MODS_HELP`). Without Live or the map gate the row is
-  Content Download again, with its Map
-  Pack dialog ([live-custom-games.md](../live/live-custom-games.md) §5).
+  it is (`custom_games::MODS_HELP`). Without Live or the map gate the row
+  reads **Mods** and opens the Map Pack dialog, its help
+  `custom_games::MAPPACK_HELP` ([live-custom-games.md](../live/live-custom-games.md) §5).
 - **New.** An entry is new when its `position` (the event-log position it
   was published at) is above the last-seen position, kept in
   `<data>/live-mods.toml` (`seen = N`). Opening the screen sets it to the

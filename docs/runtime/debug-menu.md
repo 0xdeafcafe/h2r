@@ -19,26 +19,39 @@ It is on in `h2 play` and `h2 run` windows unless `H2_DEBUG_MENU=0`.
 
 | | DualSense / DualShock 4 | Any pad | Keyboard |
 |---|---|---|---|
-| Open | touchpad click (or touchpad click + Options) | | `` ` `` (backquote) |
+| Open | touchpad click (or touchpad click + Options) | hold Back (View) + D-pad down for 0.5 s | `` ` `` (backquote) |
 | Close | two-finger tap at the top, or touchpad click + Options | Circle / B at the top | `` ` ``, Escape at the top |
-| Move the selection | swipe up / down on the touchpad | D-pad up / down | arrows up / down |
-| Change a value | swipe left / right | D-pad left / right | arrows left / right |
+| Move the selection | swipe up / down on the touchpad | D-pad up / down (hold repeats), wraps at the ends | arrows up / down, wraps |
+| Change a value | swipe left / right | D-pad left / right (hold repeats) | arrows left / right |
+| Page up / down | | LB / RB | PageUp / PageDown |
+| First / last row | | | Home / End |
 | Select or enter | touchpad click | Cross / A | Enter, Space |
 | Back | two-finger tap | Circle / B | Escape, Backspace |
+| Star or unstar the row | | Triangle / Y | F |
+| Search every section | | | type, or `/` first |
 
-The D-pad and face-button fallback means a pad without a touchpad can still
-use the menu once it is open, but only a DualSense, a DualShock 4 or the
-keyboard can open it.
+Any pad can open and use the menu. The open chord is Back and D-pad down:
+none of the layouts in [controller-layouts.md](../input/controller-layouts.md)
+gives either an action in the table there, and nobody holds both for half
+a second by accident. The game keeps the pair until the menu opens. After
+that it is hidden from the game until both are let go, and the D-pad down
+that was part of the chord does not move the cursor.
 
 - **The click alone.** The game has no use for the touchpad click, so a
   click on a closed menu opens it. That press neither selects a row nor,
   with Options added, closes the menu again; the next click selects.
-
 - **The chord.** A pad with a touchpad holds Options back for 80 ms
   (`debug_menu::gate::CHORD`) in case the click follows. If the click doesn't
   come, the game gets Options then. A press shorter than that still reaches
   the game, one sync late. Pads without a touchpad pass Options straight
-  through.
+  through. The Back + D-pad down hold (`debug_menu::gate::HOLD`, 0.5 s)
+  works on every pad.
+- **Hold-repeat.** A held D-pad direction moves once at the press, then
+  repeats every 80 ms after 350 ms (`REPEAT_DELAY`, `REPEAT_EVERY` in
+  `gate.rs`). The keyboard repeats at the OS's key-repeat rate.
+- **Wrap and paging.** Up from the top goes to the last row, down from the
+  bottom to the first. A page is 14 rows (`debug_menu::model::PAGE`) and
+  stops at the ends.
 - **Swipes.** A swipe is 0.4 of the touchpad's half-width (`SWIPE` in
   `input::touchpad`). Each 0.4 travelled is one step, so a long swipe moves
   several rows. A second finger is one back, and the rest of that touch does
@@ -48,35 +61,165 @@ keyboard can open it.
   whatever was held, so a player doesn't keep running or firing. After it
   closes, anything still held stays hidden until it is let go. The Circle
   that closed the menu never melees, and the Options from the chord never
-  pauses the game. While the menu is open, the keyboard keys above go to the
-  menu, and every other key is swallowed.
+  pauses the game.
 - **Values.** A toggle flips with left, right or select. A number steps by
-  its own step, clamped to its range. A choice cycles through its options.
-  An action (reload, revert) runs on select. Greyed rows say why in the
-  footer, and refuse to change.
+  a step scaled to its range (the range over 64, rounded to 1, 2, 5 or 10
+  times a power of ten, and never finer than the row's own step) unless the
+  row sets one, clamped to its range. Select on a number with a default puts
+  it back. A choice cycles through its options. An action (reload, revert)
+  runs on select. Greyed rows say why in the footer, and refuse to change.
+- **Confirm.** A destructive row asks first: the first select shows
+  "press again to <label>", and a second within 2 s makes the call.
+- **Results.** A change's result shows in the menu for 3 s, above the
+  controls: the row's own text for its result (`Row::on_ok`), else
+  "<label>: done" for an action and "<label>: <value>" for an edit. Errors
+  show the same way, in red. The overlay also draws the result for those
+  3 s after the menu closes, on a small plate of its own (see
+  [Layout](#layout)).
+- **Footer.** The last line teaches the controls of the device last used
+  (keyboard, a touchpad pad's touchpad, or a pad's buttons), split by
+  dots. Above it are the selected row's description and the call it
+  makes, as the agent API would send it, so the menu shows the matching
+  `h2 agent` call.
+- **Header.** `Menu::set_header` pins a section above every page, right
+  under the title bar. Its rows are drawn as `label value` pairs split by
+  dots on up to two lines, listed every second while the menu is open.
+- **Favourites and Recent.** Star the selected row with Triangle / Y or F.
+  The first page lists starred rows under Favourites and the last five
+  actions or edits under Recent, above the sections. A row is keyed by its
+  section's id and its label. They live in memory, for the run.
+- **Search.** With the menu open, a letter, digit or `/ - .` starts a
+  search over every section's rows; the list becomes the matching rows,
+  labelled "Section > row". `f` stars a row and Space selects until the
+  search has started; `/` starts it without a letter, so `f` can be the
+  first one. Escape clears the search, and only then goes back. Backspace
+  erases a letter, and goes back with none. Modifier and function keys are
+  not the menu's.
 
 ## Keyboard
 
 The keys are the Keyboard column of the table above, mapped by
-`debug_menu::Key` (`crates/extensions/debug-menu/src/lib.rs`). While the menu is open
-they go to the menu and every other key is swallowed.
+`debug_menu::Key` (`crates/extensions/debug-menu/src/lib.rs`, from
+`keymap::menu_key` in `crates/apps/app/src/keymap.rs`). While the menu is
+open the arrows, PageUp/PageDown, Home/End, Enter, Space, Escape and
+Backspace act on it, and letters, digits and `/ - .` go to its search. Modifier
+keys and F1 to F12 are not the menu's and pass as before; every other key is
+swallowed.
+
+## Layout
+
+`debug_menu::layout` turns the menu into lines of text, each with a tone,
+64 characters wide (`COLS`). `crates/apps/app/src/menu_overlay.rs` draws
+them on one dark panel in the top left of the game image, one step bigger
+than the watermark:
+
+```text
++==================================================================+
+| DEBUG MENU > Player                                              |  <- title bar
++==================================================================+
+| mainmenu · tick 376 · 11 fps · offline                           |  <- status
+|------------------------------------------------------------------|  <- rule
+| > God mode                                               < off > |  <- selected: bar, panel width
+|   Infinite ammo                                              off |
+|   Give weapon  >                                                 |  <- chevrons by the labels
+|   Teleport     >                                                 |
+|------------------------------------------------------------------|  <- rule
+| makes you take no damage                                         |  <- help, wrapped on phrases
+| agent: cheat.set {"name":"god","value":true}                     |  <- the call
+| Full-speed ready. Restart from debug menu > Game > Game code.    |  <- window notice
+|------------------------------------------------------------------|  <- rule
+| arrows move/change · Enter select · Esc back · F star · / search |  <- controls
++------------------------------------------------------------------+
+```
+
+- **Title bar.** The breadcrumb (`DEBUG MENU > Game > Game code`) on a bar
+  across the top of the panel, in the same font and near-white as the
+  rows.
+- **Rules.** The parts (status, rows, help, controls) are split by
+  `Tone::Rule` lines, drawn one font pixel thick across the whole panel
+  with equal space above and below. A heading among the rows (Favourites,
+  Recent) is its label with a thin line on to the right edge.
+- **Rows.** The label on the left and the value on the right. A page's
+  chevron sits two columns after the longest page label shown, so it reads
+  with its label. The selected row is on a bar exactly the panel's width.
+- **Help.** The selected row's description, or why it is greyed, on up to
+  two lines, broken after a phrase (`,` `;` `:` `.`) when one ends at
+  least half a line in, else at a space (`layout::wrap_phrases`). Section
+  descriptions fit one line (a test checks every section).
+- **Width and padding.** The panel is always 64 characters wide, so it
+  keeps its size from page to page; the padding is the same at the sides
+  and the bottom.
+- **The window's notices.** While the menu is open, the window's banner
+  (the full-speed build, an update) and the paired editor's status
+  ("Editor · edits blocked") are lines inside the panel above the controls,
+  in the menu's tones (`layout::lines_with`, `menu_overlay::notice_tone`),
+  up to three lines each. Nothing is drawn over the open menu. While it is
+  closed they are their own plates (the banner top left, the editor's top
+  right), in the panel's dark colour with a strip in their tone down the
+  left edge (`app::overlay`). The menu's lone result then goes below any
+  plate it would cover (`menu_overlay::place`).
 
 ## Sections
 
-Each section is a `debug_menu::Section`: the agent calls it makes, and a
-function from their answers to rows (`crates/extensions/debug-menu/src/sources.rs`).
-The menu re-asks every second while a page is open, and right after any
-change.
+The first page is organised by what you are doing, not by agent namespace:
+Player, World, Game, Time, View, Perf, Settings, Dev. Each is a
+`debug_menu::Section`: the agent calls it makes, and a function from their
+answers to rows (`crates/extensions/debug-menu/src/sources/`, one file a
+section). A page reached from another (a weapon picker, the Video settings)
+is a sub-page: its id has a `/` (`player/give`), a row of its parent opens
+it, and `sources::is_page` tells the two apart. The menu re-asks every
+second while a page is open, and right after any change.
+
+Rows read as a person would say them: a human label with its unit
+(`Range (world units)`, `Frame time p99 (ms)`), never a JSON key or a hex
+id. A tag is named by the last part of its path (`Battle Rifle`). A row
+that can't act is greyed with the reason, and a row that changes the game
+for good (load, restart, quit, revert all) asks twice. What a change did
+shows as a one-line result.
+
+A pinned line over every page (`sources::header`, from `session.status`,
+`sim.view` and `sim.session`) says where you are:
+`coagulation · tick 5412 · 30 fps · pos 36.7 -80.8 1.7 · offline`.
+
+Writes to the simulation (give, spawn, teleport, load, restart) are host
+writes: `sim.session` refuses them in a co-op session and on a multiplayer
+client. Those rows are greyed with its reason, which the session gives in
+its own words.
 
 | Section | Calls | Rows |
 |---|---|---|
-| Render | `render.toggle`, `render.param`, `settings.list {prefix: "graphics."}`, `render.stats` | the renderer's switches and parameters (a parameter steps by a tenth of its default), the graphics settings, the last frame's stats (read-only). A setting that applies after a restart is greyed with that reason, and so is one locked for this run by a flag or env var. |
-| Shader overrides | `render.overrides`, `render.reload` | the all-overrides switch, reload, the overrides directory, each override and its state; a rejected override is greyed with its error |
-| Tag edits | `edit.changes`, `edit.revert` | each live tag edit (group, tag, field, old -> new). Select one to revert it, or revert all. |
-| Cheats | `cheat.list`, `cheat.set` | god mode, infinite ammo, bottomless clip, game speed, fly, noclip, hide HUD; a cheat refused on its own is greyed with its reason |
-| Perf | `perf.overlay`, `profile.counters` | the perf overlay switch (the same one F3 flips), fps and frame-time percentiles, per-phase ms and counts |
-| Features | `features.list` | every feature with its state (read-only) |
-| Debug views | `debug.views`, `debug.view` | world-space lines for the loaded map, live hitboxes and recent collision queries. Each view has its own switch. Controls set the draw range and trace lifetime. |
+| Player | `cheat.list`, `cheat.set`, `sim.session`, `session.status`, `player.mark`, `player.recall` | God mode, Infinite ammo, Bottomless clip, Fly, Noclip, Give weapon >, Teleport >, Mark position, Recall position, Hide HUD. At the main menu every cheat says no game is running instead of looking accepted, and there is no player to mark or put back. |
+| Player > Give weapon | `edit.tags {group: "weap"}`, `sim.view`, `sim.give` | the map's weapons by name; select one to put it in the local player's hands (it replaces what they hold). The result reads `gave <name>`. |
+| Player > Teleport | `sim.view`, `sim.state.set` | each other player by name; select one to move beside them, facing the way they do. Mark position and Recall position sit beside it on the Player page: Mark keeps the local player's position and facing in the default slot (`quick`), Recall teleports back to it — a host write, greyed with the session's reason in co-op; an empty slot is the call's error. |
+| World | `sim.session` | Spawn vehicle >, Spawn object > |
+| World > Spawn vehicle, Spawn object > (Weapons, Equipment, Scenery, Crates, Machines, Creatures) | `edit.tags {group}`, `sim.view`, `sim.spawn` | the map's tags of that kind by name; select one to make it 5 world units (vehicles) or 3 (objects) in front of the local player, half a unit up, facing the way the player does. |
+| Game | `state.list`, `sim.session`, `session.status`, `state.save`, `state.load`, `map.reload`, `game.menu` | Quick save (`state.save {name: "quick", replace: true}`), Quick load (confirm; greyed until a `quick` snapshot exists), Snapshots >, Restart map (confirm), Load level >, Test maps >, Quit to main menu (confirm), Game code >. A save or load that finds the machine busy fails with the agent's BUSY message, which names what is live. |
+| Game > Snapshots | `state.list`, `state.load` | each snapshot of this build, with its map, tick and size; select one twice to load it |
+| Game > Load level | `game.levels`, `game.load`, `sim.session` | the disc's campaign missions and multiplayer maps by name, under Campaign and Multiplayer headings; select one twice to load it — a mission on Normal, a map as a local Slayer game (`game.load {scenario}`). A co-op or networked session greys every row with its reason, as `game.load` refuses it. Works from the main menu too. |
+| Game > Test maps | `maps.test.list`, `maps.test.load` | each test map; a ready one loads (confirm), one being built or that failed is greyed with why |
+| Game > Game code | `game.code`, `game.code.restart` | Running (full speed, or the slower start on the fast tier), Full-speed build (building with minutes in and about how many left, ready, failed or not needed), the build log's last step and path, the module and its stamp, and Restart at full speed (confirm), greyed with why until the full-speed build is ready |
+| Time | `cheat.list`, `cheat.set`, `host.pause`, `host.step` | Game speed, over the speeds the cheat lists; Pause, the window's own pause (Cmd+P's): `host.pause {}` reads it, `{"on"}` sets it; Step one tick (`host.step {ticks: 1}`), greyed until paused. A headless game has no window, so both carry the method's refusal. |
+| View | `debug.views`, `debug.view`, `host.screenshot` | the world debug views below, each with its own switch; Range (world units, steps of 8, default 48); Trace lifetime (ticks); Take screenshot (`host.screenshot {}`: the window's newest frame as a PNG in the game's screenshots directory, the result names the file); Render passes >; Graphics settings > (the Video page of Settings) |
+| View > Render passes | `render.toggle`, `render.param` | the renderer's switches and parameters (a parameter steps by a tenth of its default; the all-overrides switch is under Dev) |
+| Perf | `perf.overlay`, `profile.counters`, `profile.capture` | Overlay (F3), FPS, frame time p50 and p99 (ms), slowest frame, the five biggest phases by name (frame pacing left out), and Capture 10 s (`profile.capture {ms: 10000}`, which says how many frames it saw and the p99) |
+| Settings | `settings.list {}` | every setting, grouped by prefix into Video, Controls, Co-op, Skulls, Theater, Superbounce, Halo 1, Game modes and Other (a key no group owns), each a sub-page `settings/<group>` that keeps its own keys. A setting that applies after a restart is greyed with "takes effect on restart"; one locked for this run by a flag or env var says what locked it. |
+| Dev | `edit.changes` | Shader overrides >, Tag edits >, Features >, Render stats > |
+| Dev > Shader overrides | `render.overrides`, `render.reload`, `render.toggle {name: "overrides"}` | the all-overrides switch, Reload, the directory, each override by file name and its state; a rejected one is greyed with its error |
+| Dev > Tag edits | `edit.changes`, `edit.revert` | each live tag edit (tag, field, old -> new); select one to revert it, or Revert all (confirm) |
+| Dev > Features | `features.list` | each feature, on or off with the reason it is off (read-only). The rows come from the answer's structured `features` array when it has one, else from the `feature <id>: on` and `feature <id>: off (<reason>)` lines of the plan text (`Plan::text`, `crates/hooking/hooks/src/plan.rs`); the plan's `warning:` lines show as greyed rows. |
+| Dev > Render stats | `render.stats` | every counter as a read-only row named by its path |
+
+The Player and Time pages are the cheats below; the same `cheat.list`
+answer also gives the cheat line in the watermark.
+
+### Cheat line
+
+While the menu is closed, a small line at the bottom left of the game image
+lists the cheats that are on and a game speed other than 1x
+(`cheats: God mode, Fly, 0.5x`). It shows with the perf overlay off, so a
+forgotten god mode is never invisible. `app::Watermark::set_cheats` takes
+the list; `debug_menu::sources::active_cheats` makes it from a `cheat.list`
+answer (`crates/apps/app/src/watermark.rs`, `shell.rs`).
 
 ### Debug views
 
@@ -119,10 +262,15 @@ local players' units, with the helpers our custom skulls use:
 | `god` (god mode) | sets the body's cannot-take-damage flag; switching off clears it only on the units we set it on |
 | `infinite_ammo` | each magazine's reserve to its maximum, an energy weapon's charge to full, both grenade counts topped; reloads still happen |
 | `bottomless_clip` | each magazine's loaded rounds to its maximum, so no reloads (plasma heat still builds) |
-| `game_speed` | 0.25x, 0.5x, 1x, 1.5x or 2x game time, set the way the game's own set-speed helper sets it; a new map puts it back to 1 |
+| `game_speed` | 0.1x, 0.25x, 0.5x, 1x, 1.5x, 2x or 4x game time, set the way the game's own set-speed helper sets it; a new map puts it back to 1 |
 | `fly` | flight through the game's own physics (walls still stop you); controls below |
 | `noclip` | the same flight through walls; the body takes no damage while it is on |
 | `hide_hud` | the HUD hidden through the game's own HUD switch (the flag a script's HUD builtin sets); the game's last value goes back when off |
+| `ai_off` | the actors stand still: the AI globals' on byte (`[0x4f55d0]+0`, which `ai_update` checks and the script's `ai` switch writes) held at 0; the game's last value goes back when off |
+
+A cheat switched on at the main menu is kept and takes hold when a
+campaign or multiplayer game starts; until then `cheat.list` gives it a
+`pending` reason.
 
 ### Fly and noclip
 
@@ -176,8 +324,9 @@ vehicle moves you. The research points are in the module doc.
 | a networked game's guest (world mode 5) | all but `hide_hud`: the host's simulation decides | `hide_hud` |
 | a networked game's host (world mode 4) | `game_speed`: the guests' clocks would not follow | god, ammo, clip, fly and noclip on the host's own players; `hide_hud` |
 
-They act only in a campaign or multiplayer game, not on the main menu.
-When every cheat is refused, the menu shows "cheats are off" with the
+They act only in a campaign or multiplayer game, not on the main menu,
+where the menu says so on each row. When every cheat is refused, the menu
+shows "Cheats are off" with the
 reason and greys every row. A cheat refused on its own greys only its row,
 with its own reason. `cheat.set` answers `UNAVAILABLE` with the reason. If
 the session turns into one that refuses a cheat while it is on (someone
@@ -190,10 +339,12 @@ menu.
 Not built:
 
 - infinite plasma heat: the heat fields are not researched;
-- AI ignores the player, active camouflage, one-hit kills, kill all
-  enemies, give weapons, spawn vehicles, teleport to the crosshair, a free
-  camera: each needs more research, or calls into the game (object
-  creation, ray casts) that these cheats do not make yet;
+- AI ignores the player, active camouflage, one-hit kills, teleport to the
+  crosshair, a free camera: each needs more research, or calls into the
+  game (ray casts) that these cheats do not make yet;
+- kill all enemies: the only delete, `world.object.delete`, is an editor
+  edit that frees the object without telling the AI that owns it, so it is
+  not offered for an actor;
 - low gravity: our Low Gravity skull already owns the gravity constant, and
   two writers would fight over it.
 
@@ -203,24 +354,26 @@ Rows are not hand-coded. They come from a registry through an agent method,
 so an item belongs to one of these:
 
 1. **An entry in an existing registry.** A `hot_render::Hub` toggle or
-   parameter (`hub.declare_toggle` / `declare_param`), a `settings::Def`
-   under `graphics.`, a feature: it shows up in its section with no menu code.
+   parameter (`hub.declare_toggle` / `declare_param`) shows up under View >
+   Render passes, a `settings::Def` under Settings (a prefix no group owns
+   lands in Other), a cheat under Player or Time, a feature under Dev >
+   Features: all with no menu code.
 2. **A new row kind in an existing section.** Change that section's rows
-   function in `sources.rs`, using `Row::toggle`, `int`, `float`, `choice`,
-   `action` or `info`, with a `Setter` naming the agent method and parameter
-   that changes it. Mark it `.disabled(reason)` when it can't change, and
-   `.about(text)` for the footer.
+   function in `sources/<section>.rs`, using `Row::toggle`, `int`, `float`,
+   `choice`, `action`, `open` or `info`, with a `Setter` naming the agent
+   method and parameter that changes it. Mark it `.disabled(reason)` when it
+   can't change, `.about(text)` for the footer, `.confirm()` when it can't be
+   undone, and `.on_ok(fmt)` for the line that says what it did.
 3. **A new section.** Add the host methods to the agent
    (`agent.add_method`, on the game's thread), then a `Section { id, title,
-   about, calls, rows }`. Add it to `sources::all()` for every game, or with
+   about, calls, rows }` in a file of `sources/`, and list it in
+   `sources::all()`. A page reached from another takes an id with a `/` and
+   a `Row::open` on its parent. A section for one mode goes in with
    `Shared::add_section` at run time.
 
-The hook for a later Players section (`sim.*`) is
-`debug_menu::Shared::add_section`: give it the `sim.*` calls and a rows
-function, and it appears on the first page after the built-in sections.
-
-Test new rows in `crates/extensions/debug-menu/src/tests.rs`: the fake game there
-answers the calls the way the host methods do.
+Test new rows in the file's own `tests` module over `sources/fake.rs`, a
+fake game that answers each method in the format the host returns (read it
+from the method's implementation, not its doc).
 
 ## How it is wired
 
@@ -228,7 +381,7 @@ answers the calls the way the host methods do.
   (`HostPadState::touchpad`, read in `game_controller/apple.rs`, never mapped
   to the guest), gestures (`touchpad.rs`), and `InputManager::set_gate`. A
   `PadGate` sees each pad between polling and conversion.
-- `crates/extensions/debug-menu`: the model (`model.rs`), sections (`sources.rs`), layout
+- `crates/extensions/debug-menu`: the model (`model.rs`), sections (`sources/`), layout
   (`layout.rs`), the gate (`gate.rs`) and `Shared`, the handle the window,
   the input layer and the agent connection share.
 - `crates/extensions/agent/src/menu.rs`: the menu's in-process agent connection, plus
@@ -236,10 +389,9 @@ answers the calls the way the host methods do.
 - `crates/extensions/game/src/debug_menu_glue.rs`: installs those methods. A game
   without `H2_AGENT` still gets a socketless agent for the menu. Its shader
   overrides are not loaded or watched until asked.
-- `crates/apps/app/src/menu_overlay.rs`: the drawing (top left of the game image,
-  one step bigger than the watermark, a dark plate, the selected row on a
-  bar). `keymap.rs` has the backquote key, and `shell.rs` routes keys and
-  redraws.
+- `crates/apps/app/src/menu_overlay.rs`: the drawing ([Layout](#layout)).
+  `keymap.rs` has the backquote key, and `shell.rs` routes keys, redraws,
+  and hands the menu the window's notices while it is open.
 - `crates/apps/cli/src/play_cmd.rs`: makes the menu, sets the gate, hands it to
   the window and the game.
 - With the keyboard on (the default), player one is
@@ -252,15 +404,18 @@ answers the calls the way the host methods do.
 
 ## When a pad doesn't open it
 
-`h2 agent hostpads` (`input.host`, [agent-api.md](agent-api.md#inputhost-the-host-controllers))
-shows each controller three ways. Run it while the touchpad is held down:
+Hold Back and D-pad down for half a second; that works on any pad. If it
+doesn't, `h2 agent hostpads` (`input.host`,
+[agent-api.md](agent-api.md#inputhost-the-host-controllers)) shows each
+controller three ways. Run it while the buttons are held:
 
-- `devices`: the controller as GameController reads it. `profile` must be
-  `dualsense` or `dualshock4` for it to have a touchpad. `extended` means
-  the framework gave it a plain profile, so there is no touchpad to read.
-  `touchpad.click` should be `true` while the pad is held.
-- `pads`: what the gate is handed. Player one's touchpad should match the
-  one under `devices`.
+- `devices`: the controller as GameController reads it. Back must show as
+  held. For the touchpad, `profile` must be `dualsense` or `dualshock4`;
+  `extended` means the framework gave it a plain profile, so there is no
+  touchpad to read, and `touchpad.click` should be `true` while the pad is
+  held.
+- `pads`: what the gate is handed. Player one's buttons and touchpad should
+  match the one under `devices`.
 - `gate`: `open`, and per pad `touchpad`, `click`, `chord`, and
   `chord_pending` (Start waiting for the click).
 
@@ -292,3 +447,18 @@ shows each controller three ways. Run it while the touchpad is held down:
   but afr.
 - The perf overlay switch matches F3.
 - Shader overrides reload from the default directory.
+- Give weapon, Teleport and Spawn in a campaign and a multiplayer level: that
+  the weapon is held, the vehicle lands on the ground in front of the
+  player, and the player stands clear of the one they teleported to.
+- Quick save and Quick load in a level with something live that a snapshot
+  can't carry: the failure names it.
+- Pause and Step one tick: Pause stops the window as Cmd+P does and the row
+  shows it; a step runs one tick and the game holds again.
+- Load level, from a running game and from the main menu: the mission or
+  map starts, and in a co-op session every row is greyed with the reason.
+- Mark position and Recall position: a recall lands back on the marked
+  spot facing the marked way, and a recall with no mark fails with the
+  empty slot.
+- Take screenshot: the PNG lands in the screenshots directory and is the
+  frame on screen.
+- The cheat line at the bottom left, with the perf overlay off.

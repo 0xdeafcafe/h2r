@@ -27,7 +27,8 @@ use rules::labels::{Census, Class, Member, ObjectType};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BlockKind, Edit, Endpoint, FieldWrite, ForgeDoc, OpId, Placement, Refusal, Result, Value,
+    BlockKind, Edit, Endpoint, FieldWrite, ForgeDoc, MarkerArea, OpId, Placement, Refusal, Result,
+    Value,
 };
 
 /// The most bytes a label's text takes.
@@ -168,11 +169,14 @@ pub struct MapRows {
     pub flags: Vec<FlagRow>,
     pub starts: Vec<i16>,
     pub tags: BTreeMap<String, ObjectType>,
+    /// The path of each sound (`snd!`) the map names; none when the rows do
+    /// not read tag paths (the running game's).
+    pub sounds: Option<std::collections::BTreeSet<String>>,
 }
 
 /// One labelled thing of a map, after its Forge document: the block and
 /// final index of its placement, its label, what it is and its team.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LabelledThing {
     pub block: BlockKind,
     pub index: u32,
@@ -181,6 +185,8 @@ pub struct LabelledThing {
     /// The placement's team designator, 0 to 7: a flag's or a starting
     /// location's team field. Neutral (8) and none (-1) are `None`.
     pub team: Option<u8>,
+    /// The area on the flag, in offsets from its placement.
+    pub area: Option<MarkerArea>,
 }
 
 /// A team field as a census member's team: designators 0 to 7; neutral (8),
@@ -201,13 +207,36 @@ pub fn labelled(rows: &MapRows, doc: Option<&ForgeDoc>) -> Result<Vec<LabelledTh
     let mut flags = rows.flags.clone();
     let mut starts = rows.starts.clone();
     let mut labels = Labels::default();
+    // An item spawner's team is a property of the document
+    // (`EntryOp::Property`), by the spawner's final index.
+    let mut spawner_teams: BTreeMap<u32, u8> = BTreeMap::new();
+    let mut areas = BTreeMap::new();
     if let Some(doc) = doc {
+        labels = doc.labels(&rows.counts)?;
+        areas = doc.areas(&rows.counts)?;
+        let teams = crate::teams(&doc.ops);
+        let resolved = (!areas.is_empty() || !teams.is_empty())
+            .then(|| crate::resolve(&doc.ops, &rows.counts))
+            .transpose()?;
         for op in &doc.ops {
-            if let Edit::Placement(p) = &op.edit {
+            let placement = match &op.edit {
+                Edit::Placement(p) => Some(p),
+                Edit::Entry(_) if !areas.is_empty() => {
+                    resolved.as_ref().and_then(|r| r.lowered.get(&op.id))
+                }
+                _ => None,
+            };
+            if let Some(p) = placement {
                 replay_row(&mut flags, &mut starts, p);
             }
         }
-        labels = doc.labels(&rows.counts)?;
+        if let Some(resolved) = resolved {
+            for (end, team) in teams {
+                if let Some(index) = resolved.index(end) {
+                    spawner_teams.insert(index, team);
+                }
+            }
+        }
     }
     let own = |block: BlockKind, index: u32| {
         labels
@@ -226,6 +255,7 @@ pub fn labelled(rows: &MapRows, doc: Option<&ForgeDoc>) -> Result<Vec<LabelledTh
                 label,
                 class: Class::Flag,
                 team: designator(i64::from(f.team)),
+                area: areas.remove(&index),
             });
         }
     }
@@ -238,6 +268,7 @@ pub fn labelled(rows: &MapRows, doc: Option<&ForgeDoc>) -> Result<Vec<LabelledTh
                     .get(l.index as usize)
                     .and_then(|&t| designator(i64::from(t))),
             ),
+            BlockKind::NetgameEquipment => (Class::Object, spawner_teams.get(&l.index).copied()),
             _ => (Class::Object, None),
         };
         out.push(LabelledThing {
@@ -246,6 +277,7 @@ pub fn labelled(rows: &MapRows, doc: Option<&ForgeDoc>) -> Result<Vec<LabelledTh
             label: l.label.clone(),
             class,
             team,
+            area: None,
         });
     }
     out.sort_by_key(|t| (t.block, t.index));
@@ -341,6 +373,7 @@ pub fn census(things: &[LabelledThing], tags: &BTreeMap<String, ObjectType>) -> 
     let mut census = Census {
         labels: BTreeMap::new(),
         tags: tags.clone(),
+        sounds: None,
     };
     for t in things {
         census
@@ -372,7 +405,9 @@ pub trait CensusOf: Sized {
 impl CensusOf for Census {
     fn of_file<R: Read + Seek>(map: &mut map::Map<R>, doc: Option<&ForgeDoc>) -> Result<Self> {
         let rows = rows_of_file(map)?;
-        Ok(census(&labelled(&rows, doc)?, &rows.tags))
+        let mut census = census(&labelled(&rows, doc)?, &rows.tags);
+        census.sounds = rows.sounds.clone();
+        Ok(census)
     }
 
     fn of_game(rows: &MapRows, doc: Option<&ForgeDoc>) -> Result<Self> {
@@ -455,13 +490,19 @@ pub fn rows_of_file<R: Read + Seek>(map: &mut map::Map<R>) -> Result<MapRows> {
         let count = le_u32(&root, def.offset as usize)?;
         rows.counts.insert(def.kind, count.min(CENSUS_ENTRY_LIMIT));
     }
-    rows.flags = read_block(map, &root, loc.space, BlockKind::NetgameFlags, CENSUS_FLAG_LIMIT)?
-        .iter()
-        .map(|e| FlagRow {
-            kind: u16_at(e, 0x10),
-            team: u16_at(e, 0x12),
-        })
-        .collect();
+    rows.flags = read_block(
+        map,
+        &root,
+        loc.space,
+        BlockKind::NetgameFlags,
+        CENSUS_FLAG_LIMIT,
+    )?
+    .iter()
+    .map(|e| FlagRow {
+        kind: u16_at(e, 0x10),
+        team: u16_at(e, 0x12),
+    })
+    .collect();
     rows.starts = read_block(
         map,
         &root,
@@ -476,12 +517,20 @@ pub fn rows_of_file<R: Read + Seek>(map: &mut map::Map<R>) -> Result<MapRows> {
         .insert(BlockKind::NetgameFlags, rows.flags.len() as u32);
     rows.counts
         .insert(BlockKind::StartingLocations, rows.starts.len() as u32);
+    let mut sounds = std::collections::BTreeSet::new();
     for tag in map.tags() {
+        if &tag.group.0 == b"snd!"
+            && let Some(name) = tag.name.as_deref()
+            && !name.is_empty()
+        {
+            sounds.insert(name.replace('\\', "/"));
+        }
         if let (Some(ty), Some(name)) = (object_type(&tag.group.0), tag.name.as_deref())
             && !name.is_empty()
         {
             rows.tags.insert(name.replace('\\', "/"), ty);
         }
     }
+    rows.sounds = Some(sounds);
     Ok(rows)
 }

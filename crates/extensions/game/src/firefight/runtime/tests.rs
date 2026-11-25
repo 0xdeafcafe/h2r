@@ -32,6 +32,8 @@ const PLAYERS: u32 = 0x1003_0000;
 const OBJECTS: u32 = 0x1004_0000;
 const UNIT: u32 = 0x1005_0000;
 const SCRATCH: u32 = 0x1006_0000;
+/// The variant's flags: `[GAME_GLOBALS] + 8 + 0x17c`, team play in bit 0.
+const VARIANT_FLAGS: u32 = GAME_GLOBALS + 8 + 0x17c;
 /// The Elite's invented character tag datum.
 const ELITE_TAG: u32 = 0xe123_0042;
 const TICK: u32 = 10;
@@ -85,7 +87,7 @@ fn guest(kit: bool, world: u32) -> (FakeGuest, u32) {
         m.put_u32(PALETTE + 4, ELITE_TAG);
         pair(&mut m, SCNR + 0x240, 1, ORDERS);
         m.map(ORDERS, 0x7c);
-        named(&mut m, ORDERS, "ff_hunt");
+        named(&mut m, ORDERS, "ff_hunt_00");
     }
     m.put_u32(points::PLAYERS.base, PLAYERS)
         .put_u32(points::OBJECTS.base, OBJECTS);
@@ -133,6 +135,30 @@ fn drive(
     });
     assert_eq!(run.result, Ok(Ret::new(0, 0)));
     (run.calls, run.guest)
+}
+
+/// The fixture's map with both teams' base zones, `ff_base_00` at the
+/// origin and `ff_base_01` at (80, 0, 0), after its drop zone, and a
+/// variant with team play `on` or off.
+fn two_team_map(m: &mut FakeGuest, team_play: bool) {
+    pair(m, SCNR + 0x168, 3, ZONES);
+    for (i, x) in [(1u32, 0.0f32), (2, 80.0)] {
+        let (zone, area) = (ZONES + i * 0x38, AREAS + i * 0x88);
+        named(m, zone, &format!("ff_base_{:02}", i - 1));
+        pair(m, zone + 0x30, 1, area);
+        m.map(area, 0x88).put_f32(area + 0x24, x);
+    }
+    m.put_u32(VARIANT_FLAGS, u32::from(team_play));
+}
+
+/// Game Setup chose Crossfire, the two-team wave set.
+fn crossfire(it: &Arc<Shared>) {
+    it.lock().set_options(Box::new(|| {
+        Ok(Options {
+            wave_set: 3,
+            ..Options::default()
+        })
+    }));
 }
 
 fn wire_command(value: serde_json::Value) -> wire::CommandParams {
@@ -432,12 +458,19 @@ fn the_director_steps_after_the_tick_and_scores_a_kill_of_a_kit_class() {
     let (mut m, _) = guest(true, 1);
     shared.lock().start(&mut m, false);
     shared.lock().post_tick(&mut m, &[]);
-    // Holdout's shared pool is announced at the first step.
+    // Holdout's shared pool is announced at the first step, then the mode
+    // state the step leaves.
     let head = shared.lock().state().log.unwrap();
-    assert_eq!((head.seq, head.tick), (1, TICK + 1));
+    assert_eq!((head.seq, head.tick), (2, TICK + 1));
+    {
+        let rt = shared.lock();
+        let ops: Vec<_> = rt.running().unwrap().host.log().since(0).to_vec();
+        assert!(matches!(ops[0].op, Command::Lives { .. }), "{ops:?}");
+        assert!(matches!(ops[1].op, Command::ModeState { .. }), "{ops:?}");
+    }
     // The same tick again changes nothing.
     shared.lock().post_tick(&mut m, &[]);
-    assert_eq!(shared.lock().state().log.unwrap().seq, 1);
+    assert_eq!(shared.lock().state().log.unwrap().seq, 2);
     m.put_u32(GAME_TIME + 8, TICK + 1);
     shared
         .lock()
@@ -446,8 +479,10 @@ fn the_director_steps_after_the_tick_and_scores_a_kill_of_a_kit_class() {
     let host = &rt.running().unwrap().host;
     let last = host
         .log()
-        .since(1)
-        .last()
+        .since(2)
+        .iter()
+        .rev()
+        .find(|e| !matches!(e.op, Command::ModeState { .. }))
         .expect("a score entry")
         .op
         .clone();
@@ -469,7 +504,35 @@ fn every_wire_command_is_the_directors_own() {
                 weapon_tier: 2,
             },
         ),
+        (
+            json!({"target": {"slot": 2, "team": 1}}),
+            Command::Target { slot: 2, team: 1 },
+        ),
         (json!({"hunt": {"slot": 2}}), Command::Hunt { slot: 2 }),
+        (
+            json!({"team_lives": {"team": 1, "pool": 7}}),
+            Command::TeamLives { team: 1, pool: 7 },
+        ),
+        (
+            json!({"score": {"player": 2, "points": 50, "reason": "player_kill"}}),
+            Command::Score {
+                player: 2,
+                points: 50,
+                reason: ScoreReason::PlayerKill,
+            },
+        ),
+        (
+            json!({"finish": {"outcome": {"team_won": {"team": 1}}}}),
+            Command::Finish {
+                outcome: Outcome::TeamWon { team: 1 },
+            },
+        ),
+        (
+            json!({"finish": {"outcome": "draw"}}),
+            Command::Finish {
+                outcome: Outcome::Draw,
+            },
+        ),
         (
             json!({"erase_squad": {"slot": 0}}),
             Command::EraseSquad { slot: 0 },
@@ -528,7 +591,8 @@ fn the_kit_reply_reads_the_scenario() {
     assert_eq!(kit.zones[0].point, [40.0, 0.0, 0.0]);
     assert_eq!(kit.zones[0].starts, 2);
     assert_eq!(kit.classes, BTreeMap::from([("elite".to_string(), 0)]));
-    assert_eq!(kit.hunt_order, Some(0));
+    assert_eq!(kit.hunt_orders, [Some(0)]);
+    assert!(kit.bases.is_empty(), "the fixture marks no base zone");
     let (m, _) = guest(false, 1);
     assert_eq!(kit_reply(&m).unwrap(), wire::Kit::default());
 }
@@ -573,8 +637,22 @@ fn the_pages_choices_start_the_match() {
     it.lock().start(&mut m, false);
     let state = it.lock().state();
     let director = state.director.expect("the director runs");
-    assert_eq!(director.pool, 3, "the page's pool");
+    assert_eq!(director.pools, [3], "the page's pool");
+    assert_eq!(director.teams, 1);
+    assert_eq!(director.scores, [0]);
     assert_eq!(director.cap, 24, "Last Stand's cap for one player");
+}
+
+#[test]
+fn the_custom_game_wave_record_starts_its_director_on_a_kit_map() {
+    crate::lobby_start::set_mode(crate::lobby_start::Mode::Multiplayer);
+    let wave = crate::community_variants::listed_named("Last Stand").unwrap();
+    let (it, _) = shared(false);
+    it.lock().set_options(Box::new(|| Ok(Options { enabled: false, ..Options::default() })));
+    let (mut guest, _) = guest(true, 1);
+    guest.put(GAME_GLOBALS + bots::guest::OPTIONS + crate::variant_ext::OPTIONS_VARIANT, wave.record.bytes());
+    it.lock().start(&mut guest, false);
+    assert_eq!(it.lock().state().director.expect("Last Stand starts").cap, 24);
 }
 
 /// With nothing chosen the match is the settings' defaults: Holdout.
@@ -584,7 +662,7 @@ fn a_run_with_no_page_plays_the_defaults() {
     let (mut m, _) = guest(true, 1);
     it.lock().start(&mut m, false);
     let director = it.lock().state().director.expect("the director runs");
-    assert_eq!(director.pool, 12, "Holdout's pool");
+    assert_eq!(director.pools, [12], "Holdout's pool");
     assert_eq!(director.cap, 12);
 }
 
@@ -602,6 +680,276 @@ fn a_choice_the_store_cannot_give_refuses_the_mode_by_name() {
          firefight.waveset is None, not a choice"
     );
     assert!(!it.lock().state().running);
+}
+
+/// A player killed by a player is the director's `PlayerKill`, its killer
+/// and victim resolved to roster slots as an actor kill's killer is.
+#[test]
+fn player_kills_come_from_the_sim_events() {
+    let kill = |attacker: Datum, victim: Datum| {
+        SimEvent::Kill(sim_state::Kill {
+            tick: Some(40),
+            attacker,
+            victim,
+            code: 0,
+            victim_unit: Datum::NONE,
+            attacker_unit: Datum::NONE,
+            position: None,
+            attacker_position: None,
+        })
+    };
+    let events = [
+        kill(Datum(0x0001_0000), Datum(0x0002_0003)),
+        damage(40, 0xa000_0001, 0x0001_0000),
+        // A fall: nobody is credited.
+        kill(Datum::NONE, Datum(0x0003_0001)),
+        // No victim player: left out.
+        kill(Datum(0x0001_0000), Datum::NONE),
+        killed(0xa000_0001, Datum(0x0001_0000)),
+    ];
+    assert_eq!(
+        player_kills(&events),
+        [
+            PlayerKill {
+                killer: Some(0),
+                victim: 3
+            },
+            PlayerKill {
+                killer: None,
+                victim: 1
+            },
+        ]
+    );
+    assert_eq!(outcome_name(Outcome::TeamWon { team: 1 }), "team_won");
+    assert_eq!(outcome_name(Outcome::Draw), "draw");
+}
+
+/// The end report Live takes: one score per team, and the winner named
+/// only by a two-team win.
+#[test]
+fn the_end_report_carries_each_teams_score_and_the_winner() {
+    let ended = |outcome, teams| crate::firefight::host::Ended {
+        tick: 900,
+        set: "Crossfire".into(),
+        outcome,
+        rounds_cleared: 2,
+        lives_used: 4,
+        teams,
+        scores: [300, 150],
+    };
+    let won = ended_report(ended(Outcome::TeamWon { team: 1 }, 2));
+    assert_eq!(won.validate(), Ok(()));
+    assert_eq!(
+        (won.outcome.as_str(), won.team, won.teams, won.scores.as_slice()),
+        ("team_won", Some(1), 2, &[300, 150][..])
+    );
+    let draw = ended_report(ended(Outcome::Draw, 2));
+    assert_eq!(draw.validate(), Ok(()));
+    assert_eq!((draw.outcome.as_str(), draw.team), ("draw", None));
+    let one = ended_report(ended(Outcome::Won, 1));
+    assert_eq!(one.validate(), Ok(()));
+    assert_eq!((one.teams, one.scores.as_slice()), (1, &[300][..]));
+}
+
+/// Two player teams need a team game; with one and the kit's two bases
+/// the match runs.
+#[test]
+fn two_teams_need_team_play_and_a_base_each() {
+    let (it, _) = shared(false);
+    crossfire(&it);
+    let (mut m, _) = guest(true, 1);
+    two_team_map(&mut m, false);
+    assert_eq!(
+        it.lock().start(&mut m, false),
+        "firefight: off on firefight-probe: two Firefight teams need a team game, \
+         and Team Play did not turn on for this game"
+    );
+    assert!(!it.lock().state().running);
+    // Team play on, but a kit with no bases.
+    let (mut m, _) = guest(true, 1);
+    m.put_u32(VARIANT_FLAGS, 1);
+    let line = it.lock().start(&mut m, false);
+    assert!(line.ends_with("marks 0 bases, and 2 player teams need one each"), "{line}");
+    // Both.
+    let (mut m, _) = guest(true, 1);
+    two_team_map(&mut m, true);
+    let line = it.lock().start(&mut m, false);
+    assert!(line.starts_with("firefight: on on firefight-probe as Host"), "{line}");
+    let director = it.lock().state().director.expect("the director runs");
+    assert_eq!((director.teams, director.pools), (2, vec![10, 10]));
+    assert_eq!(teams_refusal(1, None), None, "one team needs no team game");
+    assert!(teams_refusal(2, None).is_some());
+}
+
+/// The options block the game is about to copy at activation, its mode
+/// and its variant's flags.
+const OPTIONS: u32 = 0x1007_0000;
+
+fn options_block(m: &mut FakeGuest, mode: u32, flags: u32) {
+    m.map(OPTIONS, 0x200)
+        .put_u32(OPTIONS, mode)
+        .put_u32(OPTIONS + OPTIONS_VARIANT_FLAGS, flags);
+}
+
+/// Two Firefight teams on a kit map turn the variant's team play on before
+/// the game copies its options, so the match starts as teams instead of
+/// being refused. Other flags stay; a variant already on is left alone.
+#[test]
+fn two_teams_turn_team_play_on_before_the_game_starts() {
+    let (it, _) = shared(false);
+    crossfire(&it);
+    let (mut m, _) = guest(true, 1);
+    two_team_map(&mut m, false);
+    options_block(&mut m, MODE_MULTIPLAYER, 0x40);
+    assert_eq!(
+        it.lock().activate(&mut m, OPTIONS, false).as_deref(),
+        Some("firefight: two teams: Team Play is on for this game")
+    );
+    let flags = m.u32(OPTIONS + OPTIONS_VARIANT_FLAGS).unwrap();
+    assert_eq!(flags, 0x41);
+    assert_eq!(
+        it.lock().activate(&mut m, OPTIONS, false),
+        None,
+        "already on"
+    );
+    // The game copies the options into its globals; the match runs.
+    m.put_u32(VARIANT_FLAGS, flags);
+    let line = it.lock().start(&mut m, false);
+    assert!(
+        line.starts_with("firefight: on on firefight-probe as Host"),
+        "{line}"
+    );
+    assert_eq!(it.lock().state().director.unwrap().teams, 2);
+}
+
+/// One team, Firefight off, a map without the kit, another mode and a
+/// film's playback leave team play as the variant has it; Teams set to two
+/// on a one-team wave set turns it on.
+#[test]
+fn only_two_firefight_teams_on_a_kit_map_turn_team_play_on() {
+    let unchanged = |options: Options, kit: bool, mode: u32, film: bool| {
+        let (it, _) = shared(false);
+        it.lock().set_options(Box::new(move || Ok(options.clone())));
+        let (mut m, _) = guest(kit, 1);
+        options_block(&mut m, mode, 0);
+        let line = it.lock().activate(&mut m, OPTIONS, film);
+        let flags = m.u32(OPTIONS + OPTIONS_VARIANT_FLAGS).unwrap();
+        assert_eq!(line.is_none(), flags == 0, "{line:?}");
+        flags == 0
+    };
+    let two = Options {
+        wave_set: 3,
+        ..Options::default()
+    };
+    let mp = MODE_MULTIPLAYER;
+    assert!(unchanged(Options::default(), true, mp, false), "one team");
+    assert!(unchanged(two.clone(), false, mp, false), "no kit");
+    assert!(unchanged(two.clone(), true, 1, false), "a campaign game");
+    assert!(unchanged(two.clone(), true, mp, true), "a film");
+    let off = Options {
+        enabled: false,
+        ..two.clone()
+    };
+    assert!(unchanged(off, true, mp, false), "Firefight off");
+    let one = Options {
+        teams: Some(1),
+        ..two
+    };
+    assert!(unchanged(one, true, mp, false), "Crossfire by one team");
+    let holdout_two = Options {
+        teams: Some(2),
+        ..Options::default()
+    };
+    assert!(wants_team_play(&holdout_two, true));
+    assert!(!unchanged(holdout_two, true, mp, false), "Teams set to two");
+    assert_eq!(with_team_play(1, true), None);
+    assert_eq!(with_team_play(0, false), None);
+    assert_eq!(with_team_play(0x10, true), Some(0x11));
+}
+
+/// Each multiplayer start publishes the match it plays for the session
+/// data (a Live host's `NewSession.firefight`): the set, its id, teams,
+/// difficulty and the kit version on a kit map with Firefight on, none
+/// otherwise, so a stale match does not linger. A film publishes nothing.
+#[test]
+fn each_multiplayer_start_names_its_match_for_the_session() {
+    type Sent = Arc<Mutex<Vec<Option<live_proto::session::Firefight>>>>;
+    let start = |options: Options, kit: bool, film: bool| {
+        let (it, _) = shared(false);
+        let sent: Sent = Arc::default();
+        let seen = Arc::clone(&sent);
+        it.lock().set_options(Box::new(move || Ok(options.clone())));
+        it.lock()
+            .set_session(Box::new(move |f| seen.lock().unwrap().push(f)));
+        let (mut m, _) = guest(kit, 1);
+        options_block(&mut m, MODE_MULTIPLAYER, 1);
+        it.lock().activate(&mut m, OPTIONS, film);
+
+        sent.lock().unwrap().clone()
+    };
+    let crossfire = Options {
+        wave_set: 3,
+        difficulty: ::firefight::Difficulty::Heroic,
+        ..Options::default()
+    };
+    let sent = start(crossfire.clone(), true, false);
+    let def = crossfire.definition().unwrap();
+    let expected = live_proto::session::Firefight {
+        set: "Crossfire".into(),
+        id: def.id().unwrap().to_string(),
+        teams: 2,
+        difficulty: 2,
+        kit: ::firefight::KIT_VERSION,
+    };
+    assert_eq!(sent, [Some(expected.clone())]);
+    assert_eq!(expected.validate(), Ok(()));
+    assert_eq!(session_firefight(&crossfire, true), Some(expected));
+    // Holdout: one team.
+    let one = start(Options::default(), true, false);
+    assert_eq!(
+        one[0].as_ref().map(|f| (f.set.as_str(), f.teams)),
+        Some(("Holdout", 1))
+    );
+    // No kit, or Firefight off: the session names no match.
+    assert_eq!(start(crossfire.clone(), false, false), [None]);
+    let off = Options {
+        enabled: false,
+        ..crossfire.clone()
+    };
+    assert_eq!(start(off, true, false), [None]);
+    assert!(start(crossfire, true, true).is_empty(), "a film");
+}
+
+/// The Clankers are told the match: the player teams, the actors' team,
+/// the bases, the drop zones, each team's pool and whether a wave is on.
+#[test]
+fn the_clankers_are_told_the_teams_bases_and_lives() {
+    use bots::firefight::{Context, Phase as BotPhase};
+    let (it, _) = shared(false);
+    let (mut m, _) = guest(true, 1);
+    it.lock().start(&mut m, false);
+    let one = bot_context(&it.lock().running().unwrap().host);
+    assert_eq!(
+        one,
+        Some(Context {
+            player_teams: vec![0],
+            ai_team: 3,
+            bases: Vec::new(),
+            lives: vec![Some(12)],
+            phase: BotPhase::Between,
+            drop_zones: vec![[40.0, 0.0, 0.0]],
+        })
+    );
+    crossfire(&it);
+    let (mut m, _) = guest(true, 1);
+    two_team_map(&mut m, true);
+    it.lock().start(&mut m, false);
+    let two = bot_context(&it.lock().running().unwrap().host).unwrap();
+    assert_eq!(two.player_teams, [0, 1]);
+    assert_eq!(two.ai_team, 3, "never a player team");
+    assert_eq!(two.bases, [[0.0, 0.0, 0.0], [80.0, 0.0, 0.0]]);
+    assert_eq!(two.lives, [Some(10), Some(10)]);
+    assert_eq!(two.phase, BotPhase::Between, "warmup");
 }
 
 /// The HUD's blob comes from the host's director and its log, and says so
@@ -640,4 +988,43 @@ fn the_hud_blob_comes_from_the_hosts_director_and_log() {
     let rt = replica.lock();
     let game = rt.running().unwrap();
     assert!(mode_blob(&game.host, game.players).is_none());
+}
+
+#[cfg(feature = "rules")]
+#[test]
+fn the_kit_director_announces_its_type_only_for_its_own_record() {
+    use crate::rules::guest::{VARIANT, VARIANT_ENGINE};
+    use variants::ext::{Ext, Mode, Script};
+    let (mut m, _) = guest(true, 1);
+    for (engine, mode, owns) in [
+        (2, Mode::Firefight, true),
+        (2, Mode::None, true),
+        (2, Mode::Rules, false),
+        (7, Mode::None, false),
+    ] {
+        m.put_u32(GAME_GLOBALS + VARIANT + VARIANT_ENGINE, engine);
+        let ext = Ext { script: Script { mode, prefix: [9; 8], options: 0 }, ..Ext::default() };
+        m.put(GAME_GLOBALS + crate::variant_ext::BLOCK, &ext.encode());
+        assert_eq!(director_owns_line(&m), owns, "{engine}, {mode:?}");
+    }
+}
+
+#[test]
+fn change_rules_crossfire_starts_its_director_with_the_stored_setting_off() {
+    use crate::pause_change_map::{Draft, game_types};
+
+    let listed = crate::community_variants::listed_named("Crossfire").unwrap();
+    let row = game_types::listed(listed.record.clone()).unwrap();
+    let mut draft = Draft::default();
+    draft.pick_rules(&row);
+    let variant = draft.variant.unwrap();
+    let (shared, _) = shared(false);
+    shared.lock().set_options(Box::new(|| Ok(Options { enabled: false, ..Options::default() })));
+    let (mut m, _) = guest(true, 1);
+    two_team_map(&mut m, true);
+    m.put(GAME_GLOBALS + bots::guest::OPTIONS + crate::variant_ext::OPTIONS_VARIANT, variant.bytes());
+    shared.lock().start(&mut m, false);
+    let state = shared.lock().state();
+    assert!(state.running, "{:?}", state.refused);
+    assert_eq!(state.director.unwrap().teams, 2);
 }

@@ -1177,6 +1177,9 @@ impl Live {
                     )));
                 }
             }
+            // The script checks of a hopper edit, on the whole file: every entry
+            // runs a rules script that fits its playlist's kind.
+            crate::admin::check_file(self, &file)?;
         }
         let meta = PublishedFile {
             title_id: title,

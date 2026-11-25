@@ -26,12 +26,21 @@ pub(super) struct Search {
     came: Vec<u32>,
     touched: Vec<u32>,
     heap: BinaryHeap<Open>,
+    exhausted: Option<u32>,
 }
 
 impl Search {
     /// After exhaustion this is the entire directed reachable set.
     pub(super) fn reached(&self, i: u32) -> bool {
-        self.best[i as usize] < f32::INFINITY
+        self.best.get(i as usize).is_some_and(|&b| b < f32::INFINITY)
+    }
+
+    /// The start of the last search when it ran out of polys without
+    /// reaching its goal, so `reached` holds its whole reachable set. A
+    /// search refused before it began (a pole outside the mesh, or a goal
+    /// out of the map from in it) exhausts nothing.
+    pub(super) fn exhausted_from(&self) -> Option<u32> {
+        self.exhausted
     }
 
     pub(super) fn corridor(
@@ -55,8 +64,16 @@ impl Search {
         path: &mut Vec<u32>,
     ) -> bool {
         path.clear();
+        self.exhausted = None;
         let n = mesh.polys.len();
         if start as usize >= n || goal as usize >= n {
+            return false;
+        }
+        // From in the map, a corridor never ends or passes out of it
+        // (docs/game/bots.md section 3.2, "In the map"). From out of it
+        // (after a bounce) anything goes, so the bot plans back in.
+        let confined = mesh.in_map(start);
+        if confined && !mesh.in_map(goal) {
             return false;
         }
         let goal_at = mesh.polys[goal as usize].center;
@@ -93,7 +110,7 @@ impl Search {
             let here = mesh.polys[i as usize].center;
             for &ei in mesh.out.get(i as usize).into_iter().flatten() {
                 let e = &mesh.edges[ei as usize];
-                if skip(ei, e) {
+                if skip(ei, e) || (confined && !mesh.in_map(e.to)) {
                     continue;
                 }
                 let there = mesh.polys[e.to as usize].center;
@@ -126,6 +143,7 @@ impl Search {
                 }
             }
         }
+        self.exhausted = Some(start);
         false
     }
 }

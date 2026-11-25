@@ -7,15 +7,23 @@ use std::path::PathBuf;
 
 use dear_imgui_rs::{TableColumnFlags, TableColumnWidth, TableFlags, TreeNodeFlags, Ui};
 use variants::ext;
-use variants::panel::{Origin, strip_icon};
+use variants::ext_weapons;
+use variants::panel::{Origin, OptionKind, OptionView, ScriptView, script_view, strip_icon};
 use variants::record::{self, Kind};
 use variants::{GameType, GameVariant, SettingId, VariantEditor};
 
-use crate::app::{Action, App};
+use crate::app::{Action, App, rules_edit};
 use crate::theme::{self, Fonts, icon};
+
+/// Which script a record names, and the editor's open script it may be:
+/// what [`VariantsUi::script`] is looked up for.
+type ScriptKey = ([u8; 8], Option<String>);
 
 /// The variant tool's own UI state.
 pub struct VariantsUi {
+    /// The script the open record names, found once per record and script
+    /// editor state rather than compiled every frame.
+    script: Option<(ScriptKey, Option<rules::Ir>)>,
     /// The game type "New" makes.
     pub new_type: GameType,
     /// The name a copy of the open built-in gets.
@@ -24,6 +32,14 @@ pub struct VariantsUi {
     copy_for: Option<Origin>,
     /// Pasted portable variant text.
     import_text: String,
+    /// The map variants on this machine a variant may suggest, read when
+    /// the "Suggest map variants" section opens (and by its Refresh).
+    suggestable: Option<Vec<forge::files::variants::Suggestable>>,
+    /// The ids of the ones ticked, in the order ticked: what Export writes
+    /// as the file's `maps` (the open variant changing clears them).
+    suggest: Vec<String>,
+    /// The variant the ticks were made for.
+    suggest_for: Option<Origin>,
     /// Open only the settings pages whose title contains this, once (the
     /// headless screenshots' `--page`).
     pub only_page: Option<String>,
@@ -32,12 +48,36 @@ pub struct VariantsUi {
 impl Default for VariantsUi {
     fn default() -> Self {
         Self {
+            script: None,
             new_type: GameType::Slayer,
             copy_name: String::new(),
             copy_for: None,
             import_text: String::new(),
+            suggestable: None,
+            suggest: Vec::new(),
+            suggest_for: None,
             only_page: None,
         }
+    }
+}
+
+impl VariantsUi {
+    /// The script `prefix` names, as [`rules_edit::find_script`] finds it,
+    /// looked up again only when the prefix or the script editor's
+    /// analysed script changes.
+    fn script_for(&mut self, app: &App, prefix: [u8; 8]) -> Option<&rules::Ir> {
+        let editor_hash = app
+            .rules
+            .analysis
+            .check
+            .as_ref()
+            .and_then(|c| c.hash.clone());
+        let key = (prefix, editor_hash);
+        if self.script.as_ref().is_none_or(|(k, _)| *k != key) {
+            let found = rules_edit::find_script(prefix, &app.rules);
+            self.script = Some((key, found));
+        }
+        self.script.as_ref().and_then(|(_, ir)| ir.as_ref())
     }
 }
 
@@ -68,6 +108,24 @@ pub fn list(ui: &Ui, app: &App, st: &mut VariantsUi, fonts: &Fonts, actions: &mu
         actions.push(Action::NewVariant(st.new_type));
     }
     ui.set_item_tooltip("A new variant of this game type with its defaults");
+    ui.set_next_item_width(-1.0);
+    if let Some(_c) = ui.begin_combo("##new-script", format!("{} New from script...", icon::PLUS)) {
+        for (label, source) in rules_edit::starters() {
+            if ui.selectable(&label) {
+                actions.push(Action::NewVariantFromScript(source.to_string()));
+            }
+        }
+        if app.rules.analysis.check.as_ref().is_some_and(|c| c.ok) {
+            ui.separator();
+            if ui.selectable(format!("The open script ({})", app.rules.title)) {
+                actions.push(Action::NewVariantFromScript(app.rules.text.clone()));
+            }
+        }
+    }
+    ui.set_item_tooltip(
+        "A new variant of a game type script: its settings and option defaults, as the \
+         game's list would make it",
+    );
     ui.separator();
     let open = e.origin().cloned();
     theme::panel_body(ui, "##variant-list", || {
@@ -165,9 +223,18 @@ pub fn settings(ui: &Ui, app: &App, st: &mut VariantsUi, fonts: &Fonts, actions:
     ui.separator();
 
     let defaults = e.schema().new_variant(ty);
+    // The script the record names, when this editor has it.
+    let prefix = e.script_prefix();
+    let script = prefix.and_then(|p| st.script_for(app, p).map(|ir| script_view(ir, v)));
+    let marked: &[SettingId] = script
+        .as_ref()
+        .map_or(&[], |s| s.marked_settings.as_slice());
     let disabled = ui.begin_disabled_with_cond(read_only);
     let only = st.only_page.take();
     {
+        if let Some(prefix) = prefix {
+            script_section(ui, prefix, script.as_ref(), actions);
+        }
         for page in e.schema().pages_for(ty) {
             if let Some(only) = &only {
                 ui.set_next_item_open(page.title.contains(only.as_str()));
@@ -196,7 +263,8 @@ pub fn settings(ui: &Ui, app: &App, st: &mut VariantsUi, fonts: &Fonts, actions:
             for id in &page.settings {
                 ui.table_next_row();
                 ui.table_next_column();
-                if let Some(x) = setting_row(ui, e, *id, v, &defaults, fonts) {
+                let quick = marked.contains(id);
+                if let Some(x) = setting_row(ui, e, *id, v, &defaults, fonts, quick) {
                     actions.push(Action::SetSetting(*id, x));
                 }
             }
@@ -208,11 +276,130 @@ pub fn settings(ui: &Ui, app: &App, st: &mut VariantsUi, fonts: &Fonts, actions:
     disabled.end();
 }
 
-/// Our options the record has no field for, in its extension block
-/// (docs/game/game-options.md section 3). Only the ones the game applies
-/// are shown (gravity, damage, shield and health, unlimited grenades);
-/// the rest arrive with their slices. Team count (setting 93) is a record field with no retail row,
-/// shown here too. Returns the action for what the user changed.
+/// The Script section: the script the record names (its name and
+/// description, how it scores, the Quick Options rows it marks) and a row
+/// per option, which edits the block's option bits as one undo step
+/// ([`Action::SetScriptOption`]). `view` is `None` when this editor does
+/// not have the script.
+fn script_section(ui: &Ui, prefix: [u8; 8], view: Option<&ScriptView>, actions: &mut Vec<Action>) {
+    let title = view.map_or_else(
+        || format!("Script {}", rules_edit::hex_prefix(prefix)),
+        |s| format!("Script: {}", s.name),
+    );
+    if !ui.collapsing_header(
+        format!("{title}##variant-script"),
+        TreeNodeFlags::DEFAULT_OPEN,
+    ) {
+        return;
+    }
+    let Some(view) = view else {
+        ui.text_colored(
+            theme::WARN,
+            format!(
+                "{} This variant names a script this editor does not have. Open it in the \
+                 script editor to see its options; its settings stay as they are.",
+                icon::INFO
+            ),
+        );
+        return;
+    };
+    if !view.about.is_empty() {
+        ui.text_wrapped(&view.about);
+    }
+    if view.carrier_scoring {
+        ui.text_disabled("Scored by the built-in game it uses.");
+    }
+    if !view.marks.is_empty() {
+        ui.text_disabled(format!("{} Quick Options", icon::FLAG));
+        for m in &view.marks {
+            ui.bullet_text(format!(
+                "{}: {}{}",
+                m.label,
+                m.text,
+                if m.option { "  (option)" } else { "" }
+            ));
+        }
+    }
+    if view.options.is_empty() {
+        return;
+    }
+    let flags = TableFlags::ROW_BG | TableFlags::BORDERS_INNER_V;
+    let Some(_t) = ui.begin_table_with_flags("##variant-script-options", 2, flags) else {
+        return;
+    };
+    ui.table_setup_column(
+        "Option",
+        TableColumnFlags::NONE,
+        Some(TableColumnWidth::Fixed(230.0)),
+    );
+    ui.table_setup_column(
+        "Value",
+        TableColumnFlags::NONE,
+        Some(TableColumnWidth::Stretch(1.0)),
+    );
+    for o in &view.options {
+        ui.table_next_row();
+        ui.table_next_column();
+        ui.align_text_to_frame_padding();
+        ui.text(&o.label);
+        let help = if o.description.is_empty() {
+            "No help text."
+        } else {
+            o.description.as_str()
+        };
+        ui.set_item_tooltip(format!("{help}\n\nDefault: {}", o.text(o.default)));
+        if o.quick {
+            ui.same_line();
+            ui.text_disabled(icon::FLAG);
+            ui.set_item_tooltip("Marked by the script: shown in the lobby's Quick Options");
+        }
+        ui.table_next_column();
+        if let Some(value) = option_row(ui, o) {
+            actions.push(Action::SetScriptOption(o.index, value));
+        }
+    }
+}
+
+/// One option's widget; the new value when the user changed it.
+fn option_row(ui: &Ui, o: &OptionView) -> Option<i32> {
+    ui.set_next_item_width(-1.0);
+    let wid = format!("##script-option-{}", o.index);
+    match &o.kind {
+        OptionKind::Bool => {
+            let mut on = o.value != 0;
+            ui.checkbox(&wid, &mut on).then_some(i32::from(on))
+        }
+        OptionKind::Int { lo, hi } => {
+            let mut x = o.value;
+            ui.slider_i32(&wid, &mut x, *lo, *hi)
+                .then_some(x.clamp(*lo, *hi))
+        }
+        OptionKind::Enum { lo, values } => {
+            let mut out = None;
+            if let Some(_c) = ui.begin_combo(&wid, o.text(o.value)) {
+                for (i, name) in values.iter().enumerate() {
+                    let value = lo + i as i32;
+                    if ui
+                        .selectable_config(name)
+                        .selected(value == o.value)
+                        .build()
+                        && value != o.value
+                    {
+                        out = Some(value);
+                    }
+                }
+            }
+            out
+        }
+    }
+}
+
+/// The `hx` extras the settings table has rows for (gravity, damage,
+/// shield, health, unlimited grenades; docs/game/game-options.md section
+/// 3) and the team count (setting 93, also a table row). Each is edited
+/// as its settings row ([`Action::SetVariantRow`]), the way a script's
+/// `settings` block names it; the extras no row stores are not shown.
+/// Returns the action for what the user changed.
 fn more_options(ui: &Ui, v: &GameVariant) -> Option<Action> {
     if !ui.collapsing_header("More options (h2recomp)##variant-ext", TreeNodeFlags::NONE) {
         return None;
@@ -227,7 +414,7 @@ fn more_options(ui: &Ui, v: &GameVariant) -> Option<Action> {
         );
     }
     let now = v.ext();
-    let mut next = now;
+    let mut out = None;
     let flags = TableFlags::ROW_BG | TableFlags::BORDERS_INNER_V;
     let _t = ui.begin_table_with_flags("##variant-ext-table", 2, flags)?;
     ui.table_setup_column(
@@ -240,56 +427,71 @@ fn more_options(ui: &Ui, v: &GameVariant) -> Option<Action> {
         TableColumnFlags::NONE,
         Some(TableColumnWidth::Stretch(1.0)),
     );
-    ui.table_next_row();
-    ui.table_next_column();
-    ui.align_text_to_frame_padding();
-    ui.text("Gravity (%)");
-    ui.set_item_tooltip(
-        "Gravity for everyone, as a percent of the game's. The Low Gravity \
-         skull halves it again. Applied by the host and on Live (not on \
-         System Link, where every machine plays the game's own).",
-    );
-    ui.table_next_column();
-    ui.set_next_item_width(-1.0);
-    let mut g = i32::from(now.gravity);
     let (lo, hi) = (*ext::GRAVITY.start(), *ext::GRAVITY.end());
-    if ui.slider_i32("##ext-gravity", &mut g, i32::from(lo), i32::from(hi)) {
-        next.gravity = g.clamp(lo.into(), hi.into()) as u16;
-    }
-    let (lo, hi) = (*ext::PERCENT.start(), *ext::PERCENT.end());
-    for (label, id, tip, value) in [
+    let (plo, phi) = (*ext::PERCENT.start(), *ext::PERCENT.end());
+    for (row, label, id, tip, value, range) in [
         (
+            "gravity",
+            "Gravity (%)",
+            "##ext-gravity",
+            "Gravity for everyone, as a percent of the game's. The Low Gravity \
+             skull halves it again. Applied by the host and on Live (not on \
+             System Link, where every machine plays the game's own).",
+            i32::from(now.gravity),
+            (lo, hi),
+        ),
+        (
+            "damage",
             "Damage (%)",
             "##ext-damage",
-            "Damage every player deals, as a percent of the game's.",
-            &mut next.damage,
+            "Damage every player deals, as a percent of the game's. Players \
+             only (vehicles keep theirs). Applied by the host and its guests \
+             on Live (not on System Link).",
+            i32::from(now.damage),
+            (plo, phi),
         ),
         (
+            "shield",
             "Shields (%)",
             "##ext-shield",
-            "How much every player's shield holds, as a percent of the game's.",
-            &mut next.shield,
+            "How much every player's shield holds, as a percent of the game's. \
+             Players only (vehicles keep theirs). Applied by the host and its \
+             guests on Live (not on System Link).",
+            i32::from(now.shield),
+            (plo, phi),
         ),
         (
+            "health",
             "Health (%)",
             "##ext-health",
-            "How much every player's body holds, as a percent of the game's.",
-            &mut next.health,
+            "How much every player's body holds, as a percent of the game's. \
+             Players only (vehicles keep theirs). Applied by the host and its \
+             guests on Live (not on System Link).",
+            i32::from(now.health),
+            (plo, phi),
+        ),
+        (
+            "speed",
+            "Movement speed (%)",
+            "##ext-speed",
+            "How fast every player moves, as a percent of the game's. A \
+             carrier's or the Juggernaut's own speed is scaled too. Applied \
+             by the host and its guests on Live (not on System Link).",
+            i32::from(now.speed),
+            (plo, phi),
         ),
     ] {
         ui.table_next_row();
         ui.table_next_column();
         ui.align_text_to_frame_padding();
         ui.text(label);
-        ui.set_item_tooltip(format!(
-            "{tip} Players only (vehicles keep theirs). Applied by the host and \
-             its guests on Live (not on System Link)."
-        ));
+        ui.set_item_tooltip(tip);
         ui.table_next_column();
         ui.set_next_item_width(-1.0);
-        let mut x = i32::from(*value);
-        if ui.slider_i32(id, &mut x, i32::from(lo), i32::from(hi)) {
-            *value = x.clamp(lo.into(), hi.into()) as u16;
+        let mut x = value;
+        if ui.slider_i32(id, &mut x, i32::from(range.0), i32::from(range.1)) {
+            let x = x.clamp(range.0.into(), range.1.into());
+            out = Some(Action::SetVariantRow(row.into(), x));
         }
     }
     ui.table_next_row();
@@ -303,13 +505,66 @@ fn more_options(ui: &Ui, v: &GameVariant) -> Option<Action> {
     ui.table_next_column();
     let mut on = now.unlimited_grenades;
     if ui.checkbox("##ext-grenades", &mut on) {
-        next.unlimited_grenades = on;
+        out = Some(Action::SetVariantRow(
+            "unlimited_grenades".into(),
+            i32::from(on),
+        ));
     }
     let teams = team_count_row(ui, v);
-    if next != now {
-        return Some(Action::SetVariantExt(next));
+    let weapons = weapon_rows(ui, v);
+    out.or_else(|| teams.map(|t| Action::SetVariantRow("team_count".into(), t)))
+        .or(weapons)
+}
+
+/// The weapons of ours the starting and secondary weapon can be, beyond
+/// the record's list (docs/game/game-options.md, "Any weapon as the
+/// starting or secondary weapon"): a choice of each slot, "Not Used" for
+/// the record's own. The action for what the user changed.
+fn weapon_rows(ui: &Ui, v: &GameVariant) -> Option<Action> {
+    let now = v.ext();
+    let mut out = None;
+    for (secondary, label, tip, id, widget) in [
+        (
+            false,
+            "Other starting weapon",
+            "A weapon the map's list lacks, given as the starting weapon in \
+             place of the one set above. The map must carry it, or the one \
+             above is used. Applied by the host (not on System Link).",
+            now.primary,
+            "##ext-primary",
+        ),
+        (
+            true,
+            "Other secondary weapon",
+            "A weapon the map's list lacks, given as the secondary weapon in \
+             place of the one set above. The map must carry it, or the one \
+             above is used. Applied by the host (not on System Link).",
+            now.secondary,
+            "##ext-secondary",
+        ),
+    ] {
+        ui.table_next_row();
+        ui.table_next_column();
+        ui.align_text_to_frame_padding();
+        ui.text(label);
+        ui.set_item_tooltip(tip);
+        ui.table_next_column();
+        ui.set_next_item_width(-1.0);
+        if let Some(_c) = ui.begin_combo(widget, ext_weapons::name(id)) {
+            let steps = std::iter::once(0u16).chain(ext_weapons::TABLE.iter().map(|w| w.id));
+            for step in steps {
+                if ui
+                    .selectable_config(ext_weapons::name(step))
+                    .selected(step == id)
+                    .build()
+                    && step != id
+                {
+                    out = Some(Action::SetVariantWeapon(secondary, step));
+                }
+            }
+        }
     }
-    teams.map(|t| Action::SetSetting(record::TEAM_COUNT, t))
+    out
 }
 
 /// Team count (setting 93, `+0xb4`): how many teams the game makes,
@@ -365,6 +620,7 @@ fn setting_row(
     v: &GameVariant,
     defaults: &GameVariant,
     fonts: &Fonts,
+    quick: bool,
 ) -> Option<i32> {
     let value = v.get(id)?;
     let schema = e.schema();
@@ -387,6 +643,11 @@ fn setting_row(
         .map(|d| e.value_text(id, d))
         .unwrap_or_default();
     ui.set_item_tooltip(format!("{help}\n\nDefault: {default_text}"));
+    if quick {
+        ui.same_line();
+        ui.text_disabled(icon::FLAG);
+        ui.set_item_tooltip("Marked by the script: shown in the lobby's Quick Options");
+    }
     ui.table_next_column();
     ui.set_next_item_width(-1.0);
     let wid = format!("##setting-{}", id.0);
@@ -452,7 +713,6 @@ pub fn inspector(
     };
     let current = e.current();
     let saved = matches!(e.origin(), Some(Origin::Saved(_)));
-    let can_save = e.is_dirty() && !e.is_read_only();
     let button = |label: String, enabled: bool, tip: &str| -> bool {
         let d = ui.begin_disabled_with_cond(!enabled);
         let clicked = ui.button(label);
@@ -460,14 +720,6 @@ pub fn inspector(
         ui.set_item_tooltip(tip);
         clicked
     };
-    if button(
-        format!("{} Save", icon::SAVE),
-        can_save,
-        "Write it to the game's save storage (Cmd+S)",
-    ) {
-        actions.push(Action::SaveVariant);
-    }
-    ui.same_line();
     if button(
         format!("{} Revert", icon::UNDO),
         e.has_changes(),
@@ -489,7 +741,7 @@ pub fn inspector(
         "Write it as a portable .h2variant file to share",
     ) && let Some(p) = export_dialog(dialogs, current)
     {
-        actions.push(Action::ExportVariant(p));
+        actions.push(export_action(p, &st.suggest, st.suggestable.as_deref().unwrap_or_default()));
     }
     ui.same_line();
     if ui.button(format!("{} Import...", icon::PACKAGE_OPEN))
@@ -498,6 +750,7 @@ pub fn inspector(
         actions.push(Action::ImportVariantFile(p));
     }
     ui.set_item_tooltip("Open a .h2variant file as a new, unsaved variant");
+    suggest_section(ui, app, st);
     ui.separator();
 
     if let Some(v) = current {
@@ -582,4 +835,107 @@ pub fn import_dialog(dialogs: bool) -> Option<PathBuf> {
         .set_title("Open a game variant")
         .add_filter("Game variant", &[variants::portable::EXTENSION])
         .pick_file()
+}
+
+/// What Export writes: the plain file with nothing ticked, else a version-2
+/// file whose `maps` are the ticked map variants, in the order ticked.
+fn export_action(
+    path: PathBuf,
+    ticked: &[String],
+    known: &[forge::files::variants::Suggestable],
+) -> Action {
+    let maps: Vec<_> = ticked
+        .iter()
+        .filter_map(|id| known.iter().find(|s| s.id.to_string() == *id))
+        .map(|s| variants::portable::MapSuggestion {
+            base: s.base.to_string(),
+            variant: s.id.to_string(),
+            name: s.name.clone(),
+        })
+        .collect();
+    if maps.is_empty() {
+        Action::ExportVariant(path)
+    } else {
+        Action::ExportVariantWith(path, maps)
+    }
+}
+
+/// The "Suggest map variants" section: this machine's map variants, ticked
+/// for the next Export. A game variant only suggests: the lobby opens its
+/// Map Variant picker on one (docs/game/forge-map-variants.md).
+fn suggest_section(ui: &Ui, app: &App, st: &mut VariantsUi) {
+    let origin = app.variants.as_ref().and_then(|e| e.origin().cloned());
+    if st.suggest_for != origin {
+        st.suggest.clear();
+        st.suggest_for = origin;
+    }
+    if !ui.collapsing_header("Suggest map variants", TreeNodeFlags::NONE) {
+        return;
+    }
+    if st.suggestable.is_none() || ui.small_button("Refresh##suggest") {
+        st.suggestable = Some(
+            forge::files::variants::suggestable(&app.data_root()).unwrap_or_default(),
+        );
+    }
+    ui.text_wrapped(
+        "Tick the map variants this game variant was made for. The lobby's Map Variant picker opens on one; nothing is changed for the player.",
+    );
+    let known = st.suggestable.clone().unwrap_or_default();
+    if known.is_empty() {
+        ui.text_disabled("No saved map variants on this machine.");
+    }
+    for s in &known {
+        let id = s.id.to_string();
+        let mut on = st.suggest.contains(&id);
+        let full = st.suggest.len() >= variants::portable::MAX_MAPS && !on;
+        let d = ui.begin_disabled_with_cond(full);
+        if ui.checkbox(format!("{} ({})##map-{id}", s.name, s.map), &mut on) {
+            if on {
+                st.suggest.push(id.clone());
+            } else {
+                st.suggest.retain(|x| *x != id);
+            }
+        }
+        d.end();
+    }
+    if st.suggest.len() >= variants::portable::MAX_MAPS {
+        ui.text_disabled(format!("At most {} are suggested.", variants::portable::MAX_MAPS));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use forge::files::variants::{Source, Suggestable};
+    use forge_doc::Sha256;
+
+    fn known(name: &str) -> Suggestable {
+        Suggestable {
+            source: Source::Saved,
+            map: "fixture".into(),
+            file: name.into(),
+            name: name.into(),
+            base: Sha256::of(b"base"),
+            id: Sha256::of(name.as_bytes()),
+        }
+    }
+
+    #[test]
+    fn export_writes_the_ticked_map_variants_in_the_order_ticked() {
+        let all = [known("Castle"), known("Tower")];
+        let path = PathBuf::from("v.h2variant");
+        // Nothing ticked: the plain export.
+        assert!(matches!(export_action(path.clone(), &[], &all), Action::ExportVariant(_)));
+        let ticked = [all[1].id.to_string(), all[0].id.to_string()];
+        let Action::ExportVariantWith(p, maps) = export_action(path.clone(), &ticked, &all) else {
+            panic!("a tick makes a version-2 export");
+        };
+        assert_eq!(p, path);
+        let names: Vec<_> = maps.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["Tower", "Castle"]);
+        assert_eq!(maps[0].base, all[1].base.to_string());
+        // A tick whose map variant has gone from the list is dropped.
+        let gone = [Sha256::of(b"gone").to_string()];
+        assert!(matches!(export_action(path, &gone, &all), Action::ExportVariant(_)));
+    }
 }

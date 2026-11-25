@@ -67,7 +67,7 @@ fn a_spot_is_counted_among_its_kind_best_first_as_the_verifier_counts() {
     assert!(target(&to_spot(0, Some("ledge")), &s, &[]).is_err());
     // No scan: the mode must be on.
     let e = target(&to_spot(0, None), &[], &[]).unwrap_err();
-    assert!(e.contains("superbounce.set"), "{e}");
+    assert!(e.contains("hud.superbounce"), "{e}");
 }
 
 #[test]

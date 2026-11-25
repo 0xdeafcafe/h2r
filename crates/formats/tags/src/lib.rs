@@ -18,6 +18,9 @@ pub mod edit;
 pub mod rebuild;
 /// A new `bitm` from RGBA pixels, shaped like an existing one.
 pub mod rgba_bitmap;
+/// A `bitm` taken apart into its records and laid out again with images or
+/// sequences added, for a save that moves the tag.
+pub mod bitmap_grow;
 /// The main menu's level lists (multiplayer maps and campaign levels) in
 /// the globals tag: names, descriptions, pictures.
 pub mod ui_levels;
@@ -41,7 +44,11 @@ pub mod sound;
 pub mod ui;
 /// Animation graphs (`jmad`) and their compressed frame data; see `docs/formats/animation.md`.
 pub mod anim;
+/// Sparse keys for a decoded clip: the animation editor's key reduction; see `docs/editor/studio-redesign.md`.
+pub mod anim_keys;
 pub mod anim_sample;
+/// The `jmad` animation encoder (codecs 1, 3 and 8); see `docs/formats/animation.md`.
+pub mod anim_write;
 /// Object family (`obje` subtypes, `hlmt`, `itmc`, `vehc`); see `docs/formats/objects.md`.
 pub mod object;
 /// Materials resolved from `shad` tags into ordered, ready-to-draw passes.
@@ -142,4 +149,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod anim_keys_tests;
+#[cfg(test)]
 mod anim_tests;
+#[cfg(test)]
+mod anim_write_tests;

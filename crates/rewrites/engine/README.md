@@ -9,7 +9,7 @@ Hand-written Rust replacements for Halo 2 engine functions, installed behind the
 ## Layout
 
 - `src/lib.rs`: the ported functions (tag lookup, datum arrays, locale, hs, squads, screen effects, lights).
-- `src/sim_native/`, `src/sim_objects/`, `src/sim_collision/`, `src/sim_physics/`, `src/sim_anim.rs`: the adapters that gather, call the sim crates and scatter.
+- `src/sim_native/`, `src/sim_objects/`, `src/sim_collision/`, `src/sim_physics/`, `src/sim_anim.rs` (with `src/sim_anim/skeleton.rs`, `src/sim_anim/markers.rs`, `src/sim_anim/palette.rs` and `src/sim_anim/filter.rs`): the adapters that gather, call the sim crates and scatter.
 - `src/render_loop/`, `src/render.rs`: the render-loop ports.
 - `entry`, `abi`, `locale`, `point_shapes`, `runtime_glue`: async entries, the override adapters and hook shapes, re-exported from `guest-layout` (`crates/hooking/guest-layout/src`).
 

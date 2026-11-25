@@ -21,7 +21,10 @@
 
 use std::ops::Range;
 
-use frame_scene::{FrameScene, GroupSite, LightBinding, LightEntry, LightGroup, LightPose, PROJECTION_ROWS, Row, Topology};
+use frame_scene::{
+    FrameScene, GroupSite, LightBinding, LightEntry, LightGroup, LightPose, PROJECTION_ROWS, Row,
+    Topology,
+};
 
 /// A resident stream, as the native geometry names it.
 pub type StreamId = u32;
@@ -106,12 +109,22 @@ fn same_pose<'r>(rows: &dyn Fn(&LightEntry) -> &'r [Row], a: &LightEntry, b: &Li
 }
 
 /// The group's draws from the scene, or why not.
-pub fn plan(scene: &FrameScene, group: &LightGroup, resident: &dyn Resident) -> Result<Plan, Refusal> {
+pub fn plan(
+    scene: &FrameScene,
+    group: &LightGroup,
+    resident: &dyn Resident,
+) -> Result<Plan, Refusal> {
     if !group.whole() {
         return Err(Refusal::Remainder(group.remainder));
     }
     let draws = plan_entries(scene.entries_of(group), &|e| scene.pose_rows(e), resident)?;
-    Ok(Plan { light: group.light, layer: group.layer, site: group.site, projection: group.projection, draws })
+    Ok(Plan {
+        light: group.light,
+        layer: group.layer,
+        site: group.site,
+        projection: group.projection,
+        draws,
+    })
 }
 
 /// [`plan`]'s draws for a whole group's `entries`, each object entry's
@@ -166,13 +179,19 @@ pub fn plan_view<'a>(
     view: &'a frame_scene::View,
     resident: &'a dyn Resident,
 ) -> impl Iterator<Item = (&'a LightGroup, Result<Plan, Refusal>)> + 'a {
-    view.lights.clone().flat_map(move |l| scene.groups_of(l).iter().map(move |g| (g, plan(scene, g, resident))))
+    view.lights.clone().flat_map(move |l| {
+        scene
+            .groups_of(l)
+            .iter()
+            .map(move |g| (g, plan(scene, g, resident)))
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use frame_scene::{
-        InstanceKey, LightStep, LightStream, LightTarget, SceneBuilder, SceneId, SceneLight, Stamp, ViewKey, ViewKind,
+        InstanceKey, LightStep, LightStream, LightTarget, SceneBuilder, SceneId, SceneLight, Stamp,
+        ViewKey, ViewKind,
     };
 
     use super::*;
@@ -191,7 +210,10 @@ mod tests {
                 _ => return None,
             };
             let first = e.stream.first_index;
-            Some(ResidentPart { stream, indices: first..first + e.stream.index_count })
+            Some(ResidentPart {
+                stream,
+                indices: first..first + e.stream.index_count,
+            })
         }
     }
 
@@ -201,24 +223,69 @@ mod tests {
         scene_extract::layout::camera::read(&m, 0x1000).unwrap()
     }
 
-    fn entry(slot: u16, owner: LayerOwner, pose: LightPose, first: u32, topology: Topology) -> LightEntry {
+    fn entry(
+        slot: u16,
+        owner: LayerOwner,
+        pose: LightPose,
+        first: u32,
+        topology: Topology,
+    ) -> LightEntry {
         LightEntry {
             slot,
             record: 1,
             owner,
             model: u32::MAX,
-            stream: LightStream { section: 2, part: slot as u8, vertex_class: 0, first_index: first, index_count: 6, topology },
+            stream: LightStream {
+                section: 2,
+                part: slot as u8,
+                vertex_class: 0,
+                first_index: first,
+                index_count: 6,
+                topology,
+            },
             pose,
-            binding: LightBinding { shader: 0xe000_0010, selector: 0, variant: 0, implementation: 3 },
+            binding: LightBinding {
+                shader: 0xe000_0010,
+                selector: 0,
+                variant: 0,
+                implementation: 3,
+            },
         }
     }
 
-    fn scene(groups: &[(LightGroup, Vec<(LightEntry, Vec<frame_scene::Row>)>)]) -> std::sync::Arc<FrameScene> {
+    fn scene(
+        groups: &[(LightGroup, Vec<(LightEntry, Vec<frame_scene::Row>)>)],
+    ) -> std::sync::Arc<FrameScene> {
         let mut b = SceneBuilder::default();
         b.begin(SceneId::default());
-        b.open_view(ViewKey { kind: ViewKind::Game, player: 0, view: 0 }, camera()).unwrap();
-        let light = SceneLight { handle: 1, definition: 2, flags: 7, definition_flags: 0, additional_casters: true, steps: 0..0, ..Default::default() };
-        b.push_light(light, &[LightStep { layer: 12, stencil: Some(0), target: LightTarget::View, draws: true }]).unwrap();
+        b.open_view(
+            ViewKey {
+                kind: ViewKind::Game,
+                player: 0,
+                view: 0,
+            },
+            camera(),
+        )
+        .unwrap();
+        let light = SceneLight {
+            handle: 1,
+            definition: 2,
+            flags: 7,
+            definition_flags: 0,
+            additional_casters: true,
+            steps: 0..0,
+            ..Default::default()
+        };
+        b.push_light(
+            light,
+            &[LightStep {
+                layer: 12,
+                stencil: Some(0),
+                target: LightTarget::View,
+                draws: true,
+            }],
+        )
+        .unwrap();
         for (g, e) in groups {
             b.push_light_group(g.clone(), e).unwrap();
         }
@@ -226,7 +293,15 @@ mod tests {
     }
 
     fn group(layer: u8, site: GroupSite) -> LightGroup {
-        LightGroup { light: 0, layer, site, projection: None, entries: 0..0, remainder: 0 }
+        LightGroup {
+            light: 0,
+            layer,
+            site,
+            projection: None,
+            pass: None,
+            entries: 0..0,
+            remainder: 0,
+        }
     }
 
     const W: LightPose = LightPose::World;
@@ -241,22 +316,65 @@ mod tests {
             (entry(1, LayerOwner::Cluster(2), W, 6, LIST), vec![]),
             // A duplicate: drawn again, not joined backwards.
             (entry(1, LayerOwner::Cluster(2), W, 6, LIST), vec![]),
-            (entry(3, LayerOwner::Cluster(2), W, 12, Topology::Strip), vec![]),
-            (entry(4, LayerOwner::Cluster(2), W, 18, Topology::Strip), vec![]),
-            (entry(5, LayerOwner::Placement(4), LightPose::Placement(4), 24, LIST), vec![]),
-            (LightEntry { model: 0xe500_0000, ..entry(6, object, LightPose::Rows(0..0), 30, LIST) }, rows.clone()),
-            (LightEntry { model: 0xe500_0000, ..entry(7, object, LightPose::Rows(0..0), 36, LIST) }, rows.clone()),
+            (
+                entry(3, LayerOwner::Cluster(2), W, 12, Topology::Strip),
+                vec![],
+            ),
+            (
+                entry(4, LayerOwner::Cluster(2), W, 18, Topology::Strip),
+                vec![],
+            ),
+            (
+                entry(
+                    5,
+                    LayerOwner::Placement(4),
+                    LightPose::Placement(4),
+                    24,
+                    LIST,
+                ),
+                vec![],
+            ),
+            (
+                LightEntry {
+                    model: 0xe500_0000,
+                    ..entry(6, object, LightPose::Rows(0..0), 30, LIST)
+                },
+                rows.clone(),
+            ),
+            (
+                LightEntry {
+                    model: 0xe500_0000,
+                    ..entry(7, object, LightPose::Rows(0..0), 36, LIST)
+                },
+                rows.clone(),
+            ),
         ];
         let s = scene(&[(group(12, GroupSite::Light), entries)]);
         let g = &s.groups_of(0)[0];
         let p = plan(&s, g, &Held).unwrap();
-        let ranges: Vec<_> = p.draws.iter().map(|d| (d.indices.clone(), d.entries.clone())).collect();
-        assert_eq!(ranges, [(0..12, 0..2), (6..12, 2..3), (12..18, 3..4), (18..24, 4..5), (24..30, 5..6), (30..42, 6..8)]);
+        let ranges: Vec<_> = p
+            .draws
+            .iter()
+            .map(|d| (d.indices.clone(), d.entries.clone()))
+            .collect();
+        assert_eq!(
+            ranges,
+            [
+                (0..12, 0..2),
+                (6..12, 2..3),
+                (12..18, 3..4),
+                (18..24, 4..5),
+                (24..30, 5..6),
+                (30..42, 6..8)
+            ]
+        );
         assert_eq!(p.entries(), 8, "every handler of the layer");
         assert_eq!(p.draws[0].stream, 1002);
         assert_eq!(p.draws[4].stream, 2002);
         assert_eq!(p.draws[4].pose, LightPose::Placement(4));
-        let LightPose::Rows(r) = &p.draws[5].pose else { panic!("an object's rows") };
+        let LightPose::Rows(r) = &p.draws[5].pose else {
+            panic!("an object's rows")
+        };
         assert_eq!(&s.rows[r.start as usize..r.end as usize], rows.as_slice());
     }
 
@@ -278,15 +396,38 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            let s = scene(&[(group(12, GroupSite::Light), vec![(base.clone(), vec![]), (e, vec![])])]);
-            assert_eq!(plan(&s, &s.groups_of(0)[0], &Held).unwrap().draws.len(), 2, "case {n}");
+            let s = scene(&[(
+                group(12, GroupSite::Light),
+                vec![(base.clone(), vec![]), (e, vec![])],
+            )]);
+            assert_eq!(
+                plan(&s, &s.groups_of(0)[0], &Held).unwrap().draws.len(),
+                2,
+                "case {n}"
+            );
         }
         let object = LayerOwner::Object(InstanceKey(1));
-        let a = LightEntry { model: 5, ..entry(0, object, LightPose::Rows(0..0), 0, LIST) };
-        let b = LightEntry { record: 2, ..LightEntry { model: 5, ..entry(1, object, LightPose::Rows(0..0), 6, LIST) } };
+        let a = LightEntry {
+            model: 5,
+            ..entry(0, object, LightPose::Rows(0..0), 0, LIST)
+        };
+        let b = LightEntry {
+            record: 2,
+            ..LightEntry {
+                model: 5,
+                ..entry(1, object, LightPose::Rows(0..0), 6, LIST)
+            }
+        };
         let rows = |x| vec![[x, 0.0, 0.0, 0.0]; 3];
-        let s = scene(&[(group(12, GroupSite::Light), vec![(a, rows(1.0)), (b, rows(2.0))])]);
-        assert_eq!(plan(&s, &s.groups_of(0)[0], &Held).unwrap().draws.len(), 2, "another record's pose");
+        let s = scene(&[(
+            group(12, GroupSite::Light),
+            vec![(a, rows(1.0)), (b, rows(2.0))],
+        )]);
+        assert_eq!(
+            plan(&s, &s.groups_of(0)[0], &Held).unwrap().draws.len(),
+            2,
+            "another record's pose"
+        );
     }
 
     #[test]
@@ -294,27 +435,101 @@ mod tests {
         let projection = Some([[3; 4]; PROJECTION_ROWS]);
         let caster = (entry(0, LayerOwner::Cluster(2), W, 0, LIST), vec![]);
         let s = scene(&[
-            (LightGroup { projection, ..group(10, GroupSite::Light) }, vec![caster.clone()]),
-            (LightGroup { projection, ..group(10, GroupSite::AdditionalCasters) }, vec![caster.clone()]),
-            (LightGroup { projection, ..group(11, GroupSite::AdditionalCasters) }, vec![caster]),
+            (
+                LightGroup {
+                    projection,
+                    ..group(10, GroupSite::Light)
+                },
+                vec![caster.clone()],
+            ),
+            (
+                LightGroup {
+                    projection,
+                    ..group(10, GroupSite::AdditionalCasters)
+                },
+                vec![caster.clone()],
+            ),
+            (
+                LightGroup {
+                    projection,
+                    ..group(11, GroupSite::AdditionalCasters)
+                },
+                vec![caster],
+            ),
         ]);
         let v = &s.views[0];
         let plans: Vec<_> = plan_view(&s, v, &Held).map(|(_, p)| p.unwrap()).collect();
-        assert_eq!(plans.iter().map(|p| (p.layer, p.site)).collect::<Vec<_>>(),
-            [(10, GroupSite::Light), (10, GroupSite::AdditionalCasters), (11, GroupSite::AdditionalCasters)]);
-        assert!(plans.iter().all(|p| p.projection == projection && p.draws.len() == 1));
+        assert_eq!(
+            plans.iter().map(|p| (p.layer, p.site)).collect::<Vec<_>>(),
+            [
+                (10, GroupSite::Light),
+                (10, GroupSite::AdditionalCasters),
+                (11, GroupSite::AdditionalCasters)
+            ]
+        );
+        assert!(
+            plans
+                .iter()
+                .all(|p| p.projection == projection && p.draws.len() == 1)
+        );
     }
 
     #[test]
     fn a_remainder_a_missing_stream_or_pose_keeps_the_layers_handlers() {
         let s = scene(&[
-            (LightGroup { remainder: 2, ..group(12, GroupSite::Light) }, vec![]),
-            (group(12, GroupSite::Light), vec![(entry(0, LayerOwner::Cluster(9), W, 0, LIST), vec![])]),
-            (group(12, GroupSite::Light), vec![(entry(0, LayerOwner::Placement(7), LightPose::Placement(7), 0, LIST), vec![])]),
-            (group(12, GroupSite::Light), vec![(entry(0, LayerOwner::Object(InstanceKey(1)), LightPose::Rows(0..0), 0, LIST), vec![])]),
+            (
+                LightGroup {
+                    remainder: 2,
+                    ..group(12, GroupSite::Light)
+                },
+                vec![],
+            ),
+            (
+                group(12, GroupSite::Light),
+                vec![(entry(0, LayerOwner::Cluster(9), W, 0, LIST), vec![])],
+            ),
+            (
+                group(12, GroupSite::Light),
+                vec![(
+                    entry(
+                        0,
+                        LayerOwner::Placement(7),
+                        LightPose::Placement(7),
+                        0,
+                        LIST,
+                    ),
+                    vec![],
+                )],
+            ),
+            (
+                group(12, GroupSite::Light),
+                vec![(
+                    entry(
+                        0,
+                        LayerOwner::Object(InstanceKey(1)),
+                        LightPose::Rows(0..0),
+                        0,
+                        LIST,
+                    ),
+                    vec![],
+                )],
+            ),
             (group(12, GroupSite::Light), vec![]),
         ]);
-        let got: Vec<_> = s.groups_of(0).iter().map(|g| plan(&s, g, &Held).map(|p| p.draws.len())).collect();
-        assert_eq!(got, [Err(Refusal::Remainder(2)), Err(Refusal::Stream), Err(Refusal::Stream), Err(Refusal::Pose), Ok(0)]);
+        let got: Vec<_> = s
+            .groups_of(0)
+            .iter()
+            .map(|g| plan(&s, g, &Held).map(|p| p.draws.len()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                Err(Refusal::Remainder(2)),
+                Err(Refusal::Stream),
+                Err(Refusal::Stream),
+                Err(Refusal::Pose),
+                Ok(0)
+            ]
+        );
     }
 }

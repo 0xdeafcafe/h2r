@@ -22,6 +22,8 @@ license = "WTFPL"
 mem-watch = { path = "crates/platform/mem-watch" }
 hs = { path = "crates/formats/hs" }
 tags = { path = "crates/formats/tags" }
+anim-edit = { path = "crates/tools/anim-edit" }
+sound-edit = { path = "crates/tools/sound-edit" }
 map = { path = "crates/formats/map" }
 assets = { path = "crates/platform/assets" }
 xiso = { path = "crates/formats/xiso" }
@@ -42,7 +44,9 @@ sim-core = { path = "crates/rewrites/sim-core" }
 hud-kit-core = { path = "crates/rewrites/hud-kit-core" }
 sim-anim = { path = "crates/rewrites/sim-anim" }
 sim-collision = { path = "crates/rewrites/sim-collision" }
+sim-havok = { path = "crates/rewrites/sim-havok" }
 sim-objects = { path = "crates/rewrites/sim-objects" }
+sim-sound = { path = "crates/rewrites/sim-sound" }
 sim-state = { path = "crates/rewrites/sim-state" }
 sim-ext = { path = "crates/rewrites/sim-ext" }
 x87 = { path = "crates/recompiler/x87" }
@@ -64,6 +68,10 @@ thiserror = "2"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Our screens' presentation (assets/ui/, docs/game/ui-builder.md "Screens in YAML"):
+# the maintained fork of serde_yaml, and maps that keep the files' key order.
+serde_yaml_ng = "0.10"
+indexmap = { version = "2", features = ["serde"] }
 png = "0.18"
 libc = "0.2"
 toml = "0.9"
@@ -86,16 +94,20 @@ chunks_exact_to_as_chunks = "allow"
 manual_is_multiple_of = "allow"
 large_enum_variant = "allow"
 collapsible_if = "allow"
+# `!(x > y)` is how this code refuses NaN along with the small values.
+neg_cmp_op_on_partial_ord = "allow"
+# Tests pin layout constants against each other with plain asserts.
+assertions_on_constants = "allow"
+field_reassign_with_default = "allow"
 
 # Debug builds keep file/line backtraces but drop full debug info, which is
 # most of a debug target (test binaries shrink several times over). For
 # variables in a debugger, build with CARGO_PROFILE_DEV_DEBUG=2.
+# No debug info in dev builds, workspace crates included: macOS keeps it in
+# each codegen unit's object file and in a dSYM per test executable, about
+# 12 GB per target directory. A panic still names its file and line; a
+# backtrace names functions, not lines (docs/dev/build-speed.md).
 [profile.dev]
-debug = "line-tables-only"
-# Dependencies carry no debug info at all: smaller rlibs and less for every
-# test binary's link to read. A panic still names its file and line, and a
-# backtrace still names their functions (docs/dev/build-speed.md).
-[profile.dev.package."*"]
 debug = false
 
 # The fixture tests decode ~5M rows; keep them quick in debug builds.

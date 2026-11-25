@@ -1,0 +1,40 @@
+screen: layout.dialog.settings
+kind: dialog
+layout: settings
+backing: over
+opener: game-setup
+states:
+  focus-0:
+    focus: 0
+  focus-1:
+    focus: 1
+  focus-2:
+    focus: 2
+settings:
+  host: menu
+  icon: question
+  name: "Name"
+  about: "What this window is for."
+widgets:
+  title:
+    component: title
+    text: "TITLE"
+rows:
+  row.0:
+    kind: value
+    text: "Row 1"
+    values: ["On", "Off"]
+    current: 0
+    help: "What row 1 sets."
+  row.1:
+    kind: value
+    text: "Row 2"
+    values: ["On", "Off"]
+    current: 0
+    help: "What row 2 sets."
+  row.2:
+    kind: value
+    text: "Row 3"
+    values: ["On", "Off"]
+    current: 0
+    help: "What row 3 sets."

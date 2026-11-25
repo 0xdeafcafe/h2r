@@ -1,6 +1,7 @@
 //! Superbounce medals (docs/game/superbounce.md, "Medals"): the chain of
 //! bounces each player makes with no ground between them, the medals each
-//! bounce earns, and Bounced, a fall out of the map during a bounce.
+//! bounce earns, and Bounced, a fall out of the map or through a strip's
+//! floor during a bounce.
 //!
 //! [`Chain`] is one player's, stepped once a tick with that player's
 //! reads ([`PlayerTick`]); [`Medals`] keeps one per player slot, the
@@ -12,6 +13,13 @@
 //! It is not in a snapshot: after a state load or a Theater seek a chain
 //! in flight starts again at 1.
 //!
+//! Each step also says what the chain saw of the player's physics
+//! ([`Physics`]): every touchdown, each landing judged a bounce with its
+//! launch, and the end of a run of bounces. A rules script hears them as
+//! `on touchdown`, `on launch` and `on grounded` (docs/game/rules-world-api.md,
+//! "Physics") and keeps its own chain on them; the Superbounce script's
+//! chain is this one's, step for step (`superbounce_chain_tests.rs`).
+//!
 //! Each award of a tick is recorded for the film and Live through
 //! [`record`]: a bounce as `Telemetry::superbounce`, a Bounced as
 //! `Telemetry::bounced`, on the console whose simulation is the game's,
@@ -20,31 +28,40 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use engine::GuestMemory;
-use hud_kit_core::huds::superbounce::{MEDALS, Medal};
+use hud_kit_core::views::superbounce::{MEDALS, Medal};
 use superbounce::{Spot, Vec3};
 
 use crate::superbounce_charge::{
-    LandingResult, TOUCHDOWN_VZ, landing_spot, strip_landing, strips_near, touchdown,
+    LAUNCH_TICKS, LandingResult, Pending, TOUCHDOWN_VZ, Through, judge, strips_near, through,
+    touchdown,
 };
 use crate::superbounce_mode::primed;
 
 /// Player slots the game has.
 pub const SLOTS: usize = 16;
-/// From this tick after a bounce (the bounce's own is 0), a tick with the
-/// airborne bit clear ends the chain: a soft landing at the top of the
-/// flight is no touchdown. The two ticks before it are the launch's, when
-/// the bit may still be clear.
+/// From this tick after a bounce's touchdown (the touchdown's own is 0),
+/// a tick with the airborne bit clear ends the chain: a soft landing at
+/// the top of the flight is no touchdown. The two ticks before it are the
+/// launch's, when the bit may still be clear. It is the tick the launch
+/// window closes on ([`LAUNCH_TICKS`]), so the bounce is filed first.
 pub const CLEAR_FROM: u32 = 3;
 /// An origin that moves more than this (world units) in one tick was
 /// moved (a teleporter, `sim.state.set`), and the chain ends.
 pub const TELEPORT: f32 = 3.0;
 /// Awards kept for `superbounce.state`'s `recent`.
 pub const RECENT: usize = 8;
-/// A bounce whose vertical speed comes out over this (units/s) is a
-/// Monster Bounce: above the top of every measured launch (7.97 to 13.22
-/// on Ascension's strip, docs/game/superbounce.md, "Traces"), by about a
-/// fifth. Reasoned from those, not measured: no Monster has been traced.
+/// A bounce whose launch (the best vertical speed of its window,
+/// [`Pending`]) comes out over this (units/s) is a Monster Bounce: above
+/// the top of every measured launch (7.97 to 13.22 on Ascension's strip,
+/// docs/game/superbounce.md, "Traces"), by about a fifth. Reasoned from
+/// those, not measured: no Monster has been traced.
 pub const MONSTER_VZ: f32 = 16.0;
+/// Game ticks a fall through a strip's floor keeps its Bounced armed
+/// (`superbounce_charge::through`): 10 s. The Guardians take a second or
+/// more to kill a player under the map, and a kill barrier or a fatal
+/// landing below can take longer; a player still alive after it dropped
+/// through to a floor below and lived.
+pub const BOUNCED_TICKS: u32 = 300;
 
 /// The medals a bounce earns at chain count `chain`, lowest first: every
 /// bounce is a Superbounce, and the second to the sixth of a chain earn
@@ -91,6 +108,8 @@ pub struct PlayerTick {
     pub velocity: Vec3,
     /// Biped flags bit 0.
     pub airborne: bool,
+    /// The unit crouch request on a living biped.
+    pub crouching: bool,
     /// The level pair's word; `None` without a pair.
     pub word: Option<u32>,
 }
@@ -115,19 +134,22 @@ pub fn spot_id(spot: &Spot) -> u32 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
     /// A bounce, the chain's count with it, off the strip [`spot_id`]
-    /// names. `monster` when it came out over [`MONSTER_VZ`]; `strips` is
-    /// how many bounce strips were within `LANDING_RADIUS` of the
-    /// touchdown, kept for study of Monsters (a V of seams), not a test.
+    /// names (`None` off every strip: a seam the marks don't know).
+    /// `monster` when it came out over [`MONSTER_VZ`]; `strips` is how
+    /// many bounce strips were within `LANDING_RADIUS` of the touchdown,
+    /// kept for study of Monsters (a V of seams), not a test.
     Bounce {
         chain: u32,
-        spot: u32,
+        spot: Option<u32>,
         monster: bool,
         strips: u8,
     },
     /// The unit went (a death) on the tick after one that was airborne,
     /// falling at [`TOUCHDOWN_VZ`] or faster, and either in a chain or
-    /// primed: a fall out of the map during a bounce. `chain` is the count
-    /// of the chain it was in, 0 if none.
+    /// primed: a fall out of the map during a bounce. Or it went within
+    /// [`BOUNCED_TICKS`] of a fall through a strip's floor
+    /// (`superbounce_charge::through`) with no bounce since. `chain` is the
+    /// count of the chain it was in, 0 if none.
     Bounced { chain: u32 },
 }
 
@@ -145,10 +167,11 @@ impl Event {
             Event::Bounce { chain, .. } | Event::Bounced { chain } => chain,
         }
     }
-    /// The bounce's strip ([`spot_id`]); `None` for a Bounced.
+    /// The bounce's strip ([`spot_id`]); `None` for a Bounced and a
+    /// bounce off every strip.
     pub fn spot(self) -> Option<u32> {
         match self {
-            Event::Bounce { spot, .. } => Some(spot),
+            Event::Bounce { spot, .. } => spot,
             Event::Bounced { .. } => None,
         }
     }
@@ -161,6 +184,41 @@ impl Event {
     }
 }
 
+/// What a step saw of the player's physics, in the order it saw it: the
+/// host half of the world API's physics events
+/// (docs/game/rules-world-api.md, "Physics"). A rules script that keeps
+/// a chain on [`Physics::Launch`] and [`Physics::Grounded`] counts as
+/// [`Chain`] does: the count grows on a launch while the run is live and
+/// starts at 1 otherwise, and a Grounded comes after every launch whose
+/// run then ends, before the next launch.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Physics {
+    /// A landing ([`touchdown`]): the fall before (units/s, positive) and
+    /// the vertical speed on the touchdown tick (units/s, up positive).
+    /// None is seen while a touchdown's launch window is open, or under a
+    /// strip's floor after a fall through it.
+    Touchdown { down: f32, up: f32 },
+    /// A landing judged a bounce, when its launch window closed: the strip
+    /// ([`spot_id`], `None` off every marked strip) and the launch (the
+    /// best vertical speed of its window, units/s).
+    Launch { spot: Option<u32>, speed: f32 },
+    /// The run of bounces ended: [`Chain::live`] went from true to false.
+    Grounded,
+}
+
+/// What a step read of a player's biped, for the rules script's reads
+/// `p.airborne`, `p.crouching` and `p.primed` (docs/game/rules-world-api.md, "Physics").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Body {
+    pub slot: u8,
+    /// Biped flags bit 0 ([`PlayerTick::airborne`]).
+    pub airborne: bool,
+    /// The unit crouch request on a living biped.
+    pub crouching: bool,
+    /// The level pair's word is the primed one ([`primed`]).
+    pub primed: bool,
+}
+
 /// The previous tick, for the touchdown and the unit's change.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Prev {
@@ -171,14 +229,33 @@ struct Prev {
     word: Option<u32>,
 }
 
+/// A Bounced waiting on the unit going: a fall through a strip's floor.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Armed {
+    /// The chain's count when it fell through, 0 if none was live.
+    chain: u32,
+    /// Ticks since the fall through (0 on its tick).
+    ticks: u32,
+    /// The fall through: a touchdown under its floor by its edge is the
+    /// same fall ([`Through::under`]).
+    through: Through,
+}
+
 /// One player's chain.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Chain {
     count: u32,
     live: bool,
-    /// Ticks since the last bounce (0 on its tick).
+    /// Ticks since the last bounce's touchdown (0 on its tick).
     since: u32,
     prev: Option<Prev>,
+    /// A touchdown whose launch is being read.
+    pending: Option<Pending>,
+    /// A fall through a strip's floor, awarding a Bounced when the unit
+    /// goes.
+    armed: Option<Armed>,
+    /// What the last step saw ([`Chain::physics`]).
+    seen: Vec<Physics>,
 }
 
 impl Chain {
@@ -190,6 +267,17 @@ impl Chain {
     /// Whether the next bounce adds to the count.
     pub fn live(&self) -> bool {
         self.live
+    }
+
+    /// Whether a fall through a strip's floor has armed a Bounced: the
+    /// unit going within [`BOUNCED_TICKS`] earns it.
+    pub fn armed(&self) -> bool {
+        self.armed.is_some()
+    }
+
+    /// What the last [`Chain::step`] saw of the player's physics, in order.
+    pub fn physics(&self) -> &[Physics] {
+        &self.seen
     }
 
     /// Ends the chain (the count stays, for the record).
@@ -211,15 +299,76 @@ impl Chain {
         p.airborne && p.vz <= TOUCHDOWN_VZ && (self.live || p.word.is_some_and(primed))
     }
 
-    /// One tick: `t` is the player's unit, `None` when it has none (dead,
-    /// or not in the game).
-    pub fn step(&mut self, t: Option<&PlayerTick>, spots: &[Spot]) -> Option<Event> {
-        let Some(t) = t else {
-            let fell = self.prev.is_some_and(|p| self.falling(&p));
-            let chain = if self.live { self.count } else { 0 };
+    /// Judges the pending touchdown: a primed bounce adds to the chain
+    /// (or starts one) and is returned; anything else ends it.
+    fn settle(&mut self, spots: &[Spot]) -> Option<Event> {
+        let p = self.pending.take()?;
+        let judged = judge(spots, &p).filter(|j| j.result == LandingResult::Bounce && p.primed());
+        let Some(j) = judged else {
             self.live = false;
-            self.prev = None;
-            return fell.then_some(Event::Bounced { chain });
+            return None;
+        };
+        self.count = if self.live { self.count + 1 } else { 1 };
+        self.live = true;
+        self.since = LAUNCH_TICKS;
+        let spot = j.spot.map(|i| spot_id(&spots[i]));
+        self.seen.push(Physics::Launch {
+            spot,
+            speed: p.launch,
+        });
+        Some(Event::Bounce {
+            chain: self.count,
+            spot,
+            monster: p.launch > MONSTER_VZ,
+            strips: strips_near(spots, p.at).min(255) as u8,
+        })
+    }
+
+    /// The unit went (or was replaced) after the tick `prev`: what was
+    /// pending settles, and a Bounced is earned once, by an armed fall
+    /// through (its chain) or by `prev` being a fall during a bounce. A
+    /// bounce settled here is the event instead. The chain ends.
+    fn gone(&mut self, prev: Option<Prev>, spots: &[Spot]) -> Option<Event> {
+        let settled = self.settle(spots);
+        let fell = prev.is_some_and(|p| self.falling(&p));
+        let chain = if self.live { self.count } else { 0 };
+        let armed = self.armed.take();
+        self.live = false;
+        settled.or(match armed {
+            Some(a) => Some(Event::Bounced { chain: a.chain }),
+            None => fell.then_some(Event::Bounced { chain }),
+        })
+    }
+
+    /// One tick: `t` is the player's unit, `None` when it has none (dead,
+    /// or not in the game). A touchdown is judged when its launch window
+    /// closes ([`Pending`]), [`LAUNCH_TICKS`] after it; a window cut short
+    /// (the unit gone, a new one, a teleport) is judged on what was seen.
+    /// A fall through a strip's floor (`superbounce_charge::through`) drops
+    /// the touchdown it follows, ends the chain and arms a Bounced for
+    /// [`BOUNCED_TICKS`]; a bounce or a teleport disarms it.
+    ///
+    /// What the step saw of the player's physics is [`Chain::physics`]
+    /// after it: a [`Physics::Grounded`] whenever the chain was live, or
+    /// went live in the step, and is not after it.
+    pub fn step(&mut self, t: Option<&PlayerTick>, spots: &[Spot]) -> Option<Event> {
+        self.seen.clear();
+        let was = self.live;
+        let event = self.step_inner(t, spots);
+        let launched = self
+            .seen
+            .iter()
+            .any(|p| matches!(p, Physics::Launch { .. }));
+        if (was || launched) && !self.live {
+            self.seen.push(Physics::Grounded);
+        }
+        event
+    }
+
+    fn step_inner(&mut self, t: Option<&PlayerTick>, spots: &[Spot]) -> Option<Event> {
+        let Some(t) = t else {
+            let prev = self.prev.take();
+            return self.gone(prev, spots);
         };
         let now = Prev {
             unit: t.unit,
@@ -228,47 +377,77 @@ impl Chain {
             airborne: t.airborne,
             word: t.word,
         };
-        let Some(p) = self.prev.replace(now) else {
-            return None;
-        };
+        let p = self.prev.replace(now)?;
         if p.unit != t.unit {
             // A new unit on the same tick the old one went: a death and a
             // respawn, or a vehicle.
-            let fell = self.falling(&p);
-            let chain = if self.live { self.count } else { 0 };
-            self.live = false;
-            return fell.then_some(Event::Bounced { chain });
+            return self.gone(Some(p), spots);
         }
         if distance(p.position, t.position) > TELEPORT || !t.velocity[2].is_finite() {
+            let settled = self.settle(spots);
             self.live = false;
-            return None;
+            self.armed = None;
+            return settled;
         }
-        if touchdown(p.airborne, p.vz, t.airborne, now.vz) {
-            let bounced = p.word.is_some_and(primed)
-                && strip_landing(spots, p.word, p.position, p.vz, now.vz)
-                    == Some(LandingResult::Bounce);
-            // A bounce is by a strip, so `landing_spot` finds it.
-            if bounced && let Some(i) = landing_spot(spots, p.position) {
-                self.count = if self.live { self.count + 1 } else { 1 };
-                self.live = true;
-                self.since = 0;
-                return Some(Event::Bounce {
-                    chain: self.count,
-                    spot: spot_id(&spots[i]),
-                    monster: now.vz > MONSTER_VZ,
-                    strips: strips_near(spots, p.position).min(255) as u8,
+        if let Some(a) = self.armed.as_mut() {
+            a.ticks += 1;
+            if a.ticks >= BOUNCED_TICKS {
+                // Alive 10 s after it: it dropped to a floor below.
+                self.armed = None;
+            }
+        }
+        let went = through(
+            spots,
+            p.position,
+            p.vz,
+            p.word,
+            t.position,
+            self.pending.as_ref(),
+            self.live,
+        );
+        if let Some(th) = went {
+            // The touchdown it follows was the seam hit: dropped, not
+            // judged.
+            self.pending = None;
+            let chain = if self.live { self.count } else { 0 };
+            self.live = false;
+            if self.armed.is_none() {
+                self.armed = Some(Armed {
+                    chain,
+                    ticks: 0,
+                    through: th,
                 });
             }
-            self.live = false;
             return None;
         }
-        if self.live {
-            self.since = self.since.saturating_add(1);
-            if self.since >= CLEAR_FROM && !t.airborne {
+        let sunk = self.armed.is_some_and(|a| a.through.under(p.position));
+        let mut event = None;
+        if let Some(pending) = self.pending.as_mut() {
+            if !pending.see(now.vz) {
+                return None;
+            }
+            event = self.settle(spots);
+            if matches!(event, Some(Event::Bounce { .. })) {
+                self.armed = None;
+            }
+        } else if !sunk && touchdown(p.airborne, p.vz, t.airborne, now.vz) {
+            self.seen.push(Physics::Touchdown {
+                down: -p.vz,
+                up: now.vz,
+            });
+            if self.live || p.word.is_some_and(primed) {
+                self.pending = Some(Pending::new(p.word, p.position, p.vz, 0, now.vz));
+            } else {
                 self.live = false;
             }
+            return None;
+        } else if self.live {
+            self.since = self.since.saturating_add(1);
         }
-        None
+        if self.live && self.since >= CLEAR_FROM && !t.airborne {
+            self.live = false;
+        }
+        event
     }
 }
 
@@ -344,6 +523,10 @@ pub struct Medals {
     records: BTreeMap<u8, Record>,
     recent: VecDeque<Award>,
     seq: u64,
+    /// What the last step saw of each player's physics, by slot.
+    heard: Vec<(u8, Physics)>,
+    /// The bodies of the players with a unit at the last step, by slot.
+    bodies: Vec<Body>,
 }
 
 impl Medals {
@@ -355,6 +538,8 @@ impl Medals {
             records: BTreeMap::new(),
             recent: VecDeque::new(),
             seq: 0,
+            heard: Vec::new(),
+            bodies: Vec::new(),
         }
     }
 
@@ -373,13 +558,25 @@ impl Medals {
             *self = Medals::new();
         }
         let mut out = Vec::new();
+        self.heard.clear();
+        self.bodies.clear();
         for slot in 0..SLOTS {
             let s = seen.iter().find(|s| usize::from(s.slot) == slot);
             if let Some(s) = s {
                 self.users[slot] = s.user;
             }
             let t = s.and_then(|s| s.tick);
+            if let Some(t) = t {
+                self.bodies.push(Body {
+                    slot: slot as u8,
+                    airborne: t.airborne,
+                    crouching: t.crouching,
+                    primed: t.word.is_some_and(primed),
+                });
+            }
             let event = self.chains[slot].step(t.as_ref(), spots);
+            let saw = self.chains[slot].physics();
+            self.heard.extend(saw.iter().map(|p| (slot as u8, *p)));
             let slot = slot as u8;
             if let Some(e) = event {
                 out.push(self.award(slot, tick, e.chain(), e.medals(), e.spot(), e.strips()));
@@ -456,6 +653,19 @@ impl Medals {
             r.chain = c.count();
             r.live = c.live();
         }
+    }
+
+    /// What the last [`Medals::step`] read of each player's biped that had
+    /// a unit, by slot, for the rules script's biped reads.
+    pub fn bodies(&self) -> &[Body] {
+        &self.bodies
+    }
+
+    /// What the last [`Medals::step`] saw of the players' physics, slot
+    /// by slot and in order within a slot ([`Chain::physics`]): what a
+    /// rules script hears as `on touchdown`, `on launch` and `on grounded`.
+    pub fn physics(&self) -> &[(u8, Physics)] {
+        &self.heard
     }
 
     /// The players that have earned a medal this game, by slot.
@@ -548,11 +758,13 @@ pub fn medals_by_id() -> Vec<(&'static str, Medal)> {
 // ---- the guest ----
 
 /// Every listed player's slot, local user and unit reads, for
-/// [`Medals::step`]: position, velocity, airborne and the level pair's
+/// [`Medals::step`]: position, velocity, airborne, crouching and the level pair's
 /// word (one pair read each, sixteen at most).
 pub fn read_players(m: &dyn GuestMemory) -> Vec<Seen> {
     use engine::view::{objects, players};
-    use live_telemetry::layout::{BIPED_FLAGS, BODY_VELOCITY};
+    use live_telemetry::layout::{
+        BIPED_FLAGS, BODY_DEPLETED, BODY_VELOCITY, UNIT_FLAG_CROUCH, UNIT_FLAGS,
+    };
     let Ok(Some(array)) = players::array(m) else {
         return Vec::new();
     };
@@ -588,6 +800,10 @@ pub fn read_players(m: &dyn GuestMemory) -> Vec<Seen> {
             let airborne = kind == objects::BIPED
                 && m.u16(body.addr.wrapping_add(BIPED_FLAGS))
                     .is_ok_and(|flags| flags & 1 != 0);
+            let crouching = kind == objects::BIPED
+                && body.damage_flags(m).is_ok_and(|flags| flags & BODY_DEPLETED == 0)
+                && m.u32(body.addr.wrapping_add(UNIT_FLAGS))
+                    .is_ok_and(|flags| flags & UNIT_FLAG_CROUCH != 0);
             let word = live_telemetry::havok_agents::fixed_pair_word(m, unit.raw())
                 .ok()
                 .flatten();
@@ -596,6 +812,7 @@ pub fn read_players(m: &dyn GuestMemory) -> Vec<Seen> {
                 position,
                 velocity,
                 airborne,
+                crouching,
                 word,
             })
         })();

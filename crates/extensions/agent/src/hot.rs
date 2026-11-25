@@ -8,10 +8,18 @@
 //! never inside one. The render methods only talk to the hub; the renderer
 //! picks changes up at its next frame.
 //!
-//! Raw edits (`raw` and `evict` in `edit.batch`, `edit.raw.append`,
-//! `edit.stage.put`, `edit.overlay`; docs/editor/realtime-edits.md) go
-//! through the editor's `hot_tags::RawFiles`, which the game's glue
+//! Raw edits (`raw` and `evict` in `edit.batch`, for sections, pixels and
+//! sound chunks; `edit.raw.append`, `edit.stage.put`, `edit.overlay`;
+//! docs/editor/realtime-edits.md) go through the editor's `hot_tags::RawFiles`, which the game's glue
 //! installs; bytes are base64 or `{stage, at, len}` naming staged bytes.
+//!
+//! Block moves (`moves` in `edit.batch`, `edit.arena`) copy a grown tag
+//! block into the editor's `hot_tags::arena`, which the glue installs and
+//! `world.placement.edit` shares.
+//!
+//! Collision edits (`edit.collision.stage` and `.commit`, [`collision`])
+//! stage a collision BSP's new blocks in the same arena and repoint its
+//! pairs at one boundary.
 
 #[cfg(feature = "render-overrides")]
 use std::path::PathBuf;
@@ -185,7 +193,62 @@ fn raw_was(v: &Value) -> Result<hot_tags::Was, RpcError> {
     }
 }
 
-/// `raw` and `evict` of an `edit.batch`.
+/// A 32-bit address: a number or a `0x` string.
+fn address(v: &Value, what: &str) -> Result<u32, RpcError> {
+    v.as_u64()
+        .and_then(|n| u32::try_from(n).ok())
+        .or_else(|| u32::from_str_radix(v.as_str()?.strip_prefix("0x")?, 16).ok())
+        .ok_or_else(|| invalid(format!("{what} must be a 32-bit address (a number or a 0x string)")))
+}
+
+fn whole(v: &Value, what: &str) -> Result<u32, RpcError> {
+    v.as_u64()
+        .and_then(|n| u32::try_from(n).ok())
+        .ok_or_else(|| invalid(format!("{what} must be a 32-bit unsigned integer")))
+}
+
+/// One `moves` entry: `{root: {tag, group?, path} | {at}, stride, count,
+/// capacity?, bytes, was: {count, address}}`.
+fn block_move(
+    w: &Value,
+    conn: ConnId,
+    stages: &Stages,
+    used: &mut Vec<u64>,
+) -> Result<hot_tags::Move, RpcError> {
+    let root = match w.get("root") {
+        Some(Value::Object(r)) if r.contains_key("at") => {
+            if r.contains_key("tag") || r.contains_key("path") {
+                return Err(invalid("moves: root is {tag, path} or {at}"));
+            }
+            hot_tags::MoveRoot::At(address(&r["at"], "moves: root.at")?)
+        }
+        Some(Value::Object(r)) => hot_tags::MoveRoot::Path {
+            tag: tag_sel(r)?,
+            path: opt_str(r, "path")?
+                .ok_or_else(|| invalid("moves: root.path names the block field"))?
+                .to_owned(),
+        },
+        _ => return Err(invalid("moves: root is {tag, path} or {at}")),
+    };
+    let was = w
+        .get("was")
+        .filter(|v| v.is_object())
+        .ok_or_else(|| invalid("moves: was is the root's {count, address} before the move"))?;
+    let capacity = match w.get("capacity") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(whole(v, "moves: capacity")?),
+    };
+    Ok(hot_tags::Move {
+        root,
+        stride: whole(&w["stride"], "moves: stride")?,
+        count: whole(&w["count"], "moves: count")?,
+        capacity,
+        bytes: raw_bytes(w.get("bytes").unwrap_or(&Value::Null), conn, stages, used)?,
+        was: (whole(&was["count"], "moves: was.count")?, address(&was["address"], "moves: was.address")?),
+    })
+}
+
+/// `raw`, `evict` and `moves` of an `edit.batch`.
 fn raw_batch(
     p: &Value,
     conn: ConnId,
@@ -216,6 +279,15 @@ fn raw_batch(
         None | Some(Value::Null) => {}
         Some(Value::Array(list)) => batch.evict = list.clone(),
         Some(_) => return Err(invalid("evict must be an array")),
+    }
+    match p.get("moves") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(list)) => {
+            for w in list {
+                batch.moves.push(block_move(w, conn, stages, used)?);
+            }
+        }
+        Some(_) => return Err(invalid("moves must be an array")),
     }
     Ok(batch)
 }
@@ -308,7 +380,7 @@ pub fn add_edit_methods(
             let idx = hot_tags::index::index(g).map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
             let mut reply = json!({"at":ctx.at,"name":ctx.at.map,"file":cached_file.as_ref().and_then(|(_, file)| file.as_ref()),
                 "checksum":checksum,"scenario":format!("{:#010x}",idx.scenario),"epoch":ctx.epoch,
-                "session":probe(g,ctx)});
+                "session":probe(g,ctx),"bsp":hot_tags::raw::loaded_bsp(g)});
             if p.get("known_epoch").is_some_and(|e| e.as_u64() != Some(ctx.epoch)) {
                 let entries = hot_tags::index::all(g,&idx).map_err(|e| RpcError::new(code::UNAVAILABLE,e))?;
                 reply["loaded"] = json!(entries.into_iter().map(|e| e.datum).collect::<Vec<_>>());
@@ -317,6 +389,7 @@ pub fn add_edit_methods(
         })
     });
     let stages = Arc::new(Mutex::new(Stages::default()));
+    collision::add_methods(agent, &editor, &guest, &session, &stages);
     let (ed, g, probe, st) = (lock(&editor), guest.clone(), session.clone(), Arc::clone(&stages));
     agent.add_game_method(method::EDIT_BATCH, Access::Act, move |p, ctx| {
         let mut ed = ed.lock().unwrap_or_else(|e| e.into_inner());
@@ -325,7 +398,11 @@ pub fn add_edit_methods(
         let raw = raw_batch(&p, ctx.conn, &stages, &mut used)?;
         let empty = Vec::new();
         let writes = match p.get("writes") {
-            None | Some(Value::Null) if !raw.raw.is_empty() || !raw.evict.is_empty() => &empty,
+            None | Some(Value::Null)
+                if !raw.raw.is_empty() || !raw.evict.is_empty() || !raw.moves.is_empty() =>
+            {
+                &empty
+            }
             _ => p["writes"]
                 .as_array()
                 .ok_or_else(|| invalid("writes must be an array"))?,
@@ -336,10 +413,16 @@ pub fn add_edit_methods(
             ed.batch_with(g, writes, &raw, opt_str(object(&p)?, "label")?)
                 .map_err(|e| match e {
                     hot_tags::BatchError::Field(e) => edit_error(e),
-                    hot_tags::BatchError::Mismatch { fields, raw } => RpcError {
+                    hot_tags::BatchError::Mismatch { fields, raw, moves } => RpcError {
                         code: code::MISMATCH,
-                        message: "the game changed these fields or raw bytes".into(),
-                        data: Some(json!({"fields":fields,"raw":raw})),
+                        message: "the game changed these fields, raw bytes or block roots".into(),
+                        data: Some(json!({"fields":fields,"raw":raw,"moves":moves})),
+                    },
+                    hot_tags::BatchError::Full { root, need, largest_free, why } => RpcError {
+                        code: agent_proto::sim::REFUSED,
+                        message: format!("the edit arena is full: {why}"),
+                        data: Some(json!({"why":why,"root":root,"need":need,
+                            "largest_free":largest_free})),
                     },
                 })
         })?;
@@ -388,6 +471,15 @@ pub fn add_edit_methods(
         st.lock().unwrap_or_else(|e| e.into_inner()).put(ctx.conn, stage, bytes)
     });
     let (ed, g) = (lock(&editor), guest.clone());
+    agent.add_game_method(method::EDIT_ARENA, Access::Read, move |_, ctx| {
+        let mut ed = ed.lock().unwrap_or_else(|e| e.into_inner());
+        with(&g, |g| {
+            ed.at_epoch(g, ctx.epoch, ctx.map_epoch)?;
+            ed.arena(g)
+        })
+        .map_err(edit_error)
+    });
+    let (ed, g) = (lock(&editor), guest.clone());
     agent.add_game_method(method::EDIT_OVERLAY, Access::Read, move |_, ctx| {
         let mut ed = ed.lock().unwrap_or_else(|e| e.into_inner());
         with(&g, |g| {
@@ -395,9 +487,9 @@ pub fn add_edit_methods(
             Ok(ed.overlay())
         })
     });
-    // A new map drops the overlay, the raw journal and the stages at its
-    // first tick rather than at the next edit call: the old offsets mean
-    // nothing in it.
+    // A new map drops the overlay, the raw journal and the stages, and
+    // releases the edit arena, at its first tick rather than at the next
+    // edit call: the old offsets and blocks mean nothing in it.
     let (ed, g, st) = (lock(&editor), guest.clone(), Arc::clone(&stages));
     let mut seen = None;
     agent.add_ticker("edit.overlay", move |ctx| {
@@ -411,6 +503,7 @@ pub fn add_edit_methods(
         let mut ed = ed.lock().unwrap_or_else(|e| e.into_inner());
         with(&g, |g| {
             let _ = ed.at_epoch(g, ctx.epoch, ctx.map_epoch);
+            ed.bind_arena(g);
         });
     });
     let (ed, g) = (lock(&editor), Arc::clone(&guest));
@@ -632,6 +725,8 @@ pub fn watch_overrides(hub: &'static Hub, dir: PathBuf) -> hot_render::ReloadRep
     }
     r
 }
+
+pub mod collision;
 
 #[cfg(test)]
 mod tests;

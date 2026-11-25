@@ -10,6 +10,9 @@
 //! - [`store`]: writing packages and `active.toml` (the editor's side).
 //! - [`campaign_list`]: campaigns past Halo 2's own, as 1.0's campaign level
 //!   list records (docs/halo1/campaign-picker.md).
+//! - [`package`]: Studio's packages: manifest, lock, id and the load order
+//!   (docs/editor/studio-redesign.md).
+//! - [`playlist`]: a hopper fragment, what a `playlist` item holds.
 //! - [`map_pack`]: the Multiplayer Map Pack's maps, which packages can
 //!   take as their base.
 //! - [`patch_lvl`] and [`map_list`]: 1.0's multiplayer map list entries,
@@ -25,14 +28,17 @@ mod id;
 pub mod manifest;
 pub mod map_list;
 pub mod map_pack;
+pub mod package;
 pub mod patch;
 pub mod patch_lvl;
+pub mod playlist;
+pub mod relight;
 mod resolve;
 pub mod store;
 
 pub use canonical::{NotInteger, canonicalize};
 pub use hash::{BadHex, Hasher, Sha256};
-pub use id::MapId;
+pub use id::{LEVEL_FORMAT, LevelId, LevelInputs, MapId};
 /// Cache map types used when resolving and validating package contents.
 pub use map;
 pub use manifest::{HudSwap, LevelHud, Manifest, ManifestError, Origin, Swap, Variant};

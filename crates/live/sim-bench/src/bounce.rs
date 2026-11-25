@@ -19,9 +19,12 @@
 //! bounced **try** is one in which the chain filed at least one bounce;
 //! the **bounce rate** is bounced tries over tries. The practice's own
 //! word (`practice_bounces`: the route rose 0.4 over its lowest point) is
-//! kept beside it, as are the chain's links (`chain_bounces`).
+//! kept beside it, as are the chain's links (`chain_bounces`). How the bots
+//! practised ([`Habits`]: variety, fumbles, chains planned and flown,
+//! Monsters, letting players go first) comes from the practice's own
+//! events.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
@@ -35,9 +38,11 @@ pub const SAME_Z: f32 = 0.5;
 pub const LAUNCH_FALL: f32 = 0.1;
 /// ... or this long (ticks) after the bounce.
 pub const LAUNCH_TICKS: u32 = 150;
-/// The heights kept before a bounce, to find its touchdown (the award can
-/// come a tick after the touchdown).
-pub const RECENT: usize = 4;
+/// The heights kept before a bounce, to find its touchdown: the award
+/// comes when the landing's launch window closes,
+/// [`crate::drops::LAUNCH_TICKS`] after the touchdown, so the touchdown
+/// and the tick before it are kept with the window.
+pub const RECENT: usize = crate::drops::LAUNCH_TICKS as usize + 2;
 
 /// One event, as the glue reads it.
 #[derive(Clone, Debug, PartialEq)]
@@ -62,6 +67,82 @@ pub enum Event {
     /// The medal chain filed a Bounced: a fall out of the map during a
     /// bounce, ending a chain of `chain` (0 if none).
     Bounced { chain: u32 },
+    /// What the try just started means to do: a Monster site, the chain's
+    /// links planned, the error it fumbles with, whether it goes again at
+    /// a site it just missed.
+    Intent {
+        site: [f32; 3],
+        monster: bool,
+        links: u32,
+        fumble: Option<String>,
+        again: bool,
+    },
+    /// The try's chain after its first bounce: links tried and made.
+    Chained { site: [f32; 3], tried: u32, made: u32 },
+    /// The bot let a player go first at the site for `waited` ticks, then
+    /// went on or gave it up.
+    Yielded {
+        site: [f32; 3],
+        waited: u32,
+        gave_up: bool,
+    },
+    /// Standing between tries, the bot stepped out of a player's way.
+    SteppedAside,
+    /// The medal chain's last bounce was a Monster Bounce.
+    Monster,
+}
+
+/// How the bots practised (docs/runtime/sim.md, "Bounce practice"): the
+/// practice's own account of its variety, fumbles, chains, Monsters and
+/// yielding.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Habits {
+    /// Tries at the same site as the bot's try before.
+    pub repeats: u64,
+    /// The sites a bot tried, each once (a bot's line; summed over the
+    /// bots in the totals and in pools).
+    pub distinct_sites: u64,
+    /// Tries set up with a fumble, and of those, tries the chain still
+    /// filed a bounce in.
+    pub fumbles: u64,
+    pub fumble_bounces: u64,
+    /// Tries going again at a site whose landing just missed.
+    pub retries: u64,
+    /// Tries at a Monster site, and Monster Bounces the chain filed.
+    pub monster_tries: u64,
+    pub monster_bounces: u64,
+    /// Chain links planned after the first bounce, tried (in the air off a
+    /// launch) and made (launched again).
+    pub chain_links_planned: u64,
+    pub chain_links_tried: u64,
+    pub chain_links_made: u64,
+    /// Times a bot let a player go first, of those given up, and the ticks
+    /// waited.
+    pub yields: u64,
+    pub yields_given_up: u64,
+    pub yield_ticks: u64,
+    /// Steps out of a player's way between tries.
+    pub stepped_aside: u64,
+}
+
+impl Habits {
+    fn add(&mut self, o: &Habits) {
+        self.repeats += o.repeats;
+        self.distinct_sites += o.distinct_sites;
+        self.fumbles += o.fumbles;
+        self.fumble_bounces += o.fumble_bounces;
+        self.retries += o.retries;
+        self.monster_tries += o.monster_tries;
+        self.monster_bounces += o.monster_bounces;
+        self.chain_links_planned += o.chain_links_planned;
+        self.chain_links_tried += o.chain_links_tried;
+        self.chain_links_made += o.chain_links_made;
+        self.yields += o.yields;
+        self.yields_given_up += o.yields_given_up;
+        self.yield_ticks += o.yield_ticks;
+        self.stepped_aside += o.stepped_aside;
+    }
 }
 
 /// Launch heights: how many, the best and the mean, world units.
@@ -108,6 +189,9 @@ pub struct Stats {
     /// `no_bounce`, `no_drop`, `no_route`, `timeout`, ...).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub why: BTreeMap<String, u64>,
+    /// How the bots practised.
+    #[serde(default)]
+    pub habits: Habits,
 }
 
 /// One bot's line.
@@ -207,6 +291,11 @@ struct Player {
     recent: VecDeque<f32>,
     flight: Option<Flight>,
     first_bounce: Option<u32>,
+    /// The try under way is fumbled; the site of the try before; every
+    /// site tried.
+    try_fumble: bool,
+    last_site: Option<usize>,
+    tried: BTreeSet<usize>,
 }
 
 /// The practice's tally over a match.
@@ -280,14 +369,24 @@ impl BounceTally {
             }
             Event::Tried { site, bounced, why } => {
                 let i = self.site(site);
-                let chained = {
+                let (chained, repeat, fumbled) = {
                     let p = self.players.entry(player).or_default();
                     let c = p.try_chained && p.try_site == Some(i);
                     p.try_site = None;
                     p.try_chained = false;
-                    c
+                    let repeat = p.last_site == Some(i);
+                    p.last_site = Some(i);
+                    p.tried.insert(i);
+                    (c, repeat, std::mem::take(&mut p.try_fumble))
                 };
                 self.both(player, Some(i), |a| {
+                    let h = &mut a.stats.habits;
+                    if repeat {
+                        h.repeats += 1;
+                    }
+                    if fumbled && chained {
+                        h.fumble_bounces += 1;
+                    }
                     a.stats.attempts += 1;
                     if bounced {
                         a.stats.practice_bounces += 1;
@@ -340,6 +439,53 @@ impl BounceTally {
                     a.chain_ended(chain);
                 });
             }
+            Event::Intent {
+                site,
+                monster,
+                links,
+                fumble,
+                again,
+            } => {
+                let i = self.site(site);
+                self.players.entry(player).or_default().try_fumble = fumble.is_some();
+                self.both(player, Some(i), |a| {
+                    let h = &mut a.stats.habits;
+                    h.fumbles += u64::from(fumble.is_some());
+                    h.retries += u64::from(again);
+                    h.monster_tries += u64::from(monster);
+                    h.chain_links_planned += u64::from(links);
+                });
+            }
+            Event::Chained { site, tried, made } => {
+                let i = self.site(site);
+                self.both(player, Some(i), |a| {
+                    a.stats.habits.chain_links_tried += u64::from(tried);
+                    a.stats.habits.chain_links_made += u64::from(made);
+                });
+            }
+            Event::Yielded {
+                site,
+                waited,
+                gave_up,
+            } => {
+                let i = self.site(site);
+                self.both(player, Some(i), |a| {
+                    let h = &mut a.stats.habits;
+                    h.yields += 1;
+                    h.yields_given_up += u64::from(gave_up);
+                    h.yield_ticks += u64::from(waited);
+                });
+            }
+            Event::SteppedAside => {
+                self.both(player, None, |a| a.stats.habits.stepped_aside += 1);
+            }
+            Event::Monster => {
+                let site = {
+                    let p = self.players.entry(player).or_default();
+                    p.try_site.or(p.flight.and_then(|f| f.site))
+                };
+                self.both(player, site, |a| a.stats.habits.monster_bounces += 1);
+            }
         }
     }
 
@@ -384,6 +530,7 @@ impl BounceTally {
         let mut players = Vec::new();
         for (index, p) in &self.players {
             let mut acc = p.acc.clone();
+            acc.stats.habits.distinct_sites = p.tried.len() as u64;
             acc.chain_ended(p.chain);
             if let Some(f) = p.flight {
                 acc.launch(f64::from(f.top - f.from));
@@ -451,6 +598,7 @@ fn add(a: &mut Acc, b: &Acc) {
     for (k, v) in &o.why {
         *s.why.entry(k.clone()).or_default() += v;
     }
+    s.habits.add(&o.habits);
     if let Some(l) = o.launch {
         let m = s.launch.get_or_insert_with(Launch::default);
         let n = m.n + l.n;

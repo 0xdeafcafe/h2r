@@ -16,8 +16,19 @@ pub struct Call {
     pub kind: MapKind,
     pub header: u32,
     pub output: Output,
+    /// Set when this layer-10 call's casters went into a private chain.
+    pub private: Mutex<Option<Arc<crate::native_shadow_chain::Chain>>>,
 }
 impl Call {
+    /// The private chain still in force: not handed back to the guest.
+    pub fn private_chain(&self) -> Option<Arc<crate::native_shadow_chain::Chain>> {
+        self.private
+            .lock()
+            .ok()?
+            .clone()
+            .filter(|chain| !chain.spilled())
+    }
+
     pub fn supplies(&self, receiver: &Call) -> bool {
         self.layer.layer == 10
             && receiver.layer.layer == 11
@@ -158,6 +169,7 @@ mod tests {
             kind: MapKind::Depth,
             header: 9,
             output: Default::default(),
+            private: Default::default(),
         }
     }
 

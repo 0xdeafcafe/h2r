@@ -80,15 +80,42 @@ pub(crate) fn tables() -> Tables {
     t
 }
 
+/// Invented recordings: `arrive` moves after four ticks, `broken` has a
+/// type no handler reads, `empty` has no stream.
+pub(crate) fn recordings() -> Vec<hs::recording::Recorded> {
+    use hs::recording::{Game, Recorded, prologue_len};
+    let mut arrive = vec![0; prologue_len(Game::Halo2, 1)];
+    arrive.extend_from_slice(&[(6 << 2) | 2, 4]);
+    arrive.extend_from_slice(&0.5f32.to_le_bytes());
+    arrive.extend_from_slice(&[0; 4]);
+    arrive.push((1 << 2) | 1);
+    let mut broken = vec![0; prologue_len(Game::Halo2, 1)];
+    broken.push(30 << 2);
+    let row = |name: &str, ticks, stream| Recorded {
+        name: name.into(),
+        version: 4,
+        control_version: 1,
+        ticks,
+        stream,
+    };
+    vec![
+        row("arrive", 5, arrive),
+        row("broken", 0, broken),
+        row("empty", 0, Vec::new()),
+    ]
+}
+
 /// The invented map with the scripts and the object name `door` (weapon
-/// 1), at `dir/example.map`, with the invented `default.xbe` beside it
+/// 1), at `dir/example.map` with its metadata ending the file (a table can
+/// grow), with the invented `default.xbe` beside it
 /// when `executable`.
 pub(crate) fn scripted_source(dir: &Path, executable: bool) -> PathBuf {
-    let mut b = fixture::fixture();
+    let mut b = fixture::fixture_at_end();
     let name = fixture::sfile(fixture::NAMES_AT);
     b[name..name + 5].copy_from_slice(b"door\0");
     let payload = &mut b[fixture::sfile(0)..fixture::sfile(fixture::SCNR_SIZE)];
     tables().write(payload, fixture::META + fixture::SCNR as u32, 0xa00);
+    hs::fixture::write_recordings(payload, fixture::META + fixture::SCNR as u32, 0xd00, &recordings());
     let map = dir.join("example.map");
     std::fs::write(&map, b).unwrap();
     if executable {

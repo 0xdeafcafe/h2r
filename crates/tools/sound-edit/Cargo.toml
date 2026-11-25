@@ -1,0 +1,20 @@
+[package]
+name = "sound-edit"
+description = "Waveform edits as a list: trim, fades, gain, normalise, silence, and a sound's permutations as files (docs/editor/studio-redesign.md, \"The sound editor\")"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.h2]
+doc = ["editor/studio-redesign.md"]
+status = "in progress"
+
+[dependencies]
+# The level meter `normalise` and the render's numbers use.
+audio = { path = "../../platform/audio", default-features = false }
+serde.workspace = true
+serde_yaml_ng.workspace = true
+
+[lints]
+workspace = true

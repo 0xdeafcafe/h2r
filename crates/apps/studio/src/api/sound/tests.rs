@@ -52,6 +52,7 @@ pub(crate) fn sound_map() -> Vec<u8> {
     let h = META_FILE + 0x1100;
     b[h + 5] = 1; // Xbox ADPCM; rate 0 is 22.05 kHz and encoding 0 is mono
     b[h + 10] = 1; // one pitch range, the first
+    b[h + 0xe..h + 0x10].copy_from_slice(&u16::MAX.to_le_bytes()); // no extra info
     put(&mut b, h + 0x10, 1741);
     let g = META_FILE + 0x1200;
     let base = META + 0x1200;
@@ -72,8 +73,93 @@ pub(crate) fn sound_map() -> Vec<u8> {
     b
 }
 
+/// The ticks of permutation 0's mouth curve, rising from 0 to 255 over the
+/// sound's 1,741 ms (52 ticks at 30 Hz).
+const CURVE: usize = 52;
+/// Where the extra-info resource sits in the map's raw data: past the
+/// sound's chunk (0x3300 + 600 blocks of 36 bytes ends at 0x8760).
+const RESOURCE_AT: usize = 0x8800;
+
+/// The sound map with two permutations and one extra info: permutation 0
+/// is voiced (a 52-tick curve), permutation 1 unvoiced (a zero-length
+/// entry). Everything is invented, in the retail extra-info layout. The
+/// permutations block grows to two elements, so the chunk moves from
+/// `+0x74` to `+0x90` and the extra info follows it.
+pub(crate) fn mouth_map() -> Vec<u8> {
+    let mut b = sound_map();
+    let h = META_FILE + 0x1100;
+    b[h + 0xe..h + 0x10].copy_from_slice(&0u16.to_le_bytes()); // the extra-info index
+    let g = META_FILE + 0x1200;
+    let base = META + 0x1200;
+    b[g + 0x58 + 10] = 2; // the range has two permutations
+    put(&mut b, g + 5 * 8, 2); // the permutations block has two elements
+    // The chunks block moves out from under the second permutation.
+    put(&mut b, g + 8 * 8 + 4, base + 0x90);
+    put(&mut b, g + 0x90, DATA_AT as u32);
+    put(&mut b, g + 0x90 + 4, SIZE);
+    put(&mut b, g + 0x90 + 8, u32::MAX);
+    // The range's second permutation: no chunks, no bytes, unvoiced.
+    put(&mut b, g + 0x64 + 16 + 8, 0);
+    b[g + 0x64 + 16 + 14] = 0;
+    b[g + 0x64 + 5] = 0; // permutation 0's descriptor
+    b[g + 0x64 + 16 + 5] = 1; // permutation 1's descriptor
+
+    // The extra-info resource, laid out as the converter writes it.
+    let curve: Vec<u8> = (0..CURVE).map(|i| (i * 255 / (CURVE - 1)) as u8).collect();
+    let data_len = curve.len();
+    let block_start = (4 + data_len).next_multiple_of(4) + 4;
+    let descriptors = 2 * 16;
+    let resource_size = block_start + descriptors;
+    let mut raw = b"hklb".to_vec();
+    for value in [resource_size as u32, data_len as u32, 0, 2, 0] {
+        raw.extend_from_slice(&value.to_le_bytes());
+    }
+    raw.extend_from_slice(b"crsr");
+    raw.extend_from_slice(&curve);
+    raw.resize(24 + block_start - 4, 0);
+    raw.extend_from_slice(b"crsr");
+    // Descriptor 0: permutation 0's curve, at 0 for its length. Descriptor
+    // 1: permutation 1's zero-length entry, at the end of the data.
+    for (at, len) in [(0u32, data_len as u32), (data_len as u32, 0)] {
+        raw.extend_from_slice(&at.to_le_bytes());
+        raw.extend_from_slice(&len.to_le_bytes());
+        raw.extend_from_slice(&[0; 8]); // no facial sequence
+    }
+    raw.extend_from_slice(b"fklb");
+    b[RESOURCE_AT..RESOURCE_AT + raw.len()].copy_from_slice(&raw);
+
+    // The gestalt's extra-info element and its locators.
+    let extra_at = 0xa0;
+    let locators_at = extra_at + 0x2c;
+    put(&mut b, g + 10 * 8, 1);
+    put(&mut b, g + 10 * 8 + 4, base + extra_at as u32);
+    let e = g + extra_at;
+    put(&mut b, e + 8, RESOURCE_AT as u32); // the resource pointer, local
+    put(&mut b, e + 0xc, raw.len() as u32);
+    put(&mut b, e + 0x10, 16);
+    put(&mut b, e + 0x14, resource_size as u32);
+    put(&mut b, e + 0x18, 2); // two locators
+    put(&mut b, e + 0x1c, base + locators_at as u32);
+    put(&mut b, e + 0x24, 0x0100_fff8);
+    put(&mut b, e + 0x28, u32::MAX);
+    let l = g + locators_at;
+    b[l..l + 8].copy_from_slice(&[1, 2, 0, 0, 0, 0, 0xff, 0xff]);
+    put(&mut b, l + 8, data_len as u32);
+    put(&mut b, l + 0xc, 4);
+    b[l + 16..l + 24].copy_from_slice(&[0, 2, 8, 0, 8, 0, 16, 0]);
+    put(&mut b, l + 16 + 8, descriptors as u32);
+    put(&mut b, l + 16 + 0xc, block_start as u32);
+    b
+}
+
 fn open(t: &Temp) -> (crate::App, Api) {
     let (mut app, ..) = tag_tests::app_with_registry(&t.0, sound_map(), tag_tests::registry());
+    app.audition.headless = true;
+    (app, Api::new())
+}
+
+fn open_mouth(t: &Temp) -> (crate::App, Api) {
+    let (mut app, ..) = tag_tests::app_with_registry(&t.0, mouth_map(), tag_tests::registry());
     app.audition.headless = true;
     (app, Api::new())
 }
@@ -97,7 +183,7 @@ fn the_methods_are_listed() {
     let t = Temp::new("list");
     let (mut app, mut api) = open(&t);
     let list = call(&mut api, &mut app, m::METHODS, json!({}));
-    for name in [m::SOUND_READ, m::SOUND_PLAY, m::SOUND_STOP] {
+    for name in [m::SOUND_READ, m::SOUND_PLAY, m::SOUND_STOP, m::SOUND_MOUTH] {
         let row = list
             .as_array()
             .unwrap()
@@ -200,6 +286,55 @@ fn sound_play_plays_to_the_headless_output_and_stops() {
 }
 
 #[test]
+fn sound_mouth_reads_one_curve_and_one_null() {
+    let t = Temp::new("mouth");
+    let (mut app, mut api) = open_mouth(&t);
+    // Permutation 0 is voiced: 52 ticks at 30 Hz, rising 0 to 1.
+    let r = call(&mut api, &mut app, m::SOUND_MOUTH, json!({"tag": SND}));
+    assert_eq!(r["ticks"], CURVE);
+    let curve = r["curve"].as_array().unwrap();
+    assert_eq!(curve.len(), CURVE);
+    assert_eq!(curve[0], 0.0);
+    assert_eq!(curve[CURVE - 1], 1.0);
+    // Permutation 1 is unvoiced: a zero-length mouth entry.
+    let r = call(
+        &mut api,
+        &mut app,
+        m::SOUND_MOUTH,
+        json!({"tag": SND, "permutation": 1}),
+    );
+    assert_eq!(r["ticks"], 0);
+    assert!(r["curve"].is_null());
+    // sound.read carries the same mouth on its selected permutation.
+    let r = call(&mut api, &mut app, m::SOUND_READ, json!({"tag": SND}));
+    assert_eq!(r["selected"]["mouth"]["ticks"], CURVE);
+    assert_eq!(r["selected"]["mouth"]["curve"][0], 0.0);
+    assert_eq!(r["selected"]["mouth"]["curve"][CURVE - 1], 1.0);
+    let r = call(
+        &mut api,
+        &mut app,
+        m::SOUND_READ,
+        json!({"tag": SND, "permutation": 1}),
+    );
+    assert!(r["selected"]["mouth"]["curve"].is_null());
+    // The curve is read even where the audio cannot be: the codec-stream
+    // map, without the executable.
+    if std::env::var_os("H2_XBE").is_none() {
+        let t = Temp::new("mouth-wma");
+        let mut b = mouth_map();
+        b[META_FILE + 0x1100 + 4] = 2; // encoding: codec
+        let (mut app, ..) = tag_tests::app_with_registry(&t.0, b, tag_tests::registry());
+        let mut api = Api::new();
+        let r = call(&mut api, &mut app, m::SOUND_READ, json!({"tag": SND}));
+        assert_eq!(
+            r["selected"]["refusal"],
+            crate::app::audition::NEEDS_EXECUTABLE
+        );
+        assert_eq!(r["selected"]["mouth"]["ticks"], CURVE);
+    }
+}
+
+#[test]
 fn a_codec_stream_without_the_executable_is_refused_by_name() {
     // `H2_XBE` names an executable for any source: then there is one.
     if std::env::var_os("H2_XBE").is_some() {
@@ -220,4 +355,144 @@ fn a_codec_stream_without_the_executable_is_refused_by_name() {
         code_of(api.call(&mut app, m::SOUND_PLAY, json!({"tag": SND}))),
         code::REFUSED
     );
+}
+
+/// The differing bytes of two equal-length files, as `(offset, length)` runs.
+fn runs(a: &[u8], b: &[u8]) -> Vec<(usize, usize)> {
+    assert_eq!(a.len(), b.len());
+    let mut out: Vec<(usize, usize)> = Vec::new();
+    for i in (0..a.len()).filter(|&i| a[i] != b[i]) {
+        match out.last_mut() {
+            Some((s, n)) if *s + *n == i => *n += 1,
+            _ => out.push((i, 1)),
+        }
+    }
+    out
+}
+
+fn save_as(api: &mut Api, app: &mut crate::App, t: &Temp, name: &str) -> Vec<u8> {
+    let out = t.0.join(name);
+    let saved = call(
+        api,
+        app,
+        m::DOC_SAVE_AS,
+        json!({"doc": "map", "path": out.display().to_string()}),
+    );
+    assert_eq!(saved["saved"], true);
+    std::fs::read(&out).unwrap()
+}
+
+#[test]
+fn a_redrawn_curve_saves_as_its_bytes_and_the_checksum_only() {
+    let t = Temp::new("mouth-write");
+    let (mut app, mut api) = open_mouth(&t);
+    let clean = save_as(&mut api, &mut app, &t, "clean.map");
+    // Permutation 0's curve rose 0 to 255; draw it all open.
+    let r = call(
+        &mut api,
+        &mut app,
+        m::SOUND_MOUTH,
+        json!({"tag": SND, "curve": vec![1.0; CURVE]}),
+    );
+    assert_eq!(r["written"], json!({"ticks": CURVE, "changed": CURVE - 1, "edited": true}));
+    assert_eq!(r["edited"], true);
+    assert!(r["curve"].as_array().unwrap().iter().all(|v| *v == 1.0));
+    // Every read shows it before the save.
+    let r = call(&mut api, &mut app, m::SOUND_READ, json!({"tag": SND}));
+    assert_eq!(r["selected"]["mouth"]["curve"][0], 1.0);
+    let edited = save_as(&mut api, &mut app, &t, "edited.map");
+    let curve_at = RESOURCE_AT + 0x1c;
+    for (at, len) in runs(&clean, &edited) {
+        // The curve's bytes, or the header (its checksum).
+        assert!(
+            (at >= curve_at && at + len <= curve_at + CURVE) || at + len <= 0x800,
+            "a change at {at:#x} for {len}"
+        );
+    }
+    assert!(edited[curve_at..curve_at + CURVE].iter().all(|&b| 255 == b));
+    assert_eq!(edited.len(), clean.len());
+    // Undo: the file's curve is back, and the save is the clean one.
+    let r = call(&mut api, &mut app, m::SOUND_MOUTH, json!({"undo": true}));
+    assert_eq!(r["undone"]["permutation"], 0);
+    let r = call(&mut api, &mut app, m::SOUND_MOUTH, json!({"tag": SND}));
+    assert_eq!(r["curve"][0], 0.0);
+    assert_eq!(r["edited"], false);
+    assert_eq!(save_as(&mut api, &mut app, &t, "undone.map"), clean);
+    let r = call(&mut api, &mut app, m::SOUND_MOUTH, json!({"undo": true}));
+    assert!(r["undone"].is_null());
+}
+
+#[test]
+fn a_curve_drawn_back_to_the_files_is_not_an_edit_and_revert_gives_the_files() {
+    let t = Temp::new("mouth-revert");
+    let (mut app, mut api) = open_mouth(&t);
+    let stored = call(&mut api, &mut app, m::SOUND_MOUTH, json!({"tag": SND}))["curve"].clone();
+    call(&mut api, &mut app, m::SOUND_MOUTH, json!({"tag": SND, "curve": vec![0.5; CURVE]}));
+    let r = call(&mut api, &mut app, m::SOUND_MOUTH, json!({"tag": SND, "revert": true}));
+    assert_eq!((r["edited"].clone(), r["curve"].clone()), (json!(false), stored.clone()));
+    // Undo takes the revert back: the half-open curve is again drawn.
+    call(&mut api, &mut app, m::SOUND_MOUTH, json!({"undo": true}));
+    let r = call(&mut api, &mut app, m::SOUND_MOUTH, json!({"tag": SND}));
+    assert_eq!(r["edited"], true);
+    // Drawing the stored values is no edit.
+    call(&mut api, &mut app, m::SOUND_MOUTH, json!({"tag": SND, "curve": stored}));
+    let r = call(&mut api, &mut app, m::SOUND_MOUTH, json!({"tag": SND}));
+    assert_eq!(r["edited"], false);
+}
+
+#[test]
+fn an_unvoiced_permutation_another_length_and_bad_params_are_refused() {
+    let t = Temp::new("mouth-refuse");
+    let (mut app, mut api) = open_mouth(&t);
+    let refused = |api: &mut Api, app: &mut crate::App, p: Value| match api.call(app, m::SOUND_MOUTH, p) {
+        Ok(v) => panic!("expected a refusal, got {v}"),
+        Err(e) => (e.code, e.message),
+    };
+    // Permutation 1 has no curve and none can be appended yet.
+    let (c, why) = refused(
+        &mut api,
+        &mut app,
+        json!({"tag": SND, "permutation": 1, "curve": [0.5]}),
+    );
+    assert_eq!(c, code::REFUSED);
+    assert!(why.contains("no mouth curve"), "{why}");
+    let (c, why) = refused(&mut api, &mut app, json!({"tag": SND, "curve": vec![0.5; 3]}));
+    assert_eq!(c, code::REFUSED);
+    assert!(why.contains("52 ticks and 3 were given"), "{why}");
+    let (c, _) = refused(&mut api, &mut app, json!({"tag": SND, "curve": [1.5]}));
+    assert_eq!(c, code::INVALID_PARAMS);
+    let (c, _) = refused(
+        &mut api,
+        &mut app,
+        json!({"tag": SND, "curve": vec![0.5; CURVE], "revert": true}),
+    );
+    assert_eq!(c, code::INVALID_PARAMS);
+    let (c, _) = refused(
+        &mut api,
+        &mut app,
+        json!({"tag": SND, "from_sound": {"gain": 9}}),
+    );
+    assert_eq!(c, code::INVALID_PARAMS);
+    // Nothing was written by any of them.
+    let r = call(&mut api, &mut app, m::SOUND_MOUTH, json!({"tag": SND}));
+    assert_eq!(r["edited"], false);
+}
+
+#[test]
+fn from_the_sound_fills_the_curve_from_the_loudness() {
+    let t = Temp::new("mouth-from");
+    let (mut app, mut api) = open_mouth(&t);
+    let r = call(
+        &mut api,
+        &mut app,
+        m::SOUND_MOUTH,
+        json!({"tag": SND, "from_sound": {"gain": 1.0, "smoothing": 0.0}}),
+    );
+    assert_eq!(r["ticks"], CURVE);
+    assert_eq!(r["edited"], true);
+    let curve = r["curve"].as_array().unwrap();
+    // The invented audio gets louder to the end: the last tick is the
+    // loudest, so it is fully open, and the first is nearly closed.
+    assert_eq!(curve[CURVE - 1], 1.0);
+    assert!(curve[0].as_f64().unwrap() < 0.5);
 }

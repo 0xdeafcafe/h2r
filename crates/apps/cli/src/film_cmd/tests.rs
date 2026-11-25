@@ -31,8 +31,11 @@ fn header(version: u32, length_ticks: u64) -> film::Header {
         telemetry: false,
         telemetry_hooks: None,
         render_hooks: None,
+        inputs_in_film: false,
         live_service: false,
         features: String::new(),
+        player_features: false,
+        tape_id: None,
     }
 }
 
@@ -63,6 +66,8 @@ fn sample_film() -> Vec<u8> {
                     events: vec![],
                     closing_events: vec![],
                     post_hash: None,
+                    forge: vec![],
+                    firefight: vec![],
                 },
                 vec![],
                 None,
@@ -212,9 +217,10 @@ fn film_stat_counts_tape_batches_bytes_and_operations() {
     let first = vec![call(1, "Select"), call(2, "Htonl")];
     let pad = vec![call(3, "XInputGetState")];
     let second = vec![call(4, "Select")];
-    out.chunk(film::NETR, &first).unwrap();
-    out.chunk(film::tape::PADR, &pad).unwrap();
-    out.chunk(film::NETR, &second).unwrap();
+    // One batch holds pad and socket calls in call order.
+    let all: Vec<Call> = first.iter().chain(&pad).chain(&second).cloned().collect();
+    out.chunk_bytes(film::tape::TAPE, &film::tape::encode_batch(&all).unwrap())
+        .unwrap();
     out.chunk(
         PDEV,
         &film::tape::PortChange {
@@ -225,33 +231,120 @@ fn film_stat_counts_tape_batches_bytes_and_operations() {
     .unwrap();
     let bytes = out.finish().unwrap().into_inner();
     let reader = film::Reader::new(Cursor::new(&bytes)).unwrap();
-    let stored = |tag| {
-        reader
-            .entries
+    let stored: u64 = reader
+        .entries
+        .iter()
+        .filter(|e| e.tag == film::tape::TAPE)
+        .map(|e| u64::from(e.size) + 8)
+        .sum();
+    let json = |batch: &[Call]| -> u64 {
+        batch
             .iter()
-            .filter(|e| e.tag == tag)
-            .map(|e| u64::from(e.size) + 8)
-            .sum::<u64>()
+            .map(|c| serde_json::to_vec(c).unwrap().len() as u64 + 1)
+            .sum()
     };
-    let inflated = |batch: &[Call]| serde_json::to_vec(batch).unwrap().len();
+    let binary = |batch: &[Call]| film::tape::encode_batch(batch).unwrap().len();
     let net = format!(
-        "NETR calls=3 inflated={} stored={} chunks=2\n  \"Htonl\" calls=1\n  \"Select\" calls=2\n",
-        inflated(&first) + inflated(&second),
-        stored(film::NETR),
+        "NETR calls=3 json={} binary={}\n  \"Htonl\" calls=1\n  \"Select\" calls=2\n",
+        json(&first) + json(&second),
+        binary(&[first.clone(), second.clone()].concat()),
     );
     let pad = format!(
-        "PADR calls=1 inflated={} stored={} chunks=1\n  \"XInputGetState\" calls=1\n",
-        inflated(&pad),
-        stored(film::tape::PADR),
+        "PADR calls=1 json={} binary={}\n  \"XInputGetState\" calls=1\n",
+        json(&pad),
+        binary(&pad),
     );
     let report = stat_bytes(bytes);
     assert!(report.contains("source: local"), "{report}");
-    assert!(report.contains(&net), "{report}");
-    assert!(report.contains(&pad), "{report}");
     assert!(
-        report.contains("RAND calls=0 inflated=0 stored=0 chunks=0"),
+        report.contains(&format!(
+            "TAPE calls=4 inflated={} stored={stored} chunks=1\n",
+            binary(&all)
+        )),
         "{report}"
     );
+    assert!(report.contains(&net), "{report}");
+    assert!(report.contains(&pad), "{report}");
+    assert!(report.contains("RAND calls=0 json=0 binary=0"), "{report}");
     assert!(report.contains("PDEV calls=0 inflated="), "{report}");
     assert!(!report.contains("outputs"), "{report}");
+}
+
+/// 40 ticks of one seat: it turns 0.25 more every tick and presses a
+/// button on tick 11 and holds it.
+fn actions_film() -> Vec<u8> {
+    let mut out = film::Writer::new(Cursor::new(Vec::new()), &header(2, 40)).unwrap();
+    let mut track = TrackWriter::default();
+    for tick in 1..=40u64 {
+        let mut action = [0u8; 92];
+        action[4..8].copy_from_slice(&(tick as f32 * 0.25).to_bits().to_le_bytes());
+        if tick >= 11 {
+            action[0] = 4;
+        }
+        track
+            .push(
+                &mut out,
+                Tick {
+                    tick,
+                    inputs: vec![film::blam::SeatInput { seat: 0, pad: None, action: Some(action) }],
+                    events: vec![],
+                    closing_events: vec![],
+                    post_hash: None,
+                    forge: vec![],
+                    firefight: vec![],
+                },
+            )
+            .unwrap();
+    }
+    let descriptor = MatchHeader {
+        map: film::blam::MapIdentity {
+            name: "example".into(),
+            origin: "mod".into(),
+            sha256: "a".repeat(64),
+            ..Default::default()
+        },
+        variant_blob: vec![0],
+        ..Default::default()
+    };
+    track.finish(&mut out, &descriptor, &Summary::default()).unwrap();
+    out.finish().unwrap().into_inner()
+}
+
+#[test]
+fn film_stat_fields_counts_changes_and_prices_each_predictor() {
+    let bytes = actions_film();
+    let films = || vec![film::Reader::new(Cursor::new(bytes.clone())).unwrap()];
+    let report = fields(films()).unwrap();
+    assert!(report.contains("films: 1\nticks: 40\n"), "{report}");
+    assert!(
+        report.contains("FIELD yaw words=1 seat_ticks=40 changed=40 (100.0%) seat_chunks=1 stored_chunks=1 "),
+        "{report}"
+    );
+    assert!(
+        report.contains("FIELD buttons words=1 seat_ticks=40 changed=1 (2.5%) seat_chunks=1 stored_chunks=1 "),
+        "{report}"
+    );
+    // A field that never leaves its start is stored nowhere.
+    assert!(
+        report.contains("FIELD tail words=1 seat_ticks=40 changed=0 (0.0%) seat_chunks=1 stored_chunks=0 "),
+        "{report}"
+    );
+    // Two films are one report.
+    let both = fields(films().into_iter().chain(films()).collect::<Vec<_>>()).unwrap();
+    assert!(both.contains("films: 2\nticks: 80\n"), "{both}");
+    assert!(both.contains("FIELD yaw words=1 seat_ticks=80 changed=80 "), "{both}");
+}
+
+#[test]
+fn film_stat_names_an_unsealed_tape_rather_than_a_footer_fault() {
+    let mut bytes = sample_film();
+    // A session killed mid-write: the film's front and chunks, no footer.
+    bytes.truncate(bytes.len() - film::range::FOOTER_BYTES - 16);
+    let dir = std::env::temp_dir().join(format!("film-stat-{}", live_proto::sign::random_id()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("tape.h2film");
+    std::fs::write(&path, bytes).unwrap();
+    let error = format!("{:#}", stat(&path).unwrap_err());
+    std::fs::remove_dir_all(dir).unwrap();
+    assert!(error.contains("an unsealed tape"), "{error}");
 }

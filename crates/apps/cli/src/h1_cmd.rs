@@ -957,6 +957,22 @@ pub(crate) fn write_mp_package(
     done: &h1convert::convert::Converted,
     card: Option<&h1convert::ui::Card>,
 ) -> Result<(PathBuf, PathBuf)> {
+    let file = &done.manifest.variants[0].file;
+    let parts: Vec<String> = std::iter::once(done.name.clone())
+        .chain(file.split('/').map(str::to_owned))
+        .collect();
+    let map_file = out.write(&parts, &done.bytes)?;
+    let manifest = write_mp_metadata(out, out_root, sandbox, done, card)?;
+    Ok((map_file, manifest))
+}
+
+pub(crate) fn write_mp_metadata(
+    out: &OutDir,
+    out_root: &Path,
+    sandbox: Sandbox,
+    done: &h1convert::convert::Converted,
+    card: Option<&h1convert::ui::Card>,
+) -> Result<PathBuf> {
     let name = done.name.clone();
     let manifest_path = out_root.join(&name).join(content::manifest::MANIFEST_FILE);
     let mut manifest = done.manifest.clone();
@@ -974,11 +990,6 @@ pub(crate) fn write_mp_package(
             .variants
             .sort_by(|x, y| x.origin.sandbox.cmp(&y.origin.sandbox));
     }
-    let file = done.manifest.variants[0].file.clone();
-    let parts: Vec<String> = std::iter::once(name.clone())
-        .chain(file.split('/').map(str::to_owned))
-        .collect();
-    let map_file = out.write(&parts, &done.bytes)?;
     if let Some(c) = card {
         let mut png = Vec::new();
         assets::png::write_rgba(&mut png, c.width, c.height, &c.rgba)?;
@@ -987,11 +998,10 @@ pub(crate) fn write_mp_package(
         manifest.package.description = Some(c.description.clone());
         manifest.package.image = Some(PREVIEW_FILE.to_owned());
     }
-    let manifest = out.write(
+    Ok(out.write(
         &[name, content::manifest::MANIFEST_FILE.to_owned()],
         manifest.to_toml().as_bytes(),
-    )?;
-    Ok((map_file, manifest))
+    )?)
 }
 
 /// The Halo 2 disc `h1 convert` reads: `--disc`, else `$H2_DISC`, else
@@ -1124,10 +1134,22 @@ pub(crate) fn write_campaign_level(
     hud: &[[map::TagId; 3]],
     sensor: Option<[i16; 2]>,
 ) -> Result<Vec<PathBuf>> {
+    let mut written = vec![out.write(&[h1campaign::manifest::map_file(level)], bytes)?];
+    written.extend(write_campaign_metadata(out, out_dir, level, hud, sensor)?);
+    Ok(written)
+}
+
+pub(crate) fn write_campaign_metadata(
+    out: &OutDir,
+    out_dir: &Path,
+    level: &str,
+    hud: &[[map::TagId; 3]],
+    sensor: Option<[i16; 2]>,
+) -> Result<Vec<PathBuf>> {
     let manifest_name = h1campaign::manifest::file_name();
     let existing = std::fs::read_to_string(out_dir.join(manifest_name)).ok();
     let manifest = h1campaign::manifest::manifest_for(existing.as_deref(), level)?;
-    let mut written = vec![out.write(&[h1campaign::manifest::map_file(level)], bytes)?];
+    let mut written = Vec::new();
     // The HUD pairs `boot::hud` switches between (docs/halo1/hud.md),
     // always written so an older file never outlives its map.
     let pairs = content::LevelHud {

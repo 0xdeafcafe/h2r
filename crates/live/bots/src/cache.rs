@@ -12,10 +12,28 @@ use crate::nav::{Build, NavMesh};
 /// cache file loads.
 static CURRENT: std::sync::RwLock<Option<std::sync::Arc<MapData>>> = std::sync::RwLock::new(None);
 
+/// Why the loaded map's data no longer matches its tags, once a live
+/// edit wrote a tag it was built from ([`mark_stale`]).
+static STALE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 /// Exchange the active pointer. Release the retired map outside any lock
-/// shared with a bot sampling a frame.
+/// shared with a bot sampling a frame. New data is fresh.
 pub(crate) fn replace_current(d: Option<std::sync::Arc<MapData>>) -> Option<std::sync::Arc<MapData>> {
+    *STALE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     std::mem::replace(&mut *CURRENT.write().unwrap_or_else(|e| e.into_inner()), d)
+}
+
+/// A live edit (docs/editor/realtime-edits.md, "Realtime coverage") wrote
+/// a tag the loaded data was built from (the structure BSP's collision):
+/// the bots keep using it, and [`stale`] says why until the next map's
+/// data replaces it. The first reason is kept.
+pub fn mark_stale(why: impl Into<String>) {
+    STALE.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| why.into());
+}
+
+/// Why the loaded data is stale, if a live edit made it so.
+pub fn stale() -> Option<String> {
+    STALE.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// The loaded map's data.
@@ -34,7 +52,7 @@ pub const VERSION: u32 = 4;
 /// generator. Every file built by another version is stale and is built
 /// again (`crate::autonav`); the `generator_output_is_pinned` test in
 /// `nav/tests.rs` fails when the output changes and this does not.
-pub const GENERATOR: u32 = 6;
+pub const GENERATOR: u32 = 7;
 
 /// The header's length: magic, format version, [`Stamp`].
 pub const HEADER_LEN: usize = 20;
@@ -156,6 +174,19 @@ fn build_geometry(
     Ok((pf, data))
 }
 
+/// The line-of-sight walls of `bsp` alone: every surface's ring fanned
+/// into triangles, and its breakable glass. What [`build`] makes for
+/// walls, without the nav mesh: a live collision edit's
+/// (`crate::autonav::collision_edited`).
+pub fn walls_of(bsp: &Bsp) -> Walls {
+    let mut tris = Vec::with_capacity(bsp.surfaces.len());
+    for s in 0..bsp.surfaces.len() {
+        let ring = bsp.surface_ring(s);
+        Walls::fan_polygon(ring.iter().filter_map(|&v| bsp.vertices.get(v).map(|v| v.point)), &mut tris);
+    }
+    Walls::new(tris).with_glass(crate::glass::panes(bsp))
+}
+
 impl MapData {
     /// The file: magic, version, `stamp`, the mesh, the walls, the glass
     /// (a count, then per pane its breakable index, its vertex count and
@@ -251,6 +282,39 @@ impl MapData {
 mod tests {
     use super::*;
     use crate::nav::{Kind, Poly};
+
+    /// One invented square surface at height `z`, its four edges round it
+    /// (left surface the square).
+    fn square(z: f32) -> Bsp {
+        use tags::collision::{Edge, Surface, Vertex};
+        let mut bsp = Bsp::default();
+        for (x, y) in [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)] {
+            bsp.vertices.push(Vertex { point: [x, y, z], edge: 0 });
+        }
+        for i in 0..4u16 {
+            bsp.edges.push(Edge {
+                start_vertex: i,
+                end_vertex: (i + 1) % 4,
+                forward_edge: (i + 1) % 4,
+                reverse_edge: u16::MAX,
+                left_surface: 0,
+                right_surface: u16::MAX,
+            });
+        }
+        bsp.surfaces.push(Surface { plane: 0, first_edge: 0, flags: 0, breakable_surface: u8::MAX, material: 0 });
+        bsp
+    }
+
+    #[test]
+    fn walls_of_a_bsp_fan_every_surface_ring() {
+        let walls = walls_of(&square(1.0));
+        // A square is two triangles.
+        assert_eq!(walls.tris.len(), 2);
+        assert!(walls.tris.iter().flatten().all(|v| v[2] == 1.0));
+        // The square blocks a segment through it and not one beside it.
+        assert!(!walls.clear([2.0, 2.0, 0.0], [2.0, 2.0, 2.0]));
+        assert!(walls.clear([6.0, 2.0, 0.0], [6.0, 2.0, 2.0]));
+    }
 
     #[test]
     fn the_file_round_trips_and_refuses_damage() {

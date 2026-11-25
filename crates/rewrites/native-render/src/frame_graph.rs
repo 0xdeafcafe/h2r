@@ -5,20 +5,25 @@
 //! pass. Display and capture use the same recording path and separate
 //! attachments. Only display hands its final target to the presenter.
 
+pub mod display_rate;
+mod cones;
 mod inputs;
 pub use inputs::{freeze_display_inputs, freeze_scaled_inputs};
 mod lighting;
+mod markers;
 mod private;
 mod sun;
+pub use cones::ConeDraws;
 pub use lighting::{E3Report, PassWork};
 pub use sun::{RECEIVER_DEPTH_BIAS, SunSkip};
 
 use std::ops::Range;
+use std::sync::Arc;
 
 use d3d::gfx_backend::TileWork;
 use d3d::gfx_backend::{BatchStats, GuestDrawPass};
 use d3d::scaled::{ScaledBackend, ScaledScenePass, ScaledSurface, ScaledTexture};
-use d3d::scene_sink::{ReplayFrame, ReplayOp};
+use d3d::scene_sink::{ReplayFrame, ReplayOp, Retarget, Retargeted};
 use d3d::threaded::owner::Outputs;
 use d3d::{GfxBackend, Lighting};
 use frame_scene::{FrameScene, SceneId, TargetRef, summary_hash};
@@ -183,34 +188,66 @@ fn sun_tiles(
     let models = models
         .as_deref()
         .map(|m| m as &dyn crate::sun_casters::CasterModels);
-    sun::plan(device, scene, replay, scale, models)
+    let world = crate::sun_casters::world_for(scene.id.map_epoch);
+    let world = world
+        .as_deref()
+        .map(|w| w as &dyn crate::sun_casters::WorldReceivers);
+    sun::plan(device, scene, replay, scale, models, world)
 }
 
 fn record(
     pass: &mut impl FramePass,
+    scene: &FrameScene,
     frame: &ReplayFrame,
     fresh_targets: bool,
     lighting: Lighting,
     observer: Option<&mut dyn PassObserver>,
     sun_replay: Option<sun::SunReplay>,
+    mut retarget: Option<&mut Retarget>,
 ) -> Result<Option<E3Report>, String> {
     // The graph replays the guest's layers in both modes. Only work
     // submitted by the E3 stages belongs to these four pass rows.
     let mut e3 = (lighting == Lighting::E3).then(E3Report::default);
+    // The marker skin: a stage after each game view's last op, before the
+    // overlay (`markers`).
+    let marker_stages = markers::plan(scene, frame);
     let rows = observer
         .as_ref()
         .map(|_| pass_rows(frame))
         .unwrap_or_default();
     let mut rows = rows.into_iter().enumerate().peekable();
     let mut observer = observer;
+    // Ranges of the chosen lights' stages this draw recorded (`e3.lights`).
+    let mut chosen = 0u32;
+    // The cone shadows the shadowed chosen lights read (`cones`).
+    let cone_replay = cones::plan(scene, frame, lighting);
     let ran = (|| -> Result<(), String> {
         for (i, (at, op)) in frame.ops.iter().enumerate() {
             let named = |e: String| format!("view {} {} op {i}: {e}", at.view, at.slot.name());
+            // A display frame between ticks: the op on the blended camera.
+            let moved = retarget.as_deref_mut().map(|r| r.op(*at, op));
+            let op = moved.as_ref().map_or(op, Retargeted::get);
+            // A stage of one lighting mode (the renderer's chosen lights
+            // beyond the guest's) draws only in that mode.
+            let mode = stage_mode(op);
+            let other_mode = mode.is_some_and(|m| m != lighting);
+            // A shadowed chosen light whose cone is not drawn is kept.
+            let cone_kept = cone_replay.as_ref().is_some_and(|c| c.skip.contains(&i));
             // An admitted object shadow's ops: its sun stage stands in.
-            if !sun_replay.as_ref().is_some_and(|s| s.skip[i]) {
+            if !other_mode && !cone_kept && !sun_replay.as_ref().is_some_and(|s| s.skip[i]) {
+                // A shadowed chosen light: its cone's term first.
+                if let Some(stage) = cone_replay.as_ref().and_then(|c| c.before.get(&i)) {
+                    pass.apply(stage).map_err(named)?;
+                }
                 pass.apply(op).map_err(named)?;
+                if let (Some(_), ReplayOp::Stage(stage)) = (mode, op) {
+                    chosen += stage.plan.ranges as u32;
+                }
             }
-            if let Some(stage) = sun_replay.as_ref().and_then(|s| s.after.get(&i)) {
+            for stage in sun_replay.as_ref().and_then(|s| s.after.get(&i)).into_iter().flatten() {
+                pass.apply(stage).map_err(named)?;
+            }
+            if let Some(stage) = marker_stages.get(&i) {
                 pass.apply(stage).map_err(named)?;
             }
             if let Some((index, row)) = rows.next_if(|(_, row)| row.ops.end == i + 1)
@@ -238,7 +275,25 @@ fn record(
     if let (Some(report), Some(s)) = (e3.as_mut(), &sun_replay) {
         report.add_sun(s.work());
     }
+    if let Some(report) = e3.as_mut() {
+        let lit = crate::light_choice::choose(scene);
+        report.add_choice(&lit);
+        report.add_cones(crate::cone_shadows::choose(scene, &lit).work);
+        report.add_chosen(chosen);
+        if let Some(c) = &cone_replay {
+            report.add_cone_draws(c.work());
+        }
+    }
     Ok(e3)
+}
+
+/// The one lighting mode `op` draws in: a scene stage whose pass names
+/// one (`d3d::ExternalPass::lighting_only`). `None` for every other op.
+fn stage_mode(op: &ReplayOp) -> Option<Lighting> {
+    let ReplayOp::Stage(stage) = op else {
+        return None;
+    };
+    stage.pass.lock().ok()?.lighting_only()
 }
 
 /// Re-render this scene to an isolated target. No present hook or
@@ -270,7 +325,7 @@ pub fn draw_private_with_observer(
     let before = backend.batch_stats();
     let sun_replay = sun_tiles(&backend.ctx.device, scene, replay, scale, lighting);
     let mut pass = GuestDrawPass::new_lit(backend, replay, scale, lighting)?;
-    let e3 = record(&mut pass, replay, true, lighting, observer, sun_replay)?;
+    let e3 = record(&mut pass, scene, replay, true, lighting, observer, sun_replay, None)?;
     let (size, rgba) = pass.read_rgba()?;
     Ok(CapturedFrame {
         id: scene.id,
@@ -296,7 +351,7 @@ pub fn draw_display(
     let before = backend.batch_stats();
     let sun_replay = sun_tiles(&backend.ctx.device, scene, replay, scale, lighting);
     let mut pass = GuestDrawPass::new_display_lit(backend, replay, scale, lighting)?;
-    let e3 = record(&mut pass, replay, true, lighting, observer, sun_replay)?;
+    let e3 = record(&mut pass, scene, replay, true, lighting, observer, sun_replay, None)?;
     pass.present(flags, gamma)?;
     Ok(FrameReport::new(
         scene.id,
@@ -328,7 +383,7 @@ pub fn draw_display_on(
     let sun_replay = sun_tiles(&backend.ctx.device, scene, replay, 1, lighting);
     let mut pass = GuestDrawPass::on_existing(backend, replay, targets)?;
     pass.set_lighting(lighting);
-    let e3 = record(&mut pass, replay, false, lighting, observer, sun_replay)?;
+    let e3 = record(&mut pass, scene, replay, false, lighting, observer, sun_replay, None)?;
     let outputs = pass.present_with_outputs(flags, gamma)?;
     Ok((
         FrameReport::new(scene.id, lighting, e3, before, backend.batch_stats()),
@@ -360,8 +415,85 @@ pub fn draw_scaled_display_on(
     let _ = inputs::freeze_native_scaled_inputs(&mut pass, replay);
     // The scaled display draws no sun tile: every object shadow keeps
     // retail's mask there.
-    let e3 = record(&mut pass, replay, false, lighting, observer, None)?;
+    let e3 = record(&mut pass, scene, replay, false, lighting, observer, None, None)?;
     let (after, outputs) = pass.present(replay.flags, replay.gamma.as_deref())?;
+    Ok((
+        FrameReport::new(scene.id, lighting, e3, before, after),
+        outputs,
+    ))
+}
+
+/// [`draw_display_on`] for a frame owner running the display-rate loop
+/// ([`display_rate`]): this frame is drawn on the live attachments as
+/// ever (the guest's tickets and samples are its own), and the window is
+/// shown the loop's display frame for this Swap when the loop blends it.
+pub fn draw_display_at_rate(
+    backend: &mut GfxBackend,
+    display: &display_rate::Display,
+    scene: &Arc<FrameScene>,
+    replay: &Arc<ReplayFrame>,
+    lighting: Lighting,
+    observer: Option<&mut dyn PassObserver>,
+    targets: &std::collections::HashMap<TargetRef, gfx::surface::SurfaceId>,
+) -> Result<(FrameReport, Outputs<d3d::gfx_backend::HostTexture>), String> {
+    let before = backend.batch_stats();
+    // The display frame's own targets start from these inputs too.
+    let _ = freeze_display_inputs(backend, replay, targets);
+    let sun_replay = sun_tiles(&backend.ctx.device, scene, replay, 1, lighting);
+    let mut pass = GuestDrawPass::on_existing(backend, replay, targets)?;
+    pass.set_lighting(lighting);
+    let e3 = record(&mut pass, scene, replay, false, lighting, observer, sun_replay, None)?;
+    let grid = pass.grid();
+    let shown = display.at_swap(pass.backend_mut(), scene, replay, grid, lighting);
+    let (flags, gamma) = (replay.flags, replay.gamma.as_deref());
+    let outputs = match shown {
+        // The window places the marks with the cameras the display frame
+        // drew (`display_rate::marks_present`).
+        Some(shown) => d3d::present_camera::with(Some(shown.marks), || {
+            pass.present_with_outputs_showing(flags, gamma, shown.image)
+        })?,
+        None => pass.present_with_outputs(flags, gamma)?,
+    };
+    Ok((
+        FrameReport::new(scene.id, lighting, e3, before, backend.batch_stats()),
+        outputs,
+    ))
+}
+
+/// [`draw_scaled_display_on`] for a frame owner running the display-rate
+/// loop, as [`draw_display_at_rate`]: the view draws the display frame on
+/// its own targets on its grid, whole or fractional.
+pub fn draw_scaled_display_at_rate(
+    backend: &mut ScaledBackend<GfxBackend, GfxBackend>,
+    display: &display_rate::Display,
+    scene: &Arc<FrameScene>,
+    replay: &Arc<ReplayFrame>,
+    observer: Option<&mut dyn PassObserver>,
+    targets: &std::collections::HashMap<
+        TargetRef,
+        ScaledSurface<gfx::surface::SurfaceId, gfx::surface::SurfaceId>,
+    >,
+) -> Result<
+    (
+        FrameReport,
+        Outputs<ScaledTexture<d3d::gfx_backend::HostTexture, d3d::gfx_backend::HostTexture>>,
+    ),
+    String,
+> {
+    let lighting = backend.lighting();
+    let grid = backend.resolution();
+    let before = backend.view().batch_stats();
+    let mut pass = ScaledScenePass::new(backend, replay, targets)?;
+    let _ = inputs::freeze_native_scaled_inputs(&mut pass, replay);
+    let e3 = record(&mut pass, scene, replay, false, lighting, observer, None, None)?;
+    let shown = display.at_swap(pass.view_mut(), scene, replay, grid, lighting);
+    let (flags, gamma) = (replay.flags, replay.gamma.as_deref());
+    let (after, outputs) = match shown {
+        Some(shown) => d3d::present_camera::with(Some(shown.marks), || {
+            pass.present_showing(flags, gamma, shown.image)
+        })?,
+        None => pass.present(flags, gamma)?,
+    };
     Ok((
         FrameReport::new(scene.id, lighting, e3, before, after),
         outputs,

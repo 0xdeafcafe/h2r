@@ -214,6 +214,18 @@ pub struct CheckView {
     /// ([`crate::game_variants::option_views`]).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     options: Vec<crate::game_variants::OptionView>,
+    /// Who scores the game, `script` or `carrier`, when it checks clean.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scoring: Option<&'static str>,
+    /// The script's `about` text, when it has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    about: Option<String>,
+    /// The `settings` block in words: name, label, value text.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    settings: Vec<crate::game_variants::ScriptSetting>,
+    /// The Quick Options marks, in the script's order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    quick: Vec<crate::game_variants::QuickView>,
 }
 
 fn check_view(c: workbench::Check) -> CheckView {
@@ -225,6 +237,10 @@ fn check_view(c: workbench::Check) -> CheckView {
         errors: c.errors.into_iter().map(Into::into).collect(),
         warnings: c.warnings.into_iter().map(Into::into).collect(),
         options: Vec::new(),
+        scoring: None,
+        about: None,
+        settings: Vec::new(),
+        quick: Vec::new(),
         report: c.report.map(|r| WireReport {
             worst_tick_ops: r.worst_tick_ops,
             budget: r.budget,
@@ -360,6 +376,26 @@ enum WireEvent {
         assist: Option<u8>,
         class: String,
     },
+    Damage {
+        object: u32,
+        #[serde(default)]
+        by: Option<u8>,
+        amount: i32,
+    },
+    Touchdown {
+        player: u8,
+        down: i32,
+        up: i32,
+    },
+    Launch {
+        player: u8,
+        #[serde(default)]
+        spot: Option<u32>,
+        speed: i32,
+    },
+    Grounded {
+        player: u8,
+    },
 }
 
 impl From<WireEvent> for Input {
@@ -396,6 +432,10 @@ impl From<WireEvent> for Input {
             WireEvent::ActorAssist { killer, assist, class } => {
                 Input::ActorAssist { killer, assist, class }
             }
+            WireEvent::Damage { object, by, amount } => Input::Damage { object, by, amount },
+            WireEvent::Touchdown { player, down, up } => Input::Touchdown { player, down, up },
+            WireEvent::Launch { player, spot, speed } => Input::Launch { player, spot, speed },
+            WireEvent::Grounded { player } => Input::Grounded(player),
         }
     }
 }
@@ -432,6 +472,10 @@ impl From<&Input> for WireEvent {
                 assist,
                 class,
             },
+            Input::Damage { object, by, amount } => WireEvent::Damage { object, by, amount },
+            Input::Touchdown { player, down, up } => WireEvent::Touchdown { player, down, up },
+            Input::Launch { player, spot, speed } => WireEvent::Launch { player, spot, speed },
+            Input::Grounded(player) => WireEvent::Grounded { player },
         }
     }
 }
@@ -1017,6 +1061,10 @@ async fn post_check(
         && let Ok(ir) = rules::compile(&b.source)
     {
         view.options = crate::game_variants::option_views(&ir);
+        view.scoring = Some(crate::game_variants::scoring_word(&ir));
+        view.about = Some(ir.header.about.clone()).filter(|a| !a.is_empty());
+        view.settings = crate::game_variants::script_settings(&ir);
+        view.quick = crate::game_variants::quick_views(&ir);
     }
     Ok(crate::http::json(StatusCode::OK, &view))
 }
@@ -1120,7 +1168,7 @@ async fn get_builtin(State(live): Shared, headers: HeaderMap) -> ApiResult<Respo
         items.push(json!({
             "name": ir.as_ref().map_or(*key, |ir| ir.header.name.as_str()),
             "key": key,
-            "engine": ir.as_ref().map(|ir| ir.header.carrier),
+            "engine": ir.as_ref().map(|ir| ir.header.engine()),
             "source": source,
             "hash": ir.as_ref().map(|ir| ir.id().to_string()),
             "example": true,

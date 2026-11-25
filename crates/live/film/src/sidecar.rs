@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
     io::{self, ErrorKind, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -397,6 +397,65 @@ impl SidecarWriter {
 
     pub fn contains(&self, tick: u64) -> bool {
         self.at(tick).is_some()
+    }
+
+    /// A writer for a film cut from this recorder's running tape
+    /// (docs/game/film-format.md, "One film per game"). The cut holds the
+    /// tape's bytes up to its end, so each capture mark keeps its offset.
+    /// It takes the keyframes from tick `from` on, the last one before
+    /// `from` (so the cut can open there) and the RAM anchors they encode
+    /// against. [`SidecarWriter::finish`] then binds it to the sealed cut.
+    pub fn fork(&self, film_id: &str, from: u64) -> Result<Self> {
+        ensure!(
+            !self.failed && self.inherited.is_none(),
+            "only a recorder's sidecar can be cut"
+        );
+        let films_dir = self
+            .path
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .context("sidecar outside a film library")?;
+        let mut cut = Self::create(
+            films_dir,
+            film_id,
+            &self.id.stamp,
+            &self.id.switches,
+            self.cap_bytes,
+            None,
+        )?;
+        let mut wanted: BTreeSet<u64> = self.keys.range(from..).map(|(&tick, _)| tick).collect();
+        if let Some((&before, _)) = self.keys.range(..from).next_back() {
+            wanted.insert(before);
+        }
+        let anchors: Vec<u64> = wanted
+            .iter()
+            .filter_map(|tick| self.keys.get(tick).and_then(|key| key.ram_anchor))
+            .collect();
+        wanted.extend(anchors);
+        let mut source = File::open(&self.stage)?;
+        let file = cut.file.as_mut().context("sidecar output already closed")?;
+        for tick in wanted {
+            let mut key = self
+                .keys
+                .get(&tick)
+                .context("missing sidecar RAM anchor")?
+                .clone();
+            let size = 8 + u64::from(key.size);
+            let offset = file.stream_position()?;
+            ensure!(
+                offset.saturating_add(size + TAIL_BYTES) <= cut.cap_bytes,
+                "sidecar exceeds cache cap"
+            );
+            source.seek(SeekFrom::Start(key.offset))?;
+            ensure!(
+                io::copy(&mut (&mut source).take(size), file)? == size,
+                "truncated sidecar keyframe"
+            );
+            key.offset = offset;
+            cut.keys.insert(tick, key);
+        }
+        Ok(cut)
     }
 
     /// Store the unchanged KEYF payload. The MARK is the capture point in

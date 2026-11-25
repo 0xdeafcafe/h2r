@@ -11,16 +11,25 @@ use map::TagId;
 use shaders::psh::{self, PixelOptions, PixelShaderDef, PixelUniforms, TextureDim};
 use shaders::vsh::{self, VertexUniforms};
 use tags::material::Material as TagMaterial;
-use tags::shader::StageStates;
+use tags::shader::{RenderStateValue, StageStates};
 
 use crate::decorators::PROVIDED_INPUTS;
+use crate::engine_states::apply_static;
+use crate::gpu::Image;
 use crate::look::{self, PassLook, Stage};
 use crate::object_program_gpu::input_fetch;
-use crate::object_streams::{Attribute, Element, SLOT, StreamData, StreamElement, declaration, gather, registers};
-use crate::pass_state::{PassState, pass_state};
-use crate::program::{PassParts, VIEW_CONSTANTS, ViewInputs, constants_read, frame_pixel, frame_vertex, translate_pass_with_pixel, world_parity};
+use crate::object_streams::{
+    Attribute, Element, SLOT, StreamData, StreamElement, declaration, gather, registers,
+};
+use crate::pass_state::{PassState, geometry_pass_state};
+use crate::program::{
+    PassParts, VIEW_CONSTANTS, ViewInputs, constants_read, frame_pixel, frame_vertex,
+    translate_pass_with_pixel, world_parity,
+};
 
-pub use scene_extract::layout::decorators::{DECORATOR_CLASSIFICATION, Refusal as SetRefusal, SetGeometry, set_geometry, set_geometry_with};
+pub use scene_extract::layout::decorators::{
+    DECORATOR_CLASSIFICATION, Refusal as SetRefusal, SetGeometry, set_geometry, set_geometry_with,
+};
 
 /// `c[53]`, the batch's detail-level constant.
 pub const LOD_CONSTANT: usize = frame_scene::decorator::LOD_CONSTANT as usize;
@@ -37,6 +46,62 @@ pub struct DecoratorLook {
     /// its input semantics (register `v<i>` reads `semantics[i]`).
     pub microcode: Vec<u8>,
     pub semantics: Vec<u16>,
+    /// The pass sets no `CULLMODE`: it draws with the cull and winding
+    /// the device holds at the layer-3 call
+    /// (`decorators_gpu::DrawKey::cull`).
+    pub inherits_cull: bool,
+    /// The render states (guest slots) the guest's draw of the pass
+    /// leaves set once the next switch has restored it: each state of the
+    /// implementation's list the restore list does not write back, at the
+    /// last value the draw sets it to (its engine-driven values after the
+    /// list), then the implementation's restore list ([`skip_holds`]).
+    pub leaves: Vec<RenderStateValue>,
+}
+
+/// D3D's `TWOSIDEDLIGHTING` (canonical state), which the draw `0x0004e260`
+/// turns on before its placements (`0x0004e2da`) and off after them
+/// (`0x0004ebb4`).
+pub const TWO_SIDED_LIGHTING: u32 = 141;
+
+static STATE_TABLE: std::sync::LazyLock<gfx::xdk::RenderStateTable> =
+    std::sync::LazyLock::new(|| gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD));
+
+/// Each state `states` sets, at the last value it sets it to, in the
+/// order of those last values.
+fn last_values(states: &[RenderStateValue]) -> Vec<RenderStateValue> {
+    let mut out: Vec<RenderStateValue> = Vec::with_capacity(states.len());
+    for s in states.iter().rev() {
+        if !out.iter().any(|o| o.state == s.state) {
+            out.push(*s);
+        }
+    }
+    out.reverse();
+    out
+}
+
+/// Whether skipping the guest's draw of a placement whose pass is `look`
+/// leaves the device's render states as drawing it would (`read`: the
+/// device's render state at a guest slot, at the layer-3 call), the rule
+/// `crate::layer_pass::skip_holds` applies to a world layer's items
+/// (docs/graphics/native-decorators.md, "The glue"; **Code**, `h2
+/// disasm`): the draw's shader begin `0x0001bbf0` sets the pass's list
+/// and its engine-driven values without comparing them with the device
+/// (`0x0001a170`; those values come from the shader instance's own inputs,
+/// [`decorator_look`]), the next pass switch or layer setup restores the
+/// implementation's restore list (`0x00018900`) before another
+/// implementation's list is set (`0x00016b90`), so a state the list sets
+/// and the restore list writes back is left at the restore's value, and
+/// the draw leaves `TwoSidedLighting` off. Skipped, none of it runs. The
+/// two agree exactly when every state of [`DecoratorLook::leaves`] and
+/// `TwoSidedLighting` off already hold; a state that does not read
+/// refuses.
+pub fn skip_holds(look: &DecoratorLook, read: &dyn Fn(u32) -> Option<u32>) -> bool {
+    let two_sided = STATE_TABLE.canonical_to_guest(TWO_SIDED_LIGHTING);
+    two_sided.and_then(read) == Some(0)
+        && look
+            .leaves
+            .iter()
+            .all(|s| read(u32::from(s.state)) == Some(s.value))
 }
 
 /// The pass of `material` at detail level `lod`, layer `layer`, pass
@@ -44,34 +109,56 @@ pub struct DecoratorLook {
 /// `program` gives a `vrtx` tag's classification-1 program and semantics
 /// (`crate::look::vertex_program`, `vertex_semantics`).
 pub fn decorator_look(
-    material: &TagMaterial, lod: u8, layer: u8, pass: u8, program: &mut dyn FnMut(TagId) -> Option<(Vec<u8>, Vec<u16>)>,
+    material: &TagMaterial,
+    lod: u8,
+    layer: u8,
+    pass: u8,
+    program: &mut dyn FnMut(TagId) -> Option<(Vec<u8>, Vec<u16>)>,
 ) -> Result<DecoratorLook, String> {
     let list = material
         .layers
         .iter()
         .find(|l| l.lod == usize::from(lod) && l.layer == usize::from(layer))
         .ok_or_else(|| format!("the template has no layer {layer} at detail level {lod}"))?;
-    let p = list.passes.get(usize::from(pass)).ok_or_else(|| format!("the layer has no pass {pass}"))?;
-    let imp = p.implementations.first().ok_or("the pass has no implementation")?;
-    if !imp.engine_render_states.is_empty() {
-        return Err("engine-driven render states".into());
-    }
-    if !imp.engine_stage_states.is_empty() {
-        return Err("engine-driven texture stage states".into());
-    }
+    let p = list
+        .passes
+        .get(usize::from(pass))
+        .ok_or_else(|| format!("the layer has no pass {pass}"))?;
+    let imp = p
+        .implementations
+        .first()
+        .ok_or("the pass has no implementation")?;
+    // Engine-driven states over the pass's own, from the instance's
+    // inputs: the stage translates the pass once for every draw.
+    let applied =
+        apply_static(imp, &material.inputs).map_err(|r| format!("engine-driven states: {r:?}"))?;
     // A pass that leaves the cull to the device draws as the draws before
-    // it left it: not known here.
-    if !look::sets_state(&imp.render_states, gfx::state::RenderStateType::CullMode) {
-        return Err("the pass inherits the device's cull".into());
-    }
-    let look = look::implementation_look(p.pass, imp).map_err(|r| format!("{r:?}"))?;
-    if look.textures.contains(&Stage::Lightmap) {
-        return Err("a stage samples a lightmap".into());
-    }
-    let state = pass_state(&imp.render_states).map_err(|r| format!("render states: {r:?}"))?;
+    // it left it: the device's at the layer-3 call, read at the ask.
+    let inherits_cull =
+        !look::sets_state(&imp.render_states, gfx::state::RenderStateType::CullMode);
+    // A stage sampling the lightmap takes the globals' bitmap (the draw
+    // sets the page to -1, `0x0004e277`): [`stage_images`].
+    let mut look = look::implementation_look(p.pass, imp).map_err(|r| format!("{r:?}"))?;
+    look.stage_states = applied.stage_states;
+    let state = geometry_pass_state(&applied.render_states).map_err(|r| format!("render states: {r:?}"))?;
     let (microcode, semantics) =
         program(look.vertex_shader).ok_or("the vrtx has no classification-1 program")?;
-    Ok(DecoratorLook { look, state, microcode, semantics })
+    // A state the restore list writes back is left at the restore's
+    // value, whatever the list set it to.
+    let restored = |s: &RenderStateValue| imp.restore_states.iter().any(|r| r.state == s.state);
+    let mut leaves: Vec<RenderStateValue> = last_values(&applied.render_states)
+        .into_iter()
+        .filter(|s| !restored(s))
+        .collect();
+    leaves.extend_from_slice(&imp.restore_states);
+    Ok(DecoratorLook {
+        look,
+        state,
+        microcode,
+        semantics,
+        inherits_cull,
+        leaves,
+    })
 }
 
 /// A decorator pass translated for one set's stream.
@@ -92,12 +179,20 @@ pub struct DecoratorProgram {
     pub state: PassState,
     /// The registers the set's stream supplies, in vertex-buffer order.
     pub declaration: Vec<Element>,
+    /// [`DecoratorLook::inherits_cull`].
+    pub inherits_cull: bool,
 }
 
 /// The pixel shader as the draw has it: `TwoSidedLighting` on
 /// (`0x0004e2da`), so a back face reads the back colours.
 fn two_sided(def: &PixelShaderDef, options: &PixelOptions) -> psh::PixelShader {
-    psh::translate(def, &PixelOptions { two_sided_lighting: true, ..*options })
+    psh::translate(
+        def,
+        &PixelOptions {
+            two_sided_lighting: true,
+            ..*options
+        },
+    )
 }
 
 /// Whether the stage sets `c[c]`: the view's (`c[0..18]`, from the device
@@ -105,7 +200,10 @@ fn two_sided(def: &PixelShaderDef, options: &PixelOptions) -> psh::PixelShader {
 fn sets_constant(look: &PassLook, c: u8) -> bool {
     usize::from(c) < VIEW_CONSTANTS
         || usize::from(c) == LOD_CONSTANT
-        || look.vertex_constants.iter().any(|r| r.index == c && r.written != 0)
+        || look
+            .vertex_constants
+            .iter()
+            .any(|r| r.index == c && r.written != 0)
 }
 
 /// Translates `look` for a set whose stream has the format `stream` (its
@@ -124,14 +222,23 @@ pub fn compile(look: &DecoratorLook, stream: &[StreamElement]) -> Result<Decorat
         return Err("per-draw engine inputs".into());
     }
     world_parity(pass)?;
-    let program = vsh::Program::parse(&look.microcode).map_err(|e| format!("vertex program: {e:?}"))?;
-    if let Some(c) = constants_read(&program)?.into_iter().find(|&c| !sets_constant(pass, c)) {
-        return Err(format!("vertex program reads c[{c}], which the decorator stage does not set"));
+    let program =
+        vsh::Program::parse(&look.microcode).map_err(|e| format!("vertex program: {e:?}"))?;
+    if let Some(c) = constants_read(&program)?
+        .into_iter()
+        .find(|&c| !sets_constant(pass, c))
+    {
+        return Err(format!(
+            "vertex program reads c[{c}], which the decorator stage does not set"
+        ));
     }
     let declaration = declaration(&look.semantics, &[stream.to_vec()]);
     let streamed = registers(&declaration);
     if streamed & PROVIDED_INPUTS != 0 {
-        return Err(format!("the set's stream supplies an instance register ({:#06x})", streamed & PROVIDED_INPUTS));
+        return Err(format!(
+            "the set's stream supplies an instance register ({:#06x})",
+            streamed & PROVIDED_INPUTS
+        ));
     }
     if declaration.is_empty() {
         return Err("the set's stream supplies no register the program reads".into());
@@ -140,7 +247,9 @@ pub fn compile(look: &DecoratorLook, stream: &[StreamElement]) -> Result<Decorat
         &PassParts {
             microcode: &look.microcode,
             pixel_shader: &pass.pixel_shader,
-            dims: pass.textures.map(|s| (s != Stage::Empty).then_some(TextureDim::D2)),
+            dims: pass
+                .textures
+                .map(|s| (s != Stage::Empty).then_some(TextureDim::D2)),
             biased: pass.textures.map(|s| matches!(s, Stage::Bitmap { .. })),
             stage_states: &pass.stage_states,
             vertex_constants: &pass.vertex_constants,
@@ -149,6 +258,7 @@ pub fn compile(look: &DecoratorLook, stream: &[StreamElement]) -> Result<Decorat
             provided_inputs: streamed | PROVIDED_INPUTS,
             input_fetch: input_fetch(&declaration),
             w_buffer: true,
+            shadow: [None; 4],
         },
         two_sided,
     )?;
@@ -162,7 +272,48 @@ pub fn compile(look: &DecoratorLook, stream: &[StreamElement]) -> Result<Decorat
         pixel: t.pixel,
         state: look.state,
         declaration,
+        inherits_cull: look.inherits_cull,
     })
+}
+
+/// The images `program`'s sampled stages bind: a bitmap stage's from
+/// `bitmap` (bitmap, image), a lightmap stage's `lightmap`. The draw
+/// `0x0004e260` sets the current lightmap page to -1 (`0x0004e277`), so
+/// the stage setup binds the globals' rasterizer bitmap at `+0x64` as for
+/// an object's record, and the draw adds no lightmap coordinates: the
+/// stage takes that image only when it is uniform
+/// (`crate::object_program_gpu::uniform`), which samples the same
+/// wherever the coordinates fall. An error says why the material stays on
+/// the D3D path.
+pub fn stage_images(
+    program: &DecoratorProgram,
+    bitmap: &dyn Fn(TagId, u32) -> Option<Image>,
+    lightmap: Option<&Image>,
+) -> Result<[Option<Image>; 4], String> {
+    let mut images: [Option<Image>; 4] = Default::default();
+    for (n, dim) in program.dims.iter().enumerate() {
+        if dim.is_none() {
+            continue;
+        }
+        images[n] = Some(match program.stages[n] {
+            Stage::Bitmap { bitmap: id, image } => {
+                bitmap(id, image).ok_or_else(|| format!("stage {n} bitmap did not load"))?
+            }
+            Stage::Lightmap => {
+                let image = lightmap
+                    .ok_or_else(|| format!("stage {n} samples the lightmap, which did not load"))?;
+                if !crate::object_program_gpu::uniform(image) {
+                    return Err(format!(
+                        "stage {n} samples the lightmap, whose image ({}x{}) is not uniform, so the coordinates the draw leaves would matter",
+                        image.width, image.height
+                    ));
+                }
+                image.clone()
+            }
+            _ => return Err(format!("stage {n} samples what is not a bitmap")),
+        });
+    }
+    Ok(images)
 }
 
 /// A set's vertices as one program reads them, and its indices: per
@@ -186,7 +337,10 @@ pub fn buffers(program: &DecoratorProgram, set: &SetGeometry) -> Result<Decorato
     if set.indices.iter().any(|&i| usize::from(i) >= count) {
         return Err("an index names a vertex past the set's stream".into());
     }
-    let stream = StreamData { bytes: &set.vertices, stride: usize::from(set.stride) };
+    let stream = StreamData {
+        bytes: &set.vertices,
+        stride: usize::from(set.stride),
+    };
     let vertices = gather(&program.declaration, &[Some(stream)], count)?;
     Ok(DecoratorBuffers {
         registers: program.declaration.iter().map(|e| e.register).collect(),
@@ -198,7 +352,11 @@ pub fn buffers(program: &DecoratorProgram, set: &SetGeometry) -> Result<Decorato
 
 /// A batch's uniforms: the program's with the view's constants, surface
 /// and depth, and `c[53]` the batch's.
-pub fn uniforms(program: &DecoratorProgram, view: &ViewInputs, lod_constant: [f32; 4]) -> (VertexUniforms, PixelUniforms) {
+pub fn uniforms(
+    program: &DecoratorProgram,
+    view: &ViewInputs,
+    lod_constant: [f32; 4],
+) -> (VertexUniforms, PixelUniforms) {
     let mut vertex = frame_vertex(&program.vertex, view);
     vertex.constants[LOD_CONSTANT] = lod_constant;
     (vertex, frame_pixel(&program.pixel, view))
@@ -221,7 +379,12 @@ pub(crate) mod tests {
             vertex_shader: TagId(0xe000_0002),
             textures: [Stage::Empty; 4],
             stage_states: Vec::new(),
-            pixel_shader: PixelShaderDef { final_inputs_abcd, final_inputs_efg, ..Default::default() }.to_bytes(),
+            pixel_shader: PixelShaderDef {
+                final_inputs_abcd,
+                final_inputs_efg,
+                ..Default::default()
+            }
+            .to_bytes(),
             vertex_constants: Vec::new(),
             vertex_defaults: Vec::new(),
             per_draw_inputs: false,
@@ -248,33 +411,70 @@ pub(crate) mod tests {
     pub(crate) fn code(extra: Option<O>) -> Vec<u8> {
         let mut code = vec![Inst::mac(MacOp::Mov, Some(O::v(0)), None, None).to_temp(1, 0xf)];
         for k in 0..3u8 {
-            code.push(Inst::mac(MacOp::Dph, Some(O::r(1)), Some(O::v(12 + k)), None).to_temp(0, 8 >> k));
+            code.push(
+                Inst::mac(MacOp::Dph, Some(O::r(1)), Some(O::v(12 + k)), None).to_temp(0, 8 >> k),
+            );
         }
         for k in 0..4u8 {
-            code.push(Inst::mac(MacOp::Dph, Some(O::r(0)), Some(O::c(k)), None).to_out(false, OutReg::Pos, 8 >> k));
+            code.push(
+                Inst::mac(MacOp::Dph, Some(O::r(0)), Some(O::c(k)), None).to_out(
+                    false,
+                    OutReg::Pos,
+                    8 >> k,
+                ),
+            );
         }
-        code.push(Inst::mac(MacOp::Mul, Some(O::v(15)), Some(O::c(LOD_CONSTANT as u8)), None).to_out(false, OutReg::D0, 0xf));
-        code.push(Inst::mac(MacOp::Mov, Some(O::v(11)), None, None).to_out(false, OutReg::T(0), 0xf));
+        code.push(
+            Inst::mac(
+                MacOp::Mul,
+                Some(O::v(15)),
+                Some(O::c(LOD_CONSTANT as u8)),
+                None,
+            )
+            .to_out(false, OutReg::D0, 0xf),
+        );
+        code.push(Inst::mac(MacOp::Mov, Some(O::v(11)), None, None).to_out(
+            false,
+            OutReg::T(0),
+            0xf,
+        ));
         if let Some(extra) = extra {
-            code.push(Inst::mac(MacOp::Mov, Some(extra), None, None).to_out(false, OutReg::T(1), 0xf));
+            code.push(Inst::mac(MacOp::Mov, Some(extra), None, None).to_out(
+                false,
+                OutReg::T(1),
+                0xf,
+            ));
         }
         program(&code)
     }
 
     /// Semantic 0 (a three-float position) in `v0`.
     pub(crate) fn decorator(extra: Option<O>) -> DecoratorLook {
-        DecoratorLook { look: look(), state: state(), microcode: code(extra), semantics: vec![0] }
+        DecoratorLook {
+            look: look(),
+            state: state(),
+            microcode: code(extra),
+            semantics: vec![0],
+            inherits_cull: false,
+            leaves: Vec::new(),
+        }
     }
 
     pub(crate) fn stream() -> Vec<StreamElement> {
-        vec![StreamElement::Attribute { semantic: 0, format: Attribute::Float(3) }]
+        vec![StreamElement::Attribute {
+            semantic: 0,
+            format: Attribute::Float(3),
+        }]
     }
 
     #[test]
     fn the_program_takes_the_position_from_the_stream_and_v11_to_v15_from_the_instances() {
         let p = compile(&decorator(None), &stream()).unwrap();
         assert_eq!(p.declaration.len(), 1);
-        assert_eq!((p.declaration[0].register, p.declaration[0].format), (0, Attribute::Float(3)));
+        assert_eq!(
+            (p.declaration[0].register, p.declaration[0].format),
+            (0, Attribute::Float(3))
+        );
         assert!(p.wgsl.contains("vs_main") && p.wgsl.contains("fs_main"));
         assert_eq!(p.state, state());
     }
@@ -288,7 +488,13 @@ pub(crate) mod tests {
         // A stream that supplies an instance register.
         let mut d = decorator(None);
         d.semantics = (0..13).collect();
-        let s = vec![StreamElement::Attribute { semantic: 12, format: Attribute::Float(4) }, stream()[0]];
+        let s = vec![
+            StreamElement::Attribute {
+                semantic: 12,
+                format: Attribute::Float(4),
+            },
+            stream()[0],
+        ];
         assert!(compile(&d, &s).unwrap_err().contains("instance register"));
         // Nothing streamed that the program reads.
         let mut d = decorator(None);
@@ -306,20 +512,312 @@ pub(crate) mod tests {
         let set = SetGeometry {
             stream_type: 1,
             stride: 12,
-            vertices: positions.iter().flatten().flat_map(|f| f.to_le_bytes()).collect(),
+            vertices: positions
+                .iter()
+                .flatten()
+                .flat_map(|f| f.to_le_bytes())
+                .collect(),
             indices: vec![0, 1, 1],
         };
         let b = buffers(&p, &set).unwrap();
-        assert_eq!((b.registers.as_slice(), b.formats.as_slice()), (&[0u8][..], &[Attribute::Float(3)][..]));
+        assert_eq!(
+            (b.registers.as_slice(), b.formats.as_slice()),
+            (&[0u8][..], &[Attribute::Float(3)][..])
+        );
         assert_eq!(b.vertices.len(), 2);
         assert_eq!(b.vertices[1][..12], set.vertices[12..]);
         assert_eq!(b.indices, [0, 1, 1]);
-        assert!(buffers(&p, &SetGeometry { stride: 0, ..set.clone() }).is_err());
-        let short = SetGeometry { vertices: set.vertices[..20].to_vec(), ..set };
+        assert!(
+            buffers(
+                &p,
+                &SetGeometry {
+                    stride: 0,
+                    ..set.clone()
+                }
+            )
+            .is_err()
+        );
+        let short = SetGeometry {
+            vertices: set.vertices[..20].to_vec(),
+            ..set
+        };
         assert!(buffers(&p, &short).is_err(), "a vertex past the stream");
-        let view = ViewInputs { constants: [[0.5; 4]; VIEW_CONSTANTS], guest_size: (8, 8), size: (8, 8), z_scale: 1.0, w_clip: None };
+        let view = ViewInputs {
+            constants: [[0.5; 4]; VIEW_CONSTANTS],
+            guest_size: (8, 8),
+            size: (8, 8),
+            z_scale: 1.0,
+            w_clip: None,
+        };
         let (v, _) = uniforms(&p, &view, [1.0, 2.0, 0.0, 1.0]);
         assert_eq!(v.constants[LOD_CONSTANT], [1.0, 2.0, 0.0, 1.0]);
         assert_eq!(v.constants[0], [0.5; 4]);
+    }
+
+    /// An engine-driven blend-colour alpha from the instance's scalar 21
+    /// goes over the pass's own colour; one from a draw's input refuses.
+    #[test]
+    fn a_pass_takes_its_engine_driven_states_from_the_instance() {
+        use gfx::state::RenderStateType as R;
+        use tags::material::{EngineInputs, ResolvedLayer, ResolvedPass};
+        use tags::shader::{ExternalBinding, RenderStateValue};
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let slot = |t| {
+            (0..=255u8)
+                .find(|&s| R::from_guest_index(&table, u32::from(s)) == Some(t))
+                .expect("a 5849 slot")
+        };
+        let rs = |t, value| RenderStateValue {
+            state: slot(t),
+            value,
+        };
+        let mut imp = crate::engine_states::tests::implementation(
+            vec![
+                rs(R::AlphaBlendEnable, 0),
+                rs(R::ZWriteEnable, 1),
+                rs(R::BlendColor, 0x00ff_ffff),
+            ],
+            0,
+        );
+        imp.input_reads.scalars = 1 << 21;
+        imp.engine_render_states = vec![ExternalBinding {
+            bytes: [0, 1, 0, 21],
+        }];
+        let mut material = TagMaterial {
+            shader: TagId(0xe000_0100),
+            template: TagId(0xe000_0101),
+            inputs: EngineInputs::default(),
+            layers: vec![ResolvedLayer {
+                lod: 0,
+                layer: 3,
+                passes: vec![ResolvedPass {
+                    index: 0,
+                    pass: TagId(0xe000_0200),
+                    implementations: vec![imp],
+                }],
+            }],
+        };
+        material.inputs.scalars[21] = 1.0;
+        let mut program = |_: TagId| Some((code(None), vec![0]));
+        let look = decorator_look(&material, 0, 3, 0, &mut program).unwrap();
+        assert_eq!(look.state.blend_constant, wgpu::Color::WHITE);
+        material.layers[0].passes[0].implementations[0].engine_render_states =
+            vec![ExternalBinding {
+                bytes: [0, 1, 0, 3],
+            }];
+        let e = decorator_look(&material, 0, 3, 0, &mut program).unwrap_err();
+        assert!(
+            e.contains("engine-driven states") && e.contains("PerDraw"),
+            "{e}"
+        );
+    }
+
+    /// A placement's guest draw is skipped only where what it leaves set
+    /// already holds: its list at the values it sets (an engine-driven
+    /// value over the list's own), its restore list, and `TwoSidedLighting`
+    /// off.
+    #[test]
+    fn a_skipped_placement_holds_only_when_what_its_draw_leaves_already_holds() {
+        use gfx::state::RenderStateType as R;
+        use std::collections::HashMap;
+        use tags::material::{EngineInputs, ResolvedLayer, ResolvedPass};
+        use tags::shader::ExternalBinding;
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let slot = |t| {
+            (0..=255u8)
+                .find(|&s| R::from_guest_index(&table, u32::from(s)) == Some(t))
+                .expect("a 5849 slot")
+        };
+        let rs = |t, value| RenderStateValue {
+            state: slot(t),
+            value,
+        };
+        let mut imp = crate::engine_states::tests::implementation(
+            vec![
+                rs(R::AlphaBlendEnable, 0),
+                rs(R::ZWriteEnable, 1),
+                rs(R::BlendColor, 0x00ff_ffff),
+            ],
+            0,
+        );
+        imp.restore_states = vec![rs(R::AlphaTestEnable, 0)];
+        // The blend colour's alpha from the instance's scalar 21 (1.0).
+        imp.input_reads.scalars = 1 << 21;
+        imp.engine_render_states = vec![ExternalBinding {
+            bytes: [0, 1, 0, 21],
+        }];
+        let mut material = TagMaterial {
+            shader: TagId(0xe000_0100),
+            template: TagId(0xe000_0101),
+            inputs: EngineInputs::default(),
+            layers: vec![ResolvedLayer {
+                lod: 0,
+                layer: 3,
+                passes: vec![ResolvedPass {
+                    index: 0,
+                    pass: TagId(0xe000_0200),
+                    implementations: vec![imp],
+                }],
+            }],
+        };
+        material.inputs.scalars[21] = 1.0;
+        let mut program = |_: TagId| Some((code(None), vec![0]));
+        let look = decorator_look(&material, 0, 3, 0, &mut program).unwrap();
+        let blend = rs(R::BlendColor, 0xffff_ffff);
+        assert_eq!(
+            look.leaves,
+            [
+                rs(R::AlphaBlendEnable, 0),
+                rs(R::ZWriteEnable, 1),
+                blend,
+                rs(R::AlphaTestEnable, 0)
+            ],
+            "the driven value in place of the list's"
+        );
+        let two_sided = table
+            .canonical_to_guest(TWO_SIDED_LIGHTING)
+            .expect("a 5849 slot");
+        let mut device: HashMap<u32, u32> = look
+            .leaves
+            .iter()
+            .map(|s| (u32::from(s.state), s.value))
+            .collect();
+        device.insert(two_sided, 0);
+        let holds =
+            |device: &HashMap<u32, u32>| skip_holds(&look, &|slot| device.get(&slot).copied());
+        assert!(holds(&device));
+        let with = |slot: u8, value: u32| {
+            let mut d = device.clone();
+            d.insert(u32::from(slot), value);
+            d
+        };
+        assert!(
+            !holds(&with(blend.state, 0x00ff_ffff)),
+            "the draw would set the driven value"
+        );
+        assert!(
+            !holds(&with(slot(R::AlphaTestEnable), 1)),
+            "the switch after it would restore AlphaTestEnable"
+        );
+        assert!(
+            !holds(&with(slot(R::ZWriteEnable), 0)),
+            "the draw would set ZWriteEnable"
+        );
+        let mut lit = device.clone();
+        lit.insert(two_sided, 1);
+        assert!(!holds(&lit), "the draw leaves two-sided lighting off");
+        let mut unread = device.clone();
+        unread.remove(&u32::from(slot(R::AlphaBlendEnable)));
+        assert!(!holds(&unread), "a state that does not read");
+    }
+
+    /// A pass that turns depth writes off and its restore list back on is
+    /// skipped over a device that holds them on: the switch after the
+    /// guest's draw would leave them on, as skipping it does.
+    #[test]
+    fn a_placement_whose_restore_list_writes_back_what_it_sets_holds() {
+        use gfx::state::RenderStateType as R;
+        use std::collections::HashMap;
+        use tags::material::{EngineInputs, ResolvedLayer, ResolvedPass};
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let slot = |t| {
+            (0..=255u8)
+                .find(|&s| R::from_guest_index(&table, u32::from(s)) == Some(t))
+                .expect("a 5849 slot")
+        };
+        let rs = |t, value| RenderStateValue {
+            state: slot(t),
+            value,
+        };
+        let mut imp = crate::engine_states::tests::implementation(
+            vec![rs(R::AlphaBlendEnable, 0), rs(R::ZWriteEnable, 0)],
+            0,
+        );
+        imp.restore_states = vec![rs(R::ZWriteEnable, 1)];
+        let material = TagMaterial {
+            shader: TagId(0xe000_0100),
+            template: TagId(0xe000_0101),
+            inputs: EngineInputs::default(),
+            layers: vec![ResolvedLayer {
+                lod: 0,
+                layer: 3,
+                passes: vec![ResolvedPass {
+                    index: 0,
+                    pass: TagId(0xe000_0200),
+                    implementations: vec![imp],
+                }],
+            }],
+        };
+        let mut program = |_: TagId| Some((code(None), vec![0]));
+        let look = decorator_look(&material, 0, 3, 0, &mut program).unwrap();
+        assert_eq!(
+            look.leaves,
+            [rs(R::AlphaBlendEnable, 0), rs(R::ZWriteEnable, 1)],
+            "the restore's value, not the list's"
+        );
+        let two_sided = table
+            .canonical_to_guest(TWO_SIDED_LIGHTING)
+            .expect("a 5849 slot");
+        let device = |z: u32| -> HashMap<u32, u32> {
+            [
+                (u32::from(slot(R::AlphaBlendEnable)), 0),
+                (u32::from(slot(R::ZWriteEnable)), z),
+                (two_sided, 0),
+            ]
+            .into_iter()
+            .collect()
+        };
+        let holds =
+            |device: &HashMap<u32, u32>| skip_holds(&look, &|slot| device.get(&slot).copied());
+        assert!(
+            holds(&device(1)),
+            "depth writes off for the draw, back on after it"
+        );
+        assert!(
+            !holds(&device(0)),
+            "the restore would turn on depth writes the device holds off"
+        );
+    }
+
+    /// A lightmap stage binds the globals' bitmap when it is uniform, as
+    /// an object's does; a bitmap stage its own image.
+    #[test]
+    fn a_lightmap_stage_takes_the_uniform_globals_bitmap() {
+        let mut p = compile(&decorator(None), &stream()).unwrap();
+        let base = TagId(0xe000_0007);
+        p.stages = [
+            Stage::Bitmap {
+                bitmap: base,
+                image: 0,
+            },
+            Stage::Lightmap,
+            Stage::Empty,
+            Stage::Empty,
+        ];
+        p.dims = [Some(TextureDim::D2), Some(TextureDim::D2), None, None];
+        let image = |rgba: Vec<u8>| Image::from_rgba(2, 1, rgba, Vec::new());
+        let grey = image(vec![9, 9, 9, 255, 9, 9, 9, 255]);
+        let varied = image(vec![9, 9, 9, 255, 1, 2, 3, 255]);
+        let bitmap = |id: TagId, n: u32| (id == base && n == 0).then(|| varied.clone());
+        let got = stage_images(&p, &bitmap, Some(&grey)).unwrap();
+        assert_eq!(
+            (got[0].as_ref(), got[1].as_ref(), got[2].as_ref()),
+            (Some(&varied), Some(&grey), None)
+        );
+        assert!(
+            stage_images(&p, &bitmap, Some(&varied))
+                .unwrap_err()
+                .contains("not uniform")
+        );
+        assert!(
+            stage_images(&p, &bitmap, None)
+                .unwrap_err()
+                .contains("did not load")
+        );
+        assert!(
+            stage_images(&p, &|_, _| None, Some(&grey))
+                .unwrap_err()
+                .contains("stage 0 bitmap")
+        );
     }
 }

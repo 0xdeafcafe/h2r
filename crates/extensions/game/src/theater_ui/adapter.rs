@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
-use agent_proto::theater::{Compatibility, CompatibilityState};
+use agent_proto::theater::{Compatibility, CompatibilityState, MonitorLookSource};
 use agent_proto::{CallError, Client};
 use debug_menu::{Call, Rpc};
 use serde::{Deserialize, Serialize};
@@ -59,6 +59,9 @@ pub struct FilmMeta {
     pub image_stamp: String,
     pub compatibility: CompatibilityState,
     pub compatibility_reason: Option<String>,
+    /// Recorded Forge monitor looks this machine draws as the marker. They
+    /// are not reasons: the film plays.
+    pub monitor_looks: Vec<MonitorLookSource>,
     pub saved: bool,
     pub result: Option<String>,
     pub host: Option<String>,
@@ -103,6 +106,17 @@ impl FilmSummary for FilmMeta {
     fn scoreboard(&self) -> &[Player] {
         &self.scoreboard
     }
+}
+
+/// The sentence the Theater bar shows once for a look this machine cannot
+/// draw (`forge::look::film::Unseen::sentence`).
+pub(super) fn monitor_sentence(look: &MonitorLookSource) -> String {
+    forge::look::film::Unseen {
+        seat: look.seat,
+        map: look.map.clone(),
+        reason: look.reason.clone(),
+    }
+    .sentence()
 }
 
 impl FilmMeta {
@@ -190,6 +204,19 @@ impl FilmMeta {
     pub fn apply_compatibility(&mut self, report: Compatibility) {
         self.compatibility = report.state;
         self.compatibility_reason = report.reasons.into_iter().next();
+        self.monitor_looks = report.monitor_looks;
+    }
+
+    /// The detail page's line about monitor looks drawn as markers.
+    pub(super) fn monitor_note(&self) -> Option<String> {
+        let n = self.monitor_looks.len();
+        (n > 0).then(|| {
+            format!(
+                "{n} monitor look{} drawn as marker{}",
+                if n == 1 { "" } else { "s" },
+                if n == 1 { "" } else { "s" },
+            )
+        })
     }
 
     pub(super) fn check_cached(&mut self, dir: &Path, installation: &crate::theater::Installation) {
@@ -665,6 +692,16 @@ pub(super) fn save_playback(recording: &Path, dir: &Path) -> anyhow::Result<()> 
             && error.kind() != std::io::ErrorKind::NotFound
         {
             let _ = fs::remove_file(&target);
+            return Err(error.into());
+        }
+        // The film file travels with the film when there is one.
+        if let Err(error) = fs::hard_link(
+            film::file::beside(recording),
+            film::file::beside(&target),
+        ) && error.kind() != std::io::ErrorKind::NotFound
+        {
+            let _ = fs::remove_file(&target);
+            let _ = fs::remove_file(target.with_extension("h2stats"));
             return Err(error.into());
         }
     }

@@ -77,6 +77,7 @@ pub const BUILD_ENV: &[&str] = &[
     "H2_HOT",
     "H2_OPT_COLD",
     "H2_PASSES",
+    "H2_ACCESS_COUNT",
     "H2_PGO",
 ];
 
@@ -168,6 +169,11 @@ pub struct RunReq {
     /// Driven through the agent API (`h2 lab agent`) until `stop`: the game
     /// never stops by itself, so `frames` can't be set (docs/runtime/lab.md).
     pub serve: bool,
+    /// A benchmark (`h2 lab bench`): its numbers need a quiet machine, so
+    /// the player's consent doesn't offer Start alongside. Absent when
+    /// false, so an older host still reads the request.
+    #[serde(skip_serializing_if = "is_false")]
+    pub bench: bool,
     /// A dedicated System Link host instead of a game window: headless
     /// `h2 serve --system-link --host-light` until `stop`, driven through
     /// `h2 lab agent` like a `serve` run (docs/runtime/lab.md, "Dedicated
@@ -195,23 +201,50 @@ pub struct Dedicated {
     /// [`DEDICATED_MAX_PLAYERS`]). Needs `map`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_players: Option<u8>,
-    /// XNet base UDP port (default [`DEDICATED_BASE_PORT`]); the host uses
-    /// base through base+6.
+    /// XNet base UDP port (default [`LAB_BASE_PORT`]); the host uses base
+    /// through base+6, which may not overlap [`player_ports`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_port: Option<u16>,
 }
 
-/// The XNet base port of a dedicated host: an unconfigured `h2 play`'s, so
-/// a joiner on another Mac sees its System Link broadcasts. Broadcasts go
-/// to the sender's own base, so both ends must share it.
-pub const DEDICATED_BASE_PORT: u16 = 3074;
+/// The XNet base an unconfigured `h2 play` binds
+/// (`live_hle::config::lan_address`): the player's own game on the lab Mac.
+pub const PLAYER_BASE_PORT: u16 = 3074;
+
+/// Ports an XNet game binds from its base: title channels +0, +1, +5, +6,
+/// QoS +2, co-op +4 (`live_hle::NetworkConfig`).
+pub const XNET_PORTS: u16 = 7;
+
+/// The XNet base of every lab game, a dedicated host's and a windowed
+/// run's: past the player's own ports ([`player_ports`]), so a job and the
+/// player's game on the same Mac never bind the same ones. System Link
+/// broadcasts go to the sender's own base, so a joiner on another Mac
+/// starts with `H2_XNET_ADDR=<its LAN IPv4>:3174`.
+pub const LAB_BASE_PORT: u16 = PLAYER_BASE_PORT + 100;
+
+/// The UDP ports an XNet game with base `base` binds.
+pub fn xnet_ports(base: u16) -> std::ops::RangeInclusive<u16> {
+    base..=base.saturating_add(XNET_PORTS - 1)
+}
+
+/// The ports the player's own game binds, which no lab game may take.
+pub fn player_ports() -> std::ops::RangeInclusive<u16> {
+    xnet_ports(PLAYER_BASE_PORT)
+}
+
+/// Whether a lab game at XNet base `base` would bind one of the player's
+/// ports.
+pub fn takes_player_ports(base: u16) -> bool {
+    let (ours, theirs) = (xnet_ports(base), player_ports());
+    ours.start() <= theirs.end() && theirs.start() <= ours.end()
+}
 
 /// A dedicated host's lobby limit when `--max-players` is not given.
 pub const DEDICATED_MAX_PLAYERS: u8 = 8;
 
 impl Dedicated {
     pub fn base_port(&self) -> u16 {
-        self.base_port.unwrap_or(DEDICATED_BASE_PORT)
+        self.base_port.unwrap_or(LAB_BASE_PORT)
     }
 
     /// The `host.lobby.open` parameters, when the job opens a lobby.
@@ -374,6 +407,12 @@ pub enum Request {
     Stop {
         id: String,
     },
+    /// Free the host's disk (`h2 lab clean`): the floor's prune, or with
+    /// `all` everything but a running job's files.
+    Clean {
+        #[serde(default)]
+        all: bool,
+    },
     Runs {
         #[serde(default)]
         limit: Option<usize>,
@@ -448,7 +487,11 @@ pub fn parse(line: &str) -> Result<Request> {
 
 pub fn validate(r: &Request) -> Result<()> {
     match r {
-        Request::Status | Request::Update | Request::Recordings | Request::Runs { .. } => Ok(()),
+        Request::Status
+        | Request::Update
+        | Request::Recordings
+        | Request::Runs { .. }
+        | Request::Clean { .. } => Ok(()),
         Request::Fetch { id } | Request::Mem { id } => check_job_id(id),
         Request::Logs { id, .. } => check_log_id(id),
         Request::SyncBases { branch, commit } | Request::Sync { branch, commit, .. } => {
@@ -703,6 +746,14 @@ fn validate_dedicated(r: &RunReq, d: &Dedicated) -> Result<()> {
         ensure!(
             (1024..=65529).contains(&p),
             "--base-port is 1024 to 65529 (the host uses base through base+6)"
+        );
+        let player = player_ports();
+        ensure!(
+            !takes_player_ports(p),
+            "--base-port {p} takes a port of the player's own game (UDP {}-{}); \
+             pick a base whose seven ports miss them",
+            player.start(),
+            player.end()
         );
     }
     Ok(())
@@ -1032,6 +1083,8 @@ mod tests {
     #[test]
     fn short_requests_parse() {
         assert_eq!(run(r#"{"cmd":"status"}"#).unwrap(), Request::Status);
+        assert_eq!(run(r#"{"cmd":"clean"}"#).unwrap(), Request::Clean { all: false });
+        assert_eq!(run(r#"{"cmd":"clean","all":true}"#).unwrap(), Request::Clean { all: true });
         assert_eq!(
             run(r#"{"cmd":"wait","id":"0003","timeout":2.5}"#).unwrap(),
             Request::Wait {
@@ -1301,7 +1354,7 @@ mod tests {
             panic!()
         };
         let d = r.dedicated.unwrap();
-        assert_eq!(d.base_port(), DEDICATED_BASE_PORT);
+        assert_eq!(d.base_port(), LAB_BASE_PORT);
         assert!(d.lobby().is_none());
         let open = Dedicated {
             map: Some("lockout".into()),
@@ -1348,11 +1401,41 @@ mod tests {
         assert!(refused("", r#"{"map":"lockout","variant":" "}"#).contains("--variant"));
         assert!(refused("", r#"{"base_port":80}"#).contains("--base-port"));
         assert!(refused("", r#"{"base_port":65530}"#).contains("--base-port"));
+        // Bases whose seven ports reach the player's 3074-3080.
+        for base in [3068, 3074, 3080] {
+            let err = refused("", &format!(r#"{{"base_port":{base}}}"#));
+            assert!(
+                err.contains("the player's own game (UDP 3074-3080)"),
+                "{err}"
+            );
+        }
         assert!(refused("", r#"{"socket":"/tmp/x"}"#).contains("unknown field"));
         // The environment is the run allowlist, as for any run.
         assert!(
             refused(r#","env":{"H2_XNET_ADDR":"1.2.3.4:5"}"#, "{}").contains("not a run variable")
         );
+    }
+
+    #[test]
+    fn lab_games_keep_off_the_players_ports() {
+        assert_eq!(player_ports(), 3074..=3080);
+        assert_eq!(xnet_ports(LAB_BASE_PORT), 3174..=3180);
+        assert!(!takes_player_ports(LAB_BASE_PORT));
+        // The nearest bases on either side are allowed; one port closer
+        // reaches the player's range.
+        assert!(!takes_player_ports(3067));
+        assert!(!takes_player_ports(3081));
+        for base in 3068..=3080 {
+            assert!(takes_player_ports(base), "{base}");
+        }
+        assert_eq!(xnet_ports(u16::MAX), u16::MAX..=u16::MAX);
+        // Accepted as the request's base.
+        let Request::Run(r) =
+            run(r#"{"cmd":"run","name":"Join test","dedicated":{"base_port":3081}}"#).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(r.dedicated.unwrap().base_port(), 3081);
     }
 
     /// An ordinary run serializes without the field, so an older host

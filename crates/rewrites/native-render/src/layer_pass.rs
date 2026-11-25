@@ -1,6 +1,8 @@
 //! A layer draw planned from the scene alone (docs/graphics/framescene.md,
 //! slice 4): for each item of a [`frame_scene::LayerPass`] of layers 1, 5,
-//! 7, 8 and 20 (the scene's and the first person's), the material passes
+//! 7, 8 and 20 (the scene's and the first person's), of layer 2
+//! ([`OVERLAY_LAYER`], the scene's and the first person's) and of the
+//! scene's layer 17 ([`BLOOM_LAYER`]), the material passes
 //! the layer draws for it, the implementation of each, the engine inputs
 //! the item's draw evaluates and the values of the material's animated
 //! properties, from the pass's [`LayerInputs`], the item's owner and
@@ -29,28 +31,70 @@
 //!   `0x0045dcc0`) unless its function is periodic (type 3); the range
 //!   input is 0 without a lighting record, else the record's callback's
 //!   (not carried: a ranged function on an object item refuses). The
-//!   function `0x0013b390` ([`Function::evaluate`]), then, unless the
+//!   function `0x0013b390` ([`tags::effects::function::Function::evaluate`]), then, unless the
 //!   function's flags have a bit of `0xf0`, the result clamped to 0..1
 //!   and mapped onto the function's range. A property driven by an object
 //!   function calls the lighting record's callbacks and refuses.
 //!
 //! The stage applies the values of pixel- and vertex-constant animations;
-//! a bitmap, render-state or stage-state animation refuses
+//! a bitmap frame, render-state or stage-state animation refuses
 //! ([`LayerRefusal::Animation`]).
+
+mod animation;
+mod pixel;
+mod texture_transform;
+
+pub use animation::{PassAnimation, property_value, render_time, sample_constants};
 
 use std::ops::Range;
 use std::sync::Arc;
 
 use frame_scene::{FrameScene, LayerInputs, LayerItem, LayerOwner, LayerPass, Lighting};
-use tags::effects::function::{Function, FunctionType};
 use tags::material::{AnimationKind, EngineInputs, InputReads, Material, ResolvedImplementation};
 use tags::shader::AnimatedProperty;
 
 use crate::object_lighting::{LIGHTING_SCALARS, LIGHTING_VECTORS, ShaderValues, scalar_input, vector_input};
 
 /// The layers the stage plans: the scene's 1, 5, 7, 8 and 20 and the
-/// first person's 1, 7 and 8.
+/// first person's 1, 7, 8 and 20.
 pub const LAYERS: [u8; 5] = [1, 5, 7, 8, 20];
+
+/// The scene's layer 17 (S: bloom), drawn late in `render_scene_passes`
+/// (the layer draw at `0x0002c306`, returning `0x0002c30b`) when the
+/// caller's colour byte is set, the colour byte of `render_screen_effects`
+/// (docs/graphics/native-post-hud.md). Its begin (`0x00044370`) draws it
+/// when `[0x004ba024]` is set and the scene list's mask has it, binds the
+/// view's target (the descriptor at `0x0043fa1c` gives -1), clears the
+/// channels of the descriptor's flags `0x10` first unless `[0x00485a75]`
+/// or `[0x00485a76]` is set, sets the byte `[0x00485a74]` the colour
+/// pass's combiners read (`engine::glow::COMBINER_BYTE`), and stencil mode
+/// 0. Planned like [`LAYERS`]: the scene's caller only.
+pub const BLOOM_LAYER: u8 = 17;
+
+/// Layer 2, the late overlay: the scene draws it after the dynamic lights
+/// and the decals of mode 1 (the layer draw at `0x0002c05b`, returning
+/// `0x0002c060`), the first person after its layer 7 when its begin says
+/// so (`0x00040284`, returning `0x00040289`). The alternate view draws it at `0x0002bda3`. All three take their setup from
+/// the general layer begin `0x00044370`, as layers 5, 7, 8 and 20 do; its
+/// items draw under the device's stencil ([`item_stencil`]). Its passes
+/// multiply the destination (S: the materials' blend, not the layer's).
+/// Planned like [`LAYERS`].
+pub const OVERLAY_LAYER: u8 = 2;
+
+/// The layers planned besides [`LAYERS`]: [`OVERLAY_LAYER`] and
+/// [`BLOOM_LAYER`].
+pub const OTHER_LAYERS: [u8; 2] = [OVERLAY_LAYER, BLOOM_LAYER];
+
+/// Every layer the stage plans, [`LAYERS`] then [`OTHER_LAYERS`]: the
+/// layers the world's load compiles (`layers_load`).
+pub fn planned_layers() -> impl Iterator<Item = u8> {
+    LAYERS.into_iter().chain(OTHER_LAYERS)
+}
+
+/// Whether the stage plans `layer`: one of [`LAYERS`] or [`OTHER_LAYERS`].
+pub fn planned(layer: u8) -> bool {
+    LAYERS.contains(&layer) || OTHER_LAYERS.contains(&layer)
+}
 
 /// The scalar input the shader instance gives (`shad +0x44`).
 const SHADER_SCALARS: u64 = 1 << 21;
@@ -76,24 +120,23 @@ pub struct Instance {
     pub values: ShaderValues,
 }
 
+/// A shader instance's animated properties (`shad +0x3c`, its first
+/// postprocess block's): what its passes' animated constants read. Empty
+/// when the instance does not read or animates nothing.
+pub fn instance_properties(lib: &tags::material::ShaderLibrary, shader: map::TagId) -> Vec<AnimatedProperty> {
+    lib.shader(shader)
+        .ok()
+        .and_then(|instance| instance.postprocess.into_iter().next())
+        .map(|p| p.properties)
+        .unwrap_or_default()
+}
+
 /// One pass of an item's draw: its index in the layer and the
 /// implementation drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PassDraw {
     pub pass: usize,
     pub implementation: usize,
-}
-
-/// The value of one animated target's property components, in its
-/// properties' order.
-#[derive(Clone, Debug, PartialEq)]
-pub struct AnimatedValue {
-    pub pass: usize,
-    /// Index into the implementation's `animated`.
-    pub target: usize,
-    pub kind: AnimationKind,
-    /// `(component, value)` per property reference.
-    pub values: Vec<(i16, f32)>,
 }
 
 /// One item's draw, planned.
@@ -106,11 +149,12 @@ pub struct LayerDraw {
     pub part: u8,
     pub shader: u32,
     pub layer: u8,
-    /// The material resolved with [`Self::inputs`].
+    /// The baseline resolved with [`Self::inputs`]. Use [`Self::implementation`] for the draw.
     pub material: Arc<Material>,
     pub passes: Vec<PassDraw>,
     pub inputs: EngineInputs,
-    pub animation: Vec<AnimatedValue>,
+    /// Only passes with animated constants need a private register image.
+    sampled: Vec<(PassDraw, ResolvedImplementation)>,
     /// An object item's palette rows (into [`FrameScene::rows`]).
     pub rows: Range<u32>,
 }
@@ -118,12 +162,8 @@ pub struct LayerDraw {
 impl LayerDraw {
     /// The implementation drawn for `pass`.
     pub fn implementation(&self, pass: &PassDraw) -> Option<&ResolvedImplementation> {
-        self.material
-            .layers
-            .iter()
-            .find(|l| l.lod == 0 && l.layer == usize::from(self.layer))
-            .and_then(|l| l.passes.get(pass.pass))
-            .and_then(|p| p.implementations.get(pass.implementation))
+        self.sampled.iter().find(|(p, _)| p == pass).map(|(_, imp)| imp)
+            .or_else(|| implementation(&self.material, self.layer, pass))
     }
 }
 
@@ -151,19 +191,39 @@ pub enum LayerRefusal {
     Implementation { pass: usize, count: usize, wanted: usize },
     /// A pass reads an input the scene does not give.
     Input { pass: usize, input: Input },
-    /// A pass animates a bitmap, a render state or a stage state.
+    /// A binding cannot be applied, e.g. an animated frame or pipeline state.
     Animation { pass: usize, kind: AnimationKind },
+    /// A vertex binding needs texture-slot fields the pass does not supply.
+    TextureTransform { pass: usize, slot: u8, mode: u8 },
     /// An animated property is driven by an object function, or is ranged
     /// on an object item: its inputs are the lighting record's callbacks.
     ObjectAnimation { property: usize },
     /// An animated target names a property the instance does not have, or
     /// a function that does not parse.
     Property { property: usize },
+    /// A periodic curve needs a wave table unavailable to the native evaluator.
+    Wave { property: usize, wave: u8 },
+    /// A later object can inherit a structure pass's c[18] upload.
+    MaterialConstant18,
     /// The render time did not read.
     NoTime,
 }
 
 impl LayerRefusal {
+    /// Whether the cause is the sampling of an animated constant: what
+    /// `native_shader_animation_*_refused` counts.
+    pub fn is_animation(&self) -> bool {
+        matches!(
+            self,
+            LayerRefusal::Animation { .. }
+                | LayerRefusal::TextureTransform { .. }
+                | LayerRefusal::ObjectAnimation { .. }
+                | LayerRefusal::Property { .. }
+                | LayerRefusal::Wave { .. }
+                | LayerRefusal::NoTime
+        )
+    }
+
     /// The cause's name, as `render.scene` counts it.
     pub fn name(&self) -> &'static str {
         match self {
@@ -176,6 +236,9 @@ impl LayerRefusal {
             LayerRefusal::Animation { .. } => "animation",
             LayerRefusal::ObjectAnimation { .. } => "object_animation",
             LayerRefusal::Property { .. } => "property",
+            LayerRefusal::TextureTransform { .. } => "texture_transform",
+            LayerRefusal::Wave { .. } => "wave",
+            LayerRefusal::MaterialConstant18 => "material_c18",
             LayerRefusal::NoTime => "time",
         }
     }
@@ -192,18 +255,42 @@ pub struct LayerPlan {
 /// Plans `pass` of `scene`: every item's draw, or why not.
 pub fn plan(scene: &FrameScene, pass: &LayerPass, materials: &mut dyn Materials) -> LayerPlan {
     let mut out = LayerPlan::default();
+    let mut last_inheritor = None;
     for item in scene.items_of(pass) {
-        match plan_item(pass, item, materials) {
+        let result = plan_item(pass, item, materials);
+        // An unresolved object, or a selected pass without its own row,
+        // can depend on an earlier material's upload.
+        if matches!(pass.layer, 1 | BLOOM_LAYER) && matches!(item.owner, LayerOwner::Object(_))
+            && !result.as_ref().is_ok_and(|d| d.passes.iter().all(|p| d.implementation(p).is_some_and(writes_material_c18)))
+        {
+            last_inheritor = Some(item.slot);
+        }
+        match result {
             Ok(draw) => out.draws.push(draw),
             Err(r) => out.refused.push((item.slot, r)),
         }
     }
+    if let Some(last) = last_inheritor {
+        out.draws.retain(|draw| {
+            if draw.slot < last && !matches!(draw.owner, LayerOwner::Object(_))
+                && draw.passes.iter().any(|p| draw.implementation(p).is_some_and(writes_material_c18))
+            {
+                out.refused.push((draw.slot, LayerRefusal::MaterialConstant18));
+                return false;
+            }
+            true
+        });
+    }
     out
+}
+
+pub(crate) fn writes_material_c18(imp: &ResolvedImplementation) -> bool {
+    imp.vertex_constants.iter().any(|r| r.index == 18 && r.written != 0)
 }
 
 /// One item's draw.
 pub fn plan_item(pass: &LayerPass, item: &LayerItem, materials: &mut dyn Materials) -> Result<LayerDraw, LayerRefusal> {
-    if !LAYERS.contains(&pass.layer) {
+    if !planned(pass.layer) {
         return Err(LayerRefusal::Layer(pass.layer));
     }
     let shader = item.key.shader;
@@ -226,21 +313,24 @@ pub fn plan_item(pass: &LayerPass, item: &LayerItem, materials: &mut dyn Materia
     }
     let material = if per_draw { materials.material(shader, Some(&inputs)).map_err(LayerRefusal::Material)? } else { own };
     let passes = passes_of(&material, pass.layer, item.key.implementation)?;
-    let mut animation = Vec::new();
+    let mut sampled = Vec::new();
     for p in &passes {
         let imp = implementation(&material, pass.layer, p).expect("planned from this material");
-        for (target, a) in imp.animated.iter().enumerate() {
-            if !matches!(a.kind, AnimationKind::PixelConstant | AnimationKind::VertexConstant) {
-                return Err(LayerRefusal::Animation { pass: p.pass, kind: a.kind });
+        if !imp.animated.is_empty() {
+            match sample_constants(imp, &instance.properties, pass.inputs.time, object, p.pass) {
+                Ok(at_time) => sampled.push((*p, at_time)),
+                Err(r) => {
+                    if !object {
+                        timeline::native::ShaderAnimation::LayersRefused.count(1);
+                    }
+                    return Err(r);
+                }
             }
-            let mut values = Vec::with_capacity(a.properties.len());
-            for r in &a.properties {
-                let index = usize::try_from(r.property).map_err(|_| LayerRefusal::Property { property: usize::MAX })?;
-                let property = instance.properties.get(index).ok_or(LayerRefusal::Property { property: index })?;
-                values.push((r.component, property_value(property, index, pass.inputs.time, object)?));
-            }
-            animation.push(AnimatedValue { pass: p.pass, target, kind: a.kind, values });
         }
+    }
+    // An object's item draws through the object passes, which count it.
+    if !object && !sampled.is_empty() {
+        timeline::native::ShaderAnimation::LayersDrawn.count(sampled.len() as u64);
     }
     Ok(LayerDraw {
         slot: item.slot,
@@ -252,7 +342,7 @@ pub fn plan_item(pass: &LayerPass, item: &LayerItem, materials: &mut dyn Materia
         material,
         passes,
         inputs,
-        animation,
+        sampled,
         rows: item.rows.clone(),
     })
 }
@@ -348,32 +438,6 @@ fn bits(mut mask: u64) -> impl Iterator<Item = u32> {
     })
 }
 
-/// An animated property's value at render time `time` (`0x00017550`
-/// through `0x0001b230`), or why not. `object`: the item has a lighting
-/// record, whose callbacks give the range input.
-pub fn property_value(property: &AnimatedProperty, index: usize, time: Option<f64>, object: bool) -> Result<f32, LayerRefusal> {
-    if property.input != 0 {
-        return Err(LayerRefusal::ObjectAnimation { property: index });
-    }
-    let function = Function::parse(&property.function).map_err(|_| LayerRefusal::Property { property: index })?;
-    if object && function.is_ranged() {
-        return Err(LayerRefusal::ObjectAnimation { property: index });
-    }
-    let time = time.ok_or(LayerRefusal::NoTime)?;
-    let period = f32::from_bits(property.input_b);
-    let mut x = (time / f64::from(period)) as f32;
-    if function.kind != FunctionType::Periodic {
-        x = (f64::from(x) % 1.0) as f32;
-    }
-    let v = function.evaluate(x, 0.0);
-    if function.is_raw_output() {
-        return Ok(v);
-    }
-    let v = v.clamp(0.0, 1.0);
-    let [lo, hi] = function.range;
-    Ok((hi - lo) * v + lo)
-}
-
 /// One structure item of a layer draw's list as the skip sees it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SkipItem {
@@ -385,6 +449,24 @@ pub struct SkipItem {
     pub part: u8,
     /// The item's shader datum (`+8`).
     pub shader: u32,
+}
+
+/// One item of a layer draw's list as the skip sees it: a structure
+/// item, or an object's by its slot and shader datum (what the scene's
+/// [`LayerItem`] for it holds: the plan decides it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrefixItem {
+    World(SkipItem),
+    Object { slot: u32, shader: u32 },
+}
+
+impl PrefixItem {
+    pub fn slot(self) -> u32 {
+        match self {
+            PrefixItem::World(i) => i.slot,
+            PrefixItem::Object { slot, .. } => slot,
+        }
+    }
 }
 
 /// Clears `layer`'s bit on the longest run of the current list's items,
@@ -400,6 +482,30 @@ pub fn clear_prefix(
     layer: u32,
     native: &dyn Fn(SkipItem) -> bool,
 ) -> Option<(Vec<SkipItem>, crate::skip::Cleared)> {
+    let (drawn, cleared) = clear_layer_prefix(mem, layer, &|item| match item {
+        PrefixItem::World(i) => native(i),
+        PrefixItem::Object { .. } => false,
+    })?;
+    let drawn = drawn
+        .into_iter()
+        .map(|i| match i {
+            PrefixItem::World(i) => i,
+            PrefixItem::Object { .. } => unreachable!("refused above"),
+        })
+        .collect();
+    Some((drawn, cleared))
+}
+
+/// [`clear_prefix`] over structure and object items alike: the run from
+/// the list's first item of the layer that are geometry items `native`
+/// accepts, a structure item's with its owner and part, an object's by
+/// its slot and shader. The walk stops at the first item of the layer it
+/// refuses or that is another build.
+pub fn clear_layer_prefix(
+    mem: &mut dyn crate::camera::GuestWrite,
+    layer: u32,
+    native: &dyn Fn(PrefixItem) -> bool,
+) -> Option<(Vec<PrefixItem>, crate::skip::Cleared)> {
     use crate::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, MAX_ITEMS, RENDER_RECORD_SIZE, RENDER_RECORDS};
     use crate::world::Owner;
     if layer >= 32 || mem.read_u32(CURRENT_LAYER)? != layer {
@@ -433,16 +539,18 @@ pub fn clear_prefix(
             break;
         }
         let base = RENDER_RECORDS + RENDER_RECORD_SIZE * record as u32;
-        if mem.read_u32(base + 4)? != u32::MAX {
-            break; // an object's
-        }
-        let packed = mem.read_u32(base + 0xc)?;
-        let owner = if mem.read_u32(base)? & (1 << 12) == 0 {
-            Owner::Cluster((packed >> 9) & 0x1ff)
+        let shader = mem.read_u32(item + 8)?;
+        let found = if mem.read_u32(base + 4)? != u32::MAX {
+            PrefixItem::Object { slot: i, shader }
         } else {
-            Owner::Instance((packed >> 18) & 0x7ff)
+            let packed = mem.read_u32(base + 0xc)?;
+            let owner = if mem.read_u32(base)? & (1 << 12) == 0 {
+                Owner::Cluster((packed >> 9) & 0x1ff)
+            } else {
+                Owner::Instance((packed >> 18) & 0x7ff)
+            };
+            PrefixItem::World(SkipItem { slot: i, owner, part: arg as u8, shader })
         };
-        let found = SkipItem { slot: i, owner, part: arg as u8, shader: mem.read_u32(item + 8)? };
         if !native(found) {
             break;
         }
@@ -458,6 +566,122 @@ pub fn clear_prefix(
     Some((drawn, cleared))
 }
 
+/// The stencil a world layer's items draw under, and whether the device
+/// must already hold stencil mode 1 for the guest's draws to be skipped
+/// state-neutrally: the geometry draw's prologue (`0x0004d640`) sets a
+/// stencil mode only in layers 1 and 3, mode 0 when the stencil-off flags
+/// are set and mode 2 for a marked object's record, and its epilogue
+/// (`0x0004d720`) leaves mode 1 after either. So in layer 1 with the
+/// stencil off the items draw with the stencil disabled and the device
+/// must hold mode 1; with a marked item the device must hold mode 1 (the
+/// marked item's draw takes mode 2, `object_state::mark`). Otherwise, and
+/// in every other layer, the items draw under the device's stencil.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ItemStencil {
+    /// The stencil the unmarked items draw with.
+    pub stencil: gfx::state::StencilState,
+    /// The device must hold mode 1 (`object_state::structure_stencil(0)`).
+    pub needs_mode_1: bool,
+}
+
+/// [`ItemStencil`] for layer `layer`, the pass's `stencil_off`, the
+/// device's stencil at the layer call, and whether an item the pass
+/// takes is marked.
+pub fn item_stencil(layer: u8, stencil_off: bool, device: gfx::state::StencilState, marked: bool) -> ItemStencil {
+    if layer != 1 && layer != 3 {
+        return ItemStencil { stencil: device, needs_mode_1: false };
+    }
+    if stencil_off {
+        return ItemStencil { stencil: gfx::state::StencilState { enable: false, ..device }, needs_mode_1: true };
+    }
+    ItemStencil { stencil: device, needs_mode_1: marked }
+}
+
+/// Whether skipping the guest's draw of a pass with implementation `imp`
+/// leaves the device as drawing it would (`read`: the device's render
+/// state at a guest slot, at the layer call), as layer 3's walk requires
+/// of the parts it skips (docs/graphics/framescene.md, slice 4, "The
+/// stage"; **Code**, `h2 disasm`, docs/graphics/layer-draw.md):
+///
+/// - the shader draw `0x00016b90` compares the draw's implementation and
+///   template with the cached ones (`[0x00485b48 + 0x24]`, `+0x20`). On
+///   a change it restores the cached implementation's restore list
+///   (`0x00018900` on its `+0x11c`, when one is cached), caches the new
+///   one and sets its render-state list (`0x00018900` on its `+2`), with
+///   no comparison against the device. Draws of the cached
+///   implementation set nothing more;
+/// - every draw then sets the engine-driven values (`0x0001a170`, from
+///   the inputs `0x0001ae70` evaluates);
+/// - the layer setup `0x00016b10` restores the cached implementation's
+///   list and clears the cache at the next layer draw (and at each
+///   layer's first shader begin, `0x0001bbf0`).
+///
+/// The layer draw runs the setup before any item, so a skipped run from
+/// the list's first begins on a cleared cache, and the first item the
+/// guest keeps begins on one too: its draw switches, and sets its own
+/// list. Skipped, the run leaves the device unchanged. Drawn, each
+/// implementation's list is restored before another's is set, and the
+/// last one's when the first kept item's draw switches or the next layer
+/// begins; a kept item of the same implementation switches nothing, but
+/// sets the same list and draws over it either way. So both agree exactly
+/// when every state of the restore list already holds and every state of
+/// the render-state list either already holds or is one the restore list
+/// writes back. A state that does not read refuses. A pass with
+/// engine-driven render values the restore list does not write back sets
+/// values decided per draw, and refuses here ([`skip_holds_with`] takes
+/// the draw's inputs). The first shader begin's fixed states and its
+/// cleared texture caches are redone by the first shader begin the guest
+/// keeps (the byte `0x004670bc` stays set), or by the next layer draw's.
+pub fn skip_holds(imp: &ResolvedImplementation, read: &dyn Fn(u32) -> Option<u32>) -> bool {
+    skip_holds_with(imp, None, read)
+}
+
+/// [`skip_holds`] for a draw whose engine inputs are `inputs`: the draw
+/// also sets each engine-driven render value (`0x0001a170`, after the
+/// static list), so each the restore list does not write back must hold
+/// too, computed over the value the static list leaves (its own where it
+/// sets the state, else the device's: `EngineState::value`). A value
+/// whose source slot is not one of the inputs `0x0001ae70` evaluates (the
+/// implementation's input masks, `ResolvedImplementation::input_reads`)
+/// is whatever the context last held, and refuses, as does a pass whose
+/// inputs change per draw (`per_draw_inputs`: `inputs` would not be the
+/// guest's) and any such pass without `inputs`.
+pub fn skip_holds_with(imp: &ResolvedImplementation, inputs: Option<&EngineInputs>, read: &dyn Fn(u32) -> Option<u32>) -> bool {
+    if !imp.restore_states.iter().all(|s| read(u32::from(s.state)) == Some(s.value)) {
+        return false;
+    }
+    let restored = |state: u8| imp.restore_states.iter().any(|r| r.state == state);
+    let leaves = |s: &tags::shader::RenderStateValue| {
+        let held = read(u32::from(s.state));
+        held.is_some() && (held == Some(s.value) || restored(s.state))
+    };
+    if !imp.render_states.iter().all(leaves) {
+        return false;
+    }
+    if imp.engine_render_states.is_empty() {
+        return true;
+    }
+    let Some((render, _)) = tags::material::engine_states(imp) else {
+        return false;
+    };
+    let mut kept = render.iter().filter(|s| !restored(s.state)).peekable();
+    if kept.peek().is_none() {
+        return render.iter().all(|s| read(u32::from(s.state)).is_some());
+    }
+    let Some(inputs) = inputs.filter(|_| !imp.per_draw_inputs) else {
+        return false;
+    };
+    let evaluated = |s: &tags::material::EngineState| match s.source {
+        tags::material::EngineStateSource::Scalar(n) => n < 64 && imp.input_reads.scalars & (1u64 << n) != 0,
+        tags::material::EngineStateSource::Colour(n) => n < 64 && imp.input_reads.vectors & (1u64 << n) != 0,
+    };
+    kept.all(|s| {
+        let held = read(u32::from(s.state));
+        let base = imp.render_states.iter().rev().find(|r| r.state == s.state).map(|r| r.value).or(held);
+        evaluated(s) && held.is_some() && base.and_then(|b| s.value(inputs, b)) == held
+    })
+}
+
 /// The world's owner of a layer item, `None` for an object's.
 pub fn world_owner(owner: LayerOwner) -> Option<crate::world::Owner> {
     match owner {
@@ -467,15 +691,8 @@ pub fn world_owner(owner: LayerOwner) -> Option<crate::world::Owner> {
     }
 }
 
-/// Whether a planned draw is static: the material as resolved at the load
-/// (no input read per draw) and no animation. Only these draw with the
-/// programs compiled at the load (`crate::fog_gpu::FogSet`).
-pub fn is_static(draw: &LayerDraw) -> bool {
-    draw.animation.is_empty() && draw.passes.iter().all(|p| draw.implementation(p).is_some_and(|i| !i.per_draw_inputs))
-}
-
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use frame_scene::{
         Defaults, InstanceKey, ItemKey, LIGHTING_WORDS, RenderCamera, SceneBuilder, SceneId, Stamp, ViewKey, ViewKind,
@@ -487,7 +704,7 @@ mod tests {
 
     const SHADER: u32 = 0xe000_0040;
 
-    fn implementation(index: usize, reads: InputReads, animated: Vec<AnimatedTarget>) -> ResolvedImplementation {
+    pub(crate) fn implementation(index: usize, reads: InputReads, animated: Vec<AnimatedTarget>) -> ResolvedImplementation {
         ResolvedImplementation {
             index,
             vertex_shader: Some(TagId(0xe000_0002)),
@@ -597,7 +814,10 @@ mod tests {
     }
 
     fn item(owner: LayerOwner, implementation: usize, lighting: Option<Lighting>) -> LayerItem {
-        LayerItem { slot: 4, key: key(implementation), owner, model: u32::MAX, rows: 0..0, lighting }
+        LayerItem {
+            slot: 4, key: key(implementation), owner, model: u32::MAX, rows: 0..0, lighting,
+            flags: frame_scene::PartFlags::NONE, subparts: None, refusal: None, prt: None,
+        }
     }
 
     #[test]
@@ -661,7 +881,7 @@ mod tests {
         assert_eq!(r, LayerRefusal::Input { pass: 0, input: Input::Scalar(37) }, "the root value needs a lighting");
     }
 
-    fn identity(range: [f32; 2], flags: u8) -> Vec<u8> {
+    pub(crate) fn identity(range: [f32; 2], flags: u8) -> Vec<u8> {
         let mut b = vec![0u8, flags, 0, 0];
         b.extend(range[0].to_le_bytes());
         b.extend(range[1].to_le_bytes());
@@ -669,7 +889,7 @@ mod tests {
         b
     }
 
-    fn timed(period: f32, function: Vec<u8>) -> AnimatedProperty {
+    pub(crate) fn timed(period: f32, function: Vec<u8>) -> AnimatedProperty {
         AnimatedProperty { input: 0, input_a: 0, input_b: period.to_bits(), function }
     }
 
@@ -690,9 +910,10 @@ mod tests {
         assert_eq!(property_value(&bad, 2, Some(10.0), false), Err(LayerRefusal::Property { property: 2 }));
     }
 
-    fn animated(kind: AnimationKind, refs: &[(i16, i16)]) -> AnimatedTarget {
+    pub(crate) fn animated(kind: AnimationKind, refs: &[(i16, i16)]) -> AnimatedTarget {
         AnimatedTarget {
             kind,
+            pixel_register: (kind == AnimationKind::PixelConstant).then_some((false, 0)),
             binding: AnimationBinding { target: 0, b1: 0, b2: 0, properties: 0 },
             properties: refs.iter().map(|&(property, component)| PropertyRef { property, component }).collect(),
         }
@@ -700,13 +921,22 @@ mod tests {
 
     #[test]
     fn constant_animations_take_their_values_and_other_kinds_are_named() {
-        let a = animated(AnimationKind::VertexConstant, &[(0, 0), (1, 2)]);
+        // Only the first reference feeds a direct constant. The register and
+        // component come entirely from the target word (c[18].z here).
+        let mut a = animated(AnimationKind::VertexConstant, &[(0, 3), (99, 2)]);
+        a.binding.target = 0x50;
+        a.binding.b2 = 0xff;
         let m = material(8, vec![vec![implementation(0, InputReads::default(), vec![a])]], own_inputs());
         let mut lib = library(m);
-        lib.instance.properties = vec![timed(4.0, identity([0.0, 2.0], 0)), timed(10.0, identity([0.0, 1.0], 0))];
-        let d = plan_item(&pass(8, view_inputs()), &item(LayerOwner::Cluster(1), 0, None), &mut lib).unwrap();
-        assert_eq!(d.animation.len(), 1);
-        assert_eq!(d.animation[0].values, [(0, 1.0), (2, 0.0)], "2.5 wraps to 0.5 of 0..2; 1.0 wraps to 0");
+        lib.instance.properties = vec![timed(4.0, identity([0.0, 2.0], 0))];
+        let item0 = item(LayerOwner::Cluster(1), 0, None);
+        for (seconds, expected) in [(10., 1.), (11., 1.5), (8., 0.)] {
+            let mut pass = pass(8, view_inputs());
+            pass.inputs.time = Some(seconds);
+            let d = plan_item(&pass, &item0, &mut lib).unwrap();
+            assert_eq!(d.implementation(&d.passes[0]).unwrap().vertex_constants[0].value, [0., 0., expected, 0.]);
+            assert_eq!(d.material.layers[0].passes[0].implementations[0].vertex_constants[0].value, [0.; 4]);
+        }
         let b = animated(AnimationKind::Bitmap, &[(0, 0)]);
         let m = material(8, vec![vec![implementation(0, InputReads::default(), vec![b])]], own_inputs());
         let mut lib = library(m);
@@ -717,6 +947,76 @@ mod tests {
         let m = material(8, vec![vec![implementation(0, InputReads::default(), vec![c])]], own_inputs());
         let r = plan_item(&pass(8, view_inputs()), &item(LayerOwner::Cluster(1), 0, None), &mut library(m)).unwrap_err();
         assert_eq!(r, LayerRefusal::Property { property: 5 }, "the instance has no property 5");
+    }
+
+    /// `c[18].z` over 0..2 on a 4 s period.
+    pub(crate) fn animated_z() -> (AnimatedTarget, Vec<AnimatedProperty>) {
+        let mut a = animated(AnimationKind::VertexConstant, &[(0, 0)]);
+        a.binding.target = 0x50;
+        (a, vec![timed(4.0, identity([0.0, 2.0], 0))])
+    }
+
+    #[test]
+    fn a_pass_animation_compiles_at_clock_zero_and_samples_each_draws_clock() {
+        let still = implementation(0, InputReads::default(), Vec::new());
+        let (base, none) = PassAnimation::baseline(&still, &[], false, 0).unwrap();
+        assert!(none.is_none(), "nothing animates");
+        assert_eq!(base, still);
+
+        let (target, props) = animated_z();
+        let imp = implementation(0, InputReads::default(), vec![target]);
+        let (base, animation) = PassAnimation::baseline(&imp, &props, false, 0).unwrap();
+        assert!(base.animated.is_empty(), "compiled without its targets");
+        assert_eq!(base.vertex_constants[0].value, [0.0; 4], "clock 0");
+        let animation = animation.unwrap();
+        let at = animation.sample(Some(11.0)).unwrap();
+        let v = at.vertex(&shaders::vsh::VertexUniforms::default());
+        assert_eq!(v.constants[18][2], 1.5, "11 s over 4 s wraps to 0.75 of 0..2");
+        assert_eq!(animation.sample(None).unwrap_err(), LayerRefusal::NoTime);
+        assert!(LayerRefusal::NoTime.is_animation() && !LayerRefusal::NoPass.is_animation());
+
+        // Without the instance's property the pass does not compile.
+        let r = PassAnimation::baseline(&imp, &[], false, 0).unwrap_err();
+        assert_eq!(r, LayerRefusal::Property { property: 0 });
+        // A ranged curve refuses on an object only.
+        let mut ranged = props.clone();
+        ranged[0].function[1] = 1;
+        assert!(PassAnimation::baseline(&imp, &ranged, false, 0).is_ok());
+        assert_eq!(
+            PassAnimation::baseline(&imp, &ranged, true, 0).unwrap_err(),
+            LayerRefusal::ObjectAnimation { property: 0 }
+        );
+    }
+
+    #[test]
+    fn colour_and_scalar_bindings_share_a_default_and_preserve_each_others_lanes() {
+        let mut rgb = animated(AnimationKind::VertexConstant, &[(0, 99)]);
+        rgb.binding.target = (4 << 5) | 9;
+        let mut alpha = animated(AnimationKind::VertexConstant, &[(1, 99)]);
+        alpha.binding.target = (3 << 5) | 9;
+        let imp = implementation(0, InputReads::default(), vec![alpha, rgb]);
+        let mut palette = identity([f32::from_bits(0xff00_8000), 0.], 0x20);
+        palette[16..20].copy_from_slice(&0xff80_0080u32.to_le_bytes());
+        let props = [timed(2., palette), timed(2., identity([2., 8.], 0))];
+        let out = sample_constants(&imp, &props, Some(1.), false, 0).unwrap();
+        let reg = out.vertex_defaults[0];
+        assert_eq!((reg.index, reg.written), (9, 15));
+        assert_eq!(reg.value, [64.0 / 255.0, 64.0 / 255.0, 64.0 / 255.0, 5.0]);
+    }
+
+    #[test]
+    fn transform_binding_uses_the_bitmap_slots_fields_without_sampling_its_own_property() {
+        let mut slot = animated(AnimationKind::Bitmap, &[(0, 3), (1, 6)]);
+        slot.binding.target = 3;
+        let mut vertex = animated(AnimationKind::VertexConstant, &[(9, 0)]);
+        let word: u16 = 4 | 16 | (20 << 5) | (3 << 10);
+        [vertex.binding.target, vertex.binding.b1] = word.to_le_bytes();
+        let props = [timed(2., identity([3., 5.], 0)), timed(2., identity([8., 12.], 0))];
+        let imp = implementation(0, InputReads::default(), vec![slot, vertex]);
+        let out = sample_constants(&imp, &props, Some(1.), false, 0).unwrap();
+        let reg = out.vertex_constants.iter().find(|r| r.index == 22).unwrap();
+        assert_eq!(reg.value, [0., 0., 4., 10.]);
+        assert_eq!(reg.written, 15);
     }
 
     #[test]
@@ -765,6 +1065,176 @@ mod tests {
     }
 
     #[test]
+    fn the_skip_takes_object_items_the_plan_drew_in_the_same_run() {
+        use crate::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, RENDER_RECORD_SIZE, RENDER_RECORDS};
+        use crate::world::Owner;
+        use scene_extract::GuestRead;
+        use scene_extract::testing::Mem;
+        const LIST: u32 = 0x0060_0000;
+        const ITEMS: u32 = 0x0061_0000;
+        let mut m = Mem::default();
+        m.w(CURRENT_LAYER, 7);
+        m.w(CURRENT_LIST, LIST);
+        m.w(LIST + 4, 4);
+        m.w(LIST + 0xc, 0);
+        m.w(LIST + 0x14, ITEMS);
+        // Record 1 cluster 7, records 2 and 3 objects'.
+        for (r, model, packed) in [(1, u32::MAX, 7 << 9), (2, 0xe100_0001, 0), (3, 0xe100_0002, 0)] {
+            let base = RENDER_RECORDS + RENDER_RECORD_SIZE * r;
+            m.w(base, 0);
+            m.w(base + 4, model);
+            m.w(base + 0xc, packed);
+        }
+        for (i, record) in [(0u32, 1u32), (1, 2), (2, 1), (3, 3)] {
+            let at = ITEMS + ITEM_SIZE * i;
+            m.w(at, GEOMETRY_BUILD);
+            m.w(at + 8, 0xe000_0010 + i);
+            m.w(at + 0xc, record << 8);
+            m.w(at + 0x10, 1 << 7);
+        }
+        // The plan drew the object item at slot 1, not the one at 3.
+        let (drawn, cleared) = clear_layer_prefix(&mut m, 7, &|i| match i {
+            PrefixItem::World(_) => true,
+            PrefixItem::Object { slot, shader } => slot == 1 && shader == 0xe000_0011,
+        })
+        .unwrap();
+        assert_eq!(drawn.iter().map(|i| i.slot()).collect::<Vec<_>>(), [0, 1, 2], "the object between the structure's");
+        assert_eq!(drawn[1], PrefixItem::Object { slot: 1, shader: 0xe000_0011 });
+        assert!(matches!(drawn[2], PrefixItem::World(SkipItem { owner: Owner::Cluster(7), .. })));
+        assert_eq!(cleared.items.len(), 3);
+        assert_eq!(m.read_u32(ITEMS + 3 * ITEM_SIZE + 0x10), Some(1 << 7), "the refused object keeps its draw");
+        // The structure-only skip stops at the object.
+        for i in 0..4 {
+            m.w(ITEMS + ITEM_SIZE * i + 0x10, 1 << 7);
+        }
+        let (drawn, _) = clear_prefix(&mut m, 7, &|_| true).unwrap();
+        assert_eq!(drawn.len(), 1);
+    }
+
+    #[test]
+    fn a_skipped_pass_holds_when_what_it_sets_is_already_held_or_restored() {
+        use tags::shader::RenderStateValue;
+        let mut imp = implementation(0, InputReads::default(), Vec::new());
+        imp.render_states = vec![RenderStateValue { state: 11, value: 13 }];
+        imp.restore_states = vec![RenderStateValue { state: 19, value: 20 }];
+        let device = |slot: u32| match slot {
+            11 => Some(13),
+            19 => Some(20),
+            _ => Some(0),
+        };
+        assert!(skip_holds(&imp, &device));
+        assert!(!skip_holds(&imp, &|slot| if slot == 19 { Some(21) } else { device(slot) }), "a restore that would change the device");
+        assert!(!skip_holds(&imp, &|slot| if slot == 11 { None } else { device(slot) }), "a state that does not read");
+        assert!(!skip_holds(&imp, &|slot| if slot == 11 { Some(12) } else { device(slot) }), "a set the restore list does not write back");
+        imp.engine_render_states = vec![tags::shader::ExternalBinding { bytes: [0; 4] }];
+        assert!(!skip_holds(&imp, &device), "per-draw states");
+    }
+
+    /// A blended pass sets its blend and the restore list writes it back:
+    /// drawn, the switch away from it (the next implementation's draw or
+    /// the next layer's setup) leaves the device as it was, as skipping
+    /// it does.
+    #[test]
+    fn a_pass_whose_restore_list_writes_back_what_it_sets_holds() {
+        use tags::shader::{ExternalBinding, RenderStateValue};
+        // ALPHABLENDENABLE on, ZWRITEENABLE off; the restore list turns
+        // them back and the device holds them back.
+        let mut imp = implementation(0, InputReads::default(), Vec::new());
+        imp.per_draw_inputs = false;
+        imp.render_states = vec![RenderStateValue { state: 0x0e, value: 1 }, RenderStateValue { state: 0x15, value: 0 }];
+        imp.restore_states = vec![RenderStateValue { state: 0x0e, value: 0 }, RenderStateValue { state: 0x15, value: 1 }];
+        let device = |slot: u32| match slot {
+            0x15 => Some(1),
+            _ => Some(0),
+        };
+        assert!(skip_holds(&imp, &device), "set, then written back to what the device holds");
+        let blending = |slot: u32| if slot == 0x0e { Some(1) } else { device(slot) };
+        assert!(!skip_holds(&imp, &blending), "the restore would turn off a blend the device holds");
+        let unread = |slot: u32| if slot == 0x0e { None } else { device(slot) };
+        assert!(!skip_holds(&imp, &unread), "a restored state that does not read");
+        // A state set and not restored must already hold.
+        let mut unrestored = imp.clone();
+        unrestored.restore_states.truncate(1);
+        assert!(!skip_holds(&unrestored, &device), "ZWRITEENABLE stays off after the draw");
+        // An engine-driven value the restore list writes back needs no
+        // inputs; one it does not, as before.
+        let mut driven = imp.clone();
+        // ALPHAREF (0x3d) from scalar 3.
+        driven.engine_render_states = vec![ExternalBinding { bytes: [2, 1, 0, 3] }];
+        assert!(!skip_holds(&driven, &device), "ALPHAREF is not written back and no inputs give it");
+        driven.restore_states.push(RenderStateValue { state: 0x3d, value: 0 });
+        assert!(skip_holds(&driven, &device), "written back to the device's ALPHAREF");
+        assert!(!skip_holds(&driven, &|slot| if slot == 0x3d { Some(7) } else { device(slot) }), "a restore to another ALPHAREF");
+    }
+
+    /// With the draw's inputs, an engine-driven render value holds when
+    /// the device already holds it, computed over the device's value.
+    #[test]
+    fn a_skipped_pass_with_engine_states_holds_when_their_values_do() {
+        use tags::shader::{ExternalBinding, RenderStateValue};
+        let mut imp = implementation(0, InputReads { scalars: 1 << 3, vectors: 1 << 2, ints: 0 }, Vec::new());
+        imp.per_draw_inputs = false;
+        imp.render_states = vec![RenderStateValue { state: 11, value: 13 }];
+        // ALPHAREF (0x3d) from scalar 3; BLENDCOLOR (0x4b) from colour 2.
+        imp.engine_render_states = vec![ExternalBinding { bytes: [2, 1, 0, 3] }, ExternalBinding { bytes: [0, 0, 0, 2] }];
+        let mut inputs = EngineInputs::default();
+        inputs.scalars[3] = 100.0;
+        inputs.vectors[2] = [0.0, 1.0, 0.0];
+        let device = |slot: u32| match slot {
+            11 => Some(13),
+            0x3d => Some(100),
+            // Green, over a top byte the draw keeps.
+            0x4b => Some(0x7700_ff00),
+            _ => Some(0),
+        };
+        assert!(skip_holds_with(&imp, Some(&inputs), &device));
+        assert!(!skip_holds(&imp, &device), "no inputs");
+        let other = |slot: u32| if slot == 0x3d { Some(99) } else { device(slot) };
+        assert!(!skip_holds_with(&imp, Some(&inputs), &other), "the draw would change ALPHAREF");
+        let mut unread = imp.clone();
+        unread.input_reads.vectors = 0;
+        assert!(!skip_holds_with(&unread, Some(&inputs), &device), "a slot 0x0001ae70 does not fill");
+        let mut per_draw = imp.clone();
+        per_draw.per_draw_inputs = true;
+        assert!(!skip_holds_with(&per_draw, Some(&inputs), &device), "inputs that change per draw");
+    }
+
+    #[test]
+    fn layer_1_items_draw_unstenciled_with_the_stencil_off_and_need_mode_1_to_skip() {
+        let device = crate::object_state::structure_stencil(0);
+        let off = item_stencil(1, true, device, false);
+        assert!(!off.stencil.enable && off.needs_mode_1, "the prologue's mode 0, the epilogue's mode 1");
+        assert_eq!(item_stencil(1, false, device, false), ItemStencil { stencil: device, needs_mode_1: false });
+        assert!(item_stencil(1, false, device, true).needs_mode_1, "a marked item's epilogue leaves mode 1");
+        for layer in [5, 7, 8, 20] {
+            assert_eq!(item_stencil(layer, true, device, true), ItemStencil { stencil: device, needs_mode_1: false }, "layer {layer}");
+        }
+    }
+
+    #[test]
+    fn a_world_write_before_an_inheriting_object_keeps_its_material_upload() {
+        for layer in [1, 17] {
+            let writer = implementation(0, InputReads::default(), vec![]);
+            let mut reader = implementation(1, InputReads::default(), vec![]);
+            reader.vertex_constants.clear();
+            let mut lib = library(material(layer as usize, vec![vec![writer, reader]], own_inputs()));
+            let mut object = item(LayerOwner::Object(InstanceKey(1)), 1, None);
+            object.slot = 5;
+            let world = item(LayerOwner::Cluster(2), 0, None);
+            let after = LayerItem { slot: 6, ..world.clone() };
+            let pass = LayerPass { items: 0..3, ..pass(layer, view_inputs()) };
+            let mut scene = FrameScene { layer_items: vec![world, object, after], ..Default::default() };
+            let got = plan(&scene, &pass, &mut lib);
+            assert_eq!(got.refused, [(4, LayerRefusal::MaterialConstant18)]);
+            assert_eq!(got.draws.iter().map(|d| d.slot).collect::<Vec<_>>(), [5, 6]);
+            scene.layer_items[1].key.implementation = 0;
+            assert!(plan(&scene, &pass, &mut lib).refused.is_empty());
+            scene.layer_items[1].key.shader ^= 1;
+            assert!(plan(&scene, &pass, &mut lib).refused.contains(&(4, LayerRefusal::MaterialConstant18)));
+        }
+    }
+
+    #[test]
     fn a_scene_layer_plans_its_items_in_order_and_names_the_rest() {
         let m = material(20, vec![vec![implementation(0, InputReads::default(), Vec::new())]], own_inputs());
         let mut lib = library(m);
@@ -798,5 +1268,48 @@ mod tests {
         assert_eq!(by_cause["material"], 1);
         let three = pass(3, view_inputs());
         assert_eq!(plan_item(&three, &item(LayerOwner::Cluster(1), 0, None), &mut lib).unwrap_err(), LayerRefusal::Layer(3));
+        assert!(planned(BLOOM_LAYER) && !planned(16) && !planned(3), "layer 17 is planned; 3 and 16 are other stages'");
+        assert!(planned(OVERLAY_LAYER), "layer 2 is planned");
+    }
+
+    #[test]
+    fn every_planned_layer_is_loaded_once_and_layer_3_and_the_late_passes_are_not() {
+        let all: Vec<u8> = planned_layers().collect();
+        assert_eq!(all, [1, 5, 7, 8, 20, 2, 17]);
+        assert!(all.iter().all(|&l| planned(l)));
+        for other in [3, 6, 15, 16, 18, 19, 21] {
+            assert!(!planned(other), "layer {other} is another stage's");
+        }
+    }
+
+    #[test]
+    fn overlay_uses_the_current_views_inputs_for_each_layer_call() {
+        let reads = InputReads { scalars: 1 << 12, ..Default::default() };
+        let mut lib = library(material(2, vec![vec![implementation(0, reads, Vec::new())]], own_inputs()));
+        let placement = item(LayerOwner::Placement(1), 0, None);
+        for value in [0.25_f32, 0.75] {
+            let mut inputs = view_inputs();
+            inputs.set_scalar(12, value.to_bits());
+            let draw = plan_item(&pass(OVERLAY_LAYER, inputs), &placement, &mut lib).unwrap();
+            assert_eq!(draw.inputs.scalars[12], value);
+        }
+    }
+
+    #[test]
+    fn a_layer_2_item_plans_as_the_other_scene_layers_and_draws_under_the_devices_stencil() {
+        let m = material(2, vec![vec![implementation(0, InputReads::default(), Vec::new())]], own_inputs());
+        let mut lib = library(m);
+        let d = plan_item(&pass(OVERLAY_LAYER, view_inputs()), &item(LayerOwner::Cluster(3), 0, None), &mut lib).unwrap();
+        assert_eq!(d.layer, OVERLAY_LAYER);
+        assert_eq!(d.passes, [PassDraw { pass: 0, implementation: 0 }]);
+        assert_eq!(d.inputs, own_inputs());
+        let other = plan_item(&pass(OVERLAY_LAYER, view_inputs()), &LayerItem { key: ItemKey { shader: 0xe000_0099, ..key(0) }, ..item(LayerOwner::Cluster(3), 0, None) }, &mut lib);
+        assert_eq!(other.unwrap_err().name(), "material", "a shader that does not resolve is named");
+        let device = crate::object_state::structure_stencil(0);
+        assert_eq!(
+            item_stencil(OVERLAY_LAYER, true, device, true),
+            ItemStencil { stencil: device, needs_mode_1: false },
+            "the geometry draw sets no stencil mode outside layers 1 and 3"
+        );
     }
 }

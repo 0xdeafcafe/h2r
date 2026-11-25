@@ -41,7 +41,9 @@ workspace_library(
     deps = [
         "//crates/formats/content:content",
         "//crates/formats/host-dirs:host-dirs",
+        "//crates/formats/tags:tags",
         "//crates/formats/xiso:xiso",
+        "//crates/platform/mem-watch:mem-watch",
         "//third-party/rust:memmap2",
         "//third-party/rust:thiserror",
     ] + select({
@@ -70,7 +72,9 @@ workspace_test(
     deps = [
         "//crates/formats/content:content",
         "//crates/formats/host-dirs:host-dirs",
+        "//crates/formats/tags:tags",
         "//crates/formats/xiso:xiso",
+        "//crates/platform/mem-watch:mem-watch",
         "//third-party/rust:memmap2",
         "//third-party/rust:thiserror",
     ] + select({
@@ -99,7 +103,9 @@ workspace_test(
     deps = [
         "//crates/formats/content:content",
         "//crates/formats/host-dirs:host-dirs",
+        "//crates/formats/tags:tags",
         "//crates/formats/xiso:xiso",
+        "//crates/platform/mem-watch:mem-watch",
         "//third-party/rust:memmap2",
         "//third-party/rust:thiserror",
         ":vfs",
@@ -129,7 +135,9 @@ workspace_test(
     deps = [
         "//crates/formats/content:content",
         "//crates/formats/host-dirs:host-dirs",
+        "//crates/formats/tags:tags",
         "//crates/formats/xiso:xiso",
+        "//crates/platform/mem-watch:mem-watch",
         "//third-party/rust:memmap2",
         "//third-party/rust:thiserror",
         ":vfs",
@@ -159,7 +167,9 @@ workspace_test(
     deps = [
         "//crates/formats/content:content",
         "//crates/formats/host-dirs:host-dirs",
+        "//crates/formats/tags:tags",
         "//crates/formats/xiso:xiso",
+        "//crates/platform/mem-watch:mem-watch",
         "//third-party/rust:memmap2",
         "//third-party/rust:thiserror",
         ":vfs",
@@ -189,7 +199,41 @@ workspace_test(
     deps = [
         "//crates/formats/content:content",
         "//crates/formats/host-dirs:host-dirs",
+        "//crates/formats/tags:tags",
         "//crates/formats/xiso:xiso",
+        "//crates/platform/mem-watch:mem-watch",
+        "//third-party/rust:memmap2",
+        "//third-party/rust:thiserror",
+        ":vfs",
+    ] + select({
+        "config//os:linux": [
+            "//third-party/rust:libc",
+            "//third-party/rust:rustix",
+        ],
+        "config//os:macos": [
+            "//third-party/rust:libc",
+            "//third-party/rust:rustix",
+        ],
+        "DEFAULT": [],
+    }),
+)
+
+workspace_test(
+    name = "state",
+    crate = "state",
+    crate_root = "crates/runtime/vfs/tests/state.rs",
+    description = "",
+    features = [],
+    manifest = "crates/runtime/vfs",
+    package = "vfs",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/formats/content:content",
+        "//crates/formats/host-dirs:host-dirs",
+        "//crates/formats/tags:tags",
+        "//crates/formats/xiso:xiso",
+        "//crates/platform/mem-watch:mem-watch",
         "//third-party/rust:memmap2",
         "//third-party/rust:thiserror",
         ":vfs",
@@ -219,7 +263,41 @@ workspace_test(
     deps = [
         "//crates/formats/content:content",
         "//crates/formats/host-dirs:host-dirs",
+        "//crates/formats/tags:tags",
         "//crates/formats/xiso:xiso",
+        "//crates/platform/mem-watch:mem-watch",
+        "//third-party/rust:memmap2",
+        "//third-party/rust:thiserror",
+        ":vfs",
+    ] + select({
+        "config//os:linux": [
+            "//third-party/rust:libc",
+            "//third-party/rust:rustix",
+        ],
+        "config//os:macos": [
+            "//third-party/rust:libc",
+            "//third-party/rust:rustix",
+        ],
+        "DEFAULT": [],
+    }),
+)
+
+workspace_test(
+    name = "store_map",
+    crate = "store_map",
+    crate_root = "crates/runtime/vfs/tests/store_map.rs",
+    description = "",
+    features = [],
+    manifest = "crates/runtime/vfs",
+    package = "vfs",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/formats/content:content",
+        "//crates/formats/host-dirs:host-dirs",
+        "//crates/formats/tags:tags",
+        "//crates/formats/xiso:xiso",
+        "//crates/platform/mem-watch:mem-watch",
         "//third-party/rust:memmap2",
         "//third-party/rust:thiserror",
         ":vfs",

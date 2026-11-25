@@ -336,3 +336,143 @@ fn a_mode_state_over_the_blob_limit_is_refused_and_changes_nothing() {
     assert!(host.changes.is_empty());
     assert!(host.set.state().is_empty());
 }
+
+fn shows(packet: &Packet) -> Vec<&Vec<u8>> {
+    packet
+        .records
+        .iter()
+        .filter_map(|r| match r {
+            Record::Show(bytes) => Some(bytes),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The show state rides the first packet whole (with the key), then only
+/// when it changes; the digest's hash is of the state the peer was last
+/// offered; and a stopped script retracts the state with an empty record.
+#[test]
+fn the_show_state_rides_the_key_changes_with_the_state_and_repairs() {
+    let mut host = Host::default();
+    host.tick = Some(30);
+    host.capture(&Pool::new().mem, 30, false, &[]).unwrap();
+
+    // No script: no record, and the digest at tick 30 hashes the empty
+    // state.
+    host.set_show(None);
+    let mut budget = Budget::default();
+    let first = packet(&host, &mut budget);
+    assert!(shows(&first).is_empty());
+    let Record::Digest { show_hash, .. } = digests(&first)[0] else {
+        unreachable!()
+    };
+    assert_eq!(*show_hash, ::actor_net::digest::state_hash(&[]));
+
+    // The script starts: the state rides the next packet.
+    host.tick = Some(31);
+    host.set_show(Some(vec![7, 8]));
+    let second = packet(&host, &mut budget);
+    assert_eq!(shows(&second), vec![&vec![7, 8]]);
+
+    // A change goes out; the same state twice sends once.
+    host.tick = Some(32);
+    host.set_show(Some(vec![9]));
+    host.set_show(Some(vec![9]));
+    let third = packet(&host, &mut budget);
+    assert_eq!(shows(&third), vec![&vec![9]]);
+    host.tick = Some(33);
+    if let Some(sent) = host.schedule(&mut budget, None, false).unwrap() {
+        assert!(shows(&sent).is_empty(), "unchanged, nothing to send");
+    }
+
+    // The digest at tick 60 hashes the last state offered.
+    host.tick = Some(60);
+    let sent = host.schedule(&mut budget, None, false).unwrap().unwrap();
+    let Record::Digest { show_hash, .. } = digests(&sent)[0] else {
+        unreachable!()
+    };
+    assert_eq!(*show_hash, ::actor_net::digest::state_hash(&[9]));
+
+    // The script stops: an empty record retracts the state.
+    host.tick = Some(61);
+    host.set_show(None);
+    let sent = host.schedule(&mut budget, None, false).unwrap().unwrap();
+    assert_eq!(shows(&sent), vec![&Vec::<u8>::new()]);
+    assert!(digests(&sent).is_empty());
+}
+
+fn digests(packet: &Packet) -> Vec<&Record> {
+    packet
+        .records
+        .iter()
+        .filter(|r| matches!(r, Record::Digest { .. }))
+        .collect()
+}
+
+#[test]
+fn a_digest_rides_every_thirtieth_host_tick_with_the_log_head() {
+    let mut pool = Pool::new();
+    pool.add(0x0100_0001, 1.);
+    let mut host = Host::default();
+    let mut budget = Budget::default();
+    host.capture(&pool.mem, 29, false, &[]).unwrap();
+    assert!(digests(&packet(&host, &mut budget)).is_empty());
+    pool.add(0x0200_0002, 2.);
+    host.capture(&pool.mem, 30, false, &[]).unwrap();
+    host.set_mode(&[4, 2]).unwrap();
+    host.set_log_head(Some([5; 32]));
+    let sent = packet(&host, &mut budget);
+    assert_eq!(
+        digests(&sent),
+        [&Record::Digest {
+            log_head: [5; 32],
+            state_hash: ::actor_net::digest::state_hash(&[4, 2]),
+            actor_count: 2,
+            show_hash: ::actor_net::digest::state_hash(&[]),
+        }]
+    );
+    // No mode keeps a log: the head is all zeros.
+    host.capture(&pool.mem, 60, false, &[]).unwrap();
+    host.set_log_head(None);
+    assert!(matches!(
+        digests(&packet(&host, &mut budget)).as_slice(),
+        [Record::Digest { log_head, .. }] if *log_head == [0; 32]
+    ));
+}
+
+#[test]
+fn a_lost_delta_is_found_by_the_next_digest_and_repaired_by_a_key() {
+    use crate::actor_net::client::Client;
+    let mut pool = Pool::new();
+    pool.add(0x0100_0001, 1.);
+    let mut host = Host::default();
+    let mut budget = Budget::default();
+    let mut client = Client::default();
+    host.capture(&pool.mem, 29, false, &[]).unwrap();
+    assert!(client.receive(&packet(&host, &mut budget), 1));
+
+    // The tick that creates the second actor is lost on the way.
+    pool.add(0x0200_0002, 2.);
+    host.capture(&pool.mem, 30, false, &[]).unwrap();
+    let lost = packet(&host, &mut budget);
+    assert_eq!(digests(&lost).len(), 1);
+
+    // The next digest disagrees with the client's one actor.
+    host.capture(&pool.mem, 60, false, &[]).unwrap();
+    let quiet = packet(&host, &mut budget);
+    assert!(matches!(quiet.records.as_slice(), [Record::Digest { .. }]));
+    assert!(client.receive(&quiet, 2));
+    assert!(client.take_key_request());
+
+    // The transport passes the request on; the key restores the set.
+    host.capture(&pool.mem, 61, false, &[]).unwrap();
+    let key = host.schedule(&mut budget, None, true).unwrap().unwrap();
+    let key = decode(&encode(&key).unwrap()).unwrap();
+    assert!(matches!(key.records.as_slice(), [Record::Key { actors, .. }] if actors.len() == 2));
+    assert!(client.receive(&key, 3));
+    host.capture(&pool.mem, 90, false, &[]).unwrap();
+    assert!(client.receive(&packet(&host, &mut budget), 4));
+    assert!(!client.take_key_request());
+    assert_eq!(client.status().digest_misses, 0);
+    assert!(!client.status().diverged);
+}

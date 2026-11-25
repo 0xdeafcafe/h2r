@@ -6,16 +6,14 @@
 //! other ([`DEFS`], in [`crate::setting_defs::ALL`]), so they persist and
 //! `h2 settings` lists them.
 //!
-//! **The page** is a kit screen ([`page`]) of eight choice rows
-//! ([`crate::ui_kit::choice::ChoiceRow`]) on the lobby's own settings
-//! dialog, Quick Options (`DialogBase::QuickOptions`), as the Halo 1
-//! Options page is: Quick Options' panel, header and list (its
-//! `setting_lists` skin, label left and the value alone in the value
-//! column), Quick Options' header (the focused row's icon in its game
-//! type picture and the row's one line in its help line; the value picker
-//! A opens says what the row does and what each choice means), and the
-//! legend in its footer (docs/game/ui-builder.md "The Dialog kind", "A
-//! page's header").
+//! **The page** is the shared settings dialog ([`page`],
+//! `crate::ui_kit::settings`), declared by `content/ui/screens/clankers.yaml`:
+//! eight rows over [`DEFS`] on the lobby's own settings dialog, Quick
+//! Options, as the Halo 1 Options page is. Its header (icon, name and
+//! what the window is for) is the same whatever has the focus; the
+//! focused row's help is under the rows, and the value picker A opens
+//! says what the row does and what each choice means
+//! (docs/game/ui-builder.md "The settings dialog").
 //!
 //! **The row.** A custom game's Game Setup dialog gets a "Clanker Options..." row,
 //! the way it gets the Halo 1 Options row (`crate::h1_options_row`, whose
@@ -48,12 +46,9 @@ use bots::phantom::{Identity, PhantomHandle, Phantoms};
 use crate::h1_options_row::{self as h1row, CHANGE_MAP};
 use crate::list_class::{self, Rows};
 use crate::telemetry;
-use crate::ui_kit::choice::ChoiceRow;
-use crate::ui_kit::dialog::{DialogBase, icon};
 use crate::ui_kit::ids::{self, Family};
-use crate::ui_kit::input::{Glyph, Prompt};
 use crate::ui_kit::screen::{KitScreen, KitTexts};
-use crate::ui_kit::view::Opener;
+use crate::ui_kit::settings::Bindings;
 
 /// The page's feature (`features.clankers`) and screen name.
 pub const FEATURE: &str = "clankers";
@@ -196,107 +191,14 @@ pub static DEFS: [&Def; 8] = [
     &GLITCHES,
 ];
 
-static ROWS: [ChoiceRow; 8] = [
-    ChoiceRow::new(
-        &ENABLED,
-        "Clankers",
-        "Bots join this game and show in the lobby.",
-    )
-    .explain(
-        "Clankers are bots that play this game with you. On adds them to \
-         the lobby like any other player. Off plays without them.",
-    )
-    .icon(icon::SPARTAN),
-    ChoiceRow::new(&COUNT, "Count", "How many bots join, up to 15.")
-        .explain(
-            "How many Clankers join this game, from 1 to 15. Each one \
-             takes a place in the lobby, so leave room for your friends.",
-        )
-        .icon(icon::SQUARES),
-    ChoiceRow::new(
-        &DIFFICULTY,
-        "Difficulty",
-        "How well they play. Mixed varies it around Normal.",
-    )
-    .explain(
-        "How well the Clankers aim, move and pick their fights. Easy is \
-         forgiving and Legendary plays like a veteran. Mixed gives you a \
-         spread of Easy, Normal and Heroic bots.",
-    )
-    .icon(icon::SKULL),
-    ChoiceRow::new(&TEAM, "Teams", "Which team they join in a team game.")
-        .explain(
-            "Where the Clankers go in a team game. Auto-balance spreads \
-             them so the teams stay even. Red or Blue puts every bot on \
-             that team. Free for all games ignore this.",
-        )
-        .icon(icon::FLAG),
-    ChoiceRow::new(
-        &AGGRESSION,
-        "Aggression",
-        "How eagerly they push into a fight.",
-    )
-    .explain(
-        "How hard the Clankers push. Calm bots hold back and wait for a \
-         good shot. Wild bots rush in and chase every kill. Normal sits \
-         in between.",
-    )
-    .icon(icon::BOMB),
-    ChoiceRow::new(
-        &AIM_STYLE,
-        "Aim style",
-        "Steady tracks smoothly; Twitchy flicks.",
-    )
-    .explain(
-        "How the Clankers move their aim. Steady bots track you smoothly \
-         and stay on target. Twitchy bots snap onto you in quick flicks.",
-    )
-    .icon(icon::HELMET),
-    ChoiceRow::new(&TAUNTS, "Taunts", "Whether they taunt after a kill.")
-        .explain(
-            "On lets the Clankers show off over you after a kill, as \
-             players do. Off keeps them on the move.",
-        )
-        .icon(icon::CROWN),
-    ChoiceRow::new(
-        &GLITCHES,
-        "Glitches",
-        "Whether they BXR, sword fly and super bounce.",
-    )
-    .explain(
-        "Halo 2's famous tricks: button combos like BXR, double shots, \
-         sword flying and super bounces. Off plays it straight. Some \
-         shows off now and then. Lots uses them whenever it can.",
-    )
-    .icon(icon::LIGHTNING),
-];
-
-/// The Game Setup row's text; the page's title stays [`TITLE`].
-pub const ROW_LABEL: &str = "Clanker Options...";
-/// What the Game Setup row does, in Game Setup's description while it has
-/// the focus, as retail's rows have theirs (`crate::game_setup_help`).
-pub const ROW_HELP: &str =
-    "Add bots to this game: how many, how well they play, and which team they join.";
-/// The page's title, in capitals as Quick Options' header ("QUICK
-/// OPTIONS") is.
-pub const TITLE: &str = "CLANKERS";
-
-/// The Clankers page over `store`: a dialog of its rows on Quick Options
-/// (its eight rows fit the eleven its list shows).
+/// The Clankers page over `store`: the shared settings dialog
+/// (`crate::ui_kit::settings`) its doc declares,
+/// `content/ui/screens/clankers.yaml`: its header, its eight rows over
+/// [`DEFS`], their help and picker copy, and the Game Setup row's text
+/// and help (`settings.caller`).
 pub fn page(store: Arc<Store>) -> KitScreen {
-    let mut s = KitScreen::new(FEATURE, SCREEN, IDS, TITLE)
-        .row_label(ROW_LABEL)
-        .row_help(ROW_HELP)
-        .dialog(DialogBase::QuickOptions, Opener::GAME_SETUP_CLANKERS)
-        .header(icon::SPARTAN);
-    for r in &ROWS {
-        s = s.row(r.row(Arc::clone(&store)));
-    }
-    s.prompts(&[
-        Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
-        Prompt::new(&[Glyph::A], "Select"),
-        Prompt::new(&[Glyph::B], "Back"),
-    ])
+    crate::ui_kit::settings::screen(FEATURE, SCREEN, IDS, Some(store), Bindings::new())
+        .unwrap_or_else(|e| panic!("{e}"))
 }
 
 // --- The driver -----------------------------------------------------------
@@ -419,6 +321,14 @@ impl Rosters for live_hle::Hle {
         self.matchmade()
             .filter(|(_, session)| *session == hosted)
             .map(|(playlist, _)| playlist.to_string())
+            // A Clankermatch has no server match: its playlist is the
+            // clanker hopper it hosts (docs/game/bots.md §8.4 item 2), so
+            // the server matches the bots to the party's level there.
+            .or_else(|| {
+                self.clanker_hosted()
+                    .filter(|(session, _)| *session == hosted)
+                    .map(|(_, mark)| mark.hopper_id.to_string())
+            })
     }
     fn ask(
         &self,
@@ -473,8 +383,14 @@ struct RosterState {
 #[derive(Clone, Debug)]
 struct Fill {
     hopper: u32,
-    /// The bots the playlist holds besides the human.
+    /// The people in the party ([`Driver::set_party`]): the bots fill the
+    /// playlist's most players less these. Followed until the first bot
+    /// sits, then kept.
+    humans: usize,
+    /// The bots the playlist holds besides the party.
     bots: usize,
+    /// The schedule's seed (from the session id).
+    seed: u64,
     /// The playlist's teams (0 free for all).
     teams: u32,
     schedule: Vec<std::time::Duration>,
@@ -493,6 +409,41 @@ struct Fill {
 /// longer than a handoff's gap between the lobby's session and the game's
 /// (a few seconds, §9.5), short enough that leaving ends it.
 const FILL_GONE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A Clankermatch lobby whose bots are all due and whose game has not
+/// started says why this long after the last bot's seat
+/// ([`Driver::stalled`]): the hopper's start wait at its most players is
+/// none, so a full lobby starts well inside it.
+const STALL_AFTER: std::time::Duration = std::time::Duration::from_secs(20);
+/// The same reason is said again this often while it holds.
+const STALL_REPEAT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// What [`Driver::stalled`] said last.
+#[derive(Default)]
+struct StallWatch {
+    said: Option<(String, std::time::Instant)>,
+}
+
+/// The fill's plan for a party of `humans` in `mark`'s playlist, for the
+/// log: the seats, the party, the bots.
+fn fill_line(
+    mark: &live_proto::hopper::clankers::ClankerHopper,
+    humans: usize,
+    bots: usize,
+) -> String {
+    let people = if humans == 1 { "person" } else { "people" };
+    if bots == 0 {
+        format!(
+            "clankermatch: the party of {humans} {people} fills clanker playlist {}'s {} seats: no bots",
+            mark.hopper_id, mark.players
+        )
+    } else {
+        format!(
+            "clankermatch: {} seats, the party of {humans} {people}, {bots} bots",
+            mark.players
+        )
+    }
+}
 
 /// What the driver seats: the page's bots, or a Clankermatch's. Every bot
 /// is a phantom peer.
@@ -513,6 +464,9 @@ struct Seating {
     /// The host player's team, the bots balance around (0 when unknown or
     /// not one of the game's teams).
     host_team: u8,
+    /// The people the bots balance around, all on `host_team` (a party
+    /// keeps together in a team playlist).
+    humans: usize,
 }
 
 impl Seating {
@@ -528,6 +482,7 @@ impl Seating {
                 teams: f.teams,
                 skill: None,
                 host_team: f.host_team.filter(|t| u32::from(*t) < f.teams).unwrap_or(0),
+                humans: f.humans.max(1),
             },
             None => Seating {
                 count,
@@ -536,6 +491,7 @@ impl Seating {
                 teams: 0,
                 skill: request_skill(want.difficulty),
                 host_team: 0,
+                humans: 1,
             },
         }
     }
@@ -610,6 +566,16 @@ impl PadSource for Clanker {
 
     fn reset_input(&mut self) {
         self.brain.reset_input();
+    }
+
+    fn order(&mut self, order: Option<bots::brain::Order>) -> bool {
+        self.brain.set_order(order);
+        true
+    }
+
+    // `superbounce.verify`'s trials on a Clanker seat hold its pad.
+    fn hold_pad(&mut self, pad: Option<input::host::HostPadState>) -> bool {
+        self.brain.hold_pad(pad)
     }
 
     fn phantom_latency(&self) -> bots::tuning::PhantomLatency {
@@ -771,9 +737,18 @@ pub struct Driver {
     fill: Mutex<Option<Fill>>,
     /// The host player's team, as [`frame`] last read it.
     host_team: Mutex<Option<u8>>,
+    /// The people in the party of the match this console hosts, as
+    /// [`frame`] last read it (`bots::lobby::party_players`).
+    party: Mutex<Option<u32>>,
+    /// The stalled Clankermatch's last line ([`Driver::stalled`]).
+    stall: Mutex<StallWatch>,
     /// The lobby up takes the page's bots ([`admits_page`]); as [`frame`]
     /// last read it, and true before any lobby is read.
     admits: AtomicBool,
+    /// This console runs a multiplayer game as its distributed server, as
+    /// [`frame`] last read it: a Clankermatch's fill outlives the lobby's
+    /// advertisement while it does ([`Driver::tick_match`]).
+    hosts_game: AtomicBool,
 }
 
 /// Whether a lobby in retail mode `retail` takes the page's Clankers: a
@@ -818,7 +793,10 @@ impl Driver {
             reported: AtomicBool::new(false),
             fill: Mutex::new(None),
             host_team: Mutex::new(None),
+            party: Mutex::new(None),
+            stall: Mutex::default(),
             admits: AtomicBool::new(true),
+            hosts_game: AtomicBool::new(false),
         }
     }
 
@@ -1174,7 +1152,7 @@ impl Driver {
             // The human (at the bots' mean: the server matched them to
             // its level) and the bots the roster put on a team are fixed;
             // the rest are balanced around them.
-            let mut fixed = vec![(seating.host_team, mean)];
+            let mut fixed = vec![(seating.host_team, mean); seating.humans];
             fixed.extend(seats.iter().filter_map(|(s, _)| Some((s.team?, k(s)))));
             let free: Vec<f32> = seats
                 .iter()
@@ -1274,6 +1252,77 @@ impl Driver {
         *self.host_team.lock().unwrap_or_else(|e| e.into_inner()) = team;
     }
 
+    /// A Clankermatch lobby that has not started [`STALL_AFTER`] after
+    /// its last bot was due: one line saying why, again when the reason
+    /// changes or every [`STALL_REPEAT`] while it holds. `read` reads the
+    /// lobby (`bots::lobby::match_wait`): `None` when there is nothing to
+    /// wait for (the countdown or the game runs), else the reason and the
+    /// whole line. Called only once the wait is long enough.
+    pub fn stalled(
+        &self,
+        now: std::time::Instant,
+        read: impl FnOnce() -> Option<(String, String)>,
+    ) -> Option<String> {
+        let due = self
+            .fill
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .filter(|f| f.gone.is_none() && f.seated >= f.bots)
+            .map(|f| (f.hopper, f.started + f.schedule.last().copied().unwrap_or_default()));
+        let mut watch = self.stall.lock().unwrap_or_else(|e| e.into_inner());
+        let Some((hopper, due)) = due else {
+            *watch = StallWatch::default();
+            return None;
+        };
+        let waited = now.saturating_duration_since(due);
+        if waited < STALL_AFTER {
+            return None;
+        }
+        let Some((reason, line)) = read() else {
+            watch.said = None;
+            return None;
+        };
+        // No bot sits while the fill waits for its roster: say that first.
+        let (reason, line) = {
+            let r = self.roster.lock().unwrap_or_else(|e| e.into_inner());
+            if r.asked.is_some() && r.roster.is_none() && !r.refused {
+                let why = "Live has not answered the bots' roster (no bot is seated until it \
+                           answers or refuses; see the \"clankers: asking Live\" and \"live: roster:\" lines)";
+                (format!("{why}; {reason}"), format!("{why}; {line}"))
+            } else {
+                (reason, line)
+            }
+        };
+        if watch
+            .said
+            .as_ref()
+            .is_some_and(|(r, at)| *r == reason && now.saturating_duration_since(*at) < STALL_REPEAT)
+        {
+            return None;
+        }
+        watch.said = Some((reason, now));
+        Some(format!(
+            "clankermatch: clanker playlist {hopper}'s match has not started {:.0} s after its last bot was due: {line}",
+            waited.as_secs_f32()
+        ))
+    }
+
+    /// The people in the party of the matchmaking lobby this console
+    /// hosts (the squad session's players), or `None` while it cannot be
+    /// read: a Clankermatch's bots fill the seats the party does not.
+    pub fn set_party(&self, humans: Option<u32>) {
+        *self.party.lock().unwrap_or_else(|e| e.into_inner()) = humans;
+    }
+
+    /// Whether this console runs a multiplayer game as its distributed
+    /// server: the game deletes a matchmaking lobby's advertisement once
+    /// its match session takes over, so a Clankermatch's fill holds while
+    /// the game runs and ends [`FILL_GONE`] after it.
+    pub fn set_hosts_game(&self, hosts: bool) {
+        self.hosts_game.store(hosts, Ordering::Relaxed);
+    }
+
     /// The lobby up, in retail mode `retail`: the page's bots stand down in
     /// a lobby that does not take them ([`admits_page`]) and come back in
     /// one that does, the last [`Want`] applied again on a change. Lines
@@ -1303,8 +1352,8 @@ impl Driver {
 
     /// Follows the Clankermatch this console hosts, at `now`: a clanker
     /// hopper's lobby starts a fill, its bots join on their schedule, and
-    /// it ends when the console hosts another kind of session or none for
-    /// [`FILL_GONE`]. Applies the last [`Want`] again when that changes
+    /// it ends when the console hosts another kind of session, or none and
+    /// no game ([`Driver::set_hosts_game`]) for [`FILL_GONE`]. Applies the last [`Want`] again when that changes
     /// what is seated. Lines for the log.
     pub fn tick_match(&self, now: std::time::Instant) -> Vec<String> {
         let Some(rosters) = &self.rosters else {
@@ -1313,6 +1362,9 @@ impl Driver {
         let hosted = rosters.clanker_match();
         let hosting = hosted.is_some() || rosters.session().is_some();
         let host_team = *self.host_team.lock().unwrap_or_else(|e| e.into_inner());
+        // One human when the party cannot be read.
+        let party = *self.party.lock().unwrap_or_else(|e| e.into_inner());
+        let humans = party.map_or(1, |n| n.max(1)) as usize;
         let mut log = Vec::new();
         let changed = {
             let mut fill = self.fill.lock().unwrap_or_else(|e| e.into_inner());
@@ -1321,8 +1373,21 @@ impl Driver {
                 (Some(h), Some((_, mark))) if h == mark.hopper_id => {
                     let f = fill.as_mut().expect("a fill");
                     f.gone = None;
+                    let mut replanned = false;
                     if f.seated == 0 {
                         f.host_team = host_team;
+                        // The party read late or changed before any bot
+                        // sat: the bots are the seats it leaves. Only a
+                        // party read counts (out of the lobby, in the
+                        // game, it reads as none).
+                        if party.is_some() && humans != f.humans {
+                            let bots = mark.bots_for(humans as u32) as usize;
+                            log.push(fill_line(&mark, humans, bots));
+                            f.humans = humans;
+                            f.bots = bots;
+                            f.schedule = crate::clankermatch::schedule(bots, f.seed);
+                            replanned = true;
+                        }
                     }
                     let n = crate::clankermatch::seated(
                         &f.schedule,
@@ -1330,10 +1395,10 @@ impl Driver {
                     );
                     let more = n != f.seated;
                     f.seated = n;
-                    more
+                    more || replanned
                 }
                 (_, Some((session, mark))) => {
-                    let bots = mark.bots_for(1) as usize;
+                    let bots = mark.bots_for(humans as u32) as usize;
                     let seed = u64::from_str_radix(&session, 16).unwrap_or(0) ^ 0xc1a4;
                     let schedule = crate::clankermatch::schedule(bots, seed);
                     log.push(format!(
@@ -1350,6 +1415,7 @@ impl Driver {
                             String::new()
                         }
                     ));
+                    log.push(fill_line(&mark, humans, bots));
                     // Every bot a phantom (docs/game/bots.md §8.4,
                     // "Phantoms only"): they join the match's target
                     // session as peers, never the party, and count toward
@@ -1360,7 +1426,9 @@ impl Driver {
                     ));
                     *fill = Some(Fill {
                         hopper: mark.hopper_id,
+                        humans,
                         bots,
+                        seed,
                         teams: mark.teams,
                         schedule,
                         started: now,
@@ -1374,6 +1442,12 @@ impl Driver {
                     log.push("clankermatch: this console hosts another game: the bots go".into());
                     *fill = None;
                     true
+                }
+                (Some(_), None) if self.hosts_game.load(Ordering::Relaxed) => {
+                    // The game deleted the lobby's advertisement when its
+                    // match session took over: the match runs on.
+                    fill.as_mut().expect("a fill").gone = None;
+                    false
                 }
                 (Some(_), None) => {
                     let f = fill.as_mut().expect("a fill");
@@ -1426,16 +1500,45 @@ fn mixed_slot(number: u32) -> u8 {
 /// The driver [`install`] started, for [`frame`] and telemetry.
 static DRIVER: Mutex<Option<std::sync::Weak<Driver>>> = Mutex::new(None);
 
+/// The settings store [`frame`] reads the Firefight options from, for
+/// [`firefight_seat_teams`] (set with [`DRIVER`]).
+static STORE: Mutex<Option<std::sync::Weak<Store>>> = Mutex::new(None);
+
+/// The player teams new Clankers are seated on in a lobby in `mode`
+/// ([`bots::firefight::set_seat_teams`]): Firefight's
+/// ([`crate::firefight::options::Options::player_teams`], one when the
+/// options cannot be read), none in any other mode. The phantom session
+/// then puts each new Clanker on a player team, the one with fewer
+/// players with two ([`bots::firefight::seat_team`]), never the AI's
+/// team, which the Firefight host keeps clear of the player teams
+/// (docs/game/firefight.md).
+pub fn firefight_seat_teams(
+    mode: crate::lobby_start::Mode,
+    options: impl FnOnce() -> Result<crate::firefight::options::Options, String>,
+) -> Option<u8> {
+    (mode == crate::lobby_start::Mode::Firefight)
+        .then(|| options().map_or(1, |o| o.player_teams()))
+}
+
 /// Once a frame, from the bots' frame hook: every second or so, asks
 /// for a roster again if the hosted Live session changed
 /// ([`Driver::refresh`]). Never waits on the server. `host_team` reads
-/// the host player's team from the game and `lobby` the lobby's retail
-/// mode (`None` while it cannot be read: left as it was,
-/// [`Driver::set_lobby`]); each is called twice a second.
+/// the host player's team from the game, `party` the people in the party
+/// of the matchmaking lobby this console hosts
+/// (`bots::lobby::party_players`, [`Driver::set_party`]) and `lobby` the
+/// lobby's retail mode (`None` while it cannot be read: left as it was,
+/// [`Driver::set_lobby`]) and `hosts_game` whether this console runs a
+/// multiplayer game as its distributed server ([`Driver::set_hosts_game`]);
+/// each is called twice a second. `match_wait`
+/// reads why a Clankermatch lobby has not started, only once it has
+/// waited long ([`Driver::stalled`]).
 pub fn frame(
     n: u64,
     host_team: impl FnOnce() -> Option<u8>,
+    party: impl FnOnce() -> Option<u32>,
     lobby: impl FnOnce() -> Option<crate::lobby_tabs::RetailMode>,
+    hosts_game: impl FnOnce() -> bool,
+    match_wait: impl FnOnce() -> Option<(String, String)>,
 ) {
     // Twice a second: a Clankermatch's bots join 0.5 to 3 s apart.
     if n % 15 != 0 {
@@ -1447,13 +1550,31 @@ pub fn frame(
         .as_ref()
         .and_then(|w| w.upgrade());
     let Some(d) = d else { return };
+    let store = STORE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|w| w.upgrade());
+    bots::firefight::set_seat_teams(firefight_seat_teams(
+        crate::lobby_start::state().mode,
+        || match &store {
+            Some(store) => crate::firefight::options::Options::read(store),
+            None => Err("no settings store".into()),
+        },
+    ));
     d.set_host_team(host_team());
+    d.set_party(party());
+    d.set_hosts_game(hosts_game());
     if let Some(retail) = lobby() {
         for line in d.set_lobby(retail) {
             eprintln!("clankers: {line}");
         }
     }
-    for line in d.tick_match(std::time::Instant::now()) {
+    let now = std::time::Instant::now();
+    for line in d.tick_match(now) {
+        eprintln!("clankers: {line}");
+    }
+    if let Some(line) = d.stalled(now, match_wait) {
         eprintln!("clankers: {line}");
     }
     if n % 30 == 0 {
@@ -1494,6 +1615,18 @@ fn build_soon_on(was: bool, now: bool) {
     }
 }
 
+/// The settings whose change the driver applies at once ([`drive`]), in
+/// the lobby and in a game: every page row but Teams, which no code reads.
+pub const LIVE_KEYS: [&str; 7] = [
+    "clankers.enabled",
+    "clankers.count",
+    "clankers.difficulty",
+    "clankers.aggression",
+    "clankers.aim_style",
+    "clankers.taunts",
+    "clankers.glitches",
+];
+
 /// Starts `driver` over `store`: matches it now and on every change.
 pub fn drive(store: &Arc<Store>, driver: Driver) -> Arc<Driver> {
     let d = Arc::new_cyclic(|me| Driver {
@@ -1512,15 +1645,7 @@ pub fn drive(store: &Arc<Store>, driver: Driver) -> Arc<Driver> {
             }
         }
     };
-    for key in [
-        ENABLED.key,
-        COUNT.key,
-        DIFFICULTY.key,
-        AGGRESSION.key,
-        AIM_STYLE.key,
-        TAUNTS.key,
-        GLITCHES.key,
-    ] {
+    for key in LIVE_KEYS {
         store.on_change(key, run.clone());
     }
     for line in d.apply(Want::read(store)) {
@@ -1717,6 +1842,7 @@ pub fn install(
     }
     let d = drive(store, driver);
     *DRIVER.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::downgrade(&d));
+    *STORE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::downgrade(store));
     // Every bot goes out as a bot; a game with server bots names their
     // roster's session, and its phantoms carry their rostered xuids.
     if let Some(t) = telemetry {

@@ -9,23 +9,27 @@ mod colors;
 mod havok;
 mod solver_rows;
 mod solver_pairs;
-mod first_person;
+pub(crate) mod first_person;
 mod pose_layers;
 mod light;
 mod support;
-mod observer;
+pub(crate) mod observer;
 mod objects;
 mod object_update;
 pub(crate) mod node_matrices;
-mod spatial;
+pub(crate) mod spatial;
 mod visit;
 pub(crate) mod unit_aim;
 mod weld;
 mod weapon_slots;
+mod broadphase;
+mod motion;
+pub mod parity;
+mod world;
 
 pub type Result<T> = std::result::Result<T, GuestFault>;
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Controls { Integer, Sse, Mixed, Trig, Camera, Weld }
+enum Controls { Integer, Sse, Mixed, Trig, Camera, Weld, World }
 
 pub struct Port {
     pub point: &'static Point,
@@ -64,21 +68,25 @@ pub const PORTS: &[Port] = {
     use Controls::*;
     use points::*;
     &[
-        Port {
-            generated_sites: havok::SOLVER_REST,
-            ..port(&HAVOK_SOLVER, "sim.native_havok_solver", Mixed, havok::SOLVER_SITES, havok::solve)
-        },
-        port(&HAVOK_SUPPORT_VERTICES, "sim.native_havok_support_vertices", Mixed, support::SITES, support::vertices),
-        port(&HAVOK_WELD_CONTACTS, "sim.native_havok_weld", Weld, weld::SITES, weld::contacts),
         // The pose root runs under the pose-matrix switch: it inlines that
         // leaf and transform composition for the whole skeleton walk.
         port(&OBJECT_NODE_MATRICES, "sim.native_pose_matrix", Sse, &node_matrices::SITES, node_matrices::update),
-        port(&OBJECT_SPATIAL_VISIT, "sim.native_spatial_visit", Sse, &visit::SITES, visit::objects),
-        port(&OBJECT_SPATIAL_PORTAL, "sim.native_spatial_portal", Mixed, &spatial::SITES, spatial::portal),
         port(&UNIT_AIM_UPDATE, "sim.native_unit_aim", Trig, unit_aim::SITES, unit_aim::aim),
         port(&FIRST_PERSON_POSE_UPDATE, "sim.native_first_person_pose", Mixed, first_person::POSE_SITES, first_person::pose),
         port(&FIRST_PERSON_FILTER_UPDATE, "sim.native_first_person_filters", Mixed, first_person::FILTER_SITES, first_person::filters),
-        port(&OBSERVER_RESULT, "sim.native_observer_camera", Camera, &[], observer::camera),
+    ]
+};
+
+/// The Havok world entries under `impl.sim.native.physics` phase 5
+/// (docs/engine/sim-rewrite-havok.md §7.8): the step wrapper, the island
+/// collide and the island integrate. The world phases between them stay
+/// guest code and drive these entries through the dispatcher.
+pub const PHYSICS_PORTS: &[Port] = {
+    use points::*;
+    &[
+        port(&HAVOK_WORLD_STEP, "sim.native.physics", Controls::World, world::WORLD_SITES, world::step),
+        port(&HAVOK_ISLAND_COLLIDE, "sim.native.physics", Controls::World, world::ISLAND_SITES, world::collide_island),
+        port(&HAVOK_ISLAND_INTEGRATE, "sim.native.physics", Controls::World, world::INTEGRATE_SITES, world::integrate_island),
     ]
 };
 
@@ -91,11 +99,24 @@ pub const PORTS: &[Port] = {
 /// `impl.sim.native.objects` (`crate::sim_objects`); their `oracle.*` names
 /// are labels, not switches. The unit aim port stays in `PORTS` under its
 /// own switch, and the unit movement body runs the same code
-/// (`unit_aim::step`).
+/// (`unit_aim::step`). The observer camera is a seat
+/// (`crate::sim_seats::camera`) under `impl.sim.native.seats`, which
+/// retired its switch.
 pub const ORACLES: &[Port] = {
     use Controls::*;
     use points::*;
     &[
+        // The Havok per-function ports retired by `impl.sim.native.physics`
+        // (sim-rewrite-havok.md, slice 8): their bodies are the differential
+        // oracles for the phase 5 kernels (sim_havok::solver, support, weld).
+        Port {
+            generated_sites: havok::SOLVER_REST,
+            ..port(&HAVOK_SOLVER, "oracle.havok_solver", Mixed, havok::SOLVER_SITES, havok::solve)
+        },
+        port(&HAVOK_SUPPORT_VERTICES, "oracle.havok_support_vertices", Mixed, support::SITES, support::vertices),
+        port(&HAVOK_WELD_CONTACTS, "oracle.havok_weld", Weld, weld::SITES, weld::contacts),
+        port(&OBJECT_SPATIAL_VISIT, "oracle.spatial_visit", Sse, &visit::SITES, visit::objects),
+        port(&OBJECT_SPATIAL_PORTAL, "oracle.spatial_portal", Mixed, &spatial::SITES, spatial::portal),
         port(&OBJECTS_PRE_PHYSICS, "oracle.objects_pre_physics", Integer, &objects::PRE_SITES, objects::pre),
         port(&OBJECTS_POST_PHYSICS, "oracle.objects_post_physics", Integer, &objects::POST_SITES, objects::post),
         port(&OBJECT_PRE_UPDATE, "oracle.object_pre_update", Integer, &object_update::PRE, object_update::pre),
@@ -107,17 +128,18 @@ pub const ORACLES: &[Port] = {
         port(&UNIT_UPDATE, "oracle.unit_update", Integer, &objects::UNIT_SITES, objects::unit),
         // Other codecs are guest calls that resume at the call's return.
         port(&ANIM_ADDITIVE_NODES, "sim.native.anim", Sse, &crate::sim_native::evaluator::ADDITIVE_SITES, crate::sim_native::evaluator::additive),
+        port(&OBSERVER_RESULT, "oracle.observer_camera", Camera, &[], observer::camera),
     ]
 };
 
-pub(crate) fn push(c: &mut CpuAbi, g: &mut Guest, word: u32) -> Result<()> {
+pub(crate) fn push(c: &mut CpuAbi, g: &mut impl crate::sim_native::Memory, word: u32) -> Result<()> {
     let sp = c.esp.wrapping_sub(4);
     g.set_u32(sp, word)?;
     c.esp = sp;
     Ok(())
 }
 
-pub(crate) fn pop(c: &mut CpuAbi, g: &Guest) -> Result<u32> {
+pub(crate) fn pop(c: &mut CpuAbi, g: &impl crate::sim_native::Memory) -> Result<u32> {
     let v = g.u32(c.esp)?;
     c.esp = c.esp.wrapping_add(4);
     Ok(v)
@@ -151,7 +173,7 @@ pub(crate) fn arithmetic(c: &mut CpuAbi, a: u32, b: u32, sub: bool) -> u32 {
     v
 }
 
-fn call_arg(c: &mut CpuAbi, g: &mut Guest, arg: u32, target: u32, site: u32) -> Result<TransferAbi> {
+fn call_arg(c: &mut CpuAbi, g: &mut impl crate::sim_native::Memory, arg: u32, target: u32, site: u32) -> Result<TransferAbi> {
     push(c, g, arg)?;
     g.call(c, target, site)
 }
@@ -182,6 +204,10 @@ pub fn supported(port: &Port, cpu: &CpuAbi, guest: &Guest) -> bool {
         Integer => true,
         Sse => cpu.mxcsr & 0x1f80 == 0x1f80,
         Weld => x87_masked && weld::supported(guest),
+        World => {
+            let masked = x87_masked && cpu.mxcsr & 0x1f80 == 0x1f80;
+            masked && cpu.x87.control & 0xc00 == 0 && world::monitor_off(guest)
+        }
         Mixed | Trig | Camera => {
             let masked = x87_masked && cpu.mxcsr & 0x1f80 == 0x1f80;
             masked && (port.controls == Mixed || cpu.x87.control & 0xc00 == 0)

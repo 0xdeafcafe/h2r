@@ -1624,3 +1624,148 @@ fn probe_animation_uses_the_units_graph_and_resolves_the_engine_selection() {
     assert_eq!(out["animation"], 77);
     assert_eq!(out["selected"], json!([1, 2, 3]));
 }
+
+
+/// A game with structure BSP `loaded` loaded and `active` active: the
+/// game globals at [`GLOBALS`].
+const GLOBALS: u32 = 0x8050_0000;
+
+fn structure_world(loaded: i16, active: i16) -> World {
+    let mut w = world();
+    w.g.map(engine::points::GAME_GLOBALS.base, 4);
+    w.g.put_u32(engine::points::GAME_GLOBALS.base, GLOBALS);
+    w.g.map(GLOBALS, 0x10);
+    w.g.put_u16(GLOBALS + addr::GAME_GLOBALS_ACTIVE_BSP, active as u16);
+    w.g.map(addr::LOADED_STRUCTURE_BSP, 2);
+    w.g.put_u16(addr::LOADED_STRUCTURE_BSP, loaded as u16);
+    w
+}
+
+/// The callees as the game's: deactivate sets the active BSP to -1,
+/// activate to `to` (the loaded one, in the game).
+fn structure_callees(to: i16) -> impl FnMut(&GuestCall, &mut dyn GuestMemory) -> Regs {
+    move |c, m| {
+        let at = GLOBALS + addr::GAME_GLOBALS_ACTIVE_BSP;
+        if c.target == engine::points::STRUCTURE_BSP_DEACTIVATE.base {
+            m.set_u16(at, u16::MAX).unwrap();
+        } else if c.target == engine::points::STRUCTURE_BSP_ACTIVATE.base {
+            m.set_u16(at, to as u16).unwrap();
+        }
+        Regs::default()
+    }
+}
+
+#[test]
+fn reactivating_the_structure_deactivates_then_activates_the_loaded_bsp() {
+    let (out, calls, g) = one(structure_world(1, 1), Call::ReactivateStructure, structure_callees(1));
+    assert_eq!(out.unwrap(), json!({"bsp": 1}));
+    let targets: Vec<u32> = calls.iter().map(|c| c.target).collect();
+    assert_eq!(
+        targets,
+        [
+            engine::points::STRUCTURE_BSP_DEACTIVATE.base,
+            engine::points::STRUCTURE_BSP_ACTIVATE.base
+        ]
+    );
+    // Neither takes an argument.
+    assert!(calls.iter().all(|c| c.args.is_empty()));
+    assert_eq!(g.u16(GLOBALS + addr::GAME_GLOBALS_ACTIVE_BSP).unwrap(), 1);
+    // The loaded BSP is the game's to change: the call leaves it.
+    assert_eq!(g.u16(addr::LOADED_STRUCTURE_BSP).unwrap(), 1);
+}
+
+#[test]
+fn reactivating_needs_a_loaded_active_structure_and_checks_what_it_left() {
+    // Nothing loaded, or a switch half done: refused before any call.
+    for (loaded, active) in [(-1, -1), (0, -1), (1, 0)] {
+        let (out, calls, _) = one(structure_world(loaded, active), Call::ReactivateStructure, structure_callees(loaded));
+        assert_eq!(out.unwrap_err().code, REFUSED, "{loaded} {active}");
+        assert!(calls.is_empty());
+    }
+    // An activation that leaves another BSP active is an error.
+    let (out, calls, _) = one(structure_world(0, 0), Call::ReactivateStructure, structure_callees(-1));
+    assert!(out.unwrap_err().message.contains("left BSP -1 active"));
+    assert_eq!(calls.len(), 2);
+}
+
+mod base;
+mod definition;
+mod same_calls;
+
+#[test]
+fn a_sound_is_started_at_the_units_head_marker_as_a_dialogue_line_is() {
+    let w = world();
+    let unit = w.unit;
+    let (out, calls, _) = one(
+        w,
+        Call::Sound {
+            unit,
+            sound: 0xe400_0040,
+        },
+        |c, _| {
+            assert_eq!(c.target, addr::SOUND_START_AT_MARKER);
+            al(0x00cc_0001)
+        },
+    );
+    assert_eq!(out.unwrap()["instance"], "00cc0001");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].esi, Some(unit));
+    assert_eq!(calls[0].eax, Some(addr::HEAD_MARKER));
+    // The pointer, then the four words it points to.
+    assert_eq!(
+        calls[0].args[1..],
+        [u32::MAX, 0xe400_0040, 1.0f32.to_bits(), 0]
+    );
+}
+
+#[test]
+fn a_sound_the_game_does_not_start_is_an_error() {
+    let w = world();
+    let unit = w.unit;
+    let (out, _, _) = one(
+        w,
+        Call::Sound { unit, sound: 7 },
+        |_, _| al(u32::MAX),
+    );
+    assert!(out.unwrap_err().message.contains("started no sound"));
+}
+
+#[test]
+fn a_recording_is_played_by_the_recording_player_with_the_units_index_and_flags() {
+    let w = world();
+    let unit = w.unit;
+    let (out, calls, _) = one(
+        w,
+        Call::Recording {
+            unit,
+            index: 3,
+            flags: 8,
+        },
+        |c, _| {
+            assert_eq!(c.target, addr::RECORDING_PLAYER);
+            al(1)
+        },
+    );
+    assert_eq!(out.unwrap()["index"], 3);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].eax, Some(unit));
+    assert_eq!(calls[0].ecx, Some(3));
+    // The play flags are the one stack argument, after the return slot.
+    assert_eq!(calls[0].args, [8]);
+}
+
+#[test]
+fn a_recording_the_player_refuses_is_an_error() {
+    let w = world();
+    let unit = w.unit;
+    let (out, _, _) = one(
+        w,
+        Call::Recording {
+            unit,
+            index: 9,
+            flags: 0,
+        },
+        |_, _| al(0x7700),
+    );
+    assert!(out.unwrap_err().message.contains("started no recording 9"));
+}

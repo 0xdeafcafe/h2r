@@ -16,7 +16,7 @@ use std::sync::{Arc, OnceLock};
 
 use crate::setting_defs::{GUEST_FRAME, RESOLUTION};
 use crate::ui_kit::picker::{self, Pick};
-use crate::run_opts::NativeSize;
+use crate::run_opts::NativeTarget;
 use crate::video_screen::resolution;
 use settings::{Apply, Def, Resolution, Store, Tier, Value};
 
@@ -31,10 +31,6 @@ pub enum List {
     Controls,
     /// The retail Settings list (Player Profiles, Game Variants).
     Settings,
-    /// The Edit Profile list (screen 38, `crate::profile_voice_row`): its
-    /// rows are told apart by index, and ours sits among the retail ones
-    /// ([`Extension::at`]).
-    Profile,
     /// One of our screens, by id.
     Screen(&'static str),
 }
@@ -161,9 +157,6 @@ impl Screen {
 pub struct Extension {
     pub list: List,
     pub retail: u32,
-    /// The index our rows start at: after the retail rows unless set
-    /// ([`Extension::at`]).
-    at: Option<u32>,
     rows: Vec<Row>,
 }
 
@@ -172,7 +165,6 @@ pub fn extend(list: List, retail: u32) -> Extension {
     Extension {
         list,
         retail,
-        at: None,
         rows: Vec::new(),
     }
 }
@@ -181,16 +173,6 @@ impl Extension {
     pub fn row(mut self, r: Row) -> Extension {
         self.rows.push(r);
         self
-    }
-    /// Our rows from index `at`, the retail rows from there on after
-    /// them: [`Model::retail_index`] says which retail row an index shows.
-    pub fn at(mut self, at: u32) -> Extension {
-        self.at = Some(at.min(self.retail));
-        self
-    }
-    /// The index our first row is at.
-    fn start(&self) -> u32 {
-        self.at.unwrap_or(self.retail)
     }
 }
 
@@ -235,7 +217,7 @@ pub struct Model {
     screens: Vec<Screen>,
     extensions: Vec<Extension>,
     strings: Vec<(u32, String)>,
-    native_size: NativeSize,
+    native_target: NativeTarget,
     resolution_address: OnceLock<u32>,
 }
 
@@ -295,7 +277,7 @@ impl Model {
             screens,
             extensions,
             strings: Vec::new(),
-            native_size: Arc::new(|| GUEST_FRAME),
+            native_target: Arc::new(|| settings::NativeTarget::windowed(GUEST_FRAME)),
             resolution_address: OnceLock::new(),
         };
         let mut texts: Vec<String> = Vec::new();
@@ -344,14 +326,14 @@ impl Model {
         Ok(m)
     }
 
-    pub(crate) fn with_native_size(mut self, native: NativeSize) -> Self {
-        self.native_size = native;
+    pub(crate) fn with_native_target(mut self, native: NativeTarget) -> Self {
+        self.native_target = native;
         self
     }
 
     fn resolution_label(&self) -> Option<String> {
         let r = Resolution::from_value(self.store.get(RESOLUTION.key)?)?;
-        Some(resolution::label(r, (self.native_size)()))
+        Some(resolution::label(r, (self.native_target)()))
     }
 
     /// Where this model's mutable locale slot was placed in this guest.
@@ -404,12 +386,17 @@ impl Model {
         self.screen(id).map(|s| self.id(s.title))
     }
 
+    /// The retail lists some extension adds rows to.
+    pub fn extended_lists(&self) -> Vec<List> {
+        self.extensions.iter().map(|e| e.list).collect()
+    }
+
     /// Our rows of `list`: all of a screen's, or those added to a retail
     /// list.
     pub fn rows(&self, list: List) -> &[Row] {
         match list {
             List::Screen(id) => self.screen(id).map_or(&[], |s| &s.rows),
-            List::Controls | List::Settings | List::Profile => self
+            List::Controls | List::Settings => self
                 .extensions
                 .iter()
                 .find(|e| e.list == list)
@@ -423,7 +410,7 @@ impl Model {
     pub fn count(&self, list: List, retail: u32) -> u32 {
         match list {
             List::Screen(_) => self.rows(list).len() as u32,
-            List::Controls | List::Settings | List::Profile => {
+            List::Controls | List::Settings => {
                 match self.extensions.iter().find(|e| e.list == list) {
                     Some(e) if e.retail == retail => retail + e.rows.len() as u32,
                     _ => retail,
@@ -436,11 +423,11 @@ impl Model {
     pub fn row(&self, list: List, index: i16) -> Option<&Row> {
         let base = match list {
             List::Screen(_) => 0,
-            List::Controls | List::Settings | List::Profile => self
+            List::Controls | List::Settings => self
                 .extensions
                 .iter()
                 .find(|e| e.list == list)
-                .map_or(0, |e| e.start() as i64),
+                .map_or(0, |e| i64::from(e.retail)),
         };
         let i = usize::try_from(i64::from(index) - base).ok()?;
         self.rows(list).get(i)
@@ -450,29 +437,14 @@ impl Model {
     pub fn index_of(&self, list: List, kind: &RowKind) -> Option<i16> {
         let base = match list {
             List::Screen(_) => 0,
-            List::Controls | List::Settings | List::Profile => self
+            List::Controls | List::Settings => self
                 .extensions
                 .iter()
                 .find(|e| e.list == list)
-                .map_or(0, |e| e.start()),
+                .map_or(0, |e| e.retail),
         };
         let i = self.rows(list).iter().position(|r| r.kind == *kind)?;
         i16::try_from(base as usize + i).ok()
-    }
-
-    /// The retail row index `index` of `list` shows: itself before our
-    /// rows, `index` less ours after them ([`Extension::at`]), `None` for
-    /// one of ours, a screen of ours, or past the list.
-    pub fn retail_index(&self, list: List, index: i16) -> Option<i16> {
-        let e = self.extensions.iter().find(|e| e.list == list)?;
-        let (i, at, n) = (i64::from(index), i64::from(e.start()), e.rows.len() as i64);
-        let retail = match i {
-            _ if i < 0 => return None,
-            _ if i < at => i,
-            _ if i < at + n => return None,
-            _ => i - n,
-        };
-        (retail < i64::from(e.retail)).then_some(retail as i16)
     }
 
     /// Row `row` as one line, its label then its value: for a list whose
@@ -544,7 +516,7 @@ impl Model {
         };
         if row.picker && let Some(state) = self.store.state(key) && !state.locked {
             let (choices, help): (Vec<(Value, String)>, String) = if key == RESOLUTION.key {
-                let native = (self.native_size)();
+                let native = (self.native_target)();
                 let selected = Resolution::from_value(state.shown).expect("validated resolution");
                 let choices = resolution::choices(native, selected)
                     .into_iter()

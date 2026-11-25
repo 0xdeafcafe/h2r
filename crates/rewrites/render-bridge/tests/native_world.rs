@@ -104,7 +104,8 @@ impl Host for Stub {
         self.resolved.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, view: &frame_scene::View, stencil: &StencilPlan) -> Option<native_render::skip::Cleared> {
+    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, view: &frame_scene::View, stencil: &StencilPlan, claim_guest: bool) -> Option<native_render::skip::Cleared> {
+        assert!(claim_guest);
         self.asked.lock().unwrap().push((bsp, view.camera, stencil.clone()));
         let mut mem = native_world::Mem(mem);
         let (masks, cleared, _) = native_world::plan_parts(&mem, &self.parts, |_, _| true)?;
@@ -277,6 +278,10 @@ fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
     native_world::before_layer(&mut m, 0x0002_bd74);
     assert_eq!(masks(&m), vec![0b0010, 0b1010, 0b1010]);
     assert_eq!(stub.asked.lock().unwrap().len(), asked + 2);
+    render_bridge::scene_step::with_open(|open| {
+        let (_, view) = open.expect("alternate layer 3 opened a view");
+        assert_eq!(view.key.kind, frame_scene::ViewKind::Alternate);
+    });
     native_world::restore_pending(&mut m);
 }
 

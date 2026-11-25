@@ -1,0 +1,323 @@
+{
+  "name": "h2-rules",
+  "displayName": "H2 Rules and HaloScript",
+  "description": "Language support for h2recomp scripts: game type scripts (.rules) and HaloScript working copies (.hsc), with highlighting, snippets and the h2 rules and h2 hs language servers.",
+  "publisher": "h2recomp",
+  "version": "0.1.0",
+  "license": "WTFPL",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/0xdeafcafe/h2r",
+    "directory": "editors/vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/0xdeafcafe/h2r/issues"
+  },
+  "homepage": "https://github.com/0xdeafcafe/h2r/tree/master/editors/vscode",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Snippets"
+  ],
+  "keywords": [
+    "halo",
+    "h2recomp",
+    "rules",
+    "game type",
+    "haloscript",
+    "hsc"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:rules",
+    "onLanguage:haloscript"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "rules",
+        "aliases": [
+          "Rules",
+          "rules"
+        ],
+        "extensions": [
+          ".rules"
+        ],
+        "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "haloscript",
+        "aliases": [
+          "HaloScript"
+        ],
+        "extensions": [
+          ".hsc"
+        ],
+        "configuration": "./haloscript-language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "rules",
+        "scopeName": "source.rules",
+        "path": "./syntaxes/rules.tmLanguage.json"
+      },
+      {
+        "language": "haloscript",
+        "scopeName": "source.haloscript",
+        "path": "./syntaxes/haloscript.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "rules",
+        "path": "./snippets/rules.json"
+      }
+    ],
+    "configuration": {
+      "title": "H2 Rules and HaloScript",
+      "properties": {
+        "h2rules.serverPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "Path to the `h2` binary that serves `h2 rules lsp` and `h2 hs lsp` (both servers use it). Empty: `h2` on `PATH`, then `~/.cargo/bin/h2`. A leading `~` is the home directory."
+        },
+        "h2rules.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "scope": "window",
+          "description": "Traces the messages between VS Code and the rules language server, in the \"H2 Rules Trace\" output channel."
+        },
+        "h2hs.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "scope": "window",
+          "description": "Traces the messages between VS Code and the HaloScript language server, in the \"H2 HaloScript Trace\" output channel."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "h2rules.restartServer",
+        "title": "H2 Rules: Restart Language Server"
+      },
+      {
+        "command": "h2rules.showOutput",
+        "title": "H2 Rules: Show Output"
+      },
+      {
+        "command": "h2rules.reloadInGame",
+        "title": "H2: Reload Script in Game"
+      },
+      {
+        "command": "h2rules.runScenario",
+        "title": "H2: Run Scenario Test..."
+      },
+      {
+        "command": "h2hs.showUses",
+        "title": "H2: Show Uses in Map"
+      },
+      {
+        "command": "h2hs.showInStudio",
+        "title": "H2: Show in Studio"
+      },
+      {
+        "command": "h2hs.restartServer",
+        "title": "H2 HaloScript: Restart Language Server"
+      }
+    ],
+    "semanticTokenTypes": [
+      {
+        "id": "api",
+        "superType": "function",
+        "description": "A game API entry or built-in function."
+      },
+      {
+        "id": "label",
+        "superType": "variable",
+        "description": "A Forge label the map supplies."
+      },
+      {
+        "id": "capability",
+        "superType": "enumMember",
+        "description": "A capability named in requires or a grant."
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "rules",
+        "scopes": {
+          "keyword": [
+            "keyword.other.rules"
+          ],
+          "event": [
+            "entity.name.function.event.rules"
+          ],
+          "function": [
+            "entity.name.function.rules"
+          ],
+          "api": [
+            "support.function.rules"
+          ],
+          "variable": [
+            "variable.other.rules"
+          ],
+          "parameter": [
+            "variable.parameter.rules"
+          ],
+          "enum": [
+            "entity.name.type.enum.rules"
+          ],
+          "enumMember": [
+            "variable.other.enummember.rules"
+          ],
+          "type": [
+            "storage.type.rules"
+          ],
+          "number": [
+            "constant.numeric.rules"
+          ],
+          "string": [
+            "string.quoted.double.rules"
+          ],
+          "comment": [
+            "comment.line.double-slash.rules"
+          ],
+          "operator": [
+            "keyword.operator.rules"
+          ],
+          "label": [
+            "entity.name.label.rules"
+          ],
+          "capability": [
+            "support.constant.capability.rules"
+          ]
+        }
+      },
+      {
+        "language": "haloscript",
+        "scopes": {
+          "keyword": [
+            "keyword.other.haloscript"
+          ],
+          "type": [
+            "storage.type.haloscript"
+          ],
+          "function": [
+            "support.function.haloscript"
+          ],
+          "method": [
+            "entity.name.function.script.haloscript"
+          ],
+          "macro": [
+            "keyword.control.haloscript"
+          ],
+          "variable": [
+            "variable.other.global.haloscript"
+          ],
+          "enumMember": [
+            "constant.other.name.haloscript"
+          ],
+          "string": [
+            "string.quoted.double.haloscript"
+          ],
+          "number": [
+            "constant.numeric.haloscript"
+          ],
+          "comment": [
+            "comment.line.semicolon.haloscript"
+          ],
+          "parameter": [
+            "variable.parameter.haloscript"
+          ]
+        }
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "h2rules.reloadInGame",
+          "when": "editorLangId == rules",
+          "group": "h2@1"
+        },
+        {
+          "command": "h2rules.runScenario",
+          "when": "editorLangId == rules",
+          "group": "h2@2"
+        },
+        {
+          "command": "h2hs.showUses",
+          "when": "editorLangId == haloscript",
+          "group": "h2@1"
+        },
+        {
+          "command": "h2hs.showInStudio",
+          "when": "editorLangId == haloscript",
+          "group": "h2@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "h2rules.restartServer",
+          "when": "editorLangId == rules"
+        },
+        {
+          "command": "h2rules.showOutput",
+          "when": "editorLangId == rules"
+        },
+        {
+          "command": "h2rules.reloadInGame",
+          "when": "editorLangId == rules"
+        },
+        {
+          "command": "h2rules.runScenario",
+          "when": "editorLangId == rules"
+        },
+        {
+          "command": "h2hs.showUses",
+          "when": "editorLangId == haloscript"
+        },
+        {
+          "command": "h2hs.showInStudio",
+          "when": "editorLangId == haloscript"
+        },
+        {
+          "command": "h2hs.restartServer",
+          "when": "editorLangId == haloscript"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p .",
+    "watch": "tsc -watch -p .",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "tsc -p . && node --test test/grammar.test.mjs test/hsGrammar.test.mjs test/json.test.mjs test/serverPath.test.mjs",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "~1.90.0",
+    "@vscode/vsce": "^3.2.0",
+    "typescript": "^5.4.0",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.1.0"
+  }
+}

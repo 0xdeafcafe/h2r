@@ -440,8 +440,9 @@ enum Side {
     Right,
 }
 
-/// Both bumpers side by side with one lit, the way the retail glyphs show the
-/// two triggers and the two sticks. Monochrome, so it takes the text colour.
+/// Both bumpers (or both triggers) side by side with one lit, the way the
+/// retail glyphs show the two triggers and the two sticks. Monochrome, so
+/// it takes the text colour.
 fn shoulder_pair(h: usize, lit: Side, labels: [&str; 2], trigger: bool) -> Canvas {
     const BW: f32 = 21.0;
     const GAP: f32 = 3.0;

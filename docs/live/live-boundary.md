@@ -52,9 +52,9 @@ There is another verified tail jump at `0x0008d9de` to the already-listed `XNetC
 | `0x003a07b9` | XONLINE | 1 | `XOnlineFriendsEnumerateFinish` | likely | 1 / 1 | Task disposer 0x0006b640 finishes enumeration before pump/close. |
 | `0x003a07c4` | XONLINE | 1 | `XOnlineFriendsGetLatest` | likely | 3 / 3 | 0x0008cd60 supplies controller, capacity, friend buffer and consumes returned count. |
 | `0x003a07cf` | XONLINE | 2 | `XOnlineFriendsGetTitleName` | likely | 4 / 4 | 0x0006b590/0x0008d1a0 supply title ID, language, character limit, wide buffer. |
-| `0x003a07da` | XONLINE | 1 | `XOnlineFriendsRemove` | likely | 2 / 2 | 0x0008cdf0 supplies controller plus copied friend record. |
+| `0x003a07da` | XONLINE | 1 | `XOnlineFriendsRemove` | likely | 2 / 2 | 0x0008cdf0 supplies controller plus copied friend record. Implemented: signs a `FriendRemoved` event on the player's account stream (`invites::Op::FriendRemove`); returns S_OK at once. |
 | `0x003a07e5` | XONLINE | 1 | `XOnlineFriendsGameInvite` | likely | 4 / 5 | 0x0008cfe0 passes controller, by-value session ID, one recipient and friend record. |
-| `0x003a0806` | XONLINE | 1 | `XOnlineFriendsAnswerRequest` | likely | 3 / 3 | 0x0008ce40 maps UI answer to request-answer enum and passes friend/controller. |
+| `0x003a0806` | XONLINE | 1 | `XOnlineFriendsAnswerRequest` | likely | 3 / 3 | 0x0008ce40 maps UI answer to request-answer enum and passes friend/controller. Implemented: Yes (1) signs `FriendAccepted`, No (0) and Never (2) sign `FriendDeclined` (`invites::Op::FriendRequestAnswer`); returns S_OK at once. |
 | `0x003a0811` | XONLINE | 1 | `XOnlineFriendsAnswerGameInvite` | likely | 3 / 3 | 0x0008d050 maps UI invite answer and supplies friend/controller. |
 | `0x003a081c` | XONLINE | 1 | `XOnlineFriendsJoinGame` | likely | 2 / 2 | UI function 0x002395dc passes controller/friend; two-word join-game entry. |
 | `0x003a0827` | XONLINE | 1 | `XOnlineFriendsGetAcceptedGameInvite` | likely | 1 / 1 | 0x0006d210 passes accepted-invite output record; one-word result getter. |
@@ -76,8 +76,8 @@ There is another verified tail jump at `0x0008d9de` to the already-listed `XNetC
 | `0x003a8316` | XONLINE | 1 | `XOnlinePresenceInit` | likely | 3 / 3 | 0x0008c320 initializes per-controller presence task with event/task output. |
 | `0x003a8321` | XONLINE | 1 | `XOnlineGameInviteSend` | likely | 8 / 9 | 0x0008f7e0 sends XUID recipient list, by-value session ID and message handle. |
 | `0x003a834e` | XONLINE | 1 | `XOnlineGameInviteAnswer` | likely | 5 / 5 | 0x0008d0b0 supplies controller, answer-info record, answer enum, event/task. |
-| `0x003a835d` | XONLINE | 1 | `XOnlineFriendsRequestEx` | likely | 5 / 7 | 0x0008f6e0 XUID branch passes message handle and by-value 12-byte recipient XUID. |
-| `0x003a838a` | XONLINE | 1 | `XOnlineFriendsRequestByNameEx` | likely | 5 / 5 | Same wrapper name branch passes gamertag pointer instead of XUID value. |
+| `0x003a835d` | XONLINE | 1 | `XOnlineFriendsRequestEx` | likely | 5 / 7 | 0x0008f6e0 XUID branch passes message handle and by-value 12-byte recipient XUID. Implemented: the task posts a signed `FriendRequested` event on the player's account stream. |
+| `0x003a838a` | XONLINE | 1 | `XOnlineFriendsRequestByNameEx` | likely | 5 / 5 | Same wrapper name branch passes gamertag pointer instead of XUID value. Implemented: the gamertag is resolved to an XUID on the server first; unknown gives FRIEND_NOT_FOUND. |
 | `0x003a8399` | XONLINE | 1 | `XOnlineTeamMemberRecruit` | likely | 7 / 11 | 0x0008f500 XUID branch supplies team and recipient XUID values, properties/message/event/task. |
 | `0x003a83d4` | XONLINE | 1 | `XOnlineTeamMemberRecruitByName` | likely | 7 / 9 | Same wrapper name branch replaces recipient XUID with name pointer. |
 | `0x003a8407` | XONLINE | 1 | `XOnlineTeamMemberAnswerRecruit` | likely | 5 / 7 | 0x000abfa0 supplies controller, by-value team XUID, answer enum, event/task. |

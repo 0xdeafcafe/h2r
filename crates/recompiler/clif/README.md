@@ -9,9 +9,10 @@ The Cranelift fast tier: it turns planned IR (`emit::Owner`) straight into host 
 ## Layout
 
 - `src/lower.rs`: IR to Cranelift lowering, one handler per owner (`compile_shard`).
-- `src/abi.rs`: the handler signature and the ABI probe each shard carries.
+- `src/abi.rs`: the runtime ABI offsets and constants, and the import table's slots.
 - `src/x87.rs`: x87 operations lowered to calls into the `x87` crate's ABI.
-- `src/lib.rs`: `registry_c`, `HELPERS_C` and the module assembly.
+- `src/module.rs`: the registry and the bridge (import table and installers) as Cranelift objects.
+- `src/lib.rs`: shard compilation and `build_dylib`, which links every object with the platform's linker; no C is compiled.
 
 ## Tests
 

@@ -9,8 +9,8 @@ group deca 0xac align 4
   0x8 tagref next_decal groups=deca -- V class
   0x10 f32[2] radius -- E +0x14 scales the placement test (0x0017e670); V Halo 1's +0x18 pair in the same range
   0x18 unknown 0x4 -- E read as a scale in 0x0017ef10; 0.75 on most
-  0x1c f32[3] colour_lower -- V red, green, blue in 0..1, as Halo 1's +0x34; name D
-  0x28 f32[3] colour_upper -- V as Halo 1's +0x40; name D
+  0x1c f32[3] colour_lower view=rgb -- V red, green, blue in 0..1, as Halo 1's +0x34; name D
+  0x28 f32[3] colour_upper view=rgb -- V red, green, blue in 0..1, as Halo 1's +0x40; name D
   0x34 f32[2] lifetime_bounds -- V seconds (180 on most), as Halo 1's +0x78 pair; name D
   0x3c f32[2] decay_time_bounds -- V seconds (20 on most), as Halo 1's +0x80 pair; name D
   0x44 pad 0x44

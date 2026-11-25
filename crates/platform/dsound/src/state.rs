@@ -28,6 +28,7 @@ use crate::voice_rings::{self, VoiceRings};
 
 /// The `dsound` snapshot section's DirectSound half.
 mod snap;
+mod voice_trace;
 
 /// Why the shim cannot continue. Distinct from an HRESULT failure, which the
 /// game is allowed to see and handle.
@@ -417,6 +418,7 @@ pub struct DirectSound {
     mixer: Arc<Mutex<Mixer>>,
     layout: Layout,
     clock_only: bool,
+    voice_trace: Option<voice_trace::VoiceTrace>,
     objects: HashMap<u32, Object>,
     root: Option<u32>,
     mix_bin_headroom: [u32; 32],
@@ -467,6 +469,7 @@ impl DirectSound {
             mixer,
             layout,
             clock_only: false,
+            voice_trace: None,
             objects: HashMap::new(),
             root: None,
             mix_bin_headroom: [0; 32],
@@ -737,7 +740,8 @@ impl DirectSound {
         // held voice released or none of them.
         let mixer = Arc::clone(&self.mixer);
         let mut m = mixer.lock().unwrap();
-        for obj in self.objects.values_mut() {
+        let mut released = Vec::new();
+        for (&ptr, obj) in &mut self.objects {
             match obj {
                 Object::Buffer(b) if b.gate == Gate::Held => {
                     b.gate = Gate::Open;
@@ -748,16 +752,27 @@ impl DirectSound {
                             sb.set_current_position(0);
                         }
                         sb.play(r.looping);
+                        if self.voice_trace.is_some() {
+                            released.push(ptr);
+                        }
                     }
                 }
                 Object::Stream(s) if s.gate == Gate::Held => {
                     s.gate = Gate::Open;
                     if let Some(st) = m.stream_mut(s.audio) {
                         st.pause(false);
+                        if self.voice_trace.is_some() {
+                            released.push(ptr);
+                        }
                     }
                 }
                 _ => {}
             }
+        }
+        // The whole group starts on one mixer frame under this lock.
+        released.sort_unstable();
+        for ptr in released {
+            self.voice_event(format_args!("synch-release {ptr:x}"));
         }
         Ok(S_OK)
     }
@@ -780,16 +795,21 @@ impl DirectSound {
             }
             sb.play(r.looping);
         })?;
+        self.voice_event(format_args!("buffer-resume {ptr:x}"));
         Ok(())
     }
 
     fn release_stream_gate(&mut self, ptr: u32) -> Result<(), Stop> {
         let mixer = Arc::clone(&self.mixer);
         let s = self.stream(ptr)?;
+        let was_held = s.gate != Gate::Open;
         s.gate = Gate::Open;
         let audio = s.audio;
         if let Some(st) = mixer.lock().unwrap().stream_mut(audio) {
             st.pause(false);
+        }
+        if was_held {
+            self.voice_event(format_args!("stream-resume {ptr:x}"));
         }
         Ok(())
     }
@@ -1678,6 +1698,7 @@ impl DirectSound {
             b.mix_in_playing = true;
             b.gate = Gate::Open;
             self.note("mix-in buffer Play");
+            self.voice_event(format_args!("mix-in-play {ptr:x}"));
             self.sync_buffer(ptr)?;
             return Ok(S_OK);
         }
@@ -1704,12 +1725,16 @@ impl DirectSound {
         }
         b.gate = Gate::Open;
         b.resume = None;
+        let data = b.data.as_ref().map(|d| (d.ptr, d.size));
         self.with_audio(ptr, |_, sb| {
             if from_start {
                 sb.set_current_position(0);
             }
             sb.play(looping);
         })?;
+        if !running || from_start {
+            self.voice_event(format_args!("buffer-play {ptr:x} {flags:x} {data:x?}"));
+        }
         Ok(S_OK)
     }
 
@@ -1724,6 +1749,7 @@ impl DirectSound {
         b.mix_in_playing = false;
         self.with_audio(ptr, |_, sb| sb.stop())?;
         self.sync_buffer(ptr)?;
+        self.voice_event(format_args!("buffer-stop {ptr:x}"));
         Ok(S_OK)
     }
 
@@ -1834,7 +1860,14 @@ impl DirectSound {
         let rate = b.format.map(|f| f.sample_rate());
         let eff = b.frequency.or(rate);
         if let Some(eff) = eff {
-            self.with_audio(ptr, |_, sb| sb.set_frequency(eff))?;
+            let changed = self.with_audio(ptr, |_, sb| {
+                let previous = sb.params().frequency;
+                sb.set_frequency(eff);
+                sb.params().frequency != previous
+            })?;
+            if changed == Some(true) {
+                self.voice_event(format_args!("buffer-frequency {ptr:x} {eff}"));
+            }
         }
         Ok(S_OK)
     }
@@ -2033,6 +2066,7 @@ impl DirectSound {
         self.next_token += 1;
         let token = self.next_token;
         let s = self.stream(ptr)?;
+        let start = !s.voice_active;
         s.started = true;
         s.voice_active = true;
         // Keep the kernel event alive until the packet completes. The signal
@@ -2053,6 +2087,13 @@ impl DirectSound {
             },
             done: None,
         });
+        if start {
+            self.voice_event(format_args!("stream-start {ptr:x}"));
+        }
+        self.voice_event(format_args!(
+            "submit {ptr:x} {:x} {:x} {:x} {:x} {:x}",
+            pkt.buffer, pkt.max_size, pkt.status_ptr, pkt.completed_size_ptr, pkt.event_or_context
+        ));
         self.service_stream(h, ptr)?;
         Ok(S_OK)
     }
@@ -2196,7 +2237,12 @@ impl DirectSound {
         let mixer = Arc::clone(&self.mixer);
         let audio = self.stream(ptr)?.audio;
         if let Some(st) = mixer.lock().unwrap().stream_mut(audio) {
+            let previous = st.params().frequency;
             st.set_frequency(pitch_to_hz(pitch));
+            let hz = st.params().frequency;
+            if hz != previous {
+                self.voice_event(format_args!("stream-frequency {ptr:x} {hz}"));
+            }
         }
         Ok(S_OK)
     }
@@ -2482,6 +2528,10 @@ impl DirectSound {
             }
             let (callback, ctx) = (s.callback, s.callback_context);
             s.packets.pop_front();
+            self.voice_event(format_args!(
+                "complete {ptr:x} {:x} {:x} {:x} {:x} {code:x}",
+                rec.size, rec.status_ptr, rec.completed_size_ptr, rec.event_or_context
+            ));
             if callback != 0 {
                 h.stream_callback(StreamCallback {
                     function: callback,
@@ -2593,18 +2643,20 @@ impl DirectSound {
         if !self.holds(lease) {
             return Err(Stop::Consumer(self.conflict(lease.who)));
         }
-        let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
-        #[cfg(feature = "playback")]
-        if !self.clock_only() {
+        let shared = Arc::clone(&self.mixer);
+        let mut mixer = shared.lock().unwrap_or_else(|e| e.into_inner());
+        let playing = self.playing_for_trace(&mixer);
+        if self.clock_only() {
+            out.fill(0.0);
+            if let Some(side) = side {
+                side.fill(0.0);
+            }
+            mixer.advance_clock(out.len() / 2);
+        } else {
+            #[cfg(feature = "playback")]
             mixer.render_split(out, side);
-            drop(mixer);
-            return self.service_all(h).map(|_| ());
         }
-        out.fill(0.0);
-        if let Some(side) = side {
-            side.fill(0.0);
-        }
-        mixer.advance_clock(out.len() / 2);
+        self.trace_render(&mixer, playing, (out.len() / 2) as u64);
         drop(mixer);
         self.service_all(h).map(|_| ())
     }
@@ -2685,19 +2737,23 @@ impl DirectSound {
     }
 
     fn render_discard(&mut self, frames: u64) {
-        let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
+        let shared = Arc::clone(&self.mixer);
+        let mut mixer = shared.lock().unwrap_or_else(|e| e.into_inner());
         #[cfg(feature = "playback")]
         let mut scratch = (!self.clock_only()).then(|| vec![0.0f32; 2 * RENDER_CHUNK as usize]);
         let mut left = frames;
         while left > 0 {
             let count = left.min(RENDER_CHUNK);
+            let playing = self.playing_for_trace(&mixer);
             #[cfg(feature = "playback")]
             if let Some(out) = &mut scratch {
                 mixer.render(&mut out[..2 * count as usize]);
+                self.trace_render(&mixer, playing, count);
                 left -= count;
                 continue;
             }
             mixer.advance_clock(count as usize);
+            self.trace_render(&mixer, playing, count);
             left -= count;
         }
         self.frames_rendered += frames;

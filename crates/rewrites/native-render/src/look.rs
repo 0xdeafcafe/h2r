@@ -9,10 +9,11 @@
 use std::io::{Read, Seek};
 
 use map::{Map, TagId};
-use tags::material::{Material, Origin, Register, ResolvedImplementation, TextureSource};
+use tags::material::{EngineInputs, Material, Origin, Register, ResolvedImplementation, TextureSource};
 use tags::shader::{Metadata, PSDEF_SIZE, StageStates};
 
-use crate::pass_state::{PassState, StateRefusal, pass_state};
+use crate::engine_states::{EngineStateRefusal, apply_static};
+use crate::pass_state::{PassState, StateRefusal, geometry_pass_state};
 
 /// The layer the native world draws.
 pub const LIGHTMAP_LAYER: usize = 3;
@@ -39,10 +40,8 @@ pub enum Stage {
     /// The section's lightmap page through its palette.
     Lightmap,
     /// An engine texture by id (`0x00019530`'s table): supplied per view,
-    /// never decoded at load. The look refuses these
-    /// ([`Refusal::EngineTexture`]); the stages that supply them (the
-    /// water edge blend's scene copy and reflections,
-    /// `crate::water_gpu`) build their own look with them.
+    /// never decoded at load. Layer 3 can bind target 1. The water and
+    /// fog passes supply their own per-view resources.
     Engine(u8),
     /// An image a host with no game keys itself ([`HostStage`]): never a
     /// tag, so it cannot stand for one. Bound as a bitmap stage is, from
@@ -106,7 +105,7 @@ pub enum Refusal {
     MissingImplementation(usize),
     /// The implementation has no vertex program.
     NoVertexShader,
-    /// A stage samples an engine texture other than the lightmap.
+    /// The pass has no binding for this engine texture.
     EngineTexture(u8),
     /// A stage samples what the previous draw left.
     UnsetSlot(u8),
@@ -116,13 +115,16 @@ pub enum Refusal {
     EngineVertexConstant(u8),
     /// Something in the pass is animated.
     Animated,
+    /// An animated constant the sampler cannot apply
+    /// ([`crate::layer_pass::PassAnimation::baseline`]), by the
+    /// [`crate::layer_pass::LayerRefusal::name`] of its cause.
+    AnimationSample(&'static str),
     /// The pass's render states do not fit the native pass
     /// ([`crate::pass_state::pass_state`]).
     State(StateRefusal),
-    /// The pass reads engine-driven render states.
-    EngineRenderStates,
-    /// The pass reads engine-driven texture stage states.
-    EngineStageStates,
+    /// The pass's engine-driven render or stage states do not fit
+    /// ([`crate::engine_states::apply_static`]).
+    EngineStates(EngineStateRefusal),
     /// The pass blends with what is under it (the native world draws
     /// opaque layer-3 passes only).
     Blended,
@@ -134,6 +136,8 @@ pub enum Refusal {
 pub struct WorldPass {
     pub look: PassLook,
     pub state: PassState,
+    /// Effective writes that take their dimensions from target 1.
+    pub texaccum_dimensions: Vec<(tags::material::EngineVertexConstant, u8)>,
     /// The implementation does not set `CULLMODE`: the pass culls as the
     /// device does when layer 3 is drawn (`crate::program::InheritedCull`),
     /// and nothing where that is not known (`state`'s cull is `None`).
@@ -142,8 +146,10 @@ pub struct WorldPass {
 
 /// [`layer3_look`] with the pass's own render states: depth test and
 /// write, colour writes, alpha test and cull, as the D3D path applies them
-/// on entry (`0x00018900`). A pass that reads engine-driven render or stage
-/// states, or blends, stays on the D3D path. Where the implementation does
+/// on entry (`0x00018900`), with its engine-driven render and stage states
+/// over them from the material's inputs
+/// ([`crate::engine_states::apply_static`]). A pass whose engine-driven
+/// states do not fit, or that blends, stays on the D3D path. Where the implementation does
 /// not set `CULLMODE` itself it inherits the previous draw's: the D3D
 /// path's draws of placement 282 on 03a cull `Front` (`CULL_CW`, front face
 /// `CW`) where the pass leaves it unset. Such a
@@ -152,45 +158,102 @@ pub struct WorldPass {
 /// (an open, single-sided girder seen from behind then draws its back
 /// faces: the 43 px on 03a).
 pub fn layer3_pass(material: &Material) -> Result<WorldPass, Refusal> {
-    let look = layer3_look(material)?;
-    let imp = layer3_implementation(material).ok_or(Refusal::NoLayer3)?;
-    world_pass(look, imp)
+    let (pass, imp) = layer3_selected(material)?;
+    world_pass(world_implementation_look(pass, imp, None)?, imp, &material.inputs)
+}
+
+/// [`layer3_pass`] for a pass whose constants animate: compiled from its
+/// registers at clock 0, with the animation each frame samples at the
+/// render clock (`properties` the instance's, `shad +0x3c`; the
+/// structure planner's sampler, [`crate::layer_pass::PassAnimation`]).
+/// A target the sampler cannot apply stays on the D3D path
+/// ([`Refusal::AnimationSample`]).
+pub fn layer3_pass_sampled(
+    material: &Material, properties: &[tags::shader::AnimatedProperty],
+) -> Result<(WorldPass, Option<crate::layer_pass::PassAnimation>), Refusal> {
+    let (pass, imp) = layer3_selected(material)?;
+    let (imp, animation) = sampled(imp, properties)?;
+    Ok((world_pass(world_implementation_look(pass, &imp, None)?, &imp, &material.inputs)?, animation))
+}
+
+fn sampled(
+    imp: &ResolvedImplementation, properties: &[tags::shader::AnimatedProperty],
+) -> Result<(ResolvedImplementation, Option<crate::layer_pass::PassAnimation>), Refusal> {
+    crate::layer_pass::PassAnimation::baseline(imp, properties, false, 0).map_err(|r| Refusal::AnimationSample(r.name()))
 }
 
 /// The lighting selector for a BSP without a matching first lightmap
 /// group (record builder, `world_walk::Plan::lighting`). A layer mask
 /// covers all passes, so this material path requires a single pass.
-pub fn unlit_bsp_pass(pass: &tags::material::SelectedImplementation, normalization: Option<TagId>)
-    -> Result<WorldPass, Refusal>
-{
+/// `inputs` are those `pass` was resolved with (the instance's,
+/// `EngineInputs::for_shader`, when the resolve was given none).
+pub fn unlit_bsp_pass(
+    pass: &tags::material::SelectedImplementation, inputs: &EngineInputs, normalization: Option<TagId>,
+) -> Result<WorldPass, Refusal> {
+    let imp = unlit_bsp_implementation(pass)?;
+    let look = world_implementation_look(pass.pass, imp, normalization)?;
+    world_pass(look, imp, inputs)
+}
+
+/// [`unlit_bsp_pass`] for a pass whose constants animate, as
+/// [`layer3_pass_sampled`].
+pub fn unlit_bsp_pass_sampled(
+    pass: &tags::material::SelectedImplementation, inputs: &EngineInputs, normalization: Option<TagId>,
+    properties: &[tags::shader::AnimatedProperty],
+) -> Result<(WorldPass, Option<crate::layer_pass::PassAnimation>), Refusal> {
+    unlit_bsp_implementation(pass)?;
+    selected_bsp_pass_sampled(pass, inputs, normalization, properties)
+}
+
+/// Compile the implementation selected by the structure render record.
+/// The part mask covers every pass in the layer, so a batched material
+/// must still have exactly one pass.
+pub fn selected_bsp_pass_sampled(
+    pass: &tags::material::SelectedImplementation, inputs: &EngineInputs, normalization: Option<TagId>,
+    properties: &[tags::shader::AnimatedProperty],
+) -> Result<(WorldPass, Option<crate::layer_pass::PassAnimation>), Refusal> {
+    if pass.layer_passes != 1 { return Err(Refusal::Passes(pass.layer_passes)); }
+    let (imp, animation) = sampled(&pass.implementation, properties)?;
+    let look = world_implementation_look(pass.pass, &imp, normalization)?;
+    Ok((world_pass(look, &imp, inputs)?, animation))
+}
+
+fn unlit_bsp_implementation(pass: &tags::material::SelectedImplementation) -> Result<&ResolvedImplementation, Refusal> {
     if pass.layer_passes != 1 { return Err(Refusal::Passes(pass.layer_passes)); }
     let imp = &pass.implementation;
     if imp.index != UNLIT_BSP_IMPLEMENTATION {
         return Err(Refusal::MissingImplementation(UNLIT_BSP_IMPLEMENTATION));
     }
-    let look = look_with_engine(pass.pass, imp, normalization)?;
-    world_pass(look, imp)
+    Ok(imp)
 }
 
 /// Record lighting selector when the BSP has no matching lightmap.
 pub const UNLIT_BSP_IMPLEMENTATION: usize = 3;
 
-fn world_pass(look: PassLook, imp: &ResolvedImplementation) -> Result<WorldPass, Refusal> {
-    if !imp.engine_render_states.is_empty() {
-        return Err(Refusal::EngineRenderStates);
-    }
-    if !imp.engine_stage_states.is_empty() {
-        return Err(Refusal::EngineStageStates);
-    }
-    let mut state = pass_state(&imp.render_states).map_err(Refusal::State)?;
+fn world_pass(mut look: PassLook, imp: &ResolvedImplementation, inputs: &EngineInputs) -> Result<WorldPass, Refusal> {
+    let applied = apply_static(imp, inputs).map_err(Refusal::EngineStates)?;
+    look.stage_states = applied.stage_states;
+    let mut state = geometry_pass_state(&applied.render_states).map_err(Refusal::State)?;
     if state.blend.is_some() {
-        return Err(Refusal::Blended);
+        // The world issues opaque parts together. A replacement blend is
+        // independent of the destination only when the operation is known.
+        use gfx::state::{BlendOp, RenderStateType as R};
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let operation = applied.render_states.iter().rev()
+            .find(|s| R::from_guest_index(&table, u32::from(s.state)) == Some(R::BlendOp));
+        if state.blend != Some(wgpu::BlendState::REPLACE)
+            || operation.map(|s| s.value) != Some(BlendOp::Add.xbox_value())
+        {
+            return Err(Refusal::Blended);
+        }
+        state.blend = None;
     }
     let inherits_cull = !sets_state(&imp.render_states, gfx::state::RenderStateType::CullMode);
     if inherits_cull {
         state.primitive.cull_mode = None;
     }
-    Ok(WorldPass { look, state, inherits_cull })
+    let texaccum_dimensions = texaccum_dimensions(imp);
+    Ok(WorldPass { look, state, inherits_cull, texaccum_dimensions })
 }
 
 /// Whether `states` set `which` (build 5849's slots).
@@ -201,18 +264,17 @@ pub(crate) fn sets_state(states: &[tags::shader::RenderStateValue], which: gfx::
         .any(|s| gfx::state::RenderStateType::from_guest_index(&table, u32::from(s.state)) == Some(which))
 }
 
-/// The implementation [`layer3_look`] takes.
-fn layer3_implementation(material: &Material) -> Option<&ResolvedImplementation> {
-    let layer = material.layers.iter().find(|l| l.lod == 0 && l.layer == LIGHTMAP_LAYER)?;
-    let [pass] = layer.passes.as_slice() else { return None };
-    pass.implementations.iter().find(|i| samples_lightmap(i))
-}
-
 /// The layer-3 pass of `material` (first level of detail), or why not.
 /// The implementation is the first that samples the lightmap: the one the
 /// engine binds for a lightmapped section (S, the lightmap bind at
 /// `0x0004d40f`).
 pub fn layer3_look(material: &Material) -> Result<PassLook, Refusal> {
+    let (pass, imp) = layer3_selected(material)?;
+    implementation_look(pass, imp)
+}
+
+/// The pass and implementation [`layer3_look`] draws, or why none.
+fn layer3_selected(material: &Material) -> Result<(TagId, &ResolvedImplementation), Refusal> {
     let layer = material
         .layers
         .iter()
@@ -227,22 +289,79 @@ pub fn layer3_look(material: &Material) -> Result<PassLook, Refusal> {
         .iter()
         .find(|i| samples_lightmap(i))
         .ok_or(Refusal::NoLightmapImplementation)?;
-    implementation_look(pass.pass, imp)
+    Ok((pass.pass, imp))
 }
 
 /// One implementation of the pass `pass` as the native pass draws it, or
 /// why it stays on the D3D path: its vertex program, stage textures and
 /// instance constants, nothing animated or computed per draw.
 pub fn implementation_look(pass: TagId, imp: &ResolvedImplementation) -> Result<PassLook, Refusal> {
-    look_with_engine(pass, imp, None)
+    look_with_engine(pass, imp, None, None, false)
 }
 
-fn look_with_engine(pass: TagId, imp: &ResolvedImplementation, normalization: Option<TagId>) -> Result<PassLook, Refusal> {
+/// The image of the rasterizer data's `+0x14` bitmap that engine texture
+/// `id` binds. Both jump-table entries (`0x000197dd` for 14, `0x000197fb`
+/// for 15) call `0x000143c0` with that bitmap; 14 clears `ecx` first (image
+/// 0), 15 leaves the 1 `0x00019538` loaded (image 1).
+pub fn rasterizer_image(id: u8) -> u32 {
+    u32::from(id == 15)
+}
+
+/// [`implementation_look`] with the rasterizer data's bitmap at `+0x14`
+/// (engine textures 14 and 15, `screen_look::engine_texture`) resolved to
+/// `rasterizer`: a stage naming either samples it ([`rasterizer_image`]).
+/// `None` refuses them as [`implementation_look`] does.
+pub fn implementation_look_with_rasterizer(
+    pass: TagId, imp: &ResolvedImplementation, rasterizer: Option<TagId>,
+) -> Result<PassLook, Refusal> {
+    look_with_engine(pass, imp, None, rasterizer, false)
+}
+
+/// Target 1 is a live render texture. Its size bindings can share a row
+/// with instance data, another dimension binding or a scalar input.
+/// Keep only lanes for which target 1 is the final engine write.
+fn texaccum_dimensions(imp: &ResolvedImplementation) -> Vec<(tags::material::EngineVertexConstant, u8)> {
+    use tags::material::VectorTarget;
+    let mut covered = [[0u8; 16]; 2];
+    for b in imp.scalar_bindings.iter().chain(&imp.vector_bindings) {
+        if let VectorTarget::Vertex { bank, reg, components } = b.target {
+            covered[usize::from(bank)][usize::from(reg)] |= components;
+        }
+    }
+    let mut dimensions = Vec::new();
+    for &d in imp.dimension_bindings.iter().rev() {
+        let written = &mut covered[usize::from(d.bank)][usize::from(d.reg)];
+        let lanes = d.components() & !*written;
+        *written |= d.components();
+        let stage = usize::from(d.stage).checked_sub(1).and_then(|n| imp.textures.get(n)).copied().flatten();
+        if lanes != 0 && stage.is_some_and(|t| t.source == TextureSource::Engine(crate::object_program::TEXACCUM_TEXTURE)) {
+            dimensions.push((d, lanes));
+        }
+    }
+    dimensions
+}
+
+fn world_implementation_look(
+    pass: TagId, imp: &ResolvedImplementation, normalization: Option<TagId>,
+) -> Result<PassLook, Refusal> {
+    look_with_engine(pass, imp, normalization, None, true)
+}
+
+fn look_with_engine(
+    pass: TagId, imp: &ResolvedImplementation, normalization: Option<TagId>, rasterizer: Option<TagId>,
+    world_accumulation: bool,
+) -> Result<PassLook, Refusal> {
+    use crate::object_program::TEXACCUM_TEXTURE;
     let vertex_shader = imp.vertex_shader.ok_or(Refusal::NoVertexShader)?;
     if !imp.animated.is_empty() {
         return Err(Refusal::Animated);
     }
-    if let Some(r) = imp.vertex_constants.iter().find(|r| r.origin == Origin::Engine) {
+    let accumulation_size = |r: &Register| world_accumulation && imp.dimension_bindings.iter().any(|d| {
+        d.bank == 1 && 18 + d.reg == r.index && usize::from(d.stage).checked_sub(1)
+            .and_then(|stage| imp.textures.get(stage)).copied().flatten()
+            .is_some_and(|t| t.source == TextureSource::Engine(TEXACCUM_TEXTURE))
+    });
+    if let Some(r) = imp.vertex_constants.iter().find(|r| r.origin == Origin::Engine && !accumulation_size(r)) {
         return Err(Refusal::EngineVertexConstant(r.index));
     }
     let mut textures = [Stage::Empty; 4];
@@ -251,8 +370,12 @@ fn look_with_engine(pass: TagId, imp: &ResolvedImplementation, normalization: Op
             None | Some(TextureSource::None) => Stage::Empty,
             Some(TextureSource::Bitmap { bitmap, image, .. }) => Stage::Bitmap { bitmap, image },
             Some(TextureSource::Lightmap) => Stage::Lightmap,
+            Some(TextureSource::Engine(TEXACCUM_TEXTURE)) if world_accumulation => Stage::Engine(TEXACCUM_TEXTURE),
             Some(TextureSource::Engine(1)) => Stage::Bitmap {
                 bitmap: normalization.ok_or(Refusal::EngineTexture(1))?, image: 0,
+            },
+            Some(TextureSource::Engine(id @ (14 | 15))) => Stage::Bitmap {
+                bitmap: rasterizer.ok_or(Refusal::EngineTexture(id))?, image: rasterizer_image(id),
             },
             Some(TextureSource::Engine(id)) => return Err(Refusal::EngineTexture(id)),
             Some(TextureSource::UnsetSlot(s)) => return Err(Refusal::UnsetSlot(s)),
@@ -461,15 +584,31 @@ mod tests {
             pass: TagId(13), layer_passes: 1, render_writes: Vec::new(), implementation: opaque(implementation(3, false), &[]),
         };
         let cube = TagId(17);
-        let pass = unlit_bsp_pass(&selected, Some(cube)).unwrap();
+        let pass = unlit_bsp_pass(&selected, &EngineInputs::default(), Some(cube)).unwrap();
         assert_eq!(pass.look.implementation, 3);
         assert_eq!(pass.look.vertex_shader, selected.implementation.vertex_shader.unwrap());
         assert_eq!(pass.look.textures[3], Stage::Bitmap { bitmap: cube, image: 0 });
-        assert_eq!(unlit_bsp_pass(&selected, None), Err(Refusal::EngineTexture(1)));
+        assert_eq!(unlit_bsp_pass(&selected, &EngineInputs::default(), None), Err(Refusal::EngineTexture(1)));
         selected.implementation = opaque(implementation(0, true), &[]);
-        assert_eq!(unlit_bsp_pass(&selected, Some(cube)), Err(Refusal::MissingImplementation(3)));
+        assert_eq!(unlit_bsp_pass(&selected, &EngineInputs::default(), Some(cube)), Err(Refusal::MissingImplementation(3)));
         selected.layer_passes = 2;
-        assert_eq!(unlit_bsp_pass(&selected, Some(cube)), Err(Refusal::Passes(2)));
+        assert_eq!(unlit_bsp_pass(&selected, &EngineInputs::default(), Some(cube)), Err(Refusal::Passes(2)));
+    }
+
+    #[test]
+    fn engine_textures_14_and_15_are_the_rasterizer_bitmap_s_first_and_second_image() {
+        let mut imp = implementation(0, true);
+        imp.textures[1] = texture(TextureSource::Engine(14));
+        imp.textures[2] = texture(TextureSource::Engine(15));
+        let bitmap = TagId(0xe000_0042);
+        let look = implementation_look_with_rasterizer(TagId(1), &imp, Some(bitmap)).unwrap();
+        assert_eq!(look.textures[1], Stage::Bitmap { bitmap, image: 0 });
+        assert_eq!(look.textures[2], Stage::Bitmap { bitmap, image: 1 });
+        // Without the bitmap, or through the plain look, 14 refuses first.
+        assert_eq!(implementation_look_with_rasterizer(TagId(1), &imp, None), Err(Refusal::EngineTexture(14)));
+        assert_eq!(implementation_look(TagId(1), &imp), Err(Refusal::EngineTexture(14)));
+        imp.textures[1] = None;
+        assert_eq!(implementation_look(TagId(1), &imp), Err(Refusal::EngineTexture(15)));
     }
 
     #[test]
@@ -540,6 +679,79 @@ mod tests {
         assert_eq!((p.state.depth_compare, p.state.depth_write), (wgpu::CompareFunction::Equal, false));
     }
 
+    /// A layer-3 pass whose constants animate stays on the D3D path
+    /// without its properties, and compiles at clock 0 with them.
+    #[test]
+    fn an_animated_layer3_pass_compiles_with_its_animation() {
+        let (target, props) = crate::layer_pass::tests::animated_z();
+        let mut imp = opaque(implementation(0, true), &[]);
+        imp.animated = vec![target];
+        let m = material(3, vec![vec![imp]]);
+        assert_eq!(layer3_pass(&m), Err(Refusal::Animated));
+        assert_eq!(layer3_pass_sampled(&m, &[]).unwrap_err(), Refusal::AnimationSample("property"));
+        let (pass, animation) = layer3_pass_sampled(&m, &props).unwrap();
+        let animation = animation.expect("kept for the frame's clock");
+        let c18 = pass.look.vertex_constants.iter().find(|r| r.index == 18).unwrap();
+        assert_eq!(c18.value[2], 0.0, "clock 0");
+        let v = animation.sample(Some(11.0)).unwrap().vertex(&shaders::vsh::VertexUniforms::default());
+        assert_eq!(v.constants[18][2], 1.5);
+        let still = material(3, vec![vec![opaque(implementation(0, true), &[])]]);
+        let (pass, none) = layer3_pass_sampled(&still, &props).unwrap();
+        assert!(none.is_none());
+        assert_eq!(pass, layer3_pass(&still).unwrap());
+    }
+
+    /// An engine-driven alpha reference from the instance's scalar 21
+    /// lands in the pass's alpha test, after the pass's own value; a
+    /// driven LOD bias in its stage's states.
+    #[test]
+    fn a_world_pass_takes_its_engine_driven_states_from_the_instance() {
+        use gfx::state::{CompareFunc, RenderStateType as R};
+        let mut imp = opaque(
+            implementation(0, true),
+            &[(R::AlphaTestEnable, 1), (R::AlphaRef, 0xff), (R::AlphaFunc, CompareFunc::Less.xbox_value())],
+        );
+        imp.input_reads.scalars = 1 << 21;
+        imp.stage_states = vec![StageStates {
+            address_u: 1,
+            address_v: 1,
+            address_w: 1,
+            mag_filter: 2,
+            min_filter: 2,
+            mip_filter: 2,
+            mip_lod_bias: 0,
+            max_mip_level: 0,
+            max_anisotropy: 1,
+            color_key_op: 0,
+            color_sign: 0,
+            alpha_kill: 0,
+            border_color: 0,
+            color_key_color: 0,
+            unread: [0; 2],
+        }];
+        // ALPHAREF (0x3d) and stage 0's MIPMAPLODBIAS from scalar 21.
+        imp.engine_render_states = vec![ExternalBinding { bytes: [2, 1, 0, 21] }];
+        imp.engine_stage_states = vec![ExternalBinding { bytes: [0, 0, 1, 21] }];
+        let mut m = material(3, vec![vec![imp]]);
+        m.inputs.scalars[21] = 64.0;
+        let p = layer3_pass(&m).unwrap();
+        assert_eq!(p.state.alpha_test, Some((wgpu::CompareFunction::Less, 64)));
+        assert_eq!(f32::from_bits(p.look.stage_states[0].mip_lod_bias), 64.0);
+    }
+
+    #[test]
+    fn a_world_replacement_blend_needs_an_explicit_operation() {
+        use gfx::state::{BlendFactor, BlendOp, RenderStateType as R};
+        let mut states = vec![(R::AlphaBlendEnable, 1), (R::SrcBlend, BlendFactor::One.xbox_value()),
+            (R::DestBlend, BlendFactor::Zero.xbox_value())];
+        let build = |states: &[_]| layer3_pass(&material(3, vec![vec![opaque(implementation(0, true), states)]]));
+        assert_eq!(build(&states).unwrap_err(), Refusal::Blended);
+        states.push((R::BlendOp, BlendOp::Add.xbox_value()));
+        assert_eq!(build(&states).unwrap().state.blend, None);
+        states.push((R::BlendOp, BlendOp::Max.xbox_value()));
+        assert_eq!(build(&states).unwrap_err(), Refusal::Blended);
+    }
+
     #[test]
     fn world_passes_outside_the_native_state_stay_on_the_d3d_path() {
         use gfx::state::{BlendFactor, RenderStateType as R};
@@ -551,16 +763,28 @@ mod tests {
         );
         assert_eq!(refusal(blended), Refusal::Blended);
         assert_eq!(refusal(opaque(implementation(0, true), &[(R::FogEnable, 1)])), Refusal::State(StateRefusal::Fog));
+        // Engine-driven states from a draw's input (scalar 3) or past the
+        // tables.
         let mut engine = opaque(implementation(0, true), &[]);
-        engine.engine_render_states = vec![ExternalBinding { bytes: [0; 4] }];
-        assert_eq!(refusal(engine), Refusal::EngineRenderStates);
+        engine.input_reads.scalars = 1 << 3;
+        engine.engine_render_states = vec![ExternalBinding { bytes: [2, 1, 0, 3] }];
+        assert_eq!(refusal(engine), Refusal::EngineStates(EngineStateRefusal::PerDraw { state: 0x3d, stage: None }));
         let mut engine = opaque(implementation(0, true), &[]);
-        engine.engine_stage_states = vec![ExternalBinding { bytes: [0; 4] }];
-        assert_eq!(refusal(engine), Refusal::EngineStageStates);
+        engine.engine_stage_states = vec![ExternalBinding { bytes: [0, 10, 1, 0] }];
+        assert_eq!(refusal(engine), Refusal::EngineStates(EngineStateRefusal::Undecoded));
         // Every layer-3 refusal still applies.
         let mut texaccum = opaque(implementation(0, true), &[]);
         texaccum.textures[0] = texture(TextureSource::Engine(3));
-        assert_eq!(refusal(texaccum), Refusal::EngineTexture(3));
+        let mut binding = tags::material::EngineVertexConstant { bank: 1, reg: 1, mode: 9, stage: 1, source: 0 };
+        texaccum.vertex_constants[0].origin = Origin::Engine;
+        texaccum.dimension_bindings.push(binding);
+        // Stage 1's later width occupies x of the same row.
+        binding.stage = 2;
+        binding.mode = 5;
+        texaccum.dimension_bindings.push(binding);
+        let pass = layer3_pass(&material(3, vec![vec![texaccum]])).unwrap();
+        assert_eq!(pass.look.textures[0], Stage::Engine(3));
+        assert_eq!(pass.texaccum_dimensions[0].1, 0b0010);
     }
 
     #[test]

@@ -7,12 +7,15 @@
 use dear_imgui_rs::{TextureId, Ui};
 use dear_imgui_wgpu::ExternalTextureId;
 
-use boot::ui_kit::animation::{Phase, SAMPLES};
 use boot::ui_kit::input::Input;
 
-use crate::app::{Action, App, Pick, UiScreens};
+use crate::app::ui_screens::browse::{self, Browse, Folder, Item, Root};
+use crate::app::{Action, App, Pick};
 use crate::theme::{self, Fonts, icon};
 use crate::viewport::Gpu;
+
+mod edit;
+mod transport;
 
 /// The pad as the inspector lays it out: rows of (input, label).
 const PAD: [&[(Input, &str)]; 3] = [
@@ -29,6 +32,8 @@ const PAD: [&[(Input, &str)]; 3] = [
         (Input::Start, "Start"),
     ],
 ];
+
+mod gallery;
 
 /// The picture on the GPU.
 struct Texture {
@@ -49,12 +54,29 @@ pub struct UiScreensUi {
     /// The finding under the mouse in the inspector: its widgets light up.
     hot: Option<usize>,
     filter: String,
+    /// The grid of previews.
+    gallery: gallery::GalleryUi,
+    /// Selecting, dragging and typing on the picture.
+    edit: edit::EditUi,
+    /// The animation transport.
+    transport: transport::Transport,
 }
 
-/// The outliner: one filter over both lists, then our screens and their
-/// states and the retail screens, each under a header that folds. The lists
+/// What the outliner's folders and rows need while they draw.
+struct Cx<'a> {
+    pick: Option<Pick>,
+    at: Option<Browse>,
+    /// A filter is typed: every folder with a match opens.
+    open: bool,
+    actions: &'a mut Vec<Action>,
+}
+
+/// The outliner: one filter over both trees, then our screens and the
+/// retail screens, each a root that shows all of it when clicked and a tree
+/// of folders that shows all of one when clicked (the arrow folds it).
+/// Our screens fold out to their states, retail ones are rows. The trees
 /// sit in the outliner itself, so a short window scrolls the outliner
-/// rather than squeezing the retail list into what is left below ours.
+/// rather than squeezing the retail tree into what is left below ours.
 pub fn tree(
     ui: &Ui,
     app: &mut App,
@@ -68,94 +90,184 @@ pub fn tree(
         .build();
     let filter = st.filter.to_ascii_lowercase();
     let shown = |name: &str| filter.is_empty() || name.to_ascii_lowercase().contains(&filter);
-    let pick = app.ui_screens.pick.clone();
+    let mut cx = Cx {
+        pick: app.ui_screens.pick.clone(),
+        at: app.ui_screens.gallery.at.clone(),
+        open: !filter.is_empty(),
+        actions,
+    };
 
-    let f = ui.push_font(fonts.bold);
-    let ours_open = ui.collapsing_header(
-        "Our screens##ui-ours",
-        dear_imgui_rs::TreeNodeFlags::DEFAULT_OPEN,
-    );
-    f.pop();
-    if ours_open {
-        let mut any = false;
-        for (screen, states) in UiScreens::tree() {
-            if !shown(screen) && !states.iter().any(|s| shown(s)) {
-                continue;
-            }
-            any = true;
-            let node = ui
-                .tree_node_config(format!("ui-{screen}"))
-                .label(format!("{}  {screen}", icon::LAYERS))
-                .default_open(
-                    !filter.is_empty()
-                        || matches!(&pick, Some(Pick::Native { screen: s, .. }) if s == screen),
-                )
-                .span_avail_width(true)
-                .push();
-            let Some(_node) = node else { continue };
-            for state in states {
-                let this = Pick::Native {
-                    screen: screen.to_string(),
-                    state: state.clone(),
-                };
-                let on = pick.as_ref() == Some(&this);
-                if ui
-                    .selectable_config(format!("{state}##ui-{screen}-{state}"))
-                    .selected(on)
-                    .build()
-                {
-                    actions.push(Action::UiPick(this));
-                }
-            }
-        }
-        if !any {
-            ui.text_disabled("No screen of ours matches the filter.");
-        }
-    }
-
-    let f = ui.push_font(fonts.bold);
-    let retail_open = ui.collapsing_header(
-        "Retail screens##ui-retail-header",
-        dear_imgui_rs::TreeNodeFlags::DEFAULT_OPEN,
-    );
-    f.pop();
-    if !retail_open {
-        return;
-    }
-    let retail = app.ui_screens.retail();
-    if retail.is_empty() {
-        ui.text_wrapped(match app.ui_screens.disc_error() {
-            Some(e) => format!("The disc did not open: {e}"),
-            None => "Open a disc image to list the game's own screens.".to_owned(),
+    root_node(ui, fonts, &mut cx, Root::Ours, |cx| {
+        let ours = browse::ours_tree();
+        let view = ours.tree.filtered(&|i| {
+            shown(&i.name)
+                || ours
+                    .states
+                    .get(&i.name)
+                    .is_some_and(|s| s.iter().any(|s| shown(s)))
         });
-        return;
-    }
-    let mut any = false;
-    for tag in retail {
-        if !shown(&tag) {
-            continue;
+        if view.is_empty() {
+            ui.text_disabled("No screen of ours matches the filter.");
+        } else {
+            walk(ui, &view, Root::Ours, cx, ours_row);
         }
-        any = true;
-        let short = tag.rsplit('\\').next().unwrap_or(&tag).to_owned();
-        let this = Pick::Retail(tag.clone());
-        let on = pick.as_ref() == Some(&this);
+    });
+
+    root_node(ui, fonts, &mut cx, Root::Retail, |cx| {
+        let Some(retail) = app.ui_screens.retail_tree() else {
+            ui.text_wrapped(match app.ui_screens.disc_error() {
+                Some(e) => format!("The disc did not open: {e}"),
+                None => "Open a disc image to list the game's own screens.".to_owned(),
+            });
+            return;
+        };
+        let view = retail.tree.filtered(&|i| shown(&i.name));
+        if view.is_empty() {
+            ui.text_disabled("No retail screen matches the filter.");
+        } else {
+            walk(ui, &view, Root::Retail, cx, retail_row);
+        }
+    });
+}
+
+/// A root's row: the arrow folds it, a click on its name shows all of it
+/// as a grid. `body` draws what is under it while it is open.
+fn root_node(ui: &Ui, fonts: &Fonts, cx: &mut Cx<'_>, root: Root, body: impl FnOnce(&mut Cx<'_>)) {
+    let this = Browse::root(root);
+    let f = ui.push_font(fonts.bold);
+    let node = ui
+        .tree_node_config(format!("ui-root-{}", root.name()))
+        .label(root.title())
+        .default_open(true)
+        .open_on_arrow(true)
+        .span_avail_width(true)
+        .selected(cx.at.as_ref() == Some(&this))
+        .push();
+    f.pop();
+    if ui.is_item_clicked() && !ui.is_item_toggled_open() {
+        cx.actions.push(Action::UiBrowse(Some(this)));
+    }
+    if let Some(_node) = node {
+        body(cx);
+    }
+}
+
+/// `folder`'s folders (each a node that shows all of it when clicked), then
+/// its own screens through `row`.
+fn walk(ui: &Ui, folder: &Folder, root: Root, cx: &mut Cx<'_>, row: fn(&Ui, &Item, &mut Cx<'_>)) {
+    for sub in &folder.folders {
+        let this = Browse {
+            root,
+            folder: sub.id.clone(),
+        };
+        let holds_pick = match &cx.pick {
+            Some(Pick::Native { screen, .. }) => root == Root::Ours && sub.contains(screen),
+            Some(Pick::Retail { tag, .. }) => root == Root::Retail && sub.contains(tag),
+            None => false,
+        };
+        let node = ui
+            .tree_node_config(format!("ui-folder-{}-{}", root.name(), sub.id))
+            .label(format!("{}  {}", icon::FOLDER, sub.label))
+            .default_open(cx.open || holds_pick)
+            .open_on_arrow(true)
+            .span_avail_width(true)
+            .selected(cx.at.as_ref() == Some(&this))
+            .push();
+        if ui.is_item_clicked() && !ui.is_item_toggled_open() {
+            cx.actions.push(Action::UiBrowse(Some(this)));
+        }
+        if let Some(_node) = node {
+            walk(ui, sub, root, cx, row);
+        }
+    }
+    for item in &folder.items {
+        row(ui, item, cx);
+    }
+}
+
+/// One of our screens: a node with its states under it.
+fn ours_row(ui: &Ui, item: &Item, cx: &mut Cx<'_>) {
+    let screen = item.name.as_str();
+    let states = browse::ours_tree()
+        .states
+        .get(screen)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let picked = matches!(&cx.pick, Some(Pick::Native { screen: s, .. }) if s == screen);
+    let node = ui
+        .tree_node_config(format!("ui-{screen}"))
+        .label(format!("{}  {}", icon::LAYERS, item.label))
+        .default_open(cx.open || picked)
+        .span_avail_width(true)
+        .push();
+    let Some(_node) = node else { return };
+    for state in states {
+        let this = Pick::Native {
+            screen: screen.to_string(),
+            state: state.clone(),
+        };
+        let on = cx.pick.as_ref() == Some(&this);
         if ui
-            .selectable_config(format!("{short}##ui-retail-{tag}"))
+            .selectable_config(format!("{state}##ui-{screen}-{state}"))
             .selected(on)
             .build()
         {
-            actions.push(Action::UiPick(this));
+            cx.actions.push(Action::UiPick(this));
         }
-        ui.set_item_tooltip(&tag);
     }
-    if !any {
-        ui.text_disabled("No retail screen matches the filter.");
+}
+
+/// A retail screen: a row named by its tag's last part, the tag in the
+/// tooltip.
+fn retail_row(ui: &Ui, item: &Item, cx: &mut Cx<'_>) {
+    let this = Pick::retail(item.name.clone());
+    // On whichever sample state of the screen is shown.
+    let on = matches!(&cx.pick, Some(Pick::Retail { tag, .. }) if *tag == item.name);
+    if ui
+        .selectable_config(format!("{}##ui-retail-{}", item.label, item.name))
+        .selected(on)
+        .build()
+    {
+        cx.actions.push(Action::UiPick(this));
     }
+    ui.set_item_tooltip(&item.name);
 }
 
 /// The picture: zoom, the overlays' switches, then the screen at 640 by
 /// 480 times the zoom, with its rectangles, findings and areas over it.
-pub fn preview(ui: &Ui, app: &mut App, st: &mut UiScreensUi, gpu: &mut Gpu<'_>) {
+pub fn preview(
+    ui: &Ui,
+    app: &mut App,
+    st: &mut UiScreensUi,
+    gpu: &mut Gpu<'_>,
+    actions: &mut Vec<Action>,
+) {
+    // A folder or root shows its grid of previews; a picked screen says
+    // where it is and goes back to its folder's grid.
+    if let Some(at) = app.ui_screens.gallery.at.clone() {
+        gallery::show(ui, app, &mut st.gallery, gpu, at);
+        return;
+    }
+    if gallery::pick_crumbs(ui, app) {
+        return;
+    }
+    let picture = preview_picture(ui, app, st, gpu);
+    // The editing draws on its own draw list: the picture's is let go.
+    if let Some((origin, zoom, hovered)) = picture {
+        let at = |px: [f32; 2]| [origin[0] + px[0] * zoom, origin[1] + px[1] * zoom];
+        transport::onion(ui, &mut app.ui_screens, &st.transport, &at);
+        edit::canvas(ui, app, &mut st.edit, origin, zoom, hovered, actions);
+    }
+}
+
+/// The picture and its overlays: where it is (top left, zoom) and whether
+/// the mouse is over it, when drawn.
+fn preview_picture(
+    ui: &Ui,
+    app: &mut App,
+    st: &mut UiScreensUi,
+    gpu: &mut Gpu<'_>,
+) -> Option<([f32; 2], f32, bool)> {
     let s = &mut app.ui_screens;
     ui.set_next_item_width(140.0);
     ui.slider_f32("Zoom", &mut s.zoom, 0.5, 3.0);
@@ -166,7 +278,7 @@ pub fn preview(ui: &Ui, app: &mut App, st: &mut UiScreensUi, gpu: &mut Gpu<'_>) 
     ui.same_line();
     ui.checkbox("Reserved", &mut s.show_reserved);
     if matches!(s.pick.as_ref(), Some(Pick::Native { .. })) {
-        transition_picker(ui, s);
+        transport::bar(ui, s, &mut st.transport);
     }
     let (zoom, rects, safe, reserved) = (s.zoom, s.show_rects, s.show_safe, s.show_reserved);
     let hot: Vec<String> = st
@@ -179,7 +291,7 @@ pub fn preview(ui: &Ui, app: &mut App, st: &mut UiScreensUi, gpu: &mut Gpu<'_>) 
         .unwrap_or_default();
     let Some(shot) = s.shot() else {
         ui.text_disabled("Pick a screen and a state on the left.");
-        return;
+        return None;
     };
     ui.same_line();
     ui.text_disabled(if shot.from_disc {
@@ -189,7 +301,7 @@ pub fn preview(ui: &Ui, app: &mut App, st: &mut UiScreensUi, gpu: &mut Gpu<'_>) 
     });
     let Some(texture) = upload(st, gpu, shot) else {
         ui.text_disabled("The preview could not create its texture.");
-        return;
+        return None;
     };
     let size = [640.0 * zoom, 480.0 * zoom];
     let origin = ui.cursor_screen_pos();
@@ -234,7 +346,7 @@ pub fn preview(ui: &Ui, app: &mut App, st: &mut UiScreensUi, gpu: &mut Gpu<'_>) 
         .iter()
         .flat_map(|f| f.ids.iter().map(String::as_str))
         .collect();
-    if let Some(view) = &shot.view {
+    if let Some(view) = shot.view.as_ref().or(shot.retail_view.as_ref()) {
         for w in view.widgets.iter().filter(|w| w.alpha != 0) {
             let r = w.pixels();
             if hot.contains(&w.id) {
@@ -258,28 +370,7 @@ pub fn preview(ui: &Ui, app: &mut App, st: &mut UiScreensUi, gpu: &mut Gpu<'_>) 
             st.hovered = Some(id);
         }
     }
-}
-
-fn transition_picker(ui: &Ui, s: &mut UiScreens) {
-    let label = |phase| match phase {
-        Phase::In(0) => "Before opening",
-        Phase::In(_) => "Opening",
-        Phase::Rest => "At rest",
-        Phase::Out(4) => "Closing",
-        Phase::Out(_) => "Closed",
-    };
-    ui.set_next_item_width(140.0);
-    if let Some(_combo) = ui.begin_combo("Transition", label(s.animation())) {
-        for phase in SAMPLES {
-            if ui
-                .selectable_config(label(phase))
-                .selected(s.animation() == phase)
-                .build()
-            {
-                s.set_animation(phase);
-            }
-        }
-    }
+    Some((origin, zoom, hovered))
 }
 
 /// The picture uploaded when it changed.
@@ -392,6 +483,15 @@ pub fn inspector(
         ui.spacing();
         ui.separator();
     }
+    if s.pick.is_some() {
+        edit::selected(ui, app, &mut st.edit, fonts, actions);
+        if ui.collapsing_header("Widgets##ui-widgets", dear_imgui_rs::TreeNodeFlags::empty()) {
+            edit::widget_list(ui, app, &mut st.edit, actions);
+        }
+        ui.spacing();
+        ui.separator();
+    }
+    let s = &mut app.ui_screens;
     heading("Checks");
     st.hot = None;
     match s.shot() {
@@ -404,10 +504,7 @@ pub fn inspector(
                 ui.text_colored(theme::OK, format!("{} every check passes", icon::CHECK));
             }
             for (i, f) in shot.findings.iter().enumerate() {
-                ui.text_colored(theme::ERROR, icon::ALERT);
-                ui.same_line();
-                ui.text_wrapped(&f.text);
-                if ui.is_item_hovered() {
+                if super::problems::finding_line(ui, crate::api::checks::Severity::Error, &f.text) {
                     st.hot = Some(i);
                 }
             }

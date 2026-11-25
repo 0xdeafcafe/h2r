@@ -2,7 +2,7 @@
 
 Patterns that follow the built-in scripts in
 `crates/formats/rules/src/builtin/*.rules`. Each is a fragment: add a
-header (`rules "Name" 1`, `carrier slayer`, `requires ...`) around it, run
+header (`rules "Name" 1`, `type slayer`, `requires ...`) around it, run
 `h2 rules check`, then a scenario. Copy from a built-in when a recipe is
 close; those files compile and have tests (`crates/formats/rules/tests/`).
 Entries a host cannot make yet are marked; see
@@ -28,8 +28,8 @@ on kill(victim, killer) {
 }
 ```
 
-Scenario: two players, a kill, a suicide, then a betrayal. A Slayer
-carrier's stock record is free-for-all, so the betrayal branch needs
+Scenario: two players, a kill, a suicide, then a betrayal. Slayer's
+stock record is free-for-all, so the betrayal branch needs
 `"variant": {"team_play": 1}`.
 
 ```json
@@ -174,7 +174,9 @@ scenario's `teams`). Per-team state is `team var`, read as `t.x`.
 
 ## A role with powers
 
-From `vip.rules`. A role is an enum in a player variable; a power is a
+From the VIP test script in `crates/formats/rules/tests/scripts.rs`
+(the listed `vip.rules` keeps the role and has no powers). A role is an
+enum in a player variable; a power is a
 grant made when the role changes. Needs the capabilities in `requires`, a
 palette of tag paths for what the player may place or touch, and a budget
 on each grant. Grants are not hostable by the host runtime today, so this

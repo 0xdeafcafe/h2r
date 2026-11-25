@@ -34,6 +34,36 @@ pub fn sample_items() -> Vec<Item> {
     .collect()
 }
 
+pub(super) fn sample_thing(block: forge::BlockKind, kind: forge::ThingKind) -> forge::Thing {
+    forge::Thing {
+        id: forge::Endpoint::Base {
+            block,
+            index: 0,
+            print: None,
+        },
+        block,
+        kind,
+        own: true,
+        frame: forge::Frame::default(),
+        fields: if kind == forge::ThingKind::Goal {
+            vec![
+                ("type", forge::Value::Int(0)),
+                ("team", forge::Value::Int(0)),
+                ("identifier", forge::Value::Int(0)),
+            ]
+        } else {
+            vec![(
+                "palette index",
+                forge::Value::Tag(Some(forge::TagKey {
+                    group: "scen".into(),
+                    path: r"fixture\beacon".into(),
+                })),
+            )]
+        },
+        changed: false,
+    }
+}
+
 /// Each screen's named sample sheets.
 pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
     let at = |sheet: &Sheet, focus: usize| Sheet {
@@ -51,18 +81,41 @@ pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
         Kind::Properties => vec![
             (
                 "beacon",
-                sheet::properties_sheet("Beacon", Group::Scenery, 17.5).expect("rows"),
+                sheet::properties_sheet(
+                    "Beacon",
+                    &sample_thing(forge::BlockKind::Scenery, forge::ThingKind::Object),
+                    17.5,
+                )
+                .expect("rows"),
             ),
             (
                 "gate",
-                sheet::properties_sheet("Gate", Group::Machines, 90.).expect("rows"),
+                sheet::properties_sheet(
+                    "Gate",
+                    &sample_thing(forge::BlockKind::NetgameFlags, forge::ThingKind::Goal),
+                    90.,
+                )
+                .expect("rows"),
             ),
         ],
+        Kind::Coordinates => vec![(
+            "beacon",
+            sheet::coordinates_sheet(
+                "Beacon",
+                forge::Frame {
+                    position: [1.25, -2.5, 3.75],
+                    rotation: [0.5, 0.25, -0.5],
+                },
+            ),
+        )],
         Kind::Tools => vec![
             ("objects", sheet::tools(Tool::Objects)),
             ("links", sheet::tools(Tool::Links)),
         ],
-        Kind::Settings => vec![("open", sheet::settings(2)), ("fine", sheet::settings(0))],
+        Kind::Settings => vec![
+            ("open", sheet::settings(2, 0, false)),
+            ("fine", sheet::settings(0, 0, true)),
+        ],
         Kind::Link => vec![
             (
                 "teleporter",
@@ -77,18 +130,75 @@ pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
             ("delete-linked", sheet::question(Ask::DeleteLinked, "")),
             ("overwrite", sheet::question(Ask::Overwrite, "Courtyard")),
             ("leave", sheet::question(Ask::Leave, "")),
+            ("load", sheet::question(Ask::Load, "")),
+            (
+                "delete-variant",
+                sheet::question(Ask::DeleteVariant, "Courtyard"),
+            ),
         ],
         Kind::Options => {
             let open = sheet::options();
             let last = at(&open, open.rows.len() - 1);
             vec![("open", open), ("last", last)]
         }
+        Kind::MapLimits => {
+            let open = super::map_limits::sheet(&super::map_limits::Usage::sample());
+            let last = at(&open, open.rows.len() - 1);
+            let unavailable = super::map_limits::sheet(&super::map_limits::Usage::default());
+            vec![("open", open), ("last", last), ("unavailable", unavailable)]
+        }
         Kind::Controls => {
             let open = sheet::controls();
             let last = at(&open, open.rows.len() - 1);
             vec![("open", open), ("last", last)]
         }
+        Kind::Games => {
+            use forge_doc::games::GameSet;
+            let open = super::games::sheet(GameSet::of(&[2, 3]));
+            let done = at(&super::games::sheet(GameSet::ALL), 8);
+            vec![("open", open), ("all", done)]
+        }
+        Kind::Variants => {
+            let rows = sample_variants();
+            let open = super::variants::list_sheet(&rows, Some("Courtyard"));
+            let unusable = at(&open, 3);
+            let empty = super::variants::list_sheet(&[], None);
+            vec![("open", open), ("unusable", unusable), ("empty", empty)]
+        }
+        Kind::Variant => {
+            let rows = sample_variants();
+            let open = Some("Courtyard");
+            vec![
+                ("saved", super::variants::variant_sheet(&rows[0], open)),
+                ("open", super::variants::variant_sheet(&rows[1], open)),
+                ("live", super::variants::variant_sheet(&rows[2], open)),
+                ("unusable", super::variants::variant_sheet(&rows[3], open)),
+            ]
+        }
     }
+}
+
+/// Sample map variants: two saved (the second is the open one), one from
+/// Xbox Live and one that fails a check.
+fn sample_variants() -> Vec<super::variants::Row> {
+    use super::variants::Row;
+    let row = |file: &str, name: &str, saved, sentence: Option<String>| Row {
+        file: file.into(),
+        name: name.into(),
+        saved,
+        sentence,
+    };
+    vec![
+        row("Arena", "Arena", true, None),
+        row("Courtyard", "Courtyard", true, None),
+        row("Two_Towers", "Two Towers", false, None),
+        row(
+            "Old_Arena",
+            "Old Arena",
+            true,
+            Some(forge::files::variants::Problem::BaseHash.sentence("Old Arena", "court")),
+        ),
+    ]
 }
 
 /// A Forge screen in one of its sample sheets, its focus where the

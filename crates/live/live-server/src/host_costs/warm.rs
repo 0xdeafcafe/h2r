@@ -90,7 +90,7 @@ impl HostCosts {
         // Keep room for the match that the searchers are trying to form.
         let lease = HostLease {
             id: String::new(), assignment_id: String::new(), provider: ProviderKind::Cloudflare,
-            class: class.clone(), region: None, map: String::new(), map_id: None, variant: None,
+            class: class.clone(), region: None, map: String::new(), map_id: None, variant: None, firefight: None,
             hopper: None, max_players: 16, roster: Vec::new(), bots: Vec::new(),
             transport: Transport::Tunnel, idle_timeout_s: DEFAULT_IDLE_TIMEOUT_S,
             max_match_s: DEFAULT_MAX_MATCH_S, created_ms: from_ms,

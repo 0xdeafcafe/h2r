@@ -123,6 +123,26 @@ fn a_low_magazine_reloads_only_when_calm() {
 }
 
 #[test]
+fn calm_with_nobody_in_view_tops_up_a_used_magazine() {
+    // A rifle a burst or two down: topped up once the fight is over.
+    let a = arms(Some(gun(BR, rounds(30, 36, 50, 108))), None);
+    assert_eq!(decide(&a, None, true, &[]), Kit::Reload);
+    assert_eq!(decide_by_range(&a, None, true, true, &[]), Kit::Reload);
+    // Not in a lull alone, not with an enemy in view, not under fire.
+    assert_eq!(decide_by_range(&a, None, false, true, &[]), Kit::Fine);
+    assert_eq!(decide(&a, Some(20.0), true, &[]), Kit::Fine);
+    assert_eq!(decide(&a, Some(5.0), false, &[]), Kit::Fine);
+    // Nearly full, or nothing to load: no reload.
+    let b = arms(Some(gun(BR, rounds(34, 36, 50, 108))), None);
+    assert_eq!(decide(&b, None, true, &[]), Kit::Fine);
+    let c = arms(Some(gun(BR, rounds(30, 36, 0, 108))), None);
+    assert_eq!(decide(&c, None, true, &[]), Kit::Fine);
+    // A battery is never reloaded.
+    let d = arms(Some(gun(PP, Ammo::Battery(0.5))), None);
+    assert_eq!(decide(&d, None, true, &[]), Kit::Fine);
+}
+
+#[test]
 fn a_dry_gun_switches_to_the_other() {
     let a = arms(
         Some(gun(BR, rounds(0, 36, 0, 108))),
@@ -287,6 +307,35 @@ fn the_preferred_range_is_the_held_guns_band() {
     assert_eq!(preferred_range(&a), MELEE_BAND);
     assert_eq!(preferred_range(&Kit::Melee), MELEE_BAND);
     assert_eq!(preferred_range(&Kit::Fine), Role::Unknown.band());
+}
+
+#[test]
+fn a_short_gun_out_of_its_range_draws_the_longer_one_or_holds_fire() {
+    // An SMG's band ends at 9; at three times that it does not shoot.
+    let far = 3.0 * smg_reach_band();
+    for by_range in [false, true] {
+        let a = arms(
+            Some(with(SMG, smg(), full())),
+            Some(with(BR, rifle(), full())),
+        );
+        let kit = if by_range {
+            decide_by_range(&a, Some(far), false, false, &[])
+        } else {
+            decide(&a, Some(far), false, &[])
+        };
+        assert_eq!(kit, Kit::Switch, "by range {by_range}");
+    }
+    // With only short guns it keeps them and closes in: the shot is out
+    // of range (tactics::Shot::in_range), the band pulls it nearer.
+    let a = arms(Some(with(SMG, smg(), full())), Some(with(SHOTGUN, shotgun(), full())));
+    assert_eq!(decide_by_range(&a, Some(far), false, false, &[]), Kit::Fine);
+    let held = a.held.unwrap();
+    assert!(!(held.reach().fire.0..held.reach().fire.1).contains(&far));
+    assert!(far > preferred_range(&a).1);
+}
+
+fn smg_reach_band() -> f32 {
+    with(SMG, smg(), full()).reach().band.1
 }
 
 #[test]
@@ -1239,8 +1288,9 @@ fn it_draws_the_rifle_as_soon_as_an_smg_cannot_reach() {
     let mut primary = with(SMG, smg(), full());
     primary.profile.dual = Some(DualGun::Smg);
     let pair = arms(Some(primary), Some(with(BR, rifle(), full())));
-    assert_eq!(decide_by_range(&pair, Some(9.1), false, false, &[]), Kit::Switch);
-    assert_eq!(decide_by_range(&pair, Some(7.0), false, false, &[]), Kit::Fine);
+    // An SMG fires to 1.6 times its band (9 units), 14.4.
+    assert_eq!(decide_by_range(&pair, Some(14.5), false, false, &[]), Kit::Switch);
+    assert_eq!(decide_by_range(&pair, Some(9.1), false, false, &[]), Kit::Fine);
     let long = arms(Some(with(BR, rifle(), full())), Some(with(SNIPER, sniper(), full())));
     assert_eq!(decide_by_range(&long, Some(25.0), false, false, &[]), Kit::Switch);
 }

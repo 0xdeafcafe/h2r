@@ -9,6 +9,23 @@ pub enum Resolution {
     Fixed(u32, u32),
 }
 
+/// One sample of the host surface used to select a Native raster.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeTarget {
+    /// Physical surface pixels, including any area outside the game viewport.
+    pub drawable: (u32, u32),
+    /// Physical game viewport before applying the fullscreen budget.
+    pub viewport: (u32, u32),
+    pub fullscreen: bool,
+}
+
+impl NativeTarget {
+    /// A windowed or offscreen target with no aspect override.
+    pub const fn windowed(size: (u32, u32)) -> Self {
+        Self { drawable: size, viewport: size, fullscreen: false }
+    }
+}
+
 impl Resolution {
     /// The largest dimension the host frame handoff accepts.
     pub const MAX_DIMENSION: u32 = 8192;
@@ -30,16 +47,17 @@ impl Resolution {
         Self::fixed(w.parse().ok()?, h.parse().ok()?)
     }
 
-    /// Native follows the drawable's aspect within the UHD 4K pixel budget.
-    /// Explicit resolutions use the requested raster, including full 5K.
-    pub fn size(self, native: (u32, u32)) -> (u32, u32) {
+    /// Native uses viewport pixels with a UHD 4K pixel budget in fullscreen.
+    /// Explicit resolutions use the requested raster in either mode.
+    pub fn size(self, native: NativeTarget) -> (u32, u32) {
         const UHD_PIXELS: u64 = 3840 * 2160;
         match self {
             Self::Fixed(w, h) => (w, h),
             Self::Native => {
-                let (w, h) = (u64::from(native.0), u64::from(native.1));
-                if w * h <= UHD_PIXELS {
-                    return native;
+                let (w, h) = native.viewport;
+                let (w, h) = (u64::from(w), u64::from(h));
+                if !native.fullscreen || w * h <= UHD_PIXELS {
+                    return native.viewport;
                 }
                 // sqrt(budget * width / height) and its transpose give
                 // one uniform reduction. Round down to stay within budget.
@@ -110,22 +128,25 @@ impl LegacyScale {
 
 #[cfg(test)]
 mod tests {
+    use super::NativeTarget;
     use super::Resolution::{Fixed, Native};
 
     #[test]
     fn native_uses_a_pixel_budget_and_explicit_sizes_use_the_full_raster() {
-        assert_eq!(Native.size((5120, 2880)), (3840, 2160));
-        assert_eq!(Native.size((2880, 5120)), (2160, 3840));
+        let fullscreen = |size| NativeTarget { fullscreen: true, ..NativeTarget::windowed(size) };
+        assert_eq!(Native.size(fullscreen((5120, 2880))), (3840, 2160));
+        assert_eq!(Native.size(fullscreen((2880, 5120))), (2160, 3840));
         for physical in [(5120, 1440), (3840, 2160), (1233, 857)] {
-            assert_eq!(Native.size(physical), physical);
+            assert_eq!(Native.size(fullscreen(physical)), physical);
         }
         for (w, h) in [(7680, 2160), (4096, 2560), (4001, 4001)] {
-            let (rw, rh) = Native.size((w, h));
+            assert_eq!(Native.size(NativeTarget::windowed((w, h))), (w, h));
+            let (rw, rh) = Native.size(fullscreen((w, h)));
             assert!(u64::from(rw) * u64::from(rh) <= 3840 * 2160);
             assert!(rw > 0 && rh > 0);
             let error = (f64::from(rw) - f64::from(rh) * f64::from(w) / f64::from(h)).abs();
             assert!(error <= f64::from(w) / f64::from(h));
         }
-        assert_eq!(Fixed(5120, 2880).size((5120, 2880)), (5120, 2880));
+        assert_eq!(Fixed(5120, 2880).size(fullscreen((5120, 2880))), (5120, 2880));
     }
 }

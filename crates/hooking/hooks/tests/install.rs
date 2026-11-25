@@ -86,6 +86,82 @@ fn late_observers_preserve_the_boot_handler_and_reuse_its_shadow_page() {
     assert_eq!(*seen.lock().unwrap(), [("boot", 41), ("boot", 41), ("editor", 41)]);
 }
 
+/// Where a slice a tick hook ends (`Runtime::request_preempt`) stops: a
+/// `before` asks before the original runs, so the thread stops inside the
+/// chain's after-hooks continuation, which no snapshot can carry; a tick
+/// observer asks after it returned, so nothing is live. The bounce search
+/// asked its forks from a `before` and every one was refused
+/// ("continuation feature: after hooks"). Returns the live continuations'
+/// origins at each stop.
+fn stops_when_asked(from_before: bool) -> Vec<Vec<&'static str>> {
+    let rt = runtime();
+    let mut r = Registry::new(Switches::defaults());
+    r.add(&from_fn("asker", move |b| {
+        if from_before {
+            b.raw().before(&points::GAME_TICK, "ask before", |c| {
+                c.ctx.runtime().request_preempt(runtime::preempt::REQUEST);
+                Ok(Flow::Continue)
+            });
+        }
+        b.frame().on_tick("ask after", move |o| {
+            if !from_before {
+                o.runtime.request_preempt(runtime::preempt::REQUEST);
+            }
+        });
+        Ok(())
+    }))
+    .unwrap();
+    let plan = r.build(&at(&points::GAME_TICK)).unwrap();
+    plan.install(&rt).unwrap();
+    rt.memory().set_u32(STACK, HARNESS_EXIT).unwrap();
+    let mut cpu = CpuAbi {
+        esp: STACK,
+        ..Default::default()
+    };
+    let mut ctx = ExecCtx::new(Arc::clone(&rt), 1);
+    let mut stops = Vec::new();
+    let mut t = TransferAbi::jump(LEAF);
+    loop {
+        // Armed for host requests only, as the kernel arms a slice.
+        ctx.arm_preemption(0);
+        let end = Runner::default().run_from(&mut cpu, &mut ctx, t);
+        match ctx.take_preempted() {
+            Some(resume) => {
+                stops.push(
+                    ctx.live_continuations()
+                        .iter()
+                        .map(|c| c.origin)
+                        .collect(),
+                );
+                t = resume;
+            }
+            None => {
+                assert!(
+                    matches!(ctx.event(end.event_id), Some(Event::HarnessExit)),
+                    "{:?}",
+                    ctx.event(end.event_id)
+                );
+                break;
+            }
+        }
+        assert!(stops.len() < 8, "{stops:?}");
+    }
+    assert_eq!(cpu.eax, 41, "the original ran");
+    assert!(ctx.live_continuations().is_empty());
+    stops
+}
+
+#[test]
+fn a_slice_asked_before_the_tick_ends_inside_its_after_hooks() {
+    assert_eq!(stops_when_asked(true), vec![vec![hooks::install::AFTER_HOOKS]]);
+}
+
+#[test]
+fn a_slice_asked_by_a_tick_observer_ends_with_nothing_live() {
+    let stops = stops_when_asked(false);
+    assert!(stops.iter().all(Vec::is_empty), "{stops:?}");
+}
+
 /// The tick collision: lockstep's hash and Live telemetry's sample used to
 /// be two overrides on `game_tick`, and lockstep refused to install when
 /// telemetry was there. Both now run, once each per tick, after the
@@ -371,6 +447,53 @@ fn an_entry_awaits_guest_calls_and_returns_as_stdcall() {
     assert_eq!(cpu.xmm[2], 19u128.to_le_bytes());
 }
 
+/// A guest call with a reserve is made below the body's frame: the
+/// callee starts at the entry ESP less the reserve, the argument and the
+/// return token, and a word the body keeps just below its entry ESP
+/// survives the call.
+#[test]
+fn a_reserved_guest_call_leaves_the_bodys_frame_alone() {
+    use guest_layout::memory::GuestMemory;
+    use hooks::{EntryFuture, GuestCall, Ret};
+    let rt = runtime();
+    let mut r = Registry::new(Switches::defaults());
+    let placed = Arc::new(AtomicU32::new(0));
+    let callee = Arc::new(Mutex::new(Vec::new()));
+    {
+        let (placed, callee) = (Arc::clone(&placed), Arc::clone(&callee));
+        r.add(&from_fn("framed", move |b| {
+            let callee = Arc::clone(&callee);
+            b.raw().observe_before(&points::GAME_TICK, "callee esp", move |o| {
+                let esp = o.cpu.esp;
+                let arg = o.guest().u32(esp + 4).unwrap();
+                callee.lock().unwrap().push((esp, arg));
+            });
+            let at = b.entry("framed", move |cx| -> EntryFuture {
+                Box::pin(async move {
+                    let esp = cx.entry().esp;
+                    cx.write(|m| m.set_u32(esp - 8, 0xfeed))?;
+                    let a = cx.call(GuestCall::new(LEAF).reserve(0x40).args([0x77])).await?;
+                    Ok(Ret::new(a.eax + cx.read(|m| m.u32(esp - 8))?, 0))
+                })
+            })?;
+            placed.store(at, Ordering::SeqCst);
+            Ok(())
+        }))
+        .unwrap();
+    }
+    r.build(&at(&points::GAME_TICK)).unwrap().install(&rt).unwrap();
+    let at = placed.load(Ordering::SeqCst);
+
+    rt.memory().set_u32(STACK, HARNESS_EXIT).unwrap();
+    let mut cpu = CpuAbi { esp: STACK, ..Default::default() };
+    let mut ctx = ExecCtx::new(Arc::clone(&rt), 1);
+    let t = Runner::default().run(&mut cpu, &mut ctx, at);
+    assert!(matches!(ctx.event(t.event_id), Some(Event::HarnessExit)), "{:?}", ctx.event(t.event_id));
+    assert_eq!(cpu.eax, 41 + 0xfeed, "the leaf answered and the frame word is the body's");
+    assert_eq!(cpu.esp, STACK + 4);
+    assert_eq!(*callee.lock().unwrap(), [(STACK - 0x40 - 4 - 4, 0x77)]);
+}
+
 /// The same body as a point's implementation.
 #[test]
 fn an_async_implementation_is_a_chains_body() {
@@ -645,4 +768,67 @@ fn a_shared_arena_page_is_mapped_once() {
         .collect();
     assert_eq!(mapped, [(PAGE, Permissions::RW)]);
     assert!(mem.u8(ARENA_START + PAGE).is_err());
+}
+
+/// A site on a call's continuation, in a page of its own.
+static CONTINUATION: Point = Point::new(
+    "TEST_CONTINUATION",
+    0x0050_0105,
+    points::Sig::Site,
+    "docs/engine/feature-engine.md",
+);
+
+/// An image (its header's magic mapped) where a `call rel32` ends at
+/// [`CONTINUATION`], which has a generated original; `resume` also makes
+/// it a resume of the image, as every call's continuation is.
+fn continuation_runtime(resume: bool) -> Arc<Runtime> {
+    let site = CONTINUATION.base;
+    let owner = site - 0x105;
+    let mut d = Dispatch::default();
+    for pc in [owner, site] {
+        d.register_generated_rust(pc, |_, _, pc| Ok(TransferAbi::jump(pc))).unwrap();
+    }
+    if resume {
+        d.register_resume(site, owner, site).unwrap();
+    }
+    let mut g = Guest::new();
+    g.map_zeroed(0x1_0000, 0x1000, Permissions::RW).unwrap();
+    g.write_bytes(0x1_0000, b"XBEH", 1).unwrap();
+    g.map_zeroed(owner, 0x1000, Permissions::RW).unwrap();
+    g.write_bytes(site - 5, &[0xe8, 0x00, 0x01, 0x00, 0x00, 0x8b], 1).unwrap();
+    Runtime::new(g, d)
+}
+
+fn hook_the_continuation(rt: &Arc<Runtime>) -> hooks::Installed {
+    let mut r = Registry::new(Switches::defaults());
+    r.add(&from_fn("cont", |b| {
+        b.raw().observe_before(&CONTINUATION, "never runs", |_| {}).optional();
+        Ok(())
+    }))
+    .unwrap();
+    r.build(&hooks::Base).unwrap().install(rt).unwrap()
+}
+
+/// A return is routed to the resume table before any override, so a hook
+/// on a call's continuation would never run: install refuses it with the
+/// point's name. A site a call ends at that is not a resume of the image
+/// (bytes that only look like a call) keeps its hook.
+#[test]
+fn a_site_on_a_calls_continuation_is_refused_at_install() {
+    let rt = continuation_runtime(true);
+    let installed = hook_the_continuation(&rt);
+    assert!(
+        installed
+            .notes
+            .iter()
+            .any(|n| n.contains("TEST_CONTINUATION (0x00500105) is a call's continuation")),
+        "{:?}",
+        installed.notes
+    );
+    assert!(rt.read_dispatch(|d| d.override_name(CONTINUATION.base).is_none()));
+
+    let rt = continuation_runtime(false);
+    let installed = hook_the_continuation(&rt);
+    assert!(installed.notes.is_empty(), "{:?}", installed.notes);
+    assert!(rt.read_dispatch(|d| d.override_name(CONTINUATION.base).is_some()));
 }

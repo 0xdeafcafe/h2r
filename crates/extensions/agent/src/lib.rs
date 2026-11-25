@@ -26,12 +26,20 @@
 //!   readers in the game, a fake in tests.
 //! * [`collision`] answers `collision.stats`: the native collision
 //!   world's call, bail and decode counters.
+//! * [`anim`] reports the graph walk and manager parity counters and their
+//!   first mismatches through `anim.graph_walk` and `anim.manager`.
 //! * [`havok`] answers `havok.bodies` and `havok.contacts`: the Havok
 //!   world's rigid bodies and contact points ([`Agent::add_game_method`]).
 //! * [`firefight`] answers `firefight.*` over the game's Firefight
 //!   runtime, which the game registers as a [`firefight::Source`].
+//! * [`actors`] answers `actors.net`: the actor channel's per-peer budgets
+//!   on a distributed host and the puppets and digest check on a client,
+//!   from the report the game publishes each tick.
 //! * [`rules`] answers `rules.state` over the game's rules runtime, which
 //!   the game registers as a [`rules::Source`].
+//! * [`variants`] answers `variants.quick`: the lobby variant's Quick
+//!   Options rows as its rules script marks them, which the game
+//!   registers as a [`variants::Source`].
 //! * [`raw`] answers `world.raw`: an object's body, physics component,
 //!   Havok entity, motion and shape as raw bytes. `world.poke` writes
 //!   bounded byte ranges within those parts.
@@ -52,9 +60,13 @@
 //! The observer adds dispatch transfers to every tick, as `lockstep`'s
 //! does: compare runs that all have the agent on, or all off.
 
+pub mod actors;
 pub mod ai;
+pub mod anim;
 mod capture;
 pub mod collision;
+pub mod collision_sources;
+pub mod collision_trace_query;
 mod collision_traces;
 pub use collision_traces::{CollisionTrace, CollisionTraces};
 pub mod compare;
@@ -80,11 +92,13 @@ pub mod raw;
 mod reader;
 pub mod render;
 mod server;
+pub mod hs_eval;
 pub mod hs_state;
 pub mod shadow;
 pub mod sim;
 mod tap;
 mod trace;
+pub mod variants;
 
 pub use capture::{FrameSource, Sampler, TickMark, summarise, write_csv};
 pub use exec::{

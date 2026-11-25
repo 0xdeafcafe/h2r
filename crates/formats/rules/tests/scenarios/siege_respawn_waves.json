@@ -1,0 +1,99 @@
+{
+  "teams": [
+    0,
+    1
+  ],
+  "variant": {
+    "team_play": 1,
+    "lives": 1
+  },
+  "players": [
+    {
+      "slot": 0,
+      "team": 0,
+      "lives": 1,
+      "unit": 100
+    },
+    {
+      "slot": 1,
+      "team": 1,
+      "lives": 1,
+      "unit": 101
+    },
+    {
+      "slot": 2,
+      "team": 0,
+      "lives": 1,
+      "unit": 102
+    }
+  ],
+  "map": [
+    {
+      "label": "territory",
+      "object": 10,
+      "class": "flag"
+    },
+    {
+      "label": "territory",
+      "object": 11,
+      "class": "flag"
+    },
+    {
+      "label": "ctf_flag_spawn",
+      "object": 20,
+      "team": 0,
+      "class": "flag"
+    },
+    {
+      "label": "ctf_flag_spawn",
+      "object": 21,
+      "team": 1,
+      "class": "flag"
+    }
+  ],
+  "ticks": [
+    {
+      "events": [
+        {
+          "spawn": 0
+        },
+        {
+          "spawn": 1
+        },
+        {
+          "spawn": 2
+        }
+      ]
+    },
+    {
+      "events": [
+        {
+          "kill": {
+            "victim": 0,
+            "killer": 1
+          }
+        }
+      ]
+    },
+    {
+      "events": [
+        {
+          "kill": {
+            "victim": 2,
+            "killer": 1
+          }
+        }
+      ]
+    },
+    {
+      "events": [
+        {
+          "kill": {
+            "victim": 1,
+            "killer": 0
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -9,6 +9,8 @@ license.workspace = true
 mem-watch.workspace = true
 forge.workspace = true
 forge-doc.workspace = true
+# The shapes Forge draws for a game type's parts (forge_glue/markers_world.rs).
+game-markers = { path = "../../formats/game-markers" }
 # The Firefight director and its host log (firefight/host.rs).
 firefight = { path = "../../formats/firefight" }
 host-log.workspace = true
@@ -26,6 +28,8 @@ h1-runtime = { path = "../h1-runtime" }
 render-bridge = { path = "../../rewrites/render-bridge", default-features = false }
 sim-bridge = { path = "../../rewrites/sim-bridge" }
 film = { path = "../../live/film" }
+# Start points: the stored arena frames (theater/start_point.rs).
+zstd = "0.11"
 rustc-hash = { workspace = true }
 xbe.workspace = true
 xiso.workspace = true
@@ -64,8 +68,14 @@ assets = { path = "../../platform/assets" }
 native-render = { path = "../../rewrites/native-render", optional = true }
 # The frame step's scene (docs/graphics/framescene.md); pure, no GPU.
 frame-scene = { path = "../../rewrites/frame-scene" }
+# The HUD walk the overlay stage draws the HUD from (hud_overlay.rs,
+# docs/graphics/native-post-hud.md "The HUD on the overlay").
+hud-edit = { path = "../../tools/hud-edit", optional = true }
 shaders = { path = "../../formats/shaders", optional = true }
 serde.workspace = true
+# Screens' presentation in YAML (ui_kit::data).
+serde_yaml_ng.workspace = true
+indexmap.workspace = true
 dsound = { path = "../../platform/dsound", default-features = false }
 # Voice chat's media objects (voice_glue); devices come from the host.
 voice = { workspace = true, optional = true }
@@ -78,6 +88,9 @@ live-hle = { path = "../../live/live-hle" }
 live-telemetry = { path = "../../live/live-telemetry" }
 # The superbounce game type's spot scan (superbounce_mode).
 superbounce = { path = "../../live/superbounce" }
+# The Pogo Stick's styles and where the map rewrite placed its tags
+# (pogo_loadout; docs/game/pogo-stick.md).
+pogo = { path = "../../formats/pogo" }
 # The HUD kit's model, templates and record compiler (hud_kit,
 # superbounce_hud; docs/game/hud-kit.md).
 hud-kit-core.workspace = true
@@ -110,9 +123,11 @@ serde_json.workspace = true
 perf = { path = "../../tools/perf", optional = true }
 
 [features]
+# Invented UI map templates for the package parity tests.
+ui-fixture = []
 default = ["gpu", "movie-playback", "local-io", "test-maps", "rules"]
 desktop-runtime = ["render-bridge/native-render", "recomp/desktop-runtime"]
-gpu = ["desktop-runtime", "gfx/gpu", "d3d/gpu", "agent/render-overrides", "dep:wgpu", "dep:native-render", "dep:shaders", "dep:hot-render"]
+gpu = ["desktop-runtime", "gfx/gpu", "d3d/gpu", "agent/render-overrides", "dep:wgpu", "dep:native-render", "dep:shaders", "dep:hot-render", "dep:hud-edit"]
 movie-playback = ["desktop-runtime", "bink-hle/playback", "dep:movies"]
 local-io = ["desktop-runtime", "dep:voice", "dsound/playback"]
 perf = ["dep:perf"]

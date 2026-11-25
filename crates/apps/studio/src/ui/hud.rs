@@ -28,6 +28,7 @@ use hud_edit::{HudState, Value, WidgetKey, WidgetKind};
 use tags::registry::Kind as RegKind;
 
 use crate::app::map_cards::MapEntry;
+use crate::app::image_gen::ImageAction;
 use crate::app::{Action, App, HudTool, TagAction};
 use crate::fields::{self, PanelState};
 use crate::theme::{self, Fonts, icon};
@@ -504,14 +505,11 @@ pub fn inspector(
             ui.text_colored(theme::OK, format!("{} no overlaps, nothing off the screen", icon::CHECK));
         }
         for (i, f) in shot.findings.iter().enumerate() {
-            let c = match f.severity {
-                Severity::Warning => theme::ERROR,
-                Severity::Note => theme::WARN,
+            let severity = match f.severity {
+                Severity::Warning => crate::api::checks::Severity::Warning,
+                Severity::Note => crate::api::checks::Severity::Note,
             };
-            ui.text_colored(c, icon::ALERT);
-            ui.same_line();
-            ui.text_wrapped(&f.text);
-            if ui.is_item_hovered() {
+            if super::problems::finding_line(ui, severity, &f.text) {
                 st.hot = Some(i);
             }
         }
@@ -645,6 +643,19 @@ fn properties(ui: &Ui, h: &mut HudTool, panel: &mut PanelState, key: WidgetKey, 
                 actions.push(Action::HudSet(key, f.key.to_owned(), v, true));
             }
         }
+    }
+    // A bitmap widget's picture: the Generate window on its bitmap (image 0
+    // to start; the window picks another), in the map open in Studio.
+    if key.kind == WidgetKind::Bitmap
+        && let Some(f) = key.kind.fields().iter().find(|f| f.key == "bitmap")
+        && let Value::Tag(id) = w.get_field(f)
+        && id != map::TagId::NULL
+    {
+        let name = s.tag_name(id);
+        if ui.button(format!("{} Generate image...##hud-generate", icon::ZAP)) {
+            actions.push(Action::Image(ImageAction::Open { bitmap: name, image: 0 }));
+        }
+        ui.set_item_tooltip("Make a new picture for this widget's bitmap from a prompt and references you pick");
     }
     theme::section(ui, "Fields");
     let mut out = Vec::new();

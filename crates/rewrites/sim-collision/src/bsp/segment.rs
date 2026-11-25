@@ -67,10 +67,28 @@ pub struct Hit {
     pub material: u16,
 }
 
+/// Last plane visited before an unsplit segment reaches its leaf. These
+/// four binary32 results also survive in registers or the D caller's frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlaneDistances {
+    pub distance: u32,
+    pub delta: u32,
+    pub start: u32,
+    pub end: u32,
+}
+
+/// An unsplit walk that does not enter a surface lookup. A direct leaf
+/// starts without a plane, leaving the incoming XMM registers intact.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StraightWalk {
+    pub last: Option<PlaneDistances>,
+}
+
 /// What the walk leaves in R and the context.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Outcome {
     pub hit: Option<Hit>,
+    pub straight: Option<StraightWalk>,
     /// Leaves appended to R's list, in order, starting at the entry
     /// `listed`; once the list holds [`LEAF_LIST`] the rest go to the
     /// overflow slot `+0x418`, the last one staying.
@@ -86,7 +104,89 @@ pub struct Outcome {
     pub mask_reads: Vec<u32>,
 }
 
+pub mod record {
+    /// `f32`: the hit fraction; `max(limit, 0)` before the walk.
+    pub const FRACTION: u32 = 0x00;
+    /// The hit plane's guest address.
+    pub const PLANE: u32 = 0x04;
+    /// The leaf the surface was found in, then the surface index.
+    pub const LEAF: u32 = 0x08;
+    pub const SURFACE: u32 = 0x0c;
+    /// The surface's plane word, sign-extended (bit 15: flipped).
+    pub const SURFACE_PLANE: u32 = 0x10;
+    /// Surface flags `u8`, breakable index `u8`, material `i16`.
+    pub const FLAGS: u32 = 0x14;
+    pub const BREAKABLE: u32 = 0x15;
+    pub const MATERIAL: u32 = 0x16;
+    /// `u32` leaves listed, then up to 256 leaf indices.
+    pub const COUNT: u32 = 0x18;
+    pub const LEAVES: u32 = 0x1c;
+    /// The last leaf visited once the list is full.
+    pub const OVERFLOW: u32 = 0x418;
+    pub const SIZE: u32 = 0x41c;
+}
+
+/// The vector test's 40-byte context (entry D's first argument; entry C
+/// builds one in its own frame).
+pub mod context {
+    pub const FLAGS: u32 = 0x00;
+    pub const BSP: u32 = 0x04;
+    /// `u16`.
+    pub const BREAKABLE_COUNT: u32 = 0x08;
+    pub const MASK: u32 = 0x0c;
+    pub const START: u32 = 0x10;
+    pub const DELTA: u32 = 0x14;
+    pub const RECORD: u32 = 0x18;
+    pub const PREV_LEAF: u32 = 0x1c;
+    /// `u8`.
+    pub const PREV_KIND: u32 = 0x20;
+    pub const PLANE: u32 = 0x24;
+    pub const SIZE: u32 = 0x28;
+}
+
 impl Outcome {
+    /// The context fields the caller reads after the walk.
+    pub fn write_context<E>(
+        &self,
+        mut store: impl FnMut(u32, &[u8]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        store(context::PREV_LEAF, &self.prev_leaf.to_le_bytes())?;
+        store(context::PREV_KIND, &[self.prev_kind])?;
+        store(context::PLANE, &self.plane.to_le_bytes())
+    }
+
+    /// Emit result-record stores in execution order. Unvisited list entries and
+    /// the hit fields on a miss retain their caller-provided bytes.
+    pub fn write_record<E>(
+        &self,
+        init: Option<u32>,
+        listed: u32,
+        mut store: impl FnMut(u32, &[u8]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        if let Some(fraction) = init {
+            store(record::FRACTION, &fraction.to_le_bytes())?;
+            store(record::COUNT, &0u32.to_le_bytes())?;
+        }
+        let (count, writes) = self.list_writes(listed);
+        for (offset, leaf) in writes {
+            store(offset, &leaf.to_le_bytes())?;
+        }
+        if count != listed {
+            store(record::COUNT, &count.to_le_bytes())?;
+        }
+        if let Some(h) = self.hit {
+            store(record::FRACTION, &h.fraction.to_le_bytes())?;
+            store(record::PLANE, &h.plane_addr.to_le_bytes())?;
+            store(record::LEAF, &h.leaf.to_le_bytes())?;
+            store(record::SURFACE, &h.surface.to_le_bytes())?;
+            store(record::SURFACE_PLANE, &h.plane.to_le_bytes())?;
+            store(record::FLAGS, &[h.flags])?;
+            store(record::BREAKABLE, &[h.breakable])?;
+            store(record::MATERIAL, &h.material.to_le_bytes())?;
+        }
+        Ok(())
+    }
+
     /// R's leaf count after the walk, and where each appended leaf went:
     /// `(R offset, leaf)` in order.
     pub fn list_writes(&self, listed: u32) -> (u32, Vec<(u32, u32)>) {
@@ -94,10 +194,10 @@ impl Outcome {
         let mut out = Vec::with_capacity(self.leaves.len());
         for &leaf in &self.leaves {
             if (count as i32) < LEAF_LIST as i32 {
-                out.push((0x1c + 4 * count, leaf));
+                out.push((record::LEAVES + 4 * count, leaf));
                 count += 1;
             } else {
-                out.push((0x418, leaf));
+                out.push((record::OVERFLOW, leaf));
             }
         }
         (count, out)
@@ -136,6 +236,7 @@ impl Bsp {
             fp: Fp::new(),
             nodes_left: self.nodes.len(),
             out: Outcome {
+                straight: Some(StraightWalk::default()),
                 prev_leaf: q.prev_leaf,
                 prev_kind: q.prev_kind,
                 plane: q.plane,
@@ -208,10 +309,14 @@ impl<G: GuestRead> Walk<'_, G> {
             }
             let (a, b) = (non_negative(s0), non_negative(s1));
             if a == b {
+                if let Some(straight) = &mut self.out.straight {
+                    straight.last = Some(PlaneDistances { distance: dist, delta, start: s0, end: s1 });
+                }
                 child = Self::child(&n, a)?;
                 continue;
             }
             // Opposite signs at the ends: delta is nonzero.
+            self.out.straight = None;
             let increasing = above(delta, 0);
             let split = det::x87_neg_quotient(dist, delta);
             self.out.inexact |= split.inexact;
@@ -258,6 +363,10 @@ impl<G: GuestRead> Walk<'_, G> {
         } else {
             (None, false)
         };
+        // Even a table lookup of NONE uses additional stack slots.
+        if lookup.is_some() {
+            self.out.straight = None;
+        }
         if let Some(lookup) = lookup.filter(|&l| l != NONE) {
             let s = self.matcher(lookup, t0, two_sided)?;
             if s != NONE {
@@ -354,11 +463,9 @@ impl<G: GuestRead> Walk<'_, G> {
 
     /// `0x1debd0`: a breakable surface whose bit is clear is never inside;
     /// otherwise the point is inside when no edge has
-    /// `(Bv - Av) * (pu - Au) - (pv - Av) * (Bu - Au) > 0`. The edges are
-    /// tested in ring order and the first rejection ends the test, as in
-    /// the guest.
-    fn inside(&mut self, s: u32, [ua, va]: [usize; 2], u: u32, v: u32) -> Result<bool, Bail> {
-        let surface = *self.bsp.surfaces.get(s as usize).ok_or(Bail::Data)?;
+    /// `(Bv - Av) * (pu - Au) - (pv - Av) * (Bu - Au) > 0`.
+    fn inside(&mut self, s: u32, axes: [usize; 2], u: u32, v: u32) -> Result<bool, Bail> {
+        let surface = self.bsp.surfaces.get(s as usize).ok_or(Bail::Data)?;
         let q = self.q;
         if q.mask != 0
             && surface.flags & 8 != 0
@@ -371,26 +478,6 @@ impl<G: GuestRead> Walk<'_, G> {
                 return Ok(false);
             }
         }
-        let fp = &mut self.fp;
-        self.bsp.with_surface_ring(self.g, s, &surface, |ring| {
-            for e in ring {
-                let (au, av) = (e.a[ua], e.a[va]);
-                let (bu, bv) = (e.b[ua], e.b[va]);
-                let pu = fp.sub(u, au);
-                let pv = fp.sub(v, av);
-                let ev = fp.sub(bv, av);
-                let eu = fp.sub(bu, au);
-                let left = fp.mul(ev, pu);
-                let right = fp.mul(pv, eu);
-                let cross = fp.sub(left, right);
-                if !fp.exact() {
-                    return Err(Bail::Float);
-                }
-                if above(cross, 0) {
-                    return Ok(false);
-                }
-            }
-            Ok(true)
-        })
+        self.bsp.ring_contains(self.g, s, surface, axes, [u, v], &mut self.fp)
     }
 }

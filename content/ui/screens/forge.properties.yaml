@@ -1,0 +1,104 @@
+screen: forge.properties
+kind: list
+layout: controls
+backing: shell
+states:
+  beacon:
+    focus: 0
+  gate:
+    focus: 0
+widgets:
+  title:
+    component: title
+  legend:
+    component: legend
+    prompts: [[A, "SELECT"], [B, "BACK"]]
+props:
+  prop.0:
+    text: "Coordinates..."
+    help: "Type or nudge the position and rotation."
+    prop: coordinates
+    open: forge.coordinates
+  prop.1:
+    text: "Heading"
+    help: "Which way the object faces, about the vertical."
+    prop: heading
+    open: picker
+  prop.2:
+    text: "Team"
+    help: "Which team starts here."
+    on: [starting-point]
+    prop: team
+    open: picker
+    values: ["None", "Red", "Blue", "Green", "Yellow", "Purple", "Orange", "Brown", "Pink", "Neutral"]
+  prop.3:
+    text: "Team"
+    help: "Which team this goal belongs to."
+    on: [goal]
+    prop: team
+    open: picker
+    values: ["None", "Red", "Blue", "Green", "Yellow", "Purple", "Orange", "Brown", "Pink", "Neutral"]
+  prop.4:
+    text: "Role"
+    help: "The netgame flag's type."
+    on: [goal]
+    prop: role
+    open: picker
+    values: ["CTF flag spawn", "CTF flag return", "Assault bomb spawn", "Assault bomb return", "Oddball spawn", "Role 5", "Role 6", "Teleporter sender", "Teleporter receiver", "Role 9", "Territory", "Hill 1", "Hill 2", "Hill 3", "Hill 4", "Hill 5", "Hill 6", "Hill 7", "Hill 8"]
+  prop.5:
+    text: "Order"
+    help: "The flag's identifier, for hills and territories."
+    on: [goal]
+    prop: order
+    open: picker
+    values: ["0", "1", "2", "3", "4", "5", "6", "7"]
+  prop.6:
+    text: "Respawn time"
+    help: "Seconds before the item comes back."
+    on: [spawner]
+    prop: "respawn time"
+    open: keyboard
+  prop.7:
+    text: "Return time"
+    help: "How long the item may be away from its spot before it goes back."
+    on: [spawner]
+    prop: "return time"
+    open: keyboard
+  prop.8:
+    text: "Game types..."
+    help: "Which game types the item appears in."
+    on: [spawner]
+    prop: games
+    open: forge.games
+  prop.9:
+    text: "Label"
+    help: "A name a game type script finds this by. Lowercase letters, digits, - _ and ."
+    prop: label
+    open: keyboard
+  prop.10:
+    text: "Label number"
+    help: "Tells things with one label apart. Empty takes the number off."
+    prop: "label number"
+    open: keyboard
+  prop.11:
+    text: "Clear label"
+    help: "Take the label off."
+    prop: "clear label"
+    open: act
+  prop.12:
+    text: "Save as prefab"
+    help: "Save this object, its group or the selection to place again."
+    on: [object]
+    prop: prefab
+    open: keyboard
+  prop.13:
+    text: "Reset orientation"
+    help: "Pitch and roll to zero, and the yaw to the rotation snap."
+    prop: "reset orientation"
+    open: act
+  prop.14:
+    text: "Duplicate"
+    help: "Make a copy of this object and hold it."
+    on: [object]
+    prop: duplicate
+    open: act

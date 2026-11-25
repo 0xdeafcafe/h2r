@@ -15,7 +15,7 @@ group 736b7920 0xac align 4
   0x40 unknown 0x4 seen=zero
   0x44 f32 scalar_44 -- V set (5.0) by one retail sky
   0x48 block fog_a 0x18 align 4 -- E 0x00131030 reads element 0 of each sky the camera sees, weighted, and 0x0012fb1b writes the normalized sums to the view state (+0x1c..+0x30); V 68 of 91 retail skies have one element
-    0x0 f32[3] color -- E 0x001301c0 clamps the blended colour to 0..1; V values in 0..1
+    0x0 f32[3] color view=rgb -- E 0x001301c0 clamps the blended colour to 0..1; V values in 0..1
     0xc f32 max_density -- E 0x001301c0: no fog (the colour and distances left alone) unless the blend is above a threshold, clamped to at most 1; V values in 0..1
     0x10 f32 start_distance -- E 0x001301c0: the opaque distance is raised past it; V 0 on retail skies
     0x14 f32 opaque_distance -- E 0x001301c0: at least the start distance; V 200 and 700 seen

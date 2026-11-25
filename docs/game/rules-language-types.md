@@ -1,6 +1,6 @@
 # Rules language: declared labels and stronger types
 
-Status: Design, with slices 1 to 9 built: the IR's label and tag tables, their verifier rules, the VM's bound on a labelled set and `rules::labels::check` ("The IR", "The start gate"); the checker, declared labels, `T?` with narrowing, `zone` and `weapon` (`lang/check.rs`); the census builders, the host's gate and the lobby's gate ([rules-start-gate.md](rules-start-gate.md)); scenario maps, the check report's `labels` and the generator's minimal map ("The workbench"); Live's hopper gate, a map census and `admin::check_pairs` ([rules-start-gate.md](rules-start-gate.md#hoppers-system-link-offline-and-theater)); the editor's Rust half: `rules::ide` on the checker's `Checked` script, every diagnostic with its fixes, code actions and rename in `ide/fix.rs`, `h2 rules lsp` and the `ide` route ("Diagnostics and the editor"); `time`, constants, `match`, the `carrier` enum and value functions ("Stronger typing"); the web workbench: the test map, its problems and "Add what the script needs", "What a map needs", quick fixes, rename and the Insert menu's label groups ("The workbench", "Diagnostics and the editor"). "The built language" below is the language before slice 2, which the gap table describes.
+Status: Design, with slices 1 to 9 built: the IR's label and tag tables, their verifier rules, the VM's bound on a labelled set and `rules::labels::check` ("The IR", "The start gate"); the checker, declared labels, `T?` with narrowing, `zone` and `weapon` (`lang/check.rs`); the census builders, the host's gate and the lobby's gate ([rules-start-gate.md](rules-start-gate.md)); scenario maps, the check report's `labels` and the generator's minimal map ("The workbench"); Live's hopper gate, a map census and `admin::check_pairs` ([rules-start-gate.md](rules-start-gate.md#hoppers-system-link-offline-and-theater)); the editor's Rust half: `rules::ide` on the checker's `Checked` script, every diagnostic with its fixes, code actions and rename in `ide/fix.rs`, `h2 rules lsp` and the `ide` route ("Diagnostics and the editor"); `time`, constants, `match`, value functions ("Stronger typing"); the web workbench: the test map, its problems and "Add what the script needs", "What a map needs", quick fixes, rename and the Insert menu's label groups ("The workbench", "Diagnostics and the editor"). "The built language" below is the language before slice 2, which the gap table describes.
 Code: `crates/formats/rules/src/lang` (lexer, parser, `check.rs`, which gives every diagnostic, `lower.rs`, which lowers a checked script), `crates/formats/rules/src/ide`, `crates/formats/rules/src/ir.rs`, `crates/formats/rules/src/verify.rs`, `crates/formats/rules/src/labels.rs`; the workbench's web half in `web/src/lib/rules.ts`, `web/src/lib/rulesIde.ts`, `web/src/stats/rulesMonaco.ts` and `web/src/stats/RulesTest.tsx`. Tests: `cargo test -p rules`; `bun test test/rules.test.ts test/rulesIde.test.ts` in `web/`.
 Switch: none.
 
@@ -25,12 +25,12 @@ Everything not marked **Code** is **Design**.
 ## What the built language leaves unchecked
 
 **Code**, `crates/formats/rules/src/lang/lower.rs` and the built-ins in
-`crates/formats/rules/src/builtin`:
+`content/core/rules/` and `content/modes/rules/`:
 
 | Gap | Where it shows |
 |---|---|
 | A label is a string interned at each use (`Cx::label`). A typo is an empty set, and nothing says what a map must hold. | `siege.rules`: `first(objects labelled "core")` is `none` on a map with no core, and `create` gets `none` |
-| `player`, `team`, `object` and `tag` always admit `none` (`Ty::nullable`); a read through `none` gives the slot's initial value. | `koth.rules`: `lead.team` is read when `first(...)` found nobody; `ctf.rules`: `f.at_home = true` through a neutral bomb's `none` team |
+| `player`, `team`, `object` and `tag` always admit `none` (`Ty::nullable`); a read through `none` gives the slot's initial value. | `koth.rules`: `lead.team` is read when `first(...)` found nobody |
 | Ticks and seconds are both `int`. | every timer and counter relies on the author writing `seconds(...)` |
 | Every placed thing is `object`. | `inside(p, o)` accepts a crate; `on enter(zone, o)` gives two `object`s |
 | Any tag path fits any `tag` parameter. | `set_loadout` accepts a vehicle's path |
@@ -60,11 +60,13 @@ the compiler cannot disagree.
 | `zone` | an `object` with a volume: a Forge trigger volume, or a netgame flag with its capture volume | `Object` |
 | `tag` | a tag path of any object definition | `Tag` |
 | `weapon` | a `tag` that must be a weapon | `Tag` |
+| `sound` | a `tag` that must be a sound (`snd!`); a string in a `sound` place is interned with the sound group, and the start gate blocks a map whose tag index lacks it, by name | `Tag` |
 | `class`, `text` | an AI class; a string-table text | `Class`, `Text` |
-| `enum` types | script-declared, plus the built-in `carrier` (`carrier.assault`), which lowers to an `int` constant | `Enum(n)`; `Int` |
+| `enum` types | script-declared | `Enum(n)`; `Int` |
 | `timer` | a global variable's type; it reads and writes as `time` | `Timer` |
 | `T?` | `T` or `none`, for `player`, `team`, `object`, `zone`, `tag`, `weapon` | the IR type of `T` |
 | `objects`, `zones`, `spawns`, `players`, `teams` | sets: not values, used where a set is read | none (`SetBase`) |
+| label kind `path` | a flight path: points numbered from 0, passed to `fly` and nowhere else | a label (`LabelKind::Path`) |
 
 Three conversions are implicit and nothing else is: `zone` to `object`,
 `weapon` to `tag`, and `T` to `T?`. A whole-number literal reads as
@@ -87,11 +89,26 @@ types. A test asserts each front-end signature erases to its entry's
 | `inside(p, z)`, `ticks_held(z, t)` | `player, zone -> bool`; `zone, team -> time` |
 | `o.carrier`, `player_of(o)` | `object -> player?` |
 | `o.team` | `object -> team?` (neutral is `none`) |
-| `end_round(winner)` | `team?` |
+| `end_round(winner)`, `ff_team_finish(winner)` | `team?` (`none` is a draw) |
 | `register_objective(o, t)`, `spawn_objective(tag, at, t)` | the team is `team?` |
 | `set_loadout(p, a, b)`, `give(p, w)` | `player, weapon?, weapon?`; `player, weapon` |
-| `spawn_areas(t, areas, n)` | `team, spawns, int` |
+| `spawn_areas(t, areas, n)`, `spawn_near(t, z, n)` | `team, spawns, int`; `team, zone?, int` (`none` lifts the rule) |
+| `set_body(t, body)` | `team, tag?` (`none` gives the players their own) |
+| `sound_to(s, p)`, `sound_to_team(s, t)`, `sound_to_all(s)`, `sound_at(s, o)`, `music(s)` | `sound, player`; `sound, team`; `sound`; `sound, object`; `sound` |
+| `show_area(z, t)`, `hide_area(z)` | `zone, team?` (`none` is neutral); `zone` |
+| `hud_value(w, n)`, `hud_fill(w, f)`, `hud_style(w, n)`, `hud_text(w, "…")`, `hud_show(w, on)` | `int` (a widget's number, the name of its `hud` declaration), then `int`; `fixed`; `int`; `text`; `bool` |
+| `mark(wp, z)`, `mark(wp, z, to)`, `unmark(wp)` | `int` (a waypoint's number, the name of its `waypoint` declaration), then `zone`; the audience form's `to` a `player`, a `team` or `all` (everyone, the two-argument form) |
+| `side_of(p)`, `slot_of(p)` | `player -> int`: the player's team index in a game with teams and 16 and its roster slot in one without; the roster slot |
+| `teleport(o, at)`, `move_to(o, at, t)`, `object_pos`, `object_vel` | `object, vec`; `object, vec, time`; `object, int -> fixed` (a `vec` is three `fixed` registers in the IR, `Type::width`; `at` may also be an object, and `teleport(o, at, offset)` an object and a `vec`) |
+| `set_open(o, open)` | `object, bool` |
+| `offer_pick(n, title)`, `pick_row(n, label)`, `picked(p, n)` | `int, text`; `int, text`; `player, int -> int` |
+| `vec(x, y, z)`, `length(v)`, `distance(a, b)`, `v.x`, `o.position`, `o.velocity`, `o.speed` | `fixed, fixed, fixed -> vec`; `vec -> fixed`; `vec, vec -> fixed`; `vec -> fixed`; `-> vec`; `-> vec`; `-> fixed` |
+| `on arrive(o)` | `object` |
+| `on touchdown(p, down, up)` | `player, fixed, fixed` |
+| `on launch(p, spot, speed)`, `on grounded(p)` | `player, zone?, fixed`; `player` |
+| `airborne(p)`, `crouching(p)`, `primed(p)` (`p.airborne`, `p.crouching`, `p.primed`), `sees(a, b)` | `player -> bool`; `object, object -> bool` |
 | `place_squad(s, c, n, at)` | `squad, class, int, objects` |
+| `fly(v, p, t)` | `object, path, time`; the vehicle is an `object` the host checks, since `vehicle` is not a front-end type ([rules-world-api.md](rules-world-api.md#vehicles-and-drop-ships)) |
 | `round_time_left()`, `now()`, `seconds(n)` | `-> time`; `int -> time` |
 | `on kill(victim, killer)` | `player, player?` |
 | `on enter(z, o)`, `on leave(z, o)`, `on bounce(p, spot, chain, monster)` | `zone, object`; `player, zone, int, bool` |
@@ -129,6 +146,7 @@ identifier and is the map's label text unless `= "..."` gives another
 | `object?`, `zone?` | one value or `none` | none or one |
 | `objects`, `zones` | a set | any number, unless a requirement says otherwise |
 | `spawns` | a set of starting locations, with no members to visit | any number, unless a requirement says otherwise |
+| `path` | the points of a flight, with no members to visit; passed to `fly` | at least 2, numbered from 0 with none missing and none twice; a count requirement may raise the least or state a most |
 
 | Requirement | On | Meaning |
 |---|---|---|
@@ -136,6 +154,14 @@ identifier and is the map's label text unless `= "..."` gives another
 | `numbered` | a set | every member has a number |
 | `numbered a..b` | a set | every member's number is in `a..b`, and each number in it has at least one member |
 | `per team` | `objects`, `zones` | each team in play has at least one member whose team it is |
+
+A `path` is numbered already: `numbered`, `per team` and `path?` are
+declaration errors, and a count below 2 is raised to 2. The start gate
+(`labels::check`) names the first number missing below the path's last
+(`ProblemKind::PathGap`), a number used twice (`PathDuplicate`) and a point
+with no number, so a hole in a flight blocks the start instead of
+skipping a leg. A path's points are objects of the map (any placement but
+a starting location); where each is comes from the map at run time.
 
 A label's kind is checked against the placement's class, which the map
 decides and the label does not store:
@@ -146,6 +172,7 @@ decides and the label does not store:
 | flag | a netgame flag, with its own label or the built-in one for its type (`forge_doc::builtin_label`) | `object`, `zone` |
 | volume | a Forge trigger volume | `object`, `zone` |
 | spawn | a starting location | `spawns` |
+| object, flag or volume, numbered | a point of a flight | `path` |
 
 Squads, emitters and devices get kinds of their own when a script can
 act on one; the kind byte has room.
@@ -181,7 +208,8 @@ into the event's one IR handler, in source order, each body under
 stands. A handler may leave trailing arguments unnamed: `on enter(goal)`.
 
 **A fn takes a set** when its parameter's type is `objects`, `zones` or
-`spawns`; the argument is a label's name. Functions are inlined, so the
+`spawns`; the argument is a label's name. (A `path` parameter is not
+built: `fly` takes a label directly.) Functions are inlined, so the
 set is still a constant index. Sets are not variables or table columns.
 
 A label is named only by its declaration. `objects labelled "x"`,
@@ -326,11 +354,6 @@ for the rest. An arm may name several variants, comma-separated
 (`Mode.b, Mode.c { }`); a variant in two arms is an error. It lowers to
 compares and forward jumps.
 `match on Role has no arm for Role.guard. Add "Role.guard { }" or "else { }".`
-`variant.engine` is the built-in enum `carrier`, whose variants are the
-names of `caps::CARRIERS` and erase to their engine indices:
-`variant.engine == carrier.assault`. `variant.engine == 9` is an error,
-`a carrier is named, not numbered: write carrier.assault`. `match` takes
-a `carrier` too.
 
 ### Constants
 
@@ -468,7 +491,7 @@ exists, fixes: text edits the editor applies. `ide::Diagnostic` carries
 the checker's `code` and its `fixes` (`ide/fix.rs`); `ide::actions`
 returns the fixes at a range (LSP `textDocument/codeAction`), and
 `ide::rename` renames a declaration and its uses. `h2 rules lsp`
-(`crates/apps/cli/src/rules_lsp.rs`) answers both, and Live's
+(`crates/apps/h2-tools/src/rules_lsp.rs`) answers both, and Live's
 `POST /v1/rules/ide` has them as the `actions` and `rename` operations.
 The web workbench's editor (**Code**, `web/src/stats/rulesMonaco.ts`)
 asks `actions` over the selection for Monaco's quick fixes (Ctrl/Cmd+.,
@@ -491,7 +514,7 @@ numbered.
 | `label.set-as-one` | `barrier is a set of objects, and delete takes one. Loop with "for each barrier b", or take one with first(barrier) or barrier[n].` | Wrap in `for each` |
 | `label.one-as-set` | `goal is one zone, not a set. Use it directly, or declare it as zones.` | Change the declaration to `zones` |
 | `label.kind` | `core is an object, and inside takes a zone. If the map's core is a volume, declare it "label core: zone".` | Change the declaration to `zone` |
-| `label.spawns` | `attack names spawn areas, which have no objects to visit. Pass it to spawn_areas.` | none |
+| `label.spawns` | `attack names spawn areas, which have no objects to visit. Pass it to spawn_areas.`; `run_in names a flight path, whose points are not objects to visit. Pass it to fly.` | none |
 | `label.index` | `barrier is not numbered, so barrier[n] has no meaning. Add "numbered" to its declaration.` | Add `numbered` |
 | `label.same-text` | `capture and zone both name the map label "zone". Keep one.` | none |
 | `label.unused` (warning) | `label core is declared but never used; a map would still need one.` | Remove the declaration |
@@ -500,12 +523,33 @@ numbered.
 | `null.never` (warning) | `p is never none here.` | Remove the check |
 | `unit.mix`, `unit.literal` | "Time"; `0.01s is not a whole number of ticks (30 a second).` | Add `s`; Wrap in `seconds(...)` |
 | `tag.group` | "Zones and weapons" | Change the column to `weapon` |
+| `body.unknown` | `objects/characters/elite/elite is not a player body; set_body takes objects/characters/masterchief/masterchief_mp or objects/characters/elite/elite_mp` | none |
+| `field.path` | `"Vitals Grade" is not a field name: lower-case letters, digits and underscores, starting with a letter` | none |
 | `zone.delete` (warning) | `goal is a zone. A flag cannot be deleted, so on a map where goal is a flag this does nothing.` | none |
 | `match.missing` | "Enums and match" | Add the missing arms |
 | `const.range`, `const.zero` | "Constants" | none |
 | `text.hole` | "Messages" | none |
 | `cap.missing`, `cap.unused` (warning) | "Capabilities" | Add to `requires`; Remove from `requires` |
 | `event.args`, `event.label` | `on enter gives 2 arguments (zone, object); this handler names 3.` `core is an object; on enter takes a zone label.` | none |
+| `setting.unknown` | `no setting named score_limt. Did you mean score_limit?` | Change to `score_limit` |
+| `setting.type` | `juggernaut_movement is a Juggernaut setting; this script's record is Slayer's` | Remove the setting (or the mark) |
+| `setting.twice` | `lives is set twice; it is first set on line 5` | Remove the repeated setting |
+| `setting.value` | `time_limit is a time: write 300s for 300 seconds. time_limit takes a time in whole seconds, 0s to 32767s, or none.` | none |
+| `quick.many` | `Quick Options has five rows; this line names 6` | Drop the marks past the fifth |
+| `quick.unknown` | `bounce_points is no setting and no option of this script` | Change to the nearest name; Remove the mark |
+| `quick.twice` | `lives is marked twice` | Remove the repeated mark |
+| `option.setting` | `option lives has a setting's name; an option needs a name of its own` | none |
+| `uses.handlers` | `on kill has no place here: with uses slayer the built-in game scores, and the script holds its header lines, settings and quick only` | Remove `uses slayer` |
+| `scoring.none` | ``this script scores nothing. Write `uses slayer` to play Slayer's rules.`` | Add `uses <T>` |
+| `header.retired` | ``list is gone: write `type party`, which files the game in its row`` (and the like for `carrier` and `scoring`) | Replace the line with the one it names |
+
+The `setting.*`, `quick.*`, `option.setting`, `uses.*` and
+`scoring.*` codes check the settings block, the `quick` line and the
+`uses` line against `rules::settings::TABLE`
+([rules-engine.md](rules-engine.md#the-language)). A settings value is
+not a front-end type: each row's kind (bool, int, seconds, choice,
+percent) says what it takes, and the checker folds it as it folds a
+constant.
 
 **Hover** shows a type on every name: `lead: player?`. Where the
 checker narrows it, a second line says so:
@@ -600,7 +644,11 @@ with the start gate's check.
   `max` (absent when unbounded), `single`, `numbered`, number range,
   `per_team` and `needs`, its sentence in Forge's words
   (`labels::describe`), read from the IR's label table; and `minimal`,
-  the smallest passing map as scenario things. The CLI's `h2 rules
+  the smallest passing map as scenario things. It also has `settings`
+  (`workbench::SettingLine`: the table's name, label and kind, the
+  stored value and its words, in table order) and `quick`
+  (`workbench::QuickLine`: each Quick Options row's kind, name, label and
+  starting value, in the script's order). The CLI's `h2 rules
   check` prints the sentences under "a map needs". The workbench page
   shows it as "What a map needs" beside the problems (**Code**,
   `MapNeeds`): each label's text, its kind in words and its sentence.
@@ -626,8 +674,8 @@ does not verify.
 
 | Table | Holds, in encoding order |
 |---|---|
-| label (`LabelDef`) | text (a string); kind, a byte (`LabelKind`: 1 object, 2 zone, 3 spawn); `min` and `max` members, two `u16`s, `max` at most 256 (`ty::MAX_LABELLED`, which states no limit); flags, a byte (`ir::label_flags`: 1 single, 2 numbered, 4 number range, 8 per team); the number range `lo` and `hi`, two `i32`s, inclusive, both 0 without the range flag |
-| tag (`TagDef`) | path (a string); group, a byte (`TagGroup`: 0 any object, 1 weapon) |
+| label (`LabelDef`) | text (a string); kind, a byte (`LabelKind`: 1 object, 2 zone, 3 spawn, 4 path); `min` and `max` members, two `u16`s, `max` at most 256 (`ty::MAX_LABELLED`, which states no limit); flags, a byte (`ir::label_flags`: 1 single, 2 numbered, 4 number range, 8 per team); the number range `lo` and `hi`, two `i32`s, inclusive, both 0 without the range flag |
+| tag (`TagDef`) | path (a string); group, a byte (`TagGroup`: 0 any object, 1 weapon, 2 sound) |
 
 A single label is `max` 1 with the single flag and no other, and `min` 0
 when it is optional (`object?`). Decoding refuses an unknown kind or
@@ -660,7 +708,7 @@ group.
 
 ## The built-ins, rewritten
 
-The 12 scripts in `crates/formats/rules/src/builtin`, the examples in
+The 12 scripts in `content/core/rules/` and `content/modes/rules/`, the examples in
 rules-engine.md and the h2-rules skill, and the scripts in
 `crates/formats/rules/tests` are rewritten by hand in the slice that
 changes the form they use (slices 2 and 5). Their tests keep the calls
@@ -701,8 +749,8 @@ on enter(goal, o) {
   `if let`.
 - `koth.rules` declares `label hill_corner: zones numbered` and reads
   `hill_corner[hill]`; `oddball.rules` `label oddball_spawn: objects`;
-  `race.rules` `label checkpoint: zones numbered` and
-  `label race_start: spawns`, with `on enter(checkpoint z, o)`.
+  `race.rules` `label checkpoint: zones numbered at least 3 at most 64
+  = "hill_corner"`, with `on enter(checkpoint z, o)`.
 - The six scripts with no label change only where a handle may be
   `none` (`juggernaut.rules`' `crown(p: player?)`) and where a count is
   `time`.
@@ -712,8 +760,6 @@ on enter(goal, o) {
 - New keywords: `label`, `const`, `match`, `is`. Type and kind words
   (`zone`, `time`, `weapon`, `objects`, `numbered`, `per`) are read by
   place and stay usable as names, so `let zone = ...` compiles.
-  `carrier` followed by `.` names a carrier; elsewhere it is the
-  script's `carrier` line.
 - A script declares at most 64 labels. A label's members are at most
   256. Each read of a label costs its `at most` in the worst-tick
   estimate, so a script that reads a set every tick declares one; the
@@ -739,7 +785,7 @@ Every slice leaves the tree green and lands by itself. Paths are under
 | 3 (built) | The host gate | `crates/extensions/game/src/rules/runtime.rs`, `rules/guest.rs`, `rules/feature.rs`; `crates/formats/forge-doc/src/labels.rs` (`of_file`, `of_game`, which build a `rules::labels::Census`); `crates/extensions/agent-proto/src/rules.rs` (`blocked`); `crates/apps/boot/src/registration.rs` (the `film` argument) | over invented guest memory and a Forge document: a map that lacks `goal` gives `Status::Blocked`, one `Call::End` and no VM; a map that has it starts; `film` skips the check; a Forge session refuses without ending; `of_file` equals `of_game` on one fixture; `rules.state` lists the problems | `Runtime::start` runs the check and a blocked game ends in its first tick | 1 |
 | 4 (built) | Scenario maps | `scenario.rs`, `workbench.rs`, `fake.rs`, `sim.rs`; the `run`, `check` and `simulate` wire types in `crates/live/live-proto/src/rules.rs` and their use in `crates/live/live-server/src/rule_scripts.rs` | a scenario with a map runs Siege's phases on the fake; a missing label is a `map` problem and no run; the check report lists `labels` and `minimal` from a hand-built blob; a generated match passes the check | `h2 rules run`, `POST /v1/rules/run` and `/v1/rules/simulate` take a map with classes; the report has `labels` | 1; the scenario lane and the generator lane |
 | 5 (built) | Time, constants, match, value functions | the `lang/` files, the built-ins, the tests and the doc scripts of slice 2 | one test per diagnostic code; a `time` option's bits equal an `int` option's of the same range, and its label ends ` (seconds)`; the built-ins' scenario tests | the fixtures of "Stronger typing" compile or fail with the texts on this page; the built-ins use `time`, `const` and `match` | 2 |
-| 6 (built) | The editor's Rust half | `ide/*`, `crates/apps/cli/src/rules_lsp.rs`; the `ide` route's `actions` and `rename` in `rule_scripts.rs` | hover, completion order in `inside(p, ` and after `is`, tokens, definition, references and rename for a label; each fix applied gives a script without that error; `ide/model.rs` holds no type inference | `rules::ide` reads `Checked`; `h2 rules lsp` answers `codeAction` and `rename` | 2; beside 5 |
+| 6 (built) | The editor's Rust half | `ide/*`, `crates/apps/h2-tools/src/rules_lsp.rs`; the `ide` route's `actions` and `rename` in `rule_scripts.rs` | hover, completion order in `inside(p, ` and after `is`, tokens, definition, references and rename for a label; each fix applied gives a script without that error; `ide/model.rs` holds no type inference | `rules::ide` reads `Checked`; `h2 rules lsp` answers `codeAction` and `rename` | 2; beside 5 |
 | 7 (built) | The lobby gate | `crates/extensions/game/src/rules/gate.rs` (new), `rules/mod.rs`, `crates/extensions/game/src/lobby_mode.rs` (`start_refused`, the `LOBBY_VARIANT_PANEL` hook), `lobby_status.rs`, `lobby_mode/tests.rs` | over invented guest memory and a map fixture: a changed map, Forge map or variant runs the check once; a blocked pair answers `REFUSED_STATE` and the status line's text, with `(and n more)`; Forge mode is not held; a host block becomes the lobby's verdict; `rules.state` lists the problems in the lobby | Start Game does nothing on a blocked pair and the status line says why | 3 |
 | 8 (built) | The web workbench | `web/src/lib/rules.ts`, `web/src/lib/rulesIde.ts`, `web/src/stats/rulesMonaco.ts`, `web/src/stats/RulesTest.tsx`, `web/src/stats/Rules.tsx`, `web/src/stats/RulesEditor.tsx` and their tests | pure-half tests: the scenario map round-trips, "Add what the script needs" satisfies the report's labels, events name things by label, the Insert groups; a code action applies its edits | the page shows map problems, quick fixes, rename and "What a map needs" | 4, 6 |
 | 9 (built) | The hopper gate | `crates/live/live-server/src/admin.rs` (`check_pairs`), `crates/live/live-proto/src/map_census.rs` (new), the census route in `crates/live/live-server/src/content.rs` and `http.rs`, `crates/apps/cli/src/live_maps.rs` (`census`), `docs/live/live-api.md` | an edit with a blocked pair, an unknown script or a map with no census is refused by name, and one with good pairs publishes; a new census lists the entries it blocks; the census event applies in both homes | no published hopper holds a blocked pair | 1, 3 (`Census`); the context-policy lane |

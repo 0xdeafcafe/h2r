@@ -39,9 +39,10 @@
 //! are counted per scope, and host writes are attributed to the handler
 //! they ran in (`runtime::trap`'s HLE census).
 //!
-//! Every `H2_RENDER_CENSUS_EVERY` frames (default 300) and when a game
-//! ends it prints `render-census:` lines and, with `H2_RENDER_CENSUS_OUT`
-//! set, rewrites the full per-page table there as TSV.
+//! Every `H2_RENDER_CENSUS_EVERY` frames (default 300) and at game
+//! boundaries it prints `render-census:` lines and, with
+//! `H2_RENDER_CENSUS_OUT` set, rewrites the full per-page table there as
+//! TSV. A successful map activation starts a fresh census.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
@@ -586,7 +587,7 @@ impl Census {
     pub fn pages(&self) -> &BTreeMap<u32, PageStat> {
         &self.pages
     }
-    /// Since the census started, the open window included.
+    /// For the current map, the open window included.
     pub fn totals(&self) -> Totals {
         let mut t = self.run.clone();
         t.add(&self.window);
@@ -679,7 +680,7 @@ impl Census {
                     if core {
                         w.rs_core += 1;
                         stat.rs_core += 1;
-                        let lined = self.sticky.contains(&p);
+                        let lined = self.sticky.binary_search(&p).is_ok();
                         w.rs_core_lined += lined as u64;
                         if let Some(g) = region_group(self.regions.classify(p << 12)) {
                             let c = self.coverage.entry(g).or_default();
@@ -1258,6 +1259,27 @@ impl Feature for RenderCensus {
                 if s.census.totals().frames != 0 {
                     report(&mut s, &opts);
                 }
+            })
+            .optional();
+        let (state, opts) = (Arc::clone(&self.state), self.opts.clone());
+        b.game()
+            .on_start("reset the render census", move |o| {
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                if !s.armed {
+                    return;
+                }
+                if s.since_report != 0 {
+                    name_targets(&mut s.census, o.runtime);
+                    report(&mut s, &opts);
+                }
+                s.census = Census::default();
+                s.since_report = 0;
+                let mut g = o.guest();
+                g.set_sticky_pages(&[]);
+                let _ = g.take_trap_hits();
+                g.arm_all(true, true);
+                drop(g);
+                let _ = runtime::trap::take_hle_calls();
             })
             .optional();
         let state = Arc::clone(&self.state);

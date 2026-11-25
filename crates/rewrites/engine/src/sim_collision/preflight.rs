@@ -6,19 +6,58 @@ use runtime::{
     Guest,
     guest::{Access, Permissions},
 };
-use sim_collision::{Bail, Bsp, mem::overlaps, structure::LeafTable};
+use sim_collision::{
+    Bail, Bsp, TopologyKey,
+    mem::overlaps,
+    structure::{LeafTable, TableVersion},
+};
 
 pub trait CollisionMemory: Memory {
+    /// Reads must remain attributable to the guest instruction under a trap.
+    fn trapped(&self) -> bool {
+        false
+    }
+
     /// Establish a version for this BSP and its decode constants. The
     /// default is for immutable bytes and a world dedicated to one fixture.
     fn bsp_revision(&mut self, _addr: u32) -> Result<(u64, u64), Bail> {
         Ok((0, 0))
     }
 
+    /// A version of the bytes under the MOPP program at `code` (header and
+    /// bytecode): it moves whenever any of them may have been written. The
+    /// default is for immutable bytes.
+    fn mopp_revision(&mut self, _code: u32) -> Result<u64, Bail> {
+        Ok(0)
+    }
+
     /// A version for all bytes of this leaf table, when the memory provider
     /// can detect every change. Other providers read the selected word live.
     fn leaf_table(&mut self, _count_addr: u32, _leaves: u32, _leaf: u32) -> Option<LeafTable> {
         None
+    }
+
+    /// A version for every byte a portal graph was decoded from, when the
+    /// provider can detect every change. With `sources` (after a decode)
+    /// it arms a new version over those spans; with `None` it returns the
+    /// armed version for `key` while no source has changed. Other
+    /// providers decode the graph on every call.
+    fn topology_version(
+        &mut self,
+        _key: TopologyKey,
+        _sources: Option<&[(u32, u32)]>,
+    ) -> Option<TableVersion> {
+        None
+    }
+
+    /// Physical spans behind the possibly mapped portion of a recursive
+    /// frame below the entry. Flat providers require it to be contiguous.
+    fn frame_spans(&self, lo: u32, hi: u32) -> Result<Vec<(u32, u32)>, Bail> {
+        let len = hi.checked_sub(lo).ok_or(Bail::Alias)?;
+        Ok(vec![(
+            self.physical_range(lo, len).ok_or(Bail::Alias)?,
+            len,
+        )])
     }
 
     /// Physical address of the first byte of a contiguous, readable range.
@@ -28,12 +67,43 @@ pub trait CollisionMemory: Memory {
 }
 
 impl CollisionMemory for Guest {
+    fn frame_spans(&self, lo: u32, hi: u32) -> Result<Vec<(u32, u32)>, Bail> {
+        let mut spans = Vec::new();
+        for m in self.mappings() {
+            let start = lo.max(m.virtual_start);
+            let end = u64::from(hi).min(u64::from(m.virtual_start) + u64::from(m.len));
+            if u64::from(start) < end {
+                spans.push((
+                    m.physical_start + (start - m.virtual_start),
+                    (end - u64::from(start)) as u32,
+                ));
+            }
+        }
+        Ok(spans)
+    }
+
+    fn trapped(&self) -> bool {
+        self.has_trap()
+    }
+
     fn bsp_revision(&mut self, addr: u32) -> Result<(u64, u64), Bail> {
         super::sources::revision(self, addr)
     }
 
     fn leaf_table(&mut self, count_addr: u32, leaves: u32, leaf: u32) -> Option<LeafTable> {
         super::cluster::table(self, count_addr, leaves, leaf)
+    }
+
+    fn topology_version(
+        &mut self,
+        key: TopologyKey,
+        sources: Option<&[(u32, u32)]>,
+    ) -> Option<TableVersion> {
+        super::topology::version(self, key, sources)
+    }
+
+    fn mopp_revision(&mut self, code: u32) -> Result<u64, Bail> {
+        super::sources::mopp_revision(self, code)
     }
 
     fn physical_range(&self, addr: u32, len: u32) -> Option<u32> {

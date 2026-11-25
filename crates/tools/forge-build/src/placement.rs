@@ -1,8 +1,8 @@
 use std::io::{Read, Seek};
 
 use forge_doc::{
-    Apply, BlockKind, F32, FieldWrite, Links, Placement, Refusal, TagKey, TagWrite, Value,
-    WorldBounds,
+    Apply, BlockKind, F32, FieldWrite, Labels, Links, Placement, Printed, Refusal, TagKey,
+    TagWrite, Value, WorldBounds,
 };
 use map::{FourCC, Map, Tag, TagQuery};
 use scenario_edit::{
@@ -56,13 +56,15 @@ pub(super) struct Materialiser<'a, R> {
     map: &'a mut Map<R>,
     tags: TagFields,
     device_groups: Vec<Vec<u32>>,
+    prints: Vec<Printed>,
 }
 
 /// What the save leaves to write: new tag strings, and the device groups
-/// the scenario editor has no block for.
+/// the scenario editor has no block for; and the prints compared.
 pub(super) struct Finished {
     pub strings: Vec<String>,
     pub device_groups: Vec<Vec<u32>>,
+    pub prints: Vec<Printed>,
 }
 
 impl<'a, R: Read + Seek> Materialiser<'a, R> {
@@ -72,6 +74,7 @@ impl<'a, R: Read + Seek> Materialiser<'a, R> {
             map,
             tags: TagFields::default(),
             device_groups: Vec::new(),
+            prints: Vec::new(),
         }
     }
 
@@ -81,6 +84,7 @@ impl<'a, R: Read + Seek> Materialiser<'a, R> {
         Ok(Finished {
             strings: self.tags.strings,
             device_groups: self.device_groups,
+            prints: self.prints,
         })
     }
 
@@ -180,6 +184,22 @@ impl<R: Read + Seek> Apply for Materialiser<'_, R> {
     fn links(&mut self, links: &Links) -> forge_doc::Result<()> {
         crate::links::teleporters(self.session, &links.teleporters)?;
         self.device_groups.clone_from(&links.device_groups);
+        Ok(())
+    }
+
+    /// Labels are document data with no scenario bytes. The ground build
+    /// reads the ground labels back from the finished scenario
+    /// (`crate::ground`), so nothing is kept here.
+    fn labels(&mut self, _: &Labels) -> forge_doc::Result<()> {
+        Ok(())
+    }
+
+    /// Each print against the disc's row, before the first edit.
+    fn prints(&mut self, prints: &[Printed]) -> forge_doc::Result<()> {
+        for printed in prints {
+            crate::entry::check(self.map, self.scenario()?, printed)?;
+        }
+        self.prints = prints.to_vec();
         Ok(())
     }
 }

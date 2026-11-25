@@ -15,12 +15,39 @@ use crate::App;
 use crate::app::commands::{self, Kind};
 use crate::app::{Action, Pick, ToolKind, UiScreens};
 
-fn pick_json(p: Option<&Pick>) -> Value {
+pub(super) fn pick_json(p: Option<&Pick>) -> Value {
     match p {
         Some(Pick::Native { screen, state }) => json!({ "screen": screen, "state": state }),
-        Some(Pick::Retail(tag)) => json!({ "retail": tag }),
+        Some(Pick::Retail { tag, sample: None }) => json!({ "retail": tag }),
+        Some(Pick::Retail {
+            tag,
+            sample: Some(s),
+        }) => json!({ "retail": tag, "sample": s }),
         None => Value::Null,
     }
+}
+
+/// Refuses a `sample` that retail screen `tag` has no sample variant of,
+/// with the names it has.
+fn retail_sample_named(tag: &str, sample: Option<&str>) -> Result<(), agent_proto::RpcError> {
+    use boot::ui_kit::preview::retail_sample;
+    let Some(name) = sample else { return Ok(()) };
+    let found = retail_sample::for_screen_variant(tag, name).map_err(|e| err(code::FAILED, e))?;
+    if found.is_some() {
+        return Ok(());
+    }
+    let names = retail_sample::variants(tag).map_err(|e| err(code::FAILED, e))?;
+    Err(err(
+        code::INVALID_PARAMS,
+        format!(
+            "{tag} has no sample named {name:?} (its samples: {})",
+            if names.is_empty() {
+                "none".to_owned()
+            } else {
+                names.join(", ")
+            }
+        ),
+    ))
 }
 
 fn need_pick(app: &App) -> Result<(), agent_proto::RpcError> {
@@ -36,6 +63,7 @@ fn need_pick(app: &App) -> Result<(), agent_proto::RpcError> {
 pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
     match method {
         m::UI_PALETTE => palette(app, p),
+        m::UI_SELECT_FOLDER | m::UI_SHEET => super::ui_browse::call(app, method, p),
         m::UI_SCREENS => {
             app.sync_ui_disc();
             let retail = if app.ui_screens.has_disc() {
@@ -48,11 +76,19 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 "retail": retail,
                 "pick": pick_json(app.ui_screens.pick.as_ref()),
                 "disc": app.ui_screens.has_disc(),
+                "folders": super::ui_browse::folders(app),
             }))
         }
         m::UI_PICK => {
+            let sample = p.opt_str("sample")?;
             let pick = match (p.opt_str("screen")?, p.opt_str("retail")?) {
                 (Some(screen), None) => {
+                    if sample.is_some() {
+                        return Err(err(
+                            code::INVALID_PARAMS,
+                            "sample names a retail screen's sample state: ui.pick {\"retail\": ..., \"sample\": ...}",
+                        ));
+                    }
                     let tree = UiScreens::tree();
                     let Some((_, states)) = tree.iter().find(|(n, _)| *n == screen) else {
                         return Err(err(
@@ -75,7 +111,13 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
                         state,
                     }
                 }
-                (None, Some(tag)) => Pick::Retail(tag.to_owned()),
+                (None, Some(tag)) => {
+                    retail_sample_named(tag, sample)?;
+                    Pick::Retail {
+                        tag: tag.to_owned(),
+                        sample: sample.map(str::to_owned),
+                    }
+                }
                 _ => {
                     return Err(err(
                         code::INVALID_PARAMS,
@@ -123,7 +165,7 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 None => {
                     let stem = match app.ui_screens.pick.as_ref().expect("picked") {
                         Pick::Native { screen, state } => format!("{screen}-{state}"),
-                        Pick::Retail(t) => t.replace(['\\', '/'], "_"),
+                        Pick::Retail { tag: t, .. } => t.replace(['\\', '/'], "_"),
                     };
                     studio_proto::output_dir()
                         .join("ui")

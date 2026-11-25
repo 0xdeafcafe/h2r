@@ -1,9 +1,8 @@
 //! The local Objects tool opens the active cache slot on a worker. Only
 //! typed palette references and the base identity enter the Forge document.
 use std::collections::BTreeMap;
-use std::fs::File;
 use std::io::{Cursor, Read, Seek, SeekFrom};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, ensure};
 use bots::los::Walls;
@@ -47,9 +46,36 @@ pub(crate) fn admitted(m: &dyn GuestMemory) -> bool {
             && g.game_ended(m) == Ok(0)
             && g.options().mode(m) == Ok(MODE_MULTIPLAYER)
     }) && crate::coop_probe::read_sim(&ReadGm(m)).is_some_and(|sim| {
-        agent_proto::sim::SessionKind::from_sim_mode(sim.mode)
-            == agent_proto::sim::SessionKind::Local
-    }) && offline() == Some(true)
+        use agent_proto::sim::SessionKind;
+        let kind = SessionKind::from_sim_mode(sim.mode);
+        (kind == SessionKind::Local && offline() == Some(true))
+            || (matches!(kind, SessionKind::Local | SessionKind::MpHost)
+                && crate::lobby_start::mode() == crate::lobby_start::Mode::Forge
+                && crate::lobby_mode::remote_members(m) == Some(0))
+    })
+}
+
+/// A synchronous network game (co-op host or guest) on a multiplayer map,
+/// in which a shared Forge session may run
+/// (docs/game/forge-design.md, F5).
+pub(crate) fn admitted_shared(m: &dyn GuestMemory) -> bool {
+    GameGlobals::current(m).ok().flatten().is_some_and(|g| {
+        g.map_active(m) == Ok(1)
+            && g.game_ended(m) == Ok(0)
+            && g.options().mode(m) == Ok(MODE_MULTIPLAYER)
+    }) && crate::coop_probe::read_sim(&ReadGm(m)).is_some_and(|sim| {
+        matches!(
+            agent_proto::sim::SessionKind::from_sim_mode(sim.mode),
+            agent_proto::sim::SessionKind::CoopHost | agent_proto::sim::SessionKind::CoopGuest
+        )
+    })
+}
+
+/// Where Forge may run: an offline local game, or a synchronous network
+/// game whose link has a Forge channel waiting
+/// ([`crate::forge_glue::net::pending`], re-offered each tick).
+pub(crate) fn admitted_session(m: &dyn GuestMemory) -> bool {
+    admitted(m) || (admitted_shared(m) && crate::forge_glue::net::pending())
 }
 
 #[derive(Clone, Debug)]
@@ -68,12 +94,12 @@ impl Loaded {
         if replaying {
             return Err("Forge is unavailable during Theater playback.".into());
         }
-        if !admitted(m) {
+        if !admitted_session(m) {
             return Err("Forge requires an active, offline local multiplayer game.".into());
         }
         let slot = map_slots::current_source(&ReadGm(m))
             .ok_or("The active map has no readable cache slot.")?;
-        let path = map_slots::slot_file(&slot).ok_or("The active map source is unavailable.")?;
+        let path = map_slots::recorded_file(&slot).ok_or("The active map source is unavailable.")?;
         let name = crate::health::loaded_map_name(m)
             .map_err(|_| "The loaded cache name is unavailable.")?;
         let base_name = slot
@@ -99,7 +125,7 @@ impl Loaded {
     }
 
     pub(crate) fn matches(&self, m: &dyn GuestMemory) -> bool {
-        admitted(m)
+        admitted_session(m)
             && global::SCENARIO.pointer(m) == Ok(Some(self.scenario))
             && cache_checksum(m) == Ok(self.checksum)
     }
@@ -116,54 +142,45 @@ pub(crate) struct Opened {
     pub refused: Vec<String>,
     /// Structure collision indexed by the game's active BSP.
     pub walls: Vec<Walls>,
+    /// Every named tag of the map by its salted datum, which
+    /// [`rows::read`] resolves the loaded scenario's references through.
+    pub names: BTreeMap<u32, TagKey>,
 }
 
-/// Resolve the recorded source once, then release the foreground VFS before
-/// hashing or decoding. Bound the snapshot and hash the storage padding too,
-/// as the F2 materialiser does. Refuse sparse and layered sources whose bytes
-/// could not be reproduced by a peer opening the named base on its disc.
-pub(crate) fn open(vfs: &Mutex<vfs::Vfs>, loaded: &Loaded) -> Result<Opened, String> {
+/// Read the selected slot's logical bytes, including package layers and
+/// storage padding. Hash and decode the snapshot outside the foreground VFS lock.
+pub(crate) fn open(vfs: &Arc<Mutex<vfs::Vfs>>, loaded: &Loaded) -> Result<Opened, String> {
     open_checked(vfs, loaded).map_err(|e| e.to_string())
 }
 
-fn open_checked(vfs: &Mutex<vfs::Vfs>, loaded: &Loaded) -> anyhow::Result<Opened> {
-    let source = {
-        let mut vfs = vfs.lock().unwrap_or_else(|e| e.into_inner());
-        ensure!(
-            vfs.map_id(&loaded.path).is_none(),
-            "Forge needs the original map. This slot serves a package or an override."
-        );
-        ensure!(
-            vfs.map_ranges(&loaded.path)?.is_none(),
-            "Forge needs the complete map. This slot serves a sparse copy."
-        );
-        vfs.file_source(&loaded.path)
-            .context("The active map file is unavailable.")?
+fn open_checked(vfs: &Arc<Mutex<vfs::Vfs>>, loaded: &Loaded) -> anyhow::Result<Opened> {
+    // A materialised editing kit retains the original document's base.
+    // Other installed maps are bases in their own right, including two
+    // packages with the same disc basename and different logical bytes.
+    let package = {
+        let mut mounted = vfs.lock().unwrap_or_else(|e| e.into_inner());
+        ensure!(mounted.map_ranges(&loaded.path)?.is_none(), "Forge needs the complete map.");
+        mounted.map_id(&loaded.path)
     };
-    let max = map::writer::cache_size_limit(CacheType::Multiplayer)?;
-    match source {
-        vfs::FileSource::Memory(bytes) => {
-            ensure!(
-                bytes.len() as u64 <= max,
-                "The map exceeds the multiplayer cache size limit."
-            );
-            decode(&bytes, loaded)
-        }
-        vfs::FileSource::Host(f) => {
-            ensure!(
-                f.len <= max,
-                "The map exceeds the multiplayer cache size limit."
-            );
-            let mut file = File::open(f.path)?;
-            file.seek(SeekFrom::Start(f.offset))?;
-            let mut bytes = vec![0; usize::try_from(f.len)?];
-            file.read_exact(&mut bytes)?;
-            decode(&bytes, loaded)
-        }
-    }
+    let base = if package.is_some() && package == crate::map_variant::kit_start() {
+        Some(crate::map_variant::installed(&loaded.base_name)
+            .context("The installed map the kit was built on is unknown.")?)
+    } else {
+        None
+    };
+    let mut file = crate::bots_nav_auto::VfsFile::open(Arc::clone(vfs), &loaded.path)?;
+    let len = file.seek(SeekFrom::End(0))?;
+    ensure!(len <= map::writer::cache_size_limit(CacheType::Multiplayer)?,
+        "The map exceeds the multiplayer cache size limit.");
+    file.seek(SeekFrom::Start(0))?;
+    let mut bytes = vec![0; usize::try_from(len)?];
+    file.read_exact(&mut bytes)?;
+    decode(&bytes, loaded, base)
 }
 
-fn decode(bytes: &[u8], loaded: &Loaded) -> anyhow::Result<Opened> {
+/// `base` is the hash of the installed map a kit package was built on;
+/// the original map is its own base.
+fn decode(bytes: &[u8], loaded: &Loaded, base: Option<Sha256>) -> anyhow::Result<Opened> {
     let mut map = Map::from_reader(Cursor::new(bytes))?;
     let header = map.header();
     ensure!(
@@ -247,13 +264,28 @@ fn decode(bytes: &[u8], loaded: &Loaded) -> anyhow::Result<Opened> {
         extents.push(extent);
     }
     let teleporters = teleporters(&view, &root)?;
+    let room = kit_room(&mut map, &view)?;
+    let names = map
+        .tags()
+        .iter()
+        .filter_map(|tag| {
+            let path = tag.name.clone().filter(|p| !p.is_empty())?;
+            Some((
+                tag.id.0,
+                TagKey {
+                    group: tag.group.to_string(),
+                    path,
+                },
+            ))
+        })
+        .collect();
     let (bounds, walls) = geometry(&mut map, &view)?;
     let doc = ForgeDoc {
         format: forge_doc::FORMAT,
         builder: BuilderVersions::CURRENT,
         base: MapRef {
             map: loaded.base_name.clone(),
-            sha256: Sha256::of(bytes),
+            sha256: base.unwrap_or_else(|| Sha256::of(bytes)),
         },
         title: loaded.name.clone(),
         author: loaded.author.clone(),
@@ -270,15 +302,45 @@ fn decode(bytes: &[u8], loaded: &Loaded) -> anyhow::Result<Opened> {
         base_counts,
         ..Default::default()
     };
+    let session = Session::new(doc, limits, palette, loaded.free_slots)
+        .and_then(|s| s.with_teleporters(teleporters))
+        .map_err(anyhow::Error::msg)?;
+    // A map with spare rows past its blocks' counts has the kit.
+    let session = if room.values().any(|&n| n > 0) {
+        session.with_kit(room).map_err(anyhow::Error::msg)?
+    } else {
+        session
+    };
     Ok(Opened {
-        session: Session::new(doc, limits, palette, loaded.free_slots)
-            .and_then(|s| s.with_teleporters(teleporters))
-            .map_err(anyhow::Error::msg)?,
+        session,
         tags,
         extents,
         refused,
         walls,
+        names,
     })
+}
+
+/// The spare rows the kit's blocks have past their counts: the rows after
+/// each count that read in the kit's spare form (`forge::kit::room`).
+fn kit_room<R: Read + Seek>(
+    map: &mut Map<R>,
+    view: &TagView<'_>,
+) -> anyhow::Result<BTreeMap<BlockKind, u32>> {
+    let mut room = BTreeMap::new();
+    for block in forge::kit::BLOCKS {
+        let def = scenario_layout::block(block);
+        let pair = view.at(def.offset as usize, 8)?;
+        let count = u32::from_le_bytes(pair[..4].try_into()?);
+        let address = u32::from_le_bytes(pair[4..].try_into()?);
+        let spare = forge::kit::room(block, count, |n| {
+            let at = address.checked_add(n.checked_mul(def.stride)?)?;
+            let offset = map.file_offset(at, def.stride).ok()?;
+            map.read_file_range(offset, def.stride.into()).ok()
+        });
+        room.insert(block, spare);
+    }
+    Ok(room)
 }
 
 /// The object definition header (`obje`, docs/formats/objects.md): its
@@ -432,5 +494,13 @@ fn geometry<R: Read + Seek>(
     Ok((bounds, walls))
 }
 
+/// The loaded scenario's rows, typed fields and prints. The session reads
+/// them once when it opens (docs/game/forge-map-variants.md, "Applying an
+/// edit in a session"), and the Things list is built from them.
+#[allow(dead_code)]
+pub(crate) mod rows;
+
+#[cfg(test)]
+mod rows_tests;
 #[cfg(test)]
 mod tests;

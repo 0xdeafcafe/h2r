@@ -7,7 +7,7 @@ Switch: `H2_SIM`, `sim.render_every` and the `impl.sim.*` switches, listed in
 [switches.md](switches.md).
 
 Code: `crates/live/sim-bench` (the match, batch and tuning files, pacing, the
-tally and report, the comparison), `crates/live/bots/src/tuning.rs`,
+tally and report, the comparison, the spatial trace), `crates/live/bots/src/tuning.rs`,
 `crates/rewrites/sim-bridge/src/sim_frame.rs`, `crates/extensions/game/src/sim_glue.rs` and its
 System Link lobby, `crates/extensions/game/src/sim_census.rs`, `crates/apps/cli/src/sim_cmd.rs`, and the examples in
 [sim-examples/](sim-examples/).
@@ -294,6 +294,7 @@ render_every = 0
 pace = "unpaced"
 components = true           # false: no state_components_v1 in the report (timing arms)
 detail = "full"             # "training": no components; sparse digests and a rolling digest
+                            # "spatial": the training report and the spatial trace beside it
 bot_threads = 3             # bot think workers: a count, "auto" or "off"; unset: see below
 bot_pipeline = false        # true: thinks overlap the guest's tick (a different match)
 
@@ -315,13 +316,80 @@ aggression = 0.9
 reaction = 5
 ```
 
-`superbounce = true` (before the tables) turns the superbounce mode on
-for the match: the bots practise bounces instead of fighting
+`superbounce = true` (before the tables) makes the match play the
+Superbounce rules script, which turns the superbounce mode on: the bots practise bounces instead of fighting
 ([Bounce practice](#bounce-practice)). A `[drill]` table (with
 `superbounce = true`) makes them try one site only
 ([The bounce drill](#the-bounce-drill)). A `[train]` table (with
 `superbounce = true`, and no `[drill]`) makes the run one shard of a
-bounce site training batch ([Training the bounce sites](#training-the-bounce-sites)).
+bounce site training batch ([Training the bounce sites](#training-the-bounce-sites)). A
+`[drops]` table (without `superbounce`) drops every seat onto candidate
+seams ([Seam drops](#seam-drops)). `game_type = "firefight"` with a
+`[firefight]` table plays Firefight ([Firefight](#firefight)).
+
+### Firefight
+
+`game_type = "firefight"` plays a Firefight match
+([firefight.md](../game/firefight.md)) on a map that carries the kit:
+a Slayer game with team play on and, unless the file sets one, no time
+limit. The bots are the players.
+
+```toml
+map = "firefight-beavercreek"   # the kit package `h2 firefight kit beavercreek` installs
+game_type = "firefight"
+
+[firefight]                     # every key optional
+set = "holdout"                 # holdout (default), attrition, last_stand, crossfire
+difficulty = "normal"           # easy, normal (default), heroic, legendary
+teams = 1                       # 1 or 2; unset: the set's own (Crossfire 2, the rest 1)
+lives = 5                       # 1, 3, 5, 8, 12, 20 or 30; unset: the set's own
+skulls = true                   # each round switches on its skull; unset: on
+
+[[bot]]
+team = 0
+```
+
+- **The map.** A disc map name resolves as for any match. Otherwise the
+  name is an installed kit package, as the lobby's map select lists it:
+  its package directory (`firefight-<map>`) or its list name
+  (`Firefight – <map>`), and the lobby is opened on its map list slot
+  (`sim_glue::kit_request`).
+- **The seat rule.** Bots sit on the player teams only: team 0 with one
+  team, 0 or 1 with two. The AI's team is never a seat, so any other
+  `team` is refused by name (`bot 3: team 2: Firefight seats are on the
+  player teams 0..1`). A bot with no `team` takes the player team with
+  the fewest bots so far, the lower on a tie, after the named ones
+  (`sim_bench::firefight::Firefight::balance`). Every bot on one team is
+  no problem here.
+- **The choices.** At the sim's start the table becomes the Firefight
+  page's settings (`firefight.enabled`, `firefight.waveset`,
+  `firefight.difficulty`, `firefight.lives`, `firefight.skulls`,
+  `firefight.teams`; 0 for lives and teams is the set's own) in a
+  settings store of the run's own, and the runtime reads them when the
+  game starts, as it reads Game Setup's (`sim_glue::firefight_store`).
+- **Refused with it:** `team_play = false`, `superbounce`, `[drill]`,
+  `[train]`, `[drops]` and `[bounces]`; a `[firefight]` table without
+  `game_type = "firefight"`.
+- **The report** gains a `firefight` section
+  (`sim_bench::firefight::FirefightReport`): the set, the teams, whether
+  the director ended the match and with what `outcome` (`won`, `lost`,
+  `team_won` with its `team`, or `draw`), `rounds_cleared`, each player
+  team's `scores` and `lives_used`, from the runtime's result
+  (`sim_glue::note_firefight`). A match a limit stopped first has
+  `ended: false`, no outcome, and the player teams' scores as the game
+  last showed them.
+
+[sim-examples/firefight-beavercreek.toml](sim-examples/firefight-beavercreek.toml)
+is Holdout with two Clankers on team 0;
+[sim-examples/firefight-beavercreek-crossfire.toml](sim-examples/firefight-beavercreek-crossfire.toml)
+is Crossfire with two Clankers on each team:
+
+```
+h2 firefight kit beavercreek
+h2 bots nav beavercreek
+h2 sim run docs/runtime/sim-examples/firefight-beavercreek.toml
+h2 sim run docs/runtime/sim-examples/firefight-beavercreek-crossfire.toml
+```
 
 ### Bot parameters from a file
 
@@ -330,7 +398,9 @@ bounce site training batch ([Training the bounce sites](#training-the-bounce-sit
 - `skill`: easy, normal, heroic, legendary (`bots::mind::Skill`);
 - the aim table's numbers for that skill, each optional: `reaction`
   (ticks), `error` (radians), `lead`, `gain`, `fire_cone_deg`,
-  `burst_on`/`burst_off` (ticks; `burst = false` holds the trigger),
+  `burst_on`/`burst_off` (ticks an automatic fires and rests past its
+  gun's band; inside the band it is held; `burst = false` holds it at
+  every range),
   `grenades_per_minute`;
 - `awareness` (0..1; the decisions' sense of the fight, per skill now);
 - the personality, each optional (0..1): `aggression`, `caution`,
@@ -557,6 +627,60 @@ The stage boundaries are the sim's own lobby observations
 only moves forward, charging the time since the last boundary to the stage
 it leaves.
 
+### The spatial trace
+
+`detail = "spatial"` in a match or batch file records where things
+happened, for Studio's playtest ([playtest.md](../editor/playtest.md)).
+The report is a training one (`Detail::tally`), and beside it
+(`sim_bench::spatial::trace_path`: `report.json` gives `spatial.bin`,
+`<name>.report.json` gives `<name>.spatial.bin`) the run writes the trace.
+The same observers that feed the tally feed a
+`sim_bench::spatial::Recorder` (`sim_glue::spatial`), on the game thread
+and read-only:
+
+| Event | When | What |
+|---|---|---|
+| `sample` | every 6th tick from the match's start (five a second), each living player | position, nav polygon, yaw and pitch of the aim |
+| `spawn` | a player's unit alive after a tick in which it was not | the place; the scenario starting location within 2 units; the nearest living enemy and its distance; how many living enemies have a clear line to it, eye to eye (the bots' walls; absent without them) |
+| `damage` | `DAMAGE_REPORT` against a player's unit | both players' places at the last tick and the weapons they held, the amount |
+| `kill` | `PLAYER_KILLED` | the same, classified as the tally classifies it |
+| `pickup` | a weapon datum new to a living player's slots, or more grenades | the place, the weapon (its definition when it is the one now held), the netgame equipment placement within 2.5 units |
+| `stuck` | a bot's stuck spell ending (the unstick escalation back at `Moving`, a death or the match's end) | where it began, its length in ticks, where the bot was going (`bots::stuck::Stuck::goal`) |
+| `repath` | a bot's repath count rising | the place and where it was going |
+
+A place is a position and the polygon of the bots' nav mesh under it
+(`NavMesh::poly_near`); without a loaded mesh it has no polygon. The
+header names the map, game type, seed and team play, the counted ticks,
+the scenario's player starting locations (position, team) and netgame
+equipment (position, respawn time), read from guest memory at the game's
+start (`sim_glue::spatial::places`), and the nav mesh's polygon centres
+and links. A tick jump restarts the trace as it restarts the tally.
+
+The file is `H2SP`, a format version (1), the header as JSON, the mesh,
+then the events, little-endian (`Trace::to_bytes`). At the end of the run
+the trace's kill log is checked against the report's
+(`Trace::agrees_with`) and the result is a note in the report and on
+stderr: `spatial trace <path> (N events; its K kills are the report's)`,
+or the first difference. A run with no report path writes no trace.
+
+`h2 sim spatial <spatial.bin | run dir | results dir>...` prints the
+measures of the traces named, together (a results directory is every
+`runs/*/spatial.bin`): `sim_bench::spatial::measure`, each measure a pure
+function over the traces in `sim-bench/src/spatial/`. A place off the
+mesh is binned on a 2-unit XY grid.
+
+| Measure | From | Refused under |
+|---|---|---|
+| `heat` | kills (where killers stood) and deaths (where victims fell), per bin, by team and by the killer's weapon | 10 deaths |
+| `spawns` | per starting location: uses, mean life, deaths within 3 s, enemies in sight, nearest enemy, time to first engagement; the spawn kills' places; each team's seconds to its first engagement | 8 spawns |
+| `flow` | player-seconds per bin, crossings from bin to bin with direction, the mesh's polygons no sample was on | 300 samples |
+| `sight` | damage and kill segments: the ten longest, the ten bin pairs most fought across, the median, a histogram per weapon in 5-unit buckets | 10 segments |
+| `items` | per equipment placement: pickups, pickups a minute, time to first pickup, kills with a weapon taken from it, never picked | no placement, or 3 pickups |
+| `stuck` | stuck spells and repaths per bin, and the mesh's islands no starting location reaches along its links | 300 samples |
+
+A refused measure prints what it lacked, for example
+`heat: too few deaths (6, at least 10 needed)`.
+
 ### 6.1 Sim stores: the map without the map
 
 The retail map is never streamed in a sim or light host that uses
@@ -729,9 +853,10 @@ params = "tuning/aggressive.toml"
   a run per skill and overrides each bot's skill. When the runs cover
   multiple skills, `compare.json` has `by_skill` and the table repeats
   per skill.
-- **Detail.** `detail = "training"` in the batch file sets every run's
-  `detail` (the match file's own is the default; see "Finding the first
-  differing state").
+- **Detail.** `detail = "training"` or `"spatial"` in the batch file
+  sets every run's `detail` (the match file's own is the default; see
+  "Finding the first differing state" and [The spatial trace](#the-spatial-trace)).
+  A spatial run writes `spatial.bin` beside its `report.json`.
 - `h2 sim batch --dry-run` prints the runs and stops.
 
 ### Arm swaps
@@ -901,8 +1026,9 @@ host makes the command exit unsuccessfully after it writes the comparison.
 
 A match with `superbounce = true` is a practice: every bot practises
 superbounces ([bots.md, "Practising bounces"](../game/bots.md#practising-bounces))
-and nobody fights. `sim_glue::Sim::add_bots` forces the superbounce mode
-on (`superbounce_mode::set_override`), installs the pair reader the
+and nobody fights. `sim_glue::Sim::add_bots` puts the built-in Superbounce script's block
+on the game's record at its start (`game_variants::inject::set_sim_block`),
+so the script turns the superbounce mode on, installs the pair reader the
 route's prime reads (`sim_bots::install_pair_reader`), keeps the medal
 chain's awards for the sim (`superbounce_mode::collect_awards`) and turns
 the tally's bounce counting on. [sim-examples/superbounce-practice.toml](sim-examples/superbounce-practice.toml)
@@ -945,7 +1071,12 @@ site (the stand point the try was at):
               "practice_bounces": 14, "bounced_tries": 12, "bounce_rate": 0.3,
               "chain_bounces": 17, "chains": { "1": 8, "2": 3 }, "best_chain": 3,
               "bounced_deaths": 1, "launch": { "n": 17, "best": 6.1, "mean": 4.2 },
-              "why": { "too_slow": 9, "prime_failed": 6, "missed": 5 } },
+              "why": { "too_slow": 9, "prime_failed": 6, "missed": 5 },
+              "habits": { "repeats": 2, "distinct_sites": 14, "fumbles": 3,
+                          "fumble_bounces": 0, "retries": 2, "monster_tries": 5,
+                          "monster_bounces": 0, "chain_links_planned": 9,
+                          "chain_links_tried": 4, "chain_links_made": 0, "yields": 1,
+                          "yields_given_up": 0, "yield_ticks": 64, "stepped_aside": 3 } },
   "players": [ { "index": 0, "seat": 0, "name": "Bouncer 1", "arm": "base",
                  "first_bounce_ticks": 812, "stats": { "...": "..." } } ],
   "sites": [ { "site": [12.1, -3.4, 2.0], "stats": { "...": "..." } } ]
@@ -973,6 +1104,19 @@ crouch spot), so a site out of reach adds no try and no reason;
 `no_route` is a route that failed to plan from where the bot stood.
 `first_bounce_ticks` counts from the match's start to the bot's first
 chain bounce. The block is absent from a match without `superbounce`.
+
+`habits` is how the bots practised (`sim_bench::bounce::Habits`, from
+the practice's own events; [bots.md, "How each bot
+practises"](../game/bots.md#how-each-bot-practises)): `repeats`, tries
+at the same site as the bot's try before; `distinct_sites`, the sites a
+bot tried (in the totals, summed over the bots); `fumbles`, tries set
+up with a fumble, and `fumble_bounces`, those the chain still filed a
+bounce in; `retries`, tries going straight back to a site just missed;
+`monster_tries` at a Monster site and `monster_bounces` the chain filed
+as Monsters; `chain_links_planned`, `chain_links_tried` (in the air off
+a launch) and `chain_links_made` (launched again); `yields`, times a bot
+let a player go first, `yields_given_up` of them, and `yield_ticks`
+waited; `stepped_aside`, steps out of a player's way between tries.
 
 A batch's comparison carries them per arm (`compare.json`'s `bounce`:
 the runs, the totals and each map's, pooled over every bot) and the
@@ -1155,6 +1299,193 @@ budget = 120    # scored tries a site
 `superbounce-train-match.toml` are the example (eight bots, thirty minutes
 of game time a run).
 
+### Seam drops
+
+`h2 sim drops <match file>` measures superbounces without walking or nav:
+each seat is put above a point of a candidate collision edge, given the
+-3 pair word, dropped, and its outcome recorded. A match file with a
+`[drops]` table is the input; `sim::drops` (pure and tested) plans,
+shards, steps each drop and builds the report, `game::sim_drops` reads and
+writes the guest, and the CLI runs the processes.
+
+```toml
+map = "ascension"
+max_wall_s = 3600
+
+[drops]
+targets = "scan"      # the map's .spots bounce candidates, or a list
+max_targets = 60      # scan: the first 60
+heights = [0.5, 1.0, 2.0, 3.5, 5.0, 8.0]          # over the target's floor
+across = { from = -0.12, to = 0.12, step = 0.02 } # or a list
+along = 5             # points along each edge
+repeats = 1
+approach = { stick = 0.3, lead = 0.2, from = ["+", "-"] }  # optional
+# carry = [[0.0, 0.0], [1.5, 0.0]]  # or touchdown velocities, not with approach
+# carry_along = [0.1, 0.3, 0.6]     # or speeds along each target's drift
+```
+
+- **The table.** Every key is optional. `heights` (world units of the
+  origin over the floor, a list or `{ from, to, step }` like `across`)
+  default to `[0.5, 1, 2, 3.5, 5, 8]`; `across`
+  (offset from the edge toward its drift side) to -0.12 to 0.12 in steps
+  of 0.02; `along` to 5 points an edge (a point target has one);
+  `repeats` to 1. `approach` pushes the stick at `stick` of full through
+  the fall, the drop starting `lead` units back against the push, once
+  from each side in `from`; without it the seat falls straight. `carry`
+  is a list of horizontal velocities (world X and Y, units/s, each finite
+  and at most 3 long) a straight drop touches down with, each drop once
+  with each; it defaults to `[[0, 0]]`, the plumb drop, and is refused
+  beside `approach` (`drops: carry and approach: one or the other`).
+  `carry_along` is a list of speeds (units/s, each finite and at most 3
+  either way) along each target's own drift direction, for a scan whose
+  seams drift different ways; it is refused beside `carry` or `approach`
+  (`drops: carry_along and carry: one or the other`, `drops: carry_along
+  and approach: one or the other`). `seats`
+  (1 to 15, default 15) is the seat count when the file lists no
+  `[[bot]]`, `bounce_vz` (default 3.5, `sim::drops::BOUNCE_VZ`, the
+  game's landing classifier's too) the launch that counts as a bounce,
+  `settle_ticks`, `fall_ticks` and `after_ticks` (240, 300, 15) the
+  phases' limits, `retries` (2) how often a setup failure is tried again,
+  `out` the results directory (default `results/<file stem>` beside the
+  file). A listed target is `{ id, shape, edge = [[x,y,z],[x,y,z]] }` or
+  `{ point = [x,y,z] }`, with optional `drift` and `stand`.
+  `targets = "scan"` reads the map's `.spots` from `--data` and keeps the
+  slot, crease, vee and busy sites, ids `s000-slot` and on.
+- **The match.** A drops table fills what the file leaves out: the map
+  from `drops.map`, 15 phantom seats named `Dropper 1` and on, no time
+  limit, team play (free-for-all sims end at tick 0) and the training
+  report. It is refused with `superbounce = true`, a `[drill]` or a
+  `[train]`. The match ends (`stopped`) when every drop is done, or at
+  `max_ticks` or `max_wall_s`.
+- **Seats.** A shared queue feeds the seats: an idle seat takes the next
+  drop whose start is 1.2 units clear of every busy seat and drop
+  (`sim::drops::CLEAR`), else waits at its spawn; after 60 ticks with
+  every seat idle, one takes a drop regardless. Up to 15 seats drop at
+  once in a process, and `--parallel N` runs N processes.
+- **The prime.** Each drop runs through the phases of
+  `sim::drops::DropRun`. Place: a teleport (`Call::Teleport`, through the
+  calls queue; a run with no `--socket` registers its own) to the rest
+  point, just over the floor beside the target. Settle: the word is
+  written 0 every tick and the body stopped until it is still for 3 ticks,
+  so the teleport carries no prime and no speed. Arm: -3 on the still
+  body and, in the same tick, the lift teleport straight up to the drop
+  height. Fall and after: -3 is written over every fixed-body pair of the
+  body (`live_telemetry::havok_agents::level_pairs` and `set_level_words`)
+  every tick until `after_ticks` past touchdown, so a pair rebuilt in the
+  air or by a sleep is primed again before the next tick. Each tick's
+  row keeps the pairs' agents and words before the write. Through every
+  phase the seat's phantom pad is held (`Phantoms::hold_pad`, forwarded
+  by the sim's `Metered` seat), so its brain never steers; a seat whose
+  pad can't be held is a note in the report.
+- **Falling plumb.** A straight drop (no `approach`) lands under its
+  release point: every fall row writes the body's horizontal velocity to
+  0 (`Act::level`, the object's and each Havok motion's X and Y, Z kept),
+  and the touchdown's velocity is the one the touchdown tick ran from. A
+  fall row's `fixed` is the horizontal speed it took off, and the
+  record's `drift_fixed` the most any row took: near 0 on a clean drop,
+  large when something pushed the body sideways. An approach drop's
+  horizontal motion is its held stick's and is left alone (no `level`,
+  no `drift_fixed`).
+- **Carrying.** A drop with a non-zero `carry` writes the carry instead
+  of 0 on each fall row, so the touchdown tick runs from exactly that
+  horizontal velocity. The drop starts back along the carry by its
+  travel, the carry times the rows the fall covers past the first 5
+  (`sim::drops::carry_travel`): the fall model (`sim::drops::fall_model`,
+  fitted to the control's rows: rows 1 to 5 barely move, then the speed
+  is 0.234 units/s gaining 4.171/30 a row) puts the touchdown on the last
+  row still more than 0.03 over the floor, so 4.5 lands from row 46 at
+  5.935, 5.5 from row 51 at 6.630 and 3.65 from row 42 at 5.378. The rest
+  point is under the start, lifted by the travel's length as well as the
+  across offset. Until the body falls faster than -1 the carry is
+  written unchecked; from then on the first row whose horizontal velocity
+  is more than 0.05 off the carry (`sim::drops::CARRY_TOLERANCE`: the body
+  was hit) or that is on the ground stops the writes for the rest of the
+  drop, and the record's `carry_cut` is that row. A row's `fixed` is how
+  far off the carry it was; a carried drop's `drift_fixed` counts the
+  rows from falling on. `[drops.control]` takes one `carry` (default
+  `[0, 0]`).
+- **Carrying along.** `carry_along` plans like `carry`, with each drop's
+  carry the speed times the target's unit drift vector
+  (`sim::drops::Target::drift`, the `drift` a listed target gave or the
+  scan spot's, normalised): the fall model's travel, the start, the
+  contact gate and the records are the carry's. The record's `carry` is
+  that resolved world vector and `carry_along` the speed. A target with no
+  drift (a scan spot whose drift is zero, a listed target with none) gets
+  no drops, and a note in the report names the targets skipped. The
+  control keeps its own `carry`.
+- **Outcomes.** A touchdown is the vertical speed coming back over -0.5
+  after falling faster than -1. `bounced`: the best vertical speed of the
+  touchdown tick and the 3 after (`sim::drops::LAUNCH_TICKS`, the game's
+  landing window too) reached `bounce_vz`; the record gives the
+  launch speed and height (apex minus the touchdown's low point, the rest
+  estimated ballistically if the apex comes after `after_ticks`).
+  Otherwise the touchdown tick's prime decides: the pairs read the tick
+  before must come out of it with the same agents, all still -3, and no
+  new pair that isn't -3. When they don't, the drop is `prime_lost`, with
+  the reason `no_pair`, `rebuilt`, `reset (word w)` or `new_pair (word w)`;
+  when they do, `no_bounce`. `setup_failed` names the step (`teleport:
+  ...`, `did not settle in 240 ticks`, `lift: never ran`, `no touchdown in
+  300 ticks`) and is tried again. A failed prime is never counted as
+  `no_bounce`.
+- **The control.** Every run starts with the control drop, alone: on
+  Ascension the slot seam at (-10.54, 4.0, -3.19), on the seam's line
+  (across 0), from 4.5 and 5.5 over its floor: touchdowns near 5.9 and
+  6.6 units/s, clearly over the 5.4 that bounces (a drop from 3.6
+  touches down at 5.38, under it). When none bounces, the run stops with `control did not
+  bounce: <outcome>` (the outcomes and reasons seen), the report is still
+  written, and `h2 sim drops` exits with that error. Another map needs
+  `[drops.control] point = [x,y,z]` (with optional `heights`, `edge`,
+  `drift`, `carry`) or `no_control = true`.
+- **Records.** Each drop's record (`sim::drops::Record`) gives the target
+  id and shape, point, height, across and along offsets, side, carry,
+  seat, attempts, release tick, outcome and reason, the touchdown (tick,
+  position, velocity, speed, contacts), `aim_miss` (the touchdown's X and
+  Y from the point), the launch, whether the prime held, `drift_fixed`,
+  `carry_cut`, the words of the fall run-length, and the first
+  tick of each event. The control's drops and the first drop of each outcome keep
+  every row from the arm on. They are the report's `drops` block. Every
+  position is the unit's origin (object `+0x64`, `sim_drops::body`),
+  the point a teleport places, not the bounding sphere's centre
+  (`+0x30`), which is about 0.4 units over it.
+- **Sharding.** Targets are split over the runs by their drop counts
+  (largest first, onto the lightest run), `<map>-drops<i>`, each run's
+  match with its targets listed and its bots' tunings inline.
+- **Report.** `<out>/drops.json` (`h2-sim-drops-report/1`) and `drops.md`
+  pool the runs: outcome counts and the first of each; the control's
+  drops; a row a target with its rate, catch half-width (the furthest
+  touchdown from the edge that bounced), slowest bounced touchdown, best
+  launch, its own launch fit, its largest `drift_fixed` and a cell a
+  height, across offset and carry (`drops.md`'s columns name a non-zero
+  carry as `c x,y`, and a `carry_along` drop by its speed instead, as
+  `+0.00 a 0.30`); the drop with the largest `drift_fixed`
+  over every run; and the three model numbers. `catch` is the catch half-width over every
+  target (`superbounce::CATCH`). `bounce_speed` is the slowest touchdown
+  that bounced beside the fastest that didn't (`BOUNCE_SPEED`). `gain` is
+  the launch's slope over the excess speed, fitted with each target's own
+  intercept (`speed::launch`'s gain) ([superbounce.md,
+  Speed](../game/superbounce.md#speed)).
+- **The verified file.** Each run plays on its own copy of the map's
+  `.verified` (`make_bounce_data`) and writes a line for every target that
+  bounced: its stand, the best bounce's offset and height, trials and
+  hits. `--merge` merges them into `--data`'s `bots/` at the end; without
+  it, `h2 sim harvest <out>` does.
+- **Flags.** `--parallel N` (default half the cores), `--dry-run` (the
+  plan: targets, drops and runs), `--merge`, `--keep-data`, and a batch's
+  `--disc`, `--data`, `--tier` and `--pace`.
+
+```sh
+h2 sim drops docs/runtime/sim-examples/superbounce-drops.toml --parallel 4
+```
+
+`docs/runtime/sim-examples/superbounce-drops.toml` is the example: the
+first 60 targets of the Ascension scan at the default heights and offsets.
+`match.status` gives a drops run's progress (`drops`: planned, done, the
+control's state and the error; [agent-api.md](agent-api.md)).
+
+`h2 sim bounces` runs trials on the same targets from a saved machine,
+seven ticks a wave, and ranks the seams by the error a player may make
+([bounce-search.md](bounce-search.md)).
+
 ## 8. Determinism
 
 What a sim run's result depends on, and what breaks reproducibility:
@@ -1271,6 +1602,17 @@ That needs the 4 MiB read and hash each tick, so it stays behind
 `H2_FEATURES=impl.sim.arena-hash` (the same switch as the aggregate `arena`
 digest, which it replaces with a single pass). `arena_base` in the series is
 the guest address of block 0.
+
+In a full report with arena verification, DirectSound adds `sound.voices`
+to the component series. Each line names the logical output frame since
+match start, the event, and its guest handles or packet fields. A quiet tick
+has an empty value. An A/B run compares the ordered lines using the same
+`h2 sim diff` command. A different start, pitch, completion or callback
+grid point shows up even when the aggregate gameplay and arena hashes
+agree. `h2 sim diff a.json b.json --sound` requires consecutive full-detail
+samples, readable voice records and arena digests in both runs. It exits
+silently on complete agreement and returns an error for missing coverage
+or the first difference. See [DirectSound](../audio/dsound.md#notification-and-callback-contracts).
 
 `detail = "training"` (the match key, or the batch key, which overrides the
 match file's) is for runs that only need to know whether two plays agree. It
@@ -1542,11 +1884,27 @@ headers and blocks while those dependencies are being traced.
 - The `guest_census` reads and the `wall.phantom_*` timers in a run: the
   array pointers and names come from the retail XBE, and the reads are
   tested over a fake guest only.
+- How many seeds make each measure's numbers steady; the refusal
+  thresholds are guesses (**S**).
+- The spatial trace in a run: that the starting locations and equipment
+  read at the game's start are the map's (tested over a fake guest only),
+  that a pickup's placement by distance is the item's, and that a run's
+  trace agrees with its report's kills (the check runs at every traced
+  run's end).
+- A Firefight match end to end: that the game options' scenario path for
+  a kit package is its map list slot path (what the sim waits for), that
+  the bots load the base map's nav mesh on the kit map, and that the
+  phantoms' teams hold in a team game the runtime places actors in.
 
 ## Tests
 
 `cargo test -p sim-bench` (config, metrics, compare, clock, the examples
-here), `cargo test -p bots tuning` and `cargo test -p bots
+here, and Firefight: `a_firefight_match_toml_parses`,
+`firefight_bots_are_on_player_teams_only`,
+`two_team_firefight_balances_omitted_teams`,
+`the_report_has_rounds_and_score`), `cargo test -p game sim_glue`
+(`a_firefight_match_finds_its_kit_package`,
+`a_firefight_table_becomes_the_pages_choices`), `cargo test -p bots tuning` and `cargo test -p bots
 a_tuned_brain` (the overrides), `cargo test -p sim-bridge sim_frame` (the skip's decision
 and stubs over a fake guest), `cargo test -p game sim_glue` (snapshots to
 samples, limits and phantom tuning), `cargo test -p game sim_census` (the
@@ -1562,4 +1920,15 @@ candidates and ranking), `cargo test -p bots tuning`,
 `superbounce_mode`, and `cargo test -p cli sim_cmd` (the run's own
 proofs). Training: `cargo test -p sim-bench train` (the `[train]` table, the
 plan and shard rule, the report from `.learned` lines) and `cargo test -p cli
-sim_cmd` (the arguments, `--reopen`).
+sim_cmd` (the arguments, `--reopen`). Seam drops: `cargo test -p sim-bench drops` (the
+table, the plan and shards, the queue, each outcome over a fake body
+including every `prime_lost` reason, the control gate, the fits and the
+verified lines), `cargo test -p live-telemetry havok_agents` (the level
+pairs) and `cargo test -p game sim_drops` (the constants it shares).
+The spatial trace: `cargo test -p sim-bench spatial` (the file's round
+trip and refusals, each event once with its places, the kills against the
+tally's, and each measure on invented traces with too few events
+refused) and `cargo test -p game sim_glue` (the scenario's places over a
+fake guest, `the_tally_is_unchanged_with_the_trace_on`,
+`a_spatial_match_writes_a_trace_whose_kills_are_the_reports`), and `cargo
+test -p cli sim_cmd` (`spatial_finds_the_traces_of_a_results_directory`).

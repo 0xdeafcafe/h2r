@@ -1,0 +1,15 @@
+screen: coop.friends
+kind: list
+layout: controls
+backing: shell
+scrolls: true
+states:
+  focus-0:
+    focus: 0
+widgets:
+  title:
+    component: title
+    text: "Invite a Friend"
+  legend:
+    component: legend
+    prompts: [[B, "BACK"]]

@@ -37,12 +37,17 @@ export interface ActivityRow { hour: string; games: number; kills: number }
 
 /** Firefight's part of the summary (docs/game/firefight.md "Scoring and
  *  stats"): matches against the director, folded by the server from the
- *  host's `FirefightScore` and `FirefightEnded` events. */
+ *  host's `FirefightScore` and `FirefightEnded` events. `won` is one
+ *  team's wins; two-team matches are in `versus`, by the team that won. */
 export interface FirefightSet { set: string; games: number; won: number; rounds_cleared: number }
 export interface FirefightClass { class: string; kills: number }
-export interface FirefightPlayer { xuid: string; name: string; score: number; kills: number; assists: number; games: number }
+export interface FirefightPlayer {
+  xuid: string; name: string; score: number; kills: number; assists: number; player_kills: number; games: number;
+}
+export interface FirefightVersus { games: number; wins: [number, number]; draws: number }
 export interface FirefightSummary {
-  games: number; won: number; rounds_cleared: number; lives_used: number; score: number;
+  games: number; won: number; rounds_cleared: number; lives_used: number; score: number; player_kills: number;
+  versus: FirefightVersus;
   sets: FirefightSet[]; kills_by_class: FirefightClass[]; players: FirefightPlayer[];
 }
 
@@ -92,7 +97,17 @@ function totals(v: unknown): Totals {
 }
 
 export function emptyFirefight(): FirefightSummary {
-  return { games: 0, won: 0, rounds_cleared: 0, lives_used: 0, score: 0, sets: [], kills_by_class: [], players: [] };
+  return {
+    games: 0, won: 0, rounds_cleared: 0, lives_used: 0, score: 0, player_kills: 0,
+    versus: { games: 0, wins: [0, 0], draws: 0 },
+    sets: [], kills_by_class: [], players: [],
+  };
+}
+
+function versus(v: unknown): FirefightVersus {
+  const o = (v && typeof v === "object" ? v : {}) as Record<string, unknown>;
+  const wins = Array.isArray(o.wins) ? o.wins : [];
+  return { games: n(o.games), wins: [n(wins[0]), n(wins[1])], draws: n(o.draws) };
 }
 
 /** A server without Firefight stats sends no `firefight`; that reads as none. */
@@ -100,12 +115,16 @@ function firefight(v: unknown): FirefightSummary {
   const o = (v && typeof v === "object" ? v : {}) as Record<string, unknown>;
   return {
     games: n(o.games), won: n(o.won), rounds_cleared: n(o.rounds_cleared), lives_used: n(o.lives_used), score: n(o.score),
+    player_kills: n(o.player_kills), versus: versus(o.versus),
     sets: arr(o.sets).filter((r) => typeof r.set === "string")
       .map((r) => ({ set: s(r.set), games: n(r.games), won: n(r.won), rounds_cleared: n(r.rounds_cleared) })),
     kills_by_class: arr(o.kills_by_class).filter((r) => typeof r.class === "string")
       .map((r) => ({ class: s(r.class), kills: n(r.kills) })),
     players: arr(o.players).filter((r) => typeof r.xuid === "string")
-      .map((r) => ({ xuid: s(r.xuid), name: s(r.name), score: n(r.score), kills: n(r.kills), assists: n(r.assists), games: n(r.games) })),
+      .map((r) => ({
+        xuid: s(r.xuid), name: s(r.name), score: n(r.score), kills: n(r.kills), assists: n(r.assists),
+        player_kills: n(r.player_kills), games: n(r.games),
+      })),
   };
 }
 

@@ -8,7 +8,7 @@
 //! workbench call the same check. See `docs/game/rules-start-gate.md`, "The
 //! check", and `docs/game/rules-language-types.md`, "The start gate".
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -34,7 +34,7 @@ impl Class {
     /// Whether a member of this class satisfies a label of `kind`.
     pub fn satisfies(self, kind: LabelKind) -> bool {
         match kind {
-            LabelKind::Object => self != Class::Spawn,
+            LabelKind::Object | LabelKind::Path => self != Class::Spawn,
             LabelKind::Zone => matches!(self, Class::Flag | Class::Volume),
             LabelKind::Spawn => self == Class::Spawn,
         }
@@ -93,6 +93,8 @@ impl ObjectType {
         match group {
             TagGroup::Any => true,
             TagGroup::Weapon => self == ObjectType::Weapon,
+            // A sound is no object: the census holds sounds apart.
+            TagGroup::Sound => false,
         }
     }
 }
@@ -117,6 +119,32 @@ pub struct Census {
     pub labels: BTreeMap<String, Vec<Member>>,
     #[serde(default)]
     pub tags: BTreeMap<String, ObjectType>,
+    /// The paths of the sounds (`snd!`) the map holds, or none when the
+    /// census does not read them (the running game holds no tag paths): a
+    /// sound a script plays is then not checked here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sounds: Option<BTreeSet<String>>,
+}
+
+/// The text a ground label reads when the map places none of its own: a
+/// script's `siege_site` is the map's `territory` flags when no
+/// `siege_site` is placed (docs/game/game-types-without-carriers.md,
+/// "Maps for scripted games"). Every other label has none.
+pub fn fallback(text: &str) -> Option<&'static str> {
+    match text {
+        "siege_site" => Some("territory"),
+        _ => None,
+    }
+}
+
+/// The text whose members a script's label `text` reads: its own when
+/// `has` says the map holds any, else its [`fallback`]. The census check,
+/// the host's table and the fake game all read a label through this.
+pub fn reads<'a>(text: &'a str, has: impl Fn(&str) -> bool) -> &'a str {
+    match fallback(text) {
+        Some(other) if !has(text) => other,
+        _ => text,
+    }
 }
 
 /// What is wrong, by the IR's label- or tag-table index.
@@ -136,8 +164,15 @@ pub enum ProblemKind {
     Unnumbered { label: u16 },
     /// A team in play with no member, of a `per team` label.
     Team { label: u16, team: u8 },
+    /// A path with no point numbered `number` below its last: a hole in
+    /// the flight (or no point 0).
+    PathGap { label: u16, number: i32 },
+    /// Two points of a path with the same number.
+    PathDuplicate { label: u16, number: i32 },
     /// A tag the map holds of another type than the tag table's group.
     TagGroup { tag: u16, found: ObjectType },
+    /// A sound the script plays that the map does not hold.
+    Sound { tag: u16 },
 }
 
 /// One problem and its text.
@@ -158,6 +193,17 @@ pub fn check(ir: &Ir, census: &Census, teams: &[u8]) -> Vec<Problem> {
         label(name, i as u16, def, census, teams, &mut out);
     }
     for (i, t) in ir.tags.iter().enumerate() {
+        if t.group == TagGroup::Sound {
+            if let Some(sounds) = &census.sounds
+                && !sounds.contains(&t.path)
+            {
+                out.push(Problem {
+                    kind: ProblemKind::Sound { tag: i as u16 },
+                    text: format!("the sound \"{}\" is not on this map; {name} plays it", t.path),
+                });
+            }
+            continue;
+        }
         if let Some(&found) = census.tags.get(&t.path)
             && !found.is(t.group)
         {
@@ -177,7 +223,8 @@ pub fn check(ir: &Ir, census: &Census, teams: &[u8]) -> Vec<Problem> {
 
 fn label(name: &str, index: u16, def: &LabelDef, census: &Census, teams: &[u8], out: &mut Vec<Problem>) {
     let text = def.text.as_str();
-    let all = census.labels.get(text).map_or(&[][..], Vec::as_slice);
+    let holds = |t: &str| census.labels.get(t).is_some_and(|m| !m.is_empty());
+    let all = census.labels.get(reads(text, holds)).map_or(&[][..], Vec::as_slice);
     let good: Vec<&Member> = all.iter().filter(|m| m.class.satisfies(def.kind)).collect();
     let wrong = all.iter().find(|m| !m.class.satisfies(def.kind));
     let one = noun(def.kind, 1);
@@ -246,6 +293,11 @@ fn label(name: &str, index: u16, def: &LabelDef, census: &Census, teams: &[u8], 
             }
         }
     }
+    if def.kind == LabelKind::Path {
+        for (kind, text) in path(name, index, def, &good) {
+            push(kind, text);
+        }
+    }
     if def.per_team() {
         for &team in teams {
             if !good.iter().any(|m| m.team == Some(team)) {
@@ -258,6 +310,37 @@ fn label(name: &str, index: u16, def: &LabelDef, census: &Census, teams: &[u8], 
     }
 }
 
+/// A path's points are numbered from 0 with none missing and none twice:
+/// a flight visits point 0, 1, 2 ... in order, so a hole has no meaning
+/// and a repeat has two. Only the first gap is reported, since the points
+/// after it are not the ones the author meant.
+fn path(name: &str, index: u16, def: &LabelDef, good: &[&Member]) -> Vec<(ProblemKind, String)> {
+    let mut out = Vec::new();
+    let text = def.text.as_str();
+    let mut numbers: Vec<i32> = good.iter().filter_map(|m| m.number).collect();
+    numbers.sort_unstable();
+    if let Some(w) = numbers.windows(2).find(|w| w[0] == w[1]) {
+        out.push((
+            ProblemKind::PathDuplicate { label: index, number: w[0] },
+            format!("two points of the path labelled \"{text}\" have the number {}; {name} needs each point numbered once", w[0]),
+        ));
+    }
+    numbers.dedup();
+    let Some(&last) = numbers.last() else {
+        return out;
+    };
+    // Sorted and distinct, the numbers are 0, 1, 2 ... until the first gap.
+    if let Some(number) = numbers.iter().enumerate().find(|&(i, &n)| n != i as i32).map(|(i, _)| i as i32) {
+        out.push((
+            ProblemKind::PathGap { label: index, number },
+            format!(
+                "the path labelled \"{text}\" has no point numbered {number}; {name} needs its points numbered 0 to {last} with none missing"
+            ),
+        ));
+    }
+    out
+}
+
 /// The smallest census [`check`] accepts for `teams`: for each label, the
 /// most of its `min`, one member per number of its range and one per team
 /// in play; volumes for a zone label, objects and starting locations for
@@ -267,7 +350,7 @@ pub fn minimal(ir: &Ir, teams: &[u8]) -> Census {
     let mut census = Census::default();
     for def in &ir.labels {
         let class = match def.kind {
-            LabelKind::Object => Class::Object,
+            LabelKind::Object | LabelKind::Path => Class::Object,
             LabelKind::Zone => Class::Volume,
             LabelKind::Spawn => Class::Spawn,
         };
@@ -303,6 +386,8 @@ fn noun(kind: LabelKind, n: usize) -> &'static str {
         (LabelKind::Zone, false) => "zones",
         (LabelKind::Spawn, true) => "starting location",
         (LabelKind::Spawn, false) => "starting locations",
+        (LabelKind::Path, true) => "path point",
+        (LabelKind::Path, false) => "path points",
     }
 }
 
@@ -311,6 +396,7 @@ fn kind_a(kind: LabelKind) -> &'static str {
         LabelKind::Object => "an object (anything placed but a starting location)",
         LabelKind::Zone => "a zone (a trigger volume or a flag)",
         LabelKind::Spawn => "starting locations",
+        LabelKind::Path => "the points of a path (placements numbered from 0, none missing)",
     }
 }
 
@@ -318,6 +404,7 @@ fn group_a(group: TagGroup) -> &'static str {
     match group {
         TagGroup::Any => "an object",
         TagGroup::Weapon => "a weapon",
+        TagGroup::Sound => "a sound",
     }
 }
 
@@ -599,6 +686,33 @@ mod tests {
     }
 
     #[test]
+    fn a_sound_the_map_lacks_blocks_by_its_path() {
+        let mut ir = siege();
+        ir.tags.push(crate::ir::TagDef {
+            path: "sound/stinger".into(),
+            group: TagGroup::Sound,
+        });
+        let at = (ir.tags.len() - 1) as u16;
+        let mut census = minimal(&ir, TEAMS);
+        // A census that does not read sounds checks none.
+        assert_eq!(check(&ir, &census, TEAMS), vec![]);
+        census.sounds = Some(BTreeSet::new());
+        let name = ir.header.name.clone();
+        assert_eq!(
+            check(&ir, &census, TEAMS),
+            vec![Problem {
+                kind: ProblemKind::Sound { tag: at },
+                text: format!("the sound \"sound/stinger\" is not on this map; {name} plays it"),
+            }]
+        );
+        census.sounds = Some(BTreeSet::from(["sound/stinger".to_string()]));
+        assert_eq!(check(&ir, &census, TEAMS), vec![]);
+        // A sound is checked against the sounds, never the object tags.
+        census.tags.insert("sound/stinger".into(), ObjectType::Vehicle);
+        assert_eq!(check(&ir, &census, TEAMS), vec![]);
+    }
+
+    #[test]
     fn a_requirement_reads_in_forges_words() {
         let ir = siege();
         let words: Vec<String> = ir.labels.iter().map(describe).collect();
@@ -615,6 +729,30 @@ mod tests {
                 "any number of objects labelled \"barrier\"",
             ]
         );
+    }
+
+    #[test]
+    fn siege_site_reads_the_territories_until_one_is_placed() {
+        let has = |held: &'static [&'static str]| move |t: &str| held.contains(&t);
+        assert_eq!(reads("siege_site", has(&["territory"])), "territory");
+        assert_eq!(reads("siege_site", has(&["territory", "siege_site"])), "siege_site");
+        assert_eq!(reads("territory", has(&[])), "territory");
+        assert_eq!(reads("ctf_flag_spawn", has(&[])), "ctf_flag_spawn");
+
+        let mut ir = sample();
+        ir.header.name = "Siege".into();
+        ir.labels = vec![def("siege_site", LabelKind::Zone, 1, 256, 0, 0, 0)];
+        let mut census = Census::default();
+        assert_eq!(
+            texts(&ir, &census),
+            vec!["the map has no zone labelled \"siege_site\"; Siege needs at least 1"]
+        );
+        // The map's territories stand in until a site is placed.
+        census.labels.insert("territory".into(), vec![member(Class::Flag, None, None)]);
+        assert_eq!(texts(&ir, &census), Vec::<String>::new());
+        // A placed site of the wrong class is still the label's problem.
+        census.labels.insert("siege_site".into(), vec![member(Class::Object, None, None)]);
+        assert_eq!(texts(&ir, &census).len(), 1);
     }
 
     #[test]

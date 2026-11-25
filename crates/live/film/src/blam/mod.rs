@@ -6,7 +6,10 @@ mod unified;
 pub use live_proto::film::stream;
 pub use live_proto::film::{Mode, PlayerSummary, Summary};
 pub use track::{EmbeddedKeyframeInfo, KeyframeInfo, KeyframeSource, TrackReader, TrackWriter, embedded_keyframes, summary};
-pub(crate) use track::{decode_keyframe, encode_keyframe, split_keyframe};
+pub(crate) use track::{
+    Block as TidxBlock, Directory as TidxDirectory, SCENE_REFRESH_TICKS,
+    decode_keyframe, encode_keyframe, split_keyframe,
+};
 pub use unified::RecordData;
 
 use anyhow::{Result, ensure};
@@ -106,6 +109,12 @@ pub struct Tick {
     /// Observed after the last completed tick, e.g. a quit on the scoreboard.
     pub closing_events: Vec<Event>,
     pub post_hash: Option<u64>,
+    /// The payloads of the tick's Forge entry records ([`stream::FORGE`]),
+    /// in record order: the tag byte's subtype first, then the message.
+    pub forge: Vec<Vec<u8>>,
+    /// The payloads of the tick's Firefight entry records
+    /// ([`stream::FIREFIGHT`]), in record order: each one host-log entry.
+    pub firefight: Vec<Vec<u8>>,
 }
 
 impl Tick {

@@ -3,8 +3,9 @@
 //! `HudState`, then the compiled kit widgets through the same draw with
 //! the values answered as the runtime's hooks answer them, then the
 //! channels: the prompt line and a notification at their points, and the
-//! training box around its text. Each picture comes with where every
-//! element landed, for the JSON and the checks.
+//! training box around its text; a world mark's lines, projected from the
+//! HUD's sample scene. Each picture comes with where every element
+//! landed, for the JSON and the checks.
 
 use std::path::{Path, PathBuf};
 
@@ -17,7 +18,10 @@ use hud_edit::state::{Grenade, HudState};
 use serde_json::{Value as Json, json};
 
 use crate::compile::{AsHudEdit, Compiled};
-use crate::model::{Element, Hud, Kind, NAVPOINT_FONT, Style, Value, Values};
+use crate::model::{
+    Element, GAUGE_FONT, Glyphs, Hud, Kind, NAVPOINT_FONT, Style, Value, Values, WORLD_FONT,
+};
+use hud_kit_core::world::{self, Pose, Shape};
 use crate::rects::{MESSAGE_LINE, PROMPT_DOWN, TRAINING_PAD};
 use crate::source::{Colours, Source};
 
@@ -37,6 +41,52 @@ pub const INACTIVE_ALPHA: f32 = 0.7;
 /// frame's width and height from the frame's centre (the runtime's is the
 /// strip's stand point projected, slice 6).
 pub const NAVPOINT_SAMPLE: [f32; 2] = [0.2, -0.25];
+/// The samples of a HUD's navpoints, by their order among its elements:
+/// the first is [`NAVPOINT_SAMPLE`], and the others are apart from it and
+/// from each other, so two navpoints shown at once do not draw their
+/// numbers over each other. A navpoint past the last takes the last.
+pub const NAVPOINT_SAMPLES: [[f32; 2]; 4] = [
+    NAVPOINT_SAMPLE,
+    [-0.22, -0.25],
+    [0.0, -0.3],
+    [0.34, -0.12],
+];
+
+/// The sample of a HUD's `ordinal`th navpoint ([`NAVPOINT_SAMPLES`]).
+pub fn navpoint_sample(ordinal: usize) -> [f32; 2] {
+    NAVPOINT_SAMPLES[ordinal.min(NAVPOINT_SAMPLES.len() - 1)]
+}
+/// The preview's world sample: where the origin of a HUD's sample scene
+/// (`Describe::world`) is drawn, this fraction of the frame's width and
+/// height from the frame's centre: on the floor ahead, under the reticle.
+pub const WORLD_SAMPLE: [f32; 2] = [0.0, 0.22];
+/// HUD pixels a world unit of the sample scene takes across, in a
+/// fullscreen frame ([`WORLD_FRAME`] high); a smaller frame scales it.
+pub const WORLD_SCALE: f32 = 130.0;
+pub const WORLD_FRAME: f32 = 396.0;
+/// How much of a unit of the scene's depth (+Y, away from the viewer)
+/// goes up the screen: the floor seen from above and behind.
+pub const WORLD_TILT: f32 = 0.5;
+/// Pixels between a world mark's lines and its label below them: below,
+/// as the guide's drift arrow is past the box on the other side.
+pub const WORLD_LABEL_GAP: f32 = 3.0;
+
+/// Where the sample scene's point `p` is drawn in `frame`: an oblique
+/// view, +X to the right, +Y up the screen by [`WORLD_TILT`], +Z up. The
+/// game's is the camera's.
+pub fn project(frame: &Frame, p: [f32; 3]) -> [f32; 2] {
+    let c = frame.anchor_point(4).expect("the centre");
+    let (w, h) = (
+        f32::from(frame.right - frame.left),
+        f32::from(frame.bottom - frame.top),
+    );
+    let scale = WORLD_SCALE * h / WORLD_FRAME;
+    [
+        c[0] + WORLD_SAMPLE[0] * w + p[0] * scale,
+        c[1] + WORLD_SAMPLE[1] * h - (p[1] * WORLD_TILT + p[2]) * scale,
+    ]
+}
+
 /// Pixels between a navpoint's arrow and its marker: the marker is put
 /// out from the point by the arrow's length and one more (E `0x0024ecae`
 /// with `0x0024e9c7`'s return; S: the rest of its sum).
@@ -47,6 +97,9 @@ pub const NAVPOINT_NUMBER_GAP: f32 = 2.0;
 /// The message and training font: font id 6 fullscreen, 5 in split
 /// screen (E `0x0024cfaf`..`0x0024cfc9`, `0x001e71d7`).
 pub const MESSAGE_FONT: [i16; 2] = [6, 5];
+/// The banner's top above the frame's bottom, in every screen mode (E
+/// `0x0024d554`: the frame's height less 40).
+pub const BANNER_UP: f32 = 40.0;
 /// The retail HUD's state words the sheet starts from: word A `0x1000`,
 /// the retail shield meter's show word. Each source adds the word the
 /// widget on the motion tracker's rectangle shows on
@@ -121,6 +174,24 @@ pub struct Drawn {
     /// The engine font its text is in.
     pub font: Option<i16>,
     pub notes: Vec<String>,
+    /// A world mark: its shape, and its lines as drawn. It lies in the
+    /// world under the HUD, so it claims no rectangle of the screen and
+    /// the overlap checks leave it out.
+    pub world: Option<WorldDrawn>,
+}
+
+/// A world mark as the preview drew it.
+#[derive(Clone, Debug)]
+pub struct WorldDrawn {
+    pub shape: Shape,
+    /// Its sample pose in this state, if the HUD gives one.
+    pub pose: Option<Pose>,
+    /// How many line segments its shape gave.
+    pub edges: usize,
+    /// The screen rectangle its lines and label cover.
+    pub bounds: Option<Rect>,
+    /// The screen rectangle its label covers, if it has one.
+    pub label: Option<Rect>,
 }
 
 /// One picture: a HUD at a state and a screen mode.
@@ -163,14 +234,46 @@ pub fn style_colour(base: [u8; 4], style: Style, colours: &Colours) -> [u8; 4] {
         // The record's colour at its start (`hudg::Flash::start`); the
         // curve over `since_tick` is slice 4's.
         Style::Flash(p) => colours.flash(p),
+        // The go green, a world mark's alone (`world::GO_GREEN`).
+        Style::Go => {
+            let [r, g, b] = world::GO_GREEN.map(|v| (v * 255.0).round() as u8);
+            [r, g, b, base[3]]
+        }
+        // The preview has no map to read the team colours from: its own
+        // stand-ins (S, [`PREVIEW_TEAMS`]); the game reads the map's.
+        Style::Team(n) => {
+            let [r, g, b] = PREVIEW_TEAMS[usize::from(n) % PREVIEW_TEAMS.len()];
+            [r, g, b, base[3]]
+        }
+        // A gizmo axis' colour (`world::AXIS_COLOURS`), a world mark's
+        // alone.
+        Style::Axis(n) => {
+            let [r, g, b] = world::AXIS_COLOURS[usize::from(n) % world::AXIS_COLOURS.len()]
+                .map(|v| (v * 255.0).round() as u8);
+            [r, g, b, base[3]]
+        }
     }
 }
+
+/// The colours the preview draws `Style::Team(n)` in: stand-ins of ours,
+/// one per team, apart enough to tell on the sheet. S: not the game's
+/// (docs/game/hud-kit.md, "Colours"; the runtime reads the map's own).
+pub const PREVIEW_TEAMS: [[u8; 3]; world::TEAMS as usize] = [
+    [220, 70, 60],
+    [70, 110, 230],
+    [230, 200, 60],
+    [70, 190, 90],
+    [235, 140, 50],
+    [160, 90, 210],
+    [230, 130, 170],
+    [160, 160, 160],
+];
 
 /// How a bitmap element's texels are drawn for its style: as they are
 /// (`Normal`, `Flash`), faded (`Dim`), greyed (`Inactive`).
 pub fn style_look(style: Style) -> Option<Look> {
     match style {
-        Style::Normal | Style::Flash(_) => None,
+        Style::Normal | Style::Flash(_) | Style::Go | Style::Team(_) | Style::Axis(_) => None,
         Style::Dim => Some(Look {
             alpha: DIM_ALPHA,
             grey: false,
@@ -202,9 +305,15 @@ impl KitAnswers<'_> {
 }
 
 impl Answers for KitAnswers<'_> {
+    /// A gauge is placed by the HUD editor and not drawn by it: its
+    /// picture is [`gauge`]'s, from the code that draws it.
     fn shown(&self, h: usize, w: &Widget) -> Option<bool> {
         let (e, v) = self.of(h, w)?;
-        Some(v.shown && e.at.offset(self.mode).is_some())
+        Some(
+            v.shown
+                && e.at.offset(self.mode).is_some()
+                && !matches!(e.kind, Kind::Gauge { .. }),
+        )
     }
     /// `hud_input1` as the runtime's input hook gives it: the fill, or a
     /// cropped meter's ramp at the fill (`hud_kit_core::records::Widget::input`).
@@ -298,6 +407,91 @@ fn blit(
     }
 }
 
+/// A gauge as the game's text draw draws it: the picture of its fill
+/// (`Glyphs::picture`, the pixels the fonts are served with) with its
+/// top-left corner at the widget's point `point`, in the kit text colour
+/// for its style; a flash is drawn as `Normal`, as the runtime draws it
+/// and as a meter's is ([`style_look`]). The picture comes from the code that draws it, so the
+/// synthetic source, which has no fonts, draws the same one; on a disc
+/// the `glyphs` check holds the served font to having each of them. A
+/// gauge shown with no picture, or one of another size than it claims,
+/// is not drawn and says why.
+fn gauge(
+    canvas: &mut Canvas,
+    colours: &Colours,
+    mode: Mode,
+    e: &Element,
+    glyphs: &Glyphs,
+    v: &Value,
+    point: Option<[f32; 2]>,
+) -> Drawn {
+    let in_mode = e.at.offset(mode).is_some();
+    let size = [f32::from(glyphs.size.0), f32::from(glyphs.size.1)];
+    let rect = point
+        .filter(|_| in_mode)
+        .map(|p| place::text_rect(p, size, 0));
+    let mut notes = Vec::new();
+    let mut cover = None;
+    let mut drawn = false;
+    if let Some(r) = rect.filter(|_| v.shown) {
+        let unit = glyphs.unit(v.fill);
+        match glyphs.picture(v.fill) {
+            Some(p) if (i32::from(p.width), i32::from(p.height))
+                == (i32::from(glyphs.size.0), i32::from(glyphs.size.1)) =>
+            {
+                let style = match v.style {
+                    Style::Flash(_) => Style::Normal,
+                    s => s,
+                };
+                let colour = style_colour(colours.widget, style, colours);
+                let [x0, y0] = [r.x0.round() as i32, r.y0.round() as i32];
+                let width = usize::from(p.width).max(1);
+                let mut c = Cover::new();
+                for (n, px) in p.pixels.iter().enumerate() {
+                    let alpha = u32::from(*px >> 12) * 17 * u32::from(colour[3]) / 255;
+                    let (x, y) = (x0 + (n % width) as i32, y0 + (n / width) as i32);
+                    // Opaque as the text draw counts it.
+                    if alpha > 64 {
+                        c.set(x, y);
+                    }
+                    drawn |= canvas.blend(x, y, [colour[0], colour[1], colour[2], alpha as u8]);
+                }
+                cover = Some(c);
+            }
+            Some(p) => notes.push(format!(
+                "its picture U+{unit:04X} is {} by {}, not the {} by {} it claims",
+                p.width, p.height, glyphs.size.0, glyphs.size.1
+            )),
+            None => notes.push(format!("no code of ours draws U+{unit:04X}")),
+        }
+    }
+    let hidden = if !in_mode {
+        Some(format!("no {} offset", mode.label()))
+    } else if !v.shown {
+        Some("not shown in this state".to_owned())
+    } else {
+        None
+    };
+    Drawn {
+        id: e.id,
+        kind: e.kind.name(),
+        channel: false,
+        rect,
+        reserved: rect,
+        text: None,
+        style: v.style,
+        fill: Some(v.fill),
+        angle: None,
+        shown: v.shown,
+        drawn,
+        hidden,
+        cover,
+        font: Some(GAUGE_FONT.engine()),
+        notes,
+        world: None,
+    }
+}
+
 /// Where a channel's text block sits for a block of `size`: its
 /// rectangle (a training box's includes its margin).
 fn channel_rect(kind: &Kind, frame: &Frame, mode: Mode, size: [f32; 2]) -> Rect {
@@ -324,6 +518,13 @@ fn channel_rect(kind: &Kind, frame: &Frame, mode: Mode, size: [f32; 2]) -> Rect 
                 y1: y + size[1],
             }
         }
+        // Centred across the frame, its top BANNER_UP above the frame's
+        // bottom (E 0x0024d52a..0x0024d554; S: that the line's top, not
+        // its baseline, is there).
+        Kind::Banner { .. } => {
+            let cx = (f32::from(frame.left) + f32::from(frame.right)) / 2.0;
+            centred(cx, f32::from(frame.bottom) - BANNER_UP, size)
+        }
         // Centred on the frame's centre, half the text plus the margin
         // each way (E 0x001e72e9..0x001e7373).
         _ => {
@@ -342,6 +543,7 @@ fn channel_rect(kind: &Kind, frame: &Frame, mode: Mode, size: [f32; 2]) -> Rect 
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn channel(
     canvas: &mut Canvas,
     src: &mut Source,
@@ -349,9 +551,14 @@ fn channel(
     mode: Mode,
     e: &Element,
     v: &Value,
+    navpoint_ordinal: usize,
+    pose: Option<&Pose>,
 ) -> Drawn {
     if let Kind::Navpoint { .. } = e.kind {
-        return navpoint(canvas, src, frame, mode, e, v);
+        return navpoint(canvas, src, frame, mode, e, v, navpoint_ordinal);
+    }
+    if let Kind::WorldMark { shape, .. } = e.kind {
+        return world_mark(canvas, src, frame, mode, e, v, shape, pose);
     }
     let fonts = src.fonts.as_ref();
     let font = MESSAGE_FONT[usize::from(mode != Mode::Full)];
@@ -388,6 +595,7 @@ fn channel(
         cover: None,
         font: Some(font),
         notes: Vec::new(),
+        world: None,
     };
     if fonts.is_none() {
         d.notes.push("no fonts: the fixed-advance stand-in".into());
@@ -399,7 +607,9 @@ fn channel(
     let rect = channel_rect(&e.kind, frame, mode, block_size(&lines));
     let base = match e.kind {
         Kind::Prompt { .. } => src.colours.prompt,
-        Kind::Message { .. } => src.colours.message,
+        // The banner is in the user's HUD text colour too (E `0x0024d557`
+        // calls `0x0013927e`, as the notifications do).
+        Kind::Message { .. } | Kind::Banner { .. } => src.colours.message,
         _ => src.colours.training,
     };
     let colour = style_colour(base, v.style, &src.colours);
@@ -428,7 +638,9 @@ fn channel(
     };
     for (line, size) in v.text.split('\n').zip(&lines) {
         let x = match e.kind {
-            Kind::Training { .. } => (rect.x0 + rect.x1) / 2.0 - (size[0] / 2.0).floor(),
+            Kind::Training { .. } | Kind::Banner { .. } => {
+                (rect.x0 + rect.x1) / 2.0 - (size[0] / 2.0).floor()
+            }
             _ => rect.x0,
         };
         blit(canvas, &mut cover, fonts, font, line, colour, [x, y]);
@@ -502,7 +714,8 @@ fn draw_sprite(canvas: &mut Canvas, cover: &mut Cover, sprite: &Sprite, at: &Rec
 /// four colours `0x0024da7d` writes are all `0x0013927e`'s, the
 /// notifications' colour here; S: the shader's combine) at the style's
 /// alpha. Then the value's number, centred above the marker in
-/// [`NAVPOINT_FONT`] (the game draws no number: the kit's). The outline
+/// [`NAVPOINT_FONT`] (the game draws no number: the kit's). The point is
+/// the sample of the HUD's `ordinal`th navpoint ([`navpoint_sample`]). The outline
 /// `0x0024f0fc` draws from `arrow_assets +0x1c` is not drawn (decoding 8).
 fn navpoint(
     canvas: &mut Canvas,
@@ -511,6 +724,7 @@ fn navpoint(
     mode: Mode,
     e: &Element,
     v: &Value,
+    ordinal: usize,
 ) -> Drawn {
     let font = NAVPOINT_FONT.engine();
     let in_mode = e.at.offset(mode).is_some();
@@ -539,14 +753,16 @@ fn navpoint(
             "the point is the preview's sample".into(),
             "the arrow's outline (0x0024f0fc) is not drawn".into(),
         ],
+        world: None,
     };
     if !in_mode {
         return d;
     }
     let c = frame.anchor_point(4).expect("the centre");
+    let sample = navpoint_sample(ordinal);
     let mut point = [
-        c[0] + NAVPOINT_SAMPLE[0] * f32::from(frame.right - frame.left),
-        c[1] + NAVPOINT_SAMPLE[1] * f32::from(frame.bottom - frame.top),
+        c[0] + sample[0] * f32::from(frame.right - frame.left),
+        c[1] + sample[1] * f32::from(frame.bottom - frame.top),
     ];
     let hudg = src.hudg.clone();
     let mut sprite = |image, seq: i16, what: &str, notes: &mut Vec<String>| {
@@ -639,17 +855,154 @@ fn navpoint(
     d
 }
 
+/// A straight line from `a` to `b`, two pixels wide, into `cover`.
+fn draw_line(canvas: &mut Canvas, cover: &mut Cover, a: [f32; 2], b: [f32; 2], colour: [u8; 4]) {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let steps = dx.abs().max(dy.abs()).ceil().max(1.0) as i32;
+    // The second pixel is beside the line: below a flat one, right of a
+    // steep one.
+    let side = if dx.abs() >= dy.abs() { (0, 1) } else { (1, 0) };
+    for i in 0..=steps {
+        let t = i as f32 / steps as f32;
+        let (x, y) = ((a[0] + dx * t).round() as i32, (a[1] + dy * t).round() as i32);
+        for (px, py) in [(x, y), (x + side.0, y + side.1)] {
+            if colour[3] > 64 {
+                cover.set(px, py);
+            }
+            canvas.blend(px, py, colour);
+        }
+    }
+}
+
+/// A world mark (`hud_kit_core::world`): its shape's lines at the HUD's
+/// sample pose for this state, projected by [`project`], in the user's
+/// HUD colour (the notifications' here) at the value's style and the
+/// pose's strength, and its label centred [`WORLD_LABEL_GAP`] below them
+/// in [`WORLD_FONT`]. The game draws the same lines through the window's
+/// world-line pass, under the HUD, from the camera.
+#[allow(clippy::too_many_arguments)]
+fn world_mark(
+    canvas: &mut Canvas,
+    src: &mut Source,
+    frame: &Frame,
+    mode: Mode,
+    e: &Element,
+    v: &Value,
+    shape: Shape,
+    pose: Option<&Pose>,
+) -> Drawn {
+    let font = WORLD_FONT.engine();
+    let in_mode = e.at.offset(mode).is_some();
+    let label = Some(v.text.clone()).filter(|t| v.shown && !t.is_empty());
+    let edges = pose.map(|p| world::edges(shape, p)).unwrap_or_default();
+    let mut d = Drawn {
+        id: e.id,
+        kind: e.kind.name(),
+        channel: true,
+        rect: None,
+        reserved: None,
+        text: label.clone(),
+        style: v.style,
+        fill: None,
+        angle: None,
+        shown: v.shown,
+        drawn: false,
+        hidden: if !in_mode {
+            Some(format!("no {} offset", mode.label()))
+        } else if !v.shown {
+            Some("not shown in this state".to_owned())
+        } else if pose.is_none() {
+            Some("no sample pose in this state".to_owned())
+        } else {
+            None
+        },
+        cover: None,
+        font: label.as_ref().map(|_| font),
+        notes: vec!["the pose is the preview's sample".into()],
+        world: Some(WorldDrawn {
+            shape,
+            pose: pose.copied(),
+            edges: edges.len(),
+            bounds: None,
+            label: None,
+        }),
+    };
+    let Some(pose) = pose.filter(|_| d.hidden.is_none()) else {
+        return d;
+    };
+    let base = style_colour(src.colours.message, v.style, &src.colours);
+    let colour = [
+        base[0],
+        base[1],
+        base[2],
+        (f32::from(base[3]) * pose.strength.clamp(0.0, 1.0)).round() as u8,
+    ];
+    let mut cover = Cover::new();
+    let mut bounds: Option<Rect> = None;
+    let mut label_rect: Option<Rect> = None;
+    for [a, b] in &edges {
+        let (a, b) = (project(frame, *a), project(frame, *b));
+        draw_line(canvas, &mut cover, a, b, colour);
+        bounds = Some(union(
+            bounds,
+            Rect {
+                x0: a[0].min(b[0]).floor(),
+                y0: a[1].min(b[1]).floor(),
+                x1: a[0].max(b[0]).ceil() + 2.0,
+                y1: a[1].max(b[1]).ceil() + 2.0,
+            },
+        ));
+    }
+    if let (Some(text), Some(lines)) = (&label, bounds) {
+        let fonts = src.fonts.as_ref();
+        let size = render::text_size(fonts, font, text);
+        let at = centred(
+            (lines.x0 + lines.x1) / 2.0,
+            lines.y1 + WORLD_LABEL_GAP,
+            size,
+        );
+        blit(canvas, &mut cover, fonts, font, text, colour, [at.x0, at.y0]);
+        bounds = Some(union(bounds, at));
+        label_rect = Some(at);
+    }
+    if let Some(w) = d.world.as_mut() {
+        w.bounds = bounds;
+        w.label = label_rect;
+    }
+    d.drawn = !edges.is_empty();
+    d.cover = Some(cover);
+    d
+}
+
+/// The retail player HUD as a user in monitor mode sees it: the bitmap
+/// widgets `model::MONITOR_KEEPS` names alone (the motion tracker), as the
+/// runtime's gate leaves them (`hud_kit::retail_gate` in the game crate).
+pub fn monitor_retail(retail: &mut hud_edit::Hud) {
+    retail.widgets.retain(|w| {
+        w.key.kind == hud_edit::model::WidgetKind::Bitmap
+            && crate::model::MONITOR_KEEPS.contains(&w.name.as_str())
+    });
+}
+
 /// `hud` (compiled as `compiled`) at `values` over the retail player HUD
-/// at `st`.
+/// at `st` (for a `monitor` HUD, `Describe::monitor`, its motion tracker
+/// alone: [`monitor_retail`]), its world marks at the sample poses
+/// `world` (`Describe::world` for the state).
+#[allow(clippy::too_many_arguments)]
 pub fn shot(
     src: &mut Source,
     hud: &Hud,
     compiled: &Compiled,
+    monitor: bool,
     state: &str,
     values: &Values,
+    world: &[(&'static str, Pose)],
     st: &HudState,
 ) -> Result<Shot> {
-    let retail = hud_edit::model::read(&mut src.map, src.player)?;
+    let mut retail = hud_edit::model::read(&mut src.map, src.player)?;
+    if monitor {
+        monitor_retail(&mut retail);
+    }
     let kit = compiled.as_hud_edit(KIT_BASE);
     let mode = st.mode;
     let answers = KitAnswers {
@@ -673,7 +1026,15 @@ pub fn shot(
     for e in &hud.elements {
         let v = values.get(e.id).cloned().unwrap_or_default();
         if e.kind.is_channel() {
-            elements.push(channel(&mut canvas, src, &frame, mode, e, &v));
+            // Which of the HUD's navpoints this is: its own sample.
+            let ordinal = hud
+                .elements
+                .iter()
+                .filter(|x| matches!(x.kind, Kind::Navpoint { .. }))
+                .position(|x| x.id == e.id)
+                .unwrap_or(0);
+            let pose = world.iter().find(|(id, _)| *id == e.id).map(|(_, p)| p);
+            elements.push(channel(&mut canvas, src, &frame, mode, e, &v, ordinal, pose));
             continue;
         }
         let p = pic
@@ -681,6 +1042,10 @@ pub fn shot(
             .iter()
             .find(|p| p.hud == KIT && p.name == e.id)
             .with_context(|| format!("{} was not placed", e.id))?;
+        if let Kind::Gauge { glyphs } = &e.kind {
+            elements.push(gauge(&mut canvas, &src.colours, mode, e, glyphs, &v, p.point));
+            continue;
+        }
         let in_mode = e.at.offset(mode).is_some();
         let (font, reserved) = match &e.kind {
             Kind::Text {
@@ -724,6 +1089,7 @@ pub fn shot(
             cover: p.cover.clone(),
             font,
             notes: p.notes.clone(),
+            world: None,
         });
     }
     Ok(Shot {
@@ -768,6 +1134,16 @@ pub fn shot_json(s: &Shot, src: &Source, findings: &[crate::check::Finding]) -> 
             "drawn": d.drawn,
             "hidden": d.hidden,
             "notes": d.notes,
+            "world": d.world.as_ref().map(|w| json!({
+                "shape": w.shape.name(),
+                "at": w.pose.map(|p| p.at),
+                "along": w.pose.map(|p| p.along),
+                "half": w.pose.map(|p| p.half),
+                "to": w.pose.and_then(|p| p.to),
+                "strength": w.pose.map(|p| p.strength),
+                "edges": w.edges,
+                "bounds": rect_json(&w.bounds),
+            })),
         })).collect::<Vec<_>>(),
         "colours": src.colours.notes,
         "findings": findings

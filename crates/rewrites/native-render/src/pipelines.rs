@@ -13,7 +13,10 @@ use gfx::pipeline::{PipelineKey, ShaderProgram, create_render_pipeline};
 static COMPILER: LazyLock<Arc<Compiler>> = LazyLock::new(|| {
     Compiler::with_worker_setup(background::workers(), "native pipeline", background::lower_current)
 });
-static ARCHIVE: OnceLock<Option<mpsc::Sender<Message>>> = OnceLock::new();
+static ARCHIVE: OnceLock<Option<mpsc::SyncSender<Message>>> = OnceLock::new();
+const ARCHIVE_QUEUE: usize = 256;
+const ARCHIVE_RECIPES: usize = 8192;
+const PROGRAM_PIPELINES: usize = 256;
 
 enum Message {
     Warm(Weak<Program>),
@@ -26,8 +29,8 @@ pub fn start(path: Option<PathBuf>) {
     LazyLock::force(&COMPILER);
     let Some(path) = path else { return };
     ARCHIVE.get_or_init(|| {
-        let (send, receive) = mpsc::channel();
-        match background::spawn("native pipeline archive", move || run_archive(path, receive)) {
+        let (send, receive) = mpsc::sync_channel(ARCHIVE_QUEUE);
+        match background::spawn("native pipeline archive", move || run_archive(path, receive, ARCHIVE_RECIPES)) {
             Ok(_) => Some(send),
             Err(error) => {
                 eprintln!("native pipeline archive: {error}");
@@ -41,11 +44,12 @@ pub fn start(path: Option<PathBuf>) {
 /// line): bump it when a fingerprint or a stored descriptor changes meaning.
 const ARCHIVE_VERSION: u32 = 1;
 
-fn run_archive(path: PathBuf, receive: mpsc::Receiver<Message>) {
+fn run_archive(path: PathBuf, receive: mpsc::Receiver<Message>, limit: usize) {
     let _scope = mem_watch::scope("render.pipeline");
     let (mut store, loaded) = PipelineStore::open::<u64>(&path, ARCHIVE_VERSION);
     let mut recipes: HashMap<u64, HashSet<PipelineKey>> = HashMap::new();
-    for item in loaded.pipelines {
+    let mut recorded = loaded.pipelines.len();
+    for item in loaded.pipelines.into_iter().rev().take(limit) {
         if let Some(id) = item.program {
             recipes.entry(id).or_default().insert(item.key);
         }
@@ -56,13 +60,14 @@ fn run_archive(path: PathBuf, receive: mpsc::Receiver<Message>) {
                 if let Some(program) = weak.upgrade()
                     && let Some(keys) = recipes.get(&program.id)
                 {
-                    for key in keys {
+                    for key in keys.iter().take(PROGRAM_PIPELINES) {
                         program.request(key, Priority::Background);
                     }
                 }
             }
             Message::Record(id, key) => {
-                if recipes.entry(id).or_default().insert(key.clone()) {
+                if recorded < limit && recipes.entry(id).or_default().insert(key.clone()) {
+                    recorded += 1;
                     store.record_program(id, &id, None);
                     store.record(Some(id), false, &key);
                 }
@@ -113,6 +118,9 @@ impl Program {
             }
             return Arc::clone(&entry.pipeline);
         }
+        if entries.len() == PROGRAM_PIPELINES {
+            entries.clear();
+        }
         // Queued jobs may outlive the map. They only retain this small key
         // until claimed; their device, modules and layouts belong to the map.
         let _scope = mem_watch::scope("render.pipeline");
@@ -126,7 +134,7 @@ impl Program {
                 create_render_pipeline(&program.device, &recipe, &program.shader, program.label)
             });
             if result.is_some() && let Some(Some(send)) = ARCHIVE.get() {
-                let _ = send.send(Message::Record(program.id, recipe));
+                let _ = send.try_send(Message::Record(program.id, recipe));
             }
             result
         });
@@ -147,7 +155,7 @@ impl Pipelines {
             device: device.clone(), shader, label, id, entries: Mutex::default(),
         });
         if let Some(Some(send)) = ARCHIVE.get() {
-            let _ = send.send(Message::Warm(Arc::downgrade(&program)));
+            let _ = send.try_send(Message::Warm(Arc::downgrade(&program)));
         }
         Self(program)
     }
@@ -199,6 +207,33 @@ mod tests {
     }
 
     #[test]
+    fn archive_recipe_limit_survives_reopening() {
+        let key = PipelineKey {
+            shader: ShaderId(0),
+            vertex_buffers: Vec::new(),
+            primitive: Default::default(),
+            depth_stencil: None,
+            color_target: wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::Rgba8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL,
+            },
+            samples: 1,
+        };
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("h2-native-archive-limit-{}-{stamp}", std::process::id()));
+        for ids in [1..5, 5..10] {
+            let (send, recv) = mpsc::channel();
+            for id in ids {
+                send.send(Message::Record(id, key.clone())).unwrap();
+            }
+            drop(send);
+            run_archive(path.clone(), recv, 2);
+            let (store, _) = PipelineStore::open::<u64>(&path, ARCHIVE_VERSION);
+            assert_eq!(store.len(), (2, 2));
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn a_reloaded_shader_warms_the_exact_instanced_descriptor_from_disk() {
         let Ok(ctx) = gfx::GfxContext::headless() else { return };
         let key = PipelineKey {
@@ -222,7 +257,7 @@ mod tests {
         let (send, recv) = mpsc::channel();
         send.send(Message::Record(original.0.id, recipe.clone())).unwrap();
         drop(send);
-        run_archive(path.clone(), recv);
+        run_archive(path.clone(), recv, ARCHIVE_RECIPES);
         drop(original);
         let file = std::fs::read_to_string(&path).unwrap();
         assert!(!file.contains("vs_main"));
@@ -232,7 +267,7 @@ mod tests {
         let (send, recv) = mpsc::channel();
         send.send(Message::Warm(Arc::downgrade(&reloaded.0))).unwrap();
         drop(send);
-        run_archive(path.clone(), recv);
+        run_archive(path.clone(), recv, ARCHIVE_RECIPES);
         let warm = reloaded.0.entries.lock().unwrap()[&recipe].pipeline.clone();
         let mut current = key;
         current.shader = ShaderId(95);

@@ -416,6 +416,7 @@ fn the_boot_s_features_plan_together_with_the_campaigns() {
     .unwrap();
     r.add(&crate::h1_options_row::SetupRow {
         data_root: std::env::temp_dir(),
+        page: crate::h1_options_row::test_page(),
     })
     .unwrap();
     let text = match r.build(&hooks::Base) {
@@ -429,7 +430,7 @@ fn the_boot_s_features_plan_together_with_the_campaigns() {
         ),
     };
     for line in [
-        "0x00149f49 SCREEN_REQUEST: observe_before [map-select:change map arms the categories] -> before [campaigns:the campaign picker first] -> original",
+        "0x00149f49 SCREEN_REQUEST: before [campaigns:the campaign picker first] -> original",
         "0x0019c6a0 MP_LEVEL_ARRAY: before [map-select:a Select Map of ours lists ours] -> original",
         "0x00137fe0 GAME_TICK: before [map-select:refresh installed map offers] -> original",
         "0x002afd70 MP_LEVEL_NAME: before [map-select:category names] -> original",
@@ -437,7 +438,7 @@ fn the_boot_s_features_plan_together_with_the_campaigns() {
         "0x002c9b17 MAP_LIST_ROW_CHOSEN: before [map-select:categories open their maps] -> original",
         "0x002bb384 MAP_SCREEN_FREE: observe_before [map-select:forget the freed map list] -> original",
         "0x002300ea SCREEN_BACK_EVENT: before [map-select:return from maps to their folders",
-        "0x00147f6d SCREEN_PUSH: observe_before [ui-back:remember the replaced Game Setup] -> before [map-select:restore the opened folder's focus] -> original",
+        "0x00147f6d SCREEN_PUSH: before [ui-back:remember the replaced lobby selector, map-select:restore the opened folder's focus] -> original",
     ] {
         assert!(text.contains(line), "{line}\n{text}");
     }
@@ -656,10 +657,11 @@ fn a_package_installed_while_the_game_runs_is_listed_without_a_restart() {
             disc_slot(0x14, "ascension", "Ascension"),
         ])
     });
-    // At boot nothing is installed: the retail list, the disc unread.
+    // A disc-only install still has a catalogue for Change Map and Forge.
     let sel = Selection::new(sources.read(0).unwrap());
     assert!(!sel.active());
-    assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(sel.catalogue().maps(Category::Halo2).len(), 2);
+    assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
     let g0 = sel.generation();
 
     let content_root = sources.content_root();
@@ -711,7 +713,11 @@ fn pack_picker_uses_exact_installed_slots_for_disc_and_dlc_bases() {
     assert_eq!(row_label(&cat, Mode::Maps(Category::Mods), a).unwrap().1, "After Hours");
     assert_eq!(list_for(&cat, Mode::Pack(a), &|_| 0), [(a, 0), (b, 0)]);
     assert_eq!(row_label(&cat, Mode::Pack(a), b).unwrap().1, "Warlock");
+    let members = cat.playable_maps(Category::Mods);
+    assert_eq!(members.iter().map(|m| m.id).collect::<Vec<_>>(), [a, b]);
+    assert_eq!(members[1].name, "After Hours / Warlock");
     cat.active_pack = Some("release-one".into());
+    assert!(cat.playable_maps(Category::Halo2).iter().any(|m| m.id == a && m.name == "Lockout (After Hours)"));
     let disc = list_for(&cat, Mode::Maps(Category::Halo2), &|id| u8::from(id == 0x0a));
     assert!(disc.contains(&(a, 1)), "the pack maps onto the retail row with its lock flag");
     assert!(disc.contains(&(0x14, 0)), "uncovered bases stay on disc");
@@ -746,10 +752,10 @@ fn the_lobbys_mode_picks_what_change_map_opens() {
         kit.clone(),
         probe.clone(),
     ]);
-    assert_eq!(cat.categories(), [Category::Halo2, Category::Mods]);
+    assert_eq!(cat.categories(), [Category::Halo2, Category::Mods, Category::Firefight]);
     assert_eq!(cat.maps(Category::Firefight), [kit]);
     assert_eq!(mode_category(Mode::Multiplayer), None);
-    assert_eq!(mode_category(Mode::Forge), Some(Category::Halo2));
+    assert_eq!(mode_category(Mode::Forge), None);
     assert_eq!(mode_category(Mode::Firefight), Some(Category::Firefight));
     assert_eq!(Category::Firefight.label(), "Firefight");
     // The Firefight label has its own string id, clear of the footers.
@@ -757,4 +763,37 @@ fn the_lobbys_mode_picks_what_change_map_opens() {
     let unique: std::collections::BTreeSet<_> = ids.iter().collect();
     assert_eq!(unique.len(), ids.len(), "every string has its own id");
     assert!(ids.iter().all(|&id| IDS.owns(id)));
+}
+
+#[test]
+fn the_picker_checks_the_selected_disc_or_package_file() {
+    let disc = map(1, "Arena", 0, r"scenarios\multi\arena\arena");
+    let offer = map(2, "Custom arena", 0, r"t:\$C\123456789abcdef0\arena.map");
+    assert_eq!(disc.slot_path(), crate::map_slots::slot_file(r"d:\maps\arena.map"));
+    assert_eq!(offer.slot_path(), crate::map_slots::slot_file(&offer.path));
+    assert_ne!(disc.slot_path(), offer.slot_path());
+}
+
+#[test]
+fn changing_the_game_variant_filters_the_same_map_list_used_for_forge() {
+    use crate::community_variants::listed_named;
+    use crate::lobby_start::Mode;
+    let catalogue = Arc::new(Catalogue::new([
+        map(1, "Lockout", 1, r"d:\maps\lockout"),
+        map(2, "Firefight – Lockout", 2, &new_map_path(2, "lockout")),
+        map(3, "Firefight – Beaver Creek", 3, &new_map_path(3, "beavercreek")),
+        map(4, "Community Midship", 4, &new_map_path(4, "midship")),
+    ]));
+    let holdout = &listed_named("Holdout").unwrap().record;
+    let basin = &listed_named("Basin").unwrap().record;
+    let selection = Selection::new((*catalogue).clone());
+    let offered = |record| {
+        let open = selection.begin_picker(Mode::Multiplayer, Some(record));
+        assert_eq!(open.mode, super::Mode::Maps(Category::Firefight));
+        selection.picker_catalogue().all().map(|m| m.id).collect::<Vec<_>>()
+    };
+    assert_eq!(offered(holdout), [3, 2]);
+    assert_eq!(offered(basin), [3]);
+    assert_eq!(selection.begin_picker(Mode::Forge, Some(basin)).mode, super::Mode::Categories);
+    assert!(Arc::ptr_eq(&selection.picker_catalogue(), &selection.catalogue()));
 }

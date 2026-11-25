@@ -153,6 +153,59 @@ pub fn active_map_file(
     map_file_at(vfs, &name, slot.as_deref())
 }
 
+/// The loaded map's bytes for the telemetry worker: its host region where it
+/// has one, else, for a map the VFS rewrites in memory (the pogo kit, the
+/// screens: no contiguous host file), those bytes. Frame names come from them
+/// (docs/live/live-telemetry.md, "Frame species, aim, weapon and shots").
+pub fn active_map_source(
+    vfs: &mut vfs::Vfs,
+    guest: &runtime::Guest,
+    binding: Option<&vfs::MapRebind>,
+) -> Option<crate::telemetry::MapFile> {
+    let name = crate::telemetry::loaded_map_name(guest).ok()?;
+    if name.is_empty() {
+        return None;
+    }
+    let slot = binding
+        .filter(|b| b.has_ever_bound())
+        .and_then(|_| crate::map_slots::active_file(guest));
+    match map_source(vfs, &name, slot.as_deref())? {
+        vfs::FileSource::Host(file) => Some(telemetry_file(file)),
+        vfs::FileSource::Memory(bytes) => Some(crate::telemetry::MapFile::memory(
+            format!("{name}.map (rewritten in memory)"),
+            bytes,
+        )),
+    }
+}
+
+/// [`map_file_at`], and where the map has no host file because the VFS
+/// rewrites it, its bytes by the same slot, package and disc names.
+pub fn map_source(vfs: &mut vfs::Vfs, name: &str, slot: Option<&str>) -> Option<vfs::FileSource> {
+    if let Some(file) = map_file_at(vfs, name, slot) {
+        return Some(vfs::FileSource::Host(file));
+    }
+    let dir = format!("{}\\maps", vfs::CDROM_DEVICE);
+    let memory = |vfs: &mut vfs::Vfs, path: &str| match vfs.file_source(path)? {
+        vfs::FileSource::Memory(bytes) => Some(bytes),
+        vfs::FileSource::Host(_) => None,
+    };
+    let named = slot
+        .map(str::to_owned)
+        .into_iter()
+        .chain(vfs.content_map_path(name))
+        .chain([format!("{dir}\\{name}.map")])
+        .find_map(|path| memory(vfs, &path));
+    let bytes = named.or_else(|| {
+        disc_map_paths(vfs, &dir).into_iter().find_map(|path| {
+            let bytes = memory(vfs, &path)?;
+            header_name_of(&bytes)
+                .is_some_and(|n| n.eq_ignore_ascii_case(name))
+                .then_some(bytes)
+        })
+    })?;
+    Some(vfs::FileSource::Memory(bytes))
+}
+
 /// Candidate DVD paths for a map whose on-disc filename differs from its header.
 pub(crate) fn disc_map_paths(vfs: &mut vfs::Vfs, dir: &str) -> Vec<String> {
     vfs.list_directory(dir)
@@ -183,6 +236,14 @@ pub fn header_name(file: &vfs::HostFile) -> Option<String> {
     f.read_exact(&mut b).ok()?;
     let end = b.iter().position(|c| *c == 0).unwrap_or(LEN);
     let name = std::str::from_utf8(&b[..end]).ok()?;
+    (!name.is_empty()).then(|| name.to_owned())
+}
+
+/// [`header_name`] of a map held in memory.
+pub fn header_name_of(bytes: &[u8]) -> Option<String> {
+    let field = bytes.get(0x198..0x198 + 32)?;
+    let end = field.iter().position(|c| *c == 0).unwrap_or(field.len());
+    let name = std::str::from_utf8(&field[..end]).ok()?;
     (!name.is_empty()).then(|| name.to_owned())
 }
 
@@ -222,11 +283,12 @@ pub fn mount<R: vfs::Rewrite + 'static>(
     disc: &Path,
     fonts: Option<R>,
     maps: Option<&Path>,
-    campaign_maps: &[(String, PathBuf)],
+    campaign_maps: &[(String, vfs::MapSource)],
 ) -> vfs::Result<vfs::Vfs> {
     if maps.is_none()
         && cfg.server_maps.is_none()
         && cfg.sim_store.is_none()
+        && cfg.store_maps.is_none()
         && campaign_maps.is_empty()
     {
         return match fonts {
@@ -242,15 +304,37 @@ pub fn mount<R: vfs::Rewrite + 'static>(
     // verified server copy still wins where one is set, and everything
     // they do not serve comes from the store before the disc
     // (crates/runtime/vfs/src/sim_store.rs).
-    match cfg.sim_store.clone() {
-        Some(dir) => over_disc(
+    // Store maps (`store-maps`, docs/engine/asset-store.md) replace the
+    // disc's map files under everything else: the disc's are never read
+    // (crates/runtime/vfs/src/store_map.rs). A level with packages over it
+    // is served from its image (`cfg.store_levels`).
+    let levels = cfg.store_levels.clone();
+    match (cfg.store_maps.clone(), cfg.sim_store.clone()) {
+        (Some(root), Some(dir)) => over_disc(
+            cfg,
+            vfs::SimStoreBackend::new(
+                vfs::StoreMapBackend::new(dvd, root).with_levels(levels),
+                dir,
+            ),
+            fonts,
+            maps,
+            campaign_maps,
+        ),
+        (Some(root), None) => over_disc(
+            cfg,
+            vfs::StoreMapBackend::new(dvd, root).with_levels(levels),
+            fonts,
+            maps,
+            campaign_maps,
+        ),
+        (None, Some(dir)) => over_disc(
             cfg,
             vfs::SimStoreBackend::new(dvd, dir),
             fonts,
             maps,
             campaign_maps,
         ),
-        None => over_disc(cfg, dvd, fonts, maps, campaign_maps),
+        (None, None) => over_disc(cfg, dvd, fonts, maps, campaign_maps),
     }
 }
 
@@ -261,7 +345,7 @@ pub fn mount_for_agent<R: vfs::Rewrite + 'static>(
     disc: &Path,
     fonts: Option<R>,
     maps: Option<&Path>,
-    campaign_maps: &[(String, PathBuf)],
+    campaign_maps: &[(String, vfs::MapSource)],
     allow_rebind: bool,
 ) -> vfs::Result<(vfs::Vfs, Option<vfs::MapRebind>)> {
     let writable = allow_rebind && cfg.server_maps.is_none();
@@ -276,15 +360,15 @@ fn over_disc<B: vfs::Backend + 'static, R: vfs::Rewrite + 'static>(
     dvd: B,
     fonts: Option<R>,
     maps: Option<&Path>,
-    campaign_maps: &[(String, PathBuf)],
+    campaign_maps: &[(String, vfs::MapSource)],
 ) -> vfs::Result<vfs::Vfs> {
     let disc = vfs::CampaignMapsBackend::new(dvd, campaign_maps.iter().cloned()).with_assets(
         crate::h1_variants::campaign_choice(),
-        crate::h1_variants::campaign_alternates(campaign_maps),
+        crate::campaigns::halo2_maps(&cfg.data_root),
     );
     if !campaign_maps.is_empty() {
         eprintln!(
-            "campaigns: {} map(s) served from <data>/campaigns",
+            "campaigns: {} map(s) served from the tag store",
             campaign_maps.len()
         );
     }
@@ -509,6 +593,38 @@ pub mod tests {
         guest.map_zeroed(name & !0xfff, 0x1000, runtime::guest::Permissions::RW).unwrap();
         guest.write_bytes(name, b"level\0", 1).unwrap();
         assert_eq!(active_map_file(&mut vfs, &guest, None).unwrap(), from_name);
+    }
+
+    /// Replaces every map with a named synthetic one, as the pogo kit does.
+    struct Maps;
+    impl vfs::Rewrite for Maps {
+        fn wants(&self, path: &str) -> bool {
+            path.to_ascii_lowercase().starts_with("maps\\")
+        }
+        fn rewrite(&mut self, _: &str, _: &[u8]) -> Option<Vec<u8>> {
+            Some(named_map("level"))
+        }
+    }
+
+    #[test]
+    fn a_map_the_vfs_rewrites_names_its_tags_from_memory() {
+        let t = Temp::new();
+        let cfg = vfs::Config::new(t.0.join("data"), 0x4D530064);
+        let mut v = mount(cfg, &iso(&t), Some(Maps), None, &[]).unwrap();
+        // The rewrite leaves no contiguous host file, so nothing locates one.
+        assert!(map_file(&mut v, "level").is_none());
+        let Some(vfs::FileSource::Memory(bytes)) = map_source(&mut v, "level", None) else {
+            panic!("no in-memory map")
+        };
+        assert_eq!(header_name_of(&bytes).as_deref(), Some("level"));
+        // By a slot of its own, too.
+        assert!(matches!(
+            map_source(&mut v, "other", Some(r"\Device\CdRom0\maps\level.map")),
+            Some(vfs::FileSource::Memory(_))
+        ));
+        let file = crate::telemetry::MapFile::memory("level", bytes);
+        let names = crate::telemetry::TagNames::load(&file).unwrap();
+        assert!(names.is_for(map::Map::from_reader(std::io::Cursor::new(named_map("level"))).unwrap().scenario().unwrap().id.0));
     }
 
     #[test]

@@ -747,6 +747,19 @@ pub struct Report {
     /// on ([`crate::bounce`]; docs/runtime/sim.md, "Bounce practice").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bounce: Option<crate::bounce::BounceReport>,
+    /// The seam drops' records, in a match with a `[drops]` table
+    /// ([`crate::drops`]; docs/runtime/sim.md, "Seam drops").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drops: Option<crate::drops::DropsRun>,
+    /// The bounce search's records, in a match with a `[bounces]` table
+    /// ([`crate::bounces`]; docs/runtime/bounce-search.md).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bounces: Option<crate::bounces::BouncesRun>,
+    /// A Firefight match's rounds cleared, outcome and per-team score
+    /// ([`crate::firefight::FirefightReport`]; docs/runtime/sim.md,
+    /// "Firefight").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firefight: Option<crate::firefight::FirefightReport>,
     /// The flat RAM window's fixups per tick; `None` without a window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flat: Option<FlatReport>,
@@ -1414,6 +1427,9 @@ impl Tally {
                     .collect();
                 self.bounce.report(self.started, &who)
             }),
+            drops: None,
+            bounces: None,
+            firefight: None,
             flat: None,
             guest_census: self.census(),
             notes,

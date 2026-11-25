@@ -132,7 +132,7 @@ fn either_native_list_labels_and_opens_video_and_voice_after_its_own_rows() {
                     assert_eq!(page.screen(), [VIDEO, VOICE][i]);
                     assert_eq!(
                         label(&m, m.title_id(page.screen()).unwrap()),
-                        ["Video Settings", "Voice"][i]
+                        ["Video", "Voice"][i]
                     );
                 }
                 None => assert_eq!(pressed, None),
@@ -156,6 +156,18 @@ fn settings_rows_require_their_class_and_the_correct_pause_feature() {
     assert!(
         !Pages::new(false, false, &hooks::Switches::defaults()).enabled(NativeList::Controller)
     );
+}
+
+#[test]
+fn the_pause_rows_are_audited_for_snapshots() {
+    let mut registry = hooks::Registry::new(hooks::Switches::defaults());
+    for mode in [Mode::Campaign, Mode::Multiplayer] {
+        assert!(registry.add(&Settings(mode)).unwrap());
+    }
+    let plan = registry.build(&hooks::Base).unwrap();
+    // They draw their rows from guest memory and keep no host state, so
+    // they must not forbid every keyframe for the whole session.
+    assert!(plan.snapshot_blockers().is_empty(), "{:?}", plan.snapshot_blockers());
 }
 
 #[test]

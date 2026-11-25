@@ -1,0 +1,17 @@
+[package]
+format = 1
+id = "superbounce"
+name = "Superbounce"
+description = "The superbounce HUD: the arming bar, the prompt, the notifications, the navpoint and the tutorial, the readout beside the motion tracker, and the pill block."
+
+[[item]]
+kind = "hud"
+source = "huds/superbounce.hud.yaml"
+
+[[item]]
+kind = "hud"
+source = "huds/superbounce-readout.hud.yaml"
+
+[[item]]
+kind = "hud"
+source = "huds/pill-block.hud.yaml"

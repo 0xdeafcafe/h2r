@@ -12,7 +12,7 @@ const STRUCTURE_GLOBAL: u32 = 0x004e_033c;
 const PROJECTION_AXES: u32 = 0x0044_0b94;
 const SCRATCH_SIZE: u32 = 0x420;
 
-pub(super) fn fp_error(_: Error) -> GuestFault {
+pub(crate) fn fp_error(_: Error) -> GuestFault {
     GuestFault {
         addr: 0,
         len: 0, access: runtime::guest::Access::Execute,
@@ -20,7 +20,7 @@ pub(super) fn fp_error(_: Error) -> GuestFault {
     }
 }
 
-pub(super) fn load_fpu(c: &CpuAbi) -> X87 {
+pub(crate) fn load_fpu(c: &CpuAbi) -> X87 {
     let x = &c.x87;
     X87(x87::abi::X87Abi {
         st: x.st, control: x.control, status: x.status, tag: x.tag, opcode: x.opcode,
@@ -31,8 +31,8 @@ pub(super) fn load_fpu(c: &CpuAbi) -> X87 {
 
 // Only the final x87 instruction and the most recent memory operand
 // survive at a transfer. Read FOP from the mapped instruction.
-pub(super) fn finish_fpu(c: &mut CpuAbi, g: &Guest, x: X87, pc: u32, operand: u32) -> Result<()> {
-    let [op, modrm] = g.read::<2>(pc)?;
+pub(crate) fn finish_fpu(c: &mut CpuAbi, g: &impl crate::sim_native::Memory, x: X87, pc: u32, operand: u32) -> Result<()> {
+    let [op, modrm] = g.load::<2>(pc)?;
     c.x87.st = x.0.st;
     c.x87.status = x.0.status;
     c.x87.tag = x.0.tag;

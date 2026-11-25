@@ -16,6 +16,9 @@ rules.workspace = true
 # Published game variants: the `.h2variant` file, its checks and the record
 # (docs/live/live-api.md "Game variants"). Pure Rust, no I/O on the routes.
 variants = { path = "../../formats/variants" }
+# The built-in Firefight wave sets a mode-1 hopper entry names by hash
+# prefix (docs/game/firefight.md, "Live"). Pure Rust, no I/O.
+firefight = { path = "../../formats/firefight" }
 anyhow.workspace = true
 serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true, features = ["raw_value"] }

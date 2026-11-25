@@ -2,24 +2,36 @@
 //! geometry (docs/game/superbounce.md, "Spots in the geometry").
 //!
 //! A superbounce needs two things: the player's level pair word at -3
-//! (a forced crouch, [`Kind::Crouch`] spots), then a landing on a narrow
-//! strip of floor between two parallel floor edges, at least one a
-//! concave crease, that the capsule sinks onto at once ([`Kind::Bounce`]
-//! spots). The scan is pure: it takes the
+//! (a forced crouch, [`Kind::Crouch`] spots), then a landing on a seam in
+//! the collision, the joint where two floor surfaces meet, that the
+//! capsule sinks into ([`Kind::Bounce`] spots: a narrow strip between two
+//! parallel joints, at least one a concave crease, targeted on the
+//! collision edge the pinch sits on; single creases; and busy vertices,
+//! where many floor edges meet; the last two are candidates for the sim's
+//! training; a V and a pair of creases converging on a tip are three
+//! candidates each, the two arms and the tip or bottom line, `vee.rs`).
+//! The scan is pure: it takes the
 //! collision surfaces and returns spots. Reading them out of a `.map`
 //! is [`scan_map`].
 //!
 //! Coordinates are world units, Z up.
 
 mod bounce;
+mod busy;
 mod crouch;
 mod geom;
 pub mod ghost;
 pub mod learned;
 mod read;
+pub mod rule;
 mod scan;
+pub mod speed;
+pub mod tune;
 pub mod verified;
+mod vee;
 pub mod view;
+
+pub use vee::facing;
 
 /// A point in world units.
 pub type Vec3 = [f32; 3];
@@ -33,6 +45,31 @@ pub const RADIUS: f32 = 0.175;
 pub const STANDING: f32 = 0.725;
 /// See [`STANDING`].
 pub const CROUCHED: f32 = 0.5;
+
+/// The catch (world units): how far either side of a bounce spot's edge,
+/// horizontally, a landing's origin still counts as on it. The one
+/// tolerance a bounce spot has, used only for the hit or miss verdict
+/// ([`catch_miss`]): marks, the aligner and the assist aim at the edge
+/// itself (docs/game/superbounce.md, "The target: the collision edge").
+// TODO(sim): unmeasured. Measure how far off the edge a primed landing
+// still launches with the sim's training (`h2 sim train`) and replace
+// this. 0.1 holds the measured Ascension origin (y 4.04, 0.04 off the
+// seam), the bots' learned aim (y 3.985) and the second Zanzibar window
+// try (4.8 cm off its crease).
+pub const CATCH: f32 = 0.1;
+
+/// How far (world units, horizontally) `xy` is outside the catch of
+/// `edge`: 0 within [`CATCH`] of the segment, the hit side of the verdict.
+/// A busy point's edge is one vertex twice: the catch is a disc round it.
+pub fn catch_miss(edge: [Vec3; 2], xy: [f32; 2]) -> f32 {
+    (geom::segment_xy(edge, xy) - catch()).max(0.0)
+}
+
+/// The catch in effect: [`CATCH`], or the live override
+/// (`superbounce.tune`, [`tune`]).
+pub fn catch() -> f32 {
+    tune::CATCH.get()
+}
 
 /// What a spot is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -115,10 +152,25 @@ pub enum Shape {
     #[default]
     Slot,
     /// One concave crease between two walkable floors (a flat floor at the
-    /// foot of a ramp): a candidate for a game run to try, with a launch
-    /// estimate from its own dihedral (docs/game/superbounce.md, "Bounce",
-    /// "Single creases").
+    /// foot of a ramp): a candidate for the sim's training to test
+    /// ([`Spot::candidate`]), with a launch estimate from its own dihedral
+    /// and no speed (docs/game/superbounce.md, "Bounce", "Single
+    /// creases"). Not marked for play until proved.
     Crease,
+    /// A V: two ramps meeting at the bottom (Sanctuary's), a single
+    /// crease whose two floors both tilt and rise away from it, or two
+    /// creases converging on a tip (Zanzibar's). Each is three spots: the
+    /// groove's bottom line or the tip (`arm` none), and each arm (`arm`
+    /// set, approached from the mirror side, [`Arm`]). Candidates like
+    /// [`Shape::Crease`], ranked over every other single crease
+    /// (docs/game/superbounce.md, "Vs").
+    Vee,
+    /// A busy point: one floor vertex where many collision edges meet,
+    /// coplanar triangulation edges counted too. The vertex itself is the
+    /// target (`edge` is it twice). A candidate like [`Shape::Crease`],
+    /// scored by its edges and planes (docs/game/superbounce.md, "Busy
+    /// points").
+    Busy,
 }
 
 impl Shape {
@@ -127,6 +179,45 @@ impl Shape {
         match self {
             Shape::Slot => "slot",
             Shape::Crease => "crease",
+            Shape::Vee => "vee",
+            Shape::Busy => "busy",
+        }
+    }
+}
+
+/// A V's arm: the side of the V's bisector it is approached from. The
+/// landing arm mirrors the approach: a player coming in from one side of
+/// the V lands on the arm across the bisector, not on the tip
+/// (docs/game/superbounce.md, "Vs").
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Arm {
+    /// A point on the bisector: the converging creases' tip, or the middle
+    /// of a groove's bottom line.
+    pub pivot: Vec3,
+    /// The bisector's horizontal direction (unit): from the tip into the
+    /// V's opening; a groove's along its bottom line.
+    pub bisector: [f32; 2],
+    /// Unit, horizontal, square to the bisector: toward the half-plane the
+    /// arm is approached from, the far side of the bisector from the arm
+    /// (the mirror side).
+    pub from: [f32; 2],
+}
+
+impl Arm {
+    /// Whether `xy` is on the side this arm is approached from: in front
+    /// of the bisector along [`Arm::from`], the bisector itself counted.
+    pub fn approached_from(&self, xy: [f32; 2]) -> bool {
+        let d = [xy[0] - self.pivot[0], xy[1] - self.pivot[1]];
+        d[0] * self.from[0] + d[1] * self.from[1] >= 0.0
+    }
+
+    /// The same arm approached from its own side: the control the sim's
+    /// training flies once beside the mirror (docs/game/bounce-search.md,
+    /// "Vs: the mirror and its control").
+    pub fn same_side(self) -> Arm {
+        Arm {
+            from: [-self.from[0], -self.from[1]],
+            ..self
         }
     }
 }
@@ -135,15 +226,27 @@ impl Shape {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Spot {
     pub kind: Kind,
-    /// The line to draw: for a bounce, the strip's midline at floor
-    /// height; for a crouch spot, the side where standing becomes clear.
+    /// The target. For a bounce, the collision edge itself: its two end
+    /// vertices to the float, as the map's collision stores them (a
+    /// slot's seam, or a crease's own joint; collinear edges sharing a
+    /// vertex are one, from the first's start to the last's end); for a
+    /// busy point, its vertex twice. For a crouch spot, the side where
+    /// standing becomes clear.
     pub edge: [Vec3; 2],
-    /// Where a player stands to use it: on the strip, a little toward the
-    /// crease, or inside the forced-crouch place. A unit's origin.
+    /// Where a player stands to use it, a unit's origin: for a bounce, the
+    /// aim point, on the edge (a slot's over the middle of its two
+    /// joints' overlap; a crease's at its middle; a busy point's on its
+    /// vertex), or, when [`Spot::landed`], a measured landing; for a
+    /// crouch spot, inside the forced-crouch place.
     pub stand: Vec3,
-    /// Bounce only: how far (world units) the player must fall onto the
-    /// strip for the landing to reach it (0 for a standing jump). Crouch
-    /// spots: 0.
+    /// Bounce: `stand` is a landing a run measured, where the origin came
+    /// down on a bounce: the map's verified landing ([`verified::land`])
+    /// or, with none, a learned line's aim ([`learned::apply`]). It is
+    /// the point to come down on as it is; a scan's `stand` is on the
+    /// edge, and nothing says where beside it a landing works best.
+    pub landed: bool,
+    /// Bounce only: a measured drop (world units) onto the strip; 0 when
+    /// none is measured, which is every scanned spot. Crouch spots: 0.
     pub fall: f32,
     /// Bounce only: the estimated launch speed straight up (world units a
     /// second) for a primed landing after `fall`. Crouch spots: 0.
@@ -153,19 +256,17 @@ pub struct Spot {
     pub drift: [f32; 2],
     /// 0..1: how sure the scan is; 1 for a proven crouch spot.
     pub score: f32,
-    /// Bounce: the gap between the slot's two joints (world units), the
-    /// ribbon's real width. Crouch: the widest the forced band measures
-    /// across its edge.
-    pub width: f32,
-    /// Bounce: the downward speed (world units a second) the landing must
-    /// touch down at for the capsule to sink onto both edges; `fall` is
-    /// worked from it. Crouch spots: 0.
+    /// Bounce: a measured touchdown speed (world units a second, downward)
+    /// the landing needs; 0 when none is measured, which is every scanned
+    /// spot, and then nothing shows a speed for it. Crouch spots: 0.
     pub need: f32,
     /// Crouch: [`Status::Proven`] near a measured priming place, else
     /// [`Status::Likely`]. Bounce spots: `Likely` (the measured bounces
     /// are the bots' list, `crates/live/bots/src/glitches/spots.rs`). A
     /// map's verified file ([`verified::apply`]) makes either kind
-    /// `Proven` or `Failed`.
+    /// `Proven` or `Failed`; a learned file's line ([`learned::apply`])
+    /// and a verified landing ([`verified::land`]) move a bounce spot's
+    /// aim, never its status.
     pub status: Status,
     /// Crouch: the unit direction (X and Y) from `stand` to the standing
     /// room next to it, the way out. Bounce spots: zero.
@@ -173,8 +274,24 @@ pub struct Spot {
     /// Crouch: the edges the standing capsule hits at `stand`. Bounce
     /// spots: empty.
     pub lip: Lip,
-    /// Bounce: a two-joint slot or a single crease. Crouch spots: `Slot`.
+    /// Bounce: a two-joint slot, a single crease, a V or a busy point.
+    /// Crouch spots: `Slot`.
     pub shape: Shape,
+    /// A V's arm: the side it is approached from. `None` for every other
+    /// spot, a V's tip or bottom line among them.
+    pub arm: Option<Arm>,
+}
+
+impl Spot {
+    /// A single crease, V or busy point nothing has proved: a candidate
+    /// the sim's training tests (`h2 sim train`), never marked for play,
+    /// the HUD or the assist (docs/game/superbounce.md, "Single creases",
+    /// "Busy points").
+    pub fn candidate(&self) -> bool {
+        self.kind == Kind::Bounce
+            && matches!(self.shape, Shape::Crease | Shape::Vee | Shape::Busy)
+            && self.status != Status::Proven
+    }
 }
 
 /// A measured place where a forced crouch primed the pair word: a unit's
@@ -280,9 +397,9 @@ pub struct Poly {
 /// Every spot in a set of collision polygons (a map's structure BSP plus
 /// its placed instanced geometry, already in world space).
 ///
-/// Bounce spots come first (slots and single creases together, at most
-/// 512), then crouch spots (at most 12, by the stricter rules), each kind
-/// best score first. With no [`Context`]: no starting locations and no
+/// Bounce spots come first (slots and single creases together, ranked by
+/// score alone), then crouch spots (at most 12, by the stricter rules),
+/// each kind best score first. With no [`Context`]: no starting locations and no
 /// proven places. A heuristic: the thresholds and their calibration
 /// against the two measured Ascension spots are in `bounce.rs` and
 /// `crouch.rs`.

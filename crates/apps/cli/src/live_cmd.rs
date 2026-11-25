@@ -166,14 +166,16 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           upload a map package and publish it (docs/game/maps.md §5)
   maps list [--server URL] [--base MAP] [--author GAMERTAG] [--json]
                           the map packages the server has
-  hosts start --map MAP [--variant VARIANT] [--max-players N]
+  hosts start --map MAP [--variant VARIANT] [--max-players N] [--bots N]
                  [--class small|large] [--region R] [--transport udp|tunnel]
                  [--no-launch] [--live URL] [--data DIR | --as GAMERTAG]
                           start a custom dedicated host as an admin
                           (docs/live/dedicated-host.md): launched on the
                           server's provider, or with --no-launch print
                           H2_LEASE, H2_HOST_LEASE_JSON, H2_TOKEN and H2_LIVE
-                          lines to eval before a manual docker run
+                          lines to eval before a manual docker run;
+                          --bots N seats N phantom bots (at most
+                          --max-players minus one)
   hosts list [--live URL] [--data DIR | --as GAMERTAG]
                           running and recent dedicated hosts with costs (JSON)
   hosts stop LEASE [--live URL] [--data DIR | --as GAMERTAG]
@@ -932,22 +934,30 @@ pub(crate) fn friend_run(
     target: Option<&str>,
 ) -> Result<()> {
     let me = pick_account(client, accounts, as_tag)?;
+    let key = me.key_pair()?;
+    let author = me
+        .id
+        .clone()
+        .unwrap_or_else(|| live_accounts::author_id(me.xuid, &client.discovery.id));
     if action == FriendAction::List {
-        let friends: Friends = client.get(
-            &format!("/accounts/{}/friends", path_part(&me.gamertag)),
-            &[],
+        // Pending requests show only to the account itself: read with its
+        // token, not anonymously.
+        let token = issue_token(&key, &author, &client.discovery.id, lxm::READ, now());
+        let req = client.authorized(
+            client.agent.get(&client.url(&format!(
+                "/accounts/{}/friends",
+                path_part(&me.gamertag)
+            ))),
+            token,
         )?;
+        let friends: Friends = serde_json::from_str(&call(req, None)?)
+            .context("the friends list: an unexpected reply")?;
         print_friends(&friends);
         return Ok(());
     }
     let raw = target.unwrap_or_default();
     let tag = Gamertag::new(raw).with_context(|| format!("{raw:?} is not a valid gamertag"))?;
     let other = lookup(client, &tag)?;
-    let key = me.key_pair()?;
-    let author = me
-        .id
-        .clone()
-        .unwrap_or_else(|| live_accounts::author_id(me.xuid, &client.discovery.id));
     let (kind, data, done) = match action {
         FriendAction::Add => (
             types::FRIEND_REQUESTED,

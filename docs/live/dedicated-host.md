@@ -1,6 +1,6 @@
 # Running Halo 2 as a dedicated host
 
-**Partially feasible.** A Mac can run the native title without a window. The question is whether Halo 2 will keep that machine in charge when every player is remote. Its simulation chooses the host by machine identity, but its normal lobby starts through a local player. The dedicated-host spike provides `h2 serve --system-link` for the first real client join. The join and zero-local-player lifecycle still need a game run.
+**Partially feasible.** Zero-local-player matches run on Cloudflare hosts: an all-phantom sim lease boots from the private bundle, plays to `match_over` and reports ([measurements](notes/host-halving.md)). A remote human joining a dedicated host still needs a game run, on a Mac with `h2 lab run --dedicated` and on a Cloudflare host through the tunnel. Halo 2's simulation chooses the host by machine identity, but its normal lobby starts through a local player; the host lobby below supplies that start without one.
 
 Live would choose and reserve the machine. The native game would run the match. With that arrangement every player has a network path to the authority, including the player who used to host. Fairness improves by removing that player's zero-network-delay advantage. Latency improves for a given player only if the new route and server perform better.
 
@@ -219,6 +219,16 @@ Admission keeps 30% of each vCPU and 256 MiB of memory free. It accounts
 for boot reservations even before resident memory grows. A rolling
 30-second gameplay p99 over 36 ms also closes admission.
 
+A Firefight lease (`HostLease.firefight`) takes a whole pack: the host
+runs every actor's AI ([CPU on the host](../game/ai-networking.md#cpu-on-the-host)),
+so the supervisor starts it only in an empty pack and refuses every lease
+beside it until it ends (`SlotClass::Whole`, `admit_class`; refusals
+`whole_needs_empty` and `taken_whole`). On a small pack that is one whole
+vCPU. The pool routes it like any lease: a busy pack's refusal marks that
+pack full until one of its leases ends, and the lease lands in a new or
+empty pack.
+[Admission](../../crates/live/live-proto/src/host_pack.rs) · [Supervisor](../../crates/apps/cli/src/host_cmd/pack.rs)
+
 Small packs admit up to five slots on one vCPU within 1,536 MiB. Large
 packs admit up to ten slots on two vCPUs within 3,072 MiB. Cloudflare
 provisions and bills 3 and 6 GiB respectively under its capped scheduling
@@ -337,7 +347,9 @@ host uses the original. Keep matched files immutable while mounted.
 
 The stripper clears known local bitmap LOD and low-detail payloads and
 classifiable PCM and Xbox ADPCM sample spans. It keeps WMA, IMA, unknown
-or externally referenced ranges, and other raw resources. The guest can
+or externally referenced ranges, and other raw resources. Tag metadata,
+BSPs and the index stay whole, so a Firefight kit map keeps its squads,
+zones, orders, sectors and moved group table. The guest can
 read codec bytes before DirectSound sees a packet (WMA decoder
 `0x0038a0c5`–`0x0038a1cc`). Render also feeds the animation cache used
 from the tick. Keep the original cache alongside its verified override.
@@ -376,14 +388,17 @@ key in `--data` (the operator, the default) or an admin account's key with
 
 ```sh
 h2 live hosts start --map lockout --variant 'Slayer' --max-players 8 \
-  [--class small|large] [--region lhr] [--transport udp|tunnel] [--no-launch] \
+  [--bots N] [--class small|large] [--region lhr] [--transport udp|tunnel] [--no-launch] \
   [--live URL] [--data DIR | --as GAMERTAG]
 ```
 
 Without `--no-launch` the server reserves the lease (budget,
 `LIVE_MAX_HOSTS` and cost rows all apply, exactly as for a match) and its
 configured provider starts the container; the command prints the lease
-JSON. With `--no-launch` no provider is started: the server records the
+JSON. `--bots N` (default 0, at most `--max-players` minus one, so one
+seat stays for a person) puts N Clanker names in the lease's `bots`; the
+host adds them to its lobby as phantoms ([`h2 host run`](#h2-host-run)).
+With `--no-launch` no provider is started: the server records the
 lease as `requested` and answers its host token, and the command prints
 shell lines a manual container run can `eval` — the only place the token
 is ever shown:
@@ -465,6 +480,17 @@ and `live: true`. Open returns the session ID acknowledged by Live. The
 supervisor registers that ID and the endpoint once `host.lobby.state` shows a lobby. It requests
 start when the lobby is ready and has at least the reserved player count,
 or one player for an open lobby. Lease roster authorization belongs to Live.
+
+A non-sim lease with `bots` starts the child with `--host-bots`. Once the
+host is registered, the supervisor adds each leased bot through the
+child's `sim.player.add` as a brain-driven phantom named as the lease
+names it, with the host-made xuid `live_proto::bots::local_xuid(n)` for
+seat n from 1. A refused add is a named error in the host log; the other
+bots and the lobby carry on. Phantoms are not players to the supervisor:
+it counts only lobby players whose name lacks the bot mark (U+2699), so
+phantoms alone never start a match, keep a lobby from going idle, or
+appear in the reported player counts.
+[`add_phantoms`](../../crates/apps/cli/src/host_cmd/supervisor.rs)
 
 When the supervisor receives a TCP `H2_AGENT` address, the child also
 binds that address to the same agent. Both listeners share the same
@@ -603,6 +629,7 @@ h2 host bundle --disc "$H2_DISC" --out "$bundle_dir"
 | Multiplayer `maps/*.map` | The host loads these maps for matches. The bundle selects them by their cache headers. |
 | `maps/fonts/` | The retail menu reads the font tables and packed glyphs from the DVD. |
 | `bots/<map>.<bsp>.bots`, `bots/<map>.<bsp>.vis` | Each multiplayer map's bot nav mesh and visibility grid, built from the disc. A sim child builds none, and a light host would otherwise build each map's when it is first played. |
+| `firefight/firefight-<map>/`, `firefight/kits.json` | Each multiplayer map's Firefight kit package (its `manifest.toml` and patch) and the index naming the kit version and each map's package ID. A Firefight match plays its map's kit. |
 
 The light host skips Bink movies. Campaign levels and dashboard media are
 outside the multiplayer boot path. See [boot](../../crates/apps/boot/src/lib.rs)
@@ -616,6 +643,21 @@ bundled map's header and refuses a map without a current mesh and grid.
 `--data DIR` names the data root (default: the one `h2 play` uses).
 `--no-bots` leaves the bot data out.
 [Bundle nav data](../../crates/live/host-data/src/bundle/nav.rs) · [Bot data files](../game/bots.md)
+
+The command builds every multiplayer map's Firefight kit from the disc
+with the builder `h2 firefight kit` uses, so the host's package ID is the
+one each player gets from their own disc
+([The kit](../game/firefight.md#the-kit)). A map the kit refuses, for
+lack of headroom or drops, is named and left without one. A kit's patch
+is bound to the disc map's hash, so a map with a kit comes from the disc
+even when `--stripped-maps` has a copy of it. `--no-firefight` leaves the
+kits out; the headless host's own build has no kit builder. When a lease
+names a Firefight match, the host places its map's package in the match's
+data root (`<data>/maps/firefight-<map>`) before the game starts. It
+refuses the lease when the bundle has no kit for the map, its kits are
+another version than the match's, or the lease's `map_id` names another
+package.
+[Bundle kits](../../crates/live/host-data/src/bundle/kits.rs) · [Placing a kit](../../crates/live/host-data/src/lib.rs)
 
 `--image DIR` adds `libh2game.so` and `libh2game.so.stamp` from `DIR`
 (`deploy/host/build.sh --module` stages them in `deploy/host/stage/image`).

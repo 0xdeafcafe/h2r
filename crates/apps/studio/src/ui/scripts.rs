@@ -2,14 +2,22 @@
 //! "Scripts"): the globals and scripts with a search, the builtins and
 //! where their names come from, and in the Inspector the selected
 //! definition's source with every name a link. Read only; each panel is
-//! one scrolling body.
+//! one scrolling body. "Open in VS Code" and "Open in Zed" write the
+//! scripts as a working copy and open it there (`app::external`); what a
+//! save there changed shows under the buttons. **Edit** puts the shown
+//! definition's source in a text box and **Compile** writes it into the
+//! map's tables (`app::script_edit`); **Compile working copy** does the
+//! same for what a save in VS Code or Zed changed.
 
-use dear_imgui_rs::{ListClipper, MouseButton, MouseCursor, TreeNodeFlags, Ui};
+use dear_imgui_rs::{
+    InputTextMultilineFlags, ListClipper, MouseButton, MouseCursor, TreeNodeFlags, Ui,
+};
 use hs::{Item, NameFrom};
 use scenario_edit::layout;
 
+use crate::app::script_edit::{Outcome, Refusal};
 use crate::app::scripts::{LinkKind, Loaded, Target};
-use crate::app::{Action, App, ScriptAction};
+use crate::app::{Action, App, Doc, ScriptAction};
 use crate::theme::{self, Fonts, icon};
 
 /// The tab's own state: the searches.
@@ -17,6 +25,21 @@ use crate::theme::{self, Fonts, icon};
 pub struct ScriptsUi {
     pub filter: String,
     pub builtins: String,
+    /// The recording shown under Recordings (an index into the block).
+    pub recording: Option<usize>,
+    /// The definition being edited and its text.
+    pub edit: Option<Edit>,
+    /// The expression box (**Evaluate in game**).
+    pub expression: String,
+}
+
+/// A definition's source in the text box.
+pub struct Edit {
+    pub item: Item,
+    pub text: String,
+    /// `ScriptsTool::compiles` when Compile was pressed: the edit closes
+    /// when a later compile applied.
+    pub sent: Option<u64>,
 }
 
 /// The left tab: counts, the search, the definitions, the builtins and
@@ -40,6 +63,9 @@ pub fn list(
             ui.same_line();
             ui.text_wrapped(&why);
             ui.spacing();
+            if ui.collapsing_header("Recordings##scripts-recordings", TreeNodeFlags::NONE) {
+                recordings(ui, app, None, st, actions);
+            }
             doc_row(ui, app, None, dialogs, actions);
             return;
         }
@@ -52,6 +78,8 @@ pub fn list(
         hs::RETAIL_NODES
     ));
     ui.text_disabled(format!("{} {}", icon::FILE, l.executable));
+    external_row(ui, app, l, actions);
+    eval_row(ui, app, st, actions);
     ui.set_next_item_width(-1.0);
     ui.input_text("##scripts-filter", &mut st.filter)
         .hint(format!("{} Search names and source", icon::SEARCH))
@@ -96,7 +124,233 @@ pub fn list(
     if ui.collapsing_header("Builtins##scripts-builtins", TreeNodeFlags::NONE) {
         builtins(ui, l, st);
     }
+    if ui.collapsing_header("Recordings##scripts-recordings", TreeNodeFlags::NONE) {
+        recordings(ui, app, Some(l), st, actions);
+    }
     doc_row(ui, app, Some(l), dialogs, actions);
+}
+
+/// The map's recorded animations: each with its length, and for the picked
+/// one the scripts that play it, its initial state and every event. Read
+/// only (docs/editor/rich-editors.md, "Recordings").
+fn recordings(
+    ui: &Ui,
+    app: &App,
+    l: Option<&Loaded>,
+    st: &mut ScriptsUi,
+    actions: &mut Vec<Action>,
+) {
+    use crate::app::recordings::NONE;
+    let rows = match app.recordings_loaded() {
+        Ok(rows) => rows,
+        Err(why) => {
+            ui.text_disabled(why);
+            return;
+        }
+    };
+    if rows.is_empty() {
+        ui.text_disabled(NONE);
+        return;
+    }
+    for (i, r) in rows.iter().enumerate() {
+        let events = match &r.decoded {
+            Ok(d) => format!("{} events", d.events.len()),
+            Err(_) => "does not read".to_owned(),
+        };
+        let label = format!(
+            "{}  {} ticks · {events}##recording-{i}",
+            r.recorded.name, r.recorded.ticks
+        );
+        if ui
+            .selectable_config(label)
+            .selected(st.recording == Some(i))
+            .build()
+        {
+            st.recording = Some(i);
+        }
+    }
+    let Some((i, r)) = st
+        .recording
+        .and_then(|i| rows.get(i).map(|r| (i, r)))
+    else {
+        return;
+    };
+    theme::section(ui, &r.recorded.name);
+    ui.text_disabled(format!(
+        "stream version {} · control version {} · {} bytes",
+        r.recorded.version,
+        r.recorded.control_version,
+        r.recorded.stream.len()
+    ));
+    let users = l.map(|l| l.recording_uses(rows, i));
+    if users.as_ref().is_none_or(Vec::is_empty) {
+        ui.text_disabled(if users.is_some() {
+            "No script plays it."
+        } else {
+            "Which scripts play it needs the scripts, which need the game's executable."
+        });
+    } else if let Some(users) = users {
+        ui.text_disabled(format!(
+            "Played by {}",
+            users
+                .iter()
+                .map(|(_, name, n)| format!("{name} ×{n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    play_row(ui, app, r, actions);
+    let d = match &r.decoded {
+        Ok(d) => d,
+        Err(why) => {
+            ui.text_colored(theme::ERROR, icon::ALERT);
+            ui.same_line();
+            ui.text_wrapped(why);
+            return;
+        }
+    };
+    ui.text_disabled(format!(
+        "Starts from: {}",
+        fields_text(&d.initial.fields)
+    ));
+    let clipper = ListClipper::new(d.events.len()).begin(ui);
+    for k in clipper.iter() {
+        let e = &d.events[k];
+        ui.text(format!(
+            "{:>5}  {}  {}",
+            e.tick,
+            e.name,
+            fields_text(&e.fields)
+        ));
+    }
+    if d.trailing > 0 {
+        ui.text_disabled(format!("{} bytes follow the end event.", d.trailing));
+    }
+}
+
+/// **Play on unit** (the first player's): the paired game plays the
+/// recording and the Scene viewport draws the path the unit takes.
+fn play_row(ui: &Ui, app: &App, r: &crate::app::recordings::Row, actions: &mut Vec<Action>) {
+    let paired = app
+        .pairing
+        .published
+        .as_ref()
+        .is_some_and(|s| s["state"] == "connected");
+    let disabled = ui.begin_disabled_with_cond(!paired || r.decoded.is_err());
+    if ui.button(format!("{} Play on unit##recording-play", icon::RUN)) {
+        actions.push(Action::Script(ScriptAction::PlayRecording {
+            name: r.recorded.name.clone(),
+            player: 0,
+        }));
+    }
+    disabled.end();
+    ui.same_line();
+    ui.text_disabled(if paired {
+        "on player 0, in the paired game"
+    } else {
+        "pair with a game to play it"
+    });
+}
+
+fn fields_text(fields: &[hs::recording::Named]) -> String {
+    use hs::recording::Value;
+    fields
+        .iter()
+        .map(|(name, v)| {
+            let v = match v {
+                Value::Unsigned(n) => format!("{n:#x}"),
+                Value::Signed(n) => n.to_string(),
+                Value::Reals(r) => format!(
+                    "({})",
+                    r.iter().map(|f| format!("{f:.3}")).collect::<Vec<_>>().join(", ")
+                ),
+            };
+            format!("{name} {v}")
+        })
+        .collect::<Vec<_>>()
+        .join("  ")
+}
+
+/// The expression box and **Evaluate in game**: the paired game compiles
+/// the expression against the loaded map's scripts and answers its value
+/// (`hs.eval`); the last answer shows under the box.
+fn eval_row(ui: &Ui, app: &App, st: &mut ScriptsUi, actions: &mut Vec<Action>) {
+    let paired = app
+        .pairing
+        .published
+        .as_ref()
+        .is_some_and(|s| s["state"] == "connected");
+    ui.set_next_item_width(-1.0);
+    ui.input_text("##scripts-eval", &mut st.expression)
+        .hint(format!("{} An expression, such as (+ 1 2)", icon::RUN))
+        .build();
+    let disabled = ui.begin_disabled_with_cond(!paired || st.expression.trim().is_empty());
+    if ui.button("Evaluate in game##scripts-eval-run") {
+        actions.push(Action::Script(ScriptAction::Eval {
+            expression: st.expression.trim().to_owned(),
+            ty: None,
+        }));
+    }
+    disabled.end();
+    if ui.is_item_hovered() {
+        ui.tooltip_text(
+            "Compile the expression against the loaded map's scripts and run it in\nthe paired game, over a snapshot of the map's global values. A builtin\nthat needs the game's objects is refused by name.",
+        );
+    }
+    ui.same_line();
+    if !paired {
+        ui.text_disabled("pair with a game to evaluate");
+    }
+    match &app.scripts.evaluated {
+        Some((expression, Ok(value))) => ui.text_wrapped(format!("{expression}  ->  {value}")),
+        Some((expression, Err(why))) => {
+            ui.text_colored(theme::ERROR, icon::ALERT);
+            ui.same_line();
+            ui.text_wrapped(format!("{expression}: {why}"));
+        }
+        None => {}
+    }
+}
+
+/// "Open in VS Code" and "Open in Zed", and the working copy's state.
+fn external_row(ui: &Ui, app: &App, l: &Loaded, actions: &mut Vec<Action>) {
+    if ui.button("Open in VS Code##scripts-code") {
+        actions.push(Action::Script(ScriptAction::OpenInEditor(Some("code"))));
+    }
+    if ui.is_item_hovered() {
+        ui.tooltip_text(
+            "Write every script and global to a working copy and open it in VS Code\nat the one shown. The extension (h2 rules editors install) checks it\nagainst this map's builtins and names, and asks Studio where a name is\nused. Each save there comes back here; Compile working copy writes what\nit changed into the map.",
+        );
+    }
+    ui.same_line();
+    if ui.button("Open in Zed##scripts-zed") {
+        actions.push(Action::Script(ScriptAction::OpenInEditor(Some("zed"))));
+    }
+    if ui.is_item_hovered() {
+        ui.tooltip_text("As Open in VS Code, in Zed.");
+    }
+    let Some(w) = app.scripts.external.as_ref().filter(|w| w.map == l.map) else {
+        return;
+    };
+    ui.text_disabled(format!("{} {}", icon::FILE, w.path.display()));
+    let color = if w.changes.is_empty() { theme::DIM } else { theme::WARN };
+    ui.text_colored(color, w.summary());
+    if w.stale {
+        ui.text_colored(
+            theme::WARN,
+            "The map's scripts changed since the working copy was written; Studio left your edits in it.",
+        );
+    }
+    let disabled = ui.begin_disabled_with_cond(w.changes.changed.is_empty() && w.changes.added.is_empty());
+    if ui.button("Compile working copy##scripts-compile-working") {
+        actions.push(Action::Script(ScriptAction::CompileWorking));
+    }
+    disabled.end();
+    if ui.is_item_hovered() {
+        ui.tooltip_text(
+            "Compile the definitions the file changed or added into the map's\nscripts. Ones it removed stay: the compiler adds and replaces.",
+        );
+    }
 }
 
 fn builtins(ui: &Ui, l: &Loaded, st: &mut ScriptsUi) {
@@ -235,7 +489,13 @@ fn doc_row(ui: &Ui, app: &App, l: Option<&Loaded>, dialogs: bool, actions: &mut 
 
 /// The Inspector: the selected definition's source, names as links, and
 /// the definitions that use it.
-pub fn source(ui: &Ui, app: &App, fonts: &Fonts, actions: &mut Vec<Action>) {
+pub fn source(
+    ui: &Ui,
+    app: &App,
+    st: &mut ScriptsUi,
+    fonts: &Fonts,
+    actions: &mut Vec<Action>,
+) {
     let l = match app.scripts_loaded() {
         Ok(l) => l,
         Err(why) => {
@@ -256,7 +516,11 @@ pub fn source(ui: &Ui, app: &App, fonts: &Fonts, actions: &mut Vec<Action>) {
     ui.text_disabled(
         "Decompiled from the map: comments, layout and the file it came from are not kept.",
     );
+    edit_row(ui, app, st, item, &e.source.source, actions);
     ui.separator();
+    if st.edit.as_ref().is_some_and(|x| x.item == item) {
+        return;
+    }
     let text = &e.source.source;
     let scenario = app.session.scenario();
     let mut links = e.links.iter().enumerate().peekable();
@@ -324,6 +588,117 @@ pub fn source(ui: &Ui, app: &App, fonts: &Fonts, actions: &mut Vec<Action>) {
         let label = format!("{user_name}  ×{n}##script-use-{user:?}");
         if ui.selectable(label) {
             actions.push(Action::Script(ScriptAction::Select(user)));
+        }
+    }
+}
+
+/// **Edit**, the text box with **Compile** and **Check**, the undo and
+/// redo of compiles, and how the last compile ended.
+fn edit_row(
+    ui: &Ui,
+    app: &App,
+    st: &mut ScriptsUi,
+    item: Item,
+    source: &str,
+    actions: &mut Vec<Action>,
+) {
+    let compiles = app.scripts.compiles;
+    if let Some(x) = &st.edit
+        && x.sent.is_some_and(|seen| compiles > seen)
+        && matches!(&app.scripts.compile, Some(Outcome::Done(r)) if r.applied)
+    {
+        st.edit = None;
+    }
+    let editing = st.edit.as_ref().is_some_and(|x| x.item == item);
+    if !editing {
+        if ui.button("Edit##script-edit") {
+            st.edit = Some(Edit {
+                item,
+                text: source.to_owned(),
+                sent: None,
+            });
+        }
+        if ui.is_item_hovered() {
+            ui.tooltip_text(
+                "Edit this definition's source here. Compile writes it into the\nmap's scripts: only its nodes change.",
+            );
+        }
+    } else if let Some(x) = &mut st.edit {
+        ui.input_text_multiline("##script-edit-text", &mut x.text, [-1.0, 180.0])
+            .flags(InputTextMultilineFlags::ALLOW_TAB_INPUT)
+            .build();
+        if ui.button("Compile##script-compile") {
+            x.sent = Some(compiles);
+            actions.push(Action::Script(ScriptAction::Compile {
+                source: x.text.clone(),
+                apply: true,
+            }));
+        }
+        if ui.is_item_hovered() {
+            ui.tooltip_text(
+                "Write the compiled source into the map as one undo step. A new\nstring, script or global, or more nodes than free slots, makes a table\ngrow, which needs Edit > Allow growing full blocks.",
+            );
+        }
+        ui.same_line();
+        if ui.button("Check##script-check") {
+            actions.push(Action::Script(ScriptAction::Compile {
+                source: x.text.clone(),
+                apply: false,
+            }));
+        }
+        ui.same_line();
+        if ui.button("Revert##script-revert") {
+            x.text = source.to_owned();
+        }
+        ui.same_line();
+        if ui.button("Close##script-edit-close") {
+            st.edit = None;
+        }
+    }
+    // The compiles are the map document's steps while the Scripts surface
+    // shows it (docs/editor/studio-flow.md, "Shared patterns"): Undo and
+    // Redo run on that document, as Cmd+Z does.
+    let (undo, redo) = app.doc_can(Doc::Map);
+    if undo || redo {
+        ui.same_line();
+        let off = ui.begin_disabled_with_cond(!undo);
+        if ui.button("Undo compile##script-undo") {
+            actions.push(Action::UndoDoc(Doc::Map));
+        }
+        off.end();
+        ui.same_line();
+        let off = ui.begin_disabled_with_cond(!redo);
+        if ui.button("Redo compile##script-redo") {
+            actions.push(Action::RedoDoc(Doc::Map));
+        }
+        off.end();
+    }
+    match &app.scripts.compile {
+        None => {}
+        Some(Outcome::Done(r)) => {
+            let names: Vec<&str> = r.definitions.iter().map(|(n, _)| n.as_str()).collect();
+            ui.text_colored(
+                theme::DIM,
+                format!(
+                    "{} {}: {} nodes ({} reused, {} added), {} new string bytes, {} free nodes{}",
+                    if r.applied { "Compiled" } else { "Checked" },
+                    names.join(", "),
+                    r.nodes,
+                    r.reused,
+                    r.grown,
+                    r.new_strings,
+                    r.free_nodes,
+                    if r.grows { "; a table grows" } else { "" },
+                ),
+            );
+        }
+        Some(Outcome::Failed(Refusal::Problems(messages))) => {
+            for m in messages {
+                ui.text_colored(theme::ERROR, format!("{} {m}", icon::ALERT));
+            }
+        }
+        Some(Outcome::Failed(other)) => {
+            ui.text_colored(theme::ERROR, format!("{} {}", icon::ALERT, other.line()));
         }
     }
 }

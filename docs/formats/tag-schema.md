@@ -468,7 +468,7 @@ scenario reaches.
 ## Load test
 
 ```sh
-cargo h2 map testbuild disc/halo2.iso --out ~/h2-testmaps --map lockout --relocate-all
+cargo h2-tools map testbuild disc/halo2.iso --out ~/h2-testmaps --map lockout --relocate-all
 H2_MAP_DIR=~/h2-testmaps/relocated cargo h2 play disc/halo2.iso --level lockout
 ```
 

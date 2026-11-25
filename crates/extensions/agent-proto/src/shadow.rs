@@ -4,7 +4,7 @@
 //! `session.methods` lists them there.
 //!
 //! Ports are named by their switch (`sim.native_unit_pose`,
-//! `sim.native_havok_solver`), by group (`sim.native`, `sim.physics`) or
+//! `sim.native_unit_aim`), by group (`sim.native`, `sim.physics`) or
 //! as `all`. A port is checked only when it is installed: its `impl.`
 //! switch is on in this run.
 

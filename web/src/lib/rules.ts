@@ -103,6 +103,52 @@ export interface CheckResult {
   options: ScriptOption[];
   /** The carrier, when the server's check names it. */
   carrier: Carrier | null;
+  /** Who scores the game: the script, or with `scoring carrier` the
+   *  carrier's engine. Null when the server's check does not say. */
+  scoring: Scoring | null;
+  /** The script's `about` text; empty when it has none. */
+  about: string;
+  /** The script's `settings` block in words. */
+  settings: ScriptSetting[];
+  /** The Quick Options marks, in the script's order. */
+  quick: QuickMark[];
+}
+
+export type Scoring = "script" | "carrier";
+/** One row of a script's `settings` block: its name, our label for it and
+ *  the value as text ("15", "Magnum", "On", "5 minutes"). */
+export interface ScriptSetting { name: string; label: string; value: string }
+/** A Quick Options mark: a record setting or one of the script's options. */
+export interface QuickMark { kind: "setting" | "option"; name: string; label: string }
+
+/** The settings block of a check, read defensively. */
+export function parseSettings(v: unknown): ScriptSetting[] {
+  const out: ScriptSetting[] = [];
+  for (const s of arr(v).map(obj)) {
+    const name = str(s.name);
+    if (name) out.push({ name, label: str(s.label) || name, value: str(s.value) });
+  }
+  return out;
+}
+
+/** The Quick Options marks of a check, read defensively. */
+export function parseQuick(v: unknown): QuickMark[] {
+  const out: QuickMark[] = [];
+  for (const q of arr(v).map(obj)) {
+    const name = str(q.name);
+    if (name && (q.kind === "setting" || q.kind === "option")) out.push({ kind: q.kind, name, label: str(q.label) || name });
+  }
+  return out;
+}
+
+/** The quick marks with the value each shows: a setting's text from the
+ *  block, or the option's own name's label alone (an option's value is
+ *  picked when the variant is made). */
+export function quickRows(c: Pick<CheckResult, "settings" | "quick">): Array<{ label: string; value: string | null }> {
+  return c.quick.map((q) => ({
+    label: q.label,
+    value: q.kind === "setting" ? c.settings.find((s) => s.name === q.name)?.value ?? null : null,
+  }));
 }
 
 /** The carriers, by their `carrier` keyword, with the retail engine index
@@ -205,6 +251,10 @@ export function parseCheck(body: unknown): CheckResult {
     report: parseReport(b.report),
     options: parseOptions(b.options ?? obj(b.report).options),
     carrier: parseCarrier(b.carrier ?? obj(b.report).carrier),
+    scoring: b.scoring === "script" || b.scoring === "carrier" ? b.scoring : null,
+    about: str(b.about),
+    settings: parseSettings(b.settings),
+    quick: parseQuick(b.quick),
   };
 }
 
@@ -787,6 +837,9 @@ export interface TraceTick {
   warnings: string[];
   globals: TraceVar[];
   players: TracePlayer[];
+  /** The script's HUD as the first seated player sees it, when it shows
+   *  anything; an older run's answer carries none. */
+  hud?: HudLine[];
   error: string | null;
 }
 export interface Trace {
@@ -804,6 +857,21 @@ export interface Trace {
   worst_tick_ops?: number;
   scores: Array<{ slot: number; score: number }>;
 }
+/** One row of the script's HUD after a tick, as the match's first seated
+ *  player sees it (`rules::show::view`): the workbench's HUD strip. */
+export interface HudLine {
+  name: string;
+  /** The kit element it is at ("koth.hill"), when it has one. */
+  slot: string | null;
+  /** "text", "banner", "meter" or "waypoint". */
+  kind: string;
+  shown: boolean;
+  value: number;
+  text: string | null;
+  /** What a waypoint marks: the object's handle. */
+  at: number | null;
+}
+
 /** A run whose script did not build, or whose map the script's labels
  *  refuse (`map`: each problem's text; nothing ran). */
 export interface RunFailed { ok: false; errors: Problem[]; map?: string[] }
@@ -825,6 +893,15 @@ export function parseTrace(body: unknown): Trace | RunFailed {
       warnings: strs(t.warnings),
       globals: vars(t.globals),
       players: arr(t.players).map(obj).map((p) => ({ slot: num(p.slot), team: num(p.team), alive: p.alive === true, score: num(p.score), lives: num(p.lives), vars: vars(p.vars) })),
+      hud: arr(t.hud).map(obj).map((h) => ({
+        name: str(h.name),
+        slot: h.slot === undefined || h.slot === null ? null : str(h.slot),
+        kind: str(h.kind),
+        shown: h.shown === true,
+        value: num(h.value),
+        text: h.text === undefined || h.text === null ? null : str(h.text),
+        at: h.at === undefined || h.at === null ? null : num(h.at),
+      })),
       error: optStr(t.error),
     })),
     last_tick: num(b.last_tick),
@@ -884,6 +961,16 @@ export function traceLines(t: Trace): string[] {
   else out.push(`ran to tick ${t.last_tick}`);
   if (t.cut) out.push(t.cut);
   return out;
+}
+
+/** The HUD strip of a run: the last tick whose HUD showed a row, with
+ *  the rows. Null when the script's HUD showed nothing in the trace. */
+export function hudStrip(t: Trace): { tick: number; rows: HudLine[] } | null {
+  for (const k of [...t.ticks].reverse()) {
+    const rows = k.hud ?? [];
+    if (rows.length) return { tick: k.tick, rows };
+  }
+  return null;
 }
 
 // ---------- results ----------
@@ -1298,6 +1385,20 @@ export async function fetchScripts(api: string, author: string, fetchFn: typeof 
 
 export async function fetchScript(api: string, hash: string, fetchFn: typeof fetch = fetch): Promise<Script | null> {
   return parseScript(await answer(await fetchFn(`${api}/rules/${encodeURIComponent(hash)}`, { headers: { accept: "application/json" } })));
+}
+
+/** The script view (the check's answer) of the script with this hash: a
+ *  saved one, else a built-in; null when the server has neither. A
+ *  variant's page reads who scores and the Quick Options marks from it. */
+export async function fetchScriptView(api: string, hash: string, fetchFn: typeof fetch = fetch): Promise<CheckResult | null> {
+  let source: string | null = null;
+  try {
+    source = (await fetchScript(api, hash, fetchFn))?.source ?? null;
+  } catch (e) {
+    if (!(e instanceof ApiError && e.status === 404)) throw e;
+  }
+  if (source === null) source = (await fetchBuiltins(api, fetchFn)).find((b) => b.hash === hash)?.source ?? null;
+  return source === null ? null : checkRules(api, source, fetchFn);
 }
 
 /** Saves a script that verifies; whether this saved it (false: the hash

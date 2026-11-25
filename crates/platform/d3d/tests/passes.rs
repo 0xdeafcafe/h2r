@@ -8,7 +8,7 @@
 use crate::common::*;
 use d3d::abi::Regs;
 use d3d::device::{
-    BACK_BUFFER_DATA, COPY_SWAP_FLAG, DEPTH_BUFFER_DATA, DISPLAY_BUFFER_DATA, Rect,
+    BACK_BUFFER_DATA, COPY_SWAP_FLAG, DEPTH_BUFFER_DATA, DISPLAY_BUFFER_DATA, FRAME_COPY_SLOTS, Rect,
     THIRD_BUFFER_DATA, scissor_region,
 };
 use d3d::layout::device_field as f;
@@ -16,7 +16,8 @@ use d3d::{
     Device, Event, GfxBackend, GuestLayout, GuestMemory, PixelRect, Recorded, RecordingBackend,
     SparseMemory, UploadPolicy,
 };
-use gfx::GfxContext;
+use d3d::resource::SurfaceHeader;
+use gfx::{D3DFormat, GfxContext};
 use gfx::surface::HostPixelOrder;
 use gfx::vertex::fvf;
 
@@ -303,15 +304,61 @@ fn textures_over_the_frame_buffers_sample_a_back_buffer_copy_or_skip() {
     assert_eq!(d.stats().depth_alias_uploads, 2);
 }
 
+/// The surfaces copied for frame-buffer samples, in order: a copy that
+/// made a texture or refilled one.
 fn snapshots(d: &Device<RecordingBackend>) -> Vec<u32> {
     d.backend
         .calls
         .iter()
         .filter_map(|c| match c {
-            Recorded::Snapshot { surface, .. } => Some(*surface),
+            Recorded::Snapshot { surface, .. } | Recorded::SnapshotInto { surface, .. } => {
+                Some(*surface)
+            }
             _ => None,
         })
         .collect()
+}
+
+/// Frame-buffer copies that made a texture.
+fn copy_textures_made(d: &Device<RecordingBackend>) -> usize {
+    d.backend
+        .calls
+        .iter()
+        .filter(|c| matches!(c, Recorded::Snapshot { .. }))
+        .count()
+}
+
+/// The surface the copy the last draw bound at stage 0 was last filled
+/// from.
+fn last_draw_copy_source(d: &Device<RecordingBackend>) -> Option<u32> {
+    let id = last_stage0(d)?;
+    d.backend.calls.iter().rev().find_map(|c| match c {
+        Recorded::Snapshot { surface, id: i, .. } | Recorded::SnapshotInto { surface, id: i, .. }
+            if *i == id =>
+        {
+            Some(*surface)
+        }
+        _ => None,
+    })
+}
+
+/// For each draw, whether the copy it binds at stage 0 was made or
+/// refilled after the draw before it: the draw reads the frame as of a
+/// copy of its own, not one a later write made stale.
+fn fresh_copies(d: &Device<RecordingBackend>) -> Vec<bool> {
+    let mut fresh = Vec::new();
+    let mut filled = Vec::new();
+    for c in &d.backend.calls {
+        match c {
+            Recorded::Snapshot { id, .. } | Recorded::SnapshotInto { id, .. } => filled.push(*id),
+            Recorded::Draw { textures, .. } => {
+                fresh.push(textures[0].is_some_and(|t| filled.contains(&t)));
+                filled.clear();
+            }
+            _ => {}
+        }
+    }
+    fresh
 }
 
 fn header_words(m: &SparseMemory, field: u32) -> (u32, u32) {
@@ -320,6 +367,269 @@ fn header_words(m: &SparseMemory, field: u32) -> (u32, u32) {
         m.read_u32(header + 4).unwrap(),
         m.read_u32(header + 8).unwrap(),
     )
+}
+
+#[test]
+fn a_frame_copy_in_a_fitted_ui_scope_keeps_the_whole_frame() {
+    // At a wide output a dialog blurs the menu under it by copying the
+    // 640x480 frame between targets inside the menu's widget fit. The copy
+    // must cover the frame; a widget keeps the fit.
+    let (mut d, mut m) = create_with(RecordingBackend::new(), UploadPolicy::Always, |p| {
+        (p.width, p.height) = (640, 480);
+    });
+    set_states(&mut d, &mut m);
+    quad_vb(&mut m, 112.0, 64.0, 208.0, 160.0, 0xFFFF_FFFF);
+    bind_quad(&mut d, &mut m);
+    let fit = d3d::backend::UiFit::about((2560, 1080), [320., 240.]);
+    assert!(fit.is_some());
+    d.set_ui_fit(&mut m, fit).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    assert_eq!(d.backend.draws().last().unwrap().ui_fit, fit);
+
+    let back = data_of(&m, f::BACK_BUFFER);
+    frame_texture(&mut m, back, 0x12, 640, 480);
+    d.set_texture(&mut m, 0, FRAME_TEX).unwrap();
+    quad_vb(&mut m, 0.0, 0.0, 640.0, 480.0, 0xFFFF_FFFF);
+    bind_quad(&mut d, &mut m);
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    let copy = (*d.backend.draws().last().unwrap()).clone();
+    assert_eq!(copy.texture_info[0].map(|i| (i.width, i.height)), Some((640, 480)));
+    assert_eq!(copy.ui_fit, None, "a frame copy covers the frame");
+
+    // Unbound again: a widget keeps the fit.
+    d.set_texture(&mut m, 0, 0).unwrap();
+    quad_vb(&mut m, 112.0, 64.0, 208.0, 160.0, 0xFFFF_FFFF);
+    bind_quad(&mut d, &mut m);
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    assert_eq!(d.backend.draws().last().unwrap().ui_fit, fit);
+}
+
+/// Full-screen fills, tints, fades and colour passes push a quad whose
+/// positions reach both edges of the frame along the axis the UI fit
+/// shrinks. At any display shape the fit places widgets, and such a quad
+/// spans the display — the screen effects' hand-pushed strips have no
+/// submission site `render_aspect` could read, so the device reads the
+/// draw's own vertices (docs/graphics/high-resolution.md).
+#[test]
+fn full_frame_quads_span_the_display_in_a_fitted_ui_scope() {
+    let (mut d, mut m) = create_with(RecordingBackend::new(), UploadPolicy::Always, |p| {
+        (p.width, p.height) = (640, 480);
+    });
+    set_states(&mut d, &mut m);
+    for output in [
+        (1920, 1080), // 16:9
+        (2560, 1080), // 64:27
+        (3440, 1440), // 21:9
+        (5120, 2880), // a 5K raster
+        (5120, 2648), // the same window's drawable
+        (1200, 1600), // taller than 4:3: the fit shrinks y
+    ] {
+        let fit = d3d::backend::UiFit::about(output, [320., 240.]);
+        assert!(fit.is_some(), "a fit at {output:?}");
+        d.set_ui_fit(&mut m, fit).unwrap();
+        let shrinks_x = fit.unwrap().transform[0] < 1.0;
+
+        // A widget inside the view keeps the fit.
+        quad_vb(&mut m, 112.0, 64.0, 208.0, 160.0, 0xFFFF_FFFF);
+        bind_quad(&mut d, &mut m);
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+        assert_eq!(d.backend.draws().last().unwrap().ui_fit, fit, "a widget at {output:?}");
+
+        // A quad over the whole window is a full-frame pass.
+        quad_vb(&mut m, 0.0, 0.0, 640.0, 480.0, 0xFFFF_FFFF);
+        bind_quad(&mut d, &mut m);
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+        assert_eq!(
+            d.backend.draws().last().unwrap().ui_fit,
+            None,
+            "the whole frame spans the display at {output:?}"
+        );
+
+        // A cutscene's letterbox band: full width, part height. It spans
+        // the display along the fitted axis only.
+        quad_vb(&mut m, 0.0, 60.0, 640.0, 420.0, 0xFFFF_FFFF);
+        bind_quad(&mut d, &mut m);
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+        assert_eq!(
+            d.backend.draws().last().unwrap().ui_fit,
+            if shrinks_x { None } else { fit },
+            "the cinema window at {output:?}"
+        );
+    }
+}
+
+/// A projected-effect fit places flares, light volumes and CPU-projected
+/// sprites with the display lens, and keeps frame copies and frame-edge
+/// strips (a sprite can be bigger than the view). A quad laid exactly over
+/// the frame that samples an image the device rendered is a screen pass
+/// (the title screen's depth of field, blur and tint run inside such a
+/// scope) and spans the display. Sprites keep the fit, a depth billboard
+/// with its screen input included (docs/graphics/high-resolution.md).
+#[test]
+fn a_screen_pass_in_a_projected_effect_scope_spans_the_display() {
+    let (mut d, mut m) = create_with(RecordingBackend::new(), UploadPolicy::Always, |p| {
+        (p.width, p.height) = (640, 480);
+    });
+    set_states(&mut d, &mut m);
+    let back = data_of(&m, f::BACK_BUFFER);
+    frame_texture(&mut m, back, 0x12, 640, 480);
+    texture(&mut m, 0x80);
+    for output in [(1920, 1080), (2496, 1662)] {
+        let factor = (640.0 / 480.0) / (output.0 as f32 / output.1 as f32);
+        let sprite = d3d::backend::UiFit::projected_sprite(factor, 320.0 * (1.0 - factor));
+        let draw = |d: &mut Device<RecordingBackend>,
+                    m: &mut SparseMemory,
+                    fit: d3d::backend::UiFit,
+                    art: u32,
+                    [x0, y0, x1, y1]: [f32; 4]| {
+            d.set_ui_fit(m, Some(fit)).unwrap();
+            d.set_texture(m, 0, art).unwrap();
+            quad_vb(m, x0, y0, x1, y1, 0xFFFF_FFFF);
+            bind_quad(d, m);
+            d.draw_vertices(m, TRIANGLESTRIP, 0, 4).unwrap();
+            d.backend.draws().last().unwrap().ui_fit
+        };
+        let frame = [0.0, 0.0, 640.0, 480.0];
+        assert_eq!(
+            draw(&mut d, &mut m, sprite, FRAME_TEX, frame),
+            None,
+            "a screen pass over the frame at {output:?}"
+        );
+        assert_eq!(
+            draw(&mut d, &mut m, sprite, FRAME_TEX, [400.0, 100.0, 500.0, 200.0]),
+            Some(sprite),
+            "a sprite sampling the frame at {output:?}"
+        );
+        assert_eq!(
+            draw(&mut d, &mut m, sprite, FRAME_TEX, [-200.0, -100.0, 900.0, 600.0]),
+            Some(sprite),
+            "a sprite bigger than the view at {output:?}"
+        );
+        assert_eq!(
+            draw(&mut d, &mut m, sprite, TEX_HEADER, frame),
+            Some(sprite),
+            "a quad over the frame with uploaded art at {output:?}"
+        );
+        let billboard = sprite.with_screen_input(1);
+        assert_eq!(
+            draw(&mut d, &mut m, billboard, FRAME_TEX, frame),
+            Some(billboard),
+            "a depth billboard at {output:?}"
+        );
+    }
+}
+
+const SCREEN_VAF: u32 = MISC + 0x7800;
+const SCREEN_PROGRAM: u32 = MISC + 0x7A00;
+const SCREEN_CONSTANTS: u32 = MISC + 0x7C00;
+
+/// Selects a vertex program for immediate draws the way Halo does
+/// (SelectVertexShaderDirect, every attribute format NONE): `placed` puts
+/// `v0` on the screen through constant rows (`oPos = v0 * c[96] + c[97]`,
+/// unit coordinates scaled to the 640x480 window); otherwise `oPos = v0`,
+/// the window coordinates as given.
+fn screen_program(d: &mut Device<RecordingBackend>, m: &mut SparseMemory, placed: bool) {
+    use shaders::vsh::encode::{Inst, Operand, program};
+    use shaders::vsh::{MacOp, OutReg};
+    let position = if placed {
+        vec![
+            Inst::mac(MacOp::Mul, Some(Operand::v(0)), Some(Operand::c(96)), None)
+                .to_temp(0, 0xF),
+            Inst::mac(MacOp::Add, Some(Operand::r(0)), None, Some(Operand::c(97)))
+                .to_out(false, OutReg::Pos, 0xF),
+        ]
+    } else {
+        vec![Inst::mac(MacOp::Mov, Some(Operand::v(0)), None, None).to_out(false, OutReg::Pos, 0xF)]
+    };
+    let mut insts = position;
+    insts.push(Inst::mac(MacOp::Mov, Some(Operand::v(3)), None, None).to_out(false, OutReg::D0, 0xF));
+    m.write(SCREEN_PROGRAM, &program(&insts)).unwrap();
+    d.load_vertex_shader_program(m, SCREEN_PROGRAM, 0).unwrap();
+    for (i, v) in [640.0f32, 480.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0].iter().enumerate() {
+        m.write_u32(SCREEN_CONSTANTS + 4 * i as u32, v.to_bits()).unwrap();
+    }
+    d.set_vertex_shader_constant(m, 96, SCREEN_CONSTANTS, 2, true).unwrap();
+    for reg in 0..16u32 {
+        m.write_u32(SCREEN_VAF + 16 * reg + 8, 0x02).unwrap(); // D3DVSDT_NONE
+    }
+    d.select_vertex_shader_direct(m, SCREEN_VAF, 0).unwrap();
+}
+
+/// The title screen's backdrop passes are immediate-mode quads drawn by
+/// vertex programs: inline Begin/End words in the push buffer and
+/// `D3DDevice_End` strips, their positions passed through or placed from
+/// constant rows. Where they land in the window, not their raw `v0`,
+/// decides the fit: a quad over the whole window spans the display at any
+/// shape, and a widget keeps the fit (docs/graphics/high-resolution.md).
+#[test]
+fn immediate_program_quads_over_the_frame_span_the_display_in_a_fitted_ui_scope() {
+    let (mut d, mut m) = create_with(RecordingBackend::new(), UploadPolicy::Always, |p| {
+        (p.width, p.height) = (640, 480);
+    });
+    set_states(&mut d, &mut m);
+    for output in [(1920, 1080), (2496, 1662)] {
+        let fit = d3d::backend::UiFit::about(output, [320., 240.]);
+        assert!(fit.is_some_and(|f| f.transform[0] < 1.0), "a pillarbox fit at {output:?}");
+        d.set_ui_fit(&mut m, fit).unwrap();
+        let last = |d: &Device<RecordingBackend>| {
+            let draws = d.backend.draws();
+            let draw = draws.last().unwrap();
+            (draw.entry, draw.ui_fit)
+        };
+
+        // Window coordinates passed through (`no constant rows`).
+        screen_program(&mut d, &mut m, false);
+        inline_quad(&mut m, 0.0, 0.0, 640.0, 480.0, [255; 4]);
+        d.kick_off(&mut m).unwrap();
+        assert_eq!(
+            last(&d),
+            ("inline Begin/End", None),
+            "a pass-through inline quad over the frame at {output:?}"
+        );
+        inline_quad(&mut m, 112.0, 64.0, 208.0, 160.0, [255; 4]);
+        d.kick_off(&mut m).unwrap();
+        assert_eq!(
+            last(&d),
+            ("inline Begin/End", fit),
+            "a pass-through inline widget at {output:?}"
+        );
+
+        // Unit coordinates the program places through c[96..=97].
+        screen_program(&mut d, &mut m, true);
+        inline_quad(&mut m, 0.0, 0.0, 1.0, 1.0, [255; 4]);
+        d.kick_off(&mut m).unwrap();
+        assert_eq!(
+            last(&d),
+            ("inline Begin/End", None),
+            "a constant-placed inline quad over the frame at {output:?}"
+        );
+        inline_quad(&mut m, 112.0 / 640.0, 64.0 / 480.0, 208.0 / 640.0, 160.0 / 480.0, [255; 4]);
+        d.kick_off(&mut m).unwrap();
+        assert_eq!(
+            last(&d),
+            ("inline Begin/End", fit),
+            "a constant-placed inline widget at {output:?}"
+        );
+
+        // The same through D3DDevice_Begin/SetVertexData/End.
+        for (corners, want, what) in [
+            ([0.0, 0.0, 1.0, 1.0], None, "over the frame"),
+            ([0.175, 0.125, 0.325, 0.375], fit, "a widget"),
+        ] {
+            let [x0, y0, x1, y1] = corners;
+            d.begin(&mut m, QUADLIST).unwrap();
+            for (x, y) in [(x0, y0), (x1, y0), (x1, y1), (x0, y1)] {
+                d.set_vertex_data(&mut m, 3, [1.0; 4]).unwrap();
+                d.set_vertex_data(&mut m, -1, [x, y, 0.5, 1.0]).unwrap();
+            }
+            d.end(&mut m).unwrap();
+            assert_eq!(
+                last(&d),
+                ("D3DDevice_End", want),
+                "a constant-placed D3DDevice_End quad, {what}, at {output:?}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -425,6 +735,226 @@ fn copy_swap_device_keeps_its_back_buffer_and_shows_a_copy() {
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     assert_eq!(snapshots(&d), [back, front]);
     assert!(d.take_events().is_empty());
+}
+
+/// A free-standing colour target the size of the frame: draws into it
+/// sample the back buffer without writing it.
+const OFFSCREEN: u32 = MISC + 0x7300;
+
+fn offscreen(m: &mut SparseMemory) {
+    SurfaceHeader::linear(D3DFormat::LinA8R8G8B8, W, H, W * 4, 0x0040_0000)
+        .write(m, OFFSCREEN)
+        .unwrap();
+}
+
+/// The texture stage 0 of the last draw bound.
+fn last_stage0(d: &Device<RecordingBackend>) -> Option<u32> {
+    d.backend
+        .calls
+        .iter()
+        .rev()
+        .find_map(|c| match c {
+            Recorded::Draw { textures, .. } => Some(textures[0]),
+            _ => None,
+        })
+        .flatten()
+}
+
+/// `n` draws with the bindings as they are: the distinct copies they bound
+/// at stage 0, in order.
+fn sampling_draws(d: &mut Device<RecordingBackend>, m: &mut SparseMemory, n: usize) -> Vec<u32> {
+    let mut seen = Vec::new();
+    for _ in 0..n {
+        d.draw_vertices(m, TRIANGLESTRIP, 0, 4).unwrap();
+        let t = last_stage0(d).expect("the draw samples the copy");
+        if seen.last() != Some(&t) {
+            seen.push(t);
+        }
+    }
+    seen
+}
+
+#[test]
+fn frame_sampling_draws_with_no_write_between_share_one_copy() {
+    let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Always);
+    quad(&mut d, &mut m, 0xFFFF_FFFF);
+    offscreen(&mut m);
+    let back = m.read_u32(L.device + f::BACK_BUFFER).unwrap();
+    { let data = data_of(&m, f::BACK_BUFFER); frame_texture(&mut m, data, 0x12, W, H); }
+    d.set_texture(&mut m, 0, FRAME_TEX).unwrap();
+    d.set_render_target(&mut m, OFFSCREEN, 0).unwrap();
+    // Five draws read the back buffer and write only the other target.
+    let ids = sampling_draws(&mut d, &mut m, 5);
+    assert_eq!(snapshots(&d), [d.back_buffer().unwrap()]);
+    assert_eq!(ids.len(), 1, "every draw binds the one copy");
+    let snap = d.backend.calls.iter().find_map(|c| match c {
+        Recorded::Snapshot { id, .. } => Some(*id),
+        _ => None,
+    });
+    assert_eq!(ids.first().copied(), snap);
+    assert_eq!(d.stats().frame_snapshots, 1);
+    assert_eq!(d.stats().frame_snapshot_reuses, 4);
+    assert_eq!(d.frame_snapshots_held(), 1);
+    // An X8 view of the same buffer forces alpha: a copy of its own.
+    { let data = data_of(&m, f::BACK_BUFFER); frame_texture(&mut m, data, 0x1E, W, H); }
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    assert_eq!(d.stats().frame_snapshots, 2);
+    assert_eq!(d.frame_snapshots_held(), 2);
+    assert!(d.take_events().is_empty());
+    // A present ends what the copies hold and keeps their textures: the
+    // next frame's sample refills one.
+    d.set_render_target(&mut m, back, 0).unwrap();
+    d.swap(&mut m, 0).unwrap();
+    assert_eq!(d.frame_snapshots_held(), 2);
+    { let data = data_of(&m, f::BACK_BUFFER); frame_texture(&mut m, data, 0x12, W, H); }
+    d.set_render_target(&mut m, OFFSCREEN, 0).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    assert_eq!(d.stats().frame_snapshots, 3);
+    assert_eq!(d.stats().frame_copy_textures, 2);
+    assert_eq!(fresh_copies(&d).last(), Some(&true));
+    assert!(matches!(
+        d.backend.calls.iter().rev().find(|c| matches!(c, Recorded::Snapshot { .. } | Recorded::SnapshotInto { .. })),
+        Some(Recorded::SnapshotInto { .. })
+    ));
+    assert!(d.take_events().is_empty());
+}
+
+#[test]
+fn a_write_between_frame_samples_makes_a_new_copy() {
+    let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Always);
+    quad(&mut d, &mut m, 0xFFFF_FFFF);
+    offscreen(&mut m);
+    let back = m.read_u32(L.device + f::BACK_BUFFER).unwrap();
+    { let data = data_of(&m, f::BACK_BUFFER); frame_texture(&mut m, data, 0x12, W, H); }
+    d.set_texture(&mut m, 0, FRAME_TEX).unwrap();
+    d.set_render_target(&mut m, OFFSCREEN, 0).unwrap();
+    let first = sampling_draws(&mut d, &mut m, 2);
+    assert_eq!(first.len(), 1);
+
+    // A clear of the back buffer: the next sample sees it.
+    d.set_render_target(&mut m, back, 0).unwrap();
+    d.clear(&mut m, 0, 0, 0xF0, 0xFF00_00FF, 1.0, 0).unwrap();
+    d.set_render_target(&mut m, OFFSCREEN, 0).unwrap();
+    let second = sampling_draws(&mut d, &mut m, 2);
+    assert_eq!(second.len(), 1);
+    // The clear emptied the copy: the next sample refills its texture.
+    assert_eq!(second, first);
+
+    // A draw into the back buffer that samples it reads the copy from
+    // before it, and its own write makes the next copy fresh: each of
+    // these draws reads what the one before drew.
+    d.set_render_target(&mut m, back, 0).unwrap();
+    let feedback = sampling_draws(&mut d, &mut m, 3);
+    assert_eq!(feedback, first, "one texture, refilled");
+    assert_eq!(
+        fresh_copies(&d),
+        [true, false, true, false, false, true, true],
+        "a copy after each write, and none where nothing wrote the frame"
+    );
+    assert_eq!(d.stats().frame_snapshots, 4);
+    assert_eq!(d.stats().frame_copy_textures, 1);
+    assert!(d.take_events().is_empty());
+    assert_eq!(
+        snapshots(&d),
+        [d.back_buffer().unwrap(); 4],
+        "every copy is of the back buffer"
+    );
+}
+
+#[test]
+fn a_long_session_of_frame_sampling_draws_holds_a_bounded_number_of_copies() {
+    let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Always);
+    quad(&mut d, &mut m, 0xFFFF_FFFF);
+    offscreen(&mut m);
+    let back = m.read_u32(L.device + f::BACK_BUFFER).unwrap();
+    d.set_texture(&mut m, 0, FRAME_TEX).unwrap();
+    let mut held = 0;
+    for frame in 0..1000 {
+        // The back buffer's Data turns over at each flip.
+        { let data = data_of(&m, f::BACK_BUFFER); frame_texture(&mut m, data, 0x12, W, H); }
+        // 25 draws that only read the frame (a distortion target), then
+        // 25 that read and write it (refraction drawn into the frame).
+        d.set_render_target(&mut m, OFFSCREEN, 0).unwrap();
+        for _ in 0..25 {
+            d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+            held = held.max(d.frame_snapshots_held());
+        }
+        d.set_render_target(&mut m, back, 0).unwrap();
+        for _ in 0..25 {
+            d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+            held = held.max(d.frame_snapshots_held());
+        }
+        d.swap(&mut m, 0).unwrap();
+        assert!(d.frame_snapshots_held() <= FRAME_COPY_SLOTS, "frame {frame}");
+        assert!(d.take_events().is_empty(), "frame {frame}");
+        d.backend.calls.clear();
+    }
+    assert_eq!(held, 1);
+    let s = d.stats();
+    // Per frame: one copy for the 25 reads, which the first write's read
+    // shares; each later write's read needs its own.
+    assert_eq!(s.frame_snapshots, 1000 * 25);
+    assert_eq!(s.frame_snapshot_reuses, 1000 * 25);
+    // Every one of them refilled the one texture the first made.
+    assert_eq!(s.frame_copy_textures, 1);
+}
+
+/// Particles blended into the frame they sample (refused native, drawn
+/// through D3D): every draw writes the frame, so every draw needs a copy
+/// of its own. The copies refill the pool's textures, so the textures
+/// made stay at the pool's size however many draws there are, and each
+/// draw still reads the frame as the draw before left it.
+#[test]
+fn five_hundred_frame_writing_samples_hold_at_most_the_pool() {
+    let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Always);
+    quad(&mut d, &mut m, 0xFFFF_FFFF);
+    let back = m.read_u32(L.device + f::BACK_BUFFER).unwrap();
+    { let data = data_of(&m, f::BACK_BUFFER); frame_texture(&mut m, data, 0x12, W, H); }
+    d.set_texture(&mut m, 0, FRAME_TEX).unwrap();
+    d.set_render_target(&mut m, back, 0).unwrap();
+    let ids = sampling_draws(&mut d, &mut m, 500);
+    let made = copy_textures_made(&d);
+    assert!(made <= FRAME_COPY_SLOTS, "{made} copy textures for 500 draws");
+    assert!(d.frame_snapshots_held() <= FRAME_COPY_SLOTS);
+    let mut bound = ids.clone();
+    bound.sort_unstable();
+    bound.dedup();
+    assert!(bound.len() <= FRAME_COPY_SLOTS, "{} textures bound", bound.len());
+    assert_eq!(fresh_copies(&d), vec![true; 500], "each draw reads a copy taken after the one before wrote");
+    assert_eq!(snapshots(&d), vec![d.back_buffer().unwrap(); 500]);
+    let s = d.stats();
+    assert_eq!(s.frame_snapshots, 500);
+    assert_eq!(s.frame_copy_textures, made as u64);
+    assert!(d.take_events().is_empty());
+}
+
+/// The current and the previous frame both sampled, between writes, for
+/// many frames: two contents in use at once, still within the pool, and
+/// each draw's copy is of the buffer it names.
+#[test]
+fn current_and_previous_frame_samples_share_the_pool_across_presents() {
+    let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Always);
+    quad(&mut d, &mut m, 0xFFFF_FFFF);
+    parity_textures(&mut m);
+    for frame in 0..200u32 {
+        for _ in 0..5 {
+            for previous in [false, true] {
+                d.set_texture(&mut m, 0, parity(frame, previous)).unwrap();
+                d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+                let want = if previous { d.front_buffer() } else { d.back_buffer() };
+                assert_eq!(last_draw_copy_source(&d), want, "frame {frame}, previous {previous}");
+            }
+        }
+        assert!(d.frame_snapshots_held() <= FRAME_COPY_SLOTS, "frame {frame}");
+        d.swap(&mut m, 0).unwrap();
+        assert!(d.take_events().is_empty(), "frame {frame}");
+    }
+    assert!(copy_textures_made(&d) <= FRAME_COPY_SLOTS);
+    let s = d.stats();
+    // Per frame: each current sample follows a write (5 copies); the
+    // previous frame is copied once and shared by the other 4.
+    assert_eq!(s.frame_snapshots, 200 * 6);
+    assert_eq!(s.frame_snapshot_reuses, 200 * 4);
 }
 
 #[test]

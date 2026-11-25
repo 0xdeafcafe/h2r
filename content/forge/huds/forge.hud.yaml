@@ -1,0 +1,84 @@
+# The monitor's HUD (docs/game/forge-firefight-ui.md, "The monitor HUD"):
+# the prompt line, the notification list and the training box, a pill in the
+# grenade row with the objects left and the battery strip under it with the
+# share used, the tool's name top right, and a second pill for the edits
+# Rebuild map has still to apply. Elements in draw order.
+name: forge
+elements:
+  - id: forge.prompt
+    kind: prompt
+    longest: "Press \uE100 to start a link from Assault Rifle Ammo Crate"
+  - id: forge.notice
+    kind: message
+    longest: "Item spawners are full (100) in this map."
+  - id: forge.teach
+    kind: training
+    longest: "Hold \uE107 and use the right stick\nto turn what you are holding."
+  # The budget pill is two pieces of the frag pill's art and an LCD count in
+  # the grenade row's first place, the strip under it.
+  - id: forge.budget.pill
+    kind: icon
+    art: {type: grenade-pill, part: body}
+    at: {anchor: top-left, full: [0, 0], half: [0, 0], quarter: [0, 0], origin: next-grenade-pill}
+  - id: forge.budget.pill.end
+    kind: icon
+    art: {type: grenade-pill, part: end}
+    at: {anchor: top-left, full: [20, 0], half: [20, 0], quarter: [20, 0], origin: next-grenade-pill}
+  - id: forge.budget.count
+    kind: text
+    font: lcd
+    justify: centre
+    longest: "9999"
+    at: {anchor: top-left, full: [0, 0], half: [0, 0], quarter: [0, 0], origin: next-grenade-count}
+    over: forge.budget.pill
+  - id: forge.budget.meter
+    kind: meter
+    art: {type: strip-meter}
+    at: {anchor: top-left, full: [0, 21], half: [0, 21], quarter: [0, 21], origin: next-grenade-pill}
+  - id: forge.tool
+    kind: text
+    font: hud
+    justify: end
+    longest: "VOLUMES"
+    at: {anchor: top-right, full: [-6, 6]}
+  # The rebuild pill is the place after the budget pill: 30 right, the kit
+  # pill's width (20 and 7) and a gap of 3.
+  - id: forge.rebuild.pill
+    kind: icon
+    art: {type: grenade-pill, part: body}
+    at: {anchor: top-left, full: [30, 0], half: [30, 0], quarter: [30, 0], origin: next-grenade-pill}
+  - id: forge.rebuild.pill.end
+    kind: icon
+    art: {type: grenade-pill, part: end}
+    at: {anchor: top-left, full: [50, 0], half: [50, 0], quarter: [50, 0], origin: next-grenade-pill}
+  - id: forge.rebuild.count
+    kind: text
+    font: lcd
+    justify: centre
+    longest: "99"
+    at: {anchor: top-left, full: [30, 0], half: [30, 0], quarter: [30, 0], origin: next-grenade-count}
+    over: forge.rebuild.pill
+  # The held or aimed thing, the link's first end, and the nearest two other
+  # monitors are the game's navpoints (arrow, marker and the distance in
+  # metres); the gizmo is three world segments, one for each axis.
+  - id: forge.nav.target
+    kind: navpoint
+    longest: "999"
+  - id: forge.nav.from
+    kind: navpoint
+    longest: "999"
+  - id: forge.nav.monitor.1
+    kind: navpoint
+    longest: "999"
+  - id: forge.nav.monitor.2
+    kind: navpoint
+    longest: "999"
+  - id: forge.gizmo.x
+    kind: world-mark
+    shape: segment
+  - id: forge.gizmo.y
+    kind: world-mark
+    shape: segment
+  - id: forge.gizmo.z
+    kind: world-mark
+    shape: segment

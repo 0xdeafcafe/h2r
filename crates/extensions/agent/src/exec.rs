@@ -31,6 +31,7 @@ use serde_json::Value;
 use crate::reader::{GameStatus, Reader, TagNames};
 
 mod mirror;
+mod picture;
 mod lobby_tape;
 pub use lobby_tape::LobbyTape;
 mod snap;
@@ -256,6 +257,14 @@ pub struct Agent {
 #[derive(Default)]
 struct Shared {
     collision_traces: Arc<crate::CollisionTraces>,
+    /// Level collision live commits replaced, for the debug views.
+    collision_edits: Arc<crate::debug_views::CollisionEdits>,
+    /// The BSP activation `edit.collision.commit` runs, when the game has
+    /// one ([`Agent::set_collision_activation`]).
+    collision_activation: crate::hot::collision::Activator,
+    /// Told of every structure collision commit
+    /// ([`Agent::on_structure_collision`]).
+    structure_listeners: crate::hot::collision::StructureListeners,
     editor_calls: OnceLock<crate::sim::calls::Shared>,
     state: Mutex<State>,
     wake: Condvar,
@@ -265,6 +274,8 @@ struct Shared {
 #[derive(Default)]
 struct State {
     live: crate::live::Mirror,
+    /// `render.picture`'s open pictures (`exec/picture.rs`).
+    pictures: Arc<crate::render::picture::Pictures>,
     /// The `camera` layer's source ([`Agent::set_camera_source`]), and why
     /// this run has none ([`Agent::set_camera_unavailable`]).
     cameras: Option<crate::live::CameraSource>,
@@ -451,6 +462,7 @@ impl Agent {
             c.closing = true;
         }
         s.live.close(conn);
+        s.pictures.close_conn(conn);
         input::lock(&s.input).release_menu(conn);
         if s.controller == Some(conn) {
             s.controller = None;
@@ -624,6 +636,41 @@ impl Agent {
         self.shared.collision_traces.clone()
     }
 
+    pub(crate) fn collision_edits(&self) -> Arc<crate::debug_views::CollisionEdits> {
+        self.shared.collision_edits.clone()
+    }
+
+    pub(crate) fn collision_activator(&self) -> crate::hot::collision::Activator {
+        self.shared.collision_activation.clone()
+    }
+
+    /// The BSP activation a collision commit with `activate` or `mode:
+    /// rebuild` runs (docs/editor/realtime-edits.md, "Collision"). Without
+    /// one those commits are refused.
+    pub fn set_collision_activation(&self, activation: Box<dyn crate::hot::collision::Activation>) {
+        *self
+            .shared
+            .collision_activation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(activation);
+    }
+
+    /// Calls `f` after every `edit.collision.commit` that replaces a
+    /// structure's level collision (after its activation, when it asks for
+    /// one), from the commit's tick, with the guest held: `f` must not
+    /// wait on the game.
+    pub fn on_structure_collision(&self, f: impl Fn(&crate::hot::collision::StructureCommit) + Send + Sync + 'static) {
+        self.shared
+            .structure_listeners
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(Arc::new(f));
+    }
+
+    pub(crate) fn structure_listeners(&self) -> crate::hot::collision::StructureListeners {
+        self.shared.structure_listeners.clone()
+    }
+
     pub(crate) fn set_debug_views(&self, views: crate::debug_views::Observer) {
         self.lock().debug_views = Some(views);
     }
@@ -720,6 +767,8 @@ impl Agent {
         }
         s.recorders.shutdown();
         s.live.close_all();
+        // Ring files go with the game.
+        s.pictures.retain_conns(|_| false);
         s.fail_snapshots();
         s.shutdown = true;
         s.paused = None;
@@ -841,6 +890,7 @@ impl Agent {
         s.ticks += 1;
         s.last_tick = Some(Instant::now());
         s.refresh(reader, Where::Tick);
+        s.pictures.stamp(s.game.tick, s.presents);
         s.track_load();
         let stepping = s.stepping.is_some();
         match s.stepping {
@@ -909,6 +959,7 @@ impl Agent {
             return;
         }
         s.presents = presents;
+        s.pictures.stamp(s.game.tick, presents);
         s.lobby_boundary(reader);
         // A pause asked for while the game isn't ticking (loading) takes
         // hold at the next tick; its limit still runs out here.
@@ -1181,6 +1232,9 @@ impl State {
         }
         self.conns
             .retain(|id, c| !c.dead && (!c.closing || busy.contains(id)));
+        // A picture never outlives its connection.
+        let conns = &self.conns;
+        self.pictures.retain_conns(|c| conns.contains_key(&c));
         // A capture nobody will read is stopped.
         if self
             .capture
@@ -1375,6 +1429,9 @@ impl State {
         if agent_proto::live::METHODS.contains(&m) {
             return self.live_method(conn, req, reader);
         }
+        if agent_proto::picture::METHODS.contains(&m) {
+            return self.picture_method(conn, req);
+        }
         if method::CONTROL.contains(&m) && self.controller != Some(conn) {
             return Some(Err(RpcError::new(
                 code::NOT_CONTROLLER,
@@ -1501,6 +1558,7 @@ impl State {
                             .map(|m| (*m).to_owned()),
                     )
                     .chain(agent_proto::live::METHODS.iter().map(|m| (*m).to_owned()))
+                    .chain(agent_proto::picture::METHODS.iter().map(|m| (*m).to_owned()))
                     .chain(self.host.keys().cloned())
                     .chain(self.connection_reads.keys().cloned())
                     .chain(self.game_methods.keys().cloned())
@@ -1627,10 +1685,7 @@ impl State {
             method::LOAD_TIMELINE => params::<LoadParams>(p)
                 .and_then(|lp| self.loads(lp))
                 .map(to_value),
-            method::FEATURES => Ok(to_value(Features {
-                at: self.at(),
-                plan: self.plan.clone(),
-            })),
+            method::FEATURES => Ok(to_value(Features::new(self.at(), self.plan.clone()))),
             method::PROFILE_CAPTURE => {
                 let cp = match params::<CaptureParams>(p) {
                     Ok(cp) => cp,

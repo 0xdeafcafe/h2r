@@ -56,7 +56,7 @@ fn the_real_tokens_of_a_builtin_colour_its_keywords() {
 
 #[test]
 fn problems_list_errors_first_at_the_place_they_point_to() {
-    let text = "rules \"x\" 1\ncarrier slayer\n\non kill(victim, killer) {\n    score(victim, nope)\n}\n";
+    let text = "rules \"x\" 1\ntype slayer\n\non kill(victim, killer) {\n    score(victim, nope)\n}\n";
     let rows = problems(text, &ide::diagnostics(text));
     let first = rows.first().expect("a problem");
     assert_eq!(first.severity, "error");
@@ -204,8 +204,8 @@ fn snippets_expand_to_their_defaults_with_the_first_selected() {
     assert_eq!((e.text.as_str(), e.cursor, e.select), ("a b", 2, None));
 
     // Choices give their first; nesting and escapes read through.
-    assert_eq!(expand_snippet("list ${1|tweakers|}", "").text, "list tweakers");
-    assert_eq!(expand_snippet("carrier ${1|slayer,ctf|}", "").text, "carrier slayer");
+    assert_eq!(expand_snippet("points \"${1:Points}\"", "").text, "points \"Points\"");
+    assert_eq!(expand_snippet("type ${1|slayer,ctf|}", "").text, "type slayer");
     let e = expand_snippet("${1:outer ${2:inner}}", "");
     assert_eq!((e.text.as_str(), e.select), ("outer inner", Some((0, 11))));
     assert_eq!(expand_snippet(r"\$x", "").text, "$x");
@@ -239,7 +239,7 @@ fn completions_rank_by_the_word_then_the_languages_order() {
 
 #[test]
 fn typing_opens_narrows_takes_and_closes_the_completions() {
-    let text = "rules \"T\" 1\ncarrier slayer\non kill(victim, killer) {\n    sco\n}\n";
+    let text = "rules \"T\" 1\ntype slayer\non kill(victim, killer) {\n    sco\n}\n";
     let at = text.find("sco").unwrap() + 3;
     let mut ed = RulesEditor { text: text.into(), cursor: at, ..Default::default() };
     ed.after_typing(Some('o'));
@@ -304,7 +304,7 @@ fn text_edits_apply_together_and_carry_the_cursor() {
 
 #[test]
 fn quick_fixes_at_the_cursor_and_on_the_problem_rows() {
-    let src = "rules \"T\" 1\ncarrier slayer\nlabel barrier: objects\non tick { for each barier b { } }\n";
+    let src = "rules \"T\" 1\ntype slayer\nlabel barrier: objects\non tick { for each barier b { } }\n";
     let mut ed = RulesEditor { text: src.into(), cursor: src.find("barier").unwrap() + 2, ..Default::default() };
     ed.open_fixes().unwrap();
     let menu = ed.menu.clone().unwrap();
@@ -375,7 +375,7 @@ fn hovers_read_as_code_and_prose_and_find_their_problems() {
             HoverBlock { code: false, text: "Adds points to p.".into() },
         ]
     );
-    let text = "rules \"x\" 1\ncarrier slayer\n\non kill(victim, killer) {\n    score(victim, nope)\n}\n";
+    let text = "rules \"x\" 1\ntype slayer\n\non kill(victim, killer) {\n    score(victim, nope)\n}\n";
     let diags = ide::diagnostics(text);
     let d = diags.iter().find(|d| d.message.contains("nope")).unwrap();
     assert!(diagnostics_at(&diags, d.range.start).contains(&d));
@@ -384,7 +384,7 @@ fn hovers_read_as_code_and_prose_and_find_their_problems() {
 
 #[test]
 fn format_hands_the_widget_the_laid_out_text() {
-    let src = "rules \"T\" 1\ncarrier slayer\non kill(victim, killer) {\nif killer != none {\nscore(killer, 1)\n}\n}\n";
+    let src = "rules \"T\" 1\ntype slayer\non kill(victim, killer) {\nif killer != none {\nscore(killer, 1)\n}\n}\n";
     let want = ide::format(src).unwrap();
     let mut ed = RulesEditor { text: src.into(), ..Default::default() };
     ed.format().unwrap();
@@ -417,7 +417,7 @@ fn open_in_editor_names_the_file_after_the_script() {
 }
 
 #[test]
-fn open_in_editor_tries_script_edit_then_the_users_editors() {
+fn open_in_editor_tries_an_editor_with_the_extension_then_the_users_editors() {
     let file = Path::new("/s/x.rules");
     let bin = |name: &str| Some(PathBuf::from(format!("/bin/{name}")));
     let env = |k: &str| match k {
@@ -425,32 +425,59 @@ fn open_in_editor_tries_script_edit_then_the_users_editors() {
         "EDITOR" => Some("vim".to_string()),
         _ => None,
     };
-    let got = editor_launches(file, env, bin, None, |_| false, true);
-    let commands: Vec<String> = got.iter().map(Launch::describe).collect();
+    let describe = |got: Vec<Launch>| -> Vec<String> { got.iter().map(Launch::describe).collect() };
+
+    // Zed has the extension: it comes first, and once.
+    let got = editor_launches(file, env, bin, |e| e == "zed", true);
     assert_eq!(
-        commands,
+        describe(got),
         [
-            "/bin/h2 script-edit /s/x.rules",
+            "/bin/zed /s/x.rules",
             "subl -w /s/x.rules",
             // vim needs a terminal: passed over.
             "/bin/code /s/x.rules",
-            "/bin/zed /s/x.rules",
             "open -t /s/x.rules",
         ]
     );
 
-    // No h2 on PATH: Cargo's; nothing else found and not macOS: only it.
-    let home = Path::new("/home/me");
-    let cargo_h2 = |p: &Path| p == Path::new("/home/me/.cargo/bin/h2");
-    let got = editor_launches(file, |_| None, |_| None, Some(home), cargo_h2, false);
-    let commands: Vec<String> = got.iter().map(Launch::describe).collect();
-    assert_eq!(commands, ["/home/me/.cargo/bin/h2 script-edit /s/x.rules"]);
+    // Neither has it: $VISUAL first, then VS Code and Zed as they are.
+    let got = editor_launches(file, env, bin, |_| false, true);
+    assert_eq!(
+        describe(got),
+        ["subl -w /s/x.rules", "/bin/code /s/x.rules", "/bin/zed /s/x.rules", "open -t /s/x.rules"]
+    );
 
-    // No h2 at all; $VISUAL and $EDITOR the same: tried once.
+    // An extension in an editor that is not found counts for nothing;
+    // nothing found and not macOS: nothing to try.
+    let got = editor_launches(file, |_| None, |_| None, |_| true, false);
+    assert!(got.is_empty());
+
+    // $VISUAL and $EDITOR the same, and VS Code with the extension: tried
+    // once each.
     let env = |k: &str| matches!(k, "VISUAL" | "EDITOR").then(|| "code --wait".to_string());
-    let got = editor_launches(file, env, |_| None, Some(home), |_| false, true);
-    let commands: Vec<String> = got.iter().map(Launch::describe).collect();
-    assert_eq!(commands, ["code --wait /s/x.rules", "open -t /s/x.rules"]);
+    let got = editor_launches(file, env, bin, |e| e == "code", true);
+    assert_eq!(
+        describe(got),
+        ["/bin/code /s/x.rules", "code --wait /s/x.rules", "/bin/zed /s/x.rules", "open -t /s/x.rules"]
+    );
+
+    // Where each editor keeps the extension.
+    let home = Path::new("/home/me");
+    let vscode = |dir: &Path| -> Vec<String> {
+        if dir == Path::new("/home/me/.vscode/extensions") {
+            vec!["rust-lang.rust-analyzer-0.3.1".into(), "h2recomp.h2-rules-0.1.0".into()]
+        } else {
+            Vec::new()
+        }
+    };
+    assert!(extension_installed("code", home, true, |_| false, vscode));
+    assert!(!extension_installed("code", home, true, |_| false, |_| Vec::new()));
+    let zed_mac = |p: &Path| p == Path::new("/home/me/Library/Application Support/Zed/extensions/installed/h2-rules");
+    assert!(extension_installed("zed", home, true, zed_mac, |_| Vec::new()));
+    assert!(!extension_installed("zed", home, false, zed_mac, |_| Vec::new()));
+    let zed_linux = |p: &Path| p == Path::new("/home/me/.local/share/zed/extensions/installed/h2-rules");
+    assert!(extension_installed("zed", home, false, zed_linux, |_| Vec::new()));
+    assert!(!extension_installed("subl", home, true, |_| true, vscode));
 
     assert!(is_terminal_editor("/usr/bin/nvim") && is_terminal_editor("nano"));
     assert!(!is_terminal_editor("code") && !is_terminal_editor("/usr/local/bin/zed"));
@@ -465,7 +492,7 @@ fn a_started_editor_counts_as_open_once_it_succeeds_or_keeps_running() {
     assert_eq!(launch_step(None, early), LaunchStep::Wait);
     assert_eq!(launch_step(None, LAUNCH_GRACE), LaunchStep::Done, "a GUI editor still running");
     assert_eq!(launch_step(Some(true), early), LaunchStep::Done, "code and open exit at once");
-    assert_eq!(launch_step(Some(false), early), LaunchStep::Next, "an h2 without script-edit");
+    assert_eq!(launch_step(Some(false), early), LaunchStep::Next, "an editor that failed to start");
 }
 
 #[test]
@@ -550,4 +577,224 @@ fn open_in_editor_writes_the_script_and_watches_its_file() {
     ed.open_starter("slayer").unwrap();
     assert!(ed.watch.is_none());
     std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn the_script_section_lists_marks() {
+    // A script that marks settings: one line per mark, in its order, and
+    // one per setting the block names.
+    let mut ed = RulesEditor::default();
+    ed.open_starter("SWAT").unwrap();
+    let check = ed.refresh().check.clone().unwrap();
+    assert!(check.ok, "{:?}", check.errors);
+    let rep = check.report.as_ref().unwrap();
+    let section = script_section(&check).unwrap();
+    assert_eq!(section.settings.len(), rep.settings.len());
+    assert!(!section.settings.is_empty());
+    assert_eq!(section.quick.len(), rep.quick.len());
+    assert_eq!(section.quick.len(), 5, "swat's quick line has five names");
+    for (i, (line, q)) in section.quick.iter().zip(&rep.quick).enumerate() {
+        assert!(line.starts_with(&format!("{}. {}", i + 1, q.label)), "{line}");
+        assert!(line.ends_with("(setting)"), "{line}");
+    }
+    for (line, s) in section.settings.iter().zip(&rep.settings) {
+        assert_eq!(line, &format!("{}: {}", s.label, s.text));
+    }
+
+    // Options show as such, in the script's order among the settings.
+    ed.open_starter("Superbounce (built in)").unwrap();
+    let check = ed.refresh().check.clone().unwrap();
+    let section = script_section(&check).unwrap();
+    let kinds: Vec<&str> = section
+        .quick
+        .iter()
+        .map(|l| if l.ends_with("(option)") { "option" } else { "setting" })
+        .collect();
+    assert_eq!(kinds, ["setting", "setting", "setting", "option", "option"]);
+
+    // A script that names none has no section.
+    ed.apply(Edit::to(BLANK.to_string(), 0));
+    let check = ed.refresh().check.clone().unwrap();
+    assert_eq!(script_section(&check), None);
+}
+
+#[test]
+fn a_script_saves_as_its_own_game_variant() {
+    let src = rules::builtin::SWAT;
+    let (name, text) = game_variant_file(src).unwrap();
+    assert_eq!(name, "SWAT.h2variant");
+    // The file is what `from_script` makes, source attached.
+    let ir = rules::compile(src).unwrap();
+    let want = variants::portable::from_script(&ir, Some(src), &[]).unwrap();
+    let got = variants::portable::read(&text).unwrap();
+    assert_eq!(got.id(), want.id());
+    assert_eq!(got.name, "SWAT");
+
+    let ed = RulesEditor { text: src.to_string(), ..Default::default() };
+    let dir = std::env::temp_dir().join(format!("h2-script-variant-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = ed.save_game_variant(&dir.join(&name)).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    // A script that does not build writes nothing.
+    let bad = RulesEditor { text: "rules".into(), ..Default::default() };
+    assert!(bad.save_game_variant(&dir.join("x.h2variant")).is_err());
+    assert!(!dir.exists());
+}
+
+#[test]
+fn a_script_is_found_by_its_hash_prefix() {
+    let ed = RulesEditor::default();
+    let ir = rules::compile(rules::builtin::SWAT).unwrap();
+    let prefix: [u8; 8] = ir.id().0[..8].try_into().unwrap();
+    assert_eq!(find_script(prefix, &ed).unwrap().id(), ir.id());
+    assert!(find_script([9; 8], &ed).is_none());
+    assert_eq!(hex_prefix([0xab, 1, 2, 3, 4, 5, 6, 7]), "ab01020304050607");
+
+    // The script open in the editor is found too, once analysed.
+    let mut ed = RulesEditor::default();
+    ed.refresh();
+    let own = rules::compile(BLANK).unwrap();
+    let prefix: [u8; 8] = own.id().0[..8].try_into().unwrap();
+    assert_eq!(find_script(prefix, &ed).unwrap().id(), own.id());
+}
+
+#[test]
+fn vs_code_and_zed_open_the_file_at_the_line() {
+    let file = Path::new("/s/x.rules");
+    let bin = |name: &str| Some(PathBuf::from(format!("/bin/{name}")));
+    let env = |k: &str| (k == "VISUAL").then(|| "subl -w".to_string());
+    let describe = |got: Vec<Launch>| -> Vec<String> { got.iter().map(Launch::describe).collect() };
+
+    // Any editor: VS Code (with the extension) and Zed open at the line;
+    // the others get the file alone.
+    let got = editor_launches_at(file, Some((12, 3)), None, env, bin, |e| e == "code", true);
+    assert_eq!(
+        describe(got),
+        [
+            "/bin/code -g /s/x.rules:12:3",
+            "subl -w /s/x.rules",
+            "/bin/zed /s/x.rules:12:3",
+            "open -t /s/x.rules",
+        ]
+    );
+
+    // One editor asked for: that one alone, or nothing when it is not
+    // found (and the reason names it).
+    let got = editor_launches_at(file, Some((1, 1)), Some("zed"), env, bin, |_| false, true);
+    assert_eq!(describe(got), ["/bin/zed /s/x.rules:1:1"]);
+    let got = editor_launches_at(file, None, Some("code"), env, |_| None, |_| true, true);
+    assert!(got.is_empty());
+    assert!(no_editor(Some("code")).contains("VS Code"));
+    assert!(no_editor(Some("zed")).contains("Zed"));
+    assert!(no_editor(None).contains("$VISUAL"));
+
+    assert_eq!(goto_args("code", "/f", None), ["/f"]);
+    assert_eq!(goto_args("vim", "/f", Some((2, 1))), ["/f"]);
+    assert_eq!(editor_param("vscode"), Ok(Some("code")));
+    assert_eq!(editor_param("zed"), Ok(Some("zed")));
+    assert_eq!(editor_param("auto"), Ok(None));
+    assert!(editor_param("emacs").is_err());
+
+    // The command inside the app, for an editor whose command is not on
+    // PATH: macOS only.
+    let home = Path::new("/home/me");
+    assert_eq!(
+        bundled_programs("zed", Some(home), true),
+        [
+            PathBuf::from("/Applications/Zed.app/Contents/MacOS/cli"),
+            PathBuf::from("/home/me/Applications/Zed.app/Contents/MacOS/cli"),
+        ]
+    );
+    assert_eq!(
+        bundled_programs("code", None, true),
+        [PathBuf::from("/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code")]
+    );
+    assert!(bundled_programs("code", Some(home), false).is_empty());
+    assert!(bundled_programs("vim", Some(home), true).is_empty());
+}
+
+#[test]
+fn edits_here_reach_the_watched_file_once_typing_pauses() {
+    let root = std::env::temp_dir().join(format!("h2-editor-rules-sync-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut ed = RulesEditor::default();
+    ed.open_starter("slayer").unwrap();
+    let path = ed.prepare_external(&root).unwrap();
+    let t0 = Instant::now();
+    assert!(!ed.sync_out(t0), "nothing unsaved");
+
+    let mine = rules::builtin::SLAYER.replace("Slayer", "Mine");
+    ed.set_text(mine.clone());
+    assert!(!ed.sync_out(t0), "the pause starts");
+    assert!(!ed.sync_out(t0 + SYNC_AFTER / 2));
+    assert!(ed.sync_out(t0 + SYNC_AFTER));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), mine);
+    assert!(!ed.dirty());
+    assert_eq!(
+        ed.poll_disk(t0 + SYNC_AFTER * 5),
+        DiskPoll::Nothing,
+        "its own write is no outside change"
+    );
+
+    // Typing again starts the pause again.
+    let t1 = t0 + SYNC_AFTER * 10;
+    ed.set_text(mine.replace("Mine", "Again"));
+    assert!(!ed.sync_out(t1));
+    ed.set_text(mine.replace("Mine", "Third"));
+    assert!(!ed.sync_out(t1 + SYNC_AFTER), "the text changed since");
+
+    // Off, or while the file and the buffer disagree: nothing is written.
+    ed.sync_to_file = false;
+    assert!(!ed.sync_out(t1 + SYNC_AFTER * 3));
+    ed.sync_to_file = true;
+    ed.conflict = Some("theirs".into());
+    assert!(!ed.sync_out(t1 + SYNC_AFTER * 4));
+    assert!(!ed.sync_out(t1 + SYNC_AFTER * 6));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), mine);
+    ed.keep_mine();
+    assert!(!ed.sync_out(t1 + SYNC_AFTER * 7));
+    assert!(ed.sync_out(t1 + SYNC_AFTER * 8));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), mine.replace("Mine", "Third"));
+
+    // A script with no watched file is not written behind the user's back.
+    ed.open_starter("slayer").unwrap();
+    ed.set_text(mine.clone());
+    assert!(!ed.sync_out(t1 + SYNC_AFTER * 9));
+    assert!(!ed.sync_out(t1 + SYNC_AFTER * 20));
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn open_in_vs_code_opens_at_the_cursor_or_the_line_asked() {
+    let root = std::env::temp_dir().join(format!("h2-editor-rules-at-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut ed = RulesEditor::default();
+    ed.open_starter("slayer").unwrap();
+    // The cursor at the start of the third line.
+    let third = ed.text.match_indices('\n').nth(1).unwrap().0 + 1;
+    ed.cursor = third;
+    let (path, at, _) = ed.external_launches(&root, Some("code"), None).unwrap();
+    assert_eq!(at, (3, 1));
+    assert_eq!(ed.watch.as_ref().map(|w| w.path.clone()), Some(path.clone()));
+    let (_, at, _) = ed.external_launches(&root, Some("zed"), Some(0)).unwrap();
+    assert_eq!(at, (1, 1), "line 0 is the first");
+    let (_, at, _) = ed.external_launches(&root, None, Some(7)).unwrap();
+    assert_eq!(at, (7, 1));
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn a_scenario_runs_the_script_on_the_fake_game() {
+    let r = run_scenario(rules::builtin::SLAYER, r#"{"ticks":[{},{}]}"#, false).unwrap();
+    assert!(r.ok, "{}", r.text);
+    assert_eq!(r.ticks, 2);
+    assert!(r.text.starts_with("tick 0: "), "{}", r.text);
+    assert_eq!(r.outcome, "the round was still running");
+
+    let err = run_scenario("rules", "{}", false).unwrap_err();
+    assert!(err.starts_with("the script does not build"), "{err}");
+    let err = run_scenario(rules::builtin::SLAYER, r#"{"nope":1}"#, false).unwrap_err();
+    assert!(err.starts_with("scenario:"), "{err}");
 }

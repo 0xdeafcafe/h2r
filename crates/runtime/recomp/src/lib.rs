@@ -577,6 +577,12 @@ pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) 
         > = lib.get(b"h2x87bridge_install")?;
         let fns = shim::x87_helpers();
         install_x87(fns.as_ptr(), fns.len() as u32);
+        // A fast-tier module's own helpers (clif's bridge object).
+        type InstallHelpers = unsafe extern "C" fn(*const *const std::ffi::c_void, u32);
+        if let Ok(install_clif) = lib.get::<InstallHelpers>(b"h2clif_install_v1") {
+            let fns = shim::clif_helpers();
+            install_clif(fns.as_ptr(), fns.len() as u32);
+        }
         let module: libloading::Symbol<*const runtime::H2GenModule> = lib.get(b"h2gen_module")?;
         let m = &**module;
         if m.abi_version != runtime::cpu::ABI_VERSION {
@@ -699,7 +705,7 @@ mod tests {
             std::fs::remove_dir_all(&dir).unwrap();
         }
         let image = synthetic_xbe(&[0xc3]); // ret
-        for (choice, expected) in [(tier::Choice::Auto, tier::Tier::Fast), (tier::Choice::Clang, tier::Tier::Clang)] {
+        for (choice, expected) in [(tier::Choice::Bridge, tier::Tier::Fast), (tier::Choice::Clang, tier::Tier::Clang)] {
             // The desktop starts from the fast module, and uses the clang
             // module once it is ready. Build it here in the foreground.
             let plan = tier::prepare(&image, Path::new("synthetic.xbe"), &dir, choice, 1, false).unwrap();
@@ -814,7 +820,8 @@ mod tests {
         // What the composition root registers (boot::register_image_entries).
         register_retail_entries(
             guest_layout::points::render_aspect::instruction_entries()
-                .chain(guest_layout::points::scene_effects::instruction_entries()),
+                .chain(guest_layout::points::scene_effects::instruction_entries())
+                .chain(guest_layout::points::game_types::instruction_entries()),
         );
         for (source, expected_hit) in [(None, false), (Some(cache.as_path()), true)] {
             let (analysis, hit) = analyze_cached(&x, source).unwrap();

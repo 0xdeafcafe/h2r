@@ -8,7 +8,8 @@
 //!
 //! - **At load** ([`load`], on the world's worker, before the world's
 //!   draws are kept): each material's layer-16 passes
-//!   (`native_render::fog_gpu::layer_passes`) compiled with their own
+//!   (`native_render::fog_gpu::layer_passes_selected`, the planar gate's
+//!   implementation, [`LOADED_IMPLEMENTATION`]) compiled with their own
 //!   programs ([`FogProgram::compile`]), all or nothing, their stage
 //!   images decoded and their fog words kept; then the parts that can
 //!   draw: a material that compiled, with the rigid classification for
@@ -47,6 +48,13 @@ use frame_scene::{LateMaterial, LatePart};
 
 use crate::native_world_glue::{ReadMemory, Ready, StageDecoder, StageImages, State, current_ready, palettes_hold};
 
+/// The implementation of its layer-16 passes the load compiles: the one
+/// layer 16's build binds for a record with the planar gate open
+/// (`native_render::fog::layer_implementation`: 2). A pass with a single
+/// implementation draws it for every item; an item whose record binds
+/// another stays on the D3D path ([`FogView::draws`]).
+pub const LOADED_IMPLEMENTATION: u8 = 2;
+
 /// The fog of one loaded world, kept for the whole load: what compiled
 /// with its fog words, and the parts the native pass draws.
 pub struct FogView {
@@ -61,13 +69,20 @@ pub struct FogView {
     /// The skip's table: each drawn part with its material's shader by
     /// tag index.
     pub part_set: HashMap<(Owner, u8), u16>,
+    /// Each drawn material's shader (tag index) that has a pass with more
+    /// than one implementation: the implementation compiled for it. A
+    /// material whose passes all have one is not here and draws for any
+    /// item's implementation.
+    pub chosen: HashMap<u16, u8>,
 }
 
 impl FogView {
     /// Whether the pass draws `part` of `owner` with `shader` (the item's
-    /// `+8` low word): the skip's acceptance.
-    pub fn draws(&self, owner: Owner, part: u8, shader: u16) -> bool {
+    /// `+8` low word) for an item whose record binds `implementation`
+    /// (`FogItem::implementation`): the skip's acceptance.
+    pub fn draws(&self, owner: Owner, part: u8, shader: u16, implementation: Option<u8>) -> bool {
         self.part_set.get(&(owner, part)) == Some(&shader)
+            && self.chosen.get(&shader).is_none_or(|&loaded| implementation == Some(loaded))
     }
 }
 
@@ -86,6 +101,7 @@ pub fn load<R: std::io::Read + std::io::Seek>(
 ) -> FogView {
     let mut programs: HashMap<u16, Vec<FogProgram>> = HashMap::new();
     let mut words: HashMap<u16, FogWords> = HashMap::new();
+    let mut chosen: HashMap<u16, u8> = HashMap::new();
     let mut parts: Vec<((Owner, u8), (u32, u32, Option<LightmapKey>, u16))> = Vec::new();
     let materials: Vec<u16> = world.draws.iter().map(|d| d.material).collect::<BTreeSet<_>>().into_iter().collect();
     if !materials.is_empty() {
@@ -93,12 +109,45 @@ pub fn load<R: std::io::Read + std::io::Seek>(
             Ok(mut lib) => {
                 let mut refused: HashMap<String, usize> = HashMap::new();
                 let mut rigid_refused: HashMap<String, usize> = HashMap::new();
-                for &m in &materials {
-                    let Some(&shader) = shaders.get(usize::from(m)) else { continue };
-                    let compiled = lib
-                        .material(shader, None)
-                        .map_err(|e| format!("material: {e}"))
-                        .and_then(|mat| fog_gpu::layer_passes(&mat, native_render::fog::FOG_LAYER).map_err(|r| r.describe()))
+                // Every material resolved first: whether any pass of the
+                // layer sets a cull other than the layer's start decides
+                // whether a pass that leaves it unset can be drawn
+                // (`fog_gpu::layer_sets_other_cull`).
+                let resolved: Vec<(u16, TagId, Result<tags::material::Material, String>)> = materials
+                    .iter()
+                    .filter_map(|&m| {
+                        let &shader = shaders.get(usize::from(m))?;
+                        Some((m, shader, lib.material(shader, None).map_err(|e| format!("material: {e}"))))
+                    })
+                    .collect();
+                let rasterizer = map
+                    .tags()
+                    .iter()
+                    .find(|tag| tag.group.0 == *b"matg")
+                    .and_then(|tag| tag.location.as_ref())
+                    .and_then(|loc| {
+                        crate::native_lights_glue::matg_rasterizer_bitmap(
+                            lib.metadata(),
+                            loc.address,
+                            crate::native_lights_glue::RASTERIZER_DATUM_14,
+                        )
+                    });
+                let selection = fog_gpu::Selection {
+                    rasterizer,
+                    implementation: Some(usize::from(LOADED_IMPLEMENTATION)),
+                    layer_cull: !resolved
+                        .iter()
+                        .filter_map(|(_, _, mat)| mat.as_ref().ok())
+                        .any(|mat| fog_gpu::layer_sets_other_cull(mat, native_render::fog::FOG_LAYER)),
+                };
+                for (m, shader, mat) in resolved {
+                    if mat.as_ref().is_ok_and(|mat| fog_gpu::layer_has_choice(mat, native_render::fog::FOG_LAYER)) {
+                        chosen.insert(shader.0 as u16, LOADED_IMPLEMENTATION);
+                    }
+                    let compiled = mat
+                        .and_then(|mat| {
+                            fog_gpu::layer_passes_selected(&mat, native_render::fog::FOG_LAYER, selection).map_err(|r| r.describe())
+                        })
                         .and_then(|passes| {
                             passes
                                 .iter()
@@ -186,7 +235,7 @@ pub fn load<R: std::io::Read + std::io::Seek>(
         .iter()
         .filter_map(|&(k, (_, _, _, m))| Some((k, shaders.get(usize::from(m))?.0 as u16)))
         .collect();
-    FogView { programs, words, parts, part_set }
+    FogView { programs, words, parts, part_set, chosen }
 }
 
 /// Builds the fog resources on the BSP loader's device.
@@ -203,6 +252,14 @@ pub fn upload_fog(
         eprintln!("native-fog: {} materials' layer-16 passes uploaded, {} parts", set.len(), fog.parts.len());
     }
     set
+}
+
+/// Fog and water require stencil to be off. Its comparison and operations
+/// can be uninitialized while the enable word is zero.
+pub(crate) fn stencil_disabled(read: impl FnOnce(u32) -> Option<u32>) -> bool {
+    let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+    table.canonical_to_guest(gfx::state::RenderStateType::StencilEnable.index())
+        .and_then(read) == Some(0)
 }
 
 /// The device's fog words at the layer-16 call, by [`FOG_WORD_SLOTS`]
@@ -226,8 +283,29 @@ struct Glue<B: d3d::backend::Backend + Send + 'static> {
     state: State,
 }
 
+/// A display-only part has no entry in the retail layer sort. The hook
+/// supplies whole clusters only when there are no guest entries to order
+/// against. Multiple candidates also need a sort before they can be drawn.
+pub(super) fn display_late_part(
+    mem: &dyn GuestMemory, clusters: &[u16], parts: &HashMap<(Owner, u8), u16>,
+    layer: u8, eligible: impl Fn(u16, u16) -> bool,
+) -> Option<(Owner, u8)> {
+    let mut selected = None;
+    for (&(owner, part), &loaded) in parts {
+        let Owner::Cluster(cluster) = owner else { continue };
+        let Ok(id) = u16::try_from(cluster) else { continue };
+        if clusters.binary_search(&id).is_err() || !eligible(id, loaded) { continue; }
+        if render_bridge::native_world::display_late_shader(mem, id, part, layer) != Some(loaded) {
+            continue;
+        }
+        if selected.is_some() { return None; }
+        selected = Some((owner, part));
+    }
+    selected
+}
+
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
-    fn ask(&self, mem: &mut dyn GuestMemory) -> Option<native_render::skip::Cleared> {
+    fn ask(&self, mem: &mut dyn GuestMemory, display_clusters: &[u16]) -> Option<native_render::skip::Cleared> {
         use timeline::native::{Metric, Stage};
         let ready = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -241,9 +319,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             return None;
         }
         let read = ReadMemory(mem);
-        if !d.stencil_state(&read).is_some_and(|s| !s.enable)
-            || !palettes_hold(palettes, &|n| d.stage_palette(&read, n))
-        {
+        if !stencil_disabled(|slot| d.render_state(&read, slot)) {
+            render_bridge::native_layers::count(FOG_LATE_LAYER.into(), "refused_stencil_view", 1);
+            return None;
+        }
+        if !palettes_hold(palettes, &|n| d.stage_palette(&read, n)) {
+            render_bridge::native_layers::count(FOG_LATE_LAYER.into(), "refused_palette_view", 1);
             return None;
         }
         // With a render thread that records scene stages, everything here
@@ -257,24 +338,80 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // its fog cannot be established.
         let device_words = device_fog_words(&d, mem);
         let Some(materials) = resolve_materials(&fog.words, &device_words) else {
+            render_bridge::native_layers::count(FOG_LATE_LAYER.into(), "refused_fog_words_view", 1);
             if !FOG_UNREADABLE.swap(true, Ordering::Relaxed) {
                 eprintln!("native-fog: the device's fog state does not read; the D3D path draws the fog");
             }
             return None;
         };
+        let mut samples = fog_gpu::LayerSamples::new();
+        let inputs = fog_gpu::PlanarInputs::read(&read);
+        for (&material, passes) in &fog.programs {
+            if passes.iter().any(|p| p.planar.is_some()) {
+                let Some(inputs) = &inputs else {
+                    render_bridge::native_layers::count(FOG_LATE_LAYER.into(), "refused_planar_inputs_view", 1);
+                    return None;
+                };
+                samples.insert(material, passes.iter().map(|p| {
+                    p.planar.as_ref().map(|b| b.sample(&p.program.pixel, inputs))
+                }).collect());
+            }
+        }
+        let samples = Arc::new(samples);
+        // What the passes write: colour always (they blend over the
+        // scene), depth when any of their states writes it.
+        let writes_depth = fog
+            .programs
+            .values()
+            .any(|passes| passes.iter().any(|p| p.state.depth_write));
+        let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
+        let plan = |ranges| d3d::ExternalPlan { stage: Stage::Fog, view, ranges, slots: Vec::new() };
+        let run = u64::from(d.swap_count()).wrapping_add(1);
+        let pass = |selected, fogs, display_only| -> Box<dyn d3d::ExternalPass> {
+            Box::new(FogViewPass {
+                ready: Arc::clone(&ready),
+                selected,
+                samples: Arc::clone(&samples),
+                fogs,
+                display_only,
+                view: None,
+                w_clip: None,
+                writes_depth,
+                run,
+            })
+        };
+        if !display_clusters.is_empty() {
+            let planar = native_render::fog::planar_gate(&ReadMemory(mem))?;
+            let selected = display_late_part(mem, display_clusters, &fog.part_set, FOG_LATE_LAYER, |id, shader| {
+                let Some(record) = render_bridge::native_scene_lists::display_cluster_fog_flags(mem, id) else { return false };
+                native_render::fog::layer_implementation(record, planar)
+                    .is_some_and(|implementation| fog.chosen.get(&shader).is_none_or(|&loaded| loaded == implementation))
+            });
+            if let Some(selected) = selected {
+                let target = d.external_ready(&ReadMemory(mem), false).ok()?;
+                if d.projection_factor_for_target(target.surface_size) < 1.0 {
+                    ready.with_pipeline_target(&d, mem, |gpu, device, color, depth| {
+                        gpu.prewarm_fog(device, color, depth).then_some(())
+                    })?;
+                    let display = pass(vec![selected], late_fogs(&materials), true);
+                    let _ = d.draw_display_stage(&mut crate::native_lights_glue::DeviceMemory(mem), plan(1), display);
+                }
+            }
+        }
         // The skip over a preview: nothing touches the guest until the
         // reservation has recorded on every copy
         // (`native_render::skip::MaskPreview`).
         let read = ReadMemory(mem);
         let mut preview = native_render::skip::MaskPreview::new(&read)?;
-        let (selected, cleared) = native_render::fog::clear_fog(&mut preview, native_render::fog::FOG_LAYER as u32, &|item| {
-            let accepted = fog.draws(item.owner, item.part, item.shader);
+        let (selected, cleared, refused) = native_render::fog::clear_fog(&mut preview, native_render::fog::FOG_LAYER as u32, &|item| {
+            let accepted = fog.draws(item.owner, item.part, item.shader, item.implementation);
             if !accepted {
                 Stage::Fog.count(Metric::Examined, 1);
                 Stage::Fog.count(Metric::RefusedOwnership, 1);
             }
             accepted
         })?;
+        count_late_refusals(FOG_LATE_LAYER.into(), refused);
         let masks = preview.finish()?;
         if selected.is_empty() {
             return None;
@@ -289,28 +426,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let fogs = late_fogs(&late.materials);
         let selected = late_selected(&late.parts);
         let ranges = selected.len();
-        // What the passes write: colour always (they blend over the
-        // scene), depth when any of their states writes it.
-        let writes_depth = fog
-            .programs
-            .values()
-            .any(|passes| passes.iter().any(|p| p.state.depth_write));
-        let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
-        let plan = d3d::ExternalPlan { stage: Stage::Fog, view, ranges, slots: Vec::new() };
-        let run = u64::from(d.swap_count()).wrapping_add(1);
-        let pass = || -> Box<dyn d3d::ExternalPass> {
-            Box::new(FogViewPass {
-                ready: Arc::clone(&ready),
-                selected: selected.clone(),
-                fogs: fogs.clone(),
-                view: None,
-                w_clip: None,
-                writes_depth,
-                run,
-            })
-        };
         drop(planning);
-        if !commit_late(&mut d, mem, &self.state, &ready, scene, plan, &pass, &masks) {
+        if !commit_late(&mut d, mem, &self.state, &ready, scene, plan(ranges), &|| pass(selected.clone(), fogs.clone(), false), &masks) {
             return None;
         }
         render_bridge::scene_step::late_drawn(late.key, FOG_LATE_LAYER);
@@ -342,6 +459,20 @@ pub fn late_fogs(materials: &[LateMaterial]) -> HashMap<u16, (shaders::psh::fog:
 /// The scene's parts as the GPU world names them.
 pub fn late_selected(parts: &[LatePart]) -> Vec<(Owner, u8)> {
     parts.iter().map(|p| (p.owner, p.part)).collect()
+}
+
+pub(super) fn count_late_refusals(layer: u32, refused: native_render::fog::LateRefusals) {
+    for (cause, n) in [
+        ("refused_build", refused.build),
+        ("refused_handler", refused.handler),
+        ("refused_record", refused.record),
+        ("refused_object", refused.object),
+        ("refused_subparts", refused.subparts),
+        ("refused_material", refused.material),
+        ("refused_order", refused.order),
+    ] {
+        render_bridge::native_layers::count(layer, cause, n);
+    }
 }
 
 /// A late layer's pass reserved and committed (docs/graphics/framescene.md,
@@ -414,10 +545,12 @@ static FOG_UNREADABLE: AtomicBool = AtomicBool::new(false);
 
 /// One view's fog replacement.
 struct FogViewPass {
+    display_only: bool,
     ready: Arc<Ready>,
-    /// The parts the masks surrendered, in the layer's item order: what
-    /// the replacement must record on every copy.
+    /// Parts in layer order for a guest-list replacement, or the single
+    /// part admitted for the display copy.
     selected: Vec<(Owner, u8)>,
+    samples: Arc<fog_gpu::LayerSamples>,
     /// Each material's fog unit and colour, resolved at the ask.
     fogs: HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
     view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
@@ -431,6 +564,7 @@ struct FogViewPass {
 }
 
 impl d3d::ExternalPass for FogViewPass {
+    fn display_only(&self) -> bool { self.display_only }
     // The selection and constants belong to this view. Ready pins the BSP,
     // and each recording binds the target copy passed to it by the renderer.
     fn replays_scene(&self) -> bool { true }
@@ -488,7 +622,10 @@ impl d3d::ExternalPass for FogViewPass {
             z_scale: request.z_scale,
             w_clip: self.w_clip,
         };
-        Some(gpu.fog_draws(&t.device, t.color_format, t.depth_format, t.size, &self.selected, &view, &self.fogs))
+        Some(gpu.fog_draws(
+            &t.device, t.color_format, t.depth_format, t.size, d3d::external_viewport(&request, t.size),
+            &self.selected, &view, &self.fogs, &self.samples,
+        ))
     }
 
     fn record_ranges(&mut self, mut t: d3d::ExternalTarget<'_>) -> usize {
@@ -509,9 +646,9 @@ impl d3d::ExternalPass for FogViewPass {
         let Some(gpu) = gpu.as_mut() else { return 0 };
         {
             let mut uploads = t.encoder_uploads();
-            gpu.prepare_fog(&mut uploads, &view, &self.fogs);
+            gpu.prepare_fog(&mut uploads, &view, &self.fogs, &self.samples);
         }
-        gpu.encode_fog(t.device, t.encoder, t.color, t.color_format, t.depth, t.depth_format, t.size, &self.selected)
+        gpu.encode_fog(t.device, t.encoder, t.color, t.color_format, t.depth, t.depth_format, t.size, t.viewport, &self.selected)
     }
 }
 
@@ -520,6 +657,15 @@ static NO_VIEW: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn late_layers_only_need_the_stencil_enable_word() {
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let slot = table.canonical_to_guest(gfx::state::RenderStateType::StencilEnable.index()).unwrap();
+        assert!(stencil_disabled(|s| (s == slot).then_some(0)));
+        assert!(!stencil_disabled(|_| None));
+        assert!(!stencil_disabled(|_| Some(1)));
+    }
 
     #[test]
     fn the_fog_words_overlay_the_device() {

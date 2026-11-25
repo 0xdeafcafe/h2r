@@ -239,6 +239,44 @@ impl shell::Controller for Controller {
 mod tests {
     use super::*;
 
+    fn local_entry(map: &str) -> film::LibraryEntry {
+        film::LibraryEntry {
+            meta: film::FilmMeta {
+                id: "local".into(),
+                map: map.into(),
+                variant: String::new(),
+                started_ms: 1,
+                length_ticks: 100,
+                players: Vec::new(),
+                source: film::Source::Local,
+                image_stamp: String::new(),
+            },
+            summary: None,
+            version: 3,
+            ticks_per_second: None,
+            runtime_stamp: String::new(),
+            simulation_hooks: None,
+            xbe_sha256: String::new(),
+            guest_image: None,
+            saved: false,
+            lease_id: None,
+            game_id: None,
+            path: "local.h2film".into(),
+        }
+    }
+
+    #[test]
+    fn the_library_lists_games_not_nameless_films() {
+        assert!(!local_entry("").is_game(), "no map, no players");
+        assert!(local_entry("zanzibar").is_game());
+        let mut scored = local_entry("");
+        scored.meta.players.push(film::Player { name: "Chief".into(), team: 0, score: 1 });
+        assert!(scored.is_game());
+        let mut summarised = local_entry("");
+        summarised.summary = Some(film::blam::Summary { level: "a30".into(), ..Default::default() });
+        assert!(summarised.is_game());
+    }
+
     #[test]
     fn exact_host_films_retain_the_live_id() {
         let meta = film::FilmMeta {
@@ -302,7 +340,7 @@ mod tests {
             }),
             ticks_per_second: Some(60),
             version: 3,
-            runtime_stamp: "h2-sim/1".into(),
+            runtime_stamp: "h2-sim/2".into(),
             simulation_hooks: Some("fixture".into()),
             xbe_sha256: String::new(),
             guest_image: None,

@@ -74,8 +74,9 @@ pub struct RowSpec {
     /// The string ids the row shows (empty for texts served by slot).
     pub ids: Vec<u32>,
     /// Art drawn while the row has the focus, beside the screen's own
-    /// ([`ScreenSpec::shown_art`]): a row's icon in Quick Options' game
-    /// type picture (`crate::ui_kit::dialog::quick_icon`).
+    /// ([`ScreenSpec::shown_art`]): a film's level picture in the Theater
+    /// library. A settings dialog's art is the screen's own, never a
+    /// row's: its top is the same in every state.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub art: Option<crate::ui_kit::view::PaneArt>,
 }
@@ -271,13 +272,6 @@ pub struct PaneText {
     pub text: String,
 }
 
-/// A compositor HUD in title-safe coordinates. Its input belongs to the
-/// tool in the world. The HUD itself has neither a list nor a focus owner.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct HudSpec {
-    pub widgets: Vec<crate::ui_kit::view::Widget>,
-}
-
 /// A screen of ours, described.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ScreenSpec {
@@ -293,8 +287,9 @@ pub struct ScreenSpec {
     pub focus: usize,
     pub description: Option<DescriptionBlock>,
     /// The screen's own line in the description block, in place of the
-    /// focused row's description: a page's help line, as Quick Options'
-    /// `quick_options_help` is ([`crate::ui_kit::screen::KitScreen::header`]).
+    /// focused row's description: a page-wide line that can change while
+    /// the same row stays focused
+    /// ([`crate::ui_kit::screen::KitScreen::live_help`]).
     pub help: Option<String>,
     /// The legend under the description (or alone when there is none).
     pub prompts: Vec<Prompt>,
@@ -322,9 +317,6 @@ pub struct ScreenSpec {
     pub panel: Vec<crate::ui_kit::view::PaneArt>,
     /// Texts that belong to no row ([`PaneText`]), drawn over the art.
     pub texts: Vec<PaneText>,
-    /// A compositor HUD owns its widgets and has no list, focus or shell backing.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hud: Option<HudSpec>,
     /// A modal dialog over the screen beneath, drawn by
     /// [`crate::ui_kit::dialog::dialog_view`] rather than as a list
     /// (docs/game/ui-builder.md "Screen kinds").
@@ -356,17 +348,8 @@ impl ScreenSpec {
             art: Vec::new(),
             panel: Vec::new(),
             texts: Vec::new(),
-            hud: None,
             dialog: None,
             underlay: None,
-        }
-    }
-    /// A transparent HUD made of kit widgets in title-safe screen coordinates.
-    pub fn hud(name: &str, title: &str, widgets: Vec<crate::ui_kit::view::Widget>) -> Self {
-        Self {
-            transparent: true,
-            hud: Some(HudSpec { widgets }),
-            ..Self::new(name, title)
         }
     }
 
@@ -865,7 +848,7 @@ mod tests {
         );
         assert_eq!(
             s.description_text().unwrap(),
-            "short\n\n\u{e100} Go",
+            "short\n\n\u{e100} GO",
             "focus 0"
         );
     }

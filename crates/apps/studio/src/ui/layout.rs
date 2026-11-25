@@ -23,18 +23,21 @@ impl ToolWindows {
 }
 
 pub(super) struct Keys {
-    pub maps: WindowKey,
+    pub browser: WindowKey,
     pub tags: WindowKey,
     pub scripts: WindowKey,
     pub outliner: WindowKey,
     pub viewport: WindowKey,
     pub inspector: WindowKey,
     pub log: WindowKey,
+    pub problems: WindowKey,
+    pub playtest: WindowKey,
     pub game: WindowKey,
     pub pending_edits: WindowKey,
     pub bytes: WindowKey,
     /// The game type script editor, beside the Variants tool's settings.
     pub rules: WindowKey,
+    pub package: WindowKey,
     pub variants: ToolWindows,
     pub playlists: ToolWindows,
     pub screens: ToolWindows,
@@ -49,13 +52,16 @@ fn key(id: &str, icon: &str, title: &str) -> WindowKey {
 impl Keys {
     pub fn new() -> Self {
         Self {
-            maps: key("maps", icon::MAP, "Maps"),
+            package: key("package", icon::PACKAGE, "Package"),
+            browser: key("browser", icon::TREE, "Browser"),
             tags: key("tags", icon::BOX, "Tags"),
             scripts: key("scripts", icon::FILE, "Scripts"),
             outliner: key("outliner", icon::TREE, "Scene"),
             viewport: key("viewport", icon::EYE, "Viewport"),
             inspector: key("inspector", icon::SLIDERS, "Inspector"),
             log: key("log", icon::LOG, "Log"),
+            problems: key("problems", icon::ALERT, "Problems"),
+            playtest: key("playtest", icon::CROSSHAIR, "Playtest"),
             game: key("game", icon::ZAP, "Game"),
             pending_edits: key("pending_edits", icon::SLIDERS, "Pending"),
             bytes: key("tag-bytes", icon::INFO, "Data and bytes"),
@@ -97,12 +103,19 @@ impl Keys {
         DockLayout::split(
             DockSplit::Down,
             0.22,
-            DockLayout::tabs([&self.game, &self.log, &self.pending_edits, &self.bytes]),
+            DockLayout::tabs([
+                &self.game,
+                &self.log,
+                &self.problems,
+                &self.playtest,
+                &self.pending_edits,
+                &self.bytes,
+            ]),
             DockLayout::split(
                 DockSplit::Left,
                 0.22,
                 DockLayout::tabs(
-                    [&self.outliner, &self.tags, &self.scripts, &self.maps]
+                    [&self.outliner, &self.tags, &self.scripts, &self.browser]
                         .into_iter()
                         .chain(tools.map(|tool| &tool.list)),
                 ),
@@ -118,7 +131,7 @@ impl Keys {
                         [&self.viewport]
                             .into_iter()
                             .chain(tools.map(|tool| &tool.center))
-                            .chain([&self.rules]),
+                            .chain([&self.rules, &self.package]),
                     ),
                 ),
             ),
@@ -136,18 +149,21 @@ impl Keys {
             &self.log,
             &self.game,
         ];
-        if saved_dock(&window_name(&self.maps)).is_none() {
+        if saved_dock(&window_name(&self.browser)).is_none() {
             retire_tools_leaf(anchors);
         }
         seed(
             &self.outliner,
-            [&self.maps, &self.tags, &self.scripts]
+            [&self.browser, &self.tags, &self.scripts]
                 .into_iter()
                 .chain(tools.map(|t| &t.list)),
         );
-        seed(&self.viewport, tools.map(|t| &t.center).into_iter().chain([&self.rules]));
+        seed(&self.viewport, tools.map(|t| &t.center).into_iter().chain([&self.rules, &self.package]));
         seed(&self.inspector, tools.map(|t| &t.inspector));
-        seed(&self.log, [&self.game, &self.pending_edits, &self.bytes]);
+        seed(
+            &self.log,
+            [&self.game, &self.problems, &self.playtest, &self.pending_edits, &self.bytes],
+        );
     }
 }
 

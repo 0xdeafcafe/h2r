@@ -1,5 +1,6 @@
 //! The daemon supervises the game's PID independently of the revision under test.
 //! All reports live inside the job directory so an ordinary fetch brings them back.
+//! The same tick looks for games the player opens (`super::player`).
 
 use std::collections::VecDeque;
 use std::fs;
@@ -9,6 +10,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
+use super::player::Watch;
 use super::{Job, Meta, Shared, agent_socket_path, write_meta};
 
 const INTERVAL: Duration = Duration::from_secs(2);
@@ -47,10 +49,12 @@ impl Samples {
 
 /// Run the monitor through builds, takeover and gameplay. Waking it on spawn
 /// records a first game sample without delaying a short job by two seconds.
+/// `watch` asks the player's games what the job should do.
 pub(super) fn supervise<T>(
     sh: &Shared,
     id: &str,
     job: &Job,
+    watch: Watch,
     run: impl FnOnce() -> T,
 ) -> (T, Option<String>) {
     let limit = match job {
@@ -72,7 +76,7 @@ pub(super) fn supervise<T>(
         }
     }
     std::thread::scope(|scope| {
-        let guard = scope.spawn(move || monitor(sh, id, limit, rx));
+        let guard = scope.spawn(move || monitor(sh, id, limit, watch, rx));
         let finish = Finish(tx);
         let result = run();
         drop(finish);
@@ -80,7 +84,13 @@ pub(super) fn supervise<T>(
     })
 }
 
-fn monitor(sh: &Shared, id: &str, limit: u64, rx: Receiver<Event>) -> Option<String> {
+fn monitor(
+    sh: &Shared,
+    id: &str,
+    limit: u64,
+    mut watch: Watch,
+    rx: Receiver<Event>,
+) -> Option<String> {
     let start = Instant::now();
     let mut samples = Samples::default();
     loop {
@@ -95,7 +105,10 @@ fn monitor(sh: &Shared, id: &str, limit: u64, rx: Receiver<Event>) -> Option<Str
         let elapsed = start.elapsed().as_millis() as u64;
         let cap =
             game.and_then(|pid| samples.sample(meta, pid, elapsed, limit, mem_watch::footprint));
-        let reason = cap.or_else(|| pressure.then(|| "machine memory pressure".to_owned()));
+        let disk_free = pressure
+            .then(|| super::build_cache::disk(&sh.cfg.root).map(|d| d.free_bytes))
+            .flatten();
+        let reason = cap.or_else(|| pressure.then(|| pressure_reason(disk_free, sh.cfg.disk_floor)));
         if let Some(reason) = &reason {
             meta.error = Some(reason.clone());
         }
@@ -105,7 +118,7 @@ fn monitor(sh: &Shared, id: &str, limit: u64, rx: Receiver<Event>) -> Option<Str
         if let Some(reason) = reason {
             let observation = json!({
                 "job_id": id, "job_name": meta.name, "reason": reason, "pid": pgid, "game_pid": game,
-                "mem_limit": limit, "pressure": pressure, "samples": samples.recent,
+                "mem_limit": limit, "pressure": pressure, "disk_free_bytes": disk_free, "samples": samples.recent,
                 "last_footprint_bytes": meta.last_footprint_bytes,
                 "peak_footprint_bytes": meta.peak_footprint_bytes,
                 "elapsed_ms": elapsed, "commit": meta.commit,
@@ -118,10 +131,26 @@ fn monitor(sh: &Shared, id: &str, limit: u64, rx: Receiver<Event>) -> Option<Str
             return Some(reason);
         }
         drop(inner);
+        if watch.tick(sh, id) {
+            // The player paused the job; it is stopping.
+            return None;
+        }
         match rx.recv_timeout(INTERVAL) {
             Ok(Event::Step) | Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Ok(Event::Finished) | Err(mpsc::RecvTimeoutError::Disconnected) => return None,
         }
+    }
+}
+
+/// The stop reason for machine memory pressure. A nearly full disk starves
+/// macOS swap, so say so when the free space is under the floor.
+fn pressure_reason(disk_free: Option<u64>, floor: u64) -> String {
+    match disk_free {
+        Some(free) if floor != 0 && free < floor => format!(
+            "machine memory pressure (disk nearly full: {} GiB free)",
+            super::build_cache::gib(free)
+        ),
+        _ => "machine memory pressure".to_owned(),
     }
 }
 
@@ -225,6 +254,18 @@ mod tests {
             Some("memory limit: 13 over 12 bytes")
         );
         assert_eq!(record.peak_footprint_bytes, Some(13));
+    }
+
+    #[test]
+    fn pressure_names_a_nearly_full_disk() {
+        let gib = |n: u64| n << 30;
+        assert_eq!(
+            pressure_reason(Some(gib(2)), gib(20)),
+            "machine memory pressure (disk nearly full: 2 GiB free)"
+        );
+        assert_eq!(pressure_reason(Some(gib(30)), gib(20)), "machine memory pressure");
+        assert_eq!(pressure_reason(Some(gib(2)), 0), "machine memory pressure");
+        assert_eq!(pressure_reason(None, gib(20)), "machine memory pressure");
     }
 
     #[test]

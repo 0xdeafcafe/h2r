@@ -402,6 +402,7 @@ fn rifle_layout() -> Layout {
         label: None,
         unit: None,
         axes: Vec::new(),
+        view: None,
     };
     let barrel = Layout {
         name: "barrels".into(),

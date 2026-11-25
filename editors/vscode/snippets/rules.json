@@ -1,0 +1,335 @@
+{
+  "Script header": {
+    "prefix": "rules",
+    "description": "The header: name, version, game type and teams.",
+    "body": [
+      "rules \"${1:Name}\" ${2:1}",
+      "type ${3|slayer,ctf,assault,oddball,koth,juggernaut,territories,research,party,firefight,siege|}",
+      "teams ${4:2}",
+      "$0"
+    ]
+  },
+  "requires": {
+    "prefix": "requires",
+    "description": "The capabilities the script uses.",
+    "body": [
+      "requires ${1|hud.message,player.weapons,player.team,player.spawn,player.traits,game.traits,objects.create,objects.delete,ai.squads,forge.place,forge.move,forge.delete,forge.scale|}$0"
+    ]
+  },
+  "uses": {
+    "prefix": "uses",
+    "description": "Play a built-in game's rules; the script holds settings only.",
+    "body": [
+      "uses ${1|slayer,ctf,assault,oddball,koth,juggernaut,territories|}$0"
+    ]
+  },
+  "points": {
+    "prefix": "points",
+    "description": "What a point is called, at most 32 bytes.",
+    "body": [
+      "points \"${1:Points}\"$0"
+    ]
+  },
+  "about": {
+    "prefix": "about",
+    "description": "The variant's description, at most 150 characters.",
+    "body": [
+      "about \"${1:Description}\"$0"
+    ]
+  },
+  "quick": {
+    "prefix": "quick",
+    "description": "The settings and options the lobby's Quick Options shows, at most five.",
+    "body": [
+      "quick ${1:score_limit}$0"
+    ]
+  },
+  "settings": {
+    "prefix": "settings",
+    "description": "The record settings the script sets, one name = value a line.",
+    "body": [
+      "settings {",
+      "\t${1:score_limit} = ${2:50}",
+      "\t$0",
+      "}"
+    ]
+  },
+  "option int": {
+    "prefix": "option int",
+    "description": "An int option with a range, a default, a label and a description.",
+    "body": [
+      "option ${1:name}: int ${2:1}..${3:5} = ${4:1} \"${5:Label}\" \"${6:Description}\"$0"
+    ]
+  },
+  "option bool": {
+    "prefix": "option bool",
+    "description": "A bool option.",
+    "body": [
+      "option ${1:name}: bool = ${2|true,false|} \"${3:Label}\" \"${4:Description}\"$0"
+    ]
+  },
+  "option time": {
+    "prefix": "option time",
+    "description": "A time option in whole seconds.",
+    "body": [
+      "option ${1:name}: time ${2:5s}..${3:60s} = ${4:20s} \"${5:Label}\" \"${6:Description}\"$0"
+    ]
+  },
+  "option enum": {
+    "prefix": "option enum",
+    "description": "An option of a declared enum type.",
+    "body": [
+      "option ${1:name}: ${2:Mode} = ${2:Mode}.${3:variant} \"${4:Label}\" \"${5:Description}\"$0"
+    ]
+  },
+  "enum": {
+    "prefix": "enum",
+    "description": "An enum: read as Name.variant.",
+    "body": [
+      "enum ${1:Name} { ${2:a}, ${3:b} }$0"
+    ]
+  },
+  "const": {
+    "prefix": "const",
+    "description": "A compile-time constant.",
+    "body": [
+      "const ${1:name} = ${2:0}$0"
+    ]
+  },
+  "palette": {
+    "prefix": "palette",
+    "description": "A palette of tags for grant.",
+    "body": [
+      "palette \"${1:name}\" = [\"${2:objects/forge/block_wall/block_wall}\"]$0"
+    ]
+  },
+  "global var": {
+    "prefix": "global var",
+    "description": "A global variable.",
+    "body": [
+      "global var ${1:name}: ${2|int,bool,fixed,time,timer,player?,team?,object?|} = ${3:0}$0"
+    ]
+  },
+  "player var": {
+    "prefix": "player var",
+    "description": "A per-player variable, read as p.name.",
+    "body": [
+      "player var ${1:name}: ${2|int,bool,fixed,time|} = ${3:0}$0"
+    ]
+  },
+  "team var": {
+    "prefix": "team var",
+    "description": "A per-team variable, read as t.name.",
+    "body": [
+      "team var ${1:name}: ${2|int,bool,fixed,time|} = ${3:0}$0"
+    ]
+  },
+  "object var": {
+    "prefix": "object var",
+    "description": "A per-object variable, read as o.name.",
+    "body": [
+      "object var ${1:name}: ${2|int,bool,fixed,time|} = ${3:0}$0"
+    ]
+  },
+  "table": {
+    "prefix": "table",
+    "description": "A constant table, indexed by row or looked up by its first column.",
+    "body": [
+      "table ${1:name}: (${2:key}: ${3:int}, ${4:value}: ${5:int}) = [",
+      "\t(${6:0}, ${7:0}),",
+      "]$0"
+    ]
+  },
+  "label zone": {
+    "prefix": "label zone",
+    "description": "A label: exactly one zone the map supplies.",
+    "body": [
+      "label ${1:name}: zone = \"${2:map text}\"$0"
+    ]
+  },
+  "label objects numbered": {
+    "prefix": "label numbered",
+    "description": "A label: a set whose members are numbered a..b.",
+    "body": [
+      "label ${1:name}: ${2|zones,objects|} numbered ${3:0}..${4:1} = \"${5:map text}\"$0"
+    ]
+  },
+  "label per team": {
+    "prefix": "label per team",
+    "description": "A label: a set with at most n members, one per team.",
+    "body": [
+      "label ${1:name}: ${2|zones,objects,spawns|} at most ${3:16} per team = \"${4:map text}\"$0"
+    ]
+  },
+  "fn": {
+    "prefix": "fn",
+    "description": "A function (inlined, no return value).",
+    "body": [
+      "fn ${1:name}(${2:p}: ${3:player}) {",
+      "\t$0",
+      "}"
+    ]
+  },
+  "fn value": {
+    "prefix": "fn value",
+    "description": "A value function: one expression.",
+    "body": [
+      "fn ${1:name}(${2:p}: ${3:player}) -> ${4:int} = ${0:0}"
+    ]
+  },
+  "on init": {
+    "prefix": "on init",
+    "description": "Once, at the game's start.",
+    "body": ["on init {", "\t$0", "}"]
+  },
+  "on round_start": {
+    "prefix": "on round_start",
+    "description": "A round begins.",
+    "body": ["on round_start {", "\t$0", "}"]
+  },
+  "on round_end": {
+    "prefix": "on round_end",
+    "description": "A round ends.",
+    "body": ["on round_end {", "\t$0", "}"]
+  },
+  "on tick": {
+    "prefix": "on tick",
+    "description": "Every tick, after the timers.",
+    "body": ["on tick {", "\t$0", "}"]
+  },
+  "on timer": {
+    "prefix": "on timer",
+    "description": "A global timer var reaches 0.",
+    "body": ["on timer(${1:t}) {", "\t$0", "}"]
+  },
+  "on kill": {
+    "prefix": "on kill",
+    "description": "A kill: the victim, and the killer (player?; a suicide has killer == victim).",
+    "body": [
+      "on kill(${1:victim}, ${2:killer}) {",
+      "\tif let ${3:k} = ${2:killer} and ${3:k} != ${1:victim} {",
+      "\t\tscore(${3:k}, 1)$0",
+      "\t}",
+      "}"
+    ]
+  },
+  "on spawn": {
+    "prefix": "on spawn",
+    "description": "A player spawns.",
+    "body": ["on spawn(${1:p}) {", "\t$0", "}"]
+  },
+  "on death": {
+    "prefix": "on death",
+    "description": "A player dies.",
+    "body": ["on death(${1:p}) {", "\t$0", "}"]
+  },
+  "on join": {
+    "prefix": "on join",
+    "description": "A player joins.",
+    "body": ["on join(${1:p}) {", "\t$0", "}"]
+  },
+  "on quit": {
+    "prefix": "on quit",
+    "description": "A player quits.",
+    "body": ["on quit(${1:p}) {", "\t$0", "}"]
+  },
+  "on pickup": {
+    "prefix": "on pickup",
+    "description": "A player picks up an object.",
+    "body": ["on pickup(${1:p}, ${2:o}) {", "\t$0", "}"]
+  },
+  "on drop": {
+    "prefix": "on drop",
+    "description": "A player drops an object.",
+    "body": ["on drop(${1:p}, ${2:o}) {", "\t$0", "}"]
+  },
+  "on press": {
+    "prefix": "on press",
+    "description": "A player presses an object (at most 10 a second a player).",
+    "body": ["on press(${1:p}, ${2:o}) {", "\t$0", "}"]
+  },
+  "on enter": {
+    "prefix": "on enter",
+    "description": "An object enters a zone; a label in the zone's place picks the zones.",
+    "body": ["on enter(${1:zone}, ${2:o}) {", "\t$0", "}"]
+  },
+  "on leave": {
+    "prefix": "on leave",
+    "description": "An object leaves a zone; a label in the zone's place picks the zones.",
+    "body": ["on leave(${1:zone}, ${2:o}) {", "\t$0", "}"]
+  },
+  "on squad_dead": {
+    "prefix": "on squad_dead",
+    "description": "A squad is dead.",
+    "body": ["on squad_dead(${1:s}) {", "\t$0", "}"]
+  },
+  "on actor_kill": {
+    "prefix": "on actor_kill",
+    "description": "An AI actor is killed: the killer (player?) and its Class.",
+    "body": ["on actor_kill(${1:killer}, ${2:class}) {", "\t$0", "}"]
+  },
+  "on actor_assist": {
+    "prefix": "on actor_assist",
+    "description": "An assist on an AI kill: killer, assist (player?) and Class.",
+    "body": ["on actor_assist(${1:killer}, ${2:assist}, ${3:class}) {", "\t$0", "}"]
+  },
+  "on bounce": {
+    "prefix": "on bounce",
+    "description": "A superbounce: the player, the spot, its place in the chain, and whether it was a Monster Bounce.",
+    "body": ["on bounce(${1:p}, ${2:spot}, ${3:chain}, ${4:monster}) {", "\t$0", "}"]
+  },
+  "on bounced": {
+    "prefix": "on bounced",
+    "description": "A fall out of the map during a bounce.",
+    "body": ["on bounced(${1:p}) {", "\t$0", "}"]
+  },
+  "on edit": {
+    "prefix": "on edit",
+    "description": "A granted power was used on an object.",
+    "body": ["on edit(${1:p}, ${2:o}) {", "\t$0", "}"]
+  },
+  "for each": {
+    "prefix": "for each",
+    "description": "Loop over a set, with an optional where.",
+    "body": [
+      "for each ${1|players,teams,objectives|} ${2:p} where ${3:true} {",
+      "\t$0",
+      "}"
+    ]
+  },
+  "if": {
+    "prefix": "if",
+    "description": "if",
+    "body": ["if ${1:cond} {", "\t$0", "}"]
+  },
+  "if else": {
+    "prefix": "ifelse",
+    "description": "if / else",
+    "body": ["if ${1:cond} {", "\t$2", "} else {", "\t$0", "}"]
+  },
+  "if let": {
+    "prefix": "iflet",
+    "description": "Bind a T? as T when it is not none.",
+    "body": ["if let ${1:k} = ${2:killer} {", "\t$0", "}"]
+  },
+  "match": {
+    "prefix": "match",
+    "description": "Match an enum value.",
+    "body": [
+      "match ${1:value} {",
+      "\t${2:Type}.${3:a} { $4 }",
+      "\telse { $0 }",
+      "}"
+    ]
+  },
+  "message": {
+    "prefix": "message",
+    "description": "A HUD message with holes (needs hud.message).",
+    "body": ["message(${1:p}, \"${2:{k\\} scored}\")$0"]
+  },
+  "grant": {
+    "prefix": "grant",
+    "description": "Grant a Forge power with a budget.",
+    "body": ["grant(${1:p}, ${2|forge.place,forge.move,forge.delete,forge.scale|}, budget ${3:20})$0"]
+  }
+}

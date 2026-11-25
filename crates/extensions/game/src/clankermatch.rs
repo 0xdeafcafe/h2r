@@ -11,9 +11,9 @@
 //! descriptor index, AL the answer) once per hopper and stores the index in
 //! each row. A `before` on it answers "not listed" for a hopper outside
 //! the [`Scope`] the opening press set: Clankermatch only the server's
-//! clanker hoppers (`live_hle::Hle::clanker_hoppers`), OptiMatch only the
-//! others, and the party lobby's MULTIPLAYER tab both on one page
-//! (docs/game/party-lobby.md, "The tabs"). A hopper it lets through
+//! clanker hoppers (`live_hle::Hle::clanker_hoppers`), OptiMatch and the
+//! party lobby's MULTIPLAYER mode both kinds on one page
+//! (docs/game/party-lobby.md, "The modes"). A hopper it lets through
 //! still goes to the game's own check.
 //!
 //! **Quickmatch** searches the playlist the player last picked in
@@ -38,10 +38,11 @@
 //! clanker hoppers; its press sets [`active`] and runs that same press, so
 //! the party goes to the clanker playlists. Retail's row sets
 //! [`Scope::Players`] first, so it always lists the human ones. In a
-//! matchmaking lobby (the party lobby's MULTIPLAYER tab) action 9 is
+//! matchmaking lobby (the party lobby's MULTIPLAYER mode) action 9 is
 //! Change Playlist... ([`CHANGE_PLAYLIST`]), and its press lists every
 //! hopper ([`Scope::All`]). The party lobby's Game Setup drops both
-//! Switch To rows (`crate::lobby_mode::arrange`): the strip changes mode.
+//! Switch To rows (`crate::lobby_mode::arrange`): the GAME MODE picker
+//! changes mode.
 //!
 //! **The fill.** While this console hosts a clanker hopper's lobby, the
 //! Clankers driver (`crate::clankers`) asks Live for the playlist's roster
@@ -74,9 +75,11 @@ pub enum Scope {
     /// The clanker ones: the Xbox Live menu's Clankermatch row and "Switch
     /// To: Clankermatch".
     Clankers,
-    /// Both, on one page: the party lobby's MULTIPLAYER tab and its Change
-    /// Playlist... row (docs/game/party-lobby.md, "The tabs").
+    /// Both, on one page: the party lobby's MULTIPLAYER mode and its Change
+    /// Playlist... row (docs/game/party-lobby.md, "The modes").
     All,
+    /// First-time Quickmatch opens the combined picker under its own title.
+    QuickMatch,
 }
 
 impl Scope {
@@ -85,12 +88,14 @@ impl Scope {
             Scope::Players => 0,
             Scope::Clankers => 1,
             Scope::All => 2,
+            Scope::QuickMatch => 3,
         }
     }
     const fn of_byte(b: u8) -> Scope {
         match b {
             1 => Scope::Clankers,
             2 => Scope::All,
+            3 => Scope::QuickMatch,
             _ => Scope::Players,
         }
     }
@@ -114,7 +119,7 @@ pub fn set_scope(scope: Scope) {
             match scope {
                 Scope::Players => "the playlists are the human hoppers",
                 Scope::Clankers => "the playlists are the clanker hoppers",
-                Scope::All => "the playlists are every hopper, human and clanker",
+                Scope::QuickMatch | Scope::All => "the playlists are every hopper, human and clanker",
             }
         );
     }
@@ -125,17 +130,10 @@ pub fn active() -> bool {
     scope() == Scope::Clankers
 }
 
-/// From the Live menu's press: `on` for the Clankermatch row.
-pub fn set_active(on: bool) {
-    set_scope(if on { Scope::Clankers } else { Scope::Players });
-}
-
-/// Whether the playlist list shows hopper `index` in `scope`: a clanker
-/// hopper only for Clankermatch, any other only for OptiMatch, and every
-/// hopper on the party lobby's one page.
+/// Which descriptors the opening menu action includes on the playlist list.
 pub fn listed(index: u32, marks: &ClankerHoppers, scope: Scope) -> bool {
     match scope {
-        Scope::All => true,
+        Scope::QuickMatch | Scope::All => true,
         Scope::Clankers => marks.contains(index),
         Scope::Players => !marks.contains(index),
     }
@@ -562,6 +560,7 @@ mod tests {
                     playlist_id: hopper_id + 1,
                     players: 8,
                     teams: 0,
+                    ranked: true,
                     ranks_as: None,
                 })
                 .collect(),
@@ -667,6 +666,7 @@ mod tests {
         let mut r = hooks::Registry::new(hooks::Switches::defaults());
         r.add(&h1row::SetupRow {
             data_root: std::env::temp_dir(),
+            page: crate::h1_options_row::test_page(),
         })
         .unwrap();
         let store = Arc::new(settings::Store::defaults(&crate::clankers::DEFS));

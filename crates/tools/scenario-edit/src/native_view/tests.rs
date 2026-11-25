@@ -125,7 +125,7 @@ fn the_depth_rule_is_view_depth_over_far() {
     };
     assert!((depth_of(&cam, ahead(cam.far * 0.25)) - 0.25).abs() < 1e-4);
     assert_eq!(depth_of(&cam, ahead(cam.far * 2.0)), 1.0);
-    assert!(DEPTH_RULE.floor);
+    const { assert!(DEPTH_RULE.floor) };
     // Floored to D24's step, as the world's W-buffer depth is: at most
     // one step under the unfloored depth.
     let p = ahead(cam.far * 0.3);
@@ -174,7 +174,8 @@ fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
     Some(pollster::block_on(adapter.request_device(&Default::default())).unwrap())
 }
 
-/// Draw `load` in `lighting` into a 64 by 64 viewport target and read
+/// Draw `load` in `lighting` into a 64 by 64 viewport target through the
+/// view the viewport's native passes write (`Shading::Gamma`) and read
 /// the centre pixel back.
 fn centre(
     device: &wgpu::Device,
@@ -183,6 +184,17 @@ fn centre(
     lighting: Lighting,
     camera: &Camera,
 ) -> ([u8; 4], CullStats) {
+    centre_of(device, queue, &mut NativeWorld::new(device, queue, load, lighting), camera)
+}
+
+/// [`centre`] of a world already uploaded (and perhaps repainted).
+fn centre_of(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    world: &mut NativeWorld,
+    camera: &Camera,
+) -> ([u8; 4], CullStats) {
+    let lighting = world.lighting();
     let size = wgpu::Extent3d {
         width: 64,
         height: 64,
@@ -201,20 +213,18 @@ fn centre(
         })
     };
     let color = target(
-        crate::render::COLOR_FORMAT,
+        crate::render::UI_FORMAT,
         wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
     );
     let depth = target(
         crate::render::DEPTH_FORMAT,
         wgpu::TextureUsages::RENDER_ATTACHMENT,
     );
-    let mut world = NativeWorld::new(device, queue, load, lighting);
-    assert_eq!(world.lighting(), lighting);
     let stats = world.render(
         device,
         queue,
         &color.create_view(&Default::default()),
-        crate::render::COLOR_FORMAT,
+        crate::render::UI_FORMAT,
         &depth.create_view(&Default::default()),
         crate::render::DEPTH_FORMAT,
         [64, 64],
@@ -485,6 +495,7 @@ fn the_game_mode_draws_layer_3_where_it_compiled() {
 fn layer_1_is_refused_until_it_is_checked_against_the_game() {
     let plan = StaticLayer {
         compiled: 3,
+        constants: Default::default(),
         drawn: [0u16, 2].into_iter().collect(),
         parts: vec![((Owner::Cluster(0), 0), (0, 6, None, 0))],
         refused: BTreeMap::from([("animated: x".to_owned(), 1)]),
@@ -585,14 +596,14 @@ fn frame(
             view_formats: &[],
         })
     };
-    let color = target(crate::render::COLOR_FORMAT);
+    let color = target(crate::render::UI_FORMAT);
     let depth = target(crate::render::DEPTH_FORMAT);
     let mut world = NativeWorld::new(device, queue, load, lighting);
     world.render(
         device,
         queue,
         &color.create_view(&Default::default()),
-        crate::render::COLOR_FORMAT,
+        crate::render::UI_FORMAT,
         &depth.create_view(&Default::default()),
         crate::render::DEPTH_FORMAT,
         [64, 64],
@@ -778,6 +789,40 @@ fn the_viewport_draws_the_level_through_the_native_world() {
     vp.set_native(&device, &queue, &[]);
     assert!(!vp.has_native());
     assert_eq!(draw(&mut vp), empty);
+}
+
+/// The viewport keeps the native world's colours as the game writes
+/// them: the base look is the game's `t0 · t3` in gamma space on the
+/// stored bytes, so in Flat (white for the page) the floor is the base
+/// map's bytes exactly. Drawn through the target's sRGB view they were
+/// encoded a second time and came out pale (200, 60, 20 as about 229,
+/// 133, 79). Skipped without a wgpu adapter.
+#[test]
+fn the_viewport_keeps_the_native_worlds_colours_as_stored() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let (mut map, mut files) = textured();
+    let (loads, errors) = read_all(&mut map, &mut files);
+    assert!(errors.is_empty(), "{errors:?}");
+    let half = crate::fixture::TEX_FLOOR / 2.0;
+    let camera = Camera {
+        target: [half, half, 0.0],
+        yaw: 0.0,
+        pitch: 1.3,
+        distance: 6.0,
+        ..Camera::default()
+    };
+    let mut vp = crate::render::Viewport::new(&device);
+    vp.set_native(&device, &queue, &loads);
+    vp.set_lighting(&device, &queue, &loads, Lighting::Flat);
+    vp.render(&device, &queue, &camera, [64, 64]);
+    let px = read_centre(&device, &queue, vp.color_texture().unwrap());
+    let want = crate::fixture::TEX_BASE_RGBA;
+    assert!(
+        (0..3).all(|c| px[c].abs_diff(want[c]) <= 3),
+        "the floor {px:?}, the base map {want:?}"
+    );
 }
 
 /// Step 2: the viewport's own passes write the native depth rule, so a
@@ -1150,4 +1195,357 @@ fn an_item_reference_set_after_open_has_its_model_read() {
     assert!(ed.undo());
     assert!(ed.native_models().unwrap().has_read(late));
     std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- posed models (M1) --------------------------------------------------------
+
+/// A pose that turns node 1 a quarter about z at frame 1 of 2, over a
+/// two-node skeleton whose child sits at x = 1: `posed_nodes` composes the
+/// turn into the child's world matrix and leaves the rest pose elsewhere.
+#[test]
+fn posed_nodes_compose_the_animation_over_the_defaults() {
+    use tags::anim_sample::{NodeTransform, Pose};
+    let skeleton = [
+        SkeletonNode {
+            parent: -1,
+            translation: [0.0; 3],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: 1.0,
+        },
+        SkeletonNode {
+            parent: 0,
+            translation: [1.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: 1.0,
+        },
+    ];
+    let mut pose = Pose {
+        nodes: vec![NodeTransform::default(), NodeTransform::default()],
+    };
+    pose.nodes[1].rotation = [
+        0.0,
+        0.0,
+        std::f32::consts::FRAC_1_SQRT_2,
+        std::f32::consts::FRAC_1_SQRT_2,
+    ];
+    pose.nodes[1].has_rotation = true;
+    let nodes = posed_nodes(&skeleton, &pose, &NodeMatrix::IDENTITY).unwrap();
+    assert_eq!(nodes.len(), 2);
+    // The root is where it rests.
+    assert_eq!(nodes[0], NodeMatrix::IDENTITY);
+    // The child is its rest frame after the quarter turn: x now points to
+    // y, and the node still sits at x = 1.
+    let close = |a: [f32; 3], b: [f32; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-5);
+    assert!(close(nodes[1].forward, [0.0, 1.0, 0.0]), "{:?}", nodes[1]);
+    assert!(close(nodes[1].position, [1.0, 0.0, 0.0]), "{:?}", nodes[1]);
+    // A vertex at the child's x = 1 (its own origin) is unchanged; one
+    // further out follows the turn, as the renderer skins it.
+    assert!(close(nodes[1].point([0.0, 0.0, 0.0]), [1.0, 0.0, 0.0]));
+    assert!(close(nodes[1].point([1.0, 0.0, 0.0]), [1.0, 1.0, 0.0]));
+    // A pose for another node count is named, not papered over.
+    let short = Pose {
+        nodes: vec![NodeTransform::default()],
+    };
+    let e = posed_nodes(&skeleton, &short, &NodeMatrix::IDENTITY).unwrap_err();
+    assert!(e.contains("node count"), "{e}");
+}
+
+/// A box chain halves each level to the nearest average, an odd edge
+/// repeating its last column, and refuses bytes of another size.
+#[test]
+fn a_box_chain_averages_two_by_two_blocks() {
+    // 3 by 2: the second column of the next level repeats column 2.
+    let rgba: Vec<u8> = [[0u8, 0, 0, 255], [100, 0, 0, 255], [40, 8, 0, 255]]
+        .into_iter()
+        .chain([[200, 0, 0, 255], [100, 4, 0, 255], [80, 8, 0, 255]])
+        .flatten()
+        .collect();
+    let image = box_chain(3, 2, &rgba, 2).unwrap();
+    assert_eq!((image.width, image.height, image.mips.len()), (3, 2, 2));
+    // level 1 is 1 by 1: columns 0 and 1 of both rows.
+    assert_eq!(image.mips[0], vec![100, 1, 0, 255]);
+    assert_eq!(image.mips[1], vec![100, 1, 0, 255]);
+    assert!(box_chain(3, 2, &rgba[1..], 1).is_none());
+    assert!(box_chain(0, 2, &[], 1).is_none());
+}
+
+/// A map's base bitmap is repainted in the world drawn from it: the
+/// invented textured BSP read from a map names its base bitmap, a repaint
+/// of the same size changes the centre pixel to the new colour, a repaint
+/// of another size changes nothing, and Lightmap only keeps its white.
+/// Skipped without a wgpu adapter.
+#[test]
+fn a_repainted_base_map_changes_the_drawn_world() {
+    use crate::fixture::TEX_BASE_RGBA;
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let (mut map, mut files) = textured();
+    let load = NativeLoad::read(&mut map, &mut files, 0).unwrap();
+    let bitmap = load.base_bitmaps[&0];
+    let camera = Camera {
+        target: [2.0, 2.0, 0.0],
+        yaw: 0.0,
+        pitch: 1.3,
+        distance: 3.0,
+        ..Camera::default()
+    };
+    let mut world = NativeWorld::new(&device, &queue, &load, Lighting::Flat);
+    assert!(world.draws_bitmap(bitmap));
+    assert!(!world.draws_bitmap(TagId(0x77)));
+    let (before, _) = centre_of(&device, &queue, &mut world, &camera);
+    let blue: Vec<u8> = [10u8, 20, 240, 255].repeat(16);
+    assert_eq!(world.repaint_base(&queue, bitmap, 4, 4, &blue), 1);
+    let (after, _) = centre_of(&device, &queue, &mut world, &camera);
+    assert_ne!(before, after, "the texture was written");
+    assert!(after[2] > 180 && after[0] < 80, "blue: {after:?} (was {before:?}, base {TEX_BASE_RGBA:?})");
+    // Another size is refused whole.
+    assert_eq!(world.repaint_base(&queue, bitmap, 2, 2, &blue[..16]), 0);
+    let (again, _) = centre_of(&device, &queue, &mut world, &camera);
+    assert_eq!(after, again);
+    // A bitmap no material took writes nothing.
+    assert_eq!(world.repaint_base(&queue, TagId(0x77), 4, 4, &blue), 0);
+    // Lightmap only draws white whatever the bitmap.
+    let flat = NativeWorld::new(&device, &queue, &load, Lighting::LightmapOnly);
+    assert_eq!(flat.repaint_base(&queue, bitmap, 4, 4, &blue), 0);
+}
+
+/// The invented coloured material ([`crate::fixture::fixture_with_shader_colour`])
+/// with its pass in `layer`, opened as a map, and its raw resources.
+fn coloured(layer: u8) -> (Map<std::io::Cursor<Vec<u8>>>, ResourceFiles) {
+    let bytes = crate::fixture::fixture_with_shader_colour(layer);
+    let mut files = ResourceFiles::new();
+    files.set_bytes(map::ResourceFile::Local, bytes.clone().into());
+    (
+        Map::from_reader(std::io::Cursor::new(bytes)).unwrap(),
+        files,
+    )
+}
+
+/// The floor's shader drawn alone on each shape plans its layer-5 pass
+/// and its base look, as the level does; in layer 1 the same pass is
+/// refused by name and nothing of it is drawn.
+#[test]
+fn a_material_preview_plans_the_materials_own_passes() {
+    use crate::fixture::{LAYERED_LAYER, id};
+    use preview::{Shape, material, material_draws};
+    for shape in [Shape::Sphere, Shape::Quad] {
+        let (mut map, mut files) = coloured(LAYERED_LAYER);
+        let p = material(&mut map, &mut files, id(6), shape).unwrap();
+        assert_eq!(p.shape, shape);
+        let d = material_draws(&p);
+        assert_eq!(d.base, None, "{shape:?}: {d:?}");
+        assert!(d.unresolved.is_empty(), "{d:?}");
+        assert!(d.drawn.contains(&LAYERED_LAYER), "{shape:?}: {d:?}");
+        assert!(
+            d.drawn
+                .iter()
+                .all(|&l| l == LAYERED_LAYER || l == layers_load::LAYER_3),
+            "{shape:?}: {d:?}"
+        );
+        assert!(
+            d.refused.iter().all(|(layer, _)| *layer == layers_load::LAYER_3),
+            "only layer 3 may stand aside for the base look: {d:?}"
+        );
+    }
+    let (mut map, mut files) = coloured(1);
+    let p = material(&mut map, &mut files, id(6), Shape::Sphere).unwrap();
+    let d = material_draws(&p);
+    assert!(!d.drawn.contains(&1), "{d:?}");
+    let (_, why) = d.refused.iter().find(|(l, _)| *l == 1).expect("layer 1 named");
+    assert!(why.contains(LAYER_1_UNCHECKED), "{why}");
+}
+
+/// The shape geometry: the sphere's points are on the unit sphere with
+/// their normals, its triangles face outward (counter-clockwise from
+/// outside, as the square's from above) and index its vertices.
+#[test]
+fn the_preview_shapes_face_outward() {
+    use preview::{quad, sphere};
+    let s = sphere();
+    let n = s.positions.len();
+    assert_eq!(s.normals.len(), n);
+    assert_eq!((s.tangents.len(), s.binormals.len(), s.uvs.len()), (n, n, n));
+    for p in &s.positions {
+        let r = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+        assert!((r - 1.0).abs() < 1e-5, "{p:?}");
+    }
+    let facing = |sec: &SectionInput| {
+        let mut out = 0usize;
+        for t in &sec.parts[0].triangles {
+            let [a, b, c] = (*t).map(|i| sec.positions[usize::from(i)]);
+            let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            let n = [
+                e1[1] * e2[2] - e1[2] * e2[1],
+                e1[2] * e2[0] - e1[0] * e2[2],
+                e1[0] * e2[1] - e1[1] * e2[0],
+            ];
+            let mid = [
+                (a[0] + b[0] + c[0]) / 3.0,
+                (a[1] + b[1] + c[1]) / 3.0,
+                (a[2] + b[2] + c[2]) / 3.0,
+            ];
+            let outward = sec.normals[usize::from(t[0])];
+            let dir = if sec.positions.len() == 4 { outward } else { mid };
+            let dot = n[0] * dir[0] + n[1] * dir[1] + n[2] * dir[2];
+            // A pole's triangles have no area: they face nowhere.
+            if dot < -1e-7 {
+                out += 1;
+            }
+            assert!(t.iter().all(|&i| usize::from(i) < sec.positions.len()));
+        }
+        out
+    };
+    assert_eq!(facing(&s), 0, "every sphere triangle faces out");
+    assert_eq!(facing(&quad()), 0, "the square faces up");
+}
+
+/// On the GPU: the coloured material on a sphere draws its pass's
+/// colour over the base look, and an edit of the colour parameter in
+/// the map's bytes changes the picture to the new colour; in layer 1
+/// the pass is absent and the base look alone is drawn. Skipped without
+/// a wgpu adapter.
+#[test]
+fn a_material_preview_draws_its_colour_and_follows_an_edit() {
+    use crate::fixture::{LAYERED_LAYER, SHADER_COLOURS, id, put};
+    use preview::{Shape, material, render_material};
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let draw = |bytes: Vec<u8>| -> Vec<[u8; 4]> {
+        let mut files = ResourceFiles::new();
+        files.set_bytes(map::ResourceFile::Local, bytes.clone().into());
+        let mut map = Map::from_reader(std::io::Cursor::new(bytes)).unwrap();
+        let p = material(&mut map, &mut files, id(6), Shape::Sphere).unwrap();
+        let tex = render_material(&device, &queue, &p, [64, 64], [0.0; 3]);
+        read_pixels(&device, &queue, &tex)
+    };
+    let green = |p: &[u8; 4]| p[1] > 250 && p[0] < 5 && p[2] < 5;
+    let red = |p: &[u8; 4]| p[0] > 250 && p[1] < 5 && p[2] < 5;
+    let before = draw(crate::fixture::fixture_with_shader_colour(LAYERED_LAYER));
+    let lit = before.iter().filter(|p| p[..3] != [0, 0, 0]).count();
+    assert!(lit > 200, "the sphere fills the view: {lit}");
+    // The pass draws at the base look's depth (the same position code):
+    // all but a stray edge pixel is its colour.
+    let most = |n: usize| n * 100 >= lit * 95;
+    assert!(
+        most(before.iter().filter(|p| green(p)).count()),
+        "the sphere is the pass's green"
+    );
+    let mut edited = crate::fixture::fixture_with_shader_colour(LAYERED_LAYER);
+    put(&mut edited, crate::fixture::META_FILE + SHADER_COLOURS, 0xffff_0000);
+    let after = draw(edited);
+    assert!(most(after.iter().filter(|p| red(p)).count()), "the edit shows");
+    let refused = draw(crate::fixture::fixture_with_shader_colour(1));
+    assert_eq!(refused.iter().filter(|p| green(p)).count(), 0, "layer 1 is absent");
+    assert!(refused.iter().filter(|p| p[..3] != [0, 0, 0]).count() > 200, "the base look draws");
+}
+
+/// The floor's final C0 red lane follows a one-second ramp. Its green
+/// and blue lanes still come from the authored colour.
+#[test]
+fn material_at_and_the_playing_clock_sample_the_same_pixels() {
+    use crate::fixture::{self, FINAL_C0, LAYERED_LAYER, META, META_FILE, TEX_SHAD, id, put, putf};
+    use preview::{MaterialSurface, Shape, material_at, render_material};
+
+    let mut bytes = fixture::fixture_with_shader_colour(LAYERED_LAYER);
+    // Free space after the vertex shader in the fixture's metadata.
+    let table = 0x2c00;
+    let post = META_FILE + TEX_SHAD + 0x60;
+    for (field, count, relative) in [
+        (0x1c, 1, 0x00), // instance LOD, mask and six layer entries
+        (0x24, 6, 0x08),
+        (0x2c, 1, 0x14), // one pass and its animation ranges
+        (0x34, 1, 0x18),
+        (0x3c, 1, 0x28), // time property, ref, range and binding
+        (0x44, 1, 0x40),
+        (0x4c, 1, 0x44),
+        (0x54, 1, 0x48),
+    ] {
+        put(&mut bytes, post + field, count);
+        put(&mut bytes, post + field + 4, META + (table + relative) as u32);
+    }
+    let at = META_FILE + table;
+    put(&mut bytes, at, 1 << LAYERED_LAYER);
+    for (offset, count) in [
+        (4, 6u16),
+        (0x08 + 2 * usize::from(LAYERED_LAYER), 1),
+        (0x14, 1),
+        (0x18 + 6, 1),
+        (0x44, 1),
+    ] {
+        bytes[at + offset..at + offset + 2].copy_from_slice(&(count << 9).to_le_bytes());
+    }
+    putf(&mut bytes, at + 0x28 + 8, 1.0); // period
+    put(&mut bytes, at + 0x28 + 12, 20);
+    put(&mut bytes, at + 0x28 + 16, META + table as u32 + 0x50);
+    putf(&mut bytes, at + 0x50 + 8, 1.0); // identity function, range [0, 1]
+    bytes[at + 0x48..at + 0x4a].copy_from_slice(&FINAL_C0.to_le_bytes());
+
+    let mut files = ResourceFiles::new();
+    files.set_bytes(map::ResourceFile::Local, bytes.clone().into());
+    let mut map = Map::from_reader(std::io::Cursor::new(bytes)).unwrap();
+    let mut sample = |time| material_at(&mut map, &mut files, id(6), Shape::Sphere, time).unwrap();
+    let start = sample(0.0);
+    let half = sample(0.5);
+    let plan = |p: &preview::MaterialPreview| {
+        let layer = &p.load.layers().unwrap().plans()[&LAYERED_LAYER];
+        assert!(layer.drawn.contains(&0), "{:?}", layer.refused);
+        layer.constants[&0].clone()
+    };
+    assert_ne!(plan(&start), plan(&half));
+    assert_eq!(plan(&start), plan(&sample(1.0)));
+
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let mut surface = MaterialSurface::new(&device, &queue, &start, [64, 64]);
+    surface.draw(&device, &queue, &start, [0.0; 3]);
+    let first = read_pixels(&device, &queue, surface.color());
+    surface.draw_at(&device, &queue, &start, [0.0; 3], 0.5);
+    let playing = read_pixels(&device, &queue, surface.color());
+    assert_ne!(first, playing);
+    let at_half = render_material(&device, &queue, &half, [64, 64], [0.0; 3]);
+    assert_eq!(playing, read_pixels(&device, &queue, &at_half));
+    surface.draw_at(&device, &queue, &start, [0.0; 3], 1.0);
+    assert_eq!(first, read_pixels(&device, &queue, surface.color()));
+}
+
+/// Every pixel of a 64 by 64 colour texture.
+fn read_pixels(device: &wgpu::Device, queue: &wgpu::Queue, color: &wgpu::Texture) -> Vec<[u8; 4]> {
+    let row = 256u32;
+    let buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: u64::from(row * 64),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut enc = device.create_command_encoder(&Default::default());
+    enc.copy_texture_to_buffer(
+        color.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buf,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row),
+                rows_per_image: Some(64),
+            },
+        },
+        wgpu::Extent3d {
+            width: 64,
+            height: 64,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([enc.finish()]);
+    buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    let data = buf.slice(..).get_mapped_range().unwrap();
+    (0..64 * 64)
+        .map(|i| {
+            let at = (i / 64) * row as usize + (i % 64) * 4;
+            [data[at], data[at + 1], data[at + 2], data[at + 3]]
+        })
+        .collect()
 }

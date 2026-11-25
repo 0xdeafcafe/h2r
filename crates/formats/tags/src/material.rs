@@ -131,6 +131,9 @@ pub struct VectorBinding {
 pub struct AnimatedTarget {
     pub kind: AnimationKind,
     pub binding: AnimationBinding,
+    /// Active pixel destination (C1, slot) after fragment selection. Slot
+    /// 8 is the final combiner. Inactive and non-pixel bindings have none.
+    pub pixel_register: Option<(bool, u8)>,
     /// The property components feeding it.
     pub properties: Vec<PropertyRef>,
 }
@@ -141,6 +144,22 @@ pub enum AnimationKind {
     StageState,
     PixelConstant,
     VertexConstant,
+}
+
+impl AnimationKind {
+    /// Direct constants dereference the range start even when its count is
+    /// zero. Texture transform modes use the bitmap slot instead.
+    pub fn property_refs(self, sp: &ShaderPostprocess, binding: AnimationBinding) -> &[PropertyRef] {
+        let Some(range) = sp.property_ranges.get(usize::from(binding.properties)) else { return &[] };
+        let word = u16::from_le_bytes([binding.target, binding.b1]);
+        match self {
+            Self::VertexConstant if (word >> 5) & 31 >= 5 => &[],
+            Self::VertexConstant | Self::PixelConstant => {
+                sp.property_refs.get(usize::from(range.start)).map_or(&[], std::slice::from_ref)
+            }
+            _ => sp.property_refs.get(range.indices()).unwrap_or(&[]),
+        }
+    }
 }
 
 /// One resolved implementation of a pass: everything a D3D/WGSL layer needs.
@@ -219,6 +238,22 @@ pub struct Material {
     pub template: TagId,
     pub inputs: EngineInputs,
     pub layers: Vec<ResolvedLayer>,
+}
+
+impl Material {
+    /// Whether the material is built from tag `tag`: its shader, its
+    /// template, a pass or an implementation's vertex shader. Matched by
+    /// tag index (the datum's low half), as a guest datum and the map's
+    /// index entry name one tag whatever their salts
+    /// (docs/editor/realtime-edits.md, "The native refresh").
+    pub fn uses(&self, tag: TagId) -> bool {
+        let same = |t: TagId| t.0 & 0xffff == tag.0 & 0xffff;
+        same(self.shader)
+            || same(self.template)
+            || self.layers.iter().flat_map(|l| &l.passes).any(|p| {
+                same(p.pass) || p.implementations.iter().any(|i| i.vertex_shader.is_some_and(same))
+            })
+    }
 }
 
 /// Parameter storage shared by consecutive full material binds. The two
@@ -343,12 +378,14 @@ impl ShaderLibrary {
     /// Loads the metadata region and tag table of a map.
     pub fn read<R: std::io::Read + std::io::Seek>(map: &mut map::Map<R>) -> Result<Self> {
         let meta = Metadata::read(map)?;
-        let tags: Vec<_> = map
+        Ok(Self::with_metadata(map, meta))
+    }
+    pub fn with_metadata<R: std::io::Read + std::io::Seek>(map: &map::Map<R>, meta: Metadata) -> Self {
+        let tags = map
             .tags()
             .iter()
-            .filter_map(|t| t.location.map(|l| (t.id, t.group, l.address)))
-            .collect();
-        Ok(Self::new(meta, tags))
+            .filter_map(|t| t.location.map(|l| (t.id, t.group, l.address)));
+        Self::new(meta, tags)
     }
     pub fn metadata(&self) -> &Metadata {
         &self.meta
@@ -788,12 +825,19 @@ impl ShaderLibrary {
             ] {
                 work.charge(usize::from(r.count))?;
                 for binding in &sp.animations[r.indices()] {
-                    let pr = sp.property_ranges[usize::from(binding.properties)];
-                    work.charge(usize::from(pr.count))?;
+                    let refs = kind.property_refs(sp, *binding);
+                    work.charge(refs.len())?;
+                    let pixel_register = if kind == AnimationKind::PixelConstant {
+                        let w = u16::from_le_bytes([binding.target, binding.b1]);
+                        colour_register(w, spas, imp, &frag_offset, inputs)?
+                    } else {
+                        None
+                    };
                     animated.push(AnimatedTarget {
+                        pixel_register,
                         kind,
                         binding: *binding,
-                        properties: sp.property_refs[pr.indices()].to_vec(),
+                        properties: refs.to_vec(),
                     });
                 }
             }
@@ -1049,14 +1093,28 @@ fn apply_color(
     frag_offset: &[u8; 8],
     inputs: &EngineInputs,
 ) -> Result<Option<(bool, u8)>> {
+    let Some(register) = colour_register(w, spas, imp, frag_offset, inputs)? else {
+        return Ok(None);
+    };
+    write_colour(ps, c0w, c1w, register, mask, color)?;
+    Ok(Some(register))
+}
+
+/// Shared by instance, engine and animated combiner-constant writes.
+fn colour_register(
+    w: u16,
+    spas: &PassPostprocess,
+    imp: &Implementation,
+    frag_offset: &[u8; 8],
+    inputs: &EngineInputs,
+) -> Result<Option<(bool, u8)>> {
     let c1 = w & 0x400 != 0;
     let fin = w & 0x3c0 == 0x200;
     let mut reg = usize::from((w >> 6) & 0xf);
     if !imp.fragments.is_empty() {
         let frag = usize::from(w & 7);
-        let f = spas
-            .fragments
-            .get(usize::from(imp.fragments.start) + frag)
+        let f = spas.fragments[imp.fragments.indices()]
+            .get(frag)
             .ok_or(Error::Invalid("colour binding names a missing fragment"))?;
         if f.selector != -1 {
             let s = usize::try_from(f.selector)
@@ -1073,21 +1131,41 @@ fn apply_color(
             reg += usize::from(frag_offset[frag]);
         }
     }
-    let (idx, bit) = if fin {
-        (if c1 { PS_FINAL_C1 } else { PS_FINAL_C0 }, 8)
-    } else if reg < 8 {
-        (if c1 { PS_C1 } else { PS_C0 } + reg, reg)
-    } else {
+    if !fin && reg >= 8 {
         return Err(Error::Invalid("colour binding register above 8"));
+    }
+    Ok(Some((c1, if fin { 8 } else { reg as u8 })))
+}
+
+fn write_colour(
+    ps: &mut [u8; PSDEF_SIZE],
+    c0w: &mut u16,
+    c1w: &mut u16,
+    (c1, slot): (bool, u8),
+    mask: u32,
+    color: u32,
+) -> Result<()> {
+    let idx = match slot {
+        0..=7 => (if c1 { PS_C1 } else { PS_C0 }) + usize::from(slot),
+        8 => if c1 { PS_FINAL_C1 } else { PS_FINAL_C0 },
+        _ => return Err(Error::Invalid("colour binding register above 8")),
     };
     let old = word(ps, idx);
     set_word(ps, idx, (old & !mask) | (color & mask));
     if c1 {
-        *c1w |= 1 << bit;
+        *c1w |= 1 << slot;
     } else {
-        *c0w |= 1 << bit;
+        *c0w |= 1 << slot;
     }
-    Ok(Some((c1, bit as u8)))
+    Ok(())
+}
+
+impl ResolvedImplementation {
+    /// Merge the selected ARGB lanes into one resolved combiner constant and
+    /// mark the constant for upload. Slot 8 selects the final combiner.
+    pub fn write_pixel_constant(&mut self, register: (bool, u8), mask: u32, color: u32) -> Result<()> {
+        write_colour(&mut self.pixel_shader, &mut self.c0_written, &mut self.c1_written, register, mask, color)
+    }
 }
 
 /// `0x00019ca0`'s packing of an engine value into an ARGB combiner
@@ -1210,6 +1288,151 @@ impl EngineVertexConstant {
     }
 }
 
+/// How an engine-driven state's value is converted for its state (byte 3
+/// of its entry in [`ANIMATED_RENDER_STATES`] or [`ANIMATED_STAGE_STATES`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EngineStateKind {
+    /// 0: a colour word.
+    Colour,
+    /// 1: the float's bits.
+    Float,
+    /// 2: the float rounded to an integer (`fistp`, `0x0001a1f8`).
+    Integer,
+}
+
+/// Where an engine-driven state's value comes from in the shader draw's
+/// context (`0x0001a170`, `0x0001ab50`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EngineStateSource {
+    /// Source byte 1: the scalar at `ctx + 0x5c + 4·slot`, the shader's
+    /// evaluated parameter (`0x0001a1cd`).
+    Scalar(u8),
+    /// Any other source byte: the colour at `ctx + 0x108 + 12·slot`,
+    /// packed by `0x00131ed0` into the state's low 24 bits, its alpha byte
+    /// kept (`0x0001a89c`).
+    Colour(u8),
+}
+
+/// One engine-driven render or texture-stage state: an entry of an
+/// implementation's `+0x11e` (render) or `+0x120` (stage) range of the
+/// `spas` bindings, as `0x0001a170` and `0x0001ab50` read it. A render
+/// binding is `[target, source, -, slot]`, a stage binding `[stage,
+/// target, source, slot]`; the target indexes [`ANIMATED_RENDER_STATES`]
+/// (`0x467020`) or [`ANIMATED_STAGE_STATES`] (`0x46703c`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EngineState {
+    /// The D3D render or texture-stage state (the table entry's word).
+    pub state: u8,
+    /// The texture stage, for a stage state.
+    pub stage: Option<u8>,
+    pub kind: EngineStateKind,
+    pub source: EngineStateSource,
+}
+
+impl EngineState {
+    /// A render-state binding, or `None` when its target is past the
+    /// table (the guest would read past it).
+    pub fn render(e: ExternalBinding) -> Option<Self> {
+        let [target, source, _, slot] = e.bytes;
+        Self::of(&ANIMATED_RENDER_STATES, target, None, source, slot)
+    }
+
+    /// A texture-stage-state binding, or `None` when its target is past
+    /// the table or its stage past the four stages.
+    pub fn stage(e: ExternalBinding) -> Option<Self> {
+        let [stage, target, source, slot] = e.bytes;
+        if stage >= 4 {
+            return None;
+        }
+        Self::of(&ANIMATED_STAGE_STATES, target, Some(stage), source, slot)
+    }
+
+    fn of(table: &[(u8, u8, u8)], target: u8, stage: Option<u8>, source: u8, slot: u8) -> Option<Self> {
+        let &(state, _, kind) = table.get(usize::from(target))?;
+        let kind = match kind {
+            0 => EngineStateKind::Colour,
+            1 => EngineStateKind::Float,
+            _ => EngineStateKind::Integer,
+        };
+        let source = if source == 1 { EngineStateSource::Scalar(slot) } else { EngineStateSource::Colour(slot) };
+        Some(Self { state, stage, kind, source })
+    }
+
+    /// The state's name ([`render_state_name`], [`stage_state_name`]).
+    pub fn name(self) -> Option<&'static str> {
+        match self.stage {
+            None => render_state_name(self.state),
+            Some(_) => stage_state_name(u16::from(self.state)),
+        }
+    }
+
+    /// The state's value for a draw whose engine inputs are `inputs`,
+    /// over `current`, the value the state holds (the D3D shadow the guest
+    /// reads, `0x00407498` or `0x00404dd0`): `0x0001ae70` fills the
+    /// context's scalar slots from `inputs.scalars` and its colour slots
+    /// from `inputs.vectors`, and `0x0001a170` and `0x0001ab50` convert
+    /// them alike:
+    ///
+    /// - a scalar of kind [`EngineStateKind::Integer`] is rounded
+    ///   (`fistp`, `0x0001a1f8`), of kind [`EngineStateKind::Float`] its
+    ///   bits, of kind [`EngineStateKind::Colour`] times [`BYTE_SCALE`],
+    ///   rounded, into the top byte over `current`'s low 24 bits
+    ///   (`0x0001a801`);
+    /// - a colour is packed by `0x00131ed0`, each channel times
+    ///   [`BYTE_SCALE`], rounded and masked to a byte, red at bit 16, green
+    ///   at 8, blue at 0, into `current`'s low 24 bits, its top byte kept
+    ///   (`0x0001a89c`), whatever the kind.
+    ///
+    /// Rounding is to nearest, ties to even (the x87 default; the
+    /// products are exact at 53 bits). `None` when the slot is past the
+    /// inputs (the guest would read the next field of its context).
+    pub fn value(self, inputs: &EngineInputs, current: u32) -> Option<u32> {
+        match self.source {
+            EngineStateSource::Scalar(slot) => {
+                let x = f64::from(*inputs.scalars.get(usize::from(slot))?);
+                Some(match self.kind {
+                    EngineStateKind::Integer => fistp(x),
+                    EngineStateKind::Float => (x as f32).to_bits(),
+                    EngineStateKind::Colour => (current & 0x00ff_ffff) | (fistp(x * f64::from(BYTE_SCALE)) << 24),
+                })
+            }
+            EngineStateSource::Colour(slot) => {
+                let v = inputs.vectors.get(usize::from(slot))?;
+                Some((current & 0xff00_0000) | pack_colour(*v))
+            }
+        }
+    }
+}
+
+/// The fraction-to-byte scale at `0x0045dc38`, 255.
+pub const BYTE_SCALE: f32 = 255.0;
+
+/// `fistp m32` under round-to-nearest-even: out of range or NaN gives the
+/// integer indefinite, `0x80000000`.
+fn fistp(x: f64) -> u32 {
+    let r = x.round_ties_even();
+    if r.is_nan() || !(-2_147_483_648.0..=2_147_483_647.0).contains(&r) {
+        return 0x8000_0000;
+    }
+    r as i32 as u32
+}
+
+/// `0x00131ed0`: a colour as a D3D word's low 24 bits, each channel times
+/// [`BYTE_SCALE`], rounded and masked to a byte (no clamp: 1.5 wraps).
+fn pack_colour([r, g, b]: [f32; 3]) -> u32 {
+    let byte = |c: f32| fistp(f64::from(c) * f64::from(BYTE_SCALE)) & 0xff;
+    (byte(r) << 16) | (byte(g) << 8) | byte(b)
+}
+
+/// `imp`'s engine-driven render and texture-stage states, in the order
+/// `0x0001a170` and `0x0001ab50` apply them, or `None` when one does not
+/// decode ([`EngineState`]).
+pub fn engine_states(imp: &ResolvedImplementation) -> Option<(Vec<EngineState>, Vec<EngineState>)> {
+    let render = imp.engine_render_states.iter().map(|&e| EngineState::render(e)).collect::<Option<Vec<_>>>()?;
+    let stage = imp.engine_stage_states.iter().map(|&e| EngineState::stage(e)).collect::<Option<Vec<_>>>()?;
+    Some((render, stage))
+}
+
 /// `imp`'s engine-driven vertex constants in the order `0x00019be0`
 /// applies them.
 pub fn engine_vertex_constants(spas: &PassPostprocess, imp: &Implementation) -> Vec<EngineVertexConstant> {
@@ -1238,16 +1461,18 @@ fn stage_dims(textures: &[Option<StageTexture>; 4], stage: usize) -> (f32, f32) 
 /// complement, 2..5 a cosine or sine wave over one period, scaled into
 /// 0..1 and clamped; anything else the value itself.
 pub fn engine_scalar(x: f32, transform: usize) -> f32 {
-    use std::f32::consts::TAU;
+    // The guest multiplies two singles on the x87 stack and keeps the
+    // angle there through the trig operation. Narrow only the result.
+    let angle = f64::from(std::f32::consts::TAU) * f64::from(x);
     let y = match transform {
-        1 => 1.0 - x,
-        2 => ((TAU * x).cos() + 1.0) * 0.5,
-        3 => 0.5 - (TAU * x).cos() * 0.5,
-        4 => ((TAU * x).sin() + 1.0) * 0.5,
-        5 => 0.5 - (TAU * x).sin() * 0.5,
-        _ => x,
+        1 => return 1.0 - x,
+        2 => (angle.cos() + 1.0) * 0.5,
+        3 => 0.5 - angle.cos() * 0.5,
+        4 => (angle.sin() + 1.0) * 0.5,
+        5 => 0.5 - angle.sin() * 0.5,
+        _ => return x,
     };
-    if (2..=5).contains(&transform) { y.clamp(0.0, 1.0) } else { y }
+    y.clamp(0.0, 1.0) as f32
 }
 
 fn eval_engine(
@@ -1294,5 +1519,72 @@ fn eval_size(out: &mut [f32; 4], mode: usize, dims: (f32, f32)) {
         16 => (out[0], out[1], out[2]) = (w, h, 1.0),
         17 => (out[0], out[1], out[2]) = (0.0, 0.0, 0.0),
         _ => *out = [0.0; 4],
+    }
+}
+
+#[cfg(test)]
+mod uses_tests {
+    use super::*;
+
+    fn implementation(vertex_shader: Option<TagId>) -> ResolvedImplementation {
+        ResolvedImplementation {
+            index: 0,
+            vertex_shader,
+            textures: [None, None, None, None],
+            stage_states: Vec::new(),
+            render_states: Vec::new(),
+            restore_states: Vec::new(),
+            pixel_shader: [0; PSDEF_SIZE],
+            variant: false,
+            c0_written: 0,
+            c1_written: 0,
+            pixel_constants_from_engine: false,
+            per_draw_inputs: false,
+            input_reads: InputReads::default(),
+            vector_bindings: Vec::new(),
+            scalar_bindings: Vec::new(),
+            vertex_constants: Vec::new(),
+            vertex_defaults: Vec::new(),
+            animated: Vec::new(),
+            engine_render_states: Vec::new(),
+            engine_stage_states: Vec::new(),
+            dimension_bindings: Vec::new(),
+        }
+    }
+
+    /// Invented datums: a shader, its template, two passes (one with no
+    /// implementations) and a vertex shader.
+    fn material() -> Material {
+        Material {
+            shader: TagId(0xe000_0001),
+            template: TagId(0xe000_0002),
+            inputs: EngineInputs::default(),
+            layers: vec![
+                ResolvedLayer {
+                    lod: 0,
+                    layer: 0,
+                    passes: vec![ResolvedPass { index: 0, pass: TagId(0xe000_0003), implementations: Vec::new() }],
+                },
+                ResolvedLayer {
+                    lod: 0,
+                    layer: 1,
+                    passes: vec![ResolvedPass {
+                        index: 0,
+                        pass: TagId(0xe000_0004),
+                        implementations: vec![implementation(None), implementation(Some(TagId(0xe000_0005)))],
+                    }],
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn a_material_uses_its_shader_template_passes_and_vertex_shaders() {
+        let m = material();
+        for n in 1..=5 {
+            assert!(m.uses(TagId(0xe000_0000 + n)), "{n}");
+        }
+        assert!(!m.uses(TagId(0xe000_0006)));
+        assert!(m.uses(TagId(0xf123_0003)), "another salt of the same index");
     }
 }

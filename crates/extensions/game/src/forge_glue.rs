@@ -3,7 +3,11 @@
 //! any map file still being read by the background worker.
 mod editing;
 pub mod gizmo;
-pub mod marker;
+pub mod ground;
+mod link;
+pub mod markers_world;
+pub mod nav;
+pub mod net;
 
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -26,8 +30,10 @@ use serde_json::{Value, json};
 
 use crate::forge_controls as controls;
 use crate::forge_map::{self, Loaded, Opened};
-use crate::ui_kit::spec::ScreenSpec;
 use editing::Editor;
+
+/// Ticks between rebuilds of the game type markers.
+const MARKS_EVERY: u32 = 3;
 
 type Shared = Arc<Mutex<Driver>>;
 type MapResult = Result<Opened, String>;
@@ -57,33 +63,110 @@ fn current() -> Option<Shared> {
     CURRENT.lock().unwrap_or_else(|e| e.into_inner()).upgrade()
 }
 
-/// The window draws this page over the current world frame.
-pub fn page() -> Option<ScreenSpec> {
+/// The other seats' drawn bodies, as the last tick left them: the
+/// presentation instances the native renderer's object pass draws. The
+/// local seat's own body is never drawn in its own view.
+pub fn monitor_bodies() -> Vec<forge::look::body::Draw> {
+    let Some(driver) = current() else {
+        return Vec::new();
+    };
+    driver.lock().unwrap_or_else(|e| e.into_inner()).bodies.clone()
+}
+
+/// What this machine draws as a monitor: the renderer's declaration and
+/// the source maps its catalogue holds. A film's recorded looks are measured
+/// against it (`theater::forge_film`, `monitor_look_source`); without a
+/// running Forge driver the catalogue is empty and every model look is
+/// drawn as the marker.
+pub fn can_draw() -> forge::look::session::CanDraw {
+    let maps = current()
+        .map(|driver| -> Vec<String> {
+            let driver = driver.lock().unwrap_or_else(|e| e.into_inner());
+            driver.looks.catalogue().iter().map(|e| e.sha256.clone()).collect()
+        })
+        .unwrap_or_default();
+    forge::look::session::CanDraw::ours(forge::look::BODIES_DRAWN, maps)
+}
+
+/// The bodies a film's monitor records give at the film tick Theater plays
+/// (docs/game/forge-monitor-appearance.md, "Theater"): the seats' looks and
+/// poses drawn by the code the live session uses, from this machine's
+/// catalogue. Empty outside a film that recorded monitors.
+pub fn playback_bodies(m: &dyn engine::GuestMemory) -> Vec<forge::look::body::Draw> {
+    if !crate::theater::forge_film::active() {
+        return Vec::new();
+    }
+    let catalogue = current()
+        .map(|driver| {
+            let driver = driver.lock().unwrap_or_else(|e| e.into_inner());
+            driver.looks.catalogue().to_vec()
+        })
+        .unwrap_or_default();
+    let bodies = forge::look::body::Bodies::new(&catalogue);
+    crate::theater::forge_film::draws(&bodies, |index| {
+        crate::pad_lightbar::palette_rgb(m, index).unwrap_or([0; 3])
+    })
+}
+
+/// The monitor the game's Appearance page draws beside the Spartan in
+/// `widget` (docs/game/forge-monitor-appearance.md, ML4b): the saved look
+/// of the profile on local slot 0, as this machine's catalogue can draw
+/// it. `None` leaves the page as retail draws it.
+pub fn appearance_body(
+    m: &dyn engine::GuestMemory,
+    widget: &forge::look::appearance::Widget,
+    seconds: f32,
+) -> Option<forge::look::body::Draw> {
+    let who = who_of(Some(m));
     let driver = current()?;
     let driver = driver.lock().unwrap_or_else(|e| e.into_inner());
-    driver.editor.as_ref()?.page()
+    let saved = forge::look::saved::load(driver.store.as_deref()?, &who.profile, who.colour).saved;
+    forge::look::appearance::beside(
+        widget,
+        Some(&saved),
+        driver.looks.catalogue(),
+        0,
+        seconds,
+        |index| crate::pad_lightbar::palette_rgb(m, index).unwrap_or([0; 3]),
+    )
 }
 
-/// World-space axes and the held object's outline, projected through the
-/// render frame's camera.
-pub fn gizmo() -> Option<gizmo::Axes> {
-    let (frame, extent) = {
-        let driver = current()?;
-        let driver = driver.lock().unwrap_or_else(|e| e.into_inner());
-        driver.editor.as_ref()?.ghost()?
-    };
-    gizmo::project(frame, extent)
+/// The host lights of the other seats' bodies (docs/game/
+/// forge-monitor-appearance.md, ML5), in the palette colours the loaded
+/// map holds: what the frame step's scene adds to each game view after
+/// the game's candidates (`render_bridge::scene_step::set_host_lights`).
+pub fn monitor_lights(m: &dyn engine::GuestMemory) -> Vec<frame_scene::Light> {
+    let mut bodies = monitor_bodies();
+    bodies.extend(playback_bodies(m));
+    host_lights(&bodies, |index| crate::pad_lightbar::palette_rgb(m, index))
 }
 
-/// A click on a compositor dialog's row. The Forge screens are the game's
-/// (`crate::forge_screens`), which take the mouse as the game does, so the
-/// compositor draws no dialog and no click is the session's.
-pub fn click(_row: usize) -> bool {
-    false
+/// The host light each drawn body carries: at the body's origin, the
+/// look's light colour from `rgb`, its radius, no shadow. A marker draws
+/// no light, and neither does a body whose colour the map does not hold.
+pub fn host_lights(
+    draws: &[forge::look::body::Draw],
+    rgb: impl Fn(u8) -> Option<[u8; 3]>,
+) -> Vec<frame_scene::Light> {
+    draws
+        .iter()
+        .filter(|d| d.model.is_some())
+        .filter_map(|d| {
+            let light = d.light?;
+            let [r, g, b] = rgb(light.colour)?;
+            let colour = [r, g, b].map(|c| f32::from(c) / 255.0);
+            Some(frame_scene::Light::host_light(
+                d.seat,
+                d.frame.position,
+                colour,
+                light.radius,
+            ))
+        })
+        .collect()
 }
 
 fn admitted(m: &dyn engine::GuestMemory, generation: u64) -> bool {
-    GENERATION.load(Ordering::Acquire) == generation && forge_map::admitted(m)
+    GENERATION.load(Ordering::Acquire) == generation && forge_map::admitted_session(m)
 }
 
 struct Driver {
@@ -94,11 +177,22 @@ struct Driver {
     calls: calls::Shared,
     vfs: Option<Arc<Mutex<vfs::Vfs>>>,
     data: PathBuf,
+    /// The co-op link a shared session's lanes run over, offered each
+    /// tick before anything else the driver does.
+    link: link::CoopLink,
     loaded: Option<Loaded>,
     opening: Option<Receiver<MapResult>>,
     editor: Option<Editor>,
     /// The saved map the editor loads at its first tick.
     draft: Option<String>,
+    /// The game type markers the last rebuild made, and the tick of it
+    /// ([`markers_world`]).
+    marks: Arc<Vec<markers_world::Entry>>,
+    marks_at: Option<u32>,
+    marks_preview: bool,
+    /// The other seats' drawn bodies as the last tick left them, for the
+    /// native renderer's object pass ([`monitor_bodies`]).
+    bodies: Vec<forge::look::body::Draw>,
     reason: String,
 }
 
@@ -110,9 +204,17 @@ impl Driver {
         self.looks.close();
         self.opening = None;
         self.loaded = None;
+        self.marks = Arc::default();
+        self.marks_at = None;
+        self.marks_preview = false;
+        markers_world::clear();
+        self.bodies.clear();
+        self.link.reset();
         self.reason = "Waiting for a local multiplayer map.".into();
         controls::publish(controls::State::default());
         crate::forge_screens::publish(crate::forge_screens::Facts::default());
+        crate::forge_readout::clear();
+        crate::forge_hud::clear();
     }
 
     fn open(&mut self, loaded: &Loaded) -> Result<(), String> {
@@ -132,6 +234,9 @@ impl Driver {
     }
 
     fn tick(&mut self, m: &dyn engine::GuestMemory) {
+        // The co-op link offers its lanes before anything else, so a
+        // session that opens this tick finds them.
+        self.link.tick(m);
         if self
             .loaded
             .as_ref()
@@ -140,7 +245,7 @@ impl Driver {
             self.reset();
         }
         if self.loaded.is_none() {
-            if !forge_map::admitted(m) {
+            if !forge_map::admitted_session(m) {
                 return;
             }
             // The monitor is a Forge lobby's (or the level boot's) only
@@ -171,7 +276,17 @@ impl Driver {
             };
             self.opening = None;
             match result {
-                Ok(opened) => {
+                Ok(mut opened) => {
+                    // The map's own entries, read once from the running
+                    // scenario before any edit (docs/game/forge-map-variants.md,
+                    // "Applying an edit in a session").
+                    let rows = forge_map::rows::read(m, loaded.scenario, &|datum: u32| {
+                        opened.names.get(&datum).cloned()
+                    });
+                    opened.session = opened.session.with_base(rows.into_base());
+                    for line in opened.session.left_out() {
+                        eprintln!("forge: the map's things leave out {line}");
+                    }
                     self.draft = take_draft().or_else(crate::lobby_start::forge_map);
                     let mut editor =
                         Editor::new(opened, &self.data, loaded.scenario, self.calls.clone());
@@ -182,6 +297,20 @@ impl Driver {
                         .unwrap_or_default();
                     if let Some(notice) = self.looks.open(self.store.as_deref(), &who_of(Some(m))) {
                         editor.say(notice, tick);
+                    }
+                    // A synchronous network game's session is shared over
+                    // the Forge lanes its link offered.
+                    if forge_map::admitted_shared(m) {
+                        let Some(offer) = net::take() else {
+                            self.reason = "The co-op link has no Forge channel.".into();
+                            return;
+                        };
+                        let name = who_of(Some(m)).profile;
+                        let monitor = monitor_start(m, &self.looks);
+                        if let Err(e) = editor.open_shared(offer, tick, &name, &monitor) {
+                            self.reason = e;
+                            return;
+                        }
                     }
                     self.editor = Some(editor);
                 }
@@ -206,7 +335,30 @@ impl Driver {
             if let Some(name) = self.draft.take() {
                 e.load_draft(tick, name);
             }
-            e.tick(tick, bsp, crate::forge_screens::ui_up(m));
+            // The session's game type decides which things the tool aims
+            // at (docs/game/forge-map-variants.md, "Game types").
+            let game = GameGlobals::current(m)
+                .ok()
+                .flatten()
+                .and_then(|g| g.options().variant().engine(m).ok());
+            e.tick(tick, bsp, crate::forge_screens::ui_up(m), game, m);
+            let now = tick as f32 / 30.;
+            crate::forge_readout::publish(e.readout_scene(game));
+            crate::forge_hud::publish(e.monitor_hud(now));
+            // The things are rebuilt a few times a second; the aimed and
+            // held things move the selection every tick.
+            let preview = e.marker_preview();
+            if preview || self.marks_preview || self
+                .marks_at
+                .is_none_or(|at| tick < at || tick - at >= MARKS_EVERY)
+            {
+                self.marks = Arc::new(e.marker_entries());
+                self.marks_at = Some(tick);
+            }
+            self.marks_preview = preview;
+            let (aimed, held) = e.marker_pins();
+            markers_world::publish(&self.marks, aimed, held);
+            self.bodies = e.monitor_draws(now, now);
         }
     }
 }
@@ -238,6 +390,8 @@ impl Feature for Hooks {
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         controls::camera_hooks(b)?;
+        crate::forge_readout::hook(b)?;
+        crate::forge_hud::hook(b)?;
         let driver = self.0.clone();
         b.game().on_start("reset the Forge document", move |_| {
             controls::forget_park();
@@ -254,6 +408,7 @@ impl Feature for Hooks {
                 .is_some_and(|v| v != 0)
             {
                 driver.lock().unwrap_or_else(|e| e.into_inner()).reset();
+                net::clear();
             }
         });
         let driver = self.0.clone();
@@ -270,6 +425,36 @@ impl Feature for Hooks {
                 .then(|| "The local Forge session owns a live edit log.".into())
         }));
         Ok(())
+    }
+}
+
+/// What the session's monitor channel starts with (docs/game/
+/// forge-monitor-appearance.md, ML7): the local seat's look, what this
+/// machine can draw as its hello says, the host model list's catalogue
+/// and the palette's RGB.
+fn monitor_start(m: &dyn engine::GuestMemory, looks: &Looks) -> editing::MonitorStart {
+    let colour = crate::pad_lightbar::seat_colour(m, 0).unwrap_or(0);
+    let resolved = looks
+        .session()
+        .cloned()
+        .unwrap_or_else(|| forge::look::MonitorLook::default_for(colour));
+    let catalogue = looks.catalogue().to_vec();
+    let base = catalogue
+        .iter()
+        .find(|e| e.key == resolved.model)
+        .filter(|_| !resolved.is_marker())
+        .map(|e| e.sha256.clone());
+    editing::MonitorStart {
+        base,
+        can: forge::look::session::CanDraw::ours(
+            forge::look::BODIES_DRAWN,
+            catalogue.iter().map(|e| e.sha256.clone()).collect(),
+        ),
+        look: resolved,
+        catalogue,
+        palette: (0..forge::look::PALETTE)
+            .map(|index| crate::pad_lightbar::palette_rgb(m, index).unwrap_or([0; 3]))
+            .collect(),
     }
 }
 
@@ -311,6 +496,7 @@ pub fn install(
     vfs: Option<Arc<Mutex<vfs::Vfs>>>,
     data: &Path,
     store: Option<Arc<settings::Store>>,
+    live: Option<Arc<live_hle::Hle>>,
 ) -> anyhow::Result<()> {
     let calls = crate::lobby_start::install_queue(registry, agent)?;
     let (models, note) = catalogue(data);
@@ -320,10 +506,15 @@ pub fn install(
         calls,
         vfs,
         data: data.into(),
+        link: link::CoopLink::new(Box::new(link::HleTransport::new(live))),
         loaded: None,
         opening: None,
         editor: None,
         draft: None,
+        marks: Arc::default(),
+        marks_at: None,
+        marks_preview: false,
+        bodies: Vec::new(),
         reason: "Waiting for a local multiplayer map.".into(),
     }));
     if registry
@@ -384,19 +575,49 @@ impl LocalApi for Backend {
             .unwrap_or_else(|reason| json!({"session":"inactive","reason":reason})))
     }
 
+    fn session(&self) -> Result<Arc<forge::Session>, String> {
+        self.read(|e| e.session.clone())
+    }
+
+    fn ground(&self) -> Result<Value, String> {
+        self.read(Editor::ground_json)
+    }
+
+    fn ground_build(&self, if_stale: bool) -> Result<local::GroundReply, String> {
+        let mut driver = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(e) = driver.editor.as_mut() else {
+            return Err(driver.reason.clone());
+        };
+        e.ground_build(if_stale)
+    }
+
+    fn nav(&self) -> Result<Value, String> {
+        self.read(Editor::nav_json)
+    }
+
+    fn nav_generate(&self) -> Result<local::NavReply, String> {
+        let mut driver = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(e) = driver.editor.as_mut() else {
+            return Err(driver.reason.clone());
+        };
+        e.nav_generate()
+    }
+
     fn document(&self) -> Result<ForgeDoc, String> {
         self.read(|e| e.session.document().clone())
     }
 
     fn log(&self, since: u32) -> Result<Vec<Entry>, String> {
-        self.read(|e| {
-            e.session
-                .log()
-                .iter()
-                .filter(|entry| entry.seq > since)
-                .cloned()
-                .collect()
-        })
+        self.read(|e| e.log_since(since))
+    }
+
+    fn wait_ticks(&self) -> u64 {
+        let driver = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if driver.editor.as_ref().is_some_and(Editor::is_shared) {
+            agent::forge::net::WAIT_TICKS
+        } else {
+            30
+        }
     }
 
     fn input(&self, m: &dyn engine::GuestMemory, input: forge::tool::Input) -> Result<(), String> {
@@ -418,5 +639,51 @@ impl LocalApi for Backend {
             return Err(driver.reason.clone());
         };
         e.propose(tick, op, was)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use forge::look::body::{Draw, Light};
+
+    fn draw(seat: u8, model: Option<u32>, light: Option<Light>) -> Draw {
+        Draw {
+            seat,
+            model,
+            frame: forge::Frame {
+                position: [1.0, 2.0, 3.0 + f32::from(seat)],
+                rotation: [0.0; 3],
+            },
+            sphere: ([1.0, 2.0, 3.0], 1.0),
+            primary: 0,
+            secondary: 0,
+            highlight: [0; 4],
+            light,
+        }
+    }
+
+    /// ML5: a body with a light carries one host light at its origin, in
+    /// the palette colour, with no datum and no shadow; a marker, a body
+    /// without a light and a colour the map lacks carry none.
+    #[test]
+    fn a_drawn_body_with_a_light_carries_one_host_light_in_its_palette_colour() {
+        let lit = Light { colour: 4, radius: 4.0 };
+        let draws = [
+            draw(1, Some(0), Some(lit)),
+            draw(2, None, Some(lit)),
+            draw(3, Some(0), None),
+            draw(5, Some(1), Some(Light { colour: 17, radius: 2.0 })),
+        ];
+        let rgb = |index: u8| (index == 4).then_some([255, 0, 51]);
+        let lights = super::host_lights(&draws, rgb);
+        assert_eq!(lights.len(), 1);
+        let l = &lights[0];
+        let none = frame_scene::NO_DATUM;
+        assert_eq!((l.host, l.handle, l.definition), (Some(1), none, none));
+        assert!(!l.shadowed() && !l.guest_selected);
+        let c = l.candidate.as_ref().unwrap();
+        assert_eq!(c.position, [1.0, 2.0, 4.0]);
+        assert_eq!(c.colour_a, [1.0, 0.0, 0.2]);
+        assert_eq!(c.bounds.1, 4.0);
     }
 }

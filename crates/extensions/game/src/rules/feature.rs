@@ -2,7 +2,8 @@
 //! runtime at the game's start, at each kill and tick boundary and at the
 //! game's end, and the agent API's view of it.
 //!
-//! Off unless `H2_FEATURES` names it. Its hooks, all on game-thread points:
+//! On by default; `H2_FEATURES=-rules` turns it off. Its hooks, all on
+//! game-thread points:
 //!
 //! - `GAME_ACTIVATE`, an observer after a successful start: start or refuse
 //!   the script ([`Runtime::start`]); a Live host then puts the running
@@ -15,16 +16,43 @@
 //!   then lets pass).
 //! - `PLAYER_KILLED`, an observer before: `on kill` ([`Runtime::kill`]).
 //!   The point is opaque, so nothing can answer it.
+//! - `ENGINE_ROUND_RESET`, an observer after: `on round_start` for each
+//!   round after the first ([`Runtime::round_start`]); the first round's
+//!   reset runs inside `GAME_ACTIVATE`, and [`Runtime::start`] delivers it.
+//! - `ENGINE_PLAYER_LEFT`, an observer before: `on quit` with the player
+//!   in ESI, already off the roster ([`Runtime::quit`]).
 //! - `GAME_TICK`, an observer after: timers and `on tick`
 //!   ([`Runtime::post_tick`]).
 //! - `GAME_END`, an observer after: the record is removed.
-//! - `SLAYER_KILL`, `JUGGERNAUT_KILL`, `JUGGERNAUT_TICK` and `SCORE_ADD`,
-//!   `before`s in the default class: while a script runs on the authority,
-//!   the carrier's own scoring and role-making return at once
-//!   ([`super::scoring`]).
+//! - `PLAYER_SPAWN_LOCATION`, observers before and after, and
+//!   `SPAWN_LOCATION_FREE`, a `before` in the default class: a team's
+//!   spawn rule keeps its spawns to the rule's starting locations
+//!   ([`register_spawns`], `super::world::spawns`).
+//! - `PLAYER_SPAWN`, a `before` and an `after` in the default class: a
+//!   team's body is the spawning player's model byte for the length of
+//!   the spawn ([`register_bodies`], `super::world::body`).
+//! - `VARIANT_CLEAN_UP`, `VARIANT_ENCODE`, `VARIANT_DECODE`,
+//!   `VARIANT_PROTOCOL` and `VARIANT_CATEGORY`, `before`s in the default
+//!   class: a record of the script index is kept by the clean-up, crosses
+//!   the wire with no type area, plays distributed and is filed as
+//!   Slayer's ([`super::record`]).
+//! - `GAME_ACTIVATE`, two `before`s in the last class: the script index's
+//!   engine object goes in the engine table, and a record that names a
+//!   script, or has none on a type with a built-in, moves onto the
+//!   script index ([`super::record::move_onto_script_index`]); and `SPAWN_TYPE_MASK`, a
+//!   `before` in the default class: the spawn gather's unchecked jump on
+//!   the engine index is answered as Slayer's case for the script index
+//!   ([`super::engine_object`]).
 //!
-//! The superbounce mode's tick observer feeds it each bounce its medal
-//! chain files ([`bounces`]).
+//! A script with a `uses` line (docs/game/rules-variants.md, "A script
+//! that keeps its carrier's rules") runs the built-in script of the type it
+//! uses under the record ([`runtime::used_builtin`]): every hook above treats
+//! it as that script, and the Live session names the built-in's hash. Its
+//! `requires` turn their modes on through the record's script reference
+//! (`super::header`), as for any script.
+//!
+//! The superbounce mode's tick observer feeds it what its medal chain saw
+//! of each player's physics and each bounce the chain files ([`bounces`]).
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -50,6 +78,13 @@ pub struct Shared {
     pub reentry: AtomicBool,
     /// The last `rules.reload`, for `rules.state`.
     last_reload: Mutex<Option<wire::LastReload>>,
+    /// The live starting locations of the spawn pick in progress, set as
+    /// `PLAYER_SPAWN_LOCATION` starts and cleared as it returns.
+    spawn_pick: Mutex<Option<super::world::spawns::Filter>>,
+    /// The model byte each spawn in progress was given, to put back after
+    /// it: one entry per `PLAYER_SPAWN` running, innermost last, so a
+    /// spawn that re-enters itself (`coop_players`) puts back only its own.
+    body_swap: Mutex<Vec<Option<super::world::body::Swap>>>,
     /// What a reload reaches beyond the runtime, set at install.
     links: OnceLock<Links>,
 }
@@ -66,6 +101,8 @@ impl Shared {
             runtime: Mutex::new(runtime),
             reentry: AtomicBool::new(false),
             last_reload: Mutex::new(None),
+            spawn_pick: Mutex::new(None),
+            body_swap: Mutex::new(Vec::new()),
             links: OnceLock::new(),
         }
     }
@@ -81,6 +118,16 @@ impl Shared {
 
     pub fn links(&self) -> Option<&Links> {
         self.links.get()
+    }
+
+    /// The spawn pick in progress (`super::world::spawns`).
+    pub fn spawn_pick(&self) -> MutexGuard<'_, Option<super::world::spawns::Filter>> {
+        self.spawn_pick.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The model bytes of the spawns in progress (`super::world::body`).
+    pub fn body_swap(&self) -> MutexGuard<'_, Vec<Option<super::world::body::Swap>>> {
+        self.body_swap.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn set_last_reload(&self, r: wire::LastReload) {
@@ -109,6 +156,9 @@ pub struct Rules {
     pub shared: Arc<Shared>,
     pub hle: Option<Arc<live_hle::Hle>>,
     pub scripts: Arc<crate::game_variants::GameScripts>,
+    /// The VFS the loaded map's sound tags are read through
+    /// ([`super::world::audio::activate`]).
+    pub vfs: Option<Arc<std::sync::Mutex<vfs::Vfs>>>,
 }
 
 /// The record's script prefix when its blob is neither built in nor on
@@ -130,7 +180,6 @@ fn manifest() -> hooks::Manifest {
         "Rules scripts: the VM of a script game on the authoritative machine",
     )
     .doc("docs/game/rules-engine.md")
-    .off_by_default()
 }
 
 /// Whether the `rules` feature is on under `switches`.
@@ -168,10 +217,29 @@ impl hooks::Feature for Rules {
     fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         use hooks::Flow;
         use std::sync::atomic::Ordering;
+        // The placement `set_loadout` builds each weapon in
+        // (`super::world::loadout`).
+        let scratch = b.guest_alloc(
+            super::world::loadout::SCRATCH_SIZE,
+            ::runtime::guest::Permissions::RW,
+        )?;
+        super::world::loadout::set_scratch(scratch);
+        let sight_scratch = b.guest_alloc(
+            super::world::physics::SIGHT_SCRATCH_SIZE,
+            ::runtime::guest::Permissions::RW,
+        )?;
         let s = Arc::clone(&self.shared);
         let hle = self.hle.clone();
         let scripts = Arc::clone(&self.scripts);
+        let vfs = self.vfs.clone();
         b.game().on_start("start the game's rules script", move |o| {
+            // The sounds the loaded map holds, by path: read from its file
+            // before the start, which refuses a script naming one it lacks.
+            // The map file is read with no guest memory held.
+            if let Some(vfs) = &vfs {
+                let loaded = super::world::audio::loaded(&o.guest());
+                super::world::audio::activate(vfs, loaded);
+            }
             // A host (or a game alone) whose record names a script that is
             // not on this machine fetches it from Live first, with no guest
             // memory held and a bounded wait; the start below then finds it
@@ -260,7 +328,7 @@ impl hooks::Feature for Rules {
                     };
                     let s = Arc::clone(&s);
                     c.answer_async(move |cx| -> EntryFuture {
-                        Box::pin(runtime::run_work(cx, s, work))
+                        Box::pin(runtime::run_work(cx, s, work, sight_scratch))
                     })
                 },
             )
@@ -287,13 +355,51 @@ impl hooks::Feature for Rules {
                 };
                 s.lock().kill(m, victim, slot_of(attacker));
             });
+        // A later round's start. The first round's reset runs inside
+        // `GAME_ACTIVATE`, before the start observer above: `Runtime::start`
+        // delivers that one. This observer runs before the script starts:
+        // the last game's runtime is idle from its end, or replaced by the
+        // start with whatever the handler queued.
+        let s = Arc::clone(&self.shared);
+        b.raw().observe_after(
+            &engine::points::ENGINE_ROUND_RESET,
+            "rules: on round_start",
+            move |o| {
+                let mem = o.guest();
+                let m: &dyn GuestMemory = &*mem;
+                s.lock().round_start(m);
+            },
+        );
+        let s = Arc::clone(&self.shared);
+        b.raw().observe_before(
+            &engine::points::ENGINE_PLAYER_LEFT,
+            "rules: on quit",
+            move |o| {
+                let Some(player) = slot_of(o.cpu.esi) else {
+                    return;
+                };
+                let mem = o.guest();
+                let m: &dyn GuestMemory = &*mem;
+                s.lock().quit(m, player);
+            },
+        );
         let s = Arc::clone(&self.shared);
         b.frame().on_tick("run the rules script's tick", move |o| {
             let mem = o.guest();
             let m: &dyn GuestMemory = &*mem;
-            s.lock().post_tick(m);
+            sim_state::events(|events| s.lock().post_tick(m, events));
         });
-        super::scoring::register(b, &self.shared);
+        let s = Arc::clone(&self.shared);
+        super::start_line::replace_carrier(
+            b,
+            move || s.lock().has_authority(),
+            Some(crate::firefight::feature::FEATURE),
+        );
+        super::roles::register(b, &self.shared);
+        super::record::register(b);
+        super::engine_object::register(b)?;
+        register_spawns(b, &self.shared);
+        register_bodies(b, &self.shared);
         let s = Arc::clone(&self.shared);
         b.game().on_end("end the rules script", move |_| {
             s.lock().ended();
@@ -306,6 +412,102 @@ impl hooks::Feature for Rules {
     }
 }
 
+/// The spawn rules (`spawn_areas`, `spawn_near`; `super::world::spawns`):
+/// as `PLAYER_SPAWN_LOCATION` starts, the spawning player's (ECX) team
+/// rule becomes the pick's filter, cleared as it returns; the free-spot
+/// test `SPAWN_LOCATION_FREE`, which only that chooser calls, answers AL 0
+/// ("something stands there") for a location the filter does not keep,
+/// so the chooser keeps its best of the rest. No other feature answers
+/// the test; `coop_players`' `after` on the chooser only runs in co-op.
+fn register_spawns(b: &mut hooks::Builder, shared: &Arc<Shared>) {
+    use hooks::Flow;
+    let s = Arc::clone(shared);
+    b.raw().observe_before(
+        &engine::points::PLAYER_SPAWN_LOCATION,
+        "rules: the spawning team's starting locations",
+        move |o| {
+            let pick = {
+                let mem = o.guest();
+                let m: &dyn GuestMemory = &*mem;
+                s.lock().spawn_filter(m, o.cpu.ecx)
+            };
+            *s.spawn_pick() = pick;
+        },
+    );
+    let s = Arc::clone(shared);
+    b.raw().observe_after(
+        &engine::points::PLAYER_SPAWN_LOCATION,
+        "rules: the spawn pick ends",
+        move |_| {
+            *s.spawn_pick() = None;
+        },
+    );
+    let s = Arc::clone(shared);
+    b.raw().before(
+        &engine::points::SPAWN_LOCATION_FREE,
+        "rules: a starting location off the team's rule is taken",
+        move |c| {
+            let blocked = s.spawn_pick().as_ref().is_some_and(|f| !f.passes(c.cpu.ecx));
+            if !blocked {
+                return Ok(Flow::Continue);
+            }
+            c.cpu.eax &= !0xff;
+            c.ret(0).map(Flow::Return)
+        },
+    );
+}
+
+/// The teams' bodies (`set_body`; `super::world::body`): before
+/// `PLAYER_SPAWN` (the player handle its stack argument), the spawning
+/// player's team body becomes its model byte; after it, the player's own
+/// is put back. Both continue the chain. `sim_glue`'s `before` runs first
+/// (its own class), and `coop_players`' (campaign co-op, which runs no
+/// script) sits outside this one.
+fn register_bodies(b: &mut hooks::Builder, shared: &Arc<Shared>) {
+    use hooks::Flow;
+    let s = Arc::clone(shared);
+    b.raw().before(
+        &engine::points::PLAYER_SPAWN,
+        "rules: the spawning team's body",
+        move |c| {
+            // One entry per spawn, written or not, so the after pops its own.
+            let mut swap = None;
+            if let Some(handle) = c.arg_u32("player") {
+                let rt = Arc::clone(c.ctx.runtime());
+                let mut mem = rt.memory();
+                let m: &mut dyn GuestMemory = &mut *mem;
+                let body = s.lock().spawn_body(&*m, handle);
+                if let Some((slot, body)) = body {
+                    match super::world::body::put(m, slot, body) {
+                        Ok(w) => swap = w,
+                        Err(e) => eprintln!("rules: player {slot}'s body was not set: {e:?}"),
+                    }
+                }
+            }
+            s.body_swap().push(swap);
+            Ok(Flow::Continue)
+        },
+    )
+    // Inside `coop_players`' spawn, which re-enters the spawn it answers.
+    .after_feature(crate::coop_players::FEATURE);
+    let s = Arc::clone(shared);
+    b.raw().after(
+        &engine::points::PLAYER_SPAWN,
+        "rules: the player's own body again",
+        move |c| {
+            let Some(swap) = s.body_swap().pop().flatten() else {
+                return Ok(());
+            };
+            let rt = Arc::clone(c.ctx.runtime());
+            let mut mem = rt.memory();
+            if let Err(e) = super::world::body::restore(&mut *mem, swap) {
+                eprintln!("rules: a player's own body was not put back: {e:?}");
+            }
+            Ok(())
+        },
+    );
+}
+
 /// Adds the feature. Says why when it is left out. `film`: this run plays
 /// a film back (Theater), so the start gate does not run: the film's host
 /// passed it (docs/game/rules-start-gate.md, "Hoppers, System Link,
@@ -314,6 +516,7 @@ pub fn install(
     registry: &mut hooks::Registry,
     hle: Option<Arc<live_hle::Hle>>,
     film: bool,
+    vfs: Option<Arc<std::sync::Mutex<vfs::Vfs>>>,
 ) -> anyhow::Result<bool> {
     let scripts = Arc::new(crate::game_variants::GameScripts::in_game(hle.clone()));
     let shared = Arc::new(Shared::new(
@@ -328,25 +531,56 @@ pub fn install(
             shared: Arc::clone(&shared),
             hle,
             scripts,
+            vfs,
         })
         .map_err(|e| anyhow::anyhow!("{FEATURE}: {e}"))?;
     if !added {
         return Ok(false);
     }
+    // The objective HUDs a script feeds (`super::world::hud`), hidden
+    // until it does.
+    super::world::hud::register();
     let _ = SHARED.set(shared);
     Ok(true)
 }
 
-/// One tick's superbounce awards (`superbounce_chain::Medals::step`), as
-/// the running script's `on bounce` and `on bounced`
-/// ([`Runtime::bounces`]). Nothing without the feature.
-pub fn bounces(m: &dyn GuestMemory, awards: &[crate::superbounce_chain::Award]) {
-    if awards.is_empty() {
-        return;
-    }
+/// The host's role membership and traits for an actor-channel frame.
+pub fn network_roles(m: &dyn GuestMemory) -> Option<crate::actor_net::roles::State> {
+    let rt = SHARED.get()?.lock();
+    let state = super::roles::network_state(m, &rt)?;
+    // An empty Juggernaut mask clears the native role of a former holder
+    // while its replicated engine globals catch up.
+    (state.mask != 0 || rt.running()?.record_engine == super::roles::JUGGERNAUT).then_some(state)
+}
+
+/// One tick of the superbounce medal chain (`superbounce_chain::Medals::step`):
+/// what it saw of the players' physics, as the running script's `on
+/// touchdown`, `on launch` and `on grounded` ([`Runtime::physics`]), then
+/// its awards, as `on bounce` and `on bounced` ([`Runtime::bounces`]).
+/// Nothing without the feature.
+pub fn bounces(
+    m: &dyn GuestMemory,
+    bodies: &[crate::superbounce_chain::Body],
+    physics: &[(u8, crate::superbounce_chain::Physics)],
+    awards: &[crate::superbounce_chain::Award],
+) {
     if let Some(s) = SHARED.get() {
-        s.lock().bounces(m, awards);
+        let mut rt = s.lock();
+        // Set the biped reads from every chain step, even without events.
+        rt.bodies(bodies);
+        if awards.is_empty() && physics.is_empty() {
+            return;
+        }
+        rt.physics(m, physics);
+        rt.bounces(m, awards);
     }
+}
+
+/// What the running script calls a point (its header's `points`), for the
+/// base HUD ([`super::base_hud`]); none while no script runs here.
+pub fn points_label() -> Option<String> {
+    let rt = SHARED.get()?.lock();
+    rt.running().map(|r| r.vm.ir().header.points.clone())
 }
 
 /// The problems the host's start gate blocked the last game on, while the
@@ -374,7 +608,7 @@ pub fn local_blob(prefix: [u8; 8]) -> Option<Vec<u8>> {
 }
 
 /// Why `rules.state` has no runtime to answer from.
-pub const OFF: &str = "the rules feature is off (H2_FEATURES=rules turns it on)";
+pub const OFF: &str = "the rules feature is off (H2_FEATURES=-rules turned it off)";
 
 /// The agent API's view of the runtime ([`agent::rules::Source`]). Without
 /// the feature it answers that it is off.
@@ -409,6 +643,10 @@ impl agent::rules::Source for AgentSource {
                 ..Default::default()
             },
         }
+    }
+
+    fn zones(&self) -> wire::Zones {
+        self.shared.as_ref().map(|s| s.lock().zones()).unwrap_or_default()
     }
 
     fn reload(

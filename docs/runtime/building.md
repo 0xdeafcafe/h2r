@@ -132,14 +132,22 @@ The variables are listed under Cross-build target directories in [switches.md](s
 ## The `h2` command
 
 `.cargo/config.toml` defines an alias, so `cargo h2 <command>` is
-`cargo run --release -q -p cli -- <command>`. `cargo install --locked
---path crates/apps/cli` installs the same program as `h2`.
+`cargo run --release -q -p cli -- <command>`. The offline map, tag and
+script tools (`rules`, `variants`, `maps`, `tags`, `firefight`, `forge
+build`, `hud`, `shader` and the rest) are a second binary, `h2-tools`, that
+`h2` runs with the same words; `cargo h2-tools <tool>` builds and runs only
+that one ([cli-tools.md](cli-tools.md)). Install both, into one directory:
+
+```sh
+cargo install --locked --path crates/apps/cli
+cargo install --locked --path crates/apps/h2-tools
+```
 
 ```sh
 cargo h2 info                    # title, sections, libraries
 cargo h2 ls                      # files on the disc
-cargo h2 maps                    # map headers and tag counts
-cargo h2 tags <map> [group]      # tags in a map
+cargo h2-tools maps              # map headers and tag counts
+cargo h2-tools tags <map> [group] # tags in a map
 cargo h2 extract                 # copy the disc's files to disc/extracted/
 cargo h2 analyze                 # function discovery and coverage
 cargo h2 lift --stats            # lowering coverage
@@ -160,6 +168,18 @@ cargo run --release -p cli --features perf -- bench list
 cargo run --release -p cli --features perf -- bench --only hot-loop
 cargo run --release -p cli --features perf -- profile hot-loop/memory --seconds 5 --out $TMPDIR/prof
 ```
+
+## The store
+
+`h2 build` extracts the disc into the asset store after it has built the
+image: `tags::repo::compile::prepare` on `<data>/tags`, with progress on
+stderr, then the disc's files that are not maps copied to `<data>/disc/`
+once per image (`crates/apps/cli/src/store_prepare.rs`). `h2 play`, `h2 run`
+and `h2 serve` run the same step before they boot, beside the packages'
+convert items, and never fail the boot: a problem is a line on stderr. With
+nothing stale the step costs a stat of each map file. The slim host build
+(`--profile host`) does not extract. The design is
+[asset-store.md](../engine/asset-store.md), "Extraction on compile".
 
 ## Ghidra
 
@@ -186,8 +206,8 @@ workflow per platform: [buck.yml](../../.github/workflows/buck.yml)
 ([xbox.md](xbox.md#building)) and
 [windows.yml](../../.github/workflows/windows.yml)
 ([windows.md](windows.md#windows-ci)); [ci.yml](../../.github/workflows/ci.yml)
-covers the repo checks, macOS (clippy and the tests) and the Linux desktop
-host. Every Rust job runs the compiler `rust-toolchain.toml` pins, installed
+covers the repo checks and macOS (clippy and the tests), and
+[linux.yml](../../.github/workflows/linux.yml) the Linux desktop host. Every Rust job runs the compiler `rust-toolchain.toml` pins, installed
 by rustup (`scripts/ci/install-rust.sh` on Linux and macOS) and named in
 `RUSTUP_TOOLCHAIN`, and prints `rustc -V`. No workflow touches the disc, so
 none builds the game module: the iOS and Xbox jobs stop at the runtime.

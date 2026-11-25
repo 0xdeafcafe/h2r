@@ -384,10 +384,37 @@ pub fn firefight_game(host: &User) -> Value {
     })
 }
 
-/// The fixture's events as a batch's `(kind, data)` pairs, then `GameEnded`.
+const CROSSFIRE_EVENTS: &str = include_str!("../fixtures/firefight-crossfire-events.json");
+
+/// A two-team Firefight match (Crossfire) for `host`: the host and a
+/// Clanker on team 0, two Clankers on team 1.
+pub fn firefight_crossfire_game(host: &User) -> Value {
+    json!({
+        "console": "Den", "map": "beavercreek", "mode": "multiplayer", "variant": "Firefight",
+        "team_play": true, "tick": 0, "kind": "custom",
+        "players": [
+            {"index": 0, "name": "Host", "xuid": host.xuid, "team": 0, "local": true},
+            {"index": 1, "name": "Clanker 1", "team": 0, "local": true, "bot": true},
+            {"index": 2, "name": "Clanker 2", "team": 1, "local": true, "bot": true},
+            {"index": 3, "name": "Clanker 3", "team": 1, "local": true, "bot": true}
+        ]
+    })
+}
+
+/// The one-team fixture's events as a batch's `(kind, data)` pairs, then
+/// `GameEnded`.
 pub fn firefight_batch() -> Vec<(String, Value)> {
+    fixture_batch(FIREFIGHT_EVENTS)
+}
+
+/// The two-team fixture's events, as [`firefight_batch`].
+pub fn firefight_crossfire_batch() -> Vec<(String, Value)> {
+    fixture_batch(CROSSFIRE_EVENTS)
+}
+
+fn fixture_batch(fixture: &str) -> Vec<(String, Value)> {
     let mut events: Vec<(String, Value)> =
-        serde_json::from_str::<Vec<Value>>(FIREFIGHT_EVENTS)
+        serde_json::from_str::<Vec<Value>>(fixture)
             .unwrap()
             .into_iter()
             .map(|e| (e["kind"].as_str().unwrap().to_string(), e["data"].clone()))

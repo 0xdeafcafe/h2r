@@ -25,9 +25,14 @@ const DEFAULT_LINEUP: Array<[string, string, number, [number, number, number], s
   ["Team Objective", "Four against four: Capture the Flag, Assault, Territories, King and Oddball.", 4, [2, 3, 4], ["Classic CTF", "Assault", "Territories", "Team King", "Teamball"]],
   ["Free for All", "Unranked free for all, 2 to 8 players. Parties welcome.", 1, [2, 8, 0], ["Rumble Slayer", "Oddball", "King of the Hill"]],
   ["Unranked Teams", "Unranked team games for parties of any size, 2 to 4 a side.", 3, [2, 2, 4], ["Team Slayer", "Classic CTF", "Team King", "Teamball"]],
-  ["Clanker Slayer", "Free for all Slayer, up to 8 players, where every other player is a bot.", 1, [2, 8, 0], ["Rumble Slayer"], true],
-  ["Clanker Teams", "Four against four Team Slayer. Bots fill every seat your party does not.", 3, [2, 1, 4], ["Team Slayer"], true],
-  ["Clanker Doubles", "Two against two Team Slayer. Bots fill every seat your party does not.", 3, [2, 1, 2], ["Team Slayer"], true],
+  ["Clanker Rumble", "Ranked Clanker free for all, up to 8. Bots fill every seat your party does not.", 1, [2, 8, 0], ["Rumble Slayer", "Oddball", "King of the Hill"], true],
+  ["Clanker Slayer", "Ranked Clanker Team Slayer, four against four. Bots fill every seat your party does not.", 3, [2, 1, 4], ["Team Slayer"], true],
+  ["Clanker Doubles", "Ranked Clanker Team Skirmish, two against two. Bots fill every seat your party does not.", 3, [2, 1, 2], ["Team Slayer", "Teamball"], true],
+  ["Clanker Snipers", "Ranked Clanker Team Snipers, four against four. Bots fill every seat your party does not.", 3, [2, 1, 4], ["Team Snipers"], true],
+  ["Clanker BTB", "Ranked Clanker Big Team Battle on big maps. Bots fill every seat your party does not.", 3, [2, 1, 8], ["Team Slayer", "Classic CTF", "Assault", "Territories"], true],
+  ["BTB Heavies", "Ranked Clanker Team Heavies on big maps. Bots fill every seat your party does not.", 3, [2, 1, 8], ["Team Heavies"], true],
+  ["Solo Training", "Unranked Clanker free for all training, up to 8. Bots fill every seat your party does not.", 1, [2, 8, 0], ["Rumble Slayer", "Oddball", "King of the Hill"], true],
+  ["Team Training", "Unranked Clanker team training, four against four. Bots fill every seat your party does not.", 3, [2, 1, 4], ["Team Slayer", "Classic CTF", "Team King", "Teamball"], true],
 ];
 
 /** The server's built-in playlists, by hopper index, for when the hopper

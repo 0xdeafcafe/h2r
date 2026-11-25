@@ -9,6 +9,8 @@ license.workspace = true
 map.workspace = true
 assets.workspace = true
 content.workspace = true
+# The game type markers' shapes, palette and areas (src/marker_view.rs).
+game-markers = { path = "../../formats/game-markers" }
 tags.workspace = true
 thiserror.workspace = true
 serde.workspace = true

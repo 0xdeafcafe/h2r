@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use crate::coop_live::{self, FriendRows, HostRows, JoinRows, Lobby};
 use crate::list_class::Rows;
-use crate::skulls::{self, SKULLS, State, TOTAL};
+use crate::skulls::{self, SKULLS, State};
 use crate::skulls_menu::{self, Mode, SkullsScreen};
 use crate::ui_kit::input::{Glyph, Input, Prompt};
 use crate::ui_kit::page::{AccountPage, Driven, ListPage, Live, described};
@@ -49,7 +49,14 @@ fn skull_text(id: u32) -> Option<String> {
 }
 
 impl Describe for SkullsScreen {
+    /// Both pages, one design (docs/game/skulls.md "The page"): Start
+    /// Level (campaign), the options, then the skulls; a row A changes is
+    /// `components::row::pick` on the one-text skin ("Mythic: On"), a
+    /// locked skull `components::row::disabled` (its name alone), each
+    /// with its own legend ([`skulls_menu::RowLegend`]) and its help.
     fn spec(&self) -> ScreenSpec {
+        use crate::skulls_menu::PageRow;
+        use crate::ui_kit::components::row as kit_row;
         let title = skull_text(self.title()).unwrap_or_else(|| "?".into());
         let campaign = self.mode() == Mode::Campaign;
         let mut s = ScreenSpec::new(
@@ -60,7 +67,6 @@ impl Describe for SkullsScreen {
             },
             &title,
         );
-        s.ids = vec![self.title()];
         s.list = ListPlace::from(Some(skulls_menu::LIST_LAYOUT));
         s.style = ValueStyle::Inline;
         s.description = Some(skulls_menu::DESCRIPTION_TEXT.into());
@@ -68,75 +74,58 @@ impl Describe for SkullsScreen {
         s.art = skulls_art();
         s.content.row_help = true;
         s.content.required_icons.push("art.1".into());
-        if campaign {
-            s.prompts = self.campaign_prompts(0);
-            s.footer = true;
-            s.ids.push(skulls_menu::FOOTER_ID);
-            s.inputs = vec![
-                Input::Up,
-                Input::Down,
-                Input::Left,
-                Input::Right,
-                Input::A,
-                Input::B,
-            ];
-            let ids = |row: i16| -> Vec<u32> {
-                let mut ids: Vec<u32> = self.texts(row).into_iter().map(|(_, id)| id).collect();
-                ids.extend(Rows::description(self, row));
-                ids
-            };
-            s.rows.push(
-                RowSpec::action(skulls_menu::START)
-                    .press(Press::Act)
-                    .describe(skulls_menu::START_DESCRIPTION)
-                    .ids(&ids(0)),
-            );
-            for (n, o) in self.options().iter().enumerate() {
-                let row = 1 + n as i16;
-                let halo1 = crate::h1_options::is_halo1(&self.store(), o);
-                let mut spec = RowSpec::value(o.label, &["Halo 1", "Halo 2"], usize::from(!halo1))
-                    .press(Press::Open(crate::ui_kit::picker::NAME.into()))
-                    .describe(&crate::h1_options::description(o))
-                    .ids(&ids(row));
-                spec.prompts = Some(self.campaign_prompts(row));
-                s.rows.push(spec);
-            }
-            let mut order: Vec<(i16, usize)> = (0..TOTAL)
-                .filter_map(|i| Some((self.row_of_skull(i)?, i)))
-                .collect();
-            order.sort();
-            for (row, i) in order {
-                let label = SKULLS[i].label;
-                let mut spec = match self.state(i) {
-                    State::On => RowSpec::value(label, &["On", "Off"], 0).press(Press::Step),
-                    State::Off => RowSpec::value(label, &["On", "Off"], 1).press(Press::Step),
-                    State::Locked => RowSpec::info(label, skulls_menu::LOCKED),
-                }
-                .describe(&skulls_menu::description(i))
-                .ids(&ids(row));
-                spec.prompts = Some(self.campaign_prompts(row));
-                s.rows.push(spec);
-            }
+        s.footer = true;
+        // The screen's legend is its first row kind's: Start Level's on
+        // the campaign page, a skull's on the multiplayer one. Each row
+        // carries its own.
+        let first = if campaign {
+            skulls_menu::RowLegend::Start
         } else {
-            s.inputs = vec![Input::Up, Input::Down, Input::A, Input::B];
-            for row in 0..self.count() as i16 {
-                let ids: Vec<u32> = self
-                    .texts(row)
-                    .into_iter()
-                    .map(|(_, id)| id)
-                    .chain(Rows::description(self, row))
-                    .collect();
-                let label = ids
-                    .first()
-                    .and_then(|id| skull_text(*id))
-                    .unwrap_or_else(|| "?".into());
-                s.rows.push(
-                    RowSpec::action(&label)
-                        .press(Press::Step)
-                        .describe(&skulls_menu::mp_description(row as usize))
-                        .ids(&ids),
-                );
-            }
+            skulls_menu::RowLegend::Setting
+        };
+        s.prompts = first.prompts();
+        s.ids = vec![self.title(), first.id()];
+        s.inputs = vec![Input::Up, Input::Down, Input::A, Input::B];
+        let on_off = skulls_menu::VALUES;
+        for row in 0..self.count() as i16 {
+            let ids: Vec<u32> = self
+                .texts(row)
+                .into_iter()
+                .map(|(_, id)| id)
+                .chain(Rows::description(self, row))
+                .collect();
+            let skull = |i: usize, state: State, help: String| {
+                let label = SKULLS[i].label;
+                match state {
+                    State::On => kit_row::pick(label, &on_off, 0),
+                    State::Off => kit_row::pick(label, &on_off, 1),
+                    State::Locked => kit_row::disabled(label),
+                }
+                .describe(&help)
+            };
+            let spec = if campaign {
+                match self.page_row(row) {
+                    Some(PageRow::Start) => RowSpec::action(skulls_menu::START)
+                        .press(Press::Act)
+                        .describe(skulls_menu::START_DESCRIPTION),
+                    Some(PageRow::Option(o)) => {
+                        let halo1 = crate::h1_options::is_halo1(&self.store(), o);
+                        kit_row::pick(o.label, &["Halo 1", "Halo 2"], usize::from(!halo1))
+                            .describe(&crate::h1_options::description(o))
+                    }
+                    Some(PageRow::Skull(i)) => {
+                        let state = self.state(i);
+                        skull(i, state, skulls_menu::help(i, state))
+                    }
+                    None => continue,
+                }
+            } else {
+                let (r, state) = (row as usize, self.mp_state(row as usize));
+                skull(crate::skulls_mp::MP[r].index, state, skulls_menu::mp_help(r, state))
+            };
+            let mut spec = spec.ids(&ids);
+            spec.prompts = Some(self.row_prompts(row));
+            s.rows.push(spec);
         }
         s
     }
@@ -275,11 +264,9 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
     s
 }
 
-/// The screens `h2 ui preview` knows, by name.
-pub const NAMES: [&str; 42] = [
-    "forge.hud",
-    "forge.palette",
-    "forge.menu",
+/// The screens `h2 ui preview` knows, including the design specimens
+/// and layout gallery. Append new screens to preserve existing ids.
+pub const NAMES: [&str; 74] = [
     "forge.objects",
     "forge.properties",
     "forge.tools",
@@ -288,12 +275,16 @@ pub const NAMES: [&str; 42] = [
     "forge.question",
     "forge.options",
     "forge.controls",
+    "forge.games",
+    "forge.variants",
+    "forge.variant",
     "campaigns",
     "skulls",
     "skulls.h1",
     "skulls.mp",
     "h1-options",
     "variant-more-options",
+    crate::variant_quick::page::SCREEN,
     "coop",
     "coop.friends",
     "coop.join",
@@ -304,6 +295,8 @@ pub const NAMES: [&str; 42] = [
     "kit.dialog",
     "kit.dialog.large",
     crate::lab_takeover::SCREEN,
+    crate::lab_takeover::ALONGSIDE_SCREEN,
+    crate::lab_takeover::RUNNING_SCREEN,
     "clankers",
     crate::firefight::options::SCREEN,
     crate::clanker_card::SCREEN,
@@ -316,19 +309,58 @@ pub const NAMES: [&str; 42] = [
     crate::theater_ui::PAUSE_MENU,
     "kit.picker",
     "kit.picker.game",
-    FORGE_MAP_PICKER,
+    MAP_VARIANT_PICKER,
+    MODE_PICKER,
     crate::custom_games::browser_filters::SCREEN,
-    crate::lobby_tabs::preview::NAME,
+    "design.title",
+    "design.body",
+    "design.panel-text",
+    "design.description",
+    "design.row.action",
+    "design.row.value-inline",
+    "design.row.value-column",
+    "design.row.pick-inline",
+    "design.row.setting",
+    "design.row.info",
+    "design.row.text",
+    "design.row.disabled",
+    "design.legend",
+    "design.picker",
+    "design.cells",
+    "design.art",
+    "design.focus",
+    "layout.list",
+    "layout.list.description",
+    "layout.list.panel-edge",
+    "layout.list.level-select",
+    "layout.list.texts",
+    "layout.dialog.settings",
+    "layout.dialog.large",
+    "layout.dialog.message",
+    "layout.dialog.over-screen",
+    "layout.code-entry",
+    "layout.picker",
+    "forge.map-limits",
 ];
 
-/// The value picker as the Forge Map row opens it, with two saved maps
-/// (`crate::lobby_mode::forge_map_pick`).
-pub const FORGE_MAP_PICKER: &str = "kit.picker.forge-map";
+/// The value picker as the Map Variant row opens it, with two usable map
+/// variants and one that cannot be used (`crate::lobby_mode::map_variant_pick`).
+pub const MAP_VARIANT_PICKER: &str = "kit.picker.map-variant";
+
+/// The GAME MODE picker X opens in the pregame lobby, over the lobby
+/// (docs/game/party-lobby.md, "Changing mode"; `crate::lobby_tabs::picker`).
+pub const MODE_PICKER: &str = "kit.picker.mode";
 
 /// Every named state of screen `name` for the preview sheet: a list's
 /// first, middle and last row focused; the sign-in prompt's pages
 /// ([`crate::ui_kit::page::Page::states`]).
 pub fn states(name: &str) -> Option<Vec<(String, ScreenSpec)>> {
+    Some(live(name)?.specs())
+}
+
+/// Screen `name`'s named states as its Rust builds them: what the
+/// converter reads (`crate::ui_kit::data::export`).
+pub fn raw_states(name: &str) -> Option<Vec<(String, ScreenSpec)>> {
     Some(live(name)?.specs())
 }
 
@@ -345,18 +377,13 @@ pub fn sample(name: &str) -> Option<ScreenSpec> {
 /// file.
 pub fn live(name: &str) -> Option<Box<dyn Live>> {
     match name {
-        // The compositor's (slice U7 removes them).
-        "forge.hud" | "forge.palette" | "forge.menu" => super::forge::live(name),
         // The game's screens (`crate::forge_screens`).
         "forge.objects" | "forge.properties" | "forge.tools" | "forge.settings" | "forge.link"
-        | "forge.question" | "forge.options" | "forge.controls" => {
+        | "forge.question" | "forge.options" | "forge.controls" | "forge.games"
+        | "forge.variants" | "forge.variant" | "forge.map-limits" => {
             crate::forge_screens::pages::live(name)
         }
         "signin-code" => Some(Box::new(Driven::new(crate::signin_screen::SigninPage))),
-        // The party lobby's mode strip (`crate::lobby_tabs::strip`).
-        crate::lobby_tabs::preview::NAME => {
-            Some(Box::new(Driven::new(crate::lobby_tabs::preview::TabsPage)))
-        }
         "account" => Some(Box::new(Driven::new(AccountPage))),
         "mods" | "mods.pack" | "mods.detail" => {
             use crate::mods_screen::spec::{Sample, preview::Preview};
@@ -366,38 +393,45 @@ pub fn live(name: &str) -> Option<Box<dyn Live>> {
         | crate::theater_ui::PAUSE_MENU => {
             crate::theater_ui::preview::live(name)
         }
+        _ if name.starts_with("design.") || name.starts_with("layout.") => {
+            crate::ui_kit::components::live(name)
+        }
+        // Quick Options for a script variant: Superbounce's rows, fewer
+        // marks, a refusal (`crate::variant_quick::page::samples`).
+        crate::variant_quick::page::SCREEN => Some(Box::new(crate::variant_quick::page::Samples::new())),
         _ => Some(Box::new(Driven::new(list_page(name)?))),
     }
 }
 
 /// The kit's choice rows as a dialog (docs/game/ui-builder.md "The Dialog
 /// kind"): on the game's own settings dialog (the lobby's Quick Options,
-/// `quick_options`), its description in Quick Options' help line, as the
-/// Clankers and Halo 1 Options pages are, or on the large dialog, the one
-/// the game maps have too (a pause menu's screen).
+/// `quick_options`) as the shared settings dialog its doc declares
+/// (`kit.dialog`, `crate::ui_kit::settings`), as the Clankers and Halo 1
+/// Options pages are, or on the large dialog, the one the game maps have
+/// too (a pause menu's screen).
 pub fn dialog_example(
     store: Arc<settings::Store>,
     base: crate::ui_kit::dialog::DialogBase,
 ) -> crate::ui_kit::screen::KitScreen {
     use crate::ui_kit::choice::example::{COUNT, LEVEL};
     use crate::ui_kit::dialog::DialogBase;
-    let (feature, name) = match base {
-        DialogBase::QuickOptions => ("kit-dialog", "kit.dialog"),
-        DialogBase::Large | DialogBase::ValuePicker => ("kit-dialog-large", "kit.dialog.large"),
-    };
-    crate::ui_kit::screen::KitScreen::new(
-        feature,
-        name,
-        crate::ui_kit::ids::family(name),
-        "Choices",
-    )
-    .dialog(base, crate::ui_kit::view::Opener::MAIN_MENU)
-    .row(COUNT.row(Arc::clone(&store)))
-    .row(LEVEL.row(store))
-    .prompts(&[
-        Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
-        Prompt::new(&[Glyph::B], "Back"),
-    ])
+    match base {
+        DialogBase::QuickOptions => crate::ui_kit::settings::screen(
+            "kit-dialog",
+            "kit.dialog",
+            crate::ui_kit::ids::family("kit.dialog"),
+            Some(store),
+            crate::ui_kit::settings::Bindings::new(),
+        )
+        .unwrap_or_else(|e| panic!("{e}")),
+        DialogBase::Large | DialogBase::ValuePicker => crate::ui_kit::screen::KitScreen::new(
+            "kit-dialog-large",
+            "kit.dialog.large",
+            crate::ui_kit::ids::family("kit.dialog.large"),
+        )
+        .row(COUNT.row(Arc::clone(&store)))
+        .row(LEVEL.row(store)),
+    }
 }
 
 /// The value picker's sample: the kit's Count (nine values, so the list
@@ -418,14 +452,59 @@ pub fn picker_sample() -> crate::ui_kit::picker::Pick {
     .over(crate::ui_kit::view::Opener::GAME_SETUP_CLANKERS)
 }
 
-/// The lobby's picker's sample ([`FORGE_MAP_PICKER`]): New with two saved
-/// maps, the second held. Its choice writes no file.
+/// The lobby's pickers' samples: [`MAP_VARIANT_PICKER`], Original and
+/// three map variants, the second usable one held and the last unusable; [`MODE_PICKER`], the GAME MODE picker X
+/// opens (`crate::lobby_tabs::picker::pick`) for the leader of an Xbox
+/// Live custom game lobby with every mode on, Custom Games held. Their
+/// choices write nothing.
 pub fn lobby_pick_sample(name: &str) -> Option<crate::ui_kit::picker::Pick> {
     match name {
-        FORGE_MAP_PICKER => Some(crate::lobby_mode::forge_map_pick(
-            Ok(vec!["Castle Keep".into(), "Lockout Towers".into()]),
-            Some("Lockout Towers"),
-        )),
+        MAP_VARIANT_PICKER => {
+            use crate::lobby_mode::VariantEntry;
+            let usable = |file: &str, name: &str, detail: &str| VariantEntry {
+                file: file.into(),
+                name: name.into(),
+                sentence: None,
+                detail: detail.into(),
+                id: None,
+                suggested_for: None,
+            };
+            Some(crate::lobby_mode::map_variant_pick(
+                Ok(vec![
+                    usable("castle-keep", "Castle Keep", "By Builder. Adds 4 Crates, 2 Spawns."),
+                    usable("lockout-towers", "Lockout Towers", "By Builder. Adds 3 Scenery."),
+                    VariantEntry {
+                        file: "old-keep".into(),
+                        name: "Old Keep".into(),
+                        sentence: Some(
+                            ::forge::files::variants::Problem::BaseHash
+                                .sentence("Old Keep", "court"),
+                        ),
+                        detail: String::new(),
+                        id: None,
+                        suggested_for: None,
+                    },
+                ]),
+                Some("lockout-towers"),
+                Arc::new(|_| String::new()),
+            ))
+        }
+        MODE_PICKER => {
+            use crate::lobby_tabs::{Facts, Place, Present, Tab, header::Shown, row};
+            let facts = Facts {
+                playlists: true,
+                live_co_op: true,
+                remote_members: false,
+            };
+            let shown = Shown {
+                place: Place::XboxLive,
+                leader: true,
+                selected: Tab::CustomGames,
+                row: row(Present::ALL, Place::XboxLive, facts),
+                clanker: None,
+            };
+            Some(crate::lobby_tabs::picker::pick(&shown, Present::ALL))
+        }
         _ => None,
     }
 }
@@ -439,16 +518,9 @@ pub fn choices_example(store: Arc<settings::Store>) -> crate::ui_kit::screen::Ki
         "kit-choices",
         "kit.choices",
         crate::ui_kit::ids::family("kit.choices"),
-        "Choices",
     )
-    .layout(skulls_menu::LIST_LAYOUT, ValueStyle::Inline)
-    .description(skulls_menu::DESCRIPTION_TEXT)
     .row(COUNT.row(Arc::clone(&store)))
     .row(LEVEL.row(store))
-    .prompts(&[
-        Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
-        Prompt::new(&[Glyph::B], "Back"),
-    ])
 }
 
 /// The campaign picker with Halo 1 installed beside the test campaign,
@@ -530,11 +602,8 @@ pub fn list_page(name: &str) -> Option<ListPage> {
             list(ListPage::new(class, described(&s)))
         }
         "h1-options" => {
-            let s = Arc::new(crate::h1_options::OptionsScreen {
-                store: skull_store(),
-            });
-            let class = crate::h1_options_row::class(Arc::clone(&s));
-            list(ListPage::new(class, move || s.spec()))
+            let s = Arc::new(crate::h1_options::page(skull_store()));
+            list(ListPage::new(s.class(), described(&s)))
         }
         "variant-more-options" => {
             let p = Arc::new(crate::variant_page::Page::new());
@@ -550,6 +619,7 @@ pub fn list_page(name: &str) -> Option<ListPage> {
             );
             list(ListPage::new(class, move || p.spec()))
         }
+        crate::variant_quick::page::SCREEN => list(crate::variant_quick::page::sample_page()),
         "coop" | "coop.friends" | "coop.join" => {
             let lobby = lobby();
             let [host, friends, join] = coop_live::classes(&lobby);
@@ -591,6 +661,8 @@ pub fn list_page(name: &str) -> Option<ListPage> {
         }
         crate::clanker_card::SCREEN => list(crate::clanker_card::page_sample()),
         crate::lab_takeover::SCREEN => list(crate::lab_takeover::sample_page()),
+        crate::lab_takeover::ALONGSIDE_SCREEN => list(crate::lab_takeover::sample_alongside_page()),
+        crate::lab_takeover::RUNNING_SCREEN => list(crate::lab_takeover::sample_running_page()),
         crate::custom_games::browser_filters::SCREEN => {
             list(crate::custom_games::browser_filters::sample_page())
         }
@@ -616,10 +688,19 @@ pub fn list_page(name: &str) -> Option<ListPage> {
             ));
             list(ListPage::new(p.class(), described(&p)))
         }
-        FORGE_MAP_PICKER => {
+        MAP_VARIANT_PICKER => {
             crate::ui_kit::picker::offer_list(lobby_pick_sample(name)?)?;
             let p = Arc::new(crate::ui_kit::picker::Picker::new(false));
             list(ListPage::new(p.class(), described(&p)))
+        }
+        // The held value first, so the picker opens on it; then the
+        // first and last.
+        MODE_PICKER => {
+            let pick = lobby_pick_sample(name)?;
+            let at = [pick.current, 0, pick.values.len().saturating_sub(1)];
+            crate::ui_kit::picker::offer_list(pick)?;
+            let p = Arc::new(crate::ui_kit::picker::Picker::new(false));
+            list(ListPage::new(p.class(), described(&p)).with_states(&at))
         }
         _ => None,
     }
@@ -629,6 +710,31 @@ pub fn list_page(name: &str) -> Option<ListPage> {
 mod tests {
     use super::*;
     use crate::ui_kit::spec::{Finding, check_fallback};
+
+    /// The GAME MODE picker's sample is the picker X opens: the lobby modes
+    /// in title case, Custom Games held, over the lobby; its states draw.
+    #[test]
+    fn the_mode_picker_lists_the_lobby_modes_with_custom_games_held() {
+        use crate::lobby_tabs::Tab;
+        let p = lobby_pick_sample(MODE_PICKER).expect("the mode picker has a sample");
+        assert_eq!(p.title, "GAME MODE");
+        assert_eq!(p.values, ["Multiplayer", "Custom Games", "Forge"]);
+        assert_eq!(
+            p.values,
+            [Tab::Multiplayer, Tab::CustomGames, Tab::Forge].map(Tab::title_case)
+        );
+        assert_eq!(p.values[p.current], "Custom Games");
+        assert_eq!(p.opener, crate::ui_kit::view::Opener::LOBBY);
+        assert_eq!(p.description, "Choose what this lobby plays.");
+        assert!(NAMES.contains(&MODE_PICKER));
+        let s = sample(MODE_PICKER).expect("the mode picker opens");
+        assert_eq!(s.rows.len(), 3);
+        assert_eq!(s.focus, 1, "it opens on the held value");
+        let states = states(MODE_PICKER).unwrap();
+        let names: Vec<&str> = states.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["focus-1", "focus-0", "focus-2"], "the held value first");
+        assert_eq!(states[0].1.focus, p.current);
+    }
 
     /// The kit's legend is the skulls page's own, glyph for glyph, and the
     /// description the page serves is the described one.
@@ -664,12 +770,19 @@ mod tests {
     }
 
     /// Our settings dialogs: the pages that are Quick Options inside.
-    const QUICK_PAGES: [&str; 3] = ["clankers", "h1-options", crate::firefight::options::SCREEN];
+    const QUICK_PAGES: [&str; 5] = [
+        "clankers",
+        "h1-options",
+        crate::firefight::options::SCREEN,
+        crate::custom_games::browser_filters::SCREEN,
+        crate::variant_quick::page::SCREEN,
+    ];
 
     /// Screen `name` drawn from `from` has every widget the kit's own
     /// Quick Options sample (`kit.dialog`) has where that sample has it:
-    /// the panel, the title, the rows' bars, labels and values, the help
-    /// line and the legend, each the same art or font and justification.
+    /// the panel, the title, the header's lines, the rows' bars, labels
+    /// and values, the help under the rows and the legend, each the same
+    /// art or font and justification.
     fn assert_quick_options_inside(from: &crate::ui_kit::preview::From<'_>, name: &str) {
         use crate::ui_kit::view::Kind;
         let (quick, _) = from.draw(&sample("kit.dialog").unwrap(), "q").unwrap();
@@ -677,7 +790,8 @@ mod tests {
         let mut compared = 0;
         for w in &quick.widgets {
             let same = w.id.starts_with("panel.")
-                || ["title", "description", "legend"].contains(&w.id.as_str())
+                || ["title", "header.name", "header.about", "description", "legend"]
+                    .contains(&w.id.as_str())
                 || ["row.0.", "row.1."].iter().any(|p| w.id.starts_with(p));
             if !same {
                 continue;
@@ -710,6 +824,8 @@ mod tests {
         for id in [
             "panel.0",
             "title",
+            "header.name",
+            "header.about",
             "description",
             "legend",
             "row.0.label",
@@ -721,21 +837,25 @@ mod tests {
         assert_eq!(v.list, quick.list, "{name}");
     }
 
-    /// The Clankers and Halo 1 Options pages are Quick Options inside, not
-    /// just its frame: a dialog on `quick_options`, its list (skin,
-    /// anchor, a row per setting), each value alone in the value column,
-    /// Quick Options' header (the focused row's one line in the help line,
-    /// its icon in the game type picture), a capitalised title and the
-    /// legend in its footer; drawn, laid out as the kit's Quick Options
-    /// sample is ([`assert_quick_options_inside`]), each row's icon where
-    /// Quick Options has its picture.
+    /// Our settings dialogs are the shared settings dialog on Quick
+    /// Options, inside as well as out: a dialog on `quick_options`, its
+    /// list (skin, anchor, a row per setting), each value alone in the
+    /// value column, a capitalised title and the legend in its footer;
+    /// the header (one icon in Quick Options' game type picture, the name
+    /// and what the window is for) the same in every focus, and the
+    /// focused row's help under the rows; drawn, laid out as the kit's
+    /// Quick Options sample is ([`assert_quick_options_inside`]).
     #[test]
     fn our_settings_dialogs_are_quick_options_inside() {
         use crate::ui_kit::dialog::{
-            DialogBase, DialogGeometry, QUICK_HELP, QUICK_HELP_TEXT, QUICK_OPTIONS_SCREEN_ID,
-            QUICK_PICTURE, QUICK_PICTURE_DEPTH, QUICK_PICTURE_SIZE,
+            DialogBase, DialogGeometry, QUICK_NAME_TEXT, QUICK_OPTIONS_SCREEN_ID, QUICK_PICTURE,
+            QUICK_PICTURE_DEPTH, QUICK_PICTURE_SIZE, SETTINGS_ABOUT_TEXT, SETTINGS_HELP_TEXT,
         };
+        use crate::ui_kit::spec::{fallback, wrap};
         let g = DialogGeometry::fallback_for(DialogBase::QuickOptions);
+        let lines = |text: &str, b: crate::list_class::TextBlock| {
+            wrap(text, i32::from(b.rect[3] - b.rect[1]), &fallback::width).len()
+        };
         for name in QUICK_PAGES {
             let s = sample(name).unwrap();
             let d = s
@@ -747,70 +867,68 @@ mod tests {
             assert_eq!(s.style, ValueStyle::Setting, "{name}: the value alone");
             assert_eq!(
                 s.list,
-                DialogGeometry::list_place(g.list, s.rows.len()),
+                DialogGeometry::list_place(crate::ui_kit::dialog::QUICK_LIST, s.rows.len()),
                 "{name}: Quick Options' own list"
             );
+            assert_eq!(g.list, crate::ui_kit::dialog::QUICK_LIST, "{name}");
             assert!(
                 s.rows.len() <= g.list_items,
                 "{name}: fits without scrolling"
             );
             assert_eq!(
                 s.description,
-                Some(QUICK_HELP_TEXT.into()),
-                "{name}: the help line"
+                Some(SETTINGS_HELP_TEXT.into()),
+                "{name}: the help under the rows"
             );
             assert!(
                 s.footer && s.footer_text().is_some(),
                 "{name}: a footer legend"
             );
             assert_eq!(s.title, s.title.to_uppercase(), "{name}: as QUICK OPTIONS");
-            for r in &s.rows {
+            // The header: one icon, the name and the about lines.
+            assert_eq!(s.art.len(), 1, "{name}: one icon");
+            let icon = &s.art[0];
+            assert!(
+                matches!(
+                    icon.art,
+                    crate::ui_kit::view::Art::Screen { screen_id, pane: 0, index: 1, image }
+                        if screen_id == QUICK_OPTIONS_SCREEN_ID
+                            && (0..crate::ui_kit::dialog::icon::COUNT as i16).contains(&image)
+                ),
+                "{name}: {:?} is not an icon in Quick Options' picture",
+                icon.art
+            );
+            assert_eq!(
+                (icon.at, icon.size, icon.depth),
+                (QUICK_PICTURE.at, QUICK_PICTURE_SIZE, QUICK_PICTURE_DEPTH),
+                "{name}"
+            );
+            let ids: Vec<&str> = s.texts.iter().map(|t| t.id.as_str()).collect();
+            assert_eq!(ids, ["header.name", "header.about"], "{name}");
+            assert_eq!(s.texts[0].rect, QUICK_NAME_TEXT.rect, "{name}");
+            assert_eq!(s.texts[1].rect, SETTINGS_ABOUT_TEXT.rect, "{name}");
+            assert_eq!(lines(&s.texts[0].text, QUICK_NAME_TEXT), 1, "{name}: one name line");
+            assert_eq!(lines(&s.texts[1].text, SETTINGS_ABOUT_TEXT), 1, "{name}: one about line");
+            assert_eq!(s.help, None, "{name}: the rows' help, no page line");
+            for (row, r) in s.rows.iter().enumerate() {
                 let (label, value) = r.cells(s.style);
                 assert_eq!(label, r.label, "{name}");
                 let v = value.unwrap_or_else(|| panic!("{name}: {} has a value", r.label));
                 assert!(!v.contains('<') && !v.contains('>'), "{name}: {v:?}");
                 let help = r.description.as_deref().unwrap_or("");
                 assert!(!help.is_empty() && !help.contains('\n'), "{name}: {help:?}");
+                assert!(lines(help, SETTINGS_HELP_TEXT) <= 2, "{name}: {help:?}, two lines at most");
                 assert!(
-                    help.encode_utf16().count() <= 52,
-                    "{name}: {help:?}, one line"
+                    s.texts.iter().all(|t| t.text != help && t.text != r.label),
+                    "{name}: the about line says the window, not a row"
                 );
-            }
-            // Quick Options' header: the focused row's line in the help
-            // line, one line, and its icon in Quick Options' game type
-            // picture; nothing of the page's own in their place.
-            assert_eq!(s.help, None, "{name}: the rows' lines");
-            assert!(s.art.is_empty(), "{name}: the icon is the focused row's");
-            let room = i32::from(QUICK_HELP.right) - i32::from(QUICK_HELP.left);
-            for (row, r) in s.rows.iter().enumerate() {
                 let focused = ScreenSpec {
                     focus: row,
                     ..s.clone()
                 };
-                let help = r.description.as_deref().unwrap_or("");
-                assert!(
-                    crate::ui_kit::spec::fallback::width(help) <= room,
-                    "{name}: {help:?} is more than the help line's one line"
-                );
                 assert_eq!(focused.description_text().as_deref(), Some(help), "{name}");
-                let art = focused.shown_art();
-                assert_eq!(art.len(), 1, "{name}: {}'s icon", r.label);
-                let icon = &art[0];
-                assert!(
-                    matches!(
-                        icon.art,
-                        crate::ui_kit::view::Art::Screen { screen_id, pane: 0, index: 1, image }
-                            if screen_id == QUICK_OPTIONS_SCREEN_ID
-                                && (0..crate::ui_kit::dialog::icon::COUNT as i16).contains(&image)
-                    ),
-                    "{name}: {:?} is not an icon in Quick Options' picture",
-                    icon.art
-                );
-                assert_eq!(
-                    (icon.at, icon.size, icon.depth),
-                    (QUICK_PICTURE.at, QUICK_PICTURE_SIZE, QUICK_PICTURE_DEPTH),
-                    "{name}"
-                );
+                assert_eq!(focused.art, s.art, "{name}: the icon stays");
+                assert_eq!(focused.texts, s.texts, "{name}: the header stays");
             }
             assert_quick_options_inside(&crate::ui_kit::preview::From::Synthetic, name);
             let (v, _) = crate::ui_kit::preview::From::Synthetic
@@ -829,6 +947,7 @@ mod tests {
                 ],
                 "{name}: the icon where Quick Options has its picture"
             );
+            assert!(v.widget("name").is_none(), "{name}: no name line follows the focus");
         }
     }
 
@@ -982,15 +1101,22 @@ mod tests {
             (screen, issue),
             (
                 "kit.dialog" | "kit.dialog.large" | "clankers" | "firefight" | "h1-options" | "kit.picker" | "kit.picker.game"
-                | FORGE_MAP_PICKER
+                | crate::variant_quick::page::SCREEN
+                | MAP_VARIANT_PICKER
+                | MODE_PICKER
                 | "browser.filters" | "clanker_player_options" | "theater.pause-menu"
-                | "forge.objects" | "forge.tools" | "forge.link" | "forge.question",
+                | "forge.objects" | "forge.tools" | "forge.link" | "forge.question" | "forge.games"
+                | "forge.variant",
                 Issue::Contrast { id, .. }
             )
                 if id.starts_with("row.")
         ) || matches!(
             (screen, issue),
             ("theater.pause-menu", Issue::Contrast { id, .. }) if id == "title"
+        ) || (
+            // The specimens and layouts on a dialog's rows: kit.dialog's.
+            (screen.starts_with("design.") || screen.starts_with("layout."))
+                && matches!(issue, Issue::Contrast { id, .. } if id.starts_with("row."))
         )
     }
 
@@ -1109,9 +1235,9 @@ mod tests {
             assert_eq!([list.anchor.x, list.anchor.y], PICKER_LIST.anchor);
             assert_eq!(list.visible_items as usize, PICKER_LIST_ROWS);
         }
-        // Quick Options' help line and list, which the Clankers and Halo 1
-        // Options pages use, are its tag's own, and those pages are laid out
-        // as Quick Options on the disc's geometry too.
+        // Quick Options' help line, name line and list, which our settings
+        // dialogs' header and rows use, are its tag's own, and those pages
+        // are laid out as Quick Options on the disc's geometry too.
         {
             use crate::ui_kit::dialog::{
                 QUICK_ANIMATION, QUICK_HELP_TEXT, QUICK_LIST, QUICK_LIST_ROWS,
@@ -1131,6 +1257,28 @@ mod tests {
                 1,
                 "left-justified, as TextBlock::bytes writes"
             );
+            // The variant-name line, where a settings dialog of ours names
+            // what its window changes.
+            let name = &pane.text_blocks[1];
+            let r = name.rect;
+            let q = crate::ui_kit::dialog::QUICK_NAME_TEXT;
+            assert_eq!([r.top, r.left, r.bottom, r.right], q.rect);
+            assert_eq!((name.font, name.animation.0), (q.font, q.animation));
+            assert!(
+                name.text_color.iter().all(|c| (c - 1.0).abs() < 0.02),
+                "white: {:?}",
+                name.text_color
+            );
+            // A settings dialog's about block is the help line's own
+            // block, in its font, colour and animation.
+            {
+                use crate::ui_kit::dialog::SETTINGS_ABOUT_TEXT as ABOUT;
+                assert_eq!(ABOUT.rect, [help.rect.top, help.rect.left, help.rect.bottom, help.rect.right]);
+                assert_eq!(
+                    (ABOUT.font, ABOUT.colour, ABOUT.animation),
+                    (help.font, help.text_color, help.animation.0)
+                );
+            }
             let list = &pane.lists[0];
             assert_eq!(list.skin, QUICK_LIST.skin);
             assert_eq!([list.anchor.x, list.anchor.y], QUICK_LIST.anchor);
@@ -1165,13 +1313,20 @@ mod tests {
                     );
                 }
                 assert!(disc.image(pic.bitmap, icon::COUNT as i16).is_none());
-                // Our pages' rows' lines fit the help line in its font.
-                let room = i32::from(QUICK_HELP_TEXT.rect[3]) - i32::from(QUICK_HELP_TEXT.rect[1]);
+                // Our settings dialogs' copy in the disc's font: the name
+                // and the about one line each, each row's help two at most.
+                use crate::ui_kit::dialog::{QUICK_NAME_TEXT, SETTINGS_ABOUT_TEXT, SETTINGS_HELP_TEXT};
+                let lines = |text: &str, b: crate::list_class::TextBlock| {
+                    let width = i32::from(b.rect[3]) - i32::from(b.rect[1]);
+                    crate::ui_kit::spec::wrap(text, width, &|t| disc.fonts.width(b.font, t)).len()
+                };
                 for name in QUICK_PAGES {
-                    for r in sample(name).unwrap().rows {
+                    let s = sample(name).unwrap();
+                    assert_eq!(lines(&s.texts[0].text, QUICK_NAME_TEXT), 1, "{name}: the name");
+                    assert_eq!(lines(&s.texts[1].text, SETTINGS_ABOUT_TEXT), 1, "{name}: the about");
+                    for r in s.rows {
                         let help = r.description.unwrap_or_default();
-                        let w = disc.fonts.width(QUICK_HELP_TEXT.font, &help);
-                        assert!(w <= room, "{name}: {help:?}: {w} of {room}");
+                        assert!(lines(&help, SETTINGS_HELP_TEXT) <= 2, "{name}: {help:?}");
                     }
                 }
             }

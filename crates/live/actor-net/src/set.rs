@@ -62,7 +62,8 @@ impl ActorSet {
     }
 
     /// Apply one host change or restore a full key. A posture for an absent
-    /// actor cannot create it. Lines, controls and digests are transient.
+    /// actor cannot create it. Lines, controls, digests, cues and the show
+    /// state are transient.
     pub fn apply(&mut self, record: &Record) -> Result<(), SetError> {
         record_len(record)?;
         self.apply_validated(record)
@@ -91,7 +92,11 @@ impl ActorSet {
                 }
             }
             Record::State(state) => self.state.clone_from(state),
-            Record::Control { .. } | Record::Line { .. } | Record::Digest { .. } => {}
+            Record::Control { .. }
+            | Record::Line { .. }
+            | Record::Digest { .. }
+            | Record::Show { .. }
+            | Record::Cue { .. } => {}
         }
         Ok(())
     }
@@ -117,7 +122,8 @@ impl Replica {
 
     /// Returns true once for each accepted packet. Dispatch transient records
     /// only on true. Copies of a line in different packets share its original
-    /// (entity, vocalization, tick), which identifies one playback.
+    /// (entity, vocalization, tick), and copies of a cue share its (tick,
+    /// sequence), which identifies one playback or showing.
     pub fn apply(&mut self, packet: &Packet) -> Result<bool, SetError> {
         if self
             .last_tick

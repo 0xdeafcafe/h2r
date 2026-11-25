@@ -343,7 +343,10 @@ impl World {
         self.u32(OUT)
     }
     fn wait(&mut self, h: u32) -> u32 {
-        let limit = Instant::now() + Duration::from_secs(6);
+        self.wait_for(h, Duration::from_secs(6))
+    }
+    fn wait_for(&mut self, h: u32, timeout: Duration) -> u32 {
+        let limit = Instant::now() + timeout;
         loop {
             let result = self.call("XOnlineTaskContinue", &[h]);
             if result != 0 {
@@ -2219,6 +2222,108 @@ fn sessions_two_guests_publish_find_parse_update_and_delete() {
     );
 }
 
+/// Clanker Team Skirmish through the title's calls (docs/game/bots.md §8.4):
+/// the console hosts a four-seat match session of descriptor 10, which
+/// reads as a 2 v 2 clanker hopper, and the round the full lobby makes
+/// registers on the server for the host and for a party member's console,
+/// so neither console's arbitration status fails the match (result 0x11).
+#[test]
+fn a_clanker_doubles_lobby_registers_its_round_for_each_console_of_the_party() {
+    use live_proto::optimatch::attr as attr_id;
+    const HOPPER: u32 = 10;
+    const ROUND: u32 = DATA + 0x12000;
+
+    let server = Server::new();
+    let host_account = server.account("Host");
+    let guest_account = server.account("Guest");
+    let mut host = World::new(&server.embedded.url, &[&host_account]);
+    host.logon();
+    server.until(|| host.hle.clanker_hoppers().contains(HOPPER));
+
+    let path = host.storage_path("9809", "multiplayer_hopper.dat");
+    let download = host.storage_start(path, 0x20000);
+    assert_eq!(host.wait(download), TASK_SUCCESS);
+    assert_eq!(host.storage_results(download), OK);
+    let file = live_proto::hopper::HopperFile::parse(&host.bytes(
+        host.u32(OUT), host.u32(OUT + 4) as usize,
+    )).unwrap();
+    assert_eq!(host.call("XOnlineTaskClose", &[download]), OK);
+    let marks = host.hle.clanker_hoppers();
+    let selected = marks.hoppers.iter().find(|m| {
+        file.text(m.hopper_id as usize).unwrap().title == "Clanker Doubles"
+    }).expect("Clanker Doubles in the downloaded lineup");
+    assert_eq!((selected.hopper_id, selected.playlist_id), (HOPPER, 11));
+    // The playlist press searches with the descriptor index from the row.
+    // A Clanker search is held empty before the title creates its target.
+    for (i, value) in [Some(selected.hopper_id), Some(1), None, None, Some(1),
+        None, None, None, None, None, None, None].into_iter().enumerate()
+    {
+        attr(&host, MATCH_ATTR + i as u32 * 16,
+             if value.is_some() { 0 } else { 0x00f0_0000 }, u64::from(value.unwrap_or(0)));
+    }
+    let cap = host.call("XOnlineMatchSearchResultsLen", &[50, 7, MATCH_SPEC]);
+    assert_eq!(host.call("XOnlineMatchSearch", &[1, 50, 12, MATCH_ATTR, cap, 0, OUT]), OK);
+    let search = host.u32(OUT);
+    assert_eq!(host.wait_for(search, Duration::from_secs(25)), TASK_SUCCESS);
+    assert_eq!(host.call("XOnlineMatchSearchGetResults", &[search, OUT, OUT + 4]), OK);
+    assert_eq!(host.u32(OUT + 4), 0, "an empty search lets the title host");
+    assert_eq!(host.call("XOnlineTaskClose", &[search]), OK);
+    attr(&host, MATCH_ATTR, attr_id::HOPPER, u64::from(selected.hopper_id));
+    attr(&host, MATCH_ATTR + 16, attr_id::OPEN, 2);
+    assert_eq!(
+        host.call(
+            "XOnlineMatchSessionCreate",
+            &[2, 2, 0, 0, 2, MATCH_ATTR, 0, OUT]
+        ),
+        OK
+    );
+    let target = host.u32(OUT);
+    assert_eq!(host.wait(target), TASK_SUCCESS);
+    assert_eq!(
+        host.call("XOnlineMatchSessionGetInfo", &[target, MATCH_ID, MATCH_KEY]),
+        OK
+    );
+    let target_id = sign::hex(&host.bytes(MATCH_ID, 8));
+    let (id, mark) = host.hle.clanker_hosted().expect("a clanker hopper hosted");
+    assert_eq!(id, target_id);
+    assert_eq!(
+        (mark.hopper_id, mark.players, mark.teams, mark.bots_for(2)),
+        (HOPPER, 4, 2, 2),
+        "2 v 2: a party of two leaves two seats"
+    );
+
+    // The round the host makes, and each console's registration of it.
+    let session: [u8; 8] = host.bytes(MATCH_ID, 8).try_into().unwrap();
+    host.put(ROUND, &session);
+    assert_eq!(host.call("XOnlineArbitrationCreateRoundID", &[ROUND + 8]), OK);
+    let round: [u8; 16] = host.bytes(ROUND, 16).try_into().unwrap();
+    assert_eq!(
+        host.call("XOnlineArbitrationRegister", &[ROUND, 300, 0xc, 0, OUT]),
+        OK
+    );
+    let task = host.u32(OUT);
+    assert_eq!(host.wait(task), TASK_SUCCESS, "the host's registration");
+
+    let mut guest = World::new(&server.embedded.url, &[&guest_account]);
+    guest.logon();
+    guest.put(ROUND, &round);
+    assert_eq!(
+        guest.call("XOnlineArbitrationRegister", &[ROUND, 300, 0xc, 0, OUT]),
+        OK
+    );
+    let task = guest.u32(OUT);
+    assert_eq!(guest.wait(task), TASK_SUCCESS, "the party member's registration");
+
+    let round_hex = sign::hex(&round[8..]);
+    let stream = live_proto::arbitration::stream(&target_id, &round_hex);
+    let registered = server
+        .events()
+        .into_iter()
+        .filter(|e| e.stream == stream && e.kind == "ArbitrationRegistered")
+        .count();
+    assert_eq!(registered, 2);
+}
+
 #[test]
 fn a_full_clankermatch_target_stays_advertised_until_the_guest_deletes_it() {
     use live_proto::{optimatch::attr as attr_id, session::Session};
@@ -2569,6 +2674,100 @@ fn guests_read_the_rules_hash_their_host_advertises() {
         HostRules::Known {
             session,
             rules: Some(hash),
+            refreshed: true
+        }
+    );
+}
+/// A host's Firefight match (docs/game/firefight.md, "Live") reaches its
+/// open session at once and its guests read it back; leaving Firefight
+/// clears it on the server and for the guests.
+#[test]
+fn guests_read_the_firefight_match_their_host_advertises() {
+    use live_hle::HostFirefight;
+    let s = Server::new();
+    let a = s.account("Host");
+    let b = s.account("Guest");
+    let mut host = World::new(&s.embedded.url, &[&a]);
+    let mut guest = World::raw_network(
+        &s.embedded.url,
+        json!([b.json()]),
+        Duration::from_millis(100),
+        32000,
+    );
+    host.logon();
+    guest.logon();
+    let wait = Duration::from_secs(5);
+    assert_eq!(guest.hle.host_firefight(wait), HostFirefight::NotJoined);
+    for (i, id) in [1, 2, 3, 5, 6, 7, 8].into_iter().enumerate() {
+        attr(&host, MATCH_ATTR + i as u32 * 16, id, 100 + u64::from(id));
+    }
+    assert_eq!(
+        host.call(
+            "XOnlineMatchSessionCreate",
+            &[1, 7, 0, 0, 7, MATCH_ATTR, 0, OUT]
+        ),
+        0
+    );
+    let create = host.u32(OUT);
+    assert_eq!(host.wait(create), TASK_SUCCESS);
+    let created = s
+        .events()
+        .into_iter()
+        .find(|e| e.kind == "SessionCreated")
+        .unwrap();
+    assert!(created.data["advertisement"].get("firefight").is_none());
+    let cap = guest.call("XOnlineMatchSearchResultsLen", &[50, 7, MATCH_SPEC]);
+    let (_, table, count) = match_search(&mut guest, 1, 0, cap);
+    assert_eq!(count, 1);
+    let row = guest.u32(table);
+    assert_eq!(guest.call("XNetRegisterKey", &[row + 4, row + 0x30]), 0);
+    let session = live_proto::sign::hex(&host.hle.local_sessions()[0].id);
+    assert_eq!(
+        guest.hle.host_firefight(wait),
+        HostFirefight::Known {
+            session: session.clone(),
+            firefight: None,
+            refreshed: true
+        }
+    );
+    let crossfire = live_proto::session::Firefight {
+        set: "Crossfire".into(),
+        id: "5e".repeat(32),
+        teams: 2,
+        difficulty: 1,
+        kit: 2,
+    };
+    host.hle.set_session_firefight(Some(crossfire.clone()));
+    let advertised = || {
+        s.get_as_operator::<Page<live_proto::session::Session>>("/v1/sessions")
+            .items[0]
+            .advertisement
+            .firefight
+            .clone()
+    };
+    s.until(|| advertised().is_some());
+    assert_eq!(advertised(), Some(crossfire.clone()));
+    assert_eq!(
+        host.hle.local_sessions()[0].firefight,
+        Some(crossfire.clone())
+    );
+    assert_eq!(
+        guest.hle.host_firefight(wait),
+        HostFirefight::Known {
+            session: session.clone(),
+            firefight: Some(crossfire),
+            refreshed: true
+        }
+    );
+    // The host's next game is not Firefight: the session drops it.
+    host.hle.set_session_firefight(None);
+    s.until(|| advertised().is_none());
+    assert_eq!(host.hle.local_sessions()[0].firefight, None);
+    assert_eq!(
+        guest.hle.host_firefight(wait),
+        HostFirefight::Known {
+            session,
+            firefight: None,
             refreshed: true
         }
     );
@@ -3220,6 +3419,277 @@ fn friend_pair(server: &Server, a: &Account, b: &Account) {
             .send_string(&event)
             .unwrap();
     }
+}
+fn friend_event(server: &Server, signer: &Account, kind: &str, data: serde_json::Value) {
+    let author = format!("acct:{}@{}", signer.xuid, server.discovery.id);
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let event = live_proto::sign::EventBody::at_unix(
+        &signer.key,
+        &author,
+        &live_proto::streams::account(signer.xuid),
+        kind,
+        data,
+        now,
+    )
+    .sign(&signer.key);
+    let token = sign::issue_token(
+        &signer.key,
+        &author,
+        &server.discovery.id,
+        lxm::EVENTS_WRITE,
+        now,
+    );
+    server
+        .agent
+        .post(&server.url("/v1/events"))
+        .set("authorization", &format!("Bearer {token}"))
+        .set("content-type", "application/jose")
+        .send_string(&event)
+        .unwrap();
+}
+fn friend_record(w: &World, xuid: Xuid) {
+    let mut f = [0; 86];
+    f[..8].copy_from_slice(&xuid.0.to_le_bytes());
+    w.put(INV_FRIEND, &f);
+}
+fn friend_events(s: &Server, kind: &str, from: Xuid, to: Xuid) -> bool {
+    s.events().iter().any(|e| {
+        e.kind == kind
+            && e.data["from"] == from.to_string()
+            && e.data["to"] == to.to_string()
+    })
+}
+#[test]
+fn friend_request_answers_and_removals_are_signed_events() {
+    let s = Server::new();
+    let a = s.account("Asker");
+    let b = s.account("Answerer");
+    let c = s.account("Decliner");
+    let mut asker = World::new(&s.embedded.url, &[&a]);
+    let mut answerer = World::new(&s.embedded.url, &[&b]);
+    asker.logon();
+    answerer.logon();
+    friend_event(&s, &a, types::FRIEND_REQUESTED, json!({"from":a.xuid,"to":b.xuid}));
+    friend_event(&s, &c, types::FRIEND_REQUESTED, json!({"from":c.xuid,"to":b.xuid}));
+
+    // Yes (1) accepts and returns at once; the request is the answerer's.
+    friend_record(&answerer, a.xuid);
+    assert_eq!(answerer.call("XOnlineFriendsAnswerRequest", &[0, INV_FRIEND, 1]), 0);
+    guest_until(&mut answerer, |_| {
+        friend_events(&s, types::FRIEND_ACCEPTED, a.xuid, b.xuid)
+    });
+    // No (0) declines; the friends list then shows the first as a friend.
+    friend_record(&answerer, c.xuid);
+    assert_eq!(answerer.call("XOnlineFriendsAnswerRequest", &[0, INV_FRIEND, 0]), 0);
+    guest_until(&mut answerer, |_| {
+        friend_events(&s, types::FRIEND_DECLINED, c.xuid, b.xuid)
+    });
+    guest_until(&mut answerer, |w| {
+        let n = w.call("XOnlineFriendsGetLatest", &[0, 100, INV_RECORD]);
+        (0..n).any(|i| w.rt.memory().u64(INV_RECORD + i * 86).unwrap() == a.xuid.0)
+    });
+    // An answer outside the enum is refused.
+    assert_ne!(answerer.call("XOnlineFriendsAnswerRequest", &[0, INV_FRIEND, 3]), 0);
+
+    // Remove ends the friendship.
+    friend_record(&answerer, a.xuid);
+    assert_eq!(answerer.call("XOnlineFriendsRemove", &[0, INV_FRIEND]), 0);
+    guest_until(&mut answerer, |_| {
+        s.events().iter().any(|e| {
+            e.kind == types::FRIEND_REMOVED
+                && e.data["by"] == b.xuid.to_string()
+                && e.data["friend"] == a.xuid.to_string()
+        })
+    });
+    guest_until(&mut answerer, |w| {
+        let n = w.call("XOnlineFriendsGetLatest", &[0, 100, INV_RECORD]);
+        (0..n).all(|i| w.rt.memory().u64(INV_RECORD + i * 86).unwrap() != a.xuid.0)
+    });
+}
+#[test]
+fn friend_requests_made_in_the_game_reach_the_server_and_can_be_answered() {
+    let s = Server::new();
+    let a = s.account("Asker");
+    let b = s.account("Answerer");
+    let c = s.account("Namesake");
+    let mut asker = World::new(&s.embedded.url, &[&a]);
+    let mut answerer = World::new(&s.embedded.url, &[&b]);
+    let mut namesake = World::new(&s.embedded.url, &[&c]);
+    asker.logon();
+    answerer.logon();
+    namesake.logon();
+
+    // By xuid: the task completes once the server has the request.
+    let (blo, bhi) = (b.xuid.0 as u32, (b.xuid.0 >> 32) as u32);
+    assert_eq!(
+        asker.call("XOnlineFriendsRequestEx", &[0, blo, bhi, 0, 0, 0, OUT]),
+        0
+    );
+    let task = asker.u32(OUT);
+    assert_eq!(asker.wait(task), TASK_SUCCESS);
+    assert!(friend_events(&s, types::FRIEND_REQUESTED, a.xuid, b.xuid));
+
+    // By name.
+    asker.put(BUFFER, b"Namesake\0");
+    assert_eq!(
+        asker.call("XOnlineFriendsRequestByNameEx", &[0, BUFFER, 0, 0, OUT]),
+        0
+    );
+    let task = asker.u32(OUT);
+    assert_eq!(asker.wait(task), TASK_SUCCESS);
+    assert!(friend_events(&s, types::FRIEND_REQUESTED, a.xuid, c.xuid));
+
+    // An unknown name fails its task with a status, not a crash.
+    asker.put(BUFFER, b"Nobody\0");
+    assert_eq!(
+        asker.call("XOnlineFriendsRequestByNameEx", &[0, BUFFER, 0, 0, OUT]),
+        0
+    );
+    let task = asker.u32(OUT);
+    assert_eq!(asker.wait(task), FRIEND_NOT_FOUND);
+
+    // The answerer sees the request pending and accepts it.
+    guest_until(&mut answerer, |w| {
+        let n = w.call("XOnlineFriendsGetLatest", &[0, 100, INV_RECORD]);
+        (0..n).any(|i| {
+            w.rt.memory().u64(INV_RECORD + i * 86).unwrap() == a.xuid.0
+                && w.u32(INV_RECORD + i * 86 + 28) & 0x80000000 != 0
+        })
+    });
+    friend_record(&answerer, a.xuid);
+    assert_eq!(
+        answerer.call("XOnlineFriendsAnswerRequest", &[0, INV_FRIEND, 1]),
+        0
+    );
+    guest_until(&mut answerer, |_| {
+        friend_events(&s, types::FRIEND_ACCEPTED, a.xuid, b.xuid)
+    });
+}
+fn wide_text(text: &str) -> Vec<u8> {
+    text.encode_utf16()
+        .chain([0])
+        .flat_map(u16::to_le_bytes)
+        .collect()
+}
+/// Composes a generic text message in `w` and sends it to `to` with the
+/// game's XOnlineMessageSend; the send's task.
+fn send_text(w: &mut World, to: Xuid, text: &str) -> u32 {
+    assert_eq!(
+        w.call("XOnlineMessageCreate", &[1, 0, 0, 0, 0, 0x08, 0x4ec0, OUT]),
+        0
+    );
+    let msg = w.u32(OUT);
+    let bytes = wide_text(text);
+    w.put(BUFFER, &bytes);
+    assert_eq!(
+        w.call(
+            "XOnlineMessageSetProperty",
+            &[msg, 0x6c4, bytes.len() as u32, BUFFER, 0]
+        ),
+        0
+    );
+    w.put(INV_FRIEND, &to.0.to_le_bytes());
+    w.word(INV_FRIEND + 8, 0);
+    assert_eq!(
+        w.call("XOnlineMessageSend", &[0, msg, 1, INV_FRIEND, 0, OUT]),
+        0
+    );
+    let task = w.u32(OUT);
+    assert_eq!(w.call("XOnlineMessageDestroy", &[msg]), 0);
+    task
+}
+fn text_events(s: &Server, kind: &str) -> Vec<WireEvent> {
+    s.events().into_iter().filter(|e| e.kind == kind).collect()
+}
+#[test]
+fn friends_text_messages_reach_the_inbox_and_delete_on_the_server() {
+    let s = Server::new();
+    let a = s.account("Sender");
+    let b = s.account("Reader");
+    let c = s.account("Stranger");
+    friend_pair(&s, &a, &b);
+    let mut sender = World::new(&s.embedded.url, &[&a]);
+    let mut reader = World::new(&s.embedded.url, &[&b]);
+    let mut stranger = World::new(&s.embedded.url, &[&c]);
+    sender.logon();
+    reader.logon();
+    stranger.logon();
+
+    // A sends B a message: the task reports the server's answer, and the
+    // mailbox has the signed event with the text.
+    let text = "Hello \u{96ea} from the game";
+    let task = send_text(&mut sender, b.xuid, text);
+    assert_eq!(sender.wait(task), TASK_SUCCESS);
+    let sent = text_events(&s, live_proto::mailbox::TEXT_SENT);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].data["text"], text);
+    assert_eq!(sent[0].data["from"], a.xuid.to_string());
+    assert_eq!(sent[0].stream, live_proto::mailbox::stream(b.xuid));
+
+    // B's inbox lists it with the sender and the text.
+    guest_until(&mut reader, |w| {
+        w.call("XOnlineMessageEnumerate", &[0, INV_RECORD, OUT]) == 0 && w.u32(OUT) == 1
+    });
+    assert_eq!(reader.bytes(INV_RECORD, 8), a.xuid.0.to_le_bytes());
+    assert_eq!(reader.bytes(INV_RECORD + 12, 1), vec![1]);
+    assert_eq!(reader.bytes(INV_RECORD + 48, 6), b"Sender");
+    let message = reader.u32(INV_RECORD + 32);
+    assert_eq!(
+        reader.call("XOnlineGetNotificationEx", &[0, OUT, OUT + 16]),
+        1
+    );
+    assert_eq!(reader.bytes(OUT, 1), vec![1]);
+    assert_eq!(reader.u32(OUT + 1), message);
+    assert_eq!(
+        reader.call("XOnlineGetNotificationEx", &[0, OUT, OUT + 16]),
+        0,
+        "one toast per message"
+    );
+    assert_eq!(
+        reader.call("XOnlineMessageDetails", &[0, message, 0, 0, 0, OUT]),
+        0
+    );
+    let details = reader.u32(OUT);
+    assert_eq!(reader.wait(details), TASK_SUCCESS);
+    let expected = wide_text(text);
+    assert_eq!(
+        reader.call(
+            "XOnlineMessageDetailsGetResultsProperty",
+            &[details, 0x6c4, 256, BUFFER, OUT, OUT + 4]
+        ),
+        0
+    );
+    assert_eq!(reader.u32(OUT), expected.len() as u32);
+    assert_eq!(reader.bytes(BUFFER, expected.len()), expected);
+    assert_eq!(
+        reader.call(
+            "XOnlineMessageDetailsGetResultsProperty",
+            &[details, 0x3c2, 256, BUFFER, OUT, OUT + 4]
+        ),
+        MESSAGE_PROPERTY_NOT_FOUND
+    );
+    assert_eq!(reader.call("XOnlineTaskClose", &[details]), 0);
+
+    // Deleting it removes it on the server and from the list.
+    assert_eq!(reader.call("XOnlineMessageDelete", &[0, message, 0]), 0);
+    guest_until(&mut reader, |_| {
+        text_events(&s, live_proto::mailbox::TEXT_DELETED)
+            .iter()
+            .any(|e| e.data["message_id"] == sent[0].position)
+    });
+    for _ in 0..3 {
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            reader.call("XOnlineMessageEnumerate", &[0, INV_RECORD, OUT]),
+            0
+        );
+        assert_eq!(reader.u32(OUT), 0, "still gone after the next refresh");
+    }
+
+    // A stranger is refused: the task fails and nothing is stored.
+    let task = send_text(&mut stranger, b.xuid, "let me in");
+    assert_eq!(stranger.wait(task), FRIEND_NOT_FOUND);
+    assert_eq!(text_events(&s, live_proto::mailbox::TEXT_SENT).len(), 1);
 }
 fn guest_until(w: &mut World, mut condition: impl FnMut(&mut World) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(6);
@@ -4455,6 +4925,121 @@ fn arbitration_registers_and_reports_the_round_as_the_signed_in_account() {
     let body = SignedEvent::open(&events[1].jws).unwrap().body;
     assert_eq!(body.data["xuid"], account.xuid.to_string());
     assert_eq!(body.data["procedures"], json!([0x8001]));
+}
+
+/// A matchmaking host's target session runs on a network key of its own
+/// (`XNetCreateKey`), registered beside the Live session it advertises,
+/// and its round names that key: the round is registered under the Live
+/// session, the one the game record carries.
+#[test]
+fn a_round_naming_the_hosts_network_key_registers_under_its_live_session() {
+    const ROUND: u32 = DATA + 0x12000;
+    const GAME_KEY: u32 = DATA + 0x12100;
+    let server = Server::new();
+    let account = server.account("Arbiter");
+    let mut w = World::new(&server.embedded.url, &[&account]);
+    w.logon();
+    assert_eq!(w.call("XNetCreateKey", &[ROUND, GAME_KEY]), OK);
+    assert_eq!(w.call("XNetRegisterKey", &[ROUND, GAME_KEY]), OK);
+    let network_key = sign::hex(&w.bytes(ROUND, 8));
+    attr(&w, MATCH_ATTR, 1, 101);
+    assert_eq!(
+        w.call(
+            "XOnlineMatchSessionCreate",
+            &[1, 7, 0, 0, 1, MATCH_ATTR, 0, OUT]
+        ),
+        0
+    );
+    let create = w.u32(OUT);
+    assert_eq!(w.wait(create), TASK_SUCCESS);
+    let session_hex = w.hle.hosted_session().expect("the advertised session");
+    assert_ne!(session_hex, network_key);
+    assert_eq!(w.call("XOnlineArbitrationCreateRoundID", &[ROUND + 8]), OK);
+    let round_hex = sign::hex(&w.bytes(ROUND + 8, 8));
+
+    assert_eq!(
+        w.call("XOnlineArbitrationRegister", &[ROUND, 300, 0xc, 0, OUT]),
+        OK
+    );
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+
+    let stream = live_proto::arbitration::stream(&session_hex, &round_hex);
+    let kinds: Vec<String> = server
+        .events()
+        .into_iter()
+        .filter(|e| e.stream == stream)
+        .map(|e| e.kind)
+        .collect();
+    assert_eq!(kinds, ["ArbitrationRegistered"]);
+}
+
+/// The game deletes a matchmaking lobby's advertisement once its match
+/// session takes over, long before the game ends: the round's report
+/// still goes to the Live session it was registered under.
+#[test]
+fn a_rounds_report_follows_its_registration_after_the_advertisement_goes() {
+    const ROUND: u32 = DATA + 0x12000;
+    const GAME_KEY: u32 = DATA + 0x12100;
+    const PROCEDURES: u32 = DATA + 0x13000;
+    let server = Server::new();
+    let account = server.account("Arbiter");
+    let mut w = World::new(&server.embedded.url, &[&account]);
+    w.logon();
+    assert_eq!(w.call("XNetCreateKey", &[ROUND, GAME_KEY]), OK);
+    assert_eq!(w.call("XNetRegisterKey", &[ROUND, GAME_KEY]), OK);
+    attr(&w, MATCH_ATTR, 1, 101);
+    assert_eq!(
+        w.call(
+            "XOnlineMatchSessionCreate",
+            &[1, 7, 0, 0, 1, MATCH_ATTR, 0, OUT]
+        ),
+        0
+    );
+    let create = w.u32(OUT);
+    assert_eq!(w.wait(create), TASK_SUCCESS);
+    assert_eq!(
+        w.call("XOnlineMatchSessionGetInfo", &[create, MATCH_ID, MATCH_KEY]),
+        OK
+    );
+    let session_hex = w.hle.hosted_session().expect("the advertised session");
+    assert_eq!(sign::hex(&w.bytes(MATCH_ID, 8)), session_hex);
+    let (lo, hi) = (w.u32(MATCH_ID), w.u32(MATCH_ID + 4));
+    assert_eq!(w.call("XOnlineArbitrationCreateRoundID", &[ROUND + 8]), OK);
+    let round_hex = sign::hex(&w.bytes(ROUND + 8, 8));
+    assert_eq!(
+        w.call("XOnlineArbitrationRegister", &[ROUND, 300, 0xc, 0, OUT]),
+        OK
+    );
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+    assert_eq!(w.call("XOnlineTaskClose", &[task]), OK);
+
+    assert_eq!(w.call("XOnlineMatchSessionDelete", &[lo, hi, 0, OUT]), OK);
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+    assert_eq!(w.hle.hosted_session(), None);
+
+    w.put(PROCEDURES, &[0; 0x88]);
+    w.put(PROCEDURES, &0x8001u16.to_le_bytes());
+    assert_eq!(
+        w.call(
+            "XOnlineArbitrationReport",
+            &[ROUND, 1, PROCEDURES, 0, 3, 0, OUT]
+        ),
+        OK
+    );
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+
+    let stream = live_proto::arbitration::stream(&session_hex, &round_hex);
+    let kinds: Vec<String> = server
+        .events()
+        .into_iter()
+        .filter(|e| e.stream == stream)
+        .map(|e| e.kind)
+        .collect();
+    assert_eq!(kinds, ["ArbitrationRegistered", "ArbitrationReported"]);
 }
 
 // Outages (docs/live/live.md "Outages"): a Worker deploy or a dropped

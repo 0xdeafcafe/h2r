@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 
 use superbounce::learned::{self, Knobs};
 use superbounce::verified::{self, Entry};
-use superbounce::{Kind, Lip, MAX_LIP, Shape, Spot, Status};
+use superbounce::{Arm, Kind, Lip, MAX_LIP, Poly, Shape, Spot, Status};
 
 use crate::brain::Vec3;
 use crate::cache::Stamp;
@@ -58,9 +58,6 @@ pub const MEASURED_FALL: f32 = 2.43;
 /// The most a bounce site may need to fall onto it (world units) for a
 /// bot's standing jump to reach it.
 pub const STANDING_FALL: f32 = 0.5;
-/// A slot's width when the spot does not say (world units): Ascension's
-/// strip, y 3.8 to 4.0.
-pub const SLOT_WIDTH: f32 = 0.2;
 
 /// A bounce the planner can use: the spot as the bounce run takes it, and
 /// what the planner needs to know of its launch.
@@ -69,14 +66,14 @@ pub struct Site {
     pub bounce: Bounce,
     /// Launch speed straight up (world units a second).
     pub launch: f32,
-    /// How far the landing must fall onto the slot ([`STANDING_FALL`] is
-    /// what a standing jump gives).
+    /// How far the landing must fall onto the slot, as measured
+    /// ([`STANDING_FALL`] is what a standing jump gives); 0 for a scanned
+    /// site, which has no measured drop ([`Site::drop_known`]).
     pub fall: f32,
     /// The downward speed the landing must touch down at (world units a
-    /// second; 0 unknown).
+    /// second): a measured one, else the one threshold every seam shares
+    /// (`superbounce::speed::BOUNCE_SPEED`).
     pub need: f32,
-    /// The slot's width (world units; 0 unknown, read as [`SLOT_WIDTH`]).
-    pub width: f32,
     /// `Proven` when a game run bounced from it (measured, or verified).
     pub status: Status,
     /// Where a verified drop landed: the point to aim at instead of
@@ -90,7 +87,31 @@ pub struct Site {
     /// state, `None` with no line.
     pub knobs: Knobs,
     pub line: Option<learned::State>,
+    /// A single crease the scan found (`superbounce::Spot::candidate`):
+    /// the sim's training flies it, a route or a show-off does not until
+    /// it is proved ([`Site::plays`]).
+    pub candidate: bool,
+    /// A V's arm (`superbounce::Arm`): the side of the V's bisector it is
+    /// approached from, the mirror side; the training also flies it from
+    /// its own side as a control ([`Site::same_side`]). `None` for every
+    /// other site.
+    pub arm: Option<Arm>,
+    /// The floor's shape (`superbounce::Shape`): a slot, a single crease, a
+    /// V or a busy point. A measured site is a slot.
+    pub shape: Shape,
+    /// The scan's score (`superbounce::Spot::score`, 0 to 1); 0 for a
+    /// measured site, which no scan scored.
+    pub score: f32,
 }
+
+/// A seam scoring this or more has at least two creases converging on
+/// its line (docs/game/superbounce.md, "Monster bounces"): a Monster's
+/// shape.
+pub const MONSTER_SCORE: f32 = 0.85;
+/// A launch over this (world units a second) is a Monster Bounce
+/// (docs/game/superbounce.md, "The rule"; the game's
+/// `superbounce_chain::MONSTER_VZ`).
+pub const MONSTER_VZ: f32 = 16.0;
 
 impl Site {
     /// A scanned bounce spot as a site; `None` for a crouch spot.
@@ -110,13 +131,17 @@ impl Site {
             },
             launch: s.launch,
             fall: s.fall,
-            need: s.need,
-            width: s.width,
+            // The one threshold every seam shares, unless measured.
+            need: superbounce::speed::need(s),
             status: s.status,
             aim: None,
             height: None,
             knobs: Knobs::default(),
             line: None,
+            candidate: s.candidate(),
+            arm: s.arm,
+            shape: s.shape,
+            score: s.score,
         })
     }
 
@@ -133,13 +158,44 @@ impl Site {
                 0.0
             },
             need: MEASURED_NEED,
-            width: SLOT_WIDTH,
             status: Status::Proven,
             aim: b.landing,
             height: None,
             knobs: Knobs::default(),
             line: None,
+            candidate: false,
+            arm: None,
+            shape: Shape::Slot,
+            score: 0.0,
         }
+    }
+
+    /// A V's arm approached from its own side instead of the mirror: the
+    /// training's control (docs/game/bounce-search.md, "Vs: the mirror
+    /// and its control"). The approach side and the drift turn round, and
+    /// the learned knobs go (they are the mirror's: the control's search
+    /// keeps its own line). Any other site as it is.
+    pub fn same_side(self) -> Site {
+        let Some(a) = self.arm else {
+            return self;
+        };
+        let d = self.bounce.drift;
+        Site {
+            bounce: Bounce {
+                drift: [-d[0], -d[1]],
+                ..self.bounce
+            },
+            knobs: Knobs::default(),
+            line: None,
+            arm: Some(a.same_side()),
+            ..self
+        }
+    }
+
+    /// Whether `xy` is on the side this site is approached from: anywhere
+    /// but a V's arm's other side.
+    pub fn approached_from(&self, xy: [f32; 2]) -> bool {
+        self.arm.is_none_or(|a| a.approached_from(xy))
     }
 
     /// With what a verified entry about it says: its status, and where and
@@ -167,6 +223,23 @@ impl Site {
         self.knobs = learned::knobs_for(lines, self.bounce.stand);
         self.line = learned::entry_for(lines, self.bounce.stand).map(|e| e.state);
         self
+    }
+
+    /// Whether a route or a show-off may bounce here: anything but a
+    /// candidate (a single crease or a V), which only plays once a game run
+    /// proved it. A learned line proves nothing (the training writes the
+    /// word, docs/game/bounce-search.md, "Rules and limits").
+    pub fn plays(&self) -> bool {
+        !self.candidate || self.proven()
+    }
+
+    /// Whether anything measured the drop onto it: a measured fall, a
+    /// verified height or a recipe's takeoff. A scanned site has none (the
+    /// scan carries no `fall`), so the training tries the drops as well as
+    /// the stand (`mind::practice::site_in`), from a floor the speed
+    /// model's drop over it (`bounce_route::launch_floor`).
+    pub fn drop_known(&self) -> bool {
+        self.fall > 0.0 || self.height.is_some() || self.bounce.takeoff.is_some()
     }
 
     /// A standing jump from the spot's `stand` reaches it. A learned `how`
@@ -206,6 +279,18 @@ impl Site {
 
     pub fn proven(&self) -> bool {
         self.status == Status::Proven
+    }
+
+    /// Whether it has a Monster's shape or launch (docs/game/superbounce.md,
+    /// "Monster bounces"): lines converging on it (a seam scoring
+    /// [`MONSTER_SCORE`] or more, a V, a busy point), or a launch over
+    /// [`MONSTER_VZ`] (a verified best, or the scan's estimate).
+    pub fn monster(&self) -> bool {
+        let shape = match self.shape {
+            Shape::Vee | Shape::Busy => true,
+            Shape::Slot | Shape::Crease => self.score >= MONSTER_SCORE,
+        };
+        shape || self.launch > MONSTER_VZ
     }
 }
 
@@ -430,6 +515,8 @@ pub fn has_scan(map: &str) -> bool {
 #[derive(Default)]
 struct Table {
     maps: HashMap<String, Arc<Vec<Spot>>>,
+    /// Each map's floor polygons ([`publish_floors`]).
+    floors: HashMap<String, Arc<Vec<Poly>>>,
 }
 
 static TABLE: Mutex<Option<Table>> = Mutex::new(None);
@@ -457,6 +544,26 @@ pub fn scanned(map: &str) -> Arc<Vec<Spot>> {
     let t = TABLE.lock().unwrap_or_else(|e| e.into_inner());
     t.as_ref()
         .and_then(|t| t.maps.get(&map.to_ascii_lowercase()))
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Stores `map`'s floor polygons (any case), replacing the last: what a
+/// drop's takeoff is judged on (`bounce_route::judge_takeoff`).
+pub fn publish_floors(map: &str, floors: Vec<Poly>) {
+    let mut t = TABLE.lock().unwrap_or_else(|e| e.into_inner());
+    t.get_or_insert_with(Table::default)
+        .floors
+        .insert(map.to_ascii_lowercase(), Arc::new(floors));
+    GENERATION.fetch_add(1, Ordering::Release);
+}
+
+/// The floor polygons of `map` (any case); empty until the worker has
+/// read them ([`read_floors`]).
+pub fn floors(map: &str) -> Arc<Vec<Poly>> {
+    let t = TABLE.lock().unwrap_or_else(|e| e.into_inner());
+    t.as_ref()
+        .and_then(|t| t.floors.get(&map.to_ascii_lowercase()))
         .cloned()
         .unwrap_or_default()
 }
@@ -644,21 +751,92 @@ pub fn store_learned(map: &str, lines: &[learned::Entry]) -> std::io::Result<Opt
     Ok(written)
 }
 
+// ---- reloading from the files ----
+
+/// What [`reload_in`] read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reloaded {
+    /// `read` (the scan was replaced by the file's), `absent` (no file;
+    /// the scan stays) or `unread: <why>` (damaged, another format or
+    /// another scanner's; the scan stays).
+    pub spots_file: String,
+    /// The lines of the verified and learned files now kept.
+    pub verified: usize,
+    pub learned: usize,
+}
+
+/// Reads `map`'s `.spots`, `.verified` and `.learned` files from `dir`
+/// again (any case of `map`) and keeps them in place of what was kept,
+/// bumping the [`generation`] so every reader (the mode, the brains)
+/// applies them again. The `.spots` file is taken when it is the current
+/// scanner's ([`stamp`]'s generator): its map fingerprint is not checked,
+/// since the game has no map to check it against here. A file that is not
+/// read leaves the kept data as it was.
+pub fn reload_in(dir: &Path, map: &str) -> Reloaded {
+    let key = map.to_ascii_lowercase();
+    let spots_file = match std::fs::read(dir.join(file_name(&key))) {
+        Ok(bytes) => match from_bytes(&bytes) {
+            Some((found, stamp)) if stamp.generator == self::stamp(0).generator => {
+                let mut t = TABLE.lock().unwrap_or_else(|e| e.into_inner());
+                t.get_or_insert_with(Table::default)
+                    .maps
+                    .insert(key.clone(), Arc::new(found));
+                "read".to_string()
+            }
+            Some(_) => "unread: made by another scanner version".to_string(),
+            None => "unread: not a spots file of this format".to_string(),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => "absent".to_string(),
+        Err(e) => format!("unread: {e}"),
+    };
+    let verified = read_verified(dir, &key).unwrap_or_else(|why| {
+        eprintln!("bots: {key}'s verified spots not read: {why}");
+        Vec::new()
+    });
+    let learned = read_learned(dir, &key).unwrap_or_else(|why| {
+        eprintln!("bots: {key}'s learned file not read: {why}");
+        Vec::new()
+    });
+    let out = Reloaded {
+        spots_file,
+        verified: verified.len(),
+        learned: learned.len(),
+    };
+    let mut v = VERIFIED.lock().unwrap_or_else(|e| e.into_inner());
+    let v = v.get_or_insert_with(Verified::default);
+    v.maps.insert(key.clone(), Arc::new(verified));
+    v.learned.insert(key, Arc::new(learned));
+    GENERATION.fetch_add(1, Ordering::Release);
+    out
+}
+
+/// [`reload_in`] the verified directory ([`set_verified_dir`]); `None`
+/// without one.
+pub fn reload(map: &str) -> Option<(PathBuf, Reloaded)> {
+    let dir = verified_dir()?;
+    let r = reload_in(&dir, map);
+    Some((dir, r))
+}
+
 // ---- the file ----
 
 /// A spots file's first bytes and format version.
 pub const MAGIC: &[u8; 4] = b"H2SP";
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 5;
 const HEADER: usize = 4 + 4 + 4 + 8 + 4;
-/// Kind (0 a slot, 1 crouch, 2 a single crease), status and lip count
-/// bytes, then the floats: edge, stand, fall,
-/// launch, drift, score, width, need, out, and [`MAX_LIP`] lip edges.
-const SPOT_FLOATS: usize = 6 + 3 + 1 + 1 + 2 + 1 + 1 + 1 + 2 + 6 * MAX_LIP;
-const SPOT_BYTES: usize = 3 + 4 * SPOT_FLOATS;
+/// Kind (0 a slot, 1 crouch, 2 a single crease, 3 a V, 4 a busy point),
+/// status, lip count and arm (0 none, 1 a V's arm) bytes, then the
+/// floats: edge, stand, fall, launch, drift, score, need, out,
+/// [`MAX_LIP`] lip edges, and the arm's pivot, bisector and approach side
+/// (zero for none).
+const SPOT_FLOATS: usize = 6 + 3 + 1 + 1 + 2 + 1 + 1 + 2 + 6 * MAX_LIP + 3 + 2 + 2;
+const SPOT_BYTES: usize = 4 + 4 * SPOT_FLOATS;
+/// The first arm float.
+const ARM_AT: usize = 17 + 6 * MAX_LIP;
 
 /// The scanner's version. **Bump it whenever `superbounce`'s scan changes
 /// what it finds**: every file made by another version is scanned again.
-pub const SCAN: u32 = 4;
+pub const SCAN: u32 = 7;
 
 /// The stamp of a map's spots file: the nav generator and the scan
 /// version, for the map with `fingerprint`.
@@ -687,6 +865,8 @@ pub fn to_bytes(spots: &[Spot], stamp: Stamp) -> Vec<u8> {
             (Kind::Bounce, Shape::Slot) => 0,
             (Kind::Crouch, _) => 1,
             (Kind::Bounce, Shape::Crease) => 2,
+            (Kind::Bounce, Shape::Vee) => 3,
+            (Kind::Bounce, Shape::Busy) => 4,
         });
         o.push(match s.status {
             Status::Likely => 0,
@@ -694,6 +874,8 @@ pub fn to_bytes(spots: &[Spot], stamp: Stamp) -> Vec<u8> {
             Status::Failed => 2,
         });
         o.push(s.lip.len() as u8);
+        o.push(u8::from(s.arm.is_some()));
+        let arm = s.arm.unwrap_or_default();
         let mut lip = [[[0.0f32; 3]; 2]; MAX_LIP];
         lip[..s.lip.len()].copy_from_slice(s.lip.edges());
         let floats = s
@@ -703,9 +885,12 @@ pub fn to_bytes(spots: &[Spot], stamp: Stamp) -> Vec<u8> {
             .chain(&s.stand)
             .chain([&s.fall, &s.launch])
             .chain(&s.drift)
-            .chain([&s.score, &s.width, &s.need])
+            .chain([&s.score, &s.need])
             .chain(&s.out)
-            .chain(lip.iter().flatten().flatten());
+            .chain(lip.iter().flatten().flatten())
+            .chain(&arm.pivot)
+            .chain(&arm.bisector)
+            .chain(&arm.from);
         for f in floats {
             o.extend_from_slice(&f.to_le_bytes());
         }
@@ -735,19 +920,21 @@ pub fn from_bytes(b: &[u8]) -> Option<(Vec<Spot>, Stamp)> {
     let spots = body
         .chunks_exact(SPOT_BYTES)
         .map(|c| {
-            let f = |k: usize| f32::from_le_bytes(c[3 + 4 * k..7 + 4 * k].try_into().unwrap());
+            let f = |k: usize| f32::from_le_bytes(c[4 + 4 * k..8 + 4 * k].try_into().unwrap());
             let v = |k: usize| [f(k), f(k + 1), f(k + 2)];
             let lip_len = usize::from(c[2]);
             if lip_len > MAX_LIP {
                 return None;
             }
             let lip: Vec<[[f32; 3]; 2]> = (0..lip_len)
-                .map(|e| [v(18 + 6 * e), v(21 + 6 * e)])
+                .map(|e| [v(17 + 6 * e), v(20 + 6 * e)])
                 .collect();
             let (kind, shape) = match c[0] {
                 0 => (Kind::Bounce, Shape::Slot),
                 1 => (Kind::Crouch, Shape::Slot),
                 2 => (Kind::Bounce, Shape::Crease),
+                3 => (Kind::Bounce, Shape::Vee),
+                4 => (Kind::Bounce, Shape::Busy),
                 _ => return None,
             };
             Some(Spot {
@@ -765,10 +952,20 @@ pub fn from_bytes(b: &[u8]) -> Option<(Vec<Spot>, Stamp)> {
                 launch: f(10),
                 drift: [f(11), f(12)],
                 score: f(13),
-                width: f(14),
-                need: f(15),
-                out: [f(16), f(17)],
+                need: f(14),
+                out: [f(15), f(16)],
                 lip: Lip::new(&lip),
+                arm: match c[3] {
+                    0 => None,
+                    1 => Some(Arm {
+                        pivot: v(ARM_AT),
+                        bisector: [f(ARM_AT + 3), f(ARM_AT + 4)],
+                        from: [f(ARM_AT + 5), f(ARM_AT + 6)],
+                    }),
+                    _ => return None,
+                },
+                // The cache holds the scan; measured landings are applied after.
+                landed: false,
             })
         })
         .collect::<Option<Vec<_>>>()?;
@@ -804,6 +1001,26 @@ pub fn scan<R: std::io::Read + std::io::Seek>(
     let mut out = Vec::new();
     for k in 0..bsps {
         out.extend(superbounce::scan_map(map, k).map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+/// The floor polygons (normal Z over `superbounce::rule::FLOOR_NZ`) of
+/// every structure BSP of `map`, with their instanced geometry, at the
+/// collision's own precision (`superbounce::map_polys`): what the bounce
+/// rule steps a drop over ([`publish_floors`]).
+pub fn read_floors<R: std::io::Read + std::io::Seek>(
+    map: &mut map::Map<R>,
+    bsps: usize,
+) -> Result<Vec<Poly>, String> {
+    let mut out = Vec::new();
+    for k in 0..bsps {
+        let polys = superbounce::map_polys(map, k).map_err(|e| e.to_string())?;
+        out.extend(
+            polys
+                .into_iter()
+                .filter(|p| p.normal[2] > superbounce::rule::FLOOR_NZ),
+        );
     }
     Ok(out)
 }

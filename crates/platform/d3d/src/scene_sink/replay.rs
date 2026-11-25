@@ -8,7 +8,9 @@ use frame_types::carried::CameraUse;
 use gfx::texture::{DecodeOptions, DecodedTexture, TextureDesc};
 use gfx::{Clear, D3DFormat};
 
-use crate::backend::{RectClear, ResolvedDraw, SceneStage};
+use crate::backend::{
+    ExternalPassRequest, ExternalPlan, ExternalSurfaces, RectClear, ResolvedDraw, SceneStage, SharedReplacement,
+};
 
 #[derive(Clone, Debug)]
 pub enum ReplayTexture {
@@ -41,6 +43,55 @@ pub enum ReplaySample {
     },
 }
 
+/// A typed replacement retained beside the packet in [`ReplayOp::Draw`].
+/// The pass records repeatedly
+/// ([`crate::backend::ExternalPass::replays_scene`]) and reads only the
+/// draw's own texture inputs, so a replay's live and frozen bindings
+/// reach it unchanged.
+#[derive(Clone)]
+pub struct RetainedExternal {
+    /// The packet the admission was made for. Replay uses the admission
+    /// only for a draw that still equals it.
+    pub packet: Arc<ResolvedDraw>,
+    pub surfaces: ExternalSurfaces<TargetRef>,
+    pub request: ExternalPassRequest,
+    pub plan: ExternalPlan,
+    pub pass: SharedReplacement,
+}
+
+impl RetainedExternal {
+    /// The admission's attachments on this replay's targets, only when it
+    /// still describes `draw`: the draw equals the packet it was made for,
+    /// its surfaces are the attachments `draw` is bound to (a colour-only
+    /// draw has the colour as its depth), and a private capture is at 1x (a
+    /// live display's backend answers for its own scale and copies). `None`
+    /// means draw the packet.
+    pub fn resolve<S: Copy + Eq>(
+        &self,
+        draw: &Arc<ResolvedDraw>,
+        targets: &std::collections::HashMap<TargetRef, S>,
+        bound: (S, Option<S>),
+        display: bool,
+        scale: impl Into<gfx::raster::RenderScale>,
+    ) -> Option<ExternalSurfaces<S>> {
+        if !(display || scale.into() == gfx::raster::RenderScale::ONE) || !(Arc::ptr_eq(&self.packet, draw) || *self.packet == **draw) {
+            return None;
+        }
+        let surfaces = self.surfaces.try_map(|r| targets.get(r).copied())?;
+        (surfaces.color == bound.0 && surfaces.depth == bound.1.unwrap_or(bound.0)).then_some(surfaces)
+    }
+}
+
+impl std::fmt::Debug for RetainedExternal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RetainedExternal")
+            .field("plan", &self.plan)
+            .field("colour", &self.surfaces.color)
+            .field("depth", &self.surfaces.depth)
+            .finish_non_exhaustive()
+    }
+}
+
 impl std::fmt::Debug for SceneStage<TargetRef> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SceneStage")
@@ -60,16 +111,27 @@ pub enum ReplayOp {
     /// The original ticket issued to the guest. Private playback skips it.
     EndFlareQuery(u64),
     Bind { colour: TargetRef, depth: TargetRef },
+    /// A guest draw. `external`, when set, is the typed replacement the
+    /// guest's draw was admitted as: replay prepares it on its own
+    /// attachments with this op's own texture inputs, and draws `draw`
+    /// (the exact D3D packet) when it cannot.
     Draw {
         draw: Arc<ResolvedDraw>,
         textures: [Option<ReplayTexture>; 4],
         camera: CameraUse,
+        external: Option<Box<RetainedExternal>>,
     },
     Clear { colour: TargetRef, depth: TargetRef, clear: Clear },
     ClearRects { colour: TargetRef, depth: TargetRef, clear: RectClear },
     Copy { from: TargetRef, to: TargetRef },
     Upload { to: TargetRef, desc: TextureDesc, bytes: Arc<[u8]> },
-    Sample { of: TargetRef, id: u32, how: ReplaySample },
+    /// Sample `id` of `of`. `into`: the earlier sample of this frame whose
+    /// texture this copy refills (a pooled frame-buffer copy,
+    /// [`crate::Backend::snapshot_surface_into`]): replay copies into that
+    /// sample's texture, which holds this sample's contents from here on,
+    /// so the ops are applied in their recorded order. `None`: a texture
+    /// of its own.
+    Sample { of: TargetRef, id: u32, how: ReplaySample, into: Option<u32> },
     /// The guest's object shadow (`0x00032350`) the following ops draw,
     /// by its index in the scene's `object_shadows`; `None` after it.
     /// Recorded where the shadow the hooks declare changes
@@ -102,7 +164,11 @@ impl ReplayOp {
             }
             Self::Upload { to, .. } => *to = map(*to),
             Self::Sample { of, .. } => *of = map(*of),
-            Self::Draw { textures, .. } => {
+            Self::Draw { textures, external, .. } => {
+                if let Some(e) = external {
+                    let surfaces = e.surfaces.try_map(|s| Some(map(*s))).expect("total map");
+                    e.surfaces = surfaces;
+                }
                 #[cfg(feature = "gpu")]
                 for texture in textures.iter_mut().flatten() {
                     if let ReplayTexture::Live { target, .. } = texture { *target = map(*target); }
@@ -322,11 +388,13 @@ impl<S: Copy + Eq> Recorder<S> {
         }
     }
 
-    pub fn sample(&mut self, at: SlotAt, of: TargetRef, how: ReplaySample, view: Option<Arc<()>>) -> Origin {
+    pub fn sample(
+        &mut self, at: SlotAt, of: TargetRef, how: ReplaySample, view: Option<Arc<()>>, into: Option<u32>,
+    ) -> Origin {
         let id = self.next_sample;
         self.next_sample += 1;
         let origin = Origin::sample(self.seq, Some(id), &how, view);
-        self.push(at, ReplayOp::Sample { of, id, how });
+        self.push(at, ReplayOp::Sample { of, id, how, into });
         origin
     }
 

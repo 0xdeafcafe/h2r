@@ -34,6 +34,79 @@ pub fn world(mem: &dyn GuestRead) -> WorldState {
     WorldState { texaccum: texaccum_bound(mem) }
 }
 
+/// Visibility records produced by the guest's main camera gather. The
+/// portal flood writes cluster ordinals at 0x00173130. The structure
+/// gather filters those to the IDs consumed by 0x00133390, and the object
+/// gather `0x00132220` (with the view's player unit appended by
+/// `0x0003f33c`) fills the object list. A light view has separate lists and
+/// must never be attributed to the camera. The source is the guest's; the
+/// scene step puts the Rust sets in their place whenever the Rust
+/// computation holds, keeping these when it declines
+/// ([`crate::visibility`]).
+pub fn cluster_gather(mem: &dyn GuestRead) -> Option<frame_scene::scene::ClusterGather> {
+    use engine::render_loop::occlusion::guest::{LIST_COUNT, LIST_HANDLES, MAIN_VIS, VIS_KIND, VIS_OBJECTS};
+
+    const ACTIVE_VIS: u32 = 0x004c_0b80;
+    const CLIP_MODE: u32 = 0x2a7c;
+    const STRUCTURE_LIST: u32 = 0xc;
+    const REGION_COUNT: u32 = 0xa6c;
+    const REGION_IDS: u32 = 0xa6e;
+    const REGION_STRIDE: u32 = 0x1a;
+
+    fn ids(count: u32, mut read: impl FnMut(u32) -> Option<u32>) -> Option<Vec<u16>> {
+        const MAX_CLUSTERS: u32 = 512;
+        if count > MAX_CLUSTERS {
+            return None;
+        }
+        (0..count)
+            .map(|i| read(i).filter(|&id| id < MAX_CLUSTERS).map(|id| id as u16))
+            .collect()
+    }
+
+    let half = |at: u32| mem.read_u32(at & !3).map(|v| (v >> ((at & 2) * 8)) & 0xffff);
+    let ptr = |at| mem.read_u32(at).filter(|&p| p != 0);
+    if ptr(ACTIVE_VIS)? != MAIN_VIS || mem.read_u32(MAIN_VIS + VIS_KIND)? != 0 {
+        return None;
+    }
+    let mode = mem.read_u32(MAIN_VIS + CLIP_MODE)?;
+    if mode > 2 {
+        return None;
+    }
+    let regions = ptr(MAIN_VIS)?;
+    let visible = ids(half(regions.checked_add(REGION_COUNT)?)?, |i| {
+        half(regions.checked_add(REGION_IDS + REGION_STRIDE * i)?)
+    })?;
+    let list = ptr(MAIN_VIS + STRUCTURE_LIST)?;
+    let count = half(list.checked_add(LIST_COUNT)?)?;
+    if count > mem.read_u32(list)? {
+        return None;
+    }
+    let structure = if count == 0 {
+        Vec::new()
+    } else {
+        let handles = ptr(list.checked_add(LIST_HANDLES)?)?;
+        ids(count, |i| mem.read_u32(handles.checked_add(4 * i)?))?
+    };
+    let list = ptr(MAIN_VIS + VIS_OBJECTS)?;
+    let count = half(list.checked_add(LIST_COUNT)?)?;
+    if count > mem.read_u32(list)? {
+        return None;
+    }
+    let objects = if count == 0 {
+        Vec::new()
+    } else {
+        let handles = ptr(list.checked_add(LIST_HANDLES)?)?;
+        (0..count).map(|i| mem.read_u32(handles.checked_add(4 * i)?)).collect::<Option<Vec<u32>>>()?
+    };
+    Some(frame_scene::scene::ClusterGather {
+        mode,
+        visible,
+        structure,
+        objects,
+        source: frame_scene::VisibilitySource::Guest,
+    })
+}
+
 /// The clusters the current list's `layer` items draw, each once, in the
 /// list's order: the clusters the guest found visible for the view.
 /// Instanced-geometry placements are not clusters and are left out.
@@ -117,7 +190,7 @@ pub fn layer(mem: &dyn GuestRead, layer: u8, lighting: bool, builder: &mut Scene
                 continue;
             }
         }
-        match layer_item(mem, item, slot, lighting) {
+        match layer_item(mem, layer, item, slot, lighting) {
             Some((entry, rows)) => {
                 builder.push_layer_item(entry, &rows)?;
                 out.items += 1;
@@ -130,11 +203,18 @@ pub fn layer(mem: &dyn GuestRead, layer: u8, lighting: bool, builder: &mut Scene
 }
 
 /// One geometry item of a layer list; `None` for another build callback
-/// or what does not read.
-fn layer_item(mem: &dyn GuestRead, item: u32, slot: u32, lighting: bool) -> Option<(LayerItem, Vec<Row>)> {
+/// or what does not read. An object item carries what its record makes
+/// the draw do, or the named cause the scene cannot reproduce it
+/// ([`crate::layout::object_walk::layer_part`]; layer 3's parts are the
+/// object walk's).
+fn layer_item(mem: &dyn GuestRead, layer: u8, item: u32, slot: u32, lighting: bool) -> Option<(LayerItem, Vec<Row>)> {
     let key = item_key(mem, item)?;
     let at = RENDER_RECORDS + RENDER_RECORD_SIZE * u32::from(key.record);
     let model = mem.read_u32(at + RECORD_MODEL)?;
+    let mut flags = PartFlags::NONE;
+    let mut subparts = None;
+    let mut refusal = None;
+    let mut prt = None;
     let (owner, rows, lit) = match record_owner(mem, key.record)? {
         RecordOwner::World => {
             let packed = mem.read_u32(at + RECORD_KEY)?;
@@ -148,11 +228,23 @@ fn layer_item(mem: &dyn GuestRead, item: u32, slot: u32, lighting: bool) -> Opti
         RecordOwner::Object(handle) => {
             let rows = record_rows(mem, key.record).ok()?;
             let lit = if lighting { read_object(mem, handle)?.lighting } else { None };
+            let part = crate::layout::object_walk::layer_part(mem, layer, item, at, key);
+            // Layer 5 adds the model's PRT stream (`layout::prt`); the
+            // part's checks first, since the draw takes it only for a
+            // shader without flag bit 0.
+            let part = part.and_then(|p| match layer {
+                5 => crate::layout::prt::read(mem, at).map(|s| (p, s)),
+                _ => Ok((p, None)),
+            });
+            match part {
+                Ok(((f, s), p)) => (flags, subparts, prt) = (f, s, p),
+                Err(why) => refusal = Some(why),
+            }
             (LayerOwner::Object(InstanceKey(handle)), rows, lit)
         }
         RecordOwner::Unresolved => return None,
     };
-    Some((LayerItem { slot, key, owner, model, rows: 0..0, lighting: lit }, rows))
+    Some((LayerItem { slot, key, owner, model, rows: 0..0, lighting: lit, flags, subparts, refusal, prt }, rows))
 }
 
 /// What [`objects`] put in the view.
@@ -289,6 +381,46 @@ mod tests {
     fn view(b: &mut SceneBuilder, m: &Mem) {
         b.begin(SceneId::default());
         b.open_view(ViewKey { kind: ViewKind::Game, player: 0, view: 0 }, camera(m).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn main_gather_preserves_cluster_ids_before_structure_and_layer_selection() {
+        use engine::render_loop::occlusion::guest::{MAIN_VIS, VIS_KIND};
+        let mut m = Mem::default();
+        let (regions, list, handles) = (0x1000, 0x3000, 0x3400);
+        m.w(0x004c_0b80, MAIN_VIS);
+        m.w(MAIN_VIS + VIS_KIND, 0);
+        m.w(MAIN_VIS + 0x2a7c, 0);
+        m.w(MAIN_VIS, regions);
+        // The first ID is packed in the high half next to the count;
+        // the next is aligned because the visible row stride is 26 bytes.
+        m.w(regions + 0xa6c, (103 << 16) | 2);
+        m.w(regions + 0xa88, 9);
+        m.w(MAIN_VIS + 0xc, list);
+        m.w(list, 512);
+        m.w(list + 4, 1);
+        m.w(list + 0xc, handles);
+        m.w(handles, 9);
+        let (objects, object_handles) = (0x3800, 0x3c00);
+        m.w(MAIN_VIS + 0x14, objects);
+        m.w(objects, 64);
+        m.w(objects + 4, 2);
+        m.w(objects + 0xc, object_handles);
+        m.w(object_handles, 0x0005_0002);
+        m.w(object_handles + 4, 0x0006_0001);
+        let gather = cluster_gather(&m).unwrap();
+        assert_eq!(gather.visible, [103, 9]);
+        assert_eq!(gather.structure, [9]);
+        assert_eq!(gather.objects, [0x0005_0002, 0x0006_0001]);
+        assert_eq!(gather.source, frame_scene::VisibilitySource::Guest);
+
+        m.w(list + 4, 0);
+        assert!(cluster_gather(&m).unwrap().structure.is_empty());
+        m.w(list + 4, 513);
+        assert!(cluster_gather(&m).is_none());
+        m.w(list + 4, 1);
+        m.w(0x004c_0b80, MAIN_VIS + 8);
+        assert!(cluster_gather(&m).is_none(), "another view owns the active gather");
     }
 
     #[test]
@@ -504,9 +636,9 @@ mod tests {
         for (slot, build, record, mask) in [
             (0, GEOMETRY_BUILD, 1, seven),
             (1, GEOMETRY_BUILD, 1, seven),
-            (2, GEOMETRY_BUILD, 4, seven | 1 << 3),
+            (2, GEOMETRY_BUILD, 4, seven | 1 << 3 | 1 << 2),
             (3, GEOMETRY_BUILD, 2, seven),
-            (4, 0x0001_2340, 1, seven),
+            (4, 0x0001_2340, 1, seven | 1 << 2),
             (5, GEOMETRY_BUILD, 2, 1 << 5),
         ] {
             let at = ITEMS + ITEM_SIZE * slot;
@@ -522,6 +654,9 @@ mod tests {
         // The first person's items carry their owner's lighting.
         let first_person = layer(&m, 7, true, &mut b).unwrap().unwrap();
         assert_eq!(first_person, got);
+        b.open_view(ViewKey { kind: ViewKind::Alternate, player: 0, view: 0 }, camera(&m).unwrap()).unwrap();
+        let overlay = layer(&m, 2, true, &mut b).unwrap().unwrap();
+        assert_eq!(overlay, Layer { items: 1, remainder: 1 });
         let s = b.seal(Stamp::default()).unwrap();
         s.check().unwrap();
         let v = &s.views[0];
@@ -542,6 +677,9 @@ mod tests {
         let lit = &s.items_of(&passes[1])[1];
         assert_eq!(lit.lighting, read_object(&m, a).unwrap().lighting);
         assert_eq!(s.counts(v).layers, [(7, 3, 1), (7, 3, 1)]);
+        let alternate = &s.views[1];
+        assert_eq!(s.counts(alternate).layers, [(2, 1, 1)]);
+        assert_eq!(s.items_of(&s.layers_of(alternate)[0])[0].owner, LayerOwner::Object(InstanceKey(a)));
         m.w(CURRENT_LIST, 0);
         let mut b = SceneBuilder::default();
         view(&mut b, &m);

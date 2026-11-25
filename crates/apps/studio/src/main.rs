@@ -23,7 +23,7 @@ const USAGE: &str = "usage: h2-editor call <call> [args] | h2-editor --serve [--
 [--halo1 <iso|maps dir>] [--mappack <iso|folder>] [--data <dir>] [--package <dir>[#H1|#H2]] [--halo1-map <map> [--convert h2|h1]] [--overlay on|off] [--tool scenario|tags|scripts|textures|variants|playlists|ui-screens|hud] [--hs-doc <hs_doc.txt>] [--tags-map <map>] [--tag <group>:<path>] [--ui-screen <screen>/<state> [--ui-press up,a,...]] \
 [--hud-map <map>|--hud-package <key>] [--hud <nhdt name>] [--hud-widget <name>] [--pick <map>] [--select <block>:<index>] [--hopper <file.dat>|default] \
 [--variant <built-in index>] [--copy-variant <name>] [--playlist <1..16>] [--preset <n>] \
-[--focus] [--camera <yaw>,<pitch>,<distance>] [--dialog unsaved|package] \
+[--focus] [--camera <yaw>,<pitch>,<distance>] [--dialog unsaved|edit-target] \
 [--no-disc] [--nudge <x>,<y>,<z>] [--page <variant settings page>] [--screenshot <out.png> [--size <w>x<h>] [--scale <s>] [--do <steps>] \
 [--crop <target>]... [--pad <points>] [--crop-height <points>] [--callout <target>=<badge>]...]
 --serve: the agent API with no window (docs/editor/agent-api.md); the window listens too, \
@@ -309,13 +309,17 @@ fn main() -> Result<()> {
         .unwrap_or_else(content::store::default_data_root);
     mem_watch::start(&data, option_env!("H2_BUILD_SHA"));
     let mut app = App::new();
+    // Edits are lines in the edit target (docs/editor/studio-redesign.md).
+    app.edits_to_target();
     if let Some(d) = &args.data {
         app.set_data_root(d.clone());
     }
     app.scripts.doc_path = args.hs_doc.clone();
-    // The field panel's settings live in the layout's file (`shutdown`).
-    app.tag_fields =
-        studio::fields::Settings::from_ini(&std::fs::read_to_string(ini_path()).unwrap_or_default());
+    // The field panel's and the workspace's settings live in the layout's
+    // file (`shutdown`).
+    let ini = std::fs::read_to_string(ini_path()).unwrap_or_default();
+    app.tag_fields = studio::fields::Settings::from_ini(&ini);
+    app.workspace = studio::app::workspace::Workspace::from_ini(&ini);
     app.refresh_packages();
     let disc = editor_core::default_disc(args.source.clone()).filter(|_| !args.no_disc);
     // The Map Pack: --mappack, else $H2_MAPPACK_ISO, else mappack.iso beside
@@ -455,7 +459,7 @@ fn main() -> Result<()> {
     }
     match args.dialog.as_deref() {
         None => {}
-        Some("package") => app.open_package_form(),
+        Some("edit-target") => app.edits.open_picker(),
         // An unsaved edit (the selection nudged, or a variant copy) and
         // Quit: the unsaved-changes prompt.
         Some("unsaved") => {
@@ -465,7 +469,7 @@ fn main() -> Result<()> {
         Some(d) => bail!("unknown dialog {d}\n{USAGE}"),
     }
     if let Some(out) = &args.screenshot {
-        // The Maps list's names and pictures, so a shot shows them.
+        // The map grid's names and pictures, so a shot shows them.
         app.wait_cards();
         let mut h = studio::headless::Headless::new(args.size, args.scale)?;
         studio::probe::want(studio::script::labels(
@@ -491,6 +495,11 @@ fn main() -> Result<()> {
         .socket
         .clone()
         .unwrap_or_else(studio_proto::default_socket);
+    // A later start's plan: with a tree and a disc, what is stale
+    // re-extracts in the background while the editor answers
+    // (docs/editor/tag-workspace.md, "First start"). With no tree the
+    // start page shows instead.
+    app.start_workspace();
     if args.serve {
         return serve(app, &socket);
     }
@@ -722,6 +731,7 @@ impl Win {
             ini.push('\n');
         }
         ini.push_str(&app.tag_fields.ini());
+        ini.push_str(&app.workspace.ini());
         if let Err(e) = std::fs::write(ini_path(), ini) {
             eprintln!("h2-editor: the layout was not saved: {e}");
         }
@@ -785,6 +795,8 @@ impl ApplicationHandler for Runner {
         // Agent calls run between frames, on the app the window draws.
         if let Some((_, rx)) = &self.listening {
             self.api.pump(&mut self.app, rx);
+        } else {
+            self.api.run_preview_asks(&mut self.app);
         }
         if let Some(w) = &self.win {
             w.window.request_redraw();

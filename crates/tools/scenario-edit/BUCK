@@ -40,6 +40,7 @@ workspace_library(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/game-markers:game-markers",
         "//crates/formats/map:map",
         "//crates/formats/shaders:shaders",
         "//crates/formats/tags:tags",
@@ -69,6 +70,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/game-markers:game-markers",
         "//crates/formats/map:map",
         "//crates/formats/shaders:shaders",
         "//crates/formats/tags:tags",

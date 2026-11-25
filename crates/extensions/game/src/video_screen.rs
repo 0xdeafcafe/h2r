@@ -1,18 +1,21 @@
-//! Video Settings opens from the main menu's Settings list and the pause
-//! menu's Player Settings. The screen uses the Controls layout for Field
+//! Video opens from the main menu's Settings list and the pause
+//! menu's Player Settings, and Voice from the same two places. The screen uses the Controls layout for Field
 //! of View, Frame Rate, Resolution, Lighting, HUD Position and LOD Distance.
 //! See docs/game/settings-menu.md "Video screen" for the trace.
 //!
-//! **The row.** The Settings list (screen id 19, list handler `0x2b1cca` at
+//! **The rows.** The Settings list (screen id 19, list handler `0x2b1cca` at
 //! `screen + 0x614`, vtable `0x45b060`) builds its datum array named
 //! "settings list" with two rows and reports `2 + (byte [handler+0x220] !=
 //! 0)` item widgets (slot 19, `0x2b1d60`); the constructor clears that byte
-//! just before the array is made and allocates room for three. The list
-//! hook makes the array three rows and sets the byte, so a third widget is
-//! built. Its text (`0x2b1d6e`) and press (`0x2b1da9`) are wrapped like
-//! the Controls ones; the press opens the Video screen the way the Settings
-//! screen opens Controls. The tag has a pane per retail row only, so the
-//! pane hook keeps the shown pane for row 2 (as the Skulls row does).
+//! just before the array is made and embeds room for three. The list hook
+//! makes the array four rows (Video, then Voice) and sets the byte, so a
+//! third widget is built; the fourth is one of ours, linked after the
+//! embedded ones by the "add items" hook ([`settings_extra_items`],
+//! `layout_glue`). Their text (`0x2b1d6e`) and press (`0x2b1da9`) are
+//! wrapped like the Controls ones; a press opens the Video or Voice screen
+//! the way the Settings screen opens Controls. The tag has a pane per
+//! retail row only, so the pane hook keeps the shown pane for rows 2 and
+//! up (as the Skulls row does).
 //!
 //! **The screen** is our own list class (`crate::list_class`, docs/formats/ui.md
 //! "Screen and list classes"): the row calls `0x149f1e(player mask,
@@ -128,25 +131,38 @@ pub const SETTINGS_ROWS: u32 = 2;
 pub const SETTINGS_ROW_TEXT: u32 = 0x002b_1d6e;
 pub const SETTINGS_ROW_CHOSEN: u32 = 0x002b_1da9;
 pub const SETTINGS_THIRD_ITEM: u32 = 0x220;
+/// The Settings list handler's vtable, which marks it in the "add items"
+/// method.
+pub const SETTINGS_VTABLE: u32 = 0x0045_b060;
+/// The item widgets the handler embeds (`+0x88`, 0x80 bytes each): the two
+/// retail rows' and the one [`SETTINGS_THIRD_ITEM`] adds. Rows past these
+/// are item widgets of ours.
+pub const SETTINGS_EMBEDDED_ITEMS: u32 = 3;
+/// The names of our two pages: the rows that open them and their titles.
+pub const VIDEO_NAME: &str = "Video";
+pub const VOICE_NAME: &str = "Voice";
 
 #[path = "video_screen_resolution.rs"]
 pub(crate) mod resolution;
 
-use crate::run_opts::NativeSize;
+use crate::run_opts::NativeTarget;
 
-/// The model of our rows: the Video screen from the settings that name it,
-/// the Video row that opens it on the Settings list (left out when the
-/// screen has no rows), and the controller options on Controls.
+/// The model of our rows: the Video and Voice screens from the settings that
+/// name them, the Video and Voice rows that open them on the Settings list
+/// (Voice left out when its screen has no rows), and the controller options
+/// on Controls.
 pub fn model(store: Arc<Store>, on: Switches) -> Result<Model, String> {
-    model_with_native_size(store, on, Arc::new(|| crate::setting_defs::GUEST_FRAME))
+    model_with_native_target(
+        store, on, Arc::new(|| settings::NativeTarget::windowed(crate::setting_defs::GUEST_FRAME)),
+    )
 }
 
-pub fn model_with_native_size(
+pub fn model_with_native_target(
     store: Arc<Store>,
     on: Switches,
-    native: NativeSize,
+    native: NativeTarget,
 ) -> Result<Model, String> {
-    let mut video = Screen::new(SCREEN).title("Video Settings");
+    let mut video = Screen::new(SCREEN).title(VIDEO_NAME);
     if on.video_screen {
         video = video
             .rows_from_settings(&store.defs())
@@ -196,25 +212,36 @@ pub fn model_with_native_size(
                 .bool_ids(speaker_row::ON_ID, speaker_row::OFF_ID),
         );
     }
-    let settings = ui::extend(List::Settings, SETTINGS_ROWS).row(Row::open(SCREEN));
-    // The Voice screen opens from Player Settings and Edit Profile.
-    let mut voice = Screen::new(VOICE_SCREEN).title("Voice");
+    // Video, then Voice, after the Settings list's retail rows (a row whose
+    // screen has no rows is dropped). Voice is the install's
+    // (`Scope::Host`), so it is a row here, not on Edit Profile.
+    let settings = ui::extend(List::Settings, SETTINGS_ROWS)
+        .row(Row::open(SCREEN))
+        .row(Row::open(VOICE_SCREEN));
+    let mut voice = Screen::new(VOICE_SCREEN).title(VOICE_NAME);
     if on.voice_screen {
         voice = voice.rows_from_settings(&store.defs());
     }
-    let extensions = vec![controls, settings, crate::profile_voice_row::rows()];
+    let extensions = vec![controls, settings];
     Model::with_ids(
         store,
         vec![video, voice],
         extensions,
         vec![MODEL_IDS, MORE_MODEL_IDS],
     )
-    .map(|m| m.with_native_size(native))
+    .map(|m| m.with_native_target(native))
 }
 
 /// The Voice screen's id and list.
 pub const VOICE_SCREEN: &str = crate::voice_settings::SCREEN;
 pub const VOICE_LIST: List = List::Screen(VOICE_SCREEN);
+
+/// How many item widgets of ours the Settings list needs past the three it
+/// embeds: our rows past [`SETTINGS_EMBEDDED_ITEMS`].
+pub fn settings_extra_items(m: &Model) -> u32 {
+    m.count(List::Settings, SETTINGS_ROWS)
+        .saturating_sub(SETTINGS_EMBEDDED_ITEMS)
+}
 
 /// The item count when the game builds the array named `name` with
 /// `retail` rows: ours added for the Controls and Settings lists, else
@@ -234,7 +261,7 @@ pub fn settings_third_item(name: u32, count: u32) -> bool {
     name == SETTINGS_LIST_NAME && count > SETTINGS_ROWS
 }
 
-/// The pane call for row `row` of screen `id`: `true` for our row on the
+/// The pane call for row `row` of screen `id`: `true` for our rows on the
 /// Settings list, which has no pane (the shown one stays).
 pub fn skip_settings_pane(id: i16, row: i16) -> bool {
     id == SETTINGS_SCREEN_ID && row >= SETTINGS_ROWS as i16
@@ -366,9 +393,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(no_fov.rows(LIST).len(), 5);
-        assert_eq!(m.count(List::Settings, SETTINGS_ROWS), 3);
+        assert_eq!(m.count(List::Settings, SETTINGS_ROWS), 4);
         assert_eq!(m.count(List::Controls, 6), 12);
-        // No Video screen: no Video row on Settings either.
+        // No Video screen: no Video row on Settings either, and Voice moves up.
         let none = model(
             store(),
             Switches {
@@ -379,7 +406,12 @@ mod tests {
         .unwrap();
         assert!(none.rows(LIST).is_empty());
         assert_eq!(none.count(List::Controls, 6), 12);
-        assert_eq!(none.count(List::Settings, SETTINGS_ROWS), 2);
+        assert_eq!(none.count(List::Settings, SETTINGS_ROWS), 3);
+        assert_eq!(none.index_of(List::Settings, &RowKind::Open(SCREEN)), None);
+        assert_eq!(
+            none.index_of(List::Settings, &RowKind::Open(VOICE_SCREEN)),
+            Some(2)
+        );
         let bare = model(
             store(),
             Switches {
@@ -460,12 +492,13 @@ mod tests {
         let m = all();
         assert_eq!(m.index_of(List::Settings, &RowKind::Open(SCREEN)), Some(2));
         assert_eq!(m.index_of(List::Controls, &RowKind::Open(SCREEN)), None);
-        assert_eq!(drawn(&m, List::Settings, 2), s("Video Settings", ""));
+        assert_eq!(drawn(&m, List::Settings, 2), s("Video", ""));
+        assert_eq!(drawn(&m, List::Settings, 3), s("Voice", ""));
         assert_eq!(
             drawn(&m, List::Controls, 6),
             s("Controller Speaker", "0x2000181")
         );
-        for r in [0i16, 1, 3, -1] {
+        for r in [0i16, 1, 4, -1] {
             assert_eq!(drawn(&m, List::Settings, r), None, "{r}");
         }
         assert_eq!(
@@ -485,6 +518,7 @@ mod tests {
         assert_eq!(settings_text(&m, Some(1)), None, "Game Variants is retail");
         assert_eq!(settings_text(&m, None), None);
         assert_eq!(press(&m, List::Settings, 2), Chosen::Open(SCREEN));
+        assert_eq!(press(&m, List::Settings, 3), Chosen::Open(VOICE_SCREEN));
         assert_eq!(press(&m, List::Settings, 0), Chosen::Nothing);
         assert_eq!(press(&m, List::Settings, 1), Chosen::Nothing);
         let no_speaker = model(
@@ -554,13 +588,15 @@ mod tests {
     fn the_settings_list_gets_a_third_widget_and_no_pane_for_it() {
         let m = all();
         let n = list_count(&m, SETTINGS_LIST_NAME, SETTINGS_ROWS);
-        assert_eq!(n, 3);
+        assert_eq!(n, 4);
         assert!(settings_third_item(SETTINGS_LIST_NAME, n));
+        assert_eq!(settings_extra_items(&m), 1, "Voice is the fourth widget");
         assert!(!settings_third_item(SETTINGS_LIST_NAME, 2), "not grown");
         assert!(!settings_third_item(speaker_row::LIST_NAME, 7));
         // A Settings list built with another count is not the one we know.
         assert_eq!(list_count(&m, SETTINGS_LIST_NAME, 4), 4);
         assert!(skip_settings_pane(SETTINGS_SCREEN_ID, 2));
+        assert!(skip_settings_pane(SETTINGS_SCREEN_ID, 3));
         assert!(!skip_settings_pane(SETTINGS_SCREEN_ID, 0));
         assert!(!skip_settings_pane(SETTINGS_SCREEN_ID, 1));
         assert!(!skip_settings_pane(speaker_row::SCREEN_ID, 2));
@@ -568,6 +604,66 @@ mod tests {
             crate::skulls_menu::DIFFICULTY_SCREEN_ID,
             2
         ));
+    }
+
+    /// The Settings list's extra rows are Video then Voice, in that order:
+    /// they open those screens and carry those labels.
+    #[test]
+    fn the_settings_lists_extra_rows_are_video_then_voice() {
+        let m = all();
+        let rows = m.rows(List::Settings);
+        assert_eq!(
+            rows.iter().map(|r| r.kind.clone()).collect::<Vec<_>>(),
+            [RowKind::Open(SCREEN), RowKind::Open(VOICE_SCREEN)]
+        );
+        assert_eq!(m.count(List::Settings, SETTINGS_ROWS), SETTINGS_ROWS + 2);
+        for (i, (screen, label)) in [(SCREEN, "Video"), (VOICE_SCREEN, "Voice")]
+            .into_iter()
+            .enumerate()
+        {
+            let row = SETTINGS_ROWS as i16 + i as i16;
+            assert_eq!(m.index_of(List::Settings, &RowKind::Open(screen)), Some(row));
+            assert_eq!(press(&m, List::Settings, row), Chosen::Open(screen));
+            assert_eq!(drawn(&m, List::Settings, row), s(label, ""), "{label}");
+        }
+    }
+
+    /// The pages are named by one word, as the rows that open them.
+    #[test]
+    fn the_page_titles_are_video_and_voice() {
+        let m = all();
+        assert_eq!(m.screen(SCREEN).unwrap().title, "Video");
+        assert_eq!(m.screen(VOICE_SCREEN).unwrap().title, "Voice");
+        assert_eq!((VIDEO_NAME, VOICE_NAME), ("Video", "Voice"));
+        let texts: Vec<&str> = m.strings().iter().map(|(_, t)| t.as_str()).collect();
+        for gone in ["Video Settings", "Voice Chat"] {
+            assert!(!texts.contains(&gone), "{gone}");
+        }
+    }
+
+    /// Edit Profile (screen 38) is retail: no extension of the model
+    /// grows or labels a list that could be it, and no screen of ours takes
+    /// its place.
+    #[test]
+    fn no_extension_touches_edit_profile() {
+        const EDIT_PROFILE_SCREEN: i16 = 38;
+        let m = all();
+        // The model's retail lists are the Settings and Controls lists, whose
+        // screens are 19 and 39; no list stands for Edit Profile.
+        assert_eq!(m.extended_lists(), [List::Controls, List::Settings]);
+        assert_ne!(SETTINGS_SCREEN_ID, EDIT_PROFILE_SCREEN);
+        assert_ne!(speaker_row::SCREEN_ID, EDIT_PROFILE_SCREEN);
+        // Edit Profile's row array is named at `0x45bfd8`; no list hook
+        // grows it.
+        const EDIT_PROFILE_LIST_NAME: u32 = 0x0045_bfd8;
+        for retail in [0, 5, 6, 7] {
+            assert_eq!(list_count(&m, EDIT_PROFILE_LIST_NAME, retail), retail);
+        }
+        assert!(!skip_settings_pane(EDIT_PROFILE_SCREEN, 4));
+        assert!(!skip_settings_pane(EDIT_PROFILE_SCREEN, 6));
+        // Its rows take no Voice Chat row from any model.
+        let texts: Vec<&str> = m.strings().iter().map(|(_, t)| t.as_str()).collect();
+        assert!(!texts.contains(&"Voice Chat"));
     }
 
     #[test]
@@ -607,7 +703,7 @@ mod tests {
         );
         assert_eq!(drawn(&m, LIST, 3), s("Lighting", "Retail"));
         assert_eq!(drawn(&m, LIST, 4), s("HUD Position", "Pinned"));
-        assert_eq!(drawn(&m, LIST, 5), s("LOD Distance", "1x"));
+        assert_eq!(drawn(&m, LIST, 5), s("LOD Distance", "Highest"));
         assert_eq!(drawn(&m, LIST, 6), None);
         assert_eq!(drawn(&m, LIST, -1), None);
     }
@@ -757,9 +853,13 @@ mod tests {
     #[test]
     fn native_follows_a_resize_and_an_open_pick_keeps_its_values() {
         use crate::ui_kit::picker;
-        let dims = Arc::new(std::sync::Mutex::new((5120, 2880)));
+        let studio = settings::NativeTarget {
+            fullscreen: true,
+            ..settings::NativeTarget::windowed((5120, 2880))
+        };
+        let dims = Arc::new(std::sync::Mutex::new(studio));
         let read = Arc::clone(&dims);
-        let m = model_with_native_size(
+        let m = model_with_native_target(
             Arc::new(Store::defaults(ALL)),
             Switches::ALL,
             Arc::new(move || *read.lock().unwrap()),
@@ -768,13 +868,12 @@ mod tests {
         let row = m.row(LIST, 2).unwrap();
         let slot = m.texts(row)[1].1;
         m.bind_resolution_slot(&[(slot, 0x8000)]);
-        let native = |w, h| resolution::label(settings::Resolution::Native, (w, h));
-        let studio = native(5120, 2880);
+        let studio = resolution::label(settings::Resolution::Native, studio);
         assert_eq!(m.resolution_write(), Some((0x8000, format!("{studio}\0").into_bytes())));
         assert_eq!(m.line(row), format!("Resolution: {studio}"));
         assert_eq!(m.press(row), Chosen::Open(picker::NAME));
         let open = picker::current().unwrap();
-        *dims.lock().unwrap() = (2560, 1600);
+        *dims.lock().unwrap() = settings::NativeTarget::windowed((2560, 1600));
         assert_eq!(
             m.resolution_write(),
             Some((0x8000, b"Native (2560x1600)\0".to_vec()))
@@ -796,9 +895,9 @@ mod tests {
         let lod = m.store().handle::<u32>(LOD_DISTANCE.key);
         assert_eq!(press(&m, LIST, row), Chosen::Open(picker::NAME));
         let pick = picker::current().unwrap();
-        assert_eq!(pick.values, ["Retail", "0.5x", "1x", "1.5x", "2x", "3x", "4x"]);
-        assert_eq!(pick.values[pick.current], "1x");
-        assert_eq!(lod.get(), 2, "opening leaves the current value alone");
+        assert_eq!(pick.values, ["Retail", "0.5x", "1x", "1.5x", "2x", "3x", "4x", "Highest"]);
+        assert_eq!(pick.values[pick.current], "Highest");
+        assert_eq!(lod.get(), crate::setting_defs::LOD_HIGHEST, "opening leaves the current value alone");
         (pick.set)(3);
         assert_eq!(lod.get(), 3);
         assert_eq!(drawn(&m, LIST, row), s("LOD Distance", "1.5x"));
@@ -827,7 +926,8 @@ mod tests {
         let all = m.strings();
         let text = |t: &str| all.iter().any(|(_, s)| s == t);
         for t in [
-            "Video Settings",
+            "Video",
+            "Voice",
             "Uncapped",
             "60",
             "HUD Position",

@@ -2,29 +2,25 @@
 //! rows on a pre-game screen (docs/halo1/multiplayer.md "Halo 1
 //! options", docs/halo1/campaign.md §5).
 //!
-//! - **Campaign:** on the Game Options page between the difficulty and a
-//!   Halo 1 level (`crate::skulls_screen`, the skulls page), above the
-//!   skulls: [`CAMPAIGN`].
-//! - **Multiplayer:** a "Halo 1 Options" row on a custom game's Game Setup
-//!   dialog, next to the map and game type, while the chosen map is a
-//!   converted Halo 1 map (`crate::h1_options_row`), opens a screen of
-//!   these rows ([`OptionsScreen`]): [`MULTIPLAYER`]. The screen is the
-//!   lobby's own settings dialog, Quick Options, inside and out
-//!   (`DialogBase::QuickOptions`, docs/game/ui-builder.md "The Dialog
-//!   kind"): its list on the `setting_lists` skin, each row's name left
-//!   and its choice alone in the value column ("Sandbox  Halo 1"),
-//!   Quick Options' header (the focused row's icon, [`OptionRow::icon`],
-//!   in its game type picture and the row's one line,
-//!   [`OptionRow::help`], in its help line; docs/game/ui-builder.md "A
-//!   page's header"), its title bar and its footer. A on a row opens the
-//!   value picker, which says what the option does and what each choice
-//!   means ([`OptionRow::explain`]).
+//! - **Campaign:** on the Skulls page between the difficulty and a Halo 1
+//!   level (`crate::skulls_screen`), under Start Level and above the
+//!   skulls: [`CAMPAIGN`]. A on one opens the value picker.
+//! - **Multiplayer:** a "Halo 1 Options..." row on a custom game's Game
+//!   Setup dialog, next to the map and game type, while the chosen map is
+//!   a converted Halo 1 map (`crate::h1_options_row`), opens the Halo 1
+//!   Options page ([`page`]): the shared settings dialog
+//!   (`crate::ui_kit::settings`) its doc declares,
+//!   `content/ui/screens/h1-options.yaml`, with a row per [`MULTIPLAYER`]
+//!   option, each its name and its choice ("Sandbox  Halo 1"). Its header
+//!   (icon, name and what the window is for) stays whatever has the
+//!   focus; the focused row's help is under the rows, and the value picker
+//!   A opens says what the option does and what each choice means
+//!   (docs/game/ui-builder.md "The settings dialog").
 //!
 //! Each row is one setting of the store with two choices, Halo 1's and
-//! Halo 2's ([`OptionRow`]); a new option is one more [`OptionRow`] in the
-//! lists. A opens the value picker on either page. Left or right changes
-//! the choice directly. The store saves it, and ([`install_switches`]) moves
-//! the run's switch at once:
+//! Halo 2's ([`OptionRow`]). A opens the value picker on either page. Left
+//! or right changes the choice directly. The store saves it, and
+//! ([`install_switches`]) moves the run's switch at once:
 //!
 //! | Setting | Switch | Takes effect |
 //! |---|---|---|
@@ -39,32 +35,19 @@ use std::sync::Arc;
 
 use settings::{Def, Store, Value};
 
-use crate::list_class::Rows;
 use crate::setting_defs::{self, HALO1_ASSETS, HALO1_HUD, HALO1_SANDBOX};
-use crate::ui::{Chosen, LABEL_SLOT, VALUE_SLOT};
 use crate::ui_kit::ids::{self, Family};
+use crate::ui_kit::screen::KitScreen;
+use crate::ui_kit::settings::Bindings;
 
-/// Our string ids: the screen's title, then per row its two labels and its
-/// description.
+/// The Skulls page's option rows' string ids: per row its two labels and
+/// its description.
 pub const IDS: Family = ids::family("h1 options");
-pub const TITLE_ID: u32 = IDS.id(0);
-pub const FOOTER_ID: u32 = IDS.id(1);
-/// The Game Setup row that opens the screen: its own text, so the screen's
-/// title stays "Halo 1 Options" (`crate::h1_options_row`).
-pub const ROW_LABEL_ID: u32 = IDS.id(2);
-pub const ROW_LABEL: &str = "Halo 1 Options...";
-/// What the Game Setup row does, in Game Setup's description while it has
-/// the focus, as retail's rows have theirs (`crate::game_setup_help`).
-pub const ROW_HELP_ID: u32 = IDS.id(3);
-pub const ROW_HELP: &str =
-    "Choose whether this Halo 1 map plays with Halo 1's weapons, vehicles and HUD, or Halo 2's.";
+/// The multiplayer page's string ids ([`page`]).
+pub const PAGE_IDS: Family = ids::family("h1-options");
 /// Rows' strings start here, [`PER_ROW`] ids each.
 const ROW_IDS: u32 = 4;
 const PER_ROW: u32 = 3;
-/// In capitals, as Quick Options' header ("QUICK OPTIONS") is.
-pub const TITLE: &str = "HALO 1 OPTIONS";
-/// The options screen's buttons, in the footer as retail's are.
-pub const PROMPT: &str = "\u{e10a}  \u{e10b} CHANGE  \u{e100} SELECT  \u{e101} BACK";
 
 /// One option: a setting of two choices, Halo 1's then Halo 2's.
 pub struct OptionRow {
@@ -74,26 +57,12 @@ pub struct OptionRow {
     /// What each choice means, Halo 1's then Halo 2's, read after "Halo 1:" and
     /// "Halo 2:"; short, for the five lines of the description pane.
     pub means: [&'static str; 2],
-    /// One line for the multiplayer screen's help line (Quick Options'
-    /// one-line `quick_options_help`, [`HELP_UNITS`] at most): what the
-    /// option switches, shown while the row has the focus.
-    pub help: &'static str,
     /// What the value picker A opens says: what the option does, what
     /// each choice means and when it takes effect, in a few short
-    /// sentences ([`EXPLAIN_UNITS`] at most).
+    /// sentences (`crate::ui_kit::settings::EXPLAIN_UNITS` at most). The
+    /// multiplayer page's rows say the same in their doc.
     pub explain: &'static str,
-    /// The row's icon in Quick Options' game type picture while it has
-    /// the focus (`crate::ui_kit::dialog::icon`).
-    pub icon: u16,
 }
-
-/// The longest picker text: about seven lines of the picker's
-/// description block (235 units wide in font 1).
-pub const EXPLAIN_UNITS: usize = 200;
-
-/// The longest help line: retail's own ("Temporarily change settings for
-/// this game variant.") is 51.
-pub const HELP_UNITS: usize = 52;
 
 /// An option is its setting.
 impl PartialEq for OptionRow {
@@ -115,12 +84,10 @@ pub static SANDBOX: OptionRow = OptionRow {
         "its weapons, vehicles and health packs.",
         "Halo 2's nearest ones, and its health. From the next game.",
     ],
-    help: "Weapons, vehicles and health, from the next game.",
     explain: "Which weapons, vehicles and health this map plays with. \
               Halo 1 keeps its own, health packs included. Halo 2 swaps in \
               Halo 2's nearest weapons and vehicles, and its health. \
               From the next game.",
-    icon: crate::ui_kit::dialog::icon::BOMB,
 };
 
 pub static ASSETS: OptionRow = OptionRow {
@@ -130,11 +97,9 @@ pub static ASSETS: OptionRow = OptionRow {
         "its characters, weapons and vehicles.",
         "Halo 2's; cutscenes stay Halo 1's. From the next level.",
     ],
-    help: "Characters, weapons, vehicles: from the next level.",
     explain: "Which characters, weapons and vehicles this level uses. \
               Halo 1 keeps its own. Halo 2 swaps in Halo 2's; the \
               cutscenes stay Halo 1's. Changes from the next level.",
-    icon: crate::ui_kit::dialog::icon::SPARTAN,
 };
 
 pub static HUD: OptionRow = OptionRow {
@@ -144,24 +109,20 @@ pub static HUD: OptionRow = OptionRow {
         "its shield and health meters, motion tracker and ammo counter.",
         "Halo 2's. From the next game.",
     ],
-    help: "Shields, health, motion tracker and ammo counter.",
     explain: "Which HUD you play with. Halo 1 shows its own shield and \
               health meters, motion tracker and ammo counter. Halo 2 \
               shows Halo 2's. Changes from the next game.",
-    icon: crate::ui_kit::dialog::icon::HELMET,
 };
 
-/// The campaign's options, above the skulls on the Game Options page.
+/// The campaign's options, above the skulls on the Skulls page.
 pub static CAMPAIGN: &[&OptionRow] = &[&ASSETS, &HUD];
-/// A multiplayer game's options, on the Halo 1 Options screen.
+/// A multiplayer game's options, on the Halo 1 Options page: its doc's
+/// rows, in order.
 pub static MULTIPLAYER: &[&OptionRow] = &[&SANDBOX, &HUD];
 /// Every row, each once: the order its strings are numbered in.
 pub static ALL: &[&OptionRow] = &[&SANDBOX, &ASSETS, &HUD];
 
-/// The multiplayer screen's strings, after the rows': the two choices
-/// (its value column), then each row's name and each row's help line.
-const MP_IDS: u32 = ROW_IDS + PER_ROW * 3;
-const _: () = assert!(MP_IDS + 2 + 2 * 3 <= IDS.len);
+const _: () = assert!(ROW_IDS + PER_ROW * 3 <= IDS.len);
 
 fn index(row: &OptionRow) -> u32 {
     ALL.iter()
@@ -177,22 +138,6 @@ pub fn label_id(row: &OptionRow, halo1: bool) -> u32 {
 /// The description id of `row`.
 pub fn description_id(row: &OptionRow) -> u32 {
     IDS.base + ROW_IDS + PER_ROW * index(row) + 2
-}
-
-/// The multiplayer screen's value column: the choice, "Halo 1" or
-/// "Halo 2".
-pub fn choice_id(halo1: bool) -> u32 {
-    IDS.base + MP_IDS + u32::from(!halo1)
-}
-
-/// `row`'s name alone ("Sandbox"), the multiplayer screen's label column.
-pub fn name_id(row: &OptionRow) -> u32 {
-    IDS.base + MP_IDS + 2 + index(row)
-}
-
-/// `row`'s help line, the multiplayer screen's description.
-pub fn help_id(row: &OptionRow) -> u32 {
-    IDS.base + MP_IDS + 2 + ALL.len() as u32 + index(row)
 }
 
 /// A choice's name.
@@ -211,25 +156,16 @@ pub fn description(row: &OptionRow) -> String {
 }
 
 static STRINGS: std::sync::LazyLock<Vec<(u32, String)>> = std::sync::LazyLock::new(|| {
-    let mut v = vec![
-        (TITLE_ID, TITLE.to_string()),
-        (FOOTER_ID, PROMPT.to_string()),
-        (ROW_LABEL_ID, ROW_LABEL.to_string()),
-        (ROW_HELP_ID, ROW_HELP.to_string()),
-        (choice_id(true), choice(true).to_string()),
-        (choice_id(false), choice(false).to_string()),
-    ];
+    let mut v = Vec::new();
     for r in ALL {
         v.push((label_id(r, true), label(r, true)));
         v.push((label_id(r, false), label(r, false)));
         v.push((description_id(r), description(r)));
-        v.push((name_id(r), r.label.to_string()));
-        v.push((help_id(r), r.help.to_string()));
     }
     v
 });
 
-/// Every string we serve.
+/// Every string the Skulls page's option rows show.
 pub fn strings() -> Vec<(u32, &'static str)> {
     STRINGS.iter().map(|(i, t)| (*i, t.as_str())).collect()
 }
@@ -319,150 +255,32 @@ pub fn option_at(rows: &[&'static OptionRow], row: i16) -> Option<&'static Optio
     usize::try_from(row).ok().and_then(|r| rows.get(r).copied())
 }
 
-/// The multiplayer Halo 1 Options screen: [`MULTIPLAYER`]'s rows, each its
-/// name and its choice in Quick Options' two columns.
-pub struct OptionsScreen {
-    pub store: Arc<Store>,
-}
-
-impl Rows for OptionsScreen {
-    fn content_spec(&self) -> Option<crate::ui_kit::spec::ScreenSpec> {
-        Some(crate::ui_kit::spec::Describe::spec(self))
-    }
-
-    fn title(&self) -> u32 {
-        TITLE_ID
-    }
-    fn count(&self) -> usize {
-        MULTIPLAYER.len()
-    }
-    fn texts(&self, row: i16) -> Vec<(u32, u32)> {
-        option_at(MULTIPLAYER, row)
-            .map(|r| {
-                vec![
-                    (LABEL_SLOT, name_id(r)),
-                    (VALUE_SLOT, choice_id(is_halo1(&self.store, r))),
-                ]
-            })
-            .unwrap_or_default()
-    }
-    /// A opens the value picker on the row's two choices, as the game's
-    /// own settings rows open theirs (`crate::ui_kit::picker`).
-    fn press(&self, row: i16) -> Chosen {
-        let Some(r) = option_at(MULTIPLAYER, row) else {
-            return Chosen::Nothing;
-        };
-        match crate::ui_kit::picker::offer(pick(&self.store, r)) {
-            Some(picker) => Chosen::Open(picker),
-            None => Chosen::Stepped(step(&self.store, r)),
-        }
-    }
-    fn sideways(&self, row: i16, right: bool) -> Option<String> {
-        let r = option_at(MULTIPLAYER, row)?;
-        Some(format!(
-            "h1 options: {} on row {row}: {}",
-            if right { "right" } else { "left" },
-            step(&self.store, r)
-        ))
-    }
-    /// The focused row's one line ([`OptionRow::help`]) in Quick
-    /// Options' help line; the value picker says more.
-    fn description(&self, row: i16) -> Option<u32> {
-        option_at(MULTIPLAYER, row).map(help_id)
-    }
-    /// The first row's icon: the focus starts there.
-    fn picture_image(&self) -> Option<u16> {
-        self.row_image(0)
-    }
-    /// The focused row's icon in Quick Options' game type picture.
-    fn row_image(&self, row: i16) -> Option<u16> {
-        DIALOG.picture()?;
-        option_at(MULTIPLAYER, row).map(|r| r.icon)
-    }
-    fn describe(&self, count: usize) -> Option<String> {
-        let rows: Vec<String> = MULTIPLAYER
-            .iter()
-            .take(count)
-            .enumerate()
-            .map(|(i, r)| {
-                format!(
-                    "[{i}] \"{}\" = \"{}\"",
-                    r.label,
-                    choice(is_halo1(&self.store, r))
-                )
-            })
-            .collect();
-        Some(format!("\"{TITLE}\"; rows: {}", rows.join(" ")))
-    }
-}
-
-impl crate::ui_kit::spec::Describe for OptionsScreen {
-    fn spec(&self) -> crate::ui_kit::spec::ScreenSpec {
-        use crate::ui_kit::dialog::DialogSpec;
-        use crate::ui_kit::input::{Glyph, Input, Prompt};
-        use crate::ui_kit::spec::{ListPlace, Press, RowSpec, ScreenSpec};
-        let base = DIALOG;
-        let mut s = ScreenSpec::new(SCREEN, TITLE);
-        s.ids = vec![TITLE_ID, FOOTER_ID];
-        s.list = ListPlace::from(Some(crate::ui_kit::dialog_tag::base_layout(
-            base,
-            MULTIPLAYER.len(),
-        )));
-        s.style = base.style();
-        s.description = base.help().map(Into::into);
-        s.content.row_help = true;
-        s.footer = true;
-        s.prompts = vec![
-            Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
-            Prompt::new(&[Glyph::A], "Select"),
-            Prompt::new(&[Glyph::B], "Back"),
-        ];
-        s.inputs = vec![
-            Input::Up,
-            Input::Down,
-            Input::Left,
-            Input::Right,
-            Input::A,
-            Input::B,
-        ];
-        for (row, r) in MULTIPLAYER.iter().enumerate() {
-            let halo1 = is_halo1(&self.store, r);
-            let mut ids: Vec<u32> = self
-                .texts(row as i16)
-                .into_iter()
-                .map(|(_, id)| id)
-                .collect();
-            ids.push(help_id(r));
-            let mut spec =
-                RowSpec::value(r.label, &[choice(true), choice(false)], usize::from(!halo1))
-                    .press(Press::Open(crate::ui_kit::picker::NAME.into()))
-                    .describe(r.help)
-                    .ids(&ids);
-            if base.picture().is_some() {
-                spec = spec.art(crate::ui_kit::dialog::quick_icon(r.icon));
-            }
-            s.rows.push(spec);
-        }
-        s.dialog = Some(DialogSpec {
-            base,
-            rows: s.rows.clone(),
-            ..DialogSpec::new("", crate::ui_kit::view::Opener::GAME_SETUP)
-        });
-        s
-    }
-}
-
-/// The dialog the multiplayer screen is: the lobby's Quick Options.
-pub const DIALOG: crate::ui_kit::dialog::DialogBase =
-    crate::ui_kit::dialog::DialogBase::QuickOptions;
-
 /// The multiplayer screen's id for `Open` rows and the loader registry.
 pub const SCREEN: &str = "h1-options";
+
+/// The Halo 1 Options page over `store`: the shared settings dialog
+/// (`crate::ui_kit::settings`) its doc declares,
+/// `content/ui/screens/h1-options.yaml`: its header, a row per
+/// [`MULTIPLAYER`] option ("Halo 1" or "Halo 2" in its value column), and
+/// the Game Setup row's text and help (`settings.caller`). Its class is
+/// `features.h1-options-screen` (`crate::h1_options_row::SCREEN_FEATURE`).
+pub fn page(store: Arc<Store>) -> KitScreen {
+    crate::ui_kit::settings::screen(
+        crate::h1_options_row::SCREEN_FEATURE,
+        SCREEN,
+        PAGE_IDS,
+        Some(store),
+        Bindings::new(),
+    )
+    .unwrap_or_else(|e| panic!("{e}"))
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::list_class::Rows;
     use crate::setting_defs::ALL as DEFS;
+    use crate::ui::Chosen;
 
     fn store_at(dir: &std::path::Path) -> Store {
         Store::load(DEFS, Some(&settings::path_in(dir)), &|_| None, &[]).0
@@ -473,6 +291,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    fn doc() -> Arc<crate::ui_kit::data::ScreenDoc> {
+        crate::ui_kit::data::require(SCREEN).unwrap_or_else(|e| panic!("{e}"))
     }
 
     #[test]
@@ -500,16 +322,6 @@ mod tests {
         assert!(ids.iter().all(|i| crate::layout_glue::is_ours(*i)));
         assert_ne!(label_id(&SANDBOX, true), label_id(&SANDBOX, false));
         assert_ne!(label_id(&SANDBOX, false), label_id(&ASSETS, true));
-        // The Game Setup row says "...Options..." as its neighbours do; the
-        // screen's title keeps its name.
-        let text = |id| v.iter().find(|(i, _)| *i == id).map(|(_, t)| *t);
-        assert_eq!(text(ROW_LABEL_ID), Some("Halo 1 Options..."));
-        assert_eq!(text(TITLE_ID), Some("HALO 1 OPTIONS"));
-        // The multiplayer screen's columns and help lines.
-        assert_eq!(text(name_id(&SANDBOX)), Some("Sandbox"));
-        assert_eq!(text(choice_id(true)), Some("Halo 1"));
-        assert_eq!(text(choice_id(false)), Some("Halo 2"));
-        assert_eq!(text(help_id(&HUD)), Some(HUD.help));
         // A description fits the pane's five lines (the kit's disc check
         // measures it; a skull's, at most 140, does).
         for r in ALL {
@@ -523,89 +335,70 @@ mod tests {
         );
     }
 
-    /// The multiplayer screen is Quick Options inside: each row its name
-    /// and its choice alone in the two columns, its help one line as
-    /// retail's is, and the whole of it a dialog on Quick Options.
+    /// The multiplayer page is the shared settings dialog: its rows are
+    /// [`MULTIPLAYER`]'s, each its name and its choice alone in Quick
+    /// Options' two columns, its header the same whatever has the focus,
+    /// and the focused row's help under the rows.
     #[test]
-    fn the_multiplayer_screen_is_quick_options_inside() {
-        use crate::ui_kit::spec::{Describe, ValueStyle};
-        for r in ALL {
-            assert!(!r.help.is_empty(), "{}", r.label);
-            assert!(
-                r.help.encode_utf16().count() <= HELP_UNITS,
-                "{}: {:?} is more than Quick Options' one line",
-                r.label,
-                r.help
-            );
-            assert!(!r.help.contains('\n'), "{}", r.label);
+    fn the_multiplayer_page_is_the_shared_settings_dialog() {
+        use crate::ui_kit::dialog::{DialogBase, SETTINGS_HELP_TEXT, icon, quick_icon};
+        use crate::ui_kit::spec::{Describe, ScreenSpec, ValueStyle};
+        let d = doc();
+        let keys: Vec<&str> = d.rows.values().filter_map(|r| r.setting.as_deref()).collect();
+        let options: Vec<&str> = MULTIPLAYER.iter().map(|r| r.def.key).collect();
+        assert_eq!(keys, options, "a row per multiplayer option, in order");
+        for (r, o) in d.rows.values().zip(MULTIPLAYER) {
+            assert_eq!(r.text, o.label);
+            assert_eq!(r.explain.as_deref(), Some(o.explain), "{}: the Skulls page says the same", o.label);
         }
-        let screen = OptionsScreen {
-            store: Arc::new(Store::defaults(DEFS)),
-        };
-        let s = screen.spec();
+        let p = page(Arc::new(Store::defaults(DEFS)));
+        assert!(p.slots() <= PAGE_IDS.len);
+        let s = p.spec();
         assert_eq!(s.style, ValueStyle::Setting);
-        let d = s.dialog.as_ref().expect("a dialog");
-        assert_eq!(d.base, DIALOG);
-        assert_eq!(d.base, crate::ui_kit::dialog::DialogBase::QuickOptions);
-        assert_eq!(d.rows, s.rows);
-        assert_eq!(
-            s.description,
-            Some(crate::ui_kit::dialog::QUICK_HELP_TEXT.into())
-        );
+        let dialog = s.dialog.as_ref().expect("a dialog");
+        assert_eq!(dialog.base, DialogBase::QuickOptions);
+        assert_eq!(dialog.rows, s.rows);
+        assert_eq!(s.description.map(|b| b.rect), Some(SETTINGS_HELP_TEXT.rect));
         let (label, value) = s.rows[0].cells(s.style);
-        assert_eq!(
-            (label.as_str(), value.as_deref()),
-            ("Sandbox", Some("Halo 1"))
-        );
-        assert_eq!(s.rows[1].description.as_deref(), Some(HUD.help));
-        // Quick Options' header: the focused row's one line in the help
-        // line and its icon in the game type picture, following the focus.
-        assert_eq!(screen.description(0), Some(help_id(&SANDBOX)));
-        assert_eq!(screen.description(1), Some(help_id(&HUD)));
-        assert_eq!(screen.description(2), None);
+        assert_eq!((label.as_str(), value.as_deref()), ("Sandbox", Some("Halo 1")));
         assert_eq!(s.help, None, "no page line in place of the rows'");
-        assert!(s.art.is_empty(), "the icon is the focused row's");
-        let text = strings();
-        let text = |id| text.iter().find(|(i, _)| *i == id).map(|(_, t)| *t);
-        let room = i32::from(crate::ui_kit::dialog::QUICK_HELP.right)
-            - i32::from(crate::ui_kit::dialog::QUICK_HELP.left);
-        for (row, r) in MULTIPLAYER.iter().enumerate() {
-            let focused = crate::ui_kit::spec::ScreenSpec {
+        assert_eq!(s.art, [quick_icon(icon::HELMET)]);
+        assert_eq!(Rows::picture_image(&p), Some(icon::HELMET));
+        let texts: Vec<&str> = s.texts.iter().map(|t| t.text.as_str()).collect();
+        // The about line is the Game Setup row's help: the two always agree.
+        let caller = d.settings.clone().and_then(|s| s.caller).expect("a caller");
+        assert_eq!(texts, ["This Halo 1 map", caller.help.as_str()]);
+        assert_eq!(
+            caller.help,
+            "Play this Halo 1 map with Halo 1's weapons and HUD, or Halo 2's."
+        );
+        for (row, r) in d.rows.values().enumerate() {
+            let focused = ScreenSpec {
                 focus: row,
                 ..s.clone()
             };
-            assert_eq!(focused.description_text().as_deref(), Some(r.help));
-            assert_eq!(text(help_id(r)), Some(r.help));
-            assert_eq!(
-                focused.shown_art(),
-                [crate::ui_kit::dialog::quick_icon(r.icon)],
-                "{}",
-                r.label
-            );
-            assert_eq!(screen.row_image(row as i16), Some(r.icon));
-            // One line: the kit's own measure (7.5 units a character)
-            // inside Quick Options' 494-unit help line.
-            assert!(crate::ui_kit::spec::fallback::width(r.help) <= room, "{}", r.label);
+            assert_eq!(focused.description_text(), r.help.clone());
+            assert_eq!((focused.art.clone(), focused.texts.clone()), (s.art.clone(), s.texts.clone()));
+            assert!(Rows::description(&p, row as i16).is_some_and(|id| PAGE_IDS.owns(id)));
         }
-        assert_eq!(screen.row_image(MULTIPLAYER.len() as i16), None);
-        assert_eq!(screen.picture_image(), Some(MULTIPLAYER[0].icon));
+        assert_eq!(Rows::description(&p, 2), None);
+        // The Game Setup row's text and help are the page's own slots.
+        assert_ne!(p.row_label_id(), p.title());
+        assert!(p.row_help_id().is_some_and(|id| PAGE_IDS.owns(id)));
     }
 
-    /// Every option, on either page, has an icon of Quick Options'
-    /// picture, a one-line help, and an explanation for the value picker
-    /// that says more than the help and is player copy, not a note.
+    /// Every option has an explanation for the value picker that is
+    /// player copy and fits its block.
     #[test]
-    fn every_option_has_an_icon_a_line_and_real_picker_copy() {
-        use crate::ui_kit::dialog::{PICKER_HELP_TEXT, icon};
+    fn every_option_has_real_picker_copy() {
+        use crate::ui_kit::dialog::PICKER_HELP_TEXT;
         use crate::ui_kit::spec::{fallback, wrap};
         let width = i32::from(PICKER_HELP_TEXT.rect[3]) - i32::from(PICKER_HELP_TEXT.rect[1]);
         let height = i32::from(PICKER_HELP_TEXT.rect[0]) - i32::from(PICKER_HELP_TEXT.rect[2]);
         for r in ALL {
-            assert!(r.icon < icon::COUNT, "{}", r.label);
-            assert!(!r.help.is_empty() && r.help.encode_utf16().count() <= HELP_UNITS);
             let e = r.explain;
-            assert!(!e.is_empty() && e != r.help, "{}", r.label);
-            assert!(e.encode_utf16().count() <= EXPLAIN_UNITS, "{}: {e}", r.label);
+            assert!(!e.is_empty(), "{}", r.label);
+            assert!(e.encode_utf16().count() <= crate::ui_kit::settings::EXPLAIN_UNITS, "{}: {e}", r.label);
             let lines = wrap(e, width, &fallback::width).len() as i32;
             assert!(lines * fallback::LINE <= height, "{}: {lines} lines", r.label);
             let lower = e.to_lowercase();
@@ -613,57 +406,40 @@ mod tests {
                 assert!(!lower.contains(bad), "{}: {e}", r.label);
             }
         }
-        // Rows of one page show different icons.
-        assert_ne!(SANDBOX.icon, HUD.icon);
-        assert_ne!(ASSETS.icon, HUD.icon);
     }
 
     /// Left and right each step to the other choice, A opens the value
     /// picker whose choice is saved too; a store loaded again has it.
     #[test]
     fn stepping_saves_and_a_new_run_reads_it() {
+        use crate::ui_kit::spec::Describe;
         let dir = scratch("step");
         let s = Arc::new(store_at(&dir));
-        let screen = OptionsScreen {
-            store: Arc::clone(&s),
+        let p = page(Arc::clone(&s));
+        let value = |row: usize| {
+            let spec = p.spec();
+            spec.rows[row].cells(spec.style).1.unwrap_or_default()
         };
-        assert_eq!(
-            screen.texts(0),
-            [
-                (LABEL_SLOT, name_id(&SANDBOX)),
-                (VALUE_SLOT, choice_id(true))
-            ]
-        );
-        let line = screen.sideways(0, true).unwrap();
-        assert!(
-            line.contains("multiplayer.halo1_sandbox -> Halo 2"),
-            "{line}"
-        );
-        assert_eq!(
-            screen.texts(0),
-            [
-                (LABEL_SLOT, name_id(&SANDBOX)),
-                (VALUE_SLOT, choice_id(false))
-            ]
-        );
+        assert_eq!(value(0), "Halo 1");
+        let line = p.sideways(0, true).unwrap();
+        assert!(line.contains("multiplayer.halo1_sandbox ->"), "{line}");
+        assert_eq!(value(0), "Halo 2");
         // A opens the value picker on HUD: Halo 1 then Halo 2, Halo 1
-        // held; choosing Halo 2 there saves it.
-        assert_eq!(screen.press(1), Chosen::Open(crate::ui_kit::picker::NAME));
-        let p = crate::ui_kit::picker::current().expect("the picker's pick");
-        assert_eq!(p.title, "HUD");
-        assert_eq!(p.values, ["Halo 1", "Halo 2"]);
-        assert_eq!(p.current, 0);
-        assert_eq!(p.description, HUD.explain);
-        assert!(
-            (p.set)(0).contains("stays Halo 1"),
-            "the held one: nothing changes"
-        );
-        assert!((p.set)(1).contains("halo1.hud -> Halo 2"));
+        // held, its explanation on the right; choosing Halo 2 there saves
+        // it.
+        assert_eq!(p.press(1), Chosen::Open(crate::ui_kit::picker::NAME));
+        let pick = crate::ui_kit::picker::current().expect("the picker's pick");
+        assert_eq!(pick.title, "HUD");
+        assert_eq!(pick.values, ["Halo 1", "Halo 2"]);
+        assert_eq!(pick.current, 0);
+        assert_eq!(pick.description, HUD.explain);
+        assert!((pick.set)(1).contains("halo1.hud ->"));
         let again = store_at(&dir);
         assert_eq!(setting_defs::halo1_sandbox(&again), "h2");
         assert!(!is_halo1(&again, &HUD));
-        assert!(screen.sideways(0, false).unwrap().contains("-> Halo 1"));
-        assert_eq!(screen.press(2), Chosen::Nothing, "no such row");
+        p.sideways(0, false).unwrap();
+        assert_eq!(value(0), "Halo 1");
+        assert_eq!(p.press(2), Chosen::Nothing, "no such row");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

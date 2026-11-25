@@ -1,0 +1,28 @@
+// Zombies: humans on red with shotguns, zombies on green with swords. The
+// honour rules stay in `about`: the game does not switch a team for a
+// kill. `infection.rules` enforces them but waits on `set_team` (untraced,
+// `verify::unhostable`).
+// docs/game/community-gametypes.md.
+rules "Zombies" 1
+type party
+points "Kills"
+uses slayer
+about "Humans on red with shotguns, zombies on green with swords. When a zombie gets you, switch to green. Last human standing wins."
+quick time_limit, respawn_time, starting_weapon, secondary_weapon, weapons_on_map
+
+settings {
+    team_play = true
+    starting_weapon = shotgun
+    secondary_weapon = energy_sword
+    starting_grenades = false
+    grenades_on_map = false
+    weapons_on_map = shotguns
+    motion_sensor = false
+    overshield_pickups = false
+    camo_pickups = false
+    light_vehicle = none
+    second_light_vehicle = none
+    heavy_vehicle = none
+    flying_vehicle = none
+    score_limit = none
+}

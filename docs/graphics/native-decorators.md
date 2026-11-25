@@ -1,7 +1,7 @@
 # Native decorators: the BSP's grass and rocks in layer 3
 
 Status: Built, not verified in a run. The read, the build's implementation lookup, extraction, the plan, the loader, the recording and the glue that reserves the pass and skips the guest's items are built and unit-tested; no frame has been compared with the D3D path.
-Code: `crates/rewrites/scene-extract/src/layout/decorators.rs` (`read`, `registers`, `implementation`, `set_geometry`), `crates/rewrites/scene-extract/src/decorators.rs` (`extract`, `clear_slots`), `crates/rewrites/frame-scene/src/decorator.rs`, `crates/rewrites/native-render/src/decorators.rs` (`plan`), `crates/rewrites/native-render/src/decorators_load.rs` (`decorator_look`, `compile`, `buffers`), `crates/rewrites/native-render/src/decorators_gpu.rs` (`MaterialGpu`, `bind`, `encode`), `crates/rewrites/render-bridge/src/native_decorators.rs` (the observer), `crates/extensions/game/src/native_decorators_glue.rs` (the host). Tests: the unit tests of those files.
+Code: `crates/rewrites/scene-extract/src/layout/decorators.rs` (`read`, `registers`, `implementation`, `set_geometry`), `crates/rewrites/scene-extract/src/decorators.rs` (`extract`, `clear_slots`), `crates/rewrites/frame-scene/src/decorator.rs`, `crates/rewrites/native-render/src/decorators.rs` (`plan`), `crates/rewrites/native-render/src/decorators_load.rs` (`decorator_look`, `skip_holds`, `compile`, `buffers`), `crates/rewrites/native-render/src/decorators_gpu.rs` (`MaterialGpu`, `bind`, `encode`), `crates/rewrites/render-bridge/src/native_decorators.rs` (the observer, `plan_held`), `crates/extensions/game/src/native_decorators_glue.rs` (the host). Tests: the unit tests of those files.
 Switch: `impl.render.native` (the stage; extraction runs with the frame step, `frame-scene`).
 
 Model decorators are the structure BSP's placed scatter: each placement is
@@ -130,12 +130,38 @@ same reads, in the same order.
 9. **The glue** (`render_bridge::native_decorators`, an observer before
    the layer draw, after the frame step's and the native world's, and
    `native_decorators_glue`). At the scene's layer 3, the open view's
-   materials are made ready, the view is planned over the ready ones,
+   materials are made ready, and of those the host keeps the ones whose
+   guest draws a skip leaves out without changing a render state the
+   device holds (`Host::holds`, `decorators_load::skip_holds`): the
+   draw's shader begin sets its pass's list (`0x00018900`) and its
+   engine-driven values (`0x0001a170`) without comparing them with the
+   device, the next switch to another implementation (`0x00016b90`) or
+   layer setup restores the implementation's restore list
+   (`0x00018900`) first, and the draw leaves `TwoSidedLighting` off
+   (`0x0004ebb4`), so a material is kept only when the restore list,
+   every state of the pass's list the restore list does not write back,
+   at the value the draw sets (`DecoratorLook::leaves`), and
+   `TwoSidedLighting` off already hold at the call, the rule the world
+   layers' items follow (`layer_pass::skip_holds`). The view is planned
+   over the kept ones (`render_bridge::native_decorators::plan_held`),
    and the host reserves one external pass (stage `World`) as the fog's
-   does: the device must be W-buffered with the stencil off, layer 3's
+   does: the device must be W-buffered, the stage palettes the load
+   expanded palettized stage bitmaps through must still be bound
+   (`palettes_hold`), the device's stencil must read, and so must its
+   cull when a planned pass leaves the cull to the device. The draw
+   `0x0004e260` sets neither, so the pipelines draw under the stencil
+   and cull the device holds at the layer-3 call
+   (`decorators_gpu::DrawKey`; the stencil through
+   `fog_gpu::layer_stencil`, its reference set on the pass). Layer 3's
    bit is cleared on every planned item through a preview
    (`clear_slots`, all or nothing: each slot an item of build
-   `0x0004de20` with the bit set), and the masks are applied and the
+   `0x0004de20` with the bit set). With each mask the preview writes the
+   geometry cache stamps the item's build would have made
+   (`layout::decorators::build_stamps`: `0x0012de70`'s resident path, the
+   frame's stamp `[[0x004e649c] + 0x38]` into entry `u16[info + 0x20]`'s
+   `+0x14` of the table `[[[0x004e649c] + 0x64] + 0x44]`, `0x18` bytes an
+   entry, for the placement's geometry record and the set's geometry).
+   The masks and stamps are applied and the
    reservation committed only once the pass has recorded on every copy.
    The next layer draw sets each bit back on the items that still hold
    the mask it left; a map activation forgets them.
@@ -153,7 +179,9 @@ same reads, in the same order.
   `0x0045dc18`, `0x0045dd34`, `0x0045dd38`, `0x0045dd3c`, `0x0045dd44`,
   `0x005259b4`, `0x0043fde4`) and the detail tables.
 - Written: layer 3's bit (`1 << 3`) of the drawn items' layer mask (item
-  `+0x10`), cleared before the layer draw and set back at the next.
+  `+0x10`), cleared before the layer draw and set back at the next; the
+  geometry cache entries' stamps (`+0x14`) of the drawn items' geometry
+  record and set geometry.
 - `render.scene` reports per view `decorators`, `decorator_instances` and
   `decorator_remainder`, and the counters `scene_decorator_draws`,
   `scene_decorator_instances`, `scene_decorator_remainder`, and the
@@ -161,36 +189,60 @@ same reads, in the same order.
   `scene_decorator_views_native` (views the stage drew),
   `scene_decorator_items_skipped` (items the guest skipped),
   `scene_decorator_draws_unready` (draws left to the guest: their
-  material is not ready) and `scene_decorator_views_declined` (views the
+  material is not ready), `scene_decorator_draws_state` (draws left to
+  the guest because skipping them would change a render state the device
+  holds) and `scene_decorator_views_declined` (views the
   host left to the D3D path) ([agent-api.md](../runtime/agent-api.md)).
 - The load prints one line (`native-decorators: … layer-3 passes load;
   on the D3D path: …`), and each reason a material stays on the D3D path
   is printed once.
-- What a replacement of the draw must still do: the geometry cache's
-  request and stamp (`0x0012de70`) for the placement's record and the set,
-  a residency write the entry census does not count.
+- The geometry cache stamps a skipped item's build would make are written
+  by the glue, a residency write the entry census does not count.
 
 ## Rules and limits
 
 - The stage draws all of a view's planned decorators or none: a refusal
   at the ask or on any copy leaves every item to the D3D path. Draws
-  whose material is not ready stay the guest's while the rest draw
-  natively.
-- A pass stays on the D3D path when it has engine-driven render or
-  stage states, leaves the cull to the device, samples a lightmap, has a
-  palettized stage bitmap, computes anything per draw, reads a constant
-  the stage does not set (it sets `c[0..18]`, `c[53]` and the pass's
-  own), or its set's stream supplies one of `v11..v15`.
-- The pipelines test no stencil, so a layer 3 drawn with the stencil on
-  is the D3D path's.
+  whose material is not ready, or whose skip would change a render state
+  the device holds, stay the guest's while the rest draw natively.
+- The skip's state rule covers the device's render states only. The
+  draw also leaves the engine input table pointer `[0x00485a58]` at 0
+  (`0x0001bd50`), the lightmap page at -1, `v11..v15`, `c[53]`, its
+  stream, shader and stage textures, which a skip leaves as the draws
+  before it left them.
+- A pass's engine-driven render and stage states go over its own
+  (`engine_states::apply_static`): each value from the material's
+  inputs, the render values after the pass's list where `pass_state`
+  reads them, the stage values into the stage's states. A driven state
+  whose source is not the instance's scalar 21 changes per draw and
+  keeps the pass on the D3D path; the byte layouts are in
+  [notes/decorator-stages.md](notes/decorator-stages.md).
+- A pass stays on the D3D path when it computes anything per draw,
+  reads a constant the stage does not set (it sets `c[0..18]`, `c[53]`
+  and the pass's own), or its set's stream supplies one of `v11..v15`.
+- A stage sampling the lightmap binds the globals' rasterizer bitmap at
+  `+0x64`, as an object's does: the draw sets the current page to -1
+  (`0x0004e277`) and adds no lightmap coordinates. The load reads it once
+  (`native_objects_glue::engine_lightmap`) and takes it only when it is
+  uniform (`decorators_load::stage_images`); otherwise the passes that
+  sample it stay on the D3D path with the reason.
+- A palettized stage bitmap is expanded at load through the palette its
+  stage holds then, as the world's are; a view whose stage palettes
+  differ stays on the D3D path.
+- A pass that sets no `CULLMODE` draws with the device's cull and
+  winding; a view where the cull does not read stays on the D3D path.
+- A view whose stencil tests or writes on a copy whose depth has no
+  stencil aspect has no pipeline for that copy, so the view stays on the
+  D3D path.
 - The pipeline draws with two-sided lighting on, as the draw sets it.
 - Extraction repeats the build's implementation lookup: an item whose
   build declines is not in the scene, as the guest draws nothing for it.
-- A skipped item gets no entry, so its build does not run and the
-  geometry cache's request and stamp for its record and set are not made
-  that frame. A placement whose geometry is not resident is a remainder,
-  so the guest's build asks for it again; whether resident geometry is
-  evicted sooner without the stamp is not known.
+- A skipped item gets no entry, so its build does not run; the skip
+  writes the stamps its build would have made for its record and set, so
+  the cache ages that geometry as the guest's draw would. A placement
+  whose geometry is not resident is a remainder, and the skip refuses
+  when an item's geometry is no longer resident at the layer draw, so the
+  guest's build makes the cache's load request itself.
 - Decals and quads (the other decorator types) are not typed: their
   items are in the transparent layers.
 
@@ -205,6 +257,12 @@ same reads, in the same order.
 
 ## Not verified
 
+- That every guest draw after a skipped placement sets what it reads of
+  the state the rule above does not cover (the engine input table
+  pointer, the vertex data `v11..v15`, `c[53]`).
+- That the render states at a placement's place in the sorted layer are
+  those at the layer-3 call, where `skip_holds` reads them: the layer's
+  guest draws sorted before it may change them.
 - That the `f64` steps give the x87 results bit for bit under the game's
   precision control.
 - Whether `0x0012de70` ever gives a block that is not marked resident
@@ -213,7 +271,9 @@ same reads, in the same order.
   counters in a run.
 - That the shader word at item `+8` and the tags' shader index agree
   (the load keys passes by the tag index, as the build reads the word).
-- The geometry cache's behaviour for skipped items (above).
+- That the stamp is the only state `0x0012de70`'s resident path changes
+  (read from its disassembly, `0x0012de7f..0x0012de98`; not compared with
+  a run).
 
 ## Related
 

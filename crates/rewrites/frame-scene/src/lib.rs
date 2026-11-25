@@ -8,8 +8,10 @@
 //! it from guest memory; `native_render` draws it. The camera, the carried
 //! part and the view and instance keys are `frame_types`', re-exported.
 
+pub mod blend;
 pub mod builder;
 pub mod decorator;
+pub mod display;
 pub mod late;
 pub mod layer;
 pub mod light;
@@ -17,6 +19,8 @@ pub mod light_group;
 pub mod mailbox;
 pub mod node;
 pub mod object;
+pub mod pace;
+pub mod overlay;
 pub mod scene;
 pub mod summary;
 
@@ -24,6 +28,42 @@ pub mod summary;
 // device (`d3d`), which sits below this crate: they live in `frame_types`
 // and keep their paths here.
 pub use frame_types::{camera, carried};
+
+pub use builder::{BuildError, FreeList, InstanceInput, SceneBuilder};
+pub use camera::{Camera, D24_SCALE, Mat4, RenderCamera, mul, transform, w_depth};
+pub use carried::{
+    AuxTarget, Carried, CarriedOp, CarriedSummary, GuestOp, OpCounts, Readback, SideTarget, Slot,
+    SlotAt, SlotEvent, SlotTracker, TargetRef, TargetSample,
+};
+pub use decorator::{DecoratorCounts, DecoratorDraw, DecoratorInstance};
+pub use late::{
+    DeviceFog, FOG_WORDS, FogState, LateCounts, LateInput, LateLayer, LateMaterial, LatePart,
+    PostEffect, PostParams, WaterState,
+};
+pub use layer::{
+    LayerInputs, LayerItem, LayerObjectRefusal, LayerOwner, LayerPass, PRT_FIRST_CONSTANT,
+    PrtStream,
+};
+pub use light::{
+    Light, LightCandidate, LightConstants, LightProjection, LightStep, LightTarget, LightVariants,
+    LightVolume, NO_DATUM, SceneLight,
+};
+pub use light_group::{
+    GroupSite, LightBinding, LightEntry, LightGroup, LightPose, LightStream, ObjectShadow,
+    PROJECTION_ROWS, SHADOW_COMBINER_WORDS, ShadowFilter, ShadowFilterDraw, ShadowPass, Topology,
+};
+pub use node::{NODE_MATRIX_SIZE, NodeMatrix};
+pub use object::{Defaults, ItemKey, LIGHTING_BYTES, LIGHTING_WORDS, Lighting, ObjectFrame, Owner};
+pub use overlay::{
+    ClipRect, Combiner, Overlay, OverlayBlend, OverlayBlur, OverlayCamera, OverlayCounts,
+    OverlayError, OverlayGlyph, OverlayItem, OverlayKind, OverlayMaterial, OverlayModelView,
+    OverlayTexture, OverlayVertex, Program, Sampler,
+};
+pub use scene::{
+    AuxDepth, Cut, DisplayVisibility, FrameScene, Instance, InstanceKey, NearbyCaster, PartDraw, PartFlags, Row,
+    SceneId, Stamp, Subparts, View, ViewCounts, ViewKey, ViewKind, VisibilitySource, WorldState,
+};
+pub use summary::summary_hash;
 
 #[cfg(test)]
 pub(crate) mod test_camera {
@@ -44,24 +84,3 @@ pub(crate) mod test_camera {
         }
     }
 }
-
-pub use builder::{BuildError, FreeList, InstanceInput, SceneBuilder};
-pub use camera::{Camera, D24_SCALE, Mat4, RenderCamera, mul, transform, w_depth};
-pub use carried::{
-    AuxTarget, Carried, CarriedOp, CarriedSummary, GuestOp, OpCounts, Readback, SideTarget, Slot, SlotAt, SlotEvent, SlotTracker,
-    TargetRef, TargetSample,
-};
-pub use decorator::{DecoratorCounts, DecoratorDraw, DecoratorInstance};
-pub use late::{
-    DeviceFog, FOG_WORDS, FogState, LateCounts, LateInput, LateLayer, LateMaterial, LatePart, PostEffect, PostParams, WaterState,
-};
-pub use layer::{LayerInputs, LayerItem, LayerOwner, LayerPass};
-pub use light::{Light, LightCandidate, LightConstants, LightProjection, LightStep, LightTarget, LightVariants, LightVolume, SceneLight};
-pub use light_group::{GroupSite, LightBinding, LightEntry, LightGroup, LightPose, LightStream, ObjectShadow, PROJECTION_ROWS, Topology};
-pub use node::{NODE_MATRIX_SIZE, NodeMatrix};
-pub use object::{Defaults, ItemKey, LIGHTING_BYTES, LIGHTING_WORDS, Lighting, ObjectFrame, Owner};
-pub use scene::{
-    AuxDepth, Cut, FrameScene, Instance, InstanceKey, PartDraw, PartFlags, Row, SceneId, Stamp, View, ViewCounts, ViewKey,
-    Subparts, ViewKind, WorldState,
-};
-pub use summary::summary_hash;

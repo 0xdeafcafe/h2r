@@ -422,6 +422,8 @@ pub fn dialog<M: Gm + ?Sized>(m: &M) -> Option<Dialog> {
                             *n,
                             crate::clanker_card::SCREEN
                                 | crate::lab_takeover::SCREEN
+                                | crate::lab_takeover::ALONGSIDE_SCREEN
+                                | crate::lab_takeover::RUNNING_SCREEN
                                 | crate::ui_kit::picker::NAME
                                 | crate::ui_kit::picker::GAME_NAME
                         )

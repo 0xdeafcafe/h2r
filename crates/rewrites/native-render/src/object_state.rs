@@ -5,7 +5,8 @@
 //! render-state array at the layer-3 call ([`EntryStates`]). A field the
 //! draw depends on that neither gives (the slot does not read, or holds a
 //! value outside its enum) refuses the draw, as does a state the native
-//! pass does not reproduce: blending, a depth bias, a fill mode other than solid,
+//! pass does not reproduce: destination-dependent blending in layer 3, a
+//! depth bias, a fill mode other than solid,
 //! Z-buffering set by the implementation (the programs write w; the
 //! device's own mode, `SET_CONTROL0`, the host checks), or an alpha test
 //! other than the one the program was compiled with. Nothing is taken
@@ -17,6 +18,7 @@
 
 use gfx::state::{CompareFunc, DepthBufferMode, FillMode, RenderState, RenderStateType as R, StencilState};
 use gfx::xdk::{HALO2_BUILD, RenderStateTable};
+use tags::material::{EngineInputs, EngineState, EngineStateSource, InputReads, ResolvedImplementation};
 use tags::shader::RenderStateValue;
 
 /// The fields read at the layer-3 call: every one a draw's pipeline, its
@@ -91,6 +93,76 @@ impl EntryStates {
     }
 }
 
+/// Xbox BLENDCOLOR in the shader pass render-state lists.
+const BLEND_COLOR_SLOT: u8 = 75;
+
+/// Ordered RGB and alpha writes applied by the guest after its static list.
+/// Keeping the static colour here lets the skip compare the *final* word
+/// to the device, even when the intermediate static write differs.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LayerBlendColor {
+    base: Option<u32>,
+    writes: Vec<EngineState>,
+    reads: InputReads,
+}
+
+impl LayerBlendColor {
+    pub(crate) fn take(imp: &mut ResolvedImplementation) -> Result<Option<Self>, String> {
+        let mut blend = Self::default();
+        imp.engine_render_states.retain(|&raw| {
+            if let Some(binding) = EngineState::render(raw).filter(|s| s.state == BLEND_COLOR_SLOT) {
+                blend.writes.push(binding);
+                false
+            } else {
+                true
+            }
+        });
+        if blend.writes.is_empty() {
+            return Ok(None);
+        }
+        for binding in &blend.writes {
+            let (n, given, reads) = match binding.source {
+                EngineStateSource::Scalar(n) => (n, imp.input_reads.scalars, &mut blend.reads.scalars),
+                EngineStateSource::Colour(n) => (n, imp.input_reads.vectors, &mut blend.reads.vectors),
+            };
+            if n >= 64 || given >> n & 1 == 0 {
+                return Err(format!("BLENDCOLOR reads unevaluated input {:?}", binding.source));
+            }
+            *reads |= 1 << n;
+        }
+        imp.render_states.retain(|s| {
+            if s.state == BLEND_COLOR_SLOT {
+                blend.base = Some(s.value);
+                false
+            } else {
+                true
+            }
+        });
+        Ok(Some(blend))
+    }
+
+    pub(crate) fn resolve(
+        &self, imp: &ResolvedImplementation, entry: &EntryStates, view: &frame_scene::LayerInputs,
+        lighting: Option<&frame_scene::Lighting>, shader: crate::object_lighting::ShaderValues,
+    ) -> Result<RenderStateValue, String> {
+        let held = entry.get(R::BlendColor).ok_or("BLENDCOLOR does not read")?;
+        let mut value = self.base.unwrap_or(held);
+        let mut inputs = EngineInputs::default();
+        inputs.scalars[21] = f32::from_bits(shader.scalar_21);
+        crate::layer_pass::give(&mut inputs, self.reads, view, lighting, shader)
+            .map_err(|input| format!("BLENDCOLOR input {input:?} is unavailable"))?;
+        for binding in &self.writes {
+            value = binding.value(&inputs, value).ok_or("BLENDCOLOR input is outside the engine slots")?;
+        }
+        // The prefix skips the guest state change too. The regular skip
+        // check verifies that each restore already holds on the device.
+        if value != held && !imp.restore_states.iter().any(|s| s.state == BLEND_COLOR_SLOT && s.value == held) {
+            return Err("BLENDCOLOR would leave the device changed".into());
+        }
+        Ok(RenderStateValue { state: BLEND_COLOR_SLOT, value })
+    }
+}
+
 /// What one draw is issued with: its pipeline's primitive, depth and
 /// colour writes, its W clip's clamp (`D3DRS_DEPTHCLIPCONTROL`), and its
 /// alpha test (checked against the program's).
@@ -103,6 +175,24 @@ pub struct DrawState {
     pub color_writes: wgpu::ColorWrites,
     pub w_clamp: bool,
     pub alpha_test: Option<(wgpu::CompareFunction, u8)>,
+    /// The draw's blend. Layer 3 requires an opaque result.
+    pub blend: Option<wgpu::BlendState>,
+    /// The blend constant the packet sets, as `gfx::translate::blend_constant`
+    /// derives it (each channel's `f64` bits); zero without a blend.
+    pub blend_constant: [u64; 4],
+}
+
+impl DrawState {
+    /// The blend constant is issued dynamically and is absent from the pipeline descriptor.
+    pub(crate) fn pipeline_state(self) -> Self {
+        Self { blend_constant: [0; 4], ..self }
+    }
+
+    /// [`Self::blend_constant`] as the packet sets it.
+    pub fn blend_color(&self) -> wgpu::Color {
+        let [r, g, b, a] = self.blend_constant.map(f64::from_bits);
+        wgpu::Color { r, g, b, a }
+    }
 }
 
 /// The reference stencil mode 2 writes: a part whose record marks its
@@ -135,18 +225,27 @@ pub fn mark(state: &mut DrawState) {
 /// or why it is refused. `compiled`: the alpha test its program was
 /// compiled with.
 pub fn resolve(own: &[RenderStateValue], entry: &EntryStates, compiled: Option<(wgpu::CompareFunction, u8)>) -> Result<DrawState, String> {
-    resolve_states(own, entry, compiled, false)
+    resolve_states(own, entry, compiled, false, false)
 }
 
-/// The third-person scene path supplies the fog uniforms and handles a
-/// zero-reference stencil test. First-person callers use `resolve`.
+/// The third-person scene path supplies fog uniforms and the packet's
+/// stencil reference. First-person callers use `resolve`.
 pub fn resolve_scene(own: &[RenderStateValue], entry: &EntryStates, compiled: Option<(wgpu::CompareFunction, u8)>) -> Result<DrawState, String> {
-    resolve_states(own, entry, compiled, true)
+    resolve_states(own, entry, compiled, true, false)
+}
+
+/// [`resolve_scene`] for an object's draw in a world layer other than 3
+/// (`object_program_gpu::OBJECT_LAYERS`; `entry` the device at that layer call): its passes
+/// blend, so a blend its implementation sets, or the device's it
+/// inherits, is the draw's ([`DrawState::blend`]), every field the blend
+/// reads known.
+pub fn resolve_layer(own: &[RenderStateValue], entry: &EntryStates, compiled: Option<(wgpu::CompareFunction, u8)>) -> Result<DrawState, String> {
+    resolve_states(own, entry, compiled, true, true)
 }
 
 fn resolve_states(
     own: &[RenderStateValue], entry: &EntryStates, compiled: Option<(wgpu::CompareFunction, u8)>,
-    scene: bool,
+    scene: bool, blends: bool,
 ) -> Result<DrawState, String> {
     let table = RenderStateTable::for_build(HALO2_BUILD);
     let mut rs = RenderState::default();
@@ -175,11 +274,33 @@ fn resolve_states(
             Err(format!("{t:?} is inherited and the device's does not read or decode"))
         }
     };
+    // Layer 3 may inherit its colour mask. With all channels disabled its
+    // blend cannot affect any attachment, regardless of the blend factors.
+    let masked = scene && !blends && known.contains(&R::ColorWriteEnable)
+        && gfx::translate::color_writes(rs.color_write).is_empty();
+    if masked {
+        rs.blend_enable = false;
+    }
     for t in REQUIRED {
+        if masked && t == R::AlphaBlendEnable {
+            continue;
+        }
         need(t)?;
     }
     if rs.blend_enable {
-        return Err("it blends (ALPHABLENDENABLE)".into());
+        need(R::SrcBlend)?;
+        need(R::DestBlend)?;
+        need(R::BlendOp)?;
+        if !blends && (rs.blend_op != gfx::state::BlendOp::Add
+            || gfx::translate::blend_state(&rs) != Some(wgpu::BlendState::REPLACE))
+        {
+            return Err("it blends (ALPHABLENDENABLE)".into());
+        }
+        if !blends {
+            rs.blend_enable = false;
+        } else {
+            need(R::BlendColor)?;
+        }
     }
     if rs.fog_enable && !scene {
         return Err("fog is on (FOGENABLE)".into());
@@ -192,10 +313,6 @@ fn resolve_states(
             R::StencilFail, R::StencilZFail, R::StencilPass]
         {
             need(field)?;
-        }
-        // The external bundle encoder uses the render pass's default ref.
-        if rs.stencil.reference != 0 {
-            return Err("the stencil reference is nonzero".into());
         }
     }
     if rs.solid_offset_enable {
@@ -238,6 +355,13 @@ fn resolve_states(
         color_writes: gfx::translate::color_writes(rs.color_write),
         w_clamp: rs.depth_clamp,
         alpha_test,
+        blend: gfx::translate::blend_state(&rs),
+        blend_constant: if rs.blend_enable {
+            let c = gfx::translate::blend_constant(&rs);
+            [c.r, c.g, c.b, c.a].map(f64::to_bits)
+        } else {
+            [0; 4]
+        },
     })
 }
 
@@ -245,6 +369,17 @@ fn resolve_states(
 mod tests {
     use super::*;
     use gfx::state::{CullMode, FrontFace};
+
+    #[test]
+    fn a_scene_object_can_mask_colour_with_unread_blend_enable() {
+        let mut device = entry();
+        device.0.retain(|(t, _)| *t != R::AlphaBlendEnable);
+        let masked = own(&[(R::ColorWriteEnable, 0)]);
+        let state = resolve_scene(&masked, &device, None).unwrap();
+        assert!(state.depth_write && state.color_writes.is_empty());
+        assert_eq!(state.blend, None);
+        assert!(resolve_scene(&[], &device, None).is_err());
+    }
 
     fn slot(t: R) -> u8 {
         let table = RenderStateTable::for_build(HALO2_BUILD);
@@ -276,6 +411,28 @@ mod tests {
                 _ => 0,
             })
         })
+    }
+
+    #[test]
+    fn partial_blend_writes_inherit_the_other_channels_and_apply_in_order() {
+        use tags::shader::ExternalBinding;
+        let mut imp = crate::engine_states::tests::implementation(vec![], 0);
+        imp.input_reads.scalars = 1 << 21 | 1 << 37;
+        imp.engine_render_states = vec![
+            ExternalBinding { bytes: [0, 1, 0, 21] },
+            ExternalBinding { bytes: [0, 1, 0, 37] },
+        ];
+        let held = 0x1203_4567;
+        imp.restore_states = own(&[(R::BlendColor, held)]);
+        let writes = LayerBlendColor::take(&mut imp).unwrap().unwrap();
+        let entry = EntryStates(vec![(R::BlendColor, held)]);
+        let view = frame_scene::LayerInputs::default();
+        let lighting = frame_scene::Lighting { words: [0; 30], root: Some(0.25f32.to_bits()) };
+        let shader = crate::object_lighting::ShaderValues { scalar_21: 0.5f32.to_bits(), ..Default::default() };
+        assert_eq!(writes.resolve(&imp, &entry, &view, Some(&lighting), shader).unwrap().value, 0x4003_4567);
+        assert!(writes.resolve(&imp, &entry, &view, None, shader).unwrap_err().contains("Scalar(37)"));
+        imp.engine_render_states.push(ExternalBinding { bytes: [0, 1, 0, 1] });
+        assert!(LayerBlendColor::take(&mut imp).unwrap_err().contains("unevaluated"));
     }
 
     #[test]
@@ -322,6 +479,33 @@ mod tests {
     }
 
     #[test]
+    fn a_world_layers_draw_keeps_its_blend_and_inherits_what_it_leaves() {
+        use gfx::state::BlendFactor;
+        let alpha = own(&[
+            (R::AlphaBlendEnable, 1),
+            (R::SrcBlend, BlendFactor::SrcAlpha.xbox_value()),
+            (R::DestBlend, BlendFactor::InvSrcAlpha.xbox_value()),
+        ]);
+        assert!(resolve_scene(&alpha, &entry(), None).unwrap_err().contains("blends"), "layer 3's refuse it");
+        let s = resolve_layer(&alpha, &entry(), None).unwrap();
+        let blend = s.blend.expect("its blend");
+        assert_eq!((blend.color.src_factor, blend.color.dst_factor), (wgpu::BlendFactor::SrcAlpha, wgpu::BlendFactor::OneMinusSrcAlpha));
+        assert_eq!(blend.color.operation, wgpu::BlendOperation::Add, "the device's op");
+        assert_eq!(s.blend_color(), wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }, "the device's colour");
+        // Blending inherited from the device, with the device's factors.
+        let inherited = resolve_layer(&[], &EntryStates(entry().0.into_iter().map(|(t, v)| (t, if t == R::AlphaBlendEnable { 1 } else { v })).collect()), None).unwrap();
+        let blend = inherited.blend.expect("the device's blend");
+        assert_eq!((blend.color.src_factor, blend.color.dst_factor), (wgpu::BlendFactor::One, wgpu::BlendFactor::Zero));
+        // A factor that does not read refuses it.
+        let mut unread = entry();
+        unread.0.retain(|(t, _)| *t != R::BlendOp);
+        assert!(resolve_layer(&own(&[(R::AlphaBlendEnable, 1)]), &unread, None).unwrap_err().contains("BlendOp"));
+        // No blend: none, and no constant.
+        let opaque = resolve_layer(&[], &entry(), None).unwrap();
+        assert_eq!((opaque.blend, opaque.blend_constant), (None, [0; 4]));
+    }
+
+    #[test]
     fn a_field_that_cannot_be_established_refuses_the_draw() {
         let mut e = entry();
         e.0.retain(|(t, _)| *t != R::CullMode);
@@ -346,7 +530,9 @@ mod tests {
         assert!(resolve(&[], &with(R::StencilEnable, 1), None).unwrap_err().contains("stencil"));
         assert!(resolve(&[], &with(R::FogEnable, 1), None).is_err());
         assert!(resolve_scene(&[], &with(R::FogEnable, 1), None).is_ok());
-        assert!(resolve(&[], &with(R::AlphaBlendEnable, 1), None).unwrap_err().contains("blends"));
+        assert_eq!(resolve(&[], &with(R::AlphaBlendEnable, 1), None).unwrap().blend, None);
+        let nonzero = own(&[(R::StencilEnable, 1), (R::StencilRef, 17)]);
+        assert_eq!(resolve_scene(&nonzero, &entry(), None).unwrap().stencil.reference, 17);
         assert!(resolve(&own(&[(R::ZEnable, DepthBufferMode::Z.xbox_value())]), &entry(), None).unwrap_err().contains("Z-buffered"));
         assert!(resolve(&[], &with(R::ZEnable, DepthBufferMode::Z.xbox_value()), None).is_ok(), "inherited: the device's mode, checked by the host");
         let off = resolve(&[], &with(R::ZEnable, DepthBufferMode::Disabled.xbox_value()), None).unwrap();

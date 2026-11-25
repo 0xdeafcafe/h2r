@@ -7,7 +7,7 @@ use crate::{bundle, BotData, BundleSpec};
 
 const USAGE: &str = "usage: h2 host bundle --disc <iso|dir> --out <dir>
                       [--stripped-maps <dir>] [--sim-stores <dir>] [--data <dir> | --no-bots]
-                      [--image <dir>] [--force] [--zstd-level 1..=21]
+                      [--image <dir>] [--no-firefight] [--force] [--zstd-level 1..=21]
 
 Writes <out>/host-data.tar.zst — the files a multiplayer host reads off
 the DVD (default.xbe, mainmenu/shared/single_player_shared and every
@@ -21,6 +21,14 @@ game write: maps whose files are missing or stale are built there first,
 as `h2 bots nav all` does. --data defaults to the data root `h2 play`
 uses. --no-bots leaves the bot data out; a host then has none for a sim
 match, and a light host builds each map's mesh when it is first played.
+
+Every multiplayer map's Firefight kit is built from the disc, as
+`h2 firefight kit` builds it, and carried as firefight/firefight-<map>/
+with firefight/kits.json naming each map's package. A map the kit refuses
+(no headroom, too few drops) is left without one and named. A kit's base
+map comes from the disc even when --stripped-maps has a copy of it: the
+kit's patch is bound to the disc map. --no-firefight leaves the kits out;
+a host then refuses Firefight matches.
 
 --image adds the Linux game module a dedicated host runs: libh2game.so
 and libh2game.so.stamp from <dir> (deploy/host/build.sh --module stages
@@ -60,6 +68,15 @@ pub fn bundle_cmd(args: Vec<String>) -> Result<()> {
         unknown = out.unknown_skipped,
     );
     println!("host-data: bot nav data for {} multiplayer maps", out.nav_maps);
+    if spec.firefight {
+        println!(
+            "host-data: Firefight kits for {} multiplayer maps ({} from the disc, not stripped)",
+            out.kits, out.kit_bases_unstripped
+        );
+        for (map, why) in &out.kits_refused {
+            println!("host-data: no Firefight kit for {map}: {why}");
+        }
+    }
     if let Some(dir) = spec.image.as_ref().filter(|_| out.image) {
         println!("host-data: game module from {}", dir.display());
     } else {
@@ -82,6 +99,7 @@ fn parse_args(args: &[String]) -> Result<Option<BundleSpec>, String> {
     use std::path::PathBuf;
     let (mut disc, mut out, mut stripped, mut force, mut level) = (None, None, None, false, 3);
     let (mut sim_stores, mut data, mut no_bots, mut image) = (None, None, false, None);
+    let mut firefight = cfg!(feature = "firefight");
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -104,6 +122,7 @@ fn parse_args(args: &[String]) -> Result<Option<BundleSpec>, String> {
                 image = Some(PathBuf::from(it.next().ok_or("--image needs a directory")?));
             }
             "--no-bots" => no_bots = true,
+            "--no-firefight" => firefight = false,
             "--force" => force = true,
             "--zstd-level" => {
                 let raw = it.next().ok_or("--zstd-level needs a number")?;
@@ -125,7 +144,7 @@ fn parse_args(args: &[String]) -> Result<Option<BundleSpec>, String> {
         dir: bots::cache::dir(&data.unwrap_or_else(content::store::default_data_root)),
         build: true,
     });
-    Ok(Some(BundleSpec { disc, out, stripped, sim_stores, bots, image, force, zstd_level: level }))
+    Ok(Some(BundleSpec { disc, out, stripped, sim_stores, bots, image, firefight, force, zstd_level: level }))
 }
 
 #[cfg(test)]
@@ -154,6 +173,10 @@ mod tests {
         assert_eq!(bots.dir, bots::cache::dir(&content::store::default_data_root()));
         assert!(bots.build);
         assert!(spec.image.is_none());
+        // Firefight kits by default, where the builder is compiled in.
+        assert_eq!(spec.firefight, cfg!(feature = "firefight"));
+        let spec = parse_args(&args(&["--disc", "d", "--out", "o", "--no-firefight"])).unwrap().unwrap();
+        assert!(!spec.firefight);
     }
 
     #[test]

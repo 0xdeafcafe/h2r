@@ -176,7 +176,17 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let target = opts
         .seek
         .or_else(|| view.and_then(|v| v.tick.map(u64::from)))
-        .unwrap_or_else(|| opts.range.map_or(0, |[start, _]| start));
+        .unwrap_or_else(|| {
+            // A game cut from a session's tape opens at its game's start.
+            let opening = || {
+                if opts.prepare {
+                    0
+                } else {
+                    boot::theater::autorecord::opening_tick(&header, reader.front.as_ref())
+                }
+            };
+            opts.range.map_or_else(opening, |[start, _]| start)
+        });
     if let Some([start, end]) = opts.range {
         ensure!((start..end).contains(&target), "seek outside film clip");
     }
@@ -325,7 +335,7 @@ fn child_with_start(
         && film.header.version >= 2
         && launch.source != Some(agent_proto::theater::SeekRoute::Boot)
     {
-        let mut track = film::blam::TrackReader::open(&opts.film)?;
+        let mut track = film::blam::TrackReader::open_with_film(&opts.film)?;
         if compatibility == film::image::ImageMatch::FromBoot {
             track.disable_embedded_keyframes();
         }
@@ -413,7 +423,8 @@ fn child_with_start(
     #[cfg(feature = "desktop")]
     if let Some(capture) = capture {
         let observer = film.header.version >= 2 && local_gpu != Some(true);
-        return run(export::host(capture, camera, observer, host_bots)?, None);
+        let lod = settings.handle(boot::setting_defs::LOD_DISTANCE.key);
+        return run(export::host(capture, camera, observer, host_bots, lod)?, None);
     }
     if opts.every == 0 {
         let host = boot::Host { host_light: true, host_bots, ..Default::default() };
@@ -428,8 +439,9 @@ fn child_with_start(
                     gfx: Some(boot::d3d_glue::offscreen_film_reference()?),
                     gfx_view: Some(boot::run_opts::DisplayView {
                         backend: None,
-                        native_size: retail.clone(),
+                        native_target: std::sync::Arc::new(|| settings::NativeTarget::windowed(boot::setting_defs::GUEST_FRAME)),
                         viewer_output: Some(retail),
+                        viewer_lod: None,
                         display_size: std::sync::Arc::new(|size| size),
                     }),
                     ..host
@@ -490,7 +502,7 @@ fn child_with_start(
             if let Some(input) = window.take_input() {
                 controller.attach_input(input);
             }
-            let native: boot::run_opts::NativeSize = std::sync::Arc::new(window.native_size());
+            let native: boot::run_opts::NativeTarget = std::sync::Arc::new(window.native_target());
             let raster = boot::d3d_glue::output_size(Some(&settings), native.clone())?;
             let film_media = export::media(
                 media_options,
@@ -537,8 +549,9 @@ fn child_with_start(
                     Some(d3d::GfxBackend::new(window.gfx_context())),
                     Some(boot::run_opts::DisplayView {
                         backend: Some(d3d::GfxBackend::new(window.gfx_context()).on_present(present)),
-                        native_size: native,
+                        native_target: native,
                         viewer_output: Some(raster),
+                        viewer_lod: Some(settings.handle(boot::setting_defs::LOD_DISTANCE.key)),
                         display_size: std::sync::Arc::new(window.display_size()),
                     }),
                     None,

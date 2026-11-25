@@ -15,6 +15,8 @@ pub enum ScoreReason {
     Kill,
     /// A second player who damaged the actor in its last five seconds.
     Assist,
+    /// A kill of a player on the other team (two teams only).
+    PlayerKill,
 }
 
 /// Points for one kill of `class`, or `None` for a class without a score.

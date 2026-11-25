@@ -1,34 +1,36 @@
 //! The Resolution picker takes a snapshot of the drawable on open. The
 //! selected Native value continues to follow the drawable as it changes.
 
-use settings::Resolution;
+use settings::{NativeTarget, Resolution};
 
 /// Space in the model's locale table for the current row value and its NUL.
 /// The row rewrites this slot when the drawable or selection changes.
 pub(crate) const VALUE_SLOT: &str = "                                ";
 
-pub(crate) fn label(choice: Resolution, native: (u32, u32)) -> String {
+pub(crate) fn label(choice: Resolution, native: NativeTarget) -> String {
     match choice {
-        Resolution::Native => format!("Native ({}x{})", native.0, native.1),
+        Resolution::Native => {
+            let (w, h) = choice.size(native);
+            format!("Native ({w}x{h})")
+        }
         _ => choice.to_string(),
     }
 }
 
-/// The narrow value column shows the physical Native size. The picker's
-/// help has room for the automatic raster and the full-size alternative.
-pub(crate) fn help(native: (u32, u32)) -> String {
+/// Explain the full-size alternative when Native uses the fullscreen budget.
+pub(crate) fn help(native: NativeTarget) -> String {
     let (w, h) = Resolution::Native.size(native);
-    if (w, h) == native {
+    let (full_w, full_h) = native.viewport;
+    if (w, h) == native.viewport {
         return crate::setting_defs::RESOLUTION.help.into();
     }
     format!(
-        "Native renders at {w}x{h}. Pick {}x{} for full resolution.",
-        native.0, native.1
+        "Native renders at {w}x{h}. Pick {full_w}x{full_h} for full resolution."
     )
 }
 
-pub(crate) fn choices(native: (u32, u32), current: Resolution) -> Vec<Resolution> {
-    let (w, h) = native;
+pub(crate) fn choices(native: NativeTarget, current: Resolution) -> Vec<Resolution> {
+    let (w, h) = native.viewport;
     let mut sizes = Vec::new();
     if w > 0 && h > 0 {
         // Use familiar widths on 16:10 and 4:3 displays (1280x800,
@@ -71,7 +73,8 @@ mod tests {
 
     #[test]
     fn studio_display_has_native_then_five_standard_sizes() {
-        let native = (5120, 2880);
+        let windowed = NativeTarget::windowed((5120, 2880));
+        let native = NativeTarget { fullscreen: true, ..windowed };
         let labels: Vec<_> = choices(native, Resolution::Native)
             .into_iter()
             .map(|r| label(r, native))
@@ -79,7 +82,7 @@ mod tests {
         assert_eq!(
             labels,
             [
-                "Native (5120x2880)",
+                "Native (3840x2160)",
                 "1280x720",
                 "1920x1080",
                 "2560x1440",
@@ -91,7 +94,8 @@ mod tests {
             help(native),
             "Native renders at 3840x2160. Pick 5120x2880 for full resolution."
         );
-        assert_eq!(help((3440, 1440)), crate::setting_defs::RESOLUTION.help);
+        assert_eq!(label(Resolution::Native, windowed), "Native (5120x2880)");
+        assert_eq!(help(windowed), crate::setting_defs::RESOLUTION.help);
         assert!(label(Resolution::Native, native).len() < VALUE_SLOT.len());
     }
 
@@ -105,11 +109,12 @@ mod tests {
             (801, 603),
             (300, 800),
         ] {
-            let sizes = choices(native, Resolution::Native);
+            let target = NativeTarget::windowed(native);
+            let sizes = choices(target, Resolution::Native);
             assert_eq!(sizes[0], Resolution::Native);
-            assert_eq!(sizes.last().unwrap().size(native), native);
+            assert_eq!(sizes.last().unwrap().size(target), native);
             for size in &sizes[1..] {
-                let (w, h) = size.size(native);
+                let (w, h) = size.size(target);
                 assert!(w <= native.0 && h <= native.1);
                 let error =
                     (i64::from(w) * i64::from(native.1) - i64::from(h) * i64::from(native.0)).abs();
@@ -117,6 +122,6 @@ mod tests {
             }
         }
         let custom = Resolution::Fixed(1278, 800);
-        assert_eq!(choices((800, 600), custom).last(), Some(&custom));
+        assert_eq!(choices(NativeTarget::windowed((800, 600)), custom).last(), Some(&custom));
     }
 }

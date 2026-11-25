@@ -7,12 +7,13 @@ use std::collections::BTreeSet;
 use rules::builtin::{self, builtin, examples};
 use rules::caps;
 use rules::fake::FakeGame;
-use rules::ir::Op;
+use rules::ir::{Op, OptionValue};
 use rules::vm::{Arg, Placed};
 use rules::{Fired, Input, Ir, Vm, build, compile};
 
 const BALL: &str = "objects/weapons/multiplayer/ball/ball";
 const FLAG: &str = "objects/weapons/multiplayer/flag/flag";
+const BOMB: &str = "objects/weapons/multiplayer/assault_bomb/assault_bomb";
 
 fn player(p: u8) -> Arg {
     Arg::Player(Some(p))
@@ -36,6 +37,23 @@ fn start(src: &str, g: &mut FakeGame, seed: u64) -> Vm {
     let (ir, report) = build(src).unwrap();
     assert!(report.fits());
     let options = ir.default_options();
+    let mut vm = Vm::new(ir, options, seed).unwrap();
+    vm.begin_tick(1);
+    assert_eq!(vm.fire(g, Input::RoundStart), Fired::Ran);
+    vm
+}
+
+/// [`start`] with the named options packed, on a game with no carrier slot:
+/// the record is the script index's, whose type area is zero.
+fn start_scripted(src: &str, g: &mut FakeGame, seed: u64, given: &[(&str, i64)]) -> Vm {
+    g.carrier = rules::SCRIPT_INDEX;
+    let (ir, report) = build(src).unwrap();
+    assert!(report.fits());
+    let given: Vec<(String, OptionValue)> = given
+        .iter()
+        .map(|(k, v)| (k.to_string(), OptionValue::Int(*v)))
+        .collect();
+    let options = ir.pack_options(&given).unwrap();
     let mut vm = Vm::new(ir, options, seed).unwrap();
     vm.begin_tick(1);
     assert_eq!(vm.fire(g, Input::RoundStart), Fired::Ran);
@@ -67,7 +85,7 @@ fn unhostable_entries(ir: &Ir) -> BTreeSet<&'static str> {
             Op::Call { entry, .. } => caps::entry(entry, ir.header.api_version),
             _ => None,
         })
-        .filter(|e| !e.hostable_on(ir.header.carrier))
+        .filter(|e| !e.hostable_on(ir.header.engine()))
         .map(caps::spelled)
         .collect()
 }
@@ -114,12 +132,12 @@ fn each_header_names_exactly_the_entries_a_host_lacks() {
         assert_eq!(listed_entries(src), used, "{name}");
         assert_eq!(rules::verify::unhostable(&ir).is_none(), used.is_empty(), "{name}");
     }
-    // Slayer, VIP, Bounce Practice and Superbounce need nothing a host
+    // Slayer, VIP, Bounce Hunt and Superbounce need nothing a host
     // lacks.
     for src in [
         builtin::SLAYER,
         builtin::VIP,
-        builtin::BOUNCE_PRACTICE,
+        builtin::BOUNCE_HUNT,
         builtin::SUPERBOUNCE,
     ] {
         assert!(unhostable_entries(&compile(src).unwrap()).is_empty());
@@ -132,7 +150,7 @@ fn each_header_names_exactly_the_entries_a_host_lacks() {
 fn a_set_argument_names_its_member() {
     let src = r#"
 rules "T" 1
-carrier slayer
+type slayer
 global var n: int = 0
 on round_start { n = count(players p where p.team == team 1) }
 "#;
@@ -146,7 +164,7 @@ on round_start { n = count(players p where p.team == team 1) }
 
     let bad = r#"
 rules "T" 1
-carrier slayer
+type slayer
 on round_start { for each pick(players p, 1) q { score(q, 1) } }
 "#;
     assert!(compile(bad).is_err());
@@ -156,7 +174,7 @@ on round_start { for each pick(players p, 1) q { score(q, 1) } }
 fn objectives_are_visited_by_handle_and_bounded_at_eight() {
     let src = r#"
 rules "T" 1
-carrier slayer
+type slayer
 global var first_seen: object? = none
 global var n: int = 0
 on round_start {
@@ -187,7 +205,7 @@ fn salted_object_datums_round_trip_through_the_vm() {
     const B: u32 = 0x8000_0001;
     let src = r#"
 rules "T" 1
-carrier slayer
+type slayer
 global var first_seen: object? = none
 global var carried: object? = none
 global var n: int = 0
@@ -226,8 +244,13 @@ on pickup(p, o) {
 
 // ---- Oddball ----
 
+/// An object the weapon system made, in the registry and carried by none.
+fn made(g: &mut FakeGame, o: u32) {
+    g.objectives.insert(o, None);
+}
+
 #[test]
-fn oddball_scores_time_held_and_resets_a_dropped_ball() {
+fn oddball_makes_its_balls_one_at_a_time_and_scores_time_held() {
     let mut g = FakeGame::with_players(2);
     g.labelled.insert(
         "oddball_spawn".into(),
@@ -236,34 +259,66 @@ fn oddball_scores_time_held_and_resets_a_dropped_ball() {
             Placed { placement: 1, object: 41 },
         ],
     );
+    // The type area's ball count is zero on the script index, and the
+    // record's own field is ignored: the script's option says how many.
     g.variant.insert("oddball_ball_count".into(), 1);
-    let mut vm = start(builtin::ODDBALL, &mut g, 3);
+    let mut vm = start_scripted(builtin::ODDBALL, &mut g, 3, &[("ball_count", 2)]);
+    // The first ball is made at the round's start, at the first spawn, and
+    // the second once the first is seen, at the second.
     vm.flush_queue(&mut g);
-    // One ball, at the first spawn.
     assert_eq!(
         g.calls_to("spawn_objective"),
         vec![&vec![Arg::Tag(Some(BALL.into())), object(40), Arg::Team(None)]]
     );
+    made(&mut g, 100);
+    ticks(&mut vm, &mut g, 2, 1);
+    vm.flush_queue(&mut g);
+    assert_eq!(
+        g.calls_to("spawn_objective"),
+        vec![
+            &vec![Arg::Tag(Some(BALL.into())), object(40), Arg::Team(None)],
+            &vec![Arg::Tag(Some(BALL.into())), object(41), Arg::Team(None)],
+        ]
+    );
+    made(&mut g, 101);
+    ticks(&mut vm, &mut g, 3, 1);
+    vm.flush_queue(&mut g);
+    assert_eq!(g.calls_to("spawn_objective").len(), 2);
 
-    g.objectives.insert(100, None);
+    // Held, a ball scores each second.
     vm.fire(&mut g, Input::Pickup(1, 100));
     g.objectives.insert(100, Some(1));
     assert_eq!(g.calls_to("role_traits"), vec![&vec![player(1), Arg::Bool(true)]]);
-    ticks(&mut vm, &mut g, 2, 29);
+    ticks(&mut vm, &mut g, 4, 29);
     assert!(scores(&g).is_empty());
-    ticks(&mut vm, &mut g, 31, 1);
+    ticks(&mut vm, &mut g, 33, 1);
     assert_eq!(scores(&g), vec![(1, 1)]);
 
-    // Dropped: no more points, and the ball returns after the reset time.
-    vm.fire(&mut g, Input::Drop(1, 100));
-    g.objectives.insert(100, None);
-    ticks(&mut vm, &mut g, 32, 30 * 30 - 1);
+    // The second ball is picked up and dropped: no points, and it returns
+    // after the reset time, by the script, to its own spawn.
+    vm.fire(&mut g, Input::Pickup(0, 101));
+    vm.fire(&mut g, Input::Drop(0, 101));
+    g.objectives.insert(101, None);
+    ticks(&mut vm, &mut g, 34, 30 * 30 - 1);
     vm.flush_queue(&mut g);
+    assert!(g.calls_to("delete").is_empty());
+    ticks(&mut vm, &mut g, 34 + 899, 1);
+    vm.flush_queue(&mut g);
+    assert_eq!(g.calls_to("delete"), vec![&vec![object(101)]]);
+    assert_eq!(
+        g.calls_to("spawn_objective").last(),
+        Some(&&vec![Arg::Tag(Some(BALL.into())), object(41), Arg::Team(None)])
+    );
     assert!(g.calls_to("reset_objective").is_empty());
-    ticks(&mut vm, &mut g, 32 + 899, 1);
+    assert_eq!(scores(&g).first(), Some(&(1, 1)));
+
+    // The old object may stay in the registry; it is ignored, and the
+    // replacement takes the spawn the old one had.
+    made(&mut g, 102);
+    ticks(&mut vm, &mut g, 934, 2000);
     vm.flush_queue(&mut g);
-    assert_eq!(g.calls_to("reset_objective"), vec![&vec![object(100)]]);
-    assert_eq!(scores(&g), vec![(1, 1)]);
+    assert_eq!(g.calls_to("delete"), vec![&vec![object(101)]]);
+    assert_eq!(g.calls_to("spawn_objective").len(), 3);
 }
 
 // ---- Juggernaut ----
@@ -302,6 +357,38 @@ fn juggernaut_passes_to_its_killer_and_only_it_scores() {
     assert_eq!(scores(&g), vec![(j, 1), (k, 1)]);
 }
 
+#[test]
+fn script_index_carries_the_crown_and_its_trait_choices_across_a_restore() {
+    let source = builtin::JUGGERNAUT.replace(
+        "type juggernaut",
+        r#"type juggernaut
+option role_active_camo: bool = true "Camo"
+option role_extra_damage: bool = false "Damage""#,
+    );
+    let mut g = FakeGame::with_players(3);
+    g.carrier = rules::SCRIPT_INDEX;
+    let mut vm = start(&source, &mut g, 11);
+    let holder = vm.global("juggernaut").unwrap() as u8;
+    let killer = (holder + 1) % 3;
+    assert!(vm.has_role(holder));
+    assert!(!vm.has_role(killer));
+    assert_eq!(vm.role_trait(1), Some(true));
+    assert_eq!(vm.role_trait(2), Some(false));
+    assert_eq!(vm.role_trait(3), Some(false));
+    assert_eq!(vm.role_trait(4), None);
+    vm.fire(&mut g, Input::Kill { victim: holder, killer: Some(killer) });
+    let ext = rules::RulesExt::decode(&vm.ext().encode()).unwrap();
+    let mut vm = Vm::resume(vm.ir().clone(), vm.ir().default_options(), ext).unwrap();
+    assert!(!vm.has_role(holder));
+    assert!(vm.has_role(killer));
+    vm.fire(&mut g, Input::Quit(killer));
+    assert!(!vm.has_role(killer));
+    vm.fire(&mut g, Input::RoundStart);
+    assert_ne!(vm.ext().role_mask, 0);
+    vm.fire(&mut g, Input::RoundEnd);
+    assert_eq!(vm.ext().role_mask, 0);
+}
+
 // ---- King of the Hill ----
 
 #[test]
@@ -321,7 +408,10 @@ fn king_scores_time_on_the_hill_unless_contested() {
     g.inside.insert((0, 500));
     // Player 1 stands on hill 1, which is not in play.
     g.inside.insert((1, 510));
-    let mut vm = start(builtin::KING, &mut g, 5);
+    // A stock record's type area would move the hill every second; the
+    // script index's is zero, so only the script's own option counts.
+    g.variant.insert("king_moving_hill".into(), 1);
+    let mut vm = start_scripted(builtin::KING, &mut g, 5, &[("move_time", 0)]);
     assert_eq!(vm.global("hills"), Some(2));
     ticks(&mut vm, &mut g, 2, 30);
     assert_eq!(scores(&g), vec![(0, 1)]);
@@ -335,15 +425,40 @@ fn king_scores_time_on_the_hill_unless_contested() {
     g.players.get_mut(&1).unwrap().team = 0;
     ticks(&mut vm, &mut g, 92, 30);
     assert_eq!(scores(&g), vec![(0, 1), (0, 1), (1, 1)]);
+    // Hill 0 stayed in play throughout, and the script made no call into a
+    // retail objective registry.
+    assert_eq!(vm.global("hill"), Some(0));
+    assert!(g.calls_to("register_objective").is_empty());
+}
+
+#[test]
+fn king_moves_the_hill_on_its_own_option() {
+    let mut g = FakeGame::with_players(1);
+    g.labelled.insert(
+        "hill_corner".into(),
+        vec![
+            Placed { placement: 0, object: 500 },
+            Placed { placement: 1, object: 510 },
+        ],
+    );
+    g.numbers.extend([(500, 0), (510, 1)]);
+    let mut vm = start_scripted(builtin::KING, &mut g, 5, &[("move_time", 2)]);
+    assert_eq!(vm.global("hill"), Some(0));
+    // Two seconds are 60 ticks at 30 ticks a second (`caps::TICKS_PER_SECOND`);
+    // the timer set at tick 1 runs out at tick 61.
+    ticks(&mut vm, &mut g, 2, 57);
+    assert_eq!(vm.global("hill"), Some(0));
+    ticks(&mut vm, &mut g, 59, 5);
+    assert_eq!(vm.global("hill"), Some(1));
 }
 
 // ---- CTF and Assault ----
 
-#[test]
-fn ctf_capture_scores_and_returns_the_flag() {
+/// Two teams' flag stands (objects 10 and 11) and a game on the script
+/// index, whose type area is zero.
+fn ctf_game() -> FakeGame {
     let mut g = FakeGame::with_players(2);
     g.players.get_mut(&1).unwrap().team = 1;
-    g.variant.insert("engine".into(), 1);
     g.variant.insert("team_play".into(), 1);
     g.labelled.insert(
         "ctf_flag_spawn".into(),
@@ -353,69 +468,167 @@ fn ctf_capture_scores_and_returns_the_flag() {
         ],
     );
     g.object_teams.extend([(10, 0), (11, 1)]);
-    let mut vm = start(builtin::CTF, &mut g, 2);
+    g
+}
+
+fn flag_at(o: u32, team: u8, g: &mut FakeGame) {
+    g.objectives.insert(o, None);
+    g.object_teams.insert(o, team);
+}
+
+fn made_at(tag: &str, at: u32, team: Option<u8>) -> Vec<Arg> {
+    vec![Arg::Tag(Some(tag.into())), object(at), Arg::Team(team)]
+}
+
+#[test]
+fn ctf_capture_scores_and_returns_the_flag() {
+    let mut g = ctf_game();
+    // The record's own fields are ignored on the script index.
+    g.variant.insert("ctf_touch_return".into(), 1);
+    let mut vm = start_scripted(builtin::CTF, &mut g, 2, &[]);
     vm.flush_queue(&mut g);
     assert_eq!(
         g.calls_to("spawn_objective"),
-        vec![
-            &vec![Arg::Tag(Some(FLAG.into())), object(10), Arg::Team(Some(0))],
-            &vec![Arg::Tag(Some(FLAG.into())), object(11), Arg::Team(Some(1))],
-        ]
+        vec![&made_at(FLAG, 10, Some(0)), &made_at(FLAG, 11, Some(1))]
     );
 
     // Team 1's flag is object 21; player 0 takes it.
-    g.objectives.insert(21, None);
-    g.object_teams.insert(21, 1);
+    flag_at(21, 1, &mut g);
     vm.fire(&mut g, Input::Pickup(0, 21));
     g.objectives.insert(21, Some(0));
     assert_eq!(g.calls_to("role_traits"), vec![&vec![player(0), Arg::Bool(true)]]);
     ticks(&mut vm, &mut g, 2, 5);
     assert!(scores(&g).is_empty());
 
-    // At its own flag's spawn: a capture, and the flag goes home.
+    // At its own flag's spawn: a capture, and the flag goes home: the old
+    // object is removed and another is made at team 1's stand.
     g.inside.insert((0, 10));
     ticks(&mut vm, &mut g, 7, 1);
     vm.flush_queue(&mut g);
     assert_eq!(scores(&g), vec![(0, 1)]);
-    assert_eq!(g.calls_to("reset_objective"), vec![&vec![object(21)]]);
+    assert_eq!(g.calls_to("delete"), vec![&vec![object(21)]]);
+    assert_eq!(g.calls_to("spawn_objective").last(), Some(&&made_at(FLAG, 11, Some(1))));
+    assert!(g.calls_to("reset_objective").is_empty());
     assert_eq!(g.calls_to("role_traits").last(), Some(&&vec![player(0), Arg::Bool(false)]));
-    g.inside.clear();
+
+    // The removed object may stay in the registry still held; it scores
+    // nothing more.
+    ticks(&mut vm, &mut g, 8, 10);
+    vm.flush_queue(&mut g);
+    assert_eq!(scores(&g), vec![(0, 1)]);
+    assert_eq!(g.calls_to("delete").len(), 1);
+}
+
+#[test]
+fn ctf_returns_a_dropped_flag_by_time_and_by_touch() {
+    let mut g = ctf_game();
+    let mut vm = start_scripted(
+        builtin::CTF,
+        &mut g,
+        2,
+        &[("reset_time", 2), ("touch_return", 1)],
+    );
+    vm.flush_queue(&mut g);
 
     // Dropped, it returns after the reset time.
-    g.variant.insert("ctf_reset_time".into(), 2);
+    flag_at(21, 1, &mut g);
     vm.fire(&mut g, Input::Pickup(0, 21));
     vm.fire(&mut g, Input::Drop(0, 21));
     g.objectives.insert(21, None);
-    ticks(&mut vm, &mut g, 8, 59);
+    ticks(&mut vm, &mut g, 2, 59);
     vm.flush_queue(&mut g);
-    assert_eq!(g.calls_to("reset_objective").len(), 1);
-    ticks(&mut vm, &mut g, 67, 1);
+    assert!(g.calls_to("delete").is_empty());
+    ticks(&mut vm, &mut g, 61, 1);
     vm.flush_queue(&mut g);
-    assert_eq!(g.calls_to("reset_objective").len(), 2);
+    assert_eq!(g.calls_to("delete"), vec![&vec![object(21)]]);
+    assert_eq!(g.calls_to("spawn_objective").last(), Some(&&made_at(FLAG, 11, Some(1))));
+    // It is not returned twice.
+    ticks(&mut vm, &mut g, 62, 120);
+    vm.flush_queue(&mut g);
+    assert_eq!(g.calls_to("delete").len(), 1);
 
     // With touch return, its own team's touch returns it at once.
-    g.variant.insert("ctf_touch_return".into(), 1);
+    flag_at(22, 1, &mut g);
+    vm.fire(&mut g, Input::Pickup(0, 22));
+    vm.fire(&mut g, Input::Drop(0, 22));
+    g.objectives.insert(22, None);
+    vm.fire(&mut g, Input::Pickup(1, 22));
+    vm.flush_queue(&mut g);
+    assert_eq!(g.calls_to("delete"), vec![&vec![object(21)], &vec![object(22)]]);
+    assert_eq!(g.calls_to("spawn_objective").len(), 4);
+    assert!(scores(&g).is_empty());
+
+    // Without it, the touch changes nothing.
+    let mut g = ctf_game();
+    let mut vm = start_scripted(builtin::CTF, &mut g, 2, &[("reset_time", 0)]);
+    flag_at(21, 1, &mut g);
     vm.fire(&mut g, Input::Pickup(0, 21));
     vm.fire(&mut g, Input::Drop(0, 21));
     vm.fire(&mut g, Input::Pickup(1, 21));
+    ticks(&mut vm, &mut g, 2, 1000);
     vm.flush_queue(&mut g);
-    assert_eq!(g.calls_to("reset_objective").len(), 3);
+    assert!(g.calls_to("delete").is_empty());
+}
+
+#[test]
+fn ctf_flag_at_home_needs_the_teams_own_flag_at_its_stand() {
+    let mut g = ctf_game();
+    let mut vm = start_scripted(
+        builtin::CTF,
+        &mut g,
+        2,
+        &[("flag_at_home", 1), ("touch_return", 1)],
+    );
+    // Team 0's flag is out with player 1; player 0 holds team 1's flag at
+    // team 0's stand, and cannot capture.
+    flag_at(20, 0, &mut g);
+    flag_at(21, 1, &mut g);
+    vm.fire(&mut g, Input::Pickup(1, 20));
+    g.objectives.insert(20, Some(1));
+    vm.fire(&mut g, Input::Pickup(0, 21));
+    g.objectives.insert(21, Some(0));
+    g.inside.insert((0, 10));
+    ticks(&mut vm, &mut g, 2, 5);
+    assert!(scores(&g).is_empty());
+
+    // Dropped and touched by team 0, the flag returns, and the capture scores.
+    vm.fire(&mut g, Input::Drop(1, 20));
+    g.objectives.insert(20, None);
+    vm.fire(&mut g, Input::Pickup(0, 20));
+    g.objectives.insert(20, None);
+    ticks(&mut vm, &mut g, 7, 1);
+    vm.flush_queue(&mut g);
     assert_eq!(scores(&g), vec![(0, 1)]);
+    assert_eq!(g.calls_to("delete"), vec![&vec![object(20)], &vec![object(21)]]);
+}
+
+#[test]
+fn ctf_with_one_flag_makes_only_the_defenders() {
+    let mut g = ctf_game();
+    let mut vm = start_scripted(builtin::CTF, &mut g, 2, &[("flag_type", 1)]);
+    vm.flush_queue(&mut g);
+    // The defender swaps at each round start, from team 1 to team 0 first.
+    assert_eq!(g.calls_to("spawn_objective"), vec![&made_at(FLAG, 10, Some(0))]);
+    assert_eq!(vm.global("defender"), Some(0));
+    vm.fire(&mut g, Input::RoundStart);
+    vm.flush_queue(&mut g);
+    assert_eq!(g.calls_to("spawn_objective").last(), Some(&&made_at(FLAG, 11, Some(1))));
+    assert_eq!(g.calls_to("spawn_objective").len(), 2);
 }
 
 #[test]
 fn assault_arms_a_bomb_on_the_enemy_plate() {
     let mut g = FakeGame::with_players(2);
     g.players.get_mut(&1).unwrap().team = 1;
-    g.variant.insert("engine".into(), 9);
-    g.variant.insert("assault_arm_time".into(), 1);
     g.labelled.insert("assault_bomb_spawn".into(), vec![Placed { placement: 0, object: 10 }]);
     g.labelled.insert("assault_bomb_return".into(), vec![Placed { placement: 1, object: 12 }]);
     g.object_teams.extend([(10, 0), (12, 1)]);
-    let mut vm = start(builtin::ASSAULT, &mut g, 2);
+    let mut vm = start_scripted(builtin::ASSAULT, &mut g, 2, &[("arm_time", 1)]);
+    vm.flush_queue(&mut g);
+    assert_eq!(g.calls_to("spawn_objective"), vec![&made_at(BOMB, 10, Some(0))]);
     // Player 0 carries team 0's bomb onto team 1's plate.
+    flag_at(30, 0, &mut g);
     g.objectives.insert(30, Some(0));
-    g.object_teams.insert(30, 0);
     vm.fire(&mut g, Input::Pickup(0, 30));
     g.inside.insert((0, 12));
     ticks(&mut vm, &mut g, 2, 29);
@@ -423,7 +636,46 @@ fn assault_arms_a_bomb_on_the_enemy_plate() {
     ticks(&mut vm, &mut g, 31, 1);
     vm.flush_queue(&mut g);
     assert_eq!(scores(&g), vec![(0, 1)]);
-    assert_eq!(g.calls_to("reset_objective"), vec![&vec![object(30)]]);
+    assert_eq!(g.calls_to("delete"), vec![&vec![object(30)]]);
+    assert_eq!(g.calls_to("spawn_objective").last(), Some(&&made_at(BOMB, 10, Some(0))));
+    assert!(g.calls_to("reset_objective").is_empty());
+}
+
+#[test]
+fn assault_with_one_bomb_is_neutral_and_armed_on_the_defenders_plate() {
+    let mut g = FakeGame::with_players(2);
+    g.players.get_mut(&1).unwrap().team = 1;
+    g.labelled.insert("assault_bomb_spawn".into(), vec![Placed { placement: 0, object: 14 }]);
+    g.labelled.insert(
+        "assault_bomb_return".into(),
+        vec![Placed { placement: 1, object: 12 }, Placed { placement: 2, object: 13 }],
+    );
+    g.object_teams.extend([(12, 0), (13, 1)]);
+    let mut vm = start_scripted(
+        builtin::ASSAULT,
+        &mut g,
+        2,
+        &[("flag_type", 1), ("arm_time", 1)],
+    );
+    vm.flush_queue(&mut g);
+    // One neutral bomb, and team 0 defends the first round.
+    assert_eq!(g.calls_to("spawn_objective"), vec![&made_at(BOMB, 14, None)]);
+    assert_eq!(vm.global("defender"), Some(0));
+    // The attacker, player 1, carries it onto the defenders' plate only.
+    flag_at(31, 0, &mut g);
+    g.object_teams.remove(&31);
+    vm.fire(&mut g, Input::Pickup(1, 31));
+    g.objectives.insert(31, Some(1));
+    g.inside.insert((1, 13));
+    ticks(&mut vm, &mut g, 2, 60);
+    assert!(scores(&g).is_empty());
+    g.inside.clear();
+    g.inside.insert((1, 12));
+    ticks(&mut vm, &mut g, 62, 31);
+    vm.flush_queue(&mut g);
+    assert_eq!(scores(&g), vec![(1, 1)]);
+    assert_eq!(g.calls_to("delete"), vec![&vec![object(31)]]);
+    assert_eq!(g.calls_to("spawn_objective").last(), Some(&&made_at(BOMB, 14, None)));
 }
 
 // ---- Territories ----
@@ -432,7 +684,9 @@ fn assault_arms_a_bomb_on_the_enemy_plate() {
 fn territories_held_score_each_interval() {
     let mut g = FakeGame::with_players(2);
     g.players.get_mut(&1).unwrap().team = 1;
-    g.variant.insert("territories_count".into(), 2);
+    // The type area's fields are zero on the script index; they are
+    // ignored, as the script's options say how many and how long.
+    g.variant.insert("territories_count".into(), 1);
     g.labelled.insert(
         "territory".into(),
         vec![
@@ -441,9 +695,17 @@ fn territories_held_score_each_interval() {
             Placed { placement: 2, object: 602 },
         ],
     );
-    let mut vm = start(builtin::TERRITORIES, &mut g, 4);
+    let mut vm = start_scripted(
+        builtin::TERRITORIES,
+        &mut g,
+        4,
+        &[("in_play", 2), ("contest_time", 1)],
+    );
+    // The script tracks its own territories: none is registered with the
+    // game, and the third is out of play.
+    assert!(g.calls_to("register_objective").is_empty());
     assert_eq!(
-        g.calls_to("register_objective"),
+        g.calls_to("show_area"),
         vec![&vec![object(600), Arg::Team(None)], &vec![object(601), Arg::Team(None)]]
     );
 
@@ -489,31 +751,89 @@ fn infection_switches_the_victims_team() {
 
 // ---- Superbounce ----
 
-/// A bounce at chain count `chain` by `player` off strip `spot`.
-fn bounce(player: u8, spot: u32, chain: u32, monster: bool) -> Input {
-    Input::Bounce {
+/// A landing the host judged a bounce, by `player` off strip `spot`,
+/// launching at `speed` world units a second.
+fn launch(player: u8, spot: u32, speed: i32) -> Input {
+    Input::Launch {
         player,
-        spot,
-        chain,
-        monster,
+        spot: Some(spot),
+        speed: rules::ty::fixed::from_int(speed),
     }
 }
 
+/// `n` launches in a run by `player`, the last at `last` units/s, the
+/// rest at 12: the `n`th bounce of a chain.
+fn chain_of(vm: &mut Vm, g: &mut FakeGame, player: u8, n: u32, last: i32) {
+    for i in 1..=n {
+        vm.fire(g, launch(player, 77, if i == n { last } else { 12 }));
+    }
+}
+
+/// The chain's scores as `chain_of` gives them: one score a launch.
+fn last_score(g: &FakeGame) -> i32 {
+    scores(g).last().map_or(0, |s| s.1)
+}
+
 #[test]
-fn superbounce_scores_bounces_only_by_their_chain() {
+fn superbounce_scores_bounces_only_by_the_chain_it_keeps() {
     let (ir, report) = build(builtin::SUPERBOUNCE).unwrap();
     assert!(report.fits());
     assert_eq!(ir.header.name, "Superbounce");
-    assert_eq!(ir.header.carrier, 2);
-    assert_eq!(ir.header.list, rules::ir::List::Tweakers);
+    assert_eq!(ir.header.engine(), 2);
+    assert_eq!(ir.header.game_type, rules::types::Type::Research);
     assert_eq!(ir.header.requires, ["hud.superbounce"]);
     // The options in the order the record packs them: the suicide penalty
     // (bit 0), bounce points raw 1 (bits 1 to 3), the Bounced penalty
-    // (bit 4), the Monster double (bit 5).
+    // (bit 4), the Monster double (bit 5); then the HUD's, which the host
+    // reads: the seam targets (bits 6 and 7, `likely` raw 1), velocity
+    // (bit 8), the fall alignment (bit 9), the miss info (bit 10), the
+    // medals (bit 11), the second bounce's targets (bit 12), the approach
+    // guide (bit 13) and the charge segments (bit 14), each on; then the
+    // Pogo Stick's, the host's too: the stick (bit 15, on) and its style
+    // (bits 16 and 17, `unsc` raw 0).
     let names: Vec<&str> = (0..ir.options.len()).map(|i| ir.option_name(i)).collect();
-    assert_eq!(names, ["suicide_costs", "bounce_points", "bounced_costs", "monster_double"]);
-    assert_eq!(ir.option_offsets(), [0, 1, 4, 5]);
-    assert_eq!(ir.default_options(), 1 | (1 << 1) | (1 << 4) | (1 << 5));
+    assert_eq!(
+        names,
+        [
+            "suicide_costs",
+            "bounce_points",
+            "bounced_costs",
+            "monster_double",
+            "targets",
+            "velocity",
+            "alignment",
+            "miss_info",
+            "medals",
+            "second_bounce",
+            "approach_guide",
+            "charge_segments",
+            "pogo",
+            "pogo_style"
+        ]
+    );
+    assert_eq!(ir.option_offsets(), [0, 1, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+    let scoring = 1 | (1 << 1) | (1 << 4) | (1 << 5);
+    let hud = (1 << 6) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11) | (1 << 12) | (1 << 13) | (1 << 14);
+    let pogo = 1 << 15;
+    assert_eq!(ir.default_options(), scoring | hud | pogo);
+    assert_eq!(ir.option_values(4), ["common", "likely", "all"]);
+    assert_eq!(ir.option_value(ir.default_options(), "targets"), Some(1));
+    assert_eq!(ir.option_value(scoring, "targets"), Some(0));
+    assert_eq!(ir.option_value(scoring | (2 << 6), "targets"), Some(2));
+    assert_eq!(ir.option_value(ir.default_options(), "medals"), Some(1));
+    assert_eq!(ir.option_value(scoring, "medals"), Some(0));
+    // The stick is on and UNSC by default; a variant turns it off, or
+    // picks a style by the enum's index.
+    assert_eq!(ir.option_values(13), ["unsc", "covenant", "forerunner"]);
+    assert_eq!(ir.option_value(ir.default_options(), "pogo"), Some(1));
+    assert_eq!(ir.option_value(ir.default_options(), "pogo_style"), Some(0));
+    assert_eq!(ir.option_value(scoring | hud, "pogo"), Some(0));
+    for style in 0..3u32 {
+        let bits = scoring | hud | pogo | (style << 16);
+        assert_eq!(ir.option_value(bits, "pogo_style"), Some(style as i32));
+        assert_eq!(ir.option_value(bits, "pogo"), Some(1));
+        assert_eq!(ir.option_value(bits, "targets"), Some(1));
+    }
 
     // The defaults: a kill scores nothing, a single scores 1, a double 2
     // (3 for the chain of two), and a death with no killer or by the
@@ -523,9 +843,11 @@ fn superbounce_scores_bounces_only_by_their_chain() {
     vm.begin_tick(1);
     assert_eq!(vm.fire(&mut g, Input::Kill { victim: 0, killer: Some(1) }), Fired::Ran);
     assert!(scores(&g).is_empty(), "a kill scores 0");
-    assert_eq!(vm.fire(&mut g, bounce(1, 77, 1, false)), Fired::Ran);
-    assert_eq!(vm.fire(&mut g, bounce(1, 78, 2, false)), Fired::Ran);
+    assert_eq!(vm.fire(&mut g, launch(1, 77, 12)), Fired::Ran);
+    assert_eq!(vm.fire(&mut g, launch(1, 78, 11)), Fired::Ran);
     assert_eq!(vm.player_var(1, "bounces"), Some(2));
+    assert_eq!(vm.player_var(1, "chain"), Some(2));
+    assert_eq!(vm.player_var(0, "chain"), Some(0), "each player keeps its own");
     assert_eq!(scores(&g), vec![(1, 1), (1, 2)]);
     assert_eq!(scores(&g).iter().map(|s| s.1).sum::<i32>(), 3);
     vm.fire(&mut g, Input::Kill { victim: 1, killer: None });
@@ -538,23 +860,43 @@ fn superbounce_scores_bounces_only_by_their_chain() {
     let mut g = FakeGame::with_players(2);
     let mut vm = Vm::new(ir.clone(), ir.default_options(), 1).unwrap();
     vm.begin_tick(1);
-    for chain in 1..=8 {
-        vm.fire(&mut g, bounce(0, 77, chain, false));
-    }
+    chain_of(&mut vm, &mut g, 0, 8, 12);
     let points: Vec<i32> = scores(&g).iter().map(|s| s.1).collect();
     assert_eq!(points, [1, 2, 3, 4, 5, 6, 6, 6]);
+    assert_eq!(vm.player_var(0, "chain"), Some(8));
+
+    // The ground ends the run: the next launch starts a chain at 1, and
+    // the count stays until it does. A launch off a seam no strip marks
+    // counts the same.
+    assert_eq!(vm.fire(&mut g, Input::Grounded(0)), Fired::Ran);
+    assert_eq!(vm.player_var(0, "flying"), Some(0));
+    assert_eq!(vm.player_var(0, "chain"), Some(8));
+    vm.fire(&mut g, Input::Launch { player: 0, spot: None, speed: rules::ty::fixed::from_int(9) });
+    assert_eq!(vm.player_var(0, "chain"), Some(1));
+    assert_eq!(last_score(&g), 1);
+    vm.fire(&mut g, launch(0, 77, 12));
+    assert_eq!(last_score(&g), 2);
 
     // A Bounced is a death with no killer: with the suicide penalty on,
-    // `on kill` takes its one point and `on bounced` none. A Monster
-    // doubles after the cap.
+    // `on kill` takes its one point and `on bounced` none. A Monster (a
+    // launch over 16 units/s) doubles after the cap; 16 itself is no
+    // Monster.
     let mut g = FakeGame::with_players(2);
     let mut vm = Vm::new(ir.clone(), ir.default_options(), 1).unwrap();
     vm.begin_tick(1);
     assert_eq!(vm.fire(&mut g, Input::Bounced(0)), Fired::Ran);
     vm.fire(&mut g, Input::Kill { victim: 0, killer: None });
-    vm.fire(&mut g, bounce(1, 77, 1, true));
-    vm.fire(&mut g, bounce(1, 77, 9, true));
-    assert_eq!(scores(&g), vec![(0, -1), (1, 2), (1, 12)]);
+    vm.fire(&mut g, launch(1, 77, 17));
+    vm.fire(&mut g, Input::Grounded(1));
+    chain_of(&mut vm, &mut g, 1, 9, 17);
+    assert_eq!(scores(&g)[..2], [(0, -1), (1, 2)]);
+    assert_eq!(last_score(&g), 12);
+    vm.fire(&mut g, Input::Grounded(1));
+    vm.fire(&mut g, launch(1, 77, 16));
+    assert_eq!(last_score(&g), 1, "at the speed is not over it");
+    vm.fire(&mut g, Input::Grounded(1));
+    vm.fire(&mut g, Input::Launch { player: 1, spot: Some(77), speed: rules::ty::fixed::from_int(16) + 1 });
+    assert_eq!(last_score(&g), 2, "a step over it is");
 
     // With the suicide penalty off, the Bounced penalty takes the point:
     // bounce points raw 0, the Bounced penalty on (bit 4).
@@ -572,19 +914,68 @@ fn superbounce_scores_bounces_only_by_their_chain() {
     let mut g = FakeGame::with_players(2);
     let mut vm = Vm::new(ir.clone(), 2 << 1, 1).unwrap();
     vm.begin_tick(1);
-    vm.fire(&mut g, bounce(0, 77, 1, false));
-    vm.fire(&mut g, bounce(0, 77, 3, true));
+    vm.fire(&mut g, launch(0, 77, 12));
+    vm.fire(&mut g, Input::Grounded(0));
+    vm.fire(&mut g, launch(0, 77, 12));
+    vm.fire(&mut g, launch(0, 77, 12));
+    vm.fire(&mut g, launch(0, 77, 17));
     vm.fire(&mut g, Input::Bounced(0));
     vm.fire(&mut g, Input::Kill { victim: 0, killer: None });
     vm.fire(&mut g, Input::Kill { victim: 1, killer: Some(0) });
-    assert_eq!(scores(&g), vec![(0, 2), (0, 6)]);
-    assert_eq!(vm.player_var(0, "bounces"), Some(2));
+    assert_eq!(scores(&g), vec![(0, 2), (0, 2), (0, 4), (0, 6)]);
+    assert_eq!(vm.player_var(0, "bounces"), Some(4));
 
     // Bounce points 0 scores no bounce.
     let mut g = FakeGame::with_players(2);
     let mut vm = Vm::new(ir, 0, 1).unwrap();
     vm.begin_tick(1);
-    vm.fire(&mut g, bounce(0, 77, 2, true));
+    chain_of(&mut vm, &mut g, 0, 2, 17);
     assert!(scores(&g).is_empty());
-    assert_eq!(vm.player_var(0, "bounces"), Some(1));
+    assert_eq!(vm.player_var(0, "bounces"), Some(2));
+}
+
+#[test]
+fn a_round_starts_with_the_declared_types_line_even_with_no_handler() {
+    use rules::fake::RoundLine;
+    use rules::types::{StartLine, TABLE};
+    for row in TABLE {
+        let src = format!("rules \"Test variant\" 1\ntype {}\nuses slayer\n", row.name);
+        let ir = compile(&src).unwrap();
+        let mut vm = Vm::new(ir, 0, 1).unwrap();
+        let mut game = FakeGame::with_players(2);
+        vm.fire(&mut game, Input::Init);
+        assert!(game.start_lines.is_empty());
+        for _ in 0..2 {
+            assert_eq!(vm.fire(&mut game, Input::RoundStart), Fired::NoHandler);
+        }
+        match row.start {
+            StartLine::None => assert!(game.start_lines.is_empty(), "{}", row.name),
+            StartLine::Retail(kind) => {
+                assert_eq!(game.start_lines, [RoundLine::Event { kind, index: 0 }; 2], "{}", row.name);
+            }
+            StartLine::Ours => assert_eq!(game.start_lines, [RoundLine::Clip(row.ty); 2], "{}", row.name),
+        }
+    }
+}
+
+/// The scoreboard's label is the header's `points`: the type's own with no
+/// `points` line, the script's with one, told at every round start.
+#[test]
+fn a_round_start_tells_the_scoreboard_what_a_point_is() {
+    use rules::types::TABLE;
+    for row in TABLE {
+        let src = format!("rules \"Test variant\" 1\ntype {}\nuses slayer\n", row.name);
+        let mut vm = Vm::new(compile(&src).unwrap(), 0, 1).unwrap();
+        let mut game = FakeGame::with_players(2);
+        assert_eq!(game.scoreboard_label, None);
+        vm.fire(&mut game, Input::Init);
+        assert_eq!(game.scoreboard_label, None, "{}: init is no round", row.name);
+        vm.fire(&mut game, Input::RoundStart);
+        assert_eq!(game.scoreboard_label.as_deref(), Some(row.points), "{}", row.name);
+    }
+    let src = "rules \"Test variant\" 1\ntype ctf\nuses ctf\npoints \"Flags\"\n";
+    let mut vm = Vm::new(compile(src).unwrap(), 0, 1).unwrap();
+    let mut game = FakeGame::with_players(2);
+    vm.fire(&mut game, Input::RoundStart);
+    assert_eq!(game.scoreboard_label.as_deref(), Some("Flags"));
 }

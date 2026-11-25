@@ -41,6 +41,9 @@ pub struct TagsUi {
     pub export_dependencies: bool,
     /// Export raw resources (pixels, geometry) as blobs.
     pub export_resources: bool,
+    /// The Shader tab's state: the preview shape, its picture and the
+    /// bitmap picker (docs/editor/rich-editors.md, "Shaders").
+    pub shader: fields::shader::ShaderUi,
 }
 
 fn group_text(g: FourCC) -> String {
@@ -154,7 +157,7 @@ pub fn tree(ui: &Ui, app: &App, st: &mut TagsUi, fonts: &Fonts, actions: &mut Ve
     if !doc.is_open() {
         ui.text_wrapped(match &doc.error {
             Some(e) => format!("The map's tags could not be read: {e}"),
-            None => "Open a map from the Maps tab to edit its tags, or pick a map above to browse \
+            None => "Open a map from the Browser to edit its tags, or pick a map above to browse \
                      its tags."
                 .to_owned(),
         });
@@ -178,14 +181,50 @@ pub fn tree(ui: &Ui, app: &App, st: &mut TagsUi, fonts: &Fonts, actions: &mut Ve
     if !browse {
         st.scenario.update(app);
     }
+    // The filter and the arrangement sit at the top and cover every section
+    // under them; each section is a folding header in the panel's one scroll.
+    if ui.radio_button_bool("Groups", st.arrange == Arrange::Group) {
+        st.arrange = Arrange::Group;
+    }
+    ui.same_line();
+    if ui.radio_button_bool("Paths", st.arrange == Arrange::Path) {
+        st.arrange = Arrange::Path;
+    }
+    ui.set_next_item_width(-1.0);
+    ui.input_text("##tag-filter", &mut st.filter)
+        .hint(format!("{} words of group:name", icon::SEARCH))
+        .build();
+    let filter = st.filter.to_ascii_lowercase();
+    let hits = tag_tree::search(view.doc.tags(), &filter);
+    let refilter = st.opened_for.as_deref() != Some(filter.as_str());
+    st.opened_for = Some(filter.clone());
+    let narrowed = refilter && !filter.is_empty();
+    let filtering = !filter.is_empty();
+
     let model = st
         .scenario
         .model
         .as_ref()
         .filter(|_| scenario.is_some())
         .map(|(_, tree)| tree);
-    if let Some(tree) = model {
-        scenario_rows(ui, &view, tree, &mut st.scenario.opened, actions);
+    if let Some(tree) = model
+        && let Some(_open) = ui
+            .tree_node_config("##scenario-tags")
+            .label("Scenario")
+            .default_open(true)
+            .span_avail_width(true)
+            .push()
+    {
+        if filtering {
+            let inside: Vec<usize> = hits
+                .iter()
+                .copied()
+                .filter(|i| !tree.unreachable.contains(i))
+                .collect();
+            tag_rows(ui, &view, &inside, ListNames::GroupAndPath, actions);
+        } else {
+            scenario_rows(ui, &view, tree, &mut st.scenario.opened, actions);
+        }
     }
     if let Some(_all) = ui
         .tree_node_config("##all-tags")
@@ -194,9 +233,17 @@ pub fn tree(ui: &Ui, app: &App, st: &mut TagsUi, fonts: &Fonts, actions: &mut Ve
         .span_avail_width(true)
         .push()
     {
-        all_tags(ui, &view, st, fonts, actions);
+        match st.arrange {
+            Arrange::Group => by_group(ui, &view, &hits, narrowed, fonts, actions),
+            Arrange::Path => {
+                let root = tag_tree::by_path(view.doc.tags(), &hits);
+                let f = ui.push_font(fonts.bold);
+                ui.text(format!("{} tags", root.count));
+                f.pop();
+                folder(ui, &view, &root, "", narrowed, actions);
+            }
+        }
     }
-    // `all_tags` borrows the whole state; look the model up again after it.
     let model = st
         .scenario
         .model
@@ -218,49 +265,17 @@ pub fn tree(ui: &Ui, app: &App, st: &mut TagsUi, fonts: &Fonts, actions: &mut Ve
             if tree.incomplete {
                 ui.text_disabled("Reachability is unknown for tags outside the walk.");
             } else {
-                tag_rows(
-                    ui,
-                    &view,
-                    &tree.unreachable,
-                    ListNames::GroupAndPath,
-                    actions,
-                );
+                let shown: Vec<usize> = if filtering {
+                    tree.unreachable
+                        .iter()
+                        .copied()
+                        .filter(|i| hits.contains(i))
+                        .collect()
+                } else {
+                    tree.unreachable.clone()
+                };
+                tag_rows(ui, &view, &shown, ListNames::GroupAndPath, actions);
             }
-        }
-    }
-}
-
-fn all_tags(
-    ui: &Ui,
-    view: &RowView<'_>,
-    st: &mut TagsUi,
-    fonts: &Fonts,
-    actions: &mut Vec<Action>,
-) {
-    if ui.radio_button_bool("Groups", st.arrange == Arrange::Group) {
-        st.arrange = Arrange::Group;
-    }
-    ui.same_line();
-    if ui.radio_button_bool("Paths", st.arrange == Arrange::Path) {
-        st.arrange = Arrange::Path;
-    }
-    ui.set_next_item_width(-1.0);
-    ui.input_text("##tag-filter", &mut st.filter)
-        .hint(format!("{} words of group:name", icon::SEARCH))
-        .build();
-    let filter = st.filter.to_ascii_lowercase();
-    let hits = tag_tree::search(view.doc.tags(), &filter);
-    let refilter = st.opened_for.as_deref() != Some(filter.as_str());
-    st.opened_for = Some(filter.clone());
-    let narrowed = refilter && !filter.is_empty();
-    match st.arrange {
-        Arrange::Group => by_group(ui, view, &hits, narrowed, fonts, actions),
-        Arrange::Path => {
-            let root = tag_tree::by_path(view.doc.tags(), &hits);
-            let f = ui.push_font(fonts.bold);
-            ui.text(format!("{} tags", root.count));
-            f.pop();
-            folder(ui, view, &root, "", narrowed, actions);
         }
     }
 }
@@ -358,6 +373,15 @@ fn tag_rows(
                 .build()
         }) {
             view.select(t.id, None, actions);
+        }
+        // A double-click opens the tag as a document tab, in the editor
+        // its group gets (docs/editor/studio-redesign.md). The row reports
+        // its click on release; the double-click is the second press.
+        if !view.browse
+            && ui.is_item_hovered()
+            && ui.is_mouse_double_clicked(dear_imgui_rs::MouseButton::Left)
+        {
+            actions.push(Action::OpenDoc(crate::app::Doc::Tag(t.id)));
         }
     });
 }
@@ -513,13 +537,18 @@ fn scenario_rows(
     });
 }
 
-/// The selected tag's fields, with export and import.
+/// The selected tag's fields, with export and import; a group with a tag
+/// view shows its tab too (`fields::rich`), drawn with the GPU for its
+/// pictures.
+#[allow(clippy::too_many_arguments)]
 pub fn fields(
     ui: &Ui,
     app: &mut App,
     st: &mut TagsUi,
     fonts: &Fonts,
     dialogs: bool,
+    gpu: &mut Gpu<'_>,
+    pictures: &mut MapListUi,
     actions: &mut Vec<Action>,
 ) {
     let doc = app.shown_tags();
@@ -527,7 +556,7 @@ pub fn fields(
         ui.text_wrapped(
             "Pick a tag on the left. Every field is shown: named ones by their name, the \
              rest by their type and offset under Unnamed fields. Edits save with the map \
-             (File, Save map as / Save as package). Import a tag bundle here to replace a \
+             (File, Save, or Export map). Import a tag bundle here to replace a \
              tag of the open map.",
         );
         if app.browsing().is_none() && doc.is_open() {
@@ -578,15 +607,7 @@ pub fn fields(
             ui.text_disabled(line);
         }
     }
-    if coverage(doc, id).is_some() {
-        let mut settings = st.panel.settings.clone();
-        if ui.checkbox("Show unnamed fields", &mut settings.unnamed) {
-            st.panel.set_settings(settings);
-        }
-        if ui.is_item_hovered() {
-            ui.set_item_tooltip("Open every element's Unnamed fields group");
-        }
-    } else {
+    if coverage(doc, id).is_none() {
         // No layout: the bytes only.
         if t.bsp.is_some() {
             if let Some(bytes) = doc.read_source(id, t.address, t.size) {
@@ -605,6 +626,24 @@ pub fn fields(
         }
     }
     ui.separator();
+    // A group with tag views has a tab bar: Fields, then its views.
+    let shown = fields::rich::tab(t.group, &st.panel.settings.tab);
+    if let Some(chosen) = fields::rich::tab_bar(ui, t.group, shown) {
+        let mut settings = st.panel.settings.clone();
+        settings.tab = chosen.to_owned();
+        st.panel.set_settings(settings);
+    }
+    if let Some(view) = fields::rich::tag_view(t.group, shown) {
+        let mut cx = fields::rich::ViewCx {
+            gpu,
+            pictures,
+            panel: &mut st.panel,
+            shader: &mut st.shader,
+        };
+        (view.draw)(ui, app, id, &mut cx, actions);
+        st.panel.store(app);
+        return;
+    }
     let scene = if app.browsing().is_none() {
         app.session.scenario()
     } else {
@@ -644,18 +683,84 @@ pub fn fields(
         }
         st.focus = want;
     }
-    // Nothing is pinned over the rows: the header scrolls with them, in
-    // the window (docs/editor/tag-editing.md, "Panels on short windows").
-    fields::panel_with_marks(
-        ui,
-        doc,
-        id,
-        &path,
-        &mut st.panel,
-        actions,
-        fields::PanelRoot::Tags(scene),
-        &mut inspector::tag_field_marks(ui, issues, &mut resolution),
-    );
+    // The filter row sits above the rows: Search fields, Changed only and
+    // Show unnamed fields together.
+    let mut settings = st.panel.settings.clone();
+    ui.set_next_item_width(fields::LABEL);
+    ui.input_text("##field-search", &mut settings.search)
+        .hint(format!("{} Search fields", icon::SEARCH))
+        .build();
+    ui.same_line();
+    ui.checkbox("Changed only", &mut settings.changed);
+    if ui.is_item_hovered() {
+        ui.set_item_tooltip("The fields that differ from the loaded file, lists included");
+    }
+    ui.same_line();
+    ui.checkbox("Show unnamed fields", &mut settings.unnamed);
+    if ui.is_item_hovered() {
+        ui.set_item_tooltip("Open every element's Unnamed fields group");
+    }
+    st.panel.set_settings(settings);
+    if !st.panel.settings.search.is_empty() || st.panel.settings.changed {
+        // Hits replace the rows: a flat list of breadcrumb and value.
+        let found = fields::find::find_from(
+            doc,
+            id,
+            &mut steps.clone(),
+            st.panel.link,
+            issues,
+            &st.panel.settings.search,
+            st.panel.settings.changed,
+            st.panel.settings.unnamed,
+        );
+        if let Some(why) = found.why {
+            ui.text_colored(theme::WARN, why);
+        }
+        clipped_rows(ui, found.hits.len(), |i| {
+            let hit = &found.hits[i];
+            let _id = ui.push_id(hit.row["path"].as_str().unwrap_or_default());
+            // The element's crumbs name where the field is; the header
+            // already names the tag, so its crumb is left out.
+            let trail = hit.breadcrumbs.iter().skip(1).cloned().collect::<Vec<_>>().join(" > ");
+            let label = if trail.is_empty() {
+                hit.row["label"].as_str().unwrap_or_default().to_owned()
+            } else {
+                format!("{trail} > {}", hit.row["label"].as_str().unwrap_or_default())
+            };
+            let value = hit.row["summary"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| hit.row["value"].to_string());
+            if ui.selectable_config(format!("{label}##hit")).build() {
+                let path = hit.row["path"].as_str().unwrap_or_default().to_owned();
+                actions.push(Action::Navigate(NavAction::Go {
+                    tag: id,
+                    path: Some(path),
+                    element: None,
+                }));
+                // Going there shows the field's rows, not the hit list.
+                let mut settings = st.panel.settings.clone();
+                settings.search.clear();
+                settings.changed = false;
+                st.panel.set_settings(settings);
+            }
+            ui.same_line_with_pos(fields::LABEL);
+            ui.text_disabled(&value);
+        });
+    } else {
+        // Nothing is pinned over the rows: the header scrolls with them, in
+        // the window (docs/editor/tag-editing.md, "Panels on short windows").
+        fields::panel_with_marks(
+            ui,
+            doc,
+            id,
+            &path,
+            &mut st.panel,
+            actions,
+            fields::PanelRoot::Tags(scene),
+            &mut inspector::tag_field_marks(ui, issues, &mut resolution),
+        );
+    }
     if let Some(action) = resolution {
         app.pairing.requests.push(Request::Apply(action));
     }

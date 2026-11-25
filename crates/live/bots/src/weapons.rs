@@ -29,70 +29,82 @@ pub struct Reach {
 pub const BLADE_LUNGE: f32 = 1.5;
 /// A blade's lunge from its aim assist reach is kept within this.
 pub const LUNGE_LIMITS: (f32, f32) = (1.0, 3.0);
-/// A gun's fire range reaches this far past its band's far end.
-pub const FIRE_PAST_BAND: f32 = 1.6;
+/// Every gun's fire range ends this many times its band's far end: one
+/// rule for every class, from the band its own tag data gives it. A
+/// person sprays a little past where a gun is good, never across the map.
+pub const FIRE_PAST_BAND: f32 = 1.25;
+
+/// An automatic whose projectile is slower than this (world units a
+/// second) fires bolts a strafing target can step out of.
+pub const SLOW_BOLT: f32 = 150.0;
+/// A slow-bolt automatic keeps its target within this...
+pub const SLOW_BOLT_BAND: f32 = 6.0;
+/// ...and so fires at it no further than this (world units).
+pub const SLOW_BOLT_FIRE: f32 = SLOW_BOLT_BAND * FIRE_PAST_BAND;
+
+/// The plasma rifle and plasma pistol by identity, or any automatic whose
+/// projectile speed reads slow.
+fn slow_bolts(p: &Profile) -> bool {
+    matches!(
+        p.dual,
+        Some(crate::arms::DualGun::PlasmaRifle | crate::arms::DualGun::PlasmaPistol)
+    ) || (p.shot_speed > 0.0 && p.shot_speed < SLOW_BOLT)
+}
 
 /// A favorite can win a close pickup decision or justify a short detour.
 pub(crate) fn pickup_bias(personality: Option<crate::decisions::Personality>, role: Role) -> f32 {
     6.0 * personality.map_or(0.0, |p| p.weapon_interest(role))
 }
 
-/// What `p` is good at. The role's band ([`Role::band`]) and fire range
-/// ([`Role::fire_range`]), refined by the tag's aim assist reach
-/// (`cone_range`, `pull_range`; `weap +0x20c`, `+0x214`) where Bungie set
-/// one. Snipers and splash weapons start with their role's range. A
-/// blade's lunge uses its aim assist reach. The projectile's damage reach
-/// caps both the firing range and the band.
+/// What `p` is good at. The band is the role's ([`Role::band`]), refined
+/// by the tag's aim assist reach (`cone_range`, `pull_range`; `weap
+/// +0x20c`, `+0x214`) where Bungie set one, shortened for slow bolts and
+/// to the projectile's damage reach. Snipers and splash weapons start with
+/// their role's band. Every gun then fires to [`FIRE_PAST_BAND`] times its
+/// band's far end, from its role's near limit (splash). A blade's lunge
+/// uses its aim assist reach.
 pub fn reach(p: &Profile) -> Reach {
     let role = p.role();
     let (lo, hi) = role.band();
-    let (flo, fhi) = role.fire_range();
     let r = p.cone_range.max(p.pull_range);
-    let mut reach = match role {
-        // A confirmed SMG is a short-range automatic. Its magnetism can
-        // reach beyond the distance where sustained fire is worth the rounds.
-        _ if p.dual == Some(crate::arms::DualGun::Smg) => {
-            let far = if r > 0.0 { r.clamp(4.5, 9.0) } else { 9.0 };
-            Reach {
-                band: (lo, far),
-                fire: (0.0, far),
-                lunge: 0.0,
-            }
-        }
-        Role::Blade => {
-            let lunge = if r > 0.0 {
-                r.clamp(LUNGE_LIMITS.0, LUNGE_LIMITS.1)
-            } else {
-                BLADE_LUNGE
-            };
-            Reach {
-                band: (0.0, lunge),
-                fire: (0.0, 0.0),
-                lunge,
-            }
-        }
-        Role::Scatter | Role::Spray | Role::Precise if r > 0.0 => {
-            // Within half and one and a half times the role's: a tag
-            // value far off is not trusted to throw the bot about.
-            let far = r.clamp((lo + 2.0).max(0.5 * hi), 1.5 * hi).min(fhi);
-            Reach {
-                band: (lo, far),
-                fire: (flo, (far * FIRE_PAST_BAND).clamp(far, fhi)),
-                lunge: 0.0,
-            }
-        }
-        _ => Reach {
-            band: (lo, hi),
-            fire: (flo, fhi),
-            lunge: 0.0,
-        },
-    };
-    if p.damage_reach > 0.0 && p.damage_reach < reach.fire.1 {
-        reach.fire.1 = p.damage_reach;
-        let far = reach.band.1.min(p.damage_reach / FIRE_PAST_BAND);
-        reach.band = (reach.band.0.min(far), far);
+    if role == Role::Blade {
+        let lunge = if r > 0.0 {
+            r.clamp(LUNGE_LIMITS.0, LUNGE_LIMITS.1)
+        } else {
+            BLADE_LUNGE
+        };
+        return Reach {
+            band: (0.0, lunge),
+            fire: (0.0, 0.0),
+            lunge,
+        };
     }
-    reach
+    let mut far = match role {
+        // Between half the role's band end and the role's own: a tag
+        // value far off is not trusted to throw the bot about, and no gun
+        // is good further than its class.
+        Role::Scatter | Role::Spray | Role::Precise if r > 0.0 => {
+            r.clamp((lo + 2.0).max(0.5 * hi), hi)
+        }
+        _ => hi,
+    };
+    // Plasma bolts are slow: past a few metres a strafing target walks
+    // out of their path (docs/game/notes/2026-11-23-bots-natural-round1.md:
+    // 0.42 of plasma rifle shots hit under 3 units, 0.17 from 3 to 12,
+    // almost none beyond).
+    if role == Role::Spray && slow_bolts(p) {
+        far = far.min(SLOW_BOLT_BAND);
+    }
+    // The projectile's damage reach caps where the fire stops, and so the
+    // band.
+    if p.damage_reach > 0.0 {
+        far = far.min(p.damage_reach / FIRE_PAST_BAND);
+    }
+    Reach {
+        band: (lo.min(far), far),
+        fire: (role.fire_range().0, far * FIRE_PAST_BAND),
+        lunge: 0.0,
+    }
 }
 
 /// How far `d` is outside `band`, relative to it: 0 inside.
@@ -355,6 +367,13 @@ impl Combo {
         self.attempted = attempted;
     }
 
+    /// It has kept its fire on this target long enough (twice the melee
+    /// finish's pulls) that the shield is likely down, read or not.
+    pub fn softened(&self, skill: Skill) -> bool {
+        let k = ComboSkill::of(skill);
+        k.finish && self.hits >= k.finish_pulls.saturating_mul(2)
+    }
+
     /// A combo or a glitch is under way.
     pub fn busy(&self) -> bool {
         self.phase != Phase::Idle || self.trick.is_some()
@@ -581,28 +600,83 @@ impl Combo {
 /// The left trigger when dual wielding: Halo 2 fires the left-hand gun
 /// with it (and throws no grenades). A charge gun (the plasma pistol) is
 /// held to charge and let go on target; a once-per-pull gun is pulled
-/// and let go at its rate; an automatic is held.
-#[derive(Clone, Debug, Default)]
+/// and let go at its rate; an automatic is held on the right hand's hold
+/// pattern, or with the right trigger when that is held too. An empty
+/// magazine with rounds in reserve gets one pull, which starts the
+/// reload.
+#[derive(Clone, Debug)]
 pub struct LeftHand {
     next: u32,
     until: u32,
     charge: Option<u32>,
+    hold: crate::tactics::Hold,
+    rng: crate::mind::feel::Rng,
+    /// No pull on an empty magazine before this tick.
+    dry_next: Option<u32>,
+}
+
+impl Default for LeftHand {
+    fn default() -> Self {
+        Self {
+            next: 0,
+            until: 0,
+            charge: None,
+            hold: Default::default(),
+            rng: crate::mind::feel::Rng::new(0x6c65_6674),
+            dry_next: None,
+        }
+    }
+}
+
+/// What the left trigger is for this tick.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LeftAim {
+    /// The target is clear and in the left gun's fire range.
+    pub in_range: bool,
+    /// The aim is in the fire cone...
+    pub on: bool,
+    /// ...or near it (`tactics::HOLD_CONE` cones).
+    pub near: bool,
+    /// The hold pattern of an automatic (`tactics::hold_pattern`).
+    pub pattern: Option<(u32, u32)>,
+    /// The right trigger, when it is held on an automatic too: an
+    /// automatic in the left hand goes down and up with it.
+    pub right: Option<bool>,
 }
 
 /// After an overcharge from the left hand, the next charge waits this
 /// long (ticks).
 pub const LEFT_RECHARGE: u32 = 15;
+/// A pull on an empty left magazine that did not start a reload is tried
+/// again after this long (ticks).
+pub const LEFT_DRY_RETRY: u32 = 45;
 
 impl LeftHand {
     pub fn reset(&mut self) {
         *self = LeftHand::default();
     }
 
-    /// Whether the left trigger is down this tick, wanting to fire
-    /// (`want`: on target and in range) with `gun` in the left hand.
-    pub fn trigger(&mut self, tick: u32, gun: &Gun, want: bool) -> bool {
+    /// Whether the left trigger is down this tick with `gun` in the left
+    /// hand.
+    pub fn trigger(&mut self, tick: u32, gun: &Gun, aim: LeftAim) -> bool {
+        let want = aim.in_range && aim.on;
+        if gun.ammo.empty_magazine() {
+            self.charge = None;
+            self.hold.stop(tick);
+            if tick < self.until {
+                return true;
+            }
+            if self.dry_next.is_none_or(|t| tick >= t) {
+                self.until = tick + crate::tactics::PULL_TICKS;
+                self.dry_next = Some(tick + LEFT_DRY_RETRY);
+                return true;
+            }
+            return false;
+        }
+        self.dry_next = None;
         if !gun.ammo.ready() {
             self.charge = None;
+            self.hold.stop(tick);
             return false;
         }
         match gun.profile.trigger {
@@ -639,7 +713,19 @@ impl LeftHand {
                 }
                 false
             }
-            Trigger::Automatic | Trigger::Unknown => want,
+            Trigger::Automatic | Trigger::Unknown => match aim.right {
+                Some(right) => {
+                    self.hold.stop(tick);
+                    right && aim.in_range
+                }
+                None => self.hold.step(
+                    tick,
+                    aim.pattern,
+                    want,
+                    aim.in_range && aim.near,
+                    &mut self.rng,
+                ),
+            },
             Trigger::Absent => false,
         }
     }

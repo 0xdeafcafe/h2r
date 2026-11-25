@@ -21,10 +21,12 @@ pub(super) struct EngineReplay {
 
 impl EngineReplay {
     pub(super) fn open(replay: &Replay, image: film::image::ImageMatch) -> Result<Self> {
-        let mut track = TrackReader::open(&replay.path)?;
+        let mut track = TrackReader::open_with_film(&replay.path)?;
         if image == film::image::ImageMatch::FromBoot {
             track.disable_embedded_keyframes();
         }
+        // A film starts with no monitor looks; its records give them.
+        super::forge_film::clear();
         Ok(Self {
             track,
             map_vfs: None,
@@ -58,6 +60,11 @@ impl EngineReplay {
     pub(super) fn next_tick(&mut self) -> Result<&Tick> {
         if self.pending.is_none() {
             self.pending = self.track.step()?;
+            // The tick's monitor looks and poses are read as the tick is,
+            // so the first tick after a seek has its chunk's checkpoint.
+            if let Some(tick) = &self.pending {
+                super::forge_film::deliver(tick.tick, &tick.forge)?;
+            }
         }
         self.pending
             .as_ref()
@@ -117,6 +124,12 @@ impl EngineReplay {
         let checked_digest = frame.post_hash.is_some();
         self.pending = None;
         self.saw_actions = false;
+        // The next tick's Firefight entries, before its pre-tick applies
+        // them (`firefight::film`). Past the film's end there is none; a
+        // block that cannot be read fails at the next tick's own read.
+        if let Ok(next) = self.next_tick() {
+            crate::firefight::film::deliver(&next.firefight);
+        }
         Ok(checked_digest)
     }
 }
@@ -241,6 +254,8 @@ impl Session {
         agent: Option<&crate::agent_glue::AgentGlue>,
     ) -> Result<u64> {
         let started = std::time::Instant::now();
+        // The film's checkpoint after the keyframe rebuilds the monitors.
+        super::forge_film::clear();
         let snap = snapshot::Snapshot::open(&frame.snapshot, machine.shelf.build())?;
         ensure!(
             snap.header.tick == frame.tick,

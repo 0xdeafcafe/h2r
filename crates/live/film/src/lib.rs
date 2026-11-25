@@ -1,16 +1,21 @@
 //! Each complete chunk stands alone. Offsets always refer to the four-byte tag.
 pub mod blam;
+pub mod columns;
+pub mod file;
 pub mod image;
 mod library;
 pub mod machine;
 pub mod manifest;
 pub mod presentation;
+mod recover;
 pub mod range;
 pub mod sidecar;
 pub mod share;
+pub mod side;
 pub mod tape;
 use anyhow::{Context, Result, ensure};
 pub use library::{Library, LibraryEntry};
+pub use recover::recover_tape;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     fs::File,
@@ -123,6 +128,22 @@ pub struct Header {
     pub render_hooks: Option<RenderHooks>,
     pub live_service: bool,
     pub features: String,
+    /// A player session's default recording: the player features stayed
+    /// on, and the replay installs them the same way
+    /// (docs/game/film-format.md, "Recording every game").
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub player_features: bool,
+    /// The stats stream holds no actions: every tick's are in the film
+    /// file beside it (`film::file`, `TrackReader::attach_film`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub inputs_in_film: bool,
+    /// A film cut from a session's running tape at one game's end
+    /// (docs/game/film-format.md, "One film per game"): the tape's ID. The
+    /// cut keeps the tape's boot `HEAD`, which carries this ID and the
+    /// session's start; the cut's own ID and start are in its final `HEAD`
+    /// and the front.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tape_id: Option<String>,
 }
 impl Header {
     pub fn telemetry_plan(&self) -> live_proto::film::TelemetryHooks {
@@ -143,12 +164,17 @@ pub struct Entry {
     pub size: u32,
 }
 
+/// Sees every chunk the writer stores: its tag and the zstd frame that
+/// went to the file ([`Writer::set_mirror`]).
+pub type Mirror = Box<dyn FnMut(Tag, &[u8]) -> Result<()> + Send>;
+
 pub struct Writer<W: Write + Seek> {
     out: W,
     index: Vec<Entry>,
     failed: bool,
     version: u32,
     ranges: Option<Box<range::Build>>,
+    mirror: Option<Mirror>,
 }
 impl<W: Write + Seek> Writer<W> {
     pub fn new(mut out: W, header: &Header) -> Result<Self> {
@@ -174,9 +200,17 @@ impl<W: Write + Seek> Writer<W> {
             failed: false,
             version: header.version,
             ranges,
+            mirror: None,
         };
         w.chunk(HEAD, header)?;
         Ok(w)
+    }
+    /// Hand each chunk stored from now on, with its stored frame, to
+    /// `mirror`, so the film file's machine part ([`file::machine_mirror`])
+    /// is written as the container's is, without a second compression. A
+    /// cut ([`Writer::fork`]) does not inherit it.
+    pub fn set_mirror(&mut self, mirror: Option<Mirror>) {
+        self.mirror = mirror;
     }
     pub fn chunk(&mut self, tag: Tag, value: &impl Serialize) -> Result<()> {
         ensure!(tag != INDX, "finish writes the index");
@@ -298,6 +332,40 @@ impl<W: Write + Seek> Writer<W> {
         self.index.last().map(|entry| entry.offset)
     }
 
+    /// Continue a copy of this unsealed v3 tape as a film of its own, cut
+    /// at this point (docs/game/film-format.md, "One film per game").
+    /// `out` holds every byte written so far, and nothing more.
+    /// `header.tape_id` names this tape; the cut's ID and start replace the
+    /// tape's in the front. The caller writes the cut's final `HEAD`, track
+    /// and end mark and seals it with [`Writer::finish`]. This tape keeps
+    /// recording.
+    pub fn fork<V: Write + Seek>(&mut self, mut out: V, header: &Header) -> Result<Writer<V>> {
+        ensure!(!self.failed, "film output already failed");
+        let ranges = self.ranges.as_ref().context("a cut requires a v3 tape")?;
+        ensure!(
+            header.version == self.version
+                && header.tape_id.as_deref() == Some(ranges.front.id.as_str())
+                && header.meta.id != ranges.front.id,
+            "a cut names its tape and has an ID of its own"
+        );
+        let len = self.out.stream_position()?;
+        ensure!(
+            out.seek(SeekFrom::End(0))? == len,
+            "the cut's copy differs in length from the tape"
+        );
+        let mut ranges = ranges.clone();
+        ranges.front.id.clone_from(&header.meta.id);
+        ranges.front.started_ms = header.meta.started_ms;
+        Ok(Writer {
+            out,
+            index: self.index.clone(),
+            failed: false,
+            version: self.version,
+            ranges: Some(ranges),
+            mirror: None,
+        })
+    }
+
     fn write(&mut self, tag: Tag, raw: &[u8]) -> Result<()> {
         ensure!(!self.failed, "film output already failed");
         let bytes = compress_chunk(raw)?;
@@ -306,6 +374,9 @@ impl<W: Write + Seek> Writer<W> {
         self.index
             .push(write_envelope(&mut self.out, tag, offset, &bytes)?);
         self.failed = false;
+        if let Some(mirror) = &mut self.mirror {
+            mirror(tag, &bytes)?;
+        }
         Ok(())
     }
     pub fn finish(mut self) -> Result<W> {

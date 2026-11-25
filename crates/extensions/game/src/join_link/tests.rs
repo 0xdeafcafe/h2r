@@ -15,7 +15,7 @@ fn films_and_offline_runs_add_no_join_hooks_or_dialog_allocations() {
         (Some(signed_out()), false),
     ] {
         let mut features = hooks::Registry::new(hooks::Switches::defaults());
-        install(&mut features, live, unsupported).unwrap();
+        install(&mut features, live, unsupported, None).unwrap();
         let plan = features.build(&hooks::Base).unwrap();
         assert!(plan.features.is_empty());
         assert!(plan.chains.is_empty() && plan.entries.is_empty() && plan.allocs.is_empty());
@@ -266,8 +266,8 @@ fn the_join_link_and_lab_consent_plan_together_at_ui_update() {
     })
     .unwrap();
     let mut features = hooks::Registry::new(hooks::Switches::defaults());
-    install(&mut features, Some(live), false).unwrap();
-    crate::lab_takeover::install(&mut features, &agent::Agent::new()).unwrap();
+    install(&mut features, Some(live), false, None).unwrap();
+    crate::lab_takeover::install(&mut features, &agent::Agent::new(), true).unwrap();
     let plan = features.build(&hooks::Base).unwrap().text();
     assert!(
         plan.contains("process a Live join link") && plan.contains("open or expire a lab request"),

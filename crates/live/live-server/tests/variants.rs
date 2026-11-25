@@ -4,6 +4,8 @@
 //! author deletes it; a second server on the log reads the same. Run with
 //! the server's own timers and with none (the Worker's Durable Object).
 mod common;
+#[path = "support/variant_scripts.rs"]
+mod scripts;
 use axum::{http::Method, http::StatusCode};
 use common::*;
 use live_proto::lxm;
@@ -66,8 +68,8 @@ async fn flow(timers: Timers) {
     assert_eq!(v["description"], "Three points a kill");
     assert_eq!(v["author"]["gamertag"], "Maker");
     assert_eq!(v["author"]["xuid"], me.xuid.to_string());
-    assert_eq!(v["engine"], 2);
-    assert_eq!(v["game_type"], "Slayer");
+    assert_eq!(v["engine"], 6);
+    assert_eq!(v["game_type"], "Script");
     assert_eq!(v["script_hash"], slayer_hash());
     assert_eq!(v["script_name"], "Slayer");
     assert_eq!(v["visibility"], "public");
@@ -90,7 +92,7 @@ async fn flow(timers: Timers) {
     assert_eq!(r.json()["id"], id);
 
     // An unlisted one, from a whole file.
-    let file = portable::port(&plain_king(), None, Some("No script"), PortScript::Keep).unwrap();
+    let file = portable::port(&plain_king(), None, Some("With script"), PortScript::Builtin).unwrap();
     let r = send(
         &h,
         Method::POST,
@@ -101,8 +103,21 @@ async fn flow(timers: Timers) {
     .await;
     assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
     let unlisted = r.json()["id"].as_str().unwrap().to_string();
-    assert_eq!(r.json()["script_hash"], Value::Null);
+    assert_eq!(r.json()["script_name"], "King of the Hill");
     assert_eq!(r.json()["game_type"], "King of the Hill");
+
+    // A whole file with no script (mode 0) is refused, by name.
+    let bare = portable::export(&plain_king());
+    let r = send(
+        &h,
+        Method::POST,
+        "/v1/variants",
+        json!({"bundle": bare, "visibility": "public"}),
+        Some(&me),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.error());
+    assert!(r.json()["message"].as_str().unwrap_or("").contains("no rules script"), "{}", r.json());
 
     // Nobody posts the event by hand.
     let forged = h.event(
@@ -232,10 +247,11 @@ async fn bad_variants_are_refused() {
     }))
     .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.error());
-    // The fields way: a plain record publishes.
+    // The fields way: a plain record names no script, and is refused.
     let r = publish(&h, &me, json!({"name": "Hill", "description": "Up", "record_hex": hex, "visibility": "public"}))
         .await;
-    assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.error());
+    assert!(r.json()["message"].as_str().unwrap_or("").contains("no rules script"), "{}", r.json());
 
     // A scripted record needs its script, and the script must be the one
     // the prefix names and ride the record's engine.
@@ -313,4 +329,49 @@ async fn a_file_is_built_with_no_account() {
     assert_eq!(o[0]["lo"], 1);
     assert_eq!(o[1]["kind"], "bool");
     assert_eq!(o[1]["default"], 1);
+}
+
+/// The parity suite's variant cases: the same requests the Worker's SQL
+/// store runs (`live-worker`, `worker_variant_scripts`).
+#[tokio::test]
+async fn native_variant_scripts() {
+    let h = harness().await;
+    scripts::exercise(h.live.clone()).await;
+}
+
+#[tokio::test]
+async fn a_script_variant_has_the_scripts_settings() {
+    let h = harness().await;
+    let me = h.create("Maker").await;
+    let ir = rules::compile(rules::builtin::DUEL).unwrap();
+    let from = |extra: Value| {
+        let mut body = json!({"source": rules::builtin::DUEL, "name": "My Duel", "visibility": "public"});
+        body.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        body
+    };
+    // No description in the request: the script's `about`.
+    let r = send(&h, Method::POST, "/v1/variants/from-script", from(json!({})), Some(&me)).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+    let v = r.json();
+    assert_eq!(v["description"], ir.header.about);
+    // The record is the script's own: the stock record plus the block.
+    let rec = record_of(v["record_hex"].as_str().unwrap());
+    let mut want = portable::record_for(&ir, &[]).unwrap();
+    want.set_name("My Duel").unwrap();
+    assert_eq!(rec.bytes()[..], want.bytes()[..]);
+    let stock = GameVariant::stock(GameType::Slayer).unwrap();
+    assert_ne!(rec.bytes()[..], stock.bytes()[..]);
+    assert!(!v["settings"].as_array().unwrap().is_empty());
+
+    // A description in the request wins.
+    let r = send(
+        &h,
+        Method::POST,
+        "/v1/variants/from-script",
+        from(json!({"name": "My Duel 2", "description": "Mine"})),
+        Some(&me),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+    assert_eq!(r.json()["description"], "Mine");
 }

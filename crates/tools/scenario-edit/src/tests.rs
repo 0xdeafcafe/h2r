@@ -926,6 +926,62 @@ fn disc_ascension_frames_its_structure_not_its_cloud_deck() {
     );
 }
 
+/// Coagulation's sky (`scenarios\skies\multi\halo\coagulation`): six
+/// regions, every layer see-through. Its blue is the `coag_stars` dome
+/// (`sky_one_alpha_env`, DXT1, opaque); its clouds (`two_alpha_clouds`)
+/// are a `Y8` tile with no alpha times `coag_cloudcover_mask`, and its
+/// sun volume (`one_add_illum_detail`) a grey beams tile times
+/// `ascension_sun_volume_mask`. Without their masks the clouds were an
+/// opaque white dome over the blue and the volume added grey over it.
+/// The sky builds, and both layers draw with their masks.
+#[test]
+#[ignore = "needs the owner's disc image"]
+fn disc_coagulation_sky_layers_take_their_masks() {
+    let maps = MapSource::disc_maps(&disc_iso()).unwrap();
+    let (_, source) = maps.iter().find(|(n, _)| n == "coagulation").unwrap();
+    let mut s = crate::Session::new();
+    s.open_named(source.clone(), "coagulation").unwrap();
+    let scene = s.scene().expect("a scene");
+    let sky = scene.sky.as_ref().expect("coagulation's sky builds");
+    assert_eq!(sky.name, "coagulation");
+    let material = |stem: &str| {
+        scene
+            .materials
+            .iter()
+            .find(|m| m.shader.ends_with(stem))
+            .unwrap_or_else(|| panic!("{stem}: {:?}", scene.materials))
+    };
+    let clouds = material("coag_cloudcover");
+    assert_eq!(clouds.blend, crate::scene::Blend::Alpha, "{clouds:?}");
+    assert!(
+        clouds
+            .base
+            .as_deref()
+            .is_some_and(|b| b.ends_with("coag_cloudtile")),
+        "{clouds:?}"
+    );
+    assert!(
+        clouds
+            .mask
+            .as_deref()
+            .is_some_and(|m| m.ends_with("coag_cloudcover_mask")),
+        "{clouds:?}"
+    );
+    let volume = material("coag_sun_volume");
+    assert_eq!(volume.blend, crate::scene::Blend::Additive, "{volume:?}");
+    assert!(
+        volume
+            .mask
+            .as_deref()
+            .is_some_and(|m| m.ends_with("ascension_sun_volume_mask")),
+        "{volume:?}"
+    );
+    let stars = material("coag_stars");
+    assert!(stars.mask.is_none(), "{stars:?}");
+    let masked = sky.mesh.batches.iter().filter(|b| b.mask.is_some()).count();
+    assert_eq!(masked, 2, "the clouds and the sun volume");
+}
+
 /// Framing drops the few placements far outside a level.
 #[test]
 fn trimmed_bounds_drop_outliers() {
@@ -1114,6 +1170,151 @@ fn disc_scenarios_read_and_fields_are_plausible() {
         outside * 100 <= positions,
         "{outside} of {positions} outside"
     );
+}
+
+/// The matcher `0x0015a090` as read (docs/game/notes/2026-11-23-item-game-types.md).
+#[test]
+fn game_type_matcher_follows_the_engine_routine() {
+    use layout::game_types::{ENGINE_CODES, first_match, slot_matches};
+    // A slot names an engine's code, the two flag codes stand for each
+    // other, 12 is every engine and 13 and 14 every engine but 1 and 9.
+    for code in ENGINE_CODES {
+        let flag = code == 1 || code == 9;
+        for slot in -1..=15i16 {
+            let want = i32::from(slot) == code
+                || (flag && (slot == 1 || slot == 9))
+                || slot == 12
+                || (!flag && (slot == 13 || slot == 14));
+            assert_eq!(slot_matches(slot, Some(code)), want, "{slot} {code}");
+        }
+    }
+    assert!(slot_matches(9, Some(1)) && slot_matches(1, Some(9)));
+    assert!(!slot_matches(13, Some(9)) && slot_matches(14, Some(2)));
+    // King of the Hill's code is 0, so a slot of 4 matches nothing.
+    assert!(slot_matches(0, Some(0)));
+    assert!(ENGINE_CODES.iter().all(|&c| !slot_matches(4, Some(c))));
+    // With no engine object only a slot of 0 matches, 12 included.
+    assert!(slot_matches(0, None));
+    assert!(!slot_matches(12, None) && !slot_matches(2, None));
+    // The first matching slot wins; none leaves the entry out.
+    assert_eq!(first_match(&[3, 12, 2, 0], Some(2)), Some(1));
+    assert_eq!(first_match(&[0, 0, 0, 0], Some(2)), None);
+    assert_eq!(first_match(&[2, 0, 0, 0], None), Some(1));
+    assert_eq!(first_match(&[], Some(2)), None);
+}
+
+#[test]
+fn item_game_type_slots_are_the_typed_fields() {
+    use layout::game_types::{ITEM_SLOTS, SLOT_COUNT, item_slots};
+    let kind = BlockKind::NetgameEquipment;
+    let mut s = read(fixture());
+    for (k, v) in [12i64, 2, 13, 0].into_iter().enumerate() {
+        s.set(kind, 0, &format!("game type {}", k + 1), Value::Int(v))
+            .unwrap();
+    }
+    let entry = s.block(kind).entry(0).unwrap();
+    assert_eq!(item_slots(entry), Some([12, 2, 13, 0]));
+    assert_eq!(item_slots(&entry[..ITEM_SLOTS as usize + 7]), None);
+    let def = layout::block(kind);
+    for k in 0..SLOT_COUNT {
+        let f = def.field(&format!("game type {}", k + 1)).unwrap();
+        assert_eq!(f.offset, ITEM_SLOTS + 2 * k as u32);
+        assert_eq!(f.ty, layout::FieldType::I16);
+    }
+}
+
+/// The D1 census (docs/game/forge-map-variants.md, "Slices"): every
+/// multiplayer scenario on the owner's disc (`H2_DISC`, else
+/// `disc/halo2.iso`), read-only. Each netgame equipment slot must lie in
+/// the matcher's range and each respawn mode in the tick's; the counts
+/// say how the retail maps use them. Starting locations' bytes from
+/// `+0x12` to `+0x2a` have no engine reader; their values are printed,
+/// not checked.
+#[test]
+#[ignore = "needs the owner's disc image"]
+fn disc_item_game_types_and_respawn_modes_census() {
+    use layout::game_types::{ENGINE_CODES, MAX, SLOT_COUNT, first_match, item_slots};
+    use std::collections::BTreeMap;
+    let maps = MapSource::disc_maps(&disc_iso()).unwrap();
+    let (mut checked, mut items) = (0, 0usize);
+    let mut slot_values: BTreeMap<i16, usize> = BTreeMap::new();
+    let mut slot_sets: BTreeMap<[i16; SLOT_COUNT], usize> = BTreeMap::new();
+    let mut modes: BTreeMap<i64, usize> = BTreeMap::new();
+    let mut per_engine: BTreeMap<i32, usize> = BTreeMap::new();
+    let mut in_no_engine = 0usize;
+    let mut never = 0usize;
+    let mut start_words: BTreeMap<(usize, i16), usize> = BTreeMap::new();
+    let mut starts = 0usize;
+    for (name, source) in maps {
+        let mut m = source.open().unwrap();
+        if m.header().cache_type != map::CacheType::Multiplayer {
+            continue;
+        }
+        let s = Scenario::read(&mut m).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let kind = BlockKind::NetgameEquipment;
+        let block = s.block(kind);
+        let mut line = BTreeMap::new();
+        for i in 0..block.len() {
+            let slots = item_slots(block.entry(i).unwrap()).unwrap();
+            for (k, &v) in slots.iter().enumerate() {
+                assert!(
+                    (0..=MAX).contains(&v),
+                    "{name} netgame equipment {i} game type {}: {v}",
+                    k + 1
+                );
+                *slot_values.entry(v).or_default() += 1;
+            }
+            *slot_sets.entry(slots).or_default() += 1;
+            let mode = s.get(kind, i, "respawn mode").unwrap().as_int().unwrap();
+            assert!(
+                i16::try_from(mode).is_ok_and(|m| layout::RESPAWN_MODES.contains(&m)),
+                "{name} netgame equipment {i} respawn mode: {mode}"
+            );
+            *modes.entry(mode).or_default() += 1;
+            let mut any = false;
+            for code in ENGINE_CODES {
+                if first_match(&slots, Some(code)).is_some() {
+                    *per_engine.entry(code).or_default() += 1;
+                    *line.entry(code).or_insert(0usize) += 1;
+                    any = true;
+                }
+            }
+            if first_match(&slots, None).is_some() {
+                in_no_engine += 1;
+            }
+            if !any {
+                never += 1;
+            }
+            items += 1;
+        }
+        eprintln!(
+            "{name}: {} items; in a game per engine code {line:?}",
+            block.len()
+        );
+        let starting = s.block(BlockKind::StartingLocations);
+        for i in 0..starting.len() {
+            let e = starting.entry(i).unwrap();
+            for at in (0x12..=0x2a).step_by(2) {
+                let v = i16::from_le_bytes([e[at], e[at + 1]]);
+                *start_words.entry((at, v)).or_default() += 1;
+            }
+            starts += 1;
+        }
+        checked += 1;
+    }
+    assert!(checked > 0);
+    eprintln!("{checked} multiplayer scenarios, {items} netgame equipment entries");
+    eprintln!("slot values (value: slots): {slot_values:?}");
+    eprintln!("respawn modes (mode: entries): {modes:?}");
+    eprintln!("entries in a game per engine code: {per_engine:?}");
+    eprintln!("entries with no engine object: {in_no_engine}; in no engine's game: {never}");
+    let mut sets: Vec<_> = slot_sets.into_iter().collect();
+    sets.sort_by_key(|s| std::cmp::Reverse(s.1));
+    eprintln!("slot sets, most used first: {sets:?}");
+    eprintln!("{starts} starting locations; (offset, value): count");
+    for ((at, v), n) in start_words {
+        eprintln!("  +{at:#04x} {v}: {n}");
+    }
 }
 
 fn names(s: &Scenario) -> Vec<(i16, i16)> {
@@ -1386,6 +1587,94 @@ fn another_tags_grown_block_is_appended_and_repointed() {
     assert_eq!(word(&out, root), 3);
     assert_eq!(word(&out, root + 4), META + 0x2000);
     assert_eq!(&out[src.len()..src.len() + 0x30], &bytes[..]);
+    open(out).validate_checksum().unwrap();
+}
+
+#[test]
+fn the_recordings_blocks_writes_save_with_the_scenario() {
+    let src = fixture_at_end();
+    let mut s = read(src.clone());
+    let base = META + SCNR as u32;
+    let root = base + 0xf00;
+    let g = crate::TagGrown {
+        root,
+        count: 3,
+        bytes: vec![1, 2, 3],
+    };
+    // A pair outside the scenario's payload, one that is also patched, and
+    // a grown stream with nothing in it are refused.
+    let elsewhere = crate::TagGrown {
+        root: META + 0x1100,
+        ..g.clone()
+    };
+    assert!(s.set_recording_changes(vec![], vec![elsewhere]).is_err());
+    assert!(
+        s.set_recording_changes(vec![(root + 4, vec![0])], vec![g.clone()])
+            .is_err()
+    );
+    let empty = crate::TagGrown {
+        bytes: vec![],
+        ..g.clone()
+    };
+    assert!(s.set_recording_changes(vec![], vec![empty]).is_err());
+    assert!(!s.is_modified() && s.changes().is_empty());
+
+    s.set_recording_changes(vec![(base + 0xf40, vec![7, 8])], vec![g])
+        .unwrap();
+    let c = s.changes();
+    assert!(c.patches.contains(&(base + 0xf40, vec![7, 8])));
+    assert_eq!(c.tag_grown.len(), 1);
+    let out = write(&src, &s);
+    let word = |b: &[u8], o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+    assert_eq!(&out[sfile(0xf40)..sfile(0xf40) + 2], [7, 8]);
+    assert_eq!(word(&out, sfile(0xf00)), 3);
+    let at = word(&out, sfile(0xf04));
+    assert!(at > META);
+    assert_eq!(&out[src.len()..src.len() + 3], [1, 2, 3]);
+    open(out).validate_checksum().unwrap();
+}
+
+#[test]
+fn the_script_tables_writes_save_with_the_scenario() {
+    let src = fixture_at_end();
+    let mut s = read(src.clone());
+    let base = META + SCNR as u32;
+    let root = base + 0xf20;
+    let g = crate::TagGrown {
+        root,
+        count: 2,
+        bytes: vec![9; 8],
+    };
+    // A pair outside the payload, one that is also patched and an empty
+    // table are refused, and nothing is written.
+    let elsewhere = crate::TagGrown {
+        root: META + 0x1100,
+        ..g.clone()
+    };
+    assert!(s.set_script_changes(vec![], vec![elsewhere]).is_err());
+    assert!(
+        s.set_script_changes(vec![(root + 4, vec![0])], vec![g.clone()])
+            .is_err()
+    );
+    let empty = crate::TagGrown {
+        bytes: vec![],
+        ..g.clone()
+    };
+    assert!(s.set_script_changes(vec![], vec![empty]).is_err());
+    assert!(!s.is_modified() && s.changes().is_empty());
+
+    s.set_script_changes(vec![(base + 0xf40, vec![7, 8])], vec![g])
+        .unwrap();
+    let c = s.changes();
+    assert!(c.patches.contains(&(base + 0xf40, vec![7, 8])));
+    assert_eq!(c.tag_grown.len(), 1);
+    assert_eq!(s.script_changes().1.len(), 1);
+    let out = write(&src, &s);
+    let word = |b: &[u8], o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+    assert_eq!(&out[sfile(0xf40)..sfile(0xf40) + 2], [7, 8]);
+    assert_eq!(word(&out, sfile(0xf20)), 2);
+    assert!(word(&out, sfile(0xf24)) > META);
+    assert_eq!(&out[src.len()..src.len() + 8], [9; 8]);
     open(out).validate_checksum().unwrap();
 }
 
@@ -2434,6 +2723,125 @@ fn added_sky_layers_add_over_the_dome_and_black_adds_nothing() {
     assert!(px[0] > 180 && px[2] < 60, "the planet: {px:?}");
 }
 
+/// Coagulation's cloud layer (`two_alpha_clouds`) is a cloud tile with no
+/// alpha of its own (`Y8`) times a cover mask: drawn by the tile alone it
+/// was an opaque white dome over the blue sky. A see-through layer with
+/// a coverage mask ([`crate::scene::Look::mask`]) takes the mask in colour
+/// and alpha, at the mask's own scale: where the mask is clear the blue
+/// dome behind shows, where it is solid the cloud covers it. The sky box's
+/// coordinates (`u` 0.25) sit on the mask's left (clear) texel; at scale 3
+/// (`u` 0.75) on its right (solid white) one.
+#[test]
+fn a_cloud_layer_is_covered_by_its_mask() {
+    use crate::scene::{Blend, Image, Layer, Look, Scene, SceneSky};
+    let instance = gfx::instance();
+    let Ok(adapter) =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+    else {
+        eprintln!("no wgpu adapter; skipping");
+        return;
+    };
+    let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+    let size = [64u32, 64];
+    let cam = Camera {
+        distance: 40.0,
+        ..Camera::default()
+    };
+    let blue = Image {
+        width: 1,
+        height: 1,
+        rgba: vec![10, 10, 200, 255],
+    };
+    // The cloud tile: white, opaque everywhere (as `Y8` decodes).
+    let tile = Image {
+        width: 1,
+        height: 1,
+        rgba: vec![255, 255, 255, 255],
+    };
+    // The mask: clear on the left, solid white on the right.
+    let mask = Image {
+        width: 2,
+        height: 1,
+        rgba: [[255u8, 255, 255, 0], [255, 255, 255, 255]].concat(),
+    };
+    let mut vp = crate::render::Viewport::new(&device);
+    let mut draw = |cover: Option<Layer>| {
+        let mut mesh = crate::scene::Mesh::default();
+        push_sky_box(
+            &mut mesh,
+            50.0,
+            [0.25, 0.5],
+            &Look::plain(Some(0)),
+            Blend::Opaque,
+        );
+        let clouds = Look {
+            mask: cover,
+            ..Look::plain(Some(1))
+        };
+        push_sky_box(&mut mesh, 40.0, [0.25, 0.5], &clouds, Blend::Alpha);
+        let scene = Scene {
+            textures: vec![blue.clone(), tile.clone(), mask.clone()],
+            lifts: vec![1.0; 3],
+            sky: Some(SceneSky {
+                name: "test_sky".into(),
+                mesh,
+                clear: [0.0; 3],
+            }),
+            ..Scene::default()
+        };
+        vp.set_scene(&device, &queue, &scene);
+        vp.render(&device, &queue, &cam, size);
+        center_pixel(&device, &queue, &vp, size)
+    };
+    let layer = |s: f32| {
+        Some(Layer {
+            texture: 2,
+            scale: [s, s],
+        })
+    };
+    let bare = draw(None);
+    assert!(
+        bare[0] > 230 && bare[2] > 230,
+        "the tile alone covers the sky: {bare:?}"
+    );
+    let clear = draw(layer(1.0));
+    assert!(
+        clear[2] > 180 && clear[0] < 60,
+        "the mask's clear texel shows the dome: {clear:?}"
+    );
+    let solid = draw(layer(3.0));
+    assert!(
+        solid[0] > 230 && solid[2] > 230,
+        "the mask's solid texel: {solid:?}"
+    );
+}
+
+/// The viewport's two shading spaces write one colour texture through
+/// two views that differ only in the sRGB encode: the editor's own
+/// shaders sample sRGB pictures and write linear light through the sRGB
+/// view; the native renderer's passes (the game's gamma-space combiners
+/// on `Rgba8Unorm` and `BC*Unorm` pictures) write the plain view, as the
+/// game writes its plain surface. `encode_srgb` (the native clear
+/// colour) inverts `scene::srgb_to_linear`.
+#[test]
+fn each_shading_space_writes_its_own_view_of_the_target() {
+    use crate::render::{COLOR_FORMAT, Shading, UI_FORMAT, encode_srgb};
+    use wgpu::TextureFormat as F;
+    assert_eq!(Shading::Linear.target_format(), F::Rgba8UnormSrgb);
+    assert_eq!(Shading::Linear.texture_format(), F::Rgba8UnormSrgb);
+    assert_eq!(Shading::Gamma.target_format(), F::Rgba8Unorm);
+    assert!(!Shading::Gamma.texture_format().is_srgb());
+    assert_eq!(COLOR_FORMAT, Shading::Linear.target_format());
+    assert_eq!(UI_FORMAT, Shading::Gamma.target_format());
+    assert_eq!(COLOR_FORMAT.remove_srgb_suffix(), UI_FORMAT);
+    for b in [0u8, 5, 10, 63, 128, 188, 255] {
+        let back = encode_srgb(f64::from(crate::scene::srgb_to_linear(b))) * 255.0;
+        assert!((back - f64::from(b)).abs() < 0.5, "{b} came back as {back}");
+    }
+    assert_eq!(encode_srgb(-1.0), 0.0);
+    assert_eq!(encode_srgb(2.0), 1.0);
+}
+
 /// A map's shared caches come from beside it, or from `shared` when the
 /// source names one (a Map Pack map leans on the Halo 2 disc's).
 #[test]
@@ -2710,4 +3118,179 @@ fn geometry_raw_patches_save_with_the_map_and_a_refusal_refuses_the_save() {
     let e = save::write_patched(&mut open(src.clone()), &s, &mut out).unwrap_err();
     assert!(e.to_string().contains("a grown write"), "{e}");
     assert!(out.into_inner().is_empty());
+}
+
+#[test]
+fn a_geometry_grown_block_goes_to_the_metadata_end_and_its_pair_names_it() {
+    use crate::scenario::{GeometryChanges, GeometryGrown};
+    let src = metadata_last(fixture_with_collision());
+    let mut s = read(src.clone());
+    // The structure's per-leaf pair (`sbsp+0x2c`), pointed at two new
+    // elements.
+    let pair = META + (SBSP + 0x2c) as u32;
+    let bytes: Vec<u8> = (0u8..16).collect();
+    let grown = GeometryGrown {
+        pair_space: None,
+        pair,
+        count: 2,
+        bytes: bytes.clone(),
+        align: 16,
+    };
+    s.set_geometry_changes(GeometryChanges {
+        grown: vec![grown.clone()],
+        ..GeometryChanges::default()
+    })
+    .unwrap();
+    assert!(!s.changes().is_empty());
+    let out = write(&src, &s);
+    let mut m = open(out.clone());
+    m.validate_checksum().unwrap();
+    let root = m.read_tag_bytes(id(4)).unwrap();
+    let word = |at: usize| u32::from_le_bytes(root[at..at + 4].try_into().unwrap());
+    // The copy starts where the source's metadata ended.
+    assert_eq!((word(0x2c), word(0x30)), (2, META + 0x2000));
+    let at = m.file_offset(META + 0x2000, 16).unwrap();
+    assert_eq!(m.read_file_range(at, 16).unwrap(), bytes);
+    // A pair in the scenario's payload is the Scenario tool's; an empty
+    // block is refused.
+    let over = GeometryGrown {
+        pair: META + SCNR as u32,
+        ..grown.clone()
+    };
+    let refuse = |g: GeometryGrown| {
+        s.clone()
+            .set_geometry_changes(GeometryChanges {
+                grown: vec![g],
+                ..GeometryChanges::default()
+            })
+            .is_err()
+    };
+    assert!(refuse(over));
+    assert!(refuse(GeometryGrown {
+        count: 0,
+        bytes: Vec::new(),
+        ..grown
+    }));
+}
+
+#[test]
+fn bitmap_changes_save_beside_the_modeling_tools_and_a_refusal_refuses_the_save() {
+    use crate::scenario::{GeometryChanges, RawAppend, RawPatch};
+    let src = fixture_with_textured_bsp();
+    let mut s = read(src.clone());
+    let block = map::RawPointer {
+        file: map::ResourceFile::Local,
+        offset: TEX_BLOCK_FILE as u32,
+    };
+    let before = s.changes();
+    // Pixels patched in place: the same bytes as a geometry raw patch.
+    s.set_bitmap_changes(GeometryChanges {
+        raw_patches: vec![RawPatch {
+            block,
+            block_size: 0x40,
+            offset: 0x10,
+            bytes: vec![0x11, 0x22, 0x33],
+        }],
+        ..GeometryChanges::default()
+    })
+    .unwrap();
+    assert_ne!(s.changes(), before);
+    // A modeling write elsewhere in the same block does not clash.
+    s.set_geometry_changes(GeometryChanges {
+        raw_patches: vec![RawPatch {
+            block,
+            block_size: 0x40,
+            offset: 0x30,
+            bytes: vec![0xab],
+        }],
+        ..GeometryChanges::default()
+    })
+    .unwrap();
+    let out = write(&src, &s);
+    let ranges: Vec<_> = diff(&src, &out)
+        .into_iter()
+        .filter(|&(a, _)| !(0x2d0..0x2d4).contains(&a))
+        .collect();
+    let at = TEX_BLOCK_FILE;
+    assert_eq!(ranges, [(at + 0x10, at + 0x13), (at + 0x30, at + 0x31)]);
+    // A patch over the scenario's payload is the Scenario tool's.
+    assert!(
+        s.set_bitmap_changes(GeometryChanges {
+            patches: vec![(META + SCNR as u32, vec![1])],
+            ..GeometryChanges::default()
+        })
+        .is_err()
+    );
+    // Undoing the edit (an empty set) is the source again, byte for byte.
+    s.set_geometry_changes(GeometryChanges::default()).unwrap();
+    s.set_bitmap_changes(GeometryChanges::default()).unwrap();
+    assert_eq!(s.changes(), before);
+    assert_eq!(write(&src, &s), src);
+    // A refusal names the Textures tool and stops the save before it writes.
+    s.set_bitmap_changes(GeometryChanges {
+        raw_appends: vec![RawAppend {
+            bytes: vec![0; 16],
+            align: 0x200,
+            pointer_space: None,
+            pointer_address: 0,
+        }],
+        refusal: Some("image 0: not written".into()),
+        ..GeometryChanges::default()
+    })
+    .unwrap();
+    let mut sink = Cursor::new(Vec::new());
+    let e = save::write_patched(&mut open(src.clone()), &s, &mut sink).unwrap_err();
+    assert!(e.to_string().contains("bitmap: image 0: not written"), "{e}");
+    assert!(sink.into_inner().is_empty());
+}
+
+#[test]
+fn sound_changes_save_beside_the_other_tools_and_a_refusal_refuses_the_save() {
+    use crate::scenario::{GeometryChanges, RawPatch};
+    let src = fixture_with_textured_bsp();
+    let mut s = read(src.clone());
+    let block = map::RawPointer {
+        file: map::ResourceFile::Local,
+        offset: TEX_BLOCK_FILE as u32,
+    };
+    let before = s.changes();
+    s.set_sound_changes(GeometryChanges {
+        raw_patches: vec![RawPatch {
+            block,
+            block_size: 0x40,
+            offset: 0x20,
+            bytes: vec![9, 8, 7],
+        }],
+        ..GeometryChanges::default()
+    })
+    .unwrap();
+    assert_ne!(s.changes(), before);
+    let out = write(&src, &s);
+    let ranges: Vec<_> = diff(&src, &out)
+        .into_iter()
+        .filter(|&(a, _)| !(0x2d0..0x2d4).contains(&a))
+        .collect();
+    assert_eq!(ranges, [(TEX_BLOCK_FILE + 0x20, TEX_BLOCK_FILE + 0x23)]);
+    // A mouth curve edit writes raw bytes in place and nothing else.
+    assert!(
+        s.set_sound_changes(GeometryChanges {
+            patches: vec![(META + SCNR as u32, vec![1])],
+            ..GeometryChanges::default()
+        })
+        .is_err()
+    );
+    // An empty set is the source again.
+    s.set_sound_changes(GeometryChanges::default()).unwrap();
+    assert_eq!(s.changes(), before);
+    assert_eq!(write(&src, &s), src);
+    // A refusal names the sound and stops the save before it writes.
+    s.set_sound_changes(GeometryChanges {
+        refusal: Some("its data is in a shared cache".into()),
+        ..GeometryChanges::default()
+    })
+    .unwrap();
+    let mut sink = Cursor::new(Vec::new());
+    let e = save::write_patched(&mut open(src.clone()), &s, &mut sink).unwrap_err();
+    assert!(e.to_string().contains("sound: its data is in a shared cache"), "{e}");
+    assert!(sink.into_inner().is_empty());
 }

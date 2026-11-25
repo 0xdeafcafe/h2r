@@ -1,0 +1,24 @@
+screen: forge.variant
+kind: dialog
+layout: large
+backing: over
+opener: main-menu
+states:
+  saved:
+    focus: 0
+  open:
+    focus: 0
+  live:
+    focus: 0
+  unusable:
+    focus: 0
+widgets:
+  title:
+    component: title
+    text: "MAP VARIANT"
+  description:
+    component: description
+    at: [15, 74]
+    size: [235, 154]
+  legend:
+    component: legend

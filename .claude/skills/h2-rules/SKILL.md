@@ -1,13 +1,14 @@
 ---
 name: h2-rules
-description: Use when writing, checking, testing or shipping a game type script in the rules language, a `.rules` file, a rules scenario, a game variant or a `.h2variant` file. Covers h2 rules check/build/run/sim/caps/builtin/lsp, h2 variants port, capabilities and requires, the tick budget, Studio's script editor and reloading a script into a running game (rules.reload), and Live's /v1/rules and /v1/variants routes.
+description: Use when writing, checking, testing or shipping a game type script in the rules language, a `.rules` file, a rules scenario, a game variant or a `.h2variant` file. Covers h2 rules check/build/run/sim/caps/builtin/lsp/editors, the VS Code and Zed extensions, h2 variants port, capabilities and requires, the tick budget, Studio's script editor and reloading a script into a running game (rules.reload), and Live's /v1/rules and /v1/variants routes.
 ---
 
 # Write, test and ship a game type script
 
 A game type is a `.rules` script in our own small language. It compiles
-to a verified IR blob whose SHA-256 names it, and it plays as a game of one
-retail engine (its carrier). You write it, check it, run it over a scenario
+to a verified IR blob whose SHA-256 names it. Its `type` line names its
+game type (the list row it is filed in and its start line); a `uses` line
+plays a built-in game's rules under the script's settings. You write it, check it, run it over a scenario
 on a fake game, then ship it as a game variant. The design is
 [docs/game/rules-engine.md](../../../docs/game/rules-engine.md); this
 skill is the working loop.
@@ -40,11 +41,13 @@ h2 rules build my_mode.rules -o my_mode.rir         # the verified blob and its 
    scripts (`engine <index>: <name>`: Capture the Flag, Slayer, Oddball,
    King of the Hill, Juggernaut, Territories, Assault), then the payoff
    examples (`example <key>: <name>`: infection, gun_game, vip, siege,
-   race, bounce_practice). `h2 rules builtin slayer` prints one, by name
+   race, bounce_hunt). `h2 rules builtin slayer` prints one, by name
    (any case), engine index or example key.
-2. **Write the `.rules` file**: a header (`rules "Name" 1`, `carrier
-   slayer`, optional `teams n` and `requires ...`), options, variables,
-   functions, handlers. A new mode carries `slayer`.
+2. **Write the `.rules` file**: a header (`rules "Name" 1`, `type
+   slayer`, optional `teams n`, `points "Label"`, `uses <game>` and
+   `requires ...`), options, variables, functions, handlers. The type is
+   one of `slayer ctf assault oddball koth juggernaut territories research
+   party firefight siege`; a new mode picks the row it belongs in.
 3. **`h2 rules check`.** Fix every error and read the report.
 4. **`h2 rules sim`** first: it plays whole matches made up from what
    the script handles and says who won, how each match ended, the
@@ -70,12 +73,19 @@ h2 rules build my_mode.rules -o my_mode.rir         # the verified blob and its 
 status; run it when unsure whether an entry exists or a host can make it.
 `h2 rules lsp` is a language server on stdin and stdout for files ending
 `.rules` (diagnostics, completion, hover, signature help, definitions,
-references, semantic tokens, outline, formatting, quick fixes, rename).
+references, highlights, semantic tokens, outline, folding, formatting,
+quick fixes, rename). A person edits scripts in VS Code or Zed through
+it: `h2 rules editors install` installs the VS Code extension and prints
+the Zed steps, and `h2 rules editors status` says what is installed and
+whether the server starts
+([docs/editor/rules-editors.md](../../../docs/editor/rules-editors.md)).
+The extensions live in `editors/`; their tests and packaging run in CI
+(`.github/workflows/editors.yml`), not in a lane.
 
 ## Read the check report
 
 ```text
-x.rules: "Count" version 1, carrier engine 2, 2 teams
+x.rules: "Count" version 1, type slayer, points "Kills", engine 2, 2 teams
 worst tick: 112 ops of 100000 budget (fits)
 costliest handler: on kill (7 ops a run)
 IR: 214 bytes of 65536
@@ -121,8 +131,8 @@ own powers.
 
 The fixed list (`h2 rules caps`): `game.traits`, `player.traits`,
 `player.team`, `player.spawn`, `player.weapons`, `player.disguise`,
-`player.camera`, `objects.create`, `objects.delete`, `objects.move`,
-`ai.squads`, `hud.message`, `firefight.director`, and the four
+`player.camera`, `player.pick`, `objects.create`, `objects.delete`, `objects.move`,
+`ai.squads`, `vehicles.drive`, `hud.message`, `firefight.director`, and the four
 **grantable** `forge.move`, `forge.delete`, `forge.place`, `forge.scale`.
 
 - Only a `forge.*` capability can be given to a player:
@@ -146,7 +156,8 @@ The fixed list (`h2 rules caps`): `game.traits`, `player.traits`,
   the reason in `rules.state`. The VM refuses every granted proposal in a
   ranked game or in Theater. Declare the least a mode needs.
 - The host runtime refuses, today, any script that calls `grant`: grants
-  need the match edit path, which is not built. VIP is a test script.
+  need the match edit path, which is not built. The VIP with powers is a
+  test script (`tests/scripts.rs`); the listed VIP has none.
 
 ## The scenario
 
@@ -179,11 +190,15 @@ error (`scenario: unknown field ...`) and every field is optional.
   declaration order from bit 0. Absent, every option takes its default.
 - `players`: `slot` (0 to 15), `team` (default 0), `alive` (true), `score`
   (0), `lives` (0), `unit` (the player's unit object, so `enter` and
-  `leave` naming it move the player in and out of a zone). `teams`
+  `leave` naming it move the player in and out of a zone), `body`
+  (`{"airborne": true, "crouching": false, "primed": true}`: what
+  `p.airborne`, `p.crouching` and `p.primed` read; a `touchdown` lands
+  the player). `sight` is a list of `[from, to]` object pairs with
+  nothing solid between them, the only pairs `sees` answers true for. `teams`
   defaults to `[0, 1]`.
 - `variant`: record fields by name (`{"team_play": 1, "score_limit":
-  25}`); a field left out reads the stock record of the script's carrier
-  (a Slayer carrier is free-for-all, score limit 25, time limit 480).
+  25}`); a field left out reads the stock record of the script's engine
+  (Slayer's is free-for-all, score limit 25, time limit 480).
 - `map`: `[{"label": "hill", "object": 40, "number": 1, "class":
   "volume"}]`, what the game holds that the script labels, and what
   the members of the script's `label hill: ...`
@@ -201,11 +216,16 @@ error (`scenario: unknown field ...`) and every field is optional.
   `{"press": {"player": 0, "object": 0}}`, `{"pickup": {"player": 0,
   "object": 5}}`, `{"drop": {...}}`, `{"bounce": {"player": 0, "object":
   0, "chain": 2, "monster": false}}` (`chain` 1 and `monster` false when
-  left out), `{"bounced": 0}`, `{"edit": {"player": 0, "object": 7}}`, `{"squad_dead": 2}`,
+  left out), `{"bounced": 0}`, `{"touchdown": {"player": 0, "down":
+  589824, "up": 786432}}` (raw `fixed`, world units a second),
+  `{"launch": {"player": 0, "spot": 77, "speed": 786432}}` (`spot` `none`
+  when left out), `{"grounded": 0}`, `{"edit": {"player": 0, "object": 7}}`, `{"squad_dead": 2}`,
   `{"actor_kill": {"killer": 0, "class": "elite"}}`, `{"actor_assist":
   {"killer": 0, "assist": 1, "class": "elite"}}`, `"round_end"`.
 - A kill marks the victim dead and counts its death and the killer's
-  kill; a spawn marks the player alive; a quit removes the player. The
+  kill; a spawn marks the player alive, unless the engine holds it (the
+  variant's `lives` positive and none left, when only the script's
+  `respawn` brings the player back); a quit removes the player. The
   dead and the departed leave every zone and drop what they carry; a
   `pickup` or `drop` of an objective sets or clears its carrier. A zone
   that living players of one team alone are inside is held by it, which
@@ -234,22 +254,23 @@ h2 variants port my_record.bin --script my_mode.rules -o out/
 
 - The input is a record: a raw 0x130-byte record, a saved-variant file, a
   hopper slot (0x37c bytes) or a `.h2variant`. Its engine must be the
-  script's carrier, or the port fails with `the record is engine N; the
-  script rides engine M`.
+  script's (`h2 rules check` prints it), or the port fails with `the
+  record is engine N; the script's record is engine M`.
 - `--name NAME` and `--description TEXT` replace the record's name and the
   input file's description (one input only). `--option key=value`, once
   per option, sets a script option by name: an int (whole seconds for a
   `time` option), `true` or `false`, or an enum value's name. An option the script does not declare, a value
-  out of range, or any option with `--script keep` is refused. Options
+  out of range is refused. Options
   left out take their defaults. A script over the budget is refused.
 - `--script builtin` (the default) attaches the record's engine's
-  built-in; `keep` leaves it unscripted; `x.rules` compiles, verifies and
-  carries the source; `x.rir` carries the blob alone.
+  built-in; `x.rules` compiles, verifies and carries the source; `x.rir`
+  carries the blob alone. Every port names a script, and the script's
+  `settings` are the only `hx` extras the record carries.
 - It prints `<id>  <path>` per file; the id is the SHA-256 of the file's
   canonical bytes, and the same input and script give the same id. Exit is
   nonzero if any input failed.
 - With no record at hand, use Live's `/v1/variants/bundle`, which starts
-  from the carrier engine's stock record.
+  from the script's engine's stock record.
 - A `.h2variant` placed in the game's `game-variants` data folder joins
   Custom Games' variant list with its script (the in-game store is built
   and tested, not yet played).
@@ -264,7 +285,7 @@ client address, refilled at 2 a second (429 past it).
 | `POST /v1/rules/run` `{source, scenario}` | none | a trace, or `{ok: false, errors}` when it does not build; a bad scenario is 400 |
 | `POST /v1/rules/simulate` `{source, players, teams, seed, matches}` | none | generated matches: `{ok, teams, summary, rows, match}`; `match` holds the first seed's `scenario` (the run's shape) and `trace`; a batch costs 2 tokens and 1 more per further 25 matches |
 | `POST /v1/rules/ide` `{source, op, line, character}` | none | one editor answer (complete, hover, signature, definition, references, tokens, symbols, format, diagnostics) |
-| `GET /v1/rules/builtin` | read | `{items: [{name, engine, source, hash, example, key?}]}`: the engine ports, then the examples (`example: true`, `engine` their carrier) |
+| `GET /v1/rules/builtin` | read | `{items: [{name, engine, source, hash, example, key?}]}`: the engine ports, then the examples (`example: true`, `engine` their record's engine) |
 | `POST /v1/rules` `{source}` | token, `content.write` | saves a script whose check is `ok` (it fits the budget); 201 new, 200 saved already |
 | `GET /v1/rules/{hash}`, `/{hash}/ir`, `GET /v1/rules?author=` | read | the source, the blob, an author's list |
 | `POST /v1/variants/bundle` `{script_hash or source, name, description, options}` | none | `{id, file_name, bundle}`, unpublished |
@@ -303,7 +324,14 @@ account publishes at most 200. Full reference:
 
 Studio's **Game type script** window (a tab beside the Variants tool's
 settings) edits one `.rules` file with colouring, problems, completion,
-hover and the check report. Agents drive the same state over the editor
+hover and the check report. **Open in VS Code** and **Open in Zed** save it
+and open the file there at the cursor; Studio's own edits go to the file a
+second after typing stops. The extension's **H2: Reload Script in Game** and
+**H2: Run Scenario Test...** call Studio over its socket (`rules.reload
+{path}`, `rules.run`). **Open in editor** opens the file
+in VS Code or Zed when one has the rules extension (else `$VISUAL`,
+`$EDITOR`, `code`, `zed`, `open -t`); each save there comes back into
+Studio, and into the paired game while Reload on save is ticked. Agents drive the same state over the editor
 socket (`h2 studio`, [docs/editor/agent-api.md](../../../docs/editor/agent-api.md)):
 
 ```sh
@@ -312,6 +340,8 @@ h2 studio rules.set '{"source":"..."}'
 h2 studio rules.get                               # problems, check, reload state
 h2 studio rules.save '{"path":"/tmp/mine.rules"}' # reloads too while reload on save is on
 h2 studio rules.reload '{"mode":"auto"}'          # answers {queued}; rules.get's reload has the game's answer
+h2 studio rules.run '{"scenario":"case.json"}'    # the open script over a scenario, as h2 rules run prints it
+h2 studio rules.external '{"editor":"code","launch":false}'  # its file and the command that opens it
 ```
 
 Studio sends the verified blob to the paired game's `rules.reload`. A
@@ -323,7 +353,7 @@ h2 agent rules.state     # last_reload: mode, hash, tick, reasons
 ```
 
 - **In place** when the new script keeps the old one's state shape: the
-  same carrier, teams, capabilities, options (kind, range, default),
+  same type, `uses`, teams, capabilities, options (kind, range, default),
   enums, variables per scope (names, types, order), labels and palettes.
   New handler code and new starting values are fine; every value and
   score carries on.
@@ -356,34 +386,73 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
   division by zero gives 0 with a warning.
 - **Host-only.** Only the host runs the script. Guests fetch it only to
   show its name, option labels and messages, and a film stores the blob.
-- **A script game rides an engine index.** A new mode carries `slayer`; a
-  port carries its own engine (`ctf`, `oddball`, `king`, `juggernaut`,
-  `territories`, `assault`), and a variant file's record must be that
-  engine. Retail settings (score and time limits, lives, team play) stay in
+- **A script names a type, not an engine.** `type` files the variant and
+  picks its start line; `points` names what a point is. A retail type's
+  record is that game's engine (`ctf`, `assault`, `oddball`, `koth`,
+  `juggernaut`, `territories`); `research`, `party`, `firefight` and
+  `siege` are on Slayer's, and a variant file's record must be that
+  engine. `carrier`, `list` and `scoring` lines are refused
+  (`header.retired`), each naming its replacement
+  ([docs/game/game-types-without-carriers.md](../../../docs/game/game-types-without-carriers.md)). Retail settings (score and time limits, lives, team play) stay in
   the record: read them as `variant.score_limit` and so on rather than
   re-implementing them. `score(p, n)` already adds the team score and
   tests the score limit.
 - **Order.** `score`, `end_round`, `set_lives`, `respawn` and the other
   `Now` actions are made where the handler runs. The `Queued` ones
   (`create`, `delete`, `place_squad`, `hunt`, `erase_squad`, `forge_*`,
-  `spawn_objective`, `reset_objective`, `ff_*`) are made in order at the
+  `spawn_objective`, `reset_objective`, `ff_*`, `bot_*`) are made in order at the
   next tick boundary, and a read never sees a queued call. `h2 rules caps`
   does not print the order; `crates/formats/rules/src/caps.rs` does.
 - **Known runtime gaps.** A host refuses a script, by name, if it calls an
-  entry that is not `named` or VM-only: `set_team`, `give`, `message`,
-  `spawn_areas`, `reset_objective`, `role_traits`, `inside`, `ticks_held`,
-  `label_number`, `zone_id`, `set_loadout`, `take`, `create`,
-  `register_objective`, `spawn_objective`, `player_of`.
-  `check` lists these as unhostable. The host runtime also, today, delivers
-  only `init`, `kill`, `timer` and `tick`; reads only scores, kills,
-  deaths, `alive`, `team_of`, `lives`, `round_time_left` and
-  `is_objective`; makes only `score`, `end_round`, `set_lives` and
-  `respawn`; reads only `variant.team_play`, `score_limit`, `time_limit`
-  and `lives`; and refuses Forge labels and any `grant`. Calls land at the
-  next tick boundary, and a mode 2 script on a lifted carrier does not
-  replace the carrier's own scoring. The one script playable today is
-  Slayer-shaped; everything else is proven by scenario. Name the entries
+  entry that is not `named` or VM-only: `set_team`, `give`,
+  `take`, `create`, `register_objective`,
+  and `spawn_objective`. The host answers `sees(a, b)` from the next
+  tick boundary's collision trace, one tick after the first request.
+  `airborne`, `crouching` and `primed` read the superbounce chain's
+  biped snapshot. The host names the read and refuses the script at
+  start if it omits `requires hud.superbounce`. `on touchdown`,
+  `on launch` and `on grounded` come from the superbounce mode's medal
+  chain, so a host delivers them only to a script that `requires
+  hud.superbounce`. `push` and
+  `launch` have no entry until R9. `check` lists these as unhostable. The host runtime
+  also delivers only `init`, `round_start`, `kill`, `quit`, `timer`,
+  `tick`, `bounce`, `bounced`, `touchdown`, `launch`, `grounded`, `spawn`,
+  `death`, `enter`, `leave`, `arrive` and `damage`;
+  reads only scores, kills, deaths, `alive`, `team_of`, `lives`,
+  `round_time_left`, `is_objective`, `carrier_of`, the label reads,
+  `inside`, `player_of`, `object_pos`, `object_vel` and the three biped reads; makes only `score`, `end_round`, `set_lives`,
+  `respawn`, `role_traits`, `reset_objective`, `sound_to`, `sound_to_team` and `sound_to_all` (a `sound` of the map, played at the audience's units), `set_loadout` (the
+  multiplayer weapon list's tags only), `spawn_areas` and `spawn_near`
+  (a team's spawn rule, read at each spawn), `set_body` (a team's body,
+  Spartan or Elite, at each spawn), `show_area` and `hide_area` (a zone's
+  boundary drawn in play, at most eight), `teleport` (an object put at a
+  `vec` or at another object's place; a position outside the world is a
+  refused call), `move_to` and `stop` (a mover of at most 16, stepped each
+  tick, with `on arrive(o)` on its end tick; `face`, `move_along`, `attach`
+  and a player's `teleport` are refused by name) and the `bot_*` orders
+  (a `bot_*` order to a seat no phantom holds is a refused call), and
+  `message`, `message_team` and `message_all`, which it shows to the host's
+  own players and sends to clients as a show cue
+  (docs/game/rules-world-api.md, "The show channel"); reads only
+  `variant.team_play`, `score_limit`, `time_limit`
+  and `lives`; and refuses Forge labels and any `grant`. A zone is a
+  labelled netgame flag (`game::rules::world::zones`). Calls land at the
+  next tick boundary, so a score read back in the same handler is the
+  old one; a script that ends on a total counts it in a variable. While
+  a mode 2 script scores, the engine's own scoring is answered in place
+  (docs/game/rules-engine.md, "One scorer"). The listed scripted modes
+  (Superbounce, Siege, Gun Game, Race, VIP) run on a host; the rest is
+  proven by scenario. Name the entries
   your script waits on in a comment at the top, as the built-ins do.
+- **Vehicles and drop ships.** `label run_in: path` is a flight: at least
+  two placements numbered from 0, none missing and none twice (a gap
+  blocks the start, naming the number). `fly(ship, run_in, 12s)` flies it
+  in the stated ticks facing its tangent; `seat`, `eject`, `unload`,
+  `place_squad_in(s, class, n, ship)` and `vehicle_riders` and
+  `vehicle_driver` load and read it. All of them run on the fake game and
+  a host refuses a script that calls one, by name, until the research in
+  docs/game/rules-world-api.md ("Vehicles and drop ships") names them.
+  A vehicle entry on an object that is no vehicle is a refused call.
 - **`message(to, text)`.** `to` is a player, a team or `all`; `h2 rules
   caps` lists the three forms under the one name. The text may hold up
   to four `{name}` holes (a player, team, int, time or enum in scope;

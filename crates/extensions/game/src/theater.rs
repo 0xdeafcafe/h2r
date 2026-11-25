@@ -1,12 +1,14 @@
 //! Host film lifetime: boot facts before guest entry, observer-only checkpoints,
 //! then seal and optionally upload at the first slice after game over.
 mod actions;
+pub mod autorecord;
 mod camera;
 mod capture;
 mod media;
 pub use capture::{ClipCapture, ClipSink, ClipSpan, Picture};
 pub use media::Media;
 mod compatibility;
+pub mod forge_film;
 #[cfg(feature = "gpu")]
 mod host_view;
 #[cfg(feature = "gpu")]
@@ -22,14 +24,19 @@ mod unified;
 mod objectives;
 mod record;
 pub use record::in_keyframe;
+pub(crate) use record::keyframe_scope;
 mod startup;
 pub use startup::Startup;
 pub use startup::configure_replay_child;
 mod replay;
 mod sidecar;
+pub mod start_point;
+pub mod start_play;
+pub mod start_point_agent;
+pub mod start_point_state;
 pub use sidecar::{ReplayCache, RetrySeek};
 mod replay_cursor;
-mod ring;
+pub(crate) mod ring;
 mod warm;
 mod warm_transport;
 pub use warm_transport::SliceAction;
@@ -44,7 +51,7 @@ pub use verify::VerificationMode;
 use anyhow::{Context, Result, bail, ensure};
 use rig::ReplayCamera;
 pub use agent_proto::theater::CompatibilityState;
-pub use compatibility::{Installation, image_match};
+pub use compatibility::{Installation, hook_digest, image_match};
 pub use controls::{library_methods, playback_images};
 use film::{
     FilmMeta, Header, Reader, Source, Writer,
@@ -56,7 +63,10 @@ use std::{
     collections::BTreeSet,
     fs::File,
     path::PathBuf,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -133,11 +143,20 @@ struct Recording {
     file: PathBuf,
     match_over: bool,
     track: film::blam::TrackWriter,
+    /// A default recording's film file: its actions, digests and machine
+    /// part, written as the game is played (docs/game/input-film.md). The
+    /// container's writer mirrors its machine chunks into it.
+    film: Option<Arc<Mutex<film::file::FilmWriter<File>>>>,
     meta: metadata::Capture,
     frame: record::Capture,
     unified: unified::Capture,
     disk: Arc<Mutex<film::manifest::DiskTracker>>,
     upload: Option<UploadTarget>,
+    /// Wall time of the current game's first tick: a cut film's start.
+    game_started_ms: Option<u64>,
+    /// What the last header appended to the tape said of the game, so a
+    /// new game, a join or a leave appends another.
+    described: Option<metadata::Described>,
 }
 
 struct UploadTarget {
@@ -195,6 +214,40 @@ struct State {
     warm_check: Option<(u64, bool)>,
     failure: Option<String>,
     complete: bool,
+    /// What a default recording kept and why it kept nothing.
+    outcome: Outcome,
+}
+
+/// A default recording's account of itself: the films it cut, the last
+/// reason a game or tape went without one, and the outside changes it
+/// carried on through (`theater.status`, and the line printed at the
+/// session's end).
+#[derive(Default)]
+struct Outcome {
+    films: Vec<PathBuf>,
+    discard: Option<String>,
+    notes: Vec<String>,
+    /// The session-end line has been printed.
+    reported: bool,
+}
+
+impl Outcome {
+    /// The one line a default recording ends with: the films written, or
+    /// why there are none.
+    fn line(&self, dir: &std::path::Path, failure: Option<&str>) -> String {
+        match self.films.len() {
+            0 => {
+                let why = self
+                    .discard
+                    .as_deref()
+                    .or(failure)
+                    .unwrap_or("no game was played this session");
+                format!("theater: no film: {why}")
+            }
+            1 => format!("theater: 1 film saved to {}", dir.display()),
+            n => format!("theater: {n} films saved to {}", dir.display()),
+        }
+    }
 }
 pub struct Facts {
     pub stamp: String,
@@ -206,6 +259,9 @@ pub struct Facts {
     pub live_service: bool,
     pub telemetry_hooks: live_proto::film::TelemetryHooks,
     pub render_hooks: film::RenderHooks,
+    /// A player session's default recording keeps its player features on
+    /// ([`autorecord`]). Host and simulation recordings never do.
+    pub player_features: bool,
 }
 pub struct Session {
     version: u32,
@@ -221,13 +277,32 @@ pub struct Session {
     bots: Mutex<bot_tape::BotTape>,
     upload: Mutex<Option<std::thread::JoinHandle<Result<()>>>>,
     require_upload: bool,
-    recording_account: std::sync::OnceLock<Option<live_hle::films::sync::Sync>>,
-    film_sync: std::sync::OnceLock<Box<dyn Fn() -> Option<live_hle::films::sync::Sync> + Send + Sync>>,
+}
+
+/// Cuts the game in play and discards the tape when it drops
+/// ([`Session::seal_on_drop`]). It only locks the session, as every tap
+/// does.
+pub struct Seal {
+    session: Arc<Session>,
+    slices: AtomicU64,
+}
+
+impl Seal {
+    /// Name the last slice the owner finished, so a forced seal cuts
+    /// there. Cheap enough to call every slice.
+    pub fn advance(&self, slices: u64) {
+        self.slices.store(slices, Ordering::Relaxed);
+    }
+}
+
+impl Drop for Seal {
+    fn drop(&mut self) {
+        if let Err(error) = self.session.finish(self.slices.load(Ordering::Relaxed), true) {
+            eprintln!("theater: sealing the recording on exit: {error:#}");
+        }
+    }
 }
 impl Session {
-    pub fn sync_library(&self, sync: impl Fn() -> Option<live_hle::films::sync::Sync> + Send + Sync + 'static) {
-        let _ = self.film_sync.set(Box::new(sync));
-    }
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -246,6 +321,7 @@ impl Session {
             bots,
             address,
             live_service, telemetry_hooks, render_hooks,
+            player_features,
         } = facts;
         let switches = hooks::Switches::from_env().map_err(anyhow::Error::msg)?;
         let admission = crate::replication_admission::FEATURE;
@@ -306,6 +382,10 @@ impl Session {
             let guest_image = film::image::GuestImage::capture(
                 &stamp, recomp::host_triple(), &xbe_sha256,
             );
+            // A default recording and a host's keep their actions in a film
+            // file, which a host sends to Live beside its stats stream; an
+            // explicit recording is one container.
+            let split = player_features || host_recording;
             let header = Header {
                 version: 3,
                 title_id,
@@ -326,6 +406,9 @@ impl Session {
                 render_hooks: Some(render_hooks),
                 live_service,
                 features: switches.with(admission, true).spec(),
+                player_features: player_features && !host_recording,
+                inputs_in_film: split,
+                tape_id: None,
                 transfers_per_slice: opts.transfers_per_slice,
                 meta: FilmMeta {
                     id: live_proto::sign::random_id(),
@@ -360,6 +443,27 @@ impl Session {
                     .with_context(|| path.display().to_string())?,
                 &header,
             )?;
+            let film = if split {
+                let mut file = File::options();
+                file.read(true).write(true).create_new(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    file.mode(0o600);
+                }
+                let film_path = film::file::beside(&path);
+                let seed = film::file::Seed { header: header.clone(), descriptor: Default::default() };
+                let writer = film::file::FilmWriter::new(
+                    file.open(&film_path).with_context(|| film_path.display().to_string())?,
+                    &seed,
+                    30,
+                )?;
+                let writer = Arc::new(Mutex::new(writer));
+                out.set_mirror(Some(film::file::machine_mirror(Arc::clone(&writer))));
+                Some(writer)
+            } else {
+                None
+            };
             out.chunk(film::DATA, &manifest)?;
             (
                 Mode::Record(Recording {
@@ -368,12 +472,19 @@ impl Session {
                     sidecar: None,
                     file: path,
                     match_over: false,
-                    track: Default::default(),
+                    track: if split {
+                        film::blam::TrackWriter::default().without_inputs()
+                    } else {
+                        Default::default()
+                    },
+                    film,
                     meta: metadata::Capture::new(&header),
                     frame: Default::default(),
                     unified: Default::default(),
                     disk: Arc::new(Mutex::new(disk)),
                     upload,
+                    game_started_ms: None,
+                    described: None,
                 }),
                 header,
                 1.,
@@ -418,8 +529,6 @@ impl Session {
         Ok(Some(Arc::new(Self {
             warm: Mutex::new(warm),
             version: header.version,
-            film_sync: Default::default(),
-            recording_account: Default::default(),
             video_menu: Default::default(),
             capture: Default::default(),
             media: Default::default(),
@@ -452,6 +561,7 @@ impl Session {
                 warm_check: None,
                 failure: None,
                 complete: false,
+                outcome: Outcome::default(),
             }),
             upload: Mutex::default(),
         })))
@@ -476,6 +586,82 @@ impl Session {
 
     pub fn has_engine_track(&self) -> bool {
         self.version >= 2
+    }
+
+    /// A player session's default recording, or the replay of one: the
+    /// player features run as they did in the recorded session
+    /// ([`autorecord`]). Otherwise a film turns them off on both sides.
+    pub fn player_features(&self) -> bool {
+        self.lock().header.player_features
+    }
+
+    /// This boot plays a film back rather than recording one.
+    pub fn plays_back(&self) -> bool {
+        self.replaying
+    }
+
+    /// Something outside the tape (a session link joined, an editor write)
+    /// is about to change the guest. A default recording carries on: the
+    /// session's other games still become films, and a cut opens at its
+    /// game's start from the tape's keyframes, which hold the changed
+    /// guest. `drops_game` also drops the game in play, whose ticks the
+    /// tape can no longer replay; its film is never cut. A sealed film, an
+    /// explicit recording and a replay are left alone.
+    pub fn outside_change(&self, why: &str, drops_game: bool) {
+        let mut s = self.lock();
+        if !s.header.player_features
+            || s.complete
+            || s.failure.is_some()
+            || !matches!(s.mode, Mode::Record(_))
+        {
+            return;
+        }
+        let dropped = drops_game && s.drop_game(format!("{why}; the game in play is not kept"));
+        if !dropped {
+            s.outcome.notes.push(why.to_owned());
+        }
+        eprintln!(
+            "theater: {why}; recording carries on{}",
+            if dropped { ", without the game in play" } else { "" }
+        );
+    }
+
+    /// What this session's recording has kept and why it kept nothing
+    /// (`theater.status`).
+    pub fn status(&self) -> agent_proto::theater::Status {
+        let s = self.lock();
+        let (tape, in_game) = match &s.mode {
+            Mode::Record(rec) if s.header.player_features && rec.out.is_some() => {
+                (Some(rec.file.display().to_string()), rec.in_game())
+            }
+            Mode::Record(rec) => (None, rec.in_game()),
+            Mode::Replay(..) => (None, false),
+        };
+        agent_proto::theater::Status {
+            default_recording: s.header.player_features && !self.replaying,
+            tape,
+            in_game,
+            games_cut: s.outcome.films.iter().map(|p| p.display().to_string()).collect(),
+            last_discard: s.outcome.discard.clone(),
+            notes: s.outcome.notes.clone(),
+            failure: s.failure.clone(),
+        }
+    }
+
+    /// Cut and discard a default recording when its owner goes away without
+    /// a teardown (docs/game/film-format.md, "One film per game"). The boot
+    /// loop holds one across its whole slice loop: an error exit or a panic
+    /// that skips the final [`Session::finish`] still cuts the game in play
+    /// and deletes the tape, where an abandoned unsealed tape would keep
+    /// neither. [`Seal::advance`] names the last finished slice; the seal
+    /// does nothing once the recording completed or failed on its own.
+    /// `None` for anything but a default recording.
+    pub fn seal_on_drop(self: &Arc<Self>) -> Option<Seal> {
+        let s = self.lock();
+        (!self.replaying && s.header.player_features && !s.complete).then(|| Seal {
+            session: Arc::clone(self),
+            slices: AtomicU64::new(0),
+        })
     }
 
     pub fn render_hooks(&self) -> film::RenderHooks {
@@ -511,10 +697,13 @@ impl Session {
                     return;
                 }
                 if rec.meta.descriptor().match_start_tick == Some(tick) {
-                    let _ = self.recording_account.set(self.film_sync.get().and_then(|account| account()));
+                    rec.game_started_ms = Some(autorecord::now_ms());
                 }
             } else {
                 Session::check_replay_tick(&mut s, guest, hash);
+            }
+            if s.failure.is_none() {
+                Session::describe_tape(&mut s);
             }
             if s.failure.is_none() {
                 s.measure_match_start(tick);
@@ -534,6 +723,34 @@ impl Session {
         }
         s.finish_warm_tick(tick);
         s.completed_transport_tick(reached_target);
+    }
+
+    /// Append a header naming the game on the tape (its map, variant and
+    /// players) when that changes, and an empty one when the game is gone, so
+    /// a tape a hard kill leaves is recovered as the game it held
+    /// (`film::recover_tape`). A session in menus appends none.
+    fn describe_tape(s: &mut State) {
+        if s.header.version < 3 {
+            return;
+        }
+        let Mode::Record(rec) = &mut s.mode else { return };
+        let now = rec.meta.description();
+        if now == rec.described || (now.is_none() && rec.described.is_none()) {
+            return;
+        }
+        rec.described = now.clone();
+        let mut header = s.header.clone();
+        if let Some(game) = now {
+            header.meta.map = game.map;
+            header.meta.variant = game.variant;
+            header.meta.players = game.players;
+        }
+        if let Mode::Record(rec) = &mut s.mode
+            && let Some(out) = rec.out.as_mut()
+            && let Err(e) = out.chunk(film::HEAD, &header)
+        {
+            s.fail(format!("writing the tape's game header: {e:#}"));
+        }
     }
 
     /// The guest-arena hash and HLE call cursor share the 30-tick checkpoint.
@@ -713,6 +930,16 @@ impl Session {
             return Ok(());
         }
         if s.complete || s.failure.is_some() {
+            // A default recording that failed is never listed half-written.
+            if teardown && s.failure.is_some() {
+                // Keep what was recorded: the game in play is cut up to the
+                // tick the failure stopped the tape at.
+                if s.header.player_features && matches!(&s.mode, Mode::Record(r) if r.out.is_some()) {
+                    s.cut_game(slices);
+                }
+                s.report_session_end();
+                s.discard_auto();
+            }
             return Ok(());
         }
         let Mode::Record(rec) = &s.mode else {
@@ -721,11 +948,20 @@ impl Session {
         if !teardown && (!rec.match_over || rec.frame.actions.is_some()) {
             return Ok(());
         }
+        // A default recording cuts each game into a film of its own and
+        // keeps recording. At the session's end it cuts the game in play,
+        // if any, and discards the tape (docs/game/film-format.md, "One
+        // film per game").
+        if s.header.player_features {
+            s.cut_game(slices);
+            if teardown {
+                s.complete = true;
+                s.report_session_end();
+                s.discard_auto();
+            }
+            return Ok(());
+        }
         let matched = rec.match_over;
-        let account_upload = !rec.meta.archived_on_live
-            && !rec.unified.live_session
-            && rec.meta.descriptor().mode != film::blam::Mode::Matchmaking
-            && s.header.game_id.is_none();
         let mut summary = rec.meta.summary(s.tick);
         rec.unified.summary_medals(&mut summary.players);
         if !summary.level.is_empty() {
@@ -761,6 +997,16 @@ impl Session {
                 },
             )?;
             out.finish()?.sync_all()?;
+            // A host's film file, sealed beside its stats stream once the
+            // container's mirror into it has closed.
+            if let Some(film) = rec.film.take() {
+                Arc::try_unwrap(film)
+                    .map_err(|_| anyhow::anyhow!("the film file is still shared"))?
+                    .into_inner()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .finish()?
+                    .sync_all()?;
+            }
             Ok(())
         })();
         if let Err(e) = done {
@@ -776,13 +1022,6 @@ impl Session {
         rec.frame = Default::default();
         s.complete = true;
         drop(s);
-        if matched
-            && account_upload
-            && let Some(sync) = self.recording_account.get().and_then(Option::as_ref)
-            && let Err(error) = sync.enqueue(&header.meta.id, &path)
-        {
-            eprintln!("film library: {error}");
-        }
         if matched && let Some(target) = upload {
             // Create before spawning so a stopped uploader leaves its sealed
             // output recoverable when the supervisor cleans the lease.
@@ -835,6 +1074,97 @@ impl State {
     }
     fn fail(&mut self, why: String) {
         self.fail_at(self.tick, why)
+    }
+
+    /// Close and delete a default recording's file and keyframe cache.
+    fn discard_auto(&mut self) {
+        if !self.header.player_features {
+            return;
+        }
+        let id = self.header.meta.id.clone();
+        let Mode::Record(rec) = &mut self.mode else { return };
+        if rec.out.is_none() && rec.sidecar.is_none() && !rec.file.exists() {
+            return;
+        }
+        drop(rec.out.take());
+        drop(rec.film.take());
+        drop(rec.sidecar.take());
+        rec.frame = Default::default();
+        let dir = rec.file.parent().unwrap_or(std::path::Path::new(".")).to_owned();
+        if let Err(error) = autorecord::remove_as(&dir, &rec.file, Some(&id)) {
+            eprintln!("theater: could not delete {}: {error:#}", rec.file.display());
+        }
+    }
+
+    /// Seal the game a default recording just played as a film of its own,
+    /// cut from the running tape, and describe the next game from its
+    /// start (docs/game/film-format.md, "One film per game"). A game that
+    /// never started (menus, Theater, settings) has no film. A cut that
+    /// cannot be written is logged and kept as the last discard reason; the
+    /// tape keeps recording.
+    fn cut_game(&mut self, slices: u64) {
+        let (tick, calls) = (self.tick, self.calls);
+        let tape = self.header.clone();
+        let Mode::Record(rec) = &mut self.mode else { return };
+        rec.match_over = false;
+        if let Some(start) = rec.meta.descriptor().match_start_tick {
+            // The tape keeps the game's closing observations, as a film
+            // sealed at its game's end does, so every later cut has them.
+            let closed = (|| -> Result<()> {
+                rec.track.closing_events(std::mem::take(&mut rec.frame.events))?;
+                rec.track.append_to_last(rec.unified.take_records(false, false)?)?;
+                let out = rec.out.as_mut().context("film already closed")?;
+                rec.batch.flush(out)
+            })();
+            if let Err(error) = closed {
+                self.fail(format!("closing a game on the tape: {error:#}"));
+                return;
+            }
+            match autorecord::cut(rec, &tape, slices, tick, calls, start) {
+                Ok(path) => {
+                    eprintln!("theater: this game's film is {}", path.display());
+                    self.outcome.films.push(path);
+                }
+                Err(error) => {
+                    eprintln!("theater: could not keep this game's film: {error:#}");
+                    self.outcome.discard = Some(format!("could not keep this game's film: {error:#}"));
+                }
+            }
+        }
+        let Mode::Record(rec) = &mut self.mode else { return };
+        rec.meta.next_game();
+        rec.unified.next_game();
+        rec.frame.next_game();
+        rec.game_started_ms = None;
+    }
+
+    /// Forget the game in play without cutting it; its ticks stay on the
+    /// tape. Returns whether a game was in play.
+    fn drop_game(&mut self, why: String) -> bool {
+        let Mode::Record(rec) = &mut self.mode else { return false };
+        if !rec.in_game() {
+            return false;
+        }
+        rec.match_over = false;
+        rec.meta.next_game();
+        rec.unified.next_game();
+        rec.frame.next_game();
+        rec.game_started_ms = None;
+        self.outcome.discard = Some(why);
+        true
+    }
+
+    /// Print the session's one closing line, once: the films written or why
+    /// there are none.
+    fn report_session_end(&mut self) {
+        if self.outcome.reported {
+            return;
+        }
+        self.outcome.reported = true;
+        let Mode::Record(rec) = &self.mode else { return };
+        let dir = rec.file.parent().unwrap_or(std::path::Path::new("."));
+        let line = self.outcome.line(dir, self.failure.as_deref());
+        eprintln!("{line}");
     }
 
     fn fail_at(&mut self, tick: u64, why: String) {
@@ -907,7 +1237,7 @@ impl Tap for Session {
             }
         }
     }
-    fn record(&self, tag: film::Tag, mut c: Call) {
+    fn record(&self, mut c: Call) {
         let mut s = self.lock();
         if s.complete || s.failure.is_some() {
             return;
@@ -917,7 +1247,7 @@ impl Tap for Session {
             return;
         };
         if let Some(out) = &mut rec.out {
-            match rec.batch.append(out, tag, c) {
+            match rec.batch.append(out, c) {
                 Ok(()) => s.calls += 1,
                 Err(e) => s.fail(e.to_string()),
             }
@@ -964,10 +1294,14 @@ impl agent::LobbyTape for Session {
     }
 }
 
+/// The [`Observer`]'s feature id. No other feature may take it: the
+/// in-game Theater's screens are `theater-films` and `theater-film-detail`.
+pub const OBSERVER_FEATURE: &str = "theater-film";
+
 pub struct Observer(pub Arc<Session>, pub Option<agent::Agent>);
 impl hooks::Feature for Observer {
     fn manifest(&self) -> hooks::Manifest {
-        hooks::Manifest::new("theater-film", "Exact host film").doc("docs/game/theater.md")
+        hooks::Manifest::new(OBSERVER_FEATURE, "Exact host film").doc("docs/game/theater.md")
     }
     fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         // Hook installation changes guest dispatch boundaries. A v1 tape

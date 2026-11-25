@@ -31,9 +31,12 @@ pub struct Placement {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SquadOp {
     Place(Placement),
-    /// Send the squad at the players.
+    /// Send the squad at the players: through the map's hunt order for
+    /// `base`. Firefight's base is the squad's target team's (0 with one
+    /// team); Forge, which marks one base, sends 0.
     Hunt {
         slot: u8,
+        base: u8,
     },
     /// Remove the squad's actors and bodies.
     Erase {
@@ -45,7 +48,7 @@ impl SquadOp {
     pub fn slot(&self) -> u8 {
         match *self {
             SquadOp::Place(Placement { slot, .. })
-            | SquadOp::Hunt { slot }
+            | SquadOp::Hunt { slot, .. }
             | SquadOp::Erase { slot } => slot,
         }
     }
@@ -136,7 +139,7 @@ mod tests {
         assert_eq!(place(0, 0).check(16), Err(Refused::Count(0)));
         assert_eq!(place(0, 33).check(16), Err(Refused::Count(33)));
         assert_eq!(SquadOp::Erase { slot: 2 }.check(2).map_err(|_| ()), Err(()));
-        assert_eq!(SquadOp::Hunt { slot: 1 }.check(2), Ok(()));
+        assert_eq!(SquadOp::Hunt { slot: 1, base: 1 }.check(2), Ok(()));
     }
 
     #[test]

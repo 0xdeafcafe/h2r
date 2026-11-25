@@ -4,9 +4,9 @@
 //! - [`port_saves`]: the player's saved variants (the XAPI save-game
 //!   variants under `UDATA\4D530064`, `variants::save::SaveStore`), once per
 //!   source, at boot off the game thread. The source saves are only read.
-//! - [`port_builtins`]: the retail built-ins and the community variants, on
-//!   request (they are already in the game's list, so they are not put in
-//!   the store at boot).
+//! - [`port_builtins`]: the retail built-ins and the listed scripts'
+//!   variants (`rules::builtin::LISTED`), on request (they are already in
+//!   the game's list, so they are not put in the store at boot).
 
 use content::Sha256;
 pub use variants::portable::PortScript;
@@ -15,15 +15,6 @@ use variants::save::SaveStore;
 
 use super::bundle::Bundle;
 use super::store::Store;
-
-/// `variants.port.script`'s value: `keep` (0) or `builtin` (1).
-pub fn script_setting(v: i64) -> PortScript {
-    if v == 1 {
-        PortScript::Builtin
-    } else {
-        PortScript::Keep
-    }
-}
 
 /// `v` as a bundle named `name` with `description`, its script per
 /// `script` (`variants::portable::port`), or why not.
@@ -88,7 +79,7 @@ pub fn port_saves(store: &mut Store, saves: &SaveStore, script: &PortScript) -> 
             continue;
         }
         let name = s.contents.variant.name();
-        let ported = port(&s.contents.variant, &name, "", script.clone())
+        let ported = port_saved(store, &s.contents.variant, &name, script)
             .and_then(|b| store.put_ported(&key, b));
         match ported {
             Ok(_) => report.ported += 1,
@@ -98,8 +89,35 @@ pub fn port_saves(store: &mut Store, saves: &SaveStore, script: &PortScript) -> 
     report
 }
 
-/// The retail built-ins in `schema` and the community variants as bundles
-/// (for the CLI). Each is a bundle or its name and why not.
+/// A renamed copy of a scripted variant already names the blob and its
+/// option bits. Use that reference when automatically porting the save.
+fn port_saved(store: &Store, v: &GameVariant, name: &str, script: &PortScript) -> Result<Bundle, String> {
+    let saved = v.ext().script;
+    if saved.mode == variants::ext::Mode::Rules && *script == PortScript::Builtin {
+        let blob = crate::rules::runtime::compiled_in(saved.prefix)
+            .map(|b| b.blob.as_slice())
+            .or_else(|| store.script(saved.prefix))
+            .ok_or_else(|| format!("no local rules script with prefix {}", super::hex(&saved.prefix)))?;
+        let attach = variants::portable::Attach {
+            ir: blob.to_vec(),
+            source: None,
+            options: Some(saved.options),
+        };
+        let mut bundle = Bundle::new(v, name, "", Some(attach)).map_err(|e| e.to_string())?;
+        // Attaching a new script starts with its defaults. This save already
+        // names the script and can carry the player's edits to those extras.
+        let saved_hex = super::hex(v.bytes());
+        if bundle.record_hex != saved_hex {
+            bundle.record_hex = saved_hex;
+            bundle.check().map_err(|e| e.to_string())?;
+        }
+        return Ok(bundle);
+    }
+    port(v, name, "", script.clone())
+}
+
+/// The retail built-ins in `schema` and the listed scripts' variants as
+/// bundles (for the CLI). Each is a bundle or its name and why not.
 pub fn port_builtins(
     schema: &variants::Schema,
     script: &PortScript,
@@ -114,21 +132,17 @@ pub fn port_builtins(
                 .map_err(|why| (b.name.clone(), why)),
         );
     }
-    for c in crate::community_variants::VARIANTS {
-        let built = variants::GameType::from_list_index(c.ty as u32)
-            .ok_or_else(|| format!("list type {} is unknown", c.ty as u32))
-            .and_then(|ty| {
-                let mut v = schema.new_variant(ty);
-                v.set_name(c.name).map_err(|e| e.to_string())?;
-                for (id, value) in c.pairs() {
-                    v.set(variants::SettingId(id), value)
-                        .map_err(|e| e.to_string())?;
-                }
-                Ok(v)
-            })
-            .and_then(|v| port(&v, c.name, c.description, script.clone()))
-            .map_err(|why| (c.name.to_owned(), why));
-        out.push(built);
+    for b in crate::community_variants::scripts() {
+        out.push(listed_bundle(&b.source).map_err(|why| (b.name.clone(), why)));
     }
     out
+}
+
+/// A listed script's bundle: the bundle of its own variant
+/// (`variants::portable::from_script`, its record, name and `about`),
+/// with its default options. It carries its script whatever `script`
+/// [`port_builtins`] was given.
+fn listed_bundle(source: &str) -> Result<Bundle, String> {
+    let ir = ::rules::compile(source).map_err(|e| e.to_string())?;
+    variants::portable::from_script(&ir, None, &[]).map_err(|e| e.to_string())
 }

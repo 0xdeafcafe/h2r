@@ -17,10 +17,13 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+mod area;
 mod collision;
+mod ground;
 mod multi;
 mod nav;
 mod volume_edit;
+pub use area::AreaFrom;
 pub use multi::FieldEdit;
 pub use volume_edit::NEW_VOLUME_SIZE;
 
@@ -49,6 +52,9 @@ struct Doc {
     objects: crate::object_collision::ObjectCollisions,
     /// The structure BSPs' own pathfinding data ([`crate::nav_view`]).
     pathfinding: crate::nav_view::LevelPathfinding,
+    /// The pathfinding of AI ground built over this map, shown in its
+    /// place ([`Session::set_ground_pathfinding`]).
+    ground_pathfinding: Option<crate::nav_view::LevelPathfinding>,
     /// The bots' nav mesh and spots, when the editor has given them
     /// ([`Session::set_bot_nav`]); they go with the map.
     bot_nav: Option<Arc<crate::nav_view::BotNav>>,
@@ -115,6 +121,19 @@ pub struct Drag {
 /// Why the editor refuses to grow a block while growth is off.
 pub const GROWTH_REFUSAL: &str = "the block is full: growing it needs more tag memory, and the \
      engine's headroom for that is not established (docs/editor/scenario-editor.md §6)";
+
+/// Why a script table may not outgrow the map's.
+pub const SCRIPT_GROWTH_REFUSAL: &str = "a script table is longer than the map's: growing it \
+     appends a copy to the map's metadata, and the engine's headroom for more tag memory is not \
+     established (docs/editor/scenario-editor.md §6): turn on Edit > Allow growing full blocks \
+     to do it";
+
+/// Why a scenario data reference may not grow past the room its source
+/// had while growth is off.
+pub const DATA_GROWTH_REFUSAL: &str = "the data is longer than it was in the source. Growing it \
+     appends a copy to the map's metadata, and the engine's headroom for more tag memory is not \
+     established (docs/editor/scenario-editor.md §6): turn on Edit > Allow growing full blocks \
+     to do it";
 
 /// The editor state over one map.
 pub struct Session {
@@ -442,7 +461,17 @@ impl Session {
 
     fn open_keyed(&mut self, source: MapSource, name: &str, cache_key: &str) -> Result<()> {
         let mut map = source.open()?;
-        let scenario = Scenario::read(&mut map)?;
+        let mut scenario = Scenario::read(&mut map)?;
+        // The areas the map was saved with (`game_markers::record`): not
+        // edits. A record that does not read leaves the map without them,
+        // and the status says so.
+        let area_note = match source.areas() {
+            Ok(rows) => match scenario.load_areas(&rows) {
+                0 => String::new(),
+                lost => format!(", {lost} saved areas found no flag"),
+            },
+            Err(e) => format!(", the saved areas were not read: {e}"),
+        };
         let mut raw = geometry::RawFiles::open(&source)?;
         let started = std::time::Instant::now();
         let lit = geometry::world_parts_lit(&mut map, &mut raw).unwrap_or_default();
@@ -491,7 +520,7 @@ impl Session {
             None => String::new(),
         };
         self.status = format!(
-            "{} triangles{}, {} placements{art}",
+            "{} triangles{}, {} placements{art}{area_note}",
             world.len(),
             if world_failed > 0 {
                 format!(" ({world_failed} sections not loaded)")
@@ -515,6 +544,7 @@ impl Session {
             collision,
             objects,
             pathfinding,
+            ground_pathfinding: None,
             bot_nav: None,
             scene,
             native: Arc::new(native),
@@ -920,6 +950,22 @@ impl Session {
         doc.scenario.set_geometry_changes(changes)
     }
 
+    /// Replace the Textures tool's writes (see
+    /// [`Scenario::set_bitmap_changes`]), which save with the map and
+    /// count toward [`Self::is_dirty`].
+    pub fn set_bitmap_changes(&mut self, changes: crate::GeometryChanges) -> Result<()> {
+        let doc = self.doc.as_mut().ok_or(Error::Save("no map is open"))?;
+        doc.scenario.set_bitmap_changes(changes)
+    }
+
+    /// Replace the Sound window's writes (see
+    /// [`Scenario::set_sound_changes`]), which save with the map and count
+    /// toward [`Self::is_dirty`].
+    pub fn set_sound_changes(&mut self, changes: crate::GeometryChanges) -> Result<()> {
+        let doc = self.doc.as_mut().ok_or(Error::Save("no map is open"))?;
+        doc.scenario.set_sound_changes(changes)
+    }
+
     /// Replace the string IDs the tag editor adds (see
     /// [`Scenario::set_tag_strings`]).
     pub fn set_tag_strings(&mut self, strings: Vec<String>) -> Result<()> {
@@ -936,6 +982,69 @@ impl Session {
         }
         let doc = self.doc.as_mut().ok_or(Error::Save("no map is open"))?;
         doc.scenario.set_tag_grown(grown)
+    }
+
+    /// Replace the recordings block's writes (see
+    /// [`Scenario::set_recording_changes`]), which save with the map and
+    /// count toward [`Self::is_dirty`]. A grown stream is refused while
+    /// growth is off.
+    pub fn set_recording_changes(
+        &mut self,
+        patches: Vec<(u32, Vec<u8>)>,
+        grown: Vec<crate::TagGrown>,
+    ) -> Result<()> {
+        if !grown.is_empty() && !self.allow_growth {
+            return Err(Error::Refused(GROWTH_REFUSAL));
+        }
+        let doc = self.doc.as_mut().ok_or(Error::Save("no map is open"))?;
+        doc.scenario.set_recording_changes(patches, grown)
+    }
+
+    /// Replace the script tables' writes (see
+    /// [`Scenario::set_script_changes`]), which save with the map and
+    /// count toward [`Self::is_dirty`]. A grown table is refused while
+    /// growth is off.
+    pub fn set_script_changes(
+        &mut self,
+        patches: Vec<(u32, Vec<u8>)>,
+        grown: Vec<crate::TagGrown>,
+    ) -> Result<()> {
+        if !grown.is_empty() && !self.allow_growth {
+            return Err(Error::Refused(SCRIPT_GROWTH_REFUSAL));
+        }
+        let doc = self.doc.as_mut().ok_or(Error::Save("no map is open"))?;
+        doc.scenario.set_script_changes(patches, grown)
+    }
+
+    /// Why the scenario's data reference at `pair` (the virtual address of
+    /// its `(size, address)` pair) may not be given `len` bytes, if it may
+    /// not: [`Scenario::data_pair_refusal`]'s reasons, and
+    /// [`DATA_GROWTH_REFUSAL`] for one that needs new room while growth is
+    /// off.
+    pub fn data_refusal(&self, pair: u32, len: u32) -> Option<&'static str> {
+        let Some(s) = self.scenario() else {
+            return Some("no map is open");
+        };
+        if let Some(why) = s.data_pair_refusal(pair) {
+            return Some(why);
+        }
+        (!self.allow_growth && s.data_grows(pair, len)).then_some(DATA_GROWTH_REFUSAL)
+    }
+
+    /// Give the scenario's data reference at `pair` the payload `bytes`,
+    /// of any length, as one undo step: the session's form of the tag
+    /// editor's `TagDoc::resize_data` (docs/editor/rich-editors.md, "Data
+    /// that changes length"). The save writes it in place or appends it
+    /// ([`Scenario::changes`]).
+    pub fn resize_data(&mut self, pair: u32, bytes: Vec<u8>, label: &str) -> Result<()> {
+        let len = u32::try_from(bytes.len()).map_err(|_| Error::Refused("the data is too long"))?;
+        if let Some(why) = self.data_refusal(pair, len) {
+            return Err(Error::Refused(why));
+        }
+        if self.scenario().and_then(|s| s.data(pair)).as_deref() == Some(bytes.as_slice()) {
+            return Ok(());
+        }
+        self.apply(Command::resize_data(pair, bytes, label))
     }
 
     /// Let adding grow a block past its source size. Off by default; see

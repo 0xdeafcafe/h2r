@@ -4,7 +4,7 @@ Status: Built. Code: `crates/formats/tags/src/effects/`. Switch: none.
 
 Implementation: `crates/formats/tags/src/effects/` (hand-written fixed codecs, not in
 `schema.rs`, like [sound.md](sound.md)). Tool: `h2 effect` in
-`crates/apps/cli/src/effects.rs`. Evidence labels as in [map-format.md](map-format.md):
+`crates/apps/h2-tools/src/effects.rs`. Evidence labels as in [map-format.md](map-format.md):
 **V** verified on the owner's retail disc, **E** corroborated by the engine's own
 code (XBE disassembly, addresses in [engine-map.md](../engine/engine-map.md)), **S** a name only,
 unverified. No map bytes, tag names, tag dumps or extracted assets are
@@ -69,7 +69,7 @@ wrapper `0x00246cd0`; table in [engine-map.md](../engine/engine-map.md)), **V** 
 | `+1` | flags: bit 0 ranged (use set 1, blend by range input); any of `0xf0` = output used raw, not mapped onto the header range | E; V: bits `0x01`, `0x10`, `0x20` observed |
 | `+2`, `+3` | wave / shape selector for set 0 and set 1 (types 2 and 3 only) | E; V |
 | `+4`, `+8` | output range (min, max), mapped when `flags & 0xf0 == 0` | E (`0x00246cd0`); V |
-| `+0xc..+0x14` | not read by the engine (kept as `unknown_0c`; observed zero, `ffffffff`, or stale bytes) | E |
+| `+0xc..+0x14` | preserved by the scalar evaluator as `unknown_0c`. The shader colour evaluator reads packed gradient stops here ([shader-instances.md](shader-instances.md)) | E |
 | `+0x14` | two sets of `T[type]` words each | E, V |
 
 Blob length is exactly `0x14 + 8 * T[type]` words-per-set: 20, 28, 36, 52, 68,
@@ -77,6 +77,13 @@ Blob length is exactly `0x14 + 8 * T[type]` words-per-set: 20, 28, 36, 52, 68,
 all 3,600 distinct blobs reachable from `effe` emitters on the disc (399,177
 property uses over the 30 maps) have exactly this length and parse and round-trip
 through `Function::parse`/`to_bytes`; types 6, 8, 9 and above 10 do not occur.
+The per-set words the evaluator reads are also given typed, as the curve
+editor's handles: `Function::set_values`/`Function::write_set` over `Set`
+(from/to, frequency/phase/minimum/maximum, slope/intercept, the base and three
+keys, the points and coefficients, minimum/maximum/power; a constant's, type
+6's and type 8's words unnamed). A setter writes only the words its value
+names, so an edit round-trips through `to_bytes`
+([rich-editors.md](../editor/rich-editors.md), "Curves").
 
 | Type (names **S**) | Set layout (word index into payload, per set) | Evaluation (**E**) |
 |---|---|---|

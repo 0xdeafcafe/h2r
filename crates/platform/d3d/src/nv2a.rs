@@ -54,6 +54,8 @@
 
 /// Pure resolved-draw shader inputs for transactional native recording.
 pub mod resolved;
+mod hud;
+pub use hud::overlay_vertices;
 
 use std::collections::HashMap;
 
@@ -62,7 +64,7 @@ use std::collections::HashMap;
 // untrusted input.
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 
 use gfx::pipeline::ShaderId;
 use gfx::program::{ProgramBindings, StageDims};
@@ -204,7 +206,8 @@ pub struct Nv2aShaders {
     bindings: Option<ProgramBindings>,
     vertex_bytes: [u8; VertexUniforms::SIZE],
     pixel_bytes: [u8; PixelUniforms::SIZE],
-    programs: FxHashMap<ProgramKey, Result<Compiled, String>>,
+    programs: FxHashMap<Arc<ProgramKey>, Result<Compiled, String>>,
+    program_count: mem_watch::Gauge,
     table: RenderStateTable,
     next: u32,
     stats: Nv2aStats,
@@ -228,7 +231,7 @@ pub struct Nv2aShaders {
 struct Persist {
     store: PipelineStore,
     /// The program each registered shader id runs, and its cache id.
-    ids: HashMap<ShaderId, (u64, ProgramKey)>,
+    ids: HashMap<ShaderId, (u64, Arc<ProgramKey>)>,
     /// The map draws are on (`None` before the game loaded one).
     map: Option<String>,
     /// Bumped at each map change, from 1.
@@ -263,14 +266,14 @@ impl Persist {
         let map = self.map.as_deref();
         for id in self.drew.drain(..) {
             if let Some((cache_id, key)) = self.ids.get(&id) {
-                self.store.record_program(*cache_id, key, map);
+                self.store.record_program(*cache_id, key.as_ref(), map);
             }
         }
         for (key, count) in new_pipelines {
             if key.shader == gfx::renderer::SHADER_XYZRHW_DIFFUSE {
                 self.store.record(None, *count, key);
             } else if let Some((cache_id, program)) = self.ids.get(&key.shader) {
-                self.store.record_program(*cache_id, program, map);
+                self.store.record_program(*cache_id, program.as_ref(), map);
                 self.store.record(Some(*cache_id), *count, key);
             }
         }
@@ -295,9 +298,11 @@ struct Warm {
     skip: std::sync::Arc<std::sync::Mutex<FxHashSet<u64>>>,
     /// Recorded programs not registered yet, by cache id.
     keys: HashMap<u64, ProgramKey>,
+    key_count: mem_watch::Gauge,
     /// Recorded pipelines by program cache id, queued once it is
     /// registered and again when a later scope takes it in.
     pipelines: HashMap<u64, Vec<StoredPipeline>>,
+    _pipeline_count: mem_watch::Gauge,
     /// Registered programs with recorded pipelines: cache id to shader id.
     registered: HashMap<u64, ShaderId>,
     /// Where each recorded program drew ([`pipeline_store::select`]).
@@ -394,11 +399,13 @@ impl Default for Nv2aShaders {
 impl Nv2aShaders {
     /// An empty provider.
     pub fn new() -> Self {
+        static PROGRAMS: mem_watch::Counter = mem_watch::Counter::new("d3d.nv2a_program_entries");
         Self {
             bindings: None,
             vertex_bytes: [0; VertexUniforms::SIZE],
             pixel_bytes: [0; PixelUniforms::SIZE],
             programs: FxHashMap::default(),
+            program_count: PROGRAMS.track(0),
             table: RenderStateTable::default(),
             next: 0,
             stats: Nv2aStats::default(),
@@ -473,12 +480,16 @@ impl Nv2aShaders {
         if spawned.is_err() {
             return;
         }
+        static ARCHIVE_KEYS: mem_watch::Counter = mem_watch::Counter::new("d3d.nv2a_archive_pending_keys");
+        static ARCHIVE_PIPELINES: mem_watch::Counter = mem_watch::Counter::new("d3d.nv2a_archive_pipeline_records");
         self.warm = Some(Warm {
             jobs,
             rx,
             waiting: FxHashSet::default(),
             skip,
+            key_count: ARCHIVE_KEYS.track(loaded.programs.len() as u64),
             keys: loaded.programs.into_iter().collect(),
+            _pipeline_count: ARCHIVE_PIPELINES.track(pipelines.values().map(|p| p.len() as u64).sum()),
             pipelines,
             registered: HashMap::new(),
             seen: loaded.seen,
@@ -545,6 +556,9 @@ impl Nv2aShaders {
         }
         let (generation, map) = pipeline_store::current_map();
         self.map_generation = generation;
+        if let Some(bindings) = &mut self.bindings {
+            bindings.clear_texture_groups();
+        }
         let Some(p) = self.persist.as_mut() else { return };
         p.map = map.clone();
         p.epoch = p.epoch.wrapping_add(1).max(1);
@@ -575,9 +589,11 @@ impl Nv2aShaders {
             };
             warm.waiting.remove(&cache_id);
             warm.keys.remove(&cache_id);
+            warm.key_count.set(warm.keys.len() as u64);
             if self.programs.contains_key(&key) {
                 continue;
             }
+            let key = Arc::new(key);
             let r = r.map(|(module, t)| {
                 let Translation { dims, discards, warnings, .. } = t;
                 let id = ShaderId(SHADER_ID_BASE + self.next);
@@ -592,7 +608,7 @@ impl Nv2aShaders {
                 );
                 self.stats.prewarmed += 1;
                 if let Some(p) = self.persist.as_mut() {
-                    p.ids.insert(id, (cache_id, key.clone()));
+                    p.ids.insert(id, (cache_id, Arc::clone(&key)));
                 }
                 if let Some(w) = self.warm.as_mut()
                     && let Some(stored) = w.pipelines.get(&cache_id)
@@ -603,6 +619,7 @@ impl Nv2aShaders {
                 Compiled { id, dims, discards, warnings }
             });
             self.programs.insert(key, r);
+            self.program_count.set(self.programs.len() as u64);
         }
     }
 
@@ -645,7 +662,8 @@ fn view_dim(d: TextureDim) -> wgpu::TextureViewDimension {
     }
 }
 
-fn alpha_func(f: CompareFunc) -> AlphaFunc {
+/// The pixel translator's comparison for the device alpha-test state.
+pub fn alpha_func(f: CompareFunc) -> AlphaFunc {
     match f {
         CompareFunc::Never => AlphaFunc::Never,
         CompareFunc::Less => AlphaFunc::Less,
@@ -676,14 +694,44 @@ pub fn guest_def(
     texture_modes: u32,
     final_latch: bool,
 ) -> PixelShaderDef {
-    let mut words = *psdef;
-    words[..57].copy_from_slice(combiner_state);
-    words[54] = texture_modes;
-    // Straight from the words: the judge builds one per draw on the
-    // guest's thread.
+    let words = combiner_words(psdef, combiner_state, texture_modes);
     let mut def = PixelShaderDef::from_words(&words);
     def.explicit_final = final_latch;
     def
+}
+
+fn combiner_words(psdef: &[u32; 60], states: &[u32; 57], modes: u32) -> [u32; 60] {
+    let mut words = *psdef;
+    words[..57].copy_from_slice(states);
+    words[54] = modes;
+    words
+}
+
+/// Register combiners and their constants at this draw, suitable for
+/// carrying in a scene overlay without retaining the device or the draw.
+pub fn overlay_shader_words(draw: &ResolvedDraw) -> Option<[u32; 60]> {
+    static TABLE: std::sync::LazyLock<RenderStateTable> =
+        std::sync::LazyLock::new(RenderStateTable::default);
+    if polygon_stipple(&TABLE, draw) { return None; }
+    let words = combiner_words(
+        draw.shader.pixel_shader.as_deref()?,
+        &draw.shader.combiner_state,
+        draw.raw.render[slot::PS_TEXTURE_MODES as usize],
+    );
+    overlay_final(words, draw.shader.final_combiner_latch, draw.state.render.fog_enable,
+        raw(&TABLE, draw, rs::SPECULARENABLE) != 0)
+}
+
+fn overlay_final(mut words: [u32; 60], latch: bool, fog: bool, specular: bool) -> Option<[u32; 60]> {
+    if words[8] == 0 && words[9] == 0 {
+        // An explicitly programmed zero final needs the latch to distinguish
+        // it from an absent final. The overlay carries only the 60 words.
+        if latch {
+            return None;
+        }
+        (words[8], words[9]) = psh::d3d_default_final_combiner(fog, specular);
+    }
+    Some(words)
 }
 
 /// The fog coordinate of pre-transformed (`XYZRHW`) vertices: what the
@@ -1160,6 +1208,7 @@ impl ShaderProvider for Nv2aShaders {
                 if let (Some(w), Some(id)) = (self.warm.as_mut(), cache_id)
                     && w.keys.remove(&id).is_some()
                 {
+                    w.key_count.set(w.keys.len() as u64);
                     w.waiting.remove(&id);
                     if let Ok(mut skip) = w.skip.lock() {
                         skip.insert(id);
@@ -1172,12 +1221,13 @@ impl ShaderProvider for Nv2aShaders {
                     let _scope = mem_watch::scope("render.translate");
                     compile(ctx, renderer, bindings, &key, SHADER_ID_BASE + self.next)
                 };
+                let shared_key = Arc::new(key.clone());
                 match &r {
                     Ok(c) => {
                         self.next += 1;
                         self.stats.translated += 1;
                         if let (Some(p), Some(id)) = (self.persist.as_mut(), cache_id) {
-                            p.ids.insert(c.id, (id, key.clone()));
+                            p.ids.insert(c.id, (id, Arc::clone(&shared_key)));
                         }
                         if let (Some(w), Some(id)) = (self.warm.as_mut(), cache_id)
                             && let Some(stored) = w.pipelines.get(&id)
@@ -1189,7 +1239,8 @@ impl ShaderProvider for Nv2aShaders {
                     }
                     Err(_) => self.stats.failed += 1,
                 }
-                self.programs.insert(key.clone(), r.clone());
+                self.programs.insert(shared_key, r.clone());
+                self.program_count.set(self.programs.len() as u64);
                 r?
             }
         };
@@ -1261,6 +1312,12 @@ impl ShaderProvider for Nv2aShaders {
         }
     }
 
+    fn forget_textures(&mut self, gone: &[wgpu::Texture]) {
+        if let Some(b) = &mut self.bindings {
+            b.forget_textures(gone);
+        }
+    }
+
     fn maintain(
         &mut self,
         ctx: &gfx::GfxContext,
@@ -1317,8 +1374,11 @@ pub(crate) fn input_fetch(draw: &ResolvedDraw, mode: FetchMode) -> [InputFetch; 
         return [InputFetch::Float; 16];
     }
     let strides: Vec<u32> = draw.streams.iter().map(|s| s.stride).collect();
-    RepackPlan::with_mode(&draw.layout, &strides, mode)
-        .input_fetch()
+    plan_input_fetch(&RepackPlan::with_mode(&draw.layout, &strides, mode))
+}
+
+fn plan_input_fetch(plan: &RepackPlan) -> [InputFetch; 16] {
+    plan.input_fetch()
         .map(|f| match f {
             AttributeFetch::Float => InputFetch::Float,
             AttributeFetch::Xyz1 => InputFetch::Xyz1,
@@ -1348,6 +1408,16 @@ fn program_key(
     draw: &ResolvedDraw,
     present: [bool; 4],
     fetch: FetchMode,
+) -> Result<KeyParts, String> {
+    program_key_with_fetch(table, caps, draw, present, || input_fetch(draw, fetch))
+}
+
+fn program_key_with_fetch(
+    table: &RenderStateTable,
+    caps: gfx::translate::Capabilities,
+    draw: &ResolvedDraw,
+    present: [bool; 4],
+    input_fetch: impl FnOnce() -> [InputFetch; 16],
 ) -> Result<KeyParts, String> {
         let render = &draw.state.render;
         let flat = render.shade_mode == ShadeMode::Flat;
@@ -1414,10 +1484,16 @@ fn program_key(
         code.final_constant0 = 0;
         code.final_constant1 = 0;
 
+        let mut fetch = input_fetch();
+        if let Some(register) = draw.ui_fit.and_then(|fit| fit.screen_input)
+            && let Some(input @ InputFetch::Float) = fetch.get_mut(usize::from(register))
+        {
+            *input = InputFetch::WindowFloat;
+        }
         let vertex_options = VertexOptions {
             provided_inputs: draw.shader.provided_inputs,
             flat_shading: flat,
-            input_fetch: input_fetch(draw, fetch),
+            input_fetch: fetch,
         };
         let signs: [u8; 4] = std::array::from_fn(|n| color_sign(draw.extras[n].color_sign));
         let border: [u8; 4] = std::array::from_fn(|n| {
@@ -1569,7 +1645,7 @@ pub fn sharp_shadow_stages(shadow: &[Option<Shadow>; 4]) -> u8 {
 /// [`PixelOptions::border`] for a stage: the `BORDER` axes when the stage
 /// reads signed channels, uses a non-preset colour, or the host cannot
 /// clamp to border. The shader path approximates linear filtering at edges.
-fn shader_border(s: &TextureStageState, sign: u8, clamp_to_border: bool) -> u8 {
+pub fn shader_border(s: &TextureStageState, sign: u8, clamp_to_border: bool) -> u8 {
     if sign == 0 && clamp_to_border && matches!(s.border_color, 0 | 0xff00_0000 | 0xffff_ffff) {
         return 0;
     }
@@ -1899,6 +1975,28 @@ fn module(device: &wgpu::Device, source: String) -> wgpu::ShaderModule {
     })
 }
 
+/// Sampler paired with the border-axis mask from [`shader_border`].
+pub fn sampler_key(
+    stage: &TextureStageState,
+    caps: gfx::translate::Capabilities,
+    shader_border: u8,
+) -> SamplerKey {
+    let mut key = SamplerKey::from_stage(stage, caps);
+    if shader_border != 0 {
+        // The shader supplies the border; the sampler clamps.
+        for (axis, mode) in [&mut key.address_u, &mut key.address_v, &mut key.address_w]
+            .into_iter()
+            .enumerate()
+        {
+            if shader_border >> axis & 1 != 0 {
+                *mode = wgpu::AddressMode::ClampToEdge;
+            }
+        }
+        key.border = None;
+    }
+    key
+}
+
 /// A translated program, before it has a module.
 struct Translation {
     source: String,
@@ -1932,6 +2030,26 @@ fn translate(key: &ProgramKey) -> Result<Translation, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn overlay_reads_live_registers_and_keeps_definition_mappings() {
+        let stored = std::array::from_fn(|i| 2000 + i as u32);
+        let live = std::array::from_fn(|i| 5000 + i as u32);
+        let words = super::combiner_words(&stored, &live, 73);
+        assert_eq!(words[..54], live[..54]);
+        assert_eq!(words[54], 73);
+        assert_eq!(words[55..57], live[55..]);
+        assert_eq!(words[57..], stored[57..]);
+        assert_eq!(super::overlay_final(words, true, false, false), Some(words));
+    }
+
+    #[test]
+    fn overlay_final_observes_the_bind_time_latch() {
+        let words = [0; 60];
+        assert!(super::overlay_final(words, true, false, false).is_none());
+        let defaulted = super::overlay_final(words, false, false, false).unwrap();
+        assert_eq!((defaulted[8], defaulted[9]), shaders::psh::d3d_default_final_combiner(false, false));
+    }
+
     #[test]
     fn a_map_change_scopes_its_own_programs_but_the_boot_menu_keeps_the_startup_set() {
         use super::next_scope;

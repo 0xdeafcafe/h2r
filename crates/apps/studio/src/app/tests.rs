@@ -258,13 +258,11 @@ fn packages_save_and_open_through_actions() {
     let mut app = app_with(&t);
     app.dispatch(Action::OpenSource(p));
     move_flag(&mut app, 7.0);
-    app.open_package_form();
-    let mut form = app.package_form.clone().unwrap();
+    let mut form = app.session.form_defaults();
     assert_eq!(form.dir, "example-edit");
     form.name = "Studio test".into();
     form.dir = "example-studio".into();
-    app.dispatch(Action::SavePackage(form));
-    assert!(app.package_form.is_none(), "the form closes on success");
+    app.save_map_package(&form);
     assert!(!app.is_dirty());
     assert!(t.0.join("data/maps/example-studio").is_dir());
     move_flag(&mut app, 1.0);
@@ -366,17 +364,27 @@ fn the_variant_tool_builds_from_the_fallback_and_undoes_through_actions() {
         app.variants.as_ref().unwrap().current().unwrap().get(id),
         Some(was)
     );
-    // Our options (the extension block), then undo.
-    let low = variants::ext::Ext {
-        gravity: 50,
-        ..Default::default()
-    };
-    app.dispatch(Action::SetVariantExt(low));
-    assert_eq!(app.variants.as_ref().unwrap().current().unwrap().ext(), low);
+    // The extras are settings rows, then undo.
+    let before = app.variants.as_ref().unwrap().current().unwrap().ext();
+    app.dispatch(Action::SetVariantRow("gravity".into(), 50));
+    let after = app.variants.as_ref().unwrap().current().unwrap().ext();
+    assert_eq!(after.gravity, 50);
+    assert_eq!(after.script, before.script);
     app.dispatch(Action::Undo);
     assert_eq!(
         app.variants.as_ref().unwrap().current().unwrap().ext(),
-        variants::ext::Ext::default()
+        before
+    );
+    // The other weapons are their own action, then undo.
+    let id = variants::ext_weapons::TABLE[0].id;
+    app.dispatch(Action::SetVariantWeapon(true, id));
+    let after = app.variants.as_ref().unwrap().current().unwrap().ext();
+    assert_eq!((after.primary, after.secondary), (0, id));
+    assert_eq!(after.script, before.script);
+    app.dispatch(Action::Undo);
+    assert_eq!(
+        app.variants.as_ref().unwrap().current().unwrap().ext(),
+        before
     );
 }
 
@@ -586,7 +594,7 @@ fn the_maps_list_groups_user_packages_and_both_halo1_variants() {
     move_flag(&mut app, 7.0);
     let mut form = app.session.form_defaults();
     form.name = "Flag moved".into();
-    app.dispatch(Action::SavePackage(form));
+    app.save_map_package(&form);
     converted_package(&t, "00");
     app.refresh_packages();
     assert_eq!(
@@ -614,7 +622,7 @@ fn a_user_package_opens_over_its_disc_map_from_the_list() {
     app.dispatch(Action::OpenSource(p));
     move_flag(&mut app, 7.0);
     let form = app.session.form_defaults();
-    app.dispatch(Action::SavePackage(form));
+    app.save_map_package(&form);
     assert_eq!(app.opened_package(), Some("example-edit"));
     // Back to the disc's map, then the package from the list.
     app.dispatch(Action::SelectMap("example".into()));
@@ -641,7 +649,7 @@ fn save_rewrites_the_package_the_map_came_from() {
     std::fs::write(&image, b"\x89PNG\r\n\x1a\n").unwrap();
     form.image = Some(image.clone());
     let pkg = app.session.maps_dir().join(&form.dir);
-    app.dispatch(Action::SavePackage(form.clone()));
+    app.save_map_package(&form);
     let active = app.session.maps_dir().join("active.toml");
     let choice = std::fs::read(&active).unwrap();
     let mut manifest = app.session.packages().pop().unwrap().manifest;
@@ -665,7 +673,6 @@ fn save_rewrites_the_package_the_map_came_from() {
     assert_eq!(app.save_target(), SaveTarget::Package(pkg.clone()));
     move_flag(&mut app, 9.0);
     app.dispatch(Action::Save);
-    assert!(app.package_form.is_none());
     assert!(!app.is_dirty());
     assert_ne!(std::fs::read_to_string(manifest_path).unwrap(), first);
     assert_eq!(
@@ -691,7 +698,7 @@ fn save_rewrites_the_package_the_map_came_from() {
 }
 
 #[test]
-fn save_offers_a_named_package_for_a_read_only_base_map() {
+fn save_asks_for_an_edit_target_for_a_read_only_base_map() {
     let t = Temp::new("save-read-only");
     let map = t.map("example", &fixture::fixture());
     let mut permissions = std::fs::metadata(&map).unwrap().permissions();
@@ -701,13 +708,9 @@ fn save_offers_a_named_package_for_a_read_only_base_map() {
     assert_eq!(app.save_target(), SaveTarget::Nothing);
     app.dispatch(Action::OpenSource(map));
     move_flag(&mut app, 7.0);
-    assert_eq!(
-        app.save_target(),
-        SaveTarget::PackageForm { name: "example edit".into() }
-    );
+    assert_eq!(app.save_target(), SaveTarget::EditTarget(None));
     app.dispatch(Action::Save);
-    let form = app.package_form.as_ref().unwrap();
-    assert_eq!((form.name.as_str(), form.dir.as_str()), ("example edit", "example-edit"));
+    assert!(app.edits.picker.is_some());
     assert!(app.is_dirty());
     assert!(!app.session.maps_dir().exists());
 }
@@ -725,7 +728,6 @@ fn save_rewrites_the_last_standalone_output() {
     let first = std::fs::read(&output).unwrap();
     move_flag(&mut app, 9.0);
     app.dispatch(Action::Save);
-    assert!(app.package_form.is_none());
     assert!(!app.is_dirty());
     assert_ne!(std::fs::read(output).unwrap(), first);
     assert_eq!(std::fs::read(map).unwrap(), fixture::fixture());
@@ -768,7 +770,7 @@ fn a_converted_variant_opens_and_saves_as_a_new_derived_package() {
         form.dir, "h1_bloodgulch-edit",
         "not the import's own package"
     );
-    app.dispatch(Action::SavePackage(form));
+    app.save_map_package(&form);
     assert!(!app.is_dirty());
     // The new package is a derived map the resolver reads: the whole
     // converted map, then the edit.
@@ -1399,12 +1401,10 @@ fn a_map_pack_map_opens_edits_and_saves_over_the_halo_2_caches() {
 
     // Edit, save as a package named for the map, reopen it over the pack's map.
     move_flag(&mut app, 7.0);
-    app.open_package_form();
-    let mut form = app.package_form.clone().unwrap();
+    let mut form = app.session.form_defaults();
     assert_eq!(form.dir, "backwash-edit");
     form.name = "Pack edit".into();
-    app.dispatch(Action::SavePackage(form));
-    assert!(app.package_form.is_none(), "the form closes on success");
+    app.save_map_package(&form);
     assert!(t.0.join("data/maps/backwash-edit").is_dir());
     move_flag(&mut app, 1.0);
     app.dispatch(Action::Undo);
@@ -1466,9 +1466,407 @@ fn real_map_pack_opens_beside_the_disc_and_saves_a_package() {
     }
     let name = names[0].clone();
     app.dispatch(Action::SelectMap(name.clone()));
-    app.open_package_form();
-    let form = app.package_form.clone().unwrap();
-    app.dispatch(Action::SavePackage(form.clone()));
-    assert!(app.package_form.is_none());
+    let form = app.session.form_defaults();
+    app.save_map_package(&form);
     assert!(t.0.join("data/maps").join(&form.dir).is_dir());
+}
+
+#[test]
+fn go_to_anything_finds_every_voice_and_every_editor() {
+    use commands::{Kind, palette};
+
+    let t = Temp::new("palette-voices");
+    let mut app = app_with(&t);
+    // A voice is found by its name and by what it is for, under its own
+    // kind, and the old window command is gone.
+    for query in ["voices", "announcer", "character clone"] {
+        let found = palette(&mut app, query);
+        assert!(found.total(Kind::Voice) > 0, "{query}");
+        assert_eq!(found.total(Kind::Command), 0, "{query}");
+    }
+    let found = palette(&mut app, "cortana");
+    let entry = found
+        .entries
+        .iter()
+        .find(|e| e.kind == Kind::Voice)
+        .cloned()
+        .expect("a voice row for cortana");
+    assert!(matches!(&entry.action, Action::OpenAsset { asset, .. } if asset == "voice:cortana"));
+    // Running it opens the voice document, on Setup: no dataset is built.
+    app.dispatch(entry.action);
+    assert_eq!(app.front_doc(), Some(Doc::Voice));
+    assert_eq!(app.voices.doc.as_deref(), Some("cortana"));
+    assert_eq!(app.voices.pane, voices::Pane::Setup);
+
+    // Each editor has a command in Go to anything.
+    let editors = palette(&mut app, "open editor:");
+    assert_eq!(editors.total(Kind::Command), Surface::EDITORS.len());
+    let variants = palette(&mut app, "open editor game variants").entries.remove(0);
+    app.dispatch(variants.action);
+    assert_eq!(app.surface(), Surface::Variants);
+}
+
+#[test]
+fn a_sound_starts_one_line_row_that_targets_it() {
+    let t = Temp::new("voices-line-for");
+    let mut app = app_with(&t);
+    let tag = r"sound\dialog\invented\line_one";
+    let id = app.sound_new_line(tag);
+    assert_eq!(app.voices.batch.rows.len(), 1);
+    assert_eq!(app.voices.batch.rows[0].tag.as_deref(), Some(tag));
+    assert_eq!(app.sound_lines(tag).len(), 1);
+    // Asked again for the same sound: the same row, not a second one.
+    assert_eq!(app.sound_new_line(tag), id);
+    assert_eq!(app.voices.batch.rows.len(), 1);
+    // Another sound is another row, and a sound's pane lists only its own.
+    let other = r"sound\dialog\invented\line_two";
+    assert_ne!(app.sound_new_line(other), id);
+    assert_eq!(app.voices.batch.rows.len(), 2);
+    assert_eq!(app.sound_lines(tag).len(), 1);
+    assert_eq!(app.sound_lines(other).len(), 1);
+    // No window is asked for: a line is made in the sound's own document.
+    assert_eq!(app.front_doc(), None);
+}
+
+// ---------- Go to anything over every asset ----------
+
+/// The invented tags tree the palette's tag rows come from: one map,
+/// `fixture`, holding the invented cache's own tags, so a tree row opens
+/// on a map the app can open. The files hold placeholder bytes, which
+/// the palette never decodes (as `api/tests/assets_tests.rs` builds).
+fn palette_tree(root: &Path) {
+    use map::FourCC;
+    use tags::repo::store::Manifest;
+    use tags::repo::{TagKey, TagRepo};
+    let key = |g: [u8; 4], path: &str| TagKey::new(FourCC(g), path);
+    let mut repo = TagRepo::create(root).unwrap();
+    let place = |repo: &TagRepo, k: &TagKey| {
+        let p = repo.path_of(k, None);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, b"placeholder").unwrap();
+    };
+    let scenario = key(*b"scnr", "levels\\test\\fixture");
+    let blaster = key(*b"weap", "objects\\test\\blaster");
+    let kit = key(*b"itmc", "objects\\test\\kit");
+    for k in [&scenario, &blaster, &kit] {
+        place(&repo, k);
+    }
+    repo.put_manifest(
+        &Manifest {
+            map: "fixture".to_owned(),
+            name: "fixture".to_owned(),
+            scenario: Some(scenario.clone()),
+            tags: vec![(scenario, None), (blaster, None), (kit, None)],
+            ..Default::default()
+        },
+        b"header",
+    )
+    .unwrap();
+}
+
+/// One local package, `map-kit`, whose item adds a weapon: a package and
+/// an item for the palette to find.
+fn palette_package(dir: &Path) {
+    std::fs::create_dir_all(dir.join("tags")).unwrap();
+    std::fs::write(
+        dir.join("package.toml"),
+        r#"[package]
+format = 1
+id = "map-kit"
+name = "Map kit"
+
+[[item]]
+kind = "tag"
+source = "tags/map_kit.weap.yaml"
+tag = "objects\\weapons\\map_kit"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("tags/map_kit.weap.yaml"),
+        "like: 'weap:objects\\test\\blaster'\n",
+    )
+    .unwrap();
+}
+
+/// The fixture map in a folder as the source (listed, nothing picked),
+/// the tree and the package in place: everything the palette reads,
+/// before any map is open.
+fn palette_app(t: &Temp) -> App {
+    let folder = t.0.join("maps");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("fixture.map"), fixture::fixture()).unwrap();
+    let mut app = app_with(t);
+    palette_tree(&app.tags_root());
+    palette_package(&t.0.join("data/packages/map-kit"));
+    app.dispatch(Action::OpenSource(folder));
+    app
+}
+
+/// The palette's entry of one kind under one label.
+fn palette_entry(found: &commands::Palette, kind: commands::Kind, label: &str) -> commands::Entry {
+    found
+        .entries
+        .iter()
+        .find(|e| e.kind == kind && e.label == label)
+        .unwrap_or_else(|| panic!("no {label:?} under {}", kind.title()))
+        .clone()
+}
+
+#[test]
+fn go_to_anything_finds_a_tag_a_package_an_item_and_a_command_with_no_map_open() {
+    use commands::{Kind, palette};
+
+    let t = Temp::new("palette-assets");
+    let mut app = palette_app(&t);
+    assert_eq!(app.loaded_map(), None, "the map is listed, not open");
+
+    // One query reaches all four kinds, with nothing open. The baked
+    // packages are in the set too, so kinds are counted, not named.
+    let found = palette(&mut app, "map");
+    for kind in [Kind::Tag, Kind::Package, Kind::Item, Kind::Command] {
+        assert!(found.total(kind) > 0, "{} has no entries", kind.title());
+    }
+    // The scenario tag of the tree (its kind is Maps), the package, its
+    // item and the map editor's command, each under its kind.
+    let scenario = palette_entry(&found, Kind::Tag, "fixture");
+    let package = palette_entry(&found, Kind::Package, "Map kit");
+    let item = palette_entry(&found, Kind::Item, "tags/map_kit.weap.yaml");
+    let command = palette_entry(&found, Kind::Command, "Open editor: Map");
+
+    // Running the command opens its editor.
+    app.dispatch(command.action);
+    assert_eq!(app.surface(), Surface::Scene);
+
+    // Running the scenario tag opens the map: a scenario tag is the
+    // map's own tab.
+    app.dispatch(scenario.action);
+    assert_eq!(app.loaded_map(), Some("fixture"));
+    assert_eq!(app.front_doc(), Some(Doc::Map));
+
+    app.perform(package.action, false).unwrap();
+    assert_eq!(app.front_doc(), Some(Doc::Package));
+    assert_eq!(app.doc_asset(Doc::Package).as_deref(), Some("package:map-kit"));
+    app.perform(item.action, false).unwrap();
+    let source = app.front_doc().and_then(|doc| app.source_asset(doc)).unwrap();
+    assert_eq!(source.id, "item:map-kit:0");
+}
+
+#[test]
+fn go_to_anything_opens_a_tree_tag_by_opening_its_map_first() {
+    use commands::{Kind, palette};
+
+    let t = Temp::new("palette-tree-tag");
+    let mut app = palette_app(&t);
+    let found = palette(&mut app, "blaster");
+    let entry = palette_entry(&found, Kind::Tag, "blaster");
+    assert!(matches!(entry.action, Action::OpenAsset { .. }));
+    app.dispatch(entry.action);
+    assert_eq!(
+        app.loaded_map(),
+        Some("fixture"),
+        "the map holding the tag opened first"
+    );
+    assert!(
+        matches!(app.front_doc(), Some(Doc::Tag(_))),
+        "{:?}",
+        app.front_doc()
+    );
+}
+
+// ---------- Items open ----------
+
+/// The map registry the items open on: the scenario, and the sound
+/// (`crate::api::sound::tests::mouth_map` keeps the invented cache's own
+/// tags, with the weapon's slot a `snd!` now).
+fn items_registry() -> &'static tags::registry::Registry {
+    static R: std::sync::OnceLock<tags::registry::Registry> = std::sync::OnceLock::new();
+    R.get_or_init(|| {
+        let schema =
+            tags::schema::Schema::parse("group scnr 0x10 align 4\ngroup snd! 0x14 align 4\n")
+                .unwrap();
+        let mut defs = tags::defs::Defs::default();
+        defs.parse_into(
+            "test",
+            "\
+group snd! 0x14
+  0x0 pad 0x6
+  0x6 u16 playback_index
+  0x8 pad 0xc
+",
+        )
+        .unwrap();
+        tags::registry::Registry::build(&schema, &defs)
+    })
+}
+
+/// One local package, `items`, whose items open the editors of what they
+/// build: a `rules` script, a `variant` of it, a `sound` item whose tag
+/// the map holds, and an `edits` item naming that sound.
+fn items_package(dir: &Path) {
+    std::fs::create_dir_all(dir.join("scripts")).unwrap();
+    std::fs::create_dir_all(dir.join("edits")).unwrap();
+    std::fs::create_dir_all(dir.join("sound/invented")).unwrap();
+    // Opening the item uses the sound already in the fixture map.
+    std::fs::write(dir.join("sound/invented/line.wav"), b"unused fixture").unwrap();
+    std::fs::write(
+        dir.join("package.toml"),
+        r#"[package]
+format = 1
+id = "items"
+name = "Items"
+
+[[item]]
+kind = "rules"
+source = "scripts/hill.rules"
+
+[[item]]
+kind = "variant"
+source = "scripts/hill.variant.rules"
+
+[[item]]
+kind = "sound"
+source = "sound/invented/line.wav"
+tag = "objects\\test\\blaster"
+
+[[item]]
+kind = "edits"
+source = "edits/blaster.yaml"
+"#,
+    )
+    .unwrap();
+    // Both items use a buildable script so the variant can open its settings.
+    for name in ["hill.rules", "hill.variant.rules"] {
+        std::fs::write(
+            dir.join("scripts").join(name),
+            "rules \"Hill\" 1\ntype slayer\nuses slayer\n",
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        dir.join("edits/blaster.yaml"),
+        "- tag: 'snd!:objects\\test\\blaster'\n  set:\n    - {path: playback_index, value: 1}\n",
+    )
+    .unwrap();
+}
+
+/// The invented sound open as the map (`mouth_map`'s `snd!` tag is the
+/// weapon's slot), with the package in place: everything an item's
+/// double-click reads.
+fn items_app(t: &Temp) -> App {
+    let (mut app, _, _) = tag_tests::app_with_registry(
+        &t.0,
+        crate::api::sound::tests::mouth_map(),
+        items_registry(),
+    );
+    items_package(&t.0.join("data/packages/items"));
+    app
+}
+
+/// An item row's double-click (`Action::OpenAsset`, the way in the
+/// browser and Go to anything push) opens the editor of what the item
+/// builds, and the tab carries the item's id
+/// (docs/editor/studio-flow.md, "Everything is an asset").
+#[test]
+fn an_items_double_click_opens_the_editor_of_what_it_builds() {
+    let t = Temp::new("items-open");
+    let mut app = items_app(&t);
+    let open = |asset: &str| Action::OpenAsset {
+        asset: asset.to_owned(),
+        map: None,
+    };
+
+    // The `rules` item opens the script editor on the package's file, as
+    // a tab of the item.
+    app.dispatch(open("item:items:0"));
+    assert_eq!(app.front_doc(), Some(Doc::Rules));
+    assert!(app.rules.opened);
+    assert_eq!(app.doc_id(Doc::Rules), "item:items:0");
+    assert_eq!(app.doc_title(Doc::Rules), "hill.rules");
+    assert_eq!(app.doc_tool(Doc::Rules), ToolKind::Variants);
+
+    // The `variant` item of the same script opens the variant's
+    // settings, as a tab of the item.
+    app.dispatch(open("item:items:1"));
+    assert_eq!(app.front_doc(), Some(Doc::Variant));
+    assert!(app.variants.as_ref().is_some_and(|e| e.current().is_some()));
+    assert_eq!(app.doc_id(Doc::Variant), "item:items:1");
+
+    // The `sound` item opens the `snd!` it builds in the sound editor.
+    app.dispatch(open("item:items:2"));
+    let front = app.front_doc().unwrap();
+    assert!(matches!(front, Doc::Tag(_)), "{front:?}");
+    let tag = app
+        .tags
+        .tag(match front {
+            Doc::Tag(id) => id,
+            _ => unreachable!(),
+        })
+        .unwrap();
+    assert_eq!(
+        format!("{}:{}", tags::defs::fourcc_text(tag.group), tag.name),
+        r"snd!:objects\test\blaster",
+        "the tag the item builds"
+    );
+    assert_eq!(super::kinds::kind(tag.group).editor, super::kinds::Editor::Audition, "the sound editor");
+
+    // The `edits` item opens the tag its file names.
+    app.dispatch(open("item:items:3"));
+    let front = app.front_doc().unwrap();
+    assert!(matches!(front, Doc::Tag(_)), "{front:?}");
+
+    // An item whose tag no map holds refuses and names the item.
+    let before = app.log().len();
+    app.dispatch(open("item:items:99"));
+    assert_eq!(app.front_doc(), Some(front), "the edits item stays in front");
+    assert!(app.log().len() > before);
+    assert!(
+        app.status()
+            .is_some_and(|s| s.text().contains("item:items:99")),
+        "{:?}",
+        app.status()
+    );
+
+    // The script and the variant keep their item ids after the other
+    // items opened.
+    assert_eq!(app.doc_id(Doc::Rules), "item:items:0");
+    assert_eq!(app.doc_id(Doc::Variant), "item:items:1");
+}
+
+/// A variant opened another way loses the item id: the tab answers its
+/// tool name again, and the item id comes back only from the item.
+#[test]
+fn a_variant_opened_another_way_answers_no_item() {
+    let t = Temp::new("items-variant-replaced");
+    let mut app = items_app(&t);
+    app.dispatch(Action::OpenAsset {
+        asset: "item:items:1".into(),
+        map: None,
+    });
+    assert_eq!(app.doc_id(Doc::Variant), "item:items:1");
+    let new_variant = Action::NewVariant(variants::GameType::Slayer);
+    app.dispatch(new_variant.clone());
+    assert_eq!(app.pending(), Some(&new_variant));
+    assert_eq!(app.doc_id(Doc::Variant), "item:items:1");
+    app.resolve(Answer::Discard);
+    assert_eq!(
+        app.doc_id(Doc::Variant),
+        "variant",
+        "the new variant is no item's"
+    );
+
+    // A script opened from the starters answers no item any more: the
+    // editor holds no file, and the tab's id says so.
+    app.dispatch(Action::OpenAsset {
+        asset: "item:items:0".into(),
+        map: None,
+    });
+    assert_eq!(app.doc_id(Doc::Rules), "item:items:0");
+    app.rules.open_starter("slayer").unwrap();
+    app.dispatch(Action::FocusDoc(Doc::Rules));
+    assert_eq!(
+        app.doc_id(Doc::Rules),
+        "rules",
+        "a starter is no item's script"
+    );
 }

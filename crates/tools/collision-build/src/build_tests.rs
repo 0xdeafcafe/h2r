@@ -118,7 +118,7 @@ fn every_reference_is_on_its_leafs_side_and_every_centroid_walks_home() {
     // `compile` runs `verify::check`; here a broken BSP must fail it.
     let mut c = build(&l_room()).unwrap();
     assert!(verify::check(&c.bsp, 4).is_empty());
-    let r = c.bsp.refs.iter_mut().next().unwrap();
+    let r = c.bsp.refs.first_mut().unwrap();
     r.plane ^= 0x8000;
     let problems = verify::check(&c.bsp, 4);
     assert!(problems.iter().any(|p| p.contains("not on its path's side")), "{problems:#?}");

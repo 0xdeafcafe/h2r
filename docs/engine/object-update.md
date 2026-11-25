@@ -1,7 +1,7 @@
 # Object update: entries, conventions and liveness
 
-Status: Partly built. Slice 1's, slice 3's, slice 4's, slice 5's, slice 6a's, slice 6b's, slice 6c's, slice 7a's, slice 8's, slice 9's, slice 10's and slice 11's bodies are in the body table behind the switch: the three walks, the per-object pre- and post-update, the four type dispatchers, the wake leaves and the early-mover wake; function values, the export evaluator, the import dispatcher, every type level's import handler and change colours; the light walk, the light record update and its phase step, and the light-list link, unlink and expire; the damage update `d5de0`, with the tick's `Damage` and `Kill` events; the item, scenery, device, machine, crate, creature and projectile updates, and the projectile step `f8eb0`; the post-update shell (component transform, node matrices, bounds, attachment refresh, node-matrix notify) and the transform setters and getters; the unit update's shell `c6b30`, the movement `c60c0`, the direction clamp `cba50`, the idle test `c85c0` and the aim update `c7840`; the unit update's control `c49b0`, state `c58f0`, powered seats `c5eb0` and control refresh `ce0c0`; the unit update's timers `c6740`, dialogue update `114c60`, team `c6990` with its seat iterator `d0620` and `d0690`, active camouflage `c6810` and integrated light `c50a0`, and the unit animation state `111650`; the weapon update `fdfb0`; the vehicle update `efde0` with its gate `f1320` and contact reset `f06c0` (the type physics and the rest of its tree stay callouts); the biped update `dd360` with the carrier `baf40`, the timer update `e2d80`, `1469f0`, the action request `e68c0`, the animation kind `dd300`, the landing test `e4050`, the fall update `e45e0`, the animation state update `e4c50` and the look update `de190` (the movement and animation steps and the seat updates stay callouts); the biped post-physics update `dd990` with the crouch step `dd7d0`, the crouch height `dd8e0` and its forced test `e0dc0`, the ground probe `e30c0` and its surface test `ddf60`, the jump update `e4680`, the physics input `dd0d0`, the landing update `e4330` and the contact update `e2fa0` (the AI hooks, the damage packet and the physics step stay callouts). The other slices of [sim-rewrite-objects.md](sim-rewrite-objects.md) add the rest.
-Code: `crates/rewrites/sim-objects` (kernels and typed views, no `runtime` dependency: `src/wake.rs` the wake leaves, `src/events.rs` the tick's events, `src/damage.rs` the damage and kill event reads, `src/bounds.rs` the bounds kernel), `crates/rewrites/engine/src/sim_objects` (the guest boundary: `BODIES`, `drive`, `supported`, retail frame helpers; `walks.rs`, `object.rs`, `wake.rs` the slice 1 bodies; `functions/` the slice 3 bodies; `lights/` the slice 5 bodies; `damage.rs` the slice 8 body and the event recorders; `item.rs`, `scenery.rs`, `device.rs`, `machine.rs`, `bloc.rs`, `creature.rs`, `projectile.rs`, `projectile_step.rs` the slice 11 bodies over `sse.rs` (scalar SSE on the guest registers) and `alu.rs` (shift and 16-bit flag idioms); `weapon/` the slice 9 body, one file per state group; `vehicle.rs` the slice 10 bodies; `biped/` the slice 7a bodies, `biped/post/` the slice 7b bodies; `post.rs`, `pose.rs`, `bounds.rs`, `transform.rs` the slice 4 bodies over `xform.rs` (the node-matrix rows); `unit.rs` the slice 6a bodies, with `sim_physics::unit_aim::step` for `c7840`; `unit_state/` the slice 6b bodies; `unit_rest.rs` and `unit_anim.rs` the slice 6c bodies), `crates/rewrites/sim-bridge/src/sim_objects.rs` (installer). Tests: `crates/rewrites/engine/src/sim_objects/tests.rs` (the dispatcher, guarding, finalize and a leaf on a synthetic pool), `crates/rewrites/engine/src/sim_objects/functions/tests.rs` (the slice 3 helpers and the import dispatcher on synthetic memory), `crates/rewrites/engine/src/sim_objects/damage/tests.rs` (the damage update's frame and the recorders), `crates/rewrites/engine/src/sim_objects/unit/tests.rs` (the slice 6a frames, callouts and stores), `crates/rewrites/engine/src/sim_objects/biped/tests.rs` (the slice 7a leaves, and the biped update's frame, callouts and stores), `crates/rewrites/engine/src/sim_objects/biped/post/tests.rs` (the slice 7b leaves, the crouch step, and the post-update's early returns, physics input path and contact counter), `crates/rewrites/engine/src/sim_objects/unit_state/tests.rs` (the slice 6b frames, callouts, stores and the divide error), `crates/rewrites/engine/src/sim_objects/lights/tests.rs` (the slice 5 bodies' frames, sites and stores on a synthetic light array), `crates/rewrites/sim-bridge/src/sim_objects.rs` (the installer, the guard, the event observers, and resumes at a body's sites on the unit shell), `crates/rewrites/engine/tests/sim_objects_differential.rs` (fused transcripts and mixed frames against the lifted original for every slice 1, slice 3, slice 4, slice 5, slice 6a, slice 6b, slice 6c, slice 7a, slice 7b, slice 8, slice 9, slice 10 and slice 11 root, comparing the integer registers, flags, memory, XMM registers and x87 state at every callout and return (`FLOAT_OPT_OUT` lists the roots that do not, each with its reason), feature `differential`), `crates/rewrites/sim-objects/src/wake/tests.rs` (the wake kernels), `crates/rewrites/sim-objects/src/damage/tests.rs` (the event reads), `crates/rewrites/sim-objects/src/bounds/tests.rs` (the bounds kernel), `crates/rewrites/engine/src/sim_objects/bounds/tests.rs` (`bdef0` against that kernel), and the views in `crates/rewrites/sim-objects` and `crates/rewrites/sim-state`.
+Status: Partly built. Slice 1's, slice 3's, slice 4's, slice 5's, slice 6a's, slice 6b's, slice 6c's, slice 7a's, slice 8's, slice 9's, slice 10's and slice 11's bodies are in the body table behind the switch: the three walks, the per-object pre- and post-update, the four type dispatchers, the wake leaves and the early-mover wake; function values, the export evaluator, the import dispatcher, every type level's import handler and change colours; the light walk, the light record update and its phase step, and the light-list link, unlink and expire; the damage update `d5de0`, with the tick's `Damage` and `Kill` events; the item, scenery, device, machine, crate, creature and projectile updates, and the projectile step `f8eb0`; the post-update shell (component transform, node matrices, bounds, attachment refresh, node-matrix notify) and the transform setters and getters; the unit update's shell `c6b30`, the movement `c60c0`, the direction clamp `cba50`, the idle test `c85c0` and the aim update `c7840`; the unit update's control `c49b0`, state `c58f0`, powered seats `c5eb0` and control refresh `ce0c0`; the unit update's timers `c6740`, dialogue update `114c60`, team `c6990` with its seat iterator `d0620` and `d0690`, active camouflage `c6810` and integrated light `c50a0`, and the unit animation state `111650`; the weapon update `fdfb0`; the vehicle update `efde0` with its gate `f1320` and contact reset `f06c0` (the type physics and the rest of its tree stay callouts); the biped update `dd360` with the carrier `baf40`, the timer update `e2d80`, `1469f0`, the action request `e68c0`, the animation kind `dd300`, the landing test `e4050`, the fall update `e45e0`, the animation state update `e4c50` and the look update `de190` (the movement and animation steps and the seat updates stay callouts); the biped post-physics update `dd990` with the crouch step `dd7d0`, the crouch height `dd8e0` and its forced test `e0dc0`, the ground probe `e30c0` and its surface test `ddf60`, the jump update `e4680`, the physics input `dd0d0`, the landing update `e4330` and the contact update `e2fa0` (the AI hooks, the damage packet and the physics step stay callouts). The tag-function curve evaluator `13b390` runs as a capture arm: the guest answers each call and the idiomatic kernel `sim-objects/src/functions/curve.rs` is compared with the result at every call, counted in `engine::sim_objects::functions::parity`. The other slices of [sim-rewrite-objects.md](sim-rewrite-objects.md) add the rest.
+Code: `crates/rewrites/sim-objects` (kernels and typed views, no `runtime` dependency: `src/wake.rs` the wake leaves, `src/events.rs` the tick's events, `src/damage.rs` the damage and kill event reads, `src/bounds.rs` the bounds kernel, `src/functions/curve.rs` the tag-function curve evaluator), `crates/rewrites/engine/src/sim_objects` (the guest boundary: `BODIES`, `drive`, `supported`, retail frame helpers; `walks.rs`, `object.rs`, `wake.rs` the slice 1 bodies; `functions/` the slice 3 bodies, `functions/parity.rs` the curve evaluator's capture arm; `lights/` the slice 5 bodies; `damage.rs` the slice 8 body and the event recorders; `item.rs`, `scenery.rs`, `device.rs`, `machine.rs`, `bloc.rs`, `creature.rs`, `projectile.rs`, `projectile_step.rs` the slice 11 bodies over `sse.rs` (scalar SSE on the guest registers) and `alu.rs` (shift and 16-bit flag idioms); `weapon/` the slice 9 body, one file per state group; `vehicle.rs` the slice 10 bodies; `biped/` the slice 7a bodies, `biped/post/` the slice 7b bodies; `post.rs`, `pose.rs`, `bounds.rs`, `transform.rs` the slice 4 bodies over `xform.rs` (the node-matrix rows); `unit.rs` the slice 6a bodies, with `sim_physics::unit_aim::step` for `c7840`; `unit_state/` the slice 6b bodies; `unit_rest.rs` and `unit_anim.rs` the slice 6c bodies), `crates/rewrites/sim-bridge/src/sim_objects.rs` (installer). Tests: `crates/rewrites/engine/src/sim_objects/tests.rs` (the dispatcher, guarding, finalize and a leaf on a synthetic pool), `crates/rewrites/engine/src/sim_objects/functions/tests.rs` (the slice 3 helpers and the import dispatcher on synthetic memory), `crates/rewrites/engine/src/sim_objects/functions/curve_tests.rs` (the curve kernel against the `function_eval` oracle, and the arm's counters), `crates/rewrites/engine/src/sim_objects/damage/tests.rs` (the damage update's frame and the recorders), `crates/rewrites/engine/src/sim_objects/unit/tests.rs` (the slice 6a frames, callouts and stores), `crates/rewrites/engine/src/sim_objects/biped/tests.rs` (the slice 7a leaves, and the biped update's frame, callouts and stores), `crates/rewrites/engine/src/sim_objects/biped/post/tests.rs` (the slice 7b leaves, the crouch step, and the post-update's early returns, physics input path and contact counter), `crates/rewrites/engine/src/sim_objects/unit_state/tests.rs` (the slice 6b frames, callouts, stores and the divide error), `crates/rewrites/engine/src/sim_objects/lights/tests.rs` (the slice 5 bodies' frames, sites and stores on a synthetic light array), `crates/rewrites/sim-bridge/src/sim_objects.rs` (the installer, the guard, the event observers, and resumes at a body's sites on the unit shell), `crates/rewrites/engine/tests/sim_objects_differential.rs` (fused transcripts and mixed frames against the lifted original for every slice 1, slice 3, slice 4, slice 5, slice 6a, slice 6b, slice 6c, slice 7a, slice 7b, slice 8, slice 9, slice 10 and slice 11 root, comparing the integer registers, flags, memory, MXCSR, XMM registers and x87 state at every callout and return (`FLOAT_OPT_OUT` lists the roots that do not, each with its reason), feature `differential`), `crates/rewrites/sim-objects/src/wake/tests.rs` (the wake kernels), `crates/rewrites/sim-objects/src/damage/tests.rs` (the event reads), `crates/rewrites/sim-objects/src/bounds/tests.rs` (the bounds kernel), `crates/rewrites/engine/src/sim_objects/bounds/tests.rs` (`bdef0` against that kernel), and the views in `crates/rewrites/sim-objects` and `crates/rewrites/sim-state`.
 Switch: `impl.sim.native.objects` (default off), listed in [switches.md](../runtime/switches.md).
 
 The contract page for phase 3 of the simulation rewrite: the object walks,
@@ -37,8 +37,10 @@ virtual addresses; bare numbers in tables are hex. Names are ours.
   change colours, the unit update's shell `c6b30` and the light record
   update `c0c80` that slice 5's body takes over, are in
   `sim_physics::ORACLES`: never installed, kept as test oracles. The
-  unit aim port stays in `sim_physics::PORTS` under its own switch; the
-  `c7840` body runs the same code (`sim_physics::unit_aim::step`). The
+  unit aim body shares `sim_physics::unit_aim::step` with the animation
+  subsystem. With both switches enabled, the object dispatcher hands
+  calls to `c7840` to the animation hook. The individual aim port is
+  available when both subsystems are off. The
   function value, import and base import ports
   (`sim_native::object`, `sim_native::object_base`) are not installed
   either; `tests/sim_native_differential.rs` keeps them as oracles. The
@@ -103,6 +105,7 @@ How the slice 1 bodies keep the contract is in "Slice 1 bodies" below.
 | `d1410` | `UNIT_IMPORT_ANIMATION` | `(unit: eax) -> xmm0`; `ret`. Calls `1c6e30` | segment |
 | `be8e0` | `OBJECT_CHANGE_COLORS` | `(object: stack 0) -> al`; `ret 4` | segment, then leaf |
 | `13bb90` | none yet | `(function: eax, stack 0, stack 1)`, input in `xmm0` (clamped), result in `xmm0`; `ret 8`. Calls the evaluator `13b390` | callout |
+| `13b390` | `FUNCTION_EVALUATE` | `(reference: edi, input: stack 0, range: stack 1) -> xmm0`; `ret 8`. The curve evaluator under every function value, light phase and screen effect ([engine-map.md](engine-map.md), `function_evaluate`) | capture arm: the guest answers, the kernel `functions/curve.rs` is compared with every call (`functions/parity.rs`); curve kinds 9 and 10 decline |
 
 ### Slice 4: post-update shell
 
@@ -421,6 +424,11 @@ thread interleaving changes.
 
 ## Slice 1 bodies
 
+The three walks and the typed object iterator use the same bounded bitmap scan
+in `sim_objects::walk::next_live`. Each visit reads through the first occupied
+slot and stops. The next visit reads the high-water mark and the bitmap again,
+so a callback can activate or delete a slot in the same word.
+
 Each is **C**: read at its address with `h2 disasm`, and compared with
 the lifted original by `tests/sim_objects_differential.rs`.
 
@@ -522,6 +530,13 @@ flags undefined at every call and return (the liveness tables below show
 no reader at any slice 3 entry or site) and keep `xmm0` to `xmm4` and the
 x87 state as retail leaves them. Function names compared by `cmp` or
 `sub` are read from those instructions' immediates in the loaded image.
+
+The `sim_objects::functions::ExportCursor` scans consecutive misses in
+one Rust loop. A match returns to the evaluator with the record, index
+and byte offset in the guest frame. On resume the body advances that
+cursor and reads the current count, table address and requested name.
+This keeps duplicate exports in definition order even if a callback
+replaces the table.
 
 **Function value** `bab40` (`functions/value.rs`). Saves `ecx`, `ebx`,
 `ebp`, `esi`, `edi`; stores 0 through the value pointer first. The
@@ -636,10 +651,11 @@ are the body's; the after-root dispatcher `1090d0` fuses. The pose
 matrix `1421f0`, the composition `142a60` and the root transform
 `bdc40` run inline through `sim_native`, so they are no callouts: the
 harness steps them on the lifted side as part of the tree (`INLINED`).
-`sim-anim` has no
-`build_matrices` yet (phase 1b has not landed it); when it does, it
-replaces those inline leaves for the skeleton walk, and the frame and
-callouts here stay.
+The skeleton walk from node 1 is phase 1b's: `sim_anim::build_matrices`
+through `engine::sim_anim::skeleton` (`impl.sim.native.anim.skeleton`),
+with the port's per-node loop as the fallback when it declines
+([skeleton-walk.md](skeleton-walk.md)). The frame and the callouts here
+are the same either way.
 
 **Attachment refresh `bef30`** (`post.rs`). Loops over siblings by
 storing the next sibling over its own object argument (`[esp+14]`) and
@@ -860,6 +876,13 @@ after it); `faa30` is entered with `xmm0` set. Callee cleanup: `fd410`,
 
 ## Slice 5 bodies
 
+`sim_objects::light::blend` interpolates the two radius endpoints (light
+record `+ec`) and the two intensity endpoints (`+c4`) in the same order.
+It returns both the sum and the weighted second endpoint, which remains
+visible in the caller’s XMM registers. The scalar SSE model handles
+inputs outside the kernel’s proved range and tracks exceptions when the
+guest precision flag is clear.
+
 Each is **C** for its control flow and accesses: read at its address
 with `h2 disasm`, and compared with the lifted original by
 `tests/sim_objects_differential.rs` (roots `c1400`, `c0c80`, `c0b00`,
@@ -926,17 +949,19 @@ lights with `16bc00`), and frees the light (`16ba40`).
 - Captures from campaign and multiplayer: registers and RAM at the n-th
   call of `c0c80` and `c2d00` on a level with lights that have a function
   source (owner node matrices and markers) and marker-parent lights,
-  compared with `impl.sim.native.objects` off. The harness has no light
-  with a function source, so `bab40` and the owner-marker path (`b8c40`,
-  `16640f`, `b8d30`) are reached only by those captures.
-- `c0c80` writes whole `xmm` registers where retail writes the low lane,
-  so the harness leaves the float comparison out for the `c1400` and
-  `c0c80` roots (`FLOAT_OPT_OUT`, with the reason) and keeps it for the
-  `c0b00`, `c2d00`, `c3220` and `c3260` roots.
+  compared with `impl.sim.native.objects` off. The synthetic record fixture
+  exercises a function source through both colour calls. Captures cover the
+  owner-marker path (`b8c40`, `16640f`, `b8d30`) with real attachments.
 - The harness answers `16bc00` from the synthetic bitmap; the iterator's
   own behaviour is not compared.
 
 ## Slice 6a bodies
+
+On the look path of `cba50`, `sim_objects::unit::look_up` completes
+`frame_up × aim` and evaluates `aim × left` in packed binary32 lanes.
+The adapter reconstructs the six XMM outputs at the normalizer call.
+The scalar SSE path handles exceptional operands, out-of-range
+intermediates and float environments outside the packed path’s proof.
 
 Each is **C** for its control flow and accesses: read at its address
 with `h2 disasm`, and compared with the lifted original by
@@ -969,7 +994,7 @@ look (`+180`). With both of a pair's rates zero (definition `+144`,
 `+148`; `+150`, `+154`; times `+14c` when body `+1bc` is 1) the
 direction is copied and clamped (`cba50`, fused; for the aim only when
 `c4970` answers) and its velocity (`+174`, `+198`) set from `[4687a4]`.
-Otherwise `c7840` (fused) turns it in the unit's frame (`b9fc0`) when
+Otherwise `c7840` turns it in the unit's frame (`b9fc0`) when
 the limits record's (body `+ [body+33e]`) bit 5 (aim) or 6 (look) is
 set, or `11f0d0` turns it in the world. The aim's two rate fractions
 (`11ce20`, `1201a0`, clamped to 0..1) become the bytes at `+243` and
@@ -994,14 +1019,12 @@ any of seven `e6fe0(unit, n)` tests answers; then 0 when a held weapon
 caller's `ecx`, saved and restored in the frame, so `ecx` returns with
 it.
 
-**Aim `c7840`.** The port `sim_physics::unit_aim` run as a body:
-`unit_aim::step` returns its calls and return as an `Exit`, which the
-port maps to a `TransferAbi` and the body to a `Next`. The port stays in
-`sim_physics::PORTS` under `impl.sim.native_unit_aim` until phase 1c
-retires it; the port's check that x87 rounding is to nearest does not
-apply to the body: the transcendentals it uses (`fsin`, `fcos`,
-`fpatan`, `fsqrt`) give the same bits in every rounding mode in the
-`x87` crate.
+**Aim `c7840`.** `sim_physics::unit_aim::step` computes joint-space
+direction and velocity with scalar SSE and x87. It returns a call or
+return to its driver. The object update can fuse the step when it owns
+aim. With the animation subsystem selected, the object update emits the
+call and `sim_anim::unit_aim` plans and commits the segment. Both
+drivers use the guest frame across all nine return sites.
 
 ### Not verified for slice 6a
 
@@ -1200,8 +1223,8 @@ seven-entry table at `f069c` (read from the image), `f1cd0`
 `f4800` or `2056e0` (`VEHICLE_CONTACT_SOLVE`); above 6 none. These stay
 callouts, so the Halo 1 drive model's hooks on them run as before.
 
-**Callees**, every one a callout except the leaves, `bba20` and the unit
-animation state `111650` (slice 6c, fused), with the
+**Callees**, every one a callout except the leaves, `bba20`, the unit
+action update `e6830` and the unit animation state `111650` (slice 6c, fused), with the
 bytes `ret` pops: `320560` the probe; `1d2460`, `efc30`, `ef870`,
 `efb60`, `205510`, `1cfb90`, `ba3d0` (a tail jump into `b7360`),
 `f06c0`, `f6010`, `cc380`, `372d48`, `113e40`, `b9ef0` (0); `b9b90`,
@@ -1353,6 +1376,15 @@ instructions that carry them.
 
 ## Slice 7a bodies
 
+Bipeds and vehicles share the unit action update at `e6830`. The signed
+offset at unit `+346` locates the action record. Its bitmap starts at
+`+4`. The body visits set bits in ascending order and calls descriptor
+slot `+4` with the object and action index. On return at `e6890`,
+a zero result clears that action in the current word. The scan then
+reads the bitmap again so it sees changes the callback made to later
+actions. The high byte of saved ECX records whether any callback
+returned nonzero, and AL returns that result.
+
 **C** for the control flow and accesses: read at each entry with
 `h2 disasm`, and compared with the lifted original by
 `tests/sim_objects_differential.rs` (a root per body over the slice 11
@@ -1393,10 +1425,10 @@ the bodies make every stack store retail makes so they match.
 **Callees** that stay callouts, with the bytes `ret` pops: `e3700`,
 `e5930`, `1faf30`, `e6900`, `10f820`, `de080` (0); `e3380`, `e0ef0`,
 `bfa40` (4); `e01d0`, `dc5c0`, `e3c90`, `e40d0`, `e4450` (8); `e24f0`,
-`e4d90` (`c`); `10f430` (`1c`); and the shared `1e5af0`, `e6830` (4),
+`e4d90` (`c`); `10f430` (`1c`); and the shared `1e5af0` (4),
 `b58c0` (8), `b8d30` (`c`), `30bf0`, `113e40` (0). Fused bodies in the
 tree: `bba20`, `ba1d0` (slice 4), `cba50` (slice 6a), `111650` (slice
-6c).
+6c) and `e6830`.
 
 **A split block.** Function discovery takes `de336`, the look update's
 third clamp step, for a function start (`h2 analyze --explain de336`:

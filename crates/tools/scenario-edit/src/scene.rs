@@ -339,6 +339,45 @@ pub fn detail_plan(
     }
 }
 
+/// Whether a blend takes a coverage mask ([`Look::mask`]): the layers
+/// that blend by their picture's alpha or add it. Solid surfaces' masks
+/// are specular or change-colour masks, not coverage, and water's
+/// passes are not reproduced.
+pub fn masks(blend: Blend) -> bool {
+    matches!(blend, Blend::Alpha | Blend::Additive)
+}
+
+/// Whether a bitmap reads as a coverage mask by its tag name: named
+/// `mask` and not an engine bitmap (Coagulation's
+/// `coag_cloudcover_mask`, the sun volume's `ascension_sun_volume_mask`).
+pub fn is_coverage_mask(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let last = lower.rsplit('\\').next().unwrap_or(&lower);
+    last.contains("mask") && !is_engine_bitmap(&lower)
+}
+
+/// The mask that covers a see-through base map `base`: in the first
+/// implementation that samples `base`, the first other stage whose
+/// bitmap `is_mask`, at that stage's scale. The cloud templates multiply
+/// it in, colour and alpha (`two_alpha_clouds`: mask in stage 1, tile in
+/// stage 2, `t1 * t2` in RGB and alpha; h1convert's
+/// `shad::program::clouds` rebuilds the same pass). A cloud tile with no
+/// alpha of its own (Coagulation's, `Y8`) drawn without it covers the
+/// whole sky. `None` when no such stage is sampled with `base`.
+pub fn mask_plan(
+    implementations: &[[StageBinding; 4]],
+    base: TagId,
+    is_mask: impl Fn(TagId) -> bool,
+) -> Option<(TagId, [f32; 2])> {
+    let stages = implementations
+        .iter()
+        .find(|stages| stages.iter().any(|s| s.bitmap == Some(base)))?;
+    stages.iter().find_map(|s| {
+        let b = s.bitmap.filter(|&b| b != base && is_mask(b))?;
+        Some((b, s.scale.unwrap_or([1.0, 1.0])))
+    })
+}
+
 /// The [`Look`] of a base map (`texture`) drawn by `plan`: its scale, and
 /// each detail map that decodes (`texture_of`) in order.
 pub fn look_of(
@@ -601,13 +640,18 @@ pub struct Layer {
 
 /// How a shader draws, as the viewport reproduces it: its base map at a
 /// scale of the texture coordinates, times each detail map at its own
-/// scale, doubled (the game's `t0 * t1 x2` combiners, in gamma space).
+/// scale, doubled (the game's `t0 * t1 x2` combiners, in gamma space),
+/// times its coverage mask, if it has one, in colour and alpha.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Look {
     /// Index into [`Scene::textures`]; `None` draws untextured grey.
     pub texture: Option<usize>,
     pub scale: [f32; 2],
     pub details: [Option<Layer>; MAX_DETAILS],
+    /// A see-through layer's coverage ([`mask_plan`]): multiplied into
+    /// the base map in RGB and alpha at its own scale, as the cloud
+    /// passes multiply their mask and tile (`two_alpha_clouds`).
+    pub mask: Option<Layer>,
     /// Self-illuminated ([`template_emits`]): drawn as it is, unshaded.
     pub emissive: bool,
 }
@@ -619,6 +663,7 @@ impl Look {
             texture,
             scale: [1.0, 1.0],
             details: [None; MAX_DETAILS],
+            mask: None,
             emissive: false,
         }
     }
@@ -633,6 +678,8 @@ pub struct Batch {
     pub scale: [f32; 2],
     /// Detail maps multiplied in ([`Look::details`]).
     pub details: [Option<Layer>; MAX_DETAILS],
+    /// The coverage mask multiplied in ([`Look::mask`]).
+    pub mask: Option<Layer>,
     /// [`Look::emissive`].
     pub emissive: bool,
     /// The lightmap page lighting it, an index into [`Scene::textures`];
@@ -650,6 +697,7 @@ impl Batch {
             texture: self.texture,
             scale: self.scale,
             details: self.details,
+            mask: self.mask,
             emissive: self.emissive,
         }
     }
@@ -706,6 +754,7 @@ impl Mesh {
                     texture: look.texture,
                     scale: look.scale,
                     details: look.details,
+                    mask: look.mask,
                     emissive: look.emissive,
                     lightmap,
                     blend,
@@ -833,6 +882,8 @@ pub struct MaterialInfo {
     pub base: Option<String>,
     /// Detail maps multiplied in.
     pub details: usize,
+    /// The coverage mask multiplied in ([`Look::mask`]), when one decoded.
+    pub mask: Option<String>,
 }
 
 /// One scenario BSP's lighting, for `view.stats` and the log.
@@ -1315,6 +1366,60 @@ pub fn skies_in(bytes: &[u8], address: u32) -> Vec<TagId> {
         .unwrap_or_default()
 }
 
+/// What a decoded `sky ` says about light and fog: its first light with
+/// parameters is the sun, its first `fog_a` element ([`fog_of`]) the fog.
+/// `name` is the tag's path; the atmosphere keeps its file name.
+pub fn atmosphere_of(sky: &h1_assets::sky::h2::Sky, name: &str) -> Atmosphere {
+    let sun = sky.lights.iter().find_map(|l| {
+        let p = l.params.as_ref()?;
+        Some(Sun {
+            direction: sun_direction(l.yaw, l.pitch),
+            color: p.color,
+            power: p.power,
+        })
+    });
+    let fog = sky
+        .gradients_a
+        .first()
+        .and_then(|g| fog_of(g.color, g.fraction, g.tail[0], g.tail[1]));
+    Atmosphere {
+        sky: Some(name.rsplit(['\\', '/']).next().unwrap_or(name).to_owned()),
+        sun,
+        fog,
+        fallback_rgb: Some(sky.fallback_rgb),
+    }
+}
+
+/// The atmosphere of the first of a scenario payload's skies that
+/// decodes, read from a tag document instead of the map file, so a sky
+/// edited in the document is seen as edited. `sky` gives a tag's path,
+/// payload address and payload bytes; `read` gives `len` bytes at a
+/// virtual address of a tag's region (a block element can sit outside
+/// the payload). `None` when no sky decodes: the caller keeps the
+/// scene's own atmosphere.
+pub fn atmosphere_in_doc(
+    scenario: &[u8],
+    scenario_address: u32,
+    sky: &mut dyn FnMut(TagId) -> Option<(String, u32, Vec<u8>)>,
+    read: &mut dyn FnMut(TagId, u32, u32) -> Option<Vec<u8>>,
+) -> Option<Atmosphere> {
+    for id in skies_in(scenario, scenario_address) {
+        if id == TagId::NULL {
+            continue;
+        }
+        let Some((name, address, payload)) = sky(id) else {
+            continue;
+        };
+        let decoded = h1_assets::sky::h2::Sky::decode(&payload, address, &mut |at, n| {
+            read(id, at, n).ok_or_else(|| h1_assets::sky::Error::Invalid("sky block unread".into()))
+        });
+        if let Ok(decoded) = decoded {
+            return Some(atmosphere_of(&decoded, &name));
+        }
+    }
+    None
+}
+
 /// The open map's scenario's skies ([`skies_in`]).
 pub fn scenario_skies<R: Read + Seek>(map: &mut Map<R>) -> Vec<TagId> {
     let Some((id, address)) = map
@@ -1481,24 +1586,7 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
                 .ok()
                 .and_then(|t| t.name.clone())
                 .unwrap_or_default();
-            let sun = sky.lights.iter().find_map(|l| {
-                let p = l.params.as_ref()?;
-                Some(Sun {
-                    direction: sun_direction(l.yaw, l.pitch),
-                    color: p.color,
-                    power: p.power,
-                })
-            });
-            let fog = sky
-                .gradients_a
-                .first()
-                .and_then(|g| fog_of(g.color, g.fraction, g.tail[0], g.tail[1]));
-            self.scene.atmosphere = Atmosphere {
-                sky: Some(name.rsplit(['\\', '/']).next().unwrap_or(&name).to_owned()),
-                sun,
-                fog,
-                fallback_rgb: Some(sky.fallback_rgb),
-            };
+            self.scene.atmosphere = atmosphere_of(&sky, &name);
             return;
         }
     }
@@ -1678,6 +1766,7 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
             emissive: false,
             base: None,
             details: 0,
+            mask: None,
         };
         let look = match shader_bitmaps(self.map, shader) {
             Ok((template, bitmaps)) => {
@@ -1712,6 +1801,13 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
                     _ => Look::plain(texture),
                 };
                 look.emissive = emissive;
+                if let Some(base) = base.filter(|_| look.texture.is_some() && masks(blend))
+                    && let Some((mask, scale)) = self.mask_plan(shader, base, &bitmaps)
+                    && let Some(texture) = self.texture(mask, false, false)
+                {
+                    look.mask = Some(Layer { texture, scale });
+                    info.mask = name_of(&*self.map, mask);
+                }
                 info.template = template;
                 info.blend = blend;
                 info.emissive = emissive;
@@ -1756,6 +1852,35 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
                 .and_then(|t| t.name.as_deref())
                 .is_some_and(is_detail_map)
         })
+    }
+
+    /// The coverage mask of a shader's base map `base` and its scale:
+    /// [`mask_plan`] over its resolved material, else the first of its
+    /// own `bitmaps` named as a mask ([`is_coverage_mask`]) at scale 1.
+    fn mask_plan(
+        &mut self,
+        shader: TagId,
+        base: TagId,
+        bitmaps: &[TagId],
+    ) -> Option<(TagId, [f32; 2])> {
+        let library = self
+            .library
+            .get_or_insert_with(|| tags::material::ShaderLibrary::read(&mut *self.map).ok());
+        let material = library.as_mut().and_then(|l| l.material(shader, None).ok());
+        let map = &*self.map;
+        let is_mask = |id: TagId| {
+            map.tag(id)
+                .ok()
+                .and_then(|t| t.name.as_deref())
+                .is_some_and(is_coverage_mask)
+        };
+        match material {
+            Some(m) => mask_plan(&stage_bindings(&m), base, is_mask),
+            None => bitmaps
+                .iter()
+                .find(|&&b| b != base && is_mask(b))
+                .map(|&b| (b, [1.0, 1.0])),
+        }
     }
 
     fn texture(&mut self, bitmap: TagId, cutout: bool, clamp: bool) -> Option<usize> {
@@ -2423,6 +2548,88 @@ mod tests {
         a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-4)
     }
 
+    /// An invented sky payload at `base`: one light (`yaw`, `pitch`, white
+    /// parameters) and one fog gradient, the elements after the root.
+    fn invented_sky(base: u32, yaw: f32, pitch: f32, fog_density: f32) -> Vec<u8> {
+        use crate::fixture::{put, putf};
+        use h1_assets::sky::h2::{GRADIENT_LEN, LIGHT_LEN, PARAMS_LEN, ROOT_LEN, layout, light, params};
+        let light_at = ROOT_LEN;
+        let params_at = light_at + LIGHT_LEN;
+        let gradient_at = params_at + PARAMS_LEN;
+        let mut b = vec![0u8; gradient_at + GRADIENT_LEN];
+        put(&mut b, layout::LIGHTS, 1);
+        put(&mut b, layout::LIGHTS + 4, base + light_at as u32);
+        put(&mut b, layout::GRADIENT_A, 1);
+        put(&mut b, layout::GRADIENT_A + 4, base + gradient_at as u32);
+        putf(&mut b, layout::MODEL_SCALE, 1.0);
+        putf(&mut b, light_at + light::YAW, yaw);
+        putf(&mut b, light_at + light::PITCH, pitch);
+        put(&mut b, light_at + light::PARAMS, 1);
+        put(&mut b, light_at + light::PARAMS + 4, base + params_at as u32);
+        for i in 0..3 {
+            putf(&mut b, params_at + params::COLOR + 4 * i, 1.0);
+        }
+        putf(&mut b, params_at + params::POWER, 2.0);
+        for i in 0..3 {
+            putf(&mut b, gradient_at + 4 * i, 0.5);
+        }
+        putf(&mut b, gradient_at + 0xc, fog_density);
+        putf(&mut b, gradient_at + 0x10, 5.0);
+        putf(&mut b, gradient_at + 0x14, 105.0);
+        b
+    }
+
+    /// A sky edited in the tag document moves the sun and the fog the
+    /// viewport draws with: the sun direction and fog density read back
+    /// from the edited bytes, not the map file's.
+    #[test]
+    fn an_edited_sky_moves_the_sun_and_the_fog() {
+        use crate::fixture::put;
+        let (scnr_at, sky_at) = (0x1000u32, 0x2000u32);
+        let sky_id = TagId(0xe100_0001);
+        let mut scnr = vec![0u8; 0x18];
+        put(&mut scnr, SCENARIO_SKIES, 1);
+        put(&mut scnr, SCENARIO_SKIES + 4, scnr_at + 0x10);
+        put(&mut scnr, 0x14, sky_id.0);
+        let read_atmosphere = |yaw: f32, density: f32| {
+            let payload = invented_sky(sky_at, yaw, std::f32::consts::FRAC_PI_2 * 0.5, density);
+            let whole = payload.clone();
+            atmosphere_in_doc(
+                &scnr,
+                scnr_at,
+                &mut |id| (id == sky_id).then(|| ("sky\\sky_day".to_owned(), sky_at, payload.clone())),
+                &mut |id, at, n| {
+                    let start = at.checked_sub(sky_at)? as usize;
+                    (id == sky_id).then(|| whole.get(start..start + n as usize).map(<[u8]>::to_vec))?
+                },
+            )
+            .expect("the sky decodes")
+        };
+        let before = read_atmosphere(0.0, 0.25);
+        let after = read_atmosphere(std::f32::consts::FRAC_PI_2, 0.75);
+        assert_eq!(before.sky.as_deref(), Some("sky_day"));
+        let (b, a) = (before.sun.unwrap(), after.sun.unwrap());
+        assert!(close3(b.direction, sun_direction(0.0, std::f32::consts::FRAC_PI_4)));
+        assert!(close3(a.direction, sun_direction(std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_4)));
+        assert!(!close3(b.direction, a.direction));
+        assert_eq!((before.fog.unwrap().density, after.fog.unwrap().density), (0.25, 0.75));
+        // The viewport's words follow: the sun's xy turns from +x to +y.
+        let (ub, ua) = (
+            crate::render::AtmosphereUniforms::of(&before),
+            crate::render::AtmosphereUniforms::of(&after),
+        );
+        assert!(ub.sun[0] > 0.5 && ub.sun[1].abs() < 1e-4, "{:?}", ub.sun);
+        assert!(ua.sun[1] > 0.5 && ua.sun[0].abs() < 1e-4, "{:?}", ua.sun);
+        assert_eq!(ua.fog_color[3], 0.75);
+    }
+
+    /// No sky that decodes: the caller keeps the scene's atmosphere.
+    #[test]
+    fn a_scenario_with_no_readable_sky_gives_no_atmosphere() {
+        let scnr = vec![0u8; 0x18];
+        assert_eq!(atmosphere_in_doc(&scnr, 0x1000, &mut |_| None, &mut |_, _, _| None), None);
+    }
+
     #[test]
     fn sky_lights_point_up_and_tint_by_hue() {
         // Yaw 0, pitch 90 degrees: straight up.
@@ -3047,6 +3254,7 @@ mod tests {
                     }),
                     None
                 ],
+                mask: None,
                 emissive: false,
             }
         );
@@ -3074,6 +3282,72 @@ mod tests {
         assert_eq!(detail_plan(&imps, bump, |_| true), DetailPlan::default());
         // No base texture: no details either.
         assert_eq!(look_of(None, &plan, |_| Some(5)), Look::plain(None));
+    }
+
+    /// Coagulation's sky: the cloud shader (`two_alpha_clouds`) samples
+    /// its cover mask and its cloud tile in one pass, and the sun volume
+    /// (`one_add_illum_detail`) its volume mask and its beams tile. The
+    /// tile is the base map (the mask is not a diffuse name); the mask
+    /// covers it at its stage's scale. Only the layers that blend by
+    /// alpha or add take one, and engine bitmaps are never masks.
+    #[test]
+    fn a_see_through_layer_takes_its_coverage_mask() {
+        let (tile, mask, white, other) = (TagId(0x20), TagId(0x21), TagId(0x22), TagId(0x23));
+        let names = |id: TagId| match id.0 {
+            0x20 => "scenarios\\skies\\multi\\halo\\coagulation\\bitmaps\\coag_cloudtile",
+            0x21 => "scenarios\\skies\\multi\\halo\\coagulation\\bitmaps\\coag_cloudcover_mask",
+            0x22 => "shaders\\default_bitmaps\\bitmaps\\color_white",
+            _ => "invented\\bitmaps\\other",
+        };
+        assert_eq!(bitmap_role(names(tile)), BitmapRole::Diffuse);
+        assert_eq!(bitmap_role(names(mask)), BitmapRole::Other);
+        assert!(is_coverage_mask(names(mask)));
+        assert!(is_coverage_mask(
+            "scenarios\\skies\\multi\\ascension\\bitmaps\\ascension_sun_volume_mask"
+        ));
+        assert!(!is_coverage_mask(names(tile)));
+        assert!(!is_coverage_mask(
+            "shaders\\default_bitmaps\\bitmaps\\alpha_mask"
+        ));
+        let stage = |bitmap: Option<TagId>, s: Option<f32>| StageBinding {
+            bitmap,
+            scale: s.map(|s| [s, s]),
+        };
+        let imps = [[
+            stage(None, None),
+            stage(Some(mask), None),
+            stage(Some(tile), Some(4.0)),
+            stage(Some(white), None),
+        ]];
+        let is_mask = |id: TagId| is_coverage_mask(names(id));
+        assert_eq!(mask_plan(&imps, tile, is_mask), Some((mask, [1.0, 1.0])));
+        let scaled = [[
+            stage(Some(tile), Some(4.0)),
+            stage(Some(mask), Some(0.5)),
+            stage(None, None),
+            stage(None, None),
+        ]];
+        assert_eq!(mask_plan(&scaled, tile, is_mask), Some((mask, [0.5, 0.5])));
+        // No mask sampled with the base map, or the base map not sampled.
+        let plain = [[
+            stage(Some(tile), None),
+            stage(Some(other), None),
+            stage(None, None),
+            stage(None, None),
+        ]];
+        assert_eq!(mask_plan(&plain, tile, is_mask), None);
+        assert_eq!(mask_plan(&imps, other, is_mask), None);
+        // The blends that take one.
+        let takes: Vec<Blend> = Blend::ALL.into_iter().filter(|&b| masks(b)).collect();
+        assert_eq!(takes, [Blend::Alpha, Blend::Additive]);
+        assert_eq!(
+            template_blend("shaders\\shader_templates\\transparent\\two_alpha_clouds"),
+            Blend::Alpha
+        );
+        assert_eq!(
+            template_blend("shaders\\shader_templates\\transparent\\one_add_illum_detail"),
+            Blend::Additive
+        );
     }
 
     #[test]

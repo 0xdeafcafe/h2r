@@ -28,6 +28,29 @@ impl RecordData {
         }
     }
 
+    /// A Forge entry record: `subtype` is [`stream::FORGE_WELCOME`],
+    /// [`stream::FORGE_ITEM`], [`stream::FORGE_LOOK`] or
+    /// [`stream::FORGE_POSE`] and `bytes` the message
+    /// (docs/game/forge-design.md, "Films and determinism").
+    pub fn forge(subtype: u8, bytes: &[u8]) -> Self {
+        let mut payload = Vec::with_capacity(1 + bytes.len());
+        payload.push(subtype);
+        payload.extend_from_slice(bytes);
+        Self {
+            tag: stream::FORGE,
+            payload,
+        }
+    }
+
+    /// A Forge entry record from a payload that already leads with its
+    /// subtype (`forge::net::film`).
+    pub fn forge_payload(payload: Vec<u8>) -> Self {
+        Self {
+            tag: stream::FORGE,
+            payload,
+        }
+    }
+
     pub fn marker(label: &str) -> Self {
         Self {
             tag: stream::MARKER,
@@ -42,7 +65,13 @@ pub(super) struct TickRecords {
     pub after: Vec<RecordData>,
 }
 
-pub(super) fn encode(ticks: &[Tick], extra: &[TickRecords]) -> Result<Vec<u8>> {
+/// A time chunk's records. `with_inputs` is false when the actions are in
+/// the film file ([`crate::Header::inputs_in_film`]).
+pub(super) fn encode(
+    ticks: &[Tick],
+    extra: &[TickRecords],
+    with_inputs: bool,
+) -> Result<Vec<u8>> {
     ensure!(
         ticks.len() == extra.len(),
         "record groups disagree with film ticks"
@@ -53,7 +82,7 @@ pub(super) fn encode(ticks: &[Tick], extra: &[TickRecords]) -> Result<Vec<u8>> {
     let mut previous = [None; super::MAX_SEATS];
     for (tick, records) in ticks.iter().zip(extra) {
         let seats = ticks::slots(tick)?;
-        if seats != previous {
+        if with_inputs && seats != previous {
             let mut input = Vec::new();
             ticks::write_change(&previous, &seats, &mut input);
             out.record(tick.tick, stream::INPUT, &input)
@@ -61,6 +90,14 @@ pub(super) fn encode(ticks: &[Tick], extra: &[TickRecords]) -> Result<Vec<u8>> {
             previous = seats;
         }
         lifecycle(&mut out, tick.tick, stream::LIFECYCLE_EVENT, &tick.events)?;
+        for payload in &tick.forge {
+            out.record(tick.tick, stream::FORGE, payload)
+                .map_err(anyhow::Error::msg)?;
+        }
+        for payload in &tick.firefight {
+            out.record(tick.tick, stream::FIREFIGHT, payload)
+                .map_err(anyhow::Error::msg)?;
+        }
         write_records(&mut out, tick.tick, &records.during)?;
         if let Some(hash) = tick.post_hash {
             out.record(tick.tick, stream::HASH, &hash.to_le_bytes())
@@ -84,8 +121,8 @@ fn write_records(
 ) -> Result<()> {
     for record in records {
         ensure!(
-            !matches!(record.tag, stream::INPUT | stream::HASH),
-            "duplicate source of engine inputs or hash"
+            !matches!(record.tag, stream::INPUT | stream::HASH | stream::FIREFIGHT),
+            "duplicate source of engine inputs, hash or Firefight entries"
         );
         writer
             .record(tick, record.tag, &record.payload)
@@ -163,6 +200,25 @@ pub(super) fn decode(raw: &[u8], first: u64, count: usize) -> Result<VecDeque<Ti
                         frame.events = events;
                     }
                     *seen = true;
+                }
+                stream::FORGE => {
+                    ensure!(
+                        matches!(
+                            record.payload.first(),
+                            Some(
+                                &stream::FORGE_WELCOME
+                                    | &stream::FORGE_ITEM
+                                    | &stream::FORGE_LOOK
+                                    | &stream::FORGE_POSE
+                            )
+                        ),
+                        "invalid film Forge record"
+                    );
+                    frame.forge.push(record.payload.to_vec());
+                }
+                stream::FIREFIGHT => {
+                    ensure!(!record.payload.is_empty(), "empty film Firefight record");
+                    frame.firefight.push(record.payload.to_vec());
                 }
                 stream::HASH => {
                     ensure!(frame.post_hash.is_none(), "duplicate film hash");

@@ -1,9 +1,11 @@
-//! Materialise a Forge document's placement, tag-field and link edits into a
-//! local map package.
+//! Materialise a Forge document's placement, entry, tag-field and link
+//! edits into a local map package.
 //! The source maps are read-only. Scenario commands and tag patches go
 //! through scenario-edit's writer.
 #![forbid(unsafe_code)]
 
+mod entry;
+mod ground;
 mod kit;
 mod links;
 mod placement;
@@ -21,10 +23,13 @@ use content::{
     manifest::{FORGE_FORMAT, ForgeLayer, MANIFEST_FILE, ResultInfo},
     store,
 };
-use forge_doc::{BuilderVersions, ForgeDoc, Limits, MapRef, Recipe};
+use forge_doc::{BlockKind, BuilderVersions, ForgeDoc, Limits, MapRef, Recipe, Refusal};
 use map::{CacheType, Map};
 use scenario_edit::{MapSource, Session, layout, package::geometry_hash, save};
 
+pub use entry::{base_fields, base_print, entry_fields, tag_key};
+pub use forge_doc::Printed;
+pub use ground::GroundReport;
 pub use kit::Reservation;
 
 /// Versions pinned by an F2 document. Geometry-changing generators have no
@@ -32,7 +37,7 @@ pub use kit::Reservation;
 pub const VERSIONS: BuilderVersions = BuilderVersions::CURRENT;
 
 /// A generate recipe that makes the F2 session kit part of document content.
-pub const KIT_RECIPE: &str = "forge_kit";
+pub const KIT_RECIPE: &str = forge_doc::KIT_RECIPE;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -72,8 +77,25 @@ pub enum Error {
     SourceSize(String),
     #[error("forge_kit: {0}")]
     Kit(&'static str),
+    /// The document's objects have game types and the build names no
+    /// engine, or one that is no engine's.
+    #[error("forge_game: {0}")]
+    Game(&'static str),
     #[error("forge_links: {0}")]
     Links(&'static str),
+    /// The AI ground could not be built from the document's marks and
+    /// recipe: a mark with a team that is neither side, a kit of another
+    /// version, a map with no room for it.
+    #[error("forge_ground: {0}")]
+    Ground(String),
+    /// The disc's entry is not the one an edit was made on: its typed
+    /// fields give another print (docs/game/forge-map-variants.md, "Rules
+    /// and limits"). Nothing is built.
+    #[error(
+        "variant_print: the map's {} entry {index} is not the one this edit was made on",
+        .block.name()
+    )]
+    Print { block: BlockKind, index: u32 },
 }
 
 /// Bytes and manifest produced by the document. Saving is a separate action
@@ -83,6 +105,11 @@ pub struct Built {
     document: String,
     map: Vec<u8>,
     pub reserves: Vec<Reservation>,
+    /// What the AI ground build made, for a document that asks for it.
+    pub ground: Option<GroundReport>,
+    /// Every base entry the document names with a print, each compared
+    /// with the disc's row and found equal, by block then index.
+    pub prints: Vec<Printed>,
 }
 
 impl Built {
@@ -129,9 +156,34 @@ impl Built {
 }
 
 /// Build against a set of named input maps. The lookup should expose the disc's
-/// original maps by name. The hash checks use those exact bytes.
+/// original maps by name. The hash checks use those exact bytes. A document
+/// whose objects have game types needs [`build_for`].
 pub fn build(
     doc: &ForgeDoc,
+    lookup: impl FnMut(&str) -> Option<MapSource>,
+) -> Result<Built, Error> {
+    build_for(doc, None, lookup)
+}
+
+/// The `MapId` of `doc` built for the engine at variant index `engine`:
+/// the engine is in it only when the document's objects have game types
+/// (docs/game/forge-map-variants.md, "Game types").
+pub fn map_id(doc: &ForgeDoc, engine: Option<i32>) -> Result<MapId, Error> {
+    Ok(MapId::forge_game(
+        doc.base.sha256,
+        doc.id()?,
+        entry::game(doc, engine)?,
+    ))
+}
+
+/// [`build`] for the engine at variant index `engine` (Slayer 2, Capture
+/// the Flag 1, `forge_doc::games::ENGINES`): an object whose `games` set
+/// lacks it is left out of the map, and the package's identity names the
+/// engine. A document whose objects have no game types ignores `engine`
+/// and builds the one map it always does.
+pub fn build_for(
+    doc: &ForgeDoc,
+    engine: Option<i32>,
     mut lookup: impl FnMut(&str) -> Option<MapSource>,
 ) -> Result<Built, Error> {
     let mut limits = Limits {
@@ -140,7 +192,8 @@ pub fn build(
     };
     forge_doc::validate(doc, &limits)?;
     let document_hash = doc.id()?;
-    let id = MapId::forge(doc.base.sha256, document_hash);
+    let game = entry::game(doc, engine)?;
+    let id = MapId::forge_game(doc.base.sha256, document_hash, game);
     if let Some(expect) = doc.expect
         && expect.map_id != id
     {
@@ -162,6 +215,13 @@ pub fn build(
         check_map(donor, &source, false)?;
     }
     let needs_kit = requests_kit(&doc.recipes)?;
+    let asked = doc.ground_recipe()?;
+    if needs_kit && asked.is_some() {
+        return Err(Error::Recipe(format!(
+            "{} and {KIT_RECIPE} are not built together: the ground is built over the play form",
+            forge_doc::GROUND_RECIPE
+        )));
+    }
 
     let mut session = Session::new();
     session.build_scenes = false;
@@ -173,13 +233,38 @@ pub fn build(
         .iter()
         .map(|b| (b.kind, scenario.block(b.kind).len() as u32))
         .collect();
+    let flags = BlockKind::NetgameFlags;
+    limits.base_flag_types = (0..scenario.block(flags).len())
+        .map(|index| {
+            scenario
+                .get(flags, index, "type")?
+                .as_int()
+                .and_then(|kind| u16::try_from(kind).ok())
+                .ok_or(scenario_edit::Error::Invalid("netgame flag type is out of range"))
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into();
     limits.world = placement::world_bounds(&mut map)?;
+    // The objects of another game type are removed after every op; the
+    // document itself, its hash and its file are as authored.
+    let for_game = match game {
+        Some(game) => std::borrow::Cow::Owned(forge_doc::for_game(
+            doc,
+            i32::from(game),
+            &limits.base_counts,
+        )?),
+        None => std::borrow::Cow::Borrowed(doc),
+    };
 
     let mut apply = placement::Materialiser::new(&mut session, &mut map);
-    forge_doc::replay(doc, &limits, &mut apply)?;
+    forge_doc::replay(&for_game, &limits, &mut apply).map_err(|refusal| match refusal {
+        Refusal::Print { block, index } => Error::Print { block, index },
+        refusal => Error::Document(refusal),
+    })?;
     let placement::Finished {
         strings: mut new_strings,
         device_groups,
+        prints,
     } = apply.finish()?;
     if !needs_kit {
         session.set_tag_strings(std::mem::take(&mut new_strings))?;
@@ -195,6 +280,28 @@ pub fn build(
         // The writer places new string tables after the metadata. Finish
         // the kit's metadata growth before writing those tables.
         (output, reserves) = kit::reserve(output, &new_strings)?;
+    }
+    // The ground is built over the materialised map, from the marks the
+    // finished scenario's flags carry. Its bytes are the map.
+    let mut report = None;
+    if let Some(recipe) = asked {
+        let marks = doc.ground_marks(&limits.base_counts)?;
+        let labels = ground::labels(
+            session
+                .scenario()
+                .ok_or(scenario_edit::Error::Invalid("scenario is not open"))?,
+            &marks,
+        )?;
+        let built =
+            firefight_kit::ground::build(&output, &doc.base.map, &labels, &ground::recipe(recipe))
+                .map_err(|e| Error::Ground(format!("{e:#}")))?;
+        report = Some(GroundReport {
+            zones: built.zones,
+            squads: built.squads,
+            problems: built.problems,
+            receipt: built.receipt,
+        });
+        output = built.bytes;
     }
     let geometry = geometry_hash(&mut Map::from_reader(Cursor::new(output.as_slice()))?)?;
     if let Some(expect) = doc.expect
@@ -219,12 +326,15 @@ pub fn build(
         document_file: "document.h2forge".into(),
         file: "materialised.map".into(),
         sha256: Sha256::of(&output),
+        game,
     });
     Ok(Built {
         manifest,
         document: doc.canonical_json()?,
         map: output,
         reserves,
+        ground: report,
+        prints,
     })
 }
 
@@ -253,6 +363,9 @@ fn requests_kit(recipes: &[Recipe]) -> Result<bool, Error> {
                 }
                 requested = true;
             }
+            // Built after the scenario (`GroundReport`); the document's
+            // check has already refused one that is malformed.
+            Recipe::Generate { generator, .. } if generator == forge_doc::GROUND_RECIPE => {}
             Recipe::Generate { generator, .. } => {
                 return Err(Error::Recipe(format!(
                     "generator {generator:?} is unavailable"

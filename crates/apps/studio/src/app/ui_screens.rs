@@ -10,23 +10,43 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, bail};
 use boot::ui_kit::animation::{AnimatedView, Phase};
 use boot::ui_kit::input::Input;
-use boot::ui_kit::layout::{self, Rules};
+use boot::ui_kit::layout::Rules;
 use boot::ui_kit::page::Live;
-use boot::ui_kit::preview::{self, Canvas, Disc, Retail};
+use boot::ui_kit::preview::{self, Canvas, Disc};
 use boot::ui_kit::screens;
 use boot::ui_kit::spec::ScreenSpec;
 use boot::ui_kit::view::View;
 
+pub mod browse;
+pub mod check;
+pub mod gallery;
+
+pub use browse::{Browse, Root};
+pub use gallery::Gallery;
+pub mod edit;
+
 /// What the tool shows.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Pick {
     /// One of our screens ([`screens::NAMES`]) in a named state.
     Native { screen: String, state: String },
-    /// A retail screen of `mainmenu.map`, by tag name, as the disc has it.
-    Retail(String),
+    /// A retail screen of `mainmenu.map`, by tag name, as the disc has it,
+    /// in its plain sample state or the sample variant `sample` names
+    /// (`boot::ui_kit::preview::retail_sample::for_screen_variant`).
+    Retail { tag: String, sample: Option<String> },
 }
 
-/// One finding of the layout checks, with the widgets it names.
+impl Pick {
+    /// Retail screen `tag` in its plain sample state.
+    pub fn retail(tag: impl Into<String>) -> Pick {
+        Pick::Retail {
+            tag: tag.into(),
+            sample: None,
+        }
+    }
+}
+
+/// One finding of the kit's checks, with the widgets it names.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Finding {
     pub text: String,
@@ -38,8 +58,11 @@ pub struct Shot {
     pub canvas: Canvas,
     /// The view (none for a retail screen: only its picture is drawn).
     pub view: Option<View>,
-    /// The checks' findings, the kit's then the layout's.
+    /// The checks' findings (`boot::ui_kit::findings::of_state`).
     pub findings: Vec<Finding>,
+    /// A retail screen's widgets (with the map's moves), for the editing;
+    /// none for ours (`view` has them) or without the disc.
+    pub retail_view: Option<View>,
     /// Checks the source could not run (the art checks without a disc).
     pub skipped: Vec<String>,
     /// The rules the view was held to (safe and reserved areas).
@@ -68,6 +91,12 @@ pub struct UiScreens {
     pub show_rects: bool,
     pub show_safe: bool,
     pub show_reserved: bool,
+    /// The grid of previews shown in place of the picture, and its
+    /// thumbnails.
+    pub gallery: Gallery,
+    /// The selection and the edits (docs/game/ui-builder.md "Editing in
+    /// the editor").
+    pub edit: edit::UiEdit,
 }
 
 impl Default for UiScreens {
@@ -86,6 +115,8 @@ impl Default for UiScreens {
             show_rects: true,
             show_safe: true,
             show_reserved: true,
+            gallery: Gallery::default(),
+            edit: edit::UiEdit::default(),
         }
     }
 }
@@ -112,6 +143,7 @@ impl UiScreens {
             return;
         }
         self.disc_path = path;
+        self.gallery.new_disc();
         self.redraw();
     }
 
@@ -159,9 +191,10 @@ impl UiScreens {
                 }
                 self.live = Some(live);
             }
-            Pick::Retail(_) => self.live = None,
+            Pick::Retail { .. } => self.live = None,
         }
         self.pick = Some(pick);
+        self.gallery.at = None;
         self.animation = Phase::Rest;
         self.last = None;
         self.redraw();
@@ -185,8 +218,16 @@ impl UiScreens {
     }
 
     /// The spec shown, for a native screen.
+    /// The page's spec as its screen doc presents it: the doc in scope
+    /// ([`edit::ours::with_docs`]: the edits), else the reloaded or baked
+    /// one, laid over what the Rust builds, so an edit shows on every
+    /// screen of ours, whether its runtime reads the doc yet or not.
     pub fn spec(&self) -> Option<ScreenSpec> {
-        self.live.as_ref().map(|l| l.spec())
+        let spec = self.live.as_ref()?.spec();
+        let Some(Pick::Native { screen, .. }) = &self.pick else {
+            return Some(spec);
+        };
+        Some(presented(screen, spec))
     }
 
     pub fn animation(&self) -> Phase {
@@ -204,14 +245,56 @@ impl UiScreens {
         self.shot = None;
     }
 
+    /// The bitmap and image widget `id` of the screen shown draws, read
+    /// through the disc: the slot a generated picture goes into.
+    pub fn widget_bitmap(&mut self, id: &str) -> Option<(String, usize)> {
+        let w = self.edit_widget(id).ok()?;
+        let boot::ui_kit::view::Kind::Art { art, .. } = &w.kind else {
+            return None;
+        };
+        let (name, image) = self.disc()?.art_bitmap(art)?;
+        Some((name, usize::try_from(image).ok()?))
+    }
+
+    /// Draws `rgba` (`width` by `height`) for image `image` of the
+    /// bitmap at `bitmap` in every picture from now on, or the disc's
+    /// own pixels again with `None`: a generated picture previewed in
+    /// place. False when the disc has no such bitmap.
+    pub fn show_image(
+        &mut self,
+        bitmap: &str,
+        image: usize,
+        rgba: Option<(u32, u32, Vec<u8>)>,
+    ) -> bool {
+        let Ok(index) = i16::try_from(image) else {
+            return false;
+        };
+        let Some(disc) = self.disc() else {
+            return false;
+        };
+        let img = rgba.map(|(width, height, rgba)| preview::Image {
+            width,
+            height,
+            rgba,
+        });
+        let shown = disc.set_image(bitmap, index, img);
+        if shown {
+            self.redraw();
+        }
+        shown
+    }
+
     /// The picture of the pick, drawn when it changed.
     pub fn shot(&mut self) -> Option<&Shot> {
+        if self.edit.ours.poll() {
+            self.shot = None;
+        }
         if self.shot.is_none() {
             let pick = self.pick.clone()?;
             self.rev += 1;
             let shot = match pick {
                 Pick::Native { state, .. } => self.draw_native(&state),
-                Pick::Retail(tag) => self.draw_retail(&tag),
+                Pick::Retail { tag, sample } => self.draw_retail(&tag, sample.as_deref()),
             };
             match shot {
                 Ok(s) => self.shot = Some(s),
@@ -224,7 +307,21 @@ impl UiScreens {
         self.shot.as_ref()
     }
 
+    /// Our screen, drawn with the edited docs ([`edit::ours::with_docs`]):
+    /// the preview and the checks see the edits.
     fn draw_native(&mut self, state: &str) -> Result<Shot> {
+        if let Some(Pick::Native { screen, .. }) = &self.pick {
+            let screen = screen.clone();
+            self.edit
+                .ours
+                .doc(&screen)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+        let docs = self.shown_docs();
+        edit::ours::with_docs(&docs, || self.draw_native_with(state))
+    }
+
+    fn draw_native_with(&mut self, state: &str) -> Result<Shot> {
         let spec = self.spec().context("no page")?;
         let rev = self.rev;
         let phase = self.animation;
@@ -236,24 +333,17 @@ impl UiScreens {
         let src = from.source();
         let view = from.view(&spec, state)?;
         let rules = Rules::for_spec(&spec);
-        let mut findings = Vec::new();
-        if let Some(d) = disc {
-            for f in d.check(&spec)? {
-                findings.push(Finding {
-                    text: format!("kit: {f}"),
-                    ids: Vec::new(),
-                });
-            }
-        }
-        let report = layout::check(&view, src, &rules);
-        findings.extend(boot::ui_kit::content::check_with_source(&spec, &view, src).into_iter().map(|f| Finding {
-            text: format!("content: {f}"),
-            ids: vec![f.id],
-        }));
-        findings.extend(report.issues.iter().map(|i| Finding {
-            text: i.to_string(),
-            ids: i.ids().into_iter().map(String::from).collect(),
-        }));
+        // Every check's findings, as `h2 ui preview` prints them
+        // (`boot::ui_kit::findings`).
+        let report = boot::ui_kit::findings::of_state(&from, &spec, &view)?;
+        let findings: Vec<Finding> = report
+            .findings
+            .iter()
+            .map(|f| Finding {
+                text: f.to_string(),
+                ids: f.ids.clone(),
+            })
+            .collect();
         let view = if phase == Phase::Rest {
             view
         } else {
@@ -264,6 +354,7 @@ impl UiScreens {
         Ok(Shot {
             canvas: preview::render_view(&view, src),
             view: Some(view),
+            retail_view: None,
             findings,
             skipped: report.skipped.iter().map(|s| s.to_string()).collect(),
             rules,
@@ -272,19 +363,20 @@ impl UiScreens {
         })
     }
 
-    fn draw_retail(&mut self, tag: &str) -> Result<Shot> {
+    /// A retail screen as the disc has it, with the edits of the map's
+    /// tag document ([`edit::retail`], [`edit::retail_tag`]): widgets
+    /// moved, blocks hidden or copied, string IDs set.
+    fn draw_retail(&mut self, tag: &str, sample: Option<&str>) -> Result<Shot> {
         let rev = self.rev;
+        let edits = self.edit.retail_edits(tag);
         let d = self.disc().context("retail screens need the disc")?;
-        let canvas = d.render_retail(&Retail {
-            tag,
-            pane: 0,
-            text: &|_| None,
-            cells: &[],
-            footer: None,
-        })?;
+        let r = edit::retail_pick(tag, sample);
+        let canvas = d.render_retail_edited(&r, &edits)?;
+        let retail_view = Some(d.retail_view_edited(&r, &edits)?);
         Ok(Shot {
             canvas,
             view: None,
+            retail_view,
             findings: Vec::new(),
             skipped: Vec::new(),
             rules: Rules::default(),
@@ -341,7 +433,7 @@ impl UiScreens {
                     format!("{stem}-{}", self.animation)
                 }
             }
-            Pick::Retail(tag) => tag.replace(['\\', '/'], "_"),
+            Pick::Retail { tag, .. } => tag.replace(['\\', '/'], "_"),
         };
         let phase = self.animation;
         let mut written = Vec::new();
@@ -364,6 +456,18 @@ impl UiScreens {
         };
         written.push(preview::write_sheet(&from, dir)?);
         Ok(written)
+    }
+}
+
+/// Screen `screen`'s `spec` as its screen doc presents it: the doc in
+/// scope ([`edit::ours::with_docs`]: the edits), else the reloaded or
+/// baked one, laid over what the Rust builds ([`UiScreens::spec`]).
+pub fn presented(screen: &str, spec: ScreenSpec) -> ScreenSpec {
+    match boot::ui_kit::data::screen(screen) {
+        Some(doc) => boot::ui_kit::data::present(&spec, &doc, boot::ui_kit::data::design())
+            .map_err(|e| eprintln!("ui screens: {screen}: {e}"))
+            .unwrap_or(spec),
+        None => spec,
     }
 }
 
@@ -475,7 +579,7 @@ mod tests {
         let shot = s.shot().unwrap();
         assert_eq!(shot.findings, vec![]);
         assert!(shot.view.as_ref().unwrap().widget("cell.0.art").is_some());
-        let issue = layout::Issue::Fit { id: "row.0".into() };
+        let issue = boot::ui_kit::layout::Issue::Fit { id: "row.0".into() };
         assert_eq!(issue.ids(), ["row.0"]);
     }
 
@@ -526,7 +630,7 @@ mod tests {
             .find(|n| n.ends_with("main_menu"))
             .cloned()
             .unwrap_or_else(|| retail[0].clone());
-        s.select(Pick::Retail(main)).unwrap();
+        s.select(Pick::retail(main)).unwrap();
         assert!(s.shot().unwrap().view.is_none());
         assert!(s.press(Input::A).is_none(), "nothing to step");
     }

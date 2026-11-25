@@ -19,8 +19,17 @@ mod checkpoint;
 const CREATE_SQUAD: u32 = 0x0005_9890;
 /// Retail lifecycle teardown, also used before a checkpoint scenario load.
 pub(crate) const LEAVE_SESSIONS: u32 = 0x0005_93e0;
-const SET_VARIANT: u32 = 0x0019_a728;
-const CONTROLLER_COUNTDOWN: u32 = 0x0019_a78e;
+/// The lobby variant setter (`points::LOBBY_SET_VARIANT`): stack the
+/// `0x130`-byte record; AL nonzero when taken. The pause menu's Change
+/// Rules and Quick Options set the next game's variant with it
+/// (`crate::pause_change_map`), and so does the lobby's Quick Options for
+/// a script variant (`crate::variant_quick::page`).
+pub(crate) static SET_VARIANT: &points::Point = &points::LOBBY_SET_VARIANT;
+/// The controller countdown (`0x19a78e`): EAX the pressing controller's
+/// port, stack 10 and 3 as the lobby's Start Game asks; AL nonzero when the
+/// countdown started. The pause menu's Game Setup starts the next game
+/// with it (`crate::pause_change_map`).
+pub(crate) const CONTROLLER_COUNTDOWN: u32 = 0x0019_a78e;
 /// The pregame stage change the countdown finisher (`0x6e410`) makes once
 /// every peer has loaded the map: `0x6e4d7` calls it with the session in
 /// ESI and the new stage in EDI, and it returns with a plain `ret`.
@@ -797,7 +806,7 @@ impl Machine {
                 }
                 cx.write(|m| m.set_u32(scratch + variant::MAX_PLAYERS as u32, max))
                     .map_err(read_fault)?;
-                if call(cx, GuestCall::new(SET_VARIANT).args([scratch])).await? as u8 == 0 {
+                if call(cx, GuestCall::new(SET_VARIANT.base).args([scratch])).await? as u8 == 0 {
                     return Err(unavailable("retail refused the selected variant"));
                 }
                 let mut applied = Box::new([0; variant::SIZE]);

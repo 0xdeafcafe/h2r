@@ -124,7 +124,10 @@ impl App {
     /// Each frame: start a load while a bot layer shows, and pick up a
     /// finished one.
     pub fn poll_bot_nav(&mut self) {
-        if self.layers.visible(LayerId::BotNav) || self.layers.visible(LayerId::BotSpots) {
+        if self.layers.visible(LayerId::BotNav)
+            || self.layers.visible(LayerId::BotSpots)
+            || LayerId::PLAYTEST.iter().any(|&id| self.layers.visible(id))
+        {
             self.want_bot_nav();
         }
         let Some(rx) = self.bot_nav.rx.as_ref() else {
@@ -158,9 +161,10 @@ impl App {
         match result {
             Ok(nav) => {
                 self.info(format!(
-                    "bots: {}: {} polygons, {} links, {} spots",
+                    "bots: {}: {} polygons ({} out of the map), {} links, {} spots",
                     nav.map,
                     nav.polys.len(),
+                    nav.out_of_map_count(),
                     nav.links.len(),
                     nav.spots.len()
                 ));
@@ -267,6 +271,7 @@ pub fn add_mesh(nav: &mut BotNav, bsp: usize, origin: String, d: &bots::cache::M
             poly: i,
             verts: p.verts.clone(),
             normal: p.normal,
+            out_of_map: !d.nav.in_map(i as u32),
         }));
     nav.links
         .extend(d.nav.edges.iter().enumerate().map(|(i, e)| BotLink {
@@ -389,7 +394,7 @@ pub fn spots(
             kind: Some(match (s.kind, s.shape) {
                 (Kind::Crouch, _) => SpotKind::Crouch,
                 (Kind::Bounce, Shape::Slot) => SpotKind::Bounce,
-                (Kind::Bounce, Shape::Crease) => SpotKind::Strip,
+                (Kind::Bounce, Shape::Crease | Shape::Vee | Shape::Busy) => SpotKind::Strip,
             }),
             source,
             stand: s.stand,

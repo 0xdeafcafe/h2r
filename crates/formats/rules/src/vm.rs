@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::bodies::Body;
 use crate::caps::{self, Entry, Kind, Order, VARIANT_FIELDS};
 use crate::ir::*;
 use crate::policy;
@@ -30,6 +31,23 @@ pub const MAX_QUEUE: usize = 128;
 pub const MAX_OBJECT_RECORDS: usize = MAX_LABELLED;
 /// Zones `ticks_held` counts for at once.
 pub const MAX_HELD_ZONES: usize = 32;
+/// Areas `show_area` keeps drawn at once.
+pub const MAX_SHOWN_AREAS: usize = 8;
+/// Movers (`move_to`) running at once.
+pub const MAX_MOVERS: usize = 16;
+/// Barriers (`set_open`) open at once.
+pub const MAX_GATES: usize = 16;
+/// How far below its closed place an open barrier stands, in 16.16 world
+/// units: far enough that nothing it blocks is on it.
+pub const GATE_DROP: i32 = 64 << 16;
+/// Pickers (`offer_pick`) a script offers at once, numbered from 0.
+pub const MAX_PICKS: usize = 2;
+/// Rows (`pick_row`) a picker holds.
+pub const MAX_PICK_ROWS: usize = 6;
+/// Pairs of objects the sight table (`sees`) keeps at once.
+pub const MAX_SIGHT_PAIRS: usize = 32;
+/// A sight pair nobody asked for in this many ticks is dropped.
+pub const SIGHT_KEEP: u32 = 30;
 
 /// A value handed to the game, resolved from the blob's tables.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,10 +84,22 @@ pub struct Placed {
 /// What the VM reads from and does to the game. The host implements it
 /// over `engine::entry::Cx`; tests implement it over a fake.
 pub trait Game {
+    /// The variant's type announces a round, including one with no handler.
+    fn start_line(&mut self, _ty: crate::types::Type) {}
+    /// What a point is called on the scoreboard and in the post-game: the
+    /// header's `points`, told at each round start.
+    fn points_label(&mut self, _label: &str) {}
     /// Roster slots of the players present. Order does not matter.
     fn players(&self) -> Vec<u8>;
     /// Indices of the teams in play. Order does not matter.
     fn teams(&self) -> Vec<u8>;
+    /// The roster slots seated on `team`, for a waypoint's audience
+    /// (`mark(wp, at, team)`), resolved from the roster every machine
+    /// holds, so all of them keep the same mask. A game that does not say
+    /// answers none, and the team's mark is drawn to nobody.
+    fn players_of_team(&self, _team: u8) -> Vec<u8> {
+        Vec::new()
+    }
     /// The objects with a Forge label. Order does not matter.
     fn labelled(&self, label: &str) -> Vec<Placed>;
     /// The objects of the objective registry (`E+0xc1c`). Order does not
@@ -91,6 +121,19 @@ pub trait Game {
     /// An action entry, made now (an `Order::Now` entry, or a queued one
     /// from [`Vm::flush_queue`]).
     fn act(&mut self, call: &Call);
+    /// A mover's step for this tick: `object` set to `at` (16.16 world
+    /// units) and moving at `velocity` (16.16 world units a second; all
+    /// zero on the tick it arrives). The VM makes one for each running
+    /// mover every tick ([`Vm::update`]).
+    fn step_object(&mut self, _object: u32, _at: [i32; 3], _velocity: [i32; 3]) {}
+    /// The sight test behind `sees`: whether nothing solid is between the
+    /// two objects. The VM asks once a tick for each pair in its sight
+    /// table at the tick's end ([`Vm::update`]). A host that traces at
+    /// the next boundary returns `None` to keep the previous result until
+    /// it can call [`Vm::record_sight`]. A game with no trace answers false.
+    fn trace_sight(&mut self, _from: u32, _to: u32) -> Option<bool> {
+        Some(false)
+    }
     /// The VM stopped on a script error: end the round with the outcome
     /// "script error" through `GAME_END`.
     fn script_error(&mut self, error: &ScriptError);
@@ -131,6 +174,24 @@ pub enum Input {
     Quit(u8),
     /// A fall out of the map during a bounce: the Bounced medal.
     Bounced(u8),
+    /// `object` took damage credited to `by`: `amount` as a `fixed` raw
+    /// value, a fraction of full vitality.
+    Damage {
+        object: u32,
+        by: Option<u8>,
+        amount: i32,
+    },
+    /// A player's biped touched down: the speed it fell at on the tick
+    /// before and its vertical speed now, `fixed` world units a second.
+    Touchdown { player: u8, down: i32, up: i32 },
+    /// A landing the host judged a superbounce, when its launch window
+    /// closed: the strip (`superbounce_chain::spot_id`, `None` off every
+    /// marked strip) and the launch, a `fixed` raw value in world units a
+    /// second, rounded up so a `>` against a constant is the host's own
+    /// comparison.
+    Launch { player: u8, spot: Option<u32>, speed: i32 },
+    /// The player's run of bounces with no ground between them ended.
+    Grounded(u8),
 }
 
 impl Input {
@@ -155,6 +216,10 @@ impl Input {
             Input::Join(_) => Event::Join,
             Input::Quit(_) => Event::Quit,
             Input::Bounced(_) => Event::Bounced,
+            Input::Damage { .. } => Event::Damage,
+            Input::Touchdown { .. } => Event::Touchdown,
+            Input::Launch { .. } => Event::Launch,
+            Input::Grounded(_) => Event::Grounded,
         }
     }
 }
@@ -194,6 +259,23 @@ pub enum ErrorKind {
     Squad,
     /// More than [`MAX_HELD_ZONES`] zones named to `ticks_held`.
     Zones,
+    /// `set_body` named a tag that is no body of `crate::bodies::LIST`.
+    Body,
+    /// More than [`MAX_SHOWN_AREAS`] areas shown at once (`show_area`).
+    Areas,
+    /// A `hud_*`, `mark` or `unmark` call named a widget or waypoint the
+    /// script does not declare.
+    Hud,
+    /// More than [`MAX_MOVERS`] movers running at once (`move_to`).
+    Movers,
+    /// More than [`MAX_SIGHT_PAIRS`] pairs asked to `sees` within
+    /// [`SIGHT_KEEP`] ticks.
+    Sight,
+    /// More than [`MAX_GATES`] barriers open at once (`set_open`).
+    Gates,
+    /// A picker (`offer_pick`, `pick_row`) numbered past [`MAX_PICKS`], a
+    /// row for a picker never offered, or more than [`MAX_PICK_ROWS`] rows.
+    Picks,
 }
 
 impl ErrorKind {
@@ -209,6 +291,13 @@ impl ErrorKind {
             3 => ErrorKind::Queue,
             4 => ErrorKind::Squad,
             5 => ErrorKind::Zones,
+            6 => ErrorKind::Body,
+            7 => ErrorKind::Areas,
+            8 => ErrorKind::Hud,
+            9 => ErrorKind::Movers,
+            10 => ErrorKind::Sight,
+            11 => ErrorKind::Gates,
+            12 => ErrorKind::Picks,
             _ => return None,
         })
     }
@@ -257,12 +346,167 @@ pub struct RulesExt {
     pub objects: BTreeMap<u32, Vec<i32>>,
     /// Sorted by player, then capability.
     pub grants: Vec<Grant>,
+    /// Players holding the script role, one bit per player slot.
+    pub role_mask: u16,
     pub queue: Vec<Queued>,
     /// `ticks_held`'s counters: per zone object a script has named, the
     /// ticks each team held it alone, by team index. Counting starts the
     /// tick after a script first names the zone and ends at the round's
     /// end.
     pub held: BTreeMap<u32, [u32; MAX_TEAMS]>,
+    /// Each team's spawn rule (`spawn_areas`, `spawn_near`), by team
+    /// index: which starting locations its players' spawns may use. The
+    /// host's spawn hook reads it at each spawn; it ends at the round's
+    /// end.
+    pub spawns: [Option<Spawns>; MAX_TEAMS],
+    /// Each team's body (`set_body`), by team index: the body its players
+    /// spawn in; `None`, their own. The host's spawn hook reads it at each
+    /// spawn; it ends at the round's end.
+    pub bodies: [Option<Body>; MAX_TEAMS],
+    /// The areas a script shows in play (`show_area`), in the order it
+    /// first showed them, at most [`MAX_SHOWN_AREAS`]: a zone object and
+    /// the team whose colour its wall takes (`None` for neutral). Every
+    /// machine, and a film, draws the same walls from them.
+    pub shown: Vec<(u32, Option<u8>)>,
+    /// The script's HUD widgets and waypoints (`hud_*`, `mark`): the show
+    /// state every machine that runs the VM draws from
+    /// ([`crate::show::view`]) and a film's keyframe restores.
+    pub show: crate::show::State,
+    /// The movers a script runs (`move_to`), in the order started, at most
+    /// [`MAX_MOVERS`]. The VM steps each every tick ([`Vm::update`]), so a
+    /// checkpoint, a film's keyframe and the sim hash carry them and every
+    /// machine that runs the VM moves the same objects the same way.
+    pub movers: Vec<Mover>,
+    /// The sight table (`sees`): each pair a script asked for within the
+    /// last [`SIGHT_KEEP`] ticks, in the order first asked, with the
+    /// answer of its latest trace. The VM traces each at every tick's end
+    /// ([`Vm::update`]), so a read answers what the tick before the
+    /// asking ended with; the state carries it so every machine, a
+    /// checkpoint and a film's keyframe read the same.
+    pub sight: Vec<Sight>,
+    /// The barriers a script holds open (`set_open`), in the order opened,
+    /// each with the place it closes back to, at most [`MAX_GATES`].
+    pub gates: Vec<Gate>,
+    /// The pickers the script offers (`offer_pick`), in slot order.
+    pub picks: Vec<PickOffer>,
+    /// What each player picked in them, at most one row for each player and
+    /// picker, in the order made. The host reports a pick
+    /// ([`Vm::choose`]); `picked` reads it.
+    pub choices: Vec<Choice>,
+}
+
+/// One picker a script offers: its slot, and its title and rows as indexes
+/// of the script's string table.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PickOffer {
+    pub slot: u8,
+    pub title: u16,
+    pub rows: Vec<u16>,
+}
+
+/// One player's pick: the row of picker `slot`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Choice {
+    pub player: u8,
+    pub slot: u8,
+    pub row: u8,
+}
+
+/// One open barrier: the object and where it stands when closed, 16.16
+/// world units.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Gate {
+    pub object: u32,
+    pub home: [i32; 3],
+}
+
+impl Gate {
+    /// Where the barrier stands while open.
+    pub fn open_at(&self) -> [i32; 3] {
+        [self.home[0], self.home[1], self.home[2].saturating_sub(GATE_DROP)]
+    }
+}
+
+/// One pair of the sight table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sight {
+    pub from: u32,
+    pub to: u32,
+    /// The last tick a script asked for the pair.
+    pub asked: u32,
+    /// Whether the latest trace found nothing solid between them; false
+    /// until the first trace.
+    pub clear: bool,
+}
+
+/// An object moving in a straight line between two points in a stated
+/// number of ticks (`move_to(o, at, t)`): the record the VM steps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mover {
+    pub object: u32,
+    /// Where the object was when `move_to` was called, 16.16 world units.
+    pub from: [i32; 3],
+    pub to: [i32; 3],
+    /// The tick `move_to` was called on.
+    pub start: u32,
+    /// Ticks from `start` to arriving, at least 1.
+    pub duration: u32,
+}
+
+impl Mover {
+    /// The tick the mover arrives on, and `on arrive` runs.
+    pub fn end(&self) -> u32 {
+        self.start.saturating_add(self.duration)
+    }
+
+    /// The position on `tick`: the straight line, in 64-bit integer steps
+    /// truncated toward `from`, and exactly `to` from the end tick on.
+    pub fn at(&self, tick: u32) -> [i32; 3] {
+        let k = i64::from(tick.saturating_sub(self.start).min(self.duration));
+        let d = i64::from(self.duration);
+        let mut out = [0; 3];
+        for i in 0..3 {
+            let delta = i64::from(self.to[i]) - i64::from(self.from[i]);
+            out[i] = (i64::from(self.from[i]) + delta * k / d).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+        }
+        out
+    }
+
+    /// The velocity while moving, in 16.16 world units a second.
+    pub fn velocity(&self) -> [i32; 3] {
+        let d = i64::from(self.duration);
+        let mut out = [0; 3];
+        for i in 0..3 {
+            let delta = i64::from(self.to[i]) - i64::from(self.from[i]);
+            out[i] = (delta * i64::from(caps::TICKS_PER_SECOND) / d).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+        }
+        out
+    }
+}
+
+/// A team's spawn rule: the starting locations its players' spawns may
+/// use (docs/game/rules-engine.md, "The engine API").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Spawns {
+    /// `spawn_areas(team, label, n)`: the starting locations of the IR's
+    /// label `label` numbered `number`.
+    Areas { label: u16, number: i32 },
+    /// `spawn_near(team, zone, n)`: the `count` starting locations nearest
+    /// the zone object `zone`.
+    Near { zone: u32, count: u8 },
+}
+
+/// The most starting locations `spawn_near` keeps.
+pub const MAX_SPAWN_NEAR: i32 = u8::MAX as i32;
+
+/// A team's spawn rule with its label resolved, as a host reads it
+/// ([`Vm::spawn_rule`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpawnRule<'a> {
+    /// The starting locations labelled `label` and numbered `number`.
+    Areas { label: &'a str, number: i32 },
+    /// The `count` starting locations nearest the zone object `zone`.
+    Near { zone: u32, count: u8 },
 }
 
 /// State bytes that do not decode, or do not fit the blob.
@@ -277,8 +521,11 @@ pub enum StateError {
 }
 
 const STATE_MAGIC: [u8; 4] = *b"H2RX";
-/// 2 added the `ticks_held` counters.
-const STATE_VERSION: u8 = 2;
+/// 2 added the `ticks_held` counters; 3 the teams' spawn rules and
+/// bodies; 4 the script role mask and the shown areas; 5 the show state;
+/// 6 the movers; 7 the sight table; 8 the open barriers; 9 the pickers and
+/// what each player picked.
+const STATE_VERSION: u8 = 9;
 
 impl RulesExt {
     /// Whether `player` holds `cap` (an index into `requires`) with uses
@@ -316,6 +563,7 @@ impl RulesExt {
         w.extend_from_slice(&self.tick.to_le_bytes());
         w.extend_from_slice(&self.ops.to_le_bytes());
         w.push(self.zone_events);
+        w.extend_from_slice(&self.role_mask.to_le_bytes());
         match self.stopped {
             None => w.push(0),
             Some(e) => {
@@ -368,12 +616,71 @@ impl RulesExt {
             w.push(q.args.len() as u8);
             i32s(&mut w, &q.args);
         }
+        for rule in &self.spawns {
+            match *rule {
+                None => w.push(0),
+                Some(Spawns::Areas { label, number }) => {
+                    w.push(1);
+                    w.extend_from_slice(&label.to_le_bytes());
+                    w.extend_from_slice(&number.to_le_bytes());
+                }
+                Some(Spawns::Near { zone, count }) => {
+                    w.push(2);
+                    w.extend_from_slice(&zone.to_le_bytes());
+                    w.push(count);
+                }
+            }
+        }
+        for body in &self.bodies {
+            w.push(body.map_or(0, Body::code));
+        }
         w.push(self.held.len() as u8);
         for (zone, counts) in &self.held {
             w.extend_from_slice(&zone.to_le_bytes());
             for c in counts {
                 w.extend_from_slice(&c.to_le_bytes());
             }
+        }
+        w.push(self.shown.len() as u8);
+        for (zone, team) in &self.shown {
+            w.extend_from_slice(&zone.to_le_bytes());
+            w.push(team.unwrap_or(NO_TEAM));
+        }
+        let show = self.show.encode();
+        w.push(show.len() as u8);
+        w.extend_from_slice(&show);
+        w.push(self.movers.len() as u8);
+        for m in &self.movers {
+            w.extend_from_slice(&m.object.to_le_bytes());
+            i32s(&mut w, &m.from);
+            i32s(&mut w, &m.to);
+            w.extend_from_slice(&m.start.to_le_bytes());
+            w.extend_from_slice(&m.duration.to_le_bytes());
+        }
+        w.push(self.sight.len() as u8);
+        for t in &self.sight {
+            w.extend_from_slice(&t.from.to_le_bytes());
+            w.extend_from_slice(&t.to.to_le_bytes());
+            w.extend_from_slice(&t.asked.to_le_bytes());
+            w.push(t.clear as u8);
+        }
+        w.push(self.gates.len() as u8);
+        for g in &self.gates {
+            w.extend_from_slice(&g.object.to_le_bytes());
+            i32s(&mut w, &g.home);
+        }
+        w.push(self.picks.len() as u8);
+        for o in &self.picks {
+            w.push(o.slot);
+            w.extend_from_slice(&o.title.to_le_bytes());
+            w.push(o.rows.len() as u8);
+            for row in &o.rows {
+                w.extend_from_slice(&row.to_le_bytes());
+            }
+        }
+        w.push(self.choices.len() as u8);
+        for c in &self.choices {
+            w.extend_from_slice(&[c.player, c.slot, c.row]);
         }
         w
     }
@@ -391,6 +698,7 @@ impl RulesExt {
         let tick = r.u32()?;
         let ops = r.u32()?;
         let zone_events = r.u8()?;
+        let role_mask = r.u16()?;
         let stopped = match r.u8()? {
             0 => None,
             1 => {
@@ -468,6 +776,34 @@ impl RulesExt {
                 args: r.i32s(argc)?,
             });
         }
+        let mut spawns = [None; MAX_TEAMS];
+        for rule in &mut spawns {
+            let at = r.at;
+            *rule = match r.u8()? {
+                0 => None,
+                1 => Some(Spawns::Areas {
+                    label: r.u16()?,
+                    number: r.i32()?,
+                }),
+                2 => {
+                    let zone = r.u32()?;
+                    let count = r.u8()?;
+                    if count == 0 {
+                        return Err(StateError::Malformed(at));
+                    }
+                    Some(Spawns::Near { zone, count })
+                }
+                _ => return Err(StateError::Malformed(at)),
+            };
+        }
+        let mut bodies = [None; MAX_TEAMS];
+        for body in &mut bodies {
+            let at = r.at;
+            *body = match r.u8()? {
+                0 => None,
+                c => Some(Body::from_code(c).ok_or(StateError::Malformed(at))?),
+            };
+        }
         let n = r.u8()? as usize;
         let mut held = BTreeMap::new();
         let mut last: Option<u32> = None;
@@ -484,6 +820,125 @@ impl RulesExt {
             }
             held.insert(zone, counts);
         }
+        let at = r.at;
+        let n = r.u8()? as usize;
+        if n > MAX_SHOWN_AREAS {
+            return Err(StateError::Malformed(at));
+        }
+        let mut shown: Vec<(u32, Option<u8>)> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let at = r.at;
+            let zone = r.u32()?;
+            let team = match r.u8()? {
+                NO_TEAM => None,
+                t if (t as usize) < MAX_TEAMS => Some(t),
+                _ => return Err(StateError::Malformed(at)),
+            };
+            if shown.iter().any(|(z, _)| *z == zone) {
+                return Err(StateError::Malformed(at));
+            }
+            shown.push((zone, team));
+        }
+        let at = r.at;
+        let n = r.u8()? as usize;
+        let show = crate::show::State::decode(r.take(n)?).map_err(|_| StateError::Malformed(at))?;
+        let at = r.at;
+        let n = r.u8()? as usize;
+        if n > MAX_MOVERS {
+            return Err(StateError::Malformed(at));
+        }
+        let mut movers: Vec<Mover> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let at = r.at;
+            let object = r.u32()?;
+            let from = [r.i32()?, r.i32()?, r.i32()?];
+            let to = [r.i32()?, r.i32()?, r.i32()?];
+            let start = r.u32()?;
+            let duration = r.u32()?;
+            if object_id(object as i32).is_none() || duration == 0 || movers.iter().any(|m| m.object == object) {
+                return Err(StateError::Malformed(at));
+            }
+            movers.push(Mover {
+                object,
+                from,
+                to,
+                start,
+                duration,
+            });
+        }
+        let at = r.at;
+        let n = r.u8()? as usize;
+        if n > MAX_SIGHT_PAIRS {
+            return Err(StateError::Malformed(at));
+        }
+        let mut sight: Vec<Sight> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let at = r.at;
+            let (from, to, asked) = (r.u32()?, r.u32()?, r.u32()?);
+            let clear = match r.u8()? {
+                0 => false,
+                1 => true,
+                _ => return Err(StateError::Malformed(at)),
+            };
+            let known = |o: u32| object_id(o as i32).is_some();
+            if !known(from) || !known(to) || sight.iter().any(|t| t.from == from && t.to == to) {
+                return Err(StateError::Malformed(at));
+            }
+            sight.push(Sight { from, to, asked, clear });
+        }
+        let at = r.at;
+        let n = r.u8()? as usize;
+        if n > MAX_GATES {
+            return Err(StateError::Malformed(at));
+        }
+        let mut gates: Vec<Gate> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let at = r.at;
+            let object = r.u32()?;
+            let home = [r.i32()?, r.i32()?, r.i32()?];
+            if object_id(object as i32).is_none() || gates.iter().any(|g| g.object == object) {
+                return Err(StateError::Malformed(at));
+            }
+            gates.push(Gate { object, home });
+        }
+        let at = r.at;
+        let n = r.u8()? as usize;
+        if n > MAX_PICKS {
+            return Err(StateError::Malformed(at));
+        }
+        let mut picks: Vec<PickOffer> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let at = r.at;
+            let slot = r.u8()?;
+            let title = r.u16()?;
+            let rows = r.u8()? as usize;
+            if slot as usize >= MAX_PICKS || rows > MAX_PICK_ROWS || picks.iter().any(|o| o.slot >= slot) {
+                return Err(StateError::Malformed(at));
+            }
+            let mut list = Vec::with_capacity(rows);
+            for _ in 0..rows {
+                list.push(r.u16()?);
+            }
+            picks.push(PickOffer { slot, title, rows: list });
+        }
+        let at = r.at;
+        let n = r.u8()? as usize;
+        if n > MAX_PLAYERS * MAX_PICKS {
+            return Err(StateError::Malformed(at));
+        }
+        let mut choices: Vec<Choice> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let at = r.at;
+            let c = Choice { player: r.u8()?, slot: r.u8()?, row: r.u8()? };
+            let offered = picks.iter().find(|o| o.slot == c.slot).is_some_and(|o| (c.row as usize) < o.rows.len());
+            if c.player as usize >= MAX_PLAYERS
+                || !offered
+                || choices.iter().any(|d| d.player == c.player && d.slot == c.slot)
+            {
+                return Err(StateError::Malformed(at));
+            }
+            choices.push(c);
+        }
         if r.at != bytes.len() {
             return Err(StateError::Malformed(r.at));
         }
@@ -492,6 +947,7 @@ impl RulesExt {
             tick,
             ops,
             zone_events,
+            role_mask,
             stopped,
             globals,
             players,
@@ -500,9 +956,21 @@ impl RulesExt {
             grants,
             queue,
             held,
+            spawns,
+            bodies,
+            shown,
+            show,
+            movers,
+            sight,
+            gates,
+            picks,
+            choices,
         })
     }
 }
+
+/// A shown area's neutral team, in the state's bytes.
+const NO_TEAM: u8 = 0xff;
 
 struct StateReader<'a> {
     bytes: &'a [u8],
@@ -528,6 +996,9 @@ impl<'a> StateReader<'a> {
     fn u32(&mut self) -> Result<u32, StateError> {
         let b = self.take(4)?;
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+    fn i32(&mut self) -> Result<i32, StateError> {
+        Ok(self.u32()? as i32)
     }
     fn u64(&mut self) -> Result<u64, StateError> {
         let b = self.take(8)?;
@@ -606,6 +1077,7 @@ pub enum ProposalRefusal {
 #[derive(Clone, Debug)]
 pub struct Vm {
     ir: Ir,
+    role_traits: [bool; 3],
     options: u32,
     ext: RulesExt,
     /// Each slot's position within its scope.
@@ -614,6 +1086,19 @@ pub struct Vm {
     inits: [Vec<i32>; 4],
     warnings: Vec<Warning>,
     report: verify::Report,
+}
+
+/// The three booleans the game queries for a role holder. A script may
+/// expose any of them as ordinary variant options.
+fn role_traits(ir: &Ir, options: u32) -> [bool; 3] {
+    [("role_active_camo", false), ("role_extra_damage", true), ("role_damage_resistance", false)]
+        .map(|(name, default)| {
+            if ir.options.iter().enumerate().any(|(i, o)| o.ty == Ty::Bool && ir.option_name(i) == name) {
+                ir.option_value(options, name).is_some_and(|v| v != 0)
+            } else {
+                default
+            }
+        })
 }
 
 impl Vm {
@@ -631,11 +1116,22 @@ impl Vm {
             players: vec![inits[1].clone(); MAX_PLAYERS],
             teams: vec![inits[2].clone(); MAX_TEAMS],
             objects: BTreeMap::new(),
+            role_mask: 0,
             grants: Vec::new(),
             queue: Vec::new(),
             held: BTreeMap::new(),
+            spawns: [None; MAX_TEAMS],
+            bodies: [None; MAX_TEAMS],
+            shown: Vec::new(),
+            show: crate::show::State::default(),
+            movers: Vec::new(),
+            sight: Vec::new(),
+            gates: Vec::new(),
+            picks: Vec::new(),
+            choices: Vec::new(),
         };
         Ok(Vm {
+            role_traits: role_traits(&ir, options),
             ir,
             options,
             ext,
@@ -659,6 +1155,26 @@ impl Vm {
             && ext.objects.len() <= MAX_OBJECT_RECORDS
             && ext.queue.len() <= MAX_QUEUE
             && ext.held.len() <= MAX_HELD_ZONES
+            && ext.shown.len() <= MAX_SHOWN_AREAS
+            && ext.show.widgets.iter().skip(ir.widgets.len()).all(Option::is_none)
+            && ext.show.waypoints.iter().skip(ir.waypoints.len()).all(Option::is_none)
+            && ext
+                .show
+                .widgets
+                .iter()
+                .flatten()
+                .all(|w| w.text.is_none_or(|t| (t as usize) < ir.strings.len()))
+            && ext.movers.len() <= MAX_MOVERS
+            && ext.sight.len() <= MAX_SIGHT_PAIRS
+            && ext.gates.len() <= MAX_GATES
+            && ext
+                .picks
+                .iter()
+                .all(|o| (o.title as usize) < ir.strings.len() && o.rows.iter().all(|&t| (t as usize) < ir.strings.len()))
+            && ext.spawns.iter().all(|r| match r {
+                Some(Spawns::Areas { label, .. }) => (*label as usize) < ir.labels.len(),
+                _ => true,
+            })
             && ext.grants.iter().all(|g| {
                 (g.cap as usize) < ir.header.requires.len()
                     && g.palette.is_none_or(|p| (p as usize) < ir.palettes.len())
@@ -667,6 +1183,7 @@ impl Vm {
             return Err(StateError::Shape);
         }
         Ok(Vm {
+            role_traits: role_traits(&ir, options),
             ir,
             options,
             ext,
@@ -688,6 +1205,7 @@ impl Vm {
         carry(&self.ir, &ir, &mut self.ext);
         let (pos, inits) = layout(&ir);
         self.ext.stopped = None;
+        self.role_traits = role_traits(&ir, self.options);
         self.ir = ir;
         self.pos = pos;
         self.inits = inits;
@@ -701,6 +1219,20 @@ impl Vm {
 
     pub fn ext(&self) -> &RulesExt {
         &self.ext
+    }
+
+    /// End the role grants when the host observes a round boundary.
+    pub fn clear_roles(&mut self) {
+        self.ext.role_mask = 0;
+    }
+
+    pub fn has_role(&self, slot: u8) -> bool {
+        slot < MAX_PLAYERS as u8 && self.ext.role_mask & (1 << slot) != 0
+    }
+
+    /// The role holder's active camo, extra damage or damage resistance.
+    pub fn role_trait(&self, trait_id: u32) -> Option<bool> {
+        self.role_traits.get(trait_id.checked_sub(1)? as usize).copied()
     }
 
     pub fn report(&self) -> &verify::Report {
@@ -721,12 +1253,31 @@ impl Vm {
 
     /// Runs the handler for an event the host reported.
     pub fn fire(&mut self, game: &mut dyn Game, input: Input) -> Fired {
+        if input == Input::RoundStart {
+            return self.round_start_as(game, self.ir.header.game_type);
+        }
+        self.fire_handler(game, input)
+    }
+
+    /// Starts a round of the variant's declared type. A settings-only
+    /// variant can use a different type's built-in for its handlers.
+    pub fn round_start_as(&mut self, game: &mut dyn Game, ty: crate::types::Type) -> Fired {
+        if self.ext.stopped.is_none() {
+            game.points_label(&self.ir.header.points);
+            if ty.row().start != crate::types::StartLine::None {
+                game.start_line(ty);
+            }
+        }
+        self.fire_handler(game, Input::RoundStart)
+    }
+
+    fn fire_handler(&mut self, game: &mut dyn Game, input: Input) -> Fired {
         if self.ext.stopped.is_some() {
             return Fired::Stopped;
         }
         let event = input.event();
         let Some(hi) = self.handler(event, None) else {
-            self.after(&input);
+            self.after(game, &input);
             return Fired::NoHandler;
         };
         if matches!(event, Event::Enter | Event::Leave) {
@@ -737,7 +1288,7 @@ impl Vm {
         }
         let args = self.args(&input);
         let fired = self.run(game, hi, &args);
-        self.after(&input);
+        self.after(game, &input);
         fired
     }
 
@@ -776,10 +1327,63 @@ impl Vm {
                 return Fired::Stopped;
             }
         }
-        match self.handler(Event::Tick, None) {
+        if self.step_movers(game) == Fired::Stopped {
+            return Fired::Stopped;
+        }
+        let fired = match self.handler(Event::Tick, None) {
             Some(hi) => self.run(game, hi, &[]),
             None => Fired::NoHandler,
+        };
+        if fired != Fired::Stopped {
+            self.trace_sight(game);
         }
+        fired
+    }
+
+    /// The tick's end: each pair of the sight table is traced again, so a
+    /// read on the next tick answers from this one, and a pair nobody
+    /// asked for in [`SIGHT_KEEP`] ticks leaves the table.
+    fn trace_sight(&mut self, game: &mut dyn Game) {
+        let tick = self.ext.tick;
+        self.ext.sight.retain(|t| tick.saturating_sub(t.asked) < SIGHT_KEEP);
+        for t in &mut self.ext.sight {
+            if let Some(clear) = game.trace_sight(t.from, t.to) {
+                t.clear = clear;
+            }
+        }
+    }
+
+    /// Steps each running mover for this tick, in the order started: the
+    /// game is told the object's place and velocity, and a mover whose end
+    /// tick this is is told its end, leaves the list, and then `on arrive`
+    /// runs for each such object in that order (a handler may start its
+    /// object moving again). A mover takes no step on the tick it was
+    /// started on.
+    fn step_movers(&mut self, game: &mut dyn Game) -> Fired {
+        let tick = self.ext.tick;
+        let mut arrived = Vec::new();
+        let mut i = 0;
+        while i < self.ext.movers.len() {
+            let m = self.ext.movers[i];
+            if tick <= m.start {
+                i += 1;
+            } else if tick >= m.end() {
+                game.step_object(m.object, m.to, [0; 3]);
+                arrived.push(m.object);
+                self.ext.movers.remove(i);
+            } else {
+                game.step_object(m.object, m.at(tick), m.velocity());
+                i += 1;
+            }
+        }
+        for object in arrived {
+            if let Some(hi) = self.handler(Event::Arrive, None)
+                && self.run(game, hi, &[object_value(object)]) == Fired::Stopped
+            {
+                return Fired::Stopped;
+            }
+        }
+        Fired::Ran
     }
 
     /// Makes the queued calls in program order. The host calls it from its
@@ -888,6 +1492,41 @@ impl Vm {
         Some(row[self.pos[slot] as usize])
     }
 
+    /// Reads an object variable by name, including its default before the
+    /// first write to the object.
+    pub fn object_var(&self, object: u32, name: &str) -> Option<i32> {
+        let slot = self.slot_named(name, Scope::Object)?;
+        Some(self.ext.objects.get(&object).map_or(self.ir.slots[slot].init, |row| {
+            row[self.pos[slot] as usize]
+        }))
+    }
+
+    /// Writes a global by name, between ticks, for a host that holds the
+    /// mode's state in the script (Firefight's pools). `false` when the
+    /// script declares no global of that name.
+    pub fn set_global(&mut self, name: &str, value: i32) -> bool {
+        let Some(slot) = self.slot_named(name, Scope::Global) else {
+            return false;
+        };
+        let at = self.pos[slot] as usize;
+        self.ext.globals[at] = value;
+        true
+    }
+
+    /// Writes a player variable by name, between ticks. `false` when the
+    /// script declares no player variable of that name or the slot is
+    /// outside the roster.
+    pub fn set_player_var(&mut self, player: u8, name: &str, value: i32) -> bool {
+        let Some(slot) = self.slot_named(name, Scope::Player) else {
+            return false;
+        };
+        let Some(row) = self.ext.players.get_mut(player as usize) else {
+            return false;
+        };
+        row[self.pos[slot] as usize] = value;
+        true
+    }
+
     fn slot_named(&self, name: &str, scope: Scope) -> Option<usize> {
         self.ir.slots.iter().position(|s| {
             s.scope == scope && self.ir.strings.get(s.name as usize).is_some_and(|n| n == name)
@@ -902,16 +1541,147 @@ impl Vm {
     }
 
     /// Grants end at the player's quit and at the round's end; the
-    /// `ticks_held` counters end at the round's end.
-    fn after(&mut self, input: &Input) {
+    /// `ticks_held` counters, the spawn rules, the bodies and the shown
+    /// areas end at the round's end, and each open barrier closes.
+    fn after(&mut self, game: &mut dyn Game, input: &Input) {
         match *input {
-            Input::Quit(p) => self.ext.grants.retain(|g| g.player != p),
+            Input::Quit(p) => {
+                self.ext.grants.retain(|g| g.player != p);
+                if p < MAX_PLAYERS as u8 {
+                    self.ext.role_mask &= !(1 << p);
+                }
+            }
             Input::RoundEnd => {
                 self.ext.grants.clear();
+                self.clear_roles();
                 self.ext.held.clear();
+                self.ext.spawns = [None; MAX_TEAMS];
+                self.ext.bodies = [None; MAX_TEAMS];
+                self.ext.shown.clear();
+                self.ext.show = crate::show::State::default();
+                self.ext.movers.clear();
+                self.ext.sight.clear();
+                self.ext.picks.clear();
+                self.ext.choices.clear();
+                // Every barrier still open stands where it closed.
+                for gate in std::mem::take(&mut self.ext.gates) {
+                    game.step_object(gate.object, gate.home, [0; 3]);
+                }
             }
             _ => {}
         }
+    }
+
+    /// Team `team`'s spawn rule, its label resolved: what the host's spawn
+    /// hook keeps the team's spawns to. `None`: the engine's own pick.
+    pub fn spawn_rule(&self, team: u8) -> Option<SpawnRule<'_>> {
+        match (*self.ext.spawns.get(team as usize)?)? {
+            Spawns::Areas { label, number } => Some(SpawnRule::Areas {
+                label: self.ir.labels.get(label as usize)?.text.as_str(),
+                number,
+            }),
+            Spawns::Near { zone, count } => Some(SpawnRule::Near { zone, count }),
+        }
+    }
+
+    /// The movers running (`move_to`), in the order started.
+    pub fn movers(&self) -> &[Mover] {
+        &self.ext.movers
+    }
+
+    /// The barriers held open (`set_open`), in the order opened.
+    pub fn gates(&self) -> &[Gate] {
+        &self.ext.gates
+    }
+
+    /// The host's put of `object` to `at` (world units) was refused, which
+    /// the engine does for a place outside the world. When it was the put
+    /// that opened a barrier ([`Gate::open_at`], read as the host reads a
+    /// 16.16 value), the barrier never moved: it is closed again here, so
+    /// the next `set_open(o, true)` tries again. Any other refused put
+    /// changes nothing; a barrier's closing put is not one to take back,
+    /// as the barrier is already forgotten. Returns whether a barrier was
+    /// closed.
+    pub fn put_refused(&mut self, object: u32, at: [f32; 3]) -> bool {
+        let world = |v: i32| (f64::from(v) / 65536.0) as f32;
+        let held = self
+            .ext
+            .gates
+            .iter()
+            .position(|g| g.object == object && g.open_at().map(world) == at);
+        match held {
+            Some(i) => {
+                self.ext.gates.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The pickers the script offers (`offer_pick`), in slot order.
+    pub fn picks(&self) -> &[PickOffer] {
+        &self.ext.picks
+    }
+
+    /// What the players picked, in the order made.
+    pub fn choices(&self) -> &[Choice] {
+        &self.ext.choices
+    }
+
+    /// A string of the script's table, as an offer names its title and rows.
+    pub fn string(&self, id: u16) -> Option<&str> {
+        self.ir.strings.get(id as usize).map(String::as_str)
+    }
+
+    /// The host reports that `player` picked `row` of picker `slot`. A
+    /// pick of a picker not offered, a row it does not hold or a player
+    /// outside the roster is refused (`false`); a player's second pick of
+    /// the picker replaces the first. A pick holds until the round's end.
+    pub fn choose(&mut self, player: u8, slot: u8, row: u8) -> bool {
+        let offered = self
+            .ext
+            .picks
+            .iter()
+            .find(|o| o.slot == slot)
+            .is_some_and(|o| (row as usize) < o.rows.len());
+        if !offered || player as usize >= MAX_PLAYERS {
+            return false;
+        }
+        match self.ext.choices.iter_mut().find(|c| c.player == player && c.slot == slot) {
+            Some(c) => c.row = row,
+            None => self.ext.choices.push(Choice { player, slot, row }),
+        }
+        true
+    }
+
+    /// The sight table (`sees`), in the order its pairs were first asked.
+    pub fn sight(&self) -> &[Sight] {
+        &self.ext.sight
+    }
+
+    /// Records a boundary trace if the ordered pair is still in the table.
+    pub fn record_sight(&mut self, from: u32, to: u32, clear: bool) {
+        if let Some(pair) = self.ext.sight.iter_mut().find(|p| p.from == from && p.to == to) {
+            pair.clear = clear;
+        }
+    }
+
+    /// The areas shown in play (`show_area`): each zone object and the team
+    /// whose colour its wall takes, `None` for neutral.
+    pub fn shown_areas(&self) -> &[(u32, Option<u8>)] {
+        &self.ext.shown
+    }
+
+    /// The script's HUD widgets and waypoints: what every machine that
+    /// runs the VM draws ([`crate::show::view`]).
+    pub fn show(&self) -> &crate::show::State {
+        &self.ext.show
+    }
+
+    /// Team `team`'s body (`set_body`): what the host's spawn hook makes its
+    /// players spawn as. `None`: their own.
+    pub fn body(&self, team: u8) -> Option<Body> {
+        *self.ext.bodies.get(team as usize)?
     }
 
     /// The ticks `team` has held `zone` alone, as `ticks_held` reads it,
@@ -936,7 +1706,8 @@ impl Vm {
             | Input::Death(x)
             | Input::Join(x)
             | Input::Quit(x)
-            | Input::Bounced(x) => vec![p(*x)],
+            | Input::Bounced(x)
+            | Input::Grounded(x) => vec![p(*x)],
             Input::Pickup(x, ob) | Input::Drop(x, ob) | Input::Press(x, ob) | Input::Edit(x, ob) => {
                 vec![p(*x), o(*ob)]
             }
@@ -961,6 +1732,9 @@ impl Vm {
                 assist,
                 class,
             } => vec![op(*killer), op(*assist), self.class(class)],
+            Input::Damage { object, by, amount } => vec![o(*object), op(*by), *amount],
+            Input::Touchdown { player, down, up } => vec![p(*player), *down, *up],
+            Input::Launch { player, spot, speed } => vec![p(*player), spot.map_or(NONE, o), *speed],
         }
     }
 
@@ -1367,6 +2141,39 @@ impl<'a> Run<'a> {
                         }
                     }
                     caps::id::NOW => i32::try_from(self.ext.tick).unwrap_or(i32::MAX),
+                    caps::id::VEC_LENGTH => fixed::length(raw[0], raw[1], raw[2]),
+                    // The table's answer: a pair asked for the first time
+                    // reads false and is traced at this tick's end. A
+                    // `none` or an object that is gone sees nothing.
+                    caps::id::SEES => {
+                        let (Some(from), Some(to)) = (object_id(raw[0]), object_id(raw[1])) else {
+                            return Ok(Some(0));
+                        };
+                        let tick = self.ext.tick;
+                        let full = self.ext.sight.len() >= MAX_SIGHT_PAIRS;
+                        match self.ext.sight.iter_mut().find(|t| t.from == from && t.to == to) {
+                            Some(t) => {
+                                t.asked = tick;
+                                t.clear as i32
+                            }
+                            None if full => return Err(ErrorKind::Sight),
+                            None => {
+                                self.ext.sight.push(Sight { from, to, asked: tick, clear: false });
+                                0
+                            }
+                        }
+                    }
+                    // The player's row of the picker, or -1: none made, none
+                    // offered, or a player or picker out of range.
+                    caps::id::PICKED => match (u8::try_from(raw[0]), u8::try_from(raw[1])) {
+                        (Ok(player), Ok(slot)) => self
+                            .ext
+                            .choices
+                            .iter()
+                            .find(|c| c.player == player && c.slot == slot)
+                            .map_or(-1, |c| i32::from(c.row)),
+                        _ => -1,
+                    },
                     caps::id::RANDOM => {
                         if raw[0] > 0 {
                             (splitmix64(&mut self.ext.rng) % raw[0] as u64) as i32
@@ -1406,6 +2213,10 @@ impl<'a> Run<'a> {
             Kind::Action => {
                 match e.order {
                     Order::Now => {
+                        self.mover(game, e.id, &raw)?;
+                        self.gate(game, e.id, &raw)?;
+                        self.pick(e.id, &raw)?;
+                        self.stand(game, e.id, &raw)?;
                         let mut call = self.resolve(e, &raw);
                         if caps::is_message(e.id) {
                             // The holes' values follow the entry's own
@@ -1427,6 +2238,289 @@ impl<'a> Run<'a> {
                 Ok(None)
             }
         }
+    }
+
+    /// `move_to` and `stop`: the movers in the VM's state. `move_to` starts
+    /// the object moving from where the game reads it now, in a straight
+    /// line, arriving `t` ticks on (at least 1); the object's earlier mover
+    /// is replaced, with no `on arrive`. `stop` ends the object's mover,
+    /// with none. `none` for the object does nothing; a seventeenth mover
+    /// is a script error.
+    fn mover(&mut self, game: &mut dyn Game, entry: u16, raw: &[i32]) -> Result<(), ErrorKind> {
+        match (entry, raw) {
+            (caps::id::MOVE_TO, &[object, x, y, z, ticks]) => {
+                let Some(object) = object_id(object) else {
+                    return Ok(());
+                };
+                let at = |game: &mut dyn Game, entry: u16, axis: i32| {
+                    game.read(&Call {
+                        entry: &caps::ENTRIES[entry as usize],
+                        args: vec![Arg::Object(Some(object)), Arg::Int(axis)],
+                    })
+                };
+                let from = [0, 1, 2].map(|axis| at(game, caps::id::OBJECT_POS, axis));
+                let mover = Mover {
+                    object,
+                    from,
+                    to: [x, y, z],
+                    start: self.ext.tick,
+                    duration: ticks.max(1) as u32,
+                };
+                let full = self.ext.movers.len() >= MAX_MOVERS;
+                match self.ext.movers.iter_mut().find(|m| m.object == object) {
+                    Some(m) => *m = mover,
+                    None if full => return Err(ErrorKind::Movers),
+                    None => self.ext.movers.push(mover),
+                }
+            }
+            (caps::id::STOP, &[object]) => {
+                if let Some(object) = object_id(object) {
+                    self.ext.movers.retain(|m| m.object != object);
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// `set_open`: opening a closed barrier notes where it stands (as the
+    /// game reads it now) and steps it [`GATE_DROP`] below; closing an open
+    /// one steps it back to the noted place and forgets it. A barrier
+    /// already in the state asked for, and `none`, do nothing; a
+    /// seventeenth open barrier is a script error. The steps are the
+    /// host's put at the tick boundary, as a `teleport`'s.
+    fn gate(&mut self, game: &mut dyn Game, entry: u16, raw: &[i32]) -> Result<(), ErrorKind> {
+        let (caps::id::SET_OPEN, &[object, open]) = (entry, raw) else {
+            return Ok(());
+        };
+        let Some(object) = object_id(object) else {
+            return Ok(());
+        };
+        let held = self.ext.gates.iter().position(|g| g.object == object);
+        match (open != 0, held) {
+            (true, None) => {
+                if self.ext.gates.len() >= MAX_GATES {
+                    return Err(ErrorKind::Gates);
+                }
+                let home = [0, 1, 2].map(|axis| {
+                    game.read(&Call {
+                        entry: &caps::ENTRIES[caps::id::OBJECT_POS as usize],
+                        args: vec![Arg::Object(Some(object)), Arg::Int(axis)],
+                    })
+                });
+                let gate = Gate { object, home };
+                game.step_object(object, gate.open_at(), [0; 3]);
+                self.ext.gates.push(gate);
+            }
+            (false, Some(i)) => {
+                let gate = self.ext.gates.remove(i);
+                game.step_object(object, gate.home, [0; 3]);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// `offer_pick` and `pick_row`: the pickers in the VM's state, which the
+    /// host opens for the players. `offer_pick(n, title)` makes picker `n`
+    /// (0 up to [`MAX_PICKS`]) with no rows, replacing one of that number
+    /// and the picks made in it; `pick_row(n, label)` adds a row to it, at
+    /// most [`MAX_PICK_ROWS`]. A picker out of range, or a row for a picker
+    /// not offered, is a script error. The round's end takes them all.
+    fn pick(&mut self, entry: u16, raw: &[i32]) -> Result<(), ErrorKind> {
+        let text = |v: i32| u16::try_from(v).ok().filter(|&t| (t as usize) < self.ir.strings.len());
+        match (entry, raw) {
+            (caps::id::OFFER_PICK, &[slot, title]) => {
+                let slot = u8::try_from(slot).ok().filter(|&s| (s as usize) < MAX_PICKS).ok_or(ErrorKind::Picks)?;
+                let title = text(title).ok_or(ErrorKind::Picks)?;
+                self.ext.choices.retain(|c| c.slot != slot);
+                let offer = PickOffer { slot, title, rows: Vec::new() };
+                match self.ext.picks.iter_mut().find(|o| o.slot == slot) {
+                    Some(o) => *o = offer,
+                    None => {
+                        self.ext.picks.push(offer);
+                        self.ext.picks.sort_by_key(|o| o.slot);
+                    }
+                }
+            }
+            (caps::id::PICK_ROW, &[slot, label]) => {
+                let label = text(label).ok_or(ErrorKind::Picks)?;
+                let offer = u8::try_from(slot)
+                    .ok()
+                    .and_then(|s| self.ext.picks.iter_mut().find(|o| o.slot == s))
+                    .ok_or(ErrorKind::Picks)?;
+                if offer.rows.len() >= MAX_PICK_ROWS {
+                    return Err(ErrorKind::Picks);
+                }
+                offer.rows.push(label);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// The standing rules an action sets in the VM's state, which the host
+    /// reads when the engine asks: a team's spawn rule and its body. `none`
+    /// for the team sets nothing; `spawn_near` with a count of 0 or less,
+    /// or `none` for the zone, lifts the team's rule, and `set_body` with
+    /// `none` gives the team its own bodies. A `set_body` tag that is no
+    /// body is a script error.
+    fn stand(&mut self, game: &dyn Game, entry: u16, raw: &[i32]) -> Result<(), ErrorKind> {
+        if entry == caps::id::ROLE_TRAITS {
+            if (0..MAX_PLAYERS as i32).contains(&raw[0]) {
+                let bit = 1u16 << raw[0];
+                if raw[1] != 0 {
+                    self.ext.role_mask |= bit;
+                } else {
+                    self.ext.role_mask &= !bit;
+                }
+            }
+            return Ok(());
+        }
+        // The script's HUD: a widget or a waypoint is a declaration's
+        // number, and one the script does not declare is a script error.
+        match entry {
+            caps::id::HUD_VALUE
+            | caps::id::HUD_FILL
+            | caps::id::HUD_STYLE
+            | caps::id::HUD_TEXT
+            | caps::id::HUD_SHOW => {
+                let w = usize::try_from(raw[0])
+                    .ok()
+                    .filter(|&w| w < self.ir.widgets.len())
+                    .and_then(|w| self.ext.show.widget(w))
+                    .ok_or(ErrorKind::Hud)?;
+                let v = raw[1];
+                match entry {
+                    caps::id::HUD_VALUE => w.value = v,
+                    caps::id::HUD_FILL => w.fill = crate::show::fill_byte(v),
+                    caps::id::HUD_STYLE => w.style = v.clamp(0, i32::from(u8::MAX)) as u8,
+                    caps::id::HUD_TEXT => w.text = u16::try_from(v).ok(),
+                    _ => w.shown = v != 0,
+                }
+                return Ok(());
+            }
+            caps::id::HUD_VALUE_FOR => {
+                // The player's own value of a widget: none or a seat past
+                // the roster sets nothing; a second widget that reads per
+                // viewer is a script error.
+                let w = usize::try_from(raw[0])
+                    .ok()
+                    .filter(|&w| w < self.ir.widgets.len())
+                    .ok_or(ErrorKind::Hud)?;
+                if let Some(slot) = usize::try_from(raw[1]).ok().filter(|&s| s < MAX_PLAYERS)
+                    && !self.ext.show.set_for(w, slot, raw[2])
+                {
+                    return Err(ErrorKind::Hud);
+                }
+                return Ok(());
+            }
+            caps::id::MARK | caps::id::MARK_PLAYER | caps::id::MARK_TEAM | caps::id::UNMARK => {
+                let at = usize::try_from(raw[0])
+                    .ok()
+                    .filter(|&w| w < self.ir.waypoints.len())
+                    .ok_or(ErrorKind::Hud)?;
+                // The audience: `mark` is every viewer; the player form is
+                // the slot's bit (a `none` player or one past the roster
+                // is an empty mask); the team form is the seated players'
+                // bits, from the roster every machine holds. An empty mask
+                // draws to nobody.
+                let audience = match entry {
+                    caps::id::MARK | caps::id::UNMARK => crate::show::EVERYONE,
+                    caps::id::MARK_PLAYER => raw
+                        .get(2)
+                        .and_then(|&p| u8::try_from(p).ok())
+                        .filter(|&p| (p as usize) < crate::ty::MAX_PLAYERS)
+                        .map(crate::show::player)
+                        .unwrap_or(0),
+                    _ => raw
+                        .get(2)
+                        .and_then(|&t| u8::try_from(t).ok())
+                        .map(|t| {
+                            game.players_of_team(t).iter().fold(0, |mask, &slot| {
+                                mask | crate::show::player(slot)
+                            })
+                        })
+                        .unwrap_or(0),
+                };
+                self.ext.show.waypoints[at] = match raw.get(1).and_then(|&o| object_id(o)) {
+                    Some(object) if entry != caps::id::UNMARK => Some(crate::show::Waypoint {
+                        at: object,
+                        audience,
+                    }),
+                    _ => None,
+                };
+                return Ok(());
+            }
+            _ => {}
+        }
+        // The areas shown in play lead with a zone, not a team: `show_area`
+        // shows it in a team's colour (neutral for `none`) or recolours it,
+        // and `hide_area` takes it off. `none` for the zone does nothing; a
+        // ninth area is a script error.
+        match entry {
+            caps::id::SHOW_AREA => {
+                let Some(zone) = raw.first().and_then(|&z| object_id(z)) else {
+                    return Ok(());
+                };
+                let team = raw
+                    .get(1)
+                    .and_then(|&t| u8::try_from(t).ok())
+                    .filter(|&t| (t as usize) < MAX_TEAMS);
+                let full = self.ext.shown.len() >= MAX_SHOWN_AREAS;
+                match self.ext.shown.iter_mut().find(|(z, _)| *z == zone) {
+                    Some(row) => row.1 = team,
+                    None if full => return Err(ErrorKind::Areas),
+                    None => self.ext.shown.push((zone, team)),
+                }
+                return Ok(());
+            }
+            caps::id::HIDE_AREA => {
+                if let Some(zone) = raw.first().and_then(|&z| object_id(z)) {
+                    self.ext.shown.retain(|(z, _)| *z != zone);
+                }
+                return Ok(());
+            }
+            _ => {}
+        }
+        let Some(team) = raw
+            .first()
+            .and_then(|&t| usize::try_from(t).ok())
+            .filter(|&t| t < MAX_TEAMS)
+        else {
+            return Ok(());
+        };
+        match entry {
+            caps::id::SPAWN_AREAS => {
+                if let (Some(label), Some(&number)) = (raw.get(1).and_then(|&l| u16::try_from(l).ok()), raw.get(2)) {
+                    self.ext.spawns[team] = Some(Spawns::Areas { label, number });
+                }
+            }
+            caps::id::SPAWN_NEAR => {
+                let zone = raw.get(1).and_then(|&z| object_id(z));
+                let count = raw.get(2).copied().unwrap_or(0).min(MAX_SPAWN_NEAR);
+                self.ext.spawns[team] = match zone {
+                    Some(zone) if count > 0 => Some(Spawns::Near {
+                        zone,
+                        count: count as u8,
+                    }),
+                    _ => None,
+                };
+            }
+            caps::id::SET_BODY => {
+                let path = raw
+                    .get(1)
+                    .and_then(|&t| usize::try_from(t).ok())
+                    .and_then(|i| self.ir.tags.get(i))
+                    .map(|t| t.path.as_str());
+                self.ext.bodies[team] = match path {
+                    None => None,
+                    Some(p) => Some(crate::bodies::of_path(p).ok_or(ErrorKind::Body)?),
+                };
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     /// A `fmt_*` call: queues the value of register type `ty` for the next
@@ -1490,7 +2584,7 @@ mod tests {
 
     #[test]
     fn a_labelled_set_visits_at_most_its_label_max() {
-        let src = "rules \"Bound\" 1\ncarrier slayer\nlabel crate: objects\nglobal var n: int = 0\n\
+        let src = "rules \"Bound\" 1\ntype slayer\nlabel crate: objects\nglobal var n: int = 0\n\
                    on tick { for each crate o { n = n + 1 } }\n";
         let run = |max: Option<u16>, placed: u32| {
             let (mut ir, _) = crate::build(src).unwrap();
@@ -1522,6 +2616,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn host_writes_change_only_the_named_slots() {
+        let src = "rules \"Write\" 1\ntype slayer\n\
+                   global var pool: int = 7\nplayer var stock: int = 3\n\
+                   on tick { pool = pool }\n";
+        let (ir, _) = crate::build(src).unwrap();
+        let mut vm = Vm::new(ir, 0, 0).unwrap();
+        assert!(vm.set_global("pool", 4));
+        assert_eq!(vm.global("pool"), Some(4));
+        assert!(!vm.set_global("none_such", 1), "an unknown global");
+
+        assert!(vm.set_player_var(2, "stock", 0));
+        assert_eq!(vm.player_var(2, "stock"), Some(0));
+        assert_eq!(vm.player_var(1, "stock"), Some(3), "another player's row");
+        assert!(!vm.set_player_var(2, "none_such", 1), "an unknown variable");
+        assert!(!vm.set_player_var(16, "stock", 1), "outside the roster");
+    }
+
     fn ext() -> RulesExt {
         RulesExt {
             rng: 5,
@@ -1538,6 +2650,7 @@ mod tests {
             players: vec![vec![0]; MAX_PLAYERS],
             teams: vec![vec![]; MAX_TEAMS],
             objects: [(3u32, vec![7, 8]), (9, vec![1, 2])].into_iter().collect(),
+            role_mask: 0x8002,
             grants: vec![
                 Grant {
                     player: 0,
@@ -1557,6 +2670,51 @@ mod tests {
                 args: vec![4],
             }],
             held: [(5u32, [0, 30, 0, 0, 0, 0, 0, 0]), (12, [7; MAX_TEAMS])].into_iter().collect(),
+            spawns: [
+                Some(Spawns::Areas { label: 0, number: -2 }),
+                None,
+                Some(Spawns::Near { zone: 0x4001_0003, count: 4 }),
+                None,
+                None,
+                None,
+                None,
+                None,
+            ],
+            bodies: [Some(Body::Elite), Some(Body::Spartan), None, None, None, None, None, None],
+            shown: vec![(0x4001_0003, Some(1)), (0x4001_0007, None)],
+            show: {
+                let mut show = crate::show::State::default();
+                show.widgets[2] = Some(crate::show::Widget {
+                    shown: true,
+                    value: -4,
+                    fill: 200,
+                    style: 3,
+                    text: Some(1),
+                    audience: 0b101,
+                });
+                show.waypoints[1] = Some(crate::show::Waypoint { at: 0x4001_0003, audience: 3 });
+                show
+            },
+            movers: vec![Mover {
+                object: 0x4001_0009,
+                from: [1, -2, 3],
+                to: [-65_536, 65_536, 0],
+                start: 7,
+                duration: 30,
+            }],
+            sight: vec![
+                Sight { from: 0x4001_0001, to: 0x4001_0002, asked: 40, clear: true },
+                Sight { from: 0x4001_0002, to: 0x4001_0001, asked: 41, clear: false },
+            ],
+            gates: vec![Gate { object: 0x4001_0003, home: [65_536, -2, 3] }],
+            picks: vec![
+                PickOffer { slot: 0, title: 3, rows: vec![4, 5, 6] },
+                PickOffer { slot: 1, title: 7, rows: vec![8] },
+            ],
+            choices: vec![
+                Choice { player: 2, slot: 0, row: 2 },
+                Choice { player: 0, slot: 1, row: 0 },
+            ],
         }
     }
 
@@ -1564,14 +2722,21 @@ mod tests {
     fn state_refuses_unsorted_zones() {
         let mut e = ext();
         e.held.clear();
-        let bytes = e.encode();
+        e.shown.clear();
         // Two zones, 12 before 5: rewrite the tail by hand.
-        let mut bad = bytes[..bytes.len() - 1].to_vec();
+        e.show = crate::show::State::default();
+        let bytes = e.encode();
+        let show = e.show.encode();
+        // Cut the held count, the shown count and the show state.
+        let mut bad = bytes[..bytes.len() - 3 - show.len()].to_vec();
         bad.push(2);
         for zone in [12u32, 5] {
             bad.extend_from_slice(&zone.to_le_bytes());
             bad.extend_from_slice(&[0; 4 * MAX_TEAMS]);
         }
+        bad.push(0);
+        bad.push(show.len() as u8);
+        bad.extend_from_slice(&show);
         assert!(RulesExt::decode(&bad).is_err());
     }
 
@@ -1586,6 +2751,220 @@ mod tests {
         for cut in 0..bytes.len() {
             assert!(RulesExt::decode(&bytes[..cut]).is_err(), "cut at {cut}");
         }
+    }
+
+    #[test]
+    fn state_refuses_a_spawn_rule_it_does_not_know() {
+        let bytes = ext().encode();
+        // The spawn rules sit before the held counters: team 0's kind byte
+        // is the first of them.
+        // After the spawn rules and bodies come the held counters, the
+        // shown zones, the show state and the movers (36 bytes each).
+        let e = ext();
+        let held = 1 + 2 * (4 + 4 * MAX_TEAMS)
+            + (1 + 2 * (4 + 1))
+            + (1 + e.show.encode().len())
+            + (1 + 36 * e.movers.len())
+            + (1 + 13 * e.sight.len())
+            + (1 + 16 * e.gates.len())
+            + (1 + e.picks.iter().map(|o| 4 + 2 * o.rows.len()).sum::<usize>())
+            + (1 + 3 * e.choices.len());
+        let rules = (1 + 2 + 4) + (MAX_TEAMS - 2) + (1 + 4 + 1);
+        let first = bytes.len() - held - MAX_TEAMS - rules;
+        assert_eq!(bytes[first], 1, "team 0 has an Areas rule");
+        let mut bad = bytes.clone();
+        bad[first] = 3;
+        assert!(RulesExt::decode(&bad).is_err());
+        // A body byte that is no body.
+        let mut bad = bytes.clone();
+        bad[bytes.len() - held - MAX_TEAMS] = 3;
+        assert!(RulesExt::decode(&bad).is_err());
+        // A Near rule keeps at least one location.
+        let mut e = ext();
+        e.spawns[2] = Some(Spawns::Near { zone: 1, count: 0 });
+        assert!(RulesExt::decode(&e.encode()).is_err());
+    }
+
+    /// `spawn_near` and `spawn_areas` set the team's rule in the state the
+    /// host's spawn hook reads; a count of 0 lifts it, and the round's end
+    /// ends them all.
+    #[test]
+    fn spawn_rules_stand_in_the_state_until_the_round_ends() {
+        let src = "rules \"Lines\" 1\ntype slayer\nteams 2\nrequires player.spawn\n\
+                   label goal: zone\nlabel attack: spawns\nglobal var phase: int = 0\n\
+                   on round_start { spawn_near(team 1, goal, 3)\n spawn_areas(team 0, attack, 2) }\n\
+                   on tick { phase = phase + 1\n if phase == 2 { spawn_near(team 1, goal, 0) } }\n";
+        let (ir, _) = crate::build(src).unwrap();
+        let mut vm = Vm::new(ir, 0, 0).unwrap();
+        let mut g = crate::fake::FakeGame::with_players(2);
+        g.label("goal", 0x4001_0002, 0, 2);
+        vm.begin_tick(0);
+        vm.fire(&mut g, Input::RoundStart);
+        assert_eq!(vm.spawn_rule(1), Some(SpawnRule::Near { zone: 0x4001_0002, count: 3 }));
+        assert_eq!(vm.spawn_rule(0), Some(SpawnRule::Areas { label: "attack", number: 2 }));
+        assert_eq!(vm.spawn_rule(2), None);
+        assert_eq!(vm.spawn_rule(200), None);
+        // The rule is in the record: a resume keeps it.
+        let back = Vm::resume(vm.ir().clone(), 0, RulesExt::decode(&vm.ext().encode()).unwrap()).unwrap();
+        assert_eq!(back.spawn_rule(1), vm.spawn_rule(1));
+        vm.begin_tick(1);
+        vm.update(&mut g);
+        assert!(vm.spawn_rule(1).is_some());
+        vm.begin_tick(2);
+        vm.update(&mut g);
+        assert_eq!(vm.spawn_rule(1), None, "a count of 0 lifts it");
+        assert!(vm.spawn_rule(0).is_some());
+        vm.fire(&mut g, Input::RoundEnd);
+        assert_eq!(vm.spawn_rule(0), None);
+    }
+
+    /// `set_body` sets the team's body in the state, `none` gives the
+    /// players their own, and a tag that is no body stops the script.
+    #[test]
+    fn a_teams_body_stands_in_the_state_and_a_wrong_tag_stops_the_script() {
+        let src = "rules \"Bodies\" 1\ntype slayer\nteams 2\nrequires player.disguise\n\
+                   table kinds: (side: team, body: tag) = [(team 0, \"objects/characters/elite/elite\")]\n\
+                   global var phase: int = 0\n\
+                   on round_start { set_body(team 1, \"objects/characters/elite/elite_mp\")\n\
+                   set_body(team 0, \"Objects/Characters/Masterchief/Masterchief_MP\") }\n\
+                   on tick { phase = phase + 1\n if phase == 1 { set_body(team 0, none) }\n\
+                   if phase == 2 { set_body(team 1, kinds[team 0].body) } }\n";
+        let (ir, _) = crate::build(src).unwrap();
+        let mut vm = Vm::new(ir, 0, 0).unwrap();
+        let mut g = crate::fake::FakeGame::with_players(2);
+        vm.begin_tick(0);
+        vm.fire(&mut g, Input::RoundStart);
+        assert_eq!(vm.body(1), Some(Body::Elite));
+        assert_eq!(vm.body(0), Some(Body::Spartan), "in any case");
+        assert_eq!(vm.body(2), None);
+        vm.begin_tick(1);
+        vm.update(&mut g);
+        assert_eq!(vm.body(0), None, "none: their own");
+        assert_eq!(g.script_error, None);
+        vm.begin_tick(2);
+        vm.update(&mut g);
+        assert_eq!(g.script_error.map(|e| e.kind), Some(ErrorKind::Body));
+        assert_eq!(vm.body(1), Some(Body::Elite), "the refused call changed nothing");
+    }
+
+    /// `show_area` and `hide_area` keep at most eight areas in the state, in
+    /// the order first shown: showing one again recolours it, `none` is
+    /// neutral, the round's end clears them and a ninth stops the script.
+    #[test]
+    fn shown_areas_stand_in_the_state_until_the_round_ends() {
+        let src = "rules \"Walls\" 1\ntype slayer\nteams 2\n\
+                   label goal: zones numbered\nglobal var phase: int = 0\n\
+                   on round_start { for each goal z { show_area(z, team 1) }\n\
+                   if let first = goal[0] { show_area(first, none) } }\n\
+                   on tick { phase = phase + 1\n if phase == 1 { if let second = goal[1] { hide_area(second) } }\n\
+                   if phase == 2 { for each goal z { show_area(z, team 0) } } }\n";
+        let (ir, _) = crate::build(src).unwrap();
+        let mut vm = Vm::new(ir, 0, 0).unwrap();
+        let mut g = crate::fake::FakeGame::with_players(2);
+        for n in 0..3 {
+            g.label("goal", 0x4001_0000 + n as u32, n, 2);
+        }
+        vm.begin_tick(0);
+        vm.fire(&mut g, Input::RoundStart);
+        assert_eq!(
+            vm.shown_areas(),
+            [(0x4001_0000, None), (0x4001_0001, Some(1)), (0x4001_0002, Some(1))],
+            "the first recoloured to neutral, in the order first shown"
+        );
+        assert_eq!(g.shown, vm.shown_areas(), "the fake keeps the same");
+        // The record carries them: a resume has the same walls.
+        let back = Vm::resume(vm.ir().clone(), 0, RulesExt::decode(&vm.ext().encode()).unwrap()).unwrap();
+        assert_eq!(back.shown_areas(), vm.shown_areas());
+        vm.begin_tick(1);
+        vm.update(&mut g);
+        assert_eq!(vm.shown_areas(), [(0x4001_0000, None), (0x4001_0002, Some(1))]);
+        vm.begin_tick(2);
+        vm.update(&mut g);
+        assert_eq!(
+            vm.shown_areas(),
+            [(0x4001_0000, Some(0)), (0x4001_0002, Some(0)), (0x4001_0001, Some(0))]
+        );
+        vm.fire(&mut g, Input::RoundEnd);
+        g.after(&Input::RoundEnd);
+        assert!(vm.shown_areas().is_empty());
+        assert!(g.shown.is_empty());
+    }
+
+    #[test]
+    fn a_ninth_shown_area_stops_the_script() {
+        let src = "rules \"Walls\" 1\ntype slayer\nlabel goal: zones numbered\n\
+                   on round_start { for each goal z { show_area(z, none) } }\n";
+        let (ir, _) = crate::build(src).unwrap();
+        let mut vm = Vm::new(ir, 0, 0).unwrap();
+        let mut g = crate::fake::FakeGame::with_players(1);
+        for n in 0..9 {
+            g.label("goal", 0x4001_0000 + n as u32, n, 2);
+        }
+        vm.begin_tick(0);
+        vm.fire(&mut g, Input::RoundStart);
+        assert_eq!(g.script_error.map(|e| e.kind), Some(ErrorKind::Areas));
+        assert_eq!(vm.shown_areas().len(), MAX_SHOWN_AREAS);
+    }
+
+    #[test]
+    fn state_refuses_a_shown_area_twice_or_too_many() {
+        let mut e = ext();
+        e.shown = vec![(1, None), (1, Some(0))];
+        assert!(RulesExt::decode(&e.encode()).is_err());
+        let mut e = ext();
+        e.shown = (0..MAX_SHOWN_AREAS as u32 + 1).map(|z| (z, None)).collect();
+        assert!(RulesExt::decode(&e.encode()).is_err());
+    }
+
+    #[test]
+    fn a_mover_walks_a_straight_line_and_ends_exactly_on_its_target() {
+        let m = Mover {
+            object: 1,
+            from: [0, 65_536, -65_536],
+            to: [10 * 65_536, 65_536, 65_536],
+            start: 4,
+            duration: 10,
+        };
+        assert_eq!(m.end(), 14);
+        assert_eq!(m.at(4), m.from);
+        assert_eq!(m.at(9), [5 * 65_536, 65_536, 0]);
+        assert_eq!(m.at(14), m.to);
+        assert_eq!(m.at(1_000), m.to, "past the end it stays on the target");
+        // 10 units in 10 ticks at 30 ticks a second: 30 units a second.
+        assert_eq!(m.velocity(), [30 * 65_536, 0, 6 * 65_536]);
+        // A third of a unit is rounded toward the start, the same on every
+        // machine.
+        let third = Mover {
+            object: 2,
+            from: [0; 3],
+            to: [10, -10, 0],
+            start: 0,
+            duration: 3,
+        };
+        assert_eq!(third.at(1), [3, -3, 0]);
+        assert_eq!(third.at(2), [6, -6, 0]);
+    }
+
+    #[test]
+    fn state_refuses_a_mover_with_no_time_none_for_an_object_twice_or_too_many() {
+        let bad = |f: &dyn Fn(&mut Vec<Mover>)| {
+            let mut e = ext();
+            f(&mut e.movers);
+            assert!(RulesExt::decode(&e.encode()).is_err());
+        };
+        bad(&|m| m[0].duration = 0);
+        bad(&|m| m[0].object = u32::MAX);
+        bad(&|m| {
+            let again = m[0];
+            m.push(again);
+        });
+        bad(&|m| {
+            *m = (0..MAX_MOVERS as u32 + 1)
+                .map(|o| Mover { object: o, ..m[0] })
+                .collect()
+        });
+        let e = ext();
+        assert_eq!(RulesExt::decode(&e.encode()).unwrap().movers, e.movers);
     }
 
     #[test]
@@ -1609,6 +2988,7 @@ mod tests {
             objects: (0..MAX_OBJECT_RECORDS as u32)
                 .map(|i| (i, vec![0; MAX_OBJECT_SLOTS]))
                 .collect(),
+            role_mask: u16::MAX,
             grants: (0..MAX_PLAYERS as u8)
                 .flat_map(|p| {
                     (0..4u8).map(move |c| Grant {
@@ -1627,10 +3007,74 @@ mod tests {
                 MAX_QUEUE
             ],
             held: (0..MAX_HELD_ZONES as u32).map(|z| (z, [u32::MAX; MAX_TEAMS])).collect(),
+            spawns: [Some(Spawns::Near { zone: u32::MAX, count: u8::MAX }); MAX_TEAMS],
+            bodies: [Some(Body::Elite); MAX_TEAMS],
+            shown: (0..MAX_SHOWN_AREAS as u32).map(|z| (z, Some(7))).collect(),
+            show: crate::show::State {
+                widgets: [Some(crate::show::Widget {
+                    shown: true,
+                    value: i32::MIN,
+                    fill: 255,
+                    style: 255,
+                    text: Some(u16::MAX),
+                    audience: u16::MAX,
+                }); crate::show::MAX_WIDGETS],
+                waypoints: [Some(crate::show::Waypoint { at: u32::MAX, audience: u16::MAX });
+                    crate::show::MAX_WAYPOINTS],
+                per_viewer: Some(crate::show::PerViewer {
+                    widget: 15,
+                    values: [u8::MAX; MAX_PLAYERS],
+                }),
+            },
+            movers: (0..MAX_MOVERS as u32)
+                .map(|o| Mover {
+                    object: o,
+                    from: [i32::MIN; 3],
+                    to: [i32::MAX; 3],
+                    start: u32::MAX,
+                    duration: u32::MAX,
+                })
+                .collect(),
+            sight: (0..MAX_SIGHT_PAIRS as u32)
+                .map(|o| Sight { from: o, to: o + 1, asked: u32::MAX, clear: true })
+                .collect(),
+            gates: (0..MAX_GATES as u32).map(|o| Gate { object: o, home: [i32::MIN; 3] }).collect(),
+            picks: (0..MAX_PICKS as u8)
+                .map(|slot| PickOffer { slot, title: u16::MAX, rows: vec![u16::MAX; MAX_PICK_ROWS] })
+                .collect(),
+            choices: (0..MAX_PICKS as u8)
+                .flat_map(|slot| (0..MAX_PLAYERS as u8).map(move |player| Choice { player, slot, row: MAX_PICK_ROWS as u8 - 1 }))
+                .collect(),
         };
         let bytes = e.encode();
         assert!(bytes.len() <= MAX_STATE_BYTES, "{} bytes", bytes.len());
         assert_eq!(RulesExt::decode(&bytes), Ok(e));
+    }
+
+    #[test]
+    fn a_bot_order_changes_no_rulesext_byte() {
+        // One script, its kill handler ordering the killer to follow the
+        // victim (docs/game/rules-world-api.md, "Bots"): after the order's
+        // queue entry drains at the next tick's flush, the state is
+        // byte-identical to the run whose killer was `none` and made no
+        // order. The runs share one IR, so the rng (`seed`, from the IR's
+        // hash) and the slot table match; only the order differs.
+        let src = "rules \"Orders\" 1\ntype slayer\nrequires bots.orders\non kill(victim, killer) { if killer != none { bot_follow(killer, victim) } }\n";
+        let run = |killer: Option<u8>| {
+            let (ir, _) = crate::build(src).unwrap();
+            let mut vm = Vm::new(ir, 0, 0).unwrap();
+            let mut g = crate::fake::FakeGame::with_players(2);
+            vm.begin_tick(1);
+            vm.fire(&mut g, Input::Kill { victim: 0, killer });
+            vm.begin_tick(2);
+            vm.flush_queue(&mut g);
+            (vm.ext().encode(), g)
+        };
+        let (with, g) = run(Some(1));
+        assert_eq!(g.calls_to("bot_follow").len(), 1, "the order was made");
+        let (without, g) = run(None);
+        assert!(g.calls_to("bot_follow").is_empty(), "no killer, no order");
+        assert_eq!(with, without);
     }
 
     #[test]

@@ -19,6 +19,8 @@ pub enum Handle {
     Tag,
     /// A tag path that must be a weapon.
     Weapon,
+    /// A tag path that must be a sound's (`snd!`).
+    Sound,
 }
 
 impl Handle {
@@ -30,6 +32,7 @@ impl Handle {
             Handle::Zone => "zone",
             Handle::Tag => "tag",
             Handle::Weapon => "weapon",
+            Handle::Sound => "sound",
         }
     }
 
@@ -39,14 +42,14 @@ impl Handle {
             Handle::Player => Ty::Player,
             Handle::Team => Ty::Team,
             Handle::Object | Handle::Zone => Ty::Object,
-            Handle::Tag | Handle::Weapon => Ty::Tag,
+            Handle::Tag | Handle::Weapon | Handle::Sound => Ty::Tag,
         }
     }
 
     /// Whether a value of `self` is a value of `to`: the same handle, a
     /// zone as an object, or a weapon as a tag.
     pub fn fits(self, to: Handle) -> bool {
-        self == to || matches!((self, to), (Handle::Zone, Handle::Object) | (Handle::Weapon, Handle::Tag))
+        self == to || matches!((self, to), (Handle::Zone, Handle::Object) | (Handle::Weapon | Handle::Sound, Handle::Tag))
     }
 
     /// `a`, `an` and the name: "a zone", "an object".
@@ -66,6 +69,8 @@ pub enum SetKind {
     Zones,
     /// Starting locations: passed to `spawn_areas`, never visited.
     Spawns,
+    /// The points of a flight path: passed to `fly`, never visited.
+    Paths,
 }
 
 impl SetKind {
@@ -77,6 +82,7 @@ impl SetKind {
             SetKind::Objects => "objects",
             SetKind::Zones => "zones",
             SetKind::Spawns => "spawns",
+            SetKind::Paths => "paths",
         }
     }
 
@@ -87,7 +93,22 @@ impl SetKind {
             SetKind::Teams => Some(Handle::Team),
             SetKind::Objectives | SetKind::Objects => Some(Handle::Object),
             SetKind::Zones => Some(Handle::Zone),
-            SetKind::Spawns => None,
+            SetKind::Spawns | SetKind::Paths => None,
+        }
+    }
+
+    /// The message for a set with no members to visit (`to` is "visit" or
+    /// "test"), saying which call takes it; `None` for a set a script can
+    /// visit.
+    pub fn unvisited(self, name: &str, to: &str) -> Option<String> {
+        match self {
+            SetKind::Spawns => Some(format!(
+                "{name} names spawn areas, which have no objects to {to}. Pass it to spawn_areas."
+            )),
+            SetKind::Paths => Some(format!(
+                "{name} names a flight path, whose points are not objects to {to}. Pass it to fly."
+            )),
+            _ => None,
         }
     }
 
@@ -102,6 +123,7 @@ impl SetKind {
     pub fn words(self) -> &'static str {
         match self {
             SetKind::Spawns => "spawn areas",
+            SetKind::Paths => "a flight path",
             SetKind::Zones => "a set of zones",
             SetKind::Players => "a set of players",
             SetKind::Teams => "a set of teams",
@@ -117,9 +139,6 @@ pub enum Type {
     Fixed,
     /// A duration or a tick count, in ticks (`5s`, `300t`).
     Time,
-    /// The built-in enum of carrier engines (`carrier.assault`), which
-    /// `variant.engine` reads as.
-    Carrier,
     Bool,
     Squad,
     Class,
@@ -130,6 +149,11 @@ pub enum Type {
     H(Handle, bool),
     /// A set (`zones`): read where a set is read, never a value.
     Set(SetKind),
+    /// A point or an offset in world units: three `fixed` registers the
+    /// lowering keeps together. It is the value of an expression
+    /// (`vec(x, y, z)`, `o.position`, `a + b`) or a `let`, and is never
+    /// stored in a variable, an option, a table or a parameter.
+    Vec,
 }
 
 impl Type {
@@ -139,11 +163,12 @@ impl Type {
     pub const ZONE: Type = Type::H(Handle::Zone, false);
     pub const TAG: Type = Type::H(Handle::Tag, false);
     pub const WEAPON: Type = Type::H(Handle::Weapon, false);
+    pub const SOUND: Type = Type::H(Handle::Sound, false);
 
     /// The IR type; a set has none (its argument is a `Label` constant).
     pub fn erase(self) -> Option<Ty> {
         Some(match self {
-            Type::Int | Type::Time | Type::Carrier => Ty::Int,
+            Type::Int | Type::Time => Ty::Int,
             Type::Fixed => Ty::Fixed,
             Type::Bool => Ty::Bool,
             Type::Squad => Ty::Squad,
@@ -151,8 +176,16 @@ impl Type {
             Type::Text => Ty::Text,
             Type::Enum(e) => Ty::Enum(e),
             Type::H(h, _) => h.erase(),
+            // The type of each of its registers.
+            Type::Vec => Ty::Fixed,
             Type::Set(_) => return None,
         })
+    }
+
+    /// The registers a value of the type takes: three for a `vec`, one
+    /// for the rest.
+    pub fn width(self) -> usize {
+        if self == Type::Vec { 3 } else { 1 }
     }
 
     /// The register or argument type: a set argument is a label index.
@@ -236,7 +269,7 @@ impl Type {
 
     /// The type a word names, with `?` for `optional`: `int`, `fixed`,
     /// `time`, `bool`, `player`, `team`, `object`, `zone`, `squad`, `class`
-    /// (`Class`), `tag`, `weapon`, `text`, the set words `objects`,
+    /// (`Class`), `tag`, `weapon`, `sound`, `text`, the set words `objects`,
     /// `zones` and `spawns`, or a declared enum. `timer` is a variable's
     /// type, not a value's, and is the caller's to read. `None` for an
     /// unknown word or a `?` on a type with no `none`.
@@ -254,10 +287,12 @@ impl Type {
             "Class" | "class" => Type::Class,
             "tag" => Type::TAG,
             "weapon" => Type::WEAPON,
+            "sound" => Type::SOUND,
             "text" => Type::Text,
             "objects" => Type::Set(SetKind::Objects),
             "zones" => Type::Set(SetKind::Zones),
             "spawns" => Type::Set(SetKind::Spawns),
+            "vec" => Type::Vec,
             other => Type::Enum(enums.iter().position(|n| n == other)? as u8),
         };
         match (t, optional) {
@@ -274,7 +309,6 @@ impl Type {
             Type::Int => "int".into(),
             Type::Fixed => "fixed".into(),
             Type::Time => "time".into(),
-            Type::Carrier => "carrier".into(),
             Type::Bool => "bool".into(),
             Type::Squad => "squad".into(),
             Type::Class => "Class".into(),
@@ -283,6 +317,7 @@ impl Type {
             Type::H(h, false) => h.name().into(),
             Type::H(h, true) => format!("{}?", h.name()),
             Type::Set(s) => s.name().into(),
+            Type::Vec => "vec".into(),
         }
     }
 }
@@ -318,11 +353,15 @@ mod tests {
         assert_eq!(Type::named("int", true, &[]), None);
         assert_eq!(Type::named("time", false, &[]), Some(Type::Time));
         assert_eq!(Type::Time.erase(), Some(Ty::Int));
-        assert_eq!(Type::Carrier.erase(), Some(Ty::Int));
         assert_eq!(Type::from_ir(Ty::Timer), Some(Type::Time));
         assert!(!Type::Time.fits(Type::Int));
         assert!(!Type::Int.fits(Type::Time));
         assert_eq!(Type::named("Role", false, &["Role".into()]), Some(Type::Enum(0)));
         assert_eq!(Type::ZONE.optional().name(&[]), "zone?");
+        assert_eq!(Type::named("vec", false, &[]), Some(Type::Vec));
+        assert_eq!(Type::named("vec", true, &[]), None);
+        assert_eq!(Type::Vec.name(&[]), "vec");
+        assert_eq!((Type::Vec.erase(), Type::Vec.width(), Type::Fixed.width()), (Some(Ty::Fixed), 3, 1));
+        assert!(!Type::Vec.fits(Type::Fixed) && !Type::Fixed.fits(Type::Vec) && Type::Vec.fits(Type::Vec));
     }
 }

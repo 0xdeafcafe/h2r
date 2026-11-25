@@ -259,6 +259,32 @@ fn reapplying_and_switching_never_compound_and_default_restores() {
 }
 
 #[test]
+fn an_edited_field_is_kept_by_the_next_activation() {
+    let mut m = world();
+    let mut r = Remembered::default();
+    r.apply(&mut m, Level::Strong);
+    let (weapon, globals) = (0x20_0000, GLOBALS);
+    // A live edit of one weapon's cone angle and the globals' follow.
+    set_f32(&mut m, weapon + CONE_ANGLE, 0.2);
+    assert_eq!(r.adopt(&m, WEAP, 0xe000_0001, weapon, weapon + CONE_ANGLE, weapon + CONE_ANGLE + 4), 1);
+    set_f32(&mut m, PLAYER_CONTROLS + FOLLOW, 0.3);
+    assert_eq!(r.adopt(&m, MATG, 0xe000_0005, globals, PLAYER_CONTROLS + FOLLOW, PLAYER_CONTROLS + 8), 1);
+    // A biped is not ours to adopt.
+    assert_eq!(r.adopt(&m, u32::from_be_bytes(*b"bipd"), 0xe000_0002, BIPD, BIPD, BIPD + 0x400), 0);
+    r.apply(&mut m, Level::VeryStrong);
+    assert_eq!(f32_at(&m, weapon + CONE_ANGLE), 0.2, "the edit stays");
+    assert_eq!(f32_at(&m, PLAYER_CONTROLS + FOLLOW), 0.3);
+    let f = Level::VeryStrong.factors();
+    assert_eq!(f32_at(&m, weapon + PULL_ANGLE), scale(0.1, f.angle, MAX_ANGLE), "its neighbours are scaled");
+    // Reverting the edit puts our value back: the field is ours again.
+    let strong = scale(0.05, Level::Strong.factors().angle, MAX_ANGLE);
+    set_f32(&mut m, weapon + CONE_ANGLE, strong);
+    r.adopt(&m, WEAP, 0xe000_0001, weapon, weapon + CONE_ANGLE, weapon + CONE_ANGLE + 4);
+    r.apply(&mut m, Level::Default);
+    assert_eq!(f32_at(&m, weapon + CONE_ANGLE), 0.05, "retail");
+}
+
+#[test]
 fn a_reloaded_map_is_its_own_retail() {
     let mut m = world();
     let mut r = Remembered::default();

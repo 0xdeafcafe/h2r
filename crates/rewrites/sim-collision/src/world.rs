@@ -6,11 +6,16 @@
 //! snapshot or source change drops the old generation. Index order only
 //! matters to bookkeeping; the tree walk always follows guest node order.
 use crate::bsp::{Bsp, Consts, HEADER_WORDS};
-use crate::structure::{LeafTable, Structure};
+use crate::flood::{Topology, TopologyKey};
+use crate::mopp::ray::{Outcome, Unverified};
+use crate::mopp::{self, Tree};
+use crate::structure::{LeafTable, Structure, TableVersion};
 use crate::{BAILS, Bail, GuestRead};
 use sim_core::Epoch;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+mod audit;
 mod slots;
+pub use audit::SourceFingerprint;
 use slots::Slots;
 #[cfg(test)]
 pub(crate) const INDEX_RECORD_BYTES: u64 = slots::RECORD_BYTES;
@@ -31,14 +36,30 @@ pub enum Entry {
     VectorContext,
     /// E: the instanced-geometry trace (observed, still lifted).
     InstanceTrace,
+    /// G: `0x0014a5b0`, the sphere cluster flood.
+    ClusterFlood,
+    /// H: `0x000bb050`, the object spatial visit.
+    ObjectVisit,
+    /// F: `0x00300150`, the integer MOPP box query.
+    MoppBox,
+    /// I: `0x00301800`, the float MOPP ray (observed; its walk runs as a
+    /// parity arm, [`RayParity`]).
+    MoppRay,
+    /// The object-reference sphere pretest in J.
+    ObjectSphere,
+    /// J: the whole collision query.
+    Query,
 }
 
-pub const ENTRIES: usize = 5;
+pub const ENTRIES: usize = 11;
 /// Retained map arrays, BSP owners and address index capacity.
 pub const MAP_BUDGET: u64 = 8 << 20;
 /// Bounds address-index bookkeeping independently of decoded array size:
 /// an empty or intrinsically malformed BSP still occupies a cache slot.
 const MAP_SLOTS: usize = 8192;
+/// Decoded MOPP programs held at once; a guest naming more bails
+/// [`Bail::Budget`] for the rest.
+const MOPP_SLOTS: usize = 4096;
 /// Covers the BSP owner, its inline header, Rust container descriptors,
 /// reference counts and alignment, irrespective of host lock layout.
 pub(crate) const BSP_OWNER_BYTES: u64 = 512;
@@ -53,6 +74,12 @@ impl Entry {
         Entry::VectorTest,
         Entry::VectorContext,
         Entry::InstanceTrace,
+        Entry::ClusterFlood,
+        Entry::ObjectVisit,
+        Entry::MoppBox,
+        Entry::MoppRay,
+        Entry::ObjectSphere,
+        Entry::Query,
     ];
 
     pub fn name(self) -> &'static str {
@@ -62,6 +89,12 @@ impl Entry {
             Entry::VectorTest => "vector_test",
             Entry::VectorContext => "vector_context",
             Entry::InstanceTrace => "instance_trace",
+            Entry::ClusterFlood => "cluster_flood",
+            Entry::ObjectVisit => "object_visit",
+            Entry::MoppBox => "mopp_box",
+            Entry::MoppRay => "mopp_ray",
+            Entry::ObjectSphere => "object_sphere",
+            Entry::Query => "query",
         }
     }
 
@@ -72,6 +105,12 @@ impl Entry {
             Entry::VectorTest => 0x001d_e630,
             Entry::VectorContext => 0x001d_e6d0,
             Entry::InstanceTrace => 0x0024_4980,
+            Entry::ClusterFlood => 0x0014_a5b0,
+            Entry::ObjectVisit => 0x000b_b050,
+            Entry::MoppBox => 0x0030_0150,
+            Entry::MoppRay => 0x0030_1800,
+            Entry::ObjectSphere => 0x0011_e5e0,
+            Entry::Query => 0x0016_97c0,
         }
     }
 }
@@ -87,10 +126,42 @@ pub struct EntryStats {
     pub x87_control: BTreeMap<u16, u64>,
 }
 
+/// Entry I's parity arm ([`mopp::ray::RayCheck`]): queries the guest
+/// answered and the walk was compared with.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RayParity {
+    /// The walk matched the guest call for call, and key for key where
+    /// keys were observed.
+    pub matched: u64,
+    pub mismatched: u64,
+    /// Queries the walk could not follow, by [`Bail`] reason.
+    pub unverified: [u64; BAILS],
+    /// Queries whose fraction moved where no key was observed.
+    pub fraction_moved: u64,
+    /// The first mismatch since start, described.
+    pub first_mismatch: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VectorParity {
+    pub matched: u64,
+    pub mismatched: u64,
+    pub unverified: [u64; BAILS],
+    pub first_mismatch: Option<String>,
+}
+
 /// A snapshot of the world's counters. Diagnostic only: no kernel reads it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
+    pub vector: VectorParity,
+    pub context: VectorParity,
+    pub instance: VectorParity,
+    pub query: VectorParity,
+    pub visit: VectorParity,
+    pub flood: VectorParity,
     pub entries: [EntryStats; ENTRIES],
+    /// Entry I's parity arm.
+    pub ray: RayParity,
     /// Decode attempts and failures. Cache hits increment neither count.
     pub decodes: u64,
     pub decode_failures: u64,
@@ -98,9 +169,12 @@ pub struct Stats {
     pub flushes: u64,
     /// Decoded BSPs held now.
     pub bsps: u64,
+    /// Decoded MOPP programs held now.
+    pub mopps: u64,
     /// Charged resident map data, including the address index and BSP owners.
     pub bytes: u64,
-    /// Decoded array allocations, including the packed cluster table.
+    /// Decoded array allocations, including the packed cluster table and
+    /// the MOPP trees.
     pub array_bytes: u64,
     pub budget_bytes: u64,
     /// Times a generation crossed its budget and switched to scalar ring walks.
@@ -152,6 +226,28 @@ struct Counters {
     bails: [[AtomicU64; BAILS]; ENTRIES],
     mxcsr: [WordCounts<u32>; ENTRIES],
     x87_control: [WordCounts<u16>; ENTRIES],
+    ray: RayCounters,
+    vector: Mutex<VectorParity>,
+    context: Mutex<VectorParity>,
+    instance: Mutex<VectorParity>,
+    query: Mutex<VectorParity>,
+    visit: Mutex<VectorParity>,
+    flood: Mutex<VectorParity>,
+}
+
+#[derive(Default)]
+struct RayCounters {
+    matched: AtomicU64,
+    mismatched: AtomicU64,
+    unverified: [AtomicU64; BAILS],
+    fraction_moved: AtomicU64,
+    first_mismatch: OnceLock<String>,
+}
+
+/// A decoded MOPP program and the source revision it was last checked at.
+struct MoppSlot {
+    tree: Arc<Tree>,
+    revision: u64,
 }
 
 enum Slot {
@@ -171,10 +267,15 @@ struct Inner {
     built: u64,
     structure: Option<Structure>,
     cluster_source: Option<LeafTable>,
+    /// The active structure's portal graph and the version its provider
+    /// witnessed for every byte it was decoded from.
+    topology: Option<(TopologyKey, TableVersion, Arc<Topology>)>,
     scalar_rings: bool,
     ring_fallbacks: u64,
     cluster_budget_reads: u64,
     bytes: u64,
+    mopps: HashMap<u32, MoppSlot>,
+    mopp_bytes: u64,
     decodes: u64,
     decode_failures: u64,
     flushes: u64,
@@ -189,8 +290,26 @@ impl Inner {
         }
     }
 
+    /// Starts a new generation when the map epoch moved. The memory
+    /// revision belongs to the BSP sources and is left alone.
+    fn select_epoch(&mut self, epoch: u64) {
+        if self.seen != epoch {
+            self.flush();
+            self.seen = epoch;
+        }
+    }
+
     fn array_bytes(&self) -> u64 {
-        self.bytes + self.structure.as_ref().map_or(0, |s| s.footprint() as u64)
+        self.bytes
+            + self.mopp_bytes
+            + self.structure.as_ref().map_or(0, |s| s.footprint() as u64)
+            + self.topology_bytes()
+    }
+
+    fn topology_bytes(&self) -> u64 {
+        self.topology
+            .as_ref()
+            .map_or(0, |(_, _, t)| t.footprint() as u64)
     }
 
     fn metadata_bytes(&self) -> u64 {
@@ -234,6 +353,7 @@ impl Inner {
         if self.resident() + essential > limit {
             self.structure = None;
             self.cluster_source = None;
+            self.topology = None;
         }
         let available = limit
             .checked_sub(self.resident() + essential)
@@ -243,10 +363,10 @@ impl Inner {
 
     fn cluster_room(&mut self, limit: u64, table: LeafTable) -> bool {
         // One active table, so the new table replaces the old one.
-        if self.bytes + self.metadata_bytes() + table.footprint() > limit {
+        if self.bytes + self.mopp_bytes + self.metadata_bytes() + table.footprint() > limit {
             self.discard_rings();
         }
-        if self.bytes + self.metadata_bytes() + table.footprint() > limit {
+        if self.bytes + self.mopp_bytes + self.metadata_bytes() + table.footprint() > limit {
             self.cluster_budget_reads += 1;
             return false;
         }
@@ -256,18 +376,26 @@ impl Inner {
     fn flush(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.scalar_rings = false;
-        if !self.bsps.is_empty() || self.structure.is_some() {
+        if !self.bsps.is_empty()
+            || self.structure.is_some()
+            || self.topology.is_some()
+            || !self.mopps.is_empty()
+        {
             self.flushes += 1;
         }
         self.structure = None;
         self.cluster_source = None;
+        self.topology = None;
         self.bsps.clear();
         self.built = 0;
         self.bytes = 0;
+        self.mopps.clear();
+        self.mopp_bytes = 0;
     }
 }
 
 pub struct CollisionWorld {
+    store: Option<std::path::PathBuf>,
     epoch: &'static Epoch,
     budget: u64,
     slot_limit: usize,
@@ -280,12 +408,21 @@ impl CollisionWorld {
         Self::with_budget(epoch, MAP_BUDGET)
     }
 
+    /// Enable shared, immutable BSP columns in the platform cache directory.
+    pub fn with_shared_store(epoch: &'static Epoch) -> Self {
+        Self {
+            store: host_dirs::cache().map(|dir| dir.join("collision")),
+            ..Self::new(epoch)
+        }
+    }
+
     pub(crate) fn with_budget(epoch: &'static Epoch, budget: u64) -> Self {
         Self::with_limits(epoch, budget, MAP_SLOTS)
     }
 
     pub(crate) fn with_limits(epoch: &'static Epoch, budget: u64, slot_limit: usize) -> Self {
         Self {
+            store: None,
             epoch,
             budget,
             slot_limit,
@@ -326,7 +463,7 @@ impl CollisionWorld {
             }
             inner.generation
         };
-        let structure = Structure::decode(g, table).ok()?;
+        let structure = Structure::decode(g, table, self.store.as_deref()).ok()?;
         let cluster = structure.leaf_cluster(leaf)?;
         let mut inner = self.lock();
         if self.epoch.get() != epoch
@@ -372,8 +509,9 @@ impl CollisionWorld {
                 .and_then(|n| inner.bsp_room(self.budget, n + metadata));
             (inner.generation, room)
         };
-        let built = ring_limit
-            .and_then(|room| Bsp::decode_with_ring_limit(g, addr, header, &consts()?, room));
+        let built = ring_limit.and_then(|room| {
+            Bsp::decode_cached(g, addr, header, &consts()?, room, self.store.as_deref())
+        });
         let mut inner = self.lock();
         inner.decodes += 1;
         if epoch != self.epoch.get() || generation != inner.generation {
@@ -424,6 +562,115 @@ impl CollisionWorld {
         built
     }
 
+    /// The portal graph decoded for `key`, when the provider still vouches
+    /// for `version` (it saw no write to any source span since).
+    pub fn cached_topology(&self, key: TopologyKey, version: TableVersion) -> Option<Arc<Topology>> {
+        let epoch = self.epoch.get();
+        let mut inner = self.lock();
+        let memory = inner.memory;
+        inner.select(epoch, memory);
+        match &inner.topology {
+            Some((k, v, t)) if (*k, *v) == (key, version) => Some(t.clone()),
+            _ => None,
+        }
+    }
+
+    /// Keep a freshly decoded portal graph when the provider could watch
+    /// all of its sources and the budget has room; return it either way.
+    /// One graph is kept at a time: the active structure's.
+    pub fn keep_topology(
+        &self,
+        version: Option<TableVersion>,
+        mut topology: Topology,
+    ) -> Arc<Topology> {
+        if version.is_some() && topology.footprint() as u64 <= self.budget
+            && let Some(directory) = &self.store
+        {
+            topology.share_columns(directory);
+        }
+        let topology = Arc::new(topology);
+        let epoch = self.epoch.get();
+        let mut inner = self.lock();
+        let memory = inner.memory;
+        inner.select(epoch, memory);
+        inner.topology = None;
+        if let Some(version) = version
+            && inner.resident() + topology.footprint() as u64 <= self.budget
+        {
+            inner.topology = Some((topology.key(), version, topology.clone()));
+        }
+        topology
+    }
+
+    /// The decoded MOPP program at code object `code`, decoding it the
+    /// first time. `revision` is the reader's version of the bytes under
+    /// the program (the engine's write watch, or a constant): a held tree
+    /// whose header still matches is used at once while it is unchanged,
+    /// and compared with the guest's bytes again when it moved. A program
+    /// that unfolds past the decode bound is held as `guest_only`.
+    pub fn mopp(&self, g: &impl GuestRead, code: u32, revision: u64) -> Result<Arc<Tree>, Bail> {
+        let epoch = self.epoch.get();
+        let header = mopp::Header::read(g, code)?;
+        let (generation, held) = {
+            let mut inner = self.lock();
+            if self.epoch.get() != epoch {
+                return Err(Bail::Data);
+            }
+            inner.select_epoch(epoch);
+            let held = match inner.mopps.get(&code) {
+                Some(slot) if slot.tree.source().matches(&header) => {
+                    if slot.revision == revision {
+                        return Ok(slot.tree.clone());
+                    }
+                    Some(slot.tree.clone())
+                }
+                _ => None,
+            };
+            (inner.generation, held)
+        };
+        let (_, source) = mopp::Source::read(g, code)?;
+        let (tree, decoded) = match held {
+            Some(tree) if *tree.source() == source => (tree, false),
+            _ => (
+                Arc::new(Tree::decode_shared(code, source, self.store.as_deref(), self.budget)),
+                true,
+            ),
+        };
+        let mut inner = self.lock();
+        if decoded {
+            inner.decodes += 1;
+            if tree.guest_only() {
+                inner.decode_failures += 1;
+            }
+        }
+        if epoch != self.epoch.get() || generation != inner.generation {
+            return Err(Bail::Data);
+        }
+        let size = tree.footprint() as u64;
+        let old = inner
+            .mopps
+            .get(&code)
+            .map_or(0, |slot| slot.tree.footprint() as u64);
+        if old == 0 && inner.mopps.len() >= MOPP_SLOTS {
+            return Err(Bail::Budget);
+        }
+        if inner.resident() - old + size > self.budget {
+            inner.discard_rings();
+        }
+        if inner.resident() - old + size > self.budget {
+            return Err(Bail::Budget);
+        }
+        inner.mopp_bytes = inner.mopp_bytes - old + size;
+        inner.mopps.insert(
+            code,
+            MoppSlot {
+                tree: tree.clone(),
+                revision,
+            },
+        );
+        Ok(tree)
+    }
+
     /// Drop every decoded BSP.
     pub fn clear(&self) {
         let mut inner = self.lock();
@@ -443,6 +690,61 @@ impl CollisionWorld {
                     self.clear();
                 }
                 self.counters.bails[e][*why as usize].fetch_add(1, Ordering::Relaxed)
+            }
+        };
+    }
+
+    pub fn record_vector(&self, result: Result<Option<String>, Bail>) {
+        Self::record_parity(&self.counters.vector, result);
+    }
+
+    pub fn record_context(&self, result: Result<Option<String>, Bail>) {
+        Self::record_parity(&self.counters.context, result);
+    }
+
+    pub fn record_instance(&self, result: Result<Option<String>, Bail>) {
+        Self::record_parity(&self.counters.instance, result);
+    }
+
+    pub fn record_query(&self, result: Result<Option<String>, Bail>) {
+        Self::record_parity(&self.counters.query, result);
+    }
+
+    pub fn record_spatial(&self, entry: Entry, result: Result<Option<String>, Bail>) {
+        let counter = match entry {
+            Entry::ClusterFlood => &self.counters.flood,
+            Entry::ObjectVisit => &self.counters.visit,
+            _ => unreachable!("spatial parity is defined only for G and H"),
+        };
+        Self::record_parity(counter, result);
+    }
+
+    fn record_parity(counter: &Mutex<VectorParity>, result: Result<Option<String>, Bail>) {
+        let mut v = counter.lock().unwrap_or_else(|e| e.into_inner());
+        match result {
+            Ok(None) => v.matched += 1,
+            Ok(Some(reason)) => {
+                v.first_mismatch.get_or_insert(reason);
+                v.mismatched += 1;
+            }
+            Err(why) => v.unverified[why as usize] += 1,
+        }
+    }
+
+    /// Count one query of entry I's parity arm, keeping the first mismatch.
+    pub fn record_ray(&self, outcome: &Outcome) {
+        let r = &self.counters.ray;
+        match outcome {
+            Outcome::Matched => r.matched.fetch_add(1, Ordering::Relaxed),
+            Outcome::Unverified(Unverified::Bail(why)) => {
+                r.unverified[*why as usize].fetch_add(1, Ordering::Relaxed)
+            }
+            Outcome::Unverified(Unverified::Fraction) => {
+                r.fraction_moved.fetch_add(1, Ordering::Relaxed)
+            }
+            Outcome::Mismatch { .. } => {
+                r.first_mismatch.get_or_init(|| outcome.to_string());
+                r.mismatched.fetch_add(1, Ordering::Relaxed)
             }
         };
     }
@@ -468,13 +770,28 @@ impl CollisionWorld {
                 precision[usize::from(control >> 8) & 3] += count;
             }
         }
+        let ray = RayParity {
+            matched: load(&c.ray.matched),
+            mismatched: load(&c.ray.mismatched),
+            unverified: std::array::from_fn(|b| load(&c.ray.unverified[b])),
+            fraction_moved: load(&c.ray.fraction_moved),
+            first_mismatch: c.ray.first_mismatch.get().cloned(),
+        };
         let inner = self.lock();
         Stats {
             entries,
+            ray,
+            vector: c.vector.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            context: c.context.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            instance: c.instance.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            query: c.query.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            visit: c.visit.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            flood: c.flood.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             decodes: inner.decodes,
             decode_failures: inner.decode_failures,
             flushes: inner.flushes,
             bsps: inner.built,
+            mopps: inner.mopps.len() as u64,
             bytes: inner.resident(),
             array_bytes: inner.array_bytes(),
             budget_bytes: self.budget,

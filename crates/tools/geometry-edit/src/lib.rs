@@ -21,9 +21,18 @@
 //!   model's strips are refused and named.
 //! - **Use for lower LODs** points a model permutation's lower levels of
 //!   detail at an edited section.
+//! - [`coll_target`]: a `coll` BSP as a polygon mesh, compiled back with
+//!   `collision_build::coll::rebuild` and written as patches and grown
+//!   blocks in the ordinary metadata.
+//! - [`level_collision`]: a solid added to a structure's level collision
+//!   (`collision_build::level`), read from the map and written back as
+//!   patches and grown blocks in the ordinary metadata, or staged for the
+//!   live game.
 
+pub mod coll_target;
 mod grow;
 mod import;
+pub mod level_collision;
 mod session;
 mod target;
 mod visibility;
@@ -31,6 +40,8 @@ mod write;
 
 /// The kernel the session edits with: `MeshOp` is the API's op value.
 pub use mesh_edit;
+/// The level collision compiler: `Polygon` is [`level_collision`]'s solid.
+pub use collision_build;
 pub use session::{
     Check, Drawn, Error, GeometrySession, OpenInfo, Patches, Preview, RAW_ALIGN, RawAppend,
     RawWrite, RegionWrite, WriteClass,

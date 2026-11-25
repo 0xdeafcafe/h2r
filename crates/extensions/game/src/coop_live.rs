@@ -454,7 +454,8 @@ pub struct Guest {
     /// The host's skulls: engine indices, then ours from
     /// [`crate::skulls::COUNT`] (the wire's numbering).
     pub skulls: Vec<u8>,
-    /// The host's XNet endpoint as the server saw it, for pings.
+    /// The host's XNet endpoint, for pings: its LAN address when the
+    /// session read gave one (`Session::lan`), else as the server saw it.
     pub endpoint: Option<std::net::SocketAddrV4>,
 }
 
@@ -872,10 +873,9 @@ impl Lobby {
                 host: session.host_gamertag.clone(),
                 campaign: c.clone(),
                 skulls: session.advertisement.skulls.clone().unwrap_or_default(),
-                endpoint: Some(std::net::SocketAddrV4::new(
-                    session.endpoint.addr,
-                    session.endpoint.port,
-                )),
+                // The host's LAN address when this console is behind its
+                // NAT, else its public endpoint.
+                endpoint: session.reach_order().first().copied(),
             }),
             _ => None,
         }

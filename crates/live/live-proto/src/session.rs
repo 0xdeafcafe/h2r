@@ -26,7 +26,10 @@ pub fn valid_id(id: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum AttributeValue {
-    Integer(u64),
+    /// Written as a JSON number up to 2^53 and as a decimal string above:
+    /// signed events go through canonical JSON (RFC 8785), whose numbers are
+    /// doubles, and Halo 2 sets several attributes to `u64::MAX`.
+    Integer(#[serde(with = "safe_u64")] u64),
     String(String),
     Blob(Vec<u8>),
     Null,
@@ -176,6 +179,12 @@ pub struct NewSession {
     /// that sends none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rules: Option<String>,
+    /// The Firefight match the host's next game plays (docs/game/
+    /// firefight.md, "Live"): the wave set, its player teams, the
+    /// difficulty and the kit version, so every machine plays the same
+    /// one. Left out by a host whose next game is not Firefight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firefight: Option<Firefight>,
     /// Optional facts for custom game discovery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<BrowserMetadata>,
@@ -231,6 +240,60 @@ impl VariantExt {
         }
     }
 }
+/// The most bytes a Firefight wave set's name has ([`Firefight::set`]), as
+/// the `firefight` crate's validator bounds a definition's name.
+pub const FIREFIGHT_SET_MAX: usize = 128;
+/// The Firefight match a host's next game plays ([`NewSession::firefight`]).
+/// A guest checks it against its own copy: the definition's hash names the
+/// exact wave set (with the host's teams and starting lives), the kit
+/// version the map the host built.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Firefight {
+    /// The wave set's name (`firefight::Def::name`), e.g. `Crossfire`.
+    pub set: String,
+    /// The SHA-256 of the definition the host plays (`firefight::Def::id`),
+    /// 64 lowercase hex digits.
+    pub id: String,
+    /// Player teams: 1, or 2 ([`crate::firefight::MAX_TEAMS`]).
+    pub teams: u8,
+    /// 0 easy, 1 normal, 2 heroic, 3 legendary ([`DIFFICULTIES`]).
+    pub difficulty: u8,
+    /// The Firefight kit's version (`firefight_kit::KIT_VERSION`) the
+    /// host's map carries; at least 1.
+    pub kit: u32,
+}
+impl Firefight {
+    pub fn validate(&self) -> Result<(), String> {
+        let set_ok = !self.set.trim().is_empty()
+            && self.set.len() <= FIREFIGHT_SET_MAX
+            && !self.set.chars().any(char::is_control);
+        if !set_ok {
+            return Err(format!(
+                "firefight set is a name of 1 to {FIREFIGHT_SET_MAX} bytes"
+            ));
+        }
+        if !valid_rules_hash(&self.id) {
+            return Err("firefight id is a 64-digit SHA-256, lowercase hex".into());
+        }
+        if !(1..=crate::firefight::MAX_TEAMS).contains(&self.teams) {
+            return Err(format!(
+                "firefight teams is 1 to {}",
+                crate::firefight::MAX_TEAMS
+            ));
+        }
+        if usize::from(self.difficulty) >= DIFFICULTIES.len() {
+            return Err("firefight difficulty is 0 to 3".into());
+        }
+        if self.kit == 0 {
+            return Err("firefight kit is a version from 1".into());
+        }
+        Ok(())
+    }
+    pub fn difficulty_name(&self) -> &'static str {
+        DIFFICULTIES[usize::from(self.difficulty).min(DIFFICULTIES.len() - 1)]
+    }
+}
 /// The highest round trip a session reports; anything slower is this.
 pub const PING_MAX_MS: u16 = 9_999;
 fn custom() -> String {
@@ -239,6 +302,10 @@ fn custom() -> String {
 /// The session flag of a co-op campaign session (docs/live/live-coop.md,
 /// "Co-op over Live").
 pub const COOP: &str = "coop";
+/// The session flag of a Forge-mode lobby (docs/game/forge-design.md):
+/// a custom game whose shared Forge session's machines may use the co-op
+/// relay.
+pub const FORGE: &str = "forge";
 /// The campaign difficulties, by index.
 pub const DIFFICULTIES: [&str; 4] = ["easy", "normal", "heroic", "legendary"];
 /// What a co-op campaign session plays: the level and the difficulty the
@@ -296,6 +363,12 @@ pub struct Session {
     pub state: String,
     #[serde(default)]
     pub players: BTreeMap<Xuid, String>,
+    /// The host's address inside its own network, `source: "lan"`: set
+    /// only in a session read answered to a signed-in reader whose public
+    /// address is the host's ([`Session::lan_for`]), so a console behind
+    /// the host's NAT reaches it without a hairpin. Never stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lan: Option<Endpoint>,
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -334,6 +407,13 @@ pub struct Update {
     /// keeps it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rules: Option<String>,
+    /// The Firefight match for the next game ([`NewSession::firefight`]);
+    /// absent keeps it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firefight: Option<Firefight>,
+    /// The host's next game is not Firefight: drops [`NewSession::firefight`].
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub clear_firefight: bool,
     /// Replaces all browser metadata. An empty object clears it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<BrowserMetadata>,
@@ -368,11 +448,17 @@ impl NewSession {
     pub fn is_coop(&self) -> bool {
         self.flags == COOP
     }
+    pub fn is_forge(&self) -> bool {
+        self.flags == FORGE
+    }
     pub fn validate(&self) -> Result<(), String> {
         if self.port == 0
             || self.host_address.len() != 36
             || !self.slots.validate()
-            || !matches!(self.flags.as_str(), "custom" | "hopper" | "ranked" | "coop")
+            || !matches!(
+                self.flags.as_str(),
+                "custom" | "hopper" | "ranked" | "coop" | "forge"
+            )
         {
             return Err("invalid session address, slots or flags".into());
         }
@@ -400,6 +486,9 @@ impl NewSession {
         if self.rules.as_deref().is_some_and(|r| !valid_rules_hash(r)) {
             return Err("rules is a 64-digit SHA-256, lowercase hex".into());
         }
+        if let Some(f) = &self.firefight {
+            f.validate()?;
+        }
         if let Some(c) = &self.campaign {
             if !self.is_coop() {
                 return Err("only a coop session names a campaign".into());
@@ -420,7 +509,47 @@ impl Endpoint {
         self.source == "observed" || is_local_ipv4(self.addr)
     }
 }
+/// [`Endpoint::source`] of [`Session::lan`].
+pub const LAN_SOURCE: &str = "lan";
 impl Session {
+    /// The host's endpoint inside its own network, for a reader the server
+    /// saw at `reader`: when that is the host's public address (both
+    /// behind one NAT, which seldom loops traffic back inside), the
+    /// address and port the host's XNADDR (`host_address`) carries, if
+    /// that is a local-network address other than the public one. None
+    /// otherwise, and for a host whose endpoint is already local.
+    pub fn lan_for(&self, reader: Ipv4Addr) -> Option<Endpoint> {
+        if reader != self.endpoint.addr || is_local_ipv4(self.endpoint.addr) {
+            return None;
+        }
+        let x = self.advertisement.host_address.get(..10)?;
+        let addr = Ipv4Addr::new(x[0], x[1], x[2], x[3]);
+        let port = u16::from_be_bytes([x[8], x[9]]);
+        (addr != self.endpoint.addr
+            && is_local_ipv4(addr)
+            && !addr.is_loopback()
+            && (1..=65529).contains(&port))
+        .then(|| Endpoint {
+            addr,
+            port,
+            source: LAN_SOURCE.into(),
+        })
+    }
+    /// The endpoints to reach the host at, in order: its address inside
+    /// the reader's own network when the read gave one ([`Session::lan`]),
+    /// then its public endpoint.
+    pub fn reach_order(&self) -> Vec<std::net::SocketAddrV4> {
+        let public = std::net::SocketAddrV4::new(self.endpoint.addr, self.endpoint.port);
+        let mut order: Vec<_> = self
+            .lan
+            .iter()
+            .map(|l| std::net::SocketAddrV4::new(l.addr, l.port))
+            .collect();
+        if !order.contains(&public) {
+            order.push(public);
+        }
+        order
+    }
     /// Whether `GET /v1/sessions` read by `viewer` includes this session.
     pub fn listed_for(&self, viewer: Option<Xuid>, friends: impl Fn(Xuid, Xuid) -> bool) -> bool {
         self.endpoint.listable()
@@ -441,7 +570,9 @@ impl Session {
         if self.state != "open" {
             return Err("This game is no longer available.".into());
         }
-        if !matches!(ad.flags.as_str(), "custom" | "coop") || self.matchmaking.is_some() {
+        if !matches!(ad.flags.as_str(), "custom" | "coop" | "forge")
+            || self.matchmaking.is_some()
+        {
             return Err("Join this game through matchmaking.".into());
         }
         let host = if self.host_xuid == Xuid(0) && self.host_gamertag.is_empty()
@@ -531,6 +662,14 @@ impl Session {
         }
         if let Some(v) = &u.rules {
             next.rules = Some(v.clone());
+        }
+        if u.clear_firefight {
+            if u.firefight.is_some() {
+                return Err("cannot set and clear firefight in the same update".into());
+            }
+            next.firefight = None;
+        } else if let Some(v) = &u.firefight {
+            next.firefight = Some(v.clone());
         }
         if let Some(browser) = &u.browser {
             next.browser = (browser != &BrowserMetadata::default()).then(|| browser.clone());
@@ -628,6 +767,7 @@ mod tests {
             ping_ms: None,
             variant_ext: None,
             rules: None,
+            firefight: None,
             browser: None,
         }
     }
@@ -716,6 +856,7 @@ mod tests {
             last_activity: 100,
             state: "open".into(),
             players: BTreeMap::new(),
+            lan: None,
         };
         let before = s.clone();
         assert!(!s.apply(UPDATED, &json!({}), "", 101).unwrap());
@@ -754,6 +895,7 @@ mod tests {
             last_activity: 100,
             state: "open".into(),
             players: BTreeMap::new(),
+            lan: None,
         }
     }
     #[test]
@@ -893,6 +1035,127 @@ mod tests {
         assert!(!s.apply(UPDATED, &json!({}), "", 103).unwrap());
         assert_eq!(s.advertisement.rules.as_deref(), Some(hash.as_str()));
         assert!(s.apply(UPDATED, &json!({"rules": "abc"}), "", 104).is_err());
+    }
+    fn crossfire() -> Firefight {
+        Firefight {
+            set: "Crossfire".into(),
+            id: "ab".repeat(32),
+            teams: 2,
+            difficulty: 2,
+            kit: 2,
+        }
+    }
+    #[test]
+    fn firefight_match_round_trips_and_is_left_out_when_none() {
+        let old = json!({"addr":null,"port":3074,"host_address":vec![0u8;36],
+            "slots":{"public_filled":1,"public_open":7,"private_filled":0,"private_open":0},
+            "attributes":{},"map":"lockout"});
+        let n: NewSession = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(n.firefight, None);
+        assert!(serde_json::to_value(&n).unwrap().get("firefight").is_none());
+        let f = crossfire();
+        let mut with = old;
+        with["firefight"] = serde_json::to_value(&f).unwrap();
+        assert_eq!(
+            with["firefight"],
+            json!({"set": "Crossfire", "id": "ab".repeat(32), "teams": 2,
+                "difficulty": 2, "kit": 2})
+        );
+        let n: NewSession = serde_json::from_value(with.clone()).unwrap();
+        assert_eq!(n.validate(), Ok(()));
+        assert_eq!(n.firefight.as_ref(), Some(&f));
+        assert_eq!(f.difficulty_name(), "heroic");
+        let back: NewSession = serde_json::from_value(serde_json::to_value(&n).unwrap()).unwrap();
+        assert_eq!(back, n);
+        with["firefight"]["extra"] = json!(1);
+        assert!(serde_json::from_value::<NewSession>(with).is_err());
+    }
+    #[test]
+    fn firefight_match_is_validated() {
+        let mut n = new();
+        n.firefight = Some(crossfire());
+        assert_eq!(n.validate(), Ok(()));
+        let one = Firefight {
+            set: "Holdout".into(),
+            teams: 1,
+            difficulty: 0,
+            kit: 1,
+            ..crossfire()
+        };
+        n.firefight = Some(one);
+        assert_eq!(n.validate(), Ok(()));
+        let bad: [(&str, fn(&mut Firefight)); 11] = [
+            ("empty set", |f| f.set.clear()),
+            ("blank set", |f| f.set = "  ".into()),
+            ("long set", |f| f.set = "x".repeat(FIREFIGHT_SET_MAX + 1)),
+            ("control in set", |f| f.set = "Cross\nfire".into()),
+            ("short id", |f| f.id = "ab".repeat(31)),
+            ("upper id", |f| f.id = "AB".repeat(32)),
+            ("not hex", |f| f.id = "zz".repeat(32)),
+            ("no teams", |f| f.teams = 0),
+            ("three teams", |f| f.teams = 3),
+            ("difficulty 4", |f| f.difficulty = 4),
+            ("kit 0", |f| f.kit = 0),
+        ];
+        for (what, spoil) in bad {
+            let mut f = crossfire();
+            spoil(&mut f);
+            assert!(f.validate().is_err(), "{what}");
+            n.firefight = Some(f);
+            assert!(n.validate().is_err(), "{what}");
+        }
+        let longest = Firefight {
+            set: "x".repeat(FIREFIGHT_SET_MAX),
+            ..crossfire()
+        };
+        assert_eq!(longest.validate(), Ok(()));
+    }
+    #[test]
+    fn firefight_match_updates_keep_replace_and_clear_it() {
+        let mut s = session("observed", "203.0.113.5", Visibility::Public);
+        assert!(
+            serde_json::to_value(Update::default())
+                .unwrap()
+                .get("firefight")
+                .is_none()
+        );
+        assert!(
+            serde_json::to_value(Update::default())
+                .unwrap()
+                .get("clear_firefight")
+                .is_none()
+        );
+        let f = crossfire();
+        let up = serde_json::to_value(Update {
+            firefight: Some(f.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(s.apply(UPDATED, &up, "", 102).unwrap());
+        assert_eq!(s.advertisement.firefight, Some(f.clone()));
+        // Absent keeps it.
+        assert!(!s.apply(UPDATED, &json!({}), "", 103).unwrap());
+        assert_eq!(s.advertisement.firefight, Some(f.clone()));
+        // A bad one fails and changes nothing.
+        let mut bad = serde_json::to_value(&f).unwrap();
+        bad["teams"] = json!(3);
+        assert!(
+            s.apply(UPDATED, &json!({"firefight": bad}), "", 104)
+                .is_err()
+        );
+        assert_eq!(s.advertisement.firefight, Some(f.clone()));
+        // Set and clear at once is refused; clear drops it.
+        let both = json!({"firefight": f, "clear_firefight": true});
+        assert!(s.apply(UPDATED, &both, "", 105).is_err());
+        assert!(
+            s.apply(UPDATED, &json!({"clear_firefight": true}), "", 106)
+                .unwrap()
+        );
+        assert_eq!(s.advertisement.firefight, None);
+        assert!(
+            !s.apply(UPDATED, &json!({"clear_firefight": true}), "", 107)
+                .unwrap()
+        );
     }
     #[test]
     fn skulls_are_optional_checked_and_updated() {
@@ -1144,5 +1407,90 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(s.advertisement.visibility, Visibility::Friends);
+    }
+    #[test]
+    fn a_reader_behind_the_hosts_nat_is_given_its_lan_address_first() {
+        let mut s = session("observed", "203.0.113.9", Visibility::Public);
+        // The host's XNADDR: its LAN address and base port.
+        s.advertisement.host_address[..4].copy_from_slice(&[10, 0, 3, 7]);
+        s.advertisement.host_address[4..8].copy_from_slice(&[10, 0, 3, 7]);
+        s.advertisement.host_address[8..10].copy_from_slice(&3074u16.to_be_bytes());
+        let lan = s.lan_for("203.0.113.9".parse().unwrap()).unwrap();
+        assert_eq!(lan.addr, Ipv4Addr::new(10, 0, 3, 7));
+        assert_eq!((lan.port, lan.source.as_str()), (3074, LAN_SOURCE));
+        // Another network gets nothing.
+        assert_eq!(s.lan_for("198.51.100.7".parse().unwrap()), None);
+        // A public XNADDR address is no LAN one.
+        s.advertisement.host_address[..4].copy_from_slice(&[198, 51, 100, 8]);
+        assert_eq!(s.lan_for("203.0.113.9".parse().unwrap()), None);
+        // Nor is a host already on a local endpoint (a LAN-only server).
+        let mut local = session("observed", "10.0.3.7", Visibility::Public);
+        local.advertisement.host_address[..4].copy_from_slice(&[10, 0, 3, 7]);
+        local.advertisement.host_address[8..10].copy_from_slice(&3074u16.to_be_bytes());
+        assert_eq!(local.lan_for("10.0.3.7".parse().unwrap()), None);
+
+        s.lan = Some(lan);
+        let at = |a: &str| a.parse::<std::net::SocketAddrV4>().unwrap();
+        assert_eq!(s.reach_order(), vec![at("10.0.3.7:3074"), at("203.0.113.9:3074")]);
+        s.lan = None;
+        assert_eq!(s.reach_order(), vec![at("203.0.113.9:3074")]);
+        // Never stored: absent from the wire unless a read set it.
+        assert!(serde_json::to_value(&s).unwrap().get("lan").is_none());
+    }
+}
+
+/// A u64 that survives canonical JSON ([`AttributeValue::Integer`]): a
+/// number while a double holds it exactly, a decimal string beyond. Reads
+/// a number, a string, or a double already rounded by an older writer
+/// (saturating, so `u64::MAX` written as `18446744073709552000` reads back).
+mod safe_u64 {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    const EXACT: u64 = 1 << 53;
+
+    pub fn serialize<S: Serializer>(v: &u64, s: S) -> Result<S::Ok, S::Error> {
+        if *v <= EXACT {
+            s.serialize_u64(*v)
+        } else {
+            s.serialize_str(&v.to_string())
+        }
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Wire {
+        Int(u64),
+        Text(String),
+        Float(f64),
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+        match Wire::deserialize(d)? {
+            Wire::Int(v) => Ok(v),
+            Wire::Text(t) => t.parse().map_err(D::Error::custom),
+            Wire::Float(f) if f.is_finite() && f >= 0.0 && f.fract() == 0.0 => Ok(f as u64),
+            Wire::Float(f) => Err(D::Error::custom(format!("{f} is not a u64"))),
+        }
+    }
+}
+
+#[cfg(test)]
+mod safe_u64_tests {
+    use super::AttributeValue;
+
+    #[test]
+    fn large_integers_survive_canonical_json() {
+        for v in [0, 1, 32767, (1 << 53) - 1, 1 << 53, (1 << 53) + 1, u64::MAX] {
+            let a = AttributeValue::Integer(v);
+            let text = crate::jcs::to_canonical(&a).unwrap();
+            let back: AttributeValue = serde_json::from_str(&text).unwrap();
+            assert_eq!(back, a, "{text}");
+        }
+        // A double an older writer rounded u64::MAX to still reads.
+        let old: AttributeValue =
+            serde_json::from_str(r#"{"type":"integer","value":18446744073709552000}"#).unwrap();
+        assert_eq!(old, AttributeValue::Integer(u64::MAX));
+        let small: AttributeValue = serde_json::from_str(r#"{"type":"integer","value":15}"#).unwrap();
+        assert_eq!(small, AttributeValue::Integer(15));
     }
 }

@@ -720,6 +720,7 @@ mod tests {
             document_file: "document.h2forge".into(),
             file: "materialised.map".into(),
             sha256: Sha256([3; 32]),
+            game: None,
         });
         manifest.validate().unwrap();
         assert_eq!(

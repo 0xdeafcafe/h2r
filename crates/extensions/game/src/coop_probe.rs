@@ -135,7 +135,9 @@ pub mod layout {
     pub const PEERS: u32 = 0x54;
     pub const PLAYERS: u32 = 0x1118;
     pub const PARAMS_VERSION: u32 = 0x4978;
-    /// 1 for the session kind the lobby setters accept (`0x63f00`).
+    /// The squad's stage (set only by `0x5a220`): 1 in a pregame lobby,
+    /// the only stage the lobby setters accept (`0x63f00`). Not the
+    /// network class (`crate::variant_ext::SESSION_NETWORK_CLASS`).
     pub const CLASS: u32 = 0x4980;
     pub const PRIVACY: u32 = 0x498c;
     pub const MAX_PEERS: u32 = 0x4990;
@@ -455,7 +457,11 @@ pub fn setup_calls(want: &Want) -> [SetupCall; 2] {
 
 // ---- the simulation (docs/live/live-coop.md 1.1, 1.3) ----
 
-const SIM_MODE: u32 = 0x8;
+/// The simulation world's mode word (`SIM_GLOBALS + SIM_MODE`): 0 none,
+/// 1 local, 2 the synchronous server, 3 a synchronous client
+/// (`mode_name`). The Forge co-op link reads it to say which end of the
+/// link this machine is.
+pub const SIM_MODE: u32 = 0x8;
 const SIM_UPDATE: u32 = 0x28;
 const SIM_DESYNC: u32 = 0x2c;
 
