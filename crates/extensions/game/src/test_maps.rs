@@ -312,6 +312,7 @@ fn request(name: &str, listed: &Listed) -> Request {
         difficulty: level_boot::Difficulty::default(),
         kind: Kind::Multiplayer,
         variant: None,
+        options: None,
     }
 }
 

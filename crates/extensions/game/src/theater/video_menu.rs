@@ -63,6 +63,16 @@ impl Session {
         store: &Arc<Store>,
     ) -> Result<ReadTarget> {
         let mut state = self.lock();
+        if let Some(play) = &state.play {
+            // A film played from its game start has no tape of the menu:
+            // the simulation settings it was recorded with are applied to
+            // this run, and the guest draws at the viewer's size.
+            let values = play.start().settings.values.clone();
+            drop(state);
+            let _ = self.video_menu.set(store.clone());
+            apply_settings(store, &values);
+            return Ok(native);
+        }
         if state.header.version < 2 || state.header.meta.source != film::Source::Local {
             return Ok(native);
         }
@@ -81,6 +91,26 @@ impl Session {
         );
         let session = self.clone();
         Ok(Arc::new(move || observe(session.as_ref(), &native)))
+    }
+}
+
+/// The film's simulation-scope settings, forced for this run: the run
+/// decides them (`Store::force`) and the player's file is not written.
+fn apply_settings(store: &Store, values: &std::collections::BTreeMap<String, i64>) {
+    for def in store.defs() {
+        if def.scope != settings::Scope::Sim {
+            continue;
+        }
+        let Some(&bits) = values.get(def.key) else {
+            continue;
+        };
+        let value = match store.get(def.key) {
+            Some(settings::Value::Bool(_)) => settings::Value::Bool(bits != 0),
+            _ => settings::Value::Int(bits),
+        };
+        if let Err(error) = store.force(def.key, value, "the film's settings") {
+            eprintln!("theater: could not set {} to the film's value: {error}", def.key);
+        }
     }
 }
 

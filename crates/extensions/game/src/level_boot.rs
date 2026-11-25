@@ -190,6 +190,9 @@ pub struct Request {
     pub difficulty: Difficulty,
     pub kind: Kind,
     pub variant: Option<BootVariant>,
+    /// A recorded game's whole options block ([`Request::recorded`]),
+    /// queued as it is in place of the block built from the fields above.
+    pub options: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -211,6 +214,45 @@ impl Request {
         }
         self.variant = Some(BootVariant { record, script: bundle.ir()? });
         Ok(())
+    }
+
+    /// The request for a recorded game: its options block as the game held
+    /// it at activation (`film::start::GameStart::options`). The block is
+    /// queued whole; the fields are read from it for the log line and for
+    /// [`is_wanted`]. A block of another size, or a mode that is neither a
+    /// campaign nor a multiplayer game, is refused.
+    pub fn recorded(options: &[u8]) -> Result<Self> {
+        if options.len() != OPTIONS_SIZE as usize {
+            bail!("the recorded game options are {} bytes, not {OPTIONS_SIZE}", options.len());
+        }
+        let word = |at: u32| u32::from_le_bytes(options[at as usize..at as usize + 4].try_into().unwrap());
+        let kind = match word(OPT_MODE) {
+            MODE_CAMPAIGN => Kind::Campaign,
+            MODE_MULTIPLAYER => Kind::Multiplayer,
+            mode => bail!("the recorded game has options mode {mode}, not a campaign or multiplayer game"),
+        };
+        let field = &options[OPT_PATH as usize..(OPT_PATH + OPT_PATH_LEN) as usize];
+        let end = field.iter().position(|c| *c == 0).unwrap_or(field.len());
+        let scenario = String::from_utf8_lossy(&field[..end]).into_owned();
+        if scenario.is_empty() || end == field.len() {
+            bail!("the recorded game options name no scenario");
+        }
+        let difficulty = match u16::from_le_bytes([options[OPT_DIFFICULTY as usize], options[OPT_DIFFICULTY as usize + 1]]) {
+            0 => Difficulty::Easy,
+            2 => Difficulty::Heroic,
+            3 => Difficulty::Legendary,
+            _ => Difficulty::Normal,
+        };
+        Ok(Self {
+            name: short(&scenario).to_owned(),
+            scenario,
+            campaign: word(OPT_CAMPAIGN),
+            map: word(OPT_MAP),
+            difficulty,
+            kind,
+            variant: None,
+            options: Some(options.to_vec()),
+        })
     }
 
     /// What the `requesting` line says after the name.
@@ -446,6 +488,7 @@ pub fn resolve_in(disc: &Path, data_root: Option<&Path>, name: &str, difficulty:
         difficulty,
         kind: level.kind,
         variant: None,
+        options: None,
     })
 }
 
@@ -468,6 +511,7 @@ pub fn campaign_request(built: &[cl::Built], name: &str, difficulty: Difficulty)
                 difficulty,
                 kind: Kind::Campaign,
                 variant: None,
+                options: None,
             })
     })
 }
@@ -552,6 +596,9 @@ pub fn loaded_at() -> Option<u64> {
 /// session start (`0x6ec80`) fills a local game, before the variant is
 /// built into it. A path longer than the field is refused.
 pub fn fill_options<M: Gm>(m: &mut M, buf: u32, req: &Request) -> bool {
+    if let Some(options) = &req.options {
+        return m.wr(buf, &local_options(options));
+    }
     let path = req.scenario.as_bytes();
     if path.len() >= OPT_PATH_LEN as usize || path.contains(&0) {
         return false;
@@ -577,6 +624,21 @@ pub fn fill_options<M: Gm>(m: &mut M, buf: u32, req: &Request) -> bool {
         }
 }
 
+/// A recorded options block as it is queued: the session kind byte
+/// (`OPT_SESSION`) says a local game wherever the game was played, so the
+/// game loads as the menu's own start loads it, with no session or network
+/// to join. A campaign's byte is 0 (`OPTIONS_NEW`'s) and stays 0. Every
+/// other byte is the recorded one.
+pub fn local_options(options: &[u8]) -> Vec<u8> {
+    let mut out = options.to_vec();
+    if let Some(kind) = out.get_mut(OPT_SESSION as usize)
+        && *kind != 0
+    {
+        *kind = 1;
+    }
+    out
+}
+
 /// One step of building the options, in order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
@@ -592,6 +654,17 @@ pub enum Step {
     Check,
     /// `OPTIONS_QUEUE`, the block in EAX.
     Queue,
+}
+
+/// The steps for `req`: a recorded block is written and queued, with no
+/// defaults built under it; any other request builds its options
+/// ([`steps`]).
+pub fn steps_for(req: &Request) -> Vec<Step> {
+    if req.options.is_some() {
+        vec![Step::Fill, Step::Queue]
+    } else {
+        steps(req.kind)
+    }
 }
 
 /// The steps for `kind`.
@@ -668,7 +741,7 @@ pub fn game_steps(req: &Request) -> Option<Vec<GameStep>> {
     };
     let opts = Arg::Options(0);
     let mut out = Vec::new();
-    for step in steps(req.kind) {
+    for step in steps_for(req) {
         let s = match step {
             Step::New => call(OPTIONS_NEW, vec![], None, Some(opts), None),
             Step::Fill => {
@@ -848,7 +921,7 @@ fn request_level(cpu: &mut CpuAbi, ctx: &mut ExecCtx, req: Arc<Request>) -> Resu
         req.map as i32
     );
     let entry = Entry { ret_pc, esp: cpu.esp, esi: cpu.esi };
-    let todo = steps(req.kind).into();
+    let todo = steps_for(&req).into();
     run_from(cpu, ctx, req, todo, entry)
 }
 
@@ -1010,6 +1083,7 @@ mod tests {
             difficulty,
             kind: Kind::Campaign,
             variant: None,
+            options: None,
         }
     }
 
@@ -1022,6 +1096,7 @@ mod tests {
             difficulty: Difficulty::Normal,
             kind: Kind::Multiplayer,
             variant: None,
+            options: None,
         }
     }
 
@@ -1039,6 +1114,84 @@ mod tests {
         assert!(m.rd(at, &mut p));
         p.truncate(p.iter().position(|c| *c == 0).unwrap());
         String::from_utf8(p).unwrap()
+    }
+
+    /// A recorded multiplayer game's options: every byte set, as an online
+    /// game that was played on a public session left them.
+    fn recorded_block() -> Vec<u8> {
+        let mut block = vec![0x5a; OPTIONS_SIZE as usize];
+        let put = |block: &mut Vec<u8>, at: u32, bytes: &[u8]| {
+            block[at as usize..at as usize + bytes.len()].copy_from_slice(bytes);
+        };
+        put(&mut block, OPT_MODE, &MODE_MULTIPLAYER.to_le_bytes());
+        put(&mut block, OPT_SESSION, &[2]);
+        put(&mut block, OPT_CAMPAIGN, &u32::MAX.to_le_bytes());
+        put(&mut block, OPT_MAP, &80u32.to_le_bytes());
+        let mut path = vec![0u8; OPT_PATH_LEN as usize];
+        let name = br"scenarios\multi\ascension\ascension";
+        path[..name.len()].copy_from_slice(name);
+        put(&mut block, OPT_PATH, &path);
+        put(&mut block, OPT_DIFFICULTY, &2u16.to_le_bytes());
+        block
+    }
+
+    #[test]
+    fn the_recorded_options_are_queued_byte_for_byte_with_the_mode_set_to_local() {
+        let block = recorded_block();
+        let req = Request::recorded(&block).unwrap();
+        assert_eq!(
+            (req.name.as_str(), req.kind, req.campaign, req.map, req.difficulty),
+            ("ascension", Kind::Multiplayer, u32::MAX, 80, Difficulty::Heroic)
+        );
+        // Nothing is built under the block: it is written, then queued.
+        assert_eq!(steps_for(&req), [Step::Fill, Step::Queue]);
+
+        let mut m = Fake::default();
+        assert!(fill_options(&mut m, BUFFER, &req));
+        let mut got = vec![0; OPTIONS_SIZE as usize];
+        assert!(m.rd(BUFFER, &mut got));
+        let mut want = block.clone();
+        want[OPT_SESSION as usize] = 1;
+        assert_eq!(got, want);
+        assert_eq!(
+            got.iter().zip(&block).filter(|(a, b)| a != b).count(),
+            1,
+            "only the session kind byte differs from the recorded block"
+        );
+
+        // The agent API's steps carry the same bytes and queue them.
+        let steps = game_steps(&req).unwrap();
+        assert!(matches!(&steps[0], GameStep::Write { offset: 0, bytes } if *bytes == want));
+        assert!(matches!(steps.last(), Some(GameStep::Call { target: OPTIONS_QUEUE, .. })));
+        assert_eq!(steps.len(), 2);
+    }
+
+    #[test]
+    fn a_campaign_blocks_session_byte_stays_as_the_recorded_game_had_it() {
+        let mut block = recorded_block();
+        block[OPT_MODE as usize] = MODE_CAMPAIGN as u8;
+        block[OPT_SESSION as usize] = 0;
+        assert_eq!(local_options(&block), block);
+        assert_eq!(Request::recorded(&block).unwrap().kind, Kind::Campaign);
+    }
+
+    #[test]
+    fn a_recorded_block_of_another_size_mode_or_no_scenario_is_refused() {
+        let block = recorded_block();
+        assert!(Request::recorded(&block[..block.len() - 1]).is_err());
+        let mut longer = block.clone();
+        longer.push(0);
+        assert!(Request::recorded(&longer).is_err());
+        let mut menu = block.clone();
+        menu[OPT_MODE as usize] = MODE_MAINMENU as u8;
+        assert!(Request::recorded(&menu).is_err());
+        let mut nameless = block.clone();
+        nameless[OPT_PATH as usize] = 0;
+        assert!(Request::recorded(&nameless).is_err());
+        let mut unterminated = block;
+        unterminated[(OPT_PATH + OPT_PATH_LEN - 1) as usize] = b'x';
+        unterminated[OPT_PATH as usize..(OPT_PATH + OPT_PATH_LEN) as usize].fill(b'x');
+        assert!(Request::recorded(&unterminated).is_err());
     }
 
     #[test]
@@ -1377,6 +1530,7 @@ mod tests {
                 difficulty: Difficulty::Heroic,
                 kind: Kind::Campaign,
                 variant: None,
+                options: None,
             }
         );
         assert_eq!(campaign_request(&built, r"scenarios\solo\d40\d40", Difficulty::Easy).unwrap().map, 0x100a);

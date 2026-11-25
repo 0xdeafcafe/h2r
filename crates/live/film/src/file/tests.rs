@@ -614,3 +614,31 @@ fn a_damaged_game_start_block_is_refused_when_read_not_when_listed() {
         assert!(crate::start::GameStart::decode(&bytes[block.offset as usize..][..len]).is_err());
     }
 }
+
+#[test]
+fn a_tick_row_gives_the_actions_the_digest_and_the_chunks_closing_digest() {
+    let bytes = film_of_two_games();
+    let dir = std::env::temp_dir().join(format!("film-rows-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("two.h2f");
+    fs::write(&path, &bytes).unwrap();
+    let mut actions = FilmActions::open(&path).unwrap();
+    assert_eq!(actions.game_start().unwrap(), Some(started(91)));
+    assert_eq!(actions.length_ticks(), 400);
+    let row = actions.row(91).unwrap();
+    assert_eq!((row.digest, row.closing), (Some((91u64 * 77) as u16), None));
+    let mut first = Vec::new();
+    for seat in 0..SEATS {
+        if let Some(action) = seats(91)[seat] {
+            first.push((seat as u8, action));
+        }
+    }
+    let got: Vec<_> = row.inputs.iter().map(|i| (i.seat, i.action.unwrap())).collect();
+    assert_eq!(got, first);
+    // The 256th tick closes the first chunk with its whole digest, and the
+    // film's last tick closes the second.
+    assert_eq!(actions.row(256).unwrap().closing, Some(256 * 77));
+    assert_eq!(actions.row(400).unwrap().closing, Some(400 * 77));
+    assert!(actions.row(401).is_err() && actions.row(0).is_err());
+    fs::remove_dir_all(&dir).unwrap();
+}

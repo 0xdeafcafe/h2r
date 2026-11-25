@@ -179,6 +179,15 @@ pub fn run_theater(
         ..LiveConfig::default()
     };
     let mut opts = opts.clone();
+    // A film with a game start plays from it: no machine part is restored
+    // and no startup decision is read. The data directory is empty and the
+    // game's first map request is answered with the film's options.
+    if let Some(start) = film::file::game_start_of(&replay.path)? {
+        anyhow::ensure!(host.level.is_none(), "a film plays the level its options name");
+        host.level = Some(level_boot::Request::recorded(&start.options)?);
+        let lan = LiveConfig::default();
+        return run_configured(xbe, image, &opts, host, (&lan, None), None, Some((replay, None, child_started)));
+    }
     let startup = theater::Startup::read(&mut reader)?;
     let legacy_lod = startup.as_ref().and_then(theater::Startup::legacy_lod_multiplier);
     let sim = match startup {
@@ -190,6 +199,27 @@ pub fn run_theater(
         }
     };
     run_configured(xbe, image, &opts, host, (&lan, None), sim.map(|s| (s, None)), Some((replay, legacy_lod, child_started)))
+}
+
+/// A film played from its game start has the guest's storage writes go to a
+/// private scratch (`vfs::Vfs::guard_writes`); the guard ends when the run
+/// does, whatever way it ends.
+struct WriteGuard(Arc<Mutex<vfs::Vfs>>);
+
+impl WriteGuard {
+    fn start(vfs: Arc<Mutex<vfs::Vfs>>, scratch: &Path) -> Result<Self> {
+        vfs.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .guard_writes(scratch)
+            .map_err(|e| anyhow::anyhow!("guarding the film's storage writes: {e:?}"))?;
+        Ok(Self(vfs))
+    }
+}
+
+impl Drop for WriteGuard {
+    fn drop(&mut self) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).end_guard();
+    }
 }
 
 /// Workers can still hold the VFS when the game exits. End this boot's
@@ -237,6 +267,11 @@ fn run_configured(
     // accepted.
     let store_maps = switches.feature("store-maps", false);
     let replaying = replay.is_some();
+    // The game start a film plays from, if it has one (`theater::film_play`).
+    let play_start = match &replay {
+        Some(r) => film::file::game_start_of(&r.path)?,
+        None => None,
+    };
     let render_every = replay.as_ref().map_or(0, |r| r.render_every);
     if host_audit::module_from_env().is_some() {
         anyhow::ensure!(host_light, "H2_HOST_MODULE requires the light host profile");
@@ -352,7 +387,7 @@ fn run_configured(
         .transpose()?;
     let _live = if let Some(r) = &replay {
         let header = film::Reader::open(&r.path)?.header;
-        if header.xnet_addr.is_empty() {
+        if header.xnet_addr.is_empty() || play_start.is_some() {
             None
         } else {
             let network = live_hle::NetworkConfig::new(header.xnet_addr.parse()?);
@@ -704,6 +739,13 @@ fn run_configured(
     if let (Some(ready), Some(vfs)) = (host.on_vfs.take(), k.vfs()) {
         ready(&vfs);
     }
+    // The film writes nothing of the player's: its saves and profile are
+    // read and written in a scratch that goes with the run.
+    let _write_guard = match (&play_start, k.vfs()) {
+        (Some(_), Some(vfs)) => Some(WriteGuard::start(vfs, &opts.data_root.join("film-scratch"))?),
+        (Some(_), None) => bail!("a film played from its game start needs the VFS"),
+        (None, _) => None,
+    };
     // Live downloads publish their offers before the join is handed to the
     // game. The next main-menu tick refreshes the in-memory map list.
     if let (Some(vfs), Some(gate)) = (k.vfs(), &map_gate) {

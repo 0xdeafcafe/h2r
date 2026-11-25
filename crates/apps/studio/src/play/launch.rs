@@ -475,6 +475,7 @@ mod tests {
             difficulty: Difficulty::Normal,
             kind: Kind::Multiplayer,
             variant: None,
+            options: None,
         };
         let text = variants::portable::export(&variant);
         req.set_variant(&text).unwrap();

@@ -1349,6 +1349,7 @@ fn kit_request(name: &str) -> Option<level_boot::Request> {
         difficulty: level_boot::Difficulty::Normal,
         kind: level_boot::Kind::Multiplayer,
         variant: None,
+        options: None,
     })
 }
 

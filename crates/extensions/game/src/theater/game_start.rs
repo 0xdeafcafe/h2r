@@ -208,4 +208,4 @@ pub(super) fn first_update(
 }
 
 #[cfg(test)]
-mod tests;
+pub(in crate::theater) mod tests;

@@ -4,6 +4,7 @@ mod actions;
 pub mod autorecord;
 mod camera;
 mod capture;
+mod film_play;
 mod game_start;
 mod media;
 pub use capture::{ClipCapture, ClipSink, ClipSpan, Picture};
@@ -53,7 +54,7 @@ pub use verify::VerificationMode;
 use anyhow::{Context, Result, bail, ensure};
 use rig::ReplayCamera;
 pub use agent_proto::theater::CompatibilityState;
-pub use compatibility::{Installation, hook_digest, image_match};
+pub use compatibility::{Installation, NO_GAME_START, hook_digest, image_match};
 pub use controls::{library_methods, playback_images};
 use film::{
     FilmMeta, Header, Reader, Source, Writer,
@@ -199,6 +200,10 @@ struct State {
     verify: Option<verify::Verification>,
     mode: Mode,
     engine: Option<replay::EngineReplay>,
+    /// Present when the film plays from its game start ([`film_play`]):
+    /// there is no engine track, call tape or keyframe, and the replay's
+    /// tape is empty.
+    play: Option<film_play::Play>,
     header: Header,
     tick: u64,
     calls: u64,
@@ -274,6 +279,9 @@ pub struct Facts {
 pub struct Session {
     version: u32,
     replaying: bool,
+    /// The film plays from its game start: no HLE call is taped, so the
+    /// call taps (`Tap::replaying`) answer from the host.
+    from_start: bool,
     state: Mutex<State>,
     warm: Mutex<Option<warm::Warm<Boundary>>>,
     video_menu: std::sync::OnceLock<Arc<settings::Store>>,
@@ -334,10 +342,18 @@ impl Session {
         let switches = hooks::Switches::from_env().map_err(anyhow::Error::msg)?;
         let admission = crate::replication_admission::FEATURE;
         let mut image = film::image::ImageMatch::Native;
+        let play = match &replay {
+            Some(r) => film_play::Play::open(&r.path)?,
+            None => None,
+        };
         let (mut mode, header, speed, seeking, paused, capture_points) = if let Some(r) = replay {
             ensure!(record.is_none(), "cannot record and replay the same boot");
             ensure!((0.25..=4.).contains(&r.speed), "speed must be 0.25 to 4");
-            let tape = Playback::load(Reader::open(&r.path)?)?;
+            let reader = Reader::open(&r.path)?;
+            let tape = match &play {
+                Some(play) => Playback::empty(reader, play.length()),
+                None => Playback::load(reader)?,
+            };
             let capture_points = tape.capture_points();
             let mut h = tape.reader.header.clone();
             let recorded = hooks::Switches::parse(&h.features).map_err(anyhow::Error::msg)?;
@@ -348,14 +364,26 @@ impl Session {
             };
             image = image_match(h.version, &h.meta.image_stamp, &h.runtime_stamp,
                 h.guest_image.as_ref(), &stamp, &h.xbe_sha256)?;
-            ensure!(
-                h.xbe_sha256 == film::xbe_digest(xbe)
-                    && h.title_id == title_id
-                    && h.features == switches.spec()
-                    && h.epoch_100ns == epoch
-                    && h.transfers_per_slice == opts.transfers_per_slice,
-                "film boot facts differ"
-            );
+            if let Some(play) = &play {
+                // Nothing of the machine is replayed: the clock's epoch and
+                // the scheduler's transfers are not the film's to equal.
+                play.check_stamp(&film::xbe_digest(xbe))?;
+                ensure!(
+                    h.xbe_sha256 == film::xbe_digest(xbe)
+                        && h.title_id == title_id
+                        && h.features == switches.spec(),
+                    "film boot facts differ"
+                );
+            } else {
+                ensure!(
+                    h.xbe_sha256 == film::xbe_digest(xbe)
+                        && h.title_id == title_id
+                        && h.features == switches.spec()
+                        && h.epoch_100ns == epoch
+                        && h.transfers_per_slice == opts.transfers_per_slice,
+                    "film boot facts differ"
+                );
+            }
             if let Some(required) = h.render_hooks {
                 ensure!(
                     render_hooks.supports(required),
@@ -374,7 +402,12 @@ impl Session {
             h.meta.length_ticks = tape.length;
             let (speed, target, paused) = (
                 r.speed,
-                (r.seek_tick > 0).then_some(r.seek_tick),
+                // A film played from its game start has no tick before its
+                // game's first update to stop at.
+                (r.seek_tick > 0).then(|| match &play {
+                    Some(play) => r.seek_tick.max(play.start().game.first_update),
+                    None => r.seek_tick,
+                }),
                 r.paused_at_target,
             );
             (Mode::Replay(tape, r), h, speed, target, paused, capture_points)
@@ -505,7 +538,9 @@ impl Session {
             return Ok(None);
         };
         let engine = match &mode {
-            Mode::Replay(_, r) if header.version >= 2 => Some(replay::EngineReplay::open(r, image)?),
+            Mode::Replay(_, r) if header.version >= 2 && play.is_none() => {
+                Some(replay::EngineReplay::open(r, image)?)
+            }
             _ => None,
         };
         let seek = match &mode {
@@ -519,7 +554,13 @@ impl Session {
             }),
             _ => None,
         };
-        let bot_tape = bot_tape::BotTape::new(&mode, header.version);
+        // A film played from its game start restores no roster: its players
+        // are the options' and its actions are the film's.
+        let bot_tape = if play.is_some() {
+            bot_tape::BotTape::default()
+        } else {
+            bot_tape::BotTape::new(&mode, header.version)
+        };
         let mut presentation = match &mode {
             Mode::Replay(_, opts) => opts.presentation.clone(),
             Mode::Record(_) => Presentation::default(),
@@ -533,9 +574,14 @@ impl Session {
             }
             opts.camera.restore(&presentation);
         }
-        let warm = warm_transport::open(&mut mode, &opts.data_root, &presentation, header.version)?;
+        let warm = if play.is_some() {
+            None
+        } else {
+            warm_transport::open(&mut mode, &opts.data_root, &presentation, header.version)?
+        };
         let ring_status = RingStatus::from_warm(warm.as_ref());
-        Ok(Some(Arc::new(Self {
+        let from_start = play.is_some();
+        let session = Arc::new(Self {
             warm: Mutex::new(warm),
             version: header.version,
             video_menu: Default::default(),
@@ -543,6 +589,7 @@ impl Session {
             media: Default::default(),
             scaled_screenshot: Default::default(),
             replaying: matches!(&mode, Mode::Replay(_, _)),
+            from_start,
             require_upload: matches!(&mode, Mode::Record(rec) if rec.upload.is_some())
                 && std::env::var("H2_HOST_ARCHIVE").as_deref() == Ok("film"),
             bots: Mutex::new(bot_tape),
@@ -552,6 +599,7 @@ impl Session {
                 verify: verify::Verification::open(&mode, header.meta.length_ticks)?,
                 mode,
                 engine,
+                play,
                 header,
                 speed,
                 rate: Default::default(),
@@ -574,7 +622,13 @@ impl Session {
                 outcome: Outcome::default(),
             }),
             upload: Mutex::default(),
-        })))
+        });
+        if from_start {
+            // The player answers the guest's tick count itself: no wall
+            // clock paces a film that starts from its game start.
+            session.pace_in_guest();
+        }
+        Ok(Some(session))
     }
 
     pub fn attach_capture(&self, capture: Arc<ClipCapture>) -> Result<()> {
@@ -695,6 +749,11 @@ impl Session {
         if s.complete || s.failure.is_some() {
             return;
         }
+        // The ticks before the game's first update are the game's own
+        // (menus, loading), not the film's.
+        if s.play.as_ref().is_some_and(|play| !play.begun()) {
+            return;
+        }
         s.tick += 1;
         let tick = s.tick;
         if let Some(v) = &mut s.verify { v.tick(tick); }
@@ -709,6 +768,8 @@ impl Session {
                 if rec.meta.descriptor().match_start_tick == Some(tick) {
                     rec.game_started_ms = Some(autorecord::now_ms());
                 }
+            } else if s.play.is_some() {
+                film_play::tick_done(&mut s, hash);
             } else {
                 Session::check_replay_tick(&mut s, guest, hash);
             }
@@ -719,7 +780,9 @@ impl Session {
                 s.measure_match_start(tick);
             }
         }
-        if tick.is_multiple_of(30) {
+        // A film played from its game start has no hash tape: its digests
+        // are in its ticks.
+        if tick.is_multiple_of(30) && s.play.is_none() {
             Self::checkpoint_interval(&mut s, guest);
         }
         if s.failure.is_some() {
@@ -844,8 +907,11 @@ impl Session {
                     if agent.is_none_or(|a| !a.agent.connection_read_pending()) {
                         return Ok(SliceAction::Stop);
                     }
-                } else if !s.holding() || redraw_running {
-                    let pace = (!r.unpaced && s.seeking.is_none() && s.verify.is_none() && self.capture.get().is_none())
+                } else if !s.holding() || redraw_running || s.pacing.is_some() {
+                    // A film that the player paces in the guest takes no
+                    // wall-clock pacer (`theater/pacing.rs`).
+                    let pace = (!r.unpaced && s.seeking.is_none() && s.verify.is_none() && self.capture.get().is_none()
+                        && s.pacing.is_none())
                         .then(|| (kernel::clock::Clock::FREQUENCY as f64 * s.speed) as u64);
                     if m.pacer.as_ref().map(|p| p.ticks_per_second) != pace {
                         m.pacer = pace.map(|rate| {
@@ -1227,7 +1293,7 @@ impl Tap for Session {
         self.version >= 2
     }
     fn replaying(&self) -> bool {
-        self.replaying
+        self.replaying && !self.from_start
     }
     fn next(&self, op: &str, args: &[u32], thread: u32) -> Option<Call> {
         let mut s = self.lock();
