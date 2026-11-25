@@ -11,13 +11,14 @@
 //! the branches a seat takes differ per case.
 //!
 //! The seats covered here are the straight-line ones: the look curve, the
-//! unit control packet, the control update's unbound path (the phantom
-//! seats' path), the action and neutral control builders, the target
-//! comparator, the aim-assist cone, the HUD seat update and the observer
-//! resource walk. The interactive search family (`1a4900`, `1a5370`,
-//! `1a4c00`) is proven on the disc by the shadow's guest arm
-//! (`scripts/shadow-gate.sh`'s `sim.seats` group), which is the phase's
-//! parity stage. The observer camera's oracle is
+//! unit control packet, the control update (its unbound entry — the
+//! phantom seats' path — and its tail from the target update's return,
+//! with the frame the original built), the action and neutral control
+//! builders, the target comparator, the aim-assist cone, the HUD seat
+//! update and the observer resource walk. The interactive search family
+//! (`1a4900`, `1a5370`, `1a4c00`) is proven on the disc by the shadow's
+//! guest arm (`scripts/shadow-gate.sh`'s `sim.seats` group), which is the
+//! phase's parity stage. The observer camera's oracle is
 //! `sim_physics_differential::observer_camera`.
 //!
 //! Needs the user's XBE (`lifted::image`); skipped without it.
@@ -48,7 +49,8 @@ fn cleanup(target: u32) -> u32 {
     match target {
         0x000c_6ef0 | 0x0010_1090 | 0x0010_11d0 | 0x0010_1160 | 0x0014_ddc0
         | 0x0014_de70 | 0x0018_7b30 | 0x0012_cc10 | 0x0012_dcb0 | 0x0016_e770
-        | 0x0016_e890 | 0x0016_e8f0 | 0x000c_6de0 => 0,
+        | 0x0016_e890 | 0x0016_e8f0 | 0x000c_6de0 | 0x000b_67a0 | 0x001d_08e0
+        | 0x0011_df30 | 0x000e_4050 | 0x0010_0f70 => 0,
         0x0020_03dc | 0x0013_992a | 0x0003_bcb0 | 0x0016_ea60 | 0x0016_e7b0
         | 0x0016_e820 | 0x0016_e950 | 0x000c_b810 => 4,
         0x0013_a720 | 0x0013_aa27 => 8,
@@ -200,6 +202,21 @@ fn compare(
         cpu.gpr[0] = stub.eax;
         if let Some(zoom) = stub.zoom {
             cpu.xmm[0] = u128::from(zoom.to_bits());
+        }
+        // The direction and angle callees answer in memory, at the out
+        // pointers the caller passed: three words for the look, two for
+        // the angles.
+        if matches!(target, 0x001d_08e0 | 0x0011_df30) {
+            let (base, words) = if target == 0x001d_08e0 {
+                (cpu.gpr[6] + 4, 3)
+            } else {
+                (cpu.gpr[0], 2)
+            };
+            for i in 0..words {
+                let v = (i as f32 - 0.5 + boundary as f32 * 0.25) * (1.0 + case as f32 * 0.5);
+                word(&mut mem, base + 4 * i, v.to_bits());
+                native.set_u32(base + 4 * i, v.to_bits()).unwrap();
+            }
         }
         let sp = cpu.gpr[4];
         let next = mem.read_u32(sp).unwrap();
@@ -434,6 +451,109 @@ fn resources_fixture(m: &mut FlatMemory, c: &mut Cpu, case: u32) {
     word(m, STACK + 4, list);
 }
 
+// The control update's tail, from the target update's return: the frame
+// the original built (the base pointer at the seat's control record, the
+// input record in `edi`, the player record in `ebx`), the rates, the
+// assist strengths, the button bytes and the two histories.
+const CONTROL: u32 = RECORDS + 0x3000;
+const INPUT: u32 = RECORDS + 0x2000;
+const PLAYER: u32 = RECORDS + 0x4000;
+const UNIT: u32 = RECORDS + 0x400;
+
+fn tail_fixture(m: &mut FlatMemory, c: &mut Cpu, case: u32) {
+    // The frame: 0xe0 locals below the return, four saved registers.
+    let sp = STACK - 0xf0;
+    word(m, STACK, EXIT);
+    for i in 0..5u32 {
+        word(m, STACK + 4 + 4 * i, if i == 4 { INPUT } else { 1 });
+    }
+    // The third argument points at the seat's device record.
+    word(m, STACK + 4 + 4 * 3, RECORDS + 0x7000);
+    word(m, RECORDS + 0x7000, RECORDS + 0x7400);
+    m.bytes[(RECORDS + 0x7406) as usize] = 0x7f;
+    m.bytes[(RECORDS + 0x7407) as usize] = 0x10;
+    word(m, SETTINGS, PHASE);
+    word(m, PHASE + 0xf4, RECORDS + 0x2800);
+    word(m, PHASE + 0x134, RECORDS + 0x2880);
+    float(m, RECORDS + 0x2880 + 0x7c, 1.5);
+    word(m, 0x004e_0300, HEADER);
+    word(m, HEADER + 0x44, DATA);
+    // An odd object type, so the tracked-object walk runs.
+    m.bytes[(DATA + 2 * 12 + 3) as usize] = 5;
+    word(m, DATA + 2 * 12 + 8, UNIT);
+    word(m, UNIT + 0x3e4, [u32::MAX, 0x8200_0002, 0x8200_0002][case as usize % 3]);
+    word(m, UNIT + 0xb4, [u32::MAX, 2, 2][case as usize % 3]);
+    word(m, 0x0051_e9b8, RECORDS + 0x5000);
+    word(m, RECORDS + 0x5000 + 0x44, RECORDS + 0x6000);
+    // The rates, strengths and histories the tail reads.
+    float(m, sp + 0x18, 0.3);
+    float(m, sp + 0x1c, -0.2);
+    float(m, sp + 0x40, [0.0f32, 0.8, 0.1][case as usize % 3]);
+    word(m, sp + 0x44, RECORDS + 0x2840);
+    float(m, RECORDS + 0x2840, 0.5);
+    float(m, RECORDS + 0x2840 + 4, 0.25);
+    for i in 0..3u32 {
+        float(m, sp + 0x38 + 4 * i, (i as f32 - 1.0) * 0.4);
+    }
+    float(m, sp + 0xb4, 0.7);
+    float(m, sp + 0xf8, 1.0 / 30.0);
+    float(m, sp + 0xfc, 2.0);
+    // The input record under construction.
+    float(m, INPUT, 0.05);
+    float(m, INPUT + 4, -0.03);
+    word(m, INPUT + 0x18, 0x1004_0000);
+    word(m, INPUT + 0x1c, 0x0100_0000);
+    m.bytes[(INPUT + 0x20) as usize] = 3;
+    m.bytes[(INPUT + 0x21) as usize] = 1;
+    // The seat's control record.
+    word(m, CONTROL, [u32::MAX, 0x8200_0002, 0x8200_0002][case as usize % 3]);
+    m.bytes[(CONTROL + 0x2e) as usize] = 1;
+    m.bytes[(CONTROL + 0x2e + 1) as usize] = 0;
+    word(m, CONTROL + 0x34, 0);
+    float(m, CONTROL + 0x38, 0.2);
+    float(m, CONTROL + 0x3c, -0.4);
+    float(m, CONTROL + 0x40, 0.6);
+    m.bytes[(CONTROL + 0x68) as usize] = 0;
+    float(m, CONTROL + 0x78, 0.1);
+    float(m, CONTROL + 0x7c, -0.05);
+    m.bytes[(CONTROL + 0x88) as usize] = (case % 2) as u8;
+    m.bytes[(CONTROL + 0x8e) as usize] = 0;
+    m.bytes[(CONTROL + 0x8f) as usize] = 1;
+    m.bytes[(CONTROL + 0x90) as usize] = 0;
+    m.bytes[(CONTROL + 0x93) as usize] = 0;
+    word(m, CONTROL + 0xc, 0x0101);
+    word(m, CONTROL + 0xe, 0x0101);
+    // The frame's button bytes, counts and the script input.
+    for i in 0..16u32 {
+        m.bytes[(sp + 0x6c + i) as usize] = ((i + case) % 3) as u8;
+        word(m, sp + 0x7c + 2 * i, 0x0200 + i);
+    }
+    for i in 0..13u32 {
+        m.bytes[(sp + 0x20 + i) as usize] = ((i + case) % 2) as u8;
+    }
+    m.bytes[(sp + 0x2a) as usize] = 1;
+    m.bytes[(sp + 0x2b) as usize] = [0u8, 1, 1][case as usize % 3];
+    word(m, sp + 0x48, 1);
+    word(m, 0x004e_61cc, 0);
+    word(m, sp + 0x50, 0x0100);
+    word(m, sp + 0x52, 0x0200);
+    float(m, sp + 0x9c, 0.3);
+    float(m, sp + 0xa0, 0.45);
+    float(m, sp + 0xac, 0.125);
+    float(m, sp + 0xb0, 0.5);
+    word(m, sp + 0xb8, 0x0102);
+    m.bytes[(sp + 0xba) as usize] = (case % 2) as u8;
+    word(m, 0x004e_6948, PHASE);
+    m.bytes[(PHASE + 8) as usize] = 4;
+    word(m, 0x0051_0c50, RECORDS + 0x6800);
+    m.bytes[(RECORDS + 0x6805) as usize] = 1;
+    c.gpr[4] = sp;
+    c.gpr[5] = CONTROL;
+    c.gpr[7] = INPUT;
+    c.gpr[3] = PLAYER;
+    c.eip = 0x0018_61a6;
+}
+
 macro_rules! differential {
     ($name:ident, $seat:literal, $cases:literal, $prepare:expr) => {
         #[test]
@@ -446,6 +566,7 @@ macro_rules! differential {
 differential!(player_look_curve, "sim.seats.player_look_curve", 4, curve_fixture);
 differential!(unit_apply_control, "sim.seats.unit_apply_control", 3, apply_fixture);
 differential!(player_control_update_unbound, "sim.seats.player_control_update", 3, control_fixture);
+differential!(player_control_update_tail, "sim.seats.player_control_update", 3, tail_fixture);
 differential!(player_action_control, "sim.seats.player_action_control", 3, action_fixture);
 differential!(player_neutral_control, "sim.seats.player_neutral_control", 2, neutral_fixture);
 differential!(aim_target_compare, "sim.seats.aim_target_compare", 3, compare_fixture);
@@ -454,11 +575,15 @@ differential!(hud_seat_update, "sim.seats.hud_seat_update", 3, hud_fixture);
 differential!(predict_resources, "sim.seats.predict_resources", 3, resources_fixture);
 
 /// Every covered seat reaches at least one child call, so the resume
-/// machinery is exercised, and the control update reaches its submitter.
+/// machinery is exercised, the control update reaches its submitter, and
+/// the tail drives the whole selection and flag walk.
 #[test]
 fn the_covered_seats_reach_their_children() {
     assert!(matches_guest("sim.seats.player_control_update", 1, control_fixture)
         .contains(&0x0018_6a94));
+    let tail = matches_guest("sim.seats.player_control_update", 3, tail_fixture);
+    assert!(tail.contains(&0x0018_6a94), "the tail never submits");
+    assert!(tail.contains(&0x0018_61a6), "the tail never resumes at the target update");
     assert!(!matches_guest("sim.seats.hud_seat_update", 1, hud_fixture).is_empty());
     assert!(!matches_guest("sim.seats.predict_resources", 1, resources_fixture).is_empty());
 }
