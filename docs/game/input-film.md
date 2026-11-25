@@ -1,7 +1,7 @@
 # The input film
 
-Status: Design. The per-update action capture, the action-column codec, the film file's tick chunks, start points and the side stream's frames are built; the update's tail in the chunk and the tunnel frame that carries the side stream are not ([theater-design.md](theater-design.md#slices)).
-Code: `crates/extensions/game/src/theater/actions.rs` (`capture`, `apply`), `crates/live/film/src/columns.rs` (`ChunkEncoder`, `ChunkDecoder`, `FieldStats`), `crates/live/film/src/file.rs` (`FilmWriter`, `FilmReader`), `crates/live/film/src/side.rs`. Tests: `crates/extensions/game/src/theater/actions.rs` (`gathered_actions_follow_sparse_player_slots_and_replay_ignores_pad_only_rows`), `crates/live/film/src/file/tests.rs`.
+Status: Design. The per-update action capture, the action-column codec, the film file's tick chunks with the update's tail, start points and the side stream's frames are built; the tunnel frame that carries the side stream is not ([theater-design.md](theater-design.md#slices)).
+Code: `crates/extensions/game/src/theater/actions.rs` (`capture`, `apply`, `capture_body`, `apply_body`), `crates/live/film/src/columns.rs` (`ChunkEncoder`, `ChunkDecoder`, `FieldStats`), `crates/live/film/src/file.rs` (`FilmWriter`, `FilmReader`), `crates/live/film/src/side.rs`. Tests: `crates/extensions/game/src/theater/actions.rs` (`gathered_actions_follow_sparse_player_slots_and_replay_ignores_pad_only_rows`, `capture_and_apply_leave_the_head_and_stamp_untouched`), `crates/live/film/src/columns/tests.rs` (the tails), `crates/live/film/src/file/tests.rs`.
 Switch: none.
 
 A film is how to make a game happen again: the game options it started
@@ -224,11 +224,17 @@ and presence bit say.
   decoder's inner loops are straight runs over one byte stream each, and
   the coder sees a seat's idle fields as one run of zeros.
 - A tail is the update's bytes from the end of the action block to the
-  stamp: the player entries, the player-set change, the event list and
-  the save flag. A tick's runs are the bytes that differ from the tick
-  before; the chunk's first tick differs from zeros, so a chunk's tails
-  decode without the chunk before. A tick whose tail did not change is
-  one zero byte.
+  stamp (`0x5cc` through `0x403f`, 14,964 bytes, `BODY_BYTES`): the player
+  entries, the player-set change, the event list and the save flag. A
+  tick's runs are the bytes that differ from the tick before; the
+  chunk's first tick differs from zeros, so a chunk's tails decode without
+  the chunk before. A tick whose tail did not change, or that was given
+  none, is one zero byte. Two changed bytes with at most three unchanged
+  between them are one run. A chunk's tails are at most 512 KiB
+  (`TAIL_LIMIT`), and the encoder refuses a tail that would pass it. The
+  decoder checks every run lies inside the body and reads a tick's body by
+  laying the runs of the ticks up to it over zeros (`ChunkDecoder::body`),
+  one tick's runs for each tick read in order.
 - A chunk boundary is a byte boundary and a zstd frame boundary. Live
   and a downloader cut a film only between blocks.
 
@@ -276,7 +282,9 @@ below grows with the length of the game. For 16 seats:
 | The chunk's words: 256 ticks × 16 seats × 23 words | 376,832 | rows as `u32`, seat by seat |
 | Presence, flags and digests | 5,376 | |
 | Seat records | 9,722 | 8,192 of payload and the 255 headers |
-| The inflated chunk, with every column present | 459,271 | the most a chunk can be |
+| The tails | 512,000 | at most 512 KiB of runs, and a zero byte for each tick |
+| The running body | 14,964 | what the next tail is a change against |
+| The inflated chunk, with every column present and the tails full | 459,271 plus the tails | the most a chunk can be |
 | Candidate planes and exceptions | about 22,000 | |
 | The frame | 196,608 | a chunk that does not compress to this is refused |
 | The seats' last two rows | 2,944 | 16 × 2 × 23 words |

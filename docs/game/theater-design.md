@@ -1,7 +1,7 @@
 # Theater: the full in-game player
 
-Status: Design. The per-update action capture and apply, the film file and its column codec, the game start block the recorder writes for each game, start points, the camera rig, the film selector and the Live film routes are built; the film player process plays a film from its game start (slices 1b, 3 and 4); playing in the running game and the snapshot ring are not built, and the code still holds the machine film for films that have no game start ("Slices", 7a and 7b list it).
-Code: `crates/extensions/game/src/theater.rs` (`Session`), `crates/extensions/game/src/theater/actions.rs` (the update hook), `crates/extensions/game/src/theater/film_play.rs` (play from the game start), `crates/extensions/game/src/theater/pacing.rs`, `crates/live/film/src/file.rs` (the film file), `crates/extensions/game/src/theater/start_point_state.rs` (arena state). Tests: `crates/extensions/game/src/theater/tests.rs`, `crates/extensions/game/src/theater/film_play/tests.rs`, `crates/live/film/src/file/tests.rs`.
+Status: Design. The per-update action and body capture and apply, the film file and its column and tail codec, the game start block the recorder writes for each game, start points, the camera rig, the film selector and the Live film routes are built; the film player process plays a film from its game start, one film tick for each application of the update (slices 1b, 2, 3 and 4); playing in the running game and the snapshot ring are not built, and the code still holds the machine film for films that have no game start ("Slices", 7a and 7b list it).
+Code: `crates/extensions/game/src/theater.rs` (`Session`), `crates/extensions/game/src/theater/actions.rs` (the update hook), `crates/extensions/game/src/theater/record.rs` (the recorder's tick), `crates/live/film/src/columns.rs` (the chunk codec), `crates/extensions/game/src/theater/film_play.rs` (play from the game start), `crates/extensions/game/src/theater/pacing.rs`, `crates/live/film/src/file.rs` (the film file), `crates/extensions/game/src/theater/start_point_state.rs` (arena state). Tests: `crates/extensions/game/src/theater/tests.rs`, `crates/extensions/game/src/theater/film_play/tests.rs`, `crates/live/film/src/file/tests.rs`.
 Switch: [Theater ring](../runtime/switches.md).
 
 Theater plays a film in the running game: pause, rewind, jump, change
@@ -124,15 +124,30 @@ at its head). The film stores that record, as Halo 3's film does.
 | Player entries, the player-set change, the event list, the save flag | players whose properties change, a join or leave with its identifiers, queued simulation events, "save the game state on this tick" | stored, as the bytes that differ from the update before |
 | Stamp | the tick count and the game's random word | the tick is checked, not stored; the random word is covered by the digest |
 
-- **The recorder** reads the body at entry to `SIM_UPDATE_APPLY`
-  (`actions.rs`, `capture`), once for each application. A game tick that
-  applies two updates, as a synchronous client catching up does, gives
-  two records. The recorder requires each update's tick stamp to follow
-  the one before, and cuts the film at an update that does not.
+- **The recorder** reads the action block and the body (the bytes from
+  the player-state mask at `+0x5cc` to the stamp at `+0x4040`) at entry
+  to `SIM_UPDATE_APPLY` (`actions.rs`, `capture`, `capture_body`), once
+  for each application, and never writes the head or the stamp. A game
+  tick that applies two updates, as a synchronous client catching up
+  does, gives two records, each a film tick (`record.rs`,
+  `Session::record_update`); the game tick's digest and events sit on the
+  last of them. The chunk stores a body as the bytes that differ from the
+  record before it, zeros for a chunk's first
+  ([input-film.md](input-film.md#layout)). The recorder requires each
+  update's tick stamp (`capture_stamp`) to be the tick of the update
+  before, the next, or an earlier one (a revert puts the clock back)
+  (`stamp_follows`), and cuts the game's film at the tick before an
+  update that is further on: that update and every after it in the game
+  are not kept.
 - **The player** runs the film's game as a local game and writes the
-  recorded body over the one the engine built, at the same hook
-  (`actions.rs`, `apply`). The engine's own apply then adds and removes
-  players, applies property changes and events, and runs the tick.
+  recorded action block and body over the ones the engine built, at the
+  same hook (`actions.rs`, `apply`, `apply_body`). The engine's own apply
+  then adds and removes players, applies property changes and events, and
+  runs the tick. Each application takes the next film tick, so a game
+  tick that applies the update twice covers two, and the digest that is
+  checked is the one of the film tick the game tick ends on
+  (`film_play.rs`, `tick_done`); a game tick with no application covers
+  one film tick that must hold no action.
 - **A film is recorded by a machine that simulates the whole game**: a
   local game, either side of a synchronous game, or the host of a
   distributed game. A client of a distributed game is sent state, not
