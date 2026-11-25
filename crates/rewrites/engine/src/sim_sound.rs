@@ -27,11 +27,9 @@ pub static TABLE: LazyLock<Table> = LazyLock::new(|| {
         .require_nearest_x87()
 });
 
-/// Selectors that finish a partially native sound body in the image.
-pub fn generated_sites(entry: u32) -> &'static [u32] {
-    if entry == crate::native_sound_segments::LOOP_REQUEST.base {
-        crate::native_sound_segments::GENERATED_SITES
-    } else {
-        &[]
-    }
+/// Selectors that finish a partially native sound body in the image. The
+/// sound bodies run each of their paths to its end natively, so none hands
+/// control back to the generated image.
+pub fn generated_sites(_entry: u32) -> &'static [u32] {
+    &[]
 }

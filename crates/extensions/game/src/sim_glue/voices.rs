@@ -77,9 +77,10 @@ pub(crate) fn install(b: &mut hooks::Builder, audio: &Arc<dsound::Hle>) {
         let g = o.guest();
         let owner = || {
             let channel = g.u16(o.cpu.esp.wrapping_add(4)).ok()?;
-            let base = points::SOUND_CHANNELS.pointer(&*g).ok()??;
+            let m: &dyn GuestMemory = &*g;
+            let base = points::SOUND_CHANNELS.pointer(m).ok()??;
             let row = SoundChannel::at(base.wrapping_add(u32::from(channel) * SoundChannel::SIZE));
-            Some((row.owner(&*g).ok()?.raw(), channel))
+            Some((row.owner(m).ok()?.raw(), channel))
         };
         match owner() {
             Some((id, channel)) => instance_event(&hle, &*g, "channel", id, channel.into()),
