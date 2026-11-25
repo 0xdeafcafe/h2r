@@ -204,7 +204,9 @@ reaches only the display draws.
   retail selection for pose-dependent sections (`hlmt + 0xc4`). Their
   render setup can clear the live object's dirty bit and evaluate shared
   node matrices at `0x000bd7b2`. Draws outside the display substitution's
-  coverage use their original records.
+  coverage use their original records. A guest camera fitted to the
+  window runs none of that for an object outside the retail lens's
+  gather: its setup takes the "not drawn" exit first.
   [Determinism](high-resolution.md#determinism).
 - **First person and decorators.** First-person setup starts each viewmodel
   at the finest tier and uses its own pose slots. Native first-person draws

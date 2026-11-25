@@ -159,9 +159,16 @@ groups can use the fitted rectangle or the viewport edges. If the game already
 uses the Xbox widescreen HUD layout, its artwork receives only the remaining
 aspect correction. At 16:9 the Pinned layout retains the retail widescreen fit.
 
-Single-copy play fits the horizontal projection terms in the guest's active
-and saved display cameras at `VIEW_PROJECTION_TERMS`
-(`crates/extensions/game/src/render_aspect.rs`). The camera matrix, CPU
+Every session that draws in a window, single-copy or exact, fits the
+horizontal projection terms in the guest's active and saved display
+cameras at `VIEW_PROJECTION_TERMS`
+(`crates/extensions/game/src/render_aspect.rs`) to the window's aspect,
+view by view, so a resize or a fullscreen change takes effect at the
+next view. Lockstep and input tapes do not register the fit, and a game
+of more than one machine (System Link, Live, co-op, or a bot's phantom
+machine; `render_rng::networked`) keeps the retail terms at the hook:
+their peers simulate the same world through retail cameras.
+[Determinism](#determinism) says why the fit leaves the simulation alone. The camera matrix, CPU
 pixel scale and root portal bounds derive from these terms. Every wide view
 starts with the display supplement's lens; the hook swaps in the guest lens
 once it has fitted the view, and a view it does not fit keeps the
@@ -829,7 +836,39 @@ In exact mode the original object gather stays authoritative. Per-visible-object
 setup can reach animation variant selection through
 `0x00133790`, `0x000bd610` and `0x001cb410`. With the animation manager's
 gameplay RNG bit set, the selector writes the shared seed at `0x001dd6e1`.
+The pose evaluation at `0x000bd7b2` computes the object's shared node
+matrices and clears its dirty bit; marker lookup reads those matrices.
 Changing which objects enter that loop can change a later simulation tick.
+A guest camera fitted to the window keeps the simulation's inputs as a
+retail camera leaves them:
+
+- **Random numbers.** Every world frame of a one-machine game renders on
+  a private random stream (`crates/extensions/game/src/render_rng.rs`):
+  `RENDER_FRAME` swaps the shared seed (`[0x004e7408]`) for the render's
+  own and puts the simulation's back when the frame ends. Boot registers
+  it for every session that renders, except lockstep and input tapes, so
+  a recording and its replay take it alike whatever window either had.
+  Theater's camera enters the same stream; a frame is entered once.
+- **Object setup.** The guest's setup of a main-view object outside the
+  retail lens's gather takes the "not drawn" exit before any of it runs
+  (`outside_retail_lens` in
+  `crates/rewrites/render-bridge/src/native_scene_lists/setup.rs`): no
+  section choice, pose evaluation, animation selection, palette or
+  record. The retail set is the Rust visibility at the view record's
+  retail camera (`scene_step::retail_object`), a function of the
+  simulation's state and the view alone. The display supplement draws
+  those objects from the mounted model on a private overlay
+  (`DisplayVisibility::guest_lens`). Objects inside the set keep their
+  retail section choice: the LOD pixel scale `0x004b9ed0` is the
+  projection's `+0xbc` word, and the fit writes only the horizontal
+  terms. `render.scene` counts the objects left undrawn
+  (`scene_guest_lens_objects_skipped`) and the views whose retail set
+  declined (`scene_guest_lens_retail_declined`); such a view's setups
+  run as the widened gather lists them.
+- **Readbacks.** The reference copy draws the guest's camera, so with the
+  fit its pixel counts and write-backs see the widened view: the flare
+  reader's visibility byte (`0x207b0`) and the push-buffer callback's
+  texels (`0x24970`). Both feed only later draws.
 
 What must hold in exact mode, and how each is checked:
 

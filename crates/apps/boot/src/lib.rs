@@ -1065,7 +1065,15 @@ fn run_configured(
                 Arc::new(move || position)
             }
         };
-        render_aspect::install(&mut features, projected_size, single, hud, device.ui_layout.clone())?;
+        render_aspect::install(&mut features, projected_size, !lockstep_on, hud, device.ui_layout.clone())?;
+    }
+    // Every world frame of a one-machine game renders on its own random
+    // stream, so what the view draws (a wider guest camera, Theater's free
+    // camera) never chooses the simulation's random numbers
+    // (docs/graphics/high-resolution.md, "Determinism"). The same on the
+    // recording and its replay, whatever window either had.
+    if opts.d3d && !lockstep_on && !host_light {
+        render_rng::install(&mut features)?;
     }
     // Vblanks on the 60 Hz logical clock (docs/graphics/d3d.md "Vertical blank"),
     // delivered as DPCs; the frame wait above is the clocked one.

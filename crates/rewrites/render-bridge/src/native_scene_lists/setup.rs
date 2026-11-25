@@ -226,6 +226,9 @@ fn projected(m: &dyn GuestMemory, body: u32) -> Result<([f32; 3], f32, f32, f32)
 }
 
 fn setup(m: &dyn GuestMemory, cpu: &CpuAbi, lod: LodDetail) -> Result<Output> {
+    if let Some(out) = outside_retail_lens(m, cpu, |handle| crate::scene_step::retail_object(m, handle))? {
+        return Ok(out);
+    }
     fp_supported(cpu)?;
     if cpu.x87.control != 0x027f || cpu.x87.tag != 0xffff {
         return Err(Refusal::Unsupported);
@@ -315,6 +318,43 @@ fn setup(m: &dyn GuestMemory, cpu: &CpuAbi, lod: LodDetail) -> Result<Output> {
     }
     out.al = Some(u8::from(prepared.first_person));
     Ok(out)
+}
+
+/// A main-view object the widened guest camera gathered outside the retail
+/// lens's set (`scene_step::retail_object`): the "not drawn" exit, before
+/// any of the setup runs. Its row's flag bit 0 is set, AL is 0, and ECX
+/// and EDX hold the flag's address and the column, as the setup's own
+/// zero-opacity exit leaves them. No section choice, pose evaluation
+/// (`0x000bd610`, whose `0x000bd7b2` evaluates the shared node matrices
+/// and clears the object's dirty bit), animation selection, palette,
+/// lighting or record write runs for it, so the simulation finds the
+/// object as a retail camera leaves it (docs/graphics/high-resolution.md,
+/// "Determinism"). `None`: the setup runs.
+fn outside_retail_lens(
+    m: &dyn GuestMemory, cpu: &CpuAbi, retail: impl Fn(u32) -> Option<bool>,
+) -> Result<Option<Output>> {
+    let vis = cpu.esi;
+    if vis != MAIN_VIS || m.u32(at(vis, VIEW_KIND)?)? != 0 {
+        return Ok(None);
+    }
+    let list_addr = ptr(m, at(vis, 0x14)?)?;
+    let list = List::read(m, list_addr)?;
+    let index = u32::from(stack(m, cpu, 4)? as u16);
+    if index as usize >= list.count {
+        return Ok(None);
+    }
+    let handle = m.u32(at(list.column(m, 0xc)?, index * 4)?)?;
+    if retail(handle) != Some(false) {
+        return Ok(None);
+    }
+    let column = list.column(m, 8)?;
+    let mut staged = Staged::new(m);
+    let address = mark_no_draw(&mut staged, column, index)?;
+    let mut out = staged.finish();
+    out.ecx = Some(address);
+    out.edx = Some(column);
+    out.al = Some(0);
+    Ok(Some(out))
 }
 
 fn mark_no_draw(m: &mut Staged<'_>, column: u32, index: u32) -> Result<u32> {
@@ -771,6 +811,30 @@ mod setup_tests {
         for write in out.writes {
             mem.write(write.addr, write.bytes.slice()).unwrap();
         }
+    }
+
+    /// A widened view's object outside the retail lens's set takes the
+    /// "not drawn" exit before anything of its setup runs: only its row's
+    /// flag changes, so its pose, dirty bit and node matrices stay as the
+    /// simulation left them. Inside the set, or with no retail set, the
+    /// setup runs.
+    #[test]
+    fn an_object_outside_the_retail_lens_is_left_undrawn_and_untouched() {
+        let (mut m, cpu) = fixture();
+        let body = m.bytes(ROOT, 0x300).unwrap();
+        let out = outside_retail_lens(&m, &cpu, |handle| Some(handle != ROOT_HANDLE)).unwrap().unwrap();
+        assert_eq!((out.al, out.ecx, out.edx), (Some(0), Some(FLAGS), Some(FLAGS)));
+        assert_eq!(out.writes.len(), 1, "the row's flag, nothing else");
+        publish(&mut m, out);
+        assert_eq!(m.u8(FLAGS).unwrap() & 1, 1);
+        assert_eq!(m.bytes(ROOT, 0x300).unwrap(), body, "the object's pose and flags are the simulation's");
+
+        let (m, cpu) = fixture();
+        assert!(outside_retail_lens(&m, &cpu, |_| Some(true)).unwrap().is_none(), "a retail object");
+        assert!(outside_retail_lens(&m, &cpu, |_| None).unwrap().is_none(), "no widened view");
+        let mut light = cpu;
+        light.esi = LIGHT_VIS;
+        assert!(outside_retail_lens(&m, &light, |_| Some(false)).unwrap().is_none(), "a light's view");
     }
 
     #[test]

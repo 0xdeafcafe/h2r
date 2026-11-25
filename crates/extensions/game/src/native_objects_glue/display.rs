@@ -6,7 +6,8 @@ use render_bridge::native_scene_lists::{self, DisplayGeometry, LodDetail};
 
 impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     pub(super) fn draw_display_models(&self, mem: &mut dyn GuestMemory, view: &View, lod: LodDetail) -> Option<()> {
-        let handles = &view.display_visibility.as_ref()?.objects;
+        let visibility = view.display_visibility.as_ref()?;
+        let handles = &visibility.objects;
         let (models, _) = self.load(mem)?;
         let mut device = self.device.lock().ok()?;
         if !device.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()?
@@ -21,7 +22,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let specular = device_specular(&device, mem);
         let read = crate::native_world_glue::ReadMemory(mem);
         let target = device.external_ready(&read, false).ok()?;
-        if device.projection_factor_for_target(target.surface_size) >= 1.0 { return None; }
+        // A widened guest camera's objects outside the retail set are drawn
+        // whatever the device's own factor (`scene_step::retail_object`).
+        if !visibility.guest_lens && device.projection_factor_for_target(target.surface_size) >= 1.0 { return None; }
         let (gpu, color, depth) = device.external_pipeline_target(&read)?;
         let mut draws = Vec::new();
         {

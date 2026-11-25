@@ -241,11 +241,15 @@ fn registry_with_film(
         crate::render_aspect::install(
             &mut features,
             Arc::new(|| (640, 480)),
-            false,
+            !case.lockstep,
             Arc::new(|| 0),
             Arc::new(NoDevice),
         )
         .unwrap();
+    }
+    // Boot's render stream: every rendering session but lockstep's.
+    if !case.light && !case.lockstep {
+        crate::render_rng::install(&mut features).unwrap();
     }
     let lockstep = lockstep_glue::Config {
         trace: case
@@ -792,6 +796,7 @@ const BOOT_SITES: &[(&str, &str)] = &[
         "registry_for_profile (a film's session is not covered: it needs a recording)",
     ),
     ("render_aspect::install", "Case::drawing (gpu)"),
+    ("render_rng::install", "every case but Case::light and Case::lockstep"),
     ("register_late_for_profile", "registry_for_profile"),
     (
         "forge_glue::install",
@@ -1210,4 +1215,54 @@ fn the_films_header_not_the_boot_decides_forge_and_the_non_player_features() {
     let off = hooks::Switches::parse("-forge").unwrap();
     assert!(!super::local_forge(&off, Some(&*auto), false, false, false));
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The features with a hook at `point` in `registry`'s plan, switched on.
+fn hooked_at(registry: hooks::Registry, point: &str) -> Vec<&'static str> {
+    let plan = registry.build(&hooks::Base).unwrap();
+    let mut ids: Vec<_> = plan.chains
+        .values()
+        .filter(|chain| chain.point.name == point)
+        .flat_map(|chain| chain.hooks().map(|hook| hook.feature))
+        .filter(|id| plan.features.iter().any(|f| f.id == *id && f.off.is_none()))
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+/// A default play (autorecorded, signed in to Live, in a window) fits the
+/// guest camera to the window and renders on the private random stream:
+/// neither the film nor the Live HLE turns either off. Lockstep keeps the
+/// retail camera and the retail stream (docs/graphics/high-resolution.md,
+/// "Widescreen projection" and "Determinism").
+#[cfg(feature = "gpu")]
+#[test]
+fn a_default_play_fits_the_guest_camera_and_renders_on_its_own_stream() {
+    let dir = std::env::temp_dir().join(format!("h2-registration-lens-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let profile = super::compiled_render_hooks();
+    let play = Case { coop_live: true, ..Case::full("") };
+    assert!(play.live && play.drawing);
+    let auto = recording(&dir, "auto.h2film", true);
+    let registry = || registry_with_film(&play, profile, Some(Arc::clone(&auto)));
+    assert_eq!(hooked_at(registry(), "VIEW_PROJECTION_TERMS"), ["render-aspect"]);
+    assert!(hooked_at(registry(), "RENDER_FRAME").contains(&crate::render_rng::ID));
+
+    let lockstep = Case { lockstep: true, ..play.clone() };
+    assert!(hooked_at(registry_for_profile(&lockstep, profile), "VIEW_PROJECTION_TERMS").is_empty());
+    assert!(!hooked_at(registry_for_profile(&lockstep, profile), "RENDER_FRAME").contains(&crate::render_rng::ID));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A recording and its replay register the render stream alike, so the
+/// film's simulation hooks match whatever window either had.
+#[test]
+fn a_replay_renders_on_the_stream_its_recording_did() {
+    let profile = super::compiled_render_hooks();
+    let play = Case { coop_live: true, ..Case::full("") };
+    let replay = Case { replaying: true, ..play.clone() };
+    for case in [&play, &replay] {
+        assert!(hooked_at(registry_for_profile(case, profile), "RENDER_FRAME").contains(&crate::render_rng::ID));
+    }
 }

@@ -47,7 +47,11 @@ impl<B: d3d::Backend + Send> UiLayoutSink for Mutex<d3d::Device<B>> {
 
 struct RenderAspect {
     size: Size,
-    single_copy: bool,
+    /// Fit the guest camera to the window at `VIEW_PROJECTION_TERMS`
+    /// (docs/graphics/high-resolution.md, "Widescreen projection"): every
+    /// session but lockstep and input tapes. A game of several machines
+    /// keeps the retail terms at the hook (`render_rng::networked`).
+    guest_lens: bool,
     position: Position,
     sink: Arc<dyn UiLayoutSink>,
 }
@@ -55,14 +59,14 @@ struct RenderAspect {
 pub fn install(
     registry: &mut hooks::Registry,
     size: Size,
-    single_copy: bool,
+    guest_lens: bool,
     position: Position,
     sink: Arc<dyn UiLayoutSink>,
 ) -> anyhow::Result<()> {
     registry
         .add(&RenderAspect {
             size,
-            single_copy,
+            guest_lens,
             position,
             sink,
         })
@@ -104,8 +108,8 @@ fn projection_factor(mem: &impl GuestMemory, output: (u32, u32)) -> f32 {
 }
 
 // The lens a game view's visibility starts with: the display supplement
-// whenever the presentation is wider than the guest's 4:3. In single-copy
-// play `VIEW_PROJECTION_TERMS` replaces it with the guest lens once it has
+// whenever the presentation is wider than the guest's 4:3.
+// `VIEW_PROJECTION_TERMS` replaces it with the guest lens once it has
 // widened the view's own projection; a view the hook does not fit keeps
 // the supplement, so its edges are gathered either way.
 #[cfg(feature = "desktop-runtime")]
@@ -514,7 +518,7 @@ impl Feature for RenderAspect {
 
     fn build(&self, b: &mut Builder) -> Result<(), hooks::BuildError> {
         let view_lens = Arc::new(AtomicU32::new(1.0f32.to_bits()));
-        let single_copy = self.single_copy;
+        let guest_lens = self.guest_lens;
         let projected = Arc::new(AtomicBool::new(false));
         for point in [&points::RENDER_GAME_VIEW, &points::RENDER_ALTERNATE_VIEW] {
             let (size, sink, lens) = (self.size.clone(), self.sink.clone(), view_lens.clone());
@@ -534,13 +538,14 @@ impl Feature for RenderAspect {
                 .optional();
         }
 
-        if single_copy {
+        if guest_lens {
             let projected = projected.clone();
             let sink = self.sink.clone();
             b.raw()
                 .before(&points::render_aspect::VIEW_PROJECTION_TERMS, "fit the displayed camera projection", move |c| {
                     let factor = f32::from_bits(view_lens.load(Ordering::Relaxed));
-                    if fit_view_projection(&mut *c.ctx.memory(), c.cpu.esp, factor).is_some() {
+                    let mut mem = c.ctx.memory();
+                    if !crate::render_rng::networked(&*mem) && fit_view_projection(&mut *mem, c.cpu.esp, factor).is_some() {
                         projected.store(true, Ordering::Relaxed);
                         sink.set_camera_projection_factor(factor);
                         #[cfg(feature = "desktop-runtime")]

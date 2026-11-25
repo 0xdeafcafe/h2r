@@ -126,6 +126,10 @@ pub struct DisplayVisibility {
     pub placements: Vec<u16>,
     pub clusters: Vec<u16>,
     pub objects: Vec<u32>,
+    /// The objects are a widened guest camera's, outside the retail
+    /// lens's set: their guest setup left them undrawn, and the display
+    /// draws them at any device factor.
+    pub guest_lens: bool,
 }
 
 /// One game view.

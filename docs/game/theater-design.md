@@ -111,7 +111,7 @@ The same container also holds the film: the inputs (tag 1) and digests
 | The player: an isolated child process per film with a warm rewind ring | Built | `crates/apps/cli/src/theater_cmd.rs` (`run`, the restart loop) |
 | A film without a usable keyframe plays from boot | Built | `EngineReplay::open` in `crates/extensions/game/src/theater/replay.rs` (`ImageMatch::FromBoot`) |
 | Transport over the agent API: `theater.play`, `state`, `pause`, `speed`, `seek`, `step`, `keyframes`, `camera`, `hud` | Built | `crates/extensions/agent-proto/src/theater.rs` |
-| Cameras: a view replaced in the guest's renderer with a private random seed; a separate GPU view for a playerless host film | Built | `crates/extensions/game/src/theater/camera.rs` (`Seeds`), `host_view.rs` |
+| Cameras: a view replaced in the guest's renderer with a private random seed; a separate GPU view for a playerless host film | Built | `crates/extensions/game/src/theater/camera.rs` and `render_rng.rs` (`Seeds`), `host_view.rs` |
 | The film selector and film page in the game's own menus | Built | [theater.md](theater.md#in-game-theater) |
 | Compatibility: XBE digest, guest image contract, `h2-sim/2`, the hook digest | Built | `crates/extensions/game/src/theater/compatibility.rs` (`hook_digest`), [film-format.md](film-format.md#determinism-and-verification) |
 | Live: host film upload, film lists, pins, clips as tick ranges, public range reads for the web viewer | Built | [live-api.md](../live/live-api.md#theater) |
@@ -331,7 +331,7 @@ reported in `theater.state`.
 
 | Film | Picture | Free, follow, orbit | First person | HUD |
 |---|---|---|---|---|
-| Local (the recorder rendered) | the guest's renderer | the rig replaces the renderer's view argument and can set its lens; a private seed is used for modified draws (`camera.rs`, `Seeds`) | a local seat's recorded viewport; any other player gets follow | the recorded HUD, hidden by `theater.hud {game: false}` |
+| Local (the recorder rendered) | the guest's renderer | the rig replaces the renderer's view argument and can set its lens; a private seed is used for modified draws (`camera.rs`; the render stream `render_rng::Seeds`, which a window-fitted guest camera shares) | a local seat's recorded viewport; any other player gets follow | the recorded HUD, hidden by `theater.hud {game: false}` |
 | Playerless host (the recorder drew nothing) | the independent view (`host_view.rs`): BSP, lightmaps, posed opaque models | the same rig | the unit's eye; no weapon model | none |
 
 The render hooks reserve private pages at the high end of the hook arena.
