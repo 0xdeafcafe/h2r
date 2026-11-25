@@ -78,13 +78,29 @@ runs the port twice and the original once on the interpreter. Use
 
 ## Registration and the agent API
 
-`feature::sim_native` and `feature::sim_physics` register every port
-with the registry at plan build (`feature::shadow::register`), installed
-or not, under its switch name and its group (`sim.native`,
-`sim.physics`), and run each installed body through
-`feature::shadow::run`. Only installed ports are checked: a port's
-`impl.` switch puts it in the plan, and `shadow.enable` turns its checks
-on. Boot's run gives the registry the image once the module is loaded
+`feature::sim_native`, `feature::sim_physics` and `feature::sim_seats`
+register every port with the registry at plan build
+(`feature::shadow::register`), installed or not, under its name and its
+group (`sim.native`, `sim.physics`, `sim.seats`). The first two run each
+installed body through `feature::shadow::run`: the port answers on the
+live Guest, checked on a copy. The seats are the opposite arm —
+`Shadow::guest_arm` — and the two never mix on one port:
+
+- **`shadow::run`** (the per-function ports): the body is authoritative;
+  a sampled call is checked before it runs.
+- **`guest_arm`** (the seats, phase 7 of the simulation rewrite): while
+  the port's checks are on, the *original* answers on the live state —
+  sampled or not, and after a mismatch too — and the sampled call runs
+  the body on a copy for the comparison. A body that declines is
+  recorded as a skipped check. Turning the checks off
+  (`shadow.disable`) makes the bodies authoritative. That is the seats'
+  rollout: parity first, authority after.
+
+Only installed ports are checked: a port's `impl.` switch puts it in the
+plan, and `shadow.enable` turns its checks on. The seats sit behind the
+one `impl.sim.native.seats` switch and are named per entry
+(`sim.seats.player_control_update`, …). Boot's run gives the registry
+the image once the module is loaded
 (`recomp`'s [`fallback.rs`](../../crates/runtime/recomp/src/fallback.rs)
 `shadow_original`): the build's cached analysis, lifted on demand, built
 at the first `shadow.enable`.
@@ -102,8 +118,11 @@ h2 agent shadow.status
 
 `scripts/shadow-gate.sh [MAP] [TICKS] [PORT|GROUP|all ...]` runs
 `h2 sim run` on a two-phantom match on MAP with the named ports' `impl.`
-switches added to `H2_FEATURES`, waits for gameplay, turns their checks
-on, waits TICKS ticks and reads `shadow.status`. It fails when a named
+switches added to `H2_FEATURES` (the seats' one switch once, for any
+`sim.seats` name), waits for gameplay, turns their checks on, waits
+TICKS ticks and reads `shadow.status`. With the seats checked the match
+answers exactly as retail — the guest arm — so the run also proves the
+phantom seats' path with the bodies installed. It fails when a named
 port is not installed, when any call mismatched, or when nothing was
 checked; the verdict, with the full status, is in its output directory.
 It never builds: build the image first (same `H2_OPT`), and the map needs
@@ -120,7 +139,8 @@ SHADOW_EVERY=8 H2_OPT=2 scripts/shadow-gate.sh midship 3000 all
 ## Limits
 
 - A port that is off is not checked: the game runs the generated original
-  and there is no hook to run the port beside it.
+  and there is no hook to run the port beside it. The seats are the
+  exception in authority, not in this: off, nothing of theirs installs.
 - The original runs on the IR interpreter, not the generated code: a
   difference between those is the lifter's (its own differential suites),
   not the port's.
