@@ -1927,6 +1927,49 @@ fn host_quit_needs_a_window_and_asks_it_to_close() {
 }
 
 #[test]
+fn host_window_resize_needs_a_window_and_answers_its_new_shape() {
+    use agent_proto::host_window::{self, Hub, WindowState};
+    let hub: &'static Hub = Box::leak(Box::new(Hub::new()));
+    let (h, mut game) = (Harness::new(), game());
+    super::window::install(&h.agent, hub);
+    // Answered on the connection's thread: no tick needed.
+    h.send(host_window::method::RESIZE, json!({"fullscreen": true}));
+    let r = h.reply();
+    assert_eq!(r["error"]["code"], code::UNAVAILABLE, "{r}");
+    for bad in [json!({}), Value::Null, json!({"width": 800}), json!({"size": 1})] {
+        h.send(host_window::method::RESIZE, bad.clone());
+        assert_eq!(h.reply()["error"]["code"], code::INVALID_PARAMS, "{bad}");
+    }
+    // A window shell on its own thread takes the request and resizes.
+    let (ready, attached) = std::sync::mpsc::channel();
+    let shell = std::thread::spawn(move || {
+        hub.attach(Box::new(|| {}));
+        ready.send(()).unwrap();
+        loop {
+            if let Some(r) = hub.take_request() {
+                let (width, height) = r.size.unwrap();
+                hub.observe(WindowState { width, height, fullscreen: r.fullscreen, scale: 2.0 });
+                return;
+            }
+            std::thread::yield_now();
+        }
+    });
+    attached.recv().unwrap();
+    h.send(host_window::method::RESIZE, json!({"width": 1920, "height": 816}));
+    let r = h.reply();
+    shell.join().unwrap();
+    assert_eq!(
+        r["result"],
+        json!({"width": 1920, "height": 816, "fullscreen": false, "scale": 2.0}),
+        "{r}"
+    );
+    let m = h.ok(&mut game, agent_proto::method::METHODS, Value::Null);
+    for name in host_window::method::ALL {
+        assert!(m.as_array().unwrap().contains(&json!(name)), "{name}");
+    }
+}
+
+#[test]
 fn host_screenshot_needs_a_window_and_answers_what_it_wrote() {
     use agent_proto::host_shot::{self, Hub, Shot};
     let hub: &'static Hub = Box::leak(Box::new(Hub::new()));

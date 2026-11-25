@@ -36,6 +36,7 @@ pub mod superbounce_view;
 pub mod host_lobby;
 pub mod host_pause;
 pub mod host_quit;
+pub mod host_window;
 pub mod host_shot;
 pub mod host_memory;
 pub mod memory_forensics;
