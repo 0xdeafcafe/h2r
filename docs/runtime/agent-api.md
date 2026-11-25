@@ -1960,7 +1960,7 @@ h2 agent render.parity '{"arm": true}'
   reported: the reply is the underlying game view. Types:
   `CurrentViewParams` and `CurrentView` in
   `crates/extensions/agent-proto/src/render.rs`, the method in
-  `crates/extensions/game/src/agent_spawn_view.rs`.
+  `crates/extensions/game/src/agent_spawn_view.rs`. The private camera is a spectator view: a pose replayed from the player's eye also draws that player's own body, which can cover part of the picture.
 - **`render.capture`.** With `lighting: "retail" | "e3" | "relight-on" |
   "relight-off"`, the native
   renderer draws a sealed scene into a private target. The default is
