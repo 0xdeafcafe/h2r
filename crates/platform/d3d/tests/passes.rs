@@ -560,7 +560,7 @@ fn frame_sampling_draws_with_no_write_between_share_one_copy() {
     quad(&mut d, &mut m, 0xFFFF_FFFF);
     offscreen(&mut m);
     let back = m.read_u32(L.device + f::BACK_BUFFER).unwrap();
-    frame_texture(&mut m, data_of(&m, f::BACK_BUFFER), 0x12, W, H);
+    { let data = data_of(&m, f::BACK_BUFFER); frame_texture(&mut m, data, 0x12, W, H); }
     d.set_texture(&mut m, 0, FRAME_TEX).unwrap();
     d.set_render_target(&mut m, OFFSCREEN, 0).unwrap();
     // Five draws read the back buffer and write only the other target.
@@ -576,7 +576,7 @@ fn frame_sampling_draws_with_no_write_between_share_one_copy() {
     assert_eq!(d.stats().frame_snapshot_reuses, 4);
     assert_eq!(d.frame_snapshots_held(), 1);
     // An X8 view of the same buffer forces alpha: a copy of its own.
-    frame_texture(&mut m, data_of(&m, f::BACK_BUFFER), 0x1E, W, H);
+    { let data = data_of(&m, f::BACK_BUFFER); frame_texture(&mut m, data, 0x1E, W, H); }
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     assert_eq!(d.stats().frame_snapshots, 2);
     assert!(d.take_events().is_empty());
@@ -592,7 +592,7 @@ fn a_write_between_frame_samples_makes_a_new_copy() {
     quad(&mut d, &mut m, 0xFFFF_FFFF);
     offscreen(&mut m);
     let back = m.read_u32(L.device + f::BACK_BUFFER).unwrap();
-    frame_texture(&mut m, data_of(&m, f::BACK_BUFFER), 0x12, W, H);
+    { let data = data_of(&m, f::BACK_BUFFER); frame_texture(&mut m, data, 0x12, W, H); }
     d.set_texture(&mut m, 0, FRAME_TEX).unwrap();
     d.set_render_target(&mut m, OFFSCREEN, 0).unwrap();
     let first = sampling_draws(&mut d, &mut m, 2);
@@ -632,7 +632,7 @@ fn a_long_session_of_frame_sampling_draws_holds_a_bounded_number_of_copies() {
     let mut held = 0;
     for frame in 0..1000 {
         // The back buffer's Data turns over at each flip.
-        frame_texture(&mut m, data_of(&m, f::BACK_BUFFER), 0x12, W, H);
+        { let data = data_of(&m, f::BACK_BUFFER); frame_texture(&mut m, data, 0x12, W, H); }
         // 25 draws that only read the frame (a distortion target), then
         // 25 that read and write it (refraction drawn into the frame).
         d.set_render_target(&mut m, OFFSCREEN, 0).unwrap();
