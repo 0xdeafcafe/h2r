@@ -36,6 +36,7 @@ fn render_frame_and_stats_through_the_socket() {
             display_rate: Box::new(|| {
                 Some(agent_proto::DisplayRateStats { rate_hz: 60, swaps: 7, blended: 6, ..Default::default() })
             }),
+            ui: Box::new(|| None),
             counters: Box::new(|| None),
         },
     );

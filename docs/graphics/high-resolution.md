@@ -661,8 +661,10 @@ stays valid:
 - **Scissors.** `SetScissors` (`0x3f8760`) and the device's scissor region
   work in guest pixels. The view scales the result.
 - **HUD and UI.** Widget bounds are in a 640x480 frame ([ui.md](../formats/ui.md)).
-  The host fits menu draws and their scissors uniformly in a centred safe
-  area. Centered places HUD corners in the same area. Pinned translates
+  One rule places every draw: `render_bridge::ui_layout` fits the canvas
+  uniformly — `min(w/640, h/480)` display pixels per guest pixel — in a
+  centred safe area, and anchors the HUD's corner groups on top of it.
+  Centered places HUD corners on the safe area's edges. Pinned translates
   the retail corner-anchored HUD groups to their own viewport edges while
   keeping their physical scale. Centre and world-tracked indicators use
   their own anchor. Each draw records the fit before it moves to the GPU
@@ -673,8 +675,14 @@ stays valid:
   has run. Commands written before the change keep the old fit and the
   draws after it take the new one (test
   `a_fit_change_held_back_by_a_callback_starts_after_the_commands_before_it`).
-  A generated game image includes the interior UI entries for
-  these scopes. Regenerate a pre-existing image to pick them up.
+  The menus' runs the overlay draws take the same fit at their pass: the
+  run places its positions and clips by the fit the placed draw carries
+  (`game::hud_overlay::fit_overlay`), so its widgets land in the safe
+  area with everything else. A menu quad that is background art keeps the
+  full view, as on a widescreen Xbox, so the menu covers the display
+  while its widgets keep the uniform fit. A generated game image includes
+  the interior UI entries for these scopes. Regenerate a pre-existing
+  image to pick them up.
 - **Loading screens and movies.** The compositor presents the supplied frame
   at the selected display aspect. Menu and HUD fits apply inside their
   respective draw scopes.
@@ -785,6 +793,24 @@ edge's width (rows between 0.1 and 0.9):
 The area drawn wrong against the true outline falls to between a quarter
 (4x) and a half (2x) of either filter's. At 1x and in the reference at every
 scale the image is byte-identical with the filter on and off.
+
+**The atlas.** The text runs the overlay draws take a different road:
+their glyphs are not the game's cache but the disc's font data
+([fonts.md](../formats/fonts.md)), rasterised once per glyph into the
+renderer's own pages at the display's density
+(`game::hud_overlay::fill_glyphs`, `font::coverage::upsample`). The
+resample is the same reconstruction the filter runs per fragment,
+computed once per glyph on the CPU: the coverage's B-spline read as a
+surface, the edge put back where it crosses half the local stroke's
+alpha, with a ramp one output texel wide. A glyph page texel then draws
+near 1:1 and the runs sample their pages linearly
+(`OverlayMaterial::text`), so the text keeps the bitmap font's own
+outline at whatever the window's density is — no magnification of
+480p-sized texels, and no per-fragment filter cost. The scale is the
+canvas's uniform fit rounded up to whole texels (`hud_overlay::atlas_for`),
+capped at 8 where a page would stop holding a screen's glyphs; a window
+of another size rasterises the pages again on its next text run, and the
+residency drops the old ones with the assets' generation.
 
 Risks: another texture with the cache's shape at the header the game's
 glyph-cache pointer names would be filtered as text; a different build of

@@ -68,12 +68,37 @@ fn render_counters(summary: &timeline::phase::Summary) -> Value {
     Value::Object(counters)
 }
 
+/// The UI's layout now (`render.stats`'s `ui`): the window, the menu's
+/// fit, how the HUD's corners anchor and the glyph pages' density.
+fn ui_stats() -> Option<agent_proto::UiStats> {
+    let report = crate::render_aspect::layout_report()?;
+    let (atlas_scale, atlas_page) = crate::hud_overlay::atlas_state();
+    Some(ui_stats_of(report, atlas_scale, atlas_page))
+}
+
+/// The report's wire shape ([`agent_proto::UiStats`]).
+fn ui_stats_of(
+    ((w, h), (sx, sy, ox, oy), pinned): ((u32, u32), [f32; 4], bool),
+    atlas_scale: u32,
+    atlas_page: u32,
+) -> agent_proto::UiStats {
+    agent_proto::UiStats {
+        output: [w, h],
+        scale: [sx, sy],
+        offset: [ox, oy],
+        anchor: if pinned { "pinned".into() } else { "centered".into() },
+        atlas_scale,
+        atlas_page,
+    }
+}
+
 pub fn sources() -> agent::render::RenderSources {
     agent::render::RenderSources {
         #[cfg(feature = "gpu")]
         display_rate: Box::new(display_rate),
         #[cfg(not(feature = "gpu"))]
         display_rate: Box::new(|| None),
+        ui: Box::new(ui_stats),
         counters: Box::new(counters),
     }
 }
@@ -81,6 +106,22 @@ pub fn sources() -> agent::render::RenderSources {
 #[cfg(all(test, feature = "gpu"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ui_report_is_the_wire_shape() {
+        // 16:9: the safe area's fit with the HUD's corners pinned, the
+        // pages rasterised at the display's density.
+        let v = ui_stats_of(((1920, 1080), [0.75, 1.0, 80.0, 0.0], true), 3, 2048);
+        assert_eq!(v.output, [1920, 1080]);
+        assert_eq!((v.scale, v.offset), ([0.75, 1.0], [80.0, 0.0]));
+        assert_eq!(v.anchor, "pinned");
+        assert_eq!((v.atlas_scale, v.atlas_page), (3, 2048));
+        // A 4:3 window: identity, centered corners, no atlas yet.
+        let v = ui_stats_of(((640, 480), [1.0, 1.0, 0.0, 0.0], false), 0, 0);
+        assert_eq!(v.scale, [1.0, 1.0]);
+        assert_eq!(v.anchor, "centered");
+        assert_eq!((v.atlas_scale, v.atlas_page), (0, 0));
+    }
 
     #[test]
     fn render_stats_exposes_shadow_stage_means_and_refusal_reasons() {

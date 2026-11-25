@@ -261,48 +261,19 @@ impl Canvas {
     }
 
     fn fit(self, anchor: Option<(u32, [f32; 2])>) -> Option<UiFit> {
-        let mut pivot = self.centre();
-        if let Some((id, point)) = anchor.filter(|_| self.hud) {
-            if id >= 4 {
-                // Centre/crosshair and tracked world points keep their
-                // projected location; only their art scales around it.
-                if point.iter().all(|v| v.is_finite()) {
-                    pivot = point;
-                }
-            } else if self.pinned {
-                let right = id == 0 || id == 3;
-                let bottom = id >= 2;
-                pivot = [
-                    (self.rect.x + if right { self.rect.width } else { 0 }) as f32,
-                    (self.rect.y + if bottom { self.rect.height } else { 0 }) as f32,
-                ];
-            }
-        }
-        let menu = UiFit::about(self.output, self.centre());
-        if !self.hud {
-            return menu;
-        }
-        // The Xbox widescreen HUD is already laid out for anamorphic pixels.
-        // Scale the artwork only by the difference between that display and
-        // ours. Its *corner placement* still obeys the user's 4:3 safe area.
-        let mut fit =
-            UiFit::from_pixel_ratio(self.projection_factor, pivot).unwrap_or(UiFit::IDENTITY);
-        if let Some((id, _)) = anchor
-            && id < 4
-            && !self.pinned
-        {
-            let [safe_x, safe_y, _, _] = menu.unwrap_or(UiFit::IDENTITY).transform;
-            let edge_x = if id == 0 || id == 3 { 0.5 } else { -0.5 };
-            let edge_y = if id >= 2 { 0.5 } else { -0.5 };
-            fit.transform[2] += edge_x * self.rect.width as f32 * (safe_x - fit.transform[0]);
-            fit.transform[3] += edge_y * self.rect.height as f32 * (safe_y - fit.transform[1]);
-        }
-        if anchor.is_some_and(|(id, _)| id >= 4) && self.hud && !self.projected_points_fitted {
-            // The guest's tracked point is in the retail lens. Move its
-            // centre with the world, then fit the artwork about that point.
-            fit.transform[2] += (pivot[0] - self.centre()[0]) * (self.projection_factor - 1.0);
-        }
-        (fit != UiFit::IDENTITY).then_some(fit)
+        let layout = if !self.hud {
+            render_bridge::ui_layout::menu_fit(self.output, self.centre())
+        } else {
+            render_bridge::ui_layout::hud_fit(
+                self.output,
+                (self.rect.x, self.rect.y, self.rect.width, self.rect.height),
+                self.pinned,
+                self.projection_factor,
+                self.projected_points_fitted,
+                anchor,
+            )
+        };
+        layout.map(UiFit::from_transform)
     }
 }
 
@@ -359,6 +330,39 @@ pub fn hud_centre_fit() -> ([f32; 2], [f32; 4]) {
 /// "The bounce view").
 pub fn hud_bottom_left_fit() -> [f32; 4] {
     *HUD_BOTTOM_LEFT.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The window and the menu's fit as the layout hooks last set them
+/// ([`render_bridge::ui_layout`]): `render.stats`'s `ui`
+/// (docs/runtime/agent-api.md) and the glyph pages' density
+/// ([`crate::hud_overlay::atlas_for`]). The window is the guest's own
+/// canvas before the first menu scope.
+static MENU_LAYOUT: Mutex<((u32, u32), [f32; 4])> =
+    Mutex::new(((640, 480), UiFit::IDENTITY.transform));
+
+/// Whether the HUD's corner groups anchor to the window's edges
+/// (`H2_HUD_POSITION`), as the HUD's last scope laid them out.
+static HUD_ANCHOR: AtomicBool = AtomicBool::new(true);
+
+/// Whether a menu scope has run at all (`render.stats`'s `ui` stays
+/// `None` before the game's UI first drew).
+static MENU_SEEN: AtomicBool = AtomicBool::new(false);
+
+/// The window the UI's glyph pages rasterise at
+/// ([`crate::hud_overlay::atlas_for`]): what the layout hooks last fitted.
+pub fn layout_output() -> (u32, u32) {
+    MENU_LAYOUT.lock().unwrap_or_else(|e| e.into_inner()).0
+}
+
+/// The UI's layout now: the window, the menu's fit (scale then offset, in
+/// guest window units — the safe area's `min(w/640, h/480)` centred box)
+/// and whether the HUD's corner groups pin to the window's edges. `None`
+/// before the game's UI first drew a scope.
+pub fn layout_report() -> Option<((u32, u32), [f32; 4], bool)> {
+    MENU_SEEN.load(Ordering::Relaxed).then(|| {
+        let menu = *MENU_LAYOUT.lock().unwrap_or_else(|e| e.into_inner());
+        (menu.0, menu.1, HUD_ANCHOR.load(Ordering::Relaxed))
+    })
 }
 
 /// Marks the group of one menu quad that is background art (a panel, a
@@ -647,6 +651,14 @@ impl Feature for RenderAspect {
                     }
                     if hud {
                         publish_hud_corner(layout.active);
+                        HUD_ANCHOR.store(
+                            layout.active.is_some_and(|canvas| canvas.pinned),
+                            Ordering::Relaxed,
+                        );
+                    } else {
+                        MENU_SEEN.store(true, Ordering::Relaxed);
+                        *MENU_LAYOUT.lock().unwrap_or_else(|e| e.into_inner()) =
+                            (output, layout.current().unwrap_or(UiFit::IDENTITY).transform);
                     }
                     if was_active || layout.active.is_some() {
                         sink.set_fit(&mut c.ctx.memory(), layout.current());
@@ -808,6 +820,10 @@ impl Feature for RenderAspect {
                     sink.set_fit(&mut o.guest(), fit);
                 }
             })
+            // The widget's own draws take the restored fit: the run the
+            // overlay places at this call captures it (`hud_overlay::
+            // place`), and the guest draws that follow it carry it.
+            .first()
             .context_only()
             .optional();
 

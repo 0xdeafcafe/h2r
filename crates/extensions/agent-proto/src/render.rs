@@ -468,6 +468,30 @@ pub struct SnapRecord {
     pub error: Option<String>,
 }
 
+/// `render.stats`' `ui`: the layout the menus and the HUD are drawn with
+/// (docs/graphics/high-resolution.md, "The game's 640x480 assumptions"),
+/// as the game's UI scopes last set it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct UiStats {
+    /// The window the UI is drawn at, `[width, height]`; the guest's own
+    /// 640x480 canvas before the first UI scope.
+    pub output: [u32; 2],
+    /// The menu's fit in guest window units, `[sx, sy, ox, oy]`:
+    /// guest `p` draws at `p * [sx, sy] + [ox, oy]`. The safe area's
+    /// `min(w/640, h/480)` centred box; identity `[1, 1, 0, 0]` at 4:3.
+    pub scale: [f32; 2],
+    /// The fit's translation, guest window units.
+    pub offset: [f32; 2],
+    /// How the HUD's corner groups anchor: `pinned` to the window's edges
+    /// at their physical scale, or `centered` on the safe area's edges.
+    pub anchor: String,
+    /// The scale the glyph pages rasterise the text atlas at, in whole
+    /// multiples of the glyph's own size (0 before the first text run).
+    pub atlas_scale: u32,
+    /// The side of a glyph page in texels.
+    pub atlas_page: u32,
+}
+
 /// `render.stats`: the render pipeline's counters since the game started,
 /// each `null` where that piece isn't running.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -483,6 +507,10 @@ pub struct RenderStats {
     /// paced frame owner.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_rate: Option<DisplayRateStats>,
+    /// The layout the menus and the HUD are drawn with. Absent before the
+    /// game's UI has drawn a scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui: Option<UiStats>,
     /// The frame-stats window's per-frame means of the render counters.
     pub counters: Value,
 }

@@ -34,6 +34,14 @@ impl<B: Backend> Device<B> {
             Ok(true)
         }
     }
+
+    /// The UI layout the draws at this point in the frame carry
+    /// ([`Self::set_ui_fit`], `render_bridge::ui_layout`'s rule): `None`
+    /// is the identity, the full guest window (a 4:3 output, or a
+    /// background's full view).
+    pub fn ui_fit(&self) -> Option<crate::backend::UiFit> {
+        self.ui_fit
+    }
 }
 
 impl<B: Backend> Device<B> {

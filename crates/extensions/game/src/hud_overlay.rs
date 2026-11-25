@@ -15,6 +15,7 @@
 pub(crate) mod menu_text;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use d3d::backend::{ExternalAttachments, ExternalEncoded};
@@ -587,15 +588,57 @@ pub struct MissingGlyph {
 }
 
 /// Puts every glyph `overlay`'s text runs draw into `pages`: for each
-/// engine font (the run's material's) and glyph index not in its page,
-/// the glyph decoded from `fonts` once, white with its ARGB4444 alpha
-/// times 17. A glyph already in a page is not decoded again, so a list
-/// filled again costs nothing, and `Ok(())` says every glyph of the list
-/// is in the pages: the call is a list's preflight too. A glyph missing
-/// at plan time makes the plan drop its run (`refused_glyph`). `Err` is
-/// the first glyph not put in. A page keeps coverage alone: a glyph with
-/// colours of its own (a medal, a button icon) draws in its run's colour.
-pub fn fill_glyphs(pages: &mut GlyphPages, overlay: &Overlay, fonts: &Fonts) -> Result<(), MissingGlyph> {
+/// The largest scale the glyph pages rasterise at: past it a page's side
+/// stops holding a screen's glyphs, and the remainder over the cap
+/// magnifies a glyph rasterised at the cap (a fraction over 1 at 8K).
+pub const MAX_ATLAS_SCALE: u32 = 8;
+
+/// The glyph pages' rasterisation scale and page side for a window
+/// `output`: the guest canvas's uniform fit scale, rounded up to whole
+/// texels so a glyph edge lands on whole output texels, capped at
+/// [`MAX_ATLAS_SCALE`] (1 with no window worth fitting). The page side
+/// doubles past scale 1, so a page still holds a screen's glyphs; the
+/// pages' RGBA texels are 16 MB at most per font.
+pub fn atlas_for(output: (u32, u32)) -> (u32, u32) {
+    let scale = if output.0 == 0 || output.1 == 0 {
+        1
+    } else {
+        let uniform = (output.0 as f32).min(output.1 as f32 * 4.0 / 3.0) / 640.0;
+        (uniform.ceil().max(1.0).min(MAX_ATLAS_SCALE as f32)) as u32
+    };
+    let side = if scale > 1 { GlyphPages::PAGE * 2 } else { GlyphPages::PAGE };
+    (scale, side)
+}
+
+/// The glyph pages' rasterisation scale and page side as the last
+/// `place_menu` left them (0, 0 before the first one): `render.stats`'s
+/// `ui` (docs/runtime/agent-api.md).
+static ATLAS_SCALE: AtomicU32 = AtomicU32::new(0);
+static ATLAS_SIDE: AtomicU32 = AtomicU32::new(0);
+
+/// The glyph pages' rasterisation scale and page side now.
+pub fn atlas_state() -> (u32, u32) {
+    (ATLAS_SCALE.load(Ordering::Relaxed), ATLAS_SIDE.load(Ordering::Relaxed))
+}
+
+/// Puts every glyph of `overlay`'s text runs into their pages at
+/// `atlas_scale` times its size: for each engine font (the run's
+/// material's) and glyph index not in its page, the glyph decoded from
+/// `fonts` once, its ARGB4444 alpha times 17 resampled to the page's
+/// density ([`font::coverage::upsample`], the display side of the glyph
+/// filter), white with that coverage. A glyph already in a page is not
+/// decoded again, so a list filled again costs nothing, and `Ok(())` says
+/// every glyph of the list is in the pages: the call is a list's preflight
+/// too. A glyph missing at plan time makes the plan drop its run
+/// (`refused_glyph`). `Err` is the first glyph not put in. A page keeps
+/// coverage alone: a glyph with colours of its own (a medal, a button
+/// icon) draws in its run's colour.
+pub fn fill_glyphs(
+    pages: &mut GlyphPages,
+    overlay: &Overlay,
+    fonts: &Fonts,
+    atlas_scale: u32,
+) -> Result<(), MissingGlyph> {
     // What is not in a page yet, by engine font, in the order first drawn.
     let mut wanted: BTreeMap<u16, BTreeSet<u32>> = BTreeMap::new();
     for item in &overlay.items {
@@ -620,7 +663,12 @@ pub fn fill_glyphs(pages: &mut GlyphPages, overlay: &Overlay, fonts: &Fonts) -> 
                 return Err(missing(GlyphMissing::Decode));
             };
             let alpha: Vec<u8> = glyph.pixels.iter().map(|&px| ((px >> 12) * 17) as u8).collect();
-            if !pages.insert(font, index, glyph.record.width, glyph.record.height, &alpha) {
+            let coverage = font::coverage::upsample(&alpha, glyph.record.width, glyph.record.height, atlas_scale);
+            let (width, height) = (
+                glyph.record.width.saturating_mul(atlas_scale as u16),
+                glyph.record.height.saturating_mul(atlas_scale as u16),
+            );
+            if !pages.insert(font, index, width, height, &coverage) {
                 return Err(missing(GlyphMissing::Room));
             }
         }
@@ -676,8 +724,11 @@ pub fn place<B: d3d::Backend + Send + 'static>(
     overlay: Arc<Overlay>,
     assets: Arc<Mutex<OverlayAssets>>,
 ) -> bool {
-    let pass = OverlayPass { overlay, assets };
     device.lock().ok().is_some_and(|mut d| {
+        // The run draws with the layout rule the placed draw sits in: the
+        // same fit the guest's own draws carry at this point in the frame.
+        let fit = d.ui_fit().map(|f| f.transform);
+        let pass = OverlayPass { overlay, assets, fit };
         matches!(
             d.external_pass_now(&mut crate::native_lights_glue::DeviceMemory(mem), Box::new(pass)),
             Ok(true)
@@ -704,11 +755,23 @@ pub fn place_menu<B: d3d::Backend + Send + 'static>(
             return false;
         }
     }
+    // The pages hold the glyphs at the display's density, so text draws
+    // near its texels 1:1. A window of another size rasterises them again;
+    // the residency drops the old pages with the assets' generation.
+    let (scale, side) = atlas_for(crate::render_aspect::layout_output());
+    let mut a = assets.lock().unwrap_or_else(|e| e.into_inner());
+    if a.glyphs.side() != side {
+        a.glyphs = GlyphPages::new(side);
+        a.generation += 1;
+    }
+    ATLAS_SCALE.store(scale, Ordering::Relaxed);
+    ATLAS_SIDE.store(side, Ordering::Relaxed);
     // A glyph the fonts do not give leaves its run out of the plan
     // (`refused_glyph`); the rest of the list still draws.
     if let Some(fonts) = fonts() {
-        let _ = fill_glyphs(&mut assets.lock().unwrap_or_else(|e| e.into_inner()).glyphs, part, &fonts);
+        let _ = fill_glyphs(&mut a.glyphs, part, &fonts, scale);
     }
+    drop(a);
     place(device, mem, Arc::new(part.clone()), assets)
 }
 
@@ -717,10 +780,28 @@ pub fn place_menu<B: d3d::Backend + Send + 'static>(
 static RENDERER: LazyLock<Mutex<Option<(wgpu::Device, OverlayGpu, OverlayResidency)>>> =
     LazyLock::new(|| Mutex::new(None));
 
-/// An overlay's items, drawn where the pass was placed in the frame.
+/// Places a run's positions and clips in the placed draw's UI fit
+/// ([`render_bridge::ui_layout`]): what the pass draws when the guest's
+/// own draws at this point in the frame are fitted the same way.
+fn fit_overlay(overlay: &mut Overlay, fit: Option<[f32; 4]>) {
+    let Some(fit) = fit else { return };
+    for v in &mut overlay.vertices {
+        v.position = render_bridge::ui_layout::map_point(fit, v.position);
+    }
+    for item in &mut overlay.items {
+        let c = &mut item.clip;
+        let mapped = render_bridge::ui_layout::map_rect(fit, (c.x, c.y, c.width, c.height));
+        *c = ClipRect { x: mapped.0, y: mapped.1, width: mapped.2, height: mapped.3 };
+    }
+}
+
+/// An overlay's items, drawn where the pass was placed in the frame, with
+/// the placed draw's UI fit ([`render_bridge::ui_layout`]): the same
+/// placement the guest's own draws carry at this point in the frame.
 struct OverlayPass {
     overlay: Arc<Overlay>,
     assets: Arc<Mutex<OverlayAssets>>,
+    fit: Option<[f32; 4]>,
 }
 
 impl d3d::ExternalPass for OverlayPass {
@@ -740,8 +821,10 @@ impl d3d::ExternalPass for OverlayPass {
         let Some((_, gpu, residency)) = r.as_mut() else { return };
         let assets = self.assets.lock().unwrap_or_else(|e| e.into_inner());
         residency.sync(t.device, t.queue, &assets);
+        let mut overlay = (*self.overlay).clone();
+        fit_overlay(&mut overlay, self.fit);
         let size = t.color.texture().size();
-        let plan = OverlayPlan::new(&self.overlay, [size.width, size.height], &assets.glyphs);
+        let plan = OverlayPlan::new(&overlay, [size.width, size.height], &assets.glyphs);
         drop(assets);
         if let Ok((encoded, stats)) = gpu.prepare(t.device, t.color, &plan, residency) {
             (encoded.commands)(&mut *t.encoder);
@@ -912,7 +995,7 @@ mod tests {
         let refused = OverlayPlan::new(&overlay, [640, 480], &GlyphPages::default());
         assert_eq!((refused.batches.len(), refused.stats.refused_glyph), (0, 2), "over an empty atlas");
         let mut pages = GlyphPages::new(16);
-        fill_glyphs(&mut pages, &overlay, &fonts).unwrap();
+        fill_glyphs(&mut pages, &overlay, &fonts, 1).unwrap();
         assert!(pages.has(0, index(0, a)) && pages.has(0, index(0, one)));
         assert!(pages.has(1, index(1, b)));
         assert_eq!(pages.fonts().collect::<Vec<_>>(), [0, 1]);
@@ -923,12 +1006,87 @@ mod tests {
         assert_eq!(texel(5, 1), [255, 255, 255, 136], "1 beside it: alpha 8 of 15");
         assert_eq!(texel(4, 1), [0, 0, 0, 0], "the texel between them");
         assert_eq!(pages.page(1).unwrap().2, 1, "B twice is decoded once");
-        fill_glyphs(&mut pages, &overlay, &fonts).unwrap();
+        fill_glyphs(&mut pages, &overlay, &fonts, 1).unwrap();
         assert_eq!((pages.page(0).unwrap().2, pages.page(1).unwrap().2), (2, 1), "filled again: nothing added");
         let plan = OverlayPlan::new(&overlay, [640, 480], &pages);
         assert_eq!((plan.batches.len(), plan.stats.refused_glyph, plan.stats.glyphs), (2, 0, 5));
         assert_eq!(plan.vertices[1].uv, [3.0 / 16.0, 1.0 / 16.0], "A's top right");
         assert_eq!(plan.vertices[6].uv, [8.0 / 16.0, 2.0 / 16.0], "1's bottom right");
+    }
+
+    /// Filled at an atlas scale, a glyph lands resampled to that many
+    /// times its size: the display's density (`hud_overlay::atlas_for`),
+    /// so the run's UVs still name the whole glyph.
+    #[test]
+    fn the_filler_resamples_glyphs_to_the_atlas_scale() {
+        let a = u16::from(b'A');
+        let fonts = Fonts::served(b"one", [("one".to_owned(), invented_font(&[(a, 2, 2, 15)]))]);
+        let mut overlay = Overlay::new([640, 480]);
+        run(&mut overlay, &fonts, 0, "A");
+        let mut pages = GlyphPages::new(32);
+        fill_glyphs(&mut pages, &overlay, &fonts, 2).unwrap();
+        let (side, rgba, _) = pages.page(0).unwrap();
+        assert_eq!(side, 32);
+        let texel = |x: usize, y: usize| rgba[(y * 32 + x) * 4..(y * 32 + x) * 4 + 4].to_vec();
+        // A solid 2x2 glyph resampled to 4x4: solid through, one cleared
+        // texel of space around it.
+        for (x, y) in [(1, 1), (4, 1), (1, 4), (4, 4), (2, 2), (3, 3)] {
+            assert_eq!(texel(x, y), [255, 255, 255, 255], "solid at {x},{y}");
+        }
+        assert_eq!(texel(0, 0), [0, 0, 0, 0], "the space around it");
+        let plan = OverlayPlan::new(&overlay, [640, 480], &pages);
+        assert_eq!((plan.stats.refused_glyph, plan.stats.glyphs), (0, 1));
+        // The glyph's UV rectangle still spans the glyph in the page.
+        assert_eq!(plan.vertices[1].uv, [5.0 / 32.0, 1.0 / 32.0], "A's top right at scale 2");
+    }
+
+    /// The pages' scale and side for a window: the guest canvas's uniform
+    /// fit rounded up to whole texels, capped, and the side that keeps a
+    /// screen's glyphs in a page.
+    #[test]
+    fn the_atlas_scales_with_the_window_and_caps() {
+        assert_eq!(atlas_for((0, 0)), (1, GlyphPages::PAGE));
+        assert_eq!(atlas_for((640, 480)), (1, GlyphPages::PAGE));
+        assert_eq!(atlas_for((960, 720)), (2, GlyphPages::PAGE * 2));
+        assert_eq!(atlas_for((1280, 720)), (2, GlyphPages::PAGE * 2));
+        assert_eq!(atlas_for((1920, 1080)), (3, GlyphPages::PAGE * 2));
+        assert_eq!(atlas_for((5120, 2880)), (6, GlyphPages::PAGE * 2));
+        assert_eq!(atlas_for((7680, 4320)), (MAX_ATLAS_SCALE, GlyphPages::PAGE * 2));
+    }
+
+    /// A run drawn at the placed draw's UI fit: the guest canvas's 16:9
+    /// fit maps its corners onto the centred safe area, and its clip with
+    /// them; without a fit the run draws as the guest drew it.
+    #[test]
+    fn a_run_places_itself_in_the_placed_draws_fit() {
+        let fit = [0.75, 1.0, 80.0, 0.0];
+        let all = ClipRect::full([640, 480]);
+        let mut overlay = Overlay::new([640, 480]);
+        overlay
+            .push_fill(all, [0.0, 240.0, 640.0, 240.0], [1.0; 4], OverlayBlend::Off)
+            .unwrap();
+        fit_overlay(&mut overlay, Some(fit));
+        let xs: Vec<f32> = overlay.vertices.iter().map(|v| v.position[0]).collect();
+        assert_eq!(xs, [80.0, 560.0, 560.0, 80.0], "the safe area's x, in guest window units");
+        let ys: Vec<f32> = overlay.vertices.iter().map(|v| v.position[1]).collect();
+        assert_eq!(ys, [240.0, 240.0, 480.0, 480.0]);
+        let clip = &overlay.items[0].clip;
+        assert_eq!((clip.x, clip.y, clip.width, clip.height), (80, 0, 480, 480));
+        // The plan then stretches the fitted units over the window: the
+        // fill's x spans 1440 of 1920, centred.
+        let plan = OverlayPlan::new(&overlay, [1920, 1080], &NoGlyphs);
+        let left = plan.vertices[0].position[0];
+        let right = plan.vertices[1].position[0];
+        let to_display = |clip_x: f32| (clip_x + 1.0) * 0.5 * 1920.0;
+        assert!((to_display(left) - 240.0).abs() < 1e-4);
+        assert!((to_display(right) - 1680.0).abs() < 1e-4);
+        // No fit: nothing changes.
+        let mut plain = Overlay::new([640, 480]);
+        plain
+            .push_fill(all, [0.0, 240.0, 640.0, 240.0], [1.0; 4], OverlayBlend::Off)
+            .unwrap();
+        fit_overlay(&mut plain, None);
+        assert_eq!(plain.vertices[0].position, [0.0, 240.0]);
     }
 
     /// A glyph no font gives is named: a record out of range or a file
@@ -950,19 +1108,19 @@ mod tests {
             overlay.push_text_run(frame_scene::OverlayMaterial::text(font), all, [1.0; 4], &glyphs).unwrap();
             overlay
         };
-        let missing = |font: u16, index: u32, why| fill_glyphs(&mut GlyphPages::default(), &list(font, index), &fonts)
+        let missing = |font: u16, index: u32, why| fill_glyphs(&mut GlyphPages::default(), &list(font, index), &fonts, 1)
             .unwrap_err() == MissingGlyph { font, index, why };
         assert!(missing(0, 9, GlyphMissing::Decode), "no such record");
         assert!(missing(1, 1, GlyphMissing::Font), "a file that is not a font");
         assert!(missing(3, 1, GlyphMissing::Font), "no such line");
         // Six wide does not fit a four texel page.
         assert_eq!(
-            fill_glyphs(&mut GlyphPages::new(4), &list(0, 1), &fonts),
+            fill_glyphs(&mut GlyphPages::new(4), &list(0, 1), &fonts, 1),
             Err(MissingGlyph { font: 0, index: 1, why: GlyphMissing::Room })
         );
         let mut plain = Overlay::new([640, 480]);
         let all = frame_scene::ClipRect::full([640, 480]);
         plain.push_fill(all, [0.0, 0.0, 4.0, 4.0], [1.0; 4], frame_scene::OverlayBlend::Off).unwrap();
-        assert_eq!(fill_glyphs(&mut GlyphPages::default(), &plain, &fonts), Ok(()));
+        assert_eq!(fill_glyphs(&mut GlyphPages::default(), &plain, &fonts, 1), Ok(()));
     }
 }
