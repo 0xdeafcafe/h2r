@@ -340,7 +340,9 @@ mod tests {
         g.set_u32(ISLAND + 0x4c, action).unwrap();
         g.set_u32(ISLAND + 0x50, 1).unwrap();
         g.set_u32(action, action_table).unwrap();
-        g.set_u32(action_table + 0x14, 0x002a_0000).unwrap();
+        // The action object's first word is its vtable; its +0x14 is the step.
+        g.set_u32(action_table, action_table + 0x100).unwrap();
+        g.set_u32(action_table + 0x100 + 0x14, 0x002a_0000).unwrap();
         g.set_u32(ISLAND + 0x3c, entities).unwrap();
         g.set_u32(ISLAND + 0x40, 1).unwrap();
         g.set_u32(entities, entity).unwrap();
@@ -429,9 +431,10 @@ mod tests {
         let mut g = Guest::new();
         g.map_zeroed(0x0048_0000, 0x1000, Permissions::RW).unwrap();
         assert!(monitor_off(&g));
+        g.set_u32(MONITOR_END, 8).unwrap();
         g.set_u32(MONITOR_HEAD, 0).unwrap();
         assert!(!monitor_off(&g));
-        g.set_u32(MONITOR_HEAD, MONITOR_END + 4).unwrap();
+        g.set_u32(MONITOR_HEAD, 8).unwrap();
         assert!(monitor_off(&g));
         let unmapped = Guest::new();
         assert!(!monitor_off(&unmapped));

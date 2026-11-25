@@ -542,8 +542,11 @@ mod tests {
     #[test]
     fn a_positive_row_below_the_error_applies_nothing() {
         // The velocity error (2) already exceeds the right-hand side (1):
-        // the row is separating, and the impulse stays zero.
-        let solved = stream(1.0)
+        // the row is separating, and the impulse stays zero. Only a
+        // positive-limited row skips it; a free row pulls back (-0.5).
+        let mut s = stream(1.0);
+        s.commands[0].constraint = Constraint::Single(Limit::Positive);
+        let solved = s
             .solve(1, 1.0f32.to_bits(), 0.0f32.to_bits(), 0x1f80, 0x027f)
             .unwrap();
         assert_eq!(lanes(solved.bodies[0].linear), [1.0, 0.0, 0.0, 0.0].map(f32::to_bits));

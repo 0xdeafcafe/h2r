@@ -301,7 +301,8 @@ mod tests {
 
     fn guest() -> Guest {
         let mut g = Guest::new();
-        g.map_zeroed(0x0020_0000, 0x1a_000, Permissions::RW).unwrap();
+        g.map_zeroed(0x0020_0000, 0x1000, Permissions::RW).unwrap();
+        g.map_zeroed(0x0030_0000, 0x9_0000, Permissions::RW).unwrap();
         g.map_zeroed(0x0041_2000, 0x1000, Permissions::RW).unwrap();
         // The quantizer: no offset, unit scale, unbounded clamp, no bias.
         vector(&mut g, WORLD + 0x10, [0; 4]);
