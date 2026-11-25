@@ -77,6 +77,10 @@ pub(in crate::native_scene_lists) fn install(
         // After the native objects walk: a run it took never reaches the
         // guest handler, so only the entries it left behind are swapped.
         .after_feature(crate::native_objects::ID)
+        // The native lights and world layers take their runs at the same
+        // draw first, for the same reason.
+        .after_feature(crate::native_lights::ID)
+        .after_feature(crate::native_world::ID)
         .context_only()
         .optional();
 }
