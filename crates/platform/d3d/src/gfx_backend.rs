@@ -75,6 +75,7 @@ pub use guest_draw_pass::GuestDrawPass;
 pub use guest_draw_pass::tiles::{ShadowTiles, TileWork};
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use gfx::occlusion::{PixelCounter, PixelReport};
 use gfx::raster::RenderScale;
@@ -114,6 +115,9 @@ pub struct HostTexture {
     /// The texture.
     pub texture: wgpu::Texture,
     view: Option<wgpu::TextureView>,
+    /// A frame-buffer copy's: the last handle to drop hands the texture to
+    /// its backend to destroy.
+    release: Option<Arc<ReleaseOnDrop>>,
 }
 
 impl HostTexture {
@@ -127,6 +131,41 @@ impl HostTexture {
         HostTexture {
             texture: self.texture.clone(),
             view: self.view.clone(),
+            release: self.release.clone(),
+        }
+    }
+}
+
+/// Released frame-buffer copies ([`Backend::snapshot_surface`]), destroyed
+/// by the backend that made them one present after the last handle drops
+/// ([`GfxBackend::destroy_released`]).
+///
+/// Dropping a `wgpu::Texture` frees its memory only once nothing else
+/// holds it: a cached bind group or view keeps a copy (one frame-sized
+/// texture, about 19 MB at 2560x1920) alive until the cache lets it go.
+/// `destroy` frees it when the GPU is done with it, whoever still holds a
+/// handle. It must not come before the commands that use the copy are
+/// submitted (a submission over a destroyed texture is a validation
+/// error), so the backend waits for its next present, after which its own
+/// and, with a scaled pair, the view's work of that frame are submitted.
+type Released = Arc<Mutex<Vec<wgpu::Texture>>>;
+
+/// Copies a backend holds at once for destroying; more (a backend that
+/// does not present) are only dropped, as other textures are.
+const RELEASED_CAP: usize = 64;
+
+/// The copy's handles share one of these; its drop is the release.
+#[derive(Debug)]
+struct ReleaseOnDrop {
+    texture: wgpu::Texture,
+    to: Released,
+}
+
+impl Drop for ReleaseOnDrop {
+    fn drop(&mut self) {
+        let Ok(mut released) = self.to.lock() else { return };
+        if released.len() < RELEASED_CAP {
+            released.push(self.texture.clone());
         }
     }
 }
@@ -173,6 +212,11 @@ pub struct GfxBackend {
     /// The last display frame drawn between or for the guest's presents on
     /// its own targets ([`Self::retain_shown`]), kept until the next.
     shown_between: Option<SurfaceId>,
+    /// Frame-buffer copies whose last handle dropped since the last
+    /// present ([`Released`]).
+    released: Released,
+    /// Those of the frame before: destroyed at the next present.
+    releasing: Vec<wgpu::Texture>,
     scene_uploads: guest_draw_pass::TextureCache,
     present_hook: Option<PresentHook>,
     guest_present_observer: Option<GuestPresentObserver>,
@@ -289,6 +333,8 @@ pub struct BatchStats {
     pub submits: u64,
     /// Blocking waits for the GPU at `Swap` (`D3DSWAP_FINISH`).
     pub swap_waits: u64,
+    /// Frame-buffer copies destroyed a present after their release.
+    pub snapshots_destroyed: u64,
 }
 
 impl GfxBackend {
@@ -378,6 +424,8 @@ impl GfxBackend {
             presented: None,
             scene_presented: None,
             shown_between: None,
+            released: Released::default(),
+            releasing: Vec::new(),
             scene_uploads: Default::default(),
             present_hook: None,
             guest_present_observer: None,
@@ -561,6 +609,7 @@ impl GfxBackend {
         if let Some(hook) = self.replay_hook.as_mut().or(self.present_hook.as_mut()) {
             hook(ctx, store, surface, 0, gamma);
         }
+        self.poll();
         Ok(())
     }
 
@@ -663,7 +712,7 @@ impl GfxBackend {
                     ..Default::default()
                 })
             });
-        HostTexture { texture, view }
+        HostTexture { texture, view, release: None }
     }
 
     /// Reads a colour surface back (after submitting the pending pass), in
@@ -1195,6 +1244,7 @@ impl GfxBackend {
         let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
         let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "present");
         self.flush()?;
+        self.destroy_released();
         // Start the already-submitted query reads before exposing this swap.
         // If one fails, a scaled display can still fall back to the reference
         // without handing the window or parity observer a second image.
@@ -1262,10 +1312,45 @@ impl GfxBackend {
                 let _w = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "GPU wait");
                 self.stats.swap_waits += 1;
                 let _ = self.ctx.device.poll(wait);
+                self.prev_frame_end = frame_end;
+                return Ok(());
             }
         }
         self.prev_frame_end = frame_end;
+        self.poll();
         Ok(())
+    }
+
+    /// Lets the device finish what the GPU is done with, without waiting:
+    /// frees destroyed and dropped resources and runs map callbacks. Every
+    /// present does it (a swap wait polls already), so freeing never waits
+    /// on a submission that happens to come later ([`Released`]).
+    fn poll(&self) {
+        let _ = self.ctx.device.poll(wgpu::PollType::Poll);
+    }
+
+    /// Destroys the frame-buffer copies released before the last present
+    /// and drops the cached texture groups over them ([`Released`]). By
+    /// now every use of them is submitted: this backend's at that present
+    /// or this flush, and a scaled view's at its own present, which comes
+    /// after the reference's. Copies released since wait for the next.
+    fn destroy_released(&mut self) {
+        let now = self
+            .released
+            .lock()
+            .map(|mut released| std::mem::take(&mut *released))
+            .unwrap_or_default();
+        let due = std::mem::replace(&mut self.releasing, now);
+        if due.is_empty() {
+            return;
+        }
+        for texture in &due {
+            texture.destroy();
+        }
+        if let Some(s) = self.shaders.as_mut() {
+            s.forget_textures(&due);
+        }
+        self.stats.snapshots_destroyed += due.len() as u64;
     }
 
     /// Records `draw` into the pending pass for `color` and `depth` (after
@@ -1730,7 +1815,12 @@ impl Backend for GfxBackend {
                 .clear_rects(&self.ctx, &mut enc, &target, clear, &[all]);
         }
         self.side_done(enc, passes);
-        Ok(Some(self.host_texture(t, TextureKind::D2)))
+        let mut host = self.host_texture(t, TextureKind::D2);
+        host.release = Some(Arc::new(ReleaseOnDrop {
+            texture: host.texture.clone(),
+            to: Arc::clone(&self.released),
+        }));
+        Ok(Some(host))
     }
 
     fn create_texture_target(
@@ -2137,6 +2227,7 @@ impl Backend for GfxBackend {
         Ok(Some(HostTexture {
             texture: texture.clone(),
             view,
+            release: None,
         }))
     }
 
@@ -2471,6 +2562,38 @@ fn split<'a>(draw: Draw<'a>, pieces: &[Option<ScissorRect>]) -> Vec<Draw<'a>> {
 mod tests {
     use super::merge_split;
     use wgpu::ColorWrites as W;
+
+    /// A frame-buffer copy is destroyed one present after its last handle
+    /// drops, shared handles keep it, and other textures are never
+    /// destroyed this way.
+    #[test]
+    fn released_frame_buffer_copies_are_destroyed_a_present_later() {
+        use super::{Backend, GfxBackend, GfxContext};
+
+        let Ok(ctx) = GfxContext::headless() else { return };
+        let mut b = GfxBackend::new(ctx);
+        let back = b.create_surface(gfx::D3DFormat::LinA8R8G8B8, 8, 8, false).unwrap();
+        let destroyed = |b: &GfxBackend| b.batch_stats().snapshots_destroyed;
+
+        let copy = b.snapshot_surface(back, false).unwrap().unwrap();
+        let shared = copy.shared();
+        let opaque = b.snapshot_surface(back, true).unwrap().unwrap();
+        let surface = b.surface_texture(back).unwrap();
+        drop(copy);
+        drop(opaque);
+        drop(surface);
+        b.present(back, 0).unwrap();
+        assert_eq!(destroyed(&b), 0, "released this frame: its draws may be unsubmitted");
+        b.present(back, 0).unwrap();
+        assert_eq!(destroyed(&b), 1, "the opaque copy; the other has a handle left");
+        drop(shared);
+        b.present(back, 0).unwrap();
+        b.present(back, 0).unwrap();
+        assert_eq!(destroyed(&b), 2, "the last handle released it");
+        b.present(back, 0).unwrap();
+        assert_eq!(destroyed(&b), 2, "the surface's own texture is not a copy");
+        assert!(b.store.get(back).is_ok());
+    }
 
     #[test]
     fn an_unshown_scaled_swap_still_consumes_its_guest_ordinal() {

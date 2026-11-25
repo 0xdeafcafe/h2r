@@ -281,6 +281,10 @@ pub trait ShaderProvider: Send {
     /// A frame was presented (per-frame caches may drop what went unused).
     fn end_frame(&mut self) {}
 
+    /// `gone` were destroyed (frame-buffer copies the backend released):
+    /// drop cached bind groups over them.
+    fn forget_textures(&mut self, _gone: &[wgpu::Texture]) {}
+
     /// Called once when the backend is set up and then after every frame,
     /// with the pipelines draws needed since the last call that were not
     /// built yet ([`gfx::Renderer::take_new_keys`]). A provider with a

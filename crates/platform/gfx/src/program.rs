@@ -331,6 +331,30 @@ impl ProgramBindings {
         self.texture_group_entries.set(self.texture_groups.len() as u64);
     }
 
+    /// `gone` were destroyed (released frame-buffer copies): drops the
+    /// groups that bind a view of any of them. No later draw holds those
+    /// views, so the groups are never hit again, and a group over a
+    /// destroyed texture is invalid; without this each would wait out
+    /// [`GROUP_FRAMES`].
+    pub fn forget_textures(&mut self, gone: &[wgpu::Texture]) {
+        if gone.is_empty() || self.texture_groups.is_empty() {
+            return;
+        }
+        let gone: std::collections::HashSet<&wgpu::Texture> = gone.iter().collect();
+        self.texture_groups.retain(|(_, stages), _| {
+            !stages
+                .iter()
+                .flatten()
+                .any(|(view, _, _)| view.as_ref().is_some_and(|v| gone.contains(v.texture())))
+        });
+        self.texture_group_entries.set(self.texture_groups.len() as u64);
+    }
+
+    /// Texture groups cached now.
+    pub fn texture_group_count(&self) -> usize {
+        self.texture_groups.len()
+    }
+
     /// The sampler for `key` (cached).
     pub fn sampler(&mut self, device: &wgpu::Device, key: SamplerKey) -> wgpu::Sampler {
         if let Some(sampler) = self.samplers.get(&key) {
