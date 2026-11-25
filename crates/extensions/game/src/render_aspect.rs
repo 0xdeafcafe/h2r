@@ -122,22 +122,40 @@ fn starting_lens(factor: f32) -> render_bridge::scene_step::VisibilityLens {
     }
 }
 
-// 0x2fd90 reserves 0x74 stack bytes. After its call to 0x2fb70,
-// +0x54 holds the X/Y biases, X/Y scales and four tangent bounds.
+// 0x2fd90 reserves 0x74 stack bytes. After its call to 0x2fb70 (the hook
+// runs at 0x2fda3, whose stack is the continuation's), +0x54 holds the X/Y biases, X/Y scales and four tangent bounds.
 // All three consumers (matrix, CPU pixel scale and frustum) use these
 // terms. Keep the vertical lens and the centre of an off-axis window.
-fn fit_view_projection(mem: &mut impl GuestMemory, esp: u32, factor: f32) -> Option<()> {
+/// What [`fit_view_projection`] did with one call of the projection terms.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fit {
+    Applied,
+    /// A game of several machines keeps the retail terms.
+    Networked,
+    /// The terms were built for a caller that is not the displayed camera.
+    Caller(u32),
+    /// A 4:3 window, or terms the fit cannot use.
+    Unchanged,
+}
+
+fn fit_view_projection(mem: &mut impl GuestMemory, esp: u32, factor: f32) -> Fit {
     if factor == 1.0 || !factor.is_finite() || factor <= 0.0 {
-        return None;
+        return Fit::Unchanged;
     }
-    let caller = mem.u32(esp.checked_add(0x74)?).ok()?;
+    let Some(caller) = esp.checked_add(0x74).and_then(|at| mem.u32(at).ok()) else {
+        return Fit::Unchanged;
+    };
     match caller {
         // Active and saved camera of render_view_scene and render_alternate_view.
         0x0002_badc | 0x0002_bb21 | 0x0002_c7cc | 0x0002_c7ff => {}
         // Popping the last nested view rebuilds the displayed camera.
         0x0001_3cc0 if mem.u32(0x0046_701c).ok() == Some(0) => {}
-        _ => return None,
+        _ => return Fit::Caller(caller),
     }
+    widen_terms(mem, esp, factor).map_or(Fit::Unchanged, |()| Fit::Applied)
+}
+
+fn widen_terms(mem: &mut impl GuestMemory, esp: u32, factor: f32) -> Option<()> {
     let at = esp.checked_add(0x54)?;
     let mut words = [0u8; 24];
     mem.read(at, &mut words).ok()?;
@@ -545,7 +563,12 @@ impl Feature for RenderAspect {
                 .before(&points::render_aspect::VIEW_PROJECTION_TERMS, "fit the displayed camera projection", move |c| {
                     let factor = f32::from_bits(view_lens.load(Ordering::Relaxed));
                     let mut mem = c.ctx.memory();
-                    if !crate::render_rng::networked(&*mem) && fit_view_projection(&mut *mem, c.cpu.esp, factor).is_some() {
+                    let fit = if crate::render_rng::networked(&*mem) {
+                        Fit::Networked
+                    } else {
+                        fit_view_projection(&mut *mem, c.cpu.esp, factor)
+                    };
+                    if let Fit::Applied = fit {
                         projected.store(true, Ordering::Relaxed);
                         sink.set_camera_projection_factor(factor);
                         #[cfg(feature = "desktop-runtime")]
@@ -553,6 +576,13 @@ impl Feature for RenderAspect {
                             render_bridge::scene_step::VisibilityLens::Guest(factor),
                         );
                     }
+                    #[cfg(feature = "desktop-runtime")]
+                    render_bridge::scene_step::count_guest_fit(match fit {
+                        Fit::Applied => render_bridge::scene_step::GuestFit::Applied,
+                        Fit::Networked => render_bridge::scene_step::GuestFit::Networked,
+                        Fit::Caller(caller) => render_bridge::scene_step::GuestFit::Caller(caller),
+                        Fit::Unchanged => render_bridge::scene_step::GuestFit::Unchanged,
+                    });
                     Ok(Flow::Continue)
                 })
                 .context_only()
@@ -943,7 +973,7 @@ mod tests {
         for caller in [0x0002_badc, 0x0002_bb21, 0x0002_c7cc, 0x0002_c7ff, 0x0001_3cc0] {
             let mut camera = mem.clone();
             camera.put_u32(esp + 0x74, caller);
-            fit_view_projection(&mut camera, esp, 0.75).unwrap();
+            assert_eq!(fit_view_projection(&mut camera, esp, 0.75), Fit::Applied);
             let bias = camera.f32(at).unwrap();
             let scale = camera.f32(at + 8).unwrap();
             for (offset, pixel) in [(16, 0.), (20, 5120.)] {
@@ -957,7 +987,7 @@ mod tests {
         mem.put_u32(0x0046_701c, 1);
         for caller in [0x0003_f794, 0x0001_3cc0] {
             mem.put_u32(esp + 0x74, caller);
-            assert_eq!(fit_view_projection(&mut mem, esp, 0.75), None);
+            assert_eq!(fit_view_projection(&mut mem, esp, 0.75), Fit::Caller(caller));
             assert_eq!(mem.f32(at + 8).unwrap(), terms[2]);
         }
     }

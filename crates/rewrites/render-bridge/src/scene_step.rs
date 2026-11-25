@@ -197,6 +197,10 @@ static VISIBILITY_DISPLAY_INCOMPLETE: AtomicU64 = AtomicU64::new(0);
 /// set, and the widened views whose retail set declined ([`retail_object`]).
 static GUEST_LENS_OBJECTS_SKIPPED: AtomicU64 = AtomicU64::new(0);
 static GUEST_LENS_RETAIL_DECLINED: AtomicU64 = AtomicU64::new(0);
+/// Calls of the projection-terms fit (`VIEW_PROJECTION_TERMS`) by outcome
+/// ([`GuestFit`]), and the last caller it did not recognise.
+static GUEST_FIT: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+static GUEST_FIT_LAST_CALLER: AtomicU64 = AtomicU64::new(0);
 static VISIBILITY_DECLINED: [AtomicU64; scene_extract::visibility::Decline::ALL.len()] =
     [const { AtomicU64::new(0) }; scene_extract::visibility::Decline::ALL.len()];
 /// `render.scene`'s counter of each decline, in `Decline::ALL`'s order.
@@ -296,6 +300,33 @@ impl VisibilityLens {
             Self::Display(_) => 2,
         }
     }
+}
+
+/// What the projection-terms fit did with one call: widened the terms,
+/// kept retail for a game of several machines, kept retail for a caller
+/// that is not a displayed camera (`caller`), or kept retail because the
+/// window is 4:3 or the terms were unusable.
+#[derive(Clone, Copy, Debug)]
+pub enum GuestFit {
+    Applied,
+    Networked,
+    Caller(u32),
+    Unchanged,
+}
+
+/// Counts one call of the projection-terms fit
+/// (`scene_guest_lens_fit_*` in `render.scene`).
+pub fn count_guest_fit(fit: GuestFit) {
+    let slot = match fit {
+        GuestFit::Applied => 0,
+        GuestFit::Networked => 1,
+        GuestFit::Caller(caller) => {
+            GUEST_FIT_LAST_CALLER.store(u64::from(caller), Ordering::Relaxed);
+            2
+        }
+        GuestFit::Unchanged => 3,
+    };
+    GUEST_FIT[slot].fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn set_visibility_lens(lens: VisibilityLens) {
@@ -1753,6 +1784,11 @@ pub fn counters() -> Vec<(&'static str, u64)> {
         ("scene_visibility_display_incomplete", VISIBILITY_DISPLAY_INCOMPLETE.load(Ordering::Relaxed)),
         ("scene_guest_lens_objects_skipped", GUEST_LENS_OBJECTS_SKIPPED.load(Ordering::Relaxed)),
         ("scene_guest_lens_retail_declined", GUEST_LENS_RETAIL_DECLINED.load(Ordering::Relaxed)),
+        ("scene_guest_lens_fit_applied", GUEST_FIT[0].load(Ordering::Relaxed)),
+        ("scene_guest_lens_fit_networked", GUEST_FIT[1].load(Ordering::Relaxed)),
+        ("scene_guest_lens_fit_other_caller", GUEST_FIT[2].load(Ordering::Relaxed)),
+        ("scene_guest_lens_fit_unchanged", GUEST_FIT[3].load(Ordering::Relaxed)),
+        ("scene_guest_lens_fit_last_caller", GUEST_FIT_LAST_CALLER.load(Ordering::Relaxed)),
     ]
     .into_iter()
     .chain(

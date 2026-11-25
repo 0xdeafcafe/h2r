@@ -115,6 +115,9 @@ impl Feature for RenderRng {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), hooks::BuildError> {
+        // A snapshot is taken between frames, when the simulation's seed is
+        // back in place; the private stream only ever reaches drawing.
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         let seeds = shared();
         let entering = seeds.clone();
         b.raw()

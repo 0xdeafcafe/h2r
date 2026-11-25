@@ -4,9 +4,12 @@ use super::{
 };
 
 pub const DOC: &str = "docs/graphics/high-resolution.md";
-// The active camera builder has just returned its projection terms on the stack.
+// The active camera builder has returned its projection terms on the stack,
+// one instruction after the call's continuation (0x0002fd9e loads only the
+// camera's +0x20): a return resumes the caller's own code, never a hook at
+// the continuation, so a site on 0x0002fd9e would never run.
 pub const VIEW_PROJECTION_TERMS: Point =
-    Point::new("VIEW_PROJECTION_TERMS", 0x0002_fd9e, Sig::Site, DOC);
+    Point::new("VIEW_PROJECTION_TERMS", 0x0002_fda3, Sig::Site, DOC);
 pub const ANCHOR: Point = Point::new("HUD_LAYOUT_ANCHOR", 0x0013_96c7, Sig::Site, DOC);
 pub const ANCHOR_READY: Point = Point::new("HUD_LAYOUT_ANCHOR_READY", 0x0013_9929, Sig::Site, DOC);
 // Fade over the whole per-player UI viewport inside the menu callback.
