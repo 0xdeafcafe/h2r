@@ -40,7 +40,8 @@ pub fn world(mem: &dyn GuestRead) -> WorldState {
 /// gather `0x00132220` (with the view's player unit appended by
 /// `0x0003f33c`) fills the object list. A light view has separate lists and
 /// must never be attributed to the camera. The source is the guest's; the
-/// scene step swaps in the Rust sets when they equal these
+/// scene step puts the Rust sets in their place whenever the Rust
+/// computation holds, keeping these when it declines
 /// ([`crate::visibility`]).
 pub fn cluster_gather(mem: &dyn GuestRead) -> Option<frame_scene::scene::ClusterGather> {
     use engine::render_loop::occlusion::guest::{LIST_COUNT, LIST_HANDLES, MAIN_VIS, VIS_KIND, VIS_OBJECTS};

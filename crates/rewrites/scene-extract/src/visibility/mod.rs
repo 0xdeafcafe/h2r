@@ -19,8 +19,9 @@
 //!
 //! The scene step runs [`compute`] for every game view after the guest's
 //! gather, compares, counts, and puts the Rust sets in the view's
-//! `ClusterGather` only when they equal the guest's. Nothing here writes
-//! guest memory, so the sim's hashes cannot move.
+//! `ClusterGather`: they are the default. A view whose computation
+//! declined keeps the guest's lists; nothing here writes guest memory, so
+//! the sim's hashes cannot move.
 
 pub mod flood;
 pub mod frusta;
@@ -215,19 +216,19 @@ pub fn compute_with_windows(
     Ok((VisibilitySets::new(reached.clusters, objects), windows))
 }
 
-/// The view's gather with the Rust sets in place of the guest's lists when
-/// they are equal as sets, and the comparison. A difference keeps the
-/// guest's lists: they stay the fallback.
+/// The view's gather with the Rust sets in place of the guest's lists, and
+/// the comparison. The Rust sets are the default: the scene step reaches
+/// here only when the computation held, a view it declined keeps the
+/// guest's lists, and a difference keeps the Rust sets, counted and named.
+/// The guest's lists remain what the render records were built from.
 pub fn arm(
     mut gather: frame_scene::scene::ClusterGather,
     rust: VisibilitySets,
 ) -> (frame_scene::scene::ClusterGather, Parity) {
     let parity = compare(&rust, &guest::guest_sets(&gather));
-    if parity.holds() {
-        gather.visible = rust.clusters;
-        gather.objects = rust.objects;
-        gather.source = frame_scene::VisibilitySource::Rust;
-    }
+    gather.visible = rust.clusters;
+    gather.objects = rust.objects;
+    gather.source = frame_scene::VisibilitySource::Rust;
     (gather, parity)
 }
 

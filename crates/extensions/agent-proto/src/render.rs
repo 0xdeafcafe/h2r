@@ -888,8 +888,8 @@ pub struct SceneViewRecord {
     /// The game view's object list length, from the same gather.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visibility_objects: Option<u32>,
-    /// Who computed the view's visible clusters and objects: `guest`, or
-    /// `rust` when the Rust visibility equalled the guest's for this view
+    /// Who computed the view's visible clusters and objects: `rust`, or
+    /// `guest` when the Rust visibility declined for the view
     /// (docs/graphics/native-visibility.md).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visibility_source: Option<String>,

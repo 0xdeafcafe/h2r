@@ -1361,7 +1361,8 @@ fn keep_complete_clusters(clusters: &mut Vec<u16>, complete: impl Fn(u16) -> Opt
 /// The Rust visibility beside the guest's for one game view
 /// (docs/graphics/native-visibility.md): computed, compared as sets with
 /// the guest's `gather`, counted, and returned in place of the guest's
-/// lists only when equal. A decline or a difference keeps the guest's.
+/// lists whenever the computation holds: the default. A decline keeps the
+/// guest's; a difference keeps the Rust sets and stays counted and named.
 fn visibility_arm(
     m: &Ro<'_>,
     camera: &Camera,
@@ -1387,6 +1388,9 @@ fn visibility_arm(
         display_additions(m, &gather, *camera, factor, cache, windows.as_ref()?, &rust)
     });
     let (gather, parity) = visibility::arm(gather, rust);
+    if gather.source == frame_scene::VisibilitySource::Rust {
+        VISIBILITY_TAKEN.fetch_add(1, Ordering::Relaxed);
+    }
     if let Some(first) = parity.first {
         VISIBILITY_DIFFER.fetch_add(1, Ordering::Relaxed);
         if parity.clusters_guest_only + parity.clusters_rust_only != 0 {
@@ -1410,9 +1414,6 @@ fn visibility_arm(
         return (gather, extra);
     }
     VISIBILITY_EQUAL.fetch_add(1, Ordering::Relaxed);
-    if gather.source == frame_scene::VisibilitySource::Rust {
-        VISIBILITY_TAKEN.fetch_add(1, Ordering::Relaxed);
-    }
     (gather, extra)
 }
 
