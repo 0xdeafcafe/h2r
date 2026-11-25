@@ -173,7 +173,11 @@ pixel scale and root portal bounds derive from these terms. Every wide view
 starts with the display supplement's lens; the hook swaps in the guest lens
 once it has fitted the view, and a view it does not fit keeps the
 supplement described under exact mode below (`starting_lens`;
-`render.scene`'s `scene_visibility_lens_*` counts the views by lens). Water and fog
+`render.scene`'s `scene_visibility_lens_*` counts the views by lens, and
+`scene_guest_lens_fit_*` counts the hook's calls by outcome: applied,
+networked, another caller (with the last one's address), unchanged). The
+site is one instruction past the builder call's continuation: a return
+resumes the caller's own code, so a hook on a continuation never runs. Water and fog
 geometry built with this camera, the sky and CPU-projected effects share
 its horizontal lens. The BSP flood clips each open portal to its parent
 window. Object spheres must intersect one of their cluster's window frusta.
