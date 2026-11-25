@@ -188,6 +188,19 @@ cluster ID alone cannot supply a missing surface. Decorator placements
 also come from the guest's per-view list. A layer-6 material count
 describes the edge blend.
 Layer 3 draws resident cluster parts and fully opaque rigid placements.
+A display-only section is drawn whole or not at all. A cluster is kept
+only when every visible material of it, over all its LODs, draws in no
+layer but 3, 6 and 16 (`native_world::display_cluster_complete`,
+`DISPLAY_LAYERS` in
+`crates/rewrites/render-bridge/src/native_world/section.rs`), the layers
+the supplement has a display draw for. A part that also draws in layer 1
+(the accumulation a combined layer-3 shader samples), an overlay layer
+(5, 7, 8, 20, 2, 17), a layer-15 pool surface or a sorted layer (18, 19,
+21) leaves its whole cluster out, with its water edge and fog. A placement, or a cluster, is also left out when any of its parts
+is not loaded or samples the accumulation target
+(`GpuWorld::display_complete_parts` in
+`crates/rewrites/native-render/src/gpu.rs`). `render.scene`'s
+`scene_visibility_display_incomplete` counts the clusters left out.
 For objects, it builds the model sections and node palettes on a private
 copy of the record writes. Materials without native layer-3 support, fades,
 attachments and objects that require guest animation code can still leave

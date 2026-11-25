@@ -2101,7 +2101,10 @@ h2 agent render.parity '{"arm": true}'
   camera that `VIEW_PROJECTION_TERMS` widened, or the display supplement;
   a single-copy run whose views count under `_display` has views the hook
   did not fit), `scene_visibility_display_views`, `_clusters` and
-  `_objects` (what the display supplement added) and
+  `_objects` (what the display supplement added),
+  `scene_visibility_display_incomplete` (display-only clusters left out
+  whole because a part draws in a layer the supplement has no display
+  draw for) and
   `scene_visibility_declined_<reason>` (`unread`,
   `layout`, `mode`, `frusta`, `overflow`, `camera`, `not_main`: views it
   made no sets for); the light views' `scene_light_visibility_checked`,

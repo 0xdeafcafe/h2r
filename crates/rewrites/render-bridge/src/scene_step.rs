@@ -175,6 +175,9 @@ static VISIBILITY_LENS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 static VISIBILITY_DISPLAY_VIEWS: AtomicU64 = AtomicU64::new(0);
 static VISIBILITY_DISPLAY_CLUSTERS: AtomicU64 = AtomicU64::new(0);
 static VISIBILITY_DISPLAY_OBJECTS: AtomicU64 = AtomicU64::new(0);
+/// Display-only clusters left out because a part draws in a layer the
+/// display supplement has no draw for ([`keep_complete_clusters`]).
+static VISIBILITY_DISPLAY_INCOMPLETE: AtomicU64 = AtomicU64::new(0);
 static VISIBILITY_DECLINED: [AtomicU64; scene_extract::visibility::Decline::ALL.len()] =
     [const { AtomicU64::new(0) }; scene_extract::visibility::Decline::ALL.len()];
 /// `render.scene`'s counter of each decline, in `Decline::ALL`'s order.
@@ -1218,6 +1221,8 @@ fn display_additions(
     ).ok()?;
     let placements = windows.as_ref().and_then(|w| cache.display_placements(mem, retail, w)).unwrap_or_default();
     visible.retain_display_additions(baseline, gather);
+    let refused = keep_complete_clusters(&mut visible.clusters, |id| crate::native_world::display_cluster_complete(mem.0, id));
+    VISIBILITY_DISPLAY_INCOMPLETE.fetch_add(refused, Ordering::Relaxed);
     let whole_clusters = windows.as_ref().map_or_else(Vec::new, |windows| {
         visible.clusters.iter().copied().filter(|&id| {
             crate::native_scene_lists::late_cluster_bounds(mem.0, id)
@@ -1227,6 +1232,16 @@ fn display_additions(
     (!visible.clusters.is_empty() || !visible.objects.is_empty() || !placements.is_empty()).then_some(frame_scene::DisplayVisibility {
         whole_clusters, clusters: visible.clusters, objects: visible.objects, placements,
     })
+}
+
+/// Keep the display-only clusters the supplement draws in every layer
+/// they use (`native_world::display_cluster_complete`); a cluster it
+/// cannot complete, or whose parts do not read, is left out whole, with
+/// its water edge and fog. Returns how many were left out.
+fn keep_complete_clusters(clusters: &mut Vec<u16>, complete: impl Fn(u16) -> Option<bool>) -> u64 {
+    let before = clusters.len();
+    clusters.retain(|&id| complete(id) == Some(true));
+    (before - clusters.len()) as u64
 }
 
 /// The Rust visibility beside the guest's for one game view
@@ -1652,6 +1667,7 @@ pub fn counters() -> Vec<(&'static str, u64)> {
         ("scene_visibility_display_views", VISIBILITY_DISPLAY_VIEWS.load(Ordering::Relaxed)),
         ("scene_visibility_display_clusters", VISIBILITY_DISPLAY_CLUSTERS.load(Ordering::Relaxed)),
         ("scene_visibility_display_objects", VISIBILITY_DISPLAY_OBJECTS.load(Ordering::Relaxed)),
+        ("scene_visibility_display_incomplete", VISIBILITY_DISPLAY_INCOMPLETE.load(Ordering::Relaxed)),
     ]
     .into_iter()
     .chain(
@@ -1839,6 +1855,17 @@ mod tests {
         assert_eq!(GuestLensState::of(1.2, 1.2, factor), GuestLensState::Retail);
         assert_eq!(GuestLensState::of(1.2, 0.6, factor), GuestLensState::Other);
         assert_eq!(GuestLensState::of(0.0, 0.0, factor), GuestLensState::Other);
+    }
+
+    #[test]
+    fn the_display_supplement_leaves_out_whole_the_clusters_it_cannot_complete() {
+        let mut clusters = vec![2, 5, 7, 9];
+        let refused = keep_complete_clusters(&mut clusters, |id| match id {
+            5 => Some(false),
+            9 => None,
+            _ => Some(true),
+        });
+        assert_eq!((clusters, refused), (vec![2, 7], 2));
     }
 
     #[test]

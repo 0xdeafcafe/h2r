@@ -1461,6 +1461,20 @@ impl GpuWorld {
         Some(selection)
     }
 
+    /// The display-only parts this world can draw whole: every part of an
+    /// owner (a cluster or a placement) must be loaded and read no texture
+    /// accumulation target, or none of its parts is kept. A display-only
+    /// stage has no layer 1 of its own, so the accumulation target holds
+    /// nothing for those pixels, and a section drawn without some of its
+    /// parts is drawn half.
+    pub fn display_complete_parts(&self, parts: &[(Owner, u8)]) -> Vec<(Owner, u8)> {
+        complete_owners(parts, |part| {
+            let &slot = self.part_slots.get(part)?;
+            let material = self.world.draws[slot].material;
+            Some(!self.programs.as_ref().is_some_and(|p| p.program(material).is_some_and(|p| p.needs_texaccum())))
+        })
+    }
+
     /// Bind the live target descriptor only for selections whose sampled stages or
     /// vertex constants use it. A missing descriptor prevents their reservation.
     pub fn select_texaccum(&self, selection: &mut WorldSelection, target: Option<crate::world_layers::Texaccum>) -> bool {
@@ -2143,6 +2157,34 @@ mod tests {
     }
 }
 
+
+/// The parts of every owner whose parts all pass `drawable` (`None`: not
+/// loaded), in their given order.
+fn complete_owners(parts: &[(Owner, u8)], drawable: impl Fn(&(Owner, u8)) -> Option<bool>) -> Vec<(Owner, u8)> {
+    let refused: HashSet<Owner> = parts.iter()
+        .filter(|part| drawable(part) != Some(true))
+        .map(|&(owner, _)| owner)
+        .collect();
+    parts.iter().copied().filter(|(owner, _)| !refused.contains(owner)).collect()
+}
+
+#[cfg(test)]
+mod display_parts_tests {
+    use super::*;
+
+    #[test]
+    fn a_display_owner_with_a_part_it_cannot_draw_is_left_out_whole() {
+        let (a, b, c) = (Owner::Cluster(4), Owner::Instance(9), Owner::Cluster(6));
+        let parts = [(a, 0), (b, 0), (a, 1), (b, 2), (c, 3)];
+        let kept = complete_owners(&parts, |&(owner, part)| match (owner, part) {
+            (o, 2) if o == b => Some(false), // samples the accumulation target
+            (o, _) if o == c => None,        // not loaded
+            _ => Some(true),
+        });
+        assert_eq!(kept, [(a, 0), (a, 1)]);
+        assert!(complete_owners(&[], |_| Some(true)).is_empty());
+    }
+}
 
 #[cfg(test)]
 mod image_storage_tests {

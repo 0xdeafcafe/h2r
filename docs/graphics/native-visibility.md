@@ -29,8 +29,24 @@ the displayed camera projection hook. In exact mode, the scene step projects the
 and builds object planes with both lenses. It removes IDs in either the
 guest lists or the Rust gather at the retail lens. It tests rigid BSP
 placements against their clusters' portal windows and deduplicates placements
-referenced by several clusters. The native passes receive the additional
-IDs through `View::display_visibility`.
+referenced by several clusters. It keeps only the clusters whose every
+layer has a display draw (`native_world::display_cluster_complete`). The
+native passes receive the additional IDs through
+`View::display_visibility`. The passes that take it:
+
+| Pass | Display-only draw |
+|---|---|
+| World layer 3 (`native_world_glue`) | Clusters and fully visible placements, whole owners only |
+| Objects (`native_objects_glue/display.rs`) | Objects |
+| Water edge, layer 6 (`native_water_glue`) | Kind-4 parts of whole clusters, when the guest layer is empty |
+| Fog, layer 16 (`native_fog_glue`) | One part of a whole cluster, when the guest layer is empty |
+
+The rest draw only what the guest listed: the frame scene's layers 1, 5,
+7, 8, 20, 2 and 17, the decorators, the layer-15 sorted transparents
+(the pool surfaces among them), layers 18, 19 and 21, decals and the
+dynamic lights' passes. A cluster that needs one of those layers is left
+out of the supplement whole.
+[High resolution](high-resolution.md#widescreen-projection).
 [Widescreen projection](high-resolution.md#widescreen-projection).
 
 ## How it works

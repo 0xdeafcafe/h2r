@@ -414,6 +414,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 }).map(|id| Owner::Instance(u32::from(id))));
             let parts = display_section_parts(sections, &ready.section_parts,
                 &ready.part_bounds.read().unwrap_or_else(|e| e.into_inner()), &frustum);
+            // Whole sections only, and none that samples an accumulation
+            // no display stage wrote (`GpuWorld::display_complete_parts`).
+            let parts = ready.gpu().as_ref().map(|gpu| gpu.display_complete_parts(&parts)).unwrap_or_default();
             if !parts.is_empty() && let Some(selection) = select(&parts, true) {
                 let plan = d3d::ExternalPlan { stage: timeline::native::Stage::World, view, ranges: parts.len(), slots: accumulation_slots(&selection) };
                 let _ = d.draw_display_stage(&mut crate::native_lights_glue::DeviceMemory(mem), plan, Box::new(world_pass(selection, true)));
