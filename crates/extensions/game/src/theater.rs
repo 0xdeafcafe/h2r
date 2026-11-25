@@ -44,6 +44,7 @@ pub use warm_transport::SliceAction;
 use warm_transport::{Boundary, RingStatus};
 mod local_pads;
 mod transport;
+mod pacing;
 pub use transport::Restart;
 pub(crate) use transport::SeekTaps;
 mod video_menu;
@@ -205,6 +206,9 @@ struct State {
     speed: f64,
     rate: transport::PlaybackRate,
     step_until: Option<u64>,
+    /// Present when the guest's `GAME_UPDATE_TICKS` is answered by the
+    /// player (`theater/pacing.rs`); a machine film paces on the wall clock.
+    pacing: Option<transport::FrameClock>,
     seeking: Option<u64>,
     seek: Option<SeekProgress>,
     /// The film's recorded D3D capture boundaries, as ticks, from load time.
@@ -552,6 +556,7 @@ impl Session {
                 speed,
                 rate: Default::default(),
                 step_until: None,
+                pacing: None,
                 seeking,
                 seek,
                 capture_points,
@@ -1320,6 +1325,7 @@ impl hooks::Feature for Observer {
             metadata::install(&self.0, b);
             camera::install(b, &self.0);
             actions::install(b, self.0.clone());
+            pacing::install(b, self.0.clone());
         }
         let session = self.0.clone();
         let live = move || {

@@ -473,6 +473,15 @@ impl<B: Backend> Backend for VariantFiles<B> {
         self.files.clear();
         self.inner.format()
     }
+    fn guard_writes(&mut self, scratch: &std::path::Path) -> Result<()> {
+        self.inner.guard_writes(scratch)?;
+        self.files.clear();
+        Ok(())
+    }
+    fn end_guard(&mut self) {
+        self.inner.end_guard();
+        self.files.clear();
+    }
     fn cleanup(&mut self, path: &str, write_access: bool) -> Result<()> {
         self.inner.cleanup(path, write_access)
     }
