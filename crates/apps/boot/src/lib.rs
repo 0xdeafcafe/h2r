@@ -1388,6 +1388,7 @@ fn run_configured(
         forge_glue::markers_world::add_method(&a.agent);
         // render.particles.refusals: the native particle path's geometry
         // refusals and a sample draw for each (native_particles_admission.rs).
+        #[cfg(feature = "gpu")]
         game::native_particles_admission::add_refusals_method(&a.agent);
         // sim.give and sim.spawn find tags as edit.* does (agent_glue.rs).
         if let Some(sim) = &a.sim {
