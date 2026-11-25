@@ -145,6 +145,12 @@ pub struct HwState {
     /// Halo picks one of 17 dither levels (the table at `0x487288`,
     /// selected by `0x1c290` from an opacity) for screen-door fades.
     pub stipple_pattern: [u32; 32],
+    /// A pattern the display copy (a draw target larger than the guest's)
+    /// takes in place of `stipple_pattern`, set around one native world
+    /// draw ([`crate::device::Device::set_display_stipple`]). The reference
+    /// copy keeps `stipple_pattern`, so guest readbacks stay retail. Not
+    /// pushed state: it is never snapshotted.
+    pub display_stipple: Option<[u32; 32]>,
     /// `SET_ZSTENCIL_CLEAR_VALUE` as last pushed.
     pub zstencil_clear_value: u32,
     /// `SET_COLOR_CLEAR_VALUE` as last pushed.
@@ -182,6 +188,7 @@ impl Default for HwState {
             cxt_write_enable: 0,
             stipple_control: None,
             stipple_pattern: [0; 32],
+            display_stipple: None,
             zstencil_clear_value: 0,
             color_clear_value: 0,
             vertex_format: [VERTEX_FORMAT_DISABLED; 16],
@@ -211,6 +218,16 @@ pub struct Memories<'a> {
 }
 
 impl HwState {
+    /// The stipple rows a draw to a target at `scale` samples: the display
+    /// override on a target larger than the guest's, else the pattern the
+    /// guest set.
+    pub fn stipple_rows(&self, scale: crate::scaled::RenderScale) -> [u32; 32] {
+        match self.display_stipple {
+            Some(rows) if scale != crate::scaled::RenderScale::ONE => rows,
+            _ => self.stipple_pattern,
+        }
+    }
+
     /// Applies one method write. `Ok(false)` means the method is not one of
     /// these (the caller decides what that means).
     pub fn apply(&mut self, m: u32, w: u32, mem: &mut Memories<'_>) -> Result<bool, HwOverflow> {

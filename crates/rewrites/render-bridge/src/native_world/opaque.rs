@@ -100,7 +100,7 @@ fn sorted(c: &mut Call<'_>, fade: (Option<ViewLodScale>, bool)) -> Result<Flow, 
     };
     let fcw = c.cpu.x87.control;
     let mxcsr = c.cpu.mxcsr;
-    let fade = super::DisplayFade::resolve(&*mem, fade.0, fade.1);
+    let fade = super::FadePlan::resolve(&*mem, fade.0, fade.1);
     let shader = part.shader;
     let first_section = section(layer.view, bsp, part.owner);
     let mut materials = SectionMaterials::default();
@@ -144,7 +144,7 @@ pub(super) fn prepare(mem: &mut dyn GuestMemory, view: &dyn OpaqueView, material
 /// resource lifetime transitions for the last consumed entry have completed.
 pub(super) async fn handoff(cx: &Cx, mut current: Prepared, view: &dyn OpaqueView, sorted: &SortedRun,
     view_index: u32, bsp: u32, materials: &mut SectionMaterials, fcw: u16, mxcsr: u32,
-    fade: super::DisplayFade) -> Result<Ret, EntryError>
+    fade: super::FadePlan) -> Result<Ret, EntryError>
 {
     for offset in 1..=sorted.remaining {
         let Prepared { part, material, draw } = current;

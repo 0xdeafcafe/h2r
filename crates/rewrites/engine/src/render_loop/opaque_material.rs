@@ -96,6 +96,26 @@ pub fn stipple(m: &dyn GuestMemory, byte: u8, enter: bool, fcw: u16, mxcsr: u32)
     Ok(Some((fade, TABLE + 0x80 * index.value.clamp(0, 16) as u32)))
 }
 
+/// The 32-row pattern a fade byte selects from the engine's table
+/// (0x487288, 17 patterns of 0x80 bytes), by the same arithmetic
+/// [`stipple`] uses, without its device-cache comparison: the pattern
+/// address, or `None` for a solid byte (0xff), which sets no pattern.
+pub fn stipple_table(m: &dyn GuestMemory, byte: u8, fcw: u16, mxcsr: u32) -> Result<Option<u32>, Error> {
+    const FADE_SCALE: u32 = 0x0045_dbb4;
+    const TABLE_SCALE: u32 = 0x0044_541c;
+    const TABLE: u32 = 0x0048_7288;
+    if byte == 0xff { return Ok(None); }
+    let mut x = X87::new(fcw);
+    x.fild(i32::from(byte))?;
+    x.fmul_m(m.u32(FADE_SCALE)?)?;
+    let fade = x.fstp_m32()?;
+    let scaled = Sse { mxcsr }.mul(fade, m.u32(TABLE_SCALE)?)?;
+    x.fld(scaled)?;
+    let (code, index) = x87::abi::st_i32(&x.0, 0);
+    X87::ok(code)?;
+    Ok(Some(TABLE + 0x80 * index.value.clamp(0, 16) as u32))
+}
+
 pub const CACHED_FADE: u32 = 0x004b_8494;
 
 #[cfg(test)]
@@ -117,5 +137,9 @@ mod stipple_tests {
         assert_eq!(stipple(&m, 5, true, 0x037f, 0x1f80).unwrap(), None);
         assert_eq!(stipple(&m, 5, false, 0x037f, 0x1f80).unwrap(), Some((1.0f32.to_bits(), 0x0048_7388)));
         assert_eq!(stipple(&m, 0xff, true, 0x037f, 0x1f80).unwrap(), None);
+        // The table lookup alone agrees, whatever the device cache holds.
+        assert_eq!(stipple_table(&m, 5, 0x037f, 0x1f80).unwrap(), Some(0x0048_7388));
+        assert_eq!(stipple_table(&m, 5, 0x0b7f, 0x1f80).unwrap(), Some(0x0048_7408));
+        assert_eq!(stipple_table(&m, 0xff, 0x037f, 0x1f80).unwrap(), None);
     }
 }

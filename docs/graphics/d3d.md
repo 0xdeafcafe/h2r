@@ -246,6 +246,11 @@ Notes on the table:
   at heights not divisible by 32 still needs a hardware capture.
   Wireframe and point fill modes do not use polygon stipple. The visibility
   count pass does not yet apply this discard.
+  A native world draw can carry a display-only pattern
+  (`Device::set_display_stipple`, `HwState::display_stipple`): the pixel
+  uniforms of a target larger than the guest's take it through
+  `HwState::stipple_rows`, and the reference copy keeps the guest's
+  ([native-world.md](native-world.md)).
 - **`D3DResource_IsBusy`** (`0x3fb710`, called from `0x1db90`/`0x1de50`
   among others while render resources are set up). See "GPU model:
   fences and the busy check".

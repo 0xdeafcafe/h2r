@@ -223,6 +223,8 @@ async fn stencil(cx: &Cx, mode: u16) -> Result<(), EntryError> {
 /// byte and whether the rescale was wanted but could not read the
 /// placement, so the record's own byte drew. The leave keeps the record's
 /// byte, as the emitter's own leave does: it only restores the full pattern.
+/// Two-copy rendering ([`super::FadePlan::distinct`]) leaves the guest the
+/// record's own byte and hands the display copy this one ([`display_rows`]).
 fn display_byte(m: &dyn GuestMemory, p: &SortedPart, retail: u8, fade: super::DisplayFade,
     fcw: u16) -> (u8, bool)
 {
@@ -240,17 +242,39 @@ fn display_byte(m: &dyn GuestMemory, p: &SortedPart, retail: u8, fade: super::Di
     }
 }
 
+/// The rows the display copy stipples with for fade byte `byte`: the
+/// engine's table pattern, or all set (solid) for a full byte.
+fn display_rows(m: &dyn GuestMemory, byte: u8, fcw: u16, mxcsr: u32)
+    -> Result<[u32; 32], engine::light_constants::Error> {
+    let Some(address) = engine::render_loop::opaque_material::stipple_table(m, byte, fcw, mxcsr)? else {
+        return Ok([u32::MAX; 32]);
+    };
+    let mut rows = [0; 32];
+    for (i, row) in rows.iter_mut().enumerate() {
+        *row = m.u32(address + 4 * i as u32)?;
+    }
+    Ok(rows)
+}
+
 async fn record_states(cx: &Cx, p: &SortedPart, enter: bool, shader_flags: u16, fcw: u16,
-    mxcsr: u32, fade: super::DisplayFade) -> Result<(), EntryError> {
+    mxcsr: u32, plan: super::FadePlan, draw: Option<&mut dyn OpaqueDraw>) -> Result<(), EntryError> {
     use engine::render_loop::opaque_material::{CACHED_FADE, stipple};
-    let (byte, active) = cx.read(|m| {
+    let (byte, display, active) = cx.read(|m| {
         let retail = m.u8(p.record_addr + 0x1a)?;
+        let mut display = None;
         let byte = if enter && retail != 0xff {
-            let (byte, unreadable) = display_byte(m, p, retail, fade, fcw);
+            let (byte, unreadable) = display_byte(m, p, retail, plan.fade, fcw);
             super::fade_record();
             if unreadable { super::fade_unreadable(); }
             super::fade_resolved(byte == 0xff);
-            byte
+            if plan.distinct {
+                // The guest, and so the reference copy, keeps the retail
+                // byte; the display copy takes the display's.
+                display = (byte != retail).then_some(byte);
+                retail
+            } else {
+                byte
+            }
         } else {
             retail
         };
@@ -259,9 +283,16 @@ async fn record_states(cx: &Cx, p: &SortedPart, enter: bool, shader_flags: u16, 
             (matches!(p.layer, 1 | 3) && (flags & (1 << 14) != 0 ||
                 m.u32(native_render::skip::STENCIL_OFF_FLAGS)? & 0x00ff_ff00 != 0)) ||
             (enter && shader_flags & 1 != 0 && m.i32(m.u32(super::ACTIVE_BSP)? + 0x214)? > 0);
-        Ok::<_, MemFault>((byte, active))
+        Ok::<_, MemFault>((byte, display, active))
     })?;
     if !active { return Ok(()); }
+    if let (Some(byte), Some(draw)) = (display, draw) {
+        let rows = cx.read(|m| display_rows(m, byte, fcw, mxcsr)).map_err(|e| match e {
+            engine::light_constants::Error::Memory(e) => EntryError::Fault(e),
+            e => EntryError::IsolatedCall(format!("world display stipple arithmetic: {e:?}")),
+        })?;
+        draw.display_stipple(rows);
+    }
     if byte != 0xff {
         let pattern = cx.read(|m| stipple(m, byte, enter, fcw, mxcsr)).map_err(|e| match e {
             engine::light_constants::Error::Memory(e) => EntryError::Fault(e),
@@ -344,8 +375,8 @@ async fn emit(cx: &Cx, part: &SortedPart, draw: Box<dyn OpaqueDraw>) -> Result<E
     Ok(Emission::Indexed(reason, issued))
 }
 
-pub(super) async fn handoff(cx: &Cx, part: &SortedPart, draw: Box<dyn OpaqueDraw>,
-    fcw: u16, mxcsr: u32, prepared: &opaque_material::Prepared, fade: super::DisplayFade)
+pub(super) async fn handoff(cx: &Cx, part: &SortedPart, mut draw: Box<dyn OpaqueDraw>,
+    fcw: u16, mxcsr: u32, prepared: &opaque_material::Prepared, fade: super::FadePlan)
     -> Result<Emission, EntryError> {
     let material = prepared.shader_address();
     let flags = cx.write(|m| {
@@ -361,9 +392,9 @@ pub(super) async fn handoff(cx: &Cx, part: &SortedPart, draw: Box<dyn OpaqueDraw
     let streams = draw.bind_streams(cx).await?;
     if !streams { return Ok(Emission::NoDraw); }
     opaque_material::handoff(cx, prepared, fcw, mxcsr).await?;
-    record_states(cx, part, true, flags, fcw, mxcsr, fade).await?;
+    record_states(cx, part, true, flags, fcw, mxcsr, fade, Some(&mut *draw)).await?;
     let outcome = emit(cx, part, draw).await?;
-    record_states(cx, part, false, flags, fcw, mxcsr, fade).await?;
+    record_states(cx, part, false, flags, fcw, mxcsr, fade, None).await?;
     Ok(outcome)
 }
 
@@ -431,11 +462,42 @@ mod tests {
     /// Run `record_states` once on `m` and return the SET_STIPPLE argument
     /// each call took, with the fade counters' delta.
     fn enter(m: FakeGuest, fade: DisplayFade) -> (Vec<u32>, [u64; 4]) {
+        let (calls, delta, display) = enter_plan(m, fade.into());
+        assert_eq!(display, None, "a single copy sets no display override");
+        (calls, delta)
+    }
+
+    /// A draw that keeps the display stipple it was handed.
+    struct Probe(std::sync::Arc<std::sync::Mutex<Option<[u32; 32]>>>);
+
+    impl OpaqueDraw for Probe {
+        fn bind_streams<'a>(&'a self, _: &'a Cx) -> super::super::OpaqueStreams<'a> {
+            Box::pin(async { Ok(true) })
+        }
+
+        fn submit(self: Box<Self>, _: &mut dyn GuestMemory, _: &SortedPart) -> Result<(), OpaqueSubmitError> {
+            Ok(())
+        }
+
+        fn display_stipple(&mut self, rows: [u32; 32]) {
+            *self.0.lock().unwrap() = Some(rows);
+        }
+    }
+
+    /// As [`enter`] under `plan`, also returning the display copy's
+    /// override, if the draw was handed one.
+    fn enter_plan(m: FakeGuest, plan: crate::native_world::FadePlan)
+        -> (Vec<u32>, [u64; 4], Option<[u32; 32]>)
+    {
         let before = super::super::stipple_counters();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let probe = std::sync::Arc::clone(&seen);
         let run = testing::run(
             &move |cx: Cx| -> EntryFuture {
+                let probe = std::sync::Arc::clone(&probe);
                 Box::pin(async move {
-                    record_states(&cx, &part(), true, 0, FCW, MXCSR, fade).await?;
+                    let mut draw = Probe(probe);
+                    record_states(&cx, &part(), true, 0, FCW, MXCSR, plan, Some(&mut draw)).await?;
                     Ok(Ret::new(0, 28))
                 })
             },
@@ -449,7 +511,8 @@ mod tests {
         assert_eq!(run.result, Ok(Ret::new(0, 28)));
         let after = super::super::stipple_counters();
         let delta = std::array::from_fn(|i| after[i].1 - before[i].1);
-        (run.calls.iter().map(|c| c.args[0]).collect(), delta)
+        let display = *seen.lock().unwrap();
+        (run.calls.iter().map(|c| c.args[0]).collect(), delta, display)
     }
 
     /// The table row a fade byte selects: the byte times the table scale,
@@ -490,13 +553,57 @@ mod tests {
     }
 
     #[test]
+    fn two_copy_rendering_keeps_the_guest_pattern_and_hands_the_display_its_own() {
+        use crate::native_world::FadePlan;
+        let plan = |fade| FadePlan { fade, distinct: true };
+        let marked = |retail, placement| {
+            let mut m = fade_fixture(retail, placement);
+            // A recognisable pattern in the row the 100 band selects.
+            for i in 0..32 {
+                m.put_u32(table(100) + 4 * i, 0x1000 + i);
+            }
+            m
+        };
+
+        // Retail detail: the guest and the display draw the record's byte;
+        // no override.
+        let (calls, delta, rows) = enter_plan(marked(100, PLACEMENT), plan(DisplayFade::Retail));
+        assert_eq!((calls, delta, rows), (vec![table(100)], [1, 0, 1, 0], None));
+
+        // Highest: the guest, and so the reference copy and its readbacks,
+        // still set the retail pattern; the display copy draws solid.
+        let (calls, delta, rows) = enter_plan(marked(100, PLACEMENT), plan(DisplayFade::Highest));
+        assert_eq!(calls, [table(100)]);
+        assert_eq!(rows, Some([u32::MAX; 32]));
+        assert_eq!(delta, [1, 1, 0, 0], "solid counts the display copy's solid draws");
+
+        // Twice the output pixels: past the fade window, solid on the
+        // display; the guest keeps its pattern.
+        let (calls, delta, rows) = enter_plan(marked(100, PLACEMENT), plan(DisplayFade::Scaled(2.0)));
+        assert_eq!(calls, [table(100)]);
+        assert_eq!(rows, Some([u32::MAX; 32]));
+        assert_eq!(delta, [1, 1, 0, 0]);
+
+        // Half: the display's band is 100's, where the guest's byte is 199's.
+        let (calls, delta, rows) = enter_plan(marked(199, PLACEMENT), plan(DisplayFade::Scaled(0.5)));
+        assert_eq!(calls, [table(199)]);
+        assert_eq!(rows, Some(std::array::from_fn(|i| 0x1000 + i as u32)));
+        assert_eq!(delta, [1, 0, 1, 0]);
+
+        // A placement that does not read: the record's byte on both copies.
+        let (calls, delta, rows) = enter_plan(marked(100, 0), plan(DisplayFade::Scaled(2.0)));
+        assert_eq!((calls, delta, rows), (vec![table(100)], [1, 0, 1, 1], None));
+    }
+
+    #[test]
     fn the_leave_restores_the_full_pattern_from_the_records_own_byte() {
         let mut m = fade_fixture(100, PLACEMENT);
         m.put_f32(CACHED_FADE, 0.0);
         let run = testing::run(
             &|cx: Cx| -> EntryFuture {
                 Box::pin(async move {
-                    record_states(&cx, &part(), false, 0, FCW, MXCSR, DisplayFade::Highest).await?;
+                    record_states(&cx, &part(), false, 0, FCW, MXCSR, DisplayFade::Highest.into(), None)
+                        .await?;
                     Ok(Ret::new(0, 28))
                 })
             },

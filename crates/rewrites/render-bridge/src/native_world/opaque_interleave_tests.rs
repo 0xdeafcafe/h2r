@@ -192,7 +192,7 @@ fn native(mut m: FakeGuest, n: u32) -> FakeGuest {
             let material = cx.read(|m| opaque_material::prepare(m, &part, FCW, MXCSR)).unwrap();
             let outcome =
                 opaque_handler::handoff(&cx, &part, Box::new(Draw), FCW, MXCSR, &material,
-                    super::DisplayFade::Retail).await?;
+                    super::DisplayFade::Retail.into()).await?;
             assert_eq!(outcome, opaque_handler::Emission::Native(1));
             Ok(Ret::new(0, 28))
         })
@@ -337,7 +337,7 @@ fn sorted_handoff_returns_last_consumed_esi_and_guest_counter_at_first_refusal()
                     (run, current)
                 });
                 super::opaque::handoff(&cx, current, &SpanView, &run, 0, BSP, &mut materials,
-                    FCW, MXCSR, super::DisplayFade::Retail).await
+                    FCW, MXCSR, super::DisplayFade::Retail.into()).await
             })
         }, reference.clone(), Regs { esp: STACK, esi: SORTED, ..Regs::default() }, setter);
 

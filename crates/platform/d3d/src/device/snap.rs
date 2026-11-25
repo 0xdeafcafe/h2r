@@ -156,6 +156,8 @@ fn put_hw(w: &mut Writer, hw: &HwState) {
         cxt_write_enable,
         stipple_control,
         stipple_pattern,
+        // A per-draw override, cleared before any snapshot.
+        display_stipple: _,
         zstencil_clear_value,
         color_clear_value,
         vertex_format,

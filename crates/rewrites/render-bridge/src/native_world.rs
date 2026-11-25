@@ -59,8 +59,7 @@ pub fn on(switches: &hooks::Switches) -> bool {
 /// [`ViewLodScale`] display word.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DisplayFade {
-    /// Each record's own byte: Retail detail, no view, or a run whose draws
-    /// are a distinct reference copy protected readbacks watch.
+    /// Each record's own byte: Retail detail or no view.
     Retail,
     /// The projected size counts `factor` guest pixels per output pixel.
     Scaled(f32),
@@ -70,12 +69,9 @@ pub enum DisplayFade {
 
 impl DisplayFade {
     /// `mem` the live guest, `lod` the render context's scale (set per view
-    /// by the `lod-distance` feature), `display_draws` whether these draws
-    /// render the display with no distinct reference copy behind them
-    /// (single-copy rendering; an exact or protected run keeps the retail
-    /// fade, like the D3D fallback keeps its retail geometry).
-    pub fn resolve(m: &dyn GuestMemory, lod: Option<ViewLodScale>, display_draws: bool) -> Self {
-        let Some(lod) = lod.filter(|_| display_draws) else {
+    /// by the `lod-distance` feature).
+    pub fn resolve(m: &dyn GuestMemory, lod: Option<ViewLodScale>) -> Self {
+        let Some(lod) = lod else {
             return Self::Retail;
         };
         match lod.display(m) {
@@ -83,6 +79,37 @@ impl DisplayFade {
             LodDetail::Scaled(factor) => Self::Scaled(factor),
             LodDetail::Retail => Self::Retail,
         }
+    }
+}
+
+/// Where a [`DisplayFade`] lands. The fade is always the display's; what
+/// differs is whether the guest's own draws are the display.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FadePlan {
+    pub fade: DisplayFade,
+    /// Two-copy rendering (a distinct reference copy at guest resolution
+    /// plus the display copy, always so while a run is protected: network,
+    /// film or lockstep). The guest keeps the record's retail byte, so the
+    /// reference copy and every readback stay retail, and the fade reaches
+    /// the display copy alone as a stipple override on the draw
+    /// ([`OpaqueDraw::display_stipple`]). Without it (single-copy
+    /// rendering) the guest draws the display, so the fade replaces the
+    /// byte the guest's `SetStipple` takes.
+    pub distinct: bool,
+}
+
+impl FadePlan {
+    /// `single` whether the guest's draws render the display with no
+    /// distinct reference copy behind them.
+    pub fn resolve(m: &dyn GuestMemory, lod: Option<ViewLodScale>, single: bool) -> Self {
+        Self { fade: DisplayFade::resolve(m, lod), distinct: !single }
+    }
+}
+
+impl From<DisplayFade> for FadePlan {
+    /// Single-copy: the fade replaces the guest's own byte.
+    fn from(fade: DisplayFade) -> Self {
+        Self { fade, distinct: false }
     }
 }
 
@@ -144,6 +171,11 @@ pub trait OpaqueDraw: Send + Sync {
     fn submit(
         self: Box<Self>, mem: &mut dyn GuestMemory, part: &native_render::world_ranges::SortedPart,
     ) -> Result<(), OpaqueSubmitError>;
+
+    /// The stipple rows the display copy draws this entry with, in place of
+    /// the pattern the guest set (two-copy rendering; [`FadePlan`]). The
+    /// reference copy keeps the guest's pattern. Set before `submit`.
+    fn display_stipple(&mut self, _rows: [u32; 32]) {}
 }
 
 /// Active map, BSP and view used for one consecutive sequence of BSP entries.
@@ -507,15 +539,18 @@ mod display_fade_tests {
         let mut m = FlatMemory::new(address, 8);
         // No view scale, or a run whose draws a protected reference copy
         // watches: the record's own byte.
-        assert_eq!(DisplayFade::resolve(&m, None, true), DisplayFade::Retail);
-        assert_eq!(DisplayFade::resolve(&m, Some(scale), false), DisplayFade::Retail);
+        assert_eq!(DisplayFade::resolve(&m, None), DisplayFade::Retail);
+        // Two-copy runs resolve the same display fade, delivered to the
+        // display copy alone.
+        assert_eq!(FadePlan::resolve(&m, Some(scale), false),
+            FadePlan { fade: DisplayFade::Retail, distinct: true });
         // The display word: absent (retail), a multiplier, and Highest,
         // including under a menu model view's marking bit.
-        assert_eq!(DisplayFade::resolve(&m, Some(scale), true), DisplayFade::Retail);
+        assert_eq!(DisplayFade::resolve(&m, Some(scale)), DisplayFade::Retail);
         m.set_f32(address + 4, 3.5).unwrap();
-        assert_eq!(DisplayFade::resolve(&m, Some(scale), true), DisplayFade::Scaled(3.5));
+        assert_eq!(DisplayFade::resolve(&m, Some(scale)), DisplayFade::Scaled(3.5));
         m.set_u32(address + 4, LodDetail::Highest.guest_word() | ViewLodScale::MODEL_VIEW)
             .unwrap();
-        assert_eq!(DisplayFade::resolve(&m, Some(scale), true), DisplayFade::Highest);
+        assert_eq!(DisplayFade::resolve(&m, Some(scale)), DisplayFade::Highest);
     }
 }

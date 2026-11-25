@@ -182,7 +182,30 @@ impl<B: Backend> Device<B> {
     /// first draw. Each packet then resolves render-surface dependencies
     /// separately, in submission order, with its own exact backend fallback.
     /// Ok(false) always means zero packets were submitted.
+    ///
+    /// A pattern set by [`Device::set_display_stipple`] applies to this
+    /// call's draws only: the display copy draws it, the reference copy the
+    /// guest's own pattern.
     pub fn emit_world_ranges<G>(
+        &mut self, mem: &mut dyn GuestMemory, primitive: PrimitiveType,
+        ranges: Vec<PreparedIndexRange>, vertices: PreparedWorldVertices,
+        code: Option<&Microcode>, targets: &PreparedOpaqueTargets, textures: &[Option<PreparedStageTexture>; 4],
+        material: u32, enter_range: impl FnMut(u32) -> G,
+    ) -> Result<bool, D3dError> {
+        let sent = self.emit_world_packets(mem, primitive, ranges, vertices, code, targets, textures,
+            material, enter_range);
+        self.hw.display_stipple = None;
+        sent
+    }
+
+    /// Pattern the display copy draws the next [`Device::emit_world_ranges`]
+    /// with, in place of the stipple the guest set. The reference copy keeps
+    /// the guest's. `None` draws both with the guest's.
+    pub fn set_display_stipple(&mut self, rows: Option<[u32; 32]>) {
+        self.hw.display_stipple = rows;
+    }
+
+    fn emit_world_packets<G>(
         &mut self, mem: &mut dyn GuestMemory, primitive: PrimitiveType,
         mut ranges: Vec<PreparedIndexRange>, vertices: PreparedWorldVertices,
         code: Option<&Microcode>, targets: &PreparedOpaqueTargets, textures: &[Option<PreparedStageTexture>; 4],
