@@ -451,6 +451,31 @@ impl Vfs {
         self.journals.forget_mount(index);
         self.mounts[index].backend.format()
     }
+    /// Guards every mounted volume's writes: each writable volume reads and
+    /// writes a private copy of itself under `scratch` until
+    /// [`Vfs::end_guard`], and its real files, records and times are never
+    /// written (a film plays without touching the player's profile or
+    /// saves, docs/game/theater-design.md "What the guest is given while a
+    /// film plays"). Call it with no guest running. On a failure no volume
+    /// stays guarded and `scratch` is gone.
+    pub fn guard_writes(&mut self, scratch: &std::path::Path) -> Result<()> {
+        for index in 0..self.mounts.len() {
+            let dir = scratch.join(format!("mount{index}"));
+            if let Err(e) = self.mounts[index].backend.guard_writes(&dir) {
+                self.end_guard();
+                let _ = std::fs::remove_dir_all(scratch);
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+    /// Drops what [`Vfs::guard_writes`] wrote; the real volumes are served
+    /// again as they were.
+    pub fn end_guard(&mut self) {
+        for m in &mut self.mounts {
+            m.backend.end_guard();
+        }
+    }
     /// Replaces the seed directories [`Config::cache_seed`] gave (for a VFS
     /// built without [`Vfs::with_storage`]).
     pub fn set_cache_seed(&mut self, seed: Vec<PathBuf>) {
