@@ -86,7 +86,7 @@ impl Session {
             let _: Empty = params(p)?;
             Ok(serde_json::json!(session.status()))
         });
-        if !self.replaying() {
+        if !self.replaying {
             return;
         }
         let unpaced = matches!(&self.lock().mode, Mode::Replay(_, replay) if replay.unpaced);

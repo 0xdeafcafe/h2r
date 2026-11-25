@@ -699,6 +699,9 @@ impl super::Session {
         if let Some(engine) = &mut state.engine {
             engine.map_vfs.clone_from(&vfs);
         }
+        if let Some(play) = &mut state.play {
+            play.map_vfs.clone_from(&vfs);
+        }
         if let super::Mode::Record(rec) = &mut state.mode {
             rec.meta.vfs = vfs;
             rec.meta.live = live.as_ref().map(Arc::downgrade).unwrap_or_default();

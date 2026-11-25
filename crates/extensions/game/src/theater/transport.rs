@@ -232,6 +232,18 @@ impl State {
     /// What the player asks of the next frame: the answer to the engine's
     /// question in `GAME_UPDATE_TICKS` ([`FrameClock::frame_ticks`]).
     pub(super) fn demand(&self) -> Demand {
+        // A film played from its game start loads its map at the engine's
+        // own pace: a pause, a speed or a target waits for its first update.
+        if self.play.as_ref().is_some_and(|play| !play.begun()) {
+            return Demand {
+                paused: false,
+                speed: 1.0,
+                tick: self.tick,
+                run_to: None,
+                jumping: self.restart.is_some(),
+                tick_hz: self.tick_hz(),
+            };
+        }
         Demand {
             paused: self.paused,
             speed: self.speed,

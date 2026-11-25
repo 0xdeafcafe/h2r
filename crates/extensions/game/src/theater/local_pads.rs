@@ -81,6 +81,20 @@ struct FilmPads {
     sync: u64,
     last: Ports,
     replay: Option<PortReplay>,
+    /// A film played from its game start: every pad the guest reads is
+    /// neutral, and none of the host's reaches it. The handles the guest
+    /// opened and the port each is on.
+    neutral: Option<Vec<(u32, u32)>>,
+}
+
+/// The ports a film played from its game start connects: a neutral pad on
+/// each of the first `count`.
+fn neutral_ports(count: usize) -> Ports {
+    let mut ports = EMPTY;
+    for port in ports.iter_mut().take(count) {
+        *port = Some((1, false));
+    }
+    ports
 }
 
 impl FilmPads {
@@ -120,6 +134,13 @@ impl InputTap for FilmPads {
         memory: Option<&dyn xapi::GuestMemory>,
     ) {
         const OP: &str = "XInputGetState";
+        if let Some(opened) = &self.neutral {
+            packet.fill(0);
+            let port = opened.iter().rev().find(|(h, _)| *h == handle).map(|(_, port)| *port);
+            let connected = port.is_some_and(|port| self.last.get(port as usize).is_some_and(Option::is_some));
+            *status = if connected { 0 } else { input::gamepad::ERROR_DEVICE_NOT_CONNECTED };
+            return;
+        }
         if self.replay.is_some() {
             // Never return live input if the tape is exhausted or malformed.
             *status = input::gamepad::ERROR_DEVICE_NOT_CONNECTED;
@@ -154,6 +175,10 @@ impl InputTap for FilmPads {
     }
 
     fn opened(&mut self, handle: u32, port: u32) {
+        if let Some(opened) = &mut self.neutral {
+            opened.push((handle, port));
+            return;
+        }
         if let Some(inner) = &mut self.inner {
             inner.opened(handle, port);
         }
@@ -213,8 +238,14 @@ impl Session {
         if state.header.version < 2 {
             return Ok(());
         }
+        let neutral = state.play.as_ref().map(|play| neutral_ports(play.ports()));
         let replay = match &mut state.mode {
             Mode::Record(_) => None,
+            Mode::Replay(..) if neutral.is_some() => Some(PortReplay {
+                backend: FilmBackend::default(),
+                events: vec![PortChange { sync: 0, ports: neutral.unwrap_or(EMPTY) }],
+                next: 0,
+            }),
             Mode::Replay(playback, _) => {
                 let reader = &mut playback.reader;
                 let mut events = Vec::new();
@@ -243,8 +274,9 @@ impl Session {
             session: self.clone(),
             inner: x.take_input_tap(),
             sync: 0,
-            last: EMPTY,
+            last: neutral.unwrap_or(EMPTY),
             replay,
+            neutral: neutral.map(|_| Vec::new()),
         };
         if let Some(replay) = &mut pads.replay {
             let mut input = InputManager::new(Default::default())?;

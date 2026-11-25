@@ -4,13 +4,13 @@
 //! player datum index, including split-screen players, not by pad port.
 //! See docs/live/live-coop.md §§1.3 and "Visual prediction" and
 //! coop_look::State::applied, which reads facing from these same records.
-use std::sync::Arc;
+use std::sync::{Arc, MutexGuard};
 
 use anyhow::{Context, Result, ensure};
 use engine::GuestMemory;
 use film::blam::{MAX_SEATS, SeatInput};
 
-use super::{Mode, Session, State, game_start};
+use super::{Mode, Session, State, film_play, game_start};
 
 const MASK: u32 = 8;
 const ACTION_BYTES: usize = 0x5c;
@@ -57,7 +57,7 @@ fn capture(
     Ok(inputs)
 }
 
-fn apply(m: &mut dyn GuestMemory, update: u32, inputs: &[SeatInput]) -> Result<()> {
+pub(super) fn apply(m: &mut dyn GuestMemory, update: u32, inputs: &[SeatInput]) -> Result<()> {
     let at = block_address(update)?;
     let mut block = read_block(m, at)?;
     let mut changed = false;
@@ -115,12 +115,55 @@ pub(super) fn note_first_update(
     }
 }
 
+/// An update entered `SIM_UPDATE_APPLY`. A recording takes the actions the
+/// engine built for the tick; a film played from its game start writes the
+/// film's over them ([`film_play::update`]); a machine film writes its
+/// track's. `state` is the session's lock, held from before the guest's
+/// memory was taken.
+pub(super) fn at_update(
+    session: &Session,
+    mut state: MutexGuard<'_, State>,
+    memory: &mut runtime::Guest,
+    update: Result<u32>,
+) {
+    let result = match update {
+        Err(e) => Err(e),
+        Ok(ptr) if matches!(&state.mode, Mode::Record(_)) => {
+            note_first_update(session.video_menu.get(), &mut state, memory);
+            let pads = bots::guest::game_tick(&*memory)
+                .map(|tick| bots::phantom::global().gathered_pads(tick))
+                .unwrap_or([None; MAX_SEATS]);
+            match capture(&*memory, ptr, &pads) {
+                Ok(inputs) => {
+                    drop(state);
+                    session.record_actions(inputs);
+                    return;
+                }
+                Err(e) => Err(e),
+            }
+        }
+        Ok(ptr) if state.play.is_some() => film_play::update(&mut state, memory, ptr),
+        Ok(ptr) => (|| -> Result<()> {
+            let engine = state
+                .engine
+                .as_mut()
+                .context("missing film command track")?;
+            engine.note_actions()?;
+            apply(memory, ptr, &engine.next_tick()?.inputs)
+        })(),
+    };
+    if let Err(e) = result {
+        let tick = state.tick + 1;
+        state.fail_at(tick, e.to_string());
+    }
+}
+
 pub(super) fn install(b: &mut hooks::Builder, session: Arc<Session>) {
     b.raw().before(
         &engine::points::SIM_UPDATE_APPLY,
         "film simulation actions",
         move |c| {
-            let mut state = session.lock();
+            let state = session.lock();
             if state.complete || state.failure.is_some() {
                 return Ok(hooks::Flow::Continue);
             }
@@ -128,36 +171,7 @@ pub(super) fn install(b: &mut hooks::Builder, session: Arc<Session>) {
                 .arg_u32("update")
                 .context("cannot read film simulation update argument");
             let mut memory = c.ctx.memory();
-            let result = match update {
-                Err(e) => Err(e),
-                Ok(ptr) if matches!(&state.mode, Mode::Record(_)) => {
-                    note_first_update(session.video_menu.get(), &mut state, &memory);
-                    let pads = bots::guest::game_tick(&*memory)
-                        .map(|tick| bots::phantom::global().gathered_pads(tick))
-                        .unwrap_or([None; MAX_SEATS]);
-                    match capture(&*memory, ptr, &pads) {
-                        Ok(inputs) => {
-                            drop(memory);
-                            drop(state);
-                            session.record_actions(inputs);
-                            return Ok(hooks::Flow::Continue);
-                        }
-                        Err(e) => Err(e),
-                    }
-                }
-                Ok(ptr) => (|| -> Result<()> {
-                    let engine = state
-                        .engine
-                        .as_mut()
-                        .context("missing film command track")?;
-                    engine.note_actions()?;
-                    apply(&mut *memory, ptr, &engine.next_tick()?.inputs)
-                })(),
-            };
-            if let Err(e) = result {
-                let tick = state.tick + 1;
-                state.fail_at(tick, e.to_string());
-            }
+            at_update(&session, state, &mut memory, update);
             Ok(hooks::Flow::Continue)
         },
     );

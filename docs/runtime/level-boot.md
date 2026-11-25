@@ -16,6 +16,13 @@ starts a local game instead: one player, the game's default Slayer
 variant. `--difficulty` does not apply to it. Map-pack maps (installed into
 `--data`, not on the disc) are not offered.
 
+A film's game plays the same way: `level_boot::Request::recorded` takes the
+options block the film holds (`film::start::GameStart::options`) and the
+first map request queues it byte for byte, with no defaults built under it
+(`steps_for`: write, then queue). The session kind byte (`+0x5`) is set to 1,
+local, unless it is 0 (a campaign's), so a game that was played online loads
+as a local one ([theater-design.md](../game/theater-design.md#playback)).
+
 `H2_PERF_FROM=level` (with an `h2` built with `--features perf`) opens the
 profiler session at the first present after the level loaded; with no
 level requested it waits for the first game that is not the main menu.

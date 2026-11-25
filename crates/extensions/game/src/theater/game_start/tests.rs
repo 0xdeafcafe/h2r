@@ -6,12 +6,12 @@ use crate::theater::{Facts, Mode, Session};
 use runtime::guest::Permissions;
 use std::{fs, path::PathBuf, sync::Arc};
 
-const GLOBALS: u32 = 0xc0_0000;
-const RANDOM: u32 = 0xc1_0000;
+pub(in crate::theater) const GLOBALS: u32 = 0xc0_0000;
+pub(in crate::theater) const RANDOM: u32 = 0xc1_0000;
 
-struct Temp(PathBuf);
+pub(in crate::theater) struct Temp(pub(in crate::theater) PathBuf);
 impl Temp {
-    fn new() -> Self {
+    pub(in crate::theater) fn new() -> Self {
         let dir = std::env::temp_dir().join(format!("film-start-{}", live_proto::sign::random_id()));
         fs::create_dir_all(&dir).unwrap();
         Self(dir)
@@ -24,7 +24,7 @@ impl Drop for Temp {
 }
 
 /// The options block a synthetic game starts from, distinct for each `salt`.
-fn block(mode: u32, salt: u8) -> Vec<u8> {
+pub(in crate::theater) fn block(mode: u32, salt: u8) -> Vec<u8> {
     let mut block: Vec<u8> = (0..OPTIONS_BYTES).map(|i| (i * 31 + 7) as u8 ^ salt).collect();
     block[OPT_MODE as usize..OPT_MODE as usize + 4].copy_from_slice(&mode.to_le_bytes());
     block
@@ -32,7 +32,7 @@ fn block(mode: u32, salt: u8) -> Vec<u8> {
 
 /// A guest with the engine's arena, a game's globals holding `options`
 /// active, and the two shared random words.
-fn game(options: &[u8], words: [u32; 2]) -> runtime::Guest {
+pub(in crate::theater) fn game(options: &[u8], words: [u32; 2]) -> runtime::Guest {
     let mut g = arena();
     g.map_zeroed(crate::sim_glue::RANDOM_SEED_PTR & !4095, 4096, Permissions::RW)
         .unwrap();

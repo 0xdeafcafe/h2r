@@ -625,6 +625,17 @@ pub fn carried(tag: Tag) -> bool {
 pub trait Source: Read + Seek + Send {}
 impl<T: Read + Seek + Send> Source for T {}
 
+/// One tick of a film file as a player plays it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TickRow {
+    /// The seats that acted, with no pad.
+    pub inputs: Vec<SeatInput>,
+    /// The low 16 bits of the tick's gameplay digest, if it has one.
+    pub digest: Option<u16>,
+    /// The whole digest, on the digested tick that closes a chunk.
+    pub closing: Option<u64>,
+}
+
 type Rows = ([[u32; WORDS]; SEATS], [[u32; WORDS]; SEATS]);
 
 /// A film file's actions by tick, for a [`crate::blam::TrackReader`] that takes its
@@ -692,6 +703,52 @@ impl FilmActions {
         Ok(())
     }
 
+    /// The film's game: its last game start ([`FilmReader::game_start`]).
+    pub fn game_start(&mut self) -> Result<Option<GameStart>> {
+        self.reader.game_start()
+    }
+
+    /// Load the chunk holding `tick` and give the tick's index in it.
+    fn locate(&mut self, tick: u64) -> Result<usize> {
+        ensure!(tick >= 1, "film ticks start at 1");
+        let k = ((tick - 1) / CHUNK_TICKS as u64) as usize;
+        let t = ((tick - 1) % CHUNK_TICKS as u64) as usize;
+        self.load(k)
+            .with_context(|| format!("film file has no chunk for tick {tick}"))?;
+        ensure!(
+            t < self.decoder.ticks(),
+            "film file ends before tick {tick}"
+        );
+        Ok(t)
+    }
+
+    /// What the film holds for `tick`: each seat's action, the low 16 bits
+    /// of the tick's gameplay digest when it has one, and, when the tick
+    /// closes its chunk, the whole digest the chunk ends with. A player
+    /// that plays the film from its game start writes the actions into the
+    /// game and checks the digests against it ([`TickRow`]).
+    pub fn row(&mut self, tick: u64) -> Result<TickRow> {
+        let t = self.locate(tick)?;
+        let mut inputs = Vec::new();
+        for seat in 0..SEATS {
+            let mut action = [0u8; ACTION_BYTES];
+            if self.decoder.action(t, seat, &mut action) {
+                inputs.push(SeatInput {
+                    seat: seat as u8,
+                    pad: None,
+                    action: Some(action),
+                });
+            }
+        }
+        let digested = self.decoder.flags(t) & TICK_DIGEST != 0;
+        Ok(TickRow {
+            inputs,
+            digest: digested.then(|| self.decoder.digest(t)),
+            closing: (digested && t + 1 == self.decoder.ticks())
+                .then(|| self.decoder.arena_hash()),
+        })
+    }
+
     /// Put the film's actions on `tick` in `inputs`. A seat's pad, which
     /// the film does not carry, stays as `inputs` had it. If the stats
     /// stream has the tick's gameplay digest, the film's low 16 bits must
@@ -702,15 +759,7 @@ impl FilmActions {
         inputs: &mut Vec<SeatInput>,
         digest: Option<u64>,
     ) -> Result<()> {
-        ensure!(tick >= 1, "film ticks start at 1");
-        let k = ((tick - 1) / CHUNK_TICKS as u64) as usize;
-        let t = ((tick - 1) % CHUNK_TICKS as u64) as usize;
-        self.load(k)
-            .with_context(|| format!("film file has no chunk for tick {tick}"))?;
-        ensure!(
-            t < self.decoder.ticks(),
-            "film file ends before tick {tick}"
-        );
+        let t = self.locate(tick)?;
         if let Some(digest) = digest
             && self.decoder.flags(t) & TICK_DIGEST != 0
         {
@@ -737,6 +786,19 @@ impl FilmActions {
         }
         Ok(())
     }
+}
+
+/// The game start of the film file beside `container` (its last: the game
+/// the film is of), or `None` when there is no film file or it holds no game
+/// start. Reads the file's index and the one block; no tick chunk is
+/// inflated.
+pub fn game_start_of(container: &Path) -> Result<Option<GameStart>> {
+    let path = beside(container);
+    if !path.try_exists()? {
+        return Ok(None);
+    }
+    let file = File::open(&path).with_context(|| path.display().to_string())?;
+    FilmReader::open(file)?.game_start()
 }
 
 /// The film file's path beside its container.

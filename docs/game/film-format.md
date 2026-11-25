@@ -205,7 +205,7 @@ value; the profile is not read
 
 **A tick chunk** holds, for each of its updates, the action block as
 columns, the update's tail, and 16 bits of the gameplay digest, and ends
-with the arena hash after its last tick
+with the whole gameplay digest of its last tick
 ([input-film.md](input-film.md#layout)). The update's head and stamp are
 not stored: the record's index is the update, and playback requires the
 engine's tick count to equal the header's first tick count plus the
@@ -441,7 +441,7 @@ The checks in playback, in order:
 3. Sixteen bits of the gameplay digest after every tick. It covers the
    gameplay the sim harness observes, including the random word and
    player state.
-4. The arena hash at the end of every chunk, which covers hidden state.
+4. The whole 64-bit gameplay digest at the end of every chunk.
 
 Playback reports the first observed divergence and its tick, and stops
 there. The render steps the shared random word, so a recording and a

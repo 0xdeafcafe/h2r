@@ -16,6 +16,9 @@ use std::path::PathBuf;
 /// operations take no call index, and a game that has made no socket holds
 /// no socket call (docs/game/input-film.md, "What the replay depends on").
 pub(super) const SIMULATION_ABI: &str = "h2-sim/2";
+/// Why a film recorded before game starts does not open.
+pub const NO_GAME_START: &str =
+    "This film has no game start, so it cannot be played; it was recorded before films began at the game's start.";
 const BREAKING_CHANGE: &str = "Film predates a breaking simulation change.";
 
 /// Check an installed, current module against the recording. The launcher also
@@ -98,9 +101,19 @@ impl Installation {
         }
     }
 
+    /// The viewer's data directory.
+    pub fn data(&self) -> &std::path::Path {
+        &self.data
+    }
+
     pub fn compatibility(&self, entry: &film::LibraryEntry) -> Compatibility {
-        let mut report = self.check(entry, recomp::host_triple(), || {
-            entry.check_initial_files(&self.data)
+        // A film plays from its game start: it needs no file of the
+        // viewer's disk, and a film without a game start does not play.
+        let start = film::file::game_start_of(&entry.path);
+        let mut report = self.check(entry, recomp::host_triple(), || match &start {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => Err(anyhow::anyhow!(NO_GAME_START)),
+            Err(error) => Err(anyhow::anyhow!("The film's game start cannot be read: {error:#}")),
         });
         // A film of a Forge session names the monitor looks this machine
         // draws as markers; they are not reasons the film is unavailable.

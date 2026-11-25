@@ -27,7 +27,7 @@ From [notes/halo3-film.md](notes/halo3-film.md), which has the sources.
 |---|---|---|
 | Start state | game options, both variants by value, seed, machines and 16 player configurations, in a fixed header of about 64 KB; a game state only in a clip | the engine's options block by value, a few kilobytes compressed; a game state only in a film that begins mid-game |
 | Tick record | one bit-packed record per tick, beginning with an update number; its other fields are not covered by the sources | the engine's simulation update: its action block as columns per seat per chunk of 256, the rest as the bytes that changed |
-| Desync check | not covered by the sources | 16 bits of the gameplay digest a tick, and the 64-bit arena hash every 256 ticks |
+| Desync check | not covered by the sources | 16 bits of the gameplay digest a tick, and the whole 64-bit digest every 256 ticks |
 | Compression | none; fields are bit-packed | residual columns under zstd |
 | Seek points | none in the file; campaign films cannot be rewound | none in the file; the player's ring of game-state snapshots |
 | Version gate | executable type, determinism version, map signature | XBE digest, simulation contract, map digest |
@@ -163,7 +163,7 @@ The file's header, game start, block kinds and trailer are in
 [film-format.md](film-format.md#the-film-file). `film::file` writes and
 reads them; `FilmActions` reads a film's actions by tick, in any order.
 A tick's digest in a chunk is the low 16 bits of its gameplay digest and
-the chunk's closing hash is the arena hash after its last tick. The
+the chunk's closing word is the whole gameplay digest of its last tick. The
 recorder feeds the file one update at a time and writes a checkpoint of
 the open chunk every 150 ticks (`FilmWriter::checkpoint`), which a reader
 of an unsealed file takes as its last chunk. A host seals its film at the
@@ -193,7 +193,7 @@ seat records    u8 count; each: u8 tick offset, u8 seat, u8 kind,
                 u16 length, bytes (8,192 in all, 255 at most)
 tails           per tick: ULEB run count; each run a ULEB skip, a ULEB
                 length and that many bytes
-u64             the arena hash after the chunk's last tick
+u64             the gameplay digest of the chunk's last tick
 ```
 
 The 13 action fields are the rows 1 to 13 of the table above; the first
@@ -346,7 +346,7 @@ so each client holds the host's film.
   send, the host names its byte range, and the client fetches it after
   the game from the host's film on Live. A film with a gap is unsealed until the gap is
   filled, and is not offered for Watch.
-- **Check.** Each chunk ends with the arena hash, and the sealed film's
+- **Check.** Each chunk ends with the whole gameplay digest, and the sealed film's
   digest is in the game's Live record; the client compares both.
 - **The view.** Theater plays the whole film with the player's seat
   selected. It shows the host's authoritative game from that seat, not

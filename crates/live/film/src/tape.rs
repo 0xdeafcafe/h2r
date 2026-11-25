@@ -278,6 +278,25 @@ pub struct Playback {
     pub length: u64,
 }
 impl Playback {
+    /// A playback with no tape: a film played from its game start has no
+    /// calls, hash checks, capture boundaries or lobby marks, and its
+    /// length is the film file's (`FilmActions::length_ticks`). The reader
+    /// is held for the film's header only; no section is read.
+    pub fn empty(reader: Reader<File>, length: u64) -> Self {
+        Self {
+            reader,
+            streams: TapeRows::new(Vec::new()),
+            batch: VecDeque::new(),
+            barriers: TapeRows::new(Vec::new()),
+            last_barrier: None,
+            last_call_chunk: None,
+            checks: TapeRows::new(Vec::new()),
+            lobby: TapeRows::new(Vec::new()),
+            end: None,
+            length,
+        }
+    }
+
     pub fn load(mut reader: Reader<File>) -> FilmResult<Self> {
         let mut streams = Vec::new();
         let mut checks = Vec::new();

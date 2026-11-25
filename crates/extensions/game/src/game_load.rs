@@ -221,6 +221,7 @@ mod tests {
             difficulty: Difficulty::default(),
             kind: Kind::Multiplayer,
             variant: None,
+            options: None,
         }
     }
 
@@ -233,6 +234,7 @@ mod tests {
             difficulty: d,
             kind: Kind::Campaign,
             variant: None,
+            options: None,
         }
     }
 

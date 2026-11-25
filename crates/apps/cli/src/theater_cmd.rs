@@ -10,8 +10,8 @@ use std::{
 #[cfg(feature = "desktop")]
 mod export;
 
-const USAGE: &str = "h2 theater play FILM [--seek TICK] [--render-every N] [--speed 0.25..4] [--disc ISO] [--out IMAGE_DIR] [--data INITIAL_DATA] [--movies DIR] [--socket PATH]\n\
-                    h2 theater prepare FILM [--disc ISO] [--out IMAGE_DIR] [--data INITIAL_DATA] [--movies DIR] [--socket PATH]";
+const USAGE: &str = "h2 theater play FILM [--seek TICK] [--render-every N] [--speed 0.25..4] [--disc ISO] [--out IMAGE_DIR] [--data VIEWER_DATA] [--movies DIR] [--socket PATH]\n\
+                    h2 theater prepare FILM [--disc ISO] [--out IMAGE_DIR] [--data VIEWER_DATA] [--movies DIR] [--socket PATH]";
 #[derive(Clone)]
 struct Options {
     film: PathBuf,
@@ -280,7 +280,7 @@ fn child_with_start(
     #[cfg(feature = "desktop")]
     let media_options = opts.clone();
     let child_started = std::time::Instant::now();
-    let mut film = film::Reader::open(&opts.film)?;
+    let film = film::Reader::open(&opts.film)?;
     let xbe = boot::read_xbe(&opts.disc)?;
     let xbe_sha256 = film::xbe_digest(&xbe);
     ensure!(
@@ -303,7 +303,7 @@ fn child_with_start(
             Err(e) => diagnostics.push(format!("{}: {e}", path.display())),
         }
     }
-    let (image, image_stamp, compatibility) = images
+    let (image, _image_stamp, compatibility) = images
         .into_iter()
         .min_by_key(|(_, _, mode)| *mode != film::image::ImageMatch::Native)
         .with_context(|| {
@@ -321,8 +321,16 @@ fn child_with_start(
         film.header.version >= 2 || film.header.meta.source == film::Source::Host,
         "v1 local films lack the controller input stream"
     );
-    let entry = film.machine_section().unique(film::DATA)?.clone();
+    // A film plays from its game start: the data directory is empty and
+    // private, with no manifest restored and nothing of the viewer's disk
+    // read for it (docs/game/theater-design.md, "Playback").
+    ensure!(
+        film::file::game_start_of(&opts.film)?.is_some(),
+        "{}",
+        boot::theater::NO_GAME_START
+    );
     let data = work.join("data");
+    fs::create_dir_all(&data)?;
     let viewer_data = opts.data.clone().unwrap_or_else(content::store::default_data_root);
     let films_dir = std::env::var_os("H2_FILM_DIR").map(PathBuf::from)
         .unwrap_or_else(|| viewer_data.join("films"));
@@ -331,27 +339,6 @@ fn child_with_start(
         eprintln!("theater: {problem}");
     }
     let cap_bytes = boot::setting_defs::theater_cache_cap_bytes(Some(&settings));
-    let delta = if launch.target > 0
-        && film.header.version >= 2
-        && launch.source != Some(agent_proto::theater::SeekRoute::Boot)
-    {
-        let mut track = film::blam::TrackReader::open_with_film(&opts.film)?;
-        if compatibility == film::image::ImageMatch::FromBoot {
-            track.disable_embedded_keyframes();
-        }
-        if cap_bytes > 0
-            && let Some((stamp, switches)) = &launch.presentation.snapshot_build
-            && stamp == &image_stamp
-            && let Err(e) = track.attach_sidecar(&films_dir, stamp, switches)
-        {
-            eprintln!("theater: could not open sidecar for disk restore: {e:#}");
-        }
-        track.disk_delta_at(launch.target)?
-    } else {
-        Vec::new()
-    };
-    film.read::<film::manifest::Manifest>(&entry)?
-        .restore_keyframe(&data, opts.data.as_deref(), &delta)?;
     let verification = Some(verify::mode(&opts, work)?);
     let boot = boot::RunOpts {
         disc: opts.disc,
@@ -384,7 +371,7 @@ fn child_with_start(
         cache: Some(boot::theater::ReplayCache {
             films_dir,
             cap_bytes,
-            disk_digest: film::xbe_digest(&delta),
+            disk_digest: film::xbe_digest(&[]),
         }),
         unpaced: opts.prepare,
         render_every: opts.every,
@@ -413,13 +400,9 @@ fn child_with_start(
         r.map(|_| ())
     };
     let host_bots = film.header.host_bots;
-    let local_gpu = if film.header.meta.source == film::Source::Local {
-        let hooks = film.header.render_hooks;
-        let startup = boot::theater::Startup::read(&mut film)?.context("missing startup for local film")?;
-        Some(startup.local_gpu_draws(hooks))
-    } else {
-        None
-    };
+    // A film played from its game start has no recorded startup, and no
+    // GPU reference to reproduce: its digests are of the simulation.
+    let local_gpu: Option<bool> = None;
     #[cfg(feature = "desktop")]
     if let Some(capture) = capture {
         let observer = film.header.version >= 2 && local_gpu != Some(true);
