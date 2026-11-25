@@ -1021,7 +1021,7 @@ impl Session {
         let Mode::Record(rec) = &s.mode else {
             unreachable!()
         };
-        if !teardown && (!rec.match_over || rec.frame.actions.is_some()) {
+        if !teardown && (!rec.match_over || !rec.frame.updates.is_empty()) {
             return Ok(());
         }
         // A default recording cuts each game into a film of its own and
