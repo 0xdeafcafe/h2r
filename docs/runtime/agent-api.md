@@ -72,6 +72,7 @@ connection to hold `session.claim`.
 | `render.spawn_view`, `render.view` | act | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
 | `render.parity` | act | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
 | `render.residual` | read | [Residual D3D work](#renderresidual-residual-d3d-work) |
+| `render.particles.refusals` | read | [`render.particles.refusals`](#renderparticlesrefusals) |
 | `render.overrides`, `render.programs` | read | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
 | `render.reload`, `render.dump`, `render.param`, `render.toggle` | act | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
 | `edit.map`, `edit.tags`, `edit.get`, `edit.changes` | read | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
@@ -1774,6 +1775,51 @@ The method is the host's (`crates/extensions/game/src/forge_glue/markers_world.r
 ```sh
 h2 agent render.markers
 h2 agent render.markers '{"kind":"hill"}'
+```
+
+### `render.particles.refusals`
+
+`render.particles.refusals` says why the native particle path left draws to
+D3D. Every geometry refusal has a named check, which the present's refusal
+log also carries (`Particle/Geometry/primitive=428`). The answer keeps, per
+check, a count and the shape of the first draw that failed it. It takes no
+params; any field is refused with `invalid params`.
+
+```json
+{"refused": 428,
+ "samples": {"primitive": {
+   "label": "Geometry/primitive", "producer": "Particle", "count": 428,
+   "shape": {"entry": "D3DDevice_DrawVertices", "primitive": "TriangleList",
+             "vertex_count": 6, "indexed": false, "pretransformed": false,
+             "layouts": 1, "streams": 1, "layout_strides": [8],
+             "stream_strides": [8], "stream_bytes": [48],
+             "attribute_count": 1,
+             "attributes": [{"stream": 0, "register": 0, "data_type": "Short4", "offset": 0}],
+             "provided_inputs": 1}}}}
+```
+
+- The checks, in the order they run: `indexed`, `pretransformed`,
+  `layouts` (not one stream layout), `streams` (not one stream),
+  `stride` (stream index, layout against stream, or the producer's
+  stride), `attributes` (not exactly one for a particle),
+  `attribute_slot` (offset or register), `primitive`, `vertex_count`,
+  `data_len`, `data_type`, `inputs` (the shader's provided registers),
+  `corner_vertices`, `corner_compare`, `corner_differs` (the stream
+  differs from the published corner values), `unpublished`,
+  `data_differs` (a dynamic call's bytes), `indices`, and the ribbon
+  bytes' `raw_bytes`, `raw_attributes` and `raw_vertex_count`.
+- `count` totals the run, not one present; the per-window counters are in
+  the log. `producer` is the producer of the first draw (`Particle`,
+  `Dynamic`, `Immediate`).
+- A draw the captured-particle fallback takes is not a refusal and is not
+  counted. Refusals of other kinds (target, state, shader) are only in the
+  log.
+
+The method is the host's (`crates/extensions/game/src/native_particles_admission.rs`,
+`add_refusals_method`; the name is `agent_proto::method::RENDER_PARTICLES_REFUSALS`).
+
+```sh
+h2 agent render.particles.refusals
 ```
 
 ### `render.coop_look`
