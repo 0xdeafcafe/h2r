@@ -47,6 +47,9 @@ pub(super) struct Hub {
     armed: Mutex<Option<Armed>>,
     /// The agent's guest calls, to queue a game.
     calls: OnceLock<calls::Shared>,
+    /// The call that queued the latest game. A call leaves the queue when
+    /// its ticket drops, so the ticket is kept until the next game is queued.
+    ticket: Mutex<Option<calls::PendingCall>>,
     /// Told the film's id when a watch ends by leaving, so the menu can
     /// open the film page again.
     returned: OnceLock<Box<dyn Fn(&str) + Send + Sync>>,
@@ -59,6 +62,7 @@ impl Hub {
             parked: Mutex::new(None),
             armed: Mutex::new(None),
             calls: OnceLock::new(),
+            ticket: Mutex::new(None),
             returned: OnceLock::new(),
         }
     }
@@ -426,7 +430,11 @@ impl Session {
             .calls
             .get()
             .ok_or("the game's own functions aren't reachable here: the agent-calls feature isn't installed")?;
-        calls::submit(calls, calls::Call::QueueGame { steps }).map(|_| ())
+        let mut held = self.watch.ticket.lock().unwrap_or_else(|e| e.into_inner());
+        // A game queued before and not yet started is superseded.
+        drop(held.take());
+        *held = Some(calls::submit(calls, calls::Call::QueueGame { steps })?);
+        Ok(())
     }
 
     /// A start-route seek: the film's options are queued again and the film
