@@ -237,6 +237,65 @@ fn object(
     })
 }
 
+/// The local players' globals (`[0x004e8c20]`): from `+0xc` the four
+/// local users' player datums, none for an unmapped user.
+pub const PLAYER_GLOBALS: u32 = 0x004e_8c20;
+pub const LOCAL_PLAYERS: u32 = 0xc;
+/// The players' datum array header (`[0x004e8c24]`): a player is `0x21c`
+/// bytes, its unit at `+0x2c`.
+pub const PLAYERS: u32 = 0x004e_8c24;
+pub const PLAYER_SIZE: u32 = 0x21c;
+pub const PLAYER_UNIT: u32 = 0x2c;
+/// The local users' cameras, `0x140` bytes each: `+0xc` the camera's kind
+/// (its update routine) and `+0x4` the float `0x00155760` tests.
+pub const USER_CAMERAS: u32 = 0x004e_8c44;
+pub const USER_CAMERA_SIZE: u32 = 0x140;
+pub const USER_CAMERA_KIND: u32 = 0xc;
+pub const USER_CAMERA_TEST: u32 = 0x4;
+/// The kind `0x00155760` answers 0 for: the first-person camera.
+pub const FIRST_PERSON_CAMERA: u32 = 0x0023_c110;
+/// The image's `0.0` that `0x00155760` compares `+0x4` with.
+pub const CAMERA_TEST_ZERO: u32 = 0x0045_dbd8;
+
+/// The unit `0x0002b990` passes in EDI for `0x0003f33c` to append: the
+/// view's local user (`VIEW_PLAYER` holds the user index, not a unit;
+/// `0x0002ba10` stores its argument there and passes the same argument in
+/// EAX) when mapped to a player whose camera `0x00155760` answers 0 for
+/// (kind [`FIRST_PERSON_CAMERA`] with `+0x4` equal to `0.0`, unordered
+/// not equal), that player's unit (`[[0x004e8c24]+0x44] + 0x21c * index
+/// + 0x2c`). Otherwise none, as for a unit of `-1`.
+pub fn view_player_unit(mem: &dyn GuestRead) -> Result<Option<u32>, Decline> {
+    let (u, l) = (Decline::Unread, Decline::Layout);
+    let user = u32_at(mem, VIEW_PLAYER).ok_or(u)?;
+    if user == NONE {
+        return Ok(None);
+    }
+    if user >= 4 {
+        return Err(l);
+    }
+    let globals = ptr_at(mem, PLAYER_GLOBALS).ok_or(u)?;
+    let player = u32_at(mem, at(globals, LOCAL_PLAYERS + 4 * user).ok_or(l)?).ok_or(u)?;
+    if player == NONE {
+        return Ok(None);
+    }
+    let camera = USER_CAMERAS + USER_CAMERA_SIZE * user;
+    let kind = u32_at(mem, camera + USER_CAMERA_KIND).ok_or(u)?;
+    let test = f32_at(mem, camera + USER_CAMERA_TEST).ok_or(u)?;
+    let zero = f32_at(mem, CAMERA_TEST_ZERO).ok_or(u)?;
+    if kind != FIRST_PERSON_CAMERA || test != zero {
+        return Ok(None);
+    }
+    let players = ptr_at(mem, PLAYERS).ok_or(u)?;
+    let data = ptr_at(mem, at(players, 0x44).ok_or(l)?).ok_or(u)?;
+    let slot = (player & 0xffff)
+        .checked_mul(PLAYER_SIZE)
+        .and_then(|o| at(data, o))
+        .and_then(|s| at(s, PLAYER_UNIT))
+        .ok_or(l)?;
+    let unit = u32_at(mem, slot).ok_or(u)?;
+    Ok((unit != NONE).then_some(unit))
+}
+
 /// The references of `clusters` (and of the sky cluster), and the objects
 /// they name.
 pub fn object_world(
@@ -244,10 +303,9 @@ pub fn object_world(
     view: &ViewInputs,
     clusters: &[u16],
 ) -> Result<ObjectWorld, Decline> {
-    let player = u32_at(mem, VIEW_PLAYER).ok_or(Decline::Unread)?;
     let mut world = ObjectWorld {
         view_flags: view.flags,
-        player: (player != NONE).then_some(player),
+        player: view_player_unit(mem)?,
         capacity: view.capacity,
         ..ObjectWorld::default()
     };

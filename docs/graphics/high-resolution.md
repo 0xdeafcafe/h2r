@@ -162,7 +162,11 @@ aspect correction. At 16:9 the Pinned layout retains the retail widescreen fit.
 Single-copy play fits the horizontal projection terms in the guest's active
 and saved display cameras at `VIEW_PROJECTION_TERMS`
 (`crates/extensions/game/src/render_aspect.rs`). The camera matrix, CPU
-pixel scale and root portal bounds derive from these terms. Water and fog
+pixel scale and root portal bounds derive from these terms. Every wide view
+starts with the display supplement's lens; the hook swaps in the guest lens
+once it has fitted the view, and a view it does not fit keeps the
+supplement described under exact mode below (`starting_lens`;
+`render.scene`'s `scene_visibility_lens_*` counts the views by lens). Water and fog
 geometry built with this camera, the sky and CPU-projected effects share
 its horizontal lens. The BSP flood clips each open portal to its parent
 window. Object spheres must intersect one of their cluster's window frusta.

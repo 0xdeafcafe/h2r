@@ -224,8 +224,15 @@ view's sphere in mode 1, always in mode 2, and always under view flag
 `0x80`. A rejected object can be listed through a later cluster. The sky
 cluster's objects (`0x004b9ee9`, `0x004686c4`, `0x004b9eec` and the
 structure's table at `+0xb0`) are added unclipped. View flag `0x40`
-lists no objects. The view's player unit (`0x004b9ed8`) is appended when
-it is not listed, as `0x0003f33c` does. `guest::object_world` reads the
+lists no objects. The view's player unit is appended when it is not
+listed, as `0x0003f33c` does. `0x004b9ed8` holds the view's local user
+index, not a unit. `0x0002b990` maps it to a unit when the user has a
+player (`[0x004e8c20] + 0xc + 4 · user`) and `0x00155760` answers 0 for
+the user's camera: kind `0x0023c110` (the first-person camera, `+0xc` of
+the user's `0x140`-byte record at `0x004e8c44`) with `+0x4` equal to the
+image's `0.0`. The unit is the player's `+0x2c` (players at
+`[[0x004e8c24] + 0x44]`, `0x21c` bytes each). Any other case appends
+nothing (`guest::view_player_unit`). `guest::object_world` reads the
 references and spheres into Rust-owned maps first.
 
 ### The light views
@@ -297,7 +304,7 @@ counted only: no light list is carried into the scene.
   `+0x2a78` view kind, `+0x2a7c` mode), `[0x004c0b80]` (the active
   struct), the structure tag and its collision BSP, the open-portal bits,
   the object and reference datum arrays, the light records, the sky
-  globals, the view's player unit, the view records, the observer
+  globals, the view's local user, the local player map, the users' camera kinds, the players' units, the view records, the observer
   cameras, the render camera, and the image's values named above.
 - Writes nothing.
 - `render.scene` reports it
@@ -341,7 +348,9 @@ counted only: no light list is carried into the scene.
   setup and the camera and lens builders: **Code**, read in the
   disassembly (`h2 disasm`) at the addresses above.
 - The open-portal bits are indexed by portal: **Code** (`0x00172927`).
-- `0x004b9ed8` holding the view's player unit: **S** (occlusion-culling.md).
+- `0x004b9ed8` holding the view's local user index, and the unit
+  `0x0002b990` appends: **Code** (`0x0002ba10`, `0x0002bc6b`, `0x0002b990`,
+  `0x00155760`).
 - That the item lists `0x00040e90` leave the light struct's lists alone
   between a light's gather and its passes: **S**.
 - Every behaviour above on invented fixtures: **Test**

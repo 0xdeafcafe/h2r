@@ -103,6 +103,21 @@ fn projection_factor(mem: &impl GuestMemory, output: (u32, u32)) -> f32 {
     retail / pixel
 }
 
+// The lens a game view's visibility starts with: the display supplement
+// whenever the presentation is wider than the guest's 4:3. In single-copy
+// play `VIEW_PROJECTION_TERMS` replaces it with the guest lens once it has
+// widened the view's own projection; a view the hook does not fit keeps
+// the supplement, so its edges are gathered either way.
+#[cfg(feature = "desktop-runtime")]
+fn starting_lens(factor: f32) -> render_bridge::scene_step::VisibilityLens {
+    use render_bridge::scene_step::VisibilityLens;
+    if factor < 1.0 && factor.is_finite() && factor > 0.0 {
+        VisibilityLens::Display(factor)
+    } else {
+        VisibilityLens::Retail
+    }
+}
+
 // 0x2fd90 reserves 0x74 stack bytes. After its call to 0x2fb70,
 // +0x54 holds the X/Y biases, X/Y scales and four tangent bounds.
 // All three consumers (matrix, CPU pixel scale and frustum) use these
@@ -511,14 +526,7 @@ impl Feature for RenderAspect {
                     lens.store(factor.to_bits(), Ordering::Relaxed);
                     sink.set_projection_factor(factor);
                     #[cfg(feature = "desktop-runtime")]
-                    {
-                        use render_bridge::scene_step::{VisibilityLens, set_visibility_lens};
-                        set_visibility_lens(if !single_copy && factor < 1.0 {
-                            VisibilityLens::Display(factor)
-                        } else {
-                            VisibilityLens::Retail
-                        });
-                    }
+                    render_bridge::scene_step::set_visibility_lens(starting_lens(factor));
                 })
                 // Reads this view's guest memory and tells the sink, as the
                 // UI-fit hooks below do (all context-only).
@@ -946,6 +954,16 @@ mod tests {
             mem.put_u32(esp + 0x74, caller);
             assert_eq!(fit_view_projection(&mut mem, esp, 0.75), None);
             assert_eq!(mem.f32(at + 8).unwrap(), terms[2]);
+        }
+    }
+
+    #[cfg(feature = "desktop-runtime")]
+    #[test]
+    fn a_wide_view_starts_with_the_display_supplement_in_either_readback_mode() {
+        use render_bridge::scene_step::VisibilityLens;
+        assert!(matches!(starting_lens(0.758), VisibilityLens::Display(f) if f == 0.758));
+        for factor in [1.0, 1.25, 0.0, f32::NAN] {
+            assert!(matches!(starting_lens(factor), VisibilityLens::Retail), "{factor}");
         }
     }
 

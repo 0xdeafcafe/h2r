@@ -168,6 +168,13 @@ static VISIBILITY_CLUSTERS_DIFFER: AtomicU64 = AtomicU64::new(0);
 static VISIBILITY_OBJECTS_DIFFER: AtomicU64 = AtomicU64::new(0);
 static VISIBILITY_TAKEN: AtomicU64 = AtomicU64::new(0);
 static VISIBILITY_NS: AtomicU64 = AtomicU64::new(0);
+/// Game views by the lens their visibility used ([`VisibilityLens`]:
+/// retail, the single-copy guest lens, the display supplement), and the
+/// views, clusters and objects the display supplement added.
+static VISIBILITY_LENS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+static VISIBILITY_DISPLAY_VIEWS: AtomicU64 = AtomicU64::new(0);
+static VISIBILITY_DISPLAY_CLUSTERS: AtomicU64 = AtomicU64::new(0);
+static VISIBILITY_DISPLAY_OBJECTS: AtomicU64 = AtomicU64::new(0);
 static VISIBILITY_DECLINED: [AtomicU64; scene_extract::visibility::Decline::ALL.len()] =
     [const { AtomicU64::new(0) }; scene_extract::visibility::Decline::ALL.len()];
 /// `render.scene`'s counter of each decline, in `Decline::ALL`'s order.
@@ -189,6 +196,9 @@ static VISIBILITY_FIRST_MISMATCH: Mutex<Option<String>> = Mutex::new(None);
 static VIEW_RECORD_CHECKED: AtomicU64 = AtomicU64::new(0);
 static VIEW_RECORD_EQUAL: AtomicU64 = AtomicU64::new(0);
 static VIEW_RECORD_DIFFER: AtomicU64 = AtomicU64::new(0);
+/// Guest-lens views by what the guest's projection holds
+/// ([`GuestLensState`]): the widened scale, the retail one, or neither.
+static VIEW_RECORD_GUEST_LENS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 static VIEW_RECORD_DECLINED: [AtomicU64; scene_extract::visibility::view::Decline::ALL.len()] =
     [const { AtomicU64::new(0) }; scene_extract::visibility::view::Decline::ALL.len()];
 /// `render.scene`'s counter of each view record decline, in
@@ -253,6 +263,17 @@ pub enum VisibilityLens {
     Guest(f32),
     /// Extra visible space on the exact-mode display copy.
     Display(f32),
+}
+
+impl VisibilityLens {
+    /// The `scene_visibility_lens_*` counter this lens counts under.
+    fn counter(self) -> usize {
+        match self {
+            Self::Retail => 0,
+            Self::Guest(_) => 1,
+            Self::Display(_) => 2,
+        }
+    }
 }
 
 pub fn set_visibility_lens(lens: VisibilityLens) {
@@ -385,12 +406,16 @@ fn open_kind_at_layer(mem: &dyn GuestMemory, kind: ViewKind, layer_hook: bool) -
                 .and_then(|()| {
                     if kind == ViewKind::Game && let Some(gather) = extract::cluster_gather(&m) {
                         let guest_lens = view_record_arm(&m, &camera, key, step.visibility_lens);
+                        VISIBILITY_LENS[step.visibility_lens.counter()].fetch_add(1, Ordering::Relaxed);
                         let display_factor = match step.visibility_lens {
                             VisibilityLens::Display(factor) => Some(factor),
                             _ => None,
                         };
                         let (gather, extra) = visibility_arm(&m, &guest_lens, key, &mut step.visibility, gather, display_factor);
                         if let Some(extra) = extra {
+                            VISIBILITY_DISPLAY_VIEWS.fetch_add(1, Ordering::Relaxed);
+                            VISIBILITY_DISPLAY_CLUSTERS.fetch_add(extra.clusters.len() as u64, Ordering::Relaxed);
+                            VISIBILITY_DISPLAY_OBJECTS.fetch_add(extra.objects.len() as u64, Ordering::Relaxed);
                             step.builder.set_display_visibility(extra)?;
                         }
                         step.builder.set_cluster_gather(gather)?;
@@ -1262,6 +1287,31 @@ fn visibility_arm(
     (gather, extra)
 }
 
+/// What the guest's horizontal projection scale holds in a view the
+/// single-copy hook reported fitted, against the Rust record's retail
+/// scale: the hook's write reached the camera the guest built
+/// (`Applied`), the guest built the retail lens anyway (`Retail`), or
+/// neither within a thousandth.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GuestLensState {
+    Applied = 0,
+    Retail = 1,
+    Other = 2,
+}
+
+impl GuestLensState {
+    fn of(retail: f32, guest: f32, factor: f32) -> Self {
+        let near = |a: f32, b: f32| b != 0.0 && ((a / b) - 1.0).abs() < 1e-3;
+        if near(guest, retail * factor) {
+            Self::Applied
+        } else if near(guest, retail) {
+            Self::Retail
+        } else {
+            Self::Other
+        }
+    }
+}
+
 /// The main view's records in Rust beside the guest's
 /// (docs/graphics/native-visibility.md, "The view records"): built from
 /// the observer camera, compared field by field with the render camera
@@ -1280,6 +1330,10 @@ fn view_record_arm(m: &Ro<'_>, camera: &Camera, key: ViewKey, lens: VisibilityLe
     };
     VIEW_RECORD_CHECKED.fetch_add(1, Ordering::Relaxed);
     if let VisibilityLens::Guest(factor) = lens {
+        if let (Some(retail), Some(guest)) = (rust.camera.projection_xy, guest.camera.projection_xy) {
+            let state = GuestLensState::of(retail[0], guest[0], factor);
+            VIEW_RECORD_GUEST_LENS[state as usize].fetch_add(1, Ordering::Relaxed);
+        }
         rust.camera = native_render::camera::display_camera(rust.camera, factor);
     }
     let (lens, parity) = view::arm(&rust, &guest);
@@ -1592,6 +1646,12 @@ pub fn counters() -> Vec<(&'static str, u64)> {
         ),
         ("scene_visibility_rust_taken", VISIBILITY_TAKEN.load(Ordering::Relaxed)),
         ("scene_visibility_ns", VISIBILITY_NS.load(Ordering::Relaxed)),
+        ("scene_visibility_lens_retail", VISIBILITY_LENS[0].load(Ordering::Relaxed)),
+        ("scene_visibility_lens_guest", VISIBILITY_LENS[1].load(Ordering::Relaxed)),
+        ("scene_visibility_lens_display", VISIBILITY_LENS[2].load(Ordering::Relaxed)),
+        ("scene_visibility_display_views", VISIBILITY_DISPLAY_VIEWS.load(Ordering::Relaxed)),
+        ("scene_visibility_display_clusters", VISIBILITY_DISPLAY_CLUSTERS.load(Ordering::Relaxed)),
+        ("scene_visibility_display_objects", VISIBILITY_DISPLAY_OBJECTS.load(Ordering::Relaxed)),
     ]
     .into_iter()
     .chain(
@@ -1606,6 +1666,9 @@ pub fn counters() -> Vec<(&'static str, u64)> {
             ("scene_view_record_checked", VIEW_RECORD_CHECKED.load(Ordering::Relaxed)),
             ("scene_view_record_equal", VIEW_RECORD_EQUAL.load(Ordering::Relaxed)),
             ("scene_view_record_differ", VIEW_RECORD_DIFFER.load(Ordering::Relaxed)),
+            ("scene_view_record_guest_lens_applied", VIEW_RECORD_GUEST_LENS[0].load(Ordering::Relaxed)),
+            ("scene_view_record_guest_lens_retail", VIEW_RECORD_GUEST_LENS[1].load(Ordering::Relaxed)),
+            ("scene_view_record_guest_lens_other", VIEW_RECORD_GUEST_LENS[2].load(Ordering::Relaxed)),
         ]
         .into_iter()
         .chain(
@@ -1768,6 +1831,24 @@ impl Feature for FrameSceneStep {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_fitted_view_tells_a_widened_guest_scale_from_a_retail_one() {
+        let factor = 0.758;
+        assert_eq!(GuestLensState::of(1.2, 1.2 * factor, factor), GuestLensState::Applied);
+        assert_eq!(GuestLensState::of(1.2, 1.2, factor), GuestLensState::Retail);
+        assert_eq!(GuestLensState::of(1.2, 0.6, factor), GuestLensState::Other);
+        assert_eq!(GuestLensState::of(0.0, 0.0, factor), GuestLensState::Other);
+    }
+
+    #[test]
+    fn each_lens_counts_under_its_own_name() {
+        assert_eq!(
+            [VisibilityLens::Retail, VisibilityLens::Guest(0.75), VisibilityLens::Display(0.75)]
+                .map(VisibilityLens::counter),
+            [0, 1, 2]
+        );
+    }
 
     #[test]
     fn worker_view_metadata_survives_the_game_thread_scene_seal() {

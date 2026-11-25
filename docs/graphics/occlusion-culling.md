@@ -26,7 +26,8 @@ All of this runs in `render_view_scene` `0x0002ba10`, **before**
 render_view_scene 0x0002ba10
   0x0002b990
     0x0003f2c0   ECX the camera 0x004b9da0, EAX the projection 0x004b9e14,
-                 EDI the view's player unit; ret 4
+                 EDI the view's player unit (0x0002b990 maps the local
+                 user at 0x004b9ed8 to it; native-visibility.md); ret 4
       0x000441b0   the view frustum (0x1bc bytes)
       0x001320f0   visibility: EAX 0 = the main struct 0x00547f88
                    (EAX 1 = 0x0054aa68); stores it to [0x004c0b80]; ret 0x1c
@@ -137,7 +138,7 @@ reads only AL: non-zero with view kind 1 re-runs the same index.
   scales at `+0xb8`/`+0xbc` (`0x004b9ed0` is the LOD pixel scale).
 - `0x004ba050` the view index (`render_game_view` stores it), `0x004ba034`
   the frame counter (`render_views` increments it), `0x004b9ed8` the
-  view's player unit (S).
+  view's local user index (Code: `0x0002ba10` stores its argument there).
 
 ### Projected size and level of detail
 

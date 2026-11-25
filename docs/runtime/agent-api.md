@@ -2096,12 +2096,21 @@ h2 agent render.parity '{"arm": true}'
   `scene_visibility_differ`, `scene_visibility_clusters_differ`,
   `scene_visibility_objects_differ`, `scene_visibility_rust_taken` (views
   that carry the Rust sets), `scene_visibility_ns` (time in the Rust
-  computation) and `scene_visibility_declined_<reason>` (`unread`,
+  computation), `scene_visibility_lens_retail`, `_guest` and `_display`
+  (game views by the lens their visibility used: retail, the single-copy
+  camera that `VIEW_PROJECTION_TERMS` widened, or the display supplement;
+  a single-copy run whose views count under `_display` has views the hook
+  did not fit), `scene_visibility_display_views`, `_clusters` and
+  `_objects` (what the display supplement added) and
+  `scene_visibility_declined_<reason>` (`unread`,
   `layout`, `mode`, `frusta`, `overflow`, `camera`, `not_main`: views it
   made no sets for); the light views' `scene_light_visibility_checked`,
   `_equal`, `_differ`, `_ns` and `_declined_<reason>` (the same reasons);
-  and the view records' `scene_view_record_checked`, `_equal`, `_differ`
-  and `_declined_<reason>` (`unread`, `layout`, `cinematic`,
+  and the view records' `scene_view_record_checked`, `_equal`, `_differ`,
+  `_guest_lens_applied`, `_guest_lens_retail` and `_guest_lens_other`
+  (single-copy views the hook fitted, by whether the guest's own
+  horizontal projection scale is the widened one, the retail one, or
+  neither) and `_declined_<reason>` (`unread`, `layout`, `cinematic`,
   `no_observer`, `override`). They also include
   (`scenes_sealed`, `scenes_unsealed`, `scene_views`, `scene_no_camera`,
   `scene_refused_writes`, `scene_layers`, `scene_layer_items`,
