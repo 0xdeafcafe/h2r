@@ -214,8 +214,12 @@ the cached pipelines with their own uniforms and sampled textures.
   helper offers the composite's quad list to
   the water stage. The keyed view owns the quad corners, and the stage verifies
   them against the current vertex window before expanding them into triangles.
-  Admission resumes at the helper's epilogue only after
-  the native draw commits. Refusals take the original indexed call.
+  When the native draw commits, the hook performs the helper's tail
+  itself (`mov al, 1; ret 0xc` past its indexed call): AL set, the return
+  address and the three arguments popped, a return to the helper's caller
+  (`scene_extract::late::WATER_COMPOSITE_RETURN`, a call continuation).
+  No resume point inside the helper is needed. Refusals take the original
+  indexed call.
   Layer 6 draws the kind-4 transparent parts of clusters and placements. A placement uses
   its own model rows at the rigid program's dynamic uniform offset.
   Each pass must compile the rigid classification and the part must supply

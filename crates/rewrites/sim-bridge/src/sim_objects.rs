@@ -78,7 +78,42 @@ pub(crate) fn install(b: &mut Builder) {
     if installed {
         install_table(b, bodies, OBJECTS, |_| &[]);
         install_events(b);
+        install_curve_arm(b);
     }
+}
+
+/// The tag-function curve evaluator `13b390` (`FUNCTION_EVALUATE`): the
+/// idiomatic kernel predicts every call, and
+/// `engine::sim_objects::functions::parity::enter` decides who answers.
+/// Until the arm has matched enough guest answers with no mismatch, the
+/// guest answers and the kernel's prediction is compared at the return
+/// (`ExecCtx::observe_guest_return`); after, the kernel answers and one
+/// call in `AUDIT_EVERY` is still compared. A declined call (float
+/// environment, curve kinds 9 and 10, a faulting read) is the guest's.
+fn install_curve_arm(b: &mut Builder) {
+    use engine::sim_objects::functions::parity::{self, Step};
+    let point = &points::FUNCTION_EVALUATE;
+    b.raw()
+        .implement(point, OBJECTS, move |cpu, ctx, pc| {
+            if pc == point.base {
+                let step = {
+                    let mem = ctx.memory();
+                    parity::enter(cpu, &mem)
+                };
+                match step {
+                    Step::Answered { target } => return Ok(TransferAbi::ret(target)),
+                    Step::Audit(prediction) => {
+                        // Compared at the guest's return; a full observer
+                        // table leaves the call uncompared.
+                        ctx.observe_guest_return(cpu, parity::ARGS, move |c, _| parity::compare(prediction, c));
+                    }
+                    Step::Guest => {}
+                }
+            }
+            original(cpu, ctx, pc, false)
+        })
+        .context_only()
+        .optional();
 }
 
 fn drive(
@@ -312,6 +347,26 @@ mod tests {
             let chain = &plan.chains[&point.base];
             assert!(chain.observe_before.iter().any(|h| h.label == label), "{}", point.name);
         }
+    }
+
+    #[test]
+    fn the_switch_installs_the_curve_evaluators_capture_arm() {
+        // On: the curve evaluator's point is implemented by the arm, which
+        // answers or hands the call to the original.
+        let mut registry = Registry::new(Switches::defaults().with(&format!("impl.{OBJECTS}"), true));
+        registry.add(&SimNative::for_tests()).unwrap();
+        let plan = registry.build(&Base).unwrap();
+        let chain = &plan.chains[&points::FUNCTION_EVALUATE.base];
+        let implement = chain.implement.as_ref().unwrap();
+        assert_eq!(implement.label, OBJECTS);
+        assert!(implement.optional);
+        assert!(chain.observe_before.is_empty() && chain.observe_after.is_empty());
+        assert!(implement.continuation_sites().0.is_empty());
+        // Off: nothing installs.
+        let mut registry = Registry::new(Switches::defaults());
+        registry.add(&SimNative::for_tests()).unwrap();
+        let plan = registry.build(&Base).unwrap();
+        assert!(!plan.chains.contains_key(&points::FUNCTION_EVALUATE.base));
     }
 
     static DAMAGE_BODIES: [Body; 2] = [

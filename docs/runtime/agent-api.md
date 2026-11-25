@@ -2250,8 +2250,8 @@ h2 agent render.parity '{"arm": true}'
   The water loader counts refused placement parts by `placement_rows_load`,
   `rigid_program_load` and `placement_streams_load`.
   Sorted range admission reports `native_{fog,water}_walk_examined`,
-  `walk_suppressed`, `walk_refused_inputs` and `walk_refused_reservation`
-  under each stage. The counters
+  `walk_suppressed`, `walk_refused_inputs`, `walk_refused_resume` and
+  `walk_refused_reservation` under each stage. The counters
   `scene_submitted_flares_reference_draws` and
   `scene_submitted_flares_display_draws` accumulate flare ranges as
   `GfxBackend::commit_external` appends them to each copy's command

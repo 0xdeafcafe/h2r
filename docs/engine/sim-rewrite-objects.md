@@ -33,7 +33,13 @@ and spatial queries) land first; section 6 says what this phase needs from
 them.
 
 The object walks, export lookup, light endpoint blends and unit look basis
-use the Rust kernels in `crates/rewrites/sim-objects`. The action walk
+use the Rust kernels in `crates/rewrites/sim-objects`, as does the
+tag-function curve evaluator `13b390`: an idiomatic kernel
+(`functions/curve.rs`) that predicts every guest call. The guest's answer
+is compared with the prediction until 4096 calls have matched with no
+mismatch; then the kernel answers, one answerable call in 64 is still
+compared, and a mismatch returns every call to the guest. The counts are
+kept in `engine::sim_objects::functions::parity`. The action walk
 `e6830` serves both bipeds and vehicles. Six object points support live
 segment comparison through the [shadow checks](shadow-exec.md#registration-and-the-agent-api).
 
