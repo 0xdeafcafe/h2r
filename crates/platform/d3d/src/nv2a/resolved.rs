@@ -64,7 +64,7 @@ pub fn resolve(
         eye: eye_uniform(&draw.hw),
         ..PixelUniforms::default()
     };
-    pu.stipple = draw.hw.stipple_pattern;
+    pu.stipple = draw.hw.stipple_rows(scale);
     let guest = (draw.target.width, draw.target.height);
     pu.stipple_scale = PixelUniforms::stipple_grid(guest, scale.size(guest.0, guest.1));
     let w_buffer = key.pixel_options.w_buffer;

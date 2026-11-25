@@ -788,8 +788,35 @@ mod retained_admission {
     }
 
     #[test]
-    fn only_water_and_only_without_a_guest_reference_is_carried() {
-        for (stage, reference) in [(Stage::Flares, false), (Stage::Transparents, false), (Stage::Water, true)] {
+    fn water_flares_and_ui_commits_are_each_retained_as_an_admitted_draw() {
+        for stage in [Stage::Water, Stage::Flares, Stage::Ui] {
+            let (begun, ops, refusals) = native_water(stage, false);
+            assert!(begun, "{stage:?}");
+            let carried: Vec<_> = ops
+                .iter()
+                .filter_map(|op| match op {
+                    ReplayOp::Draw { external, .. } => Some(external.as_ref().map(|e| e.plan.stage)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(carried, [Some(stage)], "{stage:?}");
+            assert!(refusals.is_empty(), "{stage:?}: {refusals:?}");
+        }
+    }
+
+    #[test]
+    fn other_native_stages_and_any_guest_reference_are_not_carried() {
+        // Post's glow and screen effects have no one packet; the rest are
+        // carried only as the guest's own admitted draws.
+        for (stage, reference) in [
+            (Stage::Post, false),
+            (Stage::Transparents, false),
+            (Stage::Particles, false),
+            (Stage::Sky, false),
+            (Stage::Water, true),
+            (Stage::Flares, true),
+            (Stage::Ui, true),
+        ] {
             let (begun, ops, _) = native_water(stage, reference);
             assert!(!begun, "{stage:?} reference={reference}");
             assert!(!ops.iter().any(|op| matches!(op, ReplayOp::Draw { .. })), "{stage:?}");

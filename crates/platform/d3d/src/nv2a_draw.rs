@@ -207,7 +207,7 @@ pub(super) fn uniforms(
         eye: eye_uniform(&draw.hw),
         ..PixelUniforms::default()
     };
-    pu.stipple = draw.hw.stipple_pattern;
+    pu.stipple = draw.hw.stipple_rows(scale);
     let guest = (draw.target.width, draw.target.height);
     pu.stipple_scale = PixelUniforms::stipple_grid(guest, scale.size(guest.0, guest.1));
     let w_buffer = key.pixel_options.w_buffer;
@@ -407,6 +407,21 @@ mod tests {
         varied[28 + 12..28 + 16].copy_from_slice(&0.5f32.to_le_bytes());
         draw.streams[0].data = varied.into();
         assert!(crate::nv2a::overlay_vertices(&draw, sampled).is_none());
+    }
+
+    #[test]
+    fn a_display_stipple_reaches_the_display_copy_only() {
+        let mut draw = ui_draw();
+        draw.hw.display_stipple = Some([u32::MAX; 32]);
+        let caps = Capabilities::ALL;
+        let present = [true, false, false, false];
+        let reference = NativeDrawProgram::resolve_ui(&draw, present, caps, FetchMode::Cpu, 1u32).unwrap();
+        let display = NativeDrawProgram::resolve_ui(&draw, present, caps, FetchMode::Cpu, 2u32).unwrap();
+        assert_eq!(reference.pixel.stipple, [0xa5a5a5a5; 32], "the reference copy keeps the guest's pattern");
+        assert_eq!(display.pixel.stipple, [u32::MAX; 32], "the display copy draws the override");
+        draw.hw.display_stipple = None;
+        let display = NativeDrawProgram::resolve_ui(&draw, present, caps, FetchMode::Cpu, 2u32).unwrap();
+        assert_eq!(display.pixel.stipple, [0xa5a5a5a5; 32]);
     }
 
     #[test]

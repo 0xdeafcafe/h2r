@@ -962,7 +962,7 @@ impl<B: d3d::Backend + Send + 'static> render_bridge::native_world::OpaqueView f
         let textures = material.textures(mem, &mut device, streams.lightmap());
         Ok(Box::new(OpaquePass { watch: self.watch, device: Arc::clone(&self.device), streams, vertices,
             ranges, code: material.code.clone(), textures, layer, targets,
-            frame: self.frame }))
+            frame: self.frame, display_stipple: None }))
     }
 }
 
@@ -977,9 +977,16 @@ struct OpaquePass<B: d3d::Backend> {
     layer: render_bridge::native_world_layers::Layer,
     targets: d3d::device::PreparedOpaqueTargets,
     frame: u64,
+    /// The stipple the display copy draws with (two-copy rendering), in
+    /// place of the guest's pattern the reference copy keeps.
+    display_stipple: Option<[u32; 32]>,
 }
 
 impl<B: d3d::Backend + 'static> render_bridge::native_world::OpaqueDraw for OpaquePass<B> {
+    fn display_stipple(&mut self, rows: [u32; 32]) {
+        self.display_stipple = Some(rows);
+    }
+
     fn bind_streams<'a>(&'a self, cx: &'a hooks::Cx) -> render_bridge::native_world::OpaqueStreams<'a> {
         Box::pin(self.streams.handoff(cx))
     }
@@ -988,12 +995,14 @@ impl<B: d3d::Backend + 'static> render_bridge::native_world::OpaqueDraw for Opaq
         -> Result<(), render_bridge::native_world::OpaqueSubmitError>
     {
         use render_bridge::native_world::OpaqueSubmitError::{BeforeDraw, Device};
-        let Self { watch, device, streams: _, vertices, ranges, code, textures, layer, targets, frame } = *self;
+        let Self { watch, device, streams: _, vertices, ranges, code, textures, layer, targets, frame,
+            display_stipple } = *self;
         let _phase = timeline::phase::enter(timeline::phase::Phase::D3d);
         let mut device = device.lock().map_err(|_| Device("opaque device mutex poisoned".into()))?;
         drain_opaque_writes(mem, &mut device, watch).map_err(BeforeDraw)?;
         let primitive = if part.strip { gfx::vertex::PrimitiveType::TriangleStrip }
             else { gfx::vertex::PrimitiveType::TriangleList };
+        device.set_display_stipple(display_stipple);
         let sent = device.emit_world_ranges(&mut crate::native_lights_glue::DeviceMemory(mem),
             primitive, ranges, vertices, code.as_ref(), &targets, &textures, part.shader,
             |count| crate::native_world_layers_glue::enter_opaque_range(part, layer, frame, count))

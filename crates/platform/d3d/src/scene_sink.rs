@@ -57,7 +57,30 @@ pub type SlotSource = fn() -> Option<SlotAt>;
 
 pub(crate) fn retains_draw_stage(stage: timeline::native::Stage) -> bool {
     use timeline::native::Stage;
-    matches!(stage, Stage::Flares | Stage::Sky | Stage::Water | Stage::Transparents | Stage::Particles)
+    matches!(stage, Stage::Flares | Stage::Sky | Stage::Water | Stage::Transparents | Stage::Particles | Stage::Ui)
+}
+
+/// The native producers whose commit a replaying sink carries
+/// ([`Backend::begin_native_carry`]): each issues one packet that is the draw
+/// its guest code would, as a pass that records again from that packet and
+/// the textures captured with it. Particles, transparents and sky are
+/// carried only as the guest's own admitted draws.
+pub(crate) fn carries_native_stage(stage: timeline::native::Stage) -> bool {
+    use timeline::native::Stage;
+    matches!(stage, Stage::Water | Stage::Flares | Stage::Ui) && retains_draw_stage(stage)
+}
+
+/// Why a replaying sink cannot keep a native pass that carries nothing, for
+/// the refusal's report. Post's glow and screen effects replace several
+/// guest draws and write blur levels of their own; no one packet stands in
+/// for them, so they stay on the guest path.
+fn unretained_cause(stage: timeline::native::Stage) -> &'static str {
+    use timeline::native::Stage;
+    match stage {
+        Stage::Post => "a swallowed post pass replaces several guest draws and writes its own blur targets: no single packet to retain",
+        Stage::Ui | Stage::Flares | Stage::Water => "the pass has no exact single packet the replay can retain (indexed siblings, a depth write, a sampled or side target, or a guest reference request)",
+        _ => "the scene recorder cannot retain an unsealed reservation",
+    }
 }
 
 /// The scene's object shadow the guest is drawing, by index into the
@@ -817,7 +840,7 @@ impl<B: Backend> Backend for SceneSink<B> {
         if self.replaying() && self.carry.is_none() && !self.carrying {
             let pass = pass.lock().unwrap_or_else(|err| err.into_inner());
             ExternalOrigin::new(&**pass, "scene capture reservation", Some(plan.stage))
-                .refused("the scene recorder cannot retain an unsealed reservation", None);
+                .refused(unretained_cause(plan.stage), None);
             return Ok(None);
         }
         self.inner.prepare_external(surfaces, request, textures.map(|t| t.map(|t| &t.inner)), plan, copy, pass)
@@ -896,10 +919,10 @@ impl<B: Backend> Backend for SceneSink<B> {
     fn begin_native_carry(
         &mut self, color: Self::Surface, depth: Option<Self::Surface>, admission: &crate::backend::RetainedAdmission<Self::Surface>,
     ) -> bool {
-        // Only water's composite, the one native producer whose pass the
-        // replay can record again from its packet and captured textures.
+        // Only the producers [`carries_native_stage`] names: passes the
+        // replay can record again from their packet and captured textures.
         self.carry = None;
-        if !self.replaying() || admission.plan.stage != timeline::native::Stage::Water {
+        if !self.replaying() || !carries_native_stage(admission.plan.stage) {
             return false;
         }
         let packet = Arc::clone(&admission.packet);

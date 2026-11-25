@@ -19,7 +19,10 @@ This page describes the default stage-by-stage renderer. On the opted-in
 GPU path, the scene sink retains repeatable typed stages and resolved guest
 draws at their original slots. The display worker can present a complete
 game view from that seal, and the capture worker can draw the same inputs
-into private targets. The ownership rules and the gate for changing the
+into private targets. A native producer's commit has no guest draw to
+ride, so the sink carries the commit itself for the water composite, the
+flares and the UI; post's glow and screen effects stay on the guest path in
+a kept scene (framescene.md, "Slice 6"). The ownership rules and the gate for changing the
 default are in [FrameScene slice 6](framescene.md#slice-6-the-renderer-owns-game-view-frames).
 
 ## How a frame flows

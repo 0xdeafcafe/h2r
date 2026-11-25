@@ -1466,12 +1466,29 @@ D3D reference with all native stages disabled.
   (`prepare_external`: "the scene recorder cannot retain an unsealed
   reservation") unless it carries the commit
   (`Backend::begin_native_carry`, `record_native_carry`,
-  `end_native_carry`): for the water composite (`Stage::Water`) the sink
-  applies the admission checks above to the pass's packet, and the commit
-  is kept as a `ReplayOp::Draw` with that admission and the textures the
-  packet was resolved against. Its recordings are then not refused as
-  unrecorded. `IndexedPass::water_quads` records repeatedly
-  (`replays_scene`), as a sorted layer's range does.
+  `end_native_carry`). The sink carries the water composite
+  (`Stage::Water`), the flares (`Stage::Flares`) and the UI (`Stage::Ui`),
+  by `scene_sink::carries_native_stage`: each issues one packet that is
+  the draw its guest code would, and a pass that records repeatedly
+  (`replays_scene`) from that packet and the textures it was resolved
+  against. The sink applies the admission checks above to the pass's
+  packet, and the commit is kept as a `ReplayOp::Draw` with that admission.
+  Its recordings are then not refused as unrecorded.
+  `IndexedPass::water_quads` records repeatedly, as a sorted layer's
+  range does; `UiPass` and `FlarePass` take attachments and sampled stages
+  from the copy being recorded. Particles, transparents and sky are
+  carried only as the guest's own admitted draws. Post's glow and screen
+  effects stay on the guest path: they are swallows that replace several
+  guest draws and write blur targets of their own, so no one packet
+  stands in for them. A UI pass with indexed siblings has no single
+  packet (`resolved_fallback` is `None`) and stays on the guest path too.
+  The refusal names the cause (`scene_sink::unretained_cause`) with the
+  producer. Tests: `d3d`'s `tests/scene_sink.rs`
+  `water_flares_and_ui_commits_are_each_retained_as_an_admitted_draw`,
+  `other_native_stages_and_any_guest_reference_are_not_carried`;
+  `game::native_hud_glue`
+  `a_single_draw_ui_pass_replays_in_a_kept_scene_from_its_packet`,
+  `a_ui_pass_with_siblings_has_no_single_packet_and_stays_on_the_guest_path`.
 - **Coverage.** `render.scene` reports, with the option, `carried`
   (the last frame's ops by slot, its side targets with the ops that
   named them by slot, and its readbacks in and outside a game view),

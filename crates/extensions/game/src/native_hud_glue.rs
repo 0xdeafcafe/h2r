@@ -188,6 +188,12 @@ impl UiPass {
 }
 
 impl ExternalPass for UiPass {
+    // The packet and the issue frame are immutable; `prepare` takes the
+    // attachments and sampled stages from the copy being recorded.
+    fn replays_scene(&self) -> bool {
+        true
+    }
+
     fn requires_independent_samples(&self) -> bool {
         !self.siblings.is_empty()
     }
@@ -640,5 +646,83 @@ mod tests {
         assert!(!inline_space(&mem, layout, SCREEN_FAN_PUSH_BYTES, false));
         mem.put_u32(layout.device + FLAGS, 0x1800);
         assert!(!inline_space(&mem, layout, OUTLINE_PUSH_BYTES, true));
+    }
+
+    /// A one-triangle UI draw, as the scene's UI pass is built over.
+    fn ui_draw() -> d3d::ResolvedDraw {
+        use d3d::backend::{StreamBytes, TargetInfo, Viewport};
+        use d3d::shader::{ShaderInputs, VertexProcessing};
+        use d3d::state::StateWords;
+        use gfx::vertex::{StreamLayout, VertexAttribute, VertexDataType, VertexLayout, VertexRegister};
+        let words = StateWords::defaults(false);
+        d3d::ResolvedDraw {
+            entry: "D3DDevice_DrawVerticesUP",
+            primitive: PrimitiveType::TriangleList,
+            vertex_count: 3,
+            layout: VertexLayout {
+                streams: vec![StreamLayout {
+                    stream: 0,
+                    stride: 8,
+                    attributes: vec![VertexAttribute { register: VertexRegister(0), data_type: VertexDataType::Short4, offset: 0 }],
+                }],
+                pretransformed: false,
+            },
+            streams: vec![StreamBytes { data: vec![0u8; 24].into(), stride: 8 }],
+            indices: None,
+            state: words.translate(&gfx::xdk::RenderStateTable::default()),
+            extras: words.stage_extras(),
+            raw: Arc::new(words),
+            target: TargetInfo { width: 64, height: 64, format: gfx::D3DFormat::A8R8G8B8, depth_format: None },
+            shader: ShaderInputs {
+                vertex: VertexProcessing::Program { start: 0, microcode: Vec::<u32>::new().into() },
+                provided_inputs: 1,
+                vertex_defaults: [[0., 0., 0., 1.]; 16],
+                constants: Arc::new([[0.; 4]; 192]),
+                pixel_shader: Some(Arc::new([0; 60])),
+                combiner_state: Arc::new([0; 57]),
+                final_combiner_latch: true,
+                affine_projection: false,
+            },
+            viewport: Viewport { x: 0, y: 0, width: 64, height: 64, min_z: 0., max_z: 1. },
+            clip: Some(d3d::PixelRect { x: 0, y: 0, width: 64, height: 64 }),
+            clip_rects: Vec::new(),
+            hw: Default::default(),
+            texture_info: [None; 4],
+            textures: [None; 4],
+            retail_constants: None,
+            ui_fit: None,
+            glyph_cache: 0,
+        }
+    }
+
+    #[test]
+    fn a_single_draw_ui_pass_replays_in_a_kept_scene_from_its_packet() {
+        let pass = UiPass {
+            draw: Arc::new(ui_draw()),
+            gpu: Arc::new(Mutex::new(UiGpu::default())),
+            frame: 1,
+            siblings: Arc::from(Vec::new()),
+        };
+        assert!(pass.replays_scene(), "the sink's retain_admission requires it");
+        let packet = pass.resolved_fallback().expect("the packet the sink compares and replays");
+        assert!(Arc::ptr_eq(&packet, &pass.draw));
+        assert!(pass.colour_only());
+    }
+
+    #[test]
+    fn a_ui_pass_with_siblings_has_no_single_packet_and_stays_on_the_guest_path() {
+        let sibling = IndexedStreams {
+            layout: ui_draw().layout,
+            vertex_count: 3,
+            streams: Vec::new(),
+            indices: vec![0u32, 1, 2].into(),
+        };
+        let pass = UiPass {
+            draw: Arc::new(ui_draw()),
+            gpu: Arc::new(Mutex::new(UiGpu::default())),
+            frame: 1,
+            siblings: Arc::from(vec![sibling]),
+        };
+        assert!(pass.resolved_fallback().is_none(), "no packet: the device cannot retain or carry it");
     }
 }

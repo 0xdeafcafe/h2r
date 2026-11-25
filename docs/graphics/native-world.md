@@ -825,15 +825,25 @@ reach the D3D device in their original order, including device references
 and callbacks when a resource loses its last reference. A missing vertex
 input can suppress emission after the binder has already changed state.
 Stencil, fade and transient target operations bracket the actual draw.
-The fade byte the handler feeds the stipple choice is the record's own,
-rescaled to the display's pixel count when these draws render the display
-with no distinct reference copy: a Highest display draws every placement
-fade solid, a multiplier recomputes the placement's fade at that many
-output pixels per guest pixel (`world_walk::placement_display_alpha`), and
-Retail detail, exact and protected runs keep each record's byte
-([occlusion-culling.md](occlusion-culling.md), "Projected size and level
-of detail"). `render.scene`'s `scene_world_stipple_*` counters count the
-records entered with a fade and how the display resolved them.
+The fade the display draws a record with is the placement's, rescaled to
+the display's pixel count: a Highest display draws every placement fade
+solid, a multiplier recomputes the placement's fade at that many output
+pixels per guest pixel (`world_walk::placement_display_alpha`), and Retail
+detail keeps each record's byte ([occlusion-culling.md](occlusion-culling.md),
+"Projected size and level of detail"). Where the fade lands depends on the
+copies (`FadePlan`). Single-copy rendering has the guest's draws render the
+display, so the fade replaces the byte the guest's `SetStipple` takes.
+Two-copy rendering (a reference copy at guest resolution plus the display
+copy; always so for a network, film or lockstep run, which includes
+Theater's autorecord) leaves the guest the record's retail byte, so the
+reference copy and every guest readback stay retail, and hands the display
+copy its pattern alone: `OpaqueDraw::display_stipple` sets
+`HwState::display_stipple` for that draw, and the pixel uniforms take it on
+a target larger than the guest's (`HwState::stipple_rows`). A draw that
+falls back to the guest's indexed emitter takes the retail pattern on both
+copies. `render.scene`'s `scene_world_stipple_*` counters count the
+records entered with a fade and how the display resolved them; in
+two-copy rendering `solid` counts the display copy's solid draws.
 The next native or guest entry therefore starts with the outgoing device
 and RAM caches already installed. Applying only the last part's bindings
 would lose writes to earlier descriptors and intermediate resource releases.

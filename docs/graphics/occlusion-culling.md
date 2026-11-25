@@ -196,13 +196,17 @@ reaches only the display draws.
   walk's projection, and object setup restores it before object lighting
   computes its pixel radius. The record's fade byte — the stipple pattern
   a faded placement draws with — follows the display word on the native
-  sorted handler's draws when they render the display with no distinct
-  reference copy (single-copy rendering): a Highest display draws every
-  placement fade solid, and a multiplier recomputes the placement's fade
-  at that many output pixels per guest pixel, so a placement that covers
-  enough of the window draws solid where its guest-pixel size left it in
-  the fade window. Retail detail, exact and protected runs keep each
-  record's own byte, and the D3D fallback's guest emitter always does.
+  sorted handler's draws: a Highest display draws every placement fade
+  solid, and a multiplier recomputes the placement's fade at that many
+  output pixels per guest pixel, so a placement that covers enough of the
+  window draws solid where its guest-pixel size left it in the fade
+  window. Single-copy rendering changes the byte the guest's stipple takes.
+  Two-copy rendering (always so for a protected run: network, film or
+  lockstep, including Theater's autorecord) leaves the guest the record's
+  retail byte and gives the display copy alone the rescaled pattern, so
+  the reference copy and every guest readback stay retail. Retail detail
+  keeps each record's own byte on both, and the D3D fallback's guest
+  emitter always does.
   The screen-door pattern itself stays anchored to guest framebuffer
   pixels ([d3d.md](d3d.md), `SetStipple`), so a fade the display still
   draws shows its dots scaled with the frame. `render.scene`'s

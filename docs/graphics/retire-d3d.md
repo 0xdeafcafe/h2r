@@ -54,7 +54,8 @@ A refusal from a pass with no corresponding guest draw can instead omit
 that operation.
 
 `d3d::SceneSink` declines untyped passes and unsealed reservations inside a
-captured scene slot. The display graph needs retained inputs to record the
+captured scene slot, except the commits of native producers it carries
+(water, flares and UI; [framescene.md](framescene.md)). The display graph needs retained inputs to record the
 operation on its own attachments. A one-shot pass carries no replay command.
 The sink names this case with the producer, so it can be distinguished from a
 binding failure or a backend recording failure. Outside captured slots these
