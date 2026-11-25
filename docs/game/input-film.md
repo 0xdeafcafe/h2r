@@ -1,16 +1,18 @@
 # The input film
 
-Status: Design. The per-tick input capture, the binary HLE tape, the container that holds them, the action-column codec and the film file that carries the columns are built; a default recording writes its film file as it is played and its stats container without actions, and playback reads both; the container still carries the machine part and the full digests, and Live ingest of the film file is not built; the engine film is not.
-Code: `crates/extensions/game/src/theater/actions.rs` (`capture`, `apply`), `crates/live/film/src/tape.rs` (`Call`, `Batch`, `Playback`), `crates/live/film/src/columns.rs` (`ChunkEncoder`, `ChunkDecoder`, `FieldStats`), `crates/live/film/src/file.rs` (`FilmWriter`, `FilmReader`, `from_container`), `crates/live/film/src/blam` (the tick track). Tests: `crates/extensions/game/src/theater/actions.rs` (`gathered_actions_follow_sparse_player_slots_and_replay_ignores_pad_only_rows`), `crates/live/film/src/blam/tests.rs`.
+Status: Design. The per-update action capture, the action-column codec, the film file's tick chunks, start points and the side stream's frames are built; the update's tail in the chunk and the tunnel frame that carries the side stream are not ([theater-design.md](theater-design.md#slices)).
+Code: `crates/extensions/game/src/theater/actions.rs` (`capture`, `apply`), `crates/live/film/src/columns.rs` (`ChunkEncoder`, `ChunkDecoder`, `FieldStats`), `crates/live/film/src/file.rs` (`FilmWriter`, `FilmReader`), `crates/live/film/src/side.rs`. Tests: `crates/extensions/game/src/theater/actions.rs` (`gathered_actions_follow_sparse_player_slots_and_replay_ignores_pad_only_rows`), `crates/live/film/src/file/tests.rs`.
 Switch: none.
 
-A film is how to make a game happen again: a seed, every seat's input on
-every tick, seat joins and leaves, and a digest per tick. The engine
-reads it and nothing else does; what happened is the stats stream's
-business ([theater-design.md](theater-design.md#stats-and-film)). This
-page says what a film must hold for replay to be exact, how it is
-encoded, and what it costs in bytes and memory. The rule that must hold:
-the encoding is lossless for every byte the simulation is given.
+A film is how to make a game happen again: the game options it started
+from, the simulation update of every tick, and a digest per tick. The
+engine reads it and nothing else does; what happened is the stats
+stream's business ([theater-design.md](theater-design.md#stats-and-film)).
+[film-format.md](film-format.md#the-film-file) has the file. This page
+says what the update stream must hold for replay to be exact, how a tick
+chunk is encoded, and what it costs in bytes and memory. The rule that
+must hold: the encoding is lossless for every byte the simulation is
+given.
 
 Evidence labels: **Code** (read in this repository, path given), **Test**
 (a named test), **E** (read from the retail XBE, as recorded in the linked
@@ -23,11 +25,11 @@ From [notes/halo3-film.md](notes/halo3-film.md), which has the sources.
 
 | | Halo 3 | This design |
 |---|---|---|
-| Start state | game options, both variants by value, seed, machines and 16 player configurations, in a fixed header of about 64 KB; a game state only in a clip | the same content as a compressed seed of about 1 to 2 KB; never a game state |
-| Tick record | one bit-packed record per tick, beginning with an update number; its other fields are not covered by the sources | columns per seat per chunk of 256 ticks, holding the post-mapping action |
+| Start state | game options, both variants by value, seed, machines and 16 player configurations, in a fixed header of about 64 KB; a game state only in a clip | the engine's options block by value, a few kilobytes compressed; a game state only in a film that begins mid-game |
+| Tick record | one bit-packed record per tick, beginning with an update number; its other fields are not covered by the sources | the engine's simulation update: its action block as columns per seat per chunk of 256, the rest as the bytes that changed |
 | Desync check | not covered by the sources | 16 bits of the gameplay digest a tick, and the 64-bit arena hash every 256 ticks |
 | Compression | none; fields are bit-packed | residual columns under zstd |
-| Seek points | none in the file; campaign films cannot be rewound | none in the file; the player's sidecar and ring |
+| Seek points | none in the file; campaign films cannot be rewound | none in the file; the player's ring of game-state snapshots |
 | Version gate | executable type, determinism version, map signature | XBE digest, simulation contract, map digest |
 | Size | 45,000 to 63,000 bytes per player-minute; 133,000 to 720,000 bytes a minute for multiplayer films | about 2,700 (a host's remote seat) to 7,700 (a local seat) bytes per player-minute, and 3,650 a minute for digests (**Estimate**) |
 
@@ -37,126 +39,54 @@ established.
 
 ## What a film holds
 
-| Part | Holds | Needed by |
+| Part | Holds | Home |
 |---|---|---|
-| **Seed** | map identity and digest, variant bytes, game options, the random seed, the first tick's seats, the simulation contract | every player |
-| **Tick stream** | each seat's 92-byte action on each tick, seat records, tick flags, a digest per tick | every player |
-| **Machine part** | boot facts (`HEAD`), startup decisions (`BOOT`, `MOVI`), the initial guest disk (`DATA`), the HLE tape, capture-point marks, arena hashes with the call cursor (`HASH`) | the player until the engine film is proven for that kind of game; absent after |
+| **Game start** | the stamp, the game options block, the random words, the map's digest, the simulation-scope settings, the start hash | [film-format.md](film-format.md#the-film-file), [theater-design.md](theater-design.md#the-start-state) |
+| **Update stream** | each update's action block and tail, and a digest per tick | this page |
+| **Start point** | the arena, in a film that begins mid-game | "Start points" |
+| **Extension blocks** | a feature's outside input on its tick | film-format.md |
 
-A film holds no keyframe, no pose, no event and no score.
-
-### The seed
-
-| | The machine film (ships first) | The engine film |
-|---|---|---|
-| Seed | the boot recipe: the image identity and boot facts the player must match (`film boot facts differ` in `Session::open`), `BOOT`, `DATA`, and the logical clock's epoch | a reference: map, variant bytes, game options, random seed, the first tick's seats |
-| Start of the film | boot. Menus and the lobby are replayed from the tape; a direct level start (`StartLevel` in `crates/extensions/game/src/theater/startup.rs`) keeps that short | the first tick of the match |
-| Guest RAM in the film | none | none |
-| What makes the start state | the player's own disc and image, run from boot | the engine's own game start, given the seed |
-| Proof it is the same start | the first arena hash and every digest after | the arena hash of the first tick, stored in the film |
-
-The seed is a reference, never a snapshot. Halo 3's is the same: game
-options, both variants by value, the seed and the roster, with a game
-state only in a clip that starts mid-game
-([notes/halo3-film.md](notes/halo3-film.md)). A campaign game resumed from
-a save has the save file in `DATA`, which is the user's own data. If the
-engine's game start does not reproduce the recorded arena from the seed
-(the first experiment in [theater-design.md](theater-design.md#before-and-after-the-sim-rewrite)), the film begins at a start
-point instead ("Start points"), which is also how a mid-game joiner's
-film begins.
+A film holds no keyframe, no pose, no event, no score, no disk file, no
+controller read and no host call.
 
 ### What the replay depends on
 
-Everything the current replay reads besides the per-tick inputs, from the
-code:
+Everything that reaches a simulation from outside it, and what stands for
+it in a film:
 
-| Dependency | What is recorded | Where | Why | Machine film | Engine film |
-|---|---|---|---|---|---|
-| Pad reads (`PADR`) | every `XInputGetState` status and 22-byte packet, by call index | `FilmPads::read_with_memory` in `theater/local_pads.rs` | the only way input and menu presses reach the guest | needed; binary encoding | cut: the inputs replace it, menus are not replayed |
-| Controller ports (`PDEV`) | port topology at each input pump | `record_ports`, same file | the guest sees device changes without reading a pad; a controller arriving is how a split-screen seat joins | needed; sparse | cut: seat records |
-| Keyboard (`TEXT`) | virtual-keyboard edits | `crates/extensions/game/src/keyboard_glue.rs` | profile-name entry | needed; rare | cut |
-| Host randomness (`RAND`) | `XNetRandom`, `XNetCreateKey` and `Entropy.*` outputs | `Network::filmed`, `state_random` in `crates/live/live-hle/src/network/film.rs` | host entropy written into guest memory | needed; a few calls a session | cut: the game's own random state is guest memory, seeded from the descriptor |
-| Sockets and XNet (`NETR`) | every operation of `Op` (`crates/live/live-hle/src/network.rs`, `Network::invoke`): results, received datagrams with sender, `select` sets, QoS tables, and the pure `Htonl`, `Htons`, `FdIsSet` | `Network::filmed`, `slots` | replay never enters the socket code | offline game: derived. A null network answers them (no peers, nothing to receive), and the pure operations are computed. Live client or host: needed, it is how other seats arrive | cut: remote seats' inputs are in the tick stream |
-| Live service (`NETR`) | each XOnline call's return, guest writes, arena claims and the account view | `invoke` in `crates/live/live-hle/src/film_service.rs` | sign-in, title storage, matchmaking and advertisement answers | signed out: a handful at boot, kept. Signed in: needed | cut |
-| Host observations (`NETR`) | `HostedSession`, `HostsSession`, game settings, co-op lobby pings and joins | `lobby_hosted_session`, `hosts_session`, `game_setting` in `crates/live/live-hle/src/lib.rs`; `LobbyFilm::read` in `crates/extensions/game/src/coop_live/film.rs` | polls whose answers steer guest-facing hooks | hosts and co-op only | cut |
-| Phantom seats (`BTAP`, `BOTR`) | each phantom's action-builder result; roster changes at management boundaries | `crates/extensions/game/src/bot_glue/retail_input.rs`; `bot_boundary` in `theater/bot_tape.rs` | a bot's mind is not replayed, its outputs are | needed where there are phantoms | cut: inputs and seat records |
-| Lobby operations (`MARK`) | agent lobby calls by executor boundary | `impl agent::LobbyTape for Session` in `theater.rs` | a dedicated lobby is driven through the agent API | hosts only | cut |
-| D3D barriers (`MARK`) | slice, tick and outcome of each device capture | `try_capture_point` in `theater/record.rs` and replay at the marked scheduler boundary | a capture drains the push buffer and writes render targets back | a film without captures needs none; kept as capture-point marks so a player can make keyframes | cut: an arena keyframe touches no device |
-| Initial guest disk (`DATA`) | directories, embedded files up to 16 MiB (`LIMIT` in `crates/live/film/src/manifest.rs`), installed content by digest | `Manifest::capture_for_recording` | the guest reads the profile, settings and saves at boot | needed | cut, except a campaign save |
-| Startup (`BOOT`, `MOVI`) | host decisions made before guest entry | `Startup` in `theater/startup.rs` | they select the guest's initial conditions | needed | reduced to the feature switches |
-| Boot | nothing | | the only route to the match's start state | needed: the film starts at boot | cut |
-| The clock | nothing but the epoch in `HEAD` | [kernel README](../../crates/runtime/kernel/README.md), "Clock and replay" | time is logical: the epoch plus charged work | derived | derived: the tick count |
-| File reads | nothing | `metadata::verify_start` checks the mounted map's digest | the disc and the maps are the player's own | derived | derived |
-| Guest disk changes | only inside `KEYF` | `DiskTracker` | a restore needs the disk of its tick | not in the film; in the sidecar | none |
+| Input to the simulation | Source in a played game | In a film |
+|---|---|---|
+| Controller reads, ports, keyboard | `XInputGetState` and the input pump | not recorded. The update's actions are what the pads became; playback gives the guest neutral pads on the options' ports |
+| Remote players | packets through the socket and session code | not recorded. A remote seat's action is in the update when it is applied (`capture` in `actions.rs`) |
+| Phantom seats | each phantom's action builder (`crates/extensions/game/src/bot_glue/retail_input.rs`) | not recorded. The built action is in the update |
+| Players joining and leaving, property changes | the session's player array | the update's tail: the player-set change and the player entries |
+| Queued simulation events, checkpoint saves | the engine's own queues | the update's tail: the event list and the save flag |
+| The start state | menus, the lobby, the profile, saved games | the game options block; a start point for a resumed mission |
+| Random numbers | the shared random words | the two words at the first update; after that the simulation's own draws, with the render's kept apart (`render_rng.rs`) |
+| The clock | logical time | the tick count |
+| Map and tag data | the disc and installed maps | the map's digest; the bytes are the player's own |
+| Simulation-scope settings, the rules script | the settings store, the variant record | by value in the game start |
+| A feature's outside input (Forge edits, Firefight's host log, a script reload) | the feature | an extension block on its tick |
+| Live service answers, host observations, lobby operations | host calls | not recorded. None reaches a running game's simulation except through the update |
 
-So the machine film of an offline game needs, beyond the seed and the inputs:
-the pad stream, port changes, keyboard edits and a few entropy and
-service calls. The network tape is the large stream and exists only for
-Live and system-link games.
-
-**The tape.** The call tape is one binary stream in call order
-(`crates/live/film/src/tape/codec.rs`; the chunk tag is `TAPE`). A batch
-is one chunk: a table of the operation names it uses, then each call as
-a ULEB operation code, thread, call index (zigzag delta), result,
-arguments and outputs. An output is raw, a repeat of the last output of
-the same operation, first argument and slot, or the bytes that differ
-from it, so a pad read is the bytes that differ from its handle's last
-packet. State starts empty in each batch, which is what lets a seek read
-one chunk. Batches close at 128 calls, 64 KiB, a checkpoint or an arena
-hash, never on a change of stream, so pad reads and socket calls share
-one zstd frame and one `INDX` row. A decoder checks every count and
-length against the bytes left and refuses a batch that begins with `[`,
-which is the JSON encoding the tape no longer has (the simulation ABI
-is `h2-sim/2`).
-
-Calls that need no tape:
-
-- `Htonl`, `Htons` and `FdIsSet` are pure functions of their arguments
-  and guest memory; `Network::invoke` computes them in recording and in
-  playback, and they take no call index.
-- The null network. A game that has made no socket has none for an
-  operation on a socket (`Bind`, `Send`, `Recv`, `Close` and the like) to
-  name, so those operations are answered from the guest's own state in
-  both runs and are not taped. The first `Socket` call ends it
-  (`Network::dark`, `State::opened`, saved in the film state), and every
-  call after is taped. A dedicated host's tunnel answers before the
-  socket table and is never dark. `h2 film stat` lists the operations an
-  offline game makes; an operation it still makes that needs no socket
-  is a candidate for the same treatment.
-
-**Estimate**: a pad read that changes two packet bytes is about 15 bytes
-inflated; before, about 165. `h2 film stat FILE` prints each stream's
-bytes in both encodings from the same calls, and the tape's stored bytes.
-[Theater seek measurements](notes/theater-seek.md) records calls and
-bytes per stream.
+`h2 film stat FILE` prints each chunk's bytes by field.
 
 ### Joins and leaves
 
-**In the machine film** a join is not a record that playback applies. It
-is what the guest does when given the same inputs at the same cursors: a
-controller arriving (`PDEV`, by input-pump ordinal) and its presses
-(`PADR`, by call index) for a split-screen seat; a roster change (`BOTR`,
-by management boundary) for a phantom; packets (`NETR`, by call index) for
-a remote peer. The join and leave events the recorder observes (`PlayerJoined`,
-`PlayerLeft`) go to the stats stream. Playback never applies them,
-because the guest has already made the change. The film's seat records
-let playback check that the same seats exist, in place of
-`metadata::verify_events` on the events.
+A join is part of the update on the tick it took effect. The update the
+engine builds carries a player-set change, a mask of slots and the
+players' identifiers, which the update's own apply runs on every machine
+that receives it (**E**: [live-coop.md](../live/live-coop.md) sections
+14.1 and 14.9), and per-player entries for the players whose properties
+change. The recorder stores both as the update's tail, and playback
+writes them back before the apply. A leave is the same change with the
+slot removed. The seat records of a chunk (join, leave) repeat the roster
+change for the Theater bar and are checked against the update's mask;
+playback applies nothing from them.
 
-**In the engine film** a join is a seat record on the tick it took
-effect. The per-tick update the engine builds for itself carries more
-than the action block: a player-set change with a seat mask and the
-players' identifiers, applied on that tick by the update's own apply
-(**E**: [live-coop.md](../live/live-coop.md) section 14.1). The recorder
-reads those fields at `SIM_UPDATE_APPLY` beside the actions, with the
-joining seat's session configuration (name, appearance, team), and writes
-them as a seat record in the tick's chunk. Playback has no peers,
-so it makes the seat the way a phantom is made, as a session peer and
-player in memory with nothing on the wire
-([bots.md](bots.md#5-way-in-2-phantom-peers)), lets the engine build its
-update, and requires the update's player-set fields to equal the recorded
-ones before the apply runs. A leave removes the session player the same
-way.
+**S**: the apply finds a joining player's name and appearance in the
+update's player entry, with no session behind it. A join in a recorded
+synchronous game replayed as a local game verifies it.
 
 ## The encoding
 
@@ -197,21 +127,21 @@ every row but the first.
 | Method | Saves | Bits per active seat-tick | Decode | Verdict |
 |---|---|---:|---|---|
 | Full records | nothing | 736 | copy | the baseline |
-| Changed seats and a 12-byte change mask per field (tag 1 as built, `crates/live/film/src/blam/ticks.rs`) | idle seats, idle bytes | 180; about 120 after zstd (**S**) | byte loop | replaced: the mask costs more than the changes |
+| Changed seats and a 12-byte change mask per field | idle seats, idle bytes | 180; about 120 after zstd (**S**) | byte loop | replaced: the mask costs more than the changes |
 | **Columns**: a structure of arrays per seat inside a chunk, each field as its residual against the previous tick | the masks; puts like bytes together; an idle field is a run of zeros | 91 before the coder | one pass per column | adopted |
 | **Predictor per column per chunk**: none, previous, or linear (twice the previous minus the one before), on the field's 32-bit pattern | steady turns and ramps, where the linear residual is a few units | about 20% of the above (**S**) | the same pass | adopted; the encoder tries all three and keeps the smallest |
 | **Byte planes**: the residual's four bytes split into four runs | gathers the quiet high bytes for the coder | prepares the next row | a transpose | adopted |
 | **zstd per chunk** over the planes | zero runs, skewed high bytes, repeats | 58 to 72 | about 1 GB/s; no code of ours | adopted |
-| **Grid models, checked per value**: where a field's values sit on a grid (a remote seat's quantised aim and throttle, a trigger made from an 8-bit pressure), store the grid index; a value off the grid is stored whole | most of a remote seat's aim | 46 to 48 local; about 16 for a remote seat | a multiply and a compare | adopted for fields where slice 13 finds a grid |
-| **Dictionary** trained on recorded chunks and shipped in the app | the cold start of each small zstd frame | about 5% on chunks under 4 KB, nothing on large ones (**S**) | none | adopted only if slice 13 measures 5% or more |
+| **Grid models, checked per value**: where a field's values sit on a grid (a remote seat's quantised aim and throttle, a trigger made from an 8-bit pressure), store the grid index; a value off the grid is stored whole | most of a remote seat's aim | 46 to 48 local; about 16 for a remote seat | a multiply and a compare | adopted for fields where a measurement on recorded films finds a grid |
+| **Dictionary** trained on recorded chunks and shipped in the app | the cold start of each small zstd frame | about 5% on chunks under 4 KB, nothing on large ones (**S**) | none | adopted only if it measures 5% or more on recorded films |
 | Button edges in place of button state | nothing more: the residual of the buttons field is the set of edges | | | covered by the previous-tick predictor |
 | Run lengths for idle seats and idle ticks | nothing more: an absent column costs two mask bits, a zero run a few bytes a chunk | | | covered by the field mask and zstd |
 | Bit-packed tick records: fields at exact width, Rice or Elias-gamma residuals, floats as leading-zero count, length and significant bits (the table below) | whole bytes on small fields and on rare events | 88 to 114 local, 24 remote; 1 when idle | a bit reader with a branch per field, 50 to 100 MB/s | not adopted: the `f32` residuals are most of the stream and cost more here (about 32 bits against 22), and a byte-wise coder gains under 3% on a bit-packed stream |
 | An adaptive range coder with a model per field | 10 to 15% over zstd on the structured fields (**S**) | about 50 | 20 to 50 MB/s; our code | not adopted: the low bytes of an `f32` residual are noise that no coder shrinks, and they are most of what is left |
 | Truncated digests | 8 bytes a tick to 2 | 14,400 to 3,600 bytes a match-minute | none | adopted |
-| The seed as a reference | every state byte | | | adopted |
-| Recomputing the shot-assist block in playback | about 22 bits an active tick | | playback runs the target search | not adopted: it changes what playback computes; revisit once the engine film plays |
-| Recording pads in place of actions | the aim floats | | | not adopted: a pad becomes an action through frame timing and control history, which only the machine reproduces |
+| The game start as a reference | every state byte | | | adopted |
+| Recomputing the shot-assist block in playback | about 22 bits an active tick | | playback runs the target search | not adopted: it changes what playback computes |
+| Recording pads in place of actions | the aim floats | | | not adopted: a pad becomes an action through frame timing and control history, which a film does not reproduce |
 
 The bit-packed record, for the comparison:
 
@@ -229,55 +159,16 @@ The bit-packed record, for the comparison:
 
 ### Layout
 
-The film is one file, little-endian, read front to back.
+The file's header, game start, block kinds and trailer are in
+[film-format.md](film-format.md#the-film-file). `film::file` writes and
+reads them; `FilmActions` reads a film's actions by tick, in any order.
+A tick's digest in a chunk is the low 16 bits of its gameplay digest and
+the chunk's closing hash is the arena hash after its last tick. The
+recorder feeds the file one update at a time and writes a checkpoint of
+the open chunk every 150 ticks (`FilmWriter::checkpoint`), which a reader
+of an unsealed file takes as its last chunk. A host seals its film at the
+match's end, and `film::upload` sends it to Live with the stats stream.
 
-```text
-header, 64 bytes
-   0   8  ASCII "H2FILM4!"
-   8   u16 version (4), u16 flags (bit 0 machine part, bit 1 sealed,
-          bit 2 begins at a start point)
-  12   u8 ticks per second, u8 seat limit (16), u16 ticks per chunk (256)
-  16  16  film id
-  32   u32 length in ticks, u32 stored bytes of the seed
-  40   u64 offset of the trailer
-  48  16  digest of the dictionary the chunks name, or zero
-seed            one zstd frame
-blocks          each: u8 kind (0 tick chunk, 1 machine envelope,
-                2 start point),
-                u32 stored bytes, then one zstd frame
-trailer         u32 chunk count, then a u64 offset per tick chunk
-```
-
-`film::file` writes and reads this layout. The seed is the container's
-header and match descriptor as JSON. A machine envelope block holds its
-four-byte tag and the zstd frame the container stored, so the machine part
-is copied without being inflated: a container writer given a mirror
-(`film::Writer::set_mirror`, `film::file::machine_mirror`) hands each chunk
-it stores to the film file's writer. `FilmWriter::fork` cuts a film of its
-own from a running one, with a new ID, every block so far and a copy of the
-open chunk, while the running film goes on. `FilmActions` reads a film
-file's actions by tick, in any order, and `TrackReader::attach_film` gives a
-stats container's reader the film's actions in place of its own, checking
-each tick's digest against the film's low 16 bits. A stats container
-written without actions (`TrackWriter::without_inputs`) says so in its
-header (`inputs_in_film`); `TrackReader::open_with_film` opens it with the
-film file beside it, and a reader without one refuses to step. A tick's digest in a chunk is the low 16
-bits of its gameplay digest and the chunk's closing hash is the last
-tick's whole digest. A seat that joins, leaves or quits is a seat record on
-its tick. A default recording and a host's (`Recording::film` in `theater.rs`) feed
-the file one tick at a time from `post_tick`, mirrors the container's
-machine chunks into it, and writes a checkpoint of the open chunk
-(`FilmWriter::checkpoint`, a block of kind 3 that a reader of an unsealed
-file takes as its last chunk) before each capture mark. A game's cut
-forks the container and the film file together (`autorecord::cut`). A
-hard-killed recording is sealed at its last capture mark's tick by
-`film::recover_tape`, which seals the film file at the same tick
-(`film::file::recover_beside`). A host seals its film file with its
-container at the match's end, and `film::upload` sends both to Live. An
-explicit recording is one container with its actions inline.
-
-The length, the trailer offset and the sealed flag are zero while a film
-is being written or streamed; a reader of such a file walks the blocks.
 Chunk i covers ticks 256 i + 1 to 256 i + 256, so a tick's chunk is found
 without a search. A tick chunk, inflated (`film::columns`; the whole chunk is one zstd frame
 with a checksum, and a frame without one is refused):
@@ -300,6 +191,8 @@ per seat in the mask, ascending:
       the grid)
 seat records    u8 count; each: u8 tick offset, u8 seat, u8 kind,
                 u16 length, bytes (8,192 in all, 255 at most)
+tails           per tick: ULEB run count; each run a ULEB skip, a ULEB
+                length and that many bytes
 u64             the arena hash after the chunk's last tick
 ```
 
@@ -324,19 +217,25 @@ and presence bit say.
   there.
 - Predictor state runs across chunks: the last two values of each word of
   each seat, 188 bytes a seat. The decoder starts at tick 1 or from the
-  seat rows a sidecar keyframe stores (`ChunkDecoder::seat_rows`,
+  seat rows a ring entry stores (`ChunkDecoder::seat_rows`,
   `set_seat_rows`), which is every place playback can start. A film has no
   seek point of its own.
 - Columns run seat by seat and plane by plane, so the encoder's and the
   decoder's inner loops are straight runs over one byte stream each, and
   the coder sees a seat's idle fields as one run of zeros.
+- A tail is the update's bytes from the end of the action block to the
+  stamp: the player entries, the player-set change, the event list and
+  the save flag. A tick's runs are the bytes that differ from the tick
+  before; the chunk's first tick differs from zeros, so a chunk's tails
+  decode without the chunk before. A tick whose tail did not change is
+  one zero byte.
 - A chunk boundary is a byte boundary and a zstd frame boundary. Live
   and a downloader cut a film only between blocks.
 
 ### Size, step by step
 
-**Estimate**, from assumed rates that slice 13 measures on recorded
-films. For a local seat that is alive and playing: yaw changes on 70% of
+**Estimate**, from assumed rates, for the action block alone; the
+tails are not measured. For a local seat that is alive and playing: yaw changes on 70% of
 ticks, pitch on 50%, each throttle axis on 50%, a trigger on 5%, a button
 on 3%, the shot-assist block on 25% with four of its nine values moving,
 the interaction on 1%. A changed `f32` costs about 22 bits after the
@@ -346,8 +245,8 @@ match.
 | Step | Bits per active local seat-tick | Bytes per player-minute, active | Remote seat on a host |
 |---|---:|---:|---:|
 | Full records | 736 | 165,600 | the same |
-| Tag 1 as built, before zstd | 180 | 40,500 | |
-| Tag 1 as built, after zstd | 120 | 27,000 | |
+| A change mask per field, before zstd | 180 | 40,500 | |
+| A change mask per field, after zstd | 120 | 27,000 | |
 | Columns, previous-tick residuals, planes, zstd | 72 | 16,200 | |
 | Predictor chosen per column | 58 | 13,000 | |
 | Grids where found | 48 | 10,800 | 3,800 |
@@ -356,7 +255,7 @@ match.
 
 Match-wide, per minute: digests 3,600 bytes and chunk hashes 56, against
 19,800 for 8-byte digests with their framing; block headers and frame
-overhead about 280. Fixed: the 64-byte header, a seed of 1 to 2 KB, and
+overhead about 280. Fixed: the 64-byte header, a game start of a few kilobytes, and
 8 bytes of trailer per chunk.
 
 | A 10-minute game | Film | Halo 3 ([notes/halo3-film.md](notes/halo3-film.md)) |
@@ -364,11 +263,6 @@ overhead about 280. Fixed: the 64-byte header, a seed of 1 to 2 KB, and
 | One player, offline | 77 + 37 + 2 = 116 KB | 930 KB to 1.8 MB (campaign) |
 | Two players on a host | 54 + 37 + 2 = 93 KB | 1.3 MB |
 | 16 players on a host | 432 + 37 + 3 = 472 KB | 7.2 MB |
-
-While a film has a machine part it also carries that: for an offline
-game 3,000 to 10,000 bytes a pad-minute of pad reads in the binary tape
-([theater.md](theater.md#size-per-minute)) and the profile; for a Live
-client or host 0.3 to 1.5 MB a minute of packets.
 
 ### Memory
 
@@ -390,7 +284,7 @@ below grows with the length of the game. For 16 seats:
 | **Total, without the zstd context** | **about 1.0 MiB** | |
 
 The encoder takes a tick's rows with `push_tick` and compresses in
-`finish`, on the caller's thread. The recorder (slice 12) hands each
+`finish`, on the caller's thread. The recorder hands each
 closed chunk's frame to a writer thread, and keeps a second encoder so
 the game thread never compresses or waits; if the second fills before the
 first is written, 8.5 s later, the recording stops with that reason. The
@@ -422,11 +316,11 @@ at every length and corrupt it at random.
 ### The action side stream
 
 In a Live game the host forwards the film to every client as it is made,
-so each client records the engine film and no network tape.
+so each client holds the host's film.
 
 - **What is sent.** The film's bytes, unchanged, as numbered pieces: the
-  header and seed when a client joins, then what the file gained as each
-  tick chunk closed (the chunk and any machine envelope before it), every
+  header and game start when a client joins, then what the file gained as each
+  tick chunk closed (the chunk and any extension block before it), every
   256 ticks, and at the seal the trailer and the sealed header. Nothing
   is encoded twice, and a client's file equals the host's. `film::side`
   holds the frame format and both ends: `Forwarder` on the host and
@@ -460,8 +354,10 @@ so each client records the engine film and no network tape.
 
 ### Start points
 
-A player who joins a running game cannot simulate from the seed in time,
-so the host gives them a start point.
+A film whose first update is not its game's first begins at a start
+point: a player who joins a running synchronous game is given one by the
+host, a campaign mission resumed from a saved checkpoint gets one at its
+first update, and so does a recording started during a game.
 
 - **What it is.** The game-state arena (`0x3fe000` bytes) and the
   extension blob at the end of the join tick, compressed, with the tick,
@@ -483,10 +379,12 @@ so the host gives them a start point.
   Live confirms the start point after the game. Nothing in it is an
   address the loader follows: the arena goes in through the engine's own
   restore path.
-- **In a film.** A film that begins at a start point has header flag bit
-  2 and a block of kind 2 before its first tick chunk. It stays on the
-  joiner's machine. The joiner can instead fetch the earlier chunks and
-  hold the whole game from its seed.
+- **In a film.** A film that begins at a start point has the header's
+  start point flag and a block of kind 2 before its first tick chunk. A
+  start point a machine writes into its own film is tagged under the
+  film's id. A joiner's film stays on the joiner's machine; the joiner
+  can instead fetch the earlier chunks and hold the whole game from its
+  game start.
 - **The envelope.** `crates/extensions/game/src/theater/start_point.rs`
   writes and reads the tagged form: lengths, arena hash and identifiers,
   the SHA-256 of both stored frames, and an HMAC-SHA-256 over all of it.
@@ -503,26 +401,23 @@ so the host gives them a start point.
   hashes it as `lockstep::hash_sim` does; `matches: false` means what
   reads back is not what the tag names. Whether the arena is the whole
   state is answered by the `sim.hashes` rows after the load. `theater/start_play.rs` reads the
-  film's start point block (header flag bit 2, exactly one block of kind
+  film's start point block (the header's flag, exactly one block of kind
   2), refuses a block the flag does not name, applies it with the same
   load and returns the tick the film resumes at (the start tick plus one).
-- **What it waits for.** The player boots the film's map to its first
-  tick, calls `start_play::apply`, then reads tick chunks from the resume
-  tick; that wiring waits on the engine film reader and on the film
-  crate's start tick and arena hash (theater-design.md, slice 15). The
-  experiment answers whether the arena is the whole state to restore, or
-  whether the retail synchronous join (`crates/extensions/game/src/coop_jip.rs`)
-  or `sim_state::Keyframe` has to carry more.
+- **In playback.** The player loads the film's map from its game
+  options, calls `start_play::apply` at the first update, then reads tick
+  chunks from the resume tick. The same capture and load are the session
+  ring's entries ([theater-design.md](theater-design.md#the-session-ring)).
 
 ### On Live
 
 Live stores a film as the bytes it was sent and serves it by byte range
 (`crates/live/live-server/src/films/upload/film_file.rs`). It reads the
-header and the seed, checks that every block's stored size stays inside
+header and the game start, checks that every block's stored size stays inside
 the file and that the trailer lists exactly the tick chunks it found, and
-inflates no tick chunk. A film needs no scrub:
-Live issues the seat and machine identifiers afresh for each game, and
-the seed's roster holds the game id and gamertags. A clip is a pair of
+inflates no tick chunk. A film needs no scrub: it holds the names and
+appearance the game showed and no disk file, and Live issues the seat
+identifiers afresh for each game. A clip is a pair of
 ticks; playing it needs the film from its first byte to the end of the
 clip's last chunk, which is one range.
 
@@ -530,7 +425,8 @@ clip's last chunk, which is one range.
 
 - Lossless: decoding gives back every byte of every action the recorder
   read. A model that does not hold for a value stores the value whole.
-- A film has no seek point, keyframe, pose, event or score.
+- A film has no seek point, keyframe, pose, event, score, disk file,
+  controller read or host call.
 - The recorder and the decoder allocate nothing after they start.
 - A chunk that fails its zstd checksum, names a seat above the limit,
   or holds a column of the wrong length is refused with its tick range;
@@ -546,12 +442,6 @@ clip's last chunk, which is one range.
 - **Code**: the action block is the mask and 16 records of `0x5c` bytes;
   `capture` reads it and `apply` writes it at `SIM_UPDATE_APPLY`
   (`actions.rs`, `ACTION_BYTES`, `ACTION_BLOCK`).
-- **Code**: tag 1 as built is a changed-seat mask, a flags byte and a
-  byte-change mask of 12 bytes for an action, then the replacement bytes
-  ([film-format.md](film-format.md#tagged-records)).
-- **Code**: every call on the tape is JSON, batched by stream
-  (`Writer::chunk` in `crates/live/film/src/lib.rs`, `Batch::append` in
-  `tape.rs`).
 - **E**: the update carries a player-set change applied by its own apply
   ([live-coop.md](../live/live-coop.md) section 14.1); a remote player's
   action is quantised when stored, and a seat can be made in memory with
@@ -560,15 +450,16 @@ clip's last chunk, which is one range.
 ## Not verified
 
 - Every rate in "Size, step by step", and so every size on this page.
-  Slice 13 measures them on films that exist.
+- The size of the update's tail, and which of its bytes a local game
+  fills.
 - Whether the linear predictor beats the previous-tick one on real aim.
 - The grids: what the action store's quantisation is, and whether a
   local seat's throttle and triggers sit on one.
 - Which bytes of the action the consumer reads. The encoding does not
   depend on the answer.
 - Whether a remote seat's shot-assist block is empty on a host.
-- The three engine-film experiments
-  ([theater-design.md](theater-design.md#before-and-after-the-sim-rewrite)).
+- What a game run must show before a film plays
+  ([theater-design.md](theater-design.md#not-verified)).
 - The zstd context sizes.
 - That the tunnel can carry a frame kind the guest never sees, on every
   kind of host.
@@ -581,8 +472,8 @@ clip's last chunk, which is one range.
 ## Related
 
 - [theater-design.md](theater-design.md): the player, the stats and film split, the slices
-- [film-format.md](film-format.md): the container as built, which becomes the stats stream
-- [theater.md](theater.md): the machine and engine levels of determinism
+- [film-format.md](film-format.md): the film file, the stats container, recording every game
+- [theater.md](theater.md): the selector, the controls, the web tier
 - [notes/halo3-film.md](notes/halo3-film.md): the Halo 3 reference
 - [bots.md](bots.md): the action record and phantom seats
 - [live-coop.md](../live/live-coop.md): the simulation update and its player-set change
