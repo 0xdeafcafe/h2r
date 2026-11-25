@@ -6604,11 +6604,13 @@ impl<B: Backend> Device<B> {
                 // The original first draw is still intact. On a stale
                 // cursor or a stack fault, drop every unpublished copy.
                 if tail.is_none_or(|t| t.consume(mem, parts.indexed_esp)) {
-                    for &(_, surface) in &binding.colors {
-                        self.materialize_display_copy(surface)?;
-                    }
+                    // Recorded before the display copies materialise: the
+                    // carried textures borrow the device's cache.
                     if carried {
                         self.backend.record_native_carry(color, depth, textures);
+                    }
+                    for &(_, surface) in &binding.colors {
+                        self.materialize_display_copy(surface)?;
                     }
                     PreparedExternal {
                         device: self,
