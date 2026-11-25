@@ -81,7 +81,7 @@ the workspace checks are in
 | `h1-contract` | formats | The names both Halo 1 halves share: what the converters write and the game's Halo 1 hooks read (tag layouts, markers, script slots, function names) | [text.md](halo1/text.md), [script-builtins.md](halo1/script-builtins.md), [crate-structure.md](dev/crate-structure.md) |  |
 | `host-dirs` | formats | The per-user data, cache and config directories under each host's convention (docs/runtime/storage.md) | [storage.md](runtime/storage.md) |  |
 | `host-log` | formats | Canonical hash-chained command entries for Forge and Firefight |  |  |
-| `hs` | formats | HaloScript scenario tables, builtin catalog, typed expression API, and a native VM ([haloscript.md](formats/haloscript.md), [engine/hs_vm.md](engine/hs_vm.md)) † | [haloscript.md](formats/haloscript.md), [engine/hs_vm.md](engine/hs_vm.md) | decoding done; the VM is not wired into the game yet |
+| `hs` | formats | HaloScript scenario tables, builtin catalog, typed expression API, and a native VM ([haloscript.md](formats/haloscript.md), [engine/hs_vm.md](engine/hs_vm.md)) † | [haloscript.md](formats/haloscript.md), [engine/hs_vm.md](engine/hs_vm.md) | decoding done, VM checks supported campaign script executions against the guest |
 | `map` | formats | Reader for retail cache v8 `.map` files, with no game data ([map-format.md](formats/map-format.md)) † | [map-format.md](formats/map-format.md) | done |
 | `mopp` | formats | Havok MOPP code for Halo 2 structure BSPs: the engine's interpreter semantics as a query model, and an offline compiler over collision surfaces | [mopp.md](formats/mopp.md) | done |
 | `movies` | formats | Manifest, hashing and naming for optional Bink-to-MP4 conversion with the user's ffmpeg ([movies.md](audio/movies.md)) † | [movies.md](audio/movies.md) | done |
@@ -143,6 +143,7 @@ the workspace checks are in
 | `sim-core` | rewrites | Shared math, exact SSE-order lanes and float rules for the native simulation subsystems |  |  |
 | `sim-ext` | rewrites | SimExt: the versioned side arena of extension records saved with checkpoints, snapshots and film keyframes and folded into the sim hash (docs/engine/sim-rewrite.md section 2) | [sim-rewrite.md](engine/sim-rewrite.md) | in progress |
 | `sim-objects` | rewrites | The object update in Rust: typed views over the object pool, the definition table and the object kernels (docs/engine/sim-rewrite-objects.md) | [sim-rewrite-objects.md](engine/sim-rewrite-objects.md) |  |
+| `sim-sound` | rewrites | Sound source, scheduling and environment kernels for the native simulation | [sim-rewrite.md](engine/sim-rewrite.md), [dsound.md](audio/dsound.md) | in progress |
 | `sim-state` | rewrites | Typed, read-only views of the simulation for theater, stats, Live and the agent API (docs/engine/sim-rewrite-objects.md section 8) | [sim-rewrite-objects.md](engine/sim-rewrite-objects.md) |  |
 | `actor-net` | live | Versioned actor presentation records and per-client scheduling for distributed games | [ai-networking.md](game/ai-networking.md) |  |
 | `bots` | live | Multiplayer bots (Clankers): the brain that turns what a bot sees into controller input, and the phantom peers that play through the host simulation (docs/game/bots.md) | [bots.md](game/bots.md) |  |

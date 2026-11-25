@@ -255,6 +255,51 @@ fn the_clamp_leaves_an_unflagged_direction_alone() {
 }
 
 #[test]
+fn look_clamp_matches_the_scalar_frame_at_the_normalizer() {
+    let (initial, mut g) = world();
+    g.set_u32(STACK + 4, DIRECTION).unwrap();
+    g.set_u32(STACK + 8, 1).unwrap();
+    g.set_u8(LIMITS, 1 << 6).unwrap();
+    for mxcsr in [0x1f80, 0x1fa0] {
+        for (up, aim) in [
+            ([0.35, -1.75, 2.5], [-3.25, 0.9, 1.125]),
+            ([-0.0, 0.0, 1.0], [0.0, -0.0, 1.0]),
+            ([2.0f32.powi(40), 0.0, 0.0], [0.0, 2.0f32.powi(40), 0.0]),
+            ([f32::from_bits(1), f32::INFINITY, 0.0], [3.0, -1.0, 0.0]),
+            ([1.0, f32::from_bits(0x7f80_0001), 2.0], [0.0, 1.0, -1.0]),
+        ] {
+            vec3(&mut g, BODY + 0x7c, up);
+            vec3(&mut g, BODY + 0x168, aim);
+            let mut cpu = CpuAbi { eax: UNIT, mxcsr, xmm: [[0xcc; 16]; 8], ..initial };
+            let out = drive(&mut cpu, &mut g, &TABLE, points::UNIT_CLAMP_DIRECTION.base).unwrap();
+            assert_eq!(out, TransferAbi::call(callee::NORMALIZE, 0xcbb67));
+            let e = STACK - 0x50;
+            assert_eq!((cpu.esp, cpu.eax, cpu.edi, cpu.esi), (e - 20, e + 4, e + 4, e + 0x10));
+
+            // Scalar SSE, starting before the first cross product. The normalizer
+            // receives the unnormalized vector as well as the scratch registers.
+            let [ux, uy, uz] = up.map(f32::to_bits);
+            let [ax, ay, az] = aim.map(f32::to_bits);
+            let mut scalar = CpuAbi { mxcsr, ..initial };
+            for (r, word) in [az, az, uz, uz, uy, ay, ax].into_iter().enumerate() {
+                load(&mut scalar, r, word);
+            }
+            ssr(&mut scalar, Ss::Mul, 0, 4).unwrap();
+            ssr(&mut scalar, Ss::Mul, 3, 5).unwrap();
+            ssr(&mut scalar, Ss::Sub, 0, 3).unwrap();
+            load(&mut scalar, 3, ux);
+            rebase_look_up_scalar(&mut scalar).unwrap();
+            assert_eq!(cpu.xmm, scalar.xmm);
+            assert_eq!(cpu.mxcsr, scalar.mxcsr);
+            for (i, r) in [4, 1, 2].into_iter().enumerate() {
+                assert_eq!(g.u32(e + 4 + i as u32 * 4).unwrap(), lo(&scalar, r));
+                assert_eq!(g.u32(e + 0x10 + i as u32 * 4).unwrap(), aim[i].to_bits());
+            }
+        }
+    }
+}
+
+#[test]
 fn the_clamp_turns_a_direction_past_its_yaw_limit_back_to_the_limit() {
     let (mut cpu, mut g) = world();
     g.set_u32(STACK + 4, DIRECTION).unwrap();

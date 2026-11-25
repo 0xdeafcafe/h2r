@@ -237,3 +237,88 @@ fn handles_past_the_mark_bound_decline_and_a_dead_handle_ends_a_list() {
     let v = run(&w, &VisitQuery { lists: 1, ..query() }).unwrap();
     assert_eq!(v.marks, [3, 5]);
 }
+
+#[test]
+fn a_dead_first_handle_ends_the_list_regardless_of_its_next_reference() {
+    let [mut a, b] = lists();
+    a.clusters[0][0].handle = u32::MAX;
+    let w = world([&a, &b]);
+    let v = run(&w, &VisitQuery { lists: 1, radius: 0, ..query() }).unwrap();
+    assert!(v.handles.is_empty());
+    assert!(v.marks.is_empty());
+}
+
+#[test]
+fn a_cycle_in_the_live_reference_list_declines() {
+    let [a, b] = lists();
+    let mut w = world([&a, &b]);
+    w.img.word(LISTS[0].2 + References::SIZE + layout::NEXT, 0);
+    assert_eq!(run(&w, &query()), Err(Bail::Data));
+}
+
+#[test]
+fn visit_batch_advances_the_flood_epoch_only_on_flooding_visits() {
+    let [a, b] = lists();
+    let mut w = world([&a, &b]);
+    let q = VisitQuery { flood_epoch: u32::MAX - 1, ..query() };
+    let no_flood = VisitQuery { radius: 0, ..q };
+    let queries = [q, no_flood, q];
+    let topology = Arc::new(Topology::decode(&w.img, w.key, &CONSTS.projection).unwrap());
+    let answers = crate::batch::visit_batch(&w.img, &queries, || Ok(topology.clone())).unwrap();
+    assert_eq!(answers[1].flood_epoch, None);
+    assert_eq!(answers[2].flood_epoch, Some(0));
+    assert_eq!(answers[2].visit.flood.as_ref().unwrap().clusters, [0, 1]);
+    let (mut epoch, mut generation) = (q.flood_epoch, q.generation);
+    for (query, answer) in queries.iter().zip(answers) {
+        let serial = run(&w, &VisitQuery { flood_epoch: epoch, generation, ..*query }).unwrap();
+        assert_eq!(serial, answer.visit);
+        if let Some(f) = serial.flood {
+            epoch = epoch.wrapping_add(1);
+            for c in f.clusters {
+                w.img.word(CLUSTER_MARKS + 4 * u32::from(c), epoch);
+            }
+        }
+        generation = generation.wrapping_add(1);
+        for mark in serial.marks {
+            w.img.word(OBJECT_MARKS + 4 * u32::from(mark), generation);
+        }
+    }
+}
+
+#[test]
+fn reference_packets_keep_each_list_rounding_order_and_fall_back_on_wide_values() {
+    let minor = 1.0f32 / 4096.0;
+    let refs = |base: u32| References {
+        clusters: vec![(1..=4).map(|i| reference(base + i, 1, [1.0, minor, minor], 1.0)).collect()],
+    };
+    let (a, b) = (refs(0x1234_0000), refs(0x5678_0004));
+    let w = world([&a, &b]);
+    let q = VisitQuery { centre: [0; 3], radius: 0, ..query() };
+    // (2^-24 + 2^-24) + 1.0 rounds up. (2^-24 + 1.0) + 2^-24
+    // rounds to 1 twice. Both sets are marked; only list two touches.
+    let v = run(&w, &q).unwrap();
+    assert_eq!(v.marks, [1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(v.handles, [0x5678_0005, 0x5678_0006, 0x5678_0007, 0x5678_0008]);
+
+    let mut a = a;
+    a.clusters[0][3].bounds[0] = f32::from_bits(0x1c80_0000);
+    let w = world([&a, &b]);
+    let q = VisitQuery { centre: [1.0f32.to_bits(), 0, 0], lists: 1, ..q };
+    let v = run(&w, &q).unwrap();
+    assert_eq!(v.handles, [0x1234_0001, 0x1234_0002, 0x1234_0003]);
+}
+
+#[test]
+fn a_full_visit_stops_before_a_bad_or_unreadable_later_reference() {
+    let a = References { clusters: vec![(1..=8).map(|i| reference(i, 0, [0.0; 3], 1.0)).collect()] };
+    let b = References { clusters: vec![vec![]] };
+    let mut w = world([&a, &b]);
+    // Four hits in a packet, then the fifth hit ends a full output.
+    let q = VisitQuery { capacity: 4, radius: 0, centre: [0; 3], ..query() };
+    let (_, _, data) = LISTS[0];
+    w.img.word(data + 4 * References::SIZE + layout::NEXT, u32::MAX - 1);
+    let v = run(&w, &q).unwrap();
+    assert_eq!(v.handles, [1, 2, 3, 4]);
+    assert_eq!(v.marks, [1, 2, 3, 4, 5]);
+    assert_eq!(v.full, Some(5));
+}

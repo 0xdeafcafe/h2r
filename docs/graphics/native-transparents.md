@@ -36,7 +36,7 @@ After the opaque layers and late passes, `render_scene_passes` calls `SCENE_TRAN
   and 18..28 the instanced-geometry placement (`0x7ff` for a cluster;
   "What a world pass reads").
 
-Other handlers in the list (effects, particles, contrails, decals) keep their D3D draws here; [native-particles.md](native-particles.md) covers the effect leaves.
+Effects, particles and contrails use their own draw boundaries in [native-particles.md](native-particles.md).
 
 ### Admission and order
 
@@ -44,9 +44,22 @@ The standard handler runs its layer-15 material builds, bindings and restores. T
 
 Each triangle list or strip goes through the existing indexed pass with the resolved shaders, fog, blend and depth state and the current attachments. The resolved packet supplies the live inputs even when the item’s object lighting owner is unavailable. A triangle list keeps trailing indices in its snapshot and rasterizes complete triangles. Admission preserves the order of the individual ranges and intervening handlers. A refused range runs its original indexed call, which can still use the immutable vertex binding adapter.
 
+Camouflage and hologram use the same indexed path for ranges that reach
+the guest emitter. The indexed API return and two nested return sites
+identify the emitter and layer dispatcher, and the live layer must match the layer argument. The
+handler's return address identifies its regular layer replays or the
+specific draw of layer 18, 19 or 21. Layer begin, material state, texture
+snapshots and target changes execute in their original order. Items
+already admitted by `frame-scene.layers` never reach this path. A sealed
+frame retains each replacement beside its original indexed packet and
+resolves the sampled textures for that replay. When a verified camera
+moves between ticks, the replacement uses the same updated constants as
+the original packet.
+
+
 ### Vertex bindings
 
-`native_render::transparent_streams` packs multiple immutable streams into one buffer when their live declarations and strides allow it. It keeps the raw guest bytes, including packed normals and normalized endpoints. The cache uses immutable stream snapshots and the exact declaration, scoped to the game activation and active BSP. A transparent view can use the cache before any layer-3 item. Object entries pack only when the objects stage is on. Object inputs and node rows come from the actual draw, as do cluster and placement inputs. The opaque world keeps the layers 1, 3, 5, 7 and 8 layout, with a 92-byte stride and `Float32x2` for v6.
+`native_render::transparent_streams` packs multiple immutable streams into one buffer when their live declarations and strides allow it. It keeps the raw guest bytes, including packed normals and normalized endpoints. The cache uses immutable stream snapshots and the exact declaration, scoped to the game activation and active BSP. A transparent view can use the cache before any layer-3 item. Object entries pack only when the objects stage is on. Object inputs and node rows come from the actual draw, as do cluster and placement inputs. The resident opaque world uses a 96-byte vertex. Its layer-3 declaration binds `v6` as `Float32x2` for lightmap coordinates or `Unorm8x4` for baked colour.
 
 The `indexed draws with native bindings` log counts accepted draw bindings
 since startup and reports every 1,800 acceptances. The

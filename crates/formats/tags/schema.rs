@@ -407,6 +407,9 @@ fn model_geometry_records() -> Vec<Record> {
                 f("triangle_count", 6, U16),
                 f("part_count", 8, U16),
                 f("unknown_014", 0x14, U8),
+                // E: the light geometry builder selects this influence byte
+                // for transparent parts of a weighted section.
+                f("transparent_node_influences", 0x15, U8),
                 // Labels from D: the vertex-buffer types each value occurs with.
                 f("geometry_classification", 0x18, Enum16).choices(&[
                     (1, "no_vertex_nodes"),

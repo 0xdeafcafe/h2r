@@ -678,6 +678,8 @@ impl<B: Backend> Device<B> {
             // Boot state: CreateDevice built it from the same image and
             // switches, and the loading device keeps its own.
             cfg: _,
+            // A host hook the boot plan installs again.
+            indexed_admission: _,
             translator: _,
             backend: _,
             created: _,
@@ -770,6 +772,7 @@ impl<B: Backend> Device<B> {
             depth_alias_decodes: _,
             depth_read_generation: _,
             depth_alias: _,
+            frame_snaps: _,
             depth_level_tex: _,
             // Switches.
             lazy_depth: _,
@@ -1073,6 +1076,7 @@ impl<B: Backend> Device<B> {
         let mut surfaces: Vec<B::Surface> = self.rtt.drain().map(|(_, t)| t.surface).collect();
         surfaces.extend(self.other_surfaces.drain().map(|(_, (_, s))| s));
         for s in surfaces {
+            self.forget_surface(s);
             self.backend.destroy_surface(s).map_err(D3dError::Backend)?;
         }
         self.depth_generation += 1;
@@ -1080,6 +1084,7 @@ impl<B: Backend> Device<B> {
         self.depth_alias_decodes.clear();
         self.depth_read_generation = None;
         self.depth_alias.clear();
+        self.frame_snaps.clear();
         self.depth_color = None;
         self.depth_color_newer = false;
         Ok(())

@@ -1,6 +1,6 @@
-//! Colour lens flare fans. Ownership ends at one BEGIN/END pair; the
-//! callers, visibility queries and per-flare loop stay with the guest, and
-//! the bridge decides which draws are flares.
+//! Lens flare fans. Ownership ends at one BEGIN/END pair. The bridge
+//! identifies visibility and colour geometry, while the guest keeps the
+//! query tickets and per-flare loop.
 //!
 //! [`Site`] is pure data. `FlareGpu` (feature `gpu`) wraps
 //! `UiGpu` behind a per-site contract: it checks the
@@ -11,6 +11,8 @@
 /// One flare fan. Each is one `TriangleFan` of four vertices, no indices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Site {
+    /// Read-only visibility fan inside an active z-pass report.
+    Visibility,
     /// Reflection billboard: position, uv and a carried colour.
     Reflection,
     /// Position only; the colour is a carried default.
@@ -30,7 +32,7 @@ impl Site {
     /// Registers outside it come from the carried defaults.
     pub const fn registers(self) -> u16 {
         match self {
-            Self::Mask => 1,
+            Self::Visibility | Self::Mask => 1,
             Self::MaskSample | Self::FilterSource | Self::Filter => 1 | 1 << 3,
             Self::Reflection | Self::Composite => 1 | 1 << 3 | 1 << 9,
         }
@@ -63,6 +65,8 @@ mod gpu {
         Layout,
         /// A bound texture is not 2D, or a glyph filter is set.
         Texture,
+        /// The query state does not match the read-only visibility draw.
+        QueryState,
         /// The shared UI path refused.
         Ui(ui_gpu::Refusal),
     }
@@ -71,6 +75,15 @@ mod gpu {
 
     /// Check a resolved draw against the site's contract. No device.
     pub fn check(site: Site, draw: &ResolvedDraw) -> Result<(), Refusal> {
+        let visibility = site == Site::Visibility;
+        if draw.hw.zpass_count_enable != visibility
+            || (visibility
+                && (draw.target.depth_format.is_none()
+                    || draw.state.render.color_write.xbox_value() != 0
+                    || draw.writes_depth_stencil()))
+        {
+            return Err(Refusal::QueryState);
+        }
         check_shape(
             site,
             draw.primitive,
@@ -173,7 +186,8 @@ mod gpu {
         use super::*;
         use gfx::vertex::{StreamLayout, VertexAttribute, VertexRegister};
 
-        const SITES: [Site; 6] = [
+        const SITES: [Site; 7] = [
+            Site::Visibility,
             Site::Reflection,
             Site::Mask,
             Site::MaskSample,

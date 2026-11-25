@@ -25,6 +25,7 @@ pub trait Host: Send + Sync {
     /// the exact gel site has `Some(call)`.
     fn template(&self, mem: &dyn GuestMemory, call: Option<Call>);
     fn quad(&self, mem: &mut dyn GuestMemory);
+    fn quad_end(&self, mem: &mut dyn GuestMemory);
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -88,6 +89,16 @@ impl Feature for NativeGels {
                     }
                 }
                 Ok(Flow::Continue)
+            })
+            .context_only();
+        b.raw()
+            .after(&points::TEMPLATE_QUAD, "native_gels_quad_end", |c| {
+                let rt = Arc::clone(c.ctx.runtime());
+                let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                if let Some(host) = host {
+                    host.quad_end(&mut *rt.memory());
+                }
+                Ok(())
             })
             .context_only();
         b.snapshot(hooks::SnapshotPolicy::Stateless);

@@ -2,6 +2,7 @@
 //! docs/engine/havok-runtime.md for the retail addresses behind this walk.
 
 mod cache;
+pub mod digest;
 
 pub use cache::{Cache, Child, Convex, Tree};
 

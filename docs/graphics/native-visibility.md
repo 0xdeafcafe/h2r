@@ -6,7 +6,8 @@ window frusta objects are tested against, the main view's records and
 the sphere-mode and frustum-mode light views are computed in Rust and compared with the
 guest's. The native scene-list hooks can publish single-frustum portal walks,
 window merges, sphere regions and PVS regions after comparing the original
-producer's output. View setup and unverified calls run in the guest.
+producer's output. The guest's view setup and any call the hooks decline
+run in the guest and are the fallback a decline takes.
 Code: `crates/rewrites/scene-extract/src/visibility/` (`compute`, `arm`,
 `view`, `light`), the arms in `crates/rewrites/render-bridge/src/scene_step.rs`
 (`view_record_arm`, `visibility_arm`, `light_visibility_arm`). Tests:
@@ -21,18 +22,36 @@ camera, projection, start cluster and mode), which BSP clusters the view
 sees and which objects it lists; at each dynamic light's passes it does
 the same for the light's view. At first-person replay it compares the
 ordered light slots and their records. Each comparison counts differences
-and names the first. The scene uses Rust camera records, main-view sets
-and recorded light handles only on equality. The scene comparison reads guest
+and names the first. The scene's gather carries the Rust main-view sets
+by default, the guest's lists the fallback a decline takes, and a view
+whose lists do not read carries no gather; it uses Rust camera records and
+recorded light handles only on equality. The scene comparison reads guest
 memory. The scene-list producers also publish the ordered scratch records
 and visit stamps that their callers consume.
 
 In single-copy play, the Rust comparison uses the horizontal extent set by
-the main-view frustum hook. In exact mode, the scene step projects the portals
+the displayed camera projection hook. In exact mode, the scene step projects the portals
 and builds object planes with both lenses. It removes IDs in either the
 guest lists or the Rust gather at the retail lens. It tests rigid BSP
 placements against their clusters' portal windows and deduplicates placements
-referenced by several clusters. The native passes receive the additional
-IDs through `View::display_visibility`.
+referenced by several clusters. It keeps only the clusters whose every
+layer has a display draw (`native_world::display_cluster_complete`). The
+native passes receive the additional IDs through
+`View::display_visibility`. The passes that take it:
+
+| Pass | Display-only draw |
+|---|---|
+| World layer 3 (`native_world_glue`) | Clusters and fully visible placements, whole owners only |
+| Objects (`native_objects_glue/display.rs`) | Objects |
+| Water edge, layer 6 (`native_water_glue`) | Kind-4 parts of whole clusters, when the guest layer is empty |
+| Fog, layer 16 (`native_fog_glue`) | One part of a whole cluster, when the guest layer is empty |
+
+The rest draw only what the guest listed: the frame scene's layers 1, 5,
+7, 8, 20, 2 and 17, the decorators, the layer-15 sorted transparents
+(the pool surfaces among them), layers 18, 19 and 21, decals and the
+dynamic lights' passes. A cluster that needs one of those layers is left
+out of the supplement whole.
+[High resolution](high-resolution.md#widescreen-projection).
 [Widescreen projection](high-resolution.md#widescreen-projection).
 
 ## How it works
@@ -318,8 +337,15 @@ view's sphere in mode 1, always in mode 2, and always under view flag
 `0x80`. A rejected object can be listed through a later cluster. The sky
 cluster's objects (`0x004b9ee9`, `0x004686c4`, `0x004b9eec` and the
 structure's table at `+0xb0`) are added unclipped. View flag `0x40`
-lists no objects. The view's player unit (`0x004b9ed8`) is appended when
-it is not listed, as `0x0003f33c` does. `guest::object_world` reads the
+lists no objects. The view's player unit is appended when it is not
+listed, as `0x0003f33c` does. `0x004b9ed8` holds the view's local user
+index, not a unit. `0x0002b990` maps it to a unit when the user has a
+player (`[0x004e8c20] + 0xc + 4 · user`) and `0x00155760` answers 0 for
+the user's camera: kind `0x0023c110` (the first-person camera, `+0xc` of
+the user's `0x140`-byte record at `0x004e8c44`) with `+0x4` equal to the
+image's `0.0`. The unit is the player's `+0x2c` (players at
+`[[0x004e8c24] + 0x44]`, `0x21c` bytes each). Any other case appends
+nothing (`guest::view_player_unit`). `guest::object_world` reads the
 references and spheres into Rust-owned maps first.
 
 ### The light views
@@ -373,15 +399,23 @@ the view's base layer 3 (the main view) or `light::guest_lists` (a
 light). `parity::compare` walks the two ascending sets and counts what
 only the guest has and what only Rust has, clusters before objects,
 naming the first. `visibility::arm` returns the gather with the Rust sets
-(ascending, `source: rust`) when they are equal, and the guest's
-untouched otherwise. `scene_step::visibility_arm` counts each view and
+(ascending, `source: rust`): they are the default, so a difference keeps
+them and stays counted and named; the scene step keeps the guest's for a
+view whose computation declined, which never reaches the arm. The guest's
+lists remain what the render records were built from. The arm runs for
+every game view, whether or not its lists read: a view whose lists did
+not read is computed and counted, and carries no gather — the gather's
+mode and structure list are the guest's, and the comparison has no other
+side.
+`scene_step::visibility_arm` counts each view and
 keeps the first difference since the map loaded. A light's comparison is
 counted only: no light list is carried into the scene.
 
 ## Interfaces
 
 - Called from `render_bridge::scene_step::open_kind_at_layer` when a game
-  view's base layer 3 is read, after `extract::cluster_gather`
+  view's base layer 3 is read, whether or not `extract::cluster_gather`'s
+  lists read — they are the comparison's other side and the fallback —
   (`view_record_arm`, then `visibility_arm`), and from
   `scene_step::light` at each dynamic light's passes. First-person slot
   collection runs at the dynamic constants call and compares at replay.
@@ -391,7 +425,7 @@ counted only: no light list is carried into the scene.
   `+0x2a78` view kind, `+0x2a7c` mode), `[0x004c0b80]` (the active
   struct), the structure tag and its collision BSP, the open-portal bits,
   the object and reference datum arrays, the light records, the sky
-  globals, the view's player unit, the view records, the observer
+  globals, the view's local user, the local player map, the users' camera kinds, the players' units, the view records, the observer
   cameras, the render camera, and the image's values named above.
 - The scene differential reads the lists. The native publication hooks write the scratch records described above.
 - `render.scene` reports it
@@ -406,10 +440,15 @@ counted only: no light list is carried into the scene.
 
 - **Membership and draw order.** The region records retain their production
   order. The comparator at `0x00134950` sorts a separate array of region
-  ordinals. The scene's Rust membership sets are ascending. The native
+  ordinals. The scene's Rust membership sets are ascending, and a consumer
+  that needs the guest's order reads it from a `guest` view. The native
   publication hooks compare the ordered records at their consumer.
-- **The guest stays the fallback.** A view whose sets or records differ,
-  or for which the computation declines, keeps the guest's.
+- **The guest is the fallback.** A view for which the computation
+  declines keeps the guest's gather. A difference keeps the Rust sets,
+  the default, and stays counted and named; the render records were
+  still built from the guest's lists. A view whose lists do not read
+  carries no gather: the comparison has no other side. The camera records
+  and the first-person light handles stay taken only on equality.
 - **Declines, by name.** For the sets: memory that does not read
   (`unread`); counts, links or indices past the guest's arrays (more
   than 512 clusters or portals, more than 64 corners a portal, a short
@@ -434,7 +473,9 @@ counted only: no light list is carried into the scene.
   setup and the camera and lens builders: **Code**, read in the
   disassembly (`h2 disasm`) at the addresses above.
 - The open-portal bits are indexed by portal: **Code** (`0x00172927`).
-- `0x004b9ed8` holding the view's player unit: **S** (occlusion-culling.md).
+- `0x004b9ed8` holding the view's local user index, and the unit
+  `0x0002b990` appends: **Code** (`0x0002ba10`, `0x0002bc6b`, `0x0002b990`,
+  `0x00155760`).
 - That the item lists `0x00040e90` leave the light struct's lists alone
   between a light's gather and its passes: **S**.
 - Every behaviour above on invented fixtures: **Test**
@@ -447,9 +488,11 @@ counted only: no light list is carried into the scene.
   acceptance of R4 is `scene_visibility_differ`,
   `scene_light_visibility_differ`, `scene_first_person_visibility_differ`
   and `scene_view_record_differ` at
-  zero, and `scene_visibility_rust_taken` equal to
-  `scene_visibility_checked`, over the gate corpus, with all four
-  `*_first_mismatch` fields absent.
+  zero, over the gate corpus, with all four
+  `*_first_mismatch` fields absent. `scene_visibility_rust_taken` equals
+  `scene_visibility_checked` by construction: the Rust sets are the
+  default, and the `scene_visibility_declined_*` counters name the views
+  that keep the guest's.
 - That the render camera and projection at layer 3 are the lens the
   gather used: the display copy can change the projection after the
   gather (occlusion-culling.md).

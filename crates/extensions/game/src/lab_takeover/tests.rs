@@ -14,7 +14,7 @@ fn shown(dialog: &Dialog) {
 fn consent_uses_the_signed_ui_update_point() {
     let mut registry = hooks::Registry::new(hooks::Switches::defaults());
     let agent = agent::Agent::new();
-    install(&mut registry, &agent).unwrap();
+    install(&mut registry, &agent, true).unwrap();
     let plan = registry.build(&hooks::Base).unwrap().text();
     assert!(
         plan.lines().any(|line| {

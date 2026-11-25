@@ -107,6 +107,89 @@ impl ViewParams {
     }
 }
 
+/// `render.view.current`: read the pose of the view the game draws for a
+/// local player.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CurrentViewParams {
+    /// The local player's seat, `0..4`; omit for seat 0.
+    pub seat: Option<u8>,
+}
+
+impl CurrentViewParams {
+    /// The local seats a view record can belong to.
+    pub const SEATS: u8 = 4;
+
+    /// The seat asked for, within [`CurrentViewParams::SEATS`].
+    pub fn check(&self) -> Result<u8, String> {
+        let seat = self.seat.unwrap_or(0);
+        if seat < Self::SEATS {
+            Ok(seat)
+        } else {
+            Err(format!("seat must be 0..{}", Self::SEATS))
+        }
+    }
+}
+
+/// `render.view.current`'s reply: a pose in the conventions of
+/// [`ViewParams`], so `render.view` takes its `eye`, `yaw`, `pitch` and
+/// `fov` as they are.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct CurrentView {
+    pub eye: [f32; 3],
+    /// Heading about +z, from +x towards +y, in `0..TAU`.
+    pub yaw: f32,
+    /// Up is positive, within [`ViewParams::PITCH_LIMIT`].
+    pub pitch: f32,
+    /// The horizontal lens, degrees.
+    pub fov: f32,
+    /// The pose is the private `render.view` or `render.spawn_view` camera.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub private: bool,
+}
+
+impl CurrentView {
+    /// The pose of a camera at `eye` looking along `forward` (any length),
+    /// with a horizontal lens of `fov` degrees. `None` for a non-finite
+    /// input or a zero-length `forward`.
+    pub fn looking(eye: [f32; 3], forward: [f32; 3], fov: f32) -> Option<Self> {
+        let [x, y, z] = forward;
+        let length = (x * x + y * y + z * z).sqrt();
+        if !eye.into_iter().chain(forward).chain([fov, length]).all(f32::is_finite)
+            || length < 1e-4
+        {
+            return None;
+        }
+        let tau = std::f32::consts::TAU;
+        let mut yaw = y.atan2(x).rem_euclid(tau);
+        if yaw >= tau {
+            // A tiny negative angle rounds up to TAU: the same heading as 0.
+            yaw = 0.0;
+        }
+        Some(Self {
+            eye,
+            yaw,
+            pitch: (z / length)
+                .clamp(-1.0, 1.0)
+                .asin()
+                .clamp(-ViewParams::PITCH_LIMIT, ViewParams::PITCH_LIMIT),
+            fov,
+            private: false,
+        })
+    }
+
+    /// The `render.view` params that draw this pose.
+    pub fn view_params(&self) -> ViewParams {
+        ViewParams {
+            eye: Some(self.eye),
+            yaw: Some(self.yaw),
+            pitch: Some(self.pitch),
+            fov: Some(self.fov),
+            reset: false,
+        }
+    }
+}
+
 /// `render.frame` and `render.frame_layout`: record the next whole frame
 /// (`arm`), or read the last one recorded.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -805,8 +888,8 @@ pub struct SceneViewRecord {
     /// The game view's object list length, from the same gather.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visibility_objects: Option<u32>,
-    /// Who computed the view's visible clusters and objects: `guest`, or
-    /// `rust` when the Rust visibility equalled the guest's for this view
+    /// Who computed the view's visible clusters and objects: `rust`, or
+    /// `guest` when the Rust visibility declined for the view
     /// (docs/graphics/native-visibility.md).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visibility_source: Option<String>,
@@ -1381,5 +1464,66 @@ mod tests {
         ] {
             assert!(serde_json::from_value::<ViewParams>(unknown).is_err());
         }
+    }
+
+    #[test]
+    fn a_current_view_derives_yaw_and_pitch_from_its_forward() {
+        use std::f32::consts::{FRAC_PI_2, PI, TAU};
+        let at = |forward: [f32; 3]| CurrentView::looking([1.0, 2.0, 3.0], forward, 70.0).unwrap();
+        assert_eq!((at([1.0, 0.0, 0.0]).yaw, at([1.0, 0.0, 0.0]).pitch), (0.0, 0.0));
+        assert!((at([0.0, 1.0, 0.0]).yaw - FRAC_PI_2).abs() < 1e-6);
+        assert!((at([-1.0, 0.0, 0.0]).yaw - PI).abs() < 1e-6);
+        // Wrapped into 0..TAU, not -PI..PI.
+        assert!((at([0.0, -1.0, 0.0]).yaw - 1.5 * PI).abs() < 1e-5);
+        let down = at([2.0, 0.0, -2.0]);
+        assert!((down.pitch + std::f32::consts::FRAC_PI_4).abs() < 1e-5, "length is ignored");
+        // Straight up clamps to the limit instead of failing the check.
+        assert_eq!(at([0.0, 0.0, 1.0]).pitch, ViewParams::PITCH_LIMIT);
+        assert_eq!(at([0.0, 0.0, -1.0]).pitch, -ViewParams::PITCH_LIMIT);
+        // A tiny negative heading must not round up to TAU.
+        let tiny = at([1.0, -1e-9, 0.0]);
+        assert!((0.0..TAU).contains(&tiny.yaw), "{}", tiny.yaw);
+        assert_eq!(tiny.eye, [1.0, 2.0, 3.0]);
+        assert!(!tiny.private);
+        for bad in [[0.0; 3], [f32::NAN, 0.0, 0.0], [f32::INFINITY, 0.0, 0.0]] {
+            assert!(CurrentView::looking([0.0; 3], bad, 70.0).is_none());
+        }
+        assert!(CurrentView::looking([f32::NAN, 0.0, 0.0], [1.0, 0.0, 0.0], 70.0).is_none());
+        assert!(CurrentView::looking([0.0; 3], [1.0, 0.0, 0.0], f32::NAN).is_none());
+    }
+
+    #[test]
+    fn a_current_view_replays_through_render_view() {
+        let view = CurrentView::looking([12.5, -3.0, 2.2], [0.3, -0.8, 0.2], 74.0).unwrap();
+        let wire = serde_json::to_value(view).unwrap();
+        assert!(wire.get("private").is_none(), "{wire}");
+        // The reply's pose fields, as a client passes them on.
+        let params: ViewParams = serde_json::from_value(serde_json::json!({
+            "eye": wire["eye"], "yaw": wire["yaw"], "pitch": wire["pitch"], "fov": wire["fov"],
+        }))
+        .unwrap();
+        assert_eq!(params, view.view_params());
+        assert_eq!(
+            params.check(),
+            Ok(ViewRequest::Pose {
+                eye: view.eye,
+                yaw: view.yaw,
+                pitch: view.pitch,
+                fov: Some(74.0),
+            })
+        );
+        let private = serde_json::to_value(CurrentView { private: true, ..view }).unwrap();
+        assert_eq!(private["private"], true);
+        assert_eq!(serde_json::from_value::<CurrentView>(private).unwrap().private, true);
+    }
+
+    #[test]
+    fn current_view_params_check_the_seat() {
+        let parse = |v: Value| serde_json::from_value::<CurrentViewParams>(v);
+        assert_eq!(parse(serde_json::json!({})).unwrap().check(), Ok(0));
+        assert_eq!(parse(serde_json::json!({"seat": 3})).unwrap().check(), Ok(3));
+        assert!(parse(serde_json::json!({"seat": 4})).unwrap().check().is_err());
+        assert!(parse(serde_json::json!({"seat": -1})).is_err());
+        assert!(parse(serde_json::json!({"player": 1})).is_err());
     }
 }

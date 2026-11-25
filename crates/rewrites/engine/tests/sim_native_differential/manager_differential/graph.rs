@@ -11,7 +11,9 @@ const VIEW: u32 = DATA + 0x6000;
 const PARENTS: u32 = DATA + 0x7000;
 
 fn graphs(mem: &mut FlatMemory) {
+    word(mem, GRAPH + 0x2c, 4);
     word(mem, GRAPH + 48, CLIPS);
+    word(mem, PARENT + 0x2c, 4);
     word(mem, PARENT + 48, CLIPS);
     word(mem, GRAPH + 76, 1);
     word(mem, GRAPH + 80, PARENTS);

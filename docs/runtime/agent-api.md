@@ -32,6 +32,7 @@ connection to hold `session.claim`.
 | `host.pause`, `host.step` | act, without the controller check | [Window pause and frame step](#window-pause-and-frame-step) |
 | `host.screenshot` | act, without the controller check | [Window screenshots](#window-screenshots) |
 | `host.quit` | act, without the controller check | [Close the window](#close-the-window) |
+| `host.window.resize` | act, without the controller check | [Resize the window](#resize-the-window) |
 | `world.count`, `world.query`, `world.object` | read | [`world`](#world-what-is-in-the-level) |
 | `world.object.set`, `world.object.delete`, `world.object.respawn` | act | [Object edits](#object-edits) |
 | `world.object.animate` | act | [`world.object.animate`](#worldobjectanimate) |
@@ -42,7 +43,7 @@ connection to hold `session.claim`.
 | `actors.net` | read | [`actors.net`](#actorsnet) |
 | `world.raw` | read | [`world.raw`](#worldraw-an-objects-bytes-before-and-after) |
 | `world.poke` | claim | [`world.poke`](#worldpoke-replace-bytes-in-one-object-part) |
-| `havok.bodies`, `havok.agents`, `havok.contacts` | read | [`havok`](#havok-the-physics-world) |
+| `havok.bodies`, `havok.agents`, `havok.contacts`, `havok.digest` | read | [`havok`](#havok-the-physics-world) |
 | `havok.pair.set` | claim | [`havok.pair.set`](#havokpairset) |
 | `superbounce.state` | read | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `superbounce.set` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
@@ -68,10 +69,11 @@ connection to hold `session.claim`.
 | `render.capture_clip`, `render.capture_clip.status` | act, read | [Headless display clips](#rendercapture_clip) |
 | `render.picture.open`, `render.picture.close` | read | [Picture feed](#picture-feed-renderpicture) |
 | `render.coop_look` | read | [`render`](#render-the-frame-and-the-pipeline) |
-| `render.compare`, `render.capture`, `render.scene`, `sim.hashes` | read | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
+| `render.compare`, `render.capture`, `render.scene`, `render.view.current`, `sim.hashes` | read | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
 | `render.spawn_view`, `render.view` | act | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
 | `render.parity` | act | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
 | `render.residual` | read | [Residual D3D work](#renderresidual-residual-d3d-work) |
+| `render.particles.refusals` | read | [`render.particles.refusals`](#renderparticlesrefusals) |
 | `render.overrides`, `render.programs` | read | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
 | `render.reload`, `render.dump`, `render.param`, `render.toggle` | act | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
 | `edit.map`, `edit.tags`, `edit.get`, `edit.changes` | read | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
@@ -96,6 +98,7 @@ connection to hold `session.claim`.
 | `audio.play` | act | [`audio.play`](#audioplay) |
 | `recording.play` | act | [`recording.play`](#recordingplay) |
 | `hs.threads`, `hs.globals`, `hs.player_actions` | read | [HaloScript state](#haloscript-state) |
+| `hs.parity` | read | [HaloScript parity](#hsparity) |
 | `hs.eval` | read | [`hs.eval`](#hseval) |
 | `input.pad`, `release`, `record`, `replay`, `stop` | act | [`input`](#input-act-like-a-player) |
 | `input.state`, `input.host` | read | [`input`](#input-act-like-a-player) |
@@ -122,7 +125,9 @@ connection to hold `session.claim`.
 | `editor.marks` | read | [Paired editor](#editor-a-paired-editor) |
 | `theater.*` | read or act | [Theater transport](#theater-transport) |
 | `collision.stats` | read | [`collision`](#collision-the-native-collision-world) |
-| `anim.graph_walk` | read | [`anim`](#anim-the-animation-graph-walk) |
+| `collision.trace` | read | [`collision`](#collision-the-native-collision-world) |
+| `collision.sources`, `collision.sources.clear` | read, claim | [`collision`](#collision-the-native-collision-world) |
+| `anim.graph_walk`, `anim.manager` | read | [`anim`](#anim-the-animation-graph-walk) |
 | `input.list`, `input.log.read` | read | [Input logs](#input-act-like-a-player) |
 | `trace.*`, `flight.*` | read | [Tick traces and the flight recorder](#tick-traces-and-the-flight-recorder) |
 | `shadow.enable`, `shadow.disable`, `shadow.status` | act, act, read | [Shadow checks](#shadow-checks) |
@@ -528,6 +533,42 @@ paused game takes it too. A headless game has no window: `UNAVAILABLE`.
 h2 agent host.quit '{}'
 ```
 
+### Resize the window
+
+`host.window.resize {width, height}` sets the game window's inner size,
+in physical pixels (the size the game renders at), and
+`host.window.resize {fullscreen}` takes the window in or out of
+borderless fullscreen on its display, as Cmd+F does. An aspect or
+field-of-view check drives a live window through the shapes it covers
+with it. A size leaves fullscreen first; `{width, height, fullscreen:
+false}` says the same thing, and a size with `fullscreen: true` is
+refused, since a fullscreen window takes its display's size.
+
+| Method | Params | Result |
+|---|---|---|
+| `host.window.resize` | `{width, height}` (each 64 to 16384), `{fullscreen: bool}`, or both with `fullscreen: false` | `{width, height, fullscreen, scale}` once the window has that shape |
+
+`scale` is physical pixels per point (2 on a Retina display). The call
+waits up to 5 s for the window to take the shape: a fullscreen change
+animates on macOS, and a size asked for while leaving fullscreen is asked
+again once the window is out. A shape the window does not take in time
+(larger than the display, or a fullscreen size other than the one asked)
+answers `TIMEOUT`, with the window's state as `data`.
+
+Like `host.pause` it is answered on the connection's own thread, through
+the window shell's hub (`crates/apps/app/src/shell.rs`, over
+`agent_proto::host_window`): the shell applies the request on its event
+loop and reports the window's shape after it and on every resize. A
+headless game has no window: `UNAVAILABLE` (its render size comes from
+its command line). Missing or partial params (a width with no height),
+a side out of range and unknown fields are `INVALID_PARAMS`.
+
+```sh
+h2 agent host.window.resize '{"width":2560,"height":1080}'
+h2 agent host.window.resize '{"fullscreen":true}'
+h2 agent host.window.resize '{"fullscreen":false}'
+```
+
 ## `world`: what is in the level
 
 Objects come from `live-telemetry::memory` and `live_telemetry::things`,
@@ -799,6 +840,7 @@ boundary. Layout and evidence: [havok-runtime.md](../engine/havok-runtime.md).
 | `havok.bodies` | `{near?, radius?, limit?}` | rigid bodies: `entity` (address, the key contacts use), `state` (`active`, `inactive`, `fixed`), `object` and `datum`, `pos`, `velocity`, `angular_velocity`, `inv_mass`, `mass`, `friction`, `restitution`, and `shape` where it reads: `addr`, `vtable`, `kind` (`capsule`: `a`, `b`, `radius`, `height`; `sphere`: `radius`; `transform`: `translation`, `child`; else `other`). `near` (an object id) keeps bodies within `radius` (default 5) of its body, nearest first, with `distance`; `limit` defaults to 64 |
 | `havok.agents` | `{object}` | collision pairs and cached state ([below](#havokagents)) |
 | `havok.contacts` | `{object?}` | contact constraints: `a`, `b` (`entity`, `object`, `datum`, `fixed` for the level and static bodies) and `points`: `pos`, `normal` (from `b` toward `a`, **S**), `distance` (negative is penetration), `impulse` (what the solver applied on its last step), `friction`, `restitution`. With `object`, only its contacts, with it as `a` |
+| `havok.digest` | `{}` | the ordered heap walk (sim-rewrite-havok.md §9.2): `digest` (16 hex digits, FNV-1a over every live byte and address), `bodies`, `constraints`, `pairs`, and `heap_used` (bytes in occupied pool slots). The arena hash does not cover the Havok heap, so this digest is what proves a physics rewrite; the sim report carries the same walk as its `havok.world` component |
 
 ```sh
 h2 agent havok.agents '{"object":"player.0"}'
@@ -1422,7 +1464,8 @@ and rounds the result to the host allocation's pixel grid. The row gives
 the draw's UI transform, vertex-position classification and horizontal
 projection correction when present. `window_xy` is the min and max vertex
 position before the display fit and subpixel adjustment for supported
-small, unindexed draws.
+small, unindexed draws: the reading the device's UI fit uses to tell a
+full-frame pass from a widget (`crates/platform/d3d/src/screen_rect.rs`).
 
 Each `sampled` entry gives the stage, texture header and texture ID,
 source surface when known, guest and host sizes, and U and V address
@@ -1772,6 +1815,51 @@ h2 agent render.markers
 h2 agent render.markers '{"kind":"hill"}'
 ```
 
+### `render.particles.refusals`
+
+`render.particles.refusals` says why the native particle path left draws to
+D3D. Every geometry refusal has a named check, which the present's refusal
+log also carries (`Particle/Geometry/primitive=428`). The answer keeps, per
+check, a count and the shape of the first draw that failed it. It takes no
+params; any field is refused with `invalid params`.
+
+```json
+{"refused": 428,
+ "samples": {"primitive": {
+   "label": "Geometry/primitive", "producer": "Particle", "count": 428,
+   "shape": {"entry": "D3DDevice_DrawVertices", "primitive": "TriangleList",
+             "vertex_count": 6, "indexed": false, "pretransformed": false,
+             "layouts": 1, "streams": 1, "layout_strides": [8],
+             "stream_strides": [8], "stream_bytes": [48],
+             "attribute_count": 1,
+             "attributes": [{"stream": 0, "register": 0, "data_type": "Short4", "offset": 0}],
+             "provided_inputs": 1}}}}
+```
+
+- The checks, in the order they run: `indexed`, `pretransformed`,
+  `layouts` (not one stream layout), `streams` (not one stream),
+  `stride` (stream index, layout against stream, or the producer's
+  stride), `attributes` (not exactly one for a particle),
+  `attribute_slot` (offset or register), `primitive`, `vertex_count`,
+  `data_len`, `data_type`, `inputs` (the shader's provided registers),
+  `corner_vertices`, `corner_compare`, `corner_differs` (the stream
+  differs from the published corner values), `unpublished`,
+  `data_differs` (a dynamic call's bytes), `indices`, and the ribbon
+  bytes' `raw_bytes`, `raw_attributes` and `raw_vertex_count`.
+- `count` totals the run, not one present; the per-window counters are in
+  the log. `producer` is the producer of the first draw (`Particle`,
+  `Dynamic`, `Immediate`).
+- A draw the captured-particle fallback takes is not a refusal and is not
+  counted. Refusals of other kinds (target, state, shader) are only in the
+  log.
+
+The method is the host's (`crates/extensions/game/src/native_particles_admission.rs`,
+`add_refusals_method`; the name is `agent_proto::method::RENDER_PARTICLES_REFUSALS`).
+
+```sh
+h2 agent render.particles.refusals
+```
+
 ### `render.coop_look`
 
 A read-only host method registered with the Live co-op prediction
@@ -1838,6 +1926,7 @@ h2 agent render.parity '{"arm": true}'
 | `render.compare` | read | `{a, b, diff?}`: two PNG paths, and where to write a difference image | `{size: [w, h], differing, max_channel, mean, first: [x, y] \| null, within_bar, diff?}` |
 | `render.spawn_view` | act | `{index, yaw_offset?}` or `{reset: true}` | `{index, count, position: [x,y,z], yaw}` or `{reset: true}` |
 | `render.view` | act | `{eye: [x,y,z], yaw, pitch, fov?}` or `{reset: true}` | `{eye, yaw, pitch, fov}` or `{reset: true}` |
+| `render.view.current` | read | `{seat?}` | `{eye: [x,y,z], yaw, pitch, fov, private?}` |
 | `render.capture` | read | `{tick?, pass?, lighting?, game_id?}` | `{path, tick, present, pass?, lighting?, scene_hash, source?}` |
 | `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, carried_census?, carried_activation?, carried_checkpoint?, visibility_first_mismatch?, light_visibility_first_mismatch?, first_person_visibility_first_mismatch?, view_record_first_mismatch?, dump?, display_frame?, private_frame?}` |
 | `render.parity` | act | `{arm: true}` | `render.compare`'s fields plus `tick` |
@@ -1887,6 +1976,28 @@ h2 agent render.parity '{"arm": true}'
   with a pose, give `INVALID_PARAMS`; no loaded scenario gives
   `UNAVAILABLE`. Types: `ViewParams` and its `check` in
   `crates/extensions/agent-proto/src/render.rs`.
+- **`render.view.current`.** Reads the pose of the view the game draws for
+  local player `seat` (0 to 3, default 0), at the tick boundary, in
+  `render.view`'s conventions: `eye` in world units, `yaw` the heading
+  about +z from +x towards +y wrapped into 0 to 2π, `pitch` up positive
+  (within ±1.55), `fov` the horizontal lens in degrees. The reply also
+  carries the usual `at` stamp. A user who sees a rendering fault in their
+  own game gives the coordinator this pose, and `render.view` with its
+  `eye`, `yaw`, `pitch` and `fov` (not `at` or `private`) draws the same
+  view in a test boot. The pose comes from the seat's view record in the
+  game's view table (`spectator_view::drawn_view`: the render camera's
+  position, forward and vertical lens, the lens converted to horizontal);
+  yaw and pitch derive from the forward vector (`CurrentView::looking`).
+  While a `render.view` or `render.spawn_view` camera is selected and its
+  scenario is loaded, the reply is that camera's pose with `private: true`
+  (its lens is the one given, else the game view's); `private` is absent
+  otherwise. No view record for the seat (no world loaded, a cinematic,
+  a seat without a screen) gives `UNAVAILABLE`; a `seat` outside 0 to 3
+  or unknown params give `INVALID_PARAMS`. A Theater camera is not
+  reported: the reply is the underlying game view. Types:
+  `CurrentViewParams` and `CurrentView` in
+  `crates/extensions/agent-proto/src/render.rs`, the method in
+  `crates/extensions/game/src/agent_spawn_view.rs`. The private camera is a spectator view: a pose replayed from the player's eye also draws that player's own body, which can cover part of the picture.
 - **`render.capture`.** With `lighting: "retail" | "e3" | "relight-on" |
   "relight-off"`, the native
   renderer draws a sealed scene into a private target. The default is
@@ -1989,8 +2100,8 @@ h2 agent render.parity '{"arm": true}'
   For a game view, `visibility_clusters` counts the visible clusters,
   `structure_clusters` the subsequent BSP structure list and
   `visibility_objects` the view's object list; `visibility_source` is
-  `rust` when the Rust visibility equalled the guest's for the view and
-  supplied the clusters and objects, `guest` otherwise
+  `rust` when the Rust visibility supplied the clusters and objects (the
+  default) and `guest` when it declined for the view
   ([native-visibility.md](../graphics/native-visibility.md)). All four
   are absent if extraction cannot read the main gather at layer 3.
   A zero is a successfully read empty list. With `{"dump":true}`, the scene
@@ -2022,15 +2133,27 @@ h2 agent render.parity '{"arm": true}'
   `scene_visibility_differ`, `scene_visibility_clusters_differ`,
   `scene_visibility_objects_differ`, `scene_visibility_rust_taken` (views
   that carry the Rust sets), `scene_visibility_ns` (time in the Rust
-  computation) and `scene_visibility_declined_<reason>` (`unread`,
+  computation), `scene_visibility_lens_retail`, `_guest` and `_display`
+  (game views by the lens their visibility used: retail, the single-copy
+  camera that `VIEW_PROJECTION_TERMS` widened, or the display supplement;
+  a single-copy run whose views count under `_display` has views the hook
+  did not fit), `scene_visibility_display_views`, `_clusters` and
+  `_objects` (what the display supplement added),
+  `scene_visibility_display_incomplete` (display-only clusters left out
+  whole because a part draws in a layer the supplement has no display
+  draw for) and
+  `scene_visibility_declined_<reason>` (`unread`,
   `layout`, `mode`, `frusta`, `overflow`, `camera`, `not_main`: views it
   made no sets for); the light views' `scene_light_visibility_checked`,
   `_equal`, `_differ`, `_ns` and `_declined_<reason>` (the same reasons);
   the complete world/model geometry lists' `scene_geometry_lists_equal`,
   `scene_geometry_lists_differ` and `scene_geometry_lists_taken` (whole lists
   dispatched from a verified Rust result for the current inputs);
-  and the view records' `scene_view_record_checked`, `_equal`, `_differ`
-  and `_declined_<reason>` (`unread`, `layout`, `cinematic`,
+  and the view records' `scene_view_record_checked`, `_equal`, `_differ`,
+  `_guest_lens_applied`, `_guest_lens_retail` and `_guest_lens_other`
+  (single-copy views the hook fitted, by whether the guest's own
+  horizontal projection scale is the widened one, the retail one, or
+  neither) and `_declined_<reason>` (`unread`, `layout`, `cinematic`,
   `no_observer`, `override`). They also include
   (`scenes_sealed`, `scenes_unsealed`, `scene_views`, `scene_no_camera`,
   `scene_refused_writes`, `scene_layers`, `scene_layer_items`,
@@ -2723,6 +2846,15 @@ Every watched process (`h2 play`, `run`, `serve`, `h2 lab host` and
   to the file, so a kill loses at most a torn final line, which readers
   skip. Segments rotate hourly or at 8 MiB, seven per process. An orderly
   exit appends a `{"closed_cleanly":true}` footer.
+- **Reports.** A soft-limit, sustained-growth or hard-limit trigger
+  writes `mem-<pid>-<nanos>-<serial>.json` beside the recorder (written
+  to a `.partial` file, then renamed, before the OS diagnostics run). The
+  hard limit's report is written before the process exits with code 86.
+  Under `h2 play --follow --fresh-data` and `--watch --fresh-data`, whose
+  data dir (`<cache>/data/current`) is emptied at every launch, the
+  child's report directory is `<cache>/data/mem` unless
+  `H2_MEM_REPORT_DIR` is set, so a game the watchdog stopped leaves its
+  evidence for `h2 mem postmortem <file>` (`crates/apps/cli/src/follow.rs`).
 - **Recovery.** A starting recorder checks the directory for streams
   whose owner lock is free. A stream without the footer, or whose last
   row is over the soft limit, moves to `reports/mem-<pid>-<nanos>/` and
@@ -3331,13 +3463,23 @@ its backing state is unreadable or uninitialized.
   Each row has `name`, `type`, `type_index` and `value.bits`; scalar types
   also have `boolean`, `real` or signed `number`. Scenario declarations
   start after the interpreter's external-global cells.
-- `hs.eval` is below.
 - `hs.player_actions` returns three unsigned masks from local player
   control. `latched` records inputs seen since the script's last
   action-test reset; `capture` identifies inputs claimed by script tests;
   `until_release` retains suppression through button-up after a reset. Bit
   0 of each mask denotes the mapped action/reload button. The state is
   shared by local controls, so the method takes no player index.
+
+### `hs.parity`
+
+`h2 agent hs.parity` takes no parameters. It returns the switch name
+(`impl.sim.native.hs`) and a `checks` object keyed by VM operation.
+Each entry counts agreements (`matched`), disagreements (`mismatched`)
+and observations the Rust arm could not compare (`declined`).
+`first` holds the first mismatch description or `null`. The counters
+cover the lifetime of the process and can be read before a map loads.
+Compare two readings to see which checks ran during an encounter.
+[HaloScript VM](../engine/hs_vm.md)
 
 ### `hs.eval`
 
@@ -5521,6 +5663,7 @@ The game method reads process counters at a tick boundary. Code:
 | Method | Access | Params and result |
 |---|---|---|
 | `anim.graph_walk` | read | No parameters. Returns `switch`, `addr` (`001dd1c0`), `arm` and `body`. |
+| `anim.manager` | read | No parameters. Returns `switch` and `entries`, keyed by the eight-digit guest address of each observed manager or graph function. |
 
 `arm` has `checked`, `matched` and `mismatched` calls, `dropped` plans
 (calls that entered and never returned), `declined` by reason (`float`,
@@ -5541,29 +5684,57 @@ h2 agent anim.graph_walk
 Parity is `mismatched` 0 over the run ladder's matches, with `declined`
 small against `checked`.
 
+`anim.manager` counts segments starting at a function entry or resuming
+after a call. For each observed function, `matched` and `differed` count
+completed comparisons. `declined` counts segments the Rust arm could
+not predict. `interrupted` counts predictions for which the guest exited
+before a comparison boundary. The first difference for each function is
+retained in `first`, with the starting selector (`pc`), differing field
+(`what`), and both values (`plan` and `guest`). An entry with `first` set
+to `null` has no recorded difference. Compare counts before and after
+the scenario to establish coverage. See [animation-manager.md](../engine/animation-manager.md).
+
+```sh
+h2 agent anim.manager
+```
+
 ## `collision`: the native collision world
 
-The collision switch enables counters for native entries A, B and F,
-before-call observers for the lifted vector and instance traces C–E, the
-cluster flood G and the object visit H, and the parity arm of the lifted
-general MOPP ray I. The game
-method reads process counters at a tick boundary. The entry addresses and
-bail reasons are in [collision-queries.md](../engine/collision-queries.md).
+The collision switch counts admitted native answers, declined queries,
+floating-point environments and comparisons with lifted returns. The
+game exposes these counters at a tick boundary. See the
+[entry addresses and admission rules](../engine/collision-queries.md).
 
 | Method | Access | Params and result |
 |---|---|---|
-| `collision.stats` | read | No parameters. Returns `switch`, `entries`, `decodes`, `decode_failures`, `flushes`, `bsps`, `mopps`, `bytes`, `array_bytes`, `budget_bytes`, `ring_fallbacks`, `cluster_budget_reads`, `precision` (aggregate single, reserved, double and extended x87 calls at C and D), `vector` (C’s result parity), `context` (D’s outer walk parity), and `ray` (I’s parity arm, below). |
+| `collision.stats` | read | No parameters. Returns `switch`, `entries`, `decodes`, `decode_failures`, `flushes`, `bsps`, `mopps`, `bytes`, `array_bytes`, `budget_bytes`, `ring_fallbacks`, `cluster_budget_reads`, `precision` (aggregate single, reserved, double and extended x87 calls at C and D), `vector` (C’s result parity), `context` (D’s outer walk parity), `instance`, `flood`, `visit`, `query` (E, G, H and J’s return comparisons), and `ray` (I’s walk and callbacks). |
+| `collision.trace` | read | `{start, delta, flags}` where `start` and `delta` are three finite binary32 world coordinates and `flags` is an unsigned 32-bit whole-query mask. |
+| `collision.sources` | read | No parameters. Checks the source fingerprints of each resident native BSP and MOPP against guest RAM. |
+| `collision.sources.clear` | claim | No parameters. Returns the same check and drops all resident entries from the collision world at that tick boundary. |
+
+`collision.trace` evaluates entry J at a tick boundary on the active
+structure. The segment ends at `start + delta`. Both ignore handles are
+empty. The reply gives the tick stamp, numeric `hit_type` (zero for a
+miss), `fraction`, world `position`, optional `material` and `plane`, and
+the first and last `locations` as `{leaf, cluster, bsp}`. The arrays
+`cluster_marks`, `instance_marks` and `object_marks` give the slots J
+would mark in traversal order. The query leaves guest memory untouched.
+A path outside the native kernel returns `UNAVAILABLE` with the bail
+name in `error.data.reason`.
+
+```sh
+h2 agent collision.trace '{"start":[0,0,1],"delta":[0,0,-2],"flags":1}'
+```
 
 Each row in `entries` gives the `name` and eight-digit guest `addr`, the
 count of `native` answers, and `bails` by reason. Two frequency maps count
 the control words at entry, including calls that fall back at the first
 environment check. Keys are lowercase hexadecimal strings with leading
 zeros: eight digits for `mxcsr` and four for `x87_control`. Each value is
-a call count. Each map counts its own register independently. For
-`vector_test`, `vector_context`, `instance_trace`, `cluster_flood`,
-`object_visit` and `mopp_ray`, only the frequency maps accumulate; `cluster_flood` also
-counts the flood's recursive entries. An image without an observed entry
-leaves its row empty. The `object_sphere` row counts native answers at the
+a call count. Each map counts its own register independently. `cluster_flood` includes recursive entries in
+its environment census. The `mopp_ray` and `query` rows count the
+environment while their comparison records report the lifted outcomes.
+An image without an observed entry leaves its row empty. The `object_sphere` row counts native answers at the
 whole query's object-reference pretest. `array_bytes` counts the decoded
 BSP allocations, the packed cluster table, the portal graph and the decoded MOPP trees (`mopps`
 of them; `decodes` and `decode_failures` include MOPP programs, a failure
@@ -5580,6 +5751,12 @@ first differing byte offset in the result record, with expected and guest values
 `context` uses the same counters for entry D. It compares AL, R and the
 40-byte context, counting each outer walk once across its recursive calls.
 
+`instance`, `flood`, `visit` and `query` use the same comparison counters.
+An admitted native exit counts under `entries[].native`. A comparison
+counts only after the guest returns. A declined prediction is
+`unverified`. For J the comparison covers AL, flags, the result including
+padding, and the active mark tables and generations.
+
 `ray` counts the MOPP ray queries the native walk followed while the
 guest answered them: `matched` (every interpreter call, and every key
 where the instanced collection shows it, equal), `mismatched` with
@@ -5587,7 +5764,8 @@ where the instanced collection shows it, equal), `mismatched` with
 and both sides), `unverified` by bail reason (the walk could not follow
 the query exactly, or its environment is one it does not model), and
 `fraction_moved` (no key was visible and a terminal lowered the fraction).
-Parity is `mismatched` zero over a match.
+Read `matched`, `mismatched` and `unverified` together to distinguish
+a covered query from one the walker could not follow.
 
 ```sh
 h2 agent collision.stats
@@ -5597,6 +5775,48 @@ The bail audit (under 0.1% of calls bailing) reads `bails` against
 `native`. For `mopp_box`, `grow` counts answers that did not fit the
 key array's room. A reason that appears on one architecture only is a determinism
 bug.
+
+### Checking a cold collision world
+
+At a tick boundary, `collision.sources` returns `sources` sorted by
+`kind` and guest `address`, with `cached` and `live` 64-bit hexadecimal
+fingerprints. A BSP fingerprint covers the live header, all eight blocks,
+the projection table and the zero used by the matcher. A MOPP fingerprint
+covers origin, scale, program length and bytecode. A failed live read
+returns `live: null` and the `bail` reason. The reply counts `mismatched`
+and `unreadable` separately. An empty list means no BSP or MOPP is
+resident. A debugger memory trap makes the method unavailable.
+
+For the cache-cold parity arm, `collision.sources.clear` gives the
+pre-clear readings and drops the BSPs, MOPPs, leaf table and portal graph.
+The next queries repopulate the world from current guest sources. The
+read-only form leaves the warm world's entries in place.
+
+Start each arm from the same match state and input with
+`impl.sim.native.collision` and `impl.sim.arena-hash` enabled.
+Use one claimed connection per arm. This example captures 1,800 cold ticks.
+Replace `collision.sources.clear` with `collision.sources` for the warm
+run and save its JSON lines separately.
+
+```sh
+{
+  echo claim
+  echo pause
+  echo collision.sources.clear
+  for tick in $(seq 1 1800); do
+    echo 'step 1'
+    echo collision.sources.clear
+  done
+  echo sim.hashes
+  echo release
+} | h2 agent -
+```
+
+Compare tick stamps and the sampled gameplay and arena rows from
+`sim.hashes`. At each tick, match the cold sources to warm sources of the
+same kind and address, and compare fingerprints. A warm world may retain
+entries from earlier ticks. Inspect unreadable sources, missing counterparts
+and cached/live differences before treating a run as clean.
 
 ## Tick traces and the flight recorder
 
@@ -5681,9 +5901,10 @@ game reached, then runs on the live Guest as usual. Only installed ports
 are checked: a port's `impl.` switch puts it in the plan, and
 `shadow.enable` is the only switch for the checks.
 
-Ports are named by switch (`sim.native_unit_pose`,
-`sim.native_havok_solver`), by group (`sim.native`, `sim.physics`) or
-`all`.
+Select ports by switch name (`sim.native_unit_pose`), object point name
+(`OBJECT_FUNCTION_VALUE`), group (`sim.native`, `sim.physics`,
+`sim.native.objects`) or `all`. The object group samples individual entries
+and resumes, including those reached inside a fused walk.
 
 | Method | Access | What |
 |---|---|---|

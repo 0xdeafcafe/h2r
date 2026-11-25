@@ -256,7 +256,10 @@ fn signature(sig: Sig) -> Vec<u8> {
     bytes
 }
 
-fn hook_digest(plan: &hooks::Plan, installed: &hooks::Installed) -> String {
+/// The film's simulation hooks: what a replay's installed plan must equal
+/// (`Session::check_simulation_hooks`). Features marked presentation-only,
+/// and features install turned off, are left out.
+pub fn hook_digest(plan: &hooks::Plan, installed: &hooks::Installed) -> String {
     let placed = installed.placed.iter().copied().collect::<BTreeSet<_>>();
     let presentation = plan.features.iter().filter(|f| f.presentation_only)
         .map(|f| f.id).collect::<BTreeSet<_>>();

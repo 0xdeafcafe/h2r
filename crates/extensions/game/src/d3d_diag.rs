@@ -874,6 +874,29 @@ impl<B: Backend> Backend for DiagBackend<B> {
             Tracked { id, inner, source: TextureSource::Surface("snapshot of", surface) }
         }))
     }
+    fn snapshot_surface_into(
+        &mut self,
+        surface: Self::Surface,
+        opaque: bool,
+        into: &mut Self::Texture,
+    ) -> Result<bool, String> {
+        let r = self.inner.snapshot_surface_into(surface, opaque, &mut into.inner)?;
+        self.line(format_args!(
+            "snapshot_surface_into {surface:?} opaque={opaque} tex {} -> {}",
+            into.id,
+            if r { "ok" } else { "unsupported" }
+        ));
+        if r {
+            into.source = TextureSource::Surface("snapshot of", surface);
+            if let Some(c) = self.capturing() {
+                c.append(
+                    "frame.txt",
+                    &format!("snapshot_surface_into {surface:?} opaque={opaque} -> tex {}", into.id),
+                );
+            }
+        }
+        Ok(r)
+    }
     fn judge(&self) -> Option<Box<dyn d3d::backend::DrawJudge>> {
         self.inner.judge()
     }

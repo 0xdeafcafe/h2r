@@ -65,6 +65,10 @@ fn wire(s: &world::Stats) -> Stats {
         },
         vector: parity(&s.vector),
         context: parity(&s.context),
+        instance: parity(&s.instance),
+        flood: parity(&s.flood),
+        visit: parity(&s.visit),
+        query: parity(&s.query),
         ray: RayParity {
             matched: s.ray.matched,
             mismatched: s.ray.mismatched,
@@ -100,6 +104,10 @@ mod tests {
         s.entries[Entry::Location as usize].bails[Bail::Budget as usize] = 6;
         s.precision = [1, 0, 5, 0];
         s.context.matched = 5;
+        s.instance.mismatched = 6;
+        s.flood.matched = 3;
+        s.visit.unverified[Bail::Alias as usize] = 2;
+        s.query.matched = 7;
         s.vector.matched = 9;
         s.vector.mismatched = 1;
         s.vector.first_mismatch = Some("AL: expected 1, guest 0".into());
@@ -120,10 +128,13 @@ mod tests {
                 "cluster_flood",
                 "object_visit",
                 "mopp_box",
-                "mopp_ray"
+                "mopp_ray",
+                "object_sphere",
+                "query",
             ]
         );
         assert_eq!(w.entries[8].addr, "00301800");
+        assert_eq!(w.entries[9].addr, "0011e5e0");
         assert_eq!(w.entries[0].addr, "0014a280");
         assert_eq!(w.entries[0].native, 7);
         assert_eq!(w.entries[1].bails["alias"], 2);
@@ -139,6 +150,10 @@ mod tests {
         assert_eq!((w.ray.matched, w.ray.unverified["float"]), (11, 2));
         assert_eq!((w.vector.matched, w.vector.mismatched, w.vector.unverified["trap"]), (9, 1, 3));
         assert_eq!(w.context.matched, 5);
+        assert_eq!(w.instance.mismatched, 6);
+        assert_eq!(w.flood.matched, 3);
+        assert_eq!(w.visit.unverified["alias"], 2);
+        assert_eq!(w.query.matched, 7);
         assert_eq!(w.vector.first_mismatch, s.vector.first_mismatch);
         assert_eq!(w.ray.unverified.len(), Bail::ALL.len());
         assert_eq!(

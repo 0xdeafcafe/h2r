@@ -464,6 +464,7 @@ impl<'a> ScaledScenePass<'a> {
                         of,
                         id,
                         how: ReplaySample::InPlace,
+                        ..
                     } = op
                         && let Some(v) = self.backend.view_surface(&self.targets[of])
                     {

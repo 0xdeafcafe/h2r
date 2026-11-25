@@ -495,6 +495,8 @@ fn run_configured(
     #[cfg(feature = "gpu")]
     let mut display_size = host.gfx_view.as_ref().map(|view| Arc::clone(&view.display_size));
     #[cfg(feature = "gpu")]
+    let viewer_lod = host.gfx_view.as_ref().and_then(|view| view.viewer_lod.clone());
+    #[cfg(feature = "gpu")]
     let mut active_size = output_size.as_ref().map(|output| {
         let initial = output();
         Arc::new(move || initial) as run_opts::NativeSize
@@ -944,6 +946,15 @@ fn run_configured(
     let single = opts.d3d && host.gfx_view.is_some()
         && d3d_glue::single_copy(host.settings.as_deref(), protected_readbacks)?;
     #[cfg(feature = "gpu")]
+    // A legacy film's recorded geometry multiplier. The guest walk is retail
+    // otherwise, whatever the local display choice (lod_distance), so no
+    // run forces retail for the network, film or lockstep of it.
+    let reference_lod = legacy_lod;
+    #[cfg(feature = "gpu")]
+    // The display can draw different geometry than the copy the guest
+    // readbacks read: every non-single-copy drawing view.
+    let display_split = !single && host.gfx_view.is_some();
+    #[cfg(feature = "gpu")]
     if single && d3d_glue::locked_retail_target(host.settings.as_deref())
         && let Some(view) = &mut host.gfx_view && view.viewer_output.is_none()
         && let Some(display) = view.backend.take()
@@ -982,6 +993,9 @@ fn run_configured(
                 let (width, height) = output();
                 let scale = d3d::scaled::RenderScale::for_output(width, height).map_err(anyhow::Error::msg)?;
                 let mut b = d3d::ScaledBackend::with_resolution(b, view, scale, single).map_err(anyhow::Error::msg)?;
+                if display_split && hooks::switches::native_render_on(features.switches()) {
+                    b.keep_display_copy();
+                }
                 let (dw, dh) = native_target().drawable;
                 eprintln!("d3d: rendering at {width}x{height}; drawable {dw}x{dh}; single copy {single}");
                 // The Video screen's Resolution row changes the scale at the
@@ -1051,7 +1065,15 @@ fn run_configured(
                 Arc::new(move || position)
             }
         };
-        render_aspect::install(&mut features, projected_size, single, hud, device.ui_layout.clone())?;
+        render_aspect::install(&mut features, projected_size, !lockstep_on, hud, device.ui_layout.clone())?;
+    }
+    // Every world frame of a one-machine game renders on its own random
+    // stream, so what the view draws (a wider guest camera, Theater's free
+    // camera) never chooses the simulation's random numbers
+    // (docs/graphics/high-resolution.md, "Determinism"). The same on the
+    // recording and its replay, whatever window either had.
+    if opts.d3d && !lockstep_on && !host_light {
+        render_rng::install(&mut features)?;
     }
     // Vblanks on the 60 Hz logical clock (docs/graphics/d3d.md "Vertical blank"),
     // delivered as DPCs; the frame wait above is the clocked one.
@@ -1260,7 +1282,11 @@ fn run_configured(
             #[cfg(feature = "gpu")]
             view: d3d_calls.as_ref().and_then(|d| d.view.as_ref()),
             #[cfg(feature = "gpu")]
-            fixed_lod: protected_readbacks.then(|| legacy_lod.unwrap_or(1.0)),
+            reference_lod,
+            #[cfg(feature = "gpu")]
+            d3d_display: single,
+            #[cfg(feature = "gpu")]
+            viewer_lod,
             #[cfg(feature = "gpu")]
             world_line_present,
             rt: &loaded.runtime,
@@ -1305,13 +1331,19 @@ fn run_configured(
         )));
     }
     if let Some(a) = &mut agent {
-        a.configure_takeover(
-            &mut features,
-            !headless || observer_window,
-            !headless && opts.d3d && xa.is_some() && !replaying && !lockstep_on && !host_light
-                && sim_mode.is_none(),
-        )
-        .context("installing lab takeover consent")?;
+        // A film's replay plans the dialog as its recording did, window or
+        // none (theater::compatibility's hook digest), and takes no request.
+        let takeover = registration::lab_takeover(registration::TakeoverInputs {
+            window: !headless,
+            d3d: opts.d3d,
+            xapi: xa.is_some(),
+            lockstep: lockstep_on,
+            host_light,
+            sim: sim_mode.is_some(),
+            replaying,
+        });
+        a.configure_takeover(&mut features, !headless || observer_window, takeover.plan, takeover.accept)
+            .context("installing lab takeover consent")?;
     }
     if let (Some(theater), Some(a)) = (&theater, &agent) {
         theater.connect(&a.agent);
@@ -1368,6 +1400,10 @@ fn run_configured(
         // render.markers: the Forge game type markers the last present drew
         // (forge_glue/markers_world.rs).
         forge_glue::markers_world::add_method(&a.agent);
+        // render.particles.refusals: the native particle path's geometry
+        // refusals and a sample draw for each (native_particles_admission.rs).
+        #[cfg(feature = "gpu")]
+        game::native_particles_admission::add_refusals_method(&a.agent);
         // sim.give and sim.spawn find tags as edit.* does (agent_glue.rs).
         if let Some(sim) = &a.sim {
             sim.set_tags(Box::new(hot_glue::map_tags(&loaded.runtime, maps())));
@@ -1492,7 +1528,7 @@ fn run_configured(
     // Sim match metrics and match.* on the agent.
     if let Some(s) = &sim_mode {
         let playback = film.as_ref().filter(|f| f.has_engine_track()).map(|_| replaying);
-        s.install_with_film(&mut features, playback)?;
+        s.install_with_audio(&mut features, playback, ds.as_ref().map(|a| Arc::clone(&a.hle)))?;
         if let Some(a) = &agent {
             s.add_methods(&a.agent);
         }

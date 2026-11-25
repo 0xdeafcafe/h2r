@@ -578,7 +578,7 @@ pub(crate) fn run_with_theater(
         // consumes the unused `GuestHost::mixer`).
         audio: false,
         title: "Halo 2".into(),
-        aspect: app::DisplayAspect::Source,
+        aspect: app::DisplayAspect::Drawable,
         window_matches_monitor_aspect: true,
         bindings: play_bindings(),
         // The run prints its report before the guest thread returns.

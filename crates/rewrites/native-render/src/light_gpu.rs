@@ -654,6 +654,8 @@ pub struct LightDraw<'a> {
     pub shadow_map: Option<&'a crate::shadow_gpu::SampledMap>,
     /// Ranges of the world's indices, or of `model`'s.
     pub ranges: &'a [std::ops::Range<u32>],
+    /// Placement rows applied to unplaced structure vertices.
+    pub placement: Option<&'a crate::world::ModelRows>,
     /// A model part's buffers and rows; `None` the world's buffers.
     pub model: Option<ModelGeometry<'a>>,
 }
@@ -665,7 +667,10 @@ impl LightDraw<'_> {
         let (vertex, pixel) = colour_uniforms(self.program, a, b);
         let mut pixel = frame_pixel(&pixel, view);
         apply_gel_scale(&mut pixel, &self.program.stages, self.gel_scale);
-        let vertex = frame_vertex(&vertex, view);
+        let vertex = match self.placement {
+            Some(rows) => crate::program::rigid_vertex(&vertex, view, rows),
+            None => frame_vertex(&vertex, view),
+        };
         let mut vertex = match self.projection {
             Some(projection) => crate::shadow_look::shadow_vertex(&vertex, projection),
             None => light_vertex(&vertex, self.frame),
@@ -1164,6 +1169,7 @@ mod tests {
             gel_scale: None,
             shadow_map: None,
             ranges: std::slice::from_ref(&range),
+            placement: None,
             model: None,
         };
         let pool = gfx::ring::UploadPool::default();
@@ -1350,6 +1356,7 @@ mod tests {
                 gel_scale: None,
                 shadow_map: None,
                 ranges,
+                placement: None,
                 model: None,
             }
         }
@@ -1576,6 +1583,7 @@ mod tests {
             w_clip: None,
         };
         let projection = [1.0f32.to_bits(); crate::shadow_look::PROJECTION_DWORDS];
+        let rows = [[0., 1., 0., -3.], [-1., 0., 0., 4.], [0., 0., 1., 5.]];
         let range = 0..3;
         let draw = LightDraw {
             program: &program,
@@ -1589,11 +1597,13 @@ mod tests {
             gel_scale: None,
             shadow_map: None,
             ranges: std::slice::from_ref(&range),
+            placement: Some(&rows),
             model: None,
         };
         let (vertex, _) = draw.uniforms(&view);
         assert_eq!(vertex.constants[40], [1.0; 4]);
         assert_eq!(vertex.constants[48], [1.0; 4]);
+        assert_eq!(vertex.constants[MODEL_ROWS..MODEL_ROWS + 3], rows);
         let buffer = |usage, bytes: &[u8]| {
             use wgpu::util::DeviceExt;
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1792,6 +1802,7 @@ mod tests {
             gel_scale: None,
             shadow_map: Some(&map),
             ranges: std::slice::from_ref(&range),
+            placement: None,
             model: None,
         };
         let buffer = |usage, bytes: &[u8]| {

@@ -166,9 +166,15 @@ offsets before storing or comparing W. The stage-0 sampler uses hardware
 border addressing for supported preset colours and the shared NV2A shader
 border path for other colours or devices. As in D3D, shader borders
 approximate linear filtering at the boundary.
-Two-sided lighting, polygon stipple, additional supplied vertex inputs
-and non-2D or depth-format stage-0 textures stay on D3D. Only unsupplied `v10`
-and `v11` defaults are accepted beyond the position and packed fields. Declaration refusals include the resolved layouts and bound strides.
+Two-sided lighting selects the vertex program's back colours on back
+faces using the resolved front winding. Polygon stipple takes the pushed
+NV2A control word when available and otherwise uses the D3D state. Each
+copy applies the resolved 32-row mask in guest pixels with the shared
+NV2A fragment shader.
+Additional supplied vertex inputs and non-2D or depth-format stage-0
+textures stay on D3D. Only unsupplied `v10` and `v11` defaults are accepted
+beyond the position and packed fields. Declaration refusals include the
+resolved layouts and bound strides.
 
 The handoff supplies the resident stage views directly; there is no custom
 bitmap decoder or map cache. Recording returns one range only after the draw is

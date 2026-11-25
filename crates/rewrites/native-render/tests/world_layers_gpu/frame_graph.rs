@@ -356,6 +356,7 @@ fn carried_scene_colour_copy_samples_what_was_drawn_before_it() {
             of: aux,
             id: 0,
             how: ReplaySample::InPlace,
+            into: None,
         },
     );
     // The later shader reads the captured red on the copied black field.

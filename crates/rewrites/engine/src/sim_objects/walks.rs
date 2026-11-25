@@ -17,6 +17,7 @@ use crate::sim_physics::{arithmetic, byte, logic, pop, push};
 use guest_layout::object::header;
 use runtime::{CpuAbi, Guest};
 use ::sim_objects::events::{self, SimEvent};
+use ::sim_objects::walk;
 
 const LIST_OWNER: u32 = 0x0051_07f0;
 const PHASE_STATE: u32 = 0x004d_e2f4;
@@ -84,27 +85,22 @@ fn next_live(c: &mut CpuAbi, g: &Guest) -> Result<Scan> {
         return Ok(Scan::AtLimit);
     }
     c.edx = g.u32(c.esi.wrapping_add(layout::BITMAP))?;
-    loop {
-        c.ecx = c.eax >> 5;
-        let word = g.u32(c.edx.wrapping_add(4 * c.ecx))?;
-        let live = word & (u32::MAX << (c.eax & 31));
-        let base = c.eax & !31;
-        let candidate = base + live.trailing_zeros();
-        if live != 0 && candidate < c.edi {
-            c.eax = candidate;
-            c.ebx = 1 << (candidate & 31);
-            // Both originals compare the selected slot to the NONE sentinel.
-            arithmetic(c, candidate, u32::MAX, true);
-            return Ok(Scan::Hit);
-        }
-        if base + 32 >= c.edi {
-            c.ebx = 1 << ((c.edi - 1) & 31);
-            c.eax = c.edi;
-            arithmetic(c, c.eax, c.edi, true);
-            return Ok(Scan::Exhausted);
-        }
-        c.eax = base + 32;
+    let slot = walk::next_live(c.eax..c.edi, |at| {
+        c.eax = at;
+        c.ecx = at >> 5;
+        g.u32(c.edx.wrapping_add(4 * c.ecx))
+    })?;
+    if let Some(slot) = slot {
+        c.eax = slot;
+        c.ebx = 1 << (slot & 31);
+        // Both originals compare the selected slot to the NONE sentinel.
+        arithmetic(c, slot, u32::MAX, true);
+        return Ok(Scan::Hit);
     }
+    c.ebx = 1 << ((c.edi - 1) & 31);
+    c.eax = c.edi;
+    arithmetic(c, c.eax, c.edi, true);
+    Ok(Scan::Exhausted)
 }
 
 fn restore(c: &mut CpuAbi, g: &Guest) -> Result<()> {
@@ -349,29 +345,20 @@ fn scan(c: &mut CpuAbi, g: &Guest) -> Result<bool> {
     c.edx = g.u32(c.ebp.wrapping_add(layout::BITMAP))?;
     // 0 <= eax < esi here.
     let high = c.esi;
-    let mut at = c.eax;
-    loop {
-        let word = g.u32(c.edx.wrapping_add(4 * (at >> 5)))?;
-        let last = (at | 31).min(high - 1);
-        let mask = (u32::MAX << (at & 31)) & (u32::MAX >> (31 - (last & 31)));
-        let live = word & mask;
-        if live != 0 {
-            let slot = (at & !31) + live.trailing_zeros();
-            c.eax = slot;
-            c.ecx = slot >> 5;
-            c.edi = 1 << (slot & 31);
-            logic(c, word & c.edi, 1 << 31);
-            return Ok(true);
-        }
-        if last == high - 1 {
-            c.eax = high;
-            c.ecx = last >> 5;
-            c.edi = 1 << (last & 31);
-            arithmetic(c, high, high, true);
-            return Ok(false);
-        }
-        at = last + 1;
+    let slot = walk::next_live(c.eax..high, |at| g.u32(c.edx.wrapping_add(4 * (at >> 5))))?;
+    if let Some(slot) = slot {
+        c.eax = slot;
+        c.ecx = slot >> 5;
+        c.edi = 1 << (slot & 31);
+        logic(c, c.edi, 1 << 31);
+        return Ok(true);
     }
+    let last = high - 1;
+    c.eax = high;
+    c.ecx = last >> 5;
+    c.edi = 1 << (last & 31);
+    arithmetic(c, high, high, true);
+    Ok(false)
 }
 
 /// Finalize pass A from `b7166`.

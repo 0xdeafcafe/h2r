@@ -449,7 +449,9 @@ impl hooks::Feature for RenderHooks {
             })
             .optional();
 
-        let seeds = Arc::new(Mutex::new(Seeds::default()));
+        // The render's private random stream, shared with `render_rng`'s
+        // feature: whichever enters first enters the frame.
+        let seeds = crate::render_rng::shared();
         let frame_seeds = seeds.clone();
         let camera = self.0.clone();
         b.raw()
@@ -491,51 +493,12 @@ impl hooks::Feature for RenderHooks {
     }
 }
 
-#[derive(Default)]
-struct Seeds {
-    restore: Option<(u32, [u8; 8])>,
-    private: Option<[u8; 8]>,
-}
-
-impl Seeds {
-    fn enter(&mut self, guest: &mut dyn GuestMemory) {
-        if self.restore.is_some() {
-            return;
-        }
-        let Ok(addr) = guest.u32(crate::sim_glue::RANDOM_SEED_PTR) else {
-            return;
-        };
-        if addr == 0 {
-            return;
-        }
-        let mut original = [0; 8];
-        if guest.read(addr, &mut original).is_ok()
-            && guest
-                .write(addr, self.private.as_ref().unwrap_or(&original))
-                .is_ok()
-        {
-            self.restore = Some((addr, original));
-        }
-    }
-
-    fn leave(&mut self, guest: &mut dyn GuestMemory) {
-        let Some((addr, original)) = self.restore.take() else {
-            return;
-        };
-        let mut advanced = [0; 8];
-        if guest.read(addr, &mut advanced).is_ok() {
-            self.private = Some(advanced);
-        }
-        let _ = guest.write(addr, &original);
-    }
-}
-
 #[cfg(test)]
 pub(super) fn with_render_seeds(
     guest: &mut runtime::Guest,
     draw: impl FnOnce(&mut runtime::Guest),
 ) {
-    let mut seeds = Seeds::default();
+    let mut seeds = crate::render_rng::Seeds::default();
     seeds.enter(guest);
     draw(guest);
     seeds.leave(guest);

@@ -231,6 +231,32 @@ fn checks_count_and_the_live_call_still_runs() {
 }
 
 #[test]
+fn compare_only_samples_copies_and_leaves_the_live_call_to_the_guest() {
+    let s = registry();
+    let g = live();
+    let c = entry();
+    let mut invocations = 0;
+    let mut candidate = |cpu: &mut CpuAbi, view: &mut Guest| {
+        invocations += 1;
+        port(invocations, 1, 0)(cpu, view)
+    };
+
+    s.compare_only("test.inc", &c, &g, CODE, tick, &mut candidate);
+    assert_eq!(s.status().calls, 0);
+    s.enable(&["test.inc".into()], Some(2), None).unwrap();
+    for _ in 0..3 {
+        s.compare_only("test.inc", &c, &g, CODE, tick, &mut candidate);
+        assert_eq!(word(&g, OUT), 0);
+        assert_eq!(c, entry());
+    }
+    assert_eq!(invocations, 2);
+    let st = s.status();
+    assert_eq!((st.calls, st.checked, st.matched, st.mismatched), (3, 2, 1, 1));
+    let m = &st.mismatches[0];
+    assert_eq!((m.call, m.tick, m.diff.kind), (3, Some(7), "memory"));
+}
+
+#[test]
 fn every_samples_calls() {
     let s = registry();
     s.enable(&["all".into()], Some(3), None).unwrap();
@@ -285,4 +311,21 @@ fn the_original_starts_where_the_call_entered_whatever_eip_holds() {
         &mut p,
     );
     assert_eq!(outcome, Outcome::Matched { steps: 4 });
+}
+
+#[test]
+fn guest_authority_covers_mismatches_and_unsampled_calls() {
+    let s = registry();
+    let g = live();
+    let cpu = entry();
+    let check = || s.check_before_original("test.inc", &cpu, &g, CODE, tick, &mut port(2, 1, 0));
+    assert!(!check());
+    s.enable(&["test.inc".into()], Some(2), None).unwrap();
+    assert!(check());
+    assert!(check());
+    assert_eq!(word(&g, OUT), 0);
+    let st = s.status();
+    assert_eq!((st.calls, st.checked, st.mismatched), (2, 1, 1));
+    s.disable(&[]).unwrap();
+    assert!(!check());
 }

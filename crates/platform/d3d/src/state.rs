@@ -124,7 +124,7 @@ pub struct StageExtras {
     pub texture_transform_flags: u32,
     /// Bump matrix `[m00, m01, m10, m11]`.
     pub bump_env_mat: [f32; 4],
-    /// The device resolves this sampler to a snapshot of the scene colour or depth.
+    /// This sampler reads scene colour, depth or a frame-sized render level.
     pub samples_frame: bool,
     /// Luminance scale.
     pub bump_env_lscale: f32,

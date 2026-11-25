@@ -1,6 +1,6 @@
 # Native renderer stage 5: post and HUD
 
-Status: Partly built. The colour-pass glow, the scenario screen effects, layer 17's items, lens-flare colour fans and the UI and HUD draw natively. The visibility test retains its counted draw. Pixel parity with D3D needs a live check.
+Status: Partly built. The colour-pass glow, the scenario screen effects, layer 17's items, lens-flare colour and visibility fans, and the UI and HUD draw natively. Pixel parity with D3D needs a live check.
 Code: `crates/rewrites/render-bridge/src/native_post.rs`, `native_hud.rs`, `native_hud/hud_overlay.rs`, `crates/extensions/game/src/hud_overlay.rs`, `crates/extensions/game/src/native_post_glue.rs`, `native_post_load.rs`, `native_hud_glue.rs`, `crates/rewrites/scene-extract/src/layout/post.rs`, `glow.rs`, `screen_look.rs`, `screen_gpu.rs`, `hud.rs`, `ui_gpu.rs`, `crates/rewrites/engine/src/colour_pass.rs`, `glow.rs`, `screen_effects.rs`, `screen_grid.rs`, `function_eval.rs`. Tests: `crates/rewrites/render-bridge/tests/native_post.rs`, `native_hud.rs`, `crates/rewrites/engine/tests/colour_pass_differential.rs`, `glow_differential.rs`, `screen_effects_differential.rs`, `screen_grid_differential.rs`, `crates/platform/d3d/tests/swallow.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
@@ -664,13 +664,31 @@ uses D3D for that call.
 
 | Effect | Native admission |
 |---|---|
-| Colour pass glow | The plan reads the view size and each blur target’s dimensions independently. The window, combiners and blur steps must plan successfully. Each matched quad uses the live blend, blend constant and channel write mask. A colour-only draw accepts inherited depth and stencil settings when they have no effect. |
+| Colour pass glow | The plan reads the view size and each blur target’s dimensions independently. The window, combiners and blur steps must plan successfully. Each matched quad uses the live blend, blend constant, channel write mask, winding, cull, front fill and scissor. A colour-only draw accepts inherited depth and stencil settings when they have no effect. |
 | Screen strips into target 0 or target 1 | All drawn layer-15 passes must have loaded programs and supported bindings. A target 1 read requires an earlier write in the same call. Framebuffer stages may read stored alpha and X8 alpha in the same pass. A resolved side-target input needs no framebuffer copy. |
 | Kept convolution | It emits no draws. Its result names the pass's target. |
-| Blur and wide convolutions | The quads or grids must plan successfully and match the live attachments and colour state. |
+| Blur and wide convolutions | The quads or grids must plan successfully and match the live attachments. Each quad or grid uses the live raster state. |
 | Template pass skipped by `0x00016610` | The host leaves that pass and its convolutions out of the plan. An unreadable gate refuses the call. |
 | Layer 17 | `frame-scene.layers` ([framescene.md](framescene.md), slice 4): its structure and object items from the scene's plan, as layers 1, 5, 7, 8 and 20 (`layer_pass::BLOOM_LAYER`). |
 | `0x0002df00`, `0x0002dd30` | Carried: the D3D draws, or an owned frame's replay of them with its own counts. The fade, UI and HUD are the native UI, above. |
+
+Post admission uses the packet's decoded raster state. Inherited fog,
+flat shading and two-sided lighting can be omitted when both the planned
+and live combiners are independent of their inputs. A combiner with an
+implicit final stage can depend on inherited fog and specular state.
+Rejected state words in unused texture stages and fixed-function texture
+operations do not affect a programmable post draw. A live depth or
+stencil operation requires the original depth attachment.
+
+The glow and screen effects use the same pipeline translation for
+colour writes, blending, facing, culling, front fill and depth clamp.
+A quad strip preserves the guest fan's winding and diagonal. Each
+scissor is scaled from the destination's guest size to its physical
+copy. A convolution grid uses the raster shared by its strips. The
+combiner translator generates variants for the live alpha comparison
+and polygon stipple. The reference byte and mask rows are per-draw
+uniforms. Stipple uses guest pixel cells on each physical copy. Screen
+strips also carry the live W clip range and window-depth scale.
 
 ### The post hooks
 
@@ -995,7 +1013,7 @@ Its numbers are ported: `engine::colour_pass`
      (below).
    - **The GPU pass** (`native_render::screen_gpu`). It translates
      the layer-15 program at the target's guest size with the
-     device's depth scale. Engine stages read the view, target 1 or
+     live draw's depth scale. Engine stages read the view, target 1 or
      a convolution result. A stage reading the view takes an
      ordered copy before the pass. Each attachment uses its live
      format and loads existing contents. Partial strips, colour
@@ -1098,7 +1116,7 @@ Its numbers are ported: `engine::colour_pass`
   follows the active device and caps its shader and pipeline variants.
 - Each post call commits one complete replacement or draws all its originals. A plan with an unsupported input or an unavailable live target uses D3D for that call.
 - Under render scaling, a replacement that uses a reference-only intermediate together with a live display target falls back.
-- `0x0002df00` and `0x0002dd30` separate flare colour from visibility. The native flare stage records eligible colour fans. The visibility draw is carried. The tests' counts are answered through `GetVisibilityTestResult` from the backend's counter ([d3d.md](d3d.md), "Visibility tests"), and an owned frame's graph replays the counted draws and installs its counts under the guest's tickets ([framescene.md](framescene.md), slice 6). A typed test would need a counted native draw inside the guest's test: the external pass draws into no visibility counter. Layer 17's items are drawn as the other scene layers' are; the clear before them is the guest's. The frame tail draws supported copy and composite fans through the native screen-space pass. State commit (`0x00013cd0`) and present (`0x00013f10`) use D3D.
+- `0x0002df00` and `0x0002dd30` separate flare colour from visibility. The native flare stage records eligible colour and counted visibility fans. The tests' counts are answered through `GetVisibilityTestResult` from the backend's counter ([d3d.md](d3d.md), "Visibility tests"), and an owned frame's graph replays the counted draws and installs its counts under the guest's tickets ([framescene.md](framescene.md), slice 6). Layer 17's items are drawn as the other scene layers' are; the clear before them is the guest's. The frame tail draws supported copy and composite fans through the native screen-space pass. State commit (`0x00013cd0`) and present (`0x00013f10`) use D3D.
 
 ## Not verified
 

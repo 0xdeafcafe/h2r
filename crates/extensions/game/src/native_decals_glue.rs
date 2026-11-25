@@ -20,6 +20,9 @@ use native_render::decal_gpu::{
 use shaders::vsh::VertexUniforms;
 use timeline::native::Stage;
 
+const STIPPLE_ENABLE: usize = 83;
+const TWO_SIDED_LIGHTING: usize = 141;
+
 /// The per-device caches of the decals' programs, pipelines and texture
 /// groups, shared by every admitted draw.
 type Caches = Arc<Mutex<HashMap<wgpu::Device, DecalCache>>>;
@@ -95,6 +98,12 @@ fn decal_vertices(
         .collect())
 }
 
+/// Filled quads use the live polygon mask. A pushed NV2A control word
+/// takes precedence over the D3D state shadow, as it does on the D3D path.
+fn decal_stipple(hw: &d3d::hw::HwState, raw_enable: u32) -> Option<[u32; 32]> {
+    (hw.stipple_control.unwrap_or(raw_enable) != 0).then_some(hw.stipple_pattern)
+}
+
 fn prepare(mode: Mode, snapshot: &DrawSnapshot<'_>) -> Result<Prepared, &'static str> {
     let d = snapshot.draw;
     if d.primitive != PrimitiveType::QuadList
@@ -137,9 +146,6 @@ fn prepare(mode: Mode, snapshot: &DrawSnapshot<'_>) -> Result<Prepared, &'static
         bump_env_loffset: e.bump_env_loffset,
     });
     native_render::decal_gpu::check_state(mode, &d.state.render, &extras)?;
-    if d.raw.render[83] != 0 || d.raw.render[141] != 0 {
-        return Err("lighting/stipple");
-    }
     if d.texture_info[0]
         .is_some_and(|info| info.kind != gfx::texture::TextureKind::D2 || info.format.is_depth())
     {
@@ -156,6 +162,8 @@ fn prepare(mode: Mode, snapshot: &DrawSnapshot<'_>) -> Result<Prepared, &'static
         combiner,
         microcode: code,
         provided_inputs: d.shader.provided_inputs,
+        two_sided_lighting: d.raw.render[TWO_SIDED_LIGHTING] != 0,
+        stipple: decal_stipple(&d.hw, d.raw.render[STIPPLE_ENABLE]),
         vertex: VertexUniforms {
             constants: *d.shader.constants,
             defaults: d.shader.vertex_defaults,
@@ -417,6 +425,21 @@ mod tests {
         }
         v[12..16].copy_from_slice(&packed.to_le_bytes());
         v
+    }
+
+    #[test]
+    fn decal_stipple_uses_hardware_control_before_the_raw_state() {
+        let mut hw = d3d::hw::HwState::default();
+        hw.stipple_pattern[10] = 1 << 11;
+
+        assert_eq!(decal_stipple(&hw, 0), None);
+        assert_eq!(decal_stipple(&hw, 1), Some(hw.stipple_pattern));
+        hw.stipple_control = Some(0);
+        assert_eq!(decal_stipple(&hw, 1), None);
+        hw.stipple_control = Some(1);
+        assert_eq!(decal_stipple(&hw, 0), Some(hw.stipple_pattern));
+        hw.stipple_pattern = [0; 32];
+        assert_eq!(decal_stipple(&hw, 0), Some([0; 32]));
     }
 
     #[test]

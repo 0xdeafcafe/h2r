@@ -120,9 +120,16 @@ pub struct AuxDepth {
 /// IDs belong to this BSP and this frame's object table.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct DisplayVisibility {
+    /// Clusters wholly enclosed by one display portal window. Every subpart
+    /// of these sections is in that window.
+    pub whole_clusters: Vec<u16>,
     pub placements: Vec<u16>,
     pub clusters: Vec<u16>,
     pub objects: Vec<u32>,
+    /// The objects are a widened guest camera's, outside the retail
+    /// lens's set: their guest setup left them undrawn, and the display
+    /// draws them at any device factor.
+    pub guest_lens: bool,
 }
 
 /// One game view.
@@ -314,14 +321,15 @@ pub struct ClusterGather {
 }
 
 /// Which visibility a view's [`ClusterGather`] carries. The Rust sets are
-/// taken only for a view whose sets equal the guest's.
+/// the default; the guest's lists are the fallback a declined computation
+/// takes (docs/graphics/native-visibility.md).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VisibilitySource {
     /// The guest's portal flood and object gather, read.
     #[default]
     Guest,
-    /// `scene_extract::visibility`, equal to the guest's for this view.
+    /// `scene_extract::visibility`, computed for this view.
     Rust,
 }
 

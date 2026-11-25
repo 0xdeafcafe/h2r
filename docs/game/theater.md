@@ -247,6 +247,18 @@ experiment 1 must be resolved before attributing one here to render RNG.
 h2 theater play "$film_run/match.h2film" --disc "$H2_DISC" --out "$H2_IMAGE" --socket "$film_run/play.sock" --render-every 1 --speed 1
 ```
 
+**Experiment 3, another window.** A local game renders on its own random
+stream and its guest camera follows the window
+([Determinism](../graphics/high-resolution.md#determinism)), so a film
+recorded in one window replays in any other. Record offline in a wide
+window and play the film back at 4:3, and the other way round; each
+playback must report `hashes matched through tick T`.
+
+```sh
+H2_RESOLUTION=2922x1662 h2 run "$H2_DISC" --out "$H2_IMAGE" --data "$film_run/wide" --film "$film_run/wide.h2film"
+H2_RESOLUTION=640x480 h2 theater play "$film_run/wide.h2film" --disc "$H2_DISC" --out "$H2_IMAGE" --socket "$film_run/play.sock" --render-every 1 --speed 1
+```
+
 During either run the agent exposes the [Theater transport](../runtime/agent-api.md#theater-transport).
 `theater.keyframes` lists the available restore points and
 `theater.state` reports the seek source and remaining ticks. With the ring

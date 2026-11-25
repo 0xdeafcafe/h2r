@@ -52,6 +52,10 @@ fn answer(target: u32, site: u32, c: &mut CpuAbi, m: &mut FlatMemory, seed: u32)
             if seed == 6 && site == 0x1c67a1 {
                 half(m, CHANNEL + 6, 4);
             }
+            if seed == 7 && site == 0x1c67a1 {
+                // The second event callback can change the loop target.
+                half(m, CLIP + 0x2e, (-3i16) as u16);
+            }
             24
         }
         0x1cb3b0 => {
@@ -93,14 +97,14 @@ pub(super) fn cases(h: &mut Harness<'_>) {
         }
     }
 
-    for seed in 0..7 {
+    for seed in 0..8 {
         h.case(0x1c66a0, seed, |c, m| {
             setup(c, m, seed);
             word(m, STACK + 4, CHANNEL);
-            let target = [-0.5f32, 3.7, 9.4, 9.4, 9.4, 9.4, 9.4][seed as usize];
+            let target = [-0.5f32, 3.7, 9.4, 9.4, 9.4, 9.4, 9.4, 9.4][seed as usize];
             word(m, STACK + 8, target.to_bits());
             let flags = match seed {
-                3 => 3,    // Loop at the clip's loop frame.
+                3 | 7 => 3,    // Loop at the clip's loop frame.
                 4 => 0x2b, // Select a new clip when the loop frame is zero.
                 _ => 1,
             };

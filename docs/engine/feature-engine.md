@@ -154,7 +154,14 @@ install, a point with no generated original turns its features off the same
 way. Each point expects a shape at its address (a function start, a call,
 a frame prologue; `engine::point_shapes`); install checks it against the
 loaded image, and a point that is not what it says turns its features off
-with its name ([guest-layout.md](guest-layout.md)). A title update maps the table through `ImageAddrs`
+with its name ([guest-layout.md](guest-layout.md)). A `Sig::Site` is
+also refused when it is a call's continuation: the image's resume table
+holds it (`Dispatch::has_resume`) and a call instruction ends there
+(`point_shapes::call_ends_at`). A return resumes the caller's generated
+code at its continuation and never consults an override, so a hook there
+would never run. A site's hook goes on the next instruction reached by
+falling through, with the stack and the registers it reads unchanged
+(`hooks::verify`). A title update maps the table through `ImageAddrs`
 ([title-updates.md](../runtime/title-updates.md) section 3.3).
 Structure layouts for a title update would go through `engine::view`
 ([Guest data access](#guest-data-access)); no title-update map exists yet.

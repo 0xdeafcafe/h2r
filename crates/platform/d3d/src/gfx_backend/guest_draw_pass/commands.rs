@@ -198,8 +198,22 @@ impl<B: SceneDevice> Commands<B> {
             ReplayOp::Upload { to, desc, bytes } => {
                 gpu.write_scene_target(surface(to)?, desc, bytes, scale)?
             }
-            ReplayOp::Sample { of, id, how } => {
+            ReplayOp::Sample { of, id, how, into } => {
                 let of = surface(of)?;
+                // A pooled frame-buffer copy refilled: the earlier sample's
+                // texture takes the new contents (draws applied before
+                // this read the old), and both ids name it, so this
+                // frame's copies are as many as the device's pool.
+                if let (ReplaySample::Snapshot { opaque }, Some(prev)) = (how, into)
+                    && let Some(t) = self.outputs.samples.get_mut(prev)
+                    && gpu.snapshot_surface_into(of, *opaque, t)?
+                {
+                    let t = B::share_scene_texture(t);
+                    if self.outputs.samples.insert(*id, t).is_some() {
+                        return Err(format!("duplicate scene sample {id}"));
+                    }
+                    return Ok(());
+                }
                 let t = match how {
                     ReplaySample::Snapshot { opaque } => gpu.snapshot_surface(of, *opaque)?,
                     ReplaySample::InPlace => gpu.surface_texture(of)?,

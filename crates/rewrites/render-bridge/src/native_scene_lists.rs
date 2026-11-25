@@ -2,6 +2,7 @@
 //! (`impl.render.native`, on by default). A builder reads under the
 //! guest-memory guard and proposes all its writes before any output
 //! becomes visible.
+mod display_swap;
 mod geometry;
 mod portal_merge;
 mod portal_regions;
@@ -11,7 +12,7 @@ mod object_lod;
 mod portal_walk;
 mod records;
 mod setup;
-pub use setup::{DisplaySection, display_model};
+pub use setup::{DisplayGeometry, DisplaySection, display_model};
 mod regions;
 mod sphere_regions;
 mod transparents;
@@ -35,35 +36,104 @@ const TAGS: u32 = engine::tags::TAG_ENTRIES_GLOBAL;
 const FRAME: u32 = 0x004b_a034;
 const OBJECTS: u32 = engine::render_loop::occlusion::guest::OBJECTS;
 
+/// Geometry gather and record inputs for a whole cluster reached only by
+/// the presentation lens. Restricted lists and secondary clipping planes
+/// require their per-window records.
+pub(crate) fn late_cluster_bounds(m: &dyn GuestMemory, id: u16) -> Option<[f32; 6]> {
+    let vis = objects::MAIN_VIS;
+    if m.u32(vis + objects::VIS_FLAGS).ok()? & 0x2a1 != 0 { return None; }
+    let bsp = ptr(m, objects::ACTIVE_BSP).ok()?;
+    if u32::from(id) >= m.u32(bsp.checked_add(0x9c)?).ok()? { return None; }
+    let sections = ptr(m, bsp.checked_add(0xa0)?).ok()?;
+    let section = sections.checked_add(u32::from(id) * 0xb0)?;
+    if m.u16(section.checked_add(0x24)?).ok()? == 0 { return None; }
+    let mut bounds = [0.0; 6];
+    for (i, v) in bounds.iter_mut().enumerate() {
+        *v = m.f32(section.checked_add(0x54 + 4 * i as u32)?).ok()?;
+    }
+    Some(bounds)
+}
+
+/// The ordinary main-cluster gather (0x13457b) and record writer's flags.
+/// The caller admits only whole portal windows without a secondary plane.
+pub fn display_cluster_fog_flags(m: &dyn GuestMemory, id: u16) -> Option<u32> {
+    let sky = objects::cluster_uses_sky(m, u32::from(id)).ok()?;
+    let flags = 0xf000 | (u16::from(sky) << 10);
+    setup::section_flags(m, objects::MAIN_VIS, ptr(m, TAGS).ok()?, flags).ok()
+}
+
 pub struct NativeSceneLists;
 
 fn enabled(switches: &Switches) -> bool {
     hooks::switches::native_render_on(switches)
 }
 
-/// Guest word holding the multiplier sampled when this view starts building records.
+/// The view's requested geometry detail. The MODE tag numbers its tiers
+/// from coarsest to finest, opposite the "LOD 0" convention in most tools.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LodDetail {
+    Retail,
+    Scaled(f32),
+    Highest,
+}
+
+impl LodDetail {
+    pub const fn pixel_multiplier(self) -> f32 {
+        match self {
+            Self::Scaled(value) => value,
+            Self::Retail | Self::Highest => 1.0,
+        }
+    }
+
+    pub const fn guest_word(self) -> u32 {
+        match self {
+            Self::Highest => 0x7fff_ffff,
+            other => other.pixel_multiplier().to_bits(),
+        }
+    }
+
+    fn from_guest_word(word: u32) -> Self {
+        let scale = f32::from_bits(word);
+        match word {
+            0x7fff_ffff => Self::Highest,
+            _ if scale.is_normal() && scale > 0.0 && scale != 1.0 => Self::Scaled(scale),
+            _ => Self::Retail,
+        }
+    }
+}
+
+/// The renderer's two LOD selections, sampled at the same view boundary.
+/// The first word serves the guest and exact reference. The display word
+/// follows it, in the render context's private allocation.
 #[derive(Clone, Copy)]
 pub struct ViewLodScale(u32);
 
 impl ViewLodScale {
+    pub const MODEL_VIEW: u32 = 1 << 31;
+
     pub const fn new(guest_word: u32) -> Self {
         Self(guest_word)
     }
 
-    /// Older snapshots and views before their first record reset use retail pixels.
-    pub fn read(self, m: &dyn GuestMemory) -> f32 {
-        match m.f32(self.0) {
-            Ok(value) if value.is_finite() && value > 0.0 => value,
-            _ => 1.0,
-        }
+    pub fn read(self, m: &dyn GuestMemory) -> LodDetail {
+        m.u32(self.0).map_or(LodDetail::Retail, LodDetail::from_guest_word)
+    }
+
+    pub fn display(self, m: &dyn GuestMemory) -> LodDetail {
+        m.u32(self.0 + 4).map_or(LodDetail::Retail, |word| {
+            LodDetail::from_guest_word(word & !Self::MODEL_VIEW)
+        })
     }
 }
 
 impl NativeSceneLists {
     /// Install LOD adjustment at the guest functions invoked by the fallback
-    /// paths. These hooks also apply when native scene lists are disabled.
-    pub fn install_guest_lod(b: &mut Builder, scale: ViewLodScale) {
+    /// paths, and the D3D draw-boundary geometry swap when the guest's own
+    /// draws render the display (`d3d_display`: no distinct readback copy).
+    /// These hooks also apply when native scene lists are disabled.
+    pub fn install_guest_lod(b: &mut Builder, scale: ViewLodScale, d3d_display: bool) {
         object_lod::install(b, scale);
+        display_swap::install(b, scale, d3d_display);
     }
 
     /// Configure the replacement object setup and record writer for this view.
@@ -115,7 +185,7 @@ impl Feature for ScaledSceneLists {
         install(
             b,
             Seam::Function(&points::OBJECT_RENDER_SETUP, 20),
-            move |m, cpu| setup::build(m, cpu, scale.map_or(1.0, |scale| scale.read(m))),
+            move |m, cpu| setup::build(m, cpu, scale.map_or(LodDetail::Retail, |scale| scale.read(m))),
         );
         install(
             b,
@@ -124,7 +194,7 @@ impl Feature for ScaledSceneLists {
                 points::OBJECT_RECORD_APPENDED,
                 SceneList::ObjectRecord,
             ),
-            move |m, cpu| records::build(m, cpu, scale.map_or(1.0, |scale| scale.read(m))),
+            move |m, cpu| records::build(m, cpu, scale.map_or(1.0, |scale| scale.read(m).pixel_multiplier())),
         );
         install(
             b,
@@ -453,18 +523,18 @@ mod tests {
         let address = 0x10000;
         let scale = ViewLodScale::new(address);
         let mut live = FlatMemory::new(address, 4);
-        assert_eq!(scale.read(&live), 1.0);
+        assert_eq!(scale.read(&live), LodDetail::Retail);
         live.set_f32(address, 6.0).unwrap();
         let render_snapshot = live.clone();
         live.set_f32(address, 0.5).unwrap();
-        assert_eq!(scale.read(&live), 0.5);
-        assert_eq!(scale.read(&render_snapshot), 6.0);
+        assert_eq!(scale.read(&live), LodDetail::Scaled(0.5));
+        assert_eq!(scale.read(&render_snapshot), LodDetail::Scaled(6.0));
 
         for invalid in [-1.0, f32::NAN, f32::INFINITY] {
             live.set_f32(address, invalid).unwrap();
-            assert_eq!(scale.read(&live), 1.0);
+            assert_eq!(scale.read(&live), LodDetail::Retail);
         }
-        assert_eq!(scale.read(&FlatMemory::new(address + 4, 4)), 1.0);
+        assert_eq!(scale.read(&FlatMemory::new(address + 4, 4)), LodDetail::Retail);
     }
 
     #[test]

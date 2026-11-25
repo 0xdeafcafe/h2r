@@ -587,6 +587,7 @@ fn compile_layer3<R: std::io::Read + std::io::Seek>(
         look: pass.look,
         state,
         fog: FogWords::default(),
+        planar: None,
     };
     let mut p = FogProgram::compile(&fog_pass, &code)?;
     if let Some(rigid) = look::rigid_program(map, lib.metadata(), fog_pass.look.vertex_shader)

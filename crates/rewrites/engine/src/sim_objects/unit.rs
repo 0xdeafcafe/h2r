@@ -810,24 +810,7 @@ pub(super) fn clamp(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
                     load(c, 3, g.u32(s(4))?);
                     g.set_u32(s(0x10), c.eax)?;
                     load(c, 6, c.eax);
-                    movaps(c, 7, 1);
-                    ssr(c, Ss::Mul, 7, 3)?;
-                    ssr(c, Ss::Mul, 2, 6)?;
-                    ssr(c, Ss::Sub, 2, 7)?;
-                    ssr(c, Ss::Mul, 4, 6)?;
-                    movaps(c, 7, 2);
-                    ssr(c, Ss::Mul, 3, 5)?;
-                    ssr(c, Ss::Sub, 3, 4)?;
-                    ssr(c, Ss::Mul, 7, 1)?;
-                    movaps(c, 4, 3);
-                    ssr(c, Ss::Mul, 1, 0)?;
-                    ssr(c, Ss::Mul, 4, 5)?;
-                    ssr(c, Ss::Mul, 3, 6)?;
-                    ssr(c, Ss::Mul, 2, 6)?;
-                    ssr(c, Ss::Mul, 0, 5)?;
-                    ssr(c, Ss::Sub, 4, 7)?;
-                    ssr(c, Ss::Sub, 1, 3)?;
-                    ssr(c, Ss::Sub, 2, 0)?;
+                    rebase_look_up(c)?;
                     c.eax = c.edi;
                     st(c, g, s(4), 4)?;
                     st(c, g, s(8), 1)?;
@@ -866,6 +849,47 @@ pub(super) fn clamp(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
             _ => return Err(unowned(at)),
         };
     }
+}
+
+/// Both cross products at the look clamp. By this point the memory loads
+/// have cleared every source's upper lanes and left.x is already in xmm0.
+/// The register sequence also handles exceptional inputs and sticky flags.
+fn rebase_look_up(c: &mut CpuAbi) -> Result<()> {
+    let frame_up = [lo(c, 3), lo(c, 4), lo(c, 2)];
+    let aim = [lo(c, 6), lo(c, 5), lo(c, 1)];
+    if sim_core::det::fast_env(c.mxcsr) && sim_core::det::host_fast_env()
+        && let Some(basis) = ::sim_objects::unit::look_up(frame_up, aim, lo(c, 0))
+    {
+        let [x, y, z] = basis.up;
+        let [x_sub, y_sub, z_sub] = basis.subtrahends;
+        for (r, value) in [(0, z_sub), (1, y), (2, z), (3, y_sub), (4, x), (7, x_sub)] {
+            load(c, r, value);
+        }
+        return Ok(());
+    }
+    rebase_look_up_scalar(c)
+}
+
+fn rebase_look_up_scalar(c: &mut CpuAbi) -> Result<()> {
+    movaps(c, 7, 1);
+    ssr(c, Ss::Mul, 7, 3)?;
+    ssr(c, Ss::Mul, 2, 6)?;
+    ssr(c, Ss::Sub, 2, 7)?;
+    ssr(c, Ss::Mul, 4, 6)?;
+    movaps(c, 7, 2);
+    ssr(c, Ss::Mul, 3, 5)?;
+    ssr(c, Ss::Sub, 3, 4)?;
+    ssr(c, Ss::Mul, 7, 1)?;
+    movaps(c, 4, 3);
+    ssr(c, Ss::Mul, 1, 0)?;
+    ssr(c, Ss::Mul, 4, 5)?;
+    ssr(c, Ss::Mul, 3, 6)?;
+    ssr(c, Ss::Mul, 2, 6)?;
+    ssr(c, Ss::Mul, 0, 5)?;
+    ssr(c, Ss::Sub, 4, 7)?;
+    ssr(c, Ss::Sub, 1, 3)?;
+    ssr(c, Ss::Sub, 2, 0)?;
+    Ok(())
 }
 
 /// `cbb99` to the return: the direction's yaw and pitch in the matrix at

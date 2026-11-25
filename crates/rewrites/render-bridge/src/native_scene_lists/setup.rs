@@ -7,8 +7,12 @@ mod residency;
 mod sections;
 mod staged;
 
+pub(in crate::native_scene_lists) use palette::{PALETTE_CURSOR, PALETTE_LIMIT, blend_group};
 use records::ObjectRecord;
+pub(in crate::native_scene_lists) use residency::resource_cache_in_use;
 use sections::Prepared;
+pub(super) use sections::{HIGHEST_LOD, LOD_FRACTION_MAX};
+pub(in crate::native_scene_lists) use sections::{finest_lod, permutations, section_index};
 use staged::Staged;
 
 use super::lights::{MIN_DEPTH, PIXEL_SCALE, PROJECTION_DEPTH, SIZE_FACTOR};
@@ -34,14 +38,16 @@ const CAMERA_FORWARD: u32 = CAMERA + 0xc;
 const VIS_CAMERA_POSITION: u32 = 0x2a68;
 
 #[derive(Clone, Copy)]
-struct Scene {
+struct Scene<'a> {
     tags: u32,
     objects: Pool,
     frame: u32,
     vis: u32,
     kind: u32,
     retry: bool,
-    lod_scale: f32,
+    lod: LodDetail,
+    private: bool,
+    geometry: Option<DisplayGeometry<'a>>,
 }
 
 #[derive(Clone, Copy)]
@@ -165,7 +171,7 @@ fn lod_bytes(
     Ok((byte(visible)?, byte(detail)?))
 }
 
-fn section_flags(m: &dyn GuestMemory, vis: u32, tags: u32, flags: u16) -> Result<u32> {
+pub(super) fn section_flags(m: &dyn GuestMemory, vis: u32, tags: u32, flags: u16) -> Result<u32> {
     let flags = u32::from(flags);
     let mut section = ((((flags >> 2) & 0x2c00) | (flags & 0x4000)) >> 9) | ((flags & 0x200) << 5);
     if m.u8(at(vis, VIS_FLAGS)?)? & 0x80 != 0 {
@@ -187,8 +193,8 @@ fn section_flags(m: &dyn GuestMemory, vis: u32, tags: u32, flags: u16) -> Result
     Ok(section)
 }
 
-pub(super) fn build(m: &dyn GuestMemory, cpu: &CpuAbi, scale: f32) -> (SceneList, Result<Output>) {
-    (SceneList::ObjectSetup, setup(m, cpu, scale))
+pub(super) fn build(m: &dyn GuestMemory, cpu: &CpuAbi, detail: LodDetail) -> (SceneList, Result<Output>) {
+    (SceneList::ObjectSetup, setup(m, cpu, detail))
 }
 
 fn projected(m: &dyn GuestMemory, body: u32) -> Result<([f32; 3], f32, f32, f32)> {
@@ -219,7 +225,10 @@ fn projected(m: &dyn GuestMemory, body: u32) -> Result<([f32; 3], f32, f32, f32)
     Ok(([px, py, pz], radius, pixel_size, distance))
 }
 
-fn setup(m: &dyn GuestMemory, cpu: &CpuAbi, lod_scale: f32) -> Result<Output> {
+fn setup(m: &dyn GuestMemory, cpu: &CpuAbi, lod: LodDetail) -> Result<Output> {
+    if let Some(out) = outside_retail_lens(m, cpu, |handle| crate::scene_step::retail_object(m, handle))? {
+        return Ok(out);
+    }
     fp_supported(cpu)?;
     if cpu.x87.control != 0x027f || cpu.x87.tag != 0xffff {
         return Err(Refusal::Unsupported);
@@ -252,7 +261,9 @@ fn setup(m: &dyn GuestMemory, cpu: &CpuAbi, lod_scale: f32) -> Result<Output> {
     let explicit_retry = stack(m, cpu, 8)? as u8 != 0;
     let scene = Scene {
         tags,
-        lod_scale,
+        lod,
+        private: false,
+        geometry: None,
         objects,
         frame: m.u32(FRAME)?,
         vis,
@@ -309,6 +320,43 @@ fn setup(m: &dyn GuestMemory, cpu: &CpuAbi, lod_scale: f32) -> Result<Output> {
     Ok(out)
 }
 
+/// A main-view object the widened guest camera gathered outside the retail
+/// lens's set (`scene_step::retail_object`): the "not drawn" exit, before
+/// any of the setup runs. Its row's flag bit 0 is set, AL is 0, and ECX
+/// and EDX hold the flag's address and the column, as the setup's own
+/// zero-opacity exit leaves them. No section choice, pose evaluation
+/// (`0x000bd610`, whose `0x000bd7b2` evaluates the shared node matrices
+/// and clears the object's dirty bit), animation selection, palette,
+/// lighting or record write runs for it, so the simulation finds the
+/// object as a retail camera leaves it (docs/graphics/high-resolution.md,
+/// "Determinism"). `None`: the setup runs.
+fn outside_retail_lens(
+    m: &dyn GuestMemory, cpu: &CpuAbi, retail: impl Fn(u32) -> Option<bool>,
+) -> Result<Option<Output>> {
+    let vis = cpu.esi;
+    if vis != MAIN_VIS || m.u32(at(vis, VIEW_KIND)?)? != 0 {
+        return Ok(None);
+    }
+    let list_addr = ptr(m, at(vis, 0x14)?)?;
+    let list = List::read(m, list_addr)?;
+    let index = u32::from(stack(m, cpu, 4)? as u16);
+    if index as usize >= list.count {
+        return Ok(None);
+    }
+    let handle = m.u32(at(list.column(m, 0xc)?, index * 4)?)?;
+    if retail(handle) != Some(false) {
+        return Ok(None);
+    }
+    let column = list.column(m, 8)?;
+    let mut staged = Staged::new(m);
+    let address = mark_no_draw(&mut staged, column, index)?;
+    let mut out = staged.finish();
+    out.ecx = Some(address);
+    out.edx = Some(column);
+    out.al = Some(0);
+    Ok(Some(out))
+}
+
 fn mark_no_draw(m: &mut Staged<'_>, column: u32, index: u32) -> Result<u32> {
     let address = at(column, index * 2)?;
     let flags = m.u8(address)?;
@@ -324,19 +372,30 @@ pub struct DisplaySection {
     pub rows: Vec<frame_scene::Row>,
 }
 
-/// Produce an ordinary third-person object's records without publishing
-/// any renderer, resource, lighting, animation or simulation state.
-pub fn display_model(m: &dyn GuestMemory, handle: u32) -> Option<(frame_scene::ObjectFrame, u32, Vec<DisplaySection>)> {
-    display_model_inner(m, handle).ok()
+/// Section node remaps from the native renderer's mounted model.
+#[derive(Clone, Copy)]
+pub struct DisplayGeometry<'a> {
+    pub model: u32,
+    pub node_maps: &'a [Vec<u8>],
 }
 
-fn display_model_inner(m: &dyn GuestMemory, handle: u32) -> Result<(frame_scene::ObjectFrame, u32, Vec<DisplaySection>)> {
+/// Produce an ordinary third-person object's records without publishing
+/// any renderer, resource, lighting, animation or simulation state.
+pub fn display_model(
+    m: &dyn GuestMemory, handle: u32, lod: LodDetail, geometry: Option<DisplayGeometry<'_>>,
+) -> Option<(frame_scene::ObjectFrame, u32, Vec<DisplaySection>)> {
+    display_model_inner(m, handle, lod, geometry).ok()
+}
+
+fn display_model_inner(
+    m: &dyn GuestMemory, handle: u32, lod: LodDetail, geometry: Option<DisplayGeometry<'_>>,
+) -> Result<(frame_scene::ObjectFrame, u32, Vec<DisplaySection>)> {
     let objects = Pool::read(m, ptr(m, OBJECTS)?, 12)?;
     let body = objects.body(m, handle)?;
     let (centre, radius, pixels, distance) = projected(m, body)?;
     let scene = Scene {
         tags: ptr(m, TAGS)?, objects, frame: m.u32(FRAME)?, vis: MAIN_VIS,
-        kind: 0, retry: false, lod_scale: 1.0,
+        kind: 0, retry: false, lod, private: true, geometry,
     };
     let (opacity, _) = lod_bytes(m, scene.tags, handle, body, distance, radius)?;
     // The display gather supplies the object set, without the optional
@@ -354,6 +413,7 @@ fn display_model_inner(m: &dyn GuestMemory, handle: u32) -> Result<(frame_scene:
         mirror_alpha: 0., effect_alpha: 0., group_depth: 0., mirror_mode: false,
     };
     let mut overlay = Staged::new(m);
+    overlay.set_u32(palette::PALETTE_CURSOR, 0)?;
     let prepared = sections::prepare(&mut overlay, scene, handle, state)?;
     let [model] = prepared.models.as_slice() else { return Err(Refusal::ObjectModel) };
     if prepared.first_person || prepared.overlay.is_some() || prepared.function_overlay.is_some()
@@ -389,12 +449,12 @@ fn display_model_inner(m: &dyn GuestMemory, handle: u32) -> Result<(frame_scene:
     Ok((frame, model.datum, sections))
 }
 
-struct Walk {
-    scene: Scene,
+struct Walk<'a> {
+    scene: Scene<'a>,
     ancestors: Vec<u32>,
 }
 
-impl Walk {
+impl Walk<'_> {
     fn visit(
         &mut self,
         m: &mut Staged<'_>,
@@ -554,7 +614,7 @@ impl Walk {
                     group_depth: record_state.group_depth,
                     sphere: (record_state.centre, record_state.radius),
                 };
-                let writes = record.plan(m, self.scene.lod_scale)?;
+                let writes = record.plan(m, self.scene.lod.pixel_multiplier(), self.scene.geometry.is_some())?;
                 m.apply(writes)?;
             }
         }
@@ -753,10 +813,34 @@ mod setup_tests {
         }
     }
 
+    /// A widened view's object outside the retail lens's set takes the
+    /// "not drawn" exit before anything of its setup runs: only its row's
+    /// flag changes, so its pose, dirty bit and node matrices stay as the
+    /// simulation left them. Inside the set, or with no retail set, the
+    /// setup runs.
+    #[test]
+    fn an_object_outside_the_retail_lens_is_left_undrawn_and_untouched() {
+        let (mut m, cpu) = fixture();
+        let body = m.bytes(ROOT, 0x300).unwrap();
+        let out = outside_retail_lens(&m, &cpu, |handle| Some(handle != ROOT_HANDLE)).unwrap().unwrap();
+        assert_eq!((out.al, out.ecx, out.edx), (Some(0), Some(FLAGS), Some(FLAGS)));
+        assert_eq!(out.writes.len(), 1, "the row's flag, nothing else");
+        publish(&mut m, out);
+        assert_eq!(m.u8(FLAGS).unwrap() & 1, 1);
+        assert_eq!(m.bytes(ROOT, 0x300).unwrap(), body, "the object's pose and flags are the simulation's");
+
+        let (m, cpu) = fixture();
+        assert!(outside_retail_lens(&m, &cpu, |_| Some(true)).unwrap().is_none(), "a retail object");
+        assert!(outside_retail_lens(&m, &cpu, |_| None).unwrap().is_none(), "no widened view");
+        let mut light = cpu;
+        light.esi = LIGHT_VIS;
+        assert!(outside_retail_lens(&m, &light, |_| Some(false)).unwrap().is_none(), "a light's view");
+    }
+
     #[test]
     fn private_sections_use_the_current_permutation_and_leave_the_record_list_untouched() {
         let (mut m, _) = fixture();
-        let (_, _, sections) = display_model(&m, ROOT_HANDLE).unwrap();
+        let (_, _, sections) = display_model(&m, ROOT_HANDLE, LodDetail::Retail, None).unwrap();
         assert_eq!(sections.len(), 1);
         assert_eq!(sections[0].section, 1);
         assert_eq!(sections[0].rows.len(), 3);
@@ -765,9 +849,67 @@ mod setup_tests {
         assert_eq!(m.u32(NODE_BLOCKS - 4).unwrap(), 0);
         assert_eq!(m.u32(CACHE_ENTRIES + 0x4c).unwrap(), NONE);
         m.put_u8(ROOT + 4, 1);
-        assert!(display_model(&m, ROOT_HANDLE).is_none());
+        assert!(display_model(&m, ROOT_HANDLE, LodDetail::Retail, None).is_none());
         m.put_u8(ROOT + 4, 0).put_u8(OBJECT_SLOTS + 2, 0x10);
-        assert!(display_model(&m, ROOT_HANDLE).is_none());
+        assert!(display_model(&m, ROOT_HANDLE, LodDetail::Retail, None).is_none());
+    }
+
+    #[test]
+    fn highest_selects_the_finest_section_at_long_range_on_a_private_overlay() {
+        let (mut m, _) = fixture();
+        // Keep the object visible while putting it beyond every detail
+        // threshold. The active permutation has distinct far and near meshes.
+        m.put_u32(ROOT + 4, 1 << 24)
+            .put_f32(ROOT + 0x30, 100_000.0)
+            .put_f32(DEFAULT_MODEL_DISTANCE, 200_000.0)
+            .put_f32(ONE, 1.0)
+            .put_f32(FADE_SPAN_SCALE, 2.0)
+            .put_f32(FADE_MIN, 0.01)
+            .put_f32(0x0044_ae88, 0.2)
+            .put_f32(0x0045_dc5c, 0.8)
+            .put_f32(BYTE_SCALE, 255.0)
+            .put_u32(0x004b_a01c, 5)
+            .put_f32(LOD_FRACTION_MAX, 1.0)
+            .put_u16(0x17520 + 4, 0)
+            .put_u32(HLMT + 0xc4, 1 << 1);
+        for (i, threshold) in [100., 80., 60., 40., 20., 0.].into_iter().enumerate() {
+            m.put_f32(HLMT + 0x34 + i as u32 * 4, threshold);
+        }
+        let before = m.clone();
+        let (_, _, retail) = display_model(&m, ROOT_HANDLE, LodDetail::Retail, None).unwrap();
+        let (_, _, highest) = display_model(&m, ROOT_HANDLE, LodDetail::Highest, None).unwrap();
+        assert_eq!(retail[0].section, 0);
+        assert_eq!(highest[0].section, 1);
+        for (base, len) in [(ROOT, 0x300), (CACHE_ENTRIES, 0x100), (RENDER_RECORDS, RENDER_RECORD_SIZE as usize)] {
+            assert_eq!(m.bytes(base, len).unwrap(), before.bytes(base, len).unwrap());
+        }
+    }
+
+    #[test]
+    fn native_display_uses_mounted_sections_without_requesting_guest_resources() {
+        let (mut m, _) = fixture();
+        let resource = SECTIONS + 0x5c;
+        m.put_u32(resource + 0x34, 0)
+            .put_u8(resource + 0x38 + 0x1e, 0)
+            .put_u32(resource + 0x38 + 8, 128)
+            .put_u32(resource + 0x38 + 0x20, NONE);
+        let mounted = DisplayGeometry {
+            model: 0x4141_0003,
+            node_maps: &[Vec::new(), Vec::new()],
+        };
+        let (_, _, highest) = display_model(&m, ROOT_HANDLE, LodDetail::Highest, Some(mounted)).unwrap();
+        assert_eq!(highest[0].section, 1);
+        assert_eq!(m.u8(resource + 0x38 + 0x1e).unwrap(), 0);
+        assert_eq!(m.u32(resource + 0x38 + 0x20).unwrap(), NONE);
+    }
+
+    #[test]
+    fn highest_uses_the_next_authored_tier_when_the_finest_is_absent() {
+        let (mut m, _) = fixture();
+        m.put_u16(0x17520 + 14, u16::MAX)
+            .put_u16(0x17520 + 12, 1);
+        let (_, _, highest) = display_model(&m, ROOT_HANDLE, LodDetail::Highest, None).unwrap();
+        assert_eq!(highest[0].section, 1);
     }
 
     #[test]
@@ -810,7 +952,7 @@ mod setup_tests {
                 .put_u16(section + 0x2c, i as u16)
                 .put_f32(ROOT + 0x200 + i * 0x34 + 40, x);
         }
-        let (_, _, sections) = display_model(&m, ROOT_HANDLE).unwrap();
+        let (_, _, sections) = display_model(&m, ROOT_HANDLE, LodDetail::Retail, None).unwrap();
         assert_eq!(sections.len(), 2);
         for (section, (index, x)) in sections.iter().zip([(0, -3.), (1, 5.)]) {
             assert_eq!(section.section, index);
@@ -818,7 +960,7 @@ mod setup_tests {
         }
 
         let mut submitted = m.clone();
-        let out = setup(&submitted, &cpu, 1.0).unwrap();
+        let out = setup(&submitted, &cpu, LodDetail::Retail).unwrap();
         publish(&mut submitted, out);
         assert_eq!(submitted.u32(MAIN_COUNT).unwrap(), 2);
         let read = crate::native_world::Mem(&mut submitted);
@@ -828,8 +970,8 @@ mod setup_tests {
         }
 
         m.put_u8(palette::UNIT_NODE_ADJUSTMENTS_ENABLED, 1);
-        assert!(matches!(setup(&m, &cpu, 1.0), Err(Refusal::Palette)));
-        assert!(display_model(&m, ROOT_HANDLE).is_none());
+        assert!(matches!(setup(&m, &cpu, LodDetail::Retail), Err(Refusal::Palette)));
+        assert!(display_model(&m, ROOT_HANDLE, LodDetail::Retail, None).is_none());
         assert_eq!(m.u32(RECORD_COUNT).unwrap(), 0);
         assert_eq!(m.u32(NODE_BLOCKS - 4).unwrap(), 0);
         assert_eq!(m.u32(CACHE_ENTRIES + 0x4c).unwrap(), NONE);
@@ -838,7 +980,7 @@ mod setup_tests {
     #[test]
     fn setup_emits_parent_then_child_and_publishes_palette_and_cache() {
         let (mut mem, cpu) = fixture();
-        let out = setup(&mem, &cpu, 1.0).unwrap();
+        let out = setup(&mem, &cpu, LodDetail::Retail).unwrap();
         assert_eq!(out.al, Some(0));
         assert_eq!(mem.u32(RECORD_COUNT).unwrap(), 0);
         publish(&mut mem, out);
@@ -879,7 +1021,8 @@ mod setup_tests {
             for (i, threshold) in [55.0, 35.0, 20.0, 15.0, 5.0, 0.0].into_iter().enumerate() {
                 mem.put_f32(HLMT + 0x34 + 4 * i as u32, threshold);
             }
-            let output = setup(&mem, &cpu, scale).unwrap();
+            let lod = if scale == 1.0 { LodDetail::Retail } else { LodDetail::Scaled(scale) };
+            let output = setup(&mem, &cpu, lod).unwrap();
             publish(&mut mem, output);
             assert_eq!(mem.u32(RECORD_COUNT).unwrap(), 2);
             let lods = [0, 1].map(|i| mem.u8(CACHE_ENTRIES + 0x100 * i + 0xbc).unwrap());
@@ -900,7 +1043,7 @@ mod setup_tests {
             .put_u32(resource + 8, 0)
             .put_u8(CACHE_ENTRIES + 0xbc, 4)
             .put_u8(CACHE_ENTRIES + 0xc0, 1);
-        let out = setup(&mem, &cpu, 1.0).unwrap();
+        let out = setup(&mem, &cpu, LodDetail::Retail).unwrap();
         publish(&mut mem, out);
         assert_eq!(mem.u32(RECORD_COUNT).unwrap(), 2);
         assert_eq!((mem.u32(RENDER_RECORDS + 0xc).unwrap() >> 9) & 0x1ff, 0);
@@ -916,7 +1059,7 @@ mod setup_tests {
         mem.put_u8(child_resource + 0x1e, 0)
             .put_u32(child_resource + 8, 16)
             .put_u32(child_resource + 0x20, NONE);
-        assert!(matches!(setup(&mem, &cpu, 1.0), Err(Refusal::Residency)));
+        assert!(matches!(setup(&mem, &cpu, LodDetail::Retail), Err(Refusal::Residency)));
         assert_eq!(mem.u32(RECORD_COUNT).unwrap(), 0);
         assert_eq!(mem.u32(NODE_BLOCKS - 4).unwrap(), 0);
         assert_eq!(mem.u32(CACHE_ENTRIES + 0xc).unwrap(), 0);
@@ -938,7 +1081,11 @@ mod setup_tests {
             .put_u32(LIGHT_VIS + VIEW_KIND, 1)
             .put_u32(CURRENT_VIS, LIGHT_VIS);
         cpu.esi = LIGHT_VIS;
-        let out = setup(&mem, &cpu, 1.0).unwrap();
+        mem.put_u8(CACHE_ENTRIES + 0xbc, 0)
+            .put_u32(CACHE_ENTRIES + 0x4c, 0)
+            .put_u32(CACHE_ENTRIES + 0x50, 23)
+            .put_u16(0x17510 + 4, 1);
+        let out = setup(&mem, &cpu, LodDetail::Highest).unwrap();
         assert_eq!(out.al, Some(1));
         publish(&mut mem, out);
         assert_eq!(mem.u32(RECORD_COUNT).unwrap(), 1);
@@ -947,7 +1094,7 @@ mod setup_tests {
         assert_eq!((mem.u32(RENDER_RECORDS + 0xc).unwrap() >> 9) & 0x1ff, 0);
 
         mem.put_u32(STACK + 8, 1);
-        let retry = setup(&mem, &cpu, 1.0).unwrap();
+        let retry = setup(&mem, &cpu, LodDetail::Retail).unwrap();
         assert_eq!(retry.al, Some(0));
         publish(&mut mem, retry);
         assert_eq!(mem.u32(RECORD_COUNT).unwrap(), 3);
@@ -967,7 +1114,7 @@ mod setup_tests {
             .put_u32(LIGHT_VIS + 0x14, LIST)
             .put_u32(LIGHT_VIS + VIEW_KIND, 1);
         cpu.esi = LIGHT_VIS;
-        let out = setup(&mem, &cpu, 1.0).unwrap();
+        let out = setup(&mem, &cpu, LodDetail::Retail).unwrap();
         assert_eq!(out.al, Some(1));
         assert_eq!((out.ecx, out.edx), (Some(FLAGS), Some(FLAGS)));
         assert_eq!(mem.u16(FLAGS).unwrap(), 0x84a0);
@@ -975,6 +1122,6 @@ mod setup_tests {
         assert_eq!(mem.u16(FLAGS).unwrap(), 0x84a1);
 
         mem.put_u32(STACK + 8, 1);
-        assert_eq!(setup(&mem, &cpu, 1.0).unwrap().al, Some(0));
+        assert_eq!(setup(&mem, &cpu, LodDetail::Retail).unwrap().al, Some(0));
     }
 }

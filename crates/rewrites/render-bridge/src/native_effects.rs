@@ -63,8 +63,7 @@ pub(crate) fn build(b: &mut hooks::Builder) {
             })
             .context_only();
     }
-    // The query and layered effects are always guest-owned. Only callbacks
-    // with a run-time ownership decision need these diagnostic observers.
+    // Log the runtime callbacks whose geometry producer is unknown.
     let queued = AtomicU64::new(0);
     b.raw().observe_before(&CALLBACK_QUEUE, "native_particles_callback_queue", move |o| {
         if queued.load(Ordering::Relaxed) >= LOG_LIMIT {
