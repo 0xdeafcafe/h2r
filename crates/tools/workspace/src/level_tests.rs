@@ -1,6 +1,5 @@
-//! AS4 and AS5 (docs/engine/asset-store.md, "Build slices"): level images
-//! on an invented map kept in an invented store, and the assets a level's
-//! `LevelId` names from the store's catalogue. No disc bytes.
+//! AS4 (docs/engine/asset-store.md, "Build slices"): level images on an
+//! invented map kept in an invented store. No disc bytes.
 use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -19,7 +18,7 @@ use crate::{BuiltMap, Loaded, Report, Served, build_map};
 const D: &str = "invented\\dmg\\d";
 
 /// A fresh folder under the system's temp dir.
-fn temp(name: &str) -> PathBuf {
+pub(crate) fn temp(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("workspace-as4-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
@@ -38,7 +37,7 @@ fn adds(id: &str, path: &str, maps: &str) -> Loaded {
 
 /// The invented map with one raw resource: its bytes and the resource's
 /// (offset, length).
-fn base_with_raw() -> (Vec<u8>, (u64, u64)) {
+pub(crate) fn base_with_raw() -> (Vec<u8>, (u64, u64)) {
     let mut set = base();
     set.raw.push(RawBlob {
         bytes: (0..0x1800u32).map(|i| (i * 7 + i / 251) as u8).collect(),
@@ -51,7 +50,7 @@ fn base_with_raw() -> (Vec<u8>, (u64, u64)) {
 /// Keep `bytes` in the store at `root` as the map `name`, as the extractor
 /// does: the raw resource at `raw` an extent of its own file, everything
 /// else the skeleton.
-fn put_store(root: &Path, name: &str, bytes: &[u8], raw: (u64, u64)) -> String {
+pub(crate) fn put_store(root: &Path, name: &str, bytes: &[u8], raw: (u64, u64)) -> String {
     let mut repo = TagRepo::create(root).unwrap();
     let len = bytes.len() as u64;
     let (o, l) = raw;
@@ -66,16 +65,16 @@ fn put_store(root: &Path, name: &str, bytes: &[u8], raw: (u64, u64)) -> String {
     h
 }
 
-struct Store {
-    root: PathBuf,
-    tags: PathBuf,
-    images: PathBuf,
-    bytes: Vec<u8>,
-    raw: (u64, u64),
-    raw_hash: String,
+pub(crate) struct Store {
+    pub(crate) root: PathBuf,
+    pub(crate) tags: PathBuf,
+    pub(crate) images: PathBuf,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) raw: (u64, u64),
+    pub(crate) raw_hash: String,
 }
 
-fn store(name: &str) -> Store {
+pub(crate) fn store(name: &str) -> Store {
     let root = temp(name);
     let tags = root.join("tags");
     let (bytes, raw) = base_with_raw();
@@ -96,7 +95,7 @@ impl Drop for Store {
     }
 }
 
-fn read_image(s: &Store, id: &LevelId) -> Vec<u8> {
+pub(crate) fn read_image(s: &Store, id: &LevelId) -> Vec<u8> {
     let (_, mut f) = open_image(&s.images, &s.tags.join("raw"), id).expect("the image opens");
     let mut out = Vec::new();
     f.read_to_end(&mut out).unwrap();
@@ -340,121 +339,4 @@ fn store_levels_assemble_once_and_record_what_they_served() {
     assert!(levels.image("midship").is_err());
     let rec = served.lock().unwrap()["midship"].clone();
     assert!(rec.error.is_some());
-}
-
-/// An invented tag: a root of one word, of `group`.
-fn invented(group: &[u8; 4], path: &str, word: u32) -> tags::repo::LooseTag {
-    tags::repo::LooseTag {
-        key: TagKey::new(cc(group), path),
-        body: tags::repo::Body::Tree(tags::repo::Tree {
-            nodes: vec![tags::repo::Node {
-                bytes: word.to_le_bytes().to_vec(),
-                count: 1,
-                size: 4,
-                align: 4,
-                fields: Vec::new(),
-            }],
-            ..Default::default()
-        }),
-    }
-}
-
-/// Build and write the catalogue of the store at `store`.
-fn write_catalogue(store: &Path) {
-    let schema = tags::schema::Schema::default();
-    let (c, report) = tags::repo::catalogue::build(store, &schema).unwrap();
-    assert!(report.problems.is_empty(), "{:?}", report.problems);
-    tags::repo::catalogue::write(store, &c).unwrap();
-}
-
-/// [`store()`]'s level with a manifest and a catalogue: two invented
-/// tags, of one content.
-fn catalogued(name: &str) -> Store {
-    let s = store(name);
-    let mut repo = TagRepo::create(&s.tags).unwrap();
-    let mut m = tags::repo::store::Manifest {
-        map: "tiny".into(),
-        ..Default::default()
-    };
-    for path in ["b\\zeta", "a\\alpha"] {
-        let t = invented(b"weap", path, 7);
-        repo.put(&t).unwrap();
-        m.tags.push((t.key.clone(), None));
-    }
-    repo.put_manifest(&m, &[0; 0x800]).unwrap();
-    write_catalogue(&s.tags);
-    s
-}
-
-/// A level with nothing over it names every asset of its manifest by
-/// hash, from the store's catalogue: its `LevelId` moves with an asset.
-/// With a package over it no asset is named, and a store with no current
-/// catalogue is refused, naming what writes it.
-#[test]
-fn a_level_names_its_assets_by_hash_from_the_catalogue() {
-    let s = catalogued("level-assets");
-    let catalogue = tags::repo::catalogue::read(&s.tags).unwrap();
-    let assets = level_assets(&s.tags, "tiny", catalogue.as_ref()).unwrap();
-    // Sorted by key; two tags of one content share a hash.
-    let names: Vec<&str> = assets.iter().map(|a| a.0.as_str()).collect();
-    assert_eq!(names, ["weap:a\\alpha", "weap:b\\zeta"]);
-    assert_eq!(assets[0].1, assets[1].1);
-    let base = Sha256::of(&s.bytes);
-    let level = assemble(&s.tags, &s.images, &[], "tiny").unwrap();
-    assert!(level.image.is_none() && !level.built());
-    assert_eq!(level.assets, assets);
-    assert_eq!(level.id, level_id_of("tiny", base, &[], assets.clone()));
-    assert_ne!(level.id, level_id("tiny", base, &[]));
-    // With a package over it, the packages stand for every asset.
-    let layered = assemble(&s.tags, &s.images, &[adds_c("c")], "tiny").unwrap();
-    assert!(layered.assets.is_empty());
-    assert_eq!(layered.id, level_id("tiny", base, &[adds_c("c")]));
-
-    // A changed asset moves the id, once the catalogue is built again (as
-    // `prepare` does after an extraction).
-    let key = TagKey::new(cc(b"weap"), "a\\alpha");
-    let repo = TagRepo::open(&s.tags).unwrap();
-    std::fs::write(
-        repo.path_of(&key, None),
-        tags::repo::format::encode(&invented(b"weap", "a\\alpha", 9)),
-    )
-    .unwrap();
-    write_catalogue(&s.tags);
-    let moved = assemble(&s.tags, &s.images, &[], "tiny").unwrap();
-    assert_ne!(moved.id, level.id);
-    assert_ne!(moved.assets[0].1, assets[0].1);
-    assert_eq!(moved.assets[1].1, assets[1].1);
-    let mut tables = tags::repo::normal::Tables::none();
-    let changed = tags::repo::normal::form(&invented(b"weap", "a\\alpha", 9), &mut tables).unwrap();
-    assert_eq!(moved.assets[0].1, crate::asset_hash(&changed));
-
-    // A manifest that changes leaves the catalogue stale: refused, naming
-    // what rewrites it.
-    let mut m = repo.manifest("tiny").unwrap();
-    m.name = "renamed".into();
-    repo.write_manifest(&m).unwrap();
-    let why = assemble(&s.tags, &s.images, &[], "tiny").unwrap_err();
-    assert!(why.contains("stale") && why.contains("h2 build"), "{why}");
-    let why = level_assets(&s.tags, "tiny", catalogue.as_ref()).unwrap_err();
-    assert!(why.contains("stale"), "{why}");
-    // No catalogue at all: refused the same way.
-    std::fs::remove_file(s.tags.join(tags::repo::catalogue::CATALOGUE_FILE)).unwrap();
-    let why = assemble(&s.tags, &s.images, &[], "tiny").unwrap_err();
-    assert!(
-        why.contains("no catalogue") && why.contains("workspace.extract"),
-        "{why}"
-    );
-    // The game's levels: the catalogue is read once and the level served.
-    write_catalogue(&s.tags);
-    let mut levels = StoreLevels::new(
-        s.tags.clone(),
-        s.images.clone(),
-        Vec::new(),
-        Served::default(),
-    );
-    assert!(levels.image("tiny").unwrap().is_none());
-    assert!(levels.image("midship").is_err());
-    // A store with no manifest for the level names no asset.
-    let plain = store("level-no-manifest");
-    assert!(level_assets(&plain.tags, "tiny", None).unwrap().is_empty());
 }

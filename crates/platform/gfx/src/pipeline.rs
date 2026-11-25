@@ -97,10 +97,24 @@ impl PipelineKey {
 
 static PIPELINES: mem_watch::Counter = mem_watch::Counter::new("gfx.pipeline_cache_entries");
 
-/// A map from [`PipelineKey`] to a built pipeline, with hit/miss counters.
+/// Room for the busy draw pipelines and variants without holding every map's.
+const DRAW_PIPELINES: usize = 1536;
+/// Counting uses the same keys but has its own smaller working set.
+pub(crate) const COUNT_PIPELINES: usize = 128;
+
+#[derive(Debug)]
+struct Cached<V> {
+    value: V,
+    /// A speculative insert stays cold until a draw asks for it.
+    used: u64,
+}
+
+/// A bounded map from [`PipelineKey`] to a pipeline, with hit/miss counters.
 #[derive(Debug)]
 pub struct PipelineCache<V> {
-    map: HashMap<PipelineKey, V>,
+    map: HashMap<PipelineKey, Cached<V>>,
+    limit: usize,
+    tick: u64,
     entries: mem_watch::Gauge,
     hits: u64,
     misses: u64,
@@ -108,7 +122,7 @@ pub struct PipelineCache<V> {
 
 impl<V> Default for PipelineCache<V> {
     fn default() -> Self {
-        Self { map: HashMap::new(), entries: PIPELINES.track(0), hits: 0, misses: 0 }
+        Self::with_limit(DRAW_PIPELINES)
     }
 }
 
@@ -118,38 +132,72 @@ impl<V> PipelineCache<V> {
         Self::default()
     }
 
+    pub(crate) fn with_limit(limit: usize) -> Self {
+        assert!(limit > 0);
+        Self {
+            map: HashMap::new(),
+            limit,
+            tick: 0,
+            entries: PIPELINES.track(0),
+            hits: 0,
+            misses: 0,
+        }
+    }
+
+    pub(crate) fn is_full(&self) -> bool {
+        self.map.len() == self.limit
+    }
+
+    /// Evict a batch on a miss at the cap. A hit costs one borrowed lookup
+    /// except when the cache is exactly full.
+    fn make_room(&mut self, key: &PipelineKey) {
+        if !self.is_full() || self.map.contains_key(key) {
+            return;
+        }
+        let mut use_order: Vec<u64> = self.map.values().map(|entry| entry.used).collect();
+        let evict = (self.limit / 4).max(1);
+        let (_, oldest, _) = use_order.select_nth_unstable(evict - 1);
+        self.map.retain(|_, entry| entry.used > *oldest);
+        self.entries.set(self.map.len() as u64);
+    }
+
     /// Returns the cached value for `key`, building it with `make` on a miss.
     pub fn get_or_insert_with(&mut self, key: &PipelineKey, make: impl FnOnce(&PipelineKey) -> V) -> &V {
+        self.make_room(key);
+        self.tick += 1;
         match self.map.entry_ref(key) {
             EntryRef::Occupied(entry) => {
                 self.hits += 1;
-                entry.into_mut()
+                let entry = entry.into_mut();
+                entry.used = self.tick;
+                &entry.value
             }
             EntryRef::Vacant(entry) => {
                 let _scope = mem_watch::scope("render.pipeline");
                 self.misses += 1;
-                let value = entry.insert(make(key));
+                let entry = entry.insert(Cached { value: make(key), used: self.tick });
                 self.entries.set(self.entries.get() + 1);
-                value
+                &entry.value
             }
         }
     }
 
-    /// Adds `value` for `key` (replacing any), without counting.
+    /// Adds `value` for `key` (replacing any) without counting it as a draw.
     pub fn insert(&mut self, key: PipelineKey, value: V) {
         let _scope = mem_watch::scope("render.pipeline");
-        self.map.insert(key, value);
+        self.make_room(&key);
+        self.map.insert(key, Cached { value, used: 0 });
         self.entries.set(self.map.len() as u64);
     }
 
     /// Every key and value.
     pub fn iter(&self) -> impl Iterator<Item = (&PipelineKey, &V)> {
-        self.map.iter()
+        self.map.iter().map(|(key, entry)| (key, &entry.value))
     }
 
     /// Looks up without building or counting.
     pub fn get(&self, key: &PipelineKey) -> Option<&V> {
-        self.map.get(key)
+        self.map.get(key).map(|entry| &entry.value)
     }
 
     /// Number of distinct pipelines held.
@@ -174,7 +222,7 @@ impl<V> PipelineCache<V> {
 
     /// Drops every pipeline (e.g. after the surface format changes).
     pub fn clear(&mut self) {
-        self.map.clear();
+        self.map = HashMap::new();
         self.entries.set(0);
     }
 }
@@ -354,6 +402,39 @@ mod tests {
         cache.clear();
         assert!(cache.is_empty());
         assert_eq!(cache.entries.get(), 0);
+    }
+
+    #[test]
+    fn a_full_cache_evicts_speculation_then_least_recently_drawn() {
+        use std::sync::Arc;
+
+        let mut cache = PipelineCache::with_limit(4);
+        let keys = [0, 1, 2, 3, 4, 5].map(|id| {
+            let mut k = key(&RenderState::default());
+            k.shader = ShaderId(id);
+            k
+        });
+        let [a, b, c, speculative, d, e] = &keys;
+
+        let prewarmed = Arc::new(0);
+        let weak = Arc::downgrade(&prewarmed);
+        cache.insert(speculative.clone(), prewarmed);
+        for k in [a, b, c] {
+            cache.get_or_insert_with(k, |k| Arc::new(k.shader.0));
+        }
+        assert!(cache.is_full());
+        assert_eq!(**cache.get_or_insert_with(a, |_| unreachable!()), 0);
+
+        cache.get_or_insert_with(d, |k| Arc::new(k.shader.0));
+        assert!(cache.get(speculative).is_none());
+        assert!(weak.upgrade().is_none(), "only the cache held this pipeline");
+        let recorded = cache.get(b).unwrap().clone();
+        cache.get_or_insert_with(e, |k| Arc::new(k.shader.0));
+        assert!(cache.get(b).is_none(), "oldest draw was evicted");
+        assert_eq!(*recorded, 1, "a recorded draw still owns its pipeline");
+        assert!(cache.get(a).is_some(), "a cache hit refreshes the draw's age");
+        assert_eq!(cache.len(), 4);
+        assert_eq!(cache.entries.get(), 4);
     }
 
     #[test]

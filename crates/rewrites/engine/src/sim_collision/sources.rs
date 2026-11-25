@@ -7,7 +7,7 @@ use sim_collision::{
     Bail, Bsp,
     bsp::{HEADER_BYTES, block},
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
 
 const OWNER: &str = "collision-bsp-sources";
@@ -89,7 +89,8 @@ const MAX_WATCHED_MOPPS: usize = 1024;
 struct MoppSubscription {
     epoch: (u64, u64),
     id: WatchId,
-    codes: HashSet<u32>,
+    // Largest watched span at this address and the generation its size was checked in.
+    codes: HashMap<u32, (u32, u64)>,
 }
 
 /// A generation for the bytes under the MOPP programs the box query
@@ -111,7 +112,7 @@ impl MoppSources {
         let epoch = g.write_watch_epoch();
         let reset = self.active.as_ref().is_none_or(|s| {
             s.epoch != epoch
-                || (s.codes.len() >= MAX_WATCHED_MOPPS && !s.codes.contains(&code))
+                || (s.codes.len() >= MAX_WATCHED_MOPPS && !s.codes.contains_key(&code))
         });
         if reset {
             for (id, owner) in g.write_watch_owners() {
@@ -123,7 +124,7 @@ impl MoppSources {
             self.active = Some(MoppSubscription {
                 epoch,
                 id: g.subscribe_writes(MOPP_OWNER),
-                codes: HashSet::new(),
+                codes: HashMap::new(),
             });
         }
         let id = self.active.as_ref().expect("mopp subscription installed").id;
@@ -132,11 +133,15 @@ impl MoppSources {
             self.generation += 1;
         }
         let s = self.active.as_mut().expect("mopp subscription installed");
-        if !s.codes.contains(&code) {
+        let previous = s.codes.get(&code).copied();
+        if previous.is_none_or(|(_, generation)| generation != self.generation) {
             let header = sim_collision::mopp::Header::read(&Read(&*g, (0, 0)), code)?;
-            g.watch_virtual_read(s.id, code, header.size as usize)
-                .map_err(|_| Bail::Fault)?;
-            s.codes.insert(code);
+            let watched = previous.map_or(0, |(size, _)| size);
+            if header.size > watched {
+                g.watch_virtual_read(s.id, code, header.size as usize)
+                    .map_err(|_| Bail::Fault)?;
+            }
+            s.codes.insert(code, (watched.max(header.size), self.generation));
         }
         Ok(self.generation)
     }
@@ -173,6 +178,30 @@ mod tests {
         synth::{Builder, SOLID, leaf},
     };
     use sim_core::Epoch;
+
+    #[test]
+    fn growing_a_mopp_watches_its_new_tail_even_after_another_query() {
+        use sim_collision::mopp::{HEADER_BYTES, SIZE};
+        let code = 0x10000;
+        let other = code + 0x2000;
+        let alias = 0x20000;
+        let mut g = Guest::new();
+        g.map(code, 0x3000, 0, Permissions::RW).unwrap();
+        g.map(alias, 0x1000, 0x1000, Permissions::RW).unwrap();
+        for at in [code, other] {
+            g.set_u32(at + SIZE, HEADER_BYTES + 1).unwrap();
+        }
+        let mut sources = MoppSources::default();
+        let first = sources.revision(&mut g, code).unwrap();
+        sources.revision(&mut g, other).unwrap();
+        g.set_u32(code + SIZE, 0x1010).unwrap();
+        // This lookup consumes the dirty notification for the changed header.
+        let grown = sources.revision(&mut g, other).unwrap();
+        assert_ne!(first, grown);
+        assert_eq!(grown, sources.revision(&mut g, code).unwrap());
+        g.set_u8(alias + 0x0f, 1).unwrap();
+        assert_ne!(grown, sources.revision(&mut g, code).unwrap());
+    }
 
     #[test]
     fn decode_constants_are_watched_and_incomplete_subscriptions_retry() {

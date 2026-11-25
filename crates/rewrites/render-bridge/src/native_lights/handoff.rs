@@ -9,13 +9,13 @@
 //! its flags and its steps are made from the hand-off and the layers of
 //! the body's `LightItems` ([`Source::handed`], [`made`]), not read back
 //! from the lists. When the guest makes the lists, the light is read at
-//! that call as at the passes' entry ([`Source::observed`], [`guest_made`]).
+//! the following constants call ([`Source::observed`]).
 //!
 //! Each light the scene takes from a hand-off is checked against guest
 //! memory after its lists are made: `light_handoff_compared` per check,
 //! `light_handoff_mismatch` per difference.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use engine::light_constants as lc;
 use engine::light_passes as lp;
@@ -143,8 +143,10 @@ pub(super) struct Taken {
 }
 
 thread_local! {
-    /// The render thread's: the body, its passes and their item lists run
-    /// on it.
+    // The entry supplies the registers, but only the completed item lists
+    // supply this light's masks. A successful Rust hand-off needs no reread.
+    static OBSERVE: Cell<Option<(Entry, u64)>> = const { Cell::new(None) };
+    /// The frame body's hand-off to its passes and item lists.
     static HANDOFF: RefCell<Option<Handoff>> = const { RefCell::new(None) };
 }
 
@@ -165,9 +167,10 @@ fn hand(passes: Passes) {
 
 /// At the passes' entry: `true` when the pending hand-off is this call's
 /// (its registers and stack words), which then waits for the light's
-/// item lists with `entry` and `serial`. `false`: the scene reads the
-/// light here (no hand-off, or one that is not this call's).
+/// item lists with `entry` and `serial`. Without a matching hand-off the
+/// caller defers the scene read until the constants call.
 pub(super) fn entered(mem: &dyn GuestMemory, entry: Entry, serial: u64) -> bool {
+    OBSERVE.set(None);
     let Some(h) = HANDOFF.take() else {
         return false;
     };
@@ -221,7 +224,7 @@ pub(super) fn made(mem: &dyn GuestMemory, taken: &Taken, items: &LightItems) {
         items.receivers.layers,
         items.casters.layers,
     ) else {
-        guest_made(mem, taken, Refusal::Memory);
+        guest_made(taken, Refusal::Memory);
         return;
     };
     super::open_light(mem, &source, taken.entry.fpu(), taken.serial);
@@ -232,16 +235,29 @@ pub(super) fn made(mem: &dyn GuestMemory, taken: &Taken, items: &LightItems) {
     }
 }
 
-/// The guest makes the light's lists (the item body declined, for
-/// `why`): the scene reads the light now, before the call, as at the
-/// passes' entry.
-pub(super) fn guest_made(mem: &dyn GuestMemory, taken: &Taken, why: Refusal) {
+/// Read the guest-built lists once the same light reaches its constants.
+pub(super) fn defer(entry: Entry, serial: u64) {
+    OBSERVE.set(Some((entry, serial)));
+}
+
+pub(super) fn at_constants(esp: u32) -> Option<(Entry, u64)> {
+    use engine::render::light_gather::passes::{CONSTANTS_ARGS, FRAME};
+    let (entry, _) = OBSERVE.get()?;
+    if entry.esp == esp.wrapping_add(4 + CONSTANTS_ARGS + FRAME) {
+        OBSERVE.take()
+    } else {
+        None
+    }
+}
+
+pub(super) fn guest_made(taken: &Taken, why: Refusal) {
     super::frame::refused(SceneList::LightHandoff, why);
-    super::observe(mem, taken.entry, taken.serial);
+    defer(taken.entry, taken.serial);
 }
 
 /// A view begins: a hand-off still pending was never taken.
 pub(super) fn new_view() {
+    OBSERVE.set(None);
     if HANDOFF.take().is_some() {
         not_taken();
     }
@@ -249,6 +265,7 @@ pub(super) fn new_view() {
 
 /// A snapshot load: the pending hand-off is not this memory's.
 pub(super) fn forget() {
+    OBSERVE.set(None);
     HANDOFF.take();
 }
 
@@ -370,6 +387,22 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_deferred_light_uses_its_own_completed_lists_once() {
+        use engine::render::light_gather::passes::{CONSTANTS_ARGS, FRAME};
+        let esp = ESP - FRAME - CONSTANTS_ARGS - 4;
+        let mut m = guest();
+        defer(entry(), 7);
+        assert_eq!(at_constants(esp - 4), None);
+        lists_made(&mut m, &items(1 << 12, 0));
+        let (e, serial) = at_constants(esp).unwrap();
+        assert_eq!(serial, 7);
+        let source = Source::observed(&m, &e).unwrap();
+        let inputs = source.inputs(&m, 0, 0).unwrap();
+        assert_eq!(light_passes::steps(&inputs).drawn(), 1 << 12);
+        assert_eq!(at_constants(esp), None);
     }
 
     #[test]

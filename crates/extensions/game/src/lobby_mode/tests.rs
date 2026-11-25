@@ -572,7 +572,7 @@ fn the_panel_lines_follow_the_mode() {
     );
     let mut o = ff::Options::default();
     assert_eq!(
-        panel_lines(Mode::Firefight, None, Some(Ok(o))),
+        panel_lines(Mode::Firefight, None, Some(Ok(o.clone()))),
         [
             "Holdout waves",
             "Normal difficulty",
@@ -583,7 +583,7 @@ fn the_panel_lines_follow_the_mode() {
     o.difficulty = ::firefight::Difficulty::Legendary;
     o.lives = Some(1);
     assert_eq!(
-        panel_lines(Mode::Firefight, None, Some(Ok(o))),
+        panel_lines(Mode::Firefight, None, Some(Ok(o.clone()))),
         [
             "Last Stand waves",
             "Legendary difficulty",
@@ -592,25 +592,25 @@ fn the_panel_lines_follow_the_mode() {
     );
     o.lives = Some(5);
     assert_eq!(
-        panel_lines(Mode::Firefight, None, Some(Ok(o)))[2],
+        panel_lines(Mode::Firefight, None, Some(Ok(o.clone())))[2],
         "5 starting lives"
     );
     // Two teams say so on the wave set's line: Crossfire's own, or a set
     // the Teams row splits.
     o.wave_set = 3;
     assert_eq!(
-        panel_lines(Mode::Firefight, None, Some(Ok(o)))[0],
+        panel_lines(Mode::Firefight, None, Some(Ok(o.clone())))[0],
         "Crossfire waves, 2 teams"
     );
     o.teams = Some(1);
     assert_eq!(
-        panel_lines(Mode::Firefight, None, Some(Ok(o)))[0],
+        panel_lines(Mode::Firefight, None, Some(Ok(o.clone())))[0],
         "Crossfire waves"
     );
     o.wave_set = 2;
     o.teams = Some(2);
     assert_eq!(
-        panel_lines(Mode::Firefight, None, Some(Ok(o)))[0],
+        panel_lines(Mode::Firefight, None, Some(Ok(o.clone())))[0],
         "Last Stand waves, 2 teams"
     );
     let unread = panel_lines(
@@ -621,7 +621,7 @@ fn the_panel_lines_follow_the_mode() {
     assert_eq!(unread.len(), 1);
     assert!(unread[0].contains("firefight.lives"), "the reason is named");
     for mode in Mode::ALL {
-        assert!(panel_lines(mode, None, Some(Ok(o))).len() <= MAX_PANEL_LINES);
+        assert!(panel_lines(mode, None, Some(Ok(o.clone()))).len() <= MAX_PANEL_LINES);
     }
 }
 
@@ -667,6 +667,7 @@ fn a_snapshot_keeps_the_lobbys_mode() {
     lobby_start::set_forge_map(Some("Castle".into()));
     let bytes = save_state();
     lobby_start::clear();
+    lobby_start::set_kit_map(Some("old-kit".into()));
     load_state(&bytes).unwrap();
     assert_eq!(
         lobby_start::state(),
@@ -674,7 +675,8 @@ fn a_snapshot_keeps_the_lobbys_mode() {
             lobby: true,
             mode: Mode::Forge,
             forge_map: Some("Castle".into()),
-            map_variant: None
+            map_variant: None,
+            kit_map: None,
         }
     );
     assert!(load_state(&[1]).is_err());
@@ -695,6 +697,7 @@ fn the_header_has_its_own_panel_hook_inside_lobby_options() {
         ))
         .unwrap();
         r.add(&LobbyMode {
+            theater: None,
             offer: ALL,
             store: Some(store),
             data: std::env::temp_dir(),
@@ -734,6 +737,7 @@ fn the_rows_go_after_the_other_rows_on_the_plan() {
     r.add(&page.class()).unwrap();
     r.add(&ff::SetupRow { page }).unwrap();
     r.add(&LobbyMode {
+        theater: None,
         offer: ALL,
         store: Some(ff_store),
         data: std::env::temp_dir(),
@@ -785,6 +789,7 @@ fn the_arrangement_runs_after_every_row_is_added() {
     r.add(&page.class()).unwrap();
     r.add(&ff::SetupRow { page }).unwrap();
     r.add(&LobbyMode {
+        theater: None,
         offer: ALL,
         store: Some(ff_store),
         data: std::env::temp_dir(),
@@ -982,6 +987,23 @@ mod gate {
         g::clear();
         if let Some(mode) = mode {
             lobby_start::set_mode(mode);
+        }
+    }
+
+    #[test]
+    fn siege_picker_and_start_check_the_same_selected_record_and_objectives() {
+        let siege = crate::community_variants::listed_named("Siege").unwrap();
+        let blob = crate::rules::feature::local_blob(siege.ext().script.prefix).unwrap();
+        let (ir, _) = ::rules::verify::load(&blob).unwrap();
+        let mut guest = lobby(MAP, siege.ext().script.prefix, true);
+        guest.put(VARIANT, siege.record.bytes());
+        let input = g::read(&guest, VARIANT).unwrap();
+
+        for (census, supported) in [(Census::default(), false), (territory_map(), true)] {
+            let sources = Fake::new(census, &ir);
+            let offers = g::map_filter_using(&siege.record, &sources).unwrap();
+            assert_eq!(offers(MAP), supported);
+            assert_eq!(g::check(&input.key, &sources) == Verdict::Clear, supported);
         }
     }
 

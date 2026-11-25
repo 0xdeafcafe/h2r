@@ -2,7 +2,7 @@
 //! with, the [`Observed`] the host feeds the script each tick, the
 //! [`Command`]s it answers with, and the [`State`] the mode blob is made
 //! of. The director itself is [`crate::script::ScriptDirector`]: the
-//! definition compiled to a rules script and run on the rules VM. It reads
+//! handwritten rules script on the rules VM, with the wave set as data. It reads
 //! no clock, touches no game memory and draws only from its own generator,
 //! so the same definition, settings and observed sequence always give the
 //! same commands.
@@ -17,15 +17,6 @@ use crate::{Difficulty, MAX_TEAMS, Skull};
 
 /// Squad slots the kit provides on every map.
 pub const SQUAD_SLOTS: usize = 16;
-/// Squads placed in one step at most.
-pub const PLACE_PER_TICK: usize = 2;
-/// Live actors at or under which a wave enters cleanup.
-pub const CLEANUP_ACTORS: u16 = 3;
-/// Ticks of cleanup before the director erases what is left (60 seconds).
-pub const CLEANUP_TICKS: u32 = 60 * 30;
-/// Ticks a placed squad may go unobserved, or an erased one may stay
-/// observed, before the director treats it as gone (3 seconds).
-pub const SLOT_TIMEOUT_TICKS: u32 = 3 * 30;
 
 /// Match options chosen in Game Setup or by the hopper.
 #[derive(Clone, Debug, PartialEq, Eq)]

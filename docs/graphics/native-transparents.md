@@ -1,10 +1,10 @@
 # Native renderer stage 3: transparents
 
-Status: Built. Sorted transparent geometry draws keep their guest handlers; the stage substitutes immutable GPU vertex bindings at the indexed draw. Pixel parity and the time saved are not verified.
+Status: Built. Sorted transparent geometry draws keep their guest handlers; the standard emitter submits full parts and selected subranges through the native indexed pipeline. Pixel parity and the time saved are not verified.
 Code: `crates/rewrites/render-bridge/src/native_transparents.rs`, `crates/extensions/game/src/native_transparents_glue.rs`, `crates/rewrites/native-render/src/transparent.rs`, `transparent_streams.rs`, `world_layers_gpu.rs`. Tests: `crates/rewrites/render-bridge/tests/native_transparents.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
-After the opaque layers and late passes, `render_scene_passes` calls `SCENE_TRANSPARENTS` (`0x0001e370`). The call sorts its own list and invokes one handler per entry; the geometry handlers set up their layer-15 passes and depth-test against what the opaque layers left. The stage lets every handler run and changes only where an indexed draw takes its vertices from. Part of [native-renderer.md](native-renderer.md).
+After the opaque layers and late passes, `render_scene_passes` calls `SCENE_TRANSPARENTS` (`0x0001e370`). The call sorts its own list and invokes one handler per entry; the geometry handlers set up their layer-15 passes and depth-test against what the opaque layers left. The stage lets every handler run and offers each standard indexed range to the native renderer. Part of [native-renderer.md](native-renderer.md).
 
 ## Stage 3: transparents
 
@@ -36,45 +36,48 @@ After the opaque layers and late passes, `render_scene_passes` calls `SCENE_TRAN
   and 18..28 the instanced-geometry placement (`0x7ff` for a cluster;
   "What a world pass reads").
 
-Other handlers in the list (effects, particles, contrails, decals) keep their D3D draws here; [native-particles.md](native-particles.md) covers the effect leaves.
+Effects, particles and contrails use their own draw boundaries in [native-particles.md](native-particles.md).
 
 ### Admission and order
 
-Observers identify the sorted entry from the live guest stack and clear
-the scope at the end of the sorted loop (`0x0001e406`). The dispatcher and
-its cleanup run on whichever context calls them. The standard handler
-runs its material builds, state writes, bindings and restores. The D3D indexed draw drains pending push-buffer work, then
-resolves its own state and bindings. Stage 3 may substitute one immutable
-GPU vertex binding at that draw. It uses the original indices, shader
-classification, constants, alpha test, W clip and attachments. The
-original draw remains in place if the entry, map generation, compatible
-depth target or any sampled texture cannot be confirmed.
+The standard handler runs its layer-15 material builds, bindings and restores. The sorted ordinal must resolve to its live entry, and the emitter and handler frames must identify that entry's draw. The full-part branch supplies its range in registers. The three subrange call sites supply the topology, index count and pointer on the stack after state setup.
 
-The intervening D3D and inline draws pass through the same command
-stream. Each entry retains its own part and the implementation passes
-that the handler actually draws. No stage-3 pass is queued ahead of
-that work. The optimization targets vertex bindings. Guest handler and
-D3D state-resolution costs still apply.
+Each triangle list or strip goes through the existing indexed pass with the resolved shaders, fog, blend and depth state and the current attachments. The resolved packet supplies the live inputs even when the item’s object lighting owner is unavailable. A triangle list keeps trailing indices in its snapshot and rasterizes complete triangles. Admission preserves the order of the individual ranges and intervening handlers. A refused range runs its original indexed call, which can still use the immutable vertex binding adapter.
 
-### Admission and order
+Camouflage and hologram use the same indexed path for ranges that reach
+the guest emitter. The indexed API return and two nested return sites
+identify the emitter and layer dispatcher, and the live layer must match the layer argument. The
+handler's return address identifies its regular layer replays or the
+specific draw of layer 18, 19 or 21. Layer begin, material state, texture
+snapshots and target changes execute in their original order. Items
+already admitted by `frame-scene.layers` never reach this path. A sealed
+frame retains each replacement beside its original indexed packet and
+resolves the sampled textures for that replay. When a verified camera
+moves between ticks, the replacement uses the same updated constants as
+the original packet.
 
-`feature::native_transparents` tracks the view and geometry handler frames and verifies the entry argument and render record at each indexed draw. Observers identify the sorted entry from the live guest stack and clear the scope at the end of the sorted loop (`0x0001e406`). The dispatcher and its cleanup can run on the pipelined render thread.
-
-The standard handler runs its material builds, state writes, bindings and restores. The D3D indexed draw drains pending push-buffer work, then resolves its own state and bindings. The stage may substitute one immutable GPU vertex binding at that draw. It uses the original indices, shader classification, constants, alpha test, W clip and attachments. The original draw remains if the entry, map generation, compatible depth target or any sampled texture cannot be confirmed.
-
-The adapter requires a programmable W-buffered indexed triangle draw with compatible colour and depth targets. Each draw takes the D3D snapshot after its handler sets up the pass, so earlier setup and restore writes are included. Palette expansion, resident mip selection, BC blocks, sampler state and render-to-texture coherency stay with the D3D path. The intervening D3D and inline draws pass through the same command stream, and each entry retains its own part. No transparent pass is queued ahead of that work.
 
 ### Vertex bindings
 
-`native_render::transparent_streams` packs multiple immutable streams into one buffer when their live declarations and strides allow it. It keeps the raw guest bytes, including packed normals and normalized endpoints. The cache uses immutable stream snapshots and the exact declaration, scoped to the game activation and active BSP. A transparent view can use the cache before any layer-3 item. Object entries pack only when the objects stage is on. Object inputs and node rows come from the actual draw, as do cluster and placement inputs. The opaque world keeps the layers 1, 3, 5, 7 and 8 layout, with a 92-byte stride and `Float32x2` for v6.
+`native_render::transparent_streams` packs multiple immutable streams into one buffer when their live declarations and strides allow it. It keeps the raw guest bytes, including packed normals and normalized endpoints. The cache uses immutable stream snapshots and the exact declaration, scoped to the game activation and active BSP. A transparent view can use the cache before any layer-3 item. Object entries pack only when the objects stage is on. Object inputs and node rows come from the actual draw, as do cluster and placement inputs. The resident opaque world uses a 96-byte vertex. Its layer-3 declaration binds `v6` as `Float32x2` for lightmap coordinates or `Unorm8x4` for baked colour.
+
+The `indexed draws with native bindings` log counts accepted draw bindings
+since startup and reports every 1,800 acceptances. The
+`native_transparents_cache_hits` and `native_transparents_cache_misses`
+frame counters track reuse and packing attempts for those bindings.
 
 ### GPU submission
 
 The ordered draw path batches uniforms in the renderer's upload arena and reuses texture and sampler groups keyed by the live views and samplers. The packed vertex buffer can stay on the GPU across views. No transparent draw allocates its own pair of uniform buffers and group.
 
+The ordered indexed path shares one repack plan between shader translation
+and buffer preparation. It keeps up to 256 layout and stride combinations
+per cache. The fallback adapter checks the packed byte count before
+allocating an interleaved buffer.
+
 ## Rules and limits
 
-The optimization targets vertex bindings. Guest handler and D3D state-resolution costs still apply. A refusal leaves the original D3D draw in place.
+Guest handler and state-resolution costs still apply. A refusal leaves the original D3D draw in place.
 
 ## Not verified
 

@@ -903,10 +903,84 @@ mod tests {
             h.frames(&mut app, 4).unwrap();
             assert_eq!(app.front_doc(), Some(doc));
             assert!(h.scene.find("##studio-bar>###doc-tab-").is_ok(), "the tab strip");
+            for label in ["Undo", "Links", "Open with"] {
+                assert!(h.scene.find(label).is_ok(), "{} missing {label}", app.doc_id(doc));
+            }
             check(&h, &app.doc_id(doc));
         }
         drop(turn);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn following_a_link_and_back_restores_the_document_and_selection() {
+        use crate::app::{Doc, NavAction, shell_tests, tag_tests};
+        let dir = shell_tests::Temp::new("header-back");
+        let mut app = shell_tests::app(&dir.0);
+        let weapon = tag_tests::weap_id();
+        let target = shell_tests::kit_id();
+        app.dispatch(Action::OpenDoc(Doc::Tag(weapon)));
+        app.dispatch(Action::Navigate(NavAction::Go {
+            tag: weapon, path: Some("parts[0].item".into()), element: None,
+        }));
+        let selection = app.nav_location();
+        let tag = app.tags.tag(target).unwrap();
+        let id = format!("tag:{}:{}", tags::defs::fourcc_text(tag.group), tag.name);
+        app.dispatch(Action::OpenAsset { asset: id, map: None });
+        assert_eq!(app.front_doc(), Some(Doc::Tag(target)));
+        app.dispatch(Action::Navigate(NavAction::Back));
+        assert_eq!(app.front_doc(), Some(Doc::Tag(weapon)));
+        assert_eq!(app.nav_location(), selection);
+    }
+
+    /// The header over an invented weapon and a fake tags repository: the
+    /// Links menu, drawn, lists the model the weapon names, and the path
+    /// names the tag. Skipped without a wgpu adapter.
+    #[test]
+    fn the_header_menu_lists_the_links_of_a_weapon_in_a_fake_repository() {
+        use crate::app::{Doc, shell_tests, tag_tests};
+        use ::tags::repo::{Body, LooseTag, Node, Region, TagKey, TagRepo, Tree, Value as Field};
+        let Some((_turn, mut h)) = tags_headless() else {
+            return;
+        };
+        let dir = shell_tests::Temp::new("header-links");
+        let mut app = shell_tests::app(&dir.0);
+        let key = |g: &[u8; 4], p: &str| TagKey::new(map::FourCC(*g), p);
+        let weapon = key(b"weap", "objects\\test\\blaster");
+        let model = key(b"hlmt", "objects\\test\\blaster_model");
+        let tag = |k: &TagKey, refs: Vec<(u32, TagKey)>| LooseTag {
+            key: k.clone(),
+            body: Body::Tree(Tree {
+                region: Region::Metadata,
+                nodes: vec![Node {
+                    bytes: vec![0; 32],
+                    count: 1,
+                    size: 32,
+                    align: 4,
+                    fields: refs.into_iter().map(|(at, r)| (at, Field::Ref(r))).collect(),
+                }],
+                raws: Vec::new(),
+                losses: Vec::new(),
+            }),
+        };
+        let mut repo = TagRepo::create(&app.tags_root()).unwrap();
+        repo.put(&tag(&weapon, vec![(0, model.clone())])).unwrap();
+        repo.put(&tag(&model, Vec::new())).unwrap();
+        app.dispatch(Action::OpenDoc(Doc::Tag(tag_tests::weap_id())));
+        assert_eq!(
+            app.doc_asset(Doc::Tag(tag_tests::weap_id())).as_deref(),
+            Some("tag:weap:objects\\test\\blaster")
+        );
+        let c = crate::ui::doc_header_crumbs(&app, "tag:weap:objects\\test\\blaster").unwrap();
+        assert_eq!((c.origin.as_str(), c.kind.as_str()), ("Disc", "Objects"));
+        h.frames(&mut app, 4).unwrap();
+        h.step(&mut app, &Step::Click("Links".into(), Button::Left)).unwrap();
+        h.frames(&mut app, 3).unwrap();
+        assert!(
+            h.scene.find("tag:hlmt:objects\\test\\blaster_model").is_ok(),
+            "the Links menu lists the weapon's model"
+        );
+        assert!(h.scene.find("Show all in the Browser").is_ok());
     }
 
     /// The tab strip's clicks (a double-click in the Tags tree, a tab, a
@@ -1115,7 +1189,8 @@ mod tests {
         use crate::app::ToolKind;
         use crate::script::{Button, Step};
         use hud_edit::{WidgetKey, WidgetKind};
-        let Some((_turn, mut h)) = headless() else {
+        // Leave room for the HUD's document header and the bottom dock.
+        let Some((_turn, mut h)) = headless_sized([1280.0, 1100.0]) else {
             return;
         };
         // A combo reports no label of its own: name it to the probe.
@@ -1141,13 +1216,25 @@ mod tests {
         h.step(&mut app, &click("##hud-w-Bitmap-2")).unwrap();
         assert_eq!(app.hud.selected, Some(stray));
         let (origin, zoom) = h.studio.hud.shown.expect("the picture is shown");
-        // The stray's middle (88..152, 396..412), then 20 HUD pixels right.
+        let rect = app
+            .hud
+            .shot()
+            .unwrap()
+            .picture
+            .placed
+            .iter()
+            .find(|p| p.hud == 0 && p.key == stray)
+            .and_then(|p| p.rect)
+            .expect("the stray has a rectangle");
+        let (x, y) = ((rect.x0 + rect.x1) / 2.0, (rect.y0 + rect.y1) / 2.0);
+        assert_eq!(app.hud.widget_at([x, y]), Some(stray));
+        // Move from the widget's middle by 20 HUD pixels.
         let at = |x: f32, y: f32| format!("{},{}", origin[0] + x * zoom, origin[1] + y * zoom);
         for step in [
-            Step::Move(at(120.0, 404.0)),
+            Step::Move(at(x, y)),
             Step::Down,
-            Step::Move(at(130.0, 404.0)),
-            Step::Move(at(140.0, 404.0)),
+            Step::Move(at(x + 10.0, y)),
+            Step::Move(at(x + 20.0, y)),
             Step::Up,
         ] {
             h.step(&mut app, &step).unwrap();
@@ -2050,6 +2137,7 @@ mod tests {
             asset: None,
             tool: None,
             field: None,
+            at: None,
         };
         let hud = Problem {
             tool: Some(crate::ToolKind::Hud),
@@ -2086,20 +2174,24 @@ mod tests {
         );
     }
 
-    /// Copy into package, from the browser's context menu, is
-    /// [`Action::CopyAsset`]: the same call as `asset.copy`, a `tag` item
-    /// that holds none of the source's bytes.
+    /// New from this uses the edit target picker and opens the copy.
     #[test]
-    fn the_browsers_copy_into_package_writes_a_like_item() {
+    fn new_from_this_resumes_after_choosing_the_edit_target() {
         let t = crate::app::map_cards_tests::Temp::new("browser-copy");
         let data = t.0.join("data");
         let pkg = browser_tree(&data);
         let mut app = App::new();
         app.set_data_root(data);
-        app.dispatch(Action::CopyAsset {
+        app.dispatch(Action::CreateAsset(crate::app::assets::CreateAsset::Copy {
             asset: "tag:weap:objects\\weapons\\rifle".into(),
-            package: "kit-test".into(),
-        });
+            to: None,
+        }));
+        assert!(app.edits.picker.is_some());
+        assert!(app.front_doc().is_none());
+        app.dispatch(Action::ChooseEditTarget(crate::app::EditChoice::Existing("kit-test".into())));
+        let doc = app.front_doc().unwrap();
+        assert!(matches!(doc, crate::app::Doc::SourceAsset(_)));
+        assert_eq!(app.doc_asset(doc).as_deref(), Some("tag:weap:objects\\weapons\\rifle_copy"));
         let like = pkg.join("tags/objects/weapons/rifle_copy.weap.yaml");
         assert_eq!(
             std::fs::read_to_string(like).unwrap(),
@@ -2109,10 +2201,10 @@ mod tests {
         assert!(manifest.contains("rifle_copy"), "{manifest}");
         // A tag the tree lacks is a refusal in the log, not a file.
         let before = app.log().len();
-        app.dispatch(Action::CopyAsset {
+        app.dispatch(Action::CreateAsset(crate::app::assets::CreateAsset::Copy {
             asset: "tag:weap:objects\\nothing".into(),
-            package: "kit-test".into(),
-        });
+            to: None,
+        }));
         assert!(app.log().len() > before);
         assert!(!pkg.join("tags/objects/nothing_copy.weap.yaml").exists());
     }

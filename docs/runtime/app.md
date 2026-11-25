@@ -80,7 +80,7 @@ Also public: `app::pump_input` (below), `frame::{channel, FrameSink,
 FrameSource, Compositor}`, `pacing::{Pacer, PacePolicy, VBlank}`,
 `scale::{place, fit, DisplayAspect, Scaling}`, `keymap`, `lifecycle`.
 
-`AppConfig` (all have defaults): `title`, `window_size` (1280x960 points),
+`AppConfig` (all have defaults): `title`, `window_size` (1280x960 points, fitted to the primary monitor aspect by `h2 play`),
 `fullscreen`, `aspect` (`Standard` 4:3), `scaling` (`Fit`, `Integer`,
 `Stretch`), `filter` (`Linear`, `Nearest`), `vsync` (true), `fps`
 (`fps::FpsTarget::Thirty`; `H2_FPS`, below), `pause_on_focus_loss`
@@ -108,7 +108,7 @@ image and starts the clang build in the background. The window banner
 or has failed. Restart to use the finished clang build.
 
 Flags: `--out DIR`, `--data DIR`, `--slices N` (unlimited by
-default), `--transfers N`, `--aspect 4:3|16:9|source` (default `source` for play), `--scaling
+default), `--transfers N`, `--aspect 4:3|16:9|source` (default play shape follows the drawable), `--scaling
 fit|integer|stretch`, `--nearest`, `--fullscreen`, `--no-audio`,
 `--no-gamepads`, `--no-vsync`, `--unpaced`, `--fps 30|60|120|uncapped`,
 `--no-watermark`, `--no-mappack` (or `H2_MAPPACK=0`; a `mappack.iso` beside the
@@ -290,16 +290,17 @@ Both panels sit on the same bottom margin; the live panel grows upwards.
   the render thread, 0 with it off), and draws per frame (the render
   thread's included, joined to their frame by `timeline::phase::WorkerFrame`). The map is the level map the game
   opened last (`kernel::level::last_map`: `maps\<name>.map`, the shared
-  maps left out). Then the wgpu backend and whether the render thread is
-  on. With `--frame-stats` the window is its 5 s one; otherwise `h2 play`
+  maps left out). Then the wgpu backend, whether the render thread is on,
+  the raster of the frame being shown, and the drawable size, both in
+  physical pixels. With `--frame-stats` the window is its 5 s one; otherwise `h2 play`
   starts frame stats itself with a quiet 2 s window
   (`timeline::phase::Config::live`: no log, no CSV, no exit report). An
   embedder without frame stats gets fps and frame time from the shell's
   present count.
 - Drawing is host-side only, at present time, over the scaled game image
-  (inside any letterbox or pillarbox), never in guest memory. The text
-  changes at most four times a second; only then is it rasterised on the
-  CPU (`font8x8`, the banner's public-domain letters, with a soft
+  (inside any letterbox or pillarbox), never in guest memory. Timing
+  numbers refresh every 250 ms and the dimensions update with the
+  presented frame and drawable. Panel text is rasterised on the CPU (`font8x8`, the banner's public-domain letters, with a soft
   one-pixel shadow) into one texture a panel. Every present draws each as
   one alpha-blended quad. Glyphs are 8x8 font pixels, 2x from a target
   1600 pixels tall (Retina), and lines too long for their panel are cut
@@ -612,13 +613,16 @@ surface, clearing the rest to black.
 - **Ordering** comes from the single shared queue: the copy is submitted
   before the slot is published, and the window's read is submitted before
   the slot can return to the guest. No fences.
-- **Scaling** (`scale.rs`). Play uses square output pixels by default.
-  Native follows the drawable up to the default 4K pixel budget.
-  `GuestHost::native_size` publishes the physical drawable size for Native and
-  `GuestHost::display_size` reports where a given raster is presented.
-  `--aspect 4:3` and `16:9` fit those shapes inside the window. `Fit`
-  adds bars as needed. In Native resolution with Source aspect, Fit uses
-  the drawable's aspect for the game frame. `Integer` takes the largest
+- **Scaling** (`scale.rs`). Play renders for the drawable’s shape by default, including at fixed internal resolutions.
+  Native uses physical viewport pixels. Fullscreen targets larger than 4K
+  use a 3840 × 2160 pixel budget.
+  `GuestHost::native_target` publishes the physical drawable, fitted viewport
+  and fullscreen state together. `GuestHost::display_size` reports where a
+  given raster is presented.
+  With Fit scaling, `--aspect 4:3` and `16:9` fit those shapes inside
+  the window. `--aspect source` fits a fixed raster at its own aspect and
+  follows the drawable in Native resolution. The host loading picture
+  keeps its source shape by default. `Integer` takes the largest
   whole multiple of the frame height that fits, and `Stretch` fills the
   drawable.
 - **Resize** (`crates/apps/app/src/shell.rs`, `crates/apps/app/src/surface.rs`)
@@ -627,9 +631,9 @@ surface, clearing the rest to black.
   Both paths read the current backing size from the view. The Metal
   presenter uses aspect-preserving contents gravity and presents the
   resized drawable in a Core Animation transaction
-  (`crates/apps/app/src/metal_resize.rs`). The game reallocates its Native
-  raster after the drawable size holds steady for 150 ms. Minimizing
-  preserves the last nonzero size.
+  (`crates/apps/app/src/metal_resize.rs`). The game applies the latest
+  Native target at the next render frame boundary. DPI changes request a
+  redraw and minimizing preserves the last nonzero size.
 - **Vsync**: `AutoVsync` (Fifo) by default, `AutoNoVsync` with
   `vsync: false`. This only affects the window; guest pacing is separate.
 - **Display rate** (`AppConfig::fps`, `H2_FPS=30|60|120|uncapped`, `h2 play

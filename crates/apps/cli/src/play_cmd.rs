@@ -29,7 +29,7 @@ const USAGE: &str = "usage:
            [--live-tunnel-url https://HOST]] [--no-tunnel-setup]]
           [--icons auto|xbox|xbox360|playstation|keyboard|remote]
           [--level MAP [--difficulty easy|normal|heroic|legendary]] [--set KEY=VALUE]...
-          [--editor [--window]]
+          [--editor [--window] [--game-variant FILE]]
   h2 play --follow [--repo PATH] [--branch B] [--remote R] [--no-fetch] [--poll SECS]
           [--fresh-data] [--cache DIR] <the arguments above>
   h2 play --watch [--repo PATH] [--quiet MS] [--fresh-data] [--cache DIR] <the arguments above>
@@ -87,7 +87,8 @@ Live, film or --input-timeline (docs/editor/game-view.md). --level MAP (or H2_LE
 default player: no title, profile or menus. MAP is a map file name from the
 disc: a campaign level (03a_oldmombasa) at --difficulty (or H2_DIFFICULTY;
 normal by default), or a multiplayer map (ascension) as a local Slayer game
-with the default variant. A name the disc lacks lists them (docs/runtime/level-boot.md).
+with the default variant. --game-variant FILE supplies a portable .h2variant
+for an --editor multiplayer level. A name the disc lacks lists them (docs/runtime/level-boot.md).
 --follow keeps the game running while it builds each new commit of the
 branch, then offers a restart (`h2 play --follow --help`). --watch watches your
 checkout instead: once a burst of edits or a git pull settles it reloads rules
@@ -347,10 +348,10 @@ fn hosted(
             None => gfx,
         }
     };
-    let native_size: boot::run_opts::NativeSize = Arc::new(host.native_size());
+    let native_target: boot::run_opts::NativeTarget = Arc::new(host.native_target());
     let (gfx, view) = boot::d3d_glue::window_targets(
         &store,
-        native_size, host.display_size(),
+        native_target, host.display_size(),
         || configure(d3d::GfxBackend::new(host.gfx_context())),
         || {
             let present = host
@@ -566,6 +567,7 @@ pub(crate) fn run_with_theater(
     let mut live = crate::play_live::LiveOpts::default();
     let mut film_out = None;
     let mut level_flag: Option<String> = None;
+    let mut game_variant = None;
     let mut difficulty_flag: Option<String> = None;
     let mut tier: Option<boot::tier::Choice> = None;
     let mut editor_flag = false;
@@ -576,7 +578,8 @@ pub(crate) fn run_with_theater(
         // consumes the unused `GuestHost::mixer`).
         audio: false,
         title: "Halo 2".into(),
-        aspect: app::DisplayAspect::Source,
+        aspect: app::DisplayAspect::Drawable,
+        window_matches_monitor_aspect: true,
         bindings: play_bindings(),
         // The run prints its report before the guest thread returns.
         shutdown_timeout: Duration::from_secs(10),
@@ -653,6 +656,7 @@ pub(crate) fn run_with_theater(
             "--editor" => editor_flag = true,
             "--window" => window_flag = true,
             "--level" => level_flag = Some(val()?),
+            "--game-variant" => game_variant = Some(PathBuf::from(val()?)),
             "--difficulty" => difficulty_flag = Some(val()?),
             "--follow-status" => follow_status = Some(PathBuf::from(val()?)),
             "--input-timeline" => {
@@ -764,13 +768,16 @@ pub(crate) fn run_with_theater(
         },
         gamepads: config.gamepads,
     };
+    if game_variant.is_some() && editor.is_none() {
+        bail!("--game-variant needs --editor");
+    }
     // The packages' convert items (the Map Pack and Halo 1 discs beside
     // the game disc), before the level is resolved so `--level a30` finds
     // a level this converts.
     crate::package_prepare::before_boot(&disc, &data, no_halo1, no_mappack);
     // Before the build and the window, so a bad name stops here with the
     // disc's list.
-    let level = match level_choice(
+    let mut level = match level_choice(
         level_flag,
         difficulty_flag,
         std::env::var("H2_LEVEL").ok(),
@@ -779,6 +786,12 @@ pub(crate) fn run_with_theater(
         Some((name, difficulty)) => Some(boot::level_boot::resolve_in(&disc, Some(&data), &name, difficulty)?),
         None => None,
     };
+    if let Some(path) = game_variant {
+        let req = level.as_mut().context("--game-variant needs --level")?;
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        req.set_variant(&text)?;
+    }
     if let Some(l) = &level {
         eprintln!("play: starting {} {} ({})", l.name, l.game(), l.scenario);
     }
@@ -918,6 +931,11 @@ pub(crate) fn run_with_theater(
         if let Some(input) = host.input.as_mut() {
             if let Some(menu) = &debug_menu {
                 input.set_gate(Box::new(menu.gate()));
+            }
+            // Editor mode: Start goes to the tool, so the in-game pause menu
+            // never opens (docs/editor/game-view.md).
+            if editor.is_some() {
+                input.add_gate(Box::new(self::editor::NoStart));
             }
         }
         host.theater = theater;

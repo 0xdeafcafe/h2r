@@ -1,12 +1,25 @@
 //! Synthetic only. The coordinator runs this; no retail assets or game.
 #![cfg(feature = "gpu")]
+use std::borrow::Cow;
 use native_render::particle_gpu::*;
 use native_render::particles::{DrawIdentity, Vertex, QUAD_INDICES};
-use shaders::vsh::encode::{program, Inst, Operand as O};
+use shaders::vsh::encode::{Inst, Operand as O};
 use shaders::{psh, vsh};
 
 const SIZE: u32 = 64;
-fn snapshot(call: u64, x: f32, tint: [f32; 4]) -> ImmediateDrawSnapshot {
+fn program(instructions: &[Inst]) -> d3d::shader::Microcode {
+    let encoded = vsh::encode::program(instructions);
+    let words: Vec<_> = encoded[4..]
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .copied()
+        .map(u32::from_le_bytes)
+        .collect();
+    words.into()
+}
+
+fn snapshot(call: u64, x: f32, tint: [f32; 4]) -> ImmediateDrawSnapshot<'static> {
     let microcode = program(&[
         Inst::mac(vsh::MacOp::Mov, Some(O::v(0)), None, None).to_out(false, vsh::OutReg::Pos, 15),
         Inst::mac(vsh::MacOp::Mov, Some(O::c(20)), None, None).to_out(false, vsh::OutReg::D0, 15),
@@ -48,13 +61,14 @@ fn snapshot(call: u64, x: f32, tint: [f32; 4]) -> ImmediateDrawSnapshot {
             },
             pixel_options: Default::default(),
             flat_shading: false,
+            input_fetch: Default::default(),
         },
         vertex_uniforms,
         pixel_uniforms: Default::default(),
         textures: Default::default(),
-        vertices,
+        vertices: vertices.into(),
         raw_vertices: None,
-        indices: QUAD_INDICES.to_vec(),
+        indices: Cow::Borrowed(&QUAD_INDICES),
         primitive: wgpu::PrimitiveState::default(),
         depth: wgpu::DepthStencilState {
             format: wgpu::TextureFormat::Depth32Float,
@@ -71,7 +85,7 @@ fn snapshot(call: u64, x: f32, tint: [f32; 4]) -> ImmediateDrawSnapshot {
     }
 }
 
-fn ribbon(mut green: ImmediateDrawSnapshot) -> ImmediateDrawSnapshot {
+fn ribbon(mut green: ImmediateDrawSnapshot<'static>) -> ImmediateDrawSnapshot<'static> {
     let mut bytes = Vec::new();
     for i in [0, 1, 3, 2] {
         for f in green.vertices[i].registers[0][..3]
@@ -83,7 +97,7 @@ fn ribbon(mut green: ImmediateDrawSnapshot) -> ImmediateDrawSnapshot {
         }
         bytes.extend([0, 255, 0, 255]);
     }
-    green.raw_vertices = Some(
+    green.raw_vertices = Some(Cow::Owned(
         RawVertices::new(
             native_render::effect_geometry::Kind::Contrail,
             bytes,
@@ -106,9 +120,9 @@ fn ribbon(mut green: ImmediateDrawSnapshot) -> ImmediateDrawSnapshot {
             ],
         )
         .unwrap(),
-    );
-    green.vertices.clear();
-    green.indices = vec![0, 1, 2, 3];
+    ));
+    green.vertices.to_mut().clear();
+    green.indices = Cow::Borrowed(&[0, 1, 2, 3]);
     green.primitive.topology = wgpu::PrimitiveTopology::TriangleStrip;
     green.primitive.strip_index_format = Some(wgpu::IndexFormat::Uint32);
     green.shader.microcode = program(&[
@@ -123,11 +137,11 @@ fn admission_refuses_partial_geometry_unknown_depth_and_bad_clip() {
     let s = snapshot(1, 4., [1.; 4]);
     assert_eq!(s.validate(), Ok(()));
     let mut bad = s.clone();
-    bad.indices.push(0);
-    assert_eq!(bad.validate(), Err(Refused::Geometry));
+    bad.indices.to_mut().push(0);
+    assert_eq!(bad.validate(), Err(Refused::Geometry("indices")));
     bad = s.clone();
-    bad.indices[0] = 4;
-    assert_eq!(bad.validate(), Err(Refused::Geometry));
+    bad.indices.to_mut()[0] = 4;
+    assert_eq!(bad.validate(), Err(Refused::Geometry("indices")));
     bad = s.clone();
     bad.depth.depth_compare = None;
     assert_eq!(bad.validate(), Err(Refused::State));
@@ -146,11 +160,11 @@ fn admission_refuses_partial_geometry_unknown_depth_and_bad_clip() {
 fn weather_lines_require_pairs_and_points_remain_unadmitted() {
     let mut s = snapshot(1, 4., [1.; 4]);
     s.primitive.topology = wgpu::PrimitiveTopology::LineList;
-    s.indices = vec![0, 1, 2, 3];
+    s.indices = Cow::Borrowed(&[0, 1, 2, 3]);
     assert_eq!(s.validate(), Ok(()));
-    s.indices.pop();
-    assert_eq!(s.validate(), Err(Refused::Geometry));
-    s.indices.push(3);
+    s.indices.to_mut().pop();
+    assert_eq!(s.validate(), Err(Refused::Geometry("indices")));
+    s.indices.to_mut().push(3);
     s.primitive.topology = wgpu::PrimitiveTopology::PointList;
     assert!(s.validate().is_err());
 }
@@ -324,13 +338,16 @@ fn solid_texture(
 }
 
 /// A quad that takes its colour from texture 0.
-fn textured(mut s: ImmediateDrawSnapshot, texture: TextureBinding) -> ImmediateDrawSnapshot {
+fn textured(
+    mut s: ImmediateDrawSnapshot<'static>,
+    texture: TextureBinding,
+) -> ImmediateDrawSnapshot<'static> {
     s.shader.microcode = program(&[
         Inst::mac(vsh::MacOp::Mov, Some(O::v(0)), None, None).to_out(false, vsh::OutReg::Pos, 15),
         Inst::mac(vsh::MacOp::Mov, Some(O::v(9)), None, None).to_out(false, vsh::OutReg::T(0), 15),
         Inst::mac(vsh::MacOp::Mov, Some(O::c(20)), None, None).to_out(false, vsh::OutReg::D0, 15),
     ]);
-    for v in &mut s.vertices {
+    for v in s.vertices.to_mut() {
         v.registers[9] = [0.5, 0.5, 0., 1.];
     }
     s.shader.pixel.final_inputs_abcd = psh::bits::REG_T0 as u32;
@@ -343,7 +360,7 @@ fn textured(mut s: ImmediateDrawSnapshot, texture: TextureBinding) -> ImmediateD
 /// Red, a green strip, a scissored constant-blend quad over the red one,
 /// and (given a texture) an orange textured quad: every state a packet
 /// has to carry.
-fn scene(texture: Option<TextureBinding>) -> Vec<ImmediateDrawSnapshot> {
+fn scene(texture: Option<TextureBinding>) -> Vec<ImmediateDrawSnapshot<'static>> {
     let mut blended = snapshot(3, 10., [1.; 4]);
     blended.blend = Some(wgpu::BlendState {
         color: wgpu::BlendComponent {
@@ -375,7 +392,7 @@ fn frame(
     ctx: &gfx::GfxContext,
     renderer: &mut ParticleRenderer,
     pool: &gfx::ring::UploadPool,
-    scene: &[ImmediateDrawSnapshot],
+    scene: &[ImmediateDrawSnapshot<'_>],
     packets: bool,
 ) -> Vec<u8> {
     let (color, depth) = (

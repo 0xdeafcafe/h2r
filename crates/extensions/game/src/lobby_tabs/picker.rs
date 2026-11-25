@@ -23,7 +23,7 @@ use crate::ui_kit::view::Opener;
 
 /// The modes the picker lists, in its order. CO-OP is a lobby mode the
 /// header names, but not a value of the picker.
-pub const MODES: [Tab; 4] = [Tab::Multiplayer, Tab::CustomGames, Tab::Forge, Tab::Firefight];
+pub const MODES: [Tab; 3] = [Tab::Multiplayer, Tab::CustomGames, Tab::Forge];
 /// The picker's title, as a row's label ([`crate::ui_kit::picker::title`]
 /// puts it in capitals).
 pub const TITLE: &str = "Game Mode";
@@ -118,14 +118,14 @@ mod tests {
         remote_members: false,
     };
 
-    /// The four modes in title case, focused on the lobby's, with what each
+    /// The lobby modes in title case, focused on the lobby's, with what each
     /// plays on the right; over the lobby.
     #[test]
-    fn the_picker_lists_the_four_modes_and_opens_on_the_lobbys() {
+    fn the_picker_lists_the_lobby_modes_and_opens_on_the_lobbys() {
         let s = lobby(Place::XboxLive, true, Tab::Forge, LIVE);
         let p = pick(&s, Present::ALL);
         assert_eq!(p.title, "GAME MODE");
-        assert_eq!(p.values, ["Multiplayer", "Custom Games", "Forge", "Firefight"]);
+        assert_eq!(p.values, ["Multiplayer", "Custom Games", "Forge"]);
         assert_eq!(p.values[p.current], "Forge", "the held mode");
         assert_eq!(p.opener, Opener::LOBBY);
         assert_eq!(p.description, DESCRIPTION);
@@ -152,8 +152,8 @@ mod tests {
             ..Present::ALL
         };
         let p = pick(&s, no_forge);
-        assert_eq!(p.values, ["Multiplayer", "Custom Games", "Firefight"]);
-        assert_eq!(picked(no_forge, 2), Some(Tab::Firefight));
+        assert_eq!(p.values, ["Multiplayer", "Custom Games"]);
+        assert_eq!(picked(no_forge, 2), None);
         assert_eq!(picked(no_forge, 3), None);
         assert_eq!(picked(Present::ALL, 2), Some(Tab::Forge));
     }

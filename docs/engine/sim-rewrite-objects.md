@@ -24,13 +24,22 @@ physics step stay callouts), slice 9's (the weapon update `fdfb0`), slice
 10's (the vehicle update `efde0`, with the type physics and the rest of
 its tree left as callouts), and slice 11's (the small type updates and
 the projectile step `f8eb0`). The differential
-harness compares the XMM registers and the x87 state at every callout of
+harness compares MXCSR, the XMM registers and the x87 state at every callout of
 every root, except the roots in its `FLOAT_OPT_OUT`. The contracts they keep are in
 [object-update.md](object-update.md). It details phase 3 of
 [sim-rewrite.md](sim-rewrite.md) (the plan; its section 8 decisions bind this
 page). Phase 1 (animation and pose, `crates/rewrites/sim-anim`) and phase 2 (collision
 and spatial queries) land first; section 6 says what this phase needs from
 them.
+
+The object walks, export lookup, light endpoint blends and unit look basis
+use the Rust kernels in `crates/rewrites/sim-objects`, as does the
+tag-function curve evaluator `13b390`: an idiomatic kernel
+(`functions/curve.rs`) that runs as a capture arm at every guest call,
+the guest's answer compared with its prediction and the counts kept in
+`engine::sim_objects::functions::parity`. The action walk
+`e6830` serves both bipeds and vehicles. Six object points support live
+segment comparison through the [shadow checks](shadow-exec.md#registration-and-the-agent-api).
 
 Evidence marks: **C** confirmed (read from the retail image with `h2 disasm`
 on 2026-11-20, or already encoded in a differential-tested port in

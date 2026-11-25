@@ -294,6 +294,7 @@ dependencies = [
  "objc2-quartz-core 0.3.2",
  "png",
  "pollster",
+ "settings",
  "thiserror 2.0.21",
  "timeline",
  "wgpu",
@@ -2043,7 +2044,9 @@ dependencies = [
  "sim-anim",
  "sim-collision",
  "sim-core",
+ "sim-havok",
  "sim-objects",
+ "sim-sound",
  "simd",
  "tags",
  "variants",
@@ -6607,6 +6610,7 @@ name = "sim-anim"
 version = "0.1.0"
 dependencies = [
  "sim-core",
+ "simd",
 ]
 
 [[package]]
@@ -6625,6 +6629,8 @@ version = "0.1.0"
 dependencies = [
  "engine",
  "hooks",
+ "hs",
+ "ir",
  "lifted",
  "runtime",
  "sim-ext",
@@ -6634,7 +6640,11 @@ dependencies = [
 name = "sim-collision"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
+ "host-dirs",
+ "memmap2",
  "mopp",
+ "sha2 0.10.9",
  "sim-core",
 ]
 
@@ -6651,11 +6661,28 @@ name = "sim-ext"
 version = "0.1.0"
 
 [[package]]
+name = "sim-havok"
+version = "0.1.0"
+dependencies = [
+ "sim-core",
+ "simd",
+ "x87",
+]
+
+[[package]]
 name = "sim-objects"
 version = "0.1.0"
 dependencies = [
  "guest-layout",
  "sim-core",
+]
+
+[[package]]
+name = "sim-sound"
+version = "0.1.0"
+dependencies = [
+ "simd",
+ "x87",
 ]
 
 [[package]]
@@ -7263,6 +7290,7 @@ dependencies = [
 name = "tags"
 version = "0.1.0"
 dependencies = [
+ "content",
  "flate2",
  "map",
  "sha2 0.10.9",
@@ -7995,6 +8023,7 @@ dependencies = [
  "content",
  "host-dirs",
  "libc",
+ "mem-watch",
  "memmap2",
  "rustix 1.1.6",
  "tags",

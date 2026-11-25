@@ -1,17 +1,20 @@
 //! The Modeling section of the map inspector (docs/editor/modeling.md):
 //! pick a cluster or instanced definition, open it in edit mode, select
 //! and move its vertices with undo, and add a collision box to its
-//! structure's level collision. Every button is an `Action::Model`, the
-//! same command `geometry.*` and `mesh.*` run.
+//! structure's level collision. The controls share Modeling and tag
+//! commands with the agent API. Undo and Redo use the map document.
 
 use dear_imgui_rs::{TreeNodeFlags, Ui};
-use geometry_edit::{TargetInfo, TargetKind};
+use geometry_edit::{Target, TargetInfo, TargetKind};
 use geometry_edit::mesh_edit::{MeshOp, SelectMode};
 
 use crate::App;
 use crate::app::Action;
+use crate::app::Doc;
 use crate::app::modeling::ModelAction;
 use crate::theme;
+
+mod physics;
 
 /// What the section keeps between frames.
 pub struct ModelingPanel {
@@ -19,6 +22,8 @@ pub struct ModelingPanel {
     /// first opens on a map.
     targets: Option<(u64, Vec<TargetInfo>)>,
     picked: usize,
+    physics: physics::Panel,
+    collision_source: Option<Target>,
     delta: [f32; 3],
     /// The collision box's corners, world units.
     box_lo: [f32; 3],
@@ -38,6 +43,8 @@ impl Default for ModelingPanel {
         ModelingPanel {
             targets: None,
             picked: 0,
+            physics: physics::Panel::default(),
+            collision_source: None,
             delta: [0.0; 3],
             box_lo: [0.0; 3],
             box_hi: [0.0; 3],
@@ -58,11 +65,13 @@ pub fn section(ui: &Ui, app: &mut App, st: &mut ModelingPanel, actions: &mut Vec
     if !ui.collapsing_header("Modeling##modeling", TreeNodeFlags::NONE) {
         return;
     }
+    st.physics.draw(ui, app, actions);
     let rev = app.session.world_rev();
     if st.targets.as_ref().is_none_or(|(r, _)| *r != rev) {
         let list = app.modeling_targets(None).unwrap_or_default();
         st.targets = Some((rev, list));
         st.picked = 0;
+        st.collision_source = None;
     }
     let Some((_, targets)) = &st.targets else {
         return;
@@ -91,7 +100,7 @@ pub fn section(ui: &Ui, app: &mut App, st: &mut ModelingPanel, actions: &mut Vec
     }
     let info = &targets[st.picked.min(targets.len() - 1)];
     let (t, local) = (info.target, info.local);
-    if t.kind != TargetKind::ModeSection {
+    if matches!(t.kind, TargetKind::Cluster | TargetKind::InstanceDef) {
         collision_box(ui, app, st, t.tag, actions);
     }
     let g = &app.modeling.session;
@@ -108,6 +117,40 @@ pub fn section(ui: &Ui, app: &mut App, st: &mut ModelingPanel, actions: &mut Vec
     }
     if ui.button("Leave edit mode##modeling-close") {
         actions.push(Action::Model(ModelAction::Close(t)));
+    }
+    if t.kind == TargetKind::ModeSection {
+        let mut on = g.uses_for_lower_lods(t);
+        if ui.checkbox("Use for lower LODs##modeling-lower-lods", &mut on) {
+            actions.push(Action::Model(ModelAction::UseForLowerLods { target: t, on }));
+        }
+    }
+    if t.kind == TargetKind::Coll {
+        let sources = g.open_targets();
+        let label = |source: Target| g.name(source).map_or_else(
+            || source.id(),
+            |name| format!("{name} ({source})"),
+        );
+        let source = st.collision_source.filter(|s| sources.contains(s));
+        if let Some(_combo) = ui.begin_combo(
+            "Render section##collision-source",
+            source.map_or_else(|| "Choose an open section".to_owned(), label),
+        ) {
+            for candidate in sources.into_iter().filter(|s| s.kind != TargetKind::Coll) {
+                if ui.selectable_config(label(candidate)).selected(source == Some(candidate)).build() {
+                    st.collision_source = Some(candidate);
+                }
+            }
+        }
+        let _disabled = ui.begin_disabled_with_cond(source.is_none());
+        if ui.button("From render##collision-from-render") {
+            if let Some(render) = source {
+                actions.push(Action::Model(ModelAction::CollisionFromRender {
+                    render,
+                    target: t,
+                    materials: Vec::new(),
+                }));
+            }
+        }
     }
     let apply = |ops: Vec<MeshOp>| {
         Action::Model(ModelAction::Apply {
@@ -181,13 +224,21 @@ pub fn section(ui: &Ui, app: &mut App, st: &mut ModelingPanel, actions: &mut Vec
         actions.push(apply(vec![MeshOp::TrisToQuads { angle: st.quad_angle }]));
     }
     ui.separator();
+    // The map document's own stack, as Cmd+Z takes it in edit mode: every
+    // editor's steps are steps of its document (docs/editor/studio-flow.md,
+    // "Shared patterns").
+    let (can_undo, can_redo) = app.doc_can(Doc::Map);
+    let off = ui.begin_disabled_with_cond(!can_undo);
     if ui.button("Undo##modeling-undo") {
-        actions.push(Action::Model(ModelAction::Undo));
+        actions.push(Action::UndoDoc(Doc::Map));
     }
+    drop(off);
     ui.same_line();
+    let off = ui.begin_disabled_with_cond(!can_redo);
     if ui.button("Redo##modeling-redo") {
-        actions.push(Action::Model(ModelAction::Redo));
+        actions.push(Action::RedoDoc(Doc::Map));
     }
+    drop(off);
     for c in g.check(Some(t)) {
         ui.text(format!(
             "{} moved, {} faces' lightmaps stale: {}",

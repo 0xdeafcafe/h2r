@@ -12,7 +12,10 @@
 //! cold and warm, and compares the older per-function port where present.
 //! G and H compare like C and D, with their own dead stack; their third arm
 //! runs the lifted entry with one `sim_physics` port in place (the portal
-//! test under G, the visit itself for H).
+//! test under G, the visit itself for H). I (`mopp_ray`) runs the guest
+//! with the parity arm's observers and invented callbacks; the arm must
+//! match or say why it could not, and the collection must get the keys
+//! the native walk gives.
 #![cfg(feature = "differential")]
 
 mod common;
@@ -20,6 +23,18 @@ mod common;
 mod disc;
 #[path = "sim_collision_differential/mopp_box.rs"]
 mod mopp_box;
+#[path = "sim_collision_differential/mopp_ray.rs"]
+mod mopp_ray;
+#[path = "sim_collision_differential/instance.rs"]
+mod instance;
+#[path = "sim_collision_differential/model.rs"]
+mod model;
+#[path = "sim_collision_differential/query.rs"]
+mod query;
+#[path = "sim_collision_differential/spatial.rs"]
+mod spatial;
+#[path = "sim_collision_differential/straight.rs"]
+mod straight;
 
 use engine::sim_collision::{self as adapter, CollisionWorld, layout};
 use engine::{points, sim_native as sim};
@@ -464,6 +479,16 @@ fn check(
         };
         assert_eq!(transfer.target_pc, HARNESS_EXIT, "{case} {label}");
         let reference = reference.get_or_insert_with(|| guest(oracle));
+        if e.point.base == VECTOR.point.base || e.point.base == CONTEXT_ENTRY.point.base {
+            let mut entry = m.clone();
+            let p = if e.point.base == CONTEXT_ENTRY.point.base {
+                adapter::vector_parity::Prediction::gather_context(c, &mut entry, &world)
+            } else {
+                adapter::vector_parity::Prediction::gather(c, &mut entry, &world)
+            }.unwrap();
+            assert_eq!(entry.overlay, m.overlay, "{case}: parity gather wrote memory");
+            assert_eq!(p.compare(reference.0.gpr[0] as u8, &reference.1).unwrap(), None, "{case} {label}");
+        }
         let mut got_cpu = ir_cpu(&nc);
         got_cpu.eip = transfer.target_pc;
         compare(label, &got_cpu, &nm, reference);
@@ -841,6 +866,70 @@ fn vector_test_ties_match_the_guest() {
     });
 }
 
+#[test]
+fn vector_test_ring_groups_match_the_guest() {
+    with_oracle("collision vector test ring groups", |oracle, image| {
+        let polygon = [
+            [0.0, -4.0, -4.0],
+            [0.0, 0.0, -4.0],
+            [0.0, 4.0, -4.0],
+            [0.0, 4.0, 0.0],
+            [0.0, 4.0, 4.0],
+            [0.0, 0.0, 4.0],
+            [0.0, -4.0, 4.0],
+            [0.0, -4.0, 0.0],
+            [0.0, -4.0, -2.0],
+        ];
+        for len in [3, 5, 8, 9] {
+            for flip in [0, 0x8000] {
+                let mut b = Builder::default();
+                b.planes.push([1.0, 0.0, 0.0, 0.0]);
+                b.nodes.push((0, synth::leaf(0), synth::leaf(1)));
+                b.leaves.extend([(1, 1, 0), (1, 1, 0)]);
+                b.refs.push((flip, synth::surface(0)));
+                let points: Vec<_> =
+                    (0..len).map(|i| polygon[i * polygon.len() / len]).collect();
+                let first = b.ring(0, &points, flip != 0);
+                b.surfaces.push((flip, first, 0, 0, 7));
+
+                for (y, z) in [(0.0, -0.0), (-4.0, -4.0), (8.0, 8.0), (-8.0, 0.0)] {
+                    let mut m = fresh(image);
+                    write_bsp(&mut m, &b);
+                    record_and_mask(&mut m, &mut Rng(17));
+                    put_vector(&mut m, START, [-2.0, y, z]);
+                    put_vector(&mut m, DELTA, [4.0, 0.0, 0.0]);
+                    m.word(STACK + 4, 0);
+                    m.word(STACK + 8, 0);
+                    m.word(STACK + 12, START);
+                    m.word(STACK + 16, DELTA);
+                    let mut c = entry_cpu(&mut Rng(3), VECTOR.point.base);
+                    (c.mxcsr, c.x87.control, c.x87.tag) = (0x1fa0, 0x027f, 0xffff);
+                    c.eax = RECORD;
+                    c.ecx = 0;
+                    c.edx = BSP;
+                    c.xmm[0][..4].copy_from_slice(&1.0f32.to_le_bytes());
+
+                    for lanes in [false, true] {
+                        let label = format!("{len} edges, flip {flip:#x}, ({y}, {z}), lanes {lanes}");
+                        assert!(
+                            sim_core::lanes::with(lanes, || check(
+                                oracle,
+                                &VECTOR,
+                                &c,
+                                &m,
+                                |c, g, w| adapter::vector_test(c, g, w),
+                                None,
+                                &label,
+                            )),
+                            "{label}: declined"
+                        );
+                    }
+                }
+            }
+        }
+    });
+}
+
 /// The third arm for G and H: the lifted entry with `port` in place, from
 /// the same state, against the lifted entry alone.
 fn port_matches(
@@ -892,7 +981,7 @@ fn port_matches(
 }
 
 fn physics_port(point: &points::Point) -> &'static engine::sim_physics::Port {
-    engine::sim_physics::PORTS
+    engine::sim_physics::ORACLES
         .iter()
         .find(|p| p.point.base == point.base)
         .unwrap()

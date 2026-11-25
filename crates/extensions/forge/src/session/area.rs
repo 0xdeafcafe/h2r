@@ -86,6 +86,10 @@ impl Session {
         goal: Goal,
         frame: Frame,
     ) -> Result<OpId, String> {
+        // In a kit session the flag is a spare row of the kit.
+        if self.has_kit() {
+            self.kit_check(BlockKind::NetgameFlags)?;
+        }
         let kind = match goal {
             Goal::Hill => {
                 let flags = self.things();

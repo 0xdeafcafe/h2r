@@ -8,8 +8,8 @@ use super::residency;
 use super::staged::Staged;
 use super::*;
 
-pub(super) const PALETTE_CURSOR: u32 = NODE_BLOCKS - 4;
-const PALETTE_LIMIT: u32 = 0x27000;
+pub(in crate::native_scene_lists) const PALETTE_CURSOR: u32 = NODE_BLOCKS - 4;
+pub(in crate::native_scene_lists) const PALETTE_LIMIT: u32 = 0x27000;
 type Matrix = [f32; 12];
 
 pub(super) fn size(m: &dyn GuestMemory, model: u32, lod: u8, sections: &[u8]) -> Result<u32> {
@@ -60,7 +60,11 @@ fn single(m: &dyn GuestMemory, model: u32) -> Result<bool> {
     Ok(m.u8(at(model, 4)?)? & 4 != 0)
 }
 
-fn blend_group(m: &dyn GuestMemory, model: u32, lod: u8) -> Result<(u32, u32)> {
+pub(in crate::native_scene_lists) fn blend_group(
+    m: &dyn GuestMemory,
+    model: u32,
+    lod: u8,
+) -> Result<(u32, u32)> {
     if lod > 5 {
         return Err(Refusal::ObjectModel);
     }
@@ -134,6 +138,7 @@ pub(super) fn object_pose(
     model: u32,
     body: u32,
     slot: u32,
+    definition: u32,
     hlmt: u32,
     sections: &[u8],
 ) -> Result<u32> {
@@ -149,7 +154,9 @@ pub(super) fn object_pose(
                 }
             }
         }
-        if m.u8(at(slot, 3)?)? <= 1 && animated_actor(m, body)? {
+        if m.u8(at(slot, 3)?)? <= 1
+            && (animated_actor(m, body)? || adjusts_unit_nodes(m, body, definition)?)
+        {
             return Err(Refusal::Palette);
         }
     }
@@ -167,8 +174,29 @@ pub(super) fn object_pose(
     at(body, position as u32)
 }
 
-// These two conditions select the actor pose overlay helpers. If neither
-// applies, the cached node matrices remain the input to the palette.
+// After the actor overlays, the unit pose tail (0x000bd934) can still
+// write two individual matrices. Its predicate is 0x00113260.
+pub(super) const UNIT_NODE_ADJUSTMENTS_ENABLED: u32 = 0x0046_86a4;
+
+fn adjusts_unit_nodes(m: &dyn GuestMemory, body: u32, definition: u32) -> Result<bool> {
+    if m.u32(at(definition, 0xbc)?)? & (1 << 11) != 0
+        || m.u16(at(body, 0x1f6)?)? == u16::MAX
+        || (m.u16(at(body, 0x148)?)? & 0x8000 == 0 && m.u8(at(body, 0x137)?)? & 1 == 0)
+        || m.u8(UNIT_NODE_ADJUSTMENTS_ENABLED)? == 0
+    {
+        return Ok(false);
+    }
+    let offset = m.u16(at(body, 0x12a)?)? as i16;
+    if offset < 0 {
+        return Err(Refusal::Palette);
+    }
+    let animation = at(body, offset as u32)?;
+    Ok(m.u32(at(animation, 0x68)?)? != NONE
+        && m.u32(animation)? != NONE
+        && m.u16(at(animation, 6)?)? != u16::MAX)
+}
+
+// The two actor pose overlay helpers called before the unit pose tail.
 fn animated_actor(m: &dyn GuestMemory, body: u32) -> Result<bool> {
     let offset = m.u16(at(body, 0x33e)?)? as i16;
     if offset < 0 {
@@ -196,6 +224,7 @@ pub(super) fn fill(
     pose: u32,
     offset: u32,
     reserved: u32,
+    node_maps: Option<&[Vec<u8>]>,
 ) -> Result<()> {
     let nodes = m.u32(at(model, 0x48)?)?;
     if nodes == 0 || nodes > 127 {
@@ -232,21 +261,33 @@ pub(super) fn fill(
             continue;
         }
         let section = section_addr(m, model, u32::from(index))?;
-        if residency::resource_cache_in_use(m)? && !residency::touch(m, at(section, 0x38)?, false)?
-        {
-            return Err(Refusal::Residency);
-        }
-        let geometry = ptr(m, at(section, 0x34)?)?;
-        let remap = m.i32(at(geometry, 0x64)?)?;
-        if remap > 0 {
-            if final_rows.len() + remap as usize > reserved as usize {
+        let guest_map;
+        let remap = if let Some(maps) = node_maps {
+            maps.get(usize::from(index)).ok_or(Refusal::Palette)?.as_slice()
+        } else {
+            if residency::resource_cache_in_use(m)? && !residency::touch(m, at(section, 0x38)?, false)? {
+                return Err(Refusal::Residency);
+            }
+            let geometry = ptr(m, at(section, 0x34)?)?;
+            let count = m.i32(at(geometry, 0x64)?)?.max(0) as usize;
+            if count > 0 {
+                if final_rows.len() + count > reserved as usize {
+                    return Err(Refusal::Palette);
+                }
+                guest_map = m.bytes(ptr(m, at(geometry, 0x68)?)?, count)?;
+                guest_map.as_slice()
+            } else {
+                &[]
+            }
+        };
+        if !remap.is_empty() {
+            if final_rows.len() + remap.len() > reserved as usize {
                 return Err(Refusal::Palette);
             }
-            let map = ptr(m, at(geometry, 0x68)?)?;
             m.set_u16(pair, final_rows.len() as u16)?;
-            m.set_u16(at(pair, 2)?, remap as u16)?;
-            for j in 0..remap as u32 {
-                let index = m.u8(at(map, j)?)? as usize;
+            m.set_u16(at(pair, 2)?, remap.len() as u16)?;
+            for &index in remap {
+                let index = usize::from(index);
                 let source = if single { &rows } else { &final_rows };
                 let row = *source.get(index).ok_or(Refusal::Palette)?;
                 final_rows.push(row);

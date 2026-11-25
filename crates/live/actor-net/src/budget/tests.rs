@@ -218,8 +218,10 @@ fn records_follow_priority_with_nearest_controls_first() {
         log_head: [2; 32],
         state_hash: 8,
         actor_count: 1,
+        show_hash: 0,
     };
     let state = Record::State(vec![1]);
+    let show = Record::Show(vec![3, 4]);
     let near = control(21);
     let far = control(3);
     let offers = [
@@ -231,11 +233,12 @@ fn records_follow_priority_with_nearest_controls_first() {
         line.clone(),
         actor.clone(),
         key.clone(),
+        show.clone(),
     ];
     let packet = budget.schedule(7, &offers).unwrap().unwrap();
     assert_eq!(
         packet.records,
-        vec![key, actor, line, posture, state, digest, near, far]
+        vec![key, show, actor, line, posture, state, digest, near, far]
     );
 }
 
@@ -383,9 +386,54 @@ fn stats_count_what_was_sent_and_dropped() {
         log_head: [0; 32],
         state_hash: 1,
         actor_count: 0,
+        show_hash: 0,
     };
     let sent = budget.schedule(30, &[digest]).unwrap().unwrap();
     let stats = budget.stats();
     assert_eq!((stats.packets, stats.digests), (2, 1));
     assert_eq!(budget.window_bytes(), sent.encoded_len().unwrap());
+}
+
+#[test]
+fn shows_are_coalesced_to_five_a_second_and_a_key_carries_one_whole() {
+    let mut budget = Budget::default();
+    let show = || Record::Show(vec![1, 2, 3]);
+    // Offered every tick, a state is admitted at most five a second; the
+    // drops do not queue: each new second starts its own five.
+    let mut admitted = 0;
+    let mut per_window = [0; 2];
+    for tick in 0..2 * TICKS_PER_SECOND {
+        let sent = budget.schedule(tick, &[show()]).unwrap();
+        let shows = sent
+            .map(|sent| {
+                sent.records
+                    .iter()
+                    .filter(|r| matches!(r, Record::Show(_)))
+                    .count()
+            })
+            .unwrap_or(0);
+        admitted += shows;
+        per_window[(tick / TICKS_PER_SECOND) as usize] += shows;
+    }
+    assert_eq!(admitted, 2 * SHOWS_PER_SECOND);
+    assert_eq!(per_window, [SHOWS_PER_SECOND; 2]);
+    assert_eq!(budget.stats().shows, admitted as u64);
+    assert_eq!(
+        budget.stats().dropped,
+        2 * TICKS_PER_SECOND as u64 - admitted as u64
+    );
+
+    // A state that rides a key is never refused for the rate, even after
+    // the second's five are spent.
+    let mut budget = Budget::default();
+    for tick in 0..TICKS_PER_SECOND - 1 {
+        budget.schedule(tick, &[show()]).unwrap();
+    }
+    assert_eq!(budget.stats().shows, SHOWS_PER_SECOND as u64);
+    let sent = budget
+        .schedule(TICKS_PER_SECOND - 1, &[key(), show()])
+        .unwrap()
+        .unwrap();
+    assert_eq!(sent.records.first(), Some(&key()));
+    assert_eq!(sent.records.get(1), Some(&show()));
 }

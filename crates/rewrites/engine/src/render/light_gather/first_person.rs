@@ -53,6 +53,8 @@
 
 use std::ops::Range;
 
+pub mod slots;
+
 use super::frame::{By, FIRST_PERSON_COUNT, FIRST_PERSON_SLOT, FIRST_PERSON_TABLE};
 use super::guest::{LIGHTS, NONE, TAGS};
 use super::items::{self, LIST, LISTS, Made};

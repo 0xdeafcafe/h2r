@@ -26,7 +26,7 @@
 //!
 //! The format is Rust `Debug` text: d3d and gfx types have no serde.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
@@ -62,42 +62,73 @@ pub fn note_descriptor_present() {
     crate::host_perf::on_present(present);
 }
 
-/// Wall-clock time of every present, for the frame-rate report.
+/// Keep the total and a bounded window of timestamps for the frame-rate report.
 static KEEP_PRESENT_HISTORY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
-static PRESENT_TIMES: Mutex<Vec<std::time::Instant>> = Mutex::new(Vec::new());
+static PRESENT_TIMES: Mutex<PresentHistory> = Mutex::new(PresentHistory {
+    recorded: 0,
+    times: VecDeque::new(),
+});
+
+const PRESENT_HISTORY_LIMIT: usize = 65_536;
+const SHADOW_HISTORY_LIMIT: usize = 4_096;
+const OUTCOME_LIMIT: usize = 1_024;
+
+#[derive(Default)]
+struct PresentHistory {
+    recorded: usize,
+    times: VecDeque<std::time::Instant>,
+}
+
+impl PresentHistory {
+    fn push(&mut self, now: std::time::Instant) {
+        if self.times.len() == PRESENT_HISTORY_LIMIT {
+            self.times.pop_front();
+        }
+        self.times.push_back(now);
+        self.recorded += 1;
+    }
+
+    fn hundred_frame_rate(&self, now: std::time::Instant) -> Option<f64> {
+        let first = self.times.get(self.times.len().checked_sub(100)?)?;
+        Some(100.0 / now.duration_since(*first).as_secs_f64())
+    }
+}
 
 pub fn keep_present_history(keep: bool) {
     KEEP_PRESENT_HISTORY.store(keep, std::sync::atomic::Ordering::Relaxed);
     if !keep {
-        *PRESENT_TIMES.lock().unwrap() = Vec::new();
+        *PRESENT_TIMES.lock().unwrap() = PresentHistory::default();
     }
 }
 
 /// Wall-clock frame rate: presents per second over the run since `start`,
 /// and over a window with its mean, median and worst frame time: from
-/// present `from` (1-based) when given, else the last `tail` presents.
+/// present `from` (1-based) when given, else the last `tail` intervals,
+/// limited to the available history.
 /// `None` before two presents.
 pub fn frame_rate(start: std::time::Instant, tail: usize, from: Option<usize>) -> Option<String> {
-    let times = PRESENT_TIMES.lock().unwrap();
-    let n = times.len();
-    if n < 2 {
+    let history = PRESENT_TIMES.lock().unwrap();
+    let n = history.recorded;
+    let times = &history.times;
+    let len = times.len();
+    if len < 2 {
         return None;
     }
-    let total = times[n - 1].duration_since(start).as_secs_f64();
+    let total = times[len - 1].duration_since(start).as_secs_f64();
+    let first = n - len + 1;
     let from = match from {
-        Some(f) => f.saturating_sub(1).min(n - 2),
-        None => n.saturating_sub(tail + 1),
+        Some(f) => f.saturating_sub(first).min(len - 2),
+        None => len.saturating_sub(tail.max(1).saturating_add(1)),
     };
-    let mut gaps: Vec<f64> = times[from..]
-        .windows(2)
-        .map(|w| w[1].duration_since(w[0]).as_secs_f64() * 1e3)
+    let mut gaps: Vec<f64> = (from + 1..len)
+        .map(|i| times[i].duration_since(times[i - 1]).as_secs_f64() * 1e3)
         .collect();
     let span: f64 = gaps.iter().sum();
     gaps.sort_by(f64::total_cmp);
     Some(format!(
         "frames: {n} presents in {total:.1}s ({:.2} fps); presents {}-{n}: {:.2} fps, frame ms mean {:.0} median {:.0} max {:.0}",
         n as f64 / total,
-        from + 1,
+        first + from,
         gaps.len() as f64 * 1e3 / span,
         span / gaps.len() as f64,
         gaps[gaps.len() / 2],
@@ -114,17 +145,31 @@ pub struct DrawStats {
     pub presents: u64,
     /// (outcome, target) -> draws; the outcome is `None` for drawn.
     by_outcome: rustc_hash::FxHashMap<(Option<String>, Target), u64>,
+    other_outcomes: u64,
     /// Texture (format, kind) bound to drawn draws -> draws.
     textures: rustc_hash::FxHashMap<(D3DFormat, TextureKind), u64>,
-    /// Frames (numbered as `frame-N.png`) with a drawn draw that samples
+    /// Recent frames (numbered as `frame-N.png`) with a drawn draw that samples
     /// a depth texture: Halo's shadow apply (layer 11) reading a shadow
     /// map. Worker fallbacks can land after the guest counts a newer frame.
     shadow_frames: BTreeSet<u64>,
 }
 
-/// [`DrawStats::shadow_frames`] of the run, for the screenshot hook
+/// Recent shadow frames, for the screenshot hook
 /// (`H2_BOOT_GFX_SHADOWS`), which may run on the render thread.
 static SHADOW_FRAMES: Mutex<BTreeSet<u64>> = Mutex::new(BTreeSet::new());
+
+fn remember_shadow(frames: &mut BTreeSet<u64>, frame: u64) -> bool {
+    if frames.len() == SHADOW_HISTORY_LIMIT && frames.first().is_some_and(|&first| frame <= first) {
+        return false;
+    }
+    if !frames.insert(frame) {
+        return false;
+    }
+    if frames.len() > SHADOW_HISTORY_LIMIT {
+        frames.pop_first();
+    }
+    true
+}
 
 /// Whether frame `n` (as `frame-N.png` numbers it) sampled a shadow map.
 /// Worker fallback draws complete before the present on the same queue.
@@ -170,6 +215,9 @@ impl DrawStats {
             let out = out.as_deref().unwrap_or("drawn");
             *m.entry(format!("{out} -> {w}x{h} {f:?}")).or_default() += v;
         }
+        if self.other_outcomes != 0 {
+            m.insert("other draw outcomes".into(), self.other_outcomes);
+        }
         m
     }
 
@@ -202,10 +250,14 @@ impl DrawStats {
     ) -> Option<u64> {
         let drawn = matches!(r, Ok(DrawOutcome::Drawn));
         let out = (!drawn).then(|| outcome_name(r));
-        *self
-            .by_outcome
-            .entry((out, (t.width, t.height, t.format)))
-            .or_default() += 1;
+        let key = (out, (t.width, t.height, t.format));
+        if self.by_outcome.len() < OUTCOME_LIMIT {
+            *self.by_outcome.entry(key).or_default() += 1;
+        } else if let Some(count) = self.by_outcome.get_mut(&key) {
+            *count += 1;
+        } else {
+            self.other_outcomes += 1;
+        }
         if !drawn {
             return None;
         }
@@ -213,7 +265,7 @@ impl DrawStats {
             *self.textures.entry((ti.format, ti.kind)).or_default() += 1;
         }
         let shadow = info.iter().flatten().any(|t| t.format.is_depth());
-        (shadow && self.shadow_frames.insert(frame)).then_some(frame)
+        (shadow && remember_shadow(&mut self.shadow_frames, frame)).then_some(frame)
     }
 
     pub fn report(&self) -> String {
@@ -387,7 +439,7 @@ impl<B: Backend> DiagBackend<B> {
         self.log.is_some() && self.frames.contains(&self.in_frame)
     }
 
-    fn line(&mut self, s: String) {
+    fn line(&mut self, s: std::fmt::Arguments<'_>) {
         if self.logging()
             && let Some(l) = &mut self.log
         {
@@ -564,7 +616,7 @@ impl<B: Backend> DiagBackend<B> {
         &mut self, texture: &DecodedTexture, r: Result<B::Texture, String>,
     ) -> Result<Tracked<B::Texture, B::Surface>, String> {
         if let Err(e) = &r {
-            self.line(format!("upload_texture failed: {e}"));
+            self.line(format_args!("upload_texture failed: {e}"));
         }
         let id = self.next_texture;
         self.next_texture += 1;
@@ -618,9 +670,9 @@ impl<B: Backend> DiagBackend<B> {
         issue: impl FnOnce(&mut B, [Option<&B::Texture>; 4]) -> Result<DrawOutcome, String>,
         textures: [Option<&Tracked<B::Texture, B::Surface>>; 4],
     ) -> Result<DrawOutcome, String> {
-        let ids: Vec<Option<u64>> = textures.iter().map(|t| t.map(|t| t.id)).collect();
         let mut snap = None;
         if let Some(c) = self.capturing() {
+            let ids = textures.map(|t| t.map(|t| t.id));
             let k = c.draws;
             if c.skips.contains(&k) {
                 c.draws += 1;
@@ -675,8 +727,9 @@ impl<B: Backend> DiagBackend<B> {
                 Err(e) => eprintln!("boot: snap after draw {k}: {e}"),
             }
         }
-        let (out, target) = self.count(&r, &draw.target, &draw.texture_info);
+        self.tally(&r, &draw.target, &draw.texture_info);
         if self.logging() {
+            let (out, target) = (outcome_name(&r), target_name(&draw.target));
             let tex: Vec<String> = draw
                 .texture_info
                 .iter()
@@ -691,7 +744,7 @@ impl<B: Backend> DiagBackend<B> {
                 })
                 .collect();
             let st = &draw.state;
-            self.line(format!(
+            self.line(format_args!(
                 "draw {} {:?} n={} idx={} -> {color:?} ({target}) clip={:?} ps={} vs={:?} tex=[{}] blend={}:{:?}/{:?} atest={}:{:?}/{} z={:?}/{} cw={:?} cull={:?} {}",
                 draw.entry,
                 draw.primitive,
@@ -715,7 +768,7 @@ impl<B: Backend> DiagBackend<B> {
             ));
         }
         if self.logging() && std::env::var_os("H2_BOOT_DRAWLOG_VERTS").is_some() {
-            self.line(format!("  layout {:?}", draw.layout));
+            self.line(format_args!("  layout {:?}", draw.layout));
             for (i, st) in draw.streams.iter().enumerate() {
                 let stride = st.stride.max(4) as usize;
                 for v in st.data.chunks(stride).take(8) {
@@ -732,26 +785,14 @@ impl<B: Backend> DiagBackend<B> {
                             }
                         })
                         .collect();
-                    self.line(format!("  s{i} {}", words.join(" ")));
+                    self.line(format_args!("  s{i} {}", words.join(" ")));
                 }
             }
         }
         r
     }
 
-    /// Adds a draw's outcome to the stats; returns the outcome's and the
-    /// target's names.
-    fn count(
-        &self,
-        r: &Result<DrawOutcome, String>,
-        t: &TargetInfo,
-        info: &[Option<TextureInfo>; 4],
-    ) -> (String, String) {
-        self.tally(r, t, info);
-        (outcome_name(r), target_name(t))
-    }
-
-    /// [`Self::count`] without the names: the path every draw takes.
+    /// Adds a draw's outcome to the stats.
     fn tally(
         &self,
         r: &Result<DrawOutcome, String>,
@@ -760,7 +801,7 @@ impl<B: Backend> DiagBackend<B> {
     ) {
         let frame = self.stats.lock().unwrap().add(r, t, info);
         if let Some(n) = frame {
-            SHADOW_FRAMES.lock().unwrap().insert(n);
+            remember_shadow(&mut SHADOW_FRAMES.lock().unwrap(), n);
         }
     }
 }
@@ -792,7 +833,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
         depth: bool,
     ) -> Result<Self::Surface, String> {
         let r = self.inner.create_surface(format, width, height, depth);
-        self.line(format!(
+        self.line(format_args!(
             "create_surface {format:?} {width}x{height} depth={depth} -> {r:?}"
         ));
         if let Some(c) = &self.capture {
@@ -817,7 +858,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
         opaque: bool,
     ) -> Result<Option<Self::Texture>, String> {
         let r = self.inner.snapshot_surface(surface, opaque)?;
-        self.line(format!(
+        self.line(format_args!(
             "snapshot_surface {surface:?} opaque={opaque} -> {}",
             if r.is_some() { "ok" } else { "unsupported" }
         ));
@@ -832,6 +873,29 @@ impl<B: Backend> Backend for DiagBackend<B> {
             }
             Tracked { id, inner, source: TextureSource::Surface("snapshot of", surface) }
         }))
+    }
+    fn snapshot_surface_into(
+        &mut self,
+        surface: Self::Surface,
+        opaque: bool,
+        into: &mut Self::Texture,
+    ) -> Result<bool, String> {
+        let r = self.inner.snapshot_surface_into(surface, opaque, &mut into.inner)?;
+        self.line(format_args!(
+            "snapshot_surface_into {surface:?} opaque={opaque} tex {} -> {}",
+            into.id,
+            if r { "ok" } else { "unsupported" }
+        ));
+        if r {
+            into.source = TextureSource::Surface("snapshot of", surface);
+            if let Some(c) = self.capturing() {
+                c.append(
+                    "frame.txt",
+                    &format!("snapshot_surface_into {surface:?} opaque={opaque} -> tex {}", into.id),
+                );
+            }
+        }
+        Ok(r)
     }
     fn judge(&self) -> Option<Box<dyn d3d::backend::DrawJudge>> {
         self.inner.judge()
@@ -1027,7 +1091,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
             if let Some(r) = fallback {
                 let shadow = stats.lock().unwrap().add_at(frame, r, &target, &info);
                 if let Some(frame) = shadow {
-                    SHADOW_FRAMES.lock().unwrap().insert(frame);
+                    remember_shadow(&mut SHADOW_FRAMES.lock().unwrap(), frame);
                 }
             }
             finished(fallback);
@@ -1134,7 +1198,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
         depth: Option<Self::Surface>,
         clear: Clear,
     ) -> Result<(), String> {
-        self.line(format!("clear {color:?} depth={depth:?} {clear:?}"));
+        self.line(format_args!("clear {color:?} depth={depth:?} {clear:?}"));
         if let Some(c) = self.capturing() {
             c.append(
                 "frame.txt",
@@ -1245,7 +1309,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
         flags: u32,
         gamma: Option<&[u8; 768]>,
     ) -> Result<(), String> {
-        self.line(format!("present {surface:?} flags={flags:#x}"));
+        self.line(format_args!("present {surface:?} flags={flags:#x}"));
         if let Some(c) = self.capturing() {
             c.append(
                 "frame.txt",
@@ -1258,11 +1322,15 @@ impl<B: Backend> Backend for DiagBackend<B> {
             let mut times = PRESENT_TIMES.lock().unwrap();
             let now = std::time::Instant::now();
             // A heartbeat for long runs: where the run is, and how fast the last 100 went.
-            if n.is_multiple_of(100) && times.len() >= 100 {
-                let secs = now.duration_since(times[times.len() - 100]).as_secs_f64();
-                eprintln!("present {n}: last 100 at {:.2} fps", 100.0 / secs);
+            if n.is_multiple_of(100) && let Some(fps) = times.hundred_frame_rate(now) {
+                eprintln!("present {n}: last 100 at {fps:.2} fps");
             }
             times.push(now);
+        }
+        #[cfg(feature = "gpu")]
+        if n.is_multiple_of(100) {
+            crate::native_particles_admission::report_refusals();
+            crate::native_gels_glue::report_refusals();
         }
         // H2_HOST_PERF: where the frame time went (host_perf.rs), on the
         // game thread before the backend presents.
@@ -1309,7 +1377,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
             );
         }
         let r = self.inner.clear_rects(color, depth, clear);
-        self.line(format!(
+        self.line(format_args!(
             "clear_rects {color:?} {} rects -> {}",
             clear.rects.len(),
             outcome_name(&r)
@@ -1324,7 +1392,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
         height: u32,
         layout: GuestLayoutKind,
     ) -> Result<Vec<u8>, String> {
-        self.line(format!(
+        self.line(format_args!(
             "read_surface {surface:?} {format:?} {width}x{height}"
         ));
         self.probe.op(
@@ -1349,7 +1417,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
         height: u32,
         layout: GuestLayoutKind,
     ) -> Result<Option<Vec<u8>>, String> {
-        self.line(format!(
+        self.line(format_args!(
             "read_depth {surface:?} {format:?} {width}x{height}"
         ));
         self.probe.op(
@@ -1367,7 +1435,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
             .read_depth(surface, format, width, height, layout)
     }
     fn copy_surface(&mut self, src: Self::Surface, dst: Self::Surface) -> Result<bool, String> {
-        self.line(format!("copy_surface {src:?} -> {dst:?}"));
+        self.line(format_args!("copy_surface {src:?} -> {dst:?}"));
         self.probe
             .op("copy", &format!("{src:?}"), format!("to {dst:?}"));
         if let Some(c) = self.capturing() {
@@ -1381,7 +1449,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
         desc: &TextureDesc,
         bytes: &[u8],
     ) -> Result<bool, String> {
-        self.line(format!("write_surface {surface:?}"));
+        self.line(format_args!("write_surface {surface:?}"));
         if let Some(c) = &mut self.capture {
             let n = c.writes;
             c.writes += 1;
@@ -1400,7 +1468,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
         height: u32,
     ) -> Result<Self::Surface, String> {
         let r = self.inner.create_texture_target(format, width, height);
-        self.line(format!(
+        self.line(format_args!(
             "create_texture_target {format:?} {width}x{height} -> {r:?}"
         ));
         if let Some(c) = &self.capture {
@@ -1419,6 +1487,36 @@ impl<B: Backend> Backend for DiagBackend<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn draw_diagnostics_bound_long_run_history_and_outcome_detail() {
+        let start = std::time::Instant::now();
+        let mut presents = PresentHistory::default();
+        let mut shadows = BTreeSet::new();
+        for n in 1..=PRESENT_HISTORY_LIMIT + 50 {
+            presents.push(start + std::time::Duration::from_millis(n as u64));
+            assert!(remember_shadow(&mut shadows, n as u64));
+        }
+        assert_eq!(presents.recorded, PRESENT_HISTORY_LIMIT + 50);
+        assert_eq!(presents.times.len(), PRESENT_HISTORY_LIMIT);
+        assert_eq!(presents.times.front().unwrap().duration_since(start).as_millis(), 51);
+        let next = *presents.times.back().unwrap() + std::time::Duration::from_millis(1);
+        assert_eq!(presents.hundred_frame_rate(next), Some(1000.0));
+        assert_eq!(shadows.len(), SHADOW_HISTORY_LIMIT);
+        assert!(!remember_shadow(&mut shadows, 1));
+        let newest = *shadows.last().unwrap();
+        assert!(shadows.contains(&newest));
+
+        let mut stats = DrawStats::default();
+        let target = TargetInfo { width: 32, height: 32, format: D3DFormat::L8, depth_format: None };
+        for n in 0..OUTCOME_LIMIT + 50 {
+            stats.add(&Err(format!("error {n}")), &target, &[None; 4]);
+        }
+        stats.add(&Err("error 0".into()), &target, &[None; 4]);
+        assert_eq!(stats.by_outcome.len(), OUTCOME_LIMIT);
+        assert_eq!(stats.by_outcome()["other draw outcomes"], 50);
+        assert_eq!(stats.by_outcome()["error: error 0 -> 32x32 L8"], 2);
+    }
 
     /// The report names outcomes, targets and textures as the per-draw
     /// strings did: drawn draws by target, others by their full outcome.

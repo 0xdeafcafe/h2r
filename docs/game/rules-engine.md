@@ -322,7 +322,8 @@ game (`Status::Blocked`, below), and no rules play, the carrier's
 included. Last, a script is refused when it needs what this runtime does
 not do yet (`runtime::host_refusal`): an event other than `init`,
 `round_start`, `kill`, `quit`, `timer`, `tick`, `bounce`, `bounced`,
-`spawn`, `death`, `enter`, `leave` and `arrive`; a read other than the scores,
+`touchdown`, `launch`, `grounded`, `spawn`, `death`, `enter`, `leave`,
+`arrive` and `damage`; a read other than the scores,
 kills, deaths, `alive`, `team_of`, `lives`, `round_time_left`,
 `is_objective`, `carrier_of`, the label reads (`label_number`,
 `label_of`, `zone_id`, `object_team`), `inside`, `player_of`, `object_pos` and `object_vel`; an
@@ -435,7 +436,7 @@ Firefight sits inside.
 | `on kill` | an observer before `PLAYER_KILLED` (`0x15ce70`): the attacker and victim player datums at `[esp+4]` and `[esp+8]`, as live telemetry reads them | at the next tick boundary |
 | `on round_start`, each round after the first | an observer after `ENGINE_ROUND_RESET` (`0x157ae0`), the engine's round reset, which the round state machine `0x15c550` calls as a round begins | at the next tick boundary |
 | `on quit` | an observer before `ENGINE_PLAYER_LEFT` (`0x157de0`): the player's salted datum in ESI, the player already off the roster (player `+2` bit 1) | at the next tick boundary |
-| `on bounce`, `on bounced` | the superbounce mode's tick observer, after `GAME_TICK`: each bounce and Bounced its medal chain files that tick (`rules::feature::bounces`, "Firefight, AI and bounces") | at the next tick boundary |
+| `on touchdown`, `on launch`, `on grounded`, then `on bounce`, `on bounced` | the superbounce mode's tick observer, after `GAME_TICK`: what its medal chain saw of each player's physics that tick, slot by slot (`Runtime::physics`, `world::physics`; [rules-world-api.md](rules-world-api.md#physics)), then each bounce and Bounced the chain files (`rules::feature::bounces`, "Firefight, AI and bounces") | at the next tick boundary |
 | `on death`, `on spawn`, `on leave`, `on enter`, then `on timer`, then `on tick` | an observer after `GAME_TICK`: the roster's and the zones' changes since the last tick (`runtime::tell`, `world::zones::events`), then the per-tick group | at the next tick boundary |
 | `on init`, then the first `on round_start` | the start observer | at the first tick boundary |
 
@@ -613,10 +614,10 @@ built-in Slayer starting from a record and setting the record, a kill
 making a `SCORE_ADD` call at the next boundary, a suicide's negative
 score, a machine that is not the authority, a refusal for an unknown
 hash and for System Link, refusals by entry and by event, the
-compiled-in Superbounce example found by its prefix, a bounce reaching
-`on bounce` and scoring at the next boundary, awards reaching `on bounce`
-with their chain's count and Monster flag and a Bounced reaching
-`on bounced`, another
+compiled-in Superbounce example found by its prefix, a launch reaching
+`on launch` and scoring at the next boundary, the script's chain on the
+host's launches and ends of runs with a Monster's double, and a Bounced
+reaching `on bounced`, another
 engine's record, a record with no mode, the record removed at the game's
 end, a reverted record resuming the VM, a stored script running with no
 Live client and on System Link, a Live variant's script fetched by its
@@ -1018,6 +1019,12 @@ chain, 1 for a single bounce; `monster` a Monster Bounce),
 `on touchdown(p, down, up)` (a player's biped landed; `down` the speed it
 fell at the tick before and `up` its vertical speed now, `fixed` world
 units a second; at most 16 a tick),
+`on launch(p, spot, speed)` (a landing the host judged a superbounce, as
+its launch window closed; `spot` the strip, a `zone?`, `none` off every
+marked strip; `speed` the launch, `fixed` world units a second up; at
+most 16 a tick),
+`on grounded(p)` (the player's run of bounces with no ground between them
+ended; at most 16 a tick),
 `on edit(p, o)` (a granted power was used),
 `on join(p)`, `on quit(p)`, `on round_end`. A handler names its event's
 arguments in order and may leave out trailing ones (`on bounce(p, spot)`);
@@ -1221,8 +1228,33 @@ phase (its number is the phase, its team the side;
 `label placed_line: zones at most 16 = "siege_line"`) replaces the
 phase's line for that side. A line the map lacks (no flag stand) leaves
 that side the engine's own spawns. The attackers spawn as Spartans and the defenders
-as Elites (`set_body`), whatever each player chose. It opens no barriers (`delete` and `create` are not
-hostable, "The engine API"), and it has no core to carry.
+as Elites (`set_body`), whatever each player chose. The HUD is the King of
+the Hill kit's ("The HUDs a script feeds" in
+[rules-world-api.md](rules-world-api.md#the-huds-a-script-feeds)): the
+mark and the row (`koth.hill`) stay on the current untaken site while
+any living player occupies it. When that site empties or is taken, the
+mark moves to the first untaken site with living attackers, including a
+contested site. With no attackers on a site it marks the first untaken
+site, and in the final phase it marks the stand. The row reads open,
+held by a side or contested. The banner (`koth.banner`) says a site
+taken, the final assault, an overtime, and the last 30 and 10 seconds of a
+phase; the phase's seconds left are the kit's `koth.phase` row ("Phase
+2:59"). A phase whose clock runs out with an attacker on its front goes
+into overtime (`overtime_time`, 30 s by default): the defenders win when
+the attackers leave the front, or when the overtime runs out (a contested
+front does not hold it open past that), and a capture that completes
+first takes the site as it would have. The map opens with the phases: the
+objects the author labelled `siege_barrier`, numbered by the phase they
+open in (a barrier numbered 0 is open from the start), are opened with
+`set_open` as each phase begins (`label barrier: objects at most 8`; a
+placement's label is set from Forge's Properties page, and a map with none
+plays as before). The lobby's `kits` option picks each side's weapons from
+three sets (standard, close quarters, long range); each local player also
+picks a set in a select dialog at the round's start (`offer_pick`,
+`pick_row`, `picked`: [rules-world-api.md](rules-world-api.md#pickers)),
+which holds from that player's next spawn and takes the lobby's set's
+place; a player who does not pick, and a player on another machine, gets
+the lobby's set. Siege has no core to carry.
 
 ### A Forge graph is the same IR
 
@@ -1321,7 +1353,7 @@ land at the point in the tick where the lifted engine's did:
 |---|---|---|
 | `on kill`, and each event the carrier engine has a callback for (per port: death, spawn, pickup, drop, join, quit, round start and end) | synchronously, in place of that callback | made at once |
 | `on enter`, `on leave`, `on press`, `on timer` (slot order), then `on tick` | synchronously, in place of the carrier's per-tick update (`0x15c150`) | made at once |
-| `on squad_dead`, `on actor_kill`, `on actor_assist`, `on damage`, `on bounce`, `on bounced`; `on init` | after `GAME_TICK`, from what the tick's observers gathered; `init` after `GAME_ACTIVATE` | queued |
+| `on squad_dead`, `on actor_kill`, `on actor_assist`, `on damage`, `on touchdown`, `on launch`, `on grounded`, `on bounce`, `on bounced`; `on init` | after `GAME_TICK`, from what the tick's observers gathered; `init` after `GAME_ACTIVATE` | queued |
 
 An event the carrier has no callback for runs with the per-tick group.
 Some calls are queued from any handler and made in program order by the
@@ -1399,7 +1431,7 @@ Reads:
 | events of the tick | `PLAYER_KILLED` `0x15ce70` for `on kill`; the roster's units each tick for `on spawn` and `on death` (`runtime::tell`); `SimRead::events` once sim-rewrite section 7 exists | named |
 | squads: actors alive, `on squad_dead`, `on actor_kill`, `on actor_assist` | `actor_net::squads::count_by_squad` and the kill list Firefight's `Observed` carries (`crates/extensions/game/src/actor_net/squads.rs`, `crates/formats/firefight/src/director.rs`) | named |
 | `zone_seen(z)`, `zone_distance(z)`, `zone_team_distance(z, team)`: Firefight's drop zones, the objects labelled `ff_drop` in kit order, and a zone's distance from one player team | the zone visibility and distance Firefight's `Observed` carries (`ZoneSeen`) | named |
-| `on bounce(p, spot, chain, monster)`, `on bounced(p)` | a detector of the traced signature: capsule below the floor, then +8 to +13 units/s upward the next tick ([superbounce.md](superbounce.md#summary), **Trace**); the launch rule itself is Open there | traced; detector not built |
+| `on bounce(p, spot, chain, monster)`, `on bounced(p)`; `on touchdown(p, down, up)`, `on launch(p, spot, speed)`, `on grounded(p)` | the superbounce mode's medal chain (`superbounce_chain.rs`): its awards, and what each step saw of the player's physics (`Physics`); the touchdown rule and the landing judge of [superbounce.md](superbounce.md#medals) | named; delivered while the superbounce mode runs |
 | bounce and crouch spots, as zones | the scanner's spots per map and BSP (`crates/live/superbounce`); candidates, none traced as a real bounce | named |
 
 Actions:
@@ -1420,12 +1452,13 @@ Actions:
 | `spawn_objective(tag, at, team)`: create an objective at a placement and register it | as Oddball's `0x2bc1f0` does: placement `0xb7930`, `0xb7b40`, `0x15e050`, `0xa7870`. Not built: the host resolves no tag path to a tag datum (the loaded map's names are only in its file), and has no `at` but a registered objective | traced | core |
 | `reset_objective(o)`: return an objective to where it spawned | Oddball: `ODDBALL_BALL_RETURN` `0x2bc340`, the ball's spawn flag through `OBJECTIVE_RETURN` `0x15e360`. CTF's flag return reaches `0x15e360` at `0x242b41` from a routine whose start is not read. `ctf.rules` and `oddball.rules` do not call it: a script returns an object with `delete` and `spawn_objective` | named on Oddball | core |
 | `role_traits(p, on)`: give or take the script role | the VM's player mask and the host's answers at `ENGINE_TRAIT_QUERY` and the retail overrides | named | core |
-| barriers and other map changes | create and delete at labels, as above; a barrier is a labelled placement (forge-features.md "Invisible barriers") | not built | `objects.create`, `objects.delete` |
+| barriers and other map changes | `set_open(o, open)` on a labelled barrier object (below); creating and deleting at labels, as above, is not hostable (the host resolves no tag path to a tag datum) | `set_open` named; `create` and `delete` not built | `objects.move`; `objects.create`, `objects.delete` |
+| `set_open(o, open)`: a barrier opened or closed | the VM keeps each open barrier's closed place (`RulesExt::gates`, at most 16) and steps it `GATE_DROP` (64 world units) below it, or back, through the same `OBJECT_SET_TRANSFORM` put a `teleport` makes (`rules/world/objects.rs`); the round's end closes every open one. No call of its own; a put the world refuses (a place outside it) closes the barrier in the state again, so the next `set_open(o, true)` tries again. Whether a barrier parked below the floor stops blocking, and whether a client sees it move, are R2 and R3 | named; whether collision follows the put is not researched | `objects.move` |
 | `place_squad(s, class, n, label)` from the palette with its team, `hunt(s)`, erase | `AI_SQUAD_PLACE` `0x201520`, `AI_SET_TEAM` `0x275b60`, `AI_SET_ORDERS` `0x275cb0`, `AI_ERASE` `0x2736c0`, through `actor_net::squads::SquadEntry` (firefight.md "Guest boundary") | named; game runs R1, R2 pending | `ai.squads` |
 | `fly(v, path, t)`, `hover(v, on)`, `seat(p, v)`, `eject(p)`, `unload(v)`, `place_squad_in(s, class, n, v)`; reads `vehicle_riders(v)`, `vehicle_driver(v)`: a vehicle flown along a labelled `path`, loaded, unloaded and read | [rules-world-api.md](rules-world-api.md#vehicles-and-drop-ships): the host calls the retail hover and unload bodies at the tick boundary | named (`hover`, `unload`), not built (`fly`), traced (the rest) | `vehicles.drive` |
 | `spawn_areas(team, label, n)`: the team spawns only at the starting locations labelled `label` and numbered `n` | the rule in the VM's state; `SPAWN_LOCATION_FREE` `0x23bb70`, the free-spot test of `PLAYER_SPAWN_LOCATION` `0x14ef00`, answers "taken" for every other location (`rules/world/spawns.rs`); how the chooser weighs a location is not traced and not needed | named | `player.spawn` |
 | `spawn_near(team, zone, n)`: the team spawns only at the `n` starting locations nearest the zone; `none` or 0 lifts it | as `spawn_areas`, over the starting locations' positions (`+0x00`) | named | `player.spawn` |
-| loadout chosen at spawn | `on spawn` and `set_loadout`, plus a picker screen of ours | named; picker not built | `player.weapons` |
+| loadout chosen at spawn | `on spawn` and `set_loadout`, with `offer_pick`, `pick_row` and `picked` for the player's own choice ([rules-world-api.md](rules-world-api.md#pickers)) | named; a client's players pick from the offer cue and their picks go back up the actor channel, whose upstream frame is not built | `player.weapons`, `player.pick` |
 | `give(p, tag)`: a weapon into a living player's hands | no entry proven. The pickup's attach routine `0x10ca80` (item, new unit) is on record as an observer only (**E**, [bots.md](bots.md) "Weapon taken") | untraced | `player.weapons` |
 | `take(p, weapon)` | the inventory removal `0xce920`, reached from the drop path `0xe8de0` (**E**, bots.md, the dual-wield drop); a call outside a drop is not proven | traced | `player.weapons` |
 | `set_body(team, tag)`: the team's players spawn as the Spartan or the Elite; `none` lifts it | the rule in the VM's state; the model byte (player `+0x88`) that `PLAYER_SPAWN` `0x14f2e0` and its representation pick `0x14f040` read, written for the spawn and put back after it (`rules/world/body.rs`) | named | `player.disguise` |
@@ -1435,10 +1468,11 @@ Actions:
 | `camera(p, mode)`: first or third person | no entry known | untraced | `player.camera` |
 | `teleport(o, at)`, `move_to(o, at, t)`, `stop(o)`; `o.position`, `o.velocity`, `o.speed`; `on arrive(o)` | `OBJECT_SET_TRANSFORM` `0xb7430` for a put and a mover's step each tick; the movers in the VM's state (`RulesExt::movers`); the object datum's position and velocity for the reads (`rules/world/objects.rs`, [rules-world-api.md](rules-world-api.md#objects)) | named; whether a client sees the move is not researched (R2, R3) | `objects.move` |
 | device power | Forge's sinks (forge-features.md) | not built | `objects.move` |
-| `p.airborne`, `p.crouching`, `p.primed`; `on touchdown(p, down, up)`; `sees(a, b)` | a biped's flags (`game::superbounce_charge`), the touchdown rule run for every player, and `AI_LINE_OF_SIGHT` traced at the tick boundary for the VM's sight table (`RulesExt::sight`, `Game::trace_sight`); [rules-world-api.md](rules-world-api.md#physics) | built on the fake; a host refuses a script that uses any by name | none |
+| `p.airborne`, `p.crouching`, `p.primed`; `sees(a, b)`; `on touchdown(p, down, up)`, `on launch(p, spot, speed)`, `on grounded(p)` | a biped's flags (`game::superbounce_charge`), `AI_LINE_OF_SIGHT` awaited at the next tick boundary for the VM's sight table (`RulesExt::sight`, `rules::runtime::run_work`), and the medal chain's physics for every player (`superbounce_chain::Physics`, `game::rules::world::physics`); [rules-world-api.md](rules-world-api.md#physics) | `sees` is hostable with a one-tick delay; the host delivers the three events and answers the biped reads while the superbounce mode runs; scripts using the reads must declare `requires hud.superbounce` | none |
 | `message(to, text)`: `to` is a player, a team or `all` (everyone); the compiler picks one of three entries by its type (`message`, `message_team`, `message_all`), all spelled `message`. A text written in the call may hold up to four `{name}` holes, each a player, team, int, time or enum in scope (`{{` is a brace); the call reaches the game with the holes' values after its own arguments ([rules-language-types.md](rules-language-types.md#messages)). The host shows it to its local users in the audience through the notification insert (`hud_kit::NOTIFY`) and sends it to clients as a show cue ([rules-world-api.md](rules-world-api.md#the-show-channel)). Scoreboard text, announcer, waypoint | the notification queue (`0x24cbee`), per local user (hud-kit.md "Messages"); the centred text (`0x24cc73`) is not used | named | `hud.message` |
+| `hud_text(w, "…")`, `hud_value(w, n)`, `hud_fill(w, f)`, `hud_style(w, style)`, `hud_show(w, on)`, `hud_value_for(w, p, n)`; `mark(wp, at)`, `mark(wp, at, to)`, `unmark(wp)` | the VM's show state (`RulesExt::show`), drawn from the objective HUDs after each tick (`rules/world/hud.rs`); a mark's audience is a player's slot's bit or the team's seated players' bits, resolved in the VM from the roster (`Game::players_of_team`); the state rides the show channel's `Show` record ([rules-world-api.md](rules-world-api.md#the-show-channel)) | named | `hud.widgets`, `hud.waypoints` |
 | `place_squad_at(s, class, n, zone, tier)`: a squad at a kit zone index with a weapon tier | Firefight's `PlaceSquad` command, through the same squad entry | named | `ai.squads` |
-| `ff_round`, `ff_wave`, `ff_skull`, `ff_lives`, `ff_score`, `ff_respawn`, `ff_finish`; with two player teams `ff_target(s, team)`, `ff_team_lives(team, n)`, `ff_player_score(p, n)`, `ff_team_finish(winner)` (`none` a draw) | Firefight's host log entries (`firefight::Command`), queued with the squad commands so the log keeps program order | named | `firefight.director` |
+| `ff_round`, `ff_wave`, `ff_skull`, `ff_lives(p, n)` (`none` for the shared pool), `ff_score`, `ff_respawn`, `ff_finish`; with two player teams `ff_target(s, team)`, `ff_team_lives(team, n)`, `ff_player_score(p, n)`, `ff_team_finish(winner)` (`none` a draw) | Firefight's host log entries (`firefight::Command`), queued with the squad commands so the log keeps program order | named | `firefight.director` |
 | `sound_to(s, p)`, `sound_to_team(s, t)`, `sound_to_all(s)`: a `sound` of the map played in the ears of an audience | `SOUND_START_AT_MARKER` `0x1891d0` at each audience player's unit, and a sound cue to every machine (`rules/world/audio.rs`; [rules-world-api.md](rules-world-api.md#audio)). `say`, `sound_at`, `music`, `music_stop` and `announce` are listed and refused by name (R4, R5) | named | `audio.play` |
 | `bot_go(p, at)`, `bot_hold(p, zone)`, `bot_follow(p, q)`, `bot_attack(p, q)`, `bot_free(p)`: an outside order to a phantom bot, its brain's goal while it stands | the phantom registry (`bots::phantom::order`): a hint to the seat's brain on the host, with a zone resolved through the census and the scenario's netgame flags (`rules/world/bots.rs`). No guest entry: the pad replicates as any player's input. An order to a seat no phantom holds is a refused call | named | `bots.orders` |
 | `forge_move(o, at)`, `forge_delete(o)`, `forge_place(tag, at)`, `forge_scale(o, s)`: an edit through the Forge log | a `forge-doc` op, validated and host-stamped (`crates/formats/forge-doc`, `LogHead::stamp`); edit classes in "Roles, powers and capabilities" | named | `forge.move`, `forge.delete`, `forge.place`, `forge.scale` |
@@ -1476,6 +1510,7 @@ plain words each:
 | `player.team`, `player.spawn` | moves players between teams; chooses where they spawn | no |
 | `player.weapons` | gives and takes weapons | no |
 | `player.disguise`, `player.camera` | hides or changes a player's body; changes the camera | no |
+| `player.pick` | asks each player to pick from a short list before the round | no |
 | `objects.create`, `objects.delete`, `objects.move` | makes, removes and moves objects | no |
 | `ai.squads` | places and commands AI | no |
 | `vehicles.drive` | flies and loads vehicles | no |
@@ -1813,7 +1848,7 @@ Tooling:
   (`slot`, `team`, `alive`, `score`, `lives`, `unit`, the object
   that is the player's unit, and `body`: `airborne`, `crouching` and
   `primed`, what the physics reads answer until a `touchdown` lands the
-  player), `sight` (`[from, to]` pairs of objects with nothing solid
+  player or a `launch` puts it in the air), `sight` (`[from, to]` pairs of objects with nothing solid
   between them, what `sees` answers true for), `teams`, `variant` (record fields by name;
   each one left out reads the stock record of the script's type,
   `fake::stock_variant`), `map` (the things the game holds that a script
@@ -1828,7 +1863,8 @@ Tooling:
   player), `squad_dead`, `actor_kill` (`killer`,
   `class`), `actor_assist` (`killer`, `assist`, `class`), `damage`
   (`object`, `by`, `amount`, a raw `fixed`), `touchdown` (`player`,
-  `down`, `up`, raw `fixed`) and
+  `down`, `up`, raw `fixed`), `launch` (`player`, `spot`, `none` when
+  absent, `speed`, a raw `fixed`), `grounded` (the player) and
   `round_end`. Tick 0 reports `init` and `round_start` first; each tick
   ends with the per-tick group; queued calls are made at the start of
   the next tick and after the last. The fake game is the one the
@@ -2119,21 +2155,14 @@ engines' hooks, observers and bot readers that parse per-engine globals
 
 ## Firefight, AI and bounces
 
-**Firefight is the first port, and runs as one.** `firefight::ScriptDirector`
-(`crates/formats/firefight/src/script.rs`) compiles the wave-set
-definition to one rules script — waves, rounds, lives, skulls and
-scoring — and runs it: the host runtime steps it each tick
-([firefight.md](firefight.md#the-director-as-a-rules-script)). The
-wave-set format stays the authoring format. `firefight::Def` is already
-validated, bounded and hashed, and the hopper tool offers definitions;
-`firefight::script::compile` builds the director script's IR from a
-`Def`, with the definition's squads, waves, rounds, caps, points and
-multipliers as constant tables. It builds IR, not source: the loops over
-the 16 squad slots unroll at build time and the blob depends on nothing
-but the definition, so a wave set is one blob with one hash, mode 1
-folds into mode 2, and the built-in sets need no rewrite by hand. The
-director's tests are its scenarios: every match the fake world plays is
-replayed through a fresh script for the same `Command` log.
+**Firefight runs as a script.** `content/modes/rules/firefight.rules`
+owns waves, rounds, lives, skulls and scoring. `firefight::ScriptDirector`
+(`crates/formats/firefight/src/script.rs`) supplies the validated
+`firefight::Def` as a module of constant tables and tuning, then steps
+the compiled script each tick. The script and wave set determine the
+blob's hash. The host adapts observations and queued calls to the
+director's `Command` stream, which the scenarios exercise
+([firefight.md](firefight.md#the-director-as-a-rules-script)).
 
 **AI is commanded by squad.** A script places a squad from the kit's
 palette at a label, sets its team and orders, reads how many of its
@@ -2145,7 +2174,9 @@ players like any other to a script.
 
 **Bounces are observed, not made.** Physics stays the engine's: Havok at
 an exact 30 Hz tick ([high-framerate.md](high-framerate.md)). A script
-hears `on bounce(p, spot, chain, monster)` and `on bounced(p)`, reads the scanner's spots as zones, scores
+hears `on bounce(p, spot, chain, monster)` and `on bounced(p)`, or the
+physics events under them (`on touchdown`, `on launch`, `on grounded`,
+[rules-world-api.md](rules-world-api.md#physics)), reads the scanner's spots as zones, scores
 and times them, and sets traits. That makes Bounce Practice and a trick
 or parkour mode real scripts, and the superbounce mode a script's own
 choice (`requires hud.superbounce`). The detector's rule is a traced
@@ -2154,8 +2185,10 @@ or over-report until it is checked in play.
 
 **Code**, tests only. The detector is the superbounce mode's medal chain
 (`superbounce_chain`, [superbounce.md](superbounce.md#medals)): each
-tick its observer after `GAME_TICK` steps every player's chain, and each
-bounce it files goes to the running script as `on bounce`, and each
+tick its observer after `GAME_TICK` steps every player's chain. What
+each step saw of the player's physics goes to the running script first,
+as `on touchdown`, `on launch` and `on grounded` (`Runtime::physics`);
+then each bounce it files goes as `on bounce`, and each
 Bounced (a fall out of the map during a bounce) as `on bounced`
 (`rules::feature::bounces`, `Runtime::bounces`), on that tick, with
 their calls made at the next tick boundary as `on kill`'s are. A
@@ -2183,7 +2216,12 @@ bounce's place in its chain up to 6; `bounced_costs` (default on), a
 point off for a Bounced; and `monster_double` (default on), a Monster
 Bounce's points doubled after the cap
 ([superbounce.md](superbounce.md#the-superbounce-game-type) has the
-table). The built-in Superbounce variant's
+table). It keeps the chain itself, on the host's physics events: `on
+launch` adds one to the player's `chain` while `flying` and starts it at
+1 otherwise, `on grounded` clears `flying`, and a launch over 16 world
+units a second is a Monster; its counts and scores match the Rust
+chain's on every tick of the chain's test scenarios
+([rules-world-api.md](rules-world-api.md#physics)). The built-in Superbounce variant's
 record names it (mode 2, its hash prefix and default options); the
 record comes from `record_for` on the script, written into the built-in
 entry at list load (`community_variants::write_blocks`), and its other
@@ -2283,11 +2321,12 @@ The phased mode is the check that the API is wide enough:
 | up to three phases, a timer each | a global `int` and a `timer` | the VM alone |
 | capture zones, then a goal | the host's zone tests and `ticks_held`, over the map's territory and CTF flags | named; the built-in Siege |
 | a core carried to a goal | the objective registry as CTF and Assault | traced |
-| the map opens per phase | delete and create barriers at labels | not built (Forge labels, barriers) |
+| the map opens per phase | `set_open` on the `siege_barrier` objects, numbered by phase (a barrier is put below its place and back; `delete` and `create` are not hostable) | named; the built-in Siege |
 | spawn areas switch per phase | `spawn_areas` over labelled starting locations; `spawn_near` over a zone, which needs no labels | named; the built-in Siege (`spawn_near`) |
-| loadouts per team, chosen at spawn | `on spawn` and `set_loadout`; Halo 2 has no armor abilities, so a loadout is weapons, grenades and traits | named; the built-in Siege; picker screen not built |
+| loadouts per team, chosen at spawn | `on spawn` and `set_loadout`; Halo 2 has no armor abilities, so a loadout is weapons, grenades and traits; the lobby's `kits` option picks the set, and a player's own pick (`offer_pick`, `picked`) takes its place | named; the built-in Siege; a pick is carried for a local player only |
 | team respawn waves | hold respawns with the lives gates, release on a timer | named; the built-in Siege |
 | two species teams | `set_body` per team at the round's start | named; the built-in Siege |
+| the objective and its state on the HUD | the Hill kit's mark, row and banner (`hud_style`, `mark`, `hud_text`) | named; the built-in Siege; the phase clock is the kit's `koth.phase` row |
 
 ## Forge labels
 

@@ -93,6 +93,66 @@ fn a_refused_native_array_leaves_the_one_ordinary_draw_for_the_caller() {
 }
 
 #[test]
+fn ordered_decal_quads_resolve_once_and_replay_each_refused_packet_once() {
+    use std::sync::{Arc, Mutex};
+
+    struct Decal(Arc<d3d::ResolvedDraw>);
+    impl d3d::ExternalPass for Decal {
+        fn resolved_fallback(&self) -> Option<Arc<d3d::ResolvedDraw>> {
+            Some(Arc::clone(&self.0))
+        }
+
+        fn writes(&self) -> d3d::ExternalWrites {
+            d3d::ExternalWrites {
+                color: true,
+                depth_stencil: false,
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct Admit(Mutex<Vec<Arc<d3d::ResolvedDraw>>>);
+    impl d3d::DrawAdmission for Admit {
+        fn admit(&self, snapshot: &d3d::DrawSnapshot<'_>) -> Option<(d3d::ExternalPlan, Box<dyn d3d::ExternalPass>)> {
+            assert_eq!(snapshot.draw.entry, "D3DDevice_DrawVertices");
+            let draw = Arc::new(snapshot.draw.clone());
+            self.0.lock().unwrap().push(Arc::clone(&draw));
+            let plan = d3d::ExternalPlan {
+                stage: timeline::native::Stage::Decals,
+                view: 0,
+                ranges: 1,
+                slots: Vec::new(),
+            };
+            Some((plan, Box::new(Decal(draw))))
+        }
+    }
+
+    let mut backend = RecordingBackend::new();
+    backend.external_passes = true;
+    let (mut device, mut mem) = create(d3d::ThreadedBackend::new(backend).unwrap(), UploadPolicy::Tracked);
+    set_states(&mut device, &mut mem);
+    let owner = Arc::new(Admit::default());
+    device.add_draw_admission(owner.clone());
+    quad_vb(&mut mem, 0.0, 0.0, 16.0, 16.0, 0xff_11_22_33);
+    bind_quad(&mut device, &mut mem);
+    let reads = device.backend.waits().reads;
+    device.draw_vertices(&mut mem, QUADLIST, 0, 4).unwrap();
+    device.draw_vertices(&mut mem, QUADLIST, 0, 4).unwrap();
+    assert_eq!(device.backend.waits().reads, reads);
+
+    // The recording backend refuses external recording. Only the original
+    // packet for each guest call reaches the backend draw.
+    let drawn = device.backend.with_inner(|b| {
+        b.draws().into_iter().cloned().collect::<Vec<_>>()
+    }).unwrap();
+    let examined = owner.0.lock().unwrap();
+    assert_eq!(device.stats().resolved_draws, 2);
+    assert_eq!(device.stats().external_passes_dropped, 2);
+    assert_eq!(examined.len(), 2);
+    assert_eq!(drawn, examined.iter().map(|draw| (**draw).clone()).collect::<Vec<_>>());
+}
+
+#[test]
 fn refused_native_pushed_ui_fan_preserves_state_and_the_guest_draw() {
     use gfx::state::CullMode;
     use gfx::vertex::PrimitiveType;

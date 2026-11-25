@@ -1,13 +1,15 @@
-//! The brush, the eraser, fill and the adjustments, on pixels.
+//! The brush, the eraser, fill and the adjustments, on pixels; the clone
+//! stamp, channel copy and the turns.
 
 use bitmap_edit::{
-    Adjust, Brush, Canvas, Channels, Rect, Stroke, apply_adjust, blend, fill_rect, flood, paint,
-    stamp, to_linear, to_srgb,
+    Adjust, Bitmap, BitmapOp, Brush, Canvas, Channel, Channels, Error, LayerId, Rect, Stroke, Turn,
+    apply_adjust, blend, copy_channel, fill_rect, flood, paint, stamp, to_linear, to_srgb, turn,
 };
 
 const WHITE: [u8; 4] = [255, 255, 255, 255];
 const BLACK: [u8; 4] = [0, 0, 0, 255];
 const RED: [u8; 4] = [255, 0, 0, 255];
+const L0: LayerId = LayerId::new(0, 0, 0);
 
 fn hard(size: f32, color: [u8; 4]) -> Brush {
     Brush {
@@ -346,4 +348,343 @@ fn brush_parameters_are_checked() {
         ..Brush::default()
     };
     assert!(b.validate().is_err());
+}
+
+/// A canvas whose pixel at (`x`, `y`) is `[x, y, 7, 255]`.
+fn numbered(w: u32, h: u32) -> Canvas {
+    let mut c = Canvas::new(w, h, BLACK).unwrap();
+    for y in 0..h {
+        for x in 0..w {
+            c.set_pixel(x, y, [x as u8, y as u8, 7, 255]);
+        }
+    }
+    c
+}
+
+/// A canvas whose pixel at (`x`, `y`) is `[x + 10 * y, 0, 0, 255]`.
+fn grid(w: u32, h: u32) -> Canvas {
+    let mut c = Canvas::new(w, h, BLACK).unwrap();
+    for y in 0..h {
+        for x in 0..w {
+            c.set_pixel(x, y, [(x + 10 * y) as u8, 0, 0, 255]);
+        }
+    }
+    c
+}
+
+/// A bitmap of the one layer `L0`, holding `canvas`.
+fn one(canvas: Canvas) -> Bitmap {
+    let mut b = Bitmap::new();
+    b.add_layer(L0, canvas, None);
+    b
+}
+
+/// A one point clone stroke of a hard brush of `size`, from `source` to
+/// `at`, on the layer it paints.
+fn clone_dab(source: [f32; 2], at: [f32; 2], size: f32) -> BitmapOp {
+    BitmapOp::Clone {
+        layer: L0,
+        from: None,
+        source,
+        points: vec![at],
+        brush: hard(size, WHITE),
+    }
+}
+
+#[test]
+fn two_points_are_a_line_from_one_to_the_other() {
+    let mut b = one(Canvas::new(8, 4, BLACK).unwrap());
+    let line = |to: f32| BitmapOp::Paint {
+        layer: L0,
+        points: vec![[0.5, 1.5], [to, 1.5]],
+        brush: hard(1.0, RED),
+    };
+    // A 1 pixel brush stamps every pixel of the row from one point to
+    // the other; the next pixel is not touched.
+    b.apply(&line(5.5)).unwrap();
+    let c = &b.layer(L0).unwrap().canvas;
+    for x in 0..6 {
+        assert_eq!(c.pixel(x, 1), RED, "x = {x}");
+    }
+    assert_eq!(c.pixel(6, 1), BLACK);
+    assert_eq!(c.pixel(3, 3), BLACK);
+    // A point off the pixel centres is reached too: the last stamp is on
+    // it, where stamps every spacing from the first point would stop
+    // short.
+    b.undo().unwrap();
+    let a = b.apply(&line(5.2)).unwrap();
+    let c = &b.layer(L0).unwrap().canvas;
+    assert!(c.pixel(5, 1)[0] > 200, "{:?}", c.pixel(5, 1));
+    assert_eq!(c.pixel(6, 1), BLACK);
+    assert!(a.dirty.encloses(Rect::new(0, 1, 7, 1)));
+    // A line far off the canvas is no step, however long.
+    b.undo().unwrap();
+    let far = BitmapOp::Paint {
+        layer: L0,
+        points: vec![[-1.0e20, -50.0], [1.0e20, -50.0]],
+        brush: hard(1.0, RED),
+    };
+    let a = b.apply(&far).unwrap();
+    assert!(a.dirty.is_empty());
+    assert_eq!(b.undo_len(), 0);
+}
+
+#[test]
+fn a_clone_stamp_copies_the_pixels_at_the_offset() {
+    let mut b = one(numbered(8, 4));
+    // The source is pixel (1, 1), the stamp pixel (5, 1): four to the right.
+    let a = b.apply(&clone_dab([1.5, 1.5], [5.5, 1.5], 4.0)).unwrap();
+    let c = &b.layer(L0).unwrap().canvas;
+    for y in 0..3 {
+        for x in 4..7 {
+            assert_eq!(c.pixel(x, y), [x as u8 - 4, y as u8, 7, 255], "{x},{y}");
+        }
+    }
+    // The rim pixel is the brush's anti-aliased edge: half the source
+    // over what was there, in linear light.
+    assert_eq!(c.pixel(7, 1), [5, 1, 7, 255]);
+    // Past the source's edge (no pixel at x = -1) and outside the stamp,
+    // the pixels are as they were.
+    assert_eq!(c.pixel(3, 1), [3, 1, 7, 255]);
+    assert_eq!(c.pixel(7, 3), [7, 3, 7, 255]);
+    assert_eq!(a.dirty, Rect::new(2, 0, 6, 4));
+    assert_eq!(a.tiles, vec![(0, 0)]);
+    assert!(b.is_edited());
+}
+
+#[test]
+fn a_clone_stroke_reads_the_layer_as_it_began() {
+    let mut b = one(numbered(12, 1));
+    // Four pixels along the row: what the stroke reaches at x = 8 and 9
+    // is read from x = 4 and 5, which the stroke itself has painted by
+    // then, so a stroke reading its own output would repeat x = 0 and 1.
+    let op = BitmapOp::Clone {
+        layer: L0,
+        from: None,
+        source: [0.5, 0.5],
+        points: vec![[4.5, 0.5], [9.5, 0.5]],
+        brush: hard(2.0, WHITE),
+    };
+    let a = b.apply(&op).unwrap();
+    let c = &b.layer(L0).unwrap().canvas;
+    for x in 4..10 {
+        assert_eq!(c.pixel(x, 0), [(x - 4) as u8, 0, 7, 255], "x = {x}");
+    }
+    // Outside the stroke: the pixel left of its first stamp (no source
+    // pixel there) and the row past the last stamp's fringe.
+    assert_eq!(c.pixel(3, 0), [3, 0, 7, 255]);
+    assert_eq!(c.pixel(11, 0), [11, 0, 7, 255]);
+    assert_eq!(a.dirty, Rect::new(2, 0, 10, 1));
+}
+
+#[test]
+fn a_clone_stroke_reads_another_layer_and_leaves_it_alone() {
+    let mut b = Bitmap::new();
+    b.add_layer(L0, numbered(8, 4), None);
+    let other = LayerId::new(1, 0, 0);
+    b.add_layer(other, Canvas::new(8, 4, [0; 4]).unwrap(), None);
+    // One down and right of the source: the offset is (1, 1).
+    let op = BitmapOp::Clone {
+        layer: other,
+        from: Some(L0),
+        source: [2.5, 1.5],
+        points: vec![[3.5, 2.5]],
+        brush: hard(4.0, WHITE),
+    };
+    let a = b.apply(&op).unwrap();
+    let o = &b.layer(other).unwrap().canvas;
+    for y in 1..4 {
+        for x in 2..5 {
+            assert_eq!(
+                o.pixel(x, y),
+                [(x - 1) as u8, (y - 1) as u8, 7, 255],
+                "{x},{y}"
+            );
+        }
+    }
+    assert_eq!(o.pixel(0, 0), [0; 4]);
+    assert_eq!(a.layer, other);
+    assert!(b.layer(other).unwrap().is_edited());
+    assert!(!b.layer(L0).unwrap().is_edited());
+    // A layer that is not there is refused, with nothing changed.
+    let mut b = one(numbered(4, 4));
+    let op = BitmapOp::Clone {
+        layer: L0,
+        from: Some(LayerId::new(7, 0, 0)),
+        source: [0.5, 0.5],
+        points: vec![[1.5, 1.5]],
+        brush: hard(2.0, WHITE),
+    };
+    assert_eq!(b.apply(&op), Err(Error::NoLayer(LayerId::new(7, 0, 0))));
+    assert!(!b.is_edited());
+}
+
+#[test]
+fn a_clone_stroke_copies_and_never_erases() {
+    let mut b = one(numbered(8, 4));
+    let mut op = clone_dab([1.5, 1.5], [5.5, 1.5], 2.0);
+    if let BitmapOp::Clone { brush, .. } = &mut op {
+        *brush = Brush {
+            erase: true,
+            ..hard(2.0, WHITE)
+        };
+    }
+    let a = b.apply(&op).unwrap();
+    assert_eq!(b.layer(L0).unwrap().canvas.pixel(5, 1), [1, 1, 7, 255]);
+    assert!(!a.dirty.is_empty());
+    // Copying a layer onto itself where nothing differs is no step.
+    let mut b = one(numbered(8, 4));
+    let a = b.apply(&clone_dab([5.5, 1.5], [5.5, 1.5], 4.0)).unwrap();
+    assert!(a.dirty.is_empty());
+    assert_eq!(b.undo_len(), 0);
+    assert!(!b.is_edited());
+}
+
+#[test]
+fn a_clone_stroke_refuses_what_a_stroke_does() {
+    let mut b = one(numbered(8, 4));
+    let bad = |source: [f32; 2], points: Vec<[f32; 2]>| BitmapOp::Clone {
+        layer: L0,
+        from: None,
+        source,
+        points,
+        brush: hard(2.0, WHITE),
+    };
+    assert!(matches!(
+        b.apply(&bad([f32::NAN, 0.5], vec![[1.0, 1.0]])),
+        Err(Error::Params(_))
+    ));
+    assert!(matches!(
+        b.apply(&bad([0.5, 0.5], vec![])),
+        Err(Error::Params(_))
+    ));
+    assert!(!b.is_edited());
+    b.begin_stroke(L0, Brush::default()).unwrap();
+    assert_eq!(
+        b.apply(&bad([0.5, 0.5], vec![[1.0, 1.0]])),
+        Err(Error::Busy)
+    );
+    assert_eq!(
+        b.begin_clone(L0, Brush::default(), None, [0.5, 0.5]),
+        Err(Error::Busy)
+    );
+    b.cancel_stroke();
+    let mut locked = Bitmap::new();
+    locked.add_layer(
+        L0,
+        numbered(4, 4),
+        Some("its channels are a hypothesis".to_owned()),
+    );
+    match locked.apply(&bad([0.5, 0.5], vec![[1.0, 1.0]])) {
+        Err(Error::ReadOnly(why)) => assert!(why.contains("hypothesis")),
+        other => panic!("{other:?}"),
+    }
+    assert!(
+        locked
+            .begin_clone(L0, Brush::default(), None, [0.5, 0.5])
+            .is_err()
+    );
+}
+
+#[test]
+fn channel_copy_writes_the_channels_asked() {
+    let mut c = Canvas::new(2, 1, [200, 60, 20, 255]).unwrap();
+    c.set_pixel(1, 0, [10, 20, 30, 128]);
+    let all = c.bounds();
+    // The luma (what the encoder writes for L8) into alpha.
+    copy_channel(&mut c, Channel::Luma, Channels::parse("a").unwrap(), all).unwrap();
+    assert_eq!(c.pixel(0, 0), [200, 60, 20, 98]);
+    assert_eq!(c.pixel(1, 0), [10, 20, 30, 18]);
+    // Alpha into the colour of one pixel.
+    let one_pixel = copy_channel(
+        &mut c,
+        Channel::A,
+        Channels::parse("rgb").unwrap(),
+        Rect::new(1, 0, 1, 1),
+    )
+    .unwrap();
+    assert_eq!(one_pixel, Rect::new(1, 0, 1, 1));
+    assert_eq!(c.pixel(1, 0), [18, 18, 18, 18]);
+    assert_eq!(c.pixel(0, 0), [200, 60, 20, 98]);
+    // Red into green and blue.
+    copy_channel(&mut c, Channel::R, Channels::parse("gb").unwrap(), all).unwrap();
+    assert_eq!(c.pixel(0, 0), [200, 200, 200, 98]);
+    assert_eq!(c.pixel(1, 0), [18, 18, 18, 18]);
+    // No channel to write is refused.
+    let none = Channels {
+        r: false,
+        g: false,
+        b: false,
+        a: false,
+    };
+    assert!(copy_channel(&mut c, Channel::G, none, all).is_err());
+    for ch in Channel::ALL {
+        assert_eq!(Channel::parse(ch.name()), Some(ch));
+        assert_eq!(
+            serde_json::to_value(ch).unwrap(),
+            serde_json::json!(ch.name())
+        );
+    }
+}
+
+#[test]
+fn flip_and_turns_move_the_pixels_of_their_rectangle() {
+    // 0 1 2 3 over 10 11 12 13.
+    let mut c = grid(4, 2);
+    let all = c.bounds();
+    turn(&mut c, Turn::FlipHorizontal, all).unwrap();
+    assert_eq!(
+        (c.pixel(0, 0)[0], c.pixel(3, 0)[0], c.pixel(0, 1)[0]),
+        (3, 0, 13)
+    );
+    turn(&mut c, Turn::FlipVertical, all).unwrap();
+    assert_eq!((c.pixel(0, 0)[0], c.pixel(3, 0)[0]), (13, 10));
+    // And back.
+    turn(&mut c, Turn::FlipVertical, all).unwrap();
+    turn(&mut c, Turn::FlipHorizontal, all).unwrap();
+    assert_eq!(c.pixel(3, 1)[0], 13);
+    turn(&mut c, Turn::Half, all).unwrap();
+    assert_eq!((c.pixel(0, 0)[0], c.pixel(3, 1)[0]), (13, 0));
+    // A quarter turn needs a square.
+    assert!(matches!(
+        turn(&mut c, Turn::Quarter, all),
+        Err(Error::Rect(_))
+    ));
+    assert!(matches!(
+        turn(&mut c, Turn::ThreeQuarters, all),
+        Err(Error::Rect(_))
+    ));
+    // In a rectangle of a row; the rest stays.
+    let mut r = grid(5, 1);
+    turn(&mut r, Turn::Half, Rect::new(1, 0, 3, 1)).unwrap();
+    let row: Vec<u8> = (0..5).map(|x| r.pixel(x, 0)[0]).collect();
+    assert_eq!(row, [0, 3, 2, 1, 4]);
+    // 0 1 2 / 10 11 12 / 20 21 22: a quarter turn clockwise takes the
+    // top row to the right column.
+    let mut q = grid(3, 3);
+    let square = q.bounds();
+    turn(&mut q, Turn::Quarter, square).unwrap();
+    assert_eq!(
+        (
+            q.pixel(0, 0)[0],
+            q.pixel(2, 0)[0],
+            q.pixel(0, 2)[0],
+            q.pixel(1, 1)[0]
+        ),
+        (20, 0, 22, 11)
+    );
+    // A quarter anticlockwise undoes it.
+    turn(&mut q, Turn::ThreeQuarters, square).unwrap();
+    assert_eq!(q.pixel(2, 0)[0], 2);
+    // Two quarters are a half.
+    turn(&mut q, Turn::Quarter, square).unwrap();
+    turn(&mut q, Turn::Quarter, square).unwrap();
+    assert_eq!((q.pixel(0, 0)[0], q.pixel(2, 2)[0]), (22, 0));
+    for t in Turn::ALL {
+        assert_eq!(Turn::parse(t.name()), Some(t));
+        assert_eq!(
+            serde_json::to_value(t).unwrap(),
+            serde_json::json!(t.name())
+        );
+    }
 }

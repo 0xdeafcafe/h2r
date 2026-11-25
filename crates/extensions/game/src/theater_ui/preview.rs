@@ -84,7 +84,7 @@ fn fixture(id: &str, map: &str, variant: &str, playable: bool) -> FilmMeta {
             crate::theater::CompatibilityState::Unavailable
         },
         compatibility_reason: (!playable).then(|| "Film predates a breaking simulation change.".into()),
-        saved: id == "game-1",
+        saved: false,
         result: Some(if playable { "Won" } else { "Lost" }.into()),
         host: Some("Live Europe".into()),
         ..FilmMeta::default()
@@ -351,6 +351,10 @@ impl Live for Preview {
             }));
         }
         let last_film = BROWSE_ROWS + films.len() - 1;
+        let mut pinned = first.clone();
+        pinned.id = "saved-game".into();
+        pinned.saved = true;
+        films.push(pinned);
         let mut state = super::State {
             load: match name {
                 "empty" | "empty-saved" | "empty-clips" => Load::Ready(Vec::new()),

@@ -116,6 +116,22 @@ pub struct AuxDepth {
     pub rest_clip: [f32; 2],
 }
 
+/// Geometry admitted by the display lens outside the retail view. These
+/// IDs belong to this BSP and this frame's object table.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct DisplayVisibility {
+    /// Clusters wholly enclosed by one display portal window. Every subpart
+    /// of these sections is in that window.
+    pub whole_clusters: Vec<u16>,
+    pub placements: Vec<u16>,
+    pub clusters: Vec<u16>,
+    pub objects: Vec<u32>,
+    /// The objects are a widened guest camera's, outside the retail
+    /// lens's set: their guest setup left them undrawn, and the display
+    /// draws them at any device factor.
+    pub guest_lens: bool,
+}
+
 /// One game view.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct View {
@@ -125,6 +141,8 @@ pub struct View {
     /// respawns and the distance backstop).
     pub cut: bool,
     pub camera: Camera,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_visibility: Option<std::sync::Arc<DisplayVisibility>>,
     /// Into [`FrameScene::clusters`].
     pub clusters: Range<u32>,
     /// Into [`FrameScene::instances`], in the guest's order.
@@ -150,6 +168,8 @@ pub struct View {
     pub fog: Option<FogState>,
     /// The view's layer 6.
     pub water: Option<WaterState>,
+    /// The teardown's indexed quad mesh in the current vertex stream.
+    pub water_composite: Option<crate::late::WaterComposite>,
     /// The view's post passes.
     pub post: Option<PostParams>,
 }
@@ -284,10 +304,40 @@ pub struct PartDraw {
 /// IDs have the BSP's numbering in both lists and in the layer-3 cluster list.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ClusterGather {
-    /// Guest clipping mode (0 portal flood, 1 sphere, 2 all clusters).
+    /// Guest clipping mode (0 portal flood, 1 sphere, 2 the potentially
+    /// visible set).
     pub mode: u32,
+    /// The visible clusters: the guest's region order, or ascending when
+    /// [`VisibilitySource::Rust`] supplied them.
     pub visible: Vec<u16>,
     pub structure: Vec<u16>,
+    /// The view's object list (handles): the guest's list order, or
+    /// ascending when [`VisibilitySource::Rust`] supplied it.
+    pub objects: Vec<u32>,
+    /// Who computed `visible` and `objects` (docs/graphics/native-visibility.md).
+    pub source: VisibilitySource,
+}
+
+/// Which visibility a view's [`ClusterGather`] carries. The Rust sets are
+/// the default; the guest's lists are the fallback a declined computation
+/// takes (docs/graphics/native-visibility.md).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VisibilitySource {
+    /// The guest's portal flood and object gather, read.
+    #[default]
+    Guest,
+    /// `scene_extract::visibility`, computed for this view.
+    Rust,
+}
+
+impl VisibilitySource {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Guest => "guest",
+            Self::Rust => "rust",
+        }
+    }
 }
 
 /// A root object outside the frustum whose shadow can reach this view.

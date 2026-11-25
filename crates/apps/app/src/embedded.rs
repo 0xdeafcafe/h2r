@@ -216,7 +216,7 @@ impl Embedded {
 
     /// The layer's drawable size changed (pixels).
     pub fn resize(&mut self, size: (u32, u32)) {
-        self.surface.resize(size);
+        self.surface.resize(size, false);
     }
 
     /// Pauses or resumes the guest (the app left or regained the screen).

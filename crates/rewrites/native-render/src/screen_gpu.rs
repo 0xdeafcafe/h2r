@@ -298,6 +298,7 @@ pub enum ScreenRefused {
     Clip,
     /// No program for this pass (the load refused it).
     NoProgram,
+    FragmentRaster(String),
     /// The strip has fewer than three vertices or the call no strips.
     NoStrips,
     /// Target 1 sampled before a pass of the call drew it.
@@ -324,10 +325,9 @@ pub enum ScreenRefused {
     Uniforms,
 }
 
-/// Whether `program` would draw into `color` (recording nothing): every
-/// sampled stage bound with what the pass supplies, the colour copyable
-/// when it may be sampled (the view's, or a result that may name it).
-pub fn check(color: &wgpu::TextureView, program: &ScreenProgram) -> Result<(), ScreenRefused> {
+/// Checks the sampled stages and the optional framebuffer's copy usage.
+/// The draw-order check resolves which surface a convolution result names.
+fn check(program: &ScreenProgram, reads: [Option<u32>; 4], color_usage: Option<wgpu::TextureUsages>) -> Result<(), ScreenRefused> {
     for (n, d) in program.dims.iter().enumerate() {
         if d.is_none() {
             continue;
@@ -337,12 +337,13 @@ pub fn check(color: &wgpu::TextureView, program: &ScreenProgram) -> Result<(), S
             ScreenStage::Bitmap { .. } => {}
             ScreenStage::Engine(id) => match bound(id) {
                 None => return Err(ScreenRefused::EngineTexture(id)),
-                Some(Bound::View | Bound::Result(_)) => {
-                    if !color.texture().usage().contains(wgpu::TextureUsages::COPY_SRC) {
+                Some(_) if reads[n] == Some(0) => {
+                    let usage = color_usage.ok_or(ScreenRefused::Attachment(0))?;
+                    if !usage.contains(wgpu::TextureUsages::COPY_SRC) {
                         return Err(ScreenRefused::ColourNotCopyable);
                     }
                 }
-                Some(Bound::Target1) => {}
+                Some(_) => {}
             },
         }
     }
@@ -358,8 +359,22 @@ pub fn check_order<'a>(
     passes: impl IntoIterator<Item = (&'a ScreenProgram, Dest, &'a [ScreenConvolution])>,
 ) -> Result<(), ScreenRefused> {
     let mut drawn = Drawn::default();
+    let mut pins_view = false;
+    let mut needs_view = false;
     for (program, dest, convolutions) in passes {
+        pins_view |= dest == Dest::Bound;
+        // Even an unsampled stage can supply a size to a shader constant.
+        needs_view |= program.stages.iter().enumerate().any(|(n, stage)| {
+            let reads_size = program.constants.vertex.iter().any(|(c, _)|
+                c.reads_size() && usize::from(c.stage) == n + 1
+            );
+            (program.dims[n].is_some() || reads_size)
+                && matches!(stage, ScreenStage::Engine(id) if drawn.target(*id) == Ok(0))
+        }) || convolutions.iter().flat_map(|c| &c.draws).any(|q| q.source == 0);
         drawn.pass(program, dest, convolutions)?;
+    }
+    if needs_view && !pins_view {
+        return Err(ScreenRefused::Attachment(0));
     }
     Ok(())
 }
@@ -440,7 +455,7 @@ pub struct ScreenTarget<'a> {
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
     pub uploads: &'a gfx::ring::SubmissionUploads,
-    pub color: glow::PostSurface<'a>,
+    pub color: Option<glow::PostSurface<'a>>,
     pub target1: Option<glow::PostSurface<'a>>,
     pub convolutions: [Option<glow::PostSurface<'a>>; 3],
     /// The device's depth scale (`+0x948`).
@@ -451,6 +466,7 @@ pub struct ScreenTarget<'a> {
 pub struct ScreenGpu {
     pub program: ScreenProgram,
     module: wgpu::ShaderModule,
+    variants: HashMap<FragmentRaster, wgpu::ShaderModule>,
     layout: wgpu::PipelineLayout,
     uniforms_layout: wgpu::BindGroupLayout,
     textures_layout: wgpu::BindGroupLayout,
@@ -538,6 +554,7 @@ impl ScreenGpu {
         Ok(Self {
             program,
             module,
+            variants: HashMap::new(),
             layout,
             uniforms_layout,
             textures_layout,
@@ -549,9 +566,33 @@ impl ScreenGpu {
 
     /// The pipeline for colour format `color`: strips, the pass's blend
     /// and colour writes, no depth.
-    fn pipeline(&mut self, device: &wgpu::Device, key: RasterPipeline) -> &wgpu::RenderPipeline {
-        let (module, layout) = (&self.module, &self.layout);
-        self.pipelines.entry(key).or_insert_with(|| {
+    fn pipeline(&mut self, device: &wgpu::Device, key: RasterPipeline) -> Result<&wgpu::RenderPipeline, ScreenRefused> {
+        const SCREEN_PIPELINES: usize = 128;
+        if self.pipelines.len() == SCREEN_PIPELINES && !self.pipelines.contains_key(&key) {
+            self.pipelines.clear();
+        }
+        let default = FragmentRaster {
+            alpha: self.program.state.alpha_test.map(|(func, _)| crate::program::alpha_func(func)),
+            stipple: false,
+        };
+        let module = if key.fragment == default {
+            &self.module
+        } else {
+            match self.variants.entry(key.fragment) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let source = self.program.raster_shader.as_ref().ok_or(ScreenRefused::NoProgram)?
+                        .translate(key.fragment.alpha, key.fragment.stipple)
+                        .map_err(ScreenRefused::FragmentRaster)?;
+                    entry.insert(device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                        label: Some("native screen raster variant"),
+                        source: wgpu::ShaderSource::Wgsl(source.into()),
+                    }))
+                }
+            }
+        };
+        let layout = &self.layout;
+        Ok(self.pipelines.entry(key).or_insert_with(|| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("native screen pass"),
                 layout: Some(layout),
@@ -565,13 +606,7 @@ impl ScreenGpu {
                         attributes: &STRIP_ATTRIBUTES,
                     })],
                 },
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleStrip,
-                    front_face: key.front_face,
-                    cull_mode: key.cull,
-                    unclipped_depth: key.depth_clamp,
-                    ..Default::default()
-                },
+                primitive: key.primitive(),
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
                 fragment: Some(wgpu::FragmentState {
@@ -587,7 +622,7 @@ impl ScreenGpu {
                 multiview_mask: None,
                 cache: None,
             })
-        })
+        }))
     }
 
     /// The texture group: `engine[n]` what engine stage `n` reads (the
@@ -628,33 +663,47 @@ impl ScreenGpu {
 /// pass and the implementation.
 pub type ScreenKey = (u32, usize, usize);
 
-/// Raster state of a layer-15 strip after the guest applies the template.
+/// Raster state resolved at a native post draw.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct StripRaster {
+pub struct PostRaster {
     pub blend: Option<wgpu::BlendState>,
     pub blend_constant: wgpu::Color,
+    pub alpha_test: Option<(psh::AlphaFunc, u8)>,
+    pub stipple: Option<[u32; 32]>,
     pub writes: wgpu::ColorWrites,
     pub front_face: wgpu::FrontFace,
     pub cull: Option<wgpu::Face>,
     pub depth_clamp: bool,
+    pub fill: gfx::state::FillMode,
+    /// Window depth conversion and optional W clip range of the live strip.
+    pub z_scale: Option<f32>,
+    pub w_clip: Option<[f32; 2]>,
     /// X8 aliases read alpha as one, independently of stored alpha.
-    pub opaque_view: bool,
+    pub opaque_view: [bool; 4],
     /// The effective scissor in guest target pixels.
     pub clip: Option<[u32; 4]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct RasterPipeline {
-    format: wgpu::TextureFormat,
-    blend: Option<wgpu::BlendState>,
-    writes: wgpu::ColorWrites,
+pub(crate) struct RasterPipeline {
+    pub(crate) format: wgpu::TextureFormat,
+    pub(crate) blend: Option<wgpu::BlendState>,
+    pub(crate) writes: wgpu::ColorWrites,
     front_face: wgpu::FrontFace,
     cull: Option<wgpu::Face>,
     depth_clamp: bool,
+    polygon_mode: wgpu::PolygonMode,
+    fragment: FragmentRaster,
 }
 
-impl StripRaster {
-    fn pipeline(self, format: wgpu::TextureFormat, features: wgpu::Features) -> RasterPipeline {
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) struct FragmentRaster {
+    pub(crate) alpha: Option<psh::AlphaFunc>,
+    pub(crate) stipple: bool,
+}
+
+impl PostRaster {
+    pub(crate) fn pipeline(self, format: wgpu::TextureFormat, features: wgpu::Features) -> RasterPipeline {
         RasterPipeline {
             format,
             blend: self.blend,
@@ -662,10 +711,33 @@ impl StripRaster {
             front_face: self.front_face,
             cull: self.cull,
             depth_clamp: self.depth_clamp && features.contains(wgpu::Features::DEPTH_CLIP_CONTROL),
+            polygon_mode: gfx::translate::primitive_state(
+                &gfx::RenderState { fill_mode: self.fill, ..Default::default() },
+                wgpu::PrimitiveTopology::TriangleStrip,
+                gfx::translate::Capabilities::from_features(features),
+            ).polygon_mode,
+            fragment: self.fragment(),
         }
     }
 
-    fn scissor(self, guest: (u32, u32), size: (u32, u32)) -> Result<[u32; 4], ScreenRefused> {
+    pub(crate) fn fragment(self) -> FragmentRaster {
+        FragmentRaster {
+            alpha: self.alpha_test.map(|(func, _)| func),
+            stipple: self.stipple.is_some(),
+        }
+    }
+
+    pub(crate) fn pixel_uniforms(self, pixel: &mut PixelUniforms, guest: (u32, u32), size: (u32, u32)) {
+        if let Some((_, reference)) = self.alpha_test {
+            pixel.alpha_ref = [f32::from(reference), 0.0, 0.0, 0.0];
+        }
+        if let Some(pattern) = self.stipple {
+            pixel.stipple = pattern;
+            pixel.stipple_scale = PixelUniforms::stipple_grid(guest, size);
+        }
+    }
+
+    pub(crate) fn scissor(self, guest: (u32, u32), size: (u32, u32)) -> Result<[u32; 4], ScreenRefused> {
         let [x, y, w, h] = self.clip.unwrap_or([0, 0, guest.0, guest.1]);
         let scale = d3d::scaled::RenderScale::between(guest, size).ok_or(ScreenRefused::Clip)?;
         if w == 0 || h == 0
@@ -677,17 +749,50 @@ impl StripRaster {
     }
 }
 
-impl From<crate::pass_state::PassState> for StripRaster {
+impl RasterPipeline {
+    pub(crate) fn primitive(self) -> wgpu::PrimitiveState {
+        wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleStrip,
+            front_face: self.front_face,
+            cull_mode: self.cull,
+            unclipped_depth: self.depth_clamp,
+            polygon_mode: self.polygon_mode,
+            ..Default::default()
+        }
+    }
+}
+
+impl Default for PostRaster {
+    fn default() -> Self {
+        Self {
+            blend: None,
+            blend_constant: wgpu::Color::TRANSPARENT,
+            alpha_test: None,
+            stipple: None,
+            writes: wgpu::ColorWrites::ALL,
+            front_face: wgpu::FrontFace::Ccw,
+            cull: None,
+            depth_clamp: false,
+            fill: gfx::state::FillMode::Solid,
+            z_scale: None,
+            w_clip: None,
+            opaque_view: [false; 4],
+            clip: None,
+        }
+    }
+}
+
+impl From<crate::pass_state::PassState> for PostRaster {
     fn from(s: crate::pass_state::PassState) -> Self {
         Self {
             blend: s.blend,
             blend_constant: s.blend_constant,
+            alpha_test: s.alpha_test.map(|(func, reference)| (crate::program::alpha_func(func), reference)),
             writes: s.color_writes,
             front_face: s.primitive.front_face,
             cull: s.primitive.cull_mode,
             depth_clamp: s.primitive.unclipped_depth,
-            opaque_view: false,
-            clip: None,
+            ..Self::default()
         }
     }
 }
@@ -698,11 +803,13 @@ pub struct ScreenDraw<'a> {
     pub key: ScreenKey,
     pub program: &'a ScreenProgram,
     pub strips: &'a [Vec<StripVertex>],
-    pub raster: StripRaster,
+    pub raster: PostRaster,
     pub dest: Dest,
     /// The call's four values (f32 bits).
     pub values: [u32; 4],
     pub convolutions: &'a [ScreenConvolution],
+    /// One raster per convolution quad or grid, in draw order.
+    pub convolution_rasters: &'a [PostRaster],
 }
 
 /// A texture the set keeps: its size and format, and a view of it.
@@ -786,11 +893,22 @@ impl AlphaClear {
     }
 }
 
+/// Which framebuffer snapshots the sampled stages need, in RGBA and X8 order.
+fn view_snapshots(reads: [Option<u32>; 4], opaque: [bool; 4]) -> [bool; 2] {
+    let mut needed = [false; 2];
+    for (source, opaque) in reads.into_iter().zip(opaque) {
+        if source == Some(0) {
+            needed[usize::from(opaque)] = true;
+        }
+    }
+    needed
+}
+
 /// Compiled screen passes and the per-pass feedback copy.
 #[derive(Default)]
 pub struct ScreenSet {
     passes: HashMap<ScreenKey, Result<ScreenGpu, ScreenRefused>>,
-    copy: Option<Kept>,
+    copies: [Option<Kept>; 2],
     quads: glow::QuadDrawer,
     opaque: AlphaClear,
 }
@@ -803,6 +921,8 @@ impl ScreenSet {
     /// Forgets every pass (a new map's effects).
     pub fn clear(&mut self) {
         self.passes.clear();
+        self.copies = [None, None];
+        self.quads = glow::QuadDrawer::new();
     }
 
     /// The call against its live destination and source views, prepared
@@ -817,11 +937,11 @@ impl ScreenSet {
         stage_image: &mut dyn FnMut(ScreenStage) -> Option<Image>,
     ) -> Result<ScreenCommands, ScreenRefused> {
         let ScreenTarget { device, queue, uploads, color, target1, convolutions, z_scale } = t;
-        let guest_size = color.guest_size;
+        let guest_size = color.map_or((0, 0), |c| c.guest_size);
         check_order(draws.iter().map(|d| (d.program, d.dest, d.convolutions)))?;
         convolution_states(frame, draws.iter().map(|d| d.convolutions))?;
         let slot = |index| match index {
-            0 => Some(color),
+            0 => color,
             1 => target1,
             _ => stand_in(index).and_then(|i| convolutions[i]),
         };
@@ -846,13 +966,19 @@ impl ScreenSet {
         };
         let mut drawn = Drawn::default();
         for d in draws {
-            check(color.view, d.program)?;
+            if !d.convolution_rasters.is_empty()
+                && d.convolution_rasters.len() != d.convolutions.iter().map(|c| c.draws.len()).sum::<usize>()
+            {
+                return Err(ScreenRefused::Convolution("raster count differs from convolution count".into()));
+            }
             if d.strips.is_empty() || d.strips.iter().any(|s| s.len() < 3) {
                 return Err(ScreenRefused::NoStrips);
             }
             let (index, guest) = dest_of(d.dest);
             let dest = attachment(index, guest)?;
-            for source in drawn.reads(d.program, d.dest)?.into_iter().flatten() {
+            let reads = drawn.reads(d.program, d.dest)?;
+            check(d.program, reads, color.map(|c| c.view.texture().usage()))?;
+            for source in reads.into_iter().flatten() {
                 let source_view = sample(source)?;
                 if source != 0 && dest.texture() == source_view.texture() {
                     return Err(ScreenRefused::Source(source));
@@ -865,7 +991,7 @@ impl ScreenSet {
             }
             match self.passes.get_mut(&d.key) {
                 Some(Ok(g)) => {
-                    g.pipeline(device, d.raster.pipeline(dest.texture().format(), device.features()));
+                    g.pipeline(device, d.raster.pipeline(dest.texture().format(), device.features()))?;
                 }
                 Some(Err(r)) => return Err(r.clone()),
                 None => return Err(ScreenRefused::NoProgram),
@@ -880,6 +1006,7 @@ impl ScreenSet {
         for d in draws {
             drawn.reads(d.program, d.dest)?;
             drawn.drew(d.dest)?;
+            let mut rasters = d.convolution_rasters.iter().copied();
             for (n, c) in d.convolutions.iter().enumerate() {
                 for q in &c.draws {
                     let frame = frame.ok_or(ScreenRefused::NoFrame)?;
@@ -888,59 +1015,68 @@ impl ScreenSet {
                         return Err(ScreenRefused::Source(q.source));
                     }
                     let source = drawn.size(q.source, guest_size).ok_or(ScreenRefused::Unwritten(q.source))?;
-                    quads.push(match &q.grid {
+                    let raster = rasters.next().unwrap_or_default();
+                    let (program, shape) = match &q.grid {
                         None => {
                             let stages = [Some(source); 4];
-                            let program = self.quads.program(&frame.combiner, stages).map_err(ScreenRefused::Convolution)?;
+                            let program = self.quads.cached(&frame.combiner, stages, false, raster.fragment()).map_err(ScreenRefused::Convolution)?;
                             (program, Shape::Quad(glow::quad(frame.window, frame.signs, c.size, stages, 4, q.spread)))
                         }
                         Some(g) => {
                             // Checked by `convolution_states`.
                             let stages = [Some(g.bound); 4];
-                            let program = self.quads.grid_program(&frame.combiner, stages).map_err(ScreenRefused::Convolution)?;
+                            let program = self.quads.cached(&frame.combiner, stages, true, raster.fragment()).map_err(ScreenRefused::Convolution)?;
                             (program, Shape::Grid(glow::GridFrame::of(c.size)))
                         }
-                    });
+                    };
+                    quads.push((program, shape, raster));
                     drawn.convolved(q, c.size)?;
                 }
                 drawn.result(n, c);
             }
         }
-        let texture = color.view.texture();
-        let full = wgpu::Extent3d { width: texture.width(), height: texture.height(), depth_or_array_layers: 1 };
         let mut commands = ScreenCommands { steps: Vec::new(), ranges: 0 };
         let mut quads = quads.into_iter();
         let mut drawn = Drawn::default();
         for d in draws {
             let Some(Ok(g)) = self.passes.get(&d.key) else { return Err(ScreenRefused::NoProgram) };
             let reads = drawn.reads(d.program, d.dest)?;
-            let copy = if reads.contains(&Some(0)) {
+            let mut snapshots = [None, None];
+            for (i, needed) in view_snapshots(reads, d.raster.opaque_view).into_iter().enumerate() {
+                if !needed {
+                    continue;
+                }
+                let texture = color.ok_or(ScreenRefused::Attachment(0))?.view.texture();
+                let full = wgpu::Extent3d { width: texture.width(), height: texture.height(), depth_or_array_layers: 1 };
                 let usage = wgpu::TextureUsages::TEXTURE_BINDING
                     | wgpu::TextureUsages::COPY_DST
                     | wgpu::TextureUsages::RENDER_ATTACHMENT;
-                let (extent, _, copy, view) = keep(&mut self.copy, device, full, texture.format(), usage, "native screen view copy");
+                let (extent, _, copy, view) = keep(&mut self.copies[i], device, full, texture.format(), usage, "native screen view copy");
                 commands.steps.push(Step::Copy { source: texture.clone(), dest: copy.clone(), extent: *extent });
-                if d.raster.opaque_view {
+                if i == 1 {
                     let pipeline = self.opaque.pipeline(device, copy.format());
                     commands.steps.push(Step::Opaque { pipeline, view: view.clone() });
                 }
-                Some(view.clone())
-            } else {
-                None
-            };
+                snapshots[i] = Some(view.clone());
+            }
             let (index, dest_guest) = dest_of(d.dest);
             let dest_view = attachment(index, dest_guest)?;
             let dest_texture = dest_view.texture();
             let dest_size = (dest_texture.width(), dest_texture.height());
             let color_format = dest_texture.format();
             drawn.drew(d.dest)?;
-            let engine = reads.map(|r| match r {
-                Some(0) => copy.clone(),
+            let engine = std::array::from_fn(|n| match reads[n] {
+                Some(0) => snapshots[usize::from(d.raster.opaque_view[n])].clone(),
                 Some(t) => view_of(t).cloned(),
                 None => None,
             });
             let textures = g.textures(device, &engine)?;
-            let (vertex, pixel) = screen_uniforms(d.program, d.values, (guest_size, &drawn), (dest_guest, dest_size), z_scale);
+            let (mut vertex, mut pixel) = screen_uniforms(
+                d.program, d.values, (guest_size, &drawn), (dest_guest, dest_size), d.raster.z_scale.unwrap_or(z_scale),
+            );
+            vertex.w_clip = d.raster.w_clip;
+            vertex.w_clamp = d.raster.depth_clamp;
+            d.raster.pixel_uniforms(&mut pixel, dest_guest, dest_size);
             let uniforms = uploads
                 .uniform_run(device, queue, &g.uniforms_layout, [VertexUniforms::SIZE, PixelUniforms::SIZE], 1, |_, v, p| {
                     vertex.write_bytes(v);
@@ -969,21 +1105,19 @@ impl ScreenSet {
             // A convolution samples the preceding pass's real pixels.
             for (n, c) in d.convolutions.iter().enumerate() {
                 for q in &c.draws {
-                    let Some((program, shape)) = quads.next() else { return Err(ScreenRefused::NoFrame) };
+                    let Some((program, shape, raster)) = quads.next() else { return Err(ScreenRefused::NoFrame) };
                     let source = sample(q.source)?;
-                    let dest = attachment(q.dest, c.size)?;
-                    let format = dest.texture().format();
-                    let stages = [Some(source); 4];
-                    let quad = match (&shape, &q.grid) {
-                        (Shape::Grid(f), Some(g)) => {
-                            self.quads.grid(device, queue, uploads, &program, f, &g.strips, dest, format, None, stages)
-                        }
-                        (Shape::Quad(quad), _) => {
-                            self.quads.quad(device, queue, uploads, &program, quad, dest, format, None, stages)
-                        }
+                    let dest = glow::PostSurface { view: attachment(q.dest, c.size)?, guest_size: c.size };
+                    let format = dest.view.texture().format();
+                    let (vertex, strips) = match (&shape, &q.grid) {
+                        (Shape::Grid(f), Some(g)) => (bytemuck::bytes_of(f), Some(g.strips.as_slice())),
+                        (Shape::Quad(quad), _) => (bytemuck::bytes_of(quad), None),
                         (Shape::Grid(_), None) => return Err(ScreenRefused::NoStrips),
                     };
-                    commands.steps.extend(quad.map_err(|_| ScreenRefused::Uniforms)?.map(Step::Quad));
+                    let quad = self.quads.prepare(
+                        (device, queue, uploads), &program, vertex, strips, (dest, format, raster), [Some(source); 4],
+                    );
+                    commands.steps.extend(quad.map_err(|why| ScreenRefused::Convolution(why.into()))?.map(Step::Quad));
                     drawn.convolved(q, c.size)?;
                     commands.ranges += q.grid.as_ref().map_or(1, |grid| grid.strips.len());
                 }
@@ -1134,6 +1268,8 @@ mod tests {
             signed: [[false; 4]; 4],
             vertex: VertexUniforms::default(),
             pixel: PixelUniforms::default(),
+            combiner_inputs: Default::default(),
+            raster_shader: None,
             inputs: 0x1f,
             constants: Default::default(),
             state: PassState {
@@ -1152,15 +1288,45 @@ mod tests {
 
     #[test]
     fn the_live_raster_keys_colour_masks_and_scales_the_scissor() {
-        let mut raster: StripRaster = program([ScreenStage::Empty; 4]).state.into();
+        let mut raster: PostRaster = program([ScreenStage::Empty; 4]).state.into();
         let format = wgpu::TextureFormat::Rgba8Unorm;
         let first = raster.pipeline(format, wgpu::Features::empty());
         raster.writes = wgpu::ColorWrites::RED | wgpu::ColorWrites::BLUE;
         raster.clip = Some([4, 6, 8, 10]);
         assert_ne!(raster.pipeline(format, wgpu::Features::empty()), first);
+        raster.front_face = wgpu::FrontFace::Cw;
+        raster.cull = Some(wgpu::Face::Front);
+        raster.fill = gfx::state::FillMode::Wireframe;
+        let primitive = raster.pipeline(format, wgpu::Features::POLYGON_MODE_LINE).primitive();
+        assert_eq!(primitive.front_face, wgpu::FrontFace::Cw);
+        assert_eq!(primitive.cull_mode, Some(wgpu::Face::Front));
+        assert_eq!(primitive.polygon_mode, wgpu::PolygonMode::Line);
+        assert_eq!(raster.pipeline(format, wgpu::Features::empty()).primitive().polygon_mode, wgpu::PolygonMode::Fill);
         assert_eq!(raster.scissor((32, 32), (64, 64)), Ok([8, 12, 16, 20]));
         assert_eq!(raster.scissor((32, 32), (80, 40)), Ok([10, 8, 20, 12]));
         assert_eq!(raster.scissor((8, 8), (16, 16)), Err(ScreenRefused::Clip));
+    }
+
+    #[test]
+    fn alpha_reference_and_stipple_rows_are_per_draw_uniforms() {
+        use shaders::psh::AlphaFunc;
+
+        let raster = PostRaster {
+            alpha_test: Some((AlphaFunc::Less, 37)),
+            stipple: Some([0x42; 32]),
+            ..Default::default()
+        };
+        let other = PostRaster {
+            alpha_test: Some((AlphaFunc::Less, 83)),
+            stipple: Some([0x77; 32]),
+            ..raster
+        };
+        assert_eq!(raster.fragment(), other.fragment());
+        let mut pixel = PixelUniforms::default();
+        raster.pixel_uniforms(&mut pixel, (32, 19), (80, 31));
+        assert_eq!(pixel.alpha_ref[0], 37.0);
+        assert_eq!(pixel.stipple, [0x42; 32]);
+        assert_eq!(pixel.stipple_scale, PixelUniforms::stipple_grid((32, 19), (80, 31)));
     }
 
     #[test]
@@ -1175,6 +1341,24 @@ mod tests {
         assert_eq!(s[1].texcoords[3], [1.0, 0.0, 0.0, 1.0]);
         assert_eq!(std::mem::size_of::<StripVertex>(), 80);
         assert_eq!(STRIP_ATTRIBUTES.map(|a| (a.shader_location, a.offset)), [(0, 0), (1, 16), (2, 32), (3, 48), (4, 64)]);
+    }
+
+    #[test]
+    fn screen_stages_can_read_both_alpha_interpretations_of_the_view() {
+        let reads = [Some(0), Some(1), None, Some(0)];
+        assert_eq!(view_snapshots(reads, [false, true, true, true]), [true, true]);
+        assert_eq!(view_snapshots(reads, [false, true, true, false]), [true, false]);
+        assert_eq!(view_snapshots(reads, [true; 4]), [false, true]);
+        assert_eq!(view_snapshots([Some(1); 4], [true; 4]), [false, false]);
+    }
+
+    #[test]
+    fn convolution_result_only_requires_a_copyable_view_when_it_names_the_view() {
+        let result = program([ScreenStage::Engine(24), E, E, E]);
+        let usage = Some(wgpu::TextureUsages::RENDER_ATTACHMENT);
+        assert_eq!(check(&result, [Some(0x19), None, None, None], usage), Ok(()));
+        assert_eq!(check(&result, [Some(0), None, None, None], usage), Err(ScreenRefused::ColourNotCopyable));
+        assert_eq!(check(&result, [Some(0), None, None, None], None), Err(ScreenRefused::Attachment(0)));
     }
 
     #[test]
@@ -1212,6 +1396,14 @@ mod tests {
         let empty = Dest::Target1 { guest: (0, 240) };
         assert_eq!(check_order([(&copy, empty, none)]), Err(ScreenRefused::Target1Size));
         assert_eq!(check_order([(&copy, Dest::Bound, none)]), Ok(()), "desaturate's");
+        assert_eq!(check_order([(&copy, into, none)]), Err(ScreenRefused::Attachment(0)));
+        let mut unused = copy.clone();
+        unused.dims[0] = None;
+        assert_eq!(check_order([(&unused, into, none)]), Ok(()));
+        unused.constants.vertex.push((tags::material::EngineVertexConstant {
+            bank: 0, reg: 2, mode: 5, stage: 1, source: 0,
+        }, 1));
+        assert_eq!(check_order([(&unused, into, none)]), Err(ScreenRefused::Attachment(0)));
     }
 
     /// The blur's shape: its first pass copies the view into target 1 and
@@ -1313,25 +1505,34 @@ mod tests {
         let left = [strip(-1.0, -0.25)];
         let right = [strip(0.25, 1.0)];
         let draw = |key, program, strips, raster| ScreenDraw {
-            key, program, strips, raster, dest: Dest::Target1 { guest: size }, values: [0; 4], convolutions: &[],
+            key, program, strips, raster, dest: Dest::Target1 { guest: size }, values: [0; 4], convolutions: &[], convolution_rasters: &[],
         };
         let arena = gfx::ring::UploadPool::default().begin();
         let mut encoder = ctx.device.create_command_encoder(&Default::default());
         let color = main.create_view(&Default::default());
         let target1 = level.create_view(&Default::default());
-        let target = ScreenTarget {
+        let target = |pinned: bool| ScreenTarget {
             device: &ctx.device,
             queue: &ctx.queue,
             uploads: &arena,
-            color: glow::PostSurface { view: &color, guest_size: size },
+            color: pinned.then_some(glow::PostSurface { view: &color, guest_size: size }),
             target1: Some(glow::PostSurface { view: &target1, guest_size: size }),
             convolutions: [None; 3],
             z_scale: 1.0,
         };
-        let draws = [draw((0, 0, 0), &red, &left[..], red.state.into()), draw((0, 0, 0), &blue, &right[..], blue.state.into())];
-        assert_eq!(ScreenSet::new().encode(target, &mut encoder, &draws, None, &mut |_| None), Ok(2));
+        let draws = [
+            ScreenDraw { dest: Dest::Bound, ..draw((0, 0, 0), &red, &left[..], red.state.into()) },
+            draw((0, 0, 0), &red, &left[..], red.state.into()),
+            draw((0, 0, 0), &blue, &right[..], blue.state.into()),
+        ];
+        let mut screens = ScreenSet::new();
+        assert_eq!(screens.encode(target(true), &mut encoder, &draws[..2], None, &mut |_| None), Ok(2));
+        assert_eq!(screens.encode(target(false), &mut encoder, &draws[2..], None, &mut |_| None), Ok(1));
         arena.flush(&ctx.queue);
         ctx.queue.submit([encoder.finish()]);
+        let framebuffer = gfx::readback::read_texture(&ctx, &main, wgpu::TextureAspect::All, 4, size);
+        assert_eq!(&framebuffer[..4], [255, 0, 0, 0]);
+        assert_eq!(&framebuffer[28..32], [0; 4], "the terminal blue strip belongs to target 1");
         let px = gfx::readback::read_texture(&ctx, &level, wgpu::TextureAspect::All, 4, size);
         assert_eq!(&px[..4], [51, 102, 255, 204], "the second pass kept the first pass and its other channels");
         assert_eq!(&px[16..20], original, "the gap kept its existing pixels");
@@ -1405,19 +1606,24 @@ mod tests {
             std::array::from_fn(|i| u32::from_le_bytes([b[4 * i], b[4 * i + 1], b[4 * i + 2], b[4 * i + 3]]))
         };
         let frame = QuadFrame { window: [0.0, 0.0, 8.0, 8.0], signs: [-0.5, 0.5], combiner };
-        let mut opaque: StripRaster = back.state.into();
-        opaque.opaque_view = true;
-        let draws = [
-            ScreenDraw {
-                key: (0, 0, 0), program: &copy, strips: &strips, raster: copy.state.into(),
-                dest: Dest::Target1 { guest: size }, values: [0; 4], convolutions: &blur,
-            },
-            ScreenDraw {
-                key: (0, 1, 0), program: &back, strips: &strips, raster: opaque,
-                dest: Dest::Bound, values: [0; 4], convolutions: &[],
-            },
-        ];
-        let run = |prepared: bool| {
+        let mut opaque: PostRaster = back.state.into();
+        opaque.opaque_view = [true; 4];
+        let tail = [ScreenConvolution {
+            size: (4, 4),
+            draws: vec![ConvolutionDraw { source: 0, dest: 0x19, spread: 0.0, grid: None }],
+            result: 0x19,
+        }];
+        let run = |prepared: bool, terminal: bool| {
+            let draws = [
+                ScreenDraw {
+                    key: (0, 0, 0), program: &copy, strips: &strips, raster: copy.state.into(),
+                    dest: Dest::Target1 { guest: size }, values: [0; 4], convolutions: &blur, convolution_rasters: &[],
+                },
+                ScreenDraw {
+                    key: (0, 1, 0), program: &back, strips: &strips, raster: opaque,
+                    dest: Dest::Bound, values: [0; 4], convolutions: if terminal { &tail } else { &[] }, convolution_rasters: &[],
+                },
+            ];
             let (color, target1, stand_in) = (texture(size), texture(size), texture((4, 4)));
             fill(&color, &view_pixels);
             fill(&target1, &[1, 2, 3, 4].repeat(64));
@@ -1428,7 +1634,7 @@ mod tests {
                 device: &ctx.device,
                 queue: &ctx.queue,
                 uploads: &arena,
-                color: glow::PostSurface { view: &views[0], guest_size: size },
+                color: Some(glow::PostSurface { view: &views[0], guest_size: size }),
                 target1: Some(glow::PostSurface { view: &views[1], guest_size: size }),
                 convolutions: [Some(glow::PostSurface { view: &views[2], guest_size: (4, 4) }), None, None],
                 z_scale: 1.0,
@@ -1437,7 +1643,7 @@ mod tests {
             let mut encoder = ctx.device.create_command_encoder(&Default::default());
             let ranges = if prepared {
                 let commands = set.prepare(target, &draws, Some(&frame), &mut |_| None).unwrap();
-                assert_eq!(commands.passes(), 4, "two passes, the quad and the opaque copy's alpha");
+                assert_eq!(commands.passes(), 4 + usize::from(terminal));
                 let mut scratch = ctx.device.create_command_encoder(&Default::default());
                 commands.record(&mut scratch);
                 drop(scratch.finish());
@@ -1450,10 +1656,15 @@ mod tests {
             ctx.queue.submit([encoder.finish()]);
             (ranges, read(&color), read(&target1), read(&stand_in))
         };
-        let (own, prepared) = (run(false), run(true));
+        let (own, prepared) = (run(false, false), run(true, false));
         assert_eq!(own, prepared);
         assert_eq!(own.0, 3, "two strips and a quad");
         assert_ne!(&own.1[..4], &view_pixels[..4], "the second pass drew over the view");
+        let terminal = run(true, true);
+        assert_eq!(terminal.0, 4);
+        assert_eq!(terminal.1, own.1, "the terminal quad preserves the framebuffer");
+        assert_eq!(terminal.2, own.2, "target 1 remains available to later draws");
+        assert_ne!(terminal.3, own.3, "the terminal quad updates the live stand-in");
     }
 
     #[test]

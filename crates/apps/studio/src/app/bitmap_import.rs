@@ -66,6 +66,8 @@ pub fn import_bitmap(
         source: Some(source.clone()),
         tag: Some(tag.clone()),
         maps: Maps::default(),
+        replaces: None,
+        was: None,
     });
     manifest.validate().map_err(|e| undo(e.to_string()))?;
     std::fs::write(&manifest_path, manifest.to_toml())

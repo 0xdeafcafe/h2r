@@ -89,6 +89,9 @@ pub mod method {
     pub const ASSET_LIST: &str = "asset.list";
     pub const ASSET_THUMB: &str = "asset.thumb";
     pub const ASSET_COPY: &str = "asset.copy";
+    pub const ASSET_LINKS: &str = "asset.links";
+    pub const ASSET_FORK: &str = "asset.fork";
+    pub const ASSET_REVERT: &str = "asset.revert";
     // The package document (api/packages.rs).
     pub const PACKAGE_LIST: &str = "package.list";
     pub const PACKAGE_READ: &str = "package.read";
@@ -102,7 +105,9 @@ pub mod method {
     pub const PACKAGE_ORDER: &str = "package.order";
     pub const PACKAGE_CHECK: &str = "package.check";
     pub const PACKAGE_BUILD: &str = "package.build";
+    pub const PACKAGE_EXPORT: &str = "package.export";
     pub const PACKAGE_PLAY: &str = "package.play";
+    pub const PACKAGE_DIFF: &str = "package.diff";
     // The Problems panel (docs/editor/studio-redesign.md; api/problems.rs).
     pub const PROBLEMS_LIST: &str = "problems.list";
     // The preview switch (docs/editor/studio-redesign.md; api/preview.rs).
@@ -177,6 +182,7 @@ pub mod method {
     pub const SOUND_PERMUTATION: &str = "sound.permutation";
     // A WAV imported into a package as a `sound` item (api/import.rs).
     pub const IMPORT_SOUND: &str = "import.sound";
+    pub const IMPORT_MODEL: &str = "import.model";
     // A PNG imported into a package as a `bitmap` item (api/import.rs).
     pub const IMPORT_BITMAP: &str = "import.bitmap";
 
@@ -324,6 +330,7 @@ pub mod method {
     pub const GEOMETRY_CLOSE: &str = "geometry.close";
     pub const GEOMETRY_READ: &str = "geometry.read";
     pub const GEOMETRY_CHECK: &str = "geometry.check";
+    pub const GEOMETRY_LOWER_LODS: &str = "geometry.lower_lods";
     pub const GEOMETRY_COLLISION_ADD_BOX: &str = "geometry.collision.add_box";
     pub const GEOMETRY_COLLISION_CLEAR: &str = "geometry.collision.clear";
     pub const MESH_MODE: &str = "mesh.mode";
@@ -351,6 +358,8 @@ pub mod method {
     pub const BITMAP_SPRITE_ADD: &str = "bitmap.sprite.add";
     pub const BITMAP_SPRITE_SET: &str = "bitmap.sprite.set";
     pub const BITMAP_SPRITE_REMOVE: &str = "bitmap.sprite.remove";
+    pub const BITMAP_CHANNEL_COPY: &str = "bitmap.channel_copy";
+    pub const BITMAP_TURN: &str = "bitmap.turn";
 
     // Image generation (docs/editor/agent-api.md, "Generating images").
     pub const IMAGE_GENERATE: &str = "image.generate";
@@ -420,6 +429,9 @@ pub mod method {
     pub const HUD_SAVE_AS: &str = "hud.save_as";
     pub const MODEL_LIST: &str = "model.list";
     pub const MODEL_READ: &str = "model.read";
+    pub const MODEL_PHYSICS_SHAPES: &str = "model.physics.shapes";
+    pub const MODEL_PHYSICS_SET: &str = "model.physics.set";
+    pub const MODEL_COLLISION_FROM_RENDER: &str = "model.collision_from_render";
     pub const MODEL_RENDER: &str = "model.render";
     pub const MODEL_CHECK: &str = "model.check";
     pub const MODEL_COLORS: &str = "model.colors";

@@ -4,7 +4,7 @@
 //! action changes in the films' tick tracks, and what each predictor of the
 //! column encoder stores it in (docs/game/input-film.md, "The encoding").
 use anyhow::{Context, Result, ensure};
-use film::tape::{BOTR, CALL_STREAMS, Call, Mark, PDEV, TAPE, decode_batch, encode_batch, stream_of};
+use film::tape::{BOTR, CALL_STREAMS, Call, Mark, PDEV, TAPE, read_batch, encode_batch, stream_of};
 use std::{
     collections::BTreeMap,
     fmt::Write as _,
@@ -233,19 +233,30 @@ pub fn stat(path: &Path) -> Result<String> {
                 // Decode one batch at a time and retain only the operation
                 // names, counts and sizes. The report contains no call
                 // arguments or outputs.
-                for call in decode_batch(&raw)
+                for call in read_batch(&mut reader, &entry, &raw)
                     .with_context(|| format!("invalid tape batch at {}", entry.offset))?
                 {
                     tape.calls += 1;
                     let stream = streams.entry(stream_of(&call.op)).or_default();
                     stream.calls += 1;
-                    stream.json += serde_json::to_vec(&call)?.len() as u64 + 1;
+                    let json_len = serde_json::to_vec(&call)?.len() as u64 + 1;
+                    stream.json += json_len;
                     *stream.ops.entry(call.op.clone()).or_default() += 1;
+                    if json_len >= 65536 {
+                        stream.flush()?;
+                        stream.binary += encode_batch(std::slice::from_ref(&call))?.len() as u64;
+                        continue;
+                    }
                     stream.pending.push(call);
                     if stream.pending.len() == 128 {
                         stream.flush()?;
                     }
                 }
+            }
+            film::tape::TAPE_PART => {
+                tape.chunks += 1;
+                tape.stored += u64::from(entry.size) + 8;
+                tape.inflated += reader.read_bytes(&entry)?.len() as u64;
             }
             PDEV | BOTR => {
                 let raw = reader.read_bytes(&entry)?;

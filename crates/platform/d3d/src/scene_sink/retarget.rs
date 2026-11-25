@@ -122,8 +122,13 @@ impl Retarget {
     /// `op` at `at`, moved onto its view's blended camera where it can be.
     pub fn op<'o>(&mut self, at: SlotAt, op: &'o ReplayOp) -> Retargeted<'o> {
         match op {
-            ReplayOp::Draw { draw, textures, camera: CameraUse::View { view, first }, external: None } => {
-            // A draw with a typed replacement (a native flare) stays at its tick.
+            ReplayOp::Draw { draw, textures, camera: CameraUse::View { view, first }, external } => {
+                use timeline::native::Stage;
+                if external.as_ref().is_some_and(|admission| {
+                    !matches!(admission.plan.stage, Stage::Transparents | Stage::Particles)
+                }) {
+                    return Retargeted::Same(op);
+                }
                 let Some(rows) = self.rows.get(view) else {
                     return Retargeted::Same(op);
                 };
@@ -131,11 +136,19 @@ impl Retarget {
                     return Retargeted::Same(op);
                 };
                 self.counts.draws += 1;
+                let moved = Arc::new(moved);
+                let external = external.as_ref().and_then(|admission| {
+                    let pass = admission.pass.lock().ok()?.with_draw(Arc::clone(&moved))?;
+                    let mut adjusted = (**admission).clone();
+                    adjusted.packet = Arc::clone(&moved);
+                    adjusted.pass = Arc::new(Mutex::new(pass));
+                    Some(Box::new(adjusted))
+                });
                 Retargeted::Moved(ReplayOp::Draw {
-                    draw: Arc::new(moved),
+                    draw: moved,
                     textures: textures.clone(),
                     camera: CameraUse::View { view: *view, first: *first },
-                    external: None,
+                    external,
                 })
             }
             ReplayOp::Stage(stage) if at.slot.in_game_view() && !self.rows.is_empty() => {

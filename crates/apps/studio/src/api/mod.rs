@@ -50,7 +50,7 @@ mod ground;
 mod nav_mesh;
 mod pair;
 mod params;
-mod packages;
+pub(crate) mod packages;
 mod preview;
 mod playlists;
 mod playtest;
@@ -221,7 +221,7 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::ASSET_LIST,
-        "The browser's rows. root tags (the default): every tag of the tags tree by path, one row for a tag all its maps hold alike and `variants` where they differ, plus the tags packages add (`new`, badge `new in <package>`); a tag an edit line touches has badge `edited by <package>`. With the store's catalogue (`tags::repo::catalogue`, `assets.idx`) a tag's contents are its assets by hash: files that differ only in what ties them to their map are one asset, `hash` is the tag's asset when it has one, each entry of `variants` is one asset (`hash`, `files`, `variant`, `maps`) and `used` names the keys whose tags reference it. Without a catalogue, or with a stale one (a line in `problems`), a content is a file and `variants` lists them (`variant`, `maps`). root packages: the set (a package per row), or with `package` that package's items. root live: the server's offer (none is held offline). `kind` is Maps, Objects, Models, Animations, Bitmaps, Shaders, Effects, Sounds, Screens, HUDs, Strings, Other or a tag group; `map` keeps what that map holds; every word of `query` must match the path, group, kind or a package id",
+        "The browser's rows. root tags (the default): every tag of the tags tree by path, one row for a tag all its maps hold alike and `variants` (each with its maps) where they differ, plus the tags packages add (`new`, badge `new in <package>`); a tag an edit line touches has badge `edited by <package>`. With the store's catalogue (`tags::repo::catalogue`, `assets.idx`) a tag's contents are its assets by hash: files that differ only in what ties them to their map are one asset, `hash` is the tag's asset when it has one, each entry of `variants` is one asset (`hash`, `files`, `variant`, `maps`) and `used` names the keys whose tags reference it. Without a catalogue, or with a stale one (a line in `problems`), a content is a file and `variants` lists them (`variant`, `maps`). root packages: the set (a package per row), or with `package` that package's items. root live: the server's offer (none is held offline). `kind` is Maps, Objects, Models, Animations, Bitmaps, Shaders, Effects, Sounds, Screens, HUDs, Strings, Other, a tag group, or Voices (a `voice:<id>` row for each character and the announcer, with `state` no dataset, dataset, fine-tuned or announcer, `minutes`, `pending_asr` and `tuned`); `map` keeps what that map holds; every word of `query` must match the path, group, kind or a package id",
         r#"{"root?":"tags|packages|live","package?":"string","kind?":"string","map?":"string","query?":"string","limit?":"integer"}"#,
         r#"{"root":"string","rows":"[{asset,root,kind,name,group?,path?,origin?,new?,badge?,packages?,hash?,maps?,variants?,used?,...}]","total":"integer","limit":"integer","truncated":"boolean","maps":"[string]","kinds":"[string]","problems":"[string]"}"#,
         r#"{"kind":"Objects","query":"rifle"}"#,
@@ -235,10 +235,38 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::ASSET_COPY,
-        "Copy into a package: a new `tag` item `like:` the tag of the tree, in a package under <data>/packages/ (the source file holds no bytes of the disc's tag; the lock is rewritten). The new path is `to`, or the tag's path with _copy added",
-        r#"{"asset":"string (tag:<group>:<path>)","package":"string","to?":"string"}"#,
-        r#"{"package":"string","from":"string","tag":"string","source":"string","item":"integer","dir":"string"}"#,
+        "Copy into a package: a new `tag` item `like:` the tag of the tree, in a package under <data>/packages/ (the source file holds no bytes of the disc's tag; the lock is rewritten). The new path is `to`, or the tag's path with _copy added. Opens the authored source tab and answers its id in `doc`. The package defaults to the edit target",
+        r#"{"asset":"string (tag:<group>:<path>)","package?":"string","to?":"string"}"#,
+        r#"{"package":"string","from":"string","tag":"string","source":"string","item":"integer","dir":"string","doc":"string"}"#,
         r#"{"asset":"tag:weap:objects\\weapons\\rifle","package":"kit-test"}"#,
+    ),
+    def(
+        m::ASSET_LINKS,
+        "What an asset uses, what uses it and which editors open it, read each time (docs/editor/studio-flow.md, \"Links\"). A tag: the tags it references (role = the target's kind: Model, Animations, Sounds, HUD, Projectile, Bitmaps, ...; `via` is `node <n> +<offset>` in its file), the voice that says it when it is a dialogue sound, and in used_by the tags that reference it and the packages that add or edit it. A `rules` or `variant` item: the other kind of its script key. Any other item: the tag it adds or edits, and its package. A package: its items and `requires`, and the packages that require it. A voice: in used_by the dialogue sounds its rules pick, in uses the target sounds of the lines it made. `editors` lists each editor with `why_not` when it cannot open. `problems` names what could not be read (a tag file that does not decode, a missing tree)",
+        r#"{"asset":"string (tag:<group>:<path>, package:<id>, item:<package>:<n> or voice:<id>)"}"#,
+        r#"{"asset":"string","uses":"[{asset,role,via}]","used_by":"[{asset,role,via}]","editors":"[{id,label,why_not}]","problems":"[string]"}"#,
+        r#"{"asset":"package:kit-test"}"#,
+    ),
+    def(
+        m::ASSET_FORK,
+        "Fork for this map: the lines of a tag as they are for one map, in an `edits` item of a package under <data>/packages/ (`package`, else the edit target) whose `maps` names that map alone (`edits/<map>.yaml`). It is never a copy of the tag: every other level reads the asset as it was. Without `set` the lines are the ones the package's other `edits` items that reach the map have for the tag (the last to set a path wins); a package with none is refused, and so is a tag already forked for the map. With `set`, those lines are put in by path. The lock is rewritten",
+        r#"{"tag":"string (<group>:<path> or tag:<group>:<path>)","map":"string","package?":"string","set?":"[{path,value,from?}]"}"#,
+        r#"{"package":"string","tag":"string","map":"string","file":"string","item":"integer|null","lines":"integer","from_items":"[integer]","created":"boolean"}"#,
+        r#"{"tag":"weap:objects\\weapons\\rifle","map":"example","package":"kit-test"}"#,
+    ),
+    def(
+        m::ASSET_REVERT,
+        "Take a tag's edit lines out of a package's `edits` items (`package`, else the edit target). With `map`, only the item that names that map alone (the fork `asset.fork` made); without, every `edits` item with an entry for the tag. An item left with no entry goes with its file, and the lock is rewritten. A tag with no line is refused",
+        r#"{"tag":"string (<group>:<path> or tag:<group>:<path>)","map?":"string","package?":"string"}"#,
+        r#"{"package":"string","tag":"string","map":"string|null","removed":"[{item,file,maps,lines,item_removed}]"}"#,
+        r#"{"tag":"weap:objects\\weapons\\rifle","map":"example","package":"kit-test"}"#,
+    ),
+    def(
+        m::PACKAGE_DIFF,
+        "What a package (`id`, else the edit target) does, per asset, for a map of the open source or for every map: `edit` rows hold each field's `to` (and `from` when the line names the value it replaces) and the block lines; `patch` (a tag-delta), `override` (a `replaces`) and `added` rows name the asset; `forked` marks an item that names maps. `levels` are the maps the package changes. With `map`, the whole set is built over that map and `conflicts` holds the conflict table's rows (a package off for the level with the reason, a field or an asset a later package takes), `involves` marking the ones that name this package; Problems lists them under `package` until the level is diffed again",
+        r#"{"id?":"string","map?":"string"}"#,
+        r#"{"id":"string","map":"string|null","assets":"[{asset,item,item_asset,change: edit|patch|override|added,maps,forked,fields?,blocks?,was?,replaces?}]","counts":"{edit,patch,override,added,forked}","levels":"[string]","built":"boolean","conflicts":"[{map,kind: refused|override,package,why,involves,other?,tag?,path?}]","problems":"[string]"}"#,
+        r#"{"id":"kit-test"}"#,
     ),
     def(
         m::PACKAGE_LIST,
@@ -312,9 +340,9 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::PACKAGE_CHECK,
-        "What `h2 package check` says of one package (`id`, else the edit target): a missing or stale lock, a cache map, .h2tag bundle, disc file, voice dataset or model weights folder in its folder, an item with no builder, a missing or oversize source, a source its builder refuses, a requirement that is missing or off, and a tag path another package adds too",
+        "What `h2 package check` says of one package (`id`, else the edit target): a missing or stale lock, a cache map, .h2tag bundle, disc file, voice dataset or model weights folder in its folder, an item with no builder, a missing or oversize source, a source its builder refuses, a requirement that is missing or off, a tag path another package adds too, and a file that is a raw resource or a tag file of the tag store (`store`)",
         r#"{"id?":"string"}"#,
-        r#"{"id":"string","ok":"boolean","count":"integer","findings":"[{kind: lock|files|item|set|conflict, message, item?, file?, line?}]"}"#,
+        r#"{"id":"string","ok":"boolean","count":"integer","findings":"[{kind: lock|files|store|item|set|conflict, message, item?, file?, line?}]"}"#,
         r#"{"id":"kit-test"}"#,
     ),
     def(
@@ -332,10 +360,17 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"id":"kit-test","map":"example"}"#,
     ),
     def(
+        m::PACKAGE_EXPORT,
+        "Export a local package manifest, lock, and named files to a new folder",
+        r#"{"id":"string","out":"string"}"#,
+        r#"{"id":"string","out":"string","files":"integer"}"#,
+        r#"{"id":"export-example","out":"$OUT/export-example"}"#,
+    ),
+    def(
         m::PROBLEMS_LIST,
-        "The Problems panel's list, read again: every source or one. `check` is check.run's models and sounds, `ui` is ui.check, `hud` is hud.check and the HUD kit's, `package` is the manifest checks over the packages under <data>/packages/, `build` is what the game's package set refuses to load. Worst first; each row names what opens it (`asset`: a tag, a package or an item; `field`; or the `tool` that holds a screen or a HUD). A check that cannot run is under `skipped`",
-        r#"{"source?":"check|ui|hud|package|build"}"#,
-        r#"{"problems":"[{source,area,code,severity,message,target,path?,asset?,field?,tool?}]","counts":"{error,warning,note,total,by_source:{source:integer}}","ran":"[{source,check,findings}]","skipped":"[{source,check,why}]"}"#,
+        "The Problems panel's list, read again: every source or one. `check` is check.run's models and sounds, `ui` is ui.check, `hud` is hud.check and the HUD kit's, `package` is the manifest checks over the packages under <data>/packages/, `build` is what the game's package set refuses to load; the open script's diagnostics are `check` rows of area `scripts`, with their `line` and `col`. `asset` (an asset id) keeps the rows about that asset, as the count on the header's Check is. For a package item it refreshes package checks and open-script diagnostics. Worst first; each row names what opens it (`asset`: a tag, a package or an item; `field`; or the `tool` that holds a screen or a HUD). A check that cannot run is under `skipped`",
+        r#"{"source?":"check|ui|hud|package|build","asset?":"string"}"#,
+        r#"{"problems":"[{source,area,code,severity,message,target,path?,asset?,field?,tool?,line?,col?}]","counts":"{error,warning,note,total,by_source:{source:integer}}","ran":"[{source,check,findings}]","skipped":"[{source,check,why}]"}"#,
         r#"{"source":"package"}"#,
     ),
     def(
@@ -375,9 +410,9 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::DOC_SAVE,
-        "Save to the document's destination; for a source map the edits are lines in the edit target, and with none set the call answers NO_TARGET",
-        r#"{"doc?":"map|variant|playlists (default: the tool shown)"}"#,
-        r#"{"saved":"boolean","path?":"string","bytes?":"integer","edit_target?":"string","log":"[string]"}"#,
+        "Save a variant, rules script or playlist as an item of the edit target (NO_TARGET when unset). Save a map to its destination or record its edit lines in the edit target",
+        r#"{"doc?":"map|variant|rules|playlists (default: the tool shown)"}"#,
+        r#"{"saved":"boolean","path?":"string","bytes?":"integer","edit_target?":"string","log?":"[string]","reload?":"object|null"}"#,
         r#"{"doc":"map"}"#,
     ),
     def(
@@ -424,8 +459,8 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::SHELL_OPEN,
-        "Open a tag of the open map as a tab, in the editor its group gets (the scenario tag is the map's own tab), and bring it to the front. With map, that map opens first (refused over unsaved edits unless discard); a map alone brings its tab forward",
-        r#"{"tag?":"string|integer (an id, group:path, path.group or a group with one tag)","map?":"string","discard?":"boolean"}"#,
+        "Open a tag of the open map as a tab, in the editor its group gets (the scenario tag is the map's own tab), and bring it to the front. With map, that map opens first (refused over unsaved edits unless discard); a map alone brings its tab forward. `asset` takes an asset id: `voice:<id>` opens the voice document (tab `voice:<id>`, on Setup while the voice has no dataset, else Lines), `tag:<group>:<path>` opens the tag as the Browser does, `item:<package>:<n>` opens a package item, and `package:<id>` opens the package document",
+        r#"{"asset?":"string (voice:<id>, tag:<group>:<path>, item:<package>:<n> or package:<id>)","tag?":"string|integer (an id, group:path, path.group or a group with one tag)","map?":"string","discard?":"boolean"}"#,
         r#"{"tab":"{doc,kind,title,tool,dirty,can_undo,can_redo,front,...}","front":"string|null","log":"[string]"}"#,
         r#"{"tag":"itmc:objects\\test\\kit"}"#,
     ),
@@ -1081,27 +1116,22 @@ impl Api {
         true
     }
 
-    /// Runs the **Preview in game** ask the window's button left, as the
-    /// `pair.preview` call it stands for: the job is `pair.result`'s, and
-    /// a refusal (paused game, no pairing) goes to the log.
+    /// Runs the window's preview action through the document form of
+    /// `pair.preview` and keeps its result visible in the Game panel.
     pub fn run_preview_asks(&mut self, app: &mut App) {
-        let Some(doc) = app.preview.ask.take() else {
-            return;
-        };
-        let params = match app.game_preview(doc) {
-            Ok(g) => g.params(),
-            Err(why) => return app.error(why),
-        };
-        match self.call(app, m::PAIR_PREVIEW, params) {
-            Ok(v) => {
-                app.preview.last_job = v["id"].as_u64();
-                app.info(format!(
-                    "previewing {} in the game (pair.result {})",
-                    app.doc_title(doc),
-                    v["id"]
-                ));
+        if let Some(doc) = app.preview.ask.take() {
+            let id = app.doc_id(doc);
+            if let Err(e) = self.call(app, m::PAIR_PREVIEW, json!({"doc": id})) {
+                app.error(e.message);
             }
-            Err(e) => app.error(e.message),
+        }
+        if let Some(id) = app.preview.last_job
+            && app.preview.report.as_ref().is_some_and(|r| matches!(r["state"].as_str(), Some("sending" | "running")))
+        {
+            match self.call(app, m::PAIR_RESULT, json!({"id": id})) {
+                Ok(report) => app.preview.report = Some(report),
+                Err(e) => app.preview.report = Some(json!({"state": "failed", "why": e.message})),
+            }
         }
     }
 
@@ -1190,5 +1220,6 @@ pub fn tool_name(t: crate::ToolKind) -> &'static str {
         crate::ToolKind::Hud => "hud",
         crate::ToolKind::Scripts => "scripts",
         crate::ToolKind::Textures => "textures",
+        crate::ToolKind::Package => "package",
     }
 }

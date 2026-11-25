@@ -276,6 +276,19 @@ impl IndexedTail {
 /// world. The device decides where (the bound targets and viewport); the
 /// backend gives the pass its encoder and the targets' views.
 pub trait ExternalPass: Send {
+    /// The producer, even for untyped passes without an `ExternalPlan`.
+    fn diagnostic_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+
+    /// Produce counted packets for a replacement of a z-pass query draw.
+    /// Every active copy prepares the count pipeline before any can commit.
+    fn counts_samples(&self) -> bool { false }
+
+    /// Supplemental geometry seen only through the display lens. The game
+    /// has no draw for it. Only display attachments may receive a recording.
+    fn display_only(&self) -> bool { false }
+
     /// The scene may retain this pass after presentation and record it again
     /// on other attachments of the same device. Its selections, view and
     /// material inputs must stay valid for the lifetime of the pass. It
@@ -809,11 +822,18 @@ pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
 
     let mut pass = pass.lock().map_err(|_| "native pass poisoned")?;
     let check_recording = !pass.uses_validated_resources();
+    let counted = pass.counts_samples();
     let mut failure = None;
     let mut prepared = [None, None];
     for (slot, target) in prepared.iter_mut().zip(targets) {
+        if pass.display_only() && target.copy == TargetCopy::Reference {
+            continue;
+        }
         let result = if let Some(draws) = pass.record_draws(target, request) {
             draws.map(Prepared::Draws).map_err(|_| Metric::RefusedInputs)
+        } else if counted {
+            // Only ordered draw packets can contribute to the backend's report.
+            Err(Metric::RefusedInputs)
         } else if let Some(encoded) = pass.record_encoded(target, request) {
             encoded.map_err(|_| Metric::RefusedInputs).and_then(|encoded| {
                 if check_recording {
@@ -853,7 +873,7 @@ pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
                 let ranges = draws.ranges;
                 // A packet can join adjacent ranges (the world's triangle lists).
                 let valid = !draws.packets.is_empty()
-                    && !draws.packets.iter().any(gfx::RecordedDraw::counts_samples);
+                    && draws.packets.iter().all(|packet| packet.counts_samples() == counted);
                 (ranges, ExternalCommands::Draws { targets: target.targets, draws }, valid)
             }
             Prepared::Encoded(encoded) => (encoded.ranges, ExternalCommands::Encoded(encoded), true),
@@ -922,15 +942,24 @@ pub trait DrawAdmission: Send + Sync {
     fn stage(&self) -> Option<timeline::native::Stage> { None }
 
     fn admit(&self, snapshot: &DrawSnapshot<'_>) -> Option<(ExternalPlan, Box<dyn ExternalPass>)>;
+
+    /// A query replacement must preserve the running sample counter.
+    /// Ordinary owners are never consulted for counted packets.
+    fn admit_counted(&self, _: &DrawSnapshot<'_>) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
+        None
+    }
 }
 
 pub(crate) fn admit_draw(
     admission: &dyn DrawAdmission, snapshot: &DrawSnapshot<'_>,
 ) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
     use timeline::native::{Metric, Timer};
+    if snapshot.draw.hw.zpass_count_enable {
+        return admission.admit_counted(snapshot).filter(|(_, pass)| pass.counts_samples());
+    }
     let stage = admission.stage();
     let _timer = stage.map(|s| Timer::start(s, Metric::PrepareNs));
-    let candidate = admission.admit(snapshot);
+    let candidate = admission.admit(snapshot).filter(|(_, pass)| !pass.counts_samples());
     if candidate.is_none() && let Some(s) = stage {
         s.count(Metric::Examined, 1);
         s.count(Metric::RefusedOwnership, 1);
@@ -1040,10 +1069,12 @@ pub struct UiFit {
     pub transform: [f32; 4],
     // A flare moves in its viewport. UI widgets carry a local scissor.
     fit_scissor: bool,
+    /// Input register carrying a second copy of the guest window coordinates.
+    pub(crate) screen_input: Option<u8>,
 }
 
 impl UiFit {
-    pub const IDENTITY: Self = Self { transform: [1.0, 1.0, 0.0, 0.0], fit_scissor: true };
+    pub const IDENTITY: Self = Self { transform: [1.0, 1.0, 0.0, 0.0], fit_scissor: true, screen_input: None };
 
     /// Fit guest pixels uniformly on the output, about a pivot in guest
     /// window coordinates. Each player's viewport has its own pivot.
@@ -1063,12 +1094,21 @@ impl UiFit {
         if !ratio.is_finite() || ratio <= 0.0 || ratio == 1.0 { return None; }
         let x = ratio.min(1.0);
         let y = ratio.recip().min(1.0);
-        Some(Self { transform: [x, y, pivot[0] * (1.0 - x), pivot[1] * (1.0 - y)], fit_scissor: true })
+        Some(Self { transform: [x, y, pivot[0] * (1.0 - x), pivot[1] * (1.0 - y)], fit_scissor: true, screen_input: None })
     }
 
     /// A CPU-projected sprite or query retains its player's scissor.
     pub fn projected_sprite(scale: f32, offset: f32) -> Self {
-        Self { transform: [scale, 1.0, offset, 0.0], fit_scissor: false }
+        Self { transform: [scale, 1.0, offset, 0.0], fit_scissor: false, screen_input: None }
+    }
+
+    /// Also fit this vertex register before the guest shader uses it for a lookup.
+    pub fn with_screen_input(self, register: u8) -> Self {
+        Self { screen_input: Some(register), ..self }
+    }
+
+    pub(crate) fn applies_to_frame_sample(self) -> bool {
+        !self.fit_scissor
     }
 
     pub fn map_rect(&self, r: PixelRect) -> PixelRect {
@@ -1231,6 +1271,19 @@ impl ResolvedDraw {
 
     pub fn for_copy(&self, copy: TargetCopy) -> std::borrow::Cow<'_, Self> {
         if copy == TargetCopy::Reference { self.for_reference() } else { std::borrow::Cow::Borrowed(self) }
+    }
+
+    /// Bump offsets added to a projected scene lookup are screen displacements.
+    /// The reference copy has already restored the original projection.
+    #[cfg(feature = "gpu")]
+    pub(crate) fn bump_matrix(&self, stage: usize) -> [f32; 4] {
+        let extra = self.extras[stage];
+        let mut matrix = extra.bump_env_mat;
+        if extra.samples_frame && let Some((_, factor)) = &self.retail_constants {
+            matrix[0] *= *factor;
+            matrix[2] *= *factor;
+        }
+        matrix
     }
 
     /// Translate a scissor in the same guest-pixel space as its draw.
@@ -1609,6 +1662,27 @@ pub trait Backend: Send {
         let _ = (surface, opaque);
         Ok(None)
     }
+    /// Refills `into`, a texture an earlier [`snapshot_surface`] of a
+    /// surface of the same size and format made, with colour surface
+    /// `surface` as it is now (alpha one with `opaque`): a GPU copy into
+    /// the existing texture, recorded after everything drawn so far and
+    /// before any later draw, so a draw recorded before this call still
+    /// reads the old contents and one after it the new. Nothing is
+    /// allocated. The device keeps a small pool of these copies and
+    /// refills them (docs/graphics/d3d.md, "Frame buffers as textures").
+    /// `Ok(false)`: the backend cannot (the default, or `into` does not
+    /// match the surface), and the caller makes a new copy instead.
+    ///
+    /// [`snapshot_surface`]: Self::snapshot_surface
+    fn snapshot_surface_into(
+        &mut self,
+        surface: Self::Surface,
+        opaque: bool,
+        into: &mut Self::Texture,
+    ) -> Result<bool, String> {
+        let _ = (surface, opaque, into);
+        Ok(false)
+    }
     /// `CLEAR_REPORT_VALUE` (zpass): the sample count restarts at zero.
     fn clear_pixel_count(&mut self) -> Result<(), String> {
         Ok(())
@@ -1711,10 +1785,19 @@ pub trait Backend: Send {
             if pass.lock().map_err(|_| "native pass poisoned")?.lighting_only().is_some() {
                 return Ok(true);
             }
+            let display_only = pass.lock().map_err(|_| "native pass poisoned")?.display_only();
             let Some(recordings) = self.prepare_external(surfaces, request, [None; 4], &plan, TargetCopy::Reference, pass)? else {
                 return Ok(false);
             };
-            if !crate::device::complete_recordings(&plan, &recordings) {
+            // A reference-only backend has nothing to submit for a display
+            // supplement. The scene sink can still retain it for display replay.
+            let complete = if display_only {
+                matches!(recordings.as_slice(), [] | [_])
+                    && recordings.iter().all(|r| r.copy == TargetCopy::Display && plan.complete(r.copy, r.ranges))
+            } else {
+                crate::device::complete_recordings(&plan, &recordings)
+            };
+            if !complete {
                 return Ok(false);
             }
             for recording in recordings {
@@ -2067,6 +2150,15 @@ pub enum Recorded {
         /// The texture handle returned.
         id: u32,
     },
+    /// `snapshot_surface_into`: an earlier copy refilled.
+    SnapshotInto {
+        /// Surface copied.
+        surface: u32,
+        /// Alpha forced to one.
+        opaque: bool,
+        /// The texture refilled (the handle an earlier `Snapshot` returned).
+        id: u32,
+    },
     /// `write_surface`.
     WriteSurface {
         /// Surface.
@@ -2372,6 +2464,14 @@ impl Backend for RecordingBackend {
             id: self.next,
         });
         Ok(Some(self.next))
+    }
+    fn snapshot_surface_into(&mut self, surface: u32, opaque: bool, into: &mut u32) -> Result<bool, String> {
+        self.calls.push(Recorded::SnapshotInto {
+            surface,
+            opaque,
+            id: *into,
+        });
+        Ok(true)
     }
     fn clear_pixel_count(&mut self) -> Result<(), String> {
         self.pixel_count = 0;

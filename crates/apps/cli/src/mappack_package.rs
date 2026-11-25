@@ -1,16 +1,12 @@
 //! The `map-pack` converter of `convert` items
 //! (docs/editor/studio-redesign.md, "Conversions"): the install above as a
-//! [`workspace::Converter`]. The disc installs as one unit, `maps` (its
-//! maps and, for the game disc's version, its title update), keyed by the
-//! disc's size and modification time and the game disc's version, as
-//! [`STAMP`] is. A disc [`STAMP`] already says is installed is not
-//! installed again.
+//! [`workspace::Converter`]. Each map has a unit with its store marker
+//! as output. Installing the units also publishes the game's content
+//! metadata and the matching title update.
 use workspace::{ConvertSpec, Converter, Input, Unit};
+use workspace::converted::marker_path;
 
 use super::*;
-
-/// The one unit: the whole disc.
-pub const UNIT: &str = "maps";
 
 /// The Map Pack disc beside `game_disc`, installed into `data`.
 pub struct MapPack {
@@ -32,7 +28,7 @@ impl MapPack {
 
 impl Converter for MapPack {
     fn name(&self) -> &str {
-        "map-pack"
+        CONVERTER
     }
 
     fn version(&self) -> String {
@@ -57,23 +53,26 @@ impl Converter for MapPack {
 
     /// What `h2 import-mappack` (or the install before packages) put in.
     fn kept(&self, _: &ConvertSpec) -> bool {
+        let root = boot::store_status::root(&self.data);
         self.data.join(STAMP).is_file()
+            && workspace::converted::levels(&root).iter().any(|mark| {
+                workspace::converted::verified(&root, mark, CONVERTER).is_some()
+            })
     }
 
-    fn units(&self, _: &Input, spec: &ConvertSpec) -> Result<Vec<Unit>, String> {
+    fn units(&self, input: &Input, spec: &ConvertSpec) -> Result<Vec<Unit>, String> {
         if let Some(k) = spec.settings.keys().next() {
-            return Err(format!(
-                "settings: the map-pack converter takes none, not {k:?}"
-            ));
+            return Err(format!("settings: the map-pack converter takes none, not {k:?}"));
         }
-        let content = vfs::Config::new(&self.data, HALO2_TITLE)
-            .title_data_dir()
-            .join(vfs::CONTENT_DIR);
-        Ok(vec![Unit {
-            name: UNIT.into(),
-            key: String::new(),
-            output: Some(content),
-        }])
+        let mut iso = crate::open_iso(&input.path).map_err(|e| format!("{e:#}"))?;
+        let entries = iso.entries().map_err(|e| format!("{e:#}"))?;
+        let plan = Plan::from_entries(&entries).map_err(|e| format!("{e:#}"))?;
+        let packages = layout(&mut iso, &plan).map_err(|e| format!("{e:#}"))?;
+        let root = boot::store_status::root(&self.data);
+        Ok(packages.iter().map(|package| {
+            let name = map_stem(&package.map);
+            Unit { output: Some(marker_path(&root, &name)), name, key: String::new() }
+        }).collect())
     }
 
     fn convert(
@@ -83,18 +82,17 @@ impl Converter for MapPack {
         todo: &[Unit],
         done: &mut dyn FnMut(&str, Result<(), String>),
     ) {
-        if !todo.iter().any(|u| u.name == UNIT) {
+        if todo.is_empty() {
             return;
         }
         let r = self.base().and_then(|base| {
-            if already_installed(&self.data, &input.path, base.version) {
-                return Ok(());
-            }
-            let line =
-                install_disc(&input.path, &base, &self.data).map_err(|e| format!("{e:#}"))?;
+            let line = install_disc(&input.path, &self.game_disc, &base, &self.data)
+                .map_err(|e| format!("{e:#}"))?;
             println!("map pack: {line}");
             Ok(())
         });
-        done(UNIT, r);
+        for unit in todo {
+            done(&unit.name, r.clone());
+        }
     }
 }

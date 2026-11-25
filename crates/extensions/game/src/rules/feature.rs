@@ -51,8 +51,8 @@
 //! `requires` turn their modes on through the record's script reference
 //! (`super::header`), as for any script.
 //!
-//! The superbounce mode's tick observer feeds it each bounce its medal
-//! chain files ([`bounces`]).
+//! The superbounce mode's tick observer feeds it what its medal chain saw
+//! of each player's physics and each bounce the chain files ([`bounces`]).
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -224,6 +224,10 @@ impl hooks::Feature for Rules {
             ::runtime::guest::Permissions::RW,
         )?;
         super::world::loadout::set_scratch(scratch);
+        let sight_scratch = b.guest_alloc(
+            super::world::physics::SIGHT_SCRATCH_SIZE,
+            ::runtime::guest::Permissions::RW,
+        )?;
         let s = Arc::clone(&self.shared);
         let hle = self.hle.clone();
         let scripts = Arc::clone(&self.scripts);
@@ -324,7 +328,7 @@ impl hooks::Feature for Rules {
                     };
                     let s = Arc::clone(&s);
                     c.answer_async(move |cx| -> EntryFuture {
-                        Box::pin(runtime::run_work(cx, s, work))
+                        Box::pin(runtime::run_work(cx, s, work, sight_scratch))
                     })
                 },
             )
@@ -549,15 +553,26 @@ pub fn network_roles(m: &dyn GuestMemory) -> Option<crate::actor_net::roles::Sta
     (state.mask != 0 || rt.running()?.record_engine == super::roles::JUGGERNAUT).then_some(state)
 }
 
-/// One tick's superbounce awards (`superbounce_chain::Medals::step`), as
-/// the running script's `on bounce` and `on bounced`
-/// ([`Runtime::bounces`]). Nothing without the feature.
-pub fn bounces(m: &dyn GuestMemory, awards: &[crate::superbounce_chain::Award]) {
-    if awards.is_empty() {
-        return;
-    }
+/// One tick of the superbounce medal chain (`superbounce_chain::Medals::step`):
+/// what it saw of the players' physics, as the running script's `on
+/// touchdown`, `on launch` and `on grounded` ([`Runtime::physics`]), then
+/// its awards, as `on bounce` and `on bounced` ([`Runtime::bounces`]).
+/// Nothing without the feature.
+pub fn bounces(
+    m: &dyn GuestMemory,
+    bodies: &[crate::superbounce_chain::Body],
+    physics: &[(u8, crate::superbounce_chain::Physics)],
+    awards: &[crate::superbounce_chain::Award],
+) {
     if let Some(s) = SHARED.get() {
-        s.lock().bounces(m, awards);
+        let mut rt = s.lock();
+        // Set the biped reads from every chain step, even without events.
+        rt.bodies(bodies);
+        if awards.is_empty() && physics.is_empty() {
+            return;
+        }
+        rt.physics(m, physics);
+        rt.bounces(m, awards);
     }
 }
 

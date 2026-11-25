@@ -126,9 +126,9 @@ group phmo 0x110 align 4
     0x28 unknown 0x4 seen=many
     0x2c f32 radius -- D; V repeated in the w of both end points on 1,242 of 1,263 pills
     0x30 f32[3] bottom -- D end point (collision.rs Pill::bottom)
-    0x3c unknown 0x4 seen=35 -- floats; usually the radius again (collision.md)
+    0x3c f32 bottom_w -- usually the radius again (collision.md)
     0x40 f32[3] top -- D end point (collision.rs Pill::top)
-    0x4c unknown 0x4 seen=35 -- floats; usually the radius again
+    0x4c f32 top_w -- usually the radius again
   0x60 block boxes 0x90 align 16 -- E shape type 2, V
     0x0 struct header shape_header
     0x20 unknown 0x4 seen=const -- E Havok shape object vtable written at load

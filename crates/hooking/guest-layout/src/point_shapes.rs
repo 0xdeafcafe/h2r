@@ -169,6 +169,69 @@ pub fn verify(point: &Point, addr: u32, read: &dyn Fn(u32, &mut [u8]) -> bool) -
     ))
 }
 
+/// Bytes read before an address to find a call that ends there: the
+/// longest call, `FF /2` with a SIB byte and a 32-bit displacement.
+pub const CALL_BEFORE: usize = 7;
+
+/// Length of an `FF /2` call whose ModR/M byte is `modrm` and whose SIB
+/// byte, when it has one, is `sib`.
+fn indirect_call_len(modrm: u8, sib: Option<u8>) -> Option<usize> {
+    let (md, rm) = (modrm >> 6, modrm & 7);
+    let sib_base = || sib.map(|s| s & 7);
+    Some(match (md, rm) {
+        (3, _) => 2,
+        (0, 4) if sib_base()? == 5 => 7,
+        (0, 4) => 3,
+        (0, 5) => 6,
+        (0, _) => 2,
+        (1, 4) => 4,
+        (1, _) => 3,
+        (2, 4) => 7,
+        _ => 6,
+    })
+}
+
+/// Whether a call instruction ends exactly where `before` (the
+/// [`CALL_BEFORE`] bytes before an address) ends: a `call rel32` (`E8`) or
+/// a `call r/m32` (`FF /2`) of any addressing form. The address is then
+/// the call's continuation, if the bytes are one instruction; the caller
+/// pairs this with the image's resume table, which holds every call's
+/// continuation, so bytes that only look like a call are not enough.
+pub fn call_ends_at(before: &[u8; CALL_BEFORE]) -> bool {
+    if before[CALL_BEFORE - 5] == CALL_REL32 {
+        return true;
+    }
+    [2usize, 3, 4, 6, 7].into_iter().any(|len| {
+        let at = CALL_BEFORE - len;
+        let modrm = before[at + 1];
+        before[at] == GROUP_5
+            && (modrm >> 3) & 7 == 2
+            && indirect_call_len(modrm, before.get(at + 2).copied()) == Some(len)
+    })
+}
+
+/// Why `point` cannot be hooked at `addr` when that address is a resume of
+/// the image (`Dispatch::has_resume`) and a call ends there: a return is
+/// routed to the resume table first, which resumes the caller's generated
+/// code without consulting an override, so a hook on a call's
+/// continuation never runs. `None` when no call ends at `addr`, or the
+/// bytes do not read. Only [`Sig::Site`] points are asked: a function
+/// entry that is also a continuation still runs its hooks when called.
+pub fn continuation(point: &Point, addr: u32, read: &dyn Fn(u32, &mut [u8]) -> bool) -> Option<String> {
+    if !matches!(point.sig, Sig::Site) {
+        return None;
+    }
+    let mut before = [0u8; CALL_BEFORE];
+    if !read(addr.wrapping_sub(CALL_BEFORE as u32), &mut before) || !call_ends_at(&before) {
+        return None;
+    }
+    Some(format!(
+        "{} ({addr:#010x}) is a call's continuation: a return resumes the caller's code there and never runs a hook; \
+         move the site to the next instruction reached by falling through (docs/engine/feature-engine.md, \"Version key\")",
+        point.name
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,6 +291,45 @@ mod tests {
         assert!(Check::IndirectCall.holds(&[0; 3], &at([0xff, 0x50, 0x10])));
         assert!(!Check::IndirectCall.holds(&[0; 3], &at([0xff, 0x60, 0x10])));
         assert!(Check::Frame.holds(&[0; 3], &at([0x55, 0x8b, 0xec])));
+    }
+
+    #[test]
+    fn a_call_ending_at_the_address_is_found_in_every_form() {
+        // Padding first, then the call's bytes, ending at the address.
+        let ends = |call: &[u8]| {
+            let mut before = [0x90u8; CALL_BEFORE];
+            before[CALL_BEFORE - call.len()..].copy_from_slice(call);
+            call_ends_at(&before)
+        };
+        assert!(ends(&[0xe8, 0x10, 0x20, 0x30, 0x40])); // call rel32
+        assert!(ends(&[0xff, 0xd0])); // call eax
+        assert!(ends(&[0xff, 0x10])); // call [eax]
+        assert!(ends(&[0xff, 0x50, 0x10])); // call [eax+0x10]
+        assert!(ends(&[0xff, 0x14, 0x24])); // call [esp]
+        assert!(ends(&[0xff, 0x54, 0x24, 0x08])); // call [esp+8]
+        assert!(ends(&[0xff, 0x15, 0x10, 0x20, 0x30, 0x40])); // call [abs32]
+        assert!(ends(&[0xff, 0x90, 0x10, 0x20, 0x30, 0x40])); // call [eax+disp32]
+        assert!(ends(&[0xff, 0x94, 0x24, 0x10, 0x20, 0x30, 0x40])); // call [esp+disp32]
+        assert!(ends(&[0xff, 0x14, 0x85, 0x10, 0x20, 0x30, 0x40])); // call [eax*4+disp32]
+
+        assert!(!ends(&[0x8b, 0x44, 0x24, 0x08])); // mov eax, [esp+8]
+        assert!(!ends(&[0xff, 0x60, 0x10])); // jmp [eax+0x10] is FF /4
+        assert!(!ends(&[0xe9, 0x10, 0x20, 0x30, 0x40])); // jmp rel32
+        // call [eax+0x10] whose last byte is not where the address is.
+        assert!(!ends(&[0xff, 0x50, 0x10, 0x90]));
+    }
+
+    #[test]
+    fn a_site_after_a_call_is_a_continuation_and_a_function_is_not() {
+        // call rel32, then the site.
+        let image = reader(0x0ffe, &[0x90, 0x90, 0xe8, 0x01, 0x02, 0x03, 0x04, 0x8b]);
+        let why = continuation(&SITE, 0x1005, &image).expect("a site after a call");
+        assert!(why.starts_with("TEST_SITE (0x00001005) is a call's continuation"), "{why}");
+        assert_eq!(continuation(&FN_POINT, 0x1005, &image), None);
+        // A mov ends at the site, not a call.
+        let image = reader(0x0ffe, &[0x90, 0x90, 0x90, 0x90, 0x8b, 0x44, 0x24, 0x08]);
+        assert_eq!(continuation(&SITE, 0x1006, &image), None);
+        assert_eq!(continuation(&SITE, 0x1005, &reader(0x9000, &[])), None);
     }
 
     #[test]

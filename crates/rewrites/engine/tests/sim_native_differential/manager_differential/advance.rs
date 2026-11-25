@@ -20,11 +20,16 @@ fn setup_channels(m: &mut FlatMemory, seed: u32) {
         );
         word(m, MANAGER + offset + 4, 0x68000 + index);
     }
+    if seed == 9 {
+        half(m, MANAGER + 0x20 + 6, u16::MAX);
+    }
     let weight = match seed {
         1 => 1.0f32,
         2 => 0.375,
         5 => 0.0,
         6 => f32::NAN,
+        7 => 0.90,
+        8 => 0.015625,
         _ => 0.625,
     };
     word(m, MANAGER + 0x80, weight.to_bits());
@@ -54,7 +59,7 @@ pub(super) fn cases(h: &mut Harness<'_>) {
             },
         );
     }
-    for seed in 0..7 {
+    for seed in 0..10 {
         h.case(
             0x1cd510,
             seed,

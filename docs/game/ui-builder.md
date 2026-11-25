@@ -78,13 +78,14 @@ monitor's HUD and the Forge screens are the game's
 The Forge screens are the game's: list classes of ours on the large
 dialog (the object menu, Tools, Link and the questions) and on the
 in-game Controller Settings host (Properties, Tool settings, Forge
-options, Controls), opened over the running world
+options, Controls, Map limits), opened over the running world
 (`crates/extensions/game/src/forge_screens.rs`,
 [forge-firefight-ui.md](forge-firefight-ui.md), "The screens"). A value
 row opens `kit.picker.game` over them. Their preview pages are
 `forge.objects`, `forge.properties`, `forge.tools`, `forge.settings`,
 `forge.link`, `forge.question`, `forge.options`, `forge.controls`,
-`forge.games`, `forge.variants` and `forge.variant`, drawn over the main menu, which stands in for the game.
+`forge.games`, `forge.variants`, `forge.variant` and `forge.map-limits`,
+drawn over the main menu, which stands in for the game.
 
 **Sign-in is a modal.** The sign-in
 prompt and its new-account gamertag and invite pages are `Over` dialogs,
@@ -433,14 +434,20 @@ dimmed 85%: the lobby's PREGAME LOBBY strip above the frame shows at
 `0x235756` then blurs the screen with the Kawase blur `0x211a0`
 (`engine::glow::blur`): `3.75 * fraction` steps (`[0x0045de14]`), so at
 rest four draws with fractions 1, 1, 1 and 0.75. The first draw's scale
-is 1.0 and each next one's is 1.25 times it; a draw's spread is its
-fraction times its scale (1, 1.25, 1.5625, 1.465). Each draw makes every
-pixel the mean of four bilinear taps, tap `k` moved by the spread times
-0.5 (`[0x0045dbbc]`) in x for `k & 1` and in y for `k & 2`, else times
--0.5 (`[0x0045dbc4]`), with the sampler clamped at the edges
-(`native_render::glow::quad`). `Disc::backdrop` draws both at rest
-(fraction 1): the fill from `SharedGlobals::overlay_color`, then
-`preview::backdrop::blur` on the 640 by 480 canvas.
+is 1.0 and, the call's growth being 1, each next one's is the last
+times the spread factor `[0x0045dc0c]`; a draw's spread is its fraction
+times its scale. Each draw blends four bilinear taps, tap `k` moved by
+the spread times 0.5 (`[0x0045dbbc]`) in x for `k & 1` and in y for
+`k & 2`, else times -0.5 (`[0x0045dbc4]`), with the sampler clamped at
+the edges (`native_render::glow::quad`). The call's strength
+(`[0x0045dc20]`) selects the combiner that blends them in pairs leaning
+to the brighter tap; the alpha is their mean
+([native-post-hud.md](../graphics/native-post-hud.md#the-blur-under-a-dialog)).
+`Disc::backdrop` draws both at rest (fraction 1): the fill from
+`SharedGlobals::overlay_color`, then `preview::backdrop::blur` on the
+640 by 480 canvas. The preview's blur grows each scale by 1.25 and
+takes the plain mean of the taps, so it differs from the game's: its
+steps spread less and it does not lean to the brighter tap.
 
 The openers:
 

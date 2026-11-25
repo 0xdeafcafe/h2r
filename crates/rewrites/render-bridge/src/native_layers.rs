@@ -1,5 +1,5 @@
-//! `frame-scene.layers`: the scene's world layers 1, 5, 7, 8, 20 and 17, the
-//! first person's layers 1, 7, 8 and 20, and the sorted transparent list's
+//! `frame-scene.layers`: the scene's world layers 1, 5, 7, 8, 20, 2 and 17, the
+//! alternate view's layers 1, 5 and 2, the first person's layers 1, 7, 8, 20 and 2, and the sorted transparent list's
 //! camouflage layers 18 and 19 and hologram layer 21, drawn from the scene's plan instead of the guest's
 //! draws under the layer call (docs/graphics/framescene.md, slice 4;
 //! docs/graphics/native-water-fog.md for 18, 19 and 21). On with the native renderer;
@@ -11,7 +11,7 @@
 //! - first it sets back the bits it cleared at the last layer it took,
 //!   each only if the item still holds the mask it left;
 //! - then, when the current layer is one of [`LAYERS`] and the caller is
-//!   the scene's, one of [`FIRST_PERSON_LAYERS`] and the caller the
+//!   the scene's, the alternate view's layers 1, 5 or 2, one of [`FIRST_PERSON_LAYERS`] and the caller the
 //!   first person's `0x0003fdf0` (`native_render::world_layers::layer_site`),
 //!   or one of [`SORTED_LAYERS`] and the caller its sorted handler
 //!   (`native_render::world_layers::sorted_site`),
@@ -39,22 +39,23 @@ use hooks::{BuildError, Builder, Feature, Manifest};
 
 pub const ID: &str = "frame-scene.layers";
 
-/// The scene's layers taken: 1, 5, 7, 8 and 20 around layer 3, and the
-/// late layer 17 (`layer_pass::BLOOM_LAYER`).
-pub const LAYERS: [u32; 6] = [1, 5, 7, 8, 20, 17];
+/// The scene's layers taken: 1, 5, 7, 8 and 20 around layer 3, the
+/// overlay layer 2 after the dynamic lights (`layer_pass::OVERLAY_LAYER`)
+/// and the late layer 17 (`layer_pass::BLOOM_LAYER`).
+pub const LAYERS: [u32; 7] = [1, 5, 7, 8, 20, 2, 17];
 
 /// The first person's layers taken: `0x0003fdf0`'s calls besides layer
 /// 3, which `native_first_person` owns. It calls layers 1, 3, 8, 20 and
 /// 7, then layer 2 when `0x00044370` says so (`0x000400a6..0x00040284`);
 /// it has no layer 5.
-pub const FIRST_PERSON_LAYERS: [u32; 4] = [1, 7, 8, 20];
+pub const FIRST_PERSON_LAYERS: [u32; 5] = [1, 7, 8, 20, 2];
 
 /// The sorted transparent list's handlers' layers taken: the
 /// camouflage handler `0x00041cc0`'s 18 and 19 (19 drawn into render
 /// target 3, which the begin binds before the layer draw) and the
 /// hologram handler `0x000423c0`'s 21. Their items are object render
-/// records only; the handlers' replays of the scene's layers stay on the
-/// D3D path.
+/// records only. Regular layer replays and ranges this plan leaves behind
+/// reach the sorted indexed admission.
 pub const SORTED_LAYERS: [u32; 3] = [18, 19, 21];
 
 /// Which caller's layer draw is about to run.
@@ -62,6 +63,8 @@ pub const SORTED_LAYERS: [u32; 3] = [18, 19, 21];
 pub enum LayerCaller {
     /// The scene's (`0x0002bcd0`): structure and object items.
     Scene,
+    /// The alternate branch of the scene: structure and object items.
+    AlternateView,
     /// The first person's (`0x0003fdf0`): its arms' and weapon's items.
     FirstPerson,
     /// A sorted transparent entry's handler (`0x00041cc0`, `0x000423c0`):
@@ -77,6 +80,7 @@ pub fn caller(layer: u32, ret: u32) -> Option<LayerCaller> {
     }
     match layer_site(layer, ret) {
         Site::Scene if LAYERS.contains(&layer) => Some(LayerCaller::Scene),
+        Site::AlternateView if matches!(layer, 1 | 2 | 5) => Some(LayerCaller::AlternateView),
         Site::FirstPerson if FIRST_PERSON_LAYERS.contains(&layer) => Some(LayerCaller::FirstPerson),
         _ => None,
     }
@@ -150,6 +154,7 @@ pub fn count(layer: u32, outcome: &str, n: u64) {
 pub fn count_for(caller: LayerCaller, layer: u32, outcome: &str, n: u64) {
     let prefix = match caller {
         LayerCaller::Scene => return count(layer, outcome, n),
+        LayerCaller::AlternateView => "alt",
         LayerCaller::FirstPerson => "fp",
         LayerCaller::Sorted(_) => "sorted",
     };
@@ -185,9 +190,10 @@ pub fn extract(mem: &dyn GuestMemory, layer: u8, caller: LayerCaller) -> Option<
     b.begin(SceneId::default());
     let kind = match caller {
         LayerCaller::Scene | LayerCaller::Sorted(_) => ViewKind::Game,
+        LayerCaller::AlternateView => ViewKind::Alternate,
         LayerCaller::FirstPerson => ViewKind::FirstPerson,
     };
-    b.open_view(ViewKey { kind, player: 0, view: 0 }, camera).ok()?;
+    b.open_view(ViewKey { kind, player: 0, view: ro.read_u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(0) as u8 }, camera).ok()?;
     scene_extract::extract::layer(&ro, layer, true, &mut b).ok()??;
     b.seal(Stamp::default())
 }
@@ -262,7 +268,7 @@ pub struct NativeLayers;
 
 impl Feature for NativeLayers {
     fn manifest(&self) -> Manifest {
-        Manifest::new(ID, "World layers 1, 5, 7, 8, 20 and 17, the first person's 1, 7, 8 and 20 and the camouflage handler's 18 and 19 and the hologram's 21 drawn from the scene's plan")
+        Manifest::new(ID, "World layers 1, 5, 7, 8, 20, 2 and 17, the alternate view's 1, 5 and 2, the first person's 1, 7, 8, 20 and 2 and the camouflage handler's 18 and 19 and the hologram's 21 drawn from the scene's plan")
             .doc("docs/graphics/framescene.md")
     }
 
@@ -324,7 +330,10 @@ mod tests {
         assert_eq!(caller(20, 0x0004_020b), Some(LayerCaller::FirstPerson));
         assert_eq!(caller(3, 0x0004_0136), None, "native_first_person's");
         assert_eq!(caller(3, 0x0002_bed5), None, "native_objects' and the world's");
-        assert_eq!(caller(1, 0x0002_bd5c), None, "an alternate view's");
+        assert_eq!(caller(1, 0x0002_bd5c), Some(LayerCaller::AlternateView));
+        assert_eq!(caller(5, 0x0002_bd8c), Some(LayerCaller::AlternateView));
+        assert_eq!(caller(5, 0x0002_bd5c), None);
+        assert_eq!(caller(3, 0x0002_bd74), None, "owned by the base-layer stages");
     }
 
     #[test]
@@ -332,6 +341,21 @@ mod tests {
         assert_eq!(caller(17, 0x0002_c30b), Some(LayerCaller::Scene));
         assert_eq!(caller(17, 0x0002_c010), None, "another layer's return");
         assert_eq!(caller(16, 0x0002_c0e9), None, "the fog's late layer is native_fog's");
+    }
+
+    #[test]
+    fn the_stage_takes_the_scenes_and_the_first_persons_overlay_layer_2() {
+        assert_eq!(caller(2, 0x0002_c060), Some(LayerCaller::Scene), "after the dynamic lights");
+        assert_eq!(caller(2, 0x0004_0289), Some(LayerCaller::FirstPerson), "after the first person's layer 7");
+        assert_eq!(caller(2, 0x0002_bda8), Some(LayerCaller::AlternateView), "an alternate view's");
+        assert_eq!(caller(2, 0x0002_c30b), None, "layer 17's return");
+        count_for(LayerCaller::AlternateView, 2, "refused_state", 3);
+        count(2, "taken", 2);
+        count_for(LayerCaller::FirstPerson, 2, "refused_state", 1);
+        let c: BTreeMap<String, u64> = counters().into_iter().collect();
+        assert!(c["layer_plan_alt2_refused_state"] >= 3);
+        assert!(c["layer_plan_2_taken"] >= 2);
+        assert!(c["layer_plan_fp2_refused_state"] >= 1, "the first person's apart");
     }
 
     #[test]

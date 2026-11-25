@@ -24,6 +24,7 @@ use studio_proto::{code, method as m};
 
 use super::{MethodDef, P, Provider, Reply, def, err};
 use crate::App;
+use crate::app::{preview_switch::Route, rules_edit::reload_params};
 use crate::play::pair::Request;
 
 mod run;
@@ -68,16 +69,16 @@ const RESULT_SHAPE: &str = r#"{"id":"integer","what":"weapon|object|animation|ui
 const METHODS: &[MethodDef] = &[
     def(
         m::PAIR_PREVIEW,
-        "Put content into the paired game and read it back: give the player a weapon, spawn an object in front of them, spawn one and play a named animation of its graph on it (animation), check the menu screen shown, show the HUD, or play a sound at the player (audio.play) and sample the mixer; then wait, read the game state that matters and capture the frame. Pending edits are sent first. Answers with a job id at once; pair.result has the outcome",
-        r#"{"what":"weapon|object|animation|ui|hud|sound","target?":"string","animation?":"string","player?":"integer","seconds?":"number","pos?":"[x,y,z]","distance?":"number","keep?":"boolean","ticks?":"integer","view?":"render|screen","out?":"string","edits?":"send|skip"}"#,
-        r#"{"id":"integer","state":"sending|running"}"#,
+        "Preview the front document (or doc) in game. A variant boots Studio's own game with its current record; a script reloads into Studio's own game, starting it if needed. With what, run an explicit paired preview: give a weapon, spawn an object, play an animation, check the menu or HUD, or play and sample a sound. Paired jobs send pending edits first and answer with a pair.result job id",
+        r#"{"doc?":"string (tab id, without what)","what?":"weapon|object|animation|ui|hud|sound","target?":"string","animation?":"string","player?":"integer","seconds?":"number","pos?":"[x,y,z]","distance?":"number","keep?":"boolean","ticks?":"integer","view?":"render|screen","out?":"string","edits?":"send|skip"}"#,
+        r#"{"id?":"integer","state?":"sending|running","requested?":"boolean"}"#,
         r#"{"what":"weapon","target":"objects\\weapons\\rifle\\battle_rifle\\battle_rifle"}"#,
     ),
     def(
         m::PREVIEW_TARGET,
         "A document's preview switch: where its preview shows (studio, game for a game Studio started, attached for one someone else started), and what Preview in game asks of the paired game for its kind (`game`: the pair.preview params, or `why` it has none). With `target` the switch is set; a game target needs a paired game of that kind. The document is `doc` (a shell.tabs id) or the front one",
         r#"{"doc?":"string (a tab id from shell.tabs)","target?":"studio|game|attached"}"#,
-        r#"{"doc":"string|null","target":"studio|game|attached","targets":"[{id,label,available,why?}]","game":"{what,target?}|null","why?":"string"}"#,
+        r#"{"doc":"string|null","target":"studio|game|attached","targets":"[{id,label,available,why?}]","game":"{what,target?}|null","why?":"string","in_game":"{available,why?}"}"#,
         "{}",
     ),
     def(
@@ -104,6 +105,8 @@ impl Provider for Preview {
     fn call(&mut self, app: &mut App, method: &str, params: &Value) -> Option<Reply> {
         let p = P(params);
         Some(match method {
+            m::PAIR_PREVIEW if !p.has("what") => self.document(app, &p),
+            m::PAIR_PREVIEW if p.has("doc") => Err(err(code::INVALID_PARAMS, "use doc or what")),
             m::PAIR_PREVIEW => self.preview(app, &p),
             m::PREVIEW_TARGET => self.target(app, &p),
             m::PAIR_AUDIO => self.audio(app, &p),
@@ -191,6 +194,11 @@ impl Preview {
             "target": doc.map_or(PreviewTarget::Studio, |d| app.preview_target(d)).id(),
             "targets": targets,
             "game": null,
+            "in_game": match doc.map(|d| app.in_game_available(d)) {
+                Some(Ok(())) => json!({"available": true}),
+                Some(Err(why)) => json!({"available": false, "why": why}),
+                None => json!({"available": false, "why": "no document is open"}),
+            },
         });
         match doc.map(|d| app.game_preview(d)) {
             None => out["why"] = json!("no document is open"),
@@ -198,6 +206,46 @@ impl Preview {
             Some(Err(why)) => out["why"] = json!(why),
         }
         Ok(out)
+    }
+
+    fn document(&mut self, app: &mut App, p: &P) -> Reply {
+        if p.0.as_object().is_some_and(|p| p.keys().any(|key| key != "doc")) {
+            return Err(err(code::INVALID_PARAMS, "explicit preview options need what"));
+        }
+        let doc = if p.has("doc") {
+            super::shell::doc_param(app, p)?
+        } else {
+            app.sync_tabs();
+            app.front_doc().ok_or_else(|| err(code::REFUSED, "no document is open to preview"))?
+        };
+        app.in_game_available(doc).map_err(|why| err(code::REFUSED, why))?;
+        self.advance(app);
+        let result = match app.preview_route(doc).map_err(|why| err(code::REFUSED, why))? {
+            Route::Paired(plan) => self.preview(app, &P(&plan.params())),
+            Route::Variant => {
+                let variant = app.preview_variant().map_err(|why| err(code::REFUSED, why))?;
+                super::pair::enqueue(app, Request::StartOwnVariant(variant))
+            }
+            Route::Rules => {
+                let (params, hash) = reload_params(&app.rules.text, app.rules.mode)
+                    .map_err(|why| err(code::REFUSED, why))?;
+                let carrier = if app.pairing.link.as_ref().is_some_and(|l| l.own.is_some()) {
+                    None
+                } else {
+                    let (ir, _) = rules::build(&app.rules.text)
+                        .map_err(|e| err(code::REFUSED, e.to_string()))?;
+                    let variant = variants::portable::settings_record(&ir)
+                        .map_err(|e| err(code::REFUSED, e.to_string()))?;
+                    Some(variants::portable::export(&variant))
+                };
+                super::pair::enqueue(app, Request::PreviewRules { params, hash, carrier })
+            }
+        }?;
+        app.preview.focus_game = true;
+        app.preview.last_job = result["id"].as_u64();
+        app.preview.report = app.preview.last_job.map(|_| result.clone());
+        app.info(format!("Preview in game: {}", app.doc_title(doc)));
+        Ok(result)
     }
 
     fn preview(&mut self, app: &mut App, p: &P) -> Reply {

@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tags::anim_keys::{self, Keys, Kind};
 use tags::anim_sample::{NodeDefault, NodeTransform, Pose};
@@ -75,6 +76,8 @@ pub struct Gesture(u64);
 struct Undo {
     tracks: Tracks,
     gesture: Option<Gesture>,
+    /// The step's number ([`AnimDoc::share_steps`]).
+    serial: u64,
 }
 
 /// A clip, its skeleton, and its edit history. Track storage is shared
@@ -86,9 +89,13 @@ pub struct AnimDoc {
     nodes: Vec<Node>,
     tracks: Tracks,
     undo: Vec<Undo>,
-    redo: Vec<Tracks>,
+    /// Each undone step: the tracks it gives back, and its number.
+    redo: Vec<(Tracks, u64)>,
     revision: u64,
     next_gesture: u64,
+    /// Numbers the steps: this document's own counter until the host
+    /// shares its ([`Self::share_steps`]).
+    steps: Arc<AtomicU64>,
 }
 
 impl AnimDoc {
@@ -108,6 +115,7 @@ impl AnimDoc {
             redo: Vec::new(),
             revision: 0,
             next_gesture: 0,
+            steps: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -190,12 +198,35 @@ impl AnimDoc {
         !self.redo.is_empty()
     }
 
+    /// Number this document's steps on `steps`, the counter its host
+    /// numbers its other undo stacks on. A document whose steps come from
+    /// several places (a graph's tab holds its tags' writes and each of
+    /// its animation documents) undoes them in the order they were made:
+    /// [`Self::step_serial`] and [`Self::redo_serial`] give the numbers to
+    /// compare by. A document numbers its steps on its own counter until
+    /// the host shares one.
+    pub fn share_steps(&mut self, steps: Arc<AtomicU64>) {
+        self.steps = steps;
+    }
+
+    /// The number of the newest step not undone ([`Self::share_steps`]),
+    /// or `None` when every step is undone.
+    pub fn step_serial(&self) -> Option<u64> {
+        self.undo.last().map(|u| u.serial)
+    }
+
+    /// The number of the oldest undone step, the next a redo takes: the
+    /// steps of one document are undone newest first.
+    pub fn redo_serial(&self) -> Option<u64> {
+        self.redo.last().map(|(_, serial)| *serial)
+    }
+
     pub fn undo(&mut self) -> bool {
         let Some(entry) = self.undo.pop() else {
             return false;
         };
         self.redo
-            .push(std::mem::replace(&mut self.tracks, entry.tracks));
+            .push((std::mem::replace(&mut self.tracks, entry.tracks), entry.serial));
         if let Some(previous) = self.undo.last_mut() {
             previous.gesture = None;
         }
@@ -204,12 +235,13 @@ impl AnimDoc {
     }
 
     pub fn redo(&mut self) -> bool {
-        let Some(tracks) = self.redo.pop() else {
+        let Some((tracks, serial)) = self.redo.pop() else {
             return false;
         };
         self.undo.push(Undo {
             tracks: std::mem::replace(&mut self.tracks, tracks),
             gesture: None,
+            serial,
         });
         self.revision += 1;
         true
@@ -313,6 +345,7 @@ impl AnimDoc {
             self.undo.push(Undo {
                 tracks: self.tracks.clone(),
                 gesture,
+                serial: self.steps.fetch_add(1, Ordering::Relaxed) + 1,
             });
             self.redo.clear();
         }

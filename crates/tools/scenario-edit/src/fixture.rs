@@ -845,11 +845,24 @@ fn put_bitmap(b: &mut [u8], at: usize, format: u16, pixels_file: usize) {
 /// page. Everything is invented; the readers it goes through are
 /// `native_render::load::load_world`, `base_map` and the decodes.
 pub fn fixture_with_textured_bsp() -> Vec<u8> {
+    textured_bsp(false)
+}
+
+/// The textured floor plus a cube collision BSP with six materials,
+/// in a map that can grow metadata.
+pub fn fixture_with_render_and_collision() -> Vec<u8> {
+    metadata_last(textured_bsp(true))
+}
+
+fn textured_bsp(with_collision: bool) -> Vec<u8> {
     let mut b = fixture();
     let mut names = NAMES.to_vec();
     names.extend(
         b"levels\\test\\floor\0levels\\test\\floor_lightmap\0levels\\test\\shaders\\floor\0levels\\test\\bitmaps\\floor\0levels\\test\\bitmaps\\floor_lightmap\0objects\\test\\spare_kit\0",
     );
+    if with_collision {
+        names.extend(b"objects\\test\\cube_coll\0");
+    }
     tag_names(&mut b, &names);
     let mut classes = CLASSES.to_vec();
     classes.extend([*b"sbsp", *b"ltmp", *b"shad", *b"bitm", *b"bitm", *b"itmc"]);
@@ -862,6 +875,32 @@ pub fn fixture_with_textured_bsp() -> Vec<u8> {
         (TEX_PAGE, 0x100),
         (TEX_SPARE_ITEM, 0x10),
     ]);
+    if with_collision {
+        // Keep the collision payload after all three raw blocks.
+        let coll = 0x2600;
+        let end = coll + OBJ_COLL_SIZE;
+        put(&mut b, 0x18, end as u32);
+        put(&mut b, 0x1c, end as u32);
+        classes.push(*b"coll");
+        payloads.push((coll, OBJ_COLL_SIZE));
+        // Leave room for the cube's encoded BSP blocks before the materials.
+        let (materials, region, perm, bsp) = (coll + 0x400, coll + 0x40, coll + 0x50, coll + 0x70);
+        let material_count = 6;
+        assert!(materials + material_count as usize * 4 <= end);
+        for (field, count, block) in [
+            (coll + 0x14, material_count, materials),
+            (coll + 0x1c, 1, region),
+            (region + 4, 1, perm),
+            (perm + 4, 1, bsp),
+        ] {
+            put(&mut b, META_FILE + field, count);
+            put(&mut b, META_FILE + field + 4, META + block as u32);
+        }
+        let bytes = collision_cube().encode_blocks(META + (bsp + 4) as u32);
+        let start = META_FILE + bsp + 4;
+        assert!(start + bytes.len() <= META_FILE + materials);
+        b[start..start + bytes.len()].copy_from_slice(&bytes);
+    }
     tag_index(&mut b, &classes, &payloads);
     let file = |at: usize| META_FILE + at;
     let addr = |at: usize| META + at as u32;

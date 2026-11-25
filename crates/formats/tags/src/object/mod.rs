@@ -16,6 +16,7 @@ use crate::{Error, Result};
 use map::{FourCC, Map, TagId};
 use std::collections::HashMap;
 use std::io::{Read, Seek};
+use std::sync::Arc;
 
 pub mod direct_drive;
 pub mod h1_flight;
@@ -392,18 +393,24 @@ impl Catalog {
 #[derive(Clone, Debug)]
 pub struct Metadata {
     pub base: u32,
-    pub bytes: Vec<u8>,
+    pub bytes: Arc<Vec<u8>>,
 }
 impl Metadata {
+    pub fn new(base: u32, bytes: Vec<u8>) -> Self {
+        Self { base, bytes: Arc::new(bytes) }
+    }
+
+    /// Shader pointers use the same ordinary metadata bytes.
+    pub fn shader_view(&self) -> crate::shader::Metadata {
+        crate::shader::Metadata::from_shared(self.base, Arc::clone(&self.bytes))
+    }
+
     pub fn read<R: Read + Seek>(map: &mut Map<R>) -> Result<Self> {
         let s = map
             .metadata_space()
             .ok_or(Error::Invalid("map has no ordinary metadata"))?;
         let bytes = map.read_file_range(s.file_offset, u64::from(s.size))?;
-        Ok(Self {
-            base: s.virtual_base,
-            bytes,
-        })
+        Ok(Self::new(s.virtual_base, bytes))
     }
     pub fn slice(&self, address: u32, size: u64) -> Result<&[u8]> {
         let bad = || Error::Bounds { address, size };

@@ -25,6 +25,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 pub mod build;
 pub mod catalogue;
 pub mod compile;
+pub mod converted;
 pub mod extract;
 pub mod format;
 pub mod normal;

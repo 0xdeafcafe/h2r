@@ -45,12 +45,14 @@ pub fn layer_site(layer: u32, return_address: u32) -> Site {
         // Layer 17 (S: bloom), late in the passes: `call 0x00044550` at
         // `0x0002c306`, after the begin at `0x0002c2fd` returned true.
         | (17, 0x0002_c30b) => Site::Scene,
+        // The alternate branch ends with layer 2: begin at 0x0002bd96, draw at 0x0002bda3.
         (1, 0x0002_bd5c) | (3, 0x0002_bd74) | (5, 0x0002_bd8c) | (2, 0x0002_bda8) => {
             Site::AlternateView
         }
-        (1, 0x0004_00ab) | (3, 0x0004_0136) | (8, 0x0004_01a7) | (20, 0x0004_020b) | (7, 0x0004_0271) => {
-            Site::FirstPerson
-        }
+        (1, 0x0004_00ab) | (3, 0x0004_0136) | (8, 0x0004_01a7) | (20, 0x0004_020b) | (7, 0x0004_0271)
+        // Layer 2: `call 0x00044550` at `0x00040284`, after the begin at
+        // `0x0004027b` returned true.
+        | (2, 0x0004_0289) => Site::FirstPerson,
         _ => Site::Other,
     }
 }
@@ -126,6 +128,15 @@ pub struct Geometry {
 }
 
 impl Geometry {
+    /// The light pass selector from the fifth geometry-handler argument
+    /// and the class from its sorted slot. Call at the same indexed draw
+    /// as `read`, before the guest resumes.
+    pub fn light_selection(&self, mem: &dyn GuestRead, esp: u32) -> Option<(u8, u16)> {
+        let selector = u8::try_from(mem.read_u32(esp.checked_add(HANDLER_FRAME + 20)?)?).ok()?;
+        let vertex_class = mem.read_u32(self.sorted_slot.checked_add(8)?)? as u16;
+        Some((selector, vertex_class))
+    }
+
     /// Decode only the standard handler calling the standard emitter.
     /// A sky or special handler can share the D3D entry and the layer.
     pub fn read(mem: &dyn GuestRead, esp: u32, layer: u32) -> Option<Self> {
@@ -264,8 +275,27 @@ mod tests {
     }
 
     #[test]
+    fn light_selection_uses_the_handler_pass_argument_and_sorted_vertex_class() {
+        let mut mem = Mem::default();
+        draw(&mut mem, 4, 0, 9 << 9);
+        mem.w(STACK + HANDLER_FRAME + 8, 99); // the layer-loop argument
+        mem.w(STACK + HANDLER_FRAME + 16, 12);
+        mem.w(STACK + HANDLER_FRAME + 20, 5);
+        mem.w(ENTRY + 8, 0xbeef_0123);
+        let geometry = Geometry::read(&mem, STACK, 12).unwrap();
+        assert_eq!(geometry.light_selection(&mem, STACK), Some((5, 0x123)));
+        mem.w(STACK + HANDLER_FRAME + 20, 256);
+        assert_eq!(geometry.light_selection(&mem, STACK), None);
+        mem.w(STACK + HANDLER_FRAME + 20, 0);
+        mem.0.remove(&(ENTRY + 8));
+        assert_eq!(geometry.light_selection(&mem, STACK), None);
+    }
+
+    #[test]
     fn the_same_layer_number_has_different_view_sites() {
         assert_eq!(layer_site(1, 0x0002_be4a), Site::Scene);
+        assert_eq!(layer_site(2, 0x0002_bda8), Site::AlternateView);
+        assert_eq!(layer_site(2, 0x0002_bd8c), Site::Other);
         assert_eq!(layer_site(1, 0x0002_bd5c), Site::AlternateView);
         assert_eq!(layer_site(1, 0x0004_00ab), Site::FirstPerson);
         assert_eq!(layer_site(3, 0x0002_be4a), Site::Other);
@@ -286,6 +316,9 @@ mod tests {
         assert_eq!(layer_site(18, 0x0004_2015), Site::Other, "no scene site");
         assert_eq!(layer_site(17, 0x0002_c30b), Site::Scene, "the late layer 17");
         assert_eq!(layer_site(17, 0x0002_c010), Site::Other, "layer 20's return names only 20");
+        assert_eq!(layer_site(2, 0x0002_c060), Site::Scene, "the scene's layer 2, after the lights");
+        assert_eq!(layer_site(2, 0x0004_0289), Site::FirstPerson, "the first person's layer 2, after its 7");
+        assert_eq!(layer_site(7, 0x0004_0289), Site::Other, "layer 2's return names only 2");
     }
 
     #[test]

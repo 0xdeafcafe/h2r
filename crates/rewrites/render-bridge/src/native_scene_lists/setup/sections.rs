@@ -16,11 +16,12 @@ const VIEW_PLAYER: u32 = 0x004b_9ed8;
 const PLAYER_WINDOWS: u32 = 0x004e_d284;
 const MAX_LOD: u32 = 0x004b_a01c;
 const VIEW_INDEX: u32 = 0x004b_a050;
-const LOD_FRACTION_MAX: u32 = 0x0045_dc78;
+pub(in crate::native_scene_lists) const LOD_FRACTION_MAX: u32 = 0x0045_dc78;
 const LOD_KEEP_COARSER: u32 = 0x0044_ae88;
 const LOD_KEEP_FINER: u32 = 0x0045_dc5c;
 const LOCAL_LOD_SCALE: u32 = 0x0044_ae90;
 const OBJECT_LOD_SCALE: u32 = 0x0045_e384;
+pub(in crate::native_scene_lists) const HIGHEST_LOD: u8 = 5;
 const ABSENT: u8 = u8::MAX;
 const REGION_LIMIT: usize = 16;
 
@@ -52,7 +53,7 @@ pub(super) struct Model {
 
 pub(super) fn prepare(
     m: &mut Staged<'_>,
-    scene: Scene,
+    scene: Scene<'_>,
     handle: u32,
     state: ObjectState,
 ) -> Result<Prepared> {
@@ -114,13 +115,21 @@ pub(super) fn prepare(
     // Hysteresis and the selected LOD are stored on the requested object.
     // A first-person slot can have a separate palette and lighting owner.
     let view = m.i32(VIEW_INDEX)?;
+    // An unindexed presentation view still needs permutation scratch.
+    // The original cache row is left intact by the overlay.
+    let view = if scene.private && !(0..4).contains(&view) { 0 } else { view };
     let root_model = if first_person {
         0
     } else {
         tag(m, scene.tags, datum)?
     };
+    let lod = if scene.private || first_person || object_lod::pose_independent(m, hlmt) {
+        scene.lod
+    } else {
+        LodDetail::Retail
+    };
     let initial = if first_person || m.u32(at(body, 4)?)? & (1 << 19) != 0 {
-        5
+        HIGHEST_LOD
     } else {
         let old = if (0..4).contains(&view) {
             let entry = lighting::cache(m, handle, body, scene.frame)?;
@@ -128,7 +137,7 @@ pub(super) fn prepare(
         } else {
             ABSENT
         };
-        choose_lod(m, body, hlmt, state.distance, old, scene.lod_scale)?
+        choose_lod(m, body, hlmt, state.distance, old, lod)?
     };
     let mut current = initial;
     for i in 0..slots {
@@ -165,6 +174,7 @@ pub(super) fn prepare(
                 definition,
                 pose,
                 initial,
+                lod,
                 view,
                 single_slot: slots == 1,
                 index: i,
@@ -192,6 +202,7 @@ struct Slot {
     definition: u32,
     pose: Option<u32>,
     initial: u8,
+    lod: LodDetail,
     view: i32,
     single_slot: bool,
     index: u32,
@@ -200,7 +211,7 @@ struct Slot {
 
 fn prepare_model(
     m: &mut Staged<'_>,
-    scene: Scene,
+    scene: Scene<'_>,
     state: ObjectState,
     slot: Slot,
     current: &mut u8,
@@ -216,11 +227,17 @@ fn prepare_model(
         definition,
         pose,
         initial,
+        lod,
         view,
         single_slot,
         index,
         selector,
     } = slot;
+    let node_maps = match scene.geometry {
+        Some(geometry) if geometry.model == model_datum => Some(geometry.node_maps),
+        Some(_) => return Err(Refusal::ObjectModel),
+        None => None,
+    };
     let entry = lighting::cache(m, owner, owner_body, scene.frame)?;
     let old = if (0..4).contains(&view) {
         m.u8(at(entry, 0xbc + view as u32)?)?
@@ -231,6 +248,11 @@ fn prepare_model(
         return Err(Refusal::ObjectModel);
     }
     let first_person = pose.is_some();
+    let initial = if lod == LodDetail::Highest {
+        finest_lod(m, model, requested_body, first_person)?
+    } else {
+        initial
+    };
     let history = if first_person || !(0..4).contains(&view) {
         None
     } else {
@@ -238,7 +260,8 @@ fn prepare_model(
     };
     let token = scene.frame & 0x3fff_ffff | (view as u32).wrapping_shl(30);
     let saved_palette = m.u32(at(entry, 0x4c)?)?;
-    let reusable = old != ABSENT && saved_palette != NONE && m.u32(at(entry, 0x50)?)? == token;
+    let reusable = !scene.private && (lod != LodDetail::Highest || old == initial)
+        && old != ABSENT && saved_palette != NONE && m.u32(at(entry, 0x50)?)? == token;
     let write_lod = |m: &mut Staged<'_>, lod| -> Result<()> {
         if (0..4).contains(&view) {
             let cache = lighting::cache(m, requested, requested_body, scene.frame)?;
@@ -246,7 +269,7 @@ fn prepare_model(
         }
         Ok(())
     };
-    let desired = if reusable { old } else { *current };
+    let desired = if reusable { old } else if lod == LodDetail::Highest { initial } else { *current };
     *current = desired;
     let mut selected = pick(
         m,
@@ -256,12 +279,13 @@ fn prepare_model(
         history,
         true,
         first_person,
+        node_maps,
     )?;
     let mut chosen = desired;
     if selected.complete {
         write_lod(m, chosen)?;
     } else if old != ABSENT {
-        selected = pick(m, model, requested_body, old, history, false, first_person)?;
+        selected = pick(m, model, requested_body, old, history, false, first_person, node_maps)?;
         if selected.complete {
             chosen = old;
             *current = chosen;
@@ -303,9 +327,9 @@ fn prepare_model(
             pose
         } else {
             let object_slot = scene.objects.slot(m, owner)?;
-            palette::object_pose(m, model, owner_body, object_slot, hlmt, &selected.sections)?
+            palette::object_pose(m, model, owner_body, object_slot, definition, hlmt, &selected.sections)?
         };
-        palette::fill(m, model, chosen, &selected.sections, pose, offset, count)?;
+        palette::fill(m, model, chosen, &selected.sections, pose, offset, count, node_maps)?;
         lighting::refresh(
             m,
             owner,
@@ -350,7 +374,7 @@ fn suppressed(m: &dyn GuestMemory, objects: Pool, mut handle: u32) -> Result<boo
 
 fn effects(
     m: &dyn GuestMemory,
-    scene: Scene,
+    scene: Scene<'_>,
     hlmt: u32,
     body: u32,
     prepared: &mut Prepared,
@@ -430,10 +454,10 @@ fn choose_lod(
     hlmt: u32,
     mut distance: f32,
     old: u8,
-    scale: f32,
+    lod: LodDetail,
 ) -> Result<u8> {
-    if m.u32(at(body, 4)?)? & (1 << 19) != 0 {
-        return Ok(5);
+    if lod == LodDetail::Highest || m.u32(at(body, 4)?)? & (1 << 19) != 0 {
+        return Ok(HIGHEST_LOD);
     }
     if m.u8(FORCE_FULL_LOD)? != 0 {
         distance *= m.f32(LOCAL_LOD_SCALE)?;
@@ -441,7 +465,11 @@ fn choose_lod(
     if m.u8(at(body, 0x10a)?)? & 4 != 0 {
         distance *= m.f32(OBJECT_LOD_SCALE)?;
     }
-    distance = object_lod::model_distance(m, hlmt, distance, scale);
+    if let LodDetail::Scaled(scale) = lod
+        && distance.is_finite()
+    {
+        distance = (distance / scale).clamp(-f32::MAX, f32::MAX);
+    }
     let block = at(hlmt, 0x28)?;
     let mut thresholds = [0.0; 6];
     for (i, threshold) in thresholds.iter_mut().enumerate() {
@@ -524,29 +552,13 @@ fn pick(
     history: Option<u32>,
     request: bool,
     first_person: bool,
+    node_maps: Option<&[Vec<u8>]>,
 ) -> Result<Selection> {
-    let count = m.u32(at(model, 0x1c)?)? as usize;
-    if count > REGION_LIMIT {
-        return Err(Refusal::ObjectModel);
-    }
+    let (regions, current) = permutations(m, model, body, first_person)?;
     let mut selection = Selection {
-        sections: vec![ABSENT; count],
+        sections: vec![ABSENT; current.len()],
         complete: true,
         varied: false,
-    };
-    if count == 0 {
-        return Ok(selection);
-    }
-    let regions = ptr(m, at(model, 0x20)?)?;
-    let current = if first_person {
-        vec![0; count]
-    } else {
-        let size = m.u16(at(body, 0x118)?)? as i16;
-        let start = m.u16(at(body, 0x11a)?)? as i16;
-        if start < 0 || size < 0 || count > size as usize / 10 {
-            return Err(Refusal::ObjectModel);
-        }
-        m.bytes(at(body, start as u32)?, count)?
     };
     // Touch every requested region before inspecting the previous permutations.
     for (i, &permutation) in current.iter().enumerate() {
@@ -556,7 +568,9 @@ fn pick(
         }
         let section = section_index(m, region, permutation, lod)?;
         let section_addr = palette::section_addr(m, model, u32::from(section))?;
-        if residency::touch(m, at(section_addr, 0x38)?, request)? {
+        if node_maps.is_some_and(|maps| maps.get(usize::from(section)).is_some())
+            || residency::touch(m, at(section_addr, 0x38)?, request)?
+        {
             selection.sections[i] = section;
         }
     }
@@ -597,7 +611,70 @@ fn pick(
     Ok(selection)
 }
 
-fn section_index(m: &dyn GuestMemory, region: u32, permutation: u8, lod: u8) -> Result<u8> {
+/// Each section and its blend group share one model tier. Choose the
+/// finest authored tier that can draw every active region.
+pub(in crate::native_scene_lists) fn finest_lod(
+    m: &dyn GuestMemory,
+    model: u32,
+    body: u32,
+    first_person: bool,
+) -> Result<u8> {
+    let (regions, current) = permutations(m, model, body, first_person)?;
+    let section_count = m.u32(at(model, 0x24)?)?;
+    for lod in (0..=HIGHEST_LOD).rev() {
+        let mut complete = true;
+        for (i, &permutation) in current.iter().enumerate() {
+            let region = at(regions, i as u32 * 16)?;
+            if permutation == ABSENT || i32::from(permutation) >= m.i32(at(region, 8)?)? {
+                continue;
+            }
+            if !section_index(m, region, permutation, lod)
+                .is_ok_and(|section| u32::from(section) < section_count)
+            {
+                complete = false;
+                break;
+            }
+        }
+        if complete {
+            return Ok(lod);
+        }
+    }
+    Err(Refusal::ObjectModel)
+}
+
+pub(in crate::native_scene_lists) fn permutations(
+    m: &dyn GuestMemory,
+    model: u32,
+    body: u32,
+    first_person: bool,
+) -> Result<(u32, Vec<u8>)> {
+    let count = m.u32(at(model, 0x1c)?)? as usize;
+    if count > REGION_LIMIT {
+        return Err(Refusal::ObjectModel);
+    }
+    if count == 0 {
+        return Ok((0, Vec::new()));
+    }
+    let regions = ptr(m, at(model, 0x20)?)?;
+    let current = if first_person {
+        vec![0; count]
+    } else {
+        let size = m.u16(at(body, 0x118)?)? as i16;
+        let start = m.u16(at(body, 0x11a)?)? as i16;
+        if start < 0 || size < 0 || count > size as usize / 10 {
+            return Err(Refusal::ObjectModel);
+        }
+        m.bytes(at(body, start as u32)?, count)?
+    };
+    Ok((regions, current))
+}
+
+pub(in crate::native_scene_lists) fn section_index(
+    m: &dyn GuestMemory,
+    region: u32,
+    permutation: u8,
+    lod: u8,
+) -> Result<u8> {
     if permutation > i8::MAX as u8 || i32::from(permutation) >= m.i32(at(region, 8)?)? {
         return Err(Refusal::ObjectModel);
     }

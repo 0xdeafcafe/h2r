@@ -10,6 +10,7 @@ status = "in progress"
 doc = ["engine/sim-rewrite.md", "engine/shadow-exec.md"]
 
 [dependencies]
+hs.workspace = true
 hooks = { path = "../../hooking/hooks" }
 runtime.workspace = true
 # The ports the installs place (engine::sim_native, engine::sim_physics).
@@ -18,6 +19,10 @@ engine = { path = "../engine", features = ["runtime-glue"] }
 lifted = { path = "../../runtime/lifted" }
 # The extension records the checkpoint hooks move (sim_ext.rs).
 sim-ext.workspace = true
+
+[dev-dependencies]
+hs = { workspace = true, features = ["fixture"] }
+ir.workspace = true
 
 [lints]
 workspace = true

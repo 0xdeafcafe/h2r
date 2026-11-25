@@ -568,14 +568,16 @@ fn real_disc_base_entry_and_record() {
     }
 }
 
-#[test]
-fn a_converted_map_installs_the_sandbox_the_setting_names() {
-    let t = Temp::new("sandbox");
-    let data = &t.0;
-    let d = data.join("maps").join("h1_gulch");
-    for (s, seed) in [("h1", 7), ("h2", 9)] {
-        std::fs::create_dir_all(d.join(s)).unwrap();
-        std::fs::write(d.join(s).join("h1_gulch.map"), body(seed)).unwrap();
+fn converted_gulch(data: &Path) {
+    let root = data.join("tags");
+    let d = tags::repo::converted::halo1_metadata(&root).join("h1_gulch");
+    std::fs::create_dir_all(&d).unwrap();
+    for (sandbox, seed) in [("h1", 7), ("h2", 9)] {
+        crate::campaigns::store_fixture(
+            &root,
+            &tags::repo::converted::halo1_mp_stem("h1_gulch", sandbox),
+            &body(seed),
+        );
     }
     let variant = |s: &str, seed: u8| {
         format!(
@@ -594,65 +596,19 @@ fn a_converted_map_installs_the_sandbox_the_setting_names() {
         ),
     )
     .unwrap();
-    let ids = std::cell::RefCell::new(Vec::new());
-    let installed = |data: &Path| {
-        let r = install(data, &mut disc()).unwrap();
-        assert_eq!(r.installed.len(), 1, "{r:?}");
-        ids.borrow_mut().push((r.installed[0].1, r.installed[0].2));
-        served(data, &r, r.installed[0].1, "h1_gulch")
-    };
-    // Halo 1's sandbox by default.
-    assert_eq!(installed(data), body(7));
-    // The setting asks for Halo 2's: the next boot writes that one.
-    std::fs::write(
-        settings::path_in(data),
-        "[multiplayer]\nhalo1_sandbox = \"h2\"\n",
-    )
-    .unwrap();
-    assert_eq!(installed(data), body(9));
-    // One map in the list either way: the same offer and list ID.
-    let ids = ids.into_inner();
-    assert_eq!(ids[0], ids[1]);
-    assert_eq!(dirs(data).len(), 1);
 }
 
-/// The install reports both variants of a converted map at the path 1.0
-/// opens, and a VFS given them serves the one chosen for the next game,
-/// whatever the boot materialised.
 #[test]
 fn a_converted_map_is_served_in_the_sandbox_chosen_per_game() {
     let t = Temp::new("per-game");
     let data = &t.0;
-    let d = data.join("maps").join("h1_gulch");
-    for (s, seed) in [("h1", 7), ("h2", 9)] {
-        std::fs::create_dir_all(d.join(s)).unwrap();
-        std::fs::write(d.join(s).join("h1_gulch.map"), body(seed)).unwrap();
-    }
-    let variant = |s: &str, seed: u8| {
-        format!(
-            "[[variant]]\nfile = \"{s}/h1_gulch.map\"\nsha256 = \"{}\"\n\
-             origin = {{ game = \"halo1\", map = \"gulch\", sandbox = \"{s}\", source_sha256 = \"{}\" }}\n",
-            Sha256::of(&body(seed)),
-            Sha256([7; 32])
-        )
-    };
-    std::fs::write(
-        d.join("manifest.toml"),
-        format!(
-            "[package]\nformat = 1\nname = \"Gulch\"\n[base]\nmap = \"h1_gulch\"\nderived = true\n{}{}",
-            variant("h1", 7),
-            variant("h2", 9)
-        ),
-    )
-    .unwrap();
+    converted_gulch(data);
     let r = install(data, &mut disc()).unwrap();
     let offer = r.installed[0].1;
     assert_eq!(r.variants.len(), 1, "{r:?}");
     let (path, pair) = &r.variants[0];
     assert_eq!(path, &content_path(offer, "h1_gulch"));
     assert!(path.starts_with("TDATA\\4D530064\\$c\\"), "{path}");
-    assert_eq!(std::fs::read(&pair.h1.file).unwrap(), body(7));
-    assert_eq!(std::fs::read(&pair.h2.file).unwrap(), body(9));
     assert_ne!(pair.h1.id, pair.h2.id);
     // The path names the file the install wrote.
     let host = data.join("disk").join("Partition1").join(path.replace('\\', "/"));
@@ -665,12 +621,32 @@ fn a_converted_map_is_served_in_the_sandbox_chosen_per_game() {
     let choice = cfg.variants.choice().clone();
     let mut v = vfs::Vfs::with_storage(cfg).unwrap();
     let name = format!("{}\\{path}", vfs::DATA_DEVICE);
-    assert_eq!(v.host_file(&name).unwrap().path, pair.h1.file);
+    assert_eq!(read(&mut v, &name), body(7));
+    assert!(v.host_file(&name).is_none());
     choice.set_halo1(false);
-    let served = v.host_file(&name).unwrap();
-    assert_eq!(served.path, pair.h2.file);
-    assert_eq!(served.len, body(9).len() as u64);
+    assert_eq!(read(&mut v, &name), body(9));
     assert_eq!(v.map_id(&name), pair.h2.id);
+}
+
+#[test]
+fn a_reset_removes_the_offer_and_a_missing_sandbox_does_not_use_the_other() {
+    let t = Temp::new("store-reset");
+    let data = &t.0;
+    converted_gulch(data);
+    let root = data.join("tags");
+    let marker = tags::repo::converted::marker_path(&root, "h1_gulch_h1");
+    std::fs::remove_file(marker).unwrap();
+    let r = install(data, &mut disc()).unwrap();
+    let path = device_path(r.installed[0].1, "h1_gulch");
+    let cfg = vfs::Config::new(data, HALO2_TITLE);
+    cfg.variants.replace(r.variants);
+    let choice = cfg.variants.choice().clone();
+    let mut v = vfs::Vfs::with_storage(cfg).unwrap();
+    assert!(v.open(&path, vfs::OpenOptions::default()).is_err());
+    choice.set_halo1(false);
+    assert_eq!(read(&mut v, &path), body(9));
+    std::fs::remove_dir_all(root.join("maps")).unwrap();
+    assert!(install(data, &mut disc()).unwrap().installed.is_empty());
 }
 
 fn retail_package(data: &Path, dir: &str, name: &str, map: &str, base: &[u8], value: u8) -> MapId {

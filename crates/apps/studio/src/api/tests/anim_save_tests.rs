@@ -27,7 +27,22 @@ fn anim_save_updates_the_same_map_scoped_item_and_round_trips_keys() {
         json!({"tag": TAG, "name": "wave", "frames": 6}),
     );
     let doc = made["doc"].as_u64().unwrap();
-    let params = json!({"doc": doc, "package": "mine", "action": "wave"});
+    let params = json!({"doc": doc, "action": "wave"});
+    assert_eq!(
+        code_of(api.call(&mut app, m::ANIM_SAVE, params.clone())),
+        code::NO_TARGET
+    );
+    let action = Action::SaveAnimation {
+        doc,
+        placement: Some(crate::app::anim::DraftPlacement {
+            action: "wave".into(),
+            ..Default::default()
+        }),
+    };
+    app.dispatch(action);
+    assert!(app.edits.picker.is_some());
+    app.dispatch(Action::ChooseEditTarget(crate::app::EditChoice::Existing("mine".into())));
+    assert!(app.edits.picker.is_none());
     let dir = t.path("data/packages/mine");
     let saved = call(&mut api, &mut app, m::ANIM_SAVE, params.clone());
     let path = saved["source"].as_str().unwrap().to_owned();

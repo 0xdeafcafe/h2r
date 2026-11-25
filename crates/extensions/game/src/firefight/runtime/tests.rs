@@ -643,6 +643,18 @@ fn the_pages_choices_start_the_match() {
     assert_eq!(director.cap, 24, "Last Stand's cap for one player");
 }
 
+#[test]
+fn the_custom_game_wave_record_starts_its_director_on_a_kit_map() {
+    crate::lobby_start::set_mode(crate::lobby_start::Mode::Multiplayer);
+    let wave = crate::community_variants::listed_named("Last Stand").unwrap();
+    let (it, _) = shared(false);
+    it.lock().set_options(Box::new(|| Ok(Options { enabled: false, ..Options::default() })));
+    let (mut guest, _) = guest(true, 1);
+    guest.put(GAME_GLOBALS + bots::guest::OPTIONS + crate::variant_ext::OPTIONS_VARIANT, wave.record.bytes());
+    it.lock().start(&mut guest, false);
+    assert_eq!(it.lock().state().director.expect("Last Stand starts").cap, 24);
+}
+
 /// With nothing chosen the match is the settings' defaults: Holdout.
 #[test]
 fn a_run_with_no_page_plays_the_defaults() {
@@ -817,7 +829,7 @@ fn two_teams_turn_team_play_on_before_the_game_starts() {
 fn only_two_firefight_teams_on_a_kit_map_turn_team_play_on() {
     let unchanged = |options: Options, kit: bool, mode: u32, film: bool| {
         let (it, _) = shared(false);
-        it.lock().set_options(Box::new(move || Ok(options)));
+        it.lock().set_options(Box::new(move || Ok(options.clone())));
         let (mut m, _) = guest(kit, 1);
         options_block(&mut m, mode, 0);
         let line = it.lock().activate(&mut m, OPTIONS, film);
@@ -831,12 +843,12 @@ fn only_two_firefight_teams_on_a_kit_map_turn_team_play_on() {
     };
     let mp = MODE_MULTIPLAYER;
     assert!(unchanged(Options::default(), true, mp, false), "one team");
-    assert!(unchanged(two, false, mp, false), "no kit");
-    assert!(unchanged(two, true, 1, false), "a campaign game");
-    assert!(unchanged(two, true, mp, true), "a film");
+    assert!(unchanged(two.clone(), false, mp, false), "no kit");
+    assert!(unchanged(two.clone(), true, 1, false), "a campaign game");
+    assert!(unchanged(two.clone(), true, mp, true), "a film");
     let off = Options {
         enabled: false,
-        ..two
+        ..two.clone()
     };
     assert!(unchanged(off, true, mp, false), "Firefight off");
     let one = Options {
@@ -848,8 +860,8 @@ fn only_two_firefight_teams_on_a_kit_map_turn_team_play_on() {
         teams: Some(2),
         ..Options::default()
     };
-    assert!(!unchanged(holdout_two, true, mp, false), "Teams set to two");
     assert!(wants_team_play(&holdout_two, true));
+    assert!(!unchanged(holdout_two, true, mp, false), "Teams set to two");
     assert_eq!(with_team_play(1, true), None);
     assert_eq!(with_team_play(0, false), None);
     assert_eq!(with_team_play(0x10, true), Some(0x11));
@@ -866,13 +878,13 @@ fn each_multiplayer_start_names_its_match_for_the_session() {
         let (it, _) = shared(false);
         let sent: Sent = Arc::default();
         let seen = Arc::clone(&sent);
-        it.lock().set_options(Box::new(move || Ok(options)));
+        it.lock().set_options(Box::new(move || Ok(options.clone())));
         it.lock()
             .set_session(Box::new(move |f| seen.lock().unwrap().push(f)));
         let (mut m, _) = guest(kit, 1);
         options_block(&mut m, MODE_MULTIPLAYER, 1);
         it.lock().activate(&mut m, OPTIONS, film);
-        
+
         sent.lock().unwrap().clone()
     };
     let crossfire = Options {
@@ -880,7 +892,7 @@ fn each_multiplayer_start_names_its_match_for_the_session() {
         difficulty: ::firefight::Difficulty::Heroic,
         ..Options::default()
     };
-    let sent = start(crossfire, true, false);
+    let sent = start(crossfire.clone(), true, false);
     let def = crossfire.definition().unwrap();
     let expected = live_proto::session::Firefight {
         set: "Crossfire".into(),
@@ -899,10 +911,10 @@ fn each_multiplayer_start_names_its_match_for_the_session() {
         Some(("Holdout", 1))
     );
     // No kit, or Firefight off: the session names no match.
-    assert_eq!(start(crossfire, false, false), [None]);
+    assert_eq!(start(crossfire.clone(), false, false), [None]);
     let off = Options {
         enabled: false,
-        ..crossfire
+        ..crossfire.clone()
     };
     assert_eq!(start(off, true, false), [None]);
     assert!(start(crossfire, true, true).is_empty(), "a film");
@@ -995,4 +1007,24 @@ fn the_kit_director_announces_its_type_only_for_its_own_record() {
         m.put(GAME_GLOBALS + crate::variant_ext::BLOCK, &ext.encode());
         assert_eq!(director_owns_line(&m), owns, "{engine}, {mode:?}");
     }
+}
+
+#[test]
+fn change_rules_crossfire_starts_its_director_with_the_stored_setting_off() {
+    use crate::pause_change_map::{Draft, game_types};
+
+    let listed = crate::community_variants::listed_named("Crossfire").unwrap();
+    let row = game_types::listed(listed.record.clone()).unwrap();
+    let mut draft = Draft::default();
+    draft.pick_rules(&row);
+    let variant = draft.variant.unwrap();
+    let (shared, _) = shared(false);
+    shared.lock().set_options(Box::new(|| Ok(Options { enabled: false, ..Options::default() })));
+    let (mut m, _) = guest(true, 1);
+    two_team_map(&mut m, true);
+    m.put(GAME_GLOBALS + bots::guest::OPTIONS + crate::variant_ext::OPTIONS_VARIANT, variant.bytes());
+    shared.lock().start(&mut m, false);
+    let state = shared.lock().state();
+    assert!(state.running, "{:?}", state.refused);
+    assert_eq!(state.director.unwrap().teams, 2);
 }

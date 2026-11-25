@@ -24,9 +24,10 @@ use scenario_edit::layout::{FieldDef, FieldType, Role};
 use scenario_edit::session::FieldEdit;
 use scenario_edit::{BlockKind, Scenario, TagRef, Value};
 
+use crate::app::mods::{ChangedBy, changed_by};
 use crate::app::tag_api::{self, Chain, Node};
 use crate::app::tag_doc::Access;
-use crate::app::{Action, App, NavAction, NavLocation, Selection, TagDoc, ToolKind};
+use crate::app::{Action, App, Doc, NavAction, NavLocation, Selection, TagDoc};
 use crate::fields;
 use crate::play::issues::{Issue, IssueIndex, Kind};
 use crate::play::pair::Request;
@@ -47,6 +48,10 @@ pub struct InspectorState {
     /// field edit changes the answer without changing either; `tag.uses`
     /// always reads the live one.
     used: Option<(u64, u64, HashMap<TagId, tag_api::Uses>)>,
+    /// The packages with a patch on each tag of the chain, in load order
+    /// (`app::mods::changed_by`), read when the document's revision moves:
+    /// a change to the packages by the API shows at the next edit or reopen.
+    changed: Option<(u64, HashMap<TagId, Vec<ChangedBy>>)>,
 }
 
 /// A field's heading in the inspector.
@@ -710,15 +715,19 @@ fn tags(
     let issues = issues(app);
     state.tag_panel.follow(app);
     breadcrumbs(ui, app, location, &mut actions);
-    let undo = ui.begin_disabled_with_cond(!doc.can_undo());
+    // The tag's document is the stack, as for every editor (docs/editor/
+    // studio-flow.md, "Shared patterns"): its own writes and its editor's
+    // steps, taken newest first.
+    let can = app.doc_can(Doc::Tag(tag));
+    let undo = ui.begin_disabled_with_cond(!can.0);
     if ui.button("Undo tag edit") {
-        actions.push(Action::UndoIn(ToolKind::Tags));
+        actions.push(Action::UndoDoc(Doc::Tag(tag)));
     }
     undo.end();
     ui.same_line();
-    let redo = ui.begin_disabled_with_cond(!doc.can_redo());
+    let redo = ui.begin_disabled_with_cond(!can.1);
     if ui.button("Redo tag edit") {
-        actions.push(Action::RedoIn(ToolKind::Tags));
+        actions.push(Action::RedoDoc(Doc::Tag(tag)));
     }
     redo.end();
     let rev = doc.rev();
@@ -738,10 +747,33 @@ fn tags(
     if !state.used.as_ref().is_some_and(|(r, s, _)| (*r, *s) == key) {
         state.used = Some((key.0, key.1, HashMap::new()));
     }
+    if !state.changed.as_ref().is_some_and(|(r, _)| *r == rev) {
+        state.changed = Some((rev, HashMap::new()));
+    }
+    let map_name = app.session.map_name().map(str::to_owned);
     if let Some((_, _, _, chain)) = &state.chain {
         if let Some(node) = &chain.root {
             let mut asked = Vec::new();
             collect_tags(node, &mut asked);
+            if let Some((_, answers)) = &mut state.changed {
+                let missing: Vec<TagId> = asked
+                    .iter()
+                    .copied()
+                    .filter(|t| !answers.contains_key(t))
+                    .collect();
+                if !missing.is_empty() {
+                    let set = crate::app::assets::read_set(&app.data_root());
+                    for tag in missing {
+                        let rows = doc
+                            .tag(tag)
+                            .filter(|t| !t.name.starts_with('#'))
+                            .map(|t| tags::repo::TagKey::new(t.group, t.name.clone()))
+                            .map(|key| changed_by(&set, &key, map_name.as_deref(), None))
+                            .unwrap_or_default();
+                        answers.insert(tag, rows);
+                    }
+                }
+            }
             if let Some((_, _, answers)) = &mut state.used {
                 for tag in asked {
                     answers
@@ -756,9 +788,10 @@ fn tags(
                 ui.set_next_item_open(true);
             }
             let used = state.used.as_ref().map(|(_, _, m)| m).unwrap();
+            let changed = state.changed.as_ref().map(|(_, m)| m).unwrap();
             tag_node(
-                ui, doc, node, &mut trail, &mut state.tag_panel, used, &mut actions, issues,
-                &mut resolution,
+                ui, doc, node, &mut trail, &mut state.tag_panel, used, changed,
+                map_name.as_deref(), &mut actions, issues, &mut resolution,
             );
         }
         if chain.truncated {
@@ -825,6 +858,8 @@ fn tag_node(
     trail: &mut Vec<TagId>,
     panel: &mut fields::PanelState,
     used: &HashMap<TagId, tag_api::Uses>,
+    changed: &HashMap<TagId, Vec<ChangedBy>>,
+    map: Option<&str>,
     actions: &mut Vec<Action>,
     issues: &IssueIndex,
     resolution: &mut Option<Apply>,
@@ -908,6 +943,11 @@ fn tag_node(
             }
         }
     }
+    if let Some(rows) = changed.get(&id)
+        && !rows.is_empty()
+    {
+        changed_by_rows(ui, &t.name, t.group, rows, map, actions);
+    }
     if !matches!(t.access, Access::None(_))
         && doc.layout(id).is_some_and(|layout| layout.size <= t.size)
     {
@@ -933,16 +973,71 @@ fn tag_node(
         }
     }
     for child in node.children.iter().filter(|child| child.shortcut.is_some()) {
-        tag_node(ui, doc, child, trail, panel, used, actions, issues, resolution);
+        tag_node(
+            ui, doc, child, trail, panel, used, changed, map, actions, issues, resolution,
+        );
     }
     if node.children.iter().any(|child| child.shortcut.is_none())
         && let Some(_refs) = ui.tree_node("All references")
     {
         for child in node.children.iter().filter(|child| child.shortcut.is_none()) {
-            tag_node(ui, doc, child, trail, panel, used, actions, issues, resolution);
+            tag_node(
+            ui, doc, child, trail, panel, used, changed, map, actions, issues, resolution,
+        );
         }
     }
     trail.pop();
+}
+
+/// **Changed by**: the packages with a patch on the tag, in load order
+/// (docs/editor/studio-redesign.md, "The shell"), each field's value with
+/// the one that wins plain and the others dimmed. **Fork for this map**
+/// writes the lines that reach the open map into a fork of the edit
+/// target; **Revert for this map** takes that fork out.
+fn changed_by_rows(
+    ui: &Ui,
+    name: &str,
+    group: map::FourCC,
+    rows: &[ChangedBy],
+    map: Option<&str>,
+    actions: &mut Vec<Action>,
+) {
+    let asset = format!("tag:{}:{name}", tags::defs::fourcc_text(group));
+    let Some(_list) = ui.tree_node(format!("Changed by ({})##changed", rows.len())) else {
+        return;
+    };
+    for r in rows {
+        let scope = if r.forked {
+            format!("fork for {}", r.maps)
+        } else {
+            r.maps.clone()
+        };
+        ui.text(format!("{} (item {}, {scope})", r.package, r.item));
+        if r.change != "edit" {
+            ui.text_disabled(format!("  {}", r.change));
+        }
+        for f in &r.fields {
+            let line = format!("  {} = {}", f.path, f.value);
+            if f.wins {
+                ui.text(line);
+            } else {
+                ui.text_disabled(format!("{line} (overridden)"));
+            }
+        }
+    }
+    let Some(map) = map else { return };
+    let forked = rows
+        .iter()
+        .any(|r| r.forked && r.maps.eq_ignore_ascii_case(map));
+    if forked {
+        if ui.small_button(format!("Revert for this map##revert{asset}")) {
+            actions.push(Action::RevertAsset { asset });
+        }
+    } else if rows.iter().any(|r| !r.forked && r.change == "edit")
+        && ui.small_button(format!("Fork for this map##fork{asset}"))
+    {
+        actions.push(Action::ForkAsset { asset });
+    }
 }
 
 /// The node header's count of a tag's uses, in the design's words

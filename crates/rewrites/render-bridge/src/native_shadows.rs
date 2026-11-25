@@ -363,7 +363,21 @@ fn read_entry(mem: &dyn GuestMemory, esp: u32) -> Option<Entry> {
 fn host() -> Option<Arc<dyn Host>> {
     HOST.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
-thread_local! { static OBJECT_LIST: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) }; }
+/// The list calls the caster with two stack arguments below its three
+/// saved registers. The ranked rows sit directly above those registers.
+fn object_owner(mem: &dyn GuestMemory, esp: u32, cursor: u32, remaining: u32) -> Option<[u32; 2]> {
+    if passes::caller(mem, esp)? != object_shadows::site::CASTER {
+        return None;
+    }
+    let rows = esp.checked_add(4 + 8 + 12)?;
+    shadows::object_candidate(rows, cursor, remaining)?;
+    if mem.u8(0x0050_9413).ok()? != 1 || mem.u8(0x0048_5a46).ok()? != 1 {
+        return None;
+    }
+    let identity = [mem.u32(cursor).ok()?, mem.u32(cursor.checked_add(4)?).ok()?];
+    let args = [mem.u32(esp + 4).ok()?, mem.u32(esp + 8).ok()?];
+    (identity == args).then_some(identity)
+}
 
 pub struct NativeShadows;
 
@@ -402,49 +416,18 @@ impl Feature for NativeShadows {
             .context_only();
         b.raw()
             .observe_before(&points::OBJECT_SHADOW_LIST, "object shadow list", |_| {
-                OBJECT_LIST.set(None);
                 if let Some(h) = host() {
                     h.parent(None, None);
                 }
             })
             .context_only();
         b.raw()
-            .observe_before(
-                &points::GATHER_OBJECT_SHADOWS,
-                "object shadow candidates",
-                |o| {
-                    let m = o.guest();
-                    let esp = o.cpu.esp;
-                    OBJECT_LIST.set(
-                        (passes::caller(&*m, esp) == Some(object_shadows::site::ROWS))
-                            .then(|| m.u32(esp.wrapping_add(4)).ok())
-                            .flatten(),
-                    );
-                },
-            )
-            .context_only();
-        b.raw()
             .observe_before(&points::OBJECT_SHADOW, "object shadow owner", |o| {
                 let m = o.guest();
-                let esp = o.cpu.esp;
-                let address = o.cpu.esi;
-                let args = [
-                    m.u32(esp.wrapping_add(4)).ok(),
-                    m.u32(esp.wrapping_add(8)).ok(),
-                ];
-                let index = OBJECT_LIST
-                    .get()
-                    .and_then(|base| shadows::object_candidate(base, address, o.cpu.edi));
-                let matched = index.is_some()
-                    && passes::caller(&*m, esp) == Some(object_shadows::site::CASTER)
-                    && m.u8(0x0050_9413).ok() == Some(1)
-                    && m.u8(0x0048_5a46).ok() == Some(1)
-                    && args.iter().all(Option::is_some)
-                    && args == [m.u32(address).ok(), m.u32(address.wrapping_add(4)).ok()];
-                let identity = args[0].zip(args[1]).map(|(a, b)| [a, b]);
-                crate::scene_step::object_shadow(&*m, identity.filter(|_| matched));
+                let identity = object_owner(&*m, o.cpu.esp, o.cpu.esi, o.cpu.edi);
+                crate::scene_step::object_shadow(&*m, identity);
                 if let Some(h) = host() {
-                    h.parent(matched.then_some(Site::Object), identity);
+                    h.parent(identity.map(|_| Site::Object), identity);
                 }
             })
             .context_only();
@@ -541,6 +524,24 @@ impl Feature for NativeShadows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn caster_owner_requires_a_live_row_in_its_own_frame() {
+        let mut m = engine::FlatMemory::new(0, 0x510000);
+        let esp = 0x1000;
+        let last = esp + 24 + 8 + 31 * 20;
+        m.set_u32(esp, object_shadows::site::CASTER).unwrap();
+        m.set_u8(0x0050_9413, 1).unwrap();
+        m.set_u8(0x0048_5a46, 1).unwrap();
+        for (offset, word) in [(0, 123), (4, 0.5f32.to_bits())] {
+            m.set_u32(esp + 4 + offset, word).unwrap();
+            m.set_u32(last + offset, word).unwrap();
+        }
+        assert_eq!(object_owner(&m, esp, last, 1), Some([123, 0.5f32.to_bits()]));
+        assert_eq!(object_owner(&m, esp, last, 2), None);
+        m.set_u32(last, 124).unwrap();
+        assert_eq!(object_owner(&m, esp, last, 1), None);
+    }
 
     #[test]
     fn only_the_wrappers_blur_scopes_a_filter_to_its_after_hook() {

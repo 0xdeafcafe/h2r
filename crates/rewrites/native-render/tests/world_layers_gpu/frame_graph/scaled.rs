@@ -54,6 +54,7 @@ fn four_x_present_hands_the_menu_its_pixels_snapshot_and_guest_count() {
             of: MAIN,
             id: 5,
             how: ReplaySample::Snapshot { opaque: false },
+            into: None,
         },
     );
 
@@ -298,6 +299,7 @@ fn one_x_e3_wrapper_records_once_and_resumes_the_menu_with_a_live_view() {
             of: MAIN,
             id: 6,
             how: ReplaySample::InPlace,
+            into: None,
         },
     );
     assert!(backend.can_draw_scene(&frame, &targets));

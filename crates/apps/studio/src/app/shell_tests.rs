@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use map::{FourCC, TagId};
-use scenario_edit::fixture;
+use scenario_edit::{BlockKind, fixture};
 use serde_json::{Value, json};
 use tags::registry::Registry;
 
@@ -306,4 +306,265 @@ fn show_changes_the_surface() {
         assert_eq!(Surface::from(surface.tool()), surface);
     }
     assert!(Surface::Tags.is_map() && Surface::Scripts.is_map() && !Surface::Hud.is_map());
+}
+
+/// [`crate::api::sound::tests::mouth_map`]'s sound with one field nothing
+/// reads while it is auditioned (the playback index, 0 in the fixture), so
+/// its document takes a field edit beside the redraws of its mouth curve.
+fn sound_registry() -> &'static Registry {
+    static R: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();
+    R.get_or_init(|| {
+        let schema =
+            tags::schema::Schema::parse("group scnr 0x10 align 4\ngroup snd! 0x14 align 4\n")
+                .unwrap();
+        let mut defs = tags::defs::Defs::default();
+        defs.parse_into(
+            "test",
+            "\
+group snd! 0x14
+  0x0 pad 0x6
+  0x6 u16 playback_index
+  0x8 pad 0xc
+",
+        )
+        .unwrap();
+        Registry::build(&schema, &defs)
+    })
+}
+
+const SND: &str = r"snd!:objects\test\blaster";
+
+/// The invented sound (a 52-tick mouth curve on permutation 0) open as the
+/// tab in front, in the Tags tool.
+fn sound_app(t: &Path) -> App {
+    let (mut app, ..) =
+        tag_tests::app_with_registry(t, crate::api::sound::tests::mouth_map(), sound_registry());
+    app.audition.headless = true;
+    app.dispatch(Action::OpenAsset {
+        asset: format!("tag:{SND}"),
+        map: None,
+    });
+    app
+}
+
+/// The sound's playback index, the field the tests write.
+fn playback(app: &App) -> u16 {
+    let b = app.tags.read(weap_id(), tag_tests::WEAP + 6, 2).unwrap();
+    u16::from_le_bytes(b.try_into().unwrap())
+}
+
+/// Whether the sound's permutation 0 has a redrawn mouth curve not saved.
+fn redrawn(app: &App) -> bool {
+    app.sound_mouth_is_edited(weap_id(), 0, 0)
+}
+
+/// A sound's document is one stack (docs/editor/studio-flow.md, "Shared
+/// patterns"): a field edit and a mouth redraw undo in the order they were
+/// made, with Cmd+Z and with the editor's own Undo, and redo in reverse.
+#[test]
+fn a_mouth_redraw_and_a_field_edit_undo_in_the_order_made() {
+    let t = Temp::new("one-undo");
+    let mut app = sound_app(&t.0);
+    let (weap, snd) = (weap_id(), Doc::Tag(weap_id()));
+    assert_eq!(app.front_doc(), Some(snd));
+    let ticks = app.sound_mouth(weap, 0, 0).unwrap().unwrap().len();
+    // All open: unlike every tick of the file's rising curve.
+    let open = vec![255; ticks];
+    assert_eq!(app.doc_can(snd), (false, false));
+
+    // A field edit, then a redraw: the redraw, made last, goes first.
+    set(&mut app, weap, "playback_index", json!(7));
+    assert_eq!((playback(&app), redrawn(&app)), (7, false));
+    app.sound_mouth_write(weap, 0, 0, &open).unwrap();
+    assert_eq!((playback(&app), redrawn(&app)), (7, true));
+    assert_eq!(app.doc_can(snd), (true, false));
+    assert_eq!((app.can_undo(), app.can_redo()), (true, false));
+    app.dispatch(Action::Undo);
+    assert_eq!(
+        (playback(&app), redrawn(&app)),
+        (7, false),
+        "Cmd+Z takes the redraw, the last step made"
+    );
+    assert_eq!(app.doc_can(snd), (true, true));
+    app.dispatch(Action::Undo);
+    assert_eq!(
+        (playback(&app), redrawn(&app)),
+        (0, false),
+        "then the field edit"
+    );
+    assert_eq!(app.doc_can(snd), (false, true));
+    app.dispatch(Action::Redo);
+    assert_eq!((playback(&app), redrawn(&app)), (7, false));
+    app.dispatch(Action::Redo);
+    assert_eq!((playback(&app), redrawn(&app)), (7, true));
+    assert_eq!(app.doc_can(snd), (true, false));
+
+    // The sound editor's Undo runs the same action: a redraw first, then a
+    // field edit, undo the other way round, and redo back in order.
+    app.dispatch(Action::UndoDoc(snd));
+    app.dispatch(Action::UndoDoc(snd));
+    assert_eq!((playback(&app), redrawn(&app)), (0, false));
+    app.sound_mouth_write(weap, 0, 0, &open).unwrap();
+    set(&mut app, weap, "playback_index", json!(9));
+    assert_eq!((playback(&app), redrawn(&app)), (9, true));
+    app.dispatch(Action::UndoDoc(snd));
+    assert_eq!(
+        (playback(&app), redrawn(&app)),
+        (0, true),
+        "the field edit, made last, goes first"
+    );
+    app.dispatch(Action::UndoDoc(snd));
+    assert_eq!((playback(&app), redrawn(&app)), (0, false));
+    app.dispatch(Action::RedoDoc(snd));
+    assert_eq!(
+        (playback(&app), redrawn(&app)),
+        (0, true),
+        "the redraw, made first, is redone first"
+    );
+    app.dispatch(Action::RedoDoc(snd));
+    assert_eq!((playback(&app), redrawn(&app)), (9, true));
+
+    // A new step leaves nothing undone before it to redo.
+    app.dispatch(Action::UndoDoc(snd));
+    set(&mut app, weap, "playback_index", json!(11));
+    assert_eq!(
+        (playback(&app), redrawn(&app), app.doc_can(snd)),
+        (11, true, (true, false))
+    );
+    // `sound.mouth`'s undo keeps its way: the last redraw of the map, under
+    // a field edit made after it, which it leaves.
+    assert_eq!(app.sound_mouth_undo(), Some((weap, 0, 0)));
+    assert_eq!((playback(&app), redrawn(&app)), (11, false));
+    assert_eq!(
+        app.doc_can(snd),
+        (true, false),
+        "the field edit made after the redraw leaves its redo wrong"
+    );
+    app.dispatch(Action::UndoDoc(snd));
+    assert_eq!(
+        (playback(&app), redrawn(&app), app.doc_can(snd)),
+        (0, false, (false, true))
+    );
+}
+
+/// Two documents keep two stacks (docs/editor/studio-flow.md, "Shared
+/// patterns"): a sound's redraw and the map's placement are each undone in
+/// their own document, and each keeps its redo when the other steps.
+#[test]
+fn a_sound_and_the_map_keep_two_stacks() {
+    let t = Temp::new("one-undo-two");
+    let mut app = sound_app(&t.0);
+    let (weap, snd) = (weap_id(), Doc::Tag(weap_id()));
+    let ticks = app.sound_mouth(weap, 0, 0).unwrap().unwrap().len();
+    let open = vec![255; ticks];
+    app.sound_mouth_write(weap, 0, 0, &open).unwrap();
+    app.dispatch(Action::MovePlacement {
+        block: BlockKind::NetgameFlags,
+        index: 0,
+        position: [1.0, 2.0, 3.0],
+        ypr: None,
+    });
+    assert_eq!(
+        (app.doc_can(snd), app.doc_can(Doc::Map)),
+        ((true, false), (true, false))
+    );
+    app.dispatch(Action::UndoDoc(snd));
+    assert!(!redrawn(&app));
+    assert!(app.session.can_undo(), "the map's step stays");
+    assert_eq!(app.doc_can(snd), (false, true));
+    app.dispatch(Action::UndoDoc(Doc::Map));
+    assert!(!app.session.can_undo() && app.session.can_redo());
+    assert_eq!(
+        app.doc_can(snd),
+        (false, true),
+        "the sound's redo is its own"
+    );
+    app.dispatch(Action::RedoDoc(snd));
+    assert!(redrawn(&app) && app.session.can_redo());
+}
+
+/// No window module draws an Undo or Redo button of its own: each runs
+/// `Action::UndoDoc` or `Action::RedoDoc` on its document
+/// (docs/editor/studio-flow.md, "Shared patterns").
+#[test]
+fn every_undo_button_runs_undo_doc() {
+    /// The first string literal at or after `at`.
+    fn quoted(source: &str, at: usize) -> Option<&str> {
+        let open = source[at..].find('"')? + at;
+        let close = source[open + 1..].find('"')? + open + 1;
+        Some(&source[open + 1..close])
+    }
+    fn check(path: &Path, buttons: &mut usize) {
+        if path.is_dir() {
+            for entry in path.read_dir().unwrap() {
+                check(&entry.unwrap().path(), buttons);
+            }
+            return;
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            return;
+        }
+        let source = std::fs::read_to_string(path).unwrap();
+        for at in source.match_indices("button(").map(|(at, _)| at) {
+            // The label is written on the line that draws the button.
+            let end = source[at..].find('\n').map_or(source.len(), |n| at + n);
+            let Some(label) = quoted(&source[..end], at) else {
+                continue;
+            };
+            if !label.contains("Undo") && !label.contains("Redo") {
+                continue;
+            }
+            *buttons += 1;
+            // What the `if` that draws it does, to the line that closes it.
+            let line = source[..at].rfind('\n').map_or(0, |n| n + 1);
+            let rest = &source[line..];
+            let end = rest
+                .match_indices('\n')
+                .map(|(n, _)| n + 1)
+                .find(|&start| rest[start..].trim_start().starts_with('}'))
+                .unwrap_or(rest.len());
+            let body = &rest[..end];
+            assert!(
+                body.contains("Action::UndoDoc") || body.contains("Action::RedoDoc"),
+                "{}: the {label:?} button does not run UndoDoc:\n{body}",
+                path.display()
+            );
+        }
+    }
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut buttons = 0;
+    check(&src.join("ui.rs"), &mut buttons);
+    check(&src.join("ui"), &mut buttons);
+    assert!(buttons >= 2, "{buttons} undo buttons found");
+}
+
+/// The header's Back and Forward walk the documents brought to the front,
+/// of every kind, as the trail kept them.
+#[test]
+fn back_and_forward_walk_the_documents_across_kinds() {
+    let dir = Temp::new("doc-trail");
+    let mut app = app(&dir.0);
+    let (weap, kit) = (Doc::Tag(tag_tests::weap_id()), Doc::Tag(kit_id()));
+    for doc in [weap, kit, Doc::Tag(scnr_id())] {
+        app.dispatch(Action::OpenDoc(doc));
+    }
+    assert_eq!(app.front_doc(), Some(Doc::Map));
+    assert!(app.can_navigate(false));
+    let mut seen = Vec::new();
+    for _ in 0..8 {
+        app.dispatch(Action::Navigate(NavAction::Back));
+        seen.push(app.front_doc());
+        if app.front_doc() == Some(weap) {
+            break;
+        }
+    }
+    assert_eq!(app.front_doc(), Some(weap), "{seen:?}");
+    for _ in 0..8 {
+        if app.front_doc() == Some(Doc::Map) {
+            break;
+        }
+        app.dispatch(Action::Navigate(NavAction::Forward));
+    }
+    assert_eq!(app.front_doc(), Some(Doc::Map));
+    assert!(app.doc_trail().0.contains(&kit));
 }

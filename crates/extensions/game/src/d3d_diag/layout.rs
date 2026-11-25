@@ -1,9 +1,12 @@
-//! Metadata for an armed render.frame_layout capture. Vertex bounds use the
-//! captured program and float inputs of small screen-space draws.
+//! Metadata for an armed render.frame_layout capture. Vertex bounds are
+//! where the device places small screen-space draws (`d3d::screen_rect`).
 
 use super::{TextureSource, Tracked};
 use agent_proto::{DrawLayout, LayoutTexture};
 use d3d::backend::{PixelRect, RenderExtents, ResolvedDraw};
+use d3d::screen_rect::Bounds;
+#[cfg(feature = "gpu")]
+use d3d::screen_rect::{DrawVertices, bounds};
 
 pub(super) fn describe<T, S: std::fmt::Debug>(
     draw: &ResolvedDraw,
@@ -79,6 +82,7 @@ fn vertex_position(draw: &ResolvedDraw) -> String {
         use d3d::clip_space::epilogue::{Position, position};
         return match position(microcode) {
             Position::Rows(first) => format!("rows c[{}..={}]", first, first + 3),
+            Position::FarPlaneRows(first) => format!("far plane rows c[{}..={}]", first, first + 3),
             Position::Fixed => "no constant rows".into(),
             Position::Unknown => "unrecognised".into(),
         };
@@ -90,71 +94,30 @@ fn vertex_position(draw: &ResolvedDraw) -> String {
     }
 }
 
-type Bounds = [[f32; 2]; 2];
-
 #[cfg(not(feature = "gpu"))]
 fn vertex_bounds(_draw: &ResolvedDraw) -> (Option<Bounds>, [Option<Bounds>; 4]) {
     (None, [None; 4])
 }
 
+/// The window rectangle is the device's own reading
+/// ([`d3d::screen_rect`]), the one its UI fit decides full-frame passes by.
 #[cfg(feature = "gpu")]
 fn vertex_bounds(draw: &ResolvedDraw) -> (Option<Bounds>, [Option<Bounds>; 4]) {
-    use d3d::shader::VertexProcessing;
-    use shaders::vsh::{OutReg, Program, ProgramKind};
-
-    let measure = || {
-        // The backdrop and copy fans are small. Avoid interpreting scene
-        // meshes or state programs on the game thread during the capture.
-        if !(1..=8).contains(&draw.vertex_count) || draw.indices.is_some() {
+    // The backdrop and copy fans are small. Avoid interpreting scene
+    // meshes or state programs on the game thread during the capture.
+    let Some(vertices) = DrawVertices::of(draw).screen(8) else {
+        return (None, [None; 4]);
+    };
+    let direct = direct_projective_stages(draw);
+    let xy = bounds(vertices.iter().map(|v| v.xy));
+    let uv = std::array::from_fn(|stage| {
+        let info = draw.texture_info[stage].filter(|_| direct[stage])?;
+        if info.kind != gfx::texture::TextureKind::D2 {
             return None;
         }
-        let program = match &draw.shader.vertex {
-            VertexProcessing::Program { microcode, .. } => {
-                Some(Program::from_words(ProgramKind::Normal, microcode).ok()?)
-            }
-            VertexProcessing::FixedFunction { .. } if draw.layout.pretransformed => None,
-            _ => return None,
-        };
-        let direct = direct_projective_stages(draw);
-        let vertices: Vec<_> = (0..draw.vertex_count as usize)
-            .map(|vertex| {
-                let inputs = vertex_inputs(draw, vertex)?;
-                if let Some(program) = &program {
-                    let mut constants = *draw.shader.constants;
-                    let out = shaders::vsh::interp::run(program, &inputs, &mut constants);
-                    let [x, y, _, _] = out.get(OutReg::Pos);
-                    return Some(([x, y], std::array::from_fn(|n| out.get(OutReg::T(n as u8)))));
-                }
-
-                // XYZRHW uses the same half-pixel bias and texture input
-                // selection as the translated pretransformed program.
-                let [x, y, _, _] = inputs[0];
-                let mut coords = [[0.0, 0.0, 0.0, 1.0]; 4];
-                for (stage, uv) in coords.iter_mut().enumerate() {
-                    let index = draw.state.stages[stage].tex_coord_index;
-                    if index >= 4 {
-                        return None;
-                    }
-                    *uv = inputs[9 + index as usize];
-                }
-                Some(([x + 0.5, y + 0.5], coords))
-            })
-            .collect::<Option<_>>()?;
-        let xy = bounds(vertices.iter().map(|(xy, _)| *xy));
-        let uv = std::array::from_fn(|stage| {
-            let info = draw.texture_info[stage].filter(|_| direct[stage])?;
-            if info.kind != gfx::texture::TextureKind::D2 {
-                return None;
-            }
-            bounds(
-                vertices
-                    .iter()
-                    .map(|(_, uv)| normalised_uv(uv[stage], info)),
-            )
-        });
-        Some((xy, uv))
-    };
-    measure().unwrap_or((None, [None; 4]))
+        bounds(vertices.iter().map(|v| normalised_uv(v.tex[stage], info)))
+    });
+    (xy, uv)
 }
 
 #[cfg(feature = "gpu")]
@@ -174,43 +137,6 @@ fn direct_projective_stages(draw: &ResolvedDraw) -> [bool; 4] {
 }
 
 #[cfg(feature = "gpu")]
-fn vertex_inputs(draw: &ResolvedDraw, vertex: usize) -> Option<[[f32; 4]; 16]> {
-    use gfx::vertex::VertexDataType::*;
-
-    let mut inputs = draw.shader.vertex_defaults;
-    for (stream, source) in draw.layout.streams.iter().zip(&draw.streams) {
-        let stride = if source.stride == 0 {
-            stream.stride
-        } else {
-            source.stride
-        } as usize;
-        for attr in &stream.attributes {
-            let value = inputs.get_mut(attr.register.0 as usize)?;
-            let start = vertex * stride + attr.offset as usize;
-            let bytes = source
-                .data
-                .get(start..start + attr.data_type.byte_size() as usize)?;
-            *value = match attr.data_type {
-                Float1 | Float2 | Float3 | Float4 | Float2H => {
-                    let mut v = [0.0, 0.0, 0.0, 1.0];
-                    for (component, bytes) in v.iter_mut().zip(bytes.chunks_exact(4)) {
-                        *component = f32::from_le_bytes(bytes.try_into().ok()?);
-                    }
-                    if attr.data_type == Float2H {
-                        v[3] = v[2];
-                        v[2] = 0.0;
-                    }
-                    v
-                }
-                D3dColor => [bytes[2], bytes[1], bytes[0], bytes[3]].map(|c| f32::from(c) / 255.0),
-                _ => return None,
-            };
-        }
-    }
-    Some(inputs)
-}
-
-#[cfg(feature = "gpu")]
 fn normalised_uv([s, t, _, q]: [f32; 4], info: d3d::backend::TextureInfo) -> [f32; 2] {
     let scale = if info.format.layout() == gfx::format::Layout::Linear {
         [
@@ -221,22 +147,6 @@ fn normalised_uv([s, t, _, q]: [f32; 4], info: d3d::backend::TextureInfo) -> [f3
         [1.0; 2]
     };
     [(s / q) * scale[0], (t / q) * scale[1]]
-}
-
-#[cfg(feature = "gpu")]
-fn bounds(mut points: impl Iterator<Item = [f32; 2]>) -> Option<Bounds> {
-    let first = points.next()?;
-    let mut range = [first, first];
-    for point in std::iter::once(first).chain(points) {
-        if !point.iter().all(|v| v.is_finite()) {
-            return None;
-        }
-        for (axis, value) in point.into_iter().enumerate() {
-            range[0][axis] = range[0][axis].min(value);
-            range[1][axis] = range[1][axis].max(value);
-        }
-    }
-    Some(range)
 }
 
 #[cfg(all(test, feature = "gpu"))]

@@ -14,6 +14,9 @@ pub const MAX_STATE_BYTES: usize = 63;
 /// The most bytes a `Cue` record's payload holds
 /// (docs/game/rules-world-api.md, "The show channel").
 pub const MAX_CUE_BYTES: usize = 24;
+/// The most bytes of show state a `Show` record carries: the script
+/// state's own bound (`rules::show::MAX_BYTES`).
+pub const MAX_SHOW_BYTES: usize = 255;
 
 const KEY: u8 = 0;
 const ACTOR: u8 = 1;
@@ -22,8 +25,7 @@ const CONTROL: u8 = 3;
 const LINE: u8 = 4;
 const STATE: u8 = 5;
 const DIGEST: u8 = 6;
-// Tag 7 is the show channel's `Show` record of slice W2
-// (docs/game/rules-world-api.md, "The show channel").
+const SHOW: u8 = 7;
 const CUE: u8 = 8;
 const ACTOR_LEN: usize = 10;
 const KEY_PREFIX_AND_LENGTHS: usize = 3;
@@ -127,7 +129,18 @@ pub enum Record {
         log_head: [u8; 32],
         state_hash: u64,
         actor_count: u16,
+        /// The hash of the show state this peer was last offered
+        /// (`rules::show::State`'s bytes; the empty state's hash when the
+        /// script shows none). A mismatch asks the host for a key, which
+        /// carries the state whole.
+        show_hash: u64,
     },
+    /// The show channel's state record (docs/game/rules-world-api.md,
+    /// "The show channel"): the script's HUD and waypoint state, as the
+    /// script state encodes it (`rules::show::State::encode`), at most
+    /// [`MAX_SHOW_BYTES`] bytes. Rides every key whole and otherwise only
+    /// when it changes, at most five times a second.
+    Show(Vec<u8>),
     /// A show-channel cue (docs/game/rules-world-api.md, "The show
     /// channel"): the tick it happened, its per-tick sequence and its
     /// kind, then its payload. Repeated in three consecutive packets; the
@@ -156,6 +169,7 @@ pub enum WireError {
     DuplicateEntity,
     InvalidControl,
     CueTooLarge,
+    ShowTooLarge,
     InvalidActorChange(u8),
     UnknownRecord(u8),
     UnsupportedVersion(u8),
@@ -181,6 +195,13 @@ fn check_entity(entity: u32) -> Result<(), WireError> {
 fn check_state(len: usize) -> Result<(), WireError> {
     if len > MAX_STATE_BYTES {
         return Err(WireError::StateTooLarge);
+    }
+    Ok(())
+}
+
+fn check_show(len: usize) -> Result<(), WireError> {
+    if len > MAX_SHOW_BYTES {
+        return Err(WireError::ShowTooLarge);
     }
     Ok(())
 }
@@ -230,7 +251,11 @@ pub(crate) fn record_len(record: &Record) -> Result<usize, WireError> {
             if usize::from(*actor_count) > MAX_ACTORS {
                 return Err(WireError::TooManyActors);
             }
-            43
+            51
+        }
+        Record::Show(bytes) => {
+            check_show(bytes.len())?;
+            2 + bytes.len()
         }
         Record::Cue { bytes, .. } => {
             if bytes.len() > MAX_CUE_BYTES {
@@ -298,11 +323,17 @@ fn put_record(out: &mut Vec<u8>, record: &Record) {
             log_head,
             state_hash,
             actor_count,
+            show_hash,
         } => {
             out.push(DIGEST);
             out.extend_from_slice(log_head);
             out.extend(state_hash.to_le_bytes());
             out.extend(actor_count.to_le_bytes());
+            out.extend(show_hash.to_le_bytes());
+        }
+        Record::Show(bytes) => {
+            out.push(SHOW);
+            put_state(out, bytes);
         }
         Record::Cue {
             tick,
@@ -415,7 +446,15 @@ impl Reader<'_> {
                 log_head: self.bytes()?,
                 state_hash: u64::from_le_bytes(self.bytes()?),
                 actor_count: u16::from_le_bytes(self.bytes()?),
+                show_hash: u64::from_le_bytes(self.bytes()?),
             },
+            SHOW => {
+                let len = usize::from(self.byte()?);
+                check_show(len)?;
+                let (bytes, rest) = self.0.split_at_checked(len).ok_or(WireError::Truncated)?;
+                self.0 = rest;
+                Record::Show(bytes.to_vec())
+            }
             CUE => {
                 let tick = u32::from_le_bytes(self.bytes()?);
                 let sequence = self.byte()?;

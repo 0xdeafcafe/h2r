@@ -253,6 +253,10 @@ draws) then, for each slot with records:
    range words and dirty bit, `0x003faae0` when its push buffer is full,
    and `0x003f6190` (**E** `0x000407bd`..`0x0004080f`).
 
+The first-person visibility comparison rebuilds the replay slots from the
+dynamic passes' source records and compares each slot at this loop's
+entry. See [native-visibility.md](native-visibility.md#first-person-lights).
+
 The loop keeps the slot index at `E-0x84` and the slot's datum address
 at `E-0x80` (`E` its entry `ESP`), the volume at `E-0x7c` and the draw
 byte at `E-0x85`. The layer-draw hook reads the index and the address
@@ -336,10 +340,9 @@ candidate. The shadow word is step 2's: a set byte becomes the casters'
 layer 10 (`shadow_argument`). The scene reads no list mask back from
 guest memory for these lights. A light of the guest's own loop (a
 refused frame plan), and a hand-off whose item lists the guest makes,
-are read from memory at that point (`Source::observed`): the passes'
+are read from memory at the passes’ constants call (`Source::observed`): the passes'
 stack words, the scene flags and both masks. At the passes' entry the
-masks are the last light's, which is why the hand-off waits for the
-lists. The groups are still the layer builds' sorted entries
+masks are the last light's, so both paths wait for the completed lists. The groups are still the layer builds' sorted entries
 (`walk`, `scene_extract::light_groups`) and keep their type
 (`frame_scene::LightGroup`). A first-person light goes into the first
 person's view at its first layer draw, read from the loop's frame
@@ -817,6 +820,16 @@ the independent L8 in [e3-lighting.md](e3-lighting.md).
   private renderer record against their own attachments using the mesh,
   pose rows and textures held for that light. An armed guest-reference
   capture keeps its original draws.
+- **Gathered geometry.** Typed layers, whole scene groups and sorted
+  diffuse/specular dispatches resolve gathered entries against the same
+  resident parts. The light material selection uses the entry's LOD,
+  pass, implementation and vertex class. The BSP light index covers
+  opaque and transparent parts independently of layer 3. The model
+  section supplies the part's indices and the render record supplies
+  its pose. In the per-handler path each issue rechecks its sorted slot
+  and source index window. A partial subpart or a handler with live
+  state can issue native indexed packets using its resolved bindings.
+  [native-lights.md](native-lights.md) describes the target and gel checks.
 - **Bounds and clip.** `engine::light_constants::screen_bounds` ports
   `0x001650a0` with the caller's SSE and x87 modes. The globals keep all
   six words. At layers 12 and 13, the target setter installs the view's

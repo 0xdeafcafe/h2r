@@ -105,7 +105,8 @@ impl Action {
             Self::Save => entry.clip.is_none(),
             Self::Share | Self::CopyLink => {
                 entry.film.source != super::adapter::Source::Archive
-                    && entry.film.version != Some(1)
+                    && (entry.film.version == Some(4) || entry.film.live_game_id.is_some()
+                        || entry.film.archive_id().is_some())
             }
             Self::Delete => {
                 entry.clip.is_some() || entry.film.source != super::adapter::Source::Archive

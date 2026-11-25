@@ -58,6 +58,9 @@ pub const OBJECT_KIND: &str = refusal::OBJECT_KIND;
 /// it is not the placement's to move.
 pub const OBJECT_HELD: &str = refusal::OBJECT_HELD;
 
+/// A kit add names a spare row the map does not have: it has no kit.
+pub const NO_KIT: &str = refusal::NO_KIT;
+
 /// The name a refused edit's sentence carries (`agent_proto::forge::refusal`):
 /// a sentence that starts with a game call's name has it, a print or `was`
 /// check that failed has its own, and any other is
@@ -70,11 +73,15 @@ pub fn refusal_name(message: &str) -> &'static str {
     {
         return name;
     }
-    if let Some(name) = [OBJECT_GONE, OBJECT_KIND, OBJECT_HELD]
+    if let Some(name) = [OBJECT_GONE, OBJECT_KIND, OBJECT_HELD, NO_KIT]
         .into_iter()
         .find(|name| message.starts_with(name))
     {
         return name;
+    }
+    // The session's own sentence for a map with no kit.
+    if message.starts_with(::forge::kit::NO_KIT) {
+        return NO_KIT;
     }
     let print = forge_doc::Refusal::Print {
         block: BlockKind::Weapons,
@@ -218,6 +225,12 @@ enum Staged {
         field: &'static str,
         value: forge_doc::Value,
     },
+    /// A kit row: the fields still document values.
+    KitAdd {
+        block: BlockKind,
+        index: u32,
+        fields: Vec<(&'static str, forge_doc::Value)>,
+    },
 }
 
 /// A validated command can build a candidate document and log on a private
@@ -280,6 +293,14 @@ impl ForgeWorld {
                                 field: def.name,
                                 value,
                             })
+                        }
+                        Staged::KitAdd {
+                            block,
+                            index,
+                            fields,
+                        } => {
+                            let row = base::new_row(block, &fields, |k| resolve(k))?;
+                            ForgeStep::Base(BaseStep::Add { block, index, row })
                         }
                     })
                 })
@@ -404,6 +425,33 @@ impl World for ForgeWorld {
         let row = base::RowBytes::new(block, row)?;
         self.steps
             .push(Staged::Base(BaseStep::Restore { block, index, row }));
+        Ok(())
+    }
+
+    /// Add an entry of a kit block as its row `index`, the next spare row.
+    fn kit_add(
+        &mut self,
+        block: BlockKind,
+        index: u32,
+        fields: &[(&'static str, forge_doc::Value)],
+    ) -> Result<(), String> {
+        // The shape is checked now; a tag key resolves when the edit is applied.
+        base::new_row(block, fields, |_| Ok(0))?;
+        self.steps.push(Staged::KitAdd {
+            block,
+            index,
+            fields: fields.to_vec(),
+        });
+        Ok(())
+    }
+
+    /// Take the kit block's last row, `index`, away.
+    fn kit_drop(&mut self, block: BlockKind, index: u32) -> Result<(), String> {
+        if !::forge::kit::is_block(block) {
+            return Err(format!("the kit has no {} rows", block.name()));
+        }
+        self.steps
+            .push(Staged::Base(BaseStep::Drop { block, index }));
         Ok(())
     }
 }

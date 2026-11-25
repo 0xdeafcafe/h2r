@@ -99,6 +99,8 @@ pub enum OverlayTexture {
     None,
     /// A bitmap tag's image.
     Bitmap { tag: u32, image: u16 },
+    /// The texture header bound when this shader draw was recorded.
+    Bound { header: u32 },
     /// The renderer's glyph atlas of engine font `font`.
     Glyphs { font: u16 },
 }
@@ -145,7 +147,10 @@ impl OverlayMaterial {
 
     /// Whether the program samples [`Self::texture`].
     pub fn sampled(&self) -> bool {
-        !matches!(self.program, Program::Fixed(Combiner::Flat))
+        match self.program {
+            Program::Fixed(c) => c != Combiner::Flat,
+            Program::Shader { .. } => self.texture != OverlayTexture::None,
+        }
     }
 }
 
@@ -187,17 +192,27 @@ pub enum OverlayKind {
 }
 
 /// The blur under a dialog (`0x00235756` running the Kawase blur
-/// `0x000211a0`; docs/formats/ui.md, "Draw order"): each step makes every
-/// pixel the mean of four bilinear taps at the corners of a square, tap
-/// `k` moved by `spread * tap` guest pixels, positive for `k & 1` in x and
-/// `k & 2` in y, negative otherwise. The sampler clamps at the target's
-/// edges. Both values are the guest's, read by the producer.
+/// `0x000211a0`; docs/graphics/native-post-hud.md, "The blur under a
+/// dialog"): each step makes every pixel a blend of four bilinear taps at
+/// the corners of a square, tap `k` moved by `spread * tap` guest pixels,
+/// positive for `k & 1` in x and `k & 2` in y, negative otherwise. The
+/// sampler clamps at the target's edges.
+///
+/// The step's combiner blends the taps in pairs, `t0` with `t1`, `t2` with
+/// `t3`, then the two results, each colour channel as
+/// `w * a + (1 - w) * b` with `w = 0.5 + 0.5 * pick * clamp(4 * (a - b),
+/// -1, 1)`: a `pick` of 0 is the plain mean, a larger one leans to the
+/// brighter tap. Alpha is the plain mean. All three values are the
+/// guest's, read by the producer.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct OverlayBlur {
     /// The tap's offset over the spread.
     pub tap: f32,
     /// Each step's spread, in draw order; never empty.
     pub spreads: Vec<f32>,
+    /// The combiner's constant, 0 to 1 (`engine::glow::blur_combiner`'s
+    /// packed strength over 255); 0 for its plain form.
+    pub pick: f32,
 }
 
 /// A model widget's camera, in its scene's space.
@@ -234,9 +249,33 @@ pub struct OverlayItem {
     /// A text run's colour (RGBA, 0 to 1); a quad's and a fill's are on
     /// their corners.
     pub color: [f32; 4],
+    /// Xbox per-channel framebuffer write mask.
+    pub color_write: u32,
+    /// Texture stages sampling the live glyph cache.
+    pub glyph_cache: u8,
+    /// Alpha compare and reference (0 through 255) when enabled.
+    pub alpha_test: Option<(u32, u8)>,
+    /// Stages discarding samples whose alpha is zero.
+    pub alpha_kill: u8,
+    /// The four shader inputs for this HUD widget.
+    pub hud_input: [f32; 4],
+    /// The blend's constant colour (RGBA, 0 to 1) for a blend whose factors
+    /// name it (the fade's modes 3 to 6); zero otherwise, as D3D's default.
+    pub blend_constant: [f32; 4],
+    /// Runtime pixel shader definition, including its evaluated combiner constants.
+    pub shader_words: Option<Box<[u32]>>,
+    /// Bindings of the tag shader, in Xbox texture stage order.
+    pub shader_stages: [Option<OverlayTexture>; 4],
+    /// Each corner's four normalized texture coordinates after the vertex program.
+    pub stage_uv: Option<Box<[[[f32; 2]; 4]; 4]>>,
     /// A blur's index in [`Overlay::blurs`] or a model view's in
     /// [`Overlay::model_views`]; `None` for the other kinds.
     pub detail: Option<u32>,
+}
+
+impl OverlayItem {
+    /// The screen-quad batch's blue, green and red write channels.
+    pub const RGB_WRITE: u32 = 1 | (1 << 8) | (1 << 16);
 }
 
 /// Why the list refused an item. The list is left as it was.
@@ -363,6 +402,15 @@ impl Overlay {
             vertices: v..v + 4,
             glyphs: g..g,
             color: [1.0; 4],
+            alpha_test: None,
+            alpha_kill: 0,
+            glyph_cache: 0,
+            color_write: OverlayItem::RGB_WRITE,
+            hud_input: [0.0; 4],
+            blend_constant: [0.0; 4],
+            shader_words: None,
+            shader_stages: [None; 4],
+            stage_uv: None,
             detail: None,
         });
         Ok(self.items.len() as u32 - 1)
@@ -419,6 +467,15 @@ impl Overlay {
             vertices: v..v,
             glyphs: g..g + glyphs.len() as u32,
             color,
+            alpha_test: None,
+            alpha_kill: 0,
+            glyph_cache: 0,
+            color_write: OverlayItem::RGB_WRITE,
+            hud_input: [0.0; 4],
+            blend_constant: [0.0; 4],
+            shader_words: None,
+            shader_stages: [None; 4],
+            stage_uv: None,
             detail: None,
         });
         Ok(self.items.len() as u32 - 1)
@@ -435,6 +492,15 @@ impl Overlay {
             vertices: v..v,
             glyphs: g..g,
             color: [1.0; 4],
+            alpha_test: None,
+            alpha_kill: 0,
+            glyph_cache: 0,
+            color_write: OverlayItem::RGB_WRITE,
+            hud_input: [0.0; 4],
+            blend_constant: [0.0; 4],
+            shader_words: None,
+            shader_stages: [None; 4],
+            stage_uv: None,
             detail: Some(detail),
         });
         self.items.len() as u32 - 1
@@ -446,6 +512,7 @@ impl Overlay {
         if blur.spreads.is_empty()
             || !blur.tap.is_finite()
             || blur.spreads.iter().any(|s| !s.is_finite() || *s < 0.0)
+            || !(0.0..=1.0).contains(&blur.pick)
         {
             return Err(OverlayError::Geometry);
         }
@@ -590,18 +657,10 @@ pub(crate) fn summary_words(overlay: &Overlay, word: &mut dyn FnMut(u32)) {
             word(x.to_bits());
         }
     }
-    for item in &overlay.items {
-        word(item.kind as u32);
-        let m = &item.material;
-        match m.program {
-            Program::Fixed(c) => word(c as u32),
-            Program::Shader { tag } => {
-                word(0x100);
-                word(tag);
-            }
-        }
-        match m.texture {
+    fn texture_word(word: &mut dyn FnMut(u32), texture: OverlayTexture) {
+        match texture {
             OverlayTexture::None => word(0),
+            OverlayTexture::Bound { header } => { word(3); word(header); }
             OverlayTexture::Bitmap { tag, image } => {
                 word(1);
                 word(tag);
@@ -610,6 +669,38 @@ pub(crate) fn summary_words(overlay: &Overlay, word: &mut dyn FnMut(u32)) {
             OverlayTexture::Glyphs { font } => {
                 word(2);
                 word(u32::from(font));
+            }
+        }
+    }
+    for item in &overlay.items {
+        word(item.kind as u32);
+        let m = &item.material;
+        match m.program {
+            Program::Fixed(c) => word(c as u32),
+            Program::Shader { tag } => {
+                word(0x100);
+                word(tag);
+                word(item.glyph_cache.into());
+                word(item.alpha_kill.into());
+                if let Some((func, value)) = item.alpha_test {
+                    word(func);
+                    word(value.into());
+                }
+                floats(word, &item.hud_input);
+                if let Some(words) = &item.shader_words {
+                    for &w in words.iter() { word(w); }
+                }
+            }
+        }
+        texture_word(word, m.texture);
+        if matches!(m.program, Program::Shader { .. }) {
+            for stage in item.shader_stages {
+                texture_word(word, stage.unwrap_or_default());
+            }
+            if let Some(all) = &item.stage_uv {
+                for corner in all.iter() {
+                    for uv in corner { floats(word, uv); }
+                }
             }
         }
         word(u32::from(m.sampler.wrap) | u32::from(m.sampler.point) << 1);
@@ -622,10 +713,16 @@ pub(crate) fn summary_words(overlay: &Overlay, word: &mut dyn FnMut(u32)) {
                 word(equation);
             }
         }
+        // Only a constant blend adds words, so other items hash as before.
+        if item.blend_constant != [0.0; 4] {
+            word(0x200);
+            floats(word, &item.blend_constant);
+        }
         let c = item.clip;
         for w in [c.x, c.y, c.width, c.height] {
             word(w);
         }
+        word(item.color_write);
         floats(&mut *word, &item.color);
         for v in overlay.vertices_of(item) {
             floats(&mut *word, &v.position);
@@ -640,6 +737,12 @@ pub(crate) fn summary_words(overlay: &Overlay, word: &mut dyn FnMut(u32)) {
             floats(&mut *word, &[b.tap]);
             word(b.spreads.len() as u32);
             floats(&mut *word, &b.spreads);
+            // Only a leaning combiner adds words, so a plain mean hashes
+            // as before.
+            if b.pick != 0.0 {
+                word(0x201);
+                floats(&mut *word, &[b.pick]);
+            }
         }
         if let Some(m) = overlay.model_view_of(item) {
             let c = &m.camera;
@@ -748,7 +851,7 @@ mod tests {
         let mut o = Overlay::new([640, 480]);
         let all = ClipRect::full([640, 480]);
         o.push_fill(all, [0.0, 0.0, 640.0, 480.0], [0.0, 0.0, 0.0, 0.25], OverlayBlend::ALPHA).unwrap();
-        let blur = OverlayBlur { tap: 0.5, spreads: vec![1.0, 1.5, 2.0] };
+        let blur = OverlayBlur { tap: 0.5, spreads: vec![1.0, 1.5, 2.0], pick: 0.0 };
         assert_eq!(o.push_blur(all, blur.clone()), Ok(1));
         let viewport = ClipRect { x: 100, y: 80, width: 200, height: 150 };
         let view = OverlayModelView { camera: camera(), objects: vec![0xe000_0001, 0xe001_0002] };
@@ -774,15 +877,16 @@ mod tests {
     fn a_blur_needs_steps_and_a_model_view_a_finite_camera() {
         let mut o = Overlay::new([640, 480]);
         let all = ClipRect::full([640, 480]);
-        assert_eq!(o.push_blur(all, OverlayBlur { tap: 0.5, spreads: vec![] }), Err(OverlayError::Geometry));
-        assert_eq!(o.push_blur(all, OverlayBlur { tap: 0.5, spreads: vec![-1.0] }), Err(OverlayError::Geometry));
-        assert_eq!(o.push_blur(all, OverlayBlur { tap: f32::NAN, spreads: vec![1.0] }), Err(OverlayError::Geometry));
+        assert_eq!(o.push_blur(all, OverlayBlur { tap: 0.5, spreads: vec![], pick: 0.0 }), Err(OverlayError::Geometry));
+        assert_eq!(o.push_blur(all, OverlayBlur { tap: 0.5, spreads: vec![-1.0], pick: 0.0 }), Err(OverlayError::Geometry));
+        assert_eq!(o.push_blur(all, OverlayBlur { tap: f32::NAN, spreads: vec![1.0], pick: 0.0 }), Err(OverlayError::Geometry));
+        assert_eq!(o.push_blur(all, OverlayBlur { tap: 0.5, spreads: vec![1.0], pick: 1.5 }), Err(OverlayError::Geometry), "a pick past 1");
         let mut bad = camera();
         bad.fov_y = f32::INFINITY;
         let view = OverlayModelView { camera: bad, objects: vec![] };
         assert_eq!(o.push_model_view(all, view), Err(OverlayError::Geometry));
         let off = ClipRect { x: 640, y: 0, width: 4, height: 4 };
-        assert_eq!(o.push_blur(off, OverlayBlur { tap: 0.5, spreads: vec![1.0] }), Err(OverlayError::Clip));
+        assert_eq!(o.push_blur(off, OverlayBlur { tap: 0.5, spreads: vec![1.0], pick: 0.0 }), Err(OverlayError::Clip));
         assert!(o.is_empty() && o.blurs.is_empty() && o.model_views.is_empty(), "the list is left as it was");
     }
 
@@ -813,10 +917,13 @@ mod tests {
         assert_ne!(one, crate::summary_hash(&empty));
         scene.overlay.vertices[1].position[0] = 2.0;
         assert_ne!(crate::summary_hash(&scene), one, "a corner moved");
-        scene.overlay.push_blur(ClipRect::full([640, 480]), OverlayBlur { tap: 0.5, spreads: vec![1.0] }).unwrap();
+        scene.overlay.push_blur(ClipRect::full([640, 480]), OverlayBlur { tap: 0.5, spreads: vec![1.0], pick: 0.0 }).unwrap();
         let blurred = crate::summary_hash(&scene);
         scene.overlay.blurs[0].spreads[0] = 1.25;
         assert_ne!(crate::summary_hash(&scene), blurred, "a blur's spread changed");
+        let spread = crate::summary_hash(&scene);
+        scene.overlay.blurs[0].pick = 0.25;
+        assert_ne!(crate::summary_hash(&scene), spread, "a blur's combiner changed");
         scene.clear();
         assert!(scene.overlay.is_empty() && scene.overlay.size == [0, 0]);
     }

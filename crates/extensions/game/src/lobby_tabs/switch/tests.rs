@@ -82,21 +82,15 @@ fn switching_to_firefight_holds_the_setting_and_picks_a_kit_map() {
 }
 
 #[test]
-fn switching_to_forge_keeps_a_halo_2_map() {
+fn switching_to_forge_keeps_the_selected_map() {
     let c = catalogue();
     let p = plan(Tab::CustomGames, Tab::Forge);
     assert_eq!((p.mode, p.firefight, p.retail), (Mode::Forge, false, None));
     assert_eq!(map_for(Tab::Forge, Some(11), Some(&c)), Ok(None));
-    let from_kit = map_for(Tab::Forge, Some(12), Some(&c)).unwrap();
-    assert!(
-        from_kit.is_some_and(|id| id == 10 || id == 11),
-        "an original map in place of the kit map: {from_kit:?}"
-    );
-    assert!(
-        map_for(Tab::Forge, Some(13), Some(&c)).unwrap().is_some(),
-        "a mod is not an original"
-    );
-    assert_eq!(map_for(Tab::Forge, Some(11), None), Err(Reason::NoMapList));
+    for selected in [12, 13] {
+        assert_eq!(map_for(Tab::Forge, Some(selected), Some(&c)), Ok(None));
+    }
+    assert_eq!(map_for(Tab::Forge, Some(11), None), Ok(None));
     // CUSTOM GAMES, MULTIPLAYER and CO-OP take any map.
     for to in [Tab::CustomGames, Tab::Multiplayer, Tab::CoOp] {
         assert_eq!(map_for(to, Some(12), None), Ok(None), "{to:?}");
@@ -439,34 +433,33 @@ fn a_picked_mode_switches_as_the_tab_did() {
 }
 
 /// `run_to` reads the lobby and runs the switch: a Split Screen custom
-/// lobby to FIREFIGHT checks the lock, holds the setting and sets the mode
-/// with no retail routine; to MULTIPLAYER it is refused before any call.
+/// lobby to FORGE checks the lock and sets the mode with no retail switch.
+/// FIREFIGHT is a game type, and MULTIPLAYER needs Xbox Live.
 #[test]
 fn run_to_reads_the_lobby_and_runs_the_switch() {
+    lobby_start::set_mode(Mode::Multiplayer);
     let store = Arc::new(Store::defaults(&ff::DEFS));
     store.set(ff::ENABLED.key, Value::Bool(false)).unwrap();
-    let s = Arc::clone(&store);
-    let entry = move |cx: Cx| -> EntryFuture {
-        let s = Arc::clone(&s);
-        Box::pin(async move {
-            run_to(&cx, Tab::Firefight, crate::lobby_tabs::Present::ALL, Some(s)).await?;
-            Ok(Ret::new(0, 0))
-        })
+    let run_to_tab = |tab| {
+        let store = Arc::clone(&store);
+        let entry = move |cx: Cx| -> EntryFuture {
+            let store = Arc::clone(&store);
+            Box::pin(async move {
+                run_to(&cx, tab, crate::lobby_tabs::Present::ALL, Some(store)).await?;
+                Ok(Ret::new(0, 0))
+            })
+        };
+        let run = testing::run(&entry, guest(0), Regs::default(), |_, _| Regs::default());
+        run.result.unwrap();
+        targets(&run.calls)
     };
-    let run = testing::run(&entry, guest(0), Regs::default(), |_, _| Regs::default());
-    run.result.unwrap();
-    assert_eq!(targets(&run.calls), [points::LOBBY_START_STATE.base]);
-    assert_eq!(lobby_start::mode(), Mode::Firefight);
-    assert_eq!(store.get(ff::ENABLED.key), Some(Value::Bool(true)));
-    // MULTIPLAYER needs Xbox Live: refused, nothing called.
-    let entry = |cx: Cx| -> EntryFuture {
-        Box::pin(async move {
-            run_to(&cx, Tab::Multiplayer, crate::lobby_tabs::Present::ALL, None).await?;
-            Ok(Ret::new(0, 0))
-        })
-    };
-    let run = testing::run(&entry, guest(0), Regs::default(), |_, _| Regs::default());
-    run.result.unwrap();
-    assert!(run.calls.is_empty(), "refused before any guest call");
-    lobby_start::set_mode(Mode::Multiplayer);
+
+    assert_eq!(run_to_tab(Tab::Forge), [points::LOBBY_START_STATE.base]);
+    assert_eq!(lobby_start::mode(), Mode::Forge);
+
+    for tab in [Tab::Firefight, Tab::Multiplayer] {
+        assert!(run_to_tab(tab).is_empty(), "{tab:?} made a guest call");
+        assert_eq!(lobby_start::mode(), Mode::Forge, "{tab:?} changed the mode");
+    }
+    assert_eq!(store.get(ff::ENABLED.key), Some(Value::Bool(false)));
 }

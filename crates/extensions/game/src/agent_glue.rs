@@ -257,6 +257,8 @@ impl AgentGlue {
         agent::havok::install(&agent);
         // The native collision world's counters (impl.sim.native.collision).
         agent::collision::install(&agent);
+        // The animation graph walk's arm and body (impl.sim.native.anim).
+        agent::anim::install(&agent);
         agent::raw::install(&agent, &sim);
         agent::havok::install_writes(&agent, &sim);
         // `world.*`'s `physics.standing_fits`: the superbounce mode's
@@ -528,16 +530,20 @@ impl AgentGlue {
     }
 
     /// Windowed macOS games advertise an enabled agent to the lab even when
-    /// the player uses a custom endpoint.
+    /// the player uses a custom endpoint. `plan` registers the consent
+    /// dialog's hooks; `accept` also takes the lab's requests (boot's
+    /// `registration::lab_takeover`: a film's recording and its replay
+    /// plan the same hooks, and only the player's game accepts).
     pub fn configure_takeover(
         &mut self,
         features: &mut hooks::Registry,
         window: bool,
-        accepts_player_input: bool,
+        plan: bool,
+        accept: bool,
     ) -> Result<()> {
         crate::lab_takeover::add_info(&self.agent, window);
-        if window && accepts_player_input {
-            crate::lab_takeover::install(features, &self.agent)?;
+        if plan {
+            crate::lab_takeover::install(features, &self.agent, accept)?;
         }
         if cfg!(target_os = "macos")
             && window
@@ -654,9 +660,10 @@ impl agent::Sampler for BootSampler {
     }
 }
 
-/// The methods that read the runtime itself: `profile.faults`, the fault
-/// census (`runtime::fault_census`).
+/// Runtime fault counters and tick-boundary collision diagnostics.
 pub fn add_runtime_methods(agent: &agent::Agent, rt: &std::sync::Arc<runtime::Runtime>) {
+    agent::collision_trace_query::install(agent, rt);
+    agent::collision_sources::install(agent, rt);
     let rt = std::sync::Arc::clone(rt);
     agent.add_method(method::PROFILE_FAULTS, Access::Read, move |v| {
         let top = top_param(&v, 20)?;

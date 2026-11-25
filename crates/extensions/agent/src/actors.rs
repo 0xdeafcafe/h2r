@@ -41,6 +41,8 @@ pub struct Peer {
     pub digests: u64,
     /// Records sent, repeated copies of lines and cues included.
     pub records: u64,
+    /// `Show` records among them (the script's HUD and waypoint state).
+    pub shows: u64,
     /// Records offered and dropped by the budget.
     pub dropped: u64,
 }

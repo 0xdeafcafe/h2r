@@ -94,14 +94,6 @@ pub struct DecoratorTarget<'a> {
     pub viewport: [f32; 4],
 }
 
-/// The scissor of `viewport` in a target of `size`, `None` when empty.
-fn scissor(viewport: [f32; 4], size: (u32, u32)) -> Option<[u32; 4]> {
-    let [x, y, w, h] = viewport.map(|v| v.max(0.0).round() as u32);
-    let (x, y) = (x.min(size.0), y.min(size.1));
-    let (w, h) = (w.min(size.0 - x), h.min(size.1 - y));
-    (w != 0 && h != 0).then_some([x, y, w, h])
-}
-
 /// Records `plan` with `bound` (one per batch) into its own render pass on
 /// `target`, loading and keeping what is there. The number of guest draws
 /// (placements) recorded, or why nothing was.
@@ -115,7 +107,7 @@ pub fn encode(
     if plan.instances.is_empty() {
         return Ok(plan.slots.len());
     }
-    let Some([sx, sy, sw, sh]) = scissor(target.viewport, target.size) else {
+    let Some([sx, sy, sw, sh]) = crate::gpu::viewport_scissor(target.viewport, target.size) else {
         return Err("the view's rectangle is empty");
     };
     let (instances, offset) = uploads.stage(device, queue, plan.instance_bytes());

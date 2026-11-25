@@ -98,6 +98,20 @@ fn page_tables() {
             ],
             after: "FORGE OPTIONS | focus 1 Controls",
         },
+        Case {
+            kind: Kind::Options,
+            from: "open",
+            inputs: &[Down, Down, Down, A],
+            effects: vec![Focus(1), Focus(2), Focus(3), Open(Kind::MapLimits.screen())],
+            after: "FORGE OPTIONS | focus 3 Map limits",
+        },
+        Case {
+            kind: Kind::MapLimits,
+            from: "open",
+            inputs: &[A, Down, A, B],
+            effects: vec![Nothing, Focus(1), Nothing, Close],
+            after: "MAP LIMITS | focus 1 Scenery = 4 / 16",
+        },
         // A variant's row opens its dialog.
         Case {
             kind: Kind::Variants,
@@ -751,6 +765,7 @@ fn the_properties_page_has_selection_and_group_rows() {
         selected,
         selection,
         group,
+        pivot_editable: true,
     };
     let labels = |f: &sheet::GroupFacts| -> Vec<String> {
         sheet::group_rows(f).into_iter().map(|r| r.label).collect()
@@ -764,11 +779,11 @@ fn the_properties_page_has_selection_and_group_rows() {
     let rows = sheet::group_rows(&facts(
         false,
         0,
-        Some((forge_doc::OpId(2), "Roof".into(), false)),
+        Some(group_info(2, "Roof", 2, false)),
     ));
     assert_eq!(
         rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
-        ["Group", "Lock group", "Ungroup"]
+        ["Group", "Lock group", "Pivot", "Ungroup"]
     );
     assert_eq!(rows[0].value.as_deref(), Some("Roof"));
     assert_eq!(
@@ -776,13 +791,13 @@ fn the_properties_page_has_selection_and_group_rows() {
         Act::Choose(Choice::LockGroup(forge_doc::OpId(2), true))
     );
     assert_eq!(
-        rows[2].act,
+        rows[3].act,
         Act::Choose(Choice::Ungroup(forge_doc::OpId(2)))
     );
     let locked = sheet::group_rows(&facts(
         false,
         0,
-        Some((forge_doc::OpId(2), "Roof".into(), true)),
+        Some(group_info(2, "Roof", 2, true)),
     ));
     assert_eq!(locked[1].label, "Unlock group");
     assert_eq!(
@@ -796,4 +811,109 @@ fn the_properties_page_has_selection_and_group_rows() {
                 .is_some_and(|d| !d.trim().is_empty())
         );
     }
+}
+
+#[test]
+fn the_pivot_picker_opens_on_the_current_value_and_names_the_group() {
+    let mut group = group_info(2, "Roof", 2, false);
+    for (first, value) in [(false, "Centre"), (true, "First member")] {
+        group.pivot_first = first;
+        let mut facts = sheet::GroupFacts {
+            thing: group.members[0],
+            selected: false,
+            selection: 0,
+            group: Some(group.clone()),
+            pivot_editable: true,
+        };
+        let rows = sheet::group_rows(&facts);
+        let row = rows.iter().find(|r| r.label == "Pivot").unwrap();
+        assert_eq!(row.value.as_deref(), Some(value));
+        let Act::Pick(pick) = &row.act else {
+            panic!("the pivot opens a picker");
+        };
+        assert_eq!(pick.values, ["Centre", "First member"]);
+        assert_eq!(pick.values[pick.current], value);
+        assert_eq!(
+            pick.choices,
+            [
+                Choice::SetGroupPivot(group.id, false),
+                Choice::SetGroupPivot(group.id, true)
+            ]
+        );
+        assert!(pick.closes);
+        facts.pivot_editable = false;
+        assert!(sheet::group_rows(&facts).iter().all(|r| r.label != "Pivot"));
+    }
+}
+
+#[test]
+fn a_kit_session_adds_spawns_teleporters_and_item_spawners_to_the_object_menu() {
+    let items = [sheet::Item {
+        group: Group::Weapons,
+        name: "Rifle".into(),
+        placed: 0,
+        left: 5,
+    }];
+    let kit = sheet::KitMenu {
+        items: vec![
+            sheet::KitItem {
+                index: 0,
+                group: Group::Weapons,
+                name: "Rifles".into(),
+            },
+            sheet::KitItem {
+                index: 1,
+                group: Group::Vehicles,
+                name: "Hogs".into(),
+            },
+        ],
+        items_left: 1,
+        spawns_left: 2,
+        flags_left: 0,
+    };
+    let s = sheet::with_kit(sheet::objects(&items, 0), &kit);
+    let labels: Vec<&str> = s.rows.iter().map(|r| &*r.label).collect();
+    // The groups are in the table's order, the map's own among them.
+    assert_eq!(labels, ["Weapons", "Vehicles", "Teleporters", "Spawns"]);
+    let pick = |label: &str| {
+        let row = s.rows.iter().find(|r| &*r.label == label).unwrap();
+        let Act::Pick(p) = &row.act else {
+            panic!("a group opens the picker")
+        };
+        p.clone()
+    };
+    let weapons = pick("Weapons");
+    assert_eq!(weapons.values, ["Rifle", "Rifles spawner"]);
+    assert_eq!(weapons.choices, [Choice::Select(0), Choice::Item(0)]);
+    assert_eq!(weapons.details[1], "Item spawner. 1 more fits.");
+    assert_eq!(pick("Vehicles").choices, [Choice::Item(1)]);
+    let spawns = pick("Spawns");
+    assert_eq!(spawns.values[0], "Red start");
+    assert_eq!(spawns.choices[1], Choice::Spawn(1));
+    assert_eq!(spawns.details[0], "Starting point. 2 more fit.");
+    let teleporters = pick("Teleporters");
+    assert_eq!(teleporters.values, ["Sender", "Receiver"]);
+    assert_eq!(
+        teleporters.choices,
+        [Choice::Teleporter(true), Choice::Teleporter(false)]
+    );
+    assert_eq!(teleporters.details[0], "Teleporter. no more fit.");
+    assert!(spawns.closes && teleporters.closes);
+}
+
+#[test]
+fn the_goals_group_lists_the_goals_a_game_type_reads() {
+    let all = sheet::with_goals(None);
+    let Act::Pick(p) = &all.rows[0].act else {
+        panic!("Goals opens its picker")
+    };
+    assert_eq!(p.values, ["Hill", "Territory", "Siege site"]);
+    let some = sheet::with_goals_for(None, &[forge::Goal::Hill, forge::Goal::Site]);
+    let Act::Pick(p) = &some.rows[0].act else {
+        panic!("Goals opens its picker")
+    };
+    assert_eq!(p.values, ["Hill", "Siege site"]);
+    assert_eq!(p.choices[0], Choice::Goal(forge::Goal::Hill));
+    // A game type that reads none has no Goals group.
+    assert!(sheet::with_goals_for(None, &[]).rows.is_empty());
 }

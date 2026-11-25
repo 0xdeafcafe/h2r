@@ -76,6 +76,7 @@ impl Target {
 struct Doc {
     origin: Origin,
     variant: GameVariant,
+    package_source: Option<PathBuf>,
     /// The variant as last loaded or saved.
     base: GameVariant,
     undo: Vec<GameVariant>,
@@ -166,7 +167,7 @@ impl VariantEditor {
     pub fn is_dirty(&self) -> bool {
         self.doc
             .as_ref()
-            .is_some_and(|d| d.origin == Origin::New || d.variant != d.base)
+            .is_some_and(|d| (d.origin == Origin::New && d.package_source.is_none()) || d.variant != d.base)
     }
 
     /// The last status message, `true` for an error.
@@ -199,6 +200,7 @@ impl VariantEditor {
     fn open(&mut self, origin: Origin, v: GameVariant) {
         self.doc = Some(Doc {
             origin,
+            package_source: None,
             base: v.clone(),
             variant: v,
             undo: Vec::new(),
@@ -475,6 +477,21 @@ impl VariantEditor {
         Ok(())
     }
 
+    /// The package source the open variant was loaded from or saved to.
+    pub fn package_source(&self) -> Option<&std::path::Path> {
+        self.doc.as_ref()?.package_source.as_deref()
+    }
+
+    /// Keep undo history and set the saved baseline to the open record.
+    pub fn mark_packaged(&mut self, path: PathBuf) {
+        if let Some(doc) = &mut self.doc {
+            doc.package_source = Some(path);
+            doc.origin = Origin::New;
+            doc.base = doc.variant.clone();
+            doc.last = None;
+        }
+    }
+
     /// Deletes the open saved variant.
     pub fn delete(&mut self) -> Result<(), EditError> {
         let store = self.store.as_ref().ok_or(EditError::NoStore)?;
@@ -499,7 +516,7 @@ impl VariantEditor {
     /// ([`portable::Bundle::with_maps`]; at most [`portable::MAX_MAPS`]).
     /// With none it is [`Self::export_current`]'s version-1 text, so a
     /// variant that suggests nothing exports as it did. A record that names
-    /// the engine's built-in script carries it
+    /// a built-in script carries it
     /// ([`portable::builtin_attach`]); one that names another is refused by
     /// name ([`portable::Bundle::new`]). `None` when no variant is open.
     pub fn export_current_with(
@@ -998,6 +1015,33 @@ mod tests {
         // The same map variant twice is refused by name, nothing written.
         let twice = e.export_current_with(vec![suggestion(2, "A"), suggestion(2, "B")]).unwrap();
         assert!(matches!(twice, Err(EditError::Import(PortableError::MapSuggestion(_)))));
+    }
+
+    #[test]
+    fn a_new_variant_on_the_script_index_exports_with_maps_and_carries_its_built_in() {
+        let castle = portable::MapSuggestion {
+            base: format!("{:064x}", 1),
+            variant: format!("{:064x}", 2),
+            name: "Castle".into(),
+        };
+        let mut e = VariantEditor::new(schema(), None);
+        e.new_variant(GameType::Slayer);
+        // Slayer's built-in writes nothing in Slayer's type area, so its
+        // record rides the script index: no engine names the script by.
+        assert_eq!(e.current().unwrap().game_type(), GameType::Script);
+        let text = e
+            .export_current_with(vec![castle.clone()])
+            .expect("a variant is open")
+            .expect("the export carries the built-in");
+        let b = portable::read(&text).unwrap();
+        assert_eq!(b.maps, [castle]);
+        assert_eq!(b.engine, crate::record::SCRIPT_INDEX);
+        assert_eq!(
+            b.script.as_ref().map(|s| s.name.as_str()),
+            Some("Slayer"),
+            "the file carries the script the record names"
+        );
+        assert!(b.integrity().unwrap().script.is_some());
     }
 
     #[test]

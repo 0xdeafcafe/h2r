@@ -1,9 +1,11 @@
-//! Authored wave sets for the Elite-only stage-one kit.
+//! Authored wave sets for the Elite-only stage-one kit: the built-ins,
+//! and the map-specific sets ([`MAP_SETS`]).
 //!
 //! The sets are the `rules` items of the `modes` package
-//! (`content/modes/firefight/*.firefight.json`, docs/game/firefight.md,
-//! "Wave sets as package items"); the game and the tools read the same
-//! files the package carries.
+//! (`content/modes/firefight/*.firefight.json` and
+//! `content/modes/firefight/maps/<map>/*.firefight.json`,
+//! docs/game/firefight.md, "The definition" and "Map-specific sets");
+//! the game and the tools read the same files the package carries.
 
 use crate::{Def, MAX_TEAMS};
 
@@ -11,8 +13,8 @@ use crate::{Def, MAX_TEAMS};
 /// by two teams: half an Elite.
 pub const PLAYER_KILL_POINTS: u16 = 50;
 
-/// The `modes` package's wave set files, in menu order: three for one
-/// team, then Crossfire for two.
+/// The `modes` package's built-in wave set files, in menu order: three
+/// for one team, then Crossfire for two.
 pub const SETS: [(&str, &str); 4] = [
     (
         "firefight/holdout.firefight.json",
@@ -32,6 +34,20 @@ pub const SETS: [(&str, &str); 4] = [
     ),
 ];
 
+/// The `modes` package's map-specific wave set files, as
+/// `(base map's name, file, text)`, in map order then file order: the
+/// sets tied to a kit map ([`map_sets`]), which the lobby's Wave set row
+/// offers first on their map.
+pub const MAP_SETS: [(&str, &str, &str); 1] = [(
+    "beavercreek",
+    "firefight/maps/beavercreek/basin.firefight.json",
+    include_str!("../../../../content/modes/firefight/maps/beavercreek/basin.firefight.json"),
+)];
+
+/// The first store value a map set is named by, past the built-ins
+/// ([`menu`], [`resolve`]).
+pub const MAP_SET_BASE: i64 = SETS.len() as i64;
+
 /// The built-in wave sets, in menu order ([`SETS`]).
 pub fn definitions() -> [Def; 4] {
     SETS.map(|(file, text)| {
@@ -39,12 +55,102 @@ pub fn definitions() -> [Def; 4] {
     })
 }
 
+/// `map`'s own wave sets, in file order: the sets the `modes` package
+/// keeps under `firefight/maps/<map>/`. Empty when the map has none.
+pub fn map_sets(map: &str) -> Vec<Def> {
+    MAP_SETS
+        .iter()
+        .filter(|&&(own, _, _)| own == map)
+        .map(|&(_, file, text)| {
+            serde_json::from_str(text)
+                .unwrap_or_else(|e| panic!("{file} is not a Firefight set: {e}"))
+        })
+        .collect()
+}
+
+/// Named game variants, including sets authored for a particular kit map.
+/// The value is the settings value on that map, as accepted by `resolve`.
+pub struct Variant {
+    pub map: Option<&'static str>,
+    pub value: usize,
+    pub prefix: [u8; 8],
+    pub def: Def,
+}
+
+pub fn variants() -> &'static [Variant] {
+    static ALL: std::sync::OnceLock<Vec<Variant>> = std::sync::OnceLock::new();
+    ALL.get_or_init(|| {
+        let generic = definitions().into_iter().enumerate().map(|(i, def)| (None, i, def));
+        let specific = MAP_SETS.iter().enumerate().map(|(i, &(map, path, json))| {
+            let offset = MAP_SETS[..i].iter().filter(|(other, _, _)| *other == map).count();
+            let def = serde_json::from_str(json).unwrap_or_else(|e| panic!("{path}: {e}"));
+            (Some(map), SETS.len() + offset, def)
+        });
+        generic.chain(specific).map(|(map, value, def)| Variant {
+            map,
+            value,
+            prefix: def.id().expect("valid packaged wave set").0[..8].try_into().unwrap(),
+            def,
+        }).collect()
+    })
+}
+
+pub fn variant(prefix: [u8; 8]) -> Option<&'static Variant> {
+    variants().iter().find(|v| v.prefix == prefix)
+}
+
 /// The built-in definition whose id ([`Def::id`]) starts with `prefix`:
 /// what a mode-1 variant extension names (docs/game/firefight.md, "Live").
 pub fn by_prefix(prefix: [u8; 8]) -> Option<Def> {
-    definitions()
+    variant(prefix).map(|v| v.def.clone())
+}
+
+/// The lobby's Wave set row on `map` (`None`: no map known): `map`'s own
+/// sets first, then the built-ins, each with the store value that names
+/// it ([`resolve`]). A map with none of its own gets the built-ins alone,
+/// as does any map the build has no sets for.
+pub fn menu(map: Option<&str>) -> Vec<(i64, Def)> {
+    map.map(map_sets)
+        .unwrap_or_default()
         .into_iter()
-        .find(|d| d.id().is_ok_and(|id| id.0[..8] == prefix))
+        .enumerate()
+        .map(|(place, def)| (MAP_SET_BASE + place as i64, def))
+        .chain(
+            definitions()
+                .into_iter()
+                .enumerate()
+                .map(|(place, def)| (place as i64, def)),
+        )
+        .collect()
+}
+
+/// What the Wave set store value `value` plays on `map`: the built-in at
+/// `value`; `map`'s own set at [`MAP_SET_BASE`] plus its place in
+/// [`map_sets`]. A map-set value on a map that does not carry it —
+/// another map, or no map known — falls back to the built-ins (Holdout,
+/// the first). `None` when no set the build ships names the value.
+pub fn resolve(value: i64, map: Option<&str>) -> Option<Def> {
+    let index = usize::try_from(value).ok();
+    if let Some(place) = index.filter(|&index| index < SETS.len()) {
+        return definitions().get(place).cloned();
+    }
+    let place = index
+        .and_then(|index| index.checked_sub(MAP_SET_BASE as usize))
+        .filter(|_| names_set(value))?;
+    map_sets(map.unwrap_or(""))
+        .get(place)
+        .cloned()
+        .or_else(|| definitions().into_iter().next())
+}
+
+/// Whether `value` names a set the build ships, on some map: what the
+/// Wave set store value may hold ([`resolve`] refuses the rest).
+pub fn names_set(value: i64) -> bool {
+    let index = usize::try_from(value).ok();
+    index.is_some_and(|index| index < SETS.len())
+        || index
+            .and_then(|index| index.checked_sub(MAP_SET_BASE as usize))
+            .is_some_and(|place| place < MAP_SETS.len())
 }
 
 /// `def` played by `teams` player teams (1 or 2, clamped): with two, a
@@ -121,6 +227,39 @@ mod tests {
         for def in definitions() {
             def.canonical_json().unwrap();
         }
+    }
+
+    /// The map-specific sets written as Rust: the reference their files
+    /// are held to ([`reference`]).
+    fn map_reference() -> Vec<Def> {
+        vec![Preset {
+            name: "Basin",
+            actors: [12, 12, 12],
+            squad_max: 6,
+            gap_ticks: 450,
+            pool: 10,
+            bonus: 3,
+            skulls: [Skull::Catch, Skull::Angry, Skull::Ghost],
+            teams: 1,
+        }
+        .definition()]
+    }
+
+    #[test]
+    fn the_map_set_files_are_the_sets_rust_built() {
+        let own: Vec<Def> = MAP_SETS
+            .iter()
+            .map(|&(_, file, text)| {
+                serde_json::from_str(text)
+                    .unwrap_or_else(|e| panic!("{file} is not a Firefight set: {e}"))
+            })
+            .collect();
+        assert_eq!(own, map_reference());
+        for def in &own {
+            def.canonical_json().unwrap();
+        }
+        assert_eq!(map_sets("beavercreek"), map_reference());
+        assert!(map_sets("coagulation").is_empty());
     }
 
     struct Preset {

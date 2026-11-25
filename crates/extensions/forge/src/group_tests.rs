@@ -55,6 +55,37 @@ fn a_group_is_one_op_and_a_member_knows_its_group() {
 }
 
 #[test]
+fn changing_the_pivot_keeps_the_group_and_is_one_undo_step() {
+    let (mut s, mut w, _, group) = grouped();
+    s.set_group_locked(&mut w, 3, group, true).unwrap();
+    let before = s.groups().pop().unwrap();
+    let count = s.document().ops.len();
+    let calls = w.calls.len();
+    s.set_group_pivot(&mut w, 4, group, false).unwrap();
+    assert_eq!(s.document().ops.len(), count);
+
+    s.set_group_pivot(&mut w, 5, group, true).unwrap();
+    let after = s.groups().pop().unwrap();
+    assert_eq!(after.name, before.name);
+    assert_eq!(after.members, before.members);
+    assert!(after.locked && after.pivot_first);
+    assert_eq!(w.calls.len(), calls);
+    assert_eq!(s.document().ops.len(), count + 2);
+    assert_eq!(s.document().format, forge_doc::FORMAT_GROUPS);
+    assert!(s.set_group_pivot(&mut w, 6, group, false).is_err());
+    assert_eq!(s.groups(), [after.clone()]);
+    s.undo(&mut w, 7).unwrap();
+    assert_eq!(s.groups(), [before]);
+    s.redo(&mut w, 8).unwrap();
+    assert_eq!(s.groups(), [after.clone()]);
+
+    let mut shared = s.share(crate::net::HOST_SEAT, "Host");
+    assert!(shared.set_group_pivot(&mut w, 9, after.id, false).is_err());
+    assert!(shared.take_outgoing().is_empty());
+    assert_eq!(shared.groups(), [after]);
+}
+
+#[test]
 fn moving_a_member_moves_the_group_in_one_undo_step_and_undo_puts_it_back() {
     let (mut s, mut w, ids, _) = grouped();
     let before = frames(&s, &ids);

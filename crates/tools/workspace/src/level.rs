@@ -31,28 +31,34 @@
 //! [`trim`] keeps the folder under a cap, least recently used first,
 //! sparing the ids a caller names (the images saved films use).
 //!
-//! **Identity.** A level with nothing over it has for its [`LevelId`] its
-//! skeleton's hash and, from the store's catalogue
-//! (`tags::repo::catalogue`), every asset of its manifest by hash
-//! ([`level_assets`]): a join names the assets that differ without
-//! reading a tag. With packages over it the skeleton's hash stands for
-//! the base and the packages' ids for what they change, and no asset is
-//! named.
+//! **The conflict table** (docs/engine/asset-store.md, "Conflicts"). The
+//! build runs through [`build_map_settled`]: two packages that set
+//! different fields of one asset both apply; the same field goes to the
+//! later package and is listed (`Report::overrides`); an item that is for
+//! other content or clashes with an earlier package turns its package off
+//! for the level, whole, and so is every package that requires one
+//! ([`Level::refused`]). The packages the level takes are the ones its
+//! `LevelId` names, so a refused package moves neither the id nor the
+//! image. Which packages a level takes is learned by building once and
+//! kept as its **settlement** (`<images>/<key>.set`: the [`cache_key`] over
+//! the base and every package with an item for the level, and those left
+//! out), so an open that finds the settlement names the id without
+//! building.
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use content::package::MapScope;
+use content::package::{MapScope, Refusal};
 use content::{LevelId, LevelInputs, MapId, Sha256};
 use map::{CacheType, Map};
+use serde::{Deserialize, Serialize};
 use tags::repo::StoreFile;
-use tags::repo::catalogue::Catalogue;
 use tags::repo::skeleton::{Extent, Extents, Skeleton};
 
-use crate::build::{Loaded, Report, Target};
+use crate::build::{Loaded, Report, Target, cache_key};
 use crate::builders::BUILDERS_VERSION;
-use crate::onto::{BuiltMap, build_map_laid_out, scope_of};
+use crate::onto::{BuiltMap, build_map_settled, scope_of};
 use crate::rewrite::{Served, ServedMap, applied_to, merge};
 
 /// The images' folder under the data root.
@@ -87,6 +93,7 @@ pub struct Image {
 pub struct Level {
     /// The store's name for the level (lower case).
     pub name: String,
+    /// Over the packages the level takes: a refused one is not in it.
     pub id: LevelId,
     pub scope: MapScope,
     /// The SHA-256 of the map file the store's skeleton gives back.
@@ -98,9 +105,8 @@ pub struct Level {
     /// Packages applied, in load order, and those the level already holds.
     pub packages: Vec<String>,
     pub held: Vec<String>,
-    /// The assets its id names by hash ([`level_assets`]): none for a
-    /// level with packages over it.
-    pub assets: Vec<(String, Sha256)>,
+    /// Packages off for this level, whole, and why (module docs).
+    pub refused: Vec<Refusal>,
     /// What the build did, when this call built the image.
     pub report: Option<Report>,
 }
@@ -146,68 +152,17 @@ pub fn open_image(images: &Path, raw_root: &Path, id: &LevelId) -> Option<(Image
 }
 
 /// The [`LevelId`] of `level` over the base whose file is `base`, with
-/// `packages` laid over it in load order and no asset named by hash: the
-/// skeleton's SHA-256 stands for every asset the store gives the level,
-/// and the packages' ids for what they add and change.
+/// `packages` laid over it in load order. The skeleton's SHA-256 stands for
+/// every asset the store gives the level; the packages' ids for what they
+/// add and change.
 pub fn level_id(level: &str, base: Sha256, packages: &[Loaded]) -> LevelId {
-    level_id_of(level, base, packages, Vec::new())
-}
-
-/// [`level_id`] with `assets` in the identity: (key as
-/// `<group>:<path>`, asset hash).
-pub fn level_id_of(
-    level: &str,
-    base: Sha256,
-    packages: &[Loaded],
-    assets: Vec<(String, Sha256)>,
-) -> LevelId {
     LevelId::of(&LevelInputs {
         builders: BUILDERS_VERSION,
         level: level.to_ascii_lowercase(),
         skeleton: Some(base),
-        assets,
+        assets: Vec::new(),
         packages: packages.iter().map(|p| p.package.id).collect(),
     })
-}
-
-/// The assets a level with nothing over it reads, from the store's
-/// catalogue ([`assemble`]): every tag of its manifest as
-/// (`<group>:<path>`, asset hash), sorted by key. A store with no manifest
-/// for the level (a level of ours, built whole) names none. A manifest
-/// with no current catalogue is an error: the id would not be the one
-/// another machine makes from the same store.
-pub fn level_assets(
-    store: &Path,
-    stem: &str,
-    catalogue: Option<&Catalogue>,
-) -> Result<Vec<(String, Sha256)>, String> {
-    if !store.join("maps").join(format!("{stem}.txt")).is_file() {
-        return Ok(Vec::new());
-    }
-    let Some(c) = catalogue else {
-        return Err(err(
-            stem,
-            "the store has no catalogue (assets.idx); h2 build or workspace.extract writes it",
-        ));
-    };
-    if !c.is_current(store).unwrap_or(false) {
-        return Err(err(
-            stem,
-            "the store's catalogue (assets.idx) is stale; h2 build or workspace.extract rewrites it",
-        ));
-    }
-    c.of_map(stem)
-        .into_iter()
-        .map(|(k, h)| {
-            let hash = h
-                .parse()
-                .map_err(|e| err(stem, format!("the asset hash of {k}: {e}")))?;
-            Ok((
-                format!("{}:{}", tags::defs::fourcc_text(k.group), k.path),
-                hash,
-            ))
-        })
-        .collect()
 }
 
 /// The image of the store's level `level` (its map stem) under `packages`
@@ -219,23 +174,18 @@ pub fn assemble(
     packages: &[Loaded],
     level: &str,
 ) -> Result<Level, String> {
-    let catalogue = match tags::repo::catalogue::read(store) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("store: {}: assets.idx does not read: {e}", store.display());
-            None
-        }
-    };
-    assemble_with(store, images, packages, level, catalogue.as_ref())
+    assemble_strict(store, images, packages, level, &BTreeSet::new())
 }
 
-/// [`assemble`] with the store's catalogue read once for its levels.
-pub fn assemble_with(
+/// [`assemble`] with `strict`, the packages that are ours: one of them
+/// refused stops the level's build with the item's line, where any other is
+/// off for the level with its reason (module docs).
+pub fn assemble_strict(
     store: &Path,
     images: &Path,
     packages: &[Loaded],
     level: &str,
-    catalogue: Option<&Catalogue>,
+    strict: &BTreeSet<String>,
 ) -> Result<Level, String> {
     let name = level.to_ascii_lowercase();
     let stem = find_stem(store, &name).ok_or_else(|| {
@@ -259,39 +209,94 @@ pub fn assemble_with(
     let built_by_items: HashSet<String> = crate::maps::built_names(packages).into_iter().collect();
     let (applied, held) = applied_to(packages, &built_by_items, &target, &map);
     drop(map);
-    let mut level = Level {
-        name: name.clone(),
-        id: level_id(&name, base, &applied),
-        scope,
-        base,
-        map_id: None,
-        image: None,
-        packages: applied
-            .iter()
-            .map(|p| p.package.name().to_owned())
-            .collect(),
-        held,
-        assets: Vec::new(),
-        report: None,
-    };
     if applied.is_empty() {
-        level.assets = level_assets(store, &stem, catalogue)?;
-        level.id = level_id_of(&name, base, &[], level.assets.clone());
-        level.map_id = Some(MapId::retail(&name, base));
+        let (id, map_id) = (level_id(&name, base, &[]), MapId::retail(&name, base));
+        return Ok(Level {
+            name,
+            id,
+            scope,
+            base,
+            map_id: Some(map_id),
+            image: None,
+            packages: Vec::new(),
+            held,
+            refused: Vec::new(),
+            report: None,
+        });
+    }
+    let build = || -> Result<BuiltMap, String> {
+        let mut whole = Vec::new();
+        StoreFile::open(store, &stem)
+            .and_then(|mut f| f.read_to_end(&mut whole).map_err(Into::into))
+            .map_err(|e| err(&name, e))?;
+        let mut assets = crate::assets::OfMap::in_store(store, &stem, &whole);
+        build_map_settled(&whole, &applied, &target, strict, Some(&mut assets))
+            .map_err(|e| err(&name, e))
+    };
+    // The level over `refused` left out: its id names what it takes.
+    let level_of = |refused: &[Refusal]| -> Level {
+        let taken = without(&applied, refused);
+        let lays = !taken.is_empty();
+        Level {
+            name: name.clone(),
+            id: level_id(&name, base, &taken),
+            scope,
+            base,
+            map_id: (!lays).then(|| MapId::retail(&name, base)),
+            image: None,
+            packages: taken.iter().map(|p| p.package.name().to_owned()).collect(),
+            held: held.clone(),
+            refused: refused.to_vec(),
+            report: None,
+        }
+    };
+    // What an earlier assembly settled under this set. An image is kept
+    // under the id of the packages the level takes, so one under the id of
+    // the whole set says none is refused. Else the first assembly asks the
+    // build.
+    let asked = cache_key(&base, &applied, &target);
+    let known = settlement(images, &asked, &applied);
+    let raw_root = store.join("raw");
+    let whole = level_id(&name, base, &applied);
+    let mut built = None;
+    let refused = match &known {
+        Some(refused) => refused.clone(),
+        None if open_image(images, &raw_root, &whole).is_some() => Vec::new(),
+        None => {
+            let b = build()?;
+            let refused = b.report.refused.clone();
+            built = Some(b);
+            refused
+        }
+    };
+    let keep =
+        |refused: &[Refusal]| write_settlement(images, &asked, refused).map_err(|e| err(&name, e));
+    if known.is_none() {
+        keep(&refused)?;
+    }
+    let mut level = level_of(&refused);
+    if level.map_id.is_some() {
+        // Every package was refused: the disc's bytes.
         return Ok(level);
     }
-    let raw_root = store.join("raw");
     if let Some((image, _)) = open_image(images, &raw_root, &level.id) {
         touch(&image.extents);
         level.image = Some(image);
         return Ok(level);
     }
-    let mut whole = Vec::new();
-    StoreFile::open(store, &stem)
-        .and_then(|mut f| f.read_to_end(&mut whole).map_err(Into::into))
-        .map_err(|e| err(&name, e))?;
-    let built = build_map_laid_out(&whole, &applied, &target).map_err(|e| err(&name, e))?;
-    drop(whole);
+    // No image under that id: built now, or again when the settlement was
+    // kept and the image is gone.
+    let built = match built {
+        Some(built) => built,
+        None => build()?,
+    };
+    let refused = built.report.refused.clone();
+    let mut level = level_of(&refused);
+    if level.map_id.is_some() {
+        // The build again found every package refused: the disc's bytes.
+        keep(&refused)?;
+        return Ok(level);
+    }
     check_tag_memory(&built, cache_type, base_memory).map_err(|e| err(&name, e))?;
     let base_extents = StoreFile::extents(store, &stem).map_err(|e| err(&name, e))?;
     let mut put = |bytes: &[u8]| put_raw(&raw_root, bytes);
@@ -300,7 +305,53 @@ pub fn assemble_with(
     let image = write_image(images, &level.id, &skel, &ext).map_err(|e| err(&name, e))?;
     level.image = Some(image);
     level.report = Some(built.report);
+    keep(&refused)?;
     Ok(level)
+}
+
+/// `packages` without those named in `off`, in order.
+fn without(packages: &[Loaded], off: &[Refusal]) -> Vec<Loaded> {
+    packages
+        .iter()
+        .filter(|p| !off.iter().any(|r| r.package == p.package.name()))
+        .cloned()
+        .collect()
+}
+
+/// A level's **settlement**, `<images>/<cache key>.set`: which packages
+/// with an item for the level it leaves out. The key is over the base file
+/// and every such package, so the settlement holds for exactly what was
+/// built from.
+#[derive(Serialize, Deserialize)]
+struct Settlement {
+    /// [`cache_key`], hex.
+    key: String,
+    /// The packages off for the level, in the order they were refused and
+    /// then by what requires them.
+    refused: Vec<Refusal>,
+}
+
+/// The settlement of `key` under `images`: `None` when there is none, it is
+/// not for `key`, or it names a package with no item for the level.
+fn settlement(images: &Path, key: &Sha256, applied: &[Loaded]) -> Option<Vec<Refusal>> {
+    let text = std::fs::read_to_string(images.join(format!("{key}.set"))).ok()?;
+    let kept: Settlement = serde_json::from_str(&text).ok()?;
+    let for_this = kept.key == key.to_string()
+        && kept
+            .refused
+            .iter()
+            .all(|r| applied.iter().any(|p| p.package.name() == r.package));
+    for_this.then_some(kept.refused)
+}
+
+fn write_settlement(images: &Path, key: &Sha256, refused: &[Refusal]) -> Result<(), String> {
+    let kept = Settlement {
+        key: key.to_string(),
+        refused: refused.to_vec(),
+    };
+    let text = serde_json::to_vec(&kept).map_err(|e| e.to_string())?;
+    content::store::write_atomic(&images.join(format!("{key}.set")), &text)
+        .map_err(|e| format!("writing the settlement {key}: {e}"))
 }
 
 /// The store's stem for `key` (lower case), matched without regard to case.
@@ -541,32 +592,45 @@ pub fn trim(images: &Path, cap: u64, keep: &BTreeSet<LevelId>) -> Vec<LevelId> {
 /// The game's levels under its set, for `vfs::store_map`: each map the
 /// game opens is [`assemble`]d once per boot, recorded in the
 /// [`Served`] map `packages.list` reads. A level that does not assemble is
-/// served as the store has it, named once on stderr and in its record.
-/// The store's catalogue is read once, at the first level. After a build
-/// the folder is [`trim`]med to [`DEFAULT_IMAGE_CAP`], sparing the images
-/// this boot serves.
+/// served as the store has it, named once on stderr and in its record; so is
+/// one with a package off for it, its reason in the record's `refused`.
+/// After a build the folder is [`trim`]med to [`DEFAULT_IMAGE_CAP`],
+/// sparing the images this boot serves.
 pub struct StoreLevels {
     store: PathBuf,
     images: PathBuf,
-    packages: Vec<Loaded>,
+    packages: Arc<[Loaded]>,
     served: Served,
+    /// The packages that are ours: one of them refused stops a level's
+    /// build instead of being left out ([`assemble_strict`]).
+    strict: BTreeSet<String>,
     done: BTreeMap<String, Option<vfs::store_map::LevelImage>>,
-    /// The store's catalogue: not read yet, read and absent, or read.
-    catalogue: Option<Option<Catalogue>>,
 }
 
 impl StoreLevels {
     /// The levels of the store at `store` under `packages` (load order),
     /// images under `images`, recorded in `served`.
-    pub fn new(store: PathBuf, images: PathBuf, packages: Vec<Loaded>, served: Served) -> Self {
+    pub fn new(
+        store: PathBuf,
+        images: PathBuf,
+        packages: impl Into<Arc<[Loaded]>>,
+        served: Served,
+    ) -> Self {
         Self {
             store,
             images,
-            packages,
+            packages: packages.into(),
             served,
+            strict: BTreeSet::new(),
             done: BTreeMap::new(),
-            catalogue: None,
         }
+    }
+
+    /// The packages that are ours (`strict` by id): a refusal of one stops
+    /// a level's build, as a failure does.
+    pub fn strict(mut self, strict: BTreeSet<String>) -> Self {
+        self.strict = strict;
+        self
     }
 
     /// Shared, as `vfs::Config::store_levels` takes it.
@@ -581,24 +645,12 @@ impl vfs::store_map::Levels for StoreLevels {
         if let Some(done) = self.done.get(&key) {
             return Ok(done.clone());
         }
-        if self.catalogue.is_none() {
-            self.catalogue = Some(match tags::repo::catalogue::read(&self.store) {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!(
-                        "store: {}: assets.idx does not read: {e}",
-                        self.store.display()
-                    );
-                    None
-                }
-            });
-        }
-        let result = assemble_with(
+        let result = assemble_strict(
             &self.store,
             &self.images,
             &self.packages,
             &key,
-            self.catalogue.as_ref().and_then(|c| c.as_ref()),
+            &self.strict,
         );
         let mut record = ServedMap::default();
         let out = match result {
@@ -606,6 +658,10 @@ impl vfs::store_map::Levels for StoreLevels {
                 record.scope = level.scope.word().to_owned();
                 record.packages = level.packages.clone();
                 record.held = level.held.clone();
+                record.refused = level.refused.clone();
+                for r in &level.refused {
+                    eprintln!("packages: level {key}: {r}");
+                }
                 if level.image.is_some() {
                     record.key = level.id.to_string();
                 }

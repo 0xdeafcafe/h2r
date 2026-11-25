@@ -14,13 +14,12 @@
 //!   follow it (`health::set_halo1_sandbox`).
 //! - **Campaign.** [`set_campaign_assets`] flips the [`vfs::SandboxChoice`]
 //!   the campaign maps backend serves by ([`campaign_choice`]): a level's
-//!   Halo 2-assets map ([`campaign_alternate`]) when there is one, else
+//!   stored Halo 2-assets map when there is one, else
 //!   its Halo 1 map.
 //!
 //! Both are safe from any thread and take no guest memory. A map open now
 //! keeps what it had; `boot::map_slots` drops the game's cached copy of a
 //! map whose variant changed.
-use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 /// The multiplayer table and choice, shared with the VFS.
@@ -65,22 +64,6 @@ pub fn campaign_choice() -> vfs::SandboxChoice {
     CAMPAIGN.clone()
 }
 
-/// Where a campaign level's Halo 2-assets map goes, beside its Halo 1 map
-/// `<data>/campaigns/<key>/<level>.map`: `<data>/campaigns/<key>/h2/<level>.map`
-/// (the multiplayer packages' `h2` folder). The importer does not write it
-/// yet (docs/halo1/campaign.md §5).
-pub fn campaign_alternate(level_map: &Path) -> Option<PathBuf> {
-    let name = level_map.file_name()?;
-    Some(level_map.parent()?.join("h2").join(name))
-}
-
-/// [`campaign_alternate`] of each served campaign map.
-pub fn campaign_alternates(maps: &[(String, PathBuf)]) -> Vec<(String, PathBuf)> {
-    maps.iter()
-        .filter_map(|(n, p)| Some((n.clone(), campaign_alternate(p)?)))
-        .collect()
-}
-
 /// Sets both choices from the settings store at boot; returns the
 /// multiplayer sandbox's name (`h1` or `h2`) for what boot still picks by
 /// it (the packages library).
@@ -102,17 +85,6 @@ fn campaign_setting(store: &settings::Store) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_campaign_alternate_sits_in_an_h2_folder_beside_the_level() {
-        let p = Path::new("/data/campaigns/halo1/a30.map");
-        assert_eq!(
-            campaign_alternate(p).unwrap(),
-            Path::new("/data/campaigns/halo1/h2/a30.map")
-        );
-        let maps = vec![("a30".to_string(), p.to_path_buf())];
-        assert_eq!(campaign_alternates(&maps)[0].0, "a30");
-    }
 
     #[test]
     fn the_switches_hold_what_was_set_and_keep_health_in_step() {

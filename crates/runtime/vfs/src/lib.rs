@@ -48,6 +48,8 @@ pub use sim_store::SimStoreBackend;
 pub use path::{Namespace, validate_fatx_name, validate_fatx_path, wildcard_matches};
 pub use state::{MAX_CARRIED_BYTES, SavedFile, StateError, VfsState};
 pub use status::{Error, Result};
+mod map_source;
+pub use map_source::MapSource;
 pub use store_map::StoreMapBackend;
 pub use types::*;
 pub use variants::{ContentVariants, SandboxChoice, VariantFile, VariantFiles, VariantPair};

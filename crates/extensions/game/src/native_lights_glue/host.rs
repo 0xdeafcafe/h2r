@@ -214,12 +214,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let mut planned: Vec<Planned> = Vec::new();
         let mut pending = false;
         for part in wanted {
-            match world.resolve_parts(c, vec![part], false) {
+            match world.resolve_parts(c, [part], false) {
                 Ok(done) => {
                     for next in done {
                         match planned.last_mut() {
                             Some(last)
-                                if last.material == next.material
+                                if last.placement.is_none() && next.placement.is_none()
+                                    && last.material == next.material
                                     && last.layer == next.layer
                                     && Arc::ptr_eq(&last.compiled, &next.compiled) =>
                             {

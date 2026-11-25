@@ -322,6 +322,14 @@ impl Fonts {
             .collect();
         Some(Fonts { table, files })
     }
+    /// The fonts as a running game serves them: `table` is
+    /// `font_table.txt` and `files` each font by the name the table gives
+    /// it, already as the guest reads them (the game's font rewrites
+    /// applied), so patched no further. A name without a file is a line
+    /// without a font.
+    pub fn served(table: &[u8], files: impl IntoIterator<Item = (String, Vec<u8>)>) -> Fonts {
+        Fonts { table: Self::table(table), files: files.into_iter().collect() }
+    }
     /// Font file `name` as the game's font rewrite serves it: the message
     /// fonts with the superbounce medals added (`font::medals`,
     /// docs/game/hud-kit.md, "The medals"), and every font with the
@@ -340,7 +348,11 @@ impl Fonts {
             .map(str::to_owned)
             .collect()
     }
-    fn font(&self, index: i16) -> Option<font::Font<'_>> {
+    /// Engine font `index` (a line of the table, from 0), parsed: what
+    /// lays a text out ([`font::layout`]) and decodes its glyphs by index
+    /// ([`font::Font::glyph_by_index`]). `None` for a line the table
+    /// lacks, a file not read or one that is not a font.
+    pub fn font(&self, index: i16) -> Option<font::Font<'_>> {
         let name = self.table.get(usize::try_from(index).ok()?)?;
         font::Font::parse(self.files.get(name)?).ok()
     }
@@ -445,8 +457,8 @@ pub(crate) fn meter_fill<R: Read + Seek>(
     shader.contains("meter").then(|| st.input(w.inputs()[0]).0)
 }
 
-/// The colour text widgets are drawn in: a stand-in (how the engine gets
-/// a text widget's colour from its shader is not read).
+/// The colour the preview draws text widgets in: a stand-in (the engine's
+/// is its shader's, [`Answers::shader_colour`]).
 pub const TEXT_COLOUR: [u8; 4] = [140, 200, 255, 255];
 
 /// Fallback text metrics without the disc's fonts: per character and line.
@@ -483,6 +495,12 @@ pub trait Answers {
     }
     /// A text widget's colour (RGBA).
     fn colour(&self, _hud: usize, _w: &Widget) -> Option<[u8; 4]> {
+        None
+    }
+    /// The colour the text widget's bound shader gives a fully covered
+    /// glyph, from the capture of its state at the draw (RGBA): what the
+    /// engine shading draws text in, in place of a stand-in.
+    fn shader_colour(&self, _hud: usize, _w: &Widget) -> Option<[u8; 4]> {
         None
     }
     /// A bitmap widget's turn about its centre, radians clockwise.
@@ -875,4 +893,53 @@ fn draw_text<R: Read + Seek>(
     }
     p.drawn = true;
     p.cover = Some(cover);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An invented font: a blank record every unit maps to, with one
+    /// glyph of its own for `unit`, `wide` by `high` pixels each of alpha
+    /// `alpha` (over 15) in the font's ascent of 12.
+    fn font_with(unit: u16, wide: u16, high: u16, alpha: u16) -> Vec<u8> {
+        let mut base = vec![0; font::RECORDS_OFFSET + font::RECORD_LEN];
+        let mut put = |at: usize, bytes: &[u8]| base[at..at + bytes.len()].copy_from_slice(bytes);
+        put(font::HEADER_OFFSET, &font::MAGIC.to_le_bytes());
+        put(font::HEADER_OFFSET + 4, &12u16.to_le_bytes());
+        put(font::HEADER_OFFSET + 0xc, &1u32.to_le_bytes());
+        let glyph = font::patch::Replacement {
+            unit,
+            width: wide,
+            height: high,
+            advance: wide as i16 + 1,
+            x_offset: 0,
+            y_offset: None,
+            pixels: vec![(alpha << 12) | 0x0fff; usize::from(wide) * usize::from(high)],
+        };
+        font::patch::apply(&base, &[glyph]).unwrap()
+    }
+
+    /// Fonts as a game serves them are found by their table line: parsed,
+    /// to lay a text out and to decode a glyph by its index.
+    #[test]
+    fn served_fonts_are_found_by_their_table_line() {
+        let a = font_with(u16::from(b'A'), 2, 2, 15);
+        let fonts = Fonts::served(
+            b"first\r\n\r\nthird",
+            [
+                ("third".to_owned(), font_with(u16::from(b'3'), 3, 1, 8)),
+                ("first".to_owned(), a),
+            ],
+        );
+        assert_eq!(fonts.table, ["first", "third"]);
+        let first = fonts.font(0).unwrap();
+        assert_eq!(first.header.ascent, 12);
+        assert_eq!(first.glyph(u16::from(b'A')).unwrap().pixels, [0xffff; 4]);
+        assert_eq!(fonts.font(1).unwrap().glyph_by_index(1).unwrap().pixels, [0x8fff; 3]);
+        assert!(fonts.font(2).is_none(), "no such line");
+        assert!(fonts.font(-1).is_none());
+        assert_eq!(fonts.has_glyph(0, u16::from(b'Z')), Some(false), "a unit the font lacks");
+        assert!(Fonts::served(b"", Vec::new()).table.is_empty());
+    }
 }

@@ -247,6 +247,18 @@ experiment 1 must be resolved before attributing one here to render RNG.
 h2 theater play "$film_run/match.h2film" --disc "$H2_DISC" --out "$H2_IMAGE" --socket "$film_run/play.sock" --render-every 1 --speed 1
 ```
 
+**Experiment 3, another window.** A local game renders on its own random
+stream and its guest camera follows the window
+([Determinism](../graphics/high-resolution.md#determinism)), so a film
+recorded in one window replays in any other. Record offline in a wide
+window and play the film back at 4:3, and the other way round; each
+playback must report `hashes matched through tick T`.
+
+```sh
+H2_RESOLUTION=2922x1662 h2 run "$H2_DISC" --out "$H2_IMAGE" --data "$film_run/wide" --film "$film_run/wide.h2film"
+H2_RESOLUTION=640x480 h2 theater play "$film_run/wide.h2film" --disc "$H2_DISC" --out "$H2_IMAGE" --socket "$film_run/play.sock" --render-every 1 --speed 1
+```
+
 During either run the agent exposes the [Theater transport](../runtime/agent-api.md#theater-transport).
 `theater.keyframes` lists the available restore points and
 `theater.state` reports the seek source and remaining ticks. With the ring
@@ -272,9 +284,9 @@ dedicated match.
 
 ### In-game Theater
 
-Select **THEATER** directly below **Xbox Live** on the main menu. The
-entry in `crates/extensions/game/src/layout_glue.rs` opens the film
-library for the controller that selects it. Left and Right switch between
+Select **THEATER** between **System Link** and **Settings** on the main menu. The
+main menu and **Game Setup → Theater** in the post-game party lobby open
+the same library for the controller that selects it. Left and Right switch between
 the **Recent**, **Saved** and **Clips** tabs from any row. The active tab
 and its film count sit above the list and the details pane.
 
@@ -302,15 +314,15 @@ simulation change. A summary without a recording also shows its reason
 there. **Watch** appears for playable films and host films awaiting their
 first download.
 
-Recent combines the local library and the signed-in Live account's
-archive. `h2 play` records each session into the local library, one
+Recent combines the newest 25 unsaved local games and the signed-in Live
+account's unsaved games. `h2 play` records each session into the local library, one
 film per game, so each game played on this console appears there and
 opens at its own start; the account's archive adds
 games whose dedicated host recorded a film
 ([Recording every game](film-format.md#recording-every-game) lists what
 each kind of game shows). Saved includes local and account pins. Clips includes local
 in/out ranges and clips authored by the account. Use **Save** or **Unsave**
-to change a pin. Local films and authored clips offer **Delete** with a
+to move the film between Recent and Saved. Local films and authored clips offer **Delete** with a
 second press to confirm. The selector takes its data from the library
 and the Live listing. Older recordings and archives can leave some fields
 blank.

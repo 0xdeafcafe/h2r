@@ -3,8 +3,8 @@
 //!
 //! ```text
 //! h2 asset catalogue 1
-//! normal <version of the normal forms>
-//! record <sha256 of extract.toml, or ->
+//! normal\t<version of the normal forms>
+//! record\t<sha256 of extract.toml, or ->
 //! map\t<stem>\t<sha256 of the manifest's text>
 //! asset\t<group>\t<path>\t<asset hash>\t<variant or ->\t<map,map,...>
 //! used\t<group>\t<path>\t<group>\t<path>\t<group>\t<path>...
@@ -28,7 +28,7 @@ use super::normal;
 use super::store::{
     Manifest, TagRepo, esc, extraction_order, group_ext, parse_key, unesc, write_atomic,
 };
-use super::{Error, Result, TagKey, hex, sha256};
+use super::{Error, Result, TagKey, TagSource, hex, sha256};
 use crate::schema::Schema;
 use map::FourCC;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -104,7 +104,7 @@ impl Catalogue {
     /// [`Catalogue::parse`]'s text.
     pub fn to_text(&self) -> String {
         let mut s = format!(
-            "{MAGIC}\nnormal {}\nrecord {}\n",
+            "{MAGIC}\nnormal\t{}\nrecord\t{}\n",
             self.normal,
             self.record.as_deref().unwrap_or("-")
         );
@@ -457,7 +457,14 @@ pub fn build(root: &Path, schema: &Schema) -> Result<(Catalogue, Built)> {
 /// `force` is set (the store was just written: a file can change while no
 /// manifest does). `None` when the catalogue is current.
 pub fn update(root: &Path, schema: &Schema, force: bool) -> Result<Option<Built>> {
-    if !force && read(root)?.is_some_and(|c| c.is_current(root).unwrap_or(false)) {
+    // A catalogue that does not read (an older format, a torn write) is
+    // stale like a missing one: it is built again, never an error.
+    if !force
+        && read(root)
+            .ok()
+            .flatten()
+            .is_some_and(|c| c.is_current(root).unwrap_or(false))
+    {
         return Ok(None);
     }
     let (c, report) = build(root, schema)?;

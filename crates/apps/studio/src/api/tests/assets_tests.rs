@@ -246,9 +246,26 @@ fn the_packages_root_lists_the_set_and_a_package_its_items() {
         m::ASSET_LIST,
         json!({"root": "packages", "package": "kit-test"}),
     );
+    // An item lists under the kind of what it builds: the tag and the
+    // edit under the tag kinds, the bitmap under Bitmaps. Its own kind
+    // is on the row too.
     let kinds: Vec<_> = rows(&v).iter().map(|r| r["kind"].clone()).collect();
-    assert_eq!(kinds, [json!("tag"), json!("edits"), json!("bitmap")]);
+    assert_eq!(
+        kinds,
+        [json!("Objects"), json!("Objects"), json!("Bitmaps")]
+    );
+    let item_kinds: Vec<_> = rows(&v).iter().map(|r| r["item_kind"].clone()).collect();
+    assert_eq!(item_kinds, [json!("tag"), json!("edits"), json!("bitmap")]);
     assert_eq!(rows(&v)[0]["asset"], "item:kit-test:0");
+
+    let filtered = call(
+        &mut api,
+        &mut app,
+        m::ASSET_LIST,
+        json!({"root": "packages", "package": "kit-test", "kind": "bitmaps"}),
+    );
+    assert_eq!(rows(&filtered).len(), 1);
+    assert_eq!(rows(&filtered)[0]["asset"], "item:kit-test:2");
 
     let e = api
         .call(
@@ -292,6 +309,10 @@ fn copy_into_writes_a_like_item_with_no_bytes_of_the_source() {
     assert_eq!(v["tag"], "tag:weap:objects\\weapons\\rifle_copy");
     assert_eq!(v["source"], "tags/objects/weapons/rifle_copy.weap.yaml");
     assert_eq!(v["item"], 3);
+    assert_eq!(v["doc"], "item:kit-test:3");
+    let doc = app.front_doc().unwrap();
+    let tab = app.tabs().iter().find(|tab| tab.doc == doc).unwrap();
+    assert_eq!(app.tab_json(tab)["badge"], "new in kit-test");
     // The source file names the tag and holds nothing else.
     let text =
         std::fs::read_to_string(dir.join("tags/objects/weapons/rifle_copy.weap.yaml")).unwrap();

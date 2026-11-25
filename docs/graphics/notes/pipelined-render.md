@@ -279,6 +279,8 @@ averages), `region …` counts, the top `rs`, `ww` and `sr` pages
 (`H2_RENDER_CENSUS_TOP`, default 20) with region and first writer and
 reader, and the v2 lines above. With `H2_RENDER_CENSUS_OUT=<path>` the full per-page table
 is rewritten there as TSV at each report.
+A successful map activation reports any remaining window and starts a
+fresh census, including the sticky-page selection.
 
 **Running it.** It needs a new `h2` binary only (no generated-code or
 image change):

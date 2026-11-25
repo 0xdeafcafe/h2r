@@ -19,10 +19,10 @@ use std::time::Instant;
 
 use ::workspace::{
     Loaded, PACKAGES_DIR, Target, added_tag, build_map, builder, changes_map, check_package,
-    check_set, forbidden_files, lock_findings, read_lock, scope_of,
+    check_set, forbidden_files, lock_findings, read_lock, scope_of, store_findings,
 };
 use content::package::{
-    ALWAYS_ON, Credit, Header, Item, LOCK_FILE, MANIFEST_FILE, Manifest, MapScope, PACKAGE_FORMAT,
+    ALWAYS_ON, Credit, Header, Item, Kind, LOCK_FILE, MANIFEST_FILE, Manifest, MapScope, PACKAGE_FORMAT,
     SET_FILE, Set, SetFile, valid_slug,
 };
 use serde_json::{Value, json};
@@ -269,8 +269,10 @@ fn scope_word(s: content::package::ItemScope) -> &'static str {
     }
 }
 
-/// The findings `h2 package check` makes about one package, as rows.
-fn findings(k: &Known, id: &str) -> Res<Vec<Value>> {
+/// The findings `h2 package check` makes about one package, as rows. With
+/// `store`, the tag store's root, a file that is a raw resource or a tag
+/// file of that store is a finding too (`workspace::store_findings`).
+fn findings(k: &Known, id: &str, store: Option<&Path>) -> Res<Vec<Value>> {
     let (loaded, dir) = k.need(id)?;
     let mut out: Vec<Value> = Vec::new();
     let row = |kind: &str, message: String| json!({ "kind": kind, "message": message });
@@ -289,6 +291,14 @@ fn findings(k: &Known, id: &str) -> Res<Vec<Value>> {
         }
         for f in forbidden_files(dir) {
             out.push(row("files", f));
+        }
+    }
+    if let Some(store) = store {
+        for f in store_findings(store, loaded) {
+            let mut r = row("store", f.what.clone());
+            r["item"] = json!(f.item);
+            r["file"] = json!(f.file);
+            out.push(r);
         }
     }
     for f in check_package(loaded) {
@@ -325,6 +335,11 @@ fn findings(k: &Known, id: &str) -> Res<Vec<Value>> {
 /// `package.read`: the manifest, each item with what it builds, the lock
 /// and the findings.
 pub fn read(data: &Path, id: &str) -> Res {
+    read_with(data, id, None)
+}
+
+/// [`read`], with the findings over `store` (the tag store's root).
+pub fn read_with(data: &Path, id: &str, store: Option<&Path>) -> Res {
     let k = known(data);
     let (loaded, dir) = k.need(id)?;
     let manifest = &loaded.package.manifest;
@@ -352,7 +367,7 @@ pub fn read(data: &Path, id: &str) -> Res {
         .collect();
     let listed = read_set(data);
     let row = listed.listed.iter().find(|l| l.id == id);
-    let problems = findings(&k, id)?;
+    let problems = findings(&k, id, store)?;
     Ok(json!({
         "id": id,
         "package_id": loaded.package.id.to_string(),
@@ -375,8 +390,15 @@ pub fn read(data: &Path, id: &str) -> Res {
 /// an item with no builder, a missing source, a source its builder refuses),
 /// and its conflicts with the rest of the set.
 pub fn check(data: &Path, id: &str) -> Res {
+    check_with(data, id, None)
+}
+
+/// [`check`], with the findings over `store` (the tag store's root): a
+/// file of the package that is a raw resource or a tag file of the user's
+/// own store.
+pub fn check_with(data: &Path, id: &str, store: Option<&Path>) -> Res {
     let k = known(data);
-    let found = findings(&k, id)?;
+    let found = findings(&k, id, store)?;
     Ok(json!({
         "id": id,
         "ok": found.is_empty(),
@@ -416,19 +438,139 @@ fn commit(data: &Path, dir: &Path, manifest: &Manifest) -> Res<Loaded> {
     let path = dir.join(MANIFEST_FILE);
     let old =
         std::fs::read_to_string(&path).map_err(|e| Failed(format!("{}: {e}", path.display())))?;
-    std::fs::write(&path, manifest.to_toml())
+    content::store::write_atomic(&path, manifest.to_toml().as_bytes())
         .map_err(|e| Failed(format!("{}: {e}", path.display())))?;
     let undo = |why: Refusal| {
-        let _ = std::fs::write(&path, &old);
+        let _ = content::store::write_atomic(&path, old.as_bytes());
         why
     };
     let loaded = Loaded::from_dir(dir).map_err(|e| undo(Refused(e.to_string())))?;
     let file = set_file(data).map_err(&undo)?;
     ordered(&known(data), &file).map_err(&undo)?;
     let lock = dir.join(LOCK_FILE);
-    std::fs::write(&lock, loaded.package.lock.to_toml())
-        .map_err(|e| Failed(format!("{}: {e}", lock.display())))?;
+    content::store::write_atomic(&lock, loaded.package.lock.to_toml().as_bytes())
+        .map_err(|e| undo(Failed(format!("{}: {e}", lock.display()))))?;
     Ok(loaded)
+}
+
+/// Save an editor's source, updating its original item when it belongs to
+/// this target. A new document gets an unused path even if the title matches.
+pub(super) fn put_document(
+    data: &Path,
+    id: &str,
+    kind: Kind,
+    origin: Option<&Path>,
+    suggested: &str,
+    bytes: &[u8],
+) -> Res<PathBuf> {
+    put_source(data, id, kind, origin, suggested, None, bytes)
+}
+
+/// Sounds have an identity even across sessions: their target tag or clip id.
+pub(super) fn put_sound(
+    data: &Path,
+    id: &str,
+    clip: &str,
+    tag: Option<&str>,
+    bytes: &[u8],
+) -> Res<PathBuf> {
+    let tag = tag.map(|t| t.trim().replace('/', "\\"));
+    if let Some(t) = &tag
+        && (t.is_empty() || t.contains("..") || t.starts_with('\\') || t.contains('\0'))
+    {
+        return Err(Params(format!("{t:?} is not a tag path")));
+    }
+    let source = match &tag {
+        Some(t) => format!(
+            "sounds/{}-{}.wav",
+            super::sound_import::file_stem(t, "sound"),
+            &content::Sha256::of(t.to_ascii_lowercase().as_bytes()).to_string()[..16],
+        ),
+        None => format!("sounds/{clip}.wav"),
+    };
+    let wav = ::workspace::import::read_wav(bytes).map_err(|e| Refused(e.to_string()))?;
+    ::workspace::import::encode(&wav).map_err(|e| Refused(e.to_string()))?;
+    let dir = known(data).local(id)?.1;
+    put_source(data, id, Kind::Sound, Some(&dir.join(&source)), &source, tag, bytes)
+}
+
+fn put_source(
+    data: &Path,
+    id: &str,
+    kind: Kind,
+    origin: Option<&Path>,
+    suggested: &str,
+    tag: Option<String>,
+    bytes: &[u8],
+) -> Res<PathBuf> {
+    let k = known(data);
+    let (loaded, dir) = k.local(id)?;
+    let mut manifest = loaded.package.manifest.clone();
+    let at = manifest.items.iter().position(|i| {
+        i.kind == kind && (i.source.as_ref().is_some_and(|p| origin.is_some_and(|path| path == dir.join(p)))
+            || (kind == Kind::Sound && tag.as_ref().zip(i.tag.as_ref()).is_some_and(|(a, b)| a.eq_ignore_ascii_case(b))))
+    });
+    let existing = at.map(|i| &manifest.items[i]);
+    let source = if let Some(item) = existing {
+        if kind == Kind::Sound && item.tag != tag
+            && !item.tag.as_ref().zip(tag.as_ref()).is_some_and(|(a, b)| a.eq_ignore_ascii_case(b))
+        {
+            return Err(Refused(format!("{suggested} belongs to another sound")));
+        }
+        item.source.clone().ok_or_else(|| Refused("the item has no source".into()))?
+    } else {
+        let used = |s: &str| loaded.files.contains_key(s) || dir.join(s).symlink_metadata().is_ok();
+        if kind == Kind::Sound && used(suggested) {
+            return Err(Refused(format!("{suggested} already exists")));
+        }
+        let mut source = suggested.to_owned();
+        let (stem, extension) = suggested.rsplit_once('.').expect("editor sources have extensions");
+        let mut suffix = 2;
+        while used(&source) {
+            source = format!("{stem}-{suffix}.{extension}");
+            suffix += 1;
+        }
+        source
+    };
+    if !safe_path(&source) || bytes.len() as u64 > ::workspace::MAX_FILE_BYTES {
+        return Err(Refused(format!("invalid package source {source:?}")));
+    }
+    if manifest.items.iter().enumerate().any(|(i, item)| {
+        Some(i) != at && (item.source.as_deref() == Some(&source) || item.inputs.contains(&source))
+    }) {
+        return Err(Refused(format!("{source} is shared by another item")));
+    }
+    let path = dir.join(&source);
+    let root = root(data);
+    for entry in path.ancestors().take_while(|p| p.starts_with(&root)) {
+        match entry.symlink_metadata() {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(Refused(format!("{} is a symlink", entry.display())));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(Failed(format!("{}: {e}", entry.display()))),
+        }
+    }
+    if existing.is_none() {
+        manifest.items.push(Item {
+            kind, source: Some(source.clone()), inputs: Vec::new(), tag,
+            maps: Default::default(), replaces: None, was: None,
+        });
+    }
+    let write = |bytes: &[u8]| content::store::write_atomic(&path, bytes);
+    write(bytes).map_err(|e| Failed(format!("{}: {e}", path.display())))?;
+    if let Err(why) = commit(data, &dir, &manifest) {
+        let restored = match loaded.files.get(&source) {
+            Some(old) => write(old),
+            None => std::fs::remove_file(&path),
+        };
+        return Err(match restored {
+            Ok(()) => why,
+            Err(e) => Failed(format!("{why}. Could not restore {}: {e}", path.display())),
+        });
+    }
+    Ok(path)
 }
 
 fn changed(id: &str, loaded: &Loaded) -> Value {
@@ -630,16 +772,39 @@ pub fn put_edits(data: &Path, id: &str, map: &str, text: &str) -> Res<bool> {
             "map {map:?} cannot name a file: letters, digits, '_' and '-'"
         )));
     }
+    put_edits_at(
+        data,
+        id,
+        &edits_file(map),
+        content::package::Maps::Names(vec![map.to_owned()]),
+        text,
+    )
+}
+
+/// [`put_edits`] for any file of the package: `rel` is the file and the
+/// `edits` item's source, `maps` the item's scope when the item is made.
+/// Empty text removes the file and its item.
+pub fn put_edits_at(
+    data: &Path,
+    id: &str,
+    rel: &str,
+    maps: content::package::Maps,
+    text: &str,
+) -> Res<bool> {
+    if !safe_path(rel) {
+        return Err(Refused(format!(
+            "{rel:?} is not a path inside the package: no .., no drive or leading slash"
+        )));
+    }
     let k = known(data);
     let (loaded, dir) = k.local(id)?;
-    let rel = edits_file(map);
-    let path = dir.join(&rel);
+    let path = dir.join(rel);
     let at = loaded
         .package
         .manifest
         .items
         .iter()
-        .position(|i| i.kind == content::package::Kind::Edits && i.source.as_deref() == Some(&rel));
+        .position(|i| i.kind == content::package::Kind::Edits && i.source.as_deref() == Some(rel));
     let relock = |dir: &Path| -> Res<()> {
         let l = Loaded::from_dir(dir).map_err(|e| Refused(e.to_string()))?;
         let lock = dir.join(LOCK_FILE);
@@ -676,10 +841,12 @@ pub fn put_edits(data: &Path, id: &str, map: &str, text: &str) -> Res<bool> {
     let mut manifest = loaded.package.manifest.clone();
     manifest.items.push(Item {
         kind: content::package::Kind::Edits,
-        source: Some(rel),
+        source: Some(rel.to_owned()),
         inputs: Vec::new(),
         tag: None,
-        maps: content::package::Maps::Names(vec![map.to_owned()]),
+        maps,
+        replaces: None,
+        was: None,
     });
     if let Err(e) = commit(data, &dir, &manifest) {
         let _ = std::fs::remove_file(&path);
@@ -785,6 +952,36 @@ fn scope_at(base: &BaseMap) -> Result<MapScope, String> {
     };
     let h = map::Header::read_region(&mut f, at, len).map_err(|e| format!("not a map: {e}"))?;
     Ok(scope_of(h.cache_type))
+}
+
+/// The class of `base`'s map, read from its header.
+pub fn scope_of_base(base: &BaseMap) -> Result<MapScope, String> {
+    scope_at(base)
+}
+
+/// The package `id` as loaded, built in or local: its manifest and files.
+pub fn loaded(data: &Path, id: &str) -> Res<Loaded> {
+    Ok(known(data).need(id)?.0.clone())
+}
+
+/// The local package `id` as loaded, with its folder; a built-in one is
+/// refused.
+pub fn loaded_local(data: &Path, id: &str) -> Res<(Loaded, PathBuf)> {
+    let k = known(data);
+    let (l, dir) = k.local(id)?;
+    Ok((l.clone(), dir))
+}
+
+/// Every package the set has on, in load order: what a level is built over.
+pub fn in_order(data: &Path) -> Res<Vec<Loaded>> {
+    let k = known(data);
+    let file = set_file(data)?;
+    let set = ordered(&k, &file)?;
+    Ok(set
+        .loaded
+        .iter()
+        .filter_map(|p| k.get(p.name()).map(|(l, _)| l.clone()))
+        .collect())
 }
 
 /// The packages a build of `id` applies, in load order: `id` and what it
@@ -914,4 +1111,107 @@ pub fn build(
         rows.push(r);
     }
     Ok(rows)
+}
+
+/// Export the manifest and only its named files, with a lock for these bytes.
+pub(crate) fn export(data: &Path, store: &Path, id: &str, out: &Path) -> Res {
+    if !valid_slug(id) {
+        return Err(Params(format!("invalid package id {id:?}")));
+    }
+    let (loaded, dir) = loaded_local(data, id)?;
+    let mut refused = forbidden_files(&dir);
+    refused.extend(store_findings(store, &loaded).into_iter().map(|f| f.what));
+    if !refused.is_empty() {
+        return Err(Refused(refused.join("\n")));
+    }
+    let package_dir = dir.canonicalize().map_err(|e| Failed(e.to_string()))?;
+    for name in loaded.files.keys() {
+        let source = dir.join(name).canonicalize().map_err(|e| Failed(format!("{name}: {e}")))?;
+        if !source.starts_with(&package_dir)
+            || source == package_dir.join(MANIFEST_FILE)
+            || source == package_dir.join(LOCK_FILE)
+        {
+            return Err(Refused(format!("{name:?} is not an exportable package source")));
+        }
+    }
+    let failed = |e: std::io::Error| Failed(format!("{}: {e}", out.display()));
+    std::fs::create_dir(out).map_err(failed)?;
+    let write = || -> std::io::Result<()> {
+        std::fs::write(out.join(MANIFEST_FILE), loaded.package.manifest.to_toml())?;
+        std::fs::write(out.join(LOCK_FILE), loaded.package.lock.to_toml())?;
+        for (name, bytes) in &loaded.files {
+            let file = out.join(name);
+            if let Some(parent) = file.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(file, bytes)?;
+        }
+        Ok(())
+    };
+    if let Err(e) = write() {
+        let _ = std::fs::remove_dir_all(out);
+        return Err(failed(e));
+    }
+    Ok(json!({"id": id, "out": out, "files": loaded.files.len() + 2}))
+}
+
+/// The package tab and its most recent command's result.
+#[derive(Default)]
+pub(crate) struct Document {
+    pub read: Option<Value>,
+    pub result: Option<(&'static str, Result<Value, String>)>,
+    pub revision: u64,
+}
+
+impl Document {
+    pub fn id(&self) -> Option<&str> {
+        self.read.as_ref()?["id"].as_str()
+    }
+
+    pub fn name(&self) -> Option<&str> {
+        self.read.as_ref()?["package"]["name"].as_str()
+    }
+}
+
+impl super::App {
+    pub(super) fn open_package_document(&mut self, id: &str) {
+        if !valid_slug(id) {
+            return self.error(format!("invalid package id {id:?}"));
+        }
+        match read_with(&self.data_root(), id, Some(&self.tags_root())) {
+            Ok(read) => {
+                self.package_document.read = Some(read);
+                self.package_document.result = None;
+                self.open_doc(super::Doc::Package);
+            }
+            Err(e) => self.error(e.to_string()),
+        }
+    }
+
+    pub(crate) fn refresh_package_document(&mut self) {
+        self.package_document.revision += 1;
+        if let Some(id) = self.package_document.id()
+            && let Ok(read) = read_with(&self.data_root(), id, Some(&self.tags_root()))
+        {
+            self.package_document.read = Some(read);
+        }
+    }
+
+    pub(super) fn package_command(&mut self, method: &'static str, params: Value) {
+        use crate::api::{P, packages};
+        use studio_proto::method as m;
+
+        let answer = packages::call(self, method, &P(&params)).and_then(|reply| {
+            if method == m::PACKAGE_NEW && let Some(id) = reply["id"].as_str() {
+                packages::call(self, m::PACKAGE_TARGET, &P(&json!({"id": id})))?;
+                self.open_package_document(id);
+            }
+            Ok(reply)
+        });
+        match &answer {
+            Ok(reply) => self.info(format!("{method} {reply}")),
+            Err(e) => self.error(e.message.clone()),
+        }
+        self.package_document.result = Some((method, answer.map_err(|e| e.message)));
+    }
 }

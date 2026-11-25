@@ -112,6 +112,69 @@ fn a_sink_with_no_slot_records_nothing_and_changes_nothing() {
     assert_eq!(d.backend.inner().calls, plain.backend.calls, "the sink passes the same calls on");
 }
 
+/// A pooled frame-buffer copy refilled in the frame: a new sample, which
+/// names the earlier sample whose texture it refills, so replay copies
+/// into that texture rather than make one per sample. Draws before the
+/// refill bind the first sample, draws after it the second.
+#[test]
+fn a_refilled_copy_is_a_new_sample_that_names_the_one_it_refills() {
+    use d3d::{Backend, Recorded};
+    use d3d::scene_sink::{ReplayOp, ReplaySample, ReplayTexture};
+    use gfx::{Clear, D3DFormat};
+    use std::sync::{Arc, Mutex};
+
+    fn slot() -> Option<SlotAt> { Some(SlotAt { slot: Slot::Opaque, view: 0 }) }
+    let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
+    set_states(&mut device, &mut memory);
+    quad(&mut device, &mut memory, 0xFF19_3264);
+    let draw = device.backend.draws().pop().unwrap().clone();
+
+    let frames = Arc::new(Mutex::new(Vec::new()));
+    let output = frames.clone();
+    let mut sink = SceneSink::new(RecordingBackend::new(), slot)
+        .with_replay(move |frame| output.lock().unwrap().push(frame));
+    let fmt = D3DFormat::LinA8R8G8B8;
+    let colour = sink.create_texture_target(fmt, 32, 32).unwrap();
+    let shown = sink.create_surface(fmt, 32, 32, false).unwrap();
+    let depth = sink.create_surface(D3DFormat::LinD24S8, 32, 32, true).unwrap();
+
+    sink.clear(colour, Some(depth), Clear::all([0.1, 0.2, 0.3, 1.0])).unwrap();
+    let mut copy = sink.snapshot_surface(colour, false).unwrap().unwrap();
+    sink.draw(colour, Some(depth), &draw, [Some(&copy), None, None, None]).unwrap();
+    assert!(sink.snapshot_surface_into(colour, false, &mut copy).unwrap());
+    sink.draw(colour, Some(depth), &draw, [Some(&copy), None, None, None]).unwrap();
+    assert!(sink.copy_surface(colour, shown).unwrap());
+    sink.present(shown, 0).unwrap();
+
+    // The backend refilled the texture it made.
+    let calls = &sink.inner().calls;
+    let made: Vec<u32> = calls.iter().filter_map(|c| match c {
+        Recorded::Snapshot { id, .. } => Some(*id),
+        _ => None,
+    }).collect();
+    assert_eq!(made.len(), 1);
+    assert!(calls.iter().any(|c| matches!(c, Recorded::SnapshotInto { id, .. } if *id == made[0])));
+
+    let frame = frames.lock().unwrap().pop().unwrap();
+    let samples: Vec<_> = frame.ops.iter().filter_map(|(_, op)| match op {
+        ReplayOp::Sample { id, how, into, .. } => Some((*id, how.clone(), *into)),
+        _ => None,
+    }).collect();
+    let [(first, ReplaySample::Snapshot { opaque: false }, None),
+        (second, ReplaySample::Snapshot { opaque: false }, Some(refills))] = samples.as_slice()
+    else { panic!("unexpected samples: {samples:?}") };
+    assert_eq!(refills, first);
+    assert_ne!(second, first);
+    let bound: Vec<_> = frame.ops.iter().filter_map(|(_, op)| match op {
+        ReplayOp::Draw { textures, .. } => Some(textures[0].clone()),
+        _ => None,
+    }).collect();
+    assert!(
+        matches!(bound.as_slice(), [Some(ReplayTexture::Sample(a)), Some(ReplayTexture::Sample(b))] if a == first && b == second),
+        "{bound:?}"
+    );
+}
+
 #[test]
 fn replay_retains_the_sample_version_draw_bindings_and_distinct_copy_targets() {
     use d3d::Backend;
@@ -157,7 +220,7 @@ fn replay_retains_the_sample_version_draw_bindings_and_distinct_copy_targets() {
         op
     }).collect();
     let [ReplayOp::Clear { colour: side, .. },
-        ReplayOp::Sample { of, id, how: ReplaySample::Snapshot { opaque: true } },
+        ReplayOp::Sample { of, id, how: ReplaySample::Snapshot { opaque: true }, into: None },
         ReplayOp::Clear { .. }, ReplayOp::Bind { colour: bound, .. },
         ReplayOp::Draw { draw: kept, textures, .. },
         ReplayOp::Copy { from, to: TargetRef::SceneColour }] = ops.as_slice()
@@ -355,7 +418,7 @@ fn a_frozen_sample_needs_the_earlier_pixels_and_an_in_place_view_sees_the_later_
     let clear = |colour| (at, ReplayOp::Clear { colour, depth: TargetRef::None, clear: Clear::all([0.2, 0.5, 0.7, 1.0]) });
     let frame = |how| ReplayFrame {
         presented: main, colour: Some(desc), aux: vec![desc], ops: vec![
-            clear(main), (at, ReplayOp::Sample { id: 0, of: side, how }), clear(side),
+            clear(main), (at, ReplayOp::Sample { id: 0, of: side, how, into: None }), clear(side),
             (at, ReplayOp::Bind { colour: main, depth: TargetRef::None }),
             (at, ReplayOp::Draw { draw: std::sync::Arc::new(draw.clone()), textures: [Some(ReplayTexture::Sample(0)), None, None, None], camera: CameraUse::Screen, external: None }),
         ], ..Default::default()
@@ -668,15 +731,36 @@ mod retained_admission {
     }
 
     #[test]
+    fn sorted_water_retains_the_resolved_packet() {
+        let o = capture(false, |admission, _, _| admission.plan.stage = Stage::Water);
+        assert_eq!(o.external.unwrap().plan.stage, Stage::Water);
+        assert_eq!((o.issued, o.replay_draws), (1, 1));
+    }
+
+    #[test]
+    fn the_sky_strip_keeps_its_stencil_write_on_replay() {
+        let o = capture(false, |admission, draw, _| {
+            admission.plan.stage = Stage::Sky;
+            draw.target.depth_format = Some(D3DFormat::LinD24S8);
+            draw.state.render.stencil.enable = true;
+            draw.state.render.stencil.write_mask = 0xff;
+            draw.state.render.stencil.pass = gfx::state::StencilOp::Replace;
+            admission.packet = Arc::new(draw.clone());
+        });
+        assert!(o.submitted.writes_depth_stencil());
+        assert_eq!(o.external.unwrap().plan.stage, Stage::Sky);
+        assert_eq!((o.issued, o.replay_draws), (1, 1));
+    }
+
+    #[test]
     fn every_inexact_admission_still_draws_the_packet_once_with_its_own_outcome() {
         type Case = fn(&mut RetainedAdmission<u32>, &mut ResolvedDraw, [u32; 3]);
-        let cases: [(&str, bool, Case); 7] = [
+        let cases: [(&str, bool, Case); 6] = [
             ("one-shot pass", false, |a, _, _| {
                 a.pass = Arc::new(Mutex::new(Box::new(Flare(false)) as Box<dyn ExternalPass>));
             }),
             ("packet differs from the submitted draw", false, |_, d, _| d.entry = "adapted"),
-            ("only flares are retained: particles", false, |a, _, _| a.plan.stage = Stage::Particles),
-            ("only flares are retained: world", false, |a, _, _| a.plan.stage = Stage::World),
+            ("unretained stage: world", false, |a, _, _| a.plan.stage = Stage::World),
             ("sampled levels need their own replay samples", false, |a, _, s| a.surfaces.sampled.push(s[2])),
             ("admission bound other attachments", false, |a, _, s| a.surfaces.depth = s[2]),
             ("guest reference requested", true, |_, _, _| {}),

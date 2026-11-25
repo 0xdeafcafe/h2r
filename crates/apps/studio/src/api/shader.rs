@@ -121,7 +121,9 @@ fn override_json(app: &App, key: &Key, code: &programs::PassCode) -> Value {
 
 fn override_call(app: &mut App, p: &P) -> Reply {
     let (key, code) = pass_key(app, p)?;
-    match p.get("text") {
+    // The params as sent: a null `text` discards the draft, where `P::get`
+    // would read it as no `text` at all.
+    match p.0.get("text") {
         None => {}
         Some(Value::Null) => {
             app.shader_overrides.discard(&key);

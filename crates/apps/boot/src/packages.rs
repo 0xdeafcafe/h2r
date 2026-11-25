@@ -12,20 +12,21 @@
 //! `<data>/store/images/`; docs/engine/asset-store.md, "Runtime assembly"),
 //! and the rewrite rebuilds no map.
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use agent::{Access, Agent};
 use agent_proto::method;
 use vfs::Backend as _;
-use workspace::{GameSet, KitInputs, PackageRewrite, Served};
+use workspace::{GameSet, KitInputs, Origin, PackageRewrite, Served};
 
 mod baked {
     include!(concat!(env!("OUT_DIR"), "/packages_baked.rs"));
 }
 
-/// The set this boot read.
-static SET: OnceLock<Arc<GameSet>> = OnceLock::new();
+/// The boot's set admission result.
+static NETWORK_REFUSAL: OnceLock<Option<String>> = OnceLock::new();
 
 /// The baked packages, with a line for each that did not read: what
 /// Studio's browser lists beside the user's.
@@ -43,7 +44,7 @@ pub fn ui_rewrite(data_root: &Path) -> Result<PackageRewrite, String> {
 
 /// The boot's set and its rewrite.
 pub struct Packages {
-    pub set: Arc<GameSet>,
+    pub summary: serde_json::Value,
     pub served: Served,
     /// `None` when no package on has an item.
     pub rewrite: Option<PackageRewrite>,
@@ -52,18 +53,16 @@ pub struct Packages {
     pub levels: Option<vfs::store_map::SharedLevels>,
 }
 
-/// Read the set: baked, then `<data_root>/packages/`, `feature_on` saying
-/// which game features are on. `kits` is what the set's `kit` items run on:
-/// the campaigns' level pictures and the button icon sets. `store` is the
-/// tag store the maps are served from (`store-maps`), if they are: the
-/// set's map items then reach the game as level images. Every problem is a
-/// line on stderr.
-pub fn at_boot(
-    data_root: &Path,
-    feature_on: &dyn Fn(&str) -> bool,
-    kits: KitInputs,
-    store: Option<&Path>,
-) -> Packages {
+/// A single package load feeds map preparation and the runtime rewrite.
+pub struct BootSet {
+    pub loaded: Vec<workspace::Loaded>,
+    summary: serde_json::Value,
+    strict: BTreeSet<String>,
+    refusal: Option<String>,
+}
+
+/// Read the set before preparing the maps that its `map` items name.
+pub fn read_set(data_root: &Path, feature_on: &dyn Fn(&str) -> bool) -> BootSet {
     let (baked, mut problems) = workspace::baked(baked::BAKED);
     let mut set = GameSet::read(baked, data_root, feature_on);
     problems.append(&mut set.problems);
@@ -71,16 +70,41 @@ pub fn at_boot(
     for p in &set.problems {
         eprintln!("packages: {p}");
     }
-    // The pogo stick's weapons are in the maps the `pogo` package built:
-    // read them from what the game is handed, for the loadout.
-    // The superbounce world labels' HUD font is read from the fonts as the
-    // game is handed them, after the `glyphs` kit.
-    let mut rewrite = PackageRewrite::new(set.loaded());
+    // Our own packages: a refusal of one for a map (a `from`, `was` or
+    // `replaces` that does not match the base) stops the map's build, where
+    // an installed package refused is off for that map with its reason.
+    let strict = set
+        .on
+        .iter()
+        .filter(|e| e.origin == Origin::Baked)
+        .map(|e| e.loaded.package.name().to_owned())
+        .collect();
+    BootSet {
+        summary: set.list(&Served::default()),
+        refusal: set.network_refusal(),
+        strict,
+        loaded: set.on.into_iter().map(|entry| entry.loaded).collect(),
+    }
+}
+
+/// Install the boot's package set. `kits` is what the set's `kit` items run on:
+/// the campaigns' level pictures and the button icon sets. `store` is the
+/// tag store the maps are served from (`store-maps`), if they are: the
+/// set's map items then reach the game as level images.
+pub fn at_boot(data_root: &Path, set: BootSet, kits: KitInputs, store: Option<&Path>) -> Packages {
+    // The built-in list entries are the `variant` items of the packages
+    // that are on: a package off takes its entries out of the game's list.
+    // This is before the list is first read (`community_variants::install`).
+    game::community_variants::install_registry(workspace::script_registry(&set.loaded));
+    let loaded: Arc<[workspace::Loaded]> = set.loaded.into();
+    let mut rewrite = PackageRewrite::new(Arc::clone(&loaded)).strict(set.strict.clone());
     if store.is_some() {
         rewrite = rewrite.levels_from_store();
     } else {
         rewrite = rewrite.with_cache(data_root);
     }
+    // Read the pogo stick's weapons and the superbounce HUD font from
+    // the rewritten maps and fonts that the game actually receives.
     let rewrite = rewrite
         .with_kits(kits)
         .observing_fonts(game::superbounce_font::Capture::keep)
@@ -93,20 +117,16 @@ pub fn at_boot(
         workspace::level::StoreLevels::new(
             root.to_path_buf(),
             workspace::level::images_dir(data_root),
-            set.loaded(),
+            loaded,
             served.clone(),
         )
+        .strict(set.strict)
         .shared()
     });
     let rewrite = (!rewrite.is_empty()).then_some(rewrite);
-    // The built-in list entries are the `variant` items of the packages
-    // that are on: a package off takes its entries out of the game's list.
-    // This is before the list is first read (`community_variants::install`).
-    game::community_variants::install_registry(workspace::script_registry(&set.loaded()));
-    let set = Arc::new(set);
-    let _ = SET.set(Arc::clone(&set));
+    let _ = NETWORK_REFUSAL.set(set.refusal);
     Packages {
-        set,
+        summary: set.summary,
         served,
         rewrite,
         levels,
@@ -187,13 +207,16 @@ pub fn prepare_maps(data_root: &Path, disc: &Path, loaded: &[workspace::Loaded])
 /// an unsigned package with a `sim` item is on, named. Local games are not
 /// refused.
 pub fn network_refusal() -> Option<String> {
-    SET.get()?.network_refusal()
+    NETWORK_REFUSAL.get()?.clone()
 }
 
 /// Register `packages.list` (read, no params).
-pub fn install(agent: &Agent, set: Arc<GameSet>, served: Served) {
+pub fn install(agent: &Agent, summary: serde_json::Value, served: Served) {
     agent.add_method(method::PACKAGES_LIST, Access::Read, move |_| {
-        Ok(set.list(&served))
+        let mut result = summary.clone();
+        let maps = served.lock().unwrap_or_else(|e| e.into_inner());
+        result["maps"] = serde_json::json!(*maps);
+        Ok(result)
     });
 }
 

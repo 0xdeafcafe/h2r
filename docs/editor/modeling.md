@@ -3,26 +3,33 @@
 Status: Partly built. The mesh kernel (slice 1), the in-place
 geometry path (slices 2 and 3, for clusters, instanced definitions and
 `mode` sections), grown raw writes (slice 7, with
-`MapEditor::append_raw` and **Use for lower LODs** in the session), the
-collision compiler with `coll` BSPs as meshes (slice 8, the crate only),
+`MapEditor::append_raw` and **Use for lower LODs**, a checkbox on a model
+section and `geometry.lower_lods`), the collision compiler with `coll`
+BSPs as meshes, `coll_bsp` targets and **From render** (slice 8),
+in-place physics shape edits (slice 9),
 adding solids to a structure's level collision (slice 11, with a box
-solid as the editor's one control) and the Textures tool (slices 5 and 6: painting,
-exporting, and writing the edited images with the map's save) are
+solid as the editor's one level collision control) and the Textures tool
+(slices 5 and 6: painting, exporting, and writing edited images with
+the map's save) are
 implemented; the Modeling window is a section of the map inspector with
-buttons, not yet the gizmo, overlays and keymap below, and has no control
-or API method for **Use for lower LODs** yet. A `coll` BSP and a
-structure's collision are not yet `geometry-edit` targets, so the mesh
-session does not reach them. The one level collision edit is a box:
+buttons, not yet the gizmo, overlays and keymap below. A structure's
+level collision is not a `geometry-edit` target, so the mesh session does
+not reach it; a `coll` BSP is (`coll_bsp:<tag>:<n>`). The one level collision edit is a box:
 **Add collision box** in the section (two corners) and
 `geometry.collision.add_box` add a closed box solid to the picked
 target's structure (`ModelAction::AddCollisionBox`), onto the boxes added
 before; `geometry.collision.clear` drops them. `Modeling::level_collision`
 holds the edit (`App::set_level_collision`), the save writes it, and Play
 sends it to a paired game (realtime-edits.md, "The editor"). Rebuilding a
-level's collision and markers are designs.
+level's collision, converted map overlays, lightmap relighting for
+mesh edits and markers are designs. The physics tool edits the local
+`phmo` tag in Modeling’s **Physics shapes** panel or through
+`model.physics.shapes` and `model.physics.set`. Each edit is one step
+in the tag document's undo history and saves with the map.
 Code: `crates/tools/mesh-edit`, `crates/tools/geometry-edit`,
 `crates/tools/collision-build`,
 `crates/tools/collision-build/src/{merge,level}.rs`,
+`crates/tools/geometry-edit/src/coll_target.rs`,
 `crates/tools/geometry-edit/src/level_collision.rs`,
 `crates/formats/tags/src/geometry_write.rs`,
 `crates/formats/map/src/writer.rs` (`append_raw`, `append_metadata`),
@@ -31,10 +38,14 @@ Code: `crates/tools/mesh-edit`, `crates/tools/geometry-edit`,
 `crates/apps/studio/src/app/{modeling,textures}.rs`,
 `crates/apps/studio/src/api/bitmaps.rs`,
 `crates/apps/studio/src/api/geometry.rs`,
+`crates/apps/studio/src/api/geometry/physics.rs`,
+`crates/formats/tags/src/collision/shape_edit.rs`,
 `crates/apps/studio/src/ui/modeling.rs`.
 Tests: `crates/tools/mesh-edit/tests`,
+`crates/tools/bitmap-edit/tests`,
 `crates/tools/geometry-edit/src/{session,write,grow,level_collision}_tests.rs`,
 `crates/tools/collision-build/src/{build,coll,merge}_tests.rs`,
+`crates/tools/geometry-edit/src/coll_target_tests.rs`,
 `crates/formats/tags/src/geometry_write_tests.rs`, the `append*raw*`
 tests in `crates/formats/map/src/tests.rs`,
 `a_geometry_raw_append_*`, `a_geometry_grown_block_*` and `bitmap_changes_*` in
@@ -314,11 +325,39 @@ its writes and stage start from the file's blocks. `box_solid` is the
 closed box the editor adds (`LevelSource::add_box`, `LevelEdit::add_box`;
 a box with no volume or a corner not finite is refused by target).
 
-**From render** (`from_render.rs`): weld, drop degenerate and repeated
-triangles (one drawn both ways becomes two-sided), then join neighbours
-across shared edges, of one material and flags, within 0.5 degrees and
-0.001 of each other's plane, while the result is convex with at most
-eight vertices.
+**As a target** (`geometry-edit/src/coll_target.rs`). `geometry.list`
+gives each BSP of each `coll` as `coll_bsp:<tag>:<n>`, `n` counting
+region, permutation, BSP in order; `geometry.open` opens it as
+`mesh_from_bsp`'s mesh, which has no source triangles, so nothing is
+welded or passed through. `CollSource::read` walks the tag for each
+block, slot box and slot MOPP in the ordinary metadata. A save runs
+`rebuild` on the mesh's polygons and writes the eight blocks as
+patches where the count holds, else as grown blocks
+(`Patches::grown`, saved as `GeometryGrown`, pairs at `element + 4 + 8k`),
+the slot's box as patches and its MOPP over the old program when it fits
+(`LevelWrites::mopp`). A BSP whose polygons are as imported writes
+nothing, so an undone edit is unedited. A compile the tag cannot hold (a
+material past its list, the limits) refuses the save naming the target. A
+paired game is not patched half way: the live path freezes geometry with
+a `reload` row until the map is reloaded.
+
+**From render** replaces an open `coll_bsp` mesh with polygons made from
+an open render section's current mesh. Open the render section, then the
+collision BSP, and pick the source in Modeling or call
+`model.collision_from_render`. Both meshes use the same coordinate
+space. The command uses collision material 0 by default. The API also
+accepts a mapping indexed by render material. The destination keeps its
+node binding.
+
+`collision_build::from_render` welds, drops degenerate and repeated
+triangles (one drawn both ways becomes two-sided), then joins neighbours
+across shared edges with the same collision material and flags, within
+0.5 degrees and 0.001 of each other's plane, while the result is convex
+with at most eight vertices. `GeometrySession::collision_from_render`
+records one `replace_polygons` op after the replacement passes the
+destination's compiler and material checks. Undo and redo restore the
+meshes with their op logs, and saving uses the collision BSP's existing
+block and physics-slot write path.
 
 ## Targets and the save
 
@@ -345,7 +384,9 @@ classes, named in the status bar and by `geometry.check`: **in place**
 writes until a game run has loaded one), **grown raw** (a
 new raw block; behind Allow unverified geometry writes until a game run
 has loaded one) and **grown blocks** (a tag block with more elements;
-behind Allow growing full blocks as well).
+behind Allow growing full blocks as well). A `coll` BSP edit is always
+the last, named `grown_blocks`: the BSP is compiled whole, a block whose
+count holds is patched and one that changed is appended.
 
 ## Texture editing (`bitmap-edit`)
 
@@ -353,7 +394,8 @@ Status: built (`crates/tools/bitmap-edit`, `crates/platform/assets/src/{encode,w
 `tags::bitmap_grow`, `app/textures.rs`, `ui/textures.rs`, `api/bitmaps.rs`).
 Edits live in the
 editor until a save, which encodes what changed and writes it with the map.
-The live preview is the canvas; the 3D viewport does not show them yet. P8
+The canvas shows every edit as it is made; the 3D viewport and
+`view.snapshot` draw a painted base map again ("Preview" below). P8
 pages open read-only.
 
 - **Decode.** `assets::bitmap::decode_image` gives every level, face and
@@ -364,12 +406,32 @@ pages open read-only.
   `assets::FORMAT_TABLE`).
 - **Canvas.** One RGBA8 layer per face or slice at mip 0, in tiles of
   256, each an `Arc`, so an undo snapshot shares every tile a stroke did
-  not touch. Tools: brush and eraser (size, hardness, opacity, spacing;
-  round stamp, linear-light blend), line, fill (flood by tolerance, or
-  the whole selection), rectangle selection, eyedropper, clone, levels
-  (black, white, gamma per channel), hue, saturation and value, invert,
-  channel copy (alpha is often a mask, so channels paint apart), flip
-  and rotate by quarter turns. **Import** replaces an image, a face or a
+  not touch. Every tool writes only the ticked channels (alpha is often a
+  mask, so channels paint apart). Tools:
+  - Brush and eraser (size, hardness, opacity, spacing; round stamp,
+    linear-light blend). A stroke through points stamps at every point
+    and at most the spacing apart between them, the last on the next
+    point, so two points are a line; in the window **Shift+click** draws
+    that line from the last point painted (`BitmapAction::Line`).
+  - Clone. A source point on the layer (in the window a click of the
+    clone tool, Alt+click to move it; a cross marks it). Each stamp
+    copies the pixels under it at the offset from the source to the
+    stroke's first point, in whole pixels, read from the layer as it was
+    when the stroke began, so a stroke never copies what it has painted;
+    past the source's edge nothing is painted. `bitmap.paint` takes the
+    source as `source` and reads another image, face or slice with
+    `from`. A clone stroke copies: it never erases.
+  - Fill (flood by tolerance, or the whole selection), rectangle
+    selection, eyedropper.
+  - Levels (black, white, gamma), hue, saturation and value, invert;
+    **Copy channel** (`bitmap.channel_copy`) writes a channel, or the
+    Rec. 601 luma of the colour (what an `L8` image stores), into the
+    ticked channels; **flip** and the **quarter turns** (`bitmap.turn`)
+    move the pixels of the selection or the whole layer without
+    resampling, and a quarter turn needs a square.
+
+  A stroke, a turn or a copy that changes no pixel is no undo step and
+  marks no tile edited. **Import** replaces an image, a face or a
   selection from a PNG, resampled (box down, bilinear up) when sizes
   differ; **Export** writes a PNG outside any Git checkout, as every
   render does ([agent-api.md](agent-api.md), "Documents").
@@ -431,6 +493,18 @@ pages open read-only.
   than the edit) is the session's `bitmap_refusal`: the save fails by
   name before it writes. A map that cannot take a new raw block
   (`raw_append_refusal`) refuses a shared-cache copy or a reshape.
+- **Format choice** (`assets::write::suggest_format`). The format a picture
+  saves in is the one it has when that holds the painted alpha (DXT1 and
+  A1R5G5B5 hold opaque and cut-out pictures, the colour-only formats opaque
+  ones, the rest anything), else DXT1 for an opaque or cut-out picture and
+  DXT5 for a blended one, or X8R8G8B8 and A8R8G8B8 when a side is not a power
+  of two (no DXT, no mips). `A8`, `Y8`, `AY8` and `A8Y8` are masks and greys
+  on purpose and are kept. The answer is always a format the encoder writes
+  and `reshaped` takes at that size. Resize's **Auto** button and `"auto"` as
+  `bitmap.reshape`'s or `bitmap.image.resize`'s `format` ask for it
+  (`App::suggest_bitmap_format`, looking at the layers resampled to the
+  size asked for). Leaving a dimension or format out keeps the current
+  value, including any pending reshape.
 - **Adding images and sequences.** `bitmap.image.add` (the inspector's
   **Add image**) appends an image after the bitmap's last: its `0x74`
   record copied from an existing 2D image (`from`, default 0) at a size
@@ -474,18 +548,23 @@ pages open read-only.
   stored images' in-place pixel patches still patch their own raw
   blocks, and every other tag keeps its bytes. References to the tag
   are by datum and do not move.
-- **Preview.** The viewport's texture for the bitmap
-  (`scenario_edit::scene`) is updated from the canvas after each stamp
-  (`Queue::write_texture` on the touched rectangle, mips at the stroke's
-  end), at full size for the bitmap being painted, so a stroke shows on
-  every surface and model using it. **Paint in the viewport** casts the
-  cursor's ray (`Session::surface_hit`, or the edit mesh), takes the
-  hit's texture coordinate and stamps there; it paints through the same
-  canvas.
+- **Preview.** The canvas shows each edit as it is made, from the
+  bitmap's dirty rectangles. The 3D viewport and `view.snapshot` draw a
+  painted base map again: an open bitmap whose pixels changed is
+  uploaded as the base map of every material of the level that took it
+  ([realtime-edits.md](realtime-edits.md), R15;
+  `crates/apps/studio/src/viewport/paint.rs`). The placed objects'
+  models and textures, a shader's other stage images and a material's
+  constants do not follow in the viewport yet. **Paint in the viewport**
+  (casting the cursor's ray, `Session::surface_hit` or the edit mesh, and
+  stamping at the hit's texture coordinate through the same canvas) is
+  design, not built.
 - **Deferred.** Layers, text, packing sprites onto a sheet, a UV
   editor, the low-detail copy (header `+0x158`), which stays as the
-  source's (and so goes stale when the picture changes), and a
-  LOD 1 or 2 where the map stored no LOD 0.
+  source's (and so goes stale when the picture changes), a
+  LOD 1 or 2 where the map stored no LOD 0, a mip picker and channel view
+  toggles for the canvas (it shows mip 0, every channel) and the outliner
+  listing bitmaps by the selected object's shaders.
 
 ## The tools in the window
 
@@ -516,10 +595,16 @@ pages open read-only.
   A budget line in the status bar: vertices of 65,535, the block's
   bytes against its in-place size, the write class, the map's headroom
   under its file and tag-memory bounds.
-- **Textures** (`ToolKind::Textures`). The outliner lists bitmaps (by
-  shader use of the selected object when one is selected), the centre is
-  the 2D canvas with zoom, pan, channel toggles, mip and face pickers,
-  the inspector the tool's settings and the image's format and budget,
+- **Textures** (`ToolKind::Textures`). The outliner lists the map's
+  bitmaps, filtered by a substring, an edited one marked `*` (listing
+  them by shader use of the selected object is design). The centre is
+  the 2D canvas at mip 0: the tool buttons, zoom (the slider or
+  Ctrl+wheel), the scrollbars and a drag with the middle button to pan,
+  and image, face and slice pickers. The inspector has the tool's
+  settings with the channels it writes and the clone tool's source, the
+  selection, **Adjust** (invert, levels, hue, saturation and value,
+  **Copy channel** and a button each for the flip and the quarter turns,
+  over the selection or the whole layer), the image's format and budget,
   a **Resize** control for the image's size and format, **Add image**
   and **New image, generated...** after it, and the bitmap's sequences
   with **Add a sequence** for the selected image ("Adding images and
@@ -536,18 +621,20 @@ pages open read-only.
   frame. *Editor* keeps W, E, R and X as the scenario tool has them and
   puts every op on the toolbar and the context menu. The camera is
   unchanged (right button to fly; Alt+left drag orbits, and a click
-  without a drag is the loop select). Textures: B brush, E eraser, G
-  fill, I eyedropper, `[` and `]` size, X swap colours.
+  without a drag is the loop select). Textures: B brush, E eraser, S
+  clone, G fill, I eyedropper, `[` and `]` size, X swap colours;
+  Shift+click a line from the last point, Alt+click moves the clone
+  source, the middle button pans.
 
 ## Interfaces
 
 What is built (Code): every Modeling command is
 `Action::Model(ModelAction)` (`app/modeling.rs`): open, close, apply a
 list of `MeshOp`s as one undo step (or one merged step per `merge` key),
-seal, undo and redo, and a collision box added to a structure's level
+seal, undo and redo, **Use for lower LODs** on a model section, and a collision box added to a structure's level
 collision or the structure's boxes cleared. The provider `api/geometry.rs`
 answers `geometry.list {model?}`, `geometry.open`, `geometry.close`,
-`geometry.read`, `geometry.check`, `geometry.collision.add_box
+`geometry.read`, `geometry.check`, `geometry.lower_lods {target?, on?}`, `geometry.collision.add_box
 {structure, lo, hi, material?}`, `geometry.collision.clear {structure}`,
 `mesh.mode`, `mesh.select {ids, op |
 all | none | invert}`, `mesh.transform {translate | matrix, pivot?,
@@ -586,6 +673,7 @@ namespace (player models and looks) is separate and unchanged.
 
 | Method | Does |
 |---|---|
+| `geometry.lower_lods {target?, on?}` | **Use for lower LODs** on an open model section: its permutations' lower levels point at it (`on`, default true) or are left as the file has them; one undo step; `changed` says whether anything did |
 | `geometry.list {kind?}` | targets with kind (`cluster`, `instance_def`, `instance`, `structure_collision`, `mode_section`, `marker`, `coll_bsp`, `phmo_shape`), counts, write class, stale marks |
 | `geometry.open {target}`, `geometry.close {target}` | enter or leave Edit mode on a target; `open` returns the mesh's element counts |
 | `geometry.read {target, verts?, faces?, range?}` | positions, faces as vert ids, materials, groups; bounded by `range` |
@@ -613,9 +701,11 @@ namespace (player models and looks) is separate and unchanged.
 | `bitmap.sprites {bitmap, sequence?}`, `bitmap.sprite.add`, `.set`, `.remove` | a sequence's sprites (image, bounds, registration) and their edits, one undo step each |
 | `bitmap.spans {bitmap, image?, face?, slice?, rect?}` | the stored bytes the edits change, by LOD and offset; nothing is written |
 | `bitmap.export {bitmap, image?, mip?, out}`, `bitmap.import {bitmap, image?, path, rect?}` | PNG out and in |
-| `bitmap.paint {bitmap, image?, points, color, size, hardness?, opacity?, erase?}` | one stroke through pixel points, one undo step |
+| `bitmap.paint {bitmap, image?, points, color, size, hardness?, opacity?, spacing?, erase?, source?, from?}` | one stroke through pixel points, a stamp at each and at most the spacing apart between them, so two points are a line; with `source` a clone stroke that reads the layer `from` (the one painted without it). One undo step |
 | `bitmap.fill {bitmap, image?, at \| rect, color, tolerance?}` | |
 | `bitmap.adjust {bitmap, image?, levels? \| hsv? \| invert?, rect?, channels?}` | |
+| `bitmap.channel_copy {bitmap, image?, from, to, rect?}` | a channel (`r`, `g`, `b`, `a`, `luma`) into the channels `to` (letters of rgba) over `rect`, the whole layer by default |
+| `bitmap.turn {bitmap, image?, by, rect?}` | `flip_horizontal`, `flip_vertical`, `quarter`, `half` or `three_quarters` of `rect`, the whole layer by default, in place |
 | `bitmap.pixels {bitmap, image?, rect}` | RGBA of a small rectangle, for tests |
 
 Each op answers with the element counts after it, the ids it made and
@@ -701,12 +791,12 @@ more. Every acceptance test is on invented data; a disc test is
 | 1 | **Mesh kernel**: arenas, `validate`, selection, `Transform`, `ExtrudeFaces`, `ExtrudeEdges`, `Duplicate`, `Delete`, `Merge`, `Weld`, `Fill`, `Flip`, `RecalcNormals`, `Triangulate`, `MeshOp`, import and stable export | L | nothing | every op's count row on a cube, a plane grid, an open shell and a three-face edge; `validate` after every op of a seeded random op sequence; an unedited import exports the source; replaying the op log reproduces the mesh; an op that fails changes nothing |
 | 2 | **Preview, no write**: `geometry-edit` targets for a `mode` section and a cluster; `tags::geometry_write::encode_section`; the Modeling tool (object and edit mode, overlays, gizmo, keymap); `geometry.*` and `mesh.*`; `doc` `geometry` with undo | L | 1 | `decode(encode(x)) == x` and `encode(decode(block)) == block` on invented sections of both layouts; every method's example runs (`every_method_in_methods_has_a_test`); the window's path and the API's make the same mesh; undo and redo through `doc.*`; a save with geometry edits is refused with a named reason; headless snapshot differs after an extrude |
 | 3 | **Write, in place**: `MapEditor::patch_raw`; moved vertices for clusters, instance definitions and `mode` sections; compression box growth; part and cluster bounds; instance placements and markers; stale marks | M | 2 | the saved map differs from the source only in the moved vertices' bytes, the bounds and the checksum; it reads back to the edited positions within quantisation; a box growth rewrites every section at its own size; a count change is refused; package round trip (PPF3) |
-| 4 | **Loop tools**: `SelectLoop`, `SelectRing`, `LoopCut`, `TrisToQuads`, `Dissolve`; then `Bevel` and `Inset` | M | 1 | counts on a quad cylinder (closed ring) and a strip (open ring); loops stop at a pole and at a three-face edge; interpolated coordinates and weights (sum 255); join then triangulate restores an untouched pair |
-| 5 | **Textures, paint and export**: `bitmap-edit` canvas, tools, PNG in and out, the Textures tool, live preview, `bitmap.*` without write | M | nothing | stamp and fill pixel tests; an undo snapshot shares untouched tiles; import resample; `bitmap.pixels` after `bitmap.paint`; export refused in a Git checkout |
-| 6 | **Textures, write**: `assets::encode` (linear, swizzled, DXT1/3/5, mips, cube faces), same-size in place; then new size or format and shared-cache copies through `MapEditor::append_raw` | M | 5; 3 for `patch_raw` | the encode tests above; a painted corner changes only its blocks and their mips in the saved map; a resized image reads back through `assets::bitmap::decode_image` with every level |
+| 4 | **Loop tools**: `SelectLoop`, `SelectRing`, `LoopCut`, `TrisToQuads`, `Dissolve`; then `Bevel` and `Inset` | M | 1 | built in `crates/tools/mesh-edit` with synthetic fixtures: counts on a quad cylinder and open strip; loops stop at poles and three-face edges; cut attributes interpolate, including weights normalised to 255; joining and triangulating restores an untouched pair |
+| 5 | **Textures, paint and export**: `bitmap-edit` canvas, tools, PNG in and out, the Textures tool, live preview, `bitmap.*` without write | M | nothing | built in `crates/tools/bitmap-edit` and Studio on invented bitmaps: stamp, line, clone, fill, channel copy and turn pixel tests (`tests/stamp_fill.rs`); an undo snapshot shares untouched tiles and an edit that changed nothing is no step (`tests/history.rs`); import resample (`tests/import.rs`); `bitmap.pixels` after `bitmap.paint` with a line and a clone stroke, and the window's own line and clone drag (`api/tests/bitmaps_tests.rs`); export refused in a Git checkout |
+| 6 | **Textures, write**: `assets::encode` (linear, swizzled, DXT1/3/5, mips, cube faces), same-size in place; then new size or format and shared-cache copies through `MapEditor::append_raw` | M | 5; 3 for `patch_raw` | built in `assets::{encode, write}` and Studio (`encode_tests.rs`, `api/tests/bitmaps_tests.rs`): the encode tests above, every colour format reshaped and read back at every level, the last mip the picture's mean, sizes a format refuses named, a cube reshaped, `suggest_format`; a painted corner changes only its blocks and their mips in the saved map; a resized image reads back through `assets::bitmap::decode_image` with every level |
 | 7 | **Write, grown raw**: `MapEditor::append_raw`; topology changes for clusters and `mode` sections; section counts, visibility MOPP and table, frames; LOD repointing; behind Allow unverified geometry writes | L | 3 | the saved map validates and reads back to the exported mesh; `check_visibility` passes on every written cluster; the old block is unreferenced; a bucket-lit section and a sky strip are refused; the metadata still ends the file and a scenario block can still grow; package round trip (BPS) with a changed geometry hash |
-| 8 | **Collision compiler and `coll`**: `collision-build`; `coll` BSPs as meshes; BSP physics slots; **From render** | L | 1 | `Bsp::validate`; centroid and reference-side walks; random segments against brute force on a box, a concave room, a ramp and a two-sided sheet; limits refused; a saved `coll` reads back and its slot code emits each surface once |
-| 9 | **`phmo` primitives** in place | S | 2 | a radius, a box and a hull vertex change only their bytes; a hull made concave is refused |
+| 8 | **Collision compiler and `coll`**: `collision-build`; `coll` BSPs as meshes; BSP physics slots; **From render** | L | 1 | `Bsp::validate`; centroid and reference-side walks; random segments against brute force on a box, a concave room, a ramp and a two-sided sheet; limits refused; a saved `coll` reads back and its slot code emits each surface once; From render joins a synthetic floor into one quad, refuses an invalid material without editing, and survives undo, redo, op replay and save |
+| 9 | **`phmo` primitives** in place | S | 2 | Modeling’s **Physics shapes** and `model.physics.*` edit fixed-size fields through the tag document. Synthetic sphere, pill and box edits check the changed words. Hull edits refit the affected planes and bounds in inline and external storage. The editor refuses a vertex move that breaks convexity and a shape edit under a MOPP. |
 | 10 | **Converted maps**: the overlay, its application in `h1convert` and `h1-assets`, the editor's save through conversion | M | 2, 8 | an overlay with a stale hash is an error; a converted fixture with an extrude overlay has the extruded faces in its cluster and passes the converter's own checks (`check_visibility`, portal and cluster tests) |
 | 11 | **Level collision, adding solids**: compile, `merge`, the leaf block, MOPP, checksum; grown blocks in ordinary metadata | L | 7, 8 | merged level validates; every old segment query gives its old answer away from the solid, and hits the solid inside it; added leaves have their stand-in's cluster; the MOPP returns every touching surface on sampled boxes |
 | 12 | **Lightmaps**: stale marks are in slice 3; here the `Relighter` trait, chart packing and the sun-plus-ambient implementation | M | 6, 7 | new charts do not overlap used texels (a coverage mask from the page's `1f` triangles); a lit quad facing the sun is brighter than one facing away; the page's other texels are unchanged |
@@ -725,6 +815,12 @@ Slices 4 and 5 need nothing from 2 and 3 and can run beside them.
   the new chain still holds) and how the mips of a reshaped image are
   filtered (box, in the stored encoding) are choices, not measured
   against the engine's own tools.
+- **Design**: a stroke through points stamps at every point and at most
+  the spacing apart between them, so two points are a line that reaches
+  its second point; a clone stroke reads its source as it was when the
+  stroke began (so it never smears) at a whole-pixel offset; a flip or a
+  turn moves pixels without resampling, so a quarter turn needs a square;
+  an edit that changes no pixel is no undo step.
 - **V** ([bitmaps.md](../formats/bitmaps.md)): each of an image's three
   LOD pointers is a whole chain; DXT chains stop at one block; LOD sizes
   round up to 128 bytes; linear rows pad to 64.

@@ -264,10 +264,9 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
     s
 }
 
-/// The screens `h2 ui preview` knows, by name: ours, then the design
-/// system's specimens (`design.<component>`) and the layout gallery
-/// (`layout.<name>`, [`crate::ui_kit::components::specimens::PAGES`]).
-pub const NAMES: [&str; 73] = [
+/// The screens `h2 ui preview` knows, including the design specimens
+/// and layout gallery. Append new screens to preserve existing ids.
+pub const NAMES: [&str; 74] = [
     "forge.objects",
     "forge.properties",
     "forge.tools",
@@ -341,6 +340,7 @@ pub const NAMES: [&str; 73] = [
     "layout.dialog.over-screen",
     "layout.code-entry",
     "layout.picker",
+    "forge.map-limits",
 ];
 
 /// The value picker as the Map Variant row opens it, with two usable map
@@ -380,7 +380,7 @@ pub fn live(name: &str) -> Option<Box<dyn Live>> {
         // The game's screens (`crate::forge_screens`).
         "forge.objects" | "forge.properties" | "forge.tools" | "forge.settings" | "forge.link"
         | "forge.question" | "forge.options" | "forge.controls" | "forge.games"
-        | "forge.variants" | "forge.variant" => {
+        | "forge.variants" | "forge.variant" | "forge.map-limits" => {
             crate::forge_screens::pages::live(name)
         }
         "signin-code" => Some(Box::new(Driven::new(crate::signin_screen::SigninPage))),
@@ -711,28 +711,28 @@ mod tests {
     use super::*;
     use crate::ui_kit::spec::{Finding, check_fallback};
 
-    /// The GAME MODE picker's sample is the picker X opens: the four modes
+    /// The GAME MODE picker's sample is the picker X opens: the lobby modes
     /// in title case, Custom Games held, over the lobby; its states draw.
     #[test]
-    fn the_mode_picker_lists_the_four_modes_with_custom_games_held() {
+    fn the_mode_picker_lists_the_lobby_modes_with_custom_games_held() {
         use crate::lobby_tabs::Tab;
         let p = lobby_pick_sample(MODE_PICKER).expect("the mode picker has a sample");
         assert_eq!(p.title, "GAME MODE");
-        assert_eq!(p.values, ["Multiplayer", "Custom Games", "Forge", "Firefight"]);
+        assert_eq!(p.values, ["Multiplayer", "Custom Games", "Forge"]);
         assert_eq!(
             p.values,
-            [Tab::Multiplayer, Tab::CustomGames, Tab::Forge, Tab::Firefight].map(Tab::title_case)
+            [Tab::Multiplayer, Tab::CustomGames, Tab::Forge].map(Tab::title_case)
         );
         assert_eq!(p.values[p.current], "Custom Games");
         assert_eq!(p.opener, crate::ui_kit::view::Opener::LOBBY);
         assert_eq!(p.description, "Choose what this lobby plays.");
         assert!(NAMES.contains(&MODE_PICKER));
         let s = sample(MODE_PICKER).expect("the mode picker opens");
-        assert_eq!(s.rows.len(), 4);
+        assert_eq!(s.rows.len(), 3);
         assert_eq!(s.focus, 1, "it opens on the held value");
         let states = states(MODE_PICKER).unwrap();
         let names: Vec<&str> = states.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, ["focus-1", "focus-0", "focus-3"], "the held value first");
+        assert_eq!(names, ["focus-1", "focus-0", "focus-2"], "the held value first");
         assert_eq!(states[0].1.focus, p.current);
     }
 

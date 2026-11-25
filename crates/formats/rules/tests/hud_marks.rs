@@ -146,3 +146,171 @@ fn the_territories_count_is_those_the_viewers_side_holds() {
     let seen = view(vm.show(), vm.ir(), Viewer { slot: Some(1), team: Some(1) });
     assert_eq!(seen.at("ter.owned").map(|w| (w.style, w.shown)), Some((2, true)));
 }
+
+/// A Siege map for the HUD: two territories (600, 601) and each team's flag
+/// stand (20, 21), team 1 being player 1's.
+fn siege_game() -> FakeGame {
+    let mut g = FakeGame::with_players(2);
+    g.players.get_mut(&1).unwrap().team = 1;
+    g.variant.insert("team_play".into(), 1);
+    g.labelled.insert(
+        "territory".into(),
+        vec![Placed { placement: 0, object: 600 }, Placed { placement: 1, object: 601 }],
+    );
+    g.labelled.insert(
+        "ctf_flag_spawn".into(),
+        vec![Placed { placement: 0, object: 20 }, Placed { placement: 1, object: 21 }],
+    );
+    g.object_teams.extend([(20, 0), (21, 1)]);
+    g
+}
+
+/// What viewer 0 reads of the Siege front row: (shown, style, value).
+fn front(vm: &Vm) -> Option<(bool, u8, i32)> {
+    let viewer = Viewer { slot: Some(0), team: None };
+    view(vm.show(), vm.ir(), viewer).at("koth.hill").map(|w| (w.shown, w.style, w.value))
+}
+
+/// The banner viewer 0 reads, when it is shown.
+fn banner(vm: &Vm) -> Option<String> {
+    let viewer = Viewer { slot: Some(0), team: None };
+    let v = view(vm.show(), vm.ir(), viewer);
+    v.at("koth.banner").filter(|w| w.shown).and_then(|w| w.text.clone())
+}
+
+#[test]
+fn the_siege_mark_and_row_follow_the_front_and_its_holder() {
+    let mut g = siege_game();
+    let mut vm = start(builtin::SIEGE, &mut g, &[("capture_time", 5)]);
+
+    // Nobody on a site: the row is open and the mark is over the first one.
+    ticks(&mut vm, &mut g, 2, 1);
+    assert_eq!(front(&vm), Some((true, 0, 0)));
+    assert_eq!(marked(&vm, "koth.mark", 0), Some(600));
+
+    // An attacker alone on the second site: held by side 0, and the mark
+    // follows the site they are on.
+    g.inside.insert((0, 601));
+    ticks(&mut vm, &mut g, 3, 2);
+    assert_eq!(front(&vm), Some((true, 1, 0)));
+    assert_eq!(marked(&vm, "koth.mark", 0), Some(601));
+
+    // A defender on it too: contested.
+    g.inside.insert((1, 601));
+    ticks(&mut vm, &mut g, 5, 1);
+    assert_eq!(front(&vm), Some((true, 2, 0)));
+
+    // A defender alone: held by side 1.
+    g.inside.remove(&(0, 601));
+    ticks(&mut vm, &mut g, 6, 1);
+    assert_eq!(front(&vm), Some((true, 1, 1)));
+
+    // The front stays on the occupied site even as attackers move elsewhere.
+    g.inside.insert((0, 600));
+    ticks(&mut vm, &mut g, 7, 1);
+    assert_eq!(marked(&vm, "koth.mark", 0), Some(601));
+
+    // Once empty, the old front's accumulated capture time does not keep
+    // the mark there.
+    g.inside.remove(&(1, 601));
+    g.inside.insert((1, 600));
+    ticks(&mut vm, &mut g, 8, 1);
+    assert_eq!(marked(&vm, "koth.mark", 0), Some(600));
+
+    // The front can follow attackers onto a contested site immediately.
+    g.inside.clear();
+    g.inside.extend([(0, 601), (1, 601)]);
+    ticks(&mut vm, &mut g, 9, 1);
+    assert_eq!(marked(&vm, "koth.mark", 0), Some(601));
+    assert_eq!(front(&vm).map(|(shown, style, _)| (shown, style)), Some((true, 2)));
+}
+
+/// Holds site 600 alone until the banner shows, and returns its text, the
+/// mark's object that tick, and whether it is hidden two ticks on.
+fn first_banner(options: &[(&str, i64)]) -> (String, Option<u32>, bool) {
+    let mut g = siege_game();
+    let mut vm = start(builtin::SIEGE, &mut g, options);
+    g.inside.insert((0, 600));
+    for t in 2..800 {
+        ticks(&mut vm, &mut g, t, 1);
+        if let Some(text) = banner(&vm) {
+            let mark = marked(&vm, "koth.mark", 0);
+            ticks(&mut vm, &mut g, t + 1, 2);
+            return (text, mark, banner(&vm).is_none());
+        }
+    }
+    panic!("no banner");
+}
+
+#[test]
+fn the_siege_banner_says_a_site_taken_and_the_final_assault() {
+    // Two sites: the first taken is a site, and the front moves to the other.
+    let (text, mark, hidden) = first_banner(&[("capture_time", 5)]);
+    assert_eq!((text.as_str(), mark, hidden), ("SITE TAKEN", Some(601), true));
+    // One site: taking it opens the final assault, and the front is the stand.
+    let (text, mark, hidden) = first_banner(&[("capture_time", 5), ("sites", 1)]);
+    assert_eq!((text.as_str(), mark, hidden), ("FINAL ASSAULT", Some(21), true));
+}
+
+#[test]
+fn the_siege_clock_is_called_at_thirty_and_ten_seconds() {
+    let mut g = siege_game();
+    let mut vm = start(builtin::SIEGE, &mut g, &[("phase_time", 60)]);
+    let mut said = Vec::new();
+    for t in 2..1805 {
+        ticks(&mut vm, &mut g, t, 1);
+        if let Some(b) = banner(&vm)
+            && said.last() != Some(&b)
+        {
+            said.push(b);
+        }
+    }
+    assert_eq!(said, ["30 SECONDS", "10 SECONDS"]);
+}
+
+/// `mark(wp, at)` is every viewer, `mark(wp, at, all)` is the same, and
+/// `mark(wp, at, to)` with a player or a team is that audience only: the
+/// team's mask comes from the roster the game answers (`players_of_team`).
+#[test]
+fn a_mark_names_its_audience_and_the_view_hides_the_rest() {
+    let src = "rules \"Aim\" 1\ntype slayer\nrequires hud.waypoints\n\
+        label hill: zones numbered\n\
+        waypoint all_mark at ctf.mark\n\
+        waypoint team_mark at ter.mark\n\
+        waypoint one_mark at asl.mark\n\
+        on round_start {\n\
+            if let z = hill[0] {\n\
+                mark(all_mark, z)\n\
+                mark(team_mark, z, team 1)\n\
+                for each players p { if slot_of(p) == 0 { mark(one_mark, z, p) } }\n\
+            }\n\
+        }\n";
+    let mut g = FakeGame::with_players(3);
+    g.players.get_mut(&1).unwrap().team = 1;
+    g.players.get_mut(&2).unwrap().team = 1;
+    g.label("hill", 0x4001_0000, 0, 1);
+    let mut vm = start(src, &mut g, &[]);
+    assert_eq!(g.script_error, None, "{:?}", g.script_error);
+
+    let at = |vm: &Vm, slot: &str, viewer: u8, team: Option<u8>| {
+        let viewer = Viewer { slot: Some(viewer), team };
+        view(vm.show(), vm.ir(), viewer).waypoint_at(slot).is_some()
+    };
+    // Everyone's mark is seen by all three; team 1's by its two players;
+    // the player form by slot 0 alone.
+    assert_eq!([0, 1, 2].map(|v| at(&vm, "ctf.mark", v, None)), [true; 3]);
+    assert_eq!(
+        [0, 1, 2].map(|v| at(&vm, "ter.mark", v, None)),
+        [false, true, true]
+    );
+    assert_eq!(
+        [0, 1, 2].map(|v| at(&vm, "asl.mark", v, None)),
+        [true, false, false]
+    );
+
+    // The bytes a viewer's machine holds show the same: the state encodes,
+    // decodes and views the same as the VM's own.
+    let held = rules::show::State::decode(&vm.show().encode()).unwrap();
+    let other = Viewer { slot: Some(1), team: Some(1) };
+    assert_eq!(view(&held, vm.ir(), other), view(vm.show(), vm.ir(), other));
+}

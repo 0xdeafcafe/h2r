@@ -237,6 +237,8 @@ impl Extent {
 pub enum Action {
     Toggle,
     Accept,
+    /// Toggle selection of an aimed, ungrouped thing with empty hands.
+    Select,
     Back,
     Delete,
     Palette,
@@ -266,6 +268,7 @@ impl Action {
         Some(match name {
             "toggle" => Self::Toggle,
             "accept" => Self::Accept,
+            "select" => Self::Select,
             "back" => Self::Back,
             "delete" => Self::Delete,
             "palette" => Self::Palette,
@@ -332,6 +335,12 @@ pub enum Command {
         name: &'static str,
         value: Value,
     },
+    /// Duplicate the object `id` names at `frame` and hold the copy
+    /// (Properties' **Duplicate** row, `Session::duplicate`).
+    Duplicate {
+        id: Endpoint,
+        frame: Frame,
+    },
     Remove {
         id: Endpoint,
     },
@@ -356,6 +365,10 @@ pub enum Command {
         group: OpId,
         locked: bool,
     },
+    SetGroupPivot {
+        group: OpId,
+        pivot_first: bool,
+    },
     /// Give a thing a label, or clear it ([`crate::Session::set_label`]).
     SetLabel {
         id: Endpoint,
@@ -369,6 +382,12 @@ pub enum Command {
     },
     Undo,
     Redo,
+    /// Label the object as a siege barrier of the phase it opens in
+    /// ([`crate::Session::label_barrier`]).
+    Barrier {
+        id: Endpoint,
+        phase: i32,
+    },
     /// Place the next ground marker of this label at a frame
     /// ([`crate::Session::place_marker_next`]).
     Marker {
@@ -379,6 +398,23 @@ pub enum Command {
     BuildGround,
     Goal {
         goal: crate::Goal,
+        frame: Frame,
+    },
+    /// Add a starting point for a team in a kit session
+    /// ([`crate::Session::place_spawn`]).
+    Spawn {
+        team: u8,
+        frame: Frame,
+    },
+    /// Add a teleporter sender or receiver in a kit session
+    /// ([`crate::Session::place_teleporter`]).
+    Teleporter {
+        sender: bool,
+        frame: Frame,
+    },
+    /// Add an item spawner of a kit item ([`crate::Session::place_item`]).
+    Item {
+        item: forge_doc::TagKey,
         frame: Frame,
     },
     /// **Test waves**: build the ground if it is not current.
@@ -615,6 +651,37 @@ impl Tool {
         }
     }
 
+    /// Reset orientation (Properties): pitch and roll to zero and the yaw
+    /// to `radians`, which the caller rounds to the rotation snap. What is
+    /// placed or held turns to it at once; an aimed thing is sent as a
+    /// move, as a heading is.
+    pub fn set_orientation(&mut self, radians: f32) {
+        if radians.is_finite() && (self.placing.is_some() || self.held_thing.is_some()) {
+            self.initial_rotation = [radians, 0., 0.];
+            self.rotation = [0.; 3];
+            if let Some(ghost) = &mut self.ghost {
+                ghost.rotation = [radians, 0., 0.];
+            }
+        }
+    }
+
+    /// Carry `id` from `frame`: the state a pickup sets, so Duplicate's
+    /// copy is held at once where the add put it. `object` is the added
+    /// object's id, none for a thing of the map's own.
+    pub fn take_up(&mut self, session: &Session, id: Endpoint, object: Option<OpId>, frame: Frame) {
+        let thing = session.thing(id);
+        self.cancel();
+        self.held_thing = Some(id);
+        self.held = object;
+        self.distance = thing
+            .map(|t| self.thing_extent(session, &t).hold())
+            .unwrap_or(4.0);
+        self.offset = [0.; 3];
+        self.initial_rotation = frame.rotation;
+        self.initial_position = frame.position;
+        self.ghost = Some(frame);
+    }
+
     /// The carried frame in the basis in force: movement snap is on the
     /// world grid or the pickup's own grid, and turning is about those axes.
     fn snapped_frame(&self, raw: [f32; 3]) -> Frame {
@@ -675,6 +742,9 @@ impl Tool {
                 | Command::Link { .. }
                 | Command::Unlink { .. }
                 | Command::Goal { .. }
+                | Command::Spawn { .. }
+                | Command::Teleporter { .. }
+                | Command::Item { .. }
                 | Command::PlacePrefab { .. }
                 | Command::Undo
                 | Command::Redo
@@ -732,15 +802,15 @@ impl Tool {
             return Ok(None);
         }
         let previewing = self.placing.is_some() || self.held_thing.is_some();
-        // A thing that is gone (undone, deleted, loaded over) leaves the
-        // selection.
-        self.selection.retain(|id| session.thing(*id).is_some());
+        // Things leave the selection when they disappear or join a group.
+        let groups = session.groups();
+        self.selection
+            .retain(|id| session.thing(*id).is_some() && !groups.iter().any(|g| g.has(*id)));
         // A locked group's things are not aimed at.
-        let locked: Vec<Endpoint> = session
-            .groups()
-            .into_iter()
+        let locked: Vec<Endpoint> = groups
+            .iter()
             .filter(|g| g.locked)
-            .flat_map(|g| g.members)
+            .flat_map(|g| g.members.iter().copied())
             .collect();
         let extent = self.extent(session).unwrap_or_default();
         let mut hit = None;
@@ -831,6 +901,14 @@ impl Tool {
                     Some(id) => C::Delete { id },
                     None => C::Remove { id },
                 })
+            }
+            Some(A::Select) if !previewing => {
+                if let Some((thing, _)) = &hit
+                    && !groups.iter().any(|g| g.has(thing.id))
+                {
+                    self.toggle_selected(thing.id);
+                }
+                None
             }
             Some(A::Accept) => {
                 if let (Some(item), Some(frame)) = (self.placing, self.ghost) {

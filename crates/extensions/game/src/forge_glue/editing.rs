@@ -162,6 +162,8 @@ pub(super) struct Editor {
 impl Editor {
     pub fn new(opened: Opened, data: &Path, scenario: u32, calls: calls::Shared) -> Self {
         let saved_head = opened.session.head();
+        let mut tool = Tool::with_extents(opened.extents.into());
+        tool.monitor = crate::lobby_start::mode() == crate::lobby_start::Mode::Forge;
         Self {
             session: Arc::new(opened.session),
             tags: opened.tags.into(),
@@ -173,7 +175,7 @@ impl Editor {
                 admitted,
             },
             calls,
-            tool: Tool::with_extents(opened.extents.into()),
+            tool,
             pending: None,
             file_job: None,
             data: data.into(),
@@ -570,7 +572,8 @@ impl Editor {
             thing: id.identity(),
             selected: self.tool.is_selected(id),
             selection: self.tool.selection().len(),
-            group: self.session.group_of(id).map(|g| (g.id, g.name, g.locked)),
+            group: self.session.group_of(id),
+            pivot_editable: self.session.seat().is_none(),
         }
     }
 
@@ -964,6 +967,13 @@ impl Editor {
                     After::Shared(items) => self.shared_applied(&items),
                     After::Tool(command) => {
                         self.tool.applied(&command);
+                        // Duplicate: the copy is the log's last op, and the
+                        // monitor holds it at once where the add put it.
+                        if let Command::Duplicate { frame, .. } = &command {
+                            let op = self.session.last_op_id();
+                            let id = forge::Endpoint::Added(op);
+                            self.tool.take_up(&self.session, id, Some(op), *frame);
+                        }
                         if let Command::Goal { goal, .. } = command
                             && self.tool.show == Show::ThisGameType
                             && !goal.in_game(self.tool.game)
@@ -1006,7 +1016,14 @@ impl Editor {
     /// game's (`forge_screens::ui_up`). `game`: the session's game type, as
     /// the variant record's engine index, which decides the things the
     /// Objects tool aims at.
-    pub fn tick(&mut self, tick: u32, bsp: Option<usize>, ui_up: bool, game: Option<i32>) {
+    pub fn tick(
+        &mut self,
+        tick: u32,
+        bsp: Option<usize>,
+        ui_up: bool,
+        game: Option<i32>,
+        memory: &dyn engine::GuestMemory,
+    ) {
         self.now = tick;
         self.bsp = bsp;
         self.ui_up = ui_up;
@@ -1075,7 +1092,7 @@ impl Editor {
             };
             self.poll(tick);
         }
-        self.publish();
+        self.publish(memory);
     }
 
     fn take_input(&mut self, tick: u32, input: Input, bsp: Option<usize>) {
@@ -1109,7 +1126,7 @@ impl Editor {
     }
 
     /// The session's state for the input bridge and the screens.
-    fn publish(&self) {
+    fn publish(&self, memory: &dyn engine::GuestMemory) {
         controls::publish(controls::State {
             active: true,
             monitor: self.tool.monitor,
@@ -1117,6 +1134,9 @@ impl Editor {
             camera: self.tool.camera,
             x_properties: self.x_properties(),
             cancel: self.cancellable(),
+            select_on_hold: !self.tool.links
+                && self.tool.placing.is_none()
+                && self.tool.held_thing.is_none(),
             area: self.area.as_ref().map(area::Draft::mode),
         });
         screens::publish(Facts {
@@ -1135,6 +1155,7 @@ impl Editor {
             filename: self.filename.clone(),
             placed: self.placed(),
             folders: sheet::folder_rows(&self.session.groups()),
+            map_limits: screens::map_limits::Usage::read(memory, self.guard.scenario),
         });
     }
 
@@ -1267,7 +1288,13 @@ impl Editor {
             Palette => {
                 let mut menu = sheet::objects_with_ai(&self.items(), self.selected, &self.ai_items());
                 if self.session.can_place_goals() {
-                    menu = Some(sheet::with_goals(menu));
+                    menu = Some(sheet::with_goals_for(
+                        menu,
+                        &self.session.goals(self.tool.game),
+                    ));
+                }
+                if self.session.has_kit() {
+                    menu = Some(sheet::with_kit(menu, &self.kit_menu()));
                 }
                 let menu = sheet::with_prefabs(menu, &self.prefab_items());
                 screens::open(menu.ok_or("This map has nothing to place.")?)?;
@@ -1497,6 +1524,38 @@ impl Editor {
             .collect()
     }
 
+    /// What the kit adds to the object menu: the items its spawners can
+    /// name, and the rows each block has left.
+    fn kit_menu(&self) -> sheet::KitMenu {
+        let items = self
+            .session
+            .kit_items()
+            .into_iter()
+            .enumerate()
+            .map(|(index, tag)| sheet::KitItem {
+                index,
+                group: match forge::kit::item_group(&tag) {
+                    forge::kit::ItemGroup::Weapons => Group::Weapons,
+                    forge::kit::ItemGroup::Vehicles => Group::Vehicles,
+                    forge::kit::ItemGroup::Equipment => Group::Equipment,
+                },
+                name: tag
+                    .path
+                    .rsplit('\\')
+                    .next()
+                    .unwrap_or(&tag.path)
+                    .replace('_', " "),
+            })
+            .collect();
+        let left = |block| self.session.kit_left(block).unwrap_or(0);
+        sheet::KitMenu {
+            items,
+            items_left: left(BlockKind::NetgameEquipment),
+            spawns_left: left(BlockKind::StartingLocations),
+            flags_left: left(BlockKind::NetgameFlags),
+        }
+    }
+
     fn link_sheet(&self, active: &ActiveLink) -> Sheet {
         let [from, to] = active.link.endpoints();
         let writes = match active.link {
@@ -1517,9 +1576,34 @@ impl Editor {
                 let frame = self.goal_frame()?;
                 return self.command(tick, Command::Goal { goal, frame });
             }
+            Choice::Spawn(team) => {
+                let frame = self.goal_frame()?;
+                return self.command(tick, Command::Spawn { team, frame });
+            }
+            Choice::Teleporter(sender) => {
+                let frame = self.goal_frame()?;
+                return self.command(tick, Command::Teleporter { sender, frame });
+            }
+            Choice::Item(i) => {
+                let item = self
+                    .session
+                    .kit_items()
+                    .get(i)
+                    .cloned()
+                    .ok_or("That item is gone.")?;
+                let frame = self.goal_frame()?;
+                return self.command(tick, Command::Item { item, frame });
+            }
             Choice::EditArea(id) => return self.begin_area(id),
             Choice::Marker(forge::GroundLabel::Site) => {
                 return self.choose(tick, Choice::Goal(forge::Goal::Site));
+            }
+            // A barrier labels the object the monitor aims at (or holds),
+            // opening in the first phase: Properties' label number changes
+            // the phase.
+            Choice::Marker(forge::GroundLabel::Barrier) => {
+                let id = self.property_target()?;
+                return self.command(tick, Command::Barrier { id, phase: 1 });
             }
             Choice::Marker(label) => {
                 let frame = self.marker_frame()?;
@@ -1572,6 +1656,40 @@ impl Editor {
             Choice::ClearLabel(id) => {
                 return self.command(tick, Command::SetLabel { id, label: None });
             }
+            Choice::ResetOrientation => {
+                let id = self
+                    .tool
+                    .held_thing
+                    .or(self.tool.aimed_thing)
+                    .ok_or("Aim at a thing of the map.")?;
+                let (_, _, mut frame) = self.target().ok_or("The thing is gone.")?;
+                // Pitch and roll to zero; the yaw rounds to the rotation
+                // snap, as the tool's own turning does.
+                let step = sheet::ANGLE_STEPS.get(self.rotation_step).copied().unwrap_or(0.);
+                let yaw = frame.rotation[0].to_degrees();
+                let yaw = if step > 0. { (yaw / step).round() * step } else { yaw };
+                let yaw = yaw.to_radians();
+                if self.tool.placing.is_some() || self.tool.held_thing.is_some() {
+                    self.tool.set_orientation(yaw);
+                } else {
+                    frame.rotation = [yaw, 0., 0.];
+                    let cmd = match self.tool.aimed {
+                        Some(id) => Command::Move { id, frame },
+                        None => Command::MoveThing { id, frame },
+                    };
+                    return self.command(tick, cmd);
+                }
+            }
+            Choice::Duplicate(id) => {
+                // The copy is made in front of the monitor, as a prefab is
+                // placed, and held at once.
+                let eye = self.tool.camera.ok_or("The monitor has no view.")?;
+                let frame = forge::Frame {
+                    position: eye.point(MARKER_REACH),
+                    rotation: [eye.yaw, 0., 0.],
+                };
+                return self.command(tick, Command::Duplicate { id, frame });
+            }
             Choice::PlacePrefab(i) => {
                 let prefab = self.prefabs.get(i).ok_or("That prefab is gone.")?;
                 self.session.prefab_fits(prefab)?;
@@ -1596,6 +1714,9 @@ impl Editor {
             Choice::Ungroup(group) => return self.command(tick, Command::Ungroup { group }),
             Choice::LockGroup(group, locked) => {
                 return self.command(tick, Command::LockGroup { group, locked });
+            }
+            Choice::SetGroupPivot(group, pivot_first) => {
+                return self.command(tick, Command::SetGroupPivot { group, pivot_first });
             }
             Choice::BuildGround => return self.command(tick, Command::BuildGround),
             Choice::TestWaves => return self.command(tick, Command::TestWaves),
@@ -1739,16 +1860,20 @@ impl Editor {
                 sheet::NumberField::RenameVariant | sheet::NumberField::DuplicateVariant => {
                     return Err("That map variant is gone.".into());
                 }
-                sheet::NumberField::RespawnTime => {
+                sheet::NumberField::RespawnTime | sheet::NumberField::ReturnTime => {
                     let value = text
                         .parse::<i64>()
                         .map_err(|_| "Type a whole number.".to_string())?;
                     let id = self.tool.aimed_thing.ok_or("Aim at an item entry.")?;
+                    let name = match field {
+                        sheet::NumberField::ReturnTime => "return time",
+                        _ => "respawn time",
+                    };
                     return self.command(
                         tick,
                         Command::SetField {
                             id,
-                            name: "respawn time",
+                            name,
                             value: forge_doc::Value::Int(value),
                         },
                     );
@@ -1991,18 +2116,24 @@ fn run(s: &mut Session, w: &mut ForgeWorld, tick: u32, cmd: Command) -> Result<(
         MoveThing { id, frame } => s.move_thing(w, tick, id, frame),
         HoldThing { id, frame } => s.hold(w, tick, id, frame),
         SetField { id, name, value } => s.set_field(w, tick, id, name, value),
+        Duplicate { id, frame } => s.duplicate(w, tick, id, frame).map(|_| ()),
         Remove { id } => s.remove(w, tick, id),
         Link { from, to } => s.link(w, tick, from, to).map(|_| ()),
         Unlink { link } => s.unlink(w, tick, link),
         Group { name, members } => s.group(w, tick, &name, &members, false).map(|_| ()),
         Ungroup { group } => s.ungroup(w, tick, group),
         LockGroup { group, locked } => s.set_group_locked(w, tick, group, locked),
+        SetGroupPivot { group, pivot_first } => s.set_group_pivot(w, tick, group, pivot_first),
         SetLabel { id, label } => s.set_label(w, tick, id, label),
+        Barrier { id, phase } => s.label_barrier(w, tick, id, phase),
         PlacePrefab { prefab, frame } => s.place_prefab(w, tick, &prefab, frame).map(|_| ()),
         Undo => s.undo(w, tick),
         Redo => s.redo(w, tick),
         Marker { label, frame } => s.place_marker_next(w, tick, label, frame).map(|_| ()),
         Goal { goal, frame } => s.place_goal(w, tick, goal, frame).map(|_| ()),
+        Spawn { team, frame } => s.place_spawn(w, tick, team, frame).map(|_| ()),
+        Teleporter { sender, frame } => s.place_teleporter(w, tick, sender, frame).map(|_| ()),
+        Item { item, frame } => s.place_item(w, tick, &item, frame).map(|_| ()),
         _ => Err("A screen's command is not an edit.".into()),
     }
 }

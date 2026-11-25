@@ -547,13 +547,7 @@ fn the_composite_lands_in_its_rectangle_only() {
 
 /// A 1 by 1 base map of one colour.
 fn flat(rgba: [u8; 4]) -> Image {
-    Image {
-        width: 1,
-        height: 1,
-        rgba: rgba.to_vec(),
-        mips: Vec::new(),
-        blocks: None,
-    }
+    Image::solid(rgba)
 }
 
 /// The pixel where the sphere's front is at height `z` (upper part above

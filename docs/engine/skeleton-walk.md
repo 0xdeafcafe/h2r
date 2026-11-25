@@ -1,14 +1,23 @@
 # Skeleton walk (`bd090`'s node loop)
 
-Status: Partly built. The walk inside `bd090` is Rust; the same loop in
-`1dd1c0` (the animation graph's own callers) and the run ladder are not.
+Status: Partly built. The walk inside `bd090` is Rust. The graph walk
+`1dd1c0` is Rust behind an arm: the guest answers and the Rust result is
+compared with it at every call. The run ladder is not climbed.
 Code: `crates/rewrites/sim-anim/src/skeleton.rs` (`build_matrices`, `pose`,
-`compose`), `crates/rewrites/engine/src/sim_anim/skeleton.rs` (`run`,
-`walk`). Tests: `crates/rewrites/sim-anim/src/skeleton_tests.rs`,
+`compose`), `crates/rewrites/sim-anim/src/graph_walk.rs`
+(`graph_matrices`, `graph_order`),
+`crates/rewrites/engine/src/sim_anim/skeleton.rs` (`run`, `walk`),
+`crates/rewrites/engine/src/sim_anim/graph_walk.rs` (`plan`, `run`,
+`arm_before`, `arm_after`, `compare`, `reference`). Tests:
+`crates/rewrites/sim-anim/src/skeleton_tests.rs`,
+`crates/rewrites/sim-anim/src/graph_walk_tests.rs`,
 `crates/rewrites/engine/src/sim_anim/skeleton/tests.rs`,
+`crates/rewrites/engine/src/sim_anim/graph_walk/tests.rs`,
 `crates/rewrites/engine/tests/sim_physics_differential.rs`
-(`object_node_matrices`).
-Switch: `impl.sim.native.anim.skeleton` (on), listed in
+(`object_node_matrices`),
+`crates/rewrites/engine/tests/sim_anim_graph_differential.rs`.
+Switches: `impl.sim.native.anim.skeleton` (on) for `bd090`'s walk,
+`impl.sim.native.anim` (off) for the graph walk's arm, both listed in
 [switches.md](../runtime/switches.md).
 
 Phase 1b of the [simulation rewrite](sim-rewrite.md). `bd090` turns an
@@ -92,7 +101,15 @@ before anything reads them.
   declines by reason.
 - The pose and composition entries (`OBJECT_POSE_MATRIX`,
   `OBJECT_TRANSFORM_COMPOSE`) and their per-function switches stay: other
-  callers, `1dd1c0` among them, still reach them.
+  callers, among them `1dd1c0` while its arm runs, still reach them.
+- The graph walk is the point `ANIM_GRAPH_MATRICES` (`1dd1c0`). Under
+  `impl.sim.native.anim`, `sim-bridge` hooks it with a `before` that plans
+  the call and an `after` that compares; it has no implementation hook.
+- `engine::sim_anim::graph_walk::stats()` counts the body's calls, nodes
+  and declines; `arm_stats()` counts the arm's checks, matches,
+  mismatches, declines and dropped plans, and keeps the first mismatch.
+  The agent method `anim.graph_walk` returns both
+  ([agent-api.md](../runtime/agent-api.md#anim-the-animation-graph-walk)).
 
 ## Rules and limits
 
@@ -116,6 +133,99 @@ guest's on arm64 and x86-64 and MXCSR does not change. The walk reads node
 ranges checked to be mapped. A write fault in the scatter (a read-only
 page) leaves a different partial state from the loop's.
 
+## The graph walk `1dd1c0`
+
+`1dd1c0(graph, matrices, records, root)` (stdcall, `ret 0x10`) is the
+same pose-and-compose loop for the animation graph's own callers (the
+channel manager's `1cbd50` among them). It differs from `bd090`'s walk in
+three ways:
+
+- **Order.** A first-in, first-out queue of node indices in its frame
+  starts with node 0. Each visited node queues its first child (`+4` of
+  its 0x20-byte graph node) and then its next sibling (`+6`), when not
+  `-1`. A node linked twice is visited twice; a node linked from nothing
+  is not visited, and its matrix is not written.
+- **Scratch.** The pose goes to a scratch matrix in the frame, which is
+  then composed with the parent's matrix into the node's slot. The parent
+  is `matrices + 0x34 * parent` (`+8`), read as it stands, or `root` for
+  node 0, whose parent field is not read.
+- **No mask.** Every visited node is posed.
+
+The node count is `[graph + 0xc]`, the graph nodes `[graph + 0x10]`, the
+records `records + 0x20 * node`. A count at or below 0 returns at once.
+
+### What the call leaves
+
+Below the entry `esp` (the return address's slot):
+
+| Offset | Bytes |
+|---|---|
+| `-0x3fc` up | the queue, one `u32` per queued node |
+| `-0x430` | the scratch matrix: the last node's pose |
+| `-0x434` | the queue length |
+| `-0x438`, `-0x43c` | the caller's `ebx` and `ebp`; the only bytes written when the count is at or below 0 |
+| `-0x440`, `-0x444` | the caller's `esi` and `edi` |
+| `-0x448` | the last node's output matrix, the composition's argument |
+| `-0x44c`, `-0x450` | the return addresses `1dd241` and `1dd230` |
+| `-0x454` | the pose's saved `ebp`: `matrices` |
+
+The queue has room for 255 entries; a 256th would overwrite the return
+address.
+
+| Register | Value |
+|---|---|
+| `eax` | the queue length; `graph` when the count is at or below 0 |
+| `ecx` | the last node's first child, sign-extended, when it has one; else its parent's matrix (`root` for node 0); the count when at or below 0 |
+| `edx` | the last node's next sibling, sign-extended, when it has one; else the scratch matrix; unchanged when the count is at or below 0 |
+| `ebx`, `ebp`, `esi`, `edi` | restored |
+| XMM0 to XMM7 | as the last composition leaves them; unchanged when the count is at or below 0 |
+| EFLAGS | `add esp, 0x434` |
+
+Both leaves initialise the cutoff on the first pose, as in `bd090`'s walk.
+
+### Plan, arm and body
+
+`plan` reads the arguments, the graph, the records, the matrices, the
+root, the cutoff and the constants, builds the queue (`graph_order`),
+runs `graph_matrices` and returns every byte and register above without
+writing. Two consumers use it:
+
+- **The arm** runs under `impl.sim.native.anim`. `arm_before` plans the
+  call at the entry and keeps the plan by guest thread. The guest runs.
+  `arm_after`, at the return (`esp` past the arguments), compares the
+  plan with what the guest left: the general registers, MXCSR, EFLAGS on
+  the arithmetic bits both sides define, XMM0 to XMM7, then each written
+  byte in write order. It counts a match or a mismatch and keeps the first
+  mismatch by name (`ecx`, `xmm3`, `matrix 2 +0x10`, `stack
+  entry-0x3f8 (queue entry 1)`) with the entry registers. The guest's
+  result stands either way. A declined plan is counted by reason, and
+  the guest runs unchecked.
+- **The body** (`run`) writes the plan and returns without the guest. It
+  is not installed. It replaces the arm once the arm reports no
+  mismatch over the run ladder.
+
+`reference` is `1dd1c0` instruction by instruction with the exact
+`sim_native` leaves: the oracle of the engine tests and the third arm of
+the lifted differential.
+
+### The graph walk declines when
+
+- MXCSR is not masked, round-to-nearest and PE-sticky, or an operand is
+  off the fast path (`float`);
+- a read faults (`fault`);
+- the count is above 1024 (`count`);
+- a queued link is neither `-1` nor below the count, or the queue would
+  pass 255 entries (`queue`);
+- a range it reads or writes is not inside one mapping, or a written
+  range (the matrices, the frame, the cutoff) overlaps another range
+  (`alias`);
+- a visited node other than 0 names a parent outside the nodes
+  (`parent`).
+
+The plan reads every node's graph entry, record and matrix up to the
+count, where the guest reads only the visited ones; an unvisited range
+that is not mapped declines a call the guest would complete.
+
 ## Evidence
 
 - `skeleton_tests.rs`: `pose` and `compose` against the formulas written
@@ -134,6 +244,24 @@ page) leaves a different partial state from the loop's.
   synthetic objects, comparing all memory and registers at every
   boundary. The per-node loop is the oracle the walk replaces: that test
   and `sim_native_differential` hold it equal to the guest.
+- `graph_walk_tests.rs`: the queue order (children before siblings, node
+  0's sibling, a node queued twice), out-of-range links, a cycle, exactly
+  255 entries and one more; the walk against the leaves called in queue
+  order; the root as node 0's parent; parents read as they stand;
+  unvisited nodes kept; a walk in index order giving other matrices.
+- `graph_walk/tests.rs` (engine, no image): `run` against `reference` on
+  synthetic guest memory, counts 0 to 255, random trees with unlinked
+  nodes, forward and self parents, both cutoff states, both lane paths;
+  RAM byte for byte and every CPU field must match. Every decline leaves
+  RAM and CPU untouched. The arm counts a match against the reference,
+  a decline, and a deliberate mismatch (a register, an XMM lane, a matrix
+  byte, a queue entry, the scratch, a return address), which `compare`
+  names.
+- `sim_anim_graph_differential.rs` (`H2_XBE`): the lifted `1dd1c0` with
+  both leaves on the interpreter against `run` (both lane paths),
+  `reference` and the arm's plan, over 24 synthetic graphs; all memory
+  and registers. A byte and a register changed in the guest's result are
+  named by `compare`.
 
 ## Not verified
 
@@ -143,6 +271,10 @@ page) leaves a different partial state from the loop's.
   empty `h2 sim diff`; the cross-architecture arm.
 - The decline rate on real skeletons (`stats()`), and the time saved per
   tick on Waterworks.
+- The graph walk's arm in a run: `anim.graph_walk` with
+  `impl.sim.native.anim` on, over the sim-budget matches and a campaign
+  level, must show `mismatched` 0 and a low decline rate before `run`
+  replaces the arm. Its callers and call rate per tick are not measured.
 
 ## Related
 

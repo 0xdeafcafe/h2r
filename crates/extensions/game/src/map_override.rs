@@ -283,7 +283,7 @@ pub fn mount<R: vfs::Rewrite + 'static>(
     disc: &Path,
     fonts: Option<R>,
     maps: Option<&Path>,
-    campaign_maps: &[(String, PathBuf)],
+    campaign_maps: &[(String, vfs::MapSource)],
 ) -> vfs::Result<vfs::Vfs> {
     if maps.is_none()
         && cfg.server_maps.is_none()
@@ -345,7 +345,7 @@ pub fn mount_for_agent<R: vfs::Rewrite + 'static>(
     disc: &Path,
     fonts: Option<R>,
     maps: Option<&Path>,
-    campaign_maps: &[(String, PathBuf)],
+    campaign_maps: &[(String, vfs::MapSource)],
     allow_rebind: bool,
 ) -> vfs::Result<(vfs::Vfs, Option<vfs::MapRebind>)> {
     let writable = allow_rebind && cfg.server_maps.is_none();
@@ -360,15 +360,15 @@ fn over_disc<B: vfs::Backend + 'static, R: vfs::Rewrite + 'static>(
     dvd: B,
     fonts: Option<R>,
     maps: Option<&Path>,
-    campaign_maps: &[(String, PathBuf)],
+    campaign_maps: &[(String, vfs::MapSource)],
 ) -> vfs::Result<vfs::Vfs> {
     let disc = vfs::CampaignMapsBackend::new(dvd, campaign_maps.iter().cloned()).with_assets(
         crate::h1_variants::campaign_choice(),
-        crate::h1_variants::campaign_alternates(campaign_maps),
+        crate::campaigns::halo2_maps(&cfg.data_root),
     );
     if !campaign_maps.is_empty() {
         eprintln!(
-            "campaigns: {} map(s) served from <data>/campaigns",
+            "campaigns: {} map(s) served from the tag store",
             campaign_maps.len()
         );
     }

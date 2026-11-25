@@ -209,6 +209,7 @@ impl SceneBuilder {
             order: o..o,
             world: WorldState::default(),
             remainder: 0,
+            display_visibility: None,
             aux_depth: None,
             lights: l..l,
             layers: p..p,
@@ -216,6 +217,7 @@ impl SceneBuilder {
             decorator_remainder: 0,
             fog: None,
             water: None,
+            water_composite: None,
             post: None,
         });
         scene.cluster_gathers.push(None);
@@ -280,6 +282,12 @@ impl SceneBuilder {
     pub fn set_cluster_gather(&mut self, gather: crate::scene::ClusterGather) -> Result<(), BuildError> {
         let (scene, open) = self.open_mut()?;
         scene.cluster_gathers[open] = Some(gather);
+        Ok(())
+    }
+
+    pub fn set_display_visibility(&mut self, visibility: crate::DisplayVisibility) -> Result<(), BuildError> {
+        let (scene, open) = self.open_mut()?;
+        scene.views[open].display_visibility = Some(visibility.into());
         Ok(())
     }
 

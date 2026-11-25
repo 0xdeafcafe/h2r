@@ -56,6 +56,7 @@ pub mod firefight;
 #[cfg(feature = "rules")]
 pub mod rules;
 pub mod fov_row;
+pub mod render_rng;
 #[cfg(feature = "gpu")]
 pub mod render_aspect;
 pub mod game_code;
@@ -144,6 +145,8 @@ pub mod native_gels_replace;
 #[cfg(feature = "gpu")]
 pub mod native_hud_glue;
 #[cfg(feature = "gpu")]
+pub mod modal_blur_glue;
+#[cfg(feature = "gpu")]
 pub mod native_lights_glue;
 #[cfg(feature = "gpu")]
 pub mod native_map;
@@ -165,6 +168,8 @@ pub mod native_particles_admission;
 pub mod native_post_glue;
 #[cfg(feature = "gpu")]
 pub mod native_post_load;
+#[cfg(feature = "gpu")]
+mod native_refusals;
 #[cfg(feature = "gpu")]
 pub mod native_residual_glue;
 #[cfg(feature = "gpu")]

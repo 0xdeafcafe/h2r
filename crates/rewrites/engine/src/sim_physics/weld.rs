@@ -250,20 +250,8 @@ fn sort(c:&mut CpuAbi,g:&mut Guest)->Result<TransferAbi> {
         let head=g.u32(sp+272)?;
         let current=head.wrapping_add(g.u32(sp+24)?);
         let first=g.u32(sp+20)?;
-        let mut best=current;
-        let mut x=load_fpu(c);
-        x.fld(g.u32(current+32)?).map_err(fp_error)?;
-        for i in first..c.ebx {
-            let at=head.wrapping_add(i.wrapping_mul(128));
-            let distance=g.u32(at+32)?;
-            X87::ok(x87::abi::cmp(&mut x.0,0,x87::abi::src_kind::F32,u64::from(distance),0,false)).map_err(fp_error)?;
-            if x.0.status & 0x4100==0 {
-                x.fstp_st(0).map_err(fp_error)?;
-                x.fld(distance).map_err(fp_error)?;
-                best=at;
-            }
-        }
-        x.fstp_st(0).map_err(fp_error)?;
+        let mut x = load_fpu(c);
+        let best = select_contact(g, head, current, first, c.ebx, &mut x)?;
         swap(c,g,current,best,x)?;
         c.eax=g.u32(sp+272)?;
         let flag=g.u8(c.esi.wrapping_add(c.eax).wrapping_add(125))?;
@@ -282,6 +270,39 @@ fn sort(c:&mut CpuAbi,g:&mut Guest)->Result<TransferAbi> {
         }
         if !next_sorted(c,g)? {c.eax=g.u32(sp+276)?;return start_existing(c,g);}
     }
+}
+
+// Capture just the distances consumed by this pass. The next callback can
+// edit the candidate array, so no working set may survive that transfer.
+fn select_contact(g: &Guest, head: u32, current: u32, first: u32, end: u32, x: &mut X87) -> Result<u32> {
+    let address = |index: u32| head.wrapping_add(index.wrapping_mul(128));
+    let mut keys = [0; 32];
+    if let Some(count) = end.checked_sub(first)
+        && count > 0 && count as usize <= keys.len() && current == address(first)
+    {
+        let suffix = &mut keys[..count as usize];
+        for (key, index) in suffix.iter_mut().zip(first..end) {
+            *key = g.u32(address(index).wrapping_add(32))?;
+        }
+        if let Some(selected) = sim_havok::weld::select(suffix, &mut x.0) {
+            return Ok(address(first + selected as u32));
+        }
+    }
+    let mut best = current;
+    x.fld(g.u32(current.wrapping_add(32))?).map_err(fp_error)?;
+    for i in first..end {
+        let at = address(i);
+        let distance = g.u32(at.wrapping_add(32))?;
+        X87::ok(x87::abi::cmp(&mut x.0, 0, x87::abi::src_kind::F32,
+            u64::from(distance), 0, false)).map_err(fp_error)?;
+        if x.0.status & 0x4100 == 0 {
+            x.fstp_st(0).map_err(fp_error)?;
+            x.fld(distance).map_err(fp_error)?;
+            best = at;
+        }
+    }
+    x.fstp_st(0).map_err(fp_error)?;
+    Ok(best)
 }
 
 fn swap(c:&mut CpuAbi,g:&mut Guest,a:u32,b:u32,mut x:X87)->Result<()> {

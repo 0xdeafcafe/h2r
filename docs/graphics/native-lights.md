@@ -170,9 +170,11 @@ entries (clusters and placements) draw from the world's buffers.
 
 Object entries draw from model parts built once per map on a worker
 (`native_lights_glue/models.rs`, `native_render::light_models`), at the
-first group with an object entry: every `mode` tag's drawn opaque parts,
-their triangles in one index list per section (each part decoded in its
-own topology), the section's decompression rows, and its vertices once
+first gathered object entry. The loader takes drawable parts whose index fits
+the item argument's low byte, including transparent parts. It stores
+their triangles in one index buffer per section, including the list
+interpretation of a strip when the record clears its strip bit. The section
+holds its decompression rows and its vertices once
 per (vertex shader, classification) that the parts' materials' layer-12
 and layer-13 implementations name, gathered through the declaration that
 program's input semantics give over the section's streams. Their stage
@@ -240,13 +242,25 @@ the layers drawn this way in `scene_first_person_light_layers_alone`
 
 ### What a native light draws
 
-- **Geometry.** On the resolved-draw path, the gathered BSP owner, part
-  and full material datum must match a resident cluster draw. The
-  handler's selected implementation chooses the program. Models and
-  rigid placements retain their D3D handlers there. A split may consume
-  a contiguous native prefix. All remaining entries run in guest order,
-  even when one shares a shader with the prefix. A whole group drawn
-  from the scene takes models too ("Gathered groups in the scene").
+- **Geometry.** The sorted diffuse and specular layers use the same
+  planner as whole scene groups. Each entry identifies a cluster,
+  placement or posed model section, its source index span and topology,
+  shader datum, LOD variant, pass selector, implementation and vertex
+  class. The BSP's light parts include opaque and transparent geometry
+  from the shared buffers, even when layer 3 leaves the base draw to
+  D3D. Placements use the rigid program and its three transform rows.
+  Object draws keep their own node palette and section decompression.
+  A visibility mask can use the resident part when the emitter selects
+  one span covering that entire part.
+- **At indexed emission.** The host matches the sorted slot, render
+  record, owner, shader selection, index address, topology and count
+  before substituting a resident draw. Posed draws also check the live
+  transform constants. When a dynamic light needs its handler, the
+  native indexed path can record the actual emitted range with the
+  handler's streams, shader constants, textures and raster state. This
+  covers partial visibility and per-part state changes. Sampling a
+  generated gel requires the light's producer and matching texture view
+  on each target copy. A failed reservation retains the original draw.
 - **Shading.** Each draw takes its view constants and W range at issue,
   the light's 36 frame words in `c[31..39]`, material colours and
   inherited device culling. The sphere projection supplies six float
@@ -451,7 +465,7 @@ The host takes each of layers 12 and 13 a light's steps draw, shadowed or not, w
   10, `light_globals` without the screen bounds, `pass_flags`) into
   `Light::constants`. The BSP's material worker
   (`crates/extensions/game/src/native_lights_glue/materials.rs`) resolves
-  each requested shader, layer, implementation and set of light inputs,
+  each requested shader, LOD, layer, pass, implementation, vertex class and set of light inputs,
   translates its program and uploads its stage textures. The map worker
   uploads the normalization cube, attenuation volume and static gels.
   The guest checks the resident pipeline for the live target formats,
@@ -477,12 +491,13 @@ The host takes each of layers 12 and 13 a light's steps draw, shadowed or not, w
   every implementation of its layer-12 and 13 passes, the light
   textures, the gels of the map's `ligh` tags, and the cluster parts
   keyed by owner and part. At the hook,
-  `native_render::light_list::sorted` checks the built dispatches,
-  including handler, material variant and layer. The host resolves
-  each requested layer against the full shader datum and the material's
-  inputs. Missing streams, textures, stale stage palettes, unsupplied
-  constants or unsupported device state refuse the light before submission.
-  The GPU uses the cluster program vertex buffer with packed fetch and
+  `native_render::light_list::SortedCall` checks the built dispatches,
+  including its list interval and layer. The host decodes the
+  standard handlers' entries with the scene group's reader and resolves
+  them against the loaded parts and materials. A missing stream,
+  texture, stale stage palette or unsupplied constant leaves the
+  handler in place. The GPU uses the shared BSP program vertices or
+  the model section buffer for the selected shader and class. It
   uploads eligible DXT stages as BC on capable devices. The encoder
   binds each prepared draw in order, without rereading the list or
   resolving its materials.
@@ -500,12 +515,13 @@ The host takes each of layers 12 and 13 a light's steps draw, shadowed or not, w
   - Diagnostics (stderr, `native-lights:`). At load: each light
     texture loads with its size and layers, or says why not (no datum,
     the tag does not read, does not decode, or the wrong shape with
-    the faces and level-0 sizes it has); the surfaces left to D3D split
-    into opaque D3D draws, opaque unread shaders, transparent lit and
-    transparent unread. At run time each refusal reason prints on its
-    first occurrence.
-    The host reports admissions, splits, lights sampling shader gels, reference and scaled passes and
-    actual synchronous worker round trips. Frame and agent captures include
+    the faces and level-0 sizes it has). The BSP summary reports resident
+    lit parts and parts whose materials could not be read. The host
+    counts requests to prepare a light or layer. A light can make more
+    than one request and a declined resident plan can still draw through
+    the native indexed path. The summary aggregates these decisions by
+    reason, with up to 32 distinct shader refusal details.
+    Frame and agent captures include
     `native_lights_worker_round_trips`, `native_lights_reference_passes`
     and `native_lights_display_passes`. Every 1800 host decisions it
     also prints counts by reason.
@@ -529,13 +545,14 @@ The host takes each of layers 12 and 13 a light's steps draw, shadowed or not, w
 
 ## Rules and limits
 
-- On the resolved-draw path only structure geometry is drawn natively, and models keep their D3D handlers. A split may consume a contiguous native prefix; the remaining entries run in guest order. A whole group of layer 12 or 13, structure and model entries alike, is drawn from the scene with no handler.
-- A light that samples a shadow map (engine textures 13 and 8), an animated input, an engine-driven state from a source other than the instance's scalar 21 or an unsupplied constant keeps its D3D passes (`light_look`).
+- A whole scene group of layer 12 or 13 can skip its handlers for both structure and model entries. Individual indexed emissions keep the handler's ordering and use its resolved draw as the fallback.
+- A material with an unsupplied input, animation or unsupported shadow map binding can decline the resident plan. The indexed path requires a supported resolved shader and state and all sampled resources on each target copy.
 - The visible-light gather, first-person record replay and ranked object-shadow list run as Rust bodies. The dynamic pass body offers the current light after its item lists are ready. A complete admission takes every supported draw and the tail together. A refusal continues at the next guest step with the same lists. The per-layer path keeps the original calls for shader setup, targets and draws. See [native-light-gather.md](native-light-gather.md).
-- Diagnostics print as `native-lights:` on stderr: at load, each light texture with its size or why it did not load, and the surfaces left to D3D; at run time, each refusal reason on its first occurrence, and counts by reason every 1800 host decisions.
+- Diagnostics print as `native-lights:` on stderr: at load, each light texture with its size or why it did not load, plus resident structure parts and unread materials; at run time, each refusal reason on its first occurrence, and counts by reason every 1800 host decisions.
 
 ## Not verified
 
+- Real-map admission counts and pixel parity for mixed gathered models, placements and BSP parts whose base draw stays on D3D.
 - A first-person light's layers 12 and 13 drawn from the scene against its handlers' draws (pixel parity over the first-person weapon in a lit room), and that the view's target the dynamic lights recorded is the one the first-person layers draw on (a different one refuses, `light view target changed`).
 
 - A shadowed light's layers 12 and 13 drawn natively over its D3D or shadow-stage layers 10, 11 and 14 (pixel parity on a scene with one).

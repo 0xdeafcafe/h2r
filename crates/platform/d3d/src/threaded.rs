@@ -31,7 +31,8 @@
 //!   the same reason, as with a synchronous backend. Without a judge they
 //!   are speculated as drawn.
 //! - **Other outcomes** (`clear_rects`, `write_surface`, `copy_surface`,
-//!   `snapshot_surface`, `surface_texture`, `depth_alias_texture`) are
+//!   `snapshot_surface`, `snapshot_surface_into`, `surface_texture`,
+//!   `depth_alias_texture`) are
 //!   answered as the inner backend answers every valid call: drawn,
 //!   `true`, `Some`.
 //! - When the inner backend later gives another answer than the one
@@ -1415,6 +1416,39 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         Ok(Some(t))
     }
 
+    /// Queued as a sample of the same proxy: the render thread refills the
+    /// texture it holds for `into` in queue order, after the draws queued
+    /// before that read it. Where the inner backend cannot refill it (or
+    /// holds none, as after a frame owner's replay kept another), the
+    /// proxy gets a new copy instead, so the answer is always `true`.
+    fn snapshot_surface_into(
+        &mut self,
+        surface: u32,
+        opaque: bool,
+        into: &mut ProxyTexture<B>,
+    ) -> Result<bool, String> {
+        self.check()?;
+        let id = into.id;
+        let shared = Arc::clone(&self.shared);
+        let sample = self.frame_owner.as_ref().map(|_| ReplaySample::Snapshot { opaque });
+        self.post_sample(surface, id, sample, move |w| {
+            let s = w.surface(surface)?;
+            if let Some(t) = w.textures.get_mut(&id)
+                && w.inner.snapshot_surface_into(s, opaque, t)?
+            {
+                return Ok(());
+            }
+            match w.inner.snapshot_surface(s, opaque)? {
+                Some(h) => {
+                    w.textures.insert(id, h);
+                }
+                None => shared.miss("snapshot_surface returned None".into()),
+            }
+            Ok(())
+        });
+        Ok(true)
+    }
+
     fn clear_pixel_count(&mut self) -> Result<(), String> {
         self.check()?;
         if self.frame_owner.is_some() {
@@ -1578,7 +1612,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         &mut self, surfaces: crate::ExternalSurfaces<Self::Surface>, request: crate::ExternalPassRequest,
         textures: [Option<&Self::Texture>; 4], plan: &crate::ExternalPlan, copy: crate::TargetCopy, pass: crate::SharedReplacement,
     ) -> Result<Option<Vec<crate::ExternalRecording>>, String> {
-        if matches!(plan.stage, timeline::native::Stage::World | timeline::native::Stage::Objects | timeline::native::Stage::Lights)
+        if matches!(plan.stage, timeline::native::Stage::World | timeline::native::Stage::Objects | timeline::native::Stage::Lights | timeline::native::Stage::Sky)
             && pass.lock().map_err(|_| "native pass poisoned")?.resolved_fallback().is_some()
         {
             // This is a resolved admission the queue declined. Keep its
@@ -1766,6 +1800,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             return Ok(false);
         }
         let confirm = pass.confirm_issue();
+        let producer = pass.diagnostic_name();
         let issue = move |w: &mut Worker<B>| {
             let (c, d) = (w.surface(color)?, w.surface(depth)?);
             let sampled = sampled.into_iter().map(|s| s.and_then(|s| w.surface(s).ok())).collect();
@@ -1777,7 +1812,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         let shared = Arc::clone(&self.shared);
         self.post(move |w| {
             if !issue(w)? {
-                shared.miss("external_pass returned false".into());
+                shared.miss(format!("{producer}: the worker declined an untyped external pass"));
             }
             Ok(())
         });

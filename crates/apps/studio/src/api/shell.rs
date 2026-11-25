@@ -61,12 +61,33 @@ fn answer(app: &mut App, doc: Doc, log: Vec<String>) -> Reply {
     Ok(json!({ "tab": tab, "front": app.front_doc().map(|d| app.doc_id(d)), "log": log }))
 }
 
-/// `shell.open`: a tag of the open map (or of `map`, opened first), or a
-/// map alone.
+/// `shell.open`: an asset, a tag of the open map, or a map alone.
 fn open(app: &mut App, p: &P) -> Reply {
     let discard = p.bool("discard")?;
+    let map = p.opt_str("map")?;
+    if let Some(asset) = p.opt_str("asset")? {
+        if p.has("tag") {
+            return Err(err(
+                code::INVALID_PARAMS,
+                "shell.open takes one of asset or tag",
+            ));
+        }
+        let log = run(
+            app,
+            Action::OpenAsset {
+                asset: asset.to_owned(),
+                map: map.map(str::to_owned),
+            },
+            discard,
+        )?;
+        app.sync_tabs();
+        let Some(shown) = app.front_doc() else {
+            return Err(err(code::REFUSED, format!("{asset} did not open")));
+        };
+        return answer(app, shown, log);
+    }
     let mut log = Vec::new();
-    if let Some(map) = p.opt_str("map")? {
+    if let Some(map) = map {
         if app.loaded_map() != Some(map) || app.browsing().is_some() {
             log.extend(run(app, Action::SelectMap(map.to_owned()), discard)?);
         }
@@ -90,7 +111,7 @@ fn open(app: &mut App, p: &P) -> Reply {
     } else {
         return Err(err(
             code::INVALID_PARAMS,
-            "shell.open takes a tag, a map, or both",
+            "shell.open takes an asset, a tag, or a map",
         ));
     };
     log.extend(run(app, Action::OpenDoc(doc), false)?);

@@ -23,45 +23,12 @@ pub const ZERO: u32 = 0x0045_dbd8;
 pub const ONE: u32 = 0x0045_dbc0;
 
 /// The vector test's result record R (entries C and D).
-pub mod record {
-    /// `f32`: the hit fraction; `max(limit, 0)` before the walk.
-    pub const FRACTION: u32 = 0x00;
-    /// The hit plane's guest address.
-    pub const PLANE: u32 = 0x04;
-    /// The leaf the surface was found in, then the surface index.
-    pub const LEAF: u32 = 0x08;
-    pub const SURFACE: u32 = 0x0c;
-    /// The surface's plane word, sign-extended (bit 15: flipped).
-    pub const SURFACE_PLANE: u32 = 0x10;
-    /// Surface flags `u8`, breakable index `u8`, material `i16`.
-    pub const FLAGS: u32 = 0x14;
-    pub const BREAKABLE: u32 = 0x15;
-    pub const MATERIAL: u32 = 0x16;
-    /// `u32` leaves listed, then up to 256 leaf indices.
-    pub const COUNT: u32 = 0x18;
-    pub const LEAVES: u32 = 0x1c;
-    /// The last leaf visited once the list is full.
-    pub const OVERFLOW: u32 = 0x418;
-    pub const SIZE: u32 = 0x41c;
-}
+pub use sim_collision::bsp::segment::record;
 
-/// The vector test's 40-byte context (entry D's first argument; entry C
-/// builds one in its own frame).
-pub mod context {
-    pub const FLAGS: u32 = 0x00;
-    pub const BSP: u32 = 0x04;
-    /// `u16`.
-    pub const BREAKABLE_COUNT: u32 = 0x08;
-    pub const MASK: u32 = 0x0c;
-    pub const START: u32 = 0x10;
-    pub const DELTA: u32 = 0x14;
-    pub const RECORD: u32 = 0x18;
-    pub const PREV_LEAF: u32 = 0x1c;
-    /// `u8`.
-    pub const PREV_KIND: u32 = 0x20;
-    pub const PLANE: u32 = 0x24;
-    pub const SIZE: u32 = 0x28;
-}
+pub use sim_collision::bsp::segment::context;
+
+/// Return site of the BSP walk's near-child self-call.
+pub const CONTEXT_RECURSIVE_RETURN: u32 = 0x001d_e7dd;
 
 /// A near-child call enters 0x28 bytes below its parent. The deepest leaf
 /// uses another 0x30 to enter the matcher, 0x48 to call the ring test and
@@ -168,4 +135,35 @@ pub mod mopp_box {
         4 + 15 + ROOT_FRAME + sim_collision::mopp::MAX_FRAMES * NESTED_FRAME;
     /// The x87 precision flag, which the conversions set when inexact.
     pub const X87_PE: u16 = 0x20;
+}
+
+/// Entry I, `0x00301800`, the general MOPP ray, and the interpreter call
+/// it makes (docs/engine/collision-queries.md, "Entry I").
+pub mod mopp_ray {
+    /// The ray VM: code pointer, the stored `one / scale`, the input's
+    /// two vectors, the early-out fraction, then the collector, parent
+    /// body and collection.
+    pub const CODE: u32 = 0x10;
+    pub const INVERSE_SCALE: u32 = 0x14;
+    pub const FRACTION: u32 = 0x54;
+    pub const COLLECTOR: u32 = 0x5c;
+    pub const COLLECTION: u32 = 0x64;
+    /// The ray input: from `+0x00`, to `+0x10`, the optional filter
+    /// `+0x24`.
+    pub const INPUT_TO: u32 = 0x10;
+    pub const INPUT_FILTER: u32 = 0x24;
+    /// `f32`: the collector's fraction, which the setup copies.
+    pub const COLLECTOR_FRACTION: u32 = 0x04;
+    /// The collection's child method, vtable slot `+0x34`.
+    pub const COLLECTION_CHILD: u32 = 0x34;
+    /// The bytecode starts this far into the code object.
+    pub const BYTECODE: u32 = 0x30;
+    /// The packed `1 - w` vector of the clip blends.
+    pub const UNIT: u32 = 0x0041_2420;
+    /// The factor of the root frame scale.
+    pub const ROOT_SCALE: u32 = 0x0045_dcac;
+    /// The instanced-geometry collection's child method (`key` at entry
+    /// ESP `+4`). Where a query's collection uses it with no filter, the
+    /// parity arm sees each key the guest accepts.
+    pub const INSTANCE_CHILD: u32 = 0x0024_4bb0;
 }

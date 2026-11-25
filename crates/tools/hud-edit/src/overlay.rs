@@ -18,10 +18,12 @@
 //!   [`Shading::Preview`] draws a plain sprite with the fixed texture
 //!   combiner (S: that a plain HUD shader draws its texels as they are) and
 //!   a meter by its shader. The preview's meter fill is its own stand-in.
-//! - A text widget's colour is its shader's and is not read: the engine
-//!   shading does not list text, the preview's draws it in
-//!   [`render::TEXT_COLOUR`] or what a hook answers. Without the disc's
-//!   fonts text has no glyphs and is not listed.
+//! - A text widget's colour is its shader's. [`Shading::Engine`] reads it
+//!   from the shader's capture ([`Answers::shader_colour`]) and the
+//!   localized string from the game's string tables ([`Answers::text`]);
+//!   text with neither is not listed and is inexact. The preview draws
+//!   text in [`render::TEXT_COLOUR`] or what a hook answers. Without the
+//!   disc's fonts text has no glyphs and is not listed.
 //! - A widget's effects block (`0x22bcaf`) and an anchor that is not a
 //!   corner are not modelled.
 
@@ -45,8 +47,9 @@ pub enum Shading {
     /// grey one a hook's look asks for), a meter names its shader, and text
     /// is drawn in the preview's colour.
     Preview,
-    /// The engine's: every bitmap widget names its shader, and text is not
-    /// listed (its colour is its shader's, not read).
+    /// The engine's: every bitmap widget names its shader, and text is
+    /// drawn in the colour its shader's capture gives, from the string the
+    /// game resolved.
     Engine,
 }
 
@@ -55,8 +58,8 @@ pub enum Shading {
 pub enum Inexact {
     /// Drawn by its tag shader: exact where the renderer translates it.
     Shader,
-    /// A text widget: its colour is its shader's (not read), or the fonts
-    /// are missing.
+    /// A text widget: its colour or localized string was not read, or the
+    /// fonts are missing.
     Text,
     /// Its effects block (`0x22bcaf`) moves, scales or tints it.
     Effects,
@@ -366,20 +369,59 @@ fn text<R: Read + Seek>(
     let font = crate::layout::text_font(w.font(mode)).ok_or_else(|| {
         Missed::new(format!("font byte {} names no font: not drawn", w.font(mode)), None)
     })?;
-    if shading == Shading::Engine {
-        return Err(text_inexact("the text's colour is its shader's (not read): not listed".into()));
+    let engine = shading == Shading::Engine;
+    let answered_text = answers.text(h, w);
+    // The engine's text is the localized string the game resolved (the
+    // string tables are the game's, not the map's), the number a flagged
+    // widget shows, or the player's name; only the number is read here.
+    if engine && answered_text.is_none() {
+        let flags = w.flags();
+        if flags & 8 != 0 {
+            return Err(text_inexact("the player's name is not read".into()));
+        }
+        if flags & 1 == 0 {
+            return Err(text_inexact("the localized string is not resolved".into()));
+        }
     }
-    let string = answers.text(h, w).unwrap_or_else(|| {
+    let string = answered_text.unwrap_or_else(|| {
         let string = crate::model::string(map, w.string());
         render::widget_text(w, string.as_deref(), st)
     });
+    // Under the engine shading the colour is the shader's capture (or what
+    // a hook answers); the preview's stand-in is never exact.
+    let answered = answers.colour(h, w);
+    let captured = answered.or_else(|| engine.then(|| answers.shader_colour(h, w)).flatten());
+    if engine && captured.is_none() {
+        return Err(text_inexact("the shader's capture gave no colour".into()));
+    }
+    let colour = captured.unwrap_or(render::TEXT_COLOUR);
     let fonts = fonts
         .ok_or_else(|| text_inexact("the disc's fonts were not found: the text has no glyphs".into()))?;
     let (laid, line) = fonts
         .layout(font, &string)
         .ok_or_else(|| text_inexact(format!("font {font} does not lay out {string:?}")))?;
-    let size = [laid.width as f32, (line).max(laid.height as i32) as f32];
-    let rect = place::text_rect(point, size, w.justification());
+    let item = text_run(overlay, font, &laid, line, point, w.justification(), colour)?;
+    let inexact = match captured {
+        None => Some(Inexact::Text),
+        Some(_) if w.effects() != 0 => Some(Inexact::Effects),
+        Some(_) => None,
+    };
+    Ok(Drawn { item, note: None, inexact })
+}
+
+/// A laid-out string as one text run in `colour`: the glyphs with pixels,
+/// placed from `point` by the widget's justification.
+fn text_run(
+    overlay: &mut Overlay,
+    font: i16,
+    laid: &font::Layout,
+    line: i32,
+    point: [f32; 2],
+    justification: u16,
+    colour: [u8; 4],
+) -> Result<u32, Missed> {
+    let size = [laid.width as f32, line.max(laid.height as i32) as f32];
+    let rect = place::text_rect(point, size, justification);
     let [ox, oy] = [rect.x0.round(), rect.y0.round()];
     let glyphs: Vec<_> = laid
         .glyphs
@@ -396,24 +438,16 @@ fn text<R: Read + Seek>(
     if glyphs.is_empty() {
         return Err(Missed::new("no glyph with pixels", None));
     }
-    let answered = answers.colour(h, w);
-    let colour = answered.unwrap_or(render::TEXT_COLOUR);
     let font = u16::try_from(font)
         .map_err(|_| Missed::new(format!("font {font} is negative"), Some(Inexact::Unlisted)))?;
-    let item = overlay
+    overlay
         .push_text_run(
             OverlayMaterial::text(font),
             ClipRect::full(overlay.size),
             colour.map(|c| f32::from(c) / 255.0),
             &glyphs,
         )
-        .map_err(refused)?;
-    let inexact = match answered {
-        None => Some(Inexact::Text),
-        Some(_) if w.effects() != 0 => Some(Inexact::Effects),
-        Some(_) => None,
-    };
-    Ok(Drawn { item, note: None, inexact })
+        .map_err(refused)
 }
 
 #[cfg(test)]
@@ -509,8 +543,9 @@ mod tests {
     }
 
     /// As the engine draws it: every bitmap widget names its shader, the
-    /// text is not listed (its colour is its shader's), and the HUD is
-    /// exact only once the renderer translates every shader drawn.
+    /// text is not listed without its shader's capture (and the disc's
+    /// fonts), and the HUD is exact only once the renderer translates
+    /// every shader drawn.
     #[test]
     fn the_engine_shading_names_every_shader_and_says_what_is_inexact() {
         let (bytes, player, _, _) = fixture::build();
@@ -529,11 +564,87 @@ mod tests {
         let why: Vec<_> = listed.iter().map(|l| l.inexact).collect();
         assert_eq!(why, [Some(Inexact::Shader), Some(Inexact::Shader), Some(Inexact::Shader), Some(Inexact::Text)]);
         assert_eq!(listed[3].item, None);
-        assert_eq!(first_inexact(&listed, &overlay, &|_| true), Some((3, Inexact::Text)), "the text still is not");
+        assert_eq!(first_inexact(&listed, &overlay, &|_| true), Some((3, Inexact::Text)), "no capture, no fonts");
         assert_eq!(first_inexact(&listed, &overlay, &|_| false), Some((0, Inexact::Shader)));
         let plain = hud.widgets[0].shader().unwrap().0;
         assert_eq!(first_inexact(&listed[..3], &overlay, &|t| t == plain), Some((1, Inexact::Shader)), "the meter's shader");
         assert_eq!(first_inexact(&listed[..3], &overlay, &|_| true), None);
+    }
+
+    /// The engine shading reads a text widget's colour from its shader's
+    /// capture and its string from what the game resolved, and says which
+    /// is missing; the fixture has no fonts, so no run is listed.
+    #[test]
+    fn the_engine_text_needs_its_capture_and_its_resolved_string() {
+        struct Kit {
+            text: bool,
+            colour: bool,
+        }
+        impl Answers for Kit {
+            fn text(&self, _: usize, w: &Widget) -> Option<String> {
+                (self.text && w.name == "count").then(|| "12".to_owned())
+            }
+            fn shader_colour(&self, _: usize, w: &Widget) -> Option<[u8; 4]> {
+                (self.colour && w.name == "count").then_some([10, 20, 30, 255])
+            }
+        }
+        let (bytes, player, _, _) = fixture::build();
+        let source = MapSource { bytes: Some(bytes.into()), ..MapSource::file("hudtest.map") };
+        let mut map = source.open().unwrap();
+        let mut hud = crate::model::read(&mut map, player).unwrap();
+        let mut art = Art::new(scenario_edit::scene::resource_files(&source));
+        let st = HudState::default();
+        let note_of = |map: &mut Map<_>, art: &mut Art, hud: &Hud, kit: &Kit| {
+            let mut overlay = Overlay::default();
+            let listed = draw_list(map, art, None, &[hud], &st, kit, Shading::Engine, &mut overlay);
+            (listed[3].inexact, listed[3].notes.join("; "))
+        };
+        // A number widget with no capture: the colour is missing.
+        let (why, note) = note_of(&mut map, &mut art, &hud, &Kit { text: false, colour: false });
+        assert_eq!(why, Some(Inexact::Text));
+        assert!(note.contains("capture"), "{note}");
+        // With the capture, only the disc's fonts are missing.
+        let (why, note) = note_of(&mut map, &mut art, &hud, &Kit { text: false, colour: true });
+        assert_eq!(why, Some(Inexact::Text));
+        assert!(note.contains("fonts"), "{note}");
+        // A widget showing a localized string (no number flag) needs the
+        // game's resolved text, and a hook's answer stands in for it.
+        hud.widgets[3].bytes[crate::layout::text::FLAGS] = 0;
+        let (_, note) = note_of(&mut map, &mut art, &hud, &Kit { text: false, colour: true });
+        assert!(note.contains("localized string"), "{note}");
+        let (_, note) = note_of(&mut map, &mut art, &hud, &Kit { text: true, colour: true });
+        assert!(note.contains("fonts"), "{note}");
+        // The player's name is not read.
+        hud.widgets[3].bytes[crate::layout::text::FLAGS] = 8;
+        let (_, note) = note_of(&mut map, &mut art, &hud, &Kit { text: false, colour: true });
+        assert!(note.contains("name"), "{note}");
+    }
+
+    /// A laid-out string becomes one run: only the glyphs with pixels, in
+    /// the shader's colour, placed by the justification (the end of the
+    /// run at the point for 2).
+    #[test]
+    fn a_laid_out_string_is_one_text_run_of_its_glyphs_with_pixels() {
+        use font::{GlyphAt, Layout};
+        let glyph = |index, x, width| GlyphAt { index, x, y: 1, width, height: 6 };
+        let laid = Layout { glyphs: vec![glyph(5, 0, 4), glyph(9, 4, 0), glyph(6, 5, 4)], width: 9, height: 7 };
+        let mut overlay = Overlay::new([640, 480]);
+        let item = text_run(&mut overlay, 3, &laid, 8, [20.0, 10.0], 2, [255, 0, 0, 255]).ok().unwrap();
+        let run = &overlay.items[item as usize];
+        assert_eq!(run.kind, OverlayKind::TextRun);
+        assert_eq!(run.material.texture, OverlayTexture::Glyphs { font: 3 });
+        assert_eq!(run.color, [1.0, 0.0, 0.0, 1.0]);
+        let glyphs = overlay.glyphs_of(run);
+        assert_eq!(glyphs.iter().map(|g| g.index).collect::<Vec<_>>(), [5, 6]);
+        // The size is 9 by 8 (the line is taller), so a run ending at 20 starts at 11.
+        assert_eq!(glyphs[0].rect, [11.0, 11.0, 15.0, 17.0]);
+        assert_eq!(glyphs[1].rect, [16.0, 11.0, 20.0, 17.0]);
+        assert_eq!(overlay.counts().text_runs, 1);
+        // Nothing with pixels draws nothing, as the engine's blank draws none.
+        let blank = Layout { glyphs: vec![glyph(9, 0, 0)], width: 4, height: 7 };
+        let miss = text_run(&mut overlay, 3, &blank, 8, [0.0, 0.0], 0, [255; 4]).err().unwrap();
+        assert_eq!((miss.why.as_str(), miss.inexact), ("no glyph with pixels", None));
+        assert!(text_run(&mut overlay, -1, &laid, 8, [0.0, 0.0], 0, [255; 4]).is_err());
     }
 
     /// A hidden widget is exact (the engine draws nothing either); the

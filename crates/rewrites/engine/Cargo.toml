@@ -19,12 +19,14 @@ x87.workspace = true
 # The native simulation subsystems (docs/engine/sim-rewrite.md): float
 # rules and host lanes, and animation sampling behind src/sim_anim.rs.
 sim-core.workspace = true
+sim-havok.workspace = true
 sim-anim.workspace = true
 # The collision world behind src/sim_collision (phase 2).
 sim-collision.workspace = true
 # The object update's kernels and views behind src/sim_objects (phase 3:
 # docs/engine/sim-rewrite-objects.md).
 sim-objects.workspace = true
+sim-sound.workspace = true
 # For src/runtime_glue.rs (feature `runtime-glue`): registration of the
 # adapters with the runtime's dispatch table.
 runtime = { workspace = true, optional = true }

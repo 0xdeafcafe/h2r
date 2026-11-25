@@ -245,3 +245,82 @@ fn a_members_refusal_names_whose_it_is() {
     assert_eq!(r.code, "variant_member");
     assert_eq!(r.sentence, "Gamer: Castle needs fixture, which is not installed.");
 }
+
+/// The empty draft of `fixture` the kit start builds, in its session form.
+fn kit_draft() -> ForgeDoc {
+    let mut draft = doc("fixture");
+    draft.ops.clear();
+    draft.author = "Builder".into();
+    draft.format = draft.required_format();
+    forge_doc::session_form(&draft)
+}
+
+#[test]
+fn a_forge_start_builds_the_new_map_with_the_kit_and_resolves_to_its_package() {
+    clear();
+    let fake = installed();
+    let builds = fake.builds.clone();
+    let maps = library(fake);
+    let worker = pick_kit("fixture", Some(7), "Builder", &maps).expect("a build starts");
+    worker.join().unwrap();
+
+    let draft = kit_draft();
+    assert!(draft.recipes.contains(&forge_doc::kit()));
+    let id = MapId::forge(hash(), draft.id().unwrap());
+    assert_eq!(kit_start(), Some(id));
+    assert_eq!(crate::lobby_start::map_variant(), Some(id));
+    let (made, dir) = package().expect("built");
+    assert_eq!(made, id);
+    assert!(dir.to_string_lossy().starts_with("maps/forge-"));
+    assert_eq!(hold(), None);
+
+    // The same start again builds nothing.
+    assert!(pick_kit("fixture", Some(7), "Builder", &maps).is_none());
+    assert_eq!(builds.load(Ordering::SeqCst), 1);
+    // A variant of the store is not a kit start.
+    clear();
+    assert_eq!(kit_start(), None);
+}
+
+#[test]
+fn a_forge_start_on_a_map_this_machine_lacks_is_refused_by_name() {
+    clear();
+    assert!(pick_kit("fixture", None, "Builder", &library(Fake::default())).is_none());
+    assert_eq!(refusal().unwrap().code, "variant_base_missing");
+    assert!(hold().unwrap().contains("fixture is not installed"));
+    assert_eq!(kit_start(), None);
+    assert_eq!(package(), None);
+}
+
+#[test]
+fn the_lobbys_mode_keeps_the_kit_start_or_drops_it() {
+    clear();
+    let maps = library(installed());
+    pick_kit("fixture", Some(7), "Builder", &maps)
+        .unwrap()
+        .join()
+        .unwrap();
+    let held = kit_start();
+    assert!(held.is_some());
+    let built = package().expect("the kit package is ready");
+    // Forge mode on the same map keeps it, and asks nothing of the author.
+    follow_mode(true, Some(7), Some("fixture"), || panic!("no new pick"));
+    assert_eq!(kit_start(), held);
+    // An installed offer opens in its own cache slot, with no disc kit.
+    follow_mode(true, Some(8), None, || panic!("offer keeps its own slot"));
+    assert_eq!(package(), None);
+    assert_eq!(picked(), None);
+    assert!(
+        pick_kit("fixture", Some(7), "Builder", &maps).is_none(),
+        "returning to the disc map reuses the cached kit"
+    );
+    assert_eq!(kit_start(), held);
+    assert_eq!(package(), Some(built));
+    // Leaving Forge mode drops it.
+    follow_mode(false, Some(7), Some("fixture"), || panic!("no new pick"));
+    assert_eq!(kit_start(), None);
+    assert_eq!(picked(), None);
+    // A game with no builder has no kit start: nothing is picked.
+    follow_mode(true, Some(7), Some("fixture"), || "Builder".into());
+    assert_eq!(picked(), None);
+}

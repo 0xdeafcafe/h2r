@@ -145,7 +145,7 @@ fn each_ready_round_posts_the_record_scripts_line_on_the_host() {
         assert_eq!(work.calls, [Call::StartLine(Type::Ctf)]);
         let shared = s.clone();
         let entry = move |cx: Cx| -> EntryFuture {
-            Box::pin(run_work(cx, Arc::clone(&shared), work.clone()))
+            Box::pin(run_work(cx, Arc::clone(&shared), work.clone(), 0))
         };
         let run = testing::run(&entry, m, Regs { esp: SP, ..Regs::default() }, |_, _| Regs::default());
         assert_eq!(run.result, Ok(Ret::new(0, 0)));
@@ -200,6 +200,29 @@ fn on_script_index(m: &mut FakeGuest) -> [u8; LEN] {
     assert_eq!(v.game_type(), variants::GameType::Script);
     assert!(variants::record::check(&v).is_empty());
     raw[variants::ext::AT..variants::ext::AT + LEN].try_into().unwrap()
+}
+
+#[test]
+fn pressing_forge_launches_an_unscored_editor_from_custom_games_setup() {
+    use crate::{custom_games::{Menu, Row}, lobby_tabs::{Tab, switch}};
+    let menu = Menu::ALL;
+    let press = menu.row_kind(menu.row_of(Row::Forge).unwrap());
+    assert_eq!(press.retail_press(), Row::CustomGames.retail_press());
+    switch::set_ours(&switch::plan(Tab::CustomGames, press.mode().unwrap()), None).unwrap();
+    let stock = variants::GameVariant::stock(variants::GameType::Slayer).unwrap();
+    let mut options = options_with(stock.to_bytes());
+    assert_eq!(crate::rules::record::move_onto_script_index(&mut options, OPTIONS), Ok(Swap::Moved));
+    let editor = variants::GameVariant::from_bytes(&record_at(&options)).unwrap();
+    assert_eq!(editor.game_type(), variants::GameType::Script);
+    assert_eq!(editor.name(), "Forge");
+    assert_eq!(editor.get(variants::SettingId(1)), Some(0));
+    assert_eq!(editor.get(variants::SettingId(10)), Some(0));
+    assert!(crate::lobby_start::forge_session());
+
+    // A subsequent Custom Games press starts the very same lobby record as Slayer.
+    switch::set_ours(&switch::plan(Tab::Forge, Row::CustomGames.mode().unwrap()), None).unwrap();
+    let mut options = options_with(stock.to_bytes());
+    assert_eq!(crate::rules::record::move_onto_script_index(&mut options, OPTIONS), Ok(Swap::Stayed));
 }
 
 #[test]

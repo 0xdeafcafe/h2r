@@ -34,6 +34,13 @@
 //! The first alternative that some tag of the group matches (text fields
 //! equal) and that holds every `take` field with elements gives its values,
 //! the first such tag in the map's order. No match stops the build.
+//!
+//! With `replaces = "<asset hash>"` the item overrides whole the asset its
+//! `tag` names (docs/engine/asset-store.md, "Mods and packages"): the asset
+//! is in the map and hashes to it, else the item is a refusal
+//! ([`crate::Cx::replace_target`]). `like` may name that same asset, so an
+//! override is the asset with fields changed. The asset's hash as the item
+//! leaves it is kept for a later package's `was` (`Report::replaced`).
 use std::path::Path;
 
 use map::FourCC;
@@ -239,7 +246,14 @@ fn fourcc(g: FourCC) -> String {
 pub fn apply(cx: &mut Cx<'_>, job: &Job<'_>) -> Result<(), Failure> {
     let (group, path, file) = parse(job)?;
     let key = Cx::key(group, &path);
-    cx.check_free(&key)?;
+    // An override takes the asset at `key`; anything else adds a free path.
+    let over = match job.item.replaces.as_deref() {
+        Some(want) => Some(cx.replace_target(&key, want)?),
+        None => {
+            cx.check_free(&key)?;
+            None
+        }
+    };
     let def = def_of(group)?;
     let mut rec = match &file.like {
         Some(like) => {
@@ -262,6 +276,25 @@ pub fn apply(cx: &mut Cx<'_>, job: &Job<'_>) -> Result<(), Failure> {
         borrow(cx, def, group, &mut rec, b).map_err(|why| format!("tag {key}: {why}"))?;
     }
     let block = write_back(cx, def, &rec, &key)?;
-    cx.add_tag(&key, block)?;
+    match over {
+        Some(id) => {
+            // The asset's hash as this package leaves it, for a later
+            // patch's `was`: its normal form when the build has the base's
+            // assets, else its own. (A record that does not encode is the
+            // latter.)
+            let normal = tags::defs::encode(def, key.clone(), &rec, tags::repo::Region::Metadata)
+                .ok()
+                .and_then(|tag| cx.asset_hash_of(&tag).ok());
+            cx.write_block(id, &key, block)?;
+            // Its own hash is the tag as written, so it is read after.
+            let hash = normal.unwrap_or_else(|| {
+                crate::tag_hash(cx.set, id).expect("the tag is in the map")
+            });
+            cx.note_replaced(&key, hash);
+        }
+        None => {
+            cx.add_tag(&key, block)?;
+        }
+    }
     Ok(())
 }

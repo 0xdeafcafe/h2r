@@ -92,7 +92,7 @@ fn palette_to_properties_to_confirmed_engine_handle() {
     assert_eq!(work.len(), 1);
     let (ticket, call) = work.into_iter().next().unwrap();
     assert!(
-        matches!(call, calls::Call::Forge { steps, .. } if steps == [
+        matches!(&call, calls::Call::Forge { steps, .. } if *steps == [
             calls::ForgeStep::Make { tag: 42, frame },
         ])
     );
@@ -112,7 +112,7 @@ fn palette_to_properties_to_confirmed_engine_handle() {
     e.command(10, Command::Delete { id }).unwrap();
     let (ticket, call) = calls::lock(&e.calls).drain().pop().unwrap();
     assert!(
-        matches!(call, calls::Call::Forge { steps, .. } if steps == [
+        matches!(&call, calls::Call::Forge { steps, .. } if *steps == [
             calls::ForgeStep::Delete { target: live },
         ])
     );
@@ -139,7 +139,7 @@ fn palette_to_properties_to_confirmed_engine_handle() {
     e.command(14, Command::Undo).unwrap();
     let (ticket, call) = calls::lock(&e.calls).drain().pop().unwrap();
     assert!(
-        matches!(call, calls::Call::Forge { steps, .. } if steps == [
+        matches!(&call, calls::Call::Forge { steps, .. } if *steps == [
             calls::ForgeStep::Make { tag: 42, frame },
         ])
     );
@@ -257,9 +257,13 @@ fn selecting_two_objects_groups_them_and_the_browser_lists_the_group_first() {
     e.tool.aimed_thing = Some(a);
     e.command(27, Command::Properties).unwrap();
     let rows = labels();
-    for want in ["Group", "Lock group", "Ungroup"] {
+    for want in ["Group", "Lock group", "Pivot", "Ungroup"] {
         assert!(rows.contains(&want.to_string()), "{rows:?}");
     }
+    e.choose(28, Choice::SetGroupPivot(groups[0].id, true)).unwrap();
+    e.poll(28);
+    let groups = e.session.groups();
+    assert!(groups[0].pivot_first);
     // The browser lists the group first, and choosing it flies to its centre.
     let folders = sheet::folder_rows(&e.session.groups());
     assert_eq!(folders[0].name, "Group 1");
@@ -804,6 +808,16 @@ fn spawn_goal_and_item_properties_write_their_fields() {
         field(&e.session.thing(spawner).unwrap(), "respawn time"),
         forge_doc::Value::Int(45)
     );
+    e.tool.aimed_thing = Some(spawner);
+    e.choose(
+        9,
+        Choice::Number(sheet::NumberField::ReturnTime, "90".into()),
+    )
+    .unwrap();
+    finish(&mut e, 10);
+    let thing = e.session.thing(spawner).unwrap();
+    assert_eq!(field(&thing, "abandon limit"), forge_doc::Value::Int(90));
+    assert_eq!(field(&thing, "respawn time"), forge_doc::Value::Int(45));
 }
 
 // ---- AI ground: the build runs on a worker (docs/game/forge-map-variants.md, "AI ground") ----
@@ -1181,4 +1195,113 @@ mod nav {
         assert_eq!(e.choose(5, Choice::GenerateNav), Err(NO_GENERATOR.into()));
         assert!(!e.busy());
     }
+}
+
+/// **Reset orientation** and **Duplicate** on the Properties page of a
+/// placed shelf: one uprighting move, then one add in front of the
+/// monitor whose copy the monitor holds at once.
+#[test]
+fn reset_orientation_and_duplicate_on_the_properties_page() {
+    let mut e = editor();
+    calls::lock(&e.calls).arm();
+    e.tool.monitor = true;
+    e.choose(1, Choice::Select(0)).unwrap();
+    let frame = Frame {
+        position: [3., 0., 0.],
+        rotation: [0.7, 0.3, 0.2],
+    };
+    e.tool.ghost = Some(frame);
+    e.command(2, Command::Place { item: 0, frame }).unwrap();
+    let (ticket, _) = calls::lock(&e.calls).drain().pop().unwrap();
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[31]})));
+    e.poll(3);
+    let id = e.session.objects()[0].id;
+    let added = Endpoint::Added(id);
+    e.tool.camera = Some(forge::camera::Camera {
+        position: [0.; 3],
+        yaw: 0.,
+        pitch: 0.,
+    });
+    e.tool.aimed_thing = Some(added);
+    e.tool.aimed = Some(id);
+    e.command(4, Command::Properties).unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    let labels = || -> Vec<String> {
+        screens::screen(Kind::Properties)
+            .sheet()
+            .rows
+            .iter()
+            .map(|r| r.label.clone())
+            .collect()
+    };
+    assert!(
+        labels().contains(&"Reset orientation".to_string()),
+        "{:?}",
+        labels()
+    );
+    assert!(
+        labels().contains(&"Duplicate".to_string()),
+        "{:?}",
+        labels()
+    );
+    // Reset orientation: one move upright at the 45 degree snap, where it
+    // stands.
+    e.choose(5, Choice::ResetOrientation).unwrap();
+    let (ticket, call) = calls::lock(&e.calls).drain().pop().unwrap();
+    let upright = Frame {
+        position: [3., 0., 0.],
+        rotation: [45f32.to_radians(), 0., 0.],
+    };
+    assert!(
+        matches!(&call, calls::Call::Forge { steps, .. } if *steps == [
+            calls::ForgeStep::Move {
+                target: calls::ForgeTarget::Live(agent_proto::ObjectId {
+                    kind: agent_proto::Kind::Crate,
+                    key: 31,
+                }),
+                frame: upright,
+            },
+        ]),
+        "{call:?}"
+    );
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[]})));
+    e.poll(6);
+    assert_eq!(e.session.log().len(), 2);
+    // Duplicate: one add in front of the monitor, and the copy is held at
+    // once.
+    e.choose(7, Choice::Duplicate(added)).unwrap();
+    let (ticket, call) = calls::lock(&e.calls).drain().pop().unwrap();
+    let copy = Frame {
+        position: [3., 0., 0.],
+        rotation: [0.; 3],
+    };
+    assert!(
+        matches!(&call, calls::Call::Forge { steps, .. } if *steps == [
+            calls::ForgeStep::Make { tag: 42, frame: copy },
+        ]),
+        "{call:?}"
+    );
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[32]})));
+    e.poll(8);
+    assert_eq!(e.session.log().len(), 3);
+    assert_eq!(e.session.objects()[1].frame, copy);
+    assert_eq!(
+        e.tool.held_thing,
+        Some(Endpoint::Added(e.session.objects()[1].id))
+    );
+    assert_eq!(e.tool.held, Some(e.session.objects()[1].id));
+    assert_eq!(e.tool.ghost, Some(copy));
+}
+
+#[test]
+fn live_forge_row_starts_in_the_monitor_with_the_hud() {
+    use crate::{custom_games, lobby_start, lobby_tabs};
+    let tab = custom_games::Menu::ALL.row_kind(custom_games::FORGE_ROW).mode().unwrap();
+    let plan = lobby_tabs::switch::plan(lobby_tabs::Tab::CustomGames, tab);
+    lobby_start::set_mode(plan.mode);
+    let e = editor();
+    assert!(e.monitor());
+    assert!(e.monitor_hud(0.0).view.monitor);
+    lobby_start::clear();
+    assert!(!editor().monitor());
 }

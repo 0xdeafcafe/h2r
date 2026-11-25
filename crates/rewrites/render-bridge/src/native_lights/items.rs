@@ -37,14 +37,14 @@ pub(super) fn install(b: &mut Builder) {
                     // The main view's kind: its list 0 is not this body's.
                     Ok(None) => {
                         if let Some(taken) = &taken {
-                            handoff::guest_made(&*runtime.memory(), taken, Refusal::Layout);
+                            handoff::guest_made(taken, Refusal::Layout);
                         }
                         return original(cpu, ctx, addr);
                     }
                     Err(why) => {
                         refused(SceneList::LightItems, why);
                         if let Some(taken) = &taken {
-                            handoff::guest_made(&*runtime.memory(), taken, why);
+                            handoff::guest_made(taken, why);
                         }
                         return original(cpu, ctx, addr);
                     }

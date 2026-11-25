@@ -24,7 +24,8 @@ use crate::light_gpu::{StaticLightTexture, uniforms_layout};
 use crate::look::Stage;
 use crate::object_lighting::ShaderValues;
 use crate::object_program::{
-    IMPLEMENTATIONS, ObjectInputs, ObjectPass, Row, object_layer3, object_pass, object_pixel_uniforms, object_vertex_uniforms,
+    IMPLEMENTATIONS, ObjectInputs, ObjectPass, Row, animated_blocks, object_layer3, object_pass, object_pixel_uniforms,
+    object_vertex_uniforms,
 };
 use crate::object_program::{LIGHTMAP_STREAM, object_layer_pass, object_layer_passes, texaccum_dimensions};
 use crate::object_streams::{Attribute, Element, SLOT, StreamData, StreamElement, StreamFormats, declaration, gather, registers};
@@ -33,12 +34,63 @@ use crate::objects::{ItemDraw, ItemKey, ObjectFrame};
 use frame_scene::{AuxDepth, Defaults, FrameScene, Instance, LayerItem, LayerOwner, LayerPass, Lighting, PartDraw, PartFlags, Subparts};
 use crate::program::{ViewInputs, bias_signed, frame_pixel, frame_vertex, sampler_descriptor};
 
+/// Shader state for the object-layer prefix. The hardware row is the drained device's;
+/// material bank 1 register 0 is the source of a subsequent dirty upload
+/// (shader context +0x1630, dirty mask +0x1734).
+pub struct ObjectLayerEntry {
+    pub states: EntryStates,
+    pub c18: MaterialConstant18,
+}
+
+#[derive(Clone, Copy)]
+pub struct MaterialConstant18 {
+    device: [u32; 4],
+    bank: Option<[u32; 4]>,
+    dirty: Option<bool>,
+}
+
+impl MaterialConstant18 {
+    pub fn new(device: Row, bank: Option<[u32; 4]>, dirty: Option<bool>) -> Self {
+        Self { device: device.map(f32::to_bits), bank, dirty }
+    }
+
+    /// A dirty upload differing from hardware needs the material binder
+    /// even when the selected implementation has no binding for the row.
+    fn unchanged_at_upload(self) -> bool {
+        self.dirty == Some(false) || self.bank == Some(self.device)
+    }
+
+    fn apply(self, compiled: &ObjectPass, vertex: &mut VertexUniforms) -> Result<(), String> {
+        if !self.unchanged_at_upload() {
+            return Err("a pending c[18] upload requires the material binder".into());
+        }
+        if compiled.inherits_c18 {
+            vertex.constants[18] = self.device.map(f32::from_bits);
+        } else if crate::layer_pass::writes_material_c18(&compiled.implementation) {
+            // An instance or engine binding can overwrite only some cache
+            // lanes, yet 0x18e80 uploads the entire row. Both the cache and
+            // hardware must already agree to skip it state-neutrally.
+            if compiled.implementation.dimension_bindings.iter().any(|c| {
+                c.bank == 1 && c.reg == 0 && (1..=4).contains(&c.stage)
+                    && (compiled.texaccum[usize::from(c.stage - 1)] || compiled.view[usize::from(c.stage - 1)])
+            }) {
+                return Err("a c[18] write needs the bound target's dimensions".into());
+            }
+            let planned = vertex.constants[18].map(f32::to_bits);
+            if self.bank != Some(planned) || self.device != planned {
+                return Err("a c[18] write requires the material binder".into());
+            }
+        }
+        Ok(())
+    }
+}
+
 /// One section's vertices through one declaration: per vertex, per
 /// register in `registers` order, its guest bytes in a slot
 /// ([`crate::object_streams::gather`]) of the guest format in `formats`,
 /// which the vertex unit converts as the D3D path's fetch does
 /// ([`vertex_fetch`]); and the section's index list.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct LitBufferInput {
     pub registers: Vec<u8>,
     pub formats: Vec<Attribute>,
@@ -173,13 +225,25 @@ impl SubpartRanges {
 }
 
 /// The world layers besides 3 whose passes an object item draws natively
-/// from the scene (docs/graphics/framescene.md, slice 4): 1, 5, 7, 8, 20
-/// and 17 (`layer_pass::BLOOM_LAYER`), and from the sorted list's handlers the camouflage's 18 and 19
+/// from the scene (docs/graphics/framescene.md, slice 4): 1, 5, 7, 8, 20,
+/// the overlay layer 2 (`layer_pass::OVERLAY_LAYER`, the scene's and the
+/// first person's) and 17 (`layer_pass::BLOOM_LAYER`), and from the sorted list's handlers the camouflage's 18 and 19
 /// and the hologram's 21 (docs/graphics/native-water-fog.md). In layer 5 an item whose model has
 /// a PRT block draws its pass's PRT variant ([`LitLayerPass::prt`]) with
 /// the stream and constants the geometry draw adds
 /// (`frame_scene::PrtStream`).
-pub const OBJECT_LAYERS: [u8; 9] = [1, PRT_LAYER, 7, 8, 20, crate::layer_pass::BLOOM_LAYER, CAMO_LAYER, CAMO_MODULATE_LAYER, HOLOGRAM_LAYER];
+pub const OBJECT_LAYERS: [u8; 10] = [
+    1,
+    PRT_LAYER,
+    7,
+    8,
+    20,
+    crate::layer_pass::OVERLAY_LAYER,
+    crate::layer_pass::BLOOM_LAYER,
+    CAMO_LAYER,
+    CAMO_MODULATE_LAYER,
+    HOLOGRAM_LAYER,
+];
 
 /// Active camouflage, the layer the sorted handler `0x00041cc0` draws its
 /// records' camouflage passes in (`scene_extract::layout::world_layers::sorted_site`).
@@ -333,12 +397,35 @@ impl LitModelInput {
             )
         }) && self.layers.iter().all(|part| {
             valid(
-                &mut part.passes.iter().flat_map(|p| p.implementations.iter().flatten().copied()),
+                &mut part.passes.iter().flat_map(|p| p.implementations.iter().chain(&p.prt).flatten().copied()),
                 &part.indices,
                 part.subparts.as_ref(),
                 part.listed.as_ref(),
             )
         })
+    }
+
+    /// A shader override can gather the same section as the base material,
+    /// and a refused implementation may leave an unreferenced buffer.
+    /// Keep one copy of each distinct, reachable upload.
+    fn compact_buffers(&mut self) {
+        let slots = self.parts.iter_mut().flat_map(|p| &mut p.implementations);
+        let layers = self.layers.iter_mut().flat_map(|p| &mut p.passes)
+            .flat_map(|p| p.implementations.iter_mut().chain(&mut p.prt));
+        let mut canonical = HashMap::new();
+        let mut sources = Vec::new();
+        let mut remap = vec![None; self.buffers.len()];
+        for (_, index) in slots.chain(layers).flatten() {
+            let from = *index;
+            *index = *remap[from].get_or_insert_with(|| {
+                *canonical.entry(&self.buffers[from]).or_insert_with(|| {
+                    sources.push(from);
+                    sources.len() - 1
+                })
+            });
+        }
+        drop(canonical);
+        self.buffers = sources.into_iter().map(|i| std::mem::take(&mut self.buffers[i])).collect();
     }
 
     /// Whether a program samples the texture accumulation target
@@ -499,6 +586,7 @@ struct LitModel {
     /// layers those of a shader the game puts on its record instead
     /// ([`OVERRIDE_LAYERS`]).
     layer_index: HashMap<(u8, u16, u8, u32), usize>,
+    _geometry_bytes: mem_watch::Gauge,
 }
 
 /// Every model's lit parts on the GPU.
@@ -651,7 +739,7 @@ impl Shared {
             return view.clone();
         }
         let keep = image.is_some();
-        let mut image = image.unwrap_or(Image { width: 1, height: 1, rgba: vec![0, 0, 0, 255], mips: Vec::new(), blocks: None });
+        let mut image = image.unwrap_or_else(|| Image::solid([0, 0, 0, 255]));
         bias_signed(&mut image, program.signed[n]);
         self.created.textures += 1;
         let view = texture(device, queue, &image, "native object program stage");
@@ -750,6 +838,41 @@ pub fn input_fetch(declaration: &[Element]) -> [shaders::vsh::InputFetch; 16] {
         }
     }
     out
+}
+
+/// Match a live PRT attribute to the compiled register conversion. The
+/// vertex buffer always has a full slot, so a native three-lane fetch
+/// can supply W=1 even when the shader consumes all four lanes.
+fn prt_padding(format: Attribute, expected: shaders::vsh::InputFetch) -> Result<&'static [u8], String> {
+    use shaders::vsh::InputFetch as I;
+    if vertex_fetch(format).1 == expected {
+        return Ok(&[]);
+    }
+    match (format, expected) {
+        (Attribute::PByte(3), I::Float) => Ok(&[u8::MAX]),
+        (Attribute::NormShort(3), I::Float) => Ok(&[0xff, 0x7f]),
+        (Attribute::Short(3), I::Int) => Ok(&[1, 0]),
+        // The shader forces W to one, as does the narrower live format.
+        (Attribute::Float(1..=3) | Attribute::PByte(1..=2) | Attribute::NormShort(1..=2), I::Xyz1)
+        | (Attribute::Short(1..=2), I::IntXyz1) => Ok(&[]),
+        _ => Err(format!("PRT attribute {format:?} cannot supply {expected:?}")),
+    }
+}
+
+fn gather_prt(
+    elements: &[Element], fetch: &[shaders::vsh::InputFetch; 16], bytes: &[u8], stride: usize, count: usize,
+) -> Result<Vec<[u8; SLOT]>, String> {
+    let mut vertices = gather(elements, &[Some(StreamData { bytes, stride })], count)?;
+    for (column, element) in elements.iter().enumerate() {
+        let padding = prt_padding(element.format, fetch[usize::from(element.register)])?;
+        if !padding.is_empty() {
+            let start = element.format.size();
+            for slot in vertices.iter_mut().skip(column).step_by(elements.len()) {
+                slot[start..start + padding.len()].copy_from_slice(padding);
+            }
+        }
+    }
+    Ok(vertices)
 }
 
 /// The vertex attributes of a buffer holding `registers` of `formats`,
@@ -865,12 +988,13 @@ impl LitObjects {
     /// Publish a model only when its geometry and every material program
     /// upload successfully. Failure keeps the previous entry, if present.
     /// The result belongs to this upload, even when the key was already used.
-    pub fn add_model(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, index: u32, input: LitModelInput) -> bool {
+    pub fn add_model(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, index: u32, mut input: LitModelInput) -> bool {
         if !input.valid_draw_references() {
             return false;
         }
+        input.compact_buffers();
         let mut layouts = HashMap::new();
-        let buffers = input
+        let buffers: Vec<_> = input
             .buffers
             .iter()
             .map(|b| LitBuffer {
@@ -901,7 +1025,12 @@ impl LitObjects {
         for (i, p) in input.layers.iter().enumerate() {
             layer_index.entry((p.layer, p.section, p.part, p.shader_tag)).or_insert(i);
         }
-        self.models.insert(index, LitModel { programs, buffers, parts: input.parts, part_index, layers: input.layers, layer_index });
+        static GEOMETRY: mem_watch::Counter = mem_watch::Counter::new("native.object_geometry_buffer_bytes");
+        let geometry_bytes = buffers.iter().map(|b| b.vertices.size() + b.indices.size()).sum();
+        self.models.insert(index, LitModel {
+            programs, buffers, parts: input.parts, part_index, layers: input.layers, layer_index,
+            _geometry_bytes: GEOMETRY.track(geometry_bytes),
+        });
         true
     }
 
@@ -1080,9 +1209,13 @@ impl LitObjects {
 
     /// [`Self::plan`] for a first-person item: the topology and subparts
     /// its record draws ([`ItemDraw::flags`], [`ItemDraw::subparts`]), as
-    /// the scene's parts draw theirs ([`plan_item_part`]).
-    pub fn plan_item(&self, index: u32, frame: &ObjectFrame, item: &ItemDraw, entry: &EntryStates) -> Result<PlannedDraw, String> {
-        self.plan_inputs(index, item_inputs(frame, item)?, &item.key, &item.rows, entry, false)
+    /// the scene's parts draw theirs ([`plan_item_part`]), an animated
+    /// pass sampled at `time` (the render clock).
+    pub fn plan_item(
+        &self, index: u32, frame: &ObjectFrame, item: &ItemDraw, entry: &EntryStates, time: Option<f64>,
+    ) -> Result<PlannedDraw, String> {
+        let inputs = PartInputs { time, ..item_inputs(frame, item)? };
+        self.plan_inputs(index, inputs, &item.key, &item.rows, entry, false)
     }
 
     pub fn plan_scene(&self, index: u32, frame: &ObjectFrame, key: &ItemKey, rows: &[Row], entry: &EntryStates) -> Result<PlannedDraw, String> {
@@ -1091,9 +1224,11 @@ impl LitObjects {
 
     /// [`Self::plan_scene`] for a part of a view of the scene: the
     /// instance's lighting and defaults, the part's key and its rows, all
-    /// as extraction copied them.
+    /// as extraction copied them, an animated pass sampled at `time` (the
+    /// render clock).
     pub fn plan_part_of(
         &self, index: u32, scene: &FrameScene, instance: &Instance, part: &PartDraw, entry: &EntryStates,
+        time: Option<f64>,
     ) -> Result<PlannedDraw, String> {
         let inputs = PartInputs {
             instance: instance.key,
@@ -1101,6 +1236,7 @@ impl LitObjects {
             defaults: instance.defaults,
             subparts: part.subparts,
             strip: Some(part.flags.contains(PartFlags::STRIP)),
+            time,
         };
         self.plan_inputs(index, inputs, &part.key, scene.rows_of(part), entry, true)
     }
@@ -1135,7 +1271,7 @@ impl LitObjects {
     /// a part or implementation that is not native, or an input or state
     /// that does not resolve.
     pub fn plan_layer_item(
-        &self, index: u32, layer: u8, scene: &FrameScene, pass: &LayerPass, item: &LayerItem, entry: &EntryStates,
+        &self, index: u32, layer: u8, scene: &FrameScene, pass: &LayerPass, item: &LayerItem, entry: &ObjectLayerEntry,
     ) -> Result<Vec<PlannedDraw>, String> {
         let LayerOwner::Object(instance) = item.owner else { return Err("not an object's item".into()) };
         if let Some(why) = item.refusal {
@@ -1150,7 +1286,7 @@ impl LitObjects {
                 item.key.shader, item.key.section, item.key.part
             ));
         }
-        plan_layer_part(&m.layers, at, &|program| m.programs.get(program).map(|p| &p.pass), instance, layer, rows, pass, item, entry)
+        plan_layer_part_at_entry(&m.layers, at, &|program| m.programs.get(program).map(|p| &p.pass), instance, layer, rows, pass, item, &entry.states, Some(entry.c18))
     }
 
     /// Gathers a layer-5 PRT draw's stream (planned with the item's
@@ -1159,8 +1295,8 @@ impl LitObjects {
     /// stride apart (`read` the guest's bytes), through the declaration
     /// the stream setup builds for the stream's type (`formats`, read
     /// from guest memory). That declaration must supply the registers the
-    /// PRT variant was compiled for, fetched the same way: a stream type
-    /// whose format differs refuses. A draw without a stream is left as it
+    /// PRT variant was compiled for, with a compatible shader input type
+    /// and fourth component. A draw without a stream is left as it
     /// is.
     pub fn fill_prt(
         &self, index: u32, draw: &mut PlannedDraw, formats: &StreamFormats, read: &dyn Fn(u32, usize) -> Option<Vec<u8>>,
@@ -1172,7 +1308,7 @@ impl LitObjects {
         let mut all = input.streams.clone();
         all.push(formats.elements(stream.kind)?);
         let full = declaration(&input.semantics, &all);
-        if registers(&full) != input.provided || input_fetch(&full) != input.fetch {
+        if registers(&full) != input.provided {
             return Err(format!("PRT stream type {:#x} feeds other registers than type {PRT_STREAM:#x}'s", stream.kind));
         }
         let prt: Vec<Element> = full
@@ -1186,7 +1322,7 @@ impl LitObjects {
         let stride = usize::from(stream.stride);
         let len = count.checked_mul(stride).filter(|&n| n <= MAX_PRT_BYTES).ok_or("its PRT stream is too large")?;
         let bytes = read(stream.data, len).filter(|b| b.len() == len).ok_or("its PRT stream does not read")?;
-        let vertices = gather(&prt, &[Some(StreamData { bytes: &bytes, stride })], count)?;
+        let vertices = gather_prt(&prt, &input.fetch, &bytes, stride, count)?;
         *gathered = Some(PrtVertices { formats: prt.iter().map(|e| e.format).collect(), vertices: Arc::new(vertices) });
         Ok(())
     }
@@ -1259,7 +1395,7 @@ impl LitObjects {
         let buffer = model.buffers.get(draw.buffer)?;
         let program = model.programs.get_mut(draw.program)?;
         let prt = prt_layout(program, draw)?;
-        let key = (color, depth, buffer.layout_id, draw.state, prt.as_ref().map(|(_, f)| f.clone()).unwrap_or_default());
+        let key = (color, depth, buffer.layout_id, draw.state.pipeline_state(), prt.as_ref().map(|(_, f)| f.clone()).unwrap_or_default());
         let (entry, resident) = match program.pipelines.entry(key) {
             std::collections::hash_map::Entry::Occupied(entry) => (entry.into_mut(), true),
             std::collections::hash_map::Entry::Vacant(entry) => {
@@ -1380,7 +1516,7 @@ impl LitObjects {
             }
             let p = &mut m.programs[d.program];
             let prt_formats = d.prt.as_ref().and_then(|(_, v)| v.as_ref()).map(|v| v.formats.clone()).unwrap_or_default();
-            let (described, pipeline) = p.pipelines.get(&(color_format, depth_format, b.layout_id, d.state, prt_formats))
+            let (described, pipeline) = p.pipelines.get(&(color_format, depth_format, b.layout_id, d.state.pipeline_state(), prt_formats))
                 .cloned().ok_or("object pipeline unavailable")?;
             let textures = match &p.textures {
                 Some(textures) => textures.clone(),
@@ -1425,9 +1561,7 @@ impl LitObjects {
                 BoundGroup { index: 0, group: uniforms.group.clone(), offsets: uniforms.offsets(i).to_vec() },
                 BoundGroup::new(1, textures),
             ];
-            // The stencil reference is zero (`object_state::resolve_scene`)
-            // but for a marked part's mode 2 (`object_state::mark`); the
-            // packet sets it.
+            // Carry the resolved reference, including a marked part's mode 2.
             let state = gfx::state::RenderState { stencil: d.state.stencil, ..Default::default() };
             // A PRT draw's stream, gathered at the hook, in this
             // submission's uploads.
@@ -1557,6 +1691,16 @@ pub fn plan_layer_part<'a>(
     pass_of: &dyn Fn(usize) -> Option<&'a ObjectPass>,
     instance: frame_scene::InstanceKey, layer: u8, rows: &[Row], pass: &LayerPass, item: &LayerItem, entry: &EntryStates,
 ) -> Result<Vec<PlannedDraw>, String> {
+    plan_layer_part_at_entry(layers, at, pass_of, instance, layer, rows, pass, item, entry, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn plan_layer_part_at_entry<'a>(
+    layers: &[LitLayerPart], at: Option<usize>,
+    pass_of: &dyn Fn(usize) -> Option<&'a ObjectPass>,
+    instance: frame_scene::InstanceKey, layer: u8, rows: &[Row], pass: &LayerPass, item: &LayerItem, entry: &EntryStates,
+    c18: Option<MaterialConstant18>,
+) -> Result<Vec<PlannedDraw>, String> {
     if let Some(why) = item.refusal {
         return Err(why.name().into());
     }
@@ -1578,7 +1722,7 @@ pub fn plan_layer_part<'a>(
     let strip = Some(item.flags.contains(PartFlags::STRIP));
     let ranges = part_ranges(&p.indices, p.subparts.as_ref(), p.listed.as_ref(), strip, item.subparts)?;
     let defaults = pass.inputs.defaults.ok_or("the inputs' defaults do not read")?;
-    let inputs = ObjectInputs { lighting: item.lighting.as_ref(), defaults: &defaults, shader: p.shader };
+    let inputs = ObjectInputs { layer: Some(&pass.inputs), lighting: item.lighting.as_ref(), defaults: &defaults, shader: p.shader };
     let unstenciled;
     let entry = if layer == 1 && pass.stencil_off {
         let mut e = entry.clone();
@@ -1605,7 +1749,13 @@ pub fn plan_layer_part<'a>(
                 None => format!("layer {layer} pass {n} has no native implementation {implementation}"),
             })?;
         let compiled = pass_of(program).ok_or("its program is missing")?;
-        let mut vertex = object_vertex_uniforms(&compiled.program.vertex, &compiled.implementation, &inputs, rows, p.decompression)?;
+        let (vertex_base, pixel_base) = animated_blocks(compiled, pass.inputs.time)?;
+        let mut vertex = object_vertex_uniforms(&vertex_base, &compiled.implementation, &inputs, rows, p.decompression)?;
+        if matches!(layer, 1 | 17) && let Some(c18) = c18 {
+            c18.apply(compiled, &mut vertex)?;
+        } else if compiled.inherits_c18 {
+            return Err("the inherited c[18] needs the draw's material state".into());
+        }
         if let Some(prt) = &item.prt {
             let input = compiled.prt.as_ref().ok_or("its PRT variant has no PRT stream")?;
             let first = usize::from(frame_scene::PRT_FIRST_CONSTANT);
@@ -1615,9 +1765,14 @@ pub fn plan_layer_part<'a>(
             let end = (first + prt.constants.len()).min(vertex.constants.len());
             vertex.constants[first..end].copy_from_slice(&prt.constants[..end - first]);
         }
-        let pixel = object_pixel_uniforms(&compiled.program.pixel, &compiled.implementation, &inputs)?;
+        let pixel = object_pixel_uniforms(&pixel_base, &compiled.implementation, &inputs)?;
         let alpha_test = compiled.program.state.as_ref().ok_or("its pass has no state")?.alpha_test;
-        let mut state = object_state::resolve_layer(&compiled.implementation.render_states, entry, alpha_test)?;
+        let imp = &compiled.implementation;
+        let mut states = std::borrow::Cow::Borrowed(&imp.render_states);
+        if let Some(blend) = &compiled.blend_color {
+            states.to_mut().push(blend.resolve(imp, entry, &pass.inputs, item.lighting.as_ref(), p.shader)?);
+        }
+        let mut state = object_state::resolve_layer(&states, entry, alpha_test)?;
         if item.flags.contains(PartFlags::STENCIL_MARK) && !pass.stencil_off {
             object_state::mark(&mut state);
         }
@@ -1658,6 +1813,9 @@ struct PartInputs<'a> {
     /// (`frame_scene::PartFlags::STRIP`); `None`, in the part's own
     /// topology.
     strip: Option<bool>,
+    /// The render clock an animated pass samples its constants at
+    /// ([`animated_blocks`]); `None` refuses one.
+    time: Option<f64>,
 }
 
 impl<'a> PartInputs<'a> {
@@ -1668,6 +1826,7 @@ impl<'a> PartInputs<'a> {
             defaults: frame.defaults,
             subparts: None,
             strip: None,
+            time: None,
         }
     }
 }
@@ -1721,9 +1880,10 @@ fn plan_indexed_part<'a>(
     let (pass, inherited) = pass_of(program).ok_or("its program is missing")?;
     let ranges = part_ranges(&p.indices, p.subparts.as_ref(), p.listed.as_ref(), frame.strip, frame.subparts)?;
     let defaults = frame.defaults.ok_or("the inputs' defaults do not read")?;
-    let inputs = ObjectInputs { lighting: frame.lighting, defaults: &defaults, shader: p.shader };
-    let vertex = object_vertex_uniforms(&pass.program.vertex, &pass.implementation, &inputs, rows, p.decompression)?;
-    let pixel = object_pixel_uniforms(&pass.program.pixel, &pass.implementation, &inputs)?;
+    let inputs = ObjectInputs { layer: None, lighting: frame.lighting, defaults: &defaults, shader: p.shader };
+    let (vertex_base, pixel_base) = animated_blocks(pass, frame.time)?;
+    let vertex = object_vertex_uniforms(&vertex_base, &pass.implementation, &inputs, rows, p.decompression)?;
+    let pixel = object_pixel_uniforms(&pixel_base, &pass.implementation, &inputs)?;
     let compiled = pass.program.state.as_ref().ok_or("its pass has no state")?.alpha_test;
     let resolve = if scene { object_state::resolve_scene } else { object_state::resolve };
     let mut cached = inherited.map(|s| s.lock().unwrap_or_else(|e| e.into_inner()));
@@ -1918,10 +2078,44 @@ pub fn lit_listed(indices: &[u16], part: &tags::geometry::Part) -> Option<Vec<[u
     Some(tags::geometry::list_triangles(indices.get(part.index_range())?))
 }
 
-/// A material the lit build takes: resolved, and its shader values.
+/// A material the lit build takes: resolved, its shader values, and its
+/// instance's animated properties (`shad +0x3c`, what its passes'
+/// animated constants read; [`crate::layer_pass::instance_properties`]).
 pub struct LitMaterial {
     pub material: tags::material::Material,
     pub shader: ShaderValues,
+    pub properties: Vec<tags::shader::AnimatedProperty>,
+}
+
+/// Resolve state bindings that use only the shader instance once, before
+/// compiling its section variants. The effective writes stay on the pass
+/// for the live device-state checks at the layer call.
+fn instance_states<'a>(
+    imp: &'a tags::material::ResolvedImplementation, inputs: &tags::material::EngineInputs,
+) -> Result<std::borrow::Cow<'a, tags::material::ResolvedImplementation>, String> {
+    if imp.engine_render_states.is_empty() && imp.engine_stage_states.is_empty() {
+        return Ok(std::borrow::Cow::Borrowed(imp));
+    }
+    let states = crate::engine_states::apply_static(imp, inputs).map_err(|e| format!("engine states: {e:?}"))?;
+    let mut resolved = imp.clone();
+    resolved.render_states = states.render_states;
+    resolved.stage_states = states.stage_states;
+    resolved.engine_render_states.clear();
+    resolved.engine_stage_states.clear();
+    Ok(std::borrow::Cow::Owned(resolved))
+}
+
+/// The camouflage pass writes its blend colour from the object's engine inputs.
+fn layer_instance_states<'a>(
+    layer: u8, imp: &'a tags::material::ResolvedImplementation, inputs: &tags::material::EngineInputs,
+) -> Result<(std::borrow::Cow<'a, tags::material::ResolvedImplementation>, Option<Arc<object_state::LayerBlendColor>>), String> {
+    if layer != CAMO_LAYER || imp.engine_render_states.is_empty() {
+        return Ok((instance_states(imp, inputs)?, None));
+    }
+    let mut remaining = imp.clone();
+    let blend = object_state::LayerBlendColor::take(&mut remaining)?.map(Arc::new);
+    let resolved = instance_states(&remaining, inputs)?.into_owned();
+    Ok((std::borrow::Cow::Owned(resolved), blend))
 }
 
 /// What [`lit_model`] built: the input to upload, the materials taken,
@@ -2045,6 +2239,8 @@ pub fn lit_model(
             let samples_lightmap = engine.lightmap.is_some()
                 && imp.textures.iter().flatten().any(|t| t.source == tags::material::TextureSource::Lightmap);
             let mut compile = || -> Result<Vec<(LitProgramInput, usize)>, String> {
+                let resolved = instance_states(imp, &lit.material.inputs)?;
+                let imp = resolved.as_ref();
                 let vs = imp.vertex_shader.ok_or_else(|| format!("implementation {n} has no vertex program"))?;
                 let mut got = Vec::new();
                 for s in &secs {
@@ -2061,7 +2257,7 @@ pub fn lit_model(
                     }
                     let (microcode, semantics) = vertex(vs, s.geometry, s.influences).map_err(|e| format!("section {}: {e}", s.index))?;
                     let decl = declaration(&semantics, &streams);
-                    let compiled = object_pass(pass.pass, imp, &microcode, registers(&decl), input_fetch(&decl), engine.lightmap.is_some())
+                    let compiled = object_pass(pass.pass, imp, &lit.properties, &microcode, registers(&decl), input_fetch(&decl), engine.lightmap.is_some())
                         .map_err(|e| format!("section {} implementation {n}: {e}", s.index))?;
                     let key = (s.index, decl);
                     let buffer = match buffers.get(&key) {
@@ -2176,9 +2372,6 @@ pub fn lit_model(
         }
         for layer in OBJECT_LAYERS {
             let Ok(passes) = object_layer_passes(&lit.material, layer) else { continue };
-            // A copy of the view is made only for the sorted handlers'
-            // layers (`native_layers_glue`'s encoded pass).
-            let copies_view = engine.view && OVERRIDE_LAYERS.contains(&layer);
             let mut per: Vec<Vec<LitLayerPass>> = secs.iter().map(|_| vec![LitLayerPass::default(); passes.len()]).collect();
             let mut drawn = false;
             for (k, pass) in passes.iter().enumerate() {
@@ -2192,14 +2385,23 @@ pub fn lit_model(
                         }
                         continue;
                     }
+                    let (resolved, blend_color) = match layer_instance_states(layer, imp, &lit.material.inputs) {
+                        Ok(resolved) => resolved,
+                        Err(e) => {
+                            out.layer_refused.push((m, layer, format!("pass {k} implementation {n}: {e}")));
+                            continue;
+                        }
+                    };
+                    let imp = resolved.as_ref();
                     let index_list = |s: u16| lists[&s].0.clone();
                     let compiled = compile_layer_sections(
-                        None, pass.pass, imp, &secs, formats, engine, copies_view, &mut *vertex, &mut *image, &mut buffers,
+                        None, pass.pass, imp, &lit.properties, &secs, formats, engine, layer, &mut *vertex, &mut *image, &mut buffers,
                         &mut out.input.buffers, &index_list,
                     );
                     match compiled {
                         Ok(got) => {
-                            for (slot, (program, buffer)) in per.iter_mut().zip(got) {
+                            for (slot, (mut program, buffer)) in per.iter_mut().zip(got) {
+                                program.pass.blend_color = blend_color.clone();
                                 out.input.programs.push(program);
                                 slot[k].implementations[n] = Some((out.input.programs.len() - 1, buffer));
                             }
@@ -2213,7 +2415,7 @@ pub fn lit_model(
                     if layer == PRT_LAYER {
                         let compiled = formats.elements(PRT_STREAM).and_then(|prt| {
                             compile_layer_sections(
-                                Some(prt.as_slice()), pass.pass, imp, &secs, formats, engine, false, &mut *vertex, &mut *image,
+                                Some(prt.as_slice()), pass.pass, imp, &lit.properties, &secs, formats, engine, layer, &mut *vertex, &mut *image,
                                 &mut buffers, &mut out.input.buffers, &index_list,
                             )
                         });
@@ -2279,7 +2481,7 @@ fn material_parts<'s, 'a>(
 /// declaration made once over `buffers` (its indices the section's list,
 /// `index_list`), with its stages' images; the first failure, as the
 /// reason the implementation is left out. A stage sampling the view's own
-/// target compiles only with `copies_view` (bound per encode,
+/// target compiles only for a sorted layer that copies it (bound per encode,
 /// [`LitObjects::view_copy`]).
 ///
 /// With `prt` (layer 5, the PRT stream's format), the declaration has the
@@ -2295,10 +2497,11 @@ fn compile_layer_sections(
     prt: Option<&[StreamElement]>,
     pass: map::TagId,
     imp: &tags::material::ResolvedImplementation,
+    properties: &[tags::shader::AnimatedProperty],
     secs: &[&LitSection<'_>],
     formats: &StreamFormats,
     engine: &EngineStages,
-    copies_view: bool,
+    layer: u8,
     vertex: &mut VertexSource<'_>,
     image: &mut StageSource<'_>,
     buffers: &mut HashMap<(u16, Vec<Element>), usize>,
@@ -2327,8 +2530,11 @@ fn compile_layer_sections(
             all.push(p.to_vec());
         }
         let full = declaration(&semantics, &all);
-        let mut compiled = object_layer_pass(pass, imp, &microcode, registers(&full), input_fetch(&full))
+        let mut compiled = object_layer_pass(pass, imp, properties, &microcode, registers(&full), input_fetch(&full))
             .map_err(|e| format!("section {}: {e}", s.index))?;
+        if compiled.inherits_c18 && !matches!(layer, 1 | crate::layer_pass::BLOOM_LAYER) {
+            return Err(format!("section {}: layer {layer} does not capture inherited c[18]", s.index));
+        }
         if prt.is_some() {
             compiled.prt = Some(PrtInput {
                 semantics: semantics.clone(),
@@ -2373,7 +2579,7 @@ fn compile_layer_sections(
                 continue;
             }
             if compiled.view[k] {
-                if !copies_view {
+                if !engine.view || !OVERRIDE_LAYERS.contains(&layer) {
                     return Err(format!("stage {k} samples the view's own target, which the host copies only for the sorted handlers' layers"));
                 }
                 continue;
@@ -2396,6 +2602,53 @@ mod tests {
     use crate::object_lighting::Lighting;
     use gfx::state::RenderStateType;
 
+    #[test]
+    fn prt_layout_changes_preserve_the_fourth_component() {
+        use shaders::vsh::InputFetch as I;
+        for (format, expected, fourth) in [
+            (Attribute::PByte(3), I::Float, &[255][..]),
+            (Attribute::NormShort(3), I::Float, &[255, 127][..]),
+            (Attribute::Short(3), I::Int, &[1, 0][..]),
+        ] {
+            assert_eq!(prt_padding(format, expected).unwrap(), fourth);
+        }
+        assert!(prt_padding(Attribute::Float(2), I::Xyz1).unwrap().is_empty());
+        assert!(prt_padding(Attribute::Float(4), I::Xyz1).is_err());
+        assert!(prt_padding(Attribute::Short(3), I::Float).is_err());
+    }
+
+    #[test]
+    fn a_packed_prt_triple_supplies_w_without_reading_the_next_attribute() {
+        use shaders::vsh::InputFetch;
+        let elements = [
+            Element { stream: 0, register: 8, offset: 0, format: Attribute::PByte(3) },
+            Element { stream: 0, register: 9, offset: 3, format: Attribute::PByte(1) },
+        ];
+        let fetch = [InputFetch::Float; 16];
+        let vertices = gather_prt(&elements, &fetch, &[1, 2, 3, 4, 5, 6, 7, 8], 4, 2).unwrap();
+        assert_eq!(&vertices[0][..4], &[1, 2, 3, 255]);
+        assert_eq!(vertices[1][0], 4);
+        assert_eq!(&vertices[2][..4], &[5, 6, 7, 255]);
+        assert_eq!(vertices[3][0], 8);
+    }
+
+    #[test]
+    fn instance_driven_object_states_keep_their_effective_writes() {
+        use tags::shader::ExternalBinding;
+        let mut imp = crate::engine_states::tests::implementation(Vec::new(), 1);
+        imp.input_reads.scalars = 1 << 21;
+        imp.engine_render_states.push(ExternalBinding { bytes: [2, 1, 0, 21] });
+        imp.engine_stage_states.push(ExternalBinding { bytes: [0, 0, 1, 21] });
+        let mut inputs = tags::material::EngineInputs::default();
+        inputs.scalars[21] = 3.0;
+        let resolved = instance_states(&imp, &inputs).unwrap();
+        assert_eq!(resolved.render_states.last(), Some(&state(RenderStateType::AlphaRef, 3)));
+        assert_eq!(f32::from_bits(resolved.stage_states[0].mip_lod_bias), 3.0);
+        assert!(resolved.engine_render_states.is_empty() && resolved.engine_stage_states.is_empty());
+        imp.engine_render_states[0].bytes[3] = 3;
+        assert!(instance_states(&imp, &inputs).is_err());
+    }
+
     /// Synthetic stream formats: type 1 a 3-float position (semantic 0),
     /// a 2-float coordinate (semantic 3) and a 3-float normal (semantic 2);
     /// the lightmap stream's type a 2-float coordinate (semantic 7).
@@ -2410,15 +2663,15 @@ mod tests {
 
     #[test]
     fn a_uniform_image_is_one_texel_everywhere() {
-        let grey = Image { width: 2, height: 1, rgba: vec![9, 9, 9, 255, 9, 9, 9, 255], mips: vec![vec![9, 9, 9, 255]], blocks: None };
+        let grey = Image::from_rgba(2, 1, vec![9, 9, 9, 255, 9, 9, 9, 255], vec![vec![9, 9, 9, 255]]);
         assert!(uniform(&grey));
         let mut mip = grey.clone();
-        mip.mips[0][0] = 10;
+        mip.edit_rgba(|_, levels| levels[0][0] = 10);
         assert!(!uniform(&mip), "a level below differs");
         let mut texel = grey.clone();
-        texel.rgba[4] = 0;
+        texel.edit_rgba(|rgba, _| rgba[4] = 0);
         assert!(!uniform(&texel));
-        assert!(!uniform(&Image { width: 0, height: 0, rgba: Vec::new(), mips: Vec::new(), blocks: None }));
+        assert!(!uniform(&Image::from_rgba(0, 0, Vec::new(), Vec::new())));
     }
 
     #[test]
@@ -2452,11 +2705,11 @@ mod tests {
         // shader does not sample has no texture to bind.
         imp.pixel_shader = shaders::PixelShaderDef { texture_modes: 1 << 15, ..Default::default() }.to_bytes();
         let mut materials = HashMap::new();
-        materials.insert(0, LitMaterial { material: material(vec![imp]), shader: ShaderValues::default() });
+        materials.insert(0, LitMaterial { material: material(vec![imp]), shader: ShaderValues::default(), properties: Vec::new() });
         // v1 reads semantic 7: the lightmap coordinates the draw adds.
         let mut vertex = |_: map::TagId, _: u16, _: u8| Ok::<_, String>((rigid_program(), vec![0u16, 7, 2]));
         let mut image = |_: usize, _: map::TagId, _: u32| -> Option<Image> { None };
-        let grey = Image { width: 1, height: 1, rgba: vec![128, 128, 128, 255], mips: Vec::new(), blocks: None };
+        let grey = Image::solid([128, 128, 128, 255]);
         let without = lit_model(
             std::slice::from_ref(&section),
             &materials,
@@ -2507,7 +2760,7 @@ mod tests {
         });
         imp.pixel_shader = shaders::PixelShaderDef { texture_modes: 1 << 10, ..Default::default() }.to_bytes();
         let mut materials = HashMap::new();
-        materials.insert(0, LitMaterial { material: material(vec![imp]), shader: ShaderValues::default() });
+        materials.insert(0, LitMaterial { material: material(vec![imp]), shader: ShaderValues::default(), properties: Vec::new() });
         let mut vertex = |_: map::TagId, _: u16, _: u8| Ok::<_, String>((rigid_program(), vec![0u16, 3, 2]));
         let mut image = |_: usize, _: map::TagId, _: u32| -> Option<Image> { None };
         let without = lit_model(
@@ -2603,7 +2856,7 @@ mod tests {
             imp.input_reads.scalars |= 1 << 2;
             imp
         };
-        let lit_material = |imps| LitMaterial { material: material(imps), shader: ShaderValues::default() };
+        let lit_material = |imps| LitMaterial { material: material(imps), shader: ShaderValues::default(), properties: Vec::new() };
         let mut materials = HashMap::new();
         materials.insert(0, lit_material(vec![opaque(0), opaque(1)]));
         materials.insert(1, lit_material(vec![timed(0)]));
@@ -2700,7 +2953,7 @@ mod tests {
             state(RenderStateType::ZWriteEnable, 0),
             state(RenderStateType::ZFunc, gfx::state::CompareFunc::Equal.xbox_value()),
         ];
-        object_pass(map::TagId(0xe000_0001), &imp, &rigid_program(), crate::program::INPUT_MASK, [shaders::vsh::InputFetch::Float; 16], true)
+        object_pass(map::TagId(0xe000_0001), &imp, &[], &rigid_program(), crate::program::INPUT_MASK, [shaders::vsh::InputFetch::Float; 16], true)
             .unwrap_or_else(|e| panic!("{e}"))
     }
 
@@ -3024,7 +3277,7 @@ mod tests {
             ],
         };
         let mut materials = HashMap::new();
-        materials.insert(0, LitMaterial { material, shader: ShaderValues::default() });
+        materials.insert(0, LitMaterial { material, shader: ShaderValues::default(), properties: Vec::new() });
         let mut vertex = |_: map::TagId, _: u16, _: u8| Ok::<_, String>((rigid_program(), vec![0u16, 3, 2]));
         let mut image = |_: usize, _: map::TagId, _: u32| -> Option<Image> { None };
         let build = lit_model(&[section], &materials, &formats(), &EngineStages::default(), &mut vertex, &mut image);
@@ -3043,6 +3296,62 @@ mod tests {
         let (m, layer, why) = &build.layer_refused[0];
         assert_eq!((*m, *layer), (0, 8));
         assert!(why.contains("only in layer 3"), "{why}");
+        assert!(build.input.valid_draw_references());
+    }
+
+    #[test]
+    fn a_material_with_only_overlay_parts_compiles_without_a_base_pass() {
+        use crate::object_program::tests::{lit, rigid_program};
+        use tags::material::{ResolvedLayer, ResolvedPass};
+        let mut bytes = Vec::new();
+        for k in 0..3 {
+            for v in [k as f32, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0, 1.0] {
+                bytes.extend(v.to_le_bytes());
+            }
+        }
+        let section = LitSection {
+            index: 1,
+            geometry: 0,
+            influences: 0,
+            decompression: [[1.0; 4]; 3],
+            streams: vec![Some((1, StreamData { bytes: &bytes, stride: 32 }))],
+            vertex_count: 3,
+            parts: vec![(0, 0, vec![[0, 1, 2]])],
+            subparts: HashMap::new(),
+            listed: HashMap::new(),
+        };
+        // The destination times the source: DestColor, Zero.
+        let mut multiply = lit();
+        multiply.render_states = vec![
+            state(RenderStateType::AlphaBlendEnable, 1),
+            state(RenderStateType::SrcBlend, gfx::state::BlendFactor::DestColor.xbox_value()),
+            state(RenderStateType::DestBlend, gfx::state::BlendFactor::Zero.xbox_value()),
+            state(RenderStateType::ZWriteEnable, 0),
+        ];
+        let pass = |implementations| ResolvedPass { index: 0, pass: map::TagId(0xe000_0001), implementations };
+        let material = tags::material::Material {
+            shader: map::TagId(0xe000_0020),
+            template: map::TagId(0xe000_0021),
+            inputs: Default::default(),
+            layers: vec![
+                ResolvedLayer { lod: 0, layer: usize::from(crate::layer_pass::OVERLAY_LAYER), passes: vec![pass(vec![multiply])] },
+            ],
+        };
+        assert!(OBJECT_LAYERS.contains(&crate::layer_pass::OVERLAY_LAYER));
+        let mut materials = HashMap::new();
+        materials.insert(0, LitMaterial { material, shader: ShaderValues::default(), properties: Vec::new() });
+        let mut vertex = |_: map::TagId, _: u16, _: u8| Ok::<_, String>((rigid_program(), vec![0u16, 3, 2]));
+        let mut image = |_: usize, _: map::TagId, _: u32| -> Option<Image> { None };
+        let build = lit_model(&[section], &materials, &formats(), &EngineStages::default(), &mut vertex, &mut image);
+        assert!(build.input.parts.is_empty());
+        assert!(!build.input.is_empty());
+        assert!(build.layer_refused.is_empty(), "{:?}", build.layer_refused);
+        assert_eq!(build.input.layers.len(), 1, "layer 2's part");
+        let p = &build.input.layers[0];
+        assert_eq!((p.layer, p.section, p.part, p.shader_tag), (crate::layer_pass::OVERLAY_LAYER, 1, 0, 0xe000_0020));
+        let (program, buffer) = p.passes[0].implementations[0].expect("compiled");
+        assert_eq!((program, buffer), (0, 0));
+        assert!(build.input.programs[program].pass.program.state.as_ref().unwrap().blend.is_some(), "its blend kept");
         assert!(build.input.valid_draw_references());
     }
 
@@ -3072,7 +3381,7 @@ mod tests {
         let mut opaque = lit();
         opaque.render_states = vec![state(RenderStateType::AlphaBlendEnable, 0), state(RenderStateType::ZWriteEnable, 1)];
         let mut materials = HashMap::new();
-        materials.insert(0, LitMaterial { material: material(vec![opaque]), shader: ShaderValues::default() });
+        materials.insert(0, LitMaterial { material: material(vec![opaque]), shader: ShaderValues::default(), properties: Vec::new() });
         let mut vertex = |_: map::TagId, _: u16, _: u8| Ok::<_, String>((rigid_program(), vec![0u16, 3, 2]));
         let mut image = |_: usize, _: map::TagId, _: u32| -> Option<Image> { None };
         let engine = EngineStages { view: true, ..EngineStages::default() };
@@ -3085,18 +3394,21 @@ mod tests {
         camo.pixel_shader = shaders::PixelShaderDef { texture_modes: 1 << 5, ..Default::default() }.to_bytes();
         let pass = |implementations| ResolvedPass { index: 0, pass: map::TagId(0xe000_0001), implementations };
         let shader = map::TagId(0xe000_0020);
+        let mut driven = camo.clone();
+        driven.render_states.push(state(RenderStateType::BlendColor, 0x6d12_3456));
+        driven.engine_render_states.push(tags::shader::ExternalBinding { bytes: [1, 0, 0, 40] });
         let camouflage = tags::material::Material {
             shader,
             template: map::TagId(0xe000_0021),
             inputs: Default::default(),
             layers: vec![
-                ResolvedLayer { lod: 0, layer: usize::from(CAMO_LAYER), passes: vec![pass(vec![camo.clone()])] },
+                ResolvedLayer { lod: 0, layer: usize::from(CAMO_LAYER), passes: vec![pass(vec![driven])] },
                 ResolvedLayer { lod: 0, layer: usize::from(CAMO_MODULATE_LAYER), passes: vec![pass(vec![camo.clone()])] },
                 ResolvedLayer { lod: 0, layer: usize::from(HOLOGRAM_LAYER), passes: vec![pass(vec![camo.clone()])] },
                 ResolvedLayer { lod: 0, layer: 7, passes: vec![pass(vec![camo])] },
             ],
         };
-        let overrides = HashMap::from([(OVERRIDE_MATERIAL, LitMaterial { material: camouflage, shader: ShaderValues::default() })]);
+        let overrides = HashMap::from([(OVERRIDE_MATERIAL, LitMaterial { material: camouflage, shader: ShaderValues::default(), properties: Vec::new() })]);
         let sections = override_sections(std::slice::from_ref(&section));
         assert!(sections[0].parts.iter().all(|(_, m, _)| *m == OVERRIDE_MATERIAL));
         let built = lit_model(&sections, &overrides, &formats(), &engine, &mut vertex, &mut image);
@@ -3114,6 +3426,34 @@ mod tests {
         let camo_program = built.input.layers[0].passes[0].implementations[0].unwrap().0;
         assert_eq!(built.input.programs[camo_program].pass.view, [false, true, false, false]);
         assert_eq!(built.input.programs[camo_program].images[1], None, "the copy is bound per encode");
+        // The layer-18 packet uses the object's root value for RGB over
+        // the pass's static alpha. A skipped, unrestored write must
+        // leave the same raw word as the device already holds.
+        let instance = frame_scene::InstanceKey(7);
+        let item = LayerItem {
+            slot: 0, key: ItemKey { shader: shader.0, ..key(4, 0, 0) }, owner: LayerOwner::Object(instance),
+            model: 1, rows: 0..3, lighting: Some(Lighting { words: [0; 30], root: Some(0.5f32.to_bits()) }),
+            flags: PartFlags::NONE, subparts: None, refusal: None, prt: None,
+        };
+        let layer_pass = LayerPass {
+            layer: CAMO_LAYER, stencil_off: false, texaccum: false, items: 0..1, remainder: 0,
+            inputs: frame_scene::LayerInputs { defaults: Some(Default::default()), ..Default::default() },
+        };
+        let plan = |held| {
+            let mut entry = entry();
+            for (field, value) in &mut entry.0 {
+                match field {
+                    RenderStateType::BlendColor => *value = held,
+                    RenderStateType::BlendOp => *value = gfx::state::BlendOp::Add.xbox_value(),
+                    _ => {}
+                }
+            }
+            plan_layer_part(&built.input.layers, Some(0), &|i| Some(&built.input.programs.get(i)?.pass),
+                instance, CAMO_LAYER, &[[1.0; 4]; 3], &layer_pass, &item, &entry)
+        };
+        let draw = &plan(0x6d80_8080).unwrap()[0];
+        assert_eq!(draw.state.blend_color(), wgpu::Color { r: 128.0 / 255.0, g: 128.0 / 255.0, b: 128.0 / 255.0, a: 109.0 / 255.0 });
+        assert!(plan(0x6d00_0000).unwrap_err().contains("BLENDCOLOR would leave"));
         let (programs, buffers) = (model.input.programs.len(), model.input.buffers.len());
         let own_parts = model.input.parts.len();
         assert_eq!(own_parts, 2, "both parts draw the model's own layer 3");
@@ -3185,7 +3525,7 @@ mod tests {
             ],
         };
         let mut materials = HashMap::new();
-        materials.insert(0, LitMaterial { material, shader: ShaderValues::default() });
+        materials.insert(0, LitMaterial { material, shader: ShaderValues::default(), properties: Vec::new() });
         let mut vertex = |_: map::TagId, _: u16, _: u8| Ok::<_, String>((rigid_program(), vec![0u16, 3, 2]));
         let mut image = |_: usize, _: map::TagId, _: u32| -> Option<Image> { None };
         let build = lit_model(std::slice::from_ref(&section), &materials, &prt_formats(), &EngineStages::default(), &mut vertex, &mut image);
@@ -3212,7 +3552,7 @@ mod tests {
     fn a_prt_item_draws_its_passes_prt_variant_with_its_constants() {
         use crate::object_program::tests::rigid_program;
         use frame_scene::{InstanceKey, LayerInputs, PrtStream};
-        let plain = object_layer_pass(map::TagId(0xe000_0001), &additive(0), &rigid_program(), crate::program::INPUT_MASK, [shaders::vsh::InputFetch::Float; 16])
+        let plain = object_layer_pass(map::TagId(0xe000_0001), &additive(0), &[], &rigid_program(), crate::program::INPUT_MASK, [shaders::vsh::InputFetch::Float; 16])
             .unwrap_or_else(|e| panic!("{e}"));
         let mut with_prt = plain.clone();
         with_prt.prt = Some(PrtInput {
@@ -3282,11 +3622,142 @@ mod tests {
     }
 
     #[test]
+    fn layers_1_and_17_read_the_material_register_left_on_the_device() {
+        use crate::object_program::tests::rigid_program;
+        use frame_scene::{InstanceKey, LayerInputs};
+        let mut imp = additive(0);
+        imp.vertex_constants.retain(|r| r.index != 18);
+        imp.vector_bindings.clear();
+        imp.scalar_bindings.clear();
+        imp.input_reads = Default::default();
+        let compiled = object_layer_pass(map::TagId(1), &imp, &[], &rigid_program(),
+            crate::program::INPUT_MASK, [shaders::vsh::InputFetch::Float; 16]).unwrap();
+        assert!(compiled.inherits_c18);
+        let instance = InstanceKey(3);
+        let item = LayerItem {
+            slot: 0, key: key(4, 0, 0), owner: LayerOwner::Object(instance), model: 1, rows: 0..3,
+            lighting: None, flags: PartFlags::NONE, subparts: None, refusal: None, prt: None,
+        };
+        let mut states = entry();
+        states.0.retain(|(t, _)| *t != RenderStateType::BlendOp);
+        states.0.push((RenderStateType::BlendOp, 0x8006));
+        let device: Row = [-0.0, -4.0, 2.5, 0.75];
+        let stale_bank = Some([0; 4]);
+        for layer in [1, 17] {
+            let parts = [LitLayerPart {
+                layer, section: 4, part: 0, shader_tag: item.key.shader, shader: Default::default(),
+                decompression: [[0.0; 4]; 3], indices: 0..3, subparts: None, listed: None,
+                passes: vec![LitLayerPass { count: 1, implementations: [Some((0, 0)), None, None, None, None], ..Default::default() }],
+            }];
+            let pass = LayerPass {
+                layer, stencil_off: false, texaccum: false, items: 0..1, remainder: 0,
+                inputs: LayerInputs { defaults: Some(Defaults::default()), ..Default::default() },
+            };
+            let plan = |dirty| plan_layer_part_at_entry(&parts, Some(0), &|_| Some(&compiled), instance,
+                layer, &[[0.0; 4]; 3], &pass, &item, &states, Some(MaterialConstant18::new(device, stale_bank, dirty)));
+            assert_eq!(plan(Some(false)).unwrap()[0].vertex.constants[18].map(f32::to_bits), device.map(f32::to_bits));
+            assert!(plan(Some(true)).unwrap_err().contains("pending c[18] upload"));
+            assert!(plan(None).is_err());
+        }
+    }
+
+    #[test]
+    fn a_bound_material_row_can_only_be_skipped_if_hardware_and_bank_already_match() {
+        use crate::object_program::tests::rigid_program;
+        let mut writer = object_layer_pass(map::TagId(1), &additive(0), &[], &rigid_program(),
+            crate::program::INPUT_MASK, [shaders::vsh::InputFetch::Float; 16]).unwrap();
+        assert!(!writer.inherits_c18);
+        let mut vertex = writer.program.vertex.clone();
+        vertex.constants[18] = [-0.0, 0.0, 3.0, 9.0];
+        let hardware = vertex.constants[18];
+        let bank = hardware.map(f32::to_bits);
+        assert!(MaterialConstant18::new(hardware, Some(bank), Some(true)).apply(&writer, &mut vertex).is_ok());
+        let mut other = bank;
+        other[0] = 0;
+        assert!(MaterialConstant18::new(hardware, Some(other), Some(false)).apply(&writer, &mut vertex).is_err());
+        assert!(MaterialConstant18::new(other.map(f32::from_bits), Some(bank), Some(false)).apply(&writer, &mut vertex).is_err());
+
+        writer.implementation.dimension_bindings.push(tags::material::EngineVertexConstant {
+            bank: 1, reg: 0, mode: 9, stage: 2, source: 0,
+        });
+        writer.texaccum[1] = true;
+        let held = MaterialConstant18::new(hardware, Some(bank), Some(false));
+        assert!(held.apply(&writer, &mut vertex).unwrap_err().contains("bound target"));
+        writer.texaccum[1] = false;
+        assert!(held.apply(&writer, &mut vertex).is_ok());
+    }
+
+    #[test]
+    fn layer_19_binds_the_views_fog_coefficients_to_its_object() {
+        use crate::object_lighting::{DEFAULT_COLOUR, DEFAULT_VECTOR};
+        use crate::object_program::tests::{lit, rigid_program};
+        use frame_scene::InstanceKey;
+        use scene_extract::{layout::layer_inputs, testing::Mem};
+        use tags::material::{InputReads, VectorBinding, VectorTarget};
+
+        let mut imp = lit();
+        imp.input_reads = InputReads { vectors: 1 << 41, scalars: 1 << 39, ints: 0 };
+        imp.vector_bindings = vec![
+            VectorBinding { source: 41, target: VectorTarget::Vertex { bank: 1, reg: 0, components: 7 } },
+            VectorBinding { source: 41, target: VectorTarget::Pixel {
+                c1: false, slot: 0, mask: 0x00ff_ffff, half: false, transform: 0,
+            } },
+        ];
+        imp.scalar_bindings = vec![
+            VectorBinding { source: 39, target: VectorTarget::Vertex { bank: 1, reg: 0, components: 8 } },
+        ];
+        let compiled = object_layer_pass(map::TagId(1), &imp, &[], &rigid_program(), crate::program::INPUT_MASK,
+            [shaders::vsh::InputFetch::Float; 16]).unwrap();
+        let key = key(1, 0, 0);
+        let instance = InstanceKey(2);
+        let layers = [LitLayerPart {
+            layer: 19, section: key.section, part: key.part, shader_tag: key.shader,
+            shader: Default::default(), decompression: [[0.0; 4]; 3], indices: 0..3, subparts: None, listed: None,
+            passes: vec![LitLayerPass {
+                count: 1, implementations: [Some((0, 0)), None, None, None, None], ..Default::default()
+            }],
+        }];
+        let item = LayerItem {
+            slot: 0, key, owner: LayerOwner::Object(instance), model: 1, rows: 0..3,
+            lighting: None, flags: PartFlags::NONE, subparts: None, refusal: None, prt: None,
+        };
+        let plan = |mem: &Mem| {
+            let pass = LayerPass {
+                layer: 19, stencil_off: false, texaccum: false, items: 0..1, remainder: 0,
+                inputs: layer_inputs::read(mem),
+            };
+            plan_layer_part(&layers, Some(0), &|_| Some(&compiled), instance, 19, &[[1.0; 4]; 3], &pass, &item, &entry())
+        };
+        let mut mem = Mem::default();
+        mem.w(DEFAULT_VECTOR, 0x1000);
+        mem.w(DEFAULT_COLOUR, 0x2000);
+        for lane in 0..3 {
+            mem.f(0x1004 + lane * 4, 0.75);
+            mem.f(0x2000 + lane * 4, 0.0);
+        }
+        mem.w(layer_inputs::FOG_PLANE, 0);
+        mem.f(layer_inputs::ONE, 1.0);
+        mem.f(layer_inputs::FOG_NEAR, 2.0);
+        mem.f(layer_inputs::FOG_FAR, 6.0);
+        for (lane, value) in [-1.0, -2.0, -4.0].into_iter().enumerate() {
+            mem.f(layer_inputs::FOG_VECTOR + lane as u32 * 4, value);
+        }
+        let d = &plan(&mem).unwrap()[0];
+        assert_eq!(d.vertex.constants[18], [0.25, 0.5, 1.0, -0.5]);
+        assert_eq!(crate::light_look::repack(d.pixel.c0[0]) & 0x00ff_ffff, 0x0040_80ff);
+
+        mem.0.remove(&layer_inputs::FOG_VECTOR);
+        assert!(plan(&mem).unwrap_err().contains("view vector 41"));
+        mem.w(layer_inputs::FOG_PLANE, u32::MAX);
+        assert_eq!(plan(&mem).unwrap()[0].vertex.constants[18], [0.75, 0.75, 0.75, 0.0]);
+    }
+
+    #[test]
     fn a_world_layers_object_item_draws_each_pass_with_the_implementation_it_picks() {
         use crate::object_program::tests::rigid_program;
         use frame_scene::{InstanceKey, LayerInputs, LayerObjectRefusal};
         let compile = |index| {
-            object_layer_pass(map::TagId(0xe000_0001), &additive(index), &rigid_program(), crate::program::INPUT_MASK, [shaders::vsh::InputFetch::Float; 16])
+            object_layer_pass(map::TagId(0xe000_0001), &additive(index), &[], &rigid_program(), crate::program::INPUT_MASK, [shaders::vsh::InputFetch::Float; 16])
                 .unwrap_or_else(|e| panic!("{e}"))
         };
         let passes = [compile(0), compile(1)];
@@ -3436,6 +3907,23 @@ mod tests {
         input.parts[0].subparts = None;
         input.parts[0].indices = 2..4;
         assert!(!input.valid_draw_references());
+    }
+
+    #[test]
+    fn duplicate_geometry_uploads_share_a_buffer_and_unused_buffers_drop() {
+        let geometry = LitBufferInput { indices: vec![0, 1, 2], ..Default::default() };
+        let unused = LitBufferInput { indices: vec![2, 1, 0], ..Default::default() };
+        let mut input = LitModelInput {
+            parts: vec![part(0, 0, [Some((0, 0)), Some((0, 2)), None, None, None])],
+            programs: vec![LitProgramInput { pass: equal_pass(0), images: Default::default() }],
+            buffers: vec![geometry.clone(), unused, geometry],
+            layers: Vec::new(),
+        };
+        assert!(input.valid_draw_references());
+        input.compact_buffers();
+        assert!(input.valid_draw_references());
+        assert_eq!(input.buffers.len(), 1);
+        assert_eq!(input.parts[0].implementations[..2], [Some((0, 0)); 2]);
     }
 
     /// The map loader uploads every object definition in the tag index:

@@ -93,9 +93,9 @@ pub struct Tables<'a> {
     pub schema: Option<&'a Schema>,
 }
 
-impl Tables<'_> {
+impl<'a> Tables<'a> {
     /// No tables: the form is then the tag with its resources as content.
-    pub fn none() -> Tables<'static> {
+    pub fn none() -> Tables<'a> {
         Tables {
             gestalt: None,
             low_detail: &[],
@@ -474,19 +474,23 @@ fn cut(t: &mut Tree, at: u32, s: &Struct, root: bool, tables: &mut Tables<'_>) -
         return Ok(());
     };
     let mut cuts = Vec::new();
-    for (f, (o, v)) in node.fields.iter().enumerate() {
+    for (o, v) in &node.fields {
         let Value::Raw(raw) = v else {
             continue;
         };
         let element = *o as usize / size;
         let within = *o as usize % size;
-        let Some(Field::RawSize(size_at)) = s.fields.get(&(within as u32)) else {
+        // The size field names the raw it sizes ([`Field::RawSize`]).
+        let Some(size_at) = s.fields.iter().find_map(|(k, f)| {
+            matches!(f, Field::RawSize(of) if *of as usize == within).then_some(*k)
+        }) else {
             continue;
         };
         if root && crate::localization::matg_locale_raw_len(&node.bytes, *o).is_some() {
             continue;
         }
-        let stored = u32_at(&node.bytes, element * size + *size_at as usize);
+        let stored = u32_at(&node.bytes, element * size + size_at as usize);
+        let raw_index = raw;
         let raw = &t.raws[*raw as usize];
         if stored == 0 || stored >= raw.len {
             continue;
@@ -504,7 +508,7 @@ fn cut(t: &mut Tree, at: u32, s: &Struct, root: bool, tables: &mut Tables<'_>) -
             )));
         }
         cuts.push((
-            f,
+            *raw_index,
             RawRes {
                 origin: Origin::Local,
                 len: stored,
@@ -512,10 +516,8 @@ fn cut(t: &mut Tree, at: u32, s: &Struct, root: bool, tables: &mut Tables<'_>) -
             },
         ));
     }
-    for (f, shorter) in cuts {
-        let raw = t.raws.len() as u32;
-        t.raws.push(shorter);
-        t.nodes[at as usize].fields[f].1 = Value::Raw(raw);
+    for (raw, shorter) in cuts {
+        t.raws[raw as usize] = shorter;
     }
     let children: Vec<(u32, u32)> = t.nodes[at as usize]
         .fields

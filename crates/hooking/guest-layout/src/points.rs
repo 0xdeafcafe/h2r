@@ -232,6 +232,13 @@ pub mod ui_render {
     pub const MODEL_GEOMETRY_EMITTER: u32 = 0x0004_daa0;
     pub const MODEL_TEXTURE_COMMIT: u32 = 0x0001_cf50;
     pub const ITEM_CONTINUATION: u32 = 0x0023_5448;
+    /// `0x002353a5` with its widget list sorted, the screen's pre-draw
+    /// callback run and the depth window at `[ebp-8]`, `[ebp-0xc]`:
+    /// before its first widget draw. Reached only with widgets listed.
+    pub const LIST_READY: Point = Point::new("UI_LIST_READY", 0x0023_5428, Sig::Site, DOC);
+    /// `0x002353a5`'s draws done, before its post-draw callback: the
+    /// empty list and the end of the loop join here.
+    pub const LIST_DONE: Point = Point::new("UI_LIST_DONE", 0x0023_545c, Sig::Site, DOC);
     pub const OUTLINE_VERTICES: Point =
         Point::new("UI_OUTLINE_VERTICES", 0x0001_ed98, Sig::Site, DOC);
     pub const OUTLINE_VERTICES_TAIL: u32 = 0x0001_ee3a;
@@ -242,6 +249,14 @@ pub mod ui_render {
     pub const HUD_RETURN: Point = Point::new("UI_HUD_RETURN", 0x0013_96b9, Sig::Site, DOC);
     pub const HUD_HIDDEN_RETURN: Point =
         Point::new("UI_HUD_HIDDEN_RETURN", 0x0013_96c6, Sig::Site, DOC);
+    // The frame tail calls both helpers with two stack arguments. Each
+    // return site is before RET 8, with ESP back at its entry value.
+    pub const TAIL_COPY: Point = Point::new("TAIL_COPY", 0x0003_51a0, Sig::Site, DOC);
+    pub const TAIL_COPY_END: Point = Point::new("TAIL_COPY_END", 0x0003_52da, Sig::Site, DOC);
+    pub const TAIL_COMPOSITE: Point = Point::new("TAIL_COMPOSITE", 0x0002_2070, Sig::Site, DOC);
+    pub const TAIL_COMPOSITE_END: Point = Point::new("TAIL_COMPOSITE_END", 0x0002_229d, Sig::Site, DOC);
+    pub const TAIL_COPY_CALLER: u32 = 0x0001_3bf7;
+    pub const TAIL_COMPOSITE_CALLER: u32 = 0x0001_3c16;
     pub const FADE_RETURN: Point = Point::new("UI_FADE_RETURN", 0x0004_0dbf, Sig::Site, DOC);
     pub const OVERLAY_RECT_RETURN: Point =
         Point::new("UI_OVERLAY_RECT_RETURN", 0x0013_c1db, Sig::Site, DOC);
@@ -354,8 +369,8 @@ points! { ALL;
     SIM_ANIMATION_STREAM @ 0x0027_98a0: [opaque], Hot; "docs/perf/sim-budget.md";
     SIM_GRAPH_RESOLVE @ 0x001d_d9d0: [fn(graph: edx, clip: stack 0) ret 4], Hot; "docs/perf/sim-budget.md";
     SIM_MARKER_TRANSFORMS @ 0x000b_8d30: [fn(out: ebx, object: stack 0, name: stack 1, capacity: stack 2) -> eax ret 12], Hot; "docs/perf/sim-budget.md";
-    COLLISION_BSP_SEGMENT @ 0x001d_e6d0: [fn(query: stack 0, node: stack 1, lo: stack 2, hi: stack 3) -> al ret 16], Hot; "docs/perf/sim-budget.md";
-    /// BSP vector test: one segment through a collision BSP into the result record.
+    COLLISION_BSP_SEGMENT @ 0x001d_e6d0: [fn(query: stack 0, node: stack 1, lo: stack 2, hi: stack 3) -> al ret 16], Hot; "docs/engine/collision-queries.md";
+    /// BSP vector test. The parity observers gather at entry and compare AL and the result record at return.
     COLLISION_VECTOR_TEST @ 0x001d_e630: [fn(out: eax, flags: ecx, bsp: edx, limit: xmm0, breakable_count: stack 0, breakable_mask: stack 1, start: stack 2, delta: stack 3) -> al ret 16], Hot; "docs/engine/collision-queries.md";
     /// The instanced-geometry trace in one cluster.
     COLLISION_INSTANCE_TRACE @ 0x0024_4980: [fn(cluster: eax, start: esi, delta: edi, flags: stack 0, filter: stack 1, out: stack 2) -> al ret 12], Hot; "docs/engine/collision-queries.md";
@@ -367,10 +382,18 @@ points! { ALL;
     BASE_OBJECT_IMPORT @ 0x000b_cc20: [fn(object: stack 0, name: stack 1, value: stack 2, active: stack 3) -> al ret 16], Hot; "docs/perf/sim-budget.md";
     /// The integer MOPP box query: setup, then the interpreter below.
     COLLISION_MOPP_BOX @ 0x0030_0150: [fn(vm: ecx, code: stack 0, aabb: stack 1, array: stack 2) ret 12], Hot; "docs/engine/collision-queries.md";
+    /// The general MOPP ray: setup, then the float interpreter below; the result goes through the collector.
+    COLLISION_MOPP_RAY @ 0x0030_1800: [fn(vm: ecx, collection: stack 0, code: stack 1, input: stack 2, parent: stack 3, collector: stack 4) ret 20], Hot; "docs/engine/collision-queries.md";
+    /// The instanced-geometry collection's child method, called once per accepted MOPP key.
+    COLLISION_INSTANCE_CHILD @ 0x0024_4bb0: [fn(collection: ecx, key: stack 0, buffer: stack 1) -> eax ret 8], Hot; "docs/engine/collision-queries.md";
     SIM_MOPP_BOX @ 0x002f_f8b0: [fn(query: ecx, state: stack 0, program: stack 1) ret 8], Hot; "docs/perf/sim-budget.md";
     SIM_MOPP_RAY @ 0x0030_09e0: [fn(query: ecx, state: stack 0, program: stack 1, segment: stack 2) ret 12], Hot; "docs/perf/sim-budget.md";
     OBJECT_TRANSFORM_COMPOSE @ 0x0014_2a60: [fn(parent: ecx, child: edx, out: stack 0) -> eax ret 4], Hot; "docs/perf/sim-budget.md";
     OBJECT_POSE_MATRIX @ 0x0014_21f0: [fn(out: stack 0, pose: stack 1) ret 8], Hot; "docs/perf/sim-budget.md";
+    /// The animation graph's node walk: every node reached from node 0
+    /// through the child and sibling links posed and composed with its
+    /// parent's matrix (`root` for node 0) into `matrices`.
+    ANIM_GRAPH_MATRICES @ 0x001d_d1c0: [fn(graph: stack 0, matrices: stack 1, records: stack 2, root: stack 3) ret 16], Hot; "docs/engine/skeleton-walk.md";
     /// Root node transform from two axes, scale and an optional parent.
     OBJECT_ROOT_TRANSFORM @ 0x000b_dc40: [fn(forward: eax, up: ecx, position: stack 0, scale: stack 1, mirror: stack 2, parent: stack 3, out: stack 4) ret 20], Hot; "docs/perf/sim-budget.md";
     ANIM_ROTATION_CODEC @ 0x0028_c530: [fn() ret 0], Hot; "docs/perf/sim-budget.md";
@@ -521,6 +544,18 @@ points! { ALL;
     HAVOK_WELD_CONTACTS @ 0x002f_a2f0: [opaque], Hot; "docs/perf/sim-budget.md";
     HAVOK_SOLVER @ 0x0031_c940: [opaque], Hot; "docs/perf/sim-budget.md";
     HAVOK_SUPPORT_VERTICES @ 0x0030_48a0: [opaque], Hot; "docs/perf/sim-budget.md";
+    /// The Havok world step: collide, then integrate, each phase a guest
+    /// call resumed inside the wrapper (sim-rewrite-havok.md §2).
+    HAVOK_WORLD_STEP @ 0x0031_1100: [fn(world: ecx, step: stack 0) ret 4], Hot; "docs/engine/sim-rewrite-havok.md";
+    HAVOK_ISLAND_COLLIDE @ 0x0031_7d30: [fn(island: ecx, broadphase: stack 0, input: stack 1) ret 8], Hot; "docs/engine/sim-rewrite-havok.md";
+    HAVOK_ISLAND_INTEGRATE @ 0x0031_6a20: [fn(island: ecx, input: stack 0) ret 4], Hot; "docs/engine/sim-rewrite-havok.md";
+    /// The world broadphase's batch update, the sweep's virtual at slot
+    /// `+0x14` of the broadphase behind `W+0xc4`.
+    HAVOK_BROADPHASE_BATCH @ 0x002e_0350: [opaque], Hot; "docs/engine/sim-rewrite-havok.md";
+    /// The two shared unconstrained-motion methods, vtable slots `+0x04`
+    /// and `+0x08` of a dynamic motion.
+    HAVOK_MOTION_FORCES @ 0x0031_b060: [opaque], Hot; "docs/engine/sim-rewrite-havok.md";
+    HAVOK_MOTION_POSE @ 0x0031_b1c0: [opaque], Hot; "docs/engine/sim-rewrite-havok.md";
     OBJECT_SPATIAL_VISIT @ 0x000b_b050: [fn(lists: stack 0, types: stack 1, location: stack 2, center: stack 3, radius: stack 4, out: stack 5, capacity: stack 6) ret 28], Hot; "docs/perf/sim-budget.md";
     OBSERVER_RESULT @ 0x0017_1d90: [fn(observer: esi) ret 0], Hot; "docs/perf/sim-budget.md";
     OBJECT_SPATIAL_PORTAL @ 0x0014_a370: [fn(portal: eax, center: ecx, bsp: edx, radius: stack 0) -> al ret 4], Hot; "docs/perf/sim-budget.md";
@@ -601,6 +636,10 @@ points! { ALL;
     CREATURE_PROBE_OBJECT_POSITION @ 0x000b_75a0: [fn(position: eax, forward: ecx, up: edx, object: stack 0, a: stack 1, b: stack 2) ret 12], Optional; "docs/game/notes/creature-entity.md";
     /// Select replica physics for an object at its initial placement.
     CREATURE_PROBE_REPLICA_PHYSICS @ 0x000b_9b90: [fn(replica: edx, object: stack 0) ret 4], Optional; "docs/game/notes/creature-entity.md";
+    HS_THREAD_EXECUTE @ 0x0020_9850: [fn(thread: edi) ret 0], Optional; "docs/engine/hs_vm.md";
+    HS_EVALUATE @ 0x0020_99f0: [fn(thread: edx, expr: stack 0, dest: ebx) ret 4], Optional; "docs/engine/hs_vm.md";
+    HS_GLOBAL_READ @ 0x0020_9bc0: [fn(index: esi) -> eax ret 0], Optional; "docs/engine/hs_vm.md";
+    HS_EVALUATE_ARGUMENTS @ 0x0020_9d50: [fn(thread: stack 0, count: stack 1, parameters: stack 2, first: stack 3) -> eax ret 16], Optional; "docs/engine/hs_vm.md";
     SCRIPT_UPDATE @ 0x0020_9310: [opaque], Optional; "docs/engine/engine-map.md";
     EFFECT_PART_CREATE @ 0x0017_a8a0: [opaque], Optional; "docs/engine/engine-map.md";
     PARTICLE_SYSTEM_UPDATE @ 0x0024_7140: [opaque], Optional; "docs/engine/engine-map.md";
@@ -897,6 +936,14 @@ points! { ALL;
     RENDER_FRAME_TAIL @ 0x0001_3b90: [opaque]; "docs/graphics/native-renderer.md";
     /// `render_scene_passes`: the scene pass sequence of one view.
     RENDER_SCENE_PASSES @ 0x0002_bcd0: [opaque]; "docs/graphics/e3-lighting.md";
+    /// Water compositing after the scene's layer 6.
+    WATER_TEARDOWN @ 0x0003_c3c0: [opaque]; "docs/graphics/native-water-fog.md";
+    /// Selects the current view's sky and draws its model.
+    RENDER_SKY @ 0x0003_ede0: [opaque]; "docs/graphics/native-renderer.md";
+    /// Builds the viewport clear flags and issues the device clear.
+    SCENE_CLEAR @ 0x0001_4b60: [opaque]; "docs/graphics/native-renderer.md";
+    /// Selects the colour and depth targets, including cached selections.
+    SCENE_TARGET_SELECT @ 0x0001_cd30: [opaque]; "docs/graphics/native-renderer.md";
     /// Resets the record counters immediately before the two structure walks.
     RESET_SCENE_RECORDS @ 0x0002_cb30: [fn() ret 0]; "docs/graphics/occlusion-culling.md";
     /// Main view's visible structure cluster and placement record walks.
@@ -986,6 +1033,11 @@ points! { ALL;
     /// Screen convolution blur, also called by the colour pass. From
     /// 0x0002da96, stack arguments 0 and 1 are the steps and tap spread.
     SCREEN_CONVOLUTION_BLUR @ 0x0002_11a0: [fn(source: eax, steps: stack 0, spread: stack 1, growth: stack 2, dest: stack 3, other: stack 4, last: stack 5, combine: stack 6, arg7: stack 7, arg8: stack 8, arg9: stack 9) -> eax ret 40]; "docs/graphics/native-renderer.md";
+    /// The blur under a dialog: XMM0 the screen's transition fraction,
+    /// times `[0x0045de14]` as the steps of one call of
+    /// [`SCREEN_CONVOLUTION_BLUR`] (returning to `0x00235794`), then a
+    /// bare RET. Called from the window stack's render at `0x00235128`.
+    UI_MODAL_BLUR @ 0x0023_5756: [fn(fraction: xmm0) ret 0]; "docs/graphics/native-post-hud.md";
     /// A unit's integrated-light update, called at the end of its tick.
     UNIT_LIGHT_UPDATE @ 0x000c_50a0: [fn(unit: eax) ret 0]; "docs/halo1/hud.md";
     /// A shader template's pass set up (`0x00016610`, called by
@@ -1598,6 +1650,16 @@ points! { ALL;
     /// Fill a screen request (ECX): the player mask, two words and the
     /// loader; `OPEN_SCREEN` and the menus' own opens call it.
     SCREEN_REQUEST @ 0x0014_9f49: [fn(request: ecx, mask: stack 0, a: stack 1, b: stack 2, loader: stack 3) ret 16]; "docs/halo1/campaign-picker.md";
+    /// The action assembled for a local or remote slot becomes the unit's control.
+    PLAYER_ACTION_TO_UNIT_CONTROL @ 0x0015_05f0: [fn(player: eax, unit: stack 0, action: stack 1) ret 8]; "docs/engine/sim-rewrite.md";
+    PLAYER_NEUTRAL_UNIT_CONTROL @ 0x0015_0790: [fn(unit: edi) ret 0]; "docs/engine/sim-rewrite.md";
+    PLAYER_LOOK_CURVE @ 0x0018_5b30: [fn(samples: esi, count: eax, axis: stack 0) ret 4]; "docs/engine/sim-rewrite.md";
+    HUD_SEATS_UPDATE @ 0x0013_91ed: [fn() ret 0]; "docs/engine/sim-rewrite.md";
+    HUD_SEAT_UPDATE @ 0x0013_a838: [fn(user: stack 0) ret 4]; "docs/engine/sim-rewrite.md";
+    AIM_TARGET_UPDATE @ 0x001a_4900: [fn(user: eax, state: ebx, follow: stack 0) ret 4]; "docs/game/aim-assist.md";
+    AIM_TARGET_SEARCH @ 0x001a_5370: [fn(camera: ecx, params: stack 0, direction: stack 1, unit: stack 2, team: stack 3, output: stack 4) ret 20]; "docs/game/aim-assist.md";
+    AIM_TARGET_COMPARE @ 0x001a_66f0: [fn(lhs: stack 0, rhs: stack 1) -> eax ret 0]; "docs/game/aim-assist.md";
+    SEAT_SHOT_AIM @ 0x001a_4c00: [fn(direction: eax, origin: ebx, player: stack 0, aim: stack 1, hand: stack 2) -> al ret 12]; "docs/game/aim-assist.md";
     /// One local player's control update (look input to the player's
     /// action): stdcall, the local user index first of five stack words,
     /// the player's local controller index (player `+0x24`) in EDX. Its
@@ -1653,11 +1715,31 @@ points! { ALL;
     /// `0x24ba16`, `0x24ba5a`.
     SLOT_SIGN_OUT @ 0x0019_0d4b: [fn(slot: eax) ret 0]; "docs/game/bots.md";
     /// Allocates a one-shot sound after native playback admission.
-    SOUND_IMPULSE_ALLOCATE @ 0x0012_6000: [fn(source: stack 0, channel: stack 1, tag: stack 2, rule: stack 3) ret 16]; "docs/halo1/sounds.md";
+    SOUND_IMPULSE_ALLOCATE @ 0x0012_6000: [fn(tag: stack 0, channel: stack 1, source: stack 2, rule: stack 3) -> eax ret 16]; "docs/halo1/sounds.md";
+    /// Chooses the channel for a due instance. The low word of EAX is -1 when no channel is available.
+    SOUND_CHOOSE_CHANNEL @ 0x0012_8700: [fn(instance: stack 0, reason: stack 1) -> eax ret 8]; "docs/audio/dsound.md";
+    /// Unbinds the channel and notifies the owner before freeing the instance.
+    SOUND_FINISH_INSTANCE @ 0x0012_7320: [fn(instance: eax, reason: stack 0) ret 4]; "docs/audio/dsound.md";
+    /// Drops the instance's companion and returns its salted slot to the sound pool.
+    SOUND_FREE_INSTANCE @ 0x0012_7390: [fn(instance: edi) ret 0]; "docs/audio/dsound.md";
     /// Walks a block of predicted resources in the requested prediction mode.
     PREDICT_RESOURCES @ 0x0016_e5e0: [fn(mode: edi, resources: stack 0) -> al ret 4], Optional; "docs/perf/sim-budget.md";
+    /// Smooth a mix-in's position, obstruction and occlusion.
+    SOUND_SUBMIX_UPDATE @ 0x0022_0e00: [fn(source: edi, slot: stack 0) ret 4], Optional; "docs/audio/dsound.md";
     /// Sets source reverb and filter parameters on a DirectSound submix buffer.
     SOUND_SUBMIX_FX @ 0x0022_11e0: [fn(submix: eax, room: stack 0) ret 4], Optional; "docs/perf/sim-budget.md";
+    /// Convert the submix filter cutoff to its coefficient word.
+    SOUND_SUBMIX_CUTOFF @ 0x0021_e270: [fn(frequency: stack 0) ret 4], Optional; "docs/audio/dsound.md";
+    /// Convert the submix filter resonance to its coefficient word.
+    SOUND_SUBMIX_RESONANCE @ 0x0021_e2d0: [fn(resonance: stack 0) ret 4], Optional; "docs/audio/dsound.md";
+    /// Construct the spatial descriptor consumed by the channel mixer.
+    SOUND_CHANNEL_SPATIAL @ 0x0012_9aa0: [fn(channel: eax, gain: stack 0, output: stack 1) ret 8], Optional; "docs/audio/dsound.md";
+    /// Gather the sound instance parameters and submit the channel update.
+    SOUND_CHANNEL_UPDATE @ 0x0012_8ca0: [fn(channel: stack 0, gain: stack 1, listener: stack 2) ret 12], Optional; "docs/engine/sim-rewrite.md";
+    /// Collect a listener's cluster ambience candidates.
+    SOUND_CLUSTER_AMBIENCE @ 0x0018_d730: [fn(bsp: stack 0, cluster: stack 1, position: stack 2, fallback_radius: stack 3, palettes: stack 4, gains: stack 5, portals: stack 6, clusters: stack 7, count: stack 8) ret 36], Optional; "docs/formats/structure-bsp.md";
+    /// Compare two candidate distances during ambience selection.
+    SOUND_AMBIENCE_FARTHER @ 0x0018_ae50: [fn(a: stack 0, b: stack 1, distances: stack 2) -> eax ret 12], Optional; "docs/formats/structure-bsp.md";
     /// The sound frame service, once a frame after the render: among
     /// other things, one listener per mapped local user (`0x125c93`).
     SOUND_UPDATE @ 0x0012_5b40: [fn() ret 0]; "docs/engine/engine-map.md";
@@ -1820,6 +1902,9 @@ points! { ALL;
     /// A seconds value times the tick rate, rounded by `fistp` (`ecx`
     /// returns the same integer).
     GAME_SECONDS_TO_TICKS @ 0x0014_69f0: [fn(seconds: stack 0) -> eax ret 4], Hot; "docs/engine/object-update.md";
+    /// Visit active unit actions in order. A callback returning zero clears
+    /// its action. Returns one if any callback returned nonzero.
+    UNIT_ACTIONS_UPDATE @ 0x000e_6830: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
     /// An action request for the unit: eight words on the stack, the action
     /// first, handed to `0xe6900`.
     BIPED_ACTION @ 0x000e_68c0: [fn(action: ecx, object: stack 0) ret 4], Hot; "docs/engine/object-update.md";

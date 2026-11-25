@@ -1,7 +1,7 @@
 //! Exact producer scopes bound to D3D's transactional DrawAdmission.
 //! Both helpers publish one packet after their final producer work. Drain
 //! before that store and at its epilogue; nothing can escape as "next quad".
-use std::collections::HashMap;
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -22,11 +22,13 @@ use crate::native_lights_glue::DeviceMemory;
 use timeline::native::{Metric, Stage};
 
 mod flare_pass;
+mod refusal_samples;
+mod particle_capture;
 
 #[derive(Clone)]
 enum Source {
     Particle(Call),
-    Dynamic(DynamicCall, Vec<u8>),
+    Dynamic(DynamicCall, Option<Arc<[u8]>>),
     Immediate(Site),
 }
 impl Source {
@@ -38,6 +40,88 @@ impl Source {
         }
     }
 }
+static REFUSALS: crate::native_refusals::Counts = crate::native_refusals::Counts::new();
+
+/// The first refused draw's shape per geometry reason, for
+/// `render.particles.refusals`.
+static SAMPLES: refusal_samples::Samples = refusal_samples::Samples::new();
+
+/// `render.particles.refusals` (docs/runtime/agent-api.md): the native
+/// particle path's geometry refusals, each reason with its count and the
+/// first refused draw's shape.
+pub fn add_refusals_method(agent: &agent::Agent) {
+    agent.add_method(agent_proto::method::RENDER_PARTICLES_REFUSALS, agent::Access::Read, |params| {
+        refusal_samples::answer(&params, &SAMPLES)
+    });
+}
+
+pub(crate) fn report_refusals() {
+    REFUSALS.report("native-particles");
+}
+
+fn producer_label(producer: Producer) -> &'static str {
+    match producer {
+        Producer::Particle => "Particle",
+        Producer::Dynamic => "Dynamic",
+        Producer::Immediate(_) => "Immediate",
+        Producer::Flare(_) => "Flare",
+    }
+}
+
+/// Every `Refused::Geometry` reason with the counter name it logs under:
+/// `Particle/Geometry/primitive`. A reason not listed counts as `Geometry`
+/// (the test below keeps the list whole).
+const GEOMETRY_REASONS: [(&str, &str); 22] = [
+    ("indexed", "Geometry/indexed"),
+    ("pretransformed", "Geometry/pretransformed"),
+    ("layouts", "Geometry/layouts"),
+    ("streams", "Geometry/streams"),
+    ("stride", "Geometry/stride"),
+    ("attributes", "Geometry/attributes"),
+    ("attribute_slot", "Geometry/attribute_slot"),
+    ("primitive", "Geometry/primitive"),
+    ("vertex_count", "Geometry/vertex_count"),
+    ("data_len", "Geometry/data_len"),
+    ("data_type", "Geometry/data_type"),
+    ("inputs", "Geometry/inputs"),
+    ("corner_vertices", "Geometry/corner_vertices"),
+    ("corner_compare", "Geometry/corner_compare"),
+    ("corner_differs", "Geometry/corner_differs"),
+    ("unpublished", "Geometry/unpublished"),
+    ("data_differs", "Geometry/data_differs"),
+    ("indices", "Geometry/indices"),
+    ("raw_bytes", "Geometry/raw_bytes"),
+    ("raw_attributes", "Geometry/raw_attributes"),
+    ("raw_vertex_count", "Geometry/raw_vertex_count"),
+    ("other", "Geometry"),
+];
+
+fn geometry_label(reason: &str) -> &'static str {
+    GEOMETRY_REASONS.iter().find(|(r, _)| *r == reason).map_or("Geometry", |(_, label)| label)
+}
+
+fn refusal_label(why: Refused) -> &'static str {
+    match why {
+        Refused::Identity => "Identity",
+        Refused::Target => "Target",
+        Refused::Scissor => "Scissor",
+        Refused::Geometry(reason) => geometry_label(reason),
+        Refused::Effect(reason) => reason,
+        Refused::State => "State",
+        Refused::Texture(_) => "Texture",
+        Refused::Shader(_) => "Shader",
+    }
+}
+
+fn refuse_copy(copy: d3d::TargetCopy, why: Refused) -> &'static str {
+    let copy = match copy {
+        d3d::TargetCopy::Reference => "Reference",
+        d3d::TargetCopy::Display => "Display",
+    };
+    REFUSALS.count(copy, refusal_label(why));
+    "particle resources"
+}
+
 #[derive(Clone)]
 struct Pending {
     source: Source,
@@ -62,11 +146,13 @@ struct Scope {
     waiting: Option<Pending>,
     issuing: Option<Issuing>,
 }
-type Renderers = Arc<Mutex<HashMap<wgpu::Device, (u64, ParticleRenderer)>>>;
+type RendererSlot = Option<(wgpu::Device, u64, ParticleRenderer)>;
+type Renderer = Arc<Mutex<RendererSlot>>;
 struct Admission {
     scope: Mutex<Scope>,
-    renderers: Renderers,
+    renderer: Renderer,
     flare_gpu: Arc<Mutex<flares::FlareGpu>>,
+    captured_gpu: Arc<Mutex<native_render::ui_gpu::UiGpu>>,
     serial: AtomicU64,
 }
 struct ImmediateAdmission<B: d3d::backend::Backend + 'static> {
@@ -97,8 +183,7 @@ impl<B: d3d::backend::Backend + 'static> ImmediateAdmission<B> {
 }
 impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
     fn try_emit(&self, mem: &mut dyn GuestMemory, call: &Call) -> bool {
-        let data = [[0i16, 0, 0, 0], [1, 0, 0, 0], [1, 1, 0, 0], [0, 1, 0, 0]]
-            .into_iter().flatten().flat_map(i16::to_le_bytes).collect();
+        let data = particle_capture::corner_bytes().to_vec();
         let carried = call.emission.attributes.map(|r| r.map(|v| v.map(f32::from_bits)));
         let pending = Pending {
             source: Source::Particle(call.clone()),
@@ -134,7 +219,7 @@ impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
             Stage::Effects.count(Metric::WalkRefusedInputs, 1);
             return false;
         };
-        *bytes = generated.clone();
+        *bytes = Some(generated.as_slice().into());
         let candidate = Direct { admission: &self.admission, pending, stage: Stage::Effects };
         let drawn = self.device.lock().is_ok_and(|mut device| {
             device.try_native_inline_draw(
@@ -152,7 +237,7 @@ impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
         self.arm(Source::Particle(call.clone()))
     }
     fn arm_dynamic(&self, _: &mut dyn GuestMemory, call: &DynamicCall) -> bool {
-        self.arm(Source::Dynamic(*call, Vec::new()))
+        self.arm(Source::Dynamic(*call, None))
     }
     fn arm_effect(&self, mem: &mut dyn GuestMemory, site: Site) -> bool {
         self.arm(Source::Immediate(site));
@@ -192,7 +277,7 @@ impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
             let Ok(generated) = effect_geometry::read_generated(&Read(mem), data, call) else {
                 return;
             };
-            *bytes = generated;
+            *bytes = Some(generated.into());
         }
         // The guest has not published this packet yet. Earlier draws have
         // no active owner, even if they have identical geometry and state.
@@ -238,8 +323,9 @@ pub fn install<B: d3d::backend::Backend + 'static>(device: &d3d::abi::SharedDevi
     }
     let admission = Arc::new(Admission {
         scope: Mutex::new(Scope::default()),
-        renderers: Default::default(),
+        renderer: Default::default(),
         flare_gpu: Default::default(),
+        captured_gpu: Default::default(),
         serial: AtomicU64::new(1),
     });
     device
@@ -257,18 +343,21 @@ pub fn install<B: d3d::backend::Backend + 'static>(device: &d3d::abi::SharedDevi
 fn geometry(
     draw: &d3d::ResolvedDraw,
     source: &Source,
-) -> Result<(Vec<Vertex>, Option<RawVertices>, Vec<u32>), Refused> {
-    if draw.indices.is_some() || draw.layout.pretransformed {
-        return Err(Refused::Geometry);
+) -> Result<(Vec<Vertex>, Option<RawVertices>, Cow<'static, [u32]>), Refused> {
+    if draw.indices.is_some() {
+        return Err(Refused::Geometry("indexed"));
+    }
+    if draw.layout.pretransformed {
+        return Err(Refused::Geometry("pretransformed"));
     }
     let [layout] = draw.layout.streams.as_slice() else {
-        return Err(Refused::Geometry);
+        return Err(Refused::Geometry("layouts"));
     };
     let [stream] = draw.streams.as_slice() else {
-        return Err(Refused::Geometry);
+        return Err(Refused::Geometry("streams"));
     };
     if layout.stream != 0 || layout.stride != stream.stride {
-        return Err(Refused::Geometry);
+        return Err(Refused::Geometry("stride"));
     }
     match source {
         Source::Immediate(site) => {
@@ -299,58 +388,72 @@ fn geometry(
                 draw.shader.vertex_defaults,
             )
             .map_err(|e| Refused::Effect(e.name()))?;
-            Ok((vertices, None, indices))
+            Ok((vertices, None, indices.into()))
         }
         Source::Particle(call) => {
             let [a] = layout.attributes.as_slice() else {
-                return Err(Refused::Geometry);
+                return Err(Refused::Geometry("attributes"));
             };
-            if draw.primitive != PrimitiveType::QuadList
-                || draw.vertex_count != 4
-                || stream.stride != 8
-                || stream.data.len() != 32
-                || a.offset != 0
-                || a.register.0 != 0
-                || a.data_type != VertexDataType::Short4
-                || draw.shader.provided_inputs != 1
-            {
-                return Err(Refused::Geometry);
+            if draw.primitive != PrimitiveType::QuadList {
+                return Err(Refused::Geometry("primitive"));
+            }
+            if draw.vertex_count != 4 {
+                return Err(Refused::Geometry("vertex_count"));
+            }
+            if stream.stride != 8 {
+                return Err(Refused::Geometry("stride"));
+            }
+            if stream.data.len() != 32 {
+                return Err(Refused::Geometry("data_len"));
+            }
+            if a.offset != 0 || a.register.0 != 0 {
+                return Err(Refused::Geometry("attribute_slot"));
+            }
+            if a.data_type != VertexDataType::Short4 {
+                return Err(Refused::Geometry("data_type"));
+            }
+            if draw.shader.provided_inputs != 1 {
+                return Err(Refused::Geometry("inputs"));
             }
             let expected = call
                 .emission
                 .vertices(Declaration::CornerShort4, draw.shader.vertex_defaults)
-                .map_err(|_| Refused::Geometry)?;
-            let actual: Vec<_> = stream
-                .data
-                .chunks_exact(8)
-                .map(|bytes| {
-                    let mut registers = draw.shader.vertex_defaults;
-                    registers[0] = std::array::from_fn(|i| {
-                        i16::from_le_bytes([bytes[2 * i], bytes[2 * i + 1]]) as f32
-                    });
-                    Vertex { registers }
-                })
-                .collect();
-            if particles::differing_registers(&expected, &actual).map_err(|_| Refused::Geometry)?
+                .map_err(|_| Refused::Geometry("corner_vertices"))?;
+            let actual: [Vertex; 4] = std::array::from_fn(|corner| {
+                let mut registers = draw.shader.vertex_defaults;
+                registers[0] = std::array::from_fn(|i| {
+                    let n = corner * 8 + i * 2;
+                    i16::from_le_bytes([stream.data[n], stream.data[n + 1]]) as f32
+                });
+                Vertex { registers }
+            });
+            if particles::differing_registers(&expected, &actual)
+                .map_err(|_| Refused::Geometry("corner_compare"))?
                 != 0
             {
-                return Err(Refused::Geometry);
+                return Err(Refused::Geometry("corner_differs"));
             }
-            Ok((expected.to_vec(), None, particles::QUAD_INDICES.to_vec()))
+            Ok((expected.to_vec(), None, Cow::Borrowed(&particles::QUAD_INDICES)))
         }
         Source::Dynamic(call, bytes) => {
+            let bytes = bytes.as_ref().ok_or(Refused::Geometry("unpublished"))?;
             let primitive = match call.primitive {
                 6 => PrimitiveType::TriangleStrip,
                 7 => PrimitiveType::TriangleFan,
                 8 => PrimitiveType::QuadList,
-                _ => return Err(Refused::Geometry),
+                _ => return Err(Refused::Geometry("primitive")),
             };
-            if draw.primitive != primitive
-                || draw.vertex_count != call.vertices
-                || stream.stride != call.stride
-                || stream.data.as_ref() != bytes.as_slice()
-            {
-                return Err(Refused::Geometry);
+            if draw.primitive != primitive {
+                return Err(Refused::Geometry("primitive"));
+            }
+            if draw.vertex_count != call.vertices {
+                return Err(Refused::Geometry("vertex_count"));
+            }
+            if stream.stride != call.stride {
+                return Err(Refused::Geometry("stride"));
+            }
+            if stream.data.as_ref() != bytes.as_ref() {
+                return Err(Refused::Geometry("data_differs"));
             }
             let attributes = layout
                 .attributes
@@ -360,7 +463,7 @@ fn geometry(
                         VertexDataType::Float3 => wgpu::VertexFormat::Float32x3,
                         VertexDataType::Float2 => wgpu::VertexFormat::Float32x2,
                         VertexDataType::D3dColor => wgpu::VertexFormat::Unorm8x4Bgra,
-                        _ => return Err(Refused::Geometry),
+                        _ => return Err(Refused::Geometry("data_type")),
                     };
                     Ok(wgpu::VertexAttribute {
                         format,
@@ -376,14 +479,16 @@ fn geometry(
                 .try_fold(0u16, |mask, a| {
                     (a.register.0 < 16).then(|| mask | (1u16 << a.register.0))
                 })
-                .ok_or(Refused::Geometry)?;
+                .ok_or(Refused::Geometry("attribute_slot"))?;
             if mask != draw.shader.provided_inputs {
-                return Err(Refused::Geometry);
+                return Err(Refused::Geometry("inputs"));
             }
             Ok((
                 Vec::new(),
                 Some(raw),
-                effect_geometry::indices(call).map_err(|_| Refused::Geometry)?,
+                effect_geometry::indices(call)
+                    .map_err(|_| Refused::Geometry("indices"))?
+                    .into(),
             ))
         }
     }
@@ -400,9 +505,19 @@ impl DrawAdmission for Admission {
             .issuing
             .take()?;
         match pending {
-            Issuing::Particle(p) => self.plan(snapshot, &p, Stage::Particles),
+            Issuing::Particle(p) => self.plan(snapshot, &p, Stage::Particles, true),
             Issuing::Flare(site) => flare_pass::plan(site, snapshot, &self.flare_gpu),
         }
+    }
+
+    fn admit_counted(&self, snapshot: &DrawSnapshot<'_>) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
+        let mut scope = self.scope.lock().unwrap_or_else(|e| e.into_inner());
+        if !matches!(&scope.issuing, Some(Issuing::Flare(flares::Site::Visibility))) {
+            return None;
+        }
+        scope.issuing = None;
+        drop(scope);
+        flare_pass::plan(flares::Site::Visibility, snapshot, &self.flare_gpu)
     }
 }
 
@@ -414,7 +529,7 @@ struct Direct<'a> {
 
 impl DrawAdmission for Direct<'_> {
     fn admit(&self, snapshot: &DrawSnapshot<'_>) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
-        self.admission.plan(snapshot, &self.pending, self.stage)
+        self.admission.plan(snapshot, &self.pending, self.stage, false)
     }
 }
 
@@ -424,21 +539,8 @@ impl Admission {
         snapshot: &DrawSnapshot<'_>,
         pending: &Pending,
         stage: Stage,
+        captured: bool,
     ) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
-        let result = geometry(snapshot.draw, &pending.source);
-        let (vertices, raw_vertices, indices) = match result {
-            Ok(geometry) => geometry,
-            Err(reason) => {
-                static LOGGED: AtomicU64 = AtomicU64::new(0);
-                if LOGGED.fetch_add(1, Ordering::Relaxed) < 32 {
-                    eprintln!(
-                        "native-particles-refused: producer={:?} reason={reason:?}",
-                        pending.source.producer()
-                    );
-                }
-                return None;
-            }
-        };
         let refusal = if snapshot.color_header == 0 {
             Some("MissingColorTarget")
         } else if snapshot.depth_header == 0 || snapshot.draw.target.depth_format.is_none() {
@@ -448,22 +550,36 @@ impl Admission {
         } else if snapshot.draw.glyph_cache != 0 {
             Some("GlyphFiltering")
         } else if snapshot.draw.hw.zpass_count_enable {
-            Some("VisibilityQuery")
+            Some("UnexpectedSampleCount")
         } else if !snapshot.draw.state.bad.is_empty() {
             Some("UnresolvedState")
         } else {
             None
         };
         if let Some(reason) = refusal {
-            static LOGGED: AtomicU64 = AtomicU64::new(0);
-            if LOGGED.fetch_add(1, Ordering::Relaxed) < 32 {
-                eprintln!(
-                    "native-particles-refused: producer={:?} reason={reason}",
-                    pending.source.producer()
-                );
-            }
+            REFUSALS.count(producer_label(pending.source.producer()), reason);
             return None;
         }
+        let (vertices, raw_vertices, indices) = match geometry(snapshot.draw, &pending.source) {
+            Ok(geometry) => geometry,
+            Err(Refused::Geometry(_))
+                if captured && matches!(&pending.source, Source::Particle(_))
+                    && particle_capture::owns(snapshot.draw) =>
+            {
+                return Some((
+                    ExternalPlan { stage, view: 4, ranges: 1, slots: Vec::new() },
+                    Box::new(particle_capture::Pass::new(snapshot.draw, &self.captured_gpu)),
+                ));
+            }
+            Err(reason) => {
+                let producer = producer_label(pending.source.producer());
+                if let Refused::Geometry(why) = &reason {
+                    SAMPLES.record(*why, producer, snapshot.draw);
+                }
+                REFUSALS.count(producer, refusal_label(reason));
+                return None;
+            }
+        };
         Some((
             ExternalPlan {
                 stage,
@@ -479,7 +595,7 @@ impl Admission {
                 vertices,
                 raw_vertices,
                 indices,
-                renderers: self.renderers.clone(),
+                renderer: self.renderer.clone(),
                 prepared: Vec::new(),
                 frame: crate::d3d_diag::presents(),
             }),
@@ -494,8 +610,8 @@ struct Pass {
     depth: u32,
     vertices: Vec<Vertex>,
     raw_vertices: Option<RawVertices>,
-    indices: Vec<u32>,
-    renderers: Renderers,
+    indices: Cow<'static, [u32]>,
+    renderer: Renderer,
     prepared: Vec<(PreparedDraw, DrawIdentity, TargetKey)>,
     /// The guest frame the draw was admitted in. The renderer keeps a
     /// texture group only while draws of recent frames use it: a view of
@@ -537,18 +653,19 @@ impl<'a> CopyView<'a> {
         }
     }
 }
-// `wgpu::Device` is a handle hashed and compared by identity, so its interior
-// state never changes the key.
-#[allow(clippy::mutable_key_type)]
+// An admission belongs to one D3D device. A backend device replacement
+// releases its old caches. Draws already prepared own their handles.
 fn renderer_for<'a>(
-    renderers: &'a mut HashMap<wgpu::Device, (u64, ParticleRenderer)>,
+    renderer: &'a mut RendererSlot,
     device: &wgpu::Device,
-) -> &'a mut (u64, ParticleRenderer) {
+) -> (u64, &'a mut ParticleRenderer) {
     static DEVICES: AtomicU64 = AtomicU64::new(1);
-    renderers.entry(device.clone()).or_insert_with(|| {
+    if renderer.as_ref().is_none_or(|(owner, _, _)| owner != device) {
         let id = DEVICES.fetch_add(1, Ordering::Relaxed);
-        (id, ParticleRenderer::new(id))
-    })
+        *renderer = Some((device.clone(), id, ParticleRenderer::new(id)));
+    }
+    let (_, id, renderer) = renderer.as_mut().expect("renderer for the current device");
+    (*id, renderer)
 }
 impl Pass {
     fn snapshot(
@@ -556,7 +673,7 @@ impl Pass {
         t: &CopyView<'_>,
         renderer: &mut ParticleRenderer,
         device_id: u64,
-    ) -> Result<ImmediateDrawSnapshot, Refused> {
+    ) -> Result<ImmediateDrawSnapshot<'_>, Refused> {
         let draw = self.draw.for_copy(t.copy);
         let d = draw.as_ref();
         if t.guest_size != (d.target.width, d.target.height) {
@@ -565,13 +682,7 @@ impl Pass {
         let scale = d3d::scaled::RenderScale::between(t.guest_size, t.size).ok_or(Refused::Target)?;
         let caps = gfx::translate::Capabilities::from_features(t.device.features());
         let program = d3d::nv2a::resolved::resolve(d, t.stages.map(|v| v.is_some()), caps, scale)
-            .map_err(Refused::Shader)?;
-        let mut microcode = vec![0x78, 0x20];
-        let count = u16::try_from(program.words.len() / 4).map_err(|_| Refused::Geometry)?;
-        microcode.extend(count.to_le_bytes());
-        for word in &program.words {
-            microcode.extend(word.to_le_bytes());
-        }
+            .map_err(|reason| Refused::Shader(reason.into()))?;
         let mut render = d.state.render;
         if program.pixel_options.w_buffer {
             render.solid_offset_enable = false;
@@ -618,17 +729,18 @@ impl Pass {
                 depth_format: t.depth_format,
             },
             shader: ShaderSnapshot {
-                microcode,
+                microcode: program.words,
                 pixel: program.pixel,
                 pixel_options: program.pixel_options,
                 flat_shading: program.vertex_options.flat_shading,
+                input_fetch: program.vertex_options.input_fetch,
             },
             vertex_uniforms: program.vertex_uniforms,
             pixel_uniforms: program.pixel_uniforms,
             textures,
-            vertices: self.vertices.clone(),
-            raw_vertices: self.raw_vertices.clone(),
-            indices: self.indices.clone(),
+            vertices: Cow::Borrowed(&self.vertices),
+            raw_vertices: self.raw_vertices.as_ref().map(Cow::Borrowed),
+            indices: Cow::Borrowed(&self.indices),
             primitive,
             depth: gfx::translate::depth_stencil_state(
                 &render,
@@ -645,6 +757,25 @@ impl Pass {
     }
 }
 impl ExternalPass for Pass {
+    fn replays_scene(&self) -> bool {
+        true
+    }
+
+    fn with_draw(&self, draw: Arc<d3d::ResolvedDraw>) -> Option<Box<dyn ExternalPass>> {
+        Some(Box::new(Self {
+            draw,
+            id: self.id,
+            color: self.color,
+            depth: self.depth,
+            vertices: self.vertices.clone(),
+            raw_vertices: self.raw_vertices.clone(),
+            indices: self.indices.clone(),
+            renderer: Arc::clone(&self.renderer),
+            prepared: Vec::new(),
+            frame: self.frame,
+        }))
+    }
+
     fn encode(&mut self, _: ExternalTarget<'_>) {} // only transactional recording is supported
     fn writes(&self) -> ExternalWrites {
         let r = &self.draw.state.render;
@@ -659,30 +790,22 @@ impl ExternalPass for Pass {
         Some(Arc::clone(&self.draw))
     }
     fn prepare_copy(&mut self, target: &ExternalTarget<'_>) -> Result<(), &'static str> {
-        self.prepared
-            .retain(|p| p.1.copy != u32::from(target.copy == d3d::TargetCopy::Display));
-        let renderers = self.renderers.clone();
-        let mut renderers = renderers.lock().unwrap_or_else(|e| e.into_inner());
-        let (id, renderer) = renderer_for(&mut renderers, target.device);
+        let copy = u32::from(target.copy == d3d::TargetCopy::Display);
+        self.prepared.retain(|p| p.1.copy != copy);
+        let renderer = self.renderer.clone();
+        let mut renderer = renderer.lock().unwrap_or_else(|e| e.into_inner());
+        let (id, renderer) = renderer_for(&mut renderer, target.device);
         renderer.begin_frame(self.frame);
-        let refusal = |why: Refused| {
-            static LOGGED: AtomicU64 = AtomicU64::new(0);
-            if LOGGED.fetch_add(1, Ordering::Relaxed) < 16 {
-                eprintln!(
-                    "native-particles-refused: call={} copy={:?} reason={why:?}",
-                    self.id, target.copy
-                );
-            }
-            "particle resources"
-        };
+        let refusal = |why| refuse_copy(target.copy, why);
         let snapshot = self
-            .snapshot(&CopyView::of_target(target), renderer, *id)
+            .snapshot(&CopyView::of_target(target), renderer, id)
             .map_err(&refusal)?;
         let draw = renderer
             .prepare(target.device, &snapshot)
             .map_err(refusal)?;
-        self.prepared
-            .push((draw, snapshot.identity, snapshot.target));
+        let prepared = (draw, snapshot.identity, snapshot.target);
+        drop(snapshot);
+        self.prepared.push(prepared);
         Ok(())
     }
     /// One packet appended to the D3D pass open on these attachments: no
@@ -700,21 +823,12 @@ impl ExternalPass for Pass {
         if view.stages.iter().flatten().any(|v| attached.contains(&v.texture())) {
             return Some(Err("particle samples its own target"));
         }
-        let renderers = self.renderers.clone();
-        let mut renderers = renderers.lock().unwrap_or_else(|e| e.into_inner());
-        let (id, renderer) = renderer_for(&mut renderers, &t.device);
+        let renderer = self.renderer.clone();
+        let mut renderer = renderer.lock().unwrap_or_else(|e| e.into_inner());
+        let (id, renderer) = renderer_for(&mut renderer, &t.device);
         renderer.begin_frame(self.frame);
-        let refusal = |why: Refused| {
-            static LOGGED: AtomicU64 = AtomicU64::new(0);
-            if LOGGED.fetch_add(1, Ordering::Relaxed) < 16 {
-                eprintln!(
-                    "native-particles-refused: call={} copy={:?} reason={why:?}",
-                    self.id, t.copy
-                );
-            }
-            "particle resources"
-        };
-        let snapshot = match self.snapshot(&view, renderer, *id) {
+        let refusal = |why| refuse_copy(t.copy, why);
+        let snapshot = match self.snapshot(&view, renderer, id) {
             Ok(s) => s,
             Err(why) => return Some(Err(refusal(why))),
         };
@@ -734,18 +848,14 @@ impl ExternalPass for Pass {
         )
     }
     fn record_ranges(&mut self, target: ExternalTarget<'_>) -> usize {
-        let Some(i) = self
-            .prepared
-            .iter()
-            .position(|p| p.1.copy == u32::from(target.copy == d3d::TargetCopy::Display))
-        else {
+        let copy = u32::from(target.copy == d3d::TargetCopy::Display);
+        let Some(i) = self.prepared.iter().position(|p| p.1.copy == copy) else {
             return 0;
         };
         let (draw, identity, key) = self.prepared.swap_remove(i);
         if key.size != target.size
             || key.color_format != target.color_format
             || key.depth_format != target.depth_format
-            || identity.copy != u32::from(target.copy == d3d::TargetCopy::Display)
         {
             return 0;
         }
@@ -757,12 +867,16 @@ impl ExternalPass for Pass {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use d3d::backend::{StreamBytes, TargetInfo, Viewport};
     use d3d::shader::{ShaderInputs, VertexProcessing};
     use d3d::state::StateWords;
     use gfx::vertex::{StreamLayout, VertexAttribute, VertexLayout, VertexRegister};
+
+    pub(in crate::native_particles_admission) fn particle_draw() -> (d3d::ResolvedDraw, Source) {
+        particle()
+    }
 
     fn particle() -> (d3d::ResolvedDraw, Source) {
         let words = StateWords::defaults(false);
@@ -854,10 +968,77 @@ mod tests {
         let (mut draw, source) = particle();
         assert!(geometry(&draw, &source).is_ok());
         draw.shader.vertex_defaults[3][0] = 0.5;
-        assert!(matches!(geometry(&draw, &source), Err(Refused::Geometry)));
+        assert_eq!(geometry(&draw, &source).err(), Some(Refused::Geometry("corner_differs")));
         let (mut draw, source) = particle();
         draw.layout.streams[0].attributes[0].data_type = VertexDataType::NormShort4;
-        assert!(matches!(geometry(&draw, &source), Err(Refused::Geometry)));
+        assert_eq!(geometry(&draw, &source).err(), Some(Refused::Geometry("data_type")));
+    }
+
+    /// The reason `geometry` refuses `draw` with, for a synthetic draw one
+    /// field away from a good one.
+    fn why(draw: &d3d::ResolvedDraw, source: &Source) -> &'static str {
+        match geometry(draw, source) {
+            Err(Refused::Geometry(why)) => why,
+            other => panic!("not a geometry refusal: {:?}", other.map(|_| ())),
+        }
+    }
+
+    #[test]
+    fn each_particle_geometry_check_names_itself() {
+        let bad = |edit: &dyn Fn(&mut d3d::ResolvedDraw)| {
+            let (mut draw, source) = particle();
+            edit(&mut draw);
+            why(&draw, &source)
+        };
+        assert_eq!(bad(&|d| d.indices = Some(vec![0u32].into())), "indexed");
+        assert_eq!(bad(&|d| d.layout.pretransformed = true), "pretransformed");
+        assert_eq!(bad(&|d| d.layout.streams.clear()), "layouts");
+        assert_eq!(bad(&|d| d.streams.clear()), "streams");
+        assert_eq!(bad(&|d| d.layout.streams[0].stride = 12), "stride");
+        assert_eq!(bad(&|d| { d.layout.streams[0].stride = 16; d.streams[0].stride = 16; }), "stride");
+        assert_eq!(bad(&|d| d.layout.streams[0].attributes.clear()), "attributes");
+        assert_eq!(bad(&|d| d.layout.streams[0].attributes[0].offset = 4), "attribute_slot");
+        assert_eq!(bad(&|d| d.primitive = PrimitiveType::TriangleList), "primitive");
+        assert_eq!(bad(&|d| d.vertex_count = 6), "vertex_count");
+        assert_eq!(bad(&|d| d.streams[0].data = vec![0u8; 16].into()), "data_len");
+        assert_eq!(bad(&|d| d.layout.streams[0].attributes[0].data_type = VertexDataType::Float4), "data_type");
+        assert_eq!(bad(&|d| d.shader.provided_inputs = 3), "inputs");
+        assert_eq!(bad(&|d| d.shader.vertex_defaults[3][0] = 0.5), "corner_differs");
+    }
+
+    #[test]
+    fn each_geometry_reason_has_its_own_counter_name() {
+        for (reason, label) in GEOMETRY_REASONS {
+            if reason != "other" {
+                assert_eq!(label, format!("Geometry/{reason}"));
+            }
+            assert_eq!(refusal_label(Refused::Geometry(reason)), label);
+        }
+        assert_eq!(refusal_label(Refused::Geometry("not listed")), "Geometry");
+    }
+
+    #[test]
+    fn a_refused_particle_draw_counts_under_its_reason_and_keeps_one_sample() {
+        let (mut draw, source) = particle();
+        draw.primitive = PrimitiveType::TriangleList;
+        let admission = Admission {
+            scope: Mutex::new(Scope::default()),
+            renderer: Default::default(),
+            flare_gpu: Default::default(),
+            captured_gpu: Default::default(),
+            serial: AtomicU64::new(1),
+        };
+        let pending = Pending { source, id: 1 };
+        SAMPLES.clear();
+        assert!(admission.plan(&snapshot(&draw), &pending, Stage::Particles, false).is_none());
+        draw.vertex_count = 6;
+        assert!(admission.plan(&snapshot(&draw), &pending, Stage::Particles, false).is_none());
+        let answer = SAMPLES.answer();
+        let primitive = &answer["samples"]["primitive"];
+        assert_eq!(primitive["producer"], "Particle");
+        assert_eq!(primitive["count"], 2);
+        assert_eq!(primitive["shape"]["vertex_count"], 4, "the first draw's shape stays");
+        SAMPLES.clear();
     }
     fn snapshot(draw: &d3d::ResolvedDraw) -> DrawSnapshot<'_> {
         DrawSnapshot {
@@ -876,8 +1057,9 @@ mod tests {
     fn one_flare_end_admits_one_fan_and_leaves_visibility_to_the_query() {
         let admission = Admission {
             scope: Mutex::new(Scope::default()),
-            renderers: Default::default(),
+            renderer: Default::default(),
             flare_gpu: Default::default(),
+            captured_gpu: Default::default(),
             serial: AtomicU64::new(1),
         };
         let arm = || {
@@ -905,12 +1087,81 @@ mod tests {
     }
 
     #[test]
+    fn visibility_fans_are_counted_only_inside_their_one_read_only_scope() {
+        let admission = Admission {
+            scope: Mutex::new(Scope::default()),
+            renderer: Default::default(),
+            flare_gpu: Default::default(),
+            captured_gpu: Default::default(),
+            serial: AtomicU64::new(1),
+        };
+        let arm = || {
+            admission.scope.lock().unwrap().issuing = Some(Issuing::Flare(flares::Site::Visibility));
+        };
+        let (mut fan, _) = particle();
+        fan.entry = "D3DDevice_End";
+        fan.primitive = PrimitiveType::TriangleFan;
+        fan.layout.streams[0].stride = 256;
+        fan.layout.streams[0].attributes[0].data_type = VertexDataType::Float4;
+        fan.streams[0] = StreamBytes { stride: 256, data: vec![0; 1024].into() };
+        fan.state.render.color_write = gfx::state::ColorWriteMask::from_xbox(0);
+        fan.state.render.depth_write = false;
+        assert!(admission.admit_counted(&snapshot(&fan)).is_none());
+        arm();
+        assert!(admission.admit(&snapshot(&fan)).is_none());
+
+        fan.hw.zpass_count_enable = true;
+        arm();
+        let (plan, pass) = admission.admit_counted(&snapshot(&fan)).unwrap();
+        assert_eq!((plan.stage, plan.ranges), (Stage::Flares, 1));
+        assert!(pass.counts_samples() && pass.replays_scene());
+        assert_eq!(pass.resolved_fallback().as_deref(), Some(&fan));
+        assert!(admission.admit_counted(&snapshot(&fan)).is_none());
+
+        arm();
+        fan.state.render.color_write = gfx::state::ColorWriteMask::ALL;
+        assert!(admission.admit_counted(&snapshot(&fan)).is_none());
+        fan.state.render.color_write = gfx::state::ColorWriteMask::from_xbox(0);
+        assert!(admission.admit_counted(&snapshot(&fan)).is_none());
+        arm();
+        fan.state.render.depth_mode = gfx::state::DepthBufferMode::W;
+        fan.state.render.depth_write = true;
+        assert!(admission.admit_counted(&snapshot(&fan)).is_none());
+    }
+
+    #[test]
+    fn only_published_particle_bytes_can_supply_resolved_geometry() {
+        let admission = Admission {
+            scope: Mutex::new(Scope::default()),
+            renderer: Default::default(),
+            flare_gpu: Default::default(),
+            captured_gpu: Default::default(),
+            serial: AtomicU64::new(1),
+        };
+        let (mut draw, source) = particle();
+        let pending = Pending { source, id: 1 };
+        draw.entry = "inline Begin/End";
+        draw.shader.vertex_defaults[3][0] = 0.5;
+        assert!(admission.plan(&snapshot(&draw), &pending, Stage::Particles, false).is_none());
+        let (_, pass) = admission.plan(&snapshot(&draw), &pending, Stage::Particles, true).unwrap();
+        assert_eq!(pass.resolved_fallback().as_deref(), Some(&draw));
+
+        draw.layout.streams[0].attributes[0].data_type = VertexDataType::NormShort4;
+        assert!(admission.plan(&snapshot(&draw), &pending, Stage::Particles, true).is_some());
+        let mut other = particle_capture::corner_bytes();
+        other[8] ^= 1;
+        draw.streams[0].data = other.to_vec().into();
+        assert!(admission.plan(&snapshot(&draw), &pending, Stage::Particles, true).is_none());
+    }
+
+    #[test]
     fn a_mismatch_consumes_the_scope_and_cannot_take_the_following_quad() {
         let (draw, source) = particle();
         let admission = Admission {
             scope: Mutex::new(Scope::default()),
-            renderers: Default::default(),
+            renderer: Default::default(),
             flare_gpu: Default::default(),
+            captured_gpu: Default::default(),
             serial: AtomicU64::new(1),
         };
         assert!(
@@ -940,7 +1191,7 @@ mod tests {
         let (v, raw, indices) = geometry(&draw, &source).unwrap();
         assert!(raw.is_none());
         assert_eq!(v[0].registers[3], draw.shader.vertex_defaults[3]);
-        assert_eq!(indices, [0, 1, 3, 0, 3, 2]);
+        assert_eq!(indices.as_ref(), &[0, 1, 3, 0, 3, 2]);
         draw.layout.streams[0].attributes[0].offset = 16;
         assert!(matches!(
             geometry(&draw, &source),
@@ -954,7 +1205,7 @@ mod tests {
         ));
         draw.primitive = PrimitiveType::LineList;
         let (_, _, indices) = geometry(&draw, &Source::Immediate(Site::WeatherParticles)).unwrap();
-        assert_eq!(indices, [0, 1, 2, 3]);
+        assert_eq!(indices.as_ref(), &[0, 1, 2, 3]);
         draw.shader.provided_inputs |= 1 << 3;
         assert!(matches!(
             geometry(&draw, &Source::Immediate(Site::WeatherParticles)),
@@ -975,7 +1226,7 @@ mod tests {
             primitive: 6,
         };
         let bytes = vec![0; 96];
-        let source = Source::Dynamic(call, bytes.clone());
+        let source = Source::Dynamic(call, Some(bytes.as_slice().into()));
         draw.primitive = PrimitiveType::TriangleStrip;
         draw.shader.provided_inputs = (1 << 0) | (1 << 9) | (1 << 3);
         draw.layout.streams[0] = StreamLayout {
@@ -1005,11 +1256,11 @@ mod tests {
         };
         let (_, raw, indices) = geometry(&draw, &source).unwrap();
         assert_eq!(raw.unwrap().bytes(), bytes);
-        assert_eq!(indices, [0, 1, 2, 3]);
+        assert_eq!(indices.as_ref(), &[0, 1, 2, 3]);
         let mut changed = bytes;
         changed[95] = 1;
         draw.streams[0].data = changed.into();
-        assert!(matches!(geometry(&draw, &source), Err(Refused::Geometry)));
+        assert_eq!(geometry(&draw, &source).err(), Some(Refused::Geometry("data_differs")));
     }
     #[test]
     fn resolved_program_keeps_the_final_combiner_latch_and_w_clip_without_depth_writes() {

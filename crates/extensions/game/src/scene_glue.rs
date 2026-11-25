@@ -116,8 +116,11 @@ fn counters(sink: bool) -> BTreeMap<String, u64> {
         .map(|(k, v)| (k.to_owned(), v))
         .chain(d3d::scene_stage::counters())
         .chain(render_bridge::native_layers::counters())
+        .chain(render_bridge::native_sky::counters())
         .chain(sink.then(d3d::scene_sink::counters).into_iter().flatten())
         .collect();
+    #[cfg(feature = "gpu")]
+    counts.extend(crate::native_post_glue::refusal_counters());
     #[cfg(feature = "gpu")]
     if sink { counts.extend(crate::native_objects_glue::palette_counters()); }
     if sink && let Some(residency) = d3d::scene_stage::residency::counters() {
@@ -205,6 +208,10 @@ fn source(dump: bool) -> Result<SceneReply, String> {
             carried_census: census,
             carried_checkpoint: checkpoint,
             carried_activation: ACTIVATION.get().cloned(),
+            visibility_first_mismatch: render_bridge::scene_step::visibility_first_mismatch(),
+            light_visibility_first_mismatch: render_bridge::scene_step::light_visibility_first_mismatch(),
+            first_person_visibility_first_mismatch: render_bridge::native_lights::slot_visibility::first_mismatch(),
+            view_record_first_mismatch: render_bridge::scene_step::view_record_first_mismatch(),
             ..SceneReply::default()
         });
     };
@@ -315,6 +322,8 @@ fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>, summary: Option<&C
                     clusters: c.clusters,
                     visibility_clusters: gather.map(|g| g.visible.len() as u32),
                     structure_clusters: gather.map(|g| g.structure.len() as u32),
+                    visibility_objects: gather.map(|g| g.objects.len() as u32),
+                    visibility_source: gather.map(|g| g.source.name().to_owned()),
                     instances: c.instances,
                     parts: c.parts,
                     rows: c.rows,
@@ -361,6 +370,10 @@ fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>, summary: Option<&C
         carried_census: None,
         carried_checkpoint: None,
         carried_activation: None,
+        visibility_first_mismatch: render_bridge::scene_step::visibility_first_mismatch(),
+        light_visibility_first_mismatch: render_bridge::scene_step::light_visibility_first_mismatch(),
+        first_person_visibility_first_mismatch: render_bridge::native_lights::slot_visibility::first_mismatch(),
+        view_record_first_mismatch: render_bridge::scene_step::view_record_first_mismatch(),
         dump: None,
     }
 }
@@ -481,6 +494,7 @@ mod tests {
         b.set_clusters([1, 2]).unwrap();
         b.set_cluster_gather(frame_scene::scene::ClusterGather {
             mode: 0, visible: vec![1, 2, 3, 4], structure: vec![3, 1, 2],
+            objects: vec![0x0001_0005], source: frame_scene::VisibilitySource::Rust,
         }).unwrap();
         let nodes = [NodeMatrix::IDENTITY];
         let i = b
@@ -537,6 +551,7 @@ mod tests {
         assert_eq!(v.key, "game:0:0");
         assert_eq!((v.clusters, v.instances, v.parts, v.rows, v.remainder), (2, 1, 2, 6, 1));
         assert_eq!((v.visibility_clusters, v.structure_clusters), (Some(4), Some(3)));
+        assert_eq!((v.visibility_objects, v.visibility_source.as_deref()), (Some(1), Some("rust")));
         let dump = serde_json::to_value(&*scene).unwrap();
         assert_eq!(dump["cluster_gathers"][0]["structure"], serde_json::json!([3, 1, 2]));
         assert_eq!((v.lights, v.shadows), (2, 1));

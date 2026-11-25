@@ -6,14 +6,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use d3d::TargetCopy;
 use gfx::compile::{Pending, PendingPipeline};
 use gfx::pipeline::{PipelineKey, ShaderId};
 use gfx::{BoundGroup, RecordedDraw, ScissorRect};
 
 use gfx::state::{
-    BlendFactor, BlendOp, CompareFunc, CullMode, DepthBufferMode, RenderState, TextureAddress,
-    TextureStageState,
+    BlendFactor, BlendOp, CompareFunc, DepthBufferMode, RenderState, TextureStageState,
 };
+use gfx::translate::{Capabilities, SamplerKey};
 use shaders::psh::{self, AlphaFunc, PixelOptions, PixelShaderDef, PixelUniforms, TextureDim};
 use shaders::vsh::{self, VertexOptions, VertexUniforms};
 
@@ -63,8 +64,14 @@ pub struct ShaderSnapshot {
     pub combiner: PixelShaderDef,
     pub microcode: Vec<u8>,
     pub provided_inputs: u16,
+    /// Select back colours on back-facing fragments.
+    pub two_sided_lighting: bool,
+    /// An enabled polygon stipple's 32 rows, including an all-zero mask.
+    pub stipple: Option<[u32; 32]>,
     /// The draw's complete 192 constants and 16 attribute defaults.
     pub vertex: VertexUniforms,
+    /// The resolved NV2A z-perspective bit, with D3D's state fallback.
+    pub w_buffered: bool,
     /// Whether the guest depth format truncates stored W.
     pub integer_depth: bool,
     /// Linear textures are fetched in texels of the bound image.
@@ -77,7 +84,16 @@ pub struct Prepared {
     pub mode: Mode,
     pub vertices: Vec<Vertex>,
     pub shader: ShaderSnapshot,
-    /// Empty means the guest clipped the whole draw away.
+    /// Display scissors in guest pixels. Empty means the draw is clipped away.
+    pub clips: Vec<ClipRect>,
+    /// Original vertex constants and scissors when the display changes the
+    /// projection or fits UI to the output.
+    pub reference: Option<ReferenceCopy>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ReferenceCopy {
+    pub constants: d3d::shader::Constants,
     pub clips: Vec<ClipRect>,
 }
 
@@ -95,6 +111,7 @@ pub struct DecalTarget<'a> {
     pub guest_size: (u32, u32),
     pub size: (u32, u32),
     pub stages: [Option<&'a wgpu::TextureView>; 4],
+    pub copy: TargetCopy,
 }
 
 /// The W-buffer clip supplied by the same ordered boundary.
@@ -119,12 +136,7 @@ fn expected_blend(mode: Mode) -> Option<(BlendFactor, BlendFactor, BlendOp)> {
 
 /// Checks the effective state captured after `0x00043a40`. In particular,
 /// stencil is inherited and is admitted only when resolved disabled.
-pub fn check_state(
-    mode: Mode,
-    rs: &RenderState,
-    stages: &[TextureStageState; 4],
-    extras: &[StageExtras; 4],
-) -> Result<(), &'static str> {
+pub fn check_state(mode: Mode, rs: &RenderState, extras: &[StageExtras; 4]) -> Result<(), &'static str> {
     if rs.stencil.enable {
         return Err("stencil enabled");
     }
@@ -136,35 +148,11 @@ pub fn check_state(
     {
         return Err("fill mode");
     }
-    if stages.iter().any(|s| {
-        s.address_u == TextureAddress::Border
-            || s.address_v == TextureAddress::Border
-            || s.address_w == TextureAddress::Border
-    }) {
-        return Err("border sampler");
-    }
     if extras
         .iter()
         .any(|e| e.color_key_op != 0 || e.color_sign != 0 || e.texture_transform_flags != 0)
     {
         return Err("texture stage state");
-    }
-    if mode.w_buffered() {
-        if rs.depth_mode != DepthBufferMode::W
-            || rs.depth_func != CompareFunc::Always
-            || !rs.depth_write
-            || !rs.solid_offset_enable
-            || rs.depth_bias_slope_scale != 0.0
-            || !rs.depth_bias.is_finite()
-            || rs.cull_mode != CullMode::Ccw
-        {
-            return Err("W depth/bias");
-        }
-    } else if rs.depth_mode != DepthBufferMode::Disabled
-        || rs.solid_offset_enable
-        || rs.cull_mode != CullMode::None
-    {
-        return Err("opaque depth/bias");
     }
     match expected_blend(mode) {
         Some((src, dst, op))
@@ -209,13 +197,15 @@ struct Compiled {
 
 /// A GPU program plus the resolved draw's immutable geometry.
 pub struct DecalGpu {
-    mode: Mode,
+    packed_location: u32,
+    w_buffered: bool,
     render: RenderState,
     integer_depth: bool,
     compiled: Compiled,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     clips: Vec<ClipRect>,
+    reference: Option<ReferenceCopy>,
     pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat), wgpu::RenderPipeline>,
 }
 
@@ -259,7 +249,7 @@ fn check_combiner_state(def: &PixelShaderDef) -> Result<(), &'static str> {
 
 /// The draw's pixel uniforms before the target and clip fill in the depth
 /// terms: the combiner's embedded constants, alpha reference, LOD bias,
-/// bump terms and the linear texture scale.
+/// bump terms, the polygon mask and the linear texture scale.
 fn base_pixel(shader: &ShaderSnapshot) -> PixelUniforms {
     let def = &shader.combiner;
     let (c0, c1) = def.embedded_constants();
@@ -275,6 +265,8 @@ fn base_pixel(shader: &ShaderSnapshot) -> PixelUniforms {
                 0.0
             }
         }),
+        border: shader.stages.map(|s| psh::argb(s.border_color)),
+        stipple: shader.stipple.unwrap_or_default(),
         ..Default::default()
     };
     for n in 0..4 {
@@ -288,49 +280,98 @@ fn base_pixel(shader: &ShaderSnapshot) -> PixelUniforms {
     pixel
 }
 
-/// The pixel translation options a decal's state and mode select.
-fn pixel_options(mode: Mode, shader: &ShaderSnapshot) -> PixelOptions {
+/// W clipping follows the vertex program even with depth tests and writes
+/// disabled. The fragment program only needs to store W when depth matters.
+fn writes_w_depth(w_buffered: bool, render: &RenderState) -> bool {
+    w_buffered
+        && render.depth_mode != DepthBufferMode::Disabled
+        && (render.depth_write || render.depth_func != CompareFunc::Always)
+}
+
+fn pixel_options(shader: &ShaderSnapshot, caps: Capabilities) -> PixelOptions {
+    let mut border = [0; 4];
+    border[0] = d3d::nv2a::shader_border(&shader.stages[0], 0, caps.clamp_to_border);
     PixelOptions {
         texture_dims: [Some(TextureDim::D2), None, None, None],
         alpha_kill: shader.extras.map(|e| e.alpha_kill & 4 != 0),
+        border,
         alpha_test: shader
             .render
             .alpha_test_enable
             .then(|| alpha_func(shader.render.alpha_func)),
-        w_buffer: mode.w_buffered(),
+        w_buffer: writes_w_depth(shader.w_buffered, &shader.render),
         shadow: [None; 4],
         flat_shading: shader.render.shade_mode == gfx::state::ShadeMode::Flat,
+        two_sided_lighting: shader.two_sided_lighting,
+        stipple: shader.stipple.is_some(),
         ..Default::default()
     }
 }
 
-/// Validates the complete shader translation without creating GPU objects,
-/// so admission refuses before it reserves anything.
-pub fn check_program(mode: Mode, shader: &ShaderSnapshot) -> Result<(), &'static str> {
-    check_state(mode, &shader.render, &shader.stages, &shader.extras)?;
-    check_combiner_state(&shader.combiner)?;
-    let program = vsh::Program::parse(&shader.microcode).map_err(|_| "vertex program")?;
-    let supplied = (1 << 0) | (1 << 3);
-    if shader.provided_inputs & !supplied != 0
-        || program.inputs_read() & !shader.provided_inputs & !((1 << 10) | (1 << 11)) != 0
-    {
+fn depth_state(
+    render: &RenderState,
+    w_buffered: bool,
+    format: wgpu::TextureFormat,
+) -> wgpu::DepthStencilState {
+    let mut depth = gfx::translate::depth_stencil_state(
+        render,
+        Some(format),
+        wgpu::PrimitiveTopology::TriangleList,
+    )
+    .expect("decal targets include depth");
+    if writes_w_depth(w_buffered, render) {
+        // The fragment shader applies polygon offset to W.
+        depth.bias = wgpu::DepthBiasState::default();
+    }
+    depth
+}
+
+// D3D derives this mask from the resolved declaration. Position is v0.
+fn packed_location(provided: u16) -> Result<u32, &'static str> {
+    let packed = provided & !1;
+    if provided & 1 == 0 || !packed.is_power_of_two() {
+        return Err("vertex inputs");
+    }
+    Ok(packed.trailing_zeros())
+}
+
+fn vertex_attributes(packed: u32) -> [wgpu::VertexAttribute; 2] {
+    [
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: 0,
+            shader_location: 0,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: 12,
+            shader_location: packed,
+        },
+    ]
+}
+
+fn translate_program(
+    microcode: &[u8],
+    provided_inputs: u16,
+    def: &PixelShaderDef,
+    options: &PixelOptions,
+) -> Result<(String, bool, bool), &'static str> {
+    check_combiner_state(def)?;
+    let program = vsh::Program::parse(microcode).map_err(|_| "vertex program")?;
+    packed_location(provided_inputs)?;
+    if program.inputs_read() & !provided_inputs & !((1 << 10) | (1 << 11)) != 0 {
         return Err("vertex inputs");
     }
     let vs = vsh::translate(
         &program,
         &VertexOptions {
-            provided_inputs: shader.provided_inputs,
-            flat_shading: shader.render.shade_mode == gfx::state::ShadeMode::Flat,
+            provided_inputs,
+            flat_shading: options.flat_shading,
             ..Default::default()
         },
     )
     .map_err(|_| "vertex translation")?;
-    let def = shader.combiner.clone();
-    if !def.has_final_combiner() {
-        return Err("final combiner");
-    }
-    let options = pixel_options(mode, shader);
-    let ps = psh::translate(&def, &options);
+    let ps = psh::translate(def, options);
     if !ps.warnings.is_empty()
         || ps
             .textures
@@ -342,7 +383,7 @@ pub fn check_program(mode: Mode, shader: &ShaderSnapshot) -> Result<(), &'static
     }
     let wgsl = shaders::link(&vs, &ps).map_err(|_| "shader link")?;
     shaders::validate(&wgsl).map_err(|_| "shader validation")?;
-    Ok(())
+    Ok((wgsl, ps.textures[0].is_some(), ps.discards))
 }
 
 fn compile(
@@ -350,30 +391,15 @@ fn compile(
     mode: Mode,
     shader: &ShaderSnapshot,
 ) -> Result<Compiled, &'static str> {
-    check_program(mode, shader)?;
-    let program = vsh::Program::parse(&shader.microcode).map_err(|_| "vertex program")?;
-    let vs = vsh::translate(
-        &program,
-        &VertexOptions {
-            provided_inputs: shader.provided_inputs,
-            flat_shading: shader.render.shade_mode == gfx::state::ShadeMode::Flat,
-            ..Default::default()
-        },
-    )
-    .map_err(|_| "vertex translation")?;
-    let def = shader.combiner.clone();
-    let options = pixel_options(mode, shader);
-    let ps = psh::translate(&def, &options);
-    if !ps.warnings.is_empty()
-        || ps
-            .textures
-            .iter()
-            .enumerate()
-            .any(|(n, d)| n != 0 && d.is_some())
-    {
-        return Err("pixel translation");
-    }
-    let wgsl = shaders::link(&vs, &ps).map_err(|_| "shader link")?;
+    check_state(mode, &shader.render, &shader.extras)?;
+    let caps = Capabilities::from_features(device.features());
+    let options = pixel_options(shader, caps);
+    let (wgsl, sampled, _) = translate_program(
+        &shader.microcode,
+        shader.provided_inputs,
+        &shader.combiner,
+        &options,
+    )?;
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("native decal program"),
         source: wgpu::ShaderSource::Wgsl(wgsl.into()),
@@ -383,7 +409,6 @@ fn compile(
         label: Some("native decal uniforms"),
         entries: &[uniform(0), uniform(1)],
     });
-    let sampled = ps.textures[0].is_some();
     let entries: Vec<_> = if sampled {
         vec![
             wgpu::BindGroupLayoutEntry {
@@ -416,27 +441,19 @@ fn compile(
         immediate_size: 0,
     });
     let sampler = device.create_sampler(
-        &gfx::translate::SamplerKey::from_stage(
-            &shader.stages[0],
-            gfx::translate::Capabilities::from_features(device.features()),
-        )
-        .descriptor(),
+        &d3d::nv2a::sampler_key(&shader.stages[0], caps, options.border[0]).descriptor(),
     );
     let pixel = base_pixel(shader);
     let primitive = gfx::translate::primitive_state(
         &shader.render,
         wgpu::PrimitiveTopology::TriangleList,
-        gfx::translate::Capabilities::from_features(device.features()),
+        caps,
     );
-    let mut depth = gfx::translate::depth_stencil_state(
+    let depth = depth_state(
         &shader.render,
-        Some(wgpu::TextureFormat::Depth24PlusStencil8),
-        wgpu::PrimitiveTopology::TriangleList,
-    )
-    .ok_or("depth state")?;
-    if mode.w_buffered() {
-        depth.bias = wgpu::DepthBiasState::default();
-    }
+        shader.w_buffered,
+        wgpu::TextureFormat::Depth24PlusStencil8,
+    );
     Ok(Compiled {
         module,
         layout,
@@ -457,36 +474,44 @@ fn compile(
 /// The vertex and pixel uniforms of a draw on a target of `size` texels
 /// for a guest surface of `guest_size` (`z_scale` the depth format's full
 /// scale): the surface, the half-texel shift under a render scale, and for
-/// a W-buffered mode the clip and the depth terms.
+/// a W-buffered draw the clip and the depth terms. The polygon mask
+/// always uses the guest pixel grid of that attachment copy.
 fn draw_uniforms(
-    mode: Mode,
+    w_buffered: bool,
     render: &RenderState,
     integer_depth: bool,
     vertex: &VertexUniforms,
     pixel: PixelUniforms,
     (guest_size, size, z_scale): ((u32, u32), (u32, u32), f32),
     clip: DecalClip,
+    reference: Option<&ReferenceCopy>,
 ) -> (VertexUniforms, PixelUniforms) {
     let mut vu = vertex.clone();
+    if let Some(copy) = reference {
+        vu.constants = *copy.constants;
+        vu.ui_transform = d3d::backend::UiFit::IDENTITY.transform;
+    }
     vu.surface = [guest_size.0 as f32, guest_size.1 as f32];
     vu.z_max = z_scale;
     vu.shift = crate::program::target_shift(guest_size, size);
-    vu.w_clip = mode.w_buffered().then_some(clip.range);
-    vu.w_clamp = mode.w_buffered() && clip.clamp;
-    let mut pu = pixel;
-    if mode.w_buffered() {
+    vu.w_clip = w_buffered.then_some(clip.range);
+    vu.w_clamp = w_buffered && clip.clamp;
+    let mut pu = PixelUniforms {
+        stipple_scale: PixelUniforms::stipple_grid(guest_size, size),
+        ..pixel
+    };
+    if writes_w_depth(w_buffered, render) {
+        let offset = |value: f32| {
+            if render.solid_offset_enable && value.is_finite() {
+                value
+            } else {
+                0.0
+            }
+        };
         pu.depth = [
             z_scale,
-            if render.solid_offset_enable {
-                render.depth_bias
-            } else {
-                0.0
-            },
-            if render.solid_offset_enable {
-                render.depth_bias_slope_scale
-            } else {
-                0.0
-            },
+            offset(render.depth_bias),
+            offset(render.depth_bias_slope_scale),
             if integer_depth { 1.0 } else { 0.0 },
         ];
         pu.depth_range = clip.range;
@@ -511,13 +536,15 @@ impl DecalGpu {
             usage: wgpu::BufferUsages::INDEX,
         });
         Ok(Self {
-            mode: prepared.mode,
+            packed_location: packed_location(prepared.shader.provided_inputs)?,
+            w_buffered: prepared.shader.w_buffered,
             render: prepared.shader.render,
             integer_depth: prepared.shader.integer_depth,
             compiled,
             vertices,
             indices,
             clips: prepared.clips.clone(),
+            reference: prepared.reference.clone(),
             pipelines: HashMap::new(),
         })
     }
@@ -534,18 +561,7 @@ impl DecalGpu {
     ) -> &wgpu::RenderPipeline {
         let c = &self.compiled;
         self.pipelines.entry((color, depth)).or_insert_with(|| {
-            let attributes = [
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x3,
-                    offset: 0,
-                    shader_location: 0,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x3,
-                    offset: 12,
-                    shader_location: 3,
-                },
-            ];
+            let attributes = vertex_attributes(self.packed_location);
             let mut ds = c.depth.clone();
             ds.format = depth;
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -582,36 +598,30 @@ impl DecalGpu {
 
     /// Records this resolved draw on one target copy.
     pub fn encode(&mut self, t: &mut DecalTarget<'_>, clip: DecalClip) -> bool {
-        if clip.w_buffered != Some(self.mode.w_buffered())
+        if clip.w_buffered.is_some_and(|w| w != self.w_buffered)
             || t.guest_size.0 == 0
             || t.guest_size.1 == 0
-        {
-            return false;
-        }
-        if gfx::translate::depth_stencil_state(
-            &self.render,
-            Some(t.depth_format),
-            wgpu::PrimitiveTopology::TriangleList,
-        )
-        .is_none()
         {
             return false;
         }
         let Some(scale) = d3d::scaled::RenderScale::between(t.guest_size, t.size) else {
             return false;
         };
-        let clips: Vec<_> = self.clips.iter().map(|c| c.scaled(scale)).collect();
+        let reference = self.reference.as_ref().filter(|_| t.copy == TargetCopy::Reference);
+        let clips = reference.map_or(self.clips.as_slice(), |copy| copy.clips.as_slice());
+        let clips: Vec<_> = clips.iter().map(|c| c.scaled(scale)).collect();
         if clips.is_empty() {
             return true;
         }
         let (vu, pu) = draw_uniforms(
-            self.mode,
+            self.w_buffered,
             &self.render,
             self.integer_depth,
             &self.compiled.vertex,
             self.compiled.pixel,
             (t.guest_size, t.size, t.z_scale),
             clip,
+            reference,
         );
         let vertex_buffer = t.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("native decal vertex uniforms"),
@@ -763,6 +773,7 @@ pub struct PacketTarget<'a> {
     pub size: (u32, u32),
     pub z_scale: f32,
     pub stage0: Option<&'a wgpu::TextureView>,
+    pub copy: TargetCopy,
 }
 
 /// Programs, pipelines, samplers and texture groups of the decals' packets,
@@ -773,7 +784,7 @@ pub struct DecalCache {
     uniforms: Option<wgpu::BindGroupLayout>,
     programs: HashMap<ProgramKey, Result<Arc<CachedProgram>, &'static str>>,
     pipelines: HashMap<PipelineKey, CachedPipeline>,
-    samplers: HashMap<gfx::translate::SamplerKey, wgpu::Sampler>,
+    samplers: HashMap<SamplerKey, wgpu::Sampler>,
     groups: TextureGroups<(wgpu::BindGroupLayout, wgpu::TextureView, wgpu::Sampler)>,
     created: Created,
 }
@@ -846,37 +857,24 @@ impl DecalCache {
         clip: DecalClip,
         t: &PacketTarget<'_>,
     ) -> Result<Option<(Vec<RecordedDraw>, bool)>, &'static str> {
-        let mode = prepared.mode;
         let shader = &prepared.shader;
-        if clip.w_buffered != Some(mode.w_buffered()) || t.guest_size.0 == 0 || t.guest_size.1 == 0
+        if clip.w_buffered.is_some_and(|w| w != shader.w_buffered)
+            || t.guest_size.0 == 0
+            || t.guest_size.1 == 0
         {
             return Err("issue snapshot");
         }
-        let caps = gfx::translate::Capabilities::from_features(device.features());
+        let caps = Capabilities::from_features(device.features());
         let scale =
             d3d::scaled::RenderScale::between(t.guest_size, t.size).ok_or("target scale")?;
-        if prepared.clips.is_empty() {
+        let reference = prepared.reference.as_ref().filter(|_| t.copy == TargetCopy::Reference);
+        let clips = reference.map_or(prepared.clips.as_slice(), |copy| copy.clips.as_slice());
+        if clips.is_empty() {
             return Ok(None);
         }
-        let mut depth = gfx::translate::depth_stencil_state(
-            &shader.render,
-            Some(wgpu::TextureFormat::Depth24PlusStencil8),
-            wgpu::PrimitiveTopology::TriangleList,
-        )
-        .ok_or("depth state")?;
-        if gfx::translate::depth_stencil_state(
-            &shader.render,
-            Some(t.depth_format),
-            wgpu::PrimitiveTopology::TriangleList,
-        )
-        .is_none()
-        {
-            return Err("depth state");
-        }
-        if mode.w_buffered() {
-            depth.bias = wgpu::DepthBiasState::default();
-        }
-        depth.format = t.depth_format;
+        let depth = depth_state(&shader.render, shader.w_buffered, t.depth_format);
+        let options = pixel_options(shader, caps);
+        let border = options.border[0];
         let mut combiner = shader.combiner.clone();
         combiner.constant0 = [0; 8];
         combiner.constant1 = [0; 8];
@@ -888,7 +886,7 @@ impl DecalCache {
                 microcode: shader.microcode.clone(),
                 provided_inputs: shader.provided_inputs,
                 combiner,
-                options: pixel_options(mode, shader),
+                options,
             },
         )?;
         let color_target = wgpu::ColorTargetState {
@@ -911,7 +909,8 @@ impl DecalCache {
         let pipeline = match self.pipelines.get(&described) {
             Some(found) => found.clone(),
             None => {
-                let made = decal_pipeline(device, &program, &described).ok_or("pipeline")?;
+                let packed = packed_location(shader.provided_inputs)?;
+                let made = decal_pipeline(device, &program, &described, packed).ok_or("pipeline")?;
                 self.created.pipelines += 1;
                 self.pipelines.insert(described.clone(), made.clone());
                 made
@@ -919,7 +918,7 @@ impl DecalCache {
         };
         let textures = if program.sampled {
             let view = t.stage0.ok_or("texture view")?;
-            let key = gfx::translate::SamplerKey::from_stage(&shader.stages[0], caps);
+            let key = d3d::nv2a::sampler_key(&shader.stages[0], caps, border);
             let created = &mut self.created;
             let sampler = self
                 .samplers
@@ -961,13 +960,14 @@ impl DecalCache {
             program.unsampled.clone().ok_or("texture group")?
         };
         let (vertex, pixel) = draw_uniforms(
-            mode,
+            shader.w_buffered,
             &shader.render,
             shader.integer_depth,
             &shader.vertex,
             base_pixel(shader),
             (t.guest_size, t.size, t.z_scale),
             clip,
+            reference,
         );
         let layout = self.uniforms.as_ref().ok_or("uniforms layout")?;
         let run = uploads
@@ -990,8 +990,7 @@ impl DecalCache {
         let (index_buffer, index_at) = uploads.stage(device, queue, index_bytes);
         let blend_constant = gfx::translate::blend_constant(&shader.render);
         let render = RenderState::default();
-        let packets = prepared
-            .clips
+        let packets = clips
             .iter()
             .map(|c| {
                 RecordedDraw::prepared_indexed(
@@ -1025,33 +1024,16 @@ fn build_program(
     uniforms: &wgpu::BindGroupLayout,
     id: ShaderId,
 ) -> Result<CachedProgram, &'static str> {
-    let program = vsh::Program::parse(&key.microcode).map_err(|_| "vertex program")?;
-    let vs = vsh::translate(
-        &program,
-        &VertexOptions {
-            provided_inputs: key.provided_inputs,
-            flat_shading: key.options.flat_shading,
-            ..Default::default()
-        },
-    )
-    .map_err(|_| "vertex translation")?;
-    let ps = psh::translate(&key.combiner, &key.options);
-    if !ps.warnings.is_empty()
-        || ps
-            .textures
-            .iter()
-            .enumerate()
-            .any(|(n, d)| n != 0 && d.is_some())
-    {
-        return Err("pixel translation");
-    }
-    let wgsl = shaders::link(&vs, &ps).map_err(|_| "shader link")?;
-    shaders::validate(&wgsl).map_err(|_| "shader validation")?;
+    let (wgsl, sampled, discards) = translate_program(
+        &key.microcode,
+        key.provided_inputs,
+        &key.combiner,
+        &key.options,
+    )?;
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("native decal program"),
         source: wgpu::ShaderSource::Wgsl(wgsl.into()),
     });
-    let sampled = ps.textures[0].is_some();
     let entries: Vec<_> = if sampled {
         vec![
             wgpu::BindGroupLayoutEntry {
@@ -1100,7 +1082,7 @@ fn build_program(
         textures,
         unsampled,
         sampled,
-        discards: ps.discards,
+        discards,
     })
 }
 
@@ -1108,19 +1090,9 @@ fn decal_pipeline(
     device: &wgpu::Device,
     program: &CachedProgram,
     key: &PipelineKey,
+    packed: u32,
 ) -> Option<CachedPipeline> {
-    let attributes = [
-        wgpu::VertexAttribute {
-            format: wgpu::VertexFormat::Float32x3,
-            offset: 0,
-            shader_location: 0,
-        },
-        wgpu::VertexAttribute {
-            format: wgpu::VertexFormat::Float32x3,
-            offset: 12,
-            shader_location: 3,
-        },
-    ];
+    let attributes = vertex_attributes(packed);
     let pipeline = gfx::program::validated_resource(device, || {
         gfx::churn::create_render_pipeline(
             device,
@@ -1160,6 +1132,7 @@ fn decal_pipeline(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gfx::state::CullMode;
 
     fn state(mode: Mode) -> RenderState {
         let mut rs = RenderState {
@@ -1185,8 +1158,7 @@ mod tests {
     }
 
     #[test]
-    fn every_mode_checks_its_depth_and_blend() {
-        let stages = std::array::from_fn(|n| TextureStageState::default_for_stage(n as u32));
+    fn every_mode_checks_blend_and_rejects_inherited_stencil() {
         let extras = [StageExtras::default(); 4];
         for mode in [
             Mode::Alpha0,
@@ -1198,40 +1170,68 @@ mod tests {
             Mode::Opaque,
         ] {
             assert_eq!(
-                check_state(mode, &state(mode), &stages, &extras),
+                check_state(mode, &state(mode), &extras),
                 Ok(()),
                 "{mode:?}"
             );
             let mut stencil = state(mode);
             stencil.stencil.enable = true;
             assert_eq!(
-                check_state(mode, &stencil, &stages, &extras),
+                check_state(mode, &stencil, &extras),
                 Err("stencil enabled")
             );
             let mut blend = state(mode);
             blend.blend_enable = !blend.blend_enable;
             assert_eq!(
-                check_state(mode, &blend, &stages, &extras),
+                check_state(mode, &blend, &extras),
                 Err("blend state")
             );
         }
     }
 
     #[test]
-    fn mode_specific_bias_is_not_inherited() {
-        let stages = std::array::from_fn(|n| TextureStageState::default_for_stage(n as u32));
-        let extras = [StageExtras::default(); 4];
+    fn inherited_depth_test_and_polygon_offset_follow_resolved_w_state() {
         let mut rs = state(Mode::Multiply);
+        rs.depth_func = CompareFunc::LessEqual;
+        rs.depth_write = false;
+        rs.depth_bias_slope_scale = 1.5;
+        assert_eq!(check_state(Mode::Multiply, &rs, &[StageExtras::default(); 4]), Ok(()));
+
+        let uniforms = |render: &RenderState, w_buffered| {
+            draw_uniforms(
+                w_buffered,
+                render,
+                true,
+                &VertexUniforms::default(),
+                PixelUniforms::default(),
+                ((16, 16), (32, 32), 100.0),
+                DecalClip { range: [2.0, 90.0], clamp: true, w_buffered: None },
+                None,
+            )
+        };
+        let (vertex, px) = uniforms(&rs, true);
+        assert_eq!(vertex.w_clip, Some([2.0, 90.0]));
+        assert!(vertex.w_clamp);
+        assert_eq!(px.depth, [100.0, -4.0, 1.5, 1.0]);
+        assert_eq!(px.depth_range, [2.0, 90.0]);
+
+        let format = wgpu::TextureFormat::Depth32Float;
+        let depth = depth_state(&rs, true, format);
+        assert_eq!(depth.depth_compare, Some(wgpu::CompareFunction::LessEqual));
+        assert_eq!(depth.depth_write_enabled, Some(false));
+        assert_eq!(depth.bias, wgpu::DepthBiasState::default());
+        let z = depth_state(&rs, false, format);
+        assert_eq!((z.bias.constant, z.bias.slope_scale), (-4, 1.5));
+        assert_eq!(uniforms(&rs, false).0.w_clip, None);
+
         rs.solid_offset_enable = false;
-        assert_eq!(
-            check_state(Mode::Multiply, &rs, &stages, &extras),
-            Err("W depth/bias")
-        );
+        assert_eq!(uniforms(&rs, true).1.depth, [100.0, 0.0, 0.0, 1.0]);
         rs.solid_offset_enable = true;
-        rs.depth_bias_slope_scale = 1.0;
-        assert_eq!(
-            check_state(Mode::Multiply, &rs, &stages, &extras),
-            Err("W depth/bias")
-        );
+        rs.depth_bias = f32::NAN;
+        assert_eq!(uniforms(&rs, true).1.depth, [100.0, 0.0, 1.5, 1.0]);
+
+        rs.depth_mode = DepthBufferMode::Disabled;
+        assert!(!writes_w_depth(true, &rs));
+        assert_eq!(uniforms(&rs, true).0.w_clip, Some([2.0, 90.0]));
     }
 }

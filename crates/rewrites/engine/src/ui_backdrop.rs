@@ -1,4 +1,4 @@
-//! Immediate geometry of the menu backdrop. Texture selection, shader setup
+//! Immediate geometry of the HUD motion sensor backdrop. Texture selection, shader setup
 //! and render targets belong to the caller of each pass.
 use crate::{light_constants::Sse, memory::GuestMemory, ui_sprite::D24_FULL_SCALE};
 

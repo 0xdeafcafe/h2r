@@ -1,11 +1,11 @@
 # The party lobby's modes
 
-Status: Built: the header names the lobby's mode, X opens the GAME MODE picker for the party leader, and a pick switches among MULTIPLAYER, CUSTOM GAMES, FORGE and FIREFIGHT (CO-OP is reached from the Xbox Live menu and Split Screen's co-op lobby). The prompt line's tag edit is not built: the line shows only on a lobby tag that has the block ("The prompt line"). Slice T6 (the host's mode on Xbox Live) is design.
+Status: Built: the header names the lobby's mode, X opens the GAME MODE picker for the party leader, and a pick switches among MULTIPLAYER, CUSTOM GAMES and FORGE (CO-OP is reached from the Xbox Live menu and Split Screen's co-op lobby). The prompt line's tag edit is not built: the line shows only on a lobby tag that has the block ("The prompt line"). Slice T6 (the host's mode on Xbox Live) is design.
 Code: `crates/extensions/game/src/lobby_tabs.rs` and `lobby_tabs/` (the modes, the header, the picker, the switch), `crates/extensions/game/src/lobby_mode.rs` (Game Setup's rows by mode, the start refusal), `crates/extensions/game/src/lobby_start.rs` (`Mode`), `crates/extensions/game/src/lobby_status.rs` (the reason line), `crates/extensions/game/src/clankermatch.rs` (the Clanker playlists), `crates/extensions/game/src/clankers.rs` (`admits_page`, the Clankers by mode), `crates/extensions/game/src/custom_games.rs` (the Xbox Live menu's mode rows). Tests: named per slice below.
-Switch: none. The modes are how the lobby works: the `party-lobby` feature is `always_on`, so `-party-lobby` stops boot with the reason ([feature-engine.md](../engine/feature-engine.md#switches)). FORGE and FIREFIGHT follow the `forge` and `firefight` switches ([switches.md](../runtime/switches.md)).
+Switch: none. The modes are how the lobby works: the `party-lobby` feature is `always_on`, so `-party-lobby` stops boot with the reason ([feature-engine.md](../engine/feature-engine.md#switches)). FORGE follows the `forge` switch ([switches.md](../runtime/switches.md)).
 
 The pregame lobby (`pregame_lobby`, screen 14) is in one of five modes:
-MULTIPLAYER, CUSTOM GAMES, FORGE, FIREFIGHT and CO-OP. Its header names
+MULTIPLAYER, CUSTOM GAMES, FORGE and CO-OP. Its header names
 the mode. The party leader presses X to open the GAME MODE picker, and
 the lobby becomes the mode picked at once, with the same party in it.
 The picker replaces Game Setup's Change Mode... and Switch To rows. The
@@ -30,7 +30,6 @@ the lobby's mode of ours (`lobby_start::Mode`).
 | MULTIPLAYER | 3 | Multiplayer | OptiMatch: a playlist, then the search; the Clanker playlists are among them |
 | CUSTOM GAMES | 2 | Multiplayer | the custom game lobby |
 | FORGE | 2 | Forge | the custom game lobby, as a Forge session ([forge-firefight-ui.md](forge-firefight-ui.md), "The lobbies") |
-| FIREFIGHT | 2 | Firefight | the custom game lobby on a kit map ([firefight.md](firefight.md)) |
 | CO-OP | 0 | Multiplayer | the co-op campaign lobby ([live-coop.md](../live/live-coop.md) §11) |
 
 `Tab::of(retail mode, Mode)` is the inverse, and the lobby's mode is
@@ -40,9 +39,9 @@ opens in the mode of the row that made it: Split Screen and a hosted
 System Link game in CUSTOM GAMES; on the Xbox Live menu
 ([live-custom-games.md](../live/live-custom-games.md), "Rows"),
 OptiMatch and Clankermatch in MULTIPLAYER, Co-op Campaign in CO-OP, and
-Custom Games, Forge and Firefight each in its own mode.
+Custom Games and Forge in their respective modes. Firefight and Siege are game types in Change Rules.
 
-**The Xbox Live menu's mode rows.** Custom Games, Forge and Firefight
+**The Xbox Live menu's mode rows.** Custom Games and Forge
 each run retail's Custom Game press (a Live squad session, then
 `LOBBY_MODE_SET(2)`) and ask for their mode
 (`lobby_tabs::request`). The custom lobby's first panel update takes the
@@ -89,7 +88,6 @@ answers `Avail::On` or `Avail::Off(reason)`.
 | MULTIPLAYER | off: "Matchmaking needs Xbox Live." | off, the same | on; off with no playlist listed: "No playlists are available." |
 | CUSTOM GAMES | on | on | on |
 | FORGE | on | on | on |
-| FIREFIGHT | on | on | on |
 | CO-OP | on | off: "Co-op campaign is not available on System Link." | on; off without co-op over Xbox Live: "Co-op over Xbox Live is turned off." |
 
 FORGE is off in every place while a member is on another console
@@ -102,20 +100,10 @@ Live and off with `H2_NO_COOP_ROW=1`; `Facts::live_co_op` reads
 `coop_live::lobby`). Split Screen's co-op lobby is retail's alone, so
 CO-OP is on there with or without Live.
 
-**What a mode's game lacks does not turn the mode off.** FIREFIGHT is
-on whatever maps are installed. With no map that carries the kit (a
-data folder with only Halo 1 maps and the DLC has none) the lobby
-switches, keeps its map, and says what is missing:
-
-- the variant panel shows "No installed map supports Firefight yet"
-  and "Make one with h2 firefight kit" in place of Firefight's options
-  (`lobby_mode::firefight_map_lines`);
-- Start Game is held and the status line says "No installed map
-  supports Firefight yet." (`lobby_mode::start_refusal`, reason
-  `NoKitMap`). A Firefight lobby on a map without the kit while one is
-  installed is held the same way: "This map does not support
-  Firefight." (`NotKitMap`), with "Change Map lists the Firefight maps"
-  on the panel.
+A Firefight variant remains selectable when its maps are missing. Change Map
+lists the installed kit maps compatible with its wave set. Start Game explains
+whether a compatible map is missing or the party needs to select one.
+See [Firefight](firefight.md).
 
 Xbox Live's playlists are counted as listed until a switch to
 MULTIPLAYER finds none (`lobby_tabs::switch::no_playlists_seen`); the
@@ -123,7 +111,7 @@ mode is then off until the party leaves (`forget_playlists`, on
 `PARTY_LEAVE`).
 
 A mode that is off is listed in the picker with its reason. A mode
-whose feature is switched off (`-forge`, `-firefight`) is absent: the
+whose feature is switched off (`-forge`) is absent: the
 player turned it off, so there is no reason to give. MULTIPLAYER,
 CUSTOM GAMES and CO-OP are retail's lobby modes and always present
 (`lobby_tabs::Present`). Nothing else removes a mode.
@@ -134,7 +122,7 @@ CUSTOM GAMES and CO-OP are retail's lobby modes and always present
 70]`, font 2), the first text widget of the screen
 (`lobby_tabs::header::find`). Retail's panel update writes its text;
 then the party lobby's update sets it to the lobby's mode with
-`TEXT_SET` (`Tab::label`): CUSTOM GAMES, FORGE, FIREFIGHT, MULTIPLAYER
+`TEXT_SET` (`Tab::label`): CUSTOM GAMES, FORGE, MULTIPLAYER
 or CO-OP. The header shows on every machine, the leader's and the
 members'. The capitals fit the rectangle (**S**, the disc test
 `every_mode_label_fits_the_header`).
@@ -197,7 +185,7 @@ console leads the party). A member's X goes on to retail's handler.
 `kit.picker.mode`) over the lobby, on the lobby's window and slot, for
 the player who pressed X (`lobby_tabs::picker`). Its title is GAME MODE
 and its values the modes of `picker::MODES` present, in title case:
-Multiplayer, Custom Games, Forge, Firefight. CO-OP is not a value: the
+Multiplayer, Custom Games, Forge. CO-OP is not a value: the
 co-op lobby is reached from the Xbox Live menu's Co-op Campaign row
 and Split Screen's co-op lobby. It opens on the lobby's mode (CUSTOM
 GAMES in CO-OP). The right side says what the focused mode plays
@@ -225,31 +213,26 @@ picker's pick and a Live menu row's request both reach it through
    available in this lobby.", as retail's row raises error 0x32), and
    for MULTIPLAYER the playlist it opens on. Nothing has changed if any
    of these refuses.
-2. Sets the parts of ours: `lobby_start::set_mode` and the `firefight`
-   setting held on for FIREFIGHT (`firefight::options::ENABLED`).
+2. Records the selected lobby mode in `lobby_start::set_mode`.
 3. Leaving CO-OP, takes `coop_live`'s co-op arm down
    (`coop_live::lobby().leave()`).
 4. Sets the retail mode when it differs (`switch::plan`), by the
    routine the retail Game Setup row for that mode runs (below). The
    party's squad session is the same session before and after, so the
    roster stays and nobody leaves.
-5. Puts the map inside the mode's category
-   (`map_select::mode_category`): a map outside it is replaced by the
-   category's first through `LOBBY_SET_MAP`, and the picture and name
-   show it. CUSTOM GAMES takes any map. FIREFIGHT with no kit map
-   installed, or before the map list is read, keeps the lobby's map
-   (`map_for` answers none); its Start Game is held instead (above).
+5. Keeps the selected multiplayer map when switching between Custom Games and Forge.
+   Change Map applies the selected game variant's requirements in Custom Games.
 
 The game rebuilds the lobby's pane for the retail mode itself, and the
 next panel update draws the mode's lines and the header.
 
 | To | Retail routine (`lobby_tabs::switch`) | Opens on |
 |---|---|---|
-| CUSTOM GAMES, FORGE, FIREFIGHT (from mode 0 or 3) | Switch To: Custom Game's press (`to_custom`: `0x199a57` clears the lobby's choices, `LOBBY_MODE_SET(2)`, `0x19a864` the custom setup) | the lobby's map and variant |
+| CUSTOM GAMES, FORGE (from mode 0 or 3) | Switch To: Custom Game's press (`to_custom`: `0x199a57` clears the lobby's choices, `LOBBY_MODE_SET(2)`, `0x19a864` the custom setup) | the lobby's map and variant |
 | CO-OP | Switch To: Co-Op Game's press past its gate (`to_co_op`: `0x199a57`, `LOBBY_MODE_SET(0)`, the campaign difficulty read by `0x121100` and held by `0x148d42`, `[0x54E7CC]` cleared, `LOBBY_SET_DIFFICULTY`); on Xbox Live `coop_live::host_retail` first, as the Xbox Live menu's row arms co-op | the level and difficulty the campaign setup picks |
 | MULTIPLAYER | the playlist press (`to_matchmaking`, as `0x2b2181` runs it for a hopper: `0x199a57`, `LOBBY_MODE_SET(3)`, `0x63fb0`, `0x148cfc` the hopper, `0x19a0af` publishes it, `PLAYLIST_REMEMBER`) | the last playlist this profile played (`QUICKMATCH_HOPPER`) when it is listed, else the first listed (`HOPPER_LISTED` with `Scope::All`, `switch::opening_hopper`); none listed turns the mode off |
 
-A switch among CUSTOM GAMES, FORGE and FIREFIGHT changes no retail
+A switch among CUSTOM GAMES and FORGE changes no retail
 state but the map. A map the game refuses puts the mode back and says
 "The game did not take the map for this mode." Every refusal is on the
 reason line, which shows for four seconds over the status line's other
@@ -257,12 +240,13 @@ texts (`lobby_status::custom_game_text`).
 
 ### The lobby by tab
 
+With Theater installed, Game Setup also offers **Theater** in the party lobby, including when the party returns from a game. It opens Recent for the selecting controller.
+
 | Mode | Pane | Game Setup's rows | Panel | Start Game |
 |---|---|---|---|---|
 | MULTIPLAYER | matchmaking | Change Playlist... (retail's action 9; the Clanker and the human playlists on one page) | retail's playlist lines | starts the search; a Clanker playlist's search hosts and its Clankers fill the lobby (`clankers::Driver::tick_match`) |
 | CUSTOM GAMES | custom | Change Map, Map Variant..., Change Rules, Quick Options, and ours (Clanker Options..., Firefight Options..., Halo 1 Options...) | retail's five lines with ours (`lobby_options.rs`), and the map variant's name under the map's | retail's countdown |
-| FORGE | custom | Change Map (the original maps), Map Variant..., Change Rules, Quick Options, Clanker Options... | "New Forge map" or the map variant's name | retail's; the session loads the draft (`forge_glue::request_draft`) |
-| FIREFIGHT | custom | Change Map (the Firefight category), Firefight Options..., Quick Options, Clanker Options... | wave set, difficulty, starting lives | retail's, with the setting held |
+| FORGE | custom | Change Map (the installed multiplayer maps), Map Variant..., Change Rules, Quick Options, Clanker Options... | "New Forge map" or the map variant's name | retail's; the session loads the draft (`forge_glue::request_draft`) |
 | CO-OP | co-op | Select Level, Difficulty (retail's `load_level_lobby` and `difficulty_lobby`) | retail's level and difficulty lines | retail's co-op start (`coop_live`'s start check) |
 
 - **Game Setup has no way to change mode.** `lobby_mode::arrange` drops
@@ -284,7 +268,7 @@ texts (`lobby_status::custom_game_text`).
   row and no Switch To: Clankermatch in the lobby. The Xbox Live menu's
   Clankermatch row is only a way in: it lists the Clanker playlists,
   and the lobby the pick makes is in MULTIPLAYER.
-- The FORGE and FIREFIGHT rows, panel lines and refusal are
+- The FORGE rows, panel lines and refusal are
   `lobby_mode.rs`'s ([forge-firefight-ui.md](forge-firefight-ui.md),
   "The lobbies").
 - No row steps through values with arrows. A choice is a picker.
@@ -292,7 +276,7 @@ texts (`lobby_status::custom_game_text`).
 ### Clankers by tab
 
 Clanker Options... (`clankers::ROW_ACTION`) is on Game Setup in the
-custom lobby's three modes, and its bots sit only there:
+custom lobby's two modes, and its bots sit only there:
 `clankers::admits_page` takes the page's bots in retail mode 2 only,
 and the Clankers driver follows the lobby's mode twice a second
 (`clankers::frame`, `Driver::set_lobby`, the mode from
@@ -300,7 +284,7 @@ and the Clankers driver follows the lobby's mode twice a second
 
 | Mode | Clankers |
 |---|---|
-| CUSTOM GAMES, FORGE, FIREFIGHT | the Clanker Options page's count, difficulty and style |
+| CUSTOM GAMES, FORGE | the Clanker Options page's count, difficulty and style |
 | MULTIPLAYER | a Clanker playlist's own bots from its roster, once its search hosts; never the page's. The matchmaking lobby's squad session is not distributed (protocol 1), so a phantom cannot join it before the search |
 | CO-OP | none: the co-op lobby keeps its seats for people, and its Game Setup has no Clanker row |
 
@@ -313,8 +297,7 @@ A member's lobby shows the same header and no prompt. Its mode is
 `Tab::of` over what retail replicates to members (the lobby mode, the
 playlist, the map) with the member's own readings: a playlist the
 server marks as a Clanker one is reported as `clanker` on MULTIPLAYER
-(`clankermatch::is_clanker`), and a kit map in a custom lobby gives
-FIREFIGHT (`lobby_start::is_kit_map`).
+(`clankermatch::is_clanker`). A custom lobby shows CUSTOM GAMES to its guests, including on kit maps.
 
 FORGE is the one mode retail's data cannot tell from CUSTOM GAMES. On
 Xbox Live the host's mode travels as one byte beside the session's
@@ -329,8 +312,9 @@ The feature has no section of its own. The lobby's mode is derived, the
 widgets are guest memory, and `lobby_start::State` is in the
 `party-lobby` section (`lobby_mode::save_state`). Whether the playlist
 is a Clanker one is read from the lobby's hopper, which is guest
-memory. A snapshot is refused while a switch's guest calls are in
-flight (`SnapshotPolicy::section_forbid_while`).
+memory. Restoring the section clears the cached Firefight kit map.
+The lobby panel reads it again on redraw. A snapshot is refused while
+a switch's guest calls are in flight (`SnapshotPolicy::section_forbid_while`).
 The reason line's timer and a Live menu row's request are not saved.
 
 ## Interfaces
@@ -372,7 +356,7 @@ lobby working.
 |---|---|---|---|---|---|
 | **T1** | The model, no hooks: `Tab`, `Place`, `Avail`, `parts`, `Tab::of`, `available`, the labels, lines and reasons | S | `lobby_tabs.rs`, `lobby_tabs/tests.rs` | `every_tab_round_trips_through_its_parts`, `there_is_no_clankers_tab`, `availability_by_place` (the table above, cell by cell), `a_tab_that_is_off_has_a_reason`, `a_feature_that_is_off_removes_its_tab`, `every_label_and_reason_passes_the_content_check`, `each_look_follows_the_selection_and_the_place` | none |
 | **T2** | The header and the prompt, read-only: the update, the header set to the mode, the prompt found by its block and shown for the leader; `ui.lobby.tabs` | M | `lobby_tabs/header.rs`, `lobby_options.rs` (the update's call), `ui_kit/ids.rs` (the family), `agent_glue.rs` and `crates/extensions/agent-proto` (the method), [agent-api.md](../runtime/agent-api.md) | `FakeGuest` tests: `the_header_names_the_mode_after_retails_panel_update`, `the_header_and_the_prompt_line_are_found_by_their_place_and_index`, `the_prompt_line_is_the_leaders_and_hides_while_locked`, `the_place_and_the_retail_mode_come_from_the_session`, `the_place_is_the_squad_sessions_network_class_not_its_stage`, `the_squad_mode_is_read_in_a_lobby_state_only`, `a_member_reads_its_mode_from_the_lobby`, `multiplayer_reports_whether_its_playlist_is_a_clanker_one`, `ui_lobby_tabs_answers_each_mode_with_its_state_and_reason`; the disc test `every_mode_label_fits_the_header`; `string_ids.rs` over the family | Split Screen lobby: `ui.lobby.tabs` has `selected` `custom_games`, `header` CUSTOM GAMES, `multiplayer` `off` with "Matchmaking needs Xbox Live."; `ui.screen` has no layout finding |
-| **T3** | Changing mode inside the custom lobby: X, leader only, the GAME MODE picker, the countdown lock, CUSTOM GAMES, FORGE and FIREFIGHT, the map into the mode's category, the reason line; `change_mode`; the Xbox Live menu's mode rows | M | `lobby_tabs/input.rs`, `lobby_tabs/picker.rs`, `lobby_tabs/switch.rs`, `ui_kit/picker.rs` (`after`), `lobby_mode.rs` (`arrange`), `lobby_status.rs`, `ui_press.rs`, `custom_games.rs` (the rows) | `x_opens_the_picker_for_the_leader_only`, `the_bumpers_are_left_to_retail`, `the_picker_lists_the_four_modes_and_opens_on_the_lobbys`, `a_mode_that_is_off_says_why_and_an_absent_one_is_not_listed`, `the_setter_writes_nothing`, `a_picked_mode_switches_as_the_tab_did`, `run_to_reads_the_lobby_and_runs_the_switch`, `a_requested_switch_is_taken_once_and_expires`, `each_mode_row_lands_on_its_mode`, `no_switch_during_the_countdown`, `switching_to_firefight_holds_the_setting_and_picks_a_kit_map`, `firefight_and_co_op_are_reached_with_no_kit_map_and_no_live`, `firefight_without_a_kit_map_refuses_the_start_and_says_why`, `a_reason_shows_for_four_seconds`, `game_setup_has_no_mode_row`, `game_setup_lists_the_rows_of_each_mode`, `change_mode_is_x_and_needs_the_lobby` | Split Screen: `ui.press change_mode`, then `ui.audit` shows GAME MODE with Custom Games focused; Forge picked gives `selected` `forge` and `header` FORGE; Multiplayer picked stays and `notice` is Matchmaking's reason. Xbox Live menu: Forge and Firefight each open the lobby in their mode |
+| **T3** | Changing mode inside the custom lobby: X, leader only, the GAME MODE picker, the countdown lock, CUSTOM GAMES and FORGE, the map into the mode's category, the reason line; `change_mode`; the Xbox Live menu's mode rows | M | `lobby_tabs/input.rs`, `lobby_tabs/picker.rs`, `lobby_tabs/switch.rs`, `ui_kit/picker.rs` (`after`), `lobby_mode.rs` (`arrange`), `lobby_status.rs`, `ui_press.rs`, `custom_games.rs` (the rows) | `x_opens_the_picker_for_the_leader_only`, `the_bumpers_are_left_to_retail`, `the_picker_lists_the_four_modes_and_opens_on_the_lobbys`, `a_mode_that_is_off_says_why_and_an_absent_one_is_not_listed`, `the_setter_writes_nothing`, `a_picked_mode_switches_as_the_tab_did`, `run_to_reads_the_lobby_and_runs_the_switch`, `a_requested_switch_is_taken_once_and_expires`, `each_mode_row_lands_on_its_mode`, `no_switch_during_the_countdown`, `switching_to_firefight_holds_the_setting_and_picks_a_kit_map`, `firefight_and_co_op_are_reached_with_no_kit_map_and_no_live`, `firefight_without_a_kit_map_refuses_the_start_and_says_why`, `a_reason_shows_for_four_seconds`, `game_setup_has_no_mode_row`, `game_setup_lists_the_rows_of_each_mode`, `change_mode_is_x_and_needs_the_lobby` | Split Screen: `ui.press change_mode`, then `ui.audit` shows GAME MODE with Custom Games focused; Forge picked gives `selected` `forge` and `header` FORGE; Multiplayer picked stays and `notice` is Matchmaking's reason. Xbox Live menu: Forge opens the lobby in Forge mode |
 | **T4** | CO-OP: the retail mode switch between 2 and 0 with the party kept, Switch To rows dropped from Game Setup, no page Clankers in co-op | M | `lobby_tabs/switch.rs`, `lobby_mode.rs` (`arrange`), `coop_live.rs` (`host_retail`), `clankers.rs` (`admits_page`) | `arrange_drops_the_switch_to_rows`, `the_arrangement_runs_after_every_row_is_added`, `a_list_with_nothing_to_change_is_left_as_built`, `co_op_runs_the_co_op_switch`, `leaving_co_op_puts_the_custom_mode_back`, `co_op_from_forge_runs_after_the_checks`, `co_op_behind_the_retail_gate_is_refused_by_name`, `the_plan_sets_the_retail_mode_only_when_it_differs`, `the_page_bots_stand_down_outside_a_custom_lobby` | Xbox Live, Co-op Campaign row: `ui.lobby.tabs` `selected` `co_op`, `header` CO-OP; `change_mode` and Custom Games picked gives the custom pane with the same roster and the page's Clankers seated again |
 | **T5** | MULTIPLAYER: the playlist it opens on, the playlist press with a hopper, Change Playlist... over both kinds, the Clanker choice on one page, the search lock, Clanker Options in the custom modes | M | `lobby_tabs/switch.rs`, `lobby_tabs/header.rs` (`clanker`), `clankermatch.rs` (`Scope`), `lobby_mode.rs` (Change Playlist..., Clanker Options in Forge), `ui_kit/view.rs` (the Game Setup openers) | `multiplayer_runs_the_playlist_press_for_its_hopper`, `the_tab_opens_on_the_last_playlist_when_listed`, `else_on_the_first_listed`, `no_listed_playlist_turns_the_tab_off`, `no_switch_during_a_search`, `the_switch_rows_pick_the_playlists`, `each_row_lists_its_own_hoppers`, `quickmatch_never_gets_a_clanker_hopper`, `clanker_options_is_on_every_custom_tab`, `forge_mode_lists_change_map_and_forge_map` | Xbox Live custom game: Multiplayer picked, `ui.audit` shows the matchmaking pane with a playlist named, the roster unchanged, `ui.lobby.tabs` `clanker` false or true by the playlist; Game Setup has only Change Playlist..., whose screen lists both kinds |
 | **T6** | The host's mode on Xbox Live: the byte in the session record, the member's read | S | `lobby_tabs/seen.rs`; with the Live owner, `crates/live/live-proto/src/session.rs` and `crates/live/live-hle` | `a_member_reads_forge_from_the_byte`, `without_the_byte_a_member_derives_the_tab`, `an_unknown_byte_is_refused_by_name` | two consoles on Xbox Live: the member's `ui.lobby.tabs` `selected` equals the host's in every mode |

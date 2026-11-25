@@ -11,15 +11,14 @@ use tags::anim_keys::{Kind, Tolerance};
 use tags::anim_sample::hamilton;
 
 use crate::app::anim::{
-    AnimError, AnimInfo, AnimRead, GraphKey, HZ, PoseAnswer, PoseModel, PoseNode,
+    AnimError, AnimInfo, AnimRead, DraftPlacement, GraphKey, HZ, PoseAnswer, PoseModel, PoseNode,
     RetargetOptions, Transport,
 };
-use crate::app::{App, ToolKind};
+use crate::app::{App, Doc, ToolKind};
 use crate::theme::{self, icon};
 use crate::viewport::Gpu;
 
 mod edit;
-mod save;
 
 pub(crate) const PICTURE: [u32; 2] = [480, 360];
 
@@ -78,7 +77,8 @@ pub struct AnimUi {
     read: Option<(usize, Result<AnimRead, AnimError>)>,
     picture: Option<Picture>,
     edit: edit::State,
-    save: save::State,
+    placement_doc: Option<u64>,
+    placement: DraftPlacement,
     gizmo: Option<Gizmo>,
     name: String,
     new_frames: i32,
@@ -96,7 +96,8 @@ impl Default for AnimUi {
             read: None,
             picture: None,
             edit: edit::State::default(),
-            save: save::State::default(),
+            placement_doc: None,
+            placement: Default::default(),
             gizmo: None,
             name: String::new(),
             new_frames: 30,
@@ -133,6 +134,7 @@ impl AnimUi {
 
 /// The window, when the Tags tool has an animation graph selected.
 pub fn window(ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, st: &mut AnimUi) {
+    app.anim.save_selection = None;
     let graph = (app.tool == ToolKind::Tags)
         .then(|| app.shown_tags().selected)
         .flatten()
@@ -219,10 +221,32 @@ fn body(ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, st: &mut AnimUi, id: TagId) {
         }
         transport(ui, st, animation.frames, animation.aim_grid);
         if let Some(doc) = doc {
-            if let Ok(clip) = app.anim_doc_mut(doc) {
-                st.edit.controls(ui, clip);
+            // The graph's tab is the document (docs/editor/studio-flow.md,
+            // "Shared patterns"): its steps are this document's keys and the
+            // tag's own writes, taken newest first.
+            let can = app.doc_can(Doc::Tag(id));
+            if let Some(action) = st.edit.controls(ui, id, can) {
+                app.dispatch(action);
             }
-            st.save.draw(ui, app, doc, source.is_some());
+            if st.placement_doc != Some(doc) {
+                st.placement_doc = Some(doc);
+                st.placement = DraftPlacement::default();
+            }
+            let placement = if source.is_some() {
+                None
+            } else {
+                let fields = [
+                    ("Mode", &mut st.placement.mode),
+                    ("Class", &mut st.placement.class),
+                    ("Weapon type", &mut st.placement.weapon_type),
+                    ("Action", &mut st.placement.action),
+                ];
+                for (label, value) in fields {
+                    ui.input_text(format!("{label}##anim-placement"), value).build();
+                }
+                Some(st.placement.clone())
+            };
+            app.anim.save_selection = Some((id, doc, placement));
         }
         picture(ui, app, gpu, st, id, &info, doc);
         if let Some(doc) = doc

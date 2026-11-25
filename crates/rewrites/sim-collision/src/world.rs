@@ -7,12 +7,15 @@
 //! matters to bookkeeping; the tree walk always follows guest node order.
 use crate::bsp::{Bsp, Consts, HEADER_WORDS};
 use crate::flood::{Topology, TopologyKey};
+use crate::mopp::ray::{Outcome, Unverified};
 use crate::mopp::{self, Tree};
 use crate::structure::{LeafTable, Structure, TableVersion};
 use crate::{BAILS, Bail, GuestRead};
 use sim_core::Epoch;
 use std::collections::{BTreeMap, HashMap};
+mod audit;
 mod slots;
+pub use audit::SourceFingerprint;
 use slots::Slots;
 #[cfg(test)]
 pub(crate) const INDEX_RECORD_BYTES: u64 = slots::RECORD_BYTES;
@@ -39,9 +42,16 @@ pub enum Entry {
     ObjectVisit,
     /// F: `0x00300150`, the integer MOPP box query.
     MoppBox,
+    /// I: `0x00301800`, the float MOPP ray (observed; its walk runs as a
+    /// parity arm, [`RayParity`]).
+    MoppRay,
+    /// The object-reference sphere pretest in J.
+    ObjectSphere,
+    /// J: the whole collision query.
+    Query,
 }
 
-pub const ENTRIES: usize = 8;
+pub const ENTRIES: usize = 11;
 /// Retained map arrays, BSP owners and address index capacity.
 pub const MAP_BUDGET: u64 = 8 << 20;
 /// Bounds address-index bookkeeping independently of decoded array size:
@@ -67,6 +77,9 @@ impl Entry {
         Entry::ClusterFlood,
         Entry::ObjectVisit,
         Entry::MoppBox,
+        Entry::MoppRay,
+        Entry::ObjectSphere,
+        Entry::Query,
     ];
 
     pub fn name(self) -> &'static str {
@@ -79,6 +92,9 @@ impl Entry {
             Entry::ClusterFlood => "cluster_flood",
             Entry::ObjectVisit => "object_visit",
             Entry::MoppBox => "mopp_box",
+            Entry::MoppRay => "mopp_ray",
+            Entry::ObjectSphere => "object_sphere",
+            Entry::Query => "query",
         }
     }
 
@@ -92,6 +108,9 @@ impl Entry {
             Entry::ClusterFlood => 0x0014_a5b0,
             Entry::ObjectVisit => 0x000b_b050,
             Entry::MoppBox => 0x0030_0150,
+            Entry::MoppRay => 0x0030_1800,
+            Entry::ObjectSphere => 0x0011_e5e0,
+            Entry::Query => 0x0016_97c0,
         }
     }
 }
@@ -107,10 +126,42 @@ pub struct EntryStats {
     pub x87_control: BTreeMap<u16, u64>,
 }
 
+/// Entry I's parity arm ([`mopp::ray::RayCheck`]): queries the guest
+/// answered and the walk was compared with.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RayParity {
+    /// The walk matched the guest call for call, and key for key where
+    /// keys were observed.
+    pub matched: u64,
+    pub mismatched: u64,
+    /// Queries the walk could not follow, by [`Bail`] reason.
+    pub unverified: [u64; BAILS],
+    /// Queries whose fraction moved where no key was observed.
+    pub fraction_moved: u64,
+    /// The first mismatch since start, described.
+    pub first_mismatch: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VectorParity {
+    pub matched: u64,
+    pub mismatched: u64,
+    pub unverified: [u64; BAILS],
+    pub first_mismatch: Option<String>,
+}
+
 /// A snapshot of the world's counters. Diagnostic only: no kernel reads it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
+    pub vector: VectorParity,
+    pub context: VectorParity,
+    pub instance: VectorParity,
+    pub query: VectorParity,
+    pub visit: VectorParity,
+    pub flood: VectorParity,
     pub entries: [EntryStats; ENTRIES],
+    /// Entry I's parity arm.
+    pub ray: RayParity,
     /// Decode attempts and failures. Cache hits increment neither count.
     pub decodes: u64,
     pub decode_failures: u64,
@@ -175,6 +226,22 @@ struct Counters {
     bails: [[AtomicU64; BAILS]; ENTRIES],
     mxcsr: [WordCounts<u32>; ENTRIES],
     x87_control: [WordCounts<u16>; ENTRIES],
+    ray: RayCounters,
+    vector: Mutex<VectorParity>,
+    context: Mutex<VectorParity>,
+    instance: Mutex<VectorParity>,
+    query: Mutex<VectorParity>,
+    visit: Mutex<VectorParity>,
+    flood: Mutex<VectorParity>,
+}
+
+#[derive(Default)]
+struct RayCounters {
+    matched: AtomicU64,
+    mismatched: AtomicU64,
+    unverified: [AtomicU64; BAILS],
+    fraction_moved: AtomicU64,
+    first_mismatch: OnceLock<String>,
 }
 
 /// A decoded MOPP program and the source revision it was last checked at.
@@ -328,6 +395,7 @@ impl Inner {
 }
 
 pub struct CollisionWorld {
+    store: Option<std::path::PathBuf>,
     epoch: &'static Epoch,
     budget: u64,
     slot_limit: usize,
@@ -340,12 +408,21 @@ impl CollisionWorld {
         Self::with_budget(epoch, MAP_BUDGET)
     }
 
+    /// Enable shared, immutable BSP columns in the platform cache directory.
+    pub fn with_shared_store(epoch: &'static Epoch) -> Self {
+        Self {
+            store: host_dirs::cache().map(|dir| dir.join("collision")),
+            ..Self::new(epoch)
+        }
+    }
+
     pub(crate) fn with_budget(epoch: &'static Epoch, budget: u64) -> Self {
         Self::with_limits(epoch, budget, MAP_SLOTS)
     }
 
     pub(crate) fn with_limits(epoch: &'static Epoch, budget: u64, slot_limit: usize) -> Self {
         Self {
+            store: None,
             epoch,
             budget,
             slot_limit,
@@ -386,7 +463,7 @@ impl CollisionWorld {
             }
             inner.generation
         };
-        let structure = Structure::decode(g, table).ok()?;
+        let structure = Structure::decode(g, table, self.store.as_deref()).ok()?;
         let cluster = structure.leaf_cluster(leaf)?;
         let mut inner = self.lock();
         if self.epoch.get() != epoch
@@ -432,8 +509,9 @@ impl CollisionWorld {
                 .and_then(|n| inner.bsp_room(self.budget, n + metadata));
             (inner.generation, room)
         };
-        let built = ring_limit
-            .and_then(|room| Bsp::decode_with_ring_limit(g, addr, header, &consts()?, room));
+        let built = ring_limit.and_then(|room| {
+            Bsp::decode_cached(g, addr, header, &consts()?, room, self.store.as_deref())
+        });
         let mut inner = self.lock();
         inner.decodes += 1;
         if epoch != self.epoch.get() || generation != inner.generation {
@@ -503,8 +581,13 @@ impl CollisionWorld {
     pub fn keep_topology(
         &self,
         version: Option<TableVersion>,
-        topology: Topology,
+        mut topology: Topology,
     ) -> Arc<Topology> {
+        if version.is_some() && topology.footprint() as u64 <= self.budget
+            && let Some(directory) = &self.store
+        {
+            topology.share_columns(directory);
+        }
         let topology = Arc::new(topology);
         let epoch = self.epoch.get();
         let mut inner = self.lock();
@@ -548,7 +631,10 @@ impl CollisionWorld {
         let (_, source) = mopp::Source::read(g, code)?;
         let (tree, decoded) = match held {
             Some(tree) if *tree.source() == source => (tree, false),
-            _ => (Arc::new(Tree::decode(code, source)), true),
+            _ => (
+                Arc::new(Tree::decode_shared(code, source, self.store.as_deref(), self.budget)),
+                true,
+            ),
         };
         let mut inner = self.lock();
         if decoded {
@@ -608,6 +694,61 @@ impl CollisionWorld {
         };
     }
 
+    pub fn record_vector(&self, result: Result<Option<String>, Bail>) {
+        Self::record_parity(&self.counters.vector, result);
+    }
+
+    pub fn record_context(&self, result: Result<Option<String>, Bail>) {
+        Self::record_parity(&self.counters.context, result);
+    }
+
+    pub fn record_instance(&self, result: Result<Option<String>, Bail>) {
+        Self::record_parity(&self.counters.instance, result);
+    }
+
+    pub fn record_query(&self, result: Result<Option<String>, Bail>) {
+        Self::record_parity(&self.counters.query, result);
+    }
+
+    pub fn record_spatial(&self, entry: Entry, result: Result<Option<String>, Bail>) {
+        let counter = match entry {
+            Entry::ClusterFlood => &self.counters.flood,
+            Entry::ObjectVisit => &self.counters.visit,
+            _ => unreachable!("spatial parity is defined only for G and H"),
+        };
+        Self::record_parity(counter, result);
+    }
+
+    fn record_parity(counter: &Mutex<VectorParity>, result: Result<Option<String>, Bail>) {
+        let mut v = counter.lock().unwrap_or_else(|e| e.into_inner());
+        match result {
+            Ok(None) => v.matched += 1,
+            Ok(Some(reason)) => {
+                v.first_mismatch.get_or_insert(reason);
+                v.mismatched += 1;
+            }
+            Err(why) => v.unverified[why as usize] += 1,
+        }
+    }
+
+    /// Count one query of entry I's parity arm, keeping the first mismatch.
+    pub fn record_ray(&self, outcome: &Outcome) {
+        let r = &self.counters.ray;
+        match outcome {
+            Outcome::Matched => r.matched.fetch_add(1, Ordering::Relaxed),
+            Outcome::Unverified(Unverified::Bail(why)) => {
+                r.unverified[*why as usize].fetch_add(1, Ordering::Relaxed)
+            }
+            Outcome::Unverified(Unverified::Fraction) => {
+                r.fraction_moved.fetch_add(1, Ordering::Relaxed)
+            }
+            Outcome::Mismatch { .. } => {
+                r.first_mismatch.get_or_init(|| outcome.to_string());
+                r.mismatched.fetch_add(1, Ordering::Relaxed)
+            }
+        };
+    }
+
     /// Record both control words at dispatch, before any gate or guest write.
     pub fn observe_environment(&self, entry: Entry, mxcsr: u32, control: u16) {
         self.counters.mxcsr[entry as usize].observe(mxcsr);
@@ -629,9 +770,23 @@ impl CollisionWorld {
                 precision[usize::from(control >> 8) & 3] += count;
             }
         }
+        let ray = RayParity {
+            matched: load(&c.ray.matched),
+            mismatched: load(&c.ray.mismatched),
+            unverified: std::array::from_fn(|b| load(&c.ray.unverified[b])),
+            fraction_moved: load(&c.ray.fraction_moved),
+            first_mismatch: c.ray.first_mismatch.get().cloned(),
+        };
         let inner = self.lock();
         Stats {
             entries,
+            ray,
+            vector: c.vector.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            context: c.context.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            instance: c.instance.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            query: c.query.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            visit: c.visit.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            flood: c.flood.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             decodes: inner.decodes,
             decode_failures: inner.decode_failures,
             flushes: inner.flushes,

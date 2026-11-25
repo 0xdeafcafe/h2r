@@ -4,6 +4,10 @@
 //! [`OverlayGpu`] draws the scene's overlay stage (`frame_scene::overlay`,
 //! planned by [`crate::overlay`]) with named programs for the fixed
 //! combiners and the blur, over no guest state at all.
+mod hud_shader;
+pub use hud_shader::{glyph_colour, hud_shader_supported};
+use hud_shader::{HudPipeline, HudPipelineKey};
+
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -36,7 +40,11 @@ pub enum Refusal {
 }
 
 #[derive(Default)]
-pub struct UiGpu(HashMap<wgpu::Device, DeviceCache>);
+pub struct UiGpu(Option<(wgpu::Device, DeviceCache)>);
+
+const UI_SHADERS: usize = 256;
+const UI_PIPELINES: usize = 1024;
+const HUD_PIPELINES: usize = 256;
 
 struct DeviceCache {
     frame: u32,
@@ -44,6 +52,7 @@ struct DeviceCache {
     bindings: ProgramBindings,
     shaders: HashMap<NativeDrawKey, Option<Program>>,
     pipelines: HashMap<PipelineKey, Arc<PendingPipeline>>,
+    count_pipelines: HashMap<PipelineKey, Arc<PendingPipeline>>,
 }
 
 #[derive(Clone)]
@@ -61,13 +70,17 @@ impl UiGpu {
         draw: &ResolvedDraw,
         frame: u32,
     ) -> Result<ExternalDraws, Refusal> {
-        let cache = self.0.entry(target.device.clone()).or_insert_with(|| DeviceCache {
-            frame,
-            fetch: FetchMode::Gpu,
-            bindings: ProgramBindings::new(&target.device),
-            shaders: HashMap::new(),
-            pipelines: HashMap::new(),
-        });
+        if self.0.as_ref().is_none_or(|(device, _)| device != &target.device) {
+            self.0 = Some((target.device.clone(), DeviceCache {
+                frame,
+                fetch: FetchMode::Gpu,
+                bindings: ProgramBindings::new(&target.device),
+                shaders: HashMap::new(),
+                pipelines: HashMap::new(),
+                count_pipelines: HashMap::new(),
+            }));
+        }
+        let (_, cache) = self.0.as_mut().ok_or(Refusal::Target)?;
         if cache.frame != frame {
             cache.frame = frame;
             cache.bindings.end_frame();
@@ -130,6 +143,13 @@ impl DeviceCache {
             state.wireframe_offset_enable = false;
             state.point_offset_enable = false;
         }
+        if self.shaders.len() == UI_SHADERS && !self.shaders.contains_key(&program.key) {
+            // ShaderIds are reused after this clear, so retire the pipelines
+            // that key on them together with their shader modules.
+            self.shaders.clear();
+            self.pipelines.clear();
+            self.count_pipelines.clear();
+        }
         let id = ShaderId(self.shaders.len().try_into().map_err(|_| Refusal::Shader)?);
         let shader = self.shaders.entry(program.key.clone()).or_insert_with(|| {
             let linked = program.key.translate().ok()?;
@@ -139,9 +159,13 @@ impl DeviceCache {
                     source: wgpu::ShaderSource::Wgsl(linked.source.into()),
                 },
             ))?;
+            let mut shader = self.bindings.program(device, module, linked.dims);
+            if program.writes_depth {
+                shader.count_entry = Some(shaders::psh::COUNT_DEPTH_ENTRY.into());
+            }
             Some(Program {
                 id,
-                shader: self.bindings.program(device, module, linked.dims),
+                shader,
                 dims: linked.dims,
                 discards: linked.discards,
             })
@@ -178,6 +202,9 @@ impl DeviceCache {
         if matches!(key.primitive.topology, wgpu::PrimitiveTopology::TriangleStrip | wgpu::PrimitiveTopology::LineStrip) {
             key.primitive.strip_index_format = Some(wgpu::IndexFormat::Uint32);
         }
+        if self.pipelines.len() == UI_PIPELINES && !self.pipelines.contains_key(&key) {
+            self.pipelines.clear();
+        }
         let pipeline = self.pipelines.entry(key.clone()).or_insert_with(|| {
             Pending::ready(validated_resource(device, || {
                 create_render_pipeline(device, &key, &shader.shader, "native UI pipeline")
@@ -186,6 +213,21 @@ impl DeviceCache {
         if pipeline.get().is_none() {
             return Err(Refusal::State);
         }
+
+        let count_pipeline = if draw.hw.zpass_count_enable {
+            if self.count_pipelines.len() == UI_PIPELINES && !self.count_pipelines.contains_key(&key) {
+                self.count_pipelines.clear();
+            }
+            let count = self.count_pipelines.entry(key.clone()).or_insert_with(|| {
+                Pending::ready(validated_resource(device, || {
+                    gfx::renderer::create_sample_count_pipeline(device, &key, &shader.shader)
+                }))
+            }).clone();
+            count.get().as_ref().ok_or(Refusal::State)?;
+            Some(count)
+        } else {
+            None
+        };
 
         let upload = |bytes: &[u8]| {
             let len = bytes.len() as u64;
@@ -215,6 +257,10 @@ impl DeviceCache {
         let packet = RecordedDraw::prepared_indexed(
             &key, pipeline, streams, indices, count, groups, &state, target.size, first,
         );
+        let packet = match count_pipeline {
+            Some(count) => packet.with_sample_count(count),
+            None => packet,
+        };
         let mut packets = vec![packet];
         for clip in rest {
             packets.push(packets[0].clone().with_scissor(clip, target.size));
@@ -272,9 +318,14 @@ fn fs_texture_grey(i: VsOut) -> @location(0) vec4<f32> {
 }
 "#;
 
-/// The overlay's blur step (`frame_scene::OverlayBlur`): every pixel the
-/// mean of four bilinear taps at the corners of a square, the offset a
-/// fraction of the target. One full-screen triangle.
+/// The overlay's blur step (`frame_scene::OverlayBlur`): every pixel a
+/// blend of four bilinear taps at the corners of a square, the offset a
+/// fraction of the target (`offset.xy`), the combiner's constant in
+/// `offset.z`. The colour is blended in pairs as the guest's combiner
+/// (`engine::glow::blur_combiner`) does, each stage's output clamped to
+/// -1..1: `clamp(4 * (a - b))`, its weight `(d * pick + 1) / 2`, then
+/// `w * a + (1 - w) * b`; the alpha is the mean. A `pick` of 0 is the
+/// plain mean. One full-screen triangle.
 const OVERLAY_BLUR_WGSL: &str = r#"
 struct Blur {
     offset: vec4<f32>,
@@ -296,14 +347,24 @@ fn vs_full(@builtin(vertex_index) i: u32) -> Out {
     return out;
 }
 
+fn pick(a: vec3<f32>, b: vec3<f32>, c: f32) -> vec3<f32> {
+    let d = clamp(4.0 * (a - b), vec3<f32>(-1.0), vec3<f32>(1.0));
+    let w = clamp((d * c + 1.0) * 0.5, vec3<f32>(0.0), vec3<f32>(1.0));
+    return clamp(w * a + (1.0 - w) * b, vec3<f32>(-1.0), vec3<f32>(1.0));
+}
+
 @fragment
 fn fs_blur(i: Out) -> @location(0) vec4<f32> {
     let d = blur.offset.xy;
-    let sum = textureSample(source, taps, i.uv + vec2<f32>(-d.x, -d.y))
-        + textureSample(source, taps, i.uv + vec2<f32>(d.x, -d.y))
-        + textureSample(source, taps, i.uv + vec2<f32>(-d.x, d.y))
-        + textureSample(source, taps, i.uv + vec2<f32>(d.x, d.y));
-    return sum * 0.25;
+    let c = blur.offset.z;
+    let t0 = textureSample(source, taps, i.uv + vec2<f32>(-d.x, -d.y));
+    let t1 = textureSample(source, taps, i.uv + vec2<f32>(d.x, -d.y));
+    let t2 = textureSample(source, taps, i.uv + vec2<f32>(-d.x, d.y));
+    let t3 = textureSample(source, taps, i.uv + vec2<f32>(d.x, d.y));
+    let p0 = pick(t0.rgb, t1.rgb, c);
+    let p1 = pick(t2.rgb, t3.rgb, c);
+    let alpha = ((t0.a + t1.a) * 0.5 + (t2.a + t3.a) * 0.5) * 0.5;
+    return vec4<f32>(pick(clamp(p0, vec3<f32>(0.0), vec3<f32>(1.0)), clamp(p1, vec3<f32>(0.0), vec3<f32>(1.0)), c), alpha);
 }
 "#;
 
@@ -311,6 +372,20 @@ fn fs_blur(i: Out) -> @location(0) vec4<f32> {
 pub trait OverlayTextures {
     /// A 2D, filterable view of `texture`; `None` when it is not resident.
     fn view(&self, texture: frame_scene::OverlayTexture) -> Option<&wgpu::TextureView>;
+
+    fn stage(&self, _stage: usize, texture: frame_scene::OverlayTexture) -> Option<&wgpu::TextureView> {
+        self.view(texture)
+    }
+
+    fn stage_sampler(&self, _stage: usize, texture: frame_scene::OverlayTexture) -> Option<&wgpu::Sampler> {
+        self.sampler(texture)
+    }
+
+    /// The device sampler for a live HUD texture, including its mip and
+    /// addressing state. Atlas pages and offline sprites use the material.
+    fn sampler(&self, _texture: frame_scene::OverlayTexture) -> Option<&wgpu::Sampler> {
+        None
+    }
 }
 
 /// No textures: only flat items draw.
@@ -341,11 +416,59 @@ pub fn overlay_blend(blend: frame_scene::OverlayBlend) -> Result<Option<wgpu::Bl
     Ok(Some(wgpu::BlendState { color: component, alpha: component }))
 }
 
+/// An item's blend constant (`OverlayItem::blend_constant`) as the pass
+/// sets it.
+pub fn blend_color([r, g, b, a]: [f32; 4]) -> wgpu::Color {
+    wgpu::Color { r: f64::from(r), g: f64::from(g), b: f64::from(b), a: f64::from(a) }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct OverlayPipelineKey {
+    color_write: u32,
     combiner: frame_scene::Combiner,
     blend: frame_scene::OverlayBlend,
     format: wgpu::TextureFormat,
+}
+
+fn overlay_pipeline(
+    device: &wgpu::Device,
+    module: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    fragment: &str,
+    color_write: u32,
+    format: wgpu::TextureFormat,
+    blend: Option<wgpu::BlendState>,
+) -> wgpu::RenderPipeline {
+    let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x2, 4 => Float32x2, 5 => Float32x2];
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("native overlay"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &[Some(wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<crate::overlay::PlanVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &attributes,
+            })],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module,
+            entry_point: Some(fragment),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend,
+                write_mask: gfx::translate::color_writes(gfx::state::ColorWriteMask::from_xbox(color_write)),
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 /// The overlay stage's programs, pipelines and samplers on one device.
@@ -356,10 +479,13 @@ pub struct OverlayGpu {
     pipelines: HashMap<OverlayPipelineKey, wgpu::RenderPipeline>,
     samplers: HashMap<frame_scene::Sampler, wgpu::Sampler>,
     white: wgpu::TextureView,
+    hud: HashMap<HudPipelineKey, Option<HudPipeline>>,
     blur_module: wgpu::ShaderModule,
     blur_group_layout: wgpu::BindGroupLayout,
     blur_layout: wgpu::PipelineLayout,
     blur_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
+    // The guest and display copies can alternate sizes on every dialog frame.
+    blur_scratch: Vec<[wgpu::TextureView; 2]>,
 }
 
 /// One step of a prepared blur: the scratch it draws into and its bound
@@ -474,10 +600,12 @@ impl OverlayGpu {
             pipelines: HashMap::new(),
             samplers: HashMap::new(),
             white: white.create_view(&Default::default()),
+            hud: HashMap::new(),
             blur_module,
             blur_group_layout,
             blur_layout,
             blur_pipelines: HashMap::new(),
+            blur_scratch: Vec::new(),
         }
     }
 
@@ -516,7 +644,7 @@ impl OverlayGpu {
         device: &wgpu::Device,
         target: &wgpu::TextureView,
         plan: &crate::overlay::OverlayPlan,
-    ) -> Option<([wgpu::Texture; 2], Vec<PreparedBlur>)> {
+    ) -> Option<([wgpu::TextureView; 2], Vec<PreparedBlur>)> {
         use wgpu::util::DeviceExt;
         let texture = target.texture();
         let format = texture.format();
@@ -526,21 +654,31 @@ impl OverlayGpu {
         {
             return None;
         }
-        let scratch = [0, 1].map(|_| {
-            device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("native overlay blur"),
-                size: texture.size(),
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
+        let views = if let Some(index) = self.blur_scratch.iter().position(|views| {
+            let cached = views[0].texture();
+            cached.size() == texture.size() && cached.format() == format
+        }) {
+            self.blur_scratch.remove(index)
+        } else {
+            if self.blur_scratch.len() == 2 {
+                self.blur_scratch.remove(0);
+            }
+            [0, 1].map(|_| {
+                device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("native overlay blur"),
+                    size: texture.size(),
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                }).create_view(&Default::default())
             })
-        });
-        let views = scratch.each_ref().map(|t| t.create_view(&Default::default()));
+        };
+        self.blur_scratch.push(views.clone());
         // The taps are bilinear and clamp at the edges.
         let taps = self.sampler(device, frame_scene::Sampler { wrap: false, point: false });
         let copy = self.sampler(device, frame_scene::Sampler { wrap: false, point: true });
@@ -551,7 +689,7 @@ impl OverlayGpu {
             for offset in &blur.offsets {
                 let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("native overlay blur step"),
-                    contents: bytemuck::cast_slice(&[offset[0], offset[1], 0.0f32, 0.0f32]),
+                    contents: bytemuck::cast_slice(&[offset[0], offset[1], blur.pick, 0.0f32]),
                     usage: wgpu::BufferUsages::UNIFORM,
                 });
                 let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -576,7 +714,7 @@ impl OverlayGpu {
             });
             blurs.push(PreparedBlur { before: blur.before as usize, steps, result, scissor: blur.scissor });
         }
-        Some((scratch, blurs))
+        Some((views, blurs))
     }
 
     fn pipeline(&mut self, device: &wgpu::Device, key: OverlayPipelineKey, blend: Option<wgpu::BlendState>) -> wgpu::RenderPipeline {
@@ -588,37 +726,7 @@ impl OverlayGpu {
                 frame_scene::Combiner::TextureAlpha => "fs_texture_alpha",
                 frame_scene::Combiner::TextureGrey => "fs_texture_grey",
             };
-            let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4];
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("native overlay"),
-                layout: Some(layout),
-                vertex: wgpu::VertexState {
-                    module,
-                    entry_point: Some("vs_main"),
-                    compilation_options: Default::default(),
-                    buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<crate::overlay::PlanVertex>() as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &attributes,
-                    })],
-                },
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module,
-                    entry_point: Some(fragment),
-                    compilation_options: Default::default(),
-                    // The screen-quad begin writes colour without alpha.
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: key.format,
-                        blend,
-                        write_mask: wgpu::ColorWrites::COLOR,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
+            overlay_pipeline(device, module, layout, fragment, key.color_write, key.format, blend)
         }).clone()
     }
 
@@ -662,49 +770,87 @@ impl OverlayGpu {
         let mut stats = plan.stats;
         struct Draw {
             batch: usize,
+            stages: Option<wgpu::BindGroup>,
             pipeline: wgpu::RenderPipeline,
             group: wgpu::BindGroup,
             scissor: crate::overlay::Scissor,
             indices: std::ops::Range<u32>,
+            blend_constant: wgpu::Color,
         }
         let mut draws = Vec::with_capacity(plan.batches.len());
         for (index, batch) in plan.batches.iter().enumerate() {
-            let frame_scene::Program::Fixed(combiner) = batch.material.program else {
-                stats.refused_material += batch.items;
-                continue;
-            };
             let Ok(blend) = overlay_blend(batch.material.blend) else {
                 stats.refused_texture += batch.items;
                 continue;
             };
-            let view = if batch.material.sampled() {
-                match textures.view(batch.material.texture) {
-                    Some(view) if view.texture().dimension() == wgpu::TextureDimension::D2
-                        && filterable(view.texture().format(), device.features()) => view.clone(),
-                    _ => {
+            let sampler = self.sampler(device, batch.material.sampler);
+            let (pipeline, group, stages) = match batch.material.program {
+                frame_scene::Program::Fixed(combiner) => {
+                    let view = if batch.material.sampled() {
+                        match textures.view(batch.material.texture) {
+                            Some(view) if view.texture().dimension() == wgpu::TextureDimension::D2
+                                && filterable(view.texture().format(), device.features()) => view.clone(),
+                            _ => {
+                                stats.refused_texture += batch.items;
+                                continue;
+                            }
+                        }
+                    } else {
+                        self.white.clone()
+                    };
+                    let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("native overlay stage"),
+                        layout: &self.group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+                        ],
+                    });
+                    let key = OverlayPipelineKey { combiner, color_write: batch.color_write, blend: batch.material.blend, format };
+                    (self.pipeline(device, key, blend), group, None)
+                }
+                frame_scene::Program::Shader { .. } => {
+                    let Some(words) = batch.shader_words.as_deref().and_then(|s| s.try_into().ok()) else {
+                        stats.refused_material += batch.items;
+                        continue;
+                    };
+                    let mut def = shaders::psh::PixelShaderDef::from_words(words);
+                    let (c0, c1) = def.embedded_constants();
+                    // Fill changes update the uniforms and reuse the same pipeline.
+                    def.constant0 = [0; 8];
+                    def.constant1 = [0; 8];
+                    def.final_constant0 = 0;
+                    def.final_constant1 = 0;
+                    let key = HudPipelineKey {
+                        def, format, glyph: batch.glyph_cache, color_write: batch.color_write,
+                        blend: batch.material.blend, alpha_kill: batch.alpha_kill,
+                        alpha_func: batch.alpha_test.map(|(func, _)| func),
+                    };
+                    if self.hud.len() == HUD_PIPELINES && !self.hud.contains_key(&key) {
+                        self.hud.clear();
+                    }
+                    let entry = self.hud.entry(key);
+                    let Some(program) = entry.or_insert_with_key(|key| HudPipeline::new(device, key, blend)) else {
+                        stats.refused_material += batch.items;
+                        continue;
+                    };
+                    let mut pixel = PixelUniforms { c0, c1, ..Default::default() };
+                    if let Some((_, reference)) = batch.alpha_test {
+                        pixel.alpha_ref[0] = f32::from(reference);
+                    }
+                    let Some((group, stages)) = program.bind(device, textures, batch, &sampler, &pixel) else {
                         stats.refused_texture += batch.items;
                         continue;
-                    }
+                    };
+                    (program.pipeline.clone(), group, Some(stages))
                 }
-            } else {
-                self.white.clone()
             };
-            let sampler = self.sampler(device, batch.material.sampler);
-            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("native overlay stage"),
-                layout: &self.group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
-                ],
-            });
-            let key = OverlayPipelineKey { combiner, blend: batch.material.blend, format };
             draws.push(Draw {
                 batch: index,
-                pipeline: self.pipeline(device, key, blend),
-                group,
+                pipeline, group, stages,
                 scissor: batch.scissor,
                 indices: batch.first_index..batch.first_index + batch.index_count,
+                blend_constant: blend_color(batch.blend_constant),
             });
         }
         stats.batches = draws.len() as u32;
@@ -728,8 +874,9 @@ impl OverlayGpu {
             None => (None, Vec::new()),
         };
         // A blur's result goes back through the texture combiner as one
-        // quad over the whole target: its four corners and six indices
-        // follow the plan's.
+        // quad over the whole target, every channel written as the guest's
+        // blur quads write them: its four corners and six indices follow
+        // the plan's.
         let mut plan_vertices = plan.vertices.clone();
         let mut plan_indices = plan.indices.clone();
         let whole = plan_indices.len() as u32..plan_indices.len() as u32 + 6;
@@ -738,6 +885,7 @@ impl OverlayGpu {
             position: [x, y],
             uv: [u, v],
             color: [1.0; 4],
+            extra_uv: [[0.0; 2]; 3],
         };
         plan_vertices.extend([
             corner(-1.0, 1.0, 0.0, 0.0),
@@ -748,6 +896,7 @@ impl OverlayGpu {
         plan_indices.extend(crate::overlay::QUAD_INDICES.map(|i| base + i));
         let write_back = (!blurs.is_empty()).then(|| {
             let key = OverlayPipelineKey {
+                color_write: frame_scene::OverlayItem::RGB_WRITE | (1 << 24),
                 combiner: frame_scene::Combiner::Texture,
                 blend: frame_scene::OverlayBlend::Off,
                 format,
@@ -766,7 +915,6 @@ impl OverlayGpu {
             usage: wgpu::BufferUsages::INDEX,
         });
         let target = target.clone();
-        let scratch_views = scratch.as_ref().map(|s| s.each_ref().map(|t| t.create_view(&Default::default())));
         let (width, height) = (size.width as f32, size.height as f32);
         let steps: usize = blurs.iter().map(|b| b.steps.len()).sum();
         let count = draws.len() + steps + blurs.len();
@@ -801,21 +949,22 @@ impl OverlayGpu {
                         while let Some(d) = draws.get(*next).filter(|d| d.batch < until) {
                             pass.set_pipeline(&d.pipeline);
                             pass.set_bind_group(0, &d.group, &[]);
+                            if let Some(stages) = &d.stages { pass.set_bind_group(1, stages, &[]); }
                             pass.set_scissor_rect(d.scissor.x, d.scissor.y, d.scissor.width, d.scissor.height);
+                            pass.set_blend_constant(d.blend_constant);
                             pass.draw_indexed(d.indices.clone(), 0, 0..1);
                             *next += 1;
                         }
                     };
                     for blur in &blurs {
-                        let (Some(views), Some(scratch), Some((copy, step))) =
-                            (scratch_views.as_ref(), scratch.as_ref(), write_back.as_ref())
+                        let (Some(views), Some((copy, step))) = (scratch.as_ref(), write_back.as_ref())
                         else {
                             break;
                         };
                         segment(encoder, blur.before, &mut next);
                         encoder.copy_texture_to_texture(
                             target.texture().as_image_copy(),
-                            scratch[0].as_image_copy(),
+                            views[0].texture().as_image_copy(),
                             target.texture().size(),
                         );
                         for s in &blur.steps {
@@ -844,13 +993,14 @@ impl OverlayGpu {
 
 /// The textures an overlay names, resident on one device: each bitmap
 /// image uploaded once, each font's glyph page uploaded when it first
-/// appears and written again when its version moves
-/// ([`crate::overlay::GlyphPages`]).
+/// appears and, as it grows, each glyph added since the version it holds
+/// written once, by its rectangle ([`crate::overlay::GlyphPages`]).
 #[derive(Default)]
 pub struct OverlayResidency {
     /// The assets' generation what it holds came from.
     generation: u64,
     images: HashMap<(u32, u16), wgpu::TextureView>,
+    /// Each font's page: the version it holds, its texture and view.
     glyphs: HashMap<u16, (u64, wgpu::Texture, wgpu::TextureView)>,
 }
 
@@ -881,12 +1031,41 @@ fn write_rgba(queue: &wgpu::Queue, texture: &wgpu::Texture, rgba: &[u8]) {
     );
 }
 
+/// Writes one glyph's rectangle of a `side` texel square page (`rgba`,
+/// row-major) to `texture`: the texels a page gained, not the page.
+fn write_glyph(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    side: u32,
+    rgba: &[u8],
+    rect: crate::overlay::GlyphRect,
+) {
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d { x: rect.x, y: rect.y, z: 0 },
+            aspect: wgpu::TextureAspect::All,
+        },
+        &rgba[(rect.y * side + rect.x) as usize * 4..],
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * side),
+            rows_per_image: Some(rect.height),
+        },
+        wgpu::Extent3d { width: rect.width, height: rect.height, depth_or_array_layers: 1 },
+    );
+}
+
 impl OverlayResidency {
     /// Uploads what `assets` holds that is not resident, or has changed:
-    /// how many textures it wrote. Assets of another generation (another
-    /// map) replace all it holds. An image with no texels, or fewer than
-    /// its size needs, or past the device's largest texture, stays out
-    /// (its batches are refused as not resident).
+    /// how many textures it wrote. A font's glyph page is written whole
+    /// when it first appears and, when its version moves, in the rectangles
+    /// of the glyphs added since the version held, so no glyph's texels
+    /// are written twice. Assets of another generation (another map)
+    /// replace all it holds. An image with no texels, or fewer than its
+    /// size needs, or past the device's largest texture, stays out (its
+    /// batches are refused as not resident).
     pub fn sync(
         &mut self,
         device: &wgpu::Device,
@@ -921,7 +1100,11 @@ impl OverlayResidency {
             match self.glyphs.get_mut(&font) {
                 Some((resident, _, _)) if *resident == version => {}
                 Some((resident, texture, _)) => {
-                    write_rgba(queue, texture, rgba);
+                    if let Some((side, rgba, added)) = assets.glyphs.added_since(font, *resident) {
+                        for (_, rect) in added {
+                            write_glyph(queue, texture, side, rgba, *rect);
+                        }
+                    }
                     *resident = version;
                     wrote += 1;
                 }
@@ -941,7 +1124,7 @@ impl OverlayResidency {
 impl OverlayTextures for OverlayResidency {
     fn view(&self, texture: frame_scene::OverlayTexture) -> Option<&wgpu::TextureView> {
         match texture {
-            frame_scene::OverlayTexture::None => None,
+            frame_scene::OverlayTexture::None | frame_scene::OverlayTexture::Bound { .. } => None,
             frame_scene::OverlayTexture::Bitmap { tag, image } => self.images.get(&(tag, image)),
             frame_scene::OverlayTexture::Glyphs { font } => self.glyphs.get(&font).map(|(_, _, view)| view),
         }
@@ -1066,13 +1249,23 @@ mod tests {
         overlay.push_fill(ClipRect::full([2, 2]), [0.0, 0.0, 2.0, 2.0], [1.0, 0.0, 0.0, 1.0], OverlayBlend::Off).unwrap();
         overlay.push_quad(sprite(7), ClipRect { x: 1, y: 0, width: 1, height: 2 }, whole).unwrap();
         overlay.push_quad(sprite(8), ClipRect::full([2, 2]), whole).unwrap();
+        // Synthetic template: the final combiner copies final c0 into RGB.
+        let mut words = [0u32; 60];
+        words[8] = shaders::psh::bits::inputs(0, 0, 0, shaders::psh::bits::REG_C0);
+        words[9] = shaders::psh::bits::final_efg(0, 0, shaders::psh::bits::REG_C0 | shaders::psh::bits::CHAN_ALPHA, 0);
+        words[43] = 0x83_37_42_a8;
+        let material = OverlayMaterial { program: Program::Shader { tag: 9 }, texture: OverlayTexture::None, ..sprite(7) };
+        let item = overlay.push_quad(material, ClipRect { x: 0, y: 1, width: 1, height: 1 }, whole).unwrap();
+        overlay.items[item as usize].shader_words = Some(words.into());
+        overlay.items[item as usize].color_write = gfx::state::ColorWriteMask::ALL.xbox_value();
+
         let plan = crate::overlay::OverlayPlan::new(&overlay, [4, 4], &crate::overlay::NoGlyphs);
-        assert_eq!(plan.batches.len(), 3);
+        assert_eq!(plan.batches.len(), 4);
         let mut gpu = OverlayGpu::new(&ctx.device, &ctx.queue);
         let view = target.create_view(&Default::default());
         let (encoded, stats) = gpu.prepare(&ctx.device, &view, &plan, &textures).unwrap();
-        assert_eq!((stats.batches, stats.refused_texture, stats.items), (2, 1, 3));
-        assert_eq!((encoded.draws, encoded.passes), (2, 1));
+        assert_eq!((stats.batches, stats.refused_texture, stats.items), (3, 1, 4));
+        assert_eq!((encoded.draws, encoded.passes), (3, 1));
         let mut encoder = ctx.device.create_command_encoder(&Default::default());
         (encoded.commands)(&mut encoder);
         ctx.queue.submit([encoder.finish()]);
@@ -1082,12 +1275,15 @@ mod tests {
             [pixels[i], pixels[i + 1], pixels[i + 2]]
         };
         for y in 0..4 {
-            assert_eq!(rgb(0, y), [255, 0, 0], "row {y}: the fill");
-            assert_eq!(rgb(1, y), [255, 0, 0], "row {y}: left of the clip");
+            let left = if y < 2 { [255, 0, 0] } else { [0x37, 0x42, 0xa8] };
+            assert_eq!(rgb(0, y), left);
+            assert_eq!(rgb(1, y), left);
             assert_eq!(rgb(2, y), [0, 255, 0], "row {y}: the sprite");
             assert_eq!(rgb(3, y), [0, 255, 0], "row {y}: the sprite");
         }
-        assert!(pixels.chunks(4).all(|p| p[3] == 0), "colour writes leave alpha alone");
+        for (i, p) in pixels.chunks_exact(4).enumerate() {
+            assert_eq!(p[3], if i / 4 >= 2 && i % 4 < 2 { 0x83 } else { 0 });
+        }
         let wrong = crate::overlay::OverlayPlan::new(&overlay, [8, 8], &crate::overlay::NoGlyphs);
         assert!(gpu.prepare(&ctx.device, &view, &wrong, &textures).is_err(), "the plan is for another size");
     }
@@ -1152,9 +1348,29 @@ mod tests {
             assert_eq!(rgb(2, y), [255, 255, 0], "row {y}: the glyph's covered texel");
             assert_eq!(rgb(3, y), [0, 0, 0], "row {y}: the glyph's empty texel blends to nothing");
         }
-        // A grown page is written again; another map's assets start over.
-        assert!(assets.glyphs.insert(6, 4, 1, 1, &[9]));
-        assert_eq!(residency.sync(&ctx.device, &ctx.queue, &assets), 1);
+        // A glyph added after the page is resident reaches it by its
+        // rectangle alone (no texel of the page is written again) and
+        // draws: a red glyph over the sprite's top left.
+        assert!(assets.glyphs.insert(6, 4, 1, 1, &[255]));
+        assert_eq!(residency.sync(&ctx.device, &ctx.queue, &assets), 1, "a grown page is written again");
+        let added = [OverlayGlyph { index: 4, rect: [0.0, 0.0, 1.0, 1.0] }];
+        let red = OverlayMaterial::text(6);
+        overlay.push_text_run(red, ClipRect::full([2, 2]), [1.0, 0.0, 0.0, 1.0], &added).unwrap();
+        let plan = OverlayPlan::new(&overlay, [4, 4], &assets.glyphs);
+        let (encoded, stats) = gpu.prepare(&ctx.device, &view, &plan, &residency).unwrap();
+        // The two text runs share their material, clip and indices: one batch.
+        assert_eq!((stats.batches, stats.refused_glyph), (2, 0));
+        let mut encoder = ctx.device.create_command_encoder(&Default::default());
+        (encoded.commands)(&mut encoder);
+        ctx.queue.submit([encoder.finish()]);
+        let pixels = gfx::readback::read_texture(&ctx, &target, wgpu::TextureAspect::All, 4, (4, 4));
+        let rgb = |x: usize, y: usize| {
+            let i = 4 * (y * 4 + x);
+            [pixels[i], pixels[i + 1], pixels[i + 2]]
+        };
+        assert_eq!((rgb(0, 0), rgb(1, 1)), ([255, 0, 0], [255, 0, 0]), "the glyph added");
+        assert_eq!((rgb(0, 3), rgb(3, 3)), ([0, 0, 255], [0, 0, 0]), "the rest as it was");
+        // Another map's assets start over.
         let next = OverlayAssets { generation: 1, ..OverlayAssets::default() };
         assert_eq!(residency.sync(&ctx.device, &ctx.queue, &next), 0);
         assert!(residency.view(OverlayTexture::Bitmap { tag: 7, image: 1 }).is_none());
@@ -1189,7 +1405,7 @@ mod tests {
         overlay.push_fill(all, [0.0, 0.0, 2.0, 4.0], [1.0; 4], OverlayBlend::Off).unwrap();
         overlay.push_fill(all, [2.0, 0.0, 4.0, 4.0], [0.0, 0.0, 0.0, 1.0], OverlayBlend::Off).unwrap();
         let right = ClipRect { x: 2, y: 0, width: 2, height: 4 };
-        overlay.push_blur(right, OverlayBlur { tap: 0.5, spreads: vec![1.0] }).unwrap();
+        overlay.push_blur(right, OverlayBlur { tap: 0.5, spreads: vec![1.0], pick: 0.0 }).unwrap();
         overlay.push_fill(all, [3.0, 0.0, 4.0, 4.0], [0.0, 1.0, 0.0, 1.0], OverlayBlend::Off).unwrap();
         let plan = crate::overlay::OverlayPlan::new(&overlay, [4, 4], &crate::overlay::NoGlyphs);
         assert_eq!((plan.batches.len(), plan.blurs.len()), (2, 1));
@@ -1198,6 +1414,7 @@ mod tests {
         let texture = target(wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
         let view = texture.create_view(&Default::default());
         let (encoded, stats) = gpu.prepare(&ctx.device, &view, &plan, &NoTextures).unwrap();
+        let scratch = gpu.blur_scratch[0].clone();
         assert_eq!((stats.batches, stats.blurs, stats.refused_blur), (2, 1, 0));
         assert_eq!((encoded.draws, encoded.passes), (4, 4), "two batches, one step, one write-back");
         let mut encoder = ctx.device.create_command_encoder(&Default::default());
@@ -1222,6 +1439,48 @@ mod tests {
         let (encoded, stats) = gpu.prepare(&ctx.device, &view, &plan, &NoTextures).unwrap();
         assert_eq!((stats.batches, stats.refused_blur), (2, 1));
         assert_eq!((encoded.draws, encoded.passes), (2, 1));
+
+        // The same blur with the combiner leaning all the way: each pair
+        // takes its brighter tap (0.5 over 0), so the pixel keeps half
+        // white where the mean gave a quarter.
+        let mut leaning = overlay.clone();
+        leaning.blurs[0].pick = 1.0;
+        let plan = crate::overlay::OverlayPlan::new(&leaning, [4, 4], &crate::overlay::NoGlyphs);
+        let texture = target(wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
+        let view = texture.create_view(&Default::default());
+        let (encoded, _) = gpu.prepare(&ctx.device, &view, &plan, &NoTextures).unwrap();
+        assert_eq!(gpu.blur_scratch.as_slice(), &[scratch]);
+        let mut encoder = ctx.device.create_command_encoder(&Default::default());
+        (encoded.commands)(&mut encoder);
+        ctx.queue.submit([encoder.finish()]);
+        let pixels = gfx::readback::read_texture(&ctx, &texture, wgpu::TextureAspect::All, 4, (4, 4));
+        for y in 0..4 {
+            let i = 4 * (y * 4 + 2);
+            let leant = [pixels[i], pixels[i + 1], pixels[i + 2]];
+            assert!(leant.iter().all(|c| c.abs_diff(128) <= 1), "row {y}: leaning blur {leant:?}");
+        }
+    }
+
+    /// The step's combiner on the CPU, as the WGSL computes it: a pick of
+    /// 0 is the mean of the four taps; a positive one leans each pair to
+    /// its brighter tap, by at most half of the pair's spread.
+    #[test]
+    fn the_blur_combiner_leans_to_the_brighter_tap_by_its_constant() {
+        fn pick(a: f32, b: f32, c: f32) -> f32 {
+            let d = (4.0 * (a - b)).clamp(-1.0, 1.0);
+            let w = ((d * c + 1.0) * 0.5).clamp(0.0, 1.0);
+            (w * a + (1.0 - w) * b).clamp(-1.0, 1.0)
+        }
+        let step = |t: [f32; 4], c: f32| pick(pick(t[0], t[1], c).clamp(0.0, 1.0), pick(t[2], t[3], c).clamp(0.0, 1.0), c);
+        let taps = [0.5, 0.0, 0.25, 0.25];
+        assert!((step(taps, 0.0) - 0.25).abs() < 1e-6, "the plain mean");
+        // 64 over 255, the guest's 0.25 packed: the first pair leans by 64/255 of half its spread.
+        let c = 64.0 / 255.0;
+        let first = 0.5 * (0.5 + 0.5 * c) + 0.0 * (0.5 - 0.5 * c);
+        assert!((pick(0.5, 0.0, c) - first).abs() < 1e-6);
+        assert!(step(taps, c) > 0.25 && step(taps, c) < step(taps, 1.0));
+        assert_eq!(pick(0.3, 0.3, 1.0), 0.3, "equal taps are unchanged");
+        assert!(OVERLAY_BLUR_WGSL.contains("fn pick("));
     }
 
     #[test]

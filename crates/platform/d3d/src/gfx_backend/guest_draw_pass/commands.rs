@@ -8,7 +8,7 @@ use crate::threaded::owner::Outputs;
 
 pub(crate) trait SceneDevice: Backend {
     /// Does the physical copy select the same projection for typed and carried draws?
-    fn can_replay_flare(&self, _draw: &crate::ResolvedDraw) -> bool { true }
+    fn can_replay_admission(&self, _draw: &crate::ResolvedDraw) -> bool { true }
 
     fn record_scene_stage(
         &mut self,
@@ -80,7 +80,7 @@ impl<B: SceneDevice> Commands<B> {
         external: &crate::scene_sink::RetainedExternal,
         handles: &[Option<B::Texture>; 4],
     ) -> bool {
-        if !gpu.can_replay_flare(draw) {
+        if !gpu.can_replay_admission(draw) {
             return false;
         }
         let Some(surfaces) = external.resolve(draw, targets, bound, display, scale) else {
@@ -165,10 +165,11 @@ impl<B: SceneDevice> Commands<B> {
                         }
                     };
                 }
-                if let Some(external) = external
-                    && self.draw_external(gpu, targets, display, scale, (colour, depth), draw, external, &handles)
-                {
-                    return Ok(());
+                if let Some(external) = external {
+                    if self.draw_external(gpu, targets, display, scale, (colour, depth), draw, external, &handles) {
+                        return Ok(());
+                    }
+                    external.plan.stage.count(timeline::native::Metric::RefusedReplay, 1);
                 }
                 drawn(gpu.draw(colour, depth, draw, handles.each_ref().map(Option::as_ref))?)?;
             }
@@ -197,8 +198,22 @@ impl<B: SceneDevice> Commands<B> {
             ReplayOp::Upload { to, desc, bytes } => {
                 gpu.write_scene_target(surface(to)?, desc, bytes, scale)?
             }
-            ReplayOp::Sample { of, id, how } => {
+            ReplayOp::Sample { of, id, how, into } => {
                 let of = surface(of)?;
+                // A pooled frame-buffer copy refilled: the earlier sample's
+                // texture takes the new contents (draws applied before
+                // this read the old), and both ids name it, so this
+                // frame's copies are as many as the device's pool.
+                if let (ReplaySample::Snapshot { opaque }, Some(prev)) = (how, into)
+                    && let Some(t) = self.outputs.samples.get_mut(prev)
+                    && gpu.snapshot_surface_into(of, *opaque, t)?
+                {
+                    let t = B::share_scene_texture(t);
+                    if self.outputs.samples.insert(*id, t).is_some() {
+                        return Err(format!("duplicate scene sample {id}"));
+                    }
+                    return Ok(());
+                }
                 let t = match how {
                     ReplaySample::Snapshot { opaque } => gpu.snapshot_surface(of, *opaque)?,
                     ReplaySample::InPlace => gpu.surface_texture(of)?,

@@ -38,6 +38,7 @@ pub fn of(e: &Entry) -> Option<Sig> {
         id::CARRIER_OF | id::PLAYER_OF => given(&[O], Some(P_)),
         id::OBJECT_TEAM => given(&[O], Some(T_)),
         id::END_ROUND | id::FF_TEAM_FINISH => given(&[T_], None),
+        id::FF_LIVES => given(&[P_, Type::Int], None),
         id::REGISTER_OBJECTIVE => given(&[O, T_], None),
         id::SPAWN_OBJECTIVE => given(&[Type::TAG, O, T_], None),
         id::SET_LOADOUT => given(&[P, W_, W_], None),
@@ -77,7 +78,7 @@ pub fn of(e: &Entry) -> Option<Sig> {
 pub fn event_args(ev: Event) -> &'static [Type] {
     match ev {
         Event::Kill => &[P, P_],
-        Event::Spawn | Event::Death | Event::Join | Event::Quit | Event::Bounced => &[P],
+        Event::Spawn | Event::Death | Event::Join | Event::Quit | Event::Bounced | Event::Grounded => &[P],
         Event::Pickup | Event::Drop | Event::Press | Event::Edit => &[P, O],
         Event::Bounce => &[P, Z, Type::Int, Type::Bool],
         Event::Enter | Event::Leave => &[Z, O],
@@ -85,6 +86,7 @@ pub fn event_args(ev: Event) -> &'static [Type] {
         Event::SquadDead => &[Type::Squad],
         Event::Damage => &[O, P_, Type::Fixed],
         Event::Touchdown => &[P, Type::Fixed, Type::Fixed],
+        Event::Launch => &[P, Type::H(Handle::Zone, true), Type::Fixed],
         Event::ActorKill => &[P_, Type::Class],
         Event::ActorAssist => &[P_, P_, Type::Class],
         Event::Init | Event::RoundStart | Event::Tick | Event::Timer | Event::RoundEnd => &[],

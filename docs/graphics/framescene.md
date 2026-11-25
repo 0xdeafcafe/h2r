@@ -233,7 +233,8 @@ hundred kilobytes at most (**Estimate**).
 | Gels | the template and quad sites | carried, then typed | 6, 9 |
 | Transparents | the sorted list `0x0001e370` dispatches | carried, then typed | 6, 9 |
 | Decals, particles, contrails, effects | the producers' draws | carried, then typed | 6, 9 |
-| Sky, layer 2, layers 15, 18, 19, 21 | their draws | carried | 6 |
+| Sky model | per-view node rows, section part and layer-15 material at its indexed strip (see [native-renderer.md](native-renderer.md)) | typed with packet fallback | 6 |
+| Other layer-15 draws, layers 18, 19, 21 | their draws | carried | 6 |
 | Lens flares and their visibility tests | the flare writer `0x00020bb0` and reader `0x00020770` | typed (a native query) | 6 |
 | HUD, menus, loading screens, movies | the UI dispatch `0x00147af1`, the fallback view `0x002232a0` | carried | 6 |
 
@@ -514,7 +515,7 @@ costs the most guest time" where it is not.
 | 1 | Camera, world layer 3, objects | read guest at the layer hook, game-thread prepare, packets | typed; render-thread prepare | none yet (masks stay while there is a remainder) | 1, 2 |
 | 2 | Object-walk remainder | about 14 objects a frame through D3D | typed (`PartFlags`) | the layer-3 geometry handlers for objects | 3 |
 | 3 | First person | per-item replacement at issue | typed | the layer-3 call in `0x0003fdf0` | 3 |
-| 4 | World layers 1, 5, 7, 8, 20 and 17 | recorded at the resolved draw | typed | those layers' draws | 3 |
+| 4 | World layers 1, 5, 7, 8, 20, 2 and 17 | recorded at the resolved draw | typed | those layers' draws | 3 |
 | 5 | Lights and shadows | admitted per packet; some lights refused | typed, shadows batched in one pass sequence | the light pass `0x00031c80` and the shadow layers | 3 |
 | 6 | Opaque block as a whole | mask bits edited and restored | whole-call replacement | `LAYER_DRAW` for layers 1, 3, 5, 7, 8, 20 | 4 |
 | 7 | Fog, water | native passes at their layer hooks | typed | layers 16 and 6 | 5 |
@@ -1015,13 +1016,13 @@ to the guest's draws (**Code**):
     `boot::native_layers_glue`). At the world's load (only with the
     stage placed; `native_render::layers_load::load`, which reads the
     map file alone, so the editor loads the same layers) each world
-    material's passes of each of the five
-    layers are compiled as the fog's layer 16 is (`fog_gpu::layer_passes`,
+    material's passes of each layer the plan takes (1, 5, 7, 8 and 20,
+    the overlay layer 2 and layer 17: `layer_pass::planned_layers`) are compiled as the fog's layer 16 is (`fog_gpu::layer_passes`,
     `FogProgram`), all or nothing per material and layer, and each
     material is resolved once with its instance's properties and input
     scales; `GpuWorld::set_layer` holds one `fog_gpu::FogSet` per layer.
-    The object models compile their materials' passes of layers 1, 5,
-    7, 8 and 20 at load with their layer-3 passes
+    The object models compile their materials' passes of layers 1, 2,
+    5, 7, 8, 17 and 20 at load with their layer-3 passes
     (`object_program_gpu::lit_model`, `object_program::object_layer_pass`:
     over the same buffers, the pass's blend kept for its pipeline, no
     lightmap stage, since outside layer 3 the geometry draw binds no
@@ -1038,14 +1039,17 @@ to the guest's draws (**Code**):
     section's registers only, and the program carries what the stream
     feeds (`PrtInput`).
     Before a scene view's layer draw (`layer_site` is `Site::Scene`; the
-    late layer 17 at `0x0002c30b` among them, `layer_pass::BLOOM_LAYER`),
-    before the first person's layers 1, 7, 8 and 20 (`Site::FirstPerson`;
-    its layer 3 is `native_first_person`'s), and before the sorted
+    overlay layer 2 after the dynamic lights at `0x0002c060`,
+    `layer_pass::OVERLAY_LAYER`, and the late layer 17 at `0x0002c30b`,
+    `layer_pass::BLOOM_LAYER`, among them), before the alternate view's layers 1, 5 and 2
+    (`Site::AlternateView`), before the first person's
+    layers 1, 7, 8, 20 and 2 (`Site::FirstPerson`, its layer 2 returning
+    to `0x00040289`; its layer 3 is `native_first_person`'s), and before the sorted
     transparent list's camouflage layers 18 and 19 and hologram layer 21 (`sorted_site`,
     [native-water-fog.md](native-water-fog.md)), the bridge extracts the
     layer's pass from guest memory and the host plans it
     (`render_bridge::native_layers::caller`). A structure item (the
-    scene's caller only) is drawn when it is a cluster's or a
+    main or alternate scene caller) is drawn when it is a cluster's or a
     placement's and the layer's set draws its part with its shader.
     The set compiles game-time constant bindings with a time-zero sample
     to check the registers the program reads. At each layer call the
@@ -1062,7 +1066,7 @@ to the guest's draws (**Code**):
     its state over the device's at the call,
     `object_state::resolve_layer`, blending kept) with its fog, sampling
     no texture accumulation target; the device must draw W-buffered over
-    the whole target, as layer 3's objects. An item toggling the
+    a single clip equal to the viewport. Packets use that viewport scaled to each target copy. An item toggling the
     auxiliary state is refused (its values are read at layer 3). An item
     with a PRT stream draws each pass's PRT variant with the stream's
     constants from `c[68]` on, written over the item's own as the draw
@@ -1117,7 +1121,7 @@ to the guest's draws (**Code**):
     stage cannot draw. Each ask's outcomes are counted in `render.scene`
     as `layer_plan_<layer>_taken` and
     `layer_plan_<layer>_refused_<cause>` (the first person's as
-    `layer_plan_fp<layer>_*`, a sorted handler's as
+    `layer_plan_fp<layer>_*`, the alternate view's as `layer_plan_alt<layer>_*`, a sorted handler's as
     `layer_plan_sorted<layer>_*`): the plan's causes
     (`LayerRefusal::name`, `per_draw` for a material resolved per draw),
     extraction's object causes (`LayerObjectRefusal::name`,
@@ -1128,7 +1132,7 @@ to the guest's draws (**Code**):
     would leave a render state other than the device holds:
     `skip_holds`),
     `object_models` (the caller's models are not resident or their
-    palettes changed), `object_viewport`, `object_w_buffer`,
+    palettes changed), `viewport`, `object_w_buffer`,
     `object_model` (the item's model is not uploaded), `object_plan`
     (a pass does not plan; the first of each reason is logged),
     `object_texaccum`, `object_fog`, `object_stencil`,
@@ -1220,14 +1224,10 @@ to the guest's draws (**Code**):
   The world keeps the draws of materials it does not translate and of
   parts that lack an input of their program ([native-world.md](native-world.md)),
   and the object walk the parts it refuses (`walk_unsupported`).
-- **The light passes and the shadow layers.** Models and rigid
-  placements keep their D3D handlers ([native-lights.md](native-lights.md),
-  "What a native light draws"), every layer keeps its handlers with the
-  additional casters' pair, and the gathered walk's GPU path takes a
-  group's live streams, pose, constants and bindings from the first
-  geometry handler, which the guest runs. The scene carries what that
-  handler supplies (built): at each layer build, the sorted entries the
-  walk builds (`render_bridge::native_lights::walk`) go into a group of
+- **The light passes and the shadow layers.** The gathered walk can draw
+  from a complete scene group or use the first guest geometry handler's
+  live streams, pose, constants and bindings. At each layer build, the
+  sorted entries from `render_bridge::native_lights::walk` go into a group of
   the light (`scene_extract::light_groups::push`,
   `frame_scene::LightGroup`, `LightEntry`; `FrameScene::groups_of`),
   each entry with its stream (section, part, vertex class, index range,
@@ -1244,10 +1244,12 @@ to the guest's draws (**Code**):
   ([e3-lighting.md](e3-lighting.md), "Sun shadows from objects"). The
   summary hash
   (`frame_scene::summary_hash`) covers the groups, their entries and the
-  object shadows. What the handler does
-  beyond binding and drawing (the auxiliary state toggle, state around
-  one part, visible subparts, a shader flag, a material animation, a
-  template callback) leaves the entry to the guest by named cause.
+  object shadows. For a visibility-masked part, the emitter's selected
+  index spans must form a single draw of the entire part. Contiguous
+  list spans can join, while separate strips require separate draws.
+  A partial or split span, an auxiliary state toggle, state around one
+  part, a shader flag, material animation or a template callback leaves
+  the entry to the guest by named cause.
   `native_render::light_scene::plan` turns a whole group into native
   draws from the scene alone, sorted order and duplicates kept,
   adjacent list ranges joined. A light's layer 12 or 13 whose group is
@@ -1318,7 +1320,11 @@ device's swallow. What is built (**Code**):
   items in the current list, each material the stage draws with and its
   words resolved over the device's (`LateMaterial`), the structure parts
   the stage draws in item order (`LatePart`), and whether the stage took
-  the layer. `View::post` is `PostParams`: what `render_screen_effects`
+  the layer. `View::water_composite` holds the teardown's four u16
+  corner indices per quad, in submitted order, independently of layer 6.
+  The indexed stage matches them to the rebased vertex window before
+  expanding the quads. The summary hash includes their order.
+  `View::post` is `PostParams`: what `render_screen_effects`
   was asked to draw (its two stack bytes, the view kind, the scenario's
   screen-effect count and the loop's gates, read as
   `scene_extract::layout::post::PostFrame` reads them), the colour pass
@@ -1335,7 +1341,10 @@ device's swallow. What is built (**Code**):
   then `render_bridge::scene_step::late_layer` writes the view's layer
   (with `scene_extract::late::layer_items`) and hands back the scene's
   copy, and the pass is built from that copy: the parts it draws and
-  each material's fog unit. A layer whose gate does not hold, with no
+  each material's fog unit. For mixed fog and water lists the guest sorts
+  all the entries and the native renderer offers indexed ranges at the
+  geometry emitter with the handler's state bound. The scene stage
+  clears masks only for a fully accepted layer. A layer whose gate does not hold, with no
   structure item, or that the glue leaves to the guest is written as
   the guest draws it (`late_kept`). The frame step observes
   `RENDER_SCREEN_EFFECTS` for `PostParams`; `native_post`'s colour-pass

@@ -17,7 +17,10 @@
 //! rectangle for the live preview and the later live push), one undo step.
 //! The undo stack is across bitmaps: `history` names which bitmap each step
 //! belongs to, and whether it changed pixels or the bitmap's shape (an
-//! image added, an image resized, a sequence added).
+//! image added, an image resized, a sequence added). Each step is numbered
+//! among the steps of its bitmap's document (`TagDoc::next_step`), so a
+//! bitmap's tab undoes its own in the order they were made beside the
+//! bitmap's own writes (docs/editor/studio-flow.md, "Shared patterns").
 //!
 //! A bitmap that gained images or sequences no longer fits where it is
 //! stored: the save writes the whole tag again at the end of the metadata
@@ -45,22 +48,29 @@ use super::App;
 const GIT_REFUSAL: &str =
     "maps and renders from your disc stay out of repositories; pick a path outside it";
 
-/// The canvas tools (docs/editor/modeling.md, the keys: B, E, G, I; the
-/// selection is a rectangle that fill, adjust and import are limited to).
+/// The canvas tools (docs/editor/modeling.md, the keys: B, E, S, G, I; the
+/// selection is a rectangle that fill, adjust, import, channel copy and
+/// the turns are limited to). With a brush, the eraser or the clone,
+/// Shift+click is a straight stroke from the last point painted
+/// ([`BitmapAction::Line`]); the clone tool's source is a click with Alt
+/// held (`Textures::clone_source`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PaintTool {
     #[default]
     Brush,
     Eraser,
+    /// The brush, copying from [`Textures::clone_source`].
+    Clone,
     Fill,
     Eyedropper,
     Select,
 }
 
 impl PaintTool {
-    pub const ALL: [PaintTool; 5] = [
+    pub const ALL: [PaintTool; 6] = [
         PaintTool::Brush,
         PaintTool::Eraser,
+        PaintTool::Clone,
         PaintTool::Fill,
         PaintTool::Eyedropper,
         PaintTool::Select,
@@ -70,6 +80,7 @@ impl PaintTool {
         match self {
             PaintTool::Brush => "Brush",
             PaintTool::Eraser => "Eraser",
+            PaintTool::Clone => "Clone",
             PaintTool::Fill => "Fill",
             PaintTool::Eyedropper => "Eyedropper",
             PaintTool::Select => "Select",
@@ -202,7 +213,10 @@ impl OpenBitmap {
 
     /// Sprite `sprite` of sequence `index`, as the sprite editor shows it.
     pub fn sprite(&self, index: usize, sprite: usize) -> Option<SpriteView> {
-        self.sequence(index)?.sprites.get(sprite).map(|r| SpriteView::read(r))
+        self.sequence(index)?
+            .sprites
+            .get(sprite)
+            .map(|r| SpriteView::read(r))
     }
 
     /// The tag's sequences, then the added ones.
@@ -225,9 +239,17 @@ impl OpenBitmap {
     }
 }
 
-/// One undo step of the Textures tool.
+/// One undo step of the Textures tool: the bitmap it belongs to, what it
+/// changed, and its number among the steps of the bitmap's document
+/// (`TagDoc::next_step`).
 #[derive(Clone, Debug)]
-enum Step {
+struct Step {
+    serial: u64,
+    kind: EditKind,
+}
+
+#[derive(Clone, Debug)]
+enum EditKind {
     /// A pixel edit, in the bitmap's own history.
     Pixels(TagId),
     /// A change to the bitmap's shape.
@@ -236,8 +258,8 @@ enum Step {
 
 impl Step {
     fn tag(&self) -> TagId {
-        match self {
-            Step::Pixels(t) | Step::Shape(t, _) => *t,
+        match &self.kind {
+            EditKind::Pixels(t) | EditKind::Shape(t, _) => *t,
         }
     }
 }
@@ -285,6 +307,10 @@ pub struct Textures {
     pub tolerance: f32,
     /// The rectangle fill, adjust and import are limited to.
     pub selection: Option<Rect>,
+    /// The clone tool's source: the pixel centre it copies from, on the
+    /// layer it was set on. Kept while that layer is the one on the
+    /// canvas; forgotten with the edits.
+    pub clone_source: Option<(LayerId, [f32; 2])>,
     /// Canvas zoom in screen pixels per image pixel.
     pub zoom: f32,
     /// Changes when a bitmap is decoded again or dropped, so a texture
@@ -329,6 +355,7 @@ impl Default for Textures {
             channels: Channels::ALL,
             tolerance: 0.1,
             selection: None,
+            clone_source: None,
             zoom: 4.0,
             generation: 0,
             filter: String::new(),
@@ -382,10 +409,30 @@ impl Textures {
     /// The bitmap the newest undo step belongs to, when that step changed
     /// pixels.
     pub fn last_step(&self) -> Option<TagId> {
-        match self.history.last()? {
-            Step::Pixels(t) => Some(*t),
-            Step::Shape(..) => None,
+        match &self.history.last()?.kind {
+            EditKind::Pixels(t) => Some(*t),
+            EditKind::Shape(..) => None,
         }
+    }
+
+    /// The number of bitmap `tag`'s newest step not undone. `None` while a
+    /// stroke is being drawn: it is a step when it ends.
+    pub fn step_serial(&self, tag: TagId) -> Option<u64> {
+        if self.stroke.is_some() {
+            return None;
+        }
+        let i = self.history.iter().rposition(|s| s.tag() == tag)?;
+        Some(self.history[i].serial)
+    }
+
+    /// The number of bitmap `tag`'s oldest undone step, the next a redo of
+    /// its tab takes.
+    pub fn redo_serial(&self, tag: TagId) -> Option<u64> {
+        if self.stroke.is_some() {
+            return None;
+        }
+        let i = self.redo.iter().rposition(|s| s.tag() == tag)?;
+        Some(self.redo[i].serial)
     }
 
     /// The brush a stroke paints with: the settings, the foreground colour
@@ -421,6 +468,7 @@ impl Textures {
         self.face = 0;
         self.slice = 0;
         self.selection = None;
+        self.clone_source = None;
         self.stroke = None;
         self.history.clear();
         self.redo.clear();
@@ -456,6 +504,25 @@ pub enum BitmapAction {
         y: f32,
     },
     StrokeEnd,
+    /// A clone drag: as `StrokeBegin`, each stamp copying from `at` of the
+    /// layer `from` (the layer painted without one), as it is now. The
+    /// brush is the tool's; `StrokeTo` and `StrokeEnd` finish it.
+    CloneBegin {
+        tag: TagId,
+        layer: LayerId,
+        from: Option<LayerId>,
+        at: [f32; 2],
+    },
+    /// A straight stroke with the tool's brush from the last point painted
+    /// (`from`) to `to`, pixel coordinates: what `bitmap.paint` does with
+    /// two points. With the clone tool the stroke copies from the tool's
+    /// source, and is refused while there is none. One undo step.
+    Line {
+        tag: TagId,
+        layer: LayerId,
+        from: [f32; 2],
+        to: [f32; 2],
+    },
     /// Replace a layer, or a rectangle of it, from a PNG.
     Import {
         tag: TagId,
@@ -688,7 +755,9 @@ impl App {
             }
             images.push(info);
         }
-        let stored_sequences = parts.as_ref().map_or_else(|_| Vec::new(), |p| p.sequences.clone());
+        let stored_sequences = parts
+            .as_ref()
+            .map_or_else(|_| Vec::new(), |p| p.sequences.clone());
         Ok(OpenBitmap {
             tag,
             name,
@@ -830,7 +899,9 @@ impl App {
                 let at = at as usize;
                 bytes
                     .get_mut(at..at + b.len())
-                    .ok_or_else(|| format!("image {}: a record write lies past the tag", info.index))?
+                    .ok_or_else(|| {
+                        format!("image {}: a record write lies past the tag", info.index)
+                    })?
                     .copy_from_slice(&b);
             }
             raw.extend(plan.appended.into_iter().map(|a| MovedRaw {
@@ -896,6 +967,50 @@ impl App {
         assets::encode::encode_tiles(src, &planes, &dirty).map_err(|e| e.to_string())
     }
 
+    /// The format a save should write image `image` of bitmap `tag` in at
+    /// `size` (default: the size it saves at now): the one it has when
+    /// that holds the picture's alpha, else the smallest that does
+    /// (`assets::write::suggest_format`). The layers are looked at as
+    /// they are painted, at the new size when it differs.
+    pub fn suggest_bitmap_format(
+        &mut self,
+        tag: TagId,
+        image: usize,
+        size: Option<(u32, u32)>,
+    ) -> Result<PixelFormat, String> {
+        self.ensure_bitmap(tag)?;
+        let asked = self.textures.reshape.get(&(tag, image)).copied();
+        let open = &self.textures.open[&tag];
+        let info = open
+            .images
+            .get(image)
+            .ok_or_else(|| format!("the bitmap has no image {image}"))?;
+        if let Some(why) = info.locked.as_ref().or(info.error.as_ref()) {
+            return Err(format!("image {image} is not written: {why}"));
+        }
+        let src = info.source.as_ref().ok_or("the image has no record")?;
+        let current = asked.map_or(src.format, |r| r.format);
+        let (w, h) = size
+            .or_else(|| asked.map(|r| (r.width, r.height)))
+            .unwrap_or((u32::from(src.dimensions[0]), u32::from(src.dimensions[1])));
+        let to = Reshape {
+            width: w,
+            height: h,
+            format: current,
+        };
+        let (data, depth) = plane_data(open, info, Some(to))?;
+        let refs: Vec<&[u8]> = data.iter().map(Vec::as_slice).collect();
+        Ok(assets::write::suggest_format(
+            &Planes {
+                width: w,
+                height: h,
+                depth,
+                planes: &refs,
+            },
+            current,
+        ))
+    }
+
     pub(super) fn run_bitmap(&mut self, action: BitmapAction) {
         self.sync_textures();
         if let Err(e) = self.bitmap_action(action) {
@@ -912,16 +1027,35 @@ impl App {
 
     fn note_edit(&mut self, tag: TagId, applied: Applied) {
         if !applied.dirty.is_empty() {
-            self.textures.history.push(Step::Pixels(tag));
+            self.textures.history.push(Step {
+                serial: self.tags.next_step(),
+                kind: EditKind::Pixels(tag),
+            });
             self.textures.redo.clear();
         }
         self.textures.last = Some((tag, applied));
     }
 
+    /// The clone tool's source is a point of the layer it was set on: once
+    /// another image, face or slice is on the canvas, there is none.
+    fn forget_clone_source_of_another_layer(&mut self) {
+        let shown = LayerId::new(
+            self.textures.image as u32,
+            self.textures.face,
+            self.textures.slice,
+        );
+        if self.textures.clone_source.is_some_and(|(l, _)| l != shown) {
+            self.textures.clone_source = None;
+        }
+    }
+
     /// Records a change to a bitmap's shape as an undo step. The redo
     /// steps, the Textures tool's and the bitmap's own, are dropped.
     fn note_shape(&mut self, tag: TagId, shape: Shape) {
-        self.textures.history.push(Step::Shape(tag, shape));
+        self.textures.history.push(Step {
+            serial: self.tags.next_step(),
+            kind: EditKind::Shape(tag, shape),
+        });
         self.textures.redo.clear();
         for o in self.textures.open.values_mut() {
             o.bitmap.clear_redo();
@@ -1047,8 +1181,8 @@ impl App {
         if label.len() > 31 {
             return Err(format!("label {label:?} is over 31 bytes"));
         }
-        let first16 =
-            i16::try_from(first).map_err(|_| format!("image {first} is past a sequence's reach"))?;
+        let first16 = i16::try_from(first)
+            .map_err(|_| format!("image {first} is past a sequence's reach"))?;
         let like = parts
             .sequences
             .first()
@@ -1182,7 +1316,10 @@ impl App {
     fn remove_sprite(&mut self, tag: TagId, index: usize, sprite: usize) -> Result<(), String> {
         self.edit_sequence(tag, index, |s, _| {
             if sprite >= s.sprites.len() {
-                return Err(format!("sprite {sprite}: the sequence has {}", s.sprites.len()));
+                return Err(format!(
+                    "sprite {sprite}: the sequence has {}",
+                    s.sprites.len()
+                ));
             }
             s.sprites.remove(sprite);
             Ok(format!("sprite {sprite} removed"))
@@ -1258,10 +1395,12 @@ impl App {
                 self.textures.face = 0;
                 self.textures.slice = 0;
                 self.textures.selection = None;
+                self.forget_clone_source_of_another_layer();
             }
             BitmapAction::Layer { face, slice } => {
                 self.textures.face = face;
                 self.textures.slice = slice;
+                self.forget_clone_source_of_another_layer();
             }
             BitmapAction::Apply { tag, op } => {
                 self.ensure_bitmap(tag)?;
@@ -1303,6 +1442,54 @@ impl App {
                 {
                     self.note_edit(tag, applied);
                 }
+            }
+            BitmapAction::CloneBegin {
+                tag,
+                layer,
+                from,
+                at,
+            } => {
+                self.ensure_bitmap(tag)?;
+                let brush = self.textures.paint_brush();
+                self.open_mut(tag)?
+                    .bitmap
+                    .begin_clone(layer, brush, from, at)
+                    .map_err(|e| e.to_string())?;
+                self.textures.stroke = Some(tag);
+            }
+            BitmapAction::Line {
+                tag,
+                layer,
+                from,
+                to,
+            } => {
+                self.ensure_bitmap(tag)?;
+                let (tool, source, brush) = (
+                    self.textures.tool,
+                    self.textures.clone_source,
+                    self.textures.paint_brush(),
+                );
+                let op = match (tool, source) {
+                    (PaintTool::Clone, Some((source_layer, at))) => BitmapOp::Clone {
+                        layer,
+                        from: (source_layer != layer).then_some(source_layer),
+                        source: at,
+                        points: vec![from, to],
+                        brush,
+                    },
+                    (PaintTool::Clone, None) => {
+                        return Err(
+                            "no clone source yet: click the canvas with the clone tool to set one"
+                                .to_owned(),
+                        );
+                    }
+                    _ => BitmapOp::Paint {
+                        layer,
+                        points: vec![from, to],
+                        brush,
+                    },
+                };
+                return self.bitmap_action(BitmapAction::Apply { tag, op });
             }
             BitmapAction::Import {
                 tag,
@@ -1348,6 +1535,7 @@ impl App {
                 format,
             } => {
                 self.ensure_bitmap(tag)?;
+                let was = self.textures.reshape.get(&(tag, image)).copied();
                 let open = self.open_mut(tag)?;
                 let info = open
                     .images
@@ -1357,14 +1545,16 @@ impl App {
                     return Err(format!("image {image} is not written: {why}"));
                 }
                 let src = info.source.clone().ok_or("the image has no record")?;
-                let (w, h) = (
-                    width.unwrap_or(u32::from(src.dimensions[0])),
-                    height.unwrap_or(u32::from(src.dimensions[1])),
-                );
+                let current = was.unwrap_or(Reshape {
+                    width: u32::from(src.dimensions[0]),
+                    height: u32::from(src.dimensions[1]),
+                    format: src.format,
+                });
+                let (w, h) = (width.unwrap_or(current.width), height.unwrap_or(current.height));
                 let want = Reshape {
                     width: w,
                     height: h,
-                    format: format.unwrap_or(src.format),
+                    format: format.unwrap_or(current.format),
                 };
                 // Refuse now what the save would refuse later.
                 assets::write::reshaped(&src, want).map_err(|e| e.to_string())?;
@@ -1372,7 +1562,6 @@ impl App {
                 let same = want.width == u32::from(src.dimensions[0])
                     && want.height == u32::from(src.dimensions[1])
                     && want.format == src.format;
-                let was = self.textures.reshape.get(&(tag, image)).copied();
                 let now = (!same).then_some(want);
                 if was == now {
                     return Ok(());
@@ -1503,38 +1692,69 @@ impl App {
         } else {
             self.textures.redo.pop()
         };
-        let tag = match step {
-            None => return false,
-            Some(Step::Pixels(tag)) => tag,
-            Some(Step::Shape(tag, shape)) => {
+        step.is_some_and(|step| self.textures_take(step, undo))
+    }
+
+    /// Undo (or redo) the last Textures edit of bitmap `tag`, a step of its
+    /// tab's document (docs/editor/studio-flow.md, "Shared patterns"): the
+    /// newest not undone, wherever it lies under other bitmaps' steps, or
+    /// the oldest undone. Whether one moved.
+    pub(super) fn textures_undo_in(&mut self, tag: TagId, undo: bool) -> bool {
+        self.sync_textures();
+        if self.textures.stroke.is_some() {
+            return false;
+        }
+        let list = if undo {
+            &mut self.textures.history
+        } else {
+            &mut self.textures.redo
+        };
+        let Some(i) = list.iter().rposition(|s| s.tag() == tag) else {
+            return false;
+        };
+        let step = list.remove(i);
+        self.textures_take(step, undo)
+    }
+
+    /// Move `step` to the other stack, taking the bitmap with it: a pixel
+    /// edit is undone (or redone) in the bitmap's own history, and a shape
+    /// step is swapped for its opposite. A step whose bitmap has lost its
+    /// side of it is dropped. Whether the step was taken.
+    fn textures_take(&mut self, step: Step, undo: bool) -> bool {
+        let tag = step.tag();
+        let moved = match step.kind {
+            EditKind::Shape(_, shape) => {
                 let Some(other) = self.swap_shape(tag, shape, undo) else {
                     return false;
                 };
-                let step = Step::Shape(tag, other);
-                if undo {
-                    self.textures.redo.push(step);
-                } else {
-                    self.textures.history.push(step);
+                Step {
+                    serial: step.serial,
+                    kind: EditKind::Shape(tag, other),
                 }
-                return true;
             }
-        };
-        let applied = self.textures.open.get_mut(&tag).and_then(|o| {
-            if undo {
-                o.bitmap.undo()
-            } else {
-                o.bitmap.redo()
+            EditKind::Pixels(_) => {
+                let applied = self.textures.open.get_mut(&tag).and_then(|o| {
+                    if undo {
+                        o.bitmap.undo()
+                    } else {
+                        o.bitmap.redo()
+                    }
+                });
+                let Some(applied) = applied else {
+                    return false;
+                };
+                self.textures.last = Some((tag, applied));
+                Step {
+                    serial: step.serial,
+                    kind: EditKind::Pixels(tag),
+                }
             }
-        });
-        let Some(applied) = applied else {
-            return false;
         };
         if undo {
-            self.textures.redo.push(Step::Pixels(tag));
+            self.textures.redo.push(moved);
         } else {
-            self.textures.history.push(Step::Pixels(tag));
+            self.textures.history.push(moved);
         }
-        self.textures.last = Some((tag, applied));
         true
     }
 }

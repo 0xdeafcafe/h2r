@@ -19,12 +19,17 @@
 //! guest write, and the lifted code runs instead.
 #![deny(clippy::disallowed_methods)]
 
+pub mod batch;
 pub mod bsp;
 pub mod flood;
+pub mod instance;
 pub mod mem;
+pub mod model;
 pub mod objects;
 pub mod mopp;
+pub mod sphere;
 pub mod structure;
+mod store;
 mod world;
 
 #[cfg(any(test, feature = "synth"))]
@@ -35,7 +40,7 @@ pub use bsp::{Bsp, Consts};
 pub use flood::{Flood, FloodQuery, Topology, TopologyKey};
 pub use mem::{Fault, GuestRead};
 pub use objects::{Visit, VisitQuery};
-pub use world::{CollisionWorld, Entry, EntryStats, Stats};
+pub use world::{CollisionWorld, Entry, EntryStats, RayParity, SourceFingerprint, Stats, VectorParity};
 
 /// Why a query was left to the lifted code. Nothing was written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

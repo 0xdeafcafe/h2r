@@ -2,11 +2,41 @@
 
 Status: plan, 2026-11-20. The `SimExt` blob (section 2) is partly built,
 with tests only. Phase 1b's skeleton walk in `bd090` is built, with tests
-only ([skeleton-walk.md](skeleton-walk.md)); `1dd1c0` is not. The phase 1c bodies cover
+only ([skeleton-walk.md](skeleton-walk.md)). Its graph walk `1dd1c0` is
+built and runs as an arm, the guest answering and the Rust result compared
+with it at every call. The phase 1c bodies cover
 [markers](markers.md), the [first-person palette](palette.md), the
 [unit pose](unit-pose.md), unit aim (`c7840`) and the
 [first-person filters](first-person-filters.md) (`166d75`, including
-`11eed0`). Slice 1d implements the [channel manager and graph lookups](animation-manager.md). Run parity and the cumulative timing gate remain open.
+`11eed0`). Slice 1d compares all six [channel manager and graph entries](animation-manager.md)
+with the guest at their entry and return selectors. The guest supplies the
+result. The verification ladder and cumulative 1.2 ms/tick gate remain open.
+Phase 2 answers point, location and MOPP box queries, the object-reference
+sphere pretest and exact exits in the BSP walk, instance trace, cluster
+flood and object visit. The whole-query planner follows structure,
+liquid, instances and object models. It compares its answer at the
+lifted return and supplies the read-only `collision.trace` method.
+The general Havok ray remains under live parity. The exit ladder includes
+run hashes, a cold-cache comparison, cross-architecture results and timing.
+The [collision entry contracts](collision-queries.md) list each exit.
+Phase 3 runs behind `impl.sim.native.objects` as register-level bodies
+over the retail frames ([sim-rewrite-objects.md](sim-rewrite-objects.md)),
+and its curve evaluator — the tag-function curves `13b390` every function
+value, light and screen effect flows through — runs as an idiomatic kernel
+in `crates/rewrites/sim-objects` compared with the guest at every call
+(`engine::sim_objects::functions::parity`).
+Phase 4 runs as an opt-in sound arm. Its synthetic differential harness compares the
+guest and Rust sound bodies at each call and return. The owner-image, match,
+campaign, cross-architecture and timing results are pending.
+
+Phase 5 has landed its kernels and arms
+([sim-rewrite-havok.md](sim-rewrite-havok.md)): `impl.sim.native.physics`
+installs the world step, island collide and island integrate entries, the
+broadphase batch update, the two unconstrained-motion methods and the
+MOPP box query run as capture arms compared with the guest, and the Havok
+heap digest (`havok.digest`, the sim report's `havok.world` component)
+covers what the arena hash cannot. The per-function Havok and MOPP box
+switches are retired. The run ladder and the timing gate are open.
 The plan replaces the verdict in
 [feature-engine.md](feature-engine.md) ("Subsystem map and ranking", rows
 15-18) that objects, AI and physics "stay recompiled". The user asked on
@@ -346,19 +376,24 @@ as runtime before).
   - surfaces, planes and leaves as flat arrays;
   - MOPP programs pre-decoded (the `mopp` crate already holds the interpreter
     as a query model and an offline compiler);
-  - an object spatial index that replaces the `bb050` visit-mark walk on the
-    Rust side, while still writing the guest's visit stamps.
+  - a decoded portal graph and a per-query traversal of the live object
+    reference lists, preserving visit order and guest stamps.
 - *Entries:*
   - collision query `1697c0`;
   - BSP segment `1de630` and `1de6d0`;
   - point to leaf `14a280`;
-  - geometry test `11e5e0`;
+  - geometry test `11e5e0` at the whole query's object-reference call site;
   - float MOPP ray `3009e0` with its Havok path `244980` → `2df720` →
-    `301800` (1.80% of the thread, no caller inside the world step);
+    `301800` (1.80% of the thread, no caller inside the world step); the
+    native walk (`sim_collision::mopp::ray`) follows `301800` as a parity
+    arm that counts matches and the first mismatch, while the guest's
+    answer stands until it shows parity
+    ([collision-queries.md](collision-queries.md), "Entry I");
   - the datum walk `b89b0`;
   - spatial query `14a370` and the cluster walk `14a5b0`.
-- *Not in this phase.* The integer MOPP box query `2ff8b0` is called only
-  from the world step's contact agents (0.79%). It moves with Havok.
+- *Havok boxes.* The collision world answers the box wrapper `300150`.
+  Its inner integer interpreter `2ff8b0` and contact-agent callers also
+  belong to the Havok world-step census in phase 5.
 - *Callers.* The observer camera asks for 32% of the queries and 82% of the
   ray casts (`16f280` → `170fd0` → `171830`), sound 19% (listener leaf
   `11bed0`, obstruction `221e30`), the object spatial marks 24% and aim
@@ -398,8 +433,25 @@ as runtime before).
   Voice start, pitch, completion order and the callback grid must match,
   because completion feeds the guest ([sim-budget.md](../perf/sim-budget.md),
   "Headless guest dependencies").
-- *Hosts.* With the scheduling in Rust, a silent host can skip the
-  per-voice DirectSound calls it now makes only to keep a clock.
+- *Implementation.* `sim-sound` owns the working data for a sound update,
+  including listener axes, channel levels, track selection and obstruction
+  weights. The engine adapters gather each set of inputs from the current
+  guest state. They submit the results to the existing mixer and reload live
+  records across callbacks. The driver fuses calls between sound bodies and
+  uses the original stack at calls to other systems. Reverting an arena
+  restores the persistent sound records directly.
+- *Channel choice.* The census (`128500`), class ranking (`128b90`), pick
+  (`128700`), pressure scan (`128920`) and per-class ceiling (`128a60`) run
+  as bodies in `native_sound_sources/channels.rs`, deciding through
+  `sim_sound::{sources::VoicePriority, scheduling::CappedSelection}`. Their
+  synthetic differential cases are in `tests/sim_sound_differential/channel_choice.rs`.
+- *Verification.* Full sim reports with arena hashes include the ordered
+  `sound.voices` component. Compare complete reports from the lifted and
+  native arms with `h2 sim diff`. A quiet tick has an empty event list.
+  The clock-only arm still submits the room and filter parameters and
+  delivers any callbacks at the setters. [Sound reporting](../runtime/sim.md#finding-the-first-differing-state)
+- *Hosts.* Per-voice DirectSound submissions still drive the silent clock. Replacing
+  a submission requires preserving its completion and callback order.
 
 **Havok world (phase 5).**
 
@@ -424,9 +476,11 @@ as runtime before).
 
 **AI, actors, pathfinding and HaloScript (campaign; slot set by census B).**
 
-- *HaloScript.* The `crates/formats/hs` VM exists and is not wired in
-  ([hs_vm.md](hs_vm.md)). It goes in behind `impl.sim.native.hs`, with
-  arena-hash parity on campaign levels.
+- *HaloScript.* Under `impl.sim.native.hs` the [Rust VM](hs_vm.md#live-comparison)
+  compares supported whole threads, scheduling order, expression results,
+  global cells and builtin argument dispatch against the guest. The guest
+  is authoritative. Promotion requires engine-call and suspension coverage
+  plus campaign arena-hash parity through the verification ladder.
 - *Pathfinding.* `crates/formats/pathfind` decodes and generates the data.
 - *AI.* `AI_TARGET_SCORE` `265d30` is already a named hot point.
 - *Order.* Set by the phase 0 campaign census, not guessed here.
@@ -441,6 +495,25 @@ and the game engine. With the animation and collision they ask for, four
 local seats drive 16% of the thread. Phantom seats may not run most of it,
 so census A's phantom arm decides whether this phase matters to hosts or
 only to players.
+
+Built behind `impl.sim.native.seats` (`crates/rewrites/engine/src/sim_seats`,
+one entry per function): the observer camera `171d90`, the look curve
+`185b30`, the player-control update `185be0` (the unbound entry, which the
+phantom seats take, and every segment from the first look-curve return on —
+the bound controller's device reading stays guest), the action `1505f0`,
+neutral `150790` and unit `c6de0` control packet builders, the HUD's
+per-seat update `13a838`, the aim-assist cone `1a50a0`, the target
+comparator `1a66f0` and the observer resource walk `16e5e0`. The target
+search `1a5370`, the follow update `1a4900` and the shot aim `1a4c00` are
+bodies too, proven on the disc by the shadow arm rather than the synthetic
+differential. The entries install as the shadow's guest-authoritative arm:
+`shadow.enable` on, the original answers and each body is checked against
+it on a copy; checks off, the bodies answer. The switch retires
+`native_observer_camera`. `observer-resources` (the trim that spares the
+headless host most of the prediction walk) stays on by default until the
+seats are promoted: with the seats on it stands down, because the seats'
+resource walk covers its point, and with them off it keeps hosts fast.
+It goes when the seats default on.
 
 **Network replication.** Stays guest. Rust subsystems feed it the same arena
 state.
@@ -458,13 +531,13 @@ still uses them.
 | **1a** | Animation sampling (detailed below). 3.5% of the thread. | `impl.sim.native.anim` | Ladder steps 1-6 clean. Waterworks ≥ 0.3 ms/tick faster. Evaluator family self samples down ≥ 80%. Retires `native_rotation_codec` and `native_animation_stream`. This delta calibrates the model's *k*. |
 | **1b** | Node-matrix build (`1421f0`, `142a60`, `141e10`, the loop that drives them in `bd090`'s pose step, and `1dd1c0`). 2.9%. | same switch; the `bd090` walk also has `impl.sim.native.anim.skeleton` (on) | Ladder clean. Cumulative ≥ 0.6 ms. Retires `native_transform_compose` and `native_pose_matrix`. |
 | **1c** | Unit pose and overlays (`112070` with its aim channels and aim angles), the unit aim update `c7840`, first-person pose and filters (`16760c`, `166d75` with its filter step `11eed0`), model nodes and marker transforms (`b8d30`, `1d8f00`, `1d8f50`). 3.9%. | same switch | Ladder clean. Cumulative ≥ 0.9 ms. Retires `native_unit_pose`, `native_marker_transforms`, `native_first_person_pose`, `native_first_person_filters` and `native_unit_aim`. |
-| **1d** | Animation manager and graph resolve (`1c66a0`, `1c6f60`, `1cd590`, `1daea0`, `1dd9d0`, `1ddb40`). 3.4%. | same switch | Ladder clean. Cumulative **≥ 1.2 ms**. Retires `native_graph_resolve`. |
-| **2** | Collision world and queries, with the Havok ray path | `impl.sim.native.collision` | Ladder clean. ≥ 0.45 ms more. Retires `native_point_to_leaf`, `native_geometry_test`, `native_bsp_segment`, `native_collision_query`, `native_mopp_ray`, `native_spatial_visit` and `native_spatial_portal`. |
+| **1d** | Animation manager and graph resolve (`1c66a0`, `1c6f60`, `1cd590`, `1daea0`, `1dd9d0`, `1ddb40`). 3.4%. | same switch | Ladder clean. Cumulative **≥ 1.2 ms**. The animation switch owns graph resolution. |
+| **2** | Collision world and queries, with the Havok ray path | `impl.sim.native.collision` | Ladder clean. ≥ 0.45 ms more. Retires `native_point_to_leaf`, `native_geometry_test`, `native_bsp_segment`, `native_collision_query`, `native_mopp_ray`, `native_spatial_visit` and `native_spatial_portal`. The subsystem owns collision dispatch and the per-function bodies serve as differential oracles. |
 | **3** | Object update walk, function evaluator, lights, per-type callbacks type by type (units, then bipeds, vehicles, weapons) | `impl.sim.native.objects` | Ladder clean. ≥ 1.5 ms more. Retires `native_object_import`, `native_object_value`, `native_base_object_import`, `native_object_pre_update`, `native_object_post_update`, `native_objects_pre_physics`, `native_objects_post_physics`, `native_object_change_colors`, `native_unit_update`, `native_light_record` and `static-light`. |
-| **4** | Sound sim | `impl.sim.native.sound` | Ladder clean, with voice start and completion order compared per tick. ≥ 0.6 ms more. Retires `submix-fx`. |
+| **4** | Sound sim | `impl.sim.native.sound` | Opt-in native arm. Promote after the ladder matches, including voice start and completion order per tick, and Waterworks saves ≥ 0.6 ms/tick. |
 | **5** | Havok world and glue, with the MOPP box query | `impl.sim.native.physics` | Bar E (decision 8.1). Behaviour suites pass. Cross-arch hashes identical. ≥ 1.0 ms more. Retires `native_havok_solver`, `native_havok_support_vertices`, `native_havok_weld` and `native_mopp_box`. |
 | **6** | Effects, particles, decals | `impl.sim.native.effects` | Ladder clean. ≥ 0.4 ms more. **Waterworks ≤ 7.5 ms/tick** if *k* ≥ 3.3; otherwise after phase 7. |
-| **7** | Seats and rules: observer and cameras, player control, aim assist, HUD state | `impl.sim.native.seats` | Ladder clean. ≥ 0.9 ms more on four local seats. Retires `native_observer_camera` and `observer-resources`. Skipped for hosts if phantom seats do not run it. |
+| **7** | Seats and rules: observer and cameras, player control, aim assist, HUD state | `impl.sim.native.seats` (built) | Ladder clean. ≥ 0.9 ms more on four local seats. Retires `native_observer_camera` (done) and, when the seats default on, `observer-resources`. Skipped for hosts if phantom seats do not run it. |
 | **campaign** | HaloScript VM, AI, pathfinding, in the order census B gives; may move ahead of 4 | one per subsystem | Campaign guest CPU ≤ 12 ms at the user's 4x case. |
 
 Projected Waterworks ms/tick after each phase, from the attribution's model
@@ -602,10 +675,17 @@ It touches nothing owned by Live, bots, theater or film.
 is inline in `bd090`, whose register-level port runs it; at the loop's
 entry the port calls `sim_anim::build_matrices` through
 `engine::sim_anim::skeleton`, so one Rust call builds every matrix of an
-object ([skeleton-walk.md](skeleton-walk.md)). `1dd1c0` runs the same loop
-for the animation graph's own callers (219 and 182 visible samples into
-`1421f0` and `142a60`) and is 1b's remaining part; `native_transform_compose`
-and `native_pose_matrix` retire with it.
+object ([skeleton-walk.md](skeleton-walk.md)). `1dd1c0` runs the same
+leaves for the animation graph's own callers (219 and 182 visible samples
+into `1421f0` and `142a60`) over a queue of child and sibling links.
+`sim_anim::graph_matrices` computes it in one call
+([skeleton-walk.md](skeleton-walk.md#the-graph-walk-1dd1c0)). Under
+`impl.sim.native.anim` it runs as an arm: `engine::sim_anim::graph_walk`
+plans each call at the entry, the guest answers, and the plan is compared
+with the guest's result, counted and the first mismatch named
+(`anim.graph_walk`). The body that answers without the guest replaces the
+arm once the arm shows no mismatch over the ladder's runs;
+`native_transform_compose` and `native_pose_matrix` retire then.
 
 1c's marker slice follows the same shape: the marker port
 (`sim_native::marker`, `b8d30`) stays the vehicle, and where it would
@@ -635,10 +715,10 @@ The differential in `engine/tests/sim_physics_differential.rs` checks
 the transfer, CPU and memory at the boundaries and requires every site.
 The phase 1c ladder and cumulative timing gate are in the table above.
 
-The unit animation state `111650`
-is a body of the object update (slice 6c, [object-update.md](object-update.md)). 1d's step 0 is the write set of `1c66a0`, `1c6560` and
-`1cd590` (channel state in object data) and the readers of the graph
-resolve results.
+The unit animation state `111650` is a body of the object update
+(slice 6c, [object-update.md](object-update.md)). The [channel manager
+contract](animation-manager.md) describes the channel writes, callback
+frames and sampling view that the phase 1d arms compare.
 
 ## 6. Threading inside a tick
 

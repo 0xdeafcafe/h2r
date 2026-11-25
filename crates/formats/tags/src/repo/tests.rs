@@ -1428,7 +1428,8 @@ fn a_sound_at_two_indices_of_two_gestalts_is_one_asset() {
         &nodes[0].bytes[0x14 + 8 + 8..0x14 + 8 + 8 + 4],
         &1u32.to_le_bytes()
     );
-    let extra = nodes.last().unwrap();
+    // The extra info row, opened before the array its block names.
+    let extra = &nodes[5];
     assert_eq!(extra.size, 0x2c);
     assert_eq!(
         extra.fields,
@@ -1623,7 +1624,7 @@ fn a_padded_raw_of_the_globals_is_cut_to_its_stored_size() {
         schema: Some(&schema),
         ..normal::Tables::none()
     };
-    let globals = |bytes: Vec<u8>| tag(g(b"matg"), "globals\\globals", 0x1a4, 0x0, 0x4, 100, bytes);
+    let globals = |bytes: Vec<u8>| tag(b"matg", "globals\\globals", 0x1a4, 0x0, 0x4, 100, bytes);
     let (a, b) = (
         normal::form(&globals(padded(0, 200)), &mut tables).unwrap(),
         normal::form(&globals(padded(0xcd, 4)), &mut tables).unwrap(),
@@ -1641,7 +1642,7 @@ fn a_padded_raw_of_the_globals_is_cut_to_its_stored_size() {
     // A size of zero, or one past the resource, cuts nothing.
     let whole = |stored: u32| {
         tag(
-            g(b"matg"),
+            b"matg",
             "globals\\globals",
             0x1a4,
             0x0,
@@ -1664,7 +1665,7 @@ fn a_padded_raw_of_the_globals_is_cut_to_its_stored_size() {
     // A locale's resource keeps the length its descriptor gives it.
     let locale = |bytes: Vec<u8>| {
         tag(
-            g(b"matg"),
+            b"matg",
             "globals\\globals",
             0x1a4,
             0x19c,
@@ -1678,7 +1679,7 @@ fn a_padded_raw_of_the_globals_is_cut_to_its_stored_size() {
         normal::form(&locale(padded(0xcd, 4)), &mut tables).unwrap()
     );
     // Another group's sizes the extractor trusts: nothing is cut.
-    let weapon = |bytes: Vec<u8>| tag(g(b"weap"), "objects\\gun", 0x8, 0x0, 0x4, 100, bytes);
+    let weapon = |bytes: Vec<u8>| tag(b"weap", "objects\\gun", 0x8, 0x0, 0x4, 100, bytes);
     assert_ne!(
         normal::form(&weapon(padded(0, 200)), &mut tables).unwrap(),
         normal::form(&weapon(padded(0xcd, 4)), &mut tables).unwrap()
@@ -1763,7 +1764,9 @@ fn the_catalogue_lists_each_asset_by_hash_and_is_rebuilt_to_the_same() {
     assert!(report.problems.is_empty(), "{:?}", report.problems);
     assert_eq!(report.maps, 3);
     let key = |group: &[u8; 4], path: &str| TagKey::new(g(group), path);
-    let names = |a: &catalogue::Asset| -> Vec<&str> { a.maps.iter().map(String::as_str).collect() };
+    fn names(a: &catalogue::Asset) -> Vec<&str> {
+        a.maps.iter().map(String::as_str).collect()
+    }
     // One sound at two indices in two maps: one asset, read from two files.
     let alpha = c.of_key(&key(b"snd!", "sound\\alpha"));
     assert_eq!(alpha.len(), 2, "{alpha:?}");
@@ -1913,7 +1916,10 @@ fn prepare_writes_the_catalogue_and_leaves_a_current_one_alone() {
     assert_eq!(c.of_key(&TagKey::new(g(b"bitm"), "a\\pixels")).len(), 1);
     assert_eq!(
         c.users(&TagKey::new(g(b"bitm"), "a\\pixels")).unwrap(),
-        &BTreeSet::from([TagKey::new(g(b"matg"), "globals\\globals")])
+        &BTreeSet::from([
+            TagKey::new(g(b"bitm"), "a\\same_pixels"),
+            TagKey::new(g(b"matg"), "globals\\globals"),
+        ])
     );
     // Nothing stale: the catalogue is not written again.
     let before = snapshot(&root);
@@ -1922,6 +1928,13 @@ fn prepare_writes_the_catalogue_and_leaves_a_current_one_alone() {
     assert_eq!(snapshot(&root), before);
     // Deleted, it is written again by the next run.
     std::fs::remove_file(root.join(catalogue::CATALOGUE_FILE)).unwrap();
+    let (p, _) = prepare_run(&root, &schema, Some(&disc)).unwrap();
+    assert!(p.catalogue.is_some());
+    assert_eq!(catalogue::read(&root).unwrap().unwrap(), c);
+    // One that does not read (an older format) is written again, not an error.
+    let old = c.to_text().replace('\t', " ");
+    std::fs::write(root.join(catalogue::CATALOGUE_FILE), old).unwrap();
+    assert!(catalogue::read(&root).is_err());
     let (p, _) = prepare_run(&root, &schema, Some(&disc)).unwrap();
     assert!(p.catalogue.is_some());
     assert_eq!(catalogue::read(&root).unwrap().unwrap(), c);

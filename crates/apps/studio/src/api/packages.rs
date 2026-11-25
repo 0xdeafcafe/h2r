@@ -12,14 +12,22 @@ use studio_proto::{code, method as m};
 use super::{P, Reply, err};
 use crate::App;
 use crate::app::assets::read_set;
+use crate::app::mods;
 use crate::app::package_doc::{self as doc, BaseMap, Refusal};
 
-fn refuse(r: Refusal) -> RpcError {
+pub(super) fn refuse(r: Refusal) -> RpcError {
     match r {
         Refusal::Params(m) => err(code::INVALID_PARAMS, m),
         Refusal::Refused(m) => err(code::REFUSED, m),
         Refusal::Failed(m) => err(code::FAILED, m),
     }
+}
+
+/// Resolve the package for a save without opening the window's picker.
+pub(super) fn save_target(app: &App, package: Option<&str>) -> Result<String, RpcError> {
+    package.map(str::to_owned).or_else(|| app.edit_target()).ok_or_else(|| {
+        err(code::NO_TARGET, crate::app::edit_target::NO_TARGET)
+    })
 }
 
 /// `id`, else the edit target; with neither, `NO_TARGET`.
@@ -72,6 +80,30 @@ fn build(app: &mut App, p: &P) -> Reply {
     let rows =
         doc::build(&app.data_root(), &id, &bases, map.is_none(), out.as_deref()).map_err(refuse)?;
     Ok(json!({ "id": id, "maps": rows }))
+}
+
+/// `package.diff`: the package's changes per asset, and with `map` the
+/// conflict table's rows over that map. The rows are kept for Problems.
+fn diff(app: &mut App, p: &P) -> Reply {
+    let id = id_or_target(app, p)?;
+    let map = p.opt_str("map")?;
+    let bases = if app.source().is_some() {
+        bases(app, map)?
+    } else if map.is_some() {
+        return Err(err(
+            code::NO_DOCUMENT,
+            "no source is open: source.open takes a disc, a map or a folder of maps",
+        ));
+    } else {
+        Vec::new()
+    };
+    let (v, conflicts) = mods::diff(&app.data_root(), &id, &bases, map).map_err(refuse)?;
+    if let Some(m) = map
+        && v["built"] == true
+    {
+        app.problems.set_levels(m, conflicts);
+    }
+    Ok(v)
 }
 
 /// Build the map the package gives, then have the paired game load it. The
@@ -138,10 +170,30 @@ fn play(app: &mut App, p: &P) -> Reply {
 }
 
 pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
+    let result = handle(app, method, p);
+    if result.is_ok()
+        && matches!(
+            method,
+            m::PACKAGE_NEW | m::PACKAGE_SET | m::PACKAGE_ITEM_ADD | m::PACKAGE_ITEM_SET
+                | m::PACKAGE_ITEM_REMOVE | m::PACKAGE_TARGET | m::PACKAGE_ENABLE | m::PACKAGE_ORDER
+                | m::PACKAGE_CHECK
+        )
+    {
+        app.refresh_package_document();
+        if method == m::PACKAGE_CHECK {
+            app.refresh_problems(Some("package"));
+        }
+    }
+    result
+}
+
+fn handle(app: &mut App, method: &str, p: &P) -> Reply {
     let data = app.data_root();
     match method {
         m::PACKAGE_LIST => Ok(doc::list(&data)),
-        m::PACKAGE_READ => doc::read(&data, p.str("id")?).map_err(refuse),
+        m::PACKAGE_READ => {
+            doc::read_with(&data, p.str("id")?, Some(&app.tags_root())).map_err(refuse)
+        }
         m::PACKAGE_NEW => doc::new(&data, p.str("id")?, p.str("name")?).map_err(refuse),
         m::PACKAGE_SET => doc::set(&data, p.str("id")?, p.str("path")?, &value(p)).map_err(refuse),
         m::PACKAGE_ITEM_ADD => {
@@ -191,10 +243,16 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
         }
         m::PACKAGE_CHECK => {
             let id = id_or_target(app, p)?;
-            doc::check(&data, &id).map_err(refuse)
+            doc::check_with(&data, &id, Some(&app.tags_root())).map_err(refuse)
         }
+        m::PACKAGE_DIFF => diff(app, p),
         m::PACKAGE_BUILD => build(app, p),
         m::PACKAGE_PLAY => play(app, p),
+        m::PACKAGE_EXPORT => {
+            let out = std::path::Path::new(p.str("out")?);
+            super::docs::outside_git(out)?;
+            doc::export(&data, &app.tags_root(), p.str("id")?, out).map_err(refuse)
+        }
         _ => Err(err(code::METHOD_NOT_FOUND, format!("no method {method}"))),
     }
 }

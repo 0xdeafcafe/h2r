@@ -33,6 +33,8 @@ pub enum Kind {
     Options,
     /// Every control, from the bindings table.
     Controls,
+    /// The live object pool and scenario block counts.
+    MapLimits,
     /// The game types of an item spawner, ticked a row each.
     Games,
     /// The map variants of the open map, a row each.
@@ -57,7 +59,7 @@ pub enum Look {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 12] = [
+    pub const ALL: [Kind; 13] = [
         Kind::Objects,
         Kind::Properties,
         Kind::Coordinates,
@@ -70,6 +72,7 @@ impl Kind {
         Kind::Games,
         Kind::Variants,
         Kind::Variant,
+        Kind::MapLimits,
     ];
 
     /// The name `Open` rows, `h2 ui preview` and the loader know it by.
@@ -87,6 +90,7 @@ impl Kind {
             Kind::Games => "forge.games",
             Kind::Variants => "forge.variants",
             Kind::Variant => "forge.variant",
+            Kind::MapLimits => "forge.map-limits",
         }
     }
 
@@ -105,6 +109,7 @@ impl Kind {
             Kind::Games => "forge-games",
             Kind::Variants => "forge-variants",
             Kind::Variant => "forge-variant",
+            Kind::MapLimits => "forge-map-limits",
         }
     }
 
@@ -122,6 +127,7 @@ impl Kind {
             Kind::Games => const { ids::family("forge games") },
             Kind::Variants => const { ids::family("forge variants") },
             Kind::Variant => const { ids::family("forge variant") },
+            Kind::MapLimits => const { ids::family("forge map limits") },
         }
     }
 
@@ -134,6 +140,7 @@ impl Kind {
             | Kind::Coordinates
             | Kind::Settings
             | Kind::Options
+            | Kind::MapLimits
             | Kind::Controls => Look::List,
             Kind::Link | Kind::Question => Look::Question,
         }
@@ -271,6 +278,8 @@ pub enum NumberField {
     Coordinate(Coordinate),
     Area(AreaField),
     RespawnTime,
+    /// An item entry's return time (its abandon limit).
+    ReturnTime,
     /// A thing's label text (the keyboard takes it as typed).
     Label,
     /// A thing's label number; empty takes the number off.
@@ -300,6 +309,16 @@ pub enum Choice {
     /// page).
     Marker(forge::GroundLabel),
     Goal(forge::Goal),
+    /// Add a starting point for team `n` (the Spawns group, in a kit
+    /// session).
+    Spawn(u8),
+    /// Add a teleporter sender (true) or receiver (false) (the Teleporters
+    /// group, in a kit session).
+    Teleporter(bool),
+    /// Add an item spawner of the kit's item `i`
+    /// (`forge::Session::kit_items`), from a Weapons, Vehicles or
+    /// Equipment group.
+    Item(usize),
     EditArea(forge::Endpoint),
     /// **Build AI ground**.
     BuildGround,
@@ -322,8 +341,16 @@ pub enum Choice {
     Ungroup(forge::OpId),
     /// **Lock group** (true) or **Unlock group** (false).
     LockGroup(forge::OpId, bool),
+    /// **Pivot**: change where the group turns.
+    SetGroupPivot(forge::OpId, bool),
     /// **Clear label**: take the label off a thing.
     ClearLabel(forge::Endpoint),
+    /// **Reset orientation**: pitch and roll to zero, the yaw to the
+    /// rotation snap (docs/game/forge-map-variants-ui.md, "The Properties
+    /// page").
+    ResetOrientation,
+    /// **Duplicate** the object and hold the copy.
+    Duplicate(forge::Endpoint),
     /// Place prefab `i` (the object menu's Prefabs row) in front of the
     /// monitor.
     PlacePrefab(usize),
@@ -411,6 +438,8 @@ pub struct SheetRow {
     /// In the value column (Properties' values, the Controls page's
     /// buttons).
     pub value: Option<String>,
+    /// Whether this row's source could not supply its value.
+    pub(super) value_unavailable: bool,
     /// The focused row's line in the description block.
     pub description: Option<String>,
     pub act: Act,
@@ -421,12 +450,19 @@ impl SheetRow {
         SheetRow {
             label: label.into(),
             value: None,
+            value_unavailable: false,
             description: None,
             act,
         }
     }
     pub(super) fn value(mut self, v: &str) -> Self {
         self.value = Some(v.into());
+        self.value_unavailable = false;
+        self
+    }
+    pub(super) fn unavailable(mut self) -> Self {
+        self.value = Some("Unavailable".into());
+        self.value_unavailable = true;
         self
     }
     pub(super) fn describe(mut self, d: &str) -> Self {
@@ -743,6 +779,12 @@ pub fn with_prefabs(sheet: Option<Sheet>, prefabs: &[PrefabItem]) -> Option<Shee
 
 /// Offer objective centre flags in the Objects menu's Goals group.
 pub fn with_goals(s: Option<Sheet>) -> Sheet {
+    with_goals_for(s, &forge::Goal::ALL)
+}
+
+/// [`with_goals`] for the goals a game type reads (`forge::Session::goals`).
+/// With none the group is absent.
+pub fn with_goals_for(s: Option<Sheet>, offered: &[forge::Goal]) -> Sheet {
     let mut sheet = s.unwrap_or(Sheet {
         kind: Kind::Objects,
         title: "OBJECTS".into(),
@@ -750,6 +792,9 @@ pub fn with_goals(s: Option<Sheet>) -> Sheet {
         rows: Vec::new(),
         focus: 0,
     });
+    if offered.is_empty() {
+        return sheet;
+    }
     let title = Group::Goals.def().name;
     let mut goals = PickSpec {
         title: title.into(),
@@ -766,7 +811,7 @@ pub fn with_goals(s: Option<Sheet>) -> Sheet {
     {
         goals = pick.clone();
     }
-    for goal in forge::Goal::ALL {
+    for &goal in offered {
         goals.values.push(goal.title().into());
         goals.details.push("Place a centre marker with a radius of 1.".into());
         goals.choices.push(Choice::Goal(goal));
@@ -782,6 +827,150 @@ pub fn with_goals(s: Option<Sheet>) -> Sheet {
         }
     }
     sheet
+}
+
+/// The team names a starting point is offered for, by team number.
+pub const TEAMS: [&str; 8] = [
+    "Red", "Blue", "Yellow", "Green", "Purple", "Orange", "Brown", "Pink",
+];
+
+/// An item the kit adds as an item spawner: one of
+/// `forge::Session::kit_items`, by its place in that list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KitItem {
+    pub index: usize,
+    pub group: Group,
+    pub name: String,
+}
+
+/// What a kit session adds to the object menu: the items its spawners can
+/// name and how many rows of each block the kit has left.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KitMenu {
+    pub items: Vec<KitItem>,
+    pub items_left: u32,
+    pub spawns_left: u32,
+    pub flags_left: u32,
+}
+
+/// What a row of a kit group says: what it adds and how many more fit.
+pub fn kit_line(what: &str, left: u32) -> String {
+    let left = match left {
+        0 => "no more fit.".to_string(),
+        1 => "1 more fits.".to_string(),
+        n => format!("{n} more fit."),
+    };
+    format!("{what}. {left}")
+}
+
+/// [`objects`] with a kit session's additions: the kit's items under
+/// Weapons, Vehicles and Equipment as item spawners, a Spawns group of
+/// starting points by team and a Teleporters group of a sender and a
+/// receiver. The rows go in the groups' places, among the map's own.
+pub fn with_kit(s: Option<Sheet>, kit: &KitMenu) -> Sheet {
+    let mut sheet = s.unwrap_or(Sheet {
+        kind: Kind::Objects,
+        title: "OBJECTS".into(),
+        body: String::new(),
+        rows: Vec::new(),
+        focus: 0,
+    });
+    for group in [Group::Weapons, Group::Vehicles, Group::Equipment] {
+        let rows: Vec<_> = kit
+            .items
+            .iter()
+            .filter(|i| i.group == group)
+            .map(|i| {
+                (
+                    format!("{} spawner", i.name),
+                    kit_line("Item spawner", kit.items_left),
+                    Choice::Item(i.index),
+                )
+            })
+            .collect();
+        add_pick_rows(&mut sheet, group, rows);
+    }
+    let spawns = TEAMS
+        .iter()
+        .enumerate()
+        .map(|(team, name)| {
+            (
+                format!("{name} start"),
+                kit_line("Starting point", kit.spawns_left),
+                Choice::Spawn(team as u8),
+            )
+        })
+        .collect();
+    add_pick_rows(&mut sheet, Group::Spawns, spawns);
+    let teleporters = [(true, "Sender"), (false, "Receiver")]
+        .into_iter()
+        .map(|(sender, name)| {
+            (
+                name.to_string(),
+                kit_line("Teleporter", kit.flags_left),
+                Choice::Teleporter(sender),
+            )
+        })
+        .collect();
+    add_pick_rows(&mut sheet, Group::Teleporters, teleporters);
+    sheet
+}
+
+/// Add `rows` (a value, its line and its choice) to the picker of
+/// `group`'s row, making the row where the map has none: in the table's
+/// order among the groups, before the AI and objectives page and the
+/// prefabs.
+fn add_pick_rows(sheet: &mut Sheet, group: Group, rows: Vec<(String, String, Choice)>) {
+    if rows.is_empty() {
+        return;
+    }
+    let title = group.def().name;
+    let existing = sheet.rows.iter().position(|row| row.label == title);
+    let mut pick = match existing.map(|i| &sheet.rows[i].act) {
+        Some(Act::Pick(pick)) => pick.clone(),
+        _ => PickSpec {
+            title: title.into(),
+            values: Vec::new(),
+            current: 0,
+            details: Vec::new(),
+            description: String::new(),
+            choices: Vec::new(),
+            closes: true,
+        },
+    };
+    for (value, line, choice) in rows {
+        pick.values.push(value);
+        pick.details.push(line);
+        pick.choices.push(choice);
+    }
+    let count = if pick.values.len() == 1 {
+        "1 object.".to_string()
+    } else {
+        format!("{} objects.", pick.values.len())
+    };
+    let row = SheetRow::new(title, Act::Pick(pick)).describe(&count);
+    if let Some(i) = existing {
+        sheet.rows[i] = row;
+        return;
+    }
+    let after = GROUPS
+        .iter()
+        .skip_while(|g| g.group != group)
+        .skip(1)
+        .filter_map(|g| sheet.rows.iter().position(|r| r.label == g.name))
+        .min();
+    let at = after
+        .or_else(|| {
+            sheet
+                .rows
+                .iter()
+                .position(|r| r.label == AI_PAGE || r.label == PREFABS_PAGE)
+        })
+        .unwrap_or(sheet.rows.len());
+    sheet.rows.insert(at, row);
+    if sheet.focus >= at && sheet.rows.len() > 1 {
+        sheet.focus += 1;
+    }
 }
 
 /// Add the entry point for a hill, territory or site's area editor.
@@ -1157,9 +1346,7 @@ pub struct OptionDef {
 }
 
 /// Forge options, in order (docs/game/forge-firefight-ui.md "The screens").
-/// Monitor look joins when it is built; Map limits in P4 (Placed objects is
-/// [`placed_row`], after these, then Build AI ground, Test waves and
-/// Generate nav), Players in F5, Map settings and Publish in F14.
+/// The placed objects browser and the actions follow these pages.
 pub const OPTIONS: &[OptionDef] = &[
     OptionDef {
         label: "Tool settings...",
@@ -1175,6 +1362,11 @@ pub const OPTIONS: &[OptionDef] = &[
         label: "Map variants...",
         description: "Load, rename, copy or delete this map's variants.",
         opens: Kind::Variants,
+    },
+    OptionDef {
+        label: "Map limits",
+        description: "See the object pool and scenario counts.",
+        opens: Kind::MapLimits,
     },
 ];
 
@@ -1308,35 +1500,62 @@ pub struct GroupFacts {
     pub selected: bool,
     /// How many things are selected.
     pub selection: usize,
-    /// The thing's group: its op, its name and whether it is locked.
-    pub group: Option<(forge::OpId, String, bool)>,
+    /// The thing's active group.
+    pub group: Option<forge::GroupInfo>,
+    /// The session can change the pivot as one edit.
+    pub pivot_editable: bool,
 }
 
 /// The Properties page's rows for selecting and grouping, after the doc's
-/// rows: a thing in a group shows the group and ends or locks it; any
-/// other can be selected, and two or more selected can be grouped.
+/// rows. A member can edit its group. A free thing can be selected, and
+/// two or more selected things can be grouped.
 pub fn group_rows(f: &GroupFacts) -> Vec<SheetRow> {
-    if let Some((id, name, locked)) = &f.group {
-        return vec![
+    if let Some(group) = &f.group {
+        let mut rows = vec![
             SheetRow::new("Group", Act::Info)
-                .value(name)
+                .value(&group.name)
                 .describe("The group this object moves with."),
             SheetRow::new(
-                if *locked {
+                if group.locked {
                     "Unlock group"
                 } else {
                     "Lock group"
                 },
-                Act::Choose(Choice::LockGroup(*id, !locked)),
+                Act::Choose(Choice::LockGroup(group.id, !group.locked)),
             )
-            .describe(if *locked {
+            .describe(if group.locked {
                 "Aim at the group's objects again."
             } else {
                 "Stop aiming at the group's objects."
             }),
-            SheetRow::new("Ungroup", Act::Choose(Choice::Ungroup(*id)))
-                .describe("Let the objects move on their own."),
         ];
+        if f.pivot_editable {
+            let values = ["Centre", "First member"];
+            let current = usize::from(group.pivot_first);
+            const HELP: &str = "Choose where the group turns.";
+            let pick = PickSpec {
+                title: "Group pivot".into(),
+                values: values.map(String::from).to_vec(),
+                current,
+                details: vec![],
+                description: HELP.into(),
+                choices: vec![
+                    Choice::SetGroupPivot(group.id, false),
+                    Choice::SetGroupPivot(group.id, true),
+                ],
+                closes: true,
+            };
+            rows.push(
+                SheetRow::new("Pivot", Act::Pick(pick))
+                    .value(values[current])
+                    .describe(HELP),
+            );
+        }
+        rows.push(
+            SheetRow::new("Ungroup", Act::Choose(Choice::Ungroup(group.id)))
+                .describe("Let the objects move on their own."),
+        );
+        return rows;
     }
     let mut rows = vec![
         SheetRow::new(

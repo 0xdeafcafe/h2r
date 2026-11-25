@@ -1,5 +1,6 @@
 //! Live UI producer boundaries. An unavailable entry, stack or draw keeps
 //! the guest at the original instruction.
+use std::cell::Cell;
 use std::sync::Arc;
 
 use engine::memory::GuestMemory;
@@ -19,6 +20,7 @@ pub enum UiScope {
     Hud,
     Loading,
     Overlay,
+    FrameTail,
 }
 
 const SCOPES: [(UiScope, &Point, &Point, Option<&Point>); 6] = [
@@ -85,6 +87,10 @@ fn enter(
         }
         // The virtual call consumes its already-pushed argument.
         let stack = cpu.esp.checked_add(4)?;
+        // A widget the overlay draws (`super::ui_overlay`) is left out.
+        if draw.is_some() && let Some(transfer) = super::menu_item(c, &mut *mem, stack) {
+            return Some(transfer);
+        }
         if draw.is_some() && let Some(transfer) = replaced(c, &mut *mem, stack) {
             return Some(transfer);
         }
@@ -125,7 +131,7 @@ fn leave(c: &mut Call<'_>, mut scope: UiScope) {
         scope = UiScope::Model;
     }
     if scope == UiScope::Hud {
-        super::hud_scope_left();
+        TEXT_FRAME.set(None);
     }
     if let Some(host) = host() {
         let rt = Arc::clone(c.ctx.runtime());
@@ -162,6 +168,28 @@ pub(super) fn record(drawn: bool) {
     Stage::Ui.count(if drawn { Metric::WalkSuppressed } else { Metric::WalkRefusedReservation }, 1);
 }
 
+// The text widget has already selected its shader when it asks for its
+// anchor. Its nested string draw owns each glyph until that draw returns.
+const TEXT_ANCHOR_RETURN: u32 = 0x0022_ab1c;
+const TEXT_STRING_RETURN: u32 = 0x0022_acad;
+const GLYPH_QUAD_RETURN: u32 = 0x0001_f489;
+
+thread_local! {
+    static TEXT_FRAME: Cell<Option<u32>> = const { Cell::new(None) };
+}
+
+fn glyph_shader(mem: &dyn GuestMemory, frame: u32, stack: u32, caller: u32) -> Option<u32> {
+    // Locals, three saved registers and the string draw's two arguments
+    // put its return address at ebp-0x23c throughout glyph layout.
+    let slot = frame.checked_sub(0x23c)?;
+    if caller != GLYPH_QUAD_RETURN || stack >= slot || mem.u32(slot).ok()? != TEXT_STRING_RETURN {
+        return None;
+    }
+    let widget = mem.u32(frame.checked_add(0x10)?).ok()?;
+    let shader = mem.u32(widget.checked_add(0x24)?).ok()?;
+    (shader != u32::MAX).then_some(shader)
+}
+
 fn screen_quad(c: &mut Call<'_>) -> Option<TransferAbi> {
     Stage::Ui.count(Metric::WalkExamined, 1);
     let rt = Arc::clone(c.ctx.runtime());
@@ -176,7 +204,17 @@ fn screen_quad(c: &mut Call<'_>) -> Option<TransferAbi> {
     let Some(vertices) = screen_vertices(&*mem, corners) else {
         return geometry_refused();
     };
-    let drawn = host().is_some_and(|host| host.screen_fan(&mut *mem, &vertices));
+    let drawn = host().is_some_and(|host| {
+        let shader = TEXT_FRAME.get().and_then(|frame| glyph_shader(&*mem, frame, stack, ret));
+        if let Some(shader) = shader {
+            if host.draw_text_quad(&mut *mem, shader, &vertices) {
+                Ui::OverlayHudTextQuads.count();
+                return true;
+            }
+            Ui::OverlayHudTextFallback.count();
+        }
+        host.screen_fan(&mut *mem, &vertices)
+    });
     record(drawn);
     if drawn {
         c.cpu.esi = saved_esi;
@@ -239,7 +277,7 @@ fn loading_fan(c: &mut Call<'_>, spinner: bool) -> Option<TransferAbi> {
     let host = host()?;
     let drawn = if spinner {
         let Some(vertices) = spinner_vertices(&*mem, esp) else { return geometry_refused() };
-        host.draw_quad(&mut *mem, &vertices)
+        host.loading_spinner(&mut *mem, &vertices)
     } else {
         let vertices = u8::try_from(c.cpu.ebp).ok().and_then(|register| {
             engine::ui_sprite::mapped_rectangle(
@@ -302,10 +340,32 @@ fn overlay_rect(c: &mut Call<'_>) -> Option<TransferAbi> {
     }
 }
 
+fn tail_caller(mem: &dyn GuestMemory, stack: u32, caller: u32) -> bool {
+    mem.u32(stack).ok() == Some(caller)
+}
+
 pub(super) fn place(b: &mut Builder<'_>) {
     super::backdrop::place(b);
     super::model::place(b);
     super::outline::place(b);
+    for (start, end, caller) in [
+        (&TAIL_COPY, &TAIL_COPY_END, TAIL_COPY_CALLER),
+        (&TAIL_COMPOSITE, &TAIL_COMPOSITE_END, TAIL_COMPOSITE_CALLER),
+    ] {
+        b.raw().before(start, "native_frame_tail_draw", move |c| {
+            if c.ctx.runtime().read_dispatch(|d| d.has_generated(end.base)) {
+                let mut mem = c.ctx.memory();
+                if tail_caller(&*mem, c.cpu.esp, caller) && let Some(host) = host() {
+                    host.enter_ui(&mut *mem, UiScope::FrameTail, c.cpu.esp, true);
+                }
+            }
+            Ok(Flow::Continue)
+        }).context_only().optional();
+        b.raw().before(end, "native_frame_tail_draw_end", |c| {
+            leave(c, UiScope::FrameTail);
+            Ok(Flow::Continue)
+        }).context_only().optional();
+    }
     for (scope, start, end, alternate) in SCOPES {
         b.raw().before(start, "native_ui_enter", move |c| {
             Ok(enter(c, scope, end, alternate).map_or(Flow::Continue, Flow::Return))
@@ -326,6 +386,19 @@ pub(super) fn place(b: &mut Builder<'_>) {
     b.raw().before(&LOADING_BITMAP_READY, "native_ui_loading_bitmap", |c| {
         Ok(loading_fan(c, false).map_or(Flow::Continue, Flow::Return))
     }).context_only().optional();
+    use engine::points::render_aspect::{ANCHOR, GROUPS};
+    b.raw().before(&ANCHOR, "native_hud_text_frame", |c| {
+        if GuestMemory::u32(&*c.ctx.memory(), c.cpu.esp).ok() == Some(TEXT_ANCHOR_RETURN) {
+            TEXT_FRAME.set(Some(c.cpu.ebp));
+        }
+        Ok(Flow::Continue)
+    }).context_only().after_feature("render-aspect").optional();
+    let text_end = GROUPS.iter().find(|(ret, _)| *ret == TEXT_ANCHOR_RETURN)
+        .expect("text anchor group");
+    b.raw().before(&text_end.1, "native_hud_text_end", |_| {
+        TEXT_FRAME.set(None);
+        Ok(Flow::Continue)
+    }).context_only().after_feature("render-aspect").optional();
     b.raw().before(&SCREEN_QUAD_READY, "native_ui_screen_fan", |c| {
         Ok(screen_quad(c).map_or(Flow::Continue, Flow::Return))
     }).context_only().optional();
@@ -338,6 +411,33 @@ pub(super) fn place(b: &mut Builder<'_>) {
 mod tests {
     use super::*;
     use engine::testing::FakeGuest;
+
+    #[test]
+    fn only_the_frame_tail_caller_owns_each_shared_helper() {
+        let mut mem = FakeGuest::new();
+        let stack = 0x4100;
+        for (caller, other) in [(TAIL_COPY_CALLER, TAIL_COMPOSITE_CALLER),
+                                (TAIL_COMPOSITE_CALLER, TAIL_COPY_CALLER)] {
+            mem.put_u32(stack, caller);
+            assert!(tail_caller(&mem, stack, caller));
+            assert!(!tail_caller(&mem, stack, other));
+            assert!(!tail_caller(&mem, stack + 4, caller));
+        }
+    }
+
+    #[test]
+    fn glyph_belongs_to_current_shader_only_inside_the_text_widget_string_call() {
+        let mut mem = FakeGuest::new();
+        let frame = 0x4100;
+        let slot = frame - 0x23c;
+        mem.put_u32(slot, TEXT_STRING_RETURN).put_u32(frame + 0x10, 0x5200)
+            .put_u32(0x5224, 0x4983);
+        assert_eq!(glyph_shader(&mem, frame, slot - 20, GLYPH_QUAD_RETURN), Some(0x4983));
+        assert_eq!(glyph_shader(&mem, frame, slot, GLYPH_QUAD_RETURN), None);
+        assert_eq!(glyph_shader(&mem, frame, slot - 20, 0x8590), None);
+        mem.put_u32(slot, 0);
+        assert_eq!(glyph_shader(&mem, frame, slot - 20, GLYPH_QUAD_RETURN), None);
+    }
 
     #[test]
     fn the_widget_callback_must_match_the_live_order_entry() {

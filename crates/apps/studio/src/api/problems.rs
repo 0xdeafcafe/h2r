@@ -4,7 +4,7 @@
 
 use studio_proto::{code, method as m};
 
-use super::{P, Reply, err};
+use super::{P, Reply, checks::CHECKS, err};
 use crate::App;
 use crate::app::problems::SOURCES;
 
@@ -18,8 +18,16 @@ fn list(app: &mut App, p: &P) -> Reply {
             format!("source: {} (not {s:?})", SOURCES.join(", ")),
         ));
     }
-    app.refresh_problems(source);
-    Ok(app.problems.json(source))
+    // `asset` narrows to the rows about one asset: what the header's
+    // **Check** counts.
+    let Some(asset) = p.opt_str("asset")? else {
+        app.refresh_problems(source);
+        return Ok(app.problems.json(source));
+    };
+    let narrowed = app
+        .refresh_asset_problems(asset, source, CHECKS)
+        .map_err(|e| err(code::INVALID_PARAMS, e))?;
+    Ok(narrowed.json(source))
 }
 
 pub fn call(app: &mut App, method: &str, p: &P) -> Reply {

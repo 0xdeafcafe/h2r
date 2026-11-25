@@ -15,6 +15,13 @@
 //! composition root supplies the [`Maps`] (`boot`'s `forge_maps`), through
 //! [`install`].
 //!
+//! **The kit start.** A game started from the lobby in Forge mode is a new
+//! map with the kit ([`pick_kit`]): the base map's empty draft in its session
+//! form (`forge_doc::session_form`, which asks for the `forge_kit` recipe),
+//! built and cached as any pick is. The session opens on that package, so
+//! its starting point, flag and item rows have the spare rows the kit's
+//! edits take ([`kit_start`]; docs/game/forge-editing.md, "The object menu").
+//!
 //! **Suggestions.** [`suggest`] marks the variants a game variant's `maps`
 //! name; the picker opens on the first.
 //!
@@ -104,6 +111,9 @@ pub struct Picked {
     pub name: String,
     pub id: Option<MapId>,
     pub prep: Prep,
+    /// The pick is a Forge session's new map with the kit ([`pick_kit`]),
+    /// not a variant of the store.
+    pub kit: bool,
 }
 
 type Cell = Arc<Mutex<Option<Picked>>>;
@@ -192,6 +202,7 @@ pub fn pick(
         name: file.to_owned(),
         id: None,
         prep: Prep::Building,
+        kit: false,
     };
     let doc = match variants::load(data, map, file, installed.as_ref()) {
         Ok(doc) => doc,
@@ -201,6 +212,64 @@ pub fn pick(
             return None;
         }
     };
+    begin(picked, doc, maps)
+}
+
+/// The base map `map`'s new map with the kit, for a Forge session: its
+/// empty draft in the session form, picked and built as a variant is. The
+/// installed map's hash is the draft's base; a map this machine does not
+/// have is refused by name. The thread the build runs on, when there is
+/// one.
+pub fn pick_kit(
+    map: &str,
+    lobby_map: Option<u32>,
+    author: &str,
+    maps: &SharedMaps,
+) -> Option<JoinHandle<()>> {
+    let installed = maps
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .installed(map);
+    let mut picked = Picked {
+        map: map.to_owned(),
+        lobby_map,
+        file: String::new(),
+        name: map.to_owned(),
+        id: None,
+        prep: Prep::Building,
+        kit: true,
+    };
+    let Some(sha256) = installed else {
+        picked.prep = Prep::Refused(Refusal::new(
+            "variant_base_missing",
+            format!("{map} is not installed on this machine, so Forge cannot add a kit to it."),
+        ));
+        set(picked);
+        return None;
+    };
+    let mut doc = ForgeDoc {
+        format: forge_doc::FORMAT,
+        builder: forge_doc::BuilderVersions::CURRENT,
+        base: forge_doc::MapRef {
+            map: map.to_owned(),
+            sha256,
+        },
+        sources: vec![],
+        title: map.to_owned(),
+        author: author.to_owned(),
+        description: String::new(),
+        recipes: vec![],
+        imports: vec![],
+        ops: vec![],
+        expect: None,
+    };
+    doc.format = doc.required_format();
+    begin(picked, forge_doc::session_form(&doc), maps)
+}
+
+/// A pick's [`MapId`] and package: the package is `Ready` at once when it is
+/// cached, else built once off the game thread.
+fn begin(mut picked: Picked, doc: ForgeDoc, maps: &SharedMaps) -> Option<JoinHandle<()>> {
     picked.name = doc.title.clone();
     let id = match doc.id() {
         Ok(document) => MapId::forge(doc.base.sha256, document),
@@ -256,6 +325,7 @@ pub fn pick_installed(
                 "variant_build",
                 format!("{file} cannot be built in this game."),
             )),
+            kit: false,
         });
         return None;
     };
@@ -306,6 +376,44 @@ pub fn refusal() -> Option<Refusal> {
     with_pick(|p| match p.as_ref()?.prep.clone() {
         Prep::Refused(r) => Some(r),
         _ => None,
+    })
+}
+
+/// Keep the lobby's kit start in step with its mode and map. In Forge
+/// mode the lobby's map is built with the kit ([`pick_kit`]) once, when the
+/// mode or the map is first Forge's; leaving Forge mode drops it. `base` is
+/// the lobby's map name, none when it is not known. A game with no builder
+/// ([`install`]) has no kit start: Forge runs on the map as it is, and the
+/// kit's adds are refused by name.
+pub fn follow_mode(
+    forge: bool,
+    lobby_map: Option<u32>,
+    base: Option<&str>,
+    author: impl FnOnce() -> String,
+) {
+    let held = with_pick(|p| p.as_ref().filter(|p| p.kit).map(|p| p.lobby_map));
+    match (forge, held) {
+        (false, Some(_)) => clear(),
+        (true, Some(_)) if base.is_none() => clear(),
+        (true, Some(map)) if map == lobby_map => {}
+        (true, _) => {
+            if let (Some(base), Some(maps)) = (base, with_maps(|m| m.clone())) {
+                pick_kit(base, lobby_map, &author(), &maps);
+            }
+        }
+        (false, None) => {}
+    }
+}
+
+/// The id of the kit package a Forge session starts on: the pick is a
+/// new map with the kit ([`pick_kit`]) and is built.
+pub fn kit_start() -> Option<MapId> {
+    with_pick(|p| {
+        let p = p.as_ref().filter(|p| p.kit)?;
+        match (&p.prep, p.id) {
+            (Prep::Ready(_), Some(id)) => Some(id),
+            _ => None,
+        }
     })
 }
 

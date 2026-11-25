@@ -10,7 +10,7 @@ use rules::scenario::{self, Scenario, ScenarioBody, ScenarioEvent, ScenarioPlaye
 use rules::ty::fixed;
 use rules::verify::unhostable;
 use rules::vm::{Arg, ErrorKind, Fired, Input, MAX_SIGHT_PAIRS, RulesExt, SIGHT_KEEP};
-use rules::{Event, Vm, build, compile};
+use rules::{Event, Vm, build, builtin, compile};
 
 const EYE: u32 = 0x4001_0000;
 const TARGET: u32 = 0x4001_0001;
@@ -178,8 +178,9 @@ fn touchdown_is_an_event_with_a_player_and_two_speeds() {
         compile("rules \"T\" 1\ntype slayer\non touchdown(p, down, up) { score(down, 1) }\n")
             .is_err()
     );
-    // Without a handler the event is no handler.
-    let (ir, _) = build("rules \"T\" 1\ntype slayer\n").unwrap();
+    // Without a handler the event is no handler: the built-in Slayer script
+    // has none (a script with no handler at all does not compile).
+    let (ir, _) = build(builtin::SLAYER).unwrap();
     let mut vm = Vm::new(ir, 0, 0).unwrap();
     let mut g = FakeGame::with_players(1);
     vm.begin_tick(0);
@@ -348,29 +349,17 @@ fn the_sight_table_is_state_and_ends_with_the_round() {
 }
 
 #[test]
-fn a_host_refuses_what_its_game_side_lacks_by_name() {
-    for (src, name) in [
-        (
-            "on tick { for each players p { if p.primed { score(p, 1) } } }",
-            "primed",
-        ),
-        (
-            "on tick { for each players p { if airborne(p) { score(p, 1) } } }",
-            "airborne",
-        ),
-        (
-            "on tick { for each players p { if p.crouching { score(p, 1) } } }",
-            "crouching",
-        ),
-        ("on tick { if sees(eye, target) { end_round(team 0) } }", "sees"),
+fn physics_reads_have_named_host_entries() {
+    for (src, e) in [
+        ("on tick { for each players p { if p.crouching { score(p, 1) } } }", id::CROUCHING),
+        ("on tick { for each players p { if p.primed { score(p, 1) } } }", id::PRIMED),
+        ("on tick { for each players p { if airborne(p) { score(p, 1) } } }", id::AIRBORNE),
+        ("on tick { if sees(eye, target) { end_round(team 0) } }", id::SEES),
     ] {
-        let full =
-            format!("rules \"H\" 1\ntype slayer\nlabel eye: object\nlabel target: object\n{src}\n");
+        let full = format!("rules \"H\" 1\ntype slayer\nlabel eye: object\nlabel target: object\n{src}\n");
         let (ir, _) = build(&full).unwrap();
-        assert_eq!(unhostable(&ir).map(|e| e.name), Some(name));
-    }
-    for e in [id::AIRBORNE, id::CROUCHING, id::PRIMED, id::SEES] {
-        assert!(!caps::ENTRIES[e as usize].status.hostable());
+        assert_eq!(unhostable(&ir), None);
+        assert!(caps::ENTRIES[e as usize].status.hostable());
     }
     // The call is a plain op, which the verifier knows.
     let (ir, _) = build("rules \"H\" 1\ntype slayer\non tick { for each players p { if p.primed { score(p, 1) } } }\n").unwrap();
@@ -406,6 +395,7 @@ fn a_scenario_sets_the_bodies_the_sight_and_a_touchdown() {
                     down: fixed_at(9),
                     up: fixed_at(12),
                 }],
+                ..ScenarioTick::default()
             },
         ],
         ..Scenario::default()
@@ -433,4 +423,105 @@ fn a_scenario_sets_the_bodies_the_sight_and_a_touchdown() {
     let bad: Result<Scenario, _> =
         serde_json::from_str(r#"{"players":[{"slot":0,"body":{"flying":true}}]}"#);
     assert!(bad.is_err(), "an unknown body field is an error");
+}
+
+#[test]
+fn launch_and_grounded_are_events_with_their_arguments_and_caps() {
+    for (e, name, args) in [
+        (
+            Event::Launch,
+            "launch",
+            &[rules::Ty::Player, rules::Ty::Object, rules::Ty::Fixed][..],
+        ),
+        (Event::Grounded, "grounded", &[rules::Ty::Player][..]),
+    ] {
+        assert_eq!(Event::from_code(e.code()), Some(e));
+        assert_eq!(Event::named(name), Some(e));
+        assert_eq!(e.args(), args);
+        assert_eq!(e.worst_per_tick(), 16);
+    }
+    // The strip is a zone that may be `none`; the launch a `fixed`.
+    compile(
+        "rules \"L\" 1\ntype slayer\non launch(p, spot, speed) { if spot == none and speed > 8.0 { score(p, 1) } }\n",
+    )
+    .unwrap();
+    assert!(compile("rules \"L\" 1\ntype slayer\non launch(p, spot, speed, x) { }\n").is_err());
+    assert!(compile("rules \"L\" 1\ntype slayer\non grounded(p, x) { }\n").is_err());
+}
+
+/// A script's chain on the host's events: a launch in a run adds to it, a
+/// launch after the ground starts it again, and a launch off no marked
+/// strip hears `none`.
+const RUN: &str = r#"
+rules "Run" 1
+type slayer
+player var chain: int = 0
+player var flying: bool = false
+player var unmarked: int = 0
+on launch(p, spot, speed) {
+    if p.flying { p.chain = p.chain + 1 } else { p.chain = 1 }
+    p.flying = true
+    if spot == none { p.unmarked = p.unmarked + 1 }
+    score(p, p.chain)
+}
+on grounded(p) { p.flying = false }
+"#;
+
+#[test]
+fn a_run_of_launches_counts_until_the_ground() {
+    let (ir, _) = build(RUN).unwrap();
+    let mut vm = Vm::new(ir, 0, 0).unwrap();
+    let mut g = FakeGame::with_players(2);
+    let launch = |player: u8, spot: Option<u32>| Input::Launch {
+        player,
+        spot,
+        speed: fixed_at(12),
+    };
+    vm.begin_tick(0);
+    for input in [
+        launch(0, Some(77)),
+        launch(0, None),
+        launch(1, Some(77)),
+        Input::Grounded(0),
+        launch(0, Some(78)),
+    ] {
+        assert!(g.apply(&input));
+        assert_eq!(vm.fire(&mut g, input), Fired::Ran);
+    }
+    assert_eq!(vm.player_var(0, "chain"), Some(1));
+    assert_eq!(vm.player_var(0, "unmarked"), Some(1));
+    assert_eq!(vm.player_var(1, "chain"), Some(1));
+    let points: Vec<_> = g.calls_to("score").into_iter().map(|a| a[1].clone()).collect();
+    assert_eq!(
+        points,
+        [Arg::Int(1), Arg::Int(2), Arg::Int(1), Arg::Int(1)]
+    );
+    assert!(g.airborne.contains(&0), "the fake puts a launched player in the air");
+}
+
+#[test]
+fn a_scenario_carries_launch_and_grounded() {
+    let json = r#"{"players":[{"slot":0}],
+                   "ticks":[{"events":[{"launch":{"player":0,"spot":77,"speed":786432}},
+                                       {"launch":{"player":0,"speed":786432}}]},
+                            {"events":[{"grounded":0},{"launch":{"player":0,"spot":77,"speed":786432}}]}]}"#;
+    let s: Scenario = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        s.ticks[0].events[1],
+        ScenarioEvent::Launch {
+            player: 0,
+            spot: None,
+            speed: fixed_at(12)
+        }
+    );
+    assert_eq!(s.ticks[1].events[0].input(), Input::Grounded(0));
+    let (ir, _) = build(RUN).unwrap();
+    let r = scenario::run(ir, &s).unwrap();
+    let points: Vec<_> = r
+        .game
+        .calls_to("score")
+        .into_iter()
+        .map(|a| a[1].clone())
+        .collect();
+    assert_eq!(points, [Arg::Int(1), Arg::Int(2), Arg::Int(1)]);
 }

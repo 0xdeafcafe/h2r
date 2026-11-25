@@ -339,6 +339,34 @@ fn a_backend_that_cannot_drops_it() {
     assert!(got.lock().unwrap().is_empty());
 }
 
+#[test]
+fn untyped_pass_works_without_replay_and_refuses_with_a_captured_slot() {
+    use frame_types::{Slot, SlotAt};
+
+    fn opaque_slot() -> Option<SlotAt> {
+        Some(SlotAt { slot: Slot::Opaque, view: 0 })
+    }
+
+    for recording in [false, true] {
+        let mut backend = RecordingBackend::default();
+        backend.external_passes = true;
+        let mut sink = d3d::SceneSink::new(backend, opaque_slot);
+        if recording {
+            sink = sink.with_replay(|_| {});
+        }
+        let (mut d, mut m) = create(sink, UploadPolicy::Always);
+        set_states(&mut d, &mut m);
+        let pass: Box<dyn ExternalPass> = Box::new(Probe(Arc::default()));
+        assert!(pass.diagnostic_name().ends_with("::Probe"));
+        assert_eq!(d.external_pass_now(&mut m, pass).unwrap(), !recording);
+        assert_eq!(d.backend.inner().external.len(), usize::from(!recording));
+        assert_eq!(
+            d.stats().external_refusals[d3d::ExternalRefusal::Backend.index()],
+            u64::from(recording),
+        );
+    }
+}
+
 /// A [`Probe`] that draws colour only.
 struct ColourOnly(Probe);
 
@@ -439,6 +467,39 @@ fn refusal_of_the_display_discards_even_the_recorded_reference_clear() {
 }
 
 #[test]
+fn a_display_supplement_leaves_the_guest_attachment_unchanged_at_each_scale() {
+    struct Supplement(Counting);
+    impl ExternalPass for Supplement {
+        fn display_only(&self) -> bool { true }
+        fn replays_scene(&self) -> bool { true }
+        fn writes(&self) -> d3d::ExternalWrites { self.0.writes() }
+        fn record_ranges(&mut self, target: ExternalTarget<'_>) -> usize {
+            self.0.record_ranges(target)
+        }
+    }
+    for scale in [1, 2] {
+        let Some(reference) = backend() else { return };
+        let display = GfxBackend::new(reference.ctx.clone());
+        let mut scaled = d3d::ScaledBackend::with_single_copy(reference, display, scale, false).unwrap();
+        if scale == 1 {
+            scaled.keep_display_copy();
+        }
+        let (mut device, mut mem) = create(scaled, UploadPolicy::Always);
+        let back = device.back_buffer().unwrap();
+        device.clear(&mut mem, 0, 0, 0xf0, 0xff00ff00, 1., 0).unwrap();
+        let seen = Arc::default();
+        let pass = Supplement(Counting { seen: Arc::clone(&seen), display_ranges: 1 });
+        assert!(device.begin_external_boundary(&mut mem).unwrap());
+        assert!(device.draw_display_stage(&mut mem, plan(1), Box::new(pass)).unwrap());
+        assert_eq!(*seen.lock().unwrap(), [d3d::TargetCopy::Display]);
+        let reference = device.backend.reference_mut().read_color(back.reference).unwrap().0;
+        let display = device.backend.view_mut().read_color(back.view.unwrap()).unwrap().0;
+        assert_eq!(&reference[..4], &[0, 255, 0, 255]);
+        assert_eq!(display[1], 0, "the supplemental red clear reached the display");
+    }
+}
+
+#[test]
 fn cancel_keeps_pixels_and_commit_preserves_the_deferred_display() {
     let Some(b) = backend() else { return };
     let (mut d, mut m) = create_copy_swap(b, UploadPolicy::Always);
@@ -516,6 +577,11 @@ fn indexed_admission_receives_the_exact_resolved_guest_draw() {
 #[test]
 fn indexed_world_admission_replays_a_refused_packet_without_a_worker_read() {
     indexed_admission_replays_a_refused_packet(timeline::native::Stage::World);
+}
+
+#[test]
+fn sky_admission_replays_refused_strips_in_order() {
+    indexed_admission_replays_a_refused_packet(timeline::native::Stage::Sky);
 }
 
 #[test]
@@ -687,7 +753,7 @@ impl ExternalPass for SlotCopy {
 }
 
 #[test]
-fn an_indexed_intermediate_can_be_drawn_and_read_at_1x_and_refuses_a_mixed_scaled_view() {
+fn an_indexed_intermediate_keeps_its_guest_size_and_is_drawn_and_read_at_every_scale() {
     for scale in [1, 2] {
         let Some(reference) = backend() else { return };
         let ctx = &reference.ctx;
@@ -702,15 +768,13 @@ fn an_indexed_intermediate_can_be_drawn_and_read_at_1x_and_refuses_a_mixed_scale
         d.clear(&mut m, 0, 0, 0xf0, 0xff000000, 1., 0).unwrap();
         let mut p = plan(2);
         p.slots = vec![None, Some(d3d::ExternalSlot { header, written: true })];
-        if let Some(ready) = d.prepare_external_pass(&mut m, p, Box::new(SlotCopy)).unwrap() {
-            assert_eq!(scale, 1);
-            ready.commit();
-        } else {
-            assert_eq!(scale, 2);
-        }
+        // Smaller targets keep their guest dimensions in both copies, so
+        // the pass sees the same 16x16 slot at every scale.
+        let ready = d.prepare_external_pass(&mut m, p, Box::new(SlotCopy)).unwrap();
+        ready.expect("guest-size slot at every scale").commit();
         let back = d.back_buffer().unwrap();
         let pixels = d.backend.reference_mut().read_color(back.reference).unwrap().0;
-        assert_eq!(pixels[1], if scale == 1 { 255 } else { 0 });
+        assert_eq!(pixels[1], 255);
     }
 }
 

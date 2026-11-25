@@ -18,6 +18,36 @@ use super::testing::fake::{Game, PLAYER_AT, SCNR, UNIT, VEHICLE, until};
 use super::*;
 use crate::app::{Action, App};
 
+#[test]
+fn in_game_reloads_the_script_on_studios_paired_game() {
+    use crate::api::Api;
+    use crate::app::{Doc, rules_edit::ReloadState};
+
+    let (_temp, game, mut app, mut play) = paired("preview-rules", "example", SessionKind::Local);
+    let endpoint = Endpoint::Unix(game.path.clone());
+    play.child_endpoint = Some(endpoint.clone());
+    let mut link = play.link_view(&app);
+    link.own = Some(OwnGame {
+        level: "example".into(),
+        socket: endpoint.to_string(),
+        editor: true,
+        running: true,
+    });
+    app.pairing.link = Some(link.into());
+    app.rules.new_blank();
+    app.dispatch(Action::OpenDoc(Doc::Rules));
+    app.dispatch(Action::PreviewInGame(Some(Doc::Rules)));
+    Api::new().run_preview_asks(&mut app);
+
+    until(&mut play, &mut app, "script preview reply", |_, app| {
+        matches!(app.rules.reload, ReloadState::Done(_))
+    });
+    let (params, _) = crate::app::rules_edit::reload_params(&app.rules.text, app.rules.mode).unwrap();
+    assert_eq!(game.calls(agent_proto::rules::method::RELOAD), [params]);
+    assert_eq!(app.pairing.panel, pair::PanelMode::Own);
+    assert!(app.preview.focus_game);
+}
+
 /// The editor with the invented map open as `example`.
 pub(super) fn editor(t: &Temp) -> App {
     let mut app = App::new();
@@ -1593,3 +1623,38 @@ fn playtest_reloads_for_failed_object_edits_and_resumes_for_receipts() {
 
 mod conflict_paths;
 mod shader_override;
+
+#[test]
+fn the_mirror_follows_the_panel_mode_between_two_games() {
+    let (_t, attached, mut app, mut play) = paired("follow-mode", "example", SessionKind::Local);
+    let own = Game::start("follow-mode-own", "example", SessionKind::Local);
+    let (a, o) = (Endpoint::Unix(attached.path.clone()), Endpoint::Unix(own.path.clone()));
+    // The game this editor started, as `run_launch` records it.
+    play.child_endpoint = Some(o.clone());
+    assert_eq!(play.attached_endpoint.as_ref(), Some(&a));
+
+    play.follow(&mut app, pair::PanelMode::Own);
+    assert_eq!(app.pairing.panel, pair::PanelMode::Own);
+    // The switch leaves the attached game: answer its keep-or-restore.
+    assert!(app.pairing.leaving);
+    play.apply_edits(&mut app, Apply::Keep).unwrap();
+    until(&mut play, &mut app, "the mirror on the own game", |p, _| {
+        p.is_paired() && p.endpoint() == Some(&o) && p.session.is_some()
+    });
+    // The own game is not remembered as the attached one.
+    assert_eq!(play.attached_endpoint.as_ref(), Some(&a));
+
+    play.follow(&mut app, pair::PanelMode::Attached);
+    assert_eq!(app.pairing.panel, pair::PanelMode::Attached);
+    // Leaving the own game asks the same answer.
+    assert!(app.pairing.leaving);
+    play.apply_edits(&mut app, Apply::Keep).unwrap();
+    until(&mut play, &mut app, "the mirror back on the attached game", |p, _| {
+        p.is_paired() && p.endpoint() == Some(&a) && p.session.is_some()
+    });
+
+    // The own game ending leaves the panel on the attached game.
+    app.pairing.panel = pair::PanelMode::Own;
+    play.child_gone(&mut app);
+    assert_eq!(app.pairing.panel, pair::PanelMode::Attached);
+}

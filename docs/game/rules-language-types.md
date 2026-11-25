@@ -97,12 +97,15 @@ types. A test asserts each front-end signature erases to its entry's
 | `sound_to(s, p)`, `sound_to_team(s, t)`, `sound_to_all(s)`, `sound_at(s, o)`, `music(s)` | `sound, player`; `sound, team`; `sound`; `sound, object`; `sound` |
 | `show_area(z, t)`, `hide_area(z)` | `zone, team?` (`none` is neutral); `zone` |
 | `hud_value(w, n)`, `hud_fill(w, f)`, `hud_style(w, n)`, `hud_text(w, "…")`, `hud_show(w, on)` | `int` (a widget's number, the name of its `hud` declaration), then `int`; `fixed`; `int`; `text`; `bool` |
-| `mark(wp, z)`, `unmark(wp)` | `int` (a waypoint's number, the name of its `waypoint` declaration), then `zone`; `int` |
+| `mark(wp, z)`, `mark(wp, z, to)`, `unmark(wp)` | `int` (a waypoint's number, the name of its `waypoint` declaration), then `zone`; the audience form's `to` a `player`, a `team` or `all` (everyone, the two-argument form) |
 | `side_of(p)`, `slot_of(p)` | `player -> int`: the player's team index in a game with teams and 16 and its roster slot in one without; the roster slot |
 | `teleport(o, at)`, `move_to(o, at, t)`, `object_pos`, `object_vel` | `object, vec`; `object, vec, time`; `object, int -> fixed` (a `vec` is three `fixed` registers in the IR, `Type::width`; `at` may also be an object, and `teleport(o, at, offset)` an object and a `vec`) |
+| `set_open(o, open)` | `object, bool` |
+| `offer_pick(n, title)`, `pick_row(n, label)`, `picked(p, n)` | `int, text`; `int, text`; `player, int -> int` |
 | `vec(x, y, z)`, `length(v)`, `distance(a, b)`, `v.x`, `o.position`, `o.velocity`, `o.speed` | `fixed, fixed, fixed -> vec`; `vec -> fixed`; `vec, vec -> fixed`; `vec -> fixed`; `-> vec`; `-> vec`; `-> fixed` |
 | `on arrive(o)` | `object` |
 | `on touchdown(p, down, up)` | `player, fixed, fixed` |
+| `on launch(p, spot, speed)`, `on grounded(p)` | `player, zone?, fixed`; `player` |
 | `airborne(p)`, `crouching(p)`, `primed(p)` (`p.airborne`, `p.crouching`, `p.primed`), `sees(a, b)` | `player -> bool`; `object, object -> bool` |
 | `place_squad(s, c, n, at)` | `squad, class, int, objects` |
 | `fly(v, p, t)` | `object, path, time`; the vehicle is an `object` the host checks, since `vehicle` is not a front-end type ([rules-world-api.md](rules-world-api.md#vehicles-and-drop-ships)) |

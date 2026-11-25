@@ -820,6 +820,28 @@ players need the same disc map to use it. A delta can carry bytes that
 also appear in some retail map (new content copied from another level);
 only a whole retail map is caught.
 
+### A mod as a package of tag patches
+
+A mod that changes tags and not the whole map is a package
+([studio-redesign.md](../editor/studio-redesign.md), "Packages";
+[asset-store.md](../engine/asset-store.md), "Mods and packages"), built as
+the game assembles the level: an `edits` item whose `set` lines name the
+value each replaces (`from`), `tag` items that override an asset whole
+(`replaces`), `tag-delta` items, and new assets. Each names the user's
+own asset by key and asset hash and holds only the change, so two such
+mods on different fields of one asset both apply; one made for other
+content is off for that level with its reason, and moves neither the
+level's `LevelId` nor its image.
+
+- **No retail bytes, by the publisher's own store.** `h2 package check
+  --store <data>/tags DIR...` refuses a file whose SHA-256 is a raw
+  resource or a tag file of that machine's tag store
+  (`workspace::store_findings`): the store is the retail list there, and
+  none is shipped. The server's list (section 5) stays the gate on upload.
+- **Still whole-map.** `h2 live maps import` writes the whole-map package
+  above; importing a patched map as a package of tag patches is later
+  (AS9).
+
 ### Mod downloads (in game)
 
 - **The row.** The Xbox Live menu's last row, where retail had Content

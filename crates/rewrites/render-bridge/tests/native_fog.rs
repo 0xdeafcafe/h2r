@@ -27,7 +27,7 @@ static LOCK: Mutex<()> = Mutex::new(());
 struct OnePart(bool);
 
 impl Host for OnePart {
-    fn ask(&self, mem: &mut dyn GuestMemory) -> Option<Cleared> {
+    fn ask(&self, mem: &mut dyn GuestMemory, _display_clusters: &[u16]) -> Option<Cleared> {
         if !self.0 {
             return None;
         }
@@ -35,7 +35,7 @@ impl Host for OnePart {
         fog::clear_fog(&mut render_bridge::native_fog::Mem(mem), FOG_LAYER as u32, &|item| {
             parts.get(&(item.owner, item.part)) == Some(&(item.shader))
         })
-        .map(|(_, cleared)| cleared)
+        .map(|(_, cleared, _)| cleared)
     }
 }
 
@@ -43,14 +43,13 @@ fn install_host(draws: bool) {
     native_fog::set_host(Arc::new(OnePart(draws)));
 }
 
-/// A layer-16 list of three items: a BSP cluster, an object, and another
-/// build's; records 2 (BSP), 5 (object).
+/// A cluster and an entry-less object, with one spare slot outside the list.
 fn scene() -> FlatMemory {
     let mut m = FlatMemory::new(0x0040_0000, 0x0021_0000);
     m.set_u32(CURRENT_LAYER, FOG_LAYER as u32).unwrap();
     m.set_u32(CURRENT_LIST, 0x004c_1a48).unwrap();
     m.set_u32(0x004c_1a48, 100).unwrap();
-    m.set_u32(0x004c_1a48 + 4, 3).unwrap();
+    m.set_u32(0x004c_1a48 + 4, 2).unwrap();
     m.set_u32(0x004c_1a48 + 0xc, 0).unwrap();
     m.set_u32(0x004c_1a48 + 0x14, 0x0060_0000).unwrap();
     let item = |m: &mut FlatMemory, i: u32, build: u32, record: u32| {
@@ -71,6 +70,7 @@ fn scene() -> FlatMemory {
     m.set_u32(fog::PLANAR_READY, 1).unwrap();
     m.set_u32(fog::FOG_BYTES, 0).unwrap();
     m.set_u32(RENDER_RECORDS + 0x20 * 2 + 0xc, 37 << 9).unwrap();
+    m.set_u32(RENDER_RECORDS + 0x20 * 5, 0).unwrap();
     m.set_u32(RENDER_RECORDS + 0x20 * 5 + 4, 0xe1a3_0004).unwrap();
     // The layer draw's gate on: the fog mode 3.
     m.set_u32(FOG_MODE, 3).unwrap();
@@ -137,6 +137,26 @@ fn the_hosts_parts_lose_their_bit_and_get_it_back() {
     m.set_u32(CURRENT_LAYER, 6).unwrap();
     native_fog::before_layer(&mut m, 0x0002_c109);
     assert_eq!(mask(&m, 0), 1 << 16 | 1 << 3);
+}
+
+#[test]
+fn the_hook_skips_both_clusters_around_an_object_without_a_fog_entry() {
+    let _held = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    install_host(true);
+    let mut m = scene();
+    // Include a duplicate cluster in the spare slot after the entry-less object.
+    m.set_u32(0x004c_1a48 + 4, 3).unwrap();
+    let late = 0x0060_0000 + ITEM_SIZE * 2;
+    m.set_u32(late, GEOMETRY_BUILD).unwrap();
+    m.set_u32(late + 8, 0xe000_0010).unwrap();
+    m.set_u32(late + 0xc, (2 << 8) | 1).unwrap();
+    draw(&mut m);
+    assert_eq!(mask(&m, 0), 1 << 3);
+    assert_eq!(mask(&m, 1), (1 << 16) | (1 << 3));
+    assert_eq!(mask(&m, 2), 1 << 3);
+    native_fog::restore_pending(&mut m);
+    assert_eq!(mask(&m, 2), (1 << 16) | (1 << 3));
+    assert_eq!(mask(&m, 0), (1 << 16) | (1 << 3));
 }
 
 #[test]

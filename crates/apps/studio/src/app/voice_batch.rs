@@ -25,6 +25,18 @@ use crate::voice::{Engine, VoiceError};
 /// The most a text file imported into the batch may be.
 const MAX_IMPORT: u64 = 1 << 20;
 
+/// The columns a said line covers when it is drawn under an original on
+/// one time axis: the original (`axis_ms` long) fills `width` columns, so
+/// a line of `line_ms` covers its share of them, and a longer one is cut
+/// where the axis ends. The sound document's Lines pane draws with it.
+pub fn axis_columns(axis_ms: u64, line_ms: u64, width: usize) -> usize {
+    if axis_ms == 0 {
+        return 0;
+    }
+    let cols = (u128::from(line_ms) * width as u128 / u128::from(axis_ms)) as usize;
+    cols.min(width)
+}
+
 /// Where a row is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RowState {
@@ -63,10 +75,10 @@ pub struct Row {
     /// Whose voice; `None` is the batch's default character.
     pub character: Option<String>,
     /// The output name (a clip id: lowercase letters, digits and -), or
-    /// empty. Names the saved file and the checkout clip.
+    /// empty. Names the saved WAV when the row has no target tag.
     pub clip: String,
     /// The `snd!` tag this line replaces in the edit target package, or
-    /// `None`. A row with a tag is saved there, not under `art/announcer`.
+    /// `None`. The row is saved as a sound item.
     pub tag: Option<String>,
     pub state: RowState,
     pub said: Option<Said>,
@@ -210,6 +222,22 @@ impl Batch {
             && let Err(e) = super::announcer::check_clip_id(&r.clip)
         {
             return Some(e.to_string());
+        }
+        None
+    }
+
+    /// Why the window will not say `r` yet, or `None`: a problem of its
+    /// own ([`Batch::problem`]), or no output name and no game line to
+    /// replace, so nothing could name or place the result. The API's
+    /// `queue` does not ask for a name; the Voices window does.
+    pub fn blocked(&self, r: &Row) -> Option<String> {
+        if let Some(p) = self.problem(r) {
+            return Some(p);
+        }
+        if r.clip.is_empty() && r.tag.is_none() {
+            return Some(
+                "give the line an output name, or pick the game line it replaces".into(),
+            );
         }
         None
     }
@@ -366,24 +394,8 @@ impl App {
             .map_err(|e| e.to_string())
     }
 
-    /// Why nothing could be saved, or `None` when some row can be.
-    pub fn voice_batch_save_problem(&self) -> Option<String> {
-        let b = &self.voices.batch;
-        let done: Vec<&Row> = b.rows.iter().filter(|r| r.state == RowState::Done).collect();
-        if done.is_empty() {
-            return Some("no line is done yet".into());
-        }
-        if done.iter().all(|r| r.tag.is_none() && r.clip.is_empty()) {
-            return Some("give the lines an output name (or a target sound) first".into());
-        }
-        None
-    }
-
-    /// Keeps the done rows: a row with a tag becomes a `sound` item of
-    /// `package` (default the edit target); one with an output name is
-    /// copied to `art/announcer/<name>.wav` of `repo` (default the
-    /// checkout the editor runs in), replacing a clip only with the
-    /// batch's `replace`. `ids` limits it. A row's result is its `saved`.
+    /// Save selected done rows as sound items. An explicit repo is an
+    /// export destination for named clips.
     pub fn voice_batch_save(
         &mut self,
         ids: Option<&[u64]>,
@@ -405,20 +417,18 @@ impl App {
             .collect();
         let mut out = Vec::new();
         for (id, file, clip, tag) in todo {
-            let r: Result<String, String> = if let Some(tag) = tag {
-                match package.map(str::to_owned).or_else(|| self.edit_target()) {
-                    None => Err(super::edit_target::NO_TARGET.to_owned()),
-                    Some(p) => self
-                        .voice_commit_sound(&tag, Some(&file), &p, None)
-                        .map(|_| format!("{tag} in {p}"))
-                        .map_err(|e| e.to_string()),
-                }
-            } else if clip.is_empty() {
+            let r = if clip.is_empty() && tag.is_none() {
                 Err("no output name and no target sound".into())
-            } else {
-                self.voice_commit(&clip, Some(&file), repo, replace)
+            } else if let Some(repo) = repo.filter(|_| tag.is_none()) {
+                self.voice_commit(&clip, Some(&file), Some(repo), replace)
                     .map(|(to, _)| to.display().to_string())
                     .map_err(|e| e.to_string())
+            } else {
+                match package.map(str::to_owned).or_else(|| self.edit_target()) {
+                    None => Err(super::edit_target::NO_TARGET.to_owned()),
+                    Some(target) => self.save_voice_item(&target, &file, &clip, tag.as_deref())
+                        .map(|path| path.display().to_string()),
+                }
             };
             if let Some(row) = self.voices.batch.rows.iter_mut().find(|x| x.id == id) {
                 row.saved = Some(r.clone());

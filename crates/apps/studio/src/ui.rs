@@ -5,6 +5,9 @@
 mod bar;
 pub mod browser;
 mod doc_tabs;
+mod doc_header;
+#[cfg(test)]
+pub(crate) use doc_header::crumbs as doc_header_crumbs;
 mod game_view;
 mod layout;
 mod toolbar;
@@ -14,6 +17,7 @@ pub mod map_list;
 mod modeling;
 mod outliner;
 mod palette;
+mod package;
 mod play;
 mod playlists;
 pub mod playtest;
@@ -22,7 +26,7 @@ mod preview_switch;
 mod sound;
 pub(crate) mod sky;
 pub(crate) mod anim;
-mod announcer;
+mod voices;
 pub mod scripts;
 pub mod tags;
 mod ui_screens;
@@ -106,6 +110,7 @@ pub struct Studio {
     pub scripts: scripts::ScriptsUi,
     /// The browser panel's state.
     pub browser: browser::BrowserUi,
+    package: package::PackageUi,
     /// The Problems panel's state.
     pub problems: problems::ProblemsUi,
     /// The map grid's pictures.
@@ -114,8 +119,8 @@ pub struct Studio {
     sound: sound::SoundUi,
     /// The Animation window over the Tags tool's selected `jmad`.
     anim: anim::AnimUi,
-    /// The Voices window (View > Voices): the announcer and the clones.
-    announcer: announcer::AnnouncerUi,
+    /// The voice document (`Doc::Voice`): the announcer and the clones.
+    voices: voices::VoicesUi,
     /// The tag workspace's start page and status-line bar
     /// (`app::workspace`).
     workspace: workspace::WorkspaceUi,
@@ -152,11 +157,12 @@ impl Studio {
             tags: tags::TagsUi::default(),
             scripts: scripts::ScriptsUi::default(),
             browser: browser::BrowserUi::default(),
+            package: package::PackageUi::default(),
             problems: problems::ProblemsUi::default(),
             map_list: map_list::MapListUi::default(),
             sound: sound::SoundUi::new(),
             anim: anim::AnimUi::default(),
-            announcer: announcer::AnnouncerUi::default(),
+            voices: voices::VoicesUi::default(),
             workspace: workspace::WorkspaceUi::default(),
         }
     }
@@ -184,6 +190,7 @@ impl Studio {
         }
         self.menu_bar(ui, app, &mut actions);
         // Asked for by the frame before (once its tabs exist).
+        self.focus_game |= std::mem::take(&mut app.preview.focus_game);
         let focus_game = self.focus_game;
         bar::draw(ui, app, &mut self.play, &self.fonts, &mut actions);
         let reset = self.dockspace(ui);
@@ -247,6 +254,10 @@ impl Studio {
                 self.viewport_window(ui, app, gpu, &mut actions);
                 self.inspector_window(ui, app, gpu, &mut actions);
             }
+            Surface::Package => {
+                self.browser_window(ui, app, false, &mut actions);
+                package::window(ui, app, &self.keys.package, &mut self.package, &mut self.browser, self.dialogs, &mut actions);
+            }
             Surface::Variants => self.variant_windows(ui, app, &mut actions),
             Surface::Playlists => self.playlist_windows(ui, app, &mut actions),
             Surface::UiScreens => self.ui_screen_windows(ui, app, gpu, &mut actions),
@@ -270,7 +281,7 @@ impl Studio {
         sound::window(ui, app, gpu, &mut self.sound);
         // The same seam for model poses (that page's slice M1).
         anim::window(ui, app, gpu, &mut self.anim);
-        announcer::window(ui, app, &mut self.announcer, self.dialogs);
+        voices::window(ui, app, &mut self.voices, self.dialogs);
         // The tag workspace's first-start page (a floating window; the
         // shell is another lane's).
         workspace::start_page(ui, app, &mut self.workspace, &self.fonts, self.dialogs);
@@ -283,6 +294,7 @@ impl Studio {
             ui.set_window_focus(Some("###game"));
         }
         self.status_bar(ui, app);
+        self.browser.create_modal(ui, &mut actions);
         self.modals(ui, app, &mut actions);
         actions.extend(self.palette.draw(ui, app));
         dispatch_actions(app, actions);
@@ -316,29 +328,10 @@ impl Studio {
             self.open_source_dialog(actions);
         }
         if cmd && ui.is_key_pressed(Key::S) {
-            match app.surface() {
-                Surface::Scene | Surface::Tags | Surface::Scripts if shift => {
-                    self.save_map_dialog(app, actions)
-                }
-                Surface::Scene | Surface::Tags | Surface::Scripts => {
-                    actions.extend(MenuCommand::Save.item(app).action);
-                }
-                Surface::Variants => actions.push(Action::SaveVariant),
-                Surface::Playlists if app.hoppers.is_open() => {
-                    if shift {
-                        if let Some(path) = playlists::save_dialog(self.dialogs, app) {
-                            actions.push(Action::SaveHopperAs(path));
-                        }
-                    } else {
-                        playlists::save(app, self.dialogs, actions);
-                    }
-                }
-                Surface::Hud => {
-                    if let Some(p) = hud::save_dialog(self.dialogs, app) {
-                        actions.push(Action::HudSaveAs(p));
-                    }
-                }
-                Surface::Playlists | Surface::UiScreens | Surface::Textures => {}
+            if shift && app.surface().is_map() {
+                self.save_map_dialog(app, actions);
+            } else if !shift {
+                actions.extend(app.front_doc().and_then(|doc| app.doc_save_action(doc)));
             }
         }
         if cmd && ui.is_key_pressed(Key::Q) {
@@ -452,7 +445,10 @@ impl Studio {
             self.tool_file_menu(ui, app, actions);
             ui.separator();
             let map_tool = app.surface().is_map();
-            menu_action(ui, app, MenuCommand::Save, Some(icon::SAVE), false, actions);
+            let save = app.front_doc().and_then(|doc| app.doc_save_action(doc));
+            if ui.menu_item_enabled_selected_with_shortcut("Save", "Cmd+S", false, save.is_some()) {
+                actions.extend(save);
+            }
             if ui.menu_item_enabled_selected_with_shortcut(
                 "Export map...",
                 if map_tool { "Shift+Cmd+S" } else { "" },
@@ -506,21 +502,6 @@ impl Studio {
             }
         }
         if let Some(_m) = ui.begin_menu("View") {
-            // The editors that have no tab until a document is open in
-            // them: the window has no tool tabs.
-            if let Some(_e) = ui.begin_menu("Editors") {
-                for (surface, name) in Surface::EDITORS {
-                    let here = if surface == Surface::Scene {
-                        app.surface().is_map()
-                    } else {
-                        app.surface() == surface
-                    };
-                    if ui.menu_item_enabled_selected_no_shortcut(name, here, true) {
-                        actions.push(Action::Show(surface));
-                    }
-                }
-            }
-            ui.separator();
             menu_action(ui, app, MenuCommand::FrameAll, Some(icon::MAXIMIZE), false, actions);
             menu_action(ui, app, MenuCommand::FocusSelected, Some(icon::FOCUS), false, actions);
             ui.separator();
@@ -565,13 +546,6 @@ impl Studio {
             }
             menu_action(ui, app, MenuCommand::Overlay, None, app.overlay_shown(), actions);
             ui.separator();
-            if ui.menu_item_enabled_selected_no_shortcut(
-                format!("{} Voices", icon::SOUND),
-                self.announcer.open,
-                true,
-            ) {
-                self.announcer.open = !self.announcer.open;
-            }
             if ui.menu_item("Reset layout") {
                 self.reset_layout = true;
             }
@@ -646,8 +620,8 @@ impl Studio {
             Surface::Hud => {
                 let can = app.hud.session.as_ref().is_some_and(|s| !s.edited().is_empty());
                 if ui.menu_item_enabled_selected_with_shortcut(
-                    format!("{} Save map with HUD edits as...", icon::SAVE),
-                    "Cmd+S",
+                    format!("{} Export map with HUD edits...", icon::SAVE),
+                    "",
                     false,
                     can,
                 ) && let Some(p) = hud::save_dialog(self.dialogs, app)
@@ -656,9 +630,8 @@ impl Studio {
                 }
             }
             Surface::Textures => textures::file_menu(ui, app, self.dialogs, actions),
-            Surface::Scene | Surface::UiScreens | Surface::Tags | Surface::Scripts => {}
+            Surface::Scene | Surface::UiScreens | Surface::Tags | Surface::Scripts | Surface::Package => {}
             Surface::Variants => {
-                menu_action(ui, app, MenuCommand::SaveVariant, Some(icon::SAVE), false, actions);
                 if ui.menu_item(format!("{} Import variant...", icon::PACKAGE_OPEN))
                     && let Some(p) = variants::import_dialog(self.dialogs)
                 {
@@ -674,23 +647,14 @@ impl Studio {
                     actions.push(Action::OpenHopper(p));
                 }
                 let open = app.hoppers.is_open();
-                let save = MenuCommand::SavePlaylist.item(app);
                 if ui.menu_item_enabled_selected_with_shortcut(
-                    format!("{} {}", icon::SAVE, save.label),
-                    save.shortcut,
-                    false,
-                    open,
-                ) {
-                    playlists::save(app, self.dialogs, actions);
-                }
-                if ui.menu_item_enabled_selected_with_shortcut(
-                    "Save playlist file as...",
-                    "Shift+Cmd+S",
+                    "Export playlist file...",
+                    "",
                     false,
                     open,
                 ) && let Some(p) = playlists::save_dialog(self.dialogs, app)
                 {
-                    actions.push(Action::SaveHopperAs(p));
+                    actions.push(Action::ExportPlaylist(p));
                 }
             }
         }
@@ -703,14 +667,24 @@ impl Studio {
         ui.window(&keys.list)
             .build(|| variants::list(ui, app, st, fonts, actions));
         ui.window(&keys.center)
-            .build(|| variants::settings(ui, app, st, fonts, actions));
+            .build(|| {
+                if app.front_doc() != Some(crate::app::Doc::Rules) {
+                    doc_header::draw(ui, app, actions, &mut self.browser);
+                }
+                variants::settings(ui, app, st, fonts, actions);
+            });
         ui.window(&keys.inspector)
             .build(|| variants::inspector(ui, app, st, fonts, self.dialogs, actions));
         // Docked beside the settings, but never takes the tab from them
         // when it first appears; it is opened by picking its tab.
         ui.window(&self.keys.rules)
             .flags(dear_imgui_rs::WindowFlags::NO_FOCUS_ON_APPEARING)
-            .build(|| game_script::window(ui, app, fonts, self.dialogs));
+            .build(|| {
+                if app.front_doc() == Some(crate::app::Doc::Rules) {
+                    doc_header::draw(ui, app, actions, &mut self.browser);
+                }
+                game_script::window(ui, app, fonts, self.dialogs);
+            });
         // Opening a script (from its toolbar or `rules.open`) picks its tab,
         // asked each frame until the window's body has drawn: a request
         // made before the dock layout exists is lost.
@@ -727,7 +701,10 @@ impl Studio {
         ui.window(&keys.list)
             .build(|| playlists::list(ui, app, fonts, dialogs, actions));
         ui.window(&keys.center)
-            .build(|| playlists::entries(ui, app, fonts, actions));
+            .build(|| {
+                doc_header::draw(ui, app, actions, &mut self.browser);
+                playlists::entries(ui, app, fonts, actions);
+            });
         let st = &mut self.playlists;
         ui.window(&keys.inspector)
             .build(|| playlists::inspector(ui, app, st, fonts, dialogs, actions));
@@ -747,7 +724,10 @@ impl Studio {
             .build(|| ui_screens::tree(ui, app, st, fonts, actions));
         ui.window(&keys.center)
             .flags(WindowFlags::HORIZONTAL_SCROLLBAR)
-            .build(|| ui_screens::preview(ui, app, st, gpu, actions));
+            .build(|| {
+                doc_header::draw(ui, app, actions, &mut self.browser);
+                ui_screens::preview(ui, app, st, gpu, actions);
+            });
         ui.window(&keys.inspector)
             .build(|| ui_screens::inspector(ui, app, st, fonts, self.dialogs, actions));
     }
@@ -760,7 +740,10 @@ impl Studio {
             .build(|| hud::tree(ui, app, st, fonts, actions));
         ui.window(&keys.center)
             .flags(WindowFlags::HORIZONTAL_SCROLLBAR)
-            .build(|| hud::preview(ui, app, st, fonts, gpu, actions));
+            .build(|| {
+                doc_header::draw(ui, app, actions, &mut self.browser);
+                hud::preview(ui, app, st, fonts, gpu, actions);
+            });
         ui.window(&keys.inspector)
             .build(|| hud::inspector(ui, app, st, fonts, self.dialogs, actions));
     }
@@ -773,7 +756,10 @@ impl Studio {
             .build(|| textures::list(ui, app, st, actions));
         ui.window(&keys.center)
             .flags(WindowFlags::HORIZONTAL_SCROLLBAR)
-            .build(|| textures::canvas(ui, app, st, fonts, gpu, actions));
+            .build(|| {
+                doc_header::draw(ui, app, actions, &mut self.browser);
+                textures::canvas(ui, app, st, fonts, gpu, actions);
+            });
         ui.window(&keys.inspector)
             .build(|| textures::inspector(ui, app, st, self.dialogs, actions));
     }
@@ -851,6 +837,7 @@ impl Studio {
                 };
                 ui.text_disabled(format!("{kind} {}", src.path().display()));
             }
+            st.import_buttons(ui, self.dialogs);
             browser::draw(ui, app, &mut st, actions);
         });
         self.browser = st;
@@ -1017,6 +1004,13 @@ impl Studio {
         ui.window(&self.keys.viewport)
             .flags(WindowFlags::NO_SCROLLBAR | WindowFlags::NO_SCROLL_WITH_MOUSE)
             .build(|| {
+                doc_header::draw(ui, app, actions, &mut self.browser);
+                if let Some(doc) = app.front_doc()
+                    && app.source_asset(doc).is_some()
+                {
+                    browser::source_view(ui, app, doc);
+                    return;
+                }
                 if map_is_visible(app) {
                     toolbar::draw(ui, app, viewport, actions, &mut self.hint);
                     viewport.draw(ui, app, gpu, actions);
@@ -1200,7 +1194,7 @@ impl Studio {
 
     fn modals(&mut self, ui: &Ui, app: &mut App, actions: &mut Vec<Action>) {
         // Unsaved changes.
-        if app.pending().is_some() && !ui.is_popup_open(UNSAVED) {
+        if app.pending().is_some() && app.edits.picker.is_none() && !ui.is_popup_open(UNSAVED) {
             ui.open_popup(UNSAVED);
         }
         if let Some(_m) = ui
@@ -1237,6 +1231,7 @@ impl Studio {
                 Surface::Tags => "The map's tags".to_owned(),
                 Surface::Scripts => "The map's scripts".to_owned(),
                 Surface::Textures => "The map's bitmaps".to_owned(),
+                Surface::Package => "The package".to_owned(),
             };
             ui.text(format!("{} {who} has unsaved edits.", icon::ALERT));
             ui.text_disabled(format!("Save them before {what}?"));
@@ -1263,14 +1258,8 @@ impl Studio {
                     d.end();
                 }
                 Surface::Playlists => {
-                    if app.hoppers.path().is_some() {
-                        if ui.button(format!("{} Save", icon::SAVE)) {
-                            answer = Some(Answer::Save);
-                        }
-                    } else if ui.button(format!("{} Save as...", icon::SAVE))
-                        && let Some(p) = playlists::save_dialog(self.dialogs, app)
-                    {
-                        answer = Some(Answer::SaveAs(p));
+                    if ui.button(format!("{} Save", icon::SAVE)) {
+                        answer = Some(Answer::Save);
                     }
                 }
                 Surface::Hud => {
@@ -1280,7 +1269,7 @@ impl Studio {
                         answer = Some(Answer::SaveAs(p));
                     }
                 }
-                Surface::UiScreens | Surface::Tags | Surface::Scripts | Surface::Textures => {}
+                Surface::UiScreens | Surface::Tags | Surface::Scripts | Surface::Textures | Surface::Package => {}
             }
             ui.same_line();
             if ui.button("Discard") {
@@ -1292,7 +1281,7 @@ impl Studio {
             }
             if let Some(a) = answer {
                 app.resolve(a);
-                if app.pending().is_none() {
+                if app.pending().is_none() || app.edits.picker.is_some() {
                     ui.close_current_popup();
                 }
             }
@@ -1311,7 +1300,6 @@ impl Studio {
                 None => ui.close_current_popup(),
                 Some(mut picker) => {
                     ui.text("Which package gets your edits?");
-                    ui.text_disabled("Each change becomes an edit line in it.");
                     ui.spacing();
                     let mut answer = None;
                     for (id, name) in app.local_packages() {

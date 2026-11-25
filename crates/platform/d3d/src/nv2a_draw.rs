@@ -68,6 +68,25 @@ impl NativeDrawMaterial {
         caps: Capabilities,
         fetch: FetchMode,
     ) -> Result<Self, String> {
+        Self::resolve_inputs(draw, present, caps, || input_fetch(draw, fetch))
+    }
+
+    /// Resolve the shader using the layout plan that records its vertex buffers.
+    pub fn resolve_with_plan(
+        draw: &ResolvedDraw,
+        present: [bool; 4],
+        caps: Capabilities,
+        plan: &RepackPlan,
+    ) -> Result<Self, String> {
+        Self::resolve_inputs(draw, present, caps, || plan_input_fetch(plan))
+    }
+
+    fn resolve_inputs(
+        draw: &ResolvedDraw,
+        present: [bool; 4],
+        caps: Capabilities,
+        input_fetch: impl FnOnce() -> [InputFetch; 16],
+    ) -> Result<Self, String> {
         let sampled = crate::device::sampled_stages(&draw.shader, &draw.raw, &draw.state);
         if (0..4).any(|n| sampled[n] && (!present[n] || draw.texture_info[n].is_none())) {
             return Err("a sampled stage has no resolved texture view".into());
@@ -78,7 +97,7 @@ impl NativeDrawMaterial {
             signs,
             border,
             ..
-        } = program_key(&TABLE, caps, draw, present, fetch)?;
+        } = program_key_with_fetch(&TABLE, caps, draw, present, input_fetch)?;
         if !matches!(key.vertex, VertexSource::Microcode(_)) {
             return Err("requires a vertex program".into());
         }
@@ -229,7 +248,7 @@ pub(super) fn uniforms(
     pu.border = std::array::from_fn(|n| border_value(draw.state.stages[n].border_color, signs[n]));
     for n in 0..4 {
         let e = &draw.extras[n];
-        pu.bump_mat[n] = e.bump_env_mat;
+        pu.bump_mat[n] = draw.bump_matrix(n);
         pu.bump_lum[n] = [e.bump_env_lscale, e.bump_env_loffset, 0.0, 0.0];
         if let Some(info) = draw.texture_info[n]
             && info.format.layout() == gfx::format::Layout::Linear
@@ -247,22 +266,7 @@ pub(super) fn samplers(
     border: [u8; 4],
     caps: Capabilities,
 ) -> [SamplerKey; 4] {
-    std::array::from_fn(|n| {
-        let mut k = SamplerKey::from_stage(&draw.state.stages[n], caps);
-        if border[n] != 0 {
-            // The shader supplies the border; the sampler clamps.
-            for (axis, mode) in [&mut k.address_u, &mut k.address_v, &mut k.address_w]
-                .into_iter()
-                .enumerate()
-            {
-                if border[n] >> axis & 1 != 0 {
-                    *mode = wgpu::AddressMode::ClampToEdge;
-                }
-            }
-            k.border = None;
-        }
-        k
-    })
+    std::array::from_fn(|n| sampler_key(&draw.state.stages[n], caps, border[n]))
 }
 
 #[cfg(test)]
@@ -343,6 +347,66 @@ mod tests {
             ui_fit: None,
             glyph_cache: 1,
         }
+    }
+
+    #[test]
+    fn depth_billboard_fetch_fits_only_its_window_coordinate_on_the_display_copy() {
+        let mut draw = ui_draw();
+        let fit = crate::backend::UiFit::projected_sprite(0.75, 80.).with_screen_input(1);
+        draw.ui_fit = Some(fit);
+        let resolve = |d: &ResolvedDraw| {
+            NativeDrawProgram::resolve_ui(d, [true, false, false, false],
+                Capabilities::ALL, FetchMode::Cpu, 4u32).unwrap()
+        };
+        let display = resolve(&draw);
+        let retail = resolve(&draw.for_reference());
+        let mut expected = [InputFetch::Float; 16];
+        expected[1] = InputFetch::WindowFloat;
+        assert_eq!(display.key.0.vertex_options.input_fetch, expected);
+        assert_eq!(display.vertex.ui_transform, fit.transform);
+        assert_eq!(retail.key.0.vertex_options.input_fetch, [InputFetch::Float; 16]);
+        assert_eq!(retail.vertex.ui_transform, [1., 1., 0., 0.]);
+    }
+
+    #[test]
+    fn frame_distortion_follows_the_display_lens_on_both_horizontal_coefficients() {
+        let mut draw = ui_draw();
+        let matrix = [8., 5., -4., 3.];
+        draw.extras[0].samples_frame = true;
+        draw.extras[0].bump_env_mat = matrix;
+        draw.extras[1].bump_env_mat = matrix;
+        draw.retail_constants = Some((draw.shader.constants.clone(), 0.75));
+        assert_eq!(draw.bump_matrix(0), [6., 5., -3., 3.]);
+        assert_eq!(draw.bump_matrix(1), matrix);
+        assert_eq!(draw.for_reference().bump_matrix(0), matrix);
+    }
+
+    #[test]
+    fn hud_vertex_output_uses_glyph_colour_projected_uv_and_window_position() {
+        let mut draw = ui_draw();
+        let mut stream = Vec::new();
+        for x in [1.0f32, 2., 2., 1.] {
+            for value in [x, 3., 0., 1.] {
+                stream.extend_from_slice(&value.to_le_bytes());
+            }
+            stream.extend_from_slice(&[0, 51, 255, 102]);
+            for value in [4.0f32, 12.] {
+                stream.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        draw.streams.push(crate::backend::StreamBytes { data: stream.into(), stride: 28 });
+        draw.texture_info[0].as_mut().unwrap().format = D3DFormat::LinA8R8G8B8;
+        draw.state.stages[1].tex_coord_index = 0;
+        draw.texture_info[1] = draw.texture_info[0];
+        draw.texture_info[1].as_mut().unwrap().format = D3DFormat::A8R8G8B8;
+        let sampled = [true, true, false, false];
+        let corners = crate::nv2a::overlay_vertices(&draw, sampled).unwrap();
+        assert_eq!(corners[0], ([1.5, 3.5], [[0.25, 0.75], [4., 12.], [0.; 2], [0.; 2]], [1., 0.2, 0., 0.4]));
+        assert_eq!(corners[1].0, [2.5, 3.5]);
+        let mut varied = draw.streams[0].data.to_vec();
+        varied[28 + 12..28 + 16].copy_from_slice(&0.5f32.to_le_bytes());
+        draw.streams[0].data = varied.into();
+        assert!(crate::nv2a::overlay_vertices(&draw, sampled).is_none());
     }
 
     #[test]

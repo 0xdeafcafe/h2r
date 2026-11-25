@@ -16,7 +16,7 @@ use std::sync::{Arc, OnceLock};
 
 use crate::setting_defs::{GUEST_FRAME, RESOLUTION};
 use crate::ui_kit::picker::{self, Pick};
-use crate::run_opts::NativeSize;
+use crate::run_opts::NativeTarget;
 use crate::video_screen::resolution;
 use settings::{Apply, Def, Resolution, Store, Tier, Value};
 
@@ -217,7 +217,7 @@ pub struct Model {
     screens: Vec<Screen>,
     extensions: Vec<Extension>,
     strings: Vec<(u32, String)>,
-    native_size: NativeSize,
+    native_target: NativeTarget,
     resolution_address: OnceLock<u32>,
 }
 
@@ -277,7 +277,7 @@ impl Model {
             screens,
             extensions,
             strings: Vec::new(),
-            native_size: Arc::new(|| GUEST_FRAME),
+            native_target: Arc::new(|| settings::NativeTarget::windowed(GUEST_FRAME)),
             resolution_address: OnceLock::new(),
         };
         let mut texts: Vec<String> = Vec::new();
@@ -326,14 +326,14 @@ impl Model {
         Ok(m)
     }
 
-    pub(crate) fn with_native_size(mut self, native: NativeSize) -> Self {
-        self.native_size = native;
+    pub(crate) fn with_native_target(mut self, native: NativeTarget) -> Self {
+        self.native_target = native;
         self
     }
 
     fn resolution_label(&self) -> Option<String> {
         let r = Resolution::from_value(self.store.get(RESOLUTION.key)?)?;
-        Some(resolution::label(r, (self.native_size)()))
+        Some(resolution::label(r, (self.native_target)()))
     }
 
     /// Where this model's mutable locale slot was placed in this guest.
@@ -516,7 +516,7 @@ impl Model {
         };
         if row.picker && let Some(state) = self.store.state(key) && !state.locked {
             let (choices, help): (Vec<(Value, String)>, String) = if key == RESOLUTION.key {
-                let native = (self.native_size)();
+                let native = (self.native_target)();
                 let selected = Resolution::from_value(state.shown).expect("validated resolution");
                 let choices = resolution::choices(native, selected)
                     .into_iter()

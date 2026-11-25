@@ -1,7 +1,7 @@
 //! Undo, the shared tiles under it, the dirty log and ops as values.
 
 use bitmap_edit::{
-    Adjust, Bitmap, BitmapOp, Brush, Canvas, Channels, Error, LayerId, Rect, TILE,
+    Adjust, Bitmap, BitmapOp, Brush, Canvas, Channel, Channels, Error, LayerId, Rect, TILE, Turn,
 };
 
 const BLACK: [u8; 4] = [0, 0, 0, 255];
@@ -14,6 +14,24 @@ fn big() -> Bitmap {
     let side = TILE * 2 + 44;
     b.add_layer(L0, Canvas::new(side, side, BLACK).unwrap(), None);
     b
+}
+
+/// A bitmap whose one layer's pixel at (`x`, `y`) is `[x, y, 7, 255]`.
+fn numbered(side: u32) -> Bitmap {
+    let mut c = Canvas::new(side, side, BLACK).unwrap();
+    for y in 0..side {
+        for x in 0..side {
+            c.set_pixel(x, y, [x as u8, y as u8, 7, 255]);
+        }
+    }
+    let mut b = Bitmap::new();
+    b.add_layer(L0, c, None);
+    b
+}
+
+/// The pixel at (`x`, `y`) of the bitmap's one layer.
+fn px(b: &Bitmap, x: u32, y: u32) -> [u8; 4] {
+    b.layer(L0).unwrap().canvas.pixel(x, y)
 }
 
 fn dab(at: [f32; 2]) -> BitmapOp {
@@ -195,6 +213,143 @@ fn fill_and_adjust_are_ops_with_one_step_each() {
 }
 
 #[test]
+fn a_clone_drag_is_one_undo_step() {
+    let mut b = numbered(64);
+    b.begin_clone(
+        L0,
+        Brush {
+            size: 2.0,
+            hardness: 1.0,
+            ..Brush::default()
+        },
+        None,
+        [4.5, 8.5],
+    )
+    .unwrap();
+    // Down and right of the source by (4, 8).
+    let r1 = b.stroke_to(8.5, 16.5).unwrap();
+    let r2 = b.stroke_to(20.5, 16.5).unwrap();
+    assert!(!r1.is_empty() && !r2.is_empty());
+    assert_eq!(px(&b, 8, 16), [4, 8, 7, 255]);
+    assert_eq!(px(&b, 12, 16), [8, 8, 7, 255]);
+    assert_eq!(px(&b, 20, 16), [16, 8, 7, 255]);
+    // The row read is as it was.
+    assert_eq!(px(&b, 8, 8), [8, 8, 7, 255]);
+    assert_eq!(px(&b, 16, 8), [16, 8, 7, 255]);
+    assert!(b.stroke_active());
+    assert_eq!(b.undo_len(), 0);
+    let applied = b.end_stroke().unwrap();
+    assert!(applied.dirty.encloses(r1.union(r2)));
+    assert_eq!(b.undo_len(), 1);
+    b.undo().unwrap();
+    assert_eq!(px(&b, 12, 16), [12, 16, 7, 255]);
+    assert!(!b.is_edited());
+}
+
+#[test]
+fn an_edit_that_changed_no_pixel_is_no_step() {
+    // White over white, as a drag.
+    let mut b = Bitmap::new();
+    b.add_layer(L0, Canvas::new(16, 16, WHITE).unwrap(), None);
+    b.begin_stroke(L0, Brush::default()).unwrap();
+    b.stroke_to(8.0, 8.0).unwrap();
+    let a = b.end_stroke().unwrap();
+    assert!(a.dirty.is_empty());
+    assert_eq!(b.undo_len(), 0);
+    assert!(b.undo().is_none());
+    assert!(!b.is_edited());
+    // A uniform layer turned, or its red copied into red.
+    let _ = b.take_dirty();
+    let quarter = BitmapOp::Turn {
+        layer: L0,
+        turn: Turn::Quarter,
+        rect: None,
+    };
+    let a = b.apply(&quarter).unwrap();
+    assert!(a.dirty.is_empty());
+    let same = BitmapOp::CopyChannel {
+        layer: L0,
+        from: Channel::R,
+        to: Channels::parse("r").unwrap(),
+        rect: None,
+    };
+    let a = b.apply(&same).unwrap();
+    assert!(a.dirty.is_empty());
+    assert_eq!(b.undo_len(), 0);
+    assert!(!b.is_edited());
+    assert!(b.take_dirty().is_empty());
+    // A stroke that does change a pixel is a step.
+    b.begin_stroke(
+        L0,
+        Brush {
+            color: BLACK,
+            ..Brush::default()
+        },
+    )
+    .unwrap();
+    b.stroke_to(8.0, 8.0).unwrap();
+    let a = b.end_stroke().unwrap();
+    assert!(!a.dirty.is_empty());
+    assert_eq!(b.undo_len(), 1);
+    assert!(b.is_edited());
+}
+
+#[test]
+fn channel_copy_and_turn_are_ops_with_one_step_each() {
+    let mut b = numbered(4);
+    let copy = BitmapOp::CopyChannel {
+        layer: L0,
+        from: Channel::R,
+        to: Channels::parse("g").unwrap(),
+        rect: None,
+    };
+    let a = b.apply(&copy).unwrap();
+    assert_eq!(a.dirty, Rect::new(0, 0, 4, 4));
+    assert_eq!(px(&b, 3, 2), [3, 3, 7, 255]);
+    let flip = BitmapOp::Turn {
+        layer: L0,
+        turn: Turn::FlipHorizontal,
+        rect: None,
+    };
+    let a = b.apply(&flip).unwrap();
+    assert_eq!(a.tiles, vec![(0, 0)]);
+    assert_eq!(px(&b, 0, 2), [3, 3, 7, 255]);
+    assert_eq!(px(&b, 3, 2), [0, 0, 7, 255]);
+    assert_eq!(b.undo_len(), 2);
+    b.undo().unwrap();
+    assert_eq!(px(&b, 0, 2), [0, 0, 7, 255]);
+    // A rectangle outside the layer, a quarter turn of one that is not
+    // square, or no channel to write: refused, and nothing changes.
+    let outside = BitmapOp::Turn {
+        layer: L0,
+        turn: Turn::Half,
+        rect: Some(Rect::new(2, 2, 4, 4)),
+    };
+    assert!(matches!(b.apply(&outside), Err(Error::Rect(_))));
+    let row = BitmapOp::Turn {
+        layer: L0,
+        turn: Turn::Quarter,
+        rect: Some(Rect::new(0, 0, 4, 1)),
+    };
+    assert!(matches!(b.apply(&row), Err(Error::Rect(_))));
+    let none = BitmapOp::CopyChannel {
+        layer: L0,
+        from: Channel::A,
+        to: Channels {
+            r: false,
+            g: false,
+            b: false,
+            a: false,
+        },
+        rect: None,
+    };
+    assert!(matches!(b.apply(&none), Err(Error::Params(_))));
+    assert_eq!(b.undo_len(), 1);
+    // Still as the copy left it.
+    assert_eq!(px(&b, 3, 2), [3, 3, 7, 255]);
+}
+
+#[test]
 fn a_failed_op_changes_nothing() {
     let mut b = big();
     let outside = BitmapOp::Fill {
@@ -337,12 +492,69 @@ fn ops_round_trip_through_json() {
             rect: Some(Rect::new(1, 2, 3, 4)),
             channels: Channels::ALL,
         },
+        BitmapOp::Clone {
+            layer: L0,
+            from: Some(LayerId::new(1, 2, 3)),
+            source: [1.5, 2.5],
+            points: vec![[3.0, 4.0], [5.0, 6.0]],
+            brush: Brush::default(),
+        },
+        BitmapOp::CopyChannel {
+            layer: L0,
+            from: Channel::Luma,
+            to: Channels::parse("a").unwrap(),
+            rect: None,
+        },
+        BitmapOp::Turn {
+            layer: L0,
+            turn: Turn::ThreeQuarters,
+            rect: Some(Rect::new(1, 2, 3, 3)),
+        },
     ];
     for op in ops {
         let text = serde_json::to_string(&op).unwrap();
         let back: BitmapOp = serde_json::from_str(&text).unwrap();
         assert_eq!(back, op, "{text}");
     }
+    // A clone stroke reads the layer it paints, and the brush's defaults
+    // fill what a script leaves out.
+    let op: BitmapOp = serde_json::from_str(
+        r#"{"op":"clone","layer":{"image":0,"face":0,"slice":0},"source":[1.0,2.0],"points":[[3.0,4.0]],"brush":{"size":4.0,"color":[1,2,3,4]}}"#,
+    )
+    .unwrap();
+    match op {
+        BitmapOp::Clone { from, brush, .. } => {
+            assert_eq!(from, None);
+            assert_eq!(brush.size, 4.0);
+            assert_eq!(brush.color, [1, 2, 3, 4]);
+            assert_eq!(brush.hardness, Brush::default().hardness);
+        }
+        other => panic!("{other:?}"),
+    }
+    let op: BitmapOp = serde_json::from_str(
+        r#"{"op":"copy_channel","layer":{"image":0,"face":0,"slice":0},"from":"a","to":"rgb"}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        op,
+        BitmapOp::CopyChannel {
+            layer: L0,
+            from: Channel::A,
+            to: Channels::parse("rgb").unwrap(),
+            rect: None,
+        }
+    );
+    let op: BitmapOp =
+        serde_json::from_str(r#"{"op":"turn","layer":{"image":0,"face":0,"slice":0},"turn":"half"}"#)
+            .unwrap();
+    assert_eq!(
+        op,
+        BitmapOp::Turn {
+            layer: L0,
+            turn: Turn::Half,
+            rect: None,
+        }
+    );
     // Defaults fill what a script leaves out.
     let op: BitmapOp = serde_json::from_str(
         r#"{"op":"fill","layer":{"image":0,"face":0,"slice":0},"rect":{"x":0,"y":0,"w":2,"h":2},"color":[9,9,9,255]}"#,

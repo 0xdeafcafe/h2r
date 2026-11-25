@@ -22,9 +22,10 @@ pub enum Stage {
     Effects,
     Ui,
     Flares,
+    Sky,
 }
 
-const STAGES: [&str; 16] = [
+const STAGES: [&str; Stage::Sky as usize + 1] = [
     "world",
     "objects",
     "transparents",
@@ -41,6 +42,7 @@ const STAGES: [&str; 16] = [
     "effects",
     "ui",
     "flares",
+    "sky",
 ];
 #[derive(Clone, Copy, Debug)]
 #[repr(usize)]
@@ -529,7 +531,7 @@ impl SceneList {
     }
 }
 
-const UI_COLUMNS: [&str; Ui::OverlayHudRefusedPass as usize + 1] = [
+const UI_COLUMNS: [&str; Ui::OverlayModalBlurRefusedTargets as usize + 1] = [
     "items",
     "item_refused",
     "fallback_geometry",
@@ -574,20 +576,76 @@ const UI_COLUMNS: [&str; Ui::OverlayHudRefusedPass as usize + 1] = [
     "overlay_model_views",
     "overlay_refused_model_view",
     "overlay_refused_blur",
-    "overlay_hud_claimed",
-    "overlay_hud_quads_skipped",
-    "overlay_hud_mismatch",
-    "overlay_hud_refused_shader",
-    "overlay_hud_refused_text",
-    "overlay_hud_refused_effects",
-    "overlay_hud_refused_anchor",
-    "overlay_hud_refused_unlisted",
-    "overlay_hud_refused_frame",
-    "overlay_hud_refused_loading",
-    "overlay_hud_refused_pass",
+    "overlay_hud_tag_quads",
+    "overlay_hud_tag_fallback",
+    "overlay_hud_tag_recorded",
+    "overlay_hud_tag_record_failed",
+    "overlay_hud_text_quads",
+    "overlay_hud_text_fallback",
+    "overlay_menu_shader_quads",
+    "overlay_menu_shader_fallback",
+    "overlay_fade_quads",
+    "overlay_bar_quads",
+    "overlay_loading_quads",
+    "overlay_widget_quads",
+    "overlay_screen_fallback",
+    "overlay_menu_claimed",
+    "overlay_menu_skipped",
+    "overlay_menu_passes",
+    "overlay_menu_mismatch",
+    "overlay_menu_refused_frame",
+    "overlay_menu_refused_mismatched",
+    "overlay_menu_refused_bitmap_meter",
+    "overlay_menu_refused_bitmap_scroll",
+    "overlay_menu_refused_bitmap_state",
+    "overlay_menu_refused_text",
+    "overlay_menu_refused_model",
+    "overlay_menu_refused_draw",
+    "overlay_menu_refused_unreadable",
+    "overlay_menu_refused_unlisted",
+    "overlay_menu_refused_pass",
+    "overlay_modal_blurs",
+    "overlay_modal_blur_replayed",
+    "overlay_modal_blur_refused_pass",
+    "overlay_modal_blur_refused_arguments",
+    "overlay_modal_blur_refused_steps",
+    "overlay_modal_blur_refused_combiner",
+    "overlay_modal_blur_refused_targets",
 ];
 const UI_OFFSET: usize = SCENE_LIST_START + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len();
-pub(crate) const COLUMNS: usize = UI_OFFSET + UI_COLUMNS.len();
+const ANIMATION_OFFSET: usize = UI_OFFSET + UI_COLUMNS.len();
+const ANIMATION_COLUMNS: [&str; ShaderAnimation::Layer3Refused as usize + 1] = [
+    "layers_drawn",
+    "layers_refused",
+    "objects_drawn",
+    "objects_refused",
+    "layer3_drawn",
+    "layer3_refused",
+];
+pub(crate) const COLUMNS: usize = ANIMATION_OFFSET + ANIMATION_COLUMNS.len();
+
+/// Material passes with animated constants (`shad +0x3c`, sampled at the
+/// render clock, docs/formats/shader-instances.md "Animated constants"),
+/// by the native path that planned them with their sampled registers or
+/// refused them: the structure's layer planner (`layers`), the object
+/// passes of layer 3 and the world layers (`objects`), and the world's
+/// layer 3 (`layer3`, per selected material).
+#[derive(Clone, Copy, Debug)]
+#[repr(usize)]
+pub enum ShaderAnimation {
+    LayersDrawn,
+    LayersRefused,
+    ObjectsDrawn,
+    ObjectsRefused,
+    Layer3Drawn,
+    Layer3Refused,
+}
+
+impl ShaderAnimation {
+    pub fn count(self, n: u64) {
+        phase::count_index(phase::Counter::ALL.len() + ANIMATION_OFFSET + self as usize, n);
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 #[repr(usize)]
@@ -645,28 +703,72 @@ pub enum Ui {
     OverlayRefusedModelView,
     /// Blurs over a target the GPU cannot copy or sample.
     OverlayRefusedBlur,
-    /// HUD draws (one `nhdt`'s widgets) the overlay drew in place of the
-    /// game's quads (docs/graphics/native-post-hud.md, "The HUD on the
-    /// overlay").
-    OverlayHudClaimed,
-    /// The game's widget quads not drawn because the overlay drew them.
-    OverlayHudQuadsSkipped,
-    /// Claimed HUD draws whose skipped quads did not match the items the
-    /// overlay drew; that HUD is not claimed again on the map.
-    OverlayHudMismatch,
-    /// HUD draws left to the game's quads, by the first reason: a widget
-    /// drawn by a tag shader that does not translate, a text widget, a
-    /// widget with effects, one whose anchor is not a corner, one not
-    /// listed; a frame that is not the full screen; the map's HUDs not
-    /// loaded yet; the overlay's pass not placed.
-    OverlayHudRefusedShader,
-    OverlayHudRefusedText,
-    OverlayHudRefusedEffects,
-    OverlayHudRefusedAnchor,
-    OverlayHudRefusedUnlisted,
-    OverlayHudRefusedFrame,
-    OverlayHudRefusedLoading,
-    OverlayHudRefusedPass,
+    OverlayHudTagQuads,
+    OverlayHudTagFallback,
+    /// Display-copy overlay recordings (bitmap and glyph).
+    OverlayHudTagRecorded,
+    /// Failed overlay recordings, per attempted copy.
+    OverlayHudTagRecordFailed,
+    /// Glyph quads admitted with the text widget's evaluated pixel shader.
+    OverlayHudTextQuads,
+    OverlayHudTextFallback,
+    /// Menu shader bitmaps' quads drawn from the overlay with their tag
+    /// shader's combiner, and those the UI fan path kept.
+    OverlayMenuShaderQuads,
+    OverlayMenuShaderFallback,
+    /// The fade's, the bars' and the loading screen's draws drawn from the
+    /// overlay with the guest's combiner and blend at the draw, and those
+    /// the UI fan path kept.
+    OverlayFadeQuads,
+    OverlayBarQuads,
+    OverlayLoadingQuads,
+    OverlayWidgetQuads,
+    OverlayScreenFallback,
+    /// Menu widget draws the overlay claimed at their sorted list
+    /// (docs/graphics/native-post-hud.md, "The menus on the overlay").
+    OverlayMenuClaimed,
+    /// The game's widget draws left out because the overlay drew them.
+    OverlayMenuSkipped,
+    /// Overlay passes placed for runs of claimed widgets with items.
+    OverlayMenuPasses,
+    /// Lists whose left-out draws did not match their claim; that screen
+    /// is not claimed again on the map.
+    OverlayMenuMismatch,
+    /// Lists the game draws whole: the screen quads' viewport not the
+    /// full screen; a screen that mismatched before.
+    OverlayMenuRefusedFrame,
+    OverlayMenuRefusedMismatched,
+    /// Drawn bitmap widgets the game keeps: a meter; a scrolling bitmap;
+    /// one whose state the overlay does not draw as the game does (the
+    /// debug labels on, an image set from elsewhere, a texture not
+    /// resident, a tint constant not white).
+    OverlayMenuRefusedBitmapMeter,
+    OverlayMenuRefusedBitmapScroll,
+    OverlayMenuRefusedBitmapState,
+    /// Drawn widgets the game keeps, by the draw not read yet: text, a
+    /// model scene, another draw (a list's, a button's); one that did not
+    /// read; one the overlay refused.
+    OverlayMenuRefusedText,
+    OverlayMenuRefusedModel,
+    OverlayMenuRefusedDraw,
+    OverlayMenuRefusedUnreadable,
+    OverlayMenuRefusedUnlisted,
+    /// Lists or runs whose pass the host did not place.
+    OverlayMenuRefusedPass,
+    /// The blur under a dialog (docs/graphics/native-post-hud.md, "The
+    /// blur under a dialog"): calls whose draws the overlay's blur
+    /// replaced; calls armed whose draws were given back (a draw off the
+    /// plan, a pass that did not record); calls the host did not arm.
+    OverlayModalBlurs,
+    OverlayModalBlurReplayed,
+    OverlayModalBlurRefusedPass,
+    /// Calls the game draws, by what did not read: a word not the one
+    /// `0x00235756` pushes, endless steps, a combiner the blur step does
+    /// not draw, a draw outside targets 0 and 1.
+    OverlayModalBlurRefusedArguments,
+    OverlayModalBlurRefusedSteps,
+    OverlayModalBlurRefusedCombiner,
+    OverlayModalBlurRefusedTargets,
 }
 
 impl Ui {
@@ -738,6 +840,7 @@ pub(crate) fn labels() -> &'static [String] {
             }
         }
         out.extend(UI_COLUMNS.map(|name| format!("native_ui_{name}")));
+        out.extend(ANIMATION_COLUMNS.map(|name| format!("native_shader_animation_{name}")));
         out
     })
 }
@@ -899,14 +1002,29 @@ mod tests {
         let frame = lists + SceneList::LightFrame as usize * SCENE_LIST_RESULTS.len();
         assert_eq!(columns[frame].1, "native_scene_lists_light_frame_native");
         assert_eq!(columns[ui].1, "native_ui_items");
+        let animation = phase::Counter::ALL.len() + ANIMATION_OFFSET;
+        assert_eq!(
+            columns[animation - 1].1,
+            "native_ui_overlay_modal_blur_refused_targets"
+        );
+        assert_eq!(columns[animation].1, "native_shader_animation_layers_drawn");
+        assert_eq!(
+            columns[animation + ShaderAnimation::ObjectsRefused as usize].1,
+            "native_shader_animation_objects_refused"
+        );
         assert_eq!(
             columns[phase::Counter::ALL.len() + COLUMNS - 1].1,
-            "native_ui_overlay_hud_refused_pass"
+            "native_shader_animation_layer3_refused"
+        );
+        assert_eq!(columns[ui + Ui::OverlayMenuClaimed as usize].1, "native_ui_overlay_menu_claimed");
+        assert_eq!(
+            columns[ui + Ui::OverlayMenuRefusedPass as usize].1,
+            "native_ui_overlay_menu_refused_pass"
         );
         assert_eq!(columns[ui + Ui::OverlayRefusedTexture as usize].1, "native_ui_overlay_refused_texture");
         assert_eq!(columns[ui + Ui::OverlayModelViews as usize].1, "native_ui_overlay_model_views");
         assert_eq!(columns[ui + Ui::OverlayRefusedBlur as usize].1, "native_ui_overlay_refused_blur");
-        assert_eq!(columns[ui + Ui::OverlayHudClaimed as usize].1, "native_ui_overlay_hud_claimed");
+        assert_eq!(columns[ui + Ui::OverlayHudTagQuads as usize].1, "native_ui_overlay_hud_tag_quads");
         assert_eq!(
             columns[ui + Ui::OutlineReservation as usize].1,
             "native_ui_outline_fallback_reservation"

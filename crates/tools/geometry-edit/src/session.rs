@@ -6,9 +6,11 @@ use std::fmt;
 use std::io::{Read, Seek};
 use std::sync::Arc;
 
+use collision_build::coll;
+use collision_build::from_render::{FromRender, from_render};
 use editor_core::UndoStack;
 use map::{AddressSpace, FourCC, Map, RawPointer, ResourceFile, TagId};
-use mesh_edit::{Export, Mesh, MeshError, MeshOp, OpResult, dirty, face_flags};
+use mesh_edit::{Export, Mesh, MeshError, MeshOp, OpResult, PolygonFace, dirty, face_flags};
 use tags::geometry::{Compression, RawSource, TagView};
 use tags::geometry_write::changed_runs;
 use tags::model::{MODEL_SECTION, RenderModelGeometry};
@@ -17,8 +19,10 @@ use tags::structure::{
     STRUCTURE_SECTION, StructureRender,
 };
 
+use crate::coll_target::CollSource;
 use crate::grow::{self, Grown};
 use crate::import::section_source;
+use crate::level_collision::GrownBlock;
 use crate::target::{Target, TargetKind};
 use crate::write::{SectionSource, block_runs, rewrite};
 
@@ -112,6 +116,9 @@ pub enum WriteClass {
     /// A count changed: a new raw block appended to the map, and the
     /// owner's block info, counts and bounds pointed at it.
     Grown,
+    /// A collision BSP compiled again: its blocks patched where the count
+    /// holds, else grown in the ordinary metadata.
+    GrownBlocks,
 }
 
 impl WriteClass {
@@ -120,6 +127,7 @@ impl WriteClass {
             WriteClass::Unchanged => "unchanged",
             WriteClass::InPlace => "in_place",
             WriteClass::Grown => "grown_raw",
+            WriteClass::GrownBlocks => "grown_blocks",
         }
     }
 }
@@ -185,11 +193,14 @@ pub struct Patches {
     pub raw: Vec<RawWrite>,
     /// Grown sections' new blocks, in target order.
     pub appended: Vec<RawAppend>,
+    /// Tag blocks with a new element count, appended to the ordinary
+    /// metadata with their pairs pointed there (a recompiled `coll` BSP).
+    pub grown: Vec<GrownBlock>,
 }
 
 impl Patches {
     pub fn is_empty(&self) -> bool {
-        self.tags.is_empty() && self.raw.is_empty() && self.appended.is_empty()
+        self.tags.is_empty() && self.raw.is_empty() && self.appended.is_empty() && self.grown.is_empty()
     }
     /// Bytes written.
     pub fn len(&self) -> usize {
@@ -200,6 +211,7 @@ impl Patches {
                 .iter()
                 .map(|a| a.bytes.len() + 4 + a.writes.iter().map(|w| w.bytes.len()).sum::<usize>())
                 .sum::<usize>()
+            + self.grown.iter().map(|g| g.bytes.len() + 4).sum::<usize>()
     }
 }
 
@@ -286,6 +298,8 @@ enum Source {
         section: usize,
         local: bool,
     },
+    /// A `coll` tag's BSP `index` (its blocks and slots as read).
+    Coll { source: Arc<CollSource>, index: usize },
 }
 
 /// One open target: its source and the mesh as imported.
@@ -524,15 +538,13 @@ impl GeometrySession {
         let o = self.find(target).expect("just opened");
         let mesh = self.mesh(target).expect("open");
         let (verts, edges, faces) = mesh.counts();
-        let source = o.original.source().expect("imported");
-        let welded = source
-            .positions
-            .len()
-            .saturating_sub(o.original.vert_count());
-        let passthrough = source
-            .triangles
-            .len()
-            .saturating_sub(o.original.face_count());
+        // A collision BSP is a mesh built face by face: nothing welded.
+        let (welded, passthrough) = o.original.source().map_or((0, 0), |source| {
+            (
+                source.positions.len().saturating_sub(o.original.vert_count()),
+                source.triangles.len().saturating_sub(o.original.face_count()),
+            )
+        });
         Ok(OpenInfo {
             verts,
             edges,
@@ -547,6 +559,7 @@ impl GeometrySession {
         match self.find(t).map(|o| &o.source) {
             Some(Source::Structure { section, .. }) => section.block.file == ResourceFile::Local,
             Some(Source::Model { local, .. }) => *local,
+            Some(Source::Coll { .. }) => true,
             None => false,
         }
     }
@@ -679,6 +692,17 @@ impl GeometrySession {
                     no_append: map.raw_append_refusal().map(str::to_owned),
                 })
             }
+            TargetKind::Coll => {
+                let source = Arc::new(CollSource::read(map, target.tag)?);
+                let mesh = source.mesh(i)?;
+                Ok(Opened {
+                    target,
+                    name,
+                    source: Source::Coll { source, index: i },
+                    original: Arc::new(mesh),
+                    no_append: map.raw_append_refusal().map(str::to_owned),
+                })
+            }
             TargetKind::ModeSection => {
                 let geometry = RenderModelGeometry::read(map, target.tag, raw)?;
                 let model = match self.model(target.tag) {
@@ -733,6 +757,62 @@ impl GeometrySession {
         }
     }
 
+    /// Replace an open collision BSP with polygons from an open render
+    /// section's current mesh. The caller chooses sections in the same space.
+    /// An empty material map assigns every triangle to collision material 0.
+    pub fn collision_from_render(
+        &mut self,
+        render: Target,
+        target: Target,
+        materials: &[u16],
+    ) -> Result<OpResult, Error> {
+        let refused = |reason| Error::Refused {
+            target: target.id(),
+            reason,
+        };
+        if render.kind == TargetKind::Coll || target.kind != TargetKind::Coll {
+            return Err(refused(
+                "From render needs a render section and a collision BSP".into(),
+            ));
+        }
+        if !self.is_open(target) {
+            return Err(Error::NotOpen(target.id()));
+        }
+        let mesh = self.mesh(render).ok_or_else(|| Error::NotOpen(render.id()))?;
+        let export = mesh.export();
+        let mapped = if materials.is_empty() {
+            Vec::new()
+        } else {
+            export
+                .materials
+                .iter()
+                .map(|&m| {
+                    materials.get(usize::from(m)).copied().ok_or_else(|| {
+                        refused(format!("render material {m} has no collision material mapping"))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let polygons = from_render(
+            &export.positions,
+            &export.triangles,
+            &mapped,
+            &FromRender::default(),
+        );
+        if polygons.is_empty() {
+            return Err(refused("the render section has no usable triangles".into()));
+        }
+        let faces = polygons
+            .into_iter()
+            .map(|p| PolygonFace {
+                points: p.points,
+                material: p.material,
+                group: coll::group_of(p.flags, p.breakable_surface),
+            })
+            .collect();
+        self.apply(target, &[MeshOp::ReplacePolygons { faces }], None)
+    }
+
     /// Apply `ops` to an open target as one undo step: all of them or,
     /// when one fails, none. With `merge`, a run of calls with the same
     /// key is one step (a gizmo drag), until [`Self::seal`].
@@ -762,6 +842,21 @@ impl GeometrySession {
                 selected: mesh.selection().len(),
                 ..OpResult::default()
             };
+        }
+        if ops.iter().any(|op| matches!(op, MeshOp::ReplacePolygons { .. })) {
+            let opened = self.find(t).expect("open target");
+            let Source::Coll { source, index } = &opened.source else {
+                return Err(Error::Refused {
+                    target: t.id(),
+                    reason: "polygon replacement requires a collision BSP".into(),
+                });
+            };
+            source
+                .writes(*index, &coll::polygons_from_mesh(&mesh))
+                .map_err(|reason| Error::Refused {
+                    target: t.id(),
+                    reason,
+                })?;
         }
         let before = self.state.clone();
         match merge {
@@ -806,6 +901,17 @@ impl GeometrySession {
     fn classify(&self, o: &Opened) -> (WriteClass, Option<String>, Export) {
         let mesh = self.mesh(o.target).expect("open");
         let export = mesh.export();
+        if let Source::Coll { .. } = &o.source {
+            // Compiled again whole, so any change to a polygon is a write.
+            let changed = collision_build::coll::polygons_from_mesh(mesh)
+                != collision_build::coll::polygons_from_mesh(&o.original);
+            let class = if changed {
+                WriteClass::GrownBlocks
+            } else {
+                WriteClass::Unchanged
+            };
+            return (class, None, export);
+        }
         let source = o.original.source().expect("imported");
         if export.positions.len() != source.positions.len()
             || export.triangles != source.triangles
@@ -816,7 +922,7 @@ impl GeometrySession {
             } else {
                 match &o.source {
                     Source::Structure { bucket_lit, .. } => bucket_lit.clone(),
-                    Source::Model { .. } => None,
+                    Source::Model { .. } | Source::Coll { .. } => None,
                 }
             };
             return (WriteClass::Grown, refused, export);
@@ -849,6 +955,9 @@ impl GeometrySession {
                         .model_patches(model, &self.edited_sections(model), &mut Patches::default())
                         .err()
                         .map(|e| e.to_string()),
+                    Source::Coll { source, index } => source
+                        .writes(*index, &collision_build::coll::polygons_from_mesh(mesh))
+                        .err(),
                 };
             }
             out.push(Check {
@@ -860,11 +969,15 @@ impl GeometrySession {
                     .face_ids()
                     .filter(|&f| mesh.face_flags(f) & face_flags::LIGHTMAP_STALE != 0)
                     .count(),
-                moved: export
-                    .corners
-                    .iter()
-                    .filter(|c| c.dirty & dirty::POSITION != 0)
-                    .count(),
+                moved: if matches!(o.source, Source::Coll { .. }) {
+                    0
+                } else {
+                    export
+                        .corners
+                        .iter()
+                        .filter(|c| c.dirty & dirty::POSITION != 0)
+                        .count()
+                },
                 refused,
                 ops: self.ops(o.target).len(),
             });
@@ -947,6 +1060,9 @@ impl GeometrySession {
             }
             Source::Model { .. } => {
                 return Err("a model section is written with its model".into());
+            }
+            Source::Coll { .. } => {
+                return Err("a collision BSP is compiled whole, not patched".into());
             }
         }
         Ok(p)
@@ -1141,6 +1257,14 @@ impl GeometrySession {
                     out.raw.extend(p.raw);
                     out.appended.extend(p.appended);
                 }
+                Source::Coll { source, index } => {
+                    let mesh = self.mesh(o.target).expect("open");
+                    let w = source
+                        .writes(*index, &collision_build::coll::polygons_from_mesh(mesh))
+                        .map_err(|r| refuse(o.target, r))?;
+                    out.tags.extend(w.patches);
+                    out.grown.extend(w.grown);
+                }
                 Source::Model { model, .. } => {
                     if !models.iter().any(|m| Arc::ptr_eq(m, model)) {
                         models.push(model.clone());
@@ -1161,7 +1285,7 @@ impl GeometrySession {
     pub fn preview_positions(&self, t: Target) -> Option<Vec<[f32; 3]>> {
         let o = self.find(t)?;
         let (class, _, export) = self.classify(o);
-        (class != WriteClass::Grown).then_some(export.positions)
+        (!matches!(class, WriteClass::Grown | WriteClass::GrownBlocks)).then_some(export.positions)
     }
 
     /// The native previews of the open structure targets: a cluster
@@ -1180,7 +1304,7 @@ impl GeometrySession {
                         .iter()
                         .map(|(i, _)| Drawn::Instance(*i))
                         .collect(),
-                    TargetKind::ModeSection => return None,
+                    TargetKind::ModeSection | TargetKind::Coll => return None,
                 };
                 Some(Preview {
                     bsp: t.tag,

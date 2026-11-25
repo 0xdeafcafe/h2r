@@ -191,6 +191,11 @@ pub(crate) mod fake {
                     v
                 }
             };
+            let reload = rec(agent_proto::rules::method::RELOAD);
+            agent.add_game_method(agent_proto::rules::method::RELOAD, Access::Act, move |params, _| {
+                reload(params);
+                Ok(json!({"mode":"in_place","hash":"invented","reasons":[],"tick":20}))
+            });
             let edits = Arc::new(Mutex::new(FakeEdits {
                 peers: (kind == SessionKind::MpHost).then_some(1),
                 ..Default::default()

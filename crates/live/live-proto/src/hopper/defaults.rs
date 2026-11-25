@@ -584,7 +584,7 @@ pub fn playlists() -> Vec<Playlist> {
     let clanker = vec![
         Playlist {
             playlist_id: 9,
-            title: "Rumble Pit",
+            title: "Clanker Rumble",
             description: "Ranked Clanker free for all, up to 8. Bots fill every seat your party does not.",
             rules: Rules::FreeForAll {
                 ranked: false,
@@ -597,7 +597,7 @@ pub fn playlists() -> Vec<Playlist> {
         },
         Playlist {
             playlist_id: 10,
-            title: "Team Slayer",
+            title: "Clanker Slayer",
             description: "Ranked Clanker Team Slayer, four against four. Bots fill every seat your party does not.",
             rules: Rules::UnrankedTeams {
                 teams: 2,
@@ -611,7 +611,7 @@ pub fn playlists() -> Vec<Playlist> {
         },
         Playlist {
             playlist_id: 11,
-            title: "Team Skirmish",
+            title: "Clanker Doubles",
             description: "Ranked Clanker Team Skirmish, two against two. Bots fill every seat your party does not.",
             rules: Rules::UnrankedTeams {
                 teams: 2,
@@ -625,7 +625,7 @@ pub fn playlists() -> Vec<Playlist> {
         },
         Playlist {
             playlist_id: 12,
-            title: "Team Snipers",
+            title: "Clanker Snipers",
             description: "Ranked Clanker Team Snipers, four against four. Bots fill every seat your party does not.",
             rules: Rules::UnrankedTeams {
                 teams: 2,
@@ -639,7 +639,7 @@ pub fn playlists() -> Vec<Playlist> {
         },
         Playlist {
             playlist_id: 13,
-            title: "Big Team Battle",
+            title: "Clanker BTB",
             description: "Ranked Clanker Big Team Battle on big maps. Bots fill every seat your party does not.",
             rules: Rules::UnrankedTeams {
                 teams: 2,
@@ -831,11 +831,11 @@ mod tests {
                 "Team Objective",
                 "Free for All",
                 "Unranked Teams",
-                "Rumble Pit",
-                "Team Slayer",
-                "Team Skirmish",
-                "Team Snipers",
-                "Big Team Battle",
+                "Clanker Rumble",
+                "Clanker Slayer",
+                "Clanker Doubles",
+                "Clanker Snipers",
+                "Clanker BTB",
                 "BTB Heavies",
                 "Solo Training",
                 "Team Training",

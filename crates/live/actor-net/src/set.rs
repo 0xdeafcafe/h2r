@@ -62,8 +62,8 @@ impl ActorSet {
     }
 
     /// Apply one host change or restore a full key. A posture for an absent
-    /// actor cannot create it. Lines, controls, digests and cues are
-    /// transient.
+    /// actor cannot create it. Lines, controls, digests, cues and the show
+    /// state are transient.
     pub fn apply(&mut self, record: &Record) -> Result<(), SetError> {
         record_len(record)?;
         self.apply_validated(record)
@@ -95,6 +95,7 @@ impl ActorSet {
             Record::Control { .. }
             | Record::Line { .. }
             | Record::Digest { .. }
+            | Record::Show { .. }
             | Record::Cue { .. } => {}
         }
         Ok(())

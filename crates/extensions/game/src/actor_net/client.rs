@@ -68,6 +68,9 @@ pub struct Client {
     seen_cues: VecDeque<(u32, u8)>,
     /// Cues received and not yet presented at a tick boundary.
     pending_cues: Vec<ReceivedCue>,
+    /// Show states received and not yet held at a tick boundary, in
+    /// packet order: the newest of them is the one kept.
+    pending_show: Vec<Vec<u8>>,
     /// The run of digests that disagreed with the replica.
     digest: Check,
     /// The replica needs a key: a digest disagreed or a packet could not
@@ -176,6 +179,9 @@ impl Client {
             diverged: true,
             ..Client::default()
         };
+        // The offers rode the channel that just closed: the asking stops.
+        #[cfg(feature = "rules")]
+        crate::rules::world::pick::client_reset();
     }
 
     /// Resolve the host packet atomically before recording presentation work.
@@ -235,10 +241,12 @@ impl Client {
                     }
                 }
                 Record::State(_) => {}
+                Record::Show(bytes) => self.pending_show.push(bytes.clone()),
                 Record::Digest {
                     log_head,
                     state_hash,
                     actor_count,
+                    show_hash,
                 } => {
                     // The replica holds the whole packet by now, so the
                     // digest sees the tick's changes wherever it sits.
@@ -252,6 +260,28 @@ impl Client {
                         Verdict::Diverged => {
                             self.diverge();
                             return Ok(true);
+                        }
+                    }
+                    // The show state's hash beside the actor set's: a
+                    // mismatch asks for a key, which carries the state
+                    // whole (docs/game/rules-world-api.md, "The show
+                    // channel"). The hash is over the state this very
+                    // packet carries when it has one, else over what is
+                    // held; a record the checks later refuse leaves the
+                    // held one, which the next digest catches. A machine
+                    // without the `rules` feature shows no script's HUD
+                    // and asks for none.
+                    #[cfg(feature = "rules")]
+                    {
+                        let offered = packet.records.iter().rev().find_map(|r| match r {
+                            Record::Show(bytes) => Some(bytes.clone()),
+                            _ => None,
+                        });
+                        let held = offered.or_else(crate::rules::world::show::held_bytes);
+                        if ::actor_net::digest::state_hash(held.as_deref().unwrap_or(&[]))
+                            != *show_hash
+                        {
+                            self.wants_key = true;
                         }
                     }
                 }
@@ -342,15 +372,28 @@ impl Client {
 
         // The show channel's cues: decoded against the running script's
         // blob and shown to this machine's local users in each audience
-        // (`crate::rules::world::show::present`). Without the `rules`
-        // feature there is no script to show them by, and they are dropped.
+        // (`crate::rules::world::show::present`). The `Show` states beside
+        // them: the newest held, and the HUDs it feeds drawn from it on a
+        // machine that runs no VM (`crate::rules::world::show::receive`).
+        // Without the `rules` feature there is no script to show them by,
+        // and they are dropped. The pickers' offers beside them: this
+        // machine's local players are asked at the boundary while the
+        // asking waits (`crate::rules::world::pick::client_tick`), and a
+        // press goes back up the channel.
         let cues = std::mem::take(&mut self.pending_cues);
+        let shows = std::mem::take(&mut self.pending_show);
         #[cfg(feature = "rules")]
-        if !cues.is_empty() {
-            crate::rules::world::show::present(cx, &cues).await;
+        {
+            if !cues.is_empty() {
+                crate::rules::world::show::present(cx, &cues).await;
+            }
+            if !shows.is_empty() {
+                crate::rules::world::show::receive(cx, &shows).await;
+            }
+            crate::rules::world::pick::client_tick(cx, local_tick).await;
         }
         #[cfg(not(feature = "rules"))]
-        drop(cues);
+        drop((cues, shows));
         Ok(())
     }
 }
@@ -368,6 +411,10 @@ pub fn install(
         .on_start("clear actor puppets for the new match", move |_| {
             *new_match.lock().unwrap() = Client::default();
             super::roles::receive(&[]);
+            #[cfg(feature = "rules")]
+            crate::rules::world::show::clear_held();
+            #[cfg(feature = "rules")]
+            crate::rules::world::pick::client_reset();
         });
 
     let client = Arc::clone(&state);
@@ -393,13 +440,28 @@ pub fn install(
                     let Some(tick) = tick else {
                         *current = Client::default();
                         super::roles::receive(&[]);
+                        #[cfg(feature = "rules")]
+                        crate::rules::world::show::clear_held();
+                        #[cfg(feature = "rules")]
+                        crate::rules::world::pick::client_reset();
                         super::report::clear(agent::actors::Role::Client);
                         return Ok(Flow::Continue);
                     };
                     receive(&mut current, tick);
                     super::report::publish_client(tick, &current);
                     super::roles::receive(current.mode_state());
-                    if current.presentation.is_empty() && current.pending_cues.is_empty() {
+                    // A picker's ask waiting on a client runs the boundary
+                    // too, so the asking advances
+                    // (`crate::rules::world::pick::client_tick`).
+                    #[cfg(feature = "rules")]
+                    let asks_waiting = crate::rules::world::pick::client_busy();
+                    #[cfg(not(feature = "rules"))]
+                    let asks_waiting = false;
+                    if current.presentation.is_empty()
+                        && current.pending_cues.is_empty()
+                        && current.pending_show.is_empty()
+                        && !asks_waiting
+                    {
                         return Ok(Flow::Continue);
                     }
                     (std::mem::take(&mut *current), tick)

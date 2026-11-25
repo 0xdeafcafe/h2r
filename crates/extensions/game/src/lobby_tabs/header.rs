@@ -129,8 +129,6 @@ pub struct Reading {
     pub place: Place,
     pub leader: bool,
     pub retail: RetailMode,
-    /// The lobby's map carries the Firefight kit.
-    pub kit_map: bool,
     /// The lobby's playlist is a Clanker one (`None` with no playlist
     /// held).
     pub clanker: Option<bool>,
@@ -139,7 +137,7 @@ pub struct Reading {
 
 /// The modes for `reading`, with `mode` the lobby's mode of ours.
 pub fn shown(reading: &Reading, present: Present, mode: Mode) -> Shown {
-    let mode = seen_mode(reading.leader, mode, reading.kit_map);
+    let mode = seen_mode(reading.leader, mode);
     let selected = Tab::of(reading.retail, mode);
     Shown {
         place: reading.place,
@@ -251,6 +249,13 @@ pub fn set_live(hle: Option<Arc<live_hle::Hle>>) {
     *LIVE.lock().unwrap_or_else(|e| e.into_inner()) = hle;
 }
 
+pub(crate) fn clanker_playlist(hopper: u32) -> bool {
+    LIVE.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|live| crate::clankermatch::is_clanker(hopper, &live.clanker_hoppers()))
+}
+
 /// Reads the lobby; `None` while its session cannot be read.
 pub fn read(m: &dyn GuestMemory) -> Option<Reading> {
     let networking = m.u8(lobby::NETWORKING).ok()? != 0;
@@ -259,21 +264,14 @@ pub fn read(m: &dyn GuestMemory) -> Option<Reading> {
     let session_type = m.u32(lobby::SESSION_TYPE).ok()?;
     let campaign = crate::coop_probe::read_session(&ReadGm(m)).is_some_and(|s| s.is_campaign());
     let retail = retail_mode(networking, session_type, squad_mode(m), campaign);
-    let kit_map = crate::lobby_start::KitMaps::now(m).lobby;
     let clanker = (retail == RetailMode::Matchmaking)
         .then(|| held_hopper(m))
         .flatten()
-        .map(|h| {
-            LIVE.lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .as_ref()
-                .is_some_and(|live| crate::clankermatch::is_clanker(h, &live.clanker_hoppers()))
-        });
+        .map(clanker_playlist);
     Some(Reading {
         place,
         leader,
         retail,
-        kit_map,
         clanker,
         facts: Facts {
             // The playlists are asked for by a switch to MULTIPLAYER

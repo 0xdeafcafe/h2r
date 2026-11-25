@@ -40,6 +40,16 @@ fn only_active_local_offline_multiplayer_is_admitted() {
     }
     guest.put_u32(squad + crate::variant_ext::SESSION_NETWORK_CLASS, 0);
     assert!(admitted(&guest));
+    crate::lobby_start::set_mode(crate::lobby_start::Mode::Forge);
+    guest.put_u32(sim + 8, 4)
+        .put_u32(squad + crate::variant_ext::SESSION_NETWORK_CLASS, 2)
+        .put_u32(squad + bots::phantom::session::at::PEER_COUNT, 1)
+        .put_u32(squad + bots::phantom::session::at::LOCAL_PEER, 0);
+    assert!(admitted(&guest), "solo Live Forge host");
+    guest.put_u32(sim + 8, 5);
+    assert!(!admitted(&guest), "a distributed client");
+    crate::lobby_start::clear();
+    guest.put_u32(sim + 8, 1);
     guest.put_u32(lobby::SESSION_TYPE, 8);
     assert!(!admitted(&guest));
 }
@@ -148,7 +158,7 @@ fn opening_binds_the_selected_files_hash_palette_and_budget() {
         scenario: 1,
         free_slots: 17,
     };
-    let opened = decode(&bytes, &loaded).unwrap();
+    let opened = decode(&bytes, &loaded, None).unwrap();
     assert_eq!(opened.tags, [item.0]);
     assert_eq!(opened.session.palette().len(), 1);
     assert_eq!(opened.session.palette()[0].tag.path, "test\\shelf");
@@ -164,9 +174,14 @@ fn opening_binds_the_selected_files_hash_palette_and_budget() {
     assert_eq!(opened.session.document().base.sha256, Sha256::of(&bytes));
     assert_eq!(opened.session.budget(), 17);
     assert_eq!(opened.walls.len(), 1);
+    assert!(!opened.session.has_kit(), "an original map has no kit");
+    // A kit package's base is the installed map it was built on.
+    let installed = Sha256::of(b"the installed map");
+    let kit = decode(&bytes, &loaded, Some(installed)).unwrap();
+    assert_eq!(kit.session.document().base.sha256, installed);
     loaded.checksum ^= 1;
     assert!(
-        decode(&bytes, &loaded)
+        decode(&bytes, &loaded, None)
             .err()
             .unwrap()
             .to_string()

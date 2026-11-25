@@ -202,7 +202,7 @@ fn mark(c: &mut CpuAbi, g: &Guest, pc: u32, data: Option<u32>) -> Result<()> {
 }
 
 /// `fst`/`fstp dword ptr [addr]` at `pc`.
-fn store_f32(c: &mut CpuAbi, g: &mut Guest, pc: u32, addr: u32, pop: bool) -> Result<()> {
+pub(crate) fn store_f32(c: &mut CpuAbi, g: &mut Guest, pc: u32, addr: u32, pop: bool) -> Result<()> {
     let (_, s) = fpu(c, |x| fp::st_f32(x, 0));
     g.set_u32(addr, s.value)?;
     fpu(c, |x| fp::store_commit(x, s.status, pop));

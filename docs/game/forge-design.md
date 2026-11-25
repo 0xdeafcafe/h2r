@@ -483,11 +483,11 @@ Halo Infinite's that fit, and looks like Halo 2. Three pages hold it:
   retail Forges do, with sources.
 
 **Entering Forge.** Forge is a mode of the party lobby
-([party-lobby.md](party-lobby.md)), beside Custom Games and Firefight,
+([party-lobby.md](party-lobby.md)), beside Custom Games,
 in Split Screen, in a hosted System Link game and in an Xbox Live
 custom game, which the Xbox Live menu's Forge row opens in it
 (forge-firefight-ui.md, "The lobbies"). In Forge Game Setup has
-**Change Map...** (the original maps), **Map Variant...** (Original, or a
+**Change Map...** (the installed multiplayer maps), **Map Variant...** (Original, or a
 map variant of the lobby's map, `forge::files::variants::list`) and the game
 type, which picks the goals the session edits. Start Game is the
 game's; the draft is loaded as the session opens
@@ -506,6 +506,11 @@ are the retail five and Theater.
 3. *The scene*: the held object itself, navpoints on it, on other
    monitors and on a link's ends, the axis gizmo, and the volume, nav
    and barrier overlays.
+
+A Forge lobby with the default Slayer variant starts with an unscored
+game record. The lobby keeps its selected variant when the player switches
+back to Custom Games. Explicit rules scripts remain available for testing
+in the editor.
 
 The buttons are Halo 3's: D-pad Up swaps monitor and player, A picks up
 and drops, X opens the object menu or the Properties of the thing aimed
@@ -634,10 +639,10 @@ and the game. Sizes as under Features.
 | **F17** | Custom models on Live: the `model_uploads` flag and request, the `model-bundle` kind, the upload and publish checks in both homes, reports with `third_party_asset`, the Models queue in Halo Admin, the gate's bundle download, **Show other players' models** | M | F12, F14 | each refusal in the check's table, in both homes through the parity suite; approval and revocation replay from the log; three reports hide a bundle; a taken-down bundle makes a joiner draw the chassis; an unapproved account's publish naming a bundle is refused |
 
 | **P1** | Precision in `forge::tool`: the settings (movement snap, rotation snap, axes, fine movement) in the profile's store, thrust, Halo 3's manipulate (push, pull, roll), Coordinates with typed numbers and nudges, Reset orientation, Duplicate; their rows and the Coordinates screen; `forge.input` and `forge.status` carry them | M | F4, U4 | `tool_tests` tables: a held frame rounds to each grid in World and Local axes; the turn since pickup rounds and pickup never turns an object; a Coordinates visit is one `Placement::Set` and one undo step; a typed number outside the bounds is refused; Duplicate is one `Placement::Add`; `Page` tables for Tool settings and Coordinates |
-| **P2** | Kit sessions: a Forge-mode start materialises the draft with `forge_kit` and loads the package; netgame equipment entries, starting locations, netgame flags and teleporter flags as Kit edits; the Weapons, Vehicles, Equipment, Teleporters, Spawns and Goals groups; Team, Role and Order rows; goals listed by the session's game type | L | F2, F3's kit and capacity results, U2 | over a fake game on a kit fixture: an added entry raises the root count and writes the reserved row; a goal of a type the game type does not read is not offered; undo restores the count and the bytes; a map without the kit refuses the add with the reason; the materialised start resolves to the package |
+| **P2** | Kit sessions (**built**: `forge::kit`, `forge::session::entries`, `map_variant::pick_kit`): a Forge-mode start materialises the draft with `forge_kit` and loads the package; netgame equipment entries, starting locations, netgame flags and teleporter flags as Kit edits; the Weapons, Vehicles, Equipment, Teleporters, Spawns and Goals groups; Team, Role and Order rows; goals listed by the session's game type | L | F2, F3's kit and capacity results, U2 | over a fake game on a kit fixture: an added entry raises the root count and writes the reserved row; a goal of a type the game type does not read is not offered; undo restores the count and the bytes; a map without the kit refuses the add with the reason; the materialised start resolves to the package |
 | **P3** | Item properties: Respawn time; Game types and Place at start once their fields are decoded in [scenario-editor.md](../editor/scenario-editor.md) | S | P2 | a table of `properties(kind)`; each row's write is one typed `FieldWrite` with its `was`; a row whose field is not decoded is absent |
-| **P4** | Placed objects browser and Map limits: lists over `Session::objects` and `forge.capacity` on the Forge options page; fly to a chosen object | S | U4 | `Page` tables; `the_browser_lists_groups_then_objects`; a chosen row sets the camera and the aim |
-| **P5** | Selection, groups with a pivot and a lock, prefabs as local files, labels ([rules-engine.md](rules-engine.md#forge-labels)): one step of `forge_doc::FORMAT` for groups and labels, and a prefab file with its own number | M | P1 | golden vectors for the new ops and the prefab file; a group move is one undo step; a member's removal is refused while grouped; a prefab naming a tag the map lacks is refused by name; the seeded fuzz covers the new ops; a document of the older format still reads |
+| **P4** (built) | Forge options opens Placed objects over `Session::objects` and Map limits over the live counts shared with `forge.capacity` | S | U4 | `Page` tables; browser group order and fly-to; a synthetic guest supplies pool and block counts to the read-only limits page |
+| **P5** (built) | Selection (Properties and Hold A), groups with a local pivot picker and a lock, prefabs as local files, labels ([rules-engine.md](rules-engine.md#forge-labels)): one step of `forge_doc::FORMAT` for groups and labels, and a prefab file with its own number | M | P1 | golden vectors for the group ops and the prefab file; a pivot change or group move is one undo step; a member's removal is refused while grouped; a prefab naming a tag the map lacks is refused by name; the seeded fuzz covers the ops; a document of the older format still reads; gate, tool and picker tests cover the selection gesture and pivot choice |
 | **P6** | Lights: a generated light piece in the kit, the Lights group, Colour, Size and Brightness as tag field writes | M | F8, P2 | the generated tags decode through `tags`; each property is one `TagWrite`; a light over the per-map cap is refused |
 
 F2 and F3 can proceed independently of each other. F4 needs F2 and
@@ -733,9 +738,9 @@ skip"). The hook is ordered first, ahead of the native scene lists'
 setup, so the biped has no layer-3 items and the native objects stage,
 which draws only the walk of those items, never meets it. The biped stays
 in the visibility list, so its shadow is still chosen as a caster.
-`forge.status` gives the parked unit as `parked`. The Forge lobby's Start
-and an ordinary local game open the same session: the player starts in
-the biped and D-pad Up or Tab enters the monitor.
+`forge.status` gives the parked unit as `parked`. Start Game in a Forge lobby opens the monitor with its HUD and tools.
+A local level boot starts in the biped. D-pad Up or Tab switches between
+the biped and the monitor.
 
 `forge::Session` validates edits against the loaded map and folds their
 entries with F1. Its `World` interface resolves each placement to a

@@ -20,6 +20,18 @@
 //! ([`tags::defs::to_built`]); a tag the base map pinned is laid out anew
 //! first ([`Unpin`](crate::Unpin)). A line that does not resolve stops the
 //! build with its tag and the entry's line; nothing is dropped quietly.
+//!
+//! A line's `from` is the value it replaces, checked against one field
+//! (docs/engine/asset-store.md, "Mods and packages"): two mods that set
+//! different fields of one asset both apply, and a line applies to each
+//! map's variant of the asset in which the field has that value. The check
+//! is against the tag as the build first found it, so a line of a later
+//! package still applies over an earlier package's line on the same field
+//! (the later value wins and is listed). A `from` or `was` that does not
+//! match, a key the map lacks and a patch of an asset an earlier package
+//! overrides whole without naming its hash are refusals
+//! ([`crate::Cx::refuse`]): here they stop the build; the game's build leaves the
+//! package off for the map with the reason.
 use content::Sha256;
 use map::FourCC;
 use serde::{Deserialize, Serialize};
@@ -38,6 +50,10 @@ use crate::builders::Job;
 #[serde(deny_unknown_fields)]
 pub struct SetLine {
     pub path: String,
+    /// The value the line replaces, when it names one: the line is for
+    /// other content if the field does not hold it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<Value>,
     pub value: Value,
 }
 
@@ -80,6 +96,7 @@ impl SetLine {
         let value = serde_yaml_ng::to_value(value).map_err(|e| format!("{path}: {e}"))?;
         Ok(Self {
             path: path.to_owned(),
+            from: None,
             value,
         })
     }
@@ -214,26 +231,25 @@ pub fn apply(cx: &mut Cx<'_>, job: &Job<'_>) -> Result<(), Failure> {
 fn edit_one(cx: &mut Cx<'_>, e: &TagEdit) -> Result<(), String> {
     let (group, path) = parse_group_ref(&e.tag)?;
     let key = Cx::key(group, &path);
+    // A key the map lacks, a stale `was` and a patch of an asset an earlier
+    // package overrides whole are refusals (module docs).
     let id = cx
         .find(&key)
-        .ok_or_else(|| format!("the map has no tag {key}"))?;
-    let first = cx.touch(id)?;
-    if let Some(was) = &e.was {
-        let want: Sha256 = was.parse().map_err(|_| {
-            format!("was {was:?} is not a SHA-256 hex digest of the tag it was made on")
-        })?;
-        if want != first {
-            return Err(format!(
-                "stale edit: it was made on tag {key} with hash {want}, but the tag is {first}"
-            ));
-        }
-    }
+        .ok_or_else(|| cx.refuse(format!("the map has no tag {key}")))?;
+    cx.touch(id)?;
+    let over_override = cx.check_base(&key, id, e.was.as_deref())?;
     if e.block.is_empty() && e.set.is_empty() {
         return Ok(());
     }
     let def = def_of(group)?;
     let block = cx.read_block(id)?;
+    // Nothing has changed the tag since the build found it, as a rule:
+    // these are the bytes a later package's `from` lines check.
+    if !over_override {
+        cx.keep_base(id, &block);
+    }
     let mut rec = from_built(def, &block).map_err(|x| format!("reading tag {key}: {x}"))?;
+    check_froms(cx, def, &key, id, &rec, &e.set, over_override)?;
     let sets: Vec<(&str, &Value)> = e.set.iter().map(|s| (s.path.as_str(), &s.value)).collect();
     change(def, &mut rec, &e.block, &sets).map_err(|why| format!("tag {key}: {why}"))?;
     for s in &e.set {
@@ -241,6 +257,104 @@ fn edit_one(cx: &mut Cx<'_>, e: &TagEdit) -> Result<(), String> {
     }
     let built = write_back(cx, def, &rec, &key)?;
     cx.write_block(id, &key, built)
+}
+
+/// The `from` of each `set` line of `entry` against the tag it replaces:
+/// `rec` as it is now, when the patch is over an earlier package's whole
+/// override of the asset; else the tag as the build first found it
+/// ([`crate::Cx::base_block`]). A line whose field does not hold its `from` is a
+/// refusal; a line whose path does not resolve is the line's own error.
+fn check_froms(
+    cx: &mut Cx<'_>,
+    def: &StructDef,
+    key: &TagKey,
+    id: map::TagId,
+    rec: &Record,
+    lines: &[SetLine],
+    over_override: bool,
+) -> Result<(), String> {
+    if lines.iter().all(|s| s.from.is_none()) {
+        return Ok(());
+    }
+    let first = if over_override {
+        None
+    } else {
+        Some(cx.base_block(id).and_then(|block| {
+            from_built(def, &block).map_err(|x| format!("reading tag {key}: {x}"))
+        })?)
+    };
+    for s in lines.iter().filter(|s| s.from.is_some()) {
+        let base = first.as_ref().unwrap_or(rec);
+        if let Some(why) = from_mismatch(def, base, s)? {
+            return Err(cx.refuse(format!("tag {key}: `from` {}: {why}", s.path)));
+        }
+    }
+    Ok(())
+}
+
+/// A line's `from` against `base`: `Err` when its path does not resolve (as
+/// its `value` would not), `Ok(Some(why))` when the field does not hold the
+/// value it names, `Ok(None)` when it does or names none.
+fn from_mismatch(def: &StructDef, base: &Record, s: &SetLine) -> Result<Option<String>, String> {
+    let Some(from) = &s.from else {
+        return Ok(None);
+    };
+    let field = field_of(def, &s.path).map_err(|why| format!("set {:?}: {why}", s.path))?;
+    let cur = base
+        .at(&s.path)
+        .ok_or_else(|| format!("set {:?}: no such element", s.path))?;
+    let want = match to_val(&field.kind, cur, from) {
+        Ok(want) => want,
+        Err(why) => return Ok(Some(format!("is not a value the field takes ({why})"))),
+    };
+    if same(&want, cur) {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "is {}, but the field is {}",
+        yaml(from),
+        shown(cur)
+    )))
+}
+
+/// Whether `want` (a `from` as the field's kind) is the value `cur` holds:
+/// floats by their bits.
+fn same(want: &Val, cur: &Val) -> bool {
+    match (want, cur) {
+        (Val::Float(a), Val::Float(b)) => a.to_bits() == b.to_bits(),
+        (Val::List(a), Val::List(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same(a, b))
+        }
+        _ => want == cur,
+    }
+}
+
+fn yaml(v: &Value) -> String {
+    serde_yaml_ng::to_string(v)
+        .unwrap_or_default()
+        .trim_end()
+        .to_owned()
+}
+
+/// A field's value for a line of text.
+fn shown(v: &Val) -> String {
+    match v {
+        Val::Float(f) => f.to_string(),
+        Val::Int(n) => n.to_string(),
+        Val::Enum(n) | Val::Flags(n) | Val::Word(n) => n.to_string(),
+        Val::String(Str::Text(s)) => s.clone(),
+        Val::String(_) => "null".into(),
+        Val::Ref { target, .. } | Val::Datum(target) => match target {
+            Target::Key(k) => k.to_string(),
+            Target::Id(id) => id.to_string(),
+            Target::Null => "null".into(),
+        },
+        Val::List(items) => format!(
+            "[{}]",
+            items.iter().map(shown).collect::<Vec<_>>().join(", ")
+        ),
+        other => format!("{other:?}"),
+    }
 }
 
 /// A record as a block tree, its tag references resolved in the map.

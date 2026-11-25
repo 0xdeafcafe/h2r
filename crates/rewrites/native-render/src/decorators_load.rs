@@ -21,7 +21,7 @@ use crate::object_program_gpu::input_fetch;
 use crate::object_streams::{
     Attribute, Element, SLOT, StreamData, StreamElement, declaration, gather, registers,
 };
-use crate::pass_state::{PassState, pass_state};
+use crate::pass_state::{PassState, geometry_pass_state};
 use crate::program::{
     PassParts, VIEW_CONSTANTS, ViewInputs, constants_read, frame_pixel, frame_vertex,
     translate_pass_with_pixel, world_parity,
@@ -140,7 +140,7 @@ pub fn decorator_look(
     // sets the page to -1, `0x0004e277`): [`stage_images`].
     let mut look = look::implementation_look(p.pass, imp).map_err(|r| format!("{r:?}"))?;
     look.stage_states = applied.stage_states;
-    let state = pass_state(&applied.render_states).map_err(|r| format!("render states: {r:?}"))?;
+    let state = geometry_pass_state(&applied.render_states).map_err(|r| format!("render states: {r:?}"))?;
     let (microcode, semantics) =
         program(look.vertex_shader).ok_or("the vrtx has no classification-1 program")?;
     // A state the restore list writes back is left at the restore's
@@ -795,13 +795,7 @@ pub(crate) mod tests {
             Stage::Empty,
         ];
         p.dims = [Some(TextureDim::D2), Some(TextureDim::D2), None, None];
-        let image = |rgba: Vec<u8>| Image {
-            width: 2,
-            height: 1,
-            rgba,
-            mips: Vec::new(),
-            blocks: None,
-        };
+        let image = |rgba: Vec<u8>| Image::from_rgba(2, 1, rgba, Vec::new());
         let grey = image(vec![9, 9, 9, 255, 9, 9, 9, 255]);
         let varied = image(vec![9, 9, 9, 255, 1, 2, 3, 255]);
         let bitmap = |id: TagId, n: u32| (id == base && n == 0).then(|| varied.clone());

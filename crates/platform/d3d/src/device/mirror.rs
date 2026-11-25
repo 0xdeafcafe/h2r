@@ -558,6 +558,7 @@ impl<B: Backend> Device<B> {
                     self.backend
                         .mirror_load(t.surface, t.format, t.width, t.height, t.layout, off)
                         .map_err(D3dError::Backend)?;
+                    self.frame_snaps.written(t.surface);
                     self.stats.mirror_loads += 1;
                     let hash = if self.cfg.upload == UploadPolicy::Verify {
                         hash_bytes(&bytes)

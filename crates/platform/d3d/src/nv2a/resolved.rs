@@ -4,7 +4,7 @@
 use super::*;
 
 pub struct ResolvedProgram {
-    pub words: Vec<u32>,
+    pub words: crate::shader::Microcode,
     pub pixel: PixelShaderDef,
     pub pixel_options: PixelOptions,
     pub vertex_options: VertexOptions,
@@ -30,7 +30,7 @@ pub fn resolve(
     let VertexSource::Microcode(words) = &key.vertex else {
         return Err("native effects require a programmable vertex shader".into());
     };
-    let words = words.to_vec();
+    let words = words.clone();
     let render = &draw.state.render;
     let (c0, c1) = def.embedded_constants();
     let scale: crate::scaled::RenderScale = scale.into();
@@ -105,7 +105,7 @@ pub fn resolve(
     pu.border = std::array::from_fn(|n| border_value(draw.state.stages[n].border_color, signs[n]));
     for n in 0..4 {
         let e = &draw.extras[n];
-        pu.bump_mat[n] = e.bump_env_mat;
+        pu.bump_mat[n] = draw.bump_matrix(n);
         pu.bump_lum[n] = [e.bump_env_lscale, e.bump_env_loffset, 0.0, 0.0];
         if let Some(info) = draw.texture_info[n]
             && info.format.layout() == gfx::format::Layout::Linear
@@ -115,22 +115,7 @@ pub fn resolve(
             pu.tex_scale[n] = [1.0 / w, 1.0 / h, 1.0, 1.0];
         }
     }
-    let samplers: [SamplerKey; 4] = std::array::from_fn(|n| {
-        let mut k = SamplerKey::from_stage(&draw.state.stages[n], caps);
-        if border[n] != 0 {
-            // The shader supplies the border; the sampler clamps.
-            for (axis, mode) in [&mut k.address_u, &mut k.address_v, &mut k.address_w]
-                .into_iter()
-                .enumerate()
-            {
-                if border[n] >> axis & 1 != 0 {
-                    *mode = wgpu::AddressMode::ClampToEdge;
-                }
-            }
-            k.border = None;
-        }
-        k
-    });
+    let samplers = draw::samplers(draw, border, caps);
     Ok(ResolvedProgram {
         words,
         pixel: def,

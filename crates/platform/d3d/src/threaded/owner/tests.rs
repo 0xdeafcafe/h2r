@@ -359,6 +359,7 @@ fn a_snapshot_keeps_its_value_and_guest_handle_across_native_or_legacy_present()
                         of: name,
                         id: 17,
                         how: ReplaySample::Snapshot { opaque: matches },
+                        into: None,
                     }));
                     replay.ops.extend(frame(n, 22).ops);
                     let count = count.clone();

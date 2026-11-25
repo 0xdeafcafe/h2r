@@ -5,7 +5,9 @@
 //! A problem has a **source**: `check` (`check.run`'s models and sounds),
 //! `ui` (`ui.check`), `hud` (`hud.check` and the HUD kit's), `package`
 //! (the manifest checks `h2 package check` runs over the packages under
-//! `<data>/packages/`) and `build` (what the game's package set refuses
+//! `<data>/packages/`, a file that holds bytes of the user's own store, and
+//! the conflict rows of the last `package.diff` of each level: a package
+//! off for it, a field a later package takes) and `build` (what the game's package set refuses
 //! to load, as the boot log says it). Each row names what it opens: a tag
 //! (`asset`, with the `field` the finding names), a package or one of its
 //! items, or the tool that holds the screen or the HUD.
@@ -17,9 +19,10 @@
 
 use serde_json::{Value, json};
 
-use super::assets::read_set;
+use super::assets::{AssetId, read_set};
+use super::mods::Conflict;
 use super::navigation::NavAction;
-use super::{Action, App, ToolKind, tag_api};
+use super::{Action, App, Doc, ToolKind, rules_edit, tag_api};
 use crate::api::checks::{CHECKS, ContentCheck, Finding, Severity};
 
 /// Every source, in the order the panel lists them.
@@ -69,6 +72,8 @@ pub struct Problem {
     pub tool: Option<ToolKind>,
     /// The field of the tag the finding names.
     pub field: Option<String>,
+    /// The line and column (1-based) a script finding is at.
+    pub at: Option<(u32, u32)>,
 }
 
 impl Problem {
@@ -91,6 +96,10 @@ impl Problem {
                 v[key] = json!(s);
             }
         }
+        if let Some((line, col)) = self.at {
+            v["line"] = json!(line);
+            v["col"] = json!(col);
+        }
         v
     }
 }
@@ -107,9 +116,20 @@ pub struct Problems {
     pub checked: bool,
     /// A package or item the browser is to show, set by opening a row.
     pub reveal: Option<String>,
+    /// The conflict table's rows from the last build of each level
+    /// (`package.diff` with a map): a package off for a level, and a field
+    /// or an asset a later package takes. They list under `package`, and a
+    /// refresh keeps them: only a later diff of the level replaces them.
+    pub levels: Vec<Conflict>,
 }
 
 impl Problems {
+    /// The rows a build of `map` gave, in place of the last ones for it.
+    pub fn set_levels(&mut self, map: &str, rows: Vec<Conflict>) {
+        self.levels.retain(|c| !c.map.eq_ignore_ascii_case(map));
+        self.levels.extend(rows);
+    }
+
     /// Take a fresh read of `sources` in place of what the list held for them.
     pub fn merge(&mut self, fresh: Problems, sources: &[&str]) {
         let keep = |v: &Value| !sources.iter().any(|s| v["source"] == *s);
@@ -190,12 +210,40 @@ fn from_finding(app: &App, source: &'static str, f: &Finding) -> Problem {
         target: f.target.clone(),
         path: f.path.clone(),
         field: asset.as_ref().and_then(|_| field_of(&f.message)),
+        at: None,
         asset,
         tool: match source {
             "ui" => Some(ToolKind::UiScreens),
             "hud" => Some(ToolKind::Hud),
             _ => None,
         },
+    }
+}
+
+/// A refusal or an override of one level, as a row of `package`: a package
+/// off for the level is a warning, a field a later package takes a note.
+fn from_conflict(c: &Conflict) -> Problem {
+    let refused = c.kind == "refused";
+    Problem {
+        source: "package",
+        area: "package".to_owned(),
+        code: format!("package.{}", c.kind),
+        severity: if refused {
+            Severity::Warning
+        } else {
+            Severity::Note
+        },
+        message: if refused {
+            format!("{c_package} is off for {}: {}", c.map, c.why, c_package = c.package)
+        } else {
+            format!("{}: {}", c.map, c.why)
+        },
+        target: format!("{}: {}", c.map, c.package),
+        path: None,
+        asset: Some(format!("package:{}", c.package)),
+        tool: None,
+        field: c.path.clone(),
+        at: None,
     }
 }
 
@@ -223,7 +271,40 @@ fn from_package(f: &::workspace::Finding) -> Problem {
         asset: Some(asset),
         tool: None,
         field: None,
+        at: None,
     }
+}
+
+/// The open script's diagnostics as rows of `check`, area `scripts`: each
+/// carries its line and column, and opens at them ([`App::open_problem`]).
+fn script_rows(app: &mut App) -> Vec<Problem> {
+    app.rules.refresh();
+    let asset = app.doc_asset(Doc::Rules);
+    let title = app.rules.title.clone();
+    rules_edit::problems(&app.rules.text, &app.rules.analysis.diagnostics)
+        .into_iter()
+        .map(|p| Problem {
+            source: "check",
+            area: "scripts".to_owned(),
+            code: if p.code.is_empty() {
+                "script.diagnostic".to_owned()
+            } else {
+                format!("script.{}", p.code)
+            },
+            severity: match p.severity {
+                "error" => Severity::Error,
+                "warning" => Severity::Warning,
+                _ => Severity::Note,
+            },
+            message: p.message,
+            target: format!("{title}:{}", p.line),
+            path: None,
+            asset: asset.clone(),
+            tool: Some(ToolKind::Variants),
+            field: None,
+            at: Some((p.line, p.col)),
+        })
+        .collect()
 }
 
 /// Read the problems of `source` (every one when `None`) over `checks`: the
@@ -249,6 +330,11 @@ pub fn gather(app: &mut App, source: Option<&str>, checks: &[ContentCheck]) -> P
                 .push(json!({"source": src, "check": c.name, "why": why})),
         }
     }
+    if wanted("check") && app.rules.opened {
+        let rows = script_rows(app);
+        out.ran.push(json!({"source": "check", "check": "script.analysis", "findings": rows.len()}));
+        out.rows.extend(rows);
+    }
     if wanted("ground") {
         let rows = app.ground_problem_rows();
         out.ran.push(json!({"source": "ground", "check": "ground.build", "findings": rows.len()}));
@@ -266,10 +352,21 @@ pub fn gather(app: &mut App, source: Option<&str>, checks: &[ContentCheck]) -> P
             let mut found: Vec<::workspace::Finding> =
                 local.iter().flat_map(::workspace::check_package).collect();
             found.extend(::workspace::check_set(&local));
+            // A file that is a raw resource or a tag file of the user's own
+            // store: the retail list on their machine.
+            let store = app.tags_root();
+            for l in &local {
+                found.extend(::workspace::store_findings(&store, l));
+            }
             out.ran.push(json!({
                 "source": "package", "check": "package.check", "findings": found.len()
             }));
             out.rows.extend(found.iter().map(from_package));
+            let conflicts = app.problems.levels.clone();
+            out.ran.push(json!({
+                "source": "package", "check": "package.diff", "findings": conflicts.len()
+            }));
+            out.rows.extend(conflicts.iter().map(from_conflict));
         }
         if wanted("build") {
             out.ran.push(json!({
@@ -286,6 +383,7 @@ pub fn gather(app: &mut App, source: Option<&str>, checks: &[ContentCheck]) -> P
                 asset: None,
                 tool: None,
                 field: None,
+                at: None,
             }));
         }
     }
@@ -309,6 +407,100 @@ impl App {
         self.problems.merge(fresh, &sources);
     }
 
+    /// Refresh the findings that can belong to this asset and return its rows.
+    pub fn refresh_asset_problems(
+        &mut self,
+        asset: &str,
+        source: Option<&str>,
+        checks: &[ContentCheck],
+    ) -> Result<Problems, String> {
+        let (ran, skipped) = if matches!(AssetId::parse(asset)?, AssetId::Item(..)) {
+            // Package checks and the open script can name items. The other
+            // checks name tags or tools and cannot contribute item findings.
+            let mut ran = Vec::new();
+            if source.is_none_or(|s| s == "package") {
+                let packages = gather(self, Some("package"), &[]);
+                ran.extend(packages.ran.iter().cloned());
+                self.problems.merge(packages, &["package"]);
+            }
+            if source.is_none_or(|s| s == "check") {
+                let script = gather(self, Some("check"), &[]);
+                ran.extend(script.ran.iter().cloned());
+                self.problems.rows.retain(|p| p.area != "scripts");
+                self.problems.ran.retain(|v| v["check"] != "script.analysis");
+                self.problems.rows.extend(script.rows);
+                self.problems.ran.extend(script.ran);
+                self.problems.checked = true;
+                self.problems.sort();
+            }
+            (ran, Vec::new())
+        } else {
+            self.refresh_problems_over(source, checks);
+            (self.problems.ran.clone(), self.problems.skipped.clone())
+        };
+        Ok(Problems {
+            rows: self.asset_problems(asset),
+            ran,
+            skipped,
+            ..Problems::default()
+        })
+    }
+
+    /// The rows about the document `doc`: its asset's rows, and for the
+    /// documents with no asset of their own the rows its tool holds: a
+    /// HUD's checks (not the kit's), the screen shown at its state, the
+    /// open script's diagnostics. The header's count and `problems.list`
+    /// with an `asset` read this.
+    pub fn doc_problems(&self, doc: Doc) -> Vec<&Problem> {
+        let asset = self.doc_asset(doc);
+        let screen = match (doc, self.ui_screens.pick.as_ref()) {
+            (Doc::Ui, Some(super::ui_screens::Pick::Native { screen, state })) => {
+                Some(format!("{screen}/{state}"))
+            }
+            _ => None,
+        };
+        self.problems
+            .rows
+            .iter()
+            .filter(|p| match doc {
+                Doc::Hud => p.source == "hud" && !p.code.starts_with("hud.kit"),
+                Doc::Rules => p.area == "scripts",
+                Doc::Ui if screen.is_some() => p.source == "ui" && Some(&p.target) == screen.as_ref(),
+                _ => asset.is_some() && p.asset == asset,
+            })
+            .collect()
+    }
+
+    /// How many rows [`Self::doc_problems`] has: the number on the
+    /// header's **Check**.
+    pub fn doc_problem_count(&self, doc: Doc) -> usize {
+        self.doc_problems(doc).len()
+    }
+
+    /// The rows about asset `id`: those that name it, and those of a
+    /// document whose asset it is ([`Self::doc_problems`]).
+    pub fn asset_problems(&self, id: &str) -> Vec<Problem> {
+        let norm = |s: &str| s.replace('/', "\\");
+        let id = norm(id);
+        let mut rows: Vec<Problem> = self
+            .problems
+            .rows
+            .iter()
+            .filter(|p| p.asset.as_deref().is_some_and(|a| norm(a) == id))
+            .cloned()
+            .collect();
+        for doc in [Doc::Hud, Doc::Ui, Doc::Rules] {
+            if self.doc_asset(doc).is_some_and(|a| norm(&a) == id) {
+                for p in self.doc_problems(doc) {
+                    if !rows.contains(p) {
+                        rows.push(p.clone());
+                    }
+                }
+            }
+        }
+        rows
+    }
+
     /// [`Action::OpenProblem`]: the document of row `index`, in front: a tag
     /// in its editor with the finding's field shown, a package or item in
     /// the browser, a screen or a HUD in its tool.
@@ -316,6 +508,16 @@ impl App {
         let Some(p) = self.problems.rows.get(index).cloned() else {
             return self.error(format!("no problem {index} in the list"));
         };
+        if let Some((line, col)) = p.at {
+            // A script finding: the editor, with the cursor on the line.
+            self.dispatch(Action::SetTool(ToolKind::Variants));
+            let rows = rules_edit::problems(&self.rules.text, &self.rules.analysis.diagnostics);
+            if let Some(row) = rows.iter().find(|r| r.line == line && r.col == col) {
+                self.rules.want_cursor = Some(row.at);
+                self.rules.cursor = row.at;
+            }
+            return;
+        }
         if let Some(asset) = &p.asset {
             if let Some(text) = asset.strip_prefix("tag:") {
                 self.open_asset(asset, None);
@@ -331,6 +533,8 @@ impl App {
                         self.error(e);
                     }
                 }
+            } else if asset.starts_with("package:") {
+                self.dispatch(Action::OpenAsset { asset: asset.clone(), map: None });
             } else {
                 // The browser is a panel of the map tools.
                 if !matches!(self.tool, ToolKind::Scenario | ToolKind::Tags | ToolKind::Scripts) {

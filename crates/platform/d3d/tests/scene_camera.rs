@@ -236,3 +236,143 @@ fn a_display_frame_moves_only_verified_view_draws_onto_the_blended_camera() {
     let still = Retarget::new(b.view_cameras(), [(key, &cam)]);
     assert!(still.is_empty());
 }
+
+#[test]
+fn retained_geometry_moves_with_the_same_verified_camera_as_its_packet() {
+    use d3d::scene_sink::{RetainedExternal, Retarget, Retargeted};
+    use d3d::{ExternalPass, ExternalPassRequest, ExternalPlan, ExternalSurfaces};
+    use frame_scene::TargetRef;
+    use std::sync::Mutex;
+    use timeline::native::Stage;
+
+    struct Retained(Arc<ResolvedDraw>);
+    impl ExternalPass for Retained {
+        fn resolved_fallback(&self) -> Option<Arc<ResolvedDraw>> {
+            Some(Arc::clone(&self.0))
+        }
+        fn with_draw(&self, draw: Arc<ResolvedDraw>) -> Option<Box<dyn ExternalPass>> {
+            Some(Box::new(Self(draw)))
+        }
+    }
+
+    let cam = camera(0);
+    let b = scene(&[(1, cam)]);
+    let turned = Camera { forward: [0.0, 1.0, 0.0], ..cam };
+    let key = ViewKey { kind: ViewKind::Game, player: 1, view: 1 };
+    let at = SlotAt { slot: Slot::Transparents, view: 1 };
+    let mut retarget = Retarget::new(b.view_cameras(), [(key, &turned)]);
+    let draw = Arc::new(mapped_draw(&cam));
+    for stage in [Stage::Transparents, Stage::Particles, Stage::Flares] {
+        let pass: Box<dyn ExternalPass> = Box::new(Retained(Arc::clone(&draw)));
+        let op = ReplayOp::Draw {
+            draw: Arc::clone(&draw),
+            textures: Default::default(),
+            camera: CameraUse::View { view: 1, first: FIRST },
+            external: Some(Box::new(RetainedExternal {
+                packet: Arc::clone(&draw),
+                surfaces: ExternalSurfaces {
+                    color: TargetRef::SceneColour,
+                    depth: TargetRef::SceneDepth,
+                    sampled: Vec::new(),
+                    slots: Vec::new(),
+                    slot_sizes: Vec::new(),
+                },
+                request: ExternalPassRequest {
+                    rect: (0, 0, 80, 60),
+                    surface_size: (80, 60),
+                    z_scale: 1.0,
+                    display_projection_factor: 1.0,
+                },
+                plan: ExternalPlan { stage, view: 1, ranges: 1, slots: Vec::new() },
+                pass: Arc::new(Mutex::new(pass)),
+            })),
+        };
+        let moved = retarget.op(at, &op);
+        if stage == Stage::Flares {
+            assert!(matches!(moved, Retargeted::Same(_)));
+            continue;
+        }
+        assert_ne!(rows_at(moved.get()), rows_at(&op));
+        let ReplayOp::Draw { draw, external: Some(admission), .. } = moved.get() else {
+            panic!("the remapped draw lost its native replacement");
+        };
+        assert!(Arc::ptr_eq(draw, &admission.packet));
+        let fallback = admission.pass.lock().unwrap().resolved_fallback().unwrap();
+        assert!(Arc::ptr_eq(draw, &fallback));
+    }
+}
+
+/// A widened camera at render scale 0.75: a retained replacement takes the
+/// widened projection the scene's terrain took (its rows are exactly the
+/// blended camera's), keeps the guest viewport it was captured with, and
+/// that viewport lands on the 0.75 grid the same way the terrain's does.
+#[test]
+fn retained_geometry_takes_the_widened_projection_and_the_scaled_grid() {
+    use d3d::scene_sink::{RetainedExternal, Retarget};
+    use d3d::scaled::RenderScale;
+    use d3d::{ExternalPass, ExternalPassRequest, ExternalPlan, ExternalSurfaces};
+    use frame_scene::TargetRef;
+    use std::sync::Mutex;
+    use timeline::native::Stage;
+
+    struct Retained(Arc<ResolvedDraw>);
+    impl ExternalPass for Retained {
+        fn resolved_fallback(&self) -> Option<Arc<ResolvedDraw>> {
+            Some(Arc::clone(&self.0))
+        }
+        fn with_draw(&self, draw: Arc<ResolvedDraw>) -> Option<Box<dyn ExternalPass>> {
+            Some(Box::new(Self(draw)))
+        }
+    }
+
+    let cam = camera(0);
+    let b = scene(&[(1, cam)]);
+    let wide = Camera { fov: 1.9, ..cam };
+    let key = ViewKey { kind: ViewKind::Game, player: 1, view: 1 };
+    let at = SlotAt { slot: Slot::Transparents, view: 1 };
+    let mut retarget = Retarget::new(b.view_cameras(), [(key, &wide)]);
+    let draw = Arc::new(mapped_draw(&cam));
+    let want = wide.view_projection();
+    let want: [[f32; 4]; 4] = std::array::from_fn(|row| want.map(|column| column[row]));
+    let narrow = camera(0).view_projection();
+    let narrow: [[f32; 4]; 4] = std::array::from_fn(|row| narrow.map(|column| column[row]));
+    assert_ne!(want, narrow, "the widened projection differs");
+    let guest = (80, 60);
+    let scale = RenderScale::between(guest, (60, 45)).unwrap();
+    for stage in [Stage::Transparents, Stage::Particles] {
+        let pass: Box<dyn ExternalPass> = Box::new(Retained(Arc::clone(&draw)));
+        let op = ReplayOp::Draw {
+            draw: Arc::clone(&draw),
+            textures: Default::default(),
+            camera: CameraUse::View { view: 1, first: FIRST },
+            external: Some(Box::new(RetainedExternal {
+                packet: Arc::clone(&draw),
+                surfaces: ExternalSurfaces {
+                    color: TargetRef::SceneColour,
+                    depth: TargetRef::SceneDepth,
+                    sampled: Vec::new(),
+                    slots: Vec::new(),
+                    slot_sizes: Vec::new(),
+                },
+                request: ExternalPassRequest {
+                    rect: (0, 0, 80, 60),
+                    surface_size: (80, 60),
+                    z_scale: 1.0,
+                    display_projection_factor: 1.0,
+                },
+                plan: ExternalPlan { stage, view: 1, ranges: 1, slots: Vec::new() },
+                pass: Arc::new(Mutex::new(pass)),
+            })),
+        };
+        let moved = retarget.op(at, &op);
+        assert_eq!(rows_at(moved.get()), want, "{stage:?}: the widened projection");
+        let ReplayOp::Draw { draw: moved_draw, external: Some(admission), .. } = moved.get() else {
+            panic!("the remapped draw lost its native replacement");
+        };
+        assert_eq!(moved_draw.viewport, draw.viewport, "{stage:?}: the guest viewport");
+        let fallback = admission.pass.lock().unwrap().resolved_fallback().unwrap();
+        assert_eq!(fallback.shader.constants[usize::from(FIRST)..usize::from(FIRST) + 4], want);
+        let v = moved_draw.viewport;
+        assert_eq!(scale.rect(v.x, v.y, v.width, v.height), [0, 0, 60, 45]);
+    }
+}

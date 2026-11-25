@@ -1,7 +1,7 @@
 # Rules world API: a synced world for scripts
 
-Status: Design, with the first slices landing. Messages as cues (W1), the script HUD's declarations and show state (W2), objects in motion (W3), the physics reads, `on touchdown` and the sight table on the fake (W4, without `push` and `launch`; the host half and the Superbounce script wait), the `sound_to` audio entries (W5, partly), the bot orders (W7), vehicles (W8, on the fake with host hover and unload), the data reads with `on damage` (W9), modules (W10) and the System Link show carrier (W11, carrier only) are built; the rest extends the rules engine of [rules-engine.md](rules-engine.md) and is built after that page's host runtime runs in a game.
-Code: slice W1: `crates/formats/rules/src/show.rs` (the cue and its codec), `crates/extensions/game/src/rules/world/show.rs` (the host and client halves), `crates/live/actor-net/src/wire.rs` and `budget.rs` (the `Cue` record and its three-packet repeat), `crates/extensions/game/src/actor_net/host.rs` and `client.rs` (offered to every peer; shown once). Slice W2: `crates/formats/rules/src/show/state.rs` (the show state and `view`), the `hud`, `waypoint` and `section` declarations of `crates/formats/rules/src/lang`, the `hud_*`, `mark`, `unmark`, `side_of` and `slot_of` entries of `caps.rs`, `RulesExt::show` in `vm.rs`, `crates/extensions/game/src/rules/world/hud.rs` (the feed of the HUD kit's objective HUDs, `crates/rewrites/hud-kit-core/src/views/objective.rs`). Slice W9: the entries `object_health` to `squad_strength` of `crates/formats/rules/src/caps.rs`, `on damage` (`ir::Event::Damage`), `crates/formats/rules/src/fields.rs` (the tag read's field paths and load check), `crates/extensions/game/src/rules/world/data.rs`. Slice W7: the `bot_*` entries of `crates/formats/rules/src/caps.rs`, the dispatch in `crates/extensions/game/src/rules/runtime.rs`, `crates/extensions/game/src/rules/world/bots.rs`, `crates/live/bots/src/brain.rs` and `decisions.rs`. The plan names `crates/formats/rules/src/caps.rs` (the entries), `crates/formats/rules/src/world/` and `crates/extensions/game/src/rules/world/` (one module per capability group; `bots` and `show` are built), and `crates/live/actor-net/src/wire.rs` (two records; `Cue` is built). Tests: named per slice in "Implementation plan".
+Status: Design, with the first slices landing. Messages as cues (W1), the script HUD's declarations and show state (W2), objects in motion (W3), the physics events with their host half, the Superbounce chain as a script, and the host's `airborne`, `crouching`, `primed` and `sees` reads (W4), the `sound_to` audio entries (W5, partly), the bot orders (W7), vehicles (W8, on the fake with host hover and unload), the data reads with `on damage` (W9), modules (W10) and the System Link show carrier (W11, carrier only) are built; the rest extends the rules engine of [rules-engine.md](rules-engine.md) and is built after that page's host runtime runs in a game.
+Code: slice W1: `crates/formats/rules/src/show.rs` (the cue and its codec), `crates/extensions/game/src/rules/world/show.rs` (the host and client halves), `crates/live/actor-net/src/wire.rs` and `budget.rs` (the `Cue` record and its three-packet repeat), `crates/extensions/game/src/actor_net/host.rs` and `client.rs` (offered to every peer; shown once). Slice W2: `crates/formats/rules/src/show/state.rs` (the show state and `view`), the `hud`, `waypoint` and `section` declarations of `crates/formats/rules/src/lang`, the `hud_*`, `mark`, `unmark`, `side_of` and `slot_of` entries of `caps.rs`, `RulesExt::show` in `vm.rs`, `crates/extensions/game/src/rules/world/hud.rs` (the feed of the HUD kit's objective HUDs, `crates/rewrites/hud-kit-core/src/views/objective.rs`), and the state's halves of `crates/extensions/game/src/rules/world/show.rs` (the authority's offer and a `Viewer`'s hold and draw). Slice W9: the entries `object_health` to `squad_strength` of `crates/formats/rules/src/caps.rs`, `on damage` (`ir::Event::Damage`), `crates/formats/rules/src/fields.rs` (the tag read's field paths and load check), `crates/extensions/game/src/rules/world/data.rs`. Slice W7: the `bot_*` entries of `crates/formats/rules/src/caps.rs`, the dispatch in `crates/extensions/game/src/rules/runtime.rs`, `crates/extensions/game/src/rules/world/bots.rs`, `crates/live/bots/src/brain.rs` and `decisions.rs`. The plan names `crates/formats/rules/src/caps.rs` (the entries), `crates/formats/rules/src/world/` and `crates/extensions/game/src/rules/world/` (one module per capability group; `bots` and `show` are built), and `crates/live/actor-net/src/wire.rs` (two records, both built). Tests: named per slice in "Implementation plan".; shown once). Slice W2: `crates/formats/rules/src/show/state.rs` (the show state and `view`), the `hud`, `waypoint` and `section` declarations of `crates/formats/rules/src/lang`, the `hud_*`, `mark`, `unmark`, `side_of` and `slot_of` entries of `caps.rs`, `RulesExt::show` in `vm.rs`, `crates/extensions/game/src/rules/world/hud.rs` (the feed of the HUD kit's objective HUDs, `crates/rewrites/hud-kit-core/src/views/objective.rs`). Slice W9: the entries `object_health` to `squad_strength` of `crates/formats/rules/src/caps.rs`, `on damage` (`ir::Event::Damage`), `crates/formats/rules/src/fields.rs` (the tag read's field paths and load check), `crates/extensions/game/src/rules/world/data.rs`. Slice W4: `on touchdown`, `on launch` and `on grounded` (`ir::Event`), `crates/extensions/game/src/superbounce_chain.rs` (`Physics`, what the chain sees), `crates/extensions/game/src/rules/world/physics.rs` (the host's inputs), `content/modes/rules/superbounce.rules` (the chain as a script). Slice W7: the `bot_*` entries of `crates/formats/rules/src/caps.rs`, the dispatch in `crates/extensions/game/src/rules/runtime.rs`, `crates/extensions/game/src/rules/world/bots.rs`, `crates/live/bots/src/brain.rs` and `decisions.rs`. The plan names `crates/formats/rules/src/caps.rs` (the entries), `crates/formats/rules/src/world/` and `crates/extensions/game/src/rules/world/` (one module per capability group; `Cue` is built). Tests: named per slice in "Implementation plan".
 Switch: none of its own; the `rules` feature of `H2_FEATURES` ([switches.md](../runtime/switches.md)).
 
 A rules script moves objects, flies drop ships, orders AI squads and
@@ -129,7 +129,7 @@ engine does not replicate, is one of two things:
   Firefight or Siege round-start line (the declared type byte), a sound
   (tag-table index, an entity or a point or an audience) and a
   medal line. A cue is not state: a machine that joins later does not
-  get it. One cue is the exception, since it carries state: the walls
+  get it. Two cues are the exceptions, since they carry state. The walls
   cue (`rules::show::Cue::Walls`, kind 2) holds the whole list of areas
   the script shows (`show_area`; at most 8, each a netgame flag's index
   in 12 bits and a team in 4, 17 bytes at most). The authority sends it
@@ -140,6 +140,9 @@ engine does not replicate, is one of two things:
   draws the walls through the markers' world-line source and takes an
   older or repeated cue for nothing
   (`crates/extensions/game/src/rules/world/show.rs`, `present_walls`).
+  The pickers' offer cue (`rules::show::Cue::Pick`, kind 4) holds each
+  picker's offer the same way, for the players a client asks
+  ([Pickers](#pickers)).
 
 An audience is a 16-bit mask of player slots. A text is an index into
 the blob's string table and a sound an index into its tag table, so a
@@ -151,17 +154,25 @@ works") carries both, with two more record tags:
 
 | Record (tag) | When | Payload |
 |---|---|---|
-| `Show` (7) | the state a peer's players are the audience of changed, at most 5 times a second; whole in every `Key` | length (u8), the state filtered to that peer's players |
+| `Show` (7) (**Code**, `crates/live/actor-net/src/wire.rs`) | the state a peer's players are the audience of changed, at most 5 times a second; whole in every `Key` | length (u8), the state (`rules::show::State::encode`, at most 255 bytes) |
 | `Cue` (8) (**Code**, `crates/live/actor-net/src/wire.rs`) | a cue for that peer's players, in three consecutive packets as `Line` is (**Code**, `crates/live/actor-net/src/budget.rs`) | cue tick (u32), sequence (u8), kind (u8), length (u8), at most 24 payload bytes |
 
-The `Show` record is not built (it needs `crates/live/actor-net`); the
-state it would carry is built (`rules::show::State`, at most 244 bytes), and
-every machine that runs the VM draws it. Nor is the 64-bit hash of the
-peer's filtered state the `Digest` gains, whose mismatch asks for a
-`Key`. The host filters the state per peer, so a team's waypoint is not
-sent to the other team's machines. A message cue carries its audience as a mask
-of player slots and goes to every peer; each peer shows it to its own
-players in the audience and to no one else (**Code**,
+The `Show` record is built (**Code**, `crates/live/actor-net/src/wire.rs`,
+`budget.rs`, `game/src/actor_net/host.rs` and `client.rs`): the authority
+offers the state it holds after each tick
+(`rules/world/show.rs::offer_state`), the budget coalesces the offers to
+at most 5 a second and one rides every key whole, an empty record
+retracts the last state, and the digest beside the actor set's carries
+the hash of the state the peer was last offered, whose mismatch asks for
+a `Key` (**Code**, `rules::show::State` is at most 244 bytes; a `Viewer`
+holds the newest record that answers its blob and draws the HUDs from
+it, `rules/world/show.rs::receive`). The state carries each audience as
+a mask of player slots, and each machine shows it only to its own
+players in it, so a team's waypoint draws on its team's machines alone;
+which players a tunnel peer has is not known to the channel, so the
+whole state goes to every peer until it is. A message cue carries its
+audience as a mask of player slots and goes to every peer; each peer
+shows it to its own players in the audience and to no one else (**Code**,
 `crates/extensions/game/src/rules/world/show.rs`).
 
 A round-start clip goes to every peer. The viewer accepts only a type
@@ -285,7 +296,7 @@ entries, signatures and fake of a group in
 `vehicles`, `squads`, `bots`, `audio`, `hud`, `physics`, `data` and
 `show`. The host's zone test (`world/zones.rs`, the labelled flags as
 cylinders and hill polygons, behind `inside`, `ticks_held`, `on enter`
-and `on leave`), `set_loadout` (`world/loadout.rs`), the spawn rules
+and `on leave`), `set_loadout` (`world/loadout.rs`), the pickers (`world/pick.rs`), the spawn rules
 (`world/spawns.rs`) and the bodies (`world/body.rs`) are guest halves of the core entries, with no group
 of their own
 ([rules-engine.md](rules-engine.md#the-host-runtime)).
@@ -334,6 +345,7 @@ other.
 | `move_to(o, at, t)`, `stop(o)`; `on arrive(o)` | `move_to(Object, Fixed, Fixed, Fixed, Int)` and `stop(Object)`, now; the VM's own event | a **mover**: a `RulesExt` record (object, from, to, start tick, duration; `vm::Mover`, at most 16) the VM steps every tick in the order started, telling the game the place on the straight line from where the object was when `move_to` was called, and `to` exactly on the end tick, when `on arrive(o)` runs. `t` of 0 or less is one tick. A second `move_to` for an object replaces its mover with no `on arrive`; `stop` ends it with none; a seventeenth mover is a script error; the round's end clears them. The host puts the object at each step (`OBJECT_SET_TRANSFORM`) at the next boundary; the velocity of a step is not pushed (`OBJECT_SET_VELOCITY` needs two vectors in guest memory, and what marks the entity is R2) | named (**Code**); **S** that a client sees the move (R2, R3) | position flag |
 | `move_along(o, path, t)` | | | refused by name: it needs the `path` label kind, which W8 builds; `move_to` takes one point | |
 | `attach(o, to)`, `detach(o)` | `attach`, `detach` | no entry read; the object datum has a parent field, and HaloScript's `objects_attach` evaluator is not traced | untraced | nothing generic: only a unit's parent vehicle replicates (**E**). Until traced, `move_to` with the parent's `at` each tick is the script's follow |
+| `set_open(o, open)` | `set_open(Object, Bool)`, now | a barrier opened or closed: the first `set_open(o, true)` notes where the object stands (`vm::Gate`, in `RulesExt::gates`, at most 16, the round's end closes them) and steps it 64 world units below, and `set_open(o, false)` steps it back and forgets it; asking for the state it is in does nothing, and a seventeenth open barrier is a script error. The steps are the host's puts (`OBJECT_SET_TRANSFORM`, as `teleport`), so the host adds no call; a put outside the world is a refused call, which the host tells the VM (`Vm::put_refused`, from `Runtime::finish`) when it was the put that opened a barrier: the VM forgets the barrier, so it stands closed in the state too and the next `set_open(o, true)` tries again | named (**Code**); whether the barrier stops blocking once put there and whether a client sees it move are R2 and R3 | position flag |
 | `set_power(o, f)`, `set_position(o, f)` on a device | `device_power`, `device_position` | Forge's device sinks ([forge-features.md](forge-features.md#teleporters-buttons-and-triggers)); the engine setters are not traced | untraced | the device entity (type 16, **E**) |
 
 `create` and `delete` are the existing entries. A created object has no
@@ -500,6 +512,55 @@ nothing.
 |---|---|---|---|---|
 | `set_loadout(p, primary, secondary)` | `set_loadout` | `STARTING_WEAPON_PICK` (`0x19eda0`) answers the value's tag from the map's multiplayer globals, as the spawn's weapon pass asks it; the weapon is made and added as a starting profile does (`placement_data_new`, `object_new`, `unit_add_weapon`, and `object_delete` when the unit refuses it) — the primary in mode 2, which empties the unit's weapon slots first and readies it, the secondary in mode 1 beside it (mode 2 when there is no primary) | named | the unit's weapon entities |
 
+### Pickers
+
+Capability `player.pick`. A script offers each local player a short list
+to pick from before the round, and reads the pick. The VM keeps the offers
+and the picks in its state (`RulesExt::picks`, at most 2 pickers numbered
+from 0 of at most 6 rows each; `RulesExt::choices`, a row for each player
+and picker), so a checkpoint, a film's keyframe and a joiner read them as
+they read every other record.
+
+| Script | Entry | Engine | Status | Synced by |
+|---|---|---|---|---|
+| `offer_pick(n, title)`, `pick_row(n, label)` | `offer_pick(Int, Text)`, `pick_row(Int, Text)`, now | `offer_pick` makes picker `n` with no rows, replacing a picker of that number and the picks made in it; `pick_row` adds a row. A picker past the second, a row for a picker not offered and a seventh row are script errors (`ErrorKind::Picks`). The round's end takes the offers and the picks. The host adds no call of its own | named (**Code**) | the state blob |
+| `picked(p, n)` | `picked`, a VM read | the row (from 0, in the order the rows were added) player `p` picked in picker `n`; -1 when none was made, none is offered or the player is outside the roster | named (**Code**) | the state blob |
+| the host's report | `Vm::choose(player, picker, row)` | a pick of a picker not offered, a row it does not hold or a player outside the roster is refused (`false`); a second pick replaces the first | named (**Code**) | the state blob |
+
+On the host (`rules/world/pick.rs`) the runtime reads the offers at each
+tick boundary on the authority, outside a film. For each new set of offers
+it asks this machine's local players one at a time, in roster order: a
+`Call::OfferPick` makes the game's value picker (`ui_kit::picker`, the
+`kit.picker.game` dialog in a game, a select dialog over the running game)
+over the player's controller, titled by the offer with its rows as the
+values. A press on a row is reported from the picker's setter and handed to
+`Vm::choose` at the next boundary; the next player's picker opens then, or
+after 30 seconds (B on the picker reports nothing). Picks made before the
+round's end reset are still handed over. The picker is the existing
+data-driven one, so no screen of its own and no per-script Rust.
+
+A player on another machine is asked the other way. The authority sends
+each picker as an offer cue on the show channel
+([the show channel](#the-show-channel), `rules::show::Cue::Pick`: the
+picker's number, its title and its rows as string-table indexes, at most
+16 bytes) when the offers change — a picker taken away goes as an empty
+one, which takes the asking off — and again every 90 ticks while any
+stands, so a machine that joins late has them. A client holds them
+(`rules/world/pick.rs`, `client_offer`), asks its own local players one
+at a time at the tick boundary with the same value picker, and sends each
+press back up the actor channel as the pick message
+(`game/src/actor_net/pick.rs`: the roster slot, the picker and the row,
+three bytes, bounds-checked on both ends). The host decodes it
+(`actor_net/pick.rs::receive`), keeps only picks for players the sending
+peer sits, and hands them to `Vm::choose` like its own local reports, so
+`picked` reads a remote pick as it reads a local one. The tunnel carries
+no frame upstream yet — its only client-to-host frame is the key request,
+which holds no payload — so a client asks nobody until the frame is built
+(`actor_net/link.rs::pick_upstream` answers false), and a player on
+another machine reads -1 from `picked`; a script falls back to the
+lobby's option, as `siege.rules` does. A player who joins after the
+offers were made is asked by the next repeat of the offer cue.
+
 ### Spawns
 
 Capability `player.spawn`. A team's spawn rule is in the VM's state
@@ -604,11 +665,11 @@ widget or waypoint the script does not declare stops the script
 | Script | Entry | Engine | Status | Synced by |
 |---|---|---|---|---|
 | `message(to, "…{n}")` | exist | the notification insert (`hud_kit::NOTIFY`, E `0x24cbee`), per local user (**Code**, `crates/extensions/game/src/rules/world/show.rs`); the timed centred text (`0x24cc73`) is not used | named | a `Cue` (**Code**) |
-| `hud_text(w, "…")`, `hud_value(w, n)`, `hud_fill(w, f)`, `hud_style(w, style)`, `hud_show(w, on)` | `hud_text`, `hud_value`, `hud_fill`, `hud_style`, `hud_show` | the VM's show state; `hud_kit::Handle::publish` draws it (**Code**, `crates/extensions/game/src/rules/world/hud.rs`). The text is a literal: message holes and an audience (`to`) are not built | named | `Show` (not built) |
-| `hud_value_for(w, p, n)` | `hud_value_for` | the widget's value for the player in roster slot `p` (0 to 255), kept in the state's per-viewer table (`rules::show::PerViewer`: the widget's number and 16 bytes). `rules::show::view` gives each viewer the entry of its own slot in place of the widget's `value`; the fill, style and text stay shared. One widget at a time reads per viewer, and a second is a script error (`ErrorKind::Hud`); a `none` player sets nothing | named | `Show` (not built) |
+| `hud_text(w, "…")`, `hud_value(w, n)`, `hud_fill(w, f)`, `hud_style(w, style)`, `hud_show(w, on)` | `hud_text`, `hud_value`, `hud_fill`, `hud_style`, `hud_show` | the VM's show state; `hud_kit::Handle::publish` draws it (**Code**, `crates/extensions/game/src/rules/world/hud.rs`). The text is a literal: message holes and an audience (`to`) are not built | named | `Show` (**Code**) |
+| `hud_value_for(w, p, n)` | `hud_value_for` | the widget's value for the player in roster slot `p` (0 to 255), kept in the state's per-viewer table (`rules::show::PerViewer`: the widget's number and 16 bytes). `rules::show::view` gives each viewer the entry of its own slot in place of the widget's `value`; the fill, style and text stay shared. One widget at a time reads per viewer, and a second is a script error (`ErrorKind::Hud`); a `none` player sets nothing | named | `Show` (**Code**) |
 | `side_of(p)`, `slot_of(p)` | `side_of`, `slot_of` | the roster: the team's index in a game with teams, 16 and the slot in one without; the slot | named | none: a read |
 | `countdown(w, t)` | `hud_countdown` | the state holds the end tick; each machine counts its own ticks | not built | `Show` |
-| `mark(wp, at)`, `unmark(wp)` | `mark`, `unmark` | the object's place through `Handle::navpoint_at`, one navpoint a HUD; the text is the distance from the user's unit. The place is a zone's middle, else the unit of the player who carries the objective (the objective registry, `objectives::carrier`), else the object's origin (`Object::POSITION`, through `engine::view::objects::get`): `hud::place`. A mark is the same for every viewer, and the navpoint is the first local user's, as the kit's navpoints are shared. `mark(wp, at, to)` and the text form are not built | named | `Show` (not built) |
+| `mark(wp, at)`, `mark(wp, at, to)`, `unmark(wp)` | `mark`, `mark_player`, `mark_team`, `unmark` | the object's place through `Handle::navpoint_at`, one navpoint a HUD; the text is the distance from the user's unit. The place is a zone's middle, else the unit of the player who carries the objective (the objective registry, `objectives::carrier`), else the object's origin (`Object::POSITION`, through `engine::view::objects::get`): `hud::place`. A mark's audience is every viewer, or `to`'s: a player's slot's bit or the bits of the team's seated players, resolved in the VM from the roster every machine holds (`Game::players_of_team`); `all` is the two-argument form, and the state carries the mask. The navpoint is the first local user's, as the kit's navpoints are shared. The text form is not built | named | `Show` (**Code**) |
 | `medal(p, "…")`: a line with a medal glyph, counted in the film and on Live | `medal` | the notification queue, as the superbounce medals (hud-kit.md "The medals"); `GAME_MEDAL` (`0x1970a0`) takes only the game's own medal rows | traced | a `Cue` |
 
 Scoreboard labels and the post-game report's columns stay the carrier's
@@ -647,28 +708,61 @@ A banner is timed by the kit from the moment its text changes
 
 Halo 2's physics is Havok at an exact 30 Hz tick
 ([havok-runtime.md](../engine/havok-runtime.md),
-[high-framerate.md](high-framerate.md)). Reads need no capability.
+[high-framerate.md](high-framerate.md)). Biped state reads on the host
+require `hud.superbounce`.
 Writes need `physics.push` ("pushes objects") or `player.push` ("pushes
 players").
 
 | Script | Entry | Engine | Status |
 |---|---|---|---|
 | `o.velocity`, `o.speed` | as "Objects" | the object datum | named |
-| `p.airborne`, `p.crouching` | `airborne`, `crouching`, reads of a player | the biped's airborne bit and crouch state the superbounce tracker reads (`crates/extensions/game/src/superbounce_charge.rs`; `BIPED_AIRBORNE_TEST` `0xe4050`) | named; the rules half is built on `FakeGame`, the host half is not, so a host refuses a script that reads either |
-| `on touchdown(p, down, up)`: a landing, with the fall speed before and the vertical speed after, `fixed` world units a second (`down` positive for a fall, `up` positive for rising) | `ir::Event::Touchdown`, `Input::Touchdown`, at most 16 a tick | the touchdown rule of `superbounce_charge::touchdown`, run for every player ([superbounce.md](superbounce.md#the-rule)) | named; built on the fake, which lands the player; the host does not deliver it |
-| `p.primed`: the player's level pair is in the state a landing bounces from | `primed`, a read of a player | the pair word of the biped's one pair against the level (`live_telemetry::havok_agents::fixed_pair`, **Code**) | named; its meaning is **Trace** in superbounce.md; host half not built |
-| `sees(a, b)`: nothing solid between two objects | `sees`, a VM read of the sight table (`RulesExt::sight`) | `AI_LINE_OF_SIGHT` (`0x29dd50`) over the collision query `0x1697c0`, made in the tick boundary's async body as Firefight's sight pass is (`firefight::guest::line_of_sight`), through `Game::trace_sight` | named; the VM half is built on `FakeGame`, a host refuses a script that calls it. A player's unit is not nameable as an object yet, so it takes two objects; a point or a player waits on an entry for a unit |
+| `p.airborne`, `p.crouching` | `airborne`, `crouching`, reads of a player | the biped's airborne bit and the unit's crouch request (including forced crouch), read by `superbounce_chain::read_players` | named |
+| `on touchdown(p, down, up)`: a landing, with the fall speed before and the vertical speed after, `fixed` world units a second (`down` positive for a fall, `up` positive for rising), each rounded to the nearest `fixed` | `ir::Event::Touchdown`, `Input::Touchdown`, at most 16 a tick | the touchdown rule of `superbounce_charge::touchdown`, run for every player by the medal chain (`superbounce_chain::Physics::Touchdown`); none while a touchdown's launch window is open or under a strip's floor after a fall through it | named; the host delivers it while the superbounce mode runs; the fake lands the player |
+| `on launch(p, spot, speed)`: a landing the host judged a superbounce, on the tick its launch window closes (three ticks after the touchdown). `spot` is the strip (`zone?`, the chain's `spot_id`; `none` for a seam no marked strip accounts for), `speed` the best vertical speed of the window, rounded **up** to the next `fixed`, so `speed > 16.0` holds exactly when the host's float comparison does | `ir::Event::Launch`, `Input::Launch`, at most 16 a tick | the chain's verdict (`superbounce_charge::judge` on a primed touchdown; `superbounce_chain::Physics::Launch`) | named; the host delivers it while the superbounce mode runs; the fake puts the player in the air |
+| `on grounded(p)`: the player's run of bounces with no ground between them ended: a landing that did not bounce, the ground from the third tick after a bounce, a teleport, a new unit or a fall through a strip's floor. It follows the last `launch` of the run, before the next one | `ir::Event::Grounded`, `Input::Grounded`, at most 16 a tick | the chain's `live` going false (`superbounce_chain::Physics::Grounded`) | named; the host delivers it while the superbounce mode runs |
+| `p.primed`: the player's level pair is in the state a landing bounces from | `primed`, a read of a player | the pair word of the biped's one pair against the level (`live_telemetry::havok_agents::fixed_pair`, **Code**) | named; its meaning is **Trace** in superbounce.md; the host answers from the chain's view of the biped (below): the level pair's word is the primed one |
+| `sees(a, b)`: nothing solid between two objects | `sees`, a VM read of the sight table (`RulesExt::sight`) | `AI_LINE_OF_SIGHT` (`0x29dd50`) over the collision query `0x1697c0`, awaited in `rules::runtime::run_work` via `rules::world::physics::trace_sight` and `firefight::guest::line_of_sight` | named; the host answers at the next tick boundary |
 | `touching(a, b)`, a contact's normal and impulse | reads | Havok's contact constraints (havok-runtime.md "Contacts"), read statically and never in a run | traced |
 | `set_velocity(o, v)`, `push(o, v)`; `launch(p, v)` | `set_velocity`, `push`; `launch` | `OBJECT_SET_VELOCITY` (`0xb7740`), `quiet` clear | named; **S** for a client's own predicted biped |
 
-`sees` cannot make a guest call from a handler, so it reads a **sight
-table** in `RulesExt` (`vm::Sight`, at most 32 pairs, a 33rd is a script
-error, `ErrorKind::Sight`): a pair asked for in one tick is traced at
-that tick's end (`Vm::update`, after `on tick`, through
-`Game::trace_sight`) and answers from the next tick on, false until its
-first trace, and every kept pair is traced again at each tick's end. A
-pair is ordered, `sees(a, b)` from `a` to `b`, and not asked for in 30
-ticks (`SIGHT_KEEP`) is dropped. The table is in the state's bytes, so a
+**The physics events on the host.** The superbounce mode's medal chain
+(`superbounce_chain::Chain::step`, every listed player, bots included)
+says what it saw of each player's physics on each step
+(`Chain::physics`, `Medals::physics`): a touchdown, a landing judged a
+bounce with its launch, the end of a run. Each player gives at most one
+of each a tick, so 16 of each event: their cap. The mode's tick observer
+hands them to the runtime (`rules::feature::bounces`), which fires them
+in the chain's order, slot by slot, before the tick's `on bounce` and
+`on bounced` (`Runtime::physics`, `rules::world::physics::inputs`). The
+mode runs only for a script that requires `hud.superbounce`, so a
+script without it hears none of the three. A script keeps a chain on
+them as the Rust chain does: a launch while the run is live adds one,
+any other starts at 1, and `on grounded` ends the run. The Superbounce
+script does exactly that (`content/modes/rules/superbounce.rules`), and
+its scores and counts are checked against the Rust chain on every tick
+of every chain scenario (`superbounce_chain_twin.rs`, run by
+`superbounce_chain_tests.rs`).
+
+**The biped reads on the host.** `p.airborne`, `p.crouching` and
+`p.primed` read the medal chain's latest biped snapshot
+(`superbounce_chain::PlayerTick`, `Medals::bodies`). The mode hands
+the snapshot to the runtime on every step (`rules::feature::bounces`,
+`Runtime::bodies`), and the game answers from it
+(`rules::world::physics::read`). The reads return false until the first
+snapshot and for players without a unit in it. `p.crouching` also
+returns false for a depleted biped or a non-biped unit. The host
+refuses a script that uses any of these reads without
+`requires hud.superbounce` and names the read in its reason.
+
+`sees` reads a **sight table** in `RulesExt` (`vm::Sight`, at most 32
+ordered pairs, a 33rd is a script error, `ErrorKind::Sight`). The first
+request returns false. The host traces each kept pair at the next tick
+boundary, after queued engine calls and before that tick's handlers,
+so the first answer has a one-tick delay. A labelled placement needs
+a unique live object datum. The collision query uses the root objects'
+positions and ignores those two root bodies. Missing endpoints or failed
+queries return false. The fake traces at the end of `Vm::update`.
+The VM drops a pair after 30 ticks without a request (`SIGHT_KEEP`). The table is in the state's bytes, so a
 checkpoint, a film's keyframe and the sim hash carry it, and the round's
 end clears it. Firefight's `zone_seen` and
 `zone_distance` are this read and `distance`.
@@ -709,15 +803,16 @@ field by our schema's name; it sees no offset.
 ## Firefight and Superbounce as scripts
 
 [rules-world-modes.md](rules-world-modes.md) lists what each mode needs
-from this API, what of each is engine code today, and a sketch script
-for each. Firefight's generated director
-(`firefight::ScriptDirector`, `crates/formats/firefight/src/script.rs`)
-is what a hand-written `firefight.rules` must match, command for command
-over the director's own test scenarios, and the medal chain
-(`crates/extensions/game/src/superbounce_chain.rs`) is what a
-Superbounce script must match award for award. Engine code is deleted
-only when its script gives the same output over that code's own test
-scenarios, and until then both run in tests side by side.
+from this API. `content/modes/rules/firefight.rules` holds the Firefight
+director. `firefight::ScriptDirector` loads it with the selected wave
+set's tables and preserves the host's `Command` stream. The Superbounce script keeps
+the medal chain's count and scores on the host's physics events and
+matches the Rust chain (`crates/extensions/game/src/superbounce_chain.rs`)
+on every tick of its test scenarios ("Physics" above); the Rust chain
+still judges each landing against the scan's strips and feeds the HUD's
+medals and the records. Engine code is deleted only when its script
+gives the same output over that code's own test scenarios, and until
+then both run in tests side by side.
 
 ## Splitting a script
 
@@ -784,11 +879,11 @@ own target on top of the three common ones, as `rules.world_ns` at the
 |---|---|---|---|---|---|---|
 | W0 | Roles: `Authority`, `Replica`, `Viewer` | `game/rules/runtime.rs`, `game/rules/feature.rs`; the blob as a start condition in `game/rules/gate.rs` | over invented guest memory: a mode 3 peer keeps its VM and makes the host's calls; a mode 5 client makes none; a peer without the blob blocks the start by name | a script game scores the same on both machines of a synchronous session | the host runtime running in a game; R1 | a script Slayer game against the lifted one: the tick's 99th percentile within 0.1 ms |
 | W1 | Messages everywhere: cues (**built**) | `rules/show.rs` (`Cue`, the codec), `game/rules/world/show.rs`, `crates/live/actor-net/src/wire.rs` and `budget.rs` (`Cue`), `game/actor_net/host.rs`, `client.rs`; `message*` named | the codec round-trips and refuses each bad bound; a cue in three packets shows once; the budget drops the rest the same way twice; the fake logs each message with its audience | `message(all, "…")` from Siege shows on the host and on a Live guest | W0 | 8 cues every tick to 15 peers: 0.05 ms, and 600 bytes a second to each |
-| W2 (built but for the `Show` record, the digest, `mark`'s audience and the workbench's HUD strip) | Script HUD: show state, `hud` and `waypoint` declarations, sections | `rules/show.rs` (`State`, `view`), `lang/*` (the declarations, `section`), `ir.rs` (the header table), `ide/*` (outline, folding), `game/rules/world/hud.rs` (new, over `game/hud_kit.rs`), `wire.rs` (`Show`, the digest), the workbench's HUD strip in `web/src/stats/RulesTest.tsx` | a declared layout that overlaps is a compile error; `view` of the same bytes is the same on host and client at every tick of a fake match; a `Key` restores the state after loss | a script's wave counter and a waypoint draw on host and guest; Firefight's HUD view reads the show state | W1; the HUD kit's runtime drawing | 32 HUD writes every tick: 0.05 ms; `Show` at most 5 a second in `actors.net` |
+| W2 (built but for the workbench's HUD strip on the web, whose run route does not pass the trace's `hud` rows yet) | Script HUD: show state, `hud` and `waypoint` declarations, sections | `rules/show.rs` (`State`, `view`), `lang/*` (the declarations, `section`), `ir.rs` (the header table), `ide/*` (outline, folding), `game/rules/world/hud.rs` (new, over `game/hud_kit.rs`), `wire.rs` (`Show`, the digest), the workbench's HUD strip in `web/src/stats/RulesTest.tsx` | a declared layout that overlaps is a compile error; `view` of the same bytes is the same on host and client at every tick of a fake match; a `Key` restores the state after loss | a script's wave counter and a waypoint draw on host and guest; Firefight's HUD view reads the show state | W1; the HUD kit's runtime drawing | 32 HUD writes every tick: 0.05 ms; `Show` at most 5 a second in `actors.net` |
 | W3 (**built**, but a client's view of a host move waits on R2, R3 and R9) | Objects in motion: `vec`, position reads, `teleport`, movers, `on arrive` | `lang/types.rs`, `lang/check.rs`, `lang/lower.rs` (`vec`), `vm.rs` (movers in `RulesExt`), `game/rules/world/objects.rs` (new) | `vec` arithmetic and each type error; a mover reaches its end on the stated tick and survives a checkpoint revert; a teleport outside the world is a refused call; a film of a mover replays to the same `RulesExt` hash | Race with moving platforms and a teleporter pad plays on Live | W0; R2, R3 | 16 movers: 0.15 ms |
-| W4 (the rules half built on the fake, as `tests/world_physics.rs`; `push` and `launch` wait on R9; the host half and the script ports are not built) | Physics reads and pushes: `airborne`, `primed`, `on touchdown`, the sight table, `push`, `launch` | `vm.rs` (the sight table), `game/rules/world/physics.rs` (new), `game/superbounce_charge.rs` (the touchdown for every player), the `sb_strip` label source in `game/rules/census.rs`; `content/modes/rules/superbounce.rules`, `content/modes/rules/bounce_hunt.rules` | the sketch above scores the chain's recorded scenarios as `superbounce_chain_tests.rs` does; a `sees` pair answers one tick after it is asked and never from a handler; a push over the bound is a refused call | the Superbounce game type's chain and medals come from the script; `on bounce`, `on bounced` and the Rust chain are deleted only once the script gives the chain's awards on every scenario of its tests | W2, W3; R9 | 32 traces every tick: 0.25 ms |
+| W4 (the events built with their host half, and the Superbounce chain a script, checked by `superbounce_chain_twin.rs` on every chain scenario; `airborne`, `crouching` and `primed` read `Medals::bodies`, `sees` runs at the host boundary; `push` and `launch` wait on R9) | Physics reads, events and pushes: `airborne`, `crouching`, `primed`, `on touchdown`, `on launch`, `on grounded`, the sight table, `push`, `launch` | `vm.rs` (the sight table), `game/rules/world/physics.rs` (the events' inputs), `game/superbounce_chain.rs` (`Physics`, for every player), the `sb_strip` label source in `game/rules/census.rs`; `content/modes/rules/superbounce.rules`, `content/modes/rules/bounce_hunt.rules` | the Superbounce script scores and counts as the chain on every tick of `superbounce_chain_tests.rs`'s scenarios; a `sees` pair answers one tick after it is asked and never from a handler; a push over the bound is a refused call | the Superbounce game type's chain and scores come from the script; the Rust chain stays for what the script cannot do: judging a landing against the scan's strips, a fall through a strip's floor and the Bounced test, which need the map's geometry, and the HUD's medals, the film and Live's records, the ghosts and the Pogo Stick, which read its awards; `on bounce` stays for Bounce Hunt and Bounce Practice | W2, W3; R9 | 32 traces every tick: 0.25 ms |
 | W5 | Audio (**partly built**): `sound_to`, `sound_to_team`, `sound_to_all`, with the host finding a sound by the loaded map's tag index; `say`, `sound_at`, `music`, `announce` refused by name until R4 and R5 | `game/rules/world/audio.rs` (new), the `sound` and `line` types in `lang/*`, the tag table's sound group in `ir.rs` and `verify.rs` | a sound that is not in the map blocks the start by name; a `sound_to` cue reaches only its audience; the music slot starts a late machine at the right tick | a wave's stinger and an Elite's taunt play on every machine of a Live Firefight | W1; R4, R5 | 4 sounds every tick: 0.05 ms |
-| W6 | AI orders and the hand-written director: `go_to`, `hold`, `set_skull`, `firefight.rules` | `crates/tools/firefight-kit` (an order per zone), `game/actor_net/squads.rs`, `builtin/firefight.rules` (new), `crates/formats/firefight/src/script.rs` (fills tables) | every scenario of `crates/formats/firefight/tests` passes against the hand-written script; a squad sent to a zone gets that zone's order on the fake squad entry | Firefight runs from `firefight.rules`; the `ff_*` entries, `zone_seen`, `zone_distance` and `firefight.director` are deleted only once the script matches the generated director on every scenario | W2, W4, W5; Firefight's runs R1 to R4 | the script director with 24 actors: `rules.vm_ns` at most 0.4 ms, and the tick within 2% of the generated director's |
+| W6 (director built) | Handwritten director with the wave set as rules data. Generic AI orders and skull writes are planned. | `content/modes/rules/firefight.rules`, `crates/formats/firefight/src/script.rs` (wave-set module and command adapter) | `crates/formats/firefight/tests` covers the director's command stream, `crates/formats/rules/tests/firefight.rs` steps the source on a fake host | Firefight runs from `firefight.rules` through its host adapter. Generic replacement of the `ff_*` and zone entries depends on AI orders, skull writes and replicated HUD state. | W2, W4, W5 for generic host entries | at 24 actors, `rules.vm_ns` at most 0.4 ms |
 | W7 | Bot orders (**built**) | `crates/live/bots/src/brain.rs`, `decisions.rs` (an outside order as the goal), `pad_source.rs`, `lib.rs`, `phantom.rs` (delivery), `game/rules/world/bots.rs` (new) | a phantom with `bot_hold` plans to the zone on a nav fixture (`bots::mind::tests`); playback makes no order (`rules::runtime::tests`); an order changes no `RulesExt` byte (`rules::vm::tests`, `rules::runtime::tests`) | Clankers hold the zones a Firefight script sends them to | W0 | 16 orders every tick: 0.02 ms on the game thread |
 | W8 | Vehicles and drop ships: `vehicle`, `path`, `fly`, `seat`, `place_squad_in`, `unload` (built on the fake, with host hover and unload; see "Vehicles and drop ships") | `rules/labels.rs` (`path`), `game/rules/world/vehicles.rs`, the kit's stage 2 and its labelled ship and paths in `crates/tools/firefight-kit` | a `path` with a gap blocks the start; a ship flies a path in the stated ticks, facing its tangent; riders are placed and unloaded on the fake | a Firefight wave arrives by drop ship on a kit map | W3, W6; R6, R7, R8 | a drop ship with 8 riders in flight: 0.2 ms |
 | W9 | Advanced data: tag reads, squad state, `on damage`, squads by name | `game/rules/world/data.rs` (new), the field resolver over `tags::schema` | a field the schema lacks is a load error naming it; a tag read is the same on two fake machines | a boss wave's bar shows the boss's shield | W2 | 64 tag reads every tick: 0.02 ms |

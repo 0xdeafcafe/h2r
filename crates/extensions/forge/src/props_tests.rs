@@ -1,6 +1,6 @@
 //! `forge::props` and the session's field edits, removals and resets over
 //! the fake world and invented map of `base_tests`.
-use forge_doc::{Edit, Endpoint, EntryOp, FieldWrite, Forge, TagKey, Value};
+use forge_doc::{Edit, Endpoint, EntryOp, FieldWrite, Forge, Placement, TagKey, Value};
 
 use crate::base_tests::{Call, Fake, entry_ops, float, frame, open, rows, vec3, weapon};
 use crate::{BlockKind, Frame, Linkable, Teleporter, ThingKind, props};
@@ -473,4 +473,76 @@ fn a_spawners_team_is_a_property_op_that_touches_nothing_in_the_world() {
     );
     assert!(s.set_team(&mut w, 5, spawner, Some(8)).is_err());
     assert_eq!(s.document().ops.len(), 1);
+}
+
+#[test]
+fn duplicate_is_one_add_with_the_sources_tag_at_the_new_frame() {
+    let mut s = open(rows());
+    let mut w = Fake::default();
+    let at = frame(9., 1.5);
+    let copy = s.duplicate(&mut w, 1, weapon(0), at).unwrap();
+    let [op] = &s.document().ops[..] else {
+        panic!("one op")
+    };
+    let Edit::Placement(Placement::Add {
+        block,
+        like,
+        fields,
+    }) = &op.edit
+    else {
+        panic!("expected an add")
+    };
+    assert_eq!((*block, *like), (BlockKind::Weapons, None));
+    assert_eq!(
+        fields
+            .iter()
+            .map(|f| (f.field.as_str(), f.value.clone()))
+            .collect::<Vec<_>>(),
+        [
+            (
+                "palette index",
+                Value::Tag(Some(crate::base_tests::rifle()))
+            ),
+            ("position", vec3(at.position)),
+            ("rotation", vec3(at.rotation)),
+        ]
+    );
+    // The world makes the copy once, where the frame puts it.
+    assert_eq!(w.calls, [Call::Place(1, at)]);
+    assert_eq!(s.thing(Endpoint::Added(copy)).unwrap().frame, at);
+    // Undo takes the copy back, and the world deletes it.
+    s.undo(&mut w, 2).unwrap();
+    assert!(s.thing(Endpoint::Added(copy)).is_none());
+    assert_eq!(w.calls.last(), Some(&Call::Delete(1)));
+}
+
+#[test]
+fn duplicate_refuses_a_kind_the_session_cannot_add_and_a_full_budget() {
+    let mut s = open(rows());
+    let mut w = Fake::default();
+    let spawner = Endpoint::base(BlockKind::NetgameEquipment, 0);
+    assert_eq!(
+        s.duplicate(&mut w, 1, spawner, frame(1., 0.)).unwrap_err(),
+        "Duplicating an item spawner needs a kit session."
+    );
+    let goal = Endpoint::base(BlockKind::NetgameFlags, 1);
+    assert_eq!(
+        s.duplicate(&mut w, 2, goal, frame(1., 0.)).unwrap_err(),
+        "Duplicating a goal needs a kit session."
+    );
+    assert!(
+        w.calls.is_empty(),
+        "a refusal writes nothing: {:?}",
+        w.calls
+    );
+    // The session's object budget binds the adds: four objects fill it.
+    for tick in 3..7 {
+        s.place(&mut w, tick, 0, frame(tick as f32, 0.)).unwrap();
+    }
+    assert_eq!(
+        s.duplicate(&mut w, 7, weapon(0), frame(1., 0.))
+            .unwrap_err(),
+        "Objects are full (4)."
+    );
+    assert_eq!(w.calls.len(), 4);
 }

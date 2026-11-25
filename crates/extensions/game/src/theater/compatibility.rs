@@ -256,7 +256,10 @@ fn signature(sig: Sig) -> Vec<u8> {
     bytes
 }
 
-fn hook_digest(plan: &hooks::Plan, installed: &hooks::Installed) -> String {
+/// The film's simulation hooks: what a replay's installed plan must equal
+/// (`Session::check_simulation_hooks`). Features marked presentation-only,
+/// and features install turned off, are left out.
+pub fn hook_digest(plan: &hooks::Plan, installed: &hooks::Installed) -> String {
     let placed = installed.placed.iter().copied().collect::<BTreeSet<_>>();
     let presentation = plan.features.iter().filter(|f| f.presentation_only)
         .map(|f| f.id).collect::<BTreeSet<_>>();
@@ -638,6 +641,13 @@ mod tests {
                 .unwrap()
                 .contains(&json!(api::COMPAT))
         );
+        assert_eq!(call(api::EXIT, json!({}))["error"]["code"], code::UNAVAILABLE);
+        assert_eq!(call(api::STATE, json!({}))["result"]["active"], false);
+        let films = call(api::LIST, json!({}));
+        let rows = films["result"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().any(|row| row["id"] == "current" && row["saved"] == false));
+        assert_eq!(call(api::LIST, json!({"unknown": 1}))["error"]["code"], code::INVALID_PARAMS);
         let bad = call(api::COMPAT, json!({}));
         assert_eq!(bad["error"]["code"], code::INVALID_PARAMS);
 

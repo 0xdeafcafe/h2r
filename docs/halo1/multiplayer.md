@@ -42,7 +42,7 @@ disc/halo1.iso ─▶ <mp map>.map (cache v5, zlib)
    retail Halo 2 MP map (the base) + converted sbsp/ltmp, sky, placements
                     │  map::build (TagSet from the base)
                     ▼
-   <data>/maps/h1_<map>/{h2,h1}/h1_<map>.map + manifest.toml ─▶ content package
+   tag store levels h1_<map>_h1 and h1_<map>_h2 ─▶ guest content offer
 ```
 
 **The base.** Each converted map starts from a retail Halo 2 multiplayer
@@ -233,7 +233,7 @@ variants (**Built**)" below for how the choice is made at game start.
     stays in memory between games on the same map;
   - the write happens in guest memory only, and only when the target is
     a loaded tag of the item's group (`tag_get_checked`).
-- **The swap table** is read at boot from `<data>/maps/*/manifest.toml`
+- **The swap table** is read at boot from `<data>/tags/halo1-mp/*/manifest.toml`
   (the `h2` variant of each package), keyed by `base.map`. The hook is
   idle in the Halo 1 sandbox, which places Halo 1's assault rifle.
 
@@ -922,9 +922,11 @@ placements and what wasn't placed, then writes the package
 other sandbox adds its variant to the same manifest. `--dry-run` does
 everything but write and prints what it would write.
 
-**Package.** One package per converted map at `<data>/maps/h1_<map>/`,
-one `[[variant]]` per sandbox, each a whole map with its origin (the form
-the editor reads, `editor_core::packages::halo1_origins`):
+**Manifest.** The standalone export uses one `[[variant]]` per sandbox
+with a relative file name, hash and origin. The automatic import keeps
+that metadata under `<data>/tags/halo1-mp/h1_<map>/` and stores each
+sandbox's map as a separate level. The file names shown here describe
+the standalone export.
 
 ```toml
 [package]
@@ -1028,12 +1030,10 @@ the doc for a multiplayer option, and a switch in `h1_options::switch`.
 `boot::h1_variants` (`set_mp_sandbox`, set from the setting at boot and
 by the pregame screen's row). 1.0 opens a new map from its content
 package, `T:\$c\<offer>\h1_<map>.map` (map-pack.md "Loading"), which
-`boot::new_maps` writes once with the setting's variant. The install
-also registers, for each converted map, that path and both variant files
-(`new_maps::variant_pair`, `content_path`) in a `vfs::ContentVariants`
-table, and the data partition is mounted through `vfs::VariantFiles`
-over its host backend, which serves the registered path from the variant
-chosen when it is opened. Nothing is copied when the choice changes.
+`boot::new_maps` registers that path and both store entries in
+`vfs::ContentVariants`. `vfs::VariantFiles` serves the selected sandbox
+from the store when the file opens. A missing sandbox produces an error
+that names its level.
 
 - A file open keeps its variant until its last handle closes
   (`opened`, `closed`).
@@ -1254,13 +1254,11 @@ by `h2 import halo1`, and by `h2 play` itself when the disc is there:
    objects by default); the pregame screen changes it per game, from the
    map's next load.
 
-Each map is `<data>/maps/h1_<map>/` with `h2/h1_<map>.map`,
-`h1/h1_<map>.map` and one `manifest.toml` listing both, on the map's
-default base (`MAPS`), pinned. When it converts again, the stamp, the
-converter version to bump (`CONVERTER_VERSION`, `crates/apps/cli/src/h1_import.rs`),
-`--no-halo1` / `H2_HALO1=0` and the tests are in
-[campaign.md](campaign.md) §10. `h2 h1 convert` still converts one map
-by hand, into any `--out`.
+The importer stores each variant as `h1_<map>_h1` or `h1_<map>_h2`.
+The store writes a `<stem>.converted` marker for each completed variant.
+The import stamp, converter version, and `--no-halo1` and `H2_HALO1=0`
+controls are in [campaign.md](campaign.md) §10. `h2 h1 convert` exports
+one map to the directory chosen with `--out`.
 
 ## On the stats site and in the viewers (**Built**: `cli::live_halo1`)
 
@@ -1278,19 +1276,12 @@ changed.
 - **Row:** `multiplayer.halo1_sandbox`, a choice `halo1` (default) /
   `halo2`, one `settings::Def` in `boot::setting_defs`, on the Halo 1
   options screen from the Game Setup dialog ("Halo 1 options" above).
-- **Packaging:** each converted map is a new map in the sense of
-  [maps.md](../game/maps.md) §4: Halo 1's maps aren't on the Halo 2 disc, so
-  `boot::new_maps` installs each as a content package with its
-  `patch.lvl` record, and 1.0 lists it. One package per map holding both
-  variants, each a `[[variant]]` with its `origin` (above).
-- **Where the choice happens:** in `boot::new_maps`, which already writes
-  each new map's list record into its content directory at boot, for
-  the variant the setting names, through the resolver's variant
-  selection (above). The VFS serves the same variant: `boot` mounts the
-  package library with the same setting (`map_override::mount_with_hashes`),
-  and a rescan keeps it (`Library::reopen`). Opened without the
-  setting, the VFS would serve the default variant (Halo 1's) whichever
-  variant the menu listed.
+- **Packaging:** `boot::new_maps` checks the store marker against the
+  variant hash and registers one content offer per map with a
+  `patch.lvl` record for 1.0.
+- **Where the choice happens:** the setting selects a sandbox at boot.
+  The pregame screen can change it, and the VFS applies the choice on
+  the map's next open.
 - **Names (decided):** converted maps are `h1_<map>` (`h1_beavercreek`:
   Halo 2 has its own `beavercreek`), with Halo 1's display name in the
   list.

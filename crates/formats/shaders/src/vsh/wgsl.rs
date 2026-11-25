@@ -61,13 +61,15 @@ pub enum InputFetch {
     NormPacked3,
     /// `FLOAT2H` as three floats `(x, y, w)`: `(x, y, 0, w)`.
     Float2H,
+    /// Guest window coordinates used as a texture input by a projected sprite.
+    WindowFloat,
 }
 
 impl InputFetch {
     /// The WGSL type of the entry-point parameter.
     fn wgsl_type(self) -> &'static str {
         match self {
-            Self::Float | Self::Xyz1 | Self::Float2H => "vec4f",
+            Self::WindowFloat | Self::Float | Self::Xyz1 | Self::Float2H => "vec4f",
             Self::Int | Self::IntXyz1 => "vec4i",
             Self::NormPacked3 => "u32",
         }
@@ -77,6 +79,7 @@ impl InputFetch {
     fn wgsl_value(self, v: &str) -> String {
         match self {
             Self::Float => v.to_string(),
+            Self::WindowFloat => format!("vec4f({v}.xy * xvs.ui_transform.xy + xvs.ui_transform.zw, {v}.zw)"),
             Self::Xyz1 => format!("vec4f({v}.xyz, 1.0)"),
             Self::Int => format!("vec4f({v})"),
             Self::IntXyz1 => format!("vec4f(vec3f({v}.xyz), 1.0)"),

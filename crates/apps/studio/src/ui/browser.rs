@@ -3,16 +3,23 @@
 //! (`app::assets`). Three roots: **Tags** (every tag of the tags tree by
 //! path, with the variants of a tag that maps hold differently), **Packages**
 //! (the set, and a package's items) and **Live**. **Kind** and **Map**
-//! narrow the Tags root, and every word of the search must match.
+//! narrow the Tags root, and **Kind** narrows a package's items (**Game
+//! types**, **Playlists** beside the tag kinds); every word of the
+//! search must match.
+//!
+//! The **Voices** kind lists each character and the announcer with its
+//! dataset state; a double-click opens the voice document
+//! ([`Action::OpenAsset`] on `voice:<id>`).
 //!
 //! A double-click on a tag opens it in the editor its group gets, on the
-//! map that holds it ([`Action::OpenAsset`]); right-click offers **Open**
-//! and **Copy into package**, the call `asset.copy` makes
-//! ([`Action::CopyAsset`]).
+//! map that holds it ([`Action::OpenAsset`]). A double-click on a package
+//! item opens the editor of what it builds, using the item's map when
+//! specified. Right-click offers **Open** and, for an existing tag,
+//! **New from this...**, the window form of `asset.copy`.
 use dear_imgui_rs::{ListClipper, MouseButton, Ui};
 use serde_json::Value;
 
-use crate::app::assets::{self, Query, Root};
+use crate::app::assets::{self, CreateAsset, Query, Root};
 use crate::app::{Action, App};
 use crate::theme::{self, icon};
 
@@ -29,7 +36,9 @@ struct Key {
     query: String,
     /// The tree may have appeared or grown with the first start page.
     start_page: bool,
+    package_revision: u64,
     refresh: u32,
+    source_revision: usize,
 }
 
 /// One answer of `asset.list`, kept until its key changes.
@@ -42,12 +51,11 @@ struct Listing {
     kinds: Vec<String>,
     offline: bool,
     error: Option<String>,
-    /// The local packages a tag can be copied into: id and name.
-    locals: Vec<(String, String)>,
 }
 
 /// The panel's UI-only state.
 pub struct BrowserUi {
+    create: Option<CreateAsset>,
     root: Root,
     /// The search box.
     pub query: String,
@@ -61,13 +69,18 @@ pub struct BrowserUi {
     selected: Option<String>,
     refresh: u32,
     cache: Option<(Key, Listing)>,
+    /// An explicit set from the document link menu.
+    linked: Option<Vec<String>>,
     /// The asset ids the last frame drew a row for, for scripts and tests.
     pub shown: Vec<String>,
+    new_package_name: String,
+    pub(super) add_item: super::package::AddItem,
 }
 
 impl Default for BrowserUi {
     fn default() -> Self {
         Self {
+            create: None,
             root: Root::Tags,
             query: String::new(),
             kind: None,
@@ -76,7 +89,10 @@ impl Default for BrowserUi {
             selected: None,
             refresh: 0,
             cache: None,
+            linked: None,
             shown: Vec::new(),
+            new_package_name: String::new(),
+            add_item: Default::default(),
         }
     }
 }
@@ -96,13 +112,19 @@ fn load(app: &App, st: &BrowserUi) -> Listing {
     let q = Query {
         root: st.root,
         package: (st.root == Root::Packages).then(|| st.package.clone()).flatten(),
-        kind: st.kind.clone().filter(|_| tags),
+        kind: st.kind.clone(),
         map: st.map.clone().filter(|_| tags),
         text: st.query.clone(),
         limit: LIMIT,
     };
     let mut out = Listing::default();
-    match assets::list(&app.tags_root(), &set, &q) {
+    // The Voices kind lists voices, read from the data root.
+    let listed = if tags && assets::is_voices_kind(q.kind.as_deref()) {
+        Ok(app.voice_asset_list(&q.text, q.limit))
+    } else {
+        assets::list(&app.tags_root(), &set, &q)
+    };
+    match listed {
         Ok(v) => {
             out.rows = v["rows"].as_array().cloned().unwrap_or_default();
             out.total = v["total"].as_u64().unwrap_or(0) as usize;
@@ -118,12 +140,6 @@ fn load(app: &App, st: &BrowserUi) -> Listing {
         }
         Err(e) => out.error = Some(e),
     }
-    out.locals = set
-        .listed
-        .iter()
-        .filter(|l| l.dir.is_some())
-        .map(|l| (l.id.clone(), l.name.clone()))
-        .collect();
     out
 }
 
@@ -159,6 +175,39 @@ fn open(actions: &mut Vec<Action>, asset: &str, map: Option<String>) {
 }
 
 impl BrowserUi {
+    /// Show an asset's row in the Browser.
+    pub fn locate(&mut self, asset: &str) {
+        self.linked = None;
+        self.query.clear();
+        self.kind = None;
+        self.map = None;
+        self.package = None;
+        self.selected = Some(asset.to_owned());
+        match assets::AssetId::parse(asset) {
+            Ok(assets::AssetId::Tag(key)) => {
+                self.root = Root::Tags;
+                self.query = key.path;
+            }
+            Ok(assets::AssetId::Package(_)) => self.root = Root::Packages,
+            Ok(assets::AssetId::Item(package, _)) => {
+                self.root = Root::Packages;
+                self.package = Some(package);
+            }
+            Ok(assets::AssetId::Voice(_)) => self.root = Root::Tags,
+            Err(_) => self.selected = None,
+        }
+    }
+
+    /// Show exactly the targets of a link section, across Browser roots.
+    pub fn show_links(&mut self, rows: &[crate::app::links::Link]) {
+        let mut ids: Vec<String> = rows.iter().map(|row| row.asset.clone()).collect();
+        ids.sort();
+        ids.dedup();
+        self.linked = Some(ids);
+        self.query.clear();
+        self.selected = None;
+    }
+
     /// Show a package or one of its items, as a Problems row opens it.
     pub fn reveal(&mut self, asset: &str) {
         let package = asset
@@ -186,6 +235,7 @@ pub fn draw(ui: &Ui, app: &App, st: &mut BrowserUi, actions: &mut Vec<Action>) {
             .build()
         {
             st.root = root;
+            st.linked = None;
         }
     }
     ui.same_line();
@@ -196,6 +246,32 @@ pub fn draw(ui: &Ui, app: &App, st: &mut BrowserUi, actions: &mut Vec<Action>) {
         ui.tooltip_text("Read the tree and the packages again");
     }
 
+    if st.linked.is_some() {
+        ui.text("Linked assets");
+        ui.same_line();
+        if ui.small_button("Clear##browser-linked") { st.linked = None; }
+        if let Some(ids) = st.linked.clone() {
+            ui.set_next_item_width(-1.0);
+            ui.input_text("##browser-linked-search", &mut st.query).hint("Search linked assets").build();
+            let words = st.query.to_lowercase();
+            theme::panel_body(ui, "##browser-rows", || {
+                for id in ids.iter().filter(|id| words.split_whitespace().all(|w| id.to_lowercase().contains(w))) {
+                    st.shown.push(id.clone());
+                    if ui.selectable_config(format!("{id}##browser-link-{id}"))
+                        .selected(st.selected.as_deref() == Some(id.as_str())).build() {
+                        st.selected = Some(id.clone());
+                    }
+                    if ui.is_item_hovered() && ui.is_mouse_double_clicked(MouseButton::Left) {
+                        open(actions, id, None);
+                    }
+                }
+            });
+            return;
+        }
+    }
+    if st.root == Root::Packages {
+        super::package::new_package(ui, &mut st.new_package_name, actions);
+    }
     let key = Key {
         root: root_id(st.root),
         package: st.package.clone(),
@@ -203,7 +279,9 @@ pub fn draw(ui: &Ui, app: &App, st: &mut BrowserUi, actions: &mut Vec<Action>) {
         map: st.map.clone(),
         query: st.query.clone(),
         start_page: app.workspace_start_page(),
+        package_revision: app.package_document.revision,
         refresh: st.refresh,
+        source_revision: app.source_asset_revision(),
     };
     let (key, list) = match st.cache.take() {
         Some((k, l)) if k == key => (k, l),
@@ -255,6 +333,11 @@ fn pickers(ui: &Ui, st: &mut BrowserUi, list: &Listing) {
             combo(ui, "map", "Any map", &mut st.map, &list.maps);
         }
         Root::Packages => {
+            // The Kind picker names the items too: **Game types**,
+            // **Playlists** beside the tag kinds (`app::assets`).
+            if st.package.is_none() {
+                combo(ui, "kind", "Any kind", &mut st.kind, &list.kinds);
+            }
             if let Some(p) = st.package.clone() {
                 ui.align_text_to_frame_padding();
                 ui.text(format!("{} {p}", icon::PACKAGE_OPEN));
@@ -262,6 +345,8 @@ fn pickers(ui: &Ui, st: &mut BrowserUi, list: &Listing) {
                 if ui.small_button("All packages##browser-package-back") {
                     st.package = None;
                 }
+                ui.same_line();
+                combo(ui, "kind", "Any kind", &mut st.kind, &list.kinds);
             }
         }
         Root::Live => {}
@@ -301,11 +386,43 @@ fn body(ui: &Ui, app: &App, st: &mut BrowserUi, list: &Listing, actions: &mut Ve
     theme::panel_body(ui, "##browser-rows", || {
         for l in ListClipper::new(lines.len()).begin(ui).iter() {
             match lines[l] {
-                Line::Row(i) => row(ui, app, st, list, &list.rows[i], actions),
+                Line::Row(i) => {
+                    let entry = &list.rows[i];
+                    if let Some(asset) = entry["asset"].as_str().filter(|asset| asset.starts_with("package:"))
+                        && entry["root"] == "packages"
+                    {
+                        package_row(ui, st, entry, asset, actions);
+                    } else {
+                        row(ui, app, st, entry, actions);
+                    }
+                }
                 Line::Variant(i, v) => variant(ui, app, st, &list.rows[i], v, actions),
             }
         }
     });
+}
+
+fn package_row(ui: &Ui, st: &mut BrowserUi, entry: &Value, asset: &str, actions: &mut Vec<Action>) {
+    st.shown.push(asset.to_owned());
+    if ui.selectable_config(format!("{}##browser-{asset}", label(entry)))
+        .selected(st.selected.as_deref() == Some(asset)).build()
+    {
+        st.selected = Some(asset.to_owned());
+    }
+    if ui.is_item_hovered() {
+        tooltip(ui, entry);
+        if ui.is_mouse_double_clicked(MouseButton::Left) {
+            open(actions, asset, None);
+        }
+    }
+    if let Some(_menu) = ui.begin_popup_context_item() {
+        if ui.menu_item("Open") {
+            open(actions, asset, None);
+        }
+        if ui.menu_item("Show items in Browser") {
+            st.package = entry["id"].as_str().map(str::to_owned);
+        }
+    }
 }
 
 fn glyph(row: &Value) -> &'static str {
@@ -314,7 +431,9 @@ fn glyph(row: &Value) -> &'static str {
         "Package" => icon::PACKAGE,
         "Models" | "Objects" => icon::BOX,
         "Screens" | "HUDs" => icon::LAYERS,
-        "Sounds" => icon::SOUND,
+        "Sounds" | "Voices" => icon::SOUND,
+        "Game types" => icon::SWORDS,
+        "Playlists" => icon::LOG,
         _ => icon::FILE,
     }
 }
@@ -348,7 +467,6 @@ fn row(
     ui: &Ui,
     app: &App,
     st: &mut BrowserUi,
-    list: &Listing,
     row: &Value,
     actions: &mut Vec<Action>,
 ) {
@@ -368,23 +486,45 @@ fn row(
         tooltip(ui, row);
         if ui.is_mouse_double_clicked(MouseButton::Left) {
             if tag {
-                open(actions, asset, open_map(app, row));
-            } else if row["root"] == "packages" && asset.starts_with("package:") {
-                st.package = row["id"].as_str().map(str::to_owned);
-                st.selected = None;
+                open(actions, asset, if row["new"] == true { None } else { open_map(app, row) });
+            } else if asset.starts_with("item:") {
+                open(actions, asset, item_map(app, row));
+            } else if row["root"] == "voices" {
+                open(actions, asset, None);
             }
         }
     }
     if let Some(_menu) = ui.begin_popup_context_item() {
         if tag {
             if ui.menu_item(format!("{} Open", icon::FILE)) {
-                open(actions, asset, open_map(app, row));
+                open(actions, asset, if row["new"] == true { None } else { open_map(app, row) });
             }
-            copy_menu(ui, list, asset, actions);
-        } else if asset.starts_with("package:") && ui.menu_item("Open items") {
-            st.package = row["id"].as_str().map(str::to_owned);
+            if row["new"] != true && ui.menu_item("New from this...") {
+                st.new_from(asset);
+            }
+        } else if asset.starts_with("item:") {
+            if ui.menu_item(format!("{} Open", icon::FILE)) {
+                open(actions, asset, item_map(app, row));
+            }
+        } else if row["root"] == "voices" {
+            if ui.menu_item(format!("{} Open", icon::SOUND)) {
+                open(actions, asset, None);
+            }
         }
     }
+}
+
+/// The map an item row opens on: the item's own map names (the open one
+/// first), none when its `maps` is a scope word.
+fn item_map(app: &App, row: &Value) -> Option<String> {
+    let maps: Vec<&str> = row["maps"]
+        .as_array()
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    if maps.is_empty() {
+        return None;
+    }
+    open_map_of(app, &maps)
 }
 
 fn tooltip(ui: &Ui, row: &Value) {
@@ -398,23 +538,6 @@ fn tooltip(ui: &Ui, row: &Value) {
             ui.text_disabled(why);
         }
     });
-}
-
-/// **Copy into package**: one entry per local package.
-fn copy_menu(ui: &Ui, list: &Listing, asset: &str, actions: &mut Vec<Action>) {
-    let any = !list.locals.is_empty();
-    if let Some(_m) = ui.begin_menu_with_enabled(format!("{} Copy into package...", icon::COPY), any) {
-        for (id, name) in &list.locals {
-            if ui.menu_item(format!("{name}##browser-copy-{id}")) {
-                actions.push(Action::CopyAsset {
-                    asset: asset.to_owned(),
-                    package: id.clone(),
-                });
-            }
-        }
-    } else if !any && ui.is_item_hovered() {
-        ui.tooltip_text("No package of yours is on: make one under <data>/packages/");
-    }
 }
 
 /// One variant of a tag: the maps that hold it. A double-click opens the
@@ -442,4 +565,130 @@ fn variant(ui: &Ui, app: &App, st: &mut BrowserUi, row: &Value, n: usize, action
         open(actions, asset, open_map_of(app, &maps));
     }
     ui.unindent();
+}
+
+#[cfg(test)]
+mod linked_tests {
+    use super::*;
+    use crate::app::links::Link;
+
+    #[test]
+    fn linked_assets_keep_all_roots_and_can_return_to_a_single_asset() {
+        let mut browser = BrowserUi::default();
+        let rows = [
+            Link { asset: "tag:weap:objects\\test".into(), role: "Objects", via: "test".into() },
+            Link { asset: "package:example".into(), role: "Package", via: "test".into() },
+            Link { asset: "tag:weap:objects\\test".into(), role: "Objects", via: "other".into() },
+        ];
+        browser.show_links(&rows);
+        assert_eq!(browser.linked.as_ref().unwrap().len(), 2);
+        assert!(browser.linked.as_ref().unwrap().contains(&"package:example".to_owned()));
+        browser.locate("tag:weap:objects\\test");
+        assert!(browser.linked.is_none());
+        assert_eq!(browser.query, "objects\\test");
+    }
+}
+
+impl BrowserUi {
+    pub(super) fn new_from(&mut self, asset: &str) {
+        if let Ok(assets::AssetId::Tag(key)) = assets::AssetId::parse(asset) {
+            self.create = Some(CreateAsset::Copy {
+                asset: asset.to_owned(),
+                to: Some(format!("{}_copy", key.path)),
+            });
+        }
+    }
+
+    pub(super) fn import_buttons(&mut self, ui: &Ui, dialogs: bool) {
+        let _disabled = ui.begin_disabled_with_cond(!dialogs);
+        if ui.small_button("Import sound...")
+            && let Some(file) = rfd::FileDialog::new().add_filter("WAV", &["wav"]).pick_file()
+        {
+            let name = import_name(&file, "sound");
+            self.create = Some(CreateAsset::Sound {
+                file, tag: format!("sounds\\{name}"), class: None,
+            });
+        }
+        ui.same_line();
+        if ui.small_button("Add model...")
+            && let Some(file) = rfd::FileDialog::new().add_filter("Model YAML", &["yaml", "yml"]).pick_file()
+        {
+            let name = import_name(&file, "model");
+            self.create = Some(CreateAsset::Model { file, tag: format!("models\\{name}\\model") });
+        }
+    }
+
+    pub(super) fn create_modal(&mut self, ui: &Ui, actions: &mut Vec<Action>) {
+        const POPUP: &str = "New asset";
+        let Some(mut request) = self.create.take() else { return };
+        if !ui.is_popup_open(POPUP) {
+            ui.open_popup(POPUP);
+        }
+        let Some(_popup) = ui.begin_modal_popup_config(POPUP)
+            .flags(dear_imgui_rs::WindowFlags::ALWAYS_AUTO_RESIZE).begin()
+        else {
+            self.create = Some(request);
+            return;
+        };
+        let (tag, button) = match &mut request {
+            CreateAsset::Copy { to, .. } => (to.get_or_insert_with(String::new), "Create copy"),
+            CreateAsset::Sound { tag, .. } => (tag, "Import sound"),
+            CreateAsset::Model { tag, .. } => (tag, "Add model"),
+        };
+        ui.set_next_item_width(360.0);
+        ui.input_text("Tag path", tag).build();
+        let disabled = ui.begin_disabled_with_cond(tag.trim().is_empty());
+        let submit = ui.button(button);
+        drop(disabled);
+        ui.same_line();
+        if submit {
+            actions.push(Action::CreateAsset(request));
+            ui.close_current_popup();
+        } else if ui.button("Cancel") || ui.is_key_pressed(dear_imgui_rs::Key::Escape) {
+            ui.close_current_popup();
+        } else {
+            self.create = Some(request);
+        }
+    }
+}
+
+fn import_name(file: &std::path::Path, fallback: &str) -> String {
+    let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or(fallback);
+    crate::app::edit_target::slug_of(stem)
+}
+
+pub(super) fn source_view(ui: &Ui, app: &mut App, doc: crate::app::Doc) {
+    use assets::SourceView;
+    let Some(source) = app.source_asset(doc) else { return };
+    match &source.view {
+        SourceView::Tag(yaml) => ui.text_wrapped(yaml),
+        SourceView::Sound { .. } => super::sound::source(ui, app, doc),
+        SourceView::Model(mesh) => model_view(ui, mesh),
+    }
+}
+
+fn model_view(ui: &Ui, mesh: &pogo_kit::mesh::Mesh) {
+    if mesh.triangles() == 0 {
+        ui.text_disabled("This model has no triangles");
+        return;
+    }
+    let [left, top] = ui.cursor_screen_pos();
+    let [width, height] = ui.content_region_avail().map(|v| v.max(1.0));
+    ui.dummy([width, height]);
+    let (lo, hi) = mesh.bounds();
+    let extent = (0..3).map(|i| hi[i] - lo[i]).fold(f32::EPSILON, f32::max);
+    let scale = width.min(height) * 0.42 / extent;
+    let project = |position: [f32; 3]| {
+        let [x, y, z] = std::array::from_fn(|i| position[i] - (lo[i] + hi[i]) * 0.5);
+        [left + width * 0.5 + (x - y) * scale, top + height * 0.5 - (z + (x + y) * 0.4) * scale]
+    };
+    let draw = ui.get_window_draw_list();
+    for part in &mesh.parts {
+        for &triangle in &part.triangles {
+            let [a, b, c] = triangle.map(|i| project(part.vertices[usize::from(i)].position));
+            for (from, to) in [(a, b), (b, c), (c, a)] {
+                draw.add_line(from, to, theme::ACCENT).build();
+            }
+        }
+    }
 }

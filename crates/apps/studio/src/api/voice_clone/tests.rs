@@ -712,3 +712,224 @@ fn a_failing_model_fails_its_rows_and_the_done_ones_are_saved_together() {
     assert_eq!(r["counts"]["failed"], 2, "{r}");
     assert!(r["rows"][1]["why"].as_str().unwrap().contains("out of memory"));
 }
+
+#[test]
+fn a_done_voice_line_saves_and_updates_only_its_package_item() {
+    use content::package::Kind;
+    use crate::app::{Action, EditChoice};
+
+    let t = Temp::new("batch-package-save");
+    let mut app = test_app(&t);
+    let mut api = Api::new();
+    test_setup(&mut app, true, true);
+    let said = call(&mut api, &mut app, m::VOICE_SAY_BATCH, json!({
+        "rows": [{"text": "Invented line.", "character": "cortana", "clip": "invented-line"}],
+        "wait": true,
+    }));
+    let id = said["rows"][0]["id"].as_u64().unwrap();
+    assert_eq!(
+        api.call(&mut app, m::VOICE_BATCH_SAVE, json!({"ids": [id]})).unwrap_err().code,
+        code::NO_TARGET
+    );
+    let data = app.data_root();
+    let source = std::path::PathBuf::from(said["rows"][0]["file"].as_str().unwrap());
+    let original = std::fs::read(&source).unwrap();
+    app.dispatch(Action::SaveVoiceLines(vec![id]));
+    assert!(app.edits.picker.is_some());
+    app.dispatch(Action::ChooseEditTarget(EditChoice::New("My Lines".into())));
+    let saved = call(&mut api, &mut app, m::VOICE_BATCH_SAVE, json!({"ids": [id]}));
+    assert_eq!(saved["saved"], 1, "{saved}");
+    let dir = data.join("packages/my-lines");
+    let loaded = ::workspace::Loaded::from_dir(&dir).unwrap();
+    let [item] = loaded.package.manifest.items.as_slice() else {
+        panic!("expected one sound item");
+    };
+    assert_eq!(item.kind, Kind::Sound);
+    assert_eq!(item.source.as_deref(), Some("sounds/invented-line.wav"));
+    assert_eq!(loaded.files[item.source.as_ref().unwrap()], original);
+    assert_eq!(std::fs::read(source).unwrap(), original);
+    assert!(!t.0.join("art/announcer/invented-line.wav").exists());
+}
+
+#[test]
+fn the_window_will_not_say_a_line_with_no_output_name_and_no_game_line() {
+    use crate::app::voice_batch::Batch;
+    let mut b = Batch::default();
+    b.default_character = "cortana".into();
+    let bare = b.add("Hold on, Chief.", None, "");
+    let named = b.add("Wake up.", None, "cortana-wake");
+    let aimed = b.add("Bounce.", None, "");
+    let none = b.add("", None, "x");
+    b.rows[2].tag = Some(r"sound\dialog\combat\cortana\bounce".into());
+    let why = |b: &Batch, id| b.blocked(b.row(id).unwrap());
+    assert!(why(&b, bare).unwrap().contains("output name"), "{:?}", why(&b, bare));
+    assert!(why(&b, bare).unwrap().contains("game line"));
+    assert_eq!(why(&b, named), None);
+    // A game line to replace is as good as a name.
+    assert_eq!(why(&b, aimed), None);
+    // A problem of the line's own comes first.
+    assert_eq!(why(&b, none).as_deref(), Some("no text"));
+    // The API's own queue does not ask for a name: bare queues with
+    // named and aimed, and only the row with no text fails.
+    assert_eq!(b.queue(None), 3);
+}
+
+// ---------- Voices as documents (docs/editor/studio-flow.md, FL5) ----------
+
+/// A dialogue sound the invented cortana rules pick.
+const CORTANA_LINE: &str = r"sound\dialog\levels\test_level\mission\l01_0010_cor";
+const JOHNSON_LINE: &str = r"sound\dialog\levels\test_level\mission\l01_0060_jon";
+
+#[test]
+fn the_voices_kind_lists_every_character_with_its_dataset_state() {
+    let t = Temp::new("voices-kind");
+    let mut app = test_app(&t);
+    let mut api = Api::new();
+    test_setup(&mut app, true, true);
+    let r = call(&mut api, &mut app, m::ASSET_LIST, json!({"kind": "Voices"}));
+    let rows = r["rows"].as_array().unwrap();
+    // Every character of the table, then the announcer.
+    assert_eq!(rows.len(), dataset::CHARACTERS.len() + 1, "{r}");
+    assert!(r["kinds"].as_array().unwrap().iter().any(|k| k == "Voices"));
+    let of = |id: &str| {
+        rows.iter()
+            .find(|x| x["asset"] == format!("voice:{id}"))
+            .cloned()
+            .unwrap_or_else(|| panic!("no row for {id}: {r}"))
+    };
+    // Cortana's dataset is built; Johnson's is not.
+    assert_eq!(of("cortana")["state"], "dataset");
+    assert!(of("cortana")["minutes"].as_f64().unwrap() > 0.0);
+    assert_eq!(of("cortana")["built"], true);
+    assert_eq!(of("johnson")["state"], "no dataset");
+    assert_eq!(of("johnson")["built"], false);
+    assert_eq!(of("announcer")["state"], "announcer");
+    // Words narrow it as the Browser's search does.
+    let one = call(
+        &mut api,
+        &mut app,
+        m::ASSET_LIST,
+        json!({"kind": "voices", "query": "johnson"}),
+    );
+    assert_eq!(one["total"], 1, "{one}");
+    assert_eq!(one["rows"][0]["asset"], "voice:johnson");
+}
+
+#[test]
+fn a_voice_with_no_dataset_opens_on_setup_and_a_built_one_on_lines() {
+    use crate::app::Doc;
+    use crate::app::voices::Pane;
+
+    let t = Temp::new("voices-doc");
+    let mut app = test_app(&t);
+    let mut api = Api::new();
+    test_setup(&mut app, true, true);
+
+    let r = call(&mut api, &mut app, m::SHELL_OPEN, json!({"asset": "voice:johnson"}));
+    assert_eq!(r["front"], "voice:johnson", "{r}");
+    assert_eq!(r["tab"]["kind"], "voice");
+    assert_eq!(r["tab"]["title"], "Sergeant Johnson");
+    assert_eq!(app.front_doc(), Some(Doc::Voice));
+    assert_eq!(app.voices.pane, Pane::Setup);
+
+    // One tab: opening another voice shows it there, on its own pane, with
+    // that voice the batch's default.
+    let r = call(&mut api, &mut app, m::SHELL_OPEN, json!({"asset": "voice:cortana"}));
+    assert_eq!(r["front"], "voice:cortana", "{r}");
+    assert_eq!(app.voices.pane, Pane::Lines);
+    assert_eq!(app.voices.batch.default_character, "cortana");
+    let tabs = call(&mut api, &mut app, m::SHELL_TABS, json!({}));
+    let voices: Vec<&Value> = tabs["tabs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|tab| tab["kind"] == "voice")
+        .collect();
+    assert_eq!(voices.len(), 1, "{tabs}");
+
+    // The announcer has no setup to do.
+    call(&mut api, &mut app, m::SHELL_OPEN, json!({"asset": "voice:announcer"}));
+    assert_eq!(app.voices.pane, Pane::Lines);
+
+    // Closing the tab keeps the batch; an unknown voice is refused.
+    let r = call(&mut api, &mut app, m::SHELL_CLOSE, json!({"doc": "voice:announcer"}));
+    assert_eq!(r["closed"], true, "{r}");
+    assert_eq!(app.voices.doc, None);
+    let e = fails(api.call(&mut app, m::SHELL_OPEN, json!({"asset": "voice:nobody"})));
+    assert_eq!(e.code, code::REFUSED, "{}", e.message);
+    assert_eq!(app.voices.doc, None);
+}
+
+#[test]
+fn a_line_said_from_a_sounds_pane_is_a_row_whose_target_is_that_sound() {
+    use crate::app::audition::Clip;
+    use crate::app::voice_batch::{RowState, axis_columns};
+
+    let t = Temp::new("voices-sound-line");
+    let mut app = test_app(&t);
+    let mut api = Api::new();
+    let fake = test_setup(&mut app, true, true);
+
+    // **New line** on a sound whose path the cortana rules pick: the row
+    // is said by her, and one press again is the same row.
+    let id = app.sound_new_line(CORTANA_LINE);
+    assert_eq!(app.sound_new_line(CORTANA_LINE), id);
+    {
+        let row = app.voices.batch.row(id).unwrap();
+        assert_eq!(row.tag.as_deref(), Some(CORTANA_LINE));
+        assert_eq!(row.character.as_deref(), Some("cortana"));
+        assert_eq!(row.state, RowState::Idle);
+    }
+    // Typed and said, as the pane's **Say** does.
+    app.voices.batch.rows[0].text = "Hold on, Chief.".into();
+    assert_eq!(app.voices.batch.queue(Some(&[id])), 1);
+    app.voice_batch_run();
+    assert_eq!(fake.calls_of("say").len(), 1);
+
+    let lines = app.sound_lines(CORTANA_LINE);
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].state, RowState::Done, "{:?}", lines[0].state);
+    let said = lines[0].said.as_ref().expect("the line was said");
+    let ms = said.levels.duration_ms;
+    assert!(ms > 0);
+
+    // The levels draw under the original's, on its axis: a sound as long
+    // as the line fills the pane, a sound twice as long half of it, and a
+    // longer line is cut where the axis ends.
+    assert_eq!(axis_columns(ms, ms, 400), 400);
+    assert_eq!(axis_columns(ms * 2, ms, 400), 200);
+    assert_eq!(axis_columns(ms / 2, ms, 400), 400);
+    assert_eq!(axis_columns(0, ms, 400), 0);
+    let clip = Clip {
+        rate: said.levels.rate,
+        channels: 1,
+        pcm: said.pcm.clone(),
+    };
+    assert_eq!(clip.peaks(axis_columns(ms * 2, ms, 400)).len(), 200);
+
+    // The voice's links name the sound its line replaces.
+    let v = call(&mut api, &mut app, m::ASSET_LINKS, json!({"asset": "voice:cortana"}));
+    let uses = v["uses"].as_array().unwrap();
+    assert!(
+        uses.iter().any(|l| l["asset"] == format!("tag:snd!:{CORTANA_LINE}")
+            && l["role"] == "Sounds"
+            && l["via"] == "line 1"),
+        "{v}"
+    );
+    assert_eq!(v["editors"][0]["id"], "voices");
+
+    // A voice with no dataset says why on its row, and its pane links to
+    // its Setup (`voice:johnson`).
+    let jon = app.sound_new_line(JOHNSON_LINE);
+    app.voices.batch.rows.iter_mut().find(|r| r.id == jon).unwrap().text = "Wake up.".into();
+    app.voices.batch.queue(Some(&[jon]));
+    app.voice_batch_run();
+    let row = app.voices.batch.row(jon).unwrap();
+    assert_eq!(row.character.as_deref(), Some("johnson"));
+    assert!(
+        matches!(&row.state, RowState::Failed(w) if w.contains("dataset")),
+        "{:?}",
+        row.state
+    );
+    assert!(app.voice_status("johnson").unwrap().needs_setup());
+}

@@ -11,6 +11,10 @@ use crate::wire::{
 
 pub const TICKS_PER_SECOND: u32 = 30;
 pub const BYTES_PER_SECOND: usize = 1_000;
+/// The most `Show` records a second, without a key
+/// (docs/game/rules-world-api.md, "The show channel": coalesced to the
+/// last state, at most 5 a second).
+pub const SHOWS_PER_SECOND: usize = 5;
 /// Room for a key, state, digest and several updates per actor in one host tick.
 pub const MAX_CANDIDATES: usize = 256;
 /// Copies a line or a cue is repeated in: this packet and the next two.
@@ -96,6 +100,8 @@ pub struct Stats {
     pub digests: u64,
     /// Records sent, repeated copies of lines and cues included.
     pub records: u64,
+    /// `Show` records among them.
+    pub shows: u64,
     /// Offered records that missed admission and were dropped.
     pub dropped: u64,
 }
@@ -107,6 +113,8 @@ pub struct Budget {
     ticks_to_key: Option<u32>,
     // At most one send per tick in the rolling window.
     sent: VecDeque<(u32, usize)>,
+    // The ticks of the `Show` records admitted in the rolling window.
+    shows: VecDeque<u32>,
     repeats: Vec<Repeat>,
     // At most CONTROL_PERIOD packets of control IDs, even under entity churn.
     controls: VecDeque<(u32, u32)>,
@@ -116,6 +124,7 @@ pub struct Budget {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Priority {
     Key,
+    Show,
     Actor,
     Line,
     Cue,
@@ -128,6 +137,7 @@ enum Priority {
 fn priority(record: &Record) -> Priority {
     match record {
         Record::Key { .. } => Priority::Key,
+        Record::Show(_) => Priority::Show,
         Record::Actor(_) => Priority::Actor,
         Record::Line { .. } => Priority::Line,
         Record::Cue { .. } => Priority::Cue,
@@ -250,6 +260,13 @@ impl Budget {
         {
             self.controls.pop_front();
         }
+        while self
+            .shows
+            .front()
+            .is_some_and(|&at| tick.wrapping_sub(at) >= TICKS_PER_SECOND)
+        {
+            self.shows.pop_front();
+        }
         let available = BYTES_PER_SECOND - self.sent.iter().map(|&(_, len)| len).sum::<usize>();
 
         let mut delta_bytes = self.available_for_deltas(tick, available);
@@ -262,6 +279,7 @@ impl Budget {
         let mut waiting_for_key = false;
         for rank in [
             Priority::Key,
+            Priority::Show,
             Priority::Actor,
             Priority::Line,
             Priority::Cue,
@@ -299,6 +317,16 @@ impl Budget {
                 {
                     continue;
                 }
+                // A `Show` rides every key whole; without one it is
+                // coalesced to at most [`SHOWS_PER_SECOND`] a second. One
+                // dropped state is the peer's next slot's, or the digest's
+                // mismatch asks for a key that carries it.
+                if matches!(record, Record::Show(_))
+                    && !has_key
+                    && self.shows.len() >= SHOWS_PER_SECOND
+                {
+                    continue;
+                }
                 let copies = if repeats(record) { REPEAT_COPIES } else { 1 };
                 let limit = if rank == Priority::Key {
                     available
@@ -325,6 +353,9 @@ impl Budget {
                 if let Record::Control { entity, .. } = record {
                     self.controls.push_back((tick, *entity));
                 }
+                if matches!(record, Record::Show(_)) {
+                    self.shows.push_back(tick);
+                }
                 admitted += 1;
                 records.push(record.clone());
             }
@@ -342,6 +373,7 @@ impl Budget {
             match record {
                 Record::Key { .. } => self.stats.keys += 1,
                 Record::Digest { .. } => self.stats.digests += 1,
+                Record::Show(_) => self.stats.shows += 1,
                 _ => {}
             }
         }
