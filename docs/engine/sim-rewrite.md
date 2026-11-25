@@ -23,7 +23,8 @@ Phase 3 runs behind `impl.sim.native.objects` as register-level bodies
 over the retail frames ([sim-rewrite-objects.md](sim-rewrite-objects.md)),
 and its curve evaluator — the tag-function curves `13b390` every function
 value, light and screen effect flows through — runs as an idiomatic kernel
-in `crates/rewrites/sim-objects` compared with the guest at every call
+in `crates/rewrites/sim-objects` compared with the guest until it has
+matched 4096 calls, then answering them with an audit of every 64th
 (`engine::sim_objects::functions::parity`).
 Phase 4 runs as an opt-in sound arm. Its synthetic differential harness compares the
 guest and Rust sound bodies at each call and return. The owner-image, match,
