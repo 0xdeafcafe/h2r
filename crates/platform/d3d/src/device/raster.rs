@@ -17,7 +17,8 @@
 //!   sampled from a copy of that buffer ([`Backend::snapshot_surface`]):
 //!   the image being drawn while it is the back buffer, the image last
 //!   presented while it is the front. Draws share a copy until the device
-//!   writes that buffer again (`frame_snaps.rs`). One over the depth buffer
+//!   writes that buffer again, and copies refill a fixed pool of textures
+//!   ([`Backend::snapshot_surface_into`], `frame_snaps.rs`). One over the depth buffer
 //!   ([`DEPTH_BUFFER_DATA`]) reads the depth/stencil bits as the colour
 //!   format it names: the depth buffer is read back as guest bytes
 //!   ([`Backend::read_depth`]) once per change, and those bytes are decoded
@@ -127,6 +128,10 @@ pub(crate) struct DepthColor {
     height: u32,
 }
 
+/// A frame-buffer copy's size and format: the pool of copies is kept per
+/// key (`frame_snaps.rs`).
+pub(super) type CopyKey = (u32, u32, D3DFormat);
+
 /// What a bound texture header is, as far as the frame buffers go.
 pub(super) enum FrameTexture<T> {
     /// Ordinary guest texture memory.
@@ -134,9 +139,9 @@ pub(super) enum FrameTexture<T> {
     /// A frame buffer, copied for this draw alone (while post-process
     /// draws are held, each packet keeps its own copy).
     Snapshot(TextureInfo, T),
-    /// A frame buffer, through the copy `Device::frame_snaps` holds under
-    /// this id, shared with every draw that samples the surface before it
-    /// is written again.
+    /// A frame buffer, through the pool slot `Device::frame_snaps` holds
+    /// under this id, shared with every draw that samples the surface
+    /// before it is written again.
     Shared(TextureInfo, u64),
     /// The depth buffer's bits as this texture's format: the host texture
     /// is `Device::depth_alias[key]`.
@@ -357,25 +362,32 @@ impl<B: Backend> Device<B> {
             depth: desc.depth,
             levels: desc.levels,
         };
-        Ok(self.frame_copy(source, opaque, info, previous)?.unwrap_or_else(|| {
+        let key = (bw, bh, sw.format);
+        Ok(self.frame_copy(source, key, opaque, info, previous)?.unwrap_or_else(|| {
             FrameTexture::Skip(format!(
                 "texture {header:#010x} reads {which} and the backend cannot copy surfaces into textures"
             ))
         }))
     }
 
-    /// A draw samples colour surface `source` as `info`: a copy of it as it
-    /// is now ([`Backend::snapshot_surface`], alpha one with `opaque`).
+    /// A draw samples colour surface `source` (size and format `key`) as
+    /// `info`: a copy of it as it is now, alpha one with `opaque`.
     /// The copy is shared with later draws until the device writes
     /// `source` again (`frame_snaps.rs`), so N sampling draws with no
-    /// write in between make one copy. While post-process draws are held
-    /// (swallowing) the writes they will make are not issued yet, so each
-    /// draw gets a copy of its own. `previous`: the copy is of the image
+    /// write in between make one copy. A fresh copy goes into the pool:
+    /// a GPU copy into a slot's texture ([`Backend::snapshot_surface_into`])
+    /// whenever a slot of `key` can be refilled, a new texture
+    /// ([`Backend::snapshot_surface`]) only while the pool for `key` is
+    /// filling, so the textures held stay at the pool's size however many
+    /// draws sample the frame. While post-process draws are held (swallowing) the writes
+    /// they will make are not issued yet, so each held draw gets a copy of
+    /// its own, for the post call. `previous`: the copy is of the image
     /// last presented (`Stats::previous_frame_snapshots`). `None`: the
     /// backend cannot copy surfaces.
     fn frame_copy(
         &mut self,
         source: B::Surface,
+        key: CopyKey,
         opaque: bool,
         info: TextureInfo,
         previous: bool,
@@ -385,22 +397,57 @@ impl<B: Backend> Device<B> {
             self.stats.frame_snapshot_reuses += 1;
             return Ok(Some(FrameTexture::Shared(info, id)));
         }
-        let Some(t) = self
-            .backend
-            .snapshot_surface(source, opaque)
-            .map_err(D3dError::Backend)?
-        else {
-            return Ok(None);
+        let refill = if shared { self.frame_snaps.slot_for(key) } else { None };
+        let slot = match refill {
+            Some(id) => self.frame_snaps.texture_mut(id).map(|t| (id, t)),
+            None => None,
         };
+        let refilled = match slot {
+            Some((id, t)) => self
+                .backend
+                .snapshot_surface_into(source, opaque, t)
+                .map_err(D3dError::Backend)?
+                .then_some(id),
+            None => None,
+        };
+        let id = match refilled {
+            Some(id) => {
+                self.frame_snaps.filled(id, source, opaque);
+                id
+            }
+            None => {
+                let Some(t) = self
+                    .backend
+                    .snapshot_surface(source, opaque)
+                    .map_err(D3dError::Backend)?
+                else {
+                    return Ok(None);
+                };
+                self.stats.frame_copy_textures += 1;
+                if !shared {
+                    self.count_frame_copy(previous);
+                    return Ok(Some(FrameTexture::Snapshot(info, t)));
+                }
+                match refill {
+                    // The backend could not refill the slot: the new copy
+                    // takes its place.
+                    Some(id) => {
+                        self.frame_snaps.replace(id, source, opaque, t);
+                        id
+                    }
+                    None => self.frame_snaps.insert(key, source, opaque, t),
+                }
+            }
+        };
+        self.count_frame_copy(previous);
+        Ok(Some(FrameTexture::Shared(info, id)))
+    }
+
+    fn count_frame_copy(&mut self, previous: bool) {
         self.stats.frame_snapshots += 1;
         if previous {
             self.stats.previous_frame_snapshots += 1;
         }
-        if !shared {
-            return Ok(Some(FrameTexture::Snapshot(info, t)));
-        }
-        let id = self.frame_snaps.insert(source, opaque, t);
-        Ok(Some(FrameTexture::Shared(info, id)))
     }
 
     /// Texture `header` (`pc`) reads the depth buffer's memory from byte
@@ -610,7 +657,8 @@ impl<B: Backend> Device<B> {
             && desc.pitch.max(desc.width * 4) == c.width * 4
         {
             let opaque = desc.format == D3DFormat::LinX8R8G8B8;
-            return match self.frame_copy(surface, opaque, info, false)? {
+            let key = (c.width, c.height, c.format);
+            return match self.frame_copy(surface, key, opaque, info, false)? {
                 Some(t) => Ok(t),
                 None => skip("the backend cannot copy surfaces into textures".into()),
             };

@@ -8,7 +8,7 @@
 use crate::common::*;
 use d3d::abi::Regs;
 use d3d::device::{
-    BACK_BUFFER_DATA, COPY_SWAP_FLAG, DEPTH_BUFFER_DATA, DISPLAY_BUFFER_DATA, Rect,
+    BACK_BUFFER_DATA, COPY_SWAP_FLAG, DEPTH_BUFFER_DATA, DISPLAY_BUFFER_DATA, FRAME_COPY_SLOTS, Rect,
     THIRD_BUFFER_DATA, scissor_region,
 };
 use d3d::layout::device_field as f;
@@ -304,15 +304,61 @@ fn textures_over_the_frame_buffers_sample_a_back_buffer_copy_or_skip() {
     assert_eq!(d.stats().depth_alias_uploads, 2);
 }
 
+/// The surfaces copied for frame-buffer samples, in order: a copy that
+/// made a texture or refilled one.
 fn snapshots(d: &Device<RecordingBackend>) -> Vec<u32> {
     d.backend
         .calls
         .iter()
         .filter_map(|c| match c {
-            Recorded::Snapshot { surface, .. } => Some(*surface),
+            Recorded::Snapshot { surface, .. } | Recorded::SnapshotInto { surface, .. } => {
+                Some(*surface)
+            }
             _ => None,
         })
         .collect()
+}
+
+/// Frame-buffer copies that made a texture.
+fn copy_textures_made(d: &Device<RecordingBackend>) -> usize {
+    d.backend
+        .calls
+        .iter()
+        .filter(|c| matches!(c, Recorded::Snapshot { .. }))
+        .count()
+}
+
+/// The surface the copy the last draw bound at stage 0 was last filled
+/// from.
+fn last_draw_copy_source(d: &Device<RecordingBackend>) -> Option<u32> {
+    let id = last_stage0(d)?;
+    d.backend.calls.iter().rev().find_map(|c| match c {
+        Recorded::Snapshot { surface, id: i, .. } | Recorded::SnapshotInto { surface, id: i, .. }
+            if *i == id =>
+        {
+            Some(*surface)
+        }
+        _ => None,
+    })
+}
+
+/// For each draw, whether the copy it binds at stage 0 was made or
+/// refilled after the draw before it: the draw reads the frame as of a
+/// copy of its own, not one a later write made stale.
+fn fresh_copies(d: &Device<RecordingBackend>) -> Vec<bool> {
+    let mut fresh = Vec::new();
+    let mut filled = Vec::new();
+    for c in &d.backend.calls {
+        match c {
+            Recorded::Snapshot { id, .. } | Recorded::SnapshotInto { id, .. } => filled.push(*id),
+            Recorded::Draw { textures, .. } => {
+                fresh.push(textures[0].is_some_and(|t| filled.contains(&t)));
+                filled.clear();
+            }
+            _ => {}
+        }
+    }
+    fresh
 }
 
 fn header_words(m: &SparseMemory, field: u32) -> (u32, u32) {
@@ -579,11 +625,24 @@ fn frame_sampling_draws_with_no_write_between_share_one_copy() {
     { let data = data_of(&m, f::BACK_BUFFER); frame_texture(&mut m, data, 0x1E, W, H); }
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     assert_eq!(d.stats().frame_snapshots, 2);
+    assert_eq!(d.frame_snapshots_held(), 2);
     assert!(d.take_events().is_empty());
-    // A present drops every copy.
+    // A present ends what the copies hold and keeps their textures: the
+    // next frame's sample refills one.
     d.set_render_target(&mut m, back, 0).unwrap();
     d.swap(&mut m, 0).unwrap();
-    assert_eq!(d.frame_snapshots_held(), 0);
+    assert_eq!(d.frame_snapshots_held(), 2);
+    { let data = data_of(&m, f::BACK_BUFFER); frame_texture(&mut m, data, 0x12, W, H); }
+    d.set_render_target(&mut m, OFFSCREEN, 0).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    assert_eq!(d.stats().frame_snapshots, 3);
+    assert_eq!(d.stats().frame_copy_textures, 2);
+    assert_eq!(fresh_copies(&d).last(), Some(&true));
+    assert!(matches!(
+        d.backend.calls.iter().rev().find(|c| matches!(c, Recorded::Snapshot { .. } | Recorded::SnapshotInto { .. })),
+        Some(Recorded::SnapshotInto { .. })
+    ));
+    assert!(d.take_events().is_empty());
 }
 
 #[test]
@@ -604,16 +663,22 @@ fn a_write_between_frame_samples_makes_a_new_copy() {
     d.set_render_target(&mut m, OFFSCREEN, 0).unwrap();
     let second = sampling_draws(&mut d, &mut m, 2);
     assert_eq!(second.len(), 1);
-    assert_ne!(second, first);
+    // The clear emptied the copy: the next sample refills its texture.
+    assert_eq!(second, first);
 
     // A draw into the back buffer that samples it reads the copy from
     // before it, and its own write makes the next copy fresh: each of
     // these draws reads what the one before drew.
     d.set_render_target(&mut m, back, 0).unwrap();
     let feedback = sampling_draws(&mut d, &mut m, 3);
-    assert_eq!(feedback.first(), second.first(), "nothing wrote it yet");
-    assert_eq!(feedback.len(), 3);
+    assert_eq!(feedback, first, "one texture, refilled");
+    assert_eq!(
+        fresh_copies(&d),
+        [true, false, true, false, false, true, true],
+        "a copy after each write, and none where nothing wrote the frame"
+    );
     assert_eq!(d.stats().frame_snapshots, 4);
+    assert_eq!(d.stats().frame_copy_textures, 1);
     assert!(d.take_events().is_empty());
     assert_eq!(
         snapshots(&d),
@@ -646,7 +711,7 @@ fn a_long_session_of_frame_sampling_draws_holds_a_bounded_number_of_copies() {
             held = held.max(d.frame_snapshots_held());
         }
         d.swap(&mut m, 0).unwrap();
-        assert_eq!(d.frame_snapshots_held(), 0, "frame {frame}");
+        assert!(d.frame_snapshots_held() <= FRAME_COPY_SLOTS, "frame {frame}");
         assert!(d.take_events().is_empty(), "frame {frame}");
         d.backend.calls.clear();
     }
@@ -656,6 +721,66 @@ fn a_long_session_of_frame_sampling_draws_holds_a_bounded_number_of_copies() {
     // shares; each later write's read needs its own.
     assert_eq!(s.frame_snapshots, 1000 * 25);
     assert_eq!(s.frame_snapshot_reuses, 1000 * 25);
+    // Every one of them refilled the one texture the first made.
+    assert_eq!(s.frame_copy_textures, 1);
+}
+
+/// Particles blended into the frame they sample (refused native, drawn
+/// through D3D): every draw writes the frame, so every draw needs a copy
+/// of its own. The copies refill the pool's textures, so the textures
+/// made stay at the pool's size however many draws there are, and each
+/// draw still reads the frame as the draw before left it.
+#[test]
+fn five_hundred_frame_writing_samples_hold_at_most_the_pool() {
+    let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Always);
+    quad(&mut d, &mut m, 0xFFFF_FFFF);
+    let back = m.read_u32(L.device + f::BACK_BUFFER).unwrap();
+    { let data = data_of(&m, f::BACK_BUFFER); frame_texture(&mut m, data, 0x12, W, H); }
+    d.set_texture(&mut m, 0, FRAME_TEX).unwrap();
+    d.set_render_target(&mut m, back, 0).unwrap();
+    let ids = sampling_draws(&mut d, &mut m, 500);
+    let made = copy_textures_made(&d);
+    assert!(made <= FRAME_COPY_SLOTS, "{made} copy textures for 500 draws");
+    assert!(d.frame_snapshots_held() <= FRAME_COPY_SLOTS);
+    let mut bound = ids.clone();
+    bound.sort_unstable();
+    bound.dedup();
+    assert!(bound.len() <= FRAME_COPY_SLOTS, "{} textures bound", bound.len());
+    assert_eq!(fresh_copies(&d), vec![true; 500], "each draw reads a copy taken after the one before wrote");
+    assert_eq!(snapshots(&d), vec![d.back_buffer().unwrap(); 500]);
+    let s = d.stats();
+    assert_eq!(s.frame_snapshots, 500);
+    assert_eq!(s.frame_copy_textures, made as u64);
+    assert!(d.take_events().is_empty());
+}
+
+/// The current and the previous frame both sampled, between writes, for
+/// many frames: two contents in use at once, still within the pool, and
+/// each draw's copy is of the buffer it names.
+#[test]
+fn current_and_previous_frame_samples_share_the_pool_across_presents() {
+    let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Always);
+    quad(&mut d, &mut m, 0xFFFF_FFFF);
+    parity_textures(&mut m);
+    for frame in 0..200u32 {
+        for _ in 0..5 {
+            for previous in [false, true] {
+                d.set_texture(&mut m, 0, parity(frame, previous)).unwrap();
+                d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+                let want = if previous { d.front_buffer() } else { d.back_buffer() };
+                assert_eq!(last_draw_copy_source(&d), want, "frame {frame}, previous {previous}");
+            }
+        }
+        assert!(d.frame_snapshots_held() <= FRAME_COPY_SLOTS, "frame {frame}");
+        d.swap(&mut m, 0).unwrap();
+        assert!(d.take_events().is_empty(), "frame {frame}");
+    }
+    assert!(copy_textures_made(&d) <= FRAME_COPY_SLOTS);
+    let s = d.stats();
+    // Per frame: each current sample follows a write (5 copies); the
+    // previous frame is copied once and shared by the other 4.
+    assert_eq!(s.frame_snapshots, 200 * 6);
+    assert_eq!(s.frame_snapshot_reuses, 200 * 4);
 }
 
 #[test]

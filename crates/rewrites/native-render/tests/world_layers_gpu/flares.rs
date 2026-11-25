@@ -498,6 +498,7 @@ fn a_retained_filter_samples_its_input_and_counts_only_a_native_commit() {
                 of: input,
                 id: 1,
                 how: ReplaySample::InPlace,
+                into: None,
             },
             bind(),
             ReplayOp::Draw {

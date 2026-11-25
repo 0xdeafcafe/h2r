@@ -474,21 +474,28 @@ impl<B: Backend> SceneSink<B> {
     }
 
     fn sample_texture(&mut self, inner: B::Texture, surface: B::Surface, how: TargetSample, kind: impl FnOnce() -> ReplaySample) -> SinkTexture<B::Texture> {
+        let origin = self.sample_origin(surface, how, kind, None);
+        SinkTexture { inner, origin }
+    }
+
+    /// Records a sample of `surface` and gives the origin of the texture
+    /// that holds it. `into`: the earlier sample of this frame whose
+    /// texture the sample refills.
+    fn sample_origin(&mut self, surface: B::Surface, how: TargetSample, kind: impl FnOnce() -> ReplaySample, into: Option<u32>) -> Option<Origin> {
         self.record_sample(surface, how);
         let at = self.at();
-        let origin = self.replay.as_mut().map(|replay| {
+        self.replay.as_mut().map(|replay| {
             let how = kind();
             let view = (matches!(how, ReplaySample::InPlace)
                 && self.surfaces.iter().any(|(s, desc)| *s == surface && !desc.depth))
                 .then(|| replay.view_identity(surface));
             if let Some(at) = at {
                 let of = replay.target(surface, &self.surfaces);
-                replay.sample(at, of, how, view)
+                replay.sample(at, of, how, view, into)
             } else {
                 Origin::sample(replay.seq, None, &how, view)
             }
-        });
-        SinkTexture { inner, origin }
+        })
     }
 
     fn record_readback(&mut self, kind: Readback) {
@@ -765,6 +772,21 @@ impl<B: Backend> Backend for SceneSink<B> {
     fn snapshot_surface(&mut self, surface: Self::Surface, opaque: bool) -> Result<Option<Self::Texture>, String> {
         let r = self.inner.snapshot_surface(surface, opaque)?;
         Ok(r.map(|inner| self.sample_texture(inner, surface, TargetSample::Snapshot, || ReplaySample::Snapshot { opaque })))
+    }
+    /// A refill is a new sample of `surface` in `into`'s texture: draws
+    /// after it bind the new sample, and when the texture's last sample was
+    /// in this frame, replay refills that sample's texture
+    /// ([`ReplayOp::Sample`]'s `into`) rather than make one.
+    fn snapshot_surface_into(&mut self, surface: Self::Surface, opaque: bool, into: &mut Self::Texture) -> Result<bool, String> {
+        if !self.inner.snapshot_surface_into(surface, opaque, &mut into.inner)? {
+            return Ok(false);
+        }
+        let previous = self.replay.as_ref().and_then(|replay| match &into.origin {
+            Some(Origin::Sample { seq, id: Some(id), immutable: true, .. }) if *seq == replay.seq => Some(*id),
+            _ => None,
+        });
+        into.origin = self.sample_origin(surface, TargetSample::Snapshot, || ReplaySample::Snapshot { opaque }, previous);
+        Ok(true)
     }
     fn clear_pixel_count(&mut self) -> Result<(), String> {
         self.inner.clear_pixel_count()?;

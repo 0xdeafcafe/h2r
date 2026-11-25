@@ -1883,6 +1883,7 @@ fn tile_frame() -> d3d::scene_sink::ReplayFrame {
             of: level,
             id: 0,
             how: ReplaySample::Depth,
+            into: None,
         },
         ReplayOp::Draw {
             draw: receiver.clone(),

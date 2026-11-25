@@ -1828,6 +1828,55 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         Ok(Some(ScaledTexture { reference, view }))
     }
 
+    /// Both copies are refilled in place: the reference's guest-size one
+    /// and the view's scaled one (in single-copy mode the reference's is
+    /// the view's, shared). A view copy that cannot be refilled (made
+    /// while the view slept, so a share of the reference's, or of another
+    /// scale) is replaced by a new one; while the view sleeps it shares
+    /// the reference's again.
+    fn snapshot_surface_into(
+        &mut self,
+        surface: Self::Surface,
+        opaque: bool,
+        into: &mut Self::Texture,
+    ) -> Result<bool, String> {
+        if self.single() {
+            let Some(view) = into.view.as_mut() else { return Ok(false) };
+            return self.view.snapshot_surface_into(self.image(surface), opaque, view);
+        }
+        if !self
+            .reference
+            .snapshot_surface_into(surface.reference, opaque, &mut into.reference)?
+        {
+            return Ok(false);
+        }
+        match self.live(surface.view) {
+            Some(v) => {
+                let refilled = match into.view.as_mut() {
+                    Some(t) => match self.view.snapshot_surface_into(v, opaque, t) {
+                        Ok(refilled) => refilled,
+                        Err(e) => {
+                            self.view_failed("snapshot", e);
+                            false
+                        }
+                    },
+                    None => false,
+                };
+                if !refilled {
+                    into.view = match self.view.snapshot_surface(v, opaque) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            self.view_failed("snapshot", e);
+                            None
+                        }
+                    };
+                }
+            }
+            None => into.view = self.share(&into.reference),
+        }
+        Ok(true)
+    }
+
     fn clear_pixel_count(&mut self) -> Result<(), String> {
         if self.single() { return self.view.clear_pixel_count(); }
         self.reference.clear_pixel_count()

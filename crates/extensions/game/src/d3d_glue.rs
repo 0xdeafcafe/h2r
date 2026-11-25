@@ -1565,6 +1565,10 @@ impl d3d::backend::Backend for Headless {
         let r = self.0.snapshot_surface(surface, opaque);
         self.forget(r)
     }
+    fn snapshot_surface_into(&mut self, surface: u32, opaque: bool, into: &mut u32) -> Result<bool, String> {
+        let r = self.0.snapshot_surface_into(surface, opaque, into);
+        self.forget(r)
+    }
     fn clear_pixel_count(&mut self) -> Result<(), String> {
         let r = self.0.clear_pixel_count();
         self.forget(r)

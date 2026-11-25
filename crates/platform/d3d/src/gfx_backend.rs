@@ -32,7 +32,8 @@
 //! `SurfaceStore::read_depth_as` (which also serves textures over the depth
 //! buffer, [`Backend::read_depth`]). A texture over the back buffer is
 //! sampled from a `SurfaceStore::snapshot` copy
-//! ([`Backend::snapshot_surface`]).
+//! ([`Backend::snapshot_surface`]), refilled in place with
+//! `SurfaceStore::snapshot_into` ([`Backend::snapshot_surface_into`]).
 //! `set_pretransformed_z_max` is renderer-wide, so it is set
 //! before every built-in draw.
 //!
@@ -699,6 +700,34 @@ impl GfxBackend {
 
     /// `texture` with the view the shaders sample a `kind` texture through,
     /// if its format can be bound as a filterable float texture.
+    /// Records an alpha-only masked clear of the whole of `t` to one: a
+    /// frame-buffer copy read through an `X8` texture.
+    fn force_alpha(&mut self, enc: &mut wgpu::CommandEncoder, t: &wgpu::Texture) {
+        let view = t.create_view(&Default::default());
+        let target = gfx::RenderTarget {
+            color: &view,
+            color_format: t.format(),
+            depth: None,
+            depth_format: None,
+            size: (t.width(), t.height()),
+            samples: 1,
+        };
+        let clear = MaskedClear {
+            color: Some([0.0, 0.0, 0.0, 1.0]),
+            channels: wgpu::ColorWrites::ALPHA,
+            depth: None,
+            stencil: None,
+        };
+        let all = ScissorRect {
+            x: 0,
+            y: 0,
+            width: t.width(),
+            height: t.height(),
+        };
+        self.renderer
+            .clear_rects(&self.ctx, enc, &target, clear, &[all]);
+    }
+
     fn host_texture(&self, texture: wgpu::Texture, kind: TextureKind) -> HostTexture {
         let view =
             gfx::program::filterable(texture.format(), self.ctx.device.features()).then(|| {
@@ -1789,30 +1818,7 @@ impl Backend for GfxBackend {
             }
         };
         if opaque {
-            // Alpha to one: an alpha-only masked clear of the copy.
-            let view = t.create_view(&Default::default());
-            let target = gfx::RenderTarget {
-                color: &view,
-                color_format: t.format(),
-                depth: None,
-                depth_format: None,
-                size: (t.width(), t.height()),
-                samples: 1,
-            };
-            let clear = MaskedClear {
-                color: Some([0.0, 0.0, 0.0, 1.0]),
-                channels: wgpu::ColorWrites::ALPHA,
-                depth: None,
-                stencil: None,
-            };
-            let all = ScissorRect {
-                x: 0,
-                y: 0,
-                width: t.width(),
-                height: t.height(),
-            };
-            self.renderer
-                .clear_rects(&self.ctx, &mut enc, &target, clear, &[all]);
+            self.force_alpha(&mut enc, &t);
         }
         self.side_done(enc, passes);
         let mut host = self.host_texture(t, TextureKind::D2);
@@ -1821,6 +1827,47 @@ impl Backend for GfxBackend {
             to: Arc::clone(&self.released),
         }));
         Ok(Some(host))
+    }
+
+    fn snapshot_surface_into(
+        &mut self,
+        surface: SurfaceId,
+        opaque: bool,
+        into: &mut HostTexture,
+    ) -> Result<bool, String> {
+        // A copy into a texture of another size or format (a run-time
+        // resolution change) is refused before anything is recorded.
+        {
+            let s = self.store.get(surface).map_err(|e| e.to_string())?;
+            let d = s.desc();
+            let t = &into.texture;
+            if (t.width(), t.height()) != (d.width, d.height) || t.format() != s.wgpu_format() {
+                return Ok(false);
+            }
+        }
+        // After the draws recorded so far (the pending pass is encoded
+        // first, so a draw that read this texture before keeps reading
+        // its old contents) and before any draw recorded later.
+        let (mut enc, passes) = self.side_encoder()?;
+        let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
+        let _t = timeline::span(
+            timeline::Cat::Gfx,
+            timeline::Track::Host,
+            "surface snapshot refill",
+        );
+        let copied = match self.store.snapshot_into(&mut enc, surface, &into.texture) {
+            Ok(copied) => copied,
+            Err(error) => {
+                self.side_done(enc, passes);
+                return Err(error.to_string());
+            }
+        };
+        if copied && opaque {
+            let t = into.texture.clone();
+            self.force_alpha(&mut enc, &t);
+        }
+        self.side_done(enc, passes);
+        Ok(copied)
     }
 
     fn create_texture_target(
@@ -2593,6 +2640,30 @@ mod tests {
         b.present(back, 0).unwrap();
         assert_eq!(destroyed(&b), 2, "the surface's own texture is not a copy");
         assert!(b.store.get(back).is_ok());
+    }
+
+    /// A refill copies into the texture the first copy made: the same
+    /// texture and view (so cached bind groups over it stay valid), and
+    /// nothing allocated or released. A texture of another size is refused.
+    #[test]
+    fn a_frame_buffer_copy_refills_its_own_texture() {
+        use super::{Backend, GfxBackend, GfxContext};
+
+        let Ok(ctx) = GfxContext::headless() else { return };
+        let mut b = GfxBackend::new(ctx);
+        let back = b.create_surface(gfx::D3DFormat::LinA8R8G8B8, 8, 8, false).unwrap();
+        let small = b.create_surface(gfx::D3DFormat::LinA8R8G8B8, 4, 4, false).unwrap();
+        let mut copy = b.snapshot_surface(back, false).unwrap().unwrap();
+        let first = copy.shared();
+        for opaque in [false, true, false] {
+            assert!(b.snapshot_surface_into(back, opaque, &mut copy).unwrap());
+            assert!(copy.same_sample(&first));
+        }
+        assert!(!b.snapshot_surface_into(small, false, &mut copy).unwrap());
+        assert!(copy.same_sample(&first));
+        b.present(back, 0).unwrap();
+        b.present(back, 0).unwrap();
+        assert_eq!(b.batch_stats().snapshots_destroyed, 0, "the copy is still held");
     }
 
     #[test]

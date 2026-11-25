@@ -1662,6 +1662,27 @@ pub trait Backend: Send {
         let _ = (surface, opaque);
         Ok(None)
     }
+    /// Refills `into`, a texture an earlier [`snapshot_surface`] of a
+    /// surface of the same size and format made, with colour surface
+    /// `surface` as it is now (alpha one with `opaque`): a GPU copy into
+    /// the existing texture, recorded after everything drawn so far and
+    /// before any later draw, so a draw recorded before this call still
+    /// reads the old contents and one after it the new. Nothing is
+    /// allocated. The device keeps a small pool of these copies and
+    /// refills them (docs/graphics/d3d.md, "Frame buffers as textures").
+    /// `Ok(false)`: the backend cannot (the default, or `into` does not
+    /// match the surface), and the caller makes a new copy instead.
+    ///
+    /// [`snapshot_surface`]: Self::snapshot_surface
+    fn snapshot_surface_into(
+        &mut self,
+        surface: Self::Surface,
+        opaque: bool,
+        into: &mut Self::Texture,
+    ) -> Result<bool, String> {
+        let _ = (surface, opaque, into);
+        Ok(false)
+    }
     /// `CLEAR_REPORT_VALUE` (zpass): the sample count restarts at zero.
     fn clear_pixel_count(&mut self) -> Result<(), String> {
         Ok(())
@@ -2129,6 +2150,15 @@ pub enum Recorded {
         /// The texture handle returned.
         id: u32,
     },
+    /// `snapshot_surface_into`: an earlier copy refilled.
+    SnapshotInto {
+        /// Surface copied.
+        surface: u32,
+        /// Alpha forced to one.
+        opaque: bool,
+        /// The texture refilled (the handle an earlier `Snapshot` returned).
+        id: u32,
+    },
     /// `write_surface`.
     WriteSurface {
         /// Surface.
@@ -2434,6 +2464,14 @@ impl Backend for RecordingBackend {
             id: self.next,
         });
         Ok(Some(self.next))
+    }
+    fn snapshot_surface_into(&mut self, surface: u32, opaque: bool, into: &mut u32) -> Result<bool, String> {
+        self.calls.push(Recorded::SnapshotInto {
+            surface,
+            opaque,
+            id: *into,
+        });
+        Ok(true)
     }
     fn clear_pixel_count(&mut self) -> Result<(), String> {
         self.pixel_count = 0;

@@ -881,8 +881,9 @@ and allocations are bounded before anything is read:
     crossfade evaluator `0x002ab270`, which reads the previous parity.
   - A texture whose `Data` is a frame buffer's, `LIN_A8R8G8B8` or
     `LIN_X8R8G8B8`, 2D, the buffer's size, is sampled from a copy of that
-    buffer (`Backend::snapshot_surface`; `GfxBackend` uses
-    `gfx::SurfaceStore::snapshot`). Over the back buffer it reads the
+    buffer (`Backend::snapshot_surface` makes one, `Backend::snapshot_surface_into`
+    refills one; `GfxBackend` uses `gfx::SurfaceStore::snapshot` and
+    `snapshot_into`). Over the back buffer it reads the
     image being drawn, also while it is the target: the draw reads what
     was there before it (same-frame feedback). Over the display surface
     it reads the image last presented, which nothing draws into until the
@@ -890,28 +891,69 @@ and allocations are bounded before anything is read:
     image still waits in back0, that is back0; if the copy to the front
     was lost (`copy_surface` unsupported), the draw is skipped. Copies
     made are counted in `Stats::frame_snapshots`, the display-surface ones
-    also in `Stats::previous_frame_snapshots`. An `X8` texture reads alpha
+    also in `Stats::previous_frame_snapshots`, and those that made a
+    texture in `Stats::frame_copy_textures`. An `X8` texture reads alpha
     as one: the copy's alpha is cleared to one with an alpha-only masked
     clear, as uploads of `X8` texels force it to 255.
-    - A copy is shared between draws while its surface is unwritten
+    - The copies live in a fixed pool of textures
       (`src/device/frame_snaps.rs`, `Device::frame_copy` in
-      `src/device/raster.rs`). Each colour surface has a colour-write
-      generation, moved on by every drawn draw or pass that writes its
-      colour, every colour clear, the owed copy into the front of a
-      copy-swap device, a render-to-texture fill or mirror load, and a
-      display-only scene stage over it; a write also drops the surface's
-      copies. A draw that samples the surface at the generation a held
-      copy was taken at binds that copy (`Stats::frame_snapshot_reuses`),
-      so a run of distortion draws into their own target that all read
-      the frame costs one copy, and a draw that reads the frame after
-      another wrote it still gets a fresh one. Copies are keyed by surface
-      and alpha rule, at most eight are held (least recently used goes
-      first), a destroyed surface forgets its generation, and a present
-      drops them all (a frame owner replays each frame's samples with that
-      frame), so a long session holds a bounded number
-      (`Device::frame_snapshots_held`). While post-process draws are held
-      (swallowing), their writes are not issued yet, so each draw gets a
-      copy of its own kept with its packet.
+      `src/device/raster.rs`): at most three per surface size and format
+      (`FRAME_COPY_SLOTS`) and eight in all (`FRAME_COPY_TEXTURES`). A
+      slot's texture is made by its first copy and refilled after that
+      by a GPU `copy_texture_to_texture` into it, so the number of draws
+      that sample the frame never raises the memory held. Particles
+      blended into the frame they sample write it with every draw, so
+      every draw needs a fresh copy: at 4x a frame of a few hundred of
+      them once made one 2560x1920 texture (about 20 MB) each, gigabytes
+      a present. Each copy and the draw that reads it are recorded in
+      order, the copy after every draw recorded before it (the pending
+      pass is encoded first), so a draw before a refill still reads the
+      old contents and a draw after it the new; a draw that reads the
+      frame it writes therefore refills the slot the draw before it read.
+      The slots one draw binds are pinned until the next draw, so its
+      other stages never refill them (a draw binding more distinct copies
+      of one size than the pool adds a slot, up to its four stages). A
+      slot that holds nothing any more is refilled first, then the least
+      recently used of its size; a new size past eight replaces the least
+      recently used slot of another. Draws bind the slot's one texture and
+      view, so their bind groups are cached once per slot. When the
+      backend cannot refill a slot (a resolution change gave the surface
+      another size), a new copy replaces the slot's texture.
+    - A copy is shared between draws while its surface is unwritten. Each
+      colour surface has a colour-write generation, moved on by every
+      drawn draw or pass that writes its colour, every colour clear, the
+      owed copy into the front of a copy-swap device, a render-to-texture
+      fill or mirror load, and a display-only scene stage over it; a
+      write also ends what the surface's slots hold. A draw that samples
+      the surface at the generation a slot was filled at binds that slot
+      with no copy at all (`Stats::frame_snapshot_reuses`), so a run of
+      distortion draws into their own target that all read the frame
+      costs one copy, and a draw that reads the frame after another wrote
+      it still gets a fresh one. Slots are matched by surface and alpha
+      rule, a destroyed surface forgets its generation, and a present
+      ends what every slot holds and keeps the textures (a frame owner
+      replays each frame's samples with that frame), so a long session
+      holds a fixed number (`Device::frame_snapshots_held`). While
+      post-process draws are held (swallowing), their writes are not
+      issued yet, so each held draw gets a copy of its own kept with its
+      packet for the post call.
+    - Every backend refills in place. The render thread
+      (`ThreadedBackend`) queues the refill as a sample of the same proxy
+      and refills the texture it holds for it. The scaled backend refills
+      both copies, the reference's and the view's (a view copy made while
+      the view slept, a share of the reference's, is replaced by a scaled
+      one when the view wakes). The scene sink records a refill as a new
+      sample that names the earlier sample of the frame whose texture it
+      refills (`ReplayOp::Sample`'s `into`), and a frame owner's replay
+      (`gfx_backend/guest_draw_pass/commands.rs`) refills that sample's
+      texture, so a replayed frame makes no more copies than the device's
+      pool; only a slot's first sample of a frame makes one there. Tests:
+      `five_hundred_frame_writing_samples_hold_at_most_the_pool` and the
+      frame-sampling tests near it in `tests/passes.rs`,
+      `a_frame_copy_refill_reaches_the_texture_the_proxy_made` in
+      `tests/threaded.rs`,
+      `a_refilled_copy_is_a_new_sample_that_names_the_one_it_refills` in
+      `tests/scene_sink.rs`.
   - A new device (CreateDevice after teardown) starts with new, cleared
     frame buffers and the headers back at their first `Data`: nothing
     presented by the old device can be read as the previous frame. Halo

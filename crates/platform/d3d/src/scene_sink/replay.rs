@@ -125,7 +125,13 @@ pub enum ReplayOp {
     ClearRects { colour: TargetRef, depth: TargetRef, clear: RectClear },
     Copy { from: TargetRef, to: TargetRef },
     Upload { to: TargetRef, desc: TextureDesc, bytes: Arc<[u8]> },
-    Sample { of: TargetRef, id: u32, how: ReplaySample },
+    /// Sample `id` of `of`. `into`: the earlier sample of this frame whose
+    /// texture this copy refills (a pooled frame-buffer copy,
+    /// [`crate::Backend::snapshot_surface_into`]): replay copies into that
+    /// sample's texture, which holds this sample's contents from here on,
+    /// so the ops are applied in their recorded order. `None`: a texture
+    /// of its own.
+    Sample { of: TargetRef, id: u32, how: ReplaySample, into: Option<u32> },
     /// The guest's object shadow (`0x00032350`) the following ops draw,
     /// by its index in the scene's `object_shadows`; `None` after it.
     /// Recorded where the shadow the hooks declare changes
@@ -382,11 +388,13 @@ impl<S: Copy + Eq> Recorder<S> {
         }
     }
 
-    pub fn sample(&mut self, at: SlotAt, of: TargetRef, how: ReplaySample, view: Option<Arc<()>>) -> Origin {
+    pub fn sample(
+        &mut self, at: SlotAt, of: TargetRef, how: ReplaySample, view: Option<Arc<()>>, into: Option<u32>,
+    ) -> Origin {
         let id = self.next_sample;
         self.next_sample += 1;
         let origin = Origin::sample(self.seq, Some(id), &how, view);
-        self.push(at, ReplayOp::Sample { of, id, how });
+        self.push(at, ReplayOp::Sample { of, id, how, into });
         origin
     }
 

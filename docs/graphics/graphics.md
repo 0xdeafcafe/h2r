@@ -510,9 +510,17 @@ persisted through wgpu. What is done instead:
   retain their pipelines, and queued compile slots use weak references
   so eviction can free the inputs of work that has yet to start.
   `Nv2aShaders::follow_map` drops cached texture groups on map changes.
+- **Frame-buffer copies are a fixed pool.** A draw that samples a frame
+  buffer reads a copy of it, a texture at the target's size (about 19 MB
+  at 2560x1920). The device keeps at most three per surface size and
+  format and eight in all, made once (`Backend::snapshot_surface`) and
+  refilled in place by a GPU copy (`Backend::snapshot_surface_into`), so
+  however many draws sample the frame, writing it in between, the copies
+  held stay the same (docs/graphics/d3d.md, "Frame buffers as textures",
+  for the ordering and the backends).
 - **Frame-buffer copies are destroyed, not just dropped.** A copy for a
-  draw that samples a frame buffer (`Backend::snapshot_surface`, a new
-  texture at the target's size: about 19 MB at 2560x1920) is a
+  draw that samples a frame buffer (a pool slot replaced or dropped, or a
+  held post-process draw's own copy) is a
   `HostTexture` whose handles share one release token. When the last
   handle drops, the texture goes on its backend's released list, and the
   backend destroys it at its next present but one

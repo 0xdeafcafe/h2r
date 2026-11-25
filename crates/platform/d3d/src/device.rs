@@ -99,8 +99,9 @@ impl<B: Backend> Device<B> {
         self.frame_snaps.forget(surface);
     }
 
-    /// Frame-buffer copies the device holds for sharing between draws
-    /// (bounded; `frame_snaps.rs`).
+    /// Frame-buffer copy textures the device holds: its pool of copies,
+    /// refilled by later draws and kept across presents (at most
+    /// [`FRAME_COPY_TEXTURES`]; `frame_snaps.rs`).
     pub fn frame_snapshots_held(&self) -> usize {
         self.frame_snaps.len()
     }
@@ -113,6 +114,7 @@ pub use projection::widen_projection_rows;
 mod display;
 mod fragments;
 mod frame_snaps;
+pub use frame_snaps::{MAX_SLOTS as FRAME_COPY_TEXTURES, SLOTS as FRAME_COPY_SLOTS};
 mod external_sequence;
 pub use external_sequence::{ExternalStep, ExternalTargets, PreparedSequence};
 mod mirror;
@@ -480,6 +482,11 @@ pub struct Stats {
     /// Draws that sampled a frame buffer through a copy an earlier draw
     /// made, the surface unwritten since (`device/frame_snaps.rs`).
     pub frame_snapshot_reuses: u64,
+    /// Of [`frame_snapshots`](Self::frame_snapshots), copies that made a
+    /// texture: a pool slot's first fill, or one the backend could not
+    /// refill. The rest refilled a slot's texture
+    /// ([`Backend::snapshot_surface_into`]).
+    pub frame_copy_textures: u64,
     /// Draws split into several pieces by scissor rectangles
     /// ([`ResolvedDraw::clip_rects`]).
     pub scissor_split_draws: u64,
@@ -1187,9 +1194,9 @@ pub struct Device<B: Backend> {
     /// Textures over the depth buffer, made from `depth_copy`, by header
     /// and effective channel signs.
     depth_alias: HashMap<raster::DepthAliasKey, raster::DepthAlias<B::Texture>>,
-    /// Frame-buffer copies shared by the draws that sample them while
-    /// their surface is unwritten (`frame_snaps.rs`).
-    frame_snaps: frame_snaps::FrameSnapshots<B::Surface, B::Texture>,
+    /// The pool of frame-buffer copies, each shared by the draws that
+    /// sample it while its surface is unwritten (`frame_snaps.rs`).
+    frame_snaps: frame_snaps::FrameSnapshots<B::Surface, B::Texture, raster::CopyKey>,
     /// Lazy depth levels: the texture each dirty depth level was last
     /// sampled through ([`Backend::depth_level_texture`]), until it is drawn
     /// into, refilled or dropped.
@@ -5512,8 +5519,8 @@ impl<B: Backend> Device<B> {
             self.display.shown_lost = false;
         }
         // Frame-buffer copies never cross a present: a frame owner replays
-        // each frame's samples with that frame.
-        self.frame_snaps.clear();
+        // each frame's samples with that frame. The pool's textures stay.
+        self.frame_snaps.present();
         let metadata = crate::present_camera::Present::Guest {
             image: self.present_cameras.get(shown),
             reference: false,
@@ -6131,6 +6138,8 @@ impl<B: Backend> Device<B> {
         let mut aliases: [Option<raster::DepthAliasKey>; 4] = [None; 4];
         let mut depth_levels: [Option<u32>; 4] = [None; 4];
         let mut bound = self.textures;
+        // The frame-buffer copies this draw binds are pinned until the next.
+        self.frame_snaps.begin_draw();
         #[allow(unused_mut)]
         let mut shader = self.shader_inputs(mem, parts.vertex, &parts.layout, &parts.words)?;
         let state = self.translate_state(&parts.words);

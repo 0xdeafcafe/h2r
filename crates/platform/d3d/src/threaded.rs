@@ -31,7 +31,8 @@
 //!   the same reason, as with a synchronous backend. Without a judge they
 //!   are speculated as drawn.
 //! - **Other outcomes** (`clear_rects`, `write_surface`, `copy_surface`,
-//!   `snapshot_surface`, `surface_texture`, `depth_alias_texture`) are
+//!   `snapshot_surface`, `snapshot_surface_into`, `surface_texture`,
+//!   `depth_alias_texture`) are
 //!   answered as the inner backend answers every valid call: drawn,
 //!   `true`, `Some`.
 //! - When the inner backend later gives another answer than the one
@@ -1413,6 +1414,39 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             Ok(())
         });
         Ok(Some(t))
+    }
+
+    /// Queued as a sample of the same proxy: the render thread refills the
+    /// texture it holds for `into` in queue order, after the draws queued
+    /// before that read it. Where the inner backend cannot refill it (or
+    /// holds none, as after a frame owner's replay kept another), the
+    /// proxy gets a new copy instead, so the answer is always `true`.
+    fn snapshot_surface_into(
+        &mut self,
+        surface: u32,
+        opaque: bool,
+        into: &mut ProxyTexture<B>,
+    ) -> Result<bool, String> {
+        self.check()?;
+        let id = into.id;
+        let shared = Arc::clone(&self.shared);
+        let sample = self.frame_owner.as_ref().map(|_| ReplaySample::Snapshot { opaque });
+        self.post_sample(surface, id, sample, move |w| {
+            let s = w.surface(surface)?;
+            if let Some(t) = w.textures.get_mut(&id)
+                && w.inner.snapshot_surface_into(s, opaque, t)?
+            {
+                return Ok(());
+            }
+            match w.inner.snapshot_surface(s, opaque)? {
+                Some(h) => {
+                    w.textures.insert(id, h);
+                }
+                None => shared.miss("snapshot_surface returned None".into()),
+            }
+            Ok(())
+        });
+        Ok(true)
     }
 
     fn clear_pixel_count(&mut self) -> Result<(), String> {
