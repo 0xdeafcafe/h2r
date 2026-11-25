@@ -257,10 +257,10 @@ fn swap_entry(m: &mut dyn GuestMemory, entry: u32) -> Result<(), Refusal> {
         block_bytes.extend_from_slice(&pair.to_le_bytes());
     }
     let rows = at(block, BLOCK_MATRICES)?;
-    block_bytes.extend_from_slice(&m.bytes(rows, total * MATRIX_STRIDE)?);
+    block_bytes.extend_from_slice(&m.bytes(rows, (total * MATRIX_STRIDE) as usize)?);
     for &index in &map {
         let row = at(rows, u32::from(index) * MATRIX_STRIDE)?;
-        block_bytes.extend_from_slice(&m.bytes(row, MATRIX_STRIDE)?);
+        block_bytes.extend_from_slice(&m.bytes(row, MATRIX_STRIDE as usize)?);
     }
     m.write(at(NODE_BLOCKS, cursor)?, &block_bytes)?;
     m.set_u32(setup::PALETTE_CURSOR, end)?;
@@ -426,10 +426,6 @@ mod tests {
         )
     }
 
-    fn unchanged(m: &FakeGuest) -> bool {
-        swapped(m) == (KEY, 0, FLAGS) && m.u32(setup::PALETTE_CURSOR).unwrap() == OLD_BLOCK
-    }
-
     fn rows(m: &FakeGuest, block: u32, count: u32) -> Vec<f32> {
         (0..count * 12)
             .map(|i| m.f32(block + BLOCK_MATRICES + 4 * i).unwrap())
@@ -465,8 +461,8 @@ mod tests {
         // The retail block, the body and the record's other fields are
         // untouched: only the drawn geometry moved.
         assert_eq!(
-            m.bytes(NODE_BLOCKS, OLD_BLOCK).unwrap(),
-            before.bytes(NODE_BLOCKS, OLD_BLOCK).unwrap()
+            m.bytes(NODE_BLOCKS, OLD_BLOCK as usize).unwrap(),
+            before.bytes(NODE_BLOCKS, OLD_BLOCK as usize).unwrap()
         );
         assert_eq!(
             m.bytes(BODY, 0x300).unwrap(),
@@ -568,11 +564,17 @@ mod tests {
         ] {
             let mut m = fixture();
             edit(&mut m);
+            // The case may itself set the handle (the negative one): the
+            // record must keep whatever the retail walk left.
+            let retail_handle = m.u32(RENDER_RECORDS + RECORD_NODES).unwrap();
             swap_entry(&mut m, ENTRY).unwrap();
             let key = m.u32(RENDER_RECORDS + RECORD_KEY).unwrap();
             let handle = m.u32(RENDER_RECORDS + RECORD_NODES).unwrap();
             let cursor = m.u32(setup::PALETTE_CURSOR).unwrap();
-            assert!((key, handle, cursor) == (KEY, 0, OLD_BLOCK), "{name}");
+            assert!(
+                (key, handle, cursor) == (KEY, retail_handle, OLD_BLOCK),
+                "{name}"
+            );
         }
     }
 
@@ -624,8 +626,13 @@ mod tests {
         ] {
             let mut m = fixture();
             edit(&mut m);
+            // The palette case moves the cursor itself: it must not move again.
+            let cursor = m.u32(setup::PALETTE_CURSOR).unwrap();
             swap_entry(&mut m, ENTRY).unwrap();
-            assert!(unchanged(&m), "{name}");
+            assert!(
+                swapped(&m) == (KEY, 0, FLAGS) && m.u32(setup::PALETTE_CURSOR).unwrap() == cursor,
+                "{name}"
+            );
         }
     }
 }
