@@ -15,7 +15,7 @@ const CALLBACK_RETURN: u32 = 0x0003_bb2e;
 const SORT_RETURN: u32 = 0x0003_bb73;
 const DEFAULT_COMPARE: u32 = 0x0003_bb80;
 const DISTANCE_COMPARE: u32 = 0x0003_bbd0;
-const BUILD_CALLER: u32 = engine::points::scene_effects::LAYER_BUILT.base;
+const BUILD_CALLER: u32 = engine::points::scene_effects::LAYER_BUILD_RETURN;
 const SLOT: usize = 24;
 
 #[derive(Clone, Copy)]

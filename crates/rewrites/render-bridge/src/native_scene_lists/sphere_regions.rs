@@ -224,11 +224,12 @@ pub(super) fn install(b: &mut Builder) {
                 }
                 let bsp = ptr(&*m, guest::ACTIVE_STRUCTURE)?;
                 let generation = crate::native_map_work::bsp_generation();
+                let mem: &dyn GuestMemory = &*m;
                 let key = (
                     generation,
                     bsp,
-                    m.u32(at(bsp, graph::layout::CLUSTER_COUNT)?)?,
-                    m.u32(at(bsp, graph::layout::PORTAL_COUNT)?)?,
+                    mem.u32(at(bsp, graph::layout::CLUSTER_COUNT)?)?,
+                    mem.u32(at(bsp, graph::layout::PORTAL_COUNT)?)?,
                 );
                 state.enter(key);
                 let (selection, stamp) = select(&*m, vis, bsp, generation, &mut state.graph)?;

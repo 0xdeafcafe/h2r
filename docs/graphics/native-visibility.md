@@ -216,7 +216,7 @@ portal plane (or the root sentinel), depth and a frustum built by
 `visibility::window_record`. The region records carry the six counts and
 first-window indices. The caller sorts a separate ordinal table.
 
-The comparison at `0x001732fe` checks the proposed writes while the
+The comparison at `0x00173302`, the instruction after the writer call's return, checks the proposed writes while the
 node backlinks and cluster-to-region lookup still exist and before
 the ordinal sort. A repeat with the same ordered paths, frustum inputs,
 depths, planes and BSP generation can publish the Rust records. The
@@ -248,7 +248,7 @@ one; axes right, up and back), out to the distance `k` at view frustum `+0x88`:
 At the merged node's call to `0x00163db0`, the native record builder
 uses the live frustum's scaled matrix and tangent rectangle. It writes
 the view ordinal, rectangle, four corners, eye, bounds, six planes and
-four vectors from the eye to the corners. The reference arm at `0x00172f71` checks all
+four vectors from the eye to the corners. The reference arm at `0x00172f73`, after the call's return and its `test al, al`, checks all
 0x108 slot bytes, the argument word used as scratch, and the returned
 general registers. Exact repeats in that slot and BSP use the Rust writer.
 Camera or rectangle changes reopen the comparison. An armed plane

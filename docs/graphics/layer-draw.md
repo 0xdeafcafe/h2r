@@ -69,7 +69,7 @@ the placement records. A foreign callback can change the list and ends
 whole-list planning.
 
 `scene_extract::layer_sort::geometry` orders the full slots, including ties.
-The dispatch boundary at `0x0003bc4f` compares the original result count
+The dispatch boundary at `0x0003bc51`, the instruction after the build call's return, compares the original result count
 and every byte, including the last rejected scratch slot when present.
 For a matching list the front-end retains the Rust slots and the input
 spans it read. With the same BSP generation, view, visibility and input
