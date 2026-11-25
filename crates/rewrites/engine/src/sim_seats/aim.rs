@@ -234,6 +234,3 @@ pub fn params(c: &mut CpuAbi, g: &mut impl Memory, pc: u32) -> Result {
     c.eax = c.ebx;
     g.call(c, ZOOM, PRIMARY_ZOOM)
 }
-
-#[cfg(all(test, feature = "differential"))]
-mod differential;
