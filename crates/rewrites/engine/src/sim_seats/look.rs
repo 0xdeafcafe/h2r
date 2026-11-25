@@ -14,6 +14,9 @@ const ZERO: u32 = 0x0045_dbd8;
 const TINY: u32 = 0x0045_dbdc;
 
 type Checked = std::result::Result<Option<TransferAbi>, GuestFault>;
+// The segment helpers that only store: their fault is the same as a
+// body error, which the segment treats as a decline.
+type Unit = std::result::Result<(), GuestFault>;
 
 /// Sample a signed axis against its profile's evenly spaced response curve.
 pub fn curve(cpu: &mut CpuAbi, ram: &mut impl SegmentMemory, pc: u32) -> Checked {
@@ -320,7 +323,7 @@ fn search(c: &mut CpuAbi, m: &mut impl Memory) -> Result {
 /// The yaw/pitch pair the target update leaves: the raw rates, or the
 /// blend a target pulls them by. Stored scaled by the timestep at
 /// `edi`, the input record being built.
-fn blend(c: &mut CpuAbi, m: &mut impl Memory, assist: bool) -> Result<()> {
+fn blend(c: &mut CpuAbi, m: &mut impl Memory, assist: bool) -> Unit {
     let sp = c.esp;
     if !assist {
         // 0x1862f7: keep the rates as they are.
@@ -878,7 +881,7 @@ fn publish(c: &mut CpuAbi, m: &mut impl Memory) -> Result {
 
 /// The button state of a weapon the unit does not hold: it returns to the
 /// seat only while the previous state said so, and the count is positive.
-fn held_button(c: &mut CpuAbi, m: &mut impl Memory, button: u32) -> Result<()> {
+fn held_button(c: &mut CpuAbi, m: &mut impl Memory, button: u32) -> Unit {
     let held = m.u8(at(c.ebp, 0x90))?;
     logic(c, u32::from(held), 0x80);
     if held != 0 {
@@ -895,7 +898,7 @@ fn held_button(c: &mut CpuAbi, m: &mut impl Memory, button: u32) -> Result<()> {
 }
 
 /// One bit of the input's flag words: the conditional or/and pair.
-fn or_bit(c: &mut CpuAbi, m: &mut impl Memory, offset: u32, mask: u32, on: bool) -> Result<()> {
+fn or_bit(c: &mut CpuAbi, m: &mut impl Memory, offset: u32, mask: u32, on: bool) -> Unit {
     let word = m.u32(at(c.edi, offset))?;
     let word = if on { word | mask } else { word & !mask };
     logic(c, word, 1 << 31);
@@ -903,7 +906,7 @@ fn or_bit(c: &mut CpuAbi, m: &mut impl Memory, offset: u32, mask: u32, on: bool)
 }
 
 /// One bit of the input's third byte: the conditional or/and pair.
-fn or_byte(c: &mut CpuAbi, m: &mut impl Memory, mask: u8, on: bool) -> Result<()> {
+fn or_byte(c: &mut CpuAbi, m: &mut impl Memory, mask: u8, on: bool) -> Unit {
     let byte = m.u8(at(c.edi, 0x20))?;
     let byte = if on { byte | mask } else { byte & !mask };
     logic(c, u32::from(byte), 0x80);
@@ -912,7 +915,7 @@ fn or_byte(c: &mut CpuAbi, m: &mut impl Memory, mask: u8, on: bool) -> Result<()
 
 /// The 16-bit or of the third word the zoom counters use; its clear is
 /// the matching 8-bit and.
-fn or_word16(c: &mut CpuAbi, m: &mut impl Memory, mask: u16, on: bool) -> Result<()> {
+fn or_word16(c: &mut CpuAbi, m: &mut impl Memory, mask: u16, on: bool) -> Unit {
     if on {
         let word = m.u16(at(c.edi, 0x20))? | mask;
         logic(c, u32::from(word), 0x8000);
