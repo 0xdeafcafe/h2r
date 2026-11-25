@@ -265,7 +265,8 @@ export only.
    `theater.status`'s `watch_failure`. The start hash is made of the arena
    and the extension records' digest; the film's `HDET` section holds both
    by page, so the reason names the arena pages or the extension state
-   that differ.
+   that differ. `H2_THEATER_ARENA_DUMP` writes the arena at both starts for a
+   byte comparison.
 
 No process is started and nothing is booted to watch a film or to seek in
 one. `h2 theater play FILE`, `h2 theater verify` and the clip export

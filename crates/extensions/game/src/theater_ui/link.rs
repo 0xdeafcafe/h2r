@@ -56,7 +56,17 @@ pub(super) struct Ready {
     /// A film of this machine's own library (the film page after a film
     /// watched in the running game): no account selected it.
     local: bool,
+    /// Menu updates a local page has waited for the menu to settle.
+    waited: u32,
 }
+
+/// A film page reopened after a film watched in the running game waits for
+/// the main menu: its screen is on top, and has been for this many updates.
+/// The page is opened over a menu that is still building its own screens
+/// otherwise, and the check that the page is on top fails. It gives up
+/// waiting after [`MENU_WAIT_UPDATES`].
+const MENU_SETTLE_UPDATES: u32 = 20;
+const MENU_WAIT_UPDATES: u32 = 900;
 
 pub(super) fn share_url(
     archive: &live_hle::films::Archive,
@@ -258,6 +268,7 @@ impl Theater {
                                 generation,
                                 reply,
                                 local: false,
+                                waited: 0,
                             });
                         } else if let Some(reply) = reply {
                             let _ = reply.send(Err("Theater selection changed".into()));
@@ -319,6 +330,7 @@ impl Theater {
             generation,
             reply: None,
             local: true,
+            waited: 0,
         });
     }
 
@@ -471,6 +483,21 @@ impl Feature for Driver {
                             .and_then(|l| {
                                 l.signed_in.as_ref()?.signed_in_account(ready.controller)
                             });
+                        if ready.local && ready.waited < MENU_WAIT_UPDATES {
+                            let up = cx.read(|m| ui_watch::read(&ReadGm(m)).top.is_some());
+                            if !up || ready.waited < MENU_SETTLE_UPDATES {
+                                let mut slot =
+                                    theater.0.link.lock().unwrap_or_else(|e| e.into_inner());
+                                if slot.is_none() {
+                                    *slot = Some(Ready { waited: ready.waited + 1, ..ready });
+                                }
+                                drop(slot);
+                                let out = cx
+                                    .call(GuestCall::new(points::UI_UPDATE.base).args([elapsed]))
+                                    .await?;
+                                return Ok(Ret::new(out.eax, 4));
+                            }
+                        }
                         let result = if (!ready.local && account.map(|(id, _)| id) != Some(ready.account))
                             || theater.state().open_generation != ready.generation
                         {
