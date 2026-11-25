@@ -708,7 +708,7 @@ allocation order is covered.
 
 ### 9.3 Differential tests
 
-`crates/rewrites/engine/tests/sim_havok_differential.rs`, `differential` feature.
+`crates/rewrites/engine/tests/sim_physics_differential.rs` (a module of `tests/it.rs`), `differential` feature.
 
 - **Per entry.** From a fixture image, run the lifted entry on the
   interpreter and the Rust entry; compare all of memory outside the
@@ -787,7 +787,6 @@ Coordinator commands per slice (lanes run nothing):
 
 ```
 cargo test -p sim-havok
-cargo test -p engine --features differential --test sim_havok_differential
 cargo test -p engine --features differential --test it sim_physics_differential::
 cargo test -p agent havok
 ```
