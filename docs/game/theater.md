@@ -1,48 +1,36 @@
 # Theater: saved films, free camera and spectating
 
-For the unified host recording, binary layout, reader API and current replay path, see
-[the film format](film-format.md). The tier-B v1 design and its baseline
-experiments follow below.
+The design of the film and its player is
+[theater-design.md](theater-design.md); the files are
+[the film format](film-format.md). This page has the selector, the
+controls, the web tier and the research the design rests on.
 
 This is the design for a Halo 3-style Theater in h2recomp: record a game
 as a film, then watch it again with pause, fast forward, rewind, a free
 camera, another player's view, clips and screenshots. It also covers the
 "event" side: watching a game live as a spectator, with a player list and
-scoreboard. **The in-game selector and host-film player are implemented. The
-real-host hash and camera experiments are pending.** Playback uses the determinism
-harness from the high-frame-rate work
-([high-framerate.md](high-framerate.md), phase 1, built) and on
-levels running at a steady 30 fps ([gameplay-budget.md](../perf/notes/gameplay-budget.md)).
+scoreboard.
 
 In short:
 
-- **A film is a recording of everything the guest can't compute itself.**
-  The recompiled game already runs on a logical clock, so its schedule
-  depends only on its own work and its inputs. Record the inputs (pad
-  reads, network receives, host randomness, the boot conditions) and the
-  same build replays the session exactly. The harness (`crates/extensions/lockstep`)
-  already records and replays pad reads by read index.
-- **That exact replay is the first slice**: record a game, watch it back
-  from the start with pause, fast forward and slow motion, and export
-  screenshots and clips by re-rendering offline. It needs no game
-  knowledge beyond what the harness has, and it works for every mode.
+- **A film is the game options and the simulation updates.** Every tick
+  of every game runs from one update record the engine builds, and a game
+  starts from one options block. A film is those two things, and playback
+  is the game simulating them again in the running game.
 - **A free camera and rewind need a second layer that Halo itself
   provides.** Halo 2 keeps its whole simulation in one fixed 4 MiB
   game-state block (the block its checkpoints save), and its camera
-  director lives outside that block, in static data. A film can carry
-  compressed copies of the block as keyframes and the per-tick player
-  actions. Playback restores a keyframe and feeds the actions in, so the
-  camera and the rendering can change without the simulation noticing.
-  This is how Halo 3's Theater is generally described. One experiment
-  decides whether it holds for Halo 2 on our runtime; it comes before any
-  free-camera work.
+  director lives outside that block, in static data. The player keeps
+  compressed copies of the block as it plays, and rewinds by restoring
+  one and feeding the updates in, so the camera and the rendering can
+  change without the simulation noticing. This is how Halo 3's Theater
+  is generally described.
 - **Halo 2 multiplayer is not lockstep.** The task brief assumed it was.
   The retail XBE has both a "synchronous" and a "distributed" simulation
   mode, and community sources say multiplayer is host-authoritative and
-  distributed, with lockstep only for campaign and co-op. So a film made
-  on a networked *client* can be replayed exactly (it records what that
-  client received) but can't be re-simulated from player actions alone.
-  The host's film can.
+  distributed, with lockstep only for campaign and co-op. A networked
+  *client* is sent state, not updates, so its game can't be simulated
+  again from a film. The host's can, and the host's film is the game's.
 - **The game's own director already has the Theater camera set.** A
   per-local-player camera record selects an update function; the retail
   name table lists following, orbiting, flying, editor, first person and

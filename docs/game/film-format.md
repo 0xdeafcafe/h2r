@@ -1,239 +1,229 @@
 # Halo 2 engine films
 
-An `.h2film` records the game that the host simulated. Theater boots the
-matching recompiled image, supplies the recorded external inputs and lets the
-guest advance its own objects, physics and rules. On a distributed game the
-recording machine matters. Only an authoritative host observes the actions it
-accepted for all players. A film from a client describes that client's game.
+Status: Design. The film file's tick chunks, the action capture at the simulation update and the stats container are built; the game start, the update's tail, extension blocks and one file for each game are not ([theater-design.md](theater-design.md#slices)).
+Code: `crates/live/film/src/file.rs` (`FilmWriter`, `FilmReader`), `crates/live/film/src/blam` (the stats container), `crates/extensions/game/src/theater/record.rs` (the recorder). Tests: `crates/live/film/src/file/tests.rs`, `crates/live/film/src/tests.rs`.
+Switch: `film-autorecord` (on), listed in [switches.md](../runtime/switches.md).
+
+An `.h2film` is a film of one game: the game options the game started
+from and one simulation update for every tick after. Theater loads the
+map with those options in the running game and lets the engine advance
+its own objects, physics and rules from the updates
+([theater-design.md](theater-design.md)). The `.h2stats` file beside it
+is the stats stream: events, scores and poses for Live and the web
+viewer. This page is both files and the rules for recording them. The
+rule that must hold: a film holds nothing of the machine that recorded
+it, no disk file, profile, controller read, packet or memory image.
 
 ## Inspired by Halo 3 theater
 
-The recording has one clock. On the console, a tick supplies the commands
-the host accepted, then the engine advances the match. In the browser,
-that tick supplies a pose change or an event. In Live, the same event can
-credit a kill or close the scoreboard. Each consumer reads the same compressed time chunk and skips unneeded
-records by their declared length after inflation. Compression restarts at
-each time chunk. Large machine snapshots are stored separately so that a clip or
-match page can fetch only the public byte ranges it needs.
+| | Halo 3 ([notes/halo3-film.md](notes/halo3-film.md)) | Here |
+|---|---|---|
+| Start state | the game options block: map, both variants by value, the players' configuration, the seed, the tick rate | the engine's own options block by value, with the two random words |
+| Data | one simulation-update record a tick | the update the engine builds each tick, read at `SIM_UPDATE_APPLY` |
+| Mid-game start | one game state, in a clip | a start point: the game-state arena |
+| Seek points in the file | none | none |
+| Version gate | executable type, determinism version, map signature | XBE digest, simulation contract, hook digest, map digest |
+| Playback | load the map with the options, apply the updates | the same, as a local game |
 
-A clip holds the canonical film/game ID and the two ticks delimiting the
-excerpt. Saving, sharing or changing its camera does not copy the recording.
-To rewind in the engine, restore the nearest available machine keyframe at
-or before the target and run the intervening inputs. The archived host's
-original command order also applies when watching another player.
+A clip is the film's id and two ticks. Saving, sharing or changing its
+camera copies nothing.
 
 ## Making and opening a film
 
-A leased dedicated host records by default. So does `h2 play`, into the
-film library ([Recording every game](#recording-every-game)). To choose
-the file, pass `--film FILE` to `h2 play`, `h2 run` or `h2 serve`, or set
-`H2_FILM_OUT`.
-The destination must be a new file. Put it in `<data>/films/` or the
-configured `H2_FILM_DIR` for library discovery. Recording starts at boot
-so that a player can reproduce the lobby, menus and the match's initial
-conditions. A multiplayer game-over seals the recording. An orderly exit
-also seals it. A default recording instead cuts a film at each game's end
-and records on ([One film per game](#one-film-per-game)).
+`h2 play` records every game into the film library
+([Recording every game](#recording-every-game)), and a leased dedicated
+host records each match. To choose the file, pass `--film FILE` to
+`h2 play`, `h2 run` or `h2 serve`, or set `H2_FILM_OUT`. The destination
+must be a new file. It takes the session's first game; a later game of
+the same session goes to `FILE` with `-2`, `-3` and so on before the
+extension.
 
 ```sh
 h2 play --film match.h2film --level ascension
-h2 theater play match.h2film --disc halo2.iso --out image --data original-data
+h2 theater play match.h2film
 ```
 
-These examples assume `H2_DISC` is set for recording and that the second
-command's disc, image and installed content match the recording.
-`--data` supplies initial files referenced by digest. Theater materialises a
-private guest disk for each play or seek. Any larger initial file kept by
-reference must be the version the recorder saw at boot.
+Watch in the game's Theater plays a film in the running game.
+`h2 theater play` starts the game with the film as its first map. Both
+need the same build and the film's map; neither reads the recorder's
+data directory, and there is no `--data`.
 
 ## Recording every game
 
-`h2 play` records each session into the film library (`H2_FILM_DIR`, or
-`<data>/films`) when no `--film` or `H2_FILM_OUT` names a file. Each game
-the session plays becomes a film of its own in Theater's Recent tab
-([One film per game](#one-film-per-game)). The decision and the library
-rules live in `crates/extensions/game/src/theater/autorecord.rs`.
+`h2 play` records each game into the film library (`H2_FILM_DIR`, or
+`<data>/films`) when no `--film` or `H2_FILM_OUT` names a file. The
+decision and the library rules live in
+`crates/extensions/game/src/theater/autorecord.rs`.
 `H2_FEATURES=-film-autorecord` turns it off.
 
-- **One film per game.** The session records one tape from boot to exit.
-  Each game's end cuts the tape so far into a film whose header describes
-  that game, and recording carries on. At the session's end a game still
-  in play (a campaign mission, a multiplayer game, a game left running)
-  is cut the same way, and the tape is deleted. A recording that failed
-  still cuts the game in play, up to the tick it stopped at. A session that plays no game (menus, Theater,
-  settings) leaves no film.
-- **Names.** `auto-YYYYMMDD-HHMMSS-mmm.h2film`, the UTC time the film was
-  written; the running tape takes the session's start. Recent sorts by
-  the header's start time, which for a game's film is its game's start,
-  newest first.
-- **The library cap.** Before each game's film is written, and before a
-  session records, the library first recovers what a stopped session left
-  (below), then keeps the 24 newest unsaved default films, so the new one
-  makes 25, the Recent tab's length. A default film or tape a stopped
-  session left unsealed for an hour is removed when nothing of it could be
-  recovered. Saved films, films named with `--film` and downloaded
-  archives are never removed. The keyframe cache keeps its own cap,
-  [`theater.cache_cap_gib`](settings-menu.md#theater-keyframe-cache).
-- **Player features stay on.** A film named with `--film` turns off Live
-  session links, the Custom Game Browser advertisements and its filters,
-  Firefight's director, the rules start gate, Forge and editor map reloads
-  while it records and when it plays back. A default recording keeps them,
-  and its header's `player_features` makes the replay install the same
-  features, so both run one plan (`registration::non_player` and
-  `registration::local_forge` in `crates/apps/boot/src/registration.rs`
-  read the header, not whether the boot records or replays). Firefight's
-  director runs in that replay too. The start gate does not run in any
-  replay.
+- **One film per game.** A film opens when a game's map is activated and
+  seals when the game ends ([One film per game](#one-film-per-game)). A
+  session that plays no game (menus, Theater, settings) writes nothing.
+- **Names.** `auto-YYYYMMDD-HHMMSS-mmm.h2film` and the same stem with
+  `.h2stats`, from the UTC time the game started. Recent sorts by that
+  time, newest first.
+- **The library cap.** Before a game's film is opened the library keeps
+  the 24 newest unsaved default films, so the new one makes 25, the
+  Recent tab's length. Saved films, films named with `--film` and
+  downloaded films are never removed.
+- **Recording changes no feature.** A session records with the plan it
+  plays with: Live session links, the Custom Game Browser, Firefight's
+  director, the rules start gate and Forge stay on. A film's stamp names
+  the simulation's hooks, not the session's features
+  ([Determinism and verification](#determinism-and-verification)).
 - **One film observer.** A recording session plans the film observer
   (`theater-film`, `theater::OBSERVER_FEATURE`) beside the in-game
   Theater's screens (`theater-films`, `theater-film-detail`). No other
   feature takes its id; `registration/tests.rs` builds that plan.
-- **Outside changes are noted, not fatal.** A Live session link joined
-  (at launch with `--join`, or in the game) and the first authorized
-  editor write reach the guest from outside the tape. The recording
-  carries on and prints the change; `theater.status` lists it in `notes`.
-  The link joins from a menu, so each game after it is cut as usual: its
-  film opens at the game's start from the tape's keyframes, which hold the
-  joined session, and the network traffic of a Live game is on the tape
-  (`NETR`). An editor write changes a running game's ticks, so the game in
-  play is dropped from the film list (`Session::outside_change`); the
-  other games stay.
+- **Outside changes end the film.** An editor write or an agent API write
+  changes a running game's ticks from outside the update. The film is
+  sealed at the tick before it (`Session::outside_change`) and
+  `theater.status` lists the reason in `notes`. A change a feature records
+  as an extension block does not end the film
+  ([The film file](#the-film-file)).
+- **A film being watched is not recorded.**
 - **Sessions that skip recording.** An `h2 lab` job (its frame times stay
-  comparable; `H2_FILM_OUT` records one on purpose) and a session with
-  `H2_LOCKSTEP`, `H2_INPUT_RECORD` or `H2_INPUT_REPLAY` print
-  `theater: not recording this session: <reason>` once at boot. A recording
-  session prints `theater: recording this session; each game's film goes to
-  <dir>`.
+  comparable; `H2_FILM_OUT` records one on purpose) prints
+  `theater: not recording this session: <reason>` once at boot. A
+  recording session prints `theater: recording this session; each game's
+  film goes to <dir>`.
 - **The session says what it kept.** At the session's end it prints one
-  line: `theater: N films saved to <dir>`, or `theater: no film: <reason>`
-  (no game was played, a game's cut failed, or the recording failed).
-  `theater.status` reports the same while it runs: the tape, whether a
-  game is on it, the films cut, the last discard reason, the notes and any
-  failure ([agent API](../runtime/agent-api.md#theater-transport)).
-- **Local recordings.** Both automatic and explicitly named machine recordings
-  stay on the player’s computer. The account archive accepts shareable split
-  input films. A dedicated host uploads its match through its lease.
-- **The tape records games.** Machine keyframes, D3D barriers and the
-  local keyframe cache belong to games: outside one (main menu, lobby,
-  pregame, Theater, settings) no capture is attempted and no capture mark
-  is written. The first capture of a game lands within its first 30
-  ticks, then every 150. The tick and call stream does not stop: a film
-  replays from boot, so the tape keeps the menu ticks and calls that
-  carry a replay from boot to a game's start, and a cut's keyframes
-  resume at the game's first one. This is the menu state the tape keeps.
+  line: `theater: N films saved to <dir>`, or `theater: no film: <reason>`.
+  `theater.status` reports the same while it runs: whether a game is
+  being recorded, the films sealed, the last discard reason, the notes
+  and any failure
+  ([agent API](../runtime/agent-api.md#theater-transport)).
+- **Local films** stay on the player's computer until the player shares
+  one or the account library's background upload takes it
+  ([theater-design.md](theater-design.md#account-film-library)). A
+  dedicated host uploads its match through its lease.
 - **An exit without a teardown still seals.** The boot loop holds a seal
   (`theater::Session::seal_on_drop`) across its slice loop, so an error
-  exit or a panic that skips the final finish cuts the game in play and
-  deletes the tape as a clean exit does. A SIGTERM, a window close and
-  Cmd-Q all end the run through the loop's teardown. A hard kill (SIGKILL,
-  a power loss) still leaves an unsealed tape; the next session that
-  records recovers it (`autorecord::recover`, `film::recover_tape`), once
-  the tape has been idle past the abandoned interval, so a running
-  recording is never touched.
-- **A recovered tape keeps its playable part.** The recorder holds the
-  public ranges directory, the per-game descriptors and up to 127 unflushed
-  ticks in memory, so an unsealed tape is envelopes and nothing else.
-  Recovery rebuilds both directories from the chunks, rewrites the kept
-  envelopes contiguously as a film of its own, and ends the film at the
-  tape's last D3D capture mark whose tick a flushed chunk covers: the
-  recorder flushes its call batch and every checkpoint before such a mark,
-  so its slice, tick and call counts are exact, and at most 150 ticks of
-  the game are lost. Everything past that mark is dropped, including
-  checkpoints and call batches recorded past it, so a replay is never
-  asked for state the tape does not hold. The recorder
-  appends a header naming the game when it starts and when its roster
-  changes (`Session::describe_tape`: map, variant, players), and an empty
-  one when the game is cut or left; recovery takes the game from the
-  tape's last header, so a game a crash cut off is listed with its map and
-  players, without scores, and opens at boot. A tape of menus, or one
-  whose game was already cut into its own film, recovers with no map and
-  no players; Theater's list shows games only, so it is on disk and not
-  listed; a tape with no such mark —
-  a session that died outside a game — is deleted, as a session that
-  played no game leaves no film.
+  exit or a panic that skips the final finish seals the game in play as a
+  clean exit does. A SIGTERM, a window close and Cmd-Q all end the run
+  through the loop's teardown. A hard kill (SIGKILL, a power loss) leaves
+  an unsealed film. The recorder writes a checkpoint of the open chunk
+  every 150 ticks (`FilmWriter::checkpoint`), so the film opens as it
+  stands and loses at most 150 ticks; the library lists it without
+  scores.
 
-Recent lists up to 25 unsaved games. Saving a film moves it to Saved. Opening Theater reads the local library even when Live has no archive entry for the game.
-
-What Theater's Recent tab shows:
+Recent lists up to 25 unsaved games. Saving a film moves it to Saved.
+Opening Theater reads the local library even when Live has no entry for
+the game.
 
 | The game | Recent |
 | --- | --- |
-| Offline, split screen or System Link | The game's default film. |
-| A Live game hosted by a player | The game's default film. Live lists only games with a host film, so this console's film is the only entry. |
-| A Live game on a dedicated host | The host's film from the account's archive, when signed in, and this console's default film as a second entry. The default film replays what this console received. |
+| Offline, split screen, co-op over Live | The game's film, recorded on this machine. |
+| A game this machine hosts (System Link or Live) | The game's film, recorded on this machine. |
+| A System Link or Live game another player hosts | No film from this machine: a client is sent state, not updates. The host's film when the account library has it. |
+| A Live game on a dedicated host | The host's film from the account library, when signed in. |
 
-Recording costs time on every tick. The film checkpoint observer hashes the
-gameplay state and writes the tick's records each tick, and hashes the
-simulation arena every 30 ticks (`Session::checkpoint`, `checkpoint_interval`
-in `crates/extensions/game/src/theater.rs`; `Recording::post_tick` in
-`theater/record.rs`). Every taped HLE call, controller reads included, is
-appended to the tape (`Tap::record`). The recorder samples the pause latch
-between slices (`observe_pause`) and attempts a machine keyframe for the
-local cache every 150 ticks in a game (`CAPTURE_TICKS`,
-`try_capture_point`, gated on the descriptor's match start). A deferred
-capture prints `theater: capture at tick N deferred:` once per set of
-reasons until one lands, then one `theater: captures resumed after N
-deferrals` line; the kernel reports its blockers in whatever order its
-threads answer, so the set, not the string, identifies the deferral, and
-an after-hooks continuation names its hooked point. Boot
-hashes the data directory's start manifest once. An offline session also
-keeps retail pixels for readbacks (`d3d_glue::protected_readbacks`), which
-Live sessions already do. Two presentation features stay off while any
-film records, so the recording's hook plan matches its replay: the
-window's loading picture on the return to the menu (`return_to_menu`) and
-the attract-movie guard, which leaves the retail idle timer
-([Attract timer](../audio/bink-hle.md#attract-timer)).
+Recording costs time on every tick. The update hook copies the update's
+body (`theater/actions.rs`). The observer after the tick hashes the
+gameplay state and writes the stats records, and hashes the simulation
+arena every 256 ticks (`Session::checkpoint`, `Recording::post_tick` in
+`theater/record.rs`). Nothing is recorded outside a game, and no host
+call, controller read or memory image is recorded in one. Every world
+frame of a recording draws inside the render's private random stream
+(`render_rng.rs`), as every frame of a playback does.
 
 ### One film per game
 
-A film replays from boot, so a film of a session's second game holds the
-first game too. The recorder therefore keeps one tape per session and
-cuts it at each game's end (`State::cut_game` in
-`crates/extensions/game/src/theater.rs`, `autorecord::cut`):
+A film is one game, from the activation of its map to its end.
 
-1. The game's closing observations go on the tape's last tick, and the
-   pending HLE call batch is written, as when a film seals.
-2. The tape file is copied as it stands; it holds exactly the bytes
-   written so far, and on APFS the copy is a clone. `film::Writer::fork`
-   continues the copy with the tape's chunk index and time directory.
-3. A cloned track writer closes the copy: the cut's final `HEAD`, the
-   game's `DESC` and summary, `TIDX`, an end mark at this slice, then
-   `CIDX`, `INDX` and the footer. The tape's own writers are untouched and
-   record on.
-4. The tape's local keyframes from the last one before the game's start
-   onwards, with the RAM anchors they encode against, are copied into the
-   cut's keyframe cache (`SidecarWriter::fork`). Their capture marks sit at
-   the same offsets in the cut.
-5. The match description, stats, medals and drop counts start again for
-   the next game. The next game starts once the guest leaves the ended
-   one: a map unload, or a new game whose game-over latch is clear. A
-   game left in play, a multiplayer game (custom, system link or
-   matchmaking) or a campaign mission, is cut when the guest leaves its
-   map, as a game's end is: its film is what was played, and the next
-   game describes itself instead of inheriting the left one's start and
-   map.
+1. **Open.** When `GAME_ACTIVATE` returns success for a scenario that is
+   not the main menu, the recorder creates the film and the stats file
+   and writes the header and the game start.
+2. **The first update** fills the game start's random words and start
+   hash. A game whose arena came from a saved checkpoint, or one already
+   running when recording starts, gets a start point block here.
+3. **Each update** adds a record; every 256 make a tick chunk.
+4. **Seal.** The game-over latch, a map unload or the session's exit
+   writes the open chunk, the trailer, the length and the sealed flag,
+   and closes the stats file with its summary.
 
-A cut is an ordinary sealed v3 film whose final header has its own `id`,
-its game's start as `started_ms`, and `tape_id`, the tape's ID. Its boot
-`HEAD` is the tape's, with the tape's ID and start. The reader accepts
-that boot header only when the final header's `tape_id` names it and the
-image stamp and simulator ABI agree; without `tape_id` both headers must
-match the front, as in any film. The front carries the cut's ID, start
-and `match_start_tick`.
+Tick 1 is the game's first update. A film of a session's third game holds
+nothing of the first two. The next game starts once the guest leaves the
+ended one: a map unload, or a new game whose game-over latch is clear. A
+game left in play, multiplayer or campaign, is sealed when the guest
+leaves its map: its film is what was played.
 
-Theater opens a cut at its game's start, `match_start_tick`
-(`autorecord::opening_tick`, used by `h2 theater play` when no seek or
-clip is asked for). It seeks there from the copied keyframes, or from
-boot when the cache has none. The timeline still covers the whole tape
-up to the game's end, including the games before it.
+## The film file
 
-A cut written at a game's end stalls the game thread for the copy, the
-seal and the keyframe copy. A cut that fails is logged with
-`theater: could not keep this game's film:` and the tape records on.
+All numbers are little-endian. The file is read front to back.
+
+```text
+header, 64 bytes
+   0   8  ASCII "H2FILM5!"
+   8   u16 flags (bit 0 sealed, bit 1 begins at a start point), u16 zero
+  12   u8 ticks per second, u8 seat limit (16), u16 updates per chunk (256)
+  16  16  film id
+  32   u32 length in updates, u32 stored bytes of the game start
+  40   u64 offset of the trailer
+  48   u32 the game's tick count at the first update, 12 bytes zero
+game start      one zstd frame of sections
+blocks          each: u8 kind, u32 stored bytes, then one zstd frame
+                   0 tick chunk          256 updates
+                   2 start point         at most one, before the first chunk
+                   3 checkpoint          the open chunk, in an unsealed file
+                   5 extension           one feature's input at one tick
+trailer         u32 chunk count, then a u64 offset per tick chunk
+```
+
+`film::file` writes and reads it. A file with another magic does not
+open. The length, the trailer offset and the sealed flag are zero while a
+film is written; a reader of such a file walks the blocks and takes a
+checkpoint block as its last chunk. Chunk i covers updates 256 i + 1 to
+256 i + 256, so an update's chunk is found without a search.
+
+**The game start** is a list of sections, each a four-byte tag, a u32
+length and that many bytes (`film::start`). A reader refuses a missing
+required section, a repeated one and a length past the frame.
+
+| Section | Holds | Required |
+|---|---|---|
+| `STMP` | JSON: the XBE digest, the simulation contract, the hook digest, the build that recorded | yes |
+| `GAME` | JSON: the film's and the game's ids, the start time, the map's name, origin and SHA-256, the game type and mode, the difficulty, the roster (seat, name, team, kind), the seats local to the recorder, whether a host recorded | yes |
+| `OPTS` | the game options block, as `GAME_ACTIVATE` made it active | yes |
+| `RAND` | the two shared random words at the first update | yes |
+| `HASH` | the arena hash at entry to the first update | yes |
+| `SETS` | JSON: the value of every simulation-scope setting, and the feature switch spec | yes |
+| `VARI` | the portable variant record, with its rules script | when the game has one |
+| `MAPV` | the Forge map variant | when the game has one |
+
+The selector reads the header, `STMP` and `GAME` and nothing else. The
+options block carries the game variant and the 16 player entries by
+value; the profile is not read
+([theater-design.md](theater-design.md#the-start-state)).
+
+**A tick chunk** holds, for each of its updates, the action block as
+columns, the update's tail, and 16 bits of the gameplay digest, and ends
+with the arena hash after its last tick
+([input-film.md](input-film.md#layout)). The update's head and stamp are
+not stored: the record's index is the update, and playback requires the
+engine's tick count to equal the header's first tick count plus the
+index.
+
+**A start point** is the tagged arena and extension records of
+[input-film.md](input-film.md#start-points).
+
+**An extension block** is a u32 update index, a four-byte feature tag
+and the feature's bytes, at most 1 MiB inflated. It precedes the tick
+chunk that holds its update, in update order. Playback hands a block to
+its feature before the update it names. The tags:
+
+| Tag | Feature | Bytes |
+|---|---|---|
+| `FRGE` | a shared Forge session | the welcome that opens the session (`forge::net::Welcome`) or one stream item (`forge::net::Stamped`) |
+| `FFGT` | Firefight | one entry of the host log, its canonical JSON (`host_log::Entry::canonical_bytes`) |
+| `RULE` | the rules engine | a script reloaded into the running game |
+
+A film with a tag the build does not know is unavailable, with the
+feature named.
 
 ## Unified container, version 3
 
-All fixed-width numbers are little-endian. Offsets start at byte zero. The
+The stats stream, `<id>.h2stats`. All fixed-width numbers are little-endian. Offsets start at byte zero. The
 first 32 bytes and the final 40 bytes have fixed locations. A web client
 can read the front metadata in two short requests, then read the footer
 and chronological directory when the viewer opens.
@@ -246,9 +236,9 @@ and chronological directory when the viewer opens.
 | 16 | u32 front JSON byte length (1 through capacity in a sealed file) |
 | 20 | u32 flags = 0, u64 reserved = 0 |
 | 32 | UTF-8 JSON, followed by zero padding up to byte 131104 |
-| 131104 | First private `HEAD` envelope, followed by time chunks and private machine material |
+| 131104 | First private `HEAD` envelope, followed by time chunks and their private twins |
 | At `cidx_offset` | `CIDX` envelope containing the public time directory |
-| At `indx_offset` | `INDX` envelope containing the private machine directory |
+| At `indx_offset` | `INDX` envelope containing the private directory |
 | EOF − 40 | Eight ASCII bytes `H2RANGE3` |
 | EOF − 32 | u64 `cidx_offset`, u64 `indx_offset`, u64 complete file length |
 | EOF − 8 | u32 inflated `CIDX` byte length, u32 flags = 0 |
@@ -257,14 +247,11 @@ The front object contains `id`, `image_stamp`, `runtime_stamp`,
 `started_ms` (Unix milliseconds), `map_sha256`, `map_origin`, optional
 `match_start_tick` and `ticks_per_second`, initial `roster` (seat, name, team and kind), and
 `summary` (level, game type, mode, variant name, duration and player
-results). `final_head` locates the private final machine header for the
-local selector. A game cut from a session's tape keeps the tape's boot
-`HEAD`, and its final `HEAD` names the tape in `tape_id`
-([One film per game](#one-film-per-game)). The menu reads the front, footer and local header
-regardless of match length. Web reads just the used prefix and JSON.
+results). The menu reads the front and the footer regardless of match
+length. Web reads just the used prefix and JSON.
 Zero padding reserves room for the final scoreboard and may be sparse
 on disk. The recorder writes the footer last. Truncation or an incomplete
-front makes a v3 recording unavailable for playback.
+front makes a stats file unreadable; its film still plays.
 
 Each envelope uses a four-byte ASCII tag and a u32 compressed size,
 followed by exactly that many bytes of one checksummed zstd frame.
@@ -275,10 +262,10 @@ range `bytes=cidx_offset-(indx_offset−1)`. Its inflated JSON is bounded
 at 8 MiB (16 MiB compressed) and has this shape:
 
 ```json
-{"version":1,"chunks":[{"first":1,"last":128,"scene":1,"offset":132000,"size":470,"raw_size":1280}],"keyframes":[{"tick":97,"offset":140000}]}
+{"version":1,"chunks":[{"first":1,"last":128,"scene":1,"offset":132000,"size":470,"raw_size":1280}],"keyframes":[]}
 ```
 
-Each row uses inclusive **film ticks since boot**. `offset` points at
+Each row uses inclusive **film ticks**: tick 1 is the game's first update. `offset` points at
 the four-byte tag, `size` excludes the eight-byte envelope prefix and
 `raw_size` is the inflated byte length. Fetch one chunk with
 `bytes=offset-(offset+size+7)`. Rows start at tick 1 and cover consecutive ticks without gaps. Each row
@@ -295,63 +282,39 @@ The optional row member `clock` is an array of pairs
 guest clock advances once per subsequent film tick through the next change.
 Before the first anchor, or following a null anchor, no guest match clock was
 observed. The writer mirrors clock records (type 6, one ULEB or an empty
-payload) from the same time chunk into its index row. This maps a legacy clip's
-guest tick to a recorded boot tick without decoding any game state. After a
-pause or campaign revert, the earliest recorded occurrence wins.
+payload) from the same time chunk into its index row. This maps a clip's
+guest tick to a film tick without decoding any game state. After a
+campaign revert, the earliest recorded occurrence wins.
 
 `scene` gives the first tick of the most recent public scene checkpoint
 chunk. To draw a requested tick, load the chunks from `scene` through
 the chunk containing it and apply the sparse pose changes in order.
 The replay window is at most 16 chunks and 2048 ticks inclusive. Stats
 consumers skip pose records and can decode each event payload directly.
-`keyframes` is empty on recorder output. In files with embedded machine
-snapshots it contains ordered (completed tick, private `KEYF` envelope
-offset) pairs. Only the private replay reader consumes the machine bytes.
+`keyframes` is empty.
 Live validates public ranges against physical envelopes before authorising
 access. The private index includes all envelopes through `CIDX`, then
-the footer identifies both directories. Version 1 and 2 files retain
-their original layouts.
+the footer identifies both directories.
 
-### Private machine-state section
-
-The in-game reader opens one private section through
-`film::Reader::machine_section()`. Its first run starts with the boot
-`HEAD`. The section includes the initial guest disk, startup configuration,
-ordered HLE results (including controller reads and virtual keyboard input),
-scheduler boundaries, snapshots and the continuation data needed after a
-restore. It also covers cold replay when the first snapshot has yet to be
-taken. Absolute offsets preserve which calls preceded each snapshot.
-
-The private `BOOT` record preserves the guest Video settings, including
-their saved values and locks. Theater reads the display raster and LOD
-Distance from the viewer's settings. The guest's reference uses retail
-geometry for readbacks. Films with both the legacy render scale and LOD
-Distance recover that startup geometry multiplier for the reference.
-[Startup settings](../../crates/extensions/game/src/theater/startup.rs).
+### Private envelopes
 
 The private `INDX` is a JSON array in physical envelope order. Each row
-stores `tag` (four byte values), `offset` (u64) and `size` (u32).
-The first row of each contiguous machine run also stores `machine_span`
-(u32), the number of rows in that run, including itself. All other rows
-omit the field. For example, `HEAD DATA TAPE TICK KEYF TAPE TICK` has a
-span of three at `HEAD` and two at `KEYF`. The writer can append a
-public time chunk as soon as it fills, so the machine section can occupy
-several disjoint byte ranges. All runs together form one section, and
-each contained subchunk keeps its own zstd frame. An earlier unannotated
-v3 private index is read by inferring the same runs from its tags.
+stores `tag` (four byte values), `offset` (u64) and `size` (u32). It
+lists the `HEAD` envelopes, each time chunk's `IPRV` twin, `PSUM` and
+the `TIDX` blocks. The stats stream holds no simulation input, no
+digest and no machine state; those are in the film file or nowhere.
 
-Native playback and Live ingest validate the run lengths against the
-envelope types. HTTP access uses the public `CIDX` time spans checked
-against the actual uploaded `TICK` envelopes. Guest memory, service
-results and start files stay outside those spans, including when an
-adjacent public chunk is selected for a clip.
+Live ingest validates the envelope types. HTTP access uses the public
+`CIDX` time spans checked against the actual uploaded `TICK` envelopes.
+Private envelopes stay outside those spans, including when an adjacent
+public chunk is selected for a clip.
 
 ### Public and private identity fields
 
 A public join contains the seat, name, kind and team. A public host migration
 contains only its event kind. The public stats roster retains appearance and
 player slots. Host identifiers, XUIDs, console names, session identifiers,
-private simulation settings and bot parameters remain in the machine section.
+private simulation settings and bot parameters remain in private envelopes.
 The public summary omits player XUIDs. When those exist, a private `PSUM`
 envelope stores the full summary JSON.
 
@@ -361,9 +324,7 @@ first tick, count and record framing. `IPRV` holds the original lifecycle
 and closing batches and all six original stats-import event kinds in order.
 It can also preserve records with unrecognised extensions. Public records
 use the recognised display fields. The matching private `TIDX` block stores
-`identity_sha256`, the SHA-256 of the uncompressed `IPRV` bytes. Engine
-playback checks this digest and reads the original lifecycle batches, including
-when starting from a keyframe. Live imports the original stats from the pair
+`identity_sha256`, the SHA-256 of the uncompressed `IPRV` bytes. Live imports the original stats from the pair
 once. A chunk with entirely public content can omit `IPRV`.
 
 Live records a positive public-range validation decision on the upload receipt.
@@ -380,23 +341,14 @@ sparse scene checkpoints in `CIDX`.
 
 | Tag | Name | Payload |
 | ---: | --- | --- |
-| 1 | Input | ULEB changed-seat mask, then one state per set bit in ascending absolute player-slot order. |
+| 1 | (unused) | Not written. Actions are in the film file. |
 | 2 | Event | One-byte subtype and its payload. Subtype 0 is an ordered JSON array of engine lifecycle events. Subtype 1 is a single UTF-8 JSON object with `tick`, `kind` and `data`. Subtype 2 is a lifecycle array observed after the final completed tick and its hash. |
 | 3 | Pose | A presentation operation, including sparse object changes or a seek baseline. See the pose layout below. |
-| 4 | Hash | Eight little-endian bytes for the post-tick gameplay digest. The reader checks it after the matching tick completes. |
+| 4 | (unused) | Not written. Digests are in the film file. |
 | 5 | Marker | UTF-8 chapter name. The recording marks its start and the first active map. |
 | 6 | Clock | One ULEB for the current guest match tick, or empty while unavailable. The index mirrors clock discontinuities for clip lookup. |
-| 7 | Forge entry | A shared Forge session's stream: one-byte subtype, then the message. Subtype 0 is the welcome that opens the session (`forge::net::Welcome`), subtype 1 one stream item (`forge::net::Stamped`), at the tick the machine applied it. Watermarks are not recorded. Subtype 2 is a seat's monitor look (JSON) and subtype 3 its monitor pose (27 bytes, with its tick); both repeat at each seek checkpoint ([forge-monitor-appearance.md](forge-monitor-appearance.md), "Theater"). The record is private: `film::privacy` never makes it public. |
-| 8 | Firefight entry | One entry of the Firefight host log, its canonical JSON (`host_log::Entry::canonical_bytes`), at the tick the machine applied it; the mode state rides in its `ModeState` entries. Playback hands a tick's records to the replica before the tick ([firefight.md](firefight.md#theater)). The record is private: `film::privacy` never makes it public. |
-
-For tag 1, start each chunk with 16 empty seats. A state begins with a flags
-byte. Bit 0 selects the 18-byte Xbox gamepad, bit 1 the 92-byte retail
-action. Zero clears the slot. For each selected field, read its byte-change
-mask (3 or 12 bytes respectively, low bit first), then one replacement
-byte per set bit. An absent previous field has a zero baseline. Retain every
-seat until its next change, across all intervening ticks of this chunk.
-This implicit run also covers idle players when other seats change. A
-network player can have a complete consumed action without a local pad.
+| 7 | Forge entry | A shared Forge session's presentation: one-byte subtype, then the message. Subtype 2 is a seat's monitor look (JSON) and subtype 3 its monitor pose (27 bytes, with its tick); both repeat at each seek checkpoint ([forge-monitor-appearance.md](forge-monitor-appearance.md), "Theater"). The session's welcome and stream items are simulation input and are the film file's `FRGE` extension blocks. The record is private: `film::privacy` never makes it public. |
+| 8 | (unused) | Not written. A Firefight host log entry is the film file's `FFGT` extension block ([firefight.md](firefight.md#theater)). |
 
 The event envelope carries both the film observation time and, in subtype 1,
 the originating match clock. A late hit, medal or final scoreboard retains
@@ -445,339 +397,64 @@ at the end's tick for each player still in the game who was in it before
 its first kill and in no teabag (`film::events::medals::Incel`,
 [teabag.md](teabag.md#the-medal)), and counts it in the summary.
 
-## Private machine data and earlier formats
-
-Version 3 keeps the machine bootstrap, call tape and snapshot envelopes described
-below. Version 2 used the following sequence from byte zero. Its `INPT`
-blocks are supported by the engine reader.
-
-Integers in fixed-width binary fields are little-endian. A ULEB is an
-unsigned, minimally encoded base-128 integer with seven low-order bits
-per byte, least significant group first, and bit 7 set on every byte
-except the last. Tick and executor counters are unsigned 64-bit values.
-Offsets are absolute byte positions from the start of the file.
-
-```text
-HEAD chunk
-other chunks, including final match metadata, summary and end mark
-INDX chunk
-8 bytes   ASCII "H2FILM2!"
-u64       byte offset of the I in INDX
-```
-
-Each chunk starts with a four-byte ASCII tag and a u32 compressed byte
-count. Exactly that many bytes follow as one independent zstd frame.
-Writers enable the zstd content checksum. Stored and inflated chunk sizes
-are bounded at 80 MiB each. The enclosing directory allows at most one
-million entries. JSON payloads are UTF-8.
-
-| Tag | Contents after decompression |
-| --- | --- |
-| `HEAD` | JSON machine header. The first has `version: 2`, film ID, source, generated image stamp, runtime source fingerprint, XBE SHA-256, title ID, epoch, UTC start in Unix milliseconds, feature switches, executor budget, network settings and lease and canonical game IDs when hosted. Later headers update the display metadata and boot-relative duration. |
-| `BOOT` | Effective boot options, settings, direct-level request and resolved simulation configuration. `gpu_draws` records whether guest D3D used GPU surfaces. |
-| `MOVI` | Effective movie selection when Bink is enabled. Maps engine movie names to SHA-256 of the local transcodes. An empty map selects the skip path. |
-| `DATA` | Initial guest file manifest. Entries identify a directory, an embedded file or a file to obtain locally by path and SHA-256. Installed content and converted campaign files are identified by digest. |
-| `DESC` | Match header, including first match tick, mounted map identity and SHA-256, package/cache source if present, retail variant bytes, game type, mode, difficulty, skulls, seed and host identity. The initial roster uses absolute seats, names, optional XUIDs, teams, local/remote/phantom/bot kinds and available bot parameters. The bot kind remains readable in older descriptors. Current hosts use phantom seats for bots. Late arrivals have a join event. |
-| `INPT` | Binary block of consecutive completed ticks, including actions, events and post-tick hashes. |
-| `TAPE` | The call tape: batches of indexed calls in call order, every stream interleaved, in the binary encoding of `crates/live/film/src/tape/codec.rs` ([input-film.md](input-film.md#what-the-replay-depends-on)). A stream is told by its operation (`tape::stream_of`): `PADR` is the local XInput calls (the actual guest result and returned state, including packet number; menu input and reads between ticks), `VSIZ` the physical width and height the guest observes when it draws the Resolution row or opens its picker, `TEXT` a virtual keyboard edit at the focused guest keyboard (profile-name entry), `BTAP` the results of the phantom bot action builder including guest cold-animation requests, `NETR` and `RAND` the host boundary calls below. |
-| `BOTR` | Sparse bot roster changes at management boundaries. Current hosts record phantom seats. |
-| `PDEV` | Sparse controller connection changes by input-pump ordinal, including port, generation and rumble capability. |
-| `NETR`, `RAND` | The streams of `TAPE` that hold host boundary calls, on a common call index with the others. Records operation, arguments, thread, return/error and output slots. Socket delivery, send results and random draws retain their original ordering. The pure operations `Htonl`, `Htons` and `FdIsSet` are computed in playback and are not on the tape; nor is an operation on a socket while the guest has made none. |
-| `MARK` | Accepted lobby operations by executor boundary, D3D snapshot boundaries, bookmarks or the final mark with slice, tick and call count. |
-| `HASH` | Every 30 completed ticks, the arena digest if available and the HLE call cursor. The arena digest folds in the `SimExt` records when there are any ([sim-rewrite.md](../engine/sim-rewrite.md), "The `SimExt` blob"). Additional per-tick gameplay digests live in `INPT`. |
-| `KEYF` | Scheduler-boundary snapshot and cursors, described below. |
-| `SUMM` | Menu JSON, up to 128 KiB. Contains level, game type, mode, variant name, match duration in ticks and player results including score and medal counts. Player turnover can produce multiple results for the same seat. |
-| `TIDX` | Tick directory for independently decodable input blocks and keyframes. |
-| `INDX` | JSON array of `{tag, offset, size}` for every preceding chunk. A tag is four byte values and size excludes the eight-byte chunk prefix. |
-
-An encoded call over 1 MiB occupies consecutive `TPAR` chunks of at most
-1 MiB each. Its terminating `TAPE` chunk contains byte 0xc8, the call
-index and the part count (both little-endian u64). Playback and seek read
-the parts as one indexed call. Argument and guest-write counts vary by
-service operation. The recorder validates a call before buffering it so a
-rejected call leaves the preceding batch available to the final cut.
-
-A `TEXT` call uses operation `VirtualKeyboard`. Its six u32 arguments give
-the screen address, buffer address, caret address, capacity in UTF-16
-units, retail keyboard context and controller port, in that order. It has no output
-buffers. Its successful result encodes the end of the edit batch (0),
-backspace (1), accept (2), cancel (3), or insertion (0x10000 plus one
-filtered BMP code unit). A focused frame with no submitted edits records
-the batch end. Recording follows the native edit handler, so a rejected
-paste or a modal stealing focus can cut a batch short. Playback supplies
-these edit commands using the recorded trampoline configuration in `BOOT`.
-
-Theater resolves the recorded cache path through the mounted DVD or
-title drive links. A title-content path also resolves against the title's
-data partition before the game links its drive. Without a recorded path,
-the lookup uses the package or DVD map name.
-See `crates/extensions/game/src/theater/metadata.rs` (`prepare_map`).
-A full map's digest covers every mounted byte, including applied header
-rewrites. Sparse dedicated-host map stores can supply only their recorded
-ranges. In that case `DESC.map.ranges` lists ordered (offset, length) pairs.
-Hash the ASCII bytes `H2FILM sparse map v1` and a NUL byte, then the logical
-file length and range count as u64s. For each pair hash its two u64s followed
-by those bytes from the mounted map. A player with the full map can verify
-the same ranges. Auxiliary shared resource maps must also match the recording.
-
-A v2 reader uses the footer to find the directory and checks contiguous
-offsets, lengths and the first/final headers. It checks a selected chunk's
-physical prefix when it reads that chunk. An unfinished v2 film cannot be
-selected as a sealed film. The v1 reader retains its scan-and-recover
-behaviour for interrupted recordings. Legacy host films play from their
-boot conditions and HLE tape. V1 local films lack a recoverable controller
-stream. Their headers still appear in the library.
-
-## Legacy version 2 input blocks
-
-An `INPT` block starts with the first completed tick (one-based since boot)
-and the tick count (1–128), both ULEB. Each block begins with all 16 seat
-states empty. The state of a seat consists of an optional 18-byte Xbox
-gamepad and an optional 92-byte retail player action. Bits and padding in
-the action retain the bytes that reached the guest's simulation-update
-consumer. Its mask identifies absolute player slots, including remote and
-phantom slots. A remote player need not have a locally available raw pad.
-
-1. Read a ULEB run length and ULEB 16-bit changed-seat mask. In ascending
-   seat order, each set bit has a flags byte (bit 0 pad, bit 1 action).
-   Zero removes that seat. Each present field carries a byte-change mask
-   of `ceil(field_size/8)` bytes, low bit first, followed by the replacement
-   bytes in ascending order. Missing previous fields have a zero baseline.
-   Emit this complete set of inputs for the indicated number of ticks.
-   Repeat until the declared count is reached.
-2. Read a flags byte for each tick. Bit 0 carries a u64 gameplay digest.
-   Bit 1 carries a ULEB byte count and an ordered JSON array of events
-   (maximum 64 KiB per tick). Lifecycle events include joined player,
-   quitting, removal, team change, host migration and pause edges.
-3. The end of the last record must be the end of the decompressed block.
-   Unknown flag bits, overflowing integers, invalid masks and incomplete
-   runs are errors.
-
-Playback supplies the recorded action block at the retail simulation-update
-boundary. The engine still processes the associated network, lobby and
-controller inputs. Lifecycle transitions observed as a result are available
-to film consumers; applying those transitions twice would change the game.
-
 ## Keyframes and seeking
 
-The recorder attempts a capture point every 150 completed ticks, between
-scheduler slices. At a quiescent point it performs the D3D capture, flushes
-the HLE call batch and writes a `d3d_barrier` mark. A local recorder saves a
-machine snapshot at every sixth point. A dedicated host only writes marks.
-During playback the same device work runs at each marked slice. The player
-can save a missing snapshot there while watching or preparing the film.
-
-Recorder and player share `film::sidecar::SidecarWriter`. Its local file is
-`<films>/cache/<film id>/<build id>.h2keys`, where `build id` is the snapshot
-store's FNV-64 ID. The `H2KEYS1!` file binds its indexed `KEYF` envelopes to
-the film ID, sealed header digest and complete snapshot build key. The
-directory records the matching film mark for each snapshot. On seek, the
-player restores the tape at this mark and decodes the input block containing
-the successor tick. A recorder binds the digest after sealing the film. Cross-machine transfers use the film file.
-The cache defaults to 4 GiB and evicts the least recently watched sidecars.
-
-A sidecar envelope and a legacy embedded `KEYF` use the same binary fields.
-
-```text
-ULEB      last completed tick
-ULEB      completed scheduler slices
-ULEB      next HLE call index
-ULEB      lobby executor boundary
-ULEB      guest disk delta byte count
-bytes     delta JSON, or zero bytes for the initial disk
-bytes     H2SNAP machine state through the end of the chunk
-```
-
-A `d3d_barrier` mark records the scheduler slice, completed tick and outcome
-of each attempted D3D section capture. During linear playback the device
-drains the same push buffer, writes back dirty render targets and resolves
-visibility queries at that boundary. This also covers captures where a
-later machine section prevented publication of the keyframe. A seek skips
-barriers already reflected in its restored machine state. Film keyframes
-use D3D section v2, which prefixes the v1 payload with the 17 little-endian
-Xbox present-parameter words needed to recreate host surfaces. Ordinary
-machine saves write D3D section v1. Warm restores accept both versions. The
-first displayed frame after a seek can lack the previous frame's pixels.
-
-The disk delta records removed paths and new directory/file records relative
-to `DATA`. Changed files carry their contents and SHA-256, with a total
-budget of 16 MiB per keyframe. The reader materialises the result directly
-into a fresh directory. Machine sections carry their own build, version and
-integrity checks, including a digest of the restored guest RAM.
-
-The recorder indexes `disk/` and `metadata/` while it captures `DATA`.
-At a checkpoint it drains pending VFS metadata and checks filesystem
-identities outside the film session lock. On Unix it reuses directory
-listings and file contents while device, inode, length, modification time
-and status-change time agree. This also detects host-side save replacement
-with a preserved modification time. On Windows, it opens each path for
-attributes with read, write and delete sharing. It compares the volume
-serial number, 128-bit file ID and NT change time from that handle, along
-with the length and last-write time. It rejects reparse points. A stable
-file therefore costs metadata queries per checkpoint and zero content
-reads. On either platform it re-enumerates changed directories and hashes
-changed files. Volumes which omit the Windows identity or change time,
-and platforms without an equivalent identity, fall back to reading contents. A failed capture leaves the last good index available
-for the next attempt.
-
-`TIDX` is `{blocks, keyframes}`. Each array contains
-`{tick, count, offset, sha256}`. The count is zero for a keyframe.
-The SHA-256 covers the uncompressed chunk payload. The reader checks that
-every input and keyframe chunk has a directory row, that all input ticks
-are consecutive, and that the final tick agrees with the header.
-
-`film::Library::list()` returns lightweight entries with `version`,
-legacy `meta` and an optional `summary` (versions 2 and 3). For a single file,
-`film::blam::summary(&mut reader)` reads only the summary payload once the
-directory is open. For simulation, use `film::blam::TrackReader::open`,
-then `seek(target)` and `step()`. Seek returns the nearest snapshot at or
-before the target and positions the reader at its successor tick. If there
-is no eligible keyframe it returns `None` and positions at tick 1. Replay
-the intervening ticks to reach the requested state. A blocked snapshot
-is omitted; the ordinary input log continues.
-
-### Keyframe RAM budget
-
-A v3 anchor is a complete machine snapshot. Each of the next seven successful
-keyframes can encode its 64 MiB RAM against that same anchor. The recorder
-starts a new group when it captures the loaded match after a lobby anchor.
-Private `TIDX.keyframes[].ram_anchor` gives the preceding anchor tick. The
-target H2SNAP RAM section names it `film-{tick}`. A cold seek reads at most
-two private keyframes. It decodes the anchor's RAM into scratch space, then
-restores the target's RAM, devices, kernel and guest disk. A delta referencing
-another delta, another build or a different named anchor fails verification.
-The boot reader also checks the CRC of every inherited non-zero page and the
-target's whole-RAM hash.
-
-There are 16,384 physical pages of 4,096 bytes. The inner RAM codec uses one
-kind byte per page, four CRC bytes per non-zero page and the zstd-compressed
-contents of changed non-zero pages in groups of up to 256. A delta with zero
-changed pages therefore costs 16–80 KiB of page tables before the outer
-compression, plus its name and fixed fields. Device sections and guest disk
-edits add to this cost. The film recorder holds one 64 MiB anchor in host RAM.
-
-For a full four-minute group at the default 30-second cadence, the exact
-keyframe contribution per player-minute is `(A + D1 + … + D7) / (4 × P)`,
-where the sizes are stored KEYF bytes (including each eight-byte prefix)
-and `P` is the mean number of players. A sizing target of 16 MiB for an
-anchor and 1 MiB per delta gives 376,832 bytes per player-minute at 16
-players. These are planning figures. High page churn, GPU state and disk
-changes raise the total. The public viewer transfers zero KEYF bytes.
+Neither file holds a keyframe or a seek index for the simulation. The
+player reaches a tick by simulating to it, from the game start or from a
+game-state snapshot it took earlier in the same viewing session
+([theater-design.md](theater-design.md#seek)). The stats stream's `scene`
+checkpoints are for the web viewer's poses and restore nothing in the
+engine.
 
 ## Determinism and verification
 
-Match the XBE SHA-256, guest execution contract, simulation ABI, effective
-features, boot parameters, map content and exact variant bytes. A converted
-Halo 1 or mod map with the same display name can have different bytes.
-Guest storage, RNG, logical clock, scheduling budget, controller topology,
-and the ordering of HLE and lobby calls all affect replay. A film carries
-the host inputs; their apparent effects in telemetry are insufficient to
-reconstruct the simulation.
+A film plays when four things equal the recording's: the XBE (SHA-256),
+the simulation contract, the simulation hook digest, and the map's bytes
+(SHA-256). The variant, the players and the simulation-scope settings are
+in the film and are applied from it. A converted Halo 1 or mod map with
+the same display name can have different bytes; the digest decides.
 
-Current writers put `h2-sim/2` in `HEAD.runtime_stamp`. This ABI covers
-the host scheduler, consumed input and guest-facing HLE semantics. A change
-that breaks those contracts must bump the ABI. The sealed header also stores
-`simulation_hooks`, a SHA-256 of the installed simulation hook chains in
-execution order and the core game, clock, player and object table addresses.
-It includes hook owners, guest addresses, calling conventions, hook kinds,
-instruction sites, permitted continuation addresses, guest-callable entries
-and the allocations placed for those features.
-The recorder's boot header is written before the features are installed, so
-it holds no digest: once the features are installed the recorder appends a
-header that carries it (`Session::set_simulation_hooks`). A cut copies the
-tape with that header and writes its final header from the tape's, and
-recovery takes the digest from the tape's later header, so every film
-carries it. The player checks it after installing its features and before
-entering the guest. The guest image has its own stamp. Editing Live, the web viewer,
-codecs, diagnostic labels or documentation leaves this contract intact.
-Earlier experimental v2/v3 recordings with source-based runtime stamps
-require their corresponding simulator for engine playback.
+- **The simulation contract** is `compatibility::SIMULATION_ABI`. It
+  covers what the simulation computes from a start state and its
+  updates. A change that alters that must change the contract.
+- **The hook digest** (`compatibility::hook_digest`) is a SHA-256 of the
+  installed simulation hook chains in execution order and the core game,
+  clock, player and object table addresses. The player compares it after
+  installing its features.
+- **Not compared:** the native image stamp and target, the render hook
+  groups, the telemetry observers, the scheduler's budget, the features
+  that do not hook the simulation, and anything of the recorder's disk.
+  Editing Live, the web viewer, codecs, diagnostic labels or
+  documentation leaves a film playable.
 
-`HEAD.telemetry_hooks` selects the observer chains on the guest dispatch
-table. Its `observers` field is `events_and_impacts_v1` for new recordings.
-The `weapon_fire`, `damage_report` and `object_delete` booleans identify the
-optional hook targets present in the recording image. Both machines install
-this plan, including when a full playback image provides more functions than
-the recording host. Playback requires all selected targets and discards the
-observer output. `events_v1` selects the original telemetry hooks and `off`
-installs none. Older headers use their `telemetry` presence bit and format
-version to select the historical plan.
+The checks in playback, in order:
 
-`HEAD.render_hooks` identifies the guest render feature groups compiled into
-the recording executable. `slim` installs the common hooks, `desktop` adds
-the render loop and `gpu` also installs the native renderer features. The
-recorded feature switches still control which members of each group run.
-A desktop can replay a slim host with exactly its guest hook groups while
-the independent spectator window uses the desktop GPU. A player missing a
-required group refuses playback. Older headers use the player's compiled
-groups and retain their original compatibility checks.
+1. The start hash, before the first update is applied.
+2. The tick count against the record's index, at every update.
+3. Sixteen bits of the gameplay digest after every tick. It covers the
+   gameplay the sim harness observes, including the random word and
+   player state.
+4. The arena hash at the end of every chunk, which covers hidden state.
 
-Version 3 retains the original native image stamp and additionally records
-`HEAD.guest_image` with `version: 1`, the native target triple and an optional
-`contract_sha256`. The digest covers the compact UTF-8 JSON array
-`["h2film guest image v1 clang", xbe_sha256, guest_stamp_prefix, flags]`.
-The prefix is the native stamp up to (and excluding) ` flags `. It identifies
-the XBE, generator sources, IR passes, code-generation settings and guest ABI.
-The flags preserve their original order and include optimisation, hot/cold
-tiers, native x87/SSE paths and floating-point contraction policy. Two ELF
-linkage flags are discarded: `-fPIC` and `-fvisibility=hidden`. The native
-target and optional slim coverage suffix are checked separately.
+Playback reports the first observed divergence and its tick, and stops
+there. The render steps the shared random word, so a recording and a
+playback both draw every world frame inside the private stream
+(`render_rng.rs`); a film checks the same at any render cadence,
+`--render-every 0` included.
 
-An exact native stamp and target permit a machine-keyframe seek. For macOS
-and x86-64 Linux, an installed current Clang image with the same guest digest
-can replay across native targets. A full image contains every generated
-owner and may substitute for the host's coverage-pruned image. A slim
-candidate requires the same coverage fingerprint. Cross-target and
-slim-to-full playback start at boot or from a sidecar made by the installed
-build, and check the recorded inputs and hashes up to the requested tick. A fast-tier or external
-host module needs its native image. Earlier files without a portable stamp
-keep their original image check.
-
-Post-tick digests cover gameplay observed by the sim harness, including
-RNG and player state. The wider arena check covers hidden state. Playback
-reports the first *observed* divergence and its tick. A missing digest is
-unknown evidence for that tick. The shared RNG can advance during rendering.
-Use the recording's render cadence when checking equivalence, particularly
-`--render-every 0` for a light host. Mid-match restore, cold replay and
-rendered replay need independent comparisons on the same film.
-
-A kernel continuation, pending device work or host feature without
-serialisable state can prevent a keyframe. The reader can only seek using
-snapshots that passed capture at recorded boundaries. [Machine snapshot policies](../runtime/snapshots.md)
-and [sim determinism](../runtime/sim.md#8-determinism) describe these constraints.
-
-Live clip endpoints use the guest match clock. The in-game player translates
-the half-open interval to film ticks using the clock spans in `CIDX`. During
-a span without a recorded guest clock, the player aligns the film’s match
-boundary with the ledger’s start tick. Local clip markers already use film
-ticks. For version 1 and 2 host films the selector retains the original
-assumption that the saved clip endpoints refer directly to film ticks.
+Live clip endpoints use the guest match clock. A film tick is the guest's
+tick count minus the header's first tick count plus one, so the in-game
+player translates an endpoint with one subtraction. Local clip markers
+use film ticks.
 
 ## Choosing a player's view
 
 In a local GPU recording the guest renders its original camera, first-person weapon
 and HUD. Its exact 640x480 reference provides guest readbacks, while
-the viewer chooses the window resolution. A v3 local film can display
+the viewer chooses the window resolution. A local film can display
 one split-screen viewport. Its guest-pixel edges map onto the displayed
 raster so the selection tracks resolution changes. The slot is the player's
 seat in the film roster.
-
-When playback reaches the Video screen, its Resolution row and picker
-reproduce the recording's choices and physical size, including window resizes
-during recording. The private boot settings preserve the guest row's initial
-selection and lock. Keyframes save completed resolution changes. The recorder
-defers a seek point while the Resolution picker is held on the Video screen. The
-playback window uses its own resolution throughout.
-Older films without this menu metadata cannot reproduce the dimensions of a
-recorded picker.
-
-For a local GPU recording, `--render-every 0` runs the reference offscreen
-in the desktop player. CPU recordings and playerless hosts retain their
-headless backend. Windowed playback of a local CPU recording uses the independent
-observer described below to show the match. When an older film lacks the backend field, Theater uses
-the recorded render hooks, window settings and render-thread flag. A legacy
-offscreen GPU recording with none of the window or thread evidence is
-indistinguishable from a CPU recording.
 
 ```sh
 h2 agent theater.camera '{"mode":"first_person","seat":0}'
@@ -814,10 +491,9 @@ and discovered kill markers through a seek.
 h2 agent theater.camera '{"mode":"orbit","seat":3,"look":[0.25,0],"zoom":-1}'
 ```
 
-The dedicated guest retains its recorded world-render cadence. Changing
-POV or display cadence therefore does not add render calls to its RNG or
-scheduler timeline. Compare hashes for a headless replay and a visible
-replay of the same film when verifying this path.
+Changing the view or the display cadence adds no draw to the
+simulation's random stream. Compare digests for a headless and a visible
+playback of the same film when verifying this path.
 
 ## Missing observations
 
@@ -832,8 +508,7 @@ events and 512 KiB of highlights, including framing. The same budgets apply
 to the final batch after the last tick. Each event also has a 128 KiB limit.
 An oversized event increments `stats_encoding` or `highlight_encoding`.
 Overflowing either batch increments `stats_budget` or `highlight_budget` for
-each omitted record. The machine tape continues to record simulation inputs
-and post-tick hashes.
+each omitted record. The film file is unaffected.
 
 ## Weapon fire, damage and projectile endpoints
 
@@ -958,19 +633,16 @@ Particles, decals, muzzle flash and hitscan traces have no pose objects.
 
 These are engineering budgets, in bytes per player-minute, for a 30 Hz match
 with 15 Hz presentation sampling. They are estimates pending measurements on
-sealed matches. Event rate, active AI, object churn and the chosen keyframe
-cadence all affect size. Fixed and match-wide costs are shown separately so
+sealed matches. Event rate, active AI, and object churn all affect size. Fixed and match-wide costs are shown separately so
 that an eight-player and a one-player game can be compared.
 
 | Contents | Budget per player-minute | Basis |
 | --- | ---: | --- |
-| Input | 2,000–18,000 | Held commands need no new input payload. The upper target allows frequent stick and aim changes. |
 | Event | 1,000–8,000 compressed | Roughly 60–250 fire, hit, scoring and lifecycle records. Event type and field names repeat within a zstd frame. |
 | Pose, player | 9,000–21,000 before zstd | Up to 900 moving samples, including animation and aim. Shared objects are accounted for below. |
-| Hash | 19,800 ÷ players before zstd | Eight digest bytes and typically three framing bytes on up to 1,800 ticks. Hashes are match-wide. |
 | Marker | <100 ÷ players at one short chapter per minute | Cost is proportional to the UTF-8 label and its framing. |
 | Clock | About 75–120 ÷ players | One anchor per chunk during continuous 30 Hz play, plus anchors at clock discontinuities. |
-| Front and directories | Fixed 131,104 bytes per film for the front, plus index rows per chunk/keyframe | Divide the fixed cost by match minutes and players. A menu client can request just the prefix and occupied JSON bytes. |
+| Front and directories | Fixed 131,104 bytes per film for the front, plus index rows per chunk | Divide the fixed cost by match minutes and players. A menu client can request just the prefix and occupied JSON bytes. |
 
 For the world pose dictionary, these budgets are **per object**, before zstd,
 excluding infrequent full seek baselines. A resting object generates zero
@@ -997,23 +669,20 @@ shared operation framing. A respawn gets its own salted object identity.
 | Decals, particles, muzzle flash and explosions | 0 pose bytes | Viewer effects use the timestamped event records |
 
 The presentation rows share chunk framing, seek baselines and compression.
-They do not include machine state, the guest disk or call results. Those
-costs belong to the recording machine, independent of player count. See
-the snapshot size discussion for the RAM component. [Snapshot format](../runtime/snapshots.md)
+The film file's sizes are in [input-film.md](input-film.md#size-step-by-step).
 
 ## Live storage
 
-Dedicated hosts send a sealed file under the canonical lease game ID through
-`POST /v1/games/{game}/film`. Recent and saved film listings expose
-`has_host_film` and the summary after publication. Live derives the existing
-player and game statistics from canonical event records. If an idle timeout or
-another recorded event disagrees with the existing signed stats, Live keeps
-the film, publishes its summary and identifies the first disagreement in
-`stats_discrepancy`. The existing ledger remains the source of ranking awards.
-Older games may
-have only a telemetry archive, and older host films may lack a summary.
-A legacy telemetry recording remains readable during migration.
-After a failed upload of a default recording, the supervisor keeps the
-sealed file in its `pending-films` cache or prints the original lease path
-if recovery storage is unavailable. Explicit output files remain at the
-requested path. [Live film API](../live/live-api.md)
+A dedicated host sends the sealed film and its stats stream under the
+canonical lease game ID through `POST /v1/games/{game}/film`
+(`film::upload`). Live stores the film as sent, reads its header and game
+start, and inflates no tick chunk. Recent and saved film listings expose
+`has_host_film` and the summary after publication. Live derives the
+player and game statistics from the stats stream's canonical event
+records. If an idle timeout or another recorded event disagrees with the
+existing signed stats, Live keeps the film, publishes its summary and
+identifies the first disagreement in `stats_discrepancy`. The existing
+ledger remains the source of ranking awards. After a failed upload the
+supervisor keeps the sealed files in its `pending-films` cache or prints
+the original lease path if recovery storage is unavailable.
+[Live film API](../live/live-api.md)
