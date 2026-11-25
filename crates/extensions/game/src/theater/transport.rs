@@ -45,6 +45,9 @@ impl State {
     pub(super) fn set_speed(&mut self, speed: f64) {
         if self.speed != speed {
             self.rate = PlaybackRate::default();
+            if let Some(clock) = &mut self.pacing {
+                clock.debt = 0.;
+            }
             self.speed = speed;
         }
     }
@@ -213,14 +216,30 @@ impl State {
         {
             return;
         }
-        let tick_hz = self
+        self.rate.sample(self.tick, Instant::now(), self.tick_hz());
+    }
+
+    pub(super) fn tick_hz(&self) -> f64 {
+        let hz = self
             .engine
             .as_ref()
             .and_then(|engine| engine.track.descriptor.ticks_per_second)
             .unwrap_or(30)
             .max(1);
-        self.rate
-            .sample(self.tick, Instant::now(), f64::from(tick_hz));
+        f64::from(hz)
+    }
+
+    /// What the player asks of the next frame: the answer to the engine's
+    /// question in `GAME_UPDATE_TICKS` ([`FrameClock::frame_ticks`]).
+    pub(super) fn demand(&self) -> Demand {
+        Demand {
+            paused: self.paused,
+            speed: self.speed,
+            tick: self.tick,
+            run_to: self.seeking.or(self.step_until),
+            jumping: self.restart.is_some(),
+            tick_hz: self.tick_hz(),
+        }
     }
 
     pub(super) fn speed_reached(&self) -> Option<f64> {
@@ -231,6 +250,77 @@ impl State {
         } else {
             self.rate.reached.map(|speed| speed.min(self.speed))
         }
+    }
+}
+
+/// The most ticks one frame runs while the player runs forward to a step's
+/// or a jump's target, so the frame still draws and the transport answers.
+pub(super) const RUN_TICKS_PER_FRAME: u32 = 30;
+/// A frame longer than this counts as this long, so a stall is not repaid
+/// with a burst of ticks.
+const LONGEST_FRAME: f64 = 0.25;
+
+/// The transport's state as it bears on one frame's tick count.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Demand {
+    pub(super) paused: bool,
+    pub(super) speed: f64,
+    /// The tick shown.
+    pub(super) tick: u64,
+    /// The tick a step or a forward run to a jump's target stops at.
+    pub(super) run_to: Option<u64>,
+    /// A jump is queued and waits for the process or the ring to take it.
+    pub(super) jumping: bool,
+    pub(super) tick_hz: f64,
+}
+
+/// Answers the engine's per-frame tick count (`GAME_UPDATE_TICKS`). It
+/// holds the time of the last frame and the fraction of a tick not yet
+/// owed, and writes nothing into game state.
+#[derive(Default)]
+pub(super) struct FrameClock {
+    last: Option<Instant>,
+    pub(super) debt: f64,
+}
+
+impl FrameClock {
+    /// `None` leaves the engine's own count (`engine_ticks`) alone: normal
+    /// speed. `Some(n)` replaces it. A pause answers zero, a step or a
+    /// forward run answers the ticks left to its target (at most
+    /// [`RUN_TICKS_PER_FRAME`]), and another speed answers the ticks the
+    /// frame's time is worth at that speed, so 4x at the tick rate's frame
+    /// time is four.
+    pub(super) fn frame_ticks(
+        &mut self,
+        demand: Demand,
+        engine_ticks: u32,
+        now: Instant,
+    ) -> Option<u32> {
+        let seconds = match self.last.replace(now) {
+            Some(last) => now.duration_since(last).as_secs_f64().min(LONGEST_FRAME),
+            None => f64::from(engine_ticks) / demand.tick_hz,
+        };
+        if demand.jumping {
+            return Some(0);
+        }
+        if let Some(target) = demand.run_to {
+            self.debt = 0.;
+            let left = target.saturating_sub(demand.tick);
+            return Some(left.min(u64::from(RUN_TICKS_PER_FRAME)) as u32);
+        }
+        if demand.paused {
+            self.debt = 0.;
+            return Some(0);
+        }
+        if demand.speed == 1.0 {
+            self.debt = 0.;
+            return None;
+        }
+        self.debt += demand.speed * seconds * demand.tick_hz;
+        // The small bias keeps a frame of exactly n ticks from rounding to n - 1.
+        let whole = (self.debt + 1e-6).floor().max(0.);
+        self.debt -= whole;
+        Some((whole as u32).min(RUN_TICKS_PER_FRAME))
     }
 }
 
@@ -287,6 +377,84 @@ impl SeekTaps {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn demand() -> Demand {
+        Demand {
+            paused: false,
+            speed: 1.0,
+            tick: 100,
+            run_to: None,
+            jumping: false,
+            tick_hz: 30.0,
+        }
+    }
+
+    fn frames(demand: Demand, engine: u32, count: usize, frame: Duration) -> Vec<Option<u32>> {
+        let mut clock = FrameClock::default();
+        let start = Instant::now();
+        (0..count)
+            .map(|i| clock.frame_ticks(demand, engine, start + frame * i as u32))
+            .collect()
+    }
+
+    #[test]
+    fn a_pause_answers_zero_every_frame_and_normal_speed_leaves_the_engines_count() {
+        let tick = Duration::from_secs_f64(1.0 / 30.0);
+        let paused = Demand { paused: true, ..demand() };
+        assert_eq!(frames(paused, 1, 5, tick), vec![Some(0); 5]);
+        assert_eq!(frames(demand(), 1, 5, tick), vec![None; 5]);
+    }
+
+    #[test]
+    fn a_step_runs_the_ticks_asked_and_no_more() {
+        let tick = Duration::from_secs_f64(1.0 / 30.0);
+        let one = Demand { paused: true, run_to: Some(101), ..demand() };
+        assert_eq!(frames(one, 1, 1, tick), vec![Some(1)]);
+        let done = Demand { paused: true, tick: 101, run_to: None, ..demand() };
+        assert_eq!(frames(done, 1, 1, tick), vec![Some(0)]);
+    }
+
+    #[test]
+    fn four_times_speed_asks_for_four_ticks_a_frame_and_a_quarter_for_one_in_four() {
+        let tick = Duration::from_secs_f64(1.0 / 30.0);
+        let fast = Demand { speed: 4.0, ..demand() };
+        let got = frames(fast, 1, 4, tick);
+        // The first frame has no earlier frame; it is worth the engine's count.
+        assert_eq!(got[1..], [Some(4), Some(4), Some(4)]);
+        let slow = Demand { speed: 0.25, ..demand() };
+        let total: u32 = frames(slow, 1, 17, tick)[1..].iter().map(|n| n.unwrap()).sum();
+        assert_eq!(total, 4);
+    }
+
+    #[test]
+    fn a_forward_run_stops_exactly_at_its_target_within_the_frame_cap() {
+        let tick = Duration::from_secs_f64(1.0 / 30.0);
+        let mut at = 100;
+        let mut clock = FrameClock::default();
+        let start = Instant::now();
+        let mut frames = 0;
+        while at < 170 {
+            let run = Demand { paused: true, tick: at, run_to: Some(170), ..demand() };
+            let n = clock.frame_ticks(run, 0, start + tick * frames).unwrap();
+            assert!(n <= RUN_TICKS_PER_FRAME);
+            at += u64::from(n);
+            frames += 1;
+        }
+        assert_eq!((at, frames), (170, 3));
+    }
+
+    #[test]
+    fn a_queued_jump_runs_no_ticks_and_a_stall_is_not_repaid() {
+        let tick = Duration::from_secs_f64(1.0 / 30.0);
+        let jump = Demand { jumping: true, run_to: Some(500), ..demand() };
+        assert_eq!(frames(jump, 1, 2, tick), vec![Some(0); 2]);
+        let mut clock = FrameClock::default();
+        let start = Instant::now();
+        let fast = Demand { speed: 2.0, ..demand() };
+        clock.frame_ticks(fast, 1, start);
+        let n = clock.frame_ticks(fast, 1, start + Duration::from_secs(10)).unwrap();
+        assert_eq!(n, 15); // 0.25 s at 2x and 30 Hz
+    }
 
     #[test]
     fn rate_reports_tick_throughput_relative_to_the_films_tick_rate() {

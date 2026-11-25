@@ -254,7 +254,10 @@ the speed and the frame's time give at 0.25× to 4×, and as many as fit in
 a frame's budget while it runs forward to a jump's target. Nothing in the
 game state is written to pause or change speed, so the digests do not
 move. The renderer keeps drawing while the tick count is zero, so the
-camera moves and screenshots work in a pause.
+camera moves and screenshots work in a pause. The hook is
+`theater/pacing.rs`; the answer comes from `FrameClock::frame_ticks` in
+`theater/transport.rs`, and the hook writes only the count and the frame's
+elapsed seconds.
 
 ### Seek
 
