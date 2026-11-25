@@ -1343,6 +1343,20 @@ impl d3d::backend::Backend for Headless {
         let r = self.0.draw_owned(color, depth, draw, textures);
         self.forget(r)
     }
+    fn begin_native_carry(
+        &mut self,
+        color: u32,
+        depth: Option<u32>,
+        admission: &d3d::backend::RetainedAdmission<u32>,
+    ) -> bool {
+        self.0.begin_native_carry(color, depth, admission)
+    }
+    fn record_native_carry(&mut self, color: u32, depth: Option<u32>, textures: [Option<&u32>; 4]) {
+        self.0.record_native_carry(color, depth, textures)
+    }
+    fn end_native_carry(&mut self) {
+        self.0.end_native_carry()
+    }
     fn draw_admitted(
         &mut self,
         color: u32,

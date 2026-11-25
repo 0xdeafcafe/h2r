@@ -128,6 +128,12 @@ pub struct SceneSink<B: Backend> {
     shadows: Option<ShadowSource>,
     presents: u64,
     guest_reference: Box<dyn Fn() -> bool + Send>,
+    /// A native producer's pass the replay will carry
+    /// ([`Backend::begin_native_carry`]), until it commits.
+    carry: Option<Box<RetainedExternal>>,
+    /// The carried pass is committing: its recordings are retained, not
+    /// refused as unrecorded.
+    carrying: bool,
     present_error: Option<Box<dyn FnMut(u64) + Send>>,
     frame: Carried<KeptDraw>,
     last: Carried<KeptDraw>,
@@ -155,6 +161,8 @@ impl<B: Backend> SceneSink<B> {
             shadows: None,
             presents: 0,
             guest_reference: Box::new(|| false),
+            carry: None,
+            carrying: false,
             present_error: None,
             frame: Carried::default(),
             last: Carried::default(),
@@ -806,7 +814,7 @@ impl<B: Backend> Backend for SceneSink<B> {
         &mut self, surfaces: ExternalSurfaces<Self::Surface>, request: ExternalPassRequest, textures: [Option<&Self::Texture>; 4],
         plan: &ExternalPlan, copy: TargetCopy, pass: SharedReplacement,
     ) -> Result<Option<Vec<ExternalRecording>>, String> {
-        if self.replaying() {
+        if self.replaying() && self.carry.is_none() && !self.carrying {
             let pass = pass.lock().unwrap_or_else(|err| err.into_inner());
             ExternalOrigin::new(&**pass, "scene capture reservation", Some(plan.stage))
                 .refused("the scene recorder cannot retain an unsealed reservation", None);
@@ -885,8 +893,43 @@ impl<B: Backend> Backend for SceneSink<B> {
         }
         queued
     }
+    fn begin_native_carry(
+        &mut self, color: Self::Surface, depth: Option<Self::Surface>, admission: &crate::backend::RetainedAdmission<Self::Surface>,
+    ) -> bool {
+        // Only water's composite, the one native producer whose pass the
+        // replay can record again from its packet and captured textures.
+        self.carry = None;
+        if !self.replaying() || admission.plan.stage != timeline::native::Stage::Water {
+            return false;
+        }
+        let packet = Arc::clone(&admission.packet);
+        let again = crate::backend::RetainedAdmission {
+            packet: Arc::clone(&packet),
+            surfaces: admission.surfaces.clone(),
+            request: admission.request,
+            plan: admission.plan.clone(),
+            pass: Arc::clone(&admission.pass),
+        };
+        self.carry = self.retain_admission(again, &packet, color, depth);
+        self.carry.is_some()
+    }
+    fn record_native_carry(
+        &mut self, color: Self::Surface, depth: Option<Self::Surface>, textures: [Option<&Self::Texture>; 4],
+    ) {
+        let Some(external) = self.carry.take() else { return };
+        let draw = Arc::clone(&external.packet);
+        self.record_draw(color, depth, &draw);
+        self.replay_draw(color, depth, draw, textures, Some(external));
+        self.carrying = true;
+    }
+    fn end_native_carry(&mut self) {
+        self.carry = None;
+        self.carrying = false;
+    }
     fn commit_external(&mut self, recording: ExternalRecording) {
-        self.refuse_replay("unrecorded_external_pass");
+        if !self.carrying {
+            self.refuse_replay("unrecorded_external_pass");
+        }
         self.inner.commit_external(recording)
     }
     #[cfg(feature = "gpu")]

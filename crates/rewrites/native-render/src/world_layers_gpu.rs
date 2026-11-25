@@ -473,6 +473,9 @@ impl IndexedPass {
         native.indices = Some(triangles.into());
         let mut pass = Self::new(&native, cache, frame, None)?;
         pass.original_quad = Some(Arc::new(draw.clone()));
+        // A standalone range like a sorted layer's: a replay records it
+        // again from the packet and the texture views captured with it.
+        pass.sorted_layer = true;
         Some(pass)
     }
 

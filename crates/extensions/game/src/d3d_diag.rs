@@ -1265,6 +1265,25 @@ impl<B: Backend> Backend for DiagBackend<B> {
         self.tally(&result, &target, &info);
         (result, spare)
     }
+    fn begin_native_carry(
+        &mut self,
+        color: Self::Surface,
+        depth: Option<Self::Surface>,
+        admission: &d3d::backend::RetainedAdmission<Self::Surface>,
+    ) -> bool {
+        self.inner.begin_native_carry(color, depth, admission)
+    }
+    fn record_native_carry(
+        &mut self,
+        color: Self::Surface,
+        depth: Option<Self::Surface>,
+        textures: [Option<&Self::Texture>; 4],
+    ) {
+        self.inner.record_native_carry(color, depth, textures.map(|t| t.map(|t| &t.inner)))
+    }
+    fn end_native_carry(&mut self) {
+        self.inner.end_native_carry()
+    }
     fn draw_shared(
         &mut self,
         color: Self::Surface,

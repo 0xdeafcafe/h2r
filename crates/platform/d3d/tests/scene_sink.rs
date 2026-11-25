@@ -737,6 +737,65 @@ mod retained_admission {
         assert_eq!((o.issued, o.replay_draws), (1, 1));
     }
 
+    /// One native producer's water commit through a real sink: the frame
+    /// the replay keeps, and what the sink answered at each step.
+    fn native_water(stage: Stage, reference: bool) -> (bool, Vec<ReplayOp>, Vec<&'static str>) {
+        let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
+        set_states(&mut device, &mut memory);
+        quad(&mut device, &mut memory, 0xFF40_8020);
+        let draw = device.backend.draws().pop().unwrap().clone();
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let output = frames.clone();
+        let mut sink = SceneSink::new(RecordingBackend::new(), slot)
+            .with_replay(move |frame| output.lock().unwrap().push(frame))
+            .with_guest_reference_request(move || reference);
+        let fmt = D3DFormat::LinA8R8G8B8;
+        let colour = sink.create_texture_target(fmt, 32, 32).unwrap();
+        let shown = sink.create_surface(fmt, 32, 32, false).unwrap();
+        let depth = sink.create_surface(D3DFormat::LinD24S8, 32, 32, true).unwrap();
+        let admission = RetainedAdmission {
+            packet: Arc::new(draw),
+            surfaces: ExternalSurfaces { color: colour, depth, sampled: vec![], slots: vec![], slot_sizes: vec![] },
+            request: ExternalPassRequest { rect: (0, 0, 32, 32), surface_size: (32, 32), z_scale: 1.0, display_projection_factor: 1.0 },
+            plan: ExternalPlan { stage, view: 0, ranges: 1, slots: vec![] },
+            pass: Arc::new(Mutex::new(Box::new(Flare(true)) as Box<dyn ExternalPass>)),
+        };
+        let begun = sink.begin_native_carry(colour, Some(depth), &admission);
+        if begun {
+            sink.record_native_carry(colour, Some(depth), [None; 4]);
+        }
+        sink.end_native_carry();
+        assert!(sink.copy_surface(colour, shown).unwrap());
+        sink.present(shown, 0).unwrap();
+        let frame = frames.lock().unwrap().pop().unwrap();
+        let refusals = frame.refusals.clone();
+        (begun, frame.ops.into_iter().map(|(_, op)| op).collect(), refusals)
+    }
+
+    #[test]
+    fn a_native_water_commit_is_retained_as_an_admitted_draw() {
+        let (begun, ops, refusals) = native_water(Stage::Water, false);
+        assert!(begun);
+        let carried: Vec<_> = ops
+            .iter()
+            .filter_map(|op| match op {
+                ReplayOp::Draw { external, .. } => Some(external.as_ref().map(|e| e.plan.stage)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(carried, [Some(Stage::Water)]);
+        assert!(refusals.is_empty(), "{refusals:?}");
+    }
+
+    #[test]
+    fn only_water_and_only_without_a_guest_reference_is_carried() {
+        for (stage, reference) in [(Stage::Flares, false), (Stage::Transparents, false), (Stage::Water, true)] {
+            let (begun, ops, _) = native_water(stage, reference);
+            assert!(!begun, "{stage:?} reference={reference}");
+            assert!(!ops.iter().any(|op| matches!(op, ReplayOp::Draw { .. })), "{stage:?}");
+        }
+    }
+
     #[test]
     fn the_sky_strip_keeps_its_stencil_write_on_replay() {
         let o = capture(false, |admission, draw, _| {

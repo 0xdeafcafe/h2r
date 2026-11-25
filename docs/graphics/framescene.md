@@ -1461,6 +1461,17 @@ D3D reference with all native stages disabled.
   only for an unchanged draw bound to the attachments it was made for
   (a private capture only at 1x), and draws the packet when any copy is
   refused. Every other draw is carried as the guest's packet alone.
+  A native producer commits its pass with no guest draw to carry it, and
+  a replaying sink refuses such a reservation
+  (`prepare_external`: "the scene recorder cannot retain an unsealed
+  reservation") unless it carries the commit
+  (`Backend::begin_native_carry`, `record_native_carry`,
+  `end_native_carry`): for the water composite (`Stage::Water`) the sink
+  applies the admission checks above to the pass's packet, and the commit
+  is kept as a `ReplayOp::Draw` with that admission and the textures the
+  packet was resolved against. Its recordings are then not refused as
+  unrecorded. `IndexedPass::water_quads` records repeatedly
+  (`replays_scene`), as a sorted layer's range does.
 - **Coverage.** `render.scene` reports, with the option, `carried`
   (the last frame's ops by slot, its side targets with the ops that
   named them by slot, and its readbacks in and outside a game view),
