@@ -148,5 +148,5 @@ fn select(c: &mut CpuAbi, g: &mut impl Memory, pc: u32) -> Transfer {
 
 /// One search segment. Children may suspend and edit the live frame.
 pub fn search(c: &mut CpuAbi, g: &mut Guest, pc: u32) -> Boundary {
-    segment::<32, _>(c, g, pc, 0x1a5370..0x1a549c, SEARCH_SITES, select)
+    segment::<32, _>(c, g, pc, 0x1a5370..0x1a549c, SEARCH_SITES, |c, p, pc| select(c, p, pc))
 }

@@ -83,7 +83,7 @@ pub fn apply(c: &mut CpuAbi, g: &mut Guest, pc: u32) -> Step {
             disjoint(m, (packet, 0x7c), (at(body, 0x148), 0xfa))?;
             let control = UnitControl::gather(m, packet)?;
             control.publish(m, body)?;
-            crate::sim_objects::cmp16(c, u32::from(control.grenade), u32::from(u16::MAX));
+            crate::sim_objects::alu::cmp16(c, u32::from(control.grenade), u32::from(u16::MAX));
             c.eax = body;
             c.ecx = 0;
             c.edx = control.gaze[2];

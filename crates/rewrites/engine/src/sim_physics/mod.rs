@@ -13,7 +13,7 @@ pub(crate) mod first_person;
 mod pose_layers;
 mod light;
 mod support;
-mod observer;
+pub(crate) mod observer;
 mod objects;
 mod object_update;
 pub(crate) mod node_matrices;

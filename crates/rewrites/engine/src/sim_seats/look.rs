@@ -20,7 +20,7 @@ type Unit = std::result::Result<(), GuestFault>;
 
 /// Sample a signed axis against its profile's evenly spaced response curve.
 pub fn curve(cpu: &mut CpuAbi, ram: &mut impl SegmentMemory, pc: u32) -> Checked {
-    segment::<4, _>(cpu, ram, pc, CURVE..0x0018_5bd4, &[], sample_curve)
+    segment::<4, _>(cpu, ram, pc, CURVE..0x0018_5bd4, &[], |c, p, pc| sample_curve(c, p, pc))
 }
 
 fn sample_curve(c: &mut CpuAbi, m: &mut impl Memory, _: u32) -> Result {
@@ -113,7 +113,7 @@ fn declined(pc: u32) -> GuestFault {
 }
 
 pub fn update(cpu: &mut CpuAbi, ram: &mut impl SegmentMemory, pc: u32) -> Checked {
-    segment::<160, _>(cpu, ram, pc, UPDATE..0x0018_6aa1, SITES, control_step)
+    segment::<160, _>(cpu, ram, pc, UPDATE..0x0018_6aa1, SITES, |c, p, pc| control_step(c, p, pc))
 }
 
 fn control_step(c: &mut CpuAbi, m: &mut impl Memory, pc: u32) -> Result {

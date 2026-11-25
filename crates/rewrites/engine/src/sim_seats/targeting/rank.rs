@@ -87,5 +87,5 @@ fn compare_records(c: &mut CpuAbi, g: &mut impl Memory, _: u32) -> Transfer {
 }
 
 pub fn compare(c: &mut CpuAbi, g: &mut Guest, pc: u32) -> Boundary {
-    segment::<2, _>(c, g, pc, COMPARE..0x1a67e5, &[], compare_records)
+    segment::<2, _>(c, g, pc, COMPARE..0x1a67e5, &[], |c, p, pc| compare_records(c, p, pc))
 }
