@@ -19,7 +19,7 @@ use gfx::vertex::{
 use gfx::xdk::RenderStateTable;
 use gfx::{Clear, D3DFormat, GfxContext};
 use native_render::world_layers::Texaccum;
-use native_render::world_layers_gpu::{Cache, IndexedPass};
+use native_render::world_layers_gpu::{Cache, IndexedPass, pool_lens_stage, pool_recording_counters, pool_refusal_counter};
 use shaders::psh::{PixelShaderDef, bits::*};
 use shaders::vsh::encode::{Inst, Operand, program};
 use shaders::vsh::{MacOp, OutReg, Program};
@@ -742,6 +742,7 @@ fn sorted_pool_translates_the_resolved_ripple_and_scene_stages() {
     draw.textures = [draw.textures[0]; 4];
     draw.extras[2].bump_env_mat = [0.25, -0.1, 0.5, 0.2];
     let pass = IndexedPass::for_pool(&draw, Arc::new(Cache::default()), 1).unwrap();
+    assert_eq!(pool_lens_stage(&draw), Some(0));
     assert!(pass.replays_scene());
     assert_eq!(pass.resolved_fallback().unwrap().as_ref(), &draw);
     let program = d3d::nv2a::NativeDrawMaterial::resolve(&draw, [true; 4],
@@ -805,4 +806,77 @@ fn sky_strip_draws_the_current_views_palette_and_writes_the_stencil_mark() {
         let pixels = backend.read_color(color).unwrap().0;
         assert_eq!(&pixels[pixel..pixel + 4], &[0, 0, 0, 255]);
     }
+}
+
+/// A pool the native pass can draw: the lens at stage 0, the target's size,
+/// the depth tested without a write.
+fn pool_triangle() -> ResolvedDraw {
+    let mut draw = triangle(2.0, [1.0; 4], 0, true);
+    draw.state.render.depth_func = CompareFunc::LessEqual;
+    draw.state.render.stencil.enable = false;
+    draw
+}
+
+#[test]
+fn a_pool_without_its_inputs_is_a_named_refusal() {
+    let cache = || Arc::new(Cache::default());
+    let refused = |draw: &ResolvedDraw| IndexedPass::for_pool(draw, cache(), 1).err();
+    assert_eq!(refused(&pool_triangle()), None);
+
+    let mut draw = pool_triangle();
+    draw.target.depth_format = None;
+    assert_eq!(refused(&draw), Some("no_depth"));
+
+    let mut draw = pool_triangle();
+    draw.state.render.depth_func = CompareFunc::Always;
+    assert_eq!(refused(&draw), Some("depth_not_tested"));
+    let mut draw = pool_triangle();
+    draw.state.render.depth_mode = DepthBufferMode::Disabled;
+    assert_eq!(refused(&draw), Some("depth_not_tested"));
+
+    let mut draw = pool_triangle();
+    draw.state.render.depth_write = true;
+    assert_eq!(refused(&draw), Some("writes_depth"));
+
+    // A lens that is not the frame's size, or no sampled image: no lens.
+    let mut draw = pool_triangle();
+    draw.texture_info[0].as_mut().unwrap().width = SIZE / 2;
+    assert_eq!(pool_lens_stage(&draw), None);
+    assert_eq!(refused(&draw), Some("no_lens"));
+    let mut draw = pool_triangle();
+    draw.texture_info[0] = None;
+    assert_eq!(refused(&draw), Some("no_lens"));
+
+    assert_eq!(pool_refusal_counter("no lens"), "layer_plan_15_pool_refused_no_lens");
+}
+
+#[test]
+fn a_pool_lens_samples_the_bound_colour_not_the_guests_sample() {
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(ctx) = GfxContext::headless() else { return };
+    let mut backend = GfxBackend::new(ctx);
+    let color = backend.create_surface(FORMAT, SIZE, SIZE, false).unwrap();
+    let depth = backend.create_surface(DEPTH, SIZE, SIZE, true).unwrap();
+    // The guest's sample of an earlier frame state: red. The scene the pool
+    // draws over: blue.
+    let guest_lens = backend.create_texture_target(FORMAT, SIZE, SIZE).unwrap();
+    backend.clear(guest_lens, None, Clear { color: Some([1.0, 0.0, 0.0, 1.0]), depth: None, stencil: None }).unwrap();
+    let guest_lens = backend.surface_texture(guest_lens).unwrap().unwrap();
+    backend.clear(color, Some(depth), Clear::all([0.0, 0.0, 1.0, 1.0])).unwrap();
+    let surfaces = ExternalSurfaces { color, depth, sampled: vec![], slots: vec![], slot_sizes: vec![] };
+    let cache = Arc::new(Cache::default());
+    let draw = pool_triangle();
+    let recorded = |counters: &[(String, u64)]| counters.iter()
+        .find(|(k, _)| k == "layer_plan_15_pool_recorded").map_or(0, |(_, n)| *n);
+    let before = recorded(&pool_recording_counters());
+    assert!(after_compile(|| {
+        let pass = IndexedPass::for_pool(&draw, cache.clone(), 1).unwrap();
+        assert!(pass.replays_scene());
+        record_pass(&mut backend, surfaces.clone(), [Some(&guest_lens), None, None, None],
+            timeline::native::Stage::Water, Box::new(pass))
+    }));
+    assert!(recorded(&pool_recording_counters()) > before);
+    let pixels = backend.read_color(color).unwrap().0;
+    let at = 4 * (4 * SIZE as usize + 4);
+    assert_eq!(&pixels[at..at + 4], &[0, 0, 255, 255], "the lens is the bound colour, not the guest's red");
 }

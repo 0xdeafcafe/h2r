@@ -60,6 +60,9 @@ struct DeviceCache {
     frame: u64,
     scope: Option<(u64, u32)>,
     sections: HashMap<SectionKey, Vec<ResidentSection>>,
+    /// The scratch copies of the bound colour a pool's lens samples, one per
+    /// target copy (reference, display).
+    lens_copies: [Option<wgpu::TextureView>; 2],
 }
 
 #[derive(Default)]
@@ -233,7 +236,7 @@ impl DeviceCache {
             section_count: SECTIONS.track(0),
             section_bytes: SECTION_PAYLOAD.track(0),
             trimmed_at: 0,
-            frame: 0, scope: None, sections: HashMap::new(),
+            frame: 0, scope: None, sections: HashMap::new(), lens_copies: [None, None],
         }
     }
 
@@ -418,6 +421,10 @@ struct SurfaceTexture {
 /// One indexed range recorded at its original attachments.
 pub struct IndexedPass {
     sorted_pool: bool,
+    /// The stage of a sorted pool that samples the frame behind it (its
+    /// refraction lens): the recording binds a copy of the bound colour
+    /// there ([`IndexedPass::record_pool`]).
+    lens: Option<usize>,
     sky: Option<SkyRows>,
     draw: Arc<ResolvedDraw>,
     /// The guest quad packet when the native pass expands its topology.
@@ -454,11 +461,31 @@ impl IndexedPass {
     }
 
     /// The sorted handler resolved the ripple frame, bump matrices, reflection,
-    /// refraction sample and fog. Replay rebinds this packet's four stage views.
-    pub fn for_pool(draw: &ResolvedDraw, cache: Arc<Cache>, frame: u64) -> Option<Self> {
-        let mut pass = Self::new(draw, cache, frame, None)?;
+    /// refraction sample and fog. The pool draws over the scene the attachments
+    /// hold: it tests (and never writes) their depth, and its lens samples a
+    /// copy of the bound colour made in each recording, not the guest's sample
+    /// of an earlier frame state. Each input that does not hold is a named
+    /// refusal ([`pool_refusal_counter`] names its counter) and the guest's
+    /// D3D draw stands.
+    pub fn for_pool(draw: &ResolvedDraw, cache: Arc<Cache>, frame: u64) -> Result<Self, &'static str> {
+        use gfx::state::{CompareFunc, DepthBufferMode};
+        let render = &draw.state.render;
+        if draw.target.depth_format.is_none() {
+            return Err("no_depth");
+        }
+        if render.depth_mode == DepthBufferMode::Disabled
+            || matches!(render.depth_func, CompareFunc::Always | CompareFunc::Never)
+        {
+            return Err("depth_not_tested");
+        }
+        if draw.writes_depth_stencil() {
+            return Err("writes_depth");
+        }
+        let lens = pool_lens_stage(draw).ok_or("no_lens")?;
+        let mut pass = Self::new(draw, cache, frame, None).ok_or("geometry")?;
         pass.sorted_pool = true;
-        Some(pass)
+        pass.lens = Some(lens);
+        Ok(pass)
     }
 
     /// Expand the indexed water composite using the Xbox quad diagonal.
@@ -548,6 +575,7 @@ impl IndexedPass {
         }
         Some(Self {
             sorted_pool: false,
+            lens: None,
             sky: None,
             draw: Arc::new(draw.clone()),
             original_quad: None,
@@ -572,6 +600,18 @@ impl IndexedPass {
         target: &ExternalAttachments,
         guest_size: (u32, u32),
     ) -> Result<ExternalDraws, &'static str> {
+        self.prepare_with(target, guest_size, false).map(|(draws, _)| draws)
+    }
+
+    /// [`Self::prepare`], and with `lens` the pool's lens stage bound to the
+    /// scratch copy of the bound colour, returned for the recording to fill
+    /// before its draws.
+    fn prepare_with(
+        &self,
+        target: &ExternalAttachments,
+        guest_size: (u32, u32),
+        lens: bool,
+    ) -> Result<(ExternalDraws, Option<LensCopy>), &'static str> {
         let _scope = mem_watch::scope("native.world");
         // Both target copies retain the same geometry and material snapshot.
         let draw = &self.draw;
@@ -612,7 +652,14 @@ impl IndexedPass {
             }
             key
         });
-        let present = target.stages.each_ref().map(Option::is_some);
+        let mut stages = target.stages.clone();
+        let mut lens_copy = None;
+        if let Some(stage) = self.lens.filter(|_| lens) {
+            let copy = pool_lens_copy(&target.device, &mut cache.lens_copies, target)?;
+            stages[stage] = Some(copy.view.clone());
+            lens_copy = Some(copy);
+        }
+        let present = stages.each_ref().map(Option::is_some);
         // Visibility can split one section part into several indexed windows.
         // Keep each live window: alternating ranges must not replace each other.
         let previous = section_key.and_then(|key| {
@@ -638,7 +685,7 @@ impl IndexedPass {
         let mut consumed_surface = false;
         for (n, dim) in dims.iter().enumerate() {
             let Some(dim) = dim else { continue };
-            let view = target.stages[n].as_ref().ok_or("sample view missing")?;
+            let view = stages[n].as_ref().ok_or("sample view missing")?;
             let have = match draw.texture_info[n].ok_or("sample header missing")?.kind {
                 TextureKind::D2 => wgpu::TextureViewDimension::D2,
                 TextureKind::Volume => wgpu::TextureViewDimension::D3,
@@ -703,7 +750,7 @@ impl IndexedPass {
         pipeline.visible_at_frame(self.extracted_frame)
             .ok_or("pipeline unavailable at extraction")?
             .as_ref().ok_or("pipeline compilation failed")?;
-        let views = std::array::from_fn(|n| dims[n].and(target.stages[n].clone()));
+        let views = std::array::from_fn(|n| dims[n].and(stages[n].clone()));
         let cached_textures = previous.and_then(|(key, i)| cache.sections.get(&key)?[i].material.as_ref())
             .filter(|_| material_hit)
             .and_then(|m| m.groups.iter().find(|(stages, _)| stages == &views))
@@ -823,7 +870,139 @@ impl IndexedPass {
         for scissor in scissors {
             packets.push(packets[0].clone().with_scissor(scissor.ok_or("invalid clip rectangle")?, target.size));
         }
-        Ok(ExternalDraws { ranges: 1, packets, discards: shader.discards, writes: Vec::new() })
+        Ok((ExternalDraws { ranges: 1, packets, discards: shader.discards, writes: Vec::new() }, lens_copy))
+    }
+}
+
+/// The scratch copy of the bound colour a pool's lens stage samples: copy
+/// `from` into `to` (`extent`) before the pool draws, since an attachment
+/// cannot be sampled as it is drawn into.
+struct LensCopy {
+    from: wgpu::Texture,
+    to: wgpu::Texture,
+    view: wgpu::TextureView,
+    extent: wgpu::Extent3d,
+}
+
+/// The counter of a pool the native pass declines for `reason`
+/// ([`IndexedPass::for_pool`]'s, and the recording's own).
+pub fn pool_refusal_counter(reason: &str) -> String {
+    format!("layer_plan_15_pool_refused_{}", reason.replace([' ', '-'], "_"))
+}
+
+static POOL_RECORDINGS: Mutex<Option<HashMap<String, u64>>> = Mutex::new(None);
+
+fn count_pool_recording(counter: String) {
+    *POOL_RECORDINGS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_default().entry(counter).or_default() += 1;
+}
+
+/// The recordings of sorted pools by outcome: `layer_plan_15_pool_recorded`
+/// per recording made, `layer_plan_15_pool_refused_<reason>` per recording
+/// refused (the guest's D3D draw then stands, as
+/// `layer_plan_15_pool_on_d3d` counts for the admission's refusals).
+pub fn pool_recording_counters() -> Vec<(String, u64)> {
+    POOL_RECORDINGS.lock().unwrap_or_else(|e| e.into_inner()).iter().flatten().map(|(k, &v)| (k.clone(), v)).collect()
+}
+
+/// The stage of `draw` that samples the frame behind a pool: the first
+/// projective 2D stage whose bound image is a frame-sized 2D texture (the
+/// guest's resolve of the colour target). Its ripple stages are bump
+/// environment maps and never qualify.
+pub fn pool_lens_stage(draw: &ResolvedDraw) -> Option<usize> {
+    use shaders::psh::{PixelShaderDef, bits::TEX_PROJECT2D};
+    let words = draw.shader.pixel_shader.as_ref()?;
+    let modes = PixelShaderDef::from_words(words).texture_modes;
+    let sampled = draw.sampled_texture_stages();
+    (0..4).find(|&n| {
+        (modes >> (5 * n)) & 0x1f == TEX_PROJECT2D
+            && sampled[n]
+            && draw.texture_info[n].is_some_and(|info| {
+                info.kind == TextureKind::D2 && (info.width, info.height) == (draw.target.width, draw.target.height)
+            })
+    })
+}
+
+/// `copies`' scratch for `target`'s copy, made again when the colour's
+/// extent or format changes, and the copy to record into it.
+fn pool_lens_copy(
+    device: &wgpu::Device, copies: &mut [Option<wgpu::TextureView>; 2], target: &ExternalAttachments,
+) -> Result<LensCopy, &'static str> {
+    if !crate::water_gpu::WaterSet::can_copy(&target.color, target.size) {
+        return Err("lens source cannot be copied");
+    }
+    if !gfx::program::filterable(target.color_format, device.features()) {
+        return Err("lens source is unfilterable");
+    }
+    let texture = target.color.texture();
+    let extent = texture.size();
+    let format = texture.format();
+    let scratch = &mut copies[match target.copy {
+        d3d::TargetCopy::Reference => 0,
+        d3d::TargetCopy::Display => 1,
+    }];
+    if scratch.as_ref().is_some_and(|v| v.texture().size() != extent || v.texture().format() != format) {
+        *scratch = None;
+    }
+    let view = scratch.get_or_insert_with(|| {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("native pool lens copy"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        }).create_view(&Default::default())
+    });
+    Ok(LensCopy { from: texture.clone(), to: view.texture().clone(), view: view.clone(), extent })
+}
+
+impl IndexedPass {
+    /// A sorted pool's recording: the lens copy of the bound colour, then the
+    /// pool's packets in a pass over the same attachments, loaded, so the
+    /// pool tests the depth the world left and blends over the colour the
+    /// copy was taken of.
+    fn record_pool(
+        &mut self, target: &ExternalAttachments, request: ExternalPassRequest,
+    ) -> Result<d3d::backend::ExternalEncoded, &'static str> {
+        let (draws, lens) = self.prepare_with(target, request.surface_size, true)?;
+        let lens = lens.ok_or("lens unavailable")?;
+        if draws.packets.iter().any(RecordedDraw::counts_samples) {
+            return Err("pool draw counts samples");
+        }
+        let (color, depth) = (target.color.clone(), target.depth.clone());
+        let has_stencil = target.depth_format.has_stencil_aspect();
+        let packets = draws.packets;
+        let count = packets.len();
+        let LensCopy { from, to, extent, .. } = lens;
+        let size = target.size;
+        let commands = move |encoder: &mut wgpu::CommandEncoder| {
+            encoder.copy_texture_to_texture(from.as_image_copy(), to.as_image_copy(), extent);
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("native pool"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
+                    stencil_ops: has_stencil
+                        .then_some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_viewport(0.0, 0.0, size.0 as f32, size.1 as f32, 0.0, 1.0);
+            // Checked when the packets were made: every pipeline built, no
+            // counted draw.
+            let _ = gfx::renderer::encode_in_pass(&mut pass, &packets);
+        };
+        Ok(d3d::backend::ExternalEncoded { ranges: draws.ranges, draws: count, passes: 1, commands: Box::new(commands) })
     }
 }
 
@@ -866,6 +1045,7 @@ impl ExternalPass for IndexedPass {
         };
         Some(Box::new(Self {
             sorted_pool: self.sorted_pool,
+            lens: self.lens,
             sky: self.sky.clone(),
             draw,
             original_quad,
@@ -899,8 +1079,23 @@ impl ExternalPass for IndexedPass {
         target: &ExternalAttachments,
         request: ExternalPassRequest,
     ) -> Option<Result<ExternalDraws, &'static str>> {
-        let result = self.prepare(target, request.surface_size);
-        if self.sorted_pool && let Err(why) = &result {
+        // A pool needs its lens copy first: it records as commands.
+        if self.sorted_pool { return None; }
+        Some(self.prepare(target, request.surface_size))
+    }
+
+    fn record_encoded(
+        &mut self,
+        target: &ExternalAttachments,
+        request: ExternalPassRequest,
+    ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
+        if !self.sorted_pool { return None; }
+        let result = self.record_pool(target, request);
+        count_pool_recording(match &result {
+            Ok(_) => "layer_plan_15_pool_recorded".to_owned(),
+            Err(why) => pool_refusal_counter(why),
+        });
+        if let Err(why) = &result {
             let mut refusals = self.cache.pool_refusals.lock().unwrap_or_else(|e| e.into_inner());
             let count = refusals.entry(*why).or_default();
             *count += 1;
