@@ -24,6 +24,8 @@
 //! Context-only, like the fog's: it reads and writes the memory its
 //! context sees.
 
+mod grid;
+
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -93,7 +95,7 @@ pub fn set_host(host: Arc<dyn Host>) {
 /// views drawn natively, items skipped, draws left to the guest because
 /// their material is not ready or because skipping them would change a
 /// render state the device holds, views the host declined.
-pub fn counters() -> [(&'static str, u64); 6] {
+pub fn counters() -> impl Iterator<Item = (&'static str, u64)> {
     [
         ("scene_decorator_views", VIEWS.load(Ordering::Relaxed)),
         ("scene_decorator_views_native", DRAWN.load(Ordering::Relaxed)),
@@ -101,7 +103,7 @@ pub fn counters() -> [(&'static str, u64); 6] {
         ("scene_decorator_draws_unready", REFUSED.load(Ordering::Relaxed)),
         ("scene_decorator_draws_state", STATE.load(Ordering::Relaxed)),
         ("scene_decorator_views_declined", DECLINED.load(Ordering::Relaxed)),
-    ]
+    ].into_iter().chain(grid::counters())
 }
 
 /// A view's decorators planned over the materials that are `ready` and
@@ -219,6 +221,7 @@ impl Feature for NativeDecorators {
         if !on(b.switches()) {
             return Ok(());
         }
+        grid::install(b);
         b.raw()
             .observe_before(&points::LAYER_DRAW, "native_decorators_skip", |o| {
                 let mut g = o.guest();

@@ -1068,6 +1068,8 @@ points! { ALL;
     /// Draws the current layer (`[0x00467130]`) of the current list: layer
     /// setup, then `LAYER_ENTRIES` for the layers in its mask.
     LAYER_DRAW @ 0x0004_4550: [opaque]; "docs/graphics/layer-draw.md";
+    /// Fill the ordered decorator grid cell table from the BSP and the game-view camera.
+    DECORATOR_GRID @ 0x0003_f830: [fn(grid: stack 0, camera: stack 1) ret 8]; "docs/graphics/native-decorators.md";
     /// The layer's end: every `LAYER_DRAW` call in `RENDER_LIGHT_PASSES`
     /// is followed by one; it ends the layer's state and sets the current
     /// layer (`[0x00467130]`) to 0.
@@ -1099,11 +1101,25 @@ points! { ALL;
     /// stack `(unused, compare, context)`, `ret 0xc`. The transparents'
     /// draw order sorts with it (comparator `0x0001e700`).
     TRANSPARENT_SORT @ 0x0013_df80: [opaque]; "docs/graphics/render-loop.md";
+    /// Build a potentially visible set's region records for a single frustum.
+    VIEW_PVS_REGIONS @ 0x0017_33e0: [fn(start: eax, output: ebx, camera: stack 0) ret 4]; "docs/graphics/native-visibility.md";
+    /// Materialize one merged tangent-space portal window.
+    VIEW_WINDOW_BUILD @ 0x0016_3db0: [fn(rect: ecx, output: edi, frustum: stack 0, ordinal: stack 1) -> al ret 8]; "docs/graphics/native-visibility.md";
     /// The shader draw's render-state list: EBX the draw context, stack 0
     /// the list word's address (`count << 9 | first`), `ret 4`. Applies
     /// each entry through `SetRenderState_Simple`, the D3D shadow and
     /// dirty bits, or a per-state setter.
     RENDER_STATES @ 0x0001_a170: [fn(context: ebx, list: stack 0) ret 4]; "docs/graphics/render-loop.md";
+    /// Flood a single frustum into the caller's portal-node and cluster scratch.
+    PORTAL_WINDOW_WALK @ 0x0017_2840: [fn(view: stack 0, nodes: stack 1, clusters: stack 2, queue: stack 3, projection: stack 4) -> al ret 20]; "docs/graphics/native-visibility.md";
+    /// Merge portal windows by cluster in the current flood's node pool.
+    PORTAL_WINDOW_MERGE @ 0x0017_2c70: [fn(chains: esi, pool: stack 0) ret 4]; "docs/graphics/native-visibility.md";
+    /// Materialize regions and frusta from the merged node pool. The
+    /// single caller passes its lookup, camera and output tables, with a
+    /// zero word it leaves unused.
+    PORTAL_WINDOW_REGIONS @ 0x0017_30a0: [fn(lookup: stack 0, camera: stack 1, unused: stack 2, output: stack 3) ret 16]; "docs/graphics/native-visibility.md";
+    /// Publish sphere-mode region records and update visited-cluster stamps.
+    VIEW_SPHERE_REGIONS @ 0x0013_2d60: [fn(vis: eax) ret 0]; "docs/graphics/native-visibility.md";
     /// Populate visibility lists from the current view's cluster references.
     SCENE_CLUSTER_GATHER @ 0x0013_2220: [fn(vis: stack 0) ret 4]; "docs/graphics/native-renderer.md";
     /// Publish clusters and their instanced geometry in visibility order.

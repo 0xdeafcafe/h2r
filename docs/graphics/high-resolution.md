@@ -184,8 +184,8 @@ window. Object spheres must intersect one of their cluster's window frusta.
 The observer supplies the vertical field of view.
 
 Exact mode keeps the guest gather and visibility readbacks at the retail
-lens. The scene step walks the open portals with both the retail and display
-cameras, including their off-centre projections. It excludes geometry
+lens. The scene step walks the open portals with the stored gather frustum and
+a display copy whose tangent bounds widen around the same lens centre. It excludes geometry
 already admitted by the retail lens or submitted by the guest. Each rigid
 BSP placement needs to intersect a portal window in a cluster that references
 it. For layers 6 and 16, a display-only submission needs an empty guest

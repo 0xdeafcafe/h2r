@@ -4,13 +4,20 @@
 //! becomes visible.
 mod display_swap;
 mod geometry;
+mod portal_merge;
+mod portal_regions;
 mod lights;
 mod objects;
 mod object_lod;
+mod portal_walk;
 mod records;
 mod setup;
 pub use setup::{DisplayGeometry, DisplaySection, display_model};
+mod regions;
+mod sphere_regions;
 mod transparents;
+mod window;
+pub(crate) use transparents::{bsp as transparent_bsp, display_sort_key};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -157,6 +164,7 @@ impl Feature for ScaledSceneLists {
         if !enabled(b.switches()) {
             return Ok(());
         }
+        portal_walk::install(b);
         install(
             b,
             Seam::Function(&points::SCENE_CLUSTER_GATHER, 4),
@@ -172,6 +180,7 @@ impl Feature for ScaledSceneLists {
             Seam::Function(&points::SCENE_GEOMETRY_GATHER, 4),
             geometry::gather,
         );
+        window::install(b);
         let scale = self.0;
         install(
             b,
@@ -202,6 +211,11 @@ impl Feature for ScaledSceneLists {
             Seam::Function(&points::LIGHT_EXTRA_CASTER, 4),
             lights::extra_caster,
         );
+        regions::install(b);
+        sphere_regions::install(b);
+        portal_merge::install(b);
+        portal_regions::install(b);
+        transparents::install_display(b);
         install(
             b,
             Seam::Function(&points::TRANSPARENT_EFFECT_ENTRY, 8),

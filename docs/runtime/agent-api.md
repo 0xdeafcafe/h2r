@@ -2146,6 +2146,9 @@ h2 agent render.parity '{"arm": true}'
   `layout`, `mode`, `frusta`, `overflow`, `camera`, `not_main`: views it
   made no sets for); the light views' `scene_light_visibility_checked`,
   `_equal`, `_differ`, `_ns` and `_declined_<reason>` (the same reasons);
+  the complete world/model geometry lists' `scene_geometry_lists_equal`,
+  `scene_geometry_lists_differ` and `scene_geometry_lists_taken` (whole lists
+  dispatched from a verified Rust result for the current inputs);
   and the view records' `scene_view_record_checked`, `_equal`, `_differ`,
   `_guest_lens_applied`, `_guest_lens_retail` and `_guest_lens_other`
   (single-copy views the hook fitted, by whether the guest's own
@@ -2156,7 +2159,11 @@ h2 agent render.parity '{"arm": true}'
   `scene_refused_writes`, `scene_layers`, `scene_layer_items`,
   `scene_layer_remainder`, `scene_layers_unread` (layer draws whose list
   did not read), `scene_decorator_draws`, `scene_decorator_instances`,
-  `scene_decorator_remainder`, and the decorator stage's
+  `scene_decorator_remainder`, and the decorator placement source by view
+  (`scene_decorator_placements_equal`, `_differ`, `_no_windows`, `_unread`,
+  `_nonresident`, `_virtual_shader`). The grid producer reports
+  `scene_decorator_grid_compared`, `_differ` and `_native`.
+  The decorator stage reports
   `scene_decorator_views`, `scene_decorator_views_native`,
   `scene_decorator_items_skipped`, `scene_decorator_draws_unready`,
   `scene_decorator_draws_state` and `scene_decorator_views_declined`

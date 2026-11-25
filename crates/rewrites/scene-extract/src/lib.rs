@@ -24,6 +24,7 @@ pub mod decorators;
 pub mod extract;
 mod guest;
 pub mod late;
+pub mod layer_sort;
 pub mod layout;
 pub mod light_groups;
 pub mod lights;

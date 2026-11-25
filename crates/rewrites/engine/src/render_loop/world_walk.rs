@@ -249,6 +249,25 @@ fn cluster_sphere(m: &dyn GuestMemory, section: u32, mode: Mode) -> Option<([f32
     Some((centre, radius))
 }
 
+fn projected_cluster_size(m: &dyn GuestMemory, section: u32, mode: Mode, depth: [f32;4], near: f32, scale: f32, double: f32) -> Option<f32> {
+    let (p, r) = cluster_sphere(m, section, mode)?;
+    let z = ((depth[2] * p[2] + depth[0] * p[0]) + depth[1] * p[1]) + depth[3];
+    Some((scale / z.abs().max(near)) * r * double)
+}
+
+/// The pixel byte the main BSP record would carry at this lens.
+pub fn cluster_pixel_size(m: &dyn GuestMemory, section: u32, cw: u16) -> Option<u8> {
+    if cw & 0xc3f != 0x3f { return None; }
+    let size = projected_cluster_size(m, section, Mode::from_cw(cw), projection_depth(m)?,
+        m.f32(MIN_DEPTH).ok()?, m.f32(PIXEL_SCALE).ok()?, m.f32(TWO).ok()?)?;
+    quantize_size(size, m.f32(QUARTER).ok()?)
+}
+
+fn quantize_size(size: f32, quantize: f32) -> Option<u8> {
+    let size = size * quantize;
+    (size.is_finite() && size < i32::MAX as f32).then(|| size.floor().clamp(0., 255.) as u8)
+}
+
 fn plan(
     m: &dyn GuestMemory,
     vis: u32,
@@ -353,9 +372,7 @@ fn fill(
                     return None;
                 }
                 let section = ptr(m, bsp.checked_add(0xa0)?)?.checked_add(id * 0xb0)?;
-                let (p, r) = cluster_sphere(m, section, mode)?;
-                let z = ((depth[2] * p[2] + depth[0] * p[0]) + depth[1] * p[1]) + depth[3];
-                let size = (scale / z.abs().max(near)) * r * double;
+                let size = projected_cluster_size(m, section, mode, depth, near, scale, double)?;
                 bits |= 1 << 6;
                 let extra = m.u8(vis + 0x1c + id).ok()? as i8 as i16 as u16;
                 (id, section, extra, None, size, u8::MAX)
@@ -429,15 +446,7 @@ fn fill(
         data[28..32].copy_from_slice(&placement.map_or(0, |(_, at)| at).to_le_bytes());
         plan.put(m, row, &data)?;
         plan.put(m, ATTACHMENTS + cursor, &[u8::MAX])?;
-        let size = size * quantize;
-        if !size.is_finite() || size >= i32::MAX as f32 {
-            return None;
-        }
-        plan.put(
-            m,
-            PIXEL_SIZES + cursor,
-            &[size.floor().clamp(0., 255.) as u8],
-        )?;
+        plan.put(m, PIXEL_SIZES + cursor, &[quantize_size(size, quantize)?])?;
         cursor += 1;
         // 0x2cf64: the light's kind leaves the main view's count.
         if !light {

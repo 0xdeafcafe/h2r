@@ -65,6 +65,7 @@ pub(super) fn install(b: &mut Builder) {
         Ok(Flow::Continue)
     }).context_only();
 
+    crate::native_scene_lists::transparent_bsp::parity::install(b);
     let sections = std::sync::Mutex::new(super::section::SectionCache::default());
     b.raw().before(&points::WORLD_PART_MATERIAL, "native_world_build_section", move |c| {
         if c.cpu.edi != 0 || c.cpu.mxcsr & 0xffc0 != 0x1f80 { return Ok(Flow::Continue); }
@@ -87,7 +88,7 @@ pub(super) fn install(b: &mut Builder) {
             let mut m = c.ctx.runtime().memory();
             let sp = c.cpu.esp;
             (|| {
-                if m.u32(sp).ok()? != BUILD_RETURN { return None; }
+                if m.u32(sp).ok()? != BUILD_RETURN || super::layer_build::verifying() { return None; }
                 let arg = |n: u32| m.u32(sp.checked_add(4 + 4*n)?).ok();
                 let layer = arg(3)?;
                 if !matches!(layer, 1 | 3 | 5 | 6 | 7 | 8 | 16) { return None; }
@@ -95,7 +96,7 @@ pub(super) fn install(b: &mut Builder) {
                 let mut old = [0; 24];
                 GuestMemory::read(&*m, slot, &mut old).ok()?;
                 let entry = super::scene_build::build(&*m, arg(0)?, arg(2)? as u8, layer,
-                    arg(4)? as u8, arg(5)?, old)?;
+                    arg(4)? as u8, arg(5)?, old, false)?;
                 GuestMemory::write(&mut *m, slot, &entry.bytes).ok()?;
                 Some(entry.accepted)
             })()
@@ -145,8 +146,17 @@ pub(super) fn install(b: &mut Builder) {
         crate::render_loop::world_states(c.cpu, &mut m).map(Flow::Return)
     }).context_only();
 
+    b.raw().observe_before(&points::scene_effects::LAYER_BUILT, "native_geometry_list_parity", |o| {
+        super::layer_build::finish(&*o.guest(), o.cpu);
+    }).context_only();
+
     b.raw().before(&points::LAYER_BUILD, "native_world_layer_build", |c| {
-        let result = super::layer_build::prefix(&mut *c.ctx.runtime().memory(), c.cpu);
+        let mut mem = c.ctx.runtime().memory();
+        let result = match super::layer_build::complete(&mut *mem, c.cpu) {
+            Some(super::layer_build::Decision::Compare) => return Ok(Flow::Continue),
+            Some(super::layer_build::Decision::Native(transfer, built)) => Some((transfer, built)),
+            None => super::layer_build::prefix(&mut *mem, c.cpu),
+        };
         if let Some((transfer, built)) = result {
             Stage::World.count(Metric::BuildsSkipped, u64::from(built));
             return Ok(Flow::Return(transfer));

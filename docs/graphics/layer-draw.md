@@ -59,6 +59,24 @@ different function per entry type), and what they call: shader draw begin
   the buffer, 0x18-byte elements) with comparator `0x0003bb80`, or
   `0x0003bbd0` for layer 5.
 
+For a main view with a Rust visibility gather, `native_world::layer_build`
+builds the active layer's geometry slots in source-record order. It resolves
+each BSP section or selected model section, template pass, implementation
+and vertex class. Weighted model parts select the primary or secondary node
+influence count according to part type. A cluster needs a visible region.
+A model needs a visible owner or ancestor. The structure gather supplies
+the placement records. A foreign callback can change the list and ends
+whole-list planning.
+
+`scene_extract::layer_sort::geometry` orders the full slots, including ties.
+The dispatch boundary at `0x0003bc51`, the instruction after the build call's return, compares the original result count
+and every byte, including the last rejected scratch slot when present.
+For a matching list the front-end retains the Rust slots and the input
+spans it read. With the same BSP generation, view, visibility and input
+bytes it publishes the Rust slots and returns the count directly. A change
+requires another comparison. `render.scene` reports the counts of equal,
+different and reused lists.
+
 **Waste to look at (S, from the read; not measured yet).**
 
 - Every layer draw walks the whole item list again, calls every item's

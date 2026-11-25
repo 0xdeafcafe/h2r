@@ -256,6 +256,37 @@ selection time and ownership refusals automatically. New stage implementations u
 `gfx::churn::{create_buffer, create_buffer_init, create_bind_group, create_render_pipeline, upload_bytes}`
 for resource accounting. Legacy enqueues have no suppression promise.
 
+## Render front-end plan
+
+1. Compare the Rust portal and object gather with the guest for each view.
+   A set match admits membership tests. A consumer that draws in list
+   order also needs matching order and multiplicity.
+2. Build world and object draw lists from those regions, placements and
+   object records. Compare the ordered draw keys and per-draw setup before
+   selecting a Rust list under `impl.render.native`.
+3. Build sorted transparent entries, including layer 15 for BSP geometry
+   visible only through the display lens. Check the shared entries against
+   the reference queue and keep display-only entries on the display copy.
+4. Resolve decorator placements and instance ranges from the scene.
+   Compare each placement, its order and its instance data at the draw
+   boundary. Keep the guest path for any input the Rust builder declines.
+
+Every stage reads the scene's own projection for the frame (the view's
+camera and render scale), never a constant lens: the display copy's tangent
+bounds widen around the same lens centre as the retail copy. Visibility
+tests run at a widened FOV and render scale 0.75
+(`scene-extract/src/visibility/tests.rs`).
+
+Steps 1 and 4 have Rust producers that replace the guest's after an
+identical compare: the portal walk, regions and windows, sphere and PVS
+rows, and the decorator grid (`render-bridge/src/native_decorators/grid.rs`).
+For step 3, `View::display_transparents` carries the sorted display queue:
+the shared reference slots plus layer-15 cluster parts
+(`native_world/section.rs`, `native_scene_lists/transparents/display.rs`).
+`order_exact` is false when equal keys or a plane cycle make the merged order
+depend on the wide gather's insertion order; the queue is not drawn then.
+The native water draw does not yet consume the queue.
+
 ## Scene list builders
 
 The scene lists go off with the rest of the native renderer. This stage publishes the engine's original
@@ -269,6 +300,7 @@ frusta, live datum arrays and current tag definitions.
 | Object order and setup | `0x00134240` promotes model-linked entries with the original swaps of all four columns. Rust returns directly from accepted `OBJECT_RENDER_SETUP` calls (`0x00133790`). It calculates the projection, opacity and flags, selects sections and handles residency (`0x0004b5d0`), builds palettes and walks children (`0x00133ab0`), then publishes the visibility bit and AL retry result. |
 | Object render records | Whole-call setup uses the same Rust writer as the standalone append hook at `0x001341d0`. It publishes the model arm of `0x0002cbf0`, including attachment and group slots, projected scissors, lighting bytes and subpart allocation. The standalone hook also serves guest setup calls that reach the append after a refusal. |
 | Dynamic light order and affected geometry | The pass at `0x0002c03e` calls `0x00031910`, which collects candidates, updates per-view history, ranks lights and fades their weights. Rust replaces this call and its helpers `0x0004a7c0` and `0x0004ac30`. After the per-light visibility pass, Rust applies the caster and receiver flags from `0x00031660` and the optional owner append from `0x00031c20`. The three are `engine::render::light_gather` ([native-light-gather.md](native-light-gather.md)); the seams here call them. |
+| Ordered world and model geometry | For a Rust-gathered main view, the [layer builder](layer-draw.md) resolves BSP and model section records to complete sort slots. It skips the guest build and sort when all inputs match a list checked byte-for-byte at dispatch. |
 | Transparent and effect lists | Rust publishes the geometry append at `0x00041381` and the effect and polygon records from `0x0001e4e0` and `0x0001e5e0`. In the pass at `0x0002c19a`, Rust fills the active u16 index interval and skips `TRANSPARENT_SORT` at `0x0001e3b2`. The original comparator's plane rules, partition swaps and short-sort ties determine the order, including entries with a null callback. |
 
 The object walk uses the live salt, original partition order and visit
@@ -294,10 +326,11 @@ Setup stages writes across the entire object tree. A refusal restarts at
 the original entry with the incoming registers and memory. New resource
 I/O, synchronous waits, request reprioritization, resource relocation,
 live light-probe work, animated pose evaluation, and auxiliary model
-materials use that path. Portal traversal and dynamic light frustum
-setup (`0x000c1d90`) supply the inputs to the Rust gathers. The main
-view's traversal and object set also run in Rust beside the guest's and
-are compared with them ([native-visibility.md](native-visibility.md)).
+materials use that path. The Rust single-frustum portal walk, sphere gather and PVS gather supply
+regions after comparison with the original producers. Each hook checks
+its inputs and preserves the guest path for an unverified call. Dynamic
+light frustum setup at `0x000c1d90` supplies the light lenses.
+[Visibility in Rust](native-visibility.md).
 Effect producers decide when effects are ready to queue.
 
 Frame stats record `native_scene_lists_<stage>_native`, `_fallback` and

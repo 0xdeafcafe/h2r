@@ -83,7 +83,7 @@ impl Basis {
 
 /// `0x00030bf0`: the length on the x87 stack, compared there with the
 /// epsilon; the scale is the numerator over the length stored as a float.
-fn normalize(v: [f32; 3], inputs: &Inputs) -> [f32; 3] {
+pub(super) fn normalize(v: [f32; 3], inputs: &Inputs) -> [f32; 3] {
     let [x, y, z] = v.map(f64::from);
     let length = ((x * x + y * y) + z * z).sqrt();
     if f64::from(inputs.epsilon) > length.abs() {

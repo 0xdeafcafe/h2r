@@ -1,3 +1,8 @@
+use scene_extract::layer_sort::sort;
+pub(crate) mod bsp;
+mod display;
+pub(super) use display::install as install_display;
+
 use super::*;
 
 const LIST_END: u32 = 0x004b_6280;
@@ -28,15 +33,19 @@ impl Entry {
         if count == CAPACITY {
             return Ok(None);
         }
-        let address = at(ptr(m, LIST_ENTRIES)?, count * STRIDE)?;
+        Self::at(m, ptr(m, LIST_ENTRIES)?, count).map(Some)
+    }
+
+    fn at(m: &dyn GuestMemory, entries: u32, count: u32) -> Result<Self> {
+        let address = at(entries, count * STRIDE)?;
         let mut bytes = [0; STRIDE as usize];
         m.read(address, &mut bytes)?;
         bytes[0xc] = 0;
-        Ok(Some(Self {
+        Ok(Self {
             address,
             count,
             bytes,
-        }))
+        })
     }
 
     fn word(&mut self, offset: usize, value: u32) {
@@ -60,14 +69,7 @@ impl Entry {
         position: [f32; 3],
         radius: Option<f32>,
     ) -> Result<()> {
-        let camera = m.vec3(ENTRY_CAMERA)?;
-        let [x, y, z] = std::array::from_fn(|i| position[i] - camera[i]);
-        let [fx, fy, fz] = m.vec3(ENTRY_FORWARD)?;
-        let depth = 0.0 - ((z * fz + y * fy) + x * fx);
-        let depth = radius.map_or(depth, |radius| depth - radius);
-        if !depth.is_finite() {
-            return Err(Refusal::Unsupported);
-        }
+        let depth = entry_depth(m, position, radius)?;
         self.word(0, class);
         self.word(4, depth.to_bits());
         self.word(8, 0);
@@ -77,11 +79,38 @@ impl Entry {
         Ok(())
     }
 
+    fn geometry(&mut self, m: &dyn GuestMemory, position: [f32; 3], radius: f32, flags: u8, shader: u32, argument: u32) -> Result<()> {
+        let class = geometry_class(flags);
+        self.sort_key(m, class, position, Some(radius))?;
+        self.word(0x20, points::TRANSPARENT_GEOMETRY.base);
+        self.word(0x24, shader);
+        self.word(0x28, argument);
+        Ok(())
+    }
+
     fn publish(self, out: &mut Output) {
         out.array(self.address, self.bytes.to_vec());
         out.word(LIST_END, self.count + 1);
     }
 }
+
+fn entry_depth(m: &dyn GuestMemory, position: [f32; 3], radius: Option<f32>) -> Result<f32> {
+    let camera = m.vec3(ENTRY_CAMERA)?;
+    let [x, y, z] = std::array::from_fn(|i| position[i] - camera[i]);
+    let [fx, fy, fz] = m.vec3(ENTRY_FORWARD)?;
+    let depth = 0.0 - ((z * fz + y * fy) + x * fx);
+    let depth = radius.map_or(depth, |radius| depth - radius);
+    if !depth.is_finite() {
+        return Err(Refusal::Unsupported);
+    }
+    Ok(depth)
+}
+
+pub(crate) fn display_sort_key(m: &dyn GuestMemory, position: [f32; 3], flags: u8) -> Option<[u32; 2]> {
+    Some([geometry_class(flags), entry_depth(m, position, Some(0.)).ok()?.to_bits()])
+}
+
+fn geometry_class(flags: u8) -> u32 { [3, 1, 2, 0][usize::from(flags & 3)] }
 
 fn full(m: &dyn GuestMemory, eax: u32) -> Result<Output> {
     let mut out = Output {
@@ -134,6 +163,9 @@ fn effect_entry(m: &dyn GuestMemory, cpu: &CpuAbi, polygon: bool) -> Result<Outp
 }
 
 pub(super) fn geometry(m: &dyn GuestMemory, cpu: &CpuAbi) -> (SceneList, Result<Output>) {
+    if bsp::parity::checking() {
+        return (SceneList::TransparentGeometry, Err(Refusal::Unsupported));
+    }
     (SceneList::TransparentGeometry, geometry_entry(m, cpu))
 }
 
@@ -145,13 +177,8 @@ fn geometry_entry(m: &dyn GuestMemory, cpu: &CpuAbi) -> Result<Output> {
     let bounds = stack(m, cpu, 0x38)?;
     let position = m.vec3(at(bounds, 4)?)?;
     let radius = m.f32(at(bounds, 0x10)?)?;
-    let flags = m.u8(at(cpu.ebx, 0x16)?)? & 3;
-    // 0x00040e10 encodes the material's two sort classification bits.
-    let class = [3, 1, 2, 0][flags as usize];
-    entry.sort_key(m, class, position, Some(radius))?;
-    entry.word(0x20, points::TRANSPARENT_GEOMETRY.base);
-    entry.word(0x24, cpu.edi);
-    entry.word(0x28, cpu.ebp);
+    let flags = m.u8(at(cpu.ebx, 0x16)?)?;
+    entry.geometry(m, position, radius, flags, cpu.edi, cpu.ebp)?;
     let plane = m.u8(at(bounds, 0x14)?)?;
     entry.bytes[0xc] = plane;
     let (eax, ecx, edx) = if plane == 0 {
@@ -218,51 +245,6 @@ impl Key {
             return false;
         }
         self.tie.wrapping_sub(other.tie) > 0
-    }
-}
-
-// The guest sort moves the middle pivot to the first slot, then scans
-// until the boolean comparator fires on each side. The larger partition
-// goes on the stack. Short partitions move the first maximum to the end.
-// Exact swaps matter both for equal keys and for the plane comparator.
-fn sort(mut slots: &mut [u16], after: &impl Fn(u16, u16) -> bool) {
-    while slots.len() > 8 {
-        slots.swap(0, slots.len() / 2);
-        let pivot = slots[0];
-        let (mut left, mut right) = (0, slots.len());
-        loop {
-            left += 1;
-            while left < slots.len() && !after(slots[left], pivot) {
-                left += 1;
-            }
-            right -= 1;
-            while right > 0 && !after(pivot, slots[right]) {
-                right -= 1;
-            }
-            if right < left {
-                break;
-            }
-            slots.swap(left, right);
-        }
-        slots.swap(0, right);
-        let (lo, tail) = slots.split_at_mut(right);
-        let hi = &mut tail[left - right..];
-        if lo.len() < hi.len() {
-            sort(lo, after);
-            slots = hi;
-        } else {
-            sort(hi, after);
-            slots = lo;
-        }
-    }
-    for end in (1..slots.len()).rev() {
-        let mut largest = 0;
-        for i in 1..=end {
-            if after(slots[i], slots[largest]) {
-                largest = i;
-            }
-        }
-        slots.swap(largest, end);
     }
 }
 

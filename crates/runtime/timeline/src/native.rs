@@ -410,7 +410,7 @@ impl std::fmt::Display for WorldMaterials {
 }
 
 const SCENE_LIST_START: usize = WORLD_SECTION_BASE + WORLD_SECTION_COLUMNS.len();
-const SCENE_LISTS: [&str; 28] = [
+const SCENE_LISTS: &[&str] = &[
     "view_objects",
     "light_objects",
     "object_order",
@@ -439,6 +439,12 @@ const SCENE_LISTS: [&str; 28] = [
     "light_additional_casters",
     "typed_light_passes",
     "typed_first_person",
+    "portal_walk",
+    "portal_window_merge",
+    "pvs_regions",
+    "portal_regions",
+    "sphere_regions",
+    "window_record",
 ];
 const SCENE_LIST_RESULTS: [&str; 11] = [
     "native",
@@ -505,6 +511,12 @@ pub enum SceneList {
     TypedLightPasses,
     /// One first-person slot after its records are replayed.
     TypedFirstPerson,
+    PortalWalk,
+    PortalWindowMerge,
+    PvsRegions,
+    PortalRegions,
+    SphereRegions,
+    WindowRecord,
 }
 
 #[derive(Clone, Copy)]

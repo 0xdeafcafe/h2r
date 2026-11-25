@@ -143,6 +143,8 @@ pub struct View {
     pub camera: Camera,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_visibility: Option<std::sync::Arc<DisplayVisibility>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_transparents: Option<std::sync::Arc<crate::transparent::DisplayTransparentQueue>>,
     /// Into [`FrameScene::clusters`].
     pub clusters: Range<u32>,
     /// Into [`FrameScene::instances`], in the guest's order.

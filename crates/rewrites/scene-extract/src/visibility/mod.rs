@@ -33,10 +33,14 @@ mod light_frusta;
 pub mod objects;
 pub mod parity;
 mod placements;
+pub mod portal_walk;
+pub mod portal_projection;
+pub mod portal_clip;
 pub mod pvs;
 mod read;
 pub mod sphere;
 pub mod view;
+pub mod window_record;
 
 pub use parity::{Mismatch, Parity, VisibilitySets, compare};
 

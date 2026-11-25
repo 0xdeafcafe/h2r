@@ -4,8 +4,10 @@ Status: Built, not verified. Every game view's visible clusters and
 objects (modes 0, 1 and 2), the run-time-computed visible sets, the
 window frusta objects are tested against, the main view's records and
 the sphere-mode and frustum-mode light views are computed in Rust and compared with the
-guest's. The guest's view setup, portal flood and object gather still
-run and are the fallback a decline takes.
+guest's. The native scene-list hooks can publish single-frustum portal walks,
+window merges, sphere regions and PVS regions after comparing the original
+producer's output. The guest's view setup and any call the hooks decline
+run in the guest and are the fallback a decline takes.
 Code: `crates/rewrites/scene-extract/src/visibility/` (`compute`, `arm`,
 `view`, `light`), the arms in `crates/rewrites/render-bridge/src/scene_step.rs`
 (`view_record_arm`, `visibility_arm`, `light_visibility_arm`). Tests:
@@ -22,9 +24,10 @@ the same for the light's view. At first-person replay it compares the
 ordered light slots and their records. Each comparison counts differences
 and names the first. The scene's gather carries the Rust main-view sets
 by default, the guest's lists the fallback a decline takes, and a view
-whose lists do not read carries no gather; it uses Rust
-camera records and recorded light handles only on equality. Nothing here
-writes guest memory, so the sim's hashes cannot move.
+whose lists do not read carries no gather; it uses Rust camera records and
+recorded light handles only on equality. The scene comparison reads guest
+memory. The scene-list producers also publish the ordered scratch records
+and visit stamps that their callers consume.
 
 In single-copy play, the Rust comparison uses the horizontal extent set by
 the displayed camera projection hook. In exact mode, the scene step projects the portals
@@ -120,9 +123,8 @@ not decoded again.
 `view::compare` compares the record with the render camera
 (`0x004b9da0`), the visibility struct's start cluster (`+8`) and mode
 (`+0x2a7c`) field by field, bit for bit. `scene_step::view_record_arm`
-counts each view and keeps the first difference; the visibility below
-takes the Rust camera when the whole record is equal, the guest's
-otherwise.
+counts each view and keeps the first difference; the main portal comparison uses the
+input frustum copied at gather time, including its actual tangent extents.
 
 ### The flood
 
@@ -163,13 +165,65 @@ first, each merges into the first later one whose union with it is
 smaller than the merge factor times their two areas, and that one takes
 the union.
 
-The flood's arithmetic is its own. Screen units are the projection's
-normalised device coordinates from `RenderCamera::projection`'s terms.
-The near clip is the camera's near plane, and the polygon clip has no
-tolerance. The three values the guest's code reads from its data are read
+The light-view comparison uses the reconstructed lens in
+`visibility::flood`. The main view uses the tangent-space walk below. The three values the guest's code reads from its data are read
 from the running image each frame (`guest::tuning`), never committed: the
 straddle distance (`0x0045e060`, a double), the widening (`0x0045dfa0`)
 and the merge factor (`0x0043ff08`).
+
+### Portal traversal at the guest call
+
+`native_scene_lists::portal_walk` handles the main view's single-frustum
+walk at `0x00172840`. Rust reads the active frustum's tangent-space root
+polygon and transform, the BSP graph and the open-door bits. It emits the
+ordered node pool with each path's parent, portal, depth, polygon and
+crossed bits, the per-cluster chains and the drained queue. The caller
+retains its frustum indexing, window merge and region setup boundaries.
+
+At the merge entry the reference arm checks the guest's active records
+bit for bit, including repeated visits to a cluster, polygon order and
+signed zero. The next call can publish the Rust walk when its complete
+frustum, starting cluster, BSP generation and live input words match the
+checked call. Moving the camera or changing a door reopens the comparison.
+The hook validates the freshly seeded root, scratch layout and floating
+point environment before admission. `native_scene_lists_portal_walk_*`
+counts comparisons, mismatches, native publications and guest fallbacks.
+
+At the subsequent merge, `native_scene_lists::portal_merge` validates the
+membership bits, chain heads and links. It merges a window into the first
+older window satisfying the area test, carrying the nearer depth. Before
+region publication it compares the resulting rectangle, depth and merge
+target of every node by bits. Identical inputs for the multi-window chains
+can then bypass the guest merge. A cluster with one path requires no
+pairwise test. The counters use `native_scene_lists_portal_window_merge_*`.
+
+At base layer 3, `portal_walk::scene_visibility` uses the same traversal,
+merge arithmetic and window planes to gather the view's objects. Each
+region appears at its newest node's ordinal, with its surviving windows
+in chain order. The display walk widens the four root corners around
+their horizontal centre and clips anew. Accepted single-copy views use
+the horizontal bounds already present in the input frustum.
+
+### Portal region publication
+
+At `0x001730a0`, `native_scene_lists::portal_regions` consumes the node
+pool and its merged cluster chains for the main single-frustum view. It
+creates regions in ascending order of their chain heads, visiting each
+head's windows newest first. A merged node contributes no slot. An empty
+rectangle reserves a slot and leaves its bytes and the node's backlink
+untouched. Each accepted window stores the region ordinal, incoming
+portal plane (or the root sentinel), depth and a frustum built by
+`visibility::window_record`. The region records carry the six counts and
+first-window indices. The caller sorts a separate ordinal table.
+
+The comparison at `0x00173302`, the instruction after the writer call's return, checks the proposed writes while the
+node backlinks and cluster-to-region lookup still exist and before
+the ordinal sort. A repeat with the same ordered paths, frustum inputs,
+depths, planes and BSP generation can publish the Rust records. The
+plane-validation diagnostic, nonempty prior tables, unsupported floating
+point modes and inconsistent links retain the original producer.
+`native_scene_lists_portal_regions_*` counts comparisons, differences,
+native calls and refusals.
 
 ### The window frusta
 
@@ -190,6 +244,18 @@ one; axes right, up and back), out to the distance `k` at view frustum `+0x88`:
   plane `+0x74` negated. The far plane is local `(0, 0, c)` at `k`.
   A local plane goes to the world as `n = (r2·z + r1·y) + r0·x`,
   `d = ((t.y·n.y + d) + t.z·n.z) + t.x·n.x`.
+
+At the merged node's call to `0x00163db0`, the native record builder
+uses the live frustum's scaled matrix and tangent rectangle. It writes
+the view ordinal, rectangle, four corners, eye, bounds, six planes and
+four vectors from the eye to the corners. The reference arm at `0x00172f73`, after the call's return and its `test al, al`, checks all
+0x108 slot bytes, the argument word used as scratch, and the returned
+general registers. Exact repeats in that slot and BSP use the Rust writer.
+Camera or rectangle changes reopen the comparison. An armed plane
+diagnostic, unsupported FP state or unread input leaves the guest call in
+place. Frame counters use the prefix `native_scene_lists_window_record_`.
+See `scene_extract::visibility::window_record` and
+`render_bridge::native_scene_lists::window`.
 
 In mode 0 an object is listed when its sphere reaches a frustum of the
 cluster it is referenced from (`0x00165010` over `0x00181800`): it is out
@@ -215,6 +281,19 @@ taken in double precision, the rest in single, in the guest's order.
 An object is listed in mode 1 when `(r + R)² ≥ d²`, `d` from the view's
 centre to the object's, `R` the view's radius (`0x00132e60`).
 
+The render wrapper at `0x00132d60` admits a Rust sphere list after a
+matching guest call. At the geometry gather, `native_scene_lists::sphere_regions`
+compares the DFS-ordered cluster IDs, region count, per-region frustum
+counts, sorted ordinals and the sphere epoch and visited-cluster stamps.
+Further floods reuse that proof for the same BSP generation, start,
+centre, radius, axis rows and computed ID sequence. Outside and
+single-cluster views have separate proofs. Rust stages the region writes
+and the marks the sim shares with the renderer. A stamp already equal
+to the next epoch, differing collision BSPs, or a region count beyond the
+table's capacity returns the call to the guest. The
+`native_scene_lists_sphere_regions_*` counters report comparisons,
+mismatches, fallbacks and native calls.
+
 ### Computed visible sets
 
 Mode 2 is `0x001733e0` over `0x0016de20`: the start cluster's row,
@@ -227,6 +306,22 @@ adds the union of its two clusters' second-table rows, masked by the
 start cluster's row of the first table. Each portal is looked at once. A
 pass that adds nothing ends it. The result is the smallest row closed
 under that rule, whatever the walk's order.
+
+At the mode-2 producer (`0x001733e0`, called by `0x00132152`),
+`render_bridge::native_scene_lists::regions` uses the caller's start
+argument. The sentinel selects an empty list even when the view has a
+resolved start cluster. On the first call for a start, the original
+producer runs. At the following geometry gather Rust compares the camera copy, ordered
+region IDs, sorted ordinals, counts, window links and the fields shared
+by all valid windows. On a
+match, Rust owns those records on subsequent calls with the same start,
+computed row and open-portal bits. A BSP activation or reload clears
+the comparison. A nonempty list calls the guest frustum builder at
+`0x00163db0` for the first window. For a valid rectangle Rust copies its
+view index, rectangle, corners, bounds, planes and edge vectors into
+each following window, preserving padding in every destination.
+`native_scene_lists_pvs_regions_` counters report comparisons,
+mismatches, native calls and fallbacks.
 
 ### Objects
 
@@ -332,7 +427,7 @@ counted only: no light list is carried into the scene.
   the object and reference datum arrays, the light records, the sky
   globals, the view's local user, the local player map, the users' camera kinds, the players' units, the view records, the observer
   cameras, the render camera, and the image's values named above.
-- Writes nothing.
+- The scene differential reads the lists. The native publication hooks write the scratch records described above.
 - `render.scene` reports it
   ([agent-api.md](../runtime/agent-api.md#framescene-checks-compare-capture-scene-parity-hashes)):
   per game view `visibility_source` and `visibility_objects`; the top
@@ -343,13 +438,14 @@ counted only: no light list is carried into the scene.
 
 ## Rules and limits
 
-- **Sets, not orders.** The guest sorts its regions by the comparator
-  `0x00134950` and lists objects in its walk order; the comparison and
-  the Rust lists are ascending. A consumer that needs the guest's order
-  reads it from a `guest` view.
+- **Membership and draw order.** The region records retain their production
+  order. The comparator at `0x00134950` sorts a separate array of region
+  ordinals. The scene's Rust membership sets are ascending, and a consumer
+  that needs the guest's order reads it from a `guest` view. The native
+  publication hooks compare the ordered records at their consumer.
 - **The guest is the fallback.** A view for which the computation
-  declines keeps the guest's gather. A difference keeps the Rust sets —
-  the default — and stays counted and named; the render records were
+  declines keeps the guest's gather. A difference keeps the Rust sets,
+  the default, and stays counted and named; the render records were
   still built from the guest's lists. A view whose lists do not read
   carries no gather: the comparison has no other side. The camera records
   and the first-person light handles stay taken only on equality.
@@ -366,10 +462,9 @@ counted only: no light list is carried into the scene.
 - **Not ported.** The overlap records for light windows against source-view
   windows (`0x00132900`); cinematic and override cameras; off-centre extents passed to
   `0x0002fb70`.
-- **Own arithmetic.** The flood, the window rectangles in tangent units,
-  and the sphere flood's projection normal (the
-  structure's own BSP plane, where the guest reads the active BSP's)
-  are Rust's; a difference they make shows by name.
+- The sphere gather checks the active collision BSP before taking over
+  shared visit stamps. A light's reconstructed lens can still differ from
+  its source frusta. The light differential reports those differences.
 
 ## Evidence
 

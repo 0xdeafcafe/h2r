@@ -21,11 +21,18 @@ fn the_native_renderers_points_are_discovered_functions() {
     let entries = analyze::dispatch::entries(&xbe, &analysis);
     for p in [
         &points::LAYER_DRAW,
+        &points::DECORATOR_GRID,
         &points::SCENE_TRANSPARENTS,
+        &points::VIEW_WINDOW_BUILD,
         &points::TRANSPARENT_GEOMETRY,
+        &points::PORTAL_WINDOW_MERGE,
+        &points::PORTAL_WINDOW_REGIONS,
         &points::SCENE_CLUSTER_GATHER,
+        &points::PORTAL_WINDOW_WALK,
         &points::SCENE_GEOMETRY_GATHER,
+        &points::VIEW_PVS_REGIONS,
         &points::SCENE_OBJECT_ORDER,
+        &points::VIEW_SPHERE_REGIONS,
         &points::VISIBLE_LIGHT_LIST,
         &points::LIGHT_GEOMETRY_FLAGS,
         &points::LIGHT_EXTRA_CASTER,
@@ -73,6 +80,7 @@ fn the_native_scene_list_sites_are_instruction_boundaries() {
     let xbe = xbe::Xbe::parse(&data).unwrap();
     let mut analysis = analyze::analyze(&xbe).unwrap();
     let sites = [
+        points::scene_effects::LAYER_BUILT.base,
         points::OBJECT_RECORD_APPEND.base,
         points::TRANSPARENT_GEOMETRY_ENTRY.base,
         points::TRANSPARENT_GEOMETRY_QUEUED.base,

@@ -1,4 +1,4 @@
-//! BSP arm of the opaque geometry builder (0x4cbf0). Its output is one
+//! BSP and model arms of the opaque geometry builder (0x4cbf0). Its output is one
 //! private sort slot. The emitter separately checks whether the visible
 //! subparts produce a single complete index range.
 
@@ -11,6 +11,7 @@ const FOG_ACTIVE: u32 = 0x004b_a004;
 pub struct Entry {
     pub bytes: [u8; 24],
     pub accepted: bool,
+    pub model: bool,
 }
 
 fn ptr(m: &dyn GuestMemory, at: u32) -> Option<u32> {
@@ -24,30 +25,40 @@ fn tag(m: &dyn GuestMemory, table: u32, datum: u32) -> Option<u32> {
 /// `old` preserves the slot words the guest leaves unwritten. Layer 5
 /// even compares one such word, so zero-initializing it would change order.
 pub fn build(m: &dyn GuestMemory, shader: u32, lod: u8, layer: u32, selector: u8,
-    argument: u32, mut old: [u8; 24]) -> Option<Entry> {
+    argument: u32, mut old: [u8; 24], models: bool) -> Option<Entry> {
     if !matches!(layer, 1 | 3 | 5 | 6 | 7 | 8 | 16) { return None; }
     let index = (argument >> 8) as u16;
     if index >= 0x352 { return None; }
     let record = skip::RENDER_RECORDS + u32::from(index) * skip::RENDER_RECORD_SIZE;
-    if m.u32(record + 4).ok()? != u32::MAX { return None; }
+    let model = m.u32(record + 4).ok()?;
+    if !models && model != u32::MAX { return None; }
     let flags = m.u32(record).ok()?;
     let packed = m.u32(record + 12).ok()?;
-    let bsp = ptr(m, super::ACTIVE_BSP)?;
-    let section = if flags & (1 << 12) == 0 {
-        let n = (packed >> 9) & 511;
-        let clusters = ptr(m, bsp.checked_add(0xa0)?)?;
-        clusters.checked_add(n * 0xb0)?
-    } else {
-        let n = (packed >> 18) & 2047;
-        let placements = ptr(m, bsp.checked_add(0x144)?)?;
-        let def = u32::from(m.u16(placements.checked_add(n*0x58 + 0x34)?).ok()?);
-        let definitions = ptr(m, bsp.checked_add(0x13c)?)?;
-        definitions.checked_add(def * 0xc8)?
-    };
-    let geometry = ptr(m, section.checked_add(0x50)?)?;
-    let part = argument as u8;
-    if u32::from(part) >= m.u32(geometry).ok()? { return None; }
     let table = ptr(m, engine::tags::TAG_ENTRIES_GLOBAL)?;
+    let section_id = (packed >> 9) & 511;
+    let (info, geometry) = if model != u32::MAX {
+        if m.u32(table.checked_add((model & 0xffff) * 16)?).ok()? != u32::from_be_bytes(*b"mode") {
+            return None;
+        }
+        let mode = tag(m, table, model)?;
+        if section_id >= m.u32(mode.checked_add(0x24)?).ok()? { return None; }
+        let section = ptr(m, mode.checked_add(0x28)?)?.checked_add(section_id * 0x5c)?;
+        (section.checked_add(4)?, ptr(m, section.checked_add(0x34)?)?)
+    } else {
+        let bsp = ptr(m, super::ACTIVE_BSP)?;
+        let section = if flags & (1 << 12) == 0 {
+            ptr(m, bsp.checked_add(0xa0)?)?.checked_add(section_id * 0xb0)?
+        } else {
+            let n = (packed >> 18) & 2047;
+            let placements = ptr(m, bsp.checked_add(0x144)?)?;
+            let def = m.u16(placements.checked_add(n * 0x58 + 0x34)?).ok()?;
+            if def > i16::MAX as u16 { return None; }
+            ptr(m, bsp.checked_add(0x13c)?)?.checked_add(u32::from(def) * 0xc8)?
+        };
+        (section, ptr(m, section.checked_add(0x50)?)?)
+    };
+    let part = u32::from(argument as u8);
+    if part >= m.u32(geometry).ok()? { return None; }
     // Particle materials dispatch through a virtual function. Only shad's
     // direct template accessor is side-effect free.
     if shader as u16 > i16::MAX as u16 ||
@@ -87,13 +98,21 @@ pub fn build(m: &dyn GuestMemory, shader: u32, lod: u8, layer: u32, selector: u8
         let definitions = ptr(m, pass.checked_add(0x20)?)?;
         let implementation = ptr(m, definitions.checked_add(4)?)?.checked_add(u32::from(imp)*0x132)?;
         let vertex_tag = m.u32(implementation.checked_add(0x100)?).ok()?;
-        let class = m.u16(section.checked_add(0x14)?).ok()?;
-        // Weighted-node classifications call the node-influence lookup.
-        // These are static world and rigid geometry classifications.
-        if class > 2 { return None; }
+        let class = match m.u16(info.checked_add(0x14)?).ok()? {
+            class @ 0..=2 => class,
+            3 if model != u32::MAX && vertex_tag != u32::MAX => {
+                let address = ptr(m, geometry.checked_add(4)?)?.checked_add(part * 0x48)?;
+                let second = matches!(m.u16(address).ok()?, 4 | 5);
+                let influences = m.u8(info.checked_add(0x10 + u32::from(second))?).ok()? as i8;
+                let count = m.u32(tag(m, table, vertex_tag)?.checked_add(4)?).ok()?;
+                let candidate = (i32::from(influences) + 2) as u32;
+                if candidate < count { candidate as u16 } else { 0 }
+            }
+            _ => return None,
+        };
         old[5] = if packed >> 29 <= 1 { 1 } else { 2 };
         if packed >> 29 != 0 {
-            let sort_id = (0xffff << 11) | (packed >> 9 & 511);
+            let sort_id = ((model & 0xffff) << 11) | section_id;
             old[12..16].copy_from_slice(&u32::to_le_bytes(sort_id));
         }
         old[8..10].copy_from_slice(&class.to_le_bytes());
@@ -112,7 +131,7 @@ pub fn build(m: &dyn GuestMemory, shader: u32, lod: u8, layer: u32, selector: u8
             }
         };
     }
-    Some(Entry { bytes: old, accepted })
+    Some(Entry { bytes: old, accepted, model: model != u32::MAX })
 }
 
 /// Is the actual emitter going to submit this entire part as one range?

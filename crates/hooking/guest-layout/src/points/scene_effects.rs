@@ -7,8 +7,37 @@ use super::{
 };
 
 const RENDERER: &str = "docs/graphics/native-renderer.md";
+/// The merged node's window call (`call 0x00163db0`, returning to
+/// `PORTAL_WINDOW_RESUME`), and the site after its return. A return resumes
+/// the caller's code at 0x00172f71 (`test al, al`) and never runs a hook
+/// there; the site is the `jz` after it, which reads only ZF and falls
+/// through. A native window jumps to the resume address, so the test runs.
+pub const PORTAL_WINDOW_CALL: Point = Point::new("PORTAL_WINDOW_CALL", 0x0017_2f6c, Sig::Site, RENDERER);
+pub const PORTAL_WINDOW_RESUME: u32 = 0x0017_2f71;
+pub const PORTAL_WINDOW_READY: Point = Point::new("PORTAL_WINDOW_READY", 0x0017_2f73, Sig::Site, RENDERER);
 const PARTICLES: &str = "docs/graphics/native-particles.md";
 const DECALS: &str = "docs/graphics/native-decals-research.md";
+
+/// The portal region writer has returned; its frame and scratch tables are
+/// intact, and the caller has yet to sort the ordinal table. The writer's
+/// call (0x001732f9) returns to 0x001732fe, which a return resumes without
+/// a hook; the site is the next instruction (`mov edx, [esp+0xc]`, after
+/// the `mov eax, [esp+0x10]` that writes only EAX).
+pub const PORTAL_REGIONS_READY: Point = Point::new("PORTAL_REGIONS_READY", 0x0017_3302, Sig::Site, RENDERER);
+
+/// The address the layer build (`0x0003bab0`) returns to: a return resumes
+/// the caller there without a hook, so it is the return address the
+/// native build compares and returns to, not a site.
+pub const LAYER_BUILD_RETURN: u32 = 0x0003_bc4f;
+
+/// Ordered layer entries are complete. EAX holds the count and the caller
+/// owns the sort buffer at ESP+8, before the first geometry handler. The
+/// site is the `jle` after the build's return (`test eax, eax` at
+/// `LAYER_BUILD_RETURN`, which writes only flags).
+pub const LAYER_BUILT: Point = Point::new("LAYER_BUILT", 0x0003_bc51, Sig::Site, RENDERER);
+
+/// End of one complete BSP material walk, before the record cursor advances.
+pub const WORLD_SECTION_END: Point = Point::new("WORLD_SECTION_END", 0x0004_4c6c, Sig::Site, RENDERER);
 
 pub const DECAL_RENDER_END: Point = Point::new("DECAL_RENDER_END", 0x0004_41aa, Sig::Site, DECALS);
 
@@ -128,10 +157,16 @@ pub fn instruction_entries() -> impl Iterator<Item = u32> {
         &FLARE_COMPOSITE,
     ];
     [
+        PORTAL_REGIONS_READY.base,
+        LAYER_BUILT.base,
         DECAL_RENDER_END.base,
+        WORLD_SECTION_END.base,
         GEOMETRY_RANGE_READY.base,
         SCENE_TRANSPARENTS_END.base,
         WATER_INDEX_READY.base,
+        PORTAL_WINDOW_CALL.base,
+        PORTAL_WINDOW_RESUME,
+        PORTAL_WINDOW_READY.base,
         HUD_QUAD_READY.base,
         SCREEN_STRIP_READY.base,
         PARTICLE_EMIT_READY.base,

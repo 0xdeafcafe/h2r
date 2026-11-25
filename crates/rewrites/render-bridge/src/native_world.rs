@@ -87,6 +87,7 @@ impl DisplayFade {
 }
 
 mod layer_build;
+pub(crate) use layer_build::counters as geometry_list_counters;
 mod opaque;
 mod opaque_handler;
 mod opaque_material;
@@ -100,6 +101,7 @@ mod opaque_interleave_tests;
 mod scene_build;
 mod scene_walk;
 mod section;
+pub(crate) use section::display_cluster_transparents;
 pub use section::{DISPLAY_LAYERS, display_cluster_complete, display_late_shader};
 
 fn claimed_entries(layer: u32) -> bool {

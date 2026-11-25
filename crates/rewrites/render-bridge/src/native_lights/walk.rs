@@ -78,49 +78,8 @@ fn sort_key(s: &Slot) -> (u32, u16, u8, u16) {
     (word(s, 16), half(s, 2), s[5], half(s, 8))
 }
 
-// LAYER_SORT swaps the middle element with the first one and partitions
-// around that pivot. Equal keys have observable order. For <= 8 elements
-// the first maximum in the remaining prefix is swapped with its last slot.
-fn sort(mut slots: &mut [Slot]) {
-    while slots.len() > 8 {
-        let mid = slots.len() / 2;
-        slots.swap(0, mid);
-        let pivot = sort_key(&slots[0]);
-        let (mut left, mut right) = (0, slots.len());
-        loop {
-            left += 1;
-            while left < slots.len() && sort_key(&slots[left]) <= pivot {
-                left += 1;
-            }
-            right -= 1;
-            while right > 0 && sort_key(&slots[right]) >= pivot {
-                right -= 1;
-            }
-            if right < left {
-                break;
-            }
-            slots.swap(left, right);
-        }
-        slots.swap(0, right);
-        let (a, rest) = slots.split_at_mut(right);
-        let b = &mut rest[left - right..];
-        if a.len() < b.len() {
-            sort(a);
-            slots = b;
-        } else {
-            sort(b);
-            slots = a;
-        }
-    }
-    for end in (1..slots.len()).rev() {
-        let mut largest = 0;
-        for i in 1..=end {
-            if sort_key(&slots[i]) > sort_key(&slots[largest]) {
-                largest = i;
-            }
-        }
-        slots.swap(largest, end);
-    }
+fn sort(slots: &mut [Slot]) {
+    scene_extract::layer_sort::sort(slots, &|a, b| sort_key(&a) > sort_key(&b));
 }
 
 struct Geometry {

@@ -438,6 +438,57 @@ fn the_portal_far_test_is_optional_even_with_a_finite_window_distance() {
     assert_eq!(sets.objects, [0x0001_0001]);
 }
 
+#[test]
+fn the_stored_gather_frustum_adds_only_the_side_room_to_the_display() {
+    let mut m = scene();
+    let frustum = 0xf000 + view_frustum::FIRST;
+    fn floats(m: &mut Mem, base: u32, values: &[f32]) {
+        for (i, &value) in values.iter().enumerate() {
+            m.f(base + 4 * i as u32, value);
+        }
+    }
+    fn operand(m: &mut Mem, base: u32, value: f32) {
+        for (i, byte) in value.to_le_bytes().into_iter().enumerate() {
+            let addr = base + i as u32;
+            let shift = 8 * (addr % 4);
+            let w = m.0.entry(addr & !3).or_default();
+            *w = (*w & !(0xff << shift)) | (u32::from(byte) << shift);
+        }
+    }
+    // An eye at (0, 7, 0), facing +x: local right is -y and up is +z.
+    floats(&mut m, frustum + 4, &[1., 0.,0.,-1., -1.,0.,0., 0.,1.,0., 7.,0.,0.]);
+    floats(&mut m, frustum + 0x38, &[1., 0.,-1.,0., 0.,0.,1., -1.,0.,0., 0.,7.,0.]);
+    let root = flood::Rect([-4./3., 4./3., -1., 1.]);
+    floats(&mut m, frustum + 0xa0, &root.0);
+    m.w(frustum + 0x198, 4);
+    for (i, p) in root.corners().iter().enumerate() {
+        floats(&mut m, frustum + 0x19c + 8*i as u32, p);
+    }
+    operand(&mut m, 0x0017_35a9, 0.03);
+    operand(&mut m, 0x0017_3acc, 0.02);
+    operand(&mut m, 0x0017_338a, 0.0002);
+    m.f(0x0045_ddfc, -0.0001);
+    m.f(0x0044_aed4, 5000.);
+    m.w(0x0046_87dc, 0xf500);
+    floats(&mut m, 0xf500, &[10000., -10000., 10000., -10000.]);
+    for r in 0..6 {
+        for (k, v) in [0u32, 1, 2].into_iter().enumerate() {
+            let a = PROJECTION_ROWS + 6*r + 2*k as u32;
+            *m.0.entry(a & !3).or_default() |= v << (8 * (a % 4));
+        }
+    }
+    object(&mut m, 2, [10., -9., 0.]);
+    let mut cache = GraphCache::default();
+    let (retail,_) = portal_walk::scene_visibility(&m, &mut cache, 1, 1.).unwrap();
+    assert_eq!(retail.clusters, [0]);
+    let (wide,volumes) = portal_walk::scene_visibility(&m, &mut cache, 1, 0.75).unwrap();
+    assert_eq!(wide.clusters, [0,1]);
+    assert!(volumes.admits(1, [10.,-9.,0.], 0.5));
+    assert!(wide.objects.contains(&0x0001_0002));
+    m.w(OPEN,0);
+    assert_eq!(portal_walk::scene_visibility(&m,&mut cache,1,0.75).unwrap().0.clusters,[0]);
+}
+
 /// The display supplement (`render_bridge::scene_step::display_additions`)
 /// keeps what the wide lens reaches beyond both retail sets, whether or not
 /// the guest-lens sets equal the guest's lists. Here they are equal, the
