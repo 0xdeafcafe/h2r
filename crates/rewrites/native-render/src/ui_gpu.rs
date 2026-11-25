@@ -52,6 +52,7 @@ struct DeviceCache {
     bindings: ProgramBindings,
     shaders: HashMap<NativeDrawKey, Option<Program>>,
     pipelines: HashMap<PipelineKey, Arc<PendingPipeline>>,
+    count_pipelines: HashMap<PipelineKey, Arc<PendingPipeline>>,
 }
 
 #[derive(Clone)]
@@ -76,6 +77,7 @@ impl UiGpu {
                 bindings: ProgramBindings::new(&target.device),
                 shaders: HashMap::new(),
                 pipelines: HashMap::new(),
+                count_pipelines: HashMap::new(),
             }));
         }
         let (_, cache) = self.0.as_mut().ok_or(Refusal::Target)?;
@@ -146,6 +148,7 @@ impl DeviceCache {
             // that key on them together with their shader modules.
             self.shaders.clear();
             self.pipelines.clear();
+            self.count_pipelines.clear();
         }
         let id = ShaderId(self.shaders.len().try_into().map_err(|_| Refusal::Shader)?);
         let shader = self.shaders.entry(program.key.clone()).or_insert_with(|| {
@@ -156,9 +159,13 @@ impl DeviceCache {
                     source: wgpu::ShaderSource::Wgsl(linked.source.into()),
                 },
             ))?;
+            let mut shader = self.bindings.program(device, module, linked.dims);
+            if program.writes_depth {
+                shader.count_entry = Some(shaders::psh::COUNT_DEPTH_ENTRY.into());
+            }
             Some(Program {
                 id,
-                shader: self.bindings.program(device, module, linked.dims),
+                shader,
                 dims: linked.dims,
                 discards: linked.discards,
             })
@@ -207,6 +214,21 @@ impl DeviceCache {
             return Err(Refusal::State);
         }
 
+        let count_pipeline = if draw.hw.zpass_count_enable {
+            if self.count_pipelines.len() == UI_PIPELINES && !self.count_pipelines.contains_key(&key) {
+                self.count_pipelines.clear();
+            }
+            let count = self.count_pipelines.entry(key.clone()).or_insert_with(|| {
+                Pending::ready(validated_resource(device, || {
+                    gfx::renderer::create_sample_count_pipeline(device, &key, &shader.shader)
+                }))
+            }).clone();
+            count.get().as_ref().ok_or(Refusal::State)?;
+            Some(count)
+        } else {
+            None
+        };
+
         let upload = |bytes: &[u8]| {
             let len = bytes.len() as u64;
             if len == 0 || len.next_power_of_two() > device.limits().max_buffer_size {
@@ -235,6 +257,10 @@ impl DeviceCache {
         let packet = RecordedDraw::prepared_indexed(
             &key, pipeline, streams, indices, count, groups, &state, target.size, first,
         );
+        let packet = match count_pipeline {
+            Some(count) => packet.with_sample_count(count),
+            None => packet,
+        };
         let mut packets = vec![packet];
         for clip in rest {
             packets.push(packets[0].clone().with_scissor(clip, target.size));

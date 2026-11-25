@@ -54,8 +54,8 @@ pub const FIRST_PERSON_LAYERS: [u32; 5] = [1, 7, 8, 20, 2];
 /// camouflage handler `0x00041cc0`'s 18 and 19 (19 drawn into render
 /// target 3, which the begin binds before the layer draw) and the
 /// hologram handler `0x000423c0`'s 21. Their items are object render
-/// records only; the handlers' replays of the scene's layers stay on the
-/// D3D path.
+/// records only. Regular layer replays and ranges this plan leaves behind
+/// reach the sorted indexed admission.
 pub const SORTED_LAYERS: [u32; 3] = [18, 19, 21];
 
 /// Which caller's layer draw is about to run.

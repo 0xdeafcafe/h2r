@@ -73,10 +73,11 @@ impl<B: Backend> Device<B> {
             if !self.backend.accepts_scene_pass(&*pass) {
                 return Ok(None);
             }
+            let origin = ExternalOrigin::new(&*pass, "carried sequence", Some(plan.stage));
             let binding = match self.bind_external_at(mem, targets, &plan, &mut *pass, None) {
                 Ok(binding) => binding,
                 Err(why) => {
-                    self.refuse_external(why);
+                    self.refuse_external(origin, why, None);
                     return Ok(None);
                 }
             };
@@ -86,15 +87,14 @@ impl<B: Backend> Device<B> {
                 plan,
                 pass: Arc::new(std::sync::Mutex::new(pass)),
             };
-            let prepared = self.backend.prepare_carried_stage(&stage);
-            let Ok(Some(copies)) = prepared else {
-                self.refuse_external(ExternalRefusal::Backend);
-                return Ok(None);
+            let copies = match self.backend.prepare_carried_stage(&stage) {
+                Ok(Some(copies)) if complete_recordings(&stage.plan, &copies) => copies,
+                result => {
+                    let detail = result.as_ref().err().map(String::as_str);
+                    self.refuse_external(origin, ExternalRefusal::Backend, detail);
+                    return Ok(None);
+                }
             };
-            if !complete_recordings(&stage.plan, &copies) {
-                self.refuse_external(ExternalRefusal::Backend);
-                return Ok(None);
-            }
             recorded.push(Recorded {
                 stage,
                 colors: binding.colors,

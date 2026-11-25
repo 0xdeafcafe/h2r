@@ -22,6 +22,7 @@ use crate::native_lights_glue::DeviceMemory;
 use timeline::native::{Metric, Stage};
 
 mod flare_pass;
+mod particle_capture;
 
 #[derive(Clone)]
 enum Source {
@@ -105,6 +106,7 @@ struct Admission {
     scope: Mutex<Scope>,
     renderer: Renderer,
     flare_gpu: Arc<Mutex<flares::FlareGpu>>,
+    captured_gpu: Arc<Mutex<native_render::ui_gpu::UiGpu>>,
     serial: AtomicU64,
 }
 struct ImmediateAdmission<B: d3d::backend::Backend + 'static> {
@@ -135,8 +137,7 @@ impl<B: d3d::backend::Backend + 'static> ImmediateAdmission<B> {
 }
 impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
     fn try_emit(&self, mem: &mut dyn GuestMemory, call: &Call) -> bool {
-        let data = [[0i16, 0, 0, 0], [1, 0, 0, 0], [1, 1, 0, 0], [0, 1, 0, 0]]
-            .into_iter().flatten().flat_map(i16::to_le_bytes).collect();
+        let data = particle_capture::corner_bytes().to_vec();
         let carried = call.emission.attributes.map(|r| r.map(|v| v.map(f32::from_bits)));
         let pending = Pending {
             source: Source::Particle(call.clone()),
@@ -278,6 +279,7 @@ pub fn install<B: d3d::backend::Backend + 'static>(device: &d3d::abi::SharedDevi
         scope: Mutex::new(Scope::default()),
         renderer: Default::default(),
         flare_gpu: Default::default(),
+        captured_gpu: Default::default(),
         serial: AtomicU64::new(1),
     });
     device
@@ -438,9 +440,19 @@ impl DrawAdmission for Admission {
             .issuing
             .take()?;
         match pending {
-            Issuing::Particle(p) => self.plan(snapshot, &p, Stage::Particles),
+            Issuing::Particle(p) => self.plan(snapshot, &p, Stage::Particles, true),
             Issuing::Flare(site) => flare_pass::plan(site, snapshot, &self.flare_gpu),
         }
+    }
+
+    fn admit_counted(&self, snapshot: &DrawSnapshot<'_>) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
+        let mut scope = self.scope.lock().unwrap_or_else(|e| e.into_inner());
+        if !matches!(&scope.issuing, Some(Issuing::Flare(flares::Site::Visibility))) {
+            return None;
+        }
+        scope.issuing = None;
+        drop(scope);
+        flare_pass::plan(flares::Site::Visibility, snapshot, &self.flare_gpu)
     }
 }
 
@@ -452,7 +464,7 @@ struct Direct<'a> {
 
 impl DrawAdmission for Direct<'_> {
     fn admit(&self, snapshot: &DrawSnapshot<'_>) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
-        self.admission.plan(snapshot, &self.pending, self.stage)
+        self.admission.plan(snapshot, &self.pending, self.stage, false)
     }
 }
 
@@ -462,6 +474,7 @@ impl Admission {
         snapshot: &DrawSnapshot<'_>,
         pending: &Pending,
         stage: Stage,
+        captured: bool,
     ) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
         let refusal = if snapshot.color_header == 0 {
             Some("MissingColorTarget")
@@ -472,7 +485,7 @@ impl Admission {
         } else if snapshot.draw.glyph_cache != 0 {
             Some("GlyphFiltering")
         } else if snapshot.draw.hw.zpass_count_enable {
-            Some("VisibilityQuery")
+            Some("UnexpectedSampleCount")
         } else if !snapshot.draw.state.bad.is_empty() {
             Some("UnresolvedState")
         } else {
@@ -484,6 +497,15 @@ impl Admission {
         }
         let (vertices, raw_vertices, indices) = match geometry(snapshot.draw, &pending.source) {
             Ok(geometry) => geometry,
+            Err(Refused::Geometry)
+                if captured && matches!(&pending.source, Source::Particle(_))
+                    && particle_capture::owns(snapshot.draw) =>
+            {
+                return Some((
+                    ExternalPlan { stage, view: 4, ranges: 1, slots: Vec::new() },
+                    Box::new(particle_capture::Pass::new(snapshot.draw, &self.captured_gpu)),
+                ));
+            }
             Err(reason) => {
                 REFUSALS.count(producer_label(pending.source.producer()), refusal_label(reason));
                 return None;
@@ -666,6 +688,25 @@ impl Pass {
     }
 }
 impl ExternalPass for Pass {
+    fn replays_scene(&self) -> bool {
+        true
+    }
+
+    fn with_draw(&self, draw: Arc<d3d::ResolvedDraw>) -> Option<Box<dyn ExternalPass>> {
+        Some(Box::new(Self {
+            draw,
+            id: self.id,
+            color: self.color,
+            depth: self.depth,
+            vertices: self.vertices.clone(),
+            raw_vertices: self.raw_vertices.clone(),
+            indices: self.indices.clone(),
+            renderer: Arc::clone(&self.renderer),
+            prepared: Vec::new(),
+            frame: self.frame,
+        }))
+    }
+
     fn encode(&mut self, _: ExternalTarget<'_>) {} // only transactional recording is supported
     fn writes(&self) -> ExternalWrites {
         let r = &self.draw.state.render;
@@ -878,6 +919,7 @@ mod tests {
             scope: Mutex::new(Scope::default()),
             renderer: Default::default(),
             flare_gpu: Default::default(),
+            captured_gpu: Default::default(),
             serial: AtomicU64::new(1),
         };
         let arm = || {
@@ -905,12 +947,81 @@ mod tests {
     }
 
     #[test]
+    fn visibility_fans_are_counted_only_inside_their_one_read_only_scope() {
+        let admission = Admission {
+            scope: Mutex::new(Scope::default()),
+            renderer: Default::default(),
+            flare_gpu: Default::default(),
+            captured_gpu: Default::default(),
+            serial: AtomicU64::new(1),
+        };
+        let arm = || {
+            admission.scope.lock().unwrap().issuing = Some(Issuing::Flare(flares::Site::Visibility));
+        };
+        let (mut fan, _) = particle();
+        fan.entry = "D3DDevice_End";
+        fan.primitive = PrimitiveType::TriangleFan;
+        fan.layout.streams[0].stride = 256;
+        fan.layout.streams[0].attributes[0].data_type = VertexDataType::Float4;
+        fan.streams[0] = StreamBytes { stride: 256, data: vec![0; 1024].into() };
+        fan.state.render.color_write = gfx::state::ColorWriteMask::from_xbox(0);
+        fan.state.render.depth_write = false;
+        assert!(admission.admit_counted(&snapshot(&fan)).is_none());
+        arm();
+        assert!(admission.admit(&snapshot(&fan)).is_none());
+
+        fan.hw.zpass_count_enable = true;
+        arm();
+        let (plan, pass) = admission.admit_counted(&snapshot(&fan)).unwrap();
+        assert_eq!((plan.stage, plan.ranges), (Stage::Flares, 1));
+        assert!(pass.counts_samples() && pass.replays_scene());
+        assert_eq!(pass.resolved_fallback().as_deref(), Some(&fan));
+        assert!(admission.admit_counted(&snapshot(&fan)).is_none());
+
+        arm();
+        fan.state.render.color_write = gfx::state::ColorWriteMask::ALL;
+        assert!(admission.admit_counted(&snapshot(&fan)).is_none());
+        fan.state.render.color_write = gfx::state::ColorWriteMask::from_xbox(0);
+        assert!(admission.admit_counted(&snapshot(&fan)).is_none());
+        arm();
+        fan.state.render.depth_mode = gfx::state::DepthBufferMode::W;
+        fan.state.render.depth_write = true;
+        assert!(admission.admit_counted(&snapshot(&fan)).is_none());
+    }
+
+    #[test]
+    fn only_published_particle_bytes_can_supply_resolved_geometry() {
+        let admission = Admission {
+            scope: Mutex::new(Scope::default()),
+            renderer: Default::default(),
+            flare_gpu: Default::default(),
+            captured_gpu: Default::default(),
+            serial: AtomicU64::new(1),
+        };
+        let (mut draw, source) = particle();
+        let pending = Pending { source, id: 1 };
+        draw.entry = "inline Begin/End";
+        draw.shader.vertex_defaults[3][0] = 0.5;
+        assert!(admission.plan(&snapshot(&draw), &pending, Stage::Particles, false).is_none());
+        let (_, pass) = admission.plan(&snapshot(&draw), &pending, Stage::Particles, true).unwrap();
+        assert_eq!(pass.resolved_fallback().as_deref(), Some(&draw));
+
+        draw.layout.streams[0].attributes[0].data_type = VertexDataType::NormShort4;
+        assert!(admission.plan(&snapshot(&draw), &pending, Stage::Particles, true).is_some());
+        let mut other = particle_capture::corner_bytes();
+        other[8] ^= 1;
+        draw.streams[0].data = other.to_vec().into();
+        assert!(admission.plan(&snapshot(&draw), &pending, Stage::Particles, true).is_none());
+    }
+
+    #[test]
     fn a_mismatch_consumes_the_scope_and_cannot_take_the_following_quad() {
         let (draw, source) = particle();
         let admission = Admission {
             scope: Mutex::new(Scope::default()),
             renderer: Default::default(),
             flare_gpu: Default::default(),
+            captured_gpu: Default::default(),
             serial: AtomicU64::new(1),
         };
         assert!(

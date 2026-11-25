@@ -32,8 +32,11 @@ Code evidence from the owner's executable, inspected with `h2 disasm`:
 - The inline corner payload is eight words for four vertices. The
   stage admits only a *live declaration proven by the adapter* to be v0
   SHORT4, no other arrays. It expands (0,0), (1,0), (1,1), (0,1), z/w both
-  zero. A different declaration refuses; the payload alone is not proof
-  of SHORT4. Quad triangulation uses the D3D diagonal (0,1,2), (0,2,3).
+  zero. Quad triangulation uses the D3D diagonal (0,1,2), (0,2,3).
+  A different declaration or inherited register value leaves direct issue
+  to the guest. At publication the scoped admission compares the complete
+  corner payload and submits it through the resolved program and vertex
+  layout.
 
 `native_render::particles::read_emission` reads the helper inputs without
 writing guest memory. The feature's context-only hook always returns
@@ -93,10 +96,12 @@ identical quad cannot become owned. Pending interrupt callbacks remain
 queued and refuse the scope. No shared sorted dispatcher is modified.
 
 `DrawSnapshot::draw` supplies the actual declaration, streams, defaults,
-shaders, constants, state and clipping. Particle corners and every effective
-register must agree bitwise with the independent emission decoder.
-Generated geometry must agree byte-for-byte with the completed callback
-output, and its topology/count/declaration must agree independently.
+shaders, constants, state and clipping. The direct particle path requires
+bitwise agreement with the independent emission decoder. The publication
+path can use the live declaration and carried defaults when the packet
+belongs to the emitter and its full corner bytes match. Generated geometry
+must agree byte-for-byte with the completed callback output, and its
+topology, count and declaration must agree independently.
 
 A small pure helper in `d3d::nv2a::resolved` uses the existing translator's
 program-key derivation and state rules for uniforms and samplers. It keeps
@@ -141,8 +146,9 @@ Explicit assumptions and limits:
   still come from its own snapshot. No stale per-view matrices are cached.
 - Only programmable vertex shaders, one scissor rectangle, a depth-backed
   target and the researched vertex declarations are admitted. Shadow
-  sampling, query-counted draws, glyph filtering, unknown shader behavior
-  and missing sampled stages refuse. Integer uniform render scale and
+  sampling, glyph filtering, unknown shader behavior and missing sampled
+  stages refuse. Only the dedicated flare visibility boundary admits a
+  counted draw. Integer uniform render scale and
   single-sample attachments are the handoff/backend contract here.
 - The stage replaces D3D's GPU recording and keeps guest geometry construction and resolved-draw capture. Uploads are owned per recording so cancellation stays correct. The feature's armed count is not replacement coverage; the stage counters are.
 
@@ -222,7 +228,7 @@ is unchanged; each owned leaf executes at its original position.
 | MGS2 `0x0004f010` | Producer `0x00042850`; reached by effect parts, object attachments and lights. Evaluated volume elements feed shared billboard helper `0x0004f7e0`, admitted per leaf. |
 | tdtl `0x000508d0` | Producer `0x000429a0`; reached by attachments/lights. Curve/state updates precede `0x0004f7e0`; they remain guest-owned. |
 | Geometry `0x00041020` | Producer `0x00041040`; the transparents stage owns this handler and its `0x0004cbf0`/`0x0004d0b0` callbacks. No particles-stage hook is installed here. |
-| Layered geometry `0x00041cc0` / `0x000423c0` | Producers `0x000420a0` / `0x00042760`. These guest-owned handlers make multiple geometry calls and change targets and layers. |
+| Layered geometry `0x00041cc0` / `0x000423c0` | Producers `0x000420a0` / `0x00042760` queue camouflage and hologram. The object layers own their planned ranges, and the transparents stage records remaining standard indexed ranges at their guest layer targets. |
 | Material callbacks `0x00244610` / `0x002be650` | Generic producer `0x00041490`, material callback `0x000d4bc0`, geometry callbacks `0x00244470` / `0x002be5d0`. Both reach `0x0019f680`: admits its completed triangle strip, preserving ring/outline construction, material evaluation and degenerates. |
 | Other callbacks queued by `0x00041490` | Handler pointer comes from stack +0x18 at entry; data-driven registration through `0x000d4d85` may supply others. `UnownedMaterialCallback` for a handler outside the two researched wrappers. No guessed semantic type or ownership. |
 | Wrapper `0x00048e40` | Producer `0x00047870`; sole statically found caller `0x001160b3` supplies callback `0x0024dc50`, a no-op return: `NoGeometryCallback`. The wrapper's material changes still run. A different runtime callback gives `UnownedMaterialCallback`. |
@@ -238,13 +244,20 @@ restores its render state afterwards. Other callers give `UnownedCaller`.
 Lens flares use a separate queue: `0x0002dba0` → `0x000209b0`, populated
 from sky, object attachments, lights and effect parts. Pass `0x0002dd30`
 invokes callback `0x0002e540` through `0x00020bb0` with query work enabled.
-The guest owns its END at `0x0002e9b6`. The queue helper brackets this
-callback with z-pass query packets and retains its readback lifecycle.
-Reflection pass `0x0002df00` invokes `0x0002e9e0` without those
-queries. Its visible billboards go to the native flare stage through the shared
-leaf at `0x000480a0` when the saved caller is `0x0002f24c`. Neither queue
-nor visibility-history logic is replaced. The central handoff also rejects
-query-counted draws before asking admission owners.
+The native flare hook arms one read-only, position-only fan at END
+(`0x0002e9b6`) and disarms on return. The queue helper brackets it with
+the guest's existing z-pass clear and report. The ordered fan carries a
+count pipeline using its actual scissor, vertex program and depth/stencil
+state. W-buffered fans use the count entry's W-depth output. The backend
+sums on the copy that owns the query and scales the count to guest pixels.
+The report stays ordered with earlier draws and retains the guest's
+ticket and polling lifecycle. If the fan, targets or count pipeline fail
+preparation, the original packet adds its samples through the same
+counter.
+
+Reflection pass `0x0002df00` invokes `0x0002e9e0` with counting disabled.
+Its visible billboards go to the native flare stage through the shared
+leaf at `0x000480a0` when the saved caller is `0x0002f24c`.
 
 Weather is a BSP weather-palette path, not one of these effect sort-list
 handlers. The palette is `sbsp+0x84`, stride 0x88, weather datum +0x24;
@@ -280,6 +293,10 @@ succeeds once queued: the render thread records the particle or draws
 that packet ([render-thread.md](render-thread.md), "Keeping guest-visible
 semantics exact").
 
+A sealed frame retains eligible particle replacements beside the guest
+packet. It resolves the sampled textures against the replay's targets and
+updates verified view constants on paced frames.
+
 The effects walk admits the effect quad at
 `0x0004b252` from the builder's source and contrails at `0x0004b28c`
 from the builder's output. The return frame and caller arguments must
@@ -292,7 +309,7 @@ guest-issued leaves are queued behind the render thread the same way.
 ## Rules and limits
 
 - Coverage comes from the `particles` stage counters in `H2_FRAME_STATS` (suppressed, and positive reference and display ranges in view bucket `other`). Resource and range refusals are named counters, not receipts.
-- The feature test `crates/rewrites/render-bridge/tests/native_particles.rs` requires render-safe leaf hooks and verifies that the particle update, visibility query and layered handlers have no particle hooks.
+- The feature test `crates/rewrites/render-bridge/tests/native_particles.rs` requires render-safe leaf and visibility hooks and verifies that the particle update and layered handlers have no particle hooks.
 - `crates/rewrites/native-render/tests/particles_gpu.rs` draws a canonical particle and a packed ribbon strip into one submission with invented microcode and checks colour readback and refusal of a changed attachment identity. It skips without a GPU adapter. Pure tests cover dynamic register assignment, colour channel order, z/w reset, NaN and signed zero, missing memory, alias and overflow refusal, clip and depth mismatch and malformed geometry; `effect_immediate::` tests cover winding, caller allowlisting, defaults and point and odd-line refusals.
 
 ## Not verified
@@ -300,7 +317,7 @@ guest-issued leaves are queued behind the render thread the same way.
 - Pixel parity of colour, depth and particle evolution against D3D over the first 4,000 presents of the Old Mombasa level, including a contrail-bearing projectile and the four-vertex effect builder.
 - Combat and explosion sections at render scale 1 and 2 and two views, with a receipt on each copy: sprite blending, near clipping, alpha test, additive particles and D3D-only neighbours.
 - Sorted and direct beams, a lens with changing occlusion, a light volume or trail, both material-strip callbacks, and a weather BSP in line and point modes.
-- Query results and weather and beam simulation state equal to the D3D baseline; refused point and layered-geometry draws keep their D3D receipts.
+- Query results and weather and beam simulation state equal to the D3D baseline; refused point draws keep their D3D receipts.
 - Timings: warm p50 and p95 with diagnostics off.
 
 ## Related

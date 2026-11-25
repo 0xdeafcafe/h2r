@@ -1,11 +1,11 @@
-//! One colour fan at its original target and sampler bindings.
+//! One flare fan at its original targets, with a count pipeline for queries.
 use std::sync::{Arc, Mutex};
 
 use d3d::backend::{ExternalAttachments, ExternalDraws};
 use d3d::{
     DrawSnapshot, ExternalPass, ExternalPassRequest, ExternalPlan, ExternalWrites, ResolvedDraw,
 };
-use native_render::flares::{FlareGpu, Site};
+use native_render::flares::{self, FlareGpu, Refusal, Site};
 use timeline::native::Stage;
 
 pub(super) fn plan(
@@ -15,9 +15,11 @@ pub(super) fn plan(
 ) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
     if !matches!(snapshot.draw.entry, "D3DDevice_End" | "inline Begin/End")
         || snapshot.color_header == 0
-        || snapshot.draw.hw.zpass_count_enable
-        || native_render::flares::check(site, snapshot.draw).is_err()
     {
+        return None;
+    }
+    if let Err(reason) = flares::check(site, snapshot.draw) {
+        refuse_visibility(site, reason);
         return None;
     }
     Some((
@@ -36,6 +38,19 @@ pub(super) fn plan(
     ))
 }
 
+fn refuse_visibility(site: Site, reason: Refusal) {
+    if site == Site::Visibility {
+        let label = match reason {
+            Refusal::QueryState => "VisibilityState",
+            Refusal::Geometry => "VisibilityFanGeometry",
+            Refusal::Layout => "VisibilityFanDeclaration",
+            Refusal::Texture => "VisibilityTexture",
+            Refusal::Ui(_) => "VisibilityCounterPreparation",
+        };
+        super::REFUSALS.count("Flare", label);
+    }
+}
+
 struct FlarePass {
     site: Site,
     draw: Arc<ResolvedDraw>,
@@ -44,6 +59,10 @@ struct FlarePass {
 }
 
 impl ExternalPass for FlarePass {
+    fn counts_samples(&self) -> bool {
+        self.site == Site::Visibility
+    }
+
     fn replays_scene(&self) -> bool {
         // Immutable issue-time state. prepare obtains every attachment and
         // sampled texture from the copy currently being recorded.
@@ -64,7 +83,10 @@ impl ExternalPass for FlarePass {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .prepare(self.site, target, draw.as_ref(), self.frame)
-                .map_err(|_| "flare fan preparation"),
+                .map_err(|reason| {
+                    refuse_visibility(self.site, reason);
+                    "flare fan preparation"
+                }),
         )
     }
 

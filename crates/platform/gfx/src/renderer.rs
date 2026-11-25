@@ -499,6 +499,19 @@ impl RecordedDraw {
         self.count.is_some()
     }
 
+    /// Replay the prepared geometry into the pixel counter before drawing it.
+    /// The count pipeline uses the same vertex, primitive and depth state.
+    pub fn with_sample_count(mut self, pipeline: Arc<PendingPipeline>) -> Self {
+        self.count = Some((pipeline, self.state.2.as_ref().is_some_and(writes_depth_stencil)));
+        self
+    }
+
+    /// A physical target copy that does not own the report still draws the
+    /// packet, but contributes no samples.
+    pub fn disable_sample_count(&mut self) {
+        self.count = None;
+    }
+
     /// Makes [`Renderer::encode_pass`] start a new render pass (on the same
     /// encoder) at this draw instead of continuing the previous draw's.
     pub fn start_pass(&mut self) {
@@ -1483,6 +1496,21 @@ fn create_count_pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+/// Prepare the same sample-count pipeline as an ordinary counted draw
+/// for a native packet with an already translated shader.
+pub fn create_sample_count_pipeline(
+    device: &wgpu::Device,
+    key: &PipelineKey,
+    program: &ShaderProgram,
+) -> wgpu::RenderPipeline {
+    let fragment = if program.count_entry.is_some() {
+        program.module.clone()
+    } else {
+        count_fragment(&mut None, device)
+    };
+    create_count_pipeline(device, key, program, &fragment)
 }
 
 /// A draw pipeline for `key` to be built on a worker (or its first user).

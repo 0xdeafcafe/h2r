@@ -14,7 +14,6 @@ use gfx::compile::{Pending, PendingPipeline};
 use gfx::pipeline::{PipelineKey, ShaderId, TargetFormats};
 use gfx::program::{ProgramBindings, StageDims};
 use gfx::repack::{FetchMode, RepackPlan, StreamPlan};
-use gfx::state::{DepthBufferMode, StencilOp};
 use gfx::texture::TextureKind;
 use gfx::translate::Capabilities;
 use gfx::renderer::VertexBuffers;
@@ -430,6 +429,7 @@ pub struct IndexedPass {
     extracted_frame: u64,
     fetch: FetchMode,
     pinned: Option<SurfaceTexture>,
+    sorted_layer: bool,
     section: Option<((u64, u32), SectionKey)>,
 }
 
@@ -441,7 +441,16 @@ impl IndexedPass {
         texaccum: Option<Texaccum>,
     ) -> Option<Self> {
         if draw.indices.as_ref()?.iter().any(|&i| i >= draw.vertex_count) { return None; }
-        Self::candidate(draw, cache, frame, texaccum, None)
+        Self::candidate(draw, cache, frame, texaccum, None, false)
+    }
+
+    /// A standalone sorted-layer range can be recorded on the scene's
+    /// attachments with the exact texture views captured for this packet.
+    pub fn for_sorted_layer(draw: &ResolvedDraw, cache: Arc<Cache>, frame: u64) -> Option<Self> {
+        if draw.indices.as_ref()?.iter().any(|&i| i >= draw.vertex_count) {
+            return None;
+        }
+        Self::candidate(draw, cache, frame, None, None, true)
     }
 
     /// The sorted handler resolved the ripple frame, bump matrices, reflection,
@@ -502,7 +511,7 @@ impl IndexedPass {
             model: item.model, section: item.section, part: item.part,
             shader: item.shader, pass: item.pass,
         };
-        let mut candidate = Self::candidate(draw, cache, frame, None, Some(((generation, 0), key)))
+        let mut candidate = Self::candidate(draw, cache, frame, None, Some(((generation, 0), key)), false)
             .ok_or("geometry")?;
         candidate.sky = Some(sky);
         Ok(candidate)
@@ -514,12 +523,13 @@ impl IndexedPass {
         draw: &ResolvedDraw, cache: Arc<Cache>, frame: u64, texaccum: Option<Texaccum>,
         scope: (u64, u32), geometry: Geometry, layer: u32,
     ) -> Option<Self> {
-        Self::candidate(draw, cache, frame, texaccum, Some((scope, SectionKey::new(geometry, layer))))
+        Self::candidate(draw, cache, frame, texaccum, Some((scope, SectionKey::new(geometry, layer))), false)
     }
 
     fn candidate(
         draw: &ResolvedDraw, cache: Arc<Cache>, frame: u64, texaccum: Option<Texaccum>,
         section: Option<((u64, u32), SectionKey)>,
+        sorted_layer: bool,
     ) -> Option<Self> {
         let indices = draw.indices.as_ref()?;
         if indices.len() < 3
@@ -527,7 +537,7 @@ impl IndexedPass {
                 draw.primitive,
                 PrimitiveType::TriangleList | PrimitiveType::TriangleStrip
             )
-            || draw.target.depth_format.is_none()
+            || (!sorted_layer && draw.target.depth_format.is_none())
             || draw.streams.len() != draw.layout.streams.len()
             || draw.hw.zpass_count_enable
         {
@@ -543,6 +553,7 @@ impl IndexedPass {
             frame,
             extracted_frame: timeline::frames(),
             section,
+            sorted_layer,
             pinned: texaccum.map(|t| SurfaceTexture { header: t.texture, size: t.size }),
         })
     }
@@ -562,17 +573,16 @@ impl IndexedPass {
         // Both target copies retain the same geometry and material snapshot.
         let draw = &self.draw;
         let (width, height) = guest_size;
-        if target.targets.0 == target.targets.1 {
+        let depth = draw.target.depth_format.map(|_| target.depth_format);
+        if (target.targets.0 != target.targets.1) != depth.is_some() {
             return Err("shared color and depth");
         }
         let scale = d3d::scaled::RenderScale::between(guest_size, target.size).ok_or("zero raster extent")?;
         if (width, height) != (draw.target.width, draw.target.height)
-            || target.size
-                != (
-                    target.depth.texture().width(),
-                    target.depth.texture().height(),
-                )
-            || (draw.state.render.stencil.enable && !target.depth_format.has_stencil_aspect())
+            || depth.is_some_and(|format| {
+                target.size != (target.depth.texture().width(), target.depth.texture().height())
+                    || (draw.state.render.stencil.enable && !format.has_stencil_aspect())
+            })
         {
             return Err("incompatible target or stencil");
         }
@@ -610,7 +620,7 @@ impl IndexedPass {
         let material = previous.and_then(|(key, i)| cache.sections.get(&key)?[i].material.as_ref())
             .filter(|m| m.matches(draw, present));
         let material_hit = material.is_some();
-        let formats = TargetFormats { color: target.color_format, depth: Some(target.depth_format), samples: 1 };
+        let formats = TargetFormats { color: target.color_format, depth, samples: 1 };
         let cached_pipeline = material.and_then(|m| m.pipelines.get(&formats)).cloned();
         let repack = match previous {
             Some((key, i)) => Arc::clone(&cache.sections[&key][i].repack),
@@ -632,7 +642,9 @@ impl IndexedPass {
                 TextureKind::Cube => wgpu::TextureViewDimension::Cube,
             };
             if *dim != have { return Err("sample dimension disagrees with shader"); }
-            if view.texture() == target.color.texture() || view.texture() == target.depth.texture() {
+            if view.texture() == target.color.texture()
+                || (depth.is_some() && view.texture() == target.depth.texture())
+            {
                 return Err("sample aliases attachment");
             }
             if !gfx::program::filterable(view.texture().format(), target.device.features()) {
@@ -819,7 +831,7 @@ impl ExternalPass for IndexedPass {
         // Section caches and texture-stage bindings are outside this case.
         // Sky material groups match the replay's actual stage views and
         // formats. The immutable per-view palette is owned by this pass.
-        self.sorted_pool || self.sky.is_some() || (self.section.is_none() && self.pinned.is_none()
+        self.sorted_pool || self.sorted_layer || self.sky.is_some() || (self.section.is_none() && self.pinned.is_none()
             && self.draw.texture_info.iter().all(Option::is_none))
     }
 
@@ -859,6 +871,7 @@ impl ExternalPass for IndexedPass {
             extracted_frame: self.extracted_frame,
             fetch: self.fetch,
             pinned: self.pinned,
+            sorted_layer: self.sorted_layer,
             section: self.section,
         }))
     }
@@ -867,17 +880,14 @@ impl ExternalPass for IndexedPass {
         self.pinned.iter().map(|target| target.header).collect()
     }
 
+    fn colour_only(&self) -> bool {
+        self.draw.target.depth_format.is_none()
+    }
+
     fn writes(&self) -> ExternalWrites {
-        let r = &self.draw.state.render;
-        let stencil = &r.stencil;
         ExternalWrites {
-            color: !gfx::translate::color_writes(r.color_write).is_empty(),
-            depth_stencil: (r.depth_mode != DepthBufferMode::Disabled && r.depth_write)
-                || (stencil.enable
-                    && stencil.write_mask != 0
-                    && [stencil.fail, stencil.depth_fail, stencil.pass]
-                        .iter()
-                        .any(|&op| op != StencilOp::Keep)),
+            color: self.draw.state.render.color_write.xbox_value() != 0,
+            depth_stencil: self.draw.writes_depth_stencil(),
         }
     }
 

@@ -339,6 +339,34 @@ fn a_backend_that_cannot_drops_it() {
     assert!(got.lock().unwrap().is_empty());
 }
 
+#[test]
+fn untyped_pass_works_without_replay_and_refuses_with_a_captured_slot() {
+    use frame_types::{Slot, SlotAt};
+
+    fn opaque_slot() -> Option<SlotAt> {
+        Some(SlotAt { slot: Slot::Opaque, view: 0 })
+    }
+
+    for recording in [false, true] {
+        let mut backend = RecordingBackend::default();
+        backend.external_passes = true;
+        let mut sink = d3d::SceneSink::new(backend, opaque_slot);
+        if recording {
+            sink = sink.with_replay(|_| {});
+        }
+        let (mut d, mut m) = create(sink, UploadPolicy::Always);
+        set_states(&mut d, &mut m);
+        let pass: Box<dyn ExternalPass> = Box::new(Probe(Arc::default()));
+        assert!(pass.diagnostic_name().ends_with("::Probe"));
+        assert_eq!(d.external_pass_now(&mut m, pass).unwrap(), !recording);
+        assert_eq!(d.backend.inner().external.len(), usize::from(!recording));
+        assert_eq!(
+            d.stats().external_refusals[d3d::ExternalRefusal::Backend.index()],
+            u64::from(recording),
+        );
+    }
+}
+
 /// A [`Probe`] that draws colour only.
 struct ColourOnly(Probe);
 

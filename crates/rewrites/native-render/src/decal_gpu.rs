@@ -64,6 +64,10 @@ pub struct ShaderSnapshot {
     pub combiner: PixelShaderDef,
     pub microcode: Vec<u8>,
     pub provided_inputs: u16,
+    /// Select back colours on back-facing fragments.
+    pub two_sided_lighting: bool,
+    /// An enabled polygon stipple's 32 rows, including an all-zero mask.
+    pub stipple: Option<[u32; 32]>,
     /// The draw's complete 192 constants and 16 attribute defaults.
     pub vertex: VertexUniforms,
     /// The resolved NV2A z-perspective bit, with D3D's state fallback.
@@ -245,7 +249,7 @@ fn check_combiner_state(def: &PixelShaderDef) -> Result<(), &'static str> {
 
 /// The draw's pixel uniforms before the target and clip fill in the depth
 /// terms: the combiner's embedded constants, alpha reference, LOD bias,
-/// bump terms and the linear texture scale.
+/// bump terms, the polygon mask and the linear texture scale.
 fn base_pixel(shader: &ShaderSnapshot) -> PixelUniforms {
     let def = &shader.combiner;
     let (c0, c1) = def.embedded_constants();
@@ -262,6 +266,7 @@ fn base_pixel(shader: &ShaderSnapshot) -> PixelUniforms {
             }
         }),
         border: shader.stages.map(|s| psh::argb(s.border_color)),
+        stipple: shader.stipple.unwrap_or_default(),
         ..Default::default()
     };
     for n in 0..4 {
@@ -297,6 +302,8 @@ fn pixel_options(shader: &ShaderSnapshot, caps: Capabilities) -> PixelOptions {
         w_buffer: writes_w_depth(shader.w_buffered, &shader.render),
         shadow: [None; 4],
         flat_shading: shader.render.shade_mode == gfx::state::ShadeMode::Flat,
+        two_sided_lighting: shader.two_sided_lighting,
+        stipple: shader.stipple.is_some(),
         ..Default::default()
     }
 }
@@ -467,7 +474,8 @@ fn compile(
 /// The vertex and pixel uniforms of a draw on a target of `size` texels
 /// for a guest surface of `guest_size` (`z_scale` the depth format's full
 /// scale): the surface, the half-texel shift under a render scale, and for
-/// a W-buffered draw the clip and the depth terms.
+/// a W-buffered draw the clip and the depth terms. The polygon mask
+/// always uses the guest pixel grid of that attachment copy.
 fn draw_uniforms(
     w_buffered: bool,
     render: &RenderState,
@@ -488,7 +496,10 @@ fn draw_uniforms(
     vu.shift = crate::program::target_shift(guest_size, size);
     vu.w_clip = w_buffered.then_some(clip.range);
     vu.w_clamp = w_buffered && clip.clamp;
-    let mut pu = pixel;
+    let mut pu = PixelUniforms {
+        stipple_scale: PixelUniforms::stipple_grid(guest_size, size),
+        ..pixel
+    };
     if writes_w_depth(w_buffered, render) {
         let offset = |value: f32| {
             if render.solid_offset_enable && value.is_finite() {

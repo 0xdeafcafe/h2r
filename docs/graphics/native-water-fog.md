@@ -314,7 +314,7 @@ the cached pipelines with their own uniforms and sampled textures.
 - The fog pass applies the layer draw's own gate (`[0x0048574c] == 3` or a fog byte set); otherwise it would fog views the game left clear.
 - Objects retain their layer-16 mask. In a mixed list, range admission uses the shader, geometry and texture bindings established by the sorted guest handler. A range that cannot sample its bound textures safely stays on the guest path.
 - Any engine texture id that is run-time chosen, the light's, a rasterizer bitmap other than 14 and 15 (which resolve) or a cleared stage refuses the material at load (`FogRefusal::Unsupplied`). The load line names the materials left on D3D and why, and every 1,800 layer-16 views a line gives the skip counts.
-- Layers 18 and 19 are taken only from the camouflage handler's calls (returns `0x00042015` and `0x0004205f`), 21 only from the hologram handler's (`0x00042721`); the handlers' replays of the scene's layers stay on D3D. An item extraction refuses (a fade byte below `0xff`, which sets the stipple, and the rest of `LayerObjectRefusal`), whose model is not resident, or whose shader's passes in the layer did not compile keeps its D3D draw, and so does every item after it.
+- Layers 18 and 19 are taken only from the camouflage handler's calls (returns `0x00042015` and `0x0004205f`), 21 only from the hologram handler's (`0x00042721`); the handlers' regular layer replays run through the sorted indexed draw path. An extraction refusal (such as a fade byte below `0xff`, a missing resident model or a shader that cannot compile) leaves that item and the remaining items to the guest dispatcher. Its resolved indexed ranges can still submit natively with the live material and stipple state.
 
 ## Not verified
 
