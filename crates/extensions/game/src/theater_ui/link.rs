@@ -53,6 +53,9 @@ pub(super) struct Ready {
     controller: u32,
     generation: u64,
     reply: Option<Reply>,
+    /// A film of this machine's own library (the film page after a film
+    /// watched in the running game): no account selected it.
+    local: bool,
 }
 
 pub(super) fn share_url(
@@ -254,6 +257,7 @@ impl Theater {
                                 controller,
                                 generation,
                                 reply,
+                                local: false,
                             });
                         } else if let Some(reply) = reply {
                             let _ = reply.send(Err("Theater selection changed".into()));
@@ -270,6 +274,52 @@ impl Theater {
             })
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// The film page of a film of this machine's library, opened from the
+    /// menu the viewer returns to after a film watched in the running game.
+    /// The page opens at the next menu update, as a linked film page does.
+    pub fn reopen_film(&self, film: &str) {
+        let location = self
+            .0
+            .location
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let Some(location) = location else { return };
+        let found = (location.open)(&location.dir)
+            .and_then(|library| library.list(&location.installation))
+            .map(|films| films.into_iter().find(|f| f.id == film));
+        let entry = match found {
+            Ok(Some(film)) => Entry {
+                film,
+                clip: None,
+                archive_clip: None,
+            },
+            Ok(None) => return,
+            Err(error) => {
+                eprintln!("theater: could not reopen the film page: {error}");
+                return;
+            }
+        };
+        let (controller, account, generation) = {
+            let mut state = self.state();
+            state.open_generation = state.open_generation.wrapping_add(1);
+            (
+                state.controller,
+                state.account.unwrap_or(live_proto::Xuid(0)),
+                state.open_generation,
+            )
+        };
+        *self.0.link.lock().unwrap_or_else(|e| e.into_inner()) = Some(Ready {
+            entry,
+            view: api::InitialView::default(),
+            account,
+            controller,
+            generation,
+            reply: None,
+            local: true,
+        });
     }
 
     pub(super) fn pump_external_link(&self) {
@@ -421,7 +471,7 @@ impl Feature for Driver {
                             .and_then(|l| {
                                 l.signed_in.as_ref()?.signed_in_account(ready.controller)
                             });
-                        let result = if account.map(|(id, _)| id) != Some(ready.account)
+                        let result = if (!ready.local && account.map(|(id, _)| id) != Some(ready.account))
                             || theater.state().open_generation != ready.generation
                         {
                             Err("Theater account or selection changed".into())

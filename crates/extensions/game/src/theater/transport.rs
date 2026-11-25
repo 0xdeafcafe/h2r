@@ -141,7 +141,13 @@ impl State {
         let paused = self.visible_pause();
         self.cancel_camera_redraw();
         self.set_paused(paused);
-        self.queue_jump(target, from, request.source, source);
+        if self.watch.is_some() {
+            // In the running game: forward from the tick shown, or the
+            // start route, which the session turns into a queued game.
+            self.seek_in_game(target, from, request.source);
+        } else {
+            self.queue_jump(target, from, request.source, source);
+        }
         Ok(())
     }
 

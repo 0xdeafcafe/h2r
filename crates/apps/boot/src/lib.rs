@@ -1596,6 +1596,18 @@ fn run_configured(
         theater.add_playback_methods(&a.agent);
     }
     if !replaying && let Some(a) = &agent {
+        // A session that records its games can watch a film in itself:
+        // it queues the film's game through the agent's guest calls and
+        // opens the film page again when the viewer leaves.
+        let watch = film.clone().filter(|f| f.can_watch());
+        if let Some(f) = &watch {
+            if let Some(calls) = a.sim.as_ref().and_then(|s| s.calls()) {
+                f.attach_calls(calls);
+            }
+            if let Some(theater) = theater.clone() {
+                f.on_return(move |id| theater.reopen_film(id));
+            }
+        }
         theater::library_methods(
             &a.agent,
             film_dir(),
@@ -1603,6 +1615,7 @@ fn run_configured(
             film_out.to_owned(),
             opts.data_root.clone(),
             film_installation(),
+            watch,
         );
     }
     let bink = if opts.bink {

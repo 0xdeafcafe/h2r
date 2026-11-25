@@ -40,6 +40,10 @@ pub(super) struct Play {
     begun: bool,
     /// The film tick being played has had its actions written.
     applied: bool,
+    /// The film's game has been queued and has not activated: a start-route
+    /// seek in the running game (`watch`). Updates before the activation
+    /// are the old game's own and are not the film's.
+    awaiting: bool,
     /// The mounted maps, to check the game's map against the film's.
     pub(super) map_vfs: Option<Arc<Mutex<vfs::Vfs>>>,
 }
@@ -69,8 +73,27 @@ impl Play {
             length,
             begun: false,
             applied: false,
+            awaiting: false,
             map_vfs: None,
         }))
+    }
+
+    /// The film's options are queued again: the game that runs until they
+    /// load is not the film's, and the film starts over at the game's first
+    /// update (`Session::requeue`).
+    pub(super) fn await_activation(&mut self) {
+        self.begun = false;
+        self.applied = false;
+        self.awaiting = true;
+    }
+
+    /// The queued game activated.
+    pub(super) fn activated(&mut self) {
+        self.awaiting = false;
+    }
+
+    pub(super) fn awaiting(&self) -> bool {
+        self.awaiting
     }
 
     /// The film's length in ticks.
@@ -158,6 +181,9 @@ pub(super) fn ports(options: &[u8]) -> u32 {
 /// update to a tick.
 pub(super) fn update(state: &mut State, g: &mut Guest, update: u32) -> Result<()> {
     let play = state.play.as_mut().context("no film is being played")?;
+    if play.awaiting {
+        return Ok(());
+    }
     if !play.begun {
         let first = play.start.game.first_update;
         state.tick = first - 1;
