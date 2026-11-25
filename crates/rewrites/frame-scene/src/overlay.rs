@@ -135,15 +135,15 @@ impl OverlayMaterial {
         }
     }
 
-    /// Engine font `font`'s glyphs, alpha blended. Linear filtering: the
-    /// pages hold glyphs rasterised at the display's density
-    /// ([`crate::overlay::GlyphPages`]), so a page texel draws near 1:1
-    /// and the sampler only smooths what is left between.
+    /// Engine font `font`'s glyphs, alpha blended. Point sampling: the
+    /// pages hold glyphs rasterised at the display's density, so a page
+    /// texel draws near 1:1 and a texel keeps the coverage the page holds
+    /// (a covered texel of a 1x page draws at its full value).
     pub fn text(font: u16) -> OverlayMaterial {
         OverlayMaterial {
             program: Program::Fixed(Combiner::TextureAlpha),
             texture: OverlayTexture::Glyphs { font },
-            sampler: Sampler { wrap: false, point: false },
+            sampler: Sampler { wrap: false, point: true },
             blend: OverlayBlend::ALPHA,
         }
     }

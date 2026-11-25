@@ -799,11 +799,11 @@ their glyphs are not the game's cache but the disc's font data
 ([fonts.md](../formats/fonts.md)), rasterised once per glyph into the
 renderer's own pages at the display's density
 (`game::hud_overlay::fill_glyphs`, `font::coverage::upsample`). The
-resample is the same reconstruction the filter runs per fragment,
-computed once per glyph on the CPU: the coverage's B-spline read as a
-surface, the edge put back where it crosses half the local stroke's
+resample follows the filter's idea, computed once per glyph on the CPU:
+the coverage read as a Catmull-Rom surface through the texel centres (a
+one-texel stem keeps its alpha), the edge put back where it crosses half the local stroke's
 alpha, with a ramp one output texel wide. A glyph page texel then draws
-near 1:1 and the runs sample their pages linearly
+near 1:1 and the runs sample their pages point-wise
 (`OverlayMaterial::text`), so the text keeps the bitmap font's own
 outline at whatever the window's density is — no magnification of
 480p-sized texels, and no per-fragment filter cost. The scale is the

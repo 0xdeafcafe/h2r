@@ -7,15 +7,15 @@
 //! computed once per glyph from the coverage the font already carries —
 //! no glyph data is stored or shipped.
 //!
-//! The upscale is the display side of the same reconstruction the
-//! translated glyph filter runs per fragment (`shaders::psh::GLYPH_WGSL`):
-//! the coverage is read as alpha, which across an edge rises about
-//! linearly with the distance to it, crossing one half on the edge.
+//! The upscale reads the coverage as alpha, which across an edge rises
+//! about linearly with the distance to it, crossing one half on the edge
+//! (the premise of the translated glyph filter, `shaders::psh::GLYPH_WGSL`,
+//! which runs per fragment; this runs once per glyph on the CPU):
 //!
-//! - `a`, a cubic B-spline through the 4x4 texels around the sample: a
-//!   smooth surface that reproduces such ramps exactly, so straight edges
-//!   stay where they were, and that smooths the 4-bit steps of the
-//!   coverage instead of following them;
+//! - `a`, a Catmull-Rom surface through the 4x4 texels around the sample:
+//!   it passes through every texel, so a one-texel stem keeps its alpha,
+//!   a straight edge between flat texels stays on the boundary, and it
+//!   smooths the 4-bit steps of the coverage instead of following them;
 //! - `m`, the same spline through each texel's brightest neighbour (3x3):
 //!   the full alpha of the stroke the sample is near, 1 for solid text,
 //!   lower for a stroke that never covered a whole texel;
@@ -46,17 +46,17 @@ pub fn upsample(alpha: &[u8], width: u16, height: u16, scale: u32) -> Vec<u8> {
     };
     let mut out = vec![0u8; w * scale as usize * h * scale as usize];
     for oy in 0..h * scale as usize {
-        // The output texel's centre in source texel space; the B-spline
+        // The output texel's centre in source texel space; the spline
         // runs through the source texels' centres (offset by half a texel).
         let py = (oy as f32 + 0.5) / s - 0.5;
         let base_y = py.floor();
         let fy = py - base_y;
-        let wy = bspline(fy);
+        let wy = catmull_rom(fy);
         for ox in 0..w * scale as usize {
             let px = (ox as f32 + 0.5) / s - 0.5;
             let base_x = px.floor();
             let fx = px - base_x;
-            let wx = bspline(fx);
+            let wx = catmull_rom(fx);
             let (bx, by) = (base_x as isize, base_y as isize);
             let mut t = [0.0f32; 36];
             for y in 0..6 {
@@ -77,6 +77,7 @@ pub fn upsample(alpha: &[u8], width: u16, height: u16, scale: u32) -> Vec<u8> {
                     m += weight * top.max(mid).max(bottom);
                 }
             }
+            let m = m.clamp(0.0, 1.0);
             let n = (a / m.max(1e-4)).clamp(0.0, 1.0);
             let alpha_out = m * (((n - 0.5) * s + 0.5).clamp(0.0, 1.0));
             out[oy * (w * scale as usize) + ox] = (alpha_out * 255.0).round().clamp(0.0, 255.0) as u8;
@@ -85,16 +86,17 @@ pub fn upsample(alpha: &[u8], width: u16, height: u16, scale: u32) -> Vec<u8> {
     out
 }
 
-/// The cubic B-spline's four weights at `t` in 0..1, the same basis the
-/// glyph filter runs (`xps_glyph_bspline`).
-fn bspline(t: f32) -> [f32; 4] {
-    let u = 1.0 - t;
+/// The Catmull-Rom spline's four weights at `t` in 0..1: a cubic through
+/// the texel centres, so a stroke one texel wide keeps its full alpha at
+/// its centre (a B-spline would smooth it to two thirds) and a straight
+/// edge between two flat texels still crosses half at the boundary.
+fn catmull_rom(t: f32) -> [f32; 4] {
     let (t2, t3) = (t * t, t * t * t);
     [
-        u * u * u / 6.0,
-        (3.0 * t3 - 6.0 * t2 + 4.0) / 6.0,
-        (-3.0 * t3 + 3.0 * t2 + 3.0 * t + 1.0) / 6.0,
-        t3 / 6.0,
+        (-t3 + 2.0 * t2 - t) / 2.0,
+        (3.0 * t3 - 5.0 * t2 + 2.0) / 2.0,
+        (-3.0 * t3 + 4.0 * t2 + t) / 2.0,
+        (t3 - t2) / 2.0,
     ]
 }
 
@@ -113,7 +115,7 @@ mod tests {
         assert_eq!(upsample(&alpha, 2, 2, 0), alpha);
         assert_eq!(upsample(&alpha, 2, 2, 1), alpha);
         assert!(upsample(&[], 0, 5, 4).is_empty());
-        assert!(upsample(&[1, 2, 3], 2, 2, 2).is_empty(), "the wrong length changes nothing");
+        assert_eq!(upsample(&[1, 2, 3], 2, 2, 2), [1, 2, 3], "the wrong length changes nothing");
     }
 
     /// A straight edge keeps its position: the crossing of half the

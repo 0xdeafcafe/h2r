@@ -449,7 +449,7 @@ the display's density ([high-resolution.md](high-resolution.md#text),
 once by `ui_gpu::OverlayResidency`). A run of menu widgets is placed with
 the UI fit its draw carries (`render_bridge::ui_layout`'s rule), so its
 widgets land in the same safe area the game's own draws keep; its glyph
-pages draw near 1:1 and are sampled linearly.
+pages draw near 1:1 and are sampled point-wise.
 
 The UI's producer is `scene_extract::ui::draw_list`. Its input, a
 `UiFrame`, is the guest's UI draws in call order: the fade, the solid
