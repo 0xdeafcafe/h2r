@@ -1956,8 +1956,10 @@ fn host_window_resize_needs_a_window_and_answers_its_new_shape() {
     });
     attached.recv().unwrap();
     h.send(host_window::method::RESIZE, json!({"width": 1920, "height": 816}));
-    let r = h.reply();
+    let mut r = h.reply();
     shell.join().unwrap();
+    // Every result carries the session stamp; the shape is the rest.
+    r["result"].as_object_mut().unwrap().remove("at");
     assert_eq!(
         r["result"],
         json!({"width": 1920, "height": 816, "fullscreen": false, "scale": 2.0}),
