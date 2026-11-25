@@ -1,11 +1,12 @@
 # The loose tag repository (`tags::repo`)
 
-Status: Built for extraction, the file format, closure and building a map
-from scratch. Proven offline on the owner's disc (below); the Halo 1
+Status: Built for extraction, the file format, closure, building a map
+from scratch and the asset catalogue. Proven offline on the owner's disc
+(below; the catalogue on invented stores only); the Halo 1
 converter assembles its levels from the repository
 (`crates/tools/h1campaign/src/scratch.rs`), and the builder's open points are in
 [map-builder.md](map-builder.md), "Not verified".
-Code: `crates/formats/tags/src/repo.rs`, `crates/formats/tags/src/repo/skeleton.rs` (skeletons and extent tables), `crates/formats/tags/src/schema/hash.rs` (layout hashes). Switch: none.
+Code: `crates/formats/tags/src/repo.rs`, `crates/formats/tags/src/repo/skeleton.rs` (skeletons and extent tables), `crates/formats/tags/src/repo/normal.rs` (normal forms), `crates/formats/tags/src/repo/catalogue.rs` (the asset catalogue), `crates/formats/tags/src/schema/hash.rs` (layout hashes). Switch: none.
 Evidence labels are those of
 [map-format.md](map-format.md): **V** checked on the owner's disc, **Design**
 an implementation choice.
@@ -99,6 +100,7 @@ compare by content (`format::encode`, `format::decode`).
 <repo>/maps/<map>.header         its 0x800-byte header
 <repo>/maps/<map>.skel           its skeleton: the bytes that are not raw files, at their offsets (deflate)
 <repo>/maps/<map>.extents        its extent table: every other range as offset, length, raw hash
+<repo>/assets.idx                the asset catalogue (catalogue.rs): each asset by hash, the maps reading it
 <repo>/conflicts.txt             per key with variants, the maps that differ
 <repo>/extract.toml              the disc's identity and the versions it was extracted under
 <repo>/stamps.txt               each disc map file's size, time, place and SHA-256 when last hashed
@@ -139,6 +141,35 @@ which is what a new map (a converted Halo 1 level) builds from.
 `TagRepo::settle` rewrites it from the manifests after every extraction.
 Identical tags are stored once whatever map they came from.
 
+**The catalogue.** A key's files are not its contents: two maps keep one
+sound as two files because each indexes its own gestalt. `<repo>/assets.idx`
+(`catalogue.rs`) lists the repository's assets by **asset hash**, the
+SHA-256 of a tag's *normal form* (`normal.rs`: the tag as read for its map,
+with what ties it to that map taken out; the rules are in
+[asset-store.md](../engine/asset-store.md), "Normal forms"). Tab-separated
+text, one record a line:
+
+```text
+h2 asset catalogue 1
+normal <normal::VERSION>
+record <sha256 of extract.toml, or ->
+map\t<stem>\t<sha256 of the manifest's text>
+asset\t<group>\t<path>\t<asset hash>\t<variant or ->\t<map,map,...>
+used\t<group>\t<path>\t<group>\t<path>\t...   the keys whose tags reference this key
+```
+
+`asset` lines are sorted by key, then hash, then file: one per key, hash
+and file, since maps reading one asset can read it from more than one.
+`catalogue::build(root, schema)` reads every manifest, gives each tag its
+form with its map's gestalt and low-detail region (`normal::Tables`) and
+hashes it; a tag that cannot be read or given its form is a line in the
+report (`catalogue::Built::problems`) and has no asset.
+`catalogue::update` writes the catalogue after every extraction and when
+it is missing or stale (its `map` and `record` lines no longer match the
+manifests and `extract.toml`), which `compile::prepare` calls;
+`TagRepo::reset` removes it with the rest. `h2 tags catalogue [--repo
+REPO] [--force]` builds it and prints the variants by group as the files
+the repository keeps and as the assets the catalogue holds.
 Why tags differ between maps, **V** (lockout against `01a_tutorial`):
 sounds (`snd!`) index their map's own sound gestalt (`ugh!`), so the same
 sound has other indices in each map; bitmaps, particles (`prt3`), strings
@@ -265,7 +296,8 @@ date: `h2 build`, the step before `h2 play`/`run`/`serve` and Studio's
 workspace make it ([asset-store.md](../engine/asset-store.md), "Extraction
 on compile"). It takes `extract.lock` (a second caller waits, then finds
 nothing stale), gives each disc map file its SHA-256, runs `extract::plan`,
-and runs `extract::update` for a plan that is not empty.
+runs `extract::update` for a plan that is not empty, and ends with
+`catalogue::update` ("The catalogue").
 
 - **The stat fast path.** `stamps.txt` holds, per map, the size and
   modification time of the file read from (the image, for an entry), the
@@ -280,6 +312,9 @@ and runs `extract::update` for a plan that is not empty.
   (a map is there only when both are); a stopped run leaves it for the
   next, and a finished run removes it. A map the tree has no skeleton for
   needs the disc, and the error names it.
+- **The catalogue.** `assets.idx` is rebuilt after every extraction (a file
+  can change while no manifest does) and when it is missing or stale,
+  also with an empty plan: a store with nothing stale writes nothing.
 
 ## Building (`h2 tags build`)
 
@@ -359,7 +394,16 @@ overlap are refused; an invented map with two BSP regions, overlapping
 resources and unnamed ranges reads back equal at every border; a missing
 or short raw file is an error naming its hash; extraction writes each
 map's skeleton (bytes past the declared size included) and the plan
-takes a map lacking one whole again. The disc test extracts through the
+takes a map lacking one whole again. Normal forms: a sound at two indices
+of two gestalts has one form and another when a sample differs, and a
+form encodes and reads back; a bitmap's low-detail picture at two places
+is one; a resource of the globals is cut to its stored size and a
+locale's, another group's or one with no layout is not. The catalogue
+lists each asset by hash with its maps, files and the keys that reference
+it; one rebuilt from the manifests equals the one kept; a changed
+manifest makes it stale and an unreadable file is a problem line, not a
+failure; `prepare` writes it, leaves a current one alone and a reset
+takes it. The disc test extracts through the
 same plan, checks that planning again (`--update`) finds nothing to do,
 and checks every map reassembles to the disc's SHA-256.
 
@@ -431,10 +475,14 @@ name is the open question `h1convert::fresh` keeps them for
   retail map rebuilds from its own variants, so both stay right; a new map
   mixing tags from several maps needs the gestalt merged
   (`h1sounds::merge_sound`) and the low-detail ranges re-based. The main
-  file of a key is just the first content seen.
+  file of a key is just the first content seen. The asset hash is over a
+  normal form that takes the indices and the picture's place out (above,
+  "The catalogue"); the three bytes of a sound's header at `+0xb..+0xe`
+  are not read and stay in it.
 - **Raw lengths** without a stored size run to the next resource of the
   file, so padding comes along and the same resource can differ between
-  maps (a source of variants).
+  maps (a source of variants, in the asset hash too: only a resource of
+  `matg` or `scnr` whose element stores a size is cut to it).
 - **Tags reached by name**, not by datum, are not in a closure (above).
   `h1convert::fresh` keeps `shaders\` and `rasterizer\` for that reason.
 - **Raw in the shared caches** is stored too (with its origin), but a build

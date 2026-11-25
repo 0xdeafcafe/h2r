@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result};
+use tags::repo::catalogue;
 use tags::repo::compile::{self, DiscMap, Input, Options, Prepared};
 use tags::repo::extract::{MapWork, Plan, Why};
 use tags::schema::Schema;
@@ -118,6 +119,25 @@ fn plan_line(plan: &Plan, input: Input) -> String {
     )
 }
 
+/// What writing the asset catalogue did, in a line: the assets the store
+/// holds by hash against the files it keeps them as.
+fn catalogue_line(built: &catalogue::Built) -> String {
+    let (before, after) = built.totals();
+    format!(
+        "catalogue written: {} keys, {} assets, {} with more than one content (as files: {} files, {} keys with variants){}",
+        after.keys,
+        after.contents,
+        after.split,
+        before.contents,
+        before.split,
+        if built.problems.is_empty() {
+            String::new()
+        } else {
+            format!("; {} tags not hashed", built.problems.len())
+        }
+    )
+}
+
 /// Bring the store of `data` up to date with the game disc `disc`: the
 /// extraction (from the disc image when it is a file, else from the store),
 /// then the disc's other files. Lines for a person go to `say`.
@@ -172,6 +192,9 @@ pub fn prepare(
         say(l);
     }
     let p = p?;
+    if let Some(c) = &p.catalogue {
+        say(&format!("store: {}", catalogue_line(c)));
+    }
     if p.input == Input::Disc
         && !disc
             .extension()
@@ -338,5 +361,44 @@ mod tests {
             maps: vec![work(Why::Versions, None)],
         };
         assert!(plan_line(&plan, Input::Store).contains("the store itself"));
+    }
+
+    #[test]
+    fn the_catalogue_line_counts_assets_against_files() {
+        let sounds = tags::defs::parse_fourcc("snd!").unwrap();
+        let built = catalogue::Built {
+            before: [(
+                sounds,
+                catalogue::Variants {
+                    keys: 2,
+                    contents: 4,
+                    split: 2,
+                    instances: 6,
+                    others: 2,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            after: [(
+                sounds,
+                catalogue::Variants {
+                    keys: 2,
+                    contents: 3,
+                    split: 1,
+                    instances: 6,
+                    others: 1,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        assert_eq!(
+            catalogue_line(&built),
+            "catalogue written: 2 keys, 3 assets, 1 with more than one content (as files: 4 files, 2 keys with variants)"
+        );
+        let mut bad = built.clone();
+        bad.problems.push("m: t: why".into());
+        assert!(catalogue_line(&bad).ends_with("; 1 tags not hashed"));
     }
 }

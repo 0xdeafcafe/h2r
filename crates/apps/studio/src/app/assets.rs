@@ -4,6 +4,14 @@
 //! and what `asset.list`, `asset.thumb` and `asset.copy` answer. The
 //! window's browser and the API read the same rows.
 //!
+//! A tag's **In maps** and **Where used** come from the store's asset
+//! catalogue (`tags::repo::catalogue`, docs/engine/asset-store.md, "The
+//! catalogue") when the store has a current one: a tag's contents are its
+//! assets by hash, so two files that differ only in what ties them to
+//! their map are one content, and `used` names the keys that reference it.
+//! Without one, or with a stale one (a line in `problems`), the rows are
+//! read from the manifests and a content is a file.
+//!
 //! An asset is named by an id: `tag:<group>:<path>` for a tag of the tree
 //! or one a package adds, `package:<id>` for a package, and
 //! `item:<package>:<n>` for the n-th item of a package's manifest, and
@@ -12,6 +20,8 @@
 //! ([`App::voice_asset_list`]).
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::UNIX_EPOCH;
 
 use ::workspace::{GameSet, Loaded, added_tag, group_of_source, parse_edits, scope_of};
 use content::package::{
@@ -19,6 +29,7 @@ use content::package::{
 };
 use serde_json::{Value, json};
 use tags::defs::{fourcc_text, parse_fourcc};
+use tags::repo::catalogue::{self, Catalogue};
 use tags::repo::{TagKey, TagRepo};
 
 use super::kinds::{self, Editor};
@@ -304,6 +315,57 @@ fn map_tags(root: &Path, map: &str) -> Result<(BTreeSet<TagKey>, MapScope), Stri
     Ok((m.tags.into_iter().map(|(k, _)| k).collect(), scope))
 }
 
+/// The catalogue read for the last list, with its file's size and
+/// modification time: a list reads it again only when the file changed.
+static KEPT: Mutex<Option<(PathBuf, u64, std::time::SystemTime, Arc<Catalogue>)>> =
+    Mutex::new(None);
+
+/// The store's asset catalogue at `root`: `None` when it has none.
+fn catalogue_of(root: &Path) -> Result<Option<Arc<Catalogue>>, String> {
+    let path = root.join(catalogue::CATALOGUE_FILE);
+    let Ok(md) = std::fs::metadata(&path) else {
+        return Ok(None);
+    };
+    let when = md.modified().unwrap_or(UNIX_EPOCH);
+    if let Ok(kept) = KEPT.lock()
+        && let Some((p, len, at, c)) = kept.as_ref()
+        && *p == path
+        && *len == md.len()
+        && *at == when
+    {
+        return Ok(Some(c.clone()));
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let c = Arc::new(Catalogue::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?);
+    if let Ok(mut kept) = KEPT.lock() {
+        *kept = Some((path, md.len(), when, c.clone()));
+    }
+    Ok(Some(c))
+}
+
+/// The catalogue of the tree at `root` for a list: `None`, with a line
+/// for `problems`, when it is stale (a map was extracted again and the
+/// catalogue was not rebuilt).
+fn current_catalogue(root: &Path) -> (Option<Arc<Catalogue>>, Option<String>) {
+    match catalogue_of(root) {
+        Ok(Some(c)) if c.is_current(root).unwrap_or(false) => (Some(c), None),
+        Ok(Some(_)) => (
+            None,
+            Some(format!(
+                "{} is stale; workspace.extract rewrites it",
+                root.join(catalogue::CATALOGUE_FILE).display()
+            )),
+        ),
+        Ok(None) => (None, None),
+        Err(e) => (None, Some(e)),
+    }
+}
+
+/// A key as the rows name one: `<group>:<path>`.
+fn key_text(k: &TagKey) -> String {
+    format!("{}:{}", fourcc_text(k.group), k.path)
+}
+
 fn badge(o: &Overlay, key: &TagKey) -> (Value, Value) {
     let by = |l: &[(String, Maps)]| -> Vec<String> {
         let mut ids: Vec<String> = Vec::new();
@@ -334,21 +396,53 @@ fn words_match(words: &[String], hay: &str) -> bool {
     words.iter().all(|w| hay.contains(w.as_str()))
 }
 
-fn tag_row(key: &TagKey, versions: Option<&Versions>, o: &Overlay) -> Value {
+/// A tag's row. `versions` are its contents as the tree keeps the files,
+/// `catalogue` the store's catalogue, whose assets are the contents then.
+fn tag_row(
+    key: &TagKey,
+    versions: Option<&Versions>,
+    o: &Overlay,
+    catalogue: Option<&Catalogue>,
+) -> Value {
     let group = fourcc_text(key.group);
     let name = key.path.rsplit('\\').next().unwrap_or(&key.path).to_owned();
     let (badge, packages) = badge(o, key);
-    let maps: BTreeSet<&String> = versions
-        .into_iter()
-        .flat_map(|v| v.values().flatten())
-        .collect();
-    let variants: Vec<Value> = match versions {
-        Some(v) if v.len() > 1 => v
-            .iter()
-            .map(|(id, maps)| json!({ "variant": id, "maps": maps }))
+    // A tag the catalogue could not hash has no asset: its files are its
+    // contents, as without a catalogue.
+    let assets = catalogue.map(|c| c.of_key(key)).filter(|a| !a.is_empty());
+    let maps: BTreeSet<&String> = match assets {
+        Some(assets) => assets.iter().flat_map(|a| a.maps.iter()).collect(),
+        None => versions
+            .into_iter()
+            .flat_map(|v| v.values().flatten())
             .collect(),
+    };
+    let variants: Vec<Value> = match assets {
+        // One entry per asset: the files the maps read it from.
+        Some(assets) if assets.len() > 1 => assets
+            .iter()
+            .map(|a| {
+                json!({
+                    "hash": a.hash,
+                    "variant": a.files.iter().flatten().next(),
+                    "files": a.files.iter().map(|f| f.as_deref()).collect::<Vec<_>>(),
+                    "maps": a.maps,
+                })
+            })
+            .collect(),
+        None => match versions {
+            Some(v) if v.len() > 1 => v
+                .iter()
+                .map(|(id, maps)| json!({ "variant": id, "maps": maps }))
+                .collect(),
+            _ => Vec::new(),
+        },
         _ => Vec::new(),
     };
+    let used: Value = catalogue
+        .and_then(|c| c.users(key))
+        .map(|u| json!(u.iter().map(key_text).collect::<Vec<_>>()))
+        .unwrap_or(Value::Null);
     json!({
         "asset": tag_id(key),
         "root": "tags",
@@ -360,8 +454,10 @@ fn tag_row(key: &TagKey, versions: Option<&Versions>, o: &Overlay) -> Value {
         "new": o.added.contains_key(key),
         "badge": badge,
         "packages": packages,
+        "hash": assets.filter(|a| a.len() == 1).map(|a| a[0].hash.as_str()),
         "maps": maps,
         "variants": variants,
+        "used": used,
     })
 }
 
@@ -490,6 +586,8 @@ pub fn list(tags_root: &Path, set: &GameSet, q: &Query) -> Result<Value, String>
         Root::Tags => {
             let o = overlay(set);
             problems = o.problems.clone();
+            let (catalogue, problem) = current_catalogue(tags_root);
+            problems.extend(problem);
             let all = tree(tags_root)?;
             maps = TagRepo::open(tags_root)
                 .and_then(|r| r.maps())
@@ -529,7 +627,7 @@ pub fn list(tags_root: &Path, set: &GameSet, q: &Query) -> Result<Value, String>
                         continue;
                     }
                 }
-                let row = tag_row(key, versions, &o);
+                let row = tag_row(key, versions, &o, catalogue.as_deref());
                 let hay = format!(
                     "{} {} {} {}",
                     key.path,
