@@ -425,6 +425,8 @@ pub struct IndexedPass {
     /// refraction lens): the recording binds a copy of the bound colour
     /// there ([`IndexedPass::record_pool`]).
     lens: Option<usize>,
+    /// Whether a recording of this pass was made ([`Drop`] counts a pool that never was).
+    recorded: std::sync::atomic::AtomicBool,
     sky: Option<SkyRows>,
     draw: Arc<ResolvedDraw>,
     /// The guest quad packet when the native pass expands its topology.
@@ -582,6 +584,7 @@ impl IndexedPass {
         Some(Self {
             sorted_pool: false,
             lens: None,
+            recorded: Default::default(),
             sky: None,
             draw: Arc::new(draw.clone()),
             original_quad: None,
@@ -904,7 +907,8 @@ fn count_pool_recording(counter: String) {
 
 /// The recordings of sorted pools by outcome: `layer_plan_15_pool_recorded`
 /// per recording made, `layer_plan_15_pool_refused_<reason>` per recording
-/// refused (the guest's D3D draw then stands, as
+/// refused, and `layer_plan_15_pool_unrecorded` per admitted pass dropped
+/// without a recording (the guest's D3D draw then stands, as
 /// `layer_plan_15_pool_on_d3d` counts for the admission's refusals).
 pub fn pool_recording_counters() -> Vec<(String, u64)> {
     POOL_RECORDINGS.lock().unwrap_or_else(|e| e.into_inner()).iter().flatten().map(|(k, &v)| (k.clone(), v)).collect()
@@ -1026,6 +1030,17 @@ impl IndexedPass {
     }
 }
 
+impl Drop for IndexedPass {
+    /// An admitted pool that was dropped without a recording was declined
+    /// upstream of the pass (the stage's own counters and the `d3d:` line
+    /// logged once name where): counted so it is never silent.
+    fn drop(&mut self) {
+        if self.sorted_pool && !self.recorded.load(std::sync::atomic::Ordering::Relaxed) {
+            count_pool_recording("layer_plan_15_pool_unrecorded".to_owned());
+        }
+    }
+}
+
 impl ExternalPass for IndexedPass {
     fn replays_scene(&self) -> bool {
         // An untextured standalone range owns its entire draw. prepare()
@@ -1066,6 +1081,7 @@ impl ExternalPass for IndexedPass {
         Some(Box::new(Self {
             sorted_pool: self.sorted_pool,
             lens: self.lens,
+            recorded: Default::default(),
             sky: self.sky.clone(),
             draw,
             original_quad,
@@ -1112,7 +1128,10 @@ impl ExternalPass for IndexedPass {
         if !self.sorted_pool { return None; }
         let result = self.record_pool(target, request);
         count_pool_recording(match &result {
-            Ok(_) => "layer_plan_15_pool_recorded".to_owned(),
+            Ok(_) => {
+                self.recorded.store(true, std::sync::atomic::Ordering::Relaxed);
+                "layer_plan_15_pool_recorded".to_owned()
+            }
             Err(why) => pool_refusal_counter(why),
         });
         if let Err(why) = &result {

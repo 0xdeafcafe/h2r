@@ -896,3 +896,12 @@ fn a_pool_lens_samples_the_bound_colour_not_the_guests_sample() {
     assert_ne!(&pixels[at..at + 4], &red, "the lens sampled the guest's red");
     assert_eq!(&pixels[at..at + 4], &blue, "the lens is the bound colour");
 }
+
+#[test]
+fn an_admitted_pool_dropped_without_a_recording_is_counted() {
+    let unrecorded = || pool_recording_counters().iter()
+        .find(|(k, _)| k == "layer_plan_15_pool_unrecorded").map_or(0, |(_, n)| *n);
+    let before = unrecorded();
+    drop(IndexedPass::for_pool(&pool_triangle(), Arc::new(Cache::default()), 1).unwrap());
+    assert!(unrecorded() > before);
+}

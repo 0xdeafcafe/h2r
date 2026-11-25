@@ -6447,6 +6447,7 @@ impl<B: Backend> Device<B> {
                 || pass.requires_independent_samples())
                 && (reads_frame_copy || !self.independent_samples(mem, &sampled))
             {
+                crate::backend::note_declined(plan.stage, "device.rs", line!(), "the pass needs independent samples and the draw reads a frame copy");
                 plan.stage.count(Metric::RefusedResources, 1);
                 return None;
             }
@@ -6455,6 +6456,7 @@ impl<B: Backend> Device<B> {
                     if binding.same_draw_writes(self.render_target, color, depth, writes_color, writes_depth) {
                         Some((plan, pass, binding))
                     } else {
+                        crate::backend::note_declined(plan.stage, "device.rs", line!(), "a counted draw's writes differ from the guest's");
                         plan.stage.count(Metric::RefusedInputs, 1);
                         None
                     }
@@ -6472,11 +6474,13 @@ impl<B: Backend> Device<B> {
                     Some((plan, pass, binding))
                 }
                 Ok(_) => {
+                    crate::backend::note_declined(plan.stage, "device.rs", line!(), "the pass's attachments are not the guest draw's target");
                     plan.stage.count(Metric::RefusedInputs, 1);
                     None
                 }
                 Err(why) => {
                     fallback_reason = why.describe();
+                    crate::backend::note_declined(plan.stage, "device.rs", line!(), why.describe());
                     let origin = ExternalOrigin::new(&*pass, "resolved draw binding", Some(plan.stage));
                     self.refuse_external(origin, why, None);
                     plan.stage.count(Metric::Examined, 1);
@@ -6503,6 +6507,7 @@ impl<B: Backend> Device<B> {
                 (0..4).any(|i| sampled[i] && draw.textures[i].is_some() && textures[i].is_none());
             if missing {
                 fallback_reason = "sampled texture unavailable";
+                crate::backend::note_declined(plan.stage, "device.rs", line!(), "a sampled stage has no host texture");
                 let items = pass.items(plan.ranges) as u64;
                 plan.stage.count(timeline::native::Metric::Examined, items);
                 plan.stage
@@ -6639,6 +6644,7 @@ impl<B: Backend> Device<B> {
                 self.backend.end_native_carry();
             }
             fallback_reason = "backend recording";
+            crate::backend::note_declined(plan.stage, "device.rs", line!(), "the backend did not record every copy");
             self.stats.external_passes_dropped += 1;
         }
         if native.is_some() {

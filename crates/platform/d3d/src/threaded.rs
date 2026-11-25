@@ -1714,6 +1714,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
                 (candidate.finished)(None);
                 return Ok(());
             }
+            crate::backend::note_declined(candidate.plan.stage, "threaded.rs", line!(), "the render thread did not record every copy");
             let result = w.inner.draw(color, depth, &draw, textures);
             (candidate.finished)(Some(&result));
             let outcome = result?;
