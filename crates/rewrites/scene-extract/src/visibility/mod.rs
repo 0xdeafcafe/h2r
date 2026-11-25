@@ -18,10 +18,11 @@
 //! - [`parity`] compares sets with the guest's lists.
 //!
 //! The scene step runs [`compute`] for every game view after the guest's
-//! gather, compares, counts, and puts the Rust sets in the view's
-//! `ClusterGather`: they are the default. A view whose computation
-//! declined keeps the guest's lists; nothing here writes guest memory, so
-//! the sim's hashes cannot move.
+//! gather and puts the Rust sets in the view's `ClusterGather` when its
+//! lists read: they are the default. A view whose computation declined
+//! keeps the guest's lists, and a view whose lists did not read carries no
+//! gather; nothing here writes guest memory, so the sim's hashes cannot
+//! move.
 
 pub mod flood;
 pub mod frusta;
