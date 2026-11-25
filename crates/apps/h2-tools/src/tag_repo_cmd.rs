@@ -888,7 +888,7 @@ fn catalogue_cmd(args: &[String]) -> Result<()> {
     if wrote {
         catalogue::write(&repo_dir, &c)?;
     }
-    let keys = c.assets.iter().map(|a| &a.key).dedup().count();
+    let keys = c.assets.iter().map(|a| &a.key).collect::<std::collections::BTreeSet<_>>().len();
     let (before, after) = report.totals();
     println!(
         "{}: {} maps, {keys} keys, {} assets, {} keys with more than one content (as files: {} keys with variants); {} tags not hashed; assets.idx {}; {:.1?}",
@@ -933,7 +933,7 @@ fn catalogue_cmd(args: &[String]) -> Result<()> {
             report.after.get(g).unwrap_or(&none),
         );
         if b.split + a.split > 0 {
-            row(&tags::defs::fourcc_text(*g), b, a);
+            row(&tags::defs::fourcc_text(**g), b, a);
         }
     }
     println!(

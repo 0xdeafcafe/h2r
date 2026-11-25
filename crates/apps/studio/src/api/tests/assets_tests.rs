@@ -414,12 +414,12 @@ fn with_a_catalogue_the_rows_carry_assets_and_where_used() {
         let mut bytes = word.to_le_bytes().to_vec();
         bytes.extend([0; 4]);
         let fields = names
-            .map(|k| vec![(4, tags::repo::Value::Ref(k.clone()))])
+            .map(|k| vec![(4, ::tags::repo::Value::Ref(k.clone()))])
             .unwrap_or_default();
-        tags::repo::LooseTag {
+        ::tags::repo::LooseTag {
             key: key(group, path),
-            body: tags::repo::Body::Tree(tags::repo::Tree {
-                nodes: vec![tags::repo::Node {
+            body: ::tags::repo::Body::Tree(::tags::repo::Tree {
+                nodes: vec![::tags::repo::Node {
                     bytes,
                     count: 1,
                     size: 8,
@@ -430,9 +430,9 @@ fn with_a_catalogue_the_rows_carry_assets_and_where_used() {
             }),
         }
     };
-    let form = |t: &tags::repo::LooseTag| {
-        let mut tables = tags::repo::normal::Tables::none();
-        tags::repo::normal::form(t, &mut tables).unwrap()
+    let form = |t: &::tags::repo::LooseTag| {
+        let mut tables = ::tags::repo::normal::Tables::none();
+        ::tags::repo::normal::form(t, &mut tables).unwrap()
     };
     let rifle = key(b"weap", "objects\\weapons\\rifle");
     let pixels = key(b"bitm", "objects\\pixels");
@@ -471,9 +471,9 @@ fn with_a_catalogue_the_rows_carry_assets_and_where_used() {
         .unwrap();
     }
     let (c, report) =
-        tags::repo::catalogue::build(&root, &tags::schema::Schema::default()).unwrap();
+        ::tags::repo::catalogue::build(&root, &::tags::schema::Schema::default()).unwrap();
     assert!(report.problems.is_empty(), "{:?}", report.problems);
-    tags::repo::catalogue::write(&root, &c).unwrap();
+    ::tags::repo::catalogue::write(&root, &c).unwrap();
 
     let mut api = Api::new();
     let row = |api: &mut Api, app: &mut App, query: &str| {
@@ -484,7 +484,7 @@ fn with_a_catalogue_the_rows_carry_assets_and_where_used() {
     let rifle_tag = tag(b"weap", "objects\\weapons\\rifle", 1, Some(&pixels));
     assert_eq!(
         r["hash"],
-        json!(tags::repo::hex(&tags::repo::normal::hash(&form(
+        json!(::tags::repo::hex(&::tags::repo::normal::hash(&form(
             &rifle_tag
         ))))
     );
@@ -551,10 +551,10 @@ fn a_catalogue_that_hashed_nothing_leaves_the_rows_as_files() {
     let root = app.tags_root();
     tree(&root);
     let (c, report) =
-        tags::repo::catalogue::build(&root, &tags::schema::Schema::default()).unwrap();
+        ::tags::repo::catalogue::build(&root, &::tags::schema::Schema::default()).unwrap();
     assert_eq!(report.problems.len(), 6, "{:?}", report.problems);
     assert!(c.assets.is_empty());
-    tags::repo::catalogue::write(&root, &c).unwrap();
+    ::tags::repo::catalogue::write(&root, &c).unwrap();
     let mut api = Api::new();
     let v = call(
         &mut api,
