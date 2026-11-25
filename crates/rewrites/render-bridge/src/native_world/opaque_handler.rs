@@ -217,13 +217,45 @@ async fn stencil(cx: &Cx, mode: u16) -> Result<(), EntryError> {
     Ok(())
 }
 
+/// The fade byte the display draws this record with on its enter: the
+/// placement's fade rescaled to the display's pixel count (LOD Distance's
+/// display word; a Highest display draws every fade solid). Returns the
+/// byte and whether the rescale was wanted but could not read the
+/// placement, so the record's own byte drew. The leave keeps the record's
+/// byte, as the emitter's own leave does: it only restores the full pattern.
+fn display_byte(m: &dyn GuestMemory, p: &SortedPart, retail: u8, fade: super::DisplayFade,
+    fcw: u16) -> (u8, bool)
+{
+    let factor = match fade {
+        super::DisplayFade::Retail => return (retail, false),
+        super::DisplayFade::Highest => return (0xff, false),
+        super::DisplayFade::Scaled(factor) if factor == 1.0 => return (retail, false),
+        super::DisplayFade::Scaled(factor) => factor,
+    };
+    let at = m.u32(p.record_addr + 0x1c).ok().filter(|&at| at != 0);
+    let Some(at) = at else { return (retail, true) };
+    match engine::render_loop::world_walk::placement_display_alpha(m, at, factor, fcw) {
+        Some(byte) => (byte, false),
+        None => (retail, true),
+    }
+}
+
 async fn record_states(cx: &Cx, p: &SortedPart, enter: bool, shader_flags: u16, fcw: u16,
-    mxcsr: u32) -> Result<(), EntryError> {
+    mxcsr: u32, fade: super::DisplayFade) -> Result<(), EntryError> {
     use engine::render_loop::opaque_material::{CACHED_FADE, stipple};
     let (byte, active) = cx.read(|m| {
-        let byte = m.u8(p.record_addr + 0x1a)?;
+        let retail = m.u8(p.record_addr + 0x1a)?;
+        let byte = if enter && retail != 0xff {
+            let (byte, unreadable) = display_byte(m, p, retail, fade, fcw);
+            super::fade_record();
+            if unreadable { super::fade_unreadable(); }
+            super::fade_resolved(byte == 0xff);
+            byte
+        } else {
+            retail
+        };
         let flags = m.u32(p.record_addr)?;
-        let active = byte != 0xff || flags & (1 << 11) != 0 ||
+        let active = retail != 0xff || flags & (1 << 11) != 0 ||
             (matches!(p.layer, 1 | 3) && (flags & (1 << 14) != 0 ||
                 m.u32(native_render::skip::STENCIL_OFF_FLAGS)? & 0x00ff_ff00 != 0)) ||
             (enter && shader_flags & 1 != 0 && m.i32(m.u32(super::ACTIVE_BSP)? + 0x214)? > 0);
@@ -313,7 +345,8 @@ async fn emit(cx: &Cx, part: &SortedPart, draw: Box<dyn OpaqueDraw>) -> Result<E
 }
 
 pub(super) async fn handoff(cx: &Cx, part: &SortedPart, draw: Box<dyn OpaqueDraw>,
-    fcw: u16, mxcsr: u32, prepared: &opaque_material::Prepared) -> Result<Emission, EntryError> {
+    fcw: u16, mxcsr: u32, prepared: &opaque_material::Prepared, fade: super::DisplayFade)
+    -> Result<Emission, EntryError> {
     let material = prepared.shader_address();
     let flags = cx.write(|m| {
         m.set_u32(CURRENT_SHADER, part.shader)?;
@@ -328,17 +361,157 @@ pub(super) async fn handoff(cx: &Cx, part: &SortedPart, draw: Box<dyn OpaqueDraw
     let streams = draw.bind_streams(cx).await?;
     if !streams { return Ok(Emission::NoDraw); }
     opaque_material::handoff(cx, prepared, fcw, mxcsr).await?;
-    record_states(cx, part, true, flags, fcw, mxcsr).await?;
+    record_states(cx, part, true, flags, fcw, mxcsr, fade).await?;
     let outcome = emit(cx, part, draw).await?;
-    record_states(cx, part, false, flags, fcw, mxcsr).await?;
+    record_states(cx, part, false, flags, fcw, mxcsr, fade).await?;
     Ok(outcome)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native_world::DisplayFade;
     use engine::entry::{EntryFuture, Regs, Ret, testing};
     use engine::testing::FakeGuest;
+
+    const RECORD: u32 = 0x10000;
+    const PLACEMENT: u32 = 0x20000;
+    const FCW: u16 = 0x027f;
+    const MXCSR: u32 = 0x1f80;
+    // The globals `stipple` and the display rescale read.
+    const FADE_SCALE: u32 = 0x0045_dbb4;
+    const EPSILON: u32 = 0x0045_dbdc;
+    const TABLE_SCALE: u32 = 0x0044_541c;
+    const CACHED_FADE: u32 = 0x004b_8494;
+    const TABLE: u32 = 0x0048_7288;
+    const PIXEL_SCALE: u32 = 0x004b_9ed0;
+    const MIN_DEPTH: u32 = 0x0045_dc68;
+    const SMALL_RADIUS: u32 = 0x0045_dd08;
+    const SMALL_SCALE: u32 = 0x0045_e18c;
+    const FADE_START: u32 = 0x0045_e0d8;
+    const FADE_SLOPE: u32 = 0x0043_fde4;
+    const FADE_RANGE: u32 = 0x0045_dc38;
+    const PROJECTION_DEPTH: u32 = 0x004b_9e20;
+
+    /// One record with a placement fade, and the globals the stipple and
+    /// display rescale arithmetic read. The placement sits at the origin
+    /// with radius one; the projection's depth row leaves it one unit out,
+    /// so its projected size is `PIXEL_SCALE * 2` guest pixels.
+    fn fade_fixture(retail: u8, placement: u32) -> FakeGuest {
+        let mut m = FakeGuest::new();
+        m.map(RECORD, 0x40).map(0x0043_f000, 0x1000).map(0x0044_5000, 0x1000)
+            .map(0x0045_d000, 0x2000).map(0x0048_7000, 0x1000)
+            .map(0x004b_8000, 0x2000);
+        m.put_u32(RECORD, 0).put_u8(RECORD + 0x1a, retail).put_u32(RECORD + 0x1c, placement);
+        m.put_f32(FADE_SCALE, 1. / 255.).put_f32(EPSILON, 0.02).put_f32(TABLE_SCALE, 17.)
+            .put_f32(CACHED_FADE, 1.0)
+            .put_f32(engine::light_constants::constant::ONE, 1.0)
+            .put_f32(FADE_RANGE, 255.);
+        if placement != 0 {
+            m.map(placement, 0x60);
+            m.put_f32(placement + 0x48, 1.0);
+            m.put_f32(PIXEL_SCALE, 100.).put_f32(MIN_DEPTH, 1.).put_f32(
+                engine::light_constants::constant::TWO,
+                2.,
+            );
+            m.put_f32(SMALL_RADIUS, 0.5).put_f32(SMALL_SCALE, 0.5)
+                .put_f32(FADE_START, 0.).put_f32(FADE_SLOPE, 1. / 256.);
+        }
+        m
+    }
+
+    fn part() -> SortedPart {
+        SortedPart { owner: native_render::world::Owner::Instance(0), part: 0, record: 0,
+            record_addr: RECORD, section: 0, geometry: 0, part_addr: 0, shader: 0,
+            layer_argument: 0, lod: 0, variant: 0, projected_size: 0, layer: 0, pass: 0,
+            implementation: 0, program: 0, classification: 0, sorted_slot: 0, strip: false,
+            index_buffer: 0, indices: Vec::new() }
+    }
+
+    /// Run `record_states` once on `m` and return the SET_STIPPLE argument
+    /// each call took, with the fade counters' delta.
+    fn enter(m: FakeGuest, fade: DisplayFade) -> (Vec<u32>, [u64; 4]) {
+        let before = super::super::stipple_counters();
+        let run = testing::run(
+            &move |cx: Cx| -> EntryFuture {
+                Box::pin(async move {
+                    record_states(&cx, &part(), true, 0, FCW, MXCSR, fade).await?;
+                    Ok(Ret::new(0, 28))
+                })
+            },
+            m,
+            Regs::default(),
+            |call, _| {
+                assert_eq!(call.target, SET_STIPPLE, "unexpected callback {call:?}");
+                Regs::default()
+            },
+        );
+        assert_eq!(run.result, Ok(Ret::new(0, 28)));
+        let after = super::super::stipple_counters();
+        let delta = std::array::from_fn(|i| after[i].1 - before[i].1);
+        (run.calls.iter().map(|c| c.args[0]).collect(), delta)
+    }
+
+    /// The table row a fade byte selects: the byte times the table scale,
+    /// rounded to nearest under the fixture's control words.
+    fn table(byte: u8) -> u32 {
+        TABLE + 0x80 * ((f32::from(byte) / 255. * 17.).round() as u32).clamp(0, 16)
+    }
+
+    #[test]
+    fn the_display_detail_resolves_the_record_fade() {
+        // Retail detail: the record's own byte picks the pattern.
+        let (calls, delta) = enter(fade_fixture(100, PLACEMENT), DisplayFade::Retail);
+        assert_eq!(calls, [table(100)]);
+        assert_eq!(delta, [1, 0, 1, 0]);
+
+        // Highest: every fade draws solid, so no stipple is set at all.
+        let (calls, delta) = enter(fade_fixture(100, PLACEMENT), DisplayFade::Highest);
+        assert!(calls.is_empty());
+        assert_eq!(delta, [1, 1, 0, 0]);
+
+        // Twice the output pixels: the projected size 200 counts as 400,
+        // past the fade window, so the placement draws solid.
+        let (calls, delta) = enter(fade_fixture(100, PLACEMENT), DisplayFade::Scaled(2.0));
+        assert!(calls.is_empty());
+        assert_eq!(delta, [1, 1, 0, 0]);
+
+        // Half the output pixels: the fade falls to byte 100's band and
+        // its pattern draws, where the record's own byte would be 199's.
+        let (calls, delta) = enter(fade_fixture(199, PLACEMENT), DisplayFade::Scaled(0.5));
+        assert_eq!(calls, [table(100)]);
+        assert_ne!(table(100), table(199));
+        assert_eq!(delta, [1, 0, 1, 0]);
+
+        // A placement that does not read: the record's byte draws.
+        let (calls, delta) = enter(fade_fixture(100, 0), DisplayFade::Scaled(2.0));
+        assert_eq!(calls, [table(100)]);
+        assert_eq!(delta, [1, 0, 1, 1]);
+    }
+
+    #[test]
+    fn the_leave_restores_the_full_pattern_from_the_records_own_byte() {
+        let mut m = fade_fixture(100, PLACEMENT);
+        m.put_f32(CACHED_FADE, 0.0);
+        let run = testing::run(
+            &|cx: Cx| -> EntryFuture {
+                Box::pin(async move {
+                    record_states(&cx, &part(), false, 0, FCW, MXCSR, DisplayFade::Highest).await?;
+                    Ok(Ret::new(0, 28))
+                })
+            },
+            m,
+            Regs::default(),
+            |call, _| {
+                assert_eq!(call.target, SET_STIPPLE);
+                Regs::default()
+            },
+        );
+        assert_eq!(run.result, Ok(Ret::new(0, 28)));
+        // The leave sets the full pattern (index 16) whatever the display
+        // detail is, and counts nothing.
+        assert_eq!(run.calls.iter().map(|c| c.args[0]).collect::<Vec<_>>(), [TABLE + 0x80 * 16]);
+    }
 
     #[test]
     fn stale_ranges_retain_the_first_address_and_observe_every_indexed_callback() {

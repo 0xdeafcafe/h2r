@@ -194,7 +194,21 @@ reaches only the display draws.
   projected size controls the fade and zero-alpha cull, and the record
   stores a size byte saturated at 255. The reset repairs an interrupted
   walk's projection, and object setup restores it before object lighting
-  computes its pixel radius.
+  computes its pixel radius. The record's fade byte — the stipple pattern
+  a faded placement draws with — follows the display word on the native
+  sorted handler's draws when they render the display with no distinct
+  reference copy (single-copy rendering): a Highest display draws every
+  placement fade solid, and a multiplier recomputes the placement's fade
+  at that many output pixels per guest pixel, so a placement that covers
+  enough of the window draws solid where its guest-pixel size left it in
+  the fade window. Retail detail, exact and protected runs keep each
+  record's own byte, and the D3D fallback's guest emitter always does.
+  The screen-door pattern itself stays anchored to guest framebuffer
+  pixels ([d3d.md](d3d.md), `SetStipple`), so a fade the display still
+  draws shows its dots scaled with the frame. `render.scene`'s
+  `scene_world_stipple_records`, `_solid`, `_faded` and `_unreadable`
+  count the fades the sorted handler enters and how the display resolved
+  them.
 - **Object models.** The chooser at `0x0004c450` compares the
   camera-to-centre distance to the model's cutoffs at `hlmt + 0x34`; the
   guest's chooser always runs at retail selection (a legacy film's

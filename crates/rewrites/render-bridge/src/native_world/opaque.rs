@@ -13,7 +13,7 @@ use native_render::world_ranges::{Refusal, SortedPart, SortedRun};
 use timeline::native::{WorldSection, world_handler_fallback, world_handler_indexed, world_handler_taken};
 
 use super::opaque_handler::Emission;
-use super::{HOST, Mem, OpaqueDraw, OpaqueView};
+use super::{HOST, Mem, OpaqueDraw, OpaqueView, ViewLodScale};
 use super::opaque_material::SectionMaterials;
 use hooks::{Builder, Call, Cx, Flow, Ret};
 
@@ -31,9 +31,11 @@ const CACHE_PAGES: &[u32] = &[
     0x004b_81fc, // engine render-state mirrors
 ];
 
-pub(super) fn install(b: &mut Builder) {
+pub(super) fn install(b: &mut Builder, fade: (Option<ViewLodScale>, bool)) {
     b.raw()
-        .before(&points::LIGHT_GEOMETRY_DRAW, "native_world_opaque_handler", sorted)
+        .before(&points::LIGHT_GEOMETRY_DRAW, "native_world_opaque_handler", move |c| {
+            sorted(c, fade)
+        })
         .after_feature(crate::native_lights::ID)
         .after_feature(crate::native_objects::ID)
         .context_only();
@@ -64,7 +66,7 @@ fn section(view: u32, bsp: u32, owner: native_render::world::Owner) -> WorldSect
     }
 }
 
-fn sorted(c: &mut Call<'_>) -> Result<Flow, runtime::GuestFault> {
+fn sorted(c: &mut Call<'_>, fade: (Option<ViewLodScale>, bool)) -> Result<Flow, runtime::GuestFault> {
     let Some(layer) = crate::native_world_layers::current() else { return Ok(Flow::Continue) };
     if layer.site != Site::Scene || !matches!(layer.number, 1 | 3 | 5 | 7 | 8) {
         return Ok(Flow::Continue);
@@ -98,6 +100,7 @@ fn sorted(c: &mut Call<'_>) -> Result<Flow, runtime::GuestFault> {
     };
     let fcw = c.cpu.x87.control;
     let mxcsr = c.cpu.mxcsr;
+    let fade = super::DisplayFade::resolve(&*mem, fade.0, fade.1);
     let shader = part.shader;
     let first_section = section(layer.view, bsp, part.owner);
     let mut materials = SectionMaterials::default();
@@ -123,7 +126,8 @@ fn sorted(c: &mut Call<'_>) -> Result<Flow, runtime::GuestFault> {
         apply: Box::new(move |mem, header, value| host.try_opaque_simple(mem, header, value)),
     };
     c.answer_render_async_with(setter, move |cx| Box::pin(async move {
-        handoff(&cx, first, &*view, &sorted, layer.view, bsp, &mut materials, fcw, mxcsr).await
+        handoff(&cx, first, &*view, &sorted, layer.view, bsp, &mut materials, fcw, mxcsr,
+            fade).await
     }))
 }
 
@@ -139,11 +143,12 @@ pub(super) fn prepare(mem: &mut dyn GuestMemory, view: &dyn OpaqueView, material
 /// The caller can enter guest code as soon as this returns. All state and
 /// resource lifetime transitions for the last consumed entry have completed.
 pub(super) async fn handoff(cx: &Cx, mut current: Prepared, view: &dyn OpaqueView, sorted: &SortedRun,
-    view_index: u32, bsp: u32, materials: &mut SectionMaterials, fcw: u16, mxcsr: u32) -> Result<Ret, EntryError>
+    view_index: u32, bsp: u32, materials: &mut SectionMaterials, fcw: u16, mxcsr: u32,
+    fade: super::DisplayFade) -> Result<Ret, EntryError>
 {
     for offset in 1..=sorted.remaining {
         let Prepared { part, material, draw } = current;
-        match super::opaque_handler::handoff(cx, &part, draw, fcw, mxcsr, &material).await? {
+        match super::opaque_handler::handoff(cx, &part, draw, fcw, mxcsr, &material, fade).await? {
             Emission::Native(n) => world_handler_taken(part.shader, n),
             Emission::NoDraw => world_handler_taken(part.shader, 0),
             Emission::Indexed(why, n) => world_handler_indexed(part.shader, why, n),
