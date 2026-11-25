@@ -31,7 +31,12 @@ pub const SCENE_TRANSPARENTS_END: Point = Point::new("SCENE_TRANSPARENTS_END", 0
 
 /// The shared indexed wrapper, just after its state commit. The water
 /// composite is identified by the wrapper's own return address.
-pub const WATER_INDEX_READY: Point = Point::new("WATER_INDEX_READY", 0x0001_c8a5, Sig::Site, RENDERER);
+/// The commit (`call 0x0001cf50` at 0x0001c8a0) returns to 0x0001c8a5,
+/// where a return resumes the wrapper's generated code and no hook runs;
+/// the site is the next instruction. 0x0001c8a5 (`mov eax, [esp+8]`)
+/// writes only EAX and falls through, so `[esp]` is still the wrapper's
+/// return address and its three arguments are at `esp+4..+0xc`.
+pub const WATER_INDEX_READY: Point = Point::new("WATER_INDEX_READY", 0x0001_c8a9, Sig::Site, RENDERER);
 pub const WATER_INDEX_END: u32 = 0x0001_c8b9;
 
 pub const HUD_QUAD_READY: Point = Point::new("HUD_QUAD_READY", 0x0022_a7f6, Sig::Site, RENDERER);
@@ -67,23 +72,37 @@ const fn leaf(begin: u32, end: u32) -> EffectLeaf {
 
 pub const EFFECT_BILLBOARD: EffectLeaf = leaf(0x0004_8497, 0x0004_849d);
 pub const EFFECT_DEPTH_BILLBOARD: EffectLeaf = leaf(0x0004_8ae5, 0x0004_8aeb);
+// Its BEGIN (the End call) is the continuation of the last
+// `SetVertexData4f` call, so it never runs, as with two flare leaves below.
 pub const EFFECT_WEATHER_LAYER: EffectLeaf = leaf(0x0003_8342, 0x0003_8349);
 pub const EFFECT_WEATHER_PARTICLES: EffectLeaf = leaf(0x0003_96f7, 0x0003_96f9);
 pub const EFFECT_MATERIAL_STRIP: EffectLeaf = leaf(0x0019_fc3e, 0x0019_fc40);
 
-// Immediately before the XDK End call and at its return. The shared
-// reflection billboard already has a pair above.
+// Immediately before the XDK End call, and the first instruction after
+// the one End returns to: a return resumes the caller's generated code at
+// the continuation and never runs a hook there. Each continuation writes
+// no stack slot or register the RETURN hook reads and falls through to
+// it: mask `xor edx, edx` (0x0004730b), mask sample `lea eax, [esp+0x24]`
+// (0x00047517), filter source `xor eax, eax` (0x000467a0), filter
+// `inc ebx` (0x00046e49), composite `dec dword [esp+0x20]` (0x00047859,
+// the loop count, before its `jnz`). The shared reflection billboard
+// already has a pair above.
+//
+// The mask sample's and the composite's End calls are themselves the
+// continuations of the last `SetVertexData4f` call, so their BEGIN never
+// runs: no instruction lies between that return and End. The plan
+// refuses those hooks at install (`hooks::verify`).
 const fn flare_leaf(begin: u32, end: u32) -> EffectLeaf {
     EffectLeaf {
         begin: Point::new("FLARE_DRAW_END", begin, Sig::Site, RENDERER),
         end: Point::new("FLARE_DRAW_RETURN", end, Sig::Site, RENDERER),
     }
 }
-pub const FLARE_MASK: EffectLeaf = flare_leaf(0x0004_7306, 0x0004_730b);
-pub const FLARE_MASK_SAMPLE: EffectLeaf = flare_leaf(0x0004_7512, 0x0004_7517);
-pub const FLARE_FILTER_SOURCE: EffectLeaf = flare_leaf(0x0004_679b, 0x0004_67a0);
-pub const FLARE_FILTER: EffectLeaf = flare_leaf(0x0004_6e44, 0x0004_6e49);
-pub const FLARE_COMPOSITE: EffectLeaf = flare_leaf(0x0004_7854, 0x0004_7859);
+pub const FLARE_MASK: EffectLeaf = flare_leaf(0x0004_7306, 0x0004_730d);
+pub const FLARE_MASK_SAMPLE: EffectLeaf = flare_leaf(0x0004_7512, 0x0004_751b);
+pub const FLARE_FILTER_SOURCE: EffectLeaf = flare_leaf(0x0004_679b, 0x0004_67a2);
+pub const FLARE_FILTER: EffectLeaf = flare_leaf(0x0004_6e44, 0x0004_6e4a);
+pub const FLARE_COMPOSITE: EffectLeaf = flare_leaf(0x0004_7854, 0x0004_785d);
 
 pub const EFFECT_QUERY: Point = Point::new("EFFECT_QUERY", 0x0002_e9b6, Sig::Site, PARTICLES);
 pub const EFFECT_LAYERED_A: Point = Point::new("EFFECT_LAYERED_A", 0x0004_1cc0, Sig::Site, PARTICLES);

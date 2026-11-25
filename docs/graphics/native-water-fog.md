@@ -209,7 +209,9 @@ the cached pipelines with their own uniforms and sampled textures.
   of `0x004b9fe0` clear). The reservation drains the setup wrapper's
   pushes before the native draw. The teardown `0x0003c3c0` keeps its
   conditional alpha clear at `0x0003c515` and its state commit. At
-  `0x0001c8a5`, the indexed helper offers the composite's quad list to
+  `0x0001c8a9`, one instruction past the state commit's return
+  `0x0001c8a5` (no hook runs at a call's continuation), the indexed
+  helper offers the composite's quad list to
   the water stage. The keyed view owns the quad corners, and the stage verifies
   them against the current vertex window before expanding them into triangles.
   Admission resumes at the helper's epilogue only after
