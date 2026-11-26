@@ -1,6 +1,6 @@
 # Forge and Firefight UI: every screen and HUD piece as Halo 2 draws it
 
-Status: Partly built. Slices U1 (the main menu), U2 (the lobby modes), U3 (the monitor HUD on the HUD kit), K1 (the HUD kit's monitor mode), U4 (the Forge screens in the game and the bindings table), U5 (the Firefight HUD), K4 (the gizmo's segment in the HUD kit), U6 (the markers and the gizmo on the HUD kit) and U7 (the compositor path removed) are built, with K2 and K3, the HUD of a wave test (slice FA3 of [forge-firefight.md](forge-firefight.md)), the Waves screens (slice FA5) and the Enemy types page (slice FA6); the rest is design, the AI tool among it (slice FA7).
+Status: Partly built. Slices U1 (the main menu), U2 (the lobby modes), U3 (the monitor HUD on the HUD kit), K1 (the HUD kit's monitor mode), U4 (the Forge screens in the game and the bindings table), U5 (the Firefight HUD), K4 (the gizmo's segment in the HUD kit), U6 (the markers and the gizmo on the HUD kit) and U7 (the compositor path removed) are built, with K2 and K3, the HUD of a wave test (slice FA3 of [forge-firefight.md](forge-firefight.md)), the Waves screens (slice FA5), the Enemy types page (slice FA6) and the AI tool (slice FA7); the rest is design.
 Code: `crates/extensions/game/src/forge_screens.rs` and `forge_screens/` (the Forge screens and GAME MENU rows), `forge_screens/waves.rs` (the Waves screens), `forge_controls/bindings.rs` (the bindings table), `lobby_mode.rs` (Game Setup's Map Variant row, the start refusal), `lobby_start.rs` (the mode), `forge_hud.rs` (the monitor HUD's feed), `firefight/{hud,options}.rs`, `map_select.rs` (the Firefight category), `forge_glue/gizmo.rs` (the gizmo's ends), `hud_kit_core::views::forge` and `content/forge/huds/forge.hud.yaml` (the monitor HUD's elements), `theater_ui.rs` (`menu`, the main menu's rows), `crates/apps/cli/src/play_cmd/forge.rs` and `crates/apps/app/src/forge_overlay.rs` (the play window's keys and mouse, handed to the session). Tests: named per slice below.
 Switch: none of its own. `forge` and `firefight`, listed in [switches.md](../runtime/switches.md).
 
@@ -347,9 +347,9 @@ camera and tool take no input (`forge_screens::ui_up`, published to
 | Coordinates | a row of Properties | a list page on the same host; A opens the keyboard | P1 |
 | Placed objects | a row of Forge options | `kit.picker.game` over the objects placed, each flying the monitor to it | built |
 | Map limits | a row of Forge options | `forge.map-limits`, a read-only list page on the Controller Settings host | built (P4) |
-| Waves, Round, Wave, Squad | **Waves...** on Forge options; X in the AI tool with nothing aimed at (FA7) | list pages on the Controller Settings host, value rows opening `kit.picker.game` ("The Waves screens") | built (FA5) |
+| Waves, Round, Wave, Squad | **Waves...** on Forge options | list pages on the Controller Settings host, value rows opening `kit.picker.game` ("The Waves screens") | built (FA5) |
 | Rounds, Squads, Problems | a row of Waves or Wave | the large dialog, a row an item, each opening its page | built (FA5) |
-| Drop | X on a drop zone in the AI tool | a list page on the same host | FA7 |
+| Drop | X on a drop zone in the AI tool | a list page on the same host, on the Wave screen (`waves::Page::Drop`), with the squads that land there on the Squads list (`Page::DropSquads`) | built (FA7) |
 | Enemy types | a row of Forge options | a list page on the Controller Settings host, a row a class, each On or Off | built (FA5, FA6) |
 
 - **Object menu.** Each picker has its six rows, scroll arrows and
@@ -441,14 +441,15 @@ camera and tool take no input (`forge_screens::ui_up`, published to
 
 ### The AI tool
 
-Design (FA7; the palette group and the markers are built). The AI tool
+Built (FA7, `forge::tool::Tool::ai`, `forge_glue/editing.rs`). The AI tool
 is the monitor's tool for a Firefight map: it aims at ground markers
 only, draws the built ground, and opens the waves. Everything it writes
 is a marker or the wave set ([forge-firefight.md](forge-firefight.md)).
 
 **The palette group.** The object menu's last group is **AI and
 objectives** in every tool (`sheet::objects_with_ai`); in the AI tool X
-with nothing aimed at opens the object menu on it. Its rows are the
+with nothing aimed at opens the object menu focused on it. The Waves
+screens open from Forge options. Its rows are the
 labels the session's game type reads, each with how many are placed as
 its value and one line of help:
 
@@ -468,24 +469,29 @@ has 12 drop zones at most."
 green, a cover yellow, a base its team's colour), a marker the last
 build could not honour in orange ([forge-map-variants.md](forge-map-variants.md),
 "AI ground"), and, in this tool only, the built ground's sectors in the
-Nav tool's sector style (`forge_glue/nav_world.rs`). Sectors are drawn
-only while the ground is current: a stale ground draws none, since they
-are no longer what a build gives.
+Nav tool's sector style (`forge_glue/nav_world.rs`, `sector_lines`). The
+sectors are `GroundReport::sectors`, each a polygon of the built map
+(`forge_build::ground::sectors_of`); they are drawn only while the
+ground is current, with the Markers overlay on: a stale ground draws
+none, since they are no longer what a build gives. The build's problems
+are orange markers in every tool.
 
 **The readout** (the bottom-left readout,
 [forge-map-variants-ui.md](forge-map-variants-ui.md)) names what is
 aimed at: "Drop zone 3" and "2 squads land here", "Red base", "Cover".
-A drop zone's number is its zone in the wave set, counted from 1. The
-prompt line is the Objects tool's with the marker's name: "Press (A) to
-pick up Drop zone 3", "Press (X) for Drop zone 3".
+A drop zone's number is its zone in the wave set, counted from 0 as the
+Squad page's Drop picker counts it, so the two agree. The prompt line is
+the Objects tool's with the marker's name: "Press (A) to pick up Drop
+zone 3". `forge.status` gives `aimed_drop` (`zone`, `squads`) and `tool:
+"ai"`.
 
 **Placing a squad.** A squad is a row of a wave, and it is placed by
 giving it a drop zone. X on a drop zone opens the DROP page:
 
 | Row | Value | A |
 |---|---|---|
-| Squads that land here | the count | a picker of them ("Round 1 Wave 2: 4 Elites"); choosing one opens its SQUAD page |
-| Add squad here... | | a picker of the waves ("Round 1 Wave 1" to the last), then the new squad's SQUAD page with Drop set to this zone |
+| Squads that land here | the count | the Squads list of them ("Round 1 Wave 2: Elites"), each opening its SQUAD page |
+| Add squad here... | | a picker of the waves ("Round 1 Wave 1" to the last); the choice adds a copy of the wave's last squad with Drop set to this zone (`Edit::AddSquadAt`), and the squad is reached from the list above |
 | Coordinates... | | the Coordinates page, as for any thing |
 
 A squad whose Drop is **Any drop** belongs to no zone and is reached

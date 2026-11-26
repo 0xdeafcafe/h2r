@@ -44,6 +44,7 @@ fn report(session: &Session) -> Value {
     json!({
         "zones": report.zones,
         "squads": report.squads,
+        "sectors": report.sectors.len(),
         "problems": report.problems.len(),
         "receipt": report.receipt.as_ref().map(|r| json!({
             "base": r.base, "labels": r.labels, "kit_version": r.kit_version,

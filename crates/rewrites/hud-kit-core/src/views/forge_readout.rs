@@ -120,6 +120,9 @@ pub enum Thing {
     StartingPoint { team: String, types: String },
     Goal { role: String, team: String, order: Option<u8> },
     Teleporter { role: String, channel: u8 },
+    /// A ground marker of the AI tool: `note` is its one fact ("2 squads
+    /// land here"), empty when it has none.
+    Marker { note: String },
 }
 
 impl Thing {
@@ -130,13 +133,20 @@ impl Thing {
             Thing::StartingPoint { .. } => "Starting point",
             Thing::Goal { .. } => "Goal",
             Thing::Teleporter { .. } => "Teleporter",
+            Thing::Marker { .. } => "Ground marker",
         }
     }
 
     /// Whether the thing has a facing and no body to show it: it gets
     /// the `fgr.face` arrow.
     pub fn faces(&self) -> bool {
-        matches!(self, Thing::StartingPoint { .. } | Thing::Goal { .. } | Thing::Teleporter { .. })
+        matches!(
+            self,
+            Thing::StartingPoint { .. }
+                | Thing::Goal { .. }
+                | Thing::Teleporter { .. }
+                | Thing::Marker { .. }
+        )
     }
 }
 
@@ -313,6 +323,11 @@ pub fn facts_text(v: &View) -> Option<String> {
                     p.push(role.clone());
                     p.push(format!("Channel {channel}"));
                 }
+                Thing::Marker { note } if !note.is_empty() => {
+                    p.clear();
+                    p.push(note.clone());
+                }
+                Thing::Marker { .. } => {}
             }
             p
         }

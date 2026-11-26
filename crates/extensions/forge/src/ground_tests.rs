@@ -582,3 +582,74 @@ fn wave_problems_name_the_classes_the_ground_built() {
     );
     assert_eq!(grunts(&session), 1);
 }
+
+#[test]
+fn the_ai_tool_aims_at_markers_only() {
+    use crate::tool::{Action, Input, Tool};
+    let mut s = session();
+    let mut w = Counting::default();
+    let crate_at = Frame {
+        position: [3., 0., 0.],
+        rotation: [0.; 3],
+    };
+    let object = s.place(&mut w, 1, CRATE, crate_at).unwrap();
+    let marker = s
+        .place_marker(
+            &mut w,
+            2,
+            GroundLabel::Drop,
+            Frame {
+                position: [6., 0., 0.],
+                rotation: [0.; 3],
+            },
+            0,
+            None,
+        )
+        .unwrap();
+    let press = |action| Input {
+        action: Some(action),
+        ..Default::default()
+    };
+    let mut tool = Tool::default();
+    tool.update(&s, 3, press(Action::Toggle)).unwrap();
+    tool.camera = Some(crate::camera::Camera {
+        position: [0.; 3],
+        yaw: 0.,
+        pitch: 0.,
+    });
+    tool.update(&s, 4, Input::default()).unwrap();
+    assert_eq!(tool.aimed_thing, Some(forge_doc::Endpoint::Added(object)), "the Objects tool aims at the nearer crate");
+    tool.set_ai(true);
+    tool.update(&s, 5, Input::default()).unwrap();
+    assert_eq!(tool.aimed_thing, Some(forge_doc::Endpoint::Added(marker)), "the AI tool looks past it to the marker");
+    assert_eq!(tool.aimed, None, "a marker is not an added object");
+    tool.set_nav(true);
+    assert!(tool.nav && !tool.ai);
+    tool.set_ai(true);
+    assert!(tool.ai && !tool.nav && !tool.links);
+    tool.set_links(true);
+    assert!(tool.links && !tool.ai);
+}
+
+#[test]
+fn a_drop_knows_its_zone_and_the_squads_that_prefer_it() {
+    let mut s = session();
+    let mut w = Counting::default();
+    let first = s
+        .place_marker(&mut w, 1, GroundLabel::Drop, at(5., 0.), 0, None)
+        .unwrap();
+    let second = s
+        .place_marker(&mut w, 2, GroundLabel::Drop, at(-5., 0.), 0, None)
+        .unwrap();
+    let cover = s
+        .place_marker(&mut w, 3, GroundLabel::Cover, at(1., 0.), 0, None)
+        .unwrap();
+    assert_eq!(s.drop_zone(cover), None);
+    let zones = [s.drop_zone(first).unwrap(), s.drop_zone(second).unwrap()];
+    assert_eq!(zones.iter().copied().max(), Some(1));
+    assert_ne!(zones[0], zones[1]);
+    let mut set = s.waves_or_default();
+    set.rounds[0].waves[0].squads[0].drop = forge_doc::waves::Drop::PreferZone(zones[0] as u8);
+    s.set_waves(Some(set)).unwrap();
+    assert_eq!((s.zone_squads(zones[0]), s.zone_squads(zones[1])), (1, 0));
+}

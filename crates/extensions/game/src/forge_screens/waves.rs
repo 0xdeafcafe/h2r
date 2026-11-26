@@ -80,6 +80,11 @@ pub enum Page {
     Squads(u8, u8),
     Squad(At),
     Problems,
+    /// DROP ZONE n, from 0: what lands at a drop marker and **Add squad
+    /// here...** (docs/game/forge-firefight-ui.md, "The AI tool").
+    Drop(u8),
+    /// The squads that prefer zone n, each opening its SQUAD page.
+    DropSquads(u8),
 }
 
 /// A squad's place in the set: round, wave and squad, from 0.
@@ -101,6 +106,10 @@ impl Page {
             Page::Squads(..) => Kind::Squads,
             Page::Squad(_) => Kind::Squad,
             Page::Problems => Kind::WaveProblems,
+            // DROP ZONE is a list page like WAVE, which it replaces on the
+            // host: the AI tool never has WAVE up beside it.
+            Page::Drop(_) => Kind::Wave,
+            Page::DropSquads(_) => Kind::Squads,
         }
     }
 }
@@ -157,6 +166,13 @@ pub enum Edit {
     AtLeast(At, u16),
     AtMost(At, u16),
     Drop(At, Drop),
+    /// A squad after the wave's last, a copy of it that prefers zone
+    /// `zone` (DROP ZONE's **Add squad here...**).
+    AddSquadAt {
+        round: u8,
+        wave: u8,
+        zone: u8,
+    },
     /// The same squad again, after it.
     Duplicate(At),
     RemoveSquad(At),
@@ -227,6 +243,8 @@ pub fn sheet_for(f: &Facts, page: Page) -> Option<Sheet> {
         Page::Squads(r, w) => squads_sheet(f, r, w),
         Page::Squad(at) => squad_sheet(f, at),
         Page::Problems => problems_sheet(f),
+        Page::Drop(zone) => drop_sheet(f, zone),
+        Page::DropSquads(zone) => drop_squads_sheet(f, zone),
     }
 }
 
@@ -844,6 +862,109 @@ pub fn squad_sheet(f: &Facts, at: At) -> Option<Sheet> {
     })
 }
 
+/// The squads that prefer zone `zone`, in set order.
+pub fn squads_at_zone(def: &Def, zone: u8) -> Vec<(At, &SquadSpec)> {
+    let mut out = Vec::new();
+    for (r, round) in def.rounds.iter().enumerate() {
+        for (w, wave) in round.waves.iter().enumerate() {
+            for (s, squad) in wave.squads.iter().enumerate() {
+                if squad.drop == Drop::PreferZone(zone) {
+                    let at = At {
+                        round: r as u8,
+                        wave: w as u8,
+                        squad: s as u8,
+                    };
+                    out.push((at, squad));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// "2 squads land here": the readout's fact for a drop zone.
+pub fn lands_here(n: usize) -> String {
+    match n {
+        0 => "No squads land here".into(),
+        1 => "1 squad lands here".into(),
+        n => format!("{n} squads land here"),
+    }
+}
+
+/// DROP ZONE n: the squads that land here, **Add squad here...** and
+/// **Coordinates...**. `None` when the zone is not placed.
+pub fn drop_sheet(f: &Facts, zone: u8) -> Option<Sheet> {
+    if usize::from(zone) >= f.drops {
+        return None;
+    }
+    let here = squads_at_zone(&f.set, zone).len();
+    let squads = if here == 0 {
+        SheetRow::new("Squads that land here", Act::Info).value("None")
+    } else {
+        page_row(
+            "Squads that land here",
+            "The squads that prefer this drop zone; A opens one.",
+            Page::DropSquads(zone),
+        )
+        .value(&here.to_string())
+    };
+    let mut labels = Vec::new();
+    let mut choices = Vec::new();
+    for (r, round) in f.set.rounds.iter().enumerate() {
+        for w in 0..round.waves.len() {
+            labels.push(format!("Round {} Wave {}", r + 1, w + 1));
+            choices.push(waves_choice(Edit::AddSquadAt {
+                round: r as u8,
+                wave: w as u8,
+                zone,
+            }));
+        }
+    }
+    Some(Sheet {
+        kind: Kind::Wave,
+        title: format!("DROP ZONE {zone}"),
+        body: String::new(),
+        rows: vec![
+            squads,
+            choose_row(
+                "Add squad here...",
+                "A copy of a wave's last squad that lands at this drop zone.",
+                labels,
+                choices,
+            ),
+            SheetRow::new("Coordinates...", Act::Open(Kind::Coordinates))
+                .describe("Where the drop zone stands and which way it faces."),
+        ],
+        focus: 0,
+    })
+}
+
+/// The squads of DROP ZONE n, a row each, opening its SQUAD page.
+pub fn drop_squads_sheet(f: &Facts, zone: u8) -> Option<Sheet> {
+    let rows: Vec<SheetRow> = squads_at_zone(&f.set, zone)
+        .into_iter()
+        .map(|(at, squad)| {
+            page_row(
+                &format!(
+                    "Round {} Wave {}: {}s",
+                    at.round + 1,
+                    at.wave + 1,
+                    class_title(&squad.class)
+                ),
+                &squad_line(squad),
+                Page::Squad(at),
+            )
+        })
+        .collect();
+    (!rows.is_empty()).then(|| Sheet {
+        kind: Kind::Squads,
+        title: format!("SQUADS AT ZONE {zone}"),
+        body: String::new(),
+        rows,
+        focus: 0,
+    })
+}
+
 /// A problem's row: where it is, and what is missing.
 fn problem_row(def: &Def, p: &Problem) -> SheetRow {
     let squad = def
@@ -1111,6 +1232,15 @@ pub fn apply(def: &Def, edit: &Edit, presets: &[Def]) -> Result<Def, String> {
             c.min = c.min.min(*n);
         }
         Edit::Drop(at, drop) => squad_mut(&mut d, *at)?.drop = *drop,
+        Edit::AddSquadAt { round, wave, zone } => {
+            let w = wave_mut(&mut d, *round, *wave)?;
+            if w.squads.len() >= MAX_SQUADS {
+                return Err(format!("A wave has {MAX_SQUADS} squads at most."));
+            }
+            let mut squad = w.squads.last().cloned().ok_or(GONE)?;
+            squad.drop = Drop::PreferZone(*zone);
+            w.squads.push(squad);
+        }
         Edit::Duplicate(at) => {
             let copy = squad_mut(&mut d, *at)?.clone();
             let w = wave_mut(&mut d, at.round, at.wave)?;
@@ -1153,6 +1283,17 @@ pub fn open(page: Page) -> Result<(), String> {
     let mut pages = lock(&hub().wave_pages);
     pages.retain(|(k, _)| *k != kind);
     pages.push((kind, page));
+    Ok(())
+}
+
+/// Opens `page` as the first screen over the world (X on a drop zone):
+/// [`open`] with the screen asked for. Refused while another is up.
+pub fn show(page: Page) -> Result<(), String> {
+    if super::ours_up() {
+        return Err("A Forge screen is up.".into());
+    }
+    open(page)?;
+    *lock(&hub().request) = Some(page.kind());
     Ok(())
 }
 

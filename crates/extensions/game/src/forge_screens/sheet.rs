@@ -276,6 +276,8 @@ pub enum Tool {
     Objects,
     Links,
     Nav,
+    /// Aims at the AI ground's markers only.
+    Ai,
 }
 
 /// One row of the Coordinates editor.
@@ -1312,6 +1314,11 @@ pub const TOOLS: &[ToolDef] = &[
         tool: Tool::Nav,
         label: "Nav",
         description: "See the bots' nav and generate it.",
+    },
+    ToolDef {
+        tool: Tool::Ai,
+        label: "AI",
+        description: "Place drop zones, bases and cover.",
     },
 ];
 

@@ -84,6 +84,13 @@ fn page_tables() {
             after: "TOOLS | focus 1 Links",
         },
         Case {
+            kind: Kind::Tools,
+            from: "ai",
+            inputs: &[Up, Down, A],
+            effects: vec![Focus(2), Focus(3), Action],
+            after: "TOOLS | focus 3 AI",
+        },
+        Case {
             kind: Kind::Settings,
             from: "open",
             inputs: &[A, B],

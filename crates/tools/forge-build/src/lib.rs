@@ -416,6 +416,7 @@ pub fn build_with(
             cut: built.cut,
             costs: built.costs,
             receipt: built.receipt,
+            sectors: ground::sectors_of(&built.bytes)?,
         });
         output = built.bytes;
     }

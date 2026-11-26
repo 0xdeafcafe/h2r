@@ -141,10 +141,12 @@ pub enum Tool {
     Objects,
     Links,
     Nav,
+    /// Aims at ground markers only.
+    Ai,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 3] = [Tool::Objects, Tool::Links, Tool::Nav];
+    pub const ALL: [Tool; 4] = [Tool::Objects, Tool::Links, Tool::Nav, Tool::Ai];
 
     /// The name in the HUD's top right.
     pub fn name(self) -> &'static str {
@@ -152,6 +154,7 @@ impl Tool {
             Tool::Objects => "OBJECTS",
             Tool::Links => "LINKS",
             Tool::Nav => "NAV",
+            Tool::Ai => "AI",
         }
     }
 
@@ -161,6 +164,7 @@ impl Tool {
             Tool::Objects => &[Hand::Idle, Hand::Aimed, Hand::Placing, Hand::Holding],
             Tool::Links => &[Hand::Idle, Hand::Aimed, Hand::Linking],
             Tool::Nav => &[Hand::Idle],
+            Tool::Ai => &[Hand::Idle, Hand::Aimed, Hand::Placing, Hand::Holding],
         }
     }
 }
@@ -390,10 +394,10 @@ pub fn prompt_text(v: &View, b: &Buttons) -> String {
         return c.clone();
     }
     match (v.tool, v.hand) {
-        (Tool::Objects, Hand::Aimed) => with_name(format!("{a} to pick up"), &v.target),
-        (Tool::Objects, Hand::Placing) => with_name(format!("{a} to place"), &v.target),
-        (Tool::Objects, Hand::Holding) => with_name(format!("{a} to drop"), &v.target),
-        (Tool::Objects, _) => format!("{} for the object menu", b.objects.press()),
+        (Tool::Objects | Tool::Ai, Hand::Aimed) => with_name(format!("{a} to pick up"), &v.target),
+        (Tool::Objects | Tool::Ai, Hand::Placing) => with_name(format!("{a} to place"), &v.target),
+        (Tool::Objects | Tool::Ai, Hand::Holding) => with_name(format!("{a} to drop"), &v.target),
+        (Tool::Objects | Tool::Ai, _) => format!("{} for the object menu", b.objects.press()),
         (Tool::Links, Hand::Aimed) => with_name(format!("{a} to start a link from"), &v.target),
         (Tool::Links, Hand::Linking) if v.target.is_empty() => "Aim at the thing to link to".into(),
         (Tool::Links, Hand::Linking) => with_name(format!("{a} to link to"), &v.target),
