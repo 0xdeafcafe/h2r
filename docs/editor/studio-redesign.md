@@ -405,7 +405,7 @@ maps = "multiplayer"
 | `rules` | `.rules`; `inputs` are joined after the source (CTF and Assault are a header then the shared body) | a compiled script in the rules registry (built: checked at build, read by `workspace::script_registry`; a `rules` item of `core` is a retail type's game) | sim |
 | `variant` | a settings or scripted `.rules` file or a portable `.h2variant` record | the boot list reads script-based entries in manifest order | sim |
 | `playlist` | a TOML hopper fragment (`content::playlist::Fragment`) or an edited `multiplayer_hopper.dat` | the server reads TOML fragments through `workspace::hopper_fragments` | Live |
-| `map` | `map.toml`: `mode` (`fresh`, `onto`), `base`, the new map's `name`, `scenario` and `kits` (`fresh`), and `ground` when it has AI; the items it takes are those whose `maps` names it | a derived map package under `<data>/maps/`, built at prepare, or when first picked if it has `ground` (built: `workspace::prepare`) | sim |
+| `map` | `map.toml`: `mode` (`fresh`, `onto`), `base`, the new map's `name`, `scenario` and `kits` (`fresh`), and `ground` when it has AI; the items it takes are those whose `maps` names it | a derived map package under `<data>/maps/`, built at prepare; a `map` with `ground` has the AI ground built over the map it makes (built: `workspace::prepare`, `Fresh::ground`) | sim |
 | `map-patch` | a PPF, IPS or BPS file, and in `inputs` one TOML file with the base's `map` name and `sha256` | a map package with that layer, the one `h2 live maps import` writes for the patch (built) | sim |
 | `convert` | a recipe, `<name>.convert.toml`: a `converter` (`halo1`, `map-pack`) and its `[settings]`; the input is the user's own disc | map packages and campaign files under the data root, at prepare (built: `workspace::convert`, "Conversions") | sim |
 | `data` | a file a named game feature reads (the Pogo's pose set) | handed to the feature at boot | per feature |
@@ -558,7 +558,9 @@ changes it. After an error the set is partly changed and is dropped.
   `author`, `description`, `dir`); the output is `Manifest::retail` over
   that base with the patch as the one layer, so its `MapId` is the one
   `h2 live maps import` gives the same patch. It reads no disc. A `map`
-  item with a `ground` file is left for when the map is first picked.
+  item with a `ground` file has the AI ground built over the map the item
+  makes (`Fresh::ground`, `boot::map_ground`); its key holds the ground file
+  and the generator's version.
   Each directory a build writes holds `built-from.toml`: the package and
   item that made it, the map's id and a key over the base map's hash, the
   package ids, the builders' version and (for `fresh`) `Fresh::version`.
@@ -737,10 +739,11 @@ retail game type under it
 Firefight's wave sets are `rules` items of `modes`, and nothing is added to a map at boot for it. A
 Firefight or Siege map is made in Forge or in Studio, and the AI ground
 it needs (sectors, zones, squad slots, characters) is built on demand
-when that map is made, edited or first picked
+when that map is made or edited
 ([game-types-without-carriers.md](../game/game-types-without-carriers.md),
 "Maps for scripted games"). In Studio it is a `map` item with a
-`ground` table; `firefight_kit`'s generator is its build step.
+`ground` file (`workspace::GroundFile`, written by `ground.save`);
+`firefight_kit`'s generator is its build step.
 
 **Forge is not a package.** It is an engine feature
 (`crates/extensions/forge`, [forge-design.md](../game/forge-design.md)):

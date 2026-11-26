@@ -2642,12 +2642,26 @@ build made. Nothing builds at open or while placing.
   Problems. The built ground's pathfinding then draws in the Navigation
   layers and `nav.pathfinding` reads it in place of the map's own.
 
-The labels and the built ground live in the open session; they are not yet
-written with the map's package.
+- `ground.save {name?}` writes the labels placed on the open map to the edit
+  target (`NO_TARGET` with none) as a `map` item and its ground file
+  (`maps/<name>/map.toml` and `maps/<name>/ground.yaml`;
+  `workspace::GroundFile`) and answers `{package, name, item, file, labels,
+  changed}`. The map is `onto` over the open map and served as `name`
+  (default `<map>-ai`: letters, digits, `_` and `-`, not the open map's name,
+  else `REFUSED`); the target's `edits` items for the open map take the new
+  name as well, so the new map is the open one as edited. Saving the same
+  labels again changes nothing (`changed` false) and keeps the one item.
+  Nothing is built and the built ground is not saved: the game builds the
+  ground over the map the item makes when it prepares its maps
+  (`boot::map_ground`). `NO_DOCUMENT` with no map open.
+
+The built ground lives in the open session; the labels are written by
+`ground.save`.
 
 The tests are `app/ground_tests.rs` (the window's placing and
 `scenario.add` make one document, a build on the kit's invented court
-lists its sectors, the stale rule, a failed build in Problems) and
+lists its sectors, the stale rule, a failed build in Problems, the ground
+file and `ground.save`) and
 `scenario-edit/src/ground_tests.rs`.
 
 ## Game type markers

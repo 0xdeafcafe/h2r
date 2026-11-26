@@ -855,6 +855,106 @@ pub fn put_edits_at(
     Ok(true)
 }
 
+/// The files of a ground map in its package: its `map.toml` (the `map`
+/// item's source) and the ground file it names.
+pub fn ground_files(name: &str) -> (String, String) {
+    (format!("maps/{name}/map.toml"), format!("maps/{name}/ground.yaml"))
+}
+
+/// What [`put_map_ground`] did.
+pub struct GroundPut {
+    /// The `map` item's place in the manifest.
+    pub item: usize,
+    /// The ground file's path in the package.
+    pub ground: String,
+    /// Whether anything changed on disc.
+    pub changed: bool,
+}
+
+/// Put the AI ground of a map in the local package `id`: a `map` item
+/// (`onto`, over the disc map `base`, served as `name`) with the ground file
+/// `yaml`, and lock the package. The `edits` items of the map `takes` also
+/// name the new map, so it is the open map as edited, with its ground built
+/// over it. The item and its files are replaced when `name` is in the
+/// package already.
+pub fn put_map_ground(
+    data: &Path,
+    id: &str,
+    base: &str,
+    name: &str,
+    takes: &str,
+    yaml: &str,
+) -> Res<GroundPut> {
+    let (toml_file, ground) = ground_files(name);
+    let toml = format!(
+        "mode = \"onto\"\nbase = \"{}\"\nname = \"{name}\"\nground = \"{ground}\"\n",
+        base.to_ascii_lowercase()
+    );
+    ::workspace::MapSpec::parse(toml.as_bytes()).map_err(Params)?;
+    ::workspace::GroundFile::parse(yaml.as_bytes()).map_err(Params)?;
+    let k = known(data);
+    let (loaded, dir) = k.local(id)?;
+    let mut manifest = loaded.package.manifest.clone();
+    let existing = manifest
+        .items
+        .iter()
+        .position(|i| i.kind == Kind::Map && i.source.as_deref() == Some(toml_file.as_str()));
+    let item = existing.unwrap_or(manifest.items.len());
+    if existing.is_none() {
+        manifest.items.push(Item {
+            kind: Kind::Map,
+            source: Some(toml_file.clone()),
+            inputs: Vec::new(),
+            tag: None,
+            maps: content::package::Maps::Scope(MapScope::All),
+            replaces: None,
+            was: None,
+        });
+    }
+    // The new map takes what the open map's edits change.
+    let mut renamed = false;
+    for i in &mut manifest.items {
+        if i.kind != Kind::Edits {
+            continue;
+        }
+        if let content::package::Maps::Names(names) = &mut i.maps
+            && names.iter().any(|n| n.eq_ignore_ascii_case(takes))
+            && !names.iter().any(|n| n.eq_ignore_ascii_case(name))
+        {
+            names.push(name.to_owned());
+            renamed = true;
+        }
+    }
+    let mut changed = existing.is_none() || renamed;
+    let mut written = Vec::new();
+    for (rel, text) in [(&toml_file, toml.as_str()), (&ground, yaml)] {
+        let path = dir.join(rel);
+        if std::fs::read_to_string(&path).is_ok_and(|t| t == text) {
+            continue;
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| Failed(format!("{}: {e}", parent.display())))?;
+        }
+        std::fs::write(&path, text).map_err(|e| Failed(format!("{}: {e}", path.display())))?;
+        written.push(path);
+        changed = true;
+    }
+    if let Err(e) = commit(data, &dir, &manifest) {
+        if existing.is_none() {
+            for path in written {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        return Err(e);
+    }
+    Ok(GroundPut {
+        item,
+        ground,
+        changed,
+    })
+}
+
 // ---- the set file ----
 
 /// `package.enable`: switch a package on or off in `set.toml`. An always-on

@@ -18,9 +18,11 @@
 //! or a script edited leaves the ground current, and a crate moved marks
 //! it stale.
 //!
-//! The labels and the built ground live in the open session. They are not
-//! yet written with the map's package: the `map` item's `ground` table
-//! comes with the package model's whole-map items.
+//! The labels and the built ground live in the open session. **Save AI
+//! ground** (`ground.save`, [`App::save_ground`]) writes the labels to the
+//! edit target as a `map` item with a `ground` file
+//! ([`::workspace::GroundFile`]); the game builds the ground from it when it
+//! prepares its maps, so the built ground is never saved.
 use std::io::Cursor;
 use std::sync::mpsc;
 
@@ -33,6 +35,7 @@ use firefight_kit::{
     },
 };
 use scenario_edit::nav_view::LevelPathfinding;
+use ::workspace::{GroundFile, Side};
 use scenario_edit::{BlockKind, LabelKind, Scenario};
 use serde_json::{Value, json};
 
@@ -194,7 +197,114 @@ pub fn next_team_phase(scenario: &Scenario, kind: LabelKind) -> (u8, u16) {
     (team, phase)
 }
 
+/// The ground file for `labels`, in the build's canonical order: what a
+/// `map` item's `ground` names. The home team is the recipe's.
+pub fn ground_file_of(labels: &Labels) -> GroundFile {
+    use ::workspace::{GroundLabel, LabelName};
+    let side = |team: Team| {
+        if team.index() == 0 {
+            Side::Red
+        } else {
+            Side::Blue
+        }
+    };
+    let labels = labels.canonical();
+    let mut out = Vec::new();
+    let mut put = |label, position, facing, team: Option<Team>, phase| {
+        out.push(GroundLabel {
+            label,
+            position,
+            facing,
+            team: team.map(side),
+            phase,
+        });
+    };
+    for m in &labels.drops {
+        put(LabelName::FfDrop, m.position, Some(m.facing), None, None);
+    }
+    for m in &labels.covers {
+        put(LabelName::FfCover, m.position, Some(m.facing), None, None);
+    }
+    for b in &labels.bases {
+        put(LabelName::FfBase, b.position, None, Some(b.team), None);
+    }
+    for at in &labels.sites {
+        put(LabelName::SiegeSite, *at, None, None, None);
+    }
+    for at in &labels.goals {
+        put(LabelName::SiegeGoal, *at, None, None, None);
+    }
+    for l in &labels.lines {
+        put(LabelName::SiegeLine, l.position, None, Some(l.team), Some(l.phase));
+    }
+    GroundFile {
+        home: side(recipe().home),
+        labels: out,
+    }
+}
+
+/// The name a map made of `map` is served as, when none is given.
+pub fn default_name(map: &str) -> String {
+    let mut name = format!("{map}-ai");
+    name.truncate(64);
+    name
+}
+
+/// What [`App::save_ground`] wrote.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Saved {
+    pub package: String,
+    /// The map the item makes, as the game serves it.
+    pub name: String,
+    pub item: usize,
+    /// The ground file's path in the package.
+    pub file: String,
+    pub labels: usize,
+    /// Whether anything on disc changed.
+    pub changed: bool,
+}
+
 impl App {
+    /// **Save AI ground** and `ground.save`: write the labels placed on the
+    /// open map to the edit target as a `map` item (`onto`, over this map,
+    /// served as `name`, else `<map>-ai`) with a ground file. The game
+    /// builds the ground when it prepares its maps (`workspace::build_maps`,
+    /// `boot::map_ground`); nothing is built here. The edits made to the open
+    /// map in the target are taken by the new map as well, so its ground is
+    /// built over the map as edited.
+    pub fn save_ground(&mut self, name: Option<&str>) -> Result<Saved, String> {
+        let package = self
+            .edit_target()
+            .ok_or_else(|| super::edit_target::NO_TARGET.to_owned())?;
+        let scenario = self.session.scenario().ok_or("no map is open")?;
+        let map = self.session.map_name().ok_or("no map is open")?.to_owned();
+        let labels = labels_of(scenario)?;
+        labels.check().map_err(|e| format!("{e:#}"))?;
+        let file = ground_file_of(&labels);
+        let yaml = file.to_yaml()?;
+        let name = name.map_or_else(|| default_name(&map), str::to_owned);
+        let put = super::package_doc::put_map_ground(
+            &self.data_root(),
+            &package,
+            &map,
+            &name,
+            &map,
+            &yaml,
+        )
+        .map_err(|e| e.to_string())?;
+        self.info(format!(
+            "saved the AI ground of {map} as the map {name} in {package}"
+        ));
+        Ok(Saved {
+            package,
+            name,
+            item: put.item,
+            file: put.ground,
+            labels: file.labels.len(),
+            changed: put.changed,
+        })
+    }
+
     /// [`Action::PlaceLabelAt`].
     pub(super) fn place_label_at(
         &mut self,

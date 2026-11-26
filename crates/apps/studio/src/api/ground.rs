@@ -1,8 +1,9 @@
-//! `ground.status` and `ground.build`: the AI ground of the open map
+//! `ground.status`, `ground.build` and `ground.save`: the AI ground of the open map
 //! (docs/game/game-types-without-carriers.md, "In Studio";
 //! docs/editor/agent-api.md, "AI ground"). Labels are placed with
 //! `scenario.add {block: "label"}`; the built ground's sectors draw in the
-//! Navigation layers and read through `nav.pathfinding`.
+//! Navigation layers and read through `nav.pathfinding`. `ground.save`
+//! writes the labels to the edit target as a `map` item with a ground file.
 
 use serde_json::{Value, json};
 use studio_proto::{code, method as m};
@@ -33,6 +34,13 @@ impl Provider for Ground {
                 r#"{"job":"integer","status":"ground.status's result"}"#,
                 r#"{"wait":true}"#,
             ),
+            def(
+                m::GROUND_SAVE,
+                "Writes the labels placed on the open map to the edit target as a `map` item (onto this map, served as `name`, default `<map>-ai`) with a ground file; the game builds the AI ground over it when it prepares its maps, so nothing is built here and the built ground is not saved. The edits the target holds for the open map are taken by the new map too. NO_TARGET with no edit target; REFUSED when the name is not a map name or is the open map's; NO_DOCUMENT with no map open",
+                r#"{"name?":"string (the new map's name: letters, digits, '_' and '-')"}"#,
+                r#"{"package":"string","name":"string","item":"integer","file":"string (the ground file in the package)","labels":"integer","changed":"boolean"}"#,
+                r#"{"name":"example-ai"}"#,
+            ),
         ]
     }
 
@@ -41,6 +49,7 @@ impl Provider for Ground {
         Some(match method {
             m::GROUND_STATUS => status(app, &p),
             m::GROUND_BUILD => build(app, &p),
+            m::GROUND_SAVE => save(app, &p),
             _ => return None,
         })
     }
@@ -88,4 +97,23 @@ fn build(app: &mut App, p: &P) -> Reply {
         app.wait_ground();
     }
     Ok(json!({"job": job, "status": status_json(app, offset, limit)}))
+}
+
+fn save(app: &mut App, p: &P) -> Reply {
+    let name = p.opt_str("name")?;
+    if app.ground_state() == GroundState::NoMap {
+        return Err(err(code::NO_DOCUMENT, "no map is open"));
+    }
+    let saved = app.save_ground(name).map_err(|e| {
+        let no_target = e == crate::app::edit_target::NO_TARGET;
+        err(if no_target { code::NO_TARGET } else { code::REFUSED }, e)
+    })?;
+    Ok(json!({
+        "package": saved.package,
+        "name": saved.name,
+        "item": saved.item,
+        "file": saved.file,
+        "labels": saved.labels,
+        "changed": saved.changed,
+    }))
 }

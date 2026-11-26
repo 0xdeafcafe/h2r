@@ -26,8 +26,11 @@
 //! item again only when the base map, the packages it takes, the builders
 //! or the `fresh` kit ([`Fresh::version`]) changed.
 //!
-//! A `map` item with a `ground` file (a map with AI) is deferred: its
-//! ground is built when the map is first picked, not here.
+//! A `map` item with a `ground` file (a map with AI, [`GroundFile`]) builds
+//! the ground over the map the items make, through [`Fresh::ground`]: the
+//! generator is above this crate. The ground file and the builder's
+//! version are in the key, so a map whose labels did not change is not
+//! built again.
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -38,6 +41,7 @@ use content::{MapId, Sha256, store};
 use serde::Deserialize;
 
 use crate::build::{Failure, Loaded, Target};
+use crate::ground::GroundFile;
 use crate::builders::Job;
 use crate::onto::{build_map, scope_of_bytes};
 
@@ -71,8 +75,8 @@ pub struct MapSpec {
     /// `fresh`: the kits that build it, in order.
     #[serde(default)]
     pub kits: Vec<String>,
-    /// A file of the package with the map's AI ground: the map is built
-    /// when first picked, not at prepare.
+    /// A file of the package with the map's AI ground ([`GroundFile`]): the
+    /// ground is built over the map the item makes.
     #[serde(default)]
     pub ground: Option<String>,
     /// The package's display name; else the map's.
@@ -190,10 +194,12 @@ pub(crate) fn apply(_: &mut crate::Cx<'_>, _: &Job<'_>) -> Result<(), Failure> {
 
 pub(crate) fn check(job: &Job<'_>) -> Result<(), Failure> {
     let spec = MapSpec::parse(job.source)?;
-    if let Some(g) = &spec.ground
-        && !job.files.contains_key(g)
-    {
-        return Err(format!("the package has no ground file {g:?}").into());
+    if let Some(g) = &spec.ground {
+        let bytes = job
+            .files
+            .get(g)
+            .ok_or_else(|| format!("the package has no ground file {g:?}"))?;
+        GroundFile::parse(bytes).map_err(|e| format!("{g}: {e}"))?;
     }
     Ok(())
 }
@@ -221,6 +227,29 @@ pub trait Fresh {
     fn version(&self) -> String {
         String::new()
     }
+
+    /// Build the AI ground a `map` item's ground file asks for over the
+    /// map the item makes: the whole map with the ground in it. A build
+    /// with no generator stops the item with the reason.
+    fn ground(&self, _: &GroundJob<'_>) -> Result<Vec<u8>, String> {
+        Err("this build has no builder for AI ground".into())
+    }
+
+    /// [`Fresh::version`] for the ground generator: the kit's version.
+    fn ground_version(&self) -> String {
+        String::new()
+    }
+}
+
+/// What [`Fresh::ground`] is asked for.
+pub struct GroundJob<'a> {
+    /// The map's name.
+    pub name: &'a str,
+    /// The disc map it is over.
+    pub base: &'a str,
+    /// The map as the item makes it, before the ground.
+    pub map: &'a [u8],
+    pub ground: &'a GroundFile,
 }
 
 /// What a [`Fresh`] builder is asked for.
@@ -294,16 +323,6 @@ impl From<&MapPackage> for Held {
 enum Outcome {
     Built(MapPackage),
     Held(Held),
-    /// A map with a ground: built when first picked.
-    Ground,
-}
-
-/// An item left for later.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Deferred {
-    pub package: String,
-    pub item: usize,
-    pub why: String,
 }
 
 /// An item that did not build.
@@ -320,7 +339,6 @@ pub struct MapsBuilt {
     pub maps: Vec<MapPackage>,
     /// Items whose directory held their key already.
     pub held: Vec<Held>,
-    pub deferred: Vec<Deferred>,
     pub failed: Vec<Failed>,
 }
 
@@ -429,11 +447,6 @@ pub fn build_maps_held(
                     out.maps.push(m);
                 }
                 Ok(Outcome::Held(h)) => out.held.push(h),
-                Ok(Outcome::Ground) => out.deferred.push(Deferred {
-                    package: package.clone(),
-                    item: index,
-                    why: "the map has a ground, built when it is first picked".into(),
-                }),
                 Err(why) => out.failed.push(Failed {
                     package: package.clone(),
                     item: index,
@@ -484,9 +497,16 @@ fn build_map_item(
     held: &HeldIn<'_>,
 ) -> Result<Outcome, String> {
     let spec = MapSpec::parse(source_of(p, item)?)?;
-    if spec.ground.is_some() {
-        return Ok(Outcome::Ground);
-    }
+    let ground = match &spec.ground {
+        Some(file) => {
+            let bytes = p
+                .files
+                .get(file)
+                .ok_or_else(|| format!("the package has no ground file {file:?}"))?;
+            Some((GroundFile::parse(bytes).map_err(|e| format!("{file}: {e}"))?, bytes))
+        }
+        None => None,
+    };
     let base = bases
         .read(&spec.base.to_ascii_lowercase())
         .map_err(|e| format!("the base map {}: {e}", spec.base))?;
@@ -502,6 +522,12 @@ fn build_map_item(
             text.push('\n');
             if spec.mode == Mode::Fresh {
                 text.push_str(&fresh.version());
+            }
+            if let Some((_, bytes)) = &ground {
+                text.push('\n');
+                text.push_str(&Sha256::of(bytes).to_string());
+                text.push('\n');
+                text.push_str(&fresh.ground_version());
             }
             Sha256::of(text.as_bytes()).to_string()
         }
@@ -530,7 +556,7 @@ fn build_map_item(
         })?,
     };
     let taken = restrict(all, &|i| taken_by(i, &name));
-    if taken.is_empty() && spec.mode == Mode::Onto {
+    if taken.is_empty() && spec.mode == Mode::Onto && ground.is_none() {
         return Err(format!(
             "no item names the map {name:?} in its maps: an onto map is its base plus what it takes"
         ));
@@ -539,6 +565,14 @@ fn build_map_item(
         let scope = scope_of_bytes(&bytes).ok_or("the map's header does not read")?;
         let target = Target { name: &name, scope };
         bytes = build_map(&bytes, &taken, &target)?.0;
+    }
+    if let Some((file, _)) = &ground {
+        bytes = fresh.ground(&GroundJob {
+            name: &name,
+            base: &spec.base.to_ascii_lowercase(),
+            map: &bytes,
+            ground: file,
+        })?;
     }
     let mut manifest = MapManifest::retail(&name, Sha256::of(&bytes));
     manifest.base.sha256 = None;
@@ -697,7 +731,6 @@ pub struct Prepared {
     pub written: Vec<MapPackage>,
     /// Packages already in place: left as they are.
     pub unchanged: Vec<Held>,
-    pub deferred: Vec<Deferred>,
     pub failed: Vec<Failed>,
 }
 
@@ -716,7 +749,6 @@ pub fn prepare(
     });
     let mut out = Prepared {
         unchanged: built.held,
-        deferred: built.deferred,
         failed: built.failed,
         ..Prepared::default()
     };
