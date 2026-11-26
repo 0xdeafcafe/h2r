@@ -119,15 +119,21 @@ fn machine_tape(path: &Path) -> Result<bool, String> {
     Ok(magic == live_proto::film::range::MAGIC || &magic[..4] == b"HEAD")
 }
 
+/// Stage the upload of a recorded film: its stats container as it was
+/// sealed, and the film file's shared copy, which keeps the game and its
+/// ticks and names no machine or account (`film::file::share_copy`). Both
+/// are copies, so the library may prune or delete the film meanwhile.
 fn prepare_job(dir: &Path, job: &mut Job) -> Result<(), String> {
     if job.upload.is_none() {
-        let stats = job.source.with_extension("h2stats");
-        let mut file = File::create(dir.join("film")).map_err(|e| e.to_string())?;
-        film::share::prepare(&job.source, &mut file).map_err(|e| e.to_string())?;
+        let stats = film::file::stats_of(&job.source);
         if !stats.is_file() {
-            return Err("Film needs its prepared stats companion".into());
+            return Err("Film needs its stats container".into());
         }
         fs::copy(&stats, dir.join("stats")).map_err(|e| e.to_string())?;
+        let out = File::create(dir.join("film")).map_err(|e| e.to_string())?;
+        film::file::share_copy(&job.source, out)
+            .and_then(|file| Ok(file.sync_all()?))
+            .map_err(|e| format!("{e:#}"))?;
         job.upload = Some(Upload {
             film: film::share::object(&dir.join("film")).map_err(|e| e.to_string())?,
             stats: film::share::object(&dir.join("stats")).map_err(|e| e.to_string())?,
@@ -151,7 +157,9 @@ fn transfer(remote: &impl Remote, dir: &Path, job: &mut Job) -> Result<String, S
         let id = job.remote.as_deref().ok_or("missing upload reservation")?;
         if !job.done {
             let mut index = 0;
-            for (name, object) in [("film", &upload.film), ("stats", &upload.stats)] {
+            // The stats stream first, then the film file, as a host sends
+            // them (`film::upload`).
+            for (name, object) in [("stats", &upload.stats), ("film", &upload.film)] {
                 let mut f = File::open(dir.join(name)).map_err(|e| e.to_string())?;
                 for n in 0..object.parts.len() {
                     if index >= job.next {
@@ -544,7 +552,7 @@ mod tests {
             Ok(("remote-id".into(), false))
         }
         fn part(&self, _: &str, object: &str, n: usize, bytes: &[u8]) -> Result<(), String> {
-            if object == "stats" && self.offline.get() {
+            if object == "film" && self.offline.get() {
                 return Err("connection lost".into());
             }
             self.sent
@@ -599,11 +607,129 @@ mod tests {
         assert_eq!(
             *live.sent.borrow(),
             vec![
-                ("film".into(), 0, b"film".to_vec()),
-                ("stats".into(), 0, b"stats".to_vec())
+                ("stats".into(), 0, b"stats".to_vec()),
+                ("film".into(), 0, b"film".to_vec())
             ]
         );
         assert_eq!(fs::read(source).unwrap(), b"original recording");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A recorded film's header, as a player's default recording writes it.
+    fn recorded_header() -> film::Header {
+        serde_json::from_value(serde_json::json!({
+            "version": 3,
+            "meta": {"id": "local-game", "map": "", "variant": "", "started_ms": 0,
+                "length_ticks": 0, "players": [], "source": "Local", "image_stamp": "image"},
+            "title_id": 0x4d53_0064u32,
+            "xbe_sha256": "a".repeat(64),
+            "runtime_stamp": "h2-sim/2",
+            "epoch_100ns": 0,
+            "lease_id": null,
+            "xnet_addr": "192.168.1.20:3074",
+            "transfers_per_slice": 5000,
+            "lobby": false,
+            "lobby_machine_start": false,
+            "host_bots": false,
+            "telemetry": true,
+            "live_service": true,
+            "features": "",
+            "player_features": true,
+            "inputs_in_film": true
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_locally_recorded_film_and_its_stats_are_prepared_and_uploaded_stats_first() {
+        use film::columns::{ACTION_BYTES, SEATS};
+        let root = std::env::temp_dir().join(live_proto::sign::random_id());
+        let library = root.join("films");
+        fs::create_dir_all(&library).unwrap();
+        let source = library.join("auto-20261126-120000-000.h2film");
+        let seed = film::file::Seed {
+            header: recorded_header(),
+            descriptor: Default::default(),
+        };
+        let mut w = film::file::FilmWriter::new(File::create(&source).unwrap(), &seed, 30).unwrap();
+        for tick in 1..=300u64 {
+            let mut seats = [None; SEATS];
+            seats[0] = Some([tick as u8; ACTION_BYTES]);
+            w.push_tick(film::file::TICK_DIGEST, tick, &seats).unwrap();
+        }
+        w.finish().unwrap();
+        let stats = film::file::stats_of(&source);
+        fs::write(&stats, b"the sealed stats container").unwrap();
+        let recorded = fs::read(&source).unwrap();
+
+        let dir = Places::films(&root, "live.test", "account")
+            .dir
+            .join("recordings/local-game");
+        fs::create_dir_all(&dir).unwrap();
+        let mut job = Job {
+            source: source.clone(),
+            upload: None,
+            remote: None,
+            next: 0,
+            done: false,
+            pin: None,
+            removed: false,
+        };
+        prepare_job(&dir, &mut job).unwrap();
+        let upload = job.upload.clone().unwrap();
+        assert_eq!(upload.visibility, Visibility::Private);
+        let live = Interrupted::default();
+        assert_eq!(transfer(&live, &dir, &mut job).unwrap(), "remote-id");
+        assert!(read(&dir).unwrap().done);
+
+        let sent = live.sent.borrow();
+        let objects: Vec<_> = sent.iter().map(|(name, ..)| name.as_str()).collect();
+        let stats_parts = upload.stats.parts.len();
+        assert!(objects[..stats_parts].iter().all(|n| *n == "stats"));
+        assert!(objects[stats_parts..].iter().all(|n| *n == "film"));
+        let object = |name: &str| -> Vec<u8> {
+            sent.iter().filter(|(n, ..)| n == name).flat_map(|(.., b)| b.clone()).collect()
+        };
+        assert_eq!(object("stats"), b"the sealed stats container");
+        // The film sent is the shared copy: the game's ticks, no address.
+        let film_bytes = object("film");
+        assert_eq!(film_bytes.len() as u64, upload.film.size);
+        let shared = film::file::FilmReader::open(std::io::Cursor::new(&film_bytes)).unwrap();
+        assert!(shared.sealed);
+        assert_eq!(shared.length_ticks, 300);
+        assert_eq!(shared.seed.header.meta.id, "local-game");
+        assert!(shared.seed.header.xnet_addr.is_empty());
+        // The library's files are left as they were.
+        assert_eq!(fs::read(&source).unwrap(), recorded);
+        assert_eq!(fs::read(&stats).unwrap(), b"the sealed stats container");
+        assert!(!dir.join("film").exists() && !dir.join("stats").exists());
+        drop(sent);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_film_without_its_stats_container_is_not_prepared() {
+        let root = std::env::temp_dir().join(live_proto::sign::random_id());
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("auto-x.h2film");
+        let seed = film::file::Seed { header: recorded_header(), descriptor: Default::default() };
+        film::file::FilmWriter::new(File::create(&source).unwrap(), &seed, 30)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let dir = root.join("job");
+        fs::create_dir_all(&dir).unwrap();
+        let mut job = Job {
+            source,
+            upload: None,
+            remote: None,
+            next: 0,
+            done: false,
+            pin: None,
+            removed: false,
+        };
+        assert!(prepare_job(&dir, &mut job).unwrap_err().contains("stats container"));
+        assert!(job.upload.is_none());
         fs::remove_dir_all(root).unwrap();
     }
 }

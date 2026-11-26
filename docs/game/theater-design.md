@@ -483,8 +483,11 @@ gives a client the film without Live.
   serves it by byte range; it reads the header and the game start and
   inflates no tick chunk
   (`crates/live/live-server/src/films/upload/film_file.rs`). A shared
-  film is the recorded file: there is no disk payload to strip and no
-  share copy to make.
+  film is the recorded file with its seed and its game start's match
+  descriptor scrubbed of the recording machine's address, its lease, the
+  local map path, the host and every account number
+  (`film::file::share_copy`); its start points and tick chunks are the
+  recorded bytes.
 - **What a film reveals.** The players' names and appearance as they
   were in the game, the map and the variant. No profile, no save, no
   account identifier beyond the gamertags the game showed.
@@ -493,7 +496,10 @@ gives a client the film without Live.
   ledger import.
 - **Upload.** `POST /v1/films` takes a film and its stats stream from a
   signed-in player under `films.write`, in numbered parts, and gives them
-  a film id.
+  a film id. Live walks the film file as it walks a host's, inflates only
+  its seed, and refuses a seed that names a machine or an account
+  (`films/shared/verify.rs`, `film_file::Scan::feed_account`). The film's
+  ID is the one its stats stream names.
 - **Download.** The game fetches a film into the library once, by range
   requests it can resume (`film::share`), checks its digest and plays the
   file from disk.
@@ -510,8 +516,10 @@ homes from the same signed journal.
 
 - **Ownership.** A game appears in every participant's library when Live
   accepts the host's film. A machine queues its own offline and LAN films
-  for private background upload after the game seals them; the upload
-  resumes from its last acknowledged part.
+  for private background upload after the game seals them
+  (`live-hle` `films/sync.rs`): the job stages the stats container and
+  the film's shared copy, sends the stats stream first and the film file
+  after, as a host does, and resumes from its last acknowledged part.
 - **Playback.** Watch uses the local file when there is one, and
   otherwise reads the film in ranges into the local library.
 - **Sync.** Live owns membership. Pins and deletes are signed changes in

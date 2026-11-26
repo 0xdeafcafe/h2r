@@ -75,6 +75,28 @@ pub struct Seed {
     pub descriptor: MatchHeader,
 }
 
+impl Seed {
+    /// The seed as a film that leaves this machine carries it
+    /// ([`share_copy`]): no network address, lease, local map path, host
+    /// or account number.
+    pub fn shared(&self) -> Seed {
+        let mut seed = self.clone();
+        seed.header.xnet_addr.clear();
+        seed.header.lease_id = None;
+        scrub(&mut seed.descriptor);
+        seed
+    }
+}
+
+/// Drop what names a machine or an account from a match descriptor.
+fn scrub(descriptor: &mut MatchHeader) {
+    descriptor.map.cache_path = None;
+    descriptor.host_id = None;
+    for seat in &mut descriptor.roster {
+        seat.xuid = None;
+    }
+}
+
 fn film_id(id: &str) -> [u8; 16] {
     let hex = crate::xbe_digest(id.as_bytes());
     let mut out = [0u8; 16];
@@ -716,6 +738,54 @@ pub fn header_of(film: &Path) -> Result<Header> {
 /// `<id>.h2film` (docs/game/film-format.md).
 pub fn stats_of(film: &Path) -> PathBuf {
     film.with_extension("h2stats")
+}
+
+/// Take the recorder's hold on a film file it is about to write: an
+/// exclusive lock on its open file, kept until the file is closed, which a
+/// process exit, a crash or a kill releases ([`being_written`]).
+pub fn hold(file: &File) -> Result<()> {
+    file.try_lock()
+        .map_err(|e| anyhow::anyhow!("film file is held by another recording: {e}"))
+}
+
+/// Whether a recorder holds the film file at `film` ([`hold`]): an unsealed
+/// film it holds is a game in progress, kept out of the library's listing
+/// and left alone by its prune. One no process holds is a recording that
+/// stopped without sealing.
+pub fn being_written(film: &Path) -> bool {
+    let Ok(file) = File::open(film) else {
+        return false;
+    };
+    matches!(file.try_lock_shared(), Err(std::fs::TryLockError::WouldBlock))
+}
+
+/// The copy of the sealed film at `film` that goes to the account's film
+/// library on Live (`live-hle` `films::sync`): its start points and tick
+/// chunks byte for byte, its game start with the descriptor scrubbed, and
+/// the seed of [`Seed::shared`]. Checkpoint blocks are left out. Live
+/// checks the copy's seed (`live-server` `films/shared/verify.rs`).
+pub fn share_copy<W: Write + Seek>(film: &Path, out: W) -> Result<W> {
+    let mut reader = FilmReader::open(File::open(film)?)?;
+    ensure!(reader.sealed, "only a sealed film is shared");
+    let mut copy = FilmWriter::new(out, &reader.seed.shared(), reader.ticks_per_second)?;
+    for block in reader.start_points.clone() {
+        let frame = reader.read_block(&block)?;
+        copy.start_point(&frame)?;
+    }
+    if let Some(block) = reader.game_starts.first().copied() {
+        let mut start = GameStart::decode(&reader.read_block(&block)?)?;
+        scrub(&mut start.game.descriptor);
+        copy.game_start_frame(&start.encode()?)?;
+    }
+    for (body, stored) in reader.chunks.clone() {
+        let mut frame = vec![0u8; stored as usize];
+        read_exact_at(&mut reader.input, body, &mut frame)?;
+        let at = copy.out.stream_position()?;
+        copy.block(KIND_TICKS, &frame)?;
+        copy.chunks.push(at);
+    }
+    copy.ticks = reader.length_ticks;
+    copy.finish()
 }
 
 /// Seal the unsealed film file at `film`, ending at `end_tick`: a sealed

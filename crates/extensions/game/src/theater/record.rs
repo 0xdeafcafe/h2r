@@ -50,8 +50,12 @@ impl GameFiles {
             }
         };
         let seed = film::file::Seed { header: header.clone(), descriptor: Default::default() };
-        let film = private_new(&path)
-            .and_then(|file| film::file::FilmWriter::new(file, &seed, 30));
+        // The hold keeps the game in progress out of the library until the
+        // film is sealed and closed, or the process ends.
+        let film = private_new(&path).and_then(|file| {
+            film::file::hold(&file)?;
+            film::file::FilmWriter::new(file, &seed, 30)
+        });
         let film = match film {
             Ok(film) => film,
             Err(error) => {

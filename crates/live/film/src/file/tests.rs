@@ -560,3 +560,83 @@ fn an_update_body_is_read_back_by_tick_across_chunks_and_a_checkpoint() {
         }
     }
 }
+
+#[test]
+fn a_shared_copy_keeps_the_game_and_its_ticks_and_names_no_machine_or_account() {
+    let dir = Temp::new();
+    let path = dir.0.join("game.h2film");
+    let mut private = seed();
+    private.descriptor.host_id = Some("host-machine".into());
+    private.descriptor.map.cache_path = Some("/Users/someone/maps/example.map".into());
+    private.descriptor.roster = vec![blam::Seat { seat: 0, name: "Player".into(), xuid: Some(42), ..Default::default() }];
+    let mut start = started(1);
+    start.game.descriptor = private.descriptor.clone();
+    let mut w = FilmWriter::new(File::create(&path).unwrap(), &private, 30).unwrap();
+    w.game_start(&start).unwrap();
+    for tick in 1..=400u64 {
+        w.push_tick(TICK_DIGEST, tick * 77, &seats(tick)).unwrap();
+        if tick == 150 {
+            w.checkpoint().unwrap();
+        }
+    }
+    w.finish().unwrap();
+    assert!(private.header.lease_id.is_some() && !private.header.xnet_addr.is_empty());
+
+    let copy = share_copy(&path, Cursor::new(Vec::new())).unwrap().into_inner();
+    let mut shared = FilmReader::open(Cursor::new(&copy)).unwrap();
+    assert!(shared.sealed);
+    assert_eq!(shared.length_ticks, 400);
+    let kept = shared.seed.clone();
+    assert!(kept.header.xnet_addr.is_empty() && kept.header.lease_id.is_none());
+    assert_eq!(kept.header.meta.id, private.header.meta.id);
+    let game = shared.game_start().unwrap().unwrap();
+    for descriptor in [&kept.descriptor, &game.game.descriptor] {
+        assert!(descriptor.host_id.is_none() && descriptor.map.cache_path.is_none());
+        assert_eq!(descriptor.roster[0].name, "Player");
+        assert!(descriptor.roster[0].xuid.is_none());
+        assert_eq!(descriptor.map.sha256, "a".repeat(64));
+    }
+    assert_eq!((game.options, game.random, game.start_hash), (start.options, start.random, start.start_hash));
+    // Every tick reads back as recorded.
+    let (_, rows) = decode_all(&copy);
+    let original = fs::read(&path).unwrap();
+    assert_eq!(rows, decode_all(&original).1);
+    // An unsealed film is not shared.
+    let open = dir.0.join("open.h2film");
+    let mut w = FilmWriter::new(File::create(&open).unwrap(), &seed(), 30).unwrap();
+    w.push_tick(TICK_DIGEST, 1, &seats(1)).unwrap();
+    w.checkpoint().unwrap();
+    assert!(share_copy(&open, Cursor::new(Vec::new())).is_err());
+}
+
+#[test]
+fn a_film_a_recorder_holds_is_not_listed_until_its_recording_stops() {
+    let dir = Temp::new();
+    let path = dir.0.join("auto-game.h2film");
+    let file = File::options().read(true).write(true).create_new(true).open(&path).unwrap();
+    hold(&file).unwrap();
+    let mut w = FilmWriter::new(file, &seed(), 30).unwrap();
+    let mut start = started(1);
+    start.game.descriptor.map.name = "example".into();
+    w.game_start(&start).unwrap();
+    for tick in 1..=200u64 {
+        w.push_tick(TICK_DIGEST, tick * 77, &seats(tick)).unwrap();
+        if tick == 150 {
+            w.checkpoint().unwrap();
+        }
+    }
+    // The game in progress: held, so neither read nor listed.
+    assert!(being_written(&path));
+    assert!(crate::LibraryEntry::read(&path).is_err());
+    let library = crate::Library::open(&dir.0).unwrap();
+    assert!(library.list().unwrap().is_empty());
+    // A second recorder cannot take it.
+    assert!(hold(&File::open(&path).unwrap()).is_err());
+    // The recording stops without sealing (a crash, a kill): the hold goes
+    // with its file, and the film lists to its last checkpoint.
+    drop(w);
+    assert!(!being_written(&path));
+    let row = crate::LibraryEntry::read(&path).unwrap();
+    assert_eq!(row.meta.length_ticks, 150);
+    assert_eq!(library.list().unwrap().len(), 1);
+}
