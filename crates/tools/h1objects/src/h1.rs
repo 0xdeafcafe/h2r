@@ -730,7 +730,7 @@ pub struct Unit {
     /// `0x1a0` the camera's field of view, radians (Halo 2's `unit +0xcc`).
     pub camera_field_of_view: f32,
     /// A biped's words that Halo 2 bipeds hold at a known offset
-    /// ([`crate::rebuild::BIPED_WORDS`]), by Halo 1 offset; empty for a
+    /// ([`crate::rebuild::BIPED_WORDS`], `BIPED_LANDING`, `BIPED_RATES`), by Halo 1 offset; empty for a
     /// vehicle.
     pub biped_words: Vec<(usize, u32)>,
     pub seats: Vec<Seat>,
@@ -792,6 +792,7 @@ impl Unit {
             .collect::<Result<Vec<_>>>()?;
         let biped_words = if g == b"bipd" {
             crate::rebuild::BIPED_WORDS.iter().chain(crate::rebuild::UNIT_WORDS)
+                .chain(crate::rebuild::BIPED_LANDING)
                 .chain(crate::rebuild::BIPED_RATES)
                 .filter(|w| w.1 + 4 <= b.len())
                 .map(|w| (w.1, u32_at(b, w.1)))

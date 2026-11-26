@@ -494,8 +494,15 @@ Named on the way:
 |---|---|
 | `unit +0xcc` `camera_field_of_view` (`f32`, radians) | V: 70 degrees on every Halo 2 biped and turret with a Halo 1 counterpart, and equal to Halo 1's `unit +0x1a0` on five pairs (cyborg and masterchief, marine_armored and marine, elite, grunt, jackal). Name D: a field of view is the plain reading of 70 degrees on a unit; no reader found yet |
 
-`rebuild::BIPED_WORDS` carries the biped's turning, landing, camera
-height, slope and flying words from Halo 1 as they are. The ones with a
+`rebuild::BIPED_WORDS` carries the biped's turning, landing time, camera
+height, slope and flying words from Halo 1 as they are. Halo 2's gravity
+stays, so Halo 1's jump apex and fall heights are kept by scaling speeds
+with `rebuild::gravity_speed_factor` (sqrt(1 / `GRAVITY_RATIO`), 1.14):
+`jump_velocity` (`BIPED_RATES`, per tick times 30 times the factor; the
+cyborg's 0.07 becomes 2.394 world units per second, apex 0.687) and the
+three landing velocities (`rebuild::BIPED_LANDING`, Halo 1's value times
+the factor, no tick factor: the crewman's agree with its Halo 2
+counterpart's as they are). The ones with a
 Halo 2 pair agree within 1 % on the five pairs above; the crewman's
 distinct cutoff and falloff angles on a30 and 05a_deltaapproach tell the
 slope fields apart, and the c20 monitor and its 04b counterpart agree on
@@ -509,6 +516,10 @@ Proof (`crates/tools/h1objects/tests/unit_rebuild_disc.rs`, and the lib tests
 
 - `biped_words_match_halo_2s_counterparts`: the camera and the words,
   Halo 1 against Halo 2, on the five pairs.
+- `jump_reaches_halo1s_apex_under_halo2_gravity` and
+  `landing_thresholds_keep_halo1s_fall_heights` (lib tests), and
+  `the_converted_cyborgs_physics_against_the_chiefs`: the jump apex and
+  fall heights under Halo 2's gravity equal Halo 1's.
 - `biped_shapes_follow_the_collision_size`: the shape rule on the
   retail bipeds of the base with shapes, and `BIPED_BODY` on their 80
   rigid bodies.
