@@ -151,7 +151,7 @@ membership changes at their existing boundaries.
 | `0x0018e790` | `OPTIONS_QUEUE` | copy options (EAX) to the pending block `0x4ed3a8`, set pending `0x4ed39d` |
 | `0x0023643f` | menu campaign start | the menu's own campaign launch; the fields we write follow it |
 | `0x0006ec80` | session game start | builds options from the network session for every multiplayer start; the multiplayer fields we write follow its local branch |
-| `0x0019d220` | `VARIANT_DEFAULTS` | stdcall `(variant out, goof game type)`, `ret 8`: a default `0x130`-byte variant for the type (0 Slayer); code only, the name lookup is skipped while `0x4e034c` is null |
+| `0x0019d220` | `VARIANT_DEFAULTS` | stdcall `(variant out, goof game type)`, `ret 8`: a default `0x130`-byte variant for the type (0 Slayer); code only, the name lookup is skipped while `0x4e034c` is null; `game.load` hides `matg` for the call when the running map's `matg +0x16c` tag has a null at data `+4` (a campaign map), which the lookup at `0x19d2d7` would read |
 | `0x00138180` | `OPTIONS_CHECK` | stdcall `(options)`, `ret 4`: the game's options validator, AL=1 when valid; called and reported, not enforced |
 | `0x0018e8b0` | start game | what the session start calls directly; the queued request reaches it through the pending transition |
 | `0x0019c270` | level lookup | `(campaign, map)` to the globals' level record |

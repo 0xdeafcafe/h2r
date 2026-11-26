@@ -1769,3 +1769,60 @@ fn a_recording_the_player_refuses_is_an_error() {
     );
     assert!(out.unwrap_err().message.contains("started no recording 9"));
 }
+
+/// A running map whose globals name a tag at `matg +0x16c`; `inner` is the
+/// pointer the variant name lookup (`0x19d2d7`) reads from that tag's data.
+fn variant_world(inner: u32) -> World {
+    const MATG: u32 = 0x0300_0000;
+    const TABLE: u32 = 0x0301_0000;
+    const DATA: u32 = 0x0302_0000;
+    let mut w = world();
+    for (at, len) in [(0x004e_034c, 4), (0x004e_3b44, 4), (MATG, 0x200), (TABLE, 0x40), (DATA, 8)] {
+        w.g.map(at, len);
+    }
+    w.g.put_u32(0x004e_034c, MATG);
+    w.g.put_u32(0x004e_3b44, TABLE);
+    w.g.put_u32(MATG + 0x16c, 1);
+    w.g.put_u32(TABLE + 0x10 + 8, DATA);
+    w.g.put_u32(DATA + 4, inner);
+    w
+}
+
+#[test]
+fn a_variant_built_on_a_map_without_the_name_tag_skips_the_lookup() {
+    const VARIANT: u32 = 0x0019_d220;
+    let step = GameStep::Call {
+        target: VARIANT,
+        args: vec![Arg::Options(0x134), Arg::Value(0)],
+        eax: None,
+        esi: None,
+        report: None,
+    };
+    let seen = Arc::new(Mutex::new(None));
+    let s2 = Arc::clone(&seen);
+    // The campaign map's tag holds a null where the lookup reads.
+    let (out, _, g) = one(
+        variant_world(0),
+        Call::QueueGame { steps: vec![step.clone()] },
+        move |_, m| {
+            *s2.lock().unwrap() = Some(m.u32(0x004e_034c).unwrap());
+            Regs::default()
+        },
+    );
+    out.unwrap();
+    assert_eq!(*seen.lock().unwrap(), Some(0), "matg hidden during the call");
+    assert_eq!(g.u32(0x004e_034c).unwrap(), 0x0300_0000, "and put back after");
+    // A map that has the tag keeps its name lookup.
+    let seen = Arc::new(Mutex::new(None));
+    let s2 = Arc::clone(&seen);
+    let (out, _, _) = one(
+        variant_world(0x0302_0000),
+        Call::QueueGame { steps: vec![step] },
+        move |_, m| {
+            *s2.lock().unwrap() = Some(m.u32(0x004e_034c).unwrap());
+            Regs::default()
+        },
+    );
+    out.unwrap();
+    assert_eq!(*seen.lock().unwrap(), Some(0x0300_0000));
+}
