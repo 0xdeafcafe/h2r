@@ -2,6 +2,13 @@
 //! stack. By entry to SIM_UPDATE_APPLY, input gathering, remote arrivals
 //! and phantom slot actions have already been resolved. The mask is by
 //! player datum index, including split-screen players, not by pad port.
+//! The record's head (`+0`, the update number) and stamp (`+0x4040`, the
+//! tick count; `+0x4044`, the random word) are the engine's own and are
+//! never written. Between them are the action block (`+8`) and the body
+//! (`+0x5cc` through `+0x403f`: player entries, the player-set change, the
+//! event list, the save flag), which the film stores as the bytes that
+//! changed since the update before (docs/game/theater-design.md, "The
+//! update stream").
 //! See docs/live/live-coop.md §§1.3 and "Visual prediction" and
 //! coop_look::State::applied, which reads facing from these same records.
 use std::sync::{Arc, MutexGuard};
@@ -17,6 +24,12 @@ const ACTION_BYTES: usize = 0x5c;
 // From the mask at +8 to the end of the final action, immediately
 // before the player-state mask at +0x5cc. No other update fields change.
 const ACTION_BLOCK: usize = 4 + ACTION_BYTES * MAX_SEATS;
+/// The body starts where the action block ends: the player-state mask.
+const BODY_AT: u32 = MASK + ACTION_BLOCK as u32;
+/// The stamp: the tick count the update was built for.
+const STAMP_AT: u32 = 0x4040;
+const BODY_BYTES: usize = (STAMP_AT - BODY_AT) as usize;
+const _: () = assert!(BODY_BYTES == film::columns::BODY_BYTES);
 
 fn block_address(update: u32) -> Result<u32> {
     ensure!(update != 0, "null film simulation update");
@@ -31,6 +44,60 @@ fn read_block(m: &dyn GuestMemory, at: u32) -> Result<[u8; ACTION_BLOCK]> {
     m.read(at, &mut block)
         .map_err(|_| anyhow::anyhow!("cannot read film simulation actions at {at:#x}"))?;
     Ok(block)
+}
+
+fn body_address(update: u32) -> Result<u32> {
+    ensure!(update != 0, "null film simulation update");
+    update
+        .checked_add(STAMP_AT + 8)
+        .context("film simulation update wraps guest memory")?;
+    Ok(update + BODY_AT)
+}
+
+/// The update's body, between its action block and its stamp.
+pub(super) fn capture_body(m: &dyn GuestMemory, update: u32) -> Result<Vec<u8>> {
+    let at = body_address(update)?;
+    let mut body = vec![0; BODY_BYTES];
+    m.read(at, &mut body)
+        .map_err(|_| anyhow::anyhow!("cannot read film simulation body at {at:#x}"))?;
+    Ok(body)
+}
+
+/// The tick count the update was stamped with.
+pub(super) fn capture_stamp(m: &dyn GuestMemory, update: u32) -> Result<u32> {
+    body_address(update)?;
+    let at = update + STAMP_AT;
+    let mut stamp = [0; 4];
+    m.read(at, &mut stamp)
+        .map_err(|_| anyhow::anyhow!("cannot read film simulation stamp at {at:#x}"))?;
+    Ok(u32::from_le_bytes(stamp))
+}
+
+/// Whether an update stamped `stamp` may follow the one stamped `last`
+/// (`None` at a game's first): the same tick again, the next, or an
+/// earlier one (a campaign revert puts the clock back). A stamp that is
+/// further on than the next means an update the film does not hold.
+pub(super) fn stamp_follows(last: Option<u32>, stamp: u32) -> bool {
+    last.is_none_or(|last| stamp <= last.saturating_add(1))
+}
+
+/// Write a recorded body over the one the engine built. Writes nothing
+/// when they agree, and nothing but the body when they do not.
+pub(super) fn apply_body(m: &mut dyn GuestMemory, update: u32, body: &[u8]) -> Result<()> {
+    ensure!(
+        body.len() == BODY_BYTES,
+        "film simulation body is {} bytes, not {BODY_BYTES}",
+        body.len()
+    );
+    let at = body_address(update)?;
+    let mut current = vec![0; BODY_BYTES];
+    m.read(at, &mut current)
+        .map_err(|_| anyhow::anyhow!("cannot read film simulation body at {at:#x}"))?;
+    if current != body {
+        m.write(at, body)
+            .map_err(|_| anyhow::anyhow!("cannot write film simulation body at {at:#x}"))?;
+    }
+    Ok(())
 }
 
 fn capture(
@@ -105,6 +172,8 @@ pub(super) fn note_first_update(
     let Some(options) = rec.starts.take_options() else {
         return;
     };
+    // The game's own tick count begins here.
+    rec.frame.last_stamp = None;
     let Some(film) = &rec.film else {
         return;
     };
@@ -133,10 +202,17 @@ pub(super) fn at_update(
             let pads = bots::guest::game_tick(&*memory)
                 .map(|tick| bots::phantom::global().gathered_pads(tick))
                 .unwrap_or([None; MAX_SEATS]);
-            match capture(&*memory, ptr, &pads) {
-                Ok(inputs) => {
+            let captured = capture(&*memory, ptr, &pads).and_then(|inputs| {
+                Ok((
+                    inputs,
+                    capture_body(&*memory, ptr)?,
+                    capture_stamp(&*memory, ptr)?,
+                ))
+            });
+            match captured {
+                Ok((inputs, body, stamp)) => {
                     drop(state);
-                    session.record_actions(inputs);
+                    session.record_update(inputs, Some(body), Some(stamp));
                     return;
                 }
                 Err(e) => Err(e),
@@ -259,5 +335,49 @@ mod tests {
         assert_eq!(mem.bytes, before);
         mem.set_u32(32 + MASK, 1 << 16).unwrap();
         assert!(capture(&mem, 32, &[None; MAX_SEATS]).is_err());
+    }
+
+    #[test]
+    fn capture_and_apply_leave_the_head_and_stamp_untouched() {
+        let mut mem = FlatMemory::new(0x8000, 0x4048);
+        let update = mem.base;
+        mem.bytes.fill(0xa5);
+        let head: Vec<u8> = (0..8).map(|b| 0x10 + b).collect();
+        let stamp: Vec<u8> = (0..8).map(|b| 0xc0 + b).collect();
+        mem.bytes[..8].copy_from_slice(&head);
+        mem.bytes[0x4040..].copy_from_slice(&stamp);
+        assert_eq!(BODY_AT, 0x5cc);
+        assert_eq!(BODY_BYTES, 0x4040 - 0x5cc);
+        assert_eq!(
+            capture_stamp(&mem, update).unwrap(),
+            u32::from_le_bytes(stamp[..4].try_into().unwrap())
+        );
+
+        // A body with a player-set change, an event and the save flag.
+        let mut body = vec![0u8; BODY_BYTES];
+        body[0xdd0 - 0x5cc..0xdd0 - 0x5cc + 4].copy_from_slice(&7u32.to_le_bytes());
+        body[0xe38 - 0x5cc..0xe38 - 0x5cc + 4].copy_from_slice(&1u32.to_le_bytes());
+        body[0x403c - 0x5cc] = 1;
+        let seat = SeatInput { seat: 3, action: Some([9; ACTION_BYTES]), pad: None };
+        apply(&mut mem, update, &[seat]).unwrap();
+        apply_body(&mut mem, update, &body).unwrap();
+        assert_eq!(capture_body(&mem, update).unwrap(), body);
+        assert_eq!(capture(&mem, update, &[None; MAX_SEATS]).unwrap(), vec![seat]);
+        assert_eq!(mem.bytes[..8], head[..]);
+        assert_eq!(mem.bytes[0x4040..], stamp[..]);
+        // The action block and the body meet and neither writes the other's.
+        assert_eq!(mem.u32(update + 0xdd0).unwrap(), 7);
+        assert_eq!(mem.bytes[0x403c], 1);
+        assert_eq!(mem.u32(update + MASK).unwrap(), 1 << 3);
+
+        // A body of the wrong size, or on memory that ends early, writes nothing.
+        let before = mem.bytes.clone();
+        assert!(apply_body(&mut mem, update, &body[1..]).is_err());
+        assert_eq!(mem.bytes, before);
+        let mut short = FlatMemory::new(32, 0x4000);
+        assert!(capture_body(&short, 32).is_err());
+        assert!(capture_stamp(&short, 32).is_err());
+        assert!(apply_body(&mut short, 32, &body).is_err());
+        assert!(capture_body(&mem, u32::MAX - 100).is_err());
     }
 }

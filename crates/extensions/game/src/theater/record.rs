@@ -62,9 +62,28 @@ impl RamAnchor {
     }
 }
 
+/// One application of the simulation update: the seats' actions and the
+/// body the film stores beside them (`actions.rs`).
+pub(super) struct Update {
+    pub(super) inputs: Vec<SeatInput>,
+    /// The update's bytes between its action block and its stamp, or `None`
+    /// for an update that holds the one before's.
+    pub(super) body: Option<Vec<u8>>,
+}
+
+/// The most simulation updates one tick can apply and the film keep.
+const MAX_UPDATES: usize = 16;
+
 #[derive(Default)]
 pub(super) struct Capture {
-    pub(super) actions: Option<Vec<SeatInput>>,
+    /// The updates applied in the tick in progress, one for each
+    /// application, in order.
+    pub(super) updates: Vec<Update>,
+    /// The tick stamp of the update applied last in this game.
+    pub(super) last_stamp: Option<u32>,
+    /// An update's stamp skipped: the film ends at the tick before it, and
+    /// nothing after is kept.
+    pub(super) stamp_skipped: bool,
     pub(super) events: Vec<Event>,
     paused: bool,
     points: CapturePoints,
@@ -75,6 +94,8 @@ impl Capture {
     /// ([`CapturePoints::release_anchor`]).
     pub(super) fn next_game(&mut self) {
         self.points.release_anchor();
+        self.last_stamp = None;
+        self.stamp_skipped = false;
     }
 }
 
@@ -299,17 +320,18 @@ impl Recording {
             // game's end is (docs/game/film-format.md, "One film per game").
             self.match_over = true;
         }
-        let inputs = self.frame.actions.take().unwrap_or_default();
-        if let Some(film) = &self.film {
+        let updates = std::mem::take(&mut self.frame.updates);
+        let skipped = self.frame.stamp_skipped;
+        // The machine tape takes one batch for a tick: the tick's first
+        // update's. The film file has every one.
+        let inputs = updates
+            .first()
+            .map(|update| update.inputs.clone())
+            .unwrap_or_default();
+        if let Some(film) = &self.film
+            && !skipped
+        {
             use film::file::{RECORD_JOIN, RECORD_LEAVE, TICK_DIGEST, TICK_EVENTS};
-            let mut seats = [None; film::columns::SEATS];
-            for input in &inputs {
-                if let Some(slot) = seats.get_mut(usize::from(input.seat)) {
-                    *slot = input.action;
-                }
-            }
-            let flags = if post_hash.is_some() { TICK_DIGEST } else { 0 }
-                | if events.is_empty() { 0 } else { TICK_EVENTS };
             let mut film = film.lock().unwrap_or_else(|e| e.into_inner());
             // A game's start sits just before its first update's tick.
             match self.starts.release(&mut self.meta) {
@@ -321,16 +343,43 @@ impl Recording {
                 Ok(None) => {}
                 Err(error) => eprintln!("theater: this game has no start in its film: {error:#}"),
             }
-            film.push_tick(flags, post_hash.unwrap_or(0), &seats)?;
-            for event in &events {
-                match event {
-                    Event::Join { player } => {
-                        film.seat_record(player.seat, RECORD_JOIN, &[player.seat, player.kind as u8])?
+            // One film tick for each application of the update; a tick that
+            // applied none is one with no actions. The tick's digest and
+            // events are those of its end, so they sit on its last.
+            let ticks = updates.len().max(1);
+            for index in 0..ticks {
+                let last = index + 1 == ticks;
+                let update = updates.get(index);
+                let mut seats = [None; film::columns::SEATS];
+                if let Some(update) = update {
+                    for input in &update.inputs {
+                        if let Some(slot) = seats.get_mut(usize::from(input.seat)) {
+                            *slot = input.action;
+                        }
                     }
-                    Event::Leave { seat } | Event::Quit { seat } => {
-                        film.seat_record(*seat, RECORD_LEAVE, &[*seat])?
+                }
+                let flags = if last && post_hash.is_some() { TICK_DIGEST } else { 0 }
+                    | if last && !events.is_empty() { TICK_EVENTS } else { 0 };
+                let digest = if last { post_hash.unwrap_or(0) } else { 0 };
+                film.push_tick(flags, digest, &seats)?;
+                if let Some(body) = update.and_then(|update| update.body.as_deref()) {
+                    film.tail(body)?;
+                }
+                if !last {
+                    continue;
+                }
+                for event in &events {
+                    match event {
+                        Event::Join { player } => film.seat_record(
+                            player.seat,
+                            RECORD_JOIN,
+                            &[player.seat, player.kind as u8],
+                        )?,
+                        Event::Leave { seat } | Event::Quit { seat } => {
+                            film.seat_record(*seat, RECORD_LEAVE, &[*seat])?
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
         }
@@ -366,20 +415,48 @@ impl Recording {
 }
 
 impl Session {
+    /// An update with no body, as a test or a machine tape makes one.
     pub(super) fn record_actions(&self, inputs: Vec<SeatInput>) {
+        self.record_update(inputs, None, None);
+    }
+
+    /// The simulation update was applied: keep its actions and body for
+    /// the tick in progress. A tick can apply it more than once (a client
+    /// catching up after a stall), and each application is its own record,
+    /// in order. An update whose stamp is further on than the next tick
+    /// means a tick the film does not hold: the game's film is cut at the
+    /// tick before it (`finish` cuts it, as at the game's end).
+    pub(super) fn record_update(&self, inputs: Vec<SeatInput>, body: Option<Vec<u8>>, stamp: Option<u32>) {
         let mut s = self.lock();
         if s.complete || s.failure.is_some() {
             return;
         }
-        if let Mode::Record(r) = &mut s.mode
-            && r.frame.actions.replace(inputs).is_some()
-        {
-            let tick = s.tick + 1;
+        let tick = s.tick + 1;
+        let Mode::Record(r) = &mut s.mode else {
+            return;
+        };
+        if let Some(stamp) = stamp {
+            let last = r.frame.last_stamp.replace(stamp);
+            if !super::actions::stamp_follows(last, stamp) && !r.frame.stamp_skipped {
+                eprintln!(
+                    "theater: the update at tick {tick} is stamped {stamp} after {}: this game's film ends at the tick before",
+                    last.unwrap_or_default()
+                );
+                r.frame.stamp_skipped = true;
+                r.match_over = true;
+            }
+        }
+        if r.frame.stamp_skipped {
+            return;
+        }
+        if r.frame.updates.len() >= MAX_UPDATES {
             s.fail_at(
                 tick,
-                "two authoritative action batches arrived before a tick completed".into(),
+                format!("more than {MAX_UPDATES} simulation updates in one tick"),
             );
+            return;
         }
+        r.frame.updates.push(Update { inputs, body });
     }
 
     /// The campaign timer stops ticking while paused. Sample the pause
@@ -430,7 +507,7 @@ impl Session {
         let s = self.lock();
         !s.complete
             && s.failure.is_none()
-            && matches!(&s.mode, Mode::Record(r) if r.in_game() && r.frame.actions.is_none()
+            && matches!(&s.mode, Mode::Record(r) if r.in_game() && r.frame.updates.is_empty()
                 && r.frame.events.is_empty() && r.frame.points.due(s.tick) && !r.match_over)
     }
 
@@ -451,7 +528,7 @@ impl Session {
             };
             if !rec.in_game()
                 || rec.match_over
-                || rec.frame.actions.is_some()
+                || !rec.frame.updates.is_empty()
                 || !rec.frame.events.is_empty()
                 || !rec.frame.points.due(tick)
             {

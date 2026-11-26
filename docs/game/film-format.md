@@ -1,6 +1,6 @@
 # Halo 2 engine films
 
-Status: Design. The film file's tick chunks, the game start block (written for each game the recorder sees), the action capture at the simulation update and the stats container are built; the update's tail, extension blocks and one file for each game are not, and the file still carries the machine part and a seed ([theater-design.md](theater-design.md#slices)).
+Status: Design. The film file's tick chunks, the game start block (written for each game the recorder sees), the action and body capture at the simulation update and the stats container are built; extension blocks and one file for each game are not, and the file still carries the machine part and a seed ([theater-design.md](theater-design.md#slices)).
 Code: `crates/live/film/src/file.rs` (`FilmWriter`, `FilmReader`), `crates/live/film/src/start.rs` (`GameStart`), `crates/live/film/src/blam` (the stats container), `crates/extensions/game/src/theater/record.rs` (the recorder), `crates/extensions/game/src/theater/game_start.rs` (the capture). Tests: `crates/live/film/src/file/tests.rs`, `crates/live/film/src/start/tests.rs`, `crates/live/film/src/tests.rs`, `crates/extensions/game/src/theater/game_start/tests.rs`.
 Switch: `film-autorecord` (on), listed in [switches.md](../runtime/switches.md).
 

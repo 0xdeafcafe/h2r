@@ -375,16 +375,22 @@ fn a_fuzzed_chunk_is_refused_and_never_read_out_of_bounds() {
 #[test]
 fn the_encoder_and_decoder_allocate_nothing_after_they_start() {
     let rows = game(3 * CHUNK_TICKS);
+    let all_bodies = bodies(3 * CHUNK_TICKS);
     let mut encoder = ChunkEncoder::new().unwrap();
     // The first chunk is the start.
-    for row in &rows[..CHUNK_TICKS] {
+    for (row, body) in rows[..CHUNK_TICKS].iter().zip(&all_bodies) {
         encoder.push_tick(0, 0, row).unwrap();
+        encoder.tail(body).unwrap();
     }
     encoder.finish(1).unwrap();
     let encoded = allocations(|| {
-        for chunk in rows[CHUNK_TICKS..].chunks(CHUNK_TICKS) {
-            for row in chunk {
+        for (chunk, bodies) in rows[CHUNK_TICKS..]
+            .chunks(CHUNK_TICKS)
+            .zip(all_bodies[CHUNK_TICKS..].chunks(CHUNK_TICKS))
+        {
+            for (row, body) in chunk.iter().zip(bodies) {
                 encoder.push_tick(0, 0, row).unwrap();
+                encoder.tail(body).unwrap();
             }
             encoder.seat_record(0, 0, 0, &[1, 2, 3]).unwrap();
             encoder.finish(1).unwrap();
@@ -392,10 +398,11 @@ fn the_encoder_and_decoder_allocate_nothing_after_they_start() {
     });
     assert_eq!(encoded, 0, "the encoder allocated after it started");
 
-    let frames = encode(&rows);
+    let frames = encode_bodies(&rows, &all_bodies, &[]);
     let mut decoder = ChunkDecoder::new().unwrap();
     decoder.load(1, &frames[0]).unwrap();
     let mut out = [0u8; ACTION_BYTES];
+    let mut body = [0u8; BODY_BYTES];
     let mut seen = 0;
     let decoded = allocations(|| {
         for (i, frame) in frames.iter().enumerate().skip(1) {
@@ -404,6 +411,7 @@ fn the_encoder_and_decoder_allocate_nothing_after_they_start() {
                 for s in 0..SEATS {
                     seen += usize::from(decoder.action(t, s, &mut out));
                 }
+                seen += usize::from(decoder.body(t, &mut body));
             }
             seen += decoder.seat_records().count();
         }
@@ -439,4 +447,183 @@ fn field_stats_count_changes_and_price_each_predictor() {
     assert!(stick.grid_chunks >= 2);
     // A field of several words has no grid.
     assert_eq!(table[11].grid_chunks, 0);
+}
+
+/// Where an offset of the `0x4048`-byte update falls in the body.
+const fn at(update_offset: usize) -> usize {
+    update_offset - 0x5cc
+}
+
+/// A synthetic game's update bodies. A player entry changes now and then
+/// (`0x610` on, `0x7c` bytes each), a player joins at tick 300 and leaves
+/// at 500 (the player-set change at `0xdd0`, its mask at `0xdd4`), events
+/// queue on a few ticks (`0xe38`, `0xc8` bytes each), and the save flag
+/// (`0x403c`) is up on every 97th tick.
+fn bodies(ticks: usize) -> Vec<[u8; BODY_BYTES]> {
+    let mut rng = Rng(0x0123_4567_89ab_cdef);
+    let mut body = [0u8; BODY_BYTES];
+    let mut bodies = Vec::new();
+    for t in 0..ticks {
+        if t % 7 == 0 {
+            let entry = at(0x610) + 0x7c * (rng.next() % 16) as usize;
+            body[entry + 4..entry + 8].copy_from_slice(&(rng.next() as u32).to_le_bytes());
+        }
+        let change = at(0xdd0);
+        body[change..change + 4].fill(0);
+        body[change + 4..change + 8].fill(0);
+        if t == 300 || t == 500 {
+            body[change..change + 4].copy_from_slice(&(t as u32).to_le_bytes());
+            body[change + 4] = if t == 300 { 1 } else { 2 };
+        }
+        let events = at(0xe38);
+        body[events..events + 0xc8 * 2].fill(0);
+        if t % 41 == 5 {
+            for byte in &mut body[events..events + 0xc8 * 2] {
+                *byte = rng.next() as u8;
+            }
+        }
+        body[at(0x403c)] = u8::from(t % 97 == 0);
+        bodies.push(body);
+    }
+    bodies
+}
+
+/// `rows` as a film's chunks, each tick with its body. Ticks listed in
+/// `bare` are given none.
+fn encode_bodies(rows: &[Row], bodies: &[[u8; BODY_BYTES]], bare: &[usize]) -> Vec<Vec<u8>> {
+    let mut encoder = ChunkEncoder::new().unwrap();
+    let mut frames = Vec::new();
+    for (i, chunk) in rows.chunks(CHUNK_TICKS).enumerate() {
+        for (t, row) in chunk.iter().enumerate() {
+            let tick = i * CHUNK_TICKS + t;
+            encoder.push_tick(0, tick as u64, row).unwrap();
+            if !bare.contains(&tick) {
+                encoder.tail(&bodies[tick]).unwrap();
+            }
+        }
+        frames.push(encoder.finish(i as u64).unwrap().to_vec());
+    }
+    frames
+}
+
+#[test]
+fn bodies_with_a_player_set_change_events_and_a_save_flag_round_trip() {
+    let rows = game(700);
+    let bodies = bodies(700);
+    let frames = encode_bodies(&rows, &bodies, &[]);
+    let mut decoder = ChunkDecoder::new().unwrap();
+    let mut out = [0u8; BODY_BYTES];
+    for (i, frame) in frames.iter().enumerate() {
+        decoder.load((i * CHUNK_TICKS + 1) as u64, frame).unwrap();
+        for t in 0..decoder.ticks() {
+            let tick = i * CHUNK_TICKS + t;
+            assert!(decoder.body(t, &mut out));
+            assert!(out == bodies[tick], "body of tick {tick}");
+        }
+        assert!(!decoder.body(decoder.ticks(), &mut out));
+    }
+    // The actions are what they were: the tails ride beside them.
+    check(&rows, &encode(&rows));
+    // Ticks asked for out of order give the same bodies.
+    decoder.load(1, &frames[0]).unwrap();
+    for t in [200, 3, 3, 255, 0, 255] {
+        assert!(decoder.body(t, &mut out));
+        assert!(out == bodies[t], "body of tick {t}");
+    }
+}
+
+#[test]
+fn a_tick_given_no_tail_holds_the_body_before_and_a_chunk_starts_from_zeros() {
+    let rows = game(600);
+    let bodies = bodies(600);
+    // Tick 10 is bare, and so is the first tick of the second chunk.
+    let frames = encode_bodies(&rows, &bodies, &[10, CHUNK_TICKS]);
+    let mut decoder = ChunkDecoder::new().unwrap();
+    let mut out = [0u8; BODY_BYTES];
+    decoder.load(1, &frames[0]).unwrap();
+    assert!(decoder.body(9, &mut out));
+    let before = out;
+    assert!(decoder.body(10, &mut out));
+    assert!(out == before);
+    decoder.load(257, &frames[1]).unwrap();
+    assert!(decoder.body(0, &mut out));
+    assert!(out == [0u8; BODY_BYTES]);
+    assert!(decoder.body(1, &mut out));
+    assert!(out == bodies[CHUNK_TICKS + 1]);
+}
+
+#[test]
+fn a_chunk_decodes_its_bodies_without_the_chunk_before() {
+    let rows = game(700);
+    let bodies = bodies(700);
+    let frames = encode_bodies(&rows, &bodies, &[]);
+    // A decoder that never saw chunk 0, and one that starts over from it.
+    let mut alone = ChunkDecoder::new().unwrap();
+    alone.load(257, &frames[1]).unwrap();
+    let mut out = [0u8; BODY_BYTES];
+    for t in 0..alone.ticks() {
+        assert!(alone.body(t, &mut out));
+        assert!(out == bodies[CHUNK_TICKS + t], "body of tick {}", CHUNK_TICKS + t);
+    }
+    alone.load(513, &frames[2]).unwrap();
+    assert!(alone.body(0, &mut out));
+    assert!(out == bodies[2 * CHUNK_TICKS]);
+}
+
+#[test]
+fn a_quiet_update_costs_a_byte_a_tick_and_a_tail_is_the_bytes_that_changed() {
+    let rows = vec![[None; SEATS]; CHUNK_TICKS];
+    let mut idle = ChunkEncoder::new().unwrap();
+    let mut busy = ChunkEncoder::new().unwrap();
+    let mut body = [0u8; BODY_BYTES];
+    for (t, row) in rows.iter().enumerate() {
+        idle.push_tick(0, 0, row).unwrap();
+        busy.push_tick(0, 0, row).unwrap();
+        body[at(0x610) + 4] = t as u8;
+        busy.tail(&body).unwrap();
+    }
+    idle.finish(0).unwrap();
+    busy.finish(0).unwrap();
+    // The first tick's byte did not change. Each tick after changes one,
+    // which costs a skip, a length and the byte beside the run count.
+    assert_eq!(busy.raw().len() - idle.raw().len(), 3 * (CHUNK_TICKS - 1));
+}
+
+#[test]
+fn a_fuzzed_tail_is_refused_and_a_body_of_the_wrong_size_is_not_taken() {
+    let rows = game(8);
+    let bodies = bodies(8);
+    let mut encoder = ChunkEncoder::new().unwrap();
+    for (row, body) in rows.iter().zip(&bodies) {
+        encoder.push_tick(0, 0, row).unwrap();
+        encoder.tail(body).unwrap();
+    }
+    // A second tail for the same tick, and one that is the wrong size.
+    assert!(encoder.tail(&bodies[0]).is_err());
+    encoder.push_tick(0, 0, &rows[0]).unwrap();
+    assert!(encoder.tail(&bodies[0][..BODY_BYTES - 1]).is_err());
+    encoder.finish(3).unwrap();
+    let raw = encoder.raw().to_vec();
+    let mut decoder = ChunkDecoder::new().unwrap();
+    decoder.load(1, &corrupted(&raw)).unwrap();
+    // A run that leaves the body is refused: the last tick's run count
+    // claims a run past the end.
+    let tail_end = raw.len() - 8;
+    let mut bad = raw[..tail_end].to_vec();
+    bad.pop();
+    bad.extend_from_slice(&[1, 0xff, 0x7f, 1, 9]);
+    bad.extend_from_slice(&raw[tail_end..]);
+    assert!(decoder.load(1, &corrupted(&bad)).is_err());
+    let mut rng = Rng(77);
+    for _ in 0..2000 {
+        let mut copy = raw.clone();
+        let window = (raw.len() - 8).min(400);
+        let at = raw.len() - 8 - window + (rng.next() % window as u64) as usize;
+        copy[at] = rng.next() as u8;
+        let _ = decoder.load(1, &corrupted(&copy));
+        let mut out = [0u8; BODY_BYTES];
+        for t in 0..decoder.ticks() {
+            let _ = decoder.body(t, &mut out);
+        }
+    }
 }
