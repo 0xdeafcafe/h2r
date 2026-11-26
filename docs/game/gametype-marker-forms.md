@@ -1,6 +1,6 @@
 # Game type markers: icons, the edit form and the play form
 
-Status: Design. Nothing on this page is built. It extends the built marker set of [gametype-markers.md](gametype-markers.md) (MK1 to MK9) with slices MK10 to MK16 below.
+Status: Design; the box and the sphere as areas (MK11) are built in `game_markers::area`, `record` and `forge_doc::Area`. It extends the built marker set of [gametype-markers.md](gametype-markers.md) (MK1 to MK9) with slices MK10 to MK16 below.
 Code: `crates/formats/game-markers/src/{form,icon,digits}.rs` (the forms and icons), `crates/formats/game-markers/src/area.rs` (the box and the sphere), `crates/extensions/game/src/forge_glue/markers_world.rs` (the game's drawer). Tests: named per slice under "Slices".
 Switch: none.
 
@@ -114,9 +114,10 @@ pub enum Shape {
 A cylinder, a box and a path have the area's `below` and `above` as
 their height; a sphere has only its radius, and `below` and `above` are
 ignored and written as zero. `Area::validate` holds a box's half
-lengths and a sphere's radius to the radius's limits (0.25 to 64).
-`Area::contains` tests the box in the marker's own axes and the sphere
-by distance. The document's wire form, the record at the end of a
+lengths (`AreaError::Half`) and a sphere's radius to the radius's
+limits (0.25 to 64). `Area::contains` tests the box in the marker's own
+axes and the sphere by distance; `Area::contains_turned` turns the box
+to the marker's facing. The document's wire form, the record at the end of a
 Studio map and `rules.zones` carry the two shapes as they carry a
 radius.
 

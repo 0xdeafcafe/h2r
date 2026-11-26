@@ -137,7 +137,7 @@ A family beside `Placement`, `TagField` and `Forge`
 | `EntryOp::Remove {target}` | removes the entry | nothing |
 | `EntryOp::Reset {target}` | drops the effect of every earlier entry op on an own entry: it is in the map again, as the disc has it. Links and labels are their own ops and stay | nothing |
 | `EntryOp::Property {target, property}` | sets or clears a property that has no retail field ("Properties without a retail field") | the property's own value |
-| `EntryOp::Area {target, area}` | sets or clears a netgame flag's [area](gametype-markers.md#in-the-document) | a radius or path with heights, or `null` |
+| `EntryOp::Area {target, area}` | sets or clears a netgame flag's [area](gametype-markers.md#in-the-document) | a radius, box, sphere or path (a sphere has no heights), or `null` |
 
 `Placement::Add` stays the one way to make an entry, and its `OpId` is
 the new entry's name.
