@@ -560,3 +560,205 @@ fn a_film_that_diverges_in_the_running_game_ends_like_end_film_and_the_game_goes
     rec.checkpoint(&menus);
     assert!(!rec.lock().complete);
 }
+
+// The session ring (`ring.rs`): a seek behind the tick shown loads the
+// latest entry at or before its target and runs forward from it. The films
+// here are short, so their rings take an entry every `RING_EVERY` ticks.
+
+use crate::theater::ring::{Ring, fakes::Fake};
+use std::collections::BTreeMap;
+
+const RING_EVERY: u64 = 10;
+
+/// Watch the film with a ring of an entry every [`RING_EVERY`] ticks whose
+/// records and monitors are a fake's.
+fn ring_watch(v: &Viewer) -> (runtime::Guest, Fake) {
+    let g = v.watch();
+    let fake = Fake::default();
+    v.rec.lock().ring = Some(Ring::new(256 << 20, Box::new(fake.clone())).every(RING_EVERY));
+    (g, fake)
+}
+
+/// A frame starts, as the pacing hook has it: a ring jump loads its entry,
+/// or goes by the start route.
+fn frame(rec: &Arc<Session>, g: &mut runtime::Guest) {
+    if let Some(target) = rec.ring_frame(g) {
+        rec.start_over(target);
+    }
+}
+
+/// Play to film tick `to`, one tick a frame. Each tick's synthetic state is
+/// kept in `states`, and must be what an earlier pass kept for it.
+fn play_to(rec: &Arc<Session>, g: &mut runtime::Guest, to: u64, states: &mut BTreeMap<u64, u32>) {
+    for _ in 0..=LENGTH + 1 {
+        frame(rec, g);
+        if rec.lock().tick >= to {
+            return;
+        }
+        assert!(tick(rec, g, 0xee), "the film stopped: {:?}", rec.lock().failure);
+        let at = rec.lock().tick;
+        let state = g.u32(STATE).unwrap();
+        if let Some(before) = states.insert(at, state) {
+            assert_eq!(before, state, "tick {at} is not the straight run's");
+        }
+    }
+    panic!("the film never reached tick {to}");
+}
+
+#[test]
+fn a_seek_back_loads_the_latest_ring_entry_at_or_before_its_target_and_runs_forward_to_it() {
+    let v = viewer();
+    let rec = &v.rec;
+    let (mut g, fake) = ring_watch(&v);
+    let mut states = BTreeMap::new();
+    play_to(rec, &mut g, 28, &mut states);
+    let ring = rec.transport(api::KEYFRAMES, json!({})).unwrap();
+    assert_eq!(ring["ring"], json!([10, 20]), "{ring}");
+    assert!(ring["ring_bytes"].as_u64().unwrap() > 0);
+    assert_eq!(ring["ring_cap"], json!(256u64 << 20));
+
+    // Twice from the same entry, then from the film's held last tick.
+    for (target, entry) in [(25, 20), (23, 20), (15, 10)] {
+        if entry == 10 {
+            play_to(rec, &mut g, LENGTH, &mut states);
+            assert!(rec.lock().complete, "the film holds its last tick");
+        }
+        let from = rec.lock().tick;
+        let state = rec.transport(api::SEEK, json!({ "tick": target })).unwrap();
+        assert_eq!(state["seek"]["source"], json!("ring"), "{state}");
+        assert_eq!(state["seeking"], json!(true));
+        // The entry loads at the next frame's start: the film stands at it,
+        // with its state.
+        frame(rec, &mut g);
+        assert_eq!(rec.lock().tick, entry);
+        assert_eq!(g.u32(STATE).unwrap(), states[&entry]);
+        let state = rec.transport(api::STATE, json!({})).unwrap();
+        assert_eq!(state["seek"]["source"], json!("ring"), "{state}");
+        assert_eq!(state["seek"]["from_tick"], json!(from));
+        assert_eq!(state["seek"]["remaining_ticks"], json!(target - entry));
+        assert!(state["seek"]["restore_ms"].is_u64(), "{state}");
+        // On to the target, with the film's digests checked and the
+        // straight run's states.
+        play_to(rec, &mut g, target, &mut states);
+        let s = rec.lock();
+        assert_eq!((s.tick, s.seeking, s.failure.clone(), s.complete), (target, None, None, false));
+    }
+    assert!(v.pending().is_empty(), "no game was queued");
+    assert_eq!(fake.puts(), 3, "the monitors went back with each load");
+}
+
+#[test]
+fn a_seek_with_no_ring_entry_at_or_before_its_target_or_that_asks_for_the_start_takes_the_start_route() {
+    let v = viewer();
+    let rec = &v.rec;
+    let (mut g, _) = ring_watch(&v);
+    let mut states = BTreeMap::new();
+    play_to(rec, &mut g, 15, &mut states);
+    assert_eq!(rec.transport(api::KEYFRAMES, json!({})).unwrap()["ring"], json!([10]));
+
+    // The start asked for, though the ring has an entry for the target.
+    let state = rec.transport(api::SEEK, json!({ "tick": 12, "source": "boot" })).unwrap();
+    assert_eq!(state["seek"]["source"], json!("boot"), "{state}");
+    assert_eq!(v.pending().len(), 1, "the film's game is queued again");
+    let mut again = machine(&v.options, [5, 6]);
+    rec.game_activated(&again);
+    play_to(rec, &mut again, 12, &mut states);
+
+    // No entry at or before the target.
+    let state = rec.transport(api::SEEK, json!({ "tick": 5 })).unwrap();
+    assert_eq!(state["seek"]["source"], json!("boot"), "{state}");
+    assert!(state["seek"].get("restore_ms").is_none(), "{state}");
+    assert_eq!(v.pending().len(), 1, "the film's game is queued again");
+    assert!(rec.lock().play.as_ref().unwrap().awaiting());
+
+    // The ring is the film's, not the game's: once the film's game runs
+    // again, a jump loads the entry the first game took.
+    let mut third = machine(&v.options, [7, 8]);
+    rec.game_activated(&third);
+    play_to(rec, &mut third, 14, &mut states);
+    let state = rec.transport(api::SEEK, json!({ "tick": 11 })).unwrap();
+    assert_eq!(state["seek"]["source"], json!("ring"), "{state}");
+    frame(rec, &mut third);
+    assert_eq!((rec.lock().tick, third.u32(STATE).unwrap()), (10, states[&10]));
+    play_to(rec, &mut third, 11, &mut states);
+    assert_eq!(rec.lock().failure, None);
+    assert!(v.pending().is_empty());
+}
+
+#[test]
+fn a_ring_entry_that_fails_its_hash_drops_the_ring_and_the_jump_takes_the_start_route() {
+    let v = viewer();
+    let rec = &v.rec;
+    let (mut g, _) = ring_watch(&v);
+    let mut states = BTreeMap::new();
+    play_to(rec, &mut g, 25, &mut states);
+    rec.lock().ring.as_mut().unwrap().spoil(20);
+    let state = rec.transport(api::SEEK, json!({ "tick": 22 })).unwrap();
+    assert_eq!(state["seek"]["source"], json!("ring"), "{state}");
+
+    frame(rec, &mut g);
+    let state = rec.transport(api::STATE, json!({})).unwrap();
+    assert_eq!(state["seek"]["source"], json!("boot"), "{state}");
+    assert_eq!(state["seek"]["target"], json!(22));
+    assert_eq!(v.pending().len(), 1, "the film's game is queued again");
+    let ring = rec.transport(api::KEYFRAMES, json!({})).unwrap();
+    assert_eq!(ring["ring"], json!([]), "{ring}");
+    assert!(ring["off"].as_str().is_some_and(|why| why.contains("differs")), "{ring}");
+    assert_eq!(rec.lock().failure, None);
+
+    // The film plays from its game's start to the target, and the ring
+    // stays off for it.
+    let mut again = machine(&v.options, [5, 6]);
+    rec.game_activated(&again);
+    play_to(rec, &mut again, 22, &mut states);
+    let state = rec.transport(api::SEEK, json!({ "tick": 21 })).unwrap();
+    assert_eq!(state["seek"]["source"], json!("boot"), "{state}");
+}
+
+#[test]
+fn a_divergence_just_after_a_ring_load_drops_the_ring_and_the_jump_takes_the_start_route() {
+    let v = viewer();
+    let rec = &v.rec;
+    let (mut g, _) = ring_watch(&v);
+    play_to(rec, &mut g, 25, &mut BTreeMap::new());
+    rec.transport(api::SEEK, json!({ "tick": 24 })).unwrap();
+    frame(rec, &mut g);
+    assert_eq!(rec.lock().tick, 20);
+
+    // The loaded state is not the film's: the next digest differs.
+    g.set_u32(STATE, 0xbad0_bad0).unwrap();
+    assert!(tick(rec, &mut g, 0xee));
+    {
+        let s = rec.lock();
+        assert_eq!(s.failure, None, "the divergence is the ring's, not the film's");
+        let seek = s.seek.as_ref().unwrap();
+        assert_eq!((seek.source, seek.target), (api::SeekSource::Boot, 24));
+        assert!(s.play.as_ref().unwrap().awaiting());
+        let off = s.keyframes().off.unwrap_or_default();
+        assert!(off.contains("diverged"), "{off}");
+    }
+    assert_eq!(v.pending().len(), 1, "the film's game is queued again");
+}
+
+#[test]
+fn a_cancelled_ring_jump_holds_the_tick_it_left_and_keyframes_answer_with_no_ring() {
+    let v = viewer();
+    let rec = &v.rec;
+    let (mut g, _) = ring_watch(&v);
+    play_to(rec, &mut g, 25, &mut BTreeMap::new());
+    rec.transport(api::SEEK, json!({ "tick": 21 })).unwrap();
+    // Cancelled before its entry loads: nothing is loaded and the film
+    // holds the tick it left.
+    rec.transport(api::SEEK, json!({ "cancel": true })).unwrap();
+    frame(rec, &mut g);
+    {
+        let s = rec.lock();
+        assert_eq!((s.tick, s.seeking, s.paused), (25, None, true));
+        assert!(s.seek.is_none() && !s.ring_pending());
+    }
+    // A player with no ring says so.
+    rec.lock().ring = None;
+    let ring = rec.transport(api::KEYFRAMES, json!({})).unwrap();
+    assert_eq!(ring["ring"], json!([]));
+    assert!(ring["off"].is_string(), "{ring}");
+}

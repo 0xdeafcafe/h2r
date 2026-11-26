@@ -256,3 +256,24 @@ fn a_scan_keeps_each_distinct_look_once_and_ignores_the_rest() {
     assert_eq!(unseen.len(), 1);
     assert_eq!(unseen[0].seat, 12);
 }
+
+#[test]
+fn a_session_ring_entry_keeps_the_monitors_and_puts_them_back() {
+    let _t = turn();
+    let empty = ring::snapshot();
+    deliver(
+        150,
+        &[look_record(13, MARKER), pose_record(13, 150, 5., true)],
+    )
+    .unwrap();
+    let kept = ring::snapshot();
+    deliver(300, &[look_record(14, MARKER), pose_record(14, 300, 7., true)]).unwrap();
+    assert!(is_monitor(14));
+
+    // Loaded at the entry: the monitors read after it go.
+    ring::restore(&kept);
+    assert!(is_monitor(13) && !is_monitor(14));
+    // An entry taken before any monitor was read leaves none.
+    ring::restore(&empty);
+    assert!(!active() && !is_monitor(13));
+}

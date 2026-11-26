@@ -53,6 +53,9 @@ pub(super) struct Play {
     /// Updates applied in the game tick in progress: each took the film
     /// tick after the last.
     applied: u64,
+    /// The game ticks the film's game has ended since its first update
+    /// (a session ring entry keeps it).
+    game_ticks: u64,
     /// The film's game has been queued and has not activated: a start-route
     /// seek in the running game (`watch`). Updates before the activation
     /// are the old game's own and are not the film's.
@@ -89,6 +92,7 @@ impl Play {
             begun: false,
             at: 0,
             applied: 0,
+            game_ticks: 0,
             awaiting: false,
             map_vfs: None,
         }))
@@ -101,6 +105,7 @@ impl Play {
         self.begun = false;
         self.at = 0;
         self.applied = 0;
+        self.game_ticks = 0;
         self.awaiting = true;
         super::extension::clear();
     }
@@ -149,6 +154,34 @@ impl Play {
     /// local player the options name, at most the guest's four.
     pub(super) fn ports(&self) -> usize {
         ports(&self.start.options) as usize
+    }
+
+    /// The game ticks the film's game has ended since its first update.
+    pub(super) fn game_ticks(&self) -> u64 {
+        self.game_ticks
+    }
+
+    /// A session ring entry was loaded into the game: the state at the end
+    /// of film tick `tick`, which the film's game reached in `game_ticks`
+    /// game ticks. The film goes on from the tick after it: records handed
+    /// to their features and not applied go, and the next tick's are handed
+    /// over again, as when the tick ended ([`tick_done`]).
+    pub(super) fn resume_at(&mut self, tick: u64, game_ticks: u64) -> Result<()> {
+        ensure!(self.begun && !self.awaiting, "the film's game is not running");
+        ensure!(
+            tick >= self.start.game.first_update && tick <= self.length,
+            "tick {tick} is outside the film's game ({} to {})",
+            self.start.game.first_update,
+            self.length
+        );
+        self.at = tick;
+        self.applied = 0;
+        self.game_ticks = game_ticks;
+        super::extension::clear();
+        if tick < self.length {
+            self.deliver(tick + 1)?;
+        }
+        Ok(())
     }
 
     /// Hand the features the extension records that come before film tick
@@ -284,6 +317,7 @@ pub(super) fn tick_done(state: &mut State, hash: Option<u64>) {
         Ok(tick >= play.length)
     })();
     play.at = tick;
+    play.game_ticks += 1;
     if digested && let Some(v) = &mut state.verify {
         v.digest(tick);
     }

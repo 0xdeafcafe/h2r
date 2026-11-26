@@ -19,6 +19,7 @@ mod host_view;
 pub use host_view::HostView;
 pub use camera::{FilmCamera, RenderHooks};
 mod rig;
+mod ring;
 mod controls;
 mod metadata;
 mod measurements;
@@ -206,6 +207,9 @@ struct State {
     /// Present while a film plays in the viewer's own session
     /// ([`watch`]); the recorder is parked meanwhile.
     watch: Option<watch::WatchInfo>,
+    /// The session ring of the film being played ([`ring`]); `None` while
+    /// recording and in a verification.
+    ring: Option<ring::Ring>,
 }
 
 /// A default recording's account of itself: the films it sealed, the last
@@ -498,6 +502,7 @@ impl Session {
                 complete: false,
                 outcome: Outcome::default(),
                 watch: None,
+                ring: None,
             }),
             upload: Mutex::default(),
             watch: watch::Hub::new(own),
@@ -506,6 +511,7 @@ impl Session {
             // The player answers the guest's tick count itself: no wall
             // clock paces a film that starts from its game start.
             session.pace_in_guest();
+            session.open_ring();
         }
         Ok(Some(session))
     }
@@ -649,6 +655,13 @@ impl Session {
                 }
             } else {
                 film_play::tick_done(&mut s, hash);
+                // A divergence just after a ring load is the ring's: the
+                // jump goes by the start route instead.
+                if let Some(target) = s.ring_diverged() {
+                    drop(s);
+                    self.start_over(target);
+                    return;
+                }
                 // The film tick the game reached, which a tick that applied
                 // its update twice moves on by two.
                 let at = s.tick;
@@ -670,6 +683,7 @@ impl Session {
         if s.failure.is_some() {
             return;
         }
+        s.ring_passed(guest);
         if reached_target {
             s.seeking = None;
             if let Some(run) = &mut s.measurements {

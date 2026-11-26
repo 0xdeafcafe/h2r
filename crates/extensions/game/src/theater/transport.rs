@@ -87,8 +87,16 @@ impl State {
                     // departure tick.
                     self.restart = None;
                     self.seek = None;
+                } else if self.ring_pending() && self.tick == from {
+                    // A ring jump whose entry has not loaded: the film
+                    // still holds the departure tick.
+                    if let Some(ring) = &mut self.ring {
+                        ring.cancel();
+                    }
+                    self.seeking = None;
+                    self.seek = None;
                 } else {
-                    self.queue_jump(from, from, None);
+                    self.seek_in_game(from, from, None);
                 }
                 self.set_paused(true);
             }
@@ -132,6 +140,9 @@ impl State {
             source: api::SeekSource::Boot,
             requested_source,
         });
+        if let Some(ring) = &mut self.ring {
+            ring.cancel();
+        }
         self.restart = Some(target);
         self.step_until = None;
         self.rate = PlaybackRate::default();
@@ -147,6 +158,7 @@ impl State {
             } else {
                 seek.target.saturating_sub(self.tick)
             },
+            restore_ms: self.ring_restore_ms(seek.source),
         })
     }
 

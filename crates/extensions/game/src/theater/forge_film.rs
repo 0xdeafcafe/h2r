@@ -121,6 +121,9 @@ pub fn unseen(can: &CanDraw) -> Vec<Unseen> {
     with(|s| s.playback.unseen(can))
 }
 
+/// The monitors a session ring entry keeps and puts back.
+pub(super) mod ring;
+
 /// A film file's look records, found by one read of its track.
 type Looks = Vec<Vec<u8>>;
 

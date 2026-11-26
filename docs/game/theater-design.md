@@ -1,6 +1,6 @@
 # Theater: the full in-game player
 
-Status: Design. The per-update action and body capture and apply, the film file and its column and tail codec, the game start block, start points, the camera rig, the film selector, the Live film routes and the recorded look in first person (`coop_look::follow_film`, slice 9) are built; a film plays from its game start, in the running game and in a film player process, one film tick for each application of the update (slices 1b, 2, 3, 4 and 5). A default recording writes one film for each game, `<id>.h2film` and `<id>.h2stats`, opened at the game's activation with tick 1 its first update and sealed at its end; there is no session tape, cut or fork, and the library prune seals a hard-killed film at its last checkpoint (slice 6). The machine film is gone from Theater and the film crate: a film without a game start does not open, a seek runs in the process that plays the film, and nothing is restored from a keyframe (slice 7a). The call tape is gone: no HLE call, pad read, keyboard command, bot outcome, lobby call or network result is recorded or answered from a film, the stats container holds no machine section, arena hash or mark, and the film file holds no machine part (slice 7b). A dedicated host uploads its film file and stats stream, a machine uploads its own films as the host does, and a participant's Watch reads the host's film file from Live by range; Live stores the file as sent, reads the film file with the lease's token only, serves it to any signed-in account that can see the game, and charges a pinned game for it (slice 12; the run of a host film's arena hashes on a local playback is not made). The snapshot ring is not built ("Slices", 8). Extension records are built, with a shared Forge session's edits their first user, and an outside change with no record ends the film at the tick before it (slice 11).
+Status: Design. The per-update action and body capture and apply, the film file and its column and tail codec, the game start block, start points, the camera rig, the film selector, the Live film routes and the recorded look in first person (`coop_look::follow_film`, slice 9) are built; a film plays from its game start, in the running game and in a film player process, one film tick for each application of the update (slices 1b, 2, 3, 4 and 5). A default recording writes one film for each game, `<id>.h2film` and `<id>.h2stats`, opened at the game's activation with tick 1 its first update and sealed at its end; there is no session tape, cut or fork, and the library prune seals a hard-killed film at its last checkpoint (slice 6). The machine film is gone from Theater and the film crate: a film without a game start does not open, a seek runs in the process that plays the film, and nothing is restored from a keyframe (slice 7a). The call tape is gone: no HLE call, pad read, keyboard command, bot outcome, lobby call or network result is recorded or answered from a film, the stats container holds no machine section, arena hash or mark, and the film file holds no machine part (slice 7b). A dedicated host uploads its film file and stats stream, a machine uploads its own films as the host does, and a participant's Watch reads the host's film file from Live by range; Live stores the file as sent, reads the film file with the lease's token only, serves it to any signed-in account that can see the game, and charges a pinned game for it (slice 12; the run of a host film's arena hashes on a local playback is not made). The session ring is built: a seek behind the tick shown loads the latest entry at or before its target in the running game and runs forward from it, `theater.state` reports the route `ring` and `theater.keyframes` the entries (slice 8; its run, the after-restore step and the timeline's covered stretch are not made). Extension records are built, with a shared Forge session's edits their first user, and an outside change with no record ends the film at the tick before it (slice 11).
 Code: `crates/extensions/game/src/theater.rs` (`Session`), `crates/extensions/game/src/theater/actions.rs` (the update hook), `crates/extensions/game/src/theater/record.rs` (the recorder's tick), `crates/live/film/src/columns.rs` (the chunk codec), `crates/extensions/game/src/theater/film_play.rs` (play from the game start), `crates/extensions/game/src/theater/watch.rs` (watching in the running game), `crates/extensions/game/src/theater/pacing.rs`, `crates/live/film/src/file.rs` (the film file), `crates/extensions/game/src/theater/start_point_state.rs` (arena state). Tests: `crates/extensions/game/src/theater/tests.rs`, `crates/extensions/game/src/theater/film_play/tests.rs`, `crates/extensions/game/src/theater/watch/tests.rs`, `crates/live/film/src/file/tests.rs`.
 Switch: [the film player's `H2_THEATER_*`](../runtime/switches.md).
 
@@ -351,7 +351,7 @@ A request for tick T takes the cheapest route:
 | Route | When | Cost |
 |---|---|---|
 | **Forward** | T is ahead of the tick shown and no ring entry is nearer | simulates on from here, unrendered (`State::seek_in_game`) |
-| **Ring** | an entry at or before T exists | loads the entry in the running game, then at most 150 ticks |
+| **Ring** | an entry at or before T exists and, for T ahead, it is past the tick shown; the caller did not ask for `source: "boot"` | loads the entry at the next frame's start, then at most 150 ticks |
 | **Start** | T is behind and no entry is at or before it, or the caller asked for `source: "boot"` | queues the film's options again (`Session::requeue`): one map load, then every tick to T. Until the queued game activates, the game in play is not the film's and its updates are left alone |
 
 After the restore the player runs forward to T unrendered, checking every
@@ -362,32 +362,53 @@ the jump left. The film file holds no seek point, as Halo 3's does not.
 
 ### The session ring
 
-The ring holds game-state snapshots of the film being watched.
+The ring holds game-state snapshots of the film being watched
+(`theater/ring.rs`), in the running game and in a film player process.
 
-- **An entry** is the game-state arena, compressed, the extension
-  records, the tick, and the film cursor: the next chunk and the column
-  decoder's seat rows (`film::columns::ChunkDecoder::seat_rows`). It is
-  a start point without its tag (`start_point_state::capture`). It holds
-  no guest RAM outside the arena and no device state. About 0.26 MB an
-  entry (**Estimate**: the retail join compresses the arena 16 to 1,
+- **An entry** is the state at the end of a film tick: the game-state
+  arena, zstd at its fastest level, the `SimExt` records and the arena
+  hash of both, the tick, the game ticks the film's game had ended by
+  then, and the Forge monitor looks and poses read so far
+  (`theater::forge_film::ring`). It is a start point without its tag
+  (`start_point_state::capture`). It holds no guest RAM outside the arena
+  and no device state. The film cursor is the tick: the film file's
+  reader (`film::file::FilmActions`) keeps the column decoder's seat rows
+  (`ChunkDecoder::seat_rows`) at the start of every chunk it has decoded,
+  so it reads any tick the player has passed without the entry holding
+  them. About 0.26 MB an entry (**Estimate**: the retail join compresses
+  the arena 16 to 1,
   [live-coop.md](../live/live-coop.md#141-what-the-retail-engine-already-has)).
-- **When.** One entry every 150 ticks the player passes, playing or
-  running forward, so one pass makes the whole film seekable.
-- **Policy.** The ring keeps every entry until it reaches its byte cap
-  (256 MiB, the `theater.ring_mib` setting), then drops every second
-  entry of its older half.
-- **Restore.** At a tick boundary the player writes the arena back
-  (`start_point_state::load`), runs the engine's own step after a
-  game-state restore, the one its checkpoint revert and its synchronous
-  join run
-  ([checkpoints.md](../runtime/checkpoints.md), live-coop.md section
-  14.9), loads the extension records and resets the film cursor. The
-  arena hash after the load must equal the entry's, and the next digests
-  must match.
-- **Failure.** An entry that fails either check is dropped with the rest
-  of the ring, the jump takes the start route, and the ring stays off for
-  that film in this session.
-- **The ring is not in the film** and is dropped when the film ends.
+- **When.** One entry for each stretch of 150 film ticks the player
+  passes, playing or running forward, at the first tick a game tick ends
+  on in it (150, 300, ..., or 301 when a game tick applies its update
+  twice across 300). The first stretch has none: a jump before tick 150
+  takes the start route. A stretch passed again keeps its entry, so one
+  pass makes the whole film seekable.
+- **Policy.** The ring keeps every entry until their stored bytes pass
+  its cap (256 MiB, `H2_THEATER_RING_MIB`), then drops every second entry
+  of its older half until it fits; the oldest and the newest stay.
+- **Restore.** A ring jump loads its entry at the start of the next frame,
+  in the hook that answers the frame's tick count (`theater/pacing.rs`),
+  before any of the frame's ticks: the extension records and the arena
+  are written back (`start_point_state::load`), the arena hash after the
+  load must equal the entry's, the Forge monitors are put back, and the
+  film's cursor moves to the entry's tick (`Play::resume_at`), which
+  hands the next tick's extension records to their features again. The
+  player then runs forward to the target unrendered. No engine step runs
+  after the write. Whether the engine's own step after a game-state
+  restore (the callbacks its checkpoint revert and its synchronous join
+  run, [checkpoints.md](../runtime/checkpoints.md), live-coop.md section
+  14.9) is needed is the question of slice 8's run; until it is answered
+  the digests decide.
+- **Failure.** An entry that does not load or hashes wrong, or whose
+  state's digests differ from the film's before the jump's target or the
+  next stretch's tick, whichever is later, drops the ring: the jump takes
+  the start route, the film is not failed, and the ring stays off for
+  that film in this session (`theater.keyframes` names why). A divergence
+  after that window is the film's.
+- **The ring is not in the film** and goes with the film's state when the
+  film ends. A start-route jump keeps it: its entries are the film's, not
+  the game's. A verification (`theater.verify`) keeps none.
   `H2_THEATER_RING=0` turns it off.
 
 ### Cameras and the HUD
@@ -554,7 +575,7 @@ nothing.
 | Tick rate | 30 Hz | [high-framerate.md](high-framerate.md) |
 | Film bytes | about 0.12 MB (one player) to 0.5 MB (16) for 10 minutes | **Estimate**: [input-film.md](input-film.md#size-step-by-step) |
 | Ring entry | about 0.26 MB; one every 150 ticks; 120 entries, 31 MB, for a 10-minute film | **Estimate** |
-| Ring cap | 256 MiB | **Design** |
+| Ring cap | 256 MiB, `H2_THEATER_RING_MIB` | **Design** |
 | Simulation cost | 14.12 ms a tick on the heaviest profiled case | [sim-budget.md](../perf/sim-budget.md) |
 | Unrendered run | 2.4× real time at 14.12 ms a tick | **Estimate**: 33.3 ÷ ms per tick |
 | Jump inside the ring | worst 150 ticks: 2.1 s at 14.12 ms | **Estimate** |
@@ -584,7 +605,7 @@ nothing.
 | `theater.play`, `theater.pause`, `theater.speed`, `theater.step` | `{}`, `{}`, `{speed}`, `{ticks}` | transport state |
 | `theater.seek` | `{tick, source?: "start"}` or `{cancel: true}` | transport state |
 | `theater.end` | `{}` | queues the main menu; the film page opens when it loads |
-| `theater.keyframes` | `{}` | `{ring: [tick], ring_bytes, ring_cap}` |
+| `theater.keyframes` | `{}` | `{ring: [tick], ring_bytes, ring_cap, off?}`; `off` says why the ring is off for the film |
 | `theater.verify` | `{id \| path, from?, to?, ring?: true}` | plays the range unrendered in a second game process and returns `{ticks, digests_checked, arena_hashes_checked, first_divergence}`; `ring` takes and loads an entry every 150 ticks on the way |
 | `theater.start_point.capture`, `theater.start_point.load` | a path and a key | a start point of the running game, and its load with `matches` |
 | `theater.camera`, `theater.hud`, `theater.screenshot`, `theater.clip.mark`, `theater.clip.export`, `theater.compat`, `theater.share`, `theater.open` | as agent-api.md lists | |
@@ -621,7 +642,7 @@ Each slice updates the pages that name what it changes
 | 6 | **One film for each game.** The recorder opens the film at the game's activation with tick 1 its first update and seals it at the game's end; no session tape, no cut, no fork; `<id>.h2film` is the film file and `<id>.h2stats` the stats container, which holds no machine section. Recovery reads an unsealed film to its last checkpoint. | after 5 | `autorecord`: three games give three films and a session of menus gives none; a hard-killed film opens up to its checkpoint; the library lists a film from its header alone. Stats reader tests pass on a container with no machine section. |
 | 7a | **Delete the machine film: Theater and the film crate.** The start manifest and disk tracker (`film/src/manifest.rs`, `manifest/`), tape recovery (`recover.rs`), machine keyframes and their sidecar (`film/src/sidecar.rs`, `theater/sidecar.rs`, `warm.rs`, `warm_transport.rs`, the capture points in `record.rs`, the keyframe restore in `replay.rs`), boot facts and startup (`theater/startup.rs`), the restart loop and disk rebuild in `theater_cmd.rs`, `theater/prepare.rs`, the image match in `compatibility.rs`, and their settings, switches and agent fields. The page pool of `theater/ring.rs` and `keyframe_scope` move to their other user, the bounce search (`sim_bounces/ring.rs`, `sim_bounces::fork_scope`, [bounce-search.md](../runtime/bounce-search.md)). | after 6 | The crates build with those modules gone; `theater`, `film` and `cli` tests pass; the bounce search's fork tests pass on the moved pool; `registration/tests.rs` builds one plan for a recording and a playing session. |
 | 7b | **Delete the call tape.** `film/src/tape.rs` and `tape/`, the container's machine section that the tape and the stats reader read (`film/src/machine.rs`), `film::tape::Tap` and every user of it: taped pads, keyboard, bots, lobby and network (`theater/local_pads.rs`, `bot_tape.rs`, `keyboard_glue.rs`, `bot_glue/retail_input.rs`, `coop_live/film.rs`, `firefight/film.rs`, `live-hle/src/network/film.rs`, `film_service.rs`, the taps in `live-hle/src/lib.rs`, `impl LobbyTape for Session`), the tape table of `h2 film stat` (`film_cmd.rs`) and Live's machine-run inspection (`live-server/src/films/inspect.rs`); the film file's machine part (`film::file::machine_mirror`, block kind 1) and Live's check of it (`live-server/src/films/upload/film_file.rs`), which takes a game start block instead. | after 7a | `live-hle`, `live-server`, `boot` and `cli` tests pass with no tap; a network call in a test makes the same guest writes as before. |
-| 8 | **The session ring.** Run first: `theater.start_point.capture` and `load` in a multiplayer game and a campaign level, then 3,000 ticks of digests, with and without the engine's after-restore step. Then the ring of this page, the ring route in seek and the timeline's covered stretch. | the run after 5; the code after it | The run in a dated note. `theater::tests`: an entry taken at tick k and loaded at tick m gives the digests of a straight run, twice in a row; the cap thins the older half; a failed hash drops the ring and takes the start route. |
+| 8 | **The session ring.** The ring of this page (`theater/ring.rs`), the ring route in seek, `theater.keyframes`, and the Forge monitors kept with each entry (`forge_film::ring`): built. Run: in a multiplayer game and a campaign level, watch a film past tick 3,000, jump back to ring entries, and read the digests of the 3,000 ticks after each load and the `restore_ms` of each jump; the engine's after-restore step is wired only if the digests differ without it. Then the timeline's covered stretch from `theater.keyframes`. | the run after 5; the code after it | The run in a dated note. `ring::tests`: one entry for each stretch of 150 ticks and none before the first; the cap thins the older half and keeps the oldest and newest; a load puts back the arena, records and monitors of the latest entry at or before the target; a wrong hash is refused; the switches. `watch::tests`: an entry taken at tick k and loaded at tick m gives the states and digests of a straight run, twice in a row and from the held last tick; no entry at or before the target, or `source: "boot"`, takes the start route, and the ring outlives it; a failed hash and a divergence after a load drop the ring and take the start route; a cancelled ring jump holds the tick it left. `forge_film::tests`: an entry's monitors go back. |
 | 9 | **First person from the film.** The recorded action's facing written to each local user's look state on its update. | after 5 | `coop_look` tests over a fake guest: the look state equals the action's facing after each update; a user with no action, an out-of-range angle or another director keeps its look. `theater` `actions` tests: a camera that is not first person writes nothing. Run: a first-person film looks where the recording looked. |
 | 10 | **Films that begin mid-game.** The recorder writes a start point when a game's arena comes from a saved checkpoint, when this machine joins a synchronous game in progress and when a recording starts during a game; the player loads it through `start_play::apply`. | after 8's run | `theater`: a film with a start point plays to matching digests on a synthetic machine; one changed byte is refused; a film that flags a start point and holds none is refused. |
 | 11 | **Extension records.** A record kind for a feature's outside input, with the Forge session's edits as its first user and `Session::outside_change` ending the film for a change with no record. | after 6 | `film`: round trip and caps. `theater`: a Forge edit recorded at tick k is applied at tick k in playback; an editor write ends the film at the tick before. |

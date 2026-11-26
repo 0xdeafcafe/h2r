@@ -19,9 +19,12 @@
 //! and the viewer's are put back when it ends. The film's end holds its
 //! last tick and ends nothing: leaving is the viewer's.
 //!
-//! A start-route seek (the target is behind, or the viewer asked for the
-//! start) queues the film's options again ([`Session::requeue`]); a seek
-//! ahead runs forward from the tick shown.
+//! A seek behind the tick shown loads the session ring's latest entry at
+//! or before its target and runs forward from it (`ring.rs`). A
+//! start-route seek (the target is behind and the ring has no entry for
+//! it, or the viewer asked for the start) queues the film's options again
+//! ([`Session::requeue`]); a seek ahead runs forward from the tick shown,
+//! or from a ring entry past it.
 use super::*;
 use crate::level_boot;
 use agent::sim::calls::{self, GameStep};
@@ -225,6 +228,7 @@ impl Session {
                 loaned: Vec::new(),
                 leaving: false,
             }),
+            ring: Some(super::ring::Ring::from_env()),
         };
         Ok(Planned {
             id,
@@ -504,10 +508,15 @@ impl State {
         if let Some(seek) = &mut self.seek {
             seek.source = api::SeekSource::Boot;
         }
+        if let Some(ring) = &mut self.ring {
+            ring.started_over();
+        }
     }
 
-    /// A seek of a film being played. Ahead of the tick shown it runs
-    /// forward; otherwise (or when the start was asked for) it is a
+    /// A seek of a film being played. The session ring's latest entry at or
+    /// before the target loads when there is one nearer than the tick
+    /// shown (`ring.rs`); otherwise a target ahead of the tick shown runs
+    /// forward, and the rest (or a seek that asked for the start) is a
     /// restart, which the session turns into a queued game.
     pub(super) fn seek_in_game(
         &mut self,
@@ -517,7 +526,12 @@ impl State {
     ) {
         let begun = self.play.as_ref().is_some_and(|play| play.begun());
         let first = self.play.as_ref().map_or(1, |play| play.start().game.first_update);
-        if begun && target > self.tick && requested != Some(api::SeekRoute::Boot) {
+        if self.ring_entry_for(target, requested).is_some() {
+            self.ring_jump(target, from, requested);
+        } else if begun && target > self.tick && requested != Some(api::SeekRoute::Boot) {
+            if let Some(ring) = &mut self.ring {
+                ring.cancel();
+            }
             self.seek = Some(SeekProgress {
                 target,
                 from_tick: from,

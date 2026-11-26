@@ -32,6 +32,8 @@ pub const CLIP_STATUS: &str = "theater.clip.status";
 pub const HUD: &str = "theater.hud";
 pub const MEASUREMENTS: &str = "theater.measurements";
 pub const STEP: &str = "theater.step";
+/// The session ring's entries (`theater.keyframes`).
+pub const KEYFRAMES: &str = "theater.keyframes";
 pub const VERIFY: &str = "theater.verify";
 pub const STATUS: &str = "theater.status";
 /// Watch a film in the running game: queue its options as the next game
@@ -42,10 +44,10 @@ pub const END: &str = "theater.end";
 /// The methods of a game that records and watches in one session. They are
 /// not in [`METHODS`], which a film player process answers.
 pub const WATCH_METHODS: [&str; 2] = [WATCH, END];
-pub const TRANSPORT_METHODS: [&str; 8] = [
-    PLAY, STATE, PAUSE, SPEED, SEEK, CAMERA, HUD, STEP,
+pub const TRANSPORT_METHODS: [&str; 9] = [
+    PLAY, STATE, PAUSE, SPEED, SEEK, CAMERA, HUD, STEP, KEYFRAMES,
 ];
-pub const METHODS: [&str; 15] = [
+pub const METHODS: [&str; 16] = [
     PLAY,
     STATE,
     PAUSE,
@@ -61,6 +63,7 @@ pub const METHODS: [&str; 15] = [
     CLIP_EXPORT,
     CLIP_STATUS,
     STATUS,
+    KEYFRAMES,
 ];
 
 /// `theater.watch`: the film to watch, by library id or by path.
@@ -313,6 +316,22 @@ pub enum SeekRoute {
 pub struct Step {
     pub ticks: u64,
 }
+
+/// `theater.keyframes`: the session ring of the film playing
+/// (docs/game/theater-design.md, "The session ring").
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Keyframes {
+    /// The film ticks the ring holds an entry for, oldest first.
+    pub ring: Vec<u64>,
+    /// The entries' stored bytes.
+    pub ring_bytes: u64,
+    /// The most stored bytes the ring keeps before it thins.
+    pub ring_cap: u64,
+    /// Why the ring is off for this film: `H2_THEATER_RING=0`, or an entry
+    /// that failed its check. Absent while it is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub off: Option<String>,
+}
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CameraMode {
@@ -354,6 +373,9 @@ pub enum SeekSource {
     Forward,
     /// The film's game is queued again and runs on from its start.
     Boot,
+    /// The session ring's latest entry at or before the target is loaded in
+    /// the running game, and the film runs on from it.
+    Ring,
 }
 
 /// The jump the player is serving, kept after it completes until the next
@@ -364,6 +386,10 @@ pub struct SeekInfo {
     pub from_tick: u64,
     pub source: SeekSource,
     pub remaining_ticks: u64,
+    /// The time the ring entry took to load, for a ring jump that has loaded
+    /// it, in milliseconds rounded up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore_ms: Option<u64>,
 }
 
 
@@ -702,5 +728,33 @@ mod compatibility_tests {
             let result: Compatibility = serde_json::from_value(wire.clone()).unwrap();
             assert_eq!(serde_json::to_value(result).unwrap(), wire);
         }
+    }
+}
+
+#[cfg(test)]
+mod ring_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_ring_jump_and_the_ring_round_trip() {
+        let wire = json!({
+            "target":200, "from_tick":900, "source":"ring", "remaining_ticks":50, "restore_ms":4
+        });
+        let seek: SeekInfo = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!((seek.source, seek.restore_ms), (SeekSource::Ring, Some(4)));
+        assert_eq!(serde_json::to_value(seek).unwrap(), wire);
+
+        let on = json!({"ring":[150,300,450], "ring_bytes":786432, "ring_cap":268435456});
+        let ring: Keyframes = serde_json::from_value(on.clone()).unwrap();
+        assert_eq!(ring.off, None);
+        assert_eq!(serde_json::to_value(ring).unwrap(), on);
+        let off = json!({"ring":[], "ring_bytes":0, "ring_cap":0, "off":"H2_THEATER_RING=0"});
+        let ring: Keyframes = serde_json::from_value(off.clone()).unwrap();
+        assert_eq!(serde_json::to_value(ring).unwrap(), off);
+
+        assert!(TRANSPORT_METHODS.contains(&KEYFRAMES) && METHODS.contains(&KEYFRAMES));
+        // The ring is the player's route: a caller asks only for the start.
+        assert!(serde_json::from_value::<Seek>(json!({"tick":1,"source":"ring"})).is_err());
     }
 }

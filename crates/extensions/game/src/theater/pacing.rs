@@ -5,7 +5,9 @@
 //! frame is worth at the chosen speed. The hook writes the count into the
 //! register and the frame's elapsed seconds beside it, and nothing else, so
 //! no game state moves and the digests do not change
-//! (docs/game/theater-design.md "Pause, speed and step").
+//! (docs/game/theater-design.md "Pause, speed and step"). The one
+//! exception is a ring jump: the frame's start is the tick boundary its
+//! entry loads at, before the count is answered (`ring.rs`).
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -36,6 +38,17 @@ pub(super) fn install(b: &mut hooks::Builder, session: Arc<Session>) {
         &engine::points::GAME_UPDATE_TICKS,
         "film pacing",
         move |c| {
+            // A ring jump loads its entry here, at the frame's start, before
+            // any of its ticks (`ring.rs`).
+            if session.ring_due() {
+                let refused = {
+                    let mut memory = c.ctx.memory();
+                    session.ring_frame(&mut *memory)
+                };
+                if let Some(target) = refused {
+                    session.start_over(target);
+                }
+            }
             let mut state = session.lock();
             if state.holds_in_game() {
                 // A film watched in the running game that has ended or

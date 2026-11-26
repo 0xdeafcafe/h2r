@@ -93,7 +93,7 @@ impl Session {
             let session = self.clone();
             a.add_method(
                 name,
-                if name == api::STATE { Access::Read } else { Access::Act },
+                if matches!(name, api::STATE | api::KEYFRAMES) { Access::Read } else { Access::Act },
                 move |p| session.transport(name, p),
             );
         }
@@ -370,7 +370,7 @@ pub fn library_methods(
         let watch = watch.clone();
         a.add_method(
             name,
-            if matches!(name, api::STATE | api::CLIP_STATUS) {
+            if matches!(name, api::STATE | api::CLIP_STATUS | api::KEYFRAMES) {
                 Access::Read
             } else {
                 Access::Act
@@ -528,6 +528,10 @@ impl Session {
             }
             api::STEP => {
                 s.step(params(p)?)?;
+            }
+            api::KEYFRAMES => {
+                let _: Empty = params(p)?;
+                return Ok(serde_json::json!(s.keyframes()));
             }
             api::HUD => {
                 let p = params::<api::Hud>(p)?;

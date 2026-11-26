@@ -238,9 +238,12 @@ H2_RESOLUTION=640x480 h2 theater play "$film_run/wide.h2film" --disc "$H2_DISC" 
 ```
 
 During either run the agent exposes the [Theater transport](../runtime/agent-api.md#theater-transport).
-`theater.state` reports the seek route and remaining ticks. A seek ahead
-runs forward from the tick shown; a seek behind it queues the film's game
-again in the same process and runs forward from its start. Fast-forward
+`theater.state` reports the seek route and remaining ticks. A seek behind
+the tick shown loads the latest [session ring](theater-design.md#the-session-ring)
+entry at or before its target and runs forward from it (`theater.keyframes`
+lists the entries); with no entry for it, it queues the film's game again
+in the same process and runs forward from its start. A seek ahead runs
+forward from the tick shown. Fast-forward
 checks the film's digests and runs without host pacing. The coordinator
 should also seek backwards across a received packet while paused and
 resume. `h2 film stat FILE` lists a stats container's stored keyframes
