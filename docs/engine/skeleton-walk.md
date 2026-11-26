@@ -1,14 +1,15 @@
 # Skeleton walk (`bd090`'s node loop)
 
 Status: Partly built. The walk inside `bd090` is Rust. The graph walk
-`1dd1c0` is Rust behind an arm: the guest answers and the Rust result is
-compared with it at every call. The run ladder is not climbed.
+`1dd1c0` is Rust: the guest answers and the Rust result is compared with
+it until 4096 calls have matched with no mismatch, then the Rust body
+answers and one call in 64 is still compared.
 Code: `crates/rewrites/sim-anim/src/skeleton.rs` (`build_matrices`, `pose`,
 `compose`), `crates/rewrites/sim-anim/src/graph_walk.rs`
 (`graph_matrices`, `graph_order`),
 `crates/rewrites/engine/src/sim_anim/skeleton.rs` (`run`, `walk`),
 `crates/rewrites/engine/src/sim_anim/graph_walk.rs` (`plan`, `run`,
-`arm_before`, `arm_after`, `compare`, `reference`). Tests:
+`enter`, `audit`, `compare`, `reference`). Tests:
 `crates/rewrites/sim-anim/src/skeleton_tests.rs`,
 `crates/rewrites/sim-anim/src/graph_walk_tests.rs`,
 `crates/rewrites/engine/src/sim_anim/skeleton/tests.rs`,
@@ -190,19 +191,27 @@ root, the cutoff and the constants, builds the queue (`graph_order`),
 runs `graph_matrices` and returns every byte and register above without
 writing. Two consumers use it:
 
-- **The arm** runs under `impl.sim.native.anim`. `arm_before` plans the
-  call at the entry and keeps the plan by guest thread. The guest runs.
-  `arm_after`, at the return (`esp` past the arguments), compares the
-  plan with what the guest left: the general registers, MXCSR, EFLAGS on
-  the arithmetic bits both sides define, XMM0 to XMM7, then each written
-  byte in write order. It counts a match or a mismatch and keeps the first
+- **The arm** runs under `impl.sim.native.anim`. `enter` plans the call
+  at the entry and decides who answers. While the arm is unproven, and on
+  every audit slot after, the guest runs. `audit`, at the return (the
+  runtime's return observer, `esp` past the arguments), compares the plan
+  with what the guest left: the general registers, MXCSR, EFLAGS on the
+  arithmetic bits both sides define, XMM0 to XMM7, then each written byte
+  in write order. It counts a match or a mismatch and keeps the first
   mismatch by name (`ecx`, `xmm3`, `matrix 2 +0x10`, `stack
   entry-0x3f8 (queue entry 1)`) with the entry registers. The guest's
-  result stands either way. A declined plan is counted by reason, and
-  the guest runs unchecked.
-- **The body** (`run`) writes the plan and returns without the guest. It
-  is not installed. It replaces the arm once the arm reports no
-  mismatch over the run ladder.
+  result stands either way. A declined plan is counted by reason, the
+  guest runs unchecked and the call is not a match.
+- **The body** (`run`, called by `enter`) writes the plan and returns
+  without the guest. The arm is proven after `PROVEN_AFTER` (4096)
+  matched calls with no mismatch ever; from then on the body answers every
+  answerable call except each `AUDIT_EVERY`th (64), which the guest
+  answers and the arm compares. The audit slot is the count of answerable
+  calls since the last map load, checkpoint revert or restore
+  (`arm_new_run`), so it depends on no thread. One mismatch ends the
+  take-over for good: the guest answers every call from then on, and a new
+  run does not undo it. The same constants and rules as the object
+  function curve arm (`sim_objects::functions::parity`).
 
 `reference` is `1dd1c0` instruction by instruction with the exact
 `sim_native` leaves: the oracle of the engine tests and the third arm of

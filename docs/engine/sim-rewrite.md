@@ -3,8 +3,9 @@
 Status: plan, 2026-11-20. The `SimExt` blob (section 2) is partly built,
 with tests only. Phase 1b's skeleton walk in `bd090` is built, with tests
 only ([skeleton-walk.md](skeleton-walk.md)). Its graph walk `1dd1c0` is
-built and runs as an arm, the guest answering and the Rust result compared
-with it at every call. The phase 1c bodies cover
+built and runs as an arm: the guest answers and the Rust result is compared
+with it until the arm is proven, then the Rust body answers and one call in
+64 is still compared. The phase 1c bodies cover
 [markers](markers.md), the [first-person palette](palette.md), the
 [unit pose](unit-pose.md), unit aim (`c7840`) and the
 [first-person filters](first-person-filters.md) (`166d75`, including
@@ -682,11 +683,13 @@ into `1421f0` and `142a60`) over a queue of child and sibling links.
 `sim_anim::graph_matrices` computes it in one call
 ([skeleton-walk.md](skeleton-walk.md#the-graph-walk-1dd1c0)). Under
 `impl.sim.native.anim` it runs as an arm: `engine::sim_anim::graph_walk`
-plans each call at the entry, the guest answers, and the plan is compared
-with the guest's result, counted and the first mismatch named
-(`anim.graph_walk`). The body that answers without the guest replaces the
-arm once the arm shows no mismatch over the ladder's runs;
-`native_transform_compose` and `native_pose_matrix` retire then.
+plans each call at the entry. Until 4096 calls have matched with no
+mismatch, the guest answers and the plan is compared with its result,
+counted and the first mismatch named (`anim.graph_walk`). Then the body
+answers, one answerable call in 64 is still compared, and a mismatch
+returns every call to the guest for good.
+`native_transform_compose` and `native_pose_matrix` retire once the ladder
+is clean.
 
 1c's marker slice follows the same shape: the marker port
 (`sim_native::marker`, `b8d30`) stays the vehicle, and where it would

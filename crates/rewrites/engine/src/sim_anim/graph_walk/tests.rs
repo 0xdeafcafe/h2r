@@ -6,6 +6,7 @@
 //! Every case must leave the same RAM, byte for byte, and the same CPU.
 use super::*;
 use runtime::Guest;
+use std::sync::Mutex;
 use runtime::guest::Permissions;
 
 const RAM: u32 = 0x0080_0000;
@@ -449,42 +450,163 @@ fn a_full_queue_is_taken_and_one_more_declines() {
 }
 
 /// A thread id no other test uses, for the arm's pending plans.
-fn thread(n: u32) -> u32 {
-    0x6000 + n
+/// The arm's counters are process-wide: the tests that read or set them
+/// run one at a time.
+static ARM_TESTS: Mutex<()> = Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    let guard = ARM_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+    arm_reset();
+    guard
 }
 
+/// The arm as it stands after `matched` clean audits, with the next
+/// answerable call in audit slot `slot`.
+fn proven_at(slot: u64) {
+    with_arm(|a| {
+        a.stats.matched = PROVEN_AFTER;
+        a.stats.checked = PROVEN_AFTER;
+        a.slot = slot;
+    });
+}
+
+/// One call as the bridge makes it: [`enter`], then, when the guest
+/// answers, the reference as the guest and [`audit`] at its return.
+/// Returns whether the body answered, with the registers and memory left.
+fn call(c: &Case, edit: impl FnOnce(&mut CpuAbi, &mut Guest)) -> (bool, CpuAbi, Guest) {
+    let (mut cpu, mut g) = machine(c);
+    match enter(&mut cpu, &mut g).unwrap() {
+        Step::Answered(_) => (true, cpu, g),
+        Step::Audit(a) => {
+            reference(&mut cpu, &mut g).unwrap();
+            edit(&mut cpu, &mut g);
+            audit(*a, &cpu, &g);
+            (false, cpu, g)
+        }
+        Step::Guest => {
+            reference(&mut cpu, &mut g).unwrap();
+            (false, cpu, g)
+        }
+    }
+}
+
+fn clean(_: &mut CpuAbi, _: &mut Guest) {}
+
 #[test]
-fn the_arm_counts_a_guest_result_that_matches() {
+fn below_the_threshold_the_guest_answers_and_matches_are_counted() {
+    let _s = serial();
     let c = case(40, 9);
-    let (mut cpu, mut g) = machine(&c);
-    let before = arm_stats();
-    arm_before(thread(1), &cpu, &g);
-    reference(&mut cpu, &mut g).unwrap();
-    arm_after(thread(1), &cpu, &g);
-    let after = arm_stats();
-    assert!(after.checked > before.checked);
-    assert!(after.matched > before.matched);
+    let native = stats().native;
+    for n in 1..=3 {
+        let (answered, _, _) = call(&c, clean);
+        assert!(!answered);
+        let a = arm_stats();
+        assert_eq!((a.checked, a.matched, a.mismatched), (n, n, 0));
+    }
+    assert_eq!(stats().native, native);
+    // One short of the threshold is still the guest's.
+    with_arm(|a| a.stats.matched = PROVEN_AFTER - 1);
+    assert!(!call(&c, clean).0);
+    assert!(with_arm(|a| a.stats.matched) == PROVEN_AFTER);
 }
 
 #[test]
-fn the_arm_counts_a_decline_and_compares_nothing() {
+fn after_the_threshold_the_answered_state_equals_the_guests() {
+    let _s = serial();
+    for (count, seed) in [(1usize, 3u64), (9, 4), (64, 5), (200, 6)] {
+        let c = case(count, seed);
+        proven_at(1);
+        let (mut cpu, mut g) = machine(&c);
+        let Step::Answered(got) = enter(&mut cpu, &mut g).unwrap() else {
+            panic!("count {count}: the guest answered a proven call");
+        };
+        let (mut want_cpu, mut want_g) = machine(&c);
+        let want = reference(&mut want_cpu, &mut want_g).unwrap();
+        assert_eq!(got, want, "count {count}");
+        assert_eq!(first_difference(ram(&want_g), ram(&g)), None, "count {count}");
+        assert_eq!(cpu, want_cpu, "count {count}");
+    }
+}
+
+#[test]
+fn every_audit_every_th_call_goes_to_the_guest_and_is_compared() {
+    let _s = serial();
+    let c = case(2, 7);
+    proven_at(0);
+    let mut audited = Vec::new();
+    for n in 0..2 * AUDIT_EVERY {
+        if !call(&c, clean).0 {
+            audited.push(n);
+        }
+    }
+    assert_eq!(audited, [0, AUDIT_EVERY]);
+    let a = arm_stats();
+    assert_eq!((a.checked, a.matched, a.mismatched), (PROVEN_AFTER + 2, PROVEN_AFTER + 2, 0));
+}
+
+#[test]
+fn one_mismatch_returns_every_call_to_the_guest() {
+    let _s = serial();
+    let c = case(5, 8);
+    proven_at(0);
+    let native = stats().native;
+    // Slot 0 audits; the guest's result differs from the plan.
+    let (answered, _, _) = call(&c, |cpu, _| cpu.eax ^= 1);
+    assert!(!answered);
+    let a = arm_stats();
+    assert_eq!(a.mismatched, 1);
+    assert_eq!(a.first.as_ref().unwrap().0.what, "eax");
+    for _ in 0..2 * AUDIT_EVERY {
+        assert!(!call(&c, clean).0);
+    }
+    assert_eq!(stats().native, native);
+    // A new run keeps the verdict.
+    arm_new_run();
+    assert!(!call(&c, clean).0);
+    assert_eq!(arm_stats().mismatched, 1);
+}
+
+#[test]
+fn a_decline_runs_the_original_and_is_not_a_match() {
+    let _s = serial();
     let c = Case {
         mxcsr: 0x1f80,
         ..case(8, 10)
     };
-    let (mut cpu, mut g) = machine(&c);
-    let before = arm_stats();
-    arm_before(thread(2), &cpu, &g);
-    reference(&mut cpu, &mut g).unwrap();
-    arm_after(thread(2), &cpu, &g);
-    let after = arm_stats();
-    assert!(after.declined[Decline::Float as usize] > before.declined[Decline::Float as usize]);
+    for slot in [0, 1, 7] {
+        proven_at(slot);
+        let before = arm_stats();
+        let native = stats().native;
+        let (answered, _, _) = call(&c, clean);
+        assert!(!answered);
+        let after = arm_stats();
+        let float = Decline::Float as usize;
+        assert_eq!(after.declined[float], before.declined[float] + 1);
+        assert_eq!((after.checked, after.matched), (before.checked, before.matched));
+        assert_eq!(stats().native, native);
+    }
+}
+
+#[test]
+fn a_new_run_starts_the_audit_slots_over() {
+    let _s = serial();
+    let c = case(3, 11);
+    proven_at(5);
+    assert!(call(&c, clean).0);
+    arm_new_run();
+    assert_eq!(with_arm(|a| a.slot), 0);
+    // The proof stays; slot 0 audits.
+    assert!(!call(&c, clean).0);
+    assert!(call(&c, clean).0);
+    let a = arm_stats();
+    assert_eq!(a.matched, PROVEN_AFTER + 1);
 }
 
 /// A guest result changed after the reference ran: the arm must count a
 /// mismatch, and [`compare`] must name the first difference.
 #[test]
 fn a_deliberate_mismatch_is_counted_and_named() {
+    let _s = serial();
     let c = fixed(12);
     let edits: [(&str, fn(&mut CpuAbi, &mut Guest)); 6] = [
         ("eax", |cpu, _| cpu.eax ^= 1),
@@ -510,7 +632,7 @@ fn a_deliberate_mismatch_is_counted_and_named() {
         let entry = cpu;
         let o = plan(&entry, &g).unwrap();
         let before = arm_stats();
-        arm_before(thread(10 + n as u32), &cpu, &g);
+        let audited = Audit { outcome: plan(&entry, &g).unwrap(), before: entry };
         reference(&mut cpu, &mut g).unwrap();
         assert_eq!(
             compare(&o, &cpu, &g),
@@ -521,7 +643,7 @@ fn a_deliberate_mismatch_is_counted_and_named() {
         let m = compare(&o, &cpu, &g).unwrap_or_else(|| panic!("{name}: not seen"));
         assert_eq!(m.what, name);
         assert_ne!(m.plan, m.guest);
-        arm_after(thread(10 + n as u32), &cpu, &g);
+        audit(audited, &cpu, &g);
         let after = arm_stats();
         assert!(after.mismatched > before.mismatched, "{name}");
         assert!(after.first.is_some(), "{name}");
@@ -541,24 +663,6 @@ fn eflags_compare_only_where_both_sides_define_them() {
     let mut wrong = cpu;
     wrong.eflags ^= 0x40;
     assert_eq!(compare(&o, &wrong, &g).unwrap().what, "eflags");
-}
-
-#[test]
-fn a_return_from_another_frame_is_not_compared() {
-    let c = case(6, 14);
-    let (mut cpu, mut g) = machine(&c);
-    let before = arm_stats();
-    arm_before(thread(30), &cpu, &g);
-    reference(&mut cpu, &mut g).unwrap();
-    let mut elsewhere = cpu;
-    elsewhere.esp += 0x40;
-    arm_after(thread(30), &elsewhere, &g);
-    // Another thread's return does not take this thread's plan either.
-    arm_after(thread(31), &cpu, &g);
-    arm_after(thread(30), &cpu, &g);
-    let after = arm_stats();
-    assert!(after.checked > before.checked);
-    assert!(after.matched > before.matched);
 }
 
 #[test]
