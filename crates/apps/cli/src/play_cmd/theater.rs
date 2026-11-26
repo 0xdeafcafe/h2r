@@ -103,10 +103,13 @@ pub(crate) fn overlay(theater: Theater, screenshots: PathBuf, disc: Option<&Path
     let disc = disc.and_then(|path| match preview::Disc::open(path) {
         Ok(disc) => Some(disc),
         Err(error) => {
-            eprintln!("theater: loading UI assets: {error:#}");
+            eprintln!("theater: UI fonts and art failed to load from the disc, no overlay is drawn: {error:#}");
             None
         }
     });
+    if disc.is_none() {
+        eprintln!("theater: no disc given for the overlay's fonts, no overlay is drawn");
+    }
     let controller = Arc::new(Controller {
         theater,
         screenshots,
@@ -137,10 +140,11 @@ impl Pages {
         if let Some((old, page)) = &self.drawn && *old == spec && page.timeline == timeline {
             return Some(page.clone());
         }
-        let from = self.disc.as_ref().map_or(preview::From::Synthetic, preview::From::Disc);
-        let view = from.view(&spec, "playback").or_else(|error| {
+        // Without the disc's fonts the layout source draws every word as a
+        // block, so there is no page rather than a page of boxes.
+        let from = preview::From::Disc(self.disc.as_ref()?);
+        let view = from.view(&spec, "playback").inspect_err(|error| {
             eprintln!("theater: laying out {}: {error:#}", spec.name);
-            preview::From::Synthetic.view(&spec, "playback")
         }).ok()?;
         let canvas = preview::render_overlay(&view, from.source());
         let page = Arc::new(shell::Page {
@@ -238,6 +242,21 @@ impl shell::Controller for Controller {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn without_the_disc_fonts_no_page_of_word_blocks_is_drawn() {
+        let mut spec = ScreenSpec::new("theater_test", "Test");
+        spec.texts.push(boot::ui_kit::spec::PaneText {
+            id: "t".into(),
+            rect: [100, -100, 80, 100],
+            text: "Hello".into(),
+            font: 1,
+            right: false,
+            colour: [1.0; 3],
+        });
+        let mut pages = Pages { disc: None, drawn: None };
+        assert!(pages.render(spec, None).is_none());
+    }
 
     fn local_entry(map: &str) -> film::LibraryEntry {
         film::LibraryEntry {
