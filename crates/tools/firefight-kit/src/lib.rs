@@ -329,11 +329,20 @@ fn build_with_classes(
     fit_within(base, base_name, mode, config, labels, classes, available)
 }
 
-/// The tag memory `base` has left: `max_metadata_size(Multiplayer)` less
-/// its `+0x1c`.
+/// The most `+0x1c` a kit may take a multiplayer map to: the largest retail
+/// campaign map's, `max_metadata_size(Campaign)` (`0xc24000`). The engine
+/// reserves one physical arena for every map type (`0x30e4000` bytes), and
+/// a campaign map loads that much beside its two shared maps, which
+/// is more than a multiplayer map of this size plus its one shared map
+/// (docs/game/firefight.md, "The kit"). It is not a loader constant:
+/// the multiplayer bound `max_metadata_size(Multiplayer)` is the largest
+/// retail multiplayer map, which Zanzibar sits 132 KiB under.
+const KIT_METADATA_BUDGET: CacheType = CacheType::Campaign;
+
+/// The tag memory `base` has left: [`KIT_METADATA_BUDGET`] less its `+0x1c`.
 fn headroom(base: &[u8]) -> Result<u32> {
     let map = Map::from_reader(Cursor::new(base))?;
-    Ok(max_metadata_size(CacheType::Multiplayer)?.saturating_sub(map.header().meta_size))
+    Ok(max_metadata_size(KIT_METADATA_BUDGET)?.saturating_sub(map.header().meta_size))
 }
 
 /// [`build_with_classes`] against `available` bytes of tag headroom.
