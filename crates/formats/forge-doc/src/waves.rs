@@ -37,8 +37,9 @@ pub const DROPS_FULL: &str = "A map has 12 drop zones at most.";
 /// `the_documents_classes_are_the_kits` holds the two together).
 pub const CLASSES: [&str; 6] = ["elite", "grunt", "jackal", "drone", "brute", "hunter"];
 
-/// The classes the stage-one ground builds: the Elite alone
-/// (docs/game/firefight.md, "The kit").
+/// The class every ground has: the Elite the kit authors in stage one
+/// (docs/game/firefight.md, "The kit"). The recipe's classes
+/// (`GroundRecipe::classes`) come after it.
 pub const GROUND_CLASSES: [&str; 1] = ["elite"];
 
 /// The set a map with none of its own plays: Holdout, the first built-in

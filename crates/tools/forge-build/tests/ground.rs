@@ -9,18 +9,22 @@ use firefight_kit::{
     ground::{self, Labels, Marker},
     testkit::{self, NAME},
 };
-use forge_build::{Built, Error, KIT_RECIPE, VERSIONS, build};
+use forge_build::{Built, ClassTable, Error, KIT_RECIPE, VERSIONS, build, build_with};
 use forge_doc::{
-    BlockKind, Edit, Endpoint, F32, FORMAT, FieldWrite, Forge, ForgeDoc, GroundRecipe, Label,
-    MapRef, Op, OpId, Placement, Recipe, Value,
+    BlockKind, Edit, Endpoint, F32, FORMAT, FieldWrite, Forge, ForgeDoc, GroundClass,
+    GroundRecipe, Label, MapRef, Op, OpId, Placement, Recipe, Value,
 };
 use scenario_edit::MapSource;
 
 const FLAGS: BlockKind = BlockKind::NetgameFlags;
 
 fn source() -> MapSource {
+    source_of(testkit::court())
+}
+
+fn source_of(bytes: Vec<u8>) -> MapSource {
     let mut source = MapSource::file("invented/court.map");
-    source.bytes = Some(testkit::court().into());
+    source.bytes = Some(bytes.into());
     source
 }
 
@@ -53,6 +57,7 @@ fn recipe() -> GroundRecipe {
         kit_version: firefight_kit::KIT_VERSION,
         home: 0,
         probe: false,
+        classes: vec![],
     }
 }
 
@@ -286,4 +291,165 @@ fn the_documents_classes_are_the_kits() {
         .collect();
     assert_eq!(forge_doc::waves::CLASSES.to_vec(), kit);
     assert_eq!(forge_doc::waves::GROUND_CLASSES, ["elite"]);
+}
+
+/// The invented donor map, as a machine's disc gives it.
+fn donor_source() -> MapSource {
+    let mut source = MapSource::file("invented/donor.map");
+    source.bytes = Some(testkit::donor().into());
+    source
+}
+
+/// `names` from the invented donor, by its name and hash.
+fn with_classes(names: &[&str]) -> GroundRecipe {
+    let donor = MapRef {
+        map: testkit::DONOR.into(),
+        sha256: Sha256::of(&testkit::donor()),
+    };
+    GroundRecipe {
+        classes: names
+            .iter()
+            .map(|name| GroundClass {
+                name: (*name).into(),
+                donor: donor.clone(),
+            })
+            .collect(),
+        ..recipe()
+    }
+}
+
+/// The class table of the invented donor: its schema and `char` paths.
+fn table(schema: &tags::schema::Schema) -> ClassTable<'_> {
+    ClassTable {
+        schema,
+        paths: testkit::donor_classes()
+            .into_iter()
+            .map(|c| (c.name, c.path))
+            .collect(),
+    }
+}
+
+/// `doc` built over `base` and the invented donor with the donor's table.
+fn with_donor(doc: &ForgeDoc, base: &MapSource, donor: &MapSource) -> Result<Built, Error> {
+    let schema = testkit::donor_schema();
+    build_with(doc, None, &table(&schema), |name| match name {
+        NAME => Some(base.clone()),
+        testkit::DONOR => Some(donor.clone()),
+        _ => None,
+    })
+}
+
+#[test]
+fn a_document_with_classes_builds_the_kits_stage_two_ground() {
+    let source = source();
+    let plain = materialise(&dropped(&source), &source).unwrap();
+    let mut doc = dropped(&source);
+    doc.recipes.push(with_classes(&["grunt", "jackal"]).to_recipe());
+    let built = with_donor(&doc, &source, &donor_source()).unwrap();
+
+    let (donor, schema) = (testkit::donor(), testkit::donor_schema());
+    let all = testkit::donor_classes();
+    let classes = firefight_kit::Classes {
+        schema: &schema,
+        donors: vec![firefight_kit::Donor {
+            name: testkit::DONOR,
+            bytes: &donor,
+        }],
+        specs: all[..2].to_vec(),
+        cut_to_fit: true,
+    };
+    let labels = Labels {
+        drops: vec![drop_at(9., 6.)],
+        ..Labels::default()
+    };
+    let expected = ground::build_with(
+        plain.map_bytes(),
+        NAME,
+        &labels,
+        &ground::Recipe::new(Mode::Kit),
+        Some(&classes),
+    )
+    .unwrap();
+    assert_eq!(built.map_bytes(), expected.bytes.as_slice());
+    let report = built.ground.as_ref().unwrap();
+    assert_eq!(report.classes, expected.classes);
+    assert_eq!(report.costs, expected.costs);
+    assert!(report.cut.is_empty());
+    assert_eq!(
+        report.classes.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        ["grunt", "jackal"]
+    );
+    // The classes are in the map: it is not the stage-one ground.
+    let stage_one = {
+        let mut doc = dropped(&source);
+        doc.recipes.push(recipe().to_recipe());
+        materialise(&doc, &source).unwrap()
+    };
+    assert_ne!(built.map_bytes(), stage_one.map_bytes());
+}
+
+#[test]
+fn a_donor_of_another_hash_is_refused_by_name() {
+    let source = source();
+    let mut doc = dropped(&source);
+    doc.recipes.push(with_classes(&["grunt"]).to_recipe());
+    // This machine's donor is another map under the same name.
+    let mut other = donor_source();
+    let mut bytes = testkit::donor();
+    bytes.push(0);
+    other.bytes = Some(bytes.into());
+    let error = with_donor(&doc, &source, &other).err().unwrap();
+    assert!(
+        matches!(&error, Error::SourceHash { map, .. } if map == testkit::DONOR),
+        "{error}"
+    );
+    assert!(error.to_string().contains("donor.map"), "{error}");
+    // And a machine with no such map is refused by its name.
+    let schema = testkit::donor_schema();
+    let error = build_with(&doc, None, &table(&schema), |name| {
+        (name == NAME).then(|| source.clone())
+    })
+    .err()
+    .unwrap();
+    assert!(
+        matches!(&error, Error::MissingMap(map) if map == testkit::DONOR),
+        "{error}"
+    );
+}
+
+#[test]
+fn classes_cut_from_the_end_and_the_report_names_them() {
+    let source = source_of(testkit::tight(&testkit::court(), 0x2000));
+    let mut doc = dropped(&source);
+    doc.recipes
+        .push(with_classes(&["grunt", "jackal", "hunter"]).to_recipe());
+    let built = with_donor(&doc, &source, &donor_source()).unwrap();
+    let report = built.ground.as_ref().unwrap();
+    assert_eq!(report.cut, ["hunter"]);
+    assert_eq!(
+        report.classes.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        ["grunt", "jackal"]
+    );
+    assert!(report.costs.tag_growth <= report.costs.available);
+    assert_eq!(
+        report.costs.classes,
+        report.classes.iter().map(|c| c.bytes).sum::<usize>()
+    );
+}
+
+#[test]
+fn two_builds_of_one_recipe_are_byte_equal() {
+    let source = source();
+    let mut doc = dropped(&source);
+    doc.recipes
+        .push(with_classes(&["grunt", "jackal", "hunter"]).to_recipe());
+    // Each machine reads its own copy of the base and the donor.
+    let first = with_donor(&doc, &source, &donor_source()).unwrap();
+    let second = with_donor(&doc, &source_of(testkit::court()), &donor_source()).unwrap();
+    assert_eq!(first.map_bytes(), second.map_bytes());
+    assert_eq!(first.manifest(), second.manifest());
+    let (a, b) = (first.ground.unwrap(), second.ground.unwrap());
+    assert_eq!(a.classes, b.classes);
+    assert_eq!(a.cut, b.cut);
+    assert_eq!(a.costs, b.costs);
 }

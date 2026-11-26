@@ -3,11 +3,6 @@ use super::*;
 use crate::testkit::{self, DONOR, SHARED_WEAPON};
 use crate::{Config, Labels, Mode, build_package_with, build_with_classes};
 use h1campaign::ai::h2::ScenarioAi;
-use map::writer::max_metadata_size;
-use map::{
-    CacheType, FourCC,
-    build::{Block, TagPayload, TagSet},
-};
 
 fn classes<'a>(
     donor: &'a [u8],
@@ -95,32 +90,10 @@ fn a_transplanted_closure_resolves() {
     );
 }
 
-/// `base` with its headroom cut to `room` bytes above what the kit with no
-/// classes needs. The pinned region's slack is a hole that tags the build
-/// adds fill for free, so a filler tag takes the slack the cut adds and the
-/// base is as full as its size says.
-fn tight(base: &[u8], room: u32) -> Vec<u8> {
-    let kit = crate::build(base, testkit::NAME, Mode::Kit, &Config::default()).unwrap();
-    let mut map = Map::from_reader(Cursor::new(base)).unwrap();
-    let mut set = TagSet::from_map(&mut map).unwrap();
-    let max = max_metadata_size(CacheType::Multiplayer).unwrap();
-    let spare = (max - map.header().meta_size - kit.costs.tag_growth - room) & !0xfff;
-    set.pinned.as_mut().unwrap().metadata_size += spare;
-    set.add_group(FourCC(*b"fill"), None, None);
-    set.relocate_groups = true;
-    set.add_tag(
-        FourCC(*b"fill"),
-        r"invented\filler",
-        TagPayload::Built(Block::zeroed(spare as usize - 0x200)),
-    )
-    .unwrap();
-    set.build().unwrap().0
-}
-
 #[test]
 fn a_class_over_the_headroom_is_refused_with_its_cost() {
     let (base, donor, schema) = (testkit::court(), testkit::donor(), testkit::donor_schema());
-    let base = tight(&base, 0x2000);
+    let base = testkit::tight(&base, 0x2000);
     crate::build(&base, testkit::NAME, Mode::Kit, &Config::default()).expect("the kit alone fits");
     let small = classes(&donor, &schema, &["grunt"], false);
     build(&base, &small).expect("a small class fits");
@@ -140,7 +113,7 @@ fn a_class_over_the_headroom_is_refused_with_its_cost() {
 #[test]
 fn the_cut_order_drops_the_last_class_first() {
     let (base, donor, schema) = (testkit::court(), testkit::donor(), testkit::donor_schema());
-    let base = tight(&base, 0x2000);
+    let base = testkit::tight(&base, 0x2000);
     let with = classes(&donor, &schema, &["grunt", "jackal", "hunter"], true);
     let built = build(&base, &with).unwrap();
     assert_eq!(built.cut, ["hunter"]);

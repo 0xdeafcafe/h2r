@@ -119,6 +119,7 @@ mod tests {
                 kit_version: 1,
                 home: 0,
                 probe: false,
+                classes: vec![],
             }
         }
 
@@ -189,8 +190,7 @@ mod tests {
         let report = GroundReport {
             zones: 3,
             squads: 16,
-            problems: vec![],
-            receipt: None,
+            ..GroundReport::default()
         };
         crate::forge_glue::reload::set_reloads(false);
         assert_eq!(
@@ -232,6 +232,7 @@ mod tests {
                     kit_version: 1,
                     home: 0,
                     probe: false,
+                    classes: vec![],
                 }
             }
 

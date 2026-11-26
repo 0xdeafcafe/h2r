@@ -753,11 +753,18 @@ impl LocalApi for Backend {
         self.read(Editor::ground_json)
     }
 
-    fn ground_build(&self, if_stale: bool) -> Result<local::GroundReply, String> {
+    fn ground_build(
+        &self,
+        if_stale: bool,
+        classes: Option<Vec<String>>,
+    ) -> Result<local::GroundReply, String> {
         let mut driver = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let Some(e) = driver.editor.as_mut() else {
             return Err(driver.reason.clone());
         };
+        if let Some(classes) = classes {
+            e.set_ground_classes(&classes)?;
+        }
         e.ground_build(if_stale)
     }
 

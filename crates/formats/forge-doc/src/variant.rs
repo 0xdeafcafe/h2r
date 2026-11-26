@@ -5,9 +5,11 @@
 //! A map variant holds scenario edits only: placement adds, entry ops, links,
 //! labels and groups, and may ask for AI ground ([`crate::GroundRecipe`])
 //! and hold a wave set (`ForgeDoc::waves`, which builds nothing). Its build
-//! is a scenario patch, so it fits every map the kit fits. A document with anything more (a recipe, an import slot, a source
-//! map, a tag-field write, a placement set or removal by running index) is a
-//! Forge map. The tier is computed from the ops, never declared, and judged
+//! is a scenario patch, so it fits every map the kit fits. The ground
+//! recipe's class donors (`GroundClass::donor`) are the one source maps a
+//! variant names: the recipe holds them, not `sources`. A document with
+//! anything more (a recipe, an import slot, a source map, a tag-field
+//! write, a placement set or removal by running index) is a Forge map. The tier is computed from the ops, never declared, and judged
 //! on the play form: the session's kit recipe does not count.
 use crate::{Edit, ForgeDoc, Placement, Recipe, Refusal, Result};
 

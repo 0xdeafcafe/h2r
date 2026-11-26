@@ -2,9 +2,12 @@
 //! and other crates' through the `testkit` feature: the host data bundle
 //! (crates/live/host-data) and the server-map strip (crates/apps/cli). No
 //! input files, borrowed payloads or known disc hashes.
+use std::io::Cursor;
+
 use map::{
-    CacheType, FourCC, TagId,
+    CacheType, FourCC, Map, TagId,
     build::{Block, BspField, FixupKind, TagPayload, TagSet},
+    writer::max_metadata_size,
 };
 
 use crate::{Config, Mode};
@@ -95,6 +98,29 @@ pub fn court_kit() -> Vec<u8> {
     crate::build(&court(), NAME, Mode::Kit, &Config::default())
         .expect("the kit builds on court")
         .bytes
+}
+
+/// `base` with its headroom cut to `room` bytes above what the kit with no
+/// classes needs: a map on which a big class does not fit. The pinned
+/// region's slack is a hole that tags the build adds fill for free, so a
+/// filler tag takes the slack the cut adds and the base is as full as its
+/// size says.
+pub fn tight(base: &[u8], room: u32) -> Vec<u8> {
+    let kit = crate::build(base, NAME, Mode::Kit, &Config::default()).unwrap();
+    let mut map = Map::from_reader(Cursor::new(base)).unwrap();
+    let mut set = TagSet::from_map(&mut map).unwrap();
+    let max = max_metadata_size(CacheType::Multiplayer).unwrap();
+    let spare = (max - map.header().meta_size - kit.costs.tag_growth - room) & !0xfff;
+    set.pinned.as_mut().unwrap().metadata_size += spare;
+    set.add_group(FourCC(*b"fill"), None, None);
+    set.relocate_groups = true;
+    set.add_tag(
+        FourCC(*b"fill"),
+        r"invented\filler",
+        TagPayload::Built(Block::zeroed(spare as usize - 0x200)),
+    )
+    .unwrap();
+    set.build().unwrap().0
 }
 
 /// The donor map's label.
