@@ -20,9 +20,15 @@
 //!   clears the layer's bit on the items it draws, from the list's first,
 //!   and the guest draws the rest.
 //!
-//! What the host refuses keeps its D3D draws (and so the admission of
-//! `native_world_layers`). The plan's outcomes are counted by cause for
-//! `render.scene` ([`counters`]).
+//! The scene's and the alternate view's layers 1, 2, 5, 7, 8 and 20
+//! ([`SCENE_ONLY`]) draw only from the scene: what the host does not draw
+//! loses the layer's bit too, so the guest builds no entry for it, and is
+//! counted `scene_dropped_world_<cause>` ([`count_dropped`]). The first
+//! person's and the sorted handlers' layers still keep what the host
+//! refuses to D3D until their own cuts.
+//!
+//! The plan's outcomes are counted by cause for `render.scene`
+//! ([`counters`]).
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -43,6 +49,16 @@ pub const ID: &str = "frame-scene.layers";
 /// overlay layer 2 after the dynamic lights (`layer_pass::OVERLAY_LAYER`)
 /// and the late layer 17 (`layer_pass::BLOOM_LAYER`).
 pub const LAYERS: [u32; 7] = [1, 5, 7, 8, 20, 2, 17];
+
+/// The layers that draw only from the scene when `caller` is the scene's or
+/// the alternate view's (`layer_pass::WORLD_LAYERS` less layer 3, which
+/// `native_world` owns).
+pub const SCENE_ONLY: [u32; 6] = [1, 2, 5, 7, 8, 20];
+
+/// Whether `layer` of `caller` draws only from the scene.
+pub fn scene_only(layer: u32, caller: LayerCaller) -> bool {
+    matches!(caller, LayerCaller::Scene | LayerCaller::AlternateView) && SCENE_ONLY.contains(&layer)
+}
 
 /// The first person's layers taken: `0x0003fdf0`'s calls besides layer
 /// 3, which `native_first_person` owns. It calls layers 1, 3, 8, 20 and
@@ -138,6 +154,20 @@ pub fn set_host(host: Arc<dyn Host>) {
     *HOST.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
 }
 
+/// World items the scene did not draw, by cause: `refused` (no scene draw
+/// for the part), `unreadable` (its render record or list did not read).
+static DROPPED: Mutex<BTreeMap<&'static str, u64>> = Mutex::new(BTreeMap::new());
+
+/// Counts `n` world items dropped under `cause`: `scene_dropped_world_<cause>`
+/// in [`counters`], and the world stage's `scene_dropped` total.
+pub fn count_dropped(cause: &'static str, n: u64) {
+    if n == 0 {
+        return;
+    }
+    *DROPPED.lock().unwrap_or_else(|e| e.into_inner()).entry(cause).or_default() += n;
+    timeline::native::Stage::World.count(timeline::native::Metric::SceneDropped, n);
+}
+
 /// Counts `n` items of `layer` under `outcome` (`taken`, or a refusal's
 /// cause): the host reports each ask's plan.
 pub fn count(layer: u32, outcome: &str, n: u64) {
@@ -175,6 +205,7 @@ pub fn counters() -> Vec<(String, u64)> {
         ("layer_plan_items".to_owned(), ITEMS.load(Ordering::Relaxed)),
     ];
     out.extend(OUTCOMES.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(k, &v)| (k.clone(), v)));
+    out.extend(DROPPED.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(k, &v)| (format!("scene_dropped_world_{k}"), v)));
     out
 }
 
@@ -230,19 +261,54 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         return;
     };
     ASKED.fetch_add(1, Ordering::Relaxed);
-    let Some(scene) = extract(&*mem, layer as u8, caller) else {
-        count_for(caller, layer, "refused_unread", 1);
-        return;
+    let drawn = match extract(&*mem, layer as u8, caller) {
+        Some(scene) => host.ask(mem, layer, caller, &scene),
+        None => {
+            count_for(caller, layer, "refused_unread", 1);
+            None
+        }
     };
-    let Some(cleared) = host.ask(mem, layer, caller, &scene) else { return };
-    if cleared.items.is_empty() {
+    if let Some(cleared) = drawn.filter(|c| !c.items.is_empty()) {
+        DRAWN.fetch_add(1, Ordering::Relaxed);
+        ITEMS.fetch_add(cleared.items.len() as u64, Ordering::Relaxed);
+        remember(mem, cleared);
+    }
+    drop_rest(mem, layer, caller);
+}
+
+/// What the layer's call will restore at the next layer draw: `cleared`
+/// with each item as it was left, added to what is already pending.
+fn remember(mem: &dyn GuestMemory, cleared: Cleared) {
+    let ro = Ro(mem);
+    let mut pending = CLEARED.lock().unwrap_or_else(|e| e.into_inner());
+    let (all, left) = pending.get_or_insert_with(|| (Cleared { layer: cleared.layer, items: Vec::new() }, Vec::new()));
+    for item in cleared.items {
+        if !all.items.contains(&item) {
+            left.push(left_of(&ro, item));
+            all.items.push(item);
+        }
+    }
+}
+
+/// A scene-only layer's items the host did not draw lose the layer's bit:
+/// the guest builds no entry for them, so none reaches the device. Counted
+/// `scene_dropped_world_refused`, or `_unreadable` for a part whose record
+/// or list does not read.
+fn drop_rest(mem: &mut dyn GuestMemory, layer: u32, caller: LayerCaller) {
+    if !scene_only(layer, caller) {
         return;
     }
-    DRAWN.fetch_add(1, Ordering::Relaxed);
-    ITEMS.fetch_add(cleared.items.len() as u64, Ordering::Relaxed);
-    let m = Mem(mem);
-    let left = cleared.items.iter().map(|&item| left_of(&m, item)).collect();
-    *CLEARED.lock().unwrap_or_else(|e| e.into_inner()) = Some((cleared, left));
+    let skip = native_render::layer_pass::clear_scene_layer(&mut Mem(&mut *mem), layer, true, &|_| false);
+    match skip {
+        Some(skip) => {
+            count_dropped("refused", skip.refused as u64);
+            count_dropped("unreadable", skip.unreadable as u64);
+            if !skip.cleared.items.is_empty() {
+                remember(mem, skip.cleared);
+            }
+        }
+        None => count_dropped("unreadable", 1),
+    }
 }
 
 /// Sets back the bits the last taken layer cleared, on the items that

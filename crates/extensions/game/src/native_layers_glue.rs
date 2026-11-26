@@ -65,7 +65,11 @@
 //!   when both are order-free and every kept item before it restores what
 //!   it sets (`layer_pass::order_free`, `skip_holds`); else it keeps its
 //!   D3D draw (`order`). One external pass records them, in the list's
-//!   order.
+//!   order. The scene's and the alternate view's layers 1, 2, 5, 7, 8 and
+//!   20 keep no guest draw (`native_layers::SCENE_ONLY`): every item the
+//!   pass draws is taken in list order with no order rule, and the rest
+//!   lose the bit (`layer_pass::clear_scene_layer`) and are counted
+//!   `scene_dropped_world_*`.
 //! - **The stencil** (`layer_pass::item_stencil`): in layer 1 the
 //!   geometry draw's prologue sets stencil mode 0 when the stencil-off
 //!   flags are set and mode 2 for a marked object's record, and its
@@ -144,6 +148,7 @@ struct Glue<B: d3d::backend::Backend + Send + 'static> {
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     fn ask(&self, mem: &mut dyn GuestMemory, layer: u32, caller: LayerCaller, scene: &FrameScene) -> Option<native_render::skip::Cleared> {
         let l = u8::try_from(layer).ok()?;
+        let scene_only = render_bridge::native_layers::scene_only(layer, caller);
         let pass = scene.layer_passes.first()?;
         // The world's layer sets: the main and alternate scene callers.
         let ready = match caller {
@@ -268,7 +273,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 {
                     free.insert(draw.slot, draw.shader);
                 }
-                if taken.contains_key(&draw.slot) && !holds {
+                // A scene-only layer has no guest draw left to see the
+                // device: its state is the pass's own.
+                if taken.contains_key(&draw.slot) && !holds && !scene_only {
                     taken.remove(&draw.slot);
                     *outcomes.entry("state").or_default() += 1;
                 }
@@ -349,20 +356,32 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let mut preview = native_render::skip::MaskPreview::new(&read)?;
         let candidates = taken.len() + object_draws.len();
         let is_free = |slot: u32, shader: u32| free.get(&slot) == Some(&shader);
-        let skip = layer_pass::clear_layer_items(&mut preview, layer, &|item| match item {
-            ListItem::World(item) => ItemSkip {
-                take: data.is_some_and(|data| {
-                    taken.get(&item.slot) == Some(&item.shader)
-                        && data.part_set.get(&(item.owner, item.part))
-                            .is_some_and(|(m, shader)| *shader == item.shader && fogs.contains_key(m))
-                }),
-                free: is_free(item.slot, item.shader),
-            },
-            ListItem::Object { slot, shader } => {
-                ItemSkip { take: object_draws.get(&slot).is_some_and(|o| o.shader == shader), free: is_free(slot, shader) }
-            }
-        })?;
-        let (drawn, cleared) = (skip.drawn, skip.cleared);
+        let take_world = |item: layer_pass::SkipItem| {
+            data.is_some_and(|data| {
+                taken.get(&item.slot) == Some(&item.shader)
+                    && data.part_set.get(&(item.owner, item.part))
+                        .is_some_and(|(m, shader)| *shader == item.shader && fogs.contains_key(m))
+            })
+        };
+        let (drawn, cleared, order) = if scene_only {
+            // No guest draw is kept: every item the pass draws is taken in
+            // list order, and the rest lose the bit and are dropped by name.
+            let skip = layer_pass::clear_scene_layer(&mut preview, layer, true, &|item| match item {
+                ListItem::World(item) => take_world(item),
+                ListItem::Object { slot, shader } => object_draws.get(&slot).is_some_and(|o| o.shader == shader),
+            })?;
+            render_bridge::native_layers::count_dropped("refused", skip.refused as u64);
+            render_bridge::native_layers::count_dropped("unreadable", skip.unreadable as u64);
+            (skip.drawn, skip.cleared, 0)
+        } else {
+            let skip = layer_pass::clear_layer_items(&mut preview, layer, &|item| match item {
+                ListItem::World(item) => ItemSkip { take: take_world(item), free: is_free(item.slot, item.shader) },
+                ListItem::Object { slot, shader } => {
+                    ItemSkip { take: object_draws.get(&slot).is_some_and(|o| o.shader == shader), free: is_free(slot, shader) }
+                }
+            })?;
+            (skip.drawn, skip.cleared, skip.order)
+        };
         let masks = preview.finish()?;
         // The list's runs, in order, and the ranges they promise: one per
         // structure item, one per object pass draw.
@@ -390,8 +409,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // What the plan took that the skip did not: an item after a kept
         // one it does not commute with (`order`), or one the sets cannot
         // draw (no compiled part or fog: `set`).
-        *outcomes.entry("order").or_default() += skip.order as u64;
-        *outcomes.entry("set").or_default() += candidates.saturating_sub(drawn.len() + skip.order) as u64;
+        *outcomes.entry("order").or_default() += order as u64;
+        *outcomes.entry("set").or_default() += candidates.saturating_sub(drawn.len() + order) as u64;
         report(&outcomes, drawn.len() as u64);
         if ranges == 0 {
             return None;
