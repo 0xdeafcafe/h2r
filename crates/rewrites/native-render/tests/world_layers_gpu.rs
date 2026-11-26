@@ -905,3 +905,18 @@ fn an_admitted_pool_dropped_without_a_recording_is_counted() {
     drop(IndexedPass::for_pool(&pool_triangle(), Arc::new(Cache::default()), 1).unwrap());
     assert!(unrecorded() > before);
 }
+
+/// A standalone range replays in a kept scene, textured or not: its stage
+/// views are the recording's own. A pinned texaccum surface does not.
+#[test]
+fn a_textured_standalone_range_replays_and_a_pinned_one_does_not() {
+    let cache = Arc::new(Cache::default());
+    let plain = IndexedPass::new(&triangle(2.0, [1.0; 4], 0, false), Arc::clone(&cache), 1, None).unwrap();
+    assert!(plain.replays_scene());
+    let draw = triangle(2.0, [1.0; 4], 0, true);
+    assert!(draw.texture_info[0].is_some());
+    let textured = IndexedPass::new(&draw, Arc::clone(&cache), 1, None).unwrap();
+    assert!(textured.replays_scene());
+    let pinned = IndexedPass::new(&draw, cache, 1, Some(ACCUM)).unwrap();
+    assert!(!pinned.replays_scene());
+}

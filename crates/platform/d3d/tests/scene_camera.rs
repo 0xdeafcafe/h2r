@@ -269,7 +269,8 @@ fn retained_geometry_moves_with_the_same_verified_camera_as_its_packet() {
             textures: Default::default(),
             camera: CameraUse::View { view: 1, first: FIRST },
             external: Some(Box::new(RetainedExternal {
-                packet: Arc::clone(&draw),
+                packets: Arc::from([Arc::clone(&draw)]),
+                at: 0,
                 surfaces: ExternalSurfaces {
                     color: TargetRef::SceneColour,
                     depth: TargetRef::SceneDepth,
@@ -296,7 +297,7 @@ fn retained_geometry_moves_with_the_same_verified_camera_as_its_packet() {
         let ReplayOp::Draw { draw, external: Some(admission), .. } = moved.get() else {
             panic!("the remapped draw lost its native replacement");
         };
-        assert!(Arc::ptr_eq(draw, &admission.packet));
+        assert!(Arc::ptr_eq(draw, admission.packet()));
         let fallback = admission.pass.lock().unwrap().resolved_fallback().unwrap();
         assert!(Arc::ptr_eq(draw, &fallback));
     }
@@ -346,7 +347,8 @@ fn retained_geometry_takes_the_widened_projection_and_the_scaled_grid() {
             textures: Default::default(),
             camera: CameraUse::View { view: 1, first: FIRST },
             external: Some(Box::new(RetainedExternal {
-                packet: Arc::clone(&draw),
+                packets: Arc::from([Arc::clone(&draw)]),
+                at: 0,
                 surfaces: ExternalSurfaces {
                     color: TargetRef::SceneColour,
                     depth: TargetRef::SceneDepth,

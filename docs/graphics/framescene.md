@@ -1463,32 +1463,52 @@ D3D reference with all native stages disabled.
   refused. Every other draw is carried as the guest's packet alone.
   A native producer commits its pass with no guest draw to carry it, and
   a replaying sink refuses such a reservation
-  (`prepare_external`: "the scene recorder cannot retain an unsealed
-  reservation") unless it carries the commit
+  (`prepare_external`: "scene capture reservation", with the cause
+  `scene_sink::unretained_cause` names) unless it carries the commit
   (`Backend::begin_native_carry`, `record_native_carry`,
   `end_native_carry`). The sink carries the water composite
   (`Stage::Water`), the flares (`Stage::Flares`) and the UI (`Stage::Ui`),
-  by `scene_sink::carries_native_stage`: each issues one packet that is
-  the draw its guest code would, and a pass that records repeatedly
-  (`replays_scene`) from that packet and the textures it was resolved
-  against. The sink applies the admission checks above to the pass's
-  packet, and the commit is kept as a `ReplayOp::Draw` with that admission.
-  Its recordings are then not refused as unrecorded.
-  `IndexedPass::water_quads` records repeatedly, as a sorted layer's
-  range does; `UiPass` and `FlarePass` take attachments and sampled stages
-  from the copy being recorded. Particles, transparents and sky are
-  carried only as the guest's own admitted draws. Post's glow and screen
-  effects stay on the guest path: they are swallows that replace several
-  guest draws and write blur targets of their own, so no one packet
-  stands in for them. A UI pass with indexed siblings has no single
-  packet (`resolved_fallback` is `None`) and stays on the guest path too.
-  The refusal names the cause (`scene_sink::unretained_cause`) with the
-  producer. Tests: `d3d`'s `tests/scene_sink.rs`
+  by `scene_sink::carries_native_stage`: each issues the packets that are
+  the draws its guest code would (`ExternalPass::resolved_packets`, in
+  the guest's order), and a pass that records repeatedly
+  (`replays_scene`) from those packets and the textures it was resolved
+  against. The admission (`RetainedAdmission::packets`) holds the whole
+  ordered list. The sink applies the admission checks above to every
+  packet (a flare packet that writes depth declines the run), and keeps
+  the commit as one `ReplayOp::Draw` per packet, each holding the same
+  `RetainedExternal` and its place in it (`at`). Replay prepares the pass
+  at the run's first draw; each later draw
+  (`RetainedExternal::follows`) draws nothing when the first recorded the
+  pass, and its own packet when the first drew its packet
+  (`guest_draw_pass/commands.rs`). The carried recordings are not refused
+  as unrecorded. A single-draw pass is a run of one. A UI pass with
+  indexed siblings (`UiPass`) is a run of its head and each sibling,
+  built as its `prepare` draws them (the head's state and textures, the
+  sibling's geometry); it has no single worker fallback
+  (`resolved_fallback` is `None`), so outside a kept scene the guest code
+  stays its fallback. `IndexedPass::water_quads` records repeatedly, as a
+  sorted layer's range does, and so does a standalone `IndexedPass`,
+  textured or not, since every sampled stage binds the recording's own
+  view; one with a resident section or a pinned texaccum surface does
+  not. `UiPass`, `FlarePass` and the HUD's `WidgetPass` take attachments
+  and sampled stages from the copy being recorded (the widget's `Bound`
+  overlay textures are the recording's stage views). Particles,
+  transparents and sky are carried only as the guest's own admitted
+  draws. Post's glow and screen effects are carried as sealed scene
+  stages (`ReplayOp::Stage`, through `Backend::prepare_carried_stage` and
+  `commit_carried_stage`), not as admitted draws; a post pass that
+  reaches a plain reservation is refused with that cause. Tests: `d3d`'s
+  `tests/scene_sink.rs`
   `water_flares_and_ui_commits_are_each_retained_as_an_admitted_draw`,
+  `a_flare_that_writes_depth_still_declines`,
+  `a_guest_draws_admission_for_several_packets_is_not_kept`,
   `other_native_stages_and_any_guest_reference_are_not_carried`;
   `game::native_hud_glue`
   `a_single_draw_ui_pass_replays_in_a_kept_scene_from_its_packet`,
-  `a_ui_pass_with_siblings_has_no_single_packet_and_stays_on_the_guest_path`.
+  `a_ui_pass_with_siblings_is_carried_as_its_packets_under_one_admission`;
+  `game::hud_overlay` `a_widget_pass_replays_from_its_packet`;
+  `native-render`'s `tests/world_layers_gpu.rs`
+  `a_textured_standalone_range_replays_and_a_pinned_one_does_not`.
 - **Coverage.** `render.scene` reports, with the option, `carried`
   (the last frame's ops by slot, its side targets with the ops that
   named them by slot, and its readbacks in and outside a game view),

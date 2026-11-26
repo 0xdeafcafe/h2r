@@ -1043,13 +1043,15 @@ impl Drop for IndexedPass {
 
 impl ExternalPass for IndexedPass {
     fn replays_scene(&self) -> bool {
-        // An untextured standalone range owns its entire draw. prepare()
-        // allocates its vertices and uniforms from each recording's arena.
-        // Section caches and texture-stage bindings are outside this case.
-        // Sky material groups match the replay's actual stage views and
-        // formats. The immutable per-view palette is owned by this pass.
-        self.sorted_pool || self.sorted_layer || self.sky.is_some() || (self.section.is_none() && self.pinned.is_none()
-            && self.draw.texture_info.iter().all(Option::is_none))
+        // A standalone range owns its entire draw. prepare() allocates its
+        // vertices and uniforms from each recording's arena and binds every
+        // sampled stage to the recording's own stage view, so a textured
+        // range reads the textures the replay captured beside its packet.
+        // A section's resident cache and a pinned texaccum surface are
+        // outside this case. Sky material groups match the replay's actual
+        // stage views and formats. The immutable per-view palette is owned
+        // by this pass.
+        self.sorted_pool || self.sorted_layer || self.sky.is_some() || (self.section.is_none() && self.pinned.is_none())
     }
 
     fn uses_validated_resources(&self) -> bool { true }

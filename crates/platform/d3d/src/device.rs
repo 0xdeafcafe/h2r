@@ -6525,25 +6525,26 @@ impl<B: Backend> Device<B> {
             // producer's packet is the draw its guest code would issue, so the
             // suppression commits here and the worker draws one or the other.
             let tail = pass.indexed_tail();
-            let fallback = if tail.is_none()
+            let exact = tail.is_none()
                 && scoped.is_none()
                 && binding.same_draw_writes(self.render_target, color, depth, writes_color, writes_depth)
                 && !(parts.indexed_esp.is_some()
                     && compatible_geometry_target
                     && (self.indexed_geometry_scope)()
-                    && plan.stage != timeline::native::Stage::Transparents)
-            {
-                pass.resolved_fallback()
+                    && plan.stage != timeline::native::Stage::Transparents);
+            let fallback = if exact { pass.resolved_fallback() } else { None };
+            // These passes can record again on replay's attachments: the
+            // replay keeps every packet the pass replaces, a batch's
+            // siblings too, though only a single packet is a fallback.
+            let packets = if exact && crate::scene_sink::retains_draw_stage(plan.stage) {
+                pass.resolved_packets()
             } else {
-                None
+                Vec::new()
             };
             let pass = Arc::new(std::sync::Mutex::new(pass));
-            // These passes can record again on replay's attachments.
-            if crate::scene_sink::retains_draw_stage(plan.stage)
-                && let Some(packet) = &fallback
-            {
+            if !packets.is_empty() {
                 retained = Some(crate::backend::RetainedAdmission {
-                    packet: Arc::clone(packet),
+                    packets: packets.into(),
                     surfaces: binding.surfaces.clone(),
                     request: binding.request,
                     plan: plan.clone(),

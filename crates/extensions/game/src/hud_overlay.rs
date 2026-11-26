@@ -460,6 +460,14 @@ impl WidgetPass {
 }
 
 impl ExternalPass for WidgetPass {
+    // The overlay and the packet are immutable; `record` takes the
+    // attachments, and every `Bound` stage's view, from the copy being
+    // recorded, so a kept scene records it again from its own captured
+    // textures. Its renderer state is per device, not per frame.
+    fn replays_scene(&self) -> bool {
+        true
+    }
+
     fn resolved_fallback(&self) -> Option<Arc<d3d::ResolvedDraw>> {
         Some(Arc::clone(&self.draw))
     }
@@ -922,6 +930,27 @@ mod tests {
         assert_eq!(Source::Screen(ScreenDraw::Fade).texture(&[None; 4], None), Some(OverlayTexture::None));
         assert_eq!(screen.shader(), (0, [0.0; 4]));
         assert_eq!(Source::Tag(&at).shader(), (0xe000_0001, [0.5; 4]));
+    }
+
+    /// A widget draw is kept in a two-copy scene as its one packet: the
+    /// pass records again on the replay's attachments with the textures
+    /// captured beside that packet.
+    #[test]
+    fn a_widget_pass_replays_from_its_packet() {
+        let draw = Arc::new(crate::native_hud_glue::tests::ui_draw());
+        let pass = WidgetPass {
+            draw: Arc::clone(&draw),
+            overlay: Arc::new(Overlay::new([draw.target.width, draw.target.height])),
+            sampled: [true, false, false, false],
+        };
+        assert!(pass.replays_scene(), "the sink's retain_admission requires it");
+        let packet = pass.resolved_fallback().expect("the packet the sink compares and replays");
+        assert!(Arc::ptr_eq(&packet, &draw));
+        let packets = pass.resolved_packets();
+        assert_eq!(packets.len(), 1);
+        assert!(Arc::ptr_eq(&packets[0], &draw));
+        assert!(pass.colour_only());
+        assert!(!pass.writes().depth_stencil);
     }
 
     #[test]

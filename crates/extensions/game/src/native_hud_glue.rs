@@ -1,7 +1,8 @@
 //! Ordered handoff from the game's UI callbacks to the native UI renderer.
 //! A single-draw pass retains its immutable packet as worker fallback, so a
 //! direct producer commits without waiting for the render thread. A model
-//! draw with sibling ranges keeps the guest code as its fallback.
+//! draw with sibling ranges keeps the guest code as its fallback; a kept
+//! scene carries it as its head and sibling packets under one admission.
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -155,6 +156,17 @@ impl DrawAdmission for Direct<'_> {
     }
 }
 
+/// A sibling range drawn as `head` is: the head's state, textures and
+/// constants with the range's own geometry.
+fn sibling_draw(head: &d3d::ResolvedDraw, sibling: &IndexedStreams) -> d3d::ResolvedDraw {
+    let mut draw = head.clone();
+    draw.layout = sibling.layout.clone();
+    draw.vertex_count = sibling.vertex_count;
+    draw.streams = sibling.streams.clone();
+    draw.indices = Some(sibling.indices.clone());
+    draw
+}
+
 struct UiPass {
     draw: Arc<d3d::ResolvedDraw>,
     gpu: Arc<Mutex<UiGpu>>,
@@ -173,11 +185,7 @@ impl UiPass {
         let copy = self.draw.for_copy(target.copy);
         let mut total = gpu.prepare(target, copy.as_ref(), self.frame)?;
         for sibling in self.siblings.iter() {
-            let mut draw = (*copy).clone();
-            draw.layout = sibling.layout.clone();
-            draw.vertex_count = sibling.vertex_count;
-            draw.streams = sibling.streams.clone();
-            draw.indices = Some(sibling.indices.clone());
+            let draw = sibling_draw(&copy, sibling);
             let part = gpu.prepare(target, &draw, self.frame)?;
             total.ranges += part.ranges;
             total.packets.extend(part.packets);
@@ -216,9 +224,19 @@ impl ExternalPass for UiPass {
         }))
     }
 
-    /// The packet is the head draw alone, so sibling ranges have none.
+    /// The worker's fallback must be the whole guest draw: with sibling
+    /// ranges there is no single one, and the guest code stays the fallback.
     fn resolved_fallback(&self) -> Option<Arc<d3d::ResolvedDraw>> {
         self.siblings.is_empty().then(|| Arc::clone(&self.draw))
+    }
+
+    /// The head draw, then each sibling range as the draw `prepare` builds
+    /// for it (the head's state and textures, the sibling's geometry): a
+    /// kept scene carries the batch as these draws under one admission.
+    fn resolved_packets(&self) -> Vec<Arc<d3d::ResolvedDraw>> {
+        std::iter::once(Arc::clone(&self.draw))
+            .chain(self.siblings.iter().map(|sibling| Arc::new(sibling_draw(&self.draw, sibling))))
+            .collect()
     }
 
     fn diagnostic_draw(&self) -> Option<Arc<d3d::ResolvedDraw>> {
@@ -548,7 +566,7 @@ pub fn install<B: d3d::Backend + Send + 'static>(device: &d3d::abi::SharedDevice
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use engine::testing::FakeGuest;
 
@@ -648,8 +666,9 @@ mod tests {
         assert!(!inline_space(&mem, layout, OUTLINE_PUSH_BYTES, true));
     }
 
-    /// A one-triangle UI draw, as the scene's UI pass is built over.
-    fn ui_draw() -> d3d::ResolvedDraw {
+    /// A one-triangle UI draw, as the scene's UI pass is built over (the
+    /// HUD overlay's widget tests share it).
+    pub(crate) fn ui_draw() -> d3d::ResolvedDraw {
         use d3d::backend::{StreamBytes, TargetInfo, Viewport};
         use d3d::shader::{ShaderInputs, VertexProcessing};
         use d3d::state::StateWords;
@@ -710,8 +729,8 @@ mod tests {
     }
 
     #[test]
-    fn a_ui_pass_with_siblings_has_no_single_packet_and_stays_on_the_guest_path() {
-        let sibling = IndexedStreams {
+    fn a_ui_pass_with_siblings_is_carried_as_its_packets_under_one_admission() {
+        let sibling = || IndexedStreams {
             layout: ui_draw().layout,
             vertex_count: 3,
             streams: Vec::new(),
@@ -721,8 +740,18 @@ mod tests {
             draw: Arc::new(ui_draw()),
             gpu: Arc::new(Mutex::new(UiGpu::default())),
             frame: 1,
-            siblings: Arc::from(vec![sibling]),
+            siblings: Arc::from(vec![sibling(), sibling()]),
         };
-        assert!(pass.resolved_fallback().is_none(), "no packet: the device cannot retain or carry it");
+        assert!(pass.replays_scene());
+        assert!(pass.resolved_fallback().is_none(), "no single packet is the worker's fallback");
+        let packets = pass.resolved_packets();
+        assert_eq!(packets.len(), 3, "the head and each sibling, in order");
+        assert!(Arc::ptr_eq(&packets[0], &pass.draw));
+        for packet in &packets[1..] {
+            assert_eq!(packet.indices.as_deref(), Some(&[0u32, 1, 2][..]));
+            assert!(packet.streams.is_empty());
+            assert_eq!(packet.state, pass.draw.state, "the head's state");
+            assert_eq!(packet.textures, pass.draw.textures, "the head's textures");
+        }
     }
 }
