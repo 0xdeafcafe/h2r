@@ -11,6 +11,7 @@
 //! aliased blocks), so block spans are checked against the whole ordinary
 //! metadata region, never assumed to lie in the owning tag. Every decode is
 //! bounded by an element [`Budget`].
+use crate::bytes::{f32_at, u16_at, u32_at};
 use crate::wire::{StringId, TagBlock, TagReference};
 use crate::{Error, Result};
 use map::{FourCC, Map, TagId};
@@ -503,15 +504,6 @@ impl Record {
     }
 }
 
-fn u16_at(b: &[u8], o: usize) -> u16 {
-    u16::from_le_bytes([b[o], b[o + 1]])
-}
-fn u32_at(b: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes(b[o..o + 4].try_into().expect("4 bytes"))
-}
-fn f32_at(b: &[u8], o: usize) -> f32 {
-    f32::from_bits(u32_at(b, o))
-}
 fn ctx_err(record: &'static str, field: &'static str, source: Error) -> Error {
     Error::Field {
         record,

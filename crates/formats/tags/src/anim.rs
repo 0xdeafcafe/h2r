@@ -11,6 +11,7 @@
 //! Fields nobody could explain are kept as raw words.
 //!
 //! The module is hand-written and self-contained, like [`crate::sound`].
+use crate::bytes::{f32_at, i16_at, u16_at, u32_at};
 use crate::anim_sample::AnimationClip;
 use crate::sound::ResourceReader;
 use crate::{Error, Result, wire::StringId, wire::TagReference};
@@ -20,19 +21,6 @@ use std::sync::Arc;
 
 /// Largest animation resource `read_resource` will load.
 pub const MAX_RESOURCE_BYTES: u64 = 256 << 20;
-
-pub(crate) fn u16_at(b: &[u8], o: usize) -> u16 {
-    u16::from_le_bytes([b[o], b[o + 1]])
-}
-pub(crate) fn i16_at(b: &[u8], o: usize) -> i16 {
-    i16::from_le_bytes([b[o], b[o + 1]])
-}
-pub(crate) fn u32_at(b: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
-}
-pub(crate) fn f32_at(b: &[u8], o: usize) -> f32 {
-    f32::from_bits(u32_at(b, o))
-}
 
 /// Size of the fixed `jmad` header; the first block's elements start here.
 pub const HEADER_SIZE: usize = 0xbc;

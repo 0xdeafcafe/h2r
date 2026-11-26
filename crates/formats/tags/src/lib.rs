@@ -10,6 +10,8 @@
 //! decoder in [`lighting`], extending the shared [`structure`] lightmap reader.
 #![forbid(unsafe_code)]
 
+/// Little-endian slice readers and writers shared by the tag decoders and tools.
+pub mod bytes;
 /// The effects family (`effe`, `prt3`, `pmov`, ...); see `docs/formats/effects.md`.
 pub mod effects;
 /// Reviewed edits using the lossless cache writer.

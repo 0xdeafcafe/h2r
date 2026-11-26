@@ -13,6 +13,7 @@
 //! whose dialogue is lip-synced also names an *extra info* element of the
 //! gestalt, whose raw resource holds the mouth curves: one jaw-aperture byte
 //! per 30 Hz tick per permutation, read by [`Gestalt::mouth_curve`].
+use crate::bytes::{u16_at, u32_at};
 use crate::{Error, Result, wire::TagBlock};
 use map::{FourCC, Map, RawPointer, TagId};
 use std::io::{Read, Seek};
@@ -33,13 +34,6 @@ pub mod h1_promotion {
         bytes.len() == SIZE as usize
             && bytes[SIGNATURE as usize..TARGET as usize] == MAGIC.to_le_bytes()
     }
-}
-
-fn u16_at(b: &[u8], o: usize) -> u16 {
-    u16::from_le_bytes([b[o], b[o + 1]])
-}
-fn u32_at(b: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
 }
 
 /// Sample rate selector (`snd!` +3). Names are source-described (S); the 44.1 kHz

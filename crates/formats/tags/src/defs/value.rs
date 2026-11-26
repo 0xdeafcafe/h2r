@@ -3,6 +3,7 @@
 //! [`from_built`]), fresh tags ([`default_record`]) and comparison
 //! ([`diff`]).
 
+use crate::bytes::{put_u32, u32_at};
 use super::{Coverage, FieldDef, Kind, StructDef};
 use crate::repo::{Body, LooseTag, Node, RawRes, Region, TagKey, Tree, Value};
 use map::build::{Block, FixupKind, RawRef};
@@ -467,10 +468,6 @@ fn int_at(b: &[u8], at: usize, bytes: u8, signed: bool) -> i64 {
     }
 }
 
-fn u32_at(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(b[at..at + 4].try_into().expect("4 bytes"))
-}
-
 fn join(path: &str, name: &str) -> String {
     if path.is_empty() {
         name.to_owned()
@@ -713,10 +710,6 @@ pub fn encode(
 fn put_int(b: &mut [u8], at: usize, bytes: u8, v: i64) {
     let le = v.to_le_bytes();
     b[at..at + bytes as usize].copy_from_slice(&le[..bytes as usize]);
-}
-
-fn put_u32(b: &mut [u8], at: usize, v: u32) {
-    b[at..at + 4].copy_from_slice(&v.to_le_bytes());
 }
 
 /// Writes a plain value; `false` when the kind is not plain.

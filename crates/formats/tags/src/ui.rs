@@ -19,6 +19,7 @@
 //! Block data can alias: a block address may point into another tag's payload
 //! (two retail screens share one pane array). Blocks are therefore resolved
 //! against the whole ordinary metadata region, not only the owning tag.
+use crate::bytes::{f32_at, i16_at, u16_at, u32_at};
 use crate::{Error, Result, wire::StringId};
 use map::{FourCC, Map, TagId};
 use std::collections::HashMap;
@@ -266,18 +267,6 @@ pub struct Block {
     pub address: u32,
 }
 
-fn u16_at(b: &[u8], o: usize) -> u16 {
-    u16::from_le_bytes([b[o], b[o + 1]])
-}
-fn i16_at(b: &[u8], o: usize) -> i16 {
-    u16_at(b, o) as i16
-}
-fn u32_at(b: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes(b[o..o + 4].try_into().expect("four bytes"))
-}
-fn f32_at(b: &[u8], o: usize) -> f32 {
-    f32::from_bits(u32_at(b, o))
-}
 fn f32s<const N: usize>(b: &[u8], o: usize) -> [f32; N] {
     std::array::from_fn(|i| f32_at(b, o + i * 4))
 }

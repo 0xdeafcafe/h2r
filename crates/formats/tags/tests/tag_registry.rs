@@ -10,6 +10,7 @@
 //! reference of every element, walked through the registry, points at
 //! whole elements inside the metadata.
 
+use tags::bytes::u32_at;
 use map::{FourCC, Map};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -18,10 +19,6 @@ use std::io::BufReader;
 use tags::registry::{Kind, Layout, Registry};
 
 type Res<T> = Result<T, Box<dyn std::error::Error>>;
-
-fn u32_at(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(b[at..at + 4].try_into().unwrap())
-}
 
 /// Walks `count` elements of `l` at `addr`; returns the elements seen.
 fn walk(

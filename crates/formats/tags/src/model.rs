@@ -8,9 +8,10 @@
 //! docs/formats/map-format.md, "Render-model geometry". Unknown vertex types are kept
 //! as bytes, never guessed.
 use crate::decode::Payload;
+use crate::bytes::u32_at;
 use crate::geometry::{
     self, Compression, GeometryBlockInfo, RawSource, SectionLayout, TagView, Vertices,
-    decode_section, load_block, u32_at,
+    decode_section, load_block,
 };
 use crate::records::*;
 use crate::wire::{BinaryRecord, TagBlock, TagReference};
