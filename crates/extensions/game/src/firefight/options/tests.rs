@@ -577,7 +577,8 @@ fn only_a_custom_games_list_gets_the_row_once() {
 /// The row is on a custom game's list only in Firefight mode.
 #[test]
 fn the_row_shows_only_in_firefight_mode() {
-    use crate::lobby_mode::{arrange, Offer};
+    use crate::lobby_mode::arrange;
+    use crate::lobby_start::Offer;
     use crate::lobby_start::Mode;
     let all = Offer { forge: true, firefight: true };
     let list = [CHANGE_MAP, 1, 2, ROW_ACTION];
