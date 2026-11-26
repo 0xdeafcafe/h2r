@@ -1,7 +1,9 @@
-//! Reserve trailing scenario slots without exposing them to the map's readers.
+//! Reserve trailing scenario slots without exposing them to the map's
+//! readers, and name the block-out starter set the kit carries.
 
 use std::io::{Cursor, Read, Seek};
 
+use forge_shapes::{PieceDef, STARTER};
 use map::{Map, scenario_layout as layout};
 use scenario_edit::layout::{BlockKind, Role};
 
@@ -9,6 +11,19 @@ use crate::Error;
 
 const SPARES: u32 = 8;
 const INDEX_LIMIT: u32 = i16::MAX as u32 + 1;
+
+/// The kit's block-out starter set (docs/game/forge-blockout.md,
+/// "Materialising"): `forge_shapes::STARTER`, every role `Dev`, in its
+/// order. `crate::blockout` installs each after the document's own
+/// definitions and gives it a crate palette row after theirs, so a session
+/// places it with `object_new` and no rebuild; it is the first thing cut
+/// when the kit does not fit ("The cut order").
+pub(super) fn starter() -> Vec<PieceDef> {
+    STARTER
+        .iter()
+        .map(|&(shape, size, param)| PieceDef::dev(shape, size, param))
+        .collect()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reservation {

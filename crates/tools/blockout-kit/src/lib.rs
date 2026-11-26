@@ -27,12 +27,16 @@
 //!
 //! What a map supplies is read from it ([`Facts`]): the shader template and
 //! the global material. Nothing here is read from a disc but those names.
+//!
+//! [`palette`] surveys the surfaces a level is made of, for the Material
+//! picker: each shader's area, texture repeat and class.
 
 pub mod collision;
 pub mod dev;
 mod install;
 pub mod mesh;
 mod object;
+pub mod palette;
 pub mod physics;
 pub mod texture;
 
@@ -43,6 +47,6 @@ pub mod fixture;
 #[cfg(test)]
 mod tests;
 
-pub use install::{Cost, Facts, Installed, install, make_index_room, tag_size};
+pub use install::{Cost, Facts, Installed, cost_since, install, make_index_room, tag_size};
 pub use object::{NODE, REGION};
 pub use physics::{PIECE_FLAGS, PIECE_MASS, PIECE_MOTION, piece_body};

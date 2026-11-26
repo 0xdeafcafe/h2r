@@ -28,6 +28,8 @@ h1objects = { path = "../h1objects" }
 # and the stage's textures are written.
 pogo-kit = { path = "../pogo-kit" }
 map.workspace = true
+# The structure BSPs' drawn parts, for the palette survey.
+scenario-edit = { path = "../scenario-edit", default-features = false }
 tags.workspace = true
 
 [features]
