@@ -751,7 +751,10 @@ fn the_nav_tool_aims_at_nothing_and_a_generates_the_nav() {
         tool.update(&s, 2, press(Action::Accept)).unwrap(),
         Some(Command::GenerateNav)
     );
-    assert_eq!(tool.aimed_thing, None, "an object in the reticle is not aimed at");
+    assert_eq!(
+        tool.aimed_thing, None,
+        "an object in the reticle is not aimed at"
+    );
     assert_eq!(tool.update(&s, 3, press(Action::Delete)).unwrap(), None);
     assert_eq!(s.document().ops.len(), count, "the tool edits nothing");
     // The overlays and the tools picker are still reachable.
@@ -841,7 +844,12 @@ fn piece_ops(s: &crate::Session) -> usize {
     s.document()
         .ops
         .iter()
-        .filter(|op| matches!(op.edit, forge_doc::Edit::Forge(forge_doc::Forge::Piece { .. })))
+        .filter(|op| {
+            matches!(
+                op.edit,
+                forge_doc::Edit::Forge(forge_doc::Forge::Piece { .. })
+            )
+        })
         .count()
 }
 
@@ -859,26 +867,46 @@ fn a_push_by_one_step_is_one_forge_piece_and_the_far_face_stays() {
     let before = piece_ops(&s);
     assert_eq!(tool.update(&s, 3, push(1.)).unwrap(), None);
     let draft = tool.draft.clone().unwrap();
-    assert_eq!(draft.def.size, [80, 64, 64], "one 16-unit step on the aimed face");
-    assert!((draft.frame.position[0] - 4.84).abs() < 1e-5, "the face at the origin moved");
+    assert_eq!(
+        draft.def.size,
+        [80, 64, 64],
+        "one 16-unit step on the aimed face"
+    );
+    assert!(
+        (draft.frame.position[0] - 4.84).abs() < 1e-5,
+        "the face at the origin moved"
+    );
     let cmd = tool.update(&s, 4, press(Action::Accept)).unwrap().unwrap();
-    let Command::ResizePiece { id: target, def, origin } = cmd else {
+    let Command::ResizePiece {
+        id: target,
+        def,
+        origin,
+    } = cmd
+    else {
         panic!("A writes the draft: {cmd:?}");
     };
     assert_eq!(target, id);
     s.set_piece(&mut w, 5, id, def, Some(origin)).unwrap();
     assert_eq!(piece_ops(&s) - before, 1, "one Forge::Piece");
-    assert_eq!(s.piece(crate::Endpoint::Added(id)).unwrap().def.size, [80, 64, 64]);
+    assert_eq!(
+        s.piece(crate::Endpoint::Added(id)).unwrap().def.size,
+        [80, 64, 64]
+    );
 }
 
 #[test]
 fn a_pull_past_the_minimum_is_refused_and_the_document_is_unchanged() {
     let (s, _w, _id, mut tool) = piece_session([16, 64, 64]);
     let ops = s.document().ops.len();
-    let draft = tool.draft.clone();
+    let draft = tool.draft.clone().unwrap();
     let refused = tool.update(&s, 3, push(-1.)).unwrap_err();
     assert!(!refused.is_empty());
-    assert_eq!(tool.draft, draft, "the draft is as it was");
+    let after = tool.draft.clone().unwrap();
+    assert_eq!(
+        (after.def, after.frame),
+        (draft.def, draft.frame),
+        "the draft's shape is as it was"
+    );
     assert_eq!(s.document().ops.len(), ops);
 }
 
