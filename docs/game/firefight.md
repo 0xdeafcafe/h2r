@@ -273,8 +273,11 @@ pub struct Observed { players: Vec<PlayerSeen { slot, alive, team }>,
                       actors_alive_by_squad: [u16; 16],
                       zones: Vec<ZoneSeen { seen, distance, team_distance: [u32; 2] }>,
                       kills: Vec<Kill { class, killer, assist }>,
-                      player_kills: Vec<PlayerKill { killer, victim }> }
-pub enum Command { PlaceSquad { slot, class, count, zone, weapon_tier }, Target { slot, team },
+                      player_kills: Vec<PlayerKill { killer, victim }>,
+                      ship: ShipSeen { ready, paths: Vec<bool> } }
+pub enum Command { PlaceSquad { slot, class, count, zone, weapon_tier },
+                   DropSquad { slot, class, count, zone, weapon_tier },
+                   ShipHover { on }, ShipUnload, ShipLeave { zone }, Target { slot, team },
                    Hunt { slot }, EraseSquad { slot }, Round { index }, Wave { index },
                    Skull { id, on }, Lives { player, pool }, TeamLives { team, pool },
                    Score { player, points, reason }, Respawn { player },
@@ -601,6 +604,7 @@ that id, and each machine loads its own build.
 | Zones, areas, firing positions | sampled from the sectors: cover is a position with a wall toward the middle | the block writers of `h1campaign::ai` (`ScenarioBlocks`) |
 | Squad slots | 16 empty squads the director fills (class, count and zone are set at place time), then the class record: one empty squad `ff_class_<name>` per palette row | the same writers |
 | Characters, stage 1 | `char` tags we author from a tuning table of ours, on bipeds and weapons the multiplayer map already has | Elites only; no tag is copied from another map |
+| Dropship | the Phantom by stage-2 transplant (the map's own Spirit on a Halo 1-built map), one parked `ff_ship` placement, a point set `ff_path_NN` for each drop zone with a clear column ("The dropship", below) | cut before any class when headroom is short |
 | Characters, stage 2 | `firefight_kit::Classes` (`src/transplant.rs`): `tags::schema::transplant` of a donor's `char` tag and its closure, from the player's own campaign maps, with the sound gestalt merge (`h1_assets::sounds::transplant_from`); the retail class table (`src/retail.rs`) names the donors | each class costs tag headroom; the builder refuses a build that does not fit, naming every class's cost, or cuts classes from the end of the list |
 
 Stage 1 runs against a map on the configured disc or extracted disc tree:
@@ -612,6 +616,7 @@ h2 firefight kit beavercreek --home blue --replace
 h2 firefight kit coagulation --probe
 h2 firefight kit beavercreek --classes my-classes.txt --cut
 h2 firefight kit zanzibar --retail-classes --cut
+h2 firefight kit zanzibar --dropship none
 ```
 
 The first command installs `<data>/maps/firefight-coagulation`. `--home
@@ -696,19 +701,91 @@ last class until the build fits, and `Package::cut` names what it cut,
 first cut first. A refusal by the schema (a tag it cannot copy) or a
 missing `char` is an error naming the class, never a cut.
 
-**A drop ship (rules-world-api.md W8, R8).** The same machinery copies
-any group's tree, but three things are missing for a `vehi` root. The
-class takes `char` roots only (`ClassSpec` has no group), so a root group
-and a palette row for it are needed: the scenario's vehicle palette,
-written like the weapon palette row (`ai::weapon_slot`), and a squad's
-`vehicle` index. The schema (`layouts.txt`) must describe every group in
-the ship's closure (vehicle, model, render model, collision, physics,
-animation graph, effects, sounds): the transplant refuses the whole tree
-for one group without a layout, and a census on the player's campaign
-maps says which ship has a closure that copies. And the headroom: a ship
-with its animation graph and physics is far larger than a character, so
-Waterworks, Zanzibar and the other maps with a few KB of room refuse it
-and the cut order drops it first; R8 measures it per map in notes.
+**The dropship (rules-world-api.md, "Vehicles and drop ships").** A kit
+carries a ship the host flies squads in on (`src/ship.rs`,
+`h2 firefight kit MAP --dropship auto|phantom|spirit|none`, `auto` by
+default, `firefight_kit::Config::dropship`):
+
+- **The tag.** The Phantom, `objects\vehicles\phantom\phantom`, copied in by the
+  stage-two transplant from the first donor that carries it
+  (`transplant::add`, a `vehi` root; the command adds Outskirts,
+  `03a_oldmombasa`, as a donor when the disc has it and no class named it).
+  A map built from Halo 1's campaign already holds Halo 1's Covenant
+  dropship (the Spirit, `vehicles\c_dropship\c_dropship`; `h1campaign::h2assets`
+  keeps it as a set piece) and uses it with no donor. `auto` takes the
+  Spirit, then a Phantom the map holds, then a donor's; with none to be had it
+  builds the kit as before and says why. `phantom` and `spirit`
+  fail when their ship cannot be had; `none` writes nothing.
+- **The placement.** One vehicle placement named `ff_ship` (an object name),
+  on a new vehicle palette row for the ship, placed at the start (not
+  "not at start") at the first path's run-in, with that path's yaw. The base's
+  own vehicles, names and palette rows keep their indices; the new ones
+  follow them (`ship::author`).
+- **The paths.** For each drop zone `NN` with a clear column, a point set
+  `ff_path_NN` in the scenario's scripting data with three points,
+  `run_in`, `hover` and `run_out`, in flying order. `hover` is
+  `ship::DROP_HEIGHT` (6 units) over the zone's first area's mean. The
+  runs are at the sky height, 10 units over the tallest collision, and
+  outside the collision's horizontal bounds by at least 20. `ship::plan`
+  casts rays on the arena BSP's collision (`bots::los::Walls::clear`):
+  from just above the zone's floor to the sky (a roof over the zone
+  fails it), and, for the first of eight compass directions (starting
+  away from the map's middle) where both clear, from the run-in down to
+  the hover and from the hover up to the run-out, which lie on opposite sides.
+  A zone with no such direction gets no point set, and its squads spawn on foot.
+  The paths are not placed by hand; a map keeps what the rays find.
+- **Fit.** The ship is cut before any class: with a map short of headroom
+  the builder takes the `Fit` steps with the ship, then tries without it,
+  and only then drops classes (`fit_within`). A kit with no ship has
+  the bytes of the kit before it. `Package::ship` (`ShipReport`) and the
+  command's `dropship:` line say `kept (tag, tags copied, bytes, zone
+  paths)` or `cut (reason)`: over the tag headroom, no donor, or no clear
+  column; `Costs::ship` is the bytes (the copied tags, the placement, the
+  palette row, the name and the point sets). A probe kit has no ship.
+
+The kit only places the ship parked and gives it the points to fly. The
+placement carries no hover flag: the director turns the hold on
+(`ShipHover`), and the host flies and loads the ship ("The drop ship",
+below).
+
+**The drop ship.** The guest reads the kit's ship and paths with the rest
+of the kit (`guest::read_kit`): `KitLayout::ship` is the vehicle placement
+the object name `ff_ship` points at, and `KitLayout::paths` holds, for
+each drop zone in kit order, its `ff_path_NN` point set's `run_in`,
+`hover` and `run_out` (`ship::ShipPath`), or none when the zone has no
+set or the set misses a point. A game reports the ship as live when
+exactly one vehicle of that placement is in the world
+(`ship::placed_ship`); its seats are `ship::SEATS`, since the kit does
+not read the vehicle tag's seat blocks.
+
+The director (`content/modes/rules/firefight.rules`) holds the ship's state
+in three globals, `ship_state` (parked, inbound, unloading, outbound),
+`ship_tick` and `ship_zone`. Each tick the host tells it whether the ship
+is in the world (`Observed::ship.ready`, read `ship_ready()`) and which zones
+have a path (`zone_path(zone)`).
+
+- A squad whose chosen zone has a path, with the ship parked and in the
+  world, is placed by `ff_ship_hover(true)` and `ff_drop_squad(...)`
+  (`Command::ShipHover`, `Command::DropSquad`); the state is inbound.
+  Every other squad, including each squad of a wave while the ship is
+  out, is placed on foot by `place_squad_at` as before, so a wave
+  never waits on the ship, and a map with no ship or no path has the
+  commands it had.
+- `DropSquad` makes the host fly the ship from the path's run-in to its
+  hover point in `ship::FLY_TICKS` (240, 8 s) and place the squad into
+  it (`Game::fly`, `Game::drop_squad`, `ship::drop_squad`): up to the
+  ship's free seats ride, the rest of the squad spawns on foot at the
+  zone. A `DropSquad` for a zone the host finds no ship or path for
+  places on foot, as `PlaceSquad`.
+- 240 ticks after the drop the script calls `ff_ship_unload()`
+  (`ShipUnload`: `VEHICLE_UNLOAD`, every seat); 60 ticks later
+  `ff_ship_leave(zone)` (`ShipLeave`: a flight from the hover point to the
+  run-out in `FLY_TICKS`); 240 ticks after that `ff_ship_hover(false)` and the
+  ship is parked again. The ship's puts come before the tick's other
+  calls so a squad placed into a ship that begins its flight finds it
+  at the run-in.
+- `squad_alive` and the slot timeout read as before: riders are actors the
+  moment they are placed.
 
 The build is `firefight_kit::ground::build`, which takes the labels
 placed on the map and the recipe, and gives each label's place to the
@@ -1322,6 +1399,10 @@ boundary. Every address below is **E** unless the row says otherwise.
 | Actors' team | `AI_SET_TEAM` (`0x275b60`), behind `HS_AI_SET_TEAM` (322) | `place_squad`, after the placement | traced | The evaluator passes the `ai` value in EAX and the team in BX (`0x2a587a`). The routine accepts a squad or a group, writes the runtime squad's team byte (`+0x76`, `0x275bf4`), then each actor's team (`+0x24`, which `world.ai` reports) and its unit's (`+0x138`, `0x275c99`). Placement copies a nonzero squad team byte onto each new unit (`0x20187a`), but team 0 reads as unset there, so the body sets the team after every placement |
 | Hunt | `AI_SET_ORDERS` (`0x275cb0`), behind `HS_AI_SET_ORDERS` (333) | `hunt` | built | The evaluator passes the `ai` value in EAX and the order index in CX (`0x2a5c39`). The routine ignores an index outside the scenario's order block (`+0x240`, `0x275ce6`) and hands a squad to `0x202e90`, a group to `0x203120`. There is no built-in hunt: it is an order the kit authors, which `hunt` finds by its name `ff_hunt`. The kit writes it as order 0 of an empty block (`ai::hunt_order`): no style, script or follow target, and every area of every drop zone as its primary area set, so a squad sent to it engages from across the arena. A base map that already has orders is refused, since the kit does not merge into another block's child arrays. A kit with no zone areas is refused with the Hunt order named |
 | Erase a squad | `AI_ERASE` (`0x2736c0`), behind `HS_AI_ERASE` (297) | `erase_squad` | traced; run R2 for bodies | `ai_erase` passes the `ai` value as its one stack argument (`0x2a523b`). For each actor the routine deletes the actor (`0x1e2a90`) and then its unit (`OBJECT_DELETE`) or swarm (`0x28e200`); an actor the AI is updating at that moment is marked instead (`+0x0d`, `0x2736fc`). It then walks the objects the squad placed (runtime squad `+0x70`, linked through object `+0x3a4`) and deletes each one `0xbeb30` does not keep. Whether a dead actor's body is still on that list is what R2 settles |
+| Fly a ship along its path | `OBJECT_SET_TRANSFORM` (`0xb7430`), the pose of `rules::vehicles::Flight` | `fly` (`Game::fly`), `Flights` (`rules/world/vehicles/flight.rs`), `put_ship` | built; rules-world R7 and R3 | The host flies the ship along a keyed path with no AI pilot. `Game::fly` hands the match the ship, the path's points and the ticks; the match begins a flight on the tick it applies the entry and every tick after puts the ship at the flight's pose, facing the path's tangent, as a put at the boundary (`put_ship`: the object's own `up` made perpendicular to the tangent, `notify` set). The pose is 16.16 integer math, so every machine and a film put the ship in the same place. A flight that has run its ticks puts the ship on the last point once and is reported as an arrival (`Match::take_arrived`). At most 4 ships fly at once; a second flight of a ship replaces its first with no arrival. The next physics step can move the body again, with riders aboard and with contacts, which only a run settles ([R7](notes/2026-11-24-vehicle-actions.md)). Whether a client sees the ship move is rules-world R3 |
+| Place a squad into a ship | `VEHICLE_LOAD` (`0x11b0c0`), `OBJECT_LIST_FROM_AI` (`0x272ea0`), `OBJECT_DELETE` | `place_squad_in` (`Game::drop_squad` through `drop_squad`) | built; rules-world R7 | Retail placement cannot seat into a given ship ([R6](notes/2026-11-24-vehicle-actions.md)), so the body places `min(count, free seats)` actors with every start of the slot squad at the ship's position, then loads the squad's actor list into the ship through the retail `vehicle_load_magic` body with the all-seats mapping. The free seats are the capacity the caller names less the bipeds attached to the ship. An actor the load left unattached is deleted, so none stands under the ship; a load that seats none is refused. The actors are read from the actors pool and not from the replicated ones, since a new actor has no entity until the tick's replication. The two register and stack layouts of the load and the list cast are read from the call at `0x2a411c` and the HS cast table and are confirmed by the run |
+| Hold the ship, unload it | `VEHICLE_HOVER` (`0xf0fd0`), `VEHICLE_UNLOAD` (`0x11b2b0`, mapping -1) | `ship::hover`, `ship::unload` (`Game::hover`, `Game::unload`) | named; rules-world R7 | The director's `ShipHover` and `ShipUnload`, made at the boundary as the rules runtime makes `hover` and `unload`; each is refused for a ship no longer in the world |
+| Land the rest on foot | `AI_SQUAD_PLACE` | `drop_squad` | built | `drop_squad` places the remainder of the squad (`count` less those aboard) as `place_squad` does, in the same slot squad, so a wave never waits on the ship: a ship with no free seat, not in the world or whose load the engine refuses leaves the whole squad on foot, and the reason is printed |
 | Credit a player's score | `SCORE_ADD` (`0x15b7c0`) | `credit_score` | traced | Slayer's kill callback is its engine's vtable slot `+0x78` (engine 2 at `0x55e4d8`), which `0x15ce70` calls last (`0x15d6a4`); it calls `0x15b7c0` with the score change in EAX and the killer's player datum on the stack (`0x2bc05d`). The routine adds the change's low 16 bits, signed, to row `+0x00` at `+0x308 + 0x1c * slot` of the game engine globals, clamps to ±30,000 (`0x15b849`), marks the statborg entity's player bit for replication (`0x15b88a`), updates the team score in a team game, checks the score limit when it is nonzero, and returns true. It refuses, returning false, without a game engine, while engine `+0x6c` is not 1, and on a machine where engine `+0xc04` is not 1 (unless game globals `+0x0c` is 4). `credit_score` passes the salted player datum and treats false as an error |
 | Lives and respawn | `PLAYER_OUT_OF_LIVES` (`0x15db30`), `PLAYER_RESPAWN_READY` (`0x15dd40`), `PLAYER_ENTITY_DIRTY` (`0xa7840`), `PLAYER_SPAWN` (`0x14f2e0`) | `engine_holds_respawns`, `respawn`; `Lives` writes nothing | traced; run R3 | No routine sets lives: the engine writes player `+0x1ac` itself. Round start sets it to the variant's lives setting (game globals `+0x1b8`, 0 meaning unlimited, `0x157d03`), and a death takes one on the authority (`0x15d01e`, gated by `GAME_ENGINE_AUTHORITATIVE`), then marks the player entity's bit `0x20` for clients (`0x15d03d`; a client applies it at `0x24e257`). The players update spawns a waiting player through `PLAYER_SPAWN` only when `PLAYER_RESPAWN_READY` says so (`0x14d430`), which refuses a player `PLAYER_OUT_OF_LIVES` reports: a positive lives setting, no unit and no lives left. So the hold is the variant's lives setting at 1, and `respawn` gives one life and marks bit `0x20`; the engine respawns the player when its respawn delay runs out and takes the life at the next death. The pool stays in the mode blob, so `Lives` changes nothing in the game. A team whose players are all out of lives leaves the playing-teams mask (`0x1925c6`); whether that ends the Slayer round before the director's `Finish` is part of R3 |
 | End the game | `GAME_END` (`0x1389c0`, no arguments, `ret`) | `end_game` | traced; run R4 | The routine latches game globals `+0x1128` once, sets the end delay at `+0x112c` from the tick rate and clears `+0x1129`; it checks nothing else. The engine's own round-over path ends a game in three steps (`0x15b5f9` to `0x15b624`): engine state `+0xc04` to 2, `GAME_END` unless latched, then the engine's changed flag (`+0`, bit `0x20`), skipping the first two while game globals `+0x0c` is 4. A client ends when the engine globals entity carries bit 4 (`0x24e52a`). `end_game` takes the same three steps and refuses in mode 4; whether a client ends with it is R4 |
@@ -1345,6 +1426,15 @@ only the run's own entries reach the game, and append them with
 | R2 | after one Elite is killed, `h2 agent firefight.command '{"command":{"erase_squad":{"slot":0}}}'`, then `h2 agent world.ai` and `h2 agent sim.objects '{"kinds":["biped"]}'` | no actors; whether the dead Elite's biped is gone says if bodies are on the squad's list |
 | R3 | with the variant's lives at 1, kill player 0, read `h2 agent sim.view '{"roots":["player"]}'`, then `h2 agent firefight.command '{"command":{"respawn":{"player":0}}}'` | the player stays dead with `lives` 0 until the command, then respawns after its respawn delay with `lives` 0 again after the next death; with every player dead the round does not end before `Finish` |
 | R4 | `h2 agent firefight.command '{"command":{"finish":{"outcome":"won"}}}'` on a host with one client | both machines show the post-game screen with the scores the statborg held (`score` in `sim.view` on each) |
+
+The drop ship's two checks are the rules world's R7 and R3 ([rules-world-api.md](rules-world-api.md#vehicles-and-drop-ships)),
+run on the lab host with a kit map that carries a ship: R7 flies the ship
+(`Game::fly`) with a squad aboard and reads the ship's position every tick
+(`sim.objects`) against `Flights::step`, and the riders' parents
+(`world.ai`) after the flight; R3 reads whether a second machine shows the
+ship at the flown position. The load's register and stack layout is
+confirmed by the same run: `place_squad_in` seats the free seats and no
+unattached actor stands under the ship.
 
 Kills come from `SimEvent::ActorKilled` (AN6), which is filled only while
 the object update runs in Rust (`impl.sim.native.objects`). The killer's

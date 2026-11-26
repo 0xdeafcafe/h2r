@@ -54,6 +54,8 @@ pub struct Config {
     /// The authored layout the drops come from, for a map that has one
     /// (`crate::builtin::for_map`); the generator picks them otherwise.
     pub layout: Option<&'static crate::builtin::Layout>,
+    /// Which dropship the kit carries ([`crate::Dropship`]).
+    pub dropship: crate::Dropship,
 }
 
 /// Where the two base points came from.

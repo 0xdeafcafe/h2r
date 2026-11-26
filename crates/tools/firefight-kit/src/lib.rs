@@ -24,12 +24,14 @@ pub mod builtin;
 pub mod ground;
 mod nav;
 pub mod retail;
+pub mod ship;
 mod transplant;
 /// An invented map the kit builds on, for tests here and in other crates.
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;
 
 pub use bases::{Bases, Config, Source, Team};
+pub use ship::{Dropship, ShipReport};
 pub use retail::RetailClass;
 pub use ground::{Ground, Labels, Problem, Receipt, Recipe};
 pub use transplant::{ClassCost, ClassSpec, Classes, Donor};
@@ -63,6 +65,9 @@ pub struct Costs {
     /// The transplanted classes' tags and index entries
     /// (`ClassCost::bytes` summed): an estimate inside `tag_growth`.
     pub classes: usize,
+    /// The dropship: its transplanted tags (when a donor gave them), its
+    /// parked placement, palette row, object name and point sets.
+    pub ship: usize,
     pub scripts: usize,
     /// The starting locations, when their rewritten rows cannot stay in
     /// place (0 when they do).
@@ -83,13 +88,14 @@ pub struct Costs {
 
 impl Costs {
     /// The parts, largest first.
-    fn parts(&self) -> [(&'static str, usize); 9] {
+    fn parts(&self) -> [(&'static str, usize); 10] {
         let mut parts = [
             ("sectors", self.sectors),
             ("zones", self.zones),
             ("squads", self.squads),
             ("characters and palettes", self.characters),
             ("transplanted classes", self.classes),
+            ("dropship", self.ship),
             ("scripts", self.scripts),
             ("starting locations", self.starts),
             ("tag index", self.index),
@@ -107,9 +113,14 @@ impl fmt::Display for Costs {
         } else {
             format!(", merged into {}", self.sectors_merged)
         };
+        let ship = if self.ship == 0 {
+            String::new()
+        } else {
+            format!("dropship {} B, ", self.ship)
+        };
         write!(
             f,
-            "sectors {} B ({} of {} generated kept{merged}), zones {} B, squads {} B, characters and palettes {} B, transplanted classes {} B, scripts {} B, starting locations {} B, tag index {} B, padding {} B; tag growth {} B, available {} B",
+            "sectors {} B ({} of {} generated kept{merged}), zones {} B, squads {} B, characters and palettes {} B, transplanted classes {} B, {ship}scripts {} B, starting locations {} B, tag index {} B, padding {} B; tag growth {} B, available {} B",
             self.sectors,
             self.sectors_kept,
             self.sectors_generated,
@@ -190,6 +201,9 @@ pub struct Package {
     pub cut: Vec<String>,
     /// The steps taken to fit the headroom, in order ([`Fit`]).
     pub fitted: Vec<Fit>,
+    /// The dropship, kept or cut; none when the build asked for none
+    /// ([`Dropship::None`]).
+    pub ship: Option<ShipReport>,
 }
 
 struct Built {
@@ -202,6 +216,7 @@ struct Built {
     classes: Vec<ClassCost>,
     cut: Vec<String>,
     fitted: Vec<Fit>,
+    ship: Option<ShipReport>,
 }
 
 struct Field {
@@ -336,12 +351,22 @@ fn fit_within(
     } else {
         total
     };
+    // The ship is cut before any class: it is tried with every class, then
+    // without, and only then do classes go.
+    // A probe is two Elites and a startup script: no ship.
+    let asked = config.dropship != Dropship::None && mode == Mode::Kit;
+    let attempts: Vec<(usize, bool)> = asked
+        .then_some((total, true))
+        .into_iter()
+        .chain((fewest..=total).rev().map(|keep| (keep, false)))
+        .collect();
     let mut over = None;
-    for keep in (fewest..=total).rev() {
+    let mut ship_cut: Option<String> = None;
+    for (keep, ship) in attempts {
         for steps in 0..=Fit::ALL.len() {
             let fit = &Fit::ALL[..steps];
             match assemble(
-                base, base_name, mode, config, labels, classes, keep, fit, available,
+                base, base_name, mode, config, labels, classes, keep, ship, fit, available,
             ) {
                 Ok(mut built) => {
                     if let Some(c) = classes {
@@ -352,9 +377,23 @@ fn fit_within(
                             .collect();
                     }
                     built.fitted = fit.to_vec();
+                    if asked && !ship && built.ship.is_none() {
+                        built.ship = Some(ShipReport::cut(
+                            ship_cut.unwrap_or_else(|| "over the tag headroom".into()),
+                        ));
+                    }
                     return Ok(built);
                 }
                 Err(e) if e.downcast_ref::<transplant::Overflow>().is_some() => over = Some(e),
+                // `auto` goes without a ship it cannot get; a ship asked
+                // for by name is an error.
+                Err(e)
+                    if config.dropship == Dropship::Auto
+                        && e.downcast_ref::<transplant::ShipRefused>().is_some() =>
+                {
+                    ship_cut = Some(e.to_string());
+                    break;
+                }
                 Err(e) => return Err(e),
             }
         }
@@ -362,8 +401,8 @@ fn fit_within(
     Err(over.expect("one build at least"))
 }
 
-/// One build of the kit with the first `keep` classes and the `fit`
-/// steps, refused when its growth is over `available`.
+/// One build of the kit with the first `keep` classes, the dropship when
+/// `ship` and the `fit` steps, refused when its growth is over `available`.
 #[allow(clippy::too_many_arguments)]
 fn assemble(
     base: &[u8],
@@ -373,6 +412,7 @@ fn assemble(
     labels: &Labels,
     classes: Option<&Classes<'_>>,
     keep: usize,
+    ship: bool,
     fit: &[Fit],
     available: u32,
 ) -> Result<Built> {
@@ -413,9 +453,38 @@ fn assemble(
     // The version travels in the map, so it participates in the package id
     // even when two revisions happen to write identical AI tuning.
     set.intern(&format!("firefight_kit_v{KIT_VERSION}"))?;
+    // The dropship, when a zone has a clear column for it.
+    let ship_runs = nav.ship_runs;
+    let ship_bsp = nav.ship_bsp;
+    let any_run = ship_runs.iter().any(Option::is_some);
+    let want = if ship { config.dropship } else { Dropship::None };
+    let mut ship_report = None;
+    let pick = if want != Dropship::None && !any_run {
+        ship_report = Some(ShipReport::cut("no drop zone has a clear column for it"));
+        None
+    } else if want != Dropship::None {
+        Some(ship::pick(&set, want)?)
+    } else {
+        None
+    };
+    let copy = match &pick {
+        Some(ship::Pick::Copy(path)) => Some(*path),
+        _ => None,
+    };
     let added = match classes {
-        Some(c) => transplant::add(&mut set, c, keep)?,
-        None => transplant::Added::default(),
+        Some(c) => transplant::add(&mut set, c, keep, copy)?,
+        None if copy.is_some() => {
+            return Err(transplant::ShipRefused("no donor maps for the dropship".into()).into());
+        }
+        None => transplant::Copied::default(),
+    };
+    let ship_tag = match &pick {
+        Some(ship::Pick::Have(id, name)) => Some((*id, name.clone())),
+        Some(ship::Pick::Copy(path)) => added
+            .ship
+            .as_ref()
+            .map(|(id, _)| (*id, (*path).to_owned())),
+        None => None,
     };
     let named: Vec<(&str, TagId)> = added
         .costs
@@ -432,6 +501,12 @@ fn assemble(
         mode == Mode::Probe,
     )
     .map_err(anyhow::Error::msg)?;
+    let authored = match &ship_tag {
+        Some((tag, _)) => ship::author(&mut map, *tag, &ship_runs, ship_bsp)?,
+        None => None,
+    };
+    let ship_kept = authored.as_ref().map(|a| a.paths);
+    let ship_fields = authored.map(|a| a.fields).unwrap_or_default();
     // Each starting location takes its nearest base's team, so team 0
     // spawns at the home base and team 1 at the other.
     let starts_moved = !nav.starts.is_empty() && !starts_in_place(&mut set, scenario, &nav.starts)?;
@@ -454,6 +529,11 @@ fn assemble(
     for (offset, count, block) in ai.fields.fields {
         add(scenario, offset as usize, count, block)?;
     }
+    let mut ship_offsets = Vec::new();
+    for (offset, count, block) in ship_fields {
+        ship_offsets.push(offset);
+        add(scenario, offset, count, block)?;
+    }
     if starts_moved {
         add(
             scenario,
@@ -471,10 +551,13 @@ fn assemble(
         ..Costs::default()
     };
     let mut squads = 0;
+    costs.ship = added.ship.as_ref().map_or(0, |(_, c)| c.bytes);
     for (field, (address, bytes)) in fields.iter().zip(allocations) {
         set_pair(&mut set, &map, field, address)?;
         if field.tag != scenario {
             costs.sectors += bytes;
+        } else if ship_offsets.contains(&field.offset) {
+            costs.ship += bytes;
         } else if field.offset == layout::ZONES.0 {
             costs.zones += bytes;
         } else if field.offset == layout::SQUADS.0 || field.offset == layout::SQUAD_GROUPS.0 {
@@ -523,6 +606,16 @@ fn assemble(
         ))
         .into());
     }
+    if let (Some(paths), Some((_, tag))) = (ship_kept, ship_tag) {
+        ship_report = Some(ShipReport {
+            kept: true,
+            tag,
+            tags: added.ship.as_ref().map_or(0, |(_, c)| c.tags),
+            bytes: costs.ship,
+            paths,
+            why: None,
+        });
+    }
     Ok(Built {
         bytes,
         costs,
@@ -533,6 +626,7 @@ fn assemble(
         classes: added.costs,
         cut: Vec::new(),
         fitted: Vec::new(),
+        ship: ship_report,
     })
 }
 
@@ -641,6 +735,7 @@ pub fn build_package_with(
         classes: built.classes,
         cut: built.cut,
         fitted: built.fitted,
+        ship: built.ship,
     })
 }
 

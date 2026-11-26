@@ -363,6 +363,12 @@ pub mod id {
     pub const METER: u16 = 133;
     pub const COUNTDOWN: u16 = 134;
     pub const FF_BONUS: u16 = 135;
+    pub const ZONE_PATH: u16 = 136;
+    pub const SHIP_READY: u16 = 137;
+    pub const FF_DROP_SQUAD: u16 = 138;
+    pub const FF_SHIP_HOVER: u16 = 139;
+    pub const FF_SHIP_UNLOAD: u16 = 140;
+    pub const FF_SHIP_LEAVE: u16 = 141;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -707,6 +713,19 @@ pub const ENTRIES: &[Entry] = &[
     act(id::OBJECTIVE_MARK, "objective_mark", &[Team, Object, Int], Some("hud.objective"), Now, Named),
     act(id::METER, "meter", &[Team, Int, Int], Some("hud.objective"), Now, Named),
     act(id::COUNTDOWN, "countdown", &[Team, Int], Some("hud.objective"), Now, Named),
+    // Firefight's drop ship (docs/game/firefight.md, "The drop ship"):
+    // whether the kit's zone `n` has a path (`firefight::director::ShipSeen`)
+    // and whether the kit's ship is in the world; `ff_drop_squad` is
+    // `firefight::Command::DropSquad` (a squad flown in), and the ship's
+    // hover hold, unloading and flight out are the commands of the same
+    // names. The host makes the flights and the loads
+    // (`game::firefight::ship`).
+    read(id::ZONE_PATH, "zone_path", &[Int], Bool, Named),
+    read(id::SHIP_READY, "ship_ready", &[], Bool, Named),
+    act(id::FF_DROP_SQUAD, "ff_drop_squad", &[Squad, Class, Int, Int, Int], Some("firefight.director"), Queued, Named),
+    act(id::FF_SHIP_HOVER, "ff_ship_hover", &[Bool], Some("firefight.director"), Queued, Named),
+    act(id::FF_SHIP_UNLOAD, "ff_ship_unload", &[], Some("firefight.director"), Queued, Named),
+    act(id::FF_SHIP_LEAVE, "ff_ship_leave", &[Int], Some("firefight.director"), Queued, Named),
 ];
 
 /// The word `message(to, text)` takes for everyone.

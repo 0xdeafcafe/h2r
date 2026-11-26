@@ -190,10 +190,7 @@ fn the_kit_writes_each_start_its_base_team() {
     let mut map = Map::from_reader(Cursor::new(&base[..])).unwrap();
     assert_eq!(start_teams(&mut map), [0, 1, 8]);
     for (home, teams) in [(Team::Red, [0, 1, 0]), (Team::Blue, [1, 0, 0])] {
-        let built = build(&base, "court", Mode::Kit, &Config {
-                home,
-                ..Config::default()
-            }).unwrap();
+        let built = build(&base, "court", Mode::Kit, &Config { home, ..Config::default() }).unwrap();
         let mut map = Map::from_reader(Cursor::new(&built.bytes[..])).unwrap();
         // The middle start is as near one base as the other: it takes
         // the home base.
@@ -209,10 +206,7 @@ fn the_kit_writes_each_start_its_base_team() {
         }
     }
     let red = build(&base, "court", Mode::Kit, &Config::default()).unwrap();
-    let blue = build(&base, "court", Mode::Kit, &Config {
-            home: Team::Blue,
-            ..Config::default()
-        }).unwrap();
+    let blue = build(&base, "court", Mode::Kit, &Config { home: Team::Blue, ..Config::default() }).unwrap();
     assert_eq!(
         blue.bases.points,
         [red.bases.points[1], red.bases.points[0]]
@@ -252,6 +246,7 @@ fn roomy(base: &[u8], fit: &[Fit]) -> Built {
         &Labels::default(),
         None,
         0,
+        false,
         fit,
         u32::MAX,
     )

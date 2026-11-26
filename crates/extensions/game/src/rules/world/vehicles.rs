@@ -1,5 +1,8 @@
 //! Retail vehicle actions. Recheck the salted handle when queued work runs.
+mod flight;
 mod target;
+
+pub use flight::{Flights, MAX_FLIGHTS, Step, Stepped};
 
 use ::rules::caps::id;
 use ::rules::vm::{Arg, Call as VmCall};

@@ -5338,7 +5338,9 @@ actor for slot N: class row R at zone Z").
 
 **Command.** `command` is one director command in the host log's shape
 (externally tagged, snake_case): `place_squad {slot, class, count, zone,
-weapon_tier}`, `target {slot, team}`, `hunt {slot}`, `erase_squad
+weapon_tier}`, `drop_squad {slot, class, count, zone, weapon_tier}` (by
+drop ship where the kit has a ship and a path to the zone, else on foot),
+`ship_hover {on}`, `ship_unload` and `ship_leave {zone}`, `target {slot, team}`, `hunt {slot}`, `erase_squad
 {slot}`, `set {index}`, `round {index}`, `wave {index}`, `bonus {on,
 ticks}`, `skull {id, on}`, `lives
 {player?, pool}`, `team_lives {team, pool}`, `score {player, points,

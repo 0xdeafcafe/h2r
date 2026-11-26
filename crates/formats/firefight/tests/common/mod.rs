@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use firefight::director::{Kill, PlayerSeen, SQUAD_SLOTS, ZoneSeen};
+use firefight::director::{Kill, PlayerSeen, SQUAD_SLOTS, ShipSeen, ZoneSeen};
 use firefight::{
     Caps, Command, Count, Def, Difficulty, DifficultyMultipliers, Drop, FORMAT, Lives, Observed,
     Outcome, PlayerKill, Round, Scoring, SetRules, ScriptDirector, Skull, SquadSpec, Wave, builtin,
@@ -99,6 +99,8 @@ pub struct World {
     pub finished: Option<Outcome>,
     /// Live actors right after the last apply, before any kill.
     pub applied_live: u16,
+    /// The kit's drop ship and the zones with a path: none by default.
+    pub ship: ShipSeen,
 }
 
 impl World {
@@ -115,6 +117,7 @@ impl World {
             pending: Vec::new(),
             finished: None,
             applied_live: 0,
+            ship: ShipSeen::default(),
         }
     }
 
@@ -122,6 +125,9 @@ impl World {
         for command in std::mem::take(&mut self.pending) {
             match command {
                 Command::PlaceSquad {
+                    slot, class, count, ..
+                }
+                | Command::DropSquad {
                     slot, class, count, ..
                 } => {
                     let slot = usize::from(slot);
@@ -182,6 +188,7 @@ impl World {
             zones: self.zones.clone(),
             kills: std::mem::take(&mut self.kills),
             player_kills: std::mem::take(&mut self.player_kills),
+            ship: self.ship.clone(),
         }
     }
 }

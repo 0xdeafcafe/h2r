@@ -359,10 +359,10 @@ Capability `vehicles.drive` ("flies and loads vehicles").
 | Script | Entry | Engine | Status | Synced by |
 |---|---|---|---|---|
 | `vehicle_riders(v)` (`int`), `vehicle_driver(v)` (`player?`) | reads | the unit's seat iterator (`UNIT_SEATS_BEGIN` and `UNIT_SEATS_NEXT`) | host reads pending | a read |
-| `fly(v, path, t)` | `fly` | a notified transform reaches eligible Havok bodies, which retain velocity | not built | the vehicle entity (type 12) |
+| `fly(v, path, t)` | `fly` | the host flies the ship along the path's points with `Flights` and puts it at each tick's pose through `OBJECT_SET_TRANSFORM` with notify; a notified transform reaches eligible Havok bodies, which retain velocity | **Code** in Firefight (`Game::fly`, `crates/extensions/game/src/firefight/ship.rs`); not built in the rules runtime | the vehicle entity (type 12) |
 | `hover(v, on)` | `hover` | `VEHICLE_HOVER` (`0xf0fd0`) toggles the hold bit and refreshes the physics component on a change | named | vehicle replication unverified |
 | `seat(p, v)`, `eject(p)` | `seat`, `eject` | the vehicle entry routine `0x11ade0` behind `unit_enter_vehicle` and the biped exit action at `0xe68c0` | traced | events 24 and 11 |
-| `place_squad_in(s, class, n, v)` | `place_squad_in` | `AI_SQUAD_PLACE` selects by the scenario's vehicle palette and can leave actors unseated | refused | unit entities with the parent-vehicle flag |
+| `place_squad_in(s, class, n, v)` | `place_squad_in` | places `min(n, free seats)` actors at the ship and seats them through `VEHICLE_LOAD` (`0x11b0c0`); `AI_SQUAD_PLACE` alone selects by the scenario's vehicle palette and can leave actors unseated | **Code** in Firefight (`Game::drop_squad`, `ship::place_squad_in`); not built in the rules runtime | unit entities with the parent-vehicle flag |
 | `unload(v)` | `unload` | `VEHICLE_UNLOAD` (`0x11b2b0`) requests exit from occupied seats with the all-seats mapping | named | event 11 |
 | `on board(p, v)`, `on leave_vehicle(p, v)` | events | observers on the enter and exit events the engine queues (`SIM_EVENT_GENERATE` `0xb5a70`, types 24 and 11) | named | read on the `Authority` |
 
@@ -373,10 +373,10 @@ refuses scripts using them at start. [Retail traces for R6 and R7](notes/2026-11
 
 | Entry | Held back by |
 |---|---|
-| `fly` | W3's mover and verification of the path after physics steps with riders and contacts |
-| `place_squad_in` | needs a seat-limited spawn into the supplied vehicle. Retail placement chooses or creates its own seat vehicle. |
+| `fly` in the rules runtime | the mover's `Flights` state lives in Firefight's match; a plain script's host has none, and the pose after physics steps with riders and contacts is R7 |
+| `place_squad_in` in the rules runtime | the squad entry is Firefight's; the plain rules host has no squad placement |
 | `seat`, `eject`, `vehicle_riders`, `vehicle_driver` | host seat selection, player actions and synchronous seat reads |
-| the kit's ship and paths | R8: the kit's stage 2 (`crates/tools/firefight-kit`, FF12) is not built, so no map carries a ship or a labelled path |
+| the kit's ship and paths in the plain rules host | the kit's ship is `ff_ship` and its paths are the point sets `ff_path_NN`, which the Firefight guest reads (`firefight::guest::read_kit`); a plain script has no label for them. R8 settles headroom per map |
 
 Four choices of the fake are the API's contract, and a host that gives
 different answers is wrong until a run says the engine does:
@@ -402,6 +402,15 @@ different answers is wrong until a run says the engine does:
   The fake reports each flight's end once (`take_arrived`); `on arrive`
   is W3's event, and until it lands a script times the end itself
   (`now()` against the tick it started on, as `tests/vehicles.rs` does).
+
+**Firefight's director flies the ship.** The director script
+(`content/modes/rules/firefight.rules`) does not use the entries above: it
+holds the ship's state (parked, inbound, unloading, outbound) and calls
+the `firefight.director` entries `ff_drop_squad`, `ff_ship_hover`,
+`ff_ship_unload` and `ff_ship_leave`, which the host makes with `Game::fly`,
+`Game::drop_squad`, `Game::hover` and `Game::unload`
+([firefight.md](firefight.md), "The drop ship"). Two reads tell it what
+the kit has: `ship_ready()` and `zone_path(zone)`.
 
 **A drop ship is a vehicle on a keyed path.** The kit places it, parked,
 with a label (`label ship: object`), and labels the run-in as a `path`.

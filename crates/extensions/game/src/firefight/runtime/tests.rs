@@ -548,6 +548,19 @@ fn every_wire_command_is_the_directors_own() {
             },
         ),
         (
+            json!({"drop_squad": {"slot": 1, "class": "elite", "count": 3, "zone": 0, "weapon_tier": 2}}),
+            Command::DropSquad {
+                slot: 1,
+                class: "elite".into(),
+                count: 3,
+                zone: 0,
+                weapon_tier: 2,
+            },
+        ),
+        (json!({"ship_hover": {"on": true}}), Command::ShipHover { on: true }),
+        (json!("ship_unload"), Command::ShipUnload),
+        (json!({"ship_leave": {"zone": 1}}), Command::ShipLeave { zone: 1 }),
+        (
             json!({"target": {"slot": 2, "team": 1}}),
             Command::Target { slot: 2, team: 1 },
         ),

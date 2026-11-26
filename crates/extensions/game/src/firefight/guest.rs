@@ -13,6 +13,7 @@ use engine::entry::{Cx, EntryError, GuestCall, Regs};
 use engine::{GuestMemory, MemFault, points};
 
 use super::host::{AiGlobals, Kit};
+use super::ship::ShipPath;
 use crate::actor_net::squads::Placement;
 
 /// The two AI globals bytes `ai_update` (`0x1c83c0`) gates on
@@ -83,6 +84,20 @@ pub mod scenario {
     pub const FIRING_REFERENCE_FRAME: u32 = 0x0c;
     /// Area: the mean of its firing positions.
     pub const AREA_MEAN: u32 = 0x24;
+    /// Object names (`h1campaign::scenario::OBJECT_NAMES`): the name at
+    /// `+0`, then the object type `u16` and the placement's index in that
+    /// type's placements `u16`.
+    pub const OBJECT_NAMES: (u32, u32) = (0x48, 0x24);
+    pub const OBJECT_NAME_TYPE: u32 = 0x20;
+    pub const OBJECT_NAME_PLACEMENT: u32 = 0x22;
+    /// The vehicle object type in an object name.
+    pub const OBJECT_TYPE_VEHICLE: u16 = 1;
+    /// Scripting data, one element, and in it the point sets and their
+    /// points (`h1campaign::ai::h2::layout`). A point is named at `+0`.
+    pub const SCRIPTING_DATA: (u32, u32) = (0x1d8, 0x80);
+    pub const POINT_SETS: (u32, u32) = (0x00, 0x30);
+    pub const POINTS: (u32, u32) = (0x20, 0x3c);
+    pub const POINT_POSITION: u32 = 0x20;
 }
 
 /// The kit's squad and zone names (`crates/tools/firefight-kit/src/ai.rs`
@@ -95,6 +110,11 @@ const BASE_PREFIX: &str = "ff_base_";
 /// The orders a kit authors for `Hunt`: `ff_hunt_NN` sends a squad at
 /// base NN.
 pub const HUNT_PREFIX: &str = "ff_hunt_";
+/// The kit's parked drop ship, an object name, and a zone's flight path,
+/// the point set `ff_path_NN` for `ff_drop_NN`, with the points
+/// `run_in`, `hover` and `run_out` (`crates/tools/firefight-kit/src/ship.rs`).
+const SHIP_NAME: &str = "ff_ship";
+const PATH_PREFIX: &str = "ff_path_";
 
 /// The name of the order that hunts at `base`.
 pub fn hunt_order_name(base: u8) -> String {
@@ -142,6 +162,12 @@ pub struct KitLayout {
     /// Each base's hunt order, `ff_hunt_NN`, by base: the scenario
     /// order index, none where the scenario has no order of that name.
     pub hunt_orders: Vec<Option<u16>>,
+    /// The parked drop ship, `ff_ship`: its index among the scenario's
+    /// vehicle placements. None on a map whose kit carries no ship.
+    pub ship: Option<i16>,
+    /// Each drop zone's flight path, by position in `zones`: none for a
+    /// zone with no `ff_path_NN` point set, or one missing a point.
+    pub paths: Vec<Option<ShipPath>>,
 }
 
 impl KitLayout {
@@ -157,7 +183,7 @@ impl KitLayout {
 }
 
 /// A block's elements: `(address, count)`.
-fn block(m: &dyn GuestMemory, owner: u32, (field, size): (u32, u32)) -> Result<Vec<u32>, MemFault> {
+pub(super) fn block(m: &dyn GuestMemory, owner: u32, (field, size): (u32, u32)) -> Result<Vec<u32>, MemFault> {
     let count = m.u32(owner + field)?;
     let at = m.u32(owner + field + 4)?;
     if at == 0 {
@@ -223,6 +249,8 @@ pub fn read_kit(m: &dyn GuestMemory) -> Result<Option<KitLayout>, MemFault> {
         return Ok(None);
     };
     let mut zones = Vec::new();
+    // Each drop zone's number, `NN` of `ff_drop_NN`, in `zones` order.
+    let mut numbers: Vec<usize> = Vec::new();
     let mut bases = std::collections::BTreeMap::new();
     for (index, at) in block(m, scnr, scenario::ZONES)?.into_iter().enumerate() {
         let zone_name = name(m, at)?;
@@ -252,7 +280,10 @@ pub fn read_kit(m: &dyn GuestMemory) -> Result<Option<KitLayout>, MemFault> {
             Some(n) => {
                 bases.entry(n).or_insert(zone);
             }
-            None => zones.push(zone),
+            None => {
+                numbers.push(ordinal(&zone_name, ZONE_PREFIX).unwrap_or(usize::MAX));
+                zones.push(zone);
+            }
         }
     }
     let bases = bases
@@ -271,6 +302,9 @@ pub fn read_kit(m: &dyn GuestMemory) -> Result<Option<KitLayout>, MemFault> {
         }
         hunt_orders[base].get_or_insert(index as u16);
     }
+    let ship = read_ship(m, scnr)?;
+    let found = read_paths(m, scnr)?;
+    let paths = numbers.iter().map(|n| found.get(n).copied()).collect();
     Ok(Some(KitLayout {
         squads,
         zones,
@@ -279,18 +313,60 @@ pub fn read_kit(m: &dyn GuestMemory) -> Result<Option<KitLayout>, MemFault> {
         classes,
         team,
         hunt_orders,
+        ship,
+        paths,
     }))
 }
 
-fn guest(e: impl Into<EntryError>) -> anyhow::Error {
+/// `ff_ship`: the vehicle placement the object name points at.
+fn read_ship(m: &dyn GuestMemory, scnr: u32) -> Result<Option<i16>, MemFault> {
+    for at in block(m, scnr, scenario::OBJECT_NAMES)? {
+        if name(m, at)? == SHIP_NAME && m.u16(at + scenario::OBJECT_NAME_TYPE)? == scenario::OBJECT_TYPE_VEHICLE {
+            return Ok(Some(m.u16(at + scenario::OBJECT_NAME_PLACEMENT)? as i16));
+        }
+    }
+    Ok(None)
+}
+
+/// The scenario's `ff_path_NN` point sets by zone number: each with its
+/// `run_in`, `hover` and `run_out` points. The first set of a number wins.
+fn read_paths(
+    m: &dyn GuestMemory,
+    scnr: u32,
+) -> Result<std::collections::BTreeMap<usize, ShipPath>, MemFault> {
+    let mut found = std::collections::BTreeMap::new();
+    for data in block(m, scnr, scenario::SCRIPTING_DATA)? {
+        for set in block(m, data, scenario::POINT_SETS)? {
+            let Some(number) = ordinal(&name(m, set)?, PATH_PREFIX) else {
+                continue;
+            };
+            let mut points: [Option<[f32; 3]>; 3] = [None; 3];
+            for point in block(m, set, scenario::POINTS)? {
+                let at = m.vec3(point + scenario::POINT_POSITION)?;
+                match name(m, point)?.as_str() {
+                    "run_in" => points[0].get_or_insert(at),
+                    "hover" => points[1].get_or_insert(at),
+                    "run_out" => points[2].get_or_insert(at),
+                    _ => continue,
+                };
+            }
+            if let [Some(run_in), Some(hover), Some(run_out)] = points {
+                found.entry(number).or_insert(ShipPath { run_in, hover, run_out });
+            }
+        }
+    }
+    Ok(found)
+}
+
+pub(super) fn guest(e: impl Into<EntryError>) -> anyhow::Error {
     anyhow::anyhow!("{}", e.into())
 }
 
-async fn call(cx: &Cx, c: GuestCall) -> anyhow::Result<Regs> {
+pub(super) async fn call(cx: &Cx, c: GuestCall) -> anyhow::Result<Regs> {
     cx.call(c).await.map_err(guest)
 }
 
-fn squad_index(kit: &KitLayout, slot: u8) -> anyhow::Result<u16> {
+pub(super) fn squad_index(kit: &KitLayout, slot: u8) -> anyhow::Result<u16> {
     kit.squads
         .get(usize::from(slot))
         .copied()

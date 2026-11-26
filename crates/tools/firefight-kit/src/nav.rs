@@ -45,6 +45,10 @@ pub(crate) struct Navigation {
     pub refused: Vec<String>,
     /// Where each of the layout's drops snapped.
     pub snapped: Vec<Snap>,
+    /// The dropship's run into each drop zone, none where the zone has
+    /// no clear column (`ship::plan`), and the BSP they were planned on.
+    pub ship_runs: Vec<Option<crate::ship::Run>>,
+    pub ship_bsp: i16,
 }
 
 const MIN_ZONES: usize = 6;
@@ -207,6 +211,15 @@ pub(crate) fn prepare<R: Read + Seek>(
     if lean.fewer_drops && labels.drops.is_empty() && config.layout.is_none() {
         arena.zones.truncate(FEWEST_DROPS);
     }
+    // The ship's way into each zone, from the arena's own collision.
+    let ship_runs = match usize::try_from(arena.bsp)
+        .ok()
+        .and_then(|i| generated.get(i))
+    {
+        Some((_, _, data)) => crate::ship::plan(&data.walls, &arena.zones),
+        None => vec![None; arena.zones.len()],
+    };
+    let ship_bsp = arena.bsp;
     // Keep only the sectors the AI can use, then encode each BSP's.
     let mut bsps = Vec::with_capacity(generated.len());
     let mut trim = Trim::default();
@@ -259,6 +272,8 @@ pub(crate) fn prepare<R: Read + Seek>(
         problems,
         refused,
         snapped,
+        ship_runs,
+        ship_bsp,
     })
 }
 

@@ -179,6 +179,25 @@ pub enum Command {
         zone: u8,
         weapon_tier: u8,
     },
+    /// `place_squad` by drop ship (up to the ship's free seats, the rest on
+    /// foot), or on foot where the kit has no ship or path for the zone.
+    DropSquad {
+        slot: u8,
+        class: String,
+        count: u16,
+        zone: u8,
+        weapon_tier: u8,
+    },
+    /// The drop ship's hover hold.
+    ShipHover {
+        on: bool,
+    },
+    /// Everyone aboard the drop ship leaves.
+    ShipUnload,
+    /// The drop ship flies from the zone's hover point out along its path.
+    ShipLeave {
+        zone: u8,
+    },
     /// Two teams, after a `place_squad`: the Firefight team the squad is
     /// sent at; its `hunt` goes to that team's base.
     Target {
@@ -337,6 +356,10 @@ mod tests {
     fn commands_take_the_host_logs_shape_and_nothing_else() {
         for value in [
             json!({"place_squad": {"slot": 0, "class": "elite", "count": 2, "zone": 1, "weapon_tier": 0}}),
+            json!({"drop_squad": {"slot": 0, "class": "elite", "count": 2, "zone": 1, "weapon_tier": 0}}),
+            json!({"ship_hover": {"on": true}}),
+            json!("ship_unload"),
+            json!({"ship_leave": {"zone": 1}}),
             json!({"target": {"slot": 0, "team": 1}}),
             json!({"hunt": {"slot": 3}}),
             json!({"erase_squad": {"slot": 0}}),

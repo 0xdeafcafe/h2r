@@ -666,6 +666,14 @@ impl Game for Host<'_> {
             // A mask of 0 names no role: every zone fits.
             (id::ZONE_HAS_ROLE, [Arg::Object(Some(z)), Arg::Int(mask)]) => zone(z)
                 .map_or(0, |z| i32::from(*mask == 0 || i32::from(z.roles) & *mask != 0)),
+            (id::ZONE_PATH, [Arg::Int(z)]) => i32::from(
+                usize::try_from(*z)
+                    .ok()
+                    .and_then(|z| self.seen.ship.paths.get(z))
+                    .copied()
+                    .unwrap_or(false),
+            ),
+            (id::SHIP_READY, []) => i32::from(self.seen.ship.ready),
             (id::ZONE_SEEN, [Arg::Object(Some(z))]) => zone(z).map_or(0, |z| i32::from(z.seen)),
             (id::ZONE_DISTANCE, [Arg::Object(Some(z))]) => {
                 zone(z).map_or(0, |z| i32::try_from(z.distance).unwrap_or(i32::MAX))
@@ -706,6 +714,27 @@ fn command(call: &Call) -> Option<Command> {
             count: narrow_u16(*count)?,
             zone: narrow_u8(*zone)?,
             weapon_tier: narrow_u8(*tier)?,
+        },
+        (
+            id::FF_DROP_SQUAD,
+            [
+                Arg::Squad(slot),
+                Arg::Class(Some(class)),
+                Arg::Int(count),
+                Arg::Int(zone),
+                Arg::Int(tier),
+            ],
+        ) => Command::DropSquad {
+            slot: *slot,
+            class: class.clone(),
+            count: narrow_u16(*count)?,
+            zone: narrow_u8(*zone)?,
+            weapon_tier: narrow_u8(*tier)?,
+        },
+        (id::FF_SHIP_HOVER, [Arg::Bool(on)]) => Command::ShipHover { on: *on },
+        (id::FF_SHIP_UNLOAD, []) => Command::ShipUnload,
+        (id::FF_SHIP_LEAVE, [Arg::Int(zone)]) => Command::ShipLeave {
+            zone: narrow_u8(*zone)?,
         },
         (id::HUNT, [Arg::Squad(slot)]) => Command::Hunt { slot: *slot },
         (id::ERASE_SQUAD, [Arg::Squad(slot)]) => Command::EraseSquad { slot: *slot },

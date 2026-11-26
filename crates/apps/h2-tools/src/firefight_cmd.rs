@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use vfs::Backend;
-use firefight_kit::{ClassSpec, Classes, Config, Donor, Mode, Team};
+use firefight_kit::{ClassSpec, Classes, Config, Donor, Dropship, Mode, Team};
 use tags::schema::Schema;
 use scenario_edit::{MapSource, recipe};
 
@@ -12,6 +12,7 @@ const USAGE: &str =
     "usage: h2 firefight kit MAP [--home red|blue] [--disc ISO_OR_EXTRACTED_DISC] [--data DIR] [--probe] [--replace]
     [--retail-classes] [--class NAME=DONOR:CHAR_PATH]... [--classes FILE] [--cut]
     [--layout] [--layout-report]
+    [--dropship auto|phantom|spirit|none]
   builds <data>/maps/firefight-MAP from a multiplayer map on the disc, e.g. beavercreek.
   --home picks the map team whose base is the home base (default red): the
     players' base, or team 0's with two teams. Drops keep off both bases.
@@ -32,10 +33,18 @@ const USAGE: &str =
     line from FILE (blank lines and # comments are skipped).
   --retail-classes puts the retail class table first: the Grunt, Jackal,
     Drone, Brute and Hunter, each copied from a campaign map on your disc.
+  --dropship picks the ship squads can arrive by (default auto): the Phantom
+    copied from Outskirts (03a_oldmombasa) on your disc, or on a map built
+    from Halo 1's campaign its Covenant dropship; none leaves it out. The
+    ship is cut before any class when the map is short of tag headroom.
   A map short of tag headroom merges its sectors, then keeps six drops,
     before anything else; the build says which it took.
   --cut drops classes from the end of the list until the build fits, instead
     of refusing it.";
+
+/// The campaign map the Phantom is copied from: the same donor the class
+/// table prefers (`firefight_kit::retail`).
+const SHIP_DONOR: &str = "03a_oldmombasa";
 
 struct Args {
     base: String,
@@ -190,6 +199,12 @@ fn parse(words: Vec<String>) -> Result<Option<Args>> {
                     .with_context(|| format!("reading the class table {file}"))?;
                 classes.extend(parse_table(&text)?);
             }
+            "--dropship" => {
+                let kind = it.next().context("--dropship requires auto, phantom, spirit or none")?;
+                config.dropship = Dropship::parse(&kind).with_context(|| {
+                    format!("--dropship takes auto, phantom, spirit or none, got {kind:?}")
+                })?;
+            }
             "--home" => {
                 let team = it.next().context("--home requires red or blue")?;
                 config.home = Team::parse(&team)
@@ -265,12 +280,24 @@ pub fn run(words: Vec<String>) -> Result<()> {
         wanted = retail_wanted(|donor| files.host_file(&format!("maps\\{donor}.map")).is_some())?;
     }
     wanted.extend(args.classes);
-    let (donor_names, specs) = plan(&wanted)?;
+    let (mut donor_names, specs) = plan(&wanted)?;
+    // The Phantom comes from a campaign map: Outskirts, when the disc has
+    // it and no class already named it.
+    if !args.probe
+        && matches!(args.config.dropship, Dropship::Auto | Dropship::Phantom)
+        && !donor_names.iter().any(|d| d == SHIP_DONOR)
+        && vfs::open_disc(&disc)
+            .with_context(|| format!("opening the disc {}", disc.display()))?
+            .host_file(&format!("maps\\{SHIP_DONOR}.map"))
+            .is_some()
+    {
+        donor_names.push(SHIP_DONOR.to_owned());
+    }
     let donor_bytes = donor_names
         .iter()
         .map(|name| read_disc_map(&disc, name))
         .collect::<Result<Vec<_>>>()?;
-    let classes = (!specs.is_empty())
+    let classes = (!specs.is_empty() || !donor_names.is_empty())
         .then(|| classes_from(Schema::builtin(), &donor_names, &donor_bytes, specs, args.cut));
     let data = args.data.unwrap_or_else(content::store::default_data_root);
     let maps = content::store::maps_dir(&data);
@@ -298,6 +325,9 @@ pub fn run(words: Vec<String>) -> Result<()> {
             "class {}: {} tags, {} sounds, {} bytes of tag memory",
             c.name, c.tags, c.sounds, c.bytes
         );
+    }
+    if let Some(ship) = &saved.ship {
+        println!("{ship}");
     }
     for step in &saved.fitted {
         println!("fit: {step}: {} (short of tag headroom)", step.reason());

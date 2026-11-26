@@ -42,6 +42,18 @@ pub struct Observed {
     /// Players killed by players this tick, in event order. Only a kill
     /// across the two teams scores ([`crate::Scoring::player_kill`]).
     pub player_kills: Vec<PlayerKill>,
+    /// The kit's drop ship and the zones it can fly to.
+    pub ship: ShipSeen,
+}
+
+/// The drop ship as the kit has it (docs/game/firefight.md, "The drop
+/// ship"). A map without a ship reads as the default: not ready, no path.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ShipSeen {
+    /// The kit's ship is a live vehicle in the world.
+    pub ready: bool,
+    /// Each kit zone, in kit order, has a flight path.
+    pub paths: Vec<bool>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,6 +107,27 @@ pub enum Command {
         count: u16,
         zone: u8,
         weapon_tier: u8,
+    },
+    /// `PlaceSquad` by drop ship: the ship flies in over the zone and the
+    /// squad is placed into it, up to its free seats; the rest of the squad
+    /// is placed on foot. The host falls back to `PlaceSquad` when the kit
+    /// has no ship or no path for the zone.
+    DropSquad {
+        slot: u8,
+        class: String,
+        count: u16,
+        zone: u8,
+        weapon_tier: u8,
+    },
+    /// The ship's hover hold (`VEHICLE_HOVER`), on while it flies a drop.
+    ShipHover {
+        on: bool,
+    },
+    /// Everyone aboard leaves (`VEHICLE_UNLOAD`).
+    ShipUnload,
+    /// The ship flies from the zone's hover point out along its run-out.
+    ShipLeave {
+        zone: u8,
     },
     /// With two teams, right after a `PlaceSquad`: the Firefight team the
     /// squad is sent at. Its cleanup `Hunt` goes to that team's base. With
