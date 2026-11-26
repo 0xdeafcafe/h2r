@@ -15,13 +15,15 @@
 //! and its length, the scratch matrix, the leaves' arguments and return
 //! addresses) and the registers at the return. Two consumers:
 //!
-//! - the **arm** ([`arm_before`], [`arm_after`]): the guest runs and its
-//!   result stands; the plan made at entry is compared with what the guest
-//!   left, counted, and the first difference is kept by name. This is how
-//!   `impl.sim.native.anim` runs the walk until a run shows parity.
+//! - the **arm** ([`enter`], [`audit`]): until the arm has matched
+//!   [`PROVEN_AFTER`] calls with no mismatch, and on every
+//!   [`AUDIT_EVERY`]th call after, the guest runs and its result stands;
+//!   the plan made at entry is compared with what the guest left, counted,
+//!   and the first difference is kept by name. One mismatch ends the
+//!   take-over for good.
 //! - the **body** ([`run`]): the plan is written and the call returns
-//!   without the guest. Tests and the differential hold it equal to the
-//!   guest; it replaces the arm once the arm's counters show parity.
+//!   without the guest. [`enter`] calls it once the arm is proven. Tests
+//!   and the differential hold it equal to the guest.
 //!
 //! [`reference`] is the same function as a register-level port through the
 //! exact `sim_native` leaves, one node at a time: the oracle of the engine
@@ -422,13 +424,18 @@ fn decline(why: Decline) {
 /// fault while writing is the guest's own: every address written was
 /// checked readable, so only a read-only page gets there.
 pub fn run(c: &mut CpuAbi, g: &mut impl Memory) -> Result<Option<TransferAbi>, GuestFault> {
-    let o = match plan(c, g) {
-        Ok(o) => o,
+    match plan(c, g) {
+        Ok(o) => apply(o, c, g).map(Some),
         Err(why) => {
             decline(why);
-            return Ok(None);
+            Ok(None)
         }
-    };
+    }
+}
+
+/// Write a plan's result into the guest and the registers, and count the
+/// call as native.
+fn apply(o: Outcome, c: &mut CpuAbi, g: &mut impl Memory) -> Result<TransferAbi, GuestFault> {
     for (addr, bytes) in &o.writes {
         g.write_bytes(*addr, bytes, 1)?;
     }
@@ -440,7 +447,7 @@ pub fn run(c: &mut CpuAbi, g: &mut impl Memory) -> Result<Option<TransferAbi>, G
     };
     NATIVE.fetch_add(1, Ordering::Relaxed);
     POSED.fetch_add(u64::from(o.posed), Ordering::Relaxed);
-    Ok(Some(TransferAbi::ret(o.cpu.eip)))
+    Ok(TransferAbi::ret(o.cpu.eip))
 }
 
 /// The first place a plan and the guest's result differ.
@@ -527,30 +534,35 @@ pub struct ArmStats {
     pub mismatched: u64,
     /// Calls the plan declined, by [`Decline`]; the guest ran unchecked.
     pub declined: [u64; DECLINES],
-    /// Plans dropped without a return to compare: the same thread entered
-    /// again first, or more than [`PENDING`] calls were waiting.
+    /// Audited calls that could not be compared at the return: the
+    /// return-observer table was full ([`arm_dropped`]).
     pub dropped: u64,
     /// The first mismatch seen, with the entry state that produced it.
     pub first: Option<(Mismatch, CpuAbi)>,
 }
 
+/// Matched calls, with no mismatch ever, before the arm answers calls
+/// itself.
+pub const PROVEN_AFTER: u64 = 4096;
+
+/// After that, one answerable call in this many still goes to the guest
+/// and is compared.
+pub const AUDIT_EVERY: u64 = 64;
+
 struct ArmState {
     stats: ArmStats,
-    /// Plans made at entry, by guest thread, waiting for their return.
-    pending: Vec<(u32, Outcome, CpuAbi)>,
+    /// Answerable calls since the last map load: the audit slot is chosen
+    /// by this count, so the choice depends on no thread.
+    slot: u64,
 }
 
 static ARM: Mutex<Option<ArmState>> = Mutex::new(None);
-
-/// More waiting plans than this is a leak (calls that never returned):
-/// the oldest is dropped and counted.
-pub const PENDING: usize = 16;
 
 fn with_arm<R>(f: impl FnOnce(&mut ArmState) -> R) -> R {
     let mut guard = ARM.lock().unwrap_or_else(|e| e.into_inner());
     let state = guard.get_or_insert_with(|| ArmState {
         stats: ArmStats::default(),
-        pending: Vec::new(),
+        slot: 0,
     });
     f(state)
 }
@@ -559,65 +571,96 @@ pub fn arm_stats() -> ArmStats {
     with_arm(|a| a.stats.clone())
 }
 
-/// At the entry, before the guest runs: plan the call and keep the plan
-/// for `thread`'s return.
-pub fn arm_before(thread: u32, c: &CpuAbi, g: &impl Memory) {
-    let planned = plan(c, g);
-    with_arm(|a| {
-        // A plan of this thread still waiting belongs to a call that
-        // never returned.
-        let before = a.pending.len();
-        a.pending.retain(|(t, _, _)| *t != thread);
-        a.stats.dropped += (before - a.pending.len()) as u64;
-        match planned {
-            Ok(o) => {
-                if a.pending.len() == PENDING {
-                    a.pending.remove(0);
-                    a.stats.dropped += 1;
-                }
-                a.pending.push((thread, o, *c));
-            }
-            Err(why) => a.stats.declined[why as usize] += 1,
-        }
-    });
+/// A plan the guest's answer is compared with at the return.
+pub struct Audit {
+    outcome: Outcome,
+    before: CpuAbi,
 }
 
-/// At the return, after the guest ran: compare its result with `thread`'s
-/// plan. The guest's result stands either way. A declined call has no
-/// plan; it was counted at the entry.
-pub fn arm_after(thread: u32, c: &CpuAbi, g: &impl Memory) {
-    let entry = c.esp.wrapping_sub(4 + ARGS);
-    let Some((o, before)) = with_arm(|a| {
-        let i = a
-            .pending
-            .iter()
-            .position(|(t, o, _)| *t == thread && o.entry == entry)?;
-        let (_, o, before) = a.pending.remove(i);
-        Some((o, before))
-    }) else {
-        return;
+/// What [`enter`] did with a call.
+pub enum Step {
+    /// The body answered: `c` holds the result; return through the
+    /// transfer.
+    Answered(TransferAbi),
+    /// The guest answers; compare its result with the plan at the return
+    /// ([`audit`]).
+    Audit(Box<Audit>),
+    /// The guest answers alone: the plan declined, counted.
+    Guest,
+}
+
+/// At the entry, before the guest runs: plan the call and decide who
+/// answers. Until the arm has matched [`PROVEN_AFTER`] calls with no
+/// mismatch ever, and on every [`AUDIT_EVERY`]th answerable call after
+/// that, the guest answers and the plan is compared at the return. One
+/// mismatch ends the take-over for good: the guest answers everything
+/// from then on. A declined call is the guest's and never counts as a
+/// match.
+pub fn enter(c: &mut CpuAbi, g: &mut impl Memory) -> Result<Step, GuestFault> {
+    let o = match plan(c, g) {
+        Ok(o) => o,
+        Err(why) => {
+            decline(why);
+            with_arm(|a| a.stats.declined[why as usize] += 1);
+            return Ok(Step::Guest);
+        }
     };
+    let answer = with_arm(|a| {
+        let slot = a.slot;
+        a.slot += 1;
+        a.stats.mismatched == 0 && a.stats.matched >= PROVEN_AFTER && slot % AUDIT_EVERY != 0
+    });
+    if answer {
+        return apply(o, c, g).map(Step::Answered);
+    }
+    Ok(Step::Audit(Box::new(Audit {
+        outcome: o,
+        before: *c,
+    })))
+}
+
+/// At the return, after the guest ran: compare its result with the plan.
+/// The guest's result stands either way.
+pub fn audit(a: Audit, c: &CpuAbi, g: &impl Memory) {
     // Compared outside the lock: it reads guest memory.
-    let result = compare(&o, c, g);
-    with_arm(|a| {
-        a.stats.checked += 1;
+    let result = compare(&a.outcome, c, g);
+    with_arm(|s| {
+        s.stats.checked += 1;
         match result {
-            None => a.stats.matched += 1,
+            None => s.stats.matched += 1,
             Some(m) => {
-                a.stats.mismatched += 1;
-                if a.stats.first.is_none() {
-                    a.stats.first = Some((m, before));
+                if s.stats.mismatched == 0 {
+                    eprintln!(
+                        "sim: anim graph walk arm: the guest's result differs from the plan \
+                         ({}: plan {}, guest {}); the guest answers every call from here",
+                        m.what, m.plan, m.guest
+                    );
+                }
+                s.stats.mismatched += 1;
+                if s.stats.first.is_none() {
+                    s.stats.first = Some((m, a.before));
                 }
             }
         }
     });
 }
 
-/// Drop the arm's counters and waiting plans (tests, and a new run).
+/// An audit whose return could not be observed.
+pub fn arm_dropped() {
+    with_arm(|a| a.stats.dropped += 1);
+}
+
+/// Start the audit slots over (map load, checkpoint revert and restore):
+/// the proof and the counters stay.
+pub fn arm_new_run() {
+    with_arm(|a| a.slot = 0);
+}
+
+/// Drop the arm's counters and slots (tests).
 pub fn arm_reset() {
     with_arm(|a| {
         a.stats = ArmStats::default();
-        a.pending.clear();
+        a.slot = 0;
     });
 }
 

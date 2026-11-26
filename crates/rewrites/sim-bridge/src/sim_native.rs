@@ -332,29 +332,43 @@ fn install_anim(b: &mut Builder, exports: &[AnimBody]) {
             original(cpu, ctx, addr)
         })
         .context_only();
-    // The graph walk `1dd1c0` runs as its arm: the guest answers, and the
-    // Rust plan made at the entry is compared with what the guest left
-    // (docs/engine/skeleton-walk.md, "The graph walk `1dd1c0`").
+    // The graph walk `1dd1c0`: the body answers once the arm has matched
+    // enough guest answers with no mismatch; until then, and on every
+    // audit slot after, the guest answers and the plan made at the entry
+    // is compared at the return (docs/engine/skeleton-walk.md, "The graph
+    // walk `1dd1c0`").
     let walk = &points::ANIM_GRAPH_MATRICES;
     b.raw()
-        .before(walk, "plan the graph walk", |c| {
-            let thread = c.ctx.thread_id;
-            let mem = c.ctx.memory();
-            engine::sim_anim::graph_walk::arm_before(thread, c.cpu, &*mem);
-            Ok(hooks::Flow::Continue)
+        .implement(walk, ANIM, move |cpu, ctx, addr| {
+            use engine::sim_anim::graph_walk::{self, Step};
+            if addr == walk.base {
+                let step = {
+                    let mut mem = ctx.memory();
+                    graph_walk::enter(cpu, &mut *mem)?
+                };
+                match step {
+                    Step::Answered(transfer) => return Ok(transfer),
+                    Step::Audit(audit) => {
+                        let seen = ctx.observe_guest_return(cpu, graph_walk::ARGS, move |c, ctx| {
+                            graph_walk::audit(*audit, c, &*ctx.runtime().memory());
+                        });
+                        if !seen {
+                            graph_walk::arm_dropped();
+                        }
+                    }
+                    Step::Guest => {}
+                }
+            }
+            original(cpu, ctx, addr)
         })
-        .optional();
-    b.raw()
-        .after(walk, "compare the graph walk with the guest", |c| {
-            let thread = c.ctx.thread_id;
-            let mem = c.ctx.memory();
-            engine::sim_anim::graph_walk::arm_after(thread, c.cpu, &*mem);
-            Ok(())
-        })
+        .context_only()
         .optional();
     for (point, label) in ANIM_INVALIDATE {
         b.raw()
-            .observe_before(point, label, |_| engine::sim_anim::invalidate());
+            .observe_before(point, label, |_| {
+                engine::sim_anim::invalidate();
+                engine::sim_anim::graph_walk::arm_new_run();
+            });
     }
 }
 
@@ -642,11 +656,10 @@ mod tests {
         let pose = plan.chains[&points::SIM_UNIT_POSE.base].implement.as_ref().unwrap();
         assert_eq!(pose.label, ANIM);
         assert_eq!(pose.continuation_sites().0, sim::unit::SITES);
-        // The graph walk is checked, not replaced: the guest still answers.
+        // The graph walk answers once proven; until then it compares.
         let walk = &plan.chains[&points::ANIM_GRAPH_MATRICES.base];
-        assert!(walk.implement.is_none());
-        assert_eq!((walk.before.len(), walk.after.len()), (1, 1));
-        assert!(walk.before[0].optional && walk.after[0].optional);
+        assert_eq!(walk.implement.as_ref().unwrap().label, ANIM);
+        assert_eq!((walk.before.len(), walk.after.len()), (0, 0));
         assert_eq!(plan.chains.len(), 3 + ANIM_BODIES.len() + ANIM_INVALIDATE.len());
         assert_eq!(plan.save_sections(), vec![("sim-native", Vec::new())]);
 
