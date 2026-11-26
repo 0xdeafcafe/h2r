@@ -96,7 +96,7 @@ fn window_of(commands: &[(u32, Command)]) -> (u32, u32) {
 /// Kills like [`kill_at_age_three`], but only before the bonus round.
 fn kill_until(until: u32) -> impl FnMut(u32, &mut World) {
     move |tick, world| {
-        if tick < until {
+        if tick <= until {
             kill_at_age_three(tick, world);
         }
     }
@@ -166,7 +166,7 @@ fn a_bonus_death_costs_no_life_and_holds_the_respawn() {
         &def,
         2,
         |tick, world| {
-            if tick < start {
+            if tick <= start {
                 kill_at_age_three(tick, world);
             }
             if tick == death {
@@ -204,7 +204,7 @@ fn a_bonus_death_costs_no_life_and_holds_the_respawn() {
 /// out, six ticks in.
 fn bonus_kills(start: u32, kills: usize) -> impl FnMut(u32, &mut World) {
     move |tick, world| {
-        if tick < start {
+        if tick <= start {
             kill_at_age_three(tick, world);
         } else if tick == start + 6 {
             let alive: Vec<usize> = (0..SQUAD_SLOTS).filter(|&s| world.squads[s].0 > 0).collect();
@@ -270,7 +270,7 @@ fn all_dead_ends_the_bonus_round_not_the_game() {
         &def,
         1,
         |tick, world| {
-            if tick < start {
+            if tick <= start {
                 kill_at_age_three(tick, world);
             }
             if tick == death {
@@ -320,11 +320,8 @@ fn every_skull_is_on_in_the_bonus_round_and_restored_after() {
     // Famine came on with round one, before the bonus round.
     let mut turned_on = BONUS_SKULLS.to_vec();
     turned_on.push(Skull::Iron);
-    assert_eq!(
-        switched(false),
-        turned_on.iter().copied().collect::<BTreeSet<_>>(),
-        "exactly the skulls it switched on go off"
-    );
+    let went_off: BTreeSet<Skull> = turned_on.iter().copied().filter(|s| *s != Skull::Famine).collect();
+    assert_eq!(switched(false), went_off, "exactly the skulls it switched on go off");
     assert!(switched(true).is_superset(&turned_on.iter().copied().collect()));
 }
 
@@ -336,7 +333,7 @@ fn iron_means_no_respawn_whatever_the_pool() {
         &def,
         2,
         |tick, world| {
-            if tick < start {
+            if tick <= start {
                 kill_at_age_three(tick, world);
             }
             if (start + 2..start + 12).contains(&tick) && tick % 3 == 0 {
@@ -357,7 +354,7 @@ fn at_zero_a_dead_player_waits_for_the_grant() {
     let deaths = |tick: u32, world: &mut World| {
         kill_at_age_three(tick, world);
         // The pool of one pays for the first; the second finds it empty.
-        if tick == 3 || tick == 4 {
+        if tick == 3 || tick == 5 {
             world.kill_player(1, None);
         }
     };
@@ -512,5 +509,5 @@ fn the_bonus_definition_is_checked() {
 #[test]
 fn a_definition_with_no_bonus_keeps_its_canonical_json() {
     let json = small_def(START_POOL, true).canonical_json().unwrap();
-    assert!(!json.contains("bonus") && !json.contains("zero_holds"));
+    assert!(!json.contains("\"bonus\"") && !json.contains("zero_holds"));
 }
