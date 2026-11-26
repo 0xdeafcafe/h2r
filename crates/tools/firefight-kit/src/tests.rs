@@ -247,6 +247,7 @@ fn roomy(base: &[u8], fit: &[Fit]) -> Built {
         None,
         0,
         false,
+        false,
         fit,
         u32::MAX,
     )

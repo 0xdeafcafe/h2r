@@ -221,6 +221,33 @@ pub(crate) fn plan(walls: &Walls, zones: &[Zone]) -> Vec<Option<Run>> {
         .collect()
 }
 
+/// A point set `ff_path_NN` for each zone with a run.
+pub(crate) fn path_sets(runs: &[Option<Run>], bsp: i16) -> Vec<PointSet> {
+    let mut sets = Vec::new();
+    for (zone, run) in runs.iter().enumerate() {
+        let Some(run) = run else { continue };
+        sets.push(PointSet {
+            name: format!("{PATH_PREFIX}{zone:02}"),
+            points: POINTS
+                .iter()
+                .zip(run.points)
+                .map(|(name, position)| Point {
+                    name: (*name).to_owned(),
+                    position,
+                    reference_frame: -1,
+                    // No collision surface: the points are in the air.
+                    surface: u32::MAX,
+                    facing: [run.yaw, 0.0],
+                })
+                .collect(),
+            bsp,
+            manual_reference_frame: -1,
+            flags: 0,
+        });
+    }
+    sets
+}
+
 /// The scenario blocks a ship adds, `(field, count, block)`.
 pub(crate) struct Authored {
     pub fields: Vec<(usize, u32, Block)>,
@@ -322,29 +349,9 @@ pub(crate) fn author<R: Read + Seek>(
         !sets.iter().any(|s| s.name.starts_with(PATH_PREFIX)),
         "the base already has {PATH_PREFIX}NN point sets"
     );
-    let mut paths = 0;
-    for (zone, run) in runs.iter().enumerate() {
-        let Some(run) = run else { continue };
-        sets.push(PointSet {
-            name: format!("{PATH_PREFIX}{zone:02}"),
-            points: POINTS
-                .iter()
-                .zip(run.points)
-                .map(|(name, position)| Point {
-                    name: (*name).to_owned(),
-                    position,
-                    reference_frame: -1,
-                    // No collision surface: the points are in the air.
-                    surface: u32::MAX,
-                    facing: [run.yaw, 0.0],
-                })
-                .collect(),
-            bsp,
-            manual_reference_frame: -1,
-            flags: 0,
-        });
-        paths += 1;
-    }
+    let made = path_sets(runs, bsp);
+    let paths = made.len();
+    sets.extend(made);
     let authored = ScenarioAi {
         point_sets: sets,
         ..Default::default()

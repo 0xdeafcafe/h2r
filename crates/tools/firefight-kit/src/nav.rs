@@ -49,6 +49,9 @@ pub(crate) struct Navigation {
     /// no clear column (`ship::plan`), and the BSP they were planned on.
     pub ship_runs: Vec<Option<crate::ship::Run>>,
     pub ship_bsp: i16,
+    /// The drop pods' falls over each drop zone and each starting
+    /// location (`sky::plan`), planned on the same BSP as the ship's runs.
+    pub falls: crate::sky::Falls,
 }
 
 const MIN_ZONES: usize = 6;
@@ -144,6 +147,9 @@ pub(crate) fn prepare<R: Read + Seek>(
         .collect();
 
     let mut generated = Vec::new();
+    // Each BSP's solid and sky surfaces, when the config names sky
+    // materials: the roof the pods' columns are tested against.
+    let mut roofs: Vec<Option<(bots::los::Walls, bots::los::Walls)>> = Vec::new();
     let mut best = None;
     // The best arena's walls without the sky shell, for the ship's columns.
     let mut open_walls: Option<bots::los::Walls> = None;
@@ -197,6 +203,10 @@ pub(crate) fn prepare<R: Read + Seek>(
             best = Some(arena);
             open_walls = Some(bots::cache::walls_without_sky(&collision));
         }
+        roofs.push(
+            (!config.sky_materials.is_empty())
+                .then(|| crate::sky::split(&collision, config.sky_materials)),
+        );
         generated.push((id, pf, data));
     }
     ensure!(!generated.is_empty(), "scenario has no structure BSP");
@@ -220,6 +230,30 @@ pub(crate) fn prepare<R: Read + Seek>(
         None => vec![None; arena.zones.len()],
     };
     let ship_bsp = arena.bsp;
+    // The pods' falls: over each drop zone's first area's mean and each
+    // start, where the column to the top of the collision is open.
+    let falls = match usize::try_from(arena.bsp)
+        .ok()
+        .and_then(|i| generated.get(i).map(|g| (i, g)))
+    {
+        Some((i, (_, _, data))) => {
+            let none = bots::los::Walls::default();
+            let roof = match roofs.get(i).and_then(Option::as_ref) {
+                Some((solid, sky)) => crate::sky::Roof { solid, sky },
+                None => crate::sky::Roof { solid: &data.walls, sky: &none },
+            };
+            let means: Vec<V3> = arena
+                .zones
+                .iter()
+                .map(|z| z.areas.first().map_or([f32::NAN; 3], |a| a.mean))
+                .collect();
+            crate::sky::Falls {
+                zones: crate::sky::plan(&roof, &means),
+                starts: crate::sky::plan(&roof, &starts),
+            }
+        }
+        None => crate::sky::Falls::default(),
+    };
     // Keep only the sectors the AI can use, then encode each BSP's.
     let mut bsps = Vec::with_capacity(generated.len());
     let mut trim = Trim::default();
@@ -274,6 +308,7 @@ pub(crate) fn prepare<R: Read + Seek>(
         snapped,
         ship_runs,
         ship_bsp,
+        falls,
     })
 }
 
