@@ -158,7 +158,7 @@ impl Theater {
                 state.status = "Opening film...".into();
                 state.changed();
                 drop(state);
-                if let Err(error) = self.session().play(&entry, view) {
+                if let Err(error) = self.play(&entry, view) {
                     let mut state = self.state();
                     state.status = error;
                     state.changed();

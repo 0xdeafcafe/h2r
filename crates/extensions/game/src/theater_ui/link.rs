@@ -60,6 +60,8 @@ pub(super) struct Ready {
     waited: u32,
     /// What a local page has seen of the menu at its last update.
     menu: Menu,
+    /// The page's status line once it opens: why the film stopped.
+    notice: Option<String>,
 }
 
 /// The menu a local page waits on, as its last update saw it: the screen on
@@ -311,6 +313,7 @@ impl Theater {
                                 local: false,
                                 waited: 0,
                                 menu: Menu::default(),
+                                notice: None,
                             });
                         } else if let Some(reply) = reply {
                             let _ = reply.send(Err("Theater selection changed".into()));
@@ -329,10 +332,13 @@ impl Theater {
         Ok(())
     }
 
-    /// The film page of a film of this machine's library, opened from the
-    /// menu the viewer returns to after a film watched in the running game.
+    /// The film page of the film watched in the running game, opened from
+    /// the menu the viewer returns to after it: left, diverged, or never
+    /// started (`why` says which failed, and is the page's status line).
     /// The page opens at the next menu update, as a linked film page does.
-    pub fn reopen_film(&self, film: &str) {
+    /// The entry the menu's Watch played is the page's (a Live film is not
+    /// in the local library); with none, the film is found in the library.
+    pub fn reopen_film(&self, film: &str, why: Option<&str>) {
         let location = self
             .0
             .location
@@ -340,19 +346,35 @@ impl Theater {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         let Some(location) = location else { return };
-        let found = (location.open)(&location.dir)
-            .and_then(|library| library.list(&location.installation))
-            .map(|films| films.into_iter().find(|f| f.id == film));
-        let entry = match found {
-            Ok(Some(film)) => Entry {
-                film,
-                clip: None,
-                archive_clip: None,
-            },
-            Ok(None) => return,
-            Err(error) => {
-                eprintln!("theater: could not reopen the film page: {error}");
-                return;
+        // The film's own id, or a Live film's (its page names the game, the
+        // film file its own id).
+        let watched = self
+            .0
+            .watched
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .filter(|e| e.film.id == film || e.film.archive_id().is_some());
+        let entry = if let Some(entry) = watched {
+            entry
+        } else {
+            let found = (location.open)(&location.dir)
+                .and_then(|library| library.list(&location.installation))
+                .map(|films| films.into_iter().find(|f| f.id == film));
+            match found {
+                Ok(Some(film)) => Entry {
+                    film,
+                    clip: None,
+                    archive_clip: None,
+                },
+                Ok(None) => {
+                    eprintln!("theater: film {film} is not in the library; no film page to open");
+                    return;
+                }
+                Err(error) => {
+                    eprintln!("theater: could not reopen the film page: {error}");
+                    return;
+                }
             }
         };
         let (controller, account, generation) = {
@@ -374,6 +396,7 @@ impl Theater {
             local: true,
             waited: 0,
             menu: Menu::default(),
+            notice: why.map(str::to_owned),
         });
     }
 
@@ -573,6 +596,11 @@ impl Feature for Driver {
                                 theater.open(ready.controller, player);
                             }
                             theater.select_link(ready.entry, ready.view, ready.account);
+                            if let Some(notice) = ready.notice {
+                                let mut state = theater.state();
+                                state.status = notice;
+                                state.changed();
+                            }
                             for (_, loader) in reopen_screens(list, detail) {
                                 cx.call(
                                     GuestCall::new(points::OPEN_SCREEN.base)
