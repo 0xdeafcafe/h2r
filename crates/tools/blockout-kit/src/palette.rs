@@ -242,7 +242,9 @@ pub fn survey<R: Read + Seek>(map: &mut Map<R>, raw: &mut dyn RawSource) -> Resu
         let Ok(tag) = map.tag(part.shader) else {
             continue;
         };
-        let shader = tag.name.clone();
+        let Some(shader) = tag.name.clone() else {
+            continue;
+        };
         let triangles = part
             .tris
             .iter()

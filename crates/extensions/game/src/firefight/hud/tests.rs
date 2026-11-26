@@ -234,7 +234,7 @@ fn the_hud_reads_only_the_mode_blob() {
     }
     // The signature says it: bytes and a slot in, a view out.
     let _: fn(&[u8]) -> Result<Mode, Error> = Mode::decode;
-    let _: fn(&Mode, u8) -> Values = view;
+    let _: fn(&Mode, u8, Scope) -> Values = view;
 }
 
 /// With lives not shared each player's own count is in the blob, and each
