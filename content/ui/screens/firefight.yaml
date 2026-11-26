@@ -35,7 +35,7 @@ rows:
     text: "Wave set"
     help: "Which set of waves you fight."
     bind: waveset
-    explain: "Endless comes first: sets of three rounds, one after another until the team is out. The map's own set follows when it has one. Holdout is steady. Attrition sends more for fewer lives. Last Stand is hardest. Crossfire pits two teams against the waves and each other."
+    explain: "Endless runs sets of three rounds until the team is out. The map's own set follows if it has one. Holdout is steady, Attrition sends more for fewer lives, Last Stand is hardest, Crossfire is two teams."
   row.2:
     kind: value
     text: "Teams"
