@@ -485,6 +485,17 @@ The bar and the pause menu are pages of the UI builder
 kit as the film selector. The host captures page input before it reaches
 the guest.
 
+- **Loading panel** (`playback_page::loading`, screen `theater.loading`):
+  from `theater.watch` until the film's first answer of the transport, a
+  centred plate with the film's name, its map, the transport's status
+  ("film ... is loading") and a block sweeping a rail. The host draws it
+  while `Theater::film_loading`; the pads stay with the menu. The bar and
+  the pause menu are drawn only once the film's game is active and the
+  transport answers (`Theater::film_loaded`), never over the menu or the
+  map load. A load that fails (the game does not start within a minute,
+  or `Theater::load_failed`) ends the state, disarms the film
+  (`theater.end`) and opens the film page again with the reason as its
+  status (`Theater::reopen_film_why`).
 - **Bar** (bottom of the screen, hidden with Back or H): play state,
   speed asked and reached, time and length, a timeline with kill markers
   from the stats file, clip marks and the stretch the ring covers, the

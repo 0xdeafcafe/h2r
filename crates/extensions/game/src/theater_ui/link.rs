@@ -56,6 +56,8 @@ pub(super) struct Ready {
     /// A film of this machine's own library (the film page after a film
     /// watched in the running game): no account selected it.
     local: bool,
+    /// Why the viewer is back: a film's failed load, said on the page.
+    notice: Option<String>,
     /// Menu updates a local page has waited for the menu to settle.
     waited: u32,
     /// What a local page has seen of the menu at its last update.
@@ -254,11 +256,20 @@ fn resolve(
 }
 
 impl Theater {
-    fn select_link(&self, entry: Entry, view: api::InitialView, account: live_proto::Xuid) {
+    fn select_link(
+        &self,
+        entry: Entry,
+        view: api::InitialView,
+        account: live_proto::Xuid,
+        notice: Option<String>,
+    ) {
         let mut state = self.state();
         state.account = Some(account);
         state.working = false;
         state.select(entry);
+        if let Some(notice) = notice {
+            state.status = notice;
+        }
         state.view = Some(view);
     }
 
@@ -309,6 +320,7 @@ impl Theater {
                                 generation,
                                 reply,
                                 local: false,
+                                notice: None,
                                 waited: 0,
                                 menu: Menu::default(),
                             });
@@ -333,6 +345,14 @@ impl Theater {
     /// menu the viewer returns to after a film watched in the running game.
     /// The page opens at the next menu update, as a linked film page does.
     pub fn reopen_film(&self, film: &str) {
+        self.reopen_film_why(film, None);
+    }
+
+    /// As [`Self::reopen_film`], with the reason the viewer is back (a
+    /// load that failed) on the page. A reason the session recorded
+    /// (`return_notice`) is used when none is given.
+    pub fn reopen_film_why(&self, film: &str, why: Option<&str>) {
+        let notice = why.map(str::to_owned).or_else(|| self.state().return_notice.take());
         let location = self
             .0
             .location
@@ -372,6 +392,7 @@ impl Theater {
             generation,
             reply: None,
             local: true,
+            notice,
             waited: 0,
             menu: Menu::default(),
         });
@@ -572,7 +593,7 @@ impl Feature for Driver {
                                 let player = theater.state().player.clone();
                                 theater.open(ready.controller, player);
                             }
-                            theater.select_link(ready.entry, ready.view, ready.account);
+                            theater.select_link(ready.entry, ready.view, ready.account, ready.notice);
                             for (_, loader) in reopen_screens(list, detail) {
                                 cx.call(
                                     GuestCall::new(points::OPEN_SCREEN.base)

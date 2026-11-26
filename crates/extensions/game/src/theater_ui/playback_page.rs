@@ -5,9 +5,9 @@ use serde::Deserialize;
 use std::collections::BTreeSet;
 
 use super::adapter::Player;
-use super::overlay::Track;
+use super::overlay::{Loading, Track};
 use super::selector::clock;
-use super::{OVERLAY, PAUSE_MENU};
+use super::{LOADING, OVERLAY, PAUSE_MENU};
 use crate::list_class::ListLayout;
 use crate::ui_kit::{
     input::{Glyph, Input, Prompt, footer_legend},
@@ -84,6 +84,32 @@ fn transparent_page(name: &str, title: &str, rows: i16) -> ScreenSpec {
 fn selected_colour(player: Option<&Player>) -> Option<[u8; 3]> {
     use super::adapter::team_colour;
     player.and_then(|p| p.emblem_colour.or_else(|| team_colour(p.team.as_deref()?)))
+}
+
+/// The loading panel, from the film's queued game to its first played
+/// tick: a centred plate in the bar's style with the film, its map, the
+/// transport's status and a spinner (a block sweeping the rail).
+pub(super) fn loading(loading: &Loading, now: std::time::Instant) -> ScreenSpec {
+    const PLATE: [i16; 4] = [48, -200, -64, 200];
+    const TRACK: [i16; 4] = [-30, -170, -38, 170];
+    const BLOCK: i16 = 60;
+    let mut spec = transparent_page(LOADING, "", 0);
+    fill(&mut spec, PLATE, PANEL);
+    fill(&mut spec, TRACK, [60, 78, 104, 255]);
+    // The block sweeps right and back, once every two seconds.
+    let phase = (now.saturating_duration_since(loading.since).as_millis() % 2000) as f32 / 1000.0;
+    let phase = if phase > 1.0 { 2.0 - phase } else { phase };
+    let span = f32::from(TRACK[3] - TRACK[1] - BLOCK);
+    let left = TRACK[1] + (span * phase) as i16;
+    fill(&mut spec, [TRACK[0], left, TRACK[2], left + BLOCK], [230, 238, 255, 255]);
+    let map = if loading.map.is_empty() { "Loading".into() } else { super::adapter::title_words(&loading.map) };
+    let status = loading.status.as_deref().unwrap_or("Loading film");
+    spec.texts.extend([
+        cell("loading.title", [34, -180, 12, 180], &loading.name, BODY, false),
+        cell("loading.map", [10, -180, -12, 180], &map, MUTED, false),
+        cell("loading.status", [-44, -180, -62, 180], status, MUTED, false),
+    ]);
+    spec
 }
 
 pub(super) fn bar(track: &Track, ready: bool, notice: Option<&str>) -> ScreenSpec {
