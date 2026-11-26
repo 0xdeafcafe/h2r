@@ -1,5 +1,8 @@
 //! Drawing one private, playerless world view for Theater or an agent camera.
-use engine::{GuestMemory, render_loop::views::VIEW_STRIDE};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use engine::{GuestMemory, points, render_loop::{occlusion::guest::VIEW_PLAYER, views::VIEW_STRIDE}};
+use hooks::{BuildError, Builder, Feature, Flow, Manifest};
 use serde::{Deserialize, Serialize};
 
 pub(crate) const PITCH_LIMIT: f32 = 1.55;
@@ -13,6 +16,60 @@ const VIEW_RECORDS: u32 = 0x0047_f210;
 const VIEW_RECORD_COUNT: u32 = 4;
 const NEAR_CLIP: u32 = 0x0048_5ad4;
 const FAR_CLIP: u32 = 0x0048_5ad8;
+
+/// The current `render_views` call has drawn a private playerless view
+/// (`replace_world_view`): set by the replacement, cleared when the call
+/// returns.
+static PRIVATE_VIEW: AtomicBool = AtomicBool::new(false);
+
+/// Whether the HUD's black overlay (`HUD_BLACK_OVERLAY`) is skipped: the
+/// view drawn is one of ours and has no player. The engine draws a view
+/// with no player (`VIEW_PLAYER` is `-1`) fully black, as it draws a
+/// local player's death or spawn fade; a private view (Forge's monitor,
+/// the agent camera, the Pogo chase camera, Theater's cameras) has none,
+/// and a player's own view keeps its index, so the retail fade stays.
+pub(crate) fn skips_black_overlay(m: &dyn GuestMemory) -> bool {
+    PRIVATE_VIEW.load(Ordering::Relaxed) && m.u32(VIEW_PLAYER).is_ok_and(|user| user == u32::MAX)
+}
+
+/// The feature that skips the overlay over private views.
+pub struct PrivateViewOverlay;
+
+/// The feature's name.
+pub const OVERLAY_FEATURE: &str = "private-view-overlay";
+
+impl Feature for PrivateViewOverlay {
+    fn manifest(&self) -> Manifest {
+        Manifest::new(OVERLAY_FEATURE, "No black overlay over a private playerless view")
+            .doc("docs/game/forge-design.md")
+            .presentation_only()
+    }
+
+    fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
+        b.raw()
+            .before(
+                &points::HUD_BLACK_OVERLAY,
+                "no black overlay over a private view",
+                |call| {
+                    let mem = call.ctx.memory();
+                    if !skips_black_overlay(&*mem) {
+                        return Ok(Flow::Continue);
+                    }
+                    let target = mem.u32(call.cpu.esp)?;
+                    call.cpu.esp = call.cpu.esp.wrapping_add(4);
+                    Ok(Flow::Return(runtime::TransferAbi::ret(target)))
+                },
+            )
+            .context_only();
+        b.raw()
+            .observe_after(&points::RENDER_VIEWS, "end the private view", |_| {
+                PRIVATE_VIEW.store(false, Ordering::Relaxed);
+            })
+            .optional();
+        Ok(())
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 pub(crate) struct Pose {
@@ -195,7 +252,11 @@ pub(crate) fn replace_world_view<M: GuestMemory>(
     if let Some(fov) = fov {
         put_fov(&mut record, vertical_fov(fov));
     }
-    guest.write(scratch, &record).is_ok() && guest.set_u32(arg, scratch).is_ok()
+    let drawn = guest.write(scratch, &record).is_ok() && guest.set_u32(arg, scratch).is_ok();
+    if drawn {
+        PRIVATE_VIEW.store(true, Ordering::Relaxed);
+    }
+    drawn
 }
 
 #[cfg(test)]
@@ -276,5 +337,49 @@ mod tests {
         // Without a lens or a heading there is nothing to report.
         guest.put_f32(record(2) + 0x0c + 0x28, 0.0);
         assert!(drawn_view(&guest, 0).is_none());
+    }
+
+    fn draw(guest: &mut FakeGuest, from: u32) -> bool {
+        const STACK: u32 = 0x1000;
+        const SCRATCH: u32 = 0x3000;
+        guest
+            .put_u32(STACK, WORLD_VIEW_RETURN)
+            .put_u32(STACK + 12, from)
+            .map(SCRATCH, VIEW_STRIDE);
+        let pose = Pose { position: [0.0; 3], yaw: 0.0, pitch: 0.0 };
+        replace_world_view(guest, STACK, 1, SCRATCH, |_, _| Some((pose, None)))
+    }
+
+    /// One test, as the flag is process-wide: each private view kind (the
+    /// Forge monitor, the agent camera, the Pogo chase camera and
+    /// Theater's cameras all draw through `replace_world_view`) skips the
+    /// overlay, a player's own view or a frame with no private view keeps
+    /// it.
+    #[test]
+    fn a_private_view_with_no_player_skips_the_black_overlay() {
+        let mut guest = FakeGuest::new();
+        guest.put_u32(VIEW_PLAYER, u32::MAX);
+        PRIVATE_VIEW.store(false, Ordering::Relaxed);
+        assert!(!skips_black_overlay(&guest), "no private view drawn");
+        assert!(draw(&mut guest, 0x2000));
+        assert!(skips_black_overlay(&guest), "monitor, agent, Pogo, Theater");
+        guest.put_u32(VIEW_PLAYER, 0);
+        assert!(!skips_black_overlay(&guest), "a dead or respawning player's fade stays");
+        assert!(!skips_black_overlay(&FakeGuest::new()), "an unread player");
+        guest.put_u32(VIEW_PLAYER, u32::MAX);
+        PRIVATE_VIEW.store(false, Ordering::Relaxed);
+        assert!(!skips_black_overlay(&guest), "the next frame, drawn by the game");
+        guest.put_u32(0x1000, 0);
+        assert!(!draw(&mut guest, 0x2000), "not the world view's call");
+        assert!(!skips_black_overlay(&guest));
+    }
+
+    #[test]
+    fn the_overlay_feature_hooks_the_overlay_and_ends_with_the_views() {
+        let mut registry = hooks::Registry::new(hooks::Switches::defaults());
+        assert!(registry.add(&PrivateViewOverlay).unwrap());
+        let text = registry.build(&hooks::Base).unwrap().text();
+        assert!(text.contains("HUD_BLACK_OVERLAY: before [private-view-overlay:"), "{text}");
+        assert!(text.contains("RENDER_VIEWS"), "{text}");
     }
 }

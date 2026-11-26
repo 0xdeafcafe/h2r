@@ -611,6 +611,11 @@ pub(crate) fn register_core_film(
     // Superbounce's Pogo Stick (docs/game/pogo-stick.md): the secondary
     // weapon of a game whose script has `pogo` on, on a map with the kit.
     crate::pogo_mode::install(features).context("installing the pogo stick")?;
+    // No black overlay over a private playerless view (Forge's monitor,
+    // the agent camera, the Pogo chase camera, Theater's cameras).
+    features
+        .add(&game::spectator_view::PrivateViewOverlay)
+        .map_err(|e| anyhow::anyhow!("private-view-overlay: {e}"))?;
     // Teabags in every game, for the incel medal (docs/game/teabag.md):
     // recorded to Live and the film on the console that records the game.
     crate::teabag::install(features, telemetry.clone()).context("installing the teabag watch")?;
