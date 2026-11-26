@@ -204,6 +204,35 @@ fn widen_terms(mem: &mut impl GuestMemory, esp: u32, factor: f32, frustum: f32) 
     mem.write(at, &words).ok()
 }
 
+/// The aspect the ocean's grid setup (`0x0003ca90`) has stored at
+/// `[esp+0x10]` (`OCEAN_GRID_ASPECT`), widened to the displayed lens.
+///
+/// A BSP's water definitions (Delta Towers' bay, `water_ocean`) draw as a
+/// grid attached to the camera: the setup scales the grid's sideways
+/// vector by the horizontal tangent `tan(min(fov / 2, 0.7807)) * aspect`,
+/// with 13 % to spare, and uploads the grid's model rows (`c[50..52]`,
+/// `0x004c1b38`) and its visibility quad (`0x004c1b08`) from it. The
+/// aspect is the raster rectangle's (`0x00485648`, 640x480), not the
+/// projection's, so a camera the projection-terms fit widened by `factor`
+/// shows past the grid's sides: in a 21:9 or 32:9 window the ocean ends at
+/// a hard edge on either side and the scene under the water shows there.
+/// Dividing the aspect by `factor` gives the grid the window's lens and
+/// the same margin retail has at 4:3. A `factor` of 1 or more (a window
+/// no wider than the guest's lens) or one that does not read leaves the
+/// retail grid. Whether it widened.
+fn widen_ocean_grid(mem: &mut impl GuestMemory, esp: u32, factor: f32) -> bool {
+    if !(factor.is_finite() && factor > 0.0 && factor < 1.0) {
+        return false;
+    }
+    let Some(at) = esp.checked_add(0x10) else { return false };
+    let Ok(aspect) = mem.f32(at) else { return false };
+    let widened = aspect / factor;
+    if !(aspect.is_finite() && aspect > 0.0 && widened.is_finite()) {
+        return false;
+    }
+    mem.write(at, &widened.to_le_bytes()).is_ok()
+}
+
 fn viewport(mem: &impl GuestMemory, address: u32) -> Option<PixelRect> {
     let mut bytes = [0; 8];
     mem.read(address, &mut bytes).ok()?;
@@ -595,6 +624,22 @@ impl Feature for RenderAspect {
         }
 
         if guest_lens {
+            // The ocean's grid takes the lens the view's projection was
+            // fitted to (`widen_ocean_grid`); a view the fit left retail
+            // (several machines, another caller) keeps the retail grid.
+            let (fitted, lens) = (projected.clone(), view_lens.clone());
+            b.raw()
+                .before(&points::render_aspect::OCEAN_GRID_ASPECT, "widen the ocean grid to the displayed lens", move |c| {
+                    let widened = fitted.load(Ordering::Relaxed)
+                        && widen_ocean_grid(&mut *c.ctx.memory(), c.cpu.esp, f32::from_bits(lens.load(Ordering::Relaxed)));
+                    #[cfg(feature = "desktop-runtime")]
+                    render_bridge::scene_step::count_ocean_grid(widened);
+                    #[cfg(not(feature = "desktop-runtime"))]
+                    let _ = widened;
+                    Ok(Flow::Continue)
+                })
+                .context_only()
+                .optional();
             let projected = projected.clone();
             let sink = self.sink.clone();
             b.raw()
@@ -1151,6 +1196,83 @@ mod tests {
         close(gather_factor(&mem), (16.0 / 9.0) / GATHER_ASPECT);
         close(projection_factor(&mem, (3440, 1440)), (16.0 / 9.0) / (3440.0 / 1440.0));
         assert!(projection_factor(&mem, (3440, 1440)) >= gather_factor(&mem));
+    }
+
+    /// The ocean grid's horizontal half tangent as `0x0003ca90` makes it
+    /// from the aspect at `[esp+0x10]` and the horizontal field of view at
+    /// `0x00485640`: the half angle capped at 0.7807 (`0x0045e2d4`), its
+    /// tangent times the aspect, and 13 % to spare (`0x0045e2d0`) once it
+    /// is past the grid's own width. Delta Towers' grid is narrower than
+    /// any lens, so the margin always applies here.
+    fn ocean_half_tangent(fov: f32, aspect: f32) -> f32 {
+        (fov * 0.5).min(0.780_685_8).tan() * aspect * 1.13
+    }
+
+    /// The displayed lens's horizontal half tangent: the retail one (the
+    /// field of view at 4:3) over the projection's factor.
+    fn window_half_tangent(fov: f32, factor: f32) -> f32 {
+        (fov * 0.5).tan() / factor
+    }
+
+    #[test]
+    fn the_ocean_grid_reaches_the_sides_of_every_window() {
+        let esp = 0x1000;
+        let at = esp + 0x10;
+        let mem = FakeGuest::new();
+        for fov in [70f32.to_radians(), 90f32.to_radians()] {
+            for output in [(3440, 1440), (5120, 1440), (2560, 1080)] {
+                let factor = projection_factor(&mem, output);
+                // Retail's grid, sized from the 640x480 raster, stops
+                // short of the fitted window's sides: the hard edge on
+                // Delta Towers' bay at 21:9 and 32:9.
+                assert!(
+                    ocean_half_tangent(fov, 4.0 / 3.0) < window_half_tangent(fov, factor),
+                    "{output:?} at {fov}"
+                );
+                let mut guest = mem.clone();
+                guest.put_f32(at, 4.0 / 3.0);
+                assert!(widen_ocean_grid(&mut guest, esp, factor));
+                let aspect = guest.f32(at).unwrap();
+                close(aspect, output.0 as f32 / output.1 as f32);
+                let grid = ocean_half_tangent(fov, aspect);
+                assert!(grid >= window_half_tangent(fov, factor), "{output:?} at {fov}");
+                // The margin is retail's at 4:3.
+                close(
+                    grid / window_half_tangent(fov, factor),
+                    ocean_half_tangent(fov, 4.0 / 3.0) / window_half_tangent(fov, 1.0),
+                );
+            }
+            // 16:10 and 16:9 were inside retail's margin already, and
+            // still are.
+            for output in [(1920, 1200), (2560, 1440)] {
+                let factor = projection_factor(&mem, output);
+                assert!(ocean_half_tangent(fov, 4.0 / 3.0) >= window_half_tangent(fov, factor));
+            }
+        }
+    }
+
+    #[test]
+    fn the_ocean_grid_keeps_retail_where_the_lens_is_not_wider() {
+        let esp = 0x1000;
+        let at = esp + 0x10;
+        let mut mem = FakeGuest::new();
+        mem.put_f32(at, 4.0 / 3.0);
+        // A 4:3 window, one narrower than 4:3, and factors that do not read.
+        for factor in [1.0, 1.25, 0.0, -0.5, f32::NAN, f32::INFINITY] {
+            assert!(!widen_ocean_grid(&mut mem, esp, factor), "{factor}");
+            assert_eq!(mem.f32(at).unwrap(), 4.0 / 3.0);
+        }
+        // An aspect that does not read as one is left as it is.
+        mem.put_f32(at, 0.0);
+        assert!(!widen_ocean_grid(&mut mem, esp, 0.5));
+        assert_eq!(mem.f32(at).unwrap(), 0.0);
+        // A machine in dashboard widescreen mode: the setup's aspect is
+        // 1.5 times the raster's, and the window's factor is on the 16:9
+        // lens, so the grid keeps that larger margin.
+        mem.put_u8(0x0048_5ac2, 1).put_f32(0x0045_dfdc, 4.0 / 3.0).put_f32(at, 2.0);
+        let factor = projection_factor(&mem, (3440, 1440));
+        assert!(widen_ocean_grid(&mut mem, esp, factor));
+        close(mem.f32(at).unwrap(), 2.0 * (3440.0 / 1440.0) / (16.0 / 9.0));
     }
 
     #[cfg(feature = "desktop-runtime")]
