@@ -626,7 +626,7 @@ mod tests {
                 up: [0.0, 0.0, 1.0],
                 fov: 1.0,
                 projection_xy: None,
-                viewport: [0, 0, 480 * scale, 640 * scale],
+                viewport: [0, 0, (480 * scale) as i16, (640 * scale) as i16],
                 near: 0.1,
                 far: 100.0,
             },
@@ -702,9 +702,9 @@ mod tests {
         ];
         let shape = |scale| {
             let s = scene_at(scale, &groups);
-            passes(&s, &s.views[0], &Held)
-                .iter()
-                .map(|p| (p.slot, p.group.layer, p.plan.as_ref().map(|plan| plan.draws.len())))
+            let got = passes(&s, &s.views[0], &Held);
+            got.iter()
+                .map(|p| (p.slot, p.group.layer, p.plan.as_ref().map(|plan| plan.draws.len()).map_err(|e| format!("{e:?}"))))
                 .collect::<Vec<_>>()
         };
         let one_x = shape(1);

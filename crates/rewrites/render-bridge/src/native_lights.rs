@@ -92,6 +92,64 @@ pub const LIGHT_SLOT: frame_scene::ViewSlot = frame_scene::ViewSlot::LightAccumu
 pub const FIRST_PERSON_SLOT: frame_scene::ViewSlot = frame_scene::ViewSlot::FirstPerson;
 pub use native_render::light_scene::{PER_LIGHT_LAYERS as SCENE_PASSES, passes as scene_passes};
 
+/// One light layer of the open view, owned, in the slot it draws in.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScenePass {
+    pub slot: frame_scene::ViewSlot,
+    pub light: frame_scene::Light,
+    pub group: SceneGroup,
+}
+
+/// What the host is asked to draw: `view`'s light layers in the order the
+/// game draws them ([`native_render::light_scene::order`]): slot 4's, then
+/// slot 10's.
+pub struct SceneDraw<'a> {
+    pub passes: &'a [ScenePass],
+    pub view_target: [u32; 8],
+}
+
+/// `view`'s light layers, owned, in draw order.
+pub fn gather_scene_passes(scene: &frame_scene::FrameScene, view: &frame_scene::View) -> Vec<ScenePass> {
+    native_render::light_scene::order(scene, view)
+        .into_iter()
+        .map(|(slot, light, group)| {
+            let entries = scene.entries_of(group).to_vec();
+            let rows = entries.iter().map(|e| scene.pose_rows(e).to_vec()).collect();
+            ScenePass {
+                slot,
+                light: scene.lights[light as usize].clone(),
+                group: SceneGroup { group: group.clone(), entries, rows },
+            }
+        })
+        .collect()
+}
+
+static SCENE_DRAWN: AtomicU64 = AtomicU64::new(0);
+
+/// Light layers the host drew from the scene's groups (slots 4 and 10).
+pub fn scene_drawn() -> u64 {
+    SCENE_DRAWN.load(Ordering::Relaxed)
+}
+
+/// Draws the open view's light layers from the scene, once its light pass
+/// is over: the native producer the cut `dynamic_lights` leaves the frame
+/// to. Returns the layers drawn.
+pub fn draw_scene(mem: &mut dyn GuestMemory, passes: &[ScenePass]) -> usize {
+    if passes.is_empty() || Stage::Lights.standing_down() {
+        return 0;
+    }
+    let Some(view_target) = VIEW_TARGET.get() else {
+        refused("light view target unavailable");
+        return 0;
+    };
+    let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
+        return 0;
+    };
+    let drawn = host.draw_scene(mem, SceneDraw { passes, view_target });
+    SCENE_DRAWN.fetch_add(drawn as u64, Ordering::Relaxed);
+    drawn
+}
+
 /// Whether a layer draw returning to `ret` is the first-person lights'
 /// draw of `layer`.
 pub fn first_person_site(layer: u32, ret: u32) -> bool {
@@ -196,6 +254,12 @@ pub trait Host: Send + Sync {
     /// constants, the geometry it touches the host's to choose. Returns
     /// the lights drawn; a light it keeps draws nothing.
     fn draw_host(&self, _mem: &mut dyn GuestMemory, _draw: host::HostDraw<'_>) -> usize {
+        0
+    }
+    /// Draw `draw`'s light layers from the scene, slot 4's and then slot
+    /// 10's, in the view whose light pass is over. Returns the layers
+    /// drawn; one it keeps draws nothing.
+    fn draw_scene(&self, _mem: &mut dyn GuestMemory, _draw: SceneDraw<'_>) -> usize {
         0
     }
     /// Draw E3's chosen lights beyond the guest's ([`chosen`]) in the view

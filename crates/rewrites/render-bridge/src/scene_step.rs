@@ -790,6 +790,18 @@ fn light_candidates(mem: &dyn GuestMemory, fpu: engine::light_constants::Fpu) ->
     added
 }
 
+/// The open game view's light layers, owned, outside the step's lock
+/// ([`crate::native_lights::gather_scene_passes`]).
+fn open_light_passes() -> Vec<crate::native_lights::ScenePass> {
+    with_step(|step| {
+        let Some((scene, view)) = step.builder.open() else { return Vec::new() };
+        if view.key.kind != ViewKind::Game {
+            return Vec::new();
+        }
+        crate::native_lights::gather_scene_passes(scene, view)
+    })
+}
+
 /// The clip the light gather takes for the guest's visibility `mode`: the
 /// window frusta of the mode 0 flood (when the Rust visibility held), the
 /// view's sphere (mode 1), none (mode 2). `None` when the mode's inputs
@@ -2062,6 +2074,10 @@ impl Feature for FrameSceneStep {
                         crate::native_lights::host::draw(mem, &lights.host, fpu);
                     }
                     crate::native_lights::chosen::draw(mem, &lights.chosen, lights.unread);
+                    // The scene's own light layers: the guest's light frame
+                    // is cut, so these are the frame's dynamic lights.
+                    let passes = open_light_passes();
+                    crate::native_lights::draw_scene(mem, &passes);
                 },
             )
             .after_feature(crate::render_timing::ID)
