@@ -4,6 +4,80 @@ Goal: Halo 2 (original Xbox, title `4D530064`) running natively, ending up as
 well-structured, mostly safe Rust. The game disc is supplied by the user at
 build time and nothing derived from it is committed.
 
+## Overview
+
+The offline path turns the disc into a game image and a map store. The
+runtime loads both, runs the guest code under the Rust runtime and replaces
+parts of it with Rust. Tools and Live reach a running game through its
+agent API and Live's client HLE.
+
+```mermaid
+flowchart LR
+  subgraph Offline["Offline: your disc, at build time"]
+    XBE["disc XBE"] --> Lifter["lifter<br/>crates/recompiler"]
+    Lifter --> Shards["C11 shards"]
+    Shards --> Clang["clang"]
+    Lifter --> Clif["Cranelift"]
+    Clang --> Image["game image<br/>h2 build"]
+    Clif --> Image
+    DiscMaps["disc maps"] --> Store["map store<br/>crates/content"]
+    H1ISO["halo1.iso"] --> H1["Halo 1 conversion<br/>h2 import halo1"]
+    H1 --> Store
+  end
+
+  subgraph Runtime["Runtime: h2 play, h2 serve"]
+    App["shell and window<br/>crates/apps/app"] --> RT["Rust runtime<br/>kernel, XAPI, input"]
+    RT <--> Guest["guest code<br/>from the image"]
+    RT --> D3D["D3D on wgpu, Metal"]
+    RT --> DS["DSound on cpal"]
+    Guest <--> Rewrites["Rust rewrites<br/>engine, sim-bridge"]
+    Rewrites --> Native["native GPU renderer<br/>native-render"]
+    Native --> D3D
+    Rules["rules engine"] --> Rewrites
+    Forge["Forge"] --> Rules
+    Theater["Theater<br/>.h2film"] --> Rewrites
+    Agent["agent API<br/>socket"]
+  end
+
+  subgraph Tools["Tools"]
+    HAgent["h2 agent<br/>and tests"]
+    Studio["Studio<br/>h2-editor"]
+    Lab["h2 lab<br/>driving Mac"]
+    LabHost["lab host<br/>second Mac"]
+  end
+
+  subgraph Online["Online: Xbox Live replacement"]
+    LiveHLE["Live client HLE<br/>live-hle"]
+    Local["local server<br/>live-server"]
+    CF["Cloudflare Workers<br/>live-worker"]
+    Hosts["dedicated hosts<br/>h2host"]
+    Uplink["Uplink web app"]
+  end
+
+  Image --> Guest
+  Store --> RT
+  HAgent <--> Agent
+  Studio <--> Agent
+  Lab -- "TLS" --> LabHost
+  LabHost -- "runs h2 play" --> App
+  LabHost -- "relays agent calls" --> Agent
+  RT --> LiveHLE
+  LiveHLE <--> Local
+  LiveHLE <--> CF
+  Hosts <--> CF
+  Hosts --> Guest
+  Uplink <--> CF
+  Uplink <--> Local
+  Studio --> Store
+```
+
+Each box has a page: [LIFTER.md](lifter/LIFTER.md),
+[BOOT.md](runtime/BOOT.md), [native-renderer.md](graphics/native-renderer.md),
+[rules-engine.md](game/rules-engine.md), [forge.md](game/forge.md),
+[theater-design.md](game/theater-design.md), [agent-api.md](runtime/agent-api.md),
+[lab.md](runtime/lab.md), [editor.md](editor/editor.md) and
+[live.md](live/live.md).
+
 ## Targets
 
 - **macOS on arm64 and x86-64, rendering through Metal.** The first target.

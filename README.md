@@ -95,6 +95,67 @@ The XBE is analysed, every function is lifted from x86 to an IR and emitted as C
   <img src="docs/images/readme/render-pipeline.svg" alt="Render pipeline before and after: guest front-end, D3D translate, two copies; then native scene lists and one native render" width="100%">
 </p>
 
+```mermaid
+flowchart LR
+  subgraph Offline["Offline: your disc, at build time"]
+    XBE["disc XBE"] --> Lifter["lifter<br/>crates/recompiler"]
+    Lifter --> Shards["C11 shards"]
+    Shards --> Clang["clang"]
+    Lifter --> Clif["Cranelift"]
+    Clang --> Image["game image<br/>h2 build"]
+    Clif --> Image
+    DiscMaps["disc maps"] --> Store["map store<br/>crates/content"]
+    H1ISO["halo1.iso"] --> H1["Halo 1 conversion<br/>h2 import halo1"]
+    H1 --> Store
+  end
+
+  subgraph Runtime["Runtime: h2 play, h2 serve"]
+    App["shell and window<br/>crates/apps/app"] --> RT["Rust runtime<br/>kernel, XAPI, input"]
+    RT <--> Guest["guest code<br/>from the image"]
+    RT --> D3D["D3D on wgpu, Metal"]
+    RT --> DS["DSound on cpal"]
+    Guest <--> Rewrites["Rust rewrites<br/>engine, sim-bridge"]
+    Rewrites --> Native["native GPU renderer<br/>native-render"]
+    Native --> D3D
+    Rules["rules engine"] --> Rewrites
+    Forge["Forge"] --> Rules
+    Theater["Theater<br/>.h2film"] --> Rewrites
+    Agent["agent API<br/>socket"]
+  end
+
+  subgraph Tools["Tools"]
+    HAgent["h2 agent<br/>and tests"]
+    Studio["Studio<br/>h2-editor"]
+    Lab["h2 lab<br/>driving Mac"]
+    LabHost["lab host<br/>second Mac"]
+  end
+
+  subgraph Online["Online: Xbox Live replacement"]
+    LiveHLE["Live client HLE<br/>live-hle"]
+    Local["local server<br/>live-server"]
+    CF["Cloudflare Workers<br/>live-worker"]
+    Hosts["dedicated hosts<br/>h2host"]
+    Uplink["Uplink web app"]
+  end
+
+  Image --> Guest
+  Store --> RT
+  HAgent <--> Agent
+  Studio <--> Agent
+  Lab -- "TLS" --> LabHost
+  LabHost -- "runs h2 play" --> App
+  LabHost -- "relays agent calls" --> Agent
+  RT --> LiveHLE
+  LiveHLE <--> Local
+  LiveHLE <--> CF
+  Hosts <--> CF
+  Hosts --> Guest
+  Uplink <--> CF
+  Uplink <--> Local
+  Studio --> Store
+```
+
+
 Where to go next:
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): the whole design
