@@ -240,18 +240,29 @@ pub fn passes<'a>(
     view: &'a frame_scene::View,
     resident: &'a dyn Resident,
 ) -> Vec<LayerPass<'a>> {
-    let mut out: Vec<(ViewSlot, u32, u8, LayerPass<'a>)> = Vec::new();
+    order(scene, view)
+        .into_iter()
+        .map(|(slot, light, group)| LayerPass { slot, light, group, plan: plan(scene, group, resident) })
+        .collect()
+}
+
+/// The groups of `view`'s light layers in the order [`passes`] draws them,
+/// each with its slot and light, unplanned.
+pub fn order<'a>(
+    scene: &'a FrameScene,
+    view: &'a frame_scene::View,
+) -> Vec<(ViewSlot, u32, &'a LightGroup)> {
+    let mut out: Vec<(ViewSlot, u32, u8, &'a LightGroup)> = Vec::new();
     for light in view.lights.clone() {
         for group in scene.groups_of(light) {
             let Some((slot, rank)) = place(group) else { continue };
-            let plan = plan(scene, group, resident);
-            out.push((slot, light, rank, LayerPass { slot, light, group, plan }));
+            out.push((slot, light, rank, group));
         }
     }
     // Slots first, so slot 4 holds every light before slot 10 starts; the
     // sort is stable.
     out.sort_by_key(|(slot, light, rank, _)| (*slot, *light, *rank));
-    out.into_iter().map(|(.., pass)| pass).collect()
+    out.into_iter().map(|(slot, light, _, group)| (slot, light, group)).collect()
 }
 
 #[cfg(test)]
