@@ -9,6 +9,7 @@ license.workspace = true
 content.workspace = true
 # The wave set a document holds (src/waves.rs).
 firefight = { path = "../firefight" }
+forge-shapes = { path = "../forge-shapes" }
 game-markers = { path = "../game-markers" }
 map.workspace = true
 rules.workspace = true

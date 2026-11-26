@@ -20,6 +20,9 @@ pub const DOCUMENT_FORMAT_GROUPS: u32 = 4;
 /// (docs/game/forge-firefight.md, "The wave set"). A package may carry any
 /// of the five versions.
 pub const DOCUMENT_FORMAT_WAVES: u32 = 5;
+/// The document version a document with a block-out piece takes
+/// (docs/game/forge-blockout.md, "In the document").
+pub const DOCUMENT_FORMAT_PIECES: u32 = 6;
 
 /// Whether a package's resolver reads documents of this version.
 pub fn reads_document_format(format: u32) -> bool {
@@ -30,6 +33,7 @@ pub fn reads_document_format(format: u32) -> bool {
             | DOCUMENT_FORMAT_ENTRIES
             | DOCUMENT_FORMAT_GROUPS
             | DOCUMENT_FORMAT_WAVES
+            | DOCUMENT_FORMAT_PIECES
     )
 }
 /// Largest canonical document accepted inside a package.
@@ -119,14 +123,14 @@ mod tests {
     }
 
     #[test]
-    fn formats_past_5_are_refused() {
-        for format in [1, 2, 3, 4, 5] {
+    fn formats_past_the_known_are_refused() {
+        for format in [1, 2, 3, 4, DOCUMENT_FORMAT_WAVES, DOCUMENT_FORMAT_PIECES] {
             assert!(reads_document_format(format));
         }
-        let six = ENTRIES.replace("\"format\":3", "\"format\":6");
+        let seven = ENTRIES.replace("\"format\":3", "\"format\":7");
         assert_eq!(
-            read_header(six.as_bytes()).err(),
-            Some("unsupported document format 6".to_string())
+            read_header(seven.as_bytes()).err(),
+            Some("unsupported document format 7".to_string())
         );
         let zero = ENTRIES.replace("\"format\":3", "\"format\":0");
         assert!(read_header(zero.as_bytes()).is_err());

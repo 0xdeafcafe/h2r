@@ -46,6 +46,7 @@ replay parity on its invented cache.
   not first.
 - A group (`Forge::Group`) names 2 to 256 entries of any block by endpoint, with a name of 1 to 32 characters, a pivot flag and a lock flag; `Forge::Ungroup` ends it and `Forge::GroupLock` sets its lock. An entry is in one group, so the validator refuses a second group, a missing or removed member, a repeated member, and the removal of a grouped entry. `ForgeDoc::groups` resolves the active groups to final indices, `ForgeDoc::group_targets` by identity, and `replay` hands them to `Apply::groups`. A group has no scenario bytes, and a document with a group op is format 4 (`FORMAT_GROUPS`).
 - A wave set (`ForgeDoc::waves`, `waves.rs`) is one `firefight::Def`, the format the built-in Firefight sets are written in, with no wrapper. A document with one is format 5 (`FORMAT_WAVES`) whatever its ops; `ForgeDoc::with_waves` sets or takes it out with the format that needs, so a document without one keeps its number and identity. `waves::check` measures it against 64 KiB first, then runs `firefight::validate` against a fixed class list (`waves::CLASSES`: `elite`, then the kit's retail classes), so a document validates the same with no disc. It builds nothing, and a map variant may hold it. `waves::zone_order` numbers the `ff_drop` markers as the kit does (by position, then facing), `waves::remap` keeps a squad on the marker it prefers when the order changes, and `waves::problems` names each squad whose class the ground lacks or whose preferred zone has no drop.
+- A block-out piece (`piece.rs`, docs/game/forge-blockout.md) is a crate placement whose palette index is the placeholder key `PIECE_TAG` (`bloc`, `forge\blockout\piece`) with a definition from `Forge::Piece { target, def }`, a `forge_shapes::PieceDef` of a shape, a size, a param and materials. The validator refuses a placement of the tag with no definition, a definition on any other placement, a target that is not a crate, missing or removed, and any definition `PieceDef::validate` refuses (its size, its param, a `Map` material that is not a `shad` key) or whose `Map` key is not a well-formed tag key. A later `Forge::Piece` replaces the definition, a removal clears it, and an add `like` a piece takes its definition. `ForgeDoc::pieces` resolves the active pieces to final crate indices, `ForgeDoc::piece_targets` by identity, and `replay` hands them to `Apply::pieces`, which refuses a document with a piece by default. A piece has no scenario bytes of its own, a document with a piece op is format 6 (`FORMAT_PIECES`; 5 is the Firefight wave sets) and a Forge map, not a map variant.
 - A prefab (`Prefab`, `prefab.rs`) is a file of pieces, each a placement block, a tag key, an optional label and a position and rotation from the pivot (the first piece, as if it faced yaw 0). It has its own number (`PREFAB_FORMAT`), a bounded reader (`Prefab::from_bytes`, 128 KiB, 256 pieces) and canonical JSON. `Prefab::missing` names the first tag a map lacks. `ForgeDoc::label_targets` gives the active labels by placement identity.
 - A label is a string of 1 to 32 bytes from lowercase ASCII, digits, `_`,
   `-` and `.`, plus an optional `i32` number. `Forge::Label` sets or
@@ -109,12 +110,13 @@ replay parity on its invented cache.
   `variant_name` holds a map variant's name to 1 to 16 characters, not
   blank and without control characters, and `ForgeDoc::check_variant`
   refuses a document of the map tier as `Refusal::Tier`.
-- The `format` is the highest any op needs: 3 when any op is an entry
+- The `format` is the highest any op needs: 6 when any op is a piece
+  op, 4 when any op is a group op, 3 when any op is an entry
   op or any endpoint has a print, else 2 when any op is a label op,
   else 1. `validate` refuses any other number, so a document has one
   spelling: every document without the newer ops keeps its bytes and
   identity, and a fold that retracts the last of them returns to the
-  lower format. This build reads all three; an older build refuses a
+  lower format. This build reads every number it names; an older build refuses a
   newer document whole.
 - The sequence-zero log head hashes the starting document. An entry
   hashes its canonical JSON including the preceding hash. The host
@@ -144,7 +146,11 @@ parity against `scenario_edit::Session`. `src/tests/entry.rs` covers
 print and format 3 golden vectors, each entry op rule's refusal, final
 indices after an entry removal and a reset, a fold and undo of entry
 ops, replay's prints and lowered ops, and a seeded fuzz of entry
-documents. `tests/resolve.rs` checks `resolve` against hand replays of
+documents. `src/tests/piece.rs` covers a piece document's golden canonical JSON
+and identity, the format 6 rule, a refusing case for each validator rule, the
+definition through a replacement, a removal, a swap-remove and a duplicate, a
+fold and the inverses giving the start, `replay`'s hand-over and a seeded fuzz of
+piece documents. `tests/resolve.rs` checks `resolve` against hand replays of
 add, remove, set and reset orders, entry-op replay against the editor's
 session on its invented cache, a wrong print refused before any write,
 a reset giving the fixture's bytes back, and a fold then undo of entry

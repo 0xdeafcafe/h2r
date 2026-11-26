@@ -8,6 +8,7 @@ mod groups;
 mod labels;
 mod links;
 mod log;
+mod piece;
 mod prefab;
 mod property;
 mod waves;

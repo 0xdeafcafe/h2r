@@ -12,12 +12,13 @@
 //! placement and entry edits, and holds each base entry to one print.
 use std::collections::{BTreeMap, BTreeSet};
 
+use forge_shapes::PieceDef;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActiveGroup, ActiveLabel, Area, BlockKind, Edit, EntryOp, FieldWrite, ForgeDoc, Group,
-    GroupSet, Label, Labels, Limits, MarkerArea, Op, OpId, Placement, Print, Property, Refusal,
-    Result, Value, WorldBounds, builtin_label, entry, wire,
+    ActiveGroup, ActiveLabel, ActivePiece, Area, BlockKind, Edit, EntryOp, FieldWrite, ForgeDoc,
+    Group, GroupSet, Label, Labels, Limits, MarkerArea, Op, OpId, Pieces, Placement, Print,
+    Property, Refusal, Result, Value, WorldBounds, builtin_label, entry, piece, wire,
 };
 
 /// The largest channel a teleporter link writes. The netgame flag's
@@ -106,6 +107,13 @@ pub enum Forge {
     GroupLock {
         group: OpId,
         locked: bool,
+    },
+    /// Give the crate placement `target`, which holds the placeholder key
+    /// `PIECE_TAG`, a block-out definition, replacing any it has. Needs
+    /// format 6.
+    Piece {
+        target: Endpoint,
+        def: PieceDef,
     },
 }
 
@@ -210,6 +218,31 @@ impl ForgeDoc {
             .collect())
     }
 
+    /// Resolve the active pieces to final indices. The map's crate count is
+    /// needed when the document has a piece.
+    pub fn pieces(&self, base_counts: &BTreeMap<BlockKind, u32>) -> Result<Pieces> {
+        if !has_piece_ops(&self.ops) {
+            return Ok(Pieces::default());
+        }
+        Pass::run(&self.ops, base_counts, None, None)?.resolve_pieces()
+    }
+
+    /// Active pieces' definitions by placement identity, for a live session
+    /// whose base things still use their original indices.
+    pub fn piece_targets(
+        &self,
+        base_counts: &BTreeMap<BlockKind, u32>,
+    ) -> Result<BTreeMap<Endpoint, PieceDef>> {
+        if !has_piece_ops(&self.ops) {
+            return Ok(BTreeMap::new());
+        }
+        Ok(Pass::run(&self.ops, base_counts, None, None)?
+            .pieces
+            .into_iter()
+            .map(|(target, (_, def))| (target, def))
+            .collect())
+    }
+
     /// Resolve the active groups to final indices. The map's base count is
     /// needed for each block a group names.
     pub fn groups(&self, base_counts: &BTreeMap<BlockKind, u32>) -> Result<GroupSet> {
@@ -269,6 +302,7 @@ pub(crate) fn op(edit: &Forge) -> Result<()> {
     let link = match edit {
         Forge::Label { target, label } => return crate::labels::check_op(target, label.as_ref()),
         Forge::Group(group) => return crate::groups::check_op(group),
+        Forge::Piece { target, def } => return piece::check_op(target, def),
         Forge::Ungroup { group } | Forge::GroupLock { group, .. } if group.0 == 0 => {
             return Err(invalid("group", "want the ID of a group op"));
         }
@@ -324,16 +358,18 @@ pub(crate) fn op(edit: &Forge) -> Result<()> {
 
 /// Checks over the active document: endpoints exist when the link is made,
 /// a linked entry is not removed, each flag keeps one role and channel,
-/// each base entry has one print, and the entry ops' rules
-/// (`Pass::entry`).
+/// each base entry has one print, every placement of the piece tag has a
+/// definition and every definition a placement of it, and the entry ops'
+/// rules (`Pass::entry`).
 pub(crate) fn check(ops: &[Op], limits: &Limits) -> Result<()> {
-    Pass::run(
+    let pass = Pass::run(
         ops,
         &limits.base_counts,
         limits.world,
         Some(&limits.base_flag_types),
-    )?
-    .check_hills()
+    )?;
+    pass.check_pieces()?;
+    pass.check_hills()
 }
 
 struct Role {
@@ -353,6 +389,10 @@ struct Pass<'a> {
     order: Vec<OpId>,
     roles: BTreeMap<Endpoint, Role>,
     labels: BTreeMap<Endpoint, (OpId, Label)>,
+    /// The crates that hold the piece tag.
+    tagged: BTreeSet<Endpoint>,
+    /// The definition of each piece, with the op that gave it.
+    pieces: BTreeMap<Endpoint, (OpId, PieceDef)>,
     /// The active groups, by the op that made each.
     groups: BTreeMap<OpId, Group>,
     /// The group each grouped entry is in.
@@ -395,6 +435,8 @@ impl<'a> Pass<'a> {
             order: Vec::new(),
             roles: BTreeMap::new(),
             labels: BTreeMap::new(),
+            tagged: BTreeSet::new(),
+            pieces: BTreeMap::new(),
             groups: BTreeMap::new(),
             grouped: BTreeMap::new(),
             areas: BTreeMap::new(),
@@ -416,6 +458,10 @@ impl<'a> Pass<'a> {
                 Edit::Forge(Forge::Label { target, label }) => {
                     let target = pass.name(*target)?;
                     pass.label(op.id, target, label.as_ref())?
+                }
+                Edit::Forge(Forge::Piece { target, def }) => {
+                    let target = pass.name(*target)?;
+                    pass.piece(op.id, target, def)?
                 }
                 Edit::Forge(Forge::Group(group)) => pass.group(op.id, group)?,
                 Edit::Forge(Forge::Ungroup { group }) => pass.ungroup(*group)?,
@@ -495,6 +541,12 @@ impl<'a> Pass<'a> {
             }
         };
         if let EntryOp::Reset { .. } = edit {
+            if self.tagged.contains(&target) {
+                return Err(invalid(
+                    what,
+                    "the entry holds the piece tag: write its palette index back first",
+                ));
+            }
             if !self.edited.remove(&target) {
                 return Err(invalid(what, "the entry has no edit to reset"));
             }
@@ -526,6 +578,12 @@ impl<'a> Pass<'a> {
             } else {
                 self.games.remove(&target);
             }
+        }
+        if let EntryOp::Set { write, .. } = edit
+            && block == piece::PIECE_BLOCK
+            && write.field == piece::PALETTE_FIELD
+        {
+            self.retag(target, piece::is_piece_value(&write.value))?;
         }
         if let EntryOp::Area { area, .. } = edit {
             match area {
@@ -560,6 +618,8 @@ impl<'a> Pass<'a> {
                 return Err(invalid(block.name(), "clear the flag's area first"));
             }
             self.gone.insert(target);
+            self.tagged.remove(&target);
+            self.pieces.remove(&target);
             // A removal a later reset covers is left out by the fold, so
             // the entry keeps its row for the final indices.
             if !self.covered.contains(&id)
@@ -579,6 +639,9 @@ impl<'a> Pass<'a> {
                 like, ref fields, ..
             } => {
                 self.added.insert(id, block);
+                if block == piece::PIECE_BLOCK {
+                    self.add_crate(id, like, fields);
+                }
                 if block == FLAGS && self.flag_types.is_some() {
                     let kind = fields.iter().find_map(flag_type).or_else(|| match like {
                         Some(index) => {
@@ -615,6 +678,19 @@ impl<'a> Pass<'a> {
                         return Err(invalid(block.name(), "clear the flag's area first"));
                     }
                     self.gone.insert(end);
+                    self.tagged.remove(&end);
+                    self.pieces.remove(&end);
+                }
+            }
+            Placement::Set {
+                index, ref write, ..
+            } if block == piece::PIECE_BLOCK && write.field == piece::PALETTE_FIELD => {
+                let target = self
+                    .rows(block)
+                    .and_then(|rows| rows.get(index as usize))
+                    .copied();
+                if let Some(target) = target {
+                    self.retag(target, piece::is_piece_value(&write.value))?;
                 }
             }
             Placement::Set {
@@ -749,6 +825,99 @@ impl<'a> Pass<'a> {
             }
         }
         Ok(())
+    }
+
+    /// A crate the document adds: it holds the piece tag when its fields
+    /// write it, or, with no palette write, when its `like` source does, and
+    /// then it takes the source's definition.
+    fn add_crate(&mut self, id: OpId, like: Option<u32>, fields: &[FieldWrite]) {
+        let this = Endpoint::Added(id);
+        let written = fields.iter().find(|w| w.field == piece::PALETTE_FIELD);
+        if let Some(write) = written {
+            if piece::is_piece_value(&write.value) {
+                self.tagged.insert(this);
+            }
+            return;
+        }
+        let source = like.and_then(|i| {
+            self.rows(piece::PIECE_BLOCK)
+                .and_then(|rows| rows.get(i as usize))
+                .copied()
+        });
+        if let Some(source) = source
+            && self.tagged.contains(&source)
+        {
+            self.tagged.insert(this);
+            if let Some((_, def)) = self.pieces.get(&source).cloned() {
+                self.pieces.insert(this, (id, def));
+            }
+        }
+    }
+
+    /// The palette index of a crate is written: it holds the piece tag, or
+    /// no longer does. A piece with a definition keeps its tag.
+    fn retag(&mut self, target: Endpoint, is_piece: bool) -> Result<()> {
+        if is_piece {
+            self.tagged.insert(target);
+        } else {
+            if self.pieces.contains_key(&target) {
+                return Err(invalid(
+                    "piece",
+                    "a definition belongs to a placement of the piece tag: remove the piece",
+                ));
+            }
+            self.tagged.remove(&target);
+        }
+        Ok(())
+    }
+
+    fn piece(&mut self, id: OpId, target: Endpoint, def: &PieceDef) -> Result<()> {
+        let present = match target {
+            Endpoint::Base { block, index, .. } => self.base.get(&block).is_none_or(|&n| index < n),
+            Endpoint::Added(add) => self.added.contains_key(&add),
+        };
+        if !present || self.gone.contains(&target) {
+            return Err(invalid("piece", "names no entry"));
+        }
+        if !self.tagged.contains(&target) {
+            return Err(invalid(
+                "piece",
+                "a definition belongs to a placement of the piece tag",
+            ));
+        }
+        self.pieces.insert(target, (id, def.clone()));
+        Ok(())
+    }
+
+    /// Every crate that holds the piece tag has a definition.
+    fn check_pieces(&self) -> Result<()> {
+        if self.tagged.iter().any(|end| !self.pieces.contains_key(end)) {
+            return Err(invalid(
+                "piece",
+                "a placement of the piece tag has no definition",
+            ));
+        }
+        Ok(())
+    }
+
+    fn resolve_pieces(mut self) -> Result<Pieces> {
+        let pieces = std::mem::take(&mut self.pieces);
+        if !pieces.is_empty() && self.rows(piece::PIECE_BLOCK).is_none() {
+            return Err(invalid(
+                "pieces",
+                format!("the map's {} count is needed", piece::PIECE_BLOCK.name()),
+            ));
+        }
+        let mut active = Vec::with_capacity(pieces.len());
+        for (target, (id, def)) in pieces {
+            active.push(ActivePiece {
+                id,
+                index: self.index(piece::PIECE_BLOCK, target)?,
+                def,
+            });
+        }
+        active.sort_by_key(|p| p.index);
+        Ok(Pieces { active })
     }
 
     fn group(&mut self, id: OpId, group: &Group) -> Result<()> {
@@ -956,6 +1125,11 @@ impl<'a> Pass<'a> {
         links.device_groups = machines.finish();
         Ok(links)
     }
+}
+
+fn has_piece_ops(ops: &[Op]) -> bool {
+    ops.iter()
+        .any(|op| matches!(&op.edit, Edit::Forge(Forge::Piece { .. })))
 }
 
 fn has_area_ops(ops: &[Op]) -> bool {

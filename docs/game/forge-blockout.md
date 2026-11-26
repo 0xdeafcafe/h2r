@@ -1,7 +1,7 @@
 # Forge block-out: pieces, the natural set and the dev textures
 
-Status: Partly built. Slices BO1 and BO3 are built: `forge-shapes` has the definition, the canonical name, the structural generators (block, wall, floor plate, ramp, wedge, stairs, cylinder, arch), `STARTER`, and the natural set (`noise`, `hull` and the five rock generators). Slice BO2 is built: `crates/formats/dev-texture` has the rasters, the font and the label layout. The rest of the page is a design. It is slice F8 of [forge-design.md](forge-design.md), split into slices BO1 to BO12 below.
-Code: `crates/formats/forge-shapes` (the definitions and generators), `crates/formats/dev-texture` (the dev textures), `crates/tools/blockout-kit` (a definition as tags), `crates/tools/forge-build/src/blockout.rs` (materialising), `crates/extensions/forge/src/piece.rs` (the session). Tests: named per slice under "Slices".
+Status: Partly built. Slices BO1 and BO3 are built: `forge-shapes` has the definition, the canonical name, the structural generators (block, wall, floor plate, ramp, wedge, stairs, cylinder, arch), `STARTER`, and the natural set (`noise`, `hull` and the five rock generators). Slice BO2 is built: `crates/formats/dev-texture` has the rasters, the font and the label layout. Slice BO5 is built: `forge-doc` has `Forge::Piece`, `PIECE_TAG`, the validator's rules and `ForgeDoc::pieces` (document format 6). The rest of the page is a design. It is slice F8 of [forge-design.md](forge-design.md), split into slices BO1 to BO12 below.
+Code: `crates/formats/forge-shapes` (the definitions and generators), `crates/formats/forge-doc/src/piece.rs` (the document), `crates/formats/dev-texture` (the dev textures), `crates/tools/blockout-kit` (a definition as tags), `crates/tools/forge-build/src/blockout.rs` (materialising), `crates/extensions/forge/src/piece.rs` (the session). Tests: named per slice under "Slices".
 Switch: none. Two settings of the profile's store, `forge.blockout.grid` and `forge.blockout.dev_view` ("In the monitor").
 
 A monitor builds a level out of **pieces**: blocks, ramps, stairs,
@@ -105,15 +105,32 @@ fact, its definition, as an area is a fact of a netgame flag
   `forge_doc::PIECE_TAG`, and `Forge::Piece { target, def }`, which
   gives that placement its definition.
 - **Changing** a size, a material or a seed is one `Forge::Piece` on
-  the same target; its inverse carries the definition it replaced.
+  the same target, which replaces the definition. Its inverse is the
+  log's undo of that op (`forge_doc::inverse`), so the definition it
+  replaced is the one the earlier op in the document still gives.
 - **Moving, turning, duplicating, grouping, saving in a prefab and
   removing** are the placement ops every object has. A removal clears
-  the definition with it.
+  the definition with it, and a duplicate (an add `like` a piece, with
+  no palette write of its own) takes the source's definition.
 - The validator refuses a `PIECE_TAG` placement with no definition, a
-  definition on any other placement, a size outside the range, a
-  `param` outside its shape's range, and a `Map` material that is not a
-  `shad` key. A piece op is one step of `forge_doc::FORMAT`; a document
-  without one keeps the number it has.
+  definition on any other placement (including a placement whose
+  palette index is written back to another tag while it has one), a
+  target that is not a crate or is missing or removed, a size outside
+  the range, a `param` outside its shape's range, and a `Map` material
+  that is not a `shad` key or whose key is not a well-formed tag key.
+  The checks of a definition are `PieceDef::validate`'s.
+- **The number.** A document with a piece op is format 6
+  (`forge_doc::FORMAT_PIECES`, `content::forge::DOCUMENT_FORMAT_PIECES`);
+  number 5 is the Firefight wave sets. A document without a piece op
+  keeps the number it has, and so its bytes and identity.
+- **The tier.** A piece's definition installs tags, which a scenario
+  patch has none of, so a document with a piece is a Forge map and not a
+  map variant (`ForgeDoc::tier`).
+- **Reading it.** `ForgeDoc::pieces(base_counts)` gives each live piece's
+  final crate index, the op that gave its definition and the definition;
+  `ForgeDoc::piece_targets` gives the definitions by placement identity
+  for a live session; `replay` hands the first to `Apply::pieces`, whose
+  default refuses a document that has a piece (`Unsupported("piece")`).
 
 A definition's **name** is its canonical spelling,
 `<shape>_<x>x<y>x<z>_<param>_<first 12 hex of the SHA-256 of its
