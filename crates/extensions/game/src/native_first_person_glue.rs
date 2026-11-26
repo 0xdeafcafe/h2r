@@ -53,6 +53,11 @@ struct LayerEntry {
     /// An item with a fade byte draws unmasked only with both.
     stipple_off: bool,
     stipple_at_rest: bool,
+    /// What a flagged shader's prologue uploads from the active
+    /// structure's parameter block, where the device and the engine
+    /// already hold it (`native_objects_glue::structure_at_rest`); an item
+    /// uploading it refuses without.
+    structure: Option<frame_scene::StructureParameters>,
 }
 
 /// A live shader edit (`native_edits::Edit::Shader`;
@@ -225,6 +230,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 texaccum: crate::native_objects_glue::sampled_texaccum(&device, mem, true).ok().flatten(),
                 stipple_off: crate::native_objects_glue::stipple_off(&device, mem),
                 stipple_at_rest: crate::native_objects_glue::stipple_at_rest(&device, mem),
+                structure: native_render::structure_parameters::read(&Ro(mem))
+                    .filter(|p| crate::native_objects_glue::structure_at_rest(&device, mem, p)),
             }
         };
         if !entry.w_buffered {
@@ -515,8 +522,13 @@ fn plan_view(
                     return Err("the record's fade byte, where the device does not hold the solid stipple and a cached fade of one, which its epilogue leaves".into());
                 }
             }
+            // A shader whose prologue uploads the structure's parameter
+            // block (`frame_scene::PartFlags::STRUCTURE_PARAMETERS`).
+            if item.flags.contains(frame_scene::PartFlags::STRUCTURE_PARAMETERS) && entry.structure.is_none() {
+                return Err("the structure's parameter block, whose upload the device and the engine do not hold".into());
+            }
             let lit = lit.as_ref().ok_or("no first-person model is uploaded")?;
-            let mut draw = lit.plan_item(model, frame, item, &entry.states, time, entry.aux.as_ref())?;
+            let mut draw = lit.plan_item(model, frame, item, &entry.states, time, entry.aux.as_ref(), entry.structure.as_ref())?;
             if draw.texaccum && entry.texaccum.is_none() {
                 return Err(
                     "it samples the texture accumulation target, which is not bound or not given to this pass"

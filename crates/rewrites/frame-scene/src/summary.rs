@@ -79,6 +79,16 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
             }
             None => h.word(0),
         }
+        match &v.structure_parameters {
+            Some(p) => {
+                h.word(1);
+                for w in p.bump_env.iter().chain(&p.constants).flatten().chain(&p.scratch) {
+                    h.word(*w);
+                }
+                h.word(p.fog_colour);
+            }
+            None => h.word(0),
+        }
         for (_, caster) in scene
             .nearby_casters
             .iter()

@@ -50,6 +50,11 @@
 //!   and only where the device holds the solid pattern and the engine a
 //!   cached fade of one, which its epilogue leaves
 //!   (`native_objects_glue::stipple_at_rest`; else `object_stipple`).
+//!   An item whose shader's prologue uploads the structure's parameter
+//!   block (`frame_scene::PartFlags::STRUCTURE_PARAMETERS`) draws with
+//!   its view's upload, and only where the device and the engine already
+//!   hold it (`native_objects_glue::structure_at_rest`; else
+//!   `object_shader_flag`).
 //!   The skip clears the layer's bit on the run of
 //!   such items from the list's first (`layer_pass::clear_layer_prefix`);
 //!   the rest, and every item after the first refused one, keep their D3D
@@ -434,6 +439,10 @@ fn plan_objects<B: d3d::backend::Backend>(
     // byte: whether it is off, and whether it holds what a faded record's
     // epilogue leaves.
     let mut stipple: Option<(bool, bool)> = None;
+    // Whether the device and the engine hold the structure parameters a
+    // flagged shader's prologue uploads, read once when an item uploads
+    // them.
+    let mut structure_held: Option<bool> = None;
     let read_bytes = |at: u32, len: usize| -> Option<Vec<u8>> {
         let mut bytes = vec![0; len];
         mem.read(at, &mut bytes).ok()?;
@@ -472,6 +481,20 @@ fn plan_objects<B: d3d::backend::Backend>(
             && !*aux_at_rest.get_or_insert_with(|| crate::native_objects_glue::aux_depth_at_rest(d, mem, &aux))
         {
             *outcomes.entry("object_aux_depth").or_default() += 1;
+            continue;
+        }
+        // An item whose shader's prologue uploads the structure's
+        // parameter block draws with its view's upload, and is skipped
+        // only where the device and the engine already hold it.
+        if item.flags.contains(PartFlags::STRUCTURE_PARAMETERS)
+            && !*structure_held.get_or_insert_with(|| {
+                scene
+                    .view_of_pass(pass)
+                    .and_then(|v| v.structure_parameters)
+                    .is_some_and(|p| crate::native_objects_glue::structure_at_rest(d, mem, &p))
+            })
+        {
+            *outcomes.entry("object_shader_flag").or_default() += 1;
             continue;
         }
         // An item with a fade byte: its prologue sets the stipple pattern

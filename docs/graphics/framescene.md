@@ -901,11 +901,12 @@ commits. The three parts are built.
   makes the geometry draw `0x0004d0b0` do (`object_walk::layer_part`,
   research points in its module notes): its `PartFlags` (the stencil
   mark only in layers 1 and 3, where the prologue `0x0004d640` sets a
-  stencil mode, the fade byte, and the shader's flag bit 0 where the
-  prologue uploads nothing) and chosen subparts, or a named cause the
-  scene cannot reproduce it (`LayerObjectRefusal`: the shader's flag
-  bit 0 with the structure's parameter block or before the frame's target
-  copy, another pass, level or part in the item's argument, layer 5's PRT
+  stencil mode, the fade byte, the shader's flag bit 0, and whether its
+  prologue uploads the structure's parameter block, which the view then
+  holds in `View::structure_parameters`) and chosen subparts, or a named
+  cause the scene cannot reproduce it (`LayerObjectRefusal`: the shader's
+  flag bit 0 where that upload does not compute or before the frame's
+  target copy, another pass, level or part in the item's argument, layer 5's PRT
   stream left as the draws before it left it, subparts or auxiliary
   state that do not read; [native-objects.md](native-objects.md), "Fade,
   the shader flag and the item's argument"). In layer 5 an object item
@@ -1084,7 +1085,10 @@ to the guest's draws (**Code**):
     polygon stipple is off and the device and the engine hold the solid
     pattern and a cached fade of one, which its epilogue leaves
     (`native_objects_glue::stipple_off`, `stipple_at_rest`). An item
-    with a PRT stream draws each pass's PRT variant with the stream's
+    whose shader's prologue uploads the structure's parameter block
+    draws with its view's upload and is taken only where the device and
+    the engine already hold it (`native_objects_glue::structure_at_rest`).
+    An item with a PRT stream draws each pass's PRT variant with the stream's
     constants from `c[68]` on, written over the item's own as the draw
     sets them after its rows (`0x0004d269`), and is refused when its
     program reads a constant past them below the section's decompression
@@ -1141,7 +1145,9 @@ to the guest's draws (**Code**):
     `layer_plan_sorted<layer>_*`): the plan's causes
     (`LayerRefusal::name`, `per_draw` for a material resolved per draw),
     extraction's object causes (`LayerObjectRefusal::name`,
-    `object_shader_flag` and the rest), `object_fade` (an item with a
+    `object_shader_flag` and the rest; `object_shader_flag` also where
+    the device or the engine does not hold the structure parameters an
+    item uploads), `object_fade` (an item with a
     fade byte where the device's stipple is on), `object_stipple` (where
     the device or the engine does not hold what its epilogue leaves),
     `object_prt` (layer 5's PRT stream
@@ -1203,6 +1209,8 @@ to the guest's draws (**Code**):
     (`scene_extract::layout::object_walk`),
     `the_rest_pattern_is_the_entry_for_one_in_every_rounding_mode`
     (`engine::render_loop::opaque_material`),
+    `the_upload_is_what_the_two_functions_compute`
+    (`engine::render_loop::structure_parameters`),
     `layer_5_reads_the_objects_constants_and_its_sections_stream_at_its_level`,
     `a_model_without_a_prt_block_adds_nothing` and
     `a_draw_that_leaves_its_stream_or_constants_as_they_were_is_named`

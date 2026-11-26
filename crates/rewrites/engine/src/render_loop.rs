@@ -22,6 +22,7 @@ pub mod world_registers;
 pub mod opaque_texture;
 pub mod opaque_material;
 pub mod opaque_animation;
+pub mod structure_parameters;
 pub mod world_walk;
 pub mod occlusion;
 pub mod states;

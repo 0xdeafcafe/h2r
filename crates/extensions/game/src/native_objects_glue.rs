@@ -649,6 +649,17 @@ fn plan_walk<B: d3d::backend::Backend>(
     if fades && !stipple_at_rest(device, mem) {
         return Err(ObjectWalk::State);
     }
+    // A part whose shader's prologue uploads the structure's parameter
+    // block (`frame_scene::PartFlags::STRUCTURE_PARAMETERS`) draws with its
+    // view's upload. Skipping its handler is state-neutral only if the
+    // device and the engine already hold every word of it.
+    let uploads = run.iter().enumerate().any(|(n, e)| {
+        matches!(e, Entry::Object { .. })
+            && scene.part_at(view, (first + n) as u32).is_some_and(|(_, p)| p.flags.contains(PartFlags::STRUCTURE_PARAMETERS))
+    });
+    if uploads && !view.structure_parameters.is_some_and(|p| structure_at_rest(device, mem, &p)) {
+        return Err(ObjectWalk::State);
+    }
     let fog_words = crate::native_fog_glue::device_fog_words(device, mem);
     let table = &*STATE_TABLE;
     let device_state = |slot| device.render_state(&read, slot);
@@ -690,7 +701,8 @@ fn plan_walk<B: d3d::backend::Backend>(
         // failed GPU lookup for that same model is a residency fallback.
         if !cover.assets.uploaded() { return Err(ObjectWalk::Unresident); }
         let lit = lit.as_deref_mut().filter(|assets| assets.has(model)).ok_or(ObjectWalk::Unresident)?;
-        let mut draw = lit.plan_part_of(model, scene, instance, scene_part, &entry.states, time).map_err(|why| {
+        let structure = view.structure_parameters.as_ref();
+        let mut draw = lit.plan_part_of(model, scene, instance, scene_part, &entry.states, time, structure).map_err(|why| {
             count_refusal(&why);
             ObjectWalk::Inputs
         })?;
@@ -781,6 +793,34 @@ pub(crate) fn stipple_at_rest<B: d3d::backend::Backend>(device: &d3d::Device<B>,
     };
     let pattern = device.stipple_pattern();
     (0..32u32).all(|row| mem.u32(table + 4 * row).ok() == Some(pattern[row as usize]))
+}
+
+/// Whether the device and the engine already hold everything a flagged
+/// shader's prologue uploads from the active structure's parameter block
+/// (`0x0003c650`, `0x0003d000`; `frame_scene::StructureParameters`): the
+/// bump matrices of stages 1 to 3 (texture-stage states 22 to 25),
+/// `c[21..25]`, the fog colour and the thirteen engine words at
+/// `0x004c1b9c`, each bit for bit. From there the upload rewrites the same
+/// words, so skipping the draws that would run it leaves what drawing them
+/// would, however many there are; anything the host computed otherwise
+/// than the guest declines.
+pub(crate) fn structure_at_rest<B: d3d::backend::Backend>(
+    device: &d3d::Device<B>, mem: &dyn GuestMemory, p: &frame_scene::StructureParameters,
+) -> bool {
+    use engine::render_loop::structure_parameters::SCRATCH;
+    const BUMPENVMAT00: u32 = 22;
+    let layout = &device.config().layout;
+    let stages = (1..4u32).all(|stage| {
+        (0..4u32).all(|n| {
+            mem.u32(layout.texture_state_slot(stage, BUMPENVMAT00 + n)).ok()
+                == Some(p.bump_env[stage as usize - 1][n as usize])
+        })
+    });
+    let first = frame_scene::StructureParameters::FIRST_CONSTANT;
+    let constants = (0..5).all(|n| device.constant(first + n).map(f32::to_bits) == p.constants[n]);
+    let fog = crate::native_fog_glue::device_fog_words(device, mem)[6] == Some(p.fog_colour);
+    let scratch = (0..13u32).all(|n| mem.u32(SCRATCH + 4 * n).ok() == Some(p.scratch[n as usize]));
+    stages && constants && fog && scratch
 }
 
 /// Stencil mode 1, which layer 3's stencil switches leave.

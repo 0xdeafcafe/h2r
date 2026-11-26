@@ -89,11 +89,11 @@ pub const PRT_FIRST_CONSTANT: u8 = 68;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub enum LayerObjectRefusal {
     /// The shader's flag bit 0 (`+0x16`) while the active structure has a
-    /// parameter block (`[[0x004e0348] +0x214] > 0`): the prologue
-    /// (`0x0004d640`) runs `0x0003c650` and `0x0003d000`, which set texture
-    /// stages, the fog colour and `c[21..25]` from it. In layer 3, also a
-    /// flagged record with a structure lightmap index, which the draw does
-    /// not bind for the shader.
+    /// parameter block (`[[0x004e0348] +0x214] > 0`) whose upload
+    /// (`0x0003c650`, `0x0003d000`: the bump matrices of stages 1 to 3,
+    /// the fog colour and `c[21..25]`) does not compute. In layer 3, also
+    /// a flagged record with a structure lightmap index, which the draw
+    /// does not bind for the shader.
     ShaderFlag,
     /// The shader's flag bit 0 where the draw may call `0x0003bea0` (its
     /// program's flag bit 20, which a world layer's item does not carry)

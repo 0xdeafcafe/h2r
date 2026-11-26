@@ -37,6 +37,7 @@ fn view(kind: ViewKind, camera: Camera, instances: Range<u32>, lights: Range<u32
         display_visibility: None,
         display_transparents: None,
         aux_depth: None,
+        structure_parameters: None,
         lights,
         layers: 0..0,
         decorators: 0..0,
