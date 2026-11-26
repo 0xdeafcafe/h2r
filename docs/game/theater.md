@@ -185,7 +185,9 @@ In the original version 1 layout:
 films. A recorded film is two files, `<id>.h2film` and `<id>.h2stats`;
 the row comes from the film file's header and game start, with the map,
 players and scoreboard from a sealed stats container of the same film
-when there is one (`LibraryEntry::read`), and no tick chunk is read.
+when there is one (`LibraryEntry::read`), and no tick chunk is read. An
+unsealed film a recorder still holds (`film::file::hold`) is a game in
+progress and is not listed.
 Save and Unsave manage pins beside the film. Delete resolves a film by
 its header ID and removes its pin, the film file and its stats
 container. The host UI uses `H2_FILM_DIR` or `<data>/films`.

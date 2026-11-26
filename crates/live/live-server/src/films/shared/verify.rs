@@ -1,125 +1,49 @@
-use super::super::inspect::{Inspector, checkpoint::digest, inflate_limited};
+use super::super::inspect::Inspector;
+use super::super::upload::film_file::{Scan, Zstd};
 use super::*;
 use crate::blobs::Seen;
-use live_proto::film::sharing::{HEADER, Layout, MAX_SEED, clean_seed};
-use sha2_checkpoint::{Digest as _, Sha256 as Hash};
 
 const WINDOW: u64 = 2 << 20;
 
 #[derive(Default, Serialize, Deserialize)]
 struct Cursor {
-    layout: Option<Layout>,
-    compat: Option<Compat>,
-    game_id: Option<String>,
+    /// The walk over the film file (`H2FILM4!`, docs/game/film-format.md),
+    /// the copy `film::file::share_copy` makes.
+    scan: Scan,
     pos: u64,
-    next_block: u64,
-    blocks: u32,
-    #[serde(with = "digest")]
-    content: Hash,
-    #[serde(with = "digest")]
-    offsets: Hash,
-    #[serde(with = "digest")]
-    trailer: Hash,
+    /// Set once the whole film file checked: its film ID, which its stats
+    /// stream must name, its compatibility and its length.
+    game_id: Option<String>,
+    compat: Option<Compat>,
+    ticks: u32,
 }
 
 pub(super) fn cursor_key(s: &Share) -> String {
     format!("film-staging/{}/share", s.id)
 }
 
-/// Scans lengths, offsets and the compressed file's digest. Only the seed
-/// is inflated. Never trust an index to skip a machine envelope.
+/// Walks the film file's block lengths and its trailer and checks its
+/// digest. Only the seed is inflated, and it must name no machine or
+/// account (`film_file::Scan::feed_account`).
 impl Cursor {
-    fn film(&mut self, bytes: &[u8], file: &Object) -> ApiResult<usize> {
-        if self.pos == 0 {
-            let layout = Layout::parse(
-                bytes
-                    .get(..HEADER)
-                    .ok_or_else(|| invalid("short film header"))?,
-                file.size,
-            )
-            .map_err(invalid)?;
-            if bytes[48..64] != [0; 16] {
-                return Err(invalid("unsupported film compression dictionary"));
+    fn film(&mut self, bytes: &[u8], file: &Object) -> ApiResult<()> {
+        self.scan.feed_account(bytes, &mut Zstd)?;
+        self.pos += bytes.len() as u64;
+        if self.pos == file.size {
+            let checked = self.scan.finish(file.size)?;
+            if checked.sha256 != file.sha256 {
+                return Err(invalid("film SHA-256 mismatch"));
             }
-            let packed = bytes
-                .get(HEADER..layout.seed_end as usize)
-                .ok_or_else(|| invalid("short film seed"))?;
-            let raw = inflate_limited(packed, MAX_SEED)?;
-            let seed = clean_seed(&raw).map_err(invalid)?;
-            if serde_json::from_slice::<Value>(&raw).ok().as_ref() != Some(&seed) {
-                return Err(invalid("film seed contains private fields"));
-            }
-            let game = seed["game_id"]
-                .as_str()
-                .ok_or_else(|| invalid("missing game id"))?;
-            if bytes[16..32] != live_proto::film::sharing::header_id(game) {
-                return Err(invalid("film header contains an unrelated recording id"));
-            }
-            self.game_id = Some(game.to_owned());
-            self.compat = Some(
-                serde_json::from_value(seed["compat"].clone())
-                    .map_err(|_| invalid("invalid compatibility"))?,
-            );
-            self.next_block = layout.seed_end;
-            self.layout = Some(layout);
+            let (film, compat) = self
+                .scan
+                .account()
+                .cloned()
+                .ok_or_else(|| invalid("missing film seed"))?;
+            self.game_id = Some(film);
+            self.compat = Some(compat);
+            self.ticks = checked.ticks;
         }
-        let l = self
-            .layout
-            .as_ref()
-            .ok_or_else(|| invalid("missing film header"))?;
-        let mut end = self.pos + bytes.len() as u64;
-        if self.pos < l.trailer {
-            end = end.min(l.trailer);
-            while self.next_block < end {
-                let i = (self.next_block - self.pos) as usize;
-                let Some(head) = bytes.get(i..i + 9) else {
-                    end = self.next_block;
-                    break;
-                };
-                let len = u32::from_le_bytes(head[1..5].try_into().unwrap());
-                if head[0] != 0
-                    || len < 4
-                    || head[5..9] != [0x28, 0xb5, 0x2f, 0xfd]
-                    || self.blocks >= l.chunks
-                {
-                    return Err(invalid("invalid input film block"));
-                }
-                self.offsets.update(self.next_block.to_le_bytes());
-                self.next_block += 5 + u64::from(len);
-                if self.next_block > l.trailer {
-                    return Err(invalid("film block extends past trailer"));
-                }
-                self.blocks += 1;
-            }
-        } else {
-            let mut directory = bytes;
-            if self.pos == l.trailer {
-                let (count, tail) = bytes
-                    .split_at_checked(4)
-                    .ok_or_else(|| invalid("short film trailer"))?;
-                if count != l.chunks.to_le_bytes()
-                    || self.blocks != l.chunks
-                    || self.next_block != l.trailer
-                {
-                    return Err(invalid("invalid film chunk count"));
-                }
-                directory = tail;
-            }
-            self.trailer.update(directory);
-        }
-        let n = (end - self.pos) as usize;
-        if n == 0 {
-            return Err(invalid("incomplete film block header"));
-        }
-        self.content.update(&bytes[..n]);
-        self.pos = end;
-        if end == file.size
-            && (self.offsets.clone().finalize() != self.trailer.clone().finalize()
-                || live_proto::sign::hex(&self.content.clone().finalize()) != file.sha256)
-        {
-            return Err(invalid("film index or SHA-256 mismatch"));
-        }
-        Ok(n)
+        Ok(())
     }
 }
 
@@ -174,10 +98,7 @@ pub(super) async fn advance(store: &BlobStore, share: &Share) -> ApiResult<Optio
                 .ok_or_else(|| invalid("stats companion has unsafe public ranges"))?;
             return Ok(Some(Publication {
                 compat: cursor.compat.ok_or_else(|| invalid("missing film seed"))?,
-                ticks: cursor
-                    .layout
-                    .ok_or_else(|| invalid("missing film header"))?
-                    .ticks,
+                ticks: cursor.ticks,
                 summary: checked
                     .summary
                     .ok_or_else(|| invalid("missing stats summary"))?,

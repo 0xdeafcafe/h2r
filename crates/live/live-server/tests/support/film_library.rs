@@ -23,15 +23,18 @@ fn pack(raw: &[u8]) -> Vec<u8> {
     ruzstd::encoding::compress_to_vec(raw, ruzstd::encoding::CompressionLevel::Uncompressed)
 }
 
+/// An account's shared film file of `game` (docs/game/film-format.md, "The
+/// film file"), as `film::file::share_copy` writes it: a seed naming the
+/// film, its executable and simulation and no machine or account, and one
+/// tick chunk that is not a zstd frame, so an ingest that inflated it would
+/// refuse it.
 fn film(game: &str) -> Vec<u8> {
-    let hash = "1".repeat(64);
-    let seed = pack(
-        &serde_json::to_vec(
-            &json!({"game_id":game,"map":"lockout","map_sha256":hash,"seed":1,
-        "compat":{"xbe":hash,"hooks":hash,"contract":hash,"abi":"test"},"roster":[]}),
-        )
-        .unwrap(),
-    );
+    film_with(game, json!({"meta":{"id":game},"xbe_sha256":"1".repeat(64),
+        "runtime_stamp":"test","simulation_hooks":"1".repeat(64),"xnet_addr":"","lease_id":null}))
+}
+
+fn film_with(game: &str, header: Value) -> Vec<u8> {
+    let seed = pack(&serde_json::to_vec(&json!({"header":header,"descriptor":{}})).unwrap());
     let mut data = vec![0; 64];
     data[..8].copy_from_slice(b"H2FILM4!");
     data[8..16].copy_from_slice(&[4, 0, 2, 0, 30, 16, 0, 1]);
@@ -40,10 +43,10 @@ fn film(game: &str) -> Vec<u8> {
     data[36..40].copy_from_slice(&(seed.len() as u32).to_le_bytes());
     data.extend(seed);
     let offset = data.len() as u64;
-    let block = pack(&[1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    let payload = b"tick chunk 0";
     data.push(0);
-    data.extend((block.len() as u32).to_le_bytes());
-    data.extend(block);
+    data.extend((payload.len() as u32).to_le_bytes());
+    data.extend(payload);
     let trailer = data.len() as u64;
     data[40..48].copy_from_slice(&trailer.to_le_bytes());
     data.extend(1u32.to_le_bytes());
@@ -489,7 +492,43 @@ pub async fn exercise(live: Arc<Live>) {
         204
     );
     assert!(list().await.iter().all(|r| r["game_id"] != host));
+    private_seed_is_refused(&live).await;
     host_film_file(&live).await;
+}
+
+/// A shared film whose seed still names the recording machine's address
+/// is refused when its upload completes, and never listed.
+async fn private_seed_is_refused(live: &Arc<Live>) {
+    let owner = account(live, "Sharer").await;
+    let game = "private-game";
+    let film = film_with(game, json!({"meta":{"id":game},"xbe_sha256":"1".repeat(64),
+        "runtime_stamp":"test","xnet_addr":"192.168.1.20:3074","lease_id":null}));
+    let stats = stats(game);
+    let upload = Upload {
+        film: object(&film),
+        stats: object(&stats),
+        visibility: Visibility::Private,
+    };
+    let write = Some((&owner, lxm::FILMS_WRITE));
+    let (code, receipt) = call(live, "POST", "/v1/films", write, None, serde_json::to_vec(&upload).unwrap()).await;
+    assert_eq!(code, 202, "{}", String::from_utf8_lossy(&receipt));
+    let route = format!("/v1/films/{}", json_body(&receipt)["film"].as_str().unwrap());
+    for (name, bytes) in [("stats", stats), ("film", film)] {
+        let put = format!("{route}?object={name}&part=0");
+        assert_eq!(call(live, "PUT", &put, write, None, bytes).await.0, 204);
+    }
+    let mut refused = false;
+    for _ in 0..12 {
+        let (code, reply) = call(live, "POST", &format!("{route}?continue=1"), write, None, vec![]).await;
+        assert_ne!(code, 201, "a seed with an address was published");
+        if code == 400 {
+            assert!(String::from_utf8_lossy(&reply).contains("machine or an account"));
+            refused = true;
+            break;
+        }
+        assert_eq!(code, 202, "{}", String::from_utf8_lossy(&reply));
+    }
+    assert!(refused, "the upload was never refused");
 }
 
 /// A sealed host film file of `game` (docs/game/input-film.md, "Layout"):

@@ -111,6 +111,12 @@ decision and the library rules live in
   unsealed default film untouched for an hour at its last checkpoint
   (`film::file::recover`), or deletes it with its stats container when it
   holds no game start or no tick (`autorecord::prune`).
+- **A game in progress is not listed.** The recorder holds an exclusive
+  lock on the film file it writes (`film::file::hold`) until the film is
+  sealed and closed. The library does not list an unsealed film a
+  recorder holds, and the prune leaves it alone however long it is idle
+  (`film::file::being_written`). A crash or a kill ends the process and
+  its hold, so the film it left lists at once.
 
 Recent lists up to 25 unsaved games. Saving a film moves it to Saved.
 Opening Theater reads the local library even when Live has no entry for

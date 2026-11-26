@@ -340,6 +340,28 @@ fn a_hard_killed_game_opens_to_its_last_checkpoint_and_the_prune_seals_it() {
 }
 
 #[test]
+fn a_game_in_progress_is_not_listed_and_the_prune_leaves_it_alone() {
+    let dir = Temp::new("progress");
+    let rec = library(&dir);
+    play(&rec, &arena(), &block(MODE_MULTIPLAYER, 1), [1, 2], 200);
+    let live = PathBuf::from(rec.status().recording.expect("a game in play"));
+    assert!(film::file::being_written(&live));
+    assert!(film::LibraryEntry::read(&live).is_err(), "the game in progress is not listed");
+    assert!(film::Library::open(&dir.0).unwrap().list().unwrap().is_empty());
+    // Even untouched for hours (a long pause), a held film is not sealed
+    // under its recorder.
+    let hours_ago = SystemTime::now() - Duration::from_secs(2 * 60 * 60);
+    fs::File::options().write(true).open(&live).unwrap().set_modified(hours_ago).unwrap();
+    assert!(prune(&dir.0, KEEP, SystemTime::now()).unwrap().is_empty());
+    assert!(!film::file::FilmReader::open(fs::File::open(&live).unwrap()).unwrap().sealed);
+    // Sealed and closed, it lists.
+    rec.finish(true).unwrap();
+    assert!(!film::file::being_written(&live));
+    assert_eq!(film::LibraryEntry::read(&live).unwrap().meta.length_ticks, 200);
+    assert_eq!(film::Library::open(&dir.0).unwrap().list().unwrap().len(), 1);
+}
+
+#[test]
 fn a_killed_film_with_no_game_start_is_removed_with_its_stats() {
     let dir = Temp::new("no-start");
     let path = dir.0.join(file_name(UNIX_EPOCH + Duration::from_secs(1_795_000_000)));

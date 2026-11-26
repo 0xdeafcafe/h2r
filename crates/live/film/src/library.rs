@@ -35,10 +35,15 @@ impl LibraryEntry {
     /// header and seed, read with its game start's block; no tick chunk is
     /// inflated. A sealed stats container of the same film adds its final
     /// header (the map, players and scores) and its scoreboard. An unsealed
-    /// film (its recording was killed) lists with the ticks up to its last
-    /// checkpoint.
+    /// film a recorder still holds ([`crate::file::hold`]) is a game in
+    /// progress and is not listed; one no process holds (its recording was
+    /// killed) lists with the ticks up to its last checkpoint.
     fn film(path: &Path, file: fs::File) -> Result<Self> {
         let mut reader = crate::file::FilmReader::open(file)?;
+        ensure!(
+            reader.sealed || !crate::file::being_written(path),
+            "the film's game is still being recorded"
+        );
         let start = reader.game_start()?;
         let seed = reader.seed.header.clone();
         let listed = fs::File::open(crate::file::stats_of(path))

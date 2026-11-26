@@ -8,7 +8,10 @@ use axum::{
     body::{Body, to_bytes},
     http::StatusCode,
 };
-use live_proto::film::{PART_BYTES, SINGLE_UPLOAD_BYTES, sharing::header_id};
+use live_proto::film::{
+    PART_BYTES, SINGLE_UPLOAD_BYTES,
+    sharing::{Compat, header_id},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::Digest as _;
@@ -83,6 +86,18 @@ pub(in crate::films) struct Scan {
     offsets: Sha256,
     #[serde(with = "digest")]
     listed: Sha256,
+    /// An account's own film (`feed_account`): its film ID and what it
+    /// needs to play, from the seed.
+    #[serde(default)]
+    account: Option<(String, Compat)>,
+}
+
+/// Whose film a scan checks: a Live game's, sent by its host, or an
+/// account's own, shared into its film library (`films/shared`).
+#[derive(Clone, Copy)]
+enum Tie<'a> {
+    Game(&'a str),
+    Account,
 }
 
 /// The checked file: what goes into the receipt beside its key.
@@ -101,6 +116,22 @@ impl Scan {
     /// The next piece of the file, which starts where the last one ended.
     /// The header and the seed come in the first piece.
     pub fn feed(&mut self, game: &str, bytes: &[u8], inflate: &mut (dyn Inflate + Send)) -> ApiResult<()> {
+        self.walk(Tie::Game(game), bytes, inflate)
+    }
+
+    /// [`Scan::feed`] for a film an account shares into its library: the
+    /// seed ties the file to the film ID its stats stream names, and must
+    /// name no machine or account (`film::file::Seed::shared`).
+    pub fn feed_account(&mut self, bytes: &[u8], inflate: &mut (dyn Inflate + Send)) -> ApiResult<()> {
+        self.walk(Tie::Account, bytes, inflate)
+    }
+
+    /// An account film's ID and compatibility, once its seed was read.
+    pub fn account(&self) -> Option<&(String, Compat)> {
+        self.account.as_ref()
+    }
+
+    fn walk(&mut self, tie: Tie<'_>, bytes: &[u8], inflate: &mut (dyn Inflate + Send)) -> ApiResult<()> {
         if bytes.is_empty() {
             return Ok(());
         }
@@ -108,7 +139,7 @@ impl Scan {
         let end = start + bytes.len() as u64;
         let mut p = start;
         if start == 0 {
-            p = self.header(game, bytes, inflate)?;
+            p = self.header(tie, bytes, inflate)?;
         }
         let at = |abs: u64| (abs - start) as usize;
         while p < end {
@@ -180,7 +211,7 @@ impl Scan {
     }
 
     /// Check the header and the seed; returns where the blocks start.
-    fn header(&mut self, game: &str, bytes: &[u8], inflate: &mut (dyn Inflate + Send)) -> ApiResult<u64> {
+    fn header(&mut self, tie: Tie<'_>, bytes: &[u8], inflate: &mut (dyn Inflate + Send)) -> ApiResult<u64> {
         let h = bytes
             .get(..HEADER)
             .ok_or_else(|| bad("the header must come in the first part"))?;
@@ -217,8 +248,13 @@ impl Scan {
         if h[16..32] != header_id(film) {
             return Err(bad("the seed is not this film's"));
         }
-        if seed["header"]["game_id"].as_str() != Some(game) {
-            return Err(bad("the film belongs to another game"));
+        match tie {
+            Tie::Game(game) => {
+                if seed["header"]["game_id"].as_str() != Some(game) {
+                    return Err(bad("the film belongs to another game"));
+                }
+            }
+            Tie::Account => self.account = Some((film.to_owned(), account_seed(&seed)?)),
         }
         self.flags = flags;
         self.ticks = u32_at(32);
@@ -226,7 +262,42 @@ impl Scan {
         self.next_block = seed_end;
         Ok(seed_end)
     }
+}
 
+/// The seed of a film an account shares: no network address, lease, local
+/// map path, host or account number (`film::file::Seed::shared`), and the
+/// compatibility its library row shows.
+fn account_seed(seed: &Value) -> ApiResult<Compat> {
+    let header = &seed["header"];
+    let descriptor = &seed["descriptor"];
+    let named = |v: &Value| !v.is_null() && v.as_str() != Some("");
+    if named(&header["xnet_addr"])
+        || named(&header["lease_id"])
+        || named(&descriptor["host_id"])
+        || named(&descriptor["map"]["cache_path"])
+        || descriptor["roster"]
+            .as_array()
+            .is_some_and(|seats| seats.iter().any(|seat| !seat["xuid"].is_null()))
+    {
+        return Err(bad("the seed names a machine or an account"));
+    }
+    let text = |v: &Value| v.as_str().unwrap_or_default().to_owned();
+    let compat = Compat {
+        xbe: text(&header["xbe_sha256"]),
+        contract: text(&header["guest_image"]["contract_sha256"]),
+        abi: text(&header["runtime_stamp"]),
+        hooks: text(&header["simulation_hooks"]),
+    };
+    if compat.xbe.is_empty() || compat.abi.is_empty() || compat.abi.len() > 64 {
+        return Err(bad("the seed names no executable or simulation"));
+    }
+    if !live_proto::game::valid_id(header["meta"]["id"].as_str().unwrap_or_default()) {
+        return Err(bad("the seed's film ID is not valid"));
+    }
+    Ok(compat)
+}
+
+impl Scan {
     /// The whole file has been fed: its trailer lists exactly the tick
     /// chunks the walk found, and it ends after them.
     pub fn finish(&self, size: u64) -> ApiResult<Checked> {

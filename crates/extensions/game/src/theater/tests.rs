@@ -478,7 +478,8 @@ fn local_film_records_the_consumed_action_and_both_edges_of_a_tickless_pause() {
     rec.checkpoint(&guest);
     rec.finish(true).unwrap();
 
-    let mut track = TrackReader::open(film::file::stats_of(&file)).unwrap();
+    // The actions are in the film file, the events in its stats container.
+    let mut track = TrackReader::open_with_film(&file).unwrap();
     let first = track.step().unwrap().unwrap();
     assert_eq!(first.inputs, vec![action]);
     assert_eq!(first.events, vec![Event::Pause { paused: true }, Event::Pause { paused: false }]);

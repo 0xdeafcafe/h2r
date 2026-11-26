@@ -27,10 +27,9 @@ pub const FEATURE: &str = "film-autorecord";
 /// shows 25 films, so older automatic films would never be seen.
 pub const KEEP: usize = 25;
 
-/// An unsealed automatic film untouched for this long belongs to a session
-/// that stopped without sealing it: the prune seals it at the ticks it
-/// holds, or removes it when it does not read. A running recording writes
-/// a checkpoint every few seconds.
+/// An unsealed automatic film no recorder holds and untouched for this
+/// long belongs to a session that stopped without sealing it: the prune
+/// seals it at the ticks it holds, or removes it when it does not read.
 pub const ABANDONED_AFTER: Duration = Duration::from_secs(60 * 60);
 
 const PREFIX: &str = "auto-";
@@ -176,10 +175,11 @@ pub fn remove(path: &Path) -> anyhow::Result<()> {
 
 /// Make room for one more automatic film: keep the `keep - 1` newest
 /// unsaved automatic films and every saved one. An unsealed automatic film
-/// untouched for [`ABANDONED_AFTER`] (its session was killed) is sealed at
-/// the ticks it holds up to its last checkpoint ([`film::file::recover`])
-/// and kept, or removed when it does not read; a newer unsealed film is a
-/// recording in progress and is left alone. Films named by `--film` and
+/// no recorder holds ([`film::file::being_written`]) and untouched for
+/// [`ABANDONED_AFTER`] (its session was killed) is sealed at the ticks it
+/// holds up to its last checkpoint ([`film::file::recover`]) and kept, or
+/// removed when it does not read; one a recorder holds, or a newer one, is
+/// left alone. Films named by `--film` and
 /// downloaded archives are never touched. Returns the removed paths.
 pub fn prune(dir: &Path, keep: usize, now: SystemTime) -> anyhow::Result<Vec<PathBuf>> {
     let mut sealed = Vec::new();
@@ -200,6 +200,10 @@ pub fn prune(dir: &Path, keep: usize, now: SystemTime) -> anyhow::Result<Vec<Pat
             .and_then(film::file::FilmReader::open);
         if film.as_ref().is_ok_and(|reader| reader.sealed) {
             sealed.push(path);
+            continue;
+        }
+        // A recorder holds the film of the game it is recording.
+        if film::file::being_written(&path) {
             continue;
         }
         let idle = entry
