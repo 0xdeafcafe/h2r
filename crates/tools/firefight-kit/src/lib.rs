@@ -289,23 +289,13 @@ fn starts_in_place(set: &mut TagSet, scenario: TagId, rows: &[Vec<u8>]) -> Resul
 /// and the drops.
 #[cfg(any(test, feature = "testkit"))]
 fn build(base: &[u8], base_name: &str, mode: Mode, config: &Config) -> Result<Built> {
-    build_with(base, base_name, mode, config, &Labels::default())
+    build_with_classes(base, base_name, mode, config, &Labels::default(), None)
 }
 
 /// The kit on `base`, taking its places from `labels` where any are placed
 /// (`ground::build`, docs/game/game-types-without-carriers.md, "Maps for
-/// scripted games"). `labels` is the canonical set (`Labels::canonical`).
-fn build_with(
-    base: &[u8],
-    base_name: &str,
-    mode: Mode,
-    config: &Config,
-    labels: &Labels,
-) -> Result<Built> {
-    build_with_classes(base, base_name, mode, config, labels, None)
-}
-
-/// [`build_with`] with the transplanted `classes`. A build over the tag
+/// scripted games"; `labels` is the canonical set, `Labels::canonical`),
+/// with the transplanted `classes`. A build over the tag
 /// headroom takes the [`Fit`] steps in order, then, with `cut_to_fit`,
 /// drops the last class and takes them again, until it fits
 /// (`transplant`); otherwise it is refused with every part's and class's

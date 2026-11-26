@@ -14,6 +14,11 @@
 //! | `ff_cover` | the sampled firing positions: a placed one is taken first |
 //! | `siege_site`, `siege_goal`, `siege_line` | read by `siege.rules`; the ground only checks each is on it |
 //!
+//! [`build_with`] adds the stage-two classes (`Classes`, copied from the
+//! owner's campaign maps) as the kit's own stage two does: a build over
+//! the headroom cuts them from the end of the list when `cut_to_fit` is on,
+//! and [`Ground::classes`] and [`Ground::cut`] say what was kept and cut.
+//!
 //! The result carries a [`Receipt`] of the inputs. [`Receipt::stale`] is
 //! the stale rule: the ground is stale when any input differs from the
 //! receipt's.
@@ -23,7 +28,7 @@ use anyhow::{Result, ensure};
 use content::{MapId, Sha256};
 use serde::Serialize;
 
-use crate::{Bases, Config, Costs, KIT_VERSION, Mode, Package, Team};
+use crate::{Bases, ClassCost, Classes, Config, Costs, KIT_VERSION, Mode, Package, Team};
 
 type Point = [f32; 3];
 
@@ -291,6 +296,11 @@ pub struct Ground {
     pub problems: Vec<Problem>,
     /// The steps taken to fit the map's tag headroom ([`crate::Fit`]).
     pub fitted: Vec<crate::Fit>,
+    /// What each kept stage-two class added, in palette order after the
+    /// Elite; empty for a build with none.
+    pub classes: Vec<ClassCost>,
+    /// The classes cut to fit the headroom, first cut first.
+    pub cut: Vec<String>,
     pub receipt: Receipt,
 }
 
@@ -300,6 +310,21 @@ pub struct Ground {
 /// bytes. A map with no room for the ground is refused with its cost and
 /// biggest part, before anything is installed.
 pub fn build(base: &[u8], base_name: &str, labels: &Labels, recipe: &Recipe) -> Result<Ground> {
+    build_with(base, base_name, labels, recipe, None)
+}
+
+/// [`build`] with the stage-two `classes`: the build
+/// `crate::build_package_with` makes with the same classes, over the
+/// labels. With [`Classes::cut_to_fit`] a build over the headroom drops
+/// classes from the end of the list until it fits; without, it is refused
+/// with every class's cost.
+pub fn build_with(
+    base: &[u8],
+    base_name: &str,
+    labels: &Labels,
+    recipe: &Recipe,
+    classes: Option<&Classes<'_>>,
+) -> Result<Ground> {
     ensure!(
         recipe.kit_version == KIT_VERSION,
         "the recipe is for Firefight kit v{}, this is v{KIT_VERSION}",
@@ -308,7 +333,8 @@ pub fn build(base: &[u8], base_name: &str, labels: &Labels, recipe: &Recipe) -> 
     labels.check()?;
     let canonical = labels.canonical();
     let config = Config { home: recipe.home };
-    let built = crate::build_with(base, base_name, recipe.mode, &config, &canonical)?;
+    let built =
+        crate::build_with_classes(base, base_name, recipe.mode, &config, &canonical, classes)?;
     Ok(Ground {
         bytes: built.bytes,
         costs: built.costs,
@@ -317,6 +343,8 @@ pub fn build(base: &[u8], base_name: &str, labels: &Labels, recipe: &Recipe) -> 
         bases: built.bases,
         problems: built.problems,
         fitted: built.fitted,
+        classes: built.classes,
+        cut: built.cut,
         receipt: Receipt::of(Sha256::of(base), &canonical, recipe),
     })
 }
@@ -352,8 +380,8 @@ impl Ground {
             zones: self.zones,
             squads: self.squads,
             bases: self.bases,
-            classes: Vec::new(),
-            cut: Vec::new(),
+            classes: self.classes.clone(),
+            cut: self.cut.clone(),
             fitted: self.fitted.clone(),
         })
     }

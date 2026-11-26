@@ -550,8 +550,14 @@ pub trait LocalApi: Send + Sync + 'static {
         ))
     }
     /// `forge.ground.build`: start a build (**Build AI ground**, or with
-    /// `if_stale` **Test waves**) and answer when it has finished.
-    fn ground_build(&self, _if_stale: bool) -> Result<GroundReply, String> {
+    /// `if_stale` **Test waves**) and answer when it has finished. With
+    /// `classes`, ask for those enemy classes first
+    /// (`Session::set_ground_classes`).
+    fn ground_build(
+        &self,
+        _if_stale: bool,
+        _classes: Option<Vec<String>>,
+    ) -> Result<GroundReply, String> {
         Err(super::ground::NO_BUILDER.into())
     }
     /// `forge.nav`: the nav's state, the last generation's counts,
@@ -813,7 +819,9 @@ pub fn install(agent: &Agent, backend: impl LocalApi) {
         } else {
             serde_json::from_value(v).map_err(|e| super::invalid(e.to_string()))?
         };
-        let reply = host.ground_build(p.if_stale).map_err(refused)?;
+        let reply = host
+            .ground_build(p.if_stale, p.classes)
+            .map_err(refused)?;
         ctx.defer(
             GROUND_WAIT_TICKS,
             Box::new(move |_| match reply.try_recv() {

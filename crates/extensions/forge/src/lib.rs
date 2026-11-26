@@ -22,15 +22,15 @@ pub mod tool;
 pub use budget::{Binds, Budget, noun};
 pub use files::load_prefabs;
 pub use forge_doc::{BlockKind, Endpoint, OpId, TagKey, Value};
-pub use forge_doc::{GroundLabel, GroundRecipe, Label, MIN_GROUP_MEMBERS, Prefab};
+pub use forge_doc::{GroundClass, GroundLabel, GroundRecipe, Label, MIN_GROUP_MEMBERS, Prefab};
 pub use forge_shapes::{Material, Materials, PieceDef, Shape};
 pub use links::{AddedTeleporter, Linkable, Teleporter};
 pub use piece::{PieceInfo, PieceState, PlacedBounds};
 pub use session::{
-    CopyKind, Goal, GroundBuilder, GroundProblem, GroundReceipt, GroundReport, GroundState,
-    GroupInfo, NavBuilder, NavLine, NavProblem, NavReport, NavState, Outgoing, PlacedMarker,
-    PIECES_LOCAL_ONLY, Reopened, SHARED_PROPOSE, SHARED_REDO, Session, SessionAdmit, WAVES_HOST_ONLY, flag_label,
-    live_form,
+    CopyKind, Goal, GroundBuilder, GroundClassCost, GroundProblem, GroundReceipt, GroundReport,
+    GroundState, GroupInfo, NO_CLASSES, NavBuilder, NavLine, NavProblem, NavReport, NavState,
+    Outgoing, PIECES_LOCAL_ONLY, PlacedMarker, Reopened, SHARED_PROPOSE, SHARED_REDO, Session, SessionAdmit,
+    WAVES_HOST_ONLY, flag_label, live_form,
 };
 pub use things::{BaseRow, BaseRows, LEFT_OUT_SENTENCE, Thing, ThingKind};
 

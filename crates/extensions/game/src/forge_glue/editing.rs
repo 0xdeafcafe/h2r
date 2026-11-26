@@ -645,6 +645,23 @@ impl Editor {
         Ok(rx)
     }
 
+    /// `forge.ground.build {classes}`: ask for the enemy classes past the
+    /// Elite (docs/game/forge-firefight.md, "Enemy classes"). The next
+    /// build chooses each donor from this machine's disc. Refused while an
+    /// edit or a file job waits, and for a name the table lacks.
+    pub fn set_ground_classes(&mut self, names: &[String]) -> Result<(), String> {
+        if self.is_shared() {
+            return Err("AI ground is built in a local session.".into());
+        }
+        if self.busy() {
+            return Err("A Forge edit is waiting for the game.".into());
+        }
+        let mut next = Session::clone(&self.session);
+        next.set_ground_classes(names)?;
+        self.session = Arc::new(next);
+        Ok(())
+    }
+
     /// `forge.waves {set}`: replace or clear the session's wave set
     /// (docs/game/forge-firefight.md, "The wave set") and answer
     /// `forge.waves`' reply. Refused while an edit or a file job waits, as

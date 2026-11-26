@@ -1960,8 +1960,8 @@ mod ground {
 
     use ::forge::look::{Refusal, monitors::Who};
     use ::forge::{
-        BlockKind, Frame, GroundBuilder, GroundLabel, GroundProblem, GroundReceipt, GroundRecipe,
-        GroundReport, PaletteItem, Session,
+        BlockKind, Frame, GroundBuilder, GroundClass, GroundClassCost, GroundLabel, GroundProblem,
+        GroundReceipt, GroundRecipe, GroundReport, PaletteItem, Session,
     };
     use agent_proto::forge::method;
     use forge_doc::{Entry, ForgeDoc, Op, Sha256};
@@ -2000,14 +2000,49 @@ mod ground {
                 kit_version: 3,
                 home: 1,
                 probe: false,
+                classes: vec![],
             }
         }
 
-        fn build(&mut self, _: &ForgeDoc) -> Result<GroundReport, String> {
+        /// Every class from one invented donor.
+        fn classes(&mut self, names: &[String]) -> Result<Vec<GroundClass>, String> {
+            Ok(names
+                .iter()
+                .map(|name| GroundClass {
+                    name: name.clone(),
+                    donor: forge_doc::MapRef {
+                        map: "outskirts".into(),
+                        sha256: Sha256([0x22; 32]),
+                    },
+                })
+                .collect())
+        }
+
+        /// The map keeps the first class asked for and cuts the rest.
+        fn build(&mut self, play: &ForgeDoc) -> Result<GroundReport, String> {
             if self.refuse {
                 return Err("No room: the sectors take 9 KB too many.".into());
             }
+            let names = play
+                .ground_recipe()
+                .ok()
+                .flatten()
+                .map(|r| r.class_names())
+                .unwrap_or_default();
+            let keep = names.len().min(1);
             Ok(GroundReport {
+                classes: std::iter::once("elite".to_owned())
+                    .chain(names[..keep].iter().cloned())
+                    .collect(),
+                cut: names[keep..].iter().rev().cloned().collect(),
+                costs: names[..keep]
+                    .iter()
+                    .map(|name| GroundClassCost {
+                        name: name.clone(),
+                        tags: 3,
+                        bytes: 0x400,
+                    })
+                    .collect(),
                 zones: 2,
                 squads: 16,
                 problems: vec![GroundProblem {
@@ -2020,6 +2055,7 @@ mod ground {
                     labels: "bb22".into(),
                     kit_version: 3,
                 }),
+                ..GroundReport::default()
             })
         }
     }
@@ -2086,10 +2122,17 @@ mod ground {
                 },
             ))
         }
-        fn ground_build(&self, if_stale: bool) -> Result<GroundReply, String> {
+        fn ground_build(
+            &self,
+            if_stale: bool,
+            classes: Option<Vec<String>>,
+        ) -> Result<GroundReply, String> {
             let refuse = self.builds.ok_or(NO_BUILDER)?;
             let mut held = self.session.lock().unwrap();
             let mut session = Session::clone(&held);
+            if let Some(classes) = classes {
+                session.set_ground_classes(&classes)?;
+            }
             let mut kit = Kit { refuse };
             let result = if if_stale {
                 session.ensure_ground(&mut kit)
@@ -2198,8 +2241,12 @@ mod ground {
         assert_eq!(built["state"], "current");
         assert_eq!(
             built["recipe"],
-            json!({"kit_version": 3, "home": 1, "probe": false})
+            json!({"kit_version": 3, "home": 1, "probe": false, "classes": []})
         );
+        assert_eq!(built["classes"], json!([]));
+        assert_eq!(built["report"]["classes"], json!(["elite"]));
+        assert_eq!(built["report"]["cut"], json!([]));
+        assert_eq!(built["report"]["costs"], json!([]));
         assert_eq!(built["report"]["zones"], 2);
         assert_eq!(built["report"]["squads"], 16);
         assert_eq!(built["report"]["problems"], 1);
@@ -2232,6 +2279,57 @@ mod ground {
             json!({"if_stale": false}),
         );
         assert_eq!(forced["result"]["built"], true);
+    }
+
+    #[test]
+    fn a_build_with_classes_reports_them_kept_and_cut_with_costs() {
+        let h = Harness::new();
+        let mut game = game(1);
+        local::install(&h.agent, host(Some(false), 1));
+        let built = ask(
+            &h,
+            &mut game,
+            method::GROUND_BUILD,
+            json!({"classes": ["jackal", "grunt"]}),
+        );
+        assert!(built["error"].is_null(), "{built}");
+        let built = &built["result"];
+        assert_eq!(built["built"], true);
+        // Asked for in keep order, the donors in the recipe.
+        assert_eq!(built["classes"], json!(["grunt", "jackal"]));
+        let hash = Sha256([0x22; 32]).to_string();
+        assert_eq!(
+            built["recipe"]["classes"],
+            json!([
+                {"name": "grunt", "donor": "outskirts", "sha256": hash},
+                {"name": "jackal", "donor": "outskirts", "sha256": hash},
+            ])
+        );
+        assert_eq!(built["report"]["classes"], json!(["elite", "grunt"]));
+        assert_eq!(built["report"]["cut"], json!(["jackal"]));
+        assert_eq!(
+            built["report"]["costs"],
+            json!([{"name": "grunt", "tags": 3, "bytes": 0x400}])
+        );
+        // The same list again is current: Test waves builds nothing.
+        let again = ask(
+            &h,
+            &mut game,
+            method::GROUND_BUILD,
+            json!({"if_stale": true, "classes": ["grunt", "jackal"]}),
+        );
+        assert_eq!(again["result"]["built"], false);
+        // A name the table lacks is refused and changes nothing.
+        let bad = ask(
+            &h,
+            &mut game,
+            method::GROUND_BUILD,
+            json!({"classes": ["marine"]}),
+        );
+        assert_eq!(bad["error"]["data"]["code"], "forge_refused", "{bad}");
+        let ground = h.ok(&mut game, method::GROUND, Json::Null);
+        assert_eq!(ground["state"], "current");
+        assert_eq!(ground["classes"], json!(["grunt", "jackal"]));
     }
 
     #[test]

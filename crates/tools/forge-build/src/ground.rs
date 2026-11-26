@@ -3,26 +3,76 @@
 //!
 //! The materialiser reads the document's ground marks from the finished
 //! scenario (a flag's position, facing and team) and hands them, with the
-//! recipe, to `firefight_kit::ground::build` over the materialised map. The
-//! result is the map: nothing of it is in the document.
+//! recipe, to `firefight_kit::ground::build_with` over the materialised
+//! map. The result is the map: nothing of it is in the document.
+//!
+//! **Classes.** The recipe's enemy classes (`GroundRecipe::classes`) are
+//! copied from their donors, the campaign maps the recipe names by name and
+//! hash. Each donor is read from the machine's own maps and checked against
+//! the recipe's hash before anything is built, and refused by name when it
+//! is missing or another ([`crate::Error::MissingMap`],
+//! [`crate::Error::SourceHash`]). The build cuts classes from the end of the
+//! list when the map is short of headroom (`Classes::cut_to_fit`), so the
+//! same inputs cut alike on every machine.
 use firefight_kit::{
-    Mode, Team,
+    ClassCost, Costs, Mode, Team,
     ground::{self, BaseMarker, Labels, LineMarker, Marker, Problem, Receipt},
 };
 use forge_doc::{BlockKind, GroundLabel, GroundMark, GroundRecipe};
 use scenario_edit::Scenario;
+use tags::schema::Schema;
 
 use crate::Error;
 
 /// What the ground build made, besides the map: how many zones and squad
-/// slots it has, the labels it could not honour, and the receipt of its
-/// inputs.
+/// slots it has, the labels it could not honour, the classes it kept and
+/// cut, what it cost and the receipt of its inputs.
 #[derive(Clone, Debug)]
 pub struct GroundReport {
     pub zones: usize,
     pub squads: usize,
     pub problems: Vec<Problem>,
+    /// The classes kept past the Elite, in palette order, with what each
+    /// added.
+    pub classes: Vec<ClassCost>,
+    /// The classes cut to fit the headroom, first cut first.
+    pub cut: Vec<String>,
+    pub costs: Costs,
     pub receipt: Receipt,
+}
+
+/// What a recipe's classes are copied by: the layouts of the tags and each
+/// class's `char` tag on its donor. [`ClassTable::retail`] is the game's;
+/// a test hands its invented donor's.
+#[derive(Clone, Debug)]
+pub struct ClassTable<'a> {
+    pub schema: &'a Schema,
+    /// `(class name, char path)`.
+    pub paths: Vec<(String, String)>,
+}
+
+impl ClassTable<'static> {
+    /// The checked-in schema and `firefight_kit::retail::CLASSES`.
+    pub fn retail() -> Self {
+        Self {
+            schema: Schema::builtin(),
+            paths: firefight_kit::retail::CLASSES
+                .iter()
+                .map(|c| (c.name.to_owned(), c.path.to_owned()))
+                .collect(),
+        }
+    }
+}
+
+impl ClassTable<'_> {
+    /// The `char` path of class `name`.
+    pub(crate) fn path(&self, name: &str) -> Result<&str, Error> {
+        self.paths
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, p)| p.as_str())
+            .ok_or_else(|| Error::Ground(format!("no class table entry for {name}")))
+    }
 }
 
 fn team(label: GroundLabel, index: u32, value: i64) -> Result<Team, Error> {
@@ -98,7 +148,7 @@ pub(crate) fn labels(scenario: &Scenario, marks: &[GroundMark]) -> Result<Labels
 
 /// The kit's recipe for a document's. The kit's version is the
 /// document's own, so a recipe for another kit is refused by the build.
-pub(crate) fn recipe(recipe: GroundRecipe) -> ground::Recipe {
+pub(crate) fn recipe(recipe: &GroundRecipe) -> ground::Recipe {
     ground::Recipe {
         kit_version: recipe.kit_version,
         home: if recipe.home == 0 {

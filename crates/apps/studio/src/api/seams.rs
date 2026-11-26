@@ -169,6 +169,9 @@ pub fn register(api: &mut Api) {
     // markers.*: the open map's game type markers listed, and the marker
     // shapes rendered on a grid with no map.
     api.register(Box::new(super::markers::Markers::default()));
+    // blockout.*: a block-out definition drawn with its dev plates, the
+    // contact sheet of every shape, and a definition described.
+    api.register(Box::new(super::blockout::Blockout::default()));
     // anim.*: a jmad's animations listed and one posed on the model that
     // uses it (app::anim), the Animation window's own path.
     api.register(Box::new(super::anim::Anim::default()));

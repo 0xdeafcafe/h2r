@@ -152,6 +152,7 @@ fn a_ground_copy_is_loaded_until_the_ground_is_stale_and_has_no_kit_room() {
         kit_version: 1,
         home: 0,
         probe: false,
+        classes: vec![],
     }));
     let mut w = Fake::default();
     s.place_spawn(&mut w, 1, 0, frame(2., 0.)).unwrap();

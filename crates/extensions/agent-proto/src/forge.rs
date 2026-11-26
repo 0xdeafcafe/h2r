@@ -131,12 +131,16 @@ pub struct ThingsParams {
 }
 
 /// `forge.ground.build`: **Build AI ground**, or with `if_stale` **Test
-/// waves** (build only when the ground is stale or was never built).
+/// waves** (build only when the ground is stale or was never built). With
+/// `classes`, the enemy classes past the Elite the recipe asks for first
+/// (docs/game/forge-firefight.md, "Enemy classes"); `[]` asks for none.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GroundBuildParams {
     #[serde(default)]
     pub if_stale: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classes: Option<Vec<String>>,
 }
 
 /// How many game ticks `forge.ground.build` waits for its answer: a build

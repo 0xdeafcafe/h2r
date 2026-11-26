@@ -222,6 +222,7 @@ fn a_variant_with_waves_is_a_map_variant() {
             kit_version: 3,
             home: 0,
             probe: false,
+            classes: vec![],
         }
         .to_recipe(),
     ];

@@ -902,6 +902,7 @@ mod ground {
                 kit_version: 3,
                 home: 0,
                 probe: false,
+                classes: vec![],
             }
         }
 
@@ -918,6 +919,7 @@ mod ground {
                     reason: "off the walkable area".into(),
                 }],
                 receipt: None,
+                ..GroundReport::default()
             })
         }
     }
@@ -1640,6 +1642,7 @@ mod rebuild {
                     kit_version: 3,
                     home: 0,
                     probe: false,
+                    classes: vec![],
                 }
             }
 
@@ -1689,6 +1692,7 @@ mod rebuild {
                 kit_version: 3,
                 home: 0,
                 probe: false,
+                classes: vec![],
             }
         }
 

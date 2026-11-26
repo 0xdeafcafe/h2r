@@ -32,7 +32,7 @@ use scenario_edit::{MapSource, Session, layout, package::geometry_hash, save};
 
 pub use entry::{base_fields, base_print, entry_fields, tag_key};
 pub use forge_doc::Printed;
-pub use ground::GroundReport;
+pub use ground::{ClassTable, GroundReport};
 pub use kit::Reservation;
 
 /// Versions pinned by an F2 document. Geometry-changing generators have no
@@ -98,7 +98,8 @@ pub enum Error {
     Links(&'static str),
     /// The AI ground could not be built from the document's marks and
     /// recipe: a mark with a team that is neither side, a kit of another
-    /// version, a map with no room for it.
+    /// version, a map with no room for it even with every class cut, a
+    /// class its donor cannot give.
     #[error("forge_ground: {0}")]
     Ground(String),
     /// The disc's entry is not the one an edit was made on: its typed
@@ -200,6 +201,18 @@ pub fn map_id(doc: &ForgeDoc, engine: Option<i32>) -> Result<MapId, Error> {
 pub fn build_for(
     doc: &ForgeDoc,
     engine: Option<i32>,
+    lookup: impl FnMut(&str) -> Option<MapSource>,
+) -> Result<Built, Error> {
+    build_with(doc, engine, &ClassTable::retail(), lookup)
+}
+
+/// [`build_for`] with the ground's enemy classes copied by `table` (the
+/// game's is [`ClassTable::retail`]): the one seam a test uses to copy an
+/// invented donor's classes.
+pub fn build_with(
+    doc: &ForgeDoc,
+    engine: Option<i32>,
+    table: &ClassTable<'_>,
     mut lookup: impl FnMut(&str) -> Option<MapSource>,
 ) -> Result<Built, Error> {
     let mut limits = Limits {
@@ -233,6 +246,21 @@ pub fn build_for(
     }
     let needs_kit = requests_kit(&doc.recipes)?;
     let asked = doc.ground_recipe()?;
+    // The ground's class donors, each read once and checked against the
+    // recipe's hash before anything is built: a machine whose disc lacks
+    // one, or has another, is refused by the donor's name.
+    let mut donors: Vec<(String, Arc<[u8]>)> = Vec::new();
+    for class in asked.iter().flat_map(|r| &r.classes) {
+        if donors
+            .iter()
+            .any(|(map, _)| map.eq_ignore_ascii_case(&class.donor.map))
+        {
+            continue;
+        }
+        let source =
+            lookup(&class.donor.map).ok_or_else(|| Error::MissingMap(class.donor.map.clone()))?;
+        donors.push((class.donor.map.clone(), check_map(&class.donor, &source, false)?));
+    }
     if needs_kit && asked.is_some() {
         return Err(Error::Recipe(format!(
             "{} and {KIT_RECIPE} are not built together: the ground is built over the play form",
@@ -345,13 +373,47 @@ pub fn build_for(
                 .ok_or(scenario_edit::Error::Invalid("scenario is not open"))?,
             &marks,
         )?;
-        let built =
-            firefight_kit::ground::build(&output, &doc.base.map, &labels, &ground::recipe(recipe))
-                .map_err(|e| Error::Ground(format!("{e:#}")))?;
+        let specs = recipe
+            .classes
+            .iter()
+            .map(|class| -> Result<firefight_kit::ClassSpec, Error> {
+                Ok(firefight_kit::ClassSpec {
+                    name: class.name.clone(),
+                    donor: donors
+                        .iter()
+                        .position(|(map, _)| map.eq_ignore_ascii_case(&class.donor.map))
+                        .expect("every donor was read above"),
+                    path: table.path(&class.name)?.to_owned(),
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let classes = (!specs.is_empty()).then(|| firefight_kit::Classes {
+            schema: table.schema,
+            donors: donors
+                .iter()
+                .map(|(name, bytes)| firefight_kit::Donor {
+                    name: name.as_str(),
+                    bytes: &bytes[..],
+                })
+                .collect(),
+            specs,
+            cut_to_fit: true,
+        });
+        let built = firefight_kit::ground::build_with(
+            &output,
+            &doc.base.map,
+            &labels,
+            &ground::recipe(&recipe),
+            classes.as_ref(),
+        )
+        .map_err(|e| Error::Ground(format!("{e:#}")))?;
         report = Some(GroundReport {
             zones: built.zones,
             squads: built.squads,
             problems: built.problems,
+            classes: built.classes,
+            cut: built.cut,
+            costs: built.costs,
             receipt: built.receipt,
         });
         output = built.bytes;

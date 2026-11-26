@@ -85,9 +85,12 @@ impl Session {
     }
 
     /// What the set the session plays asks for that the ground lacks: a
-    /// class the ground does not build and a preferred zone no drop gives.
+    /// class the ground does not build (the last build's classes, or before
+    /// one the Elite and the classes the recipe asks for,
+    /// [`Session::ground_built_classes`]) and a preferred zone no drop
+    /// gives.
     pub fn wave_problems(&self) -> Vec<Problem> {
-        let classes: Vec<String> = waves::GROUND_CLASSES.map(String::from).to_vec();
+        let classes = self.ground_built_classes();
         waves::problems(
             &self.waves_or_default(),
             &classes,

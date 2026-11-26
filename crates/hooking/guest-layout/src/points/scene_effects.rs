@@ -58,6 +58,14 @@ pub const SUBPART_DRAWS: [(&Point, u32); 3] = [
 // All exits from the sorted loop join here, before the guest view cleanup.
 pub const SCENE_TRANSPARENTS_END: Point = Point::new("SCENE_TRANSPARENTS_END", 0x0001_e406, Sig::Site, RENDERER);
 
+/// The sorted loop's per-entry join, after the call to the entry's handler
+/// (`0x0001e3f1`, `call ecx`, returning to `0x0001e3f3`) or the skip of a
+/// null one (`je 0x0001e3f3`): `esi` is the ordinal just done. `0x0001e3f3`
+/// is a call's continuation, where a return resumes the generated code and
+/// no hook runs, so the site is `0x0001e3f9`, the next instruction, which
+/// both paths fall to.
+pub const TRANSPARENT_DISPATCH_NEXT: Point = Point::new("TRANSPARENT_DISPATCH_NEXT", 0x0001_e3f9, Sig::Site, RENDERER);
+
 /// The shared indexed wrapper, just after its state commit. The water
 /// composite is identified by the wrapper's own return address.
 /// The commit (`call 0x0001cf50` at 0x0001c8a0) returns to 0x0001c8a5,
@@ -180,6 +188,7 @@ pub fn instruction_entries() -> impl Iterator<Item = u32> {
         WORLD_SECTION_END.base,
         GEOMETRY_RANGE_READY.base,
         SCENE_TRANSPARENTS_END.base,
+        TRANSPARENT_DISPATCH_NEXT.base,
         WATER_INDEX_READY.base,
         PORTAL_WINDOW_CALL.base,
         PORTAL_WINDOW_RESUME,
@@ -247,6 +256,11 @@ mod tests {
         // from the wrapper at the site.
         assert!(seen.contains(&super::WATER_INDEX_READY.base));
         assert!(!seen.contains(&0x0001_c8b9));
+        // The sorted loop's join is the instruction after the handler's
+        // return, never the return itself.
+        assert!(seen.contains(&super::TRANSPARENT_DISPATCH_NEXT.base));
+        assert_eq!(super::TRANSPARENT_DISPATCH_NEXT.base, 0x0001_e3f9);
+        assert!(!seen.contains(&0x0001_e3f3));
         assert_eq!(super::WATER_INDEX_ARG_BYTES, 0xc);
         // Every leaf's two sites are entries.
         for leaf in super::EFFECT_LEAVES {

@@ -24,6 +24,35 @@ fn recipe() -> GroundRecipe {
         kit_version: 3,
         home: 0,
         probe: false,
+        classes: vec![],
+    }
+}
+
+/// An invented campaign map a class is copied from.
+fn donor(map: &str, byte: u8) -> MapRef {
+    MapRef {
+        map: map.into(),
+        sha256: Sha256([byte; 32]),
+    }
+}
+
+fn class(name: &str, donor: MapRef) -> GroundClass {
+    GroundClass {
+        name: name.into(),
+        donor,
+    }
+}
+
+/// The recipe with a grunt and a hunter from one invented donor and a
+/// brute from another.
+fn with_classes() -> GroundRecipe {
+    GroundRecipe {
+        classes: vec![
+            class("grunt", donor("outskirts", 0x22)),
+            class("brute", donor("uprising", 0x33)),
+            class("hunter", donor("outskirts", 0x22)),
+        ],
+        ..recipe()
     }
 }
 
@@ -80,10 +109,11 @@ fn the_recipe_round_trips_and_reads_back_in_any_order() {
             kit_version: 9,
             home: 1,
             probe: true,
+            classes: vec![],
         },
     ] {
         let recipe = r.to_recipe();
-        assert_eq!(GroundRecipe::of(&recipe).unwrap(), Some(r));
+        assert_eq!(GroundRecipe::of(&recipe).unwrap(), Some(r.clone()));
         let Recipe::Generate { mut parameters, .. } = recipe else {
             panic!("a generate recipe")
         };
@@ -208,7 +238,7 @@ fn with_ground_puts_the_recipe_before_the_kit_and_drops_the_expectation() {
         ..recipe()
     };
     assert_eq!(
-        built.with_ground(Some(probe)).ground_recipe().unwrap(),
+        built.with_ground(Some(probe.clone())).ground_recipe().unwrap(),
         Some(probe)
     );
     assert_eq!(built.with_ground(None).recipes, vec![kit()]);
@@ -373,6 +403,141 @@ fn a_mark_that_moves_or_a_solid_that_changes_changes_the_stamp() {
         ..recipe()
     }));
     assert_ne!(stamp(&other), stamp(&home), "the recipe changed");
+}
+
+#[test]
+fn a_recipe_with_classes_round_trips() {
+    let r = with_classes();
+    let generated = r.to_recipe();
+    assert_eq!(GroundRecipe::of(&generated).unwrap(), Some(r.clone()));
+    let Recipe::Generate { mut parameters, .. } = generated else {
+        panic!("a generate recipe")
+    };
+    // Three settings, then one parameter a class, in keep order.
+    let fields: Vec<&str> = parameters.iter().map(|p| p.field.as_str()).collect();
+    assert_eq!(
+        fields,
+        ["kit_version", "home", "mode", "class_grunt", "class_brute", "class_hunter"]
+    );
+    // Any order reads back in keep order.
+    parameters.reverse();
+    assert_eq!(GroundRecipe::from_parameters(&parameters).unwrap(), r);
+    assert_eq!(r.class_names(), ["grunt", "brute", "hunter"]);
+
+    // In a document: validated, kept by a save form and read back.
+    let mut doc = draft();
+    doc.recipes.push(r.to_recipe());
+    doc.format = doc.required_format();
+    validate(&doc, &limits()).unwrap();
+    let json = doc.canonical_json().unwrap();
+    let back = ForgeDoc::from_bytes(json.as_bytes(), &limits()).unwrap();
+    assert_eq!(back.ground_recipe().unwrap(), Some(r.clone()));
+    assert_eq!(back.id().unwrap(), doc.id().unwrap());
+    // A recipe without classes keeps the identity it always had.
+    let plain = draft().with_ground(Some(recipe()));
+    let Recipe::Generate { parameters, .. } = &plain.recipes[0] else {
+        panic!("a generate recipe")
+    };
+    assert_eq!(parameters.len(), 3);
+    assert_ne!(plain.id().unwrap(), draft().with_ground(Some(r)).id().unwrap());
+}
+
+#[test]
+fn a_malformed_class_is_refused_by_name() {
+    let good = with_classes().to_recipe();
+    let Recipe::Generate { parameters, .. } = good else {
+        panic!("a generate recipe")
+    };
+    let hash = Sha256([0x22; 32]).to_string();
+    let with = |field: &str, text: &str| {
+        let mut p = parameters[..3].to_vec();
+        p.push(FieldWrite {
+            field: field.into(),
+            value: Value::Text(text.into()),
+        });
+        p
+    };
+    let cases: Vec<(Vec<FieldWrite>, &str)> = vec![
+        // The Elite is the kit's own, never copied.
+        (with("class_elite", &format!("outskirts:{hash}")), "no enemy class"),
+        (with("class_marine", &format!("outskirts:{hash}")), "no enemy class"),
+        (with("class_grunt", "outskirts"), "donor:hash"),
+        (with("class_grunt", "out skirts:00"), "plain map name"),
+        (with("class_grunt", "outskirts:00"), "SHA-256"),
+        (
+            with("class_grunt", &format!("outskirts:{}", hash.to_uppercase())),
+            "lowercase",
+        ),
+        (
+            [
+                with("class_grunt", &format!("outskirts:{hash}")),
+                with("class_grunt", &format!("outskirts:{hash}"))[3..].to_vec(),
+            ]
+            .concat(),
+            "twice",
+        ),
+        (
+            [
+                with("class_grunt", &format!("outskirts:{hash}")),
+                with("class_jackal", &format!("outskirts:{}", Sha256([0x44; 32])))[3..].to_vec(),
+            ]
+            .concat(),
+            "two hashes",
+        ),
+    ];
+    for (parameters, want) in cases {
+        let error = GroundRecipe::from_parameters(&parameters).unwrap_err();
+        assert!(error.to_string().contains(want), "{want}: {error}");
+        // The document's validation refuses it the same way.
+        let mut doc = draft();
+        doc.recipes.push(Recipe::Generate {
+            generator: GROUND_RECIPE.into(),
+            parameters,
+        });
+        assert!(validate(&doc, &limits()).is_err(), "{want}");
+    }
+}
+
+#[test]
+fn a_variant_may_name_class_donors_and_no_other_source() {
+    let mut doc = with(vec![
+        add(1, FLAGS),
+        label(2, Endpoint::Added(OpId(1)), "ff_drop", None),
+    ]);
+    doc.title = "Yard".into();
+    doc.recipes.push(with_classes().to_recipe());
+    validate(&doc, &limits()).unwrap();
+    // The donors the recipe names do not make it a Forge map.
+    assert_eq!(doc.tier(), Tier::Variant);
+    doc.check_variant().unwrap();
+    // Any other source map does.
+    let mut sourced = doc.clone();
+    sourced.sources.push(donor("outskirts", 0x22));
+    assert_eq!(sourced.tier(), Tier::Map);
+    assert_eq!(sourced.check_variant(), Err(Refusal::Tier));
+}
+
+#[test]
+fn a_class_change_changes_the_stamp() {
+    let base = with(vec![
+        add(1, FLAGS),
+        label(2, Endpoint::Added(OpId(1)), "ff_drop", None),
+    ]);
+    let stamp = |r: GroundRecipe| {
+        base.with_ground(Some(r))
+            .ground_stamp(&counts())
+            .unwrap()
+    };
+    let none = stamp(recipe());
+    let all = stamp(with_classes());
+    assert_ne!(none, all, "classes added");
+    let mut cut = with_classes();
+    cut.classes.pop();
+    assert_ne!(stamp(cut), all, "a class cut");
+    let mut moved = with_classes();
+    moved.classes[1].donor = donor("uprising", 0x55);
+    assert_ne!(stamp(moved), all, "a donor of another hash");
+    assert_eq!(stamp(with_classes()), all, "the same list");
 }
 
 #[test]
