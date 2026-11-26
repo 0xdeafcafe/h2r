@@ -19,6 +19,8 @@ use std::{
 };
 
 use super::reload::{self, PlayCopy};
+use crate::firefight::feature::WaveTests;
+use crate::firefight::runtime::{TEST_RUNNING, TestEvent, TestPhase, WAVES_STOPPED};
 use crate::forge_map::Opened;
 use crate::forge_screens::{
     self as screens, Facts,
@@ -78,6 +80,10 @@ type GroundAnswer = mpsc::Sender<Result<Value, String>>;
 
 /// Where a nav generation's answer goes when an agent asked for it.
 type NavAnswer = mpsc::Sender<Result<Value, String>>;
+
+/// Where a wave test's answer goes when an agent asked for it
+/// (`forge.waves.test`).
+type TestAnswer = mpsc::Sender<Result<Value, String>>;
 
 #[derive(Clone, Copy)]
 enum CoordinateTarget {
@@ -176,12 +182,26 @@ pub(super) struct Editor {
     copy: Option<PlayCopy>,
     /// The driver is reloading the map onto a copy: edits wait.
     reloading: bool,
+    /// The Firefight runtime **Test waves** runs the session's set on
+    /// (`crate::firefight::feature::wave_tests`); none without the feature.
+    wave_tests: Option<Arc<dyn WaveTests>>,
+    /// Test waves built the ground: the test starts once the session goes
+    /// on over the map reloaded onto it.
+    test_after_build: bool,
+    /// The agent that asked for the test, answered when it starts.
+    test_answer: Option<TestAnswer>,
+    /// The set the test plays: its name and `Def::id`.
+    test_set: Option<(String, Option<String>)>,
+    /// What the Waves page's Start from offers on this base map
+    /// (`forge_screens::waves::presets`), read once as the session opens.
+    wave_presets: Arc<[forge_doc::waves::Def]>,
 }
 
 impl Editor {
     pub fn new(opened: Opened, data: &Path, scenario: u32, calls: calls::Shared) -> Self {
         let saved_head = opened.session.head();
         let map_name = opened.session.document().title.clone();
+        let wave_presets = screens::waves::presets(&opened.session.document().base.map);
         let mut tool = Tool::with_extents(opened.extents.into());
         tool.monitor = crate::lobby_start::mode() == crate::lobby_start::Mode::Forge;
         Self {
@@ -233,6 +253,11 @@ impl Editor {
             map_name,
             copy: None,
             reloading: false,
+            wave_tests: crate::firefight::feature::wave_tests(),
+            test_after_build: false,
+            test_answer: None,
+            test_set: None,
+            wave_presets,
         }
     }
 
@@ -247,9 +272,20 @@ impl Editor {
         self.copy.take()
     }
 
-    /// The driver reloads the map (edits wait), or has stopped.
+    /// The driver reloads the map (edits wait), or has stopped. A reload
+    /// that stopped without going on over the copy leaves a Test waves
+    /// that waited for it untested.
     pub fn set_reloading(&mut self, reloading: bool) {
         self.reloading = reloading;
+        if !reloading && std::mem::take(&mut self.test_after_build) {
+            self.answer_test(Err(super::ground::NOT_LOADED.into()));
+        }
+    }
+
+    /// The session ends (the driver leaves the map): a wave test stops
+    /// first.
+    pub fn leave(&mut self) {
+        self.stop_test(self.now);
     }
 
     /// **Rebuild map**: build the map from the document on a worker, write
@@ -277,6 +313,8 @@ impl Editor {
             return Err(reload::NO_BUILDER.into());
         }
         let built = self.session.rebuild_form()?;
+        // The rebuilt map has none of the test's actors.
+        self.stop_test(tick);
         let file = reload::copy_path(&self.data, &self.map_name);
         self.file(move || {
             let bytes = reload::build(&built)?;
@@ -350,6 +388,17 @@ impl Editor {
         // and the next edit brings the world to the document again.
         if let Err(why) = self.stage(After::Reopened, |s, w| s.release(w)) {
             self.refuse(why, tick);
+        }
+        // Test waves built this map's ground: the test starts on it.
+        if std::mem::take(&mut self.test_after_build) {
+            let started = if self.session.ground_loaded() {
+                self.begin_test(None)
+            } else {
+                Err(super::ground::NOT_LOADED.into())
+            };
+            if let Err(why) = started {
+                self.refuse(why, tick);
+            }
         }
         Ok(self)
     }
@@ -558,6 +607,8 @@ impl Editor {
         if !super::ground::available() {
             return Err(super::ground::NO_BUILDER.into());
         }
+        // The ground's map has none of the test's actors.
+        self.stop_test(tick);
         let session = self.session.clone();
         let file = reload::reloads().then(|| reload::copy_path(&self.data, &self.map_name));
         self.file(move || {
@@ -606,6 +657,180 @@ impl Editor {
         next.set_waves(set).map_err(|e| e.to_string())?;
         self.session = Arc::new(next);
         Ok(agent::forge::waves::reply(&self.session))
+    }
+
+    /// **Test waves** (docs/game/forge-firefight.md, "Test waves"): run the
+    /// session's wave set on the running map, with the editor still open.
+    /// With the current ground on the running map the runtime starts the
+    /// test at the next tick; else the ground is built, the map reloaded
+    /// onto it, and the test starts when the session goes on over it
+    /// ([`Editor::reopen`]). `answer` hears when it started or was
+    /// refused, or at once that the ground is building.
+    fn test_waves(&mut self, tick: u32, answer: Option<TestAnswer>) -> Result<(), String> {
+        if self.busy() {
+            return Err("A Forge edit is waiting for the game.".into());
+        }
+        if self.testing() {
+            return Err(TEST_RUNNING.into());
+        }
+        if self.session.ground_loaded() {
+            self.test_answer = None;
+            return self.begin_test(answer);
+        }
+        self.start_ground(tick, true, None)?;
+        self.test_after_build = true;
+        if let Some(answer) = answer {
+            let _ = answer.send(Ok(json!({"testing": false, "building": true})));
+        }
+        Ok(())
+    }
+
+    /// Hand the session's set to the runtime, which starts the test at the
+    /// next tick boundary.
+    fn begin_test(&mut self, answer: Option<TestAnswer>) -> Result<(), String> {
+        let tests = self
+            .wave_tests
+            .clone()
+            .ok_or(super::ground::NO_FIREFIGHT)?;
+        let def = super::ground::waves_or_default(&self.session);
+        let set = (def.name.clone(), def.id().ok().map(|id| id.to_string()));
+        let problem = screens::waves::first_problem(&def, &self.session.wave_problems());
+        tests.start(def)?;
+        self.test_set = Some(set);
+        self.test_answer = answer;
+        if let Some(problem) = problem {
+            self.notice = Some((problem, self.now));
+        }
+        Ok(())
+    }
+
+    /// What the Waves screens read: the set the session plays and what
+    /// goes with it (docs/game/forge-firefight-ui.md, "The Waves screens").
+    fn wave_facts(&self) -> screens::waves::Facts {
+        screens::waves::Facts {
+            set: self.session.waves_or_default(),
+            own: !self.session.waves_are_default(),
+            edited: self.session.waves_edited(),
+            classes: super::ground::wave_classes(&self.session),
+            drops: self.session.wave_drops(),
+            problems: self.session.wave_problems(),
+            presets: self.wave_presets.clone(),
+            testing: self.testing(),
+        }
+    }
+
+    /// A Waves page's value: one change of the set, one `set_waves`. Start
+    /// from over an edited set asks first. A refusal builds the pages
+    /// again, so the value shown goes back to the set's.
+    fn edit_waves(&mut self, edit: screens::waves::Edit) -> Result<(), String> {
+        let facts = self.wave_facts();
+        if let screens::waves::Edit::StartFrom(i) = edit
+            && let screens::waves::Start::Ask(question) = screens::waves::start_from(&facts, i)?
+        {
+            return screens::ask_over(question);
+        }
+        self.apply_waves(&facts, &edit)
+    }
+
+    fn apply_waves(
+        &mut self,
+        facts: &screens::waves::Facts,
+        edit: &screens::waves::Edit,
+    ) -> Result<(), String> {
+        let next = screens::waves::apply(&facts.set, edit, &facts.presets)
+            .and_then(|def| self.set_waves(Some(def)));
+        if next.is_err() {
+            screens::waves::stale();
+        }
+        next.map(|_| ())
+    }
+
+    /// Yes to a Waves question: its edit, or for Reset waves the set as the
+    /// session loaded it.
+    fn answer_waves(&mut self, ask: screens::waves::WavesAsk) -> Result<(), String> {
+        match screens::waves::answered(ask) {
+            Some(edit) => {
+                let facts = self.wave_facts();
+                self.apply_waves(&facts, &edit)
+            }
+            None => {
+                let loaded = self.session.waves_loaded().cloned();
+                self.set_waves(loaded).map(|_| ())
+            }
+        }
+    }
+
+    /// **Stop waves**, and every change of map the session makes: end the
+    /// test that runs or is starting, and a Test waves waiting for its
+    /// ground. Whether a test was stopped.
+    fn stop_test(&mut self, tick: u32) -> bool {
+        self.test_after_build = false;
+        let stopped = self.testing() && self.wave_tests.as_ref().is_some_and(|t| t.stop());
+        if stopped {
+            self.answer_test(Err(WAVES_STOPPED.into()));
+        }
+        self.poll_test(tick);
+        stopped
+    }
+
+    /// **Stop waves**: refused with no test to stop.
+    fn stop_waves(&mut self, tick: u32) -> Result<(), String> {
+        if self.stop_test(tick) {
+            Ok(())
+        } else {
+            Err("No wave test is running.".into())
+        }
+    }
+
+    /// Whether a test runs or is starting: the Forge options' row reads
+    /// **Stop waves**.
+    fn testing(&self) -> bool {
+        self.wave_tests
+            .as_ref()
+            .is_some_and(|t| t.phase() != TestPhase::Off)
+    }
+
+    /// The runtime's word on the test: its start answers the agent, a
+    /// refusal is said, and its end is the notice ("Waves cleared." or
+    /// "Waves stopped.").
+    fn poll_test(&mut self, tick: u32) {
+        let Some(tests) = self.wave_tests.clone() else {
+            return;
+        };
+        while let Some(event) = tests.take_event() {
+            match event {
+                TestEvent::Started => {
+                    let (set, id) = self.test_set.clone().unzip();
+                    self.answer_test(Ok(json!({
+                        "testing": true, "set": set, "id": id.flatten(),
+                    })));
+                }
+                TestEvent::Refused(why) => {
+                    self.answer_test(Err(why.clone()));
+                    self.refuse(why, tick);
+                }
+                TestEvent::Ended(text) => self.notice = Some((text.into(), tick)),
+            }
+        }
+    }
+
+    fn answer_test(&mut self, result: Result<Value, String>) {
+        if let Some(answer) = self.test_answer.take() {
+            let _ = answer.send(result);
+        }
+    }
+
+    /// `forge.waves.test`: start a test (`stop` false) and answer when it
+    /// has started, or at once when the ground builds first; or stop one.
+    pub fn waves_test(&mut self, stop: bool) -> Result<mpsc::Receiver<Result<Value, String>>, String> {
+        let (tx, rx) = mpsc::channel();
+        if stop {
+            let stopped = self.stop_test(self.now);
+            let _ = tx.send(Ok(json!({"testing": false, "stopped": stopped})));
+        } else {
+            self.test_waves(self.now, Some(tx))?;
+        }
+        Ok(rx)
     }
 
     /// What the game knows of the nav besides the session (`forge.nav`).
@@ -721,6 +946,8 @@ impl Editor {
         {
             entry.marker.kind = entry.marker.kind.clone().with_area(draft.area.clone());
             entry.draft_path = matches!(draft.area.shape, game_markers::Shape::Path(_));
+            // A box in hand turns with its marker, as it will once saved.
+            entry.place = super::markers_world::place_of(&entry.marker.kind, entry.place.at, draft.yaw);
         }
         entries.extend(nav);
         entries
@@ -1015,6 +1242,7 @@ impl Editor {
                 used: self.session.objects().len() as u32,
                 limit: self.session.budget() as u32,
                 rebuild: self.session.pending_rebuild() as u32,
+                enemies: crate::firefight::hud::test_enemies(),
                 changing,
                 teach: None,
                 marks: Default::default(),
@@ -1285,6 +1513,7 @@ impl Editor {
             self.refusal = None;
         }
         self.poll_file(tick);
+        self.poll_test(tick);
         self.poll(tick);
         self.net_tick(tick);
         if let Some((ask, name)) = self.ask_wait.take() {
@@ -1384,6 +1613,9 @@ impl Editor {
             placed: self.placed(),
             folders: sheet::folder_rows(&self.session.groups()),
             map_limits: screens::map_limits::Usage::read(memory, self.guard.scenario),
+            testing: self.testing(),
+            waves: Some(self.wave_facts()),
+            enemy_types: super::ground::enemy_types(&self.session),
         });
     }
 
@@ -1449,7 +1681,13 @@ impl Editor {
                 self.prefabs = prefabs;
             }
             Ok(FileResult::Saved(name, listed)) => {
-                self.notice = Some((flows::saved(&name), tick));
+                let saved = flows::saved(&name);
+                let def = self.session.waves_or_default();
+                let text = match screens::waves::first_problem(&def, &self.session.wave_problems()) {
+                    Some(problem) => format!("{saved} {problem}"),
+                    None => saved,
+                };
+                self.notice = Some((text, tick));
                 self.filename = Some(name);
                 self.variants = listed;
                 // No edit runs while a file job does: this is what was saved.
@@ -1476,7 +1714,18 @@ impl Editor {
                 self.session = Arc::new(session);
                 self.ground_building = false;
                 self.copy = play;
-                let text = super::ground::notice(self.session.ground_report(), built);
+                let mut text = super::ground::notice(self.session.ground_report(), built);
+                // Test waves waits for the reload onto the ground; with none
+                // coming the map does not hold it.
+                if self.copy.is_none() && std::mem::take(&mut self.test_after_build) {
+                    if self.session.ground_loaded() {
+                        if let Err(why) = self.begin_test(None) {
+                            text = why;
+                        }
+                    } else {
+                        text = format!("{text} {}", super::ground::NOT_LOADED);
+                    }
+                }
                 self.notice = Some((text, tick));
                 if let Some(answer) = self.ground_answer.take() {
                     let mut reply = self.ground_json();
@@ -1502,6 +1751,7 @@ impl Editor {
                 }
             }
             Err(reason) => {
+                self.test_after_build = false;
                 if std::mem::take(&mut self.ground_building)
                     && let Some(answer) = self.ground_answer.take()
                 {
@@ -1594,7 +1844,7 @@ impl Editor {
                             .ok_or("Aim at a thing of the map.")?,
                     )
                 };
-                if self.area_goal(&thing).is_some() {
+                if self.area_default(&thing).is_some() {
                     sheet::add_area_row(&mut sheet, thing.id);
                 }
                 self.coordinates = Some((target, frame));
@@ -1607,7 +1857,7 @@ impl Editor {
             Menu => return Err("The Forge menu is GAME MENU: press Start.".into()),
             BuildGround => return self.start_ground(tick, false, None),
             GenerateNav => return self.start_nav(tick, None),
-            TestWaves => return self.start_ground(tick, true, None),
+            TestWaves => return self.test_waves(tick, None),
             DialogUp | DialogDown | DialogAccept | DialogBack => {
                 return Err("A screen is up; it takes the pad.".into());
             }
@@ -1959,6 +2209,7 @@ impl Editor {
             }
             Choice::BuildGround => return self.command(tick, Command::BuildGround),
             Choice::TestWaves => return self.command(tick, Command::TestWaves),
+            Choice::StopWaves => return self.stop_waves(tick),
             Choice::GenerateNav => return self.start_nav(tick, None),
             Choice::Rebuild => return self.start_rebuild(tick),
             Choice::Tool(t) => {
@@ -2100,6 +2351,9 @@ impl Editor {
                 }
                 // The keyboard's completion names the variant
                 // (`forge_screens`); a number that got here has none.
+                sheet::NumberField::WavesName => {
+                    return self.edit_waves(screens::waves::Edit::Name(text));
+                }
                 sheet::NumberField::RenameVariant | sheet::NumberField::DuplicateVariant => {
                     return Err("That map variant is gone.".into());
                 }
@@ -2210,6 +2464,20 @@ impl Editor {
                     .ok_or("Aim at an item entry.")?;
                 return self.stage(After::Edited, move |s, w| s.set_games(w, tick, id, set));
             }
+            Choice::Waves(edit) => return self.edit_waves(edit),
+            Choice::Answer {
+                ask: Ask::Waves(ask),
+                yes,
+            } => {
+                if yes {
+                    return self.answer_waves(ask);
+                }
+            }
+            Choice::EnemyType(class, on) => {
+                let mut next = Session::clone(&self.session);
+                super::ground::set_enemy_type(&mut next, &class, on)?;
+                self.session = Arc::new(next);
+            }
             Choice::Notice(text) => self.notice = Some((text, tick)),
         }
         Ok(())
@@ -2308,6 +2576,8 @@ impl Editor {
 
     /// Loads the map variant of file stem `file` over the session.
     fn load(&mut self, tick: u32, file: String) -> Result<(), String> {
+        // The loaded document is another map's: the test's actors go.
+        self.stop_test(tick);
         let (data, session, tags, calls, guard) = (
             self.data.clone(),
             self.session.clone(),

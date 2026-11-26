@@ -613,6 +613,29 @@ fn the_forge_options_build_the_ground_and_test_waves() {
     assert!(ForgeScreen::new(Kind::Options).show(s).is_ok());
 }
 
+/// While a wave test runs (or is starting) the Test waves row reads Stop
+/// waves in its place.
+#[test]
+fn the_row_reads_stop_waves_while_a_test_runs() {
+    let rows = |s: &Sheet| {
+        s.rows
+            .iter()
+            .map(|r| (r.label.clone(), r.act.clone()))
+            .collect::<Vec<_>>()
+    };
+    let idle = rows(&sheet::options_for(&[], &[], false));
+    let testing = rows(&sheet::options_for(&[], &[], true));
+    let at = idle
+        .iter()
+        .position(|(label, _)| label == "Test waves")
+        .unwrap();
+    assert_eq!(testing[at], ("Stop waves".into(), Act::Choose(Choice::StopWaves)));
+    assert!(!testing.iter().any(|(label, _)| label == "Test waves"));
+    assert_eq!(idle.len(), testing.len(), "one row in the other's place");
+    assert_eq!(rows(&sheet::options()), idle);
+    assert!(ForgeScreen::new(Kind::Options).show(sheet::options_for(&[], &[], true)).is_ok());
+}
+
 /// The Overlays page has a row for each overlay of the table, showing On
 /// or Off, and its picker sends the overlay with the value's index.
 #[test]

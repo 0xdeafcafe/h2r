@@ -1098,8 +1098,20 @@ impl Runtime {
         }
         let census = census::census(&things);
         let zones = Zones::read(m, &table);
-        // The bots read a hill from the same areas (`bots::objective`).
-        ::bots::objective::set_flag_areas(table.flag_areas());
+        // The bots read a hill from the same areas (`bots::objective`),
+        // a box turned onto the world's axes with its flag's facing, as
+        // the zone scores it.
+        let facings = engine::objectives::netgame_flag_facings(m).unwrap_or_default();
+        ::bots::objective::set_flag_areas(
+            table
+                .flag_areas()
+                .into_iter()
+                .map(|(i, area)| {
+                    let yaw = facings.get(i as usize).copied().unwrap_or(0.0);
+                    (i, area.turned(yaw))
+                })
+                .collect(),
+        );
         // The record's option bits are its script's; a carried script has
         // no options, so the built-in plays its own defaults. A built-in under a retail record (no script, or a `uses` script's
         // settings) takes its type-area settings as options
@@ -1691,7 +1703,7 @@ impl Runtime {
         let mut out = Vec::new();
         for (handle, z) in r.zones.iter() {
             let Some(t) = r.table.get(handle) else { continue };
-            let zones::Shape::Area { at, area } = &z.shape;
+            let zones::Shape::Area { at, yaw, area } = &z.shape;
             let mut plain = serde_json::Map::new();
             match &area.shape {
                 game_markers::Shape::Radius(radius) => plain.insert("radius".into(), (*radius).into()),
@@ -1701,6 +1713,10 @@ impl Runtime {
             };
             plain.insert("below".into(), area.below.into());
             plain.insert("above".into(), area.above.into());
+            // A box turns with its flag; no other shape has a facing.
+            if matches!(area.shape, game_markers::Shape::Box { .. }) {
+                plain.insert("yaw".into(), (*yaw).into());
+            }
             out.push(wire::Zone {
                 id: t.id(),
                 label: t.text.clone(),

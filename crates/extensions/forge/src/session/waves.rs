@@ -56,6 +56,24 @@ impl Session {
         self.waves.set = self.waves.loaded.clone();
     }
 
+    /// The set as the session loaded it, which **Reset waves** returns to;
+    /// `None` when it loaded none.
+    pub fn waves_loaded(&self) -> Option<&Def> {
+        self.waves.loaded.as_ref()
+    }
+
+    /// Whether the set differs from the one the session loaded: **Start
+    /// from...** asks before it replaces an edited set.
+    pub fn waves_edited(&self) -> bool {
+        self.waves.set != self.waves.loaded
+    }
+
+    /// How many `ff_drop` labels the session places: the drop zones a
+    /// squad can prefer, zone 0 to one less than this.
+    pub fn wave_drops(&self) -> usize {
+        self.drop_count(&self.doc)
+    }
+
     /// The set the session plays: its own, else Holdout.
     pub fn waves_or_default(&self) -> Def {
         self.waves.set.clone().unwrap_or_else(waves::default_set)

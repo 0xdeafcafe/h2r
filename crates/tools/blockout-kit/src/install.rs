@@ -104,8 +104,9 @@ pub fn tag_size(root: &Block) -> u64 {
     cursor
 }
 
-/// What the set gained since it had `slots` slots and `raw` raw resources.
-fn cost_since(set: &TagSet, slots: usize, raw: usize) -> Cost {
+/// What the set gained since it had `slots` slots and `raw` raw resources
+/// (`set.slots.len()` and `set.raw.len()` taken before the adds).
+pub fn cost_since(set: &TagSet, slots: usize, raw: usize) -> Cost {
     let mut cost = Cost {
         raw: set.raw[raw..].iter().map(|r| r.bytes.len() as u64).sum(),
         ..Cost::default()

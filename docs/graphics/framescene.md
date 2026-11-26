@@ -846,8 +846,9 @@ commits. The three parts are built.
     toggle's inputs do not read the part refuses
     (`Refusal::AuxState`).
 
-  Refused parts count by cause as `native_objects_walk_part_aux_state`
-  and `_part_subparts` (parts, where
+  Refused parts count by cause as `native_objects_walk_part_aux_state`,
+  `_part_subparts`, `_part_shader_flag`, `_part_argument`,
+  `_part_program` and `_part_layout` (parts, where
   `walk_unsupported` counts objects). `render.scene` reports each view's
   parts by flag (`part_flags`).
 - **Lights.** The light passes `0x00031170` draw, per light, layer 10
@@ -1927,7 +1928,7 @@ particle updates (rule 2), with `unbalanced` zero.
 Read per frame: `passes`, `command_buffers`, `draws`,
 `native_<stage>_{examined,suppressed,refused_*,prepare_ns,encode_ns,worker_round_trips,command_buffers}`,
 from slice 2 `native_<stage>_{extract_ns,render_prepare_ns,scene_stages,scene_dropped}`,
-`walk_unsupported` and from slice 3 `walk_part_{aux_state,subparts}`, and from slice 1 `scene_dropped_*`,
+`walk_unsupported` and from slice 3 `walk_part_{aux_state,subparts,shader_flag,argument,program,layout}`, and from slice 1 `scene_dropped_*`,
 `scene_unresident`, `scene_readback`, `scene_held_draws`; from slice 5
 `render.scene`'s per-view `fog`, `water` and `post` and the counters
 `scene_{fog,water}_{views,gate_held,drawn,parts}`; from slice 6, with

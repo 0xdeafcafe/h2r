@@ -1,0 +1,19 @@
+screen: forge.wave-problems
+kind: dialog
+layout: large
+backing: over
+opener: main-menu
+states:
+  open:
+    focus: 0
+widgets:
+  title:
+    component: title
+    text: "PROBLEMS"
+  description:
+    component: description
+    at: [15, 74]
+    size: [235, 154]
+  legend:
+    component: legend
+    prompts: [[A, "SELECT"], [B, "BACK"]]

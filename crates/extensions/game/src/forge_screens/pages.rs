@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use super::screen::ForgeScreen;
 use super::sheet::{self, Ask, Group, Item, Kind, Sheet, Tool};
+use super::waves::{self, WavesAsk};
 use crate::ui_kit::input::Input;
 use crate::ui_kit::page::{Driven, Focus, ListEffect, ListPage, Live, Page, described, focus_line};
 use crate::ui_kit::spec::{Describe, ScreenSpec};
@@ -136,9 +137,67 @@ pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
                 "delete-variant",
                 sheet::question(Ask::DeleteVariant, "Courtyard"),
             ),
+            ("reset-waves", sheet::question(Ask::Waves(WavesAsk::Reset), "")),
+            (
+                "remove-round",
+                sheet::question(Ask::Waves(WavesAsk::RemoveRound(1)), ""),
+            ),
+            (
+                "start-from",
+                sheet::question(Ask::Waves(WavesAsk::StartFrom(1)), "Attrition"),
+            ),
         ],
         Kind::Options => {
             let open = sheet::options();
+            let last = at(&open, open.rows.len() - 1);
+            let waves = sheet::options_with_waves(&[], &[], false, true, true);
+            vec![("open", open), ("last", last), ("waves", waves)]
+        }
+        Kind::Waves => {
+            let f = waves::sample_facts();
+            let open = waves::waves_sheet(&f);
+            let last = at(&open, open.rows.len() - 1);
+            vec![("open", open), ("last", last)]
+        }
+        Kind::Rounds => {
+            let open = waves::rounds_sheet(&waves::sample_facts());
+            let add = at(&open, open.rows.len() - 1);
+            vec![("open", open), ("add", add)]
+        }
+        Kind::Round => {
+            let f = waves::sample_facts();
+            let open = waves::round_sheet(&f, 0).expect("round 1");
+            let second = waves::round_sheet(&f, 1).expect("round 2");
+            vec![("open", open), ("second", second)]
+        }
+        Kind::Wave => {
+            let f = waves::sample_facts();
+            let open = waves::wave_sheet(&f, 0, 0).expect("wave 1");
+            let boss = waves::wave_sheet(&f, 0, 4).expect("the boss wave");
+            vec![("open", open), ("boss", boss)]
+        }
+        Kind::Squads => {
+            let open = waves::squads_sheet(&waves::sample_facts(), 0, 0).expect("wave 1");
+            let add = at(&open, open.rows.len() - 1);
+            vec![("open", open), ("add", add)]
+        }
+        Kind::Squad => {
+            let f = waves::sample_facts();
+            let at_squad = |squad| waves::At {
+                round: 0,
+                wave: 0,
+                squad,
+            };
+            let elite = waves::squad_sheet(&f, at_squad(0)).expect("squad 1");
+            let grunt = waves::squad_sheet(&f, at_squad(1)).expect("squad 2");
+            vec![("open", elite), ("unbuilt", grunt)]
+        }
+        Kind::WaveProblems => {
+            let open = waves::problems_sheet(&waves::sample_facts()).expect("problems");
+            vec![("open", open)]
+        }
+        Kind::EnemyTypes => {
+            let open = waves::enemy_types_sheet(&waves::sample_enemy_types()).expect("types");
             let last = at(&open, open.rows.len() - 1);
             vec![("open", open), ("last", last)]
         }

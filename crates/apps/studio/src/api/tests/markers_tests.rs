@@ -171,6 +171,64 @@ fn markers_area_set_stores_clears_and_refuses_by_name() {
 }
 
 #[test]
+fn markers_area_set_stores_a_box_and_a_sphere_and_lists_them() {
+    let t = Temp::new("markers-area-box");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    open_map(&mut api, &mut app, &t, "box.map", fixture::fixture_at_end());
+    make_hill(&mut api, &mut app, false);
+    let set = |api: &mut Api, app: &mut App, p: Value| api.call(app, m::MARKERS_AREA_SET, p);
+    let r = set(&mut api, &mut app, json!({"id": "netgame_flags[0]", "area": {"box": {"half": [2, 1]}, "below": 1}})).unwrap();
+    assert_eq!(
+        r["area"],
+        json!({"box": {"half": ["40000000", "3f800000"], "below": "3f800000", "above": "3fc00000"}})
+    );
+    let hills = call(&mut api, &mut app, m::MARKERS_LIST, json!({"kind": "hill"}));
+    assert_eq!(hills["markers"][0]["area"], r["area"]);
+    assert_eq!(hills["markers"][0]["icon"], "crown");
+    assert_eq!(hills["markers"][0]["use"], Value::Null);
+    // A sphere has no heights: they are stored as zero.
+    let r = set(&mut api, &mut app, json!({"id": "netgame_flags[0]", "area": {"sphere": 3}})).unwrap();
+    assert_eq!(r["area"], json!({"sphere": {"radius": "40400000"}}));
+    // One undo step brings the box back, and the sentences are named.
+    assert!(app.session.undo());
+    assert!(matches!(
+        app.session.flag_area(0).unwrap().shape,
+        scenario_edit::marker_view::game_markers::Shape::Box { .. }
+    ));
+    for bad in [
+        json!({"box": {"half": [0.1, 2]}}),
+        json!({"box": {"half": [2]}}),
+        json!({"sphere": 100}),
+        json!({"sphere": 2, "above": 1}),
+        json!({"box": {"half": [2, 2]}, "radius": 2}),
+    ] {
+        let e = set(&mut api, &mut app, json!({"id": "netgame_flags[0]", "area": bad})).unwrap_err();
+        assert_eq!(e.code, code::INVALID_PARAMS, "{bad}");
+    }
+}
+
+/// `markers.list` names each marker's icon and a spawn's use.
+#[test]
+fn markers_list_names_the_icon_and_a_spawns_use() {
+    let t = Temp::new("markers-icon");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let all = call(&mut api, &mut app, m::MARKERS_LIST, json!({}));
+    for r in all["markers"].as_array().unwrap() {
+        let kind = scenario_edit::marker_view::game_markers::Kind::samples()
+            .into_iter()
+            .find(|k| k.name() == r["kind"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(r["icon"], json!(kind.icon().map(|i| i.name())), "{r}");
+        match r["kind"].as_str().unwrap() {
+            "spawn" => assert_eq!(r["use"], "respawn"),
+            _ => assert_eq!(r["use"], Value::Null),
+        }
+    }
+}
+
+#[test]
 fn a_hills_corner_takes_no_area_and_converting_gives_one_flag_with_the_hull() {
     let t = Temp::new("markers-area-convert");
     let mut app = app(&t);
@@ -258,6 +316,14 @@ fn markers_render_refuses_by_name() {
         (json!({"kind": "hill", "area": {"path": [[0, 0], [1, 1], [2, 2]]}, "out": out}), "area"),
         (json!({"kind": "hill", "area": {}, "out": out}), "area"),
         (json!({"size": [0, 5], "out": out}), "size"),
+        (json!({"form": "both", "out": out}), "form"),
+        (json!({"kind": "spawn", "use": "reserve", "out": out}), "use"),
+        (json!({"kind": "hill", "use": "start", "out": out}), "use"),
+        (json!({"kind": "hill", "area": {"box": {"half": [1]}}, "out": out}), "area"),
+        (json!({"kind": "hill", "area": {"box": {"half": [0.1, 2]}}, "out": out}), "area"),
+        (json!({"kind": "hill", "area": {"sphere": 100}, "out": out}), "area"),
+        (json!({"kind": "hill", "area": {"sphere": 2, "below": 1}, "out": out}), "area"),
+        (json!({"kind": "hill", "area": {"sphere": 2, "radius": 2}, "out": out}), "area"),
     ] {
         let e = api.call(&mut app, m::MARKERS_RENDER, params.clone()).unwrap_err();
         assert_eq!(e.code, code::INVALID_PARAMS, "{params}");
@@ -298,7 +364,12 @@ fn markers_render_writes_the_sheet_with_every_kind() {
     }
     // A kind with a team colour is drawn in red, blue and neutral: a
     // respawn point's three, then a start's.
-    let spawns: Vec<_> = v["kinds"].as_array().unwrap().iter().filter(|k| k["kind"] == "spawn").collect();
+    let spawns: Vec<_> = v["kinds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|k| k["kind"] == "spawn" && k["form"] == "edit")
+        .collect();
     let teams = [json!(0), json!(1), Value::Null];
     assert_eq!(spawns.iter().map(|k| k["team"].clone()).collect::<Vec<_>>(), [teams.clone(), teams].concat());
     use scenario_edit::marker_view::game_markers::{Kind, SpawnUse};
@@ -306,6 +377,57 @@ fn markers_render_writes_the_sheet_with_every_kind() {
         assert_eq!(k["lines"].as_u64().unwrap(), Kind::Spawn(using).mesh([1.0; 3]).lines.len() as u64);
     }
     assert!(sheet.exists());
+    assert_eq!(v["forms"], json!(["edit", "play"]));
+    // Every kind is on the sheet in both forms, the play form's rows below
+    // the edit form's, and a kind with no play form is an empty cell.
+    let rows_of = |form: &str| -> Vec<&Value> {
+        v["kinds"].as_array().unwrap().iter().filter(|k| k["form"] == form).collect()
+    };
+    let (edit, play) = (rows_of("edit"), rows_of("play"));
+    assert_eq!(edit.len(), play.len());
+    let last_edit = edit.iter().map(|k| k["cell"][1].as_u64().unwrap()).max().unwrap();
+    assert!(play.iter().all(|k| k["cell"][1].as_u64().unwrap() > last_edit));
+    let volume = |name: &str| name.ends_with("volume") || name == "bsp_switch";
+    for k in play.iter().filter(|k| !volume(k["kind"].as_str().unwrap())) {
+        let empty = k["lines"] == 0 && k["triangles"] == 0;
+        let none = matches!(k["kind"].as_str().unwrap(), "spawn" | "weapon_spawn" | "vehicle_spawn"
+            | "equipment_spawn" | "ff_drop" | "ff_base" | "ff_cover" | "siege_line");
+        assert_eq!(empty, none, "{}", k["kind"]);
+    }
+    // A play render of a flag return is its capture plate, and the same
+    // mesh of lines and triangles as the plate alone has.
+    let ret: Vec<_> = play.iter().filter(|k| k["kind"] == "flag_return").collect();
+    assert!(!ret.is_empty() && ret.iter().all(|k| k["lines"].as_u64().unwrap() > 0));
+    // Each row names its icon, a volume's null.
+    for k in v["kinds"].as_array().unwrap() {
+        assert_eq!(k["icon"].is_null(), volume(k["kind"].as_str().unwrap()), "{k}");
+    }
+
+    // `form` draws that form alone, and `use` keeps one use of a spawn.
+    let one = |api: &mut Api, app: &mut App, name: &str, p: Value| {
+        let mut params = json!({"out": t.path(name), "size": [160, 96]});
+        params.as_object_mut().unwrap().extend(p.as_object().unwrap().clone());
+        call(api, app, m::MARKERS_RENDER, params)
+    };
+    let alone = one(&mut api, &mut app, "play.png", json!({"kind": "spawn", "form": "play", "use": "start"}));
+    assert_eq!(alone["forms"], json!(["play"]));
+    let cells = alone["kinds"].as_array().unwrap();
+    assert_eq!(cells.len(), 3, "{alone}");
+    assert!(cells.iter().all(|k| k["form"] == "play" && k["lines"] == 0 && k["triangles"] == 0));
+    assert!(cells.iter().all(|k| k["bounds"].is_null()));
+    let ret = one(&mut api, &mut app, "ret.png", json!({"kind": "flag_return", "form": "play", "team": 0}));
+    let plate = scenario_edit::marker_view::game_markers::Kind::FlagReturn(
+        scenario_edit::marker_view::game_markers::Area::plate(),
+    )
+    .mesh_in(scenario_edit::marker_view::game_markers::Form::Play, [1.0; 3]);
+    assert_eq!(ret["kinds"][0]["lines"].as_u64().unwrap(), plate.lines.len() as u64);
+    assert_eq!(ret["kinds"][0]["triangles"].as_u64().unwrap(), plate.tris.len() as u64);
+    // A box and a sphere change the picture as a radius does.
+    let box_a = one(&mut api, &mut app, "box.png", json!({"kind": "hill", "team": 1, "form": "play", "area": {"box": {"half": [2, 1]}}}));
+    let sphere = one(&mut api, &mut app, "sphere.png", json!({"kind": "hill", "team": 1, "form": "play", "area": {"sphere": 2}}));
+    assert_ne!(png_pixels(&t.path("box.png")), png_pixels(&t.path("sphere.png")));
+    assert!(box_a["kinds"][0]["lines"].as_u64().unwrap() > 0);
+    assert!(sphere["kinds"][0]["lines"].as_u64().unwrap() > 0);
 
     // One kind, one team: the picture is the hill's, and a wider radius
     // is another picture.

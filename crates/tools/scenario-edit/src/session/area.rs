@@ -48,6 +48,15 @@ impl Session {
         (!scenario.is_hill_corner(index)).then_some((m.position, default, AreaFrom::Default))
     }
 
+    /// The yaw netgame flag `index` faces, in radians counter-clockwise
+    /// from +x: the turn of a box area. 0 for a flag not placed.
+    pub fn flag_yaw(&self, index: usize) -> f32 {
+        self.markers()
+            .iter()
+            .find(|m| m.block == BlockKind::NetgameFlags && m.index == index)
+            .map_or(0.0, |m| crate::area_edit::yaw_of(m.axes[0]))
+    }
+
     /// Sets or clears netgame flag `index`'s area as one undo step, or
     /// merged into the last with the same `merge` key (a drag).
     pub fn set_area(&mut self, index: usize, area: Option<Area>, merge: Option<u64>) -> Result<()> {

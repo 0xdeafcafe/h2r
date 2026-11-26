@@ -1,7 +1,8 @@
+use std::collections::BTreeMap;
 use std::io::{Read, Seek};
 
 use forge_doc::{
-    Apply, BlockKind, F32, FieldWrite, Labels, Links, Placement, Printed, Refusal, TagKey,
+    Apply, BlockKind, F32, FieldWrite, Labels, Links, Pieces, Placement, Printed, Refusal, TagKey,
     TagWrite, Value, WorldBounds,
 };
 use map::{FourCC, Map, Tag, TagQuery};
@@ -57,6 +58,9 @@ pub(super) struct Materialiser<'a, R> {
     tags: TagFields,
     device_groups: Vec<Vec<u32>>,
     prints: Vec<Printed>,
+    /// Each installed block-out definition's crate palette row, by name
+    /// (`crate::blockout::Report::palette_rows`).
+    piece_rows: BTreeMap<String, u32>,
 }
 
 /// What the save leaves to write: new tag strings, and the device groups
@@ -75,7 +79,14 @@ impl<'a, R: Read + Seek> Materialiser<'a, R> {
             tags: TagFields::default(),
             device_groups: Vec::new(),
             prints: Vec::new(),
+            piece_rows: BTreeMap::new(),
         }
+    }
+
+    /// The crate palette rows the block-out definitions were given.
+    pub fn with_pieces(mut self, rows: BTreeMap<String, u32>) -> Self {
+        self.piece_rows = rows;
+        self
     }
 
     pub fn finish(self) -> Result<Finished, Error> {
@@ -120,6 +131,13 @@ impl<'a, R: Read + Seek> Materialiser<'a, R> {
             Value::Int(n) => ScenarioValue::Int(*n),
             Value::Float(n) => ScenarioValue::Float(n.get()),
             Value::Vec3(v) => ScenarioValue::Vec3(v.map(F32::get)),
+            // A block-out piece's placeholder: no row until its definition
+            // is installed; `Apply::pieces` writes the row.
+            Value::Tag(Some(key))
+                if field.role == Role::PaletteIndex && *key == forge_doc::piece_tag() =>
+            {
+                ScenarioValue::Int(-1)
+            }
             Value::Tag(key) if field.role == Role::PaletteIndex => {
                 let tag = self.reference(key.as_ref())?;
                 let index = if tag.is_none() {
@@ -191,6 +209,28 @@ impl<R: Read + Seek> Apply for Materialiser<'_, R> {
     /// reads the ground labels back from the finished scenario
     /// (`crate::ground`), so nothing is kept here.
     fn labels(&mut self, _: &Labels) -> forge_doc::Result<()> {
+        Ok(())
+    }
+
+    /// Each piece's placement takes its definition's crate palette row,
+    /// which `crate::blockout::install` added before the scenario opened.
+    fn pieces(&mut self, pieces: &Pieces) -> forge_doc::Result<()> {
+        let block = BlockKind::Crates;
+        for piece in &pieces.active {
+            let name = piece.def.name();
+            let row = self
+                .piece_rows
+                .get(&name)
+                .ok_or_else(|| invalid("piece", format!("{name} was not installed")))?;
+            self.session
+                .apply(Command::set(
+                    block,
+                    piece.index as usize,
+                    "palette index",
+                    ScenarioValue::Int(i64::from(*row)),
+                ))
+                .map_err(|e| invalid(block.name(), e))?;
+        }
         Ok(())
     }
 

@@ -1,13 +1,14 @@
 //! The inspector's **Area** rows for a netgame flag
-//! (docs/game/gametype-markers.md, "Studio"): the shape (Radius or Path),
-//! the radius, Below and Above, the path's points as typed numbers, Clear,
+//! (docs/game/gametype-markers.md, "Studio"): the shape (Radius, Box,
+//! Sphere or Path), the radius or half lengths, Below and Above (a sphere
+//! has none), the path's points as typed numbers, Clear,
 //! and **Convert to area** for a retail hill's corners. Every edit goes
 //! through [`Action::SetArea`] as one undo step (a drag is one step), and
 //! an area `Area::validate` refuses goes to the status line with its
 //! sentence and leaves the document as it was.
 use dear_imgui_rs::Ui;
 use scenario_edit::AreaFrom;
-use scenario_edit::area_edit;
+use scenario_edit::area_edit::{self, ShapeKind};
 use scenario_edit::marker_view::game_markers::area::MIN_POINTS;
 use scenario_edit::marker_view::game_markers::{Area, Shape};
 
@@ -58,40 +59,46 @@ pub(super) fn rows(ui: &Ui, app: &mut App, index: usize) {
     }
     let _id = ui.push_id(index);
 
-    if matches!(area.shape, Shape::Box { .. } | Shape::Sphere(_)) {
-        ui.text_disabled("A box or a sphere is not editable here yet: the Shape row leaves it as it is.");
-    }
-
     // Shape.
-    let path = matches!(area.shape, Shape::Path(_));
+    let kind = ShapeKind::of(&area.shape);
     ui.text("Shape");
-    ui.same_line();
-    for (name, is_path) in [("Radius", false), ("Path", true)] {
-        let label = if path == is_path {
-            format!("[{name}]")
+    for k in ShapeKind::ALL {
+        ui.same_line();
+        let label = if k == kind {
+            format!("[{}]", k.name())
         } else {
-            name.to_owned()
+            k.name().to_owned()
         };
-        if ui.small_button(label) && path != is_path {
-            let next = area_edit::with_shape(&area, is_path).map_err(|e| e.to_string());
+        if ui.small_button(label) && k != kind {
+            let yaw = app.session.flag_yaw(index);
+            let next = area_edit::with_shape(&area, k, yaw).map_err(|e| e.to_string());
             store(app, index, next, false);
-        }
-        if !is_path {
-            ui.same_line();
         }
     }
 
     let mut next = area.clone();
     let mut changed = false;
     let mut done = false;
-    if let Shape::Radius(r) = &mut next.shape {
-        changed |= drag_fmt(ui, "Radius".to_owned(), 0.05, "%.2f", r);
+    match &mut next.shape {
+        Shape::Radius(r) | Shape::Sphere(r) => {
+            changed |= drag_fmt(ui, "Radius".to_owned(), 0.05, "%.2f", r);
+            done |= ui.is_item_deactivated_after_edit();
+        }
+        Shape::Box { half } => {
+            for (i, name) in ["Half x", "Half y"].into_iter().enumerate() {
+                changed |= drag_fmt(ui, name.to_owned(), 0.05, "%.2f", &mut half[i]);
+                done |= ui.is_item_deactivated_after_edit();
+            }
+        }
+        Shape::Path(_) => {}
+    }
+    // A ball has no height: its radius is all of it.
+    if !matches!(next.shape, Shape::Sphere(_)) {
+        changed |= drag_fmt(ui, "Below".to_owned(), 0.05, "%.2f", &mut next.below);
+        done |= ui.is_item_deactivated_after_edit();
+        changed |= drag_fmt(ui, "Above".to_owned(), 0.05, "%.2f", &mut next.above);
         done |= ui.is_item_deactivated_after_edit();
     }
-    changed |= drag_fmt(ui, "Below".to_owned(), 0.05, "%.2f", &mut next.below);
-    done |= ui.is_item_deactivated_after_edit();
-    changed |= drag_fmt(ui, "Above".to_owned(), 0.05, "%.2f", &mut next.above);
-    done |= ui.is_item_deactivated_after_edit();
 
     let mut remove = None;
     if let Shape::Path(points) = &mut next.shape {

@@ -1,5 +1,6 @@
 mod area;
 mod variants;
+mod waves;
 
 use super::*;
 use agent::forge::local::OBJECT_GONE;
@@ -12,6 +13,62 @@ pub(super) fn editor() -> Editor {
 
 fn editor_in(data: &Path) -> Editor {
     Editor::new(opened(), data, 1, calls::shared())
+}
+
+/// The Firefight runtime as Test waves sees it: what it was asked to play
+/// and how often it was stopped, with the events the real one gives.
+#[derive(Default)]
+pub(super) struct FakeTests {
+    pub asked: std::sync::Mutex<Vec<String>>,
+    pub stops: std::sync::atomic::AtomicUsize,
+    running: std::sync::atomic::AtomicBool,
+    events: std::sync::Mutex<std::collections::VecDeque<TestEvent>>,
+}
+
+impl WaveTests for FakeTests {
+    fn start(&self, def: ::firefight::Def) -> Result<(), String> {
+        if self.phase() != TestPhase::Off {
+            return Err(TEST_RUNNING.into());
+        }
+        self.asked.lock().unwrap().push(def.name);
+        self.running.store(true, Ordering::SeqCst);
+        self.events.lock().unwrap().push_back(TestEvent::Started);
+        Ok(())
+    }
+    fn stop(&self) -> bool {
+        self.stops.fetch_add(1, Ordering::SeqCst);
+        let was = self.running.swap(false, Ordering::SeqCst);
+        if was {
+            self.events.lock().unwrap().push_back(TestEvent::Ended(WAVES_STOPPED));
+        }
+        was
+    }
+    fn phase(&self) -> TestPhase {
+        if self.running.load(Ordering::SeqCst) {
+            TestPhase::Running
+        } else {
+            TestPhase::Off
+        }
+    }
+    fn take_event(&self) -> Option<TestEvent> {
+        self.events.lock().unwrap().pop_front()
+    }
+}
+
+impl FakeTests {
+    pub fn asked(&self) -> Vec<String> {
+        self.asked.lock().unwrap().clone()
+    }
+    pub fn stops(&self) -> usize {
+        self.stops.load(Ordering::SeqCst)
+    }
+}
+
+/// `e` with a fake runtime for its wave tests.
+pub(super) fn with_tests(e: &mut Editor) -> Arc<FakeTests> {
+    let tests = Arc::new(FakeTests::default());
+    e.wave_tests = Some(tests.clone());
+    tests
 }
 
 /// The test room as the host opens it: a shelf in the palette, two crates
@@ -945,10 +1002,14 @@ mod ground {
         assert_eq!(status["ground"]["problems"], 1);
         assert_eq!(status["ground"]["loaded"], false);
 
-        // Test waves with the ground current builds nothing.
+        // Test waves with the ground current builds nothing; this game
+        // reloads no map, so the running map cannot hold it to test on.
         e.command(6, Command::TestWaves).unwrap();
         finish(&mut e, 7);
-        assert_eq!(e.notice.as_ref().unwrap().0, "AI ground is current.");
+        assert_eq!(
+            e.notice.as_ref().unwrap().0,
+            format!("AI ground is current. {}", installed::NOT_LOADED)
+        );
         // Another marker makes it stale, and Test waves builds again.
         e.command(8, drop_at(2.)).unwrap();
         e.poll(9);
@@ -1007,6 +1068,27 @@ mod ground {
         assert!(!e.busy());
         assert_eq!(e.status()["ground"]["available"], false);
         assert_eq!(e.ground_json()["state"], "not_built");
+    }
+
+    /// A ground build stops a running test before it builds: the ground's
+    /// map has none of the test's actors.
+    #[test]
+    fn a_ground_build_stops_the_test_first() {
+        let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        reload::set_reloads(false);
+        installed::install(Box::new(Kit { refuse: false }));
+        let mut e = ground_editor();
+        let tests = with_tests(&mut e);
+        tests.start(::firefight::builtin::definitions()[0].clone()).unwrap();
+        e.poll_test(1);
+        assert!(e.testing());
+        e.command(2, Command::BuildGround).unwrap();
+        assert_eq!(tests.stops(), 1, "stopped before the build");
+        assert!(!e.testing());
+        assert!(e.ground_building);
+        finish(&mut e, 3);
+        assert_eq!(e.session.ground_state(), GroundState::Current);
+        installed::uninstall();
     }
 
     #[test]
@@ -1594,6 +1676,118 @@ mod rebuild {
         settle(&mut e, 4);
         assert!(e.take_copy().is_some());
         installed::uninstall();
+        reload::set_reloads(false);
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
+    /// A ground builder that leaves its map for the reload, as the app's.
+    struct LeavesGround;
+
+    impl forge::GroundBuilder for LeavesGround {
+        fn recipe(&self) -> forge::GroundRecipe {
+            forge::GroundRecipe {
+                kit_version: 3,
+                home: 0,
+                probe: false,
+            }
+        }
+
+        fn build(&mut self, _: &forge_doc::ForgeDoc) -> Result<forge::GroundReport, String> {
+            reload::keep_ground_copy(b"ground map".to_vec());
+            Ok(forge::GroundReport {
+                zones: 1,
+                squads: 4,
+                ..forge::GroundReport::default()
+            })
+        }
+    }
+
+    /// Test waves runs the director only on a map that holds the current
+    /// ground: without it the row builds the ground and asks the runtime
+    /// nothing until the session goes on over the map reloaded onto it;
+    /// with it the runtime is asked at once. Stop waves ends the test.
+    #[test]
+    fn a_test_starts_only_on_loaded_ground() {
+        use crate::forge_glue::ground as installed;
+        let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        reload::set_reloads(true);
+        installed::install(Box::new(LeavesGround));
+        let data = scratch("test-waves");
+        let mut e = editor_in(&data);
+        e.set_map_name("testroom".into());
+        let tests = with_tests(&mut e);
+        assert!(!e.session.ground_loaded());
+        let answer = e.waves_test(false).unwrap();
+        assert_eq!(answer.try_recv().unwrap().unwrap()["building"], true);
+        assert!(e.ground_building, "the ground builds first");
+        settle(&mut e, 2);
+        let copy = e.take_copy().expect("the ground's map is handed over");
+        assert!(tests.asked().is_empty(), "not before the map holds the ground");
+
+        // The session goes on over the map reloaded onto it: the test
+        // starts there, with the session's set.
+        let mut e = e
+            .reopen(opened(), 9, &copy, |_, _| None, 5)
+            .map_err(|(why, _)| why)
+            .unwrap();
+        assert!(e.session.ground_loaded());
+        assert_eq!(tests.asked(), ["Holdout"]);
+        e.poll(6);
+        e.poll_test(6);
+        assert!(e.testing());
+        // One at a time.
+        assert_eq!(e.test_waves(7, None), Err(TEST_RUNNING.into()));
+        assert_eq!(tests.asked().len(), 1);
+
+        // Stop waves ends it, and the session says so.
+        e.choose(8, Choice::StopWaves).unwrap();
+        assert_eq!(tests.stops(), 1);
+        assert!(!e.testing());
+        assert_eq!(e.notice, Some((WAVES_STOPPED.into(), 8)));
+        assert_eq!(
+            e.choose(9, Choice::StopWaves),
+            Err("No wave test is running.".into())
+        );
+
+        // On loaded ground Test waves asks at once and builds nothing; the
+        // agent hears once it started, with the set it plays.
+        let answer = e.waves_test(false).unwrap();
+        assert!(e.file_job.is_none(), "no build");
+        assert_eq!(tests.asked(), ["Holdout", "Holdout"]);
+        assert!(answer.try_recv().is_err(), "not before the runtime takes it");
+        e.poll_test(10);
+        let reply = answer.try_recv().unwrap().unwrap();
+        assert_eq!(reply["testing"], true);
+        assert_eq!(reply["set"], "Holdout");
+        // An agent's stop.
+        let stopped = e.waves_test(true).unwrap();
+        assert_eq!(stopped.try_recv().unwrap().unwrap()["stopped"], true);
+        assert!(!e.testing());
+
+        installed::uninstall();
+        reload::set_reloads(false);
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
+    /// Rebuild map stops a running test before it builds: the rebuilt map
+    /// has none of the test's actors.
+    #[test]
+    fn a_rebuild_stops_the_test_first() {
+        let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        reload::set_reloads(true);
+        reload::install_builder(Box::new(Bytes));
+        let data = scratch("rebuild-test");
+        let mut e = editor_in(&data);
+        e.set_map_name("testroom".into());
+        place(&mut e, 31);
+        let tests = with_tests(&mut e);
+        tests.start(::firefight::builtin::definitions()[0].clone()).unwrap();
+        e.poll_test(2);
+        e.choose(3, Choice::Rebuild).unwrap();
+        assert_eq!(tests.stops(), 1);
+        assert!(!e.testing());
+        settle(&mut e, 4);
+        reload::uninstall_builder();
         reload::set_reloads(false);
         std::fs::remove_dir_all(data).unwrap();
     }

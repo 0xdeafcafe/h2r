@@ -219,8 +219,9 @@ pub mod pill_block {
 pub mod forge {
     use super::*;
     use crate::views::forge::{
-        BUDGET_COUNT, BUDGET_END, BUDGET_LONGEST, BUDGET_METER, BUDGET_PILL, GIZMO, METER_DOWN,
-        NAME, NAV_FROM, NAV_LONGEST, NAV_MONITORS, NAV_TARGET, NOTICE, NOTICE_LONGEST, PROMPT,
+        BUDGET_COUNT, BUDGET_END, BUDGET_LONGEST, BUDGET_METER, BUDGET_PILL, ENEMIES_COUNT,
+        ENEMIES_END, ENEMIES_LONGEST, ENEMIES_PILL, ENEMIES_STEP, GIZMO, METER_DOWN, NAME,
+        NAV_FROM, NAV_LONGEST, NAV_MONITORS, NAV_TARGET, NOTICE, NOTICE_LONGEST, PROMPT,
         PROMPT_LONGEST, REBUILD_COUNT, REBUILD_END, REBUILD_LONGEST, REBUILD_PILL, REBUILD_STEP,
         TEACH, TEACH_LONGEST, TOOL, TOOL_LONGEST,
     };
@@ -270,6 +271,7 @@ pub mod forge {
             Place::new(Anchor::TopRight, (-6, 6)),
         ));
         elements.extend(pill(REBUILD_PILL, REBUILD_END, REBUILD_COUNT, REBUILD_LONGEST, REBUILD_STEP));
+        elements.extend(pill(ENEMIES_PILL, ENEMIES_END, ENEMIES_COUNT, ENEMIES_LONGEST, ENEMIES_STEP));
         let nav = |id| Element::channel(id, Kind::Navpoint { longest: NAV_LONGEST });
         elements.extend([NAV_TARGET, NAV_FROM].map(nav));
         elements.extend(NAV_MONITORS.map(nav));

@@ -1176,3 +1176,162 @@ fn a_game_start_keeps_the_pick_it_was_built_from() {
     it.lock().activate(&mut m, OPTIONS, false);
     assert_eq!(crate::map_variant::running(), None, "no pick, no running pick");
 }
+
+// ---- wave tests (docs/game/forge-firefight.md, "Test waves") ----
+
+fn holdout() -> ::firefight::Def {
+    ::firefight::builtin::definitions()[0].clone()
+}
+
+/// In a Forge session a lobby match stays off at the game's start, and
+/// Test waves is the one way the director runs there: asked, it starts at
+/// the next tick boundary as the host, over the kit the map holds.
+#[test]
+fn a_lobby_match_stays_off_in_forge_mode() {
+    use crate::firefight::feature::WaveTests;
+    use crate::lobby_start::{self, Mode};
+    lobby_start::set_mode(Mode::Forge);
+    let (shared, _) = shared(false);
+    let (mut m, _) = guest(true, 1);
+    assert_eq!(
+        shared.lock().start(&mut m, false),
+        "firefight: idle: Firefight is off in Game Setup"
+    );
+    assert!(!shared.lock().state().running);
+    assert_eq!(shared.phase(), TestPhase::Off);
+
+    shared.start(holdout()).unwrap();
+    assert_eq!(shared.phase(), TestPhase::Starting);
+    assert_eq!(shared.start(holdout()), Err(TEST_RUNNING.into()));
+    let work = shared.lock().pre_tick(&mut m);
+    assert_eq!(shared.take_event(), Some(TestEvent::Started));
+    assert_eq!(shared.take_event(), None, "once");
+    assert_eq!(shared.phase(), TestPhase::Running);
+    let state = shared.lock().state();
+    assert!(state.running && state.test, "{state:?}");
+    assert_eq!(state.role, Some(wire::Role::Host));
+    assert_eq!(state.director.unwrap().phase, "warmup");
+    assert!(work.is_some_and(|w| w.sight.is_some()), "the director looks at the zones");
+    assert_eq!(m.u8(AI).unwrap(), 1, "the AI switch is on");
+    // A snapshot is refused while it runs, as in a match.
+    assert!(shared.lock().running().is_some());
+    // A film's playback tests nothing.
+    let (film, _) = self::shared(true);
+    assert_eq!(film.start(holdout()), Err("A film's playback tests no waves.".into()));
+    lobby_start::clear();
+}
+
+/// A test needs the session's AI ground on the running map: on a map with
+/// no kit it is refused by name and nothing runs.
+#[test]
+fn a_test_is_refused_on_a_map_without_ground() {
+    let (shared, _) = shared(false);
+    let (mut m, _) = guest(false, 1);
+    shared.lock().ask_test(holdout(), test_settings()).unwrap();
+    assert!(shared.lock().pre_tick(&mut m).is_none());
+    assert_eq!(
+        shared.lock().take_test_event(),
+        Some(TestEvent::Refused("The running map has no AI ground.".into()))
+    );
+    assert_eq!(shared.lock().test_phase(), TestPhase::Off);
+    // A synchronous peer is not the host's seat.
+    let (mut peer, _) = guest(true, WORLD_SYNC_CLIENT);
+    assert_eq!(
+        shared.lock().start_test(&mut peer, holdout(), test_settings()),
+        Err("Only the host's seat tests waves.".into())
+    );
+}
+
+/// Stopping a test ends it at once (no director, no blob) and erases every
+/// slot the kit has at the next boundary, before the tick runs; the
+/// session is told the waves stopped.
+#[test]
+fn stopping_erases_every_slot() {
+    let (shared, _) = shared(false);
+    let (mut m, _) = guest(true, 1);
+    shared
+        .lock()
+        .start_test(&mut m, holdout(), test_settings())
+        .unwrap();
+    assert!(shared.lock().testing());
+    assert!(shared.lock().stop_test(TestEnd::Stopped));
+    assert!(!shared.lock().testing());
+    let state = shared.lock().state();
+    assert!(!state.running && !state.test);
+    assert_eq!(
+        shared.lock().take_test_event(),
+        Some(TestEvent::Ended(WAVES_STOPPED))
+    );
+    let work = shared.lock().pre_tick(&mut m).expect("the erases");
+    assert_eq!(work.tick, TICK + 1);
+    assert_eq!(
+        work.calls,
+        [(0, Call::Squad(SquadOp::Erase { slot: 0 }))],
+        "the fixture's kit has one slot"
+    );
+    assert_eq!(work.sight, None);
+    let (calls, _) = drive(&shared, m.clone(), work, false);
+    assert_eq!(calls[0].target, points::AI_ERASE.base);
+    assert_eq!(calls.last().unwrap().target, points::GAME_TICK.base);
+    // Once: nothing more is erased, and a second stop finds nothing.
+    assert!(shared.lock().pre_tick(&mut m).is_none());
+    assert!(!shared.lock().stop_test(TestEnd::Stopped));
+    // A start asked for and not yet taken is stopped too.
+    shared.lock().ask_test(holdout(), test_settings()).unwrap();
+    assert!(shared.lock().stop_test(TestEnd::Stopped));
+    assert_eq!(shared.lock().test_phase(), TestPhase::Off);
+}
+
+/// The test's own `Finish` ends the test, not the game: no end call, every
+/// slot erased in that tick's body, and the session says the waves were
+/// cleared. A test reports no score and no result.
+#[test]
+fn a_tests_finish_erases_its_squads_and_not_the_game() {
+    let reported = Arc::new(Mutex::new(0usize));
+    let (shared, _) = shared(false);
+    let seen = Arc::clone(&reported);
+    shared
+        .lock()
+        .set_reports(Box::new(move |_| *seen.lock().unwrap() += 1));
+    let (mut m, _) = guest(true, 1);
+    shared
+        .lock()
+        .start_test(&mut m, holdout(), test_settings())
+        .unwrap();
+    shared
+        .lock()
+        .command(wire_command(json!({"command": {"finish": {"outcome": "won"}}})))
+        .unwrap();
+    let work = shared.lock().pre_tick(&mut m).expect("the erases");
+    assert!(
+        !work.calls.iter().any(|(_, c)| *c == Call::End),
+        "{:?}",
+        work.calls
+    );
+    assert!(work.calls.contains(&(0, Call::Squad(SquadOp::Erase { slot: 0 }))));
+    assert_eq!(work.sight, None);
+    assert!(!shared.lock().testing());
+    assert_eq!(
+        shared.lock().take_test_event(),
+        Some(TestEvent::Ended(WAVES_CLEARED))
+    );
+    assert_eq!(*reported.lock().unwrap(), 0);
+}
+
+/// A new map ends a test of the last one, and a start asked for there is
+/// not taken on the new one.
+#[test]
+fn a_new_map_ends_the_test() {
+    let (shared, _) = shared(false);
+    let (mut m, _) = guest(true, 1);
+    shared
+        .lock()
+        .start_test(&mut m, holdout(), test_settings())
+        .unwrap();
+    shared.lock().start(&mut m, false);
+    assert_eq!(
+        shared.lock().take_test_event(),
+        Some(TestEvent::Ended(WAVES_STOPPED))
+    );
+    assert!(!shared.lock().testing());
+}

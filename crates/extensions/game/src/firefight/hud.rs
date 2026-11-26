@@ -12,9 +12,12 @@
 //! channel's capture sends it (`actor_net::host::Host::set_mode`) and a
 //! client extracts the HUD portion in `actor_net::roles` before [`Mode::decode`].
 //!
-//! **The view.** [`view`] is a pure function of a [`Mode`] and the viewing
-//! player's roster slot. It reads no game memory and no clock, so the host
-//! and a client agree by construction, and a test can show it.
+//! **The view.** [`view`] is a pure function of a [`Mode`], the viewing
+//! player's roster slot and the [`Scope`]: a match, or a wave test in a
+//! Forge session seen from the biped or from the monitor
+//! (docs/game/forge-firefight-ui.md, "The Firefight HUD", while editing).
+//! It reads no game memory and no clock, so the host and a client agree by
+//! construction, and a test can show it.
 //!
 //! **The HUD.** The HUD kit's `firefight` HUD
 //! (`hud_kit_core::views::firefight`, docs/game/forge-firefight-ui.md,
@@ -26,6 +29,7 @@
 //! player, its own values for each split-screen player, and sends each
 //! the notes a change makes ([`Feed`], [`tick_all`]).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ::firefight::director::Phase;
@@ -447,12 +451,69 @@ pub fn received() -> &'static Slot {
 }
 
 /// What the HUD shows on this machine for the player at roster slot
-/// `local`: the host's own blob or else the one received, decoded and
-/// viewed the same way. None while no mode runs; an error is a blob this
-/// build cannot read.
-pub fn current(local: u8) -> Option<Result<View, Error>> {
+/// `local` seen in `scope`: the host's own blob or else the one received,
+/// decoded and viewed the same way. None while no mode runs; an error is a
+/// blob this build cannot read.
+pub fn current(local: u8, scope: Scope) -> Option<Result<View, Error>> {
     let blob = slot().get().or_else(|| received().get())?;
-    Some(Mode::decode(&blob).map(|mode| view_of(&mode, local)))
+    Some(Mode::decode(&blob).map(|mode| view_of(&mode, local, scope)))
+}
+
+// ---- a wave test ----
+
+/// What the director runs is a wave test in a Forge session
+/// (`super::runtime::Runtime::start_test`), not a match.
+static TESTING: AtomicBool = AtomicBool::new(false);
+
+/// The runtime says a wave test runs, or no longer does.
+pub fn set_testing(on: bool) {
+    TESTING.store(on, Ordering::Relaxed);
+}
+
+/// Whether a wave test runs on this machine.
+pub fn testing() -> bool {
+    TESTING.load(Ordering::Relaxed)
+}
+
+/// Who sees the blob, and in what.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Scope {
+    /// A match: every element as the blob says.
+    #[default]
+    Match,
+    /// A wave test, from a player's biped: no lives (a test charges none).
+    Biped,
+    /// A wave test, from the Forge monitor: the banner and the notes; the
+    /// monitor HUD's own pill counts the enemies.
+    Monitor,
+}
+
+impl Scope {
+    /// The scope of a local user: a match with no test; in a test the
+    /// monitor for a user in it, else the biped.
+    pub fn of(testing: bool, in_monitor: bool) -> Scope {
+        match (testing, in_monitor) {
+            (false, _) => Scope::Match,
+            (true, false) => Scope::Biped,
+            (true, true) => Scope::Monitor,
+        }
+    }
+}
+
+/// The enemies left `mode` shows while a wave is on: the Forge monitor's
+/// pill in a test (`hud_kit_core::views::forge::ENEMIES_COUNT`).
+pub fn enemies_left(mode: &Mode) -> Option<u16> {
+    mode.stage.wave_on().then_some(mode.left)
+}
+
+/// The enemies left of the running wave test, for the monitor HUD; none
+/// with no test, between waves, or with no blob this build reads.
+pub fn test_enemies() -> Option<u16> {
+    if !testing() {
+        return None;
+    }
+    let blob = slot().get()?;
+    enemies_left(&Mode::decode(&blob).ok()?)
 }
 
 // ---- the view ----
@@ -470,9 +531,10 @@ fn lives_of(m: &Mode, local: u8) -> Option<u16> {
     }
 }
 
-/// What the player at roster slot `local` sees of `mode`: the kit's view.
-/// A pure function of the blob: the host and a client agree.
-pub fn view_of(mode: &Mode, local: u8) -> View {
+/// What the player at roster slot `local` sees of `mode` in `scope`: the
+/// kit's view. A pure function of the blob, the slot and the scope: the
+/// host and a client agree. A test shows no lives.
+pub fn view_of(mode: &Mode, local: u8, scope: Scope) -> View {
     View {
         stage: mode.stage,
         round: mode.round,
@@ -481,14 +543,26 @@ pub fn view_of(mode: &Mode, local: u8) -> View {
         boss: mode.boss,
         left: mode.left,
         skulls: mode.skulls,
-        lives: lives_of(mode, local),
+        lives: match scope {
+            Scope::Match => lives_of(mode, local),
+            Scope::Biped | Scope::Monitor => None,
+        },
     }
 }
 
-/// The HUD for `mode`, as the player at roster slot `local` sees it: the
-/// kit's values for [`view_of`].
-pub fn view(mode: &Mode, local: u8) -> Values {
-    kit::values(&view_of(mode, local))
+/// The kit's values for a view seen in `scope`: the monitor's are the
+/// banner alone (`kit::monitor_values`).
+fn values_in(v: &View, scope: Scope) -> Values {
+    match scope {
+        Scope::Monitor => kit::monitor_values(v),
+        Scope::Match | Scope::Biped => kit::values(v),
+    }
+}
+
+/// The HUD for `mode`, as the player at roster slot `local` sees it in
+/// `scope`: the kit's values for [`view_of`].
+pub fn view(mode: &Mode, local: u8, scope: Scope) -> Values {
+    values_in(&view_of(mode, local, scope), scope)
 }
 
 // ---- the feed ----
@@ -506,11 +580,11 @@ pub struct Feed {
 
 impl Feed {
     /// One tick: the values to publish and the notes to send for `now`,
-    /// what [`current`] gives for the first local player. No match, no
-    /// local player and a blob this build cannot read hide every element
-    /// and forget the last view; the reason for an unreadable blob is
-    /// logged when it changes.
-    pub fn tick(&mut self, now: Option<Result<View, Error>>) -> (Values, Vec<String>) {
+    /// what [`current`] gives for the local player, seen in `scope`. No
+    /// match, no local player and a blob this build cannot read hide every
+    /// element and forget the last view; the reason for an unreadable blob
+    /// is logged when it changes.
+    pub fn tick(&mut self, now: Option<Result<View, Error>>, scope: Scope) -> (Values, Vec<String>) {
         let view = match now {
             Some(Ok(v)) => {
                 self.error = None;
@@ -530,7 +604,7 @@ impl Feed {
             Some(v) => kit::notes(self.last.as_ref(), v, skull_name),
             None => Vec::new(),
         };
-        let values = view.as_ref().map_or_else(kit::hidden, kit::values);
+        let values = view.as_ref().map_or_else(kit::hidden, |v| values_in(v, scope));
         self.last = view;
         (values, notes)
     }
@@ -569,18 +643,31 @@ const USERS: usize = hud_kit::USERS as usize;
 pub type Feeds = [Feed; USERS];
 
 /// One tick for every local user: user `u`'s view of the blob at its
-/// roster slot (`slots[u]`, through `current`), its values and its notes.
-/// A user with no slot is hidden and its feed forgets its last view.
+/// roster slot (`slots[u]`) in its scope (`scopes[u]`, through `current`),
+/// its values and its notes. A user with no slot is hidden and its feed
+/// forgets its last view.
 pub fn tick_all(
     feeds: &mut Feeds,
     slots: &[Option<u8>; USERS],
-    current: impl Fn(u8) -> Option<Result<View, Error>>,
+    scopes: &[Scope; USERS],
+    current: impl Fn(u8, Scope) -> Option<Result<View, Error>>,
 ) -> [(Values, Vec<String>); USERS] {
-    std::array::from_fn(|u| feeds[u].tick(slots[u].and_then(&current)))
+    std::array::from_fn(|u| {
+        feeds[u].tick(slots[u].and_then(|slot| current(slot, scopes[u])), scopes[u])
+    })
+}
+
+/// Each local user's scope now: in a wave test, the Forge monitor's user
+/// (`crate::forge_hud::USER`) sees it from the monitor while the monitor
+/// is up, every other user from the biped.
+pub fn scopes_now() -> [Scope; USERS] {
+    let testing = testing();
+    let monitor = crate::forge_controls::monitor();
+    std::array::from_fn(|u| Scope::of(testing, monitor && u as u32 == crate::forge_hud::USER))
 }
 
 /// The feed on the plan: each tick, [`current`] for each local user's
-/// roster slot through its [`Feed`]: user 0's values are the HUD's shared
+/// roster slot and scope ([`scopes_now`]) through its [`Feed`]: user 0's values are the HUD's shared
 /// ones (the banner, the channels), every other local user's its own
 /// (`Handle::publish_for`), so each split-screen player sees its own
 /// lives; each user's notes go to that user.
@@ -606,6 +693,7 @@ impl hooks::Feature for FeedFeature {
             let all = tick_all(
                 &mut feeds.lock().unwrap_or_else(|e| e.into_inner()),
                 &slots,
+                &scopes_now(),
                 current,
             );
             for (user, (values, notes)) in all.into_iter().enumerate() {

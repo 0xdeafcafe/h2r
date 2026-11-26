@@ -8,8 +8,10 @@
 //! applies (docs/game/gametype-markers.md, "In a script"):
 //!
 //! 1. The flag's own area, when the census has one (the Forge document's
-//!    area on the flag, `Thing::area`): a radius or a path, at its own
-//!    heights. The zone's [`Source`] is [`Source::Area`].
+//!    area on the flag, `Thing::area`): a radius, a box, a sphere or a
+//!    path, at its own heights. A box turns with the flag's facing, as
+//!    Forge and Studio draw it (`Area::contains_turned`). The zone's
+//!    [`Source`] is [`Source::Area`].
 //! 2. The flags that share a label and a number (a King of the Hill hill's
 //!    corners, `hill_corner` 0 to 7), when there are three or more: the
 //!    area [`Area::of_corners`] makes of them, the convex hull of their
@@ -59,8 +61,8 @@ pub const SLOTS: u8 = 16;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Shape {
     /// An area round a centre marker's place (a flag, or a hill's corners'
-    /// middle).
-    Area { at: [f32; 3], area: Area },
+    /// middle), facing `yaw` radians: the flag's facing, which turns a box.
+    Area { at: [f32; 3], yaw: f32, area: Area },
 }
 
 impl Shape {
@@ -68,14 +70,15 @@ impl Shape {
     /// (`super::spawns`).
     pub fn middle(&self) -> [f32; 3] {
         match self {
-            Shape::Area { at, area } => area.middle(*at),
+            Shape::Area { at, area, .. } => area.middle(*at),
         }
     }
 
-    /// Whether `p` is inside, edges included (`Area::contains`).
+    /// Whether `p` is inside, edges included, with a box turned to the
+    /// marker's facing (`Area::contains_turned`).
     pub fn contains(&self, p: [f32; 3]) -> bool {
         match self {
-            Shape::Area { at, area } => area.contains(*at, p),
+            Shape::Area { at, yaw, area } => area.contains_turned(*at, *yaw, p),
         }
     }
 }
@@ -179,11 +182,13 @@ pub fn default_area(label: &str) -> Area {
 }
 
 impl Zones {
-    /// The zones of `table`'s netgame flags, at `flags`' positions (by
-    /// flag index, as `engine::objectives::netgame_flags` reads them). A
-    /// flag with no position has no zone.
-    pub fn new(table: &Table, flags: &[[f32; 3]]) -> Zones {
-        let at = |index: u32| flags.get(index as usize).copied();
+    /// The zones of `table`'s netgame flags, at `flags`' positions and
+    /// facings (by flag index, as `engine::objectives::netgame_flags` and
+    /// `netgame_flag_facings` read them). A flag with no position has no
+    /// zone.
+    pub fn new(table: &Table, flags: &[([f32; 3], f32)]) -> Zones {
+        let at = |index: u32| flags.get(index as usize).map(|(p, _)| *p);
+        let yaw = |index: u32| flags.get(index as usize).map_or(0.0, |(_, yaw)| *yaw);
         // The flags with no area of their own that share a label and a
         // number: a hill's corners.
         let mut groups: BTreeMap<(&str, i32), Vec<(u32, [f32; 3])>> = BTreeMap::new();
@@ -204,6 +209,7 @@ impl Zones {
             let own = t.area.as_ref().map(|a| Zone {
                 shape: Shape::Area {
                     at: p,
+                    yaw: yaw(t.index),
                     area: a.marker_area(),
                 },
                 reporter: t.handle(),
@@ -216,8 +222,9 @@ impl Zones {
                 }
                 let places: Vec<[f32; 3]> = group.iter().map(|(_, q)| *q).collect();
                 let (centre, area) = Area::of_corners(&places)?;
+                // A hull of corners lies on the world's axes.
                 Some(Zone {
-                    shape: Shape::Area { at: centre, area },
+                    shape: Shape::Area { at: centre, yaw: 0.0, area },
                     reporter: group.iter().map(|(h, _)| *h).min().unwrap_or(t.handle()),
                     source: Source::Corners,
                 })
@@ -225,6 +232,7 @@ impl Zones {
             let zone = own.or_else(corners).unwrap_or_else(|| Zone {
                 shape: Shape::Area {
                     at: p,
+                    yaw: yaw(t.index),
                     area: default_area(&t.text),
                 },
                 reporter: t.handle(),
@@ -237,10 +245,12 @@ impl Zones {
 
     /// The zones of the loaded map's flags; none when they cannot be read.
     pub fn read(m: &dyn GuestMemory, table: &Table) -> Zones {
-        let flags: Vec<[f32; 3]> = engine::objectives::netgame_flags(m)
+        let facings = engine::objectives::netgame_flag_facings(m).unwrap_or_default();
+        let flags: Vec<([f32; 3], f32)> = engine::objectives::netgame_flags(m)
             .unwrap_or_default()
             .into_iter()
-            .map(|(at, _, _)| at)
+            .enumerate()
+            .map(|(i, (at, _, _))| (at, facings.get(i).copied().unwrap_or(0.0)))
             .collect();
         Zones::new(table, &flags)
     }
@@ -406,6 +416,7 @@ mod tests {
     fn cylinder(at: [f32; 3]) -> Shape {
         Shape::Area {
             at,
+            yaw: 0.0,
             area: Area::default(),
         }
     }
@@ -436,7 +447,7 @@ mod tests {
         // Too few, or in a line: no polygon.
         assert!(Area::of_corners(&[[0.0; 3], [1.0, 1.0, 0.0]]).is_none());
         assert!(Area::of_corners(&[[0.0; 3], [1.0, 1.0, 0.0], [2.0, 2.0, 0.0]]).is_none());
-        let p = Shape::Area { at: centre, area };
+        let p = Shape::Area { at: centre, yaw: 0.0, area };
         assert!(p.contains([2.0, 2.0, 1.0]));
         assert!(p.contains([0.0, 0.0, 1.0]), "an edge is inside");
         assert!(!p.contains([5.0, 2.0, 1.0]));
@@ -565,7 +576,7 @@ mod tests {
         let handle = |index| t.things().iter().find(|t| t.index == index).unwrap().handle();
         let plate = zones.get(handle(0)).unwrap();
         assert_eq!(plate.source, Source::Default);
-        assert_eq!(plate.shape, Shape::Area { at: [0.0; 3], area: Area::plate() });
+        assert_eq!(plate.shape, Shape::Area { at: [0.0; 3], yaw: 0.0, area: Area::plate() });
         assert!(zones.contains(handle(0), [0.4, 0.0, 0.0]));
         assert!(!zones.contains(handle(0), [0.8, 0.0, 0.0]), "inside a cylinder, past the plate");
         assert_eq!(zones.get(handle(1)).unwrap().shape, cylinder([20.0, 0.0, 0.0]));
@@ -632,5 +643,60 @@ mod tests {
         assert!(events(&seen, 0, 0, &BTreeSet::new()).is_empty());
         seen.keep_listed(0);
         assert_eq!(seen.alive, 0);
+    }
+
+    /// A box on a flag facing a quarter turn and a half: its zone turns
+    /// with the flag, and the wall the game draws for it has its corners
+    /// where the zone does.
+    #[test]
+    fn a_turned_box_scores_inside_its_turned_corners_and_draws_them() {
+        use crate::forge_glue::markers_world::{Wall, draw_walls};
+        use crate::rules::census::Thing;
+        use ::rules::labels::Class;
+        let yaw = std::f32::consts::FRAC_PI_4;
+        let at = [10.0, 5.0, 1.0];
+        let boxed = Area::boxed([3.0, 1.0]);
+        let table = Table::from_things(vec![Thing {
+            text: "territory".into(),
+            label: None,
+            number: None,
+            class: Class::Flag,
+            designator: None,
+            block: BlockKind::NetgameFlags,
+            index: 0,
+            area: Some(forge_doc::Area::try_from(&boxed).unwrap()),
+        }]);
+        let zones = Zones::new(&table, &[(at, yaw)]);
+        let handle = table.things()[0].handle();
+        let zone = zones.get(handle).unwrap();
+        assert_eq!(zone.source, Source::Area);
+        assert_eq!(zone.shape, Shape::Area { at, yaw, area: boxed.clone() });
+        // The corner along the flag's facing and left of it.
+        let (s, c) = yaw.sin_cos();
+        let turned = |x: f32, y: f32| [at[0] + x * c - y * s, at[1] + x * s + y * c, at[2]];
+        assert!(zones.contains(handle, turned(2.9, 0.9)), "inside its turned corner");
+        assert!(!zones.contains(handle, turned(3.1, 0.9)), "past its turned end");
+        assert!(!zones.contains(handle, turned(2.9, 1.1)), "past its turned side");
+        // The world-axis corner of an unturned box is outside the turned one.
+        assert!(!zones.contains(handle, [at[0] + 2.9, at[1] + 0.9, at[2]]));
+        // The drawn wall's floor corners are the zone's corners.
+        let Shape::Area { at, yaw, area } = &zone.shape;
+        let wall = Wall { name: "zone:0".into(), team: None, at: *at, yaw: *yaw, area: area.clone() };
+        let (groups, _) = draw_walls(&[wall], None, &game_markers::Palette::default());
+        let points: Vec<[f32; 3]> = groups[0].edges.iter().flatten().copied().collect();
+        let low = points.iter().map(|p| p[2]).fold(f32::INFINITY, f32::min);
+        let mut corners: Vec<[f32; 3]> = points.into_iter().filter(|p| (p[2] - low).abs() < 1e-4).collect();
+        corners.dedup_by(|a, b| a.iter().zip(b.iter()).all(|(a, b)| (a - b).abs() < 1e-4));
+        for (x, y) in [(3.0, 1.0), (-3.0, 1.0), (3.0, -1.0), (-3.0, -1.0)] {
+            let want = turned(x, y);
+            assert!(
+                corners.iter().any(|p| (p[0] - want[0]).abs() < 1e-3 && (p[1] - want[1]).abs() < 1e-3),
+                "the wall has the corner {want:?}: {corners:?}"
+            );
+            let on_floor = [want[0], want[1], at[2]];
+            assert!(zone.shape.contains(on_floor), "the drawn corner {want:?} scores");
+            let past = turned(x * 1.05, y * 1.05);
+            assert!(!zone.shape.contains(past), "past the drawn corner {want:?}");
+        }
     }
 }

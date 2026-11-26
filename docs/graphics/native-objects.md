@@ -179,14 +179,19 @@ loader's part coverage but has no uploaded geometry and materials.
 loader lock contention. These planning refusals keep the guest draws.
 `walk_unreadable` counts views whose sorted list or
 ownership could not be established. These views may have an unknown
-object count. `walk_part_aux_state` and `walk_part_subparts` count the
-parts (not objects) behind
-`walk_unsupported` by their record's cause
+object count. The `walk_part_*` counters count the parts (not objects)
+behind `walk_unsupported` by their cause
 (`scene_extract::layout::object_walk::Refusal`,
 [framescene.md](framescene.md), "Slice 3"): `aux_state` a bit-11 part
 whose toggle's inputs (`scene_extract::layout::aux_depth`) do not read,
 `subparts` a bit-6 part whose visible-subpart mask does not read or
-names a negative first subpart.
+names a negative first subpart, `shader_flag` a flagged shader on a
+record with a structure lightmap index, `argument` an item's `+0x14` or
+`+0x15` set or an argument's low byte other than the key's part,
+`program` a program with flag bit 20, and `layout` every other refusal
+(the item's layout, a check against the guest's choice, memory that does
+not read). Every refused part is in exactly one, so their sum is what
+keeps the guest's layer-3 object draws.
 
 The method for comparing the walk with `impl.render.native=off` is in
 [notes/native-ab.md](notes/native-ab.md).

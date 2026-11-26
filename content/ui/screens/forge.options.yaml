@@ -7,6 +7,8 @@ states:
     focus: 0
   last:
     focus: 1
+  waves:
+    focus: 0
 widgets:
   title:
     component: title

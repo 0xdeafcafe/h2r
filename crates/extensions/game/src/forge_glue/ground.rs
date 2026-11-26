@@ -16,12 +16,51 @@
 //! when the worker is done. Edits wait meanwhile, so the copy is the session
 //! as it was. A builder holds this module's lock for the whole build, so the
 //! game thread only ever asks [`available`], which does not wait for it.
+//!
+//! **Test waves** then runs the session's wave set on the running map
+//! (docs/game/forge-firefight.md, "Test waves"): [`waves_or_default`] is
+//! the set, and the editor hands it to the Firefight runtime once the map
+//! holds the current ground (`editing::Editor::test_waves`).
 use std::sync::{Mutex, TryLockError};
 
 use forge::{GroundBuilder, GroundReport, Session};
 
 /// What a row says when no builder is installed.
 pub const NO_BUILDER: &str = "This game cannot build AI ground.";
+/// What Test waves says when the game has no Firefight runtime.
+pub const NO_FIREFIGHT: &str = "This game cannot run Firefight waves.";
+/// What Test waves says when the build left the running map without the
+/// ground (the game cannot reload it).
+pub const NOT_LOADED: &str = "The running map does not hold the AI ground, so the waves cannot be tested.";
+
+/// The wave set **Test waves** plays: the session's own
+/// ([`forge::Session::waves_or_default`]), else Holdout.
+pub(super) fn waves_or_default(session: &Session) -> ::firefight::Def {
+    session.waves_or_default()
+}
+
+/// The classes the built ground has, which the Waves screens' Enemy
+/// picker offers: the stage-one ground's (`forge_doc::waves::GROUND_CLASSES`,
+/// the Elite) until the recipe names its own (slice FA6, the build's
+/// report).
+pub(super) fn wave_classes(_session: &Session) -> Vec<String> {
+    forge_doc::waves::GROUND_CLASSES.map(String::from).to_vec()
+}
+
+/// The Enemy types page's rows (docs/game/forge-firefight-ui.md, "The
+/// Waves screens"): each class of the recipe, On or Off, with its cost
+/// from the last build. None until the recipe names classes (slice FA6),
+/// so Forge options has no Enemy types row.
+pub(super) fn enemy_types(_session: &Session) -> Vec<crate::forge_screens::waves::EnemyType> {
+    Vec::new()
+}
+
+/// An Enemy types row's choice: ask the recipe for `class`, or not, which
+/// marks the ground stale. Refused until the recipe names classes (slice
+/// FA6); the row that sends it is absent until then.
+pub(super) fn set_enemy_type(_session: &mut Session, class: &str, _on: bool) -> Result<(), String> {
+    Err(format!("The AI ground cannot take {class} yet."))
+}
 
 /// Tests that install the process-wide builder run one at a time.
 #[cfg(test)]

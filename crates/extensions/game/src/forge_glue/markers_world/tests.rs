@@ -1,5 +1,6 @@
 use forge::{BlockKind, GroundLabel, OpId, TagKey};
-use game_markers::LINE_ALPHA;
+use game_markers::form::{EDIT_ALPHA, ICON_NEAR, PLATE};
+use game_markers::{Icon, LINE_ALPHA};
 
 use super::*;
 
@@ -285,8 +286,10 @@ fn a_group_is_the_markers_lines_in_its_colour_faded_with_distance() {
     let palette = Palette::default();
     let (groups, _) = draw(&got, [&None, &None], eye0(), &palette, BUDGET);
     let mesh = got[0].marker.mesh(&palette).placed(&got[0].place);
-    assert_eq!(groups[0].edges.len(), mesh.lines.len());
-    assert_eq!(groups[0].edges[0], [mesh.lines[0].a, mesh.lines[0].b]);
+    // A spawn has no play form: every line of it is dim, the plate's too.
+    assert!(groups[0].edges.is_empty());
+    assert_eq!(groups[0].dim.len(), mesh.lines.len());
+    assert_eq!(groups[0].dim[0], [mesh.lines[0].a, mesh.lines[0].b]);
     assert_eq!(groups[0].colour, palette.teams[0]);
     assert_eq!(groups[1].colour, palette.teams[1]);
     assert_eq!(groups[0].alpha, LINE_ALPHA);
@@ -357,6 +360,9 @@ fn render_markers_answers_what_was_drawn_and_filters_by_kind() {
     assert_eq!(first["kind"], "spawn");
     assert_eq!(first["team"], 0);
     assert_eq!(first["faded"], false);
+    assert_eq!(first["form"], "edit");
+    assert_eq!(first["icon"], "respawn");
+    assert_eq!(first["plate_scale"], 1.0);
     assert!(first["lines"].as_u64().unwrap() > 0);
     assert_eq!(first["anchor"].as_array().unwrap().len(), 3);
     // A kind filter lists only that kind; the counts stay whole.
@@ -365,6 +371,12 @@ fn render_markers_answers_what_was_drawn_and_filters_by_kind() {
     assert_eq!(r["shown"], 2);
     let r = answer(json!({"kind": "spawn"}), &report).unwrap();
     assert_eq!(r["markers"].as_array().unwrap().len(), 2);
+    // So does a form filter: Forge draws the edit form.
+    let r = answer(json!({"form": "edit"}), &report).unwrap();
+    assert_eq!(r["markers"].as_array().unwrap().len(), 2);
+    let r = answer(json!({"form": "play", "kind": "spawn"}), &report).unwrap();
+    assert_eq!(r["markers"], json!([]));
+    assert_eq!(r["shown"], 2);
 }
 
 #[test]
@@ -378,6 +390,9 @@ fn render_markers_refuses_an_unknown_kind_and_stray_params() {
         e.message
     );
     assert!(e.message.contains("flag_stand"), "{}", e.message);
+    let e = answer(json!({"form": "solid"}), &report).unwrap_err();
+    assert_eq!(e.code, code::INVALID_PARAMS);
+    assert!(e.message.contains("unknown marker form `solid`"), "{}", e.message);
     for bad in [json!({"team": 1}), json!({"kind": 3}), json!([1])] {
         let e = answer(bad, &report).unwrap_err();
         assert_eq!(e.code, code::INVALID_PARAMS);
@@ -453,6 +468,7 @@ fn wall(zone: u32, team: Option<u8>, at: [f32; 3]) -> Wall {
         name: format!("zone:{zone:x}"),
         team,
         at,
+        yaw: 0.0,
         area: Area::default(),
     }
 }
@@ -542,16 +558,22 @@ fn the_batch_of_a_hill_and_a_wall_has_their_faces_and_lines() {
     let got = batch(&groups, None);
     // Three vertices a face, two a line: the hill's, then the wall's.
     assert_eq!(got.tris.len(), 3 * (hill_faces + 2 * ring));
-    assert_eq!(got.lines.len(), 2 * (groups[0].edges.len() + groups[1].edges.len()));
+    let hill_lines = groups[0].edges.len() + groups[0].dim.len();
+    assert_eq!(got.lines.len(), 2 * (hill_lines + groups[1].edges.len()));
     // The wall's faces keep their alpha; its lines are its team's colour
     // at the group's alpha.
     let first_wall_face = 3 * hill_faces;
     assert_eq!(got.tris[first_wall_face].colour, groups[1].tris[0].colours[0]);
     assert!(got.tris[first_wall_face].colour[3] < 1.0, "a skin, not a solid");
-    let line = got.lines[2 * groups[0].edges.len()].colour;
+    let line = got.lines[2 * hill_lines].colour;
     assert_eq!(line, [palette.teams[0][0], palette.teams[0][1], palette.teams[0][2], groups[1].alpha]);
     // Positions are the mesh's world points.
-    assert_eq!(got.lines[2 * groups[0].edges.len()].position, groups[1].edges[0][0]);
+    assert_eq!(got.lines[2 * hill_lines].position, groups[1].edges[0][0]);
+    // The hill's wall is its play form, at the group's alpha; its pip,
+    // post and plate follow at the dim alpha.
+    let dim = got.lines[2 * groups[0].edges.len()].colour;
+    assert_eq!(dim[3], groups[0].dim_alpha());
+    assert_eq!(got.lines[0].colour[3], groups[0].alpha);
 }
 
 #[cfg(feature = "gpu")]
@@ -580,11 +602,194 @@ fn with_the_native_pass_drawing_the_window_keeps_the_labels_and_drops_the_lines(
         sample.lines(&mut |l| out.push((l.edges.len(), l.label.map(str::to_owned))));
         out
     };
-    // The window alone draws every line and the label.
+    // The window alone draws every line and the label: the hill's play
+    // form with its label, its edit-only parts in a dim visit of their
+    // own, then the wall.
     let alone = seen(false);
-    assert_eq!(alone.len(), 2);
+    assert_eq!(alone.len(), 3);
     assert_eq!(alone[0], (groups[0].edges.len(), Some("Hill 1".to_owned())));
-    assert_eq!(alone[1], (groups[1].edges.len(), None));
+    assert_eq!(alone[1], (groups[0].dim.len(), None));
+    assert_eq!(alone[2], (groups[1].edges.len(), None));
     // The native pass drew them: the label is all the window draws.
     assert_eq!(seen(true), [(0, Some("Hill 1".to_owned()))]);
+}
+
+#[test]
+fn with_the_monitor_on_each_thing_draws_its_edit_form_its_play_parts_bright_and_the_rest_dim() {
+    let things = [
+        spawn(0, 1, [1., 2., 0.]),
+        flag(0, 0, 0, [3., 0., 0.]),
+        flag(1, 1, 1, [6., 0., 0.]),
+        flag(2, 10, 0, [9., 0., 0.]),
+        flag(3, 7, 8, [12., 0., 0.]),
+        flag(4, 12, 0, [15., 0., 0.]),
+        spawner(0, "weap", "weapons\\pistol"),
+    ];
+    let got = entries(&facts(&things));
+    assert_eq!(
+        names(&got),
+        [
+            "spawn",
+            "flag_stand",
+            "flag_return",
+            "territory",
+            "teleporter_sender",
+            "weapon_spawn",
+            "hill",
+        ]
+    );
+    assert!(got.iter().all(|e| e.form == Form::Edit));
+    // A hill's plate counts from 1: hill type 12 is the second hill.
+    assert_eq!(got[6].number, Some(2));
+    assert_eq!(got[3].number, None, "a territory with no number has none");
+    let palette = Palette::default();
+    let (groups, report) = draw(&got, [&None, &None], None, &palette, BUDGET);
+    assert_eq!(groups.len(), got.len());
+    for ((g, e), m) in groups.iter().zip(&got).zip(&report.markers) {
+        let c = e.marker.colour(&palette);
+        let kind = &e.marker.kind;
+        let plate = kind.plate(e.number, c).map_or(0, |p| p.lines.len());
+        let plate_in_play = kind.parts(Form::Play).has(Part::Plate);
+        let play = kind.mesh_in(Form::Play, c).lines.len() + if plate_in_play { plate } else { 0 };
+        assert_eq!(g.edges.len(), play, "{}: the play form is bright", m.kind);
+        assert_eq!(
+            g.edges.len() + g.dim.len(),
+            kind.mesh_in(Form::Edit, c).lines.len() + plate,
+            "{}: the edit form, all of it",
+            m.kind
+        );
+        assert_eq!(m.lines, g.edges.len() + g.dim.len());
+        assert_eq!(m.form, Form::Edit);
+        assert_eq!(m.icon, kind.icon().map(Icon::name));
+        assert_eq!(m.plate_scale, Some(1.0), "{}", m.kind);
+        assert_eq!(g.dim_alpha(), g.alpha * EDIT_ALPHA);
+        // The dim faces come last, faded by EDIT_ALPHA.
+        let plate_tris = kind.plate(e.number, c).map_or(0, |p| p.tris.len());
+        let dim_tris = kind.edit_only(c).tris.len() + if plate_in_play { 0 } else { plate_tris };
+        let dim = &g.tris[g.tris.len() - dim_tris..];
+        assert!(dim.iter().all(|t| t.colours[0][3] <= EDIT_ALPHA), "{}", m.kind);
+    }
+    // A spawn and an item have no play form; a flag return's is its
+    // capture plate; a territory's takes its plate with it.
+    assert!(groups[0].edges.is_empty() && !groups[0].dim.is_empty());
+    assert!(groups[5].edges.is_empty());
+    assert!(!groups[2].edges.is_empty());
+    assert!(got[3].marker.kind.parts(Form::Play).has(Part::Plate));
+    assert_eq!(report.markers[2].icon, Some("flag_return"));
+}
+
+fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn unit(v: [f32; 3]) -> [f32; 3] {
+    let n = v.iter().map(|c| c * c).sum::<f32>().sqrt();
+    v.map(|c| c / n)
+}
+
+fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a.iter().zip(b).map(|(a, b)| a * b).sum()
+}
+
+#[test]
+fn a_plates_normal_points_at_the_eye_and_its_size_doubles_from_8_to_16_units_away() {
+    let got = entries(&facts(&[spawn(0, 0, [2., 3., 0.])]));
+    let e = &got[0];
+    let centre = e.place.point(e.marker.kind.plate_at().unwrap());
+    let colour = [1.0; 3];
+    for dir in [[1., 0., 0.], [0., 1., 0.], [-0.6, -0.8, 0.]] {
+        let eye = [centre[0] + 8. * dir[0], centre[1] + 8. * dir[1], centre[2]];
+        let (place, scale) = plate_place(e, Some(eye)).unwrap();
+        assert!((scale - 1.0).abs() < 1e-4, "{scale}");
+        assert!((dot(place.forward, unit(sub(eye, place.at))) - 1.0).abs() < 1e-4, "{dir:?}");
+        // The plate's disc lies across the line to the eye.
+        let (mesh, _) = plate(e, colour, Some(eye)).unwrap();
+        let t = mesh.tris[0].points;
+        let [u, v] = [sub(t[1], t[0]), sub(t[2], t[0])];
+        let normal = unit([
+            u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0],
+        ]);
+        assert!((dot(normal, dir).abs() - 1.0).abs() < 1e-4, "{dir:?}: {normal:?}");
+    }
+    let seen = |d: f32| {
+        let eye = [centre[0] + d, centre[1], centre[2]];
+        let (mesh, scale) = plate(e, colour, Some(eye)).unwrap();
+        let (min, max) = mesh.bounds().unwrap();
+        (max[2] - min[2], min[2], scale)
+    };
+    let (near, _, _) = seen(4.);
+    let (at8, foot8, scale8) = seen(ICON_NEAR);
+    let (at16, foot16, scale16) = seen(2. * ICON_NEAR);
+    assert!((scale8 - 1.0).abs() < 1e-4 && (scale16 - 2.0).abs() < 1e-4, "{scale8} {scale16}");
+    assert!((at8 - 2. * PLATE).abs() < 1e-4, "{at8}");
+    assert!((near - at8).abs() < 1e-5, "nearer than 8 it keeps its size");
+    assert!((at16 / at8 - 2.0).abs() < 1e-4, "{at8} {at16}");
+    assert!((foot16 - foot8).abs() < 1e-4, "its foot stays on the post");
+    // The drawer reports the scale it drew.
+    let eye = Some([centre[0] + 16., centre[1], centre[2]]);
+    let (_, report) = draw(&got, [&None, &None], eye, &Palette::default(), BUDGET);
+    let drawn_scale = report.markers[0].plate_scale.unwrap();
+    assert!((drawn_scale - 2.0).abs() < 1e-4, "{drawn_scale}");
+}
+
+#[test]
+fn the_play_form_draws_only_the_play_parts_and_a_plate_only_where_play_has_one() {
+    let mut got = entries(&facts(&[
+        spawn(0, 0, [0.; 3]),
+        flag(0, 1, 0, [3., 0., 0.]),
+        flag(1, 10, 0, [6., 0., 0.]),
+    ]));
+    for e in &mut got {
+        e.form = Form::Play;
+    }
+    let palette = Palette::default();
+    let (groups, report) = draw(&got, [&None, &None], None, &palette, BUDGET);
+    assert!(groups.iter().all(|g| g.dim.is_empty()), "nothing dim in play");
+    assert!(groups[0].edges.is_empty() && groups[0].tris.is_empty(), "a spawn has no play form");
+    assert_eq!(report.markers[0].plate_scale, None);
+    let c = got[1].marker.colour(&palette);
+    assert_eq!(groups[1].edges.len(), got[1].marker.kind.mesh_in(Form::Play, c).lines.len());
+    assert_eq!(report.markers[1].plate_scale, None, "a capture plate has no sign in play");
+    assert_eq!(report.markers[2].plate_scale, Some(1.0), "a territory's sign is in play");
+    assert!(report.markers.iter().all(|m| m.form == Form::Play));
+}
+
+#[test]
+fn a_box_area_draws_on_its_markers_facing_and_any_other_area_on_the_worlds_axes() {
+    let things = [flag(0, 10, 0, [0.; 3]), flag(1, 10, 0, [20., 0., 0.])];
+    let boxed = Area::boxed([2.0, 0.5]);
+    let areas: BTreeMap<Endpoint, forge_doc::Area> = [
+        (things[0].id.identity(), forge_doc::Area::try_from(&boxed).unwrap()),
+        (things[1].id.identity(), forge_doc::Area::try_from(&Area::radius(2.0)).unwrap()),
+    ]
+    .into();
+    let mut f = facts(&things);
+    f.areas = &areas;
+    let got = entries(&f);
+    // `flag` faces 0.5 rad.
+    assert!((got[0].place.forward[0] - 0.5f32.cos()).abs() < 1e-6);
+    assert!((got[0].place.forward[1] - 0.5f32.sin()).abs() < 1e-6);
+    assert_eq!(got[1].place.forward, [1.0, 0.0, 0.0]);
+    // The drawn box's floor corners are the ones contains_turned holds.
+    let (groups, _) = draw(&got[..1], [&None, &None], None, &Palette::default(), BUDGET);
+    let floor = groups[0]
+        .edges
+        .iter()
+        .flatten()
+        .map(|p| p[2])
+        .fold(f32::INFINITY, f32::min);
+    let corners: Vec<[f32; 3]> = groups[0]
+        .edges
+        .iter()
+        .flatten()
+        .copied()
+        .filter(|p| (p[2] - floor).abs() < 1e-4)
+        .collect();
+    assert!(!corners.is_empty());
+    for c in &corners {
+        assert!(boxed.contains_turned([0.; 3], 0.5, [c[0], c[1], 0.0]), "{c:?}");
+        assert!(!boxed.contains_turned([0.; 3], 0.5, [c[0] * 1.05, c[1] * 1.05, 0.0]), "{c:?}");
+    }
 }

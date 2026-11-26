@@ -8,6 +8,9 @@ use ::firefight::{
 
 use super::*;
 
+/// A match: every element as the blob says.
+const M: Scope = Scope::Match;
+
 /// `rounds` rounds of five waves, each of three one-actor squads, two ticks
 /// apart: a match the director finishes in a few hundred ticks.
 fn small_def(shared: bool, rounds: usize) -> Def {
@@ -167,9 +170,9 @@ fn play(mut d: ScriptDirector, players: &[u8], local: u8) -> Played {
         assert!(blob.len() <= MAX_BLOB, "{} bytes", blob.len());
         let client = Mode::decode(&blob).unwrap();
         assert_eq!(client, host, "tick {tick}");
-        let (host_view, client_view) = (view(&host, local), view(&client, local));
+        let (host_view, client_view) = (view(&host, local, M), view(&client, local, M));
         assert_eq!(client_view, host_view, "tick {tick}");
-        out.notes.extend(feed.tick(Some(Ok(view_of(&client, local)))).1);
+        out.notes.extend(feed.tick(Some(Ok(view_of(&client, local, M))), M).1);
         out.stages.insert(host.stage as u8);
         out.boss_spawn |= host.stage == Stage::Spawning && host.boss;
         if let Some(b) = host_view.get(BANNER).filter(|b| b.shown) {
@@ -231,7 +234,7 @@ fn the_hud_reads_only_the_mode_blob() {
     }
     // The signature says it: bytes and a slot in, a view out.
     let _: fn(&[u8]) -> Result<Mode, Error> = Mode::decode;
-    let _: fn(&Mode, u8) -> Values = view;
+    let _: fn(&Mode, u8, Scope) -> Values = view;
 }
 
 /// With lives not shared each player's own count is in the blob, and each
@@ -245,9 +248,9 @@ fn each_player_reads_their_own_lives_from_the_blob() {
     let mode = Mode::of(&d, 2, None).unwrap();
     assert_eq!(mode.lives, Lives::Each(vec![(0, 6), (3, 6)]));
     let blob = mode.encode();
-    let mine = view(&Mode::decode(&blob).unwrap(), 3);
+    let mine = view(&Mode::decode(&blob).unwrap(), 3, M);
     assert_eq!(mine.get(LIVES_COUNT).unwrap().text, "6");
-    let absent = view(&Mode::decode(&blob).unwrap(), 5);
+    let absent = view(&Mode::decode(&blob).unwrap(), 5, M);
     assert!(!absent.get(LIVES_COUNT).unwrap().shown, "no count, no pill");
 }
 
@@ -392,8 +395,8 @@ fn a_blob_it_does_not_understand_is_refused() {
 #[test]
 fn two_teams_show_each_viewer_its_teams_lives() {
     let m = two_team_mode();
-    let red = view(&m, 0);
-    let blue = view(&m, 3);
+    let red = view(&m, 0, M);
+    let blue = view(&m, 3, M);
     assert_eq!(red.get(LIVES_COUNT).unwrap().text, "6");
     assert_eq!(blue.get(LIVES_COUNT).unwrap().text, "2");
     for (stage, banner) in [
@@ -407,6 +410,7 @@ fn two_teams_show_each_viewer_its_teams_lives() {
                 ..two_team_mode()
             },
             3,
+            M,
         );
         assert_eq!(over.get(BANNER).unwrap().text, banner);
         assert!(!over.get(LIVES_COUNT).unwrap().shown, "{banner}");
@@ -440,7 +444,7 @@ fn the_directors_two_teams_reach_the_blob() {
 #[test]
 fn each_stage_has_its_words() {
     let text = |m: &Mode| -> Vec<String> {
-        view(m, 0)
+        view(m, 0, M)
             .0
             .iter()
             .filter(|(id, _)| [BANNER, LIVES_COUNT, ENEMIES_COUNT].contains(id))
@@ -494,7 +498,7 @@ fn the_last_life_and_none_flash() {
             lives: Lives::Shared(n),
             ..sample_mode()
         };
-        view(&m, 0).get(LIVES_COUNT).unwrap().style
+        view(&m, 0, M).get(LIVES_COUNT).unwrap().style
     };
     assert_eq!(style(2), Style::Normal);
     let warn = Style::Flash(hud_kit_core::model::Pulse::TimeWarning);
@@ -522,7 +526,7 @@ fn every_blob_gives_the_kits_one_layout() {
     });
     for m in &modes {
         for local in [0, 1, 3, 7] {
-            let v = view(m, local);
+            let v = view(m, local, M);
             assert_eq!(v.layout_problems(&hud), Vec::<String>::new(), "{m:?} {local}");
             assert!(!v.get(NOTE).unwrap().shown, "a note is sent, not published");
         }
@@ -536,10 +540,10 @@ fn every_blob_gives_the_kits_one_layout() {
 fn the_feed_publishes_the_view_and_sends_the_notes_a_change_makes() {
     let hidden = hud_kit_core::views::firefight::hidden();
     let mut f = Feed::default();
-    assert_eq!(f.tick(None), (hidden.clone(), Vec::new()));
-    let a = view_of(&sample_mode(), 0);
-    let (values, notes) = f.tick(Some(Ok(a.clone())));
-    assert_eq!(values, view(&sample_mode(), 0));
+    assert_eq!(f.tick(None, M), (hidden.clone(), Vec::new()));
+    let a = view_of(&sample_mode(), 0, M);
+    let (values, notes) = f.tick(Some(Ok(a.clone())), M);
+    assert_eq!(values, view(&sample_mode(), 0, M));
     assert!(notes.is_empty(), "the first view");
     let next = Mode {
         stage: Stage::Spawning,
@@ -548,14 +552,14 @@ fn the_feed_publishes_the_view_and_sends_the_notes_a_change_makes() {
         lives: Lives::Shared(3),
         ..sample_mode()
     };
-    let (_, notes) = f.tick(Some(Ok(view_of(&next, 0))));
+    let (_, notes) = f.tick(Some(Ok(view_of(&next, 0, M))), M);
     assert_eq!(notes, ["Round 3 of 3", "A life lost"]);
-    let (values, notes) = f.tick(Some(Err(Error::Version(1))));
+    let (values, notes) = f.tick(Some(Err(Error::Version(1))), M);
     assert_eq!(values, hidden);
     assert!(notes.is_empty());
     assert_eq!(f.error.as_deref(), Some(Error::Version(1).to_string().as_str()));
     // After it, a view is the first again.
-    let (_, notes) = f.tick(Some(Ok(view_of(&next, 0))));
+    let (_, notes) = f.tick(Some(Ok(view_of(&next, 0, M))), M);
     assert!(notes.is_empty());
     assert_eq!(f.error, None);
 }
@@ -596,7 +600,7 @@ fn the_skulls_on_ride_in_the_blob() {
     };
     assert_eq!(m.skulls, SKULL_BITS);
     assert_eq!(Mode::decode(&m.encode()), Ok(m.clone()));
-    assert_eq!(view_of(&m, 0).skulls, SKULL_BITS);
+    assert_eq!(view_of(&m, 0, M).skulls, SKULL_BITS);
     // The director's set reaches the blob.
     let mut d = director(small_def(true, 2));
     d.step(0, &seen(&[0], [0; SQUAD_SLOTS], Vec::new()));
@@ -644,10 +648,10 @@ fn each_local_user_sees_its_own_lives() {
         ..sample_mode()
     };
     let blob = m.encode();
-    let current = |slot: u8| Some(Mode::decode(&blob).map(|m| view_of(&m, slot)));
+    let current = |slot: u8, scope| Some(Mode::decode(&blob).map(|m| view_of(&m, slot, scope)));
     let mut feeds: Feeds = Default::default();
     let slots = [Some(0), Some(2), None, None];
-    let all = tick_all(&mut feeds, &slots, current);
+    let all = tick_all(&mut feeds, &slots, &[M; USERS], current);
     let lives = |i: usize| {
         let v = all[i].0.get(LIVES_COUNT).unwrap();
         v.shown.then(|| v.text.clone())
@@ -661,8 +665,82 @@ fn each_local_user_sees_its_own_lives() {
         ..sample_mode()
     }
     .encode();
-    let current = |slot: u8| Some(Mode::decode(&hit).map(|m| view_of(&m, slot)));
-    let all = tick_all(&mut feeds, &slots, current);
+    let current = |slot: u8, scope| Some(Mode::decode(&hit).map(|m| view_of(&m, slot, scope)));
+    let all = tick_all(&mut feeds, &slots, &[M; USERS], current);
     assert!(all[0].1.is_empty());
     assert_eq!(all[1].1, ["A life lost"]);
+}
+
+/// A wave test seen from a biped: the banner, the notes and the enemies
+/// pill as in a match, and no lives pill, whatever the blob's lives say
+/// (a test charges none).
+#[test]
+fn a_test_shows_no_lives_pill() {
+    use hud_kit_core::views::firefight::{ENEMIES_PILL, LIVES_END, LIVES_PILL};
+    let m = Mode {
+        stage: Stage::Spawning,
+        ..sample_mode()
+    };
+    let in_match = view(&m, 0, Scope::Match);
+    assert!(in_match.get(LIVES_PILL).unwrap().shown, "a match shows its lives");
+    let biped = view(&m, 0, Scope::Biped);
+    for id in [LIVES_PILL, LIVES_END, LIVES_COUNT] {
+        assert!(!biped.get(id).unwrap().shown, "{id}: a test charges no lives");
+    }
+    assert_eq!(biped.get(BANNER).unwrap().text, "WAVE 3");
+    assert!(biped.get(ENEMIES_PILL).unwrap().shown);
+    assert_eq!(biped.get(ENEMIES_COUNT).unwrap().text, "9");
+    assert_eq!(view_of(&m, 0, Scope::Biped).lives, None);
+    // Lives lost send no note in a test.
+    let mut f = Feed::default();
+    f.tick(Some(Ok(view_of(&m, 0, Scope::Biped))), Scope::Biped);
+    let hit = Mode {
+        lives: Lives::Shared(1),
+        ..m.clone()
+    };
+    let (_, notes) = f.tick(Some(Ok(view_of(&hit, 0, Scope::Biped))), Scope::Biped);
+    assert!(notes.is_empty(), "{notes:?}");
+    // Every scope is the one layout.
+    let hud = hud_kit_core::views::firefight::hud();
+    for scope in [Scope::Match, Scope::Biped, Scope::Monitor] {
+        assert_eq!(view(&m, 0, scope).layout_problems(&hud), Vec::<String>::new(), "{scope:?}");
+    }
+}
+
+/// A wave test seen from the Forge monitor: the banner shows and the
+/// Firefight HUD's pills do not; the monitor HUD's own pill counts the
+/// enemies, and with no wave on (or no test) it shows nothing.
+#[test]
+fn a_monitor_sees_the_banner_and_the_enemies_pill() {
+    use hud_kit_core::views::firefight::{ENEMIES_END, ENEMIES_PILL, LIVES_PILL};
+    use hud_kit_core::views::forge as monitor;
+    let m = Mode {
+        stage: Stage::Spawning,
+        ..sample_mode()
+    };
+    let seen = view(&m, 0, Scope::Monitor);
+    assert_eq!(seen.get(BANNER).unwrap().text, "WAVE 3");
+    assert!(seen.get(BANNER).unwrap().shown);
+    for id in [LIVES_PILL, LIVES_COUNT, ENEMIES_PILL, ENEMIES_END, ENEMIES_COUNT] {
+        assert!(!seen.get(id).unwrap().shown, "{id}: the monitor's own HUD has the count");
+    }
+    // The monitor HUD's pill takes the count while the wave is on.
+    assert_eq!(enemies_left(&m), Some(9));
+    let v = monitor::View {
+        monitor: true,
+        enemies: enemies_left(&m),
+        ..monitor::View::default()
+    };
+    let drawn = monitor::values(&v, &monitor::Buttons::sample());
+    assert_eq!(drawn.get(monitor::ENEMIES_COUNT).unwrap().text, "9");
+    assert!(drawn.get(monitor::ENEMIES_PILL).unwrap().shown);
+    let between = Mode {
+        stage: Stage::Intermission,
+        ..sample_mode()
+    };
+    assert_eq!(enemies_left(&between), None);
+    // A scope follows the test and the monitor.
+    assert_eq!(Scope::of(false, true), Scope::Match);
+    assert_eq!(Scope::of(true, false), Scope::Biped);
+    assert_eq!(Scope::of(true, true), Scope::Monitor);
 }

@@ -165,7 +165,10 @@ pub struct Area { pub shape: Shape, pub below: f32, pub above: f32 }
   marker, in three axes, with no height test. `Area::contains_turned`
   takes the marker's facing in radians, which turns a box and no other
   shape; a box holds its edge to within `area::EDGE_SLACK` (0.0001) so a
-  corner survives the turn. `Area::outline` of a box is its four
+  corner survives the turn. A zone (`rules::world::zones`) tests with
+  `contains_turned` at its flag's facing, and the drawers place a box on
+  that facing (`markers_world::place_of`), so a box scores where it is
+  drawn. `Area::outline` of a box is its four
   corners and of a sphere its equator, in the marker's own axes.
 - **`Area::of_corners`** is the area of a retail hill: the convex hull
   of its corners round their mean, from half a unit under the lowest to
@@ -338,6 +341,13 @@ seat's monitor keeps its ring (`forge_glue::marker`). A hill's marker
 takes `Area::of_corners` or the default area until the document holds an
 area.
 
+- **Forms and plates.** Each entry draws its marker's edit form with the
+  monitor on ([gametype-marker-forms.md](gametype-marker-forms.md),
+  "When a form shows"): `markers_world::drawn` puts the play form's parts
+  in a group's `edges` at its alpha and the edit-only parts in its `dim`
+  at `form::EDIT_ALPHA` of it. The plate stands on the post, turned about
+  the upright to face the eye and scaled by `form::icon_scale` of the
+  eye's distance with its foot on the post (`markers_world::plate`).
 - **Lines first.** The world-line pass draws lines, with no depth test.
   That is the hologram's frame and is enough to read every marker. The
   native renderer's marker pass (`native_render::markers::Pass`) draws
@@ -428,18 +438,34 @@ make the same document.
   an unused hill type and one area op
   ([forge-editing.md](forge-editing.md), "The object menu").
 - **Radius.** Choose **Edit area** in an aimed or held goal's
-  Properties (X). The left stick grows or shrinks the radius by the
+  Properties (X): a hill, a territory, a site, a flag return, a bomb
+  goal or a siege goal. A flag return, a bomb goal and a siege goal with
+  no area start from `Area::plate()`, the rest from the default circle
+  (`forge_glue::editing::area::default_area`). The left stick grows or
+  shrinks the radius by the
   movement snap, or by 0.25 with snap off. The wall follows the draft.
   X opens the typed **Radius**, **Below** and **Above** rows. Close the
   rows to return to the draft. A writes one `EntryOp::Area`. B cancels.
-- **Path.** Y switches to a path. Fly the monitor and press A to drop
+- **Shapes.** Y cycles the draft's shape: a circle becomes a box of its
+  radius each way, a box a sphere of the same floor, a sphere an empty
+  path, and a path a circle of the same floor
+  ([gametype-marker-forms.md](gametype-marker-forms.md), "Boundaries").
+  A box lies on its marker's facing, as Studio draws it and the game
+  scores it. The left stick's forward axis steps the box's half length
+  and its right axis its half width while the monitor looks more along
+  the marker's facing than across it, and the other way round while it
+  looks across, one step a lean; a sphere grows on the forward
+  axis alone. X types a box's **Half length**, **Half width**, **Below**
+  and **Above**, and a sphere's **Radius**: a sphere has no height, so
+  it sets the heights aside and the shape after it takes them back.
+- **Path.** From a sphere, Y makes a path. Fly the monitor and press A to drop
   each point on the floor under the reticle. The closing edge is
   dashed. X removes the last point and holding A on a point drags it.
   Invalid additions and drags leave the last valid points in place
   and show the `AreaError` sentence. Start or a tap of A on the first
   point closes a valid path and writes one area op. B cancels. Y
   makes a circle with the same floor area, or restores the radius
-  from before the switch if the path has fewer than three points.
+  from before the path if it has fewer than three points.
 - **Moving the marker** moves the area with it and writes no area op.
 - **Undo** is the op's inverse, as for any entry op.
 
@@ -449,13 +475,22 @@ make the same document.
   with **Place new with the mouse**.
 - A selected marker with an area has gizmo handles
   (`crates/apps/studio/src/viewport.rs`): a radius has one handle on
-  its rim, dragged in or out; a path has a handle a point (drag to
+  its rim, dragged in or out; a box has one on each corner (both half
+  lengths) and one on the middle of each side (one half length), on the
+  marker's own axes; a sphere has one on its equator and one on its
+  pole (the radius); a path has a handle a point (drag to
   move, Delete to remove) and one on the middle of each edge (drag to
   add a point there). The top and the bottom of the wall each have a
-  handle for the heights. A drag that `Area::validate` refuses snaps
-  back, with the sentence in the status line.
-- The inspector shows **Shape** (Radius or Path), **Radius**, **Below**,
-  **Above** and the points as a table of typed numbers.
+  handle for the heights, except a sphere's, which has none. A drag
+  that `Area::validate` refuses snaps back, with the sentence in the
+  status line (`crates/tools/scenario-edit/src/area_edit.rs`).
+- The inspector shows **Shape** (Radius, Box, Sphere or Path),
+  **Radius** or the box's **Half x** and **Half y**, **Below** and
+  **Above** (not for a sphere) and the points as a table of typed
+  numbers. Changing the shape keeps what the old one held: a radius, a
+  sphere and a path keep their farthest reach, a box the tightest box
+  in the marker's axes, a path of a box its corners turned to the
+  marker.
 - A retail hill's corners show **Convert to area**: it writes
   `Area::of_corners`' path on a new centre flag and removes the corner
   flags, in one undo step. A custom hill is one centre marker and an
@@ -472,7 +507,7 @@ of a window ([agent API rules](../../AGENTS.md)).
 
 | Method | API | Does |
 |---|---|---|
-| `markers.list {kind?, layer?}` (built) | Studio | every marker of the open map: `{id, kind, layer, team, position, facing, label, number, area, area_from, members, bounds, lines, triangles}`, `id` the placement as `scenario.*` names it (`netgame_flags[3]`; `volume[2]` for a trigger volume), `area` as the document writes it (floats in hex) or `null`, `area_from` `corners` or `default` while the area is derived and not stored, `members` the placements it stands for, `bounds` the placed mesh's box; with `counts` by kind |
+| `markers.list {kind?, layer?}` (built) | Studio | every marker of the open map: `{id, kind, layer, team, icon, use, position, facing, label, number, area, area_from, members, bounds, lines, triangles}`, `id` the placement as `scenario.*` names it (`netgame_flags[3]`; `volume[2]` for a trigger volume), `area` as the document writes it (floats in hex) or `null`, `area_from` `corners` or `default` while the area is derived and not stored, `members` the placements it stands for, `bounds` the placed mesh's box; with `counts` by kind |
 | `markers.render {kind?, team?, area?, view?, size?, out?}` (built) | Studio | draws markers with no map, on the grid at the scale of a 0.7 figure: one kind, or with none the contact sheet of `Kind::samples` in red, blue and neutral (a kind of one fixed colour once). Answers `{path, width, height, view, covered, kinds}`, each of `kinds` with its cell and its centre in pixels. `area` is `{radius, below?, above?}` or `{path, below?, above?}` in plain numbers and is refused with `Area::validate`'s sentence. Needs no disc |
 | `markers.area.set {id, area}` (built) | Studio | sets a flag's area (`{radius, below?, above?}` or `{path, below?, above?}`) or clears it (`null`), as one undo step; answers `{id, area}` as stored, or `Area::validate`'s sentence as `REFUSED`, the document untouched |
 | `markers.area.convert {id}` (built) | Studio | a retail hill's corners become one centre flag with an area, in one undo step; answers `{id, area, position}` of the kept flag |

@@ -181,7 +181,7 @@ mod tests {
             // A member past the block's end keeps nothing.
             thing("attack", Some(1), BlockKind::StartingLocations, 9),
         ]);
-        let zones = Zones::new(&table, &[[9.0, 0.0, 0.0]]);
+        let zones = Zones::new(&table, &[([9.0, 0.0, 0.0], 0.0)]);
         (starts, table, zones)
     }
 

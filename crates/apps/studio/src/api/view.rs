@@ -218,7 +218,7 @@ pub fn snapshot(gpu: &Gpu, app: &mut App, p: &P) -> Reply {
     crate::viewport::follow_paint(&mut vp, &gpu.queue, app);
     let models = session.native_models().cloned().unwrap_or_default();
     vp.set_native_models(&gpu.device, &gpu.queue, models);
-    crate::viewport::upload_placements(&mut vp, &gpu.device, app, &live.linked);
+    crate::viewport::upload_placements(&mut vp, &gpu.device, app, &live.linked, cam.eye());
     crate::viewport::upload_overlays(&mut vp, &gpu.device, app);
     vp.set_live_instances(&gpu.device, &gpu.queue, session.source(), &live.instances);
     vp.render(&gpu.device, &gpu.queue, &cam, size);

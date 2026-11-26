@@ -1,7 +1,7 @@
 # Game type markers: icons, the edit form and the play form
 
-Status: Partly built. The forms, the parts, the icons and stroke digits, the wall and the areas of the three kinds that gain one exist in `game_markers` (MK10), and the box and the sphere as areas exist in `game_markers::area`, `record` and `forge_doc::Area` (MK11); the drawers' use of the forms and what shows in a match are design (MK12 to MK16). It extends the built marker set of [gametype-markers.md](gametype-markers.md) (MK1 to MK9).
-Code: `crates/formats/game-markers/src/{form,icon,digits}.rs` (the forms and icons), `crates/formats/game-markers/src/area.rs` (the box and the sphere), `crates/extensions/game/src/forge_glue/markers_world.rs` (the game's drawer). Tests: named per slice under "Slices".
+Status: Partly built. The forms, the parts, the icons and stroke digits, the wall and the areas of the three kinds that gain one exist in `game_markers` (MK10); the box and the sphere as areas exist in `game_markers::area`, `record` and `forge_doc::Area` (MK11); Studio draws both forms, turns the plates to the camera and edits a box and a sphere with handles (MK12); the game's drawer draws the edit form with the monitor on, its plates turned to the eye and scaled, and Forge's **Edit area** edits the four shapes on every kind with an area (MK13). What shows in a match is design (MK14 to MK16). It extends the built marker set of [gametype-markers.md](gametype-markers.md) (MK1 to MK9).
+Code: `crates/formats/game-markers/src/{form,icon,digits}.rs` (the forms and icons), `crates/formats/game-markers/src/area.rs` (the box and the sphere), `crates/tools/scenario-edit/src/marker_view.rs` (`mesh_turned`, plates turned to an eye) and `area_edit.rs` (the handles), `crates/apps/studio/src/api/markers.rs` (Studio's side), `crates/extensions/game/src/forge_glue/markers_world.rs` (the game's drawer), `crates/extensions/game/src/forge_glue/editing/area.rs` (Forge's Edit area). Tests: named per slice under "Slices".
 Switch: none.
 
 The marker set of gametype-markers.md is one hologram a kind, drawn
@@ -66,7 +66,8 @@ its top left.
 **Size across the map.** The drawer scales the plate and its icon by
 `form::icon_scale(distance)`, `max(1, distance / form::ICON_NEAR)` (8
 world units), with `Mesh::scaled`, so the icon keeps
-its size on screen out to the marker's fade distance. Nothing else of a
+its size on screen out to the marker's fade distance; the plate's foot
+stays on the post (`markers_world::plate_place`). Nothing else of a
 marker scales.
 
 ## The kinds
@@ -131,7 +132,9 @@ ignored and written as zero. `Area::validate` holds a box's half
 lengths (`AreaError::Half`) and a sphere's radius to the radius's
 limits (0.25 to 64). `Area::contains` tests the box in the marker's own
 axes and the sphere by distance; `Area::contains_turned` turns the box
-to the marker's facing. The document's wire form, the record at the end of a
+to the marker's facing. A box lies on its marker's facing everywhere:
+Studio, the game's drawer (`markers_world::place_of`) and a zone's test
+(`rules::world::zones`, at the flag's facing). The document's wire form, the record at the end of a
 Studio map and `rules.zones` carry the two shapes as they carry a
 radius.
 
@@ -219,15 +222,24 @@ no collision and no guest memory. The drawer changes in three ways
 
 | Method | API | Change |
 |---|---|---|
-| `markers.render` | Studio | takes `form` (`edit`, the default, or `play`) and `use` for a spawn; the contact sheet has a row a form |
-| `markers.list` | Studio | each marker gains `icon`, `show` and, for a spawn, `use` |
-| `markers.area.set` | Studio | takes `{box: {half}}` and `{sphere}` beside `radius` and `path` |
+| `markers.render` | Studio (built) | takes `form` (`edit` or `play`; with none, both, a block of rows a form) and `use` for a spawn; a plate turns to the camera |
+| `markers.list` | Studio (built) | each marker gains `icon` and `use` (a spawn's, else `null`); `show` comes with MK14 |
+| `markers.area.set`, `markers.render`'s `area` | Studio (built) | take `{box: {half: [x, y]}}` and `{sphere: radius}` beside `radius` and `path` |
 | `forge.things`, `forge.propose` | game | a flag reports `show`; the op `"edit":{"entry":{"show":{target, on}}}` is taken |
-| `render.markers` | game | each row gains `form` and `icon`; a play form in a match is a row of its kind |
+| `render.markers` | game | each row has `form`, `icon` and `plate_scale` (`agent_proto::MarkerRow`), and `{form}` filters the rows; a play form in a match is a row of its kind |
 | `rules.zones` | game | `area` carries the two new shapes |
 
 In Forge, **Edit area** cycles Radius, Box, Sphere and Path on Y; a box
-grows on the left stick's two axes and a sphere on one. Properties
+grows on the left stick's two axes, each stepping the box's axis
+nearer to it as the monitor looks (forward the half length and right
+the half width while looking along the marker's facing, the other way
+round across it), and a sphere on the forward one. In Studio the
+Shape row of the inspector picks the same four, and a box has a handle
+on each corner and each side, and a sphere one on its equator and one
+on its pole (`scenario_edit::area_edit`). A flag return, a bomb goal
+and a siege goal take **Edit area** as a hill does, from `Area::plate()`
+when none is stored ([gametype-markers.md](gametype-markers.md),
+"Forge"). Properties
 gains **Show in play** (On, Off) on a flag.
 
 ## Rules and limits
@@ -254,8 +266,8 @@ are on invented data.
 |---|---|---|---|---|---|
 | MK10 (built) | **Forms and icons**: `Form`, `Parts`, `Icon` and the stroke digits, `SpawnUse`, the three kinds' areas, `shapes::wall`, `Kind::samples` in both forms | M | `crates/formats/game-markers/src/{form,icon,digits}.rs` (new), `kind.rs`, `shapes.rs`, `mesh.rs` (a colour a corner), `lib.rs`, `tests.rs`; the call sites of the three kinds that gain an area | nothing | a table of each kind's lines and triangles in each form; every play vertex is an edit vertex; each icon lies in its unit square and no two icons have equal meshes; the wall's alpha falls from low to high; a kind with no play form gives an empty mesh |
 | MK11 | **The box and the sphere**: `Shape::Box`, `Shape::Sphere` through `validate`, `contains`, `outline`, the document's wire form and the map record | S | `crates/formats/game-markers/src/{area,record}.rs`, `area_shape_tests.rs` (new), `crates/formats/forge-doc/src/area.rs` and its test | nothing | a turned box holds its corners and not a point past them; a sphere holds a point over the marker that a cylinder of the same radius and no height does not; each refusal by name; both shapes round-trip canonical JSON and the record |
-| MK12 | **Studio**: `form` and `use` in `markers.render`, the fields of `markers.list`, plates turned to the camera, the Shape picker and handles for a box and a sphere | M | `crates/apps/studio/src/api/markers.rs` and its tests, `viewport/area.rs`, `ui/inspector/area.rs`, `crates/tools/scenario-edit/src/{marker_view,area_edit}.rs` | MK10, MK11 | the sheet holds every kind in both forms; a play render of a spawn is empty and of a flag return is its plate; a corner handle drag writes one area op with a box |
-| MK13 | **The game's drawer**: forms by monitor state, turned and scaled plates, the edit-only parts dimmed, `render.markers`' fields, **Edit area** on the four shapes | M | `crates/extensions/game/src/forge_glue/markers_world.rs` and its tests, `forge_glue/editing/area.rs` and its tests, `crates/extensions/agent-proto/src/render.rs` | MK10, MK11 | on an invented session each thing gives its edit form with the monitor on; a plate's normal points at the eye and its size doubles from 8 to 16 units away; scripted pad input makes a box of the stick's two lengths in one op |
+| MK12 (built) | **Studio**: `form` and `use` in `markers.render`, the fields of `markers.list`, plates turned to the camera, the Shape picker and handles for a box and a sphere | M | `crates/apps/studio/src/api/markers.rs` and its tests, `viewport/area.rs`, `ui/inspector/area.rs`, `crates/tools/scenario-edit/src/{marker_view,area_edit}.rs` | MK10, MK11 | the sheet holds every kind in both forms; a play render of a spawn is empty and of a flag return is its plate; a corner handle drag writes one area op with a box |
+| MK13 (built) | **The game's drawer**: forms by monitor state, turned and scaled plates, the edit-only parts dimmed, `render.markers`' fields, **Edit area** on the four shapes | M | `crates/extensions/game/src/forge_glue/markers_world.rs` and its tests, `forge_glue/editing/area.rs` and its tests, `crates/extensions/agent-proto/src/render.rs` | MK10, MK11 | on an invented session each thing gives its edit form with the monitor on; a plate's normal points at the eye and its size doubles from 8 to 16 units away; scripted pad input makes a box of the stick's two lengths in one op |
 | MK14 | **Shown in play, from the document**: `EntryOp::Show`, the default by who added the flag, `LabelledThing::show`, the record's flag, the Properties row, the match's entries | M | `crates/formats/forge-doc/src/entry.rs` (the op) and `validate.rs`, `crates/extensions/game/src/map_areas.rs`, the census field, `crates/extensions/forge/src/props.rs`, the play entries in `markers_world.rs` | MK13 | a flag the document added draws its play form in a match and a base flag does not; the op flips each; a match on an invented variant lists the capture plate in `render.markers` with the monitor off; a retail map with no document draws nothing |
 | MK15 | **Shown in play, from a script**: `show_marker`, `hide_marker`, `RulesExt::shown_markers`, the markers cue beside the walls cue | S | `crates/formats/rules/src/{show,vm,fake}.rs`, `crates/extensions/game/src/rules/world/walls.rs`, the builtin's row in `docs/game/rules-world-api.md` | MK14 | on the fake game a script shows a flag return in blue and hides it; the seventeenth is a script error; a host and a client hold equal lists after a tick; a client that runs no script draws from the cue |
 | MK16 | **A spawn's use**: a starting location's `Respawn` or `Start` as document data, the Properties row, the spawn choice that reads it | S | waits for the owner's answer ("Not verified") | MK10 | a start-only point is not chosen for a respawn on the fake game; the marker draws the use |

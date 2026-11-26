@@ -1197,6 +1197,12 @@ pub(crate) fn display_transparents(build: impl FnOnce(&[u16]) -> Option<frame_sc
         let Some(visibility) = view.display_visibility.as_ref() else { return };
         if visibility.clusters.is_empty() { return; }
         let Some(queue) = build(&visibility.clusters) else { return };
+        // `render.stats`: `layer_plan_15_display_queue_*` (docs/graphics/native-renderer.md).
+        let count = |outcome, n| crate::native_layers::count(15, outcome, n);
+        count("display_queue_built", 1);
+        count("display_queue_geometry", queue.geometry().count() as u64);
+        count("display_queue_unresolved_clusters", queue.unresolved_clusters.len() as u64);
+        count("display_queue_inexact", u64::from(!queue.order_exact));
         let _ = step.builder.set_display_transparents(queue);
     });
 }

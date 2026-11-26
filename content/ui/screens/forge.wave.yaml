@@ -1,0 +1,15 @@
+screen: forge.wave
+kind: list
+layout: controls
+backing: shell
+states:
+  open:
+    focus: 0
+  boss:
+    focus: 0
+widgets:
+  title:
+    component: title
+  legend:
+    component: legend
+    prompts: [[A, "SELECT"], [B, "BACK"]]

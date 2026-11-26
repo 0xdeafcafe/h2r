@@ -17,6 +17,10 @@
 //! - `forge.tool`: the tool's name, capitals, top right.
 //! - `forge.rebuild.pill`, `.pill.end`, `.count`: the grenade row's second
 //!   place, the edits Rebuild map has still to apply; hidden at 0.
+//! - `forge.enemies.pill`, `.pill.end`, `.count`: the grenade row's third
+//!   place, the enemies left while a wave test's wave is on
+//!   (docs/game/forge-firefight-ui.md, "The Firefight HUD", while
+//!   editing); hidden with no test.
 //! - `forge.nav.target`, `forge.nav.from`, `forge.nav.monitor.1` and `.2`:
 //!   the game's navpoints ([`Kind::Navpoint`](crate::model::Kind::Navpoint)), with the distance in metres
 //!   as their number ([`Marks`]): the held, aimed or link's second end, the
@@ -56,6 +60,9 @@ pub const TOOL: &str = "forge.tool";
 pub const REBUILD_PILL: &str = "forge.rebuild.pill";
 pub const REBUILD_END: &str = "forge.rebuild.pill.end";
 pub const REBUILD_COUNT: &str = "forge.rebuild.count";
+pub const ENEMIES_PILL: &str = "forge.enemies.pill";
+pub const ENEMIES_END: &str = "forge.enemies.pill.end";
+pub const ENEMIES_COUNT: &str = "forge.enemies.count";
 pub const NAV_TARGET: &str = "forge.nav.target";
 pub const NAV_FROM: &str = "forge.nav.from";
 /// How many other monitors have a navpoint: the game's list has four slots
@@ -66,7 +73,7 @@ pub const NAV_MONITORS: [&str; MONITORS] = ["forge.nav.monitor.1", "forge.nav.mo
 pub const GIZMO: [&str; AXES as usize] = ["forge.gizmo.x", "forge.gizmo.y", "forge.gizmo.z"];
 
 /// The elements' ids, in draw order.
-pub const IDS: [&str; 18] = [
+pub const IDS: [&str; 21] = [
     PROMPT,
     NOTICE,
     TEACH,
@@ -78,6 +85,9 @@ pub const IDS: [&str; 18] = [
     REBUILD_PILL,
     REBUILD_END,
     REBUILD_COUNT,
+    ENEMIES_PILL,
+    ENEMIES_END,
+    ENEMIES_COUNT,
     NAV_TARGET,
     NAV_FROM,
     NAV_MONITORS[0],
@@ -119,6 +129,11 @@ pub const REBUILD_COUNT_MAX: u32 = COUNT_MAX as u32;
 /// The first step of the pill in the grenade row to the second: the
 /// rebuild pill's place, as the Firefight HUD's second pill.
 pub const REBUILD_STEP: i16 = PILL_STEP;
+/// The first pill to the third: the enemies pill's place, after the
+/// budget and the rebuild pills.
+pub const ENEMIES_STEP: i16 = 2 * PILL_STEP;
+/// The enemies count's widest: two digits, as the Firefight HUD's.
+pub const ENEMIES_LONGEST: &str = super::firefight::COUNT_LONGEST;
 
 /// The tool the monitor holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -306,6 +321,9 @@ pub struct View {
     pub limit: u32,
     /// Edits that reach the game only through Rebuild map.
     pub rebuild: u32,
+    /// The enemies left while a wave test's wave is on; none with no test
+    /// or between waves.
+    pub enemies: Option<u16>,
     /// The value a held thing is being changed by, as the prompt says it.
     pub changing: Option<String>,
     /// The hint to show now, if the state has one that was not shown yet.
@@ -324,6 +342,7 @@ impl Default for View {
             used: 0,
             limit: 0,
             rebuild: 0,
+            enemies: None,
             changing: None,
             teach: None,
             marks: Marks::default(),
@@ -429,6 +448,14 @@ pub fn values(v: &View, b: &Buttons) -> Values {
             Value::text(count_text(v.rebuild, REBUILD_COUNT_MAX)),
         );
     }
+    if let Some(n) = v.enemies {
+        out.set(ENEMIES_PILL, Value::shown());
+        out.set(ENEMIES_END, Value::shown());
+        out.set(
+            ENEMIES_COUNT,
+            Value::text(count_text(u32::from(n), u32::from(COUNT_MAX))),
+        );
+    }
     let nav =
         |m: Option<u32>| m.map_or_else(Value::hidden, |m| Value::text(distance_text(m as f32)));
     out.set(NAV_TARGET, nav(v.marks.target));
@@ -461,6 +488,7 @@ pub fn views() -> Vec<(&'static str, View)> {
         used: 12,
         limit: 80,
         rebuild: 0,
+        enemies: None,
         changing: None,
         teach: None,
         marks: Marks::default(),
@@ -566,6 +594,14 @@ pub fn views() -> Vec<(&'static str, View)> {
         ("budget-low", with(&|v| v.used = 72)),
         ("budget-full", with(&|v| v.used = 80)),
         ("rebuild", with(&|v| v.rebuild = 2)),
+        // A wave test's wave is on: the enemies left.
+        (
+            "testing",
+            with(&|v| {
+                v.rebuild = 2;
+                v.enemies = Some(7);
+            }),
+        ),
         (
             "widest",
             with(&|v| {
@@ -574,6 +610,7 @@ pub fn views() -> Vec<(&'static str, View)> {
                 v.used = 1;
                 v.limit = u32::MAX;
                 v.rebuild = u32::MAX;
+                v.enemies = Some(u16::MAX);
                 v.marks = Marks {
                     target: Some(u32::MAX),
                     from: Some(u32::MAX),
@@ -650,9 +687,11 @@ impl Describe for Forge {
         Some("Forge runs on multiplayer maps; a campaign player HUD may have no grenade row")
     }
 
-    /// A monitor is no biped and no Firefight: never with the superbounce
-    /// HUDs or the Firefight HUD. It shows with the Forge readout, whose
-    /// rows are clear of its places.
+    /// A monitor is no biped: never with the superbounce HUDs. Nothing
+    /// placed of the Firefight HUD meets it: in a wave test the monitor
+    /// sees only Firefight's banner and notes, the game's channels, and
+    /// its own pill counts the enemies. It shows with the Forge readout,
+    /// whose rows are clear of its places.
     fn never_with(&self) -> &'static [&'static str] {
         &[
             super::superbounce::NAME,
@@ -1004,6 +1043,47 @@ mod tests {
                 .contains(&super::super::forge_readout::NAME),
             "the monitor shows the readout"
         );
+    }
+
+    /// The enemies pill is the grenade row's third place, after the budget
+    /// and the rebuild pills, a kit pill's width and the gap on from the
+    /// second; it shows only while a test's wave is on, at most 99.
+    #[test]
+    fn the_enemies_pill_takes_the_grenade_rows_third_place() {
+        let h = hud();
+        let at = |id: &str| {
+            let p = h.element(id).unwrap().at;
+            assert_eq!(p.full, p.half.unwrap(), "{id}");
+            assert_eq!(p.full, p.quarter.unwrap(), "{id}");
+            (p.origin, p.full)
+        };
+        let (pill, count) = (Origin::NextGrenadePill, Origin::NextGrenadeCount);
+        assert_eq!(ENEMIES_STEP, REBUILD_STEP + PILL_STEP);
+        assert_eq!(at(ENEMIES_PILL), (pill, (ENEMIES_STEP, 0)));
+        assert_eq!(at(ENEMIES_END), (pill, (ENEMIES_STEP + 20, 0)));
+        assert_eq!(at(ENEMIES_COUNT), (count, (ENEMIES_STEP, 0)));
+        assert_eq!(h.element(ENEMIES_COUNT).unwrap().over, Some(ENEMIES_PILL));
+        let b = Buttons::sample();
+        let mut v = View {
+            monitor: true,
+            used: 3,
+            limit: 10,
+            ..View::default()
+        };
+        for id in [ENEMIES_PILL, ENEMIES_END, ENEMIES_COUNT] {
+            assert!(!values(&v, &b).get(id).unwrap().shown, "{id}: no test");
+        }
+        v.enemies = Some(7);
+        let on = values(&v, &b);
+        assert_eq!(shown(&on, ENEMIES_COUNT).as_deref(), Some("7"));
+        assert!(on.get(ENEMIES_PILL).unwrap().shown && on.get(ENEMIES_END).unwrap().shown);
+        // The tool line keeps the tool's name in a test.
+        assert_eq!(shown(&on, TOOL).as_deref(), Some("OBJECTS"));
+        v.enemies = Some(300);
+        assert_eq!(shown(&values(&v, &b), ENEMIES_COUNT).as_deref(), Some("99"));
+        // With the monitor off nothing of the test shows.
+        v.monitor = false;
+        assert_eq!(values(&v, &b), hidden());
     }
 
     /// Every named state's prompt, in every state, is within the longest;

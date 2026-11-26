@@ -662,6 +662,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "blockout-kit"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "collision-build",
+ "dev-texture",
+ "forge-shapes",
+ "h1-assets",
+ "h1convert",
+ "h1map",
+ "h1objects",
+ "map",
+ "pogo-kit",
+ "scenario-edit",
+ "tags",
+]
+
+[[package]]
 name = "boot"
 version = "0.1.0"
 dependencies = [
@@ -2281,10 +2299,12 @@ dependencies = [
 name = "forge-build"
 version = "0.1.0"
 dependencies = [
+ "blockout-kit",
  "bots",
  "content",
  "firefight-kit",
  "forge-doc",
+ "forge-shapes",
  "map",
  "scenario-edit",
  "tags",
