@@ -80,6 +80,8 @@ mod stream_copy;
 mod stream_reuse;
 #[path = "swallow.rs"]
 mod swallow;
+#[path = "swallow_carry.rs"]
+mod swallow_carry;
 #[path = "vblank.rs"]
 mod vblank;
 #[path = "vertex_cache.rs"]

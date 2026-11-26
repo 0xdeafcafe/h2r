@@ -1380,13 +1380,35 @@ device's swallow. What is built (**Code**):
   `the_post_callees_nest_under_the_screen_effects`; `boot::scene_glue`'s
   `a_scene_summarises_per_view`; `agent_proto`'s
   `a_views_late_passes_print_only_when_they_ran`.
+- **The post swallow, carried.** The glow (`GlowPass`) and each screen
+  effect (`ScreenPass`, both `game::native_post_glue`) record again on
+  any copy's attachments once `SwallowPass::validate` has frozen their
+  raster (`replays_scene`): their slots and stages come from the copy
+  being recorded. At the call's return `Device::swallow_commit` builds a
+  `SceneStage` of `Stage::Post` from the call's surfaces and plan and,
+  when the backend can commit one (`can_commit_carried`), seals every
+  copy (`prepare_carried_stage`) and commits them
+  (`commit_carried_stage`); a replaying sink retains the stage as a
+  `ReplayOp::Stage` in place of the call's packets, so the display copy
+  replays the glow and the effects on its own attachments. A stage
+  carries no entry textures: the glow takes its down-sample's entry from
+  the view's slot, copied with alpha one where the guest read it as
+  `X8` (`OpaqueEntry`), as the device's framebuffer snapshot does. A
+  pass that does not record again, a refused carry, or a frame the guest
+  reference asked for (the sink's `can_commit_carried` is false) takes
+  the D3D path: `prepare_external` with the entry textures, which a
+  replaying sink refuses, and the packets replay. Tests: `d3d`'s
+  `tests/swallow_carry.rs`.
 - **Not built.** The replacement of layers 16 and 6 and of
   `render_screen_effects` (8.2: their census over the corpus, the table
   of writes, the differentials); the post stage drawing from
   `PostParams` on the render thread, owning its bloom and effect
   targets, in place of the swallow, which matches the guest's draws as
   they run and replays them on a mismatch, so it needs the guest's
-  calls; the deletion of the three stages' glue. Screen effects the
+  calls; under a render thread with a frame owner,
+  `ThreadedBackend::prepare_carried_stage` seals only light stages, so
+  the carried post stage is refused there and the call keeps the D3D
+  path; the deletion of the three stages' glue. Screen effects the
   scope-zoom HUD draws are not put in the scene (`native_post` leaves
   them to the HUD).
 - **Gate.** As slice 4. No guest surface other than the back buffer,
@@ -1478,9 +1500,10 @@ D3D reference with all native stages disabled.
   range does; `UiPass` and `FlarePass` take attachments and sampled stages
   from the copy being recorded. Particles, transparents and sky are
   carried only as the guest's own admitted draws. Post's glow and screen
-  effects stay on the guest path: they are swallows that replace several
-  guest draws and write blur targets of their own, so no one packet
-  stands in for them. A UI pass with indexed siblings has no single
+  effects replace several guest draws and write blur targets of their
+  own, so no one packet stands in for them: they commit as a carried
+  scene stage, which the sink keeps as a `ReplayOp::Stage` (slice 5,
+  "The post swallow, carried"). A UI pass with indexed siblings has no single
   packet (`resolved_fallback` is `None`) and stays on the guest path too.
   The refusal names the cause (`scene_sink::unretained_cause`) with the
   producer. Tests: `d3d`'s `tests/scene_sink.rs`
