@@ -318,7 +318,7 @@ fn build_map_with<R: Read + Seek>(
     if bsps.is_empty() {
         return Err("the scenario has no structure BSP".into());
     }
-    let placements = traversals::Placements::read(&view, map)?;
+    let placements = traversals::Placements::read(&bytes, map)?;
     let pads = pads::read(&view, map)?;
     let starts = scenario_starts(&view)?;
     let mut out = Vec::with_capacity(bsps.len());
@@ -398,7 +398,7 @@ pub fn mark_in_map<R: Read + Seek>(
     let location = scenario.location.ok_or("the scenario has no payload")?;
     let bytes = map.read_tag_bytes(scenario.id).map_err(|x| x.to_string())?;
     let view = TagView::new(&bytes, location.address);
-    let placements = traversals::Placements::read(&view, map)?;
+    let placements = traversals::Placements::read(&bytes, map)?;
     let pads = pads::read(&view, map)?;
     let starts = scenario_starts(&view)?;
     Ok(link_and_mark(data, &placements, &starts, &pads))
