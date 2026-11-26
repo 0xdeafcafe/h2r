@@ -82,9 +82,13 @@ pub const OPTION_SIZE: u32 = 0xc;
 /// Our guest page: settings pairs, then the merged entry block.
 pub const DATA_BASE: u32 = 0xa0fd_0000;
 const DATA_SIZE: u32 = 0x4000;
-const ENTRIES_AT: u32 = DATA_BASE + 0x2000;
-const MAX_SLOTS: u32 = (DATA_SIZE - 0x2000) / ENTRY_SIZE;
-const _: () = assert!(MAX_SLOTS > 64);
+/// The settings pairs' room: every listed entry writes one pair for each
+/// setting of its type the editor offers, so this is most of the page. The
+/// merged block, 101 entries at most, takes the rest.
+const PAIRS_SIZE: u32 = 0x3800;
+const ENTRIES_AT: u32 = DATA_BASE + PAIRS_SIZE;
+const MAX_SLOTS: u32 = (DATA_SIZE - PAIRS_SIZE) / ENTRY_SIZE;
+const _: () = assert!(MAX_SLOTS >= MAX_BUILTINS);
 const _: () = assert!(MAX_ENTRIES as u32 <= MAX_SLOTS);
 
 /// The icon after every community name, where retail names carry U+E008.

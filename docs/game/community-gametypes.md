@@ -233,8 +233,8 @@ store's (`community_variants::extend_with`, with two groups), at most 101
 in all, the content list's limit. A store variant past it is left out
 with a line. Each group writes its pairs into its own page: the
 community variants' at `0xa0fd0000`, the store's at `0xa0fd8000`
-(`game_variants::PAIRS_BASE`, 16 KiB); the merged block stays at
-`0xa0fd2000`.
+(`game_variants::PAIRS_BASE`, 16 KiB); the merged block sits at
+`0xa0fd3800`, after the community pairs' 14 KiB.
 
 A store variant's entry (`game_variants::inject::entries`) is its list
 type, its record's value of every setting of its type that the `sily`
