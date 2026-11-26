@@ -1,6 +1,6 @@
 # Halo 2 engine films
 
-Status: Design. The film file's tick chunks, the game start block, the action and body capture at the simulation update and the stats container are built; the recorder writes a checkpoint of the film file every 150 ticks. A default recording writes one film for each game, `<id>.h2film` with `<id>.h2stats` beside it, opened at the game's activation and sealed at its end (slice 6). Extension blocks are not built, the file still carries a seed, and a `--film` or host recording is one film from boot to its first game's end ([theater-design.md](theater-design.md#slices)). It carries no call, machine keyframe, disk manifest or boot record, and the stats container carries no call tape, arena hash or mark.
+Status: Design. The film file's tick chunks, the game start block, the action and body capture at the simulation update and the stats container are built; the recorder writes a checkpoint of the film file every 150 ticks. A default recording writes one film for each game, `<id>.h2film` with `<id>.h2stats` beside it, opened at the game's activation and sealed at its end (slice 6). Extension blocks are built, with the Forge session's edits their first user; the file still carries a seed, and a `--film` or host recording is one film from boot to its first game's end ([theater-design.md](theater-design.md#slices)). It carries no call, machine keyframe, disk manifest or boot record, and the stats container carries no call tape, arena hash or mark.
 Code: `crates/live/film/src/file.rs` (`FilmWriter`, `FilmReader`), `crates/live/film/src/start.rs` (`GameStart`), `crates/live/film/src/blam` (the stats container), `crates/extensions/game/src/theater/record.rs` (the recorder), `crates/extensions/game/src/theater/game_start.rs` (the capture). Tests: `crates/live/film/src/file/tests.rs`, `crates/live/film/src/start/tests.rs`, `crates/live/film/src/tests.rs`, `crates/extensions/game/src/theater/game_start/tests.rs`.
 Switch: `film-autorecord` (on), listed in [switches.md](../runtime/switches.md).
 
@@ -78,9 +78,10 @@ decision and the library rules live in
 - **Outside changes.** A Live session link joined changes nothing the
   film replays: the recording carries on and `theater.status` lists the
   reason in `notes`. An editor write or an agent API write changes a
-  running game's ticks from outside the update: the game in play goes
-  without a film, its files are deleted, `last_discard` says why, and the
-  next game records as usual (`Session::outside_change`). A change a
+  running game's ticks from outside the update, with no record: the game
+  in play's film ends at the tick before the write and is kept to there,
+  the rest of that game is not recorded, `notes` says where it ended, and
+  the next game records as usual (`Session::outside_change`). A change a
   feature records as an extension block keeps the film
   ([The film file](#the-film-file)).
 - **A film being watched is not recorded.**
@@ -211,7 +212,7 @@ says the file has one.
 | `HASH` | the arena hash at entry to the first update | yes |
 | `SETS` | JSON: the value of every simulation-scope setting, and the feature switch spec | yes |
 | `VARI` | the rules script of the variant: its eight-byte prefix, then its blob | when the variant names a rules script |
-| `MAPV` | the Forge map variant | when the game has one; read and written, filled by slice 11 |
+| `MAPV` | the Forge map variant | when the game has one; read and written, and no recorder fills it |
 | `HDET` | what the start hash is made of: the extension records' digest and a hash of each 4 KiB page of the arena | written by the recorder; when a start hash does not reproduce, playback compares it and names the differing pages and extension state |
 
 The selector reads the header, `STMP` and `GAME` and nothing else. The
@@ -230,10 +231,23 @@ index.
 **A start point** is the tagged arena and extension records of
 [input-film.md](input-film.md#start-points).
 
-**An extension block** is a u32 update index, a four-byte feature tag
-and the feature's bytes, at most 1 MiB inflated. It precedes the tick
-chunk that holds its update, in update order. Playback hands a block to
-its feature before the update it names. The tags:
+**An extension block** (kind 5) is a u32 update index, a four-byte
+feature tag and one zstd frame of the feature's bytes, at most 1 MiB
+inflated (`film::file::MAX_EXTENSION_BYTES`). A film holds at most 65,536
+(`MAX_EXTENSIONS`) and 16 MiB stored in all (`MAX_EXTENSION_TOTAL`). The
+block precedes the tick chunk that holds its update, in update order: a
+reader refuses one in the wrong chunk or out of order. The writer takes a
+record only for the next update it will write
+(`FilmWriter::extension`), and a full chunk the next tick would close is
+closed first. The recorder writes the records a game tick applied before
+that tick's first film tick (`theater::extension`, `record.rs`). Playback
+reads the records of film tick k when tick k - 1 ends, and at the first
+update for the game's first tick, and hands each to its feature
+(`FilmActions::extensions_at`, `theater::extension::deliver`); the
+feature applies them in the game tick that follows. A record the writer
+cannot keep (too large, or past a cap) ends the film at the tick before
+it. A shared copy and a recovered film keep the blocks
+(`share_copy`, `recover`). The tags:
 
 | Tag | Feature | Bytes |
 |---|---|---|

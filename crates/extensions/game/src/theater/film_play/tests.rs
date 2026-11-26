@@ -82,6 +82,7 @@ fn film_of(
     words: [u32; 2],
     ticks: u64,
     twice: Option<u64>,
+    edits: &[(u64, film::Tag, &[u8])],
 ) -> Vec<u8> {
     let seed = Seed { header: header.clone(), descriptor: Default::default() };
     let mut w = FilmWriter::new(Cursor::new(Vec::new()), &seed, 30).unwrap();
@@ -89,6 +90,10 @@ fn film_of(
     let start = first_update(&g, options.to_vec(), header, None, 1).unwrap();
     w.game_start(&start).unwrap();
     for game_tick in 1..=ticks {
+        // A feature's outside input, applied in this game tick.
+        for (_, tag, bytes) in edits.iter().filter(|(at, ..)| *at == game_tick) {
+            w.extension(w.ticks() as u32 + 1, *tag, bytes).unwrap();
+        }
         if twice == Some(game_tick) {
             applied(&mut w, &mut g, false);
         }
@@ -120,6 +125,16 @@ impl Fixture {
     /// [`Fixture::new`], with the game applying its update twice on game
     /// tick `twice`.
     fn with(twice: Option<u64>) -> Self {
+        Self::build(twice, &[])
+    }
+
+    /// [`Fixture::new`], with a feature's outside input recorded in the
+    /// game ticks given: each is a game tick, a feature and its bytes.
+    fn with_edits(edits: &[(u64, film::Tag, &[u8])]) -> Self {
+        Self::build(None, edits)
+    }
+
+    fn build(twice: Option<u64>, edits: &[(u64, film::Tag, &[u8])]) -> Self {
         let dir = Temp::new();
         let file = dir.0.join("fixture.h2film");
         let rec = Session::open(Some(file.clone()), None, host_facts(), b"xbe", &options(&dir.0))
@@ -132,7 +147,7 @@ impl Fixture {
         rec.finish(true).unwrap();
         let header = film::Reader::open(film::file::stats_of(&file)).unwrap().header;
         let options = block(MODE_CAMPAIGN, 2);
-        fs::write(&file, film_of(&header, &options, [21, 22], GAME, twice)).unwrap();
+        fs::write(&file, film_of(&header, &options, [21, 22], GAME, twice, edits)).unwrap();
         Self {
             dir,
             file,
@@ -554,4 +569,111 @@ fn a_launch_seek_reports_its_remaining_ticks_and_holds_at_its_target() {
     let s = session.lock();
     assert_eq!((s.tick, s.failure.clone()), (target, None));
     assert!(s.holding());
+}
+
+use crate::theater::extension::FORGE;
+
+#[test]
+fn a_feature_record_made_in_a_game_tick_is_written_before_its_first_film_tick() {
+    // Five game ticks; the second applies its update twice, and a Forge edit
+    // is made in each of the first, the second and the fifth.
+    let dir = Temp::new();
+    let file = dir.0.join("recorded.h2film");
+    let rec = Session::open(Some(file.clone()), None, host_facts(), b"xbe", &options(&dir.0))
+        .unwrap()
+        .unwrap();
+    let g = arena();
+    let stamps: [&[u32]; 5] = [&[10], &[11, 12], &[13], &[14], &[15]];
+    for (index, tick) in stamps.iter().enumerate() {
+        let game_tick = index + 1;
+        if matches!(game_tick, 1 | 2) {
+            rec.record_extension(FORGE, vec![0, game_tick as u8]);
+        }
+        if game_tick == 2 {
+            rec.record_extension(FORGE, vec![1, 2]);
+        }
+        if game_tick == 5 {
+            rec.record_extension(*b"ZZZZ", vec![9]);
+        }
+        for &stamp in *tick {
+            rec.record_update(vec![seat_input(stamp)], Some(body_of(stamp)), Some(stamp));
+        }
+        rec.checkpoint(&g);
+    }
+    rec.finish(true).unwrap();
+    let mut actions = film::file::FilmActions::open(&file).unwrap();
+    assert_eq!(actions.length_ticks(), 6);
+    // Game tick 2 is film ticks 2 and 3; its records come before the first.
+    assert_eq!(actions.extensions_at(1).unwrap(), vec![(FORGE, vec![0, 1])]);
+    assert_eq!(
+        actions.extensions_at(2).unwrap(),
+        vec![(FORGE, vec![0, 2]), (FORGE, vec![1, 2])]
+    );
+    assert!(actions.extensions_at(3).unwrap().is_empty());
+    assert_eq!(actions.extensions_at(6).unwrap(), vec![(*b"ZZZZ", vec![9])]);
+    assert_eq!(actions.extension_tags(), vec![FORGE, *b"ZZZZ"]);
+}
+
+#[test]
+fn a_forge_edit_recorded_at_tick_k_is_handed_to_the_forge_session_for_tick_k() {
+    use crate::forge_glue::net::take_played;
+    let (a, b, c) = (b"welcome".as_slice(), b"item at 3".as_slice(), b"item at 7".as_slice());
+    let fixture = Fixture::with_edits(&[(3, FORGE, a), (3, FORGE, b), (7, FORGE, c)]);
+    take_played();
+    let session = fixture.open();
+    let mut g = machine(&fixture.options, [21, 22]);
+    // What the session has been handed after each game tick, drained as its
+    // editor drains it at the start of the next. A record for film tick k is
+    // there before game tick k runs, and not before.
+    let mut handed: Vec<(u64, Vec<Vec<u8>>)> = Vec::new();
+    let mut n = 0;
+    while tick(&session, &mut g, |_| ()) {
+        n += 1;
+        let played = take_played();
+        if !played.is_empty() {
+            handed.push((n, played));
+        }
+    }
+    assert_eq!(session.lock().failure, None);
+    assert_eq!(
+        handed,
+        vec![
+            (2, vec![a.to_vec(), b.to_vec()]),
+            (6, vec![c.to_vec()]),
+        ],
+        "handed over after the tick before the one that applies each"
+    );
+    // The session's edits were applied in tick 3 and 7 of a film that played
+    // to matching digests.
+    assert!(session.lock().complete);
+}
+
+#[test]
+fn a_film_with_records_of_a_feature_this_build_does_not_have_does_not_open() {
+    let fixture = Fixture::with_edits(&[(2, *b"ZZZZ", b"x".as_slice())]);
+    let Err(error) = fixture.try_open() else {
+        panic!("the film opened")
+    };
+    let why = format!("{error:#}");
+    assert!(why.contains("ZZZZ") && why.contains("feature"), "{why}");
+}
+
+#[test]
+fn a_record_too_large_to_keep_ends_the_film_at_the_tick_before() {
+    let dir = Temp::new();
+    let file = dir.0.join("recorded.h2film");
+    let rec = Session::open(Some(file.clone()), None, host_facts(), b"xbe", &options(&dir.0))
+        .unwrap()
+        .unwrap();
+    let g = arena();
+    for (n, stamp) in [10u32, 11, 12, 13].into_iter().enumerate() {
+        if n == 2 {
+            rec.record_extension(FORGE, vec![0; film::file::MAX_EXTENSION_BYTES + 1]);
+        }
+        rec.record_update(vec![seat_input(stamp)], Some(body_of(stamp)), Some(stamp));
+        rec.checkpoint(&g);
+    }
+    rec.finish(true).unwrap();
+    let actions = film::file::FilmActions::open(&file).unwrap();
+    assert_eq!(actions.length_ticks(), 2);
 }

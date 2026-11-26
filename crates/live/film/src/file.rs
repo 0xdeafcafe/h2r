@@ -16,9 +16,11 @@
 //!   48  16  digest of the dictionary the chunks name, or zero
 //! seed      one zstd frame of JSON: the film header and the match descriptor
 //! blocks    u8 kind (0 tick chunk, 2 start point, 3 checkpoint, 4 game
-//!           start, at most one), u32 stored bytes, then the payload: a
-//!           tick chunk is its zstd frame; a start point and a game start
-//!           ([`crate::start`]) are a zstd frame
+//!           start, at most one, 5 extension), u32 stored bytes, then the
+//!           payload: a tick chunk is its zstd frame; a start point and a
+//!           game start ([`crate::start`]) are a zstd frame; an extension
+//!           is a u32 update index, a four-byte feature tag and a zstd
+//!           frame of the feature's bytes
 //! trailer   u32 chunk count, then a u64 offset per tick chunk
 //! ```
 //!
@@ -54,6 +56,18 @@ const KIND_TICKS: u8 = 0;
 const KIND_START: u8 = 2;
 const KIND_TAIL: u8 = 3;
 const KIND_GAME: u8 = 4;
+const KIND_EXTENSION: u8 = 5;
+/// The most bytes one extension record holds, inflated.
+pub const MAX_EXTENSION_BYTES: usize = 1 << 20;
+/// The most extension records a film holds.
+pub const MAX_EXTENSIONS: usize = 1 << 16;
+/// The most stored bytes the extension records of a film take in all.
+pub const MAX_EXTENSION_TOTAL: u64 = 16 << 20;
+/// The bytes before an extension's frame: its update index and its tag.
+const EXTENSION_PREFIX: u32 = 8;
+/// The most a stored extension frame can take: the cap's worst case for
+/// zstd, with room for the frame's own header.
+const EXTENSION_STORED: u64 = MAX_EXTENSION_BYTES as u64 + (MAX_EXTENSION_BYTES as u64 >> 7) + 1024;
 const MAX_SEED: usize = 1 << 20;
 const MAX_START: u32 = 4 << 20;
 const MAX_GAME_START: u32 = 8 << 20;
@@ -167,6 +181,8 @@ pub struct FilmWriter<W: Write + Seek> {
     ticks: u64,
     last_digest: u64,
     head: Head,
+    extensions: usize,
+    extension_bytes: u64,
 }
 
 impl<W: Write + Seek> FilmWriter<W> {
@@ -191,6 +207,8 @@ impl<W: Write + Seek> FilmWriter<W> {
             ticks: 0,
             last_digest: 0,
             head,
+            extensions: 0,
+            extension_bytes: 0,
         })
     }
 
@@ -258,8 +276,14 @@ impl<W: Write + Seek> FilmWriter<W> {
 
     /// A game start as the file stores it, copied from another film file.
     pub fn game_start_frame(&mut self, frame: &[u8]) -> Result<()> {
-        ensure!(self.head.flags & FLAG_GAME_START == 0, "a film holds one game start");
-        ensure!(frame.len() as u64 <= u64::from(MAX_GAME_START), "film game start is too large");
+        ensure!(
+            self.head.flags & FLAG_GAME_START == 0,
+            "a film holds one game start"
+        );
+        ensure!(
+            frame.len() as u64 <= u64::from(MAX_GAME_START),
+            "film game start is too large"
+        );
         self.head.flags |= FLAG_GAME_START;
         self.block(KIND_GAME, frame)
     }
@@ -269,6 +293,50 @@ impl<W: Write + Seek> FilmWriter<W> {
         ensure!(self.ticks == 0, "a start point comes before the first tick");
         self.head.flags |= FLAG_START_POINT;
         self.block(KIND_START, frame)
+    }
+
+    /// A feature's outside input, applied at the start of `update`, which
+    /// must be the next update this writer takes. The block precedes the
+    /// chunk that holds the update: a full chunk the next tick would have
+    /// closed is closed first. `tag` names the feature; the bytes are its
+    /// own, at most [`MAX_EXTENSION_BYTES`]; a film holds at most
+    /// [`MAX_EXTENSIONS`] and [`MAX_EXTENSION_TOTAL`] stored bytes of them.
+    pub fn extension(&mut self, update: u32, tag: Tag, bytes: &[u8]) -> Result<()> {
+        ensure!(
+            u64::from(update) == self.ticks + 1,
+            "an extension record comes before its update (update {update}, next is {})",
+            self.ticks + 1
+        );
+        ensure!(
+            bytes.len() <= MAX_EXTENSION_BYTES,
+            "an extension record is larger than {MAX_EXTENSION_BYTES} bytes"
+        );
+        if self.encoder.ticks() == CHUNK_TICKS {
+            self.close_chunk()?;
+        }
+        let frame = zstd::bulk::compress(bytes, 3)?;
+        self.extension_frame(update, tag, &frame)
+    }
+
+    /// An extension as the file stores it, copied from another film file.
+    fn extension_frame(&mut self, update: u32, tag: Tag, frame: &[u8]) -> Result<()> {
+        let stored = u64::from(EXTENSION_PREFIX) + frame.len() as u64;
+        ensure!(
+            self.extensions < MAX_EXTENSIONS,
+            "a film holds at most {MAX_EXTENSIONS} extension records"
+        );
+        ensure!(
+            self.extension_bytes + stored <= MAX_EXTENSION_TOTAL,
+            "a film's extension records take at most {MAX_EXTENSION_TOTAL} bytes"
+        );
+        let mut payload = Vec::with_capacity(stored as usize);
+        payload.extend_from_slice(&update.to_le_bytes());
+        payload.extend_from_slice(&tag);
+        payload.extend_from_slice(frame);
+        self.block(KIND_EXTENSION, &payload)?;
+        self.extensions += 1;
+        self.extension_bytes += stored;
+        Ok(())
     }
 
     fn block(&mut self, kind: u8, payload: &[u8]) -> Result<()> {
@@ -321,6 +389,16 @@ pub struct Block {
     pub len: u32,
 }
 
+/// One extension record of the file: the update it comes before, its
+/// feature and where its stored frame is ([`FilmReader::read_extension`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExtensionBlock {
+    pub update: u32,
+    pub tag: Tag,
+    pub offset: u64,
+    pub len: u32,
+}
+
 pub struct FilmReader<R: Read + Seek> {
     input: R,
     pub seed: Seed,
@@ -335,6 +413,8 @@ pub struct FilmReader<R: Read + Seek> {
     /// The game's start, when the film holds one
     /// ([`FilmReader::game_start`]); a file with two is refused.
     pub game_starts: Vec<Block>,
+    /// The extension records, in update order.
+    pub extensions: Vec<ExtensionBlock>,
 }
 
 fn read_exact_at<R: Read + Seek>(input: &mut R, at: u64, buf: &mut [u8]) -> Result<()> {
@@ -380,6 +460,8 @@ impl<R: Read + Seek> FilmReader<R> {
         let mut chunks = Vec::new();
         let mut start_points = Vec::new();
         let mut game_starts = Vec::new();
+        let mut extensions: Vec<ExtensionBlock> = Vec::new();
+        let mut extension_bytes = 0u64;
         let mut tail = None;
         let mut at = seed_end;
         let mut prefix = [0u8; 5];
@@ -423,6 +505,41 @@ impl<R: Read + Seek> FilmReader<R> {
                         tag: *b"GAME",
                         offset: body,
                         len: stored,
+                    });
+                }
+                KIND_EXTENSION => {
+                    ensure!(
+                        stored >= EXTENSION_PREFIX
+                            && u64::from(stored) <= u64::from(EXTENSION_PREFIX) + EXTENSION_STORED,
+                        "film extension record is cut short or too large"
+                    );
+                    ensure!(
+                        extensions.len() < MAX_EXTENSIONS,
+                        "film holds more than {MAX_EXTENSIONS} extension records"
+                    );
+                    extension_bytes += u64::from(stored);
+                    ensure!(
+                        extension_bytes <= MAX_EXTENSION_TOTAL,
+                        "film extension records are larger than {MAX_EXTENSION_TOTAL} bytes"
+                    );
+                    let mut prefix = [0u8; EXTENSION_PREFIX as usize];
+                    read_exact_at(&mut input, body, &mut prefix)?;
+                    let update = u32::from_le_bytes([prefix[0], prefix[1], prefix[2], prefix[3]]);
+                    let first = chunks.len() as u64 * CHUNK_TICKS as u64;
+                    ensure!(
+                        u64::from(update) > first
+                            && u64::from(update) <= first + CHUNK_TICKS as u64,
+                        "film extension record is not before the chunk of its update"
+                    );
+                    ensure!(
+                        extensions.last().is_none_or(|last| last.update <= update),
+                        "film extension records are out of order"
+                    );
+                    extensions.push(ExtensionBlock {
+                        update,
+                        tag: [prefix[4], prefix[5], prefix[6], prefix[7]],
+                        offset: body + u64::from(EXTENSION_PREFIX),
+                        len: stored - EXTENSION_PREFIX,
                     });
                 }
                 _ => bail!("film block of unknown kind {kind}"),
@@ -482,6 +599,7 @@ impl<R: Read + Seek> FilmReader<R> {
             chunks,
             start_points,
             game_starts,
+            extensions,
         })
     }
 
@@ -521,6 +639,14 @@ impl<R: Read + Seek> FilmReader<R> {
     pub fn game_start_at(&mut self, block: &Block) -> Result<GameStart> {
         let frame = self.read_block(block)?;
         GameStart::decode(&frame)
+    }
+
+    /// The feature bytes of an extension record, inflated.
+    pub fn read_extension(&mut self, block: &ExtensionBlock) -> Result<Vec<u8>> {
+        let mut frame = vec![0u8; block.len as usize];
+        read_exact_at(&mut self.input, block.offset, &mut frame)?;
+        zstd::bulk::decompress(&frame, MAX_EXTENSION_BYTES)
+            .context("film extension record does not inflate")
     }
 
     /// The stored frame of a game start or start point.
@@ -590,6 +716,35 @@ impl FilmActions {
         self.reader.length_ticks
     }
 
+    /// The features the film's extension records are for, each once.
+    pub fn extension_tags(&self) -> Vec<Tag> {
+        let mut tags: Vec<Tag> = Vec::new();
+        for ext in &self.reader.extensions {
+            if !tags.contains(&ext.tag) {
+                tags.push(ext.tag);
+            }
+        }
+        tags
+    }
+
+    /// The extension records that come before `update`, in the order the
+    /// recording wrote them: each one's feature and bytes.
+    pub fn extensions_at(&mut self, update: u64) -> Result<Vec<(Tag, Vec<u8>)>> {
+        let from = self
+            .reader
+            .extensions
+            .partition_point(|e| u64::from(e.update) < update);
+        let to = self
+            .reader
+            .extensions
+            .partition_point(|e| u64::from(e.update) <= update);
+        let blocks = self.reader.extensions[from..to].to_vec();
+        blocks
+            .iter()
+            .map(|block| Ok((block.tag, self.reader.read_extension(block)?)))
+            .collect()
+    }
+
     fn load(&mut self, k: usize) -> Result<()> {
         if self.loaded == Some(k) {
             return Ok(());
@@ -609,7 +764,8 @@ impl FilmActions {
         };
         self.loaded = None;
         for i in from..=k {
-            self.reader.read_chunk(i, &mut self.decoder, &mut self.buf)?;
+            self.reader
+                .read_chunk(i, &mut self.decoder, &mut self.buf)?;
             self.starts[i + 1] = Some(self.decoder.seat_rows());
         }
         self.loaded = Some(k);
@@ -663,8 +819,7 @@ impl FilmActions {
             body: body.to_vec(),
             inputs,
             digest: digested.then(|| self.decoder.digest(t)),
-            closing: (digested && t + 1 == self.decoder.ticks())
-                .then(|| self.decoder.arena_hash()),
+            closing: (digested && t + 1 == self.decoder.ticks()).then(|| self.decoder.arena_hash()),
         })
     }
 
@@ -756,7 +911,10 @@ pub fn being_written(film: &Path) -> bool {
     let Ok(file) = File::open(film) else {
         return false;
     };
-    matches!(file.try_lock_shared(), Err(std::fs::TryLockError::WouldBlock))
+    matches!(
+        file.try_lock_shared(),
+        Err(std::fs::TryLockError::WouldBlock)
+    )
 }
 
 /// The copy of the sealed film at `film` that goes to the account's film
@@ -777,7 +935,15 @@ pub fn share_copy<W: Write + Seek>(film: &Path, out: W) -> Result<W> {
         scrub(&mut start.game.descriptor);
         copy.game_start_frame(&start.encode()?)?;
     }
-    for (body, stored) in reader.chunks.clone() {
+    for (index, (body, stored)) in reader.chunks.clone().into_iter().enumerate() {
+        let last = ((index + 1) * CHUNK_TICKS) as u64;
+        for ext in reader.extensions.clone() {
+            if u64::from(ext.update) > last - CHUNK_TICKS as u64 && u64::from(ext.update) <= last {
+                let mut frame = vec![0u8; ext.len as usize];
+                read_exact_at(&mut reader.input, ext.offset, &mut frame)?;
+                copy.extension_frame(ext.update, ext.tag, &frame)?;
+            }
+        }
         let mut frame = vec![0u8; stored as usize];
         read_exact_at(&mut reader.input, body, &mut frame)?;
         let at = copy.out.stream_position()?;
@@ -824,6 +990,15 @@ pub fn recover(film: &Path, end_tick: u64) -> Result<()> {
                 if tick > end_tick {
                     break 'chunks;
                 }
+                for ext in reader
+                    .extensions
+                    .clone()
+                    .iter()
+                    .filter(|e| u64::from(e.update) == tick)
+                {
+                    let bytes = reader.read_extension(ext)?;
+                    out.extension(ext.update, ext.tag, &bytes)?;
+                }
                 let mut seats = [None; SEATS];
                 for (seat, slot) in seats.iter_mut().enumerate() {
                     let mut action = [0u8; ACTION_BYTES];
@@ -838,14 +1013,20 @@ pub fn recover(film: &Path, end_tick: u64) -> Result<()> {
                 };
                 out.push_tick(decoder.flags(t), digest, &seats)?;
                 let mut body = [0u8; BODY_BYTES];
-                ensure!(decoder.body(t, &mut body), "film chunk has no body for tick {tick}");
+                ensure!(
+                    decoder.body(t, &mut body),
+                    "film chunk has no body for tick {tick}"
+                );
                 out.tail(&body)?;
                 for record in decoder.seat_records().filter(|r| usize::from(r.tick) == t) {
                     out.seat_record(record.seat, record.kind, record.bytes)?;
                 }
             }
         }
-        ensure!(out.ticks() == end_tick, "film file is short of tick {end_tick}");
+        ensure!(
+            out.ticks() == end_tick,
+            "film file is short of tick {end_tick}"
+        );
         let file = out.finish()?;
         file.sync_all()?;
         Ok(file)

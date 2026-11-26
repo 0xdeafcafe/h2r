@@ -1,12 +1,15 @@
 //! The game's side of a shared Forge session (docs/game/forge-design.md,
 //! F5): the lanes the co-op link gives it, the offer that opens a session
-//! over them, and the film records the session writes.
+//! over them, and the film records the session writes: its edits are the
+//! film's extension records ([`record_edit`], [`take_edits`]), played back
+//! through [`deliver_played`] and [`take_played`].
 //!
 //! The co-op link itself ([`crate::forge_glue::link`]) offers the Forge
 //! lanes it carries ([`offer_host`], [`offer_guest`]) and keeps them
 //! current as seats join and leave ([`add_seat`], [`drop_seat`], [`end`]);
 //! the session opens when the game's Forge feature next ticks in a
 //! synchronous network game ([`crate::forge_map::admitted_shared`]).
+use std::collections::VecDeque;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -150,9 +153,51 @@ pub(super) fn clear() {
 }
 
 static FILM: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
+static EDITS: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
+static PLAYED: Mutex<VecDeque<Vec<u8>>> = Mutex::new(VecDeque::new());
+
+/// Edit records kept and not yet taken at most. A recording takes them
+/// every tick, so only a machine that records no film reaches it; the
+/// oldest go.
+pub const MAX_WAITING: usize = 4096;
+
+/// A record of the session's edits, which the film keeps as its extension
+/// records (`theater::extension::FORGE`): the welcome the session joined by,
+/// then each stream item applied, at the tick the machine applied it.
+pub(super) fn record_edit(payload: Vec<u8>) {
+    let mut edits = EDITS.lock().unwrap_or_else(|e| e.into_inner());
+    if edits.len() >= MAX_WAITING {
+        edits.remove(0);
+    }
+    edits.push(payload);
+}
+
+/// The edit records kept since the last call, in the order applied
+/// (`theater::record`).
+pub fn take_edits() -> Vec<Vec<u8>> {
+    std::mem::take(&mut *EDITS.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// A film's edit record, handed over by the playback before the tick it
+/// names (`theater::extension::deliver`).
+pub fn deliver_played(payload: Vec<u8>) {
+    PLAYED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push_back(payload);
+}
+
+/// The records handed over since the last call, in film order.
+pub fn take_played() -> Vec<Vec<u8>> {
+    PLAYED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .drain(..)
+        .collect()
+}
 
 /// A record for the film's Forge entries (`live_proto::film::stream::FORGE`):
-/// the welcome the session joined by, then each stream item applied.
+/// the monitor looks and poses.
 pub(super) fn record(payload: Vec<u8>) {
     FILM.lock().unwrap_or_else(|e| e.into_inner()).push(payload);
 }

@@ -128,16 +128,16 @@ pub(super) fn game_header(session: &film::Header) -> film::Header {
 
 /// What a feature calls just before it changes the guest from outside the
 /// film. The session's default recording carries on and says so
-/// ([`super::Session::outside_change`]); `drops_game` also drops the game
-/// in play, which its film can no longer replay. `None` for any other film
+/// ([`super::Session::outside_change`]); `ends_game` also ends the game in
+/// play's film at the tick before, as the change has no record. `None` for any other film
 /// and for no film.
 pub fn stopper(
     film: Option<&Arc<super::Session>>,
     why: &'static str,
-    drops_game: bool,
+    ends_game: bool,
 ) -> Option<Arc<dyn Fn() + Send + Sync>> {
     let film = film.filter(|f| !f.replaying && f.player_features())?.clone();
-    Some(Arc::new(move || film.outside_change(why, drops_game)))
+    Some(Arc::new(move || film.outside_change(why, ends_game)))
 }
 
 pub(super) fn now_ms() -> u64 {

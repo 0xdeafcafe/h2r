@@ -207,6 +207,7 @@ impl Editor {
     /// run the node, and apply what it released. Called before the
     /// editor's own work.
     pub(super) fn net_tick(&mut self, tick: u32) {
+        self.film_tick(tick);
         // The monitor channel beside the edit log: poses and looks, first
         // (it ends nothing, so a dead session still drains its lane).
         self.monitor_tick(tick);
@@ -250,7 +251,7 @@ impl Editor {
                 if let Some(welcome) = net.node.take_welcome()
                     && let Ok(payload) = film::welcome_payload(&welcome)
                 {
-                    glue::record(payload);
+                    glue::record_edit(payload);
                 }
                 if let Some(state) = step.joined {
                     net.joined = Some(state);
@@ -448,11 +449,74 @@ impl Editor {
         }
     }
 
+    /// A film that holds a shared session plays (docs/game/film-format.md,
+    /// "The film file"): the records the playback handed over for this tick
+    /// are applied as the recorded machine applied them, in order. The
+    /// welcome gives the session its state; each item changes the document
+    /// and the world. The film holds the items in the order applied, so no
+    /// peer orders them again, and the stamp ticks are the recording's own.
+    /// Records wait while an edit is being staged.
+    fn film_tick(&mut self, tick: u32) {
+        self.played.extend(glue::take_played());
+        if self.played.is_empty() || self.busy() {
+            return;
+        }
+        let mut joined = None;
+        let mut items = Vec::new();
+        for record in std::mem::take(&mut self.played) {
+            let Some((&kind, bytes)) = record.split_first() else {
+                continue;
+            };
+            match kind {
+                film::WELCOME => {
+                    let state = forge::net::Welcome::from_bytes(bytes)
+                        .map_err(|e| e.to_string())
+                        .and_then(|welcome| {
+                            forge::net::Peer::join(welcome, self.session.limits().clone())
+                                .map_err(|e| e.to_string())
+                        })
+                        .map(|peer| Box::new(peer.state().clone()));
+                    match state {
+                        Ok(state) => joined = Some(state),
+                        Err(reason) => {
+                            self.notice = Some((format!("The film's Forge session: {reason}"), tick));
+                            return;
+                        }
+                    }
+                }
+                film::ITEM => match Stamped::from_bytes(bytes) {
+                    Ok(item) => items.push(item),
+                    Err(e) => {
+                        self.notice = Some((format!("The film's Forge session: {e}"), tick));
+                        return;
+                    }
+                },
+                _ => {}
+            }
+        }
+        if joined.is_none() && items.is_empty() {
+            return;
+        }
+        let staged = items.clone();
+        let result = self.stage(After::Shared(items), move |s: &mut Session, w| {
+            if let Some(state) = &joined {
+                s.sync_to(w, state)?;
+            }
+            for item in &staged {
+                s.apply_item(w, item)?;
+            }
+            Ok(())
+        });
+        if let Err(reason) = result {
+            self.notice = Some((reason, tick));
+        }
+    }
+
     /// The staged items applied: they are the film's records.
     pub(super) fn shared_applied(&mut self, items: &[Stamped]) {
         for item in items {
             if let Ok(Some(payload)) = film::item_payload(item) {
-                glue::record(payload);
+                glue::record_edit(payload);
             }
         }
     }

@@ -413,7 +413,7 @@ fn a_join_or_an_editor_write_never_stops_a_default_recording_and_never_touches_a
 }
 
 #[test]
-fn a_join_keeps_the_game_in_play_and_an_editor_write_drops_only_that_game() {
+fn a_join_keeps_the_game_in_play_and_an_editor_write_ends_its_film_at_the_tick_before() {
     let dir = Temp::new("join");
     let rec = library(&dir);
     let guest = arena();
@@ -424,17 +424,29 @@ fn a_join_keeps_the_game_in_play_and_an_editor_write_drops_only_that_game() {
     end_game(&rec, "lockout", film::blam::Mode::Matchmaking);
     assert_eq!(films(&dir.0).len(), 1);
 
-    // An editor write with a game in play: that game's film goes.
+    // An editor write with a game in play: it has no record, so that game's
+    // film ends at the tick before it and is kept to there.
     play(&rec, &guest, &block(MODE_MULTIPLAYER, 2), [3, 4], 20);
-    let dropped = PathBuf::from(rec.status().recording.unwrap());
     rec.outside_change("an editor changed the game", true);
     let status = rec.status();
     assert!(!status.in_game && status.recording.is_none());
-    assert!(status.last_discard.is_some_and(|why| why.contains("an editor changed the game")));
-    assert!(!dropped.exists() && !film::file::stats_of(&dropped).exists());
+    assert!(status.last_discard.is_none(), "the film is kept, not discarded");
+    // The rest of the game is not recorded.
+    menus(&rec, &guest, 15);
     rec.finish(true).unwrap();
-    assert_eq!(films(&dir.0).len(), 1, "the finished game's film stays");
-    assert_eq!(rec.status().notes, ["a Live session link was joined"]);
+    let mut lengths: Vec<u64> = films(&dir.0)
+        .iter()
+        .map(|p| film::file::FilmActions::open(p).unwrap().length_ticks())
+        .collect();
+    lengths.sort();
+    assert_eq!(lengths, [20, 30], "the cut film holds the 20 ticks played before the write");
+    assert_eq!(
+        rec.status().notes,
+        [
+            "a Live session link was joined",
+            "an editor changed the game; the game in play's film ends at tick 20"
+        ]
+    );
 }
 
 #[test]

@@ -6,6 +6,7 @@ pub mod autorecord;
 mod camera;
 mod capture;
 mod film_play;
+pub mod extension;
 mod game_start;
 mod media;
 pub use capture::{ClipCapture, ClipSink, ClipSpan, Picture};
@@ -544,10 +545,13 @@ impl Session {
     /// Something outside the film (a session link joined, an editor write)
     /// is about to change the guest. A default recording carries on: the
     /// session's other games still become films, each played from its own
-    /// game start. `drops_game` also drops the game in play, whose ticks its
-    /// film can no longer replay; its film is deleted. A sealed film, an
-    /// explicit recording and a replay are left alone.
-    pub fn outside_change(&self, why: &str, drops_game: bool) {
+    /// game start. `ends_game` is a change with no record, which the game
+    /// in play's film cannot replay: the film ends at the tick before it
+    /// and is kept to there, and the rest of the game is not recorded. A
+    /// change a feature records as an extension record
+    /// ([`extension`]) is not this. A sealed film, an explicit recording
+    /// and a replay are left alone.
+    pub fn outside_change(&self, why: &str, ends_game: bool) {
         let mut s = self.lock();
         if !s.header.player_features
             || s.complete
@@ -556,13 +560,16 @@ impl Session {
         {
             return;
         }
-        let dropped = drops_game && s.drop_game(format!("{why}; the game in play is not kept"));
-        if !dropped {
-            s.outcome.notes.push(why.to_owned());
-        }
+        let ended = if ends_game { s.end_game() } else { None };
+        let said = match ended {
+            Some(ticks) if ticks > 0 => format!("{why}; the game in play's film ends at tick {ticks}"),
+            Some(_) => format!("{why}; the game in play had no tick to keep"),
+            None => why.to_owned(),
+        };
+        s.outcome.notes.push(said.clone());
         eprintln!(
-            "theater: {why}; recording carries on{}",
-            if dropped { ", without the game in play" } else { "" }
+            "theater: {said}; recording carries on{}",
+            if ended.is_some() { ", without the rest of the game in play" } else { "" }
         );
     }
 
@@ -953,6 +960,8 @@ impl State {
             return;
         }
         self.seal_game();
+        // Records a feature left outside any game are not this game's.
+        drop(extension::outside());
         let header = self.header.clone();
         let Mode::Record(rec) = &mut self.mode else { return };
         let Some(dir) = rec.library().map(std::path::Path::to_owned) else { return };
@@ -971,6 +980,24 @@ impl State {
                 self.outcome.discard = Some(format!("this game has no film: {error:#}"));
             }
         }
+    }
+
+    /// End the game in play's film at the tick before now and keep it: the
+    /// ticks it holds are what was played, and the rest of the game is not
+    /// recorded. Returns the film ticks it kept (none when the game had no
+    /// first update yet), or `None` when no game was in play.
+    fn end_game(&mut self) -> Option<u64> {
+        let Mode::Record(rec) = &self.mode else { return None };
+        if !rec.in_game() {
+            return None;
+        }
+        let kept = rec
+            .game
+            .as_ref()
+            .filter(|files| files.base.is_some())
+            .map_or(0, |files| files.film.ticks());
+        self.seal_game();
+        Some(kept)
     }
 
     /// Forget the game in play and delete its film. Returns whether a game

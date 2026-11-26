@@ -608,8 +608,9 @@ fn run_configured(
         host.discoverable_agent.then(agent_glue::discoverable_socket).flatten()
     });
     let editor_hooks_on = features.switches().feature(agent::EDIT_LIFECYCLE, true);
-    // A default recording lets the editor write; the first write drops the
-    // game in play (`outside_change`, below) instead of being refused.
+    // A default recording lets the editor write; the first write ends the
+    // game in play's film at the tick before (`outside_change`, below)
+    // instead of being refused.
     let recording_or_playback = agent_glue::reload_recording_refusal(
         replaying,
         film.as_ref().is_some_and(|f| !f.player_features()),

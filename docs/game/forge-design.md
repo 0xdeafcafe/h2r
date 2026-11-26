@@ -433,11 +433,12 @@ retail's distributed protocol as any map package does.
   playback materialises it first. Map content is already part of a
   film's match ([film-format.md](film-format.md), "Determinism and
   verification").
-- A film of an editing session records each stream item as a tagged
-  record at its tick (the "Forge entry" tag, 7), beside the inputs, and
-  the session's welcome at its start. The payload is the item's bytes
-  (`net::Stamped::to_bytes`). Playback feeds them to a `net::Peer` and
-  applies them as the session did. `simulation_hooks` covers Forge's
+- A film of an editing session records the session's welcome at its
+  start and each stream item at the tick the machine applied it, as the
+  film file's `FRGE` extension records
+  ([film-format.md](film-format.md#the-film-file)). The payload is the
+  item's bytes (`net::Stamped::to_bytes`). Playback hands them to the
+  session before that tick and applies them as the session did. `simulation_hooks` covers Forge's
   hooks, so a film records whether Forge was installed. The film's header
   decides, on both sides: a session's default recording and its replay
   install Forge, a film named with `--film` installs it on neither
@@ -909,13 +910,18 @@ fall between them. `forge.status`, `forge.propose`, `forge.log`,
 `forge.doc` and `forge.things` answer from the node's state
 ([agent-api.md](../runtime/agent-api.md), "Shared Forge session").
 
-The film's Forge entry record (tag 7) opens with the welcome and then
-carries each stream item the machine applied, at the tick it applied it
+The film's `FRGE` extension records open with the welcome and then
+carry each stream item the machine applied, at the tick it applied it
 (`forge::net::film`, [film-format.md](film-format.md)). Watermarks are
-not recorded; `film::Replay` makes each tick's own. The game records
-through `forge_glue::net::take_film`, which the theater drains into the
-tick's records. Playback's application of the records to a session is
-not wired.
+not recorded. The editor leaves each record with
+`forge_glue::net::record_edit`, and the recorder writes them with
+`forge_glue::net::take_edits` before the game tick's first film tick
+(`theater::extension`). In playback the player hands each record over
+with `forge_glue::net::deliver_played` when the tick before it ends, and
+the editor's tick applies them in order (`Editor::film_tick`): the welcome
+gives the session its state, each item changes the document and the world.
+The monitor looks and poses stay in the stats container's Forge entry
+record (tag 7) through `forge_glue::net::take_film`.
 
 **F6 in detail.** `forge_doc::Forge` holds Forge-family edits: a
 `Link` and an `Unlink` naming the link op it ends. A teleporter link

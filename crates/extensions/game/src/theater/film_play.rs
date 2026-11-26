@@ -16,6 +16,12 @@
 //!   game tick ends on is compared at the tick's end ([`tick_done`]). A
 //!   film tick is one application of the update: a game tick that applies
 //!   it twice takes two. The film ends after its last tick.
+//! - **Extension records** a feature's outside input
+//!   ([`super::extension`]): the records that come before a film tick are
+//!   handed to their features when the tick before it ends (the first
+//!   tick's, at the game's first update), and each feature applies them in
+//!   the game tick that follows. A film with records of a feature this
+//!   build does not have does not open.
 //!
 //! A film with no game start is refused ([`super::NO_GAME_START`]). The
 //! player restores nothing of the recording machine: the data directory
@@ -68,6 +74,8 @@ impl Play {
         let Some(start) = actions.game_start()? else {
             return Ok(None);
         };
+        super::extension::check(&actions.extension_tags())?;
+        super::extension::clear();
         let length = actions.length_ticks();
         ensure!(
             start.game.first_update >= 1 && start.game.first_update <= length,
@@ -94,6 +102,7 @@ impl Play {
         self.at = 0;
         self.applied = 0;
         self.awaiting = true;
+        super::extension::clear();
     }
 
     /// The queued game activated.
@@ -140,6 +149,15 @@ impl Play {
     /// local player the options name, at most the guest's four.
     pub(super) fn ports(&self) -> usize {
         ports(&self.start.options) as usize
+    }
+
+    /// Hand the features the extension records that come before film tick
+    /// `tick` ([`super::extension::deliver`]).
+    fn deliver(&mut self, tick: u64) -> Result<()> {
+        for (tag, bytes) in self.actions.extensions_at(tick)? {
+            super::extension::deliver(tag, bytes)?;
+        }
+        Ok(())
     }
 
     /// The game's first update. Writes the shared random words, checks the
@@ -210,6 +228,7 @@ pub(super) fn update(state: &mut State, g: &mut Guest, update: u32) -> Result<()
         state.tick = first - 1;
         play.begin(g)?;
         play.at = first - 1;
+        play.deliver(first)?;
     }
     let tick = play.at + play.applied + 1;
     ensure!(
@@ -258,6 +277,9 @@ pub(super) fn tick_done(state: &mut State, hash: Option<u64>) {
                 hash == Some(whole),
                 "expected gameplay {whole:016x}, observed {hash:?}"
             );
+        }
+        if tick < play.length {
+            play.deliver(tick + 1)?;
         }
         Ok(tick >= play.length)
     })();

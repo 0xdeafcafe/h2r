@@ -640,3 +640,167 @@ fn a_film_a_recorder_holds_is_not_listed_until_its_recording_stops() {
     assert_eq!(row.meta.length_ticks, 150);
     assert_eq!(library.list().unwrap().len(), 1);
 }
+
+/// A film of `ticks` updates with an extension record before each update in
+/// `at`, its bytes the update's number.
+fn film_with_extensions(ticks: u64, at: &[u32]) -> Vec<u8> {
+    let mut w = FilmWriter::new(Cursor::new(Vec::new()), &seed(), 30).unwrap();
+    for tick in 1..=ticks {
+        for _ in at.iter().filter(|&&u| u64::from(u) == tick) {
+            w.extension(tick as u32, *b"FRGE", &tick.to_le_bytes()).unwrap();
+        }
+        w.push_tick(TICK_DIGEST, tick * 77, &seats(tick)).unwrap();
+    }
+    w.finish().unwrap().into_inner()
+}
+
+#[test]
+fn an_extension_record_round_trips_with_its_update_and_feature() {
+    // 257 is the first update of the second chunk: its record follows the
+    // first chunk and precedes the second.
+    let bytes = film_with_extensions(300, &[1, 5, 5, 256, 257]);
+    let mut r = FilmReader::open(Cursor::new(&bytes)).unwrap();
+    assert_eq!(r.length_ticks, 300);
+    let found: Vec<_> = r.extensions.iter().map(|e| (e.update, e.tag)).collect();
+    assert_eq!(
+        found,
+        [1, 5, 5, 256, 257].map(|u| (u, *b"FRGE")).to_vec()
+    );
+    for ext in r.extensions.clone() {
+        assert_eq!(r.read_extension(&ext).unwrap(), u64::from(ext.update).to_le_bytes());
+    }
+    // The ticks are untouched by the records between them.
+    assert_eq!(decode_all(&bytes).1, decode_all(&film(300)).1);
+}
+
+#[test]
+fn an_extension_record_for_another_update_is_refused() {
+    let mut w = FilmWriter::new(Cursor::new(Vec::new()), &seed(), 30).unwrap();
+    assert!(w.extension(2, *b"FRGE", b"x").is_err());
+    w.push_tick(TICK_DIGEST, 1, &seats(1)).unwrap();
+    assert!(w.extension(1, *b"FRGE", b"x").is_err());
+    w.extension(2, *b"FRGE", b"x").unwrap();
+}
+
+#[test]
+fn an_extension_record_has_a_size_a_count_and_a_total_cap() {
+    let mut w = FilmWriter::new(Cursor::new(Vec::new()), &seed(), 30).unwrap();
+    let big = vec![0u8; MAX_EXTENSION_BYTES + 1];
+    assert!(w.extension(1, *b"FRGE", &big).is_err());
+    // A record of exactly the cap is kept and reads back whole.
+    let exact = vec![7u8; MAX_EXTENSION_BYTES];
+    w.extension(1, *b"FRGE", &exact).unwrap();
+    w.push_tick(TICK_DIGEST, 1, &seats(1)).unwrap();
+    let bytes = w.finish().unwrap().into_inner();
+    let mut r = FilmReader::open(Cursor::new(&bytes)).unwrap();
+    let ext = r.extensions[0];
+    assert_eq!(r.read_extension(&ext).unwrap(), exact);
+
+    // Records that do not compress take the total cap before the count cap.
+    let mut noise = vec![0u8; MAX_EXTENSION_BYTES];
+    let mut x = 0x9e37_79b9u32;
+    let mut w = FilmWriter::new(Cursor::new(Vec::new()), &seed(), 30).unwrap();
+    let mut refused = false;
+    for update in 1..=40u32 {
+        for b in noise.iter_mut() {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            *b = x as u8;
+        }
+        if w.extension(update, *b"FRGE", &noise).is_err() {
+            refused = true;
+            break;
+        }
+        w.push_tick(TICK_DIGEST, 1, &seats(1)).unwrap();
+    }
+    assert!(refused, "40 MiB of noise went in under a 16 MiB cap");
+
+    // The count cap: empty records are small, so the count ends them.
+    let mut w = FilmWriter::new(Cursor::new(Vec::new()), &seed(), 30).unwrap();
+    for _ in 0..MAX_EXTENSIONS {
+        w.extension(1, *b"FRGE", b"").unwrap();
+    }
+    assert!(w.extension(1, *b"FRGE", b"").is_err());
+}
+
+#[test]
+fn a_reader_refuses_an_extension_record_out_of_place() {
+    let bytes = film_with_extensions(300, &[5, 257]);
+    let first = bytes
+        .windows(8)
+        .position(|w| w == [5, 0, 0, 0, b'F', b'R', b'G', b'E'])
+        .unwrap();
+    // The record's update moved into the second chunk, before the first.
+    let mut moved = bytes.clone();
+    moved[first..first + 4].copy_from_slice(&300u32.to_le_bytes());
+    assert!(FilmReader::open(Cursor::new(&moved)).is_err());
+    // An update that is behind the one before it.
+    let mut back = bytes.clone();
+    let second = first + bytes[first..]
+        .windows(8)
+        .skip(1)
+        .position(|w| w == [1, 1, 0, 0, b'F', b'R', b'G', b'E'])
+        .unwrap()
+        + 1;
+    back[second..second + 4].copy_from_slice(&3u32.to_le_bytes());
+    assert!(FilmReader::open(Cursor::new(&back)).is_err());
+    // A record cut short (its stored length under the prefix).
+    let mut short = bytes.clone();
+    short[first - 4..first].copy_from_slice(&4u32.to_le_bytes());
+    assert!(FilmReader::open(Cursor::new(&short)).is_err());
+}
+
+#[test]
+fn a_shared_copy_and_a_recovered_film_keep_their_extension_records() {
+    let dir = Temp::new();
+    let original = dir.0.join("a.h2film");
+    fs::write(&original, film_with_extensions(300, &[5, 257, 290])).unwrap();
+    let shared = share_copy(&original, Cursor::new(Vec::new())).unwrap().into_inner();
+    let r = FilmReader::open(Cursor::new(&shared)).unwrap();
+    assert_eq!(
+        r.extensions.iter().map(|e| e.update).collect::<Vec<_>>(),
+        [5, 257, 290]
+    );
+    // An unsealed film cut at tick 280 keeps the records at or before it.
+    let open = dir.0.join("open.h2film");
+    let mut w = FilmWriter::new(File::create(&open).unwrap(), &seed(), 30).unwrap();
+    for tick in 1..=290u64 {
+        if [5, 257, 290].contains(&tick) {
+            w.extension(tick as u32, *b"FRGE", &tick.to_le_bytes()).unwrap();
+        }
+        w.push_tick(TICK_DIGEST, tick * 77, &seats(tick)).unwrap();
+        w.tail(&[0u8; BODY_BYTES]).unwrap();
+    }
+    w.checkpoint().unwrap();
+    drop(w);
+    recover(&open, 280).unwrap();
+    let mut r = FilmReader::open(File::open(&open).unwrap()).unwrap();
+    assert_eq!(r.length_ticks, 280);
+    assert_eq!(
+        r.extensions.iter().map(|e| e.update).collect::<Vec<_>>(),
+        [5, 257]
+    );
+    let ext = r.extensions[1];
+    assert_eq!(r.read_extension(&ext).unwrap(), 257u64.to_le_bytes());
+}
+
+#[test]
+fn a_player_asks_for_the_records_before_each_update_and_the_features_they_name() {
+    let bytes = film_with_extensions(300, &[5, 5, 257]);
+    let mut actions = FilmActions::new(Box::new(Cursor::new(bytes))).unwrap();
+    assert_eq!(actions.extension_tags(), vec![*b"FRGE"]);
+    assert!(actions.extensions_at(4).unwrap().is_empty());
+    assert_eq!(
+        actions.extensions_at(5).unwrap(),
+        vec![
+            (*b"FRGE", 5u64.to_le_bytes().to_vec()),
+            (*b"FRGE", 5u64.to_le_bytes().to_vec())
+        ]
+    );
+    assert_eq!(
+        actions.extensions_at(257).unwrap(),
+        vec![(*b"FRGE", 257u64.to_le_bytes().to_vec())]
+    );
+    assert!(actions.extensions_at(258).unwrap().is_empty());
+}

@@ -152,6 +152,9 @@ pub(super) struct Editor {
     refused: Vec<String>,
     /// Set in a shared session (docs/game/forge-design.md, F5).
     net: Option<net::Net>,
+    /// A film's edit records handed over and not yet applied, in film
+    /// order ([`Editor::film_tick`]).
+    played: Vec<Vec<u8>>,
     /// The tick the last [`Editor::tick`] ran at, for a notice asked for
     /// between ticks.
     now: u32,
@@ -220,6 +223,7 @@ impl Editor {
             ui_up: false,
             refused: opened.refused,
             net: None,
+            played: Vec::new(),
             now: 0,
             ground_building: false,
             ground_answer: None,

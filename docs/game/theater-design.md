@@ -1,6 +1,6 @@
 # Theater: the full in-game player
 
-Status: Design. The per-update action and body capture and apply, the film file and its column and tail codec, the game start block, start points, the camera rig, the film selector, the Live film routes and the recorded look in first person (`coop_look::follow_film`, slice 9) are built; a film plays from its game start, in the running game and in a film player process, one film tick for each application of the update (slices 1b, 2, 3, 4 and 5). A default recording writes one film for each game, `<id>.h2film` and `<id>.h2stats`, opened at the game's activation with tick 1 its first update and sealed at its end; there is no session tape, cut or fork, and the library prune seals a hard-killed film at its last checkpoint (slice 6). The machine film is gone from Theater and the film crate: a film without a game start does not open, a seek runs in the process that plays the film, and nothing is restored from a keyframe (slice 7a). The call tape is gone: no HLE call, pad read, keyboard command, bot outcome, lobby call or network result is recorded or answered from a film, the stats container holds no machine section, arena hash or mark, and the film file holds no machine part (slice 7b). The snapshot ring is not built ("Slices", 8).
+Status: Design. The per-update action and body capture and apply, the film file and its column and tail codec, the game start block, start points, the camera rig, the film selector, the Live film routes and the recorded look in first person (`coop_look::follow_film`, slice 9) are built; a film plays from its game start, in the running game and in a film player process, one film tick for each application of the update (slices 1b, 2, 3, 4 and 5). A default recording writes one film for each game, `<id>.h2film` and `<id>.h2stats`, opened at the game's activation with tick 1 its first update and sealed at its end; there is no session tape, cut or fork, and the library prune seals a hard-killed film at its last checkpoint (slice 6). The machine film is gone from Theater and the film crate: a film without a game start does not open, a seek runs in the process that plays the film, and nothing is restored from a keyframe (slice 7a). The call tape is gone: no HLE call, pad read, keyboard command, bot outcome, lobby call or network result is recorded or answered from a film, the stats container holds no machine section, arena hash or mark, and the film file holds no machine part (slice 7b). The snapshot ring is not built ("Slices", 8). Extension records are built, with a shared Forge session's edits their first user, and an outside change with no record ends the film at the tick before it (slice 11).
 Code: `crates/extensions/game/src/theater.rs` (`Session`), `crates/extensions/game/src/theater/actions.rs` (the update hook), `crates/extensions/game/src/theater/record.rs` (the recorder's tick), `crates/live/film/src/columns.rs` (the chunk codec), `crates/extensions/game/src/theater/film_play.rs` (play from the game start), `crates/extensions/game/src/theater/watch.rs` (watching in the running game), `crates/extensions/game/src/theater/pacing.rs`, `crates/live/film/src/file.rs` (the film file), `crates/extensions/game/src/theater/start_point_state.rs` (arena state). Tests: `crates/extensions/game/src/theater/tests.rs`, `crates/extensions/game/src/theater/film_play/tests.rs`, `crates/extensions/game/src/theater/watch/tests.rs`, `crates/live/film/src/file/tests.rs`.
 Switch: [the film player's `H2_THEATER_*`](../runtime/switches.md).
 
@@ -183,10 +183,17 @@ at its head). The film stores that record, as Halo 3's film does.
   ("Kinds of game").
 - **Extension records.** A feature of ours that changes the simulation
   from outside the update writes its input into the film on the tick it
-  applied it: a shared Forge session's edits, Firefight's host log, a
-  rules script reload ([film-format.md](film-format.md#the-film-file)). A change with no record (an editor write, an agent
-  API write) ends the film at the tick before it
-  (`Session::outside_change`).
+  applied it: the film file's extension blocks, tagged by feature
+  ([film-format.md](film-format.md#the-film-file)). A shared Forge
+  session's welcome and edits are the first user (`FRGE`); Firefight's
+  host log and a rules script reload have tags and are not wired. The
+  recorder writes a game tick's records before its first film tick; the
+  player hands them to their feature when the tick before ends, and the
+  feature applies them in the game tick that follows
+  (`theater/extension.rs`). A change with no record (an editor write, an
+  agent API write) ends the film at the tick before it and keeps it to
+  there (`Session::outside_change`). A film with records of a feature
+  this build does not have does not open.
 
 ### Films that begin mid-game
 

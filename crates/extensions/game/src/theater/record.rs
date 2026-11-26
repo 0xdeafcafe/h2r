@@ -133,9 +133,12 @@ pub(super) struct Capture {
     pub(super) updates: Vec<Update>,
     /// The tick stamp of the update applied last in this game.
     pub(super) last_stamp: Option<u32>,
-    /// An update's stamp skipped: the film ends at the tick before it, and
-    /// nothing after is kept.
+    /// An update's stamp skipped, or a change the film cannot replay was
+    /// made: the film ends at the tick before it, and nothing after is kept.
     pub(super) stamp_skipped: bool,
+    /// The records features gave the game tick in progress
+    /// ([`super::extension`]), in the order applied.
+    pub(super) extensions: Vec<(film::Tag, Vec<u8>)>,
     pub(super) events: Vec<Event>,
     paused: bool,
 }
@@ -145,6 +148,7 @@ impl Capture {
     pub(super) fn next_game(&mut self) {
         self.last_stamp = None;
         self.stamp_skipped = false;
+        self.extensions.clear();
     }
 }
 
@@ -264,10 +268,29 @@ impl Recording {
                 Ok(None) => {}
                 Err(error) => eprintln!("theater: this game has no start in its film: {error:#}"),
             }
+            // The records features gave this game tick come before its first
+            // film tick. One that cannot be kept ends the film at the tick
+            // before: the game's change has no record.
+            let mut outside = std::mem::take(&mut self.frame.extensions);
+            outside.extend(super::extension::outside());
+            let first_update = u32::try_from(out.ticks() + 1).unwrap_or(u32::MAX);
+            let mut cut = false;
+            for (tag, bytes) in outside {
+                if let Err(error) = out.extension(first_update, tag, &bytes) {
+                    eprintln!(
+                        "theater: a record of {} cannot be kept: {error:#}; this game's film ends at the tick before",
+                        String::from_utf8_lossy(&tag)
+                    );
+                    self.frame.stamp_skipped = true;
+                    self.match_over = true;
+                    cut = true;
+                    break;
+                }
+            }
             // One film tick for each application of the update; a tick that
             // applied none is one with no actions. The tick's digest and
             // events are those of its end, so they sit on its last.
-            let ticks = updates.len().max(1);
+            let ticks = if cut { 0 } else { updates.len().max(1) };
             for index in 0..ticks {
                 let last = index + 1 == ticks;
                 let update = updates.get(index);
