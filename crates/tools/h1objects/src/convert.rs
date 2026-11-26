@@ -2508,7 +2508,7 @@ impl<'a> Converter<'a> {
         }
         let hover = powered
             .iter()
-            .filter(|p| p.point.antigravity.is_some())
+            .filter(|p| p.point.hover)
             .count();
         if hover != 0 && hover != powered.len() {
             return Err(h1convert::Error::no_rebuild(
@@ -2607,23 +2607,13 @@ impl<'a> Converter<'a> {
         }
         let (attachments, creation_effect, functions) =
             self.object_attachments(b, &u.object, &mut rep)?;
-        let physics = u.object.physics.map(|id| {
-            h1::tag_bytes(self.h1, self.h1_tag(id)?, b"phys", h1::PHYS_SIZE)
-        }).transpose()?;
-        let fail = |e| h1convert::Error::no_rebuild(&self.h1.header().name, &tag.name, e);
-        let contacts = if !points.is_empty() && hover == 0 {
-            Some(
-                h1::GroundContacts::read(
-                    self.h1,
-                    physics.ok_or(Error::Truncated("wheel physics"))?,
-                    &self.base.materials,
-                )
-                .map_err(fail)?,
-            )
-        } else {
-            None
+        let fail = |why: String| {
+            Error::from(h1convert::Error::no_rebuild(
+                &self.h1.header().name,
+                &tag.name,
+                why,
+            ))
         };
-        let power = h1::powered_seats(self.h1, b).map_err(fail)?;
         // The Halo 2 vehicle whose drive tuning this one takes.
         let drive = match crate::rebuild::drive_counterpart(&tag.name) {
             Some(names) => {
@@ -2631,23 +2621,31 @@ impl<'a> Converter<'a> {
                     .iter()
                     .find_map(|n| self.base.find(b"vehi", n))
                     .ok_or_else(|| {
-                        Error::from(h1convert::Error::no_rebuild(
-                            &self.h1.header().name,
-                            &tag.name,
-                            format!("the base holds none of its drive counterparts {names:?}"),
-                        ))
+                        fail(format!("the base holds none of its drive counterparts {names:?}"))
                     })?;
                 let d = tags::defs::Defs::builtin()
                     .group(FourCC(*b"vehi"))
                     .expect("vehi definition");
                 Some(self.base.record(d, id)?)
             }
-            None => None,
+            // A prop an animation moves, a scripted set piece, a dropship
+            // or a turret has no drive to take.
+            None if scripted.is_some()
+                || crate::rebuild::drive_exempt(&tag.name)
+                || matches!(vehicle_type, 3 | 6) =>
+            {
+                None
+            }
+            None => {
+                return Err(fail(
+                    "no Halo 2 vehicle is its drive counterpart (rebuild::DRIVE_COUNTERPARTS)"
+                        .into(),
+                ));
+            }
         };
         let (root, roles) = crate::provenance::capture(|| {
             crate::rebuild::vehicle_with_tuning(&crate::rebuild::VehicleSpec {
                 source: b,
-                physics,
                 references: &references,
                 attachments: &attachments,
                 functions: &functions,
@@ -2661,12 +2659,10 @@ impl<'a> Converter<'a> {
                 vehicle_type,
                 flags,
                 weapons: &weapons,
-                contacts: contacts.as_ref(),
-                seat_power: &power,
                 points: &points,
             }, scripted.and_then(|kind| kind.flight_tuning(b)), drive.as_ref())
         });
-        let root = root.map_err(fail)?;
+        let root = root?;
         if drive.is_some() {
             rep.no_home.push(
                 "vehi: drive tuning (gears, engine, steering, ground and hover laws, friction and hover points' tuning) from the matching Halo 2 vehicle"
@@ -2674,7 +2670,7 @@ impl<'a> Converter<'a> {
             );
         }
         rep.no_home.push(format!(
-            "vehi: Halo 1's type, flags (low half), camera, {} seats (label as the rider's mode, markers), {} weapons and {} powered mass points as friction or hover points; source contact parameters and Halo 1 drive; {} attachments (looping sounds and effects) and the creation effect from Halo 1; {} seat camera tracks Halo 1's; HUD and damage null; {} Halo 1 references",
+            "vehi: Halo 1's type, flags (low half), camera, {} seats (label as the rider's mode, markers), {} weapons and {} powered mass points as friction or hover points; the counterpart's drive tuning when it has one; {} attachments (looping sounds and effects) and the creation effect from Halo 1; {} seat camera tracks Halo 1's; HUD and damage null; {} Halo 1 references",
             u.seats.len(),
             weapons.len(),
             points.len(),
@@ -2843,13 +2839,13 @@ impl<'a> Converter<'a> {
             out.push(PoweredPoint {
                 point: crate::rebuild::Point {
                     sphere: [m.position[0], m.position[1], m.position[2], m.radius],
-                    antigravity: phys.powered_flags.get(m.powered_mass_point as usize)
-                        .filter(|flags| *flags & (1 << 6) != 0)
-                        .and_then(|_| phys.antigravity.get(m.powered_mass_point as usize).copied()),
+                    hover: phys
+                        .powered_flags
+                        .get(m.powered_mass_point as usize)
+                        .is_some_and(|flags| *flags & (1 << 6) != 0),
                     marker,
                     region,
                     region_index,
-                    steered: m.powered_mass_point == 0,
                 },
                 node,
                 position: local,

@@ -1,6 +1,6 @@
 //! Object tags built from their Halo 2 definitions and Halo 1 source data.
-//! Vehicle controller dependencies and their evidence are listed in
-//! `docs/halo1/role-audit.md`.
+//! Vehicles take the drive of a Halo 2 counterpart ([`DRIVE_COUNTERPARTS`]);
+//! the mappings and their evidence are in `docs/halo1/role-audit.md`.
 
 use map::build::{Block, FixupKind};
 use map::{FourCC, TagId};
@@ -711,14 +711,14 @@ pub const FRICTION_STEERS: u32 = 1 << 2;
 pub struct Point {
     /// Halo 1 mass-point centre in object space and its collision radius.
     pub sphere: [f32; 4],
-    pub antigravity: Option<[f32; 6]>,
+    /// Halo 1 lifts it (a hover point) rather than rolling on it (a
+    /// friction point).
+    pub hover: bool,
     pub marker: String,
     pub region: String,
     /// That region's index among the model's regions (the `hlmt`'s), -1
     /// for none ([`FRICTION_REGION_INDEX`]).
     pub region_index: i16,
-    /// Powered group zero steers a jeep forward and drives the first tank tread.
-    pub steered: bool,
 }
 
 /// `phmo +0xc0`: the physics model's regions, `0xc` each, the name a
@@ -906,7 +906,6 @@ pub fn model_sphere(model: &h1_assets::models::h1::Model) -> Option<(f32, [f32; 
 pub struct VehicleSpec<'a> {
     pub object: &'a h1::Object,
     pub source: &'a [u8],
-    pub physics: Option<&'a [u8]>,
     pub references: &'a [(String, FourCC, TagId)],
     /// The bounding sphere (radius, centre) written in place of Halo 1's
     /// ([`model_sphere`]); `None` keeps Halo 1's.
@@ -922,8 +921,6 @@ pub struct VehicleSpec<'a> {
     /// The converted weapons of Halo 1's unit weapons, in order (`unit
     /// weapons`, `+0x1c0`).
     pub weapons: &'a [TagId],
-    pub contacts: Option<&'a h1::GroundContacts>,
-    pub seat_power: &'a [[f32; 2]],
     /// Source powered mass points, in source order.
     pub points: &'a [Point],
     /// Halo 1's attachments that convert ([`object_effects`]).
@@ -967,98 +964,9 @@ fn write_vehicle_phantom(record: &mut Record, points: &[Point]) -> Result<()> {
     Ok(())
 }
 
-fn write_ground_contacts(
-    record: &mut Record,
-    contacts: &h1::GroundContacts,
-    points: &[Point],
-) -> Result<()> {
-    use tags::object::direct_drive::*;
-    if contacts.wheels.len() != points.len() {
-        return Err(Error::Invalid(
-            "powered mass points and friction markers differ".into(),
-        ));
-    }
-    let required = CONTACT_DATA as usize
-        + CONTACT_HEADER as usize
-        + points.len() * WHEEL_BYTES as usize
-        + contacts.surfaces.len() * SURFACE_BYTES as usize;
-    if required > CONTACT_END as usize {
-        return Err(Error::Invalid(format!(
-            "wheel and material data exceed the vehicle phantom by {} bytes",
-            required - CONTACT_END as usize
-        )));
-    }
-    let mut at = CONTACT_DATA;
-    let mut word = |value: u32| {
-        let field = format!("@{at:#x}");
-        at += 4;
-        set(record, &field, Val::Bytes(value.to_le_bytes().to_vec()))
-    };
-    word(CONTACT_MAGIC)?;
-    word(
-        points.len() as u32
-            | ((contacts.surfaces.len() as u32) << 8)
-            | (u32::from(contacts.equal_slopes) << 16),
-    )?;
-    for ((marker, w), point) in contacts.wheels.iter().zip(points) {
-        if marker != &point.marker {
-            return Err(Error::Invalid(format!(
-                "wheel {marker} does not match friction marker {}",
-                point.marker
-            )));
-        }
-        for bits in [
-            w.mode,
-            w.rate.to_bits(),
-            w.parallel.to_bits(),
-            w.perpendicular.to_bits(),
-        ] {
-            word(bits)?;
-        }
-    }
-    for &(index, factors) in &contacts.surfaces {
-        word(u32::from(index))?;
-        for value in factors {
-            word(value.to_bits())?;
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod phantom_tests {
     use super::*;
-
-    #[test]
-    fn excess_ground_material_rows_report_an_error_before_encoding() {
-        use tags::object::direct_drive::WheelDrag;
-        let d = def(b"vehi").unwrap().child(VEHI_PHYSICS).unwrap();
-        let mut record = defs::default_record(d);
-        let point = Point {
-            sphere: [0.0; 4],
-            antigravity: None,
-            marker: "tire".into(),
-            region: String::new(),
-            region_index: -1,
-            steered: false,
-        };
-        let contacts = h1::GroundContacts {
-            wheels: vec![(
-                point.marker.clone(),
-                WheelDrag {
-                    mode: 1,
-                    rate: 1.0,
-                    parallel: 0.5,
-                    perpendicular: 0.5,
-                },
-            )],
-            surfaces: (0..11).map(|i| (i, [0.5; 5])).collect(),
-            equal_slopes: false,
-        };
-        let before = record.clone();
-        assert!(write_ground_contacts(&mut record, &contacts, &[point]).is_err());
-        assert_eq!(record, before);
-    }
 
     #[test]
     fn wheel_spheres_span_inline_shapes_in_source_order() {
@@ -1066,11 +974,10 @@ mod phantom_tests {
         let mut r = defs::default_record(d);
         let mut points: Vec<_> = (0..9).map(|i| Point {
             sphere: [i as f32, 1.0, -2.0, 0.5],
-            antigravity: None,
+            hover: false,
             marker: format!("wheel_{i}"),
             region: String::new(),
             region_index: -1,
-            steered: false,
         }).collect();
         write_vehicle_phantom(&mut r, &points).unwrap();
         let word = |at| {
@@ -1087,15 +994,19 @@ mod phantom_tests {
     }
 }
 
-/// Builds the vehicle from its Halo 1 drive and contact data, with one
-/// seat per source seat and one contact per powered mass point.
+/// Builds the vehicle from Halo 1's model, seats and powered mass points,
+/// with the drive of a prop no counterpart drives: the type, speeds and
+/// turn limits Halo 1 holds, and no friction or hover points.
 pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
     vehicle_with_tuning(v, None, None)
 }
 
 /// [`vehicle`] with Halo 1's model, collision, seats and markers and the
 /// drive tuning of `drive`, the matching Halo 2 vehicle's record
-/// ([`drive_counterpart`], [`copy_drive`], [`copy_point_tuning`]).
+/// ([`drive_counterpart`], [`copy_drive`], [`copy_point_tuning`]): its
+/// gears, engine, steering, ground and hover laws, and the tuning of its
+/// friction or hover points, which Halo 1's powered mass points name and
+/// place. Halo 1's physics and ground-contact data are not read.
 pub(crate) fn vehicle_with_tuning(
     v: &VehicleSpec,
     flight: Option<[f32; 11]>,
@@ -1103,76 +1014,20 @@ pub(crate) fn vehicle_with_tuning(
 ) -> Result<Block> {
     let d = def(b"vehi")?;
     let mut r = defs::default_record(d);
-    use tags::object::direct_drive::GRAVITY_RATIO;
-    let contacts = v.contacts;
-    let power = v.seat_power;
-    if drive.is_none()
-        && v.points
-            .iter()
-            .any(|p| p.antigravity.is_none() != contacts.is_some())
-    {
+    let friction = v.points.iter().all(|p| !p.hover);
+    if !friction && v.points.iter().any(|p| !p.hover) {
         return Err(Error::Invalid(
-            "powered point lacks its source ground or antigravity law".into(),
+            "powered points mix friction and antigravity laws".into(),
         ));
     }
-    // The H2 AI compares both vehicle ranks (+244, 0x1ab48a). The
-    // source drive decisions use distances (+384/+388, 0x16f954 and
-    // 0x16fbc1), with no ordering of vehicle definitions in that test.
-    // Equal ranks avoid introducing a vehicle-class preference.
-    // H1 0x394a1 stops attached vehicles. H2 0xe538c can instead push
-    // a parented vehicle via its rider. Disable both additional impulses.
-    if drive.is_none() {
-        for field in ["vehicle_size", "seat_entrance_acceleration_scale", "seat_exit_acceleration_scale"] {
-            set(&mut r, field, Val::Bytes(0u32.to_le_bytes().to_vec()))?;
-        }
-        // H1 0x394be writes the crouch bit in the same tick; H2 0xf045b
-        // turns +25c into a per-tick step by multiplying by tick length.
-        set(
-            &mut r,
-            "unknown_25c",
-            Val::Bytes(30f32.to_le_bytes().to_vec()),
-        )?;
-    }
-    let powered_groups = if let Some(physics) = v.physics {
-        if physics.len() < h1::PHYS_SIZE {
-            return Err(Error::Truncated("vehicle physics"));
-        }
-        // H1 0x83df4 and H2 0x2069b6 both compute gravity * penetration /
-        // depth minus damping * normal velocity. H1 integrates per tick.
-        // Both slope responses interpolate on the contact normal's z
-        // component (0x83ea2, 0x206f96). Gravity is a dimensionless
-        // multiplier at 0x8399d. Scale depth so g/depth agrees.
-        for (field, source, factor) in [
-            ("ground_depth", 0x24, 1.0 / GRAVITY_RATIO),
-            ("ground_damp_factor", 0x28, 30.0),
-            ("ground_maximum_slope_0", 0x2c, 1.0),
-            ("gravity_scale", 0x1c, 1.0),
-        ] {
-            let value = f32::from_bits(crate::base::u32_at(physics, source)) * factor;
-            set(&mut r, field, Val::Bytes(value.to_le_bytes().to_vec()))?;
-        }
-        let full = f32::from_bits(crate::base::u32_at(physics, 0x2c));
-        let cutoff = f32::from_bits(crate::base::u32_at(physics, 0x30));
-        // Equal endpoints in H1's 0x123b4 give full grip at or below
-        // the endpoint. H2 0x206fad divides by the difference. Adjacent
-        // floats express the same step for every representable normal.
-        let cutoff = if cutoff == full { full.next_up() } else { cutoff };
-        set(&mut r, "ground_maximum_slope_1", Val::Bytes(cutoff.to_le_bytes().to_vec()))?;
-        crate::base::u32_at(physics, 0x68)
-    } else {
-        0
-    };
     let mut phantom = defs::default_record(d.child(VEHI_PHYSICS).expect("vehicle phantom"));
-    if let Some(contacts) = contacts {
+    if drive.is_some() && friction && !v.points.is_empty() {
         if v.points.len() > 16 {
             return Err(Error::Invalid(
                 "vehicle exceeds the 16 friction contacts at 0x20678d".into(),
             ));
         }
         write_vehicle_phantom(&mut phantom, v.points)?;
-        if drive.is_none() {
-            write_ground_contacts(&mut phantom, contacts, v.points)?;
-        }
     } else {
         role(
             &mut phantom,
@@ -1180,153 +1035,14 @@ pub(crate) fn vehicle_with_tuning(
             TURRET_PHYSICS_ROLE,
         )?;
     }
-    if drive.is_none()
-        && matches!(v.vehicle_type, 3 | 5)
-        && let Some(physics) = v.physics
-    {
-        use tags::object::h1_flight::*;
-        let source = |at| f32::from_bits(crate::base::u32_at(physics, at));
-        let vehicle = |at: usize| -> Result<f32> {
-            let b = v
-                .source
-                .get(at..at + 4)
-                .ok_or(Error::Truncated("aircraft controller"))?;
-            Ok(f32::from_le_bytes(b.try_into().unwrap()))
-        };
-        let radius = source(0);
-        let kind = if v.vehicle_type == 3 {
-            DROPSHIP
-        } else if powered_groups != 2 {
-            PASSIVE
-        } else if radius > 0.0 {
-            LIFEPOD
-        } else {
-            BANSHEE
-        };
-        if contacts.is_some() || !(source(8).is_finite() && source(8) > 0.0) {
-            return Err(Error::Invalid(
-                "unsupported aircraft contact layout or mass".into(),
-            ));
-        }
-        let inertia = (source(0x50) + source(0x54) + source(0x58)) / (3.0 * source(8));
-        let params = [
-            MAGIC,
-            kind,
-            radius.to_bits(),
-            inertia.to_bits(),
-            vehicle(0x364)?.to_bits(),
-            vehicle(0x308)?.to_bits(),
-            vehicle(0x314)?.to_bits(),
-        ];
-        for (i, word) in params.into_iter().enumerate() {
-            set(
-                &mut phantom,
-                &format!("@{:#x}", DATA + i as u32 * 4),
-                Val::Bytes(word.to_le_bytes().to_vec()),
-            )?;
-        }
-    }
-    if drive.is_none() && matches!(v.vehicle_type, 3 | 5) && v.physics.is_none() {
-        // H1 0x398df..0x398ea skips the flight dispatch for a null phys.
-        use tags::object::h1_flight::{DATA, MAGIC, PASSIVE};
-        for (offset, value) in [(DATA, MAGIC), (DATA + 4, PASSIVE)] {
-            set(
-                &mut phantom,
-                &format!("@{offset:#x}"),
-                Val::Bytes(value.to_le_bytes().to_vec()),
-            )?;
-        }
-    }
-    if drive.is_none() && (!power.is_empty() || v.physics.is_some()) {
-        use tags::object::direct_drive::{HAS_SOURCE_GRAVITY, POWER_DATA, POWER_MAGIC};
-        if power.len() > 2 {
-            return Err(Error::Invalid(format!(
-                "{} powered seats exceed the two unit power channels",
-                power.len()
-            )));
-        }
-        let flags = if v.physics.is_some() {
-            HAS_SOURCE_GRAVITY
-        } else {
-            0
-        };
-        for (i, word) in [POWER_MAGIC, power.len() as u32 | flags]
-            .into_iter()
-            .chain(power.iter().flatten().map(|v| v.to_bits()))
-            .enumerate()
-        {
-            set(
-                &mut phantom,
-                &format!("@{:#x}", POWER_DATA + 4 * i as u32),
-                Val::Bytes(word.to_le_bytes().to_vec()),
-            )?;
-        }
-    }
     set(&mut r, VEHI_PHYSICS, Val::Block(vec![phantom]))?;
     for &(path, at) in UNIT_WORDS {
         if let Some(bytes) = v.source.get(at..at + 4) {
             set(&mut r, path, Val::Bytes(bytes.to_vec()))?;
         }
     }
-    // H1 cache speeds are in units/tick and accelerations in units/tick².
-    for (path, at, scale) in [
-        ("maximum_forward_speed", 0x2f8, 30.0), ("maximum_reverse_speed", 0x2fc, 30.0),
-        ("speed_acceleration", 0x300, 900.0), ("speed_deceleration", 0x304, 900.0),
-        ("maximum_left_turn", 0x308, 1.0), ("maximum_right_turn", 0x30c, 1.0),
-        ("wheel_circumference", 0x310, 1.0), ("turn_rate", 0x314, 1.0),
-        ("blur_speed", 0x318, 30.0),
-        ("maximum_left_slide", 0x330, 30.0), ("maximum_right_slide", 0x334, 30.0),
-        ("slide_acceleration", 0x338, 900.0), ("slide_deceleration", 0x33c, 900.0),
-        ("minimum_flipping_angular_velocity", 0x340, 30.0), ("maximum_flipping_angular_velocity", 0x344, 30.0),
-    ] {
-        if let Some(bytes) = v.source.get(at..at + 4) {
-            let value = f32::from_le_bytes(bytes.try_into().expect("four bytes")) * scale;
-            set(&mut r, path, Val::Bytes(value.to_le_bytes().to_vec()))?;
-        }
-    }
-    // The H1 hover solver (0x38152..0x38232) uses the same speed
-    // and acceleration in either direction on both horizontal axes.
-    // H2 selects four directional cap/rate pairs at 0xf32f5/0xf3562.
-    if v.vehicle_type == 4 {
-        for (source, scale, paths) in [
-            (0x2f8, 30.0, ["maximum_reverse_speed", "maximum_left_slide", "maximum_right_slide"]),
-            (0x300, 900.0, ["speed_deceleration", "slide_acceleration", "slide_deceleration"]),
-        ] {
-            if let Some(bytes) = v.source.get(source..source + 4) {
-                let value = f32::from_le_bytes(bytes.try_into().unwrap()) * scale;
-                for path in paths {
-                    set(&mut r, path, Val::Bytes(value.to_le_bytes().to_vec()))?;
-                }
-            }
-        }
-    }
-    if v.vehicle_type == 0 {
-        // H1 differential turn speed at full steering is the forward cap
-        // (0x3988b..0x398d6). H2 normalizes it by +0x22c at 0xf1d5b.
-        if let Some(bytes) = v.source.get(0x2f8..0x2fc) {
-            let cap = f32::from_le_bytes(bytes.try_into().unwrap()) * 30.0;
-            set(&mut r, "maximum_left_slide", Val::Bytes(cap.to_le_bytes().to_vec()))?;
-        }
-    }
-    if let Some(flight) = flight {
-        for (field, value) in [
-            "maximum_forward_speed",
-            "maximum_reverse_speed",
-            "speed_acceleration",
-            "speed_deceleration",
-            "maximum_left_turn",
-            "maximum_right_turn",
-            "turn_rate",
-            "maximum_left_slide",
-            "maximum_right_slide",
-            "slide_acceleration",
-            "slide_deceleration",
-        ]
-        .into_iter()
-        .zip(flight)
-        {
-            set(&mut r, field, Val::Bytes(value.to_le_bytes().to_vec()))?;
-        }
+    if drive.is_none() {
+        drive_from_halo_1(&mut r, v, flight)?;
     }
     crate::arsenal::refs(&mut r, v.references)?;
     let (obj, hlmt, predicted) = (v.object, v.hlmt, v.predicted);
@@ -1418,116 +1134,101 @@ pub(crate) fn vehicle_with_tuning(
         out.push(e);
     }
     set(&mut r, VEHI_SEATS, Val::Block(out))?;
-    let (block, marker, region) = if contacts.is_some() {
-        (VEHI_FRICTION, FRICTION_MARKER, FRICTION_REGION)
-    } else {
-        (VEHI_HOVER, HOVER_MARKER, HOVER_REGION)
-    };
-    let from: &[Record] = match drive.and_then(|d| d.at(block)) {
-        Some(Val::Block(points)) => points.as_slice(),
-        _ => &[],
-    };
-    // A Halo 2 vehicle with no points of this kind (its flier) holds
-    // itself up with its controller, and takes none of Halo 1's.
-    if !v.points.is_empty() && (drive.is_none() || !from.is_empty()) {
-        let e = d.child(block).expect("vehicle points");
-        let mut out = Vec::new();
-        for (i, p) in v.points.iter().enumerate() {
-            let mut x = defs::default_record(e);
-            if block == VEHI_HOVER
-                && drive.is_none()
-                && let Some(lift) = p.antigravity
-            {
-                // 0x84376/0x20634c measure height above the point radius.
-                // Both lift laws subtract damping * normal velocity and
-                // interpolate on the same two slope cosines (0x84418,
-                // 0x84477, 0x206420, 0x206550). H1 has fixed lift height;
-                // the H2 bank modifiers +0x2d8/+0x2dc stay zero.
-                // The H2 solver multiplies both spring and damping by
-                // strength at 0x20655e. Preserve their independent gains.
-                let [strength, offset, height, damping, full, cutoff] = lift;
-                for (field, value) in [
-                    ("antigrav_strength", strength * GRAVITY_RATIO),
-                    ("antigrav_offset", offset),
-                    ("antigrav_height", height),
-                    ("antigrav_damp_factor", damping * 30.0 / GRAVITY_RATIO),
-                    ("antigrav_normal_k1", full),
-                    ("antigrav_normal_k0", cutoff),
-                    ("radius", p.sphere[3]),
-                ] {
-                    set(&mut x, field, Val::Bytes(value.to_le_bytes().to_vec()))?;
-                }
-            }
-            set(&mut x, marker, Val::text(&p.marker))?;
-            set(&mut x, region, Val::text(&p.region))?;
-            if block == VEHI_HOVER && drive.is_some() {
+    // Halo 1's powered mass points place the counterpart's points on its
+    // model. A prop no vehicle drives has none, and a counterpart with no
+    // points of this kind (a flier, which holds itself up with its
+    // controller) takes none of Halo 1's.
+    if let Some(drive) = drive {
+        let (block, marker, region) = if friction {
+            (VEHI_FRICTION, FRICTION_MARKER, FRICTION_REGION)
+        } else {
+            (VEHI_HOVER, HOVER_MARKER, HOVER_REGION)
+        };
+        let from: &[Record] = match drive.at(block) {
+            Some(Val::Block(points)) => points.as_slice(),
+            _ => &[],
+        };
+        if !v.points.is_empty() && !from.is_empty() {
+            let e = d.child(block).expect("vehicle points");
+            let mut out = Vec::new();
+            for (i, p) in v.points.iter().enumerate() {
+                let mut x = defs::default_record(e);
+                set(&mut x, marker, Val::text(&p.marker))?;
+                set(&mut x, region, Val::text(&p.region))?;
                 set(&mut x, "radius", Val::Float(p.sphere[3]))?;
-            }
-            if block == VEHI_FRICTION {
-                if matches!(v.vehicle_type, 0 | 1) {
-                    let mut flags = 2u32;
-                    if v.vehicle_type == 1 {
-                        // H1 0x3925c..0x392af gives the two powered
-                        // groups opposite wheel quaternions. H2 tests
-                        // bits 2 and 3 at 0xf20f7/0xf2178.
-                        flags |= if p.steered { FRICTION_STEERS } else { 8 };
-                    } else if !p.steered {
-                        flags |= tags::object::direct_drive::H1_SECOND_TRACK;
-                    }
+                copy_point_tuning(&mut x, from, i, v.points.len(), friction)?;
+                if friction {
+                    // The word holds the index and the two bytes after it.
+                    let index: u32 = if p.region_index >= 0 {
+                        p.region_index as u32
+                    } else {
+                        u32::MAX
+                    };
                     set(
                         &mut x,
-                        FRICTION_FLAGS,
-                        Val::Bytes(flags.to_le_bytes().to_vec()),
+                        FRICTION_REGION_INDEX,
+                        Val::Bytes(index.to_le_bytes().to_vec()),
                     )?;
                 }
-                set(
-                    &mut x,
-                    "radius",
-                    Val::Bytes(p.sphere[3].to_le_bytes().to_vec()),
-                )?;
-                let index: u32 = if p.region_index >= 0 {
-                    p.region_index as u32
-                } else {
-                    u32::MAX
-                };
-                set(
-                    &mut x,
-                    FRICTION_REGION_INDEX,
-                    Val::Bytes(index.to_le_bytes().to_vec()),
-                )?;
+                out.push(x);
             }
-            if drive.is_some() {
-                copy_point_tuning(&mut x, from, i, v.points.len(), block == VEHI_FRICTION)?;
-            }
-            out.push(x);
+            set(&mut r, block, Val::Block(out))?;
         }
-        set(&mut r, block, Val::Block(out))?;
     }
-    // H1 passes drive commands to the solver only for two powered groups
-    // (jeep 0x39256, tank 0x393dc). Other layouts coast passively.
+    // A prop's tank still selects gear 0 or 1 (0xef40d) and reads its
+    // ratio (0xf152c), so it holds two coasting records.
     if drive.is_none() && matches!(v.vehicle_type, 0 | 1) {
-        // The H2 wheel loops index gear 0 for reverse and 1 for forward.
-        // H1 drives both directly in world units, with no engine inertia.
         let gear = d.child(VEHI_GEARS).expect("vehicle gear");
-        let mut directions = Vec::new();
-        // Even a passive tank selects gear 0 or 1 at 0xef40d. It still
-        // needs two valid records when 0xf152c reads the selected ratio.
-        let ratios = if powered_groups == 2 { [-1.0, 1.0] } else { [0.0; 2] };
-        for ratio in ratios {
-            let mut e = defs::default_record(gear);
-            set(&mut e, "speed_ratio", Val::Float(ratio))?;
-            directions.push(e);
-        }
-        set(&mut r, VEHI_GEARS, Val::Block(directions))?;
-        if powered_groups == 2 {
-            let mode = tags::object::direct_drive::H1_DIRECT_DRIVE.to_le_bytes();
-            set(&mut r, "engine_moment", Val::Bytes(mode.to_vec()))?;
-        }
+        let coasting = (0..2).map(|_| defs::default_record(gear)).collect();
+        set(&mut r, VEHI_GEARS, Val::Block(coasting))?;
     }
     if let Some(drive) = drive {
         copy_drive(&mut r, drive, v.vehicle_type)?;
     }
     built(d, &r)
+}
+
+/// What a prop no Halo 2 vehicle drives keeps of Halo 1's drive: its speeds
+/// and turn limits (Halo 1's units per tick as Halo 2's per second), and
+/// a flier's, from `flight`.
+fn drive_from_halo_1(r: &mut Record, v: &VehicleSpec, flight: Option<[f32; 11]>) -> Result<()> {
+    // H1 cache speeds are in units/tick and accelerations in units/tick².
+    for (path, at, scale) in [
+        ("maximum_forward_speed", 0x2f8, 30.0), ("maximum_reverse_speed", 0x2fc, 30.0),
+        ("speed_acceleration", 0x300, 900.0), ("speed_deceleration", 0x304, 900.0),
+        ("maximum_left_turn", 0x308, 1.0), ("maximum_right_turn", 0x30c, 1.0),
+        ("wheel_circumference", 0x310, 1.0), ("turn_rate", 0x314, 1.0),
+        ("blur_speed", 0x318, 30.0),
+        ("maximum_left_slide", 0x330, 30.0), ("maximum_right_slide", 0x334, 30.0),
+        ("slide_acceleration", 0x338, 900.0), ("slide_deceleration", 0x33c, 900.0),
+        ("minimum_flipping_angular_velocity", 0x340, 30.0), ("maximum_flipping_angular_velocity", 0x344, 30.0),
+    ] {
+        if let Some(bytes) = v.source.get(at..at + 4) {
+            let value = f32::from_le_bytes(bytes.try_into().expect("four bytes")) * scale;
+            set(r, path, Val::Bytes(value.to_le_bytes().to_vec()))?;
+        }
+    }
+    if let Some(flight) = flight {
+        for (field, value) in [
+            "maximum_forward_speed",
+            "maximum_reverse_speed",
+            "speed_acceleration",
+            "speed_deceleration",
+            "maximum_left_turn",
+            "maximum_right_turn",
+            "turn_rate",
+            "maximum_left_slide",
+            "maximum_right_slide",
+            "slide_acceleration",
+            "slide_deceleration",
+        ]
+        .into_iter()
+        .zip(flight)
+        {
+            set(r, field, Val::Bytes(value.to_le_bytes().to_vec()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Halo 1's vehicles and the Halo 2 vehicles whose drive tuning they take,
@@ -1567,10 +1268,17 @@ pub const DRIVE_COUNTERPARTS: &[(&[&str], &[&str])] = &[
 /// and its drive stays as Halo 1 wrote it.
 pub const DRIVE_EXEMPT: &[&str] = &["cinematic", "playback"];
 
+/// Whether `path`'s Halo 1 vehicle is a prop an animation moves
+/// ([`DRIVE_EXEMPT`]).
+pub fn drive_exempt(path: &str) -> bool {
+    let path = path.to_ascii_lowercase();
+    DRIVE_EXEMPT.iter().any(|w| path.contains(w))
+}
+
 /// The Halo 2 tags `path`'s Halo 1 vehicle takes drive tuning from.
 pub fn drive_counterpart(path: &str) -> Option<&'static [&'static str]> {
     let path = path.to_ascii_lowercase().replace('_', " ");
-    if DRIVE_EXEMPT.iter().any(|w| path.contains(w)) {
+    if drive_exempt(&path) {
         return None;
     }
     DRIVE_COUNTERPARTS
@@ -1651,12 +1359,12 @@ fn copy_point_tuning(
     } else {
         vec![HOVER_MARKER, "radius", HOVER_REGION, "damage_region_index"]
     };
-    for (to, from) in x.fields.iter_mut().zip(&source.fields) {
-        if to.0 != from.0 {
-            return Err(Error::Invalid(format!("point field {} differs from {}", to.0, from.0)));
+    for (to, theirs) in x.fields.iter_mut().zip(&source.fields) {
+        if to.0 != theirs.0 {
+            return Err(Error::Invalid(format!("point field {} differs from {}", to.0, theirs.0)));
         }
         if !keep.contains(&to.0.as_str()) {
-            to.1 = from.1.clone();
+            to.1 = theirs.1.clone();
         }
     }
     if !same && friction {

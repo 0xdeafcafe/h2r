@@ -831,7 +831,6 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
     let markers = vec!["driver".to_string(), "driver enter".to_string(), "camera".to_string()];
     let seats = [crate::rebuild::seat_names(&seat, &markers)];
     let root = crate::rebuild::vehicle(&crate::rebuild::VehicleSpec {
-        physics: None,
         source: &[],
         references: &[],
         object: &obj,
@@ -843,8 +842,6 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
         vehicle_type: ROLE_VEHICLE_TYPE as u16,
         flags: 0xdead_00c0,
         weapons: &[weapon],
-        contacts: None,
-        seat_power: &[],
         points: &[],
         attachments: &[],
         functions: &[],
@@ -875,7 +872,6 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
         },
     )
     .unwrap();
-    want.set("unknown_25c", word(30f32.to_bits())).unwrap();
     want.set("vehicle_type", Val::Enum(ROLE_VEHICLE_TYPE))
         .unwrap();
     let mut s = defs::default_record(def.child(VEHI_SEATS).unwrap());
@@ -940,203 +936,6 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
             "{r}"
         );
     }
-}
-
-/// The authored wheel frame, per-second drag and material scale survive encoding.
-#[test]
-fn rebuilt_vehicle_keeps_source_drag_and_direction_records() {
-    use crate::rebuild::VehicleSpec;
-    use tags::defs::{self, Defs, Target, Val};
-    let obj = crate::h1::Object {
-        texture_override: 0,
-        object_type: 1,
-        acceleration_scale: 0.0,
-        flags: 0,
-        bounding_radius: 2.0,
-        bounding_offset: [0.0; 3],
-        model: None,
-        animation: None,
-        collision: None,
-        physics: None,
-        modifier_shader: None,
-        creation_effect: None,
-        attachments: Vec::new(),
-        widgets: Vec::new(),
-        change_colours: Vec::new(),
-    };
-    let points = [
-        crate::rebuild::Point {
-            sphere: [0.75, 0.0, 0.125, 0.25],
-            antigravity: None,
-            marker: "tire_front_left".into(),
-            region: "left_front_tire".into(),
-            region_index: 2,
-            steered: true,
-        },
-        crate::rebuild::Point {
-            sphere: [0.75, 0.0, 0.125, 0.25],
-            antigravity: None,
-            marker: "tire_back_left".into(),
-            region: String::new(),
-            region_index: -1,
-            steered: false,
-        },
-    ];
-    let contacts = crate::h1::GroundContacts {
-        wheels: points
-            .iter()
-            .map(|p| {
-                (
-                    p.marker.clone(),
-                    tags::object::direct_drive::WheelDrag {
-                        mode: 5,
-                        rate: 2.0,
-                        parallel: 0.75,
-                        perpendicular: 0.45,
-                    },
-                )
-            })
-            .collect(),
-        surfaces: vec![(19, [0.125, 1.0, 1.0, 1.0, 1.0])],
-        equal_slopes: true,
-    };
-    let seat = crate::h1::Seat {
-        camera_angles: [0; 5],
-        flags: 0x14,
-        label: "W-driver".into(),
-        marker: "driver".into(),
-        camera_marker: String::new(),
-        camera_tracks: Vec::new(),
-    };
-    let passenger = crate::h1::Seat {
-        camera_angles: [0; 5],
-        flags: 0x60,
-        label: "W-passenger".into(),
-        marker: "passenger".into(),
-        camera_marker: String::new(),
-        camera_tracks: Vec::new(),
-    };
-    let mut seats = [
-        crate::rebuild::seat_names(&seat, &[]),
-        crate::rebuild::seat_names(&passenger, &[]),
-    ];
-    // The driver's camera track converted; the passenger has none.
-    let track = map::TagId(0xe001_0009);
-    seats[0].camera_track = Some(track);
-    let mut physics = [0; crate::h1::PHYS_SIZE];
-    physics[0x68..0x6c].copy_from_slice(&2u32.to_le_bytes());
-    let spec = VehicleSpec {
-        physics: Some(&physics),
-        source: &[],
-        references: &[],
-        object: &obj,
-        bounds: Some((1.5, [0.1, 0.0, 0.5])),
-        hlmt: None,
-        seats: &seats,
-        predicted: &[],
-        camera_field_of_view: 1.0,
-        vehicle_type: 1,
-        flags: 0x0000_0cd1,
-        weapons: &[],
-        contacts: Some(&contacts),
-        seat_power: &[],
-        points: &points,
-        attachments: &[],
-        functions: &[],
-        creation_effect: None,
-    };
-    let root = crate::rebuild::vehicle(&spec).unwrap();
-    let def = Defs::builtin().group(map::FourCC(*b"vehi")).unwrap();
-    let got = defs::from_built(def, &root).unwrap();
-    let word = |w: u32| Some(Val::Bytes(w.to_le_bytes().to_vec()));
-    assert_eq!(got.at("vehicle_type"), Some(&Val::Enum(1)));
-    assert_eq!(got.at("vehicle_flags"), Some(&Val::Int(0xcd1)));
-    use tags::object::direct_drive::{CONTACT_DATA, CONTACT_HEADER, CONTACT_MAGIC, WHEEL_BYTES};
-    let meta = |offset| got.bytes(&format!("phantom_shapes[0].@{offset:#x}"), 4).map(Val::Bytes);
-    let wheel = CONTACT_DATA + CONTACT_HEADER;
-    let ice = wheel + 2 * WHEEL_BYTES;
-    assert_eq!(meta(CONTACT_DATA), word(CONTACT_MAGIC));
-    assert_eq!(meta(CONTACT_DATA + 4), word(0x10102));
-    assert_eq!(meta(wheel), word(5));
-    assert_eq!(meta(wheel + 4), word(2f32.to_bits()));
-    assert_eq!(meta(wheel + 8), word(0.75f32.to_bits()));
-    assert_eq!(meta(wheel + 12), word(0.45f32.to_bits()));
-    assert_eq!(meta(ice), word(19));
-    assert_eq!(meta(ice + 4), word(0.125f32.to_bits()));
-    assert_eq!(got.bytes("ground_friction", 4).map(Val::Bytes), word(0));
-    assert_eq!(
-        got.bytes("phantom_shapes[0].x0", 4).map(Val::Bytes),
-        word(0.5_f32.to_bits())
-    );
-
-    assert_eq!(got.bytes("ground_maximum_slope_0", 4).map(Val::Bytes), word(0));
-    assert_eq!(got.bytes("ground_maximum_slope_1", 4).map(Val::Bytes), word(0.0f32.next_up().to_bits()));
-    let mut passive = physics;
-    passive[0x68..0x6c].copy_from_slice(&1u32.to_le_bytes());
-    let passive = crate::rebuild::vehicle(&VehicleSpec { physics: Some(&passive), ..spec }).unwrap();
-    let passive = defs::from_built(def, &passive).unwrap();
-    assert_eq!(passive.bytes("engine_moment", 4).map(Val::Bytes), word(0));
-    let Some(Val::Block(gears)) = passive.get("gears") else { panic!("missing direction records") };
-    assert_eq!(gears.len(), 2);
-    assert!(gears.iter().all(|g| g.get("speed_ratio") == Some(&Val::Float(0.0))));
-    // Each seat takes its kind's words.
-    assert_eq!(got.bytes("seats[0].turnover_time", 4).map(Val::Bytes), word(0));
-    assert_eq!(got.bytes("seats[1].turnover_time", 4).map(Val::Bytes), word(0));
-    assert_eq!(got.bytes("seats[0].flags", 4).map(Val::Bytes), word(0x14));
-    assert_eq!(got.bytes("seats[1].flags", 4).map(Val::Bytes), word(0x60));
-    // Halo 1's entry markers face the vehicle's forward: no facing test,
-    // whatever the role's seats hold.
-    for k in 0..2 {
-        assert_eq!(
-            got.bytes(&format!("seats[{k}].entry_marker_cone_angle"), 4).map(Val::Bytes),
-            word(std::f32::consts::PI.to_bits()),
-        );
-    }
-    // The sphere given, not Halo 1's.
-    assert_eq!(got.at("unit.obje.bounding_radius"), Some(&Val::Float(1.5)));
-    assert_eq!(
-        got.at("unit.obje.bounding_offset"),
-        Some(&Val::floats(&[0.1, 0.0, 0.5]))
-    );
-    assert_eq!(
-        got.at("seats[0].label"),
-        Some(&Val::text("warthog_d"))
-    );
-    // The contact marker and region come from the source powered point.
-    assert_eq!(
-        got.at("friction_points[0].marker_name"),
-        Some(&Val::text("tire_front_left"))
-    );
-    assert_eq!(
-        got.at("friction_points[0].region_name"),
-        Some(&Val::text("left_front_tire"))
-    );
-    assert_eq!(got.bytes("friction_points[1].fraction_of_total_mass", 4).map(Val::Bytes), word(0));
-    // Each point's region index is its own, never the role's: the front
-    // point's region is the model's third, the back point names none.
-    assert_eq!(got.bytes("friction_points[0].region_index", 4).map(Val::Bytes), word(2));
-    assert_eq!(got.bytes("friction_points[1].region_index", 4).map(Val::Bytes), word(0xffff_ffff));
-    assert_eq!(got.bytes("control", 2), Some(vec![0, 0]));
-    // Halo 1 countersteers the second powered group.
-    assert_eq!(got.bytes("friction_points[0].flags", 4).map(Val::Bytes), word(6));
-    assert_eq!(got.bytes("friction_points[1].flags", 4).map(Val::Bytes), word(10));
-    assert!(matches!(got.at("anti_gravity_points"), Some(Val::Block(b)) if b.is_empty()));
-    assert_eq!(got.at("gears[0].speed_ratio"), Some(&Val::Float(-1.0)));
-    assert_eq!(got.at("gears[1].speed_ratio"), Some(&Val::Float(1.0)));
-    let again = defs::to_built(def, &got, &mut |_| None).unwrap();
-    assert_eq!(defs::from_built(def, &again).unwrap(), got);
-    // This ground vehicle has no vertical speed.
-    assert_eq!(got.bytes("minimum_flipping_angular_velocity", 4).map(Val::Bytes), word(0));
-    // The driver's seat names its camera track; the passenger's names
-    // none (the engine's default unit track).
-    assert_eq!(
-        got.at("seats[0].camera_tracks[0].track"),
-        Some(&Val::Ref {
-            group: 0,
-            target: Target::Id(track),
-        })
-    );
-    assert!(matches!(got.at("seats[1].camera_tracks"), Some(Val::Block(b)) if b.is_empty()));
 }
 
 /// A Halo 1 camera track becomes a Halo 2 `trak` with the same points, in
@@ -2663,79 +2462,6 @@ fn a_weapon_fires_and_reloads_with_halo1_s_effects() {
     assert_eq!(target(&r, "pickup_sound"), None);
 }
 
-/// Each hover marker keeps its authored lift law in either array order.
-#[test]
-fn hover_points_keep_their_source_lift() {
-    use crate::rebuild::{VEHI_HOVER, VehicleSpec};
-    use tags::defs::{self, Defs, Val};
-    let obj = crate::h1::Object {
-        texture_override: 0,
-        object_type: 1,
-        acceleration_scale: 0.0,
-        flags: 0,
-        bounding_radius: 1.0,
-        bounding_offset: [0.0; 3],
-        model: None,
-        animation: None,
-        collision: None,
-        physics: None,
-        modifier_shader: None,
-        creation_effect: None,
-        attachments: Vec::new(),
-        widgets: Vec::new(),
-        change_colours: Vec::new(),
-    };
-    let f = |v: f32| v.to_bits();
-    let point = |m: &str, lift, height| crate::rebuild::Point {
-        sphere: [0.75, 0.0, 0.125, 0.25],
-        antigravity: Some([lift, 0.0, height, 0.01, 0.7, 0.5]),
-        marker: m.into(),
-        region: String::new(),
-        region_index: -1,
-        steered: false,
-    };
-    let def = Defs::builtin().group(map::FourCC(*b"vehi")).unwrap();
-    let build = |points: &[crate::rebuild::Point]| {
-        let root = crate::rebuild::vehicle(&VehicleSpec {
-            physics: None,
-            source: &[],
-            references: &[],
-            object: &obj,
-            bounds: None,
-            hlmt: None,
-            seats: &[],
-            predicted: &[],
-            camera_field_of_view: 1.0,
-            vehicle_type: 4,
-            flags: 0,
-            weapons: &[],
-            contacts: None,
-            seat_power: &[],
-            points,
-            attachments: &[],
-            functions: &[],
-            creation_effect: None,
-        })
-        .unwrap();
-        defs::from_built(def, &root).unwrap()
-    };
-    let word = |w: f32| Some(Val::Bytes(f(w).to_le_bytes().to_vec()));
-    use tags::object::direct_drive::GRAVITY_RATIO;
-    let got = build(&[
-        point("hull", 3.75, 0.0),
-        point("left", 1.85, 0.0),
-        point("right", 1.85, 0.45),
-    ]);
-    let at = |r: &defs::Record, i: usize, k: &str| r.bytes(&format!("{VEHI_HOVER}[{i}].{k}"), 4).map(Val::Bytes);
-    assert_eq!(at(&got, 0, "antigrav_strength"), word(3.75 * GRAVITY_RATIO));
-    assert_eq!(at(&got, 1, "antigrav_strength"), word(1.85 * GRAVITY_RATIO));
-    assert_eq!(at(&got, 2, "antigrav_height"), word(0.45));
-    assert_eq!(at(&got, 1, "antigrav_height"), word(0.0));
-    let got = build(&[point("a", 1.85, 0.45), point("b", 1.85, 0.0)]);
-    assert_eq!(at(&got, 0, "antigrav_strength"), word(1.85 * GRAVITY_RATIO));
-    assert_eq!(at(&got, 1, "antigrav_strength"), word(1.85 * GRAVITY_RATIO));
-}
-
 /// A wheel's pieces are cut at the hull's lowest point and what is left
 /// is one piece; a wheel wholly under it gives none; a hull of no pieces
 /// (an infinite floor) holds no wheel.
@@ -2960,22 +2686,15 @@ fn drive_vehicle_keeps_halo1_and_takes_the_counterpart_drive(
     let points: Vec<_> = (0..ours)
         .map(|i| Point {
             sphere: [i as f32, 1.0, -2.0, 0.25 + i as f32],
-            antigravity: (!friction).then_some([1.0, 0.0, 0.5, 0.01, 0.7, 0.5]),
+            hover: !friction,
             marker: format!("h1 {path} {i}"),
             region: format!("h1 region {i}"),
             region_index: i as i16,
-            steered: i < 2,
         })
         .collect();
-    let contacts = crate::h1::GroundContacts {
-        wheels: Vec::new(),
-        surfaces: Vec::new(),
-        equal_slopes: false,
-    };
     let hlmt = map::TagId(0xe001_0002);
     let root = crate::rebuild::vehicle_with_tuning(
         &VehicleSpec {
-            physics: None,
             source: &[],
             references: &[],
             object: &obj,
@@ -2987,8 +2706,6 @@ fn drive_vehicle_keeps_halo1_and_takes_the_counterpart_drive(
             vehicle_type: kind,
             flags: 0,
             weapons: &[],
-            contacts: friction.then_some(&contacts),
-            seat_power: &[],
             points: &points,
             attachments: &[],
             functions: &[],
@@ -3044,7 +2761,8 @@ fn drive_vehicle_keeps_halo1_and_takes_the_counterpart_drive(
             let source = if ours == theirs { i } else { i * theirs / ours };
             assert_eq!(got.at(&format!("{block}[{i}].flags")), Some(&Val::Flags(0x26 + source as u32)));
         } else {
-            let strength = 2.0 + if ours == theirs { i } else { i * theirs / ours } as f32;
+            let source = if ours == theirs { i } else { i * theirs / ours };
+            let strength = 2.0 + source as f32;
             assert_eq!(got.at(&format!("{block}[{i}].antigrav_strength")), Some(&Val::Float(strength)));
         }
     }
@@ -3052,8 +2770,8 @@ fn drive_vehicle_keeps_halo1_and_takes_the_counterpart_drive(
     // data in the phantom, no direct-drive engine word.
     assert_ne!(got.bytes("engine_moment", 4), Some(u32::from_le_bytes(*b"H1dd").to_le_bytes().to_vec()));
     if friction {
-        use tags::object::direct_drive::{CONTACT_DATA, POWER_DATA};
-        for at in [CONTACT_DATA, POWER_DATA] {
+        // Where the removed Halo 1 contact and power data sat.
+        for at in [0x180u32, 0x288] {
             assert_eq!(got.bytes(&format!("phantom_shapes[0].@{at:#x}"), 4), Some(vec![0; 4]), "{path}");
         }
     }
@@ -3165,4 +2883,18 @@ fn rocket_warthog_drive_is_the_counterparts_and_the_rest_halo_1s() {
         4,
         4,
     );
+}
+
+/// Halo 1's vehicle drive code is gone: the feature file, its
+/// registration and the tag formats only it read.
+#[test]
+fn no_halo1_drive_code_remains() {
+    let game = include_str!("../../../extensions/game/src/lib.rs");
+    let boot = include_str!("../../../apps/boot/src/registration.rs");
+    let tags = include_str!("../../../formats/tags/src/object/mod.rs");
+    assert!(!game.contains("h1_drive"));
+    assert!(!boot.contains("h1_drive") && !boot.contains("DirectDrive"));
+    assert!(!tags.contains("direct_drive") && !tags.contains("h1_flight"));
+    let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../extensions/game/src/h1_drive.rs");
+    assert!(!std::path::Path::new(file).exists());
 }
