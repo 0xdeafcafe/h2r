@@ -105,14 +105,21 @@ const fn leaf(begin: u32, end: u32) -> EffectLeaf {
 
 pub const EFFECT_BILLBOARD: EffectLeaf = leaf(0x0004_8497, 0x0004_849d);
 pub const EFFECT_DEPTH_BILLBOARD: EffectLeaf = leaf(0x0004_8ae5, 0x0004_8aeb);
-// Its BEGIN (the End call) is the continuation of the last
-// `SetVertexData4f` call, so it never runs, as with two flare leaves below.
-pub const EFFECT_WEATHER_LAYER: EffectLeaf = leaf(0x0003_8342, 0x0003_8349);
+/// The weather layer's End call (0x00038342) is the continuation of its
+/// last vertex call (`call 0x003fb2d0` at 0x0003833d), so no hook runs
+/// there. BEGIN is that vertex call's first argument push (`push esi`,
+/// 0x00038336), reached by falling through from `mov eax, [esp+0xf0]`.
+/// The callee pops its four arguments (`ret 0x10`), so ESP there equals
+/// ESP at End, and the only code between is the four pushes, `or edi, -1`
+/// and the last vertex. Arming drains with the strip still open, as the
+/// flares below do.
+pub const EFFECT_WEATHER_LAYER: EffectLeaf = leaf(0x0003_8336, 0x0003_8349);
 pub const EFFECT_WEATHER_PARTICLES: EffectLeaf = leaf(0x0003_96f7, 0x0003_96f9);
 pub const EFFECT_MATERIAL_STRIP: EffectLeaf = leaf(0x0019_fc3e, 0x0019_fc40);
 
-// Immediately before the XDK End call, and the first instruction after
-// the one End returns to: a return resumes the caller's generated code at
+// Immediately before the XDK End call (or, below, before the vertex call
+// End is the continuation of), and the first instruction after the one
+// End returns to: a return resumes the caller's generated code at
 // the continuation and never runs a hook there. Each continuation writes
 // no stack slot or register the RETURN hook reads and falls through to
 // it: mask `xor edx, edx` (0x0004730b), mask sample `lea eax, [esp+0x24]`
@@ -121,10 +128,15 @@ pub const EFFECT_MATERIAL_STRIP: EffectLeaf = leaf(0x0019_fc3e, 0x0019_fc40);
 // the loop count, before its `jnz`). The shared reflection billboard
 // already has a pair above.
 //
-// The mask sample's and the composite's End calls are themselves the
-// continuations of the last `SetVertexData4f` call, so their BEGIN never
-// runs: no instruction lies between that return and End. The plan
-// refuses those hooks at install (`hooks::verify`).
+// The mask sample's and the composite's End calls (0x00047512, 0x00047854)
+// are themselves the continuations of the last vertex call (`call
+// 0x003fb2d0`, `ret 0x10`), so a hook there never runs (`hooks::verify`
+// refuses it). Their BEGIN is that vertex call's first argument push,
+// reached by falling through: `push 0x4b7fffff` at 0x00047501 (after `mov
+// edx, [esp+0x40]`) and at 0x00047843 (after `mov eax, [esp+0x1c]`). The
+// callee pops its pushes, so ESP there equals ESP at End and the
+// late-pass return word at ESP+0x54 reads the same. Only the pushes and
+// the last vertex lie between; arming drains with the fan still open.
 const fn flare_leaf(begin: u32, end: u32) -> EffectLeaf {
     EffectLeaf {
         begin: Point::new("FLARE_DRAW_END", begin, Sig::Site, RENDERER),
@@ -132,30 +144,35 @@ const fn flare_leaf(begin: u32, end: u32) -> EffectLeaf {
     }
 }
 pub const FLARE_MASK: EffectLeaf = flare_leaf(0x0004_7306, 0x0004_730d);
-pub const FLARE_MASK_SAMPLE: EffectLeaf = flare_leaf(0x0004_7512, 0x0004_751b);
+pub const FLARE_MASK_SAMPLE: EffectLeaf = flare_leaf(0x0004_7501, 0x0004_751b);
 pub const FLARE_FILTER_SOURCE: EffectLeaf = flare_leaf(0x0004_679b, 0x0004_67a2);
 pub const FLARE_FILTER: EffectLeaf = flare_leaf(0x0004_6e44, 0x0004_6e4a);
-pub const FLARE_COMPOSITE: EffectLeaf = flare_leaf(0x0004_7854, 0x0004_785d);
+pub const FLARE_COMPOSITE: EffectLeaf = flare_leaf(0x0004_7843, 0x0004_785d);
 
 pub const EFFECT_QUERY: Point = Point::new("EFFECT_QUERY", 0x0002_e9b6, Sig::Site, PARTICLES);
 pub const EFFECT_LAYERED_A: Point = Point::new("EFFECT_LAYERED_A", 0x0004_1cc0, Sig::Site, PARTICLES);
 pub const EFFECT_LAYERED_B: Point = Point::new("EFFECT_LAYERED_B", 0x0004_23c0, Sig::Site, PARTICLES);
 
+/// Every immediate effect and flare leaf. Both of each leaf's sites are
+/// hooked as observers, so neither may be a call's continuation
+/// (`crates/rewrites/engine/tests/point_shapes.rs` checks them against the
+/// image).
+pub static EFFECT_LEAVES: [&EffectLeaf; 10] = [
+    &EFFECT_BILLBOARD,
+    &EFFECT_DEPTH_BILLBOARD,
+    &EFFECT_WEATHER_LAYER,
+    &EFFECT_WEATHER_PARTICLES,
+    &EFFECT_MATERIAL_STRIP,
+    &FLARE_MASK,
+    &FLARE_MASK_SAMPLE,
+    &FLARE_FILTER_SOURCE,
+    &FLARE_FILTER,
+    &FLARE_COMPOSITE,
+];
+
 /// Every site above, the scene list sites and the UI walk's interior
 /// sites, each once.
 pub fn instruction_entries() -> impl Iterator<Item = u32> {
-    let leaves = [
-        &EFFECT_BILLBOARD,
-        &EFFECT_DEPTH_BILLBOARD,
-        &EFFECT_WEATHER_LAYER,
-        &EFFECT_WEATHER_PARTICLES,
-        &EFFECT_MATERIAL_STRIP,
-        &FLARE_MASK,
-        &FLARE_MASK_SAMPLE,
-        &FLARE_FILTER_SOURCE,
-        &FLARE_FILTER,
-        &FLARE_COMPOSITE,
-    ];
     [
         PORTAL_REGIONS_READY.base,
         LAYER_BUILT.base,
@@ -213,7 +230,7 @@ pub fn instruction_entries() -> impl Iterator<Item = u32> {
     ]
     .into_iter()
     .chain(SUBPART_DRAWS.into_iter().flat_map(|(point, resume)| [point.base, resume]))
-    .chain(leaves.into_iter().flat_map(|l| [l.begin.base, l.end.base]))
+    .chain(EFFECT_LEAVES.into_iter().flat_map(|l| [l.begin.base, l.end.base]))
 }
 
 #[cfg(test)]
@@ -231,5 +248,29 @@ mod tests {
         assert!(seen.contains(&super::WATER_INDEX_READY.base));
         assert!(!seen.contains(&0x0001_c8b9));
         assert_eq!(super::WATER_INDEX_ARG_BYTES, 0xc);
+        // Every leaf's two sites are entries.
+        for leaf in super::EFFECT_LEAVES {
+            assert!(seen.contains(&leaf.begin.base), "{leaf:?}");
+            assert!(seen.contains(&leaf.end.base), "{leaf:?}");
+        }
+    }
+
+    /// The three End calls that are the continuation of the last vertex
+    /// call are not BEGIN sites: a hook there never runs. Their BEGIN is
+    /// the vertex call's first push, before End and in the same function.
+    #[test]
+    fn begin_is_never_an_end_call_that_follows_a_call() {
+        for (leaf, end_call, begin) in [
+            (&super::EFFECT_WEATHER_LAYER, 0x0003_8342, 0x0003_8336),
+            (&super::FLARE_MASK_SAMPLE, 0x0004_7512, 0x0004_7501),
+            (&super::FLARE_COMPOSITE, 0x0004_7854, 0x0004_7843),
+        ] {
+            assert_eq!(leaf.begin.base, begin, "{leaf:?}");
+            assert!(leaf.begin.base < end_call && end_call < leaf.end.base, "{leaf:?}");
+        }
+        let entries: std::collections::HashSet<u32> = super::instruction_entries().collect();
+        for end_call in [0x0003_8342, 0x0004_7512, 0x0004_7854] {
+            assert!(!entries.contains(&end_call), "{end_call:#010x}");
+        }
     }
 }

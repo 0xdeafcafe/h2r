@@ -165,9 +165,14 @@ The bridge (`native_flares.rs`) arms each fan at its End call and
 finishes it at the first instruction after End's return
 (`scene_effects::FLARE_*`): a return resumes the caller's generated code
 at the continuation, so no hook runs there. The MaskSample and Composite
-End calls are themselves the return of the last `SetVertexData4f` call.
-No instruction lies between, so the plan refuses their arming observers
-at install and those two fans stay on the guest path.
+End calls (`0x00047512`, `0x00047854`) are themselves the return of the
+last vertex call, so those two fans arm at that call's first argument push
+(`0x00047501`, `0x00047843`), reached by falling through. The callee pops
+its arguments (`ret 0x10`), so ESP there equals ESP at End and the
+late-pass check reads the same stack word; the fan is still open when the
+arm drains. `engine`'s `point_shapes::no_effect_leaf_site_is_a_calls_continuation`
+checks every leaf site of `scene_effects::EFFECT_LEAVES` against the
+retail XBE.
 
 `FlareGpu::prepare(site, target, draw, frame)` checks that the draw is a
 fan of four vertices with a vertex program, one stride-256 stream 0 of
@@ -197,11 +202,12 @@ also match a researched caller; another caller gives `UnownedCaller`.
 | Weather particle points | Same helper, resolved PointList | `WeatherPointRasterization`: point size/expansion is not represented by this renderer |
 
 Boundary pairs (before END / after END) are `0x00048497/0x0004849d`,
-`0x00048ae5/0x00048aeb`, and `0x00038342/0x00038349`. The weather
-layer's `0x00038342` is the End call and also the return of the last
-`SetVertexData4f` call. A return resumes the caller's generated code
-there, so the plan refuses that observer at install and the weather layer
-stays on the guest path. Weather particles
+`0x00048ae5/0x00048aeb`, and `0x00038336/0x00038349`. The weather
+layer's End call (`0x00038342`) is also the return of the last vertex
+call, where a return resumes the caller's generated code without a hook,
+so its BEGIN is that call's first argument push (`0x00038336`). The
+callee pops its four arguments, so ESP there equals ESP at End; the strip
+is still open when the arm drains. Weather particles
 write END inline: observe before its put publication at `0x000396f7`, then
 finish at `0x000396f9`. Early-out paths never arm. The saved-caller stack
 offsets are `+0x24` and `+0x30` for the two billboard emitters.

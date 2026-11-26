@@ -11,7 +11,9 @@ pub(super) fn reflection_caller(caller: Option<u32>) -> bool {
 
 const LATE_RETURN: u32 = 0x0002_e1ca;
 
-// At the End instruction, before the CPU pushes its return address.
+// At BEGIN, where ESP equals ESP at the End call, before the CPU pushes its
+// return address (for MaskSample and Composite, BEGIN is the last vertex
+// call's first push, `scene_effects::FLARE_*`).
 // Shared filter helpers have their own locals, saved registers and arguments
 // between ESP and the calling 0x46ea0 frame.
 fn owns_late_fan(site: Site, word: impl Fn(u32) -> Option<u32>) -> bool {

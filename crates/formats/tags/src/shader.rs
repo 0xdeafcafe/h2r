@@ -394,8 +394,10 @@ pub struct ShaderPostprocess {
     /// +0x4c (u16 ranges into `property_refs`).
     pub property_ranges: Vec<IndexRange>,
     pub animations: Vec<AnimationBinding>,
-    /// +0x5c, +0x64, +0x6c: constant counts 5, 2, 6 on the disc, always
-    /// pointing at shared runtime-pool bytes; not dereferenced.
+    /// +0x5c, +0x64, +0x6c: constant counts 5, 2, 6 on the disc, their data
+    /// shared between shaders. Engine texture 26 (`0x00019a68`) reads the
+    /// i16 at `+0x10` of the first's data, a bitmap parameter index
+    /// (`material::PROPERTY_BITMAP_TEXTURE`); the rest is not dereferenced.
     pub opaque_blocks: [RawBlock; 3],
     /// +0x74..+0x7c, uninterpreted.
     pub tail: [u8; 8],

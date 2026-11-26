@@ -1008,8 +1008,10 @@ Its numbers are ported: `engine::colour_pass`
      `0x11`, 23 `0x17`; 5 the view's bound target `[0x004858b8]`; 24 and
      25 the target the word `[0x00485a18 + 4 id]` names (`0x19`..`0x1b`
      sized through `0x0001dd60`: the screen effects' own targets); 4
-     clears the stage; 10 and 12 the light's; 16, 18, 26 and 27 chosen at
-     run time; 7 and 11 null entries. A template pass binding the light's,
+     clears the stage; 10 and 12 the light's; 16, 18 and 27 chosen at
+     run time; 26 a bitmap parameter of the drawn shader, which the
+     material resolver binds as that bitmap
+     (`tags::material::PROPERTY_BITMAP_TEXTURE`); 7 and 11 null entries. A template pass binding the light's,
      a run-time one or an invalid id is refused
      (`ScreenRefusal::EngineTexture`); the rest the draw supplies.
    - **which pass, implementation and program**
