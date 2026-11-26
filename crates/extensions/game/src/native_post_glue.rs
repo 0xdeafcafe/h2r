@@ -780,6 +780,14 @@ impl d3d::ExternalPass for ScreenPass {
         true
     }
 
+    // Frozen by `validate`: the call, its values and its raster are the
+    // pass's own, and every source is a slot or the view's copy made in
+    // the recording. So a scene replay can record it again on its
+    // attachments (docs/graphics/framescene.md, slice 5).
+    fn replays_scene(&self) -> bool {
+        self.raster.get().is_some()
+    }
+
     // Only prepared recordings can replace a screen call.
     fn encode(&mut self, _: d3d::ExternalTarget<'_>) {}
 
@@ -1178,8 +1186,12 @@ pub const QUAD: (PrimitiveType, usize) = (PrimitiveType::TriangleFan, 4);
 /// The native glow, recorded against the call's view and blur levels.
 struct GlowPass {
     raster: OnceLock<Vec<PostRaster>>,
+    /// Per stage, whether the down-sample's entry reads the view as `X8`
+    /// (alpha one), captured with the raster.
+    opaque_entry: OnceLock<[bool; 4]>,
     plan: Plan,
     gpu: Arc<Mutex<GpuGlow>>,
+    entry: Arc<Mutex<OpaqueEntry>>,
 }
 
 impl d3d::ExternalPass for GlowPass {
@@ -1187,12 +1199,20 @@ impl d3d::ExternalPass for GlowPass {
         true
     }
 
+    // Frozen by `validate`: the plan, the raster and the entry's format
+    // are the call's own, and a copy given no entry textures reads the
+    // view from its own slot. So a scene replay can record it again on
+    // its attachments (docs/graphics/framescene.md, slice 5).
+    fn replays_scene(&self) -> bool {
+        self.raster.get().is_some() && self.opaque_entry.get().is_some()
+    }
+
     fn encode(&mut self, _: d3d::ExternalTarget<'_>) {}
 
     fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
         match self.prepare(PostCopy::of_target(&t)) {
-            Some(commands) => {
-                commands.record(t.encoder);
+            Some(recording) => {
+                recording.record(t.encoder);
                 self.plan.draws.len()
             }
             None => 0,
@@ -1207,12 +1227,12 @@ impl d3d::ExternalPass for GlowPass {
         request: d3d::ExternalPassRequest,
     ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
         Some(match self.prepare(PostCopy::of_attachments(t, request)) {
-            Some(commands) => Ok(d3d::backend::ExternalEncoded {
+            Some(recording) => Ok(d3d::backend::ExternalEncoded {
                 ranges: self.plan.draws.len(),
-                draws: commands.passes(),
-                passes: commands.passes(),
+                draws: recording.passes(),
+                passes: recording.passes(),
                 commands: Box::new(move |encoder: &mut wgpu::CommandEncoder| {
-                    commands.record(encoder)
+                    recording.record(encoder)
                 }),
             }),
             None => Err("glow refused on the live target"),
@@ -1223,24 +1243,208 @@ impl d3d::ExternalPass for GlowPass {
 impl GlowPass {
     /// The plan's quads on one copy, prepared; `None` (logged) when
     /// refused. The cache's lock is released when this returns.
-    fn prepare(&self, t: PostCopy<'_>) -> Option<glow::GlowCommands> {
+    ///
+    /// The down-sample's entry reads the view: through the copy's stage
+    /// textures when it has them (the device's resolved inputs, with
+    /// the `X8` alpha already one), else from the view's own slot, made
+    /// opaque first where the guest read it as `X8`. A carried scene
+    /// stage and its replay have no stage textures.
+    fn prepare(&self, t: PostCopy<'_>) -> Option<GlowRecording> {
         let view = slot(t.slots, 0)?;
+        let raster = self.raster.get()?;
+        let opaque = *self.opaque_entry.get()?;
         let intermediates = [1, 2].map(|i| slot(t.slots, i).map(glow::PostSurface::from));
+        let given = t.stages.iter().any(Option::is_some);
+        let entry = (!given && opaque.contains(&true))
+            .then(|| self.entry.lock().unwrap_or_else(|e| e.into_inner()).copy(t.device, &view.attachment));
+        let entry_sources = if given {
+            t.stages
+        } else {
+            std::array::from_fn(|n| {
+                Some(match (&entry, opaque[n]) {
+                    (Some(copy), true) => &copy.view,
+                    _ => &view.attachment,
+                })
+            })
+        };
         let result = self.gpu.lock().unwrap_or_else(|e| e.into_inner()).prepare_raster(
             GlowTarget {
                 device: t.device,
                 queue: t.queue,
                 uploads: t.uploads,
                 color: view.into(),
-                entry_sources: t.stages,
+                entry_sources,
                 intermediates,
             },
             &self.plan,
-            Some(self.raster.get()?),
+            Some(raster),
         );
         result
+            .map(|commands| GlowRecording { entry, commands })
             .map_err(|error| log_rejection(|| format!("glow on live target: {error:?}")))
             .ok()
+    }
+}
+
+/// One copy's glow: the opaque entry it makes first, when it makes one,
+/// then the quads.
+struct GlowRecording {
+    entry: Option<EntryCopy>,
+    commands: glow::GlowCommands,
+}
+
+impl GlowRecording {
+    fn passes(&self) -> usize {
+        self.commands.passes() + usize::from(self.entry.is_some())
+    }
+
+    fn record(&self, encoder: &mut wgpu::CommandEncoder) {
+        if let Some(entry) = &self.entry {
+            entry.record(encoder);
+        }
+        self.commands.record(encoder);
+    }
+}
+
+/// The view as an `X8` read sees it, for a copy with no stage textures:
+/// the view copied, then the copy's alpha set to one, as the device's
+/// framebuffer snapshot of an `X8` level does.
+struct EntryCopy {
+    source: wgpu::Texture,
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    pipeline: wgpu::RenderPipeline,
+}
+
+impl EntryCopy {
+    fn record(&self, encoder: &mut wgpu::CommandEncoder) {
+        encoder.copy_texture_to_texture(
+            self.source.as_image_copy(),
+            self.texture.as_image_copy(),
+            self.source.size(),
+        );
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("native glow X8 entry"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.draw(0..3, 0..1);
+    }
+}
+
+/// The opaque entry's textures and its alpha pipeline, kept by device,
+/// size and format. Every recording writes its copy before its quads
+/// read it, in queue order, so recordings of one size share a texture.
+#[derive(Default)]
+struct OpaqueEntry {
+    pipelines: Vec<(wgpu::Device, wgpu::TextureFormat, wgpu::RenderPipeline)>,
+    textures: Vec<(wgpu::Device, wgpu::Texture, wgpu::TextureView)>,
+}
+
+impl OpaqueEntry {
+    /// The kept textures: one per live copy of the view (the reference
+    /// and the display), with room for a resize.
+    const KEPT: usize = 4;
+
+    fn copy(&mut self, device: &wgpu::Device, view: &wgpu::TextureView) -> EntryCopy {
+        let source = view.texture().clone();
+        let (size, format) = (source.size(), source.format());
+        let at = self.textures.iter().position(|(d, t, _)| {
+            d == device && t.size() == size && t.format() == format
+        });
+        let (texture, view) = match at {
+            Some(at) => {
+                let (_, t, v) = &self.textures[at];
+                (t.clone(), v.clone())
+            }
+            None => {
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("native glow X8 entry"),
+                    size,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::COPY_DST
+                        | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                });
+                let view = texture.create_view(&Default::default());
+                if self.textures.len() == Self::KEPT {
+                    self.textures.remove(0);
+                }
+                self.textures.push((device.clone(), texture.clone(), view.clone()));
+                (texture, view)
+            }
+        };
+        EntryCopy {
+            source,
+            texture,
+            view,
+            pipeline: self.pipeline(device, format),
+        }
+    }
+
+    fn pipeline(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
+        if let Some((_, _, p)) = self.pipelines.iter().find(|(d, f, _)| d == device && *f == format) {
+            return p.clone();
+        }
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("native glow X8 entry"),
+            source: wgpu::ShaderSource::Wgsl(
+                r#"
+                @vertex fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+                    let x = f32((i << 1u) & 2u);
+                    let y = f32(i & 2u);
+                    return vec4f(2.0 * x - 1.0, 2.0 * y - 1.0, 0.0, 1.0);
+                }
+                @fragment fn fs_main() -> @location(0) vec4f {
+                    return vec4f(0.0, 0.0, 0.0, 1.0);
+                }
+            "#
+                .into(),
+            ),
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("native glow X8 entry"),
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALPHA,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        self.pipelines.push((device.clone(), format, pipeline.clone()));
+        pipeline
     }
 }
 
@@ -1258,6 +1462,7 @@ impl d3d::SwallowPass for GlowPass {
             return Err("glow quad count differs from plan".into());
         }
         let mut rasters = Vec::with_capacity(originals.len());
+        let mut opaque_entry = [false; 4];
         for (i, (original, want)) in originals.iter().zip(&self.plan.draws).enumerate() {
             let inputs = CombinerInputs::read(&shaders::PixelShaderDef::from_words(&want.combiner));
             let raster = post_raster(original.draw, Some(inputs))?;
@@ -1265,16 +1470,17 @@ impl d3d::SwallowPass for GlowPass {
             for stage in 0..4 {
                 if original.sampled[stage] {
                     let source = want.stages[stage];
-                    check_bound_source(
-                        original,
-                        stage,
-                        source.map(glow_slot),
-                        slots,
-                        i == 0 && source == Some(Surface::View),
-                    )?;
+                    let entry = i == 0 && source == Some(Surface::View);
+                    check_bound_source(original, stage, source.map(glow_slot), slots, entry)?;
+                    opaque_entry[stage] = entry
+                        && original.draw.texture_info[stage]
+                            .is_some_and(|info| info.format == gfx::D3DFormat::LinX8R8G8B8);
                 }
             }
         }
+        self.opaque_entry
+            .set(opaque_entry)
+            .map_err(|_| "glow entry already captured".to_owned())?;
         self.raster.set(rasters).map_err(|_| "glow raster already captured".to_owned())
     }
 }
@@ -1282,6 +1488,8 @@ impl d3d::SwallowPass for GlowPass {
 struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
     gpu: Arc<Mutex<GpuGlow>>,
+    /// The glow's opaque entry copies ([`OpaqueEntry`]).
+    entry: Arc<Mutex<OpaqueEntry>>,
     /// The current map's screen effects, loaded here whatever the native
     /// world does ([`EffectsSlot`]).
     effects: Arc<Mutex<EffectsSlot>>,
@@ -1398,8 +1606,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let targets = targets(&plan);
         let pass: Box<dyn d3d::SwallowPass> = Box::new(GlowPass {
             raster: OnceLock::new(),
+            opaque_entry: OnceLock::new(),
             plan,
             gpu: Arc::clone(&self.gpu),
+            entry: Arc::clone(&self.entry),
         });
         let headers = glow_headers(mem);
         self.arm(
@@ -1683,6 +1893,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
     render_bridge::native_post::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         gpu: Arc::new(Mutex::new(GpuGlow::new())),
+        entry: Arc::new(Mutex::new(OpaqueEntry::default())),
         effects: Arc::new(Mutex::new(EffectsSlot::default())),
     }));
 }
@@ -3030,8 +3241,10 @@ mod tests {
         };
         let glow = GlowPass {
             raster: OnceLock::new(),
+            opaque_entry: OnceLock::new(),
             plan: plan.clone(),
             gpu: Arc::new(Mutex::new(GpuGlow::new())),
+            entry: Arc::default(),
         };
         assert!(glow.colour_only(), "the composite binds no depth");
         assert!(CapturePass(None).colour_only());
@@ -3051,5 +3264,39 @@ mod tests {
             .colour_only(),
             "the screen passes bind no depth"
         );
+    }
+
+    /// A post pass is a scene stage a replay can record again only once
+    /// its call's raster is frozen.
+    #[test]
+    fn post_passes_record_again_only_once_validated() {
+        use d3d::{ExternalPass, SwallowPass};
+        let glow = GlowPass {
+            raster: OnceLock::new(),
+            opaque_entry: OnceLock::new(),
+            plan: Plan {
+                window: [0.0; 4],
+                signs: [0.0; 2],
+                view: (640, 480),
+                down: (160, 120),
+                other: (160, 120),
+                draws: vec![],
+            },
+            gpu: Arc::new(Mutex::new(GpuGlow::new())),
+            entry: Arc::default(),
+        };
+        assert!(!glow.replays_scene());
+        glow.validate(&[], &[]).unwrap();
+        assert!(glow.replays_scene());
+        assert_eq!(glow.opaque_entry.get(), Some(&[false; 4]));
+
+        let screen = ScreenPass {
+            effects: Arc::new(crate::native_post_load::ScreenEffects::default()),
+            call: ScreenCall { egor: EGOR, passes: Vec::new(), values: [0; 4], frame: None },
+            raster: OnceLock::new(),
+        };
+        assert!(!screen.replays_scene());
+        screen.validate(&[], &[]).unwrap();
+        assert!(screen.replays_scene());
     }
 }

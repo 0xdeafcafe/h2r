@@ -869,7 +869,10 @@ pub struct SwallowTarget {
 /// Validates the live state of the original packets before native recording.
 pub trait SwallowPass: crate::backend::ExternalPass {
     /// Need the first original's resolved inputs (such as an opaque
-    /// framebuffer snapshot) alongside the live post attachments.
+    /// framebuffer snapshot) alongside the live post attachments. A pass
+    /// that [replays](crate::backend::ExternalPass::replays_scene) commits
+    /// as a carried scene stage, which carries no textures: on a copy
+    /// given none, it takes the entry from its own slots.
     fn entry_samples(&self) -> bool {
         false
     }
@@ -3441,6 +3444,29 @@ impl<B: Backend> Device<B> {
                 .collect(),
             slot_sizes: s.surfaces.iter().map(|slot| slot.map(|t| t.size)).collect(),
         };
+        let replays = pass.replays_scene();
+        let pass: crate::SharedReplacement = Arc::new(std::sync::Mutex::new(pass));
+        // A pass that records again on other attachments commits as a
+        // carried scene stage: every copy is sealed before any commits,
+        // and a sink that keeps the frame retains the stage for its replay
+        // (docs/graphics/framescene.md, slice 5). The stage carries no
+        // entry textures; such a pass takes its entry from its slots
+        // ([`SwallowPass::entry_samples`]).
+        if replays && self.backend.can_commit_carried() {
+            let stage = crate::SceneStage {
+                surfaces: surfaces.clone(),
+                request,
+                plan: plan.clone(),
+                pass: Arc::clone(&pass),
+            };
+            if let Ok(Some(copies)) = self.backend.prepare_carried_stage(&stage)
+                && complete_recordings(&plan, &copies)
+            {
+                self.backend.commit_carried_stage(stage, copies);
+                self.swallow_committed(&s.surfaces, s.packets, plan.ranges);
+                return Ok(());
+            }
+        }
         let textures = std::array::from_fn(|i| {
             let first = s.packets.first().filter(|_| entry_samples)?;
             if !first.sampled[i] {
@@ -3458,7 +3484,7 @@ impl<B: Backend> Device<B> {
             textures,
             &plan,
             TargetCopy::Reference,
-            Arc::new(std::sync::Mutex::new(pass)),
+            pass,
         );
         let detail = recordings.as_ref().err().cloned();
         if let Ok(Some(recordings)) = recordings
@@ -3467,25 +3493,36 @@ impl<B: Backend> Device<B> {
             for recording in recordings {
                 self.backend.commit_external(recording);
             }
-            for target in s.surfaces.iter().flatten() {
-                self.color_surface_written(target.surface);
-            }
-            self.stats.swallow_draws_dropped += plan.ranges as u64;
-            self.stats.claimed_draws += s.packets.len() as u64;
-            self.stats.swallow_commits += 1;
-            self.stats.external_passes += 1;
-            for packet in s.packets {
-                self.recycle_streams(packet.draw.streams);
-                for (key, texture) in packet.cached {
-                    self.cache.entry(key).or_insert(texture);
-                }
-            }
+            self.swallow_committed(&s.surfaces, s.packets, plan.ranges);
             return Ok(());
         }
         self.swallow_refused(SwallowRefusal::Encode);
         self.swallow_mismatch = Some("native encoding refused a live target copy".into());
         self.refuse_external(origin, ExternalRefusal::Backend, detail.as_deref());
         self.swallow_replay(s.packets)
+    }
+
+    /// A replacement committed in place of the held packets: its targets
+    /// are written, and the packets' streams and textures are released.
+    fn swallow_committed(
+        &mut self,
+        targets: &[Option<SwallowSurface<B::Surface>>],
+        packets: Vec<SwallowPacket<B>>,
+        ranges: usize,
+    ) {
+        for target in targets.iter().flatten() {
+            self.color_surface_written(target.surface);
+        }
+        self.stats.swallow_draws_dropped += ranges as u64;
+        self.stats.claimed_draws += packets.len() as u64;
+        self.stats.swallow_commits += 1;
+        self.stats.external_passes += 1;
+        for packet in packets {
+            self.recycle_streams(packet.draw.streams);
+            for (key, texture) in packet.cached {
+                self.cache.entry(key).or_insert(texture);
+            }
+        }
     }
 
     /// Records the last target and keeps a fully resolved packet if it

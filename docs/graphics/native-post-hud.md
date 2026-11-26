@@ -1,7 +1,7 @@
 # Native renderer stage 5: post and HUD
 
 Status: Partly built. The colour-pass glow, the scenario screen effects, layer 17's items, lens-flare colour and visibility fans, and the UI and HUD draw natively. Pixel parity with D3D needs a live check.
-Code: `crates/rewrites/render-bridge/src/native_post.rs`, `native_hud.rs`, `native_hud/hud_overlay.rs`, `crates/extensions/game/src/hud_overlay.rs`, `crates/extensions/game/src/native_post_glue.rs`, `native_post_load.rs`, `native_hud_glue.rs`, `crates/rewrites/scene-extract/src/layout/post.rs`, `glow.rs`, `screen_look.rs`, `screen_gpu.rs`, `hud.rs`, `ui_gpu.rs`, `crates/rewrites/engine/src/colour_pass.rs`, `glow.rs`, `screen_effects.rs`, `screen_grid.rs`, `function_eval.rs`. Tests: `crates/rewrites/render-bridge/tests/native_post.rs`, `native_hud.rs`, `crates/rewrites/engine/tests/colour_pass_differential.rs`, `glow_differential.rs`, `screen_effects_differential.rs`, `screen_grid_differential.rs`, `crates/platform/d3d/tests/swallow.rs`.
+Code: `crates/rewrites/render-bridge/src/native_post.rs`, `native_hud.rs`, `native_hud/hud_overlay.rs`, `crates/extensions/game/src/hud_overlay.rs`, `crates/extensions/game/src/native_post_glue.rs`, `native_post_load.rs`, `native_hud_glue.rs`, `crates/rewrites/scene-extract/src/layout/post.rs`, `glow.rs`, `screen_look.rs`, `screen_gpu.rs`, `hud.rs`, `ui_gpu.rs`, `crates/rewrites/engine/src/colour_pass.rs`, `glow.rs`, `screen_effects.rs`, `screen_grid.rs`, `function_eval.rs`. Tests: `crates/rewrites/render-bridge/tests/native_post.rs`, `native_hud.rs`, `crates/rewrites/engine/tests/colour_pass_differential.rs`, `glow_differential.rs`, `screen_effects_differential.rs`, `screen_grid_differential.rs`, `crates/platform/d3d/tests/swallow.rs`, `swallow_carry.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 Part of [native-renderer.md](native-renderer.md).
@@ -737,6 +737,21 @@ strips also carry the live W clip range and window-depth scale.
    recorded the expected ranges. A failed encode discards those
    commands and replays the originals.
 
+   The glow and the screen effects record again on any copy once
+   `validate` has frozen their raster (`replays_scene`), so the return
+   commits them as a carried scene stage of `Stage::Post`
+   (`prepare_carried_stage`, then `commit_carried_stage`). Under a
+   scene sink that keeps the frame for the display's replay (two-copy
+   mode), the sink retains it as a `ReplayOp::Stage` and the display
+   copy records it again at window resolution
+   ([framescene.md](framescene.md), slice 5). A carried stage has no
+   entry textures, so the glow reads its down-sample's entry from the
+   view's slot, through an alpha-one copy (`OpaqueEntry`) where the
+   guest read the view as `X8`. A pass that does not record again, a
+   guest reference request or a refused carry goes through
+   `prepare_external` with the first packet's entry textures; a
+   replaying sink declines that, and the packets replay.
+
    The call validates live packet state and attachments each time.
    Under render scaling, a replacement that uses a reference-only
    intermediate together with a live display target falls back.
@@ -747,6 +762,10 @@ strips also carry the live W clip range and window-depth scale.
    same-shape draws from a different End caller. GPU tests compare
    both colour attachments after a failed encode and check that a
    successful replacement writes the intermediate back to the guest.
+   `d3d/tests/swallow_carry.rs` checks the carried commit under a
+   replaying sink (one commit, one retained stage, no replayed packet),
+   the packets of a pass that does not record again, the guest
+   reference's decline, and complete reference and display copies.
    The screen renderer's GPU test covers masked writes and pixels
    preserved between partial passes into a BGRA intermediate.
 
