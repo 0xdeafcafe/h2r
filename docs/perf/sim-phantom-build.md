@@ -246,7 +246,7 @@ P1's proof, in the order it is run:
 4. **`h2 sim diff`**, switch on against off, arena hashes on, the same
    seeds: every component agrees.
 5. **Films**: a film recorded with the switch at its default verifies
-   (`h2 theater prepare`), and its `BTAP` series equals that of the same
+   (`theater.verify`), and its `BTAP` series equals that of the same
    seed recorded with the view.
 
 ## Rules and limits
