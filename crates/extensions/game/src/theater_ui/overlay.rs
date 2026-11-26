@@ -17,6 +17,9 @@ use crate::ui_kit::{input::Input, spec::ScreenSpec};
 use crate::theater::SeekTaps;
 
 const REFRESH: Duration = Duration::from_millis(150);
+/// How long a film queued in this game may take to start before the viewer
+/// is given the film page back (`Session::stall`).
+const START_WAIT: Duration = Duration::from_secs(60);
 const LONG_PRESS: Duration = Duration::from_millis(500);
 /// Ticks the bar keeps a monitor look sentence: six seconds of film.
 const MONITOR_NOTICE_TICKS: u64 = 180;
@@ -440,6 +443,8 @@ pub(super) struct Session {
     /// The film plays in this game (`theater.watch`), not in a player
     /// process: leaving is `theater.end`.
     in_game: bool,
+    /// When the film's game was queued, while it has not yet started.
+    opened_at: Option<Instant>,
     pub completed_clip: Option<Clip>,
     held_keys: HashSet<Key>,
     key_skip: SkipHold,
@@ -520,6 +525,7 @@ impl Session {
             }
         }
         let now = Instant::now();
+        self.stall(now);
         self.pump_transport(now);
         if let Some(seconds) = self.key_skip.held(now) {
             self.control_at(Control::Skip(seconds), now);
@@ -547,6 +553,25 @@ impl Session {
             self.last_poll = Some(now);
             self.send(agent_proto::theater::STATE, json!({}), Request::State);
         }
+    }
+
+    /// A film queued in this game whose game has not started within
+    /// [`START_WAIT`] is given up: the bar goes, the film is disarmed
+    /// (`theater.end`) and the film page says why.
+    fn stall(&mut self, now: Instant) -> bool {
+        let waiting = self.in_game
+            && !self.ready
+            && self.opened_at.is_some_and(|at| now.duration_since(at) >= START_WAIT);
+        if !waiting {
+            return false;
+        }
+        self.opened_at = None;
+        self.track = None;
+        self.in_game = false;
+        self.menu = None;
+        self.open_error = Some("The film's game did not start".into());
+        self.send(api::END, json!({}), Request::End);
+        true
     }
 
     fn pump_transport(&mut self, now: Instant) {
@@ -583,6 +608,7 @@ impl Session {
                     self.track = Some(Track::from_entry(&entry));
                     self.ready = false;
                     self.in_game = true;
+                    self.opened_at = Some(Instant::now());
                     self.menu = None;
                 }
             }
@@ -927,8 +953,15 @@ impl Session {
         }
     }
 
+    /// A film in this game owns the pads once its game is playing; while it
+    /// is queued the menu keeps them.
     pub fn owns_pads(&self) -> bool {
-        self.track.is_some()
+        self.track.is_some() && (self.ready || !self.in_game)
+    }
+
+    /// A film is loaded and its transport answers: the bar is drawn.
+    pub fn loaded(&self) -> bool {
+        self.track.is_some() && self.ready
     }
 
     pub fn key(&mut self, key: Key, down: bool, repeat: bool) -> bool {
@@ -1578,5 +1611,34 @@ mod tests {
         assert_eq!(d.held(now + LONG_PRESS), Some(30));
         assert_eq!(d.held(now + LONG_PRESS * 2), None);
         assert_eq!(d.update(0, now + LONG_PRESS * 2), None);
+    }
+    #[test]
+    fn a_film_queued_in_this_game_draws_no_bar_and_keeps_the_pads_until_it_plays() {
+        let mut session = Session {
+            track: Some(sample_track()),
+            in_game: true,
+            opened_at: Some(Instant::now()),
+            ..Default::default()
+        };
+        assert!(!session.loaded(), "queued: the menu is still showing");
+        assert!(!session.owns_pads());
+        session.ready = true;
+        assert!(session.loaded() && session.owns_pads());
+    }
+
+    #[test]
+    fn a_film_whose_game_never_starts_is_given_up_with_a_reason() {
+        let start = Instant::now();
+        let mut session = Session {
+            track: Some(sample_track()),
+            in_game: true,
+            opened_at: Some(start),
+            ..Default::default()
+        };
+        assert!(!session.stall(start + START_WAIT - Duration::from_secs(1)));
+        assert!(session.track.is_some());
+        assert!(session.stall(start + START_WAIT));
+        assert!(session.track.is_none() && !session.in_game);
+        assert_eq!(session.open_error.as_deref(), Some("The film's game did not start"));
     }
 }

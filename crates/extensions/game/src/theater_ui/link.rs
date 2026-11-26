@@ -1,4 +1,4 @@
-use super::{DETAIL, Entry, Location, Theater, adapter};
+use super::{DETAIL, Entry, FILMS, Location, Theater, adapter};
 use crate::{layout_glue::ReadGm, list_class, ui_watch};
 use agent_proto::{RpcError, code, theater as api};
 use engine::{
@@ -95,6 +95,12 @@ impl Menu {
 /// gives up waiting after [`MENU_WAIT_UPDATES`].
 const MENU_SETTLE_UPDATES: u32 = 20;
 const MENU_WAIT_UPDATES: u32 = 900;
+
+/// The screens a reopened film page opens, bottom first: the Theater list
+/// when it exists, then the film page over it.
+fn reopen_screens(list: Option<u32>, detail: u32) -> Vec<(&'static str, u32)> {
+    list.map(|loader| (FILMS, loader)).into_iter().chain([(DETAIL, detail)]).collect()
+}
 
 /// Whether a local page keeps waiting at this update: the menu has not had
 /// one screen on top for [`MENU_SETTLE_UPDATES`] updates in a row, and the
@@ -556,13 +562,24 @@ impl Feature for Driver {
                             || theater.state().open_generation != ready.generation
                         {
                             Err("Theater account or selection changed".into())
-                        } else if let Some(loader) = list_class::loader_of(DETAIL) {
+                        } else if let Some(detail) = list_class::loader_of(DETAIL) {
+                            // A film page of this machine's library is
+                            // reached through the Theater list, as the
+                            // menu's own Theater row reaches it: the list
+                            // is under the page, and B goes back to it.
+                            let list = if ready.local { list_class::loader_of(FILMS) } else { None };
+                            if list.is_some() {
+                                let player = theater.state().player.clone();
+                                theater.open(ready.controller, player);
+                            }
                             theater.select_link(ready.entry, ready.view, ready.account);
-                            cx.call(
-                                GuestCall::new(points::OPEN_SCREEN.base)
-                                    .args([1 << ready.controller, loader]),
-                            )
-                            .await?;
+                            for (_, loader) in reopen_screens(list, detail) {
+                                cx.call(
+                                    GuestCall::new(points::OPEN_SCREEN.base)
+                                        .args([1 << ready.controller, loader]),
+                                )
+                                .await?;
+                            }
                             let shown = cx.read(|m| ui_watch::read(&ReadGm(m)));
                             if shown.top.is_some_and(|s| s.class_name == Some(DETAIL)) {
                                 Ok(ui_watch::screen_json(
@@ -622,6 +639,12 @@ mod tests {
         assert_eq!(pushed.settled, 1);
         assert_eq!(pushed.after(true, None).settled, 0, "no screen up");
         assert!(!menu_not_settled(MENU_WAIT_UPDATES, Menu::default()), "give up and try");
+    }
+
+    #[test]
+    fn a_reopened_film_page_has_the_theater_list_under_it() {
+        assert_eq!(reopen_screens(Some(1), 2), [(FILMS, 1), (DETAIL, 2)]);
+        assert_eq!(reopen_screens(None, 2), [(DETAIL, 2)], "a linked page opens alone");
     }
 
     #[test]

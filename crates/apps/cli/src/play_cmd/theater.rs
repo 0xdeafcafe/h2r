@@ -175,10 +175,11 @@ impl shell::Controller for Controller {
             input.sync();
         }
         self.theater.pump();
-        let page = self.theater.playback_page().and_then(|spec| {
+        let playing = self.theater.playing();
+        let page = self.theater.film_loaded().then(|| self.theater.playback_page()).flatten().and_then(|spec| {
             self.pages.lock().unwrap_or_else(|e| e.into_inner()).render(spec, self.theater.playback_timeline())
         });
-        shell::View { playing: self.theater.playing(), page }
+        shell::View { playing, page }
     }
 
     fn key(&self, key: shell::Key, down: bool, repeat: bool) -> bool {
@@ -242,6 +243,15 @@ impl shell::Controller for Controller {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_playback_page_is_drawn_while_no_film_is_loaded() {
+        use shell::Controller as _;
+        let (_, controller) = overlay(Theater::default(), PathBuf::new(), None);
+        let view = controller.update();
+        assert!(view.page.is_none(), "the menus are not drawn over");
+        assert!(!view.playing);
+    }
 
     #[test]
     fn without_the_disc_fonts_no_page_of_word_blocks_is_drawn() {
