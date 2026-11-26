@@ -137,17 +137,22 @@ pub fn map_point(fit: Fit, p: [f32; 2]) -> [f32; 2] {
 }
 
 /// A guest-pixel rectangle (`x, y, width, height`) under `fit`, each edge
-/// mapped and rounded: the clip a fitted draw keeps its scissor in.
+/// mapped and rounded: the clip a fitted draw keeps its scissor in. An edge
+/// on the canvas boundary (0 or the 640x480 far side) of a shrunk axis stays
+/// on the display boundary, so a clip that is the whole canvas spans the
+/// whole display (the same rule as `d3d::backend::UiFit::map_rect`).
 pub fn map_rect(fit: Fit, r: (u32, u32, u32, u32)) -> (u32, u32, u32, u32) {
-    let edge = |axis: usize, v: u32| (v as f32 * fit[axis] + fit[axis + 2]).round() as u32;
-    let x0 = edge(0, r.0);
-    let y0 = edge(1, r.1);
-    (
-        x0,
-        y0,
-        edge(0, r.0.saturating_add(r.2)).saturating_sub(x0),
-        edge(1, r.1.saturating_add(r.3)).saturating_sub(y0),
-    )
+    let axis = |a: usize, start: u32, len: u32| {
+        let size = CANVAS[a] as u32;
+        let edge = |e: u32| {
+            if fit[a] < 1.0 && (e == 0 || e == size) { e } else { (e as f32 * fit[a] + fit[a + 2]).round() as u32 }
+        };
+        let lo = edge(start);
+        (lo, edge(start.saturating_add(len)).saturating_sub(lo))
+    };
+    let (x, w) = axis(0, r.0, r.2);
+    let (y, h) = axis(1, r.1, r.3);
+    (x, y, w, h)
 }
 
 #[cfg(test)]
@@ -310,11 +315,24 @@ mod tests {
     #[test]
     fn rects_map_edge_to_edge_and_points_axis_by_axis() {
         let fit = [0.75, 1.0, 80.0, 0.0];
-        assert_eq!(map_rect(fit, (0, 0, 640, 480)), (80, 0, 480, 480));
-        assert_eq!(map_rect(fit, (600, 100, 40, 40)), (530, 100, 30, 40));
+        assert_eq!(map_rect(fit, (0, 0, 640, 480)), (0, 0, 640, 480));
+        assert_eq!(map_rect(fit, (600, 100, 40, 40)), (530, 100, 110, 40));
         assert_eq!(map_rect(IDENTITY, (10, 20, 30, 40)), (10, 20, 30, 40));
         assert_eq!(map_point(fit, [320.0, 240.0]), [320.0, 240.0]);
         assert_eq!(map_point(fit, [0.0, 480.0]), [80.0, 480.0]);
+    }
+
+    #[test]
+    fn a_full_canvas_footer_clip_at_21_by_9_maps_inside_the_display() {
+        // The main menu's footer clip is the canvas width: it spans the
+        // display, and a clip with one interior edge keeps that edge fitted.
+        let output = (2560, 1080);
+        let fit = menu_fit(output, [320.0, 240.0]).unwrap();
+        let footer = map_rect(fit, (0, 420, 640, 60));
+        assert_eq!(footer, (0, 420, 640, 60));
+        assert!(footer.0 + footer.2 <= 640 && footer.1 + footer.3 <= 480);
+        let part = map_rect(fit, (0, 420, 320, 60));
+        assert_eq!((part.0, part.2), (0, (320.0 * fit[0] + fit[2]).round() as u32));
     }
 
     /// Ultrawide windows: the menu keeps the centred 4:3 box at the
