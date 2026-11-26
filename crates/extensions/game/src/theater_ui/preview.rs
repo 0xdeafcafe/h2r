@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use super::adapter::{Clip, FilmMeta, Library, Player, Source};
 use super::overlay::Track;
-use super::playback_page::{self, Command, Divergence, Jump, Keyframes, Menu};
+use super::playback_page::{self, Command, Divergence, Jump, Menu};
 use super::{Control, DETAIL, Entry, FILMS, Load, OVERLAY, PAUSE_MENU, Tab, Theater, pages};
 use crate::ui_kit::input::Input;
 use crate::ui_kit::page::{Focus, ListEffect, ListPage, Live, Page, described};
@@ -115,12 +115,11 @@ impl Kind {
                 "unplayable",
             ],
             Self::Detail => &[
-                "list", "unplayable", "summary", "players", "preparing", "prepared",
-                "prepare-failed", "confirm-delete",
+                "list", "unplayable", "summary", "players", "confirm-delete",
             ],
             Self::Playback => &[
                 "playing", "paused", "opening", "jumping", "divergence", "unavailable",
-                "hidden", "preparing", "pause-menu",
+                "hidden", "pause-menu",
             ],
             Self::Pause => &[
                 "menu", "no-stats", "no-marks", "player-picker", "camera-picker",
@@ -409,37 +408,17 @@ impl Live for Preview {
             _ => {}
         }
         state.select(entry.clone());
-        if let Some((tick, status)) = match name {
-            "preparing" => Some((6_080, super::PrepareStatus::Running)),
-            "prepared" => Some((entry.film.length_ticks, super::PrepareStatus::Complete)),
-            "prepare-failed" => Some((1_200, super::PrepareStatus::Failed {
-                error: "Film diverged at tick 1201.".into(),
-            })),
-            _ => None,
-        } {
-            state.prepare = Some(super::PrepareState {
-                id: entry.film.id.clone(),
-                tick,
-                length_ticks: entry.film.length_ticks,
-                status,
-            });
-            self.focus = Focus(1);
-        }
         if name == "confirm-delete" {
             state.confirm_delete = true;
             state.status = "Press A again to delete".into();
-            self.focus = Focus(3);
+            self.focus = Focus(2);
         }
-        if name == "preparing" {
-            self.show = Kind::Detail;
-            self.focus = Focus(1);
-        } else if matches!(self.initial, Kind::Playback | Kind::Pause) {
+        if matches!(self.initial, Kind::Playback | Kind::Pause) {
             let mut track = Track::from_entry(&entry);
             track.tick = 4_692;
             track.paused = matches!(name, "paused" | "pause-menu") || matches!(self.initial, Kind::Pause);
             track.speed_reached = Some(0.98);
             track.kills = vec![800, 1024, 4400, 4800, 7900, 12_500];
-            track.keyframes = Keyframes { sidecar: vec![501, 6000], ring: vec![3600, 4100, 4500] };
             track.marks = (Some(4380), Some(4620));
             match name {
                 "jumping" => {

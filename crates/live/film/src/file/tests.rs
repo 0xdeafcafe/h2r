@@ -2,7 +2,6 @@ use super::*;
 use crate::{
     Reader, Writer,
     blam::{self, Event, MapIdentity, SeatInput, Tick, TrackReader, TrackWriter},
-    manifest::Manifest,
     tape::{Batch, Call},
     tests::header,
 };
@@ -171,7 +170,6 @@ fn container(path: &Path, ticks: u64) {
     h.version = 2;
     h.meta.length_ticks = ticks;
     let mut out = Writer::new(File::create(path).unwrap(), &h).unwrap();
-    out.chunk(crate::DATA, &Manifest::default()).unwrap();
     let mut track = TrackWriter::default();
     let mut batch = Batch::default();
     for tick in 1..=ticks {
@@ -300,7 +298,7 @@ fn the_container_writer_mirrors_its_machine_chunks_into_the_film_file() {
     ));
     let mut w = Writer::new(Cursor::new(Vec::new()), &header(5)).unwrap();
     w.set_mirror(Some(machine_mirror(Arc::clone(&film))));
-    w.chunk_bytes(*b"DATA", b"disk").unwrap();
+    w.chunk_bytes(*b"PDEV", b"disk").unwrap();
     // The container keeps what the film file does not carry.
     w.chunk_bytes(crate::KEYF, &[1, 2, 3, 4]).unwrap();
     w.chunk_bytes(*b"TAPE", b"calls").unwrap();
@@ -311,7 +309,7 @@ fn the_container_writer_mirrors_its_machine_chunks_into_the_film_file() {
     let bytes = film.finish().unwrap().into_inner();
     let mut r = FilmReader::open(Cursor::new(&bytes)).unwrap();
     let tags: Vec<_> = r.machine.iter().map(|b| b.tag).collect();
-    assert_eq!(tags, [*b"DATA", *b"TAPE"]);
+    assert_eq!(tags, [*b"PDEV", *b"TAPE"]);
     let mut raw = Vec::new();
     for block in r.machine.clone() {
         raw.push(zstd::bulk::decompress(&r.read_block(&block).unwrap(), 64).unwrap());
@@ -319,7 +317,7 @@ fn the_container_writer_mirrors_its_machine_chunks_into_the_film_file() {
     assert_eq!(raw, [b"disk".to_vec(), b"calls".to_vec()]);
     // The stored frame is the container's own.
     let reader = Reader::new(Cursor::new(&container)).unwrap();
-    let data = reader.entries.iter().find(|e| e.tag == *b"DATA").unwrap();
+    let data = reader.entries.iter().find(|e| e.tag == *b"PDEV").unwrap();
     let stored = &container[data.offset as usize + 8..][..data.size as usize];
     let block = r.machine[0];
     assert_eq!(r.read_block(&block).unwrap(), stored);
@@ -410,20 +408,6 @@ fn a_track_reader_takes_its_actions_from_the_film_file() {
         .attach_film(FilmActions::open(&beside(&path)).unwrap())
         .unwrap();
     assert_eq!(steps(&mut merged), plain);
-
-    // Out of order: forward across chunks, back to an earlier one, and on.
-    let mut merged = TrackReader::open(&path).unwrap();
-    merged
-        .attach_film(FilmActions::open(&beside(&path)).unwrap())
-        .unwrap();
-    let mut seek = TrackReader::open(&path).unwrap();
-    for tick in [450u64, 100, 599, 255, 0, 300] {
-        merged.resume_after_tick(tick).unwrap();
-        seek.resume_after_tick(tick).unwrap();
-        let (a, b) = (merged.step().unwrap(), seek.step().unwrap());
-        assert_eq!(a, b, "after tick {tick}");
-        assert_eq!(a.map(|t| t.tick), Some(tick + 1));
-    }
 }
 
 #[test]

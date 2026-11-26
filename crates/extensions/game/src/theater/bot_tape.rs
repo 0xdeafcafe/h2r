@@ -92,20 +92,10 @@ impl Session {
 
     pub(crate) fn resume_bot_row(&self, cursor: u64, row: Option<usize>) -> Result<(), String> {
         let mut t = self.bots.lock().unwrap_or_else(|e| e.into_inner());
-        let next = if let Some(row) = row {
-            if row > t.entries.len() {
-                return Err("bot roster cursor past film end".into());
-            }
-            row
-        } else {
-            let offset = self
-                .lock()
-                .engine
-                .as_ref()
-                .and_then(|e| e.track.sidecar_mark_offset().or(e.track.keyframe_offset()))
-                .ok_or("restoring bot cursor without an indexed keyframe")?;
-            t.entries.partition_point(|e| e.offset <= offset)
-        };
+        let next = row.ok_or("restoring bot cursor without its roster row")?;
+        if next > t.entries.len() {
+            return Err("bot roster cursor past film end".into());
+        }
         t.cursor = cursor;
         t.pending = None;
         t.next = next;

@@ -321,6 +321,41 @@ fn a_start_route_seek_queues_the_options_again_and_reaches_its_tick() {
 }
 
 #[test]
+fn a_cancelled_start_route_seek_goes_back_to_the_tick_it_left_and_holds_there() {
+    let v = viewer();
+    let rec = &v.rec;
+    let mut g = v.watch();
+    for n in 0..25 {
+        assert!(tick(rec, &mut g, n));
+    }
+    let from = MENUS + 25;
+    rec.transport(api::SEEK, json!({ "tick": v.first + 4 })).unwrap();
+    assert_eq!(v.pending().len(), 1);
+
+    // Cancelled before it arrives: the game is queued again, for the tick
+    // the seek left, and the film holds there.
+    rec.transport(api::SEEK, json!({ "cancel": true })).unwrap();
+    {
+        let s = rec.lock();
+        assert_eq!((s.seeking, s.restart, s.paused), (Some(from), None, true));
+        assert_eq!(s.seek.as_ref().unwrap().target, from);
+        assert!(s.play.as_ref().unwrap().awaiting());
+    }
+    assert_eq!(v.pending().len(), 1, "the game is queued again");
+    let mut again = machine(&v.options, [5, 6]);
+    rec.game_activated(&again);
+    for _ in 0..=(from - v.first + 1) {
+        if rec.lock().tick >= from {
+            break;
+        }
+        assert!(tick(rec, &mut again, 0xee));
+    }
+    let s = rec.lock();
+    assert_eq!((s.tick, s.seeking, s.failure.clone()), (from, None, None));
+    assert!(s.holding());
+}
+
+#[test]
 fn a_seek_ahead_runs_forward_from_the_tick_shown() {
     let v = viewer();
     let rec = &v.rec;

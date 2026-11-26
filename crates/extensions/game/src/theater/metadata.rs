@@ -696,9 +696,6 @@ impl super::Session {
         sim: Option<&sim_bench::config::Match>,
     ) {
         let mut state = self.lock();
-        if let Some(engine) = &mut state.engine {
-            engine.map_vfs.clone_from(&vfs);
-        }
         if let Some(play) = &mut state.play {
             play.map_vfs.clone_from(&vfs);
         }

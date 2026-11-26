@@ -1,15 +1,15 @@
-//! Host transport state shared by the scheduler, the agent and the restart
-//! handoff. Only the replay child advances the recorded simulation.
-use super::{Mode, Presentation, Replay, SeekProgress, State};
+//! Host transport state shared by the scheduler and the agent. Only the
+//! film player advances the recorded simulation.
+use super::{Mode, Presentation, SeekProgress, State};
 use agent_proto::{RpcError, code, theater as api};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
+/// How a film player process opens its film: the tick, the speed and the
+/// view (`h2 theater play` hands it to the process it starts).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Restart {
+pub struct Launch {
     pub target: u64,
-    pub from_tick: Option<u64>,
-    pub source: Option<api::SeekRoute>,
     pub speed: f64,
     pub paused: bool,
     pub presentation: Presentation,
@@ -37,9 +37,6 @@ impl State {
         }
         self.step_until = None;
         self.paused = paused;
-        if let Some((_, hold)) = &mut self.warm_check {
-            *hold = paused;
-        }
     }
 
     pub(super) fn set_speed(&mut self, speed: f64) {
@@ -82,19 +79,19 @@ impl State {
             .seek
             .as_ref()
             .filter(|_| continuing)
-            .map_or_else(|| self.visible_tick(), |s| s.from_tick);
+            .map_or(self.tick, |s| s.from_tick);
         if request.cancel == Some(true) {
             if request.source.is_some() || request.clip_marks.is_some() {
                 return Err(invalid("cancel only accepts an optional tick"));
             }
             if continuing && self.seek.as_ref().is_some_and(|seek| seek.target != from) {
                 if self.seeking.is_none() && self.tick == from {
-                    // The jump has been queued but the old child still holds
-                    // the departure tick.
+                    // The jump has been queued but the film still holds the
+                    // departure tick.
                     self.restart = None;
                     self.seek = None;
                 } else {
-                    self.queue_jump(from, from, None, self.seek_source(from));
+                    self.queue_jump(from, from, None);
                 }
                 self.set_paused(true);
             }
@@ -104,28 +101,6 @@ impl State {
         let target = request.tick.ok_or_else(|| invalid("seek needs a tick"))?;
         if target > self.length() {
             return Err(invalid("seek beyond film"));
-        }
-        let source = match request.source {
-            Some(api::SeekRoute::Boot) => api::SeekSource::Boot,
-            route => {
-                let file = self.seek_source(target);
-                if route.is_none()
-                    && !self.presentation.warm_disabled
-                    && let Some(ring) = self.ring_status.ticks.iter().copied().rfind(|&tick| tick <= target)
-                    && self.engine.as_ref().and_then(|engine| engine.file_candidate(target))
-                        .is_none_or(|key| key.tick <= ring)
-                {
-                    api::SeekSource::Ring
-                } else {
-                    file
-                }
-            }
-        };
-        if request.source == Some(api::SeekRoute::Keyframe) && source == api::SeekSource::Boot {
-            return Err(RpcError::new(
-                code::UNAVAILABLE,
-                "no compatible keyframe at or before target",
-            ));
         }
         if let Some([start, end]) = request.clip_marks {
             if start.is_some_and(|tick| tick > self.length())
@@ -138,39 +113,27 @@ impl State {
             }
             self.presentation.clip_marks = [start, end];
         }
-        let paused = self.visible_pause();
-        self.cancel_camera_redraw();
+        let paused = self.paused;
         self.set_paused(paused);
-        if self.watch.is_some() {
-            // In the running game: forward from the tick shown, or the
-            // start route, which the session turns into a queued game.
-            self.seek_in_game(target, from, request.source);
-        } else {
-            self.queue_jump(target, from, request.source, source);
-        }
+        // Forward from the tick shown, or the start route, which the
+        // session turns into a queued game (`Session::requeue`).
+        self.seek_in_game(target, from, request.source);
         Ok(())
     }
 
-    pub(super) fn seek_source(&self, tick: u64) -> api::SeekSource {
-        self.engine
-            .as_ref()
-            .map_or(api::SeekSource::Boot, |engine| engine.seek_source(tick))
-    }
-
+    /// A start-route jump: the film's game is queued again
+    /// ([`super::Session::requeue`]) and runs forward to `target`.
     pub(super) fn queue_jump(
         &mut self,
         target: u64,
         from_tick: u64,
         requested_source: Option<api::SeekRoute>,
-        source: api::SeekSource,
     ) {
         self.seek = Some(SeekProgress {
             target,
             from_tick,
-            source,
+            source: api::SeekSource::Boot,
             requested_source,
-            warm: false,
-            restore_ms: None,
         });
         self.restart = Some(target);
         self.step_until = None;
@@ -182,33 +145,12 @@ impl State {
             target: seek.target,
             from_tick: seek.from_tick,
             source: seek.source,
-            warm: seek.warm,
             remaining_ticks: if self.restart.is_some() {
                 seek.target
             } else {
                 seek.target.saturating_sub(self.tick)
             },
-            restore_ms: seek.restore_ms,
         })
-    }
-
-    pub(super) fn write_restart(&self, replay: &Replay) -> anyhow::Result<bool> {
-        let Some(target) = self.restart else {
-            return Ok(false);
-        };
-        let seek = self.seek.as_ref().expect("restart has a seek request");
-        let mut presentation = self.presentation.clone();
-        replay.camera.save(&mut presentation);
-        let request = Restart {
-            target,
-            from_tick: Some(seek.from_tick),
-            source: seek.requested_source,
-            speed: self.speed,
-            paused: self.paused,
-            presentation,
-        };
-        std::fs::write(&replay.restart, serde_json::to_vec(&request)?)?;
-        Ok(true)
     }
 
     pub(super) fn completed_transport_tick(&mut self, reached_target: bool) {
@@ -227,9 +169,9 @@ impl State {
 
     pub(super) fn tick_hz(&self) -> f64 {
         let hz = self
-            .engine
+            .play
             .as_ref()
-            .and_then(|engine| engine.track.descriptor.ticks_per_second)
+            .and_then(|play| play.start().game.descriptor.ticks_per_second)
             .unwrap_or(30)
             .max(1);
         f64::from(hz)
@@ -287,7 +229,7 @@ pub(super) struct Demand {
     pub(super) tick: u64,
     /// The tick a step or a forward run to a jump's target stops at.
     pub(super) run_to: Option<u64>,
-    /// A jump is queued and waits for the process or the ring to take it.
+    /// A start-route jump is queued and waits for the film's game.
     pub(super) jumping: bool,
     pub(super) tick_hz: f64,
 }

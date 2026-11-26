@@ -301,7 +301,7 @@ impl Feature for Lobby {
             move || {
                 // A checkpoint can resume the lobby only in the isolated
                 // film player. Ordinary state.load cannot rewind real peers.
-                if !crate::theater::in_keyframe() {
+                if !crate::sim_bounces::in_fork() {
                     return Some("dedicated network host".into());
                 }
                 let q = check.lock().unwrap_or_else(|e| e.into_inner());
@@ -315,7 +315,7 @@ impl Feature for Lobby {
                     .save()
             },
             move |bytes, rt| {
-                if !crate::theater::in_keyframe() {
+                if !crate::sim_bounces::in_fork() {
                     return Err("dedicated lobby requires a film keyframe".into());
                 }
                 let machine =

@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::adapter::{Clip, Playback, Player, Source};
-use super::{Entry, Theater, playback_page::{self, Command, Divergence, Jump, Keyframes, Menu}};
+use super::{Entry, Theater, playback_page::{self, Command, Divergence, Jump, Menu}};
 use crate::ui_kit::{input::Input, spec::ScreenSpec};
 use crate::theater::SeekTaps;
 
@@ -127,7 +127,6 @@ pub(super) struct Track {
     pub marks: (Option<u64>, Option<u64>),
     pub kills: Vec<u64>,
     pub bookmarks: Vec<u64>,
-    pub keyframes: Keyframes,
     pub jump: Option<Jump>,
     pub seeking: bool,
     pub divergence: Option<Divergence>,
@@ -168,7 +167,6 @@ impl Track {
             marks: (None, None),
             kills: entry.film.kill_ticks.clone(),
             bookmarks: Vec::new(),
-            keyframes: Keyframes::default(),
             jump: None,
             seeking: false,
             divergence: None,
@@ -404,10 +402,7 @@ enum Request {
     Open,
     /// `theater.end`: leave the film this game is playing.
     End,
-    Prepare(String),
-    PrepareState(String),
     State,
-    Keyframes,
     Step,
     Export,
     ExportStatus,
@@ -430,14 +425,10 @@ pub(super) struct Session {
     last_poll: Option<Instant>,
     pub notice: Option<String>,
     menu: Option<Menu>,
-    last_keyframes: Option<Instant>,
-    keyframes_unavailable: bool,
     hud_unavailable: bool,
     pub save_requested: bool,
     export: Option<String>,
     export_poll: Option<Instant>,
-    pub prepare_answers: Vec<(String, Result<api::PrepareState, String>)>,
-    last_prepare_poll: Option<(String, Instant)>,
     seeks: SeekTaps,
     starting_seek: Option<u64>,
     cancel_on_connect: bool,
@@ -493,39 +484,6 @@ impl Session {
         Ok(())
     }
 
-    pub fn prepare(&mut self, id: &str) -> Result<(), String> {
-        if self.rpc.is_none() {
-            return Err("Playback agent is unavailable".into());
-        }
-        self.send(
-            api::PREPARE,
-            json!(api::Prepare { id: id.to_owned() }),
-            Request::Prepare(id.to_owned()),
-        );
-        Ok(())
-    }
-
-    pub fn poll_prepare(&mut self, id: &str) {
-        let now = Instant::now();
-        if self.rpc.is_none()
-            || self
-                .last_prepare_poll
-                .as_ref()
-                .is_some_and(|(last_id, last)| last_id == id && now.duration_since(*last) < REFRESH)
-            || self.pending.values().any(|request| {
-                matches!(request, Request::Prepare(pending) | Request::PrepareState(pending) if pending == id)
-            })
-        {
-            return;
-        }
-        self.last_prepare_poll = Some((id.to_owned(), now));
-        self.send(
-            api::STATE,
-            json!(api::StateParams { id: Some(id.to_owned()) }),
-            Request::PrepareState(id.to_owned()),
-        );
-    }
-
     pub fn playback(
         entry: &Entry,
         rpc: Playback,
@@ -577,13 +535,6 @@ impl Session {
             self.export_poll = Some(now);
             self.send(api::CLIP_STATUS, json!({"job": job}), Request::ExportStatus);
         }
-        if self.ready && !self.keyframes_unavailable
-            && self.last_keyframes.is_none_or(|last| now.duration_since(last) >= Duration::from_secs(1))
-            && !self.pending.values().any(|r| matches!(r, Request::Keyframes))
-        {
-            self.last_keyframes = Some(now);
-            self.send(api::KEYFRAMES, json!({}), Request::Keyframes);
-        }
         if self.track.is_some()
             && self
                 .last_poll
@@ -622,21 +573,6 @@ impl Session {
 
     fn answer(&mut self, request: Request, answer: Result<Value, String>) {
         match (request, answer) {
-            (Request::Prepare(id), answer) => {
-                let progress =
-                    answer.and_then(|value| serde_json::from_value(value).map_err(|e| e.to_string()));
-                self.prepare_answers.push((id, progress));
-            }
-            (Request::PrepareState(id), Ok(value)) => {
-                let starting = self
-                    .pending
-                    .values()
-                    .any(|r| matches!(r, Request::Prepare(pending) if pending == &id));
-                if !starting && let Ok(progress) = serde_json::from_value(value) {
-                    self.prepare_answers.push((id, Ok(progress)));
-                }
-            }
-            (Request::PrepareState(_), Err(_)) => {}
             (Request::Open, Ok(value)) if value["queued"].as_bool() == Some(false) => {
                 self.opening = None;
                 self.open_error = Some("The film's game could not be queued".into());
@@ -701,14 +637,6 @@ impl Session {
                 }
             }
             (Request::State, Err(_)) if !self.ready || self.track.as_ref().is_some_and(|t| t.seeking) => {}
-            (Request::Keyframes, Ok(value)) => {
-                if let (Some(track), Ok(keyframes)) = (&mut self.track, serde_json::from_value(value)) {
-                    track.keyframes = keyframes;
-                }
-            }
-            (Request::Keyframes, Err(error)) => {
-                self.keyframes_unavailable = error.contains("no method") || error.contains("not found");
-            }
             (Request::Seek | Request::Cancel | Request::Step, Ok(value)) => {
                 if let (Some(track), Ok(state)) = (&mut self.track, serde_json::from_value(value)) {
                     track.read(state);

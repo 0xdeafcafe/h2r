@@ -389,17 +389,17 @@ impl Host<'_> {
             }
         }
         if let Some(l) = self.live {
-            if crate::theater::in_keyframe() && !l.film_service_taped() {
+            if crate::sim_bounces::in_fork() && !l.film_service_taped() {
                 out.push(("live", "local film has untaped online service state".into()));
             }
             for c in 0..4 {
-                if l.user(c) != 0 && !(crate::theater::in_keyframe() && l.film_service_taped()) {
+                if l.user(c) != 0 && !(crate::sim_bounces::in_fork() && l.film_service_taped()) {
                     out.push(("live", format!("signed in on controller {c}")));
                 }
             }
         }
         if crate::coop_live::lobby().is_some_and(|l| l.in_coop())
-            && !(crate::theater::in_keyframe() && self.live.is_some_and(|l| l.film_service_taped()))
+            && !(crate::sim_bounces::in_fork() && self.live.is_some_and(|l| l.film_service_taped()))
         {
             out.push(("coop", "hosting or joined to a co-op session".to_owned()));
         }
@@ -470,7 +470,7 @@ impl Part for FilmNetwork<'_> {
         "livefilm"
     }
     fn blockers(&self) -> Vec<String> {
-        if crate::theater::in_keyframe() {
+        if crate::sim_bounces::in_fork() {
             Vec::new()
         } else {
             vec!["the live service cursor belongs to a film keyframe".into()]
@@ -514,8 +514,9 @@ impl BootMachine<'_> {
         })
     }
 
-    /// The recorded device operation at a film capture point. The caller
-    /// can drop the writer or continue into a full snapshot after success.
+    /// The device section of a fork's save (`sim_bounces`), saved first.
+    /// The caller can drop the writer or continue into a full snapshot
+    /// after success.
     pub(crate) fn capture_film_device(
         &mut self,
         out: &mut SnapshotWriter,
@@ -526,17 +527,9 @@ impl BootMachine<'_> {
             .map(|part| part.save(out))
     }
 
-    pub(crate) fn save_after_film_device(
-        &mut self,
-        out: SnapshotWriter,
-        ram_base: Option<&snapshot::Base<'_>>,
-    ) -> Result<Vec<u8>, String> {
-        // D3D already ran and wrote back to guest RAM at the capture point.
-        save_parts_into(&mut self.parts, out, &*self.hash, ram_base, &SAVE_ORDER[1..])
-    }
-
-    /// Complete an in-memory film keyframe around the device section that
-    /// replay already saved at the recorded barrier. RAM belongs to the pool.
+    /// Complete a fork's in-memory save around the device section the
+    /// caller saved first. RAM belongs to the page pool
+    /// (`sim_bounces/ring.rs`).
     pub(crate) fn save_ring_sections(&mut self, mut out: SnapshotWriter) -> Result<Vec<u8>, String> {
         let rt = self.rt.ok_or("ring capture needs a running guest")?;
         check_names(&self.parts)?;
@@ -856,14 +849,14 @@ impl Part for D3dPart<'_> {
         self.0.film_load_blockers()
     }
     fn save(&mut self, out: &mut SnapshotWriter) -> Result<(), String> {
-        if crate::theater::in_keyframe() {
+        if crate::sim_bounces::in_fork() {
             self.0.save_film(self.1, out)
         } else {
             self.0.save(self.1, out)
         }
     }
     fn load(&mut self, snapshot: &Snapshot<'_>) -> Result<(), String> {
-        if crate::theater::in_keyframe() {
+        if crate::sim_bounces::in_fork() {
             self.0.load_film(self.1, snapshot)
         } else {
             self.0.load(snapshot)

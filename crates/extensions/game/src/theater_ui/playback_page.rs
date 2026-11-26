@@ -45,14 +45,6 @@ pub(super) struct Divergence {
     pub kind: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
-pub(super) struct Keyframes {
-    #[serde(default)]
-    pub sidecar: Vec<u64>,
-    #[serde(default)]
-    pub ring: Vec<u64>,
-}
-
 fn cell(id: &str, rect: [i16; 4], text: &str, colour: [f32; 3], right: bool) -> PaneText {
     PaneText {
         id: id.into(),
@@ -202,7 +194,7 @@ pub(super) fn bar(track: &Track, ready: bool, notice: Option<&str>) -> ScreenSpe
         [-159, -252, -183, if clip.is_some() { 75 } else { 252 }],
         detail
             .as_deref()
-            .unwrap_or("Kills  Sidecar keyframes  Ring"),
+            .unwrap_or("Kills  Bookmarks"),
         if track.divergence.is_some() {
             [1.0, 0.62, 0.56]
         } else {
@@ -263,17 +255,6 @@ fn timeline(spec: &mut ScreenSpec, t: &Track) {
     let tick = x(t.tick);
     fill(spec, RAIL, [33, 48, 70, 255]);
     fill(spec, [top, left, bottom, tick + 1], [70, 105, 142, 255]);
-    if let (Some(first), Some(last)) =
-        (t.keyframes.ring.iter().min(), t.keyframes.ring.iter().max())
-        && *first <= end
-        && *last >= start
-    {
-        fill(
-            spec,
-            [top, x(*first), bottom, x(*last) + 1],
-            [52, 106, 100, 255],
-        );
-    }
     if let Some(jump) = t.jump.filter(|_| t.seeking) {
         let total = jump.target.abs_diff(jump.from_tick).max(1);
         let remaining = jump.remaining_ticks.min(total);
@@ -299,13 +280,6 @@ fn timeline(spec: &mut ScreenSpec, t: &Track) {
     for (marks, colour, y1, y2) in [
         (&t.kills, [230, 117, 101, 255], top, top - 4),
         (&t.bookmarks, [207, 183, 240, 255], top, bottom),
-        (
-            &t.keyframes.sidecar,
-            [146, 188, 251, 255],
-            bottom + 4,
-            bottom,
-        ),
-        (&t.keyframes.ring, [132, 219, 190, 255], bottom + 4, bottom),
     ] {
         let positions = marks
             .iter()

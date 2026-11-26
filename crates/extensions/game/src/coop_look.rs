@@ -498,7 +498,7 @@ impl Feature for Look {
             b.snapshot(hooks::SnapshotPolicy::section(
                 move || serde_json::to_vec(&save.state().users).expect("finite co-op look samples"),
                 move |bytes, _| {
-                    if !crate::theater::in_keyframe() || bytes.len() > 128 << 10 {
+                    if !crate::sim_bounces::in_fork() || bytes.len() > 128 << 10 {
                         return Err("invalid co-op film look section".into());
                     }
                     let users: [User; USERS] = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;

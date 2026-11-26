@@ -145,27 +145,6 @@ impl LibraryEntry {
         })
     }
 
-    /// Current writers place the start manifest right after the first HEAD.
-    /// Use the index for films laid out differently.
-    pub fn check_initial_files(&self, root: &Path) -> Result<()> {
-        let mut file = fs::File::open(&self.path)?;
-        let offset = if self.version >= 3 {
-            crate::range::DATA_OFFSET
-        } else {
-            0
-        };
-        let head = crate::prefix(&mut file, offset)?;
-        ensure!(head.tag == crate::HEAD, "film must begin with HEAD");
-        let next = crate::prefix(&mut file, offset + 8 + u64::from(head.size))?;
-        let manifest: crate::manifest::Manifest = if next.tag == crate::DATA {
-            crate::decode(&mut file, &next)?
-        } else {
-            let mut reader = Reader::new(file)?;
-            let data = reader.machine_section().unique(crate::DATA)?.clone();
-            reader.read(&data)?
-        };
-        manifest.check_initial_files(root)
-    }
 }
 
 impl std::ops::Deref for LibraryEntry {
@@ -234,14 +213,12 @@ impl Library {
     }
     pub fn delete(&self, id: &str) -> Result<()> {
         let path = self.get(id)?.path;
-        crate::sidecar::remove_film_with(&self.dir, id, || {
-            remove_pin(&path)?;
-            match fs::remove_file(crate::file::beside(&path)) {
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                r => r?,
-            }
-            Ok(fs::remove_file(path)?)
-        })
+        remove_pin(&path)?;
+        match fs::remove_file(crate::file::beside(&path)) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            r => r?,
+        }
+        Ok(fs::remove_file(path)?)
     }
 }
 fn remove_pin(path: &Path) -> Result<()> {

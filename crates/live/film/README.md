@@ -10,7 +10,9 @@ Seekable Halo 2 engine films, presentation records and the local film library. I
 
 - `src/tape.rs`, `src/range.rs`: the seekable chunk format and ranges.
 - `src/machine.rs`: the machine section of a film.
-- `src/manifest.rs`, `src/presentation.rs`: manifests and presentation records.
+- `src/file.rs`, `src/columns.rs`, `src/start.rs`: the film file, its tick
+  chunks and its game start.
+- `src/presentation.rs`: presentation records.
 - `src/library.rs`: the local film library.
 - `src/upload.rs`, `src/image.rs`: upload and images.
 - `src/blam/`: the engine's own film layout.

@@ -4,7 +4,9 @@ use crate::theater::actions::{apply, apply_body, at_update, capture_body};
 use crate::theater::game_start::first_update;
 use crate::theater::game_start::tests::{Temp, block, game, RANDOM};
 use crate::theater::tests::{arena, host_facts, options};
-use crate::theater::{Mode, Presentation, Replay};
+use crate::theater::{Mode, Presentation, Replay, VerificationMode};
+use agent_proto::theater::{self as api, VerificationReport, Verify};
+use serde_json::json;
 use film::blam::SeatInput;
 use film::columns::{BODY_BYTES, SEATS};
 use film::file::{FilmWriter, Seed, TICK_DIGEST};
@@ -121,9 +123,8 @@ const FIRST_GAME: u64 = 30;
 const SECOND_GAME: u64 = 40;
 
 impl Fixture {
-    /// A container recorded with a file the player's disk had in its
-    /// manifest, then the film file of a session: menus, a game, menus, a
-    /// second game. The file is gone from the data directory afterwards.
+    /// A container recorded by a session, then the film file of a session:
+    /// menus, a game, menus, a second game.
     fn new() -> Self {
         Self::with(None)
     }
@@ -132,9 +133,6 @@ impl Fixture {
     /// game tick `twice`.
     fn with(twice: Option<u64>) -> Self {
         let dir = Temp::new();
-        let disk = dir.0.join("disk");
-        fs::create_dir_all(&disk).unwrap();
-        fs::write(disk.join("auxilary.bin"), b"profile").unwrap();
         let file = dir.0.join("fixture.h2film");
         let rec = Session::open(Some(file.clone()), None, host_facts(), b"xbe", &options(&dir.0))
             .unwrap()
@@ -144,7 +142,6 @@ impl Fixture {
             rec.checkpoint(&menus);
         }
         rec.finish(90, true).unwrap();
-        fs::remove_dir_all(&disk).unwrap();
         let header = film::Reader::open(&file).unwrap().header;
         let second = block(MODE_CAMPAIGN, 2);
         let bytes = film_of(
@@ -168,32 +165,43 @@ impl Fixture {
 
     /// The player on an empty data directory.
     fn open(&self) -> Arc<Session> {
+        self.try_open().unwrap().unwrap()
+    }
+
+    fn try_open(&self) -> Result<Option<Arc<Session>>> {
+        self.open_with(|_| ())
+    }
+
+    /// The player as a verification worker for `request`, writing its
+    /// report to `report`.
+    fn verifier(&self, request: Verify, report: &std::path::Path) -> Arc<Session> {
+        let mode = VerificationMode::Worker { request, report: report.to_owned() };
+        self.open_with(|replay| replay.verification = Some(mode)).unwrap().unwrap()
+    }
+
+    /// The player, with `edit` made to how it is opened.
+    fn open_with(&self, edit: impl FnOnce(&mut Replay)) -> Result<Option<Arc<Session>>> {
         let data = self.dir.0.join("empty-data");
         fs::create_dir_all(&data).unwrap();
+        let mut replay = Replay {
+            verification: None,
+            path: self.file.clone(),
+            render_every: 0,
+            speed: 1.,
+            seek_tick: 0,
+            paused_at_target: false,
+            presentation: Presentation::default(),
+            camera: Default::default(),
+            window_closed: None,
+        };
+        edit(&mut replay);
         Session::open(
             None,
-            Some(Replay {
-                verification: None,
-                path: self.file.clone(),
-                cache: None,
-                unpaced: false,
-                render_every: 0,
-                speed: 1.,
-                seek_tick: 0,
-                from_tick: None,
-                seek_source: None,
-                paused_at_target: false,
-                presentation: Presentation::default(),
-                restart: self.dir.0.join("restart"),
-                camera: Default::default(),
-                window_closed: None,
-            }),
+            Some(replay),
             host_facts(),
             b"xbe",
             &options(&data),
         )
-        .unwrap()
-        .unwrap()
     }
 }
 
@@ -225,6 +233,7 @@ fn a_film_recorded_after_menus_and_a_first_game_plays_its_second_game_to_matchin
     let fixture = Fixture::new();
     let session = fixture.open();
     assert!(session.plays_from_start() && session.plays_back());
+    assert!(session.seal_on_drop().is_none(), "a film player seals nothing");
     // The player answers the guest's tick count; the call taps are the host's.
     assert!(session.lock().pacing.is_some());
     assert!(!film::tape::Tap::replaying(&*session));
@@ -255,10 +264,6 @@ fn a_film_recorded_after_menus_and_a_first_game_plays_its_second_game_to_matchin
     assert_eq!(s.failure, None);
     assert!(s.complete);
     assert_eq!((ticks, s.tick), (SECOND_GAME, MENUS + FIRST_GAME + 5 + SECOND_GAME));
-    drop(s);
-    // The empty data directory held nothing the film needed: the container's
-    // manifest names a file that is not there.
-    assert!(!fixture.dir.0.join("empty-data/disk/auxilary.bin").exists());
 }
 
 #[test]
@@ -473,4 +478,97 @@ fn a_film_with_no_game_start_does_not_play_from_one() {
     assert!(Play::open(&file).unwrap().is_none(), "no film file");
     fs::write(film::file::beside(&file), b"not a film").unwrap();
     assert!(Play::open(&file).is_err(), "a film file that is not one");
+}
+
+#[test]
+fn a_film_that_predates_game_starts_is_refused_by_name_and_not_played_another_way() {
+    let fixture = Fixture::new();
+    fs::remove_file(film::file::beside(&fixture.file)).unwrap();
+    let Err(error) = fixture.try_open() else {
+        panic!("a film with no game start does not open");
+    };
+    assert_eq!(error.to_string(), crate::theater::NO_GAME_START);
+}
+
+#[test]
+fn verification_counts_only_the_requested_ticks_and_reports_the_first_divergence() {
+    let fixture = Fixture::new();
+    let report = fixture.dir.0.join("report.json");
+    let result = || serde_json::from_slice::<VerificationReport>(&fs::read(&report).unwrap()).unwrap();
+    let first = fixture.first_update;
+    let request = Verify { from: Some(first + 10), to: Some(first + 19) };
+
+    let session = fixture.verifier(request, &report);
+    let mut g = machine(&fixture.second, [21, 22]);
+    while tick(&session, &mut g, |_| ()) {}
+    assert!(session.lock().complete);
+    session.finish(90, true).unwrap();
+    let clean = result();
+    assert_eq!((clean.ticks, clean.digests_checked), (10, 10));
+    assert_eq!(clean.first_divergence, None);
+
+    // A changed action inside the range is the report's first divergence.
+    let session = fixture.verifier(request, &report);
+    let mut g = machine(&fixture.second, [21, 22]);
+    let changed = 15;
+    let mut n = 0;
+    while tick(&session, &mut g, |g| {
+        n += 1;
+        if n == changed {
+            g.set_u8(UPDATE + 12, 0xee).unwrap();
+        }
+    }) {}
+    assert!(session.finish(90, false).is_err());
+    let mismatch = result();
+    let at = first + changed - 1;
+    assert_eq!((mismatch.ticks, mismatch.digests_checked), (changed - 10, changed - 11));
+    let divergence = mismatch.first_divergence.expect("a divergence");
+    assert_eq!(divergence.tick, at);
+    assert!(divergence.kind.contains("gameplay"), "{}", divergence.kind);
+}
+
+#[test]
+fn a_step_advances_one_checked_tick_and_holds() {
+    let fixture = Fixture::new();
+    let session = fixture.open();
+    let mut g = machine(&fixture.second, [21, 22]);
+    assert!(tick(&session, &mut g, |_| ()));
+    let at = session.lock().tick;
+    assert!(session.transport(api::STEP, json!({"ticks":1})).is_err(), "a playing film does not step");
+    session.transport(api::PAUSE, json!({})).unwrap();
+    let left = session.lock().length() - at;
+    for ticks in [0, left + 1, u64::MAX] {
+        assert!(session.transport(api::STEP, json!({"ticks":ticks})).is_err(), "{ticks}");
+    }
+    session.transport(api::STEP, json!({"ticks":1})).unwrap();
+    assert!(!session.lock().holding());
+    assert!(tick(&session, &mut g, |_| ()));
+    let s = session.lock();
+    assert_eq!((s.tick, s.paused, s.failure.clone()), (at + 1, true, None));
+    assert!(s.holding());
+    assert!(s.restart.is_none());
+}
+
+#[test]
+fn a_launch_seek_reports_its_remaining_ticks_and_holds_at_its_target() {
+    let fixture = Fixture::new();
+    let target = fixture.first_update + 4;
+    let session = fixture
+        .open_with(|replay| {
+            replay.seek_tick = target;
+            replay.paused_at_target = true;
+        })
+        .unwrap()
+        .unwrap();
+    let mut g = machine(&fixture.second, [21, 22]);
+    let seek = |session: &Session| session.lock().seek_info().unwrap();
+    assert_eq!((seek(&session).source, seek(&session).remaining_ticks), (api::SeekSource::Boot, target));
+    for remaining in (0..=4).rev() {
+        assert!(tick(&session, &mut g, |_| ()));
+        assert_eq!(seek(&session).remaining_ticks, remaining);
+        assert_eq!(session.lock().seeking.is_some(), remaining != 0);
+    }
+    let s = session.lock();
+    assert_eq!((s.tick, s.failure.clone()), (target, None));
+    assert!(s.holding());
 }

@@ -5,11 +5,7 @@ mod unified;
 
 pub use live_proto::film::stream;
 pub use live_proto::film::{Mode, PlayerSummary, Summary};
-pub use track::{EmbeddedKeyframeInfo, KeyframeInfo, KeyframeSource, TrackReader, TrackWriter, embedded_keyframes, summary};
-pub(crate) use track::{
-    Block as TidxBlock, Directory as TidxDirectory, SCENE_REFRESH_TICKS,
-    decode_keyframe, encode_keyframe, split_keyframe,
-};
+pub use track::{EmbeddedKeyframeInfo, TrackReader, TrackWriter, embedded_keyframes, summary};
 pub use unified::RecordData;
 
 use anyhow::{Result, ensure};

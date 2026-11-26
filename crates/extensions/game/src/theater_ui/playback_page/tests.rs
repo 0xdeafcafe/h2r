@@ -160,14 +160,10 @@ fn absent_scoreboard_and_marks_have_distinct_disabled_rows() {
 }
 
 #[test]
-fn timeline_marks_only_stats_kills_sidecar_and_ring_and_fills_toward_the_target() {
+fn timeline_marks_only_stats_kills_and_fills_toward_the_target() {
     let mut track = track();
     track.tick = 300;
     track.kills = vec![50, 50];
-    track.keyframes = serde_json::from_value(serde_json::json!({
-        "film": [100], "capture_points": [125], "ring": [175, 250], "sidecar": [500]
-    }))
-    .unwrap();
     track.marks = (Some(65), Some(95));
     track.seeking = true;
     track.jump = Some(Jump {
@@ -185,8 +181,6 @@ fn timeline_marks_only_stats_kills_sidecar_and_ring_and_fills_toward_the_target(
             .count()
     };
     assert_eq!(art_count([230, 117, 101, 255]), 1);
-    assert_eq!(art_count([146, 188, 251, 255]), 1);
-    assert_eq!(art_count([132, 219, 190, 255]), 2);
     assert_eq!(art_count([248, 207, 102, 255]), 2);
     let progress = spec
         .panel
@@ -246,8 +240,4 @@ fn playback_states_render_distinct_transport_copy() {
     );
     assert!(page.go("hidden"));
     assert!(page.spec().texts.is_empty());
-    assert!(page.go("preparing"));
-    assert_eq!(page.spec().name, crate::theater_ui::DETAIL);
-    // Prepare progress lives on the film page's Prepare row.
-    assert_eq!(page.spec().rows[1].label, "Preparing... 40%");
 }

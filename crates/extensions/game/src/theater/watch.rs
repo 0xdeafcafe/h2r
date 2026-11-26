@@ -75,8 +75,6 @@ impl Hub {
 pub(super) struct WatchInfo {
     /// The film's id.
     pub(super) film: String,
-    /// The guest calls that queue the film's options.
-    steps: Vec<GameStep>,
     /// The scenario and mode of the film's game, to tell it from another.
     scenario: String,
     kind: level_boot::Kind,
@@ -180,18 +178,13 @@ impl Session {
         let replay = Replay {
             verification: None,
             path: path.to_owned(),
-            cache: None,
-            unpaced: false,
             // The game draws its own view; the camera rig is for a rendered
             // replay, which has its own window.
             render_every: 0,
             speed: 1.,
             seek_tick: 0,
-            from_tick: None,
-            seek_source: None,
             paused_at_target: false,
             presentation: presentation.clone(),
-            restart: PathBuf::new(),
             camera: Default::default(),
             window_closed: None,
         };
@@ -206,13 +199,10 @@ impl Session {
             from_tick: 0,
             source: api::SeekSource::Boot,
             requested_source: None,
-            warm: false,
-            restore_ms: None,
         });
         let state = State {
             verify: None,
             mode: Mode::Replay(Playback::empty(reader, length), replay),
-            engine: None,
             play: Some(play),
             header,
             tick: 0,
@@ -224,19 +214,14 @@ impl Session {
             pacing: Some(Default::default()),
             seeking: start_at,
             seek,
-            capture_points: Vec::new(),
             measurements: None,
             presentation,
             restart: None,
-            ring_status: Default::default(),
-            camera_redraw: None,
-            warm_check: None,
             failure: None,
             complete: false,
             outcome: Outcome::default(),
             watch: Some(WatchInfo {
                 film: id.clone(),
-                steps: steps.clone(),
                 scenario: request.scenario.clone(),
                 kind: request.kind,
                 loaned: Vec::new(),
@@ -480,14 +465,18 @@ impl Session {
 
     /// A start-route seek: the film's options are queued again and the film
     /// starts over at the new game's first update, running forward to
-    /// `target`.
+    /// `target`. A film player process and a game watching a film seek the
+    /// same way.
     pub(super) fn requeue(&self, target: u64) -> Result<(), RpcError> {
         let steps = {
             let mut s = self.lock();
-            let Some(info) = &s.watch else {
-                return Err(unavailable("no film is being watched"));
+            let Some(play) = &s.play else {
+                return Err(unavailable("no film is playing"));
             };
-            let steps = info.steps.clone();
+            let steps = level_boot::Request::recorded(&play.start().options)
+                .ok()
+                .and_then(|request| level_boot::game_steps(&request))
+                .ok_or_else(|| unavailable("the film's options do not fit the options block"))?;
             s.restart_play(target);
             steps
         };
@@ -519,9 +508,9 @@ impl State {
         }
     }
 
-    /// A seek of a film watched in the running game. Ahead of the tick
-    /// shown it runs forward; otherwise (or when the start was asked for)
-    /// it is a restart, which the session turns into a queued game.
+    /// A seek of a film being played. Ahead of the tick shown it runs
+    /// forward; otherwise (or when the start was asked for) it is a
+    /// restart, which the session turns into a queued game.
     pub(super) fn seek_in_game(
         &mut self,
         target: u64,
@@ -536,14 +525,12 @@ impl State {
                 from_tick: from,
                 source: api::SeekSource::Forward,
                 requested_source: requested,
-                warm: false,
-                restore_ms: None,
             });
             self.seeking = Some(target.max(first));
             self.step_until = None;
             self.rate = Default::default();
         } else {
-            self.queue_jump(target, from, requested, api::SeekSource::Boot);
+            self.queue_jump(target, from, requested);
         }
     }
 

@@ -267,67 +267,6 @@ fn a_film_cut_after_the_hooks_are_installed_carries_their_digest() {
     assert_eq!(entry.simulation_hooks.as_deref(), Some("digest-of-the-installed-hooks"));
 }
 
-#[test]
-fn a_tape_sealed_after_a_hard_kill_keeps_the_digest_the_session_put_on_it() {
-    let dir = Temp::new("digest-recover");
-    let dead = dir.0.join(file_name(UNIX_EPOCH + Duration::from_secs(1_795_000_000)));
-    dead_tape_with(&dead, Some("digest-of-the-installed-hooks"));
-    let hours_ago = SystemTime::now() - ABANDONED_AFTER - Duration::from_secs(60);
-    fs::File::options().write(true).open(&dead).unwrap().set_modified(hours_ago).unwrap();
-    assert_eq!(recover(&dir.0, SystemTime::now()), vec![dead.clone()]);
-    let entry = film::LibraryEntry::read(&dead).unwrap();
-    assert_eq!(entry.simulation_hooks.as_deref(), Some("digest-of-the-installed-hooks"));
-}
-
-fn age(path: &Path) {
-    let hours_ago = SystemTime::now() - ABANDONED_AFTER - Duration::from_secs(60);
-    fs::File::options().write(true).open(path).unwrap().set_modified(hours_ago).unwrap();
-}
-
-#[test]
-fn a_tape_killed_mid_game_recovers_with_its_map_and_players_and_is_listed() {
-    let dir = Temp::new("recover-game");
-    let dead = dir.0.join(file_name(UNIX_EPOCH + Duration::from_secs(1_795_000_000)));
-    // The game starts with one player, then another joins.
-    dead_tape_in(
-        &dead,
-        Some("digest"),
-        &[("zanzibar", &["Chief"]), ("zanzibar", &["Chief", "Arbiter"])],
-    );
-    age(&dead);
-    assert_eq!(recover(&dir.0, SystemTime::now()), vec![dead.clone()]);
-    let entry = film::LibraryEntry::read(&dead).unwrap();
-    assert_eq!(entry.meta.map, "zanzibar");
-    assert_eq!(entry.meta.variant, "Slayer");
-    let names: Vec<_> = entry.meta.players.iter().map(|p| p.name.as_str()).collect();
-    assert_eq!(names, ["Chief", "Arbiter"], "the latest roster");
-    assert_eq!(entry.simulation_hooks.as_deref(), Some("digest"));
-    assert!(!entry.meta.map.is_empty() && !entry.meta.players.is_empty(), "a game the library lists");
-}
-
-#[test]
-fn a_tape_whose_game_was_cut_before_the_kill_recovers_nameless() {
-    let dir = Temp::new("recover-after-cut");
-    let dead = dir.0.join(file_name(UNIX_EPOCH + Duration::from_secs(1_795_000_000)));
-    // The game was cut into its own film; the header after it names none.
-    dead_tape_in(&dead, None, &[("zanzibar", &["Chief"]), ("", &[])]);
-    age(&dead);
-    recover(&dir.0, SystemTime::now());
-    let entry = film::LibraryEntry::read(&dead).unwrap();
-    assert!(entry.meta.map.is_empty() && entry.meta.players.is_empty());
-}
-
-#[test]
-fn a_menu_only_tape_recovers_nameless() {
-    let dir = Temp::new("recover-menus");
-    let dead = dir.0.join(file_name(UNIX_EPOCH + Duration::from_secs(1_795_000_000)));
-    dead_tape_with(&dead, Some("digest"));
-    age(&dead);
-    recover(&dir.0, SystemTime::now());
-    let entry = film::LibraryEntry::read(&dead).unwrap();
-    assert!(entry.meta.map.is_empty() && entry.meta.players.is_empty());
-}
-
 /// How many headers the unsealed tape at `path` holds so far.
 fn headers_on(path: &Path) -> usize {
     let bytes = fs::read(path).unwrap();
@@ -370,7 +309,7 @@ fn a_session_names_the_game_on_its_tape_when_it_starts_and_clears_it_when_it_end
 }
 
 #[test]
-fn a_long_game_with_fragmented_calls_is_listed_saved_and_replayed() {
+fn a_long_game_with_fragmented_calls_is_listed_and_saved_and_without_a_game_start_does_not_play() {
     use film::tape::{Call, Tap};
 
     let dir = Temp::new("replay");
@@ -404,44 +343,33 @@ fn a_long_game_with_fragmented_calls_is_listed_saved_and_replayed() {
         assert_eq!(track.step().unwrap().unwrap().tick, tick);
     }
     assert!(track.step().unwrap().is_none());
-    let replay = Session::open(
+    // The synthetic session's game has no options block, so its film has
+    // no game start: it is refused, never played some other way.
+    let Err(error) = Session::open(
         None,
-        Some(crate::theater::Replay {
-            verification: None,
-            path: cut,
-            cache: None,
-            unpaced: false,
-            render_every: 0,
-            speed: 1.,
-            seek_tick: 0,
-            from_tick: None,
-            seek_source: None,
-            paused_at_target: false,
-            presentation: crate::theater::Presentation::default(),
-            restart: dir.0.join("restart"),
-            camera: Default::default(),
-            window_closed: None,
-        }),
-        // The viewer's own facts say nothing of the player features.
+        Some(replay_of(cut)),
         Facts { light: false, ..host_facts() },
         b"xbe",
         &options(&dir.data()),
-    )
-    .unwrap()
-    .unwrap();
-    for tick in 1..=2100 {
-        let expected = call(tick);
-        let actual = replay.next(&expected.op, &expected.args, expected.thread).unwrap();
-        assert_eq!(actual.index, u64::from(tick - 1));
-        assert_eq!(actual.outputs, expected.outputs);
-        assert_eq!(actual.result, expected.result);
-        if tick < 10 {
-            replay.checkpoint(&guest);
-            assert!(replay.status().failure.is_none());
-        }
+    ) else {
+        panic!("a film with no game start does not open");
+    };
+    assert!(error.to_string().contains("predates game starts"), "{error:#}");
+}
+
+/// A film player's replay of `path` from its start.
+fn replay_of(path: PathBuf) -> crate::theater::Replay {
+    crate::theater::Replay {
+        verification: None,
+        path,
+        render_every: 0,
+        speed: 1.,
+        seek_tick: 0,
+        paused_at_target: false,
+        presentation: crate::theater::Presentation::default(),
+        camera: Default::default(),
+        window_closed: None,
     }
-    assert!(replay.plays_back());
-    assert!(replay.player_features(), "the replay plans the recording's player features");
 }
 
 #[test]
@@ -701,41 +629,13 @@ fn a_session_that_goes_away_without_a_teardown_cuts_the_game_in_play() {
     assert_eq!(films.len(), 1);
     assert_eq!(films[0].1.header.meta.length_ticks, 40);
 
-    // Only a default recording seals this way: an explicit film and a
-    // replay manage their own sealing.
+    // Only a default recording seals this way: an explicit film manages
+    // its own sealing, as a film player does (`film_play`).
     assert!(
         local(&dir, &dir.0.join("named.h2film"), false)
             .seal_on_drop()
             .is_none()
     );
-    let replay = Session::open(
-        None,
-        Some(crate::theater::Replay {
-            verification: None,
-            path: films[0].0.clone(),
-            cache: None,
-            unpaced: false,
-            render_every: 0,
-            speed: 1.,
-            seek_tick: 0,
-            from_tick: None,
-            seek_source: None,
-            paused_at_target: false,
-            presentation: crate::theater::Presentation::default(),
-            restart: dir.0.join("restart"),
-            camera: Default::default(),
-            window_closed: None,
-        }),
-        Facts {
-            light: false,
-            ..host_facts()
-        },
-        b"xbe",
-        &options(&dir.data()),
-    )
-    .unwrap()
-    .unwrap();
-    assert!(replay.seal_on_drop().is_none());
 }
 
 #[test]
@@ -781,167 +681,6 @@ fn a_campaign_mission_left_mid_session_is_cut_and_the_next_describes_itself() {
     assert_eq!(entry.meta.map, "scarab");
     auto.finish(170, true).unwrap();
     assert!(!tape.exists());
-}
-
-/// An unsealed tape as a hard kill leaves it: a boot header, the start
-/// manifest, three time chunks' worth of ticks with the third still
-/// pending, and a capture mark inside the second chunk.
-fn dead_tape(path: &Path) {
-    dead_tape_with(path, None)
-}
-
-/// [`dead_tape`] whose session had installed its hooks, and so appended the
-/// header that carries their digest, before it died.
-fn dead_tape_with(path: &Path, hooks: Option<&str>) {
-    dead_tape_in(path, hooks, &[])
-}
-
-/// [`dead_tape_with`] whose session also appended the headers that name its
-/// game as it went: each of `games` is the map and players one header held.
-fn dead_tape_in(path: &Path, hooks: Option<&str>, games: &[(&str, &[&str])]) {
-    use film::blam::{Tick, TrackWriter};
-    use film::tape::{Call, Check, Mark};
-    let header = film::Header {
-        version: 3,
-        meta: film::FilmMeta {
-            id: "dead".into(),
-            map: String::new(),
-            variant: String::new(),
-            started_ms: 1,
-            length_ticks: 0,
-            players: vec![],
-            source: film::Source::Local,
-            image_stamp: "image".into(),
-        },
-        title_id: 2,
-        xbe_sha256: "xbe".into(),
-        runtime_stamp: String::new(),
-        simulation_hooks: None,
-        guest_image: None,
-        epoch_100ns: 0,
-        lease_id: None,
-        game_id: None,
-        xnet_addr: "127.0.0.1:3074".into(),
-        transfers_per_slice: 5000,
-        lobby: false,
-        lobby_machine_start: false,
-        host_bots: false,
-        telemetry: false,
-        telemetry_hooks: None,
-        render_hooks: None,
-        inputs_in_film: false,
-        live_service: false,
-        features: String::new(),
-        player_features: true,
-        tape_id: None,
-    };
-    let mut tape = film::Writer::new(fs::File::create(path).unwrap(), &header).unwrap();
-    tape.chunk(film::DATA, &film::manifest::Manifest::default()).unwrap();
-    if let Some(hooks) = hooks {
-        let later = film::Header { simulation_hooks: Some(hooks.into()), ..header.clone() };
-        tape.chunk(film::HEAD, &later).unwrap();
-    }
-    for (map, players) in games {
-        let mut named = film::Header { simulation_hooks: hooks.map(Into::into), ..header.clone() };
-        named.meta.map = (*map).into();
-        named.meta.variant = if map.is_empty() { String::new() } else { "Slayer".into() };
-        named.meta.players = players
-            .iter()
-            .map(|name| film::Player { name: (*name).into(), team: 0, score: 0 })
-            .collect();
-        tape.chunk(film::HEAD, &named).unwrap();
-    }
-    let mut track = TrackWriter::default();
-    for n in 1..=300u64 {
-        track
-            .push(
-                &mut tape,
-                Tick {
-                    tick: n,
-                    inputs: vec![],
-                    events: vec![],
-                    closing_events: vec![],
-                    post_hash: None,
-                    forge: vec![],
-                    firefight: vec![],
-                },
-            )
-            .unwrap();
-        if n.is_multiple_of(30) {
-            tape.chunk(
-                film::HASH,
-                &Check {
-                    tick: n,
-                    sim: Some(n),
-                    calls: 0,
-                },
-            )
-            .unwrap();
-        }
-        if n == 200 {
-            tape.chunk_bytes(
-                film::tape::TAPE,
-                &film::tape::encode_batch(&[Call {
-                    index: 0,
-                    op: "Recv".into(),
-                    thread: 7,
-                    args: vec![],
-                    result: Ok(1),
-                    outputs: vec![],
-                }])
-                .unwrap(),
-            )
-            .unwrap();
-            tape.chunk(
-                film::MARK,
-                &Mark::D3dBarrier {
-                    slices: 400,
-                    tick: 200,
-                    saved: true,
-                },
-            )
-            .unwrap();
-        }
-    }
-}
-
-#[test]
-fn the_next_session_recovers_tapes_a_stopped_one_left() {
-    let dir = Temp::new("recover");
-    let dead = dir.0.join(file_name(UNIX_EPOCH + Duration::from_secs(1_795_000_000)));
-    dead_tape(&dead);
-    // A tape a running session is still writing every few seconds: recent,
-    // so never touched.
-    let running = dir.0.join(file_name(UNIX_EPOCH + Duration::from_secs(1_795_000_100)));
-    dead_tape(&running);
-    // A session that died before any game captured: nothing to keep.
-    let menus = dir.0.join(file_name(UNIX_EPOCH + Duration::from_secs(1_795_000_200)));
-    fs::write(&menus, [0u8; 512]).unwrap();
-    // A sealed film stays as it is.
-    let sealed_path = dir.0.join("auto-sealed.h2film");
-    local(&dir, &sealed_path, false).finish(1, true).unwrap();
-
-    let hours_ago = SystemTime::now() - ABANDONED_AFTER - Duration::from_secs(60);
-    for path in [&dead, &menus] {
-        fs::File::options()
-            .write(true)
-            .open(path)
-            .unwrap()
-            .set_modified(hours_ago)
-            .unwrap();
-    }
-
-    let recovered = recover(&dir.0, SystemTime::now());
-    assert_eq!(recovered, vec![dead.clone()]);
-    let entry = film::LibraryEntry::read(&dead).unwrap();
-    assert_eq!(entry.meta.length_ticks, 200, "sealed to its last capture mark");
-    assert_eq!(entry.meta.map, "", "no descriptor survives a dead session");
-    assert!(!menus.exists(), "a tape with no game is deleted, not listed");
-    assert!(
-        running.exists() && film::LibraryEntry::read(&running).is_err(),
-        "a live tape is untouched"
-    );
-    assert!(film::LibraryEntry::read(&sealed_path).is_ok());
 }
 
 #[test]

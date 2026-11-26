@@ -5,18 +5,14 @@ pub mod file;
 pub mod image;
 mod library;
 pub mod machine;
-pub mod manifest;
 pub mod presentation;
-mod recover;
 pub mod range;
-pub mod sidecar;
 pub mod share;
 pub mod side;
 pub mod start;
 pub mod tape;
 use anyhow::{Context, Result, ensure};
 pub use library::{Library, LibraryEntry};
-pub use recover::recover_tape;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     fs::File,

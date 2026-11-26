@@ -1,7 +1,4 @@
 //! One camera rig drives the independent observer and the guest's render view.
-mod redraw;
-pub(super) use redraw::PausedRedraw;
-
 use std::sync::{Arc, Mutex};
 
 use agent_proto::theater::{self as api, CameraMode};
@@ -15,9 +12,6 @@ use crate::spectator_view::{Pose, draw_world_view, put_fov, retail_view, vertica
 struct Views {
     rig: ReplayCamera,
     revision: u64,
-    guest_view_limit: u32,
-    raster_job: Option<redraw::RasterJob>,
-    publish: redraw::Publish,
     subject: Option<u8>,
     crop_seat: Option<u8>,
     drawing: [Option<[u32; 4]>; 16],

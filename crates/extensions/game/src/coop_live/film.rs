@@ -125,7 +125,7 @@ pub(super) fn policy(lobby: Arc<Lobby>) -> hooks::SnapshotPolicy {
     let save = lobby.clone();
     hooks::SnapshotPolicy::section_forbid_while(
         move || {
-            if !crate::theater::in_keyframe() {
+            if !crate::sim_bounces::in_fork() {
                 return super::screens_live(&check);
             }
             let pending = *super::COOP_MODE_PENDING
@@ -142,7 +142,7 @@ pub(super) fn policy(lobby: Arc<Lobby>) -> hooks::SnapshotPolicy {
             serde_json::to_vec(&(&*inner, &*slots)).expect("serialisable co-op state")
         },
         move |bytes, _| {
-            if !crate::theater::in_keyframe()
+            if !crate::sim_bounces::in_fork()
                 || !lobby.film.as_ref().is_some_and(LobbyFilm::replaying)
             {
                 return Err("co-op film state requires isolated playback".into());

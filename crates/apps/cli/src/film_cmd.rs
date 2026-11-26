@@ -133,8 +133,8 @@ struct Row {
 }
 
 /// The error for a file that begins as a v3 film but has no range footer: a
-/// tape a session was killed in the middle of writing. It is sealed by the
-/// next recording session (`theater::autorecord::recover`), not read here.
+/// tape a session was killed in the middle of writing. The library's prune
+/// removes it (`theater::autorecord::prune`); it is not read here.
 fn unsealed(path: &Path, error: anyhow::Error) -> anyhow::Error {
     use std::io::{Read, Seek, SeekFrom};
     let ends = || -> std::io::Result<([u8; 8], [u8; 8])> {
@@ -150,7 +150,7 @@ fn unsealed(path: &Path, error: anyhow::Error) -> anyhow::Error {
             if first == film::range::MAGIC && last != film::range::FOOTER_MAGIC =>
         {
             anyhow::anyhow!(
-                "{}: an unsealed tape, not a film: its session ended without sealing it, and the next recording session seals what is playable ({error})",
+                "{}: an unsealed tape, not a film: its session ended without sealing it ({error})",
                 path.display()
             )
         }

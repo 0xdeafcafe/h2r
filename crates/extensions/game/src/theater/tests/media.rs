@@ -23,28 +23,14 @@ impl Fixture {
             session.checkpoint(&guest);
         }
         session.finish(90, true).unwrap();
+        with_game_start(&path.join("synthetic.h2film"), 60);
         Self(path)
     }
 
     fn player(&self, render_every: u32) -> Arc<Session> {
         Session::open(
             None,
-            Some(Replay {
-                verification: None,
-                cache: None,
-                unpaced: false,
-                from_tick: None,
-                seek_source: None,
-                path: self.0.join("synthetic.h2film"),
-                render_every,
-                speed: 1.0,
-                seek_tick: 0,
-                paused_at_target: false,
-                presentation: Presentation::default(),
-                restart: self.0.join("restart.json"),
-                camera: Default::default(),
-                window_closed: None,
-            }),
+            Some(replay_of(&self.0.join("synthetic.h2film"), render_every)),
             host_facts(),
             b"synthetic",
             &options(&self.0),
@@ -96,11 +82,11 @@ fn picture(value: u8) -> Picture {
 #[test]
 fn headless_replay_emits_the_exact_half_open_clip_at_both_frame_rates() {
     let fixture = Fixture::new();
-    let guest = arena();
     for (from, to) in [(27, 34), (58, 61)] {
         for fps in [30, 60] {
             let encoded = Arc::new(Mutex::new(Encoded::default()));
             let player = fixture.player(0);
+            let mut g = film_game();
             let capture = Arc::new(ClipCapture::new(
                 ClipSpan::new(from, to, fps, 60).unwrap(),
                 picture(0),
@@ -117,7 +103,7 @@ fn headless_replay_emits_the_exact_half_open_clip_at_both_frame_rates() {
                 }
                 capture.audio(&[0.25, -0.25]);
                 if tick < 60 {
-                    player.checkpoint(&guest);
+                    film_tick(&player, &mut g);
                 }
             }
             player.finish(if to > 60 { 90 } else { 1 }, true).unwrap();

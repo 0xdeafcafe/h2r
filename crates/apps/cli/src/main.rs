@@ -192,7 +192,6 @@ const USAGE: &str = "usage: h2 <command>
   film stat FILE          report keyframes, capture points and tape usage
   film stat --fields FILE...
                           report each action field's change rate and stored bytes
-  theater prepare FILM    verify a film headlessly and build its seek cache
   mem postmortem [--pid N | FILE]  explain a recorded process memory increase
   sim <run|batch|compare> run or compare bot matches
   agent <call>            call a running game's agent API
@@ -209,7 +208,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
   server-map strip|verify ORIGINAL.map SERVER.map
   serve <disc>            run headless with the agent API; --system-link [--host-light]
                           (docs/runtime/agent-api.md)
-  theater prepare FILM    verify a film headlessly and build its seek cache
+  theater play FILM       watch a film in its own window (docs/game/theater.md)
   agent <call>            call a running game's agent API: status, count, query,
                           object, counters, wait, pause/step in a `-` script
   studio <call>           call h2-editor's agent API (the open window, or

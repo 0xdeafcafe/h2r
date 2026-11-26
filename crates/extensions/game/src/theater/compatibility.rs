@@ -6,7 +6,6 @@ use agent_proto::theater::{
 };
 use anyhow::{Result, ensure};
 use engine::points::{self, Loc, Sig};
-use film::image::{GuestImage, ImageMatch};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -18,29 +17,8 @@ use std::path::PathBuf;
 pub(super) const SIMULATION_ABI: &str = "h2-sim/2";
 /// Why a film recorded before game starts does not open.
 pub const NO_GAME_START: &str =
-    "This film has no game start, so it cannot be played; it was recorded before films began at the game's start.";
+    "This film predates game starts, so it cannot be played: it was recorded before films began at the game's start.";
 const BREAKING_CHANGE: &str = "Film predates a breaking simulation change.";
-
-/// Check an installed, current module against the recording. The launcher also
-/// uses this result to choose the disk state matching the replay's starting RAM.
-pub fn image_match(
-    version: u32,
-    original: &str,
-    runtime: &str,
-    guest: Option<&GuestImage>,
-    candidate: &str,
-    xbe_sha256: &str,
-) -> Result<ImageMatch> {
-    match_image(
-        version,
-        original,
-        runtime,
-        guest,
-        candidate,
-        xbe_sha256,
-        recomp::host_triple(),
-    )
-}
 
 fn check_abi(version: u32, runtime: &str) -> Result<()> {
     ensure!(
@@ -48,39 +26,6 @@ fn check_abi(version: u32, runtime: &str) -> Result<()> {
         "{BREAKING_CHANGE} Simulation ABI differs (recorded {runtime}, installed {SIMULATION_ABI})."
     );
     Ok(())
-}
-
-fn match_image(
-    version: u32,
-    original: &str,
-    runtime: &str,
-    guest: Option<&GuestImage>,
-    candidate: &str,
-    xbe_sha256: &str,
-    target: &str,
-) -> Result<ImageMatch> {
-    check_abi(version, runtime)?;
-    if version >= 3
-        && let Some(guest) = guest
-    {
-        let installed = GuestImage::capture(candidate, target, xbe_sha256);
-        if let (Some(recorded), Some(installed)) =
-            (&guest.contract_sha256, &installed.contract_sha256)
-        {
-            ensure!(
-                recorded == installed,
-                "{BREAKING_CHANGE} Guest image contract differs."
-            );
-        }
-        return guest
-            .compare(original, candidate, target, xbe_sha256)
-            .map_err(|reason| anyhow::anyhow!("film image stamp differs: {reason}"));
-    }
-    ensure!(
-        !candidate.is_empty() && original == candidate,
-        "film requires its exact native image stamp"
-    );
-    Ok(ImageMatch::Native)
 }
 
 /// Preflight facts for the current installation, shared by Watch and the
@@ -110,7 +55,7 @@ impl Installation {
         // A film plays from its game start: it needs no file of the
         // viewer's disk, and a film without a game start does not play.
         let start = film::file::game_start_of(&entry.path);
-        let mut report = self.check(entry, recomp::host_triple(), || match &start {
+        let mut report = self.check(entry, || match &start {
             Ok(Some(_)) => Ok(()),
             Ok(None) => Err(anyhow::anyhow!(NO_GAME_START)),
             Err(error) => Err(anyhow::anyhow!("The film's game start cannot be read: {error:#}")),
@@ -126,11 +71,14 @@ impl Installation {
         report
     }
 
+    /// A film is playable when it was recorded on this XBE and simulation,
+    /// an image is installed to play it on, and it has a game start
+    /// (`game_start`). Every installed image plays a film from its game
+    /// start: no machine part of the film is restored.
     fn check(
         &self,
         entry: &film::LibraryEntry,
-        target: &str,
-        initial_files: impl FnOnce() -> Result<()>,
+        game_start: impl FnOnce() -> Result<()>,
     ) -> Compatibility {
         use CompatibilityState::{Playable, Unavailable};
 
@@ -172,34 +120,11 @@ impl Installation {
             reasons.push(err.to_string());
         } else if installed.is_empty() {
             reasons.push("Install a current game image to play this film.".into());
+        } else if let Err(err) = game_start() {
+            reasons.push(err.to_string());
         } else {
             for image in &mut installed {
-                match match_image(
-                    entry.version,
-                    &entry.meta.image_stamp,
-                    &film.abi,
-                    entry.guest_image.as_ref(),
-                    &image.stamp,
-                    &self.xbe,
-                    target,
-                ) {
-                    Ok(_) => image.state = Playable,
-                    Err(error) => {
-                        let reason = error.to_string();
-                        if !reasons.contains(&reason) {
-                            reasons.push(reason);
-                        }
-                    }
-                }
-            }
-            if installed.iter().any(|image| image.state == Playable) {
-                reasons.clear();
-                if let Err(err) = initial_files() {
-                    reasons.push(err.to_string());
-                    for image in &mut installed {
-                        image.state = Unavailable;
-                    }
-                }
+                image.state = Playable;
             }
         }
         let state = if reasons.is_empty() {
@@ -384,7 +309,6 @@ impl Session {
 mod tests {
     use super::*;
 
-    const MAC: &str = "arm64-apple-macos11";
     const LINUX: &str = "x86_64-unknown-linux-gnu";
     const STAMP: &str = "xbe A generator B passes P codegen C abi 1 flags [\"-fno-fast-math\",\"-ffp-contract=off\",\"-O2\"]\n";
 
@@ -392,101 +316,11 @@ mod tests {
         format!("{} target {LINUX}\n", STAMP.trim_end())
     }
 
-    #[test]
-    fn image_match_table_covers_playable_and_unavailable() {
-        let linux = linux_stamp();
-        let changed = STAMP.replace("-O2", "-O3");
-        let xbe = film::xbe_digest(b"synthetic XBE");
-        let guest = GuestImage::capture(&linux, LINUX, &xbe);
-        assert!(guest.contract_sha256.is_some());
-        for (name, version, original, abi, guest, candidate, target, expected) in [
-            (
-                "same native target",
-                3,
-                linux.as_str(),
-                SIMULATION_ABI,
-                Some(&guest),
-                linux.as_str(),
-                LINUX,
-                Ok(ImageMatch::Native),
-            ),
-            (
-                "different native target",
-                3,
-                linux.as_str(),
-                SIMULATION_ABI,
-                Some(&guest),
-                STAMP,
-                MAC,
-                Ok(ImageMatch::FromBoot),
-            ),
-            (
-                "guest contract changed",
-                3,
-                linux.as_str(),
-                SIMULATION_ABI,
-                Some(&guest),
-                changed.as_str(),
-                MAC,
-                Err(BREAKING_CHANGE),
-            ),
-            (
-                "simulation ABI changed",
-                3,
-                linux.as_str(),
-                "h2-sim/0",
-                Some(&guest),
-                linux.as_str(),
-                LINUX,
-                Err(BREAKING_CHANGE),
-            ),
-            (
-                "legacy exact stamp",
-                1,
-                "native",
-                "",
-                None,
-                "native",
-                MAC,
-                Ok(ImageMatch::Native),
-            ),
-            (
-                "legacy different stamp",
-                1,
-                "native",
-                "",
-                None,
-                "other",
-                MAC,
-                Err("exact native image stamp"),
-            ),
-            (
-                "no image",
-                2,
-                "",
-                SIMULATION_ABI,
-                None,
-                "",
-                MAC,
-                Err("exact native image stamp"),
-            ),
-        ] {
-            let result = match_image(version, original, abi, guest, candidate, &xbe, target);
-            match expected {
-                Ok(mode) => assert_eq!(result.unwrap(), mode, "{name}"),
-                Err(reason) => assert!(
-                    result.unwrap_err().to_string().contains(reason),
-                    "{name}: expected {reason}"
-                ),
-            }
-        }
-    }
-
     fn entry(abi: &str) -> film::LibraryEntry {
         let xbe_sha256 = film::xbe_digest(b"synthetic XBE");
         let image_stamp = linux_stamp();
         film::LibraryEntry {
-            guest_image: Some(GuestImage::capture(&image_stamp, LINUX, &xbe_sha256)),
+            guest_image: Some(film::image::GuestImage::capture(&image_stamp, LINUX, &xbe_sha256)),
             meta: film::FilmMeta {
                 id: "synthetic-film".into(),
                 map: "synthetic".into(),
@@ -511,36 +345,41 @@ mod tests {
     }
 
     #[test]
-    fn image_match_reports_a_breaking_abi_and_accepts_an_equal_contract_across_targets() {
+    fn a_breaking_abi_or_no_game_start_is_unavailable_and_any_installed_image_plays_the_rest() {
         use CompatibilityState::{Playable, Unavailable};
         let mut installation =
             Installation::new(b"synthetic XBE", vec![STAMP.into()], PathBuf::new());
         let mut film = entry("h2-sim/0");
-        let report = installation.check(&film, MAC, || panic!("unavailable at the header"));
+        let report = installation.check(&film, || panic!("unavailable at the header"));
         assert_eq!(report.state, Unavailable);
         assert_eq!(report.installed[0].state, Unavailable);
         assert!(report.reasons[0].starts_with(BREAKING_CHANGE));
         assert_eq!(report.film.abi, "h2-sim/0");
         assert_eq!(report.film.hooks, film.simulation_hooks);
 
+        // Another build of the same guest plays it: the film is played from
+        // its game start, not restored on the image it was recorded on.
         film.runtime_stamp = SIMULATION_ABI.into();
-        installation
-            .stamps
-            .insert(0, "incompatible candidate".into());
-        let report = installation.check(&film, MAC, || Ok(()));
+        installation.stamps.insert(0, "another build".into());
+        let report = installation.check(&film, || Ok(()));
         assert_eq!(report.state, Playable);
-        assert_eq!(report.installed[0].state, Unavailable);
+        assert_eq!(report.installed[0].state, Playable);
         assert_eq!(report.installed[1].state, Playable);
         assert!(report.reasons.is_empty());
 
-        let report = installation.check(&film, MAC, || anyhow::bail!("Install the original map."));
+        let report = installation.check(&film, || anyhow::bail!(NO_GAME_START));
         assert_eq!(report.state, Unavailable);
         assert_eq!(report.installed[1].state, Unavailable);
-        assert_eq!(report.reasons, ["Install the original map."]);
+        assert_eq!(report.reasons, [NO_GAME_START]);
+
+        let empty = Installation::new(b"synthetic XBE", Vec::new(), PathBuf::new());
+        let report = empty.check(&film, || Ok(()));
+        assert_eq!(report.state, Unavailable);
+        assert!(report.reasons[0].contains("Install a current game image"));
 
         // A look this machine cannot draw is listed beside the state, not
         // a reason against it.
-        let mut report = installation.check(&film, MAC, || Ok(()));
+        let mut report = installation.check(&film, || Ok(()));
         let state = report.state;
         note_monitor_looks(
             &mut report,
@@ -555,7 +394,7 @@ mod tests {
         assert_eq!(report.monitor_looks[0].reason, "monitor_look_source");
 
         installation.xbe = film::xbe_digest(b"different synthetic XBE");
-        let report = installation.check(&film, MAC, || panic!("unavailable at the header"));
+        let report = installation.check(&film, || panic!("unavailable at the header"));
         assert_eq!(report.state, Unavailable);
         assert!(report.reasons[0].contains("original XBE"));
     }
@@ -618,9 +457,6 @@ mod tests {
             header.runtime_stamp = abi.into();
             let file = fs::File::create(dir.0.join(format!("{id}.h2film"))).unwrap();
             let mut writer = film::Writer::new(file, &header).unwrap();
-            writer
-                .chunk(film::DATA, &film::manifest::Manifest::default())
-                .unwrap();
             writer
                 .chunk(film::blam::SUMM, &film::blam::Summary::default())
                 .unwrap();

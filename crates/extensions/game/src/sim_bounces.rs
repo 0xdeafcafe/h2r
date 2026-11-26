@@ -17,9 +17,9 @@
 //! - [`between_slices`], called by the boot loop with the machine at
 //!   hand, a few transfers after that tick. It saves the whole machine
 //!   into a ring entry, or puts one back (docs/runtime/bounce-search.md,
-//!   "The fork"): guest RAM by the Theater ring's page pool over the
-//!   write watch (`theater::ring`), every other part by its snapshot
-//!   section, in a keyframe's scope.
+//!   "The fork"): guest RAM by the ring's page pool over the write
+//!   watch (`sim_bounces::ring`), every other part by its snapshot
+//!   section, in the fork's scope ([`fork_scope`]).
 //!
 //! At the end the run's provable sites go into its copy of the map's
 //! verified file (`bots::spots::store_verified`), and the records into
@@ -36,7 +36,33 @@ use sim_bench::drops::{PairSense, SeatSense, Sense};
 
 use crate::sim_drops::{Body, Seat, body, level, pad, stop};
 use crate::snapshot_glue::{BootMachine, check_hash};
-use crate::theater::ring::Ring;
+use ring::Ring;
+
+mod ring;
+
+thread_local! {
+    static FORK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A fork's save or load is running on this thread ([`fork_scope`]).
+/// Frame-only snapshot policies serialise state that only a whole-machine
+/// fork may carry; an ordinary agent snapshot has none of it.
+pub fn in_fork() -> bool {
+    FORK.get()
+}
+
+/// Runs `work` as a fork's save or load: the parts serialise what only a
+/// whole-machine fork may ([`in_fork`]).
+pub(crate) fn fork_scope<T>(work: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FORK.set(self.0);
+        }
+    }
+    let _guard = Restore(FORK.replace(true));
+    work()
+}
 
 /// The most the ring keeps: a whole RAM for every variant and one more
 /// for the capture in hand, and room for their sections. Pages two
@@ -455,7 +481,7 @@ pub fn between_slices(machine: &mut BootMachine<'_>) -> Forked {
     };
     // The parts' feature sections call back into the game's features:
     // the state lock is not held.
-    let (done, forked) = crate::theater::keyframe_scope(|| match ask {
+    let (done, forked) = fork_scope(|| match ask {
         ForkAsk::Capture { key } => {
             let done = capture(&mut ring, machine, key);
             let forked = if matches!(done, ForkDone::Captured { .. }) {

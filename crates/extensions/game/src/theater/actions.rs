@@ -218,15 +218,7 @@ pub(super) fn at_update(
                 Err(e) => Err(e),
             }
         }
-        Ok(ptr) if state.play.is_some() => film_play::update(&mut state, memory, ptr),
-        Ok(ptr) => (|| -> Result<()> {
-            let engine = state
-                .engine
-                .as_mut()
-                .context("missing film command track")?;
-            engine.note_actions()?;
-            apply(memory, ptr, &engine.next_tick()?.inputs)
-        })(),
+        Ok(ptr) => film_play::update(&mut state, memory, ptr),
     };
     if let Err(e) = result {
         let tick = state.tick + 1;
