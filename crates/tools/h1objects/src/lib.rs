@@ -62,7 +62,7 @@ pub enum Error {
     Tags(#[from] tags::Error),
     #[error("model or animation: {0}")]
     Model(#[from] h1_assets::models::Error),
-    #[error("collision BSP: {0}")]
+    #[error("halo 1 convert: {0}")]
     Bsp(#[from] h1convert::Error),
     #[error("truncated {0}")]
     Truncated(&'static str),
