@@ -985,15 +985,19 @@ intermission, won, lost, team 0 won, team 1 won, draw), the round and
 wave with their totals, whether the wave is a boss wave, the actors
 alive plus those still in the reserve while a wave is on, the skulls on
 (a bit a session skull index, only the nine of `hud::FIREFIGHT_SKULLS`),
-the team count, and the lives (the shared pool, each player's own up to eight
-players, or each team's pool). With two teams the blob carries both
-scores and a mask of team 1's slots, so each viewer sees its own team's
-pool. Version 3 encodes to 17 bytes with one shared pool, 40 with eight
-players' own lives, 29 with two team pools and 50 with two teams and
-eight players' own lives, inside the actor channel's 63-byte mode
-state. The banners for the end are "RED TEAM WINS", "BLUE TEAM WINS"
-and "DRAW". The points are the game's own score display's and
-scoreboard's; the HUD draws none of its own.
+the set (and whether the definition is endless), the bonus round's ticks
+left, the wave's total actors (the enemies meter's full length; in a bonus
+round its length in ticks), the one-team score, the team count, and the
+lives (the shared pool, each player's own up to eight players, or each
+team's pool). With two teams the blob carries both scores and a mask of
+team 1's slots, so each viewer sees its own team's pool. Version 3
+encodes to 26 bytes with one shared pool, 49 with eight players' own
+lives, 34 with two team pools and 55 with two teams and eight players'
+own lives, inside the actor channel's 63-byte mode state
+(`blob_v3_round_trips_at_every_size`). `Mode::of` leaves `bonus_left` at
+0 until the host runs a bonus round. The banners for the end are "RED TEAM WINS", "BLUE TEAM WINS"
+and "DRAW". The kit's pills show no points; the Firefight block's score line
+(below) does.
 
 - **The host** builds the blob after each tick from the director and its
   log (`Mode::of`; the outcome is the last `Finish` in the log) and
@@ -1009,6 +1013,40 @@ scoreboard's; the HUD draws none of its own.
   of range) is an error, not a guess. `the_hud_reads_only_the_mode_blob`
   plays a whole match and requires the client's view to equal the host's
   at every tick.
+
+**The layout** (`hud/layout.rs`, `hud::layout::layout`) is a pure function
+of the blob, the viewer's roster slot, the scope and the screen (full
+640x480, half 640x240, quarter 320x240). The block sits at the bottom
+right in the frame (x 48..592, y 36..444 at full size), right-justified,
+in 14 px lines stacked up from `PLATE_TOP` (44, assumed) above the retail
+score plate:
+
+| Element | Full and half | Quarter |
+|---|---|---|
+| `score` | `SCORE 1234567`; two teams `RED a BLUE b`; hidden if the plate shows the total (`PLATE_SHOWS_TOTAL`) | hidden |
+| `lives` | `LIVES 7`, `LAST LIFE` at 1, `NO LIVES` (warning look) at 0; the viewer's own count when unshared; none in a test or at the end | one line down |
+| `progress` | endless `SET 2 ROUND 1 WAVE 3`; finite `ROUND 2 OF 3 WAVE 3`; bonus `BONUS 0:42` | `WAVE 3` |
+| `enemies` | a 96 px meter: actors left over the wave's total; in a bonus round the time left | hidden |
+| `skull_0..6` | seven fixed slots, 16 px on an 18 px pitch from the right (14 px on 14 at half): Ghost, Catch, Black Eye, Thunderstorm, Famine, Mythic, Iron (no skull of ours yet). A skull on is shown in its slot, off is hidden; a slot never moves (`a_skull_slot_never_moves`) | none |
+| `banner` | centred at the top, 60 px below the frame's top (48 at half) | hidden |
+
+`Screen::retail` holds the weapon, grenades, tracker and plate
+rectangles, assumed from the census and marked to verify in the code;
+`layout::check` fails a layout with an element outside the frame, on one
+of them or on another, or a skull off its slot
+(`every_state_passes_the_layout_checks`,
+`no_element_overlaps_a_retail_rectangle`). A monitor sees the banner
+alone, a biped no lives.
+
+**Banners** (`hud/banners.rs`). `banners::events` reads what began between
+two blobs, in the order set, round, skull, wave, after what completed
+(`WAVE CLEAR`, `ROUND COMPLETE`, `SET COMPLETE`) and the bonus round
+(`BONUS ROUND`, `BONUS OVER 2 LIVES`); `LAST LIFE` comes before the wave.
+A skull is `CATCH ON`, from its name. The match's end (`VICTORY`,
+`GAME OVER`, `RED TEAM WINS`, `BLUE TEAM WINS`, `DRAW`) stays up.
+`Banners::tick` shows each for 3 s at 30 ticks a second, easing in and
+out over 200 ms; events from a newer tick replace the banner up and the
+queue (`banners_queue_set_round_skull_wave`).
 
 The HUD is the HUD kit's `firefight` HUD
 ([forge-firefight-ui.md](forge-firefight-ui.md), "The Firefight HUD";

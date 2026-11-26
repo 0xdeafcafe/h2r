@@ -19,6 +19,13 @@
 //! It reads no game memory and no clock, so the host and a client agree by
 //! construction, and a test can show it.
 //!
+//! **The layout.** [`layout`] places the elements of the Firefight block
+//! in a viewer's viewport from the blob alone, at the bottom right above
+//! Halo 2's score plate, with the seven fixed skull slots, and
+//! [`layout::check`] holds them off the weapon, grenades, tracker and plate
+//! rectangles. [`banners`] reads what began between two blobs (set, round,
+//! skull, wave, the ends) and queues it, three seconds each.
+//!
 //! **The HUD.** The HUD kit's `firefight` HUD
 //! (`hud_kit_core::views::firefight`, docs/game/forge-firefight-ui.md,
 //! "The Firefight HUD") draws it on Halo 2's own HUD: [`view_of`] turns a
@@ -95,10 +102,26 @@ pub struct Mode {
     pub left: u16,
     /// The skulls on, one bit a session skull index ([`skull_mask`]).
     pub skulls: u32,
+    /// The zero-based set; 0 in a finite definition.
+    pub set: u8,
+    /// The definition's sets go on until the players are out
+    /// (`SetRules::endless`): the progress line names the set.
+    pub endless: bool,
+    /// Ticks left of the bonus round; 0 when none is on.
+    pub bonus_left: u16,
+    /// The wave's actors, placed and still to be placed, while a wave is
+    /// on: the enemies meter's full length; in a bonus round the bonus
+    /// round's length in ticks; else 0.
+    pub total: u16,
+    /// The team's points with one team; 0 with two (`teams` has theirs).
+    pub score: u32,
     pub lives: Lives,
     /// Two teams' points and members; none with one team.
     pub teams: Option<Teams>,
 }
+
+pub mod banners;
+pub mod layout;
 
 /// Every skull Firefight turns on, by its session skull index.
 pub const FIREFIGHT_SKULLS: [Skull; 9] = [
@@ -168,14 +191,16 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// Bytes before the teams and lives: version, stage, round, rounds, wave,
-/// waves, flags, left (2), the skulls (4), the team count.
-const HEAD: usize = 14;
+/// waves, flags, left (2), the skulls (4), the set, the bonus ticks left
+/// (2), the total (2), the team count.
+const HEAD: usize = 19;
 /// Where the team count is.
 const TEAM_COUNT: usize = HEAD - 1;
 /// The two teams' part, when the team count is 2: each team's points (4
 /// each) and the second team's slot bits (2).
 const TEAMS: usize = 4 * MAX_TEAMS + 2;
 const FLAG_BOSS: u8 = 1;
+const FLAG_ENDLESS: u8 = 2;
 const LIVES_SHARED: u8 = 0;
 const LIVES_EACH: u8 = 1;
 const LIVES_TEAMS: u8 = 2;
@@ -249,6 +274,17 @@ impl Mode {
                 0
             },
             skulls: skull_mask(&state.skulls),
+            set: state.set,
+            endless: def.set.endless,
+            // The director's bonus round (`ff_bonus`) fills these when the
+            // host runs it; until then no bonus round is on.
+            bonus_left: 0,
+            total: if stage.wave_on() {
+                state.wave_actors.saturating_add(director.reserve(players))
+            } else {
+                0
+            },
+            score: if two { 0 } else { state.scores[0] },
             lives,
             teams,
         })
@@ -256,6 +292,7 @@ impl Mode {
 
     /// The blob's bytes, at most [`MAX_BLOB`].
     pub fn encode(&self) -> Vec<u8> {
+        let flags = u8::from(self.boss) * FLAG_BOSS | u8::from(self.endless) * FLAG_ENDLESS;
         let mut out = vec![
             VERSION,
             self.stage as u8,
@@ -263,12 +300,18 @@ impl Mode {
             self.rounds,
             self.wave,
             self.waves,
-            if self.boss { FLAG_BOSS } else { 0 },
+            flags,
         ];
         out.extend_from_slice(&self.left.to_le_bytes());
         out.extend_from_slice(&self.skulls.to_le_bytes());
+        out.push(self.set);
+        out.extend_from_slice(&self.bonus_left.to_le_bytes());
+        out.extend_from_slice(&self.total.to_le_bytes());
         match &self.teams {
-            None => out.push(1),
+            None => {
+                out.push(1);
+                out.extend_from_slice(&self.score.to_le_bytes());
+            }
             Some(teams) => {
                 out.push(MAX_TEAMS as u8);
                 for score in teams.scores {
@@ -328,7 +371,7 @@ impl Mode {
         if waves == 0 || waves > MAX_WAVES || wave >= waves {
             return Err(Error::Field("wave"));
         }
-        if bytes[6] & !FLAG_BOSS != 0 {
+        if bytes[6] & !(FLAG_BOSS | FLAG_ENDLESS) != 0 {
             return Err(Error::Field("flags"));
         }
         let left = u16::from_le_bytes([bytes[7], bytes[8]]);
@@ -336,8 +379,23 @@ impl Mode {
         if skulls & !SKULL_BITS != 0 {
             return Err(Error::Field("skulls"));
         }
+        let endless = bytes[6] & FLAG_ENDLESS != 0;
+        let set = bytes[13];
+        if set != 0 && !endless {
+            return Err(Error::Field("set"));
+        }
+        let bonus_left = u16::from_le_bytes([bytes[14], bytes[15]]);
+        let total = u16::from_le_bytes([bytes[16], bytes[17]]);
+        let mut score = 0;
         let (teams, at) = match bytes[TEAM_COUNT] {
-            1 => (None, HEAD),
+            1 => {
+                let end = HEAD + 4;
+                if bytes.len() < end {
+                    return Err(short(end));
+                }
+                score = u32::from_le_bytes([bytes[HEAD], bytes[HEAD + 1], bytes[HEAD + 2], bytes[HEAD + 3]]);
+                (None, end)
+            }
             2 => {
                 let end = HEAD + TEAMS;
                 if bytes.len() < end {
@@ -357,6 +415,9 @@ impl Mode {
         };
         if teams.is_none() && stage.two_teams_only() {
             return Err(Error::Field("stage"));
+        }
+        if teams.is_some() && endless {
+            return Err(Error::Field("flags"));
         }
         let kind = *bytes.get(at).ok_or_else(|| short(at + 1))?;
         let at = at + 1;
@@ -410,6 +471,11 @@ impl Mode {
             boss: bytes[6] & FLAG_BOSS != 0,
             left,
             skulls,
+            set,
+            endless,
+            bonus_left,
+            total,
+            score,
             lives,
             teams,
         })
