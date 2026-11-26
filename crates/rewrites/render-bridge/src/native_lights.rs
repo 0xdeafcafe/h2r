@@ -1252,4 +1252,67 @@ mod tests {
         assert_eq!(layers(), Some((RESOLVED_LAYERS, None)), "nor its own");
         CANDIDATE.take();
     }
+
+    /// Records the slots of the layers it is asked to draw.
+    struct Records(Mutex<Vec<u8>>);
+
+    impl Host for Records {
+        fn submit(&self, _: &mut dyn GuestMemory, _: Dispatch) -> bool {
+            false
+        }
+        fn clear_admission(&self) {}
+        fn checkpoint_gel(&self, _: u64) {}
+        fn target(&self) -> Option<[u32; 8]> {
+            None
+        }
+        fn draw_scene(&self, _: &mut dyn GuestMemory, draw: SceneDraw<'_>) -> usize {
+            let mut slots = self.0.lock().unwrap();
+            slots.extend(draw.passes.iter().filter_map(|p| p.slot.number()));
+            draw.passes.len()
+        }
+    }
+
+    #[test]
+    fn a_scene_with_one_dynamic_light_records_the_slot_4_pass() {
+        use frame_scene::{GroupSite, SceneBuilder, SceneId, SceneLight, Stamp, ViewKey, ViewKind};
+        let mut b = SceneBuilder::default();
+        b.begin(SceneId::default());
+        b.open_view(
+            ViewKey { kind: ViewKind::Game, player: 0, view: 0 },
+            frame_scene::RenderCamera {
+                position: [0.0; 3],
+                forward: [1.0, 0.0, 0.0],
+                up: [0.0, 0.0, 1.0],
+                fov: 1.0,
+                projection_xy: None,
+                viewport: [0, 0, 480, 640],
+                near: 0.1,
+                far: 100.0,
+            },
+        )
+        .unwrap();
+        b.push_light(SceneLight { handle: 1, definition: 2, flags: 7, ..Default::default() }, &[]).unwrap();
+        b.push_light_group(
+            frame_scene::LightGroup {
+                light: 0,
+                layer: 12,
+                site: GroupSite::Light,
+                projection: None,
+                pass: None,
+                entries: 0..0,
+                remainder: 0,
+            },
+            &[],
+        )
+        .unwrap();
+        let scene = b.seal(Stamp::default()).unwrap();
+        let passes = gather_scene_passes(&scene, &scene.views[0]);
+        assert_eq!(passes.len(), 1);
+        let host = Arc::new(Records(Mutex::new(Vec::new())));
+        set_host(host.clone());
+        VIEW_TARGET.set(Some([1; 8]));
+        let mut m = FlatMemory::new(0x1000);
+        assert_eq!(draw_scene(&mut m, &passes), 1);
+        assert_eq!(*host.0.lock().unwrap(), [4], "the light's layer 12 in slot 4");
+    }
 }
