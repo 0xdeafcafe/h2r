@@ -322,6 +322,141 @@ fn trimming_keeps_the_chosen_sectors_and_their_rings() {
     assert!(keep_sectors(&pf, &[true; 2]).is_err());
 }
 
+/// A `w` by `h` grid of unit floor squares at height `z(x, y)` per cell
+/// corner, every square sharing its sides with its neighbours.
+fn grid(w: u16, h: u16, z: impl Fn(u16, u16) -> f32) -> Bsp {
+    let mut points = Vec::new();
+    for y in 0..=h {
+        for x in 0..=w {
+            points.push([f32::from(x), f32::from(y), z(x, y)]);
+        }
+    }
+    let at = |x: u16, y: u16| y * (w + 1) + x;
+    let polys: Vec<Vec<u16>> = (0..h)
+        .flat_map(|y| (0..w).map(move |x| (x, y)))
+        .map(|(x, y)| vec![at(x, y), at(x + 1, y), at(x + 1, y + 1), at(x, y + 1)])
+        .collect();
+    let refs: Vec<&[u16]> = polys.iter().map(Vec::as_slice).collect();
+    bsp_from(&points, &refs)
+}
+
+/// What generated data costs in tag memory (pathfinding.md, "Trimming"):
+/// the parts merging changes.
+fn bytes(pf: &PathfindingData) -> usize {
+    8 * pf.sectors.len() + 16 * pf.links.len() + 12 * pf.vertices.len() + 4 * pf.refs.len()
+}
+
+/// Every sector's polygon is convex and counter-clockwise from above, and
+/// every surface's ref finds a sector holding the surface's middle.
+fn sound(pf: &PathfindingData, bsp: &Bsp) {
+    let problems = pf.validate(Some(bsp.surfaces.len()));
+    assert!(problems.is_empty(), "{problems:?}");
+    for s in 0..pf.sectors.len() {
+        let poly: Vec<V3> = pf
+            .sector_polygon(s)
+            .unwrap()
+            .iter()
+            .map(|&v| pf.vertices[v])
+            .collect();
+        assert!(poly.len() <= pathfind::merge::MAX_RING, "sector {s}");
+        assert!(is_convex_xy(&poly, true), "sector {s}");
+    }
+    for (surface, r) in pf.refs.iter().enumerate() {
+        let RefTarget::Sector(s) = r.target() else { continue };
+        let ring = surface_edges(bsp, surface).unwrap();
+        let mid = ring.iter().fold([0.0f32; 2], |m, &(_, v)| {
+            let p = bsp.vertices[v].point;
+            [m[0] + p[0] / ring.len() as f32, m[1] + p[1] / ring.len() as f32]
+        });
+        assert_eq!(pf.sector_for_surface(surface, mid[0], mid[1]), Some(s));
+        let poly: Vec<V3> = pf
+            .sector_polygon(s as usize)
+            .unwrap()
+            .iter()
+            .map(|&v| pf.vertices[v])
+            .collect();
+        assert!(pathfind::geom::contains_xy(&poly, mid[0], mid[1]), "surface {surface}");
+    }
+}
+
+#[test]
+fn coplanar_neighbours_merge_into_one_convex_sector() {
+    use pathfind::merge::coplanar;
+    let bsp = grid(3, 3, |_, _| 0.0);
+    let pf = generate(&bsp, 0, 7, &Options::default()).unwrap();
+    assert_eq!((pf.sectors.len(), pf.links.len()), (9, 24));
+    let (merged, sector_of) = coplanar(&pf).unwrap();
+    // One 3 by 3 square: its twelve unit sides, the twelve corners on
+    // them; the twelve inner sides and four inner corners go.
+    assert_eq!(merged.sectors.len(), 1);
+    assert_eq!(merged.links.len(), 12);
+    assert_eq!(merged.vertices.len(), 12);
+    assert_eq!(sector_of, [0; 9]);
+    assert!(merged.refs.iter().all(|&r| r == Ref::sector(0)));
+    assert!(merged.links.iter().all(|l| l.right_sector == pathfind::trim::NONE));
+    sound(&merged, &bsp);
+    assert_eq!(merged.checksum, 7);
+    assert_eq!(round_trip(&merged), merged);
+    assert_eq!(bytes(&pf) - bytes(&merged), 8 * 8 + 16 * 12 + 12 * 4);
+    // Merging again changes nothing.
+    assert_eq!(coplanar(&merged).unwrap().0, merged);
+}
+
+#[test]
+fn a_merge_stops_at_a_bend_a_concave_union_and_the_ring_cap() {
+    use pathfind::merge::{MAX_RING, coplanar};
+    // The two floor squares of `level` merge; the raised square stays.
+    let bsp = level();
+    let pf = generate(&bsp, 3, 0, &Options::default()).unwrap();
+    let (merged, sector_of) = coplanar(&pf).unwrap();
+    assert_eq!(sector_of, [0, 0, 1]);
+    assert_eq!(merged.sectors.len(), 2);
+    sound(&merged, &bsp);
+    // A crease: the east half rises at 10 degrees, so the halves stay apart.
+    let rise = 10f32.to_radians().tan();
+    let bsp = grid(4, 1, |x, _| if x > 2 { (f32::from(x) - 2.0) * rise } else { 0.0 });
+    let pf = generate(&bsp, 0, 0, &Options::default()).unwrap();
+    let (merged, sector_of) = coplanar(&pf).unwrap();
+    assert_eq!(sector_of, [0, 0, 1, 1]);
+    sound(&merged, &bsp);
+    // An L of three squares: two merge, the third would make it concave.
+    let points = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [2.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [2.0, 1.0, 0.0],
+        [0.0, 2.0, 0.0],
+        [1.0, 2.0, 0.0],
+    ];
+    let bsp = bsp_from(&points, &[&[0, 1, 4, 3], &[1, 2, 5, 4], &[3, 4, 7, 6]]);
+    let pf = generate(&bsp, 0, 0, &Options::default()).unwrap();
+    let (merged, _) = coplanar(&pf).unwrap();
+    assert_eq!(merged.sectors.len(), 2);
+    sound(&merged, &bsp);
+    // A long strip: each merged sector stays within the ring cap.
+    let bsp = grid(20, 1, |_, _| 0.0);
+    let pf = generate(&bsp, 0, 0, &Options::default()).unwrap();
+    let (merged, sector_of) = coplanar(&pf).unwrap();
+    assert!(merged.sectors.len() > 1);
+    assert!(merged.sectors.len() < pf.sectors.len());
+    // Merged sectors are runs of the strip, in order.
+    assert!(sector_of.windows(2).all(|w| w[1] == w[0] || w[1] == w[0] + 1));
+    assert_eq!(MAX_RING, 16);
+    sound(&merged, &bsp);
+    assert!(bytes(&merged) < bytes(&pf));
+    // Trimmed data with a hole merges around it.
+    let bsp = grid(3, 3, |_, _| 0.0);
+    let pf = generate(&bsp, 0, 0, &Options::default()).unwrap();
+    let mut keep = [true; 9];
+    keep[4] = false;
+    let (trimmed, _) = pathfind::trim::keep_sectors(&pf, &keep).unwrap();
+    let (merged, _) = coplanar(&trimmed).unwrap();
+    assert!(merged.sectors.len() >= 2 && merged.sectors.len() < 8);
+    sound(&merged, &bsp);
+}
+
 #[test]
 fn the_builder_refuses_undescribed_children() {
     let bsp = level();

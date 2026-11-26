@@ -289,6 +289,8 @@ pub struct Ground {
     pub squads: usize,
     pub bases: Bases,
     pub problems: Vec<Problem>,
+    /// The steps taken to fit the map's tag headroom ([`crate::Fit`]).
+    pub fitted: Vec<crate::Fit>,
     pub receipt: Receipt,
 }
 
@@ -314,6 +316,7 @@ pub fn build(base: &[u8], base_name: &str, labels: &Labels, recipe: &Recipe) -> 
         squads: built.squads,
         bases: built.bases,
         problems: built.problems,
+        fitted: built.fitted,
         receipt: Receipt::of(Sha256::of(base), &canonical, recipe),
     })
 }
@@ -351,6 +354,7 @@ impl Ground {
             bases: self.bases,
             classes: Vec::new(),
             cut: Vec::new(),
+            fitted: self.fitted.clone(),
         })
     }
 }

@@ -233,3 +233,109 @@ fn a_live_index_tail_moves_only_the_group_table() {
     assert_eq!(ai.character_palette, [map.tag(ai::ELITE_PATH).unwrap().id]);
     assert_eq!(ai.squads.len(), 16);
 }
+
+/// One build of the court with the `fit` steps and room to spare.
+fn roomy(base: &[u8], fit: &[Fit]) -> Built {
+    assemble(
+        base,
+        "court",
+        Mode::Kit,
+        &Config::default(),
+        &Labels::default(),
+        None,
+        0,
+        fit,
+        u32::MAX,
+    )
+    .unwrap()
+}
+
+#[test]
+fn merging_keeps_the_ground_in_fewer_sector_bytes() {
+    let base = fixture();
+    let full = roomy(&base, &[]);
+    let merged = roomy(&base, &[Fit::MergeSectors]);
+    // The same sectors are kept; merged, they are fewer and cost less.
+    assert_eq!(full.costs.sectors_merged, full.costs.sectors_kept);
+    assert_eq!(merged.costs.sectors_kept, full.costs.sectors_kept);
+    assert!(merged.costs.sectors_merged < merged.costs.sectors_kept, "{}", merged.costs);
+    assert!(merged.costs.sectors < full.costs.sectors, "{} against {}", merged.costs, full.costs);
+    assert!(merged.costs.tag_growth <= full.costs.tag_growth);
+    assert!(merged.costs.to_string().contains(", merged into "));
+    assert!(!full.costs.to_string().contains("merged into"));
+    // Nothing else changes: the zones, their positions and the squads.
+    assert_eq!(merged.zones, full.zones);
+    assert_eq!(
+        (merged.costs.zones, merged.costs.squads, merged.costs.characters),
+        (full.costs.zones, full.costs.squads, full.costs.characters)
+    );
+    // The map reads back: each BSP's sectors are sound, and every firing
+    // position names one of the merged sectors.
+    let mut map = Map::from_reader(Cursor::new(&merged.bytes[..])).unwrap();
+    map.validate_checksum().unwrap();
+    let mut sectors = 0;
+    for index in 0..2 {
+        let bsp = map.tag(format!("court_{index}").as_str()).unwrap().id;
+        let pf = PathfindingData::read(&mut map, bsp).unwrap().unwrap();
+        assert!(pf.validate(Some(51)).is_empty(), "{:?}", pf.validate(Some(51)));
+        assert_eq!(pf.refs[50], Ref::NONE);
+        if index == 0 {
+            sectors = pf.sectors.len();
+        }
+    }
+    assert!(sectors > 0 && sectors < 49);
+    let ai = ScenarioAi::read_map(&mut map).unwrap();
+    for zone in &ai.zones {
+        for p in &zone.firing_positions {
+            assert!((p.sector as usize) < sectors, "{}: sector {}", zone.name, p.sector);
+        }
+    }
+}
+
+#[test]
+fn a_map_short_of_headroom_takes_the_fit_steps_in_order() {
+    let base = fixture();
+    let config = Config::default();
+    let labels = Labels::default();
+    let within = |available: u32| {
+        fit_within(&base, "court", Mode::Kit, &config, &labels, None, available)
+    };
+    let full = roomy(&base, &[]);
+    let merged = roomy(&base, &[Fit::MergeSectors]);
+    let lean = roomy(&base, &Fit::ALL);
+    // The fewer drops are the first six chosen.
+    assert_eq!(lean.zones, 6);
+    assert!(lean.costs.zones <= merged.costs.zones);
+    if full.zones > 6 {
+        assert!(lean.costs.zones < merged.costs.zones);
+    }
+    let growth = |b: &Built| b.costs.tag_growth;
+    // With room for the whole kit, no step is taken.
+    let fits = within(growth(&full)).unwrap();
+    assert!(fits.fitted.is_empty());
+    assert_eq!(fits.bytes, full.bytes);
+    // Each step is taken only when the build before it is over; the build
+    // is the one that step makes. Page rounding can hide a step's saving,
+    // so each is checked where it shows.
+    if growth(&merged) < growth(&full) {
+        let fits = within(growth(&merged)).unwrap();
+        assert_eq!(fits.fitted, [Fit::MergeSectors]);
+        assert_eq!(fits.bytes, merged.bytes);
+    }
+    if growth(&lean) < growth(&merged) {
+        let fits = within(growth(&lean)).unwrap();
+        assert_eq!(fits.fitted, Fit::ALL);
+        assert_eq!(fits.bytes, lean.bytes);
+    }
+    // Short of the leanest build, the refusal names every step it took.
+    let error = within(growth(&lean) - 1).err().expect("must refuse").to_string();
+    for part in [
+        "exceeds tag headroom by 1 B",
+        "taking every step to fit",
+        Fit::MergeSectors.reason(),
+        Fit::FewerDrops.reason(),
+        ", merged into ",
+    ] {
+        assert!(error.contains(part), "{error}");
+    }
+}
