@@ -128,6 +128,23 @@ impl Session {
         waves::zone_order(&drops)
     }
 
+    /// The zone of the drop marker `id`, from 0: its place in
+    /// [`Session::drops`]. None for a marker that is not a drop.
+    pub fn drop_zone(&self, id: OpId) -> Option<usize> {
+        self.drops().iter().position(|d| *d == id)
+    }
+
+    /// How many squads of the set prefer zone `zone` (from 0).
+    pub fn zone_squads(&self, zone: usize) -> usize {
+        self.waves_or_default()
+            .rounds
+            .iter()
+            .flat_map(|r| &r.waves)
+            .flat_map(|w| &w.squads)
+            .filter(|s| matches!(s.drop, waves::Drop::PreferZone(z) if usize::from(z) == zone))
+            .count()
+    }
+
     /// How many `ff_drop` labels `doc` has, on any flag.
     fn drop_count(&self, doc: &ForgeDoc) -> usize {
         doc.ground_marks(&self.limits.base_counts)

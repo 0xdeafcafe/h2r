@@ -462,6 +462,9 @@ pub struct Tool {
     pub links: bool,
     /// The Nav tool is selected: it aims at nothing and draws the nav.
     pub nav: bool,
+    /// The AI tool is selected: the Objects tool's gestures, aiming at
+    /// ground markers only (docs/game/forge-firefight-ui.md, "The AI tool").
+    pub ai: bool,
     /// What the Links tool aims at.
     pub aimed_link: Option<Linkable>,
     /// The first end of a link being made.
@@ -506,6 +509,7 @@ impl Default for Tool {
             ghost: None,
             links: false,
             nav: false,
+            ai: false,
             aimed_link: None,
             link_from: None,
             selection: Vec::new(),
@@ -615,11 +619,12 @@ impl Tool {
 
     /// Chooses the tool: the Links tool, or the Objects tool.
     pub fn set_links(&mut self, links: bool) {
-        if self.links != links || (links && self.nav) {
+        if self.links != links || (links && (self.nav || self.ai)) {
             self.clear_selection();
             self.links = links;
             if links {
                 self.nav = false;
+                self.ai = false;
             }
         }
     }
@@ -630,6 +635,21 @@ impl Tool {
             self.clear_selection();
             self.nav = nav;
             if nav {
+                self.links = false;
+                self.ai = false;
+                self.link_from = None;
+            }
+        }
+    }
+
+    /// Chooses the AI tool, or leaves it for the Objects tool. What is
+    /// aimed at or held is let go.
+    pub fn set_ai(&mut self, ai: bool) {
+        if self.ai != ai || (ai && (self.nav || self.links)) {
+            self.clear_selection();
+            self.ai = ai;
+            if ai {
+                self.nav = false;
                 self.links = false;
                 self.link_from = None;
             }
@@ -822,6 +842,7 @@ impl Tool {
         if input.action == Some(A::Link) {
             self.clear_selection();
             self.links = true;
+            self.ai = false;
             return Ok(None);
         }
         let previewing = self.placing.is_some() || self.held_thing.is_some();
@@ -855,15 +876,22 @@ impl Tool {
             let forward = camera.forward();
             let eye = *camera;
             let labels = session.labels().unwrap_or_default();
+            let marker = |thing: &Thing| {
+                thing.block == BlockKind::NetgameFlags
+                    && labels.get(&thing.id.identity()).is_some_and(|label| {
+                        forge_doc::GroundLabel::of(&label.text).is_some()
+                    })
+            };
+            let only_markers = self.ai;
             hit = session
                 .things()
                 .into_iter()
                 .filter(|thing| {
-                    self.shows(thing)
-                        || (thing.block == BlockKind::NetgameFlags
-                            && labels.get(&thing.id.identity()).is_some_and(|label| {
-                                forge_doc::GroundLabel::of(&label.text).is_some()
-                            }))
+                    if only_markers {
+                        marker(thing)
+                    } else {
+                        self.shows(thing) || marker(thing)
+                    }
                 })
                 .filter(|thing| !locked.iter().any(|m| m.identity() == thing.id.identity()))
                 .filter_map(|thing| {

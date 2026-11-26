@@ -210,6 +210,7 @@ pub fn report_of(report: &forge_build::GroundReport) -> GroundReport {
             .collect(),
         zones: report.zones,
         squads: report.squads,
+        sectors: report.sectors.clone(),
         problems: report
             .problems
             .iter()
@@ -292,8 +293,10 @@ mod tests {
             cut: vec!["hunter".into()],
             costs: firefight_kit::Costs::default(),
             receipt: Receipt::of(Sha256::of(b"base"), &Labels::default(), &recipe),
+            sectors: vec![vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]]],
         };
         let report = report_of(&made);
+        assert_eq!(report.sectors, made.sectors);
         assert_eq!(report.classes, ["elite", "grunt"]);
         assert_eq!(report.cut, ["hunter"]);
         assert_eq!(

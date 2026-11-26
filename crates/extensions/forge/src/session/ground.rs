@@ -98,6 +98,11 @@ pub struct GroundReport {
     pub cut: Vec<String>,
     /// What each class past the Elite added, in palette order.
     pub costs: Vec<GroundClassCost>,
+    /// The sectors the built map's AI walks, each its polygon in ring
+    /// order, in world space: the AI tool draws them
+    /// (docs/game/forge-firefight-ui.md, "The AI tool"). Empty from a
+    /// builder that does not give them.
+    pub sectors: Vec<Vec<[f32; 3]>>,
 }
 
 impl GroundReport {

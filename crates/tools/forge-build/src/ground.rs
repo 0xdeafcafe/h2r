@@ -39,6 +39,9 @@ pub struct GroundReport {
     pub cut: Vec<String>,
     pub costs: Costs,
     pub receipt: Receipt,
+    /// The built map's sectors, each its polygon in ring order
+    /// ([`sectors_of`]).
+    pub sectors: Vec<Vec<[f32; 3]>>,
 }
 
 /// What a recipe's classes are copied by: the layouts of the tags and each
@@ -73,6 +76,15 @@ impl ClassTable<'_> {
             .map(|(_, p)| p.as_str())
             .ok_or_else(|| Error::Ground(format!("no class table entry for {name}")))
     }
+}
+
+/// The sectors of the built map `bytes`, each its polygon in ring order:
+/// what the AI walks, for the AI tool's overlay. A structure BSP whose
+/// pathfinding does not read gives none.
+pub(crate) fn sectors_of(bytes: &[u8]) -> Result<Vec<Vec<[f32; 3]>>, Error> {
+    let mut map = map::Map::from_reader(std::io::Cursor::new(bytes))?;
+    let level = scenario_edit::nav_view::LevelPathfinding::read(&mut map)?;
+    Ok(level.sectors.into_iter().map(|s| s.ring).collect())
 }
 
 fn team(label: GroundLabel, index: u32, value: i64) -> Result<Team, Error> {
