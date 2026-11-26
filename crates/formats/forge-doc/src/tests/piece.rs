@@ -709,7 +709,7 @@ fn a_document_is_no_stricter_without_the_crate_count() {
             palette(1, 1, piece_value()),
             define(2, Endpoint::base(CRATES, 1), block_def()),
         ],
-        vec![add_piece(1), remove(2, 0)],
+        vec![add_piece(1), remove(2, 3)],
         vec![
             add_piece(1),
             define(2, added(1), block_def()),
