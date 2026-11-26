@@ -39,7 +39,7 @@ impl ReceiverTerm {
     /// Resolve when recording after the caster/filter in GPU order.
     /// An unavailable term keeps the light's original chain.
     pub fn sampled(&self) -> Option<native_render::shadow_gpu::SampledMap> {
-        self.output.lock().ok()?.clone()
+        self.output.lock().ok()?.latest().cloned()
     }
 }
 type ReceiverObserver = Arc<dyn Fn(ReceiverTerm) + Send + Sync>;
@@ -161,7 +161,9 @@ impl ShadowFilterPass {
         t: &d3d::backend::ExternalAttachments,
     ) -> Result<d3d::backend::ExternalEncoded, &'static str> {
         if let Some(chain) = &self.chain {
-            let pair = chain.pair().ok_or("private shadow pair missing")?;
+            let pair = chain
+                .pair_for(t.size)
+                .ok_or("private shadow pair missing")?;
             let mut gpu = self.gpu.lock().map_err(|_| "shadow filter GPU poisoned")?;
             let encoded = native_render::shadow_filter_gpu::prepare(
                 &t.device,

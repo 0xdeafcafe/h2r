@@ -18,7 +18,11 @@ pub struct Pair {
     pub mask: wgpu::TextureView,
     pub other: wgpu::TextureView,
     pub depth: Option<wgpu::TextureView>,
+    /// The mask's size in texels.
     pub size: (u32, u32),
+    /// The guest's size of the same surface: `size` at 1x, smaller under
+    /// a render scale. The filter's quads are laid out in these units.
+    pub guest_size: (u32, u32),
 }
 
 fn texture(
@@ -58,8 +62,22 @@ impl Pair {
         depth: Option<wgpu::TextureFormat>,
         size: (u32, u32),
     ) -> Option<Self> {
+        Self::scaled(device, colour, depth, size, size)
+    }
+
+    /// The pair for a mask drawn at a render scale: `size` texels over
+    /// the guest's `guest_size`.
+    pub fn scaled(
+        device: &wgpu::Device,
+        colour: wgpu::TextureFormat,
+        depth: Option<wgpu::TextureFormat>,
+        size: (u32, u32),
+        guest_size: (u32, u32),
+    ) -> Option<Self> {
         if size.0 == 0
             || size.1 == 0
+            || guest_size.0 == 0
+            || guest_size.1 == 0
             || !matches!(
                 colour,
                 wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
@@ -77,6 +95,7 @@ impl Pair {
             other: texture(device, "private shadow filter", colour, size),
             depth: depth.map(|f| texture(device, "private shadow depth", f, size)),
             size,
+            guest_size,
         })
     }
 
@@ -118,7 +137,7 @@ impl Pair {
     pub fn filter_slots(&self) -> [PostSurface<'_>; 2] {
         [&self.mask, &self.other].map(|view| PostSurface {
             view,
-            guest_size: self.size,
+            guest_size: self.guest_size,
         })
     }
 

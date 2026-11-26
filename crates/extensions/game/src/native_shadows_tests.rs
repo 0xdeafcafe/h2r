@@ -371,7 +371,7 @@ fn mixed_native_shadow_unshadowed_and_refused_d3d_lights_match_all_d3d() {
                 height: 16,
             });
             if i != 2 && native {
-                let output = Arc::new(Mutex::new((i != 3).then(|| map.clone())));
+                let output = Arc::new(Mutex::new(crate::native_shadows_draw::Maps::of((i != 3).then(|| map.clone()))));
                 let pass = Range {
                     gpu: gpu.clone(),
                     draw: Arc::new(draw.clone()),

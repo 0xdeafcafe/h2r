@@ -1,6 +1,6 @@
 # Native shadows
 
-Status: Built. Replaces sorted BSP and model draws in layers 10, 11 and 14 on a single 1x retail GPU backend, draws whole groups of all three layers from the scene without guest geometry handlers, and replaces the object filter's quads; pixel parity and timing are not verified.
+Status: Built. Replaces sorted BSP and model draws in layers 10, 11 and 14 at any render scale, draws whole groups of all three layers from the scene without guest geometry handlers, and replaces the object filter's quads; pixel parity and timing are not verified.
 Code: `crates/rewrites/render-bridge/src/native_shadows.rs`, `crates/extensions/game/src/native_shadows_glue.rs`, `native_shadows_scope.rs`, `native_shadows_draw.rs`, `native_lights_glue.rs`, `crates/rewrites/native-render/src/shadows.rs`, `shadow_gpu.rs`, `shadow_look.rs`, `shadow_scene.rs`, `shadow_filter_gpu.rs`, `shadow_chain.rs`, `crates/extensions/game/src/native_shadow_chain.rs`. Tests: `crates/rewrites/native-render/tests/shadow_gpu.rs`, `native_render::shadow_look`, `shadow_scene`, `shadow_filter_gpu`, `light_gpu`, `crates/rewrites/render-bridge/tests/native_shadows.rs`, `crates/rewrites/engine/tests/shadow_constants*.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
@@ -105,7 +105,7 @@ The shared sorted point is `LIGHT_GEOMETRY_DRAW` at `0x0004d0b0`; its seven stac
 
 ## Rules and limits
 
-Range admission requires the original sorted entry, matching shader and part, a proven target and pipeline, and every texture and scissor range. A missing freeze or resource, a changed owner or projection, a pending guest callback or an incomplete external recording leaves the draw with D3D. A scaled view draws its shadow layers from the scene like an unscaled one. The mixed GPU fixture runs a shadowed receiver, guest draws and a typed diffuse/specular light on one target. It compares the pixels against seven original D3D draws. A missing shadow map keeps its receiver on D3D. Missing specular indices return both layers of the typed light to their guest slots.
+Range admission requires the original sorted entry, matching shader and part, a proven target and pipeline, and every texture and scissor range. A missing freeze or resource, a changed owner or projection, a pending guest callback or an incomplete external recording leaves the draw with D3D. A scaled view draws its shadow layers from the scene like an unscaled one, and the device side records on each target copy at its own size: a range's scissors scale with `RenderScale` from the guest surface to the copy, `Freeze` and a private chain's filter keep one map per copy size (`native_shadows_draw::Maps`), and a private chain owns one `Pair` per copy (`Pair::scaled`, whose filter quads stay in guest units). The mixed GPU fixture runs a shadowed receiver, guest draws and a typed diffuse/specular light on one target. It compares the pixels against seven original D3D draws. A missing shadow map keeps its receiver on D3D. Missing specular indices return both layers of the typed light to their guest slots.
 
 ## Not verified
 
