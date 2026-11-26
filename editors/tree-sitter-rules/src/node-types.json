@@ -3089,6 +3089,10 @@
           "named": true
         },
         {
+          "type": "use_declaration",
+          "named": true
+        },
+        {
           "type": "uses_declaration",
           "named": true
         },
@@ -3558,6 +3562,22 @@
     }
   },
   {
+    "type": "use_declaration",
+    "named": true,
+    "fields": {
+      "path": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "string",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "uses_declaration",
     "named": true,
     "fields": {
@@ -4002,6 +4022,10 @@
   },
   {
     "type": "type",
+    "named": false
+  },
+  {
+    "type": "use",
     "named": false
   },
   {
