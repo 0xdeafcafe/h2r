@@ -5,16 +5,15 @@
 //! skies from the document's bytes, edits applied, and
 //! [`apply`] hands it to the viewport, which re-uploads nothing.
 //!
-//! The one place the fan-out meets this view is [`touches_sky`]: the
-//! viewport calls [`apply`] whenever the document's revision moves, so
-//! every write path (field writes, undo, redo) is covered without a
-//! delivery of its own. The own game's sky is read by the engine from
+//! The fan-out has no delivery into this view: the viewport calls
+//! [`apply`] whenever the document's revision moves, so every write path
+//! (field writes, undo, redo) is covered. The own game's sky is read by the engine from
 //! the same bytes the Field route writes.
-use map::{FourCC, TagId};
+use map::FourCC;
 use scenario_edit::render::Viewport;
 use scenario_edit::scene::{self, Atmosphere};
 
-use crate::app::{TagDoc, live::Change};
+use crate::app::TagDoc;
 
 const SCNR: FourCC = FourCC(*b"scnr");
 const SKY: FourCC = FourCC(*b"sky ");
@@ -50,39 +49,9 @@ pub fn apply(vp: &mut Viewport, scene: Option<&Atmosphere>, tags: &TagDoc) {
     vp.set_atmosphere(atmosphere.as_ref().unwrap_or(scene));
 }
 
-/// Whether a change writes a sky or fog tag, so the viewport's sun and
-/// fog must be read again. The fan-out's hookup (LE1): a Preview that
-/// re-reads the document on every revision may call this to skip the
-/// read for other tags. `tag` is the changed tag's group, looked up in
-/// the document by the caller.
-#[allow(dead_code)] // Not wired yet.
-pub fn touches_sky(change: &Change, group_of: impl Fn(TagId) -> Option<FourCC>) -> bool {
-    change
-        .tag
-        .and_then(group_of)
-        .is_some_and(|g| g == SKY || g == FourCC(*b"fog "))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::live::Class;
-
-    #[test]
-    fn a_change_to_a_sky_or_fog_tag_touches_the_sky() {
-        let groups = |id: TagId| match id.0 {
-            1 => Some(SKY),
-            2 => Some(FourCC(*b"fog ")),
-            3 => Some(FourCC(*b"weap")),
-            _ => None,
-        };
-        let change = |tag: Option<TagId>| Change::new(Class::Field, tag, vec![(0, 4)], "edit");
-        assert!(touches_sky(&change(Some(TagId(1))), groups));
-        assert!(touches_sky(&change(Some(TagId(2))), groups));
-        assert!(!touches_sky(&change(Some(TagId(3))), groups));
-        assert!(!touches_sky(&change(Some(TagId(9))), groups));
-        assert!(!touches_sky(&change(None), groups));
-    }
 
     #[test]
     fn a_closed_document_has_no_live_atmosphere() {

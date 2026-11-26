@@ -36,21 +36,10 @@ pub fn run(args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
-/// The field table over the tick tracks of `films`, one report for all of
-/// them: per field, the seat-ticks it is in the game for, how many change
-/// from the tick before, and the stored bytes under each predictor, with
-/// the grids that hold.
-#[allow(dead_code)] // Not wired yet.
-pub fn fields<R: std::io::Read + std::io::Seek>(films: Vec<film::Reader<R>>) -> Result<String> {
-    let tracks = films
-        .into_iter()
-        .map(film::blam::TrackReader::new)
-        .collect::<Result<Vec<_>>>()?;
-    field_table(tracks)
-}
-
-/// [`fields`] over readers that are open already, with their film files
-/// attached when their actions are there.
+/// The field table over the tick tracks of `tracks`, one report for all
+/// of them: per field, the seat-ticks it is in the game for, how many
+/// change from the tick before, and the stored bytes under each predictor,
+/// with the grids that hold (`h2 film --fields`).
 pub fn field_table<R: std::io::Read + std::io::Seek>(
     tracks: Vec<film::blam::TrackReader<R>>,
 ) -> Result<String> {
