@@ -23,7 +23,7 @@ use agent::Access;
 use agent_proto::{MarkersParams, RpcError, code, method};
 use forge::tool::{Show, in_game};
 use forge::{Endpoint, GroundProblem, PlacedMarker, Thing, ThingKind, Value};
-use game_markers::{Area, Item, Kind, Marker, Palette, Place, Tint, Tri};
+use game_markers::{Area, Item, Kind, Marker, Palette, Place, SpawnUse, Tint, Tri};
 use serde_json::{Value as Json, json};
 
 /// The most markers a view draws; the nearest are kept.
@@ -173,15 +173,6 @@ fn entry(
     }
 }
 
-pub fn with_area(kind: Kind, area: Area) -> Kind {
-    match kind {
-        Kind::Hill(_) => Kind::Hill(area),
-        Kind::Territory(_) => Kind::Territory(area),
-        Kind::Site(_) => Kind::Site(area),
-        _ => kind,
-    }
-}
-
 /// Every marker of the session: one for each thing a marker stands for,
 /// one hill for a hill's corners, one for each ground label placed and
 /// each problem. A thing of another game type is left out while the tool
@@ -212,7 +203,7 @@ pub fn entries(f: &Facts<'_>) -> Vec<Entry> {
         let mut number = None;
         let kind = match t.kind {
             ThingKind::Object => continue,
-            ThingKind::StartingPoint => Kind::Spawn,
+            ThingKind::StartingPoint => Kind::Spawn(SpawnUse::Respawn),
             ThingKind::ItemSpawner => Kind::Item(item_class(t)),
             ThingKind::Goal | ThingKind::Teleporter => {
                 let Some(label) = forge::flag_label(t, f.labels) else {
@@ -235,7 +226,7 @@ pub fn entries(f: &Facts<'_>) -> Vec<Entry> {
             }
         };
         let kind = match area {
-            Some(area) => with_area(kind, area),
+            Some(area) => kind.with_area(area),
             None => kind,
         };
         out.push(entry(
@@ -291,7 +282,7 @@ pub fn entries(f: &Facts<'_>) -> Vec<Entry> {
             continue;
         };
         let kind = match f.areas.get(&Endpoint::Added(m.id)) {
-            Some(area) => with_area(kind, area.marker_area()),
+            Some(area) => kind.with_area(area.marker_area()),
             None => kind,
         };
         let team = m.label.has_team().then_some(m.team);
@@ -335,7 +326,7 @@ pub fn nav_problems(problems: &[forge::NavProblem]) -> Vec<Entry> {
         .iter()
         .map(|p| {
             let kind = match p.kind.as_str() {
-                "start_off_mesh" => Kind::Spawn,
+                "start_off_mesh" => Kind::Spawn(SpawnUse::Respawn),
                 "teleporter_off_mesh" if p.what.ends_with("receiver") => Kind::TeleporterReceiver,
                 "teleporter_off_mesh" => Kind::TeleporterSender,
                 _ => Kind::Cover,
@@ -684,10 +675,11 @@ mod gpu {
             let fade = |at: [f32; 3]| eye.map_or(1.0, |eye| fade_factor(g.fade, distance(eye, at)));
             let with = |colour: [f32; 4], at: [f32; 3]| [colour[0], colour[1], colour[2], colour[3] * fade(at)];
             for t in &g.tris {
-                let [a, b, c] = t.points;
-                batch.tris.extend([a, b, c].map(|position| native_render::markers::Vertex {
-                    position,
-                    colour: with(t.colour, position),
+                batch.tris.extend(t.points.iter().zip(t.colours).map(|(&position, colour)| {
+                    native_render::markers::Vertex {
+                        position,
+                        colour: with(colour, position),
+                    }
                 }));
             }
             let line = [g.colour[0], g.colour[1], g.colour[2], g.alpha];

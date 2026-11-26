@@ -2694,8 +2694,10 @@ hill), item spawners and trigger volumes, all from the shared
   the contact sheet of every kind in red, blue and neutral (a kind of one
   fixed colour once); `team` (0 to 7) draws one. `area` (`{radius,
   below?, above?}` or `{path: [[x, y], ...], below?, above?}`, plain
-  numbers) replaces the area of a hill, territory or siege site, and a
-  refused area gives `Area::validate`'s sentence. `view` is `angled`
+  numbers) replaces the area of a flag return, bomb goal, hill,
+  territory, siege site or siege goal, and a refused area gives
+  `Area::validate`'s sentence. A spawn is on the sheet twice, a respawn
+  point and a starting location (`SpawnUse`). `view` is `angled`
   (default), `top` or `front`, +x to the right; `size` defaults to
   `[1280, 720]`. The answer is `{path, width, height, view, covered,
   kinds}`: `covered` counts the pixels that are not the corner's

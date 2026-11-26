@@ -468,7 +468,8 @@ fn a_wall_is_the_boundary_alone_in_its_teams_colour_with_no_label() {
     for g in &groups {
         assert_eq!(g.label, None, "no label");
         assert_eq!(g.fade, Some(AREA_FADE));
-        assert_eq!(g.edges.len(), 3 * Area::default().outline().len(), "no pip");
+        let wall = Kind::wall(&Area::default(), [1.0; 3]);
+        assert_eq!(g.edges.len(), wall.lines.len(), "no pip");
     }
     assert_eq!(shown.iter().map(|s| s.kind).collect::<Vec<_>>(), ["wall", "wall"]);
     assert_eq!(shown[0].thing, "zone:1");
@@ -541,11 +542,11 @@ fn the_batch_of_a_hill_and_a_wall_has_their_faces_and_lines() {
     let got = batch(&groups, None);
     // Three vertices a face, two a line: the hill's, then the wall's.
     assert_eq!(got.tris.len(), 3 * (hill_faces + 2 * ring));
-    assert_eq!(got.lines.len(), 2 * (groups[0].edges.len() + 3 * ring));
+    assert_eq!(got.lines.len(), 2 * (groups[0].edges.len() + groups[1].edges.len()));
     // The wall's faces keep their alpha; its lines are its team's colour
     // at the group's alpha.
     let first_wall_face = 3 * hill_faces;
-    assert_eq!(got.tris[first_wall_face].colour, groups[1].tris[0].colour);
+    assert_eq!(got.tris[first_wall_face].colour, groups[1].tris[0].colours[0]);
     assert!(got.tris[first_wall_face].colour[3] < 1.0, "a skin, not a solid");
     let line = got.lines[2 * groups[0].edges.len()].colour;
     assert_eq!(line, [palette.teams[0][0], palette.teams[0][1], palette.teams[0][2], groups[1].alpha]);

@@ -1,6 +1,6 @@
 # Game type markers: icons, the edit form and the play form
 
-Status: Design; the box and the sphere as areas (MK11) are built in `game_markers::area`, `record` and `forge_doc::Area`. It extends the built marker set of [gametype-markers.md](gametype-markers.md) (MK1 to MK9) with slices MK10 to MK16 below.
+Status: Partly built. The forms, the parts, the icons and stroke digits, the wall and the areas of the three kinds that gain one exist in `game_markers` (MK10), and the box and the sphere as areas exist in `game_markers::area`, `record` and `forge_doc::Area` (MK11); the drawers' use of the forms and what shows in a match are design (MK12 to MK16). It extends the built marker set of [gametype-markers.md](gametype-markers.md) (MK1 to MK9).
 Code: `crates/formats/game-markers/src/{form,icon,digits}.rs` (the forms and icons), `crates/formats/game-markers/src/area.rs` (the box and the sphere), `crates/extensions/game/src/forge_glue/markers_world.rs` (the game's drawer). Tests: named per slice under "Slices".
 Switch: none.
 
@@ -33,15 +33,20 @@ of any game is used.
 ## The parts of a marker
 
 `Kind::parts(&self, form: Form) -> Parts` names what a marker is made
-of; `Marker::mesh_in(form, &Palette)` and `Marker::icon(&Palette)` give
-the meshes. Sizes are world units against the 0.7 figure.
+of; `Marker::mesh_in(form, &Palette)` and `Marker::icon(&Palette,
+number)` give the meshes. `Kind::mesh_in` draws one list of pieces and
+leaves the edit-only ones out of the play form, so a play piece is the
+edit form's piece itself; `Kind::edit_only` is the rest, what Forge
+dims. `Kind::mesh` is the edit form with the plate facing the marker's
+front, for a drawer that does not turn plates. Sizes are world units
+against the 0.7 figure.
 
 | Part | Is | Form |
 |---|---|---|
 | **Pad** | a ring and a thin disc on the floor, radius `kind::PAD` (0.3), wider for a vehicle | edit; play where the table says |
 | **Body** | the kind's own hologram: the figure, the pole and pennant, the ball, the column (the shapes of gametype-markers.md, "The markers") | edit |
-| **Post** | one upright line from the pad to the plate, `form::POST` (1.0) tall, so the plate clears a player standing on the pad | edit |
-| **Plate** | a disc of radius `form::PLATE` (0.14) with a rim, holding the icon, turned about the upright to face the eye | edit; play for a territory and a site |
+| **Post** | one upright line from the pad to the plate, `form::POST` (1.0) tall, or `form::PLATE_GAP` (0.1) over a taller body, so the plate clears a player standing on the pad | edit; play for a territory and a site |
+| **Plate** | a disc of radius `form::PLATE` (0.14) with a rim, holding the icon, turned about the upright to face the eye; its centre is `Kind::plate_at` | edit; play for a territory and a site |
 | **Facing** | an arrow on the floor the way a player, a vehicle or a wave faces | edit |
 | **Boundary** | the area's wall ("Boundaries") | both |
 | **Label** | the text over the anchor ("Red spawn", "Hill 2"), within 20 world units | edit |
@@ -51,11 +56,16 @@ of lines and filled triangles, as every marker shape is, so it needs no
 texture: the native marker pass draws it with the skin
 (`native_render::markers::Batch`), and the window's line pass draws its
 lines when the native renderer is off. `Icon::mesh(colour)` is its
-mesh in the plate's space. A number on a plate (a hill's, a
-territory's) is stroke digits (`game_markers::digits`).
+mesh in the plate's space: the plate in the marker's front plane,
+facing +x, the icon's square `form::ICON_HALF` each side of the centre.
+`icon::plate` is the plate's disc and rim with the icon. A number on a
+plate (a hill's, a territory's, a site's) is seven-segment stroke
+digits (`game_markers::digits`) at its bottom right, the icon shrunk to
+its top left.
 
 **Size across the map.** The drawer scales the plate and its icon by
-`max(1, distance / form::ICON_NEAR)` (8 world units) so the icon keeps
+`form::icon_scale(distance)`, `max(1, distance / form::ICON_NEAR)` (8
+world units), with `Mesh::scaled`, so the icon keeps
 its size on screen out to the marker's fade distance. Nothing else of a
 marker scales.
 
@@ -72,8 +82,8 @@ marker scales.
 | `BallSpawn` | a ball | pad and ball of three rings, post and plate | the pad's ring |
 | `Hill(Area)` | a crown, with the hill's number | the boundary, a centre pip, post and plate | the boundary |
 | `Territory(Area)` | a pennant, with the territory's number | the boundary, post and plate | the boundary, the post and the plate, in the holder's colour |
-| `TeleporterSender` | an arrow into a ring | column and arrow up, post and plate | **the portal**: a ring on the floor and an upright hoop one unit tall, amber |
-| `TeleporterReceiver` | an arrow out of a ring | column, arrow down, facing arrow, post and plate | the portal in cyan, with a short arrow on the floor the way a player leaves |
+| `TeleporterSender` | an arrow into a ring | the portal, column and arrow up, post and plate | **the portal**: a ring on the floor and an upright hoop one unit tall, amber |
+| `TeleporterReceiver` | an arrow out of a ring | the portal, column, arrow down, facing arrow, post and plate | the portal in cyan, with a short arrow on the floor the way a player leaves |
 | `Item(Weapon)`, `Item(Vehicle)`, `Item(Equipment)` | a long gun, a wedge with a cab, a diamond | pad, the item's model or its outline, a facing arrow for a vehicle, post and plate | none: the item is there |
 | `Volume(..)` | none | the solid | the boundary of a soft boundary a script shows; none for a kill trigger |
 | `Drop` | an arrow down onto a bar | as it is, with post and plate | none |
@@ -85,10 +95,14 @@ marker scales.
 
 - **Three kinds gain an area.** A flag return, a bomb goal and a siege
   goal take `Area` as a hill does; with none stored they draw
-  `Area::plate()`, a radius of half a unit, a tenth under and one over.
+  `Area::plate()` (`form::PLATE_RADIUS`, `PLATE_BELOW`, `PLATE_ABOVE`),
+  a radius of half a unit, a tenth under and one over. `Kind::area`,
+  `area_mut` and `with_area` cover all six kinds with an area.
   The area op is the one a hill uses (gametype-markers.md, "In the
   document"), and a script's zone on that flag reads the same area, so
-  for a scripted game the plate drawn is the plate scored.
+  for a scripted game the plate drawn is the plate scored: a flag with
+  no area of its own and no corners takes its marker's default area
+  (`game::rules::world::zones::default_area`).
 - **A spawn's use** is `SpawnUse::{Respawn, Start}`. The marker draws
   `Respawn` for every starting location until slice MK16 gives a
   starting location a use.
@@ -133,6 +147,10 @@ author sees the boundary a player will:
 - a line round the top at a third of full alpha;
 - a post at each corner of a box or a path, and at every fourth point
   of a circle.
+
+`shapes::wall_of` draws the same over any outline between two heights;
+the rim of a capture plate and a plant zone is it, from the floor to
+`form::RIM` over the area's outline.
 
 A sphere draws three rings (level, and two upright at right angles),
 and a skin on the half above the marker. The edit form adds what only
@@ -234,7 +252,7 @@ are on invented data.
 
 | # | Slice | Size | Owns | Needs | Accepted when |
 |---|---|---|---|---|---|
-| MK10 | **Forms and icons**: `Form`, `Parts`, `Icon` and the stroke digits, `SpawnUse`, the three kinds' areas, `shapes::wall`, `Kind::samples` in both forms | M | `crates/formats/game-markers/src/{form,icon,digits}.rs` (new), `kind.rs`, `shapes.rs`, `mesh.rs` (a colour a corner), `lib.rs`, `tests.rs`; the call sites of the three kinds that gain an area | nothing | a table of each kind's lines and triangles in each form; every play vertex is an edit vertex; each icon lies in its unit square and no two icons have equal meshes; the wall's alpha falls from low to high; a kind with no play form gives an empty mesh |
+| MK10 (built) | **Forms and icons**: `Form`, `Parts`, `Icon` and the stroke digits, `SpawnUse`, the three kinds' areas, `shapes::wall`, `Kind::samples` in both forms | M | `crates/formats/game-markers/src/{form,icon,digits}.rs` (new), `kind.rs`, `shapes.rs`, `mesh.rs` (a colour a corner), `lib.rs`, `tests.rs`; the call sites of the three kinds that gain an area | nothing | a table of each kind's lines and triangles in each form; every play vertex is an edit vertex; each icon lies in its unit square and no two icons have equal meshes; the wall's alpha falls from low to high; a kind with no play form gives an empty mesh |
 | MK11 | **The box and the sphere**: `Shape::Box`, `Shape::Sphere` through `validate`, `contains`, `outline`, the document's wire form and the map record | S | `crates/formats/game-markers/src/{area,record}.rs`, `area_shape_tests.rs` (new), `crates/formats/forge-doc/src/area.rs` and its test | nothing | a turned box holds its corners and not a point past them; a sphere holds a point over the marker that a cylinder of the same radius and no height does not; each refusal by name; both shapes round-trip canonical JSON and the record |
 | MK12 | **Studio**: `form` and `use` in `markers.render`, the fields of `markers.list`, plates turned to the camera, the Shape picker and handles for a box and a sphere | M | `crates/apps/studio/src/api/markers.rs` and its tests, `viewport/area.rs`, `ui/inspector/area.rs`, `crates/tools/scenario-edit/src/{marker_view,area_edit}.rs` | MK10, MK11 | the sheet holds every kind in both forms; a play render of a spawn is empty and of a flag return is its plate; a corner handle drag writes one area op with a box |
 | MK13 | **The game's drawer**: forms by monitor state, turned and scaled plates, the edit-only parts dimmed, `render.markers`' fields, **Edit area** on the four shapes | M | `crates/extensions/game/src/forge_glue/markers_world.rs` and its tests, `forge_glue/editing/area.rs` and its tests, `crates/extensions/agent-proto/src/render.rs` | MK10, MK11 | on an invented session each thing gives its edit form with the monitor on; a plate's normal points at the eye and its size doubles from 8 to 16 units away; scripted pad input makes a box of the stick's two lengths in one op |
