@@ -123,9 +123,9 @@ The start state is the engine's own game options and nothing from disk.
   it had reached, and every handle a game stores carries one. The object
   memory pool (the `loopobjects` header after the `object` array) is not
   zeroed when objects are freed either, so before `GAME_ACTIVATE` it is
-  zeroed when no object is live (`object-pool-clear`): the pool is a chain
-  of blocks, each a 0x20-byte header (size, owner, links, check word) and
-  a body, and the bodies are zeroed with every header left as it is; with live objects it is left, counted and logged
+  zeroed when no object is live (`object-pool-clear`), past its first block
+  header (the pool is a chain of blocks, each a 0x20-byte header and a body,
+  and the chain cannot be walked after games have been through it); with live objects it is left, counted and logged
   once. The object globals just past the pool (its end `+0x28` to `+0x80`:
   the next object sequence number, which every object's body stores, and
   the placement scratch after it) are zeroed with it, because a map load
