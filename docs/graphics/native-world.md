@@ -238,8 +238,8 @@ An item with neither draws with the stencil as the layer found it.
 
 The feature reads how layer 3's items switch it before asking the host
 (`skip::stencil_plan`: the flags, the marked BSP sections by cluster or
-placement, whether any item switches; unreadable, the D3D path draws the
-view, `native_world::stencil_views`). The native pass draws its parts
+placement, whether any item switches; unreadable, the view's structure
+items are dropped by name, `native_world::stencil_views`). The native pass draws its parts
 before the layer's items and clears their items, so their switches do
 not run; the glue (`native_world_glue::pass_stencil`) makes that exact:
 
@@ -934,6 +934,35 @@ the emitter. Its prefix also handles per-record fade and geometry state.
 The same layer's entries may use other handlers from the live list, so
 a replacement needs the observed standard geometry call as well as the
 layer ID.
+
+### The world draws only from the scene
+
+The world layers are cut per layer (`render_bridge::cut::LAYER_CUTS`; the
+layer draw `0x00044550` serves every layer, so no whole-function hook
+applies). Each draws only from the scene, in the slot the traced order gives
+it (`native_render::layer_pass::world_slot`):
+
+| Layers | Slot | Producer |
+|---|---|---|
+| 1, 3, 5, 8, 20 | 1, opaque base (`ViewSlot::OpaqueBase`) | `native_world` (3), `native_layers` (1, 5, 8, 20) |
+| 7 | 3, after the object shadows (`ShadowsAndLayer7`) | `native_layers` |
+| 2 | 6 (`Layer2`), with its stencil bracket and non-standard handlers | `native_layers` |
+
+The observer before the layer draw clears the layer's bit on every geometry
+item the native pass does not draw, as well as on those it does
+(`layer_pass::clear_scene_layer`), so the guest builds no entry for any of
+them and none reaches the device. There is no order rule: the pass draws
+its items in the list's order and no kept guest draw is left to precede or
+follow them. A structure item the pass does not draw is a named drop,
+`scene_dropped_world_refused`; an item whose render record or list does not
+read is `scene_dropped_world_unreadable`; both add to the world stage's
+`scene_dropped` count, and the plan's per-layer causes
+(`layer_plan_<layer>_refused_*`) say why. Layer 3's objects stay the sorted
+walk's (`native_objects`), and the bits go back at the next layer draw.
+The first person's layers and the sorted handlers' 18, 19 and 21 keep
+their own refusals until their cuts. The resolved-scene arm
+(`Host::use_resolved_scene`) draws from inside the guest's entries, so it
+still reaches the opaque handler hooks' own refusals.
 
 ## Not verified
 

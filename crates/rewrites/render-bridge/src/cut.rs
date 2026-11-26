@@ -51,6 +51,34 @@ pub const CUTS: &[Cut] = &[Cut {
 /// the census and the table cannot drift.
 pub const OWN_PRODUCER: &[&str] = &["object_setup"];
 
+/// A world layer draw (`LAYER_DRAW`, `0x00044550`) that draws only from the
+/// scene. The layer draw serves every layer, so these are cut per layer: its
+/// producer is [`crate::native_layers`] (layers 1, 2, 5, 7, 8 and 20) and
+/// [`crate::native_world`] (layer 3), which clear the layer's bit on every
+/// item the scene does not draw, so the guest builds no entry for it. What
+/// the scene cannot draw is `scene_dropped_world_*`.
+#[cfg(feature = "native-render")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LayerCut {
+    /// The layer number.
+    pub layer: u8,
+    /// The slot it draws in (`native_render::layer_pass::world_slot`).
+    pub slot: frame_scene::ViewSlot,
+}
+
+/// The world layers cut: 1, 3, 5, 8 and 20 in slot 1, 7 in slot 3 after the
+/// object shadows, 2 in slot 6.
+#[cfg(feature = "native-render")]
+pub const LAYER_CUTS: &[LayerCut] = &[
+    LayerCut { layer: 1, slot: frame_scene::ViewSlot::OpaqueBase },
+    LayerCut { layer: 3, slot: frame_scene::ViewSlot::OpaqueBase },
+    LayerCut { layer: 5, slot: frame_scene::ViewSlot::OpaqueBase },
+    LayerCut { layer: 8, slot: frame_scene::ViewSlot::OpaqueBase },
+    LayerCut { layer: 20, slot: frame_scene::ViewSlot::OpaqueBase },
+    LayerCut { layer: 7, slot: frame_scene::ViewSlot::ShadowsAndLayer7 },
+    LayerCut { layer: 2, slot: frame_scene::ViewSlot::Layer2 },
+];
+
 /// Why a cut does not match the census.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Refused {

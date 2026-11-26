@@ -1930,8 +1930,9 @@ pub fn counters() -> Vec<(&'static str, u64)> {
 }
 
 /// The observer before a layer draw: the scene's layer 3 opens its view;
-/// the scene's layers 1, 5, 7, 8 and 20 and the first person's layers
-/// put their items in the scene.
+/// the scene's layers 1, 2, 5, 7, 8 and 20 (which draw only from the
+/// scene, `layer_pass::world_slot`) and the first person's layers put their
+/// items in the scene.
 fn at_layer(mem: &dyn GuestMemory, ret: u32) {
     let Ok(layer) = mem.u32(CURRENT_LAYER) else {
         return;
@@ -1942,7 +1943,7 @@ fn at_layer(mem: &dyn GuestMemory, ret: u32) {
                 decorators(mem);
             }
         }
-        (Site::Scene, 1 | 5 | 7 | 8 | 20) => layer_items(mem, ViewKind::Game, layer),
+        (Site::Scene, 1 | 2 | 5 | 7 | 8 | 20) => layer_items(mem, ViewKind::Game, layer),
         (Site::AlternateView, LIGHTMAP_LAYER) => {
             let _ = open_kind_at_layer(mem, ViewKind::Alternate, true);
         }

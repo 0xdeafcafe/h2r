@@ -602,6 +602,117 @@ pub fn clear_layer_items(
     Some(LayerSkip { drawn, cleared, order })
 }
 
+/// The world layers that draw only from the scene (native-only design
+/// section 2): 1, 3, 5, 8 and 20 in slot 1, 7 in slot 3 after the object
+/// shadows, 2 in slot 6. A part of one of them the scene cannot draw is a
+/// named drop, never a guest draw.
+pub const WORLD_LAYERS: [u8; 7] = [1, 2, 3, 5, 7, 8, 20];
+
+/// The view slot a world layer draws in; `None` for any other layer.
+pub fn world_slot(layer: u8) -> Option<frame_scene::ViewSlot> {
+    use frame_scene::ViewSlot;
+    match layer {
+        1 | 3 | 5 | 8 | 20 => Some(ViewSlot::OpaqueBase),
+        7 => Some(ViewSlot::ShadowsAndLayer7),
+        2 => Some(ViewSlot::Layer2),
+        _ => None,
+    }
+}
+
+/// What [`clear_scene_layer`] cleared.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SceneLayerSkip {
+    /// The items the scene draws, in the list's order.
+    pub drawn: Vec<ListItem>,
+    /// Every item whose bit was cleared, drawn or dropped, for the restore.
+    pub cleared: crate::skip::Cleared,
+    /// Items the scene did not draw: their guest draw is gone too.
+    pub refused: usize,
+    /// Items whose render record did not read: dropped, never drawn.
+    pub unreadable: usize,
+}
+
+/// [`clear_layer_items`] for a layer that draws only from the scene: no
+/// kept item keeps a guest draw, so there is no order rule. Each geometry
+/// item of the list holding `layer`'s bit loses it: `take` says the scene
+/// draws it ([`SceneLayerSkip::drawn`]); the rest are counted `refused` (the
+/// scene has no draw for them) or `unreadable` (the item's render record
+/// does not read). `objects` false leaves the object items alone (layer
+/// 3's objects are consumed by the sorted walk). Items that are not a
+/// geometry build, or draw no record, draw nothing and keep their bit.
+/// `None` when the layer is not current or the list does not read; nothing
+/// is written then.
+pub fn clear_scene_layer(
+    mem: &mut dyn crate::camera::GuestWrite,
+    layer: u32,
+    objects: bool,
+    take: &dyn Fn(ListItem) -> bool,
+) -> Option<SceneLayerSkip> {
+    use crate::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, MAX_ITEMS, RENDER_RECORD_SIZE, RENDER_RECORDS};
+    use crate::world::Owner;
+    if layer >= 32 || mem.read_u32(CURRENT_LAYER)? != layer {
+        return None;
+    }
+    let list = mem.read_u32(CURRENT_LIST)?;
+    if list == 0 {
+        return None;
+    }
+    let count = mem.read_u32(list.checked_add(4)?)?;
+    let first = mem.read_u32(list.checked_add(0xc)?)?;
+    let items = mem.read_u32(list.checked_add(0x14)?)?;
+    if first > count || count - first > MAX_ITEMS {
+        return None;
+    }
+    items.checked_add(count.checked_mul(ITEM_SIZE)?)?;
+    let bit = 1u32 << layer;
+    let mut out = SceneLayerSkip {
+        drawn: Vec::new(),
+        cleared: crate::skip::Cleared { layer, items: Vec::new() },
+        refused: 0,
+        unreadable: 0,
+    };
+    let mut writes = Vec::new();
+    for i in first..count {
+        let item = items + ITEM_SIZE * i;
+        let mask = mem.read_u32(item + 0x10)?;
+        if mask & bit == 0 || mem.read_u32(item)? != GEOMETRY_BUILD {
+            continue;
+        }
+        let arg = mem.read_u32(item + 0xc)?;
+        let record = (arg >> 8) as u16 as i16;
+        if record < 0 {
+            continue;
+        }
+        let base = RENDER_RECORDS + RENDER_RECORD_SIZE * record as u32;
+        let found = (|| {
+            let shader = mem.read_u32(item + 8)?;
+            Some(if mem.read_u32(base + 4)? != u32::MAX {
+                ListItem::Object { slot: i, shader }
+            } else {
+                let packed = mem.read_u32(base + 0xc)?;
+                let owner = if mem.read_u32(base)? & (1 << 12) == 0 {
+                    Owner::Cluster((packed >> 9) & 0x1ff)
+                } else {
+                    Owner::Instance((packed >> 18) & 0x7ff)
+                };
+                ListItem::World(SkipItem { slot: i, owner, part: arg as u8, shader })
+            })
+        })();
+        match found {
+            Some(ListItem::Object { .. }) if !objects => continue,
+            Some(found) if take(found) => out.drawn.push(found),
+            Some(_) => out.refused += 1,
+            None => out.unreadable += 1,
+        }
+        writes.push((item, mask));
+    }
+    for (item, mask) in writes {
+        mem.write_u32(item + 0x10, mask & !bit)?;
+        out.cleared.items.push(item);
+    }
+    Some(out)
+}
+
 /// LOGICOP's canonical index, which [`gfx::state::RenderStateType`] does
 /// not model: `0` (none) draws the colour, anything else combines it
 /// with the target's.
@@ -1323,6 +1434,50 @@ pub(crate) mod tests {
         let skip = clear_layer_items(&mut m, 7, &|i| if matches!(i, ListItem::World(_)) { TAKE } else { KEEP }).unwrap();
         assert_eq!(skip.drawn.len(), 1);
         assert_eq!(skip.order, 1);
+    }
+
+    #[test]
+    fn world_layers_draw_in_their_slots() {
+        use frame_scene::ViewSlot;
+        for layer in [1, 3, 5, 8, 20] {
+            assert_eq!(world_slot(layer), Some(ViewSlot::OpaqueBase), "layer {layer}");
+        }
+        assert_eq!(world_slot(7), Some(ViewSlot::ShadowsAndLayer7), "after the object shadows");
+        assert_eq!(world_slot(2), Some(ViewSlot::Layer2));
+        assert!(world_slot(7) > world_slot(1) && world_slot(2) > world_slot(7));
+        for layer in [4, 6, 10, 15, 16, 17, 18] {
+            assert_eq!(world_slot(layer), None, "layer {layer} is not a world layer");
+        }
+        assert!(WORLD_LAYERS.iter().all(|&l| world_slot(l).is_some()));
+    }
+
+    /// No item keeps its guest draw: what the scene does not draw is
+    /// cleared and counted, in any order, and an unreadable record is a
+    /// drop of its own.
+    #[test]
+    fn an_unreadable_part_is_a_named_drop() {
+        use crate::skip::ITEM_SIZE;
+        // Record 1 cluster 7, record 2 an object's, record 3 placement 9;
+        // item 3's record 9 was never written.
+        let records = [(1, 0, u32::MAX, 7 << 9), (2, 0, 0xe100_0001, 0), (3, 1 << 12, u32::MAX, 9 << 18)];
+        let items = [(1, 1 << 5), (2, 1 << 5), (3, 1 << 5), (9, 1 << 5), (1, 1 << 3)];
+        let mut m = layer_list(5, &records, &items);
+        // The scene draws the placement only: the cluster is refused, the
+        // object is left (layer 3's rule), the item of layer 3 is not ours.
+        let skip = clear_scene_layer(&mut m, 5, false, &|i| matches!(i, ListItem::World(SkipItem { owner: crate::world::Owner::Instance(9), .. }))).unwrap();
+        assert_eq!(skip.drawn.iter().map(|i| i.slot()).collect::<Vec<_>>(), [2]);
+        assert_eq!((skip.refused, skip.unreadable), (1, 1));
+        assert_eq!(skip.cleared.items, [ITEMS, ITEMS + 2 * ITEM_SIZE, ITEMS + 3 * ITEM_SIZE]);
+        assert_eq!(mask_at(&m, 0), Some(0), "the refused part draws nothing");
+        assert_eq!(mask_at(&m, 3), Some(0), "the unreadable part draws nothing");
+        assert_eq!(mask_at(&m, 1), Some(1 << 5), "objects are the walk's when asked");
+        assert_eq!(mask_at(&m, 4), Some(1 << 3), "another layer's bit");
+        // With objects, the refused object is dropped too.
+        let mut m = layer_list(5, &records, &items);
+        let skip = clear_scene_layer(&mut m, 5, true, &|_| false).unwrap();
+        assert_eq!((skip.drawn.len(), skip.refused, skip.unreadable), (0, 3, 1));
+        assert!((0..4).all(|i| mask_at(&m, i) == Some(0)));
+        assert_eq!(clear_scene_layer(&mut m, 7, true, &|_| true), None, "not the current layer");
     }
 
     /// Five structure items; the middle one keeps its guest draw. When it
