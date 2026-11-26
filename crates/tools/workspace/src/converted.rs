@@ -50,7 +50,6 @@ use tags::schema::Schema;
 use crate::maps::BaseMaps;
 
 pub use tags::repo::converted::*;
-use tags::repo::converted::{marker_text, parse_marker};
 
 /// The shared caches a map reads resources from, by file stem.
 const SHARED: [(&str, ResourceFile); 3] = [

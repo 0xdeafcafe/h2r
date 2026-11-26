@@ -291,7 +291,7 @@ fn a_session_saves_without_its_kit_as_a_map_variant() {
 fn the_room_after_a_block_is_its_run_of_spare_rows() {
     let block = BlockKind::StartingLocations;
     let spare = kit::inert_row(block);
-    let rows = vec![spare.clone(), spare.clone(), vec![0; spare.len()], spare.clone()];
+    let rows = [spare.clone(), spare.clone(), vec![0; spare.len()], spare.clone()];
     let read = |n: u32| rows.get((n - 5) as usize).cloned();
     assert_eq!(kit::room(block, 5, read), 2);
     assert_eq!(kit::room(block, 5, |_| None), 0);

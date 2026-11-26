@@ -643,7 +643,7 @@ impl Sessions {
         } else {
             "custom"
         };
-        for (id, _record) in &mut self.records {
+        for id in self.records.keys() {
             if let (Some(service), Some(connection)) = (service, connection) {
                 let request = MatchRequest::Update {
                     id: live_proto::sign::hex(id),

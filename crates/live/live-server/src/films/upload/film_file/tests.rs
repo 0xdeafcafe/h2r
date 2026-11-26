@@ -1,5 +1,4 @@
 use super::*;
-use sha2::Digest as _;
 
 /// A sealed film file of `game` with `ticks` ticks, in the layout
 /// `film::file` writes. Its tick chunks, tail checkpoints and game start

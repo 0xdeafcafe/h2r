@@ -41,7 +41,7 @@ use agent_proto::{
     PassRecord, RenderStats, RpcError, SceneParams, SceneReply, SnapRecord, code, method,
 };
 use live_proto::maps::{MapId, Sha256};
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 
 use crate::exec::{Access, Agent, DEFER_TICKS_MAX};
 
@@ -1586,6 +1586,7 @@ mod tests {
 #[cfg(test)]
 mod frame_scene_tests {
     use super::*;
+    use serde_json::json;
     use std::sync::mpsc::{Receiver, sync_channel};
     use std::time::Duration;
 

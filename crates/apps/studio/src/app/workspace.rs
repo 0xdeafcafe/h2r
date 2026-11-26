@@ -34,6 +34,7 @@ const UNUSED_AFTER: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// The workspace state in the [`App`]: the tree's root and disc, the plan
 /// as last computed, the extraction running (or waiting to be polled) and
 /// what the last one did.
+#[derive(Default)]
 pub struct Workspace {
     /// The `tags_root` setting: where the tree lives, `<data>/tags/`
     /// unless set (docs/editor/tag-workspace.md, "The tree and its
@@ -54,18 +55,6 @@ pub struct Workspace {
     sizes: Option<Sizes>,
 }
 
-impl Default for Workspace {
-    fn default() -> Self {
-        Workspace {
-            root: None,
-            disc: None,
-            stale: None,
-            job: None,
-            last: None,
-            sizes: None,
-        }
-    }
-}
 
 /// The ini section the settings are saved in, after Dear ImGui's own and
 /// the field panel's (`[Studio][Tags]`).

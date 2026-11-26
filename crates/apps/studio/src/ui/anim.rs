@@ -46,7 +46,7 @@ pub(crate) struct Preview {
 
 impl Preview {
     pub(crate) fn render(gpu: &mut Gpu<'_>, model: &PoseModel) -> Option<Self> {
-        let texture = crate::app::anim::texture(&gpu.device, &gpu.queue, model, PICTURE);
+        let texture = crate::app::anim::texture(gpu.device, gpu.queue, model, PICTURE);
         let view = texture.create_view(&Default::default());
         let id = gpu.renderer.register_external_texture(&view).ok()?;
         Some(Self {
@@ -652,7 +652,7 @@ fn gizmo(
         .map(|node| {
             let [x, y, z, _] = node.world?[3];
             let [u, v] = camera.project([x, y, z], aspect)?;
-            (u >= 0.0 && u <= 1.0 && v >= 0.0 && v <= 1.0)
+            ((0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v))
                 .then_some([origin[0] + size[0] * u, origin[1] + size[1] * v])
         })
         .collect::<Vec<_>>();

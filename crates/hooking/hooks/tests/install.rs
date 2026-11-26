@@ -453,7 +453,6 @@ fn an_entry_awaits_guest_calls_and_returns_as_stdcall() {
 /// survives the call.
 #[test]
 fn a_reserved_guest_call_leaves_the_bodys_frame_alone() {
-    use guest_layout::memory::GuestMemory;
     use hooks::{EntryFuture, GuestCall, Ret};
     let rt = runtime();
     let mut r = Registry::new(Switches::defaults());

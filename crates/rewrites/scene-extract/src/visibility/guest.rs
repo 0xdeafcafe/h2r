@@ -359,8 +359,8 @@ fn references_into(
             references(mem, CLUSTER_OBJECTS[1], cluster)?,
         ];
         for &handle in lists.iter().flatten() {
-            if !world.objects.contains_key(&handle) {
-                world.objects.insert(handle, object(mem, &objects, handle, sphere)?);
+            if let std::collections::hash_map::Entry::Vacant(e) = world.objects.entry(handle) {
+                e.insert(object(mem, &objects, handle, sphere)?);
             }
         }
         world.refs.insert(cluster, lists);

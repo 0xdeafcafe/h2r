@@ -480,13 +480,13 @@ pub fn layer_part(
     };
     let mut out = record_flags(flags, triangle_list, conditional.is_some());
     if fade {
-        out = out | PartFlags::FADE;
+        out |= PartFlags::FADE;
     }
     if flagged {
-        out = out | PartFlags::SHADER_FLAG;
+        out |= PartFlags::SHADER_FLAG;
     }
     if uploads {
-        out = out | PartFlags::STRUCTURE_PARAMETERS;
+        out |= PartFlags::STRUCTURE_PARAMETERS;
     }
     if !matches!(layer, 1 | 3) {
         out = PartFlags(out.0 & !PartFlags::STENCIL_MARK.0);
@@ -589,15 +589,15 @@ fn read_part_layout(
     // parameter block when its prologue uploads one.
     let mut extra = PartFlags::NONE;
     if (half(mem, record, RECORD_DRAW_FLAGS)? as u8) != u8::MAX {
-        extra = extra | PartFlags::FADE;
+        extra |= PartFlags::FADE;
     }
     if half(mem, shader, SHADER_FLAGS)? & 1 != 0 {
         if lightmapped {
             return None;
         }
-        extra = extra | PartFlags::SHADER_FLAG;
+        extra |= PartFlags::SHADER_FLAG;
         if flagged_shader(mem, false).ok()? {
-            extra = extra | PartFlags::STRUCTURE_PARAMETERS;
+            extra |= PartFlags::STRUCTURE_PARAMETERS;
         }
     }
     // Read only under bit 6, as the guest does (`0x0004d5ff`).

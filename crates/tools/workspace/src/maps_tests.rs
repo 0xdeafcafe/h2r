@@ -198,7 +198,7 @@ fn a_fresh_map_builds_to_a_derived_package_with_what_it_takes() {
 fn an_onto_map_is_its_base_plus_what_it_takes() {
     let original = base_map();
     let p = map_package("scratch", ONTO_TOML, "scratch");
-    let built = build_maps(&[p.clone()], &Disc(original.clone()), &NoFresh);
+    let built = build_maps(std::slice::from_ref(&p), &Disc(original.clone()), &NoFresh);
     let [m] = built.maps.as_slice() else {
         panic!("one map: {built:?}")
     };
@@ -242,7 +242,7 @@ fn an_onto_map_that_takes_nothing_is_refused() {
 #[test]
 fn a_fresh_map_with_no_builder_and_a_missing_disc_fail_by_name() {
     let p = map_package("stage", FRESH_TOML, "fresh");
-    let built = build_maps(&[p.clone()], &Disc(base_map()), &NoFresh);
+    let built = build_maps(std::slice::from_ref(&p), &Disc(base_map()), &NoFresh);
     assert!(built.failed[0].why.contains("no builder for fresh maps"));
     let built = build_maps(&[p], &NoDisc, &NoFresh);
     assert!(built.failed[0].why.contains("the base map tiny"));
@@ -265,7 +265,7 @@ fn a_map_with_a_ground_is_built_over_what_the_item_makes() {
     let kit = Kit::default();
     let p = ground_package(GROUND_YAML);
     assert!(check_package(&p).is_empty(), "{:?}", check_package(&p));
-    let built = build_maps(&[p.clone()], &Disc(base_map()), &kit);
+    let built = build_maps(std::slice::from_ref(&p), &Disc(base_map()), &kit);
     assert!(built.failed.is_empty(), "{built:?}");
     let [m] = built.maps.as_slice() else {
         panic!("one map: {built:?}")
@@ -479,7 +479,7 @@ fn map_items_change_no_other_map() {
 fn the_rewrite_does_not_apply_what_a_built_map_took() {
     let p = map_package("stage", FRESH_TOML, "fresh");
     assert_eq!(
-        built_names(&[p.clone()]).into_iter().collect::<Vec<_>>(),
+        built_names(std::slice::from_ref(&p)).into_iter().collect::<Vec<_>>(),
         ["fresh"]
     );
     let mut rw = PackageRewrite::new(vec![p]);

@@ -310,17 +310,17 @@ mod tests {
         let mut streams = [stream(1.0), stream(2.0)];
         let key = StreamKey::new(&streams, 1).unwrap();
         let id = |b: &IndexedGeometry| b.stream.data.cache_id().unwrap();
-        let first = id(&cache.binding(key, &layout, &streams).unwrap());
-        assert_eq!(id(&cache.binding(key, &layout, &streams).unwrap()), first);
+        let first = id(cache.binding(key, &layout, &streams).unwrap());
+        assert_eq!(id(cache.binding(key, &layout, &streams).unwrap()), first);
 
         layout.streams[1].attributes[0].register = VertexRegister(6);
-        let new_layout = id(&cache.binding(key, &layout, &streams).unwrap());
+        let new_layout = id(cache.binding(key, &layout, &streams).unwrap());
         assert_ne!(new_layout, first);
 
         streams[1] = stream(3.0);
         let key = StreamKey::new(&streams, 1).unwrap();
         let packed = cache.binding(key, &layout, &streams).unwrap();
-        assert_ne!(id(&packed), new_layout);
+        assert_ne!(id(packed), new_layout);
         assert_eq!(&packed.stream.data[4..8], &3.0f32.to_le_bytes());
     }
 }

@@ -1063,7 +1063,7 @@ fn post_raster(
     draw: &d3d::ResolvedDraw,
     planned_inputs: Option<CombinerInputs>,
 ) -> Result<PostRaster, &'static str> {
-    use gfx::state::{CompareFunc, FillMode, ShadeMode};
+    use gfx::state::{CompareFunc, FillMode};
     let state = &draw.state.render;
     let alpha_test = (state.alpha_test_enable && state.alpha_func != CompareFunc::Always)
         .then(|| (d3d::nv2a::alpha_func(state.alpha_func), state.alpha_ref));

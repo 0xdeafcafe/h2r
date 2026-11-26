@@ -596,11 +596,11 @@ fn thumb(
     id: TagId,
     decode: bool,
 ) -> Option<dear_imgui_rs::TextureId> {
-    if !st.thumbs.contains_key(&id) {
+    if let std::collections::hash_map::Entry::Vacant(e) = st.thumbs.entry(id) {
         if !decode {
             return None;
         }
-        st.thumbs.insert(id, app.bitmap_picture(id, 0).map(Arc::new));
+        e.insert(app.bitmap_picture(id, 0).map(Arc::new));
     }
     let pic = st.thumbs.get(&id)?.as_ref().ok()?.clone();
     pictures.picture(gpu, &format!("shader-thumb-{:x}", id.0), &pic)

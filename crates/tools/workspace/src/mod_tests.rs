@@ -157,7 +157,7 @@ fn field_of(bytes: &[u8], path: &str) -> Val {
 fn tree_of(bytes: &[u8]) -> map::build::Block {
     let mut map = Map::from_reader(Cursor::new(bytes)).unwrap();
     let unpin = MapUnpin::new(&mut map).unwrap();
-    let mut set = TagSet::from_map(&mut map).unwrap();
+    let set = TagSet::from_map(&mut map).unwrap();
     let id = set.find(cc(b"jpt!"), A).expect("the tag is in the map");
     unpin.tree(id).unwrap()
 }
@@ -426,14 +426,14 @@ fn a_from_was_or_replaces_that_does_not_match_leaves_its_package_off_with_the_re
     // Under `h2 package build` each stops the build with its item.
     let said = |p: &[Loaded]| build_map(&bytes, p, &target()).unwrap_err();
     assert!(
-        said(&[from.clone()]).contains("edits.yaml, line 1"),
+        said(std::slice::from_ref(&from)).contains("edits.yaml, line 1"),
         "{}",
-        said(&[from.clone()])
+        said(std::slice::from_ref(&from))
     );
     assert!(
-        said(&[was.clone()]).contains("edits.yaml, line 1"),
+        said(std::slice::from_ref(&was)).contains("edits.yaml, line 1"),
         "{}",
-        said(&[was.clone()])
+        said(std::slice::from_ref(&was))
     );
     let third = said(&[replaces]);
     assert!(
@@ -868,7 +868,7 @@ fn a_delta_applied_to_its_base_gives_the_changed_tag_and_to_another_base_is_refu
 fn image_of(bytes: &[u8]) -> Vec<u8> {
     let mut map = Map::from_reader(Cursor::new(bytes)).unwrap();
     let unpin = MapUnpin::new(&mut map).unwrap();
-    let mut set = TagSet::from_map(&mut map).unwrap();
+    let set = TagSet::from_map(&mut map).unwrap();
     let id = set.find(cc(b"jpt!"), A).unwrap();
     image(&set, &unpin.tree(id).unwrap()).unwrap()
 }
@@ -963,7 +963,7 @@ fn a_fork_is_an_item_for_one_map_and_changes_only_that_level() {
     assert_eq!(second.packages, ["a-wide", "b-fork"]);
     assert_eq!(
         tiny.id,
-        level_id("tiny", Sha256::of(&s.bytes), &[wide.clone()])
+        level_id("tiny", Sha256::of(&s.bytes), std::slice::from_ref(&wide))
     );
     assert_eq!(
         second.id,

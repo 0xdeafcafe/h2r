@@ -153,8 +153,8 @@ pub fn install(maps: Box<dyn Maps>) {
 /// `None` without them or without that map.
 pub fn installed(map: &str) -> Option<Sha256> {
     let maps = with_maps(|m| m.clone())?;
-    let hash = maps.lock().unwrap_or_else(|e| e.into_inner()).installed(map);
-    hash
+    
+    maps.lock().unwrap_or_else(|e| e.into_inner()).installed(map)
 }
 
 /// Marks the map variants `game` suggests among `listed`: those whose

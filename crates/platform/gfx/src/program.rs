@@ -336,6 +336,8 @@ impl ProgramBindings {
     /// views, so the groups are never hit again, and a group over a
     /// destroyed texture is invalid; without this each would wait out
     /// [`GROUP_FRAMES`].
+    // A texture hashes by its id, not by the state behind its interior mutability.
+    #[allow(clippy::mutable_key_type)]
     pub fn forget_textures(&mut self, gone: &[wgpu::Texture]) {
         if gone.is_empty() || self.texture_groups.is_empty() {
             return;

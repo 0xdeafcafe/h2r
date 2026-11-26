@@ -375,7 +375,7 @@ fn a_killed_film_with_no_game_start_is_removed_with_its_stats() {
     rec.finish(true).unwrap();
     assert!(!open.exists(), "a game with no first update has no film");
     let removed = prune(&dir.0, KEEP, SystemTime::now() + ABANDONED_AFTER).unwrap();
-    assert_eq!(removed, [path.clone()]);
+    assert_eq!(removed, std::slice::from_ref(&path));
     assert!(!path.exists() && !film::file::stats_of(&path).exists());
 }
 

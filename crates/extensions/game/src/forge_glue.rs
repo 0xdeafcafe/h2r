@@ -498,6 +498,7 @@ fn tick_of(m: &dyn engine::GuestMemory) -> Option<u32> {
 /// was reloaded onto: each added object's live object is the one the game
 /// made at its row (`agent::forge::base::live_object`). An `Err` gives
 /// `opened` back with why, for a session of its own.
+#[allow(clippy::result_large_err)] // `Opened` goes back by value, once per reload.
 fn reopen(
     mut carry: reload::Carry,
     opened: Opened,

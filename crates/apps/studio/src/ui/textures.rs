@@ -1113,7 +1113,7 @@ fn sequence_rows(
     st: &mut TexturesUi,
     tag: TagId,
     s: &crate::app::textures::SequenceInfo,
-    images: usize,
+    _images: usize,
     locked: bool,
     actions: &mut Vec<Action>,
 ) {

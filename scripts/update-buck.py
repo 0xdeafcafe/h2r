@@ -22,6 +22,7 @@ import json
 import os
 import re
 import shutil
+import difflib
 import subprocess
 import sys
 import tomllib
@@ -601,6 +602,13 @@ def main():
     stale = sorted(os.path.relpath(p, REPO) for p in set(before) | set(after) if before.get(p) != after.get(p))
     if stale:
         print("Buck rules are stale; run scripts/update-buck.py:\n" + "".join("  {}\n".format(p) for p in stale))
+        # The diff says which tool differs when a local run passes and CI's does not.
+        for path in sorted(set(before) | set(after)):
+            if before.get(path) != after.get(path):
+                old = (before.get(path) or b"").decode("utf-8", "replace").splitlines(keepends=True)
+                new = (after.get(path) or b"").decode("utf-8", "replace").splitlines(keepends=True)
+                rel = os.path.relpath(path, REPO)
+                sys.stdout.writelines(list(difflib.unified_diff(old, new, rel, rel + " (generated)"))[:200])
         return 1
     return 0
 

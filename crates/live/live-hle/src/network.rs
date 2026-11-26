@@ -345,9 +345,7 @@ impl Network {
                 SocketAddrV4::new(
                     *address.ip(),
                     address
-                        .port()
-                        .checked_add(crate::network_config::COOP_PORT_OFFSET)
-                        .unwrap_or(u16::MAX),
+                        .port().saturating_add(crate::network_config::COOP_PORT_OFFSET),
                 )
             })
             .collect()

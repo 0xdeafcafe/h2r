@@ -627,7 +627,7 @@ fn a_deliberate_mismatch_is_counted_and_named() {
             g.set_u32(STACK - 0x44c, 0).unwrap();
         }),
     ];
-    for (n, (name, edit)) in edits.into_iter().enumerate() {
+    for (name, edit) in edits {
         let (mut cpu, mut g) = machine(&c);
         let entry = cpu;
         let o = plan(&entry, &g).unwrap();

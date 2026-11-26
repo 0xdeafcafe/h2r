@@ -289,7 +289,7 @@ fn a_mark_names_its_audience_and_the_view_hides_the_rest() {
     g.players.get_mut(&1).unwrap().team = 1;
     g.players.get_mut(&2).unwrap().team = 1;
     g.label("hill", 0x4001_0000, 0, 1);
-    let mut vm = start(src, &mut g, &[]);
+    let vm = start(src, &mut g, &[]);
     assert_eq!(g.script_error, None, "{:?}", g.script_error);
 
     let at = |vm: &Vm, slot: &str, viewer: u8, team: Option<u8>| {

@@ -698,7 +698,7 @@ impl ChunkEncoder {
             };
             let present = &self.present[s * CHUNK_TICKS..s * CHUNK_TICKS + n];
             let mut mask = 0u16;
-            if present.iter().any(|&p| p == 0) {
+            if present.contains(&0) {
                 mask |= 1;
             }
             for (i, field) in FIELDS.iter().enumerate() {

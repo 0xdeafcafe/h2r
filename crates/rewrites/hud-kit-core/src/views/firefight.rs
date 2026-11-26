@@ -24,7 +24,7 @@
 //! [`View`] is what the HUD shows; the game (`game::firefight::hud`) makes
 //! it from the mode blob alone, so a client draws what the host draws.
 
-use crate::model::{Describe, Hud, Kind, PILL_BODY, PILL_END, Pulse, Style, Value, Values};
+use crate::model::{Describe, Hud, PILL_BODY, PILL_END, Pulse, Style, Value, Values};
 
 pub const NAME: &str = "firefight";
 

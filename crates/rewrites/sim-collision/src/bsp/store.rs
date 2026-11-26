@@ -3,7 +3,7 @@
 //! cross a process boundary.
 use super::{Bsp, Consts, HEADER_WORDS, Leaf, Node, Node2d, Ref, RingEdge, Surface, block, ring};
 use crate::store::{Column, atomic_write};
-use memmap2::{Mmap, MmapOptions};
+use memmap2::MmapOptions;
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,

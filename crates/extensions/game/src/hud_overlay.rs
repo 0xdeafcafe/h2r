@@ -146,7 +146,7 @@ enum Source<'a> {
     /// A glyph: the glyph cache, which must be bound.
     Glyph(&'a HudTagQuad),
     /// A screen draw: its first bound texture, no tag.
-    Screen(ScreenDraw),
+    Screen(#[allow(dead_code)] ScreenDraw),
 }
 
 impl Source<'_> {

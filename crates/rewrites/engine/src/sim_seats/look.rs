@@ -583,7 +583,7 @@ fn selections(c: &mut CpuAbi, m: &mut impl Memory) -> Result {
         c.edx = m.u32(at(m.u32(OBJECT_HEADER)?, 0x44))?;
         let slot = c.eax & 0xffff;
         let kind = m.u8(at(c.edx, slot * 12 + 3))?;
-        c.ecx = slot * 3 & !0xff | u32::from(kind);
+        c.ecx = (slot * 3) & !0xff | u32::from(kind);
         c.ebx = alu::shl(c, 1, u32::from(kind), 32);
         logic(c, c.ebx & 1, 0x80);
         if c.ebx & 1 != 0 {
@@ -700,7 +700,7 @@ fn after_weapon(c: &mut CpuAbi, m: &mut impl Memory) -> Result {
     load(c, 0, m.u32(at(sp, 0xb0))?);
     let x = sse::ss(c, Ss::Mul, 0, m.u32(at(sp, 0xb0))?);
     load(c, 0, m.u32(at(sp, 0xac))?);
-    let y = sse::ss(c, Ss::Mul, 0, m.u32(at(sp, 0xac))?);
+    let _y = sse::ss(c, Ss::Mul, 0, m.u32(at(sp, 0xac))?);
     let square = sse::ss(c, Ss::Add, 0, x);
     let near = sse::comiss(c, square, m.u32(0x0045_e578)?) & 0x41 != 0;
     zoom_bits(c, m, near)

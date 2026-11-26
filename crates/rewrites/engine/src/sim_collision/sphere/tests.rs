@@ -1,5 +1,5 @@
 use super::*;
-use crate::sim_native::{Memory, geometry_test};
+use crate::sim_native::geometry_test;
 use runtime::{Guest, guest::Permissions};
 use sim_core::Epoch;
 

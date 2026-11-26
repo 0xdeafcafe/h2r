@@ -228,7 +228,7 @@ fn write_film(film: &Path) {
         header: Reader::open(&container).unwrap().header.clone(),
         descriptor: track.descriptor.clone(),
     };
-    let mut w = FilmWriter::new(File::create(&film).unwrap(), &seed, 30).unwrap();
+    let mut w = FilmWriter::new(File::create(film).unwrap(), &seed, 30).unwrap();
     while let Some(tick) = track.step().unwrap() {
         let flags = if tick.post_hash.is_some() { TICK_DIGEST } else { 0 };
         let mut seats = [None; SEATS];

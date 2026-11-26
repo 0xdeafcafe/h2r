@@ -174,7 +174,7 @@ impl State {
         out.extend(widget_mask.to_le_bytes());
         out.push(waypoint_mask);
         for w in self.widgets.iter().flatten() {
-            out.push(u8::from(w.shown) * SHOWN | u8::from(w.text.is_some()) * HAS_TEXT);
+            out.push((u8::from(w.shown) * SHOWN) | (u8::from(w.text.is_some()) * HAS_TEXT));
             out.extend(w.value.to_le_bytes());
             out.push(w.fill);
             out.push(w.style);

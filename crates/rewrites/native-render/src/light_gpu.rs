@@ -1112,7 +1112,7 @@ mod tests {
             LayeredImage::cube((0..6).map(|f| (f, 1, 1, vec![0; 4])).collect()).unwrap(),
         );
         let volume = StaticLightTexture::new(LayeredImage::volume(1, 1, 1, vec![0; 4]).unwrap());
-        let mut set = LightSet::new(device, queue, Some(&cube), Some(&volume));
+        let set = LightSet::new(device, queue, Some(&cube), Some(&volume));
         let other_view = LightSet::new(device, queue, Some(&cube), Some(&volume));
         assert_eq!(
             set.textures.normalization,
@@ -1204,7 +1204,7 @@ mod tests {
         gpu.lock().unwrap().pipelines.get_mut(&key).unwrap().1 = ready;
         // Runs in one submission take distinct resident slots; the next
         // submission takes the same slots again, making no buffer.
-        let mut frame = || {
+        let frame = || {
             let uploads = pool.begin();
             let runs: Vec<_> = (0..3)
                 .map(|_| {
@@ -1313,7 +1313,7 @@ mod tests {
         const SIZE: u32 = 8;
         const CLEAR: [f32; 4] = [0.25, 0.25, 0.25, 1.0];
         let scissor = [2, 1, 4, 5];
-        let mut set = LightSet::new(device, queue, None, None);
+        let set = LightSet::new(device, queue, None, None);
         let red = additive_program(
             [0.5, 0.0, 0.0, 1.0],
             wgpu::Color {
@@ -1572,7 +1572,7 @@ mod tests {
         };
         let (device, queue) = (&ctx.device, &ctx.queue);
         const SIZE: u32 = 4;
-        let mut set = LightSet::new(device, queue, None, None);
+        let set = LightSet::new(device, queue, None, None);
         let program = additive_program([0.5, 0.0, 0.0, 1.0], wgpu::Color::WHITE);
         let gpu = prepared_gpu(device, queue, &set, &program);
         let view = ViewInputs {
@@ -1711,7 +1711,7 @@ mod tests {
         };
         let (device, queue) = (&ctx.device, &ctx.queue);
         const SIZE: u32 = 4;
-        let mut set = LightSet::new(device, queue, None, None);
+        let set = LightSet::new(device, queue, None, None);
         let program = LightProgram {
             wgsl: "
                 @group(1) @binding(0) var map: texture_2d<f32>;

@@ -143,7 +143,7 @@ fn a_jmad_move_and_revert_flush_shared_and_arena_clip_keys() {
 
     let graph_range = SHARED..SHARED + 2 * STRIDE;
     let arena_range = ARENA..ARENA + 3 * STRIDE;
-    assert_eq!(animation_clip_ranges(&g, &notice), [graph_range.clone()]);
+    assert_eq!(animation_clip_ranges(&g, &notice), std::slice::from_ref(&graph_range));
 
     g.set_u32(root, 3).unwrap();
     g.set_u32(root + 4, ARENA).unwrap();
@@ -183,7 +183,7 @@ fn a_corrupt_jmad_block_pair_cannot_flush_an_unrelated_range() {
         address: GRAPH,
         size: tags::anim::HEADER_SIZE as u32,
         range: root..root + 8,
-        spans: vec![root..root + 8],
+        spans: std::iter::once(root..root + 8).collect(),
         moved_blocks: Vec::new(),
         revert: false,
     };

@@ -251,8 +251,7 @@ fn ground_over_headroom_is_refused_with_its_biggest_part() {
     pin.metadata_size += max - map.header().meta_size;
     let full = set.build().unwrap().0;
     let error = build(&full, NAME, &placed(), &recipe())
-        .err()
-        .expect("must refuse")
+        .expect_err("must refuse")
         .to_string();
     assert!(error.contains("exceeds tag headroom by "), "{error}");
     assert!(error.contains("the biggest part is "), "{error}");

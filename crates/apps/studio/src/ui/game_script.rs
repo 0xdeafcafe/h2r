@@ -392,6 +392,7 @@ fn save_game_variant(app: &mut App, dialogs: bool) {
     }
 }
 
+#[allow(dead_code)] // Not wired yet.
 fn reload(app: &mut App) {
     if let Err(why) = app.rules.queue_reload() {
         app.error(format!("Script not reloaded: {why}"));

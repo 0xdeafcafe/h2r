@@ -878,7 +878,7 @@ mod tests {
     /// guest's `qsort` puts them, which a stable sort would not.
     #[test]
     fn a_long_list_is_partitioned_as_the_guest_does() {
-        let mut keys = vec![(0.0, 0, 6); 12];
+        let mut keys = [(0.0, 0, 6); 12];
         keys[5] = (1.0, 0, 8);
         keys[7] = (2.0, 0, 6);
         keys[9] = (0.0, -1, 6);

@@ -329,6 +329,8 @@ impl ScriptDirector {
             FIGHTING => Phase::Fighting,
             CLEANUP => Phase::Cleanup { since: at },
             INTERMISSION => Phase::Intermission { until: at },
+            DONE => Phase::Done,
+            // A phase the script never writes reads as finished.
             _ => Phase::Done,
         };
         let slots = std::array::from_fn(|s| {

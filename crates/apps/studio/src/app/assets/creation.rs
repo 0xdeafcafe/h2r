@@ -247,7 +247,7 @@ fn import_model(data: &Path, file: &Path, package: &str, tag: &str) -> Result<Va
     let mut written = Vec::new();
     let mut manifest_touched = false;
     let mut lock_touched = false;
-    let mut write = || -> std::io::Result<()> {
+    let write = || -> std::io::Result<()> {
         fs::create_dir_all(dir.join(folder))?;
         for (path, bytes) in &files {
             let path = dir.join(path);

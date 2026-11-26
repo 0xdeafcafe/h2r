@@ -52,6 +52,7 @@ impl<'a> OfMap<'a> {
     }
 
     /// The assets of the map whose bytes are `base`, with no catalogue.
+    #[allow(clippy::self_named_constructors)] // `OfMap::of_map(base)` reads as the map's own assets.
     pub fn of_map(base: &'a [u8]) -> Self {
         Self::new(None, base)
     }
@@ -137,6 +138,15 @@ impl Assets for OfMap<'_> {
     }
 }
 
+/// Reborrow an optional asset table for one call: the trait object's
+/// lifetime is shortened to the reborrow's, so a loop can lend it again.
+pub(crate) fn lend<'r>(assets: &'r mut Option<&mut dyn Assets>) -> Option<&'r mut dyn Assets> {
+    match assets {
+        Some(a) => Some(&mut **a),
+        None => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,14 +197,5 @@ mod tests {
         assert_eq!(changed, by_catalogue.hash_of(&written).unwrap());
         assert_ne!(Some(changed), by_map.hash(&key()).unwrap());
         let _ = std::fs::remove_dir_all(&root);
-    }
-}
-
-/// Reborrow an optional asset table for one call: the trait object's
-/// lifetime is shortened to the reborrow's, so a loop can lend it again.
-pub(crate) fn lend<'r>(assets: &'r mut Option<&mut dyn Assets>) -> Option<&'r mut dyn Assets> {
-    match assets {
-        Some(a) => Some(&mut **a),
-        None => None,
     }
 }

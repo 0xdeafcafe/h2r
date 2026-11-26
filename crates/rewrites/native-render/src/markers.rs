@@ -53,8 +53,8 @@ impl Batch {
     }
 }
 
-/// How the guest's depth buffer stores a view's depth: a W-buffer, `floor(w
-/// * scale / far) / scale`, nearer smaller (`frame_scene::w_depth`). The
+/// How the guest's depth buffer stores a view's depth: a W-buffer,
+/// `floor(w * scale / far) / scale`, nearer smaller (`frame_scene::w_depth`). The
 /// pass writes that value for each fragment, so its test meets the world's
 /// own. `bias` is how far towards the eye a fragment moves first, in view
 /// units, so a face lying on a surface passes the rounding.

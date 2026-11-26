@@ -135,7 +135,7 @@ enum Dest {
     /// A host's or an explicit (`--film`, `H2_FILM_OUT`) recording: one
     /// film at this path, open from boot; the recording completes at its
     /// game's end.
-    Named(PathBuf),
+    Named(#[allow(dead_code)] PathBuf),
 }
 
 impl Recording {
@@ -174,6 +174,7 @@ struct SeekProgress {
     target: u64,
     from_tick: u64,
     source: agent_proto::theater::SeekSource,
+    #[allow(dead_code)] // `theater.state` does not report the requested route yet.
     requested_source: Option<agent_proto::theater::SeekRoute>,
 }
 struct State {

@@ -70,7 +70,7 @@ pub(crate) fn install(b: &mut Builder) {
                     let checked = crate::shadow::SHADOW.check_before_original(
                         name,
                         &*cpu,
-                        &*mem,
+                        &mem,
                         pc,
                         crate::shadow::game_tick,
                         &mut |cpu: &mut CpuAbi, mem: &mut runtime::Guest| {

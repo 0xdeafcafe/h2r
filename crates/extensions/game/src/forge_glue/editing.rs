@@ -299,6 +299,7 @@ impl Editor {
     /// and any hold are let go. The world is then brought to the document
     /// as after an edit. An `Err` is why the session cannot go on over it,
     /// with `opened` back for a fresh session.
+    #[allow(clippy::result_large_err)] // `Opened` goes back by value, once per reload.
     pub fn reopen(
         mut self,
         opened: Opened,
@@ -475,7 +476,6 @@ impl Editor {
                 .iter()
                 .filter_map(|t| readout::placed(t, game))
                 .collect(),
-            ..readout::Scene::default()
         }
     }
 
@@ -676,9 +676,7 @@ impl Editor {
             return nav;
         }
         let placed = self.session.ground_counts().iter().sum::<usize>() > 0;
-        let mut ground = placed
-            .then(|| self.session.markers().unwrap_or_default())
-            .unwrap_or_default();
+        let mut ground = if placed { self.session.markers().unwrap_or_default() } else { Default::default() };
         let mut things = self.session.things();
         if let Some((id, frame)) = self.tool.held_thing.zip(self.tool.ghost) {
             if let Some(t) = things.iter_mut().find(|t| t.id.identity() == id.identity()) {
@@ -991,7 +989,7 @@ impl Editor {
         };
         // A held thing being turned says its heading, as the readout's.
         let changing = (self.rotating && matches!(hand, Hand::Placing | Hand::Holding))
-            .then(|| self.tool.ghost)
+            .then_some(self.tool.ghost)
             .flatten()
             .map(|frame| format!("Heading {}", heading_degrees(frame.rotation[0])));
         crate::forge_hud::Published {

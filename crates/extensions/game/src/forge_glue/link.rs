@@ -196,7 +196,7 @@ impl coop::link::Link for RelayWhenUp {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_mut()
-            .and_then(|relay| coop::link::Link::recv(relay))
+            .and_then(coop::link::Link::recv)
     }
 }
 

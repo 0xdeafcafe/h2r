@@ -45,7 +45,7 @@ impl Store for Counting {
 /// VM's state after it.
 fn step(s: &Arc<Shared>, store: &Counting, f: impl FnOnce(&mut Runtime)) {
     let (before, sets) = (store.local.bytes(), store.sets());
-    f(&mut *s.lock());
+    f(&mut s.lock());
     let after = store.local.bytes();
     assert_eq!(
         store.sets() - sets,

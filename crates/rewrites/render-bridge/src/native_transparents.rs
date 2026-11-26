@@ -694,10 +694,10 @@ mod walk_tests {
         }
         mem.set_u32(stack + 0x78, 18).unwrap();
         mem.set_u32(stack + LAYER_DRAW_FRAME, 0x0004_2015).unwrap();
-        assert_eq!(layered_indexed_call(&ReadMemory(&mem), api), false);
+        assert!(!layered_indexed_call(&ReadMemory(&mem), api));
         mem.set_u32(native_render::skip::CURRENT_LAYER, 18).unwrap();
         mem.set_u32(stack + 0xf094, 0).unwrap();
-        assert_eq!(layered_indexed_call(&ReadMemory(&mem), api), false);
+        assert!(!layered_indexed_call(&ReadMemory(&mem), api));
     }
 
     #[test]

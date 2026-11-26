@@ -344,9 +344,9 @@ fn detail_model(state: &super::State) -> Vec<RowSpec> {
                 Action::Delete => "Delete",
             };
             if action.blocked(state) {
-                RowSpec::info(&label, "")
+                RowSpec::info(label, "")
             } else {
-                RowSpec::action(&label)
+                RowSpec::action(label)
             }
         })
         .collect()

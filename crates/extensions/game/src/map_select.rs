@@ -845,14 +845,6 @@ impl Flow {
         });
     }
 
-    fn pick(&self, category: Category) {
-        *lock(&self.next) = Some(OpenList {
-            mode: Mode::Maps(category),
-            from_setup: true,
-            focus: None,
-        });
-    }
-
     fn open(&self, mode: Mode) {
         *lock(&self.next) = Some(OpenList { mode, focus: None, from_setup: false });
     }

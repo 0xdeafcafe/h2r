@@ -15,7 +15,6 @@ use agent_proto::sim::Placement;
 use agent_proto::{ObjectId, RpcError};
 use engine::GuestMemory;
 use engine::entry::{Cx, EntryError, GuestCall};
-use engine::handle::DatumHandle;
 use serde_json::{Value, json};
 
 use super::super::{Outcome, RespawnTarget, Shared, addr, lock, object_delete, prepare_spawn};

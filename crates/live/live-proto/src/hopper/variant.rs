@@ -433,13 +433,12 @@ impl VariantRecord {
                 i16_in(0xf2, 1, 0x7fff, &mut bad);
                 i16_in(0xf4, 1, 0x7fff, &mut bad);
             }
-            _ if script => {
+            _ if script
                 // The script index (`variants::record::check`): a type area of
                 // zero, the common rules as every engine's.
-                if self.raw[TYPE_AREA..0x10c].iter().any(|&b| b != 0) {
+                && self.raw[TYPE_AREA..0x10c].iter().any(|&b| b != 0) => {
                     bad(TYPE_AREA, "a script game's type area must be zero".into());
                 }
-            }
             _ => {}
         }
         out

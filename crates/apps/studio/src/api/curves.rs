@@ -307,7 +307,7 @@ fn merge_set(
     };
     let mut sub = None;
     // A number of key `k`, when present.
-    let mut one = |k: &str, v: &mut f32| -> Result<(), agent_proto::RpcError> {
+    let one = |k: &str, v: &mut f32| -> Result<(), agent_proto::RpcError> {
         if let Some(x) = get(k) {
             *v = number(x).map_err(|e| bad(e.message))?;
         }

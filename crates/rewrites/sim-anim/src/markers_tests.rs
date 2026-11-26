@@ -186,7 +186,7 @@ fn the_selection_filters_by_name_and_cuts_at_capacity() {
     let mut low = [0u8; 256];
     low[128 - 2] = 4;
     let sel = select(
-        &instance((u8::MAX - 1) as u8, 4, 9, [0.0; 3], [1.0; 4], 0.0),
+        &instance(u8::MAX - 1, 4, 9, [0.0; 3], [1.0; 4], 0.0),
         Some(&low),
         1,
     );
@@ -303,7 +303,7 @@ fn a_node_outside_the_matrices_declines() {
 
 #[test]
 fn the_record_is_the_guests_layout() {
-    let k = constants();
+    let _k = constants();
     let mut m = Marker {
         node: 0x1234,
         local: NodeMatrix::default(),

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use tags::anim_keys::{self, Keys, Kind};
-use tags::anim_sample::{NodeDefault, NodeTransform, Pose};
+use tags::anim_sample::{NodeTransform, Pose};
 
 mod angles;
 mod check;

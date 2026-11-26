@@ -127,7 +127,7 @@ fn encode(rows: &[Row]) -> Vec<Vec<u8>> {
             encoder
                 .push_tick(
                     tick as u8 ^ 0x5a,
-                    0x1234_5678_0000_0000 | tick as u64 * 977,
+                    0x1234_5678_0000_0000 | (tick as u64 * 977),
                     row,
                 )
                 .unwrap();
@@ -162,7 +162,7 @@ fn check(rows: &[Row], frames: &[Vec<u8>]) {
             assert_eq!(decoder.flags(t), tick as u8 ^ 0x5a);
             assert_eq!(
                 decoder.digest(t),
-                ((0x1234_5678_0000_0000u64 | tick as u64 * 977) as u16)
+                ((0x1234_5678_0000_0000u64 | (tick as u64 * 977)) as u16)
             );
             for (s, action) in row.iter().enumerate() {
                 let mut out = [0u8; ACTION_BYTES];

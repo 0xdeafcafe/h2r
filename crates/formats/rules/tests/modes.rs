@@ -318,7 +318,7 @@ fn siege_holds_each_death_for_its_sides_wave() {
             (302, &[Arg::Player(Some(1))]),
         ]
     );
-    for (_, p) in &r.game.players {
+    for p in r.game.players.values() {
         assert!(p.alive);
         assert_eq!(p.lives, 1, "the wave gave the life back");
     }

@@ -406,7 +406,7 @@ fn editor(ui: &Ui, doc: &TagDoc, open: &mut Open, actions: &mut Vec<Action>) -> 
     dl.add_text(
         [origin[0] + PLOT[0] + 6.0, origin[1]],
         theme::DIM,
-        &format!("{top:.2}"),
+        format!("{top:.2}"),
     );
     dl.add_text(
         [
@@ -414,7 +414,7 @@ fn editor(ui: &Ui, doc: &TagDoc, open: &mut Open, actions: &mut Vec<Action>) -> 
             origin[1] + PLOT[1] - ui.text_line_height(),
         ],
         theme::DIM,
-        &format!("{bottom:.2}"),
+        format!("{bottom:.2}"),
     );
     dl.add_text([origin[0], origin[1] + PLOT[1] + 2.0], theme::DIM, "0");
     dl.add_text(
@@ -812,7 +812,7 @@ fn choices(
     f: &Function,
     pick: Pick,
 ) -> bool {
-    let mut done = ui.is_key_pressed(Key::Escape);
+    let done = ui.is_key_pressed(Key::Escape);
     match pick {
         Pick::Type => {
             let mut list: Vec<FunctionType> = Vec::new();

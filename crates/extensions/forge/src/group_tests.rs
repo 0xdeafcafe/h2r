@@ -73,11 +73,11 @@ fn changing_the_pivot_keeps_the_group_and_is_one_undo_step() {
     assert_eq!(s.document().ops.len(), count + 2);
     assert_eq!(s.document().format, forge_doc::FORMAT_GROUPS);
     assert!(s.set_group_pivot(&mut w, 6, group, false).is_err());
-    assert_eq!(s.groups(), [after.clone()]);
+    assert_eq!(s.groups(), std::slice::from_ref(&after));
     s.undo(&mut w, 7).unwrap();
     assert_eq!(s.groups(), [before]);
     s.redo(&mut w, 8).unwrap();
-    assert_eq!(s.groups(), [after.clone()]);
+    assert_eq!(s.groups(), std::slice::from_ref(&after));
 
     let mut shared = s.share(crate::net::HOST_SEAT, "Host");
     assert!(shared.set_group_pivot(&mut w, 9, after.id, false).is_err());

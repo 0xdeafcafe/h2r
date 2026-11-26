@@ -1,4 +1,5 @@
 use super::*;
+use tags::anim_sample::NodeDefault;
 
 fn doc() -> AnimDoc {
     AnimDoc::new(

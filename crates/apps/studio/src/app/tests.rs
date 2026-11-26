@@ -743,7 +743,7 @@ fn palette_counts_matches_beyond_its_per_kind_limit() {
     }
     let mut app = app_with(&t);
     app.dispatch(Action::OpenSource(t.0.clone()));
-    let result = palette(&mut app, "INVENTED .map");
+    let result = palette(&app, "INVENTED .map");
     assert_eq!(result.total(Kind::Map), PALETTE_LIMIT + 2);
     assert_eq!(result.entries.len(), PALETTE_LIMIT);
     assert_eq!(result.entries[0].label, "invented-00");
@@ -1480,11 +1480,11 @@ fn go_to_anything_finds_every_voice_and_every_editor() {
     // A voice is found by its name and by what it is for, under its own
     // kind, and the old window command is gone.
     for query in ["voices", "announcer", "character clone"] {
-        let found = palette(&mut app, query);
+        let found = palette(&app, query);
         assert!(found.total(Kind::Voice) > 0, "{query}");
         assert_eq!(found.total(Kind::Command), 0, "{query}");
     }
-    let found = palette(&mut app, "cortana");
+    let found = palette(&app, "cortana");
     let entry = found
         .entries
         .iter()
@@ -1499,9 +1499,9 @@ fn go_to_anything_finds_every_voice_and_every_editor() {
     assert_eq!(app.voices.pane, voices::Pane::Setup);
 
     // Each editor has a command in Go to anything.
-    let editors = palette(&mut app, "open editor:");
+    let editors = palette(&app, "open editor:");
     assert_eq!(editors.total(Kind::Command), Surface::EDITORS.len());
-    let variants = palette(&mut app, "open editor game variants").entries.remove(0);
+    let variants = palette(&app, "open editor game variants").entries.remove(0);
     app.dispatch(variants.action);
     assert_eq!(app.surface(), Surface::Variants);
 }
@@ -1623,7 +1623,7 @@ fn go_to_anything_finds_a_tag_a_package_an_item_and_a_command_with_no_map_open()
 
     // One query reaches all four kinds, with nothing open. The baked
     // packages are in the set too, so kinds are counted, not named.
-    let found = palette(&mut app, "map");
+    let found = palette(&app, "map");
     for kind in [Kind::Tag, Kind::Package, Kind::Item, Kind::Command] {
         assert!(found.total(kind) > 0, "{} has no entries", kind.title());
     }
@@ -1658,7 +1658,7 @@ fn go_to_anything_opens_a_tree_tag_by_opening_its_map_first() {
 
     let t = Temp::new("palette-tree-tag");
     let mut app = palette_app(&t);
-    let found = palette(&mut app, "blaster");
+    let found = palette(&app, "blaster");
     let entry = palette_entry(&found, Kind::Tag, "blaster");
     assert!(matches!(entry.action, Action::OpenAsset { .. }));
     app.dispatch(entry.action);
@@ -1754,7 +1754,7 @@ source = "edits/blaster.yaml"
 /// weapon's slot), with the package in place: everything an item's
 /// double-click reads.
 fn items_app(t: &Temp) -> App {
-    let (mut app, _, _) = tag_tests::app_with_registry(
+    let (app, _, _) = tag_tests::app_with_registry(
         &t.0,
         crate::api::sound::tests::mouth_map(),
         items_registry(),

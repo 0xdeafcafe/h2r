@@ -1300,7 +1300,7 @@ fn tag_uses_lists_the_placements_and_tags_that_reach_a_tag() {
     // placed by the netgame item; the placements whose palette chain
     // runs through the weapon are named too.
     let kit = call(&mut api, &mut app, m::TAG_USES, json!({ "tag": itmc }));
-    assert_eq!(tags(&kit), [weap.clone()]);
+    assert_eq!(tags(&kit), std::slice::from_ref(&weap));
     assert_eq!(kit["tags"][0]["via"], "parts[0].item");
     assert_eq!(
         blocks(&kit),
@@ -1337,7 +1337,7 @@ fn tag_uses_lists_the_placements_and_tags_that_reach_a_tag() {
     assert_eq!(blocks(&cut), [("netgame_equipment".to_owned(), 0)]);
     app.dispatch(Action::Undo);
     let back = call(&mut api, &mut app, m::TAG_USES, json!({ "tag": itmc }));
-    assert_eq!(tags(&back), [weap.clone()]);
+    assert_eq!(tags(&back), std::slice::from_ref(&weap));
 }
 
 #[test]

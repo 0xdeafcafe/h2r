@@ -255,8 +255,6 @@ pub fn poses(l: &Layout) -> Vec<(&'static str, Pose)> {
     out
 }
 
-/// The guide's elements: world marks, fullscreen only as the readout is.
-
 /// The box's label, the one verdict: before the jump the cue (`cue`,
 /// [`cue_text`]), `Jump in 0.7 s`; in a fall the call, `Will bounce` or
 /// why not ([`CALLS`]); with neither no label. No percentage: the bounce

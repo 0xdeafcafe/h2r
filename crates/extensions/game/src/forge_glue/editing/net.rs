@@ -328,7 +328,7 @@ impl Editor {
             .filter(|(seat, _)| *seat != local.0)
             .filter_map(|(seat, look)| {
                 let (pose, _) = net.monitors.seats.body(seat, now)?;
-                Some(net.bodies.draw(seat, look, pose, seconds, |index| rgb(index)))
+                Some(net.bodies.draw(seat, look, pose, seconds, &rgb))
             })
             .collect()
     }

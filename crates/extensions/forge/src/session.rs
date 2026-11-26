@@ -28,7 +28,9 @@ pub use area::{Goal, flag_label};
 pub use ground::{
     GroundBuilder, GroundProblem, GroundReceipt, GroundReport, GroundState, PlacedMarker,
 };
-pub use groups::{GroupInfo, carried};
+pub use groups::GroupInfo;
+#[cfg(test)]
+pub(crate) use groups::carried;
 pub use nav::{NavBuilder, NavLine, NavProblem, NavReport, NavState};
 pub use reload::{CopyKind, Reopened, live_form};
 pub use shared::{Outgoing, SHARED_PROPOSE, SHARED_REDO, SessionAdmit};

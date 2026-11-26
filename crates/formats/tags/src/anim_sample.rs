@@ -259,7 +259,7 @@ impl Pose {
                 r.has_translation = true;
             }
             if s.has_scale {
-                r.scale = ((s.scale - 1.0) * w + 1.0) * r.scale;
+                r.scale *= (s.scale - 1.0) * w + 1.0;
                 r.has_scale = true;
             }
         }

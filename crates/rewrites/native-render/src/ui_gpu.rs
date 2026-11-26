@@ -399,6 +399,7 @@ impl OverlayTextures for NoTextures {
 
 /// An overlay blend as wgpu takes it; `Err` when a value is not a D3D
 /// blend factor or equation.
+#[allow(clippy::result_unit_err)]
 pub fn overlay_blend(blend: frame_scene::OverlayBlend) -> Result<Option<wgpu::BlendState>, ()> {
     use gfx::state::{BlendFactor, BlendOp};
     let frame_scene::OverlayBlend::On { source, dest, equation } = blend else {

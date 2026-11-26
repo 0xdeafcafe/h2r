@@ -13,7 +13,7 @@
 //! `+0x20` the bitmap, `+0x30` flags (one tag sets bit 0), `+0xa0`,
 //! `+0xa4` two scales (0.1 to 8, 1 on most).
 
-use tags::bytes::{f32_at, u16_at, u32_at};
+use tags::bytes::{f32_at, u16_at};
 use h1map::{H1Map, Tag, TagRef};
 use map::build::{Block, FixupKind, TagSet};
 use map::{FourCC, TagId};

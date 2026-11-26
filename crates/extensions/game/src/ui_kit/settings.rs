@@ -119,7 +119,7 @@ impl Bindings {
     }
     /// A value row over something other than the store.
     pub fn value(
-        mut self,
+        self,
         name: &'static str,
         values: Vec<String>,
         get: impl Fn() -> usize + Send + Sync + 'static,

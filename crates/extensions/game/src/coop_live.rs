@@ -1654,7 +1654,7 @@ impl hooks::Feature for CoopScreens {
             lobby.set_profiles(crate::skulls::profiles_or_default(&*g).0);
         });
         // The Co-op Campaign row's lobby: co-op mode, not custom game.
-        let lobby = Arc::clone(&self.lobby);
+        let _lobby = Arc::clone(&self.lobby);
         b.raw()
             .before(&points::LOBBY_MODE_SET, "co-op mode for the co-op row", move |c| {
                 let rt = Arc::clone(c.ctx.runtime());

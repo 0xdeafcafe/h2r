@@ -44,7 +44,7 @@
 
 use crate::model::{Describe, Hud, Pulse, Style, Value, Values};
 
-use super::superbounce::{Charge, DISTANCE_LONGEST, Phase, distance_text};
+use super::superbounce::{Charge, Phase, distance_text};
 use super::superbounce_guide::{self as guide, Guide};
 use super::superbounce_segments::{self as segs, Segments};
 use crate::world::Pose;

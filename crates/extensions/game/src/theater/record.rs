@@ -362,6 +362,7 @@ impl Recording {
 
 impl Session {
     /// An update with no body, as a test or a machine tape makes one.
+    #[allow(dead_code)]
     pub(super) fn record_actions(&self, inputs: Vec<SeatInput>) {
         self.record_update(inputs, None, None);
     }

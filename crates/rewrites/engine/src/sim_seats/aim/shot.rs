@@ -4,7 +4,6 @@
 use super::*;
 use crate::light_constants::X87;
 use crate::sim_physics::{arithmetic, spatial::{finish_fpu, fp_error, load_fpu}};
-use runtime::TransferAbi;
 use x87::abi::{arith_op, unary_op};
 
 pub const SHOT_ENTRY: u32 = 0x001a_4c00;

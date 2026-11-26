@@ -282,7 +282,7 @@ fn install_anim(b: &mut Builder, exports: &[AnimBody]) {
         let hook = b.raw()
             .implement(body.point, ANIM, move |cpu, ctx, pc| {
                 let transfer = match body.run {
-                    AnimRun::Pose(run) => run(cpu, &mut *ctx.memory(), pc)?,
+                    AnimRun::Pose(run) => run(cpu, &mut ctx.memory(), pc)?,
                     AnimRun::ManagerArm => {
                         return manager_arm::run(cpu, ctx, pc, pc != body.point.base);
                     }
@@ -550,7 +550,7 @@ fn install_collision(b: &mut Builder) {
                         });
                     } else if let Some(pending) = {
                         let mut mem = call.ctx.memory();
-                        query::observe(call.cpu, &mut *mem, &WORLD)
+                        query::observe(call.cpu, &mut mem, &WORLD)
                     } {
                         call.ctx.observe_guest_return(call.cpu, pop, move |c, ctx| {
                             pending.finish(c, &ctx.runtime().memory(), &WORLD);

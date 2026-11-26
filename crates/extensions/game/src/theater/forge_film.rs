@@ -45,17 +45,20 @@ pub fn clear() {
 }
 
 /// What a ring entry keeps, to put back when it is restored.
+#[allow(dead_code)] // Film playback does not call it yet: Forge edits in a film are recorded but not replayed.
 pub(super) fn snapshot() -> Snapshot {
     with(|s| s.clone())
 }
 
 /// Put back what [`snapshot`] kept.
+#[allow(dead_code)] // Film playback does not call it yet: Forge edits in a film are recorded but not replayed.
 pub(super) fn restore(snapshot: &Snapshot) {
     *STATE.lock().unwrap_or_else(|e| e.into_inner()) = Some(snapshot.clone());
 }
 
 /// Read the monitor records of the film tick `tick`, which the playback now
 /// stands at. A record that is not readable is a named film error.
+#[allow(dead_code)] // Film playback does not call it yet: Forge edits in a film are recorded but not replayed.
 pub(super) fn deliver(tick: u64, payloads: &[Vec<u8>]) -> Result<()> {
     with(|s| {
         s.tick = u32::try_from(tick).unwrap_or(u32::MAX);

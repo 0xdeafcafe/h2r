@@ -146,7 +146,7 @@ mod tests {
                 "byte {at} changed and was accepted"
             );
         }
-        assert!(plan_from_blocks(FLAG_START_POINT, &[bytes.clone()], b"other", n, hash).is_err());
+        assert!(plan_from_blocks(FLAG_START_POINT, std::slice::from_ref(&bytes), b"other", n, hash).is_err());
         assert!(plan_from_blocks(FLAG_START_POINT, &[bytes], KEY, n, hash ^ 1).is_err());
     }
 

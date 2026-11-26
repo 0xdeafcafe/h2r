@@ -324,9 +324,7 @@ impl Live {
         }
         // The marks follow the session every tick: they move with the
         // monitor's eye and the held thing.
-        let marks = (p.view.monitor)
-            .then(|| p.points.resolved())
-            .unwrap_or_default();
+        let marks = if p.view.monitor { p.points.resolved() } else { Default::default() };
         if self.last_marks != Some(marks) {
             give(&self.handle, &marks);
             self.last_marks = Some(marks);

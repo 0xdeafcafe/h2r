@@ -460,21 +460,18 @@ fn voice_links(tags_root: &Path, id: &str) -> Links {
         }],
         ..Links::default()
     };
-    match TagRepo::open(tags_root) {
-        Ok(repo) => {
-            for key in repo.keys() {
-                if fourcc_text(key.group) == "snd!" && voice_of(&key.path) == Some(id) {
-                    out.used_by.push(Link {
-                        asset: tag_id(&key),
-                        role: "Sounds",
-                        via: "dialogue rules".to_owned(),
-                    });
-                }
+    // A voice is read from the data root; a missing tree only means there
+    // are no sounds to list.
+    if let Ok(repo) = TagRepo::open(tags_root) {
+        for key in repo.keys() {
+            if fourcc_text(key.group) == "snd!" && voice_of(&key.path) == Some(id) {
+                out.used_by.push(Link {
+                    asset: tag_id(&key),
+                    role: "Sounds",
+                    via: "dialogue rules".to_owned(),
+                });
             }
         }
-        // A voice is read from the data root; a missing tree only means
-        // there are no sounds to list.
-        Err(_) => {}
     }
     out
 }

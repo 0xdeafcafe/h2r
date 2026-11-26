@@ -628,7 +628,7 @@ mod tests {
         let out = s.handle(note("textDocument/didOpen", open));
         let [Message::Notification(n)] = &out[..] else { panic!("{out:?}") };
         let all = &n.params["diagnostics"];
-        let d = all.as_array().unwrap().iter().find(|x| x["severity"] == 1).expect(&all.to_string());
+        let d = all.as_array().unwrap().iter().find(|x| x["severity"] == 1).unwrap_or_else(|| panic!("{}", all.to_string()));
         assert_eq!(d["range"]["start"]["line"], 2);
         assert!(d["message"].as_str().unwrap().starts_with("waves.rules:2:"), "{d}");
         let _ = std::fs::remove_dir_all(&dir);

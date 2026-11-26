@@ -2498,7 +2498,7 @@ impl Worker {
                     .and_then(|a| a.users.values().next())
                     .ok_or(NO_USER)?;
                 let connection = self.connection.as_ref().ok_or(NO_SESSION)?;
-                let url = relay_url(&connection.api, &session)
+                let url = relay_url(&connection.api, session)
                     .ok_or(SERVICE_TEMPORARILY_UNAVAILABLE)?;
                 let token = issue_token(
                     &user.key,

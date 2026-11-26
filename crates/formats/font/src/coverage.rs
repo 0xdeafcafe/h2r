@@ -150,7 +150,7 @@ mod tests {
                 high_at += 1;
             }
             let width = cross(high_at - 1, high_at) - mid;
-            assert!(width >= 0.0 && width <= 1.75, "scale {scale}: edge width {width}");
+            assert!((0.0..=1.75).contains(&width), "scale {scale}: edge width {width}");
         }
     }
 

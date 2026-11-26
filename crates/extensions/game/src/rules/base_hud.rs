@@ -14,7 +14,7 @@
 //! player, hides both lines. The objective HUDs' feed is the script HUD
 //! feed's (`rules::world::hud`), not this one.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use engine::GuestMemory;
 use hud_kit_core::model::{Value, Values};

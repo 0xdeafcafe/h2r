@@ -567,28 +567,6 @@ fn variant(ui: &Ui, app: &App, st: &mut BrowserUi, row: &Value, n: usize, action
     ui.unindent();
 }
 
-#[cfg(test)]
-mod linked_tests {
-    use super::*;
-    use crate::app::links::Link;
-
-    #[test]
-    fn linked_assets_keep_all_roots_and_can_return_to_a_single_asset() {
-        let mut browser = BrowserUi::default();
-        let rows = [
-            Link { asset: "tag:weap:objects\\test".into(), role: "Objects", via: "test".into() },
-            Link { asset: "package:example".into(), role: "Package", via: "test".into() },
-            Link { asset: "tag:weap:objects\\test".into(), role: "Objects", via: "other".into() },
-        ];
-        browser.show_links(&rows);
-        assert_eq!(browser.linked.as_ref().unwrap().len(), 2);
-        assert!(browser.linked.as_ref().unwrap().contains(&"package:example".to_owned()));
-        browser.locate("tag:weap:objects\\test");
-        assert!(browser.linked.is_none());
-        assert_eq!(browser.query, "objects\\test");
-    }
-}
-
 impl BrowserUi {
     pub(super) fn new_from(&mut self, asset: &str) {
         if let Ok(assets::AssetId::Tag(key)) = assets::AssetId::parse(asset) {
@@ -690,5 +668,27 @@ fn model_view(ui: &Ui, mesh: &pogo_kit::mesh::Mesh) {
                 draw.add_line(from, to, theme::ACCENT).build();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod linked_tests {
+    use super::*;
+    use crate::app::links::Link;
+
+    #[test]
+    fn linked_assets_keep_all_roots_and_can_return_to_a_single_asset() {
+        let mut browser = BrowserUi::default();
+        let rows = [
+            Link { asset: "tag:weap:objects\\test".into(), role: "Objects", via: "test".into() },
+            Link { asset: "package:example".into(), role: "Package", via: "test".into() },
+            Link { asset: "tag:weap:objects\\test".into(), role: "Objects", via: "other".into() },
+        ];
+        browser.show_links(&rows);
+        assert_eq!(browser.linked.as_ref().unwrap().len(), 2);
+        assert!(browser.linked.as_ref().unwrap().contains(&"package:example".to_owned()));
+        browser.locate("tag:weap:objects\\test");
+        assert!(browser.linked.is_none());
+        assert_eq!(browser.query, "objects\\test");
     }
 }

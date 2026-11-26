@@ -140,7 +140,7 @@ impl Filter {
 /// team has no rule or the rule keeps no location the map has.
 pub fn filter(rule: Option<SpawnRule<'_>>, starts: &Starts, table: &Table, zones: &Zones) -> Option<Filter> {
     let live = live(rule?, &starts.at, table, zones);
-    (!live.is_empty()).then(|| Filter {
+    (!live.is_empty()).then_some(Filter {
         base: starts.base,
         stride: starts.stride,
         live,

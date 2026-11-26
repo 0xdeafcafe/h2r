@@ -439,7 +439,7 @@ pub fn build(root: &Path, schema: &Schema) -> Result<(Catalogue, Built)> {
         v.split += usize::from(fs.len() > 1);
     }
     let mut hashes: BTreeMap<TagKey, usize> = BTreeMap::new();
-    for ((key, _), _) in &assets {
+    for (key, _) in assets.keys() {
         *hashes.entry(key.clone()).or_default() += 1;
     }
     for (key, n) in hashes {

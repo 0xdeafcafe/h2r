@@ -141,8 +141,8 @@ pub fn hash(form: &LooseTag) -> [u8; 32] {
     use sha2::Digest;
     let mut h = sha2::Sha256::new();
     h.update(b"h2 asset normal form\0");
-    h.update(&VERSION.to_le_bytes());
-    h.update(&form.key.group.0);
+    h.update(VERSION.to_le_bytes());
+    h.update(form.key.group.0);
     for line in canonical(form) {
         h.update((line.len() as u32).to_le_bytes());
         h.update(line.as_bytes());
@@ -171,7 +171,7 @@ fn block<'a>(root: &'a Node, tree: &'a Tree, offset: u32) -> Option<(u32, &'a No
 }
 
 /// `block` when its elements are `size` bytes.
-fn rows<'a>(block: Option<(u32, &'a Node)>, size: usize) -> Option<&'a Node> {
+fn rows(block: Option<(u32, &Node)>, size: usize) -> Option<&Node> {
     match block {
         Some((_, n)) if n.size as usize == size => Some(n),
         _ => None,

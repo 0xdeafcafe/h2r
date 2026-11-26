@@ -296,7 +296,7 @@ impl Function {
         let stops: &[u32] = match kind {
             0 => {
                 let grey = (x * 255.0).round_ties_even() as u32;
-                return 0xff00_0000 | grey * 0x010101;
+                return 0xff00_0000 | (grey * 0x010101);
             }
             1 => return a,
             2 => &[a, d],
@@ -330,7 +330,7 @@ impl Function {
         Some(match self.kind {
             FunctionType::Identity => Set::Identity,
             FunctionType::Constant | FunctionType::MultiLinearKey | FunctionType::MultiSpline => {
-                Set::Words((0..words).map(|k| w(k)).collect())
+                Set::Words((0..words).map(&w).collect())
             }
             FunctionType::Transition => Set::Transition {
                 from: w(0),
@@ -1409,7 +1409,7 @@ mod tests {
                 f(kind).set_values(1),
                 Some(Set::Spline {
                     points: [12, 13, 14, 15, 16, 17, 18, 19]
-                        .map(|k| w(k))
+                        .map(&w)
                         .chunks(2)
                         .map(|c| [c[0], c[1]])
                         .collect::<Vec<_>>()
@@ -1455,7 +1455,7 @@ mod tests {
         let values = f.set_values(1).unwrap();
         f.write_set(1, &values).unwrap();
         assert_eq!(f.to_bytes(), bytes);
-        let mut zeroed = Function::parse(&blob(4, 0, [0; 2], [0.0, 1.0], &vec![0.0; 12])).unwrap();
+        let mut zeroed = Function::parse(&blob(4, 0, [0; 2], [0.0, 1.0], &[0.0; 12])).unwrap();
         zeroed.write_set(1, &values).unwrap();
         let out = zeroed.to_bytes();
         let word = |b: &[u8], k: usize| {

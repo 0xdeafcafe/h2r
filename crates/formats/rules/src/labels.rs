@@ -140,7 +140,7 @@ pub fn fallback(text: &str) -> Option<&'static str> {
 /// The text whose members a script's label `text` reads: its own when
 /// `has` says the map holds any, else its [`fallback`]. The census check,
 /// the host's table and the fake game all read a label through this.
-pub fn reads<'a>(text: &'a str, has: impl Fn(&str) -> bool) -> &'a str {
+pub fn reads(text: &str, has: impl Fn(&str) -> bool) -> &str {
     match fallback(text) {
         Some(other) if !has(text) => other,
         _ => text,

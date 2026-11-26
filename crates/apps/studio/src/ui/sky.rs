@@ -55,6 +55,7 @@ pub fn apply(vp: &mut Viewport, scene: Option<&Atmosphere>, tags: &TagDoc) {
 /// re-reads the document on every revision may call this to skip the
 /// read for other tags. `tag` is the changed tag's group, looked up in
 /// the document by the caller.
+#[allow(dead_code)] // Not wired yet.
 pub fn touches_sky(change: &Change, group_of: impl Fn(TagId) -> Option<FourCC>) -> bool {
     change
         .tag

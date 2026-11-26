@@ -1542,7 +1542,7 @@ mod tests {
         );
         let private = serde_json::to_value(CurrentView { private: true, ..view }).unwrap();
         assert_eq!(private["private"], true);
-        assert_eq!(serde_json::from_value::<CurrentView>(private).unwrap().private, true);
+        assert!(serde_json::from_value::<CurrentView>(private).unwrap().private);
     }
 
     #[test]

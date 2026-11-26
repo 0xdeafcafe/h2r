@@ -46,6 +46,7 @@ impl Playtest {
     }
 
     /// Plays through `source`.
+    #[allow(dead_code)] // Not wired yet.
     pub fn with_source(source: Box<dyn Source>) -> Self {
         Playtest {
             source: Some(source),

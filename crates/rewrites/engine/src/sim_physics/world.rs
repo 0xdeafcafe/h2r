@@ -233,7 +233,7 @@ mod tests {
     }
 
     fn cpu(g: &mut Guest, esp: u32, ret: u32) -> CpuAbi {
-        let mut c = CpuAbi {
+        let c = CpuAbi {
             ecx: ISLAND,
             ebx: 0x1111_2222,
             ebp: 0x3333_4444,

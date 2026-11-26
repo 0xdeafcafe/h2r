@@ -138,11 +138,11 @@ pub(super) fn object_set_with_clip(world: &ObjectWorld, reached: &Reached, clip:
                 if world.view_flags & view_flags::FIRST_PARTITION_TYPE == 0
                     || info.kind == KEPT_TYPE
                 {
-                    set.add(handle, &seen)?;
+                    set.add(handle, seen)?;
                 }
             }
             for &handle in second {
-                set.add(handle, &seen)?;
+                set.add(handle, seen)?;
             }
         }
         if let Some(sky) = world.sky {

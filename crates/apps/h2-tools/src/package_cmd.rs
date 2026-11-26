@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn check_reads_a_folder_of_packages_in_order_and_reports() {
         let root = tree("check");
-        let r = read(&[root.clone()], None).unwrap();
+        let r = read(std::slice::from_ref(&root), None).unwrap();
         let ids: Vec<&str> = r
             .loaded
             .iter()
@@ -363,9 +363,9 @@ mod tests {
         let tag_at = store.join("tags").join("invented").join("dmg");
         std::fs::create_dir_all(&tag_at).unwrap();
         std::fs::write(tag_at.join("c.jpt!"), tag).unwrap();
-        let without = read(&[root.clone()], None).unwrap();
+        let without = read(std::slice::from_ref(&root), None).unwrap();
         assert!(!without.findings.join("\n").contains("of the store"));
-        let with = read(&[root.clone()], Some(&store)).unwrap();
+        let with = read(std::slice::from_ref(&root), Some(&store)).unwrap();
         let all = with.findings.join("\n");
         assert!(
             all.contains(&format!(

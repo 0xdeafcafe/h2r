@@ -330,7 +330,7 @@ impl Session {
         } else {
             0
         };
-        let phase = label.has_phase().then(|| (placed / 2) as i32);
+        let phase = label.has_phase().then_some((placed / 2) as i32);
         self.place_marker(world, tick, label, frame, team, phase)
     }
 

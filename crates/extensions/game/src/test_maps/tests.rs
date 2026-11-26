@@ -264,7 +264,7 @@ fn maps_load_finds_a_package_written_while_the_game_runs() {
         &crate::new_maps::tests::body(3),
         "",
     );
-    let id = content::Library::open(&data.join("maps")).packages()[0].id;
+    let id = content::Library::open(data.join("maps")).packages()[0].id;
 
     // It is not found while nothing installs it: the catalogue under the
     // content root is what the list reads.

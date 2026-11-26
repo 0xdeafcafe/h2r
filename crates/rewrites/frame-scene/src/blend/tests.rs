@@ -303,8 +303,7 @@ fn the_first_person_stays_locked_to_the_blended_camera() {
     assert!(close(r.t, cam.forward), "the rows follow too");
 
     // The same pair as a world view blends in world space.
-    let mut a = a;
-    let mut b = b;
+    let (mut a, mut b) = (a, b);
     a.views[0].key.kind = ViewKind::Game;
     b.views[0].key.kind = ViewKind::Game;
     let out = blend(&a, &b, 0.5);

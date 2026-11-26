@@ -3834,10 +3834,11 @@ mod tests {
             }],
             ..Default::default()
         };
-        let page = Some(LightmapKey {
+        let key = LightmapKey {
             page: 0,
             palette: 0,
-        });
+        };
+        let page = Some(key);
         let mut b = WorldBuilder::new();
         b.add_section(
             Owner::Cluster(0),
@@ -3886,8 +3887,8 @@ mod tests {
             &mut |_| None, &mut |_| Some(Image::solid([10, 50, 90, 255])),
         );
         if !accumulation {
-            let on = HashMap::from([(page.unwrap(), Image::solid([240, 60, 90, 255]))]);
-            let off = HashMap::from([(page.unwrap(), Image::solid([20, 60, 90, 255]))]);
+            let on = HashMap::from([(key, Image::solid([240, 60, 90, 255]))]);
+            let off = HashMap::from([(key, Image::solid([20, 60, 90, 255]))]);
             assert!(set.install_relight(&ctx.device, &ctx.queue, &world, &[on.clone(), HashMap::new()]).is_err());
             assert!(!set.has_relight(), "a missing lamp-off page refuses both arms");
             set.install_relight(&ctx.device, &ctx.queue, &world, &[on, off]).unwrap();

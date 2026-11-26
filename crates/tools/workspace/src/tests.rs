@@ -250,7 +250,7 @@ fn an_edit_that_does_not_resolve_stops_with_its_line() {
         "- tag: 'jpt!:{A}'\n  set:\n    - {{path: damage_lower_bound, value: 1.0}}\n- tag: 'jpt!:{B}'\n  set:\n    - {{path: no_such_field, value: 2.0}}\n"
     );
     let e = edits("e", &[], &text);
-    let err = build(&mut base(), &[e.clone()], &target(), None).unwrap_err();
+    let err = build(&mut base(), std::slice::from_ref(&e), &target(), None).unwrap_err();
     assert_eq!(err.line, Some(4), "{err}");
     assert!(err.why.contains("no_such_field"), "{err}");
     // Check finds it without a map.
@@ -387,7 +387,7 @@ fn a_kind_with_no_builder_stops_by_name() {
         &[("strings", "m.yaml", None, "all")],
         &[("m.yaml", b"")],
     );
-    let err = build(&mut base(), &[p.clone()], &target(), None).unwrap_err();
+    let err = build(&mut base(), std::slice::from_ref(&p), &target(), None).unwrap_err();
     assert_eq!(err.kind, Kind::Strings);
     assert!(err.why.contains("no builder"), "{err}");
     assert!(check_package(&p)[0].what.contains("no builder"));
@@ -499,8 +499,8 @@ fn the_cache_key_follows_what_the_output_depends_on() {
     let base_hash = Sha256::of(b"base map");
     let a = adds_c("alpha");
     let key = |h: &Sha256, p: &[Loaded], t: &Target<'_>| cache_key(h, p, t);
-    let k = key(&base_hash, &[a.clone()], &target());
-    assert_eq!(k, key(&base_hash, &[a.clone()], &target()));
+    let k = key(&base_hash, std::slice::from_ref(&a), &target());
+    assert_eq!(k, key(&base_hash, std::slice::from_ref(&a), &target()));
 
     // A source byte, the base, the map's name and class, the order.
     let changed = pkg(
@@ -510,17 +510,17 @@ fn the_cache_key_follows_what_the_output_depends_on() {
         &[(ADD_C_FILE, b"fields:\n  damage_lower_bound: 6.0\n")],
     );
     assert_ne!(k, key(&base_hash, &[changed], &target()));
-    assert_ne!(k, key(&Sha256::of(b"other base"), &[a.clone()], &target()));
+    assert_ne!(k, key(&Sha256::of(b"other base"), std::slice::from_ref(&a), &target()));
     let other_map = Target {
         name: "other",
         scope: MapScope::Multiplayer,
     };
-    assert_ne!(k, key(&base_hash, &[a.clone()], &other_map));
+    assert_ne!(k, key(&base_hash, std::slice::from_ref(&a), &other_map));
     let other_scope = Target {
         name: "tiny",
         scope: MapScope::Campaign,
     };
-    assert_ne!(k, key(&base_hash, &[a.clone()], &other_scope));
+    assert_ne!(k, key(&base_hash, std::slice::from_ref(&a), &other_scope));
     let b = edits("beta", &[], &edit_text(A, 1.0));
     assert_ne!(
         key(&base_hash, &[a.clone(), b.clone()], &target()),
@@ -531,7 +531,7 @@ fn the_cache_key_follows_what_the_output_depends_on() {
         name: "TINY",
         scope: MapScope::Multiplayer,
     };
-    assert_eq!(k, key(&base_hash, &[a.clone()], &upper));
+    assert_eq!(k, key(&base_hash, std::slice::from_ref(&a), &upper));
 
     // A package with nothing for this map leaves the key alone.
     let elsewhere = pkg(
@@ -726,7 +726,7 @@ fn a_hud_item_reads_and_changes_no_tag() {
     );
     assert_eq!(check_package(&p), vec![]);
     let mut set = base();
-    let report = build(&mut set, &[p.clone()], &target(), None).unwrap();
+    let report = build(&mut set, std::slice::from_ref(&p), &target(), None).unwrap();
     assert!(report.added.is_empty() && report.changed.is_empty());
     assert_eq!(report.packages, vec![("h".to_owned(), 1)]);
     let read = huds(&[p]);
@@ -749,7 +749,7 @@ fn a_bad_hud_stops_by_name_with_its_line() {
     assert_eq!(found.len(), 1);
     assert!(found[0].what.starts_with("hud: "), "{:?}", found[0]);
     assert!(found[0].what.contains("needs `longest`"), "{:?}", found[0]);
-    let err = build(&mut base(), &[p.clone()], &target(), None).unwrap_err();
+    let err = build(&mut base(), std::slice::from_ref(&p), &target(), None).unwrap_err();
     assert_eq!(err.kind, Kind::Hud);
     assert!(err.why.contains("needs `longest`"), "{err}");
     assert!(huds(&[p]).is_empty());

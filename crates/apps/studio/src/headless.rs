@@ -907,7 +907,7 @@ mod tests {
                 losses: Vec::new(),
             }),
         };
-        let mut repo = TagRepo::create(&app.tags_root()).unwrap();
+        let mut repo = TagRepo::create(app.tags_root()).unwrap();
         repo.put(&tag(&weapon, vec![(0, model.clone())])).unwrap();
         repo.put(&tag(&model, Vec::new())).unwrap();
         app.dispatch(Action::OpenDoc(Doc::Tag(tag_tests::weap_id())));
@@ -1064,7 +1064,7 @@ mod tests {
         let t = crate::app::map_cards_tests::Temp::new("ui-screens-tool");
         let mut app = App::new();
         app.set_data_root(t.0.join("data"));
-        tags::repo::TagRepo::create(&app.tags_root()).unwrap();
+        tags::repo::TagRepo::create(app.tags_root()).unwrap();
         app.dispatch(Action::SetTool(ToolKind::UiScreens));
         h.frames(&mut app, 3).unwrap();
         let click = |t: &str| Step::Click(t.into(), Button::Left);
@@ -1926,7 +1926,7 @@ mod tests {
         use map::FourCC;
         use tags::repo::store::Manifest;
         use tags::repo::{TagKey, TagRepo};
-        let mut repo = TagRepo::create(&data.join("tags")).unwrap();
+        let mut repo = TagRepo::create(data.join("tags")).unwrap();
         let key = |g: &[u8; 4], p: &str| TagKey::new(FourCC(*g), p);
         let place = |repo: &TagRepo, k: &TagKey, v: Option<&str>| {
             let p = repo.path_of(k, v);

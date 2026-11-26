@@ -578,7 +578,7 @@ mod tests {
             ..Flow::default()
         };
         let t = trace(1, &[]);
-        let m = unvisited(&flow(&[0, 1]), &flow(&[1, 2]), &[t.clone()], &[t.clone()]).unwrap();
+        let m = unvisited(&flow(&[0, 1]), &flow(&[1, 2]), std::slice::from_ref(&t), std::slice::from_ref(&t)).unwrap();
         let polys: Vec<(u32, f32, f32)> = m.iter().map(|d| (d.poly.unwrap(), d.a, d.b)).collect();
         assert_eq!(polys, vec![(0, 1.0, 0.0), (2, 0.0, 1.0)]);
         let mut small = t.clone();

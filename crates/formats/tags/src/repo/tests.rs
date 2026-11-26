@@ -1272,7 +1272,7 @@ fn invented_sounds(sounds: &[(&str, &Sound)]) -> (LooseTag, Vec<LooseTag>) {
             row[0] = s.playback;
             row[0xc..0x10].copy_from_slice(&0x40u32.to_le_bytes());
             row[0x10] = 16;
-            let raw = put(&vec![s.playback; 0x40], &mut raws);
+            let raw = put(&[s.playback; 0x40], &mut raws);
             extra_fields.push((base + 0x8, Value::Raw(raw)));
             for l in 0..2u8 {
                 let mut locator = vec![0u8; LOCATOR];
@@ -1610,7 +1610,7 @@ fn a_padded_raw_of_the_globals_is_cut_to_its_stored_size() {
     let data: Vec<u8> = (0..100u32).map(|i| (i * 3) as u8).collect();
     let padded = |fill: u8, n: usize| -> Vec<u8> {
         let mut b = data.clone();
-        b.extend(std::iter::repeat(fill).take(n));
+        b.extend(std::iter::repeat_n(fill, n));
         b
     };
     // Both maps' files, by hash.

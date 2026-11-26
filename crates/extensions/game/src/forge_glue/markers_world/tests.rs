@@ -521,7 +521,7 @@ fn hill_and_wall(eye: Option<[f32; 3]>) -> (Vec<Group>, Entry) {
         Tone::Normal,
         false,
     );
-    let (mut groups, _) = draw(&[hill.clone()], [&None, &None], eye, &palette, BUDGET);
+    let (mut groups, _) = draw(std::slice::from_ref(&hill), [&None, &None], eye, &palette, BUDGET);
     let (walls, _) = draw_walls(&[wall(1, Some(0), [20., 0., 0.])], eye, &palette);
     groups.extend(walls);
     (groups, hill)

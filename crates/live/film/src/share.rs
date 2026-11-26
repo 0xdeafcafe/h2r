@@ -86,40 +86,6 @@ pub fn download(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn interrupted_download_resumes_verifies_and_reuses_the_library_file() {
-        let dir = std::env::temp_dir().join(live_proto::sign::random_id());
-        fs::create_dir(&dir).unwrap();
-        let path = dir.join("game.h2film");
-        let bytes = vec![23; (1 << 20) + 3];
-        let digest = format!("{:x}", Sha256::digest(&bytes));
-        let size = bytes.len() as u64;
-        assert!(
-            download(&path, size, &digest, |r| {
-                if r.start != 0 {
-                    bail!("interrupted");
-                }
-                Ok(bytes[..r.end as usize].into())
-            })
-            .is_err()
-        );
-        assert!(!path.exists());
-        download(&path, size, &digest, |r| {
-            assert_eq!(r, (1 << 20)..size);
-            Ok(vec![23; 3])
-        })
-        .unwrap();
-        assert_eq!(fs::read(&path).unwrap(), bytes);
-        download(&path, size, &digest, |_| panic!("fetched twice")).unwrap();
-        assert!(download(&path, 1, &digest, |_| Ok(vec![0])).is_err());
-        assert_eq!(fs::read(&path).unwrap(), bytes);
-        fs::remove_dir_all(dir).unwrap();
-    }
-}
-
 /// Build the numbered-part declaration without retaining the file in memory.
 pub fn object(path: &Path) -> Result<live_proto::film::sharing::Object> {
     use live_proto::film::{
@@ -177,4 +143,38 @@ pub(super) fn read_seed(
     let raw = zstd::bulk::decompress(&seed, MAX_SEED)?;
     let clean = clean_seed(&raw).map_err(anyhow::Error::msg)?;
     Ok((header, layout, clean))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn interrupted_download_resumes_verifies_and_reuses_the_library_file() {
+        let dir = std::env::temp_dir().join(live_proto::sign::random_id());
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("game.h2film");
+        let bytes = vec![23; (1 << 20) + 3];
+        let digest = format!("{:x}", Sha256::digest(&bytes));
+        let size = bytes.len() as u64;
+        assert!(
+            download(&path, size, &digest, |r| {
+                if r.start != 0 {
+                    bail!("interrupted");
+                }
+                Ok(bytes[..r.end as usize].into())
+            })
+            .is_err()
+        );
+        assert!(!path.exists());
+        download(&path, size, &digest, |r| {
+            assert_eq!(r, (1 << 20)..size);
+            Ok(vec![23; 3])
+        })
+        .unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        download(&path, size, &digest, |_| panic!("fetched twice")).unwrap();
+        assert!(download(&path, 1, &digest, |_| Ok(vec![0])).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::remove_dir_all(dir).unwrap();
+    }
 }

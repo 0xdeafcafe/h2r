@@ -70,6 +70,7 @@ pub fn on_wall(ray: &Ray, at: Vec3) -> Option<Vec3> {
 
 impl AreaHandles {
     /// Whether a handle is being dragged.
+    #[allow(dead_code)] // Not wired yet.
     pub fn dragging(&self) -> bool {
         self.drag.is_some()
     }

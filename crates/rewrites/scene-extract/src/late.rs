@@ -42,7 +42,7 @@ pub fn water_quad_range(mem: &dyn GuestRead, esp: u32) -> Option<(u32, u32)> {
 /// Copy the 16-bit index list as quads. Bound extraction to the device's
 /// vertex limit before allocating, and reject address wrap.
 pub fn water_composite(mem: &dyn GuestRead, indices: u32, count: u32) -> Option<frame_scene::late::WaterComposite> {
-    if indices == 0 || count < 4 || count > 1 << 20 || !count.is_multiple_of(4) {
+    if indices == 0 || !(4..=1 << 20).contains(&count) || !count.is_multiple_of(4) {
         return None;
     }
     indices.checked_add(2 * count - 1)?;

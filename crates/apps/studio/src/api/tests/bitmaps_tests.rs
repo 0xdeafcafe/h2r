@@ -370,7 +370,7 @@ fn bitmap_export_is_refused_in_a_git_checkout() {
     assert!(!out.exists());
     // The window's own export action refuses the same.
     let tag = app.resolve_bitmap("floor").unwrap();
-    let r = app.perform(
+    let _r = app.perform(
         Action::Bitmap(BitmapAction::Export {
             tag,
             layer: bitmap_edit::LayerId::new(0, 0, 0),

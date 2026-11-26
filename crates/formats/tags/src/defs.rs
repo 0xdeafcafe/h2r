@@ -313,7 +313,7 @@ impl Defs {
                     "applies" => applies = Some(parse_applies(v).map_err(&err)?),
                     "title" => {
                         return Err(err(
-                            "title on a group or struct is text: title=\"...\"".into(),
+                            "title on a group or struct is text: title=\"...\"".into()
                         ));
                     }
                     _ => return Err(err(format!("a header takes no {k}="))),
@@ -415,9 +415,7 @@ impl Defs {
                     let align = align_of(&words, 2)?;
                     let fields = self.fields(file, lines, i, indent + 2)?;
                     if l.title.is_some() {
-                        return Err(err(
-                            "a block's title is a field name: title=<field>".into(),
-                        ));
+                        return Err(err("a block's title is a field name: title=<field>".into()));
                     }
                     let title = match params.get("title") {
                         None => None,
@@ -603,9 +601,9 @@ impl Defs {
             let unit = match params.get("unit") {
                 None => None,
                 Some(_) if !numeric => return Err(err("unit needs a numeric field".into())),
-                Some(w) => Some(
-                    Unit::from_word(w).ok_or_else(|| err(format!("unknown unit={w}")))?,
-                ),
+                Some(w) => {
+                    Some(Unit::from_word(w).ok_or_else(|| err(format!("unknown unit={w}")))?)
+                }
             };
             let axes = match params.get("axes") {
                 None => Vec::new(),
@@ -630,22 +628,22 @@ impl Defs {
             let view = match params.get("view") {
                 None => None,
                 Some(w) => {
-                    let v = FieldView::from_word(w)
-                        .ok_or_else(|| err(format!("unknown view={w}")))?;
-                    let fits = match (v, &kind) {
-                        (FieldView::Rgb | FieldView::HdrRgb, Kind::Float { count: 3 }) => true,
-                        (FieldView::Argb, Kind::Float { count: 4 }) => true,
-                        (
-                            FieldView::Rgb8 | FieldView::Argb8 | FieldView::Xrgb8,
-                            Kind::Int {
-                                bytes: 4,
-                                count: 1,
-                                ..
-                            },
-                        ) => true,
-                        (FieldView::Function, Kind::Data { .. }) => true,
-                        _ => false,
-                    };
+                    let v =
+                        FieldView::from_word(w).ok_or_else(|| err(format!("unknown view={w}")))?;
+                    let fits = matches!(
+                        (v, &kind),
+                        (FieldView::Rgb | FieldView::HdrRgb, Kind::Float { count: 3 })
+                            | (FieldView::Argb, Kind::Float { count: 4 })
+                            | (
+                                FieldView::Rgb8 | FieldView::Argb8 | FieldView::Xrgb8,
+                                Kind::Int {
+                                    bytes: 4,
+                                    count: 1,
+                                    ..
+                                },
+                            )
+                            | (FieldView::Function, Kind::Data { .. })
+                    );
                     if !fits {
                         return Err(err(format!(
                             "view={w} does not fit the field's type: {}",

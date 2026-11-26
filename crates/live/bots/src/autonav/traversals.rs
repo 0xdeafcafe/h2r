@@ -3,6 +3,7 @@
 
 use std::io::{Read, Seek};
 
+#[cfg(test)]
 use tags::geometry::TagView;
 
 use crate::cache::MapData;
@@ -137,6 +138,7 @@ fn point(record: &[u8], at: usize) -> V3 {
     std::array::from_fn(|k| f32::from_bits(word(record, at + k * 4)))
 }
 
+#[cfg(test)]
 fn flags(view: &TagView<'_>) -> tags::Result<Vec<Teleporter>> {
     Ok(flags_of(&view.block(view.bytes(), 0x118, 0x20)?))
 }

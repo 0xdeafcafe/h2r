@@ -194,7 +194,7 @@ fn centre_of(
     world: &mut NativeWorld,
     camera: &Camera,
 ) -> ([u8; 4], CullStats) {
-    let lighting = world.lighting();
+    let _lighting = world.lighting();
     let size = wgpu::Extent3d {
         width: 64,
         height: 64,

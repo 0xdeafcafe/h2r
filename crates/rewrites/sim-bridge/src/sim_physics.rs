@@ -128,7 +128,7 @@ fn install_physics(b: &mut Builder) {
                     Step::Answered { target } => return Ok(TransferAbi::ret(target)),
                     Step::Audit(prediction) => {
                         let observed = ctx.observe_guest_return(cpu, parity::BROADPHASE_ARGS, move |c, ctx| {
-                            parity::broadphase_compare(&prediction, c, &*ctx.runtime().memory());
+                            parity::broadphase_compare(&prediction, c, &ctx.runtime().memory());
                         });
                         if !observed {
                             parity::uncompared(&parity::BROADPHASE);
@@ -149,14 +149,14 @@ fn install_physics(b: &mut Builder) {
     b.raw()
         .observe_before(pose, "physics-motion-pose-begin", move |o| {
             if o.addr == pose.base {
-                parity::motion_pose_begin(o.thread_id, o.cpu, &*o.guest());
+                parity::motion_pose_begin(o.thread_id, o.cpu, &o.guest());
             }
         })
         .optional();
     b.raw()
         .observe_after(pose, "physics-motion-pose-end", move |o| {
             if o.addr == pose.base {
-                parity::motion_pose_end(o.thread_id, o.cpu, &*o.guest());
+                parity::motion_pose_end(o.thread_id, o.cpu, &o.guest());
             }
         })
         .optional();
@@ -164,14 +164,14 @@ fn install_physics(b: &mut Builder) {
     b.raw()
         .observe_before(forces, "physics-motion-forces-begin", move |o| {
             if o.addr == forces.base {
-                parity::motion_forces_begin(o.thread_id, o.cpu, &*o.guest());
+                parity::motion_forces_begin(o.thread_id, o.cpu, &o.guest());
             }
         })
         .optional();
     b.raw()
         .observe_after(forces, "physics-motion-forces-end", move |o| {
             if o.addr == forces.base {
-                parity::motion_forces_end(o.thread_id, o.cpu, &*o.guest());
+                parity::motion_forces_end(o.thread_id, o.cpu, &o.guest());
             }
         })
         .optional();
@@ -179,14 +179,14 @@ fn install_physics(b: &mut Builder) {
     b.raw()
         .observe_before(mopp, "physics-mopp-box-begin", move |o| {
             if o.addr == mopp.base {
-                parity::mopp_box_begin(o.thread_id, o.cpu, &mut *o.guest());
+                parity::mopp_box_begin(o.thread_id, o.cpu, &mut o.guest());
             }
         })
         .optional();
     b.raw()
         .observe_after(mopp, "physics-mopp-box-end", move |o| {
             if o.addr == mopp.base {
-                parity::mopp_box_end(o.thread_id, o.cpu, &*o.guest());
+                parity::mopp_box_end(o.thread_id, o.cpu, &o.guest());
             }
         })
         .optional();

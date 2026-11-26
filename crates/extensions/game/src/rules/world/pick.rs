@@ -319,7 +319,7 @@ pub fn client_busy() -> bool {
 /// pickers added or taken away extend or trim the asking in place, so
 /// the cues of one tick do not reopen the first picker.
 pub fn client_plan(tick: u32, seats: &[(u8, u32)]) -> Option<Ask> {
-    let Some(received) = with_received(|r| std::mem::take(r)) else {
+    let Some(received) = with_received(std::mem::take) else {
         return with_client(|s| next_ask(&mut s.queue, &mut s.open, tick));
     };
     with_client(|s| {

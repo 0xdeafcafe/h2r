@@ -574,7 +574,7 @@ impl Admission {
             Err(reason) => {
                 let producer = producer_label(pending.source.producer());
                 if let Refused::Geometry(why) = &reason {
-                    SAMPLES.record(*why, producer, snapshot.draw);
+                    SAMPLES.record(why, producer, snapshot.draw);
                 }
                 REFUSALS.count(producer, refusal_label(reason));
                 return None;

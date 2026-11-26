@@ -751,14 +751,13 @@ pub fn check(v: &GameVariant) -> Vec<Problem> {
             c.i16_in(0xf2, 1, 0x7fff);
             c.i16_in(0xf4, 1, 0x7fff);
         }
-        SCRIPT_INDEX => {
-            if v.raw[TYPE_AREA].iter().any(|&b| b != 0) {
+        SCRIPT_INDEX
+            if v.raw[TYPE_AREA].iter().any(|&b| b != 0) => {
                 c.bad(
                     TYPE_AREA.start,
                     "a script game's type area must be zero".into(),
                 );
             }
-        }
         _ => {}
     }
     c.out

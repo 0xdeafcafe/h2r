@@ -40,6 +40,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
 /// them: per field, the seat-ticks it is in the game for, how many change
 /// from the tick before, and the stored bytes under each predictor, with
 /// the grids that hold.
+#[allow(dead_code)] // Not wired yet.
 pub fn fields<R: std::io::Read + std::io::Seek>(films: Vec<film::Reader<R>>) -> Result<String> {
     let tracks = films
         .into_iter()

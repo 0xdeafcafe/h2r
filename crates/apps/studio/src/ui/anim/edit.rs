@@ -342,7 +342,7 @@ impl State {
                 theme::RULE,
             )
             .build();
-            dl.add_text([fx + 2.0, origin[1] + 2.0], theme::DIM, &frame.to_string());
+            dl.add_text([fx + 2.0, origin[1] + 2.0], theme::DIM, frame.to_string());
         }
         for (node, n) in doc.nodes().iter().enumerate() {
             let top = origin[1] + ROW * (node + 1) as f32;
@@ -401,7 +401,7 @@ impl State {
             dl.add_text(
                 [origin[0] + 6.0, at + 2.0],
                 theme::DIM,
-                &format!(
+                format!(
                     "Events · {} frame, {} sound, {} effect",
                     read.events[0], read.events[1], read.events[2]
                 ),
@@ -597,7 +597,7 @@ impl State {
         let dl = ui.get_window_draw_list();
         for frame in (0..doc.frames()).step_by(ruler_step(doc.frames(), plot.size[0])) {
             let [x, y] = plot.point(frame as f32, plot.y[0]);
-            dl.add_text([x + 2.0, y - 15.0], theme::DIM, &frame.to_string());
+            dl.add_text([x + 2.0, y - 15.0], theme::DIM, frame.to_string());
         }
         let x = plot.point(transport.frame, plot.y[0])[0];
         dl.add_line(

@@ -5,7 +5,7 @@ pub use parity::ReturnPrediction;
 use super::{
     CollisionMemory, Outputs, Read, consts, finish, layout, layout::mopp_ray as ray_layout,
 };
-use crate::sim_native::{Memory, sub_flags};
+use crate::sim_native::sub_flags;
 use runtime::{CpuAbi, GuestFault, TransferAbi};
 use sim_collision::instance::PlacementMatrix;
 use sim_collision::{Bail, CollisionWorld, Entry, GuestRead};

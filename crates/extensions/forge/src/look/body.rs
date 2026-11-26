@@ -156,7 +156,7 @@ impl Bodies {
             primary: look.primary,
             secondary: look.secondary,
             highlight: highlight.unwrap_or([0; 4]),
-            light: (look.light > 0).then(|| Light {
+            light: (look.light > 0).then_some(Light {
                 colour: look.light_colour,
                 radius: if look.light == 2 { 4. } else { 2. },
             }),

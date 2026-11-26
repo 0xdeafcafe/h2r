@@ -35,7 +35,8 @@ impl Package {
         Ok(Self { manifest, lock, id })
     }
 
-    /// The slug the manifest names itself by.
+    /// The slug the manifest names itself by: a package's name is its id.
+    #[allow(clippy::misnamed_getters)]
     pub fn name(&self) -> &str {
         &self.manifest.package.id
     }
@@ -207,7 +208,7 @@ impl Set {
         problems.sort_by(|a, b| {
             a.package()
                 .cmp(b.package())
-                .then_with(|| rank(a).cmp(&rank(b)))
+                .then_with(|| rank(a).cmp(rank(b)))
         });
 
         // Edges run from the package that loads first.

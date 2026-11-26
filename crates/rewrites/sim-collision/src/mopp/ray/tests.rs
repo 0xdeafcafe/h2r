@@ -820,7 +820,7 @@ impl Reference<'_> {
                     frame.property = self.word(pc + 1, 4)?;
                     pc += 5;
                 }
-                0x30..=0x4f | 0x50..=0x53 => {
+                0x30..=0x53 => {
                     let key = if op < 0x50 {
                         u32::from(op - 0x30)
                     } else {

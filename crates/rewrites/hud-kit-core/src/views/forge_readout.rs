@@ -34,9 +34,9 @@
 //! `forge.status` and the HUD cannot disagree.
 
 use crate::model::{Describe, Hud, Style, Value, Values};
-use crate::world::{Pose, Shape};
+use crate::world::Pose;
 
-use super::superbounce_readout::{ARROW_DOWN, ARROW_UP, FALL_UP, INFO_UP, LEFT, SPEED_UP};
+use super::superbounce_readout::{ARROW_DOWN, ARROW_UP, FALL_UP, INFO_UP, SPEED_UP};
 
 pub const NAME: &str = "forge-readout";
 

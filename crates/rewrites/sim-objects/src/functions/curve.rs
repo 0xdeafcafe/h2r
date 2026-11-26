@@ -272,7 +272,7 @@ fn fmod_one(v: u32) -> Option<u32> {
 /// indefinite: declined.
 fn fistp(v: u32) -> Option<i32> {
     let r = f32::from_bits(v).round_ties_even();
-    (r >= -2147483648.0 && r < 2147483648.0).then_some(r as i32)
+    (-2147483648.0..2147483648.0).contains(&r).then_some(r as i32)
 }
 
 /// `17ca10 (sub, x)`: `x` clamped to 0..1; sub-type 0 that, else the
@@ -306,7 +306,7 @@ fn shape<E>(
             fp.mul(b, k)
         }
         short => {
-            let entry = table.wrapping_add(u32::from(short as i16 as u32));
+            let entry = table.wrapping_add(short as i16 as u32);
             let a = det::from_int(i32::from(byte(entry)?));
             let b = det::from_int(i32::from(byte(entry.wrapping_add(1))?));
             let a = fp.mul(a, k);

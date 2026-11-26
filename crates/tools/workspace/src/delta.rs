@@ -546,7 +546,7 @@ fn assemble(
         phase: n.phase,
         sort_by_string_id: (n.sort != 0).then_some(n.sort),
     };
-    let mut child = |next: &mut usize| -> Result<Block, String> {
+    let child = |next: &mut usize| -> Result<Block, String> {
         if *next >= nodes.len() {
             return Err("an array the image's data does not hold".into());
         }
@@ -554,7 +554,7 @@ fn assemble(
     };
     for (offset, kind, a, b, c) in &n.fixups {
         let kind = match *kind {
-            1 | 2 | 3 => {
+            1..=3 => {
                 // The array a field names is the next of the image, as it was written.
                 if usize::try_from(*b).ok() != Some(*next) {
                     return Err(format!(
@@ -772,7 +772,7 @@ mod tests {
         assert_eq!(good.len(), 8 + 12 + 4 + 20 + 17 + 20 + 8);
         let word = |n: u32| n.to_le_bytes();
         let refused = |bytes: &[u8], what: &str| {
-            let why = unimage(&set, bytes).err().expect("refused");
+            let why = unimage(&set, bytes).expect_err("refused");
             assert!(why.contains(what), "want {what:?}: {why}");
         };
         let mut other = good.clone();

@@ -4,7 +4,6 @@
 //! the cache's per-language tables, and each `unic` tag selects a span of
 //! them per language.
 
-use agent_proto::RpcError;
 use map::{FourCC, TagId};
 use serde_json::{Map as Object, Value, json};
 use studio_proto::{code, method as m};

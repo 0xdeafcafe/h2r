@@ -742,6 +742,7 @@ pub(super) fn install(session: &Arc<super::Session>, b: &mut hooks::Builder) {
 
 /// Verify the final transition affecting each seat on this tick. A replacement
 /// can leave and join the same slot before the next engine update.
+#[allow(dead_code)] // Playback does not check seat transitions yet.
 pub(super) fn verify_events(g: &Guest, events: &[Event]) -> Result<()> {
     if events.is_empty() {
         return Ok(());

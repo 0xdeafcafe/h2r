@@ -599,9 +599,7 @@ fn uses(app: &mut App, p: &P) -> Reply {
     let found = tag_api::uses(app.shown_tags(), scenario, tag);
     let answer = found.json(app.shown_tags());
     if let Some(on) = highlight {
-        let placements = on
-            .then(|| found.placements.iter().map(|p| (p.kind, p.index)).collect())
-            .unwrap_or_default();
+        let placements = if on { found.placements.iter().map(|p| (p.kind, p.index)).collect() } else { Default::default() };
         app.set_highlighted_uses(placements);
     }
     Ok(answer)

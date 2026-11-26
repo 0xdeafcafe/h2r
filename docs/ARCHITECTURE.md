@@ -78,6 +78,7 @@ the workspace checks are in
 | `firefight` | formats | Portable Firefight definitions and admission rules |  |  |
 | `font` | formats | Halo 2 packed bitmap font parser and CPU text rasteriser | [fonts.md](formats/fonts.md) | done |
 | `forge-doc` | formats | Forge documents: portable map edits, bounded canonical JSON and the host edit log |  |  |
+| `game-markers` | formats | Game type markers: the shapes Forge and Studio draw for spawns, goals, areas, teleporters, item spawns, volumes and script labels, and the area a hill or a site covers | [gametype-markers.md](game/gametype-markers.md) | in progress |
 | `h1-contract` | formats | The names both Halo 1 halves share: what the converters write and the game's Halo 1 hooks read (tag layouts, markers, script slots, function names) | [text.md](halo1/text.md), [script-builtins.md](halo1/script-builtins.md), [crate-structure.md](dev/crate-structure.md) |  |
 | `host-dirs` | formats | The per-user data, cache and config directories under each host's convention (docs/runtime/storage.md) | [storage.md](runtime/storage.md) |  |
 | `host-log` | formats | Canonical hash-chained command entries for Forge and Firefight |  |  |
@@ -110,6 +111,7 @@ the workspace checks are in
 | `background` | runtime | Background work in the game process: named threads below the game's own priority, and the worker cap for background jobs (docs/runtime/background-work.md) | [background-work.md](runtime/background-work.md) |  |
 | `kernel` | runtime | Xbox kernel HLE: threads, scheduling on a logical clock, sync, memory, files ([kernel-imports.md](runtime/kernel-imports.md), [kernel README](../crates/runtime/kernel/README.md)) † | [kernel-imports.md](runtime/kernel-imports.md), [kernel README](../crates/runtime/kernel/README.md) | in progress: covers the boot to the menu and the first level |
 | `lifted` | runtime | The lifted original on the IR interpreter: the oracle for port differential tests and for runtime shadow checks (docs/engine/shadow-exec.md) | [shadow-exec.md](engine/shadow-exec.md) |  |
+| `mem-watch` | runtime | Process footprint history, memory limits, diagnostic reports and the memory flight recorder |  |  |
 | `recomp` | runtime | Build and load: the XBE lifted, emitted and compiled into one host module, its build stamp, the module loaded with the boot bridge, and the interpreter for what the module leaves out (docs/runtime/BOOT.md) | [BOOT.md](runtime/BOOT.md) |  |
 | `runtime` | runtime | Guest memory, CPU state, dispatch/override table and the runner that drives generated code ([runtime README](../crates/runtime/runtime/README.md)) † | [runtime README](../crates/runtime/runtime/README.md) | done |
 | `runtime-test-probe` | runtime | Native C fixtures and declarations for runtime's integration tests |  |  |
@@ -125,7 +127,6 @@ the workspace checks are in
 | `gfx` | platform | Direct3D 8 (Xbox flavour) replacement on wgpu: texture decoding, state model, presenter | [graphics.md](graphics/graphics.md) | done, foundation only |
 | `hot-render` | platform | Hot iteration on the host renderer: WGSL overrides of translated programs from a watched directory, tunable parameters and toggles (docs/graphics/hot-iteration.md) | [hot-iteration.md](graphics/hot-iteration.md) |  |
 | `input` | platform | Xbox gamepad model (XINPUT_GAMEPAD), 4-port device model and host backends for h2recomp | [input.md](input/input.md) | done, foundation only |
-| `mem-watch` | runtime | Process footprint history, memory limits, diagnostic reports and the memory flight recorder |  |  |
 | `voice` | platform | The communicator under the title's own voice engine: microphone and headphone media objects over host capture and playback (docs/live/live-voice.md) | [live-voice.md](live/live-voice.md) |  |
 | `wma` | platform | Native WMAv2 decoder ([wma.md](audio/wma.md)) † | [wma.md](audio/wma.md) | done |
 | `xapi` | platform | Guest XAPI service replacements for Halo 2 | [xapi.md](runtime/xapi.md) | done |
@@ -142,6 +143,7 @@ the workspace checks are in
 | `sim-collision` | rewrites | The native collision world: BSPs decoded once, queries as single Rust calls (docs/engine/sim-rewrite-collision.md) | [sim-rewrite-collision.md](engine/sim-rewrite-collision.md) |  |
 | `sim-core` | rewrites | Shared math, exact SSE-order lanes and float rules for the native simulation subsystems |  |  |
 | `sim-ext` | rewrites | SimExt: the versioned side arena of extension records saved with checkpoints, snapshots and film keyframes and folded into the sim hash (docs/engine/sim-rewrite.md section 2) | [sim-rewrite.md](engine/sim-rewrite.md) | in progress |
+| `sim-havok` | rewrites | Ordered Havok simulation kernels over transient, Rust-owned data |  |  |
 | `sim-objects` | rewrites | The object update in Rust: typed views over the object pool, the definition table and the object kernels (docs/engine/sim-rewrite-objects.md) | [sim-rewrite-objects.md](engine/sim-rewrite-objects.md) |  |
 | `sim-sound` | rewrites | Sound source, scheduling and environment kernels for the native simulation | [sim-rewrite.md](engine/sim-rewrite.md), [dsound.md](audio/dsound.md) | in progress |
 | `sim-state` | rewrites | Typed, read-only views of the simulation for theater, stats, Live and the agent API (docs/engine/sim-rewrite-objects.md section 8) | [sim-rewrite-objects.md](engine/sim-rewrite-objects.md) |  |
@@ -156,6 +158,7 @@ the workspace checks are in
 | `live-server` (bin `h2-live-server`) | live | The Xbox Live replacement service: signed events on SQLite or Postgres behind axum (docs/live/live.md, docs/live/live-api.md) | [live.md](live/live.md), [live-api.md](live/live-api.md) | in progress |
 | `live-telemetry` | live | Non-invasive Halo 2 guest-state telemetry and live ingest | [live-telemetry.md](live/live-telemetry.md) | in progress |
 | `live-worker` (cdylib `live_worker`) | live | The Live server as a Cloudflare Worker: live-server's routes over D1, R2 and Durable Objects (docs/live/live-worker.md) | [live-worker.md](live/live-worker.md) |  |
+| `show-lan` | live | The show channel's LAN carrier: authenticated actor-channel datagrams between System Link peers (docs/game/rules-world-api.md, slice W11) | [rules-world-api.md](game/rules-world-api.md) |  |
 | `sim-bench` | live | Sim mode's pure parts: match and batch files, bot tuning files, the paced clock and speed-up, the metrics tally and report, and the A/B comparison (docs/runtime/sim.md) | [sim.md](runtime/sim.md) |  |
 | `superbounce` | live | Superbounce and forced-crouch spots found in a map's collision geometry (docs/game/superbounce.md) | [superbounce.md](game/superbounce.md) |  |
 | `agent` | extensions | The agent API server: a Unix socket in the game process, answered at tick boundaries (docs/runtime/agent-api.md) | [agent-api.md](runtime/agent-api.md) |  |
@@ -166,11 +169,13 @@ the workspace checks are in
 | `h1-runtime` | extensions | Hooks that only converted Halo 1 maps need: projectile velocity curves and the scope zoom (docs/halo1/README.md); the rest of Halo 1 in the game is game's h1_* modules | [README.md](halo1/README.md) | in progress |
 | `hot-tags` | extensions | Live edits of the running game's tags in guest memory, by field path from the tag definitions, with a journal to list and revert them (docs/graphics/hot-iteration.md) | [hot-iteration.md](graphics/hot-iteration.md) |  |
 | `lockstep` | extensions | Determinism harness: per-tick guest-RAM hashes, run traces and their comparison (docs/game/high-framerate.md) | [high-framerate.md](game/high-framerate.md) | done |
+| `anim-edit` | tools | *(no description)* † |  |  |
 | `bitmap-edit` | tools | The Textures tool's canvas of h2-editor: tiled RGBA8 layers with shared-tile undo snapshots, brush, fill and adjust tools, resampling, PNG in and out and dirty-rectangle tracking (docs/editor/modeling.md) | [modeling.md](editor/modeling.md) | in progress |
 | `collision-build` | tools | Compiles convex polygons to a Halo 2 collision BSP (planes, 3D and 2D trees, leaves, surfaces, winged edges, vertices), opens coll BSPs as editable meshes, rebuilds their BSP physics slots, makes collision from render faces, and adds solids to a structure's level collision with its per-leaf block and MOPP (docs/editor/modeling.md) | [modeling.md](editor/modeling.md), [modeling-targets.md](editor/modeling-targets.md) | in progress |
 | `editor-core` | tools | UI-free parts of h2-editor shared by its tools: map sources, the snapshot undo stack, status messages, where game variants come from | [editor.md](editor/editor.md) | in progress |
-| `firefight-kit` | tools | Offline stage-one Firefight map kit |  |  |
+| `firefight-kit` | tools | Offline Firefight map kit |  |  |
 | `forge-build` | tools | Deterministic local Forge map materialisation over the user's Halo 2 maps |  |  |
+| `forge-nav` | tools | Generate nav for a Forge map: the bots' nav mesh over the structure BSP with the map's solid objects merged in, the teleporters linked, and its problems (docs/game/forge-design.md, F9) | [forge-nav.md](game/forge-nav.md) | in progress |
 | `geometry-edit` | tools | The Modeling tool's targets and save: structure clusters, instanced geometry definitions and render-model sections opened as mesh-edit meshes, with undo, the op log, in-place and grown writes (docs/editor/modeling.md) | [modeling.md](editor/modeling.md), [modeling-targets.md](editor/modeling-targets.md) | in progress |
 | `h1-assets` | tools | Halo 1 assets as Halo 2 tags: bitmaps, models, sounds, skies and text, read from Xbox cache files (docs/halo1/README.md) | [README.md](halo1/README.md) |  |
 | `h1campaign` | tools | Halo 1 campaign levels converted to Halo 2 v8 maps (docs/halo1/campaign.md) | [campaign.md](halo1/campaign.md) |  |
@@ -184,6 +189,7 @@ the workspace checks are in
 | `perf` | tools | Performance tooling: guest-aware sampling profiler, timeline capture, benchmark harness | [profiling.md](perf/profiling.md) | done |
 | `pogo-kit` | tools | The Pogo Stick's models, built from content/pogo into each multiplayer map |  |  |
 | `scenario-edit` | tools | Sapien-style scenario placement editor: typed scnr placement blocks, undoable edits written as patched .map files, a UI-free session and an offscreen wgpu viewport | [scenario-editor.md](editor/scenario-editor.md) | in progress |
+| `sound-edit` | tools | Waveform edits as a list: trim, fades, gain, normalise, silence, and a sound's permutations as files (docs/editor/studio-redesign.md, "The sound editor") | [studio-redesign.md](editor/studio-redesign.md) | in progress |
 | `stage-kit` | tools | The content stage: Studio's test map of ours, its layout, geometry, collision and textures built from art/stage (docs/editor/content-stage.md) | [content-stage.md](editor/content-stage.md) | in progress |
 | `workspace` | tools | The package build: the builder registry, Layered tag sources and the build of a package set onto a map's TagSet (docs/editor/studio-redesign.md, "Packages") | [studio-redesign.md](editor/studio-redesign.md), [tag-workspace.md](editor/tag-workspace.md) | in progress |
 | `xtask` (bin `xtask`) | tools | The workspace's test and check runner, `cargo xtask`: a branch's affected crates in one nextest run, their doctests, the disc tier, the web tests and the pre-merge checks (docs/dev/build-speed.md) | [build-speed.md](dev/build-speed.md), [crate-structure.md](dev/crate-structure.md) |  |

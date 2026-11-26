@@ -62,13 +62,6 @@ impl Draft {
         }
     }
 
-    pub fn title(&self) -> String {
-        match &self.area.shape {
-            Shape::Radius(radius) => format!("Radius {}", sheet::number(*radius)),
-            Shape::Path(points) => format!("Path ({} points)", points.len()),
-        }
-    }
-
     pub fn status(&self) -> Value {
         let shape = match &self.area.shape {
             Shape::Radius(radius) => json!({"shape":"radius","radius":radius}),

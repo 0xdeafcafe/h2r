@@ -15,7 +15,7 @@
 //! with no strips; the strip the charge's fill, primed and lost.
 
 use crate::model::{
-    self, Art, Describe, Hud, Origin, PILL_BODY, Pulse, Style, Value, Values,
+    self, Describe, Hud, PILL_BODY, Pulse, Style, Value, Values,
 };
 
 use super::superbounce::{self, LOW_CHARGE, Phase, Scan, View};
@@ -45,10 +45,6 @@ pub const PILL_FULL: (i16, i16) = (90, 340);
 /// count is in its pill (V: the plasma count at (12, -1), its pill at
 /// (0, 0)).
 pub const ICON_AT: (i16, i16) = (12, -1);
-
-/// A place of the block: fullscreen `by` from the pill's top left
-/// ([`PILL_FULL`]); in half and quarter screen `split` from `origin` in
-/// the grenade row.
 
 /// The elements, in draw order.
 pub fn hud() -> Hud {
@@ -117,6 +113,7 @@ impl Describe for PillBlock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Origin;
     use crate::model::Anchor;
 
     fn state(name: &str) -> Values {

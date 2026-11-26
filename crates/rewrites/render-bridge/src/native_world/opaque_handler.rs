@@ -231,7 +231,7 @@ fn display_byte(m: &dyn GuestMemory, p: &SortedPart, retail: u8, fade: super::Di
     let factor = match fade {
         super::DisplayFade::Retail => return (retail, false),
         super::DisplayFade::Highest => return (0xff, false),
-        super::DisplayFade::Scaled(factor) if factor == 1.0 => return (retail, false),
+        super::DisplayFade::Scaled(1.0) => return (retail, false),
         super::DisplayFade::Scaled(factor) => factor,
     };
     let at = m.u32(p.record_addr + 0x1c).ok().filter(|&at| at != 0);
@@ -422,7 +422,6 @@ mod tests {
     const FADE_START: u32 = 0x0045_e0d8;
     const FADE_SLOPE: u32 = 0x0043_fde4;
     const FADE_RANGE: u32 = 0x0045_dc38;
-    const PROJECTION_DEPTH: u32 = 0x004b_9e20;
 
     /// One record with a placement fade, and the globals the stipple and
     /// display rescale arithmetic read. The placement sits at the origin

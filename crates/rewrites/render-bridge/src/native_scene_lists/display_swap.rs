@@ -385,7 +385,7 @@ mod tests {
         // Sections 1 (retail, tier 2) and 2 (finest, tier 5) agree on wire,
         // parts and residency; the finest section's remap is [0, 1]. The
         // residency record is inline at `+0x38`.
-        for (index, geometry, parts, map) in [(1u32, GEO1, PARTS1, MAP1), (2, GEO2, PARTS2, MAP2)] {
+        for (index, geometry, parts, _map) in [(1u32, GEO1, PARTS1, MAP1), (2, GEO2, PARTS2, MAP2)] {
             let section = SECTIONS + SECTION_STRIDE * index;
             m.put_u8(section + 0x14, 1)
                 .put_u16(section + 0x18, 1)

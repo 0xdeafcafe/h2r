@@ -39,7 +39,7 @@ pub mod additional;
 use std::cell::Cell;
 
 use super::guest::TAGS;
-use super::{Refusal, Result, visible};
+use super::{Result, visible};
 use crate::entry::{Cx, EntryError, GuestCall, Regs, Ret};
 use crate::light_constants::Fpu;
 use crate::light_passes::{self as lp, FlagInputs, flag};

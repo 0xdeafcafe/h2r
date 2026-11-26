@@ -217,8 +217,6 @@ pub fn value(index: usize, s: &Segments) -> Value {
     }
 }
 
-/// The segments' elements, in fill order.
-
 /// Sets the nine segments' values for `s` (`None`: all hidden).
 pub fn set_values(out: &mut Values, s: Option<&Segments>) {
     for (i, id) in IDS.iter().enumerate() {

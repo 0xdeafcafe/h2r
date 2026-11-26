@@ -886,7 +886,7 @@ impl App {
     }
     /// Decide from the open document's origin, without touching the filesystem.
     pub fn save_target(&self) -> SaveTarget {
-        let Some(map) = self.session.map_name() else {
+        let Some(_map) = self.session.map_name() else {
             return SaveTarget::Nothing;
         };
         if let Some(path) = &self.saved_path {
