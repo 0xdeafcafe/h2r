@@ -3,6 +3,12 @@ kind: list
 layout: controls
 backing: shell
 states:
+  piece:
+    focus: 0
+  size:
+    focus: 0
+  material:
+    focus: 0
   beacon:
     focus: 0
   gate:

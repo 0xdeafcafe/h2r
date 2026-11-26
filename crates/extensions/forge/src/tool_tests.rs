@@ -768,3 +768,127 @@ fn the_nav_tool_aims_at_nothing_and_a_generates_the_nav() {
     tool.set_nav(true);
     assert!(tool.nav && !tool.links);
 }
+
+// Block-out pieces: the grid and the Resize draft
+// (docs/game/forge-blockout.md, "In the monitor").
+
+fn blockout_def(size: [u16; 3]) -> forge_shapes::PieceDef {
+    forge_shapes::PieceDef::dev(forge_shapes::Shape::Block, size, 0)
+}
+
+fn on_grid(v: f32, grid: u16) -> bool {
+    let cells = v * 100.0 / f32::from(grid);
+    (cells - cells.round()).abs() < 1e-3
+}
+
+#[test]
+fn a_held_pieces_origin_rounds_to_each_block_out_grid_at_a_quarter_turn() {
+    let s = session(2);
+    for grid in forge_shapes::units::GRIDS {
+        for quarter in [0., std::f32::consts::FRAC_PI_2] {
+            let mut tool = Tool::default();
+            tool.update(&s, 1, press(Action::Toggle)).unwrap();
+            tool.camera = Some(Camera {
+                position: [0.123, 0.456, 0.789],
+                yaw: 0.,
+                pitch: 0.,
+            });
+            tool.set_block_grid(grid);
+            tool.select_piece(blockout_def([100, 60, 40]));
+            tool.set_heading(quarter);
+            let cmd = tool
+                .update_with_surface(&s, 2, press(Action::Accept), |_| None)
+                .unwrap()
+                .unwrap();
+            let Command::PlacePiece { frame, .. } = cmd else {
+                panic!("a held piece places as a piece: {cmd:?}");
+            };
+            assert!(
+                frame.position.iter().all(|v| on_grid(*v, grid)),
+                "grid {grid}: {:?}",
+                frame.position
+            );
+        }
+    }
+}
+
+#[test]
+fn a_set_grid_must_be_a_power_of_two_of_the_table() {
+    let mut tool = Tool::default();
+    assert_eq!(tool.block_grid, 16);
+    tool.set_block_grid(24);
+    assert_eq!(tool.block_grid, 16);
+    tool.set_block_grid(64);
+    assert_eq!(tool.block_grid, 64);
+}
+
+fn piece_session(size: [u16; 3]) -> (crate::Session, Fake, crate::OpId, Tool) {
+    let mut s = session(3);
+    let mut w = Fake::default();
+    let at = Frame {
+        position: [5., 0., 0.],
+        rotation: [0.; 3],
+    };
+    let id = s.place_piece(&mut w, 1, blockout_def(size), at).unwrap();
+    let mut tool = Tool::default();
+    tool.update(&s, 2, press(Action::Toggle)).unwrap();
+    tool.camera = Some(eye());
+    tool.begin_resize(&s, id).unwrap();
+    (s, w, id, tool)
+}
+
+fn piece_ops(s: &crate::Session) -> usize {
+    s.document()
+        .ops
+        .iter()
+        .filter(|op| matches!(op.edit, forge_doc::Edit::Forge(forge_doc::Forge::Piece { .. })))
+        .count()
+}
+
+fn push(amount: f32) -> Input {
+    Input {
+        movement: [0., amount, 0.],
+        seconds: 0.03,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_push_by_one_step_is_one_forge_piece_and_the_far_face_stays() {
+    let (mut s, mut w, id, mut tool) = piece_session([64, 64, 64]);
+    let before = piece_ops(&s);
+    assert_eq!(tool.update(&s, 3, push(1.)).unwrap(), None);
+    let draft = tool.draft.clone().unwrap();
+    assert_eq!(draft.def.size, [80, 64, 64], "one 16-unit step on the aimed face");
+    assert!((draft.frame.position[0] - 4.84).abs() < 1e-5, "the face at the origin moved");
+    let cmd = tool.update(&s, 4, press(Action::Accept)).unwrap().unwrap();
+    let Command::ResizePiece { id: target, def, origin } = cmd else {
+        panic!("A writes the draft: {cmd:?}");
+    };
+    assert_eq!(target, id);
+    s.set_piece(&mut w, 5, id, def, Some(origin)).unwrap();
+    assert_eq!(piece_ops(&s) - before, 1, "one Forge::Piece");
+    assert_eq!(s.piece(crate::Endpoint::Added(id)).unwrap().def.size, [80, 64, 64]);
+}
+
+#[test]
+fn a_pull_past_the_minimum_is_refused_and_the_document_is_unchanged() {
+    let (s, _w, _id, mut tool) = piece_session([16, 64, 64]);
+    let ops = s.document().ops.len();
+    let draft = tool.draft.clone();
+    let refused = tool.update(&s, 3, push(-1.)).unwrap_err();
+    assert!(!refused.is_empty());
+    assert_eq!(tool.draft, draft, "the draft is as it was");
+    assert_eq!(s.document().ops.len(), ops);
+}
+
+#[test]
+fn b_drops_the_draft_and_an_unchanged_draft_writes_nothing() {
+    let (s, _w, _id, mut tool) = piece_session([64, 64, 64]);
+    assert_eq!(tool.update(&s, 3, press(Action::Accept)).unwrap(), None);
+    assert!(tool.draft.is_none(), "nothing changed, nothing to write");
+    let (s, _w, _id, mut tool) = piece_session([64, 64, 64]);
+    tool.update(&s, 3, push(1.)).unwrap();
+    tool.update(&s, 4, press(Action::Back)).unwrap();
+    assert!(tool.draft.is_none());
+}

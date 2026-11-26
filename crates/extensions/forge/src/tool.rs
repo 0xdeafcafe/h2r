@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use crate::{BlockKind, Frame, Linkable, Session, Thing, ThingKind, camera::Camera};
 use forge_doc::{Endpoint, OpId, Value};
+use forge_shapes::PieceDef;
 use map::scenario_layout::game_types;
 
 /// Full stick deflection, in radians per second for look or object rotation.
@@ -96,14 +97,18 @@ pub enum Overlay {
     Gizmo,
     /// The last **Generate nav**'s problems (docs/game/forge-nav.md).
     Nav,
+    /// Barriers and `Nodraw` faces, drawn in their family's colour
+    /// (docs/game/forge-blockout.md, "Dev view").
+    Blockout,
 }
 
 impl Overlay {
-    pub const ALL: [Overlay; 4] = [
+    pub const ALL: [Overlay; 5] = [
         Overlay::Markers,
         Overlay::Monitors,
         Overlay::Gizmo,
         Overlay::Nav,
+        Overlay::Blockout,
     ];
 
     /// The overlay as `forge.status` names it.
@@ -113,6 +118,7 @@ impl Overlay {
             Self::Monitors => "monitors",
             Self::Gizmo => "gizmo",
             Self::Nav => "nav",
+            Self::Blockout => "blockout",
         }
     }
 
@@ -383,6 +389,23 @@ pub enum Command {
         prefab: Box<forge_doc::Prefab>,
         frame: Frame,
     },
+    /// Place a block-out piece of this definition at a frame
+    /// ([`crate::Session::place_piece`]).
+    PlacePiece {
+        def: PieceDef,
+        frame: Frame,
+    },
+    /// Write the Resize draft: the definition and origin it ends with
+    /// ([`crate::Session::set_piece`]).
+    ResizePiece {
+        id: OpId,
+        def: PieceDef,
+        origin: Frame,
+    },
+    /// Open the Size page on the Resize draft.
+    PieceSize {
+        id: OpId,
+    },
     Undo,
     Redo,
     /// Label the object as a siege barrier of the phase it opens in
@@ -436,6 +459,55 @@ pub enum Command {
     DialogBack,
 }
 
+/// How long a lean of the stick waits before it steps a Resize again, in
+/// seconds.
+pub const DRAFT_REPEAT: f32 = 0.18;
+/// How far the stick leans before it steps a Resize.
+pub const DRAFT_DEAD: f32 = 0.3;
+
+/// A piece being resized (docs/game/forge-blockout.md, "In the monitor"):
+/// tool state until A writes it, never in the document.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Draft {
+    pub id: OpId,
+    /// The definition and origin as the draft has them.
+    pub def: PieceDef,
+    pub frame: Frame,
+    /// What the piece was when the draft began.
+    pub from: (PieceDef, Frame),
+    /// The face the reticle picked, which the stick pushes and pulls.
+    pub face: Option<crate::piece::Face>,
+    stick: i8,
+    repeat_in: f32,
+}
+
+impl Draft {
+    /// Whether the draft is the piece as it was.
+    pub fn unchanged(&self) -> bool {
+        self.def == self.from.0 && self.frame == self.from.1
+    }
+
+    /// Set the size on `axis` to `units`, the origin face staying put. A
+    /// size the definition refuses leaves the draft as it was.
+    pub fn set_size(&mut self, axis: usize, units: i32) -> Result<(), String> {
+        let face = crate::piece::Face { axis, far: true };
+        let (def, frame) = crate::piece::resize_to(&self.def, self.frame, face, units)?;
+        self.def = def;
+        self.frame = frame;
+        Ok(())
+    }
+
+    /// Set the param (steps, sides, voussoirs or seed). A value the shape
+    /// refuses leaves the draft as it was.
+    pub fn set_param(&mut self, param: u16) -> Result<(), String> {
+        let mut next = self.def.clone();
+        next.param = param;
+        next.generate().map_err(|e| e.to_string())?;
+        self.def = next;
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Tool {
     pub monitor: bool,
@@ -460,6 +532,15 @@ pub struct Tool {
     /// World units between movement snaps; 0 is off.
     movement_step: f32,
     pub placing: Option<usize>,
+    /// The block-out piece being placed, held until A drops it.
+    pub placing_piece: Option<PieceDef>,
+    /// The piece placed or carried is a block-out piece: its origin rounds
+    /// to the block-out grid.
+    held_piece: bool,
+    /// The block-out grid in units ([`forge_shapes::units::GRIDS`]).
+    pub block_grid: u16,
+    /// The Resize draft in hand.
+    pub draft: Option<Draft>,
     pub ghost: Option<Frame>,
     /// The Links tool is selected instead of the Objects tool.
     pub links: bool,
@@ -506,6 +587,10 @@ impl Default for Tool {
             overlays: Overlays::default(),
             movement_step: 0.0,
             placing: None,
+            placing_piece: None,
+            held_piece: false,
+            block_grid: forge_shapes::units::DEFAULT_GRID,
+            draft: None,
             ghost: None,
             links: false,
             nav: false,
@@ -540,6 +625,9 @@ impl Tool {
 
     /// The bounding sphere of what is placed or held, if anything.
     pub fn extent(&self, session: &Session) -> Option<Extent> {
+        if let Some(def) = &self.placing_piece {
+            return Some(crate::piece::extent(def));
+        }
         match (self.placing, self.held_thing) {
             (Some(index), _) => Some(self.extents.get(index).copied().unwrap_or_default()),
             (None, Some(id)) => Some(self.thing_extent(session, &session.thing(id)?)),
@@ -622,6 +710,40 @@ impl Tool {
         self.distance = self.extents.get(index).copied().unwrap_or_default().hold();
     }
 
+    /// Hold a new block-out piece of `def` (the object menu's Structure and
+    /// Natural rows).
+    pub fn select_piece(&mut self, def: PieceDef) {
+        self.cancel();
+        self.distance = crate::piece::extent(&def).hold();
+        self.placing_piece = Some(def);
+        self.held_piece = true;
+    }
+
+    /// Set the block-out grid; a value that is not a grid is ignored.
+    pub fn set_block_grid(&mut self, units: u16) {
+        if forge_shapes::units::GRIDS.contains(&units) {
+            self.block_grid = units;
+        }
+    }
+
+    /// Begin the Resize draft of the piece `id`.
+    pub fn begin_resize(&mut self, session: &Session, id: OpId) -> Result<(), String> {
+        let piece = session
+            .piece(Endpoint::Added(id))
+            .ok_or("Aim at a block-out piece.")?;
+        self.clear_selection();
+        self.draft = Some(Draft {
+            id,
+            def: piece.def.clone(),
+            frame: piece.frame,
+            from: (piece.def, piece.frame),
+            face: None,
+            stick: 0,
+            repeat_in: 0.,
+        });
+        Ok(())
+    }
+
     /// Chooses the tool: the Links tool, or the Objects tool.
     pub fn set_links(&mut self, links: bool) {
         if self.links != links || (links && self.nav) {
@@ -671,7 +793,9 @@ impl Tool {
     }
 
     pub fn set_heading(&mut self, radians: f32) {
-        if radians.is_finite() && (self.placing.is_some() || self.held_thing.is_some()) {
+        if radians.is_finite()
+            && (self.placing.is_some() || self.placing_piece.is_some() || self.held_thing.is_some())
+        {
             self.initial_rotation[0] = radians;
             self.rotation[0] = 0.;
             if let Some(ghost) = &mut self.ghost {
@@ -685,7 +809,9 @@ impl Tool {
     /// placed or held turns to it at once; an aimed thing is sent as a
     /// move, as a heading is.
     pub fn set_orientation(&mut self, radians: f32) {
-        if radians.is_finite() && (self.placing.is_some() || self.held_thing.is_some()) {
+        if radians.is_finite()
+            && (self.placing.is_some() || self.placing_piece.is_some() || self.held_thing.is_some())
+        {
             self.initial_rotation = [radians, 0., 0.];
             self.rotation = [0.; 3];
             if let Some(ghost) = &mut self.ghost {
@@ -702,6 +828,7 @@ impl Tool {
         self.cancel();
         self.held_thing = Some(id);
         self.held = object;
+        self.held_piece = thing.as_ref().is_some_and(|t| t.kind == ThingKind::Piece);
         self.distance = thing
             .map(|t| self.thing_extent(session, &t).hold())
             .unwrap_or(4.0);
@@ -736,10 +863,20 @@ impl Tool {
                 )
             }
         };
+        // A block-out piece at a quarter turn rounds its origin to the
+        // block-out grid on the world's axes.
+        let position = if self.held_piece && quarter_turn(rotation) {
+            let step = f32::from(self.block_grid.max(1)) / 100.0;
+            raw.map(|v| snap(v, step))
+        } else {
+            position
+        };
         Frame { position, rotation }
     }
 
     fn cancel(&mut self) {
+        self.placing_piece = None;
+        self.held_piece = false;
         self.link_from = None;
         self.held = None;
         self.held_thing = None;
@@ -755,6 +892,7 @@ impl Tool {
     /// A load or external edit can invalidate both the aimed ID and the held preview.
     pub fn clear_selection(&mut self) {
         self.cancel();
+        self.draft = None;
         self.aimed = None;
         self.aimed_thing = None;
         self.aimed_link = None;
@@ -764,6 +902,8 @@ impl Tool {
         if matches!(
             command,
             Command::Place { .. }
+                | Command::PlacePiece { .. }
+                | Command::ResizePiece { .. }
                 | Command::Move { .. }
                 | Command::Delete { .. }
                 | Command::MoveThing { .. }
@@ -822,6 +962,9 @@ impl Tool {
         if !self.monitor {
             return Ok(None);
         }
+        if self.draft.is_some() {
+            return self.update_draft(input);
+        }
         if self.nav {
             return Ok(self.update_nav(input));
         }
@@ -833,7 +976,8 @@ impl Tool {
             self.links = true;
             return Ok(None);
         }
-        let previewing = self.placing.is_some() || self.held_thing.is_some();
+        let previewing =
+            self.placing.is_some() || self.placing_piece.is_some() || self.held_thing.is_some();
         // Things leave the selection when they disappear or join a group.
         let groups = session.groups();
         self.selection
@@ -943,7 +1087,9 @@ impl Tool {
                 None
             }
             Some(A::Accept) => {
-                if let (Some(item), Some(frame)) = (self.placing, self.ghost) {
+                if let (Some(def), Some(frame)) = (self.placing_piece.clone(), self.ghost) {
+                    Some(C::PlacePiece { def, frame })
+                } else if let (Some(item), Some(frame)) = (self.placing, self.ghost) {
                     Some(C::Place { item, frame })
                 } else if let (Some(id), Some(frame)) = (self.held_thing, self.ghost) {
                     Some(match self.held {
@@ -954,6 +1100,7 @@ impl Tool {
                     let near = self.thing_extent(session, &thing).near();
                     let distance = distance.max(near);
                     self.held_thing = Some(thing.id);
+                    self.held_piece = thing.kind == ThingKind::Piece;
                     self.held = object_id(&thing);
                     self.distance = distance;
                     let p = camera.point(distance);
@@ -967,6 +1114,65 @@ impl Tool {
                     None
                 }
             }
+            _ => None,
+        })
+    }
+
+    /// The Resize draft: fly, the reticle picks a face, the left stick's
+    /// forward and back push and pull it by a grid step, A writes the
+    /// draft, X opens Size and B drops it. A step the definition refuses is
+    /// refused by name and leaves the draft as it was.
+    fn update_draft(&mut self, input: Input) -> Result<Option<Command>, String> {
+        use Action as A;
+        use Command as C;
+        let seconds = input.seconds.clamp(0., 0.1);
+        let grid = self.block_grid;
+        let Some(draft) = self.draft.as_mut() else {
+            return Ok(None);
+        };
+        if let Some(camera) = &mut self.camera {
+            camera.fly([input.movement[0], 0., input.movement[2]], input.look, seconds);
+            // The face stays while the stick leans, though it moves.
+            if draft.stick == 0 {
+                draft.face =
+                    crate::piece::pick_face(&draft.def, draft.frame, camera.position, camera.forward())
+                        .or(draft.face);
+            }
+        }
+        let lean = if input.movement[1].abs() > DRAFT_DEAD {
+            input.movement[1].signum() as i8
+        } else {
+            0
+        };
+        let step = lean != 0 && (lean != draft.stick || draft.repeat_in <= seconds);
+        draft.stick = lean;
+        if step {
+            draft.repeat_in = DRAFT_REPEAT;
+            let face = draft.face.ok_or("Aim at a face of the piece.")?;
+            let (def, frame) =
+                crate::piece::resize_step(&draft.def, draft.frame, face, i32::from(lean), grid)?;
+            draft.def = def;
+            draft.frame = frame;
+        } else if lean != 0 {
+            draft.repeat_in -= seconds;
+        } else {
+            draft.repeat_in = 0.;
+        }
+        Ok(match input.action {
+            Some(A::Back) => {
+                self.draft = None;
+                None
+            }
+            Some(A::Accept) if draft.unchanged() => {
+                self.draft = None;
+                None
+            }
+            Some(A::Accept) => Some(C::ResizePiece {
+                id: draft.id,
+                def: draft.def.clone(),
+                origin: draft.frame,
+            }),
+            Some(A::Properties) => Some(C::PieceSize { id: draft.id }),
             _ => None,
         })
     }
@@ -1100,6 +1306,15 @@ fn aim(
     }
     let side: f32 = (0..3).map(|i| (d[i] - along * forward[i]).powi(2)).sum();
     (side <= (radius + along * RETICLE_SPREAD).powi(2)).then_some(along)
+}
+
+/// Whether a turn is a whole quarter turn of yaw with no pitch or roll.
+fn quarter_turn([yaw, pitch, roll]: [f32; 3]) -> bool {
+    const EPS: f32 = 1e-4;
+    let quarters = yaw / std::f32::consts::FRAC_PI_2;
+    (quarters - quarters.round()).abs() < EPS
+        && pitch.sin().abs() < EPS
+        && roll.sin().abs() < EPS
 }
 
 fn snap(v: f32, step: f32) -> f32 {

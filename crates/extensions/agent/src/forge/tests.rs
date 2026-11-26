@@ -2632,3 +2632,54 @@ mod ground {
         assert!(!refused["error"].is_null(), "{refused}");
     }
 }
+
+#[test]
+fn a_piece_is_loaded_when_the_palette_holds_its_bloc() {
+    use ::forge::{BlockKind, PaletteItem, PieceDef, Session, Shape, World};
+    use local::{ForgeWorld, Guard};
+    let held = PieceDef::dev(Shape::Block, [64, 64, 64], 0);
+    let other = PieceDef::dev(Shape::Ramp, [128, 128, 64], 0);
+    let limits = forge_doc::Limits {
+        world: Some(forge_doc::WorldBounds {
+            min: [-8.0; 3],
+            max: [8.0; 3],
+        }),
+        base_counts: [(BlockKind::Crates, 0)].into(),
+        ..Default::default()
+    };
+    let palette = vec![
+        PaletteItem {
+            block: BlockKind::Crates,
+            tag: ::forge::piece::bloc_key(&held),
+        },
+        // A crate that is not a definition's is not a loaded piece.
+        PaletteItem {
+            block: BlockKind::Crates,
+            tag: ::forge::TagKey {
+                group: "bloc".into(),
+                path: other.name(),
+            },
+        },
+    ];
+    let session = Session::new(draft(), limits, palette, 3).unwrap();
+    let q = calls::shared();
+    calls::lock(&q).arm();
+    let guard = Guard {
+        scenario: SCENARIO,
+        generation: 1,
+        admitted: |_, _| true,
+    };
+    ForgeWorld::apply(
+        &session,
+        &q,
+        guard,
+        |_| Ok(TAG),
+        |_, w| {
+            assert!(w.piece_loaded(&held.name()));
+            assert!(!w.piece_loaded(&other.name()));
+            assert!(!w.piece_loaded("block_1x1x1_0_000000000000"));
+            Ok(())
+        },
+    )
+    .unwrap();
+}

@@ -225,12 +225,13 @@ fn near_label(thing: &Entry) -> String {
         },
         ThingKind::ItemSpawner => tag_name(thing).unwrap_or_else(|| "Item".into()),
         ThingKind::Object => tag_name(thing).unwrap_or_else(|| "Object".into()),
+        ThingKind::Piece => "Piece".into(),
     }
 }
 
 /// A thing with no body as a near mark; none for an object, which has one.
 pub fn placed(thing: &Entry, game: Option<i32>) -> Option<Placed> {
-    if thing.kind == ThingKind::Object {
+    if matches!(thing.kind, ThingKind::Object | ThingKind::Piece) {
         return None;
     }
     Some(Placed {
@@ -258,7 +259,7 @@ pub fn aimed(
     game: Option<i32>,
 ) -> Aimed {
     let kind = match thing.kind {
-        ThingKind::Object => Thing::Object {
+        ThingKind::Object | ThingKind::Piece => Thing::Object {
             group: String::new(),
         },
         ThingKind::ItemSpawner => Thing::Spawner {

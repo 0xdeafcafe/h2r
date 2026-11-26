@@ -18,7 +18,7 @@ use crate::ui_kit::data::{PropDoc, ScreenDoc};
 /// The name a doc calls `kind` by ([`crate::ui_kit::data::PROP_KINDS`]).
 pub fn kind_name(kind: ThingKind) -> &'static str {
     match kind {
-        ThingKind::Object => "object",
+        ThingKind::Object | ThingKind::Piece => "object",
         ThingKind::ItemSpawner => "spawner",
         ThingKind::StartingPoint => "starting-point",
         ThingKind::Goal => "goal",
@@ -159,7 +159,7 @@ fn row(p: &PropDoc, thing: &Thing, heading: f32, extras: &Extras) -> Option<Shee
         // A copy of an object, held at once: a kind the session can add,
         // which is an object until slice P2, and a placed thing, not the
         // ghost of one being placed.
-        ("act", "duplicate") if thing.kind == ThingKind::Object => {
+        ("act", "duplicate") if matches!(thing.kind, ThingKind::Object | ThingKind::Piece) => {
             let placed = thing.fields.iter().any(|(name, _)| *name == "palette index");
             placed.then(|| {
                 SheetRow::new(&p.text, Act::Choose(Choice::Duplicate(thing.id))).describe(help)

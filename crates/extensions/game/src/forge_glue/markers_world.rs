@@ -915,7 +915,9 @@ mod gpu {
 
     impl WorldLineSource for Source {
         fn active(&self) -> bool {
-            let on = ACTIVE.load(Ordering::Acquire) || WALLS_ACTIVE.load(Ordering::Acquire);
+            let on = ACTIVE.load(Ordering::Acquire)
+                || WALLS_ACTIVE.load(Ordering::Acquire)
+                || super::pieces_world::active();
             if !on {
                 // Nothing to draw: the frame graph's batch goes too.
                 native_render::markers::publish(None);
@@ -931,6 +933,8 @@ mod gpu {
             report.shown += walls.len();
             report.markers.extend(shown);
             groups.extend(walls);
+            // The pending pieces, the ghost and the Block-out overlay.
+            groups.extend(super::pieces_world::published());
             *LAST.lock().unwrap_or_else(|e| e.into_inner()) = report;
             // With the native renderer on, the frame graph draws the faces
             // and the lines (with their X-ray look); the window then draws

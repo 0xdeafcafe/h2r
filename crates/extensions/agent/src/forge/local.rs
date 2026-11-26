@@ -243,6 +243,9 @@ pub struct ForgeWorld {
     made: u16,
     /// The block of each handle the session holds or this edit makes.
     blocks: BTreeMap<u32, BlockKind>,
+    /// The block-out definitions the loaded map holds `bloc`s of: the
+    /// names of the session's palette rows under `forge\\blockout\\`.
+    pieces: std::collections::BTreeSet<String>,
 }
 
 impl ForgeWorld {
@@ -260,6 +263,7 @@ impl ForgeWorld {
                 .iter()
                 .map(|object| (object.handle, object.item.block))
                 .collect(),
+            pieces: ::forge::piece::loaded_names(session.palette()),
             ..Default::default()
         };
         let result = edit(&mut candidate, &mut world)?;
@@ -367,6 +371,12 @@ impl World for ForgeWorld {
 
     fn respawn(&mut self, item: &PaletteItem, frame: Frame) -> Result<u32, String> {
         self.make(item, frame)
+    }
+
+    /// A definition is loaded when the map's palette has its `bloc`: the
+    /// tag index resolves it ([`Staged::Make`]), as it does any palette tag.
+    fn piece_loaded(&self, name: &str) -> bool {
+        self.pieces.contains(name)
     }
 
     /// A teleporter link writes the flag's identifier in the loaded

@@ -9,6 +9,8 @@ license.workspace = true
 mem-watch.workspace = true
 forge.workspace = true
 forge-doc.workspace = true
+# The block-out shapes the monitor places and draws (forge_glue/pieces_world.rs).
+forge-shapes = { path = "../../formats/forge-shapes" }
 # The shapes Forge draws for a game type's parts (forge_glue/markers_world.rs).
 game-markers = { path = "../../formats/game-markers" }
 # The Firefight director and its host log (firefight/host.rs).

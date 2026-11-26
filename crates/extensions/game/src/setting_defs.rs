@@ -977,6 +977,10 @@ pub static ALL: &[&Def] = &[
     &forge::look::saved::DEFS[2],
     &forge::look::saved::DEFS[3],
     &forge::look::saved::DEFS[4],
+    // The Forge monitor's block-out grid and dev view (forge::piece,
+    // docs/game/forge-blockout.md).
+    &forge::piece::GRID,
+    &forge::piece::DEV_VIEW,
     // Skulls in multiplayer games (crate::skulls_mp, docs/game/skulls.md).
     &crate::skulls_mp::MP_FAMINE,
     &crate::skulls_mp::MP_BLIND,

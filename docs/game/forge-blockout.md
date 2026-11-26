@@ -1,7 +1,7 @@
 # Forge block-out: pieces, the natural set and the dev textures
 
-Status: Partly built. Slices BO1 and BO3 are built: `forge-shapes` has the definition, the canonical name, the structural generators (block, wall, floor plate, ramp, wedge, stairs, cylinder, arch), `STARTER`, and the natural set (`noise`, `hull` and the five rock generators). Slice BO2 is built: `crates/formats/dev-texture` has the rasters, the font and the label layout. Slice BO5 is built: `forge-doc` has `Forge::Piece`, `PIECE_TAG`, the validator's rules and `ForgeDoc::pieces` (document format 6). Slice BO4 is built: `crates/tools/blockout-kit` installs a definition as tags with the dev set and its `Cost`, and has an invented map for tests. Slice BO11 is built: Studio's `blockout.render` (a definition or the contact sheet) and `blockout.describe` in `crates/apps/studio/src/api/blockout.rs`. Slice BO6 is built: `forge_build::blockout` materialises a document's pieces (the definitions, the crate palette rows, the starter set and the cut order in the kit) and `blockout_kit::palette` is the palette survey. Slice BO7 is built: the session places, changes and drops pieces and knows each one's state (`Session::{place_piece, set_piece, pieces}`, `forge::piece`, `World::piece_loaded`), and `forge.pieces` lists them. The rest of the page is a design. It is slice F8 of [forge-design.md](forge-design.md), split into slices BO1 to BO12 below.
-Code: `crates/formats/forge-shapes` (the definitions and generators), `crates/formats/forge-doc/src/piece.rs` (the document), `crates/formats/dev-texture` (the dev textures), `crates/tools/blockout-kit` (a definition as tags), `crates/tools/forge-build/src/blockout.rs` (materialising), `crates/extensions/forge/src/{piece.rs,session/pieces.rs}` (the session), `crates/extensions/agent/src/forge/pieces.rs` (`forge.pieces`), `crates/apps/studio/src/api/blockout.rs` (Studio's render and describe). Tests: named per slice under "Slices".
+Status: Partly built. Slices BO1 and BO3 are built: `forge-shapes` has the definition, the canonical name, the structural generators (block, wall, floor plate, ramp, wedge, stairs, cylinder, arch), `STARTER`, and the natural set (`noise`, `hull` and the five rock generators). Slice BO2 is built: `crates/formats/dev-texture` has the rasters, the font and the label layout. Slice BO5 is built: `forge-doc` has `Forge::Piece`, `PIECE_TAG`, the validator's rules and `ForgeDoc::pieces` (document format 6). Slice BO4 is built: `crates/tools/blockout-kit` installs a definition as tags with the dev set and its `Cost`, and has an invented map for tests. Slice BO11 is built: Studio's `blockout.render` (a definition or the contact sheet) and `blockout.describe` in `crates/apps/studio/src/api/blockout.rs`. Slice BO6 is built: `forge_build::blockout` materialises a document's pieces (the definitions, the crate palette rows, the starter set and the cut order in the kit) and `blockout_kit::palette` is the palette survey. Slice BO7 is built: the session places, changes and drops pieces and knows each one's state (`Session::{place_piece, set_piece, pieces}`, `forge::piece`, `World::piece_loaded`), and `forge.pieces` lists them. Slice BO8 is built: the monitor's Structure and Natural groups, Resize and its draft, Size, Material, Reroll, the Block-out grid, the ghost and the Block-out overlay. The rest of the page is a design. It is slice F8 of [forge-design.md](forge-design.md), split into slices BO1 to BO12 below.
+Code: `crates/formats/forge-shapes` (the definitions and generators), `crates/formats/forge-doc/src/piece.rs` (the document), `crates/formats/dev-texture` (the dev textures), `crates/tools/blockout-kit` (a definition as tags), `crates/tools/forge-build/src/blockout.rs` (materialising), `crates/extensions/forge/src/{piece.rs,session/pieces.rs}` (the session), `crates/extensions/agent/src/forge/pieces.rs` (`forge.pieces`), `crates/extensions/forge/src/{piece.rs,tool.rs}` (the grid, `Draft`, the resize steps), `crates/extensions/game/src/forge_screens/blockout.rs` and `forge_glue/{editing/resize.rs,pieces_world.rs}` (the monitor), `crates/apps/studio/src/api/blockout.rs` (Studio's render and describe). Tests: named per slice under "Slices".
 Switch: none. Two settings of the profile's store, `forge.blockout.grid` and `forge.blockout.dev_view` ("In the monitor").
 
 A monitor builds a level out of **pieces**: blocks, ramps, stairs,
@@ -176,6 +176,8 @@ the `dev` render model, every role `Dev`, at the path of
 `PieceDef::dev(shape, size, param)`, so definitions that differ only in
 materials share one; an all-`Dev` definition's render model is that
 twin. A definition with no drawn face has neither.
+
+A piece with no object is drawn by `forge_glue::pieces_world`: a pending piece's shell as lines and a skin in the pending tint, the ghost of a placed or resized piece, and with the Block-out overlay on the barriers and `Nodraw` faces, each a `markers_world::Group`. `ForgeWorld::piece_loaded` is true for a definition whose `bloc` the session's palette holds (`forge::piece::loaded_names`).
 
 A piece is a crate and not scenery because the engine gives a rigid
 body only to bipeds, vehicles, machines, crates and creatures: scenery
@@ -487,7 +489,7 @@ skin in their family's colour.
 
 ## In the monitor
 
-- **The object menu** gains two groups
+- **The object menu** gains two groups (`forge_screens::blockout::with_groups`; the Barrier row is slice BO12's)
   ([forge-editing.md](forge-editing.md), "The object menu"):
   **Structure** (Block, Wall, Floor plate, Ramp, Wedge, Stairs,
   Cylinder, Arch, Barrier) and **Natural** (the five shapes, eight
@@ -496,7 +498,7 @@ skin in their family's colour.
 - **Holding a piece** rounds its origin to the block-out grid on the
   world's axes when the piece stands at a quarter turn, and otherwise
   rounds as any object does. The Rotation snap applies as it is.
-- **Resize** (Properties) is a draft, as **Edit area** is: the reticle
+- **Resize** (Properties; `forge::tool::Draft`, `forge::piece::{pick_face, resize_step}`) is a draft, as **Edit area** is: the reticle
   picks the face it aims at, the left stick's forward and back push or
   pull that face by a grid step, and the opposite face stays where it
   is. The draft draws as the pending ghost does, with the face's size
@@ -505,8 +507,8 @@ skin in their family's colour.
   cancels. X opens **Size**: Width, Depth and Height rows, each opening
   the keyboard for a number of units, left and right nudging by the
   grid; Steps, Sides or Voussoirs where the shape has one.
-- **Material** (Properties) opens a picker: All faces, or Floor, Wall,
-  Ceiling and Trim, then Dev, the map's surfaces, Nodraw.
+- **Material** (Properties) opens a page of All faces and each role, each a picker: All faces, or Floor, Wall,
+  Ceiling and Trim, then Dev, the map's surfaces (`Editor::set_surfaces`, from `blockout_kit::palette::survey`; none until a survey is read), Nodraw.
 - **Reroll** (Properties, a natural piece) takes the next seed.
 - **Tool settings** gains **Block-out grid**; the Overlays page gains
   **Block-out** and **Dev view**.

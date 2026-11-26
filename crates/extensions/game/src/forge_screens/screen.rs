@@ -497,6 +497,18 @@ impl Rows for ForgeScreen {
         let Act::Type(spec) = &r.act else {
             return None;
         };
+        if let NumberField::Size(field) = spec.field {
+            // A size nudges by the block-out grid.
+            let current = r.value.as_ref()?.parse::<i64>().ok()?;
+            let grid = i64::from(super::facts().block_grid.max(1));
+            let value = (current + if right { grid } else { -grid }).max(0);
+            lock(&self.sheet)
+                .rows
+                .get_mut(usize::try_from(row).ok()?)?
+                .value = Some(value.to_string());
+            lock(&self.outbox).push_back(Choice::NudgeSize(field, right));
+            return Some(format!("{}: {value}", r.label));
+        }
         let NumberField::Coordinate(axis) = spec.field else {
             return None;
         };

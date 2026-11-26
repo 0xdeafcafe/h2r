@@ -31,6 +31,7 @@ pub fn sample_items() -> Vec<Item> {
         name: name.into(),
         placed,
         left,
+        hidden: false,
     })
     .collect()
 }
@@ -65,6 +66,19 @@ pub(super) fn sample_thing(block: forge::BlockKind, kind: forge::ThingKind) -> f
     }
 }
 
+/// A block-out piece's Properties: the object rows, then the piece's.
+fn piece_sheet() -> Sheet {
+    let facts = super::blockout::sample();
+    let mut sheet = sheet::properties_sheet(
+        &super::blockout::name(&facts.def),
+        &sample_thing(forge::BlockKind::Crates, forge::ThingKind::Piece),
+        0.,
+    )
+    .expect("rows");
+    sheet.rows.extend(super::blockout::piece_rows(&facts));
+    sheet
+}
+
 /// Each screen's named sample sheets.
 pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
     let at = |sheet: &Sheet, focus: usize| Sheet {
@@ -77,9 +91,25 @@ pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
             vec![
                 ("open", sheet::objects(&items, 1).expect("objects")),
                 ("first", sheet::objects(&items, 0).expect("objects")),
+                (
+                    "blockout",
+                    super::blockout::with_groups(sheet::objects(&items, 1)),
+                ),
             ]
         }
         Kind::Properties => vec![
+            (
+                "piece",
+                piece_sheet(),
+            ),
+            (
+                "size",
+                super::blockout::size_sheet(&super::blockout::sample().def),
+            ),
+            (
+                "material",
+                super::blockout::material_sheet(&super::blockout::sample()),
+            ),
             (
                 "beacon",
                 sheet::properties_sheet(

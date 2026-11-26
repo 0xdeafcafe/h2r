@@ -52,6 +52,30 @@ fn page_tables() {
             effects: vec![Nothing, Nothing, Focus(1), Open(picker)],
             after: "BEACON | focus 1 Heading = 17.5 degrees",
         },
+        // Structure and Natural follow the map's groups.
+        Case {
+            kind: Kind::Objects,
+            from: "blockout",
+            inputs: &[Down, Down, Down, Down],
+            effects: vec![Focus(1), Focus(2), Focus(3), Focus(4)],
+            after: "OBJECTS | focus 4 Natural",
+        },
+        // The Size page: a row a size, no arrows.
+        Case {
+            kind: Kind::Properties,
+            from: "size",
+            inputs: &[Down],
+            effects: vec![Focus(1)],
+            after: "SIZE | focus 1 Depth = 96",
+        },
+        // The Material page: All faces first, then each role.
+        Case {
+            kind: Kind::Properties,
+            from: "material",
+            inputs: &[Down, A],
+            effects: vec![Focus(1), Open(picker)],
+            after: "MATERIAL | focus 1 Floor = Dev",
+        },
         Case {
             kind: Kind::Tools,
             from: "objects",
@@ -876,6 +900,7 @@ fn a_kit_session_adds_spawns_teleporters_and_item_spawners_to_the_object_menu() 
         name: "Rifle".into(),
         placed: 0,
         left: 5,
+        hidden: false,
     }];
     let kit = sheet::KitMenu {
         items: vec![
@@ -939,4 +964,67 @@ fn the_goals_group_lists_the_goals_a_game_type_reads() {
     assert_eq!(p.choices[0], Choice::Goal(forge::Goal::Hill));
     // A game type that reads none has no Goals group.
     assert!(sheet::with_goals_for(None, &[]).rows.is_empty());
+}
+
+#[test]
+fn the_object_menu_offers_every_shape_and_each_start_is_in_the_starter_set() {
+    use forge::piece::{self, NATURAL, SEEDS, STRUCTURE};
+    let menu = blockout::with_groups(sheet::objects(&pages::sample_items(), 1));
+    let labels: Vec<&str> = menu.rows.iter().map(|r| r.label.as_str()).collect();
+    assert_eq!(labels, ["Scenery", "Crates", "Machines", "Structure", "Natural"]);
+    let Act::Pick(structure) = &menu.rows[3].act else {
+        panic!("a group opens the picker")
+    };
+    assert_eq!(structure.values.len(), STRUCTURE.len());
+    assert_eq!(structure.choices[0], Choice::Piece(forge::Shape::Block, 0));
+    assert!(structure.closes, "choosing a shape closes both");
+    let Act::Pick(natural) = &menu.rows[4].act else {
+        panic!("a group opens the picker")
+    };
+    assert_eq!(natural.values.len(), NATURAL.len() * usize::from(SEEDS));
+    assert_eq!(natural.values[0], "Boulder 1");
+    let starter: Vec<String> = forge_shapes::starter().iter().map(|d| d.name()).collect();
+    for shape in STRUCTURE {
+        assert!(starter.contains(&piece::start(shape, 0).name()), "{shape}");
+    }
+}
+
+#[test]
+fn a_hidden_palette_row_is_left_out_of_the_menu() {
+    let mut items = pages::sample_items();
+    for item in &mut items {
+        item.hidden = item.group == Group::Crates;
+    }
+    let menu = sheet::objects(&items, 0).unwrap();
+    assert!(menu.rows.iter().all(|r| r.label != "Crates"));
+}
+
+#[test]
+fn a_pieces_rows_are_resize_size_material_and_for_a_rock_reroll() {
+    let facts = blockout::sample();
+    let labels = |facts: &blockout::PieceFacts| -> Vec<String> {
+        blockout::piece_rows(facts).into_iter().map(|r| r.label).collect()
+    };
+    assert_eq!(labels(&facts), ["Resize", "Size...", "Material...", "Reroll"]);
+    let block = blockout::PieceFacts {
+        def: forge::piece::start(forge::Shape::Block, 0),
+        ..facts
+    };
+    assert_eq!(labels(&block), ["Resize", "Size...", "Material..."]);
+    let size = blockout::size_sheet(&block.def);
+    let rows: Vec<&str> = size.rows.iter().map(|r| r.label.as_str()).collect();
+    assert_eq!(rows, ["Width", "Depth", "Height"]);
+    let stairs = blockout::size_sheet(&forge::piece::start(forge::Shape::Stairs, 0));
+    assert_eq!(stairs.rows.last().unwrap().label, "Steps");
+}
+
+#[test]
+fn the_tool_settings_have_the_block_out_grid_and_the_overlays_a_dev_view() {
+    let s = sheet::settings_with(2, 0, false, 6);
+    let grid = s.rows.iter().find(|r| r.label == "Block-out grid").unwrap();
+    assert_eq!(grid.value.as_deref(), Some("64"));
+    let o = sheet::overlays_with(forge::tool::Overlays::default(), true);
+    assert_eq!(o.rows.len(), sheet::OVERLAYS.len() + 1);
+    assert_eq!(o.rows.last().unwrap().label, "Dev view");
+    assert_eq!(o.rows.last().unwrap().value.as_deref(), Some("On"));
 }
