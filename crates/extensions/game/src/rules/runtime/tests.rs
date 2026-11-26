@@ -4,12 +4,15 @@
 
 use std::sync::{Arc, Mutex};
 
-use engine::entry::{EntryFuture, Regs, testing};
+use ::rules::vm::{Arg, Call as VmCall};
+use engine::entry::{Cx, EntryFuture, GuestCall, Regs, Ret, testing};
+use engine::points;
 use engine::testing::FakeGuest;
 use engine::view::fake;
 use engine::view::players::Player;
 use variants::ext::{LEN, Script};
 
+use super::publish::walls_due;
 use super::*;
 use crate::rules::feature::Shared;
 

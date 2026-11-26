@@ -58,7 +58,10 @@ fn step(s: &Arc<Shared>, store: &Counting, f: impl FnOnce(&mut Runtime)) {
 #[test]
 fn an_unchanged_record_is_never_copied_and_a_change_is_written_once() {
     let store = Counting::default();
-    let s = Arc::new(Shared::new(Runtime::new(Box::new(store.clone()), Box::new(no_fetch))));
+    let s = Arc::new(Shared::new(Runtime::new(
+        Box::new(store.clone()),
+        Box::new(no_fetch),
+    )));
     let (mut m, _) = guest(block(prefix(&slayer().id), 2), SLAYER);
     s.lock().start(&m, false);
     assert!(s.lock().state().running);
@@ -253,7 +256,13 @@ fn the_show_state_is_encoded_again_after_a_change_and_after_it_was_forgotten() {
     let mut vm = Vm::new(::rules::compile(TOUR).unwrap(), 0, 0).unwrap();
     let mut g = ::rules::fake::FakeGame::with_players(2);
     vm.begin_tick(0);
-    vm.fire(&mut g, Input::Kill { victim: 0, killer: Some(1) });
+    vm.fire(
+        &mut g,
+        Input::Kill {
+            victim: 0,
+            killer: Some(1),
+        },
+    );
     let (quiet, shown) = (::rules::show::State::default(), vm.show().clone());
     assert_ne!(quiet, shown);
     let mut cue = ShowCue::default();
@@ -297,7 +306,11 @@ fn a_standing_picker_is_sent_at_once_and_again_every_pick_repeat_ticks() {
         if last.is_none_or(|at: u32| tick - at >= ::rules::show::PICK_REPEAT) {
             last = Some(tick);
         }
-        let sent = s.lock().pick_cue.as_ref().map(|(offers, at)| (offers.len(), *at));
+        let sent = s
+            .lock()
+            .pick_cue
+            .as_ref()
+            .map(|(offers, at)| (offers.len(), *at));
         assert_eq!(sent, last.map(|at| (1, at)), "tick {n}");
     }
     assert_eq!(last, Some(TICK + 1 + 2 * ::rules::show::PICK_REPEAT));
