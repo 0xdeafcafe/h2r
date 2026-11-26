@@ -26,7 +26,7 @@ const FILMS_FOOTER: u32 = 3;
 const DETAIL_FOOTER: u32 = 4;
 const STATUS: u32 = 5;
 const ROWS: u32 = 8;
-const ROSTER: usize = 7;
+const ROSTER: usize = 10;
 pub(super) const FILM_ROWS: usize = 40;
 pub(super) const BROWSE_ROWS: usize = OptionRow::ALL.len();
 const MAX_ROWS: usize = FILM_ROWS + BROWSE_ROWS + 1; // Also allow a retry row.
@@ -47,34 +47,23 @@ const LIST_PICTURE: PictureSpec = PictureSpec {
     at: [22, 149],
     ..lobby::PICTURE
 };
-// The actions list shows four rows above the status block; Share and Copy
-// Link are the fifth and sixth, so the list scrolls to them.
-const FILM_VISIBLE: i16 = 4;
+// The actions list shows all six rows; the fact block sits under it.
+const FILM_VISIBLE: i16 = 6;
 const FILM_LAYOUT: ListLayout = ListLayout {
-    anchor: [lobby::LIST.anchor[0], -77],
+    anchor: lobby::LIST.anchor,
     visible: FILM_VISIBLE,
     ..lobby::LIST
 };
 const FILM_PICTURE: PictureSpec = PictureSpec {
-    at: [-258, 174],
+    at: [12, 174],
     ..lobby::PICTURE
 };
-const FILM_PANEL_ART: [PictureSpec; 2] = [
-    PictureSpec {
-        at: [lobby::NAME_FIELD.at[0], FILM_LAYOUT.anchor[1] + 27],
-        ..lobby::NAME_FIELD
-    },
-    PictureSpec {
-        at: [lobby::LOBBY_DISPLAY.at[0], FILM_PICTURE.at[1]],
-        ..lobby::LOBBY_DISPLAY
-    },
-];
 const LIST_STATUS: TextBlock = TextBlock {
     rect: [-62, -20, -184, 268],
     ..lobby::BODY
 };
 const FILM_STATUS: TextBlock = TextBlock {
-    rect: [-148, -258, -187, -36],
+    rect: [-148, -258, -187, -42],
     ..lobby::STATUS
 };
 
@@ -218,8 +207,8 @@ fn entry_at(state: &super::State, row: i16) -> Option<Entry> {
     state.entries().into_iter().nth(index)
 }
 
-// The film's detail page frames its left-hand level picture.
-fn film_art() -> [(PictureSpec, [u16; 2]); 4] {
+// The film's detail page frames its right-hand level picture.
+fn film_art() -> [(PictureSpec, [u16; 2]); 2] {
     use crate::ui_kit::dialog::{FRAME_CORNER_SIZE, FRAME_CORNERS, LARGE_SCREEN_ID};
 
     let picture = FILM_PICTURE;
@@ -240,8 +229,6 @@ fn film_art() -> [(PictureSpec, [u16; 2]); 4] {
         )
     };
     [
-        (FILM_PANEL_ART[0], lobby::ART_SIZES[0]),
-        (FILM_PANEL_ART[1], lobby::ART_SIZES[1]),
         corner(FRAME_CORNERS[0], [left, top]),
         corner(FRAME_CORNERS[1], [left + width - side, top - height + side]),
     ]
@@ -381,138 +368,131 @@ fn panel_cell(rect: [i16; 4], right: bool, data: bool) -> PanelText {
     }
 }
 
-// The map and action list share the left column. The film summary and
-// roster share the right column, using the lobby's baselines throughout.
-const HEADER_LINES: usize = 5;
-const TABLE_LEFT: i16 = -28;
-const COLUMNS: [(i16, i16, bool); 4] = [
-    (TABLE_LEFT, 81, false),
-    (87, 143, false),
-    (149, 195, true),
-    (201, lobby::TABLE_RIGHT, true),
-];
-
-fn detail_cell(row: usize, left: i16, right: i16, numeric: bool, data: bool) -> PanelText {
-    let top = lobby::TABLE_TOP - row as i16 * lobby::ROW_STEP;
-    panel_cell([top, left, top - lobby::ROW_HEIGHT, right], numeric, data)
-}
+// The actions and facts share the left column; the map picture and the
+// player list share the right.
+const FACTS: usize = 6;
+const FACT_TOP: i16 = 30;
+const CELL_ROWS: usize = ROSTER / 2;
+const PLAYERS_TOP: i16 = -41;
+const CELLS_TOP: i16 = -63;
+// Left and right cell: (name left, name right, value left, value right).
+const CELLS: [(i16, i16, i16, i16); 2] = [(-28, 63, 67, 119), (125, 216, 220, 272)];
+const PLAYERS_LEFT: i16 = -28;
+const PLAYERS_RIGHT: i16 = 272;
+const HEADER_TEXT: usize = 2 * FACTS;
+const PAGE_TEXT: usize = HEADER_TEXT + 1;
+const CELL_TEXT: usize = PAGE_TEXT + 1;
+const NO_PLAYERS_TEXT: usize = CELL_TEXT + 2 * ROSTER;
+const _: () = assert!(NO_PLAYERS_TEXT < crate::list_class::MAX_PANEL_TEXTS);
 
 fn film_panel() -> Panel {
-    let mut texts = (0..=HEADER_LINES)
-        .map(|row| detail_cell(row, TABLE_LEFT, lobby::TABLE_RIGHT, false, row != 0))
-        .collect::<Vec<_>>();
-    for row in 0..=ROSTER {
-        for (left, right, numeric) in COLUMNS {
-            texts.push(detail_cell(
-                HEADER_LINES + 1 + row,
-                left,
-                right,
-                numeric,
-                row != 0,
-            ));
+    let mut texts = Vec::new();
+    for k in 0..FACTS {
+        let top = FACT_TOP - 22 * k as i16;
+        texts.push(panel_cell([top, -258, top - 20, -196], false, false));
+        texts.push(panel_cell([top, -192, top - 20, -42], false, true));
+    }
+    let head = |left, right| [PLAYERS_TOP, left, PLAYERS_TOP - 20, right];
+    texts.push(panel_cell(head(PLAYERS_LEFT, 119), false, false));
+    texts.push(panel_cell(head(125, PLAYERS_RIGHT), true, true));
+    for col in 0..2 {
+        let (nl, nr, vl, vr) = CELLS[col];
+        for r in 0..CELL_ROWS {
+            let top = CELLS_TOP - 22 * r as i16;
+            texts.push(panel_cell([top, nl, top - 20, nr], false, false));
+            texts.push(panel_cell([top, vl, top - 20, vr], true, true));
         }
     }
-    // This full-width line shares the first roster row's baseline. Only
-    // one of the line and the player cells ever has text.
-    texts.push(detail_cell(
-        HEADER_LINES + 2,
-        TABLE_LEFT,
-        lobby::TABLE_RIGHT,
-        false,
-        true,
-    ));
+    // Shares the header's line; only one of the two ever has text.
+    texts.push(panel_cell(head(PLAYERS_LEFT, PLAYERS_RIGHT), false, true));
     Panel {
         art: film_art().map(|(p, _)| p).to_vec(),
         texts,
     }
 }
 
-fn header_values(entry: &Entry, player: Option<&str>) -> Vec<String> {
+/// Label and value pairs for the fact block: empty values are skipped and
+/// the rest pack upward.
+fn facts(entry: &Entry, player: Option<&str>) -> Vec<(&'static str, String)> {
     let film = &entry.film;
-    let mut values = Vec::new();
-    if let Some((_, title)) = &entry.archive_clip
-        && !title.trim().is_empty()
-    {
-        values.push(title.clone());
-    }
+    let clip = entry
+        .archive_clip
+        .as_ref()
+        .map(|(_, title)| title.trim().to_owned())
+        .unwrap_or_default();
     let variant = film.variant_name().trim();
-    let game_type = film.game_type().unwrap_or("").trim();
-    if !variant.is_empty() {
-        values.push(variant.into());
-    }
-    let mode = film.mode().unwrap_or("").trim();
-    let mut modes: Vec<&str> = vec![];
-    if !mode.is_empty() {
-        modes.push(mode);
-    }
-    if !game_type.is_empty()
-        && !game_type.eq_ignore_ascii_case(variant)
-        && !game_type.eq_ignore_ascii_case(mode)
-    {
-        modes.push(game_type);
-    }
-    if !modes.is_empty() {
-        values.push(modes.join(" / "));
-    }
-    let when = entry.recorded_time();
-    if !when.is_empty() {
-        values.push(when);
-    }
-    if let Some(result) = entry.result(player) {
-        values.push(format!("Result: {result}"));
-    }
-    values.resize(HEADER_LINES, String::new());
-    values.push(match film.compatibility {
-        agent_proto::theater::CompatibilityState::Playable => "Playable",
-        agent_proto::theater::CompatibilityState::Unavailable => "Unavailable",
-    }.into());
+    let game = if variant.is_empty() {
+        film.game_type().unwrap_or("").trim()
+    } else {
+        variant
+    };
+    [
+        ("Clip", clip),
+        ("Map", map_title(&film.map)),
+        ("Game", game.to_owned()),
+        ("Mode", film.mode().unwrap_or("").trim().to_owned()),
+        ("Date", entry.recorded_date()),
+        ("Length", entry.duration().unwrap_or_default()),
+        ("Result", entry.result(player).unwrap_or_default()),
+    ]
+    .into_iter()
+    .filter(|(_, value)| !value.trim().is_empty())
+    .take(FACTS)
+    .collect()
+}
 
-    values
+/// The listed players: team games sort by team name, keeping order within a team.
+fn listed_players(entry: &Entry) -> Vec<&super::adapter::Player> {
+    let mut players: Vec<_> = entry.film.players().iter().collect();
+    if players.iter().any(|p| p.team.is_some()) {
+        players.sort_by_key(|p| (p.team.is_none(), p.team.clone()));
+    }
+    players
 }
 
 fn film_panel_values(state: &super::State) -> Vec<String> {
     let Some(entry) = &state.selected else {
         return Vec::new();
     };
-    let mut values = header_values(entry, state.player.as_deref());
-    let players = entry.film.scoreboard();
+    let mut values = Vec::new();
+    let facts = facts(entry, state.player.as_deref());
+    for k in 0..FACTS {
+        match facts.get(k) {
+            Some((label, value)) => values.extend([(*label).to_owned(), value.clone()]),
+            None => values.extend([String::new(), String::new()]),
+        }
+    }
+    let players = listed_players(entry);
     let pages = players.len().div_ceil(ROSTER);
     let page = state.roster_page.min(pages.saturating_sub(1));
+    values.push(if players.is_empty() { "" } else { "Players" }.into());
+    values.push(if pages > 1 {
+        format!("{} / {pages}", page + 1)
+    } else {
+        String::new()
+    });
     let teams = players.iter().any(|p| p.team.is_some());
     let scores = players.iter().any(|p| p.score.is_some());
-    let kd = players
-        .iter()
-        .any(|p| p.kills.is_some() || p.deaths.is_some());
-    values.extend([
-        if pages > 1 {
-            format!("Players {} / {pages}", page + 1)
-        } else {
-            "Players".into()
-        },
-        if teams { "Team" } else { "" }.into(),
-        if scores { "Score" } else { "" }.into(),
-        if kd { "K / D" } else { "" }.into(),
-    ]);
-    for row in 0..ROSTER {
-        if let Some(p) = players.get(page * ROSTER + row) {
-            let kd_value = |n: Option<u32>| n.map_or_else(|| "-".to_owned(), |n| n.to_string());
-            values.extend([
-                p.name.clone(),
-                p.team.clone().unwrap_or_default(),
-                p.score.map_or_else(String::new, |n| n.to_string()),
-                if p.kills.is_some() || p.deaths.is_some() {
-                    format!("{} / {}", kd_value(p.kills), kd_value(p.deaths))
-                } else {
-                    String::new()
-                },
-            ]);
-        } else {
-            values.extend(std::iter::repeat_n(String::new(), COLUMNS.len()));
+    for col in 0..2 {
+        for r in 0..CELL_ROWS {
+            match players.get(page * ROSTER + col * CELL_ROWS + r) {
+                Some(p) => {
+                    values.push(p.name.clone());
+                    values.push(if teams {
+                        p.team.clone().unwrap_or_default()
+                    } else if scores {
+                        p.score.map_or_else(String::new, |n| n.to_string())
+                    } else {
+                        String::new()
+                    });
+                }
+                None => values.extend([String::new(), String::new()]),
+            }
         }
     }
     values.push(
         if players.is_empty() {
-            "No players were recorded."
+            "Player list unavailable."
         } else {
             ""
         }
@@ -579,7 +559,7 @@ pub(super) fn spec(theater: &Theater, list: bool) -> ScreenSpec {
         && state
             .selected
             .as_ref()
-            .is_some_and(|e| e.film.scoreboard().len() > ROSTER);
+            .is_some_and(|e| e.film.players().len() > ROSTER);
     s.prompts = if list {
         library_prompts("Select")
     } else {
@@ -654,14 +634,6 @@ pub(super) fn spec(theater: &Theater, list: bool) -> ScreenSpec {
                 pane_text(i, t, text_fit::line(&value, i32::from(right - left)))
             })
             .collect();
-        // "Unavailable" is the film's real compatibility, not a missing value.
-        if state.selected.as_ref().is_some_and(|e| {
-            e.film.compatibility == agent_proto::theater::CompatibilityState::Unavailable
-        }) {
-            s.content
-                .unavailable_values
-                .push(format!("theater.panel.{HEADER_LINES}"));
-        }
         let message = if !state.status.is_empty() {
             Some(state.status.as_str())
         } else {
@@ -819,7 +791,7 @@ impl Rows for ScreenRows {
             .selected
             .as_ref()?
             .film
-            .scoreboard()
+            .players()
             .len()
             .div_ceil(ROSTER);
         if pages <= 1 {

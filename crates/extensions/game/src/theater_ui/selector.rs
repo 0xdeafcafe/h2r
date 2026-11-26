@@ -208,12 +208,21 @@ impl Entry {
         text_fit::line(&title, text_fit::ROW)
     }
 
-    fn duration(&self) -> Option<String> {
+    pub(super) fn duration(&self) -> Option<String> {
         self.clip
             .as_ref()
             .map(|clip| clip.to_tick.saturating_sub(clip.from_tick))
             .or_else(|| self.film.duration())
             .map(|ticks| clock(ticks, self.film.tick_rate()))
+    }
+
+    pub fn recorded_date(&self) -> String {
+        i64::try_from(self.film.started_ms)
+            .ok()
+            .filter(|ms| *ms > 0)
+            .and_then(chrono::DateTime::from_timestamp_millis)
+            .map(|d| d.format("%d %b %Y").to_string())
+            .unwrap_or_default()
     }
 
     pub fn recorded_time(&self) -> String {
@@ -261,7 +270,7 @@ impl Entry {
                 lines.push(text_fit::line(value, 280));
             }
         }
-        let count = self.film.scoreboard().len();
+        let count = self.film.players().len();
         let mut match_info = Vec::new();
         if count > 0 {
             match_info.push(format!(
