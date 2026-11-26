@@ -69,7 +69,7 @@ pub fn request_key(hle: Option<&Hle>) -> bool {
 
 /// The upstream pick messages the tunnel received since the last call,
 /// each with the roster slots of the remote players whose machine id the
-/// sending peer named (`super::pick::seats_of`), for `super::pick::receive`.
+/// sending peer named (`crate::actor_net::pick::seats_of`), for `crate::actor_net::pick::receive`.
 /// A peer that names a machine no player has gets no seats, and its picks
 /// are refused there.
 pub fn take_picks(hle: Option<&Hle>, m: &dyn GuestMemory) -> Vec<(Vec<u8>, Vec<u8>)> {
@@ -78,7 +78,7 @@ pub fn take_picks(hle: Option<&Hle>, m: &dyn GuestMemory) -> Vec<(Vec<u8>, Vec<u
     };
     hle.take_actor_tunnel_picks()
         .into_iter()
-        .map(|(_, machine, message)| (message, super::pick::seats_of(m, machine)))
+        .map(|(_, machine, message)| (message, crate::actor_net::pick::seats_of(m, machine)))
         .collect()
 }
 
@@ -87,7 +87,7 @@ pub fn take_picks(hle: Option<&Hle>, m: &dyn GuestMemory) -> Vec<(Vec<u8>, Vec<u
 /// False without a negotiated channel, before the client has read its own
 /// machine id, or with the send queue full.
 pub fn send_pick(hle: Option<&Hle>, pick: &[u8]) -> bool {
-    let Some(machine) = super::pick::local_machine() else {
+    let Some(machine) = crate::actor_net::pick::local_machine() else {
         return false;
     };
     let mut payload = machine.to_vec();
