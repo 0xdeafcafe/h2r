@@ -151,13 +151,14 @@ fn wave_module(def: &Def) -> Result<String, ScriptRefusal> {
     // The bonus squad is the last row, after every wave's.
     if let Some(bonus) = &def.bonus {
         let squad = &bonus.squad;
-        let preferred = match squad.drop {
-            Drop::Edge => -1,
-            Drop::PreferZone(zone) => i32::from(zone),
+        let (preferred, role) = match squad.drop {
+            Drop::Edge => (-1, 0),
+            Drop::PreferZone(zone) => (i32::from(zone), 0),
+            Drop::Role(role) => (-1, i32::from(role.bit())),
         };
         writeln!(
             data,
-            "(\"{}\", {}, {}, {}, {preferred}, {}),",
+            "(\"{}\", {}, {}, {}, {preferred}, {}, {role}),",
             squad.class, squad.count.per_player, squad.count.min, squad.count.max, squad.weapon_tier,
         )
         .unwrap();

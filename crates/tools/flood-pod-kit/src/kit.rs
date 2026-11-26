@@ -320,7 +320,6 @@ pub fn vehicle(hlmt: TagId, render: TagId, bitmap: TagId) -> Result<map::build::
     rebuild::vehicle(&VehicleSpec {
         object: &h1objects::h1::Object::default(),
         source: &[],
-        physics: None,
         references: &[],
         bounds: Some((BOUNDING_RADIUS, BOUNDING_OFFSET)),
         hlmt: Some(hlmt),
@@ -330,8 +329,6 @@ pub fn vehicle(hlmt: TagId, render: TagId, bitmap: TagId) -> Result<map::build::
         vehicle_type: rebuild::ROLE_VEHICLE_TYPE as u16,
         flags: 0,
         weapons: &[],
-        contacts: None,
-        seat_power: &[],
         points: &[],
         attachments: &[],
         functions: &[],

@@ -99,6 +99,7 @@ impl Source for Fake {
             log: Some(self.log()),
             errors: Vec::new(),
             refused: None,
+            placements_unseen: 0,
         }
     }
     fn command(&self, params: CommandParams) -> Result<CommandReply, Refused> {

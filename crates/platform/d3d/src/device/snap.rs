@@ -682,6 +682,8 @@ impl<B: Backend> Device<B> {
             cfg: _,
             // A host hook the boot plan installs again.
             indexed_admission: _,
+            // A per-draw reading of the last refusal, made again on use.
+            native_refusal: _,
             translator: _,
             backend: _,
             created: _,
