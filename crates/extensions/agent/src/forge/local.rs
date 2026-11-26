@@ -7,7 +7,7 @@ use ::forge::look::{Refusal, monitors::Who};
 use ::forge::{BlockKind, Frame, PaletteItem, Session, World};
 use agent_proto::forge::{
     GROUND_WAIT_TICKS, GroundBuildParams, NAV_WAIT_TICKS, NavParams, THING_KINDS, ThingsParams,
-    method, refusal,
+    WavesParams, method, refusal,
 };
 use agent_proto::{Boundary, Kind, ObjectId, RpcError, code};
 use engine::GuestMemory;
@@ -567,6 +567,17 @@ pub trait LocalApi: Send + Sync + 'static {
     fn nav_generate(&self) -> Result<NavReply, String> {
         Err(super::nav::NO_GENERATOR.into())
     }
+    /// `forge.waves`: the session's wave set, its id, its problems and the
+    /// drops in zone order. The default reads the session.
+    fn waves(&self) -> Result<Value, String> {
+        Ok(super::waves::reply(&*self.session()?))
+    }
+    /// `forge.waves {set}`: replace the session's set with `set` (`None`
+    /// clears it) and answer `forge.waves`' reply. A refusal is the
+    /// sentence and changes nothing.
+    fn set_waves(&self, _set: Option<forge_doc::waves::Def>) -> Result<Value, String> {
+        Err(super::waves::NO_EDIT.into())
+    }
     /// How many game ticks `forge.propose` waits for its answer. A shared
     /// session's goes to the host and back, and waits for the tick the
     /// stream applies the entry at.
@@ -663,7 +674,14 @@ pub fn install(agent: &Agent, backend: impl LocalApi) {
     let host = backend.clone();
     agent.add_game_method(method::STATUS, Access::Read, move |v, _| {
         empty(v)?;
-        host.status().map_err(super::unavailable)
+        let mut status = host.status().map_err(super::unavailable)?;
+        // The set is the session's, beside the document `variant` reads.
+        if let Ok(session) = host.session()
+            && let Some(variant) = status.get_mut("variant").filter(|v| v.is_object())
+        {
+            variant["waves"] = super::waves::status(&session);
+        }
+        Ok(status)
     });
     let host = backend.clone();
     agent.add_game_method(method::LOOK, Access::Read, move |v, ctx| {
@@ -732,6 +750,21 @@ pub fn install(agent: &Agent, backend: impl LocalApi) {
     agent.add_game_method(method::GROUND, Access::Read, move |v, _| {
         empty(v)?;
         host.ground().map_err(super::unavailable)
+    });
+    let host = backend.clone();
+    agent.add_game_method(method::WAVES, Access::Act, move |v, _| {
+        let p: WavesParams = if v.is_null() {
+            WavesParams::default()
+        } else {
+            serde_json::from_value(v).map_err(|e| super::invalid(e.to_string()))?
+        };
+        match p.set {
+            None => host.waves().map_err(super::unavailable),
+            Some(set) => {
+                let def = super::waves::parse(set).map_err(waves_refused)?;
+                host.set_waves(def).map_err(waves_refused)
+            }
+        }
     });
     let host = backend.clone();
     agent.add_game_method(method::NAV, Access::Act, move |v, ctx| {
@@ -817,6 +850,14 @@ pub fn install(agent: &Agent, backend: impl LocalApi) {
 fn who_of(host: &impl LocalApi, ctx: &mut crate::GameCtx<'_>) -> Who {
     ctx.with_guest(|m| Ok(host.who(Some(&*m))))
         .unwrap_or_else(|_| host.who(None))
+}
+
+/// A refused `forge.waves {set}`: its sentence as the message, and
+/// `{code: "forge_waves", message}` as the data.
+fn waves_refused(message: String) -> RpcError {
+    let mut e = RpcError::new(code::INVALID_REQUEST, message.clone());
+    e.data = Some(json!({"code": refusal::WAVES, "message": message}));
+    e
 }
 
 /// A refused input or edit: its sentence as the message, and

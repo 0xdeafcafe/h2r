@@ -765,6 +765,14 @@ impl LocalApi for Backend {
         self.read(Editor::nav_json)
     }
 
+    fn set_waves(&self, set: Option<forge_doc::waves::Def>) -> Result<Value, String> {
+        let mut driver = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(e) = driver.editor.as_mut() else {
+            return Err(driver.reason.clone());
+        };
+        e.set_waves(set)
+    }
+
     fn nav_generate(&self) -> Result<local::NavReply, String> {
         let mut driver = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let Some(e) = driver.editor.as_mut() else {

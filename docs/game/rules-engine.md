@@ -2399,7 +2399,9 @@ A label is a change of the document format. The format is one number
 (`forge_doc::FORMAT`, 1; `FORMAT_LABELS`, 2; `FORMAT_ENTRIES`, 3 for
 the entry edits and prints of
 [forge-map-variants.md](forge-map-variants.md#the-ops); `FORMAT_GROUPS`, 4
-for a group op, [forge-editing.md](forge-editing.md#selection-groups-and-prefabs)). A document
+for a group op, [forge-editing.md](forge-editing.md#selection-groups-and-prefabs);
+`FORMAT_WAVES`, 5 for a document with a wave set,
+[forge-firefight.md](forge-firefight.md#the-wave-set)). A document
 takes the highest number its ops need: 2 when any op is a label op and
 no op needs 3 or 4, and 1 otherwise. `crates/formats/forge-doc/src/validate.rs`
 refuses any other number, so a document has one spelling: every

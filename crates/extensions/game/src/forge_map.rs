@@ -295,6 +295,7 @@ fn decode(bytes: &[u8], loaded: &Loaded, base: Option<Sha256>) -> anyhow::Result
         sources: vec![],
         imports: vec![],
         expect: None,
+        waves: None,
     };
     let limits = Limits {
         world: Some(bounds),

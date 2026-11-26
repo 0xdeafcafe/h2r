@@ -173,7 +173,9 @@ the new entry's name.
   (`content::forge::DOCUMENT_FORMAT_ENTRIES`).
   `ForgeDoc::required_format` is the highest number its ops need, so a
   document without them keeps its number and its identity. A group op
-  needs 4 (`DOCUMENT_FORMAT_GROUPS`).
+  needs 4 (`DOCUMENT_FORMAT_GROUPS`), and a document with a wave set is 5
+  (`DOCUMENT_FORMAT_WAVES`, [forge-firefight.md](forge-firefight.md),
+  "The wave set").
 - **Validation without a map** (`validate.rs`, and the identity pass in
   `links.rs`): a base target carries its print; the block has the
   field and the layout marks it editable; the value's type is the
@@ -500,10 +502,10 @@ A map variant is a Forge document, in the form a game is played from.
   more is a **Forge map**: it is picked as a map
   ([forge-design.md](forge-design.md), slice F14), keeps `.h2forge`,
   and is never offered as a variant.
-  In the design a variant may also hold one Firefight wave set
-  (`waves`) and, as the AI ground recipe's class donors only, source
-  maps ([forge-firefight.md](forge-firefight.md), "The wave set" and
-  "Enemy classes").
+  A variant may also hold one Firefight wave set (`waves`, which builds
+  nothing, [forge-firefight.md](forge-firefight.md), "The wave set"), and
+  in the design, as the AI ground recipe's class donors only, source
+  maps (the same page, "Enemy classes").
 - **Play form and session form.** A session's document has the
   `forge_kit` recipe (`forge_doc::KIT_RECIPE`) and a saved variant does
   not ([forge-design.md](forge-design.md), "The kit").

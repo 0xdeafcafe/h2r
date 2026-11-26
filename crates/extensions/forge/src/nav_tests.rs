@@ -96,6 +96,7 @@ fn session() -> Session {
         imports: vec![],
         ops: vec![],
         expect: None,
+        waves: None,
     };
     let limits = Limits {
         base_counts: counts(),

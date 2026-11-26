@@ -18,6 +18,7 @@ mod prefab;
 mod resolve;
 mod validate;
 mod variant;
+pub mod waves;
 mod wire;
 
 pub use area::{Area, MarkerArea};
@@ -37,6 +38,7 @@ pub use map::scenario_layout::BlockKind;
 pub use resolve::{Printed, Resolved, resolve};
 pub use validate::{Limits, WorldBounds, validate};
 pub use variant::{KIT_RECIPE, MAX_VARIANT_NAME, Tier, kit, play_form, session_form, variant_name};
+pub use waves::FORMAT_WAVES;
 
 use serde::{Deserialize, Serialize};
 
@@ -47,7 +49,7 @@ pub type Result<T> = std::result::Result<T, Refusal>;
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Refusal {
     #[error(
-        "Forge format {0} is unsupported (this build reads 1, 2 for documents with labels, 3 for documents with entry edits or prints and 4 for documents with groups)"
+        "Forge format {0} is unsupported (this build reads 1, 2 for documents with labels, 3 for documents with entry edits or prints, 4 for documents with groups and 5 for documents with a wave set)"
     )]
     Format(u32),
     /// The base entry an edit names is not the one it was made on: its
