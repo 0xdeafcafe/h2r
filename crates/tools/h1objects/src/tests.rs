@@ -1658,6 +1658,38 @@ fn biped_carries_each_source_word_and_leaves_unmapped_fields_at_default() {
     assert_eq!(pr.len(), 1);
 }
 
+/// A Halo 1 biped unit holding `words` (Halo 1 offset, word) and no
+/// collision size.
+fn biped_unit(words: Vec<(usize, u32)>) -> crate::h1::Unit {
+    crate::h1::Unit {
+        hud_interfaces: Vec::new(),
+        group: h1map::Group::new(b"bipd"),
+        object: crate::h1::Object {
+            texture_override: 0,
+            object_type: 0,
+            acceleration_scale: 0.0,
+            flags: 0,
+            bounding_radius: 0.7,
+            bounding_offset: [0.0; 3],
+            model: None,
+            animation: None,
+            collision: None,
+            physics: None,
+            modifier_shader: None,
+            creation_effect: None,
+            attachments: Vec::new(),
+            widgets: Vec::new(),
+            change_colours: Vec::new(),
+        },
+        camera_field_of_view: 1.2,
+        biped_words: words,
+        seats: Vec::new(),
+        camera_tracks: Vec::new(),
+        size: None,
+        references: Vec::new(),
+    }
+}
+
 /// A biped with `jump_velocity` and the landing thresholds set from the
 /// given Halo 1 values (per tick for the jump).
 fn biped_with_fall_words(jump_per_tick: f32, landing: [f32; 3]) -> tags::defs::Record {

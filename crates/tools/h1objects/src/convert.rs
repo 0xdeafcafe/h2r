@@ -2906,17 +2906,18 @@ impl<'a> Converter<'a> {
         let counterpart_hlmt = counterpart.as_deref().and_then(|r| self.base.reference(r, h2::MODEL));
         let hlmt = self.model(&mut rep, &u.object, &tag.name, None)?;
         self.object_physics(&mut rep, hlmt, &u.object, &tag.name, PhysicsKind::Biped)?;
-        let markers = match u.object.model {
+        let (markers, nodes) = match u.object.model {
             Some(m) => {
-                h1_assets::models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?
-                    .0
+                let model = h1_assets::models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?.0;
+                let markers: Vec<String> = model
                     .markers
                     .into_iter()
                     .filter(|m| !m.instances.is_empty())
                     .map(|m| m.name)
-                    .collect()
+                    .collect();
+                (markers, model.nodes.into_iter().map(|n| n.name).collect())
             }
-            None => Vec::new(),
+            None => (Vec::new(), Vec::new()),
         };
         let player = health_hud::is_player_biped(&tag.name);
         let voices = self.biped_dialogue(tag, b, &mut rep)?;
@@ -3107,7 +3108,7 @@ impl<'a> Converter<'a> {
         });
         let parts = crate::rebuild::BipedParts {
             sentinel: tag.name.eq_ignore_ascii_case(r"characters\sentinel\sentinel"),
-            hud, markers, tracks, weapons, melee, integrated_light, blood, attachments, functions, creation, mass,
+            hud, markers, nodes, tracks, weapons, melee, integrated_light, blood, attachments, functions, creation, mass,
         };
         let root = crate::rebuild::biped(u, hlmt, &predicted, &parts)?;
         let root = self.unit_foot(*b"bipd", root, u, &mut rep)?;
