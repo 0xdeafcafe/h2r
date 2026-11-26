@@ -61,3 +61,21 @@ workspace_test(
         "//crates/rewrites/sim-core:sim-core",
     ],
 )
+
+workspace_test(
+    name = "no_mul_add",
+    crate = "no_mul_add",
+    crate_root = "crates/rewrites/sim-havok/tests/no_mul_add.rs",
+    description = "Ordered Havok simulation kernels over transient, Rust-owned data",
+    features = [],
+    manifest = "crates/rewrites/sim-havok",
+    package = "sim-havok",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/recompiler/simd:simd",
+        "//crates/recompiler/x87:x87",
+        "//crates/rewrites/sim-core:sim-core",
+        ":sim-havok",
+    ],
+)

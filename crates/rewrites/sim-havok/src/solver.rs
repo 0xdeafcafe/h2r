@@ -96,7 +96,7 @@ pub struct Command {
     pub velocity_scale: u32,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Stream {
     pub bodies: Vec<Body>,
     pub rows: Vec<Row>,
