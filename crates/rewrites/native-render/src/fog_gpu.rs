@@ -556,8 +556,8 @@ fn fog_parity(look: &PassLook) -> Result<(), FogParity> {
 /// `ALWAYS` writing reference 0 on pass, which the scene's layers 1 and 3
 /// begin in; `object_state::structure_stencil`). A pass never sets one of
 /// its own (`pass_state` refuses it), and the structure items a layer's
-/// native pass takes come before any object item that switches it
-/// (`layer_pass::clear_prefix`), so every one of them draws under that
+/// native pass takes come before any object item the guest keeps that
+/// switches it (`layer_pass::clear_layer_items`), so every one of them draws under that
 /// state. The pipelines' stencil state (the packets set its reference,
 /// [`FogSet::draws_stencil`]); `None` when the state tests or writes the
 /// stencil and `depth` has no stencil aspect.

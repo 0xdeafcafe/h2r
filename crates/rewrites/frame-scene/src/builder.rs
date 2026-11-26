@@ -815,18 +815,15 @@ mod tests {
         b.begin(SceneId::default());
         b.open_view(key(0), camera()).unwrap();
         let a = b.push_instance(object(1, &[NodeMatrix::IDENTITY])).unwrap();
-        let visible = Subparts {
-            first: 6,
-            count: 5,
-            visible: 0b1_0110,
-        };
+        let visible = Subparts::of(6, 5, [1, 2, 4]);
+        assert_eq!(visible.visible, [0b1_0110]);
         b.push_part_flagged(
             a,
             1,
             item(1),
             3,
             PartFlags::SUBPARTS,
-            Some(visible),
+            Some(visible.clone()),
             &rows(3, 1.0),
         )
         .unwrap();
@@ -836,30 +833,23 @@ mod tests {
         let v = &s.views[0];
         let (_, p) = s.part_at(v, 1).unwrap();
         assert_eq!(p.subparts, Some(visible));
-        assert_eq!(p.subparts.unwrap().drawn().collect::<Vec<_>>(), [1, 2, 4]);
+        assert_eq!(p.subparts.as_ref().unwrap().drawn().collect::<Vec<_>>(), [1, 2, 4]);
         assert_eq!(s.part_at(v, 2).unwrap().1.subparts, None, "the whole part");
         assert_eq!(s.counts(v).flagged, [("subparts", 1)]);
         // Bits past the part's own subparts draw nothing.
-        assert_eq!(
-            Subparts {
-                first: 0,
-                count: 2,
-                visible: u64::MAX
-            }
-            .drawn()
-            .count(),
-            2
-        );
-        assert_eq!(
-            Subparts {
-                first: 0,
-                count: 0,
-                visible: u64::MAX
-            }
-            .drawn()
-            .count(),
-            0
-        );
+        let all = |count| Subparts { first: 0, count, visible: vec![u64::MAX; 2] };
+        assert_eq!(all(2).drawn().count(), 2);
+        assert_eq!(all(0).drawn().count(), 0);
+    }
+
+    /// A part of more than 64 subparts keeps every one it chose.
+    #[test]
+    fn a_part_of_a_hundred_subparts_keeps_every_one_it_chose() {
+        let chosen: Vec<u16> = (0..100).filter(|n| n % 3 == 0 || *n >= 90).collect();
+        let s = Subparts::of(10, 100, chosen.iter().copied());
+        assert_eq!(s.visible.len(), 2);
+        assert_eq!(s.drawn().collect::<Vec<_>>(), chosen);
+        assert!(s.drawn().any(|n| n == 99), "past the first word");
     }
 
     #[test]

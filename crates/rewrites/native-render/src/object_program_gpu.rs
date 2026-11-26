@@ -152,7 +152,7 @@ pub struct ListedRanges {
 }
 
 impl SubpartRanges {
-    fn chooses(&self, chosen: Subparts) -> Result<(), String> {
+    fn chooses(&self, chosen: &Subparts) -> Result<(), String> {
         if chosen.first != self.first || usize::from(chosen.count) != self.ranges.len() {
             return Err(format!(
                 "the record chooses subparts {}+{}, the part's are {}+{}",
@@ -169,7 +169,7 @@ impl SubpartRanges {
     /// indices verbatim, so its `n / 3` whole triangles; a run with none
     /// draws nothing. An error when `chosen` is not over these subparts or
     /// the part has no list of them.
-    pub fn drawn_as_list(&self, chosen: Subparts) -> Result<Vec<Range<u32>>, String> {
+    pub fn drawn_as_list(&self, chosen: &Subparts) -> Result<Vec<Range<u32>>, String> {
         self.chooses(chosen)?;
         let listed = self.listed.as_ref().ok_or("the part's subparts have no list natively")?;
         if listed.spans.len() != self.ranges.len() {
@@ -207,7 +207,7 @@ impl SubpartRanges {
     /// The index ranges `chosen` draws, ascending, adjacent ones joined
     /// (one packet each), empty ones left out; an error when `chosen` is
     /// not over these subparts.
-    pub fn drawn(&self, chosen: Subparts) -> Result<Vec<Range<u32>>, String> {
+    pub fn drawn(&self, chosen: &Subparts) -> Result<Vec<Range<u32>>, String> {
         self.chooses(chosen)?;
         let mut out: Vec<Range<u32>> = Vec::new();
         for n in chosen.drawn() {
@@ -1239,7 +1239,7 @@ impl LitObjects {
             instance: instance.key,
             lighting: instance.lighting.as_ref(),
             defaults: instance.defaults,
-            subparts: part.subparts,
+            subparts: part.subparts.as_ref(),
             strip: Some(part.flags.contains(PartFlags::STRIP)),
             time,
         };
@@ -1695,14 +1695,14 @@ fn toggled(flags: PartFlags, aux: Option<&AuxDepth>) -> Option<AuxDepth> {
 /// subparts its record draws. A record marking the stencil refuses: the
 /// first-person draw keeps the device's stencil. One toggling the
 /// auxiliary state refuses unless the toggle's values are given (`aux`).
-fn item_inputs<'a>(frame: &'a ObjectFrame, item: &ItemDraw, aux: bool) -> Result<PartInputs<'a>, String> {
+fn item_inputs<'a>(frame: &'a ObjectFrame, item: &'a ItemDraw, aux: bool) -> Result<PartInputs<'a>, String> {
     if item.flags.contains(PartFlags::STENCIL_MARK) {
         return Err("the record marks the stencil, which the first-person draw does not".into());
     }
     if item.flags.contains(PartFlags::AUX_DEPTH) && !aux {
         return Err("the auxiliary state toggle, whose values the first-person draw was not given".into());
     }
-    Ok(PartInputs { subparts: item.subparts, strip: Some(item.flags.contains(PartFlags::STRIP)), ..PartInputs::of(frame) })
+    Ok(PartInputs { subparts: item.subparts.as_ref(), strip: Some(item.flags.contains(PartFlags::STRIP)), ..PartInputs::of(frame) })
 }
 
 /// [`LitObjects::plan_layer_item`] over a model's world-layer parts
@@ -1757,7 +1757,7 @@ fn plan_layer_part_at_entry<'a>(
         return Err(format!("the item names shader {:#010x}, the part's is {:#010x}", key.shader, p.shader_tag));
     }
     let strip = Some(item.flags.contains(PartFlags::STRIP));
-    let ranges = part_ranges(&p.indices, p.subparts.as_ref(), p.listed.as_ref(), strip, item.subparts)?;
+    let ranges = part_ranges(&p.indices, p.subparts.as_ref(), p.listed.as_ref(), strip, item.subparts.as_ref())?;
     let defaults = pass.inputs.defaults.ok_or("the inputs' defaults do not read")?;
     let inputs = ObjectInputs { layer: Some(&pass.inputs), lighting: item.lighting.as_ref(), defaults: &defaults, shader: p.shader };
     let unstenciled;
@@ -1845,7 +1845,7 @@ struct PartInputs<'a> {
     lighting: Option<&'a Lighting>,
     defaults: Option<Defaults>,
     /// The subparts the item's record chose; `None`, the whole part.
-    subparts: Option<Subparts>,
+    subparts: Option<&'a Subparts>,
     /// Whether the emitter draws the part as a strip
     /// (`frame_scene::PartFlags::STRIP`); `None`, in the part's own
     /// topology.
@@ -1879,7 +1879,7 @@ impl<'a> PartInputs<'a> {
 /// part draws as a list whatever the record says.
 fn part_ranges(
     whole: &Range<u32>, subparts: Option<&SubpartRanges>, listed: Option<&Range<u32>>, strip: Option<bool>,
-    chosen: Option<Subparts>,
+    chosen: Option<&Subparts>,
 ) -> Result<Vec<Range<u32>>, String> {
     let native = || subparts.ok_or("the record chooses subparts and the part has none natively");
     match (listed, strip, chosen) {
@@ -2067,8 +2067,8 @@ pub struct ListedSubparts {
 /// The subparts of `part` (a section's part, over the section's `indices`
 /// and `subparts`) as [`LitSubparts`]: each decoded alone in the part's
 /// topology, and a strip part's also as the list draw reads them
-/// ([`ListedSubparts`]). `None` when it has none or more than
-/// [`Subparts::MAX`], when one does not lie in the indices, or when a
+/// ([`ListedSubparts`]). `None` when it has none, when one does not lie
+/// in the indices, or when a
 /// list part's subpart is not whole triangles (the guest joins
 /// index-contiguous chosen subparts into one list, which would then cut
 /// its triangles differently).
@@ -2076,7 +2076,7 @@ pub fn lit_subparts(
     indices: &[u16], subparts: &[tags::geometry::Subpart], part: &tags::geometry::Part,
 ) -> Option<LitSubparts> {
     let count = usize::from(part.subpart_count);
-    if count == 0 || count > usize::from(Subparts::MAX) {
+    if count == 0 {
         return None;
     }
     let first = usize::from(part.first_subpart);
@@ -3079,7 +3079,7 @@ mod tests {
         let plan = |item: &ItemDraw| plan_item_part(&parts, &pass_of, &f, item, &entry());
         assert_eq!(plan(&item(PartFlags::STRIP, None)).unwrap().ranges, [0..9], "a strip");
         assert_eq!(plan(&item(PartFlags::NONE, None)).unwrap().ranges, [9..12], "without bit 9, a list");
-        let chosen = Subparts { first: 0, count: 2, visible: 0b10 };
+        let chosen = Subparts { first: 0, count: 2, visible: vec![0b10] };
         let flagged = PartFlags::STRIP | PartFlags::SUBPARTS;
         assert_eq!(plan(&item(flagged, Some(chosen))).unwrap().ranges, [15..18], "its chosen subpart");
         assert!(plan(&item(PartFlags::STRIP | PartFlags::STENCIL_MARK, None)).unwrap_err().contains("stencil"));
@@ -3154,17 +3154,17 @@ mod tests {
     fn a_part_draws_the_ranges_of_the_topology_its_record_picks() {
         let listed = ListedRanges { indices: 30..39, spans: vec![(0, 5), (5, 4)] };
         let subparts = SubpartRanges { first: 2, ranges: vec![10..13, 13..19], listed: Some(listed) };
-        let chosen = Subparts { first: 2, count: 2, visible: 0b10 };
-        let strip = |strip, chosen| part_ranges(&(0..9), Some(&subparts), Some(&(20..26)), strip, chosen);
+        let chosen = Subparts { first: 2, count: 2, visible: vec![0b10] };
+        let strip = |strip, chosen: Option<&Subparts>| part_ranges(&(0..9), Some(&subparts), Some(&(20..26)), strip, chosen);
         assert_eq!(strip(Some(true), None), Ok(vec![0..9]));
-        assert_eq!(strip(Some(true), Some(chosen)), Ok(vec![13..19]));
+        assert_eq!(strip(Some(true), Some(&chosen)), Ok(vec![13..19]));
         assert_eq!(strip(None, None), Ok(vec![0..9]), "in its own topology");
         assert_eq!(strip(Some(false), None), Ok(vec![20..26]), "as a list");
-        assert_eq!(strip(Some(false), Some(chosen)), Ok(vec![35..38]), "its chosen subpart's whole triangles");
-        let both = Subparts { visible: 0b11, ..chosen };
-        assert_eq!(strip(Some(false), Some(both)), Ok(vec![30..39]), "two index-contiguous subparts, one list");
+        assert_eq!(strip(Some(false), Some(&chosen)), Ok(vec![35..38]), "its chosen subpart's whole triangles");
+        let both = Subparts { visible: vec![0b11], ..chosen.clone() };
+        assert_eq!(strip(Some(false), Some(&both)), Ok(vec![30..39]), "two index-contiguous subparts, one list");
         let unlisted = SubpartRanges { listed: None, ..subparts.clone() };
-        let refused = part_ranges(&(0..9), Some(&unlisted), Some(&(20..26)), Some(false), Some(chosen));
+        let refused = part_ranges(&(0..9), Some(&unlisted), Some(&(20..26)), Some(false), Some(&chosen));
         assert!(refused.unwrap_err().contains("no list"));
         let list = |strip| part_ranges(&(0..9), None, None, strip, None);
         assert_eq!((list(Some(false)), list(None)), (Ok(vec![0..9]), Ok(vec![0..9])));
@@ -3229,8 +3229,8 @@ mod tests {
             listed: Some(ListedRanges { indices: base..buffer.len() as u32, spans: listed.spans }),
         };
         for visible in 0..32u64 {
-            let chosen = Subparts { first: 0, count: 5, visible };
-            let drawn = ranges.drawn_as_list(chosen).unwrap();
+            let chosen = Subparts { first: 0, count: 5, visible: vec![visible] };
+            let drawn = ranges.drawn_as_list(&chosen).unwrap();
             let native: Vec<[u16; 3]> = drawn
                 .iter()
                 .flat_map(|r| buffer[r.start as usize..r.end as usize].chunks_exact(3).map(|t| [t[0], t[1], t[2]]))
@@ -3238,7 +3238,7 @@ mod tests {
             assert_eq!(native, guest_list_loop(&indices, &subparts, visible), "visible {visible:#07b}");
             assert!(drawn.iter().all(|r| r.len() % 3 == 0 && !r.is_empty()));
         }
-        assert!(ranges.drawn_as_list(Subparts { first: 1, count: 5, visible: 1 }).is_err(), "another part's subparts");
+        assert!(ranges.drawn_as_list(&Subparts { first: 1, count: 5, visible: vec![1] }).is_err(), "another part's subparts");
     }
 
     #[test]
@@ -3930,20 +3930,57 @@ mod tests {
     #[test]
     fn chosen_subparts_draw_their_ranges_joined_where_adjacent() {
         let sub = SubpartRanges { first: 4, ranges: vec![10..13, 13..19, 19..19, 19..22, 22..28], listed: None };
-        let chosen = |visible| Subparts { first: 4, count: 5, visible };
+        let chosen = |visible: u64| Subparts { first: 4, count: 5, visible: vec![visible] };
         assert_eq!(
-            sub.drawn(chosen(0b1_1111)).unwrap().as_slice(),
+            sub.drawn(&chosen(0b1_1111)).unwrap().as_slice(),
             std::slice::from_ref(&(10..28)),
             "all, as one run"
         );
-        assert_eq!(sub.drawn(chosen(0b1_1001)).unwrap(), [10..13, 19..28], "the empty one joins its neighbours");
+        assert_eq!(sub.drawn(&chosen(0b1_1001)).unwrap(), [10..13, 19..28], "the empty one joins its neighbours");
         assert_eq!(
-            sub.drawn(chosen(0b0_0010)).unwrap().as_slice(),
+            sub.drawn(&chosen(0b0_0010)).unwrap().as_slice(),
             std::slice::from_ref(&(13..19))
         );
-        assert!(sub.drawn(chosen(0)).unwrap().is_empty(), "none chosen: nothing drawn");
-        assert!(sub.drawn(Subparts { first: 5, ..chosen(1) }).is_err(), "another part's subparts");
-        assert!(sub.drawn(Subparts { count: 4, ..chosen(1) }).is_err());
+        assert!(sub.drawn(&chosen(0)).unwrap().is_empty(), "none chosen: nothing drawn");
+        assert!(sub.drawn(&Subparts { first: 5, ..chosen(1) }).is_err(), "another part's subparts");
+        assert!(sub.drawn(&Subparts { count: 4, ..chosen(1) }).is_err());
+    }
+
+    /// A part of 100 subparts, past the 64 one mask word holds: the lit
+    /// model keeps every one, and an item choosing some past the first 64
+    /// draws each of them.
+    #[test]
+    fn a_part_of_a_hundred_subparts_draws_every_one_its_record_chose() {
+        use tags::geometry::{Part, Subpart};
+        let subparts: Vec<Subpart> =
+            (0..100u16).map(|n| Subpart { first_index: 3 * n, index_count: 3, unknown_4: 0xffff, part: 0 }).collect();
+        let indices: Vec<u16> = (0..300).collect();
+        let tag_part = Part {
+            kind: 0,
+            flags: tags::geometry::PART_FLAG_TRIANGLE_LIST,
+            material: 0,
+            first_index: 0,
+            index_count: 300,
+            first_subpart: 0,
+            subpart_count: 100,
+            raw: Vec::new(),
+        };
+        let lit = lit_subparts(&indices, &subparts, &tag_part).expect("every subpart kept");
+        assert_eq!(lit.triangles.len(), 100);
+        let sub = SubpartRanges { first: 0, ranges: (0..100u32).map(|n| 3 * n..3 * n + 3).collect(), listed: None };
+        let chosen = Subparts::of(0, 100, [1, 2, 64, 70, 99]);
+        assert_eq!(sub.drawn(&chosen).unwrap(), [3..9, 192..195, 210..213, 297..300]);
+        // Planned through an item, the same.
+        let passes = [equal_pass(0)];
+        let pass_of = |i: usize| passes.get(i).map(|p| (p, None::<&InheritedState>));
+        let mut with = part(4, 0, [Some((0, 0)), None, None, None, None]);
+        with.subparts = Some(sub);
+        let parts = [with];
+        let f = frame();
+        let rows = [[1.0f32; 4]; 3];
+        let inputs = PartInputs { subparts: Some(&chosen), ..PartInputs::of(&f) };
+        let planned = plan_indexed_part(&parts, Some(0), &pass_of, inputs, &key(4, 0, 0), &rows, &entry(), true).unwrap();
+        assert_eq!(planned.ranges, [3..9, 192..195, 210..213, 297..300]);
     }
 
     #[test]
@@ -3956,16 +3993,18 @@ mod tests {
         let parts = [without, with];
         let f = frame();
         let rows = [[1.0f32; 4]; 3];
-        let inputs = |subparts| PartInputs { subparts, ..PartInputs::of(&f) };
-        let plan = |part: usize, subparts: Option<Subparts>| plan_indexed_part(&parts, Some(part), &pass_of, inputs(subparts), &key(4, part as u8, 0), &rows, &entry(), true);
+        let plan = |part: usize, subparts: Option<Subparts>| {
+            let inputs = PartInputs { subparts: subparts.as_ref(), ..PartInputs::of(&f) };
+            plan_indexed_part(&parts, Some(part), &pass_of, inputs, &key(4, part as u8, 0), &rows, &entry(), true)
+        };
         let whole = plan(1, None).unwrap();
         assert_eq!(whole.instance, frame_scene::InstanceKey(f.handle));
         assert_eq!(whole.indices, 3..6);
         assert_eq!(whole.ranges.as_slice(), std::slice::from_ref(&whole.indices));
-        let chosen = plan(1, Some(Subparts { first: 2, count: 2, visible: 0b10 })).unwrap();
+        let chosen = plan(1, Some(Subparts { first: 2, count: 2, visible: vec![0b10] })).unwrap();
         assert_eq!(chosen.indices, 3..6);
         assert_eq!(chosen.ranges.as_slice(), std::slice::from_ref(&(9..12)));
-        let refused = plan(0, Some(Subparts { first: 0, count: 1, visible: 1 })).unwrap_err();
+        let refused = plan(0, Some(Subparts { first: 0, count: 1, visible: vec![1] })).unwrap_err();
         assert!(refused.contains("subparts"), "{refused}");
     }
 

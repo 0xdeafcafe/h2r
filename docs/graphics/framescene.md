@@ -814,16 +814,16 @@ commits. The three parts are built.
     the section's subpart `s`) and subparts in the section, the emitter
     draws only the visible subparts of the part: each its own strip with
     strip topology, runs of index-contiguous ones as one list otherwise.
-    The scene carries the mask read over the part's own subparts
-    (`PartDraw::subparts`, `frame_scene::Subparts`, at most 64). The
+    The scene carries the mask read over the part's own subparts,
+    however many (`PartDraw::subparts`, `frame_scene::Subparts`). The
     lit models keep, after each part's triangles, each subpart's
     triangles decoded alone in the part's topology
     (`object_program_gpu::lit_subparts`, `LitPart::subparts`), and a
     planned draw issues the chosen ones, adjacent ranges joined, one
     packet per run (`SubpartRanges::drawn`). A list part whose subparts
     are not whole triangles has no native subparts and its chosen draws
-    refuse at planning. More than 64 subparts, a negative first subpart
-    or a mask that does not read refuse (`Refusal::Subparts`).
+    refuse at planning. A negative first subpart or a mask that does
+    not read refuses (`Refusal::Subparts`).
   - **Bit 11, the auxiliary state toggle** (`PartFlags::AUX_DEPTH`). The
     prologue calls `0x00012d50` on and the epilogue off. It stores the
     device's program clip range (`+0x1c10`, game-owned through
@@ -938,6 +938,7 @@ commits. The three parts are built.
   `a_marked_part_draws_in_mode_2_whatever_its_implementation_left`
   (`native_render::object_state`),
   `chosen_subparts_draw_their_ranges_joined_where_adjacent`,
+  `a_part_of_a_hundred_subparts_draws_every_one_its_record_chose`,
   `a_strip_parts_chosen_subparts_draw_the_triangles_the_list_loop_draws`
   (each choice against the list loop `0x0004db68` written out) and
   `an_auxiliary_depth_draw_takes_the_toggles_rows_and_clip_and_nothing_else`
@@ -1113,10 +1114,21 @@ to the guest's draws (**Code**):
     inputs change per draw); an object item with any refuses. The first shader
     begin's fixed states and cleared texture caches (`0x0001bbf0`) are
     redone by the first one the guest keeps, or by the next layer's.
-    `layer_pass::clear_layer_prefix` clears the layer's bit on the run of
-    such items from the list's first, since the native pass records
-    before the guest's draw; one external pass draws them, run by run in
-    the list's order (`GpuWorld::layer_draws` and `LitObjects::draws`, in
+    `layer_pass::clear_layer_items` clears the layer's bit on each such
+    item. The native pass records before the guest's layer draw, so an
+    item after one the guest keeps moves ahead of it, and is taken only
+    where that cannot change the frame or the device: it and every kept
+    item before it are order-free (`layer_pass::order_free`: depth
+    tested and written with `LESS` or `LESSEQUAL`, no blend or logic op,
+    every colour channel written, and a stencil that is off, writes
+    nothing, or writes one reference on pass under `ALWAYS`; two items'
+    fragments are assumed not to tie in depth), and every kept item
+    before it restores what it sets (`skip_holds`), so the device at its
+    place holds the layer call's values on every state it touches. A
+    kept item whose passes did not resolve (a plan or extraction cause)
+    or that is not a geometry build stops the skip of every later one.
+    One external pass draws the taken items, run by run in the list's
+    order (`GpuWorld::layer_draws` and `LitObjects::draws`, in
     the D3D pass open on the bound attachments). The stencil
     (`layer_pass::item_stencil`): in layer 1 the geometry draw's prologue
     sets mode 0 when the stencil-off flags are set and mode 2 for a
@@ -1133,8 +1145,8 @@ to the guest's draws (**Code**):
     pipelines and its reference in its packets, and the pass reports a
     depth-stencil write when a draw writes. Everything else keeps its D3D
     draws and so the indexed-draw admission, including per-draw engine
-    inputs, unsupported animations and every item after the first one the
-    stage cannot draw. Each ask's outcomes are counted in `render.scene`
+    inputs, unsupported animations and every item `order` names. Each
+    ask's outcomes are counted in `render.scene`
     as `layer_plan_<layer>_taken` and
     `layer_plan_<layer>_refused_<cause>` (the first person's as
     `layer_plan_fp<layer>_*`, the alternate view's as `layer_plan_alt<layer>_*`, a sorted handler's as
@@ -1163,7 +1175,9 @@ to the guest's draws (**Code**):
     device is not in mode 1), `warming`, `palettes`, `device`, `program`
     (no material of the layer compiled), `first_person_structure`,
     `sorted_structure`, `order`
-    (planned, but from the first item the sets cannot draw on) and
+    (planned, but after a kept item the reordering does not commute
+    with), `set` (planned, but the sets hold no compiled part or fog for
+    it) and
     `unread` (the layer's pass did not read); `layer_plan_asked`,
     `layer_plan_drawn` and `layer_plan_items` count the layer calls
     asked, those drawn natively and their items.
@@ -1194,8 +1208,11 @@ to the guest's draws (**Code**):
     `a_game_time_property_wraps_its_time_over_its_period_and_maps_onto_its_range`,
     `constant_animations_take_their_values_and_other_kinds_are_named`,
     `a_scene_layer_plans_its_items_in_order_and_names_the_rest`,
-    `the_skip_takes_the_accepted_structure_items_up_to_the_first_it_cannot`,
-    `the_skip_takes_object_items_the_plan_drew_in_the_same_run` and
+    `the_skip_takes_the_accepted_structure_items_before_the_first_kept_one_of_unknown_effect`,
+    `the_skip_takes_object_items_the_plan_drew_in_the_same_run`,
+    `a_kept_item_in_the_middle_leaves_later_order_free_items_to_the_native_pass`,
+    `an_order_dependent_item_after_a_kept_one_stays_the_guests_and_is_counted`,
+    `an_opaque_depth_writing_pass_is_order_free_and_a_blended_or_stencil_counting_one_is_not` and
     `layer_1_items_draw_unstenciled_with_the_stencil_off_and_need_mode_1_to_skip`;
     for the objects,
     `a_world_layers_object_item_carries_its_records_flags_or_names_why_not`

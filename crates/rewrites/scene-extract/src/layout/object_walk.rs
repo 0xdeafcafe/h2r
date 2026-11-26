@@ -33,9 +33,8 @@
 //!   (`0x0004daec`), runs of index-contiguous ones as one list otherwise
 //!   (`0x0004db68`). Otherwise it draws the whole part, as without the
 //!   bit. The part is in the scene with the mask read over its own
-//!   subparts ([`Subparts`]); a part with more than [`Subparts::MAX`]
-//!   subparts, a negative first subpart or a mask that does not read
-//!   refuses ([`Refusal::Subparts`]).
+//!   subparts, however many ([`Subparts`]); a negative first subpart or a
+//!   mask that does not read refuses ([`Refusal::Subparts`]).
 //! - **Bit 11, the auxiliary state toggle** ([`PartFlags::AUX_DEPTH`]).
 //!   The prologue calls `0x00012d50` with BL 1 and the epilogue with BL
 //!   0: it sets the device's program clip range and the view-projection
@@ -157,8 +156,8 @@ pub enum Refusal {
     /// ([`crate::layout::aux_depth::read`]).
     AuxState,
     /// Bit 6 with a subpart mask and subparts, whose visible subparts
-    /// cannot be read: more than [`Subparts::MAX`], a negative first one,
-    /// or a mask that does not read.
+    /// cannot be read: a negative first one, or a mask that does not
+    /// read.
     Subparts,
     Other,
 }
@@ -207,15 +206,20 @@ pub fn record_flags(flags: u32, triangle_list: bool, subparts: bool) -> PartFlag
 /// section's subpart `s` (`0x0004db08`..`0x0004db17`). A count of zero or
 /// less draws none.
 pub fn visible_subparts(mem: &dyn GuestRead, mask: u32, first: i16, count: i16) -> Result<Subparts, Refusal> {
-    if first < 0 || count > i16::from(Subparts::MAX) {
+    if first < 0 {
         return Err(Refusal::Subparts);
     }
-    let count = count.max(0) as u8;
-    let mut visible = 0u64;
+    let count = count.max(0) as u16;
+    let mut visible = vec![0u64; usize::from(count).div_ceil(64)];
+    let mut at = None;
+    let mut w = 0;
     for n in 0..count {
         let s = first as u32 + u32::from(n);
-        let w = word(mem, mask, 4 * (s >> 5)).ok_or(Refusal::Subparts)?;
-        visible |= u64::from(w >> (s & 31) & 1) << n;
+        if at != Some(s >> 5) {
+            w = word(mem, mask, 4 * (s >> 5)).ok_or(Refusal::Subparts)?;
+            at = Some(s >> 5);
+        }
+        visible[usize::from(n / 64)] |= u64::from(w >> (s & 31) & 1) << (n % 64);
     }
     Ok(Subparts { first: first as u16, count, visible })
 }
@@ -238,7 +242,7 @@ pub fn classification(geometry: u16, influences: u8, count: u32) -> Option<u32> 
     })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Part {
     pub key: ItemKey,
     pub mode: u32,
@@ -258,13 +262,13 @@ pub struct Part {
 impl Part {
     /// The exact uploaded palette the original draw would use. These rows
     /// already incorporate the selected section's remap and skinning pose.
-    pub fn rows(self, mem: &dyn GuestRead) -> Option<Vec<Row>> {
+    pub fn rows(&self, mem: &dyn GuestRead) -> Option<Vec<Row>> {
         let rows = objects::record_rows(mem, self.key.record).ok()?;
         rows.iter().flatten().all(|v| v.is_finite()).then_some(rows)
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Entry {
     Excluded,
     Other,
@@ -964,13 +968,31 @@ mod tests {
         mem.w(0x100, 0b1010_0000);
         mem.w(0x104, 1);
         let got = visible_subparts(&mem, 0x100, 5, 4).unwrap();
-        assert_eq!(got, Subparts { first: 5, count: 4, visible: 0b0101 });
+        assert_eq!(got, Subparts { first: 5, count: 4, visible: vec![0b0101] });
         // Subpart 32 is bit 0 of the second word.
-        assert_eq!(visible_subparts(&mem, 0x100, 31, 2).unwrap().visible, 0b10);
+        assert_eq!(visible_subparts(&mem, 0x100, 31, 2).unwrap().visible, [0b10]);
         assert_eq!(visible_subparts(&mem, 0x100, 0, -1).unwrap().count, 0, "a count below one draws none");
         assert_eq!(visible_subparts(&mem, 0x100, -1, 2), Err(Refusal::Subparts));
-        assert_eq!(visible_subparts(&mem, 0x100, 0, 65), Err(Refusal::Subparts));
         assert_eq!(visible_subparts(&mem, 0x100, 60, 8), Err(Refusal::Subparts), "the third word does not read");
+    }
+
+    /// A part of 100 subparts, past the 64 one word of the scene's mask
+    /// holds: every one the mask chooses, read over four of its words.
+    #[test]
+    fn a_mask_over_a_hundred_subparts_is_read_whole() {
+        let mut mem = Mem::default();
+        // Subparts 10..110 of the section; the mask's words 0 to 3.
+        mem.w(0x100, 1 << 10 | 1 << 31);
+        mem.w(0x104, 1);
+        mem.w(0x108, 0);
+        mem.w(0x10c, 1 << 13 | 1 << 2);
+        let got = visible_subparts(&mem, 0x100, 10, 100).unwrap();
+        assert_eq!((got.first, got.count, got.visible.len()), (10, 100, 2));
+        // Section subparts 10, 31, 32, 98 and 109: the part's 0, 21, 22, 88, 99.
+        assert_eq!(got.drawn().collect::<Vec<_>>(), [0, 21, 22, 88, 99]);
+        assert_eq!(got, Subparts::of(10, 100, [0, 21, 22, 88, 99]));
+        mem.0.remove(&0x10c);
+        assert_eq!(visible_subparts(&mem, 0x100, 10, 100), Err(Refusal::Subparts), "the fourth word does not read");
     }
 
     /// Every word the auxiliary state toggle reads, made up.
@@ -1038,22 +1060,29 @@ mod tests {
         let sorted = walk(&mem);
         let chosen = Part {
             flags: PartFlags::SUBPARTS,
-            subparts: Some(Subparts { first: 30, count: 5, visible: 0b0_1001 }),
+            subparts: Some(Subparts { first: 30, count: 5, visible: vec![0b0_1001] }),
             ..part()
         };
-        assert_eq!(sorted.entries, [Entry::Object { handle, part: Some(chosen) }]);
+        assert_eq!(sorted.entries, [Entry::Object { handle, part: Some(chosen.clone()) }]);
         assert_eq!(sorted.causes, Causes::default());
-        assert_eq!(chosen.subparts.unwrap().drawn().collect::<Vec<_>>(), [0, 3]);
-        // A mask word that does not read, or more subparts than a mask
-        // holds: refused by name.
+        assert_eq!(chosen.subparts.as_ref().unwrap().drawn().collect::<Vec<_>>(), [0, 3]);
+        // A mask word that does not read: refused by name.
         mem.0.remove(&0xd004);
         assert_eq!(walk(&mem).causes, Causes { subparts: 1, ..Causes::default() });
-        mem.w(0xd004, 0);
-        mem.w(at_part + PART_SUBPART_COUNT, 65);
-        assert_eq!(walk(&mem).causes, Causes { subparts: 1, ..Causes::default() });
+        // More subparts than one word of the scene's mask holds: in the
+        // scene, every one chosen (30, 33 and the section's 96).
+        mem.w(0xd004, 1 << 1);
+        mem.w(0xd008, 0);
+        mem.w(0xd00c, 1);
+        mem.w(0xd010, 0);
+        mem.w(at_part + PART_SUBPART_COUNT, 100);
+        let many = Part { subparts: Some(Subparts::of(30, 100, [0, 3, 66])), ..chosen.clone() };
+        let sorted = walk(&mem);
+        assert_eq!(sorted.entries, [Entry::Object { handle, part: Some(many) }]);
+        assert_eq!(sorted.causes, Causes::default());
         // No subparts: drawn, as the guest draws it, with none.
         mem.w(at_part + PART_SUBPART_COUNT, 0);
-        let none = Part { subparts: Some(Subparts { first: 30, count: 0, visible: 0 }), ..chosen };
+        let none = Part { subparts: Some(Subparts { first: 30, count: 0, visible: Vec::new() }), ..chosen };
         assert_eq!(walk(&mem).entries, [Entry::Object { handle, part: Some(none) }]);
         mem.w(0x8000 + GEOMETRY_SUBPART_COUNT, 0);
         assert_eq!(walk(&mem).entries, [Entry::Object { handle, part: Some(part()) }], "no subparts to choose");

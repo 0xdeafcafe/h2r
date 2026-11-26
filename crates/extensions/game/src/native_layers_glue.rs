@@ -50,10 +50,13 @@
 //!   and only where the device holds the solid pattern and the engine a
 //!   cached fade of one, which its epilogue leaves
 //!   (`native_objects_glue::stipple_at_rest`; else `object_stipple`).
-//!   The skip clears the layer's bit on the run of
-//!   such items from the list's first (`layer_pass::clear_layer_prefix`);
-//!   the rest, and every item after the first refused one, keep their D3D
-//!   draws. One external pass records them, in the list's order.
+//!   The skip clears the layer's bit on each such item
+//!   (`layer_pass::clear_layer_items`). The external pass draws before the
+//!   guest's layer draw, so an item after one the guest keeps is taken only
+//!   when both are order-free and every kept item before it restores what
+//!   it sets (`layer_pass::order_free`, `skip_holds`); else it keeps its
+//!   D3D draw (`order`). One external pass records them, in the list's
+//!   order.
 //! - **The stencil** (`layer_pass::item_stencil`): in layer 1 the
 //!   geometry draw's prologue sets stencil mode 0 when the stencil-off
 //!   flags are set and mode 2 for a marked object's record, and its
@@ -85,7 +88,7 @@ use std::sync::{Arc, Mutex};
 use engine::memory::GuestMemory;
 use frame_scene::{FrameScene, LayerItem, LayerOwner, LayerPass, PartFlags};
 use native_render::fog_gpu::{LayerSamples, sampled_constants};
-use native_render::layer_pass::{self, PrefixItem};
+use native_render::layer_pass::{self, ItemSkip, ListItem};
 use native_render::object_program_gpu::{LitObjects, OBJECT_LAYERS, PlannedDraw};
 use native_render::object_streams::StreamFormats;
 use native_render::program::ViewInputs;
@@ -237,18 +240,33 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // would: every state its passes restore already holds, and every
         // state they set already holds or is restored
         // (`layer_pass::skip_holds`, as layer 3's walk requires).
+        // The items whose guest draws are order-free besides
+        // (`layer_pass::order_free`, under the unmarked items' stencil),
+        // by slot and shader: a kept one does not stop the skip of a later
+        // one (`layer_pass::clear_layer_items`).
+        let unmarked = layer_pass::item_stencil(l, pass.stencil_off, device_stencil, false).stencil;
+        let mut free: HashMap<u32, u32> = HashMap::new();
         if let Some(plan) = &plan {
             let device_state = |slot: u32| d.render_state(&read, slot);
-            for draw in &plan.draws {
-                if taken.contains_key(&draw.slot)
-                    && !draw.passes.iter().all(|p| draw.implementation(p).is_some_and(|imp| layer_pass::skip_holds_with(imp, Some(&draw.inputs), &device_state)))
+            for draw in plan.draws.iter().filter(|d| layer_pass::world_owner(d.owner).is_some()) {
+                let holds =
+                    draw.passes.iter().all(|p| draw.implementation(p).is_some_and(|imp| layer_pass::skip_holds_with(imp, Some(&draw.inputs), &device_state)));
+                if holds
+                    && draw.passes.iter().all(|p| draw.implementation(p).is_some_and(|imp| layer_pass::order_free(imp, &device_state, &unmarked)))
                 {
+                    free.insert(draw.slot, draw.shader);
+                }
+                if taken.contains_key(&draw.slot) && !holds {
                     taken.remove(&draw.slot);
                     *outcomes.entry("state").or_default() += 1;
                 }
             }
         }
-        let planned = if objects.is_empty() { None } else { plan_objects(&d, mem, l, caller, scene, pass, &objects, &mut outcomes) };
+        let planned = if objects.is_empty() {
+            None
+        } else {
+            plan_objects(&d, mem, l, caller, scene, pass, &objects, &unmarked, &mut free, &mut outcomes)
+        };
         let (models, mut object_draws, texaccum) = match planned {
             Some((models, draws, texaccum)) => (Some(models), draws, texaccum),
             None => (None, HashMap::new(), None),
@@ -318,14 +336,21 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let read = ReadMemory(mem);
         let mut preview = native_render::skip::MaskPreview::new(&read)?;
         let candidates = taken.len() + object_draws.len();
-        let (drawn, cleared) = layer_pass::clear_layer_prefix(&mut preview, layer, &|item| match item {
-            PrefixItem::World(item) => data.is_some_and(|data| {
-                taken.get(&item.slot) == Some(&item.shader)
-                    && data.part_set.get(&(item.owner, item.part))
-                        .is_some_and(|(m, shader)| *shader == item.shader && fogs.contains_key(m))
-            }),
-            PrefixItem::Object { slot, shader } => object_draws.get(&slot).is_some_and(|o| o.shader == shader),
+        let is_free = |slot: u32, shader: u32| free.get(&slot) == Some(&shader);
+        let skip = layer_pass::clear_layer_items(&mut preview, layer, &|item| match item {
+            ListItem::World(item) => ItemSkip {
+                take: data.is_some_and(|data| {
+                    taken.get(&item.slot) == Some(&item.shader)
+                        && data.part_set.get(&(item.owner, item.part))
+                            .is_some_and(|(m, shader)| *shader == item.shader && fogs.contains_key(m))
+                }),
+                free: is_free(item.slot, item.shader),
+            },
+            ListItem::Object { slot, shader } => {
+                ItemSkip { take: object_draws.get(&slot).is_some_and(|o| o.shader == shader), free: is_free(slot, shader) }
+            }
         })?;
+        let (drawn, cleared) = (skip.drawn, skip.cleared);
         let masks = preview.finish()?;
         // The list's runs, in order, and the ranges they promise: one per
         // structure item, one per object pass draw.
@@ -333,14 +358,14 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let mut ranges = 0;
         for item in &drawn {
             match *item {
-                PrefixItem::World(i) => {
+                ListItem::World(i) => {
                     ranges += 1;
                     match runs.last_mut() {
                         Some(LayerRun::World(parts)) => parts.push((i.owner, i.part)),
                         _ => runs.push(LayerRun::World(vec![(i.owner, i.part)])),
                     }
                 }
-                PrefixItem::Object { slot, .. } => {
+                ListItem::Object { slot, .. } => {
                     let o = object_draws.remove(&slot)?;
                     ranges += o.draws.len();
                     match runs.last_mut() {
@@ -350,10 +375,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 }
             }
         }
-        // What the plan took that the skip did not: from the first item
-        // the sets cannot draw (no compiled program, part or fog), in the
-        // list's order.
-        *outcomes.entry("order").or_default() += (candidates - drawn.len()) as u64;
+        // What the plan took that the skip did not: an item after a kept
+        // one it does not commute with (`order`), or one the sets cannot
+        // draw (no compiled part or fog: `set`).
+        *outcomes.entry("order").or_default() += skip.order as u64;
+        *outcomes.entry("set").or_default() += candidates.saturating_sub(drawn.len() + skip.order) as u64;
         report(&outcomes, drawn.len() as u64);
         if ranges == 0 {
             return None;
@@ -405,7 +431,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
 #[allow(clippy::too_many_arguments)]
 fn plan_objects<B: d3d::backend::Backend>(
     d: &d3d::Device<B>, mem: &dyn GuestMemory, layer: u8, caller: LayerCaller, scene: &FrameScene, pass: &LayerPass,
-    items: &[&LayerItem], outcomes: &mut BTreeMap<&'static str, u64>,
+    items: &[&LayerItem], stencil: &gfx::state::StencilState, free: &mut HashMap<u32, u32>, outcomes: &mut BTreeMap<&'static str, u64>,
 ) -> Option<(Arc<dyn LayerModels>, HashMap<u32, ObjectItem>, Option<native_render::world_layers::Texaccum>)> {
     let mut all = |why: &'static str| {
         *outcomes.entry(why).or_default() += items.len() as u64;
@@ -495,6 +521,14 @@ fn plan_objects<B: d3d::backend::Backend>(
             *outcomes.entry("object_state").or_default() += 1;
             continue;
         }
+        // Order-free (`layer_pass::order_free`): an unmarked record whose
+        // passes draw opaque and depth-writing under the items' stencil.
+        let marked = item.flags.contains(PartFlags::STENCIL_MARK) && !pass.stencil_off;
+        if !marked
+            && draws.iter().all(|draw| lit.planned_pass(item.model, draw).is_some_and(|p| layer_pass::order_free(&p.implementation, &device_state, stencil)))
+        {
+            free.insert(item.slot, item.key.shader);
+        }
         // Layer 5's PRT stream, gathered from guest memory now
         // (`LitObjects::fill_prt`).
         let mut draws = draws;
@@ -522,7 +556,6 @@ fn plan_objects<B: d3d::backend::Backend>(
             *outcomes.entry("object_fog").or_default() += 1;
             continue;
         }
-        let marked = item.flags.contains(PartFlags::STENCIL_MARK) && !pass.stencil_off;
         out.insert(item.slot, ObjectItem { shader: item.key.shader, marked, draws: with_fog });
     }
     drop(guard);

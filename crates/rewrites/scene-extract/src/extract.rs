@@ -296,7 +296,7 @@ pub fn objects(mem: &dyn GuestRead, entries: &[Entry], builder: &mut SceneBuilde
         };
         let model = slots
             .iter()
-            .find_map(|&s| match entries[s] {
+            .find_map(|&s| match &entries[s] {
                 Entry::Object { part: Some(p), .. } => Some(p.mode),
                 _ => None,
             })
@@ -312,7 +312,7 @@ pub fn objects(mem: &dyn GuestRead, entries: &[Entry], builder: &mut SceneBuilde
         })?;
         out.instances += 1;
         for slot in slots {
-            let Entry::Object { part: Some(part), .. } = entries[slot] else {
+            let Entry::Object { part: Some(part), .. } = &entries[slot] else {
                 out.remainder += 1;
                 continue;
             };
@@ -333,7 +333,7 @@ pub fn objects(mem: &dyn GuestRead, entries: &[Entry], builder: &mut SceneBuilde
                     continue;
                 }
             }
-            builder.push_part_flagged(instance, slot as u32, part.key, 3, part.flags, part.subparts, &rows)?;
+            builder.push_part_flagged(instance, slot as u32, part.key, 3, part.flags, part.subparts.clone(), &rows)?;
             out.parts += 1;
         }
     }
@@ -546,16 +546,23 @@ mod tests {
         camera_record(&mut m, RENDER_CAMERA);
         let a = object(&mut m, 1, 0xe000_0100, 1);
         object_record(&mut m, 4, Some(lighting(8)), 10.0);
-        let visible = Subparts { first: 2, count: 3, visible: 0b101 };
-        let chosen = Part { flags: PartFlags::SUBPARTS, subparts: Some(visible), ..part(4, 0) };
-        let entries = [Entry::Object { handle: a, part: Some(chosen) }];
+        object_record(&mut m, 5, Some(lighting(8)), 20.0);
+        let visible = Subparts { first: 2, count: 3, visible: vec![0b101] };
+        // A part of 100 subparts keeps every one it chose, past the first 64.
+        let many = Subparts::of(0, 100, [1, 63, 64, 99]);
+        let chosen = Part { flags: PartFlags::SUBPARTS, subparts: Some(visible.clone()), ..part(4, 0) };
+        let wide = Part { flags: PartFlags::SUBPARTS, subparts: Some(many.clone()), ..part(5, 1) };
+        let entries = [Entry::Object { handle: a, part: Some(chosen) }, Entry::Object { handle: a, part: Some(wide) }];
         let mut b = SceneBuilder::default();
         view(&mut b, &m);
         let got = objects(&m, &entries, &mut b).unwrap();
-        assert_eq!(got, Objects { instances: 1, parts: 1, remainder: 0 });
+        assert_eq!(got, Objects { instances: 1, parts: 2, remainder: 0 });
         let s = b.seal(Stamp::default()).unwrap();
         let (_, p) = s.part_at(&s.views[0], 0).unwrap();
-        assert_eq!((p.flags, p.subparts), (PartFlags::SUBPARTS, Some(visible)));
+        assert_eq!((p.flags, p.subparts.as_ref()), (PartFlags::SUBPARTS, Some(&visible)));
+        let (_, p) = s.part_at(&s.views[0], 1).unwrap();
+        assert_eq!(p.subparts.as_ref(), Some(&many));
+        assert_eq!(p.subparts.as_ref().unwrap().drawn().collect::<Vec<_>>(), [1, 63, 64, 99]);
     }
 
     #[test]

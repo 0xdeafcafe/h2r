@@ -122,13 +122,17 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
                 h.word(p.key.implementation as u32);
                 h.word(u32::from(p.layer));
                 h.word(u32::from(p.flags.0));
-                match p.subparts {
+                match &p.subparts {
                     Some(sp) => {
                         h.word(1);
                         h.word(u32::from(sp.first));
                         h.word(u32::from(sp.count));
-                        h.word(sp.visible as u32);
-                        h.word((sp.visible >> 32) as u32);
+                        // At least one word, as a part of no subparts has.
+                        for n in 0..sp.visible.len().max(1) {
+                            let w = sp.visible.get(n).copied().unwrap_or(0);
+                            h.word(w as u32);
+                            h.word((w >> 32) as u32);
+                        }
                     }
                     None => h.word(0),
                 }
@@ -223,13 +227,17 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
                 }
                 lighting(&mut h, i.lighting.as_ref());
                 h.word(u32::from(i.flags.0));
-                match i.subparts {
+                match &i.subparts {
                     Some(s) => {
                         h.word(1);
                         h.word(u32::from(s.first));
                         h.word(u32::from(s.count));
-                        h.word(s.visible as u32);
-                        h.word((s.visible >> 32) as u32);
+                        // At least one word, as a part of no subparts has.
+                        for n in 0..s.visible.len().max(1) {
+                            let w = s.visible.get(n).copied().unwrap_or(0);
+                            h.word(w as u32);
+                            h.word((w >> 32) as u32);
+                        }
                     }
                     None => h.word(0),
                 }

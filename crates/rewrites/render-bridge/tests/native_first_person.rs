@@ -380,7 +380,7 @@ fn first_person_plans_items_and_restores_exactly_the_unplanned_ones() {
         3,
         "the owner's mixed record modes are planned independently"
     );
-    assert_eq!((items[0].flags, items[0].subparts), (PartFlags::NONE, None));
+    assert_eq!((items[0].flags, items[0].subparts.as_ref()), (PartFlags::NONE, None));
     drop(offered);
 
     // The record's flags as the geometry draw reads them: bit 9 on A's

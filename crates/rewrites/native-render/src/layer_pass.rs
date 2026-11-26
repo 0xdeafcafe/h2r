@@ -455,57 +455,75 @@ pub struct SkipItem {
 /// item, or an object's by its slot and shader datum (what the scene's
 /// [`LayerItem`] for it holds: the plan decides it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PrefixItem {
+pub enum ListItem {
     World(SkipItem),
     Object { slot: u32, shader: u32 },
 }
 
-impl PrefixItem {
+impl ListItem {
     pub fn slot(self) -> u32 {
         match self {
-            PrefixItem::World(i) => i.slot,
-            PrefixItem::Object { slot, .. } => slot,
+            ListItem::World(i) => i.slot,
+            ListItem::Object { slot, .. } => slot,
         }
     }
 }
 
-/// Clears `layer`'s bit on the longest run of the current list's items,
-/// from its first, that are structure geometry items `native` accepts:
-/// the native pass records before the guest's layer draw, so what it
-/// takes must come first in the list's order. The walk stops at the first
-/// item of the layer that is not one (an object, another build, a refused
-/// part); that item and the rest keep their D3D draws. `None` when the
-/// layer is not current or the list does not read; nothing is written
-/// then. Callers plan the writes in a `skip::MaskPreview`.
-pub fn clear_prefix(
-    mem: &mut dyn crate::camera::GuestWrite,
-    layer: u32,
-    native: &dyn Fn(SkipItem) -> bool,
-) -> Option<(Vec<SkipItem>, crate::skip::Cleared)> {
-    let (drawn, cleared) = clear_layer_prefix(mem, layer, &|item| match item {
-        PrefixItem::World(i) => native(i),
-        PrefixItem::Object { .. } => false,
-    })?;
-    let drawn = drawn
-        .into_iter()
-        .map(|i| match i {
-            PrefixItem::World(i) => i,
-            PrefixItem::Object { .. } => unreachable!("refused above"),
-        })
-        .collect();
-    Some((drawn, cleared))
+/// What the skip learns of one item of the layer from its caller.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ItemSkip {
+    /// The native pass can draw it, and skipping its guest draw leaves
+    /// the device as drawing it would ([`skip_holds`]).
+    pub take: bool,
+    /// Its guest draw is order-free: every pass of it leaves the device
+    /// as it found it ([`skip_holds`]) and draws [`order_free`]. Unknown
+    /// items (a cause the plan or extraction names before any pass is
+    /// resolved) are not.
+    pub free: bool,
 }
 
-/// [`clear_prefix`] over structure and object items alike: the run from
-/// the list's first item of the layer that are geometry items `native`
-/// accepts, a structure item's with its owner and part, an object's by
-/// its slot and shader. The walk stops at the first item of the layer it
-/// refuses or that is another build.
-pub fn clear_layer_prefix(
+/// What [`clear_layer_items`] cleared.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LayerSkip {
+    /// The items taken, in the list's order.
+    pub drawn: Vec<ListItem>,
+    pub cleared: crate::skip::Cleared,
+    /// Items the caller would take that keep their guest draw because
+    /// taking them would move them before a kept item they do not
+    /// commute with: the `order` count.
+    pub order: usize,
+}
+
+/// Clears `layer`'s bit on each item of the current list the native pass
+/// takes, a structure geometry item's with its owner and part, an
+/// object's by its slot and shader. The native pass records before the
+/// guest's layer draw, so every item it takes draws before every item
+/// the guest keeps. An item the caller would take therefore stays the
+/// guest's when a kept item comes before it in the list, unless that
+/// reordering cannot change the frame or the device:
+///
+/// - the frame: the taken item and every kept item before it are
+///   [`ItemSkip::free`] ([`order_free`]: opaque, depth-tested and
+///   depth-writing with the same comparison family, every colour
+///   channel written, no stencil write but an idempotent one), so each
+///   pixel ends with the nearest fragment whatever the order;
+/// - the device: the shader draw `0x00016b90` switches implementations
+///   by restoring the cached one's list and setting the new one's
+///   ([`skip_holds`]). With every kept item before the taken one
+///   restoring what it sets to the values held at the layer call, the
+///   device at the taken item's place holds those values on every state
+///   it touches, so drawing it there or not leaves the next kept draw
+///   the same device; a kept item whose effect is not known stops this.
+///
+/// An item of the layer that is not a geometry build (or draws no
+/// record) is a kept item of unknown effect. `None` when the layer is not
+/// current or the list does not read; nothing is written then. Callers
+/// plan the writes in a `skip::MaskPreview`.
+pub fn clear_layer_items(
     mem: &mut dyn crate::camera::GuestWrite,
     layer: u32,
-    native: &dyn Fn(PrefixItem) -> bool,
-) -> Option<(Vec<PrefixItem>, crate::skip::Cleared)> {
+    ask: &dyn Fn(ListItem) -> ItemSkip,
+) -> Option<LayerSkip> {
     use crate::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, MAX_ITEMS, RENDER_RECORD_SIZE, RENDER_RECORDS};
     use crate::world::Owner;
     if layer >= 32 || mem.read_u32(CURRENT_LAYER)? != layer {
@@ -523,25 +541,30 @@ pub fn clear_layer_prefix(
     }
     items.checked_add(count.checked_mul(ITEM_SIZE)?)?;
     let bit = 1u32 << layer;
-    let mut prefix = Vec::new();
+    let mut taken = Vec::new();
+    let mut order = 0;
+    // A kept item seen, and whether every kept item so far is free.
+    let mut kept = false;
+    let mut kept_free = true;
     for i in first..count {
         let item = items + ITEM_SIZE * i;
         let mask = mem.read_u32(item + 0x10)?;
         if mask & bit == 0 {
             continue;
         }
-        if mem.read_u32(item)? != GEOMETRY_BUILD {
-            break;
-        }
-        let arg = mem.read_u32(item + 0xc)?;
+        // Not a geometry build, or no record: kept, its effect unknown.
+        let geometry = mem.read_u32(item)? == GEOMETRY_BUILD;
+        let arg = if geometry { mem.read_u32(item + 0xc)? } else { 0 };
         let record = (arg >> 8) as u16 as i16;
-        if record < 0 {
-            break;
+        if !geometry || record < 0 {
+            kept = true;
+            kept_free = false;
+            continue;
         }
         let base = RENDER_RECORDS + RENDER_RECORD_SIZE * record as u32;
         let shader = mem.read_u32(item + 8)?;
         let found = if mem.read_u32(base + 4)? != u32::MAX {
-            PrefixItem::Object { slot: i, shader }
+            ListItem::Object { slot: i, shader }
         } else {
             let packed = mem.read_u32(base + 0xc)?;
             let owner = if mem.read_u32(base)? & (1 << 12) == 0 {
@@ -549,21 +572,101 @@ pub fn clear_layer_prefix(
             } else {
                 Owner::Instance((packed >> 18) & 0x7ff)
             };
-            PrefixItem::World(SkipItem { slot: i, owner, part: arg as u8, shader })
+            ListItem::World(SkipItem { slot: i, owner, part: arg as u8, shader })
         };
-        if !native(found) {
-            break;
+        let skip = ask(found);
+        if skip.take && (!kept || (kept_free && skip.free)) {
+            taken.push((item, mask, found));
+            continue;
         }
-        prefix.push((item, mask, found));
+        if skip.take {
+            order += 1;
+        }
+        kept = true;
+        kept_free &= skip.free;
     }
-    let mut cleared = crate::skip::Cleared { layer, items: Vec::with_capacity(prefix.len()) };
-    let mut drawn = Vec::with_capacity(prefix.len());
-    for (item, mask, found) in prefix {
+    let mut cleared = crate::skip::Cleared { layer, items: Vec::with_capacity(taken.len()) };
+    let mut drawn = Vec::with_capacity(taken.len());
+    for (item, mask, found) in taken {
         mem.write_u32(item + 0x10, mask & !bit)?;
         cleared.items.push(item);
         drawn.push(found);
     }
-    Some((drawn, cleared))
+    Some(LayerSkip { drawn, cleared, order })
+}
+
+/// LOGICOP's canonical index, which [`gfx::state::RenderStateType`] does
+/// not model: `0` (none) draws the colour, anything else combines it
+/// with the target's.
+const LOGICOP: u32 = 150;
+
+/// Whether a pass of implementation `imp`, drawn under `stencil` (the
+/// item's, [`item_stencil`]) over a device whose render state at a guest
+/// slot `read` gives (at the layer call), draws the same frame before or
+/// after another such pass: each pixel ends with the nearest fragment
+/// whatever the order. That holds when, over the device's values with
+/// the implementation's list applied:
+///
+/// - the depth test is on (`ZENABLE` Z or W), writes (`ZWRITEENABLE`)
+///   and compares `LESS` or `LESSEQUAL` (assumed: fragments of two
+///   different items do not tie in depth);
+/// - nothing blends (`ALPHABLENDENABLE` off, `LOGICOP` none) and every
+///   colour channel is written (`COLORWRITEENABLE`: a masked channel
+///   keeps a farther fragment's value only in one order);
+/// - the stencil is off, writes nothing, or writes the same reference on
+///   pass under `ALWAYS` and keeps on a depth failure (the stencil then
+///   says whether any fragment passed, which the nearest one does in
+///   every order), and the implementation sets no stencil state itself;
+/// - no engine-driven render value targets one of these states (it is
+///   decided per draw).
+///
+/// The alpha test, the cull and the depth bias change which fragments
+/// exist, not how two items' fragments combine. A state that does not
+/// read or decode is not free.
+pub fn order_free(imp: &ResolvedImplementation, read: &dyn Fn(u32) -> Option<u32>, stencil: &gfx::state::StencilState) -> bool {
+    use gfx::state::{CompareFunc, DepthBufferMode, RenderState, RenderStateType as T, StencilOp};
+    let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+    let canonical = |guest: u8| table.guest_to_canonical(u32::from(guest));
+    const STENCIL: [T; 8] =
+        [T::StencilEnable, T::StencilFunc, T::StencilRef, T::StencilMask, T::StencilWriteMask, T::StencilFail, T::StencilZFail, T::StencilPass];
+    const ORDER: [T; 5] = [T::ZEnable, T::ZWriteEnable, T::ZFunc, T::AlphaBlendEnable, T::ColorWriteEnable];
+    let watched = |c: u32| c == LOGICOP || ORDER.iter().chain(&STENCIL).any(|t| t.index() == c);
+    if imp.render_states.iter().any(|s| canonical(s.state).is_some_and(|c| STENCIL.iter().any(|t| t.index() == c))) {
+        return false;
+    }
+    if !imp.engine_render_states.is_empty() {
+        let Some((render, _)) = tags::material::engine_states(imp) else {
+            return false;
+        };
+        if render.iter().any(|s| canonical(s.state).is_none_or(watched)) {
+            return false;
+        }
+    }
+    // The value at a canonical index: the list's last write, else the device's.
+    let value = |c: u32| -> Option<u32> {
+        let guest = table.canonical_to_guest(c)?;
+        imp.render_states.iter().rev().find(|s| u32::from(s.state) == guest).map(|s| s.value).or_else(|| read(guest))
+    };
+    let mut rs = RenderState::default();
+    for t in ORDER {
+        let Some(v) = value(t.index()) else { return false };
+        if rs.set_raw(t, v).is_err() {
+            return false;
+        }
+    }
+    if value(LOGICOP) != Some(0) {
+        return false;
+    }
+    let depth = rs.depth_mode != DepthBufferMode::Disabled
+        && rs.depth_write
+        && matches!(rs.depth_func, CompareFunc::Less | CompareFunc::LessEqual);
+    let colour = !rs.blend_enable && rs.color_write == gfx::state::ColorWriteMask::ALL;
+    let stencil_free = !stencil.enable
+        || stencil.write_mask == 0
+        || (stencil.func == CompareFunc::Always
+            && stencil.depth_fail == StencilOp::Keep
+            && matches!(stencil.pass, StencilOp::Keep | StencilOp::Replace));
+    depth && colour && stencil_free
 }
 
 /// The stencil a world layer's items draw under, and whether the device
@@ -1019,96 +1122,216 @@ pub(crate) mod tests {
         assert_eq!(reg.written, 15);
     }
 
-    #[test]
-    fn the_skip_takes_the_accepted_structure_items_up_to_the_first_it_cannot() {
+    /// A list of `layer` in a test memory: render records `(record, flags,
+    /// model, packed)` and items `(record, mask)`, item `i`'s shader
+    /// `0xe000_0010 + i` and its part `i`.
+    fn layer_list(layer: u32, records: &[(u32, u32, u32, u32)], items: &[(u32, u32)]) -> scene_extract::testing::Mem {
         use crate::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, RENDER_RECORD_SIZE, RENDER_RECORDS};
-        use crate::world::Owner;
-        use scene_extract::GuestRead;
-        use scene_extract::testing::Mem;
-        const LIST: u32 = 0x0060_0000;
-        const ITEMS: u32 = 0x0061_0000;
-        let mut m = Mem::default();
-        m.w(CURRENT_LAYER, 5);
+        let mut m = scene_extract::testing::Mem::default();
+        m.w(CURRENT_LAYER, layer);
         m.w(CURRENT_LIST, LIST);
-        m.w(LIST + 4, 5);
+        m.w(LIST + 4, items.len() as u32);
         m.w(LIST + 0xc, 0);
         m.w(LIST + 0x14, ITEMS);
-        // Records 1 and 2 clusters 7 and 8, record 3 an object's, record 4
-        // placement 9.
-        for (r, flags, model, packed) in [(1, 0, u32::MAX, 7 << 9), (2, 0, u32::MAX, 8 << 9), (3, 0, 0xe100_0001, 0), (4, 1 << 12, u32::MAX, 9 << 18)] {
+        for &(r, flags, model, packed) in records {
             let base = RENDER_RECORDS + RENDER_RECORD_SIZE * r;
             m.w(base, flags);
             m.w(base + 4, model);
             m.w(base + 0xc, packed);
         }
-        // Item 1 is not in layer 5; item 3 the object; item 4 after it.
-        for (i, record, mask) in [(0u32, 1u32, 1u32 << 5), (1, 3, 1 << 3), (2, 2, 1 << 5 | 1 << 3), (3, 3, 1 << 5), (4, 4, 1 << 5)] {
+        for (i, &(record, mask)) in items.iter().enumerate() {
+            let i = i as u32;
             let at = ITEMS + ITEM_SIZE * i;
             m.w(at, GEOMETRY_BUILD);
             m.w(at + 8, 0xe000_0010 + i);
             m.w(at + 0xc, record << 8 | i);
             m.w(at + 0x10, mask);
         }
-        let (drawn, cleared) = clear_prefix(&mut m, 5, &|_| true).unwrap();
-        assert_eq!(drawn.iter().map(|d| d.owner).collect::<Vec<_>>(), [Owner::Cluster(7), Owner::Cluster(8)]);
-        assert_eq!(drawn[1], SkipItem { slot: 2, owner: Owner::Cluster(8), part: 2, shader: 0xe000_0012 });
-        assert_eq!(cleared.items, [ITEMS, ITEMS + 2 * ITEM_SIZE]);
-        assert_eq!(m.read_u32(ITEMS + 0x10), Some(0), "its layer-5 bit cleared");
-        assert_eq!(m.read_u32(ITEMS + 2 * ITEM_SIZE + 0x10), Some(1 << 3), "only layer 5's");
-        assert_eq!(m.read_u32(ITEMS + 4 * ITEM_SIZE + 0x10), Some(1 << 5), "after the object: the guest's");
-        // A refused first item leaves everything to the guest.
-        m.w(ITEMS + 0x10, 1 << 5);
-        m.w(ITEMS + 2 * ITEM_SIZE + 0x10, 1 << 5);
-        let (drawn, cleared) = clear_prefix(&mut m, 5, &|i| i.owner != Owner::Cluster(7)).unwrap();
-        assert!(drawn.is_empty() && cleared.items.is_empty());
-        assert_eq!(clear_prefix(&mut m, 7, &|_| true), None, "not the current layer");
+        m
+    }
+
+    const LIST: u32 = 0x0060_0000;
+    const ITEMS: u32 = 0x0061_0000;
+    const TAKE: ItemSkip = ItemSkip { take: true, free: true };
+    const KEEP: ItemSkip = ItemSkip { take: false, free: false };
+
+    fn mask_at(m: &scene_extract::testing::Mem, slot: u32) -> Option<u32> {
+        use scene_extract::GuestRead;
+        m.read_u32(ITEMS + crate::skip::ITEM_SIZE * slot + 0x10)
+    }
+
+    #[test]
+    fn the_skip_takes_the_accepted_structure_items_before_the_first_kept_one_of_unknown_effect() {
+        use crate::skip::ITEM_SIZE;
+        use crate::world::Owner;
+        // Records 1 and 2 clusters 7 and 8, record 3 an object's, record 4
+        // placement 9. Item 1 is not in layer 5; item 3 the object; item 4
+        // after it.
+        let records = [(1, 0, u32::MAX, 7 << 9), (2, 0, u32::MAX, 8 << 9), (3, 0, 0xe100_0001, 0), (4, 1 << 12, u32::MAX, 9 << 18)];
+        let items = [(1, 1 << 5), (3, 1 << 3), (2, 1 << 5 | 1 << 3), (3, 1 << 5), (4, 1 << 5)];
+        let mut m = layer_list(5, &records, &items);
+        // The object keeps its draw and nothing says what it leaves.
+        let structure = |i: ListItem| if matches!(i, ListItem::World(_)) { TAKE } else { KEEP };
+        let skip = clear_layer_items(&mut m, 5, &structure).unwrap();
+        let owners: Vec<_> = skip.drawn.iter().map(|d| match d {
+            ListItem::World(i) => i.owner,
+            ListItem::Object { .. } => panic!("an object"),
+        }).collect();
+        assert_eq!(owners, [Owner::Cluster(7), Owner::Cluster(8)]);
+        assert_eq!(skip.drawn[1], ListItem::World(SkipItem { slot: 2, owner: Owner::Cluster(8), part: 2, shader: 0xe000_0012 }));
+        assert_eq!(skip.cleared.items, [ITEMS, ITEMS + 2 * ITEM_SIZE]);
+        assert_eq!(skip.order, 1, "the placement after the object");
+        assert_eq!(mask_at(&m, 0), Some(0), "its layer-5 bit cleared");
+        assert_eq!(mask_at(&m, 2), Some(1 << 3), "only layer 5's");
+        assert_eq!(mask_at(&m, 4), Some(1 << 5), "after the object: the guest's");
+        // A refused first item of unknown effect leaves everything to the
+        // guest.
+        let mut m = layer_list(5, &records, &items);
+        let skip = clear_layer_items(&mut m, 5, &|i| match i {
+            ListItem::World(SkipItem { owner: Owner::Cluster(7), .. }) => KEEP,
+            i => structure(i),
+        })
+        .unwrap();
+        assert!(skip.drawn.is_empty() && skip.cleared.items.is_empty());
+        assert_eq!(skip.order, 2);
+        assert_eq!(clear_layer_items(&mut m, 7, &|_| TAKE), None, "not the current layer");
     }
 
     #[test]
     fn the_skip_takes_object_items_the_plan_drew_in_the_same_run() {
-        use crate::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, RENDER_RECORD_SIZE, RENDER_RECORDS};
-        use crate::world::Owner;
-        use scene_extract::GuestRead;
-        use scene_extract::testing::Mem;
-        const LIST: u32 = 0x0060_0000;
-        const ITEMS: u32 = 0x0061_0000;
-        let mut m = Mem::default();
-        m.w(CURRENT_LAYER, 7);
-        m.w(CURRENT_LIST, LIST);
-        m.w(LIST + 4, 4);
-        m.w(LIST + 0xc, 0);
-        m.w(LIST + 0x14, ITEMS);
         // Record 1 cluster 7, records 2 and 3 objects'.
-        for (r, model, packed) in [(1, u32::MAX, 7 << 9), (2, 0xe100_0001, 0), (3, 0xe100_0002, 0)] {
-            let base = RENDER_RECORDS + RENDER_RECORD_SIZE * r;
-            m.w(base, 0);
-            m.w(base + 4, model);
-            m.w(base + 0xc, packed);
-        }
-        for (i, record) in [(0u32, 1u32), (1, 2), (2, 1), (3, 3)] {
-            let at = ITEMS + ITEM_SIZE * i;
-            m.w(at, GEOMETRY_BUILD);
-            m.w(at + 8, 0xe000_0010 + i);
-            m.w(at + 0xc, record << 8);
-            m.w(at + 0x10, 1 << 7);
-        }
+        let records = [(1, 0, u32::MAX, 7 << 9), (2, 0, 0xe100_0001, 0), (3, 0, 0xe100_0002, 0)];
+        let items = [(1, 1 << 7), (2, 1 << 7), (1, 1 << 7), (3, 1 << 7)];
+        let mut m = layer_list(7, &records, &items);
         // The plan drew the object item at slot 1, not the one at 3.
-        let (drawn, cleared) = clear_layer_prefix(&mut m, 7, &|i| match i {
-            PrefixItem::World(_) => true,
-            PrefixItem::Object { slot, shader } => slot == 1 && shader == 0xe000_0011,
+        let skip = clear_layer_items(&mut m, 7, &|i| match i {
+            ListItem::World(_) => TAKE,
+            ListItem::Object { slot, shader } if slot == 1 && shader == 0xe000_0011 => TAKE,
+            ListItem::Object { .. } => KEEP,
         })
         .unwrap();
-        assert_eq!(drawn.iter().map(|i| i.slot()).collect::<Vec<_>>(), [0, 1, 2], "the object between the structure's");
-        assert_eq!(drawn[1], PrefixItem::Object { slot: 1, shader: 0xe000_0011 });
-        assert!(matches!(drawn[2], PrefixItem::World(SkipItem { owner: Owner::Cluster(7), .. })));
-        assert_eq!(cleared.items.len(), 3);
-        assert_eq!(m.read_u32(ITEMS + 3 * ITEM_SIZE + 0x10), Some(1 << 7), "the refused object keeps its draw");
-        // The structure-only skip stops at the object.
-        for i in 0..4 {
-            m.w(ITEMS + ITEM_SIZE * i + 0x10, 1 << 7);
-        }
-        let (drawn, _) = clear_prefix(&mut m, 7, &|_| true).unwrap();
-        assert_eq!(drawn.len(), 1);
+        assert_eq!(skip.drawn.iter().map(|i| i.slot()).collect::<Vec<_>>(), [0, 1, 2], "the object between the structure's");
+        assert_eq!(skip.drawn[1], ListItem::Object { slot: 1, shader: 0xe000_0011 });
+        assert!(matches!(skip.drawn[2], ListItem::World(SkipItem { owner: crate::world::Owner::Cluster(7), .. })));
+        assert_eq!(skip.cleared.items.len(), 3);
+        assert_eq!(skip.order, 0);
+        assert_eq!(mask_at(&m, 3), Some(1 << 7), "the refused object keeps its draw");
+        // Without the objects, the structure item after the first one
+        // stays the guest's, counted.
+        let mut m = layer_list(7, &records, &items);
+        let skip = clear_layer_items(&mut m, 7, &|i| if matches!(i, ListItem::World(_)) { TAKE } else { KEEP }).unwrap();
+        assert_eq!(skip.drawn.len(), 1);
+        assert_eq!(skip.order, 1);
+    }
+
+    /// Five structure items; the middle one keeps its guest draw. When it
+    /// and the items after it are order-free, the later ones are taken.
+    #[test]
+    fn a_kept_item_in_the_middle_leaves_later_order_free_items_to_the_native_pass() {
+        let records: Vec<_> = (1..=5).map(|r| (r, 0, u32::MAX, (r + 6) << 9)).collect();
+        let items: Vec<_> = (1..=5).map(|r| (r, 1 << 1)).collect();
+        let mut m = layer_list(1, &records, &items);
+        let skip = clear_layer_items(&mut m, 1, &|i| if i.slot() == 2 { ItemSkip { take: false, free: true } } else { TAKE }).unwrap();
+        assert_eq!(skip.drawn.iter().map(|i| i.slot()).collect::<Vec<_>>(), [0, 1, 3, 4]);
+        assert_eq!(skip.order, 0);
+        assert_eq!(skip.cleared.items.len(), 4);
+        assert_eq!(mask_at(&m, 2), Some(1 << 1), "the kept item's draw stays");
+        assert_eq!(mask_at(&m, 3), Some(0), "the item after it is skipped");
+        assert_eq!(mask_at(&m, 4), Some(0));
+    }
+
+    /// Where the order between a kept item and a later one matters, the
+    /// later one keeps its guest draw and is counted as `order`.
+    #[test]
+    fn an_order_dependent_item_after_a_kept_one_stays_the_guests_and_is_counted() {
+        let records: Vec<_> = (1..=5).map(|r| (r, 0, u32::MAX, (r + 6) << 9)).collect();
+        let items: Vec<_> = (1..=5).map(|r| (r, 1 << 1)).collect();
+        // Item 3 blends (not free): it stays, and so does item 4 after it.
+        let mut m = layer_list(1, &records, &items);
+        let skip = clear_layer_items(&mut m, 1, &|i| match i.slot() {
+            2 => ItemSkip { take: false, free: true },
+            3 => ItemSkip { take: true, free: false },
+            _ => TAKE,
+        })
+        .unwrap();
+        assert_eq!(skip.drawn.iter().map(|i| i.slot()).collect::<Vec<_>>(), [0, 1]);
+        assert_eq!(skip.order, 2);
+        assert_eq!(mask_at(&m, 3), Some(1 << 1));
+        assert_eq!(mask_at(&m, 4), Some(1 << 1), "after a kept item that is not free");
+        // A kept item of unknown effect (refused before any pass resolved)
+        // keeps every later one.
+        let mut m = layer_list(1, &records, &items);
+        let skip = clear_layer_items(&mut m, 1, &|i| if i.slot() == 2 { KEEP } else { TAKE }).unwrap();
+        assert_eq!(skip.drawn.iter().map(|i| i.slot()).collect::<Vec<_>>(), [0, 1]);
+        assert_eq!(skip.order, 2);
+        // An item that is not a geometry build is one too.
+        let mut m = layer_list(1, &records, &items);
+        m.w(ITEMS + crate::skip::ITEM_SIZE * 2, 0);
+        let skip = clear_layer_items(&mut m, 1, &|_| TAKE).unwrap();
+        assert_eq!(skip.drawn.iter().map(|i| i.slot()).collect::<Vec<_>>(), [0, 1]);
+        assert_eq!(skip.order, 2);
+    }
+
+    #[test]
+    fn an_opaque_depth_writing_pass_is_order_free_and_a_blended_or_stencil_counting_one_is_not() {
+        use gfx::state::{CompareFunc, RenderStateType as T, StencilOp, StencilState};
+        use tags::shader::RenderStateValue;
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let g = |t: T| table.canonical_to_guest(t.index()).unwrap();
+        let logicop = table.canonical_to_guest(LOGICOP).unwrap();
+        let device = |slot: u32| {
+            Some(match slot {
+                s if s == g(T::ZEnable) => 1,
+                s if s == g(T::ZWriteEnable) => 1,
+                s if s == g(T::ZFunc) => 0x203,
+                s if s == g(T::ColorWriteEnable) => 0x0101_0101,
+                s if s == logicop => 0,
+                _ => 0,
+            })
+        };
+        let off = StencilState::default();
+        let imp = implementation(0, InputReads::default(), Vec::new());
+        assert!(order_free(&imp, &device, &off));
+        let set = |t: T, value: u32| {
+            let mut imp = imp.clone();
+            imp.render_states.push(RenderStateValue { state: g(t) as u8, value });
+            imp
+        };
+        assert!(!order_free(&set(T::AlphaBlendEnable, 1), &device, &off), "blended");
+        assert!(!order_free(&set(T::ZWriteEnable, 0), &device, &off), "no depth write");
+        assert!(!order_free(&set(T::ZFunc, 0x202), &device, &off), "depth-equal");
+        assert!(!order_free(&set(T::ZEnable, 0), &device, &off), "no depth test");
+        assert!(!order_free(&set(T::ColorWriteEnable, 0x0001_0101), &device, &off), "alpha masked");
+        assert!(order_free(&set(T::ZFunc, 0x201), &device, &off), "LESS");
+        assert!(order_free(&set(T::ZEnable, 2), &device, &off), "W-buffered");
+        assert!(!order_free(&set(T::StencilEnable, 0), &device, &off), "the pass sets a stencil state");
+        let blending = |slot: u32| if slot == g(T::AlphaBlendEnable) { Some(1) } else { device(slot) };
+        assert!(!order_free(&imp, &blending, &off), "the device blends and the pass does not turn it off");
+        assert!(order_free(&set(T::AlphaBlendEnable, 0), &blending, &off), "the pass turns it off");
+        assert!(!order_free(&imp, &|slot| if slot == logicop { Some(0x1503) } else { device(slot) }, &off), "a logic op");
+        assert!(!order_free(&imp, &|slot| if slot == g(T::ZFunc) { None } else { device(slot) }, &off), "unread");
+        // Layer 1's mode 1: ALWAYS, REPLACE on pass, KEEP on a depth fail.
+        let mode_1 = StencilState {
+            enable: true,
+            func: CompareFunc::Always,
+            reference: 0,
+            fail: StencilOp::Keep,
+            depth_fail: StencilOp::Keep,
+            pass: StencilOp::Replace,
+            ..StencilState::default()
+        };
+        assert!(order_free(&imp, &device, &mode_1));
+        assert!(!order_free(&imp, &device, &StencilState { pass: StencilOp::Incr, ..mode_1 }), "counts");
+        assert!(!order_free(&imp, &device, &StencilState { depth_fail: StencilOp::Replace, ..mode_1 }), "writes on a depth fail");
+        assert!(!order_free(&imp, &device, &StencilState { func: CompareFunc::Equal, ..mode_1 }), "tests what another writes");
+        assert!(order_free(&imp, &device, &StencilState { func: CompareFunc::Equal, write_mask: 0, ..mode_1 }), "writes nothing");
+        // An engine-driven BLENDCOLOR (target 0) changes nothing unblended;
+        // one past the table does not read.
+        let mut driven = imp.clone();
+        driven.engine_render_states = vec![tags::shader::ExternalBinding { bytes: [0, 0, 0, 2] }];
+        assert!(order_free(&driven, &device, &off));
+        driven.engine_render_states = vec![tags::shader::ExternalBinding { bytes: [0x40, 1, 0, 3] }];
+        assert!(!order_free(&driven, &device, &off));
     }
 
     #[test]
