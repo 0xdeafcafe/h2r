@@ -32,6 +32,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::bytes::u32_at;
 use crate::manifest::LANGUAGES;
 
 /// A campaign's manifest file, in its directory under `<data>/campaigns/`.
@@ -574,10 +575,6 @@ fn texts_into(r: &mut [u8], at: usize, units: usize, texts: &[String; 9]) {
     for (i, t) in texts.iter().enumerate() {
         utf16_into(&mut r[at + i * units * 2..][..units * 2], t);
     }
-}
-
-fn u32_at(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(b[at..at + 4].try_into().unwrap())
 }
 
 fn put(r: &mut [u8], at: usize, v: u32) {
