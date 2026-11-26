@@ -514,9 +514,22 @@ the flying pair already written there. A converted sentinel keeps the
 retail aggressor pair (`flags` `0xe00`, physics `0x13`) over these. Halo
 1's other flag bits have no Halo 2 counterpart and set nothing.
 
+The Halo 2 biped words Halo 1 has no word for are never left at the
+definition's zero. `death_hard_landing_velocity` is Halo 1's `+0x3e8`, in
+`BIPED_WORDS` beside the other landing velocities. The pelvis, head and
+physics control node indices are the converted model's `bip01 pelvis` and
+`bip01 head` nodes (`rebuild::BIPED_NODES`), -1 on a model without them.
+`rebuild::BIPED_DECLARED` gives the rest a value and the reason for it:
+the global material names null and their indices -1 (Halo 1 names a
+material per collision region), headshot scale 1, stun duration 0 (Halo 1
+bipeds are not stunned), no contact points, and zero acceleration range
+and gaze limits (Halo 1 has none; a player's look follows the controller).
+These values are chosen, not read from a Halo 2 biped.
+
 Proof (`crates/tools/h1objects/tests/unit_rebuild_disc.rs`, and the lib tests
 `biped_carries_each_source_word_and_leaves_unmapped_fields_at_default`,
-`biped_flags_carry_halo1s_named_bits` and
+`biped_flags_carry_halo1s_named_bits`,
+`no_converted_biped_field_is_left_at_definition_zero` and
 `rebuilt_biped_uses_source_shapes_tracks_weapons_and_hud`):
 
 - `biped_words_match_halo_2s_counterparts`: the camera and the words,

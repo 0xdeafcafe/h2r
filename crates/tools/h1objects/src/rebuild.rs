@@ -2248,6 +2248,8 @@ pub const BIPED_WORDS: &[(&str, usize)] = &[
     // After the three collision sizes at +0x424 and 40 pad bytes. Zero width
     // gives a controller no magnetism or reticle friction on the unit.
     ("autoaim_width", 0x458),
+    // The row after +0x3e4: a fall this fast kills the biped.
+    ("death_hard_landing_velocity", 0x3e8),
 ];
 
 /// H1 caches these rates per tick. The c20 monitor and its 04b counterpart
@@ -2291,6 +2293,57 @@ fn biped_flags(d: &StructDef, h1: u32) -> Result<u32> {
     }
     Ok(word)
 }
+
+/// A value written to a biped field Halo 1 has no word for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Declared {
+    Float(f32),
+    Floats([f32; 3]),
+    Index(i64),
+    /// A string id naming nothing.
+    NoName,
+    /// A block with no elements.
+    NoElements,
+}
+
+impl Declared {
+    pub fn value(&self) -> Val {
+        match self {
+            Declared::Float(v) => Val::Float(*v),
+            Declared::Floats(v) => Val::floats(v),
+            Declared::Index(v) => Val::Int(*v),
+            Declared::NoName => Val::text(""),
+            Declared::NoElements => Val::Block(Vec::new()),
+        }
+    }
+}
+
+/// The biped fields Halo 1 holds no word for, each with the value it is
+/// given and why (path, value, reason). None is left at the definition's
+/// zero, which is neither Halo 1's nor Halo 2's choice.
+pub const BIPED_DECLARED: &[(&str, Declared, &str)] = &[
+    ("living_global_material_name", Declared::NoName, "Halo 1 has no global material on a biped: its collision model names a material per region"),
+    ("dead_global_material_name", Declared::NoName, "as the living name: no global material"),
+    ("living_global_material_index", Declared::Index(-1), "-1 is no material, as the name above names none"),
+    ("dead_global_material_index", Declared::Index(-1), "-1 is no material, as the name above names none"),
+    ("headshot_acceleration_scale", Declared::Float(1.0), "a scale of 1 leaves the impulse as the damage gives it; Halo 1 has no headshot scale"),
+    ("stun_duration", Declared::Float(0.0), "Halo 1 bipeds are never stunned, so a stun lasts no time"),
+    ("contact_points", Declared::NoElements, "Halo 1 bipeds stand on their collision pills and name no contact markers"),
+    ("unit.acceleration_range", Declared::Floats([0.0; 3]), "Halo 1 has no per-axis acceleration range; the object's acceleration scale carries its tuning"),
+    ("unit.look_speed_limit", Declared::Float(0.0), "Halo 1 has no gaze speed limit; a player's look follows the controller"),
+    ("unit.look_acceleration_limit", Declared::Float(0.0), "Halo 1 has no gaze acceleration limit; a player's look follows the controller"),
+];
+
+/// The biped node indices Halo 1 has no word for, taken from the converted
+/// model's nodes (path, node name): -1, no node, when the model has none
+/// of that name (the monitor, the sentinel and the flood forms have no
+/// pelvis or head). The physics control node is the pelvis, the body's
+/// root for movement.
+pub const BIPED_NODES: &[(&str, &str)] = &[
+    ("physics_control_node_index", "bip01 pelvis"),
+    ("pelvis_node_index", "bip01 pelvis"),
+    ("head_node_index", "bip01 head"),
+];
 
 /// `bipd +0x268`, `+0x26c`, `+0x270`: the standing and crouching
 /// collision heights and the collision radius ([`h1::BIPED_SIZE`] holds
@@ -2394,6 +2447,8 @@ pub struct BipedParts {
     pub hud: Option<Vec<TagId>>,
     /// The converted model's marker names ([`UNIT_MARKERS`]).
     pub markers: Vec<String>,
+    /// The converted model's node names, in order ([`BIPED_NODES`]).
+    pub nodes: Vec<String>,
 }
 
 /// The unit's marker names, each the Halo 1 marker the Halo 1 engine uses
@@ -2565,6 +2620,13 @@ pub fn biped(
         // Both retail aggressors use this biped and flying-controller flag pair.
         set(&mut r, "flags", Val::Bytes(0xe00u32.to_le_bytes().to_vec()))?;
         set(&mut r, "unknown_264", Val::Bytes(0x13u32.to_le_bytes().to_vec()))?;
+    }
+    for (path, declared, _) in BIPED_DECLARED {
+        set(&mut r, path, declared.value())?;
+    }
+    for (path, name) in BIPED_NODES {
+        let at = parts.nodes.iter().position(|n| n.eq_ignore_ascii_case(name));
+        set(&mut r, path, Val::Int(at.map_or(-1, |i| i as i64)))?;
     }
     if let Some(size) = unit.size.filter(usable_size) {
         for (path, v) in biped_shapes(&size)? {

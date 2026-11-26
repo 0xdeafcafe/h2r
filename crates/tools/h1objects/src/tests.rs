@@ -1739,6 +1739,80 @@ fn biped_flags_carry_halo1s_named_bits() {
     );
 }
 
+/// Every biped field Halo 1 has no mapped word for is given a Halo 1 word
+/// (the death landing velocity), a declared value with its reason, or its
+/// node in the converted model; none stays at the definition's zero.
+#[test]
+fn no_converted_biped_field_is_left_at_definition_zero() {
+    use crate::rebuild::{BIPED_DECLARED, BIPED_NODES, BIPED_WORDS, BipedParts, Declared};
+    use tags::defs::{self, Defs, Val};
+    let d = Defs::builtin().group(map::FourCC(*b"bipd")).unwrap();
+    // Every field the audit named is in one of the three tables.
+    for path in [
+        "death_hard_landing_velocity",
+        "living_global_material_name",
+        "dead_global_material_name",
+        "living_global_material_index",
+        "dead_global_material_index",
+        "headshot_acceleration_scale",
+        "physics_control_node_index",
+        "pelvis_node_index",
+        "head_node_index",
+        "contact_points",
+        "stun_duration",
+        "unit.acceleration_range",
+        "unit.look_speed_limit",
+        "unit.look_acceleration_limit",
+    ] {
+        let held = BIPED_WORDS.iter().any(|w| w.0 == path)
+            || BIPED_DECLARED.iter().any(|w| w.0 == path)
+            || BIPED_NODES.iter().any(|w| w.0 == path);
+        assert!(held, "{path} has no Halo 1 word, declared value or node");
+    }
+    assert!(BIPED_DECLARED.iter().all(|w| w.2.len() > 20), "each declared value says why");
+    assert!(BIPED_DECLARED.iter().all(|w| d_has(d, w.0)));
+    // The death landing velocity is Halo 1's (+0x3e8), as its neighbours are.
+    let unit = biped_unit(BIPED_WORDS.iter().map(|w| (w.1, 0.25f32.to_bits())).collect());
+    let build = |nodes: &[&str]| {
+        let parts = BipedParts {
+            nodes: nodes.iter().map(|n| n.to_string()).collect(),
+            ..Default::default()
+        };
+        let root = crate::rebuild::biped(&unit, None, &[], &parts).unwrap();
+        defs::from_built(d, &root).unwrap()
+    };
+    let r = build(&["bip01", "bip01 pelvis", "bip01 spine", "Bip01 Head"]);
+    assert_eq!(r.at("death_hard_landing_velocity"), Some(&Val::Float(0.25)));
+    for (path, declared, _) in BIPED_DECLARED {
+        assert_eq!(r.at(path), Some(&declared.value()), "{path}");
+    }
+    assert_eq!(r.at("living_global_material_index"), Some(&Val::Int(-1)));
+    assert_eq!(r.at("dead_global_material_index"), Some(&Val::Int(-1)));
+    assert_eq!(BIPED_DECLARED.iter().find(|w| w.0 == "contact_points").unwrap().1, Declared::NoElements);
+    assert_eq!(
+        ["physics_control_node_index", "pelvis_node_index", "head_node_index"].map(|p| r.at(p).cloned()),
+        [1, 1, 3].map(|v| Some(Val::Int(v)))
+    );
+    // A model without a pelvis or head (the monitor) has no such node: -1,
+    // not node 0.
+    let r = build(&["monitor body"]);
+    assert_eq!(
+        ["physics_control_node_index", "pelvis_node_index", "head_node_index"].map(|p| r.at(p).cloned()),
+        [-1, -1, -1].map(|v| Some(Val::Int(v)))
+    );
+}
+
+/// Whether the definition has a field at `path`, through embedded structs.
+fn d_has(d: &tags::defs::StructDef, path: &str) -> bool {
+    match path.split_once('.') {
+        None => d.field(path).is_some(),
+        Some((head, rest)) => match d.field(head).map(|f| &f.kind) {
+            Some(tags::defs::Kind::Struct(s)) => d_has(s, rest),
+            _ => false,
+        },
+    }
+}
+
 /// A rebuilt biped's character shapes follow Halo 1's collision size: the
 /// standing and crouching pills run from one radius up to the height less
 /// a radius, the three spheres rest on the ground at 1, 1.35 and 1.7
