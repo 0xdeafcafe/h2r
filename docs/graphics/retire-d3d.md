@@ -581,7 +581,9 @@ keeps a guest draw, by the counter that names it (**Code**):
 - **Layer 3's world** keeps the parts whose material pass does not
   translate or that lack an input of their program
   ([native-world.md](native-world.md)).
-- **Layer 3's objects** (`native_objects_walk_*`): the objects the walk
+- **Layer 3's objects** (`native_objects_walk_*`; the refused parts by
+  cause in `walk_part_{aux_state,subparts,shader_flag,argument,program,layout}`,
+  [native-objects.md](native-objects.md)): the objects the walk
   returns (`walk_unsupported`: a bit-11 part whose toggle does not read,
   a bit-6 part with a negative first subpart or a mask that does not read,
   a flagged shader with the structure's parameter block or a structure

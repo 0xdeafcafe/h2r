@@ -148,7 +148,7 @@ const VIEW_METRICS: [&str; 9] = [
 ];
 const STRIDE: usize = METRICS.len() + VIEWS * VIEW_METRICS.len();
 const STAGE_COLUMNS: usize = STAGES.len() * STRIDE;
-const OBJECT_WALK_COLUMNS: [&str; 12] = [
+const OBJECT_WALK_COLUMNS: [&str; 16] = [
     "walk_native",
     "walk_fallback",
     "walk_unsupported",
@@ -160,6 +160,10 @@ const OBJECT_WALK_COLUMNS: [&str; 12] = [
     "walk_reservation",
     "walk_part_aux_state",
     "walk_part_subparts",
+    "walk_part_shader_flag",
+    "walk_part_argument",
+    "walk_part_program",
+    "walk_part_layout",
     "walk_unresident",
 ];
 const WORLD_OPAQUE_COLUMNS: [&str; 11] = [
@@ -815,6 +819,15 @@ pub enum ObjectWalk {
     /// whose inputs do not read. Counted with [`ObjectWalk::count`].
     PartAuxState,
     PartSubparts,
+    /// Parts refused for a flagged shader on a record with a structure
+    /// lightmap index, for an item's other pass, level or part, for a
+    /// program with flag bit 20, and for any other cause (the item's
+    /// layout, a check against the guest's choice, memory that does not
+    /// read).
+    PartShaderFlag,
+    PartArgument,
+    PartProgram,
+    PartLayout,
     /// Objects returned to the guest in a run whose validated native model
     /// had no uploaded GPU model. The run has not been consumed.
     Unresident,

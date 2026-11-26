@@ -197,6 +197,10 @@ fn initialize_walk(layer: &mut WalkLayer, mem: &mut dyn GuestMemory, esp: u32, e
     };
     ObjectWalk::PartAuxState.count(causes.aux_state);
     ObjectWalk::PartSubparts.count(causes.subparts);
+    ObjectWalk::PartShaderFlag.count(causes.shader_flag);
+    ObjectWalk::PartArgument.count(causes.argument);
+    ObjectWalk::PartProgram.count(causes.program);
+    ObjectWalk::PartLayout.count(causes.layout);
     if !crate::scene_step::objects(&*mem, layer.kind, &entries) {
         return;
     }
