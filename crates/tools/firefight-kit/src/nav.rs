@@ -145,6 +145,8 @@ pub(crate) fn prepare<R: Read + Seek>(
 
     let mut generated = Vec::new();
     let mut best = None;
+    // The best arena's walls without the sky shell, for the ship's columns.
+    let mut open_walls: Option<bots::los::Walls> = None;
     let mut why = Vec::new();
     for (index, row) in metadata_block(map, &scnr, BSPS as usize, BSP)?
         .into_iter()
@@ -193,6 +195,7 @@ pub(crate) fn prepare<R: Read + Seek>(
             .is_none_or(|b: &Arena| arena.rank() > b.rank())
         {
             best = Some(arena);
+            open_walls = Some(bots::cache::walls_without_sky(&collision));
         }
         generated.push((id, pf, data));
     }
@@ -212,11 +215,8 @@ pub(crate) fn prepare<R: Read + Seek>(
         arena.zones.truncate(FEWEST_DROPS);
     }
     // The ship's way into each zone, from the arena's own collision.
-    let ship_runs = match usize::try_from(arena.bsp)
-        .ok()
-        .and_then(|i| generated.get(i))
-    {
-        Some((_, _, data)) => crate::ship::plan(&data.walls, &arena.zones),
+    let ship_runs = match &open_walls {
+        Some(walls) => crate::ship::plan(walls, &arena.zones),
         None => vec![None; arena.zones.len()],
     };
     let ship_bsp = arena.bsp;
