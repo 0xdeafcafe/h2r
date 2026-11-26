@@ -2633,8 +2633,8 @@ mod tests {
         let consts = |flags| LightConstants {
             frame: [0; 36],
             flags,
-            colour_a: [0.0; 3],
-            colour_b: [0.0; 3],
+            colour_a: [0; 3],
+            colour_b: [0; 3],
             mode: 0,
             definition_flags: 0,
             definition_8a: 0,
