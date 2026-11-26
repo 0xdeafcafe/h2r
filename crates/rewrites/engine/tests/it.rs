@@ -57,6 +57,8 @@ mod sim_physics_differential;
 mod sim_seats_differential;
 #[path = "sim_sound_differential.rs"]
 mod sim_sound_differential;
+#[path = "sim_tick_differential.rs"]
+mod sim_tick_differential;
 #[path = "sim_tier_differential.rs"]
 mod sim_tier_differential;
 #[path = "states_differential.rs"]

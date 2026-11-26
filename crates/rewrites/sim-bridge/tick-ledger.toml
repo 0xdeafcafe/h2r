@@ -1,0 +1,11 @@
+# The ratchet for the tick driver (src/tick.rs, docs/engine/sim-rewrite.md,
+# "The tick driver"): the guest phases of `game_tick` the driver still calls
+# each tick, by map kind. A number only falls. The goal is 0 everywhere; a
+# slice that moves a phase to Rust lowers its line in the same commit, and
+# `ledger_ratchet_does_not_grow` fails when the phase table is above it.
+# `h2 agent call sim.ledger` shows the live counts.
+
+[guest_phases]
+menu = 29
+multiplayer = 29
+campaign = 29

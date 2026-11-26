@@ -1276,6 +1276,7 @@ fn build_report(inner: &Inner, s: &State) -> Report {
             start.fixups.zip(now.fixups).map(|(a, b)| b.saturating_sub(a)),
         );
         report.set_phantom_costs(now.phantom.since(start.phantom));
+        report.tick_phases = tick_phases(&start.ticks, &now.ticks);
     }
     let mut lean = s.lean.clone();
     lean.setup = Some(s.setup.phases(s.first_tick.unwrap_or_else(Instant::now)));
@@ -1370,6 +1371,24 @@ fn kit_map_named<'a>(
     })
 }
 
+/// The tick driver's time per phase between two ledger reads: the report's
+/// `tick_phases`.
+fn tick_phases(
+    start: &engine::sim_tick::Ledger,
+    end: &engine::sim_tick::Ledger,
+) -> Option<sim_bench::metrics::TickPhases> {
+    sim_bench::metrics::TickPhases::over(
+        end.ticks().saturating_sub(start.ticks()),
+        end.tick_ns().saturating_sub(start.tick_ns()),
+        end.loop_ns().saturating_sub(start.loop_ns()),
+        end.loops().saturating_sub(start.loops()),
+        engine::sim_tick::PHASES
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.name.to_owned(), end.phase_ns(i).saturating_sub(start.phase_ns(i)))),
+    )
+}
+
 /// The process's running cost totals, for the report's costs.
 #[derive(Clone, Copy)]
 struct Costs {
@@ -1379,6 +1398,8 @@ struct Costs {
     fixups: Option<u64>,
     /// The phantoms' action build ([`crate::bot_glue::phantom_build_costs`]).
     phantom: sim_bench::metrics::PhantomCosts,
+    /// The tick driver's ledger (`sim_bridge::tick::ledger`): time per phase.
+    ticks: engine::sim_tick::Ledger,
 }
 
 fn costs_now() -> Costs {
@@ -1387,6 +1408,7 @@ fn costs_now() -> Costs {
         bots: bots::think::game_thread_ns(),
         fixups: (w.windows > 0).then_some(w.fixups),
         phantom: crate::bot_glue::phantom_build_costs(),
+        ticks: sim_bridge::tick::ledger(),
     }
 }
 

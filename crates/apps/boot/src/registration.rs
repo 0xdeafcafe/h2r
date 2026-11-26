@@ -804,6 +804,10 @@ pub(crate) fn register_late_for_profile(
         features.add(&sim_bridge::sim_sound::SimSound)
             .map_err(|e| anyhow::anyhow!("sound simulation: {e}"))?;
     }
+    // The tick itself, from Rust; every hook on GAME_TICK stays around it.
+    features
+        .add(&sim_bridge::tick::TickDriver)
+        .map_err(|e| anyhow::anyhow!("tick driver: {e}"))?;
     features.add(&sim_bridge::sim_physics::NativePhysics)
         .map_err(|e| anyhow::anyhow!("simulation physics: {e}"))?;
     // SimExt, the extension records saved with checkpoints and snapshots

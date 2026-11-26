@@ -45,6 +45,10 @@ crate::globals! { GLOBALS;
     /// Pointer to the game-time record ([`crate::game::GameTime`]); `+8` is
     /// the tick count.
     GAME_TIME @ 0x0051_0c54; "docs/game/high-framerate.md";
+    /// Pointer to the tick clock `game_tick` advances after its phases when
+    /// the update record's run flag is set: `+4` gains the f32 tick length
+    /// (`[*GAME_TIME + 4]`), `+0x14` is a counter that falls by one to zero.
+    TICK_CLOCK @ 0x0051_0c6c; "docs/engine/sim-rewrite.md";
     /// Pointer to the two shared random seeds: `+0` the game's, `+4` the
     /// effects', each stepped `x * 0x19660d + 0x3c6ef35f` (both the sim
     /// and the render step them).
