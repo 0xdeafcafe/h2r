@@ -291,6 +291,46 @@ impl ForgeDoc {
         }
         Ok(Pass::run(&self.ops, base_counts, None, None)?.areas)
     }
+
+    /// The flags a `Show` op has set, by placement identity: the last op
+    /// of each flag a later reset does not cover. A flag with none has the
+    /// default of who added it ([`ForgeDoc::shown_flags`]).
+    pub fn show_targets(
+        &self,
+        base_counts: &BTreeMap<BlockKind, u32>,
+    ) -> Result<BTreeMap<Endpoint, bool>> {
+        if !has_show_ops(&self.ops) {
+            return Ok(BTreeMap::new());
+        }
+        Ok(Pass::run(&self.ops, base_counts, None, None)?.shows)
+    }
+
+    /// The final indices of the netgame flags shown in play: a flag the
+    /// document added unless a `Show` op turned it off, a flag of the base
+    /// map only when one turned it on. A document that adds no flag and has
+    /// no `Show` op shows none, and so does a map whose flag count is not
+    /// known.
+    pub fn shown_flags(&self, base_counts: &BTreeMap<BlockKind, u32>) -> Result<BTreeSet<u32>> {
+        if !has_show_ops(&self.ops) && !has_flag_adds(&self.ops) {
+            return Ok(BTreeSet::new());
+        }
+        let mut pass = Pass::run(&self.ops, base_counts, None, None)?;
+        let shows = std::mem::take(&mut pass.shows);
+        let Some(rows) = pass.rows(FLAGS) else {
+            return Ok(BTreeSet::new());
+        };
+        Ok(rows
+            .iter()
+            .enumerate()
+            .filter(|(_, end)| {
+                shows
+                    .get(*end)
+                    .copied()
+                    .unwrap_or(matches!(end, Endpoint::Added(_)))
+            })
+            .map(|(i, _)| i as u32)
+            .collect())
+    }
 }
 
 fn invalid(what: &str, reason: impl Into<String>) -> Refusal {
@@ -403,6 +443,8 @@ struct Pass<'a> {
     /// The group each grouped entry is in.
     grouped: BTreeMap<Endpoint, OpId>,
     areas: BTreeMap<Endpoint, Area>,
+    /// The flags a `Show` op has set, by identity.
+    shows: BTreeMap<Endpoint, bool>,
     /// Flag types by identity, tracked only when the document shapes an area.
     flag_types: Option<BTreeMap<Endpoint, u16>>,
     /// The print each base entry is named with, by identity.
@@ -446,6 +488,7 @@ impl<'a> Pass<'a> {
             groups: BTreeMap::new(),
             grouped: BTreeMap::new(),
             areas: BTreeMap::new(),
+            shows: BTreeMap::new(),
             flag_types,
             prints: BTreeMap::new(),
             edited: BTreeSet::new(),
@@ -558,6 +601,7 @@ impl<'a> Pass<'a> {
             }
             self.gone.remove(&target);
             self.areas.remove(&target);
+            self.shows.remove(&target);
             self.games.remove(&target);
             return Ok(());
         }
@@ -602,6 +646,9 @@ impl<'a> Pass<'a> {
                 None => {}
             }
         }
+        if let EntryOp::Show { on, .. } = edit {
+            self.shows.insert(target, *on);
+        }
         if let EntryOp::Set { write, .. } = edit
             && block == FLAGS
             && !self.covered.contains(&id)
@@ -624,6 +671,7 @@ impl<'a> Pass<'a> {
                 return Err(invalid(block.name(), "clear the flag's area first"));
             }
             self.gone.insert(target);
+            self.shows.remove(&target);
             self.tagged.remove(&target);
             self.pieces.remove(&target);
             // A removal a later reset covers is left out by the fold, so
@@ -1144,6 +1192,17 @@ fn has_piece_ops(ops: &[Op]) -> bool {
 fn has_area_ops(ops: &[Op]) -> bool {
     ops.iter()
         .any(|op| matches!(&op.edit, Edit::Entry(EntryOp::Area { .. })))
+}
+
+fn has_show_ops(ops: &[Op]) -> bool {
+    ops.iter()
+        .any(|op| matches!(&op.edit, Edit::Entry(EntryOp::Show { .. })))
+}
+
+fn has_flag_adds(ops: &[Op]) -> bool {
+    ops.iter().any(|op| {
+        matches!(&op.edit, Edit::Placement(p @ Placement::Add { .. }) if p.block() == FLAGS)
+    })
 }
 
 fn flag_type(write: &FieldWrite) -> Option<u16> {

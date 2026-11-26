@@ -11,6 +11,8 @@ blockout-kit = { path = "../blockout-kit" }
 content.workspace = true
 firefight-kit = { path = "../firefight-kit" }
 forge-doc.workspace = true
+# The areas record a built map carries.
+game-markers = { path = "../../formats/game-markers" }
 # The block-out definitions and the starter set.
 forge-shapes = { path = "../../formats/forge-shapes" }
 map.workspace = true

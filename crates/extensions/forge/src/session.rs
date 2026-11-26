@@ -702,6 +702,55 @@ impl Session {
         self.edit(world, tick, ops, None)
     }
 
+    /// The netgame flags a `Show` op has set, by identity
+    /// ([`forge_doc::ForgeDoc::show_targets`]).
+    pub fn shows(&self) -> Result<BTreeMap<Endpoint, bool>, String> {
+        self.doc
+            .show_targets(&self.limits.base_counts)
+            .map_err(reason)
+    }
+
+    /// Whether the flag `id`'s play form shows in a match: the last `Show`
+    /// op on it, else the default of who added it (a flag the document
+    /// added is shown, a flag of the base map is not). False for a thing
+    /// that is no netgame flag.
+    pub fn shown(&self, id: Endpoint) -> bool {
+        let id = id.identity();
+        let flag = match id {
+            Endpoint::Base { block, .. } => block == BlockKind::NetgameFlags,
+            Endpoint::Added(_) => self
+                .thing(id)
+                .is_some_and(|t| t.block == BlockKind::NetgameFlags),
+        };
+        flag && self
+            .shows()
+            .ok()
+            .and_then(|shows| shows.get(&id).copied())
+            .unwrap_or(matches!(id, Endpoint::Added(_)))
+    }
+
+    /// Show a netgame flag's play form in a match, or hide it: one
+    /// `EntryOp::Show`, which writes nothing to the world and is one undo
+    /// step. A thing that is no flag is refused by sentence; so is no
+    /// change, which writes nothing.
+    pub fn set_shown(
+        &mut self,
+        world: &mut impl World,
+        tick: u32,
+        id: Endpoint,
+        on: bool,
+    ) -> Result<(), String> {
+        let thing = self.thing(id).ok_or(NO_THING)?;
+        let op = props::show_op(&thing, on).ok_or_else(|| {
+            format!("This {} has no play form to show.", thing.kind.name())
+        })?;
+        if self.shown(thing.id) == on {
+            return Ok(());
+        }
+        let ops = self.ops(vec![Edit::Entry(op)])?;
+        self.edit(world, tick, ops, None)
+    }
+
     /// Remove a thing, own or added. A linked entry cannot be removed, so
     /// its links end in the same undo step; so does its place in a group. In the world an own entry's row
     /// is made inert, and an undo writes the kept row back.
@@ -734,7 +783,10 @@ impl Session {
             return Err("Only the map's own things can be restored.".into());
         };
         let row = self.base.row(block, index)?;
-        if !self.own.contains_key(&(block, index)) && !self.areas()?.contains_key(&id.identity()) {
+        if !self.own.contains_key(&(block, index))
+            && !self.areas()?.contains_key(&id.identity())
+            && !self.shows()?.contains_key(&id.identity())
+        {
             return Err("This is already as the map has it.".into());
         }
         let target = Endpoint::Base {

@@ -172,6 +172,7 @@ pub fn things_reply(session: &Session, params: &ThingsParams) -> Result<Value, R
         )));
     }
     let areas = session.areas().map_err(super::unavailable)?;
+    let shows = session.shows().map_err(super::unavailable)?;
     let things: Vec<Value> = session
         .things()
         .into_iter()
@@ -183,13 +184,22 @@ pub fn things_reply(session: &Session, params: &ThingsParams) -> Result<Value, R
         })
         .filter_map(|thing| {
             let area = areas.get(&thing.id.identity());
-            let changed = thing.changed || area.is_some();
+            let id = thing.id.identity();
+            let changed = thing.changed || area.is_some() || shows.contains_key(&id);
             if params.changed.is_some_and(|wanted| changed != wanted) {
                 return None;
             }
             let mut row = thing_json(&thing);
             if thing.block == BlockKind::NetgameFlags {
                 row["area"] = json!(area);
+                // A flag the document added is shown unless an op says
+                // not; a flag of the map is shown only when one says so.
+                row["show"] = json!(
+                    shows
+                        .get(&id)
+                        .copied()
+                        .unwrap_or(matches!(id, ::forge::Endpoint::Added(_)))
+                );
                 row["changed"] = json!(changed);
             }
             Some(row)

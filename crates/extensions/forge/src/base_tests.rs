@@ -604,3 +604,39 @@ fn setting_an_area_is_one_undoable_document_edit() {
     assert_eq!(session.log().len(), 6);
     assert!(world.calls.is_empty());
 }
+
+#[test]
+fn a_flags_play_form_shows_by_who_added_it_and_an_op_flips_it_in_one_undo_step() {
+    let mut s = open(rows());
+    let mut w = Fake::default();
+    let base = Endpoint::base(BlockKind::NetgameFlags, 1);
+    // A flag of the map is not shown; a flag the session adds is.
+    assert!(!s.shown(base));
+    let added = Endpoint::Added(
+        s.place_goal(&mut w, 1, crate::Goal::Territory, frame(1., 0.))
+            .unwrap(),
+    );
+    assert!(s.shown(added));
+    assert!(s.shows().unwrap().is_empty());
+    // The op flips each, one log entry apiece.
+    let before = s.log().len();
+    s.set_shown(&mut w, 2, base, true).unwrap();
+    assert!(s.shown(base));
+    s.set_shown(&mut w, 3, added, false).unwrap();
+    assert!(!s.shown(added));
+    assert_eq!(s.log().len(), before + 2);
+    // The state asked for is the state it is in: nothing is written.
+    s.set_shown(&mut w, 4, base, true).unwrap();
+    assert_eq!(s.log().len(), before + 2);
+    s.undo(&mut w, 5).unwrap();
+    assert!(s.shown(added));
+    // A restore puts the map's own flag back as the map has it.
+    s.reset(&mut w, 6, base).unwrap();
+    assert!(!s.shown(base));
+    assert!(s.reset(&mut w, 7, base).is_err());
+    // Only a flag has a play form to show.
+    let refused = s.set_shown(&mut w, 8, weapon(0), true).unwrap_err();
+    assert!(refused.contains("has no play form to show"), "{refused}");
+    assert!(!s.shown(weapon(0)));
+    assert!(w.calls.iter().all(|c| !matches!(c, Call::BaseRestore(..))));
+}

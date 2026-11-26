@@ -1531,6 +1531,32 @@ mod things {
         assert_eq!(changed["things"].as_array().unwrap().len(), 1);
         assert_eq!(changed["things"][0]["id"], added_id);
         assert_eq!(changed["things"][0]["area"], area);
+
+        // Shown in play: a flag of the map is not, a flag the document
+        // added is, and the op flips each.
+        let flag = |things: &Json, id: &Json| {
+            things["things"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| &t["id"] == id)
+                .unwrap()
+                .clone()
+        };
+        let listed = h.ok(&mut game, method::THINGS, json!({"kind": "goal"}));
+        assert_eq!(flag(&listed, target)["show"], false);
+        assert_eq!(flag(&listed, &added_id)["show"], true);
+        let show = |id, target: &Json, on| {
+            json!({"op":{"id":id,"edit":{"entry":{"show":{"target":target,"on":on}}}}})
+        };
+        let accepted = propose(&h, &mut game, show(7, target, true));
+        assert_eq!(accepted["result"]["entry"]["seq"], 5, "{accepted}");
+        let accepted = propose(&h, &mut game, show(8, &added_id, false));
+        assert_eq!(accepted["result"]["entry"]["seq"], 6, "{accepted}");
+        let listed = h.ok(&mut game, method::THINGS, json!({"kind": "goal"}));
+        assert_eq!(flag(&listed, target)["show"], true);
+        assert_eq!(flag(&listed, target)["changed"], true);
+        assert_eq!(flag(&listed, &added_id)["show"], false);
     }
 
     #[test]

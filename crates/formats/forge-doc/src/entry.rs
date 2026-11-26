@@ -142,6 +142,11 @@ pub enum EntryOp {
         #[serde(deserialize_with = "Option::deserialize")]
         area: Option<Area>,
     },
+    /// Show a netgame flag's play form in a match, or hide it, with no
+    /// scenario bytes (docs/game/gametype-marker-forms.md, "When a form
+    /// shows"). With no op a flag the document added is shown and a flag
+    /// of the base map is not ([`shown_flags`](ForgeDoc::shown_flags)).
+    Show { target: Endpoint, on: bool },
 }
 
 /// A property of an entry the retail layout has no field for
@@ -176,7 +181,8 @@ impl EntryOp {
             | Self::Remove { target }
             | Self::Reset { target }
             | Self::Property { target, .. }
-            | Self::Area { target, .. } => *target,
+            | Self::Area { target, .. }
+            | Self::Show { target, .. } => *target,
         }
     }
 
@@ -187,6 +193,7 @@ impl EntryOp {
             Self::Reset { .. } => "entry reset",
             Self::Property { .. } => "entry property",
             Self::Area { .. } => "entry area",
+            Self::Show { .. } => "entry show",
         }
     }
 }
@@ -222,6 +229,7 @@ pub(crate) fn check_op(edit: &EntryOp, limits: &Limits) -> Result<()> {
                 EntryOp::Reset { .. } => Ok(()),
                 EntryOp::Property { property, .. } => check_property(block, *property, what),
                 EntryOp::Area { .. } => crate::area::check_block(block),
+                EntryOp::Show { .. } => check_show_block(block),
             }
         }
         Endpoint::Added(OpId(0)) => Err(Refusal::invalid(what, "want the ID of an add op")),
@@ -244,6 +252,17 @@ pub(crate) fn check_added(
         EntryOp::Reset { .. } => Err(Refusal::invalid(edit.what(), "a reset names a base entry")),
         EntryOp::Property { property, .. } => check_property(block, *property, edit.what()),
         EntryOp::Area { .. } => crate::area::check_block(block),
+        EntryOp::Show { .. } => check_show_block(block),
+    }
+}
+
+/// Shown in play is a netgame flag's: a flag has no body, so its marker is
+/// what a player sees.
+fn check_show_block(block: BlockKind) -> Result<()> {
+    if block == BlockKind::NetgameFlags {
+        Ok(())
+    } else {
+        Err(Refusal::invalid("entry show", "shown in play belongs to a netgame flag"))
     }
 }
 

@@ -496,3 +496,41 @@ fn a_flag_return_edits_its_capture_plate() {
     assert_eq!(stored.shape, Shape::Box { half: [0.5, 0.75] });
     assert_eq!((stored.below, stored.above), (Area::plate().below, Area::plate().above));
 }
+
+#[test]
+fn a_flags_properties_offer_show_in_play_and_on_writes_one_show_op() {
+    let (mut e, id) = hill();
+    let mut script = Script::new();
+    e.tool.aimed_thing = Some(id);
+    script.press(&mut e, "properties").unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    let sheet = screens::screen(Kind::Properties).sheet();
+    let row = sheet
+        .rows
+        .iter()
+        .find(|row| row.label == "Show in play")
+        .expect("a flag has Show in play");
+    // A flag of the map is not shown in play.
+    assert_eq!(row.value.as_deref(), Some("Off"));
+    let sheet::Act::Pick(pick) = &row.act else {
+        panic!("Show in play is a picker")
+    };
+    assert_eq!(pick.values, ["On", "Off"]);
+    assert_eq!(pick.choices[0], Choice::Set(Prop::ShowInPlay, 0));
+    let ops = e.session.document().ops.len();
+    e.choose(5, pick.choices[0].clone()).unwrap();
+    e.poll(5);
+    assert!(e.session.shown(id));
+    assert_eq!(e.session.document().ops.len(), ops + 1);
+    let Some(Edit::Entry(EntryOp::Show { on, .. })) =
+        e.session.document().ops.last().map(|op| op.edit.clone())
+    else {
+        panic!("the last op is a show")
+    };
+    assert!(on);
+    // Its Properties now say On, and Off turns it back.
+    script.press(&mut e, "properties").ok();
+    e.choose(6, Choice::Set(Prop::ShowInPlay, 1)).unwrap();
+    e.poll(6);
+    assert!(!e.session.shown(id));
+}

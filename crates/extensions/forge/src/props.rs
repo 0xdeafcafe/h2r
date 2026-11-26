@@ -203,3 +203,23 @@ pub fn games_ops(thing: &Thing, set: GameSet) -> Result<Vec<EntryOp>, String> {
     }
     Ok(ops)
 }
+
+/// The name of the Properties row that shows a flag's play form in a match,
+/// On or Off (docs/game/gametype-marker-forms.md, "Interfaces"). It is no
+/// field of the layout: its value is a document fact.
+pub const SHOW_IN_PLAY: &str = "Show in play";
+
+/// Whether `thing` has the **Show in play** row: a netgame flag, which has
+/// no body of its own, so its marker is what a player sees.
+pub fn has_show(thing: &Thing) -> bool {
+    thing.block == BlockKind::NetgameFlags
+}
+
+/// The op that shows `thing`'s play form in a match (`on`) or hides it,
+/// named as the thing is; none for a thing with no such row.
+pub fn show_op(thing: &Thing, on: bool) -> Option<EntryOp> {
+    has_show(thing).then_some(EntryOp::Show {
+        target: thing.id,
+        on,
+    })
+}

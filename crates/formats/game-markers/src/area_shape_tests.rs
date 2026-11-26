@@ -104,7 +104,8 @@ fn row(index: u32, area: Area) -> Row {
         flag_type: 10,
         identifier: 1,
         at: [1.0, 2.0, 3.0],
-        area,
+        area: Some(area),
+        show: false,
     }
 }
 
@@ -137,8 +138,9 @@ fn a_record_writes_a_spheres_heights_as_zero_and_refuses_a_bad_box() {
     let back = record::read_tail(&mut Cursor::new(record::encode(&[row(0, loud)])))
         .unwrap()
         .unwrap();
-    assert_eq!(back[0].area, Area::sphere(5.5));
-    assert_eq!((back[0].area.below.to_bits(), back[0].area.above.to_bits()), (0, 0));
+    let sphere = back[0].area.clone().unwrap();
+    assert_eq!(sphere, Area::sphere(5.5));
+    assert_eq!((sphere.below.to_bits(), sphere.above.to_bits()), (0, 0));
     let bytes = record::encode(&[row(0, Area::boxed([100.0, 1.0]))]);
     assert!(matches!(
         record::decode(&bytes[..bytes.len() - record::TRAILER]),
