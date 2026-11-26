@@ -4827,7 +4827,16 @@ For a clanker hopper (`live_hle::clankermatch`):
    server, world mode 4: `bots::phantom::session::serves_game`,
    `clankers::Driver::set_hosts_game`; the game options' own mode is 2
    for every multiplayer game): the bots stay for the whole
-   match and go 30 s after it.
+   match and go 30 s after it. Before the game is first served, the
+   match session this console hosts counts as the game
+   (`bots::phantom::session::hosts_match`, `clankers::Driver::set_holds_match`:
+   the matchmaking life cycle, types 6 to 9, its target session with a
+   state, distributed, this console its host). Arbitration takes that
+   session from live (5) to state 7 while the map loads, which can last
+   longer than 30 s; the phantoms wait there as its peers ("is still in
+   the session ... it stays") and the fill holds, so the game loads with
+   them. Once the game has been served the held session no longer
+   counts, and the bots go 30 s after the game whether it lingers or not.
 4. The game record says `kind: "clankermatch"` with the playlist and
    session (`telemetry::Playlist::clankers`), and the server keeps it as
    its own kind (live-matchmaking.md §6.8).
