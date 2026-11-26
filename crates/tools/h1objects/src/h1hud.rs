@@ -27,6 +27,7 @@
 //!   shield meter, and the whole `nhdt` is behind HUD_SHOWN (`0x13939b`):
 //!   pause menu, cinematics, Blind and death hide it as they hide Halo 2's.
 
+use tags::bytes::{f32_at, i16_at};
 use h1map::{H1Map, TagId as H1TagId};
 use map::TagId;
 use map::build::Block;
@@ -162,13 +163,6 @@ pub struct Element {
     pub sequence: i16,
     /// Halo 1's colour (`+0x34`, ARGB).
     pub colour: u32,
-}
-
-fn i16_at(b: &[u8], at: usize) -> i16 {
-    i16::from_le_bytes([b[at], b[at + 1]])
-}
-fn f32_at(b: &[u8], at: usize) -> f32 {
-    f32::from_le_bytes(b[at..at + 4].try_into().unwrap())
 }
 
 /// The drawable elements of the `unhi` `b` (those with a bitmap), in draw

@@ -14,6 +14,7 @@
 //! `+0x28`, rounds `i16 +0x30`, `+0x32`, secondary `+0x34`, `+0x3c`,
 //! `+0x3e`, fragmentation and plasma grenades `u8 +0x40`, `+0x41`.
 
+use tags::bytes::{f32_at, i16_at};
 use h1map::H1Map;
 use map::TagId;
 use map::build::Block;
@@ -35,14 +36,6 @@ pub struct Profile {
     pub weapons: [(Option<h1map::TagId>, i16, i16); 2],
     pub frags: u8,
     pub plasmas: u8,
-}
-
-fn i16_at(b: &[u8], at: usize) -> i16 {
-    i16::from_le_bytes([b[at], b[at + 1]])
-}
-
-fn f32_at(b: &[u8], at: usize) -> f32 {
-    f32::from_le_bytes(b[at..at + 4].try_into().expect("4"))
 }
 
 /// The level's starting profiles.

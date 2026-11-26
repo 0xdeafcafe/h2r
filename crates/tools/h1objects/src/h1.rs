@@ -5,6 +5,7 @@
 //! carries, plus every reference. Offsets and evidence are in
 //! `docs/halo1/objects.md`.
 
+use tags::bytes::{f32_at, i16_at, u16_at, u32_at};
 use h1map::{Block, Group, H1Map, Tag, TagId, TagRef};
 
 use crate::{Error, Result};
@@ -20,18 +21,6 @@ pub const PHYS_SIZE: usize = 0x80;
 pub const MAGAZINE_SIZE: usize = 0x70;
 pub const TRIGGER_SIZE: usize = 0x114;
 
-fn u16_at(b: &[u8], at: usize) -> u16 {
-    u16::from_le_bytes([b[at], b[at + 1]])
-}
-fn i16_at(b: &[u8], at: usize) -> i16 {
-    u16_at(b, at) as i16
-}
-fn u32_at(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(b[at..at + 4].try_into().unwrap())
-}
-fn f32_at(b: &[u8], at: usize) -> f32 {
-    f32::from_bits(u32_at(b, at))
-}
 fn vec3(b: &[u8], at: usize) -> [f32; 3] {
     std::array::from_fn(|i| f32_at(b, at + 4 * i))
 }

@@ -2,6 +2,8 @@
 //! element bytes. Typed access goes through [`crate::layout`]; edits change
 //! only the bytes of the field they name, and [`Scenario::patches`] turns
 //! the difference from the source into fixed-size tag patches.
+pub(crate) use tags::bytes::u32_at;
+use tags::bytes::f32_at;
 use crate::layout::{self, BlockDef, BlockKind, FieldDef, FieldType, Role};
 use crate::volumes::{self, Frame, VolumeBlock, VolumeKind, Volumes};
 use crate::{Error, Result};
@@ -480,13 +482,6 @@ pub struct Scenario {
     /// The ground label of each netgame flag that has one, by placement
     /// ([`ground`]).
     labels: std::collections::BTreeMap<PlacementId, ground::FlagLabel>,
-}
-
-pub(crate) fn u32_at(b: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes(b[o..o + 4].try_into().unwrap())
-}
-fn f32_at(b: &[u8], o: usize) -> f32 {
-    f32::from_bits(u32_at(b, o))
 }
 
 impl Scenario {

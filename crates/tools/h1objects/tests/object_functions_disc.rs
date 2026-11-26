@@ -9,6 +9,7 @@
 //! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test it object_functions_disc:: -- --ignored --nocapture
 //! ```
 
+use tags::bytes::{f32_at, u16_at, u32_at};
 use std::fs::File;
 use std::io::{BufReader, Cursor};
 
@@ -58,16 +59,6 @@ fn text(x: &Record, field: &str, strings: &[Option<String>]) -> String {
         Some(Val::String(_)) => String::new(),
         v => format!("{v:?}"),
     }
-}
-
-fn u16_at(b: &[u8], o: usize) -> u16 {
-    u16::from_le_bytes([b[o], b[o + 1]])
-}
-fn u32_at(b: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes(b[o..o + 4].try_into().unwrap())
-}
-fn f32_at(b: &[u8], o: usize) -> f32 {
-    f32::from_bits(u32_at(b, o))
 }
 
 #[test]

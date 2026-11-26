@@ -7,6 +7,7 @@
 //!     cargo test -p h1sounds --release --test fields_disc -- --ignored --nocapture
 //! ```
 
+use tags::bytes::i16_at;
 use std::collections::BTreeMap;
 use std::io::{BufReader, Cursor};
 
@@ -22,10 +23,6 @@ type Tally = BTreeMap<u8, BTreeMap<&'static str, BTreeMap<String, usize>>>;
 fn f(b: &[u8], at: usize) -> f32 {
     f32::from_le_bytes(b[at..at + 4].try_into().unwrap())
 }
-fn i16_at(b: &[u8], at: usize) -> i16 {
-    i16::from_le_bytes([b[at], b[at + 1]])
-}
-
 fn count(t: &mut Tally, class: u8, field: &'static str, v: String) {
     *t.entry(class)
         .or_default()

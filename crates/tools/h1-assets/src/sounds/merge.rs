@@ -18,6 +18,7 @@
 //! Import names are string IDs; the caller maps them from the source map's
 //! string table into the destination's.
 
+use tags::bytes::{u16_at, u32_at};
 use std::collections::HashSet;
 
 use map::build::{TagPayload, TagSet};
@@ -31,14 +32,6 @@ use crate::sounds::{Error, Result};
 const EXTRA_OWNER: usize = 0x20;
 /// An extra info's raw pointer.
 const EXTRA_RAW: usize = 8;
-
-fn u16_at(b: &[u8], at: usize) -> u16 {
-    u16::from_le_bytes([b[at], b[at + 1]])
-}
-
-fn u32_at(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(b[at..at + 4].try_into().expect("4 bytes"))
-}
 
 fn put_u16(b: &mut [u8], at: usize, v: u16) {
     b[at..at + 2].copy_from_slice(&v.to_le_bytes());

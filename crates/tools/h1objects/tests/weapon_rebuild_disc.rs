@@ -22,6 +22,7 @@
 #[path = "support/weapon_firing.rs"]
 mod firing;
 
+use tags::bytes::{f32_at, i16_at, u16_at, u32_at};
 use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{BufReader, Cursor};
@@ -65,14 +66,6 @@ fn h1_level(name: &str) -> Option<H1Map> {
 
 fn def(g: &[u8; 4]) -> &'static StructDef {
     Defs::builtin().group(FourCC(*g)).unwrap()
-}
-
-fn f32_at(b: &[u8], o: usize) -> f32 {
-    f32::from_le_bytes(b[o..o + 4].try_into().unwrap())
-}
-
-fn i16_at(b: &[u8], o: usize) -> i16 {
-    i16::from_le_bytes([b[o], b[o + 1]])
 }
 
 #[test]
@@ -667,14 +660,6 @@ fn every_weapon_equipment_and_projectile_rebuilds() {
             "over shield and camouflage rebuilt"
         );
     }
-}
-
-fn u32_at(b: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes(b[o..o + 4].try_into().unwrap())
-}
-
-fn u16_at(b: &[u8], o: usize) -> u16 {
-    u16::from_le_bytes([b[o], b[o + 1]])
 }
 
 /// A Halo 2 base and its string table.

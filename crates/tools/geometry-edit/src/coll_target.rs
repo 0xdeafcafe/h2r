@@ -19,6 +19,7 @@
 //!
 //! An unedited BSP writes nothing.
 
+use tags::bytes::u32_at;
 use std::io::{Read, Seek};
 
 use collision_build::coll::{self, BspAt};
@@ -65,10 +66,6 @@ fn refused(tag: TagId, index: usize, reason: impl Into<String>) -> Error {
         target: Target::new(TargetKind::Coll, tag, index as u32).id(),
         reason: reason.into(),
     }
-}
-
-fn u32_at(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(b[at..at + 4].try_into().expect("four bytes"))
 }
 
 fn f3(v: [f32; 3]) -> Vec<u8> {

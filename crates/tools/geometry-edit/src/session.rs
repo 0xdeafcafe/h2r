@@ -2,6 +2,7 @@
 //! the op log, write classes and the patches a save writes
 //! (docs/editor/modeling-targets.md, "The session and the save").
 
+use tags::bytes::u32_at;
 use std::fmt;
 use std::io::{Read, Seek};
 use std::sync::Arc;
@@ -376,10 +377,6 @@ fn put16(b: &mut [u8], at: usize, v: u16) {
 fn put32(b: &mut [u8], at: usize, v: u32) {
     b[at..at + 4].copy_from_slice(&v.to_le_bytes());
 }
-fn u32_at(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(b[at..at + 4].try_into().expect("4 bytes"))
-}
-
 /// `len` bytes at `address` of `space`.
 fn read_at<R: Read + Seek>(
     map: &mut Map<R>,

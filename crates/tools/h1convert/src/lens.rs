@@ -13,6 +13,7 @@
 //! `+0x20` the bitmap, `+0x30` flags (one tag sets bit 0), `+0xa0`,
 //! `+0xa4` two scales (0.1 to 8, 1 on most).
 
+use tags::bytes::{f32_at, u16_at, u32_at};
 use h1map::{H1Map, Tag, TagRef};
 use map::build::{Block, FixupKind, TagSet};
 use map::{FourCC, TagId};
@@ -54,16 +55,6 @@ pub struct H1Lens {
     /// `+0xa0`, `+0xa4`.
     pub scales: [f32; 2],
     pub reflections: Vec<H1Reflection>,
-}
-
-fn u16_at(b: &[u8], at: usize) -> u16 {
-    u16::from_le_bytes([b[at], b[at + 1]])
-}
-fn u32_at(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(b[at..at + 4].try_into().expect("4"))
-}
-fn f32_at(b: &[u8], at: usize) -> f32 {
-    f32::from_bits(u32_at(b, at))
 }
 
 impl H1Lens {

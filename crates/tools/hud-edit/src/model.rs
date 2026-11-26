@@ -2,6 +2,7 @@
 //! HUD interfaces, weapons, the globals), and one HUD's widgets as bytes
 //! at their metadata addresses, so an edit is a patch of those bytes.
 
+use tags::bytes::u32_at;
 use std::io::{Read, Seek};
 
 use anyhow::{Context as _, Result, bail};
@@ -63,10 +64,6 @@ impl HudEntry {
             "Other"
         }
     }
-}
-
-fn u32_at(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(b[at..at + 4].try_into().unwrap())
 }
 
 fn tag_name(map: &Map<impl Read + Seek>, id: TagId) -> String {

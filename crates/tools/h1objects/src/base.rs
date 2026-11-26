@@ -1,6 +1,7 @@
 //! The retail Halo 2 map the converted objects are built on: where the
 //! templates come from.
 
+pub(crate) use tags::bytes::u32_at;
 use std::io::{Read, Seek};
 
 use map::{FourCC, Map, TagId};
@@ -232,6 +233,3 @@ fn dialogue_names<R: Read + Seek>(map: &Map<R>, meta: &Metadata) -> Result<Vec<S
         .collect()
 }
 
-pub(crate) fn u32_at(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(b[at..at + 4].try_into().unwrap())
-}

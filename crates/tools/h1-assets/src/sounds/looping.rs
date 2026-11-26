@@ -43,6 +43,7 @@
 //! room HF `+0x0c`, reflections `+0x1c`, reverb `+0x24`) are linear in
 //! Halo 1 and decibels in Halo 2.
 
+use tags::bytes::{f32_at, u32_at};
 use std::collections::HashMap;
 
 use h1map::{Block as H1Block, Group, H1Map, Tag, TagRef};
@@ -112,14 +113,6 @@ pub struct Looping {
     pub sounds: Vec<(String, ConvertedSound)>,
     /// Informational notes about this source loop.
     pub notes: Vec<String>,
-}
-
-fn f32_at(b: &[u8], at: usize) -> f32 {
-    f32::from_le_bytes(b[at..at + 4].try_into().expect("4"))
-}
-
-fn u32_at(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(b[at..at + 4].try_into().expect("4"))
 }
 
 /// A Halo 1 sound's decibels; silence is -100 dB (not [`decibels`]'s 0).

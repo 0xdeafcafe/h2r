@@ -50,6 +50,7 @@
 //!   converted Blood Gulch ghost's three hover markers are too, each at
 //!   its Halo 1 mass point's position in the object's space.
 
+use tags::bytes::{f32_at, u32_at};
 use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
 use std::io::{BufReader, Cursor};
@@ -97,14 +98,6 @@ fn h1_level(name: &str) -> Option<H1Map> {
 
 fn def(g: &[u8; 4]) -> &'static StructDef {
     Defs::builtin().group(FourCC(*g)).unwrap()
-}
-
-fn u32_at(b: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes(b[o..o + 4].try_into().unwrap())
-}
-
-fn f32_at(b: &[u8], o: usize) -> f32 {
-    f32::from_le_bytes(b[o..o + 4].try_into().unwrap())
 }
 
 /// A field's offset in `d`, through embedded structs.

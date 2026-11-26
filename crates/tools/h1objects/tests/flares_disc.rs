@@ -11,6 +11,7 @@
 //! same on Halo 2, with the classes effect parts create),
 //! `halo2_light_placement_survey` (the scenario's light placements).
 
+use tags::bytes::u32_at;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufReader, Cursor};
@@ -69,10 +70,6 @@ fn h2_maps() -> Vec<(String, Map<Cursor<Vec<u8>>>)> {
         }
     }
     out
-}
-
-fn u32_at(b: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes(b[o..o + 4].try_into().unwrap())
 }
 
 #[derive(Default)]

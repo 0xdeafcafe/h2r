@@ -18,6 +18,7 @@
 //!
 //! Layouts and evidence: `docs/halo1/sounds.md` ("The Halo 2 gestalt").
 
+use tags::bytes::u32_at;
 use map::FourCC;
 use map::build::{Block, FixupKind, RawId, RawRef, TagPayload, TagSet};
 
@@ -120,10 +121,6 @@ pub struct SoundGestalt {
     pub chunks: Vec<Chunk>,
     /// Elements of the nested blocks, by header index.
     pub nested: [Vec<Nested>; 11],
-}
-
-fn u32_at(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(b[at..at + 4].try_into().expect("4 bytes"))
 }
 
 fn is_nested(i: usize) -> bool {

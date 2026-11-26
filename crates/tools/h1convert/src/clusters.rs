@@ -21,6 +21,7 @@
 //! Layouts and evidence: docs/halo1/multiplayer.md, "Clusters and
 //! portals".
 
+use tags::bytes::{f32_at, i16_at, u32_at};
 use std::collections::BTreeMap;
 
 use h1_assets::bitmaps::atlas::{ClusterPage, Piece};
@@ -57,16 +58,6 @@ pub const PORTAL: usize = 0x24;
 /// Most portals a structure has: the open-portal mask is 16 words
 /// (E `0x00210df7`).
 pub const MAX_PORTALS: usize = 512;
-
-fn i16_at(b: &[u8], o: usize) -> i16 {
-    i16::from_le_bytes([b[o], b[o + 1]])
-}
-fn u32_at(b: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes(b[o..o + 4].try_into().expect("4"))
-}
-fn f32_at(b: &[u8], o: usize) -> f32 {
-    f32::from_le_bytes(b[o..o + 4].try_into().expect("4"))
-}
 
 /// Halo 1's cluster count, at least one (a structure with none is drawn
 /// as one cluster).

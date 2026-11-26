@@ -7,6 +7,7 @@
 //! (Weapons, equipment, projectiles and damage) and
 //! `tests/weapon_rebuild_disc.rs`.
 
+use tags::bytes::u32_at;
 use map::build::Block;
 use map::{FourCC, TagId};
 use tags::defs::{self, Defs, Record, StructDef, Val};
@@ -127,10 +128,6 @@ fn built(d: &StructDef, r: &Record) -> Result<Block> {
 
 fn word(r: &mut Record, path: &str, w: u32) -> Result<()> {
     set(r, path, Val::Bytes(w.to_le_bytes().to_vec()))
-}
-
-fn u32_at(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(b[at..at + 4].try_into().expect("4 bytes"))
 }
 
 /// Converted references, including explicit nulls, by definition path.

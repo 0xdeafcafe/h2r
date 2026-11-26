@@ -22,6 +22,7 @@
 //! ([`add_sound_events`]): the caller converts the sounds (a sound is not
 //! a model, so `h1objects` does it) and passes their datums.
 
+use tags::bytes::{i16_at, u32_at};
 use h1map::{H1Map, Tag, TagRef};
 use map::TagId;
 use map::build::{Block, FixupKind};
@@ -56,14 +57,6 @@ pub struct AnimationSounds {
     /// Per animation that plays one: (animation index, reference index,
     /// frame).
     pub events: Vec<(usize, usize, i16)>,
-}
-
-fn u32_at(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(b[at..at + 4].try_into().unwrap())
-}
-
-fn i16_at(b: &[u8], at: usize) -> i16 {
-    i16::from_le_bytes([b[at], b[at + 1]])
 }
 
 /// The block at `owner + at` (`count`, address), `stride` bytes each.

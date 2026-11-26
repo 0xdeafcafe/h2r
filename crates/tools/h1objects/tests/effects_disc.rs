@@ -18,6 +18,7 @@
 //!   to a converted sound or a tree tag of its group; every vehicle
 //!   attachment resolves to its converted tag at Halo 1's marker.
 
+use tags::bytes::{u16_at, u32_at};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufReader, Cursor};
@@ -392,13 +393,6 @@ fn h1_maps() -> Vec<(String, H1Map)> {
         }
     }
     out
-}
-
-fn u16_at(b: &[u8], o: usize) -> u16 {
-    u16::from_le_bytes([b[o], b[o + 1]])
-}
-fn u32_at(b: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes(b[o..o + 4].try_into().unwrap())
 }
 
 /// Survey: prints, per candidate offset, how the Halo 1 `effe` fields

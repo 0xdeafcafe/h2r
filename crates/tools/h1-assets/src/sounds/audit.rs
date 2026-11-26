@@ -21,6 +21,7 @@
 //! A sound whose chunks point at the wrong bytes, or at too few, plays as a
 //! short buzz that repeats; this finds it without running the game.
 
+use tags::bytes::u32_at;
 use std::collections::HashMap;
 use std::io::Cursor;
 
@@ -86,10 +87,6 @@ struct Read {
 
 fn u16_at(b: &[u8], at: usize) -> usize {
     usize::from(u16::from_le_bytes([b[at], b[at + 1]]))
-}
-
-fn u32_at(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(b[at..at + 4].try_into().expect("4 bytes"))
 }
 
 /// Bytes per block, or `None` when not Xbox ADPCM or PCM in one or two

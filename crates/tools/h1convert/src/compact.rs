@@ -17,6 +17,7 @@
 //! built 20-byte tree, or when the `ugh!` holds raw anywhere but a chunk or
 //! an extra info, or names in a form other than string IDs.
 
+use tags::bytes::u16_at;
 use std::collections::HashMap;
 
 use h1_assets::sounds::convert::snd;
@@ -271,10 +272,6 @@ pub fn gestalt(set: &mut TagSet) -> Result<Compacted> {
         raw_dropped,
         ..report
     })
-}
-
-fn u16_at(b: &[u8], at: usize) -> u16 {
-    u16::from_le_bytes([b[at], b[at + 1]])
 }
 
 /// The gestalt entries the `snd!` `header` names in `g`, without an index
