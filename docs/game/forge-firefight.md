@@ -1,7 +1,7 @@
 # Forge: Firefight maps
 
-Status: Design. Built under it: the ground labels and their palette page, the `ai_ground` recipe, **Build AI ground** with the reload onto the built map, the materialiser's ground build ([forge-map-variants.md](forge-map-variants.md), "AI ground"), the director, the host runtime and the Firefight HUD ([firefight.md](firefight.md)). FA2 is built: the wave set in the document and the session, the zone remap, the 12-drop cap and `forge.waves`; the notices that show a set's first problem come with the screens that show them (FA5). FA1, FA3 and FA4 are built too: the lobby takes a variant with ground, **Test waves** plays the session's set in the session, and Map Waves plays its own set. FA5 to FA8 below are not.
-Code: `crates/formats/forge-doc/src/ground.rs` (labels, recipe), `crates/formats/forge-doc/src/waves.rs` (the wave set), `crates/extensions/forge/src/session/waves.rs` (the set in a session), `crates/extensions/agent/src/forge/waves.rs` (`forge.waves`), `crates/extensions/agent/src/forge/test.rs` (`forge.waves.test`), `crates/tools/forge-build/src/ground.rs` (the build), `crates/tools/firefight-kit/src/ground.rs` (`ground::build`), `crates/extensions/forge/src/session/ground.rs`, `crates/extensions/game/src/forge_glue/ground.rs`, `crates/extensions/game/src/firefight/` (the runtime), `crates/formats/firefight` (`Def`, the director). Tests: named per slice below.
+Status: Design. Built under it: the ground labels and their palette page, the `ai_ground` recipe, **Build AI ground** with the reload onto the built map, the materialiser's ground build ([forge-map-variants.md](forge-map-variants.md), "AI ground"), the director, the host runtime and the Firefight HUD ([firefight.md](firefight.md)). FA2 is built: the wave set in the document and the session, the zone remap, the 12-drop cap and `forge.waves`. FA1, FA3, FA4 and FA5 are built too: the lobby takes a variant with ground, **Test waves** plays the session's set in the session, Map Waves plays its own set, and the Waves screens edit the set, with the first problem as Test waves' and a save's notice (the Enemy types page waits for FA6's classes). FA6 to FA8 below are not.
+Code: `crates/formats/forge-doc/src/ground.rs` (labels, recipe), `crates/formats/forge-doc/src/waves.rs` (the wave set), `crates/extensions/forge/src/session/waves.rs` (the set in a session), `crates/extensions/agent/src/forge/waves.rs` (`forge.waves`), `crates/extensions/agent/src/forge/test.rs` (`forge.waves.test`), `crates/extensions/game/src/forge_screens/waves.rs` (the Waves screens), `crates/tools/forge-build/src/ground.rs` (the build), `crates/tools/firefight-kit/src/ground.rs` (`ground::build`), `crates/extensions/forge/src/session/ground.rs`, `crates/extensions/game/src/forge_glue/ground.rs`, `crates/extensions/game/src/firefight/` (the runtime), `crates/formats/firefight` (`Def`, the director). Tests: named per slice below.
 Switch: none of its own. `forge` and `firefight`, listed in [switches.md](../runtime/switches.md).
 
 A player builds a Firefight map in a Forge session and plays it from the
@@ -25,7 +25,7 @@ What a player does, and what carries each step.
 | 1 | starts a Forge lobby on a multiplayer map | the FORGE lobby mode, the kit start ([forge-map-variants.md](forge-map-variants.md), "The lobby") | built |
 | 2 | places drop zones, two bases and cover from the object menu's **AI and objectives** group | `GroundLabel` markers: a netgame flag with a label op | built |
 | 3 | chooses **Build AI ground** | `firefight_kit::ground::build` over the play form, then the reload | built |
-| 4 | edits the waves, or keeps Holdout's | the wave set in the document (FA2), the Waves screens (FA5) | the set built, `forge.waves` edits it; the screens design |
+| 4 | edits the waves, or keeps Holdout's | the wave set in the document (FA2), the Waves screens (FA5) | built |
 | 5 | chooses **Test waves** and fights them in the session | the director over the session's map (FA3) | built |
 | 6 | saves the map variant | the variant store; the save builds stale ground first and writes the wave set | built |
 | 7 | in Custom Games picks Firefight, the map and the map variant, and starts | the lobby's kit check takes a variant with ground (FA1); **Map Waves** plays the map's own set (FA4) | built (FA1, FA4) |
@@ -128,7 +128,9 @@ impl Session {
   for headroom) and a preferred zone with no marker (`ZoneNotPlaced`).
   The classes the ground builds are `waves::GROUND_CLASSES` until FA6
   puts the build's own in its report. The Waves page lists them, **Test
-  waves** and a save show the first as a notice, and neither is refused: the director takes any unseen zone
+  waves** and a save show the first as a notice
+  (`forge_screens::waves::first_problem`; a save's follows "Saved
+  Name."), and neither is refused: the director takes any unseen zone
   when the preferred one is absent, and the lobby's start names a class
   the map lacks (`Refusal::UnknownClass`).
 - **Zones follow their markers.** When an op adds, moves or removes an
@@ -370,6 +372,13 @@ FA1). FA7 follows FA5, FA8 follows FA4.
   `crates/extensions/game/src/map_variant/tests.rs`,
   `crates/extensions/game/src/lobby_mode/tests.rs`,
   `crates/live/live-server/src/admin.rs`).
+- **Test** The Waves screens: each page's presses, each value one
+  `set_waves`, the validator's refusal, the pickers' values, Start from's
+  and Reset waves' questions, the pages built again after an edit
+  (`crates/extensions/game/src/forge_screens/waves_tests.rs`,
+  `crates/extensions/game/src/forge_glue/editing/tests/waves.rs`,
+  `reset_returns_to_the_loaded_set` in
+  `crates/extensions/forge/src/waves_tests.rs`).
 - **Design** The test arm, the classes in the recipe.
 
 ## Not verified

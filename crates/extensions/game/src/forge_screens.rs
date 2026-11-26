@@ -8,7 +8,8 @@
 //! - **Who builds what.** The session builds the sheets that need its
 //!   document ([`open`]: the object menu, Properties, Link, a question).
 //!   The rest are built here from what the session publishes ([`Facts`],
-//!   [`request`]): Tools, Tool settings, Forge options, Controls.
+//!   [`request`]): Tools, Tool settings, Forge options, Controls, and the
+//!   Waves screens from the set the session publishes ([`waves`]).
 //! - **Opening.** A sheet asked for opens at the next UI update, for player
 //!   one, once nothing is pending on the dialogs' window: the large
 //!   dialog's classes over the screen beneath (`dialog_tag`), the list
@@ -30,6 +31,7 @@ pub mod props;
 pub mod screen;
 pub mod sheet;
 pub mod variants;
+pub mod waves;
 
 #[cfg(test)]
 mod tests;
@@ -84,6 +86,12 @@ pub struct Facts {
     /// A wave test runs or is starting: Forge options' Test waves row reads
     /// Stop waves.
     pub testing: bool,
+    /// The wave set and what the Waves screens read with it; `None` with
+    /// no waves to edit, and Forge options has no Waves row.
+    pub waves: Option<waves::Facts>,
+    /// The Enemy types page's rows; empty while the recipe names no
+    /// classes, and Forge options has no Enemy types row.
+    pub enemy_types: Vec<waves::EnemyType>,
 }
 
 /// The longest name Save as takes: a map variant's.
@@ -117,6 +125,10 @@ struct Hub {
     passing_ctor: AtomicU32,
     /// The driver's hooks are built: a screen asked for opens.
     built: AtomicBool,
+    /// The page each Waves screen was opened on ([`waves::open`]).
+    wave_pages: Mutex<Vec<(Kind, waves::Page)>>,
+    /// A Waves edit was refused: build the pages again ([`waves::stale`]).
+    waves_stale: AtomicBool,
 }
 
 impl Hub {
@@ -140,6 +152,8 @@ impl Hub {
             passing_ctor: AtomicU32::new(0),
             // A test's screens open without a game.
             built: AtomicBool::new(cfg!(test)),
+            wave_pages: Mutex::new(Vec::new()),
+            waves_stale: AtomicBool::new(false),
         }
     }
 }
@@ -177,7 +191,9 @@ pub fn screen(kind: Kind) -> Arc<ForgeScreen> {
     Arc::clone(&hub().screens[i])
 }
 
-/// The session's facts, from this tick.
+/// The session's facts, from this tick. A change of the wave set, or a
+/// Waves edit refused since the last publish, builds the Waves pages again
+/// ([`waves::refresh`]).
 pub fn publish(facts: Facts) {
     if !facts.active {
         *lock(&hub().request) = None;
@@ -185,7 +201,16 @@ pub fn publish(facts: Facts) {
         hub().typing.store(false, Ordering::SeqCst);
         hub().leave.store(false, Ordering::SeqCst);
     }
-    *lock(&hub().facts) = facts;
+    let set = facts.waves.clone();
+    let changed = {
+        let mut held = lock(&hub().facts);
+        let changed = held.waves != facts.waves;
+        *held = facts;
+        changed
+    };
+    if waves::take_stale() || changed {
+        waves::refresh(set.as_ref());
+    }
 }
 
 fn facts() -> Facts {
@@ -237,6 +262,20 @@ pub fn open(sheet: Sheet) -> Result<(), String> {
     Ok(())
 }
 
+/// Shows the question `sheet` over the screen that is up, ours or the
+/// game's: a Waves page's Start from asks over WAVES. Refused by name while
+/// a question is up or a screen is about to open.
+pub(crate) fn ask_over(sheet: Sheet) -> Result<(), String> {
+    usable()?;
+    let question = screen(Kind::Question);
+    if question.is_up() || requested().is_some() {
+        return Err("A Forge screen is up.".into());
+    }
+    question.show(sheet)?;
+    *lock(&hub().request) = Some(Kind::Question);
+    Ok(())
+}
+
 /// Shows `sheet` above the screen beneath: B comes back to it.
 pub(crate) fn push(sheet: Sheet) -> Result<crate::ui::Chosen, String> {
     usable()?;
@@ -273,7 +312,17 @@ pub(crate) fn prepare(kind: Kind) -> Result<(), String> {
     let sheet = match kind {
         Kind::Tools => sheet::tools(f.tool.unwrap_or(sheet::Tool::Objects)),
         Kind::Settings => sheet::settings(f.rotation_snap, f.movement_snap, f.local_axes),
-        Kind::Options => sheet::options_for(&f.folders, &f.placed, f.testing),
+        Kind::Options => sheet::options_with_waves(
+            &f.folders,
+            &f.placed,
+            f.testing,
+            f.waves.is_some(),
+            !f.enemy_types.is_empty(),
+        ),
+        Kind::Waves => return waves::open(waves::Page::Waves),
+        Kind::EnemyTypes => {
+            waves::enemy_types_sheet(&f.enemy_types).ok_or("The AI ground names no enemy types.")?
+        }
         Kind::Variants => variants::list_sheet(&f.variants, f.filename.as_deref()),
         Kind::Controls => sheet::controls(),
         Kind::MapLimits => map_limits::sheet(&f.map_limits),
@@ -288,6 +337,14 @@ pub(crate) fn prepare(kind: Kind) -> Result<(), String> {
                 "{} shows the session's objects; the session opens it",
                 kind.screen()
             ));
+        }
+        Kind::Rounds
+        | Kind::Round
+        | Kind::Wave
+        | Kind::Squads
+        | Kind::Squad
+        | Kind::WaveProblems => {
+            return Err(format!("{} opens from its row on WAVES", kind.screen()));
         }
     };
     screen(kind).show(sheet)
@@ -383,8 +440,16 @@ fn step(m: &dyn GuestMemory) -> Option<Step> {
         return Some(Step::Leave);
     }
     // The object menu closes after a pick; Map variants after its dialog
-    // chose a Load or a Delete, whose question needs no screen of ours up.
-    for kind in [Kind::Objects, Kind::Variants] {
+    // chose a Load or a Delete, whose question needs no screen of ours up;
+    // a Waves page when the part it shows is gone (`waves::refresh`).
+    for kind in [
+        Kind::Objects,
+        Kind::Variants,
+        Kind::Round,
+        Kind::Wave,
+        Kind::Squads,
+        Kind::Squad,
+    ] {
         let beneath = screen(kind);
         if beneath.take_close_after_pick()
             && let Some(s) = beneath.screen()

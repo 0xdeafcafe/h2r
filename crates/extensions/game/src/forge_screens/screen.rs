@@ -481,6 +481,13 @@ impl Rows for ForgeScreen {
                 Ok(()) => Chosen::Push(k.screen()),
                 Err(why) => Chosen::Stepped(format!("{}: not opened: {why}", k.screen())),
             },
+            Act::Waves(page) => {
+                let name = page.kind().screen();
+                match super::waves::open(*page) {
+                    Ok(()) => Chosen::Push(name),
+                    Err(why) => Chosen::Stepped(format!("{name}: not opened: {why}")),
+                }
+            }
         }
     }
 
@@ -554,6 +561,11 @@ fn row_spec(r: &super::sheet::SheetRow, described: bool) -> RowSpec {
         }
         Act::Type(_) => RowSpec::action(&r.label).press(Press::Act),
         Act::Open(k) => RowSpec::action(&r.label).press(Press::Open(k.screen().into())),
+        Act::Waves(page) if r.value.is_some() => RowSpec::value(&r.label, &[value.as_str()], 0)
+            .press(Press::Open(page.kind().screen().into())),
+        Act::Waves(page) => {
+            RowSpec::action(&r.label).press(Press::Open(page.kind().screen().into()))
+        }
         Act::Dialog(sheet) => {
             RowSpec::action(&r.label).press(Press::Open(sheet.kind.screen().into()))
         }

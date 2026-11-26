@@ -1,0 +1,16 @@
+screen: forge.round
+kind: list
+layout: controls
+backing: shell
+scrolls: true
+states:
+  open:
+    focus: 0
+  second:
+    focus: 0
+widgets:
+  title:
+    component: title
+  legend:
+    component: legend
+    prompts: [[A, "SELECT"], [B, "BACK"]]

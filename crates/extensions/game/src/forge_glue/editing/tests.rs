@@ -1,5 +1,6 @@
 mod area;
 mod variants;
+mod waves;
 
 use super::*;
 use agent::forge::local::OBJECT_GONE;

@@ -192,12 +192,16 @@ pub(super) struct Editor {
     test_answer: Option<TestAnswer>,
     /// The set the test plays: its name and `Def::id`.
     test_set: Option<(String, Option<String>)>,
+    /// What the Waves page's Start from offers on this base map
+    /// (`forge_screens::waves::presets`), read once as the session opens.
+    wave_presets: Arc<[forge_doc::waves::Def]>,
 }
 
 impl Editor {
     pub fn new(opened: Opened, data: &Path, scenario: u32, calls: calls::Shared) -> Self {
         let saved_head = opened.session.head();
         let map_name = opened.session.document().title.clone();
+        let wave_presets = screens::waves::presets(&opened.session.document().base.map);
         let mut tool = Tool::with_extents(opened.extents.into());
         tool.monitor = crate::lobby_start::mode() == crate::lobby_start::Mode::Forge;
         Self {
@@ -253,6 +257,7 @@ impl Editor {
             test_after_build: false,
             test_answer: None,
             test_set: None,
+            wave_presets,
         }
     }
 
@@ -689,10 +694,70 @@ impl Editor {
             .ok_or(super::ground::NO_FIREFIGHT)?;
         let def = super::ground::waves_or_default(&self.session);
         let set = (def.name.clone(), def.id().ok().map(|id| id.to_string()));
+        let problem = screens::waves::first_problem(&def, &self.session.wave_problems());
         tests.start(def)?;
         self.test_set = Some(set);
         self.test_answer = answer;
+        if let Some(problem) = problem {
+            self.notice = Some((problem, self.now));
+        }
         Ok(())
+    }
+
+    /// What the Waves screens read: the set the session plays and what
+    /// goes with it (docs/game/forge-firefight-ui.md, "The Waves screens").
+    fn wave_facts(&self) -> screens::waves::Facts {
+        screens::waves::Facts {
+            set: self.session.waves_or_default(),
+            own: !self.session.waves_are_default(),
+            edited: self.session.waves_edited(),
+            classes: super::ground::wave_classes(&self.session),
+            drops: self.session.wave_drops(),
+            problems: self.session.wave_problems(),
+            presets: self.wave_presets.clone(),
+            testing: self.testing(),
+        }
+    }
+
+    /// A Waves page's value: one change of the set, one `set_waves`. Start
+    /// from over an edited set asks first. A refusal builds the pages
+    /// again, so the value shown goes back to the set's.
+    fn edit_waves(&mut self, edit: screens::waves::Edit) -> Result<(), String> {
+        let facts = self.wave_facts();
+        if let screens::waves::Edit::StartFrom(i) = edit
+            && let screens::waves::Start::Ask(question) = screens::waves::start_from(&facts, i)?
+        {
+            return screens::ask_over(question);
+        }
+        self.apply_waves(&facts, &edit)
+    }
+
+    fn apply_waves(
+        &mut self,
+        facts: &screens::waves::Facts,
+        edit: &screens::waves::Edit,
+    ) -> Result<(), String> {
+        let next = screens::waves::apply(&facts.set, edit, &facts.presets)
+            .and_then(|def| self.set_waves(Some(def)));
+        if next.is_err() {
+            screens::waves::stale();
+        }
+        next.map(|_| ())
+    }
+
+    /// Yes to a Waves question: its edit, or for Reset waves the set as the
+    /// session loaded it.
+    fn answer_waves(&mut self, ask: screens::waves::WavesAsk) -> Result<(), String> {
+        match screens::waves::answered(ask) {
+            Some(edit) => {
+                let facts = self.wave_facts();
+                self.apply_waves(&facts, &edit)
+            }
+            None => {
+                let loaded = self.session.waves_loaded().cloned();
+                self.set_waves(loaded).map(|_| ())
+            }
+        }
     }
 
     /// **Stop waves**, and every change of map the session makes: end the
@@ -1547,6 +1612,8 @@ impl Editor {
             folders: sheet::folder_rows(&self.session.groups()),
             map_limits: screens::map_limits::Usage::read(memory, self.guard.scenario),
             testing: self.testing(),
+            waves: Some(self.wave_facts()),
+            enemy_types: super::ground::enemy_types(&self.session),
         });
     }
 
@@ -1612,7 +1679,13 @@ impl Editor {
                 self.prefabs = prefabs;
             }
             Ok(FileResult::Saved(name, listed)) => {
-                self.notice = Some((flows::saved(&name), tick));
+                let saved = flows::saved(&name);
+                let def = self.session.waves_or_default();
+                let text = match screens::waves::first_problem(&def, &self.session.wave_problems()) {
+                    Some(problem) => format!("{saved} {problem}"),
+                    None => saved,
+                };
+                self.notice = Some((text, tick));
                 self.filename = Some(name);
                 self.variants = listed;
                 // No edit runs while a file job does: this is what was saved.
@@ -2276,6 +2349,9 @@ impl Editor {
                 }
                 // The keyboard's completion names the variant
                 // (`forge_screens`); a number that got here has none.
+                sheet::NumberField::WavesName => {
+                    return self.edit_waves(screens::waves::Edit::Name(text));
+                }
                 sheet::NumberField::RenameVariant | sheet::NumberField::DuplicateVariant => {
                     return Err("That map variant is gone.".into());
                 }
@@ -2385,6 +2461,20 @@ impl Editor {
                     .or(self.tool.aimed_thing)
                     .ok_or("Aim at an item entry.")?;
                 return self.stage(After::Edited, move |s, w| s.set_games(w, tick, id, set));
+            }
+            Choice::Waves(edit) => return self.edit_waves(edit),
+            Choice::Answer {
+                ask: Ask::Waves(ask),
+                yes,
+            } => {
+                if yes {
+                    return self.answer_waves(ask);
+                }
+            }
+            Choice::EnemyType(class, on) => {
+                let mut next = Session::clone(&self.session);
+                super::ground::set_enemy_type(&mut next, &class, on)?;
+                self.session = Arc::new(next);
             }
             Choice::Notice(text) => self.notice = Some((text, tick)),
         }

@@ -1,0 +1,16 @@
+screen: forge.enemy-types
+kind: list
+layout: controls
+backing: shell
+states:
+  open:
+    focus: 0
+  last:
+    focus: 2
+widgets:
+  title:
+    component: title
+    text: "ENEMY TYPES"
+  legend:
+    component: legend
+    prompts: [[A, "SELECT"], [B, "BACK"]]

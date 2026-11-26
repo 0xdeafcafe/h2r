@@ -41,6 +41,24 @@ pub enum Kind {
     Variants,
     /// One map variant's actions, a dialog over [`Kind::Variants`].
     Variant,
+    /// WAVES: the wave set's settings, its rounds and its problems
+    /// (docs/game/forge-firefight-ui.md, "The Waves screens").
+    Waves,
+    /// The rounds of the set, each opening [`Kind::Round`].
+    Rounds,
+    /// ROUND n: its skull and its five waves.
+    Round,
+    /// WAVE n: its gap and its squads.
+    Wave,
+    /// A wave's squads, each opening [`Kind::Squad`].
+    Squads,
+    /// SQUAD n: its enemy, count and drop.
+    Squad,
+    /// What the set asks for that the AI ground lacks, each opening its
+    /// squad.
+    WaveProblems,
+    /// The classes the AI ground builds, each On or Off.
+    EnemyTypes,
 }
 
 /// How a screen is built, each on a retail screen tag the game maps have.
@@ -59,7 +77,7 @@ pub enum Look {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 13] = [
+    pub const ALL: [Kind; 21] = [
         Kind::Objects,
         Kind::Properties,
         Kind::Coordinates,
@@ -73,6 +91,14 @@ impl Kind {
         Kind::Variants,
         Kind::Variant,
         Kind::MapLimits,
+        Kind::Waves,
+        Kind::Rounds,
+        Kind::Round,
+        Kind::Wave,
+        Kind::Squads,
+        Kind::Squad,
+        Kind::WaveProblems,
+        Kind::EnemyTypes,
     ];
 
     /// The name `Open` rows, `h2 ui preview` and the loader know it by.
@@ -91,6 +117,14 @@ impl Kind {
             Kind::Variants => "forge.variants",
             Kind::Variant => "forge.variant",
             Kind::MapLimits => "forge.map-limits",
+            Kind::Waves => "forge.waves",
+            Kind::Rounds => "forge.rounds",
+            Kind::Round => "forge.round",
+            Kind::Wave => "forge.wave",
+            Kind::Squads => "forge.squads",
+            Kind::Squad => "forge.squad",
+            Kind::WaveProblems => "forge.wave-problems",
+            Kind::EnemyTypes => "forge.enemy-types",
         }
     }
 
@@ -110,6 +144,14 @@ impl Kind {
             Kind::Variants => "forge-variants",
             Kind::Variant => "forge-variant",
             Kind::MapLimits => "forge-map-limits",
+            Kind::Waves => "forge-waves",
+            Kind::Rounds => "forge-rounds",
+            Kind::Round => "forge-round",
+            Kind::Wave => "forge-wave",
+            Kind::Squads => "forge-squads",
+            Kind::Squad => "forge-squad",
+            Kind::WaveProblems => "forge-wave-problems",
+            Kind::EnemyTypes => "forge-enemy-types",
         }
     }
 
@@ -128,20 +170,38 @@ impl Kind {
             Kind::Variants => const { ids::family("forge variants") },
             Kind::Variant => const { ids::family("forge variant") },
             Kind::MapLimits => const { ids::family("forge map limits") },
+            Kind::Waves => const { ids::family("forge waves") },
+            Kind::Rounds => const { ids::family("forge rounds") },
+            Kind::Round => const { ids::family("forge round") },
+            Kind::Wave => const { ids::family("forge wave") },
+            Kind::Squads => const { ids::family("forge squads") },
+            Kind::Squad => const { ids::family("forge squad") },
+            Kind::WaveProblems => const { ids::family("forge wave problems") },
+            Kind::EnemyTypes => const { ids::family("forge enemy types") },
         }
     }
 
     pub const fn look(self) -> Look {
         match self {
-            Kind::Objects | Kind::Tools | Kind::Games | Kind::Variants | Kind::Variant => {
-                Look::Picker
-            }
+            Kind::Objects
+            | Kind::Tools
+            | Kind::Games
+            | Kind::Variants
+            | Kind::Variant
+            | Kind::Rounds
+            | Kind::Squads
+            | Kind::WaveProblems => Look::Picker,
             Kind::Properties
             | Kind::Coordinates
             | Kind::Settings
             | Kind::Options
             | Kind::MapLimits
-            | Kind::Controls => Look::List,
+            | Kind::Controls
+            | Kind::Waves
+            | Kind::Round
+            | Kind::Wave
+            | Kind::Squad
+            | Kind::EnemyTypes => Look::List,
             Kind::Link | Kind::Question => Look::Question,
         }
     }
@@ -175,6 +235,8 @@ pub enum Ask {
     Load,
     /// Delete a saved map variant.
     DeleteVariant,
+    /// A Waves page's question (`super::waves::WavesAsk`).
+    Waves(super::waves::WavesAsk),
 }
 
 /// A value a Properties or Tool settings row sets.
@@ -292,6 +354,8 @@ pub enum NumberField {
     RenameVariant,
     /// The name of the copy of that map variant.
     DuplicateVariant,
+    /// The wave set's name (the WAVES page's Name row).
+    WavesName,
 }
 
 /// A row that opens the game's keyboard for a number.
@@ -393,6 +457,11 @@ pub enum Choice {
     /// The Game types dialog's Done: give the aimed or held item spawner
     /// this set, as one step.
     Games(forge_doc::games::GameSet),
+    /// A Waves page's value: one change of the wave set
+    /// (`super::waves::apply`), one `forge::Session::set_waves`.
+    Waves(super::waves::Edit),
+    /// An Enemy types row: ask the AI ground for the class (true) or not.
+    EnemyType(String, bool),
     /// Why a row did nothing, for the HUD's notice.
     Notice(String),
 }
@@ -422,6 +491,9 @@ pub enum Act {
     /// A map variant's row on Map variants: the file stem it stands for
     /// is the target of the dialog's rows, which open above this screen.
     Variant(String, Box<Sheet>),
+    /// Open a Waves page above this screen, built from the session's set
+    /// as it is then (`super::waves::open`); B comes back.
+    Waves(super::waves::Page),
 }
 
 /// A row's value picker: its values, the held one, what it says, and the
@@ -1601,7 +1673,21 @@ pub fn options_with_groups(folders: &[Folder], placed: &[Placed]) -> Sheet {
 /// Test waves row reads **Stop waves** while one does
 /// (docs/game/forge-firefight.md, "Test waves").
 pub fn options_for(folders: &[Folder], placed: &[Placed], testing: bool) -> Sheet {
-    let waves = if testing {
+    options_with_waves(folders, placed, testing, false, false)
+}
+
+/// [`options_for`] with **Waves...** when the session has waves to edit
+/// (`waves`) and **Enemy types...** when the recipe names classes
+/// (`enemy_types`), after the placed objects browser
+/// (docs/game/forge-firefight-ui.md, "The Waves screens").
+pub fn options_with_waves(
+    folders: &[Folder],
+    placed: &[Placed],
+    testing: bool,
+    waves: bool,
+    enemy_types: bool,
+) -> Sheet {
+    let test = if testing {
         SheetRow::new("Stop waves", Act::Choose(Choice::StopWaves))
             .describe("Erase the test's enemies and stop the waves.")
     } else {
@@ -1615,11 +1701,19 @@ pub fn options_for(folders: &[Folder], placed: &[Placed], testing: bool) -> Shee
         rows: OPTIONS
             .iter()
             .map(|o| SheetRow::new(o.label, Act::Open(o.opens)).describe(o.description))
+            .chain([placed_row_with(folders, placed)])
+            .chain(waves.then(|| {
+                SheetRow::new("Waves...", Act::Open(Kind::Waves))
+                    .describe("The rounds, waves and squads this map plays.")
+            }))
+            .chain(enemy_types.then(|| {
+                SheetRow::new("Enemy types...", Act::Open(Kind::EnemyTypes))
+                    .describe("The enemies the AI ground builds.")
+            }))
             .chain([
-                placed_row_with(folders, placed),
                 SheetRow::new("Build AI ground", Act::Choose(Choice::BuildGround))
                     .describe("Build the nav mesh and zones for the placed labels now."),
-                waves,
+                test,
                 SheetRow::new("Generate nav", Act::Choose(Choice::GenerateNav))
                     .describe("Build the bots' nav with the placed objects in."),
             ])
@@ -1658,6 +1752,7 @@ pub fn question(ask: Ask, name: &str) -> Sheet {
         ),
         Ask::Load => ("LOAD", super::variants::LOAD_QUESTION.to_string()),
         Ask::DeleteVariant => ("DELETE", super::variants::delete_question(name)),
+        Ask::Waves(ask) => super::waves::question_text(ask, name),
     };
     let answer = |yes| Act::Choose(Choice::Answer { ask, yes });
     Sheet {

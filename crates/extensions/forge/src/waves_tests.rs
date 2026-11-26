@@ -385,3 +385,39 @@ fn only_the_host_seat_edits_the_waves() {
     host.set_waves(Some(set("Yard", "elite", &[json!("edge")])))
         .unwrap();
 }
+
+/// Reset waves returns to the set as loaded, and the session says whether
+/// its set was edited since: what Start from asks on and the drop count
+/// the Drop picker lists (docs/game/forge-firefight-ui.md, "The Waves
+/// screens").
+#[test]
+fn reset_returns_to_the_loaded_set() {
+    let dir = temp_dir();
+    let mut first = session();
+    let mut world = Still::default();
+    drop_marker(&mut first, &mut world, 1, 0.);
+    drop_marker(&mut first, &mut world, 2, 4.);
+    assert_eq!(first.wave_drops(), 2);
+    assert!(!first.waves_edited(), "no set, none loaded");
+    let saved = set("Yard", "elite", &[zone(1)]);
+    first.set_waves(Some(saved.clone())).unwrap();
+    assert!(first.waves_edited());
+    let stem = first.save_variant(&dir, "Yard", false).unwrap();
+
+    let mut second = session();
+    let mut world = Still::default();
+    let loaded =
+        files::variants::load(&dir, "yard", &stem, Some(&Sha256::of(b"an invented yard"))).unwrap();
+    second.load_variant(&mut world, 1, loaded).unwrap();
+    assert_eq!(second.waves_loaded(), Some(&saved));
+    assert!(!second.waves_edited(), "as loaded");
+
+    second
+        .set_waves(Some(set("Other", "elite", &[json!("edge")])))
+        .unwrap();
+    assert!(second.waves_edited());
+    second.reset_waves();
+    assert_eq!(second.waves(), Some(&saved));
+    assert!(!second.waves_edited());
+    fs::remove_dir_all(dir).unwrap();
+}
