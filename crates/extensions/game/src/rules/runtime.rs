@@ -236,6 +236,10 @@ pub const ACTIONS: &[u16] = &[
     // call is made of the entry's own.
     id::OFFER_PICK,
     id::PICK_ROW,
+    // Kept in the VM's state (`RulesExt::loadout`); the boundary asks the
+    // player from it (`super::world::choice`), so no call is made of the
+    // entry's own.
+    id::OFFER,
 ];
 
 /// Where the `RULES` record lives: the process's `SimExt` blob in the
@@ -374,6 +378,9 @@ pub enum Call {
     /// `offer_pick`: the value picker opened for one local player with the
     /// offer's rows (`super::world::pick`).
     OfferPick(super::world::pick::Ask),
+    /// `offer`: the loadout picker opened for one local player with the
+    /// rows their window holds (`super::world::choice`).
+    OfferChoice(super::world::pick::Ask),
 }
 
 impl Call {
@@ -400,6 +407,7 @@ impl Call {
             Call::SetLoadout { .. } => "set_loadout",
             Call::Put(_) => "put_object",
             Call::OfferPick(_) => "offer_pick",
+            Call::OfferChoice(_) => "offer",
         }
     }
 }
@@ -1258,6 +1266,11 @@ impl Runtime {
         for pick in super::world::pick::take() {
             r.vm.choose(pick.player, pick.slot, pick.row);
         }
+        // The loadout picks, the same way: the VM refuses a row the
+        // player's window does not open.
+        for pick in super::world::choice::take() {
+            r.vm.choose_loadout(pick.player, pick.row);
+        }
         {
             let Running {
                 vm,
@@ -1316,6 +1329,12 @@ impl Runtime {
             && let Some(ask) = super::world::pick::plan(&r.vm, &super::world::pick::seats(m), tick)
         {
             calls.push(Call::OfferPick(ask));
+        }
+        if r.authority == Some(true)
+            && !self.film
+            && let Some(ask) = super::world::choice::plan(&r.vm, &super::world::pick::seats(m), tick)
+        {
+            calls.push(Call::OfferChoice(ask));
         }
         if let Some(ty) = r.start_line
             && super::start_line::players_ready(m)

@@ -92,7 +92,9 @@ fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> T {
 /// The VM's offers as strings: picker number, title, rows.
 fn offers(vm: &Vm) -> Vec<(u8, String, Vec<String>)> {
     let text = |id: u16| vm.string(id).unwrap_or_default().to_owned();
-    vm.picks()
+    // The loadout pickers are asked through the player's window
+    // (`super::choice`).
+    vm.plain_picks()
         .iter()
         .map(|o| (o.slot, text(o.title), o.rows.iter().map(|&r| text(r)).collect()))
         .collect()
@@ -131,7 +133,7 @@ pub fn plan_from(now: Vec<(u8, String, Vec<String>)>, seats: &[(u8, u32)], tick:
 
 /// The ask the queue yields at `tick`, held back while the open picker
 /// waits for its player.
-fn next_ask(queue: &mut VecDeque<Ask>, open: &mut Option<(u32, u8)>, tick: u32) -> Option<Ask> {
+pub(super) fn next_ask(queue: &mut VecDeque<Ask>, open: &mut Option<(u32, u8)>, tick: u32) -> Option<Ask> {
     if let Some((since, _)) = *open {
         if tick.wrapping_sub(since) < OPEN_TICKS {
             return None;
@@ -193,7 +195,7 @@ pub async fn open_remote(cx: &Cx, ask: &Ask) -> anyhow::Result<()> {
 
 /// Opens the value picker over `ask.port`'s controller with the offer's
 /// title and rows (a call of the boundary); `set` stores the row.
-async fn show_picker(cx: &Cx, ask: &Ask, set: Arc<dyn Fn(usize) -> String + Send + Sync>) -> anyhow::Result<()> {
+pub(super) async fn show_picker(cx: &Cx, ask: &Ask, set: Arc<dyn Fn(usize) -> String + Send + Sync>) -> anyhow::Result<()> {
     let pick = Pick::new(&ask.title, ask.rows.clone(), 0, HELP, set);
     let name = picker::offer_list(pick).ok_or_else(|| anyhow::anyhow!("the picker {} has no rows", ask.slot))?;
     let ingame = cx.read(list_class::ingame).unwrap_or(true);

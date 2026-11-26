@@ -16,6 +16,7 @@ const SIEGE_ATTACKERS_WIN: &str = include_str!("scenarios/siege_attackers_win.js
 const SPAWN_AREAS_SWITCH: &str = include_str!("scenarios/spawn_areas_switch.json");
 const SIEGE_RESPAWN_WAVES: &str = include_str!("scenarios/siege_respawn_waves.json");
 const SIEGE_PHASES_ORDERED: &str = include_str!("scenarios/siege_phases_ordered.json");
+const SIEGE_LOADOUT_CHOICE: &str = include_str!("scenarios/siege_loadout_choice.json");
 const SIEGE_DEFENDERS_HOLD_PHASE1: &str = include_str!("scenarios/siege_defenders_hold_phase1.json");
 const SIEGE_NO_LAYOUT: &str = include_str!("scenarios/siege_no_layout.json");
 
@@ -1112,9 +1113,7 @@ fn spawn_areas_follows_a_phase_switch() {
 
 const BEAM_RIFLE: &str = "objects/weapons/rifle/beam_rifle/beam_rifle";
 const PLASMA_PISTOL: &str = "objects/weapons/pistol/plasma_pistol/plasma_pistol";
-const SNIPER: &str = "objects/weapons/rifle/sniper_rifle/sniper_rifle";
-const ENERGY_BLADE: &str = "objects/weapons/melee/energy_blade/energy_blade";
-const ROCKET: &str = "objects/weapons/support_high/rocket_launcher/rocket_launcher";
+const SHOTGUN: &str = "objects/weapons/rifle/shotgun/shotgun";
 
 /// A map with a layout (`siege_site` numbered by phase, `siege_attack` and
 /// `siege_defend` starts) plays ordered phases: each `spawn_areas` call is
@@ -1160,8 +1159,7 @@ fn siege_plays_a_layouts_phases_in_order() {
     assert!(areas[2].0 > 500 && areas[2].0 < 960, "{areas:?}");
     assert!(areas[4].0 > areas[2].0 + 450 && areas[4].0 < 1420 + 460, "{areas:?}");
     assert!(calls(&r, "spawn_near").is_empty());
-    // Each phase's spawns carry its tier: the set, then the second tier,
-    // then the third.
+    // Nobody picked: each phase's spawns carry row 0 of their side.
     let kits: Vec<Vec<Arg>> = calls(&r, "set_loadout").into_iter().map(|(_, a)| a.to_vec()).collect();
     let kit = |p: u8, a: &str, b: &str| vec![Arg::Player(Some(p)), tag(a), tag(b)];
     assert_eq!(
@@ -1169,14 +1167,44 @@ fn siege_plays_a_layouts_phases_in_order() {
         [
             kit(0, BR, MAGNUM),
             kit(1, CARBINE, PLASMA_RIFLE),
-            kit(0, BEAM_RIFLE, PLASMA_PISTOL),
-            kit(1, SNIPER, MAGNUM),
-            kit(0, ENERGY_BLADE, CARBINE),
-            kit(1, ROCKET, BR),
+            kit(0, BR, MAGNUM),
+            kit(1, CARBINE, PLASMA_RIFLE),
+            kit(0, BR, MAGNUM),
+            kit(1, CARBINE, PLASMA_RIFLE),
         ]
     );
     assert_eq!(calls(&r, "end_round").len(), 1);
     assert_eq!(r.game.players[&0].score, 1);
+}
+
+/// A player picks a row of their side before a spawn, among the rows of the
+/// phase's tier: a row above the tier is refused and the last pick stands, a
+/// pick holds across spawns, and the second phase opens the next rows.
+#[test]
+fn siege_lets_a_player_pick_a_loadout_row_of_their_tier() {
+    let (ir, _) = siege(&[]);
+    assert_eq!(rules::verify::unhostable(&ir), None);
+    let s: Scenario = serde_json::from_str(SIEGE_LOADOUT_CHOICE).unwrap();
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    // Tier 0 opens two rows: the defender's row 3 is refused; in phase 1 four
+    // rows are open, so row 3 is taken and the attacker's row 4 is refused.
+    assert_eq!(r.refused_choices, [(1, 1, 3), (600, 0, 4)]);
+    let kits: Vec<(u32, Vec<Arg>)> =
+        calls(&r, "set_loadout").into_iter().map(|(t, a)| (t, a.to_vec())).collect();
+    let kit = |t: u32, p: u8, a: &str, b: &str| (t, vec![Arg::Player(Some(p)), tag(a), tag(b)]);
+    assert_eq!(
+        kits,
+        [
+            kit(0, 0, BR, MAGNUM),
+            kit(0, 1, CARBINE, PLASMA_RIFLE),
+            kit(2, 0, SHOTGUN, MAGNUM),
+            kit(2, 1, CARBINE, PLASMA_RIFLE),
+            kit(4, 0, SHOTGUN, MAGNUM),
+            kit(601, 0, SHOTGUN, MAGNUM),
+            kit(601, 1, BEAM_RIFLE, PLASMA_PISTOL),
+        ]
+    );
 }
 
 /// A phase-1 site held through phase 0 does nothing: no site is taken, no

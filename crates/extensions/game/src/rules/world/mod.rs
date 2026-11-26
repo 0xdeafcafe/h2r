@@ -4,6 +4,7 @@
 pub mod audio;
 pub mod body;
 pub mod bots;
+pub mod choice;
 pub mod hud;
 pub mod data;
 pub mod loadout;

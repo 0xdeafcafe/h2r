@@ -24,10 +24,11 @@
 // first takes the site as it would have.
 // The map opens with the phases: each `siege_barrier` object, numbered by
 // the phase it opens in, stands open from that phase on (`set_open`).
-// Each player picks a loadout set before the round (`offer_pick`): the
-// host opens a picker of three rows at the round's start, and the pick
-// (`picked`) is the set from that player's next spawn; a player who does
-// not pick gets the set the lobby chose.
+// Each side has a table of loadout rows, lightest first, and a player picks
+// a row of their side before a spawn: `offer` opens the rows of the
+// phase's tier to them (the host asks, a select dialog) and `choice` reads
+// the one they last picked, row 0 until they pick. A player who picks
+// nothing keeps the last row; a heavier row opens with each phase.
 // A map with a layout (`rules::builtin::layout`, or a map variant that
 // labels the same things) plays ordered phases: its `siege_site` flags are
 // numbered by phase, only a site numbered for the phase counts (a later
@@ -35,10 +36,9 @@
 // advances it. Its starting locations are labelled `siege_attack` and
 // `siege_defend`, numbered by phase, and each phase's spawns are the
 // starts of its number (`spawn_areas`), the final assault's being the last
-// number. Each phase from the second hands out a heavier loadout tier to
-// both sides at their spawns (a picked set serves tier 0). A map with no
-// numbered site plays as the lines above say: any sites in any order,
-// spawns near them.
+// number. Each phase from the second opens a heavier loadout tier to
+// both sides to pick from. A map with no numbered site plays as the lines
+// above say: any sites in any order, spawns near them, the first tier.
 // docs/game/rules-engine.md, "Phases: attack and defend" and "Payoff";
 // docs/game/siege.md.
 //
@@ -91,13 +91,6 @@ option sites: int 1..4 = 2 "Sites" "How many territories the attackers take befo
 option wave_time: time 3s..30s = 10s "Respawn wave" "How long a side's dead wait to come back together"
 option overtime_time: time 5s..60s = 30s "Overtime" "The most a phase runs on past its clock while an attacker is on its objective"
 
-// What each side spawns with: the lobby picks one set for the game, and a
-// player's own pick before the round (the picker's rows are in this order)
-// takes its place.
-enum Kits { standard, close, ranged }
-
-option kits: Kits = Kits.standard "Loadouts" "The weapons each side spawns with: the standard set, close quarters or long range"
-
 // The HUD (docs/game/game-types-without-carriers.md, "The display"): the
 // front's state, a banner, and a mark over the front.
 hud front_row: text at koth.hill
@@ -108,35 +101,36 @@ waypoint front_mark at koth.mark
 // How many starting locations a side's spawns keep near its line.
 const line = 4
 
-table loadouts: (side: team, primary: weapon, secondary: weapon) = [
-    (team 0, "objects/weapons/rifle/battle_rifle/battle_rifle", "objects/weapons/pistol/magnum/magnum"),
-    (team 1, "objects/weapons/rifle/covenant_carbine/covenant_carbine", "objects/weapons/rifle/plasma_rifle/plasma_rifle"),
+// Each side's loadout rows, lightest first: the rows a phase opens are the
+// first of them (`tier_rows`). Row 0 is the default.
+table attack_rows: (primary: weapon, secondary: weapon) = [
+    ("objects/weapons/rifle/battle_rifle/battle_rifle", "objects/weapons/pistol/magnum/magnum"),
+    ("objects/weapons/rifle/shotgun/shotgun", "objects/weapons/pistol/magnum/magnum"),
+    ("objects/weapons/rifle/beam_rifle/beam_rifle", "objects/weapons/pistol/plasma_pistol/plasma_pistol"),
+    ("objects/weapons/rifle/sniper_rifle/sniper_rifle", "objects/weapons/rifle/smg/smg"),
+    ("objects/weapons/melee/energy_blade/energy_blade", "objects/weapons/rifle/covenant_carbine/covenant_carbine"),
 ]
 
-table close_loadouts: (side: team, primary: weapon, secondary: weapon) = [
-    (team 0, "objects/weapons/rifle/shotgun/shotgun", "objects/weapons/pistol/magnum/magnum"),
-    (team 1, "objects/weapons/rifle/brute_plasma_rifle/brute_plasma_rifle", "objects/weapons/pistol/needler/needler"),
+table defend_rows: (primary: weapon, secondary: weapon) = [
+    ("objects/weapons/rifle/covenant_carbine/covenant_carbine", "objects/weapons/rifle/plasma_rifle/plasma_rifle"),
+    ("objects/weapons/rifle/brute_plasma_rifle/brute_plasma_rifle", "objects/weapons/pistol/needler/needler"),
+    ("objects/weapons/rifle/sniper_rifle/sniper_rifle", "objects/weapons/pistol/magnum/magnum"),
+    ("objects/weapons/rifle/beam_rifle/beam_rifle", "objects/weapons/pistol/plasma_pistol/plasma_pistol"),
+    ("objects/weapons/support_high/rocket_launcher/rocket_launcher", "objects/weapons/rifle/battle_rifle/battle_rifle"),
 ]
 
-// Tier 1 (the second phase) and tier 2 (the final assault): the weapons
-// each side gains as the phases go on, in place of the set it started with.
-table tier1_loadouts: (side: team, primary: weapon, secondary: weapon) = [
-    (team 0, "objects/weapons/rifle/beam_rifle/beam_rifle", "objects/weapons/pistol/plasma_pistol/plasma_pistol"),
-    (team 1, "objects/weapons/rifle/sniper_rifle/sniper_rifle", "objects/weapons/pistol/magnum/magnum"),
-]
-
-table tier2_loadouts: (side: team, primary: weapon, secondary: weapon) = [
-    (team 0, "objects/weapons/melee/energy_blade/energy_blade", "objects/weapons/rifle/covenant_carbine/covenant_carbine"),
-    (team 1, "objects/weapons/support_high/rocket_launcher/rocket_launcher", "objects/weapons/rifle/battle_rifle/battle_rifle"),
-]
-
-table ranged_loadouts: (side: team, primary: weapon, secondary: weapon) = [
-    (team 0, "objects/weapons/rifle/sniper_rifle/sniper_rifle", "objects/weapons/rifle/smg/smg"),
-    (team 1, "objects/weapons/rifle/beam_rifle/beam_rifle", "objects/weapons/pistol/plasma_pistol/plasma_pistol"),
+// How many rows each side may pick from in a tier: the tier is the phase
+// (the first, the second, the final assault).
+table tier_rows: (attack: int, defend: int) = [
+    (2, 2),
+    (4, 4),
+    (5, 5),
 ]
 
 // The phases taken so far, and how many sites come before the final one.
 global var phase: int = 0
+// The loadout tier the phase opens: 0 on a map with no numbered sites.
+global var tier: int = 0
 // Whether the map's sites are numbered by phase (a layout), and how many
 // phases of sites it has.
 global var ordered: bool = false
@@ -175,8 +169,21 @@ fn line_up() {
     spawn_areas(team 1, siege_defend, phase)
 }
 
+// The rows of its side the tier opens to a player.
+fn offer_to(p: player) {
+    let rows = tier_rows[tier]
+    if p.team == team 0 {
+        offer(p, 0, rows.attack)
+    } else {
+        offer(p, 1, rows.defend)
+    }
+}
+
 fn begin(n: int) {
     phase = n
+    tier = 0
+    if ordered { tier = min(phase, 2) }
+    for each players p { offer_to(p) }
     clock = phase_time
     seen = -1
     overtime = false
@@ -297,11 +304,20 @@ fn release(side: team) {
 
 on round_start {
     over = false
+    tier = 0
     focus = none
-    offer_pick(0, "LOADOUT")
-    pick_row(0, "STANDARD")
-    pick_row(0, "CLOSE QUARTERS")
-    pick_row(0, "LONG RANGE")
+    offer_pick(0, "ATTACKER LOADOUT")
+    pick_row(0, "BATTLE RIFLE + MAGNUM")
+    pick_row(0, "SHOTGUN + MAGNUM")
+    pick_row(0, "BEAM RIFLE + PLASMA PISTOL")
+    pick_row(0, "SNIPER RIFLE + SMG")
+    pick_row(0, "ENERGY SWORD + CARBINE")
+    offer_pick(1, "DEFENDER LOADOUT")
+    pick_row(1, "CARBINE + PLASMA RIFLE")
+    pick_row(1, "BRUTE RIFLE + NEEDLER")
+    pick_row(1, "SNIPER RIFLE + MAGNUM")
+    pick_row(1, "BEAM RIFLE + PLASMA PISTOL")
+    pick_row(1, "ROCKET LAUNCHER + BATTLE RIFLE")
     pushers = 0
     banner_left = 0
     hud_show(banner_row, false)
@@ -449,22 +465,13 @@ on timer(wave1) {
 }
 
 on spawn(p) {
-    // The player's row of the picker, or -1 when none was made.
-    let own = picked(p, 0)
-    if ordered and phase == 1 {
-        let kit = tier1_loadouts[p.team]
-        set_loadout(p, kit.primary, kit.secondary)
-    } else if ordered and phase >= 2 {
-        let kit = tier2_loadouts[p.team]
-        set_loadout(p, kit.primary, kit.secondary)
-    } else if own == 1 or (own < 0 and kits == Kits.close) {
-        let kit = close_loadouts[p.team]
-        set_loadout(p, kit.primary, kit.secondary)
-    } else if own == 2 or (own < 0 and kits == Kits.ranged) {
-        let kit = ranged_loadouts[p.team]
+    offer_to(p)
+    let row = choice(p)
+    if p.team == team 0 {
+        let kit = attack_rows[row]
         set_loadout(p, kit.primary, kit.secondary)
     } else {
-        let kit = loadouts[p.team]
+        let kit = defend_rows[row]
         set_loadout(p, kit.primary, kit.secondary)
     }
 }

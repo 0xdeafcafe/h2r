@@ -353,6 +353,8 @@ pub mod id {
     pub const OFFER_PICK: u16 = 124;
     pub const PICK_ROW: u16 = 125;
     pub const PICKED: u16 = 126;
+    pub const OFFER: u16 = 127;
+    pub const CHOICE: u16 = 128;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -667,6 +669,14 @@ pub const ENTRIES: &[Entry] = &[
     act(id::OFFER_PICK, "offer_pick", &[Int, Text], Some("player.pick"), Now, Named),
     act(id::PICK_ROW, "pick_row", &[Int, Text], Some("player.pick"), Now, Named),
     vm(id::PICKED, "picked", &[Player, Int], Int),
+    // `offer(p, picker, count)`: opens the first `count` rows of `picker` to
+    // the player as their loadout window (`vm::Window`); `choice(p)` reads
+    // the row they last picked, 0 until one is. The host asks the player
+    // (`game::rules::world::choice`) and reports the pick
+    // (`vm::Vm::choose_loadout`), which refuses a row the window does not
+    // open. The state holds both, so a film replays them.
+    act(id::OFFER, "offer", &[Player, Int, Int], Some("player.pick"), Now, Named),
+    vm(id::CHOICE, "choice", &[Player], Int),
 ];
 
 /// The word `message(to, text)` takes for everyone.

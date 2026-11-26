@@ -358,6 +358,9 @@ impl Game for GuestGame<'_> {
             // The VM keeps the offers; the boundary asks the players
             // (`crate::rules::world::pick::plan`).
             id::OFFER_PICK | id::PICK_ROW => None,
+            // The VM keeps the loadout window; the boundary asks the player
+            // (`crate::rules::world::choice::plan`).
+            id::OFFER => None,
             id::TELEPORT => crate::rules::world::objects::plan(call).map(Call::Put),
             id::SET_LOADOUT => {
                 let tag = |n: usize| match call.args.get(n) {
