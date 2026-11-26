@@ -1,0 +1,570 @@
+{
+ "author": "h2recomp",
+ "base": {
+  "map": "zanzibar",
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+ },
+ "builder": {
+  "bots": 5,
+  "forge_build": 1,
+  "pathfind": 1
+ },
+ "description": "Siege on Zanzibar, labels only. PLACEHOLDER indices: every entry index here (flags 32760 and up, starts 32600 and up) is a name for a place not yet read off the map, and the map has no such entry, so the host skips these labels until a census gives each its real index.",
+ "format": 2,
+ "imports": [],
+ "ops": [
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 0,
+       "text": "siege_site"
+      },
+      "target": {
+       "base": {
+        "block": "netgame_flags",
+        "index": 32760
+       }
+      }
+     }
+    }
+   },
+   "id": 1
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 0,
+       "text": "siege_site"
+      },
+      "target": {
+       "base": {
+        "block": "netgame_flags",
+        "index": 32761
+       }
+      }
+     }
+    }
+   },
+   "id": 2
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 1,
+       "text": "siege_site"
+      },
+      "target": {
+       "base": {
+        "block": "netgame_flags",
+        "index": 32762
+       }
+      }
+     }
+    }
+   },
+   "id": 3
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 1,
+       "text": "siege_site"
+      },
+      "target": {
+       "base": {
+        "block": "netgame_flags",
+        "index": 32763
+       }
+      }
+     }
+    }
+   },
+   "id": 4
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "text": "siege_goal"
+      },
+      "target": {
+       "base": {
+        "block": "netgame_flags",
+        "index": 32764
+       }
+      }
+     }
+    }
+   },
+   "id": 5
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 0,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 32600
+       }
+      }
+     }
+    }
+   },
+   "id": 6
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 0,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 32601
+       }
+      }
+     }
+    }
+   },
+   "id": 7
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 0,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 32602
+       }
+      }
+     }
+    }
+   },
+   "id": 8
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 0,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 32603
+       }
+      }
+     }
+    }
+   },
+   "id": 9
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 1,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 32604
+       }
+      }
+     }
+    }
+   },
+   "id": 10
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 1,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 32605
+       }
+      }
+     }
+    }
+   },
+   "id": 11
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 1,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 32606
+       }
+      }
+     }
+    }
+   },
+   "id": 12
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 1,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 32607
+       }
+      }
+     }
+    }
+   },
+   "id": 13
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 32608
+       }
+      }
+     }
+    }
+   },
+   "id": 14
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 32609
+       }
+      }
+     }
+    }
+   },
+   "id": 15
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 32610
+       }
+      }
+     }
+    }
+   },
+   "id": 16
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 32611
+       }
+      }
+     }
+    }
+   },
+   "id": 17
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 0,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 32620
+       }
+      }
+     }
+    }
+   },
+   "id": 18
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 0,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 32621
+       }
+      }
+     }
+    }
+   },
+   "id": 19
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 0,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 32622
+       }
+      }
+     }
+    }
+   },
+   "id": 20
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 0,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 32623
+       }
+      }
+     }
+    }
+   },
+   "id": 21
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 1,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 32624
+       }
+      }
+     }
+    }
+   },
+   "id": 22
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 1,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 32625
+       }
+      }
+     }
+    }
+   },
+   "id": 23
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 1,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 32626
+       }
+      }
+     }
+    }
+   },
+   "id": 24
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 1,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 32627
+       }
+      }
+     }
+    }
+   },
+   "id": 25
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 32628
+       }
+      }
+     }
+    }
+   },
+   "id": 26
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 32629
+       }
+      }
+     }
+    }
+   },
+   "id": 27
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 32630
+       }
+      }
+     }
+    }
+   },
+   "id": 28
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 32631
+       }
+      }
+     }
+    }
+   },
+   "id": 29
+  }
+ ],
+ "recipes": [],
+ "sources": [],
+ "title": "Siege Zanzibar"
+}

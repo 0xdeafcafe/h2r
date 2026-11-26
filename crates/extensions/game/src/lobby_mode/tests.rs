@@ -917,6 +917,8 @@ mod gate {
         prefix: [u8; 8],
         reads: AtomicU32,
         forge_maps: Mutex<Vec<Option<String>>>,
+        /// The layout script each census read named.
+        layouts: Mutex<Vec<Option<String>>>,
     }
 
     impl Fake {
@@ -927,6 +929,7 @@ mod gate {
                 prefix: prefix(ir),
                 reads: AtomicU32::new(0),
                 forge_maps: Mutex::new(Vec::new()),
+                layouts: Mutex::new(Vec::new()),
             }
         }
 
@@ -940,8 +943,9 @@ mod gate {
     }
 
     impl Sources for Fake {
-        fn census(&self, _map: u32, forge_map: Option<&str>) -> Result<Census, String> {
+        fn census(&self, _map: u32, forge_map: Option<&str>, script: Option<&str>) -> Result<Census, String> {
             self.reads.fetch_add(1, Ordering::SeqCst);
+            self.layouts.lock().unwrap().push(script.map(str::to_owned));
             self.forge_maps
                 .lock()
                 .unwrap()
@@ -1051,6 +1055,42 @@ mod gate {
             let offers = g::map_filter_using(&siege.record, &sources).unwrap();
             assert_eq!(offers(MAP), starts, "{what}: the picker agrees with the start");
         }
+    }
+
+    /// Siege's check names its layout to the census; another script's names
+    /// none. A map with no layout keeps the labels its flags carry, so the
+    /// census is what it was without one.
+    #[test]
+    fn no_layout_keeps_builtin_labels() {
+        let siege = crate::community_variants::listed_named("Siege").unwrap();
+        let blob = crate::rules::feature::local_blob(siege.ext().script.prefix).unwrap();
+        let (ir, _) = ::rules::verify::load(&blob).unwrap();
+        let mut guest = lobby(MAP, siege.ext().script.prefix, true);
+        guest.put(VARIANT, siege.record.bytes());
+        let input = g::read(&guest, VARIANT).unwrap();
+        let sources = Fake::new(territory_map(), &ir);
+        assert_eq!(g::check(&input.key, &sources), Verdict::Clear);
+        assert_eq!(*sources.layouts.lock().unwrap(), [Some("siege".to_string())]);
+
+        let ir = script();
+        let sources = Fake::new(territory_map(), &ir);
+        let key = g::key_of(MAP, None, None);
+        assert_eq!(g::check(&key, &sources), Verdict::Clear);
+        let other = lobby(MAP, prefix(&ir), false);
+        let input = g::read(&other, VARIANT).unwrap();
+        let _ = g::check(&input.key, &sources);
+        assert!(sources.layouts.lock().unwrap().iter().all(Option::is_none));
+
+        // A map with no layout reads as it did: the territory keeps its label.
+        let rows = MapRows {
+            counts: [(BlockKind::NetgameFlags, 1)].into_iter().collect(),
+            flags: vec![FlagRow { kind: engine::objectives::kind::TERRITORY, team: 0 }],
+            ..MapRows::default()
+        };
+        assert!(crate::rules::census::layout_doc(Some("siege"), "lockout", &rows.counts).is_none());
+        let things = forge_doc::labelled(&rows, None).unwrap();
+        assert_eq!(things.len(), 1);
+        assert_eq!(things[0].label.text, "territory");
     }
 
     #[test]

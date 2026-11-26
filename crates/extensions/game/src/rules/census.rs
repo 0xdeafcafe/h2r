@@ -77,10 +77,23 @@ pub fn rows(m: &dyn GuestMemory) -> Result<MapRows, MemFault> {
 /// In a starting location: its team (`i16`; `scenario_layout`'s `team`).
 pub const START_TEAM: u32 = 0x10;
 
-/// The labelled things of the loaded game, by [`rows`] and no document.
+/// The labelled things of the loaded game with no layout: [`rows`] and the
+/// flags' built-in labels ([`things_for`] with no script).
 pub fn things(m: &dyn GuestMemory) -> Result<Vec<LabelledThing>, String> {
+    things_for(m, None)
+}
+
+/// The labelled things of the loaded game, by [`rows`] and the built-in
+/// layout of `script` on the loaded map ([`layout_doc`]), if there is one.
+/// A map with no layout, or a script with none, keeps the flags' built-in
+/// labels. The lobby's check reads the same layout
+/// (`super::gate::Sources::census`), so the check and the match agree.
+pub fn things_for(m: &dyn GuestMemory, script: Option<&str>) -> Result<Vec<LabelledThing>, String> {
     let rows = rows(m).map_err(|e| format!("guest memory at {:#x} faulted", e.addr))?;
-    let mut things = forge_doc::labelled(&rows, None).map_err(|e| e.to_string())?;
+    let layout = script
+        .and_then(|_| crate::health::loaded_map_name(m).ok())
+        .and_then(|map| layout_doc(script, &map, &rows.counts));
+    let mut things = forge_doc::labelled(&rows, layout.as_ref()).map_err(|e| e.to_string())?;
     // The areas a Studio map was saved with (`crate::map_areas`).
     let saved = crate::map_areas::current();
     if !saved.is_empty()
@@ -89,6 +102,47 @@ pub fn things(m: &dyn GuestMemory) -> Result<Vec<LabelledThing>, String> {
         crate::map_areas::attach(&mut things, &flags, &saved);
     }
     Ok(things)
+}
+
+/// The layout `ir`'s script reads, by the name `rules::builtin::layout`
+/// keys it: Siege, found by the label it declares for its sites.
+pub fn layout_script(ir: &Ir) -> Option<&'static str> {
+    ir.labels.iter().any(|l| l.text == "siege_site").then_some("siege")
+}
+
+/// The built-in layout of `script` on the map `map` (its short name) as a
+/// document over a map whose block counts are `counts`: its label ops on
+/// entries the map has. An op on an entry the map lacks is skipped, which
+/// is what a placeholder index (a place not yet read off the map) is, so a
+/// layout never blocks a map. None for a script or map with no layout.
+pub fn layout_doc(
+    script: Option<&str>,
+    map: &str,
+    counts: &std::collections::BTreeMap<BlockKind, u32>,
+) -> Option<forge_doc::ForgeDoc> {
+    let json = ::rules::builtin::layout(script?, &map.to_ascii_lowercase())?;
+    let mut doc = match forge_doc::ForgeDoc::from_bytes(json.as_bytes(), &forge_doc::Limits::default()) {
+        Ok(doc) => doc,
+        Err(e) => {
+            eprintln!("rules: the built-in layout of {map} does not read, the map keeps its own labels: {e}");
+            return None;
+        }
+    };
+    retain_present(&mut doc, counts);
+    Some(doc)
+}
+
+/// Drops `doc`'s label ops on base entries a map of block counts `counts`
+/// lacks, and sets the format the rest need.
+fn retain_present(doc: &mut forge_doc::ForgeDoc, counts: &std::collections::BTreeMap<BlockKind, u32>) {
+    use forge_doc::{Edit, Endpoint, Forge};
+    doc.ops.retain(|op| match &op.edit {
+        Edit::Forge(Forge::Label { target: Endpoint::Base { block, index, .. }, .. }) => {
+            counts.get(block).is_some_and(|n| index < n)
+        }
+        _ => true,
+    });
+    doc.format = doc.required_format();
 }
 
 /// The census of `things`, with no tags (the game holds no tag paths).
@@ -348,5 +402,62 @@ mod tests {
         let text = forge::GroundLabel::Barrier.text();
         let def = ir.labels.iter().find(|l| l.text == text).expect("Siege declares the barrier label");
         assert_eq!(def.text, "siege_barrier");
+    }
+
+    /// A layout's labels are what a script reads: its sites are numbered,
+    /// its starts labelled, and an op on an entry the map lacks is skipped.
+    #[test]
+    fn a_layout_numbers_sites_and_labels_starts() {
+        use forge_doc::{FlagRow, MapRows};
+        let rows = MapRows {
+            counts: [(BlockKind::NetgameFlags, 3), (BlockKind::StartingLocations, 2)].into(),
+            flags: vec![FlagRow { kind: 10, team: 0 }, FlagRow { kind: 10, team: 0 }, FlagRow { kind: 0, team: 1 }],
+            starts: vec![0, 1],
+            ..MapRows::default()
+        };
+        // Without a layout the territories keep their built-in label.
+        let plain = forge_doc::labelled(&rows, None).unwrap();
+        assert!(plain.iter().filter(|t| t.block == BlockKind::NetgameFlags).take(2).all(|t| t.label.text == "territory" && t.label.number.is_none()));
+        assert!(plain.iter().all(|t| t.class != Class::Spawn));
+
+        // A layout over invented entries: two sites in phase 0 and 1, a
+        // start of each side, and one op on an entry the map lacks.
+        let op = |id: u32, block: &str, index: u32, text: &str, number: Option<u32>| {
+            let number = number.map(|n| format!(r#","number":{n}"#)).unwrap_or_default();
+            format!(r#"{{"edit":{{"forge":{{"label":{{"label":{{"text":"{text}"{number}}},"target":{{"base":{{"block":"{block}","index":{index}}}}}}}}}}},"id":{id}}}"#)
+        };
+        let ops = [
+            op(1, "netgame_flags", 0, "siege_site", Some(0)),
+            op(2, "netgame_flags", 1, "siege_site", Some(1)),
+            op(3, "starting_locations", 0, "siege_attack", Some(0)),
+            op(4, "starting_locations", 1, "siege_defend", Some(0)),
+            op(5, "starting_locations", 32000, "siege_attack", Some(2)),
+        ]
+        .join(",");
+        let json = format!(
+            r#"{{"author":"t","base":{{"map":"m","sha256":"{}"}},"builder":{{"bots":5,"forge_build":1,"pathfind":1}},"description":"","format":2,"imports":[],"ops":[{ops}],"recipes":[],"sources":[],"title":"t"}}"#,
+            "0".repeat(64)
+        );
+        let mut doc = forge_doc::ForgeDoc::from_bytes(json.as_bytes(), &forge_doc::Limits::default()).unwrap();
+        retain_present(&mut doc, &rows.counts);
+        let things = forge_doc::labelled(&rows, Some(&doc)).unwrap();
+        let find = |block, index| things.iter().find(|t| t.block == block && t.index == index).unwrap();
+        let site = find(BlockKind::NetgameFlags, 1);
+        assert_eq!((site.label.text.as_str(), site.label.number), ("siege_site", Some(1)));
+        let start = find(BlockKind::StartingLocations, 0);
+        assert_eq!((start.label.text.as_str(), start.label.number, start.class, start.team), ("siege_attack", Some(0), Class::Spawn, Some(0)));
+        let start = find(BlockKind::StartingLocations, 1);
+        assert_eq!((start.label.text.as_str(), start.team), ("siege_defend", Some(1)));
+        assert_eq!(find(BlockKind::NetgameFlags, 2).label.text, "ctf_flag_spawn", "an unlabelled flag keeps its built-in label");
+        assert_eq!(things.iter().filter(|t| t.class == Class::Spawn).count(), 2, "the op on a missing start is skipped");
+
+        // The shipped Zanzibar layout is all placeholders: it labels nothing
+        // on a map that lacks them, and reads as a document.
+        let doc = layout_doc(Some("siege"), "Zanzibar", &rows.counts).unwrap();
+        assert!(doc.ops.is_empty());
+        assert_eq!(forge_doc::labelled(&rows, Some(&doc)).unwrap(), plain);
+        assert!(layout_doc(Some("siege"), "lockout", &rows.counts).is_none());
+        assert!(layout_doc(None, "zanzibar", &rows.counts).is_none());
+        assert_eq!(layout_script(&siege_ir()), Some("siege"));
     }
 }

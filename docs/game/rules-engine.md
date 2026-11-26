@@ -389,7 +389,9 @@ the starting locations' team at `scnr+0x100`) and builds the labelled
 things with `forge_doc::labelled`: each flag with its type's built-in
 label, and what the session's Forge document labels. At a game's start a
 session has no document (a Forge session loads its draft at its first
-tick), so the host's things are the flags' built-in labels. The script
+tick), so the host's things are the flags' built-in labels, with one
+addition: a script that has a built-in map layout reads it as the
+document ("Map layouts" below). The script
 holds a labelled thing by a handle of our own, `0x4000_0000` with the
 placement id (the block's number times 65,536 plus the final index): a
 flag has no object datum. `objects labelled` visits the things with the
@@ -398,6 +400,24 @@ none); `zone.label` is the script's label of that text; `zone.id` the
 placement id; `o.team` a flag's team through its designator
 (`E+0x10 + 2d`), or an objective record's `+4` on CTF and Assault, with
 neutral as `none`.
+
+**Map layouts.** A built-in layout is a labels-only Forge document
+(`Tier::Variant`: label ops on base entries and nothing else), one per
+script and map in `crates/formats/rules/src/builtin/layouts/<script>/<map>.json`
+(`rules::builtin::layout(script, map)`). `census::things_for` applies the
+layout of the running script on the loaded map (`census::layout_script`
+finds Siege by its `siege_site` label; the map's short name is the cache
+header's), so a site gets its number and a starting location its
+`siege_attack` or `siege_defend` label. The lobby's check applies the same
+layout (`gate::Sources::census` takes the script), and a Forge map the lobby
+picked replaces it, so the check and the match agree. A map with no layout
+keeps the flags' built-in labels. A label op on an entry the map lacks is
+skipped (`census::layout_doc`), which is what a placeholder index is: a
+layout names a place it has not yet read off the map (Zanzibar's file is
+all placeholders) and a census fills in the real index later. Readers that
+need only the flags' places (`world/walls.rs` on a client, the HUD
+publisher, the Forge play forms) read `census::things`, which applies no
+layout.
 
 **Zones.** `inside`, `ticks_held`, `on enter` and `on leave` test the
 host's zones (`rules/world/zones.rs`), each one a labelled netgame flag:
