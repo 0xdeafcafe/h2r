@@ -668,6 +668,11 @@ pub struct Seat {
     pub flags: u32,
     /// Pitch auto-level and range, then yaw range (raw float words).
     pub camera_angles: [u32; 5],
+    /// `0x7c` the yaw rate and `0x80` the pitch rate, the two floats
+    /// before the camera marker (raw words, radians a second). E: Halo
+    /// 1's seat order, acceleration scale, yaw rate, pitch rate, camera
+    /// marker; the camera marker sits at `0x84`.
+    pub rates: [u32; 2],
     /// `0x04` the label scripts name the seat by (`W-driver`, `CT-driver`),
     /// 32 characters.
     pub label: String,
@@ -784,6 +789,7 @@ impl Unit {
                     flags: u32_at(e, 0),
                     label: name32(e, 4),
                     camera_angles: [0xc4, 0xc8, 0xcc, 0xf0, 0xf4].map(|at| u32_at(e, at)),
+                    rates: [0x7c, 0x80].map(|at| u32_at(e, at)),
                     marker: name32(e, 0x24),
                     camera_marker: name32(e, 0x84),
                     camera_tracks,

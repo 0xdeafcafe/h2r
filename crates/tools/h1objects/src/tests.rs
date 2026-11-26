@@ -814,6 +814,7 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
     };
     let seat = crate::h1::Seat {
         camera_angles: [0; 5],
+        rates: [0; 2],
         flags: 0x1d,
         label: "CT-driver".into(),
         marker: "driver".into(),
@@ -2655,6 +2656,10 @@ fn drive_vehicle_keeps_halo1_and_takes_the_counterpart_drive(
         })
         .collect();
     drive.set(block, Val::Block(their_points)).unwrap();
+    let seat_def = def.child(VEHI_SEATS).unwrap();
+    let mut their_seat = defs::default_record(seat_def);
+    their_seat.set("flags", Val::Flags(crate::rebuild::SEAT_DRIVER)).unwrap();
+    drive.set(VEHI_SEATS, Val::Block(vec![their_seat])).unwrap();
 
     let obj = crate::h1::Object {
         texture_override: 0,
@@ -2675,6 +2680,7 @@ fn drive_vehicle_keeps_halo1_and_takes_the_counterpart_drive(
     };
     let seat = crate::h1::Seat {
         camera_angles: [0; 5],
+        rates: [0; 2],
         flags: 0x1d,
         label: "driver".into(),
         marker: "driver".into(),
@@ -2897,4 +2903,140 @@ fn no_halo1_drive_code_remains() {
     assert!(!tags.contains("direct_drive") && !tags.contains("h1_flight"));
     let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../extensions/game/src/h1_drive.rs");
     assert!(!std::path::Path::new(file).exists());
+}
+
+/// Builds a vehicle with Halo 1 seats `(flags, [yaw, pitch rate])` on a
+/// counterpart whose seats are `(flags, entry radius, prompt)`, or on none
+/// (a turret).
+#[cfg(test)]
+fn seat_vehicle(
+    h1_seats: &[(u32, [f32; 2])],
+    counterpart: Option<&[(u32, f32, &str)]>,
+) -> tags::defs::Record {
+    use crate::rebuild::{VEHI_SEATS, VehicleSpec};
+    use tags::defs::{self, Defs, Val};
+    let def = Defs::builtin().group(map::FourCC(*b"vehi")).unwrap();
+    let drive = counterpart.map(|seats| {
+        let mut d = defs::default_record(def);
+        d.set("vehicle_type", Val::Enum(1)).unwrap();
+        let seat_def = def.child(VEHI_SEATS).unwrap();
+        let block = seats
+            .iter()
+            .map(|(flags, radius, prompt)| {
+                let mut e = defs::default_record(seat_def);
+                e.set("flags", Val::Flags(*flags)).unwrap();
+                e.set("entry_radius", Val::Float(*radius)).unwrap();
+                e.set("entry_marker_facing_angle", Val::Float(radius * 2.0)).unwrap();
+                e.set("maximum_relative_velocity", Val::Float(radius * 3.0)).unwrap();
+                e.set("enter_seat_string", Val::text(prompt)).unwrap();
+                e.set("ai_seat_role", Val::Enum((*radius as u32).into())).unwrap();
+                e
+            })
+            .collect();
+        d.set(VEHI_SEATS, Val::Block(block)).unwrap();
+        d
+    });
+    let obj = crate::h1::Object {
+        texture_override: 0,
+        object_type: 1,
+        acceleration_scale: 0.0,
+        flags: 0,
+        bounding_radius: 0.9,
+        bounding_offset: [0.0, 0.0, 0.45],
+        model: None,
+        animation: None,
+        collision: None,
+        physics: None,
+        modifier_shader: None,
+        creation_effect: None,
+        attachments: Vec::new(),
+        widgets: Vec::new(),
+        change_colours: Vec::new(),
+    };
+    let seats: Vec<_> = h1_seats
+        .iter()
+        .map(|(flags, rates)| {
+            let seat = crate::h1::Seat {
+                camera_angles: [0; 5],
+                rates: rates.map(f32::to_bits),
+                flags: *flags,
+                label: "seat".into(),
+                marker: "seat".into(),
+                camera_marker: String::new(),
+                camera_tracks: Vec::new(),
+            };
+            crate::rebuild::seat_names(&seat, &[])
+        })
+        .collect();
+    let root = crate::rebuild::vehicle_with_tuning(
+        &VehicleSpec {
+            source: &[],
+            references: &[],
+            object: &obj,
+            bounds: None,
+            hlmt: None,
+            seats: &seats,
+            predicted: &[],
+            camera_field_of_view: 1.0,
+            vehicle_type: 1,
+            flags: 0,
+            weapons: &[],
+            points: &[],
+            attachments: &[],
+            functions: &[],
+            creation_effect: None,
+        },
+        None,
+        drive.as_ref(),
+    )
+    .unwrap();
+    defs::from_built(def, &root).unwrap()
+}
+
+/// A seat takes its entry prompt and AI role from the paired counterpart
+/// seat, and its turn rates from Halo 1.
+#[test]
+fn seats_have_prompts_and_turn_rates() {
+    use crate::rebuild::{SEAT_DRIVER, SEAT_GUNNER};
+    use tags::defs::Val;
+    let got = seat_vehicle(
+        &[(SEAT_DRIVER, [0.0, 0.0]), (SEAT_GUNNER, [1.5, 0.75])],
+        Some(&[(SEAT_GUNNER, 4.0, "gunner prompt"), (SEAT_DRIVER, 2.0, "driver prompt")]),
+    );
+    assert_eq!(got.at("seats[0].enter_seat_string"), Some(&Val::text("driver prompt")));
+    assert_eq!(got.at("seats[1].enter_seat_string"), Some(&Val::text("gunner prompt")));
+    assert_eq!(got.at("seats[1].ai_seat_role"), Some(&Val::Enum(4)));
+    assert_eq!(got.at("seats[1].yaw_rate_bounds"), Some(&Val::floats(&[0.0, 1.5])));
+    assert_eq!(got.at("seats[1].pitch_rate_bounds"), Some(&Val::floats(&[0.0, 0.75])));
+}
+
+/// Seats of one kind pair in order, the extra ones with the last; a
+/// counterpart-driven seat keeps the no-region word and its paired seat's
+/// entry numbers, and a turret holds the turret role whole.
+#[test]
+fn each_seat_gets_its_own_entry_role() {
+    use crate::rebuild::{SEAT_DRIVER, SEAT_GUNNER, SeatKind, TURRET_SEAT_ROLE, seat_kind};
+    assert_eq!(seat_kind(SEAT_DRIVER | SEAT_GUNNER), SeatKind::Driver);
+    assert_eq!(seat_kind(0), SeatKind::Passenger);
+    let ours = [(SEAT_DRIVER, [0.0; 2]), (0, [0.0; 2]), (0, [0.0; 2]), (0, [0.0; 2])];
+    let got = seat_vehicle(
+        &ours,
+        Some(&[(SEAT_DRIVER, 2.0, "d"), (0, 5.0, "p0"), (0, 6.0, "p1")]),
+    );
+    for (i, want) in [2.0f32, 5.0, 6.0, 6.0].into_iter().enumerate() {
+        let word = |name: &str| got.bytes(&format!("seats[{i}].{name}"), 4).unwrap();
+        assert_eq!(word("entry_radius"), want.to_le_bytes().to_vec(), "seat {i}");
+        assert_eq!(word("entry_marker_facing_angle"), (want * 2.0).to_le_bytes().to_vec());
+        assert_eq!(word("invisible_seat_region_index"), u32::MAX.to_le_bytes().to_vec());
+        // The facing test stays open: Halo 1's entry markers face forward.
+        assert_eq!(word("entry_marker_cone_angle"), std::f32::consts::PI.to_le_bytes().to_vec());
+    }
+    // A gunner with no counterpart gunner takes the counterpart's first seat.
+    let got = seat_vehicle(&[(SEAT_GUNNER, [0.0; 2])], Some(&[(SEAT_DRIVER, 2.0, "d")]));
+    assert_eq!(got.bytes("seats[0].entry_radius", 4).unwrap(), 2.0f32.to_le_bytes().to_vec());
+    // A turret has no counterpart and holds the turret role.
+    let got = seat_vehicle(&[(SEAT_GUNNER, [0.0; 2])], None);
+    for (path, word) in TURRET_SEAT_ROLE {
+        assert_eq!(got.bytes(&format!("seats[0].{path}"), 4).unwrap(), word.to_le_bytes().to_vec(), "{path}");
+    }
 }

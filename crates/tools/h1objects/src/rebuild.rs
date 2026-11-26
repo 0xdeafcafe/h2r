@@ -356,6 +356,66 @@ pub const TURRET_SEAT_ROLE: &[(&str, u32)] = &[
     ("invisible_seat_region_index", 0xffff_ffff),
 ];
 
+/// What every rebuilt seat holds, turret or not: no hidden region (the
+/// rider's model has none of Halo 2's region indices).
+pub const SEAT_NO_REGION: &[(&str, u32)] = &[("invisible_seat_region_index", 0xffff_ffff)];
+
+/// The seat fields a rebuilt seat takes from its counterpart's paired
+/// seat: the entry prompt, the HUD, the AI's role and the built-in
+/// gunner.
+pub const SEAT_PROMPT_FIELDS: &[&str] =
+    &["enter_seat_string", "unit_hud_interface", "ai_seat_role", "built_in_gunner"];
+
+/// The entry tests a rebuilt seat takes from its counterpart's paired
+/// seat: the reach, the facing angle and the relative speed. Not
+/// [`SEAT_ENTRY_FACING`], which holds [`ANY_FACING`] on every seat.
+pub const SEAT_ENTRY_FIELDS: &[&str] =
+    &["entry_radius", "entry_marker_facing_angle", "maximum_relative_velocity"];
+
+/// A seat's part in its vehicle, which pairs a Halo 1 seat with a
+/// counterpart seat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SeatKind {
+    Driver,
+    Gunner,
+    Passenger,
+}
+
+/// Halo 1's seat flags bits ([`SEAT_DRIVER`], [`SEAT_GUNNER`]) are
+/// Halo 2's, so one reading serves both vehicles' seats; driver wins.
+pub fn seat_kind(flags: u32) -> SeatKind {
+    if flags & SEAT_DRIVER != 0 {
+        SeatKind::Driver
+    } else if flags & SEAT_GUNNER != 0 {
+        SeatKind::Gunner
+    } else {
+        SeatKind::Passenger
+    }
+}
+
+/// The counterpart seat Halo 1's seat `i` of `kinds` pairs with
+/// ([`PAIR_SEATS`]): the `n`th counterpart seat of its kind, where `n` is
+/// how many Halo 1 seats of that kind precede it; past the last such
+/// seat, the last; with none of the kind, the counterpart's first.
+pub fn counterpart_seat<'a>(seats: &'a [Record], kinds: &[SeatKind], i: usize) -> Option<&'a Record> {
+    let kind = kinds[i];
+    let n = kinds[..i].iter().filter(|k| **k == kind).count();
+    let same: Vec<_> = seats
+        .iter()
+        .filter(|s| {
+            s.bytes(SEAT_FLAGS, 4)
+                .map(|b| seat_kind(u32::from_le_bytes(b.try_into().expect("four bytes"))) == kind)
+                .unwrap_or(false)
+        })
+        .collect();
+    same.get(n).or(same.last()).copied().or(seats.first())
+}
+
+/// How a Halo 1 seat pairs with a counterpart seat: by kind ([`SeatKind`])
+/// and order within the kind ([`counterpart_seat`]). A turret (a vehicle
+/// with no counterpart) pairs with none and holds [`TURRET_SEAT_ROLE`].
+pub const PAIR_SEATS: &str = "by kind, then order";
+
 /// Unassigned shape indices in the one physics element every vehicle has
 /// (`vehi +0x2f8`, `0x2a0`): four `-1` halves; the rest of a turret's is
 /// zero.
@@ -562,6 +622,9 @@ pub struct SeatNames {
     /// sits far above the hull.
     pub camera_track: Option<TagId>,
     pub camera_angles: [u32; 5],
+    /// `yaw_rate_bounds` and `pitch_rate_bounds`' upper bounds: Halo 1's
+    /// seat rates (`h1::Seat::rates`), raw float words.
+    pub rates: [u32; 2],
     /// Halo 1's seat flags ([`seat_flags`]).
     pub flags: u32,
 }
@@ -650,6 +713,7 @@ pub fn seat_names(seat: &h1::Seat, markers: &[String]) -> SeatNames {
         camera_marker: found(&seat.camera_marker),
         camera_track: None,
         camera_angles: seat.camera_angles,
+        rates: seat.rates,
         flags: seat.flags,
     }
 }
@@ -1101,10 +1165,34 @@ pub(crate) fn vehicle_with_tuning(
     set(&mut r, "unit.weapons", Val::Block(weapons))?;
     let seat_def = d.child(VEHI_SEATS).expect("vehi seats");
     let mut out = Vec::new();
+    let kinds: Vec<_> = v.seats.iter().map(|s| seat_kind(s.flags)).collect();
+    let counterpart_seats: &[Record] = match drive.map(|d| d.at(VEHI_SEATS)) {
+        Some(Some(Val::Block(b))) if !b.is_empty() => b.as_slice(),
+        Some(_) => {
+            return Err(Error::Invalid("the counterpart holds no seats".into()));
+        }
+        None => &[],
+    };
     for (i, s) in v.seats.iter().enumerate() {
         let scope = format!("{VEHI_SEATS}[{i}].");
         let mut e = defs::default_record(seat_def);
-        role(&mut e, &scope, TURRET_SEAT_ROLE)?;
+        // A turret has no counterpart and holds the retail turret seat's
+        // entry tests; any other seat takes its paired seat's.
+        match counterpart_seat(counterpart_seats, &kinds, i) {
+            None => role(&mut e, &scope, TURRET_SEAT_ROLE)?,
+            Some(from) => {
+                role(&mut e, &scope, SEAT_NO_REGION)?;
+                for name in SEAT_PROMPT_FIELDS.iter().chain(SEAT_ENTRY_FIELDS) {
+                    if let Some(val) = from.at(name) {
+                        set(&mut e, name, val.clone())?;
+                    }
+                }
+            }
+        }
+        // Halo 1 turns the seat at its own rates.
+        for (path, bits) in [("yaw_rate_bounds", s.rates[0]), ("pitch_rate_bounds", s.rates[1])] {
+            set(&mut e, path, Val::floats(&[0.0, f32::from_bits(bits)]))?;
+        }
         set(&mut e, SEAT_FLAGS, Val::Bytes(seat_flags(s.flags, 0).to_le_bytes().to_vec()))?;
         // Halo 1's entry markers face the vehicle's forward, not the way a
         // rider comes from, so no facing test applies to them.
