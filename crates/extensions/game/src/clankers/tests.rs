@@ -1433,3 +1433,76 @@ fn two_team_firefight_balances_clankers() {
     let reds = held.iter().filter(|&&t| t == 0).count();
     assert_eq!((reds, held.len() - reds), (3, 3), "{held:?}");
 }
+
+/// A ranked clanker hopper's phantoms carry a rank for the lobby's rows:
+/// Live's level when the roster has one, else one from the name inside the
+/// difficulty's band.
+#[test]
+fn a_ranked_clankermatchs_phantoms_carry_a_rank() {
+    use std::time::{Duration, Instant};
+    const SESSION: &str = "00000000000000c7";
+    let (live, ph, d) = clankermatch(SESSION, hopper(8, 8, 0));
+    let t0 = Instant::now();
+    d.tick_match(t0);
+    let mut r = roster(SESSION, 7, 0.5);
+    r.bots[0].rank = Some(live_proto::bots::BotRank {
+        level: 20,
+        playlist: "8".into(),
+    });
+    live.answer(0, Ok(r));
+    d.tick_match(t0 + Duration::from_secs(60));
+    let list = ph.list();
+    assert_eq!(list.len(), 7);
+    let first = ph.rank_of(list[0].handle).expect("a rank");
+    assert_eq!(first, bots::phantom::session::Rank::of_level(20), "Live's level");
+    assert_eq!(first.level, 19, "stored from zero, as the stats read gives it");
+    for p in &list[1..] {
+        let rank = ph.rank_of(p.handle).expect("a rank");
+        // Heroic's band is levels 26 to 40.
+        assert!((25..=39).contains(&rank.level), "{}: {rank:?}", p.identity.gamertag);
+        let again = starting_level(&p.identity.gamertag, Skill::Heroic);
+        assert_eq!(rank, bots::phantom::session::Rank::of_level(again), "stable by name");
+    }
+}
+
+/// An unranked clanker hopper's phantoms carry none: nothing changes.
+#[test]
+fn an_unranked_clankermatchs_phantoms_carry_no_rank() {
+    use std::time::{Duration, Instant};
+    const SESSION: &str = "00000000000000c8";
+    let mut mark = hopper(15, 8, 0);
+    mark.ranked = false;
+    let (live, ph, d) = clankermatch(SESSION, mark);
+    let t0 = Instant::now();
+    d.tick_match(t0);
+    let mut r = roster(SESSION, 7, 0.5);
+    r.bots[0].rank = Some(live_proto::bots::BotRank {
+        level: 20,
+        playlist: "15".into(),
+    });
+    live.answer(0, Ok(r));
+    d.tick_match(t0 + Duration::from_secs(60));
+    let list = ph.list();
+    assert_eq!(list.len(), 7);
+    assert!(list.iter().all(|p| ph.rank_of(p.handle).is_none()));
+}
+
+#[test]
+fn a_starting_level_is_stable_and_inside_the_difficulty_band() {
+    for (skill, low, high) in [
+        (Skill::Easy, 1, 10),
+        (Skill::Normal, 11, 25),
+        (Skill::Heroic, 26, 40),
+        (Skill::Legendary, 41, 50),
+    ] {
+        for name in ["Rusty Lugnut", "rusty  lugnut", "Bolt", "Q"] {
+            let l = starting_level(name, skill);
+            assert!((low..=high).contains(&l), "{name} {skill:?}: {l}");
+            assert_eq!(l, starting_level(name, skill));
+        }
+    }
+    assert_eq!(
+        starting_level("Rusty Lugnut", Skill::Normal),
+        starting_level("RUSTY LUGNUT", Skill::Normal),
+    );
+}

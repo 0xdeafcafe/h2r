@@ -259,6 +259,32 @@ pub struct RosterSeat {
     pub skill: Skill,
     /// Seed for moment-to-moment play. The gamertag determines trait weights.
     pub seed: u64,
+    /// The level (1 to 50) Live rostered it at in the playlist: its own
+    /// standing for a persistent bot, the humans' for a made-up one.
+    /// `None` for a host-made bot.
+    pub level: Option<u8>,
+}
+
+/// The level (1 to 50) a host-made Clanker starts at in a ranked hopper,
+/// when Live has no record of it: a stable draw from its name inside its
+/// difficulty's band (Easy 1 to 10, Normal 11 to 25, Heroic 26 to 40,
+/// Legendary 41 to 50). Never saved; the name gives the same level every
+/// game.
+pub fn starting_level(name: &str, skill: Skill) -> u8 {
+    let (low, high) = match skill {
+        Skill::Easy => (1, 10),
+        Skill::Normal => (11, 25),
+        Skill::Heroic => (26, 40),
+        Skill::Legendary => (41, 50),
+    };
+    let mut h = 2_166_136_261u32;
+    for b in name.to_lowercase().split_whitespace().flat_map(|w| w.bytes().chain([b' '])) {
+        h = (h ^ u32::from(b)).wrapping_mul(16_777_619);
+    }
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2c1b_3c6d);
+    h ^= h >> 12;
+    low + (h % (u32::from(high - low) + 1)) as u8
 }
 
 /// A checked roster supplies the identity, team and brain. The player
@@ -275,6 +301,7 @@ pub fn roster_seats(roster: &live_proto::bots::Roster) -> Vec<RosterSeat> {
             team: b.team,
             skill: skill_of(b.skill),
             seed: b.personality.seed,
+            level: b.rank.as_ref().map(|r| r.level),
         })
         .collect()
 }
@@ -408,6 +435,8 @@ struct Fill {
     /// The host player's team ([`Driver::set_host_team`]), followed until
     /// the first bot sits, then kept: a bot's team does not change.
     host_team: Option<u8>,
+    /// The hopper's mark says it ranks its games.
+    ranked: bool,
 }
 
 /// A Clankermatch ends this long after its console last hosted a session:
@@ -472,6 +501,8 @@ struct Seating {
     /// The people the bots balance around, all on `host_team` (a party
     /// keeps together in a team playlist).
     humans: usize,
+    /// The hopper ranks its games: its phantoms' lobby rows show a rank.
+    ranked: bool,
 }
 
 impl Seating {
@@ -488,6 +519,7 @@ impl Seating {
                 skill: None,
                 host_team: f.host_team.filter(|t| u32::from(*t) < f.teams).unwrap_or(0),
                 humans: f.humans.max(1),
+                ranked: f.ranked,
             },
             None => Seating {
                 count,
@@ -497,6 +529,7 @@ impl Seating {
                 skill: request_skill(want.difficulty),
                 host_team: 0,
                 humans: 1,
+                ranked: false,
             },
         }
     }
@@ -1146,6 +1179,7 @@ impl Driver {
                             team: None,
                             skill: k,
                             seed: 0xc1a4_0000 ^ u64::from(n),
+                            level: None,
                         },
                         false,
                     )
@@ -1195,8 +1229,17 @@ impl Driver {
                 if rostered { ", rostered" } else { "" }
             );
             let xuid = seat.identity.xuid;
+            // A ranked hopper's lobby shows a rank for each: Live's level
+            // for it, else one from its name and difficulty.
+            let rank = seating.ranked.then(|| {
+                let level = seat
+                    .level
+                    .unwrap_or_else(|| starting_level(&seat.identity.gamertag, seat.skill));
+                bots::phantom::session::Rank::of_level(level)
+            });
             match self.phantoms.add(seat.identity, seat.team, Box::new(src)) {
                 Ok(h) => {
+                    let _ = self.phantoms.set_rank(h, rank);
                     log.push(format!("{name} on ({:?})", seat.skill));
                     own.push(Own {
                         seat: Seat { number: n, handle: h },
@@ -1457,6 +1500,7 @@ impl Driver {
                         gone: None,
                         played: false,
                         host_team,
+                        ranked: mark.ranked,
                     });
                     true
                 }

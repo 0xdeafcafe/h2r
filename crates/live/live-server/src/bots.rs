@@ -355,6 +355,13 @@ impl Live {
         {
             return Err(invalid("playlist must be [A-Za-z0-9_-]{1,64}"));
         }
+        // A clanker hopper's bots stand in its rank playlist (its own, or
+        // `ranks_as`'s): where its games rank and the lobby's stat read
+        // answers (docs/game/bots.md §9.4 item 1).
+        let rank_playlist = match &req.playlist {
+            Some(p) => Some(self.clanker_rank_playlist(p).await.unwrap_or_else(|| p.clone())),
+            None => None,
+        };
         let (count, picked, mean, kept, firefight) = {
             let s = self.model.read();
             // A handoff: the earlier session's bots first, as they were.
@@ -398,7 +405,7 @@ impl Live {
                 (count, Vec::new(), None, kept, firefight)
             } else {
                 let need = count - kept.len();
-                let (picked, mean) = match &req.playlist {
+                let (picked, mean) = match &rank_playlist {
                     Some(p) => {
                         let levels: u32 = humans
                             .iter()
@@ -430,7 +437,7 @@ impl Live {
         };
         let made = self.issue(count - kept.len() - picked.len(), false).await?;
         let mean_level = mean.unwrap_or(live_proto::rank::MIN_LEVEL);
-        let skill_at = |level: u8| match (&req.playlist, req.skill) {
+        let skill_at = |level: u8| match (&rank_playlist, req.skill) {
             (Some(_), _) => live_proto::rank::bot_skill(level),
             (None, Some(k)) => k,
             (None, None) => bots::NORMAL,
@@ -450,7 +457,7 @@ impl Live {
         let rostered = Rostered {
             session_id: req.session_id.clone(),
             host,
-            playlist: req.playlist.clone(),
+            playlist: rank_playlist.clone(),
             bots: entries
                 .iter()
                 .enumerate()
@@ -474,7 +481,7 @@ impl Live {
                     persistent: b.persistent,
                     emblem: b.emblem,
                     colors: b.colors,
-                    rank: req.playlist.as_ref().map(|p| bots::BotRank {
+                    rank: rank_playlist.as_ref().map(|p| bots::BotRank {
                         level: *level,
                         playlist: p.clone(),
                     }),

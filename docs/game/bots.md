@@ -3830,6 +3830,23 @@ bytes), and they finished with 2 kills to the host's 24.
   the lobby's balancing gives the phantom one. Everything a lobby or a
   game checks of a joining player is otherwise in its peer properties,
   which stay the host's (`sync_props`).
+- **A ranked hopper's rank.** The lobby row's rank is the player's
+  host-side fields (`+0x84..+0x90`), which a person's console fills from
+  its stats read. A phantom's stay -1, which shows no rank, unless its
+  hopper is a ranked clanker one (`ClankerHopper.ranked`): then the driver
+  gives each phantom a rank (`Phantoms::set_rank`) and its join writes it
+  under the host's hopper index (`session::config_in_ranked`: `+0x88` and
+  `+0x8a` the level as stored, 0 to 49, `+0x8c` the experience that level
+  starts at). The level is the roster's `rank.level`: a persistent bot's
+  standing in the hopper's rank playlist (`ranks_as` or its own, the
+  playlist the roster endpoint looks up and games rank in), or the humans'
+  for a made-up bot. A host-made Clanker, which Live has no record of,
+  starts at `clankers::starting_level`: a stable draw from its name inside
+  its difficulty's band (Easy 1 to 10, Normal 11 to 25, Heroic 26 to 40,
+  Legendary 41 to 50), never saved. An unranked hopper's phantoms keep
+  -1. Tests: `a_ranked_phantoms_lobby_row_has_its_rank` (`bots`),
+  `a_ranked_clankermatchs_phantoms_carry_a_rank` and
+  `an_unranked_clankermatchs_phantoms_carry_no_rank` (`game`).
 - **Kept none.** Each frame a seated phantom whose requested or
   effective handicap is not 0 (a seat taken back from an older run, a
   reclaimed peer) has both put back to 0, nothing else of the record
