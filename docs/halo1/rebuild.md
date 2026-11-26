@@ -504,8 +504,19 @@ the three flying accelerations after conversion to seconds. Words that
 hold angles in radians and small ratios whose meaning is not established
 stay unknown spans carried raw.
 
+Halo 1's biped flags (`bipd +0x2f4`) are carried by name
+(`rebuild::BIPED_FLAG_BITS`, `BIPED_PHYSICS_BITS`): turns without
+animating (bit 0), passes through other bipeds (5) and immune to falling
+damage (7) set the Halo 2 `flags` bits of those names; physics centred at
+the origin (3), spherical (4) and climbs any surface (6) set bits 0, 1 and
+3 of the character physics word (`bipd +0x264`), beside the player bit and
+the flying pair already written there. A converted sentinel keeps the
+retail aggressor pair (`flags` `0xe00`, physics `0x13`) over these. Halo
+1's other flag bits have no Halo 2 counterpart and set nothing.
+
 Proof (`crates/tools/h1objects/tests/unit_rebuild_disc.rs`, and the lib tests
-`biped_carries_each_source_word_and_leaves_unmapped_fields_at_default` and
+`biped_carries_each_source_word_and_leaves_unmapped_fields_at_default`,
+`biped_flags_carry_halo1s_named_bits` and
 `rebuilt_biped_uses_source_shapes_tracks_weapons_and_hud`):
 
 - `biped_words_match_halo_2s_counterparts`: the camera and the words,

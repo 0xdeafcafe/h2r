@@ -1652,6 +1652,93 @@ fn biped_carries_each_source_word_and_leaves_unmapped_fields_at_default() {
     assert_eq!(pr.len(), 1);
 }
 
+/// A Halo 1 biped unit holding `words` (Halo 1 offset, word) and no
+/// collision size.
+fn biped_unit(words: Vec<(usize, u32)>) -> crate::h1::Unit {
+    crate::h1::Unit {
+        hud_interfaces: Vec::new(),
+        group: h1map::Group::new(b"bipd"),
+        object: crate::h1::Object {
+            texture_override: 0,
+            object_type: 0,
+            acceleration_scale: 0.0,
+            flags: 0,
+            bounding_radius: 0.7,
+            bounding_offset: [0.0; 3],
+            model: None,
+            animation: None,
+            collision: None,
+            physics: None,
+            modifier_shader: None,
+            creation_effect: None,
+            attachments: Vec::new(),
+            widgets: Vec::new(),
+            change_colours: Vec::new(),
+        },
+        camera_field_of_view: 1.2,
+        biped_words: words,
+        seats: Vec::new(),
+        camera_tracks: Vec::new(),
+        size: None,
+        references: Vec::new(),
+    }
+}
+
+/// Halo 1's biped flags (`bipd +0x2f4`) set the Halo 2 flags and physics
+/// word they name: bits 0, 5, 7 the `flags` of those names, bits 3, 4, 6
+/// the physics word's bits 0, 1, 3, with the player and flying bits as
+/// before; a bit with no Halo 2 counterpart sets nothing.
+#[test]
+fn biped_flags_carry_halo1s_named_bits() {
+    use tags::defs::{self, Defs, Val};
+    let d = Defs::builtin().group(map::FourCC(*b"bipd")).unwrap();
+    let convert = |h1_flags: u32| {
+        let unit = biped_unit(vec![(0x2f4, h1_flags)]);
+        let root = crate::rebuild::biped(&unit, None, &[], &crate::rebuild::BipedParts::default())
+            .unwrap();
+        let r = defs::from_built(d, &root).unwrap();
+        let physics = u32::from_le_bytes(r.bytes("unknown_264", 4).unwrap()[..4].try_into().unwrap());
+        (r.at("flags").cloned(), physics)
+    };
+    let named = |bits: &[&str]| {
+        let Some(defs::Kind::Flags { bits: names, .. }) = d.field("flags").map(|f| &f.kind) else {
+            panic!("bipd flags");
+        };
+        Val::Flags(bits.iter().map(|b| 1u32 << names.iter().position(|n| n == b).unwrap()).sum())
+    };
+    assert_eq!(
+        convert(1 << 0),
+        (Some(named(&["turns_without_animating"])), 0)
+    );
+    assert_eq!(
+        convert(1 << 5),
+        (Some(named(&["passes_through_other_bipeds"])), 0)
+    );
+    assert_eq!(
+        convert(1 << 7),
+        (Some(named(&["immune_to_falling_damage"])), 0)
+    );
+    assert_eq!(convert(1 << 3), (Some(Val::Flags(0)), 0x1));
+    assert_eq!(convert(1 << 4), (Some(Val::Flags(0)), 0x2));
+    assert_eq!(convert(1 << 6), (Some(Val::Flags(0)), 0x8));
+    // The player bit and the flying bit keep their physics words.
+    assert_eq!(convert(1 << 1), (Some(Val::Flags(0)), 0x4));
+    assert_eq!(convert(1 << 2), (Some(Val::Flags(0)), 0x13));
+    // Halo 1's rotate-while-airborne (8) and limp body (9) are not mapped.
+    assert_eq!(convert(1 << 8 | 1 << 9), (Some(Val::Flags(0)), 0));
+    assert_eq!(
+        convert(0xb1),
+        (
+            Some(named(&[
+                "turns_without_animating",
+                "passes_through_other_bipeds",
+                "immune_to_falling_damage"
+            ])),
+            0x2
+        )
+    );
+}
+
 /// A rebuilt biped's character shapes follow Halo 1's collision size: the
 /// standing and crouching pills run from one radius up to the height less
 /// a radius, the three spheres rest on the ground at 1, 1.35 and 1.7

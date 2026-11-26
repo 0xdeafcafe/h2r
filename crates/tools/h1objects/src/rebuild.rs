@@ -4,7 +4,7 @@
 
 use map::build::{Block, FixupKind};
 use map::{FourCC, TagId};
-use tags::defs::{self, Defs, Record, StructDef, Val};
+use tags::defs::{self, Defs, Kind, Record, StructDef, Val};
 
 use crate::coll::sid_name;
 use crate::h1;
@@ -2257,6 +2257,41 @@ pub const BIPED_RATES: &[(&str, usize)] = &[
     ("deceleration", 0x340), ("angular_acceleration_maximum", 0x348),
 ];
 
+/// Halo 1 biped flags (`bipd +0x2f4`) that Halo 2's `bipd flags` (`+0x1f0`)
+/// has a bit for: Halo 1's bit and the Halo 2 flag's name in `unit.txt`.
+/// Bit 0 turns without animating, 5 passes through other bipeds, 7 is
+/// immune to falling damage.
+pub const BIPED_FLAG_BITS: &[(u32, &str)] = &[
+    (0, "turns_without_animating"),
+    (5, "passes_through_other_bipeds"),
+    (7, "immune_to_falling_damage"),
+];
+
+/// Halo 1 biped flags that Halo 2 keeps in the character physics word
+/// (`bipd +0x264`, `unknown_264`): Halo 1's bit and the word's bits. Bit 3
+/// (physics centred at the origin) sets the word's bit 0, bit 4 (spherical)
+/// bit 1, bit 6 (climbs any surface) bit 3, the layout the flying
+/// controller pair `0x13` and the player bit `0x4` already follow: centred
+/// and spherical, then player physics, climbing, flying.
+pub const BIPED_PHYSICS_BITS: &[(u32, u32)] = &[(3, 0x1), (4, 0x2), (6, 0x8)];
+
+/// The Halo 2 `flags` word for Halo 1's biped flags `h1`
+/// ([`BIPED_FLAG_BITS`]); a name the definition lacks is an error.
+fn biped_flags(d: &StructDef, h1: u32) -> Result<u32> {
+    let Some(Kind::Flags { bits, .. }) = d.field("flags").map(|f| &f.kind) else {
+        return Err(Error::Invalid("bipd has no flags field".into()));
+    };
+    let mut word = 0;
+    for (_, name) in BIPED_FLAG_BITS.iter().filter(|b| h1 >> b.0 & 1 != 0) {
+        let at = bits
+            .iter()
+            .position(|b| b == name)
+            .ok_or_else(|| Error::Invalid(format!("bipd flags name no bit `{name}`")))?;
+        word |= 1 << at;
+    }
+    Ok(word)
+}
+
 /// `bipd +0x268`, `+0x26c`, `+0x270`: the standing and crouching
 /// collision heights and the collision radius ([`h1::BIPED_SIZE`] holds
 /// Halo 1's). V: on every retail biped of the base with character shapes,
@@ -2517,8 +2552,14 @@ pub fn biped(
     if let Some((_, flags)) = unit.biped_words.iter().find(|w| w.0 == 0x2f4) {
         // H1 cyborgs and both H2 player characters use the player bit.
         // Both flying controller pairs (monitor, sentinel) select 0x13.
-        let controller = ((flags & 2) << 1) | if flags & 4 != 0 { 0x13 } else { 0 };
+        let mut controller = ((flags & 2) << 1) | if flags & 4 != 0 { 0x13 } else { 0 };
+        for (bit, word) in BIPED_PHYSICS_BITS {
+            if flags >> bit & 1 != 0 {
+                controller |= word;
+            }
+        }
         set(&mut r, "unknown_264", Val::Bytes(controller.to_le_bytes().to_vec()))?;
+        set(&mut r, "flags", Val::Flags(biped_flags(d, *flags)?))?;
     }
     if parts.sentinel {
         // Both retail aggressors use this biped and flying-controller flag pair.
