@@ -2071,6 +2071,7 @@ mod ground {
                     .collect(),
                 zones: 2,
                 squads: 16,
+                sectors: Vec::new(),
                 problems: vec![GroundProblem {
                     label: "ff_drop".into(),
                     position: [1., 2., 0.],

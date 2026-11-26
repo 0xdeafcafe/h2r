@@ -154,6 +154,7 @@ impl Editor {
     }
 
     /// The map's surfaces for the Material picker, as shader paths.
+    #[expect(dead_code, reason = "the driver does not read the map's surfaces yet")]
     pub(crate) fn set_surfaces(&mut self, surfaces: Vec<String>) {
         self.surfaces = surfaces;
     }

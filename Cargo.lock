@@ -2507,6 +2507,7 @@ dependencies = [
  "font",
  "forge",
  "forge-doc",
+ "forge-shapes",
  "frame-scene",
  "game-markers",
  "gfx",
