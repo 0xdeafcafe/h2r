@@ -396,6 +396,8 @@ pub enum Command {
     },
     /// **Build AI ground**: build it now.
     BuildGround,
+    /// **Generate nav**: generate it now (the Nav tool's A).
+    GenerateNav,
     Goal {
         goal: crate::Goal,
         frame: Frame,
@@ -458,6 +460,8 @@ pub struct Tool {
     pub ghost: Option<Frame>,
     /// The Links tool is selected instead of the Objects tool.
     pub links: bool,
+    /// The Nav tool is selected: it aims at nothing and draws the nav.
+    pub nav: bool,
     /// What the Links tool aims at.
     pub aimed_link: Option<Linkable>,
     /// The first end of a link being made.
@@ -501,6 +505,7 @@ impl Default for Tool {
             placing: None,
             ghost: None,
             links: false,
+            nav: false,
             aimed_link: None,
             link_from: None,
             selection: Vec::new(),
@@ -610,9 +615,24 @@ impl Tool {
 
     /// Chooses the tool: the Links tool, or the Objects tool.
     pub fn set_links(&mut self, links: bool) {
-        if self.links != links {
+        if self.links != links || (links && self.nav) {
             self.clear_selection();
             self.links = links;
+            if links {
+                self.nav = false;
+            }
+        }
+    }
+
+    /// Chooses the Nav tool, or leaves it for the one that was.
+    pub fn set_nav(&mut self, nav: bool) {
+        if self.nav != nav {
+            self.clear_selection();
+            self.nav = nav;
+            if nav {
+                self.links = false;
+                self.link_from = None;
+            }
         }
     }
 
@@ -793,6 +813,9 @@ impl Tool {
         if !self.monitor {
             return Ok(None);
         }
+        if self.nav {
+            return Ok(self.update_nav(input));
+        }
         if self.links {
             return Ok(self.update_links(session, input));
         }
@@ -937,6 +960,32 @@ impl Tool {
             }
             _ => None,
         })
+    }
+
+    /// The Nav tool: fly, and A generates the nav; the generated sectors
+    /// and links are drawn while it is selected (docs/game/forge-nav.md).
+    /// It aims at nothing and edits nothing in the document.
+    fn update_nav(&mut self, input: Input) -> Option<Command> {
+        use Action as A;
+        use Command as C;
+        if let Some(camera) = &mut self.camera {
+            camera.fly(input.movement, input.look, input.seconds.clamp(0., 0.1));
+        }
+        match input.action {
+            Some(A::Accept) => Some(C::GenerateNav),
+            Some(A::Link) | Some(A::Palette) => {
+                let palette = input.action == Some(A::Palette);
+                self.nav = false;
+                palette.then_some(C::Palette)
+            }
+            Some(A::Tools) => Some(C::Tools),
+            Some(A::Settings) => Some(C::Settings),
+            Some(A::Overlays) => Some(C::Overlays),
+            Some(A::Menu) => Some(C::Menu),
+            Some(A::Undo) => Some(C::Undo),
+            Some(A::Redo) => Some(C::Redo),
+            _ => None,
+        }
     }
 
     /// The Links tool: aim at a teleporter flag or a placed machine, A to

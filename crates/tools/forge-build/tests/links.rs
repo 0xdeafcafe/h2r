@@ -282,3 +282,57 @@ fn removing_a_linked_flag_is_refused_before_materialising() {
         "{error}"
     );
 }
+
+/// The generator half of F6: the bots' own flag reader pairs the flags a
+/// link wrote, and linking them into a mesh makes the teleporter edge.
+#[test]
+fn the_bots_generator_reads_a_linked_pair_and_links_it() {
+    use bots::autonav::{Teleporter, link_teleporters, teleporter_flags};
+    use bots::cache::MapData;
+    use bots::nav::{Kind, NavMesh, Poly};
+
+    let source = source();
+    let built = materialise(
+        &source,
+        vec![
+            flag(1, 7, 2.0),
+            flag(2, 8, 12.0),
+            teleporter(3, added(1), added(2), 5),
+        ],
+    )
+    .unwrap();
+    let (mut map, _) = scenario(&built);
+    let scnr = map.scenario().unwrap().clone();
+    let bytes = map.read_tag_bytes(scnr.id).unwrap();
+    let address = scnr.location.unwrap().address;
+    let flags = teleporter_flags(&bytes, address).unwrap();
+    let ours: Vec<&Teleporter> = flags.iter().filter(|f| f.channel == 5).collect();
+    assert_eq!(ours.len(), 2, "{flags:?}");
+    let sender = ours.iter().find(|f| f.sender).expect("a sender");
+    let receiver = ours.iter().find(|f| !f.sender).expect("a receiver");
+    assert_eq!(sender.position, [2.0, 0.0, 1.0]);
+    assert_eq!(receiver.position, [12.0, 0.0, 1.0]);
+
+    // Two floors under the ends: the generator links the pair.
+    let floor = |x: f32| {
+        Poly::new(vec![
+            [x - 2.0, -2.0, 0.5],
+            [x + 2.0, -2.0, 0.5],
+            [x + 2.0, 2.0, 0.5],
+            [x - 2.0, 2.0, 0.5],
+        ])
+    };
+    let mut data = MapData {
+        nav: NavMesh::new(vec![floor(2.0), floor(12.0)], vec![]),
+        ..Default::default()
+    };
+    link_teleporters(&mut data, &flags);
+    let edges: Vec<_> = data
+        .nav
+        .edges
+        .iter()
+        .filter(|e| e.kind == Kind::Teleporter)
+        .map(|e| (e.from, e.to))
+        .collect();
+    assert_eq!(edges, [(0, 1)]);
+}

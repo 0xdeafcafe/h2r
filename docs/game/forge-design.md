@@ -625,10 +625,10 @@ and the game. Sizes as under Features.
 | **F3** | Probes: `forge.capacity`, `forge.probe` (replication of a host-made object by group, the synchronous protocol on a multiplayer map, the AI flag in multiplayer, kit entries inert) | S | nothing | each method answers over a fake game with a test; the coordinator's runs go in `docs/game/notes/forge-probes.md` |
 | **F4** | Local session, its edits applied to the live objects through M8's calls: the camera body, the Objects tool, the object menu and Properties, save and load. **Built**, with its screens in the game (U4) and its HUD on the HUD kit (U3) | L | F1, F2, live-mirror M8 | `Page` tables for each dialog; the `Hud` view passes the kit's checks in every state; over a fake game, place, move and delete produce the expected proposals and engine calls, undo restores, a stale object is a named refusal that leaves the document alone, a saved file folds to the same document |
 | **F5** | Synchronous mode: the log on the network, roles, holding, join in progress, the film record | M | F3's results, F4 | two fake peers and a host converge to one head under reordered proposals; a second hold is refused; a late joiner's document equals the host's; a film with entries replays to the same `ForgeExt` hash. **Built** (below), except the `ForgeExt` hash, which waits for F7; the co-op link offers its lanes (`game/src/forge_glue/link.rs`) and the game's run of it is unproven |
-| **F6** | Teleporters and retail links: the Links tool, channels, device groups | M | F4 | a linked pair writes two flags with one identifier on a fixture; the bots' generator finds the link; unlink restores the bytes. **Built**, except the generator half: `bots::autonav`'s teleporter reader is private, so the test checks the bytes it reads (below) |
+| **F6** | Teleporters and retail links: the Links tool, channels, device groups | M | F4 | a linked pair writes two flags with one identifier on a fixture; the bots' generator finds the link; unlink restores the bytes. **Built**; the generator half is `bots::autonav::teleporter_flags` and `link_teleporters`, checked over a linked pair in `crates/tools/forge-build/tests/links.rs` |
 | **F7** | `SimExt` and `ForgeExt`: volumes, the graph, emitters | L | F4; sim-rewrite's blob hooks | the blob round-trips and enters the hash; a graph fixture's outputs per tick match a table; one, two and eight workers give the same bits; an emitter fires on the scheduled ticks and stops at its limit |
 | **F8** | Barriers and block-out: the kit's generated tags, the Volumes and Shape tools' object tier | M | F2, modeling slice 8 | each generated `coll` passes `Bsp::validate` and random segment tests against brute force; a barrier's enable input switches it over a fake game |
-| **F9** | Nav: Forge objects as generator input, **Generate nav**, the overlay, problems | M | F4 | a fixture with a block-out ramp gains the sectors and link that make a ledge reachable; a spawn off the mesh is reported. **Built**, but for the Nav tool, drawing the sectors and links in the game, and the bots walking the generated mesh in a match ([forge-nav.md](forge-nav.md)) |
+| **F9** | Nav: Forge objects as generator input, **Generate nav**, the overlay, problems | M | F4 | a fixture with a block-out ramp gains the sectors and link that make a ledge reachable; a spawn off the mesh is reported. **Built**: the Nav tool draws the sectors and links in the game, and the bots take the generated mesh in a match ([forge-nav.md](forge-nav.md)) |
 | **F10** | Transplant recipes and monitor bodies | L | F2, F3's headroom | on invented maps, a transplanted closure reads back and references resolve; a recipe over the headroom is refused with its cost; the census and the body runs go in notes |
 | **F11** | AI: squads, the AI tool, sectors at materialise | L | F7, F10, a synchronous session from F5 | squad blocks on a fixture read back through `h1campaign`'s decoder; a wave graph places squads on the table's ticks |
 | **F12** | `asset-import`: glTF props, then skins on a chassis, then FBX | L | modeling slices 2, 6, 8 | invented glTF files in, tags out that `tags` decodes to the same mesh within quantisation; a mapping that drops a chassis node is refused; a missing bundle materialises with aliases and equal tag indices |
@@ -878,9 +878,9 @@ group of linked machines becomes a new device group after the map's own
 names it. An unlinked entry keeps the bytes it would have had without the
 link (`crates/tools/forge-build/tests/links.rs`). The bots' generator
 pairs teleporters from those same bytes: type at `+0x10`, identifier at
-`+0x14` of `scnr+0x118`. Driving `bots::autonav::build_map` over the
-fixture needs a structure BSP the fixture does not have, or a public
-entry to the generator's flag reader.
+`+0x14` of `scnr+0x118`. `bots::autonav::teleporter_flags` is that
+reader, public, and `link_teleporters` the linker; the fixture test reads
+a linked pair through them.
 
 In a local session the Links tool aims at the map's teleporter flags
 and at placed machines. A starts a link on the first and makes it on

@@ -8,13 +8,35 @@ use tags::geometry::TagView;
 use crate::cache::MapData;
 use crate::nav::{Edge, Kind, STANDING, V3, standing_clear};
 
-pub(super) struct Teleporter {
-    position: V3,
-    channel: i16,
-    sender: bool,
+/// A teleporter netgame flag of the scenario (`scnr+0x118`, stride `0x20`):
+/// type 7 sends, type 8 receives, and a sender takes each receiver that has
+/// its identifier (`+0x14`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Teleporter {
+    pub position: V3,
+    pub channel: i16,
+    pub sender: bool,
 }
 
-#[derive(Clone, Copy)]
+/// The teleporter flags of a scenario tag's bytes, in flag order, as the
+/// generator reads them ([`Placements::read`]); `address` is the tag's
+/// payload address.
+pub fn teleporter_flags(scenario: &[u8], address: u32) -> Result<Vec<Teleporter>, String> {
+    flags(&TagView::new(scenario, address)).map_err(|e| e.to_string())
+}
+
+/// Link `flags` into `data`'s mesh as the generator does after the BSP's
+/// build: each sender to each receiver of its channel that stands on the
+/// mesh ([`Placements::add_links`]), as a teleporter edge.
+pub fn link_teleporters(data: &mut MapData, flags: &[Teleporter]) {
+    Placements {
+        teleporters: flags.to_vec(),
+        lifts: Vec::new(),
+    }
+    .add_links(data);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum LiftKind {
     Vertical,
     Shaft,
@@ -24,6 +46,7 @@ enum LiftKind {
     PowerBoost,
 }
 
+#[derive(Clone, Debug, PartialEq)]
 struct Lift {
     position: V3,
     yaw: f32,
@@ -34,6 +57,44 @@ struct Lift {
 pub(super) struct Placements {
     teleporters: Vec<Teleporter>,
     lifts: Vec<Lift>,
+}
+
+/// The scenario's lifts, elevators, launchers and power boosts: the
+/// placements the generator links as shortcuts beside the teleporters.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Lifts(Vec<Lift>);
+
+impl Lifts {
+    /// The lifts of the scenario tag `scenario` (payload address
+    /// `address`) of `map`, as the generator reads them.
+    pub fn read<R: Read + Seek>(
+        scenario: &[u8],
+        address: u32,
+        map: &map::Map<R>,
+    ) -> Result<Self, String> {
+        let view = TagView::new(scenario, address);
+        Ok(Self(Placements::read(&view, map)?.lifts))
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Link each lift whose ends stand on `data`'s mesh, as the generator
+    /// does after a BSP's build.
+    pub fn link(&self, data: &mut MapData) {
+        if !self.0.is_empty() {
+            Placements {
+                teleporters: Vec::new(),
+                lifts: self.0.clone(),
+            }
+            .add_links(data);
+        }
+    }
 }
 
 fn word(record: &[u8], at: usize) -> u32 {

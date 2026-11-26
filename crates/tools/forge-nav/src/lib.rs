@@ -132,6 +132,9 @@ pub struct Input {
     /// The player starts: the mesh is in the map where they reach.
     pub starts: Vec<V3>,
     pub teleporters: Vec<Teleporter>,
+    /// The scenario's lifts and elevators, which the bots link as they do
+    /// on the retail level.
+    pub lifts: bots::autonav::Lifts,
 }
 
 /// What a problem is about.
@@ -378,6 +381,8 @@ pub fn generate(input: &Input) -> Result<Generated, String> {
     if edges.len() != data.nav.edges.len() {
         data.nav = NavMesh::new(std::mem::take(&mut data.nav.polys), edges);
     }
+
+    input.lifts.link(&mut data);
 
     for (i, &p) in input.starts.iter().enumerate() {
         if on_mesh(&data.nav, p).is_none() {

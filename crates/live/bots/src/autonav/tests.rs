@@ -597,6 +597,17 @@ fn only_results_for_the_current_visit_can_publish() {
 }
 
 #[test]
+fn a_mesh_made_elsewhere_is_taken_by_the_loaded_map_whichever_load() {
+    let mut l = Loaded::default();
+    assert!(!l.holds("lockout"), "nothing loaded");
+    l.changed("lockout");
+    assert!(l.holds("LOCKOUT"));
+    assert!(!l.holds("zanzibar"));
+    l.changed("lockout");
+    assert!(l.holds("lockout"), "a later load of the same map");
+}
+
+#[test]
 fn a_warm_file_must_match_the_active_slots_header() {
     let first = Stamp::now(0x1234);
     let bytes = data(1.0).to_bytes(first);

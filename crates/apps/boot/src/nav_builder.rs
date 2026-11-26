@@ -52,7 +52,11 @@ impl NavBuilder for AppNav {
             added(base_counts, block, index)
         })?;
         let generated = forge_nav::generate(&input)?;
-        Ok(report_of(&generated))
+        let report = report_of(&generated);
+        // The bots of a match walk what was reported
+        // (`forge_glue::nav::stage`).
+        crate::forge_glue::nav::stage(&play.base.map, generated.data);
+        Ok(report)
     }
 }
 

@@ -10,7 +10,9 @@
 //! (`editing::Editor::start_nav`), over a copy of the session the editor
 //! takes back when it is done, as the AI ground's build does
 //! (`forge_glue::ground`).
-use std::sync::{Mutex, TryLockError};
+use std::sync::{Arc, Mutex, TryLockError};
+
+use bots::cache::MapData;
 
 use forge::{NavBuilder, NavReport, Session};
 
@@ -43,6 +45,45 @@ pub fn available() -> bool {
         Err(TryLockError::WouldBlock) => true,
         Err(TryLockError::Poisoned(e)) => e.into_inner().is_some(),
     }
+}
+
+/// The mesh the last generation made, for the bots of a match
+/// (docs/game/forge-nav.md, "The bots").
+struct Staged {
+    map: String,
+    mesh: Arc<MapData>,
+}
+
+static STAGED: Mutex<Option<Staged>> = Mutex::new(None);
+
+/// Keep `mesh`, made for the base map `map`, for the bots that load it. The
+/// generator calls this when a generation ends; the editor drops it
+/// ([`unstage`]) when the document moves on.
+pub fn stage(map: &str, mesh: MapData) {
+    *STAGED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Staged {
+        map: map.to_owned(),
+        mesh: Arc::new(mesh),
+    });
+}
+
+/// The staged mesh when it is for `map`, however the name is cased.
+pub fn staged(map: &str) -> Option<Arc<MapData>> {
+    let staged = STAGED.lock().unwrap_or_else(|e| e.into_inner());
+    staged
+        .as_ref()
+        .filter(|s| s.map.eq_ignore_ascii_case(map))
+        .map(|s| s.mesh.clone())
+}
+
+/// The document moved on or the session ended: no bot takes the mesh.
+pub fn unstage() {
+    *STAGED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// Put the staged mesh under the bots of the loaded map `map` now. False
+/// when none is staged for it or another map is loaded.
+pub fn offer(map: &str) -> bool {
+    staged(map).is_some_and(|mesh| bots::autonav::offer_loaded(map, mesh))
 }
 
 /// **Generate nav** on the worker's copy of the session.
@@ -134,6 +175,21 @@ mod tests {
         assert_eq!(s.nav_state(), NavState::Current);
         assert_eq!(s.nav_report().map(|r| r.sectors), Some(9));
         uninstall();
+    }
+
+    #[test]
+    fn a_staged_mesh_is_for_its_map_until_it_is_dropped() {
+        let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        unstage();
+        assert!(staged("court").is_none());
+        stage("court", MapData::default());
+        assert!(staged("COURT").is_some());
+        assert!(staged("lockout").is_none());
+        // Nothing is loaded in the bots: the offer is refused, the stage kept.
+        assert!(!offer("court"));
+        assert!(staged("court").is_some());
+        unstage();
+        assert!(staged("court").is_none());
     }
 
     #[test]

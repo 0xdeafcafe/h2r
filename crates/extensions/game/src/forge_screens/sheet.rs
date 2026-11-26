@@ -207,6 +207,7 @@ pub enum Prop {
 pub enum Tool {
     Objects,
     Links,
+    Nav,
 }
 
 /// One row of the Coordinates editor.
@@ -1154,6 +1155,11 @@ pub const TOOLS: &[ToolDef] = &[
         tool: Tool::Links,
         label: "Links",
         description: "Link teleporters and machines.",
+    },
+    ToolDef {
+        tool: Tool::Nav,
+        label: "Nav",
+        description: "See the bots' nav and generate it.",
     },
 ];
 
