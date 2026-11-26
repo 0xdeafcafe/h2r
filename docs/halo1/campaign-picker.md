@@ -401,8 +401,22 @@ campaign argument becomes the one that owns the map
 ours goes back to 1. The MP lookup `0x19c5f0` takes a map id alone and
 reads the multiplayer list, which campaign ids never reach.
 
+### A map whose import failed
+
+`live_halo1::installed` reads the import stamp's `done` map
+(`h1_import::Stamp`) and returns each job recorded as failed in
+`Found::failed` (`FailedMap`: the job key and the converter's reason). The
+picker lists such a map as a greyed row. It can't be picked. Its help text is
+one line, `Import failed: <reason>`, with the reason on one line and cut to
+80 characters (`FailedMap::help`). A campaign level whose job failed is
+left out of the found maps even when an older build of its `.map` is on
+disk, so no stale build is offered. The next import retries it.
+
 ## Tests
 
+- `h2` (cli) `live_halo1::tests::a_failed_import_is_listed_as_failed`: a
+  failed level is listed with its reason, its older build is not offered,
+  and the help is one short line.
 - `content` `campaign_list::tests`: the Halo 1 manifest's levels and
   order; ids after retail and rising; several campaigns ordered by `order`
   then key and never sharing an id; campaign ids after the disc's largest;

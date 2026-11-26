@@ -53,10 +53,40 @@ pub struct FoundMap {
     pub info: Halo1Map,
 }
 
+/// A map whose import failed, as the stamp records it. The picker lists it
+/// greyed; it can't be picked and no build of it is offered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FailedMap {
+    /// Its job key in the stamp (`a10`, `bloodgulch/h2`).
+    pub key: String,
+    /// Why the converter gave up, as the stamp has it.
+    pub reason: String,
+}
+
+/// The longest reason in a help line, in characters.
+const HELP_CHARS: usize = 80;
+
+impl FailedMap {
+    /// The help text for its greyed row: one short line with the reason.
+    pub fn help(&self) -> String {
+        let one: String = self.reason.split_whitespace().collect::<Vec<_>>().join(" ");
+        let cut = if one.chars().count() > HELP_CHARS {
+            let head: String = one.chars().take(HELP_CHARS - 1).collect();
+            format!("{head}\u{2026}")
+        } else {
+            one
+        };
+        format!("Import failed: {cut}")
+    }
+}
+
 /// Every converted Halo 1 map under a data root, and the import's stamp.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Found {
     pub maps: Vec<FoundMap>,
+    /// Maps whose import failed, by key. A campaign level listed here is
+    /// left out of `maps` even when an older build of it is on disk.
+    pub failed: Vec<FailedMap>,
     /// The import stamp's text, when there is one.
     pub stamp: Option<Vec<u8>>,
 }
@@ -186,10 +216,21 @@ pub fn installed(data: &Path) -> Found {
     maps.extend(multiplayer(&content::store::maps_dir(data)));
     let mut seen = std::collections::BTreeSet::new();
     maps.retain(|m| seen.insert(m.stem.clone()));
-    Found {
-        maps,
-        stamp: std::fs::read(dir.join(STAMP)).ok(),
-    }
+    let stamp = std::fs::read(dir.join(STAMP)).ok();
+    let failed: Vec<FailedMap> = stamp
+        .as_deref()
+        .and_then(|b| crate::h1_import::Stamp::parse(std::str::from_utf8(b).ok()?))
+        .map(|st| {
+            st.done
+                .into_iter()
+                .filter_map(|(key, r)| r.err().map(|reason| FailedMap { key, reason }))
+                .collect()
+        })
+        .unwrap_or_default();
+    maps.retain(|m| {
+        !(m.kind == MapKind::Campaign && failed.iter().any(|f| f.key == m.stem))
+    });
+    Found { maps, failed, stamp }
 }
 
 #[cfg(test)]
@@ -288,6 +329,48 @@ mod tests {
         assert_eq!(mp.path, pkg.join("h1/h1_alpha.map"), "the Halo 1 sandbox's map");
         assert_eq!(mp.info.preview, Some(pkg.join("preview.png")));
         assert_eq!(installed(&root.join("nothing")), Found::default());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_failed_import_is_listed_as_failed() {
+        let root = std::env::temp_dir().join(format!("h2-halo1-failed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let camp = crate::h1_import::campaign_dir(&root);
+        std::fs::create_dir_all(&camp).unwrap();
+        std::fs::write(
+            camp.join("campaign.toml"),
+            "format = 1\n[campaign]\nkey = \"halo1\"\nname = \"Invented\"\n\
+             [[level]]\nmap = \"x10\"\nname = \"First\"\n\
+             [[level]]\nmap = \"x20\"\nname = \"Second\"\n",
+        )
+        .unwrap();
+        // x10 failed this time but an older build is on disk; x20 is fine.
+        std::fs::write(camp.join("x10.map"), map_bytes(0, "x10")).unwrap();
+        std::fs::write(camp.join("x20.map"), map_bytes(0, "x20")).unwrap();
+        let stamp = crate::h1_import::Stamp {
+            converter: 1,
+            sha256: "ab".into(),
+            size: 1,
+            mtime: 1,
+            done: [
+                ("x10".to_owned(), Err("no bitmap\nfor sky".to_owned())),
+                ("x20".to_owned(), Ok(())),
+            ]
+            .into(),
+        };
+        std::fs::write(camp.join(STAMP), stamp.to_text()).unwrap();
+
+        let found = installed(&root);
+        let stems: Vec<_> = found.maps.iter().map(|m| m.stem.as_str()).collect();
+        assert_eq!(stems, ["x20"], "no stale build of the failed map");
+        assert_eq!(
+            found.failed,
+            [FailedMap { key: "x10".into(), reason: "no bitmap for sky".into() }]
+        );
+        assert_eq!(found.failed[0].help(), "Import failed: no bitmap for sky");
+        let long = FailedMap { key: "k".into(), reason: "x".repeat(300) };
+        assert!(long.help().chars().count() < 100 && !long.help().contains('\n'));
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

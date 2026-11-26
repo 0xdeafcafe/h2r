@@ -1672,6 +1672,7 @@ mod tests {
                     preview: None,
                 },
             }],
+            failed: Vec::new(),
             stamp: Some(stamp.to_vec()),
         }
     }
