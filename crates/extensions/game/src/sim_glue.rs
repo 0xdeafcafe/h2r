@@ -97,7 +97,7 @@ pub fn film_gameplay_hash(guest: &runtime::Guest) -> Option<u64> {
     }
     match level_boot::active_mode(guest) {
         Some(level_boot::MODE_CAMPAIGN | level_boot::MODE_MULTIPLAYER) =>
-            lockstep::hash_sim(guest, lockstep::SimRegion::HALO2),
+            lockstep::hash_gameplay(guest, lockstep::SimRegion::HALO2),
         _ => None,
     }
 }

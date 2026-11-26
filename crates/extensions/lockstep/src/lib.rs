@@ -15,6 +15,7 @@
 //! (or all off), never one of each. Per-present records taken between
 //! scheduler slices add nothing to the guest's run.
 
+pub mod gameplay;
 pub mod pools;
 pub mod synthetic;
 
@@ -244,6 +245,40 @@ pub fn hash_sim_blocks(
         base,
         fold_ext(hash_bytes(u64::from(len), bytes), sim_ext::digest()),
     ))
+}
+
+/// The arena's simulation-only hash: [`hash_sim`] with the render-side
+/// pools zeroed ([`gameplay::mask_render`]). What a film's start hash and
+/// its campaign digests cover.
+pub fn hash_gameplay(guest: &Guest, region: SimRegion) -> Option<u64> {
+    hash_gameplay_blocks(guest, region, usize::MAX, &mut Vec::new(), &mut Vec::new())
+        .map(|(_, hash)| hash)
+}
+
+/// [`hash_gameplay`], plus one hash per `block` bytes of the masked arena
+/// appended to `blocks` after clearing it, and the region's guest base.
+pub fn hash_gameplay_blocks(
+    guest: &Guest,
+    region: SimRegion,
+    block: usize,
+    bytes: &mut Vec<u8>,
+    blocks: &mut Vec<u64>,
+) -> Option<(u32, u64)> {
+    let (base, len) = match region {
+        SimRegion::Fixed { base, len } => (base, len),
+        SimRegion::Indirect { pointer, len } => (guest.u32(pointer).ok()?, len),
+    };
+    if base == 0 || block == 0 {
+        return None;
+    }
+    bytes.resize(len as usize, 0);
+    guest.read_bytes(base, bytes, 1).ok()?;
+    gameplay::mask_render(bytes);
+    blocks.clear();
+    if block != usize::MAX {
+        blocks.extend(bytes.chunks(block).map(|c| hash_bytes(c.len() as u64, c)));
+    }
+    Some((base, hash_arena(bytes, sim_ext::digest())))
 }
 
 /// What a record marks.

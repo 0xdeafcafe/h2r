@@ -205,7 +205,7 @@ pub(super) fn first_update(
         },
         options,
         random: random_words(g)?,
-        start_hash: lockstep::hash_sim(g, lockstep::SimRegion::HALO2)
+        start_hash: lockstep::hash_gameplay(g, lockstep::SimRegion::HALO2)
             .context("the arena has no hash at the game's first update")?,
         hash_detail: hash_detail(g),
         settings: settings(store, &header.features),
@@ -242,7 +242,7 @@ pub(super) fn dump_arena(g: &Guest, role: &str, first_update: u64) {
 /// not readable.
 pub(super) fn hash_detail(g: &Guest) -> Option<film::start::HashDetail> {
     let (mut bytes, mut pages) = (Vec::new(), Vec::new());
-    lockstep::hash_sim_blocks(
+    lockstep::hash_gameplay_blocks(
         g,
         lockstep::SimRegion::HALO2,
         film::start::DETAIL_PAGE,

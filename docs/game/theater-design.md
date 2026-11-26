@@ -103,8 +103,19 @@ The start state is the engine's own game options and nothing from disk.
   scope is `Sim` (skulls, co-op options) and the feature switch spec, by
   value. Playback applies them for the film's game and puts the viewer's
   back after.
-- **The start hash** is `lockstep::hash_sim(SimRegion::HALO2)` at entry
-  to the first update. Playback compares it before it applies the first
+- **The start hash** is `lockstep::hash_gameplay(SimRegion::HALO2)` at
+  entry to the first update: the arena and the extension records' digest,
+  with the arena's render-side data arrays (`particles`, `particle_*`,
+  `effect`, `effect location`, `lights`, `decals`, `cached object render
+  states`, `object looping sounds`, `cloth`, `liquid`; `lockstep::gameplay`)
+  and two words the simulation does not read (`+0x28d8`, `+0x28f8` of the
+  arena: the time globals' neighbours) zeroed first. The per-tick digest of
+  a campaign, which is the whole arena's hash, has the same coverage. The
+  hash is also of a game that starts from what a fresh process has: before
+  every `GAME_ACTIVATE` the salt counter of each data array is set to what
+  `data_delete_all` seeds it with (`data_salts`, feature `data-salts`),
+  because an array a map load empties one datum at a time keeps the salts
+  it had reached, and every handle a game stores carries one. Playback compares it before it applies the first
   record and refuses a film whose start it did not reproduce.
 
 ### The update stream

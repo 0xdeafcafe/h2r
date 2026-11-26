@@ -162,7 +162,8 @@ pub struct GameStart {
     pub options: Vec<u8>,
     /// The shared random words at entry to the first update.
     pub random: [u32; 2],
-    /// `lockstep::hash_sim` of the arena at entry to the first update.
+    /// `lockstep::hash_gameplay` of the arena (the simulation's part,
+    /// render-side arrays zeroed) at entry to the first update.
     pub start_hash: u64,
     pub settings: Settings,
     pub variant: Option<Vec<u8>>,

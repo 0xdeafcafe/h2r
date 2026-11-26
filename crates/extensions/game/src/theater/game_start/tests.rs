@@ -71,7 +71,7 @@ fn the_active_options_and_both_random_words_are_copied_whole() {
         assert_eq!(start.game.first_update, 91);
         assert_eq!(
             Some(start.start_hash),
-            lockstep::hash_sim(&g, lockstep::SimRegion::HALO2)
+            lockstep::hash_gameplay(&g, lockstep::SimRegion::HALO2)
         );
         assert_eq!(start.stamp.xbe_sha256, header.xbe_sha256);
         assert_eq!(start.stamp.simulation_abi, header.runtime_stamp);

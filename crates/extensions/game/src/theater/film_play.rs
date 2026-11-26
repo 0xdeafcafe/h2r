@@ -162,7 +162,7 @@ impl Play {
             metadata::verify_start(g, first, &descriptor, Some(vfs))?;
         }
         super::game_start::dump_arena(g, "watch", first);
-        let hash = lockstep::hash_sim(g, lockstep::SimRegion::HALO2)
+        let hash = lockstep::hash_gameplay(g, lockstep::SimRegion::HALO2)
             .context("the arena has no hash at the game's first update")?;
         if hash != self.start.start_hash {
             // Name what differs, when the film says what it was made of.

@@ -590,6 +590,9 @@ pub(crate) fn register_core_film(
     // Precision variants on converted Halo 1 maps in the Halo 2 sandbox
     // (docs/halo1/multiplayer.md): the battle rifle for the SMG at game
     // activation, from the swaps each package's manifest records.
+    features
+        .add(&crate::data_salts::DataSalts)
+        .map_err(|e| anyhow::anyhow!("data salts: {e}"))?;
     precision::install(features, i.packages).context("installing the precision swaps")?;
     // Halo 1's or Halo 2's HUD on converted Halo 1 maps (docs/halo1/hud.md):
     // the owners' HUD references at game activation, by `hud::style_for_map`.
