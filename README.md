@@ -18,9 +18,9 @@ That's the base. On top of it sit a replacement for Xbox Live, bots, Forge and F
 
 **Playing it**
 
-- **60 and 120 fps** over a game that ticks at 30, any resolution or aspect (ultrawide included), render scale up to 6x. [High frame rate](docs/game/high-framerate.md) · [resolution](docs/graphics/high-resolution.md)
+- **60 and 120 fps** over a game that ticks at 30, any resolution or aspect, and a render scale you set. The shots above are 4x. [High frame rate](docs/game/high-framerate.md) · [resolution](docs/graphics/high-resolution.md)
 - **A native GPU renderer.** Scene lists built in Rust, geometry kept on the GPU between frames, the game's own draw handlers skipped. On by default. [Renderer](docs/graphics/native-renderer.md)
-- **Halo 1 in the Halo 2 engine.** All 13 multiplayer maps, confirmed in game, and the campaign with Halo 1's health model. All ten levels convert at import; none has been played through yet. [Campaign](docs/halo1/campaign.md) · [multiplayer](docs/halo1/multiplayer.md)
+- **Halo 1 in the Halo 2 engine.** The 13 multiplayer maps on Halo 2 base maps, and the campaign with Halo 1's health model. All ten levels convert at import; none has been played through yet. [Campaign](docs/halo1/campaign.md) · [multiplayer](docs/halo1/multiplayer.md)
 - **iPhone, iPad, Apple TV and Linux.** Touch controls on iOS, a Steam Deck build, and an Apple TV build that's still slow. [iOS](docs/runtime/ios.md) · [tvOS](docs/runtime/tvos.md) · [SteamOS](docs/runtime/steamos.md)
 
 **Xbox Live, back**
@@ -51,13 +51,7 @@ Everything, including what's only partly done and the measured speed numbers, is
 
 ## Run it
 
-You need:
-
-- A Halo 2 disc image of your own. XISO or a full Redump image both work.
-- A Mac with Apple silicon.
-- Rust via rustup (`rust-toolchain.toml` pins the version) and clang on your `PATH`.
-
-Put the image in `disc/`, which is git-ignored. `cp -c` clones it without using any extra space. Got the Multiplayer Map Pack or Halo 1 discs too? Drop them in beside it as `mappack.iso` and `halo1.iso` and they're imported on the first run.
+You need a Mac with Apple silicon, Rust via rustup (`rust-toolchain.toml` pins the version), clang on your `PATH`, and a Halo 2 disc image of your own (XISO or a full Redump image). Nothing from the game is in this repo.
 
 ```sh
 git clone https://github.com/0xdeafcafe/h2r && cd h2r
@@ -66,7 +60,7 @@ cargo install --locked --path crates/apps/cli
 cargo install --locked --path crates/apps/h2-tools
 ```
 
-Play:
+`disc/` is git-ignored, and `cp -c` clones the image without using extra space. Then play:
 
 ```sh
 h2 play disc/halo2.iso
@@ -74,42 +68,40 @@ h2 play disc/halo2.iso --live
 h2 play disc/halo2.iso --level ascension
 ```
 
-The first run starts on a quick Cranelift build of the game while clang builds the full-speed one in the background; the window tells you when it's ready, and every run after that reuses it from `$TMPDIR/h2boot`. WASD and the mouse to move and look, Enter is A, Escape is Start, Cmd+F for fullscreen. `--follow` keeps you on the latest master, building each new commit in the background. Every flag is in [docs/runtime/app.md](docs/runtime/app.md). [Fast start](docs/lifter/cranelift-tier.md)
+The first run starts on a quick Cranelift build while clang builds the full-speed one in the background. The window says when it's ready, and later runs reuse it from `$TMPDIR/h2boot`. WASD and the mouse to move and look, Enter is A, Escape is Start, Cmd+F for fullscreen. `--follow` keeps you on the latest master. A `mappack.iso` or `halo1.iso` next to the disc gets imported too. Every flag is in [docs/runtime/app.md](docs/runtime/app.md), and the fast start is in [docs/lifter/cranelift-tier.md](docs/lifter/cranelift-tier.md).
 
-Want **Join in Halo 2** links on the Live site to open the game? `just mac-install iso=disc/halo2.iso` installs `~/Applications/Halo 2.app` and remembers where your disc is.
+`just mac-install iso=disc/halo2.iso` installs `~/Applications/Halo 2.app` and makes the **Join in Halo 2** links on the Live site open the game.
 
-The editor:
+Studio, the editor:
 
 ```sh
 cargo run --release -p studio -- --disc disc/halo2.iso
 ```
 
-Poke the running game from a script:
+Poke a running game from a script:
 
 ```sh
 h2 agent status
 h2 agent query '{"kind":["actor"],"near":{"player":0,"radius":30},"fields":["pos","team"]}'
 ```
 
-`h2 lab` does the same on a second Mac: build a branch there, replay inputs, and bring back frame timings, profiles and logs. [Lab](docs/runtime/lab.md)
-
-Want your own Live? `h2 live serve` on a Mac, Docker behind a Cloudflare Tunnel, or Cloudflare Workers. [Hosting](docs/live/live-hosting.md) · [Workers](docs/live/live-worker.md) · [web app](web/README.md)
+`h2 lab` does the same on a second Mac: build a branch there, replay inputs, bring back frame timings, profiles and logs ([Lab](docs/runtime/lab.md)). To run your own Live, use `h2 live serve` on a Mac, Docker behind a Cloudflare Tunnel, or Cloudflare Workers ([Hosting](docs/live/live-hosting.md) · [web app](web/README.md)).
 
 ## How it works
 
-The XBE is analysed, every function is lifted from x86 to an IR and emitted as C11, and clang builds that into a library. Nobody edits the generated code by hand, it's always regenerated. The Rust runtime underneath replaces the Xbox kernel, XAPI, Direct3D 8 and DirectSound on a deterministic logical clock, and renders through wgpu on Metal. The native renderer skips the game's own draw handlers and falls back to the D3D path for anything it can't take yet. Bit by bit, the hot parts of the game get rewritten in Rust, overriding the lifted function at the same address.
+The XBE is analysed, every function is lifted from x86 to an IR and emitted as C11, and clang builds that into a library. The generated code is never edited by hand, only regenerated. The Rust runtime underneath replaces the Xbox kernel, XAPI, Direct3D 8 and DirectSound, with threads scheduled on a logical clock, and draws through wgpu on Metal. The native renderer skips the game's own draw handlers and falls back to the Direct3D path for anything it can't take yet. The hot parts of the game get rewritten in Rust a piece at a time, each overriding the lifted function at the same address.
 
 <p align="center">
   <img src="docs/images/readme/render-pipeline.svg" alt="Render pipeline before and after: guest front-end, D3D translate, two copies; then native scene lists and one native render" width="100%">
 </p>
 
-The deep dives:
+Where to go next:
 
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md): the whole design, end to end
-- [LIFTER.md](docs/lifter/LIFTER.md): x86 to IR to C11
-- [native-renderer.md](docs/graphics/native-renderer.md): the GPU renderer
-- [live.md](docs/live/live.md): the Xbox Live replacement
-- [docs/README.md](docs/README.md): every doc, grouped by area
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): the whole design
+- [docs/lifter/LIFTER.md](docs/lifter/LIFTER.md): x86 to IR to C11
+- [docs/graphics/native-renderer.md](docs/graphics/native-renderer.md): the GPU renderer
+- [docs/live/live.md](docs/live/live.md): the Xbox Live replacement
+- [docs/README.md](docs/README.md): every doc, by area
 
 ## Building everything
 
@@ -123,16 +115,16 @@ just ios maps=all    # the iPhone/iPad app with every map and the map pack
 just check           # fmt, clippy and tests, as before a push
 ```
 
-`cargo h2 <command>` runs the CLI straight from the checkout. Every recipe is in [docs/runtime/building.md](docs/runtime/building.md), and [CONTRIBUTING.md](CONTRIBUTING.md) has the rules. The main one: no game data, ever.
+`cargo h2 <command>` runs the CLI straight from the checkout. Every recipe is in [docs/runtime/building.md](docs/runtime/building.md), and [CONTRIBUTING.md](CONTRIBUTING.md) has the rules. The main one is no game data, ever.
 
-On Linux, [Buck2](https://buck2.build) builds everything inside a [devenv](https://devenv.sh) shell. Tell it where your disc is in `.buckconfig.local` (an ISO or a `.7z` holding one):
+On Linux, [Buck2](https://buck2.build) builds everything inside a [devenv](https://devenv.sh) shell. Point `.buckconfig.local` at your disc (an ISO or a `.7z` holding one):
 
 ```ini
 [h2]
   disc = ~/Downloads/halo2.7z
 ```
 
-Run `devenv shell`, then `buck2 run //platform/linux:play`. A Steam Machine or Steam Deck in Developer Mode gets the game with `buck2 run //platform/steamos:run`. [docs/runtime/steamos.md](docs/runtime/steamos.md) has the details.
+Run `devenv shell`, then `buck2 run //platform/linux:play`. A Steam Machine or Steam Deck in Developer Mode uses `buck2 run //platform/steamos:run` ([docs/runtime/steamos.md](docs/runtime/steamos.md)).
 
 ## The legal bit
 
