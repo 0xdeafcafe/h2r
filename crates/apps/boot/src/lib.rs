@@ -1592,7 +1592,7 @@ fn run_configured(
                 f.attach_calls(calls);
             }
             if let Some(theater) = theater.clone() {
-                f.on_return(move |id| theater.reopen_film(id));
+                f.on_return(move |id, why| theater.reopen_film(id, why));
             }
         }
         theater::library_methods(

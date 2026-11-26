@@ -362,6 +362,10 @@ struct Shared {
     library: Mutex<Option<Box<dyn Library>>>,
     location: Mutex<Option<Location>>,
     playback: Mutex<overlay::Session>,
+    /// The film this game was last asked to watch, so its page opens again
+    /// when the film ends at the main menu (`link::reopen_film`): a Live
+    /// film is not in the local library the page is otherwise found in.
+    watched: Mutex<Option<Entry>>,
     archive_done: Mutex<Vec<(u64, pages::Action, Entry, Result<Option<Clip>, String>)>>,
     playback_dir: Option<PathBuf>,
     playback_recording: Option<PathBuf>,
@@ -928,7 +932,7 @@ impl Theater {
                 if playback_clip.is_some() {
                     playback.clip = playback_clip;
                 }
-                self.session().play(&playback, view)
+                self.play(&playback, view)
             } else {
                 Ok(())
             }
@@ -1024,6 +1028,18 @@ impl Theater {
     pub fn connect(&self, agent: &agent::Agent) {
         self.session().connect(agent);
         self.link_method(agent);
+    }
+
+    /// Watch `entry` in this game (`theater.watch`). The entry is kept for
+    /// the page that opens again when the film ends.
+    fn play(
+        &self,
+        entry: &Entry,
+        view: Option<agent_proto::theater::InitialView>,
+    ) -> Result<(), String> {
+        self.session().play(entry, view)?;
+        *self.0.watched.lock().unwrap_or_else(|e| e.into_inner()) = Some(entry.clone());
+        Ok(())
     }
 
     fn session(&self) -> MutexGuard<'_, overlay::Session> {
