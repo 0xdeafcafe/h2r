@@ -4474,6 +4474,7 @@ dependencies = [
  "background",
  "bytemuck",
  "d3d",
+ "font",
  "frame-scene",
  "gfx",
  "ir",

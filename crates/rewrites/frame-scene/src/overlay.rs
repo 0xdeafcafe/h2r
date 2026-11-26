@@ -2,6 +2,7 @@
 //! subsystem"): what is drawn over a frame's views, the HUD first, as one
 //! ordered list of items. Each item is a [`OverlayKind::Quad`], a
 //! [`OverlayKind::TextRun`], a [`OverlayKind::Fill`], a
+//! [`OverlayKind::MovieFrame`] (a movie's current frame), a
 //! [`OverlayKind::Blur`] of what is under it or a
 //! [`OverlayKind::ModelView`] (a menu's model widget), with a material key
 //! and a clip rectangle; `native_render::ui_gpu` draws the list in its
@@ -192,6 +193,19 @@ pub enum OverlayKind {
     /// A menu's model widget: its objects seen from its camera, drawn
     /// into the clip ([`OverlayModelView`]).
     ModelView,
+    /// The current frame of a movie (`detail` names its [`OverlayMovie`]),
+    /// four corners like a quad: the renderer takes the frame's texels
+    /// from the movie's upload.
+    MovieFrame,
+}
+
+/// Which movie a [`OverlayKind::MovieFrame`] item shows, and which frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct OverlayMovie {
+    /// The movie's id, as the scene's uploads name it.
+    pub movie: u32,
+    /// The frame number the producer saw.
+    pub frame: u32,
 }
 
 /// The blur under a dialog (`0x00235756` running the Kawase blur
@@ -309,6 +323,8 @@ pub struct Overlay {
     pub blurs: Vec<OverlayBlur>,
     /// The model view items' views, in item order.
     pub model_views: Vec<OverlayModelView>,
+    /// The movie frame items' movies, in item order.
+    pub movies: Vec<OverlayMovie>,
 }
 
 /// The overlay's sizes.
@@ -321,6 +337,7 @@ pub struct OverlayCounts {
     pub glyphs: u32,
     pub blurs: u32,
     pub model_views: u32,
+    pub movie_frames: u32,
     /// Items whose material is a tag shader.
     pub shader_materials: u32,
 }
@@ -343,6 +360,7 @@ impl Overlay {
         self.glyphs.clear();
         self.blurs.clear();
         self.model_views.clear();
+        self.movies.clear();
     }
 
     /// Sets the target size. Items already in the list keep their
@@ -536,6 +554,27 @@ impl Overlay {
         Ok(self.push_detail(OverlayKind::ModelView, clip, detail))
     }
 
+    /// The current frame of `movie` over the four `corners` of `clip`'s
+    /// quad: the corners' uv and colour are the producer's, the material
+    /// is the blend and sampler it wants.
+    pub fn push_movie_frame(
+        &mut self,
+        material: OverlayMaterial,
+        clip: ClipRect,
+        corners: [OverlayVertex; 4],
+        movie: OverlayMovie,
+    ) -> Result<u32, OverlayError> {
+        let n = self.push_corners(OverlayKind::MovieFrame, material, clip, corners)?;
+        self.movies.push(movie);
+        self.items[n as usize].detail = Some(self.movies.len() as u32 - 1);
+        Ok(n)
+    }
+
+    /// The movie a movie frame item shows.
+    pub fn movie_of(&self, item: &OverlayItem) -> Option<&OverlayMovie> {
+        (item.kind == OverlayKind::MovieFrame).then(|| self.movies.get(item.detail? as usize)).flatten()
+    }
+
     /// Adds `other`'s items after this list's, in their order: a producer
     /// that builds its part apart (one HUD's widgets) and then joins the
     /// scene's list. A list with no size takes `other`'s; one of another
@@ -561,10 +600,18 @@ impl Overlay {
         let (b, m) = (self.blurs.len() as u32, self.model_views.len() as u32);
         self.blurs.extend(other.blurs.iter().cloned());
         self.model_views.extend(other.model_views.iter().cloned());
+        let w = self.movies.len() as u32;
+        self.movies.extend_from_slice(&other.movies);
         self.items.extend(other.items.iter().map(|item| OverlayItem {
             vertices: item.vertices.start + v..item.vertices.end + v,
             glyphs: item.glyphs.start + g..item.glyphs.end + g,
-            detail: item.detail.map(|d| d + if item.kind == OverlayKind::Blur { b } else { m }),
+            detail: item.detail.map(|d| {
+                d + match item.kind {
+                    OverlayKind::Blur => b,
+                    OverlayKind::MovieFrame => w,
+                    _ => m,
+                }
+            }),
             ..item.clone()
         }));
         Ok(start..self.items.len() as u32)
@@ -579,6 +626,7 @@ impl Overlay {
                 OverlayKind::Fill => c.fills += 1,
                 OverlayKind::Blur => c.blurs += 1,
                 OverlayKind::ModelView => c.model_views += 1,
+                OverlayKind::MovieFrame => c.movie_frames += 1,
             }
             c.glyphs += item.glyphs.len() as u32;
             if matches!(item.material.program, Program::Shader { .. }) {
@@ -596,7 +644,7 @@ impl Overlay {
             return Ok(());
         }
         let target = ClipRect::full(self.size);
-        let (mut v, mut g, mut b, mut m) = (0u32, 0u32, 0u32, 0u32);
+        let (mut v, mut g, mut b, mut m, mut w) = (0u32, 0u32, 0u32, 0u32, 0u32);
         for (n, item) in self.items.iter().enumerate() {
             let r = (&item.vertices, &item.glyphs);
             if r.0.start != v || r.0.end < r.0.start || r.0.end as usize > self.vertices.len() {
@@ -609,7 +657,7 @@ impl Overlay {
             g = r.1.end;
             let (corners, glyphs) = (r.0.len(), r.1.len());
             let fits = match item.kind {
-                OverlayKind::Quad => corners == 4 && glyphs == 0,
+                OverlayKind::Quad | OverlayKind::MovieFrame => corners == 4 && glyphs == 0,
                 OverlayKind::Fill => corners == 4 && glyphs == 0 && !item.material.sampled(),
                 OverlayKind::TextRun => {
                     corners == 0 && glyphs > 0 && matches!(item.material.texture, OverlayTexture::Glyphs { .. })
@@ -622,6 +670,7 @@ impl Overlay {
             let next = match item.kind {
                 OverlayKind::Blur => Some(&mut b),
                 OverlayKind::ModelView => Some(&mut m),
+                OverlayKind::MovieFrame => Some(&mut w),
                 _ => None,
             };
             match (next, item.detail) {
@@ -638,8 +687,11 @@ impl Overlay {
         if v as usize != self.vertices.len() || g as usize != self.glyphs.len() {
             return Err("overlay has vertices or glyphs no item names".into());
         }
-        if b as usize != self.blurs.len() || m as usize != self.model_views.len() {
-            return Err("overlay has blurs or model views no item names".into());
+        if b as usize != self.blurs.len()
+            || m as usize != self.model_views.len()
+            || w as usize != self.movies.len()
+        {
+            return Err("overlay has blurs, model views or movies no item names".into());
         }
         Ok(())
     }
@@ -735,6 +787,10 @@ pub(crate) fn summary_words(overlay: &Overlay, word: &mut dyn FnMut(u32)) {
         for g in overlay.glyphs_of(item) {
             word(g.index);
             floats(&mut *word, &g.rect);
+        }
+        if let Some(m) = overlay.movie_of(item) {
+            word(m.movie);
+            word(m.frame);
         }
         if let Some(b) = overlay.blur_of(item) {
             floats(&mut *word, &[b.tap]);
@@ -969,5 +1025,56 @@ mod tests {
         let scene = b.scene().unwrap();
         assert_eq!(scene.overlay_counts().fills, 1);
         assert_eq!(scene.check(), Ok(()));
+    }
+
+    #[test]
+    fn overlay_items_keep_list_order() {
+        let mut o = Overlay::new([640, 480]);
+        let all = ClipRect::full([640, 480]);
+        let glyph = [OverlayGlyph { index: 1, rect: [0.0, 0.0, 4.0, 4.0] }];
+        let blur = OverlayBlur { tap: 1.0, spreads: vec![1.0], pick: 0.0 };
+        let view = OverlayModelView {
+            camera: OverlayCamera { position: [0.0; 3], forward: [0.0, 1.0, 0.0], up: [0.0, 0.0, 1.0], fov_y: 1.0 },
+            objects: vec![1],
+        };
+        o.push_movie_frame(sprite(), all, quad(0.0, 0.0), OverlayMovie { movie: 9, frame: 4 }).unwrap();
+        o.push_blur(all, blur).unwrap();
+        o.push_text_run(OverlayMaterial::text(1), all, [1.0; 4], &glyph).unwrap();
+        o.push_model_view(all, view).unwrap();
+        o.push_fill(all, [0.0, 0.0, 2.0, 2.0], [1.0; 4], OverlayBlend::Off).unwrap();
+        o.push_quad(sprite(), all, quad(4.0, 4.0)).unwrap();
+        let kinds: Vec<_> = o.items.iter().map(|i| i.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                OverlayKind::MovieFrame,
+                OverlayKind::Blur,
+                OverlayKind::TextRun,
+                OverlayKind::ModelView,
+                OverlayKind::Fill,
+                OverlayKind::Quad
+            ]
+        );
+        assert_eq!(o.movie_of(&o.items[0]), Some(&OverlayMovie { movie: 9, frame: 4 }));
+        assert_eq!(o.counts().movie_frames, 1);
+        assert_eq!(o.check(), Ok(()));
+        // Joined after another list, the movie keeps its own entry.
+        let mut a = Overlay::new([640, 480]);
+        a.push_movie_frame(sprite(), all, quad(0.0, 0.0), OverlayMovie { movie: 1, frame: 0 }).unwrap();
+        a.append(&o).unwrap();
+        assert_eq!(a.movie_of(&a.items[1]), Some(&OverlayMovie { movie: 9, frame: 4 }));
+        assert_eq!(a.check(), Ok(()));
+    }
+
+    #[test]
+    fn a_clip_rectangle_scissors_only_its_items() {
+        let mut o = Overlay::new([640, 480]);
+        let half = ClipRect { x: 0, y: 0, width: 320, height: 480 };
+        let all = ClipRect::full([640, 480]);
+        o.push_quad(sprite(), all, quad(0.0, 0.0)).unwrap();
+        o.push_quad(sprite(), half, quad(400.0, 0.0)).unwrap();
+        o.push_fill(all, [0.0, 0.0, 9.0, 9.0], [1.0; 4], OverlayBlend::Off).unwrap();
+        let clips: Vec<_> = o.items.iter().map(|i| i.clip).collect();
+        assert_eq!(clips, [all, half, all], "the narrow clip is the middle item's alone");
     }
 }

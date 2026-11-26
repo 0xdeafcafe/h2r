@@ -43,6 +43,7 @@ workspace_library(
     tree = ":lib-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/font:font",
         "//crates/formats/map:map",
         "//crates/formats/shaders:shaders",
         "//crates/formats/tags:tags",
@@ -74,6 +75,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/font:font",
         "//crates/formats/map:map",
         "//crates/formats/shaders:shaders",
         "//crates/formats/tags:tags",
@@ -110,6 +112,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/font:font",
         "//crates/formats/map:map",
         "//crates/formats/shaders:shaders",
         "//crates/formats/tags:tags",
@@ -147,6 +150,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/font:font",
         "//crates/formats/map:map",
         "//crates/formats/shaders:shaders",
         "//crates/formats/tags:tags",
@@ -184,6 +188,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/font:font",
         "//crates/formats/map:map",
         "//crates/formats/shaders:shaders",
         "//crates/formats/tags:tags",
@@ -221,6 +226,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/font:font",
         "//crates/formats/map:map",
         "//crates/formats/shaders:shaders",
         "//crates/formats/tags:tags",
@@ -258,6 +264,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/font:font",
         "//crates/formats/map:map",
         "//crates/formats/shaders:shaders",
         "//crates/formats/tags:tags",
@@ -295,6 +302,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/font:font",
         "//crates/formats/map:map",
         "//crates/formats/shaders:shaders",
         "//crates/formats/tags:tags",
@@ -332,6 +340,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/font:font",
         "//crates/formats/map:map",
         "//crates/formats/shaders:shaders",
         "//crates/formats/tags:tags",
@@ -369,6 +378,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/font:font",
         "//crates/formats/map:map",
         "//crates/formats/shaders:shaders",
         "//crates/formats/tags:tags",
@@ -406,6 +416,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/font:font",
         "//crates/formats/map:map",
         "//crates/formats/shaders:shaders",
         "//crates/formats/tags:tags",
@@ -443,6 +454,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/font:font",
         "//crates/formats/map:map",
         "//crates/formats/shaders:shaders",
         "//crates/formats/tags:tags",
@@ -480,6 +492,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/font:font",
         "//crates/formats/map:map",
         "//crates/formats/shaders:shaders",
         "//crates/formats/tags:tags",
@@ -517,6 +530,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/font:font",
         "//crates/formats/map:map",
         "//crates/formats/shaders:shaders",
         "//crates/formats/tags:tags",
@@ -554,6 +568,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/font:font",
         "//crates/formats/map:map",
         "//crates/formats/shaders:shaders",
         "//crates/formats/tags:tags",

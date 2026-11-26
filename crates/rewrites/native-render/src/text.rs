@@ -43,6 +43,54 @@ pub struct FontFace {
     pub kerning: HashMap<(u16, u16), i16>,
 }
 
+impl FontFace {
+    /// Reads a font tag's packed font: every unit it has a glyph for (its
+    /// own glyph, not the stand-in an unmapped unit draws), each record
+    /// decoded once into 8-bit coverage (the 4-bit alpha times 17), and
+    /// the kerning pairs the engine would apply. `font` is the engine
+    /// font the atlas page is keyed by.
+    pub fn from_tag(font: u16, tag: &font::Font<'_>) -> Result<FontFace, font::Error> {
+        let mut face = FontFace {
+            font,
+            ascent: tag.header.ascent,
+            descent: tag.header.descent,
+            leading: tag.header.leading,
+            ..FontFace::default()
+        };
+        let mut decoded: HashMap<u32, FaceGlyph> = HashMap::new();
+        for unit in 0..=u16::MAX {
+            if !tag.has_glyph(unit) {
+                continue;
+            }
+            let index = tag.glyph_index(unit);
+            if !decoded.contains_key(&index) {
+                let g = tag.glyph_by_index(index)?;
+                decoded.insert(
+                    index,
+                    FaceGlyph {
+                        index,
+                        advance: g.record.advance,
+                        x_offset: g.record.x_offset,
+                        y_offset: g.record.y_offset,
+                        width: g.record.width,
+                        height: g.record.height,
+                        coverage: g.pixels.iter().map(|p| (p >> 12) as u8 * 17).collect(),
+                    },
+                );
+            }
+            face.glyphs.insert(unit, decoded[&index].clone());
+        }
+        for pair in &tag.header.kerning {
+            let (a, b) = (u16::from(pair.first), u16::from(pair.second));
+            let amount = tag.kerning(a, b);
+            if amount != 0 {
+                face.kerning.insert((a, b), amount);
+            }
+        }
+        Ok(face)
+    }
+}
+
 /// Why a string was not shaped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShapeError {
@@ -144,5 +192,61 @@ mod tests {
         let mut broken = face();
         broken.glyphs.get_mut(&u16::from(b'A')).unwrap().coverage.pop();
         assert!(!broken.pack(&mut GlyphPages::new(64)));
+    }
+
+    /// A font of two glyphs built in the tag's byte layout: `A` (a 2x2
+    /// bitmap, one opaque run of four pixels) and a blank space, with a
+    /// kerning pair A, A.
+    fn tag_bytes() -> Vec<u8> {
+        use font::{CHARMAP_OFFSET, HEADER_OFFSET, MAGIC, RECORDS_OFFSET, RECORD_LEN};
+        let mut f = vec![0u8; RECORDS_OFFSET + 2 * RECORD_LEN];
+        let put16 = |f: &mut Vec<u8>, o: usize, v: u16| f[o..o + 2].copy_from_slice(&v.to_le_bytes());
+        let put32 = |f: &mut Vec<u8>, o: usize, v: u32| f[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        let h = HEADER_OFFSET;
+        put32(&mut f, h, MAGIC);
+        put16(&mut f, h + 4, 10);
+        put16(&mut f, h + 6, 3);
+        put16(&mut f, h + 8, 1);
+        put32(&mut f, h + 0xc, 2);
+        put32(&mut f, h + 0x20, 1);
+        f[h + 0x24] = b'A';
+        f[h + 0x25] = b'A';
+        put16(&mut f, h + 0x26, (-1i16) as u16);
+        let bit = h + 0x1a4 + usize::from(b'A' >> 5) * 4;
+        put32(&mut f, bit, 1 << (b'A' & 31));
+        // Record 0 is the space (unmapped units read it), record 1 is A.
+        put32(&mut f, CHARMAP_OFFSET + usize::from(b' ') * 4, 0);
+        put32(&mut f, CHARMAP_OFFSET + usize::from(b'A') * 4, 1);
+        let data_off = f.len();
+        put16(&mut f, RECORDS_OFFSET, 4);
+        let a = RECORDS_OFFSET + RECORD_LEN;
+        put16(&mut f, a, 6);
+        put16(&mut f, a + 2, 1);
+        put16(&mut f, a + 4, 2);
+        put16(&mut f, a + 6, 2);
+        put16(&mut f, a + 8, 1);
+        put16(&mut f, a + 10, 9);
+        put32(&mut f, a + 12, data_off as u32);
+        put32(&mut f, h + 0x18, 1);
+        f.push(0x44); // `01 000100`: four opaque pixels
+        f
+    }
+
+    #[test]
+    fn a_font_tag_fills_the_face_with_its_metrics_coverage_and_kerning() {
+        let bytes = tag_bytes();
+        let tag = font::Font::parse(&bytes).unwrap();
+        let face = FontFace::from_tag(7, &tag).unwrap();
+        assert_eq!((face.font, face.ascent, face.descent, face.leading), (7, 10, 3, 1));
+        let a = &face.glyphs[&u16::from(b'A')];
+        assert_eq!((a.advance, a.x_offset, a.y_offset, a.width, a.height), (6, 1, 9, 2, 2));
+        assert_eq!(a.coverage, [255; 4]);
+        assert!(face.glyphs.contains_key(&u16::from(b' ')), "the blank space is present");
+        assert!(!face.glyphs.contains_key(&u16::from(b'Z')), "an unmapped unit is no glyph");
+        assert_eq!(face.kerning.get(&(u16::from(b'A'), u16::from(b'A'))), Some(&-1));
+        // Shaped and packed like a hand-made face.
+        let run = face.shape("AA", [0.0; 2], 1.0).unwrap();
+        assert_eq!(run[1].rect, [7.0, 1.0, 9.0, 3.0], "pen 7, kerned -1, plus the offset 1");
+        assert!(face.pack(&mut GlyphPages::new(32)));
     }
 }
