@@ -20,9 +20,9 @@ pub(super) fn fpu_ready(tag: u16, status: u16, control: u16) -> bool {
 
 /// Record the same stores the guest-memory writers make. The device
 /// commits them with its own journal after every copy has reserved its draws.
-struct Mirror<'a> {
-    mem: &'a dyn GuestMemory,
-    writes: Writes,
+pub(super) struct Mirror<'a> {
+    pub(super) mem: &'a dyn GuestMemory,
+    pub(super) writes: Writes,
 }
 
 impl GuestMemory for Mirror<'_> {

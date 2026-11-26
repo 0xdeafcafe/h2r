@@ -25,6 +25,7 @@ pub mod host;
 mod items;
 mod object_shadows;
 mod passes;
+pub mod scene_frame;
 mod typed;
 mod typed_groups;
 pub mod walk;

@@ -1060,6 +1060,76 @@ mod tests {
         assert!(typed_groups::plan(&m, GroupSite::Light, &steps, 4, 0, projection).is_none());
     }
 
+    /// The cut frame's groups (`scene_frame::groups`, made before any
+    /// layer begins) against the layer builds the guest's passes make at
+    /// each layer draw, from the same item lists: the same entries in the
+    /// same sorted order, for the diffuse and specular layers and for the
+    /// casters with the shadow setup's resize laid over memory.
+    #[test]
+    fn the_cut_lights_groups_equal_the_guests_layer_builds() {
+        use crate::native_lights::{Ro, scene_frame};
+        use engine::shadow_constants::{self as sc, global::{TARGET_STRIDE, TARGETS}};
+        use native_render::light_passes::{self as passes, Inputs};
+
+        let guest = |m: &FlatMemory, list: u32, layer: u32| {
+            let built = build(m, list, layer, BUFFER).unwrap();
+            let items = m.u32(list + 20).unwrap();
+            built
+                .sorted()
+                .into_iter()
+                .map(|s| scene_extract::light_groups::entry(&Ro(m), items, s).unwrap())
+                .unzip::<_, _, Vec<_>, Vec<_>>()
+        };
+        for (layer, flags) in [(12, 1), (13, 3)] {
+            let mut m = fixture(layer);
+            m.set_u32(shadows::RECEIVERS + 12, 0).unwrap();
+            m.set_u32(lp::global::PASS_FLAGS, flags).unwrap();
+            let definition_flags = m.u32(m.u32(lp::global::DEFINITION).unwrap()).unwrap();
+            let (entries, rows) = guest(&m, shadows::RECEIVERS, layer);
+            let steps = passes::steps(&Inputs {
+                flags,
+                definition_flags,
+                receivers: 1 << layer,
+                ..Inputs::default()
+            });
+            let groups = scene_frame::groups(&m, &steps, flags, definition_flags, None).unwrap();
+            assert_eq!(groups.len(), 1, "layer {layer}: one group per drawn layer");
+            let g = &groups[0];
+            assert_eq!(u32::from(g.group.layer), layer);
+            assert_eq!((&g.entries, &g.rows), (&entries, &rows), "layer {layer}");
+            if layer == 12 {
+                assert_eq!(g.entries.len(), 3);
+            }
+        }
+
+        // The casters: the setup's block is the projection, and its resize
+        // of target 9 is the pass's size though memory still holds zero.
+        let mut m = fixture(10);
+        m.set_u32(shadows::CASTERS + 12, 0).unwrap();
+        let (entries, _) = guest(&m, shadows::CASTERS, 10);
+        let steps = passes::steps(&Inputs {
+            flags: 4,
+            casters: 1 << 10,
+            ..Inputs::default()
+        });
+        let shadow = sc::ShadowGlobals {
+            block: core::array::from_fn(|n| n as u32 + 1),
+            mode: 1,
+            size: [256, 128],
+            target: Some([256, 128, 0x0080_0100]),
+        };
+        assert_eq!(m.u32(TARGETS + 9 * TARGET_STRIDE + 0x80).unwrap(), 0);
+        let groups = scene_frame::groups(&m, &steps, 4, 0, Some(&shadow)).unwrap();
+        assert_eq!(groups.len(), 1, "layers 11, 14 and 12 do not draw");
+        let g = &groups[0];
+        assert_eq!((g.group.layer, &g.entries), (10, &entries));
+        assert_eq!(g.group.projection.unwrap()[0], [1, 2, 3, 4]);
+        assert_eq!(g.group.projection.unwrap()[8], [33, 34, 35, 36]);
+        let pass = g.group.pass.unwrap();
+        assert_eq!((pass.target, pass.size), (9, [256, 128]));
+        assert_eq!(m.u32(TARGETS + 9 * TARGET_STRIDE + 0x80).unwrap(), 0, "nothing written");
+    }
+
     #[test]
     fn long_partition_preserves_the_original_permutation_of_equal_keys() {
         let mut slots = vec![[0; 24]; 9];

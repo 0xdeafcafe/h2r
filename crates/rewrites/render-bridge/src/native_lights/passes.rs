@@ -16,6 +16,7 @@ use std::sync::Arc;
 use engine::light_constants::Fpu;
 use engine::memory::GuestMemory;
 use engine::points;
+use engine::entry::Ret;
 use engine::render::light_gather::{Refusal, passes};
 use hooks::{Builder, Call, Cx, EntryFuture, Flow};
 use runtime::TransferAbi;
@@ -75,6 +76,11 @@ pub(super) fn install(b: &mut Builder) {
                         GuestMemory::u32(&*mem, cpu.esp),
                     )
                 };
+                // Under the cut the passes stop after the item lists:
+                // the scene takes the light's layers, and nothing draws.
+                if super::scene_path_ready() {
+                    return scene_passes(cpu, ctx, plan);
+                }
                 let plan = match plan {
                     Ok(plan) => plan,
                     Err(why) => {
@@ -121,6 +127,36 @@ pub(super) fn install(b: &mut Builder) {
             |c| Ok(at_constants(c).map_or(Flow::Continue, Flow::Return)),
         )
         .context_only();
+}
+
+/// The passes of a light of the cut frame ([`super::scene_frame`]): the
+/// item lists, then the light's groups into the scene, and the return
+/// (`ret 0x10`). A refused plan returns at once: its light is a drop.
+fn scene_passes(
+    cpu: &mut runtime::CpuAbi,
+    ctx: &mut runtime::ExecCtx,
+    plan: Result<passes::Plan, Refusal>,
+) -> Result<TransferAbi, runtime::GuestFault> {
+    let plan = match plan {
+        Ok(plan) => plan,
+        Err(why) => {
+            refused(SceneList::LightPasses, why);
+            super::scene_frame::refused();
+            cpu.eax = 0;
+            return ctx.memory().ret(cpu, 0x10);
+        }
+    };
+    hooks::entry::start_render(cpu, ctx, points::RENDER_LIGHT_PASSES.base, move |cx: Cx| -> EntryFuture {
+        Box::pin(async move {
+            let (ret, _) = passes::run_with(&cx, plan, |mem, p| {
+                super::scene_frame::light(&*mem, p);
+                Ok(Some((Ret::new(0, 0x10), passes::LightPasses::default())))
+            })
+            .await?;
+            SceneList::LightPasses.count(SceneListResult::Native);
+            Ok::<_, engine::entry::EntryError>(ret)
+        })
+    })
 }
 
 /// The constants' entry. Acts only on the whole guest body's own call
