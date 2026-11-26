@@ -88,8 +88,11 @@ fn scenario() -> FakeGuest {
     {
         named(&mut m, SQUADS + 0x74 * i as u32, name);
     }
+    // Each record squad is on its class's faction's team: the Elite, the
+    // Grunt and the Hunter are Covenant (3).
     for (squad, row) in [(3u32, 0u16), (4, 1), (5, 2), (6, 9)] {
         m.put_u16(SQUADS + 0x74 * squad + 0x36, row);
+        m.put_u16(SQUADS + 0x74 * squad + 0x24, 3);
     }
     let slot0 = SQUADS + 0x74;
     m.put_u16(slot0 + 0x24, 3)
@@ -386,6 +389,62 @@ fn a_placement_sets_the_squad_then_places_and_sets_the_team() {
     assert_eq!(m.vec3(STARTS + 4).unwrap(), [10.0, 0.0, 0.0]);
     assert_eq!(m.vec3(STARTS + 0x64 + 4).unwrap(), [20.0, 0.0, 0.0]);
     assert_eq!(m.u16(STARTS + 0x10).unwrap(), 0xffff);
+}
+
+/// A scenario whose record squad of palette row `row` is on `team`.
+fn scenario_with_team(row: u16, team: u16) -> FakeGuest {
+    let mut m = scenario();
+    m.put_u16(SQUADS + 0x74 * (3 + u32::from(row)) + 0x24, team);
+    m
+}
+
+#[test]
+fn the_kit_reads_each_classs_faction_from_its_record_squad() {
+    let mut m = scenario();
+    // Row 1 is Flood (4), row 2 a human (2); row 0 stays Covenant.
+    m.put_u16(SQUADS + 0x74 * 4 + 0x24, 4)
+        .put_u16(SQUADS + 0x74 * 5 + 0x24, 2);
+    let kit = read_kit(&m).unwrap().unwrap();
+    assert_eq!(
+        kit.factions.values().copied().collect::<Vec<_>>(),
+        [Faction::Covenant, Faction::Flood, Faction::Human]
+    );
+    assert_eq!(kit.factions[&1], Faction::Flood);
+    // A record on no faction's team (the player's, 1) is no class.
+    let m = scenario_with_team(2, 1);
+    let kit = read_kit(&m).unwrap().unwrap();
+    assert_eq!(kit.classes.len(), 2);
+    assert!(!kit.factions.contains_key(&2));
+    assert!(!kit.kit().classes.contains_key("hunter"));
+}
+
+#[test]
+fn a_flood_squad_is_placed_on_the_flood_team() {
+    // Row 1 is Flood: the squad takes team 4 whatever team the host picked.
+    let m = scenario_with_team(1, 4);
+    let kit = read_kit(&m).unwrap().unwrap();
+    assert_eq!(kit.placement_team(1, 5).unwrap(), 4);
+    let (result, calls, _) = drive(
+        m,
+        move |cx| {
+            let kit = kit.clone();
+            Box::pin(async move { place_squad(&cx, &kit, placement(0, 1, 0)).await })
+        },
+        returns(0),
+    );
+    result.unwrap();
+    assert_eq!(
+        calls.last(),
+        Some(&GuestCall::new(points::AI_SET_TEAM.base).eax(1).ebx(4))
+    );
+    // A Covenant class takes the host's pick, a human class its own team.
+    let kit = layout();
+    assert_eq!(kit.placement_team(0, 5).unwrap(), 5);
+    let m = scenario_with_team(2, 2);
+    assert_eq!(read_kit(&m).unwrap().unwrap().placement_team(2, 5).unwrap(), 2);
+    // A row the kit recorded no class for is refused, not given the host's team.
+    let error = kit.placement_team(9, 5).unwrap_err().to_string();
+    assert!(error.contains("row 9"), "{error}");
 }
 
 #[test]

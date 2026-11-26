@@ -385,6 +385,9 @@ pub fn build_with(
                         .position(|(map, _)| map.eq_ignore_ascii_case(&class.donor.map))
                         .expect("every donor was read above"),
                     path: table.path(&class.name)?.to_owned(),
+                    // The ground's enemy classes are the retail Covenant
+                    // table (`forge_doc::waves::CLASSES`).
+                    faction: firefight_kit::Faction::Covenant,
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;

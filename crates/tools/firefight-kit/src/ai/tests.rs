@@ -102,7 +102,7 @@ fn kit_map_with(probe: bool, classes: &[&str]) -> Map<Cursor<Vec<u8>>> {
     let elite = set
         .add_tag(FourCC(*b"char"), ELITE_PATH, TagPayload::Empty)
         .unwrap();
-    let tags: Vec<(&str, TagId)> = classes
+    let tags: Vec<(&str, TagId, Faction)> = classes
         .iter()
         .map(|name| {
             let path = format!(r"invented\{name}");
@@ -110,6 +110,7 @@ fn kit_map_with(probe: bool, classes: &[&str]) -> Map<Cursor<Vec<u8>>> {
                 *name,
                 set.add_tag(FourCC(*b"char"), &path, TagPayload::Built(Block::zeroed(4)))
                     .unwrap(),
+                faction_of(name),
             )
         })
         .collect();
@@ -128,6 +129,15 @@ fn kit_map_with(probe: bool, classes: &[&str]) -> Map<Cursor<Vec<u8>>> {
     kit.fields.apply(root).unwrap();
     set.tag_mut(elite).unwrap().payload = TagPayload::Built(kit.character);
     Map::from_reader(Cursor::new(set.build().unwrap().0)).unwrap()
+}
+
+/// The faction a test class belongs to by its name.
+fn faction_of(name: &str) -> Faction {
+    match name.split('_').next() {
+        Some("flood") => Faction::Flood,
+        Some("marine") => Faction::Human,
+        _ => Faction::Covenant,
+    }
 }
 
 fn tag_bytes(map: &mut Map<Cursor<Vec<u8>>>, id: TagId) -> (Vec<u8>, u32) {
@@ -207,13 +217,49 @@ fn each_palette_row_has_a_class_squad_naming_it() {
 }
 
 #[test]
+fn a_class_carries_its_faction_through_the_kit() {
+    let mut map = kit_map_with(false, &["grunt", "flood_carrier", "marine"]);
+    let ai = ScenarioAi::read_map(&mut map).unwrap();
+    let record: Vec<(&str, u16)> = ai
+        .squads
+        .iter()
+        .filter_map(|s| Some((s.name.strip_prefix(CLASS_PREFIX)?, s.team)))
+        .collect();
+    // The record squad's team is the faction's: Covenant 3, Flood 4, humans 2.
+    assert_eq!(
+        record,
+        [("elite", 3), ("grunt", 3), ("flood_carrier", 4), ("marine", 2)]
+    );
+    // Each team reads back as the faction that was written.
+    for (_, team) in record {
+        assert!(Faction::from_team(team as u8).is_some());
+    }
+    // The slot squads stay on the Covenant team: the game sets a placed
+    // squad's team from its class.
+    assert!(
+        ai.squads
+            .iter()
+            .filter(|s| s.name.starts_with("ff_slot_"))
+            .all(|s| s.team == 3)
+    );
+}
+
+#[test]
 fn a_class_name_the_record_cannot_hold_is_refused_by_name() {
     let zones = [zone()];
     for bad in ["Grunt", "", "has space", "a_name_that_is_far_too_long_to_fit"] {
-        let error = class_squads(&zones, 1, &["elite", bad]).unwrap_err();
+        let error = class_squads(&zones, 1, &[("elite", Faction::Covenant), (bad, Faction::Covenant)]).unwrap_err();
         assert!(error.contains(&format!("{bad:?}")), "{error}");
     }
-    let error = class_squads(&zones, 1, &["elite", "grunt", "grunt"]).unwrap_err();
+    let error = class_squads(
+        &zones,
+        1,
+        &[
+            ("elite", Faction::Covenant),
+            ("grunt", Faction::Covenant),
+            ("grunt", Faction::Flood),
+        ],
+    ).unwrap_err();
     assert!(error.contains("grunt is named twice"), "{error}");
 }
 

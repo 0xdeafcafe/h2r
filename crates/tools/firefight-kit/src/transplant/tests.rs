@@ -91,6 +91,23 @@ fn a_transplanted_closure_resolves() {
 }
 
 #[test]
+fn a_class_carries_its_faction_through_the_kit() {
+    // The Grunt is Covenant and the Jackal stands in for a Flood class
+    // (`testkit::donor_classes`): each record squad is on its team.
+    let (base, donor, schema) = (testkit::court(), testkit::donor(), testkit::donor_schema());
+    let with = classes(&donor, &schema, &["grunt", "jackal"], false);
+    let built = build(&base, &with).unwrap();
+    let mut map = Map::from_reader(Cursor::new(&built.bytes[..])).unwrap();
+    let ai = ScenarioAi::read_map(&mut map).unwrap();
+    let record: Vec<(&str, u16)> = ai
+        .squads
+        .iter()
+        .filter_map(|s| Some((s.name.strip_prefix(crate::ai::CLASS_PREFIX)?, s.team)))
+        .collect();
+    assert_eq!(record, [("elite", 3), ("grunt", 3), ("jackal", 4)]);
+}
+
+#[test]
 fn a_class_over_the_headroom_is_refused_with_its_cost() {
     let (base, donor, schema) = (testkit::court(), testkit::donor(), testkit::donor_schema());
     let base = testkit::tight(&base, 0x2000);

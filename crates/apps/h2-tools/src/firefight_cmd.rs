@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use vfs::Backend;
-use firefight_kit::{ClassSpec, Classes, Config, Donor, Dropship, Mode, Team};
+use firefight_kit::{ClassSpec, Classes, Config, Donor, Dropship, Faction, Mode, Team};
 use tags::schema::Schema;
 use scenario_edit::{MapSource, recipe};
 
@@ -67,12 +67,24 @@ struct Wanted {
     name: String,
     donor: String,
     path: String,
+    faction: Faction,
 }
 
-/// `NAME=DONOR:CHAR_PATH`.
+/// `NAME=DONOR:CHAR_PATH`, or `NAME@FACTION=DONOR:CHAR_PATH` with FACTION
+/// `covenant` (the default), `flood` or `human`.
 fn parse_class(text: &str) -> Result<Wanted> {
     let bad = || format!("a class is NAME=DONOR:CHAR_PATH, got {text:?}");
     let (name, rest) = text.split_once('=').with_context(bad)?;
+    let (name, faction) = match name.split_once('@') {
+        None => (name, Faction::Covenant),
+        Some((name, faction)) => (
+            name,
+            Faction::ALL
+                .into_iter()
+                .find(|f| f.name() == faction.trim())
+                .with_context(bad)?,
+        ),
+    };
     let (donor, path) = rest.split_once(':').with_context(bad)?;
     let (name, donor, path) = (name.trim(), donor.trim().to_ascii_lowercase(), path.trim());
     let donor = donor.strip_suffix(".map").unwrap_or(&donor).to_owned();
@@ -83,6 +95,7 @@ fn parse_class(text: &str) -> Result<Wanted> {
         name: name.to_owned(),
         donor,
         path: path.to_owned(),
+        faction,
     })
 }
 
@@ -105,6 +118,7 @@ fn retail_wanted(on_disc: impl FnMut(&str) -> bool) -> Result<Vec<Wanted>> {
             name: name.to_owned(),
             donor: donor.to_owned(),
             path: path.to_owned(),
+            faction: Faction::Covenant,
         })
         .collect())
 }
@@ -130,6 +144,7 @@ fn plan(wanted: &[Wanted]) -> Result<(Vec<String>, Vec<ClassSpec>)> {
             name: w.name.clone(),
             donor,
             path: w.path.clone(),
+            faction: w.faction,
         });
     }
     Ok((donors, specs))
@@ -405,6 +420,7 @@ mod tests {
                 name: "grunt".into(),
                 donor: "01b_spacestation".into(),
                 path: "characters\\grunt\\grunt".into(),
+                faction: Faction::Covenant,
             }]
         );
         for bad in [
@@ -444,6 +460,17 @@ mod tests {
         // A disc without any of a class's donors is refused by class.
         let error = retail_wanted(|d| d.starts_with("03")).unwrap_err().to_string();
         assert!(error.contains("brute"), "{error}");
+    }
+
+    #[test]
+    fn a_class_may_name_its_faction() {
+        let list = parse_table("g=a:x\nf@flood=b:y\nm@human=a:z\n").unwrap();
+        let factions: Vec<_> = list.iter().map(|w| w.faction).collect();
+        assert_eq!(factions, [Faction::Covenant, Faction::Flood, Faction::Human]);
+        assert_eq!(list[1].name, "f");
+        let (_, specs) = plan(&list).unwrap();
+        assert_eq!(specs[1].faction, Faction::Flood);
+        assert!(parse_table("f@elves=b:y").is_err());
     }
 
     #[test]

@@ -26,6 +26,9 @@ const MAX_MULTIPLIER: u16 = 2 * MULTIPLIER_SCALE;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Limits {
     pub classes: BTreeSet<String>,
+    /// Classes the kit's build dropped to fit the map's tag headroom: a
+    /// definition naming one is refused as cut, not as unknown.
+    pub cut: BTreeSet<String>,
     /// The roles ([`crate::ZoneRole::bit`]) at least one zone of the kit
     /// carries. A squad's `Drop::Role` needs its role here.
     pub zone_roles: u8,
@@ -35,8 +38,15 @@ impl Limits {
     pub fn new(classes: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self {
             classes: classes.into_iter().map(Into::into).collect(),
+            cut: BTreeSet::new(),
             zone_roles: ALL_ZONE_ROLES,
         }
+    }
+
+    /// The same limits for a kit that cut `classes` to fit.
+    pub fn with_cut(mut self, classes: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.cut = classes.into_iter().map(Into::into).collect();
+        self
     }
 
     /// The same limits for a kit whose zones carry only `roles`
@@ -50,7 +60,18 @@ impl Limits {
 /// Check the format, the worst wave at each player count, and kit admission.
 pub fn validate(def: &Def, limits: &Limits) -> Result<()> {
     definition(def)?;
-    for class in def.scoring.by_class.keys() {
+    // Every squad's class and every scored class must be in the kit: one
+    // the build cut is named as cut, one it never had as unknown.
+    let squad_classes = def
+        .rounds
+        .iter()
+        .flat_map(|round| &round.waves)
+        .flat_map(|wave| &wave.squads)
+        .map(|squad| &squad.class);
+    for class in def.scoring.by_class.keys().chain(squad_classes) {
+        if limits.cut.contains(class) {
+            return Err(Refusal::CutClass(class.clone()));
+        }
         if !limits.classes.contains(class) {
             return Err(Refusal::UnknownClass(class.clone()));
         }

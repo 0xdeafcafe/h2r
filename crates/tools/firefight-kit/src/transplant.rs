@@ -21,6 +21,7 @@ use h1_assets::sounds::{
     self,
     gestalt::{self, SoundGestalt},
 };
+use firefight::Faction;
 use map::{
     FourCC, Map, TagId, TagQuery,
     build::{TagPayload, TagSet},
@@ -53,6 +54,10 @@ pub struct ClassSpec {
     pub donor: usize,
     /// The `char` tag's name in the donor.
     pub path: String,
+    /// Who the class fights for: the kit writes it with the palette row
+    /// (`ai::class_squads`) and the game places the class's squads on that
+    /// faction's team.
+    pub faction: Faction,
 }
 
 /// The classes a kit build brings in.
@@ -132,6 +137,8 @@ fn refusal(class: &str, donor: &str, refused: &[Refused]) -> anyhow::Error {
 pub(crate) struct Copied {
     /// The `char` tags, in palette order.
     pub ids: Vec<TagId>,
+    /// Each class's faction, in palette order.
+    pub factions: Vec<Faction>,
     pub costs: Vec<ClassCost>,
     /// The dropship's `vehi` tag and what it added.
     pub ship: Option<(TagId, ClassCost)>,
@@ -266,6 +273,7 @@ pub(crate) fn add(
     for spec in &all.specs[..keep.min(all.specs.len())] {
         let (id, cost) = copier.copy(set, &spec.name, spec.donor, CHAR, &spec.path)?;
         out.ids.push(id);
+        out.factions.push(spec.faction);
         out.costs.push(cost);
     }
     if let Some(path) = ship {

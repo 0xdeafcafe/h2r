@@ -174,6 +174,57 @@ pub enum Drop {
     Role(ZoneRole),
 }
 
+/// Who a class fights for. The kit writes it on the class's record squad
+/// as that faction's team, the game reads it back, and a squad is placed
+/// on that team, so each faction is hostile to every other by the engine's
+/// own "teams differ" test (docs/game/firefight.md, "Factions").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Faction {
+    Covenant,
+    Flood,
+    Human,
+}
+
+/// The engine's own team numbers (docs/halo1/ai.md, **S**).
+pub mod teams {
+    /// Enemy humans (allied humans take the player team they serve).
+    pub const HUMAN: u8 = 2;
+    pub const COVENANT: u8 = 3;
+    pub const FLOOD: u8 = 4;
+}
+
+impl Faction {
+    pub const ALL: [Self; 3] = [Self::Covenant, Self::Flood, Self::Human];
+
+    /// The team the faction's squads are placed on.
+    pub const fn team(self) -> u8 {
+        match self {
+            Self::Covenant => teams::COVENANT,
+            Self::Flood => teams::FLOOD,
+            Self::Human => teams::HUMAN,
+        }
+    }
+
+    /// The faction a team number is, if it is one.
+    pub const fn from_team(team: u8) -> Option<Self> {
+        match team {
+            teams::COVENANT => Some(Self::Covenant),
+            teams::FLOOD => Some(Self::Flood),
+            teams::HUMAN => Some(Self::Human),
+            _ => None,
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Covenant => "covenant",
+            Self::Flood => "flood",
+            Self::Human => "human",
+        }
+    }
+}
+
 /// What a kit zone is for: the roles it carries, written with the zone
 /// (`ZoneSeen::roles`). Stage-one `line` squads are Elite tier 0-1,
 /// `flank` tier 1-2, `heavy` tier 3.
