@@ -40,7 +40,12 @@ pub struct Blitter {
 impl Blitter {
     /// Creates the blit shader and samplers.
     pub fn new(ctx: &GfxContext) -> Self {
-        let d = &ctx.device;
+        Self::on_device(&ctx.device)
+    }
+
+    /// [`Blitter::new`] from the device alone, for a caller that holds no
+    /// context (a pass recorded on the frame's device).
+    pub fn on_device(d: &wgpu::Device) -> Self {
         let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("blit"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/blit.wgsl").into()),
@@ -101,9 +106,22 @@ impl Blitter {
         dst_format: wgpu::TextureFormat,
         opts: BlitOptions<'_>,
     ) {
+        self.blit_on(&ctx.device, encoder, src, dst, dst_format, opts);
+    }
+
+    /// [`Blitter::blit`] from the device alone.
+    pub fn blit_on(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        src: &wgpu::TextureView,
+        dst: &wgpu::TextureView,
+        dst_format: wgpu::TextureFormat,
+        opts: BlitOptions<'_>,
+    ) {
         let (module, layout) = (&self.module, &self.layout);
         let pipeline = self.pipelines.entry(dst_format).or_insert_with(|| {
-            ctx.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("blit"),
                 layout: Some(layout),
                 vertex: wgpu::VertexState { module, entry_point: Some("vs_main"), compilation_options: Default::default(), buffers: &[] },
@@ -138,12 +156,12 @@ impl Blitter {
             let channel = |c: usize| opts.gamma.map_or(i as f32 / 255.0, |g| g[c * 256 + i] as f32 / 255.0);
             params.extend_from_slice(&[channel(0), channel(1), channel(2), 0.0]);
         }
-        let buffer = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("blit params"),
             contents: bytemuck::cast_slice(&params),
             usage: wgpu::BufferUsages::UNIFORM,
         });
-        let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("blit"),
             layout: &self.bgl,
             entries: &[
