@@ -18,6 +18,7 @@ use std::{
     sync::{Arc, atomic::Ordering, mpsc},
 };
 
+use super::reload::{self, PlayCopy};
 use crate::forge_map::Opened;
 use crate::forge_screens::{
     self as screens, Facts,
@@ -39,6 +40,8 @@ enum After {
     Proposal(mpsc::Sender<Result<Entry, String>>),
     /// An edit that leaves the tool's state as it is.
     Edited,
+    /// The world brought to the document after a reload.
+    Reopened,
 }
 
 struct Pending {
@@ -61,8 +64,11 @@ enum FileResult {
     /// variants after, and a rename's old and new names.
     Variants(String, Vec<Listed>, Option<(String, String)>),
     Loaded(Pending),
-    /// The ground build's copy of the session, and whether it built.
-    Ground(Box<(Session, bool)>),
+    /// The ground build's copy of the session, whether it built, and the
+    /// map it made, written for the reload.
+    Ground(Box<(Session, bool, Option<PlayCopy>)>),
+    /// **Rebuild map**'s copy, written for the reload.
+    Rebuilt(Box<PlayCopy>),
     /// The nav generation's copy of the session.
     Nav(Box<Session>),
 }
@@ -160,11 +166,19 @@ pub(super) struct Editor {
     nav_staged: Option<LogHead>,
     /// The agent that asked for the running generation.
     nav_answer: Option<NavAnswer>,
+    /// The running cache's name, which a play copy's file is named for.
+    map_name: String,
+    /// A play copy written and waiting for the driver to reload onto it
+    /// ([`Editor::take_copy`]).
+    copy: Option<PlayCopy>,
+    /// The driver is reloading the map onto a copy: edits wait.
+    reloading: bool,
 }
 
 impl Editor {
     pub fn new(opened: Opened, data: &Path, scenario: u32, calls: calls::Shared) -> Self {
         let saved_head = opened.session.head();
+        let map_name = opened.session.document().title.clone();
         let mut tool = Tool::with_extents(opened.extents.into());
         tool.monitor = crate::lobby_start::mode() == crate::lobby_start::Mode::Forge;
         Self {
@@ -212,7 +226,127 @@ impl Editor {
             nav_generating: false,
             nav_staged: None,
             nav_answer: None,
+            map_name,
+            copy: None,
+            reloading: false,
         }
+    }
+
+    /// The running cache's name (`forge_map::Loaded::name`).
+    pub fn set_map_name(&mut self, name: String) {
+        self.map_name = name;
+    }
+
+    /// A play copy waiting for the reload, once: the driver reloads onto
+    /// it and carries the editor across ([`super::reload::Carry`]).
+    pub fn take_copy(&mut self) -> Option<PlayCopy> {
+        self.copy.take()
+    }
+
+    /// The driver reloads the map (edits wait), or has stopped.
+    pub fn set_reloading(&mut self, reloading: bool) {
+        self.reloading = reloading;
+    }
+
+    /// **Rebuild map**: build the map from the document on a worker, write
+    /// it as the play copy and hand it to the driver to reload onto
+    /// ([`Editor::take_copy`]). A session whose map has every edit does
+    /// nothing; a held thing is dropped first.
+    fn start_rebuild(&mut self, tick: u32) -> Result<(), String> {
+        if self.is_shared() {
+            return Err("Rebuild map is for a local session.".into());
+        }
+        if self.busy() {
+            return Err("A Forge edit is waiting for the game.".into());
+        }
+        if self.tool.held_thing.is_some() {
+            return Err("Drop what the monitor holds first.".into());
+        }
+        if !self.session.rebuild_needed() {
+            self.notice = Some((reload::NOTHING.into(), tick));
+            return Ok(());
+        }
+        if !reload::reloads() {
+            return Err(reload::NO_RELOAD.into());
+        }
+        if !reload::can_build() {
+            return Err(reload::NO_BUILDER.into());
+        }
+        let built = self.session.rebuild_form()?;
+        let file = reload::copy_path(&self.data, &self.map_name);
+        self.file(move || {
+            let bytes = reload::build(&built)?;
+            reload::write_copy(&file, &bytes)?;
+            Ok(FileResult::Rebuilt(Box::new(PlayCopy {
+                file,
+                built,
+                kind: forge::CopyKind::Rebuild,
+            })))
+        })?;
+        self.notice = Some((reload::REBUILDING.into(), tick));
+        Ok(())
+    }
+
+    /// Go on over the map a reload of ours loaded (`opened`, the session
+    /// opened on it at `scenario`): the document, the log, undo and redo,
+    /// the monitor's place and the tool are kept, and the copy's rows are
+    /// what the world holds ([`forge::Session::adopt_copy`]). `live` finds
+    /// an added object's live object by its block and row. The selection
+    /// and any hold are let go. The world is then brought to the document
+    /// as after an edit. An `Err` is why the session cannot go on over it,
+    /// with `opened` back for a fresh session.
+    pub fn reopen(
+        mut self,
+        opened: Opened,
+        scenario: u32,
+        copy: &PlayCopy,
+        mut live: impl FnMut(BlockKind, u32) -> Option<u32>,
+        tick: u32,
+    ) -> Result<Self, (String, Opened)> {
+        if opened.session.palette() != self.session.palette() {
+            return Err(("The rebuilt map's palette is not the session's.".into(), opened));
+        }
+        let baked = match self.session.baked_objects(&copy.built) {
+            Ok(baked) => baked,
+            Err(why) => return Err((why, opened)),
+        };
+        let handles = baked
+            .into_iter()
+            .filter_map(|(op, block, index)| Some((op, live(block, index)?)))
+            .collect();
+        let found = forge::Reopened {
+            handles,
+            room: opened.session.kit_room(),
+        };
+        let mut session = Session::clone(&self.session);
+        if let Err(why) = session.adopt_copy(&copy.built, copy.kind, found) {
+            return Err((why, opened));
+        }
+        self.session = Arc::new(session);
+        self.tags = opened.tags.into();
+        self.walls = opened.walls;
+        self.refused = opened.refused;
+        self.bsp = None;
+        self.guard = Guard {
+            scenario,
+            generation: GENERATION.load(Ordering::Acquire),
+            admitted,
+        };
+        self.pending = None;
+        self.file_job = None;
+        self.copy = None;
+        self.reloading = false;
+        self.area = None;
+        self.coordinates = None;
+        self.hold_height = None;
+        self.tool.clear_selection();
+        self.notice = Some((copy.done().into(), tick));
+        // The session holds what the copy holds; a refused call is said,
+        // and the next edit brings the world to the document again.
+        if let Err(why) = self.stage(After::Reopened, |s, w| s.release(w)) {
+            self.refuse(why, tick);
+        }
+        Ok(self)
     }
 
     /// Loads the saved map `name` into the session as it opens (the Forge
@@ -389,8 +523,7 @@ impl Editor {
         ground_api::Facts {
             available: super::ground::available(),
             building: self.ground_building,
-            loaded: super::ground::loads()
-                && self.session.ground_state() == forge::GroundState::Current,
+            loaded: self.session.ground_loaded(),
         }
     }
 
@@ -419,10 +552,24 @@ impl Editor {
             return Err(super::ground::NO_BUILDER.into());
         }
         let session = self.session.clone();
+        let file = reload::reloads().then(|| reload::copy_path(&self.data, &self.map_name));
         self.file(move || {
             let mut copy = Session::clone(&session);
+            // A map an earlier build left is not this one's.
+            let _ = reload::take_ground_copy();
             let built = super::ground::run(&mut copy, if_stale)?;
-            Ok(FileResult::Ground(Box::new((copy, built))))
+            let play = match (built, file, reload::take_ground_copy()) {
+                (true, Some(file), Some(bytes)) => {
+                    reload::write_copy(&file, &bytes)?;
+                    Some(PlayCopy {
+                        built: copy.ground_copy_form()?,
+                        file,
+                        kind: forge::CopyKind::Ground,
+                    })
+                }
+                _ => None,
+            };
+            Ok(FileResult::Ground(Box::new((copy, built, play))))
         })?;
         self.ground_building = true;
         self.ground_answer = answer;
@@ -1008,7 +1155,7 @@ impl Editor {
                         }
                     }
                     After::Area => self.area = None,
-                    After::Edited => {}
+                    After::Edited | After::Reopened => {}
                     After::Load(name) => {
                         self.area = None;
                         self.notice = Some((flows::loaded(&name), tick));
@@ -1205,7 +1352,7 @@ impl Editor {
     }
 
     fn busy(&self) -> bool {
-        self.pending.is_some() || self.file_job.is_some()
+        self.pending.is_some() || self.file_job.is_some() || self.reloading || self.copy.is_some()
     }
 
     fn file(
@@ -1273,9 +1420,10 @@ impl Editor {
             Ok(FileResult::Ground(done)) => {
                 // No edit runs while a file job does: the copy is the
                 // session as it was, with the build recorded.
-                let (session, built) = *done;
+                let (session, built, play) = *done;
                 self.session = Arc::new(session);
                 self.ground_building = false;
+                self.copy = play;
                 let text = super::ground::notice(self.session.ground_report(), built);
                 self.notice = Some((text, tick));
                 if let Some(answer) = self.ground_answer.take() {
@@ -1284,6 +1432,7 @@ impl Editor {
                     let _ = answer.send(Ok(reply));
                 }
             }
+            Ok(FileResult::Rebuilt(copy)) => self.copy = Some(*copy),
             Ok(FileResult::Nav(done)) => {
                 // No edit runs while a file job does: the copy is the
                 // session as it was, with the generation recorded.
@@ -1756,6 +1905,7 @@ impl Editor {
             Choice::BuildGround => return self.command(tick, Command::BuildGround),
             Choice::TestWaves => return self.command(tick, Command::TestWaves),
             Choice::GenerateNav => return self.start_nav(tick, None),
+            Choice::Rebuild => return self.start_rebuild(tick),
             Choice::Tool(t) => {
                 self.tool.set_links(t == ToolKind::Links);
                 self.tool.set_nav(t == ToolKind::Nav);
@@ -2299,4 +2449,10 @@ fn forge_readout_hold(
     from: Option<[f32; 3]>,
 ) -> hud_kit_core::views::forge_readout::Hold {
     crate::forge_readout::hold(at, height, snap, local, from)
+}
+
+/// The test room's editor (`tests::editor`), for the driver's tests.
+#[cfg(test)]
+pub(super) fn test_editor() -> Editor {
+    tests::editor()
 }

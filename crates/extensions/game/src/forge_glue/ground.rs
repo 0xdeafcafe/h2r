@@ -3,10 +3,12 @@
 //!
 //! The session asks for a build ([`forge::Session::build_ground`]) and the
 //! app supplies the builder ([`install`]): the Firefight kit's ground over
-//! the materialised play form, run off the game thread, and the map
-//! reloaded with the document, the monitor's place and the tool kept. This
-//! build holds no generator, so with none installed both rows say so and
-//! change nothing. Nothing here runs while placing.
+//! the materialised play form, run off the game thread. The builder hands
+//! the map it made to [`super::reload::keep_ground_copy`], and the driver
+//! reloads the running map onto it, the session going on over it with its
+//! document, the monitor's place and the tool (`super::reload`). This build
+//! holds no generator, so with none installed both rows say so and change
+//! nothing. Nothing here runs while placing.
 //!
 //! The build runs on a worker, as a file job of the editor
 //! (`editing::Editor::start_ground`): it takes a copy of the session, builds
@@ -14,10 +16,7 @@
 //! when the worker is done. Edits wait meanwhile, so the copy is the session
 //! as it was. A builder holds this module's lock for the whole build, so the
 //! game thread only ever asks [`available`], which does not wait for it.
-use std::sync::{
-    Mutex, TryLockError,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Mutex, TryLockError};
 
 use forge::{GroundBuilder, GroundReport, Session};
 
@@ -27,9 +26,6 @@ pub const NO_BUILDER: &str = "This game cannot build AI ground.";
 /// Tests that install the process-wide builder run one at a time.
 #[cfg(test)]
 pub(super) static TEST_GUARD: Mutex<()> = Mutex::new(());
-
-/// Whether the installed builder loads the map it builds ([`loads_map`]).
-static LOADS: AtomicBool = AtomicBool::new(false);
 
 type Builder = Box<dyn GroundBuilder + Send>;
 
@@ -55,18 +51,6 @@ pub fn available() -> bool {
     }
 }
 
-/// The installed builder reloads the running map with what it builds,
-/// keeping the document, the monitor's place and the tool. Without it a
-/// build is made and reported and the running map is not changed.
-pub fn loads_map(yes: bool) {
-    LOADS.store(yes, Ordering::Release);
-}
-
-/// Whether the builder loads the map it builds.
-pub fn loads() -> bool {
-    LOADS.load(Ordering::Acquire)
-}
-
 fn with<T>(f: impl FnOnce(&mut Builder) -> Result<T, String>) -> Result<T, String> {
     let mut guard = BUILDER.lock().unwrap_or_else(|e| e.into_inner());
     f(guard.as_mut().ok_or(NO_BUILDER)?)
@@ -77,10 +61,16 @@ pub(super) fn build(session: &mut Session) -> Result<(), String> {
     with(|b| session.build_ground(&mut **b).map(|_| ()))
 }
 
-/// **Test waves**: build when the ground is stale or never built. Whether it
-/// built.
+/// **Test waves**: build when the ground is stale or never built, or, in a
+/// game that reloads the map, when the running map does not have it.
+/// Whether it built.
 pub(super) fn test_waves(session: &mut Session) -> Result<bool, String> {
-    with(|b| session.ensure_ground(&mut **b))
+    with(|b| {
+        if super::reload::reloads() && !session.ground_loaded() {
+            return session.build_ground(&mut **b).map(|_| true);
+        }
+        session.ensure_ground(&mut **b)
+    })
 }
 
 /// The build a worker runs on its copy of the session: **Test waves** when
@@ -104,8 +94,8 @@ pub(super) fn notice(report: Option<&GroundReport>, built: bool) -> String {
         1 => ", 1 problem".into(),
         n => format!(", {n} problems"),
     };
-    let tail = if loads() {
-        ""
+    let tail = if super::reload::reloads() {
+        " Loading the map with it..."
     } else {
         " The running map is not changed."
     };
@@ -201,7 +191,7 @@ mod tests {
             problems: vec![],
             receipt: None,
         };
-        loads_map(false);
+        crate::forge_glue::reload::set_reloads(false);
         assert_eq!(
             notice(Some(&report), true),
             "AI ground built: 3 zones, 16 squad slots. The running map is not changed."
@@ -215,10 +205,10 @@ mod tests {
             problems: vec![problem.clone(), problem.clone()],
             ..report.clone()
         };
-        loads_map(true);
+        crate::forge_glue::reload::set_reloads(true);
         assert_eq!(
             notice(Some(&two), true),
-            "AI ground built: 3 zones, 16 squad slots, 2 problems."
+            "AI ground built: 3 zones, 16 squad slots, 2 problems. Loading the map with it..."
         );
         let one = GroundReport {
             problems: vec![problem],
@@ -228,7 +218,7 @@ mod tests {
         // A build that was not needed says the ground stands.
         assert_eq!(notice(Some(&one), false), "AI ground is current.");
         assert_eq!(notice(None, false), "AI ground is current.");
-        loads_map(false);
+        crate::forge_glue::reload::set_reloads(false);
     }
 
     #[test]

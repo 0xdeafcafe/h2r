@@ -25,6 +25,103 @@ impl Drop for PreparationGuard {
     }
 }
 
+/// A map reload under way ([`Sim::start_reload`]): the held transition,
+/// the play copy's preparation while it runs, and the answer so far.
+/// Dropping it withdraws the reload and revokes a running preparation.
+pub(super) struct Reloading {
+    pending: calls::PendingCall,
+    preparing: Option<(Receiver<Result<PreparedMapReload, String>>, Vec<u8>)>,
+    _guard: PreparationGuard,
+    result: wire::MapReloadResult,
+}
+
+impl Reloading {
+    /// The reload's answer once the game has taken it; none while the copy
+    /// is prepared or the transition waits for its tick.
+    fn poll(&mut self) -> Option<Result<wire::MapReloadResult, RpcError>> {
+        if let Some((worker, _)) = &self.preparing {
+            let binding = match worker.try_recv() {
+                Ok(Ok(binding)) => binding,
+                Ok(Err(why)) => return Some(Err(refused(why))),
+                Err(TryRecvError::Empty) => return None,
+                Err(TryRecvError::Disconnected) => {
+                    return Some(Err(refused("the map preparation worker stopped")));
+                }
+            };
+            self.result.checksum = Some(binding.checksum);
+            let (_, options) = self.preparing.take().expect("preparing reload");
+            self.pending.schedule_reload(options, Some(binding));
+        }
+        self.pending
+            .outcome()
+            .map(|out| out.map(|_| self.result.clone()))
+    }
+}
+
+/// A reload a game-side caller asked for ([`MapReloader::reload`]).
+pub struct MapReload(Reloading);
+
+impl MapReload {
+    /// The play copy's header checksum once the game has queued the
+    /// reload onto it, or why it did not; none while it is under way.
+    pub fn poll(&mut self) -> Option<Result<u32, String>> {
+        self.0.poll().map(|out| {
+            out.map(|result| result.checksum.unwrap_or_default())
+                .map_err(|e| e.message)
+        })
+    }
+}
+
+/// `map.reload {file}` for a caller on the game thread (Forge's **Rebuild
+/// map**; docs/game/forge-design.md): the same reload
+/// ([`Sim::start_reload`]), with the checks the method makes read from the
+/// guest at the caller's tick.
+#[derive(Clone)]
+pub struct MapReloader {
+    sim: SimHandle,
+    input: Arc<Mutex<crate::Input>>,
+}
+
+impl MapReloader {
+    /// Reload the running map onto the play copy at `file`. `m` is the
+    /// guest at the caller's tick: the session must take host writes, and
+    /// the map, the simulation and the session must be the same when the
+    /// reload runs. The file must be named for the running cache, as
+    /// `map.reload`'s.
+    pub fn reload(&self, m: &dyn GuestMemory, file: &Path) -> Result<MapReload, String> {
+        let mut sim = self.sim.lock();
+        let q = sim.calls().map_err(|e| e.message)?;
+        let session = read_session(&sim.probe, m);
+        session.kind.writes().map_err(str::to_owned)?;
+        let identity = EditIdentity::read(m).map_err(|e| e.message)?;
+        let len = identity.name.iter().position(|&b| b == 0).unwrap_or(identity.name.len());
+        let name = String::from_utf8_lossy(&identity.name[..len]).into_owned();
+        if name.is_empty() {
+            return Err("the running map has no name".into());
+        }
+        let options = active_options(m).map_err(|e| e.message)?;
+        let probe = Arc::clone(&sim.probe);
+        let check: calls::EditCheck = Box::new(move |m| {
+            if EditIdentity::read(m)? != identity {
+                return Err(refused("the active map or session changed before the reload"));
+            }
+            let current = read_session(&probe, m);
+            if current.kind != session.kind
+                || current.host != session.host
+                || current.protocol != session.protocol
+                || current.peers != session.peers
+            {
+                return Err(refused("the session or its peer count changed before the reload"));
+            }
+            Ok(())
+        });
+        let file = file.to_str().ok_or("the play copy's path is not UTF-8")?.to_owned();
+        sim.start_reload(name, options, Some(file), q, check, &self.input)
+            .map(MapReload)
+            .map_err(|e| e.message)
+    }
+}
+
 /// A validated file and the host operation that retires its old cache entry.
 pub struct PreparedMapReload {
     pub(super) checksum: u32,
@@ -105,6 +202,15 @@ impl SimHandle {
     /// Where this host can bind an editor play copy on the next map load.
     pub fn set_map_rebind(&self, prepare: MapRebind) {
         self.lock().map_rebind = Some(prepare);
+    }
+
+    /// The map reload for a caller on the game thread ([`MapReloader`]).
+    /// It holds no strong reference to the agent.
+    pub fn map_reloader(&self, agent: &Agent) -> MapReloader {
+        MapReloader {
+            sim: self.clone(),
+            input: agent.edit_input(),
+        }
     }
 
     /// A film or input replay can explain why this host cannot reload.
@@ -352,70 +458,73 @@ impl Sim {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| refused("the running map has no name"))?;
         let options = ctx.with_guest(|m| active_options(m))?;
+        let mut reloading = self.start_reload(name, options, p.file, q, check, input)?;
+        let file = reloading.preparing.is_some();
+        let poll: crate::exec::Later =
+            Box::new(move |_| reloading.poll().map(|out| out.map(|result| json!(result))));
+        if file {
+            ctx.defer_file(poll);
+        } else {
+            ctx.defer(CALL_TICKS, poll);
+        }
+        Ok(Value::Null)
+    }
+
+    /// The one map reload `map.reload` and a game-side caller
+    /// ([`MapReloader::reload`]) start: hold the game transition, then
+    /// either replay the active options at once or, with a play copy
+    /// `file`, prepare it on a worker and replay them when it is bound.
+    /// `name` is the running cache's name, `options` its options block and
+    /// `check` the recheck at the execution boundary.
+    fn start_reload(
+        &mut self,
+        name: String,
+        options: Vec<u8>,
+        file: Option<String>,
+        q: calls::Shared,
+        check: calls::EditCheck,
+        input: &Mutex<crate::Input>,
+    ) -> Result<Reloading, RpcError> {
         let mut pending = {
             let mut input = crate::tap::lock(input);
             input.allow_reload(&q).map_err(refused)?;
             calls::hold_reload(&q, check)?
         };
-        let mut result = wire::MapReloadResult {
+        let result = wire::MapReloadResult {
             queued: true,
             map: name,
             activation: pending.activation(),
-            file: p.file,
+            file,
             checksum: None,
         };
-        if let Some(file) = &result.file {
-            let path = Path::new(file);
-            if !path.is_absolute() {
-                return Err(refused("file must have an absolute path to a .map file"));
-            }
-            let map = &result.map;
-            let filename = path.file_name().and_then(|s| s.to_str());
-            if !filename.is_some_and(|f| f.eq_ignore_ascii_case(&format!("{map}.map"))) {
-                return Err(refused(format!("file must be named {map}.map for the active map")));
-            }
-            // NUL-terminated scenario path (level_boot::OPT_PATH and OPT_PATH_LEN).
-            let field = &options[0x1c..0x1c + 0x104];
-            let end = field.iter().position(|b| *b == 0)
-                .ok_or_else(|| refused("the active scenario path is unterminated"))?;
-            let scenario = std::str::from_utf8(&field[..end]).ok().filter(|s| !s.is_empty())
-                .ok_or_else(|| refused("the active scenario path is empty or invalid"))?;
-            if self.map_rebind.is_none() {
-                return Err(refused("this host has no writable editor map mount"));
-            }
-            self.adopt_editor()?;
-            let prepare = self.map_rebind.as_ref().expect("checked writable mount");
-            let guard = PreparationGuard::default();
-            let worker = prepare(map, scenario, path, Arc::clone(&guard.0)).map_err(refused)?;
-            let mut preparing = Some((worker, options));
-            ctx.defer_file(Box::new(move |_| {
-                // The claim remains live through queue admission. Dropping this
-                // poll on a timeout or disconnect also revokes a running copy.
-                let _guard = &guard;
-                if let Some((worker, _)) = &preparing {
-                    let binding = match worker.try_recv() {
-                        Ok(Ok(binding)) => binding,
-                        Ok(Err(why)) => return Some(Err(refused(why))),
-                        Err(TryRecvError::Empty) => return None,
-                        Err(TryRecvError::Disconnected) => {
-                            return Some(Err(refused("the map preparation worker stopped")));
-                        }
-                    };
-                    result.checksum = Some(binding.checksum);
-                    let (_, options) = preparing.take().expect("preparing reload");
-                    pending.schedule_reload(options, Some(binding));
-                }
-                pending.outcome().map(|out| out.map(|_| json!(result)))
-            }));
-        } else {
+        let guard = PreparationGuard::default();
+        let Some(file) = &result.file else {
             self.adopt_editor()?;
             pending.schedule_reload(options, None);
-            ctx.defer(
-                CALL_TICKS,
-                Box::new(move |_| pending.outcome().map(|out| out.map(|_| json!(result)))),
-            );
+            return Ok(Reloading { pending, preparing: None, _guard: guard, result });
+        };
+        let path = Path::new(file);
+        if !path.is_absolute() {
+            return Err(refused("file must have an absolute path to a .map file"));
         }
-        Ok(Value::Null)
+        let map = &result.map;
+        let filename = path.file_name().and_then(|s| s.to_str());
+        if !filename.is_some_and(|f| f.eq_ignore_ascii_case(&format!("{map}.map"))) {
+            return Err(refused(format!("file must be named {map}.map for the active map")));
+        }
+        // NUL-terminated scenario path (level_boot::OPT_PATH and OPT_PATH_LEN).
+        let field = &options[0x1c..0x1c + 0x104];
+        let end = field.iter().position(|b| *b == 0)
+            .ok_or_else(|| refused("the active scenario path is unterminated"))?;
+        let scenario = std::str::from_utf8(&field[..end]).ok().filter(|s| !s.is_empty())
+            .ok_or_else(|| refused("the active scenario path is empty or invalid"))?;
+        if self.map_rebind.is_none() {
+            return Err(refused("this host has no writable editor map mount"));
+        }
+        self.adopt_editor()?;
+        let prepare = self.map_rebind.as_ref().expect("checked writable mount");
+        let worker = prepare(map, scenario, path, Arc::clone(&guard.0)).map_err(refused)?;
+        Ok(Reloading { pending, preparing: Some((worker, options)), _guard: guard, result })
     }
 }
 

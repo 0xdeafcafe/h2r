@@ -1,6 +1,6 @@
 # Forge map variants: editing the map's own placements, and the file that keeps the edits
 
-Status: Partly built: slices M1 to M10, D2 to D4, V1, V2, V7 and G1 are built, and the AI ground ("AI ground") is built but for the reload of the map it builds. V3 to V6, V8 and V9 are design. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)), and so are the print, `EntryOp::{Set, Remove, Reset}`, format 3, their validator rules and `Refusal::Print` (M1), `resolve`, which lowers entry ops for `replay` (M2), the materialiser's entry ops and print check (M3), the tier, the play and session forms and the variant name rule (M4), the session's things, `Session::{things, move_thing, hold}`, its kept rows and print check, and the base calls on `World` (M5), `Session::{set_field, remove, reset}` and `forge::props` (M6), `forge_map::rows`, which reads each block's rows, typed fields and prints from the loaded scenario as the session opens (M7), `ForgeWorld`'s base calls over the call queue, `base_move`, `base_field`, `base_inert` and `base_restore` (M8), the Objects tool aiming at every thing, own or added, mark or body, by game type and `forge.show` (M9), and `forge.things`, entry ops in `forge.propose` with named refusals and the variant in `forge.status` (M10); `forge_doc::games` (D2), `forge::props::{games, games_ops}` and `Session::set_games`, the item spawner's game types, one op a changed slot (D3), and `EntryOp::Property` with the spawner's `team`, `forge_doc::teams` and the census's team for it (D4); the variant store, `forge::files::variants` (V1), and the lobby's pick and the build before Start Game, `game::map_variant` (V2); a game variant's suggested map variants, `maps` in the `.h2variant` bundle and the picker's order (V7, `variants::portable::Bundle::with_maps`, `map_variant::suggest`); `Property::Games` on scenery, crates and machines, `forge_doc::{object_games, for_game}`, `forge_build::{build_for, map_id}` and `game` in the format 2 `MapId` (G1); everything else named here as new is not.
+Status: Partly built: slices M1 to M10, D2 to D4, V1, V2, V7 and G1 are built, and the AI ground ("AI ground") is built, with the reload of the map it builds. V3 to V6, V8 and V9 are design. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)), and so are the print, `EntryOp::{Set, Remove, Reset}`, format 3, their validator rules and `Refusal::Print` (M1), `resolve`, which lowers entry ops for `replay` (M2), the materialiser's entry ops and print check (M3), the tier, the play and session forms and the variant name rule (M4), the session's things, `Session::{things, move_thing, hold}`, its kept rows and print check, and the base calls on `World` (M5), `Session::{set_field, remove, reset}` and `forge::props` (M6), `forge_map::rows`, which reads each block's rows, typed fields and prints from the loaded scenario as the session opens (M7), `ForgeWorld`'s base calls over the call queue, `base_move`, `base_field`, `base_inert` and `base_restore` (M8), the Objects tool aiming at every thing, own or added, mark or body, by game type and `forge.show` (M9), and `forge.things`, entry ops in `forge.propose` with named refusals and the variant in `forge.status` (M10); `forge_doc::games` (D2), `forge::props::{games, games_ops}` and `Session::set_games`, the item spawner's game types, one op a changed slot (D3), and `EntryOp::Property` with the spawner's `team`, `forge_doc::teams` and the census's team for it (D4); the variant store, `forge::files::variants` (V1), and the lobby's pick and the build before Start Game, `game::map_variant` (V2); a game variant's suggested map variants, `maps` in the `.h2variant` bundle and the picker's order (V7, `variants::portable::Bundle::with_maps`, `map_variant::suggest`); `Property::Games` on scenery, crates and machines, `forge_doc::{object_games, for_game}`, `forge_build::{build_for, map_id}` and `game` in the format 2 `MapId` (G1); everything else named here as new is not.
 Code: `crates/formats/forge-doc` (the document), `crates/tools/forge-build` (the materialiser), `crates/extensions/forge` (`Session`; `things.rs` for things, kept rows and the base reconcile; `tool.rs` for aiming), `crates/extensions/agent/src/forge/{local.rs, base.rs}` (`ForgeWorld`, its base calls and the agent methods), `crates/extensions/game/src/forge_map.rs`, `crates/live/live-hle/src/maps.rs` (`MapGate`). Tests: named per slice below.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
@@ -419,11 +419,14 @@ collision and each machine builds its own.
   The bytes it makes are the map, and `Built::ground` reports the zones,
   squad slots, problems and receipt (`crates/tools/forge-build/src/ground.rs`).
   The build equals the kit's own over the same labels. `ai_ground` and
-  `forge_kit` are not built together: the ground is built over the play
-  form.
+  `forge_kit` are not built together: the ground is built over the live
+  form of the play form (`Session::ground_copy_form`; forge-design.md,
+  "Rebuild map"), which has no spare rows for the kit.
 - **When it is built.** Never while placing. **Build AI ground** on the
-  Forge options page builds now; **Test waves** builds when the ground is
-  stale or was never built; a save builds first when it was built and is
+  Forge options page builds now; **Test waves** builds when the running
+  map does not hold the current ground (`Session::ground_loaded`) and
+  the game reloads, and otherwise when the ground is stale or was never
+  built; a save builds first when it was built and is
   stale, and a build that fails stops the save with its reason
   (`Session::{build_ground, ensure_ground, save_building}`).
 - **Stale** (`ForgeDoc::ground_stamp`): the stamp is a digest of the
@@ -444,12 +447,20 @@ collision and each machine builds its own.
   `AI ground built: N zones, M squad slots, P problems.`, or the build's
   own sentence when it fails (a failed build changes nothing); with no
   builder installed both rows and `forge.ground.build` refuse by name.
-  **The built map is not loaded yet**: the notice adds `The running map
-  is not changed.` until the app supplies a loader
-  (`forge_glue::ground::loads_map`, `AppGround::after`). A loader must
-  reload the running map with the build, and a session that opens on a
-  reloaded map must keep the document, the monitor's place and the tool
-  (below, "What is left").
+- **Loading it.** The builder keeps the map it built
+  (`AppGround::after`, `forge_glue::reload::keep_ground_copy`); the
+  editor writes it as the play copy and the running map is reloaded onto
+  it as **Rebuild map** reloads (forge-design.md, "Rebuild map"): the
+  session goes on over it with its document, log, undo, the monitor's
+  place and the tool. The notice adds `Loading the map with it...`, then
+  says `The map has the AI ground.` when the session has gone on over
+  it. A game that cannot reload (no agent socket or editor map mount)
+  adds `The running map is not changed.` instead. The running map then
+  holds the ground until an edit makes it stale
+  (`Session::ground_loaded`, `forge.ground`'s `loaded`). It has no
+  spare kit rows, so an add the kit would take waits for **Rebuild
+  map**, which builds the document with the kit and without the
+  ground.
 - **The overlay.** While the monitor is on, the play window draws each
   placed marker as its game type marker (a drop green, a cover yellow, a
   base its team's colour, the siege labels violet) and each label the
@@ -457,19 +468,10 @@ collision and each machine builds its own.
   (`Editor::marker_entries`, `forge_glue::markers_world`;
   [gametype-markers.md](gametype-markers.md), "The game"). The sectors
   are not drawn: the report holds their count, not their places.
-- **What is left.** Loading the built map. A session opens on the
-  original map (`forge_map::open` refuses a slot that serves a package or
-  an override), the document's edits are live in that map, and the build
-  has them baked in, so a reload needs the session to open over the built
-  map and keep its document as an edit log over the original: its things
-  are the base rows plus the document's adds, and in the reloaded scenario
-  the adds are base rows already. The driver drops its editor whenever the
-  scenario or the cache checksum changes (`forge_glue::Driver::tick`,
-  `Loaded::matches`), and the only reload path, `map.reload`
-  (`agent::sim`), is the agent's. The same reload is the **Rebuild map**
-  row's ([forge-design.md](forge-design.md), "Rebuild in a session"), which
-  refuses until it is built, so the two are one slice. The sectors' places
-  need `forge_build::GroundReport` to carry them.
+- **What is left.** The sectors' places need
+  `forge_build::GroundReport` to carry them. A Rebuild map after a
+  ground build drops the ground from the running map; Test waves loads
+  it again.
 - **The palette page.** The Objects menu's last row, **AI and
   objectives**, lists the six labels with how many are placed; choosing
   one places the next marker in front of the monitor

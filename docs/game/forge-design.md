@@ -5,7 +5,9 @@ probes and monitor UI. Place, move, turn, delete, undo and redo apply to the
 running game's objects through live-mirror M8's object calls. The Links
 tool joins teleporter flags on a channel, written to the running game's
 scenario, and machines into device groups, written when the map is
-materialised. The synchronous network mode's protocol (the log on the
+materialised; **Rebuild map** builds a play copy from the document and
+reloads the running map onto it, and the session goes on over it. The
+synchronous network mode's protocol (the log on the
 network, roles, holding, join in progress) is built and tested over fake
 machines; no transport or game carries it yet. The host-replicated mode
 is planned.
@@ -201,6 +203,61 @@ and each named source hash. The later geometry and paint slices use
   session saves each player's position and body, the map loads again
   from the new package, and play resumes. The existing reload path is
   `map.reload` (live-mirror.md slice M9).
+
+### Rebuild map
+
+In a local session, **Rebuild map** on GAME MENU builds a play copy of
+the map from the document and reloads the running map onto it; the
+session goes on over the copy with the same document, log, undo and
+redo. It is how a Rebuild edit (a device link, an add past the kit's
+spare rows) reaches the game.
+
+- **The copy.** The editor builds the session's live form
+  (`forge::live_form`, `Session::rebuild_form`) off the game thread
+  with the composition root's builder
+  (`forge_glue::reload::install_builder`, `boot::ground_builder::AppCopy`:
+  `forge_build` over the disc's maps) and writes it as
+  `<data>/cache/forge-play/<cache name>.map`
+  (`Editor::start_rebuild`). The live form keeps every row where the
+  session has it: a loaded block is never reordered under a running
+  game, so the removal of an own object entry becomes a write of an
+  empty palette index, which makes no object, and the removal of an
+  own entry of any other block is left out. The n-th add to a block is
+  row `base + n` in the copy as in the running game.
+- **The reload** is `map.reload`'s, one function for both
+  (`agent::sim::MapReloader`, `Sim::start_reload`): the driver hands
+  it the copy's file and the game queues the reload onto it with the
+  options it is running. It needs what `map.reload {file}` needs, the
+  agent socket and the editor map mount; without them the row says
+  `This game cannot reload the map.`
+- **The session goes on.** The map's activation would end the session,
+  so the driver carries the editor across a reload of its own
+  (`forge_glue::reload::Carry`) and, when the session opens on a map
+  with the copy's checksum, reopens it over the copy
+  (`Editor::reopen`, `Session::adopt_copy`). The copy's rows are what
+  the world holds: each added object is the live object the game made
+  at its row (`agent::forge::base::live_object`), and the kit's room is
+  the copy's spare rows plus the rows the document adds. The session
+  then brings the world to the document as after any edit, so a
+  removal the live form left out is made inert again and an added
+  object the game did not make is placed. Nothing the copy holds is
+  placed twice.
+- **What is kept.** The document, the log, undo and redo, the monitor,
+  its place and the tool settings. The selection and anything held are
+  let go; a rebuild is refused while the monitor holds something
+  (`Drop what the monitor holds first.`). Undo after a rebuild goes
+  back over it on the copy's rows: an add the copy made is deleted, a
+  removal is restored.
+- **When it has nothing to do.** The session keeps the digest of the
+  form the running map was built from (`Session::rebuild_needed`); with
+  no edit since, the row says `The map already has every edit.` and
+  nothing is built. The device links in that form are baked, and the
+  pending count on the row is the active device links the running map
+  does not have yet (`Session::pending_rebuild`).
+- **The notices** are `Rebuilding the map...`, then `The map is
+  rebuilt.` when the session has gone on over the copy. A reload the
+  game refuses leaves the session on the map it has, with the reason.
+  A copy that does not build says the build's sentence.
 
 ### Who owns state
 

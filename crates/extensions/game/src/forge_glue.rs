@@ -1,6 +1,9 @@
 //! Local Forge session lifetime. The player and agent share one document and
 //! apply queue. A map activation invalidates handles, outstanding calls and
-//! any map file still being read by the background worker.
+//! any map file still being read by the background worker, and ends the
+//! session, but for a reload of the session's own (**Rebuild map**, the
+//! reload after **Build AI ground**): the driver carries the editor across
+//! it and the session goes on over the reloaded map ([`reload`]).
 mod editing;
 pub mod gizmo;
 pub mod ground;
@@ -9,6 +12,7 @@ pub mod markers_world;
 pub mod nav;
 pub mod nav_world;
 pub mod net;
+pub mod reload;
 
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -195,12 +199,25 @@ struct Driver {
     /// native renderer's object pass ([`monitor_bodies`]).
     bodies: Vec<forge::look::body::Draw>,
     reason: String,
+    /// The reload of the running map onto a play copy, when the game has
+    /// one (the agent's `map.reload`).
+    reloader: Option<Box<dyn reload::Reloader>>,
+    /// A reload of ours under way, carrying the editor across the map's
+    /// activation.
+    carry: Option<reload::Carry>,
 }
 
 impl Driver {
     fn reset(&mut self) {
         GENERATION.fetch_add(1, Ordering::AcqRel);
-        self.editor = None;
+        // A reload of ours keeps the editor for the session that opens on
+        // the copy; any other change of map ends it.
+        let editor = self.editor.take();
+        if let Some(carry) = &mut self.carry
+            && carry.editor.is_none()
+        {
+            carry.editor = editor;
+        }
         self.draft = None;
         self.looks.close();
         self.opening = None;
@@ -236,10 +253,58 @@ impl Driver {
         Ok(())
     }
 
+    /// A session over a map opened as the host opens one: its own entries
+    /// read from the running scenario, and the lobby's draft to load.
+    /// `why` is the notice of a reload the session could not go on over.
+    fn fresh(
+        &mut self,
+        mut opened: Opened,
+        loaded: &Loaded,
+        m: &dyn engine::GuestMemory,
+        tick: u32,
+        why: Option<String>,
+    ) -> Editor {
+        // The map's own entries, read once from the running scenario before
+        // any edit (docs/game/forge-map-variants.md, "Applying an edit in a
+        // session").
+        let rows = forge_map::rows::read(m, loaded.scenario, &|datum: u32| {
+            opened.names.get(&datum).cloned()
+        });
+        opened.session = opened.session.with_base(rows.into_base());
+        for line in opened.session.left_out() {
+            eprintln!("forge: the map's things leave out {line}");
+        }
+        self.draft = take_draft().or_else(crate::lobby_start::forge_map);
+        let mut editor = Editor::new(opened, &self.data, loaded.scenario, self.calls.clone());
+        editor.set_map_name(loaded.name.clone());
+        if let Some(why) = why {
+            editor.say(why, tick);
+        }
+        editor
+    }
+
+    /// Ask a reload of ours how it stands. A refused one leaves the editor
+    /// on the map it has, saying why.
+    fn poll_reload(&mut self, m: &dyn engine::GuestMemory) {
+        let Some(carry) = &mut self.carry else { return };
+        if let reload::Step::Refused(why) = carry.poll() {
+            // A carried editor's map went away for another reason: it ends.
+            self.carry = None;
+            match self.editor.as_mut() {
+                Some(e) => {
+                    e.set_reloading(false);
+                    e.say(why, tick_of(m).unwrap_or_default());
+                }
+                None => eprintln!("forge: the map was not reloaded: {why}"),
+            }
+        }
+    }
+
     fn tick(&mut self, m: &dyn engine::GuestMemory) {
         // The co-op link offers its lanes before anything else, so a
         // session that opens this tick finds them.
         self.link.tick(m);
+        self.poll_reload(m);
         if self
             .loaded
             .as_ref()
@@ -270,7 +335,6 @@ impl Driver {
                 self.reason = e;
             }
         }
-        let loaded = self.loaded.as_ref().expect("read above");
         if let Some(recv) = &self.opening {
             let result = match recv.try_recv() {
                 Ok(result) => result,
@@ -279,25 +343,25 @@ impl Driver {
             };
             self.opening = None;
             match result {
-                Ok(mut opened) => {
-                    // The map's own entries, read once from the running
-                    // scenario before any edit (docs/game/forge-map-variants.md,
-                    // "Applying an edit in a session").
-                    let rows = forge_map::rows::read(m, loaded.scenario, &|datum: u32| {
-                        opened.names.get(&datum).cloned()
-                    });
-                    opened.session = opened.session.with_base(rows.into_base());
-                    for line in opened.session.left_out() {
-                        eprintln!("forge: the map's things leave out {line}");
-                    }
-                    self.draft = take_draft().or_else(crate::lobby_start::forge_map);
-                    let mut editor =
-                        Editor::new(opened, &self.data, loaded.scenario, self.calls.clone());
-                    let tick = GameTime::current(m)
-                        .ok()
-                        .flatten()
-                        .and_then(|t| t.tick(m).ok())
-                        .unwrap_or_default();
+                Ok(opened) => {
+                    let loaded = self.loaded.clone().expect("read above");
+                    let loaded = &loaded;
+                    let tick = tick_of(m).unwrap_or_default();
+                    // A reload of ours: the session goes on over the copy.
+                    let carried = self
+                        .carry
+                        .take()
+                        .filter(|carry| carry.opens(loaded.checksum));
+                    let mut editor = match carried {
+                        Some(carry) => match reopen(carry, opened, loaded, m, tick) {
+                            Ok(editor) => editor,
+                            Err((why, opened)) => {
+                                eprintln!("forge: {why}");
+                                self.fresh(opened, loaded, m, tick, Some(why))
+                            }
+                        },
+                        None => self.fresh(opened, loaded, m, tick, None),
+                    };
                     if let Some(notice) = self.looks.open(self.store.as_deref(), &who_of(Some(m))) {
                         editor.say(notice, tick);
                     }
@@ -338,6 +402,20 @@ impl Driver {
             if let Some(name) = self.draft.take() {
                 e.load_draft(tick, name);
             }
+            // A play copy built: reload the map onto it.
+            if let Some(copy) = e.take_copy() {
+                let request = match self.reloader.as_mut() {
+                    Some(reloader) => reloader.request(m, &copy.file),
+                    None => Err(reload::NO_RELOAD.into()),
+                };
+                match request {
+                    Ok(ticket) => {
+                        e.set_reloading(true);
+                        self.carry = Some(reload::Carry::new(copy, ticket));
+                    }
+                    Err(why) => e.say(why, tick),
+                }
+            }
             // The session's game type decides which things the tool aims
             // at (docs/game/forge-map-variants.md, "Game types").
             let game = GameGlobals::current(m)
@@ -365,6 +443,40 @@ impl Driver {
             self.bodies = e.monitor_draws(now, now);
         }
     }
+}
+
+/// The game's tick now, if it is ticking.
+fn tick_of(m: &dyn engine::GuestMemory) -> Option<u32> {
+    GameTime::current(m).ok().flatten().and_then(|t| t.tick(m).ok())
+}
+
+/// The session a reload of ours carried, going on over the copy the map
+/// was reloaded onto: each added object's live object is the one the game
+/// made at its row (`agent::forge::base::live_object`). An `Err` gives
+/// `opened` back with why, for a session of its own.
+fn reopen(
+    mut carry: reload::Carry,
+    opened: Opened,
+    loaded: &Loaded,
+    m: &dyn engine::GuestMemory,
+    tick: u32,
+) -> Result<Editor, (String, Opened)> {
+    let Some(editor) = carry.editor.take() else {
+        return Err(("The reloaded session has no editor.".into(), opened));
+    };
+    let live = |block, index| {
+        agent::forge::base::live_object(m, block, index)
+            .ok()
+            .flatten()
+            .map(|id| id.key)
+    };
+    let mut editor = editor
+        .reopen(opened, loaded.scenario, &carry.copy, live, tick)
+        .map_err(|(why, opened)| {
+            (format!("The session could not go on over the rebuilt map: {why}"), opened)
+        })?;
+    editor.set_map_name(loaded.name.clone());
+    Ok(editor)
 }
 
 impl Drop for Driver {
@@ -520,6 +632,8 @@ pub fn install(
         marks_preview: false,
         bodies: Vec::new(),
         reason: "Waiting for a local multiplayer map.".into(),
+        reloader: None,
+        carry: None,
     }));
     if registry
         .add(&Hooks(driver.clone()))
@@ -529,6 +643,13 @@ pub fn install(
         crate::forge_screens::install(registry)?;
         *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(&driver);
         if let Some(a) = agent {
+            // Rebuild map and the reload after an AI ground build run the
+            // agent's map reload (`reload`).
+            if let Some(sim) = &a.sim {
+                let reloader: Box<dyn reload::Reloader> = Box::new(sim.map_reloader(&a.agent));
+                driver.lock().unwrap_or_else(|e| e.into_inner()).reloader = Some(reloader);
+                reload::set_reloads(true);
+            }
             local::install(&a.agent, Backend(driver));
         }
     }
@@ -649,6 +770,66 @@ impl LocalApi for Backend {
 #[cfg(test)]
 mod tests {
     use forge::look::body::{Draw, Light};
+
+    use super::reload::{Carry, PlayCopy, Step};
+
+    fn driver() -> super::Driver {
+        super::Driver {
+            looks: forge::look::monitors::Looks::new(Vec::new(), None),
+            store: None,
+            calls: agent::sim::calls::shared(),
+            vfs: None,
+            data: ".".into(),
+            link: super::link::CoopLink::new(Box::new(super::link::HleTransport::new(None))),
+            loaded: None,
+            opening: None,
+            editor: None,
+            draft: None,
+            marks: Default::default(),
+            marks_at: None,
+            marks_preview: false,
+            bodies: Vec::new(),
+            reason: String::new(),
+            reloader: None,
+            carry: None,
+        }
+    }
+
+    fn copy(e: &super::Editor) -> PlayCopy {
+        PlayCopy {
+            file: "/tmp/testroom.map".into(),
+            built: e.session.rebuild_form().unwrap(),
+            kind: forge::CopyKind::Rebuild,
+        }
+    }
+
+    /// A change of the map's scenario or checksum resets the driver. A
+    /// reload of the session's own carries the editor across it, for the
+    /// session that opens on the copy it queued; any other ends it.
+    #[test]
+    fn a_map_change_after_a_rebuild_keeps_the_editor_for_the_copy() {
+        let mut d = driver();
+        let e = super::editing::test_editor();
+        let copy = copy(&e);
+        d.editor = Some(e);
+        d.carry = Some(Carry::new(copy, super::reload::tests::answer(Some(Ok(9)))));
+        assert_eq!(d.carry.as_mut().unwrap().poll(), Step::Queued(9));
+        d.reset();
+        assert!(d.editor.is_none());
+        let carry = d.carry.as_ref().unwrap();
+        assert!(carry.editor.is_some(), "the editor goes across the reload");
+        assert!(carry.opens(9));
+        assert!(!carry.opens(10), "another map is not the copy");
+        // A second reset (the game's start after the transition) keeps it.
+        d.reset();
+        assert!(d.carry.as_ref().unwrap().opens(9));
+
+        // Without a reload of ours, the change ends the session.
+        let mut d = driver();
+        d.editor = Some(super::editing::test_editor());
+        d.reset();
+        assert!(d.editor.is_none() && d.carry.is_none());
+    }
 
     fn draw(seat: u8, model: Option<u32>, light: Option<Light>) -> Draw {
         Draw {

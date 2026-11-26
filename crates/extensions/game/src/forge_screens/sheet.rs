@@ -327,6 +327,9 @@ pub enum Choice {
     TestWaves,
     /// **Generate nav**: the bots' nav with the placed objects in.
     GenerateNav,
+    /// **Rebuild map** (GAME MENU): build the map from the document and
+    /// load it, the session going on over it.
+    Rebuild,
     /// The placed objects browser: fly the monitor to an added object and
     /// look at it.
     FlyTo(forge::OpId),

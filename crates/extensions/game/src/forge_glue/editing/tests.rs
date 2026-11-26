@@ -6,11 +6,17 @@ use agent::forge::local::OBJECT_GONE;
 use forge::{BlockKind, Frame, TagKey};
 use forge_doc::{BuilderVersions, ForgeDoc, Limits, MapRef, WorldBounds};
 
-fn editor() -> Editor {
+pub(super) fn editor() -> Editor {
     editor_in(Path::new("."))
 }
 
 fn editor_in(data: &Path) -> Editor {
+    Editor::new(opened(), data, 1, calls::shared())
+}
+
+/// The test room as the host opens it: a shelf in the palette, two crates
+/// of its own.
+fn opened() -> Opened {
     let item = PaletteItem {
         block: BlockKind::Crates,
         tag: TagKey {
@@ -42,7 +48,7 @@ fn editor_in(data: &Path) -> Editor {
         author: "Builder".into(),
         description: String::new(),
     };
-    let opened = Opened {
+    Opened {
         session: Session::new(base, limits, vec![item], 8).unwrap(),
         tags: vec![42],
         extents: vec![Extent {
@@ -52,8 +58,7 @@ fn editor_in(data: &Path) -> Editor {
         refused: vec![r"test\hum: sound scenery has no body to place or see".into()],
         walls: vec![],
         names: Default::default(),
-    };
-    Editor::new(opened, data, 1, calls::shared())
+    }
 }
 
 #[test]
@@ -903,7 +908,7 @@ mod ground {
     #[test]
     fn build_ai_ground_runs_on_a_worker_and_the_editor_takes_the_copy_back() {
         let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
-        installed::loads_map(false);
+        crate::forge_glue::reload::set_reloads(false);
         installed::install(Box::new(Kit { refuse: false }));
         let mut e = ground_editor();
         e.command(1, drop_at(1.)).unwrap();
@@ -1347,4 +1352,247 @@ fn live_forge_row_starts_in_the_monitor_with_the_hud() {
     assert!(e.monitor_hud(0.0).view.monitor);
     lobby_start::clear();
     assert!(!editor().monitor());
+}
+
+// ---- Rebuild map and the reload after an AI ground build
+// (docs/game/forge-design.md, "Rebuild map") ----
+
+mod rebuild {
+    use super::*;
+    use crate::forge_glue::ground::TEST_GUARD;
+    use crate::forge_glue::reload::{self, CopyBuilder};
+
+    /// A build that gives the same bytes for any document.
+    struct Bytes;
+
+    impl CopyBuilder for Bytes {
+        fn build(&mut self, _: &forge_doc::ForgeDoc) -> Result<Vec<u8>, String> {
+            Ok(b"rebuilt map".to_vec())
+        }
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("forge-rebuild-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// Wait for the editor's file job to end.
+    fn settle(e: &mut Editor, tick: u32) {
+        for _ in 0..500 {
+            e.poll_file(tick);
+            if e.file_job.is_none() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the file job never finished");
+    }
+
+    /// Place the palette's shelf at x = 3 and answer it with `handle`.
+    fn place(e: &mut Editor, handle: u32) {
+        calls::lock(&e.calls).arm();
+        let frame = Frame {
+            position: [3., 0., 0.],
+            rotation: [0.; 3],
+        };
+        e.command(1, Command::Place { item: 0, frame }).unwrap();
+        let (ticket, _) = calls::lock(&e.calls).drain().pop().unwrap();
+        calls::lock(&e.calls).finish(ticket, Ok(json!({ "handles": [handle] })));
+        e.poll(2);
+        assert_eq!(e.session.objects()[0].handle, handle);
+    }
+
+    #[test]
+    fn a_rebuild_with_no_edits_does_nothing() {
+        let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        reload::set_reloads(true);
+        reload::install_builder(Box::new(Bytes));
+        let mut e = editor();
+        e.choose(1, Choice::Rebuild).unwrap();
+        assert_eq!(e.notice, Some((reload::NOTHING.into(), 1)));
+        assert!(!e.busy());
+        assert!(e.take_copy().is_none());
+        reload::uninstall_builder();
+        reload::set_reloads(false);
+    }
+
+    #[test]
+    fn a_rebuild_refuses_by_name_where_the_game_cannot_build_or_reload() {
+        let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let mut e = editor();
+        place(&mut e, 31);
+        reload::set_reloads(false);
+        reload::install_builder(Box::new(Bytes));
+        assert_eq!(e.choose(3, Choice::Rebuild), Err(reload::NO_RELOAD.into()));
+        reload::set_reloads(true);
+        reload::uninstall_builder();
+        assert_eq!(e.choose(4, Choice::Rebuild), Err(reload::NO_BUILDER.into()));
+        assert!(!e.busy());
+        reload::set_reloads(false);
+    }
+
+    #[test]
+    fn a_rebuild_writes_the_copy_for_the_cache_and_hands_it_to_the_driver() {
+        let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        reload::set_reloads(true);
+        reload::install_builder(Box::new(Bytes));
+        let data = scratch("copy");
+        let mut e = editor_in(&data);
+        e.set_map_name("testroom".into());
+        place(&mut e, 31);
+        e.choose(3, Choice::Rebuild).unwrap();
+        assert_eq!(e.notice, Some((reload::REBUILDING.into(), 3)));
+        settle(&mut e, 4);
+        // Until the driver takes the copy, edits wait.
+        assert!(e.busy());
+        let copy = e.take_copy().expect("the copy is handed over");
+        assert_eq!(copy.kind, forge::CopyKind::Rebuild);
+        assert_eq!(copy.file, data.join("cache/forge-play/testroom.map"));
+        assert_eq!(std::fs::read(&copy.file).unwrap(), b"rebuilt map");
+        assert_eq!(copy.built, e.session.rebuild_form().unwrap());
+        assert!(!e.busy());
+        reload::uninstall_builder();
+        reload::set_reloads(false);
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
+    #[test]
+    fn the_session_goes_on_over_the_reloaded_map_with_what_it_holds() {
+        let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let mut e = editor();
+        place(&mut e, 31);
+        let head = e.session.head();
+        let built = e.session.rebuild_form().unwrap();
+        let copy = reload::PlayCopy {
+            file: PathBuf::from("/tmp/testroom.map"),
+            built,
+            kind: forge::CopyKind::Rebuild,
+        };
+        e.tool.monitor = true;
+        // The map the reload loaded: the same palette, another scenario.
+        let opened = opened();
+        let mut asked = vec![];
+        let mut e = e
+            .reopen(
+                opened,
+                9,
+                &copy,
+                |block, index| {
+                    asked.push((block, index));
+                    Some(55)
+                },
+                5,
+            )
+            .map_err(|(why, _)| why)
+            .unwrap();
+        // The shelf is the crate block's third row; its object is found,
+        // not placed again.
+        assert_eq!(asked, [(BlockKind::Crates, 2)]);
+        e.poll(6);
+        assert!(calls::lock(&e.calls).drain().is_empty(), "nothing is placed");
+        assert_eq!(e.session.objects()[0].handle, 55);
+        assert_eq!(e.session.head(), head);
+        assert_eq!(e.guard.scenario, 9);
+        assert!(e.tool.monitor, "the monitor and its tool are kept");
+        assert_eq!(e.notice, Some((reload::REBUILT.into(), 5)));
+        assert!(!e.session.rebuild_needed());
+        assert!(!e.busy());
+        // Undo goes back over the rebuild: the found object is deleted.
+        e.command(7, Command::Undo).unwrap();
+        let (_, call) = calls::lock(&e.calls).drain().pop().unwrap();
+        assert!(
+            matches!(&call, calls::Call::Forge { steps, .. } if *steps == [
+                calls::ForgeStep::Delete { target: calls::ForgeTarget::Live(agent_proto::ObjectId {
+                    kind: agent_proto::Kind::Crate,
+                    key: 55,
+                }) },
+            ]),
+            "{call:?}"
+        );
+    }
+
+    #[test]
+    fn a_map_with_another_palette_is_not_gone_on_over() {
+        let e = editor();
+        let copy = reload::PlayCopy {
+            file: PathBuf::from("/tmp/testroom.map"),
+            built: e.session.rebuild_form().unwrap(),
+            kind: forge::CopyKind::Rebuild,
+        };
+        let mut opened = opened();
+        opened.session = Session::new(
+            e.session.document().clone(),
+            forge_doc::Limits {
+                world: Some(WorldBounds {
+                    min: [-10.; 3],
+                    max: [10.; 3],
+                }),
+                ..Limits::default()
+            },
+            vec![],
+            8,
+        )
+        .unwrap();
+        let (why, back) = match e.reopen(opened, 9, &copy, |_, _| None, 5) {
+            Err(refused) => refused,
+            Ok(_) => panic!("another palette is refused"),
+        };
+        assert!(why.contains("palette"), "{why}");
+        assert!(back.session.palette().is_empty(), "the opened map is given back");
+    }
+
+    #[test]
+    fn a_ground_build_hands_its_map_to_the_driver_when_the_game_reloads() {
+        use crate::forge_glue::ground as installed;
+        use forge::{GroundBuilder, GroundRecipe, GroundReport};
+
+        /// A builder that leaves its map as the app's does.
+        struct Leaves;
+
+        impl GroundBuilder for Leaves {
+            fn recipe(&self) -> GroundRecipe {
+                GroundRecipe {
+                    kit_version: 3,
+                    home: 0,
+                    probe: false,
+                }
+            }
+
+            fn build(&mut self, _: &forge_doc::ForgeDoc) -> Result<GroundReport, String> {
+                reload::keep_ground_copy(b"ground map".to_vec());
+                Ok(GroundReport {
+                    zones: 1,
+                    squads: 4,
+                    ..GroundReport::default()
+                })
+            }
+        }
+
+        let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        reload::set_reloads(true);
+        installed::install(Box::new(Leaves));
+        let data = scratch("ground");
+        let mut e = editor_in(&data);
+        e.set_map_name("testroom".into());
+        e.command(1, Command::BuildGround).unwrap();
+        settle(&mut e, 2);
+        assert_eq!(
+            e.notice.as_ref().unwrap().0,
+            "AI ground built: 1 zones, 4 squad slots. Loading the map with it..."
+        );
+        let copy = e.take_copy().expect("the ground's map is handed over");
+        assert_eq!(copy.kind, forge::CopyKind::Ground);
+        assert_eq!(std::fs::read(&copy.file).unwrap(), b"ground map");
+        assert_eq!(copy.built, e.session.ground_copy_form().unwrap());
+        // Built, but not loaded until the session goes on over it: Test
+        // waves builds again rather than run waves without it.
+        assert!(!e.session.ground_loaded());
+        e.command(3, Command::TestWaves).unwrap();
+        settle(&mut e, 4);
+        assert!(e.take_copy().is_some());
+        installed::uninstall();
+        reload::set_reloads(false);
+        std::fs::remove_dir_all(data).unwrap();
+    }
 }

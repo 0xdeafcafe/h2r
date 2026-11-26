@@ -507,9 +507,7 @@ async fn menu_press(cx: &Cx, row: MenuRow, chain: u32, list: u32) -> Result<(), 
                 list_class::open(cx, chain, picker::NAME).await?;
             }
         }
-        MenuRow::Rebuild => send(Choice::Notice(
-            "Rebuild map is not built: the session cannot rebuild the map yet.".into(),
-        )),
+        MenuRow::Rebuild => send(Choice::Rebuild),
         MenuRow::Options => match prepare(Kind::Options) {
             Ok(()) => {
                 list_class::push(
