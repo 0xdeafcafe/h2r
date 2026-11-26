@@ -179,22 +179,26 @@ a bot recovers by replanning, as on the retail maps with moving parts.
 
 ## Spawning AI
 
-A squad is a scenario block entry with a character, a count, a start
-position and orders. Characters and their bipeds, weapons and dialogue
-are tags on campaign maps, brought in by `transplant` recipes. The
+AI in Forge is a Firefight map
+([forge-firefight.md](forge-firefight.md)). The author places drop
+zones, bases and cover as labelled markers; **Build AI ground** compiles
+them with the Firefight kit's builder into sectors, zones, firing
+positions and sixteen squad slots; the document carries one wave set in
+the director's own format; and Firefight's director places the squads,
+in the session as a test and in a match from the lobby. The scenario
 blocks are written by the code that converts Halo 1's encounters
 (`crates/tools/h1campaign`, [ai.md](../halo1/ai.md), "Halo 2: the
-scenario's AI blocks and `char`"). In a session the kit's spare squad
-slots make "place a squad" a Kit edit; a character type the map lacks is
-a Rebuild. A squad takes a place input, so a trigger or a timer can
-spawn waves.
+scenario's AI blocks and `char`"). Characters past the kit's Elite are
+`char` tags on the player's campaign maps, brought in by the ground
+recipe's class list. A graph node that places a squad from a trigger or
+a timer is part of slice F7 and uses the same squad entry.
 
 What must hold: AI updates only when the AI flag is set and the game
 engine allows it (**E**, bots.md 2.4); multiplayer scenarios carry no AI
-data, so the kit adds all of it; the session is synchronous, or
-host-replicated with the actors as puppets once slice F15 is built. Costs to
-measure: a character's closure against the tag headroom, the sound
-gestalt merge, and the tick time with actors (the phase 0 census of
+data, so the ground build adds all of it; the actors are host actors in
+the distributed model ([ai-networking.md](ai-networking.md)). Costs to
+measure: a class's closure against the tag headroom, the sound gestalt
+merge, and the tick time with actors (the phase 0 census of
 sim-rewrite.md).
 
 ## Geometry, textures and models

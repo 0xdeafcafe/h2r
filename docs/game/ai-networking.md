@@ -431,9 +431,9 @@ keeps mirrors, schedules and the capability mark.
 | Piece | Home | Forge uses it for | Firefight uses it for |
 |---|---|---|---|
 | Host log | `crates/formats/host-log` | the edit log (F1, F5) | director commands |
-| Squad place and erase entry | `crates/extensions/game/src/actor_net/squads.rs` | the "squad place" sink (F11) | waves |
+| Squad place and erase entry | `crates/extensions/game/src/actor_net/squads.rs` | a wave test in a session ([forge-firefight.md](forge-firefight.md)); the graph's squad sink (F7) | waves |
 | Actor channel | `crates/live/actor-net`, `actor_net/` | puppets in host-replicated sessions (F15) | the same |
-| Sectors on a multiplayer map | `pathfind::generate`, called by the kit builder | "sectors at materialise" (F11) | [firefight.md](firefight.md), "The kit" |
+| Sectors on a multiplayer map | `pathfind::generate`, called by the kit builder | the AI ground of a map variant (F11) | [firefight.md](firefight.md), "The kit" |
 | Probes | `net.replication`, `world.ai`, `actors.net` | F3's replication and AI questions | probes P1 to P8 |
 
 ## Interfaces
