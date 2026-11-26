@@ -129,6 +129,7 @@ pub mod sun_casters;
 pub mod sun_tiles;
 #[cfg(feature = "gpu")]
 pub mod sun_tiles_gpu;
+pub mod text;
 #[cfg(feature = "gpu")]
 pub mod texture_groups;
 pub mod transparent;

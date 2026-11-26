@@ -166,6 +166,7 @@ pub struct FrameScene {
     pub shadows: Vec<ShadowMap>,
     pub carried: Carried,       // ordered guest ops per slot (4.4)
     pub uploads: Vec<TextureUpload>, // guest-made textures changed this frame (Bink, glyph pages)
+    pub overlay: Overlay,       // one ordered list over the views: Quad, TextRun, Fill, MovieFrame, Blur, ModelView items, each with its clip rectangle (frame-scene/src/overlay.rs)
 }
 
 pub struct View {
@@ -229,6 +230,8 @@ order); other modes have no slot. `Ord` is draw order. `Snapshot`
 `placed()` is false and it sorts after slot 13, before the overlay.
 Tests: `view_slots_follow_the_traced_order`, `every_decal_mode_has_a_slot`,
 `the_overlay_draws_hud_then_fade_then_ui`.
+
+A text run is shaped in Rust (`native-render/src/text.rs`: `FontFace::from_tag` reads the font tag, its glyph metrics give the pens, its bitmaps are packed once into `GlyphPages`, never the guest's glyph cache) and is one `TextRun` item, so one draw under its clip's scissor.
 
 ### 4.3 What is extracted, and where from
 

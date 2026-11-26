@@ -287,6 +287,8 @@ pub struct OverlayStats {
     pub refused_texture: u32,
     /// Model views: no stage draws a model widget's view yet.
     pub refused_model_view: u32,
+    /// Movie frames: no stage samples a movie's upload yet.
+    pub refused_movie: u32,
     /// Blurs over a target the GPU cannot copy or sample (`ui_gpu`).
     pub refused_blur: u32,
 }
@@ -294,7 +296,7 @@ pub struct OverlayStats {
 impl OverlayStats {
     /// Items the plan kept.
     pub fn drawn(&self) -> u32 {
-        self.items - self.refused_material - self.refused_clip - self.refused_glyph - self.refused_model_view
+        self.items - self.refused_material - self.refused_clip - self.refused_glyph - self.refused_model_view - self.refused_movie
     }
 }
 
@@ -355,6 +357,10 @@ impl OverlayPlan {
                 plan.stats.refused_model_view += 1;
                 continue;
             }
+            if item.kind == OverlayKind::MovieFrame {
+                plan.stats.refused_movie += 1;
+                continue;
+            }
             if matches!(item.material.program, Program::Shader { .. })
                 && !item.shader_words.as_ref().is_some_and(|words| words.len() == 60)
             {
@@ -393,7 +399,7 @@ impl OverlayPlan {
                     }));
                     plan.indices.extend(QUAD_INDICES.map(|i| base + i));
                 }
-                OverlayKind::Blur | OverlayKind::ModelView => unreachable!("planned above"),
+                OverlayKind::Blur | OverlayKind::ModelView | OverlayKind::MovieFrame => unreachable!("planned above"),
                 OverlayKind::TextRun => {
                     let font = match item.material.texture {
                         frame_scene::OverlayTexture::Glyphs { font } => font,

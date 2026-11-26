@@ -29,6 +29,8 @@ gfx = { path = "../../platform/gfx", optional = true }
 d3d = { path = "../../platform/d3d", optional = true }
 pollster = { version = "1", optional = true }
 bytemuck = { version = "1", features = ["derive"] }
+# Reads the map's font tags into text::FontFace (text.rs).
+font = { path = "../../formats/font" }
 frame-scene = { path = "../frame-scene" }
 scene-extract = { path = "../scene-extract" }
 
