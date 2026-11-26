@@ -677,3 +677,48 @@ fn a_record_too_large_to_keep_ends_the_film_at_the_tick_before() {
     let actions = film::file::FilmActions::open(&file).unwrap();
     assert_eq!(actions.length_ticks(), 2);
 }
+
+#[test]
+fn a_film_of_other_hooks_is_refused_and_another_builds_start_is_named() {
+    let fixture = Fixture::new();
+    let mut play = Play::open(&fixture.file).unwrap().unwrap();
+    play.start.stamp.hooks_sha256 = Some("hooks A".into());
+    play.start.stamp.build = "xbe A generator B codegen clang\ntarget t\n".into();
+    // Other hooks: refused by name before anything is queued.
+    let why = play.check_build(Some("hooks B"), "xbe A generator B codegen clang\n").unwrap_err();
+    let why = format!("{why:#}");
+    assert!(why.starts_with(ANOTHER_BUILD), "{why}");
+    assert!(why.contains("recorded on xbe A generator B codegen clang)"), "{why}");
+    // The same hooks on the same build: no note.
+    play.check_build(Some("hooks A"), "xbe A generator B codegen clang\ntarget t\n").unwrap();
+    assert_eq!(play.other_build, None);
+    // A digest either side lacks is not compared.
+    play.check_build(None, "").unwrap();
+    // The same hooks on another build (another tier) plays, and the build
+    // is kept for a start that does not reproduce.
+    play.check_build(Some("hooks A"), "xbe A generator B codegen cranelift\n").unwrap();
+    assert_eq!(play.other_build.as_deref(), Some("xbe A generator B codegen cranelift"));
+}
+
+#[test]
+fn a_start_that_does_not_reproduce_on_another_build_says_so() {
+    let fixture = Fixture::new();
+    let session = fixture.open();
+    {
+        let mut s = session.lock();
+        let play = s.play.as_mut().unwrap();
+        play.start.stamp.build = "build of the film".into();
+        play.other_build = Some("build of the viewer".into());
+    }
+    let mut g = machine(&fixture.options, [21, 22]);
+    g.set_u32(STATE + 64, 0xfeed).unwrap();
+    assert!(tick(&session, &mut g, |_| ()));
+    let s = session.lock();
+    let why = s.failure.as_deref().expect("the film stopped");
+    assert!(
+        why.contains(&format!(
+            "{ANOTHER_BUILD} It was recorded on build of the film; this is build of the viewer."
+        )) && why.contains("start hash"),
+        "{why}"
+    );
+}

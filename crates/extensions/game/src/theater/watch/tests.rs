@@ -560,3 +560,17 @@ fn a_film_that_diverges_in_the_running_game_ends_like_end_film_and_the_game_goes
     rec.checkpoint(&menus);
     assert!(!rec.lock().complete);
 }
+
+#[test]
+fn a_film_is_watched_from_no_lobby_so_a_forge_lobby_does_not_reach_its_game() {
+    use crate::lobby_start::{self, Mode as LobbyMode};
+    let v = viewer();
+    // The viewer is in a Forge lobby when they watch.
+    lobby_start::set_mode(LobbyMode::Forge);
+    assert!(lobby_start::forge_session());
+    v.rec.arm_watch(v.rec.plan_watch(&v.film, api::InitialView::default()).unwrap());
+    // At the film's activation the lobby is gone: no Forge swap of the
+    // record, no Forge editor.
+    assert_eq!(lobby_start::mode(), LobbyMode::Multiplayer);
+    assert!(!lobby_start::forge_session());
+}

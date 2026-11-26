@@ -274,5 +274,46 @@ pub(super) fn hash_detail(g: &Guest) -> Option<film::start::HashDetail> {
     Some(film::start::HashDetail { ext: sim_ext::digest(), pages })
 }
 
+/// How many owners a start's report names.
+const OWNERS_SHOWN: usize = 8;
+
+/// What differs between the film's start and the game's (`now`): the
+/// pages and the extension digest ([`film::start::HashDetail::differences`]),
+/// and the arena's data arrays that own the differing pages, read from
+/// `arena`, the game's arena as it stands (unmasked, so every array's
+/// header is there: `lockstep::pools::page_owners`).
+pub(super) fn start_differences(
+    film: &film::start::HashDetail,
+    now: &film::start::HashDetail,
+    arena: Option<&[u8]>,
+) -> String {
+    let mut out = film.differences(now);
+    let pages = film.differing_pages(now);
+    if let Some(arena) = arena
+        && !pages.is_empty()
+    {
+        let owners = lockstep::pools::page_owners(arena, film::start::DETAIL_PAGE, &pages);
+        if !owners.is_empty() {
+            out.push_str("; in ");
+            out.push_str(&lockstep::pools::owners_line(&owners, OWNERS_SHOWN));
+        }
+    }
+    out
+}
+
+/// The game's arena as it stands, unmasked; `None` when it is not
+/// readable.
+pub(super) fn arena_bytes(g: &Guest) -> Option<Vec<u8>> {
+    let (mut bytes, mut pages) = (Vec::new(), Vec::new());
+    lockstep::hash_sim_blocks(
+        g,
+        lockstep::SimRegion::HALO2,
+        film::start::DETAIL_PAGE,
+        &mut bytes,
+        &mut pages,
+    )?;
+    Some(bytes)
+}
+
 #[cfg(test)]
 pub(in crate::theater) mod tests;

@@ -129,6 +129,52 @@ pub fn hash_block(block: &[u8]) -> u64 {
     crate::hash_bytes(block.len() as u64, block)
 }
 
+/// The pools that own the pages of `block` that start at `offsets` (each
+/// `page` bytes long), and how many of those pages each overlaps: the
+/// pools in block order, a page that spans two pools counted for both. A
+/// start hash that does not reproduce names its differing pages by these
+/// (docs/game/theater-design.md, "Starting a film in the running game").
+pub fn page_owners(block: &[u8], page: usize, offsets: &[usize]) -> Vec<(String, usize)> {
+    page_owners_of(&find_pools(block), page, offsets)
+}
+
+/// [`page_owners`] over pools already found.
+pub fn page_owners_of(pools: &[Pool], page: usize, offsets: &[usize]) -> Vec<(String, usize)> {
+    let mut counts = vec![0usize; pools.len()];
+    for &at in offsets {
+        let end = at.saturating_add(page.max(1));
+        for (i, p) in pools.iter().enumerate() {
+            let (start, stop) = (p.offset as usize, (p.offset + p.len) as usize);
+            if start < end && at < stop {
+                counts[i] += 1;
+            }
+        }
+    }
+    pools
+        .iter()
+        .zip(counts)
+        .filter(|(_, n)| *n > 0)
+        .map(|(p, n)| (p.name.clone(), n))
+        .collect()
+}
+
+/// [`page_owners`] as one line: `object ×40, (head) ×2`, the pools with the
+/// most pages first (block order among equals), at most `shown` of them.
+pub fn owners_line(owners: &[(String, usize)], shown: usize) -> String {
+    let mut sorted: Vec<&(String, usize)> = owners.iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    let mut parts: Vec<String> = sorted
+        .iter()
+        .take(shown)
+        .map(|(name, n)| format!("{name} \u{d7}{n}"))
+        .collect();
+    let more = sorted.len().saturating_sub(shown);
+    if more > 0 {
+        parts.push(format!("{more} more"));
+    }
+    parts.join(", ")
+}
+
 /// One hash line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Line {
@@ -424,6 +470,33 @@ mod tests {
         for w in pools.windows(2) {
             assert_eq!(w[0].offset + w[0].len, w[1].offset);
         }
+    }
+
+    #[test]
+    fn differing_pages_are_named_by_the_pools_they_overlap() {
+        let mut b = vec![0u8; 0x4000];
+        header(&mut b, 0x800, "players");
+        header(&mut b, 0x1800, "object");
+        // Pages at 0x0 (head only), 0x1000 (players then object at 0x1800),
+        // 0x2000 and 0x3000 (object).
+        let owners = page_owners(&b, 0x1000, &[0, 0x1000, 0x2000, 0x3000]);
+        assert_eq!(
+            owners,
+            vec![
+                (HEAD.to_string(), 1),
+                ("players".to_string(), 2),
+                ("object".to_string(), 3),
+            ],
+            "the page at 0x0 is head and players' start; 0x1000 spans players and object"
+        );
+        let first = page_owners(&b, 0x1000, &[0x2000]);
+        assert_eq!(first, vec![("object".to_string(), 1)]);
+        assert!(page_owners(&b, 0x1000, &[]).is_empty());
+        assert_eq!(owners_line(&owners, 2), "object \u{d7}3, players \u{d7}2, 1 more");
+        assert_eq!(
+            owners_line(&owners, 8),
+            "object \u{d7}3, players \u{d7}2, (head) \u{d7}1"
+        );
     }
 
     #[test]

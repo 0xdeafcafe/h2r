@@ -59,6 +59,19 @@ pub(super) struct Play {
     awaiting: bool,
     /// The mounted maps, to check the game's map against the film's.
     pub(super) map_vfs: Option<Arc<Mutex<vfs::Vfs>>>,
+    /// The build of the session watching the film (its image stamp's first
+    /// line), when it is another than the film's: a start that does not
+    /// reproduce says so.
+    other_build: Option<String>,
+}
+
+/// What a film recorded by another build is refused with, or what a start
+/// that does not reproduce on another build says first.
+pub(super) const ANOTHER_BUILD: &str = "This film was recorded by another build.";
+
+/// The first line of a build stamp, which names the build.
+fn build_line(stamp: &str) -> &str {
+    stamp.lines().next().unwrap_or_default().trim()
 }
 
 impl Play {
@@ -91,6 +104,7 @@ impl Play {
             applied: 0,
             awaiting: false,
             map_vfs: None,
+            other_build: None,
         }))
     }
 
@@ -145,6 +159,26 @@ impl Play {
         Ok(())
     }
 
+    /// A film watched in a session that runs other simulation hooks than
+    /// the film was recorded with does not start as it did: it is refused
+    /// by name. `hooks` is the session's hook digest and `build` its build
+    /// stamp. A digest either side does not know is not compared. A film
+    /// of another build with the same hooks plays; if its start does not
+    /// reproduce, the reason names the build ([`Play::begin`]).
+    pub(super) fn check_build(&mut self, hooks: Option<&str>, build: &str) -> Result<()> {
+        let film = &self.start.stamp;
+        if let (Some(theirs), Some(ours)) = (film.hooks_sha256.as_deref(), hooks) {
+            ensure!(
+                theirs == ours,
+                "{ANOTHER_BUILD} Its simulation hooks differ from this build's, so its game would not start as it did (recorded on {}).",
+                build_line(&film.build)
+            );
+        }
+        self.other_build = (!build.is_empty() && !film.build.is_empty() && film.build != build)
+            .then(|| build_line(build).to_owned());
+        Ok(())
+    }
+
     /// The controller ports the guest has a neutral pad on: one for each
     /// local player the options name, at most the guest's four.
     pub(super) fn ports(&self) -> usize {
@@ -185,16 +219,31 @@ impl Play {
         let hash = lockstep::hash_gameplay(g, lockstep::SimRegion::HALO2)
             .context("the arena has no hash at the game's first update")?;
         if hash != self.start.start_hash {
-            // Name what differs, when the film says what it was made of.
+            // Name what differs, when the film says what it was made of:
+            // the pages, and the data arrays that own them.
             let detail = self
                 .start
                 .hash_detail
                 .as_ref()
                 .zip(super::game_start::hash_detail(g))
-                .map(|(film, now)| format!(" ({})", film.differences(&now)))
+                .map(|(film, now)| {
+                    let arena = super::game_start::arena_bytes(g);
+                    let why = super::game_start::start_differences(film, &now, arena.as_deref());
+                    format!(" ({why})")
+                })
+                .unwrap_or_default();
+            let build = self
+                .other_build
+                .as_ref()
+                .map(|ours| {
+                    format!(
+                        "{ANOTHER_BUILD} It was recorded on {}; this is {ours}. ",
+                        build_line(&self.start.stamp.build)
+                    )
+                })
                 .unwrap_or_default();
             bail!(
-                "the game's start hash {hash:016x} differs from the film's {:016x}{detail}",
+                "{build}the game's start hash {hash:016x} differs from the film's {:016x}{detail}",
                 self.start.start_hash
             );
         }
