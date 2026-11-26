@@ -13,6 +13,7 @@ use rules::scenario::{self, RunResult, Scenario, ScenarioEvent, ScenarioLabel, S
 use rules::vm::Arg;
 
 const SIEGE_ATTACKERS_WIN: &str = include_str!("scenarios/siege_attackers_win.json");
+const SPAWN_AREAS_SWITCH: &str = include_str!("scenarios/spawn_areas_switch.json");
 const SIEGE_RESPAWN_WAVES: &str = include_str!("scenarios/siege_respawn_waves.json");
 
 /// The scripts of the `core` and `modes` packages, from their folders.
@@ -1075,4 +1076,33 @@ fn the_scripts_of_the_set_are_the_baked_ones() {
     let baked = Registry::baked();
     assert_eq!(baked.problems, Vec::<String>::new());
     assert_eq!(set().scripts(), baked.scripts());
+}
+
+/// A phase switch moves a team's live set: `spawn_areas` is called with
+/// the new number the tick the phase changes, and the team's rule at the
+/// end is the later one.
+#[test]
+fn spawn_areas_follows_a_phase_switch() {
+    let src = "rules \"Switch\" 1\ntype slayer\nteams 2\nrequires player.spawn\n\
+               label start: spawns\nglobal var t: int = 0\n\
+               on round_start { spawn_areas(team 0, start, 0) }\n\
+               on tick { t = t + 1\n if t == 3 { spawn_areas(team 0, start, 1) } }\n";
+    let ir = rules::compile(src).unwrap();
+    let s: Scenario = serde_json::from_str(SPAWN_AREAS_SWITCH).unwrap();
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    let at: Vec<(u32, i64)> = calls(&r, "spawn_areas")
+        .into_iter()
+        .map(|(t, a)| match a {
+            [Arg::Team(Some(0)), Arg::Label(l), Arg::Int(n)] if l == "start" => (t, i64::from(*n)),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(at.iter().map(|(_, n)| *n).collect::<Vec<_>>(), [0, 1]);
+    assert!(at[1].0 > at[0].0, "{at:?}");
+    assert_eq!(
+        r.game.spawns.get(&0),
+        Some(&FakeSpawns::Areas { label: "start".into(), number: 1 })
+    );
+    assert_eq!(r.game.spawns.get(&1), None);
 }
