@@ -211,7 +211,7 @@ pub const SKULLS: [(Skull, &str); 9] = [
     (Skull::Assassins, "Assassins"),
     (Skull::Thunderstorm, "Thunderstorm"),
     (Skull::Famine, "Famine"),
-    (Skull::Blind, "Blind"),
+    (Skull::BlackEye, "Black Eye"),
     (Skull::Ghost, "Ghost"),
     (Skull::Catch, "Catch"),
     (Skull::Mythic, "Mythic"),

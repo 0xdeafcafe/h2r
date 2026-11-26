@@ -387,7 +387,8 @@ const BLUE_STAND: builtin::Anchor = builtin::Anchor::Flag {
 };
 
 /// One drop in the middle of the court, named `name`.
-const fn court_layout(name: &'static str) -> builtin::Layout {
+macro_rules! court_layout {
+    ($name:expr) => {
     builtin::Layout {
         map: "court",
         home: Team::Red,
@@ -397,7 +398,7 @@ const fn court_layout(name: &'static str) -> builtin::Layout {
             positions: 4,
         },
         drops: &[builtin::DropSpec {
-            name,
+            name: $name,
             anchor: builtin::Anchor::Between(&RED_STAND, &BLUE_STAND, 0.5),
             offset: [0.0; 3],
             radius: 5.0,
@@ -406,10 +407,11 @@ const fn court_layout(name: &'static str) -> builtin::Layout {
         }],
         cover: &[],
     }
+    };
 }
 
-static MIDDLE: builtin::Layout = court_layout("middle");
-static CENTRE: builtin::Layout = court_layout("centre");
+static MIDDLE: builtin::Layout = court_layout!("middle");
+static CENTRE: builtin::Layout = court_layout!("centre");
 
 #[test]
 fn the_layout_hash_changes_the_package_id() {
@@ -457,7 +459,7 @@ fn the_layout_hash_changes_the_package_id() {
 #[test]
 fn a_layout_that_cannot_place_a_drop_fails_the_build_by_name() {
     static LOST: builtin::Layout = {
-        let mut l = court_layout("lost");
+        let mut l = court_layout!("lost");
         l.drops = &[builtin::DropSpec {
             name: "west_cave",
             anchor: builtin::Anchor::Item {

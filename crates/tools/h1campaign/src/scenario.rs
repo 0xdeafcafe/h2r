@@ -1437,6 +1437,15 @@ fn place_objects(
         }
         crate::h2assets::stand_in(set, tag)
     };
+    // A retail stand-in's tag, None for Halo 1's own; a dropped one is
+    // refused by name where the caller needs the object.
+    let retail = |s: crate::h2assets::StandIn| -> std::result::Result<Option<TagId>, String> {
+        match s {
+            crate::h2assets::StandIn::Retail(id) => Ok(Some(id)),
+            crate::h2assets::StandIn::Own => Ok(None),
+            crate::h2assets::StandIn::Dropped(why) => Err(format!("left out: {why}")),
+        }
+    };
     let mut conv = h1objects::convert::Converter::new(h1, base);
     conv.options.unit_hud_draw_colour = true;
     let roster = ai
@@ -1540,6 +1549,7 @@ fn place_objects(
     {
         let tag = h1.tag(w)?;
         if let Some(id) = swap(set, tag)
+            .and_then(retail)
             .map_err(|why| h1convert::Error::no_rebuild(&h1.header().name, &tag.name, why))?
         {
             aliases.insert(FourCC(*b"weap"), &tag.name, id);
@@ -1572,6 +1582,7 @@ fn place_objects(
     // A swap that leaves the cyborg out is a named error, not Halo 1's.
     let cyborg_swap = match cyborg {
         Some(t) => swap(&*set, t)
+            .and_then(retail)
             .map_err(|why| h1convert::Error::no_rebuild(&h1.header().name, &t.name, why))?,
         None => None,
     };
@@ -1635,7 +1646,13 @@ fn place_objects(
                         .map_err(|e| h1convert::Error::no_rebuild(&h1.header().name, &t.name, e))?;
                 }
                 b"bipd" | b"vehi" | b"mach" | b"weap" | b"scen" => {
-                    if let Some(id) = swap(set, t).map_err(|why| {
+                    let stand_in = swap(set, t).map_err(|why| {
+                        h1convert::Error::no_rebuild(&h1.header().name, &t.name, why)
+                    })?;
+                    if matches!(stand_in, crate::h2assets::StandIn::Dropped(_)) {
+                        continue;
+                    }
+                    if let Some(id) = retail(stand_in).map_err(|why| {
                         h1convert::Error::no_rebuild(&h1.header().name, &t.name, why)
                     })? {
                         aliases.insert(group, &t.name, id);
