@@ -305,11 +305,9 @@ While a job is active only finished runs are removed, and the reply's
 directory are in use. A clean holds the activity lock, so a job submitted
 meanwhile is refused as busy.
 
-At startup the host takes the build/run activity lock before removing
-the old commit-named worktrees, 16-hex-key `images/` directories, the
-single `image/` directory and the private `obj-cache/`, whose objects
-become the shared cache when there is none yet. Job results and
-recordings are kept.
+At startup the host takes the build/run activity lock and refuses to start
+while an interrupted job still has children writing its logs; it then
+recovers the unfinished jobs. Job results and recordings are kept.
 
 `H2_PGO=use:NAME` names a profile uploaded with
 `h2 lab put FILE --pgo --as NAME`.

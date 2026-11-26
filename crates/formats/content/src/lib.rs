@@ -20,6 +20,7 @@
 //!
 //! Nothing here holds game data: packages name the user's disc maps by name
 //! and hash, and the tests use synthetic maps.
+mod bytes;
 pub mod campaign_list;
 mod canonical;
 pub mod forge;

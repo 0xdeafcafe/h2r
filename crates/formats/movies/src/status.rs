@@ -134,7 +134,7 @@ pub fn availability(dir: &Path, disc: &[DiscMovie]) -> Availability {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::MovieEntry;
+    use crate::{MovieEntry, Sha256, hex};
     use std::path::PathBuf;
 
     fn scratch(tag: &str) -> PathBuf {
@@ -163,6 +163,9 @@ mod tests {
             let bytes = format!("{name} synthetic output");
             fs::write(dir.join(format!("{name}.mp4")), &bytes).unwrap();
             m.upsert(entry(name, *size, bytes.as_bytes()));
+            let mut sha = Sha256::default();
+            sha.update(bytes.as_bytes());
+            m.output_sha256.insert(format!("{name}.mp4"), hex(&sha.finish()));
         }
         fs::write(dir.join(MANIFEST_NAME), m.to_json()).unwrap();
     }

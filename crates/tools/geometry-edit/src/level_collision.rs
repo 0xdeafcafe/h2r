@@ -31,6 +31,7 @@
 //! `edit.collision.stage` (docs/editor/realtime-edits.md, "Collision"), so
 //! the live game and a saved map agree.
 
+use tags::bytes::u32_at;
 use std::io::{Read, Seek};
 
 use collision_build::level::{Added, LEAF_SIZE, Level, LevelStage};
@@ -126,10 +127,6 @@ fn refused(tag: TagId, reason: impl Into<String>) -> Error {
         target: target_id(tag),
         reason: reason.into(),
     }
-}
-
-fn u32_at(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(b[at..at + 4].try_into().expect("four bytes"))
 }
 
 /// `len` bytes at `address`: in `space` when they lie there, else in the

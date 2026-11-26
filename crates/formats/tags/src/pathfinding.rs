@@ -6,7 +6,8 @@
 //! editor's user-placed hints) are kept as raw element bytes with their
 //! verified strides, so a decoded element re-encodes byte for byte apart
 //! from pointers.
-use crate::geometry::{TagView, f32_at, u16_at, u32_at};
+use crate::bytes::{f32_at, u16_at, u32_at};
+use crate::geometry::TagView;
 use crate::{Error, Result};
 use map::{AddressSpace, FourCC, Map, TagId};
 use std::io::{Read, Seek};

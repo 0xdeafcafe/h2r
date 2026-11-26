@@ -16,6 +16,7 @@
 //! elements and copied bytes shared by every block of the tag (all
 //! postprocess records and their function blobs included), so aliased or
 //! hostile counts cannot amplify allocations.
+use crate::bytes::{f32_at, i16_at, u16_at, u32_at};
 use crate::{Error, Result};
 use map::{FourCC, Map, TagId};
 use std::cell::Cell;
@@ -55,18 +56,6 @@ pub const MAX_TAG_BYTES: usize = 1 << 20;
 /// Largest animation function blob accepted (`shad` property data ref).
 pub const MAX_FUNCTION_BYTES: u32 = 0x1000;
 
-fn u16_at(b: &[u8], o: usize) -> u16 {
-    u16::from_le_bytes([b[o], b[o + 1]])
-}
-fn i16_at(b: &[u8], o: usize) -> i16 {
-    u16_at(b, o) as i16
-}
-fn u32_at(b: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
-}
-fn f32_at(b: &[u8], o: usize) -> f32 {
-    f32::from_bits(u32_at(b, o))
-}
 fn ctx(record: &'static str, field: &'static str) -> impl FnOnce(Error) -> Error {
     move |e| Error::Field {
         record,

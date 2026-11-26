@@ -266,7 +266,6 @@ fn install_movies<E>(
         fs::copy(&output, &staged_output)?;
         File::open(&staged_output)?.sync_all()?;
         fs::rename(&staged_output, dir.join(&output_name))?;
-        let legacy = manifest.output_sha256.is_empty();
         let replaced_output = find_source(&manifest, source_name)
             .map(|old| old.output_name.clone())
             .filter(|old| old != &output_name);
@@ -291,11 +290,6 @@ fn install_movies<E>(
             OutputStamp::of(&dir.join(&output_name))?,
         );
         manifest.output_sha256.insert(output_name, output_hash);
-        // The first output hash enables verification for the entire manifest.
-        // Keep already installed legacy movies playable during a partial install.
-        if legacy {
-            verify_legacy_outputs(&dir, &mut manifest);
-        }
         commit_manifest(&dir, &manifest)?;
         report.converted.push(source_name.to_owned());
     }
@@ -346,25 +340,6 @@ fn find_source<'a>(manifest: &'a Manifest, name: &str) -> Option<&'a MovieEntry>
         .movies
         .iter()
         .find(|entry| entry.source_name.eq_ignore_ascii_case(name))
-}
-
-fn verify_legacy_outputs(dir: &Path, manifest: &mut Manifest) {
-    for entry in &manifest.movies {
-        if manifest.output_sha256.contains_key(&entry.output_name) {
-            continue;
-        }
-        if let Some(path) = locate_entry(dir, entry)
-            && let Ok(stamp) = OutputStamp::of(&path)
-            && let Ok(hash) = hash_file(&path)
-        {
-            manifest
-                .output_sha256
-                .insert(entry.output_name.clone(), hash);
-            manifest
-                .output_stamp
-                .insert(entry.output_name.clone(), stamp);
-        }
-    }
 }
 
 /// `Some(reused paths)` when every requested movie has a fresh, verified
@@ -678,7 +653,8 @@ impl Write for Tee<'_> {
     }
 }
 
-pub(crate) fn hash_file(path: &Path) -> io::Result<String> {
+/// SHA-256 of a file, as the lowercase hex string a manifest records.
+pub fn hash_file(path: &Path) -> io::Result<String> {
     let mut hash = DigestWriter::default();
     io::copy(&mut File::open(path)?, &mut hash)?;
     Ok(hex(&hash.sha.finish()))
@@ -793,7 +769,6 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         const TARGET: &str = "/bink/attract_60.bik";
-        const LEGACY: &str = "/bink/intro_60.bik";
         const MOVIE: &[u8] = b"synthetic encoding";
 
         let scratch = Scratch::new(&std::env::temp_dir()).unwrap();
@@ -805,21 +780,6 @@ mod tests {
 
         let mut options = InstallOptions::new(scratch.0.join("movies"));
         fs::create_dir(&options.data_dir).unwrap();
-        fs::write(options.data_dir.join("old.mov"), b"old").unwrap();
-        let mut manifest = Manifest::default();
-        for source_name in [LEGACY, TARGET] {
-            manifest.upsert(MovieEntry {
-                source_name: source_name.to_owned(),
-                source_sha256: "legacy".to_owned(),
-                source_size: 3,
-                output_name: "old.mov".to_owned(),
-                output_size: 3,
-                duration_secs: 1.0,
-                ffmpeg_version: "legacy ffmpeg".to_owned(),
-                settings: "legacy".to_owned(),
-            });
-        }
-        fs::write(options.data_dir.join(MANIFEST_NAME), manifest.to_json()).unwrap();
 
         // A synthetic encoder copies its seekable input to the output,
         // making any extra bytes from the enclosing file visible here.
@@ -855,8 +815,6 @@ esac
         assert_eq!(entry.source_size, length);
         let new_output = crate::locate(&options.data_dir, TARGET).unwrap();
         assert_eq!(fs::read(new_output).unwrap().as_slice(), MOVIE);
-        assert_eq!(installed.find(LEGACY), manifest.find(LEGACY));
-        assert!(crate::locate(&options.data_dir, LEGACY).is_some());
         assert_eq!(fs::read(&source).unwrap(), data);
 
         let no_ffmpeg = scratch.0.join("missing-ffmpeg");
@@ -865,5 +823,32 @@ esac
         assert_eq!(report.status, InstallStatus::Complete);
         assert_eq!(report.reused, [TARGET]);
         assert!(report.converted.is_empty());
+    }
+
+    #[test]
+    fn an_entry_without_an_output_hash_is_not_playable() {
+        const NAME: &str = "/bink/intro_60.bik";
+
+        let scratch = Scratch::new(&std::env::temp_dir()).unwrap();
+        let dir = &scratch.0;
+        fs::write(dir.join("old.mov"), b"old").unwrap();
+        let mut manifest = Manifest::default();
+        manifest.upsert(MovieEntry {
+            source_name: NAME.to_owned(),
+            source_sha256: "hashless".to_owned(),
+            source_size: 3,
+            output_name: "old.mov".to_owned(),
+            output_size: 3,
+            duration_secs: 1.0,
+            ffmpeg_version: "ffmpeg".to_owned(),
+            settings: "settings".to_owned(),
+        });
+        assert!(manifest.output_sha256.is_empty());
+        fs::write(dir.join(MANIFEST_NAME), manifest.to_json()).unwrap();
+
+        // The output file is there and the size is right, but without a
+        // recorded hash the movie is not trusted.
+        assert!(crate::locate(dir, NAME).is_none());
+        assert!(!manifest.output_matches(dir, manifest.find(NAME).unwrap()).unwrap());
     }
 }

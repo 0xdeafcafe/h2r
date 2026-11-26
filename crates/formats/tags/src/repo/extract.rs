@@ -31,9 +31,9 @@ use super::{
     Body, Error, LooseTag, Node, Origin, RawRes, Region, Result, TagKey, TagSource, Tree, Value,
     sha256,
 };
+use crate::bytes::u32_at;
 use crate::schema::{
-    Field, Memory, Refusal, Relocator, Schema, Struct, check_subtree_with, stray_with, u32_at,
-    visit, walk,
+    Field, Memory, Refusal, Relocator, Schema, Struct, check_subtree_with, stray_with, visit, walk,
 };
 use map::{FourCC, Map, ResourceFile, TagId};
 use std::collections::{BTreeMap, BTreeSet, HashMap};

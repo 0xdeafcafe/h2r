@@ -36,8 +36,6 @@ pub enum Event {
     InvalidTransfer,
     TransferLimit,
     ContinuationLimit,
-    /// Retained for API compatibility; bounded history no longer emits it.
-    EventLimit,
     HarnessExit,
     /// A non-memory guest exception raised by generated code through
     /// `h2shim_v1_event` (codes 1-7 and 13). `saved_eip` is the EIP the exception

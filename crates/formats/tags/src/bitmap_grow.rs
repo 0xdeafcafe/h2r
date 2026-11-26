@@ -20,6 +20,7 @@
 //! the same flags, LOD bias and cache usage, no pixels until the save
 //! writes them, the texture cache handles empty and no low-detail picture.
 
+use crate::bytes::f32_at;
 use crate::{Image, records::BitmapImage, wire::BinaryRecord};
 
 /// Record sizes.
@@ -85,10 +86,6 @@ pub struct SpriteView {
     pub top: f32,
     pub bottom: f32,
     pub registration: [f32; 2],
-}
-
-fn f32_at(r: &[u8], at: usize) -> f32 {
-    f32::from_le_bytes([r[at], r[at + 1], r[at + 2], r[at + 3]])
 }
 
 impl SpriteView {

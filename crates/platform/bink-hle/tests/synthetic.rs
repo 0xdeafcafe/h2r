@@ -837,6 +837,9 @@ fn write_manifest(dir: &std::path::Path, movies: &[(&str, u64)]) {
             ffmpeg_version: "ffmpeg version test".into(),
             settings: "test".into(),
         });
+        let mut sha = movies::Sha256::default();
+        sha.update(out.as_bytes());
+        m.output_sha256.insert(format!("{name}.mov"), movies::hex(&sha.finish()));
     }
     std::fs::write(dir.join(movies::MANIFEST_NAME), m.to_json()).unwrap();
 }

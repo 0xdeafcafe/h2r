@@ -142,16 +142,6 @@ impl Keys {
     /// window settings. A saved window can be intentionally undocked.
     pub fn seed_saved_layout(&self) {
         let tools = self.tools();
-        let anchors = [
-            &self.outliner,
-            &self.viewport,
-            &self.inspector,
-            &self.log,
-            &self.game,
-        ];
-        if saved_dock(&window_name(&self.browser)).is_none() {
-            retire_tools_leaf(anchors);
-        }
         seed(
             &self.outliner,
             [&self.browser, &self.tags, &self.scripts]
@@ -198,31 +188,6 @@ fn saved_dock(name: &std::ffi::CStr) -> Option<u32> {
     unsafe {
         let id = sys::igImHashStr(name.as_ptr(), 0, 0);
         sys::igFindWindowSettingsByID(id).as_ref().map(|s| s.DockId)
-    }
-}
-
-/// Collapse the obsolete Tools split if it was only used by Tools.
-fn retire_tools_leaf(anchors: [&WindowKey; 5]) {
-    let Some(dock) = saved_dock(c"###tools") else {
-        return;
-    };
-    if dock == 0 {
-        return;
-    }
-    let shared = anchors
-        .iter()
-        .any(|key| saved_dock(&window_name(key)) == Some(dock));
-    // SAFETY: migration runs before submitting any windows to the dock.
-    unsafe {
-        let node = sys::igDockBuilderGetNode(dock);
-        if !shared
-            && !node.is_null()
-            && sys::ImGuiDockNode_IsLeafNode(node)
-            && !sys::ImGuiDockNode_IsCentralNode(node)
-        {
-            sys::igDockBuilderRemoveNode(dock);
-        }
-        sys::igClearWindowSettings(c"###tools".as_ptr());
     }
 }
 

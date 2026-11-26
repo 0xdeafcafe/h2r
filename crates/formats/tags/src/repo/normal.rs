@@ -30,6 +30,7 @@
 //! nodes of one element, at offsets past the element's own bytes. [`hash`]
 //! is over a form's lines: two maps agree on an asset exactly when its
 //! content is the same.
+use crate::bytes::{u16_at, u32_at};
 use super::extract::NOISY_SIZES;
 use super::{
     Body, Error, LooseTag, Node, Origin, RawRes, Result, TagKey, Tree, Value, canonical, sha256,
@@ -147,14 +148,6 @@ pub fn hash(form: &LooseTag) -> [u8; 32] {
         h.update(line.as_bytes());
     }
     h.finalize().into()
-}
-
-fn u16_at(b: &[u8], at: usize) -> u16 {
-    u16::from_le_bytes([b[at], b[at + 1]])
-}
-
-fn u32_at(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]])
 }
 
 /// Element `i` of an array of `size`-byte elements.

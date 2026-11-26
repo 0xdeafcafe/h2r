@@ -7,6 +7,7 @@
 //! `docs/halo1/sounds.md`; offsets below are the ones the disc
 //! confirms.
 
+use tags::bytes::{f32_at, u16_at, u32_at};
 use h1map::{Block, Group, H1Map, Tag, TagId, TagRef};
 
 use crate::sounds::{Error, Result};
@@ -162,15 +163,6 @@ pub struct Sound {
     pub pitch_ranges: Vec<PitchRange>,
 }
 
-fn u16_at(b: &[u8], at: usize) -> u16 {
-    u16::from_le_bytes([b[at], b[at + 1]])
-}
-fn u32_at(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(b[at..at + 4].try_into().expect("4 bytes"))
-}
-fn f32_at(b: &[u8], at: usize) -> f32 {
-    f32::from_bits(u32_at(b, at))
-}
 fn name_at(b: &[u8], at: usize) -> String {
     let s = &b[at..at + 32];
     let n = s.iter().position(|&c| c == 0).unwrap_or(32);

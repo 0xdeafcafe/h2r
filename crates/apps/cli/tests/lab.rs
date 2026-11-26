@@ -1217,60 +1217,6 @@ fn a_running_job_pins_the_image_and_queued_branches_share_one_checkout() {
 }
 
 #[test]
-fn host_migration_removes_only_the_legacy_build_directories() {
-    let lab = Lab::with_setup("migrate", &[], |root, repo| {
-        let commit = git(repo, &["rev-parse", "HEAD"]);
-        let src = root.join("src");
-        fs::create_dir_all(&src).unwrap();
-        git(
-            repo,
-            &[
-                "worktree",
-                "add",
-                "-q",
-                "--detach",
-                src.join(commit).to_str().unwrap(),
-                "HEAD",
-            ],
-        );
-        for dir in [
-            "image/src",
-            "obj-cache/ab",
-            "images/a123456789abcdef",
-            "images/other",
-            "src/other",
-            "runs/0001",
-            "recordings/demo",
-        ] {
-            let path = root.join(dir);
-            fs::create_dir_all(&path).unwrap();
-            fs::write(path.join("sentinel"), b"keep").unwrap();
-        }
-        std::os::unix::fs::symlink(
-            root.join("recordings"),
-            root.join("images/0123456789abcdef"),
-        )
-        .unwrap();
-    });
-    let old = lab
-        .root
-        .join("src")
-        .join(git(&lab.repo, &["rev-parse", "HEAD"]));
-    assert!(!old.exists());
-    assert!(!git(&lab.repo, &["worktree", "list", "--porcelain"]).contains(old.to_str().unwrap()));
-    assert!(!lab.root.join("images/a123456789abcdef").exists());
-    // The single image directory the variants replaced. The private object
-    // cache becomes the shared one beside the root, which did not exist.
-    assert!(!lab.root.join("image").exists());
-    assert!(!lab.root.join("obj-cache").exists());
-    assert!(lab.dir.join("obj/ab/sentinel").is_file());
-    for dir in ["images/other", "src/other", "runs/0001", "recordings/demo"] {
-        assert!(lab.root.join(dir).join("sentinel").is_file());
-    }
-    assert!(lab.root.join("images/0123456789abcdef").is_symlink());
-}
-
-#[test]
 fn the_build_caches_can_be_capped_independently_of_the_published_image() {
     let lab = Lab::with_host_options("caps", &["--obj-cache-limit", "0", "--target-limit", "0"]);
     // The object cache is the shared one beside the lab root.

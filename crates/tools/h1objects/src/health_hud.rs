@@ -26,6 +26,7 @@
 //! is what both converters make the player) points its HUD interfaces
 //! (`unit +0x1a0`) at the new `nhdt`. Every other unit keeps its template's.
 
+use tags::bytes::u16_at;
 use map::TagId;
 use map::build::Block;
 
@@ -110,10 +111,6 @@ pub fn is_player_biped(path: &str) -> bool {
     path.rsplit('\\')
         .next()
         .is_some_and(|last| last.contains("cyborg"))
-}
-
-fn u16_at(b: &[u8], at: usize) -> u16 {
-    u16::from_le_bytes([b[at], b[at + 1]])
 }
 
 /// The (x, y) offset at `at` in widget `w`.

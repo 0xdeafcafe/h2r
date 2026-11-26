@@ -495,6 +495,9 @@ fn convert_one(
         ffmpeg_version: ff.version.clone(),
         settings: ff.settings().to_string(),
     });
+    // An output without a recorded hash is not playable (`movies::locate`).
+    manifest.output_sha256.insert(output_name.clone(), movies::install::hash_file(&path)?);
+    manifest.output_stamp.insert(output_name.clone(), movies::OutputStamp::of(&path)?);
     // OutDir publishes via a temp file and rename, so this is atomic.
     manifest_out.write(&[MANIFEST_NAME.to_string()], manifest.to_json().as_bytes())?;
     println!("  wrote {}", path.display());

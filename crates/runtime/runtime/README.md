@@ -215,8 +215,7 @@ IDs. The first failing FFI access is pinned through eviction and drains until
 its invocation propagates it, even if native output is malformed. Generated code
 must stop at that first failure; subsequent helper faults from a broken handler
 are ordinary, evictable diagnostics. HarnessExit is recorded normally and may
-later be evicted or drained; it is not permanently pinned. EventLimit remains
-as an API variant but retention no longer emits it. An unrecorded Fault gets an
+later be evicted or drained; it is not permanently pinned. An unrecorded Fault gets an
 explicit event.
 The runtime denies unsafe code except in `ffi.rs`. The C probe is a development
 dependency, so ordinary runtime builds do not compile or export test handlers.

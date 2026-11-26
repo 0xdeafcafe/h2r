@@ -90,18 +90,14 @@ risking deleting a movie another process is playing.
 
 ## Manifest and resume
 
-`movies.json` retains the version-1 `MovieEntry` fields for compatibility
-with the existing CLI: source path, size and SHA-256; output name and size;
-duration; ffmpeg version; exact encoding settings. An additive
-`output_sha256` map records output hashes by file name. Legacy manifests
-without that map still load. When the installer publishes the first hashed
-output, it also hashes each remaining readable legacy output with the recorded
-size. These hashes record the files as they exist at migration, so installing
-only the attract clip keeps other valid legacy movies available. An
+`movies.json` holds the `MovieEntry` fields: source path, size and SHA-256;
+output name and size; duration; ffmpeg version; exact encoding settings. The
+`output_sha256` map records each output's hash by file name, and an entry
+without one is not playable: `locate` returns `None` and the installer
+converts it again. An
 `output_stamp` map records each output's size and mtime at the moment its
 hash was verified, so `locate` does not re-hash a multi-megabyte movie on
-every call; a changed stamp falls back to a full hash. Once a manifest has
-any output hashes, an entry without one is not trusted. After a successful
+every call; a changed stamp falls back to a full hash. After a successful
 run the installer deletes `movie-*.mov` files the manifest no longer
 references, and stale `.install-*` scratch directories, under its lock.
 
@@ -128,8 +124,8 @@ if let Some(path) = movies::locate(movies_dir, "intro_60") {
 }
 ```
 
-`locate` checks file name safety, regular-file status, size, and output hash
-when present. Legacy CLI entries retain their size-only lookup behavior.
+`locate` checks file name safety, regular-file status, size, and the recorded
+output hash.
 `locate_fresh` additionally checks a supplied disc source size/hash.
 Manifest names cannot escape the movie directory through separators,
 absolute paths, or symlink output files. A missing, stale, corrupt, or

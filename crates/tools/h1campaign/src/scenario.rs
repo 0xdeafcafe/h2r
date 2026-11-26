@@ -26,6 +26,7 @@
 
 mod ai_weapons;
 
+use tags::bytes::i16_at;
 use std::collections::HashMap;
 use std::io::{Read, Seek};
 
@@ -551,10 +552,6 @@ impl std::fmt::Display for ScenarioReport {
 pub(crate) fn h1_block(h1: &H1Map, (at, stride): (usize, usize)) -> Result<Vec<&[u8]>> {
     let scnr = h1.tag_data(h1.scenario())?;
     Ok(h1.tag_space().block_at(scnr, at, stride)?)
-}
-
-fn i16_at(b: &[u8], at: usize) -> i16 {
-    i16::from_le_bytes([b[at], b[at + 1]])
 }
 
 fn f32s<const N: usize>(b: &[u8], at: usize) -> [f32; N] {

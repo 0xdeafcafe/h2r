@@ -24,6 +24,7 @@
 //!   shapes sized to it, local unit references, source vitality and shields,
 //!   and a physics model when the source has collision.
 
+use tags::bytes::f32_at;
 use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
 use std::io::{BufReader, Cursor};
@@ -481,10 +482,6 @@ const PAIRS: &[(&str, &str, &str)] = &[
         "objects\\characters\\jackal\\jackal",
     ),
 ];
-
-fn f32_at(b: &[u8], o: usize) -> f32 {
-    f32::from_le_bytes(b[o..o + 4].try_into().unwrap())
-}
 
 #[test]
 #[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]

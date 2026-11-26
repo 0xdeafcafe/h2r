@@ -3,7 +3,8 @@
 //! The shared BSP reader owns geometry and lightmap linkage; this module
 //! extends it. Every block read goes through the shared [`TagView`], so
 //! aliased blocks are charged to its one per-payload budget.
-use crate::geometry::{Section, TagView, VertexBuffer, f32_at, u32_at};
+use crate::bytes::{f32_at, u32_at};
+use crate::geometry::{Section, TagView, VertexBuffer};
 use crate::structure::{Lightmap, LightmapGroup};
 use crate::wire::TagReference;
 use crate::{Error, Result};

@@ -15,7 +15,8 @@
 //!
 //! Rotations come out as `[x, y, z, w]` unit quaternions in the engine's own
 //! component order (the first three i16 words are the vector part).
-use crate::anim::{Animation, AnimationType, f32_at, u32_at};
+use crate::anim::{Animation, AnimationType};
+use crate::bytes::{f32_at, u32_at};
 use crate::{Error, Result};
 use std::ops::Range;
 use std::sync::Arc;

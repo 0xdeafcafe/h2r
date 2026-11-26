@@ -2,8 +2,9 @@
 
 use super::{
     Error, HULL_TOLERANCE, MAX_HULL_ELEMENTS, PHMO_ROOT_SIZE, Payload, PhysicsModel, Polyhedron,
-    Result, ShapeType, cross, dot, f32_at, u32_at,
+    Result, ShapeType, cross, dot,
 };
+use crate::bytes::{f32_at, u32_at};
 
 type Point = [f32; 3];
 

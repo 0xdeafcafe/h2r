@@ -17,6 +17,7 @@
 //!
 //! A volume with a parent object keeps its frame relative to that object,
 //! which only a running game places, so it is listed and not drawn.
+use tags::bytes::{i16_at, u32_at};
 use crate::geometry::{Ray, Tri, Vec3, add, cross, dot, scale, sub};
 
 /// The trigger volume block in the scenario root and its element size.
@@ -413,12 +414,6 @@ pub struct Volumes {
     pub error: Option<String>,
 }
 
-fn i16_at(b: &[u8], o: usize) -> i16 {
-    i16::from_le_bytes([b[o], b[o + 1]])
-}
-fn u32_at(b: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
-}
 fn vec3_at(b: &[u8], o: usize) -> Vec3 {
     std::array::from_fn(|k| f32::from_bits(u32_at(b, o + 4 * k)))
 }

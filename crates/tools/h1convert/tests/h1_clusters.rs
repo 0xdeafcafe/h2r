@@ -1,6 +1,7 @@
 //! Halo 1's clusters as the structure keeps them, from the owner's Halo 1
 //! disc (`$H1_ISO`). Only counts and ranges are printed.
 
+use tags::bytes::i16_at;
 use std::fs::File;
 use std::io::{BufReader, Cursor};
 
@@ -23,10 +24,6 @@ fn levels() -> Vec<(String, H1Map)> {
         out.push((n.to_owned(), m));
     }
     out
-}
-
-fn i16_at(b: &[u8], o: usize) -> i16 {
-    i16::from_le_bytes([b[o], b[o + 1]])
 }
 
 /// The fields `h1convert::structure::sound_zones` reads: each cluster's

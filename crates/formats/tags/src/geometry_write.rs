@@ -20,9 +20,8 @@
 //! inverses of the decoder's expansions, for the streams an in-place edit
 //! rewrites.
 
-use crate::geometry::{
-    BLKF, BLKH, BlockResource, LoadedBlock, RSRC, ResourceKind, SectionLayout, u32_at,
-};
+use crate::bytes::u32_at;
+use crate::geometry::{BLKF, BLKH, BlockResource, LoadedBlock, RSRC, ResourceKind, SectionLayout};
 use crate::{Error, Result};
 
 /// One resource of a section: its table entry and, when present, its bytes.

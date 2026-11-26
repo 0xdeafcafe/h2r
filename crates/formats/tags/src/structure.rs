@@ -9,9 +9,9 @@
 //! or disc check) is in `docs/formats/structure-bsp.md`. Unlisted bytes are preserved
 //! in `raw` fields, not interpreted.
 
+use crate::bytes::{f32_at, u16_at, u32_at};
 use crate::geometry::{
-    GeometryBlockInfo, RawSource, Section, SectionLayout, TagView, decode_section, f32_at,
-    load_block, u16_at, u32_at,
+    GeometryBlockInfo, RawSource, Section, SectionLayout, TagView, decode_section, load_block,
 };
 use crate::{Error, Result};
 use map::{FourCC, Map, TagId};

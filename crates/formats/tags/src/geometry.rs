@@ -24,21 +24,12 @@
 //!   name their part. Indices stay below the vertex count, and every vertex
 //!   stream agrees on that count.
 
+use crate::bytes::{f32_at, u16_at, u32_at};
 use crate::{Error, Result};
 use map::{FourCC, RawPointer, TagId};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::Range;
-
-pub(crate) fn u16_at(b: &[u8], o: usize) -> u16 {
-    u16::from_le_bytes([b[o], b[o + 1]])
-}
-pub(crate) fn u32_at(b: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
-}
-pub(crate) fn f32_at(b: &[u8], o: usize) -> f32 {
-    f32::from_bits(u32_at(b, o))
-}
 
 /// A tag payload and its virtual address, for following tag-block pointers.
 ///

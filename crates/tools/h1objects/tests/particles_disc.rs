@@ -1,6 +1,7 @@
 //! Halo 1 particles (`part`, `pctl`) and contrails (`cont`) as Halo 2
 //! `prt3` and `cont`: surveys of the Halo 1 layouts and the proofs of the
 //! conversion, from the owner's discs (`$H1_ISO`, `$H2_DISC`).
+use tags::bytes::u32_at;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufReader, Cursor};
@@ -33,10 +34,6 @@ fn h1_maps() -> Vec<(String, H1Map)> {
         }
     }
     out
-}
-
-fn u32_at(b: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
 }
 
 /// Survey (`H1_GROUP`, default `part`; `H1_SPAN` bytes, default 0x180):

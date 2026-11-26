@@ -12,6 +12,7 @@
 //! with a fixup for every pointer, so the builder can lay it out anywhere. It
 //! refuses (with a [`Refusal`]) unless the tree covers the tag's bytes exactly
 //! once and no uncovered word looks like an address in the tag or metadata.
+use crate::bytes::u32_at;
 use map::build::{Block, FixupKind, RawRef};
 use map::{FourCC, Map, TagId};
 use std::collections::BTreeMap;
@@ -295,10 +296,6 @@ pub struct Walk {
     /// Non-empty block and data-reference fields in the tag's own bytes, as
     /// (offset in the tag, count, target address), sorted, one per field.
     pub pointers: Vec<(u32, u32, u32)>,
-}
-
-pub(crate) fn u32_at(bytes: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(bytes[at..at + 4].try_into().expect("4 bytes"))
 }
 
 /// Tag bytes by address: every ordinary-metadata tag of a map, so blocks

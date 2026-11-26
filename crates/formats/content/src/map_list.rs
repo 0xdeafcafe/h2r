@@ -21,6 +21,7 @@
 //! record's preview has the same alpha: a one-pixel opaque frame, `0xbf`
 //! inside, and a transparent triangle cut from the bottom-right corner;
 //! [`preview_alpha`] draws that shape.
+use crate::bytes::u32_at;
 use crate::{
     Manifest, MapId,
     manifest::{LANGUAGES, ListInfo},
@@ -264,10 +265,6 @@ impl Entry {
             preview: r[PREVIEW..].to_vec(),
         })
     }
-}
-
-fn u32_at(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(b[at..at + 4].try_into().unwrap())
 }
 
 fn put(r: &mut [u8], at: usize, v: u32) {

@@ -110,7 +110,7 @@ impl Manifest {
         Ok(m)
     }
 
-    /// Validate an installer's output hash; legacy entries have no hash.
+    /// Validate an installer's output hash; an entry without one never matches.
     pub fn output_matches(&self, dir: &Path, entry: &MovieEntry) -> io::Result<bool> {
         let Some(want) = self.output_sha256.get(&entry.output_name) else {
             return Ok(false);
@@ -121,16 +121,11 @@ impl Manifest {
         Ok(install::hash_file(&dir.join(&entry.output_name))?.eq_ignore_ascii_case(want))
     }
 
-    /// Path of a playable output. Manifests written by the installer carry
-    /// output hashes and every entry must have one (a missing key is not a
-    /// free pass); a size/mtime stamp from install time avoids re-hashing,
-    /// and any other change falls back to a full hash. Legacy CLI manifests
-    /// have no hashes and are checked by size alone.
+    /// Path of a playable output. Every entry must carry an output hash (a
+    /// missing key is not playable); a size/mtime stamp from install time
+    /// avoids re-hashing, and any other change falls back to a full hash.
     pub(crate) fn verified_output(&self, dir: &Path, entry: &MovieEntry) -> Option<PathBuf> {
         let path = locate_entry(dir, entry)?;
-        if self.output_sha256.is_empty() {
-            return Some(path);
-        }
         let want = self.output_sha256.get(&entry.output_name)?;
         if self.output_stamp.get(&entry.output_name) == OutputStamp::of(&path).ok().as_ref() {
             return Some(path);
@@ -321,6 +316,13 @@ mod tests {
         fs::write(d.join("a.mp4"), b"123").unwrap();
         assert!(locate(&d, "a").is_none()); // wrong size
         fs::write(d.join("a.mp4"), b"1234").unwrap();
+        assert!(locate(&d, "a").is_none()); // no recorded hash
+        m.output_sha256.insert("a.mp4".into(), {
+            let mut h = Sha256::default();
+            h.update(b"1234");
+            hex(&h.finish())
+        });
+        fs::write(d.join(MANIFEST_NAME), m.to_json()).unwrap();
         assert_eq!(locate(&d, "a"), Some(d.join("a.mp4")));
         assert!(locate(&d, "zzz").is_none());
     }

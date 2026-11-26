@@ -4,6 +4,7 @@
 //! field. Everything here reads through [`Memory`], so the same code runs on a
 //! real map ([`h1map::H1Map`]) and on invented bytes in tests.
 
+pub(crate) use tags::bytes::{f32_at, i16_at, u16_at, u32_at};
 use crate::models::{Error, Result};
 
 /// Halo 1 tag data, addressed by virtual address.
@@ -18,18 +19,6 @@ impl Memory for h1map::H1Map {
     }
 }
 
-pub(crate) fn u16_at(b: &[u8], o: usize) -> u16 {
-    u16::from_le_bytes([b[o], b[o + 1]])
-}
-pub(crate) fn i16_at(b: &[u8], o: usize) -> i16 {
-    u16_at(b, o) as i16
-}
-pub(crate) fn u32_at(b: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
-}
-pub(crate) fn f32_at(b: &[u8], o: usize) -> f32 {
-    f32::from_bits(u32_at(b, o))
-}
 pub(crate) fn f32s<const N: usize>(b: &[u8], o: usize) -> [f32; N] {
     std::array::from_fn(|i| f32_at(b, o + 4 * i))
 }

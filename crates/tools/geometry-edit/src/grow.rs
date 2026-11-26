@@ -22,6 +22,7 @@
 //! - Every resource the writer does not rebuild is carried as the source's
 //!   bytes.
 
+use tags::bytes::u16_at;
 use std::collections::HashMap;
 
 use mesh_edit::{Export, Skin, dirty};
@@ -116,9 +117,6 @@ impl Grown {
     }
 }
 
-fn u16_at(b: &[u8], at: usize) -> u16 {
-    u16::from_le_bytes([b[at], b[at + 1]])
-}
 fn put16(b: &mut [u8], at: usize, v: u16) {
     b[at..at + 2].copy_from_slice(&v.to_le_bytes());
 }

@@ -44,6 +44,7 @@
 //! Ambiguous fields (always zero, or mixed evidence) are left out; the
 //! relocation check ([`super::walk`]) then refuses any tag where such a word
 //! holds an address.
+use crate::bytes::u32_at;
 use super::{Field, MAX_ALIGN, Schema, Struct};
 use map::{FourCC, Map};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -99,10 +100,6 @@ pub struct MapSample {
     pub bsps: HashSet<(u32, u32, u32)>,
     /// Address spaces (metadata and BSP regions): `[start, end)`.
     pub spaces: Vec<(u32, u32)>,
-}
-
-fn u32_at(bytes: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(bytes[at..at + 4].try_into().expect("4 bytes"))
 }
 
 impl SampleTag {

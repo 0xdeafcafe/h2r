@@ -10,6 +10,8 @@
 //!
 //! [`crate::map_list`] builds a v2 record from scratch for a new map.
 
+use crate::bytes::u32_at;
+
 /// A record or file that 1.0 or the update would refuse.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
@@ -41,10 +43,6 @@ const INSERTED: usize = 0x10c;
 pub(crate) const V2_MAP_ID: usize = 0x10c;
 #[cfg(test)]
 const V3_MAP_ID: usize = 0x110;
-
-fn u32_at(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(b[at..at + 4].try_into().unwrap())
-}
 
 /// The game's CRC (`0x163ba0`): reflected CRC-32, polynomial `0xedb88320`,
 /// initial value `0xffffffff`, and no final XOR.

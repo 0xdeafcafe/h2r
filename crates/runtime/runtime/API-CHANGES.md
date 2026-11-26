@@ -126,11 +126,10 @@ The generated object defines these probes; the runtime does not export them.
 
 - Added GuestFault reason variants InvalidWidth, InvalidBuffer and InvalidOperation.
   Bad C widths, operation tags and null buffers now record access faults.
-- Added Event variants `UnrecordedFault { pc: u32 }`, `ContinuationLimit`,
-  and `EventLimit`. Fault with event_id zero gets an UnrecordedFault record.
+- Added Event variants `UnrecordedFault { pc: u32 }` and `ContinuationLimit`.
+  Fault with event_id zero gets an UnrecordedFault record.
   The first latched access fault retains priority over invalid native output.
-- Added `events::MAX_EVENTS: usize = 1024`. Event ids remain stable; the last slot
-  records EventLimit and later execution faults. Contexts also bound outstanding
+- Added `events::MAX_EVENTS: usize = 1024`. Event ids remain stable. Contexts also bound outstanding
   Rust continuations to 1024 and stop on continuation token exhaustion.
 - `ExecCtxOpaque` now has PhantomData<(*mut u8, PhantomPinned)> and is therefore
   !Send, !Sync and !Unpin. It remains an incomplete C type, used only by pointer.
@@ -164,13 +163,12 @@ C entry point signatures unchanged.
   latched FFI fault remains in the context until its transfer is propagated.
 - MAX_EVENTS now bounds retained history rather than context lifetime. Older
   records are evicted without a fault. HarnessExit is recorded normally, so
-  retention cannot replace a new exit with EventLimit; it can later be evicted
-  or drained like other events.
+  retention cannot replace a new exit; it can later be evicted or drained
+  like other events.
   `event(id)` returns None after eviction/draining. IDs are not reset by taking
   events; the counter wraps past zero and any retained IDs. Consumers must use
   `event(id)`, not treat an opaque ID as an index into `events()`.
-- EventLimit remains public for source compatibility but history retention no
-  longer emits it. Runner and handler invocation no longer gate on event count.
+- Runner and handler invocation no longer gate on event count.
 - Completed and cancelled continuation slots are recycled with new generations,
   as described below. There are 1024 slots; exhausted generations retire a slot
   rather than reissuing an identity. Failed guest stack pushes also release

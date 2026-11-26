@@ -179,8 +179,8 @@ impl<'s> Source<'s> {
             visit(groot, l.address, rel.memory(), &mut |s, e, _| {
                 for (&o, f) in &s.fields {
                     let d = match f {
-                        Field::TagRef => super::u32_at(e, o as usize + 4),
-                        Field::TagId => super::u32_at(e, o as usize),
+                        Field::TagRef => crate::bytes::u32_at(e, o as usize + 4),
+                        Field::TagId => crate::bytes::u32_at(e, o as usize),
                         _ => continue,
                     };
                     if d != u32::MAX && tags.contains_key(&TagId(d)) {
@@ -344,7 +344,7 @@ fn raw_starts(
         visit(root, l.address, rel.memory(), &mut |s, e, _| {
             for (&o, f) in &s.fields {
                 if matches!(f, Field::Raw) {
-                    let v = super::u32_at(e, o as usize);
+                    let v = crate::bytes::u32_at(e, o as usize);
                     if v != u32::MAX && v != 0 && v >> 30 == 0 {
                         starts.push(v);
                     }
@@ -547,7 +547,7 @@ impl<'s> Unpinner<'s> {
                 continue;
             };
             let at = field as usize;
-            let offset = super::u32_at(&block.bytes, at);
+            let offset = crate::bytes::u32_at(&block.bytes, at);
             if offset == 0 || offset == u32::MAX {
                 continue;
             }
@@ -652,8 +652,8 @@ impl<'s> Unpinner<'s> {
                     }
                     continue;
                 }
-                let c = super::u32_at(&block.bytes, off as usize);
-                let a = super::u32_at(&block.bytes, off as usize + 4);
+                let c = crate::bytes::u32_at(&block.bytes, off as usize);
+                let a = crate::bytes::u32_at(&block.bytes, off as usize + 4);
                 if c == 0 || a == 0 || self.rel.memory.region(a).is_none() {
                     continue;
                 }

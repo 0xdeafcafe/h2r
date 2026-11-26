@@ -679,62 +679,6 @@ mod tests {
     }
 
     #[test]
-    fn the_saved_layout_with_the_three_old_ids_loads() {
-        use crate::ToolKind;
-        let Some((_turn, mut first)) = headless() else { return };
-        let mut app = App::new();
-        let source = crate::app::map_cards_tests::Temp::new("legacy-layout");
-        let path = source.0.join("invented.map");
-        std::fs::write(&path, fixture::fixture()).unwrap();
-        app.set_data_root(source.0.join("data"));
-        app.dispatch(Action::OpenSource(path));
-        first.frames(&mut app, 4).unwrap();
-        let before = ["outliner", "viewport", "inspector"].map(|name| {
-            first.scene.find(&format!("win:###{name}")).unwrap().0
-        });
-        let mut settings = String::new();
-        first.ctx.save_ini_settings(&mut settings);
-        drop(first);
-
-        let legacy = settings
-            .split("
-
-")
-            .filter(|section| {
-                section.starts_with("[Docking]")
-                    || ["outliner", "viewport", "inspector", "log", "game"].iter().any(|name| {
-                        section.starts_with(&format!("[Window][###{name}]"))
-                            || section.starts_with(&format!("[Window][{name}]"))
-                    })
-            })
-            .collect::<Vec<_>>()
-            .join("
-
-");
-        assert!(
-            legacy.contains("[Window][###outliner]") || legacy.contains("[Window][outliner]"),
-            "{:?}",
-            settings.lines().filter(|l| l.starts_with('[')).collect::<Vec<_>>()
-        );
-        assert!(legacy.contains("[Docking]"));
-
-        let mut h = Headless::new([1280.0, 800.0], 1.0).unwrap();
-        h.ctx.load_ini_settings(&legacy);
-        h.frames(&mut app, 4).unwrap();
-        let after = ["outliner", "viewport", "inspector"].map(|name| {
-            h.scene.find(&format!("win:###{name}")).unwrap().0
-        });
-        assert_eq!(after, before);
-
-        app.dispatch(Action::SetTool(ToolKind::Variants));
-        h.frames(&mut app, 4).unwrap();
-        let variants = ["variants-list", "variants-settings", "variants-inspector"].map(|name| {
-            h.scene.find(&format!("win:###{name}")).unwrap().0
-        });
-        assert_eq!(variants, before);
-    }
-
-    #[test]
     fn the_toolbar_has_icon_buttons_and_visible_snap_steps() {
         let Some((_turn, mut h)) = headless() else { return };
         let source = crate::app::map_cards_tests::Temp::new("toolbar");
