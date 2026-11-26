@@ -69,18 +69,19 @@ pub type SlotSource = fn() -> Option<SlotAt>;
 
 pub(crate) fn retains_draw_stage(stage: timeline::native::Stage) -> bool {
     use timeline::native::Stage;
-    matches!(stage, Stage::Flares | Stage::Sky | Stage::Water | Stage::Transparents | Stage::Particles | Stage::Ui)
+    matches!(stage, Stage::Flares | Stage::Sky | Stage::Water | Stage::Transparents | Stage::Objects | Stage::Particles | Stage::Ui)
 }
 
 /// The native producers whose commit a replaying sink carries
 /// ([`Backend::begin_native_carry`]): each issues the packets that are the
 /// draws its guest code would (one, or a UI batch's head and siblings), as
 /// a pass that records again from those packets and the textures captured
-/// with them. Particles, transparents and sky are carried only as the
-/// guest's own admitted draws.
+/// with them. A sorted transparent range and an object part are carried the
+/// same way: their indexed pass replays the range from the packet. Particles and sky are
+/// carried only as the guest's own admitted draws.
 pub(crate) fn carries_native_stage(stage: timeline::native::Stage) -> bool {
     use timeline::native::Stage;
-    matches!(stage, Stage::Water | Stage::Flares | Stage::Ui) && retains_draw_stage(stage)
+    matches!(stage, Stage::Water | Stage::Flares | Stage::Ui | Stage::Transparents | Stage::Objects) && retains_draw_stage(stage)
 }
 
 /// Why a replaying sink cannot keep a native pass that carries nothing, for
@@ -92,7 +93,7 @@ fn unretained_cause(stage: timeline::native::Stage) -> &'static str {
     use timeline::native::Stage;
     match stage {
         Stage::Post => "a post pass is carried only as a sealed scene stage; this one reached a plain reservation",
-        Stage::Ui | Stage::Flares | Stage::Water => "the pass has no exact packets the replay can retain (a depth write, a sampled or side target, a pass that cannot record again, or a guest reference request)",
+        Stage::Ui | Stage::Flares | Stage::Water | Stage::Transparents | Stage::Objects => "the pass has no exact packets the replay can retain (a depth write, a sampled or side target, a pass that cannot record again, or a guest reference request)",
         _ => "the scene recorder cannot retain an unsealed reservation",
     }
 }
@@ -168,6 +169,8 @@ pub struct SceneSink<B: Backend> {
     /// A native producer's pass the replay will carry
     /// ([`Backend::begin_native_carry`]), until it commits.
     carry: Option<Box<RetainedExternal>>,
+    /// The last `prepare_external` was refused by the sink itself.
+    refused_reservation: bool,
     /// The carried pass is committing: its recordings are retained, not
     /// refused as unrecorded.
     carrying: bool,
@@ -202,6 +205,7 @@ impl<B: Backend> SceneSink<B> {
             presents: 0,
             guest_reference: Box::new(|| false),
             carry: None,
+            refused_reservation: false,
             carrying: false,
             run: None,
             present_error: None,
@@ -934,9 +938,13 @@ impl<B: Backend> Backend for SceneSink<B> {
             let pass = pass.lock().unwrap_or_else(|err| err.into_inner());
             ExternalOrigin::new(&**pass, "scene capture reservation", Some(plan.stage))
                 .refused(unretained_cause(plan.stage), None);
+            self.refused_reservation = true;
             return Ok(None);
         }
         self.inner.prepare_external(surfaces, request, textures.map(|t| t.map(|t| &t.inner)), plan, copy, pass)
+    }
+    fn take_scene_refusal(&mut self) -> bool {
+        std::mem::take(&mut self.refused_reservation)
     }
     fn can_commit_carried(&self) -> bool {
         self.inner.can_commit_carried()

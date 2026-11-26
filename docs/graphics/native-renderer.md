@@ -335,8 +335,8 @@ frusta, live datum arrays and current tag definitions.
 | Rust publication | Original work bypassed when the inputs resolve |
 |---|---|
 | Camera and light visibility | `0x00134390` publishes visible BSP clusters and placements. `0x00132220` walks both object reference partitions and the light reference partition. Both start after the portal or sphere cluster pass. |
-| Object order and setup | `0x00134240` promotes model-linked entries with the original swaps of all four columns. Rust returns directly from accepted `OBJECT_RENDER_SETUP` calls (`0x00133790`). It calculates the projection, opacity and flags, selects sections and handles residency (`0x0004b5d0`), builds palettes and walks children (`0x00133ab0`), then publishes the visibility bit and AL retry result. |
-| Object render records | Whole-call setup uses the same Rust writer as the standalone append hook at `0x001341d0`. It publishes the model arm of `0x0002cbf0`, including attachment and group slots, projected scissors, lighting bytes and subpart allocation. The standalone hook also serves guest setup calls that reach the append after a refusal. |
+| Object order and setup | `0x00134240` promotes model-linked entries with the original swaps of all four columns. `OBJECT_RENDER_SETUP` (`0x00133790`) is a cut: Rust answers every call and a call it cannot build takes the "not drawn" exit ([native-objects.md](native-objects.md), "Object setup is cut"). It calculates the projection, opacity and flags, selects sections and handles residency (`0x0004b5d0`), builds palettes and walks children (`0x00133ab0`), then publishes the visibility bit and AL retry result. |
+| Object render records | Whole-call setup uses the same Rust writer as the standalone append hook at `0x001341d0`. It publishes the model arm of `0x0002cbf0`, including attachment and group slots, projected scissors, lighting bytes and subpart allocation. The standalone hook also serves guest calls that reach the append from the one residency arm the cut leaves to the guest. |
 | Dynamic light order and affected geometry | The pass at `0x0002c03e` calls `0x00031910`, which collects candidates, updates per-view history, ranks lights and fades their weights. Rust replaces this call and its helpers `0x0004a7c0` and `0x0004ac30`. After the per-light visibility pass, Rust applies the caster and receiver flags from `0x00031660` and the optional owner append from `0x00031c20`. The three are `engine::render::light_gather` ([native-light-gather.md](native-light-gather.md)); the seams here call them. |
 | Ordered world and model geometry | For a Rust-gathered main view, the [layer builder](layer-draw.md) resolves BSP and model section records to complete sort slots. It skips the guest build and sort when all inputs match a list checked byte-for-byte at dispatch. |
 | Transparent and effect lists | Rust publishes the geometry append at `0x00041381` and the effect and polygon records from `0x0001e4e0` and `0x0001e5e0`. In the pass at `0x0002c19a`, Rust fills the active u16 index interval and skips `TRANSPARENT_SORT` at `0x0001e3b2`. The original comparator's plane rules, partition swaps and short-sort ties determine the order, including entries with a null callback. |
@@ -481,8 +481,35 @@ interpretations of the same framebuffer in one pass are refused.
 `walk_refused_resume` and `walk_refused_reservation` counters
 (`walk_refused_resume`: the sorted range's end is not a resume point of
 the image, so the guest cannot be resumed past the skipped draw;
-`walk_refused_reservation`: the device declined the native draw); for post, `walk_suppressed` counts
+`walk_refused_reservation`: the reservation did not commit); for post, `walk_suppressed` counts
 guest strip loops skipped.
+
+A refused reservation also counts under its cause,
+`native_<stage>_walk_refused_reservation_<cause>`
+(`timeline::native::ReservationCause`); the causes sum to
+`walk_refused_reservation` (for the objects run walk, to
+`native_objects_walk_reservation`):
+
+- `declined`: the device or the scene sink does not take the pass (the
+  boundary is not drained, the sink will not keep it, or no host is
+  installed). A sorted transparent range the device refuses counts here.
+- `error`: the device returned an error, or its lock was poisoned.
+- `stale`: the load the run was planned against is no longer current.
+- `consumed`: the guest loop's cursor no longer matched at the commit.
+- `unbound`: the device could not bind the pass's targets or pipeline.
+
+A per-range draw (sorted transparents and object parts, through
+`Device::try_native_indexed_draw_why`) names the first step it did not
+pass (`d3d::NativeRefusal`), counted under:
+
+- `boundary`: the device is not at a producer boundary.
+- `geometry`: the index range's geometry did not resolve.
+- `admission`: the producer's admission returned no pass.
+- `binding`: the pass's targets do not bind as the guest draw's.
+- `resources`: a sampled texture or independent samples are missing.
+- `sink`: the scene sink would not keep the pass
+  (`Backend::take_scene_refusal`).
+- `backend`: the backend did not record every copy, or the guest cursor moved.
 
 1. Use the agent API (`h2 agent`, [agent-api.md](../runtime/agent-api.md)):
    run the same replay or save and input with the default and with

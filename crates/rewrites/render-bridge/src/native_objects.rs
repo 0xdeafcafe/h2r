@@ -1,8 +1,15 @@
 //! Scene objects drawn through resident render models and the game's pose
 //! and material inputs. The walk reads the sorted layer-3 entries before
-//! the guest prepares their draws. A complete span of objects can return
+//! the guest prepares their draws. A complete span of objects returns
 //! directly from the geometry handler after GPU reservation. It uses the
 //! render context's snapshot of guest memory.
+//!
+//! Objects draw only from the scene, in [`SLOT`]. An object the walk cannot
+//! take (an unreadable part, an interleaved span, a refused reservation) is
+//! consumed and counted as a named drop (`native_objects_scene_dropped` and
+//! its cause's `walk_*` column); its guest handler never runs and issues no
+//! D3D draw. Their setup is a cut too (`OBJECT_RENDER_SETUP`,
+//! [`crate::cut`], docs/graphics/native-objects.md, "Object setup is cut").
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -10,17 +17,20 @@ use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
 use engine::points;
-use frame_scene::{FrameScene, View, ViewKind};
+use frame_scene::{FrameScene, View, ViewKind, ViewSlot};
 use native_render::camera::GuestRead;
 use native_render::object_walk::{self, Entry, Run, SortedObjects};
 use native_render::objects::ItemKey;
 use native_render::world_layers::{Site, layer_site};
-use timeline::native::{Metric, ObjectWalk, Stage, Timer};
+use timeline::native::{Metric, ObjectWalk, ReservationCause, Stage, Timer};
 
 use crate::native_world::Mem;
 use hooks::{BuildError, Builder, Feature, Manifest};
 
 pub const ID: &str = "native-objects";
+
+/// The view slot the layer-3 objects draw in: slot 1, with the opaque base.
+pub const SLOT: ViewSlot = ViewSlot::OpaqueBase;
 
 pub fn on(switches: &hooks::Switches) -> bool {
     hooks::switches::native_render_on(switches)
@@ -126,11 +136,13 @@ pub trait Host: Send + Sync {
         &self,
         _mem: &mut dyn GuestMemory,
         _view: Option<(&FrameScene, &View)>,
+        _slot: ViewSlot,
         _first: usize,
         _run: &[Entry],
         _display_lod: Option<LodDetail>,
         _consume: &mut dyn FnMut(&mut dyn GuestMemory) -> bool,
     ) -> Result<(), ObjectWalk> {
+        Stage::Objects.reservation_cause(ReservationCause::Declined);
         Err(ObjectWalk::Reservation)
     }
 }
@@ -205,8 +217,10 @@ fn initialize_walk(layer: &mut WalkLayer, mem: &mut dyn GuestMemory, esp: u32, e
         return;
     }
     let decision = object_walk::decide(&entries, current);
-    ObjectWalk::Unsupported.fallback(decision.unsupported);
-    ObjectWalk::Order.fallback(decision.interleaved);
+    // Neither span is handed to the guest: each of its objects is dropped,
+    // by name, as its handler comes up (`walk_geometry`).
+    ObjectWalk::Unsupported.dropped(decision.unsupported);
+    ObjectWalk::Order.dropped(decision.interleaved);
     layer.base = base;
     layer.counter = counter;
     layer.entries = entries;
@@ -235,13 +249,16 @@ fn walk_geometry(c: &mut hooks::Call) -> Result<hooks::Flow, runtime::GuestFault
         initialize_walk(&mut layer, &mut *mem, esp, esi);
     }
     let mut consumed = false;
-    if let Some(run) = layer.runs.front() {
-        let stride = native_render::skip::ITEM_SIZE;
-        if layer.base.checked_add(run.slots.start as u32 * stride) == Some(esi) {
+    let stride = native_render::skip::ITEM_SIZE;
+    let counter = layer.counter;
+    let remaining_at = |layer: &WalkLayer, first: usize| (layer.entries.len() - first) as u32;
+    // The slot the handler is at, when it is one of the walk's entries.
+    let slot = esi.checked_sub(layer.base).filter(|d| d % stride == 0).map(|d| (d / stride) as usize);
+    if let Some(slot) = slot.filter(|&s| s < layer.entries.len()) {
+        if layer.runs.front().is_some_and(|run| run.slots.start == slot) {
             let run = layer.runs.pop_front().expect("matched the front");
             let skipped = (run.slots.len() - 1) as u32;
-            let counter = layer.counter;
-            let remaining = (layer.entries.len() - run.slots.start) as u32;
+            let remaining = remaining_at(&layer, run.slots.start);
             let last = esi + skipped * stride;
             let mut consume = |mem: &mut dyn GuestMemory| {
                 mem.u32(counter) == Ok(remaining)
@@ -249,9 +266,13 @@ fn walk_geometry(c: &mut hooks::Call) -> Result<hooks::Flow, runtime::GuestFault
                     && mem.set_u32(counter, remaining - skipped).is_ok()
             };
             let first = run.slots.start;
-            let result = host().ok_or(ObjectWalk::Reservation).and_then(|host| {
+            let result = host().ok_or_else(|| {
+                // No host installed: nothing took the run.
+                Stage::Objects.reservation_cause(ReservationCause::Declined);
+                ObjectWalk::Reservation
+            }).and_then(|host| {
                 crate::scene_step::with_open(|view| {
-                    host.draw_walk(&mut *mem, view, first, &layer.entries[run.slots], layer.display_lod, &mut consume)
+                    host.draw_walk(&mut *mem, view, SLOT, first, &layer.entries[run.slots], layer.display_lod, &mut consume)
                 })
             });
             match result {
@@ -260,7 +281,22 @@ fn walk_geometry(c: &mut hooks::Call) -> Result<hooks::Flow, runtime::GuestFault
                     ObjectWalk::Native.count(run.objects);
                     consumed = true;
                 }
-                Err(reason) => reason.fallback(run.objects),
+                Err(reason) => {
+                    // The host took nothing. The run's handlers do not run:
+                    // it is consumed and dropped under the cause it gave.
+                    reason.dropped(run.objects);
+                    if consume(&mut *mem) {
+                        c.cpu.esi = last;
+                        consumed = true;
+                    }
+                }
+            }
+        } else if matches!(layer.entries[slot], Entry::Object { .. }) {
+            // An object of a span the walk did not admit: consumed alone,
+            // counted when its span was decided.
+            let remaining = remaining_at(&layer, slot);
+            if mem.u32(counter) == Ok(remaining) && mem.u32(esp) == Ok(caller) {
+                consumed = true;
             }
         }
     }

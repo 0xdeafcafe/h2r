@@ -73,7 +73,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             ranges: draws.len(), slots: Vec::new(),
         };
         let pass = ObjectsPass {
-            display_only: true, display_draws: None, models, draws, texaccum, view: None, w_clip: None,
+            slot: frame_scene::ViewSlot::OpaqueBase, display_only: true, display_draws: None, models, draws, texaccum, view: None, w_clip: None,
             run: u64::from(device.swap_count()).wrapping_add(1),
         };
         device.draw_display_stage(&mut crate::native_lights_glue::DeviceMemory(mem), plan, Box::new(pass))

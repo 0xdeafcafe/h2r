@@ -86,6 +86,7 @@ fn a_refused_native_array_leaves_the_one_ordinary_draw_for_the_caller() {
         &mut mem, gfx::vertex::PrimitiveType::QuadList, 0, 4, &owner,
     ).unwrap());
     assert_eq!(owner.0.load(Ordering::Relaxed), 1);
+    assert_eq!(device.last_native_refusal(), Some(d3d::NativeRefusal::Admission));
     assert!(device.backend.draws().is_empty());
 
     device.draw_vertices(&mut mem, QUADLIST, 0, 4).unwrap();
@@ -264,4 +265,20 @@ fn a_native_fan_with_a_retained_packet_commits_without_waiting_for_the_render_th
     assert_eq!(drawn, [expected]);
     assert_eq!(*owner.0.lock().unwrap()[0], drawn[0]);
     assert_eq!(device.stats().external_passes_dropped, 1);
+}
+
+#[test]
+fn a_device_that_cannot_take_an_external_pass_refuses_a_native_draw_at_the_boundary() {
+    struct Never;
+    impl d3d::DrawAdmission for Never {
+        fn admit(&self, _: &d3d::DrawSnapshot<'_>) -> Option<(d3d::ExternalPlan, Box<dyn d3d::ExternalPass>)> {
+            panic!("a draw refused at the boundary is never offered");
+        }
+    }
+    let (mut device, mut mem) = create(RecordingBackend::new(), UploadPolicy::Tracked);
+    set_states(&mut device, &mut mem);
+    quad_vb(&mut mem, 0.0, 0.0, 16.0, 16.0, 0xff_11_22_33);
+    bind_quad(&mut device, &mut mem);
+    assert!(!device.try_native_array_draw(&mut mem, gfx::vertex::PrimitiveType::QuadList, 0, 4, &Never).unwrap());
+    assert_eq!(device.last_native_refusal(), Some(d3d::NativeRefusal::Boundary));
 }

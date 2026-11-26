@@ -49,6 +49,8 @@ pub mod native_water;
 pub mod native_world;
 #[cfg(feature = "native-render")]
 pub mod native_world_layers;
+pub mod cut;
+pub mod frame_step;
 pub mod game_random;
 pub mod render_census;
 pub mod residual_census;

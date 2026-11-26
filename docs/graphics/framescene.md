@@ -216,6 +216,20 @@ Bounds come from the guest's own tables (850 render records, 2,560 layer
 entries, **Code**, `object_walk.rs`), so a scene's typed part is a few
 hundred kilobytes at most (**Estimate**).
 
+### 4.2.1 The view's slots
+
+`frame_scene::view_slot::ViewSlot` is the traced draw order of one game
+view as data (`crates/rewrites/frame-scene/src/view_slot.rs`). Its
+variants are slots 1 to 13 of `render_scene_passes` `0x0002bcd0`, each
+with its guest call site in the doc comment, then the per-frame overlay
+`Hud`, `Fade`, `Ui`. `ViewSlot::decal(mode)` maps decal mode 0 to slot 2,
+mode 1 to slot 5 and modes 2 to 6 to slot 7 (`DecalsLate(mode)`, in mode
+order); other modes have no slot. `Ord` is draw order. `Snapshot`
+(snapshots and layers 18, 19 and 21) is unplaced until research item R-a:
+`placed()` is false and it sorts after slot 13, before the overlay.
+Tests: `view_slots_follow_the_traced_order`, `every_decal_mode_has_a_slot`,
+`the_overlay_draws_hud_then_fade_then_ui`.
+
 ### 4.3 What is extracted, and where from
 
 | Content | Source on the sim thread | Grade at the end | Slice |
@@ -349,7 +363,7 @@ would have:
 | Present counter `0x00485aa0`, frame timing `0x004e63a8` | `0x00013f10`, the frame wait `0x0012b2e0` | guest code keeps running |
 | Game-time bracket | `0x00146de0` and `0x00146b80` around `render_views` | guest code keeps running |
 | Render frame counter `0x004ba034`, the one-shot byte `0x004e6098` | `render_views`, `0x00223080` | guest code keeps running |
-| Texture, geometry and animation residency, the async I/O pool | the render's cache requests | the Rust object setup keeps making the guest's requests (it does today); the renderer's own resources come from the tags and do not depend on them |
+| Texture, geometry and animation residency, the async I/O pool | the render's cache requests | the cut object setup (`0x00133790`, [native-objects.md](native-objects.md), "Object setup is cut") makes the guest's stamps and requests in its own turn; a request that needs a new queue entry is the guest cache's service; the renderer's own resources come from the tags and do not depend on them |
 | Object visit marks, the object `+0xcc` handle, light render fields | the gathers | not read by the tick (class a); kept while any guest consumer is left, then dropped |
 
 Each slice that replaces an entry adds its row to a table in
@@ -541,7 +555,22 @@ A stage's guest entry is replaced only when all four hold:
 
 After a replacement, content the stage cannot draw is a named error: a
 counter (`scene_dropped_<stage>`), one log line per cause, and a row in
-`render.scene`. It is not sent to D3D. From slice 6 the fallback for a
+`render.scene`. It is not sent to D3D.
+
+A replaced entry is a **cut**: `render_bridge::cut::CUTS` lists it by its
+`residual_census::REGISTRY` row name and entry, and its hook returns the
+entry's ABI result to the caller without running the guest body. No
+switch brings the body back; it survives only as a test oracle. The hook
+first runs `frame_step::before` for the producer, which makes the 5.2
+writes the body made, in `frame_step::ROWS` order (guest order: the
+seed, the effects word, the stamps and residency requests inside the
+views, then `render_views`' frame counter and one-shot byte, then the
+present counter). The frame owner runs the `Step::Frame` rows once per
+frame. The rows for the seed, effects word and stamps are
+empty until the slice that cuts their writer fills them; the residency
+row belongs to the object setup, whose own producer (`cut::OWN_PRODUCER`)
+stages it with the records, and each row
+names its test in `crates/rewrites/render-bridge/tests/cut.rs`. From slice 6 the fallback for a
 stage that is not ready is to stay carried, which costs guest time but
 draws correctly.
 

@@ -25,6 +25,7 @@ pub mod pace;
 pub mod overlay;
 pub mod scene;
 pub mod summary;
+pub mod view_slot;
 
 // The render camera and the carried part are shared with the guest's
 // device (`d3d`), which sits below this crate: they live in `frame_types`

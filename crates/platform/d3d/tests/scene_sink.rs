@@ -730,6 +730,74 @@ mod retained_admission {
         assert!(o.refusals.is_empty(), "{:?}", o.refusals);
     }
 
+    /// A sorted transparent range is a native producer's commit with no
+    /// guest draw: the sink carries it (`carries_native_stage`) as one
+    /// replay draw holding the pass, which resolves on the display copy's
+    /// attachments as it does on the reference's.
+    #[test]
+    fn a_transparent_run_replays_on_the_display_copy() {
+        let (begun, ops, refusals) = native_carry(Stage::Transparents, false, |_| {});
+        assert!(begun, "the sink carries a transparent range");
+        assert!(refusals.is_empty(), "{refusals:?}");
+        let external = ops
+            .iter()
+            .find_map(|op| match op {
+                ReplayOp::Draw { external, .. } => external.as_deref(),
+                _ => None,
+            })
+            .expect("the replay keeps the pass beside its packet");
+        assert_eq!(external.plan.stage, Stage::Transparents);
+        let draw = external.packet().clone();
+        let (colour, depth) = (external.surfaces.color, external.surfaces.depth);
+        let display = HashMap::from([(colour, 7u32), (depth, 8)]);
+        assert!(external.resolve(&draw, &display, (7, Some(8)), true, 1u32).is_some());
+        // A guest reference request is a frame of guest draws only.
+        let (begun, _, _) = native_carry(Stage::Transparents, true, |_| {});
+        assert!(!begun);
+    }
+
+    /// An object part's native range is carried like a transparent one: one
+    /// replay draw holding the pass, resolvable on the display copy.
+    #[test]
+    fn object_parts_in_a_kept_scene_commit_and_replay() {
+        let (begun, ops, refusals) = native_carry(Stage::Objects, false, |_| {});
+        assert!(begun, "the sink carries an object part's range");
+        assert!(refusals.is_empty(), "{refusals:?}");
+        let external = ops
+            .iter()
+            .find_map(|op| match op {
+                ReplayOp::Draw { external, .. } => external.as_deref(),
+                _ => None,
+            })
+            .expect("the replay keeps the pass beside its packet");
+        assert_eq!(external.plan.stage, Stage::Objects);
+        let draw = external.packet().clone();
+        let display = HashMap::from([(external.surfaces.color, 7u32), (external.surfaces.depth, 8)]);
+        assert!(external.resolve(&draw, &display, (7, Some(8)), true, 1u32).is_some());
+    }
+
+    /// A pass the sink does not carry is refused by the sink, and the sink
+    /// says so (`Backend::take_scene_refusal`, the device's `Sink`); a
+    /// carried one is not, and the answer is cleared by asking.
+    #[test]
+    fn the_sink_names_its_own_refusal_of_a_reservation() {
+        let mut sink = SceneSink::new(RecordingBackend::new(), slot).with_replay(|_| {});
+        let fmt = D3DFormat::LinA8R8G8B8;
+        let colour = sink.create_texture_target(fmt, 32, 32).unwrap();
+        let depth = sink.create_surface(D3DFormat::LinD24S8, 32, 32, true).unwrap();
+        let reserve = |sink: &mut SceneSink<RecordingBackend>, stage| {
+            let surfaces = ExternalSurfaces { color: colour, depth, sampled: vec![], slots: vec![], slot_sizes: vec![] };
+            let request = ExternalPassRequest { rect: (0, 0, 32, 32), surface_size: (32, 32), z_scale: 1.0, display_projection_factor: 1.0 };
+            let plan = ExternalPlan { stage, view: 0, ranges: 1, slots: vec![] };
+            let pass: d3d::SharedReplacement = Arc::new(Mutex::new(Box::new(Flare(true)) as Box<dyn ExternalPass>));
+            sink.prepare_external(surfaces, request, [None; 4], &plan, d3d::TargetCopy::Reference, pass).unwrap();
+        };
+        assert!(!sink.take_scene_refusal());
+        reserve(&mut sink, Stage::Particles);
+        assert!(sink.take_scene_refusal(), "a particle reservation is not carried");
+        assert!(!sink.take_scene_refusal(), "asking clears it");
+    }
+
     #[test]
     fn sorted_water_retains_the_resolved_packet() {
         let o = capture(false, |admission, _, _| admission.plan.stage = Stage::Water);
@@ -1101,5 +1169,59 @@ mod retained_admission {
         }).unwrap();
         assert!(external.is_some());
         assert!(matches!(&textures[0], Some(ReplayTexture::Upload(a)) if **a == decoded));
+    }
+}
+
+/// An objects run reserved as a scene stage in a kept scene (docs/graphics/
+/// framescene.md, slice 2): `ObjectsPass` replays on the scene
+/// (`replays_scene`), so a replaying sink takes the reservation and keeps it.
+#[cfg(feature = "gpu")]
+mod kept_objects {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use d3d::scene_sink::ReplayOp;
+    use d3d::{ExternalPass, ExternalPlan, ThreadedBackend};
+    use timeline::native::Stage;
+
+    /// A pass that owns what it records from, as `ObjectsPass` does.
+    struct Owned;
+
+    impl ExternalPass for Owned {
+        fn replays_scene(&self) -> bool { true }
+    }
+
+    #[test]
+    fn an_objects_stage_reserved_in_a_kept_scene_commits_and_replays() {
+        let captured = Arc::new(Mutex::new(None));
+        let out = Arc::clone(&captured);
+        let mut recorder = RecordingBackend::new();
+        recorder.external_passes = true;
+        let sink = SceneSink::new(ThreadedBackend::new(recorder).unwrap(), || {
+            Some(SlotAt { slot: Slot::Opaque, view: 0 })
+        })
+        .with_replay(move |frame| *out.lock().unwrap() = Some(frame));
+        let (mut d, mut m) = create(sink, UploadPolicy::Always);
+        set_states(&mut d, &mut m);
+        quad(&mut d, &mut m, 0xff00_ff00);
+        assert!(d.begin_external_boundary(&mut m).unwrap());
+        let plan = ExternalPlan { stage: Stage::Objects, view: 0, ranges: 2, slots: Vec::new() };
+        d.reserve_scene_stage(&mut m, plan, Box::new(Owned))
+            .unwrap()
+            .expect("a replaying sink takes a pass that replays")
+            .commit();
+        d.swap(&mut m, 0).unwrap();
+        let guard = captured.lock().unwrap();
+        let frame = guard.as_ref().expect("the sink captured the swap");
+        let stages: Vec<_> = frame
+            .ops
+            .iter()
+            .filter_map(|(_, op)| match op {
+                ReplayOp::Stage(stage) => Some(stage.plan.stage),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(stages, [Stage::Objects]);
+        assert!(frame.refusals.is_empty(), "{:?}", frame.refusals);
     }
 }

@@ -280,6 +280,14 @@ pub const REGISTRY: &[Row] = &[
         status: Status::Partial,
         slot: "opaque",
     },
+    // Cut: the Rust object setup answers every call
+    // (docs/graphics/native-objects.md, "Object setup is cut").
+    Row {
+        name: "object_setup",
+        entry: 0x0013_3790,
+        status: Status::Native,
+        slot: "opaque",
+    },
     Row {
         name: "object_shadows",
         entry: 0x0003_35e0,
@@ -1396,7 +1404,9 @@ mod tests {
         for r in REGISTRY {
             assert_eq!(
                 r.status,
-                if matches!(
+                if r.name == "object_setup" {
+                    Status::Native
+                } else if matches!(
                     r.name,
                     "game_view"
                         | "alternate_view"

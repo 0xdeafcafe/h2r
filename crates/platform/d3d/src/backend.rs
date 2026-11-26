@@ -1909,6 +1909,11 @@ pub trait Backend: Send {
     /// a replay requires the pass to support repeated recording.
     fn accepts_scene_pass(&self, _pass: &dyn ExternalPass) -> bool { true }
 
+    /// Whether the last [`prepare_external`](Self::prepare_external) was
+    /// refused because a scene recorder would not keep the pass, cleared by
+    /// the call. Only a replaying sink says yes.
+    fn take_scene_refusal(&mut self) -> bool { false }
+
     /// Whether [`queue_scene_stage`](Self::queue_scene_stage) takes a
     /// stage now: a render thread whose backend
     /// [runs scene stages](Self::runs_scene_stages). Asked before the

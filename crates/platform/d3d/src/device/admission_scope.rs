@@ -67,6 +67,7 @@ impl<B: Backend> Device<B> {
         admission: &dyn crate::DrawAdmission,
     ) -> Result<bool, D3dError> {
         let mut streams = std::mem::take(&mut parts.streams);
+        self.native_refusal = None;
         let mut committed = false;
         let result = self.submit_inner(mem, parts, &mut streams, Some((admission, &mut committed)), None);
         self.recycle_streams(streams);
@@ -85,7 +86,12 @@ impl<B: Backend> Device<B> {
         admission: &dyn crate::DrawAdmission,
     ) -> Result<bool, D3dError> {
         const ENTRY: &str = "D3DDevice_DrawVertices";
-        if !self.native_producer_ready(mem)? || count == 0 {
+        self.native_refusal = None;
+        if !self.native_producer_ready(mem)? {
+            self.native_refusal = Some(NativeRefusal::Boundary);
+            return Ok(false);
+        }
+        if count == 0 {
             return Ok(false);
         }
         vertex_limit(ENTRY, count)?;
@@ -124,18 +130,38 @@ impl<B: Backend> Device<B> {
         indices: u32,
         admission: &dyn crate::DrawAdmission,
     ) -> Result<bool, D3dError> {
+        self.try_native_indexed_draw_why(mem, primitive, count, indices, admission).map(|r| r.is_ok())
+    }
+
+    /// Why the last `try_native_*` draw that returned `false` did not
+    /// commit, when it got as far as a step that names one.
+    pub fn last_native_refusal(&self) -> Option<NativeRefusal> {
+        self.native_refusal
+    }
+
+    /// [`Self::try_native_indexed_draw`] naming the refusal: the first
+    /// step the draw did not pass.
+    pub fn try_native_indexed_draw_why(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        primitive: PrimitiveType,
+        count: u32,
+        indices: u32,
+        admission: &dyn crate::DrawAdmission,
+    ) -> Result<Result<(), NativeRefusal>, D3dError> {
         if !self.native_producer_ready(mem)? {
-            return Ok(false);
+            return Ok(Err(NativeRefusal::Boundary));
         }
         let Some(parts) = self.indexed_parts(mem, primitive, count, indices, None, false)? else {
-            return Ok(false);
+            return Ok(Err(NativeRefusal::Geometry));
         };
         let words = parts.words.clone();
         let committed = self.try_native_producer(mem, parts, admission)?;
         if committed {
             self.pushed = Some(words);
+            return Ok(Ok(()));
         }
-        Ok(committed)
+        Ok(Err(self.native_refusal.take().unwrap_or(NativeRefusal::Backend)))
     }
 
     /// Record inline array bytes the producer already knows. Apply attribute
