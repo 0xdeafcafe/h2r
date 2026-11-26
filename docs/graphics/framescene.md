@@ -216,6 +216,20 @@ Bounds come from the guest's own tables (850 render records, 2,560 layer
 entries, **Code**, `object_walk.rs`), so a scene's typed part is a few
 hundred kilobytes at most (**Estimate**).
 
+### 4.2.1 The view's slots
+
+`frame_scene::view_slot::ViewSlot` is the traced draw order of one game
+view as data (`crates/rewrites/frame-scene/src/view_slot.rs`). Its
+variants are slots 1 to 13 of `render_scene_passes` `0x0002bcd0`, each
+with its guest call site in the doc comment, then the per-frame overlay
+`Hud`, `Fade`, `Ui`. `ViewSlot::decal(mode)` maps decal mode 0 to slot 2,
+mode 1 to slot 5 and modes 2 to 6 to slot 7 (`DecalsLate(mode)`, in mode
+order); other modes have no slot. `Ord` is draw order. `Snapshot`
+(snapshots and layers 18, 19 and 21) is unplaced until research item R-a:
+`placed()` is false and it sorts after slot 13, before the overlay.
+Tests: `view_slots_follow_the_traced_order`, `every_decal_mode_has_a_slot`,
+`the_overlay_draws_hud_then_fade_then_ui`.
+
 ### 4.3 What is extracted, and where from
 
 | Content | Source on the sim thread | Grade at the end | Slice |
