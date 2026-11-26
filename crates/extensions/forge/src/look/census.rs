@@ -177,6 +177,19 @@ pub fn choose_bipeds(tags: &BTreeMap<String, usize>) -> BTreeMap<String, String>
         .collect()
 }
 
+/// The biped tag a census `entry` was made from, among the biped tag names
+/// of its source map: the tag whose species is the entry's key and whose
+/// base name is the entry's name, the shortest then the first
+/// alphabetically when several directories hold one. `choose_bipeds` ran
+/// across every map; the entry's name and key are what is left to find it
+/// by in one.
+pub fn tag_for<'a>(entry: &Entry, tags: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    tags.into_iter()
+        .filter(|t| species_of(t).as_deref() == Some(entry.key.as_str()))
+        .filter(|t| last_component(t).eq_ignore_ascii_case(&entry.name))
+        .min_by(|a, b| a.len().cmp(&b.len()).then(a.cmp(b)))
+}
+
 /// The permutation a look takes where a variant's region lists several:
 /// the highest probability, the first on a tie. Not a number counts lowest.
 /// `None` for no permutations. (The game draws by `0x0016dad0`, which is

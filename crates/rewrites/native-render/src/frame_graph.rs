@@ -6,6 +6,7 @@
 //! attachments. Only display hands its final target to the presenter.
 
 pub mod display_rate;
+mod bodies;
 mod cones;
 mod inputs;
 pub use inputs::{freeze_display_inputs, freeze_scaled_inputs};
@@ -211,6 +212,9 @@ fn record(
     // The marker skin: a stage after each game view's last op, before the
     // overlay (`markers`).
     let marker_stages = markers::plan(scene, frame);
+    // The Forge monitors' bodies, in the markers' place and drawn first
+    // (`bodies`).
+    let body_stages = bodies::plan(scene, frame);
     let rows = observer
         .as_ref()
         .map(|_| pass_rows(frame))
@@ -245,6 +249,9 @@ fn record(
                 }
             }
             for stage in sun_replay.as_ref().and_then(|s| s.after.get(&i)).into_iter().flatten() {
+                pass.apply(stage).map_err(named)?;
+            }
+            if let Some(stage) = body_stages.get(&i) {
                 pass.apply(stage).map_err(named)?;
             }
             if let Some(stage) = marker_stages.get(&i) {

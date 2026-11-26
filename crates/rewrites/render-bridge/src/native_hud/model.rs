@@ -186,13 +186,16 @@ fn view(c: &Call<'_>) {
         refuse(widget, Ui::ModelEntry);
         return;
     }
-    let mem = rt.memory();
+    let mut mem = rt.memory();
     let Some(scene) = read_view(
         &*mem, widget.address, c.cpu.ebp, c.cpu.eax, c.cpu.ecx, c.cpu.esp, c.cpu.mxcsr,
     ) else {
         refuse(widget, Ui::ModelCamera);
         return;
     };
+    if let Some(host) = host() {
+        host.model_view(&mut *mem, scene.bounds, &scene.view);
+    }
     // Snapshot the view at the point it draws. The nested material hooks
     // still own geometry and its depth/stencil state. This records no skip.
     if super::ui_overlay::screen_rect(&*mem) == Some(super::ui_overlay::FULL_SCREEN)

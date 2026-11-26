@@ -54,7 +54,7 @@ fn pass_for(
 
 /// For each guest view with game-view ops, the index of its last one and
 /// the view: where its marker stage goes, before the overlay's ops.
-fn last_ops(frame: &ReplayFrame) -> Vec<(usize, u8)> {
+pub(super) fn last_ops(frame: &ReplayFrame) -> Vec<(usize, u8)> {
     let mut seen = HashSet::new();
     let mut out: Vec<(usize, u8)> = frame
         .ops

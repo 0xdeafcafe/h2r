@@ -124,6 +124,7 @@ pub mod map_areas;
 pub mod map_slots;
 pub mod medal_announcer;
 pub mod mod_slots;
+pub mod monitor_model;
 pub mod mods_screen;
 pub mod movies_glue;
 #[cfg(feature = "gpu")]

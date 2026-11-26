@@ -31,6 +31,7 @@
 
 #[cfg(feature = "gpu")]
 pub mod base_look;
+pub mod bodies;
 pub mod camera;
 pub mod cone_shadows;
 #[cfg(feature = "gpu")]

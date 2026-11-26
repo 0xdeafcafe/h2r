@@ -492,6 +492,17 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
         self.permits_draw() && crate::skulls_model::gpu::replace_widget(&self.device, mem, widget)
     }
 
+    fn model_view(
+        &self,
+        mem: &mut dyn GuestMemory,
+        bounds: [u16; 4],
+        view: &frame_scene::OverlayModelView,
+    ) {
+        if self.permits_draw() {
+            crate::monitor_model::gpu::appearance_view(&self.device, mem, bounds, view);
+        }
+    }
+
     fn ui_overlay(&self, _mem: &mut dyn GuestMemory) -> Option<bool> {
         // The UI scope's order must hold for a pass placed in it.
         Some(self.permits_draw())

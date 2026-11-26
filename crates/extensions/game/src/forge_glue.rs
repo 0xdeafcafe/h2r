@@ -78,6 +78,17 @@ pub fn monitor_bodies() -> Vec<forge::look::body::Draw> {
     driver.lock().unwrap_or_else(|e| e.into_inner()).bodies.clone()
 }
 
+/// Whether this machine draws a disc model for a monitor: the build has the
+/// bodies stage (`forge::look::BODIES_DRAWN`) and the native renderer is on
+/// (`monitor_model`). Without either, a model look is held and the marker
+/// shows with the reason.
+pub fn bodies_drawn() -> bool {
+    forge::look::BODIES_DRAWN
+        && cfg!(feature = "gpu")
+        && hooks::Switches::from_env()
+            .is_ok_and(|s| hooks::switches::native_render_on(&s))
+}
+
 /// What this machine draws as a monitor: the renderer's declaration and
 /// the source maps its catalogue holds. A film's recorded looks are measured
 /// against it (`theater::forge_film`, `monitor_look_source`); without a
@@ -90,7 +101,7 @@ pub fn can_draw() -> forge::look::session::CanDraw {
             driver.looks.catalogue().iter().map(|e| e.sha256.clone()).collect()
         })
         .unwrap_or_default();
-    forge::look::session::CanDraw::ours(forge::look::BODIES_DRAWN, maps)
+    forge::look::session::CanDraw::ours(bodies_drawn(), maps)
 }
 
 /// The bodies a film's monitor records give at the film tick Theater plays
@@ -143,7 +154,38 @@ pub fn appearance_body(
 pub fn monitor_lights(m: &dyn engine::GuestMemory) -> Vec<frame_scene::Light> {
     let mut bodies = monitor_bodies();
     bodies.extend(playback_bodies(m));
+    // The same per-view call hands the frame graph the bodies themselves
+    // (ML4): the frame's models and poses, drawn after the game's view.
+    #[cfg(feature = "gpu")]
+    publish_bodies(&bodies);
     host_lights(&bodies, |index| crate::pad_lightbar::palette_rgb(m, index))
+}
+
+/// The bodies of the frame, with their models, to the frame graph
+/// (`monitor_model::gpu::publish`). A machine with no Forge driver, or no
+/// body, publishes none.
+#[cfg(feature = "gpu")]
+fn publish_bodies(bodies: &[forge::look::body::Draw]) {
+    let catalogue = current()
+        .map(|driver| {
+            let driver = driver.lock().unwrap_or_else(|e| e.into_inner());
+            driver.looks.catalogue().to_vec()
+        })
+        .unwrap_or_default();
+    if bodies.is_empty() || catalogue.is_empty() {
+        crate::monitor_model::gpu::clear();
+    } else {
+        crate::monitor_model::gpu::publish(bodies, &catalogue);
+    }
+}
+
+/// The census entry the host model list names `id` (a
+/// `forge::look::body::Draw::model`): the catalogue's `id`th, as
+/// `Bodies::new` lists it.
+pub fn catalogue_entry(id: u32) -> Option<Model> {
+    let driver = current()?;
+    let driver = driver.lock().unwrap_or_else(|e| e.into_inner());
+    driver.looks.catalogue().get(id as usize).cloned()
 }
 
 /// The host light each drawn body carries: at the body's origin, the
@@ -229,6 +271,8 @@ impl Driver {
         nav_world::clear();
         nav::unstage();
         self.bodies.clear();
+        #[cfg(feature = "gpu")]
+        crate::monitor_model::gpu::clear();
         self.link.reset();
         self.reason = "Waiting for a local multiplayer map.".into();
         controls::publish(controls::State::default());
@@ -563,7 +607,7 @@ fn monitor_start(m: &dyn engine::GuestMemory, looks: &Looks) -> editing::Monitor
     editing::MonitorStart {
         base,
         can: forge::look::session::CanDraw::ours(
-            forge::look::BODIES_DRAWN,
+            bodies_drawn(),
             catalogue.iter().map(|e| e.sha256.clone()).collect(),
         ),
         look: resolved,
@@ -617,7 +661,7 @@ pub fn install(
     let calls = crate::lobby_start::install_queue(registry, agent)?;
     let (models, note) = catalogue(data);
     let driver = Arc::new(Mutex::new(Driver {
-        looks: Looks::new(models, note),
+        looks: Looks::new(models, note).with_bodies(bodies_drawn()),
         store,
         calls,
         vfs,
