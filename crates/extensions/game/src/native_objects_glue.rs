@@ -27,7 +27,7 @@ use native_render::object_state::EntryStates;
 use native_render::object_streams::{self, StreamData, StreamFormats};
 use native_render::object_walk::{Entry, Part as WalkPart};
 use tags::model::RenderModelGeometry;
-use timeline::native::ObjectWalk;
+use timeline::native::{ObjectWalk, ReservationCause, Stage as NativeStage};
 use native_render::program::ViewInputs;
 
 use crate::native_map::{self, NativeMap};
@@ -480,11 +480,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }
         let (models, generation) = self.load(mem).ok_or(ObjectWalk::Model)?;
         self.refresh_edits(mem, &models, generation);
-        let mut device = self.device.lock().map_err(|_| ObjectWalk::Reservation)?;
+        let mut device = self.device.lock().map_err(|_| refused(ReservationCause::Error))?;
         if !device.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem))
-            .map_err(|_| ObjectWalk::Reservation)?
+            .map_err(|_| refused(ReservationCause::Error))?
         {
-            return Err(ObjectWalk::Reservation);
+            return Err(refused(ReservationCause::Declined));
         }
         if !model_palettes_hold(&models, &device, mem) {
             return Err(ObjectWalk::Inputs);
@@ -523,7 +523,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             {
                 Ok(state)
             }
-            _ => Err(ObjectWalk::Reservation),
+            _ => Err(refused(ReservationCause::Stale)),
         };
         // A scene stage: queued now, its packets made when the render
         // thread reaches it. Not taken, the run is reserved here as before.
@@ -531,25 +531,38 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             let reserved = device.reserve_scene_stage(
                 &mut crate::native_lights_glue::DeviceMemory(mem), promise.clone(), pass(draws.clone()),
             );
-            if let Some(reservation) = reserved.map_err(|_| ObjectWalk::Reservation)? {
+            if let Some(reservation) = reserved.map_err(|_| refused(ReservationCause::Error))? {
                 let _state = current()?;
                 if !consume(mem) {
-                    return Err(ObjectWalk::Reservation);
+                    return Err(refused(ReservationCause::Consumed));
                 }
                 reservation.commit();
                 return Ok(());
             }
         }
-        let ready = device.prepare_external_bound(
+        let ready = match device.prepare_external_bound(
             &mut crate::native_lights_glue::DeviceMemory(mem), promise, pass(draws), Vec::new(),
-        ).ok().flatten().ok_or(ObjectWalk::Reservation)?;
+        ) {
+            Ok(Some(ready)) => ready,
+            Ok(None) => return Err(refused(ReservationCause::Unbound)),
+            Err(_) => return Err(refused(ReservationCause::Error)),
+        };
         let _state = current()?;
         if !consume(mem) {
-            return Err(ObjectWalk::Reservation);
+            return Err(refused(ReservationCause::Consumed));
         }
         ready.commit();
         Ok(())
     }
+}
+
+/// A refused reservation of the objects walk: the cause is counted under
+/// `native_objects_walk_refused_reservation_<cause>`, and the returned
+/// [`ObjectWalk::Reservation`] is counted (the sum) where the walk is
+/// handed back to the guest.
+fn refused(cause: ReservationCause) -> ObjectWalk {
+    NativeStage::Objects.reservation_cause(cause);
+    ObjectWalk::Reservation
 }
 
 /// D3D's specular bit selects the colour term in its implicit final combiner.
@@ -732,9 +745,10 @@ fn plan_walk<B: d3d::backend::Backend>(
         draws.push((model, draw));
     }
     let lit = lit.ok_or(ObjectWalk::Model)?;
-    let (gpu, color, depth) = device.external_pipeline_target(&read).ok_or(ObjectWalk::Reservation)?;
+    let (gpu, color, depth) =
+        device.external_pipeline_target(&read).ok_or_else(|| refused(ReservationCause::Unbound))?;
     if !lit.prewarm_draws(&gpu, color, depth, &draws) {
-        return Err(ObjectWalk::Reservation);
+        return Err(refused(ReservationCause::Declined));
     }
     Ok(draws)
 }
@@ -1615,7 +1629,10 @@ fn object_vertex_program(o: &mut Opened, vs: TagId, geometry: u16, influences: u
 }
 
 /// One sorted run's objects: the draws planned at the walk, in the list's
-/// order.
+/// order. The pass replays on a kept scene (`d3d::ExternalPass::replays_scene`):
+/// it owns everything it records from (`models` is an `Arc`; `draws`,
+/// `texaccum`, `view` and `w_clip` are owned values) and reads no guest
+/// state after the walk.
 struct ObjectsPass {
     display_only: bool,
     /// Alternative geometry for the display. The original run still owns

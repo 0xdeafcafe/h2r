@@ -94,8 +94,15 @@ pub enum Metric {
     /// A sorted range whose end the guest cannot be resumed at: the image
     /// has no resume point there. Not a reservation refusal.
     WalkRefusedResume,
+    /// The five causes `walk_refused_reservation` splits into
+    /// ([`ReservationCause`]), counted with [`Stage::reservation_cause`].
+    WalkRefusedReservationDeclined,
+    WalkRefusedReservationError,
+    WalkRefusedReservationStale,
+    WalkRefusedReservationConsumed,
+    WalkRefusedReservationUnbound,
 }
-const METRICS: [&str; 35] = [
+const METRICS: [&str; 40] = [
     "examined",
     "suppressed",
     "refused_ownership",
@@ -131,7 +138,46 @@ const METRICS: [&str; 35] = [
     "scene_stages",
     "scene_dropped",
     "walk_refused_resume",
+    "walk_refused_reservation_declined",
+    "walk_refused_reservation_error",
+    "walk_refused_reservation_stale",
+    "walk_refused_reservation_consumed",
+    "walk_refused_reservation_unbound",
 ];
+
+/// Why a native walk's reservation did not commit. Each cause has its own
+/// column under every stage; the stage's `walk_refused_reservation` (or the
+/// objects walk's `walk_reservation`) is their sum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReservationCause {
+    /// The device or the scene sink does not take the pass: the boundary is
+    /// not drained, the sink will not keep it, or no host is installed.
+    Declined,
+    /// The device returned an error, or its lock was poisoned.
+    Error,
+    /// The load the run was planned against is no longer the current one.
+    Stale,
+    /// The guest loop's cursor no longer matched at the commit.
+    Consumed,
+    /// The device could not bind the pass's targets or pipeline.
+    Unbound,
+}
+
+impl ReservationCause {
+    pub const ALL: [ReservationCause; 5] =
+        [Self::Declined, Self::Error, Self::Stale, Self::Consumed, Self::Unbound];
+
+    /// The column this cause counts in.
+    pub fn metric(self) -> Metric {
+        match self {
+            Self::Declined => Metric::WalkRefusedReservationDeclined,
+            Self::Error => Metric::WalkRefusedReservationError,
+            Self::Stale => Metric::WalkRefusedReservationStale,
+            Self::Consumed => Metric::WalkRefusedReservationConsumed,
+            Self::Unbound => Metric::WalkRefusedReservationUnbound,
+        }
+    }
+}
 
 // Four Xbox player views and a bucket for non-player views.
 const VIEWS: usize = 5;
@@ -883,6 +929,12 @@ impl Stage {
         STAGES[self as usize]
     }
 
+    /// Count one refused reservation under its cause. The caller counts the
+    /// sum (`walk_refused_reservation`) where it does today.
+    pub fn reservation_cause(self, cause: ReservationCause) {
+        self.count(cause.metric(), 1);
+    }
+
     pub fn count(self, metric: Metric, n: u64) {
         phase::count_index(
             phase::Counter::ALL.len() + self as usize * STRIDE + charged(metric) as usize,
@@ -982,6 +1034,26 @@ impl Drop for Timer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn each_reservation_cause_counts_its_own_column() {
+        let columns: Vec<_> = phase::counter_columns().collect();
+        let mut seen = std::collections::BTreeSet::new();
+        for stage in [Stage::Objects, Stage::Transparents] {
+            for (cause, name) in ReservationCause::ALL
+                .into_iter()
+                .zip(["declined", "error", "stale", "consumed", "unbound"])
+            {
+                // The column `Stage::reservation_cause` counts into.
+                let index = phase::Counter::ALL.len() + stage as usize * STRIDE + cause.metric() as usize;
+                let label = format!("native_{}_walk_refused_reservation_{name}", stage.name());
+                assert_eq!(columns[index].1, label);
+                assert!(seen.insert(index), "{label} shares a column");
+                assert_ne!(cause.metric() as usize, Metric::WalkRefusedReservation as usize);
+            }
+        }
+        assert_eq!(seen.len(), 10);
+    }
+
     #[test]
     fn capture_columns_identify_each_view_and_copy() {
         let columns: Vec<_> = phase::counter_columns().collect();

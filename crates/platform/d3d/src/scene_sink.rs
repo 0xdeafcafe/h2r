@@ -64,11 +64,12 @@ pub(crate) fn retains_draw_stage(stage: timeline::native::Stage) -> bool {
 /// ([`Backend::begin_native_carry`]): each issues the packets that are the
 /// draws its guest code would (one, or a UI batch's head and siblings), as
 /// a pass that records again from those packets and the textures captured
-/// with them. Particles, transparents and sky are carried only as the
-/// guest's own admitted draws.
+/// with them. A sorted transparent range is carried the same way: its
+/// indexed pass replays the range from the packet. Particles and sky are
+/// carried only as the guest's own admitted draws.
 pub(crate) fn carries_native_stage(stage: timeline::native::Stage) -> bool {
     use timeline::native::Stage;
-    matches!(stage, Stage::Water | Stage::Flares | Stage::Ui) && retains_draw_stage(stage)
+    matches!(stage, Stage::Water | Stage::Flares | Stage::Ui | Stage::Transparents) && retains_draw_stage(stage)
 }
 
 /// Why a replaying sink cannot keep a native pass that carries nothing, for
@@ -80,7 +81,7 @@ fn unretained_cause(stage: timeline::native::Stage) -> &'static str {
     use timeline::native::Stage;
     match stage {
         Stage::Post => "a post pass is carried only as a sealed scene stage; this one reached a plain reservation",
-        Stage::Ui | Stage::Flares | Stage::Water => "the pass has no exact packets the replay can retain (a depth write, a sampled or side target, a pass that cannot record again, or a guest reference request)",
+        Stage::Ui | Stage::Flares | Stage::Water | Stage::Transparents => "the pass has no exact packets the replay can retain (a depth write, a sampled or side target, a pass that cannot record again, or a guest reference request)",
         _ => "the scene recorder cannot retain an unsealed reservation",
     }
 }

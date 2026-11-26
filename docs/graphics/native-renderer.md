@@ -481,8 +481,22 @@ interpretations of the same framebuffer in one pass are refused.
 `walk_refused_resume` and `walk_refused_reservation` counters
 (`walk_refused_resume`: the sorted range's end is not a resume point of
 the image, so the guest cannot be resumed past the skipped draw;
-`walk_refused_reservation`: the device declined the native draw); for post, `walk_suppressed` counts
+`walk_refused_reservation`: the reservation did not commit); for post, `walk_suppressed` counts
 guest strip loops skipped.
+
+A refused reservation also counts under its cause,
+`native_<stage>_walk_refused_reservation_<cause>`
+(`timeline::native::ReservationCause`); the causes sum to
+`walk_refused_reservation` (for the objects run walk, to
+`native_objects_walk_reservation`):
+
+- `declined`: the device or the scene sink does not take the pass (the
+  boundary is not drained, the sink will not keep it, or no host is
+  installed). A sorted transparent range the device refuses counts here.
+- `error`: the device returned an error, or its lock was poisoned.
+- `stale`: the load the run was planned against is no longer current.
+- `consumed`: the guest loop's cursor no longer matched at the commit.
+- `unbound`: the device could not bind the pass's targets or pipeline.
 
 1. Use the agent API (`h2 agent`, [agent-api.md](../runtime/agent-api.md)):
    run the same replay or save and input with the default and with
