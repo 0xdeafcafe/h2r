@@ -8,8 +8,9 @@
 //! take (an unreadable part, an interleaved span, a refused reservation) is
 //! consumed and counted as a named drop (`native_objects_scene_dropped` and
 //! its cause's `walk_*` column); its guest handler never runs and issues no
-//! D3D draw. Their setup is a cut too (`OBJECT_RENDER_SETUP`,
-//! [`crate::cut`], docs/graphics/native-objects.md, "Object setup is cut").
+//! D3D draw. Their setup (`OBJECT_RENDER_SETUP`) is Rust's where it can
+//! build the call and the guest's where it cannot
+//! (docs/graphics/native-objects.md, "Object setup").
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};

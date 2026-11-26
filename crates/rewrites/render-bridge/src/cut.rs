@@ -37,19 +37,13 @@ pub struct Cut {
 }
 
 /// The cut producers. A slice adds its row here with its test.
-pub const CUTS: &[Cut] = &[Cut {
-    name: "object_setup",
-    entry: 0x0013_3790,
-    // AL is the caller's only read, and the setup's own answer sets it.
-    abi_result: 0,
-    pop: 20,
-}];
+pub const CUTS: &[Cut] = &[];
 
 /// Cuts whose producer is a feature that builds the call's whole output
-/// from the call's registers (the object setup: `native_scene_lists`), so
+/// from the call's registers, so
 /// [`install`] leaves their points to it. Each still has its row here, so
 /// the census and the table cannot drift.
-pub const OWN_PRODUCER: &[&str] = &["object_setup"];
+pub const OWN_PRODUCER: &[&str] = &[];
 
 /// A world layer draw (`LAYER_DRAW`, `0x00044550`) that draws only from the
 /// scene. The layer draw serves every layer, so these are cut per layer: its

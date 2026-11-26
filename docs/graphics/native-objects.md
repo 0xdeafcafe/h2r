@@ -168,32 +168,44 @@ published upload as well as the selected part's native coverage. A
 failed GPU lookup for a covered part is a named drop
 (`native_objects_walk_unresident`).
 
-#### Object setup is cut
+#### Object setup
 
-`OBJECT_RENDER_SETUP` (`0x00133790`) is a cut producer
-(`render_bridge::cut::CUTS`, row `object_setup`): its guest body never
-runs. The producer is `native_scene_lists`' own seam
-(`cut_setup`, listed in `cut::OWN_PRODUCER`), because it builds the whole
-call's output from the call's registers: the render records, the palettes
-and node rows, the lighting bytes, the animation and geometry cache stamps
-and the residency requests, all staged and published in one turn in the
-guest's visit order, with AL and the "not drawn" registers.
+`OBJECT_RENDER_SETUP` (`0x00133790`) is answered by `native_scene_lists`'
+seam (`setup_call`) wherever it can build the whole call's output from the
+call's registers: the render records, the palettes and node rows, the
+lighting bytes, the animation and geometry cache stamps and the residency
+requests, all staged and published in one turn in the guest's visit order,
+with AL and the "not drawn" registers. Such a call is counted
+`native_scene_lists_object_setup_native`.
 
 A call the setup cannot build (a refusal of `Refusal`: memory, layout,
-x87 or MXCSR state, object model, lighting, palette) takes the "not drawn"
-exit (`setup::not_drawn`: flag bit 0, AL 0), so the object has no render
-records and nothing of it draws in any layer. It is counted
-`native_scene_lists_object_setup_dropped`, under its cause
-(`..._memory`, `..._layout`, `..._unsupported`, `..._object_model`,
-`..._lighting`, `..._palette`) and as `native_objects_scene_dropped`.
+x87 or MXCSR state, object model, lighting, palette, residency) runs the
+guest body, counted `native_scene_lists_object_setup_fallback` and under
+its cause (`..._memory`, `..._layout`, `..._unsupported`,
+`..._object_model`, `..._lighting`, `..._palette`, `..._residency`). The
+body issues no draw: it writes the records the native scene then draws.
+It owns what the build does not reproduce:
 
-One arm stays the guest's: a residency request that needs a new queue
-entry, a priority raise or a wait (`residency_request` returns
-`NeedsGuestService`). Submitting storage I/O is the guest cache's own
-service, so that call runs the body, which issues no draw. It is counted
-`native_scene_lists_object_setup_fallback` and `..._residency`; once the
-request is queued the next frame's setup is native. A resident block, or a
-request already queued, is made by the cut: the cache stamp and the
+- a root object's fresh light sample (`lighting::refresh`,
+  `keeps_light_sample` false: `..._lighting`). The first person's arms are
+  such a root, and the weapon copies its light from them, so taking the
+  "not drawn" exit here loses the arms and leaves the weapon black on a
+  sample never taken;
+- a view other than the main view (kind 0) and the light view (kinds 1
+  and 2), such as a menu's model view (Choose Profile's Spartan:
+  `..._unsupported`);
+- a locked pose or a first-person model of more than 64 nodes
+  (`..._palette`).
+
+The setup is therefore not a cut (`render_bridge::cut::CUTS`), and the
+census row `object_setup` is partial (test
+`a_setup_the_build_refuses_runs_the_guest_body_and_is_not_dropped`).
+
+A residency request that needs a new queue entry, a priority raise or a
+wait (`residency_request` returns `NeedsGuestService`) is the guest
+cache's own service, so that call runs the body too; once the request is
+queued the next frame's setup is native. A resident block, or a request
+already queued, is made by the setup: the cache stamp and the
 structure-miss count (`render_bridge::native_scene_lists::residency_request`;
 test `object_setup_makes_the_guests_residency_requests`).
 

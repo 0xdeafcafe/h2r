@@ -76,7 +76,7 @@ fn present_counter(a: &Addrs, g: &mut dyn GuestMemory) -> Result<(), MemFault> {
 }
 
 /// The residency requests are the object setup's: its own producer
-/// (`native_scene_lists`, [`crate::cut::OWN_PRODUCER`]) stages them with the
+/// (`native_scene_lists`' seam at `OBJECT_RENDER_SETUP`) stages them with the
 /// records it writes, in the guest's visit order, and publishes both in one
 /// turn, so the row's `make` is empty.
 ///

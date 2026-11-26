@@ -182,11 +182,11 @@ impl Feature for ScaledSceneLists {
         );
         window::install(b);
         let scale = self.0;
-        // A cut (`crate::cut::OWN_PRODUCER`): every call is answered here.
+        // A call the setup cannot build runs the guest's body ([`setup_call`]).
         install(
             b,
             Seam::Function(&points::OBJECT_RENDER_SETUP, 20),
-            move |m, cpu| cut_setup(m, cpu, scale.map_or(LodDetail::Retail, |scale| scale.read(m))),
+            move |m, cpu| setup_call(m, cpu, scale.map_or(LodDetail::Retail, |scale| scale.read(m))),
         );
         install(
             b,
@@ -442,32 +442,21 @@ fn result_of(reason: Refusal) -> SceneListResult {
     }
 }
 
-/// `OBJECT_RENDER_SETUP` as a cut (docs/graphics/native-objects.md, "Object
-/// setup is cut"). A built call publishes its records, stamps and residency
-/// requests. A call that cannot be built is a named drop, not a guest call:
-/// the object takes the "not drawn" exit, counted `dropped` and under its
-/// cause, and the objects stage counts a `scene_dropped`. The one arm that
-/// is still the guest's is a residency request that needs a new queue
-/// entry (`Refusal::Residency`): submitting storage I/O is the guest cache's
-/// own service, so that call runs the body, which draws nothing itself,
-/// and counts under `residency`.
-fn cut_setup(m: &dyn GuestMemory, cpu: &CpuAbi, lod: LodDetail) -> (SceneList, Result<Output>) {
-    let (stage, built) = setup::build(m, cpu, lod);
-    let why = match built {
-        Ok(out) => return (stage, Ok(out)),
-        Err(Refusal::Residency) => return (stage, Err(Refusal::Residency)),
-        Err(why) => why,
-    };
-    match setup::not_drawn(m, cpu) {
-        Ok(out) => {
-            stage.count(SceneListResult::Dropped);
-            stage.count(result_of(why));
-            timeline::native::Stage::Objects.count(timeline::native::Metric::SceneDropped, 1);
-            (stage, Ok(out))
-        }
-        // Nothing to mark: the call's own list does not read.
-        Err(_) => (stage, Err(why)),
-    }
+/// `OBJECT_RENDER_SETUP` (docs/graphics/native-objects.md, "Object setup").
+/// A built call publishes its records, stamps and residency requests. A
+/// call the setup cannot build runs the guest body, counted `fallback` and
+/// under its cause ([`install`]); the guest's setup issues no draw, it
+/// writes the records the native scene then draws. The body owns what the
+/// build refuses: a root object's fresh light sample (`Refusal::Lighting`:
+/// the first person's arms, and the light the weapon copies from them), a
+/// locked pose (`Refusal::Palette`), a view other than the main and light
+/// views (`Refusal::Unsupported`: the menus' model views, Choose Profile's
+/// Spartan) and a residency request that needs a new queue entry
+/// (`Refusal::Residency`). The "not drawn" exit is no answer for these: the
+/// object is lost in every layer, and a light sample never taken stays
+/// stale for every later frame.
+fn setup_call(m: &dyn GuestMemory, cpu: &CpuAbi, lod: LodDetail) -> (SceneList, Result<Output>) {
+    setup::build(m, cpu, lod)
 }
 
 /// What the object setup's residency step does for one geometry resource
