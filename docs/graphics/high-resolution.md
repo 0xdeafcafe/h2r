@@ -939,7 +939,10 @@ same in every window:
   `crates/rewrites/render-bridge/src/native_scene_lists/setup.rs`): no
   section choice, pose evaluation, animation selection, palette or
   record. That set is the Rust visibility at the view record's retail
-  camera widened to the gather lens (`scene_step::gather_lens_object`).
+  camera widened to the gather lens (`scene_step::gather_lens_object`). A
+  menu model view (`MODEL_VIEW_CALL` to `MODEL_VIEW_RETURN`, the Choose
+  Profile Spartan) has its own camera, so no lens test applies and the
+  setup runs for every object in it.
   The display supplement draws those objects from the mounted model on a
   private overlay (`DisplayVisibility::guest_lens`): their opaque layer
   alone, each object on its own, so one still compiling its pipelines or

@@ -324,6 +324,7 @@ fn geometry(c: &mut Call<'_>) -> Result<Flow, GuestFault> {
 pub(super) fn place(b: &mut Builder<'_>) {
     b.raw()
         .before(&MODEL_VIEW_CALL, "native_ui_model_view", |c| {
+            crate::scene_step::set_model_view(true);
             view(c);
             Ok(Flow::Continue)
         })
@@ -331,6 +332,7 @@ pub(super) fn place(b: &mut Builder<'_>) {
         .optional();
     b.raw()
         .before(&MODEL_VIEW_RETURN, "native_ui_model_view_done", |c| {
+            crate::scene_step::set_model_view(false);
             if let Some(mut widget) = live(c)
                 && widget.view_stack.and_then(|s| s.checked_add(VIEW_STACK_BYTES)) == Some(c.cpu.esp)
             {
