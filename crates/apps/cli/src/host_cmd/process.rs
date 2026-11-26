@@ -289,12 +289,19 @@ impl Scratch {
 impl Drop for Scratch {
     fn drop(&mut self) {
         if self.0.join("film.pending").exists() {
-            let film = self.0.join("match.h2film");
+            // The film file and its stats container move together.
+            let path = self.0.join("match.h2film");
             let recovery = agent_proto::cache_dir().join("pending-films");
             let dest = recovery.join(format!("{}.h2film", live_proto::sign::random_id()));
-            if fs::create_dir_all(&recovery).and_then(|_| fs::rename(&film, &dest)).is_err() {
+            let moved = fs::create_dir_all(&recovery)
+                .and_then(|_| fs::rename(film::file::stats_of(&path), film::file::stats_of(&dest)))
+                .and_then(|_| match fs::rename(&path, &dest) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    r => r,
+                });
+            if moved.is_err() {
                 // The cache may be on another volume or full. Keep the original.
-                eprintln!("h2 host: unpublished film retained at {}", film.display());
+                eprintln!("h2 host: unpublished film retained at {}", path.display());
                 return;
             }
             eprintln!("h2 host: unpublished film retained at {}", dest.display());

@@ -1,6 +1,6 @@
 # Theater: the full in-game player
 
-Status: Design. The per-update action and body capture and apply, the film file and its column and tail codec, the game start block the recorder writes for each game, start points, the camera rig, the film selector, the Live film routes and the recorded look in first person (`coop_look::follow_film`, slice 9) are built; a film plays from its game start, in the running game and in a film player process, one film tick for each application of the update (slices 1b, 2, 3, 4 and 5). The machine film is gone from Theater and the film crate: a film without a game start does not open, a seek runs in the process that plays the film, and nothing is restored from a keyframe (slice 7a). The call tape is gone: no HLE call, pad read, keyboard command, bot outcome, lobby call or network result is recorded or answered from a film, the stats container holds no machine section, arena hash or mark, and the film file holds no machine part (slice 7b). The snapshot ring is not built ("Slices", 8).
+Status: Design. The per-update action and body capture and apply, the film file and its column and tail codec, the game start block, start points, the camera rig, the film selector, the Live film routes and the recorded look in first person (`coop_look::follow_film`, slice 9) are built; a film plays from its game start, in the running game and in a film player process, one film tick for each application of the update (slices 1b, 2, 3, 4 and 5). A default recording writes one film for each game, `<id>.h2film` and `<id>.h2stats`, opened at the game's activation with tick 1 its first update and sealed at its end; there is no session tape, cut or fork, and the library prune seals a hard-killed film at its last checkpoint (slice 6). The machine film is gone from Theater and the film crate: a film without a game start does not open, a seek runs in the process that plays the film, and nothing is restored from a keyframe (slice 7a). The call tape is gone: no HLE call, pad read, keyboard command, bot outcome, lobby call or network result is recorded or answered from a film, the stats container holds no machine section, arena hash or mark, and the film file holds no machine part (slice 7b). The snapshot ring is not built ("Slices", 8).
 Code: `crates/extensions/game/src/theater.rs` (`Session`), `crates/extensions/game/src/theater/actions.rs` (the update hook), `crates/extensions/game/src/theater/record.rs` (the recorder's tick), `crates/live/film/src/columns.rs` (the chunk codec), `crates/extensions/game/src/theater/film_play.rs` (play from the game start), `crates/extensions/game/src/theater/watch.rs` (watching in the running game), `crates/extensions/game/src/theater/pacing.rs`, `crates/live/film/src/file.rs` (the film file), `crates/extensions/game/src/theater/start_point_state.rs` (arena state). Tests: `crates/extensions/game/src/theater/tests.rs`, `crates/extensions/game/src/theater/film_play/tests.rs`, `crates/extensions/game/src/theater/watch/tests.rs`, `crates/live/film/src/file/tests.rs`.
 Switch: [the film player's `H2_THEATER_*`](../runtime/switches.md).
 
@@ -164,7 +164,7 @@ at its head). The film stores that record, as Halo 3's film does.
   ([input-film.md](input-film.md#layout)). The recorder requires each
   update's tick stamp (`capture_stamp`) to be the tick of the update
   before, the next, or an earlier one (a revert puts the clock back)
-  (`stamp_follows`), and cuts the game's film at the tick before an
+  (`stamp_follows`), and seals the game's film at the tick before an
   update that is further on: that update and every after it in the game
   are not kept.
 - **The player** runs the film's game as a local game and writes the
@@ -231,15 +231,22 @@ are not measured. Halo 3 stores 45,000 to 63,000 bytes per player-minute
 ([film-format.md](film-format.md#recording-every-game)).
 
 1. **A game starts.** When `GAME_ACTIVATE` returns success for a scenario
-   that is not the main menu, the recorder opens `<id>.h2film` and
-   `<id>.h2stats` and writes the stamp and the game start.
+   that is not the main menu, with options other than the game in play's,
+   the recorder seals the game before it and opens `<id>.h2film` and
+   `<id>.h2stats` (`State::open_game`). The game start, with the stamp,
+   is written at the first update, which is film tick 1
+   (`actions::note_first_update`). A game gone before its first update
+   leaves no file.
 2. **Each update.** The hook at `SIM_UPDATE_APPLY` hands the update's body
    to the film; the observer after `GAME_TICK` adds the tick's digest and
    the stats records (`record::Recording::post_tick`).
 3. **The game ends.** The game-over latch, a map unload or the session's
-   exit seals both files. A hard-killed recording leaves an unsealed film
-   that reads up to its last checkpointed chunk
-   (`film::file::FilmWriter::checkpoint`).
+   exit seals both files (`State::seal_game`). A hard-killed recording
+   leaves an unsealed film that reads up to its last checkpointed chunk
+   (`film::file::FilmWriter::checkpoint`); the library lists and plays it
+   as it stands, and the prune before a later game's film seals it there
+   once it has been untouched for an hour (`film::file::recover`,
+   `autorecord::prune`).
 
 A session that plays no game writes nothing. Nothing is recorded outside
 a game, so a film never depends on what the session did before it. A film
@@ -592,7 +599,7 @@ Each slice updates the pages that name what it changes
 |---|---|---|---|
 | 1a | **The game start in the film.** `film::start::GameStart` (stamp, options block, random words, map identity, settings, start hash, first tick) with its encoding, written as a block of the film file and read by `FilmReader::game_start`. The recorder copies the options when `GAME_ACTIVATE` succeeds and fills the start hash and random words at the game's first update; the map identity, mode and roster come from the observer of that tick, and the block is written just before it. `VARI` is filled from the variant's rules script; `MAPV` is encoded and tested and filled by slice 11. | first | `film`: round trip; every truncation and a fuzzed block are refused; an options block of another size is refused. `theater`: capture over a mapped test guest copies the active options and both random words; a recording of a synthetic session with two games writes one game start for each, at its first update's tick. |
 | 1b | **Play from the game start.** The player process takes a film with a game start: a new, empty private data directory (no `DATA` restore, no `--data`), no call tape, the film's options answered to the first map request (`level_boot`), neutral pads on the options' ports, the random words and start hash at the first update, the film's actions applied from the game's first update, digests checked, the film complete after its last tick (`h2 theater play` then leaves; holding the last tick is slice 5's). The player takes pacing and the storage guard of slices 3 and 4: it calls `Session::pace_in_guest` and guards the run's writes (`Vfs::guard_writes`), and never uses the wall-clock pacer. A seek restarts the process and runs forward from the game start. A film without a game start does not open, with that reason. | after 1a | `theater`: over a synthetic machine, a film recorded after menus and a first game plays its second game from the game start to matching digests; a changed start hash stops before the first update; a changed action stops at its tick; no `DATA` item is opened (a manifest that names a missing file plays). `level_boot`: the recorded options are queued byte for byte with the mode set to local. Run: record a game, change a profile setting and save, play the film to its end. |
-| 2 | **The whole update.** The recorder stores the update's body beyond the action block as changes against the update before, zero at each chunk's start, and the player writes it back; one record for each application of the update; the tick-stamp check. | after 1b | `columns`: round trip of bodies with a player-set change, events and a save flag; a chunk decodes without the chunk before. `actions`: capture and apply leave the head and stamp untouched; two applications in one tick give two records and replay as two ticks; a stamp that skips cuts the film. |
+| 2 | **The whole update.** The recorder stores the update's body beyond the action block as changes against the update before, zero at each chunk's start, and the player writes it back; one record for each application of the update; the tick-stamp check. | after 1b | `columns`: round trip of bodies with a player-set change, events and a save flag; a chunk decodes without the chunk before. `actions`: capture and apply leave the head and stamp untouched; two applications in one tick give two records and replay as two ticks; a stamp that skips ends the film. |
 | 3 | **Pacing in the guest.** A hook on `GAME_UPDATE_TICKS` gives the player the frame's tick count: pause, speeds, step, and the unrendered forward run with its budget. | after 1b | `theater::tests`: zero ticks while paused and the digests of a synthetic film unchanged; a step runs one tick; 4× asks for four ticks a frame and reports the count reached; a forward run stops exactly at its target. |
 | 4 | **The storage guard.** While a film plays, guest writes go to a private scratch that later reads see, dropped when the film ends (`crates/runtime/vfs/src/host.rs`). | any time | `vfs`: a write under the guard leaves the real file's bytes and time unchanged, a read after it returns the written bytes, dropping the guard removes the scratch; a file created under the guard does not exist after. |
 | 5 | **In the running game.** `theater.watch` and Watch queue the film's options through `Call::QueueGame`; `Session` moves between recording and playing at game boundaries; the film's settings are applied and put back; End Film and the film's end return to the film page; a start-route seek queues the options again. Watch starts no process. | after 3 and 4 | `theater::tests`: record a game, watch it, leave, record another, in one synthetic session, and both recordings are whole; a film being watched is not recorded; a start-route seek reaches its tick; the viewer's settings are back after the film. Agent-proto round trips. Run: `theater.watch` on a film from the main menu and from a running game. |

@@ -220,14 +220,14 @@ fn container(path: &Path, ticks: u64) {
     out.finish().unwrap();
 }
 
-/// The film file of a container, made from its own ticks.
-fn write_film(container: &Path) -> PathBuf {
-    let mut track = TrackReader::open(container).unwrap();
+/// The film file of `film`'s stats container, made from its own ticks.
+fn write_film(film: &Path) {
+    let container = stats_of(film);
+    let mut track = TrackReader::open(&container).unwrap();
     let seed = Seed {
-        header: Reader::open(container).unwrap().header.clone(),
+        header: Reader::open(&container).unwrap().header.clone(),
         descriptor: track.descriptor.clone(),
     };
-    let film = beside(container);
     let mut w = FilmWriter::new(File::create(&film).unwrap(), &seed, 30).unwrap();
     while let Some(tick) = track.step().unwrap() {
         let flags = if tick.post_hash.is_some() { TICK_DIGEST } else { 0 };
@@ -238,7 +238,6 @@ fn write_film(container: &Path) -> PathBuf {
         w.push_tick(flags, tick.post_hash.unwrap_or(0), &seats).unwrap();
     }
     w.finish().unwrap();
-    film
 }
 
 fn decode_all(bytes: &[u8]) -> (FilmReader<Cursor<&[u8]>>, Vec<(u16, Vec<Option<[u8; ACTION_BYTES]>>)>) {
@@ -261,44 +260,11 @@ fn decode_all(bytes: &[u8]) -> (FilmReader<Cursor<&[u8]>>, Vec<(u16, Vec<Option<
 }
 
 #[test]
-fn a_cut_film_is_whole_while_the_running_film_goes_on() {
-    let mut w = FilmWriter::new(Cursor::new(Vec::new()), &seed(), 30).unwrap();
-    let push = |w: &mut FilmWriter<Cursor<Vec<u8>>>, from: u64, to: u64| {
-        for tick in from..=to {
-            w.push_tick(TICK_DIGEST, tick * 77, &seats(tick)).unwrap();
-            if tick == 301 {
-                w.seat_record(3, RECORD_JOIN, &[3, 0]).unwrap();
-            }
-        }
-    };
-    push(&mut w, 1, 600);
-    let mut cut_seed = seed();
-    cut_seed.header = header(6);
-    let mut cut = w.fork(Cursor::new(Vec::new()), &cut_seed).unwrap();
-    assert!(cut.push_tick(0, 0, &seats(1)).is_err());
-    let cut = cut.finish().unwrap().into_inner();
-    // Cutting on a full chunk's last tick, a seat record still lands on it.
-    push(&mut w, 601, 768);
-    w.seat_record(1, RECORD_LEAVE, &[1]).unwrap();
-    let full_cut = w.fork(Cursor::new(Vec::new()), &cut_seed).unwrap().finish().unwrap().into_inner();
-    push(&mut w, 769, 800);
-    let whole = w.finish().unwrap().into_inner();
-
-    let (r, rows) = decode_all(&cut);
-    assert_eq!(r.seed, cut_seed);
-    assert!(r.sealed);
-    assert_eq!((r.length_ticks, r.chunk_count(), rows.len()), (600, 3, 600));
-    for (i, (digest, row)) in rows.iter().enumerate() {
-        let tick = i as u64 + 1;
-        assert_eq!(*digest, (tick * 77) as u16);
-        assert_eq!(row.as_slice(), seats(tick).as_slice());
-    }
-
-    let (r, rows) = decode_all(&full_cut);
-    assert_eq!((r.length_ticks, r.chunk_count(), rows.len()), (768, 3, 768));
-
-    let (r, rows) = decode_all(&whole);
+fn a_film_reads_back_every_tick_it_was_given() {
+    let bytes = film(800);
+    let (r, rows) = decode_all(&bytes);
     assert_eq!(r.seed, seed());
+    assert!(r.sealed);
     assert_eq!((r.length_ticks, r.chunk_count(), rows.len()), (800, 4, 800));
     for (i, (digest, row)) in rows.iter().enumerate() {
         let tick = i as u64 + 1;
@@ -329,14 +295,14 @@ fn steps(track: &mut TrackReader<File>) -> Vec<Tick> {
 fn a_track_reader_takes_its_actions_from_the_film_file() {
     let dir = Temp::new();
     let path = dir.0.join("match.h2film");
-    container(&path, 700);
+    container(&stats_of(&path), 700);
     write_film(&path);
-    let plain = steps(&mut TrackReader::open(&path).unwrap());
+    let plain = steps(&mut TrackReader::open(stats_of(&path)).unwrap());
     assert_eq!(plain.len(), 700);
 
-    let mut merged = TrackReader::open(&path).unwrap();
+    let mut merged = TrackReader::open(stats_of(&path)).unwrap();
     merged
-        .attach_film(FilmActions::open(&beside(&path)).unwrap())
+        .attach_film(FilmActions::open(&path).unwrap())
         .unwrap();
     assert_eq!(steps(&mut merged), plain);
 }
@@ -345,18 +311,18 @@ fn a_track_reader_takes_its_actions_from_the_film_file() {
 fn a_film_file_that_disagrees_with_its_stats_stream_is_refused() {
     let dir = Temp::new();
     let path = dir.0.join("match.h2film");
-    container(&path, 100);
+    container(&stats_of(&path), 100);
     // The right actions with a wrong digest on tick 30.
-    let mut w = FilmWriter::new(File::create(beside(&path)).unwrap(), &seed(), 30).unwrap();
+    let mut w = FilmWriter::new(File::create(&path).unwrap(), &seed(), 30).unwrap();
     for tick in 1..=100u64 {
         let digest = if tick == 30 { 1 } else { tick * 1_000_003 };
         let flags = if tick % 30 == 0 { TICK_DIGEST } else { 0 };
         w.push_tick(flags, digest, &seats(tick)).unwrap();
     }
     w.finish().unwrap();
-    let mut track = TrackReader::open(&path).unwrap();
+    let mut track = TrackReader::open(stats_of(&path)).unwrap();
     track
-        .attach_film(FilmActions::open(&beside(&path)).unwrap())
+        .attach_film(FilmActions::open(&path).unwrap())
         .unwrap();
     // A block is checked as it is read, so the error comes at or before
     // the block that holds tick 30.
@@ -368,7 +334,7 @@ fn a_film_file_that_disagrees_with_its_stats_stream_is_refused() {
     let mut w = FilmWriter::new(Cursor::new(Vec::new()), &other, 30).unwrap();
     w.push_tick(0, 0, &seats(1)).unwrap();
     let bytes = w.finish().unwrap().into_inner();
-    let mut track = TrackReader::open(&path).unwrap();
+    let mut track = TrackReader::open(stats_of(&path)).unwrap();
     assert!(
         track
             .attach_film(FilmActions::new(Box::new(Cursor::new(bytes))).unwrap())
@@ -379,7 +345,7 @@ fn a_film_file_that_disagrees_with_its_stats_stream_is_refused() {
 #[test]
 fn a_checkpoint_keeps_the_open_chunk_for_a_reader_of_an_unsealed_file() {
     let dir = Temp::new();
-    let path = dir.0.join("match.h2f");
+    let path = dir.0.join("match.h2film");
     let mut w = FilmWriter::new(File::create(&path).unwrap(), &seed(), 30).unwrap();
     for tick in 1..=300u64 {
         w.push_tick(TICK_DIGEST, tick * 77, &seats(tick)).unwrap();
@@ -407,8 +373,9 @@ fn a_checkpoint_keeps_the_open_chunk_for_a_reader_of_an_unsealed_file() {
 #[test]
 fn a_killed_recordings_film_file_is_sealed_at_a_tick_its_checkpoint_covers() {
     let dir = Temp::new();
-    let container = dir.0.join("tape.h2film");
-    let mut w = FilmWriter::new(File::create(beside(&container)).unwrap(), &seed(), 30).unwrap();
+    let path = dir.0.join("killed.h2film");
+    let mut w = FilmWriter::new(File::create(&path).unwrap(), &seed(), 30).unwrap();
+    w.game_start(&started(1)).unwrap();
     for tick in 1..=700u64 {
         w.push_tick(TICK_DIGEST, tick * 77, &seats(tick)).unwrap();
         if tick == 301 {
@@ -420,12 +387,17 @@ fn a_killed_recordings_film_file_is_sealed_at_a_tick_its_checkpoint_covers() {
     }
     // The recorder died here: no trailer, ticks 651 to 700 never reached the file.
     drop(w);
-    assert!(recover_beside(&container, 660).is_err());
-    assert!(!beside(&container).with_extension("h2f.recover").exists());
-    recover_beside(&container, 640).unwrap();
-    let bytes = fs::read(beside(&container)).unwrap();
+    // Unsealed, it reads up to its checkpoint.
+    let r = FilmReader::open(File::open(&path).unwrap()).unwrap();
+    assert!(!r.sealed);
+    assert_eq!(r.length_ticks, 650);
+    assert!(recover(&path, 660).is_err());
+    assert!(!path.with_extension("h2film.recover").exists());
+    recover(&path, 640).unwrap();
+    let bytes = fs::read(&path).unwrap();
     let (mut r, rows) = decode_all(&bytes);
     assert!(r.sealed);
+    assert_eq!(r.game_start().unwrap(), Some(started(1)));
     assert_eq!((r.length_ticks, rows.len()), (640, 640));
     for (i, (digest, row)) in rows.iter().enumerate() {
         let tick = i as u64 + 1;
@@ -446,82 +418,81 @@ fn started(first_update: u64) -> crate::start::GameStart {
     start
 }
 
-fn film_of_two_games() -> Vec<u8> {
+fn film_of_one_game() -> Vec<u8> {
     let mut w = FilmWriter::new(Cursor::new(Vec::new()), &seed(), 30).unwrap();
+    w.game_start(&started(1)).unwrap();
     for tick in 1..=400u64 {
-        if tick == 1 || tick == 91 {
-            w.game_start(&started(tick)).unwrap();
-        }
         w.push_tick(TICK_DIGEST, tick * 77, &seats(tick)).unwrap();
     }
     w.finish().unwrap().into_inner()
 }
 
 #[test]
-fn a_film_holds_a_game_start_for_each_game_at_its_first_update() {
-    let bytes = film_of_two_games();
+fn a_film_holds_its_games_start_before_its_first_tick() {
+    let bytes = film_of_one_game();
     let mut r = FilmReader::open(Cursor::new(&bytes)).unwrap();
     assert!(r.flags & FLAG_GAME_START != 0);
-    assert_eq!((r.game_starts.len(), r.length_ticks), (2, 400));
-    let first = r.game_start_at(&r.game_starts[0].clone()).unwrap();
-    assert_eq!((first.game.first_update, first.start_hash), (1, 3));
-    // The film is the game played last.
-    let last = r.game_start().unwrap().unwrap();
-    assert_eq!(last, started(91));
-    // A film from before game starts has none.
+    assert_eq!((r.game_starts.len(), r.length_ticks), (1, 400));
+    assert_eq!(r.game_start().unwrap().unwrap(), started(1));
+    // A film written with no game start has none.
     let old = film(10);
     let mut r = FilmReader::open(Cursor::new(&old)).unwrap();
     assert!(r.game_start().unwrap().is_none() && r.flags & FLAG_GAME_START == 0);
 }
 
 #[test]
-fn a_game_start_must_name_the_tick_the_writer_takes_next() {
+fn a_game_start_must_name_the_tick_the_writer_takes_next_and_a_film_takes_one() {
     let mut w = FilmWriter::new(Cursor::new(Vec::new()), &seed(), 30).unwrap();
     assert!(w.game_start(&started(2)).is_err());
-    w.game_start(&started(1)).unwrap();
-    w.push_tick(TICK_DIGEST, 1, &seats(1)).unwrap();
-    assert!(w.game_start(&started(1)).is_err());
-    let mut bad = started(2);
+    let mut bad = started(1);
     bad.options.pop();
     assert!(w.game_start(&bad).is_err());
-    w.game_start(&started(2)).unwrap();
+    w.game_start(&started(1)).unwrap();
+    w.push_tick(TICK_DIGEST, 1, &seats(1)).unwrap();
+    // One film for each game: a second start is refused by the writer.
+    assert!(w.game_start(&started(2)).is_err());
 }
 
 #[test]
-fn an_unsealed_film_and_a_fork_keep_their_game_starts() {
+fn a_file_with_a_second_game_start_is_refused() {
     let mut w = FilmWriter::new(Cursor::new(Vec::new()), &seed(), 30).unwrap();
+    let frame = started(1).encode().unwrap();
+    w.game_start_frame(&frame).unwrap();
+    w.push_tick(TICK_DIGEST, 1, &seats(1)).unwrap();
+    // Write a second block past the writer's own check, as a damaged or
+    // made-up file would hold it.
+    w.block(KIND_GAME, &frame).unwrap();
+    let bytes = w.finish().unwrap().into_inner();
+    let error = FilmReader::open(Cursor::new(&bytes)).err().unwrap().to_string();
+    assert!(error.contains("second game start"), "{error}");
+}
+
+#[test]
+fn an_unsealed_film_keeps_its_game_start() {
+    let mut w = FilmWriter::new(Cursor::new(Vec::new()), &seed(), 30).unwrap();
+    w.game_start(&started(1)).unwrap();
     for tick in 1..=300u64 {
-        if tick == 1 || tick == 91 {
-            w.game_start(&started(tick)).unwrap();
-        }
         w.push_tick(TICK_DIGEST, tick, &seats(tick)).unwrap();
     }
-    let mut cut_seed = seed();
-    cut_seed.header.meta.id = "the-second-game".into();
-    let cut = w.fork(Cursor::new(Vec::new()), &cut_seed).unwrap();
-    let bytes = cut.finish().unwrap().into_inner();
-    let mut r = FilmReader::open(Cursor::new(&bytes)).unwrap();
-    assert_eq!(r.game_starts.len(), 2);
-    assert_eq!(r.game_start().unwrap().unwrap().game.first_update, 91);
-    // The recording went on untouched; read it as a file still being written.
+    w.checkpoint().unwrap();
     let live = w.out.get_mut().clone();
     let mut r = FilmReader::open(Cursor::new(&live)).unwrap();
     assert!(!r.sealed);
-    assert_eq!(r.game_starts.len(), 2);
-    assert_eq!(r.game_start().unwrap().unwrap(), started(91));
+    assert_eq!(r.length_ticks, 300);
+    assert_eq!(r.game_start().unwrap(), Some(started(1)));
 }
 
 #[test]
 fn a_damaged_game_start_block_is_refused_when_read_not_when_listed() {
-    let bytes = film_of_two_games();
+    let bytes = film_of_one_game();
     let r = FilmReader::open(Cursor::new(&bytes)).unwrap();
-    let at = r.game_starts[1].offset as usize + 2;
+    let at = r.game_starts[0].offset as usize + 2;
     let mut bad = bytes.clone();
     bad[at] ^= 0xff;
     let mut r = FilmReader::open(Cursor::new(&bad)).unwrap();
     assert!(r.game_start().is_err());
     // Every cut of the block's bytes: an error, never a panic.
-    let block = r.game_starts[1];
+    let block = r.game_starts[0];
     for len in 0..block.len as usize {
         assert!(crate::start::GameStart::decode(&bytes[block.offset as usize..][..len]).is_err());
     }
@@ -529,13 +500,12 @@ fn a_damaged_game_start_block_is_refused_when_read_not_when_listed() {
 
 #[test]
 fn a_tick_row_gives_the_actions_the_digest_and_the_chunks_closing_digest() {
-    let bytes = film_of_two_games();
-    let dir = std::env::temp_dir().join(format!("film-rows-{}", std::process::id()));
-    fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("two.h2f");
+    let bytes = film_of_one_game();
+    let dir = Temp::new();
+    let path = dir.0.join("one.h2film");
     fs::write(&path, &bytes).unwrap();
     let mut actions = FilmActions::open(&path).unwrap();
-    assert_eq!(actions.game_start().unwrap(), Some(started(91)));
+    assert_eq!(actions.game_start().unwrap(), Some(started(1)));
     assert_eq!(actions.length_ticks(), 400);
     let row = actions.row(91).unwrap();
     assert_eq!((row.digest, row.closing), (Some((91u64 * 77) as u16), None));
@@ -552,7 +522,6 @@ fn a_tick_row_gives_the_actions_the_digest_and_the_chunks_closing_digest() {
     assert_eq!(actions.row(256).unwrap().closing, Some(256 * 77));
     assert_eq!(actions.row(400).unwrap().closing, Some(400 * 77));
     assert!(actions.row(401).is_err() && actions.row(0).is_err());
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 fn body_of(tick: u64) -> [u8; BODY_BYTES] {
@@ -563,23 +532,26 @@ fn body_of(tick: u64) -> [u8; BODY_BYTES] {
 }
 
 #[test]
-fn an_update_body_is_read_back_by_tick_across_chunks_a_fork_and_a_checkpoint() {
+fn an_update_body_is_read_back_by_tick_across_chunks_and_a_checkpoint() {
     let mut w = FilmWriter::new(Cursor::new(Vec::new()), &seed(), 30).unwrap();
+    let mut unsealed = Vec::new();
     for tick in 1..=600u64 {
         w.push_tick(TICK_DIGEST, tick * 77, &seats(tick)).unwrap();
         w.tail(&body_of(tick)).unwrap();
         if tick == 300 {
             w.checkpoint().unwrap();
+            unsealed = w.out.get_ref().clone();
         }
     }
     assert!(w.tail(&[0; 3]).is_err(), "a body is the update's whole body");
-    let mut cut_seed = seed();
-    cut_seed.header.meta.id = "a-cut".into();
-    let mut cut = w.fork(Cursor::new(Vec::new()), &cut_seed).unwrap();
-    assert!(cut.tail(&body_of(1)).is_err(), "a cut film takes no more tails");
-    let forked = cut.finish().unwrap().into_inner();
     let bytes = w.finish().unwrap().into_inner();
-    for bytes in [bytes, forked] {
+    // The unsealed file reads to its checkpoint at tick 300.
+    let mut actions = FilmActions::new(Box::new(Cursor::new(unsealed))).unwrap();
+    assert_eq!(actions.length_ticks(), 300);
+    for tick in [300, 1, 257, 256] {
+        assert!(actions.row(tick).unwrap().body == body_of(tick), "body of tick {tick}");
+    }
+    {
         let mut actions = FilmActions::new(Box::new(Cursor::new(bytes))).unwrap();
         // Out of order, as a seek reads them.
         for tick in [600, 1, 257, 256, 300, 2, 513] {

@@ -1,9 +1,110 @@
 //! Engine commands are sampled at the simulation-update envelope. A tick is
 //! committed when GAME_TICK returns: its updates go to the film file and its
-//! observations to the stats stream.
+//! observations to the stats container beside it.
 use super::{Mode, Recording, Session};
 use anyhow::{Context, Result};
-use film::blam::{Event, SeatInput, Tick};
+use film::{
+    Header,
+    blam::{Event, SeatInput, Summary, Tick},
+};
+use std::{fs::File, path::PathBuf};
+
+/// One game's film being written: `<id>.h2film`, the film file, and
+/// `<id>.h2stats`, its stats container (docs/game/film-format.md).
+pub(super) struct GameFiles {
+    /// The film file; the stats container is [`film::file::stats_of`] it.
+    pub(super) path: PathBuf,
+    /// The film's header: its ID and its start.
+    pub(super) header: Header,
+    pub(super) stats: film::Writer<File>,
+    pub(super) film: film::file::FilmWriter<File>,
+    pub(super) track: film::blam::TrackWriter,
+    /// The session tick before the game's first update: the film's tick n
+    /// is the session's `base + n`. `None` until the first update; a named
+    /// recording, open from boot, has zero.
+    pub(super) base: Option<u64>,
+}
+
+fn private_new(path: &std::path::Path) -> Result<File> {
+    let mut options = File::options();
+    options.read(true).write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path).with_context(|| path.display().to_string())
+}
+
+impl GameFiles {
+    /// Create the film file at `path` and its stats container, both new.
+    pub(super) fn create(path: PathBuf, header: Header, base: Option<u64>) -> Result<Self> {
+        let stats_path = film::file::stats_of(&path);
+        let stats = private_new(&stats_path)
+            .and_then(|file| film::Writer::new(file, &header));
+        let stats = match stats {
+            Ok(stats) => stats,
+            Err(error) => {
+                let _ = std::fs::remove_file(&stats_path);
+                return Err(error);
+            }
+        };
+        let seed = film::file::Seed { header: header.clone(), descriptor: Default::default() };
+        let film = private_new(&path)
+            .and_then(|file| film::file::FilmWriter::new(file, &seed, 30));
+        let film = match film {
+            Ok(film) => film,
+            Err(error) => {
+                drop(stats);
+                let _ = std::fs::remove_file(&stats_path);
+                let _ = std::fs::remove_file(&path);
+                return Err(error);
+            }
+        };
+        Ok(Self {
+            path,
+            header,
+            stats,
+            film,
+            track: film::blam::TrackWriter::default().without_inputs(),
+            base,
+        })
+    }
+
+    /// Close and delete both files: a game with no film.
+    pub(super) fn discard(self) {
+        let path = self.path.clone();
+        drop(self);
+        for file in [film::file::stats_of(&path), path] {
+            match std::fs::remove_file(&file) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    eprintln!("theater: could not delete {}: {e}", file.display());
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// The film's final header: its length, and the game's map, variant and
+/// scoreboard when the game was described.
+fn final_header(mut header: Header, summary: &Summary, tick: u64) -> Header {
+    header.meta.length_ticks = tick;
+    if !summary.level.is_empty() {
+        header.meta.map.clone_from(&summary.level);
+        header.meta.variant.clone_from(&summary.variant_name);
+        header.meta.players = summary
+            .players
+            .iter()
+            .map(|player| film::Player {
+                name: player.name.clone(),
+                team: player.team,
+                score: player.score,
+            })
+            .collect();
+    }
+    header
+}
 
 /// Ticks between the film file's checkpoints: a recording that dies keeps
 /// its ticks to the last one (`film::file::FilmWriter::checkpoint`).
@@ -36,7 +137,7 @@ pub(super) struct Capture {
 }
 
 impl Capture {
-    /// After a game's film is cut: the next game's stamps start afresh.
+    /// After a game's film is sealed: the next game's stamps start afresh.
     pub(super) fn next_game(&mut self) {
         self.last_stamp = None;
         self.stamp_skipped = false;
@@ -44,46 +145,115 @@ impl Capture {
 }
 
 impl Recording {
-    /// Whether a game is on the tape (docs/game/film-format.md, "Recording
-    /// every game"). The descriptor's match start appears when a game
-    /// starts and is cleared when its film is cut or it is left.
+    /// Whether a game is being recorded (docs/game/film-format.md,
+    /// "Recording every game"). The descriptor's match start appears when
+    /// a game starts and is cleared when its film is sealed or it is left.
     pub(super) fn in_game(&self) -> bool {
         self.meta.descriptor().match_start_tick.is_some()
+    }
+
+    /// Forget the game just sealed or dropped: the next one is described
+    /// from its activation.
+    pub(super) fn next_game(&mut self) {
+        self.meta.next_game();
+        self.starts.next_game();
+        self.unified.next_game();
+        self.frame.next_game();
+        self.frame.events.clear();
+        self.described = None;
+    }
+
+    /// Seal `files` at film tick `tick`: the game's closing observations,
+    /// its final header (from `header`, or the film's own) and its
+    /// scoreboard, then the film file's trailer. Returns the film file's
+    /// path and the final header.
+    pub(super) fn seal(
+        &mut self,
+        mut files: GameFiles,
+        header: Option<Header>,
+        tick: u64,
+    ) -> Result<(PathBuf, Header)> {
+        let sealed = (|| -> Result<Header> {
+            files.track.closing_events(std::mem::take(&mut self.frame.events))?;
+            files.track.append_to_last(self.unified.take_records(false, false)?)?;
+            self.meta.finish_map()?;
+            let mut summary = self.meta.summary(tick);
+            self.unified.summary_medals(&mut summary.players);
+            summary.dropped_samples = self.unified.drop_counts();
+            let header = final_header(header.unwrap_or_else(|| files.header.clone()), &summary, tick);
+            files.stats.chunk(film::HEAD, &header)?;
+            files.track.finish(&mut files.stats, self.meta.descriptor(), &summary)?;
+            Ok(header)
+        })();
+        let header = match sealed {
+            Ok(header) => header,
+            Err(error) => {
+                files.discard();
+                return Err(error);
+            }
+        };
+        let GameFiles { path, stats: stats_out, film: film_out, .. } = files;
+        let closed = (|| -> Result<()> {
+            stats_out.finish()?.sync_all()?;
+            film_out.finish()?.sync_all()?;
+            Ok(())
+        })();
+        if let Err(error) = closed {
+            for file in [film::file::stats_of(&path), path.clone()] {
+                let _ = std::fs::remove_file(file);
+            }
+            return Err(error);
+        }
+        Ok((path, header))
     }
 
     pub(super) fn post_tick(
         &mut self,
         guest: &runtime::Guest,
-        tick: u64,
+        session_tick: u64,
         post_hash: Option<u64>,
     ) -> Result<()> {
+        // The film's tick: tick 1 is the game's first update.
+        let game_tick = self
+            .game
+            .as_ref()
+            .and_then(|game| game.base)
+            .map(|base| session_tick - base);
         let mut events = std::mem::take(&mut self.frame.events);
         events.extend(
             self.meta
-                .observe(guest, tick, |source| self.unified.dropped(source))?,
+                .observe(guest, game_tick.unwrap_or(0), |source| self.unified.dropped(source))?,
         );
-        if self.meta.take_cut_left() {
-            // The left game's film is cut at the next slice's check, as a
-            // game's end is (docs/game/film-format.md, "One film per game").
+        if self.meta.take_left() {
+            // The left game's film is sealed at the next slice's check, as
+            // a game's end is (docs/game/film-format.md, "Recording every
+            // game").
             self.match_over = true;
         }
         let updates = std::mem::take(&mut self.frame.updates);
         let skipped = self.frame.stamp_skipped;
-        // The machine tape takes one batch for a tick: the tick's first
+        let Some(tick) = game_tick else {
+            // Before the game's first update nothing is the film's: what
+            // the observer saw of the game waits for its first tick.
+            if self.game.is_some() {
+                self.frame.events = events;
+            }
+            return Ok(());
+        };
+        let game = self.game.as_mut().context("a game's first update without its film")?;
+        // The stats track takes one batch for a tick: the tick's first
         // update's. The film file has every one.
         let inputs = updates
             .first()
             .map(|update| update.inputs.clone())
             .unwrap_or_default();
-        if let Some(film) = &self.film
-            && !skipped
-        {
+        if !skipped {
             use film::file::{RECORD_JOIN, RECORD_LEAVE, TICK_DIGEST, TICK_EVENTS};
-            let mut film = film.lock().unwrap_or_else(|e| e.into_inner());
-            // A game's start sits just before its first update's tick.
+            let out = &mut game.film;
+            // The game's start sits just before its first update's tick.
             match self.starts.release(&mut self.meta) {
                 Ok(Some(start)) => {
-                    if let Err(error) = film.game_start(&start) {
+                    if let Err(error) = out.game_start(&start) {
                         eprintln!("theater: this game has no start in its film: {error:#}");
                     }
                 }
@@ -108,32 +278,31 @@ impl Recording {
                 let flags = if last && post_hash.is_some() { TICK_DIGEST } else { 0 }
                     | if last && !events.is_empty() { TICK_EVENTS } else { 0 };
                 let digest = if last { post_hash.unwrap_or(0) } else { 0 };
-                film.push_tick(flags, digest, &seats)?;
+                out.push_tick(flags, digest, &seats)?;
                 if let Some(body) = update.and_then(|update| update.body.as_deref()) {
-                    film.tail(body)?;
+                    out.tail(body)?;
                 }
                 if !last {
                     continue;
                 }
                 for event in &events {
                     match event {
-                        Event::Join { player } => film.seat_record(
+                        Event::Join { player } => out.seat_record(
                             player.seat,
                             RECORD_JOIN,
                             &[player.seat, player.kind as u8],
                         )?,
                         Event::Leave { seat } | Event::Quit { seat } => {
-                            film.seat_record(*seat, RECORD_LEAVE, &[*seat])?
+                            out.seat_record(*seat, RECORD_LEAVE, &[*seat])?
                         }
                         _ => {}
                     }
                 }
             }
             if tick.is_multiple_of(CHECKPOINT_TICKS) {
-                film.checkpoint()?;
+                out.checkpoint()?;
             }
         }
-        let out = self.out.as_mut().context("engine tape is closed")?;
         let match_start = self.meta.descriptor().match_start_tick;
         if match_start == Some(tick) {
             self.unified.marker(&self.meta.descriptor().map.name);
@@ -144,9 +313,9 @@ impl Recording {
         }
         let records = self
             .unified
-            .take_records(self.track.begins_chunk(), self.track.needs_pose_baseline())?;
-        self.track.push_clocked(
-            out,
+            .take_records(game.track.begins_chunk(), game.track.needs_pose_baseline())?;
+        game.track.push_clocked(
+            &mut game.stats,
             Tick {
                 tick,
                 inputs,
@@ -174,8 +343,8 @@ impl Session {
     /// the tick in progress. A tick can apply it more than once (a client
     /// catching up after a stall), and each application is its own record,
     /// in order. An update whose stamp is further on than the next tick
-    /// means a tick the film does not hold: the game's film is cut at the
-    /// tick before it (`finish` cuts it, as at the game's end).
+    /// means a tick the film does not hold: the game's film is sealed at
+    /// the tick before it (`finish` seals it, as at the game's end).
     pub(super) fn record_update(&self, inputs: Vec<SeatInput>, body: Option<Vec<u8>>, stamp: Option<u32>) {
         let mut s = self.lock();
         if s.complete || s.failure.is_some() {

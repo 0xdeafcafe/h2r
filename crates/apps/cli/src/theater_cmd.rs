@@ -145,8 +145,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     if let Some(work) = std::env::var_os("H2_THEATER_WORK") {
         return child(opts, Path::new(&work));
     }
-    let reader = film::Reader::open(&opts.film)?;
-    let header = reader.header.clone();
+    let header = film::file::header_of(&opts.film)?;
     let view = std::env::var("H2_THEATER_VIEW")
         .ok()
         .map(|v| serde_json::from_str::<agent_proto::theater::InitialView>(&v))
@@ -154,11 +153,8 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let target = opts
         .seek
         .or_else(|| view.and_then(|v| v.tick.map(u64::from)))
-        .unwrap_or_else(|| {
-            // A game cut from a session's tape opens at its game's start.
-            let opening = || boot::theater::autorecord::opening_tick(&header, reader.front.as_ref());
-            opts.range.map_or_else(opening, |[start, _]| start)
-        });
+        // A film opens at its game's first update, tick 1.
+        .unwrap_or_else(|| opts.range.map_or(0, |[start, _]| start));
     if let Some([start, end]) = opts.range {
         ensure!((start..end).contains(&target), "seek outside film clip");
     }
@@ -227,11 +223,11 @@ fn child_with_start(
     #[cfg(feature = "desktop")]
     let media_options = opts.clone();
     let child_started = std::time::Instant::now();
-    let film = film::Reader::open(&opts.film)?;
+    let header = film::file::header_of(&opts.film)?;
     let xbe = boot::read_xbe(&opts.disc)?;
     let xbe_sha256 = film::xbe_digest(&xbe);
     ensure!(
-        film.header.xbe_sha256 == xbe_sha256,
+        header.xbe_sha256 == xbe_sha256,
         "film requires a different XBE"
     );
     // Any image of this XBE plays a film with a game start: the film holds
@@ -266,7 +262,7 @@ fn child_with_start(
         data_root: data,
         max_slices: u64::MAX,
         xapi: true,
-        transfers_per_slice: film.header.transfers_per_slice,
+        transfers_per_slice: header.transfers_per_slice,
         stopgaps: true,
         trace: None,
         d3d: true,
@@ -303,7 +299,7 @@ fn child_with_start(
         vfs::flush_pending_metadata();
         r.map(|_| ())
     };
-    let host_bots = film.header.host_bots;
+    let host_bots = header.host_bots;
     #[cfg(feature = "desktop")]
     if let Some(capture) = capture {
         return run(export::host(capture, host_bots)?, None);

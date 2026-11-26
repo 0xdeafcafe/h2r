@@ -35,7 +35,6 @@ fn header(version: u32, length_ticks: u64) -> film::Header {
         live_service: false,
         features: String::new(),
         player_features: false,
-        tape_id: None,
     }
 }
 
@@ -218,15 +217,16 @@ fn film_stat_fields_counts_changes_and_prices_each_predictor() {
 }
 
 #[test]
-fn film_stat_names_an_unsealed_tape_rather_than_a_footer_fault() {
+fn film_stat_names_an_unsealed_stats_container_rather_than_a_footer_fault() {
     let mut bytes = sample_film();
-    // A session killed mid-write: the film's front and chunks, no footer.
+    // A recording killed mid-game: the container's front and chunks, no
+    // footer. `stat` takes the film's path and reads the container beside.
     bytes.truncate(bytes.len() - film::range::FOOTER_BYTES - 16);
     let dir = std::env::temp_dir().join(format!("film-stat-{}", live_proto::sign::random_id()));
     std::fs::create_dir(&dir).unwrap();
-    let path = dir.join("tape.h2film");
-    std::fs::write(&path, bytes).unwrap();
+    let path = dir.join("killed.h2film");
+    std::fs::write(film::file::stats_of(&path), bytes).unwrap();
     let error = format!("{:#}", stat(&path).unwrap_err());
     std::fs::remove_dir_all(dir).unwrap();
-    assert!(error.contains("an unsealed tape"), "{error}");
+    assert!(error.contains("an unsealed stats container"), "{error}");
 }

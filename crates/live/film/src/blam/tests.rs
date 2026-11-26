@@ -35,7 +35,6 @@ fn header(length_ticks: u64) -> Header {
         live_service: false,
         features: String::new(),
         player_features: false,
-        tape_id: None,
     }
 }
 

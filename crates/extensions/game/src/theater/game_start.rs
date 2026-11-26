@@ -3,13 +3,13 @@
 //!
 //! The start has two moments. **Activation**: when `GAME_ACTIVATE` returns
 //! success for a game that is not the main menu, the engine's options block
-//! is copied whole ([`Starts::activated`]). **The first update**: at entry
+//! is copied whole ([`Starts::activated`]), and a default recording opens
+//! the new game's film. **The first update**: at entry
 //! to the game's first `SIM_UPDATE_APPLY` the recorder reads the two shared
 //! random words and the arena hash ([`first_update`]), and holds the start
 //! until the tick's observer has described the game ([`Starts::release`]),
 //! which gives the map's identity and digest, the roster and the mode. The
-//! start is written just before that tick, so the film file's blocks name
-//! the tick of the game's first update.
+//! start is written just before that tick, the film's tick 1.
 use super::{Mode, Session, metadata};
 use anyhow::{Context, Result, ensure};
 use film::start::{Game, GameStart, OPTIONS_BYTES, Settings, Stamp};
@@ -31,6 +31,12 @@ pub(super) struct Starts {
 }
 
 impl Starts {
+    /// Whether a map activated with these options is a new game: neither
+    /// the game in play nor the one waiting for its first update.
+    pub(super) fn is_new(&self, options: &[u8]) -> bool {
+        self.taken.as_deref() != Some(options) && self.activated.as_deref() != Some(options)
+    }
+
     /// A map activated with these options. A different block than the
     /// game in play's is a new game, whose start the next first update
     /// takes.
@@ -85,8 +91,9 @@ impl Starts {
 
 impl Session {
     /// A map activated (`GAME_ACTIVATE` returned success): a recording
-    /// copies the options block the game starts from, and a film player's
-    /// requeued game begins.
+    /// copies the options block the game starts from, a default recording
+    /// opens a new game's film (sealing the game before it, if any), and a
+    /// film player's requeued game begins.
     pub(super) fn game_activated(&self, g: &Guest) {
         // A film's game, or the end of one, is the watch's boundary: the
         // recorder is parked while a film plays and sees none of it.
@@ -106,9 +113,14 @@ impl Session {
         if s.complete || s.failure.is_some() {
             return;
         }
-        if let Mode::Record(rec) = &mut s.mode
-            && let Some(options) = copy_options(g)
-        {
+        if !matches!(s.mode, Mode::Record(_)) {
+            return;
+        }
+        let Some(options) = copy_options(g) else { return };
+        if matches!(&s.mode, Mode::Record(rec) if rec.library().is_some() && rec.starts.is_new(&options)) {
+            s.open_game();
+        }
+        if let Mode::Record(rec) = &mut s.mode {
             rec.starts.activated(options);
         }
     }

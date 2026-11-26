@@ -1,16 +1,18 @@
 //! Films of the games a player plays, recorded by default
 //! (docs/game/film-format.md, "Recording every game").
 //!
-//! `h2 play` records each session into the film library when no `--film`
-//! or `H2_FILM_OUT` names a destination. The session's tape runs from boot
-//! to exit and is never listed; each game it plays is cut from it into a
-//! film of its own ([`cut`], "One film per game"), which plays from its
-//! game's start (`film_play`). The recording keeps the
-//! session's player features on (Live session links, browser
-//! advertisements, Firefight's director, the rules start gate, editor
-//! reloads, Forge), and its header says so, so the replay installs the same
-//! plan. Something that changes the guest from outside the tape (a session
-//! link joined, an editor write) is noted and the recording carries on.
+//! `h2 play` records each session's games into the film library when no
+//! `--film` or `H2_FILM_OUT` names a destination. Each game is a film of
+//! its own ("One film per game"): `<id>.h2film`, the film file, and
+//! `<id>.h2stats`, its stats container, opened at the game's activation
+//! with tick 1 its first update and sealed at its end. Nothing is recorded
+//! outside a game. A film plays from its game start (`film_play`). The
+//! recording keeps the session's player features on (Live session links,
+//! browser advertisements, Firefight's director, the rules start gate,
+//! editor reloads, Forge), and its header says so, so the replay installs
+//! the same plan. Something that changes the guest from outside the film
+//! (a session link joined, an editor write) is noted and the recording
+//! carries on.
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -25,9 +27,10 @@ pub const FEATURE: &str = "film-autorecord";
 /// shows 25 films, so older automatic films would never be seen.
 pub const KEEP: usize = 25;
 
-/// An unreadable automatic film untouched for this long belongs to a
-/// session that stopped without sealing it, and the prune removes it. A
-/// running recording writes a chunk every few seconds.
+/// An unsealed automatic film untouched for this long belongs to a session
+/// that stopped without sealing it: the prune seals it at the ticks it
+/// holds, or removes it when it does not read. A running recording writes
+/// a checkpoint every few seconds.
 pub const ABANDONED_AFTER: Duration = Duration::from_secs(60 * 60);
 
 const PREFIX: &str = "auto-";
@@ -82,8 +85,9 @@ pub fn decide(i: &Inputs) -> Decision {
     }
 }
 
-/// `auto-YYYYMMDD-HHMMSS-mmm.h2film` in UTC: names sort oldest to newest,
-/// and the library sorts Recent by the header's start time.
+/// `auto-YYYYMMDD-HHMMSS-mmm.h2film` in UTC, the film file of a game that
+/// started then: names sort oldest to newest, and the library sorts Recent
+/// by the header's start time.
 pub fn file_name(at: SystemTime) -> String {
     let ms = at.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis());
     let ms = i64::try_from(ms).unwrap_or(i64::MAX);
@@ -93,25 +97,40 @@ pub fn file_name(at: SystemTime) -> String {
     format!("{PREFIX}{stamp}.h2film")
 }
 
-/// A new file in `dir` for a recording started at `at`. Two sessions
-/// started in the same millisecond take numbered names.
+/// A new film file in `dir` for a game started at `at`, with no stats
+/// container beside it either. Two games started in the same millisecond
+/// take numbered names.
 pub fn destination(dir: &Path, at: SystemTime) -> PathBuf {
+    let free = |p: &PathBuf| !p.exists() && !film::file::stats_of(p).exists();
     let name = file_name(at);
     let first = dir.join(&name);
-    if !first.exists() {
+    if free(&first) {
         return first;
     }
     let stem = name.trim_end_matches(".h2film");
     (1u32..)
         .map(|n| dir.join(format!("{stem}-{n}.h2film")))
-        .find(|p| !p.exists())
+        .find(free)
         .expect("a free film name")
 }
 
+/// The header of a game's film, from the session's: an ID of its own and
+/// the game's start, with no map, players or length until it is sealed.
+pub(super) fn game_header(session: &film::Header) -> film::Header {
+    let mut header = session.clone();
+    header.meta.id = live_proto::sign::random_id();
+    header.meta.started_ms = now_ms();
+    header.meta.map.clear();
+    header.meta.variant.clear();
+    header.meta.players.clear();
+    header.meta.length_ticks = 0;
+    header
+}
+
 /// What a feature calls just before it changes the guest from outside the
-/// tape. The session's default recording carries on and says so
+/// film. The session's default recording carries on and says so
 /// ([`super::Session::outside_change`]); `drops_game` also drops the game
-/// in play, which the tape can no longer replay. `None` for any other film
+/// in play, which its film can no longer replay. `None` for any other film
 /// and for no film.
 pub fn stopper(
     film: Option<&Arc<super::Session>>,
@@ -128,111 +147,6 @@ pub(super) fn now_ms() -> u64 {
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
-/// Seal the game that ended at `tick` as a film of its own, cut from the
-/// running tape `rec` (docs/game/film-format.md, "One film per game"). The
-/// cut is a copy of the tape so far, closed with its own `HEAD`, the game's
-/// description and scores; it opens at the game's start. Before it is written the library keeps the `KEEP - 1` newest
-/// default films. Returns the cut's path.
-pub(super) fn cut(
-    rec: &mut super::Recording,
-    tape: &film::Header,
-    tick: u64,
-) -> anyhow::Result<PathBuf> {
-    use anyhow::Context;
-    rec.meta.finish_map()?;
-    let mut summary = rec.meta.summary(tick);
-    rec.unified.summary_medals(&mut summary.players);
-    summary.dropped_samples = rec.unified.drop_counts();
-    let header = cut_header(tape, &summary, tick, rec.game_started_ms);
-    let dir = rec.file.parent().unwrap_or(Path::new(".")).to_owned();
-    let now = SystemTime::now();
-    if let Err(error) = prune(&dir, KEEP, now) {
-        eprintln!("theater: could not make room in the film library: {error:#}");
-    }
-    let path = destination(&dir, now);
-    let out = rec.out.as_mut().context("the tape is closed")?;
-    // A running tape's file holds exactly what it wrote so far; on APFS
-    // the copy is a clone.
-    fs::copy(&rec.file, &path).with_context(|| path.display().to_string())?;
-    // The cut's film file: this game's film from the tape's own, as the
-    // container is cut from the tape's.
-    let film_path = film::file::beside(&path);
-    let sealed = (|| -> anyhow::Result<()> {
-        let file = fs::File::options().write(true).open(&path)?;
-        let mut writer = out.fork(file, &header)?;
-        let actions = match &rec.film {
-            Some(tape) => {
-                let seed = film::file::Seed {
-                    header: header.clone(),
-                    descriptor: rec.meta.descriptor().clone(),
-                };
-                let file = fs::File::options()
-                    .write(true)
-                    .create_new(true)
-                    .open(&film_path)
-                    .with_context(|| film_path.display().to_string())?;
-                Some(tape.lock().unwrap_or_else(|e| e.into_inner()).fork(file, &seed)?)
-            }
-            None => None,
-        };
-        let mut track = rec.track.clone();
-        writer.chunk(film::HEAD, &header)?;
-        track.finish(&mut writer, rec.meta.descriptor(), &summary)?;
-        writer.finish()?.sync_all()?;
-        if let Some(cut) = actions {
-            cut.finish()?.sync_all()?;
-        }
-        Ok(())
-    })();
-    if let Err(error) = sealed {
-        let _ = fs::remove_file(&path);
-        let _ = fs::remove_file(&film_path);
-        return Err(error);
-    }
-    Ok(path)
-}
-
-/// The final header of a game cut from `tape`: an ID of its own, the
-/// tape's ID, the game's start, length and scoreboard.
-pub(super) fn cut_header(
-    tape: &film::Header,
-    summary: &film::blam::Summary,
-    tick: u64,
-    game_started_ms: Option<u64>,
-) -> film::Header {
-    let mut header = tape.clone();
-    header.meta.id = live_proto::sign::random_id();
-    header.tape_id = Some(tape.meta.id.clone());
-    header.meta.started_ms = game_started_ms.unwrap_or(tape.meta.started_ms);
-    header.meta.length_ticks = tick;
-    if !summary.level.is_empty() {
-        header.meta.map.clone_from(&summary.level);
-        header.meta.variant.clone_from(&summary.variant_name);
-        header.meta.players = summary
-            .players
-            .iter()
-            .map(|player| film::Player {
-                name: player.name.clone(),
-                team: player.team,
-                score: player.score,
-            })
-            .collect();
-    }
-    header
-}
-
-/// Where Theater opens a film with no seek or clip asked for: a game cut
-/// from a session's tape opens at its game's start, any other film at boot.
-pub fn opening_tick(header: &film::Header, front: Option<&film::range::Front>) -> u64 {
-    if header.tape_id.is_none() {
-        return 0;
-    }
-    front
-        .and_then(|f| f.match_start_tick)
-        .filter(|&tick| tick <= header.meta.length_ticks)
-        .unwrap_or(0)
-}
-
 pub fn is_auto(path: &Path) -> bool {
     path.extension().is_some_and(|e| e == "h2film")
         && path
@@ -245,9 +159,10 @@ fn saved(path: &Path) -> bool {
     path.with_extension("h2film.saved").is_file()
 }
 
-/// Delete one automatic film with its stats, film file and pin.
+/// Delete one automatic film: its film file, its stats container and its
+/// pin.
 pub fn remove(path: &Path) -> anyhow::Result<()> {
-    for extra in ["h2stats", "h2f", "h2film.saved"] {
+    for extra in ["h2stats", "h2film.saved"] {
         match fs::remove_file(path.with_extension(extra)) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             r => r?,
@@ -260,9 +175,12 @@ pub fn remove(path: &Path) -> anyhow::Result<()> {
 }
 
 /// Make room for one more automatic film: keep the `keep - 1` newest
-/// unsaved automatic films and every saved one, and remove automatic films
-/// a stopped session left unsealed. Films named by `--film` and downloaded
-/// archives are never touched. Returns the removed paths.
+/// unsaved automatic films and every saved one. An unsealed automatic film
+/// untouched for [`ABANDONED_AFTER`] (its session was killed) is sealed at
+/// the ticks it holds up to its last checkpoint ([`film::file::recover`])
+/// and kept, or removed when it does not read; a newer unsealed film is a
+/// recording in progress and is left alone. Films named by `--film` and
+/// downloaded archives are never touched. Returns the removed paths.
 pub fn prune(dir: &Path, keep: usize, now: SystemTime) -> anyhow::Result<Vec<PathBuf>> {
     let mut sealed = Vec::new();
     let mut removed = Vec::new();
@@ -277,7 +195,10 @@ pub fn prune(dir: &Path, keep: usize, now: SystemTime) -> anyhow::Result<Vec<Pat
         if !entry.file_type()?.is_file() || !is_auto(&path) || saved(&path) {
             continue;
         }
-        if film::LibraryEntry::read(&path).is_ok() {
+        let film = fs::File::open(&path)
+            .map_err(anyhow::Error::from)
+            .and_then(film::file::FilmReader::open);
+        if film.as_ref().is_ok_and(|reader| reader.sealed) {
             sealed.push(path);
             continue;
         }
@@ -287,9 +208,22 @@ pub fn prune(dir: &Path, keep: usize, now: SystemTime) -> anyhow::Result<Vec<Pat
             .ok()
             .and_then(|m| now.duration_since(m).ok())
             .is_some_and(|age| age >= ABANDONED_AFTER);
-        if idle {
-            remove(&path)?;
-            removed.push(path);
+        if !idle {
+            continue;
+        }
+        // A killed recording's film: sealed at what it holds when that is a
+        // game start and at least one tick, else removed.
+        let ticks = film
+            .ok()
+            .filter(|reader| !reader.game_starts.is_empty())
+            .map(|reader| reader.length_ticks)
+            .filter(|&ticks| ticks > 0);
+        match ticks.map(|ticks| film::file::recover(&path, ticks)) {
+            Some(Ok(())) => sealed.push(path),
+            _ => {
+                remove(&path)?;
+                removed.push(path);
+            }
         }
     }
     // Names carry the start time, so the newest sort last.

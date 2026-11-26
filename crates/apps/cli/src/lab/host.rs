@@ -1864,7 +1864,15 @@ fn keep_film(cfg: &HostConfig, id: &str, run: &RunReq) -> (Option<String>, Vec<S
     if !src.is_file() {
         return (None, vec![format!("film {name}: the game wrote no film")]);
     }
-    if let Err(e) = fs::hard_link(&src, &dest).or_else(|_| fs::copy(&src, &dest).map(|_| ())) {
+    // The film file and its stats container beside it.
+    let keep = |src: &Path, dest: &Path| {
+        fs::hard_link(src, dest).or_else(|_| fs::copy(src, dest).map(|_| ()))
+    };
+    let kept = keep(&src, &dest).and_then(|()| {
+        let stats = film::file::stats_of(&src);
+        if stats.is_file() { keep(&stats, &film::file::stats_of(&dest)) } else { Ok(()) }
+    });
+    if let Err(e) = kept {
         return (None, vec![format!("film {name}: keeping a copy in the run failed: {e}")]);
     }
     match film::LibraryEntry::read(&dest) {

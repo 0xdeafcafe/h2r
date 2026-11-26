@@ -1064,7 +1064,8 @@ fn viewer_skips_follow_the_light_profile_and_independent_switches() {
     }
 }
 
-/// A player session's film: recorded by default (`auto`) or with `--film`.
+/// A player session's recording: by default (`auto`) into the film
+/// library `dir/name`, or with `--film` to the film `dir/name`.
 fn recording(dir: &Path, name: &str, auto: bool) -> Arc<crate::theater::Session> {
     let opts = crate::RunOpts {
         disc: PathBuf::new(),

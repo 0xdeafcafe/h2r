@@ -48,9 +48,10 @@ pub(in crate::theater) fn game(options: &[u8], words: [u32; 2]) -> runtime::Gues
     g
 }
 
-fn recorder(dir: &Temp, name: &str) -> Arc<Session> {
+/// A default recording into the library `dir`.
+fn recorder(dir: &Temp) -> Arc<Session> {
     let facts = Facts { light: false, player_features: true, ..host_facts() };
-    Session::open(Some(dir.0.join(name)), None, facts, b"xbe", &options(&dir.0))
+    Session::open(Some(dir.0.clone()), None, facts, b"xbe", &options(&dir.0))
         .unwrap()
         .unwrap()
 }
@@ -63,7 +64,7 @@ fn the_active_options_and_both_random_words_are_copied_whole() {
         assert_eq!(copy_options(&g), Some(options.clone()));
         assert_eq!(random_words(&g).unwrap(), [0xdead_beef, 0x0bad_f00d]);
         let dir = Temp::new();
-        let rec = recorder(&dir, "a.h2film");
+        let rec = recorder(&dir);
         let header = rec.lock().header.clone();
         let start = first_update(&g, options.clone(), &header, None, 91).unwrap();
         assert_eq!(start.options, options);
@@ -85,7 +86,7 @@ fn the_main_menu_and_a_block_of_another_size_have_no_start() {
     assert!(copy_options(&menu).is_none());
     let g = game(&block(MODE_MULTIPLAYER, 0), [1, 2]);
     let dir = Temp::new();
-    let header = recorder(&dir, "a.h2film").lock().header.clone();
+    let header = recorder(&dir).lock().header.clone();
     assert!(first_update(&g, vec![0; OPTIONS_BYTES - 1], &header, None, 1).is_err());
     // No random words set is a named refusal, not a zero.
     let mut bare = arena();
@@ -114,18 +115,17 @@ fn a_reactivation_of_the_game_in_play_is_not_a_new_game() {
     assert!(starts.waiting());
 }
 
-/// One game of a synthetic session: activation, the first update, the
-/// observer's description, then `ticks` ticks. Returns the film tick of the
-/// first update.
-fn play(rec: &Session, menus: &runtime::Guest, options: &[u8], words: [u32; 2], ticks: u64) -> u64 {
+/// One game of a synthetic session: activation, which opens its film, the
+/// first update, the observer's description, then `ticks` ticks. Returns
+/// the film tick of the first update.
+pub(in crate::theater) fn play(rec: &Session, menus: &runtime::Guest, options: &[u8], words: [u32; 2], ticks: u64) -> u64 {
     let g = game(options, words);
     rec.game_activated(&g);
     let first = {
         let mut s = rec.lock();
-        let Mode::Record(r) = &s.mode else { panic!("a recording") };
-        let first = r.film.as_ref().unwrap().lock().unwrap().ticks() + 1;
         note_first_update(rec.video_menu.get(), &mut s, &g);
         let Mode::Record(r) = &mut s.mode else { panic!("a recording") };
+        let first = r.game.as_ref().expect("the game's film is open").film.ticks() + 1;
         r.meta.start_for_test(first, "zanzibar", film::blam::Mode::Custom);
         first
     };
@@ -141,62 +141,64 @@ fn end_game(rec: &Session, start: u64) {
         let mut s = rec.lock();
         let Mode::Record(r) = &mut s.mode else { panic!("a recording") };
         r.meta.start_for_test(start, "zanzibar", film::blam::Mode::Custom);
-        r.game_started_ms = Some(1_795_000_000_000 + start);
         r.match_over = true;
     }
     rec.finish(false).unwrap();
 }
 
 fn starts_of(path: &std::path::Path) -> Vec<film::start::GameStart> {
-    let mut reader =
-        film::file::FilmReader::open(fs::File::open(film::file::beside(path)).unwrap()).unwrap();
+    let mut reader = film::file::FilmReader::open(fs::File::open(path).unwrap()).unwrap();
     let blocks = reader.game_starts.clone();
     blocks.iter().map(|b| reader.game_start_at(b).unwrap()).collect()
 }
 
+/// The default films in `dir`: each film file with its stats container.
+fn films(dir: &Temp) -> Vec<PathBuf> {
+    fs::read_dir(&dir.0)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| super::super::autorecord::is_auto(p) && film::file::stats_of(p).exists())
+        .collect()
+}
+
 #[test]
-fn a_session_of_two_games_writes_a_game_start_for_each_at_its_first_update() {
+fn each_game_is_a_film_of_its_own_whose_start_is_at_tick_1() {
     let dir = Temp::new();
-    let rec = recorder(&dir, "auto-20261118-110640-000.h2film");
+    let rec = recorder(&dir);
     let menus = arena();
     for _ in 0..10 {
         rec.checkpoint(&menus);
     }
+    assert!(films(&dir).is_empty(), "the menus record nothing");
     let first_options = block(MODE_MULTIPLAYER, 1);
-    let one = play(&rec, &menus, &first_options, [11, 12], 30);
-    assert_eq!(one, 11, "the tick after the menu's ten");
-    end_game(&rec, one);
+    assert_eq!(play(&rec, &menus, &first_options, [11, 12], 30), 1);
+    end_game(&rec, 1);
     for _ in 0..5 {
         rec.checkpoint(&menus);
     }
     let second_options = block(MODE_CAMPAIGN, 2);
-    let two = play(&rec, &menus, &second_options, [21, 22], 20);
-    assert_eq!(two, 46);
-    end_game(&rec, two);
+    assert_eq!(play(&rec, &menus, &second_options, [21, 22], 20), 1);
+    end_game(&rec, 1);
     rec.finish(true).unwrap();
 
-    let films: Vec<_> = fs::read_dir(&dir.0)
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .filter(|p| super::super::autorecord::is_auto(p) && p.with_extension("h2f").exists())
-        .collect();
+    let films = films(&dir);
     assert_eq!(films.len(), 2, "one film for each game");
-    // The first game's film holds its own start; the second's, cut from the
-    // same file as it stood, holds the first's and then its own.
-    let mut all: Vec<_> = films.iter().map(|p| starts_of(p)).collect();
-    all.sort_by_key(|starts| starts.len());
-    let (a, b) = (&all[0], &all[1]);
-    assert_eq!(a.len(), 1);
-    assert_eq!(a[0].game.first_update, 11);
-    assert_eq!(a[0].options, first_options);
-    assert_eq!(a[0].random, [11, 12]);
-    assert_eq!(b.len(), 2);
-    assert_eq!(b[0].game.first_update, 11);
-    assert_eq!(b[1].game.first_update, 46);
-    assert_eq!(b[1].options, second_options);
-    assert_eq!(b[1].random, [21, 22]);
-    // Each carries the map the observer named and the recording's stamp.
-    for start in a.iter().chain(b) {
+    let mut all: Vec<_> = films
+        .iter()
+        .map(|p| {
+            let length = film::file::FilmActions::open(p).unwrap().length_ticks();
+            (length, starts_of(p))
+        })
+        .collect();
+    all.sort_by_key(|(length, _)| *length);
+    let [(20, second), (30, first)] = &all[..] else { panic!("lengths {all:?}") };
+    for (starts, options, words) in [(first, &first_options, [11, 12]), (second, &second_options, [21, 22])] {
+        assert_eq!(starts.len(), 1, "a film holds its own game's start only");
+        let start = &starts[0];
+        assert_eq!(start.game.first_update, 1);
+        assert_eq!(&start.options, options);
+        assert_eq!(start.random, words);
+        // It carries the map the observer named and the recording's stamp.
         assert_eq!(start.game.descriptor.map.name, "zanzibar");
         assert_eq!(start.stamp.simulation_abi, "h2-sim/2");
         assert!(start.game.started_ms > 0);
@@ -206,7 +208,7 @@ fn a_session_of_two_games_writes_a_game_start_for_each_at_its_first_update() {
 #[test]
 fn a_game_whose_first_update_cannot_be_read_still_records_its_ticks() {
     let dir = Temp::new();
-    let rec = recorder(&dir, "auto-20261118-110641-000.h2film");
+    let rec = recorder(&dir);
     // No random words: the start cannot be taken, and the film still is.
     let mut g = arena();
     g.map_zeroed(GLOBALS, 0x2000, Permissions::RW).unwrap();
@@ -226,4 +228,11 @@ fn a_game_whose_first_update_cannot_be_read_still_records_its_ticks() {
     }
     assert!(rec.lock().failure.is_none());
     rec.finish(true).unwrap();
+    // The film keeps its three ticks, with no start to play from.
+    let films = films(&dir);
+    assert_eq!(films.len(), 1);
+    let mut reader = film::file::FilmReader::open(fs::File::open(&films[0]).unwrap()).unwrap();
+    assert!(reader.sealed);
+    assert_eq!(reader.length_ticks, 3);
+    assert!(reader.game_start().unwrap().is_none());
 }

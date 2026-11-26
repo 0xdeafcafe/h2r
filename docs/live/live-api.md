@@ -540,8 +540,8 @@ manifest of immutable parts that together hold the original file.
 A retry after publication preserves the selected bytes and summary.
 Older receipts resolve to `films/<game>.h2film`.
 
-A host sends its film file (`.h2f`, [input-film.md](../game/input-film.md#layout))
-as a second object, with `?object=film` on the same routes: one POST up
+A host sends its film file (`<id>.h2film`, [input-film.md](../game/input-film.md#layout))
+after its stats stream (`<id>.h2stats`, `film::upload`), as a second object, with `?object=film` on the same routes: one POST up
 to 64 MiB, or numbered 16 MiB parts and a completion with the size and
 SHA-256. The film file and the stats stream can arrive in either order.
 Live checks the header, inflates the seed once to match its `game_id` to

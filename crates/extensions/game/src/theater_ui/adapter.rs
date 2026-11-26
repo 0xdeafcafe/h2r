@@ -685,23 +685,14 @@ pub(super) fn save_playback(recording: &Path, dir: &Path) -> anyhow::Result<()> 
         if library.get(&entry.meta.id).is_ok() {
             return library.save(&entry.meta.id);
         }
+        // The film file, and its stats container beside it.
         let target = dir.join(format!("saved-{}.h2film", live_proto::sign::random_id()));
         fs::hard_link(recording, &target)?;
-        let stats = recording.with_extension("h2stats");
-        if let Err(error) = fs::hard_link(&stats, target.with_extension("h2stats"))
+        if let Err(error) =
+            fs::hard_link(film::file::stats_of(recording), film::file::stats_of(&target))
             && error.kind() != std::io::ErrorKind::NotFound
         {
             let _ = fs::remove_file(&target);
-            return Err(error.into());
-        }
-        // The film file travels with the film when there is one.
-        if let Err(error) = fs::hard_link(
-            film::file::beside(recording),
-            film::file::beside(&target),
-        ) && error.kind() != std::io::ErrorKind::NotFound
-        {
-            let _ = fs::remove_file(&target);
-            let _ = fs::remove_file(target.with_extension("h2stats"));
             return Err(error.into());
         }
     }

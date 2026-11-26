@@ -1,5 +1,5 @@
 use super::*;
-use crate::level_boot::{MODE_CAMPAIGN, MODE_MULTIPLAYER};
+use crate::level_boot::MODE_CAMPAIGN;
 use crate::theater::actions::{apply, apply_body, at_update, capture_body};
 use crate::theater::game_start::first_update;
 use crate::theater::game_start::tests::{Temp, block, game, RANDOM};
@@ -73,37 +73,26 @@ fn applied(w: &mut FilmWriter<Cursor<Vec<u8>>>, g: &mut runtime::Guest, digest: 
     w.tail(&capture_body(&*g, UPDATE).unwrap()).unwrap();
 }
 
-/// The film file of a session of `menus` ticks and then these games, each
-/// after five more ticks of menus: ticks of play for each game, as a
-/// recording of the synthetic game writes them. `twice` is the game tick
-/// of the last game that applies its update twice, which is two film ticks.
+/// The film file of one game of `ticks` ticks of play, its start at tick
+/// 1, as a recording of the synthetic game writes it. `twice` is the game
+/// tick that applies its update twice, which is two film ticks.
 fn film_of(
     header: &film::Header,
-    menus: u64,
-    games: &[(Vec<u8>, [u32; 2], u64)],
+    options: &[u8],
+    words: [u32; 2],
+    ticks: u64,
     twice: Option<u64>,
 ) -> Vec<u8> {
     let seed = Seed { header: header.clone(), descriptor: Default::default() };
     let mut w = FilmWriter::new(Cursor::new(Vec::new()), &seed, 30).unwrap();
-    let none = [None; SEATS];
-    for _ in 0..menus {
-        w.push_tick(0, 0, &none).unwrap();
-    }
-    for (n, (options, words, ticks)) in games.iter().enumerate() {
-        if n > 0 {
-            for _ in 0..5 {
-                w.push_tick(0, 0, &none).unwrap();
-            }
+    let mut g = machine(options, words);
+    let start = first_update(&g, options.to_vec(), header, None, 1).unwrap();
+    w.game_start(&start).unwrap();
+    for game_tick in 1..=ticks {
+        if twice == Some(game_tick) {
+            applied(&mut w, &mut g, false);
         }
-        let mut g = machine(options, *words);
-        let start = first_update(&g, options.clone(), header, None, w.ticks() + 1).unwrap();
-        w.game_start(&start).unwrap();
-        for game_tick in 1..=*ticks {
-            if twice == Some(game_tick) && n + 1 == games.len() {
-                applied(&mut w, &mut g, false);
-            }
-            applied(&mut w, &mut g, true);
-        }
+        applied(&mut w, &mut g, true);
     }
     w.finish().unwrap().into_inner()
 }
@@ -111,26 +100,25 @@ fn film_of(
 struct Fixture {
     dir: Temp,
     file: std::path::PathBuf,
-    second: Vec<u8>,
+    /// The options the film's game starts from.
+    options: Vec<u8>,
     first_update: u64,
-    /// The film ticks of the second game: its game ticks, and one more when
-    /// one of them applied its update twice.
-    second_ticks: u64,
+    /// The film's ticks: the game's ticks, and one more when one of them
+    /// applied its update twice.
+    film_ticks: u64,
 }
 
-const MENUS: u64 = 10;
-const FIRST_GAME: u64 = 30;
-const SECOND_GAME: u64 = 40;
+const GAME: u64 = 40;
 
 impl Fixture {
-    /// A container recorded by a session, then the film file of a session:
-    /// menus, a game, menus, a second game.
+    /// A recording's stats container, then the film file of its game
+    /// written over the recording's.
     fn new() -> Self {
         Self::with(None)
     }
 
-    /// [`Fixture::new`], with the second game applying its update twice on
-    /// game tick `twice`.
+    /// [`Fixture::new`], with the game applying its update twice on game
+    /// tick `twice`.
     fn with(twice: Option<u64>) -> Self {
         let dir = Temp::new();
         let file = dir.0.join("fixture.h2film");
@@ -142,24 +130,15 @@ impl Fixture {
             rec.checkpoint(&menus);
         }
         rec.finish(true).unwrap();
-        let header = film::Reader::open(&file).unwrap().header;
-        let second = block(MODE_CAMPAIGN, 2);
-        let bytes = film_of(
-            &header,
-            MENUS,
-            &[
-                (block(MODE_MULTIPLAYER, 1), [11, 12], FIRST_GAME),
-                (second.clone(), [21, 22], SECOND_GAME),
-            ],
-            twice,
-        );
-        fs::write(film::file::beside(&file), bytes).unwrap();
+        let header = film::Reader::open(film::file::stats_of(&file)).unwrap().header;
+        let options = block(MODE_CAMPAIGN, 2);
+        fs::write(&file, film_of(&header, &options, [21, 22], GAME, twice)).unwrap();
         Self {
             dir,
             file,
-            second,
-            first_update: MENUS + FIRST_GAME + 5 + 1,
-            second_ticks: SECOND_GAME + u64::from(twice.is_some()),
+            options,
+            first_update: 1,
+            film_ticks: GAME + u64::from(twice.is_some()),
         }
     }
 
@@ -229,7 +208,7 @@ fn tick(
 }
 
 #[test]
-fn a_film_recorded_after_menus_and_a_first_game_plays_its_second_game_to_matching_digests() {
+fn a_film_plays_its_game_from_tick_1_to_matching_digests() {
     let fixture = Fixture::new();
     let session = fixture.open();
     assert!(session.plays_back());
@@ -237,9 +216,9 @@ fn a_film_recorded_after_menus_and_a_first_game_plays_its_second_game_to_matchin
     // The player answers the guest's tick count.
     assert!(session.lock().pacing.is_some());
     let start = session.game_start().unwrap();
-    assert_eq!(start.options, fixture.second);
-    assert_eq!(start.game.first_update, fixture.first_update);
-    assert_eq!(session.lock().length(), MENUS + FIRST_GAME + 5 + SECOND_GAME);
+    assert_eq!(start.options, fixture.options);
+    assert_eq!(start.game.first_update, 1);
+    assert_eq!(session.lock().length(), GAME);
 
     // The game's own ticks before its first update are not the film's.
     let menus = arena();
@@ -249,7 +228,7 @@ fn a_film_recorded_after_menus_and_a_first_game_plays_its_second_game_to_matchin
     assert_eq!(session.lock().tick, 0);
 
     // The player's shared random words are not the film's until the update.
-    let mut g = machine(&fixture.second, [999, 888]);
+    let mut g = machine(&fixture.options, [999, 888]);
     let mut ticks = 0;
     while tick(&session, &mut g, |_| ()) {
         ticks += 1;
@@ -257,12 +236,12 @@ fn a_film_recorded_after_menus_and_a_first_game_plays_its_second_game_to_matchin
             assert_eq!(session.lock().tick, fixture.first_update);
             assert_eq!([g.u32(RANDOM).unwrap(), g.u32(RANDOM + 4).unwrap()], [21, 22]);
         }
-        assert!(ticks <= SECOND_GAME, "the film ends with its last tick");
+        assert!(ticks <= GAME, "the film ends with its last tick");
     }
     let s = session.lock();
     assert_eq!(s.failure, None);
     assert!(s.complete);
-    assert_eq!((ticks, s.tick), (SECOND_GAME, MENUS + FIRST_GAME + 5 + SECOND_GAME));
+    assert_eq!((ticks, s.tick), (GAME, GAME));
 }
 
 #[test]
@@ -270,7 +249,7 @@ fn a_changed_start_hash_stops_before_the_first_update() {
     let fixture = Fixture::new();
     let session = fixture.open();
     // The player's arena is not the one the film started from.
-    let mut g = machine(&fixture.second, [21, 22]);
+    let mut g = machine(&fixture.options, [21, 22]);
     g.set_u32(STATE + 64, 0xfeed).unwrap();
     assert!(tick(&session, &mut g, |_| ()));
     let s = session.lock();
@@ -292,7 +271,7 @@ fn a_changed_start_hash_stops_before_the_first_update() {
 fn a_changed_action_stops_at_its_tick() {
     let fixture = Fixture::new();
     let session = fixture.open();
-    let mut g = machine(&fixture.second, [21, 22]);
+    let mut g = machine(&fixture.options, [21, 22]);
     let changed = 9;
     let mut n = 0;
     while tick(&session, &mut g, |g| {
@@ -316,7 +295,7 @@ fn a_changed_action_stops_at_its_tick() {
 fn a_game_that_skips_the_recorded_update_or_takes_one_the_film_does_not_hold_is_stopped() {
     let fixture = Fixture::new();
     let session = fixture.open();
-    let mut g = machine(&fixture.second, [21, 22]);
+    let mut g = machine(&fixture.options, [21, 22]);
     assert!(tick(&session, &mut g, |_| ()));
     // A tick that ends with no update taken has missed the film's actions.
     session.checkpoint(&g);
@@ -326,7 +305,7 @@ fn a_game_that_skips_the_recorded_update_or_takes_one_the_film_does_not_hold_is_
     // A second update in a tick takes the film's next tick, which the game
     // has not reached: its digest is not the game's.
     let session = fixture.open();
-    let mut g = machine(&fixture.second, [21, 22]);
+    let mut g = machine(&fixture.options, [21, 22]);
     for _ in 0..2 {
         let state = session.lock();
         at_update(&session, state, &mut g, Ok(UPDATE));
@@ -345,26 +324,26 @@ fn a_tick_that_applies_its_update_twice_replays_as_two_ticks() {
     let session = fixture.open();
     assert_eq!(
         session.lock().length(),
-        MENUS + FIRST_GAME + 5 + SECOND_GAME + 1,
+        GAME + 1,
         "the film holds a record for each application"
     );
-    let mut g = machine(&fixture.second, [999, 888]);
+    let mut g = machine(&fixture.options, [999, 888]);
     let mut ticks = 0;
     while tick(&session, &mut g, |_| ()) {
         ticks += 1;
-        assert!(ticks <= fixture.second_ticks, "the film ends with its last tick");
+        assert!(ticks <= fixture.film_ticks, "the film ends with its last tick");
     }
     let s = session.lock();
     assert_eq!(s.failure, None);
     assert!(s.complete);
-    assert_eq!((ticks, s.tick), (SECOND_GAME + 1, MENUS + FIRST_GAME + 5 + SECOND_GAME + 1));
+    assert_eq!((ticks, s.tick), (GAME + 1, GAME + 1));
 }
 
 #[test]
 fn a_recorded_body_is_written_over_the_engines_and_the_head_and_stamp_are_not() {
     let fixture = Fixture::new();
     let session = fixture.open();
-    let mut g = machine(&fixture.second, [21, 22]);
+    let mut g = machine(&fixture.options, [21, 22]);
     g.set_u32(UPDATE, 0xaaaa_0001).unwrap();
     g.set_u32(UPDATE + 4, 0xaaaa_0002).unwrap();
     g.set_u32(UPDATE + 0x4040, 0xbbbb_0001).unwrap();
@@ -422,7 +401,7 @@ fn two_applications_in_one_tick_give_two_records() {
     // Three game ticks; the second applies its update twice.
     let (_dir, file, rec) = recorded(&[&[10], &[11, 12], &[13]]);
     rec.finish(true).unwrap();
-    let mut actions = film::file::FilmActions::open(&film::file::beside(&file)).unwrap();
+    let mut actions = film::file::FilmActions::open(&file).unwrap();
     assert_eq!(actions.length_ticks(), 4);
     for (tick, n) in [(1, 10), (2, 11), (3, 12), (4, 13)] {
         let row = actions.row(tick).unwrap();
@@ -442,7 +421,7 @@ fn a_stamp_that_skips_cuts_the_film_at_the_tick_before() {
         assert!(r.frame.stamp_skipped && r.match_over, "the film is to be cut");
     }
     rec.finish(true).unwrap();
-    let mut actions = film::file::FilmActions::open(&film::file::beside(&file)).unwrap();
+    let mut actions = film::file::FilmActions::open(&file).unwrap();
     assert_eq!(actions.length_ticks(), 2);
     assert_eq!(actions.row(2).unwrap().inputs, vec![seat_input(11)]);
 }
@@ -475,14 +454,19 @@ fn a_film_with_no_game_start_does_not_play_from_one() {
     let dir = Temp::new();
     let file = dir.0.join("old.h2film");
     assert!(Play::open(&file).unwrap().is_none(), "no film file");
-    fs::write(film::file::beside(&file), b"not a film").unwrap();
+    fs::write(&file, b"not a film").unwrap();
     assert!(Play::open(&file).is_err(), "a film file that is not one");
 }
 
 #[test]
-fn a_film_that_predates_game_starts_is_refused_by_name_and_not_played_another_way() {
+fn a_film_with_no_game_start_is_refused_by_name_and_not_played_another_way() {
     let fixture = Fixture::new();
-    fs::remove_file(film::file::beside(&fixture.file)).unwrap();
+    // The recording's header and a tick, with no game start.
+    let header = film::Reader::open(film::file::stats_of(&fixture.file)).unwrap().header;
+    let seed = Seed { header, descriptor: Default::default() };
+    let mut w = FilmWriter::new(Cursor::new(Vec::new()), &seed, 30).unwrap();
+    w.push_tick(0, 0, &[None; SEATS]).unwrap();
+    fs::write(&fixture.file, w.finish().unwrap().into_inner()).unwrap();
     let Err(error) = fixture.try_open() else {
         panic!("a film with no game start does not open");
     };
@@ -498,7 +482,7 @@ fn verification_counts_only_the_requested_ticks_and_reports_the_first_divergence
     let request = Verify { from: Some(first + 10), to: Some(first + 19) };
 
     let session = fixture.verifier(request, &report);
-    let mut g = machine(&fixture.second, [21, 22]);
+    let mut g = machine(&fixture.options, [21, 22]);
     while tick(&session, &mut g, |_| ()) {}
     assert!(session.lock().complete);
     session.finish(true).unwrap();
@@ -508,7 +492,7 @@ fn verification_counts_only_the_requested_ticks_and_reports_the_first_divergence
 
     // A changed action inside the range is the report's first divergence.
     let session = fixture.verifier(request, &report);
-    let mut g = machine(&fixture.second, [21, 22]);
+    let mut g = machine(&fixture.options, [21, 22]);
     let changed = 15;
     let mut n = 0;
     while tick(&session, &mut g, |g| {
@@ -530,7 +514,7 @@ fn verification_counts_only_the_requested_ticks_and_reports_the_first_divergence
 fn a_step_advances_one_checked_tick_and_holds() {
     let fixture = Fixture::new();
     let session = fixture.open();
-    let mut g = machine(&fixture.second, [21, 22]);
+    let mut g = machine(&fixture.options, [21, 22]);
     assert!(tick(&session, &mut g, |_| ()));
     let at = session.lock().tick;
     assert!(session.transport(api::STEP, json!({"ticks":1})).is_err(), "a playing film does not step");
@@ -559,7 +543,7 @@ fn a_launch_seek_reports_its_remaining_ticks_and_holds_at_its_target() {
         })
         .unwrap()
         .unwrap();
-    let mut g = machine(&fixture.second, [21, 22]);
+    let mut g = machine(&fixture.options, [21, 22]);
     let seek = |session: &Session| session.lock().seek_info().unwrap();
     assert_eq!((seek(&session).source, seek(&session).remaining_ticks), (api::SeekSource::Boot, target));
     for remaining in (0..=4).rev() {
