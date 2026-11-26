@@ -1,9 +1,10 @@
-//! Materialise a Forge document's placement, entry, tag-field and link
-//! edits into a local map package.
+//! Materialise a Forge document's placement, entry, tag-field, link and
+//! block-out piece edits into a local map package.
 //! The source maps are read-only. Scenario commands and tag patches go
 //! through scenario-edit's writer.
 #![forbid(unsafe_code)]
 
+pub mod blockout;
 mod entry;
 mod ground;
 mod kit;
@@ -23,7 +24,9 @@ use content::{
     manifest::{FORGE_FORMAT, ForgeLayer, MANIFEST_FILE, ResultInfo},
     store,
 };
-use forge_doc::{BlockKind, BuilderVersions, ForgeDoc, Limits, MapRef, Recipe, Refusal};
+use forge_doc::{
+    BlockKind, BuilderVersions, Edit, Forge, ForgeDoc, Limits, MapRef, Recipe, Refusal,
+};
 use map::{CacheType, Map};
 use scenario_edit::{MapSource, Session, layout, package::geometry_hash, save};
 
@@ -77,6 +80,16 @@ pub enum Error {
     SourceSize(String),
     #[error("forge_kit: {0}")]
     Kit(&'static str),
+    /// A block-out piece's definition does not install on this map: a
+    /// `Map` material names a shader the base lacks, the map has nothing
+    /// the pieces draw with, or a definition does not generate
+    /// (docs/game/forge-blockout.md, "Materialising").
+    #[error("forge_piece: {0}")]
+    Piece(String),
+    /// A definition the document needs does not fit the map's tag memory
+    /// once everything the cut order drops is dropped.
+    #[error("forge_piece_cost: {0}")]
+    PieceCost(Box<blockout::Refused>),
     /// The document's objects have game types and the build names no
     /// engine, or one that is no engine's.
     #[error("forge_game: {0}")]
@@ -107,6 +120,9 @@ pub struct Built {
     pub reserves: Vec<Reservation>,
     /// What the AI ground build made, for a document that asks for it.
     pub ground: Option<GroundReport>,
+    /// The block-out definitions installed and what the cut order dropped,
+    /// for a document with a piece or a kit build.
+    pub blockout: Option<blockout::Report>,
     /// Every base entry the document names with a print, each compared
     /// with the disc's row and found equal, by block then index.
     pub prints: Vec<Printed>,
@@ -207,6 +223,7 @@ pub fn build_for(
         lookup(&doc.base.map).ok_or_else(|| Error::MissingMap(doc.base.map.clone()))?;
     source.bytes = Some(check_map(&doc.base, &source, true)?);
     let mut map = source.open()?;
+    let base_source = source.clone();
     if map.header().cache_type != CacheType::Multiplayer {
         return Err(Error::BaseType(doc.base.map.clone()));
     }
@@ -256,7 +273,43 @@ pub fn build_for(
         None => std::borrow::Cow::Borrowed(doc),
     };
 
-    let mut apply = placement::Materialiser::new(&mut session, &mut map);
+    // Block-out definitions are tags of the map: they are installed on the
+    // base, with their crate palette rows, and the scenario is opened again
+    // on the map that gives, so every placement edit goes through it.
+    let has_pieces = for_game
+        .ops
+        .iter()
+        .any(|op| matches!(op.edit, Edit::Forge(Forge::Piece { .. })));
+    let needed = if has_pieces {
+        blockout::definitions(&for_game.pieces(&limits.base_counts)?)
+    } else {
+        Vec::new()
+    };
+    let mut blockout_report = None;
+    if !needed.is_empty() || needs_kit {
+        let base = base_source
+            .bytes
+            .clone()
+            .ok_or(scenario_edit::Error::Invalid("the base map is not in memory"))?;
+        let installed =
+            blockout::install(&base, &needed, needs_kit, blockout::headroom(&base)?)?;
+        if let Some(bytes) = installed.bytes {
+            let mut rebuilt = base_source;
+            rebuilt.bytes = Some(bytes.into());
+            map = rebuilt.open()?;
+            session = Session::new();
+            session.build_scenes = false;
+            session.open_named(rebuilt, &doc.base.map)?;
+        }
+        blockout_report = Some(installed.report);
+    }
+    let piece_rows = blockout_report
+        .as_ref()
+        .map(blockout::Report::palette_rows)
+        .unwrap_or_default();
+
+    let mut apply =
+        placement::Materialiser::new(&mut session, &mut map).with_pieces(piece_rows);
     forge_doc::replay(&for_game, &limits, &mut apply).map_err(|refusal| match refusal {
         Refusal::Print { block, index } => Error::Print { block, index },
         refusal => Error::Document(refusal),
@@ -334,6 +387,7 @@ pub fn build_for(
         map: output,
         reserves,
         ground: report,
+        blockout: blockout_report,
         prints,
     })
 }

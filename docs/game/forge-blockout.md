@@ -1,6 +1,6 @@
 # Forge block-out: pieces, the natural set and the dev textures
 
-Status: Partly built. Slices BO1 and BO3 are built: `forge-shapes` has the definition, the canonical name, the structural generators (block, wall, floor plate, ramp, wedge, stairs, cylinder, arch), `STARTER`, and the natural set (`noise`, `hull` and the five rock generators). Slice BO2 is built: `crates/formats/dev-texture` has the rasters, the font and the label layout. Slice BO5 is built: `forge-doc` has `Forge::Piece`, `PIECE_TAG`, the validator's rules and `ForgeDoc::pieces` (document format 6). The rest of the page is a design. It is slice F8 of [forge-design.md](forge-design.md), split into slices BO1 to BO12 below.
+Status: Partly built. Slices BO1 and BO3 are built: `forge-shapes` has the definition, the canonical name, the structural generators (block, wall, floor plate, ramp, wedge, stairs, cylinder, arch), `STARTER`, and the natural set (`noise`, `hull` and the five rock generators). Slice BO2 is built: `crates/formats/dev-texture` has the rasters, the font and the label layout. Slice BO5 is built: `forge-doc` has `Forge::Piece`, `PIECE_TAG`, the validator's rules and `ForgeDoc::pieces` (document format 6). Slice BO4 is built: `crates/tools/blockout-kit` installs a definition as tags with the dev set and its `Cost`, and has an invented map for tests. Slice BO6 is built: `forge_build::blockout` materialises a document's pieces (the definitions, the crate palette rows, the starter set and the cut order in the kit) and `blockout_kit::palette` is the palette survey. The rest of the page is a design. It is slice F8 of [forge-design.md](forge-design.md), split into slices BO1 to BO12 below.
 Code: `crates/formats/forge-shapes` (the definitions and generators), `crates/formats/forge-doc/src/piece.rs` (the document), `crates/formats/dev-texture` (the dev textures), `crates/tools/blockout-kit` (a definition as tags), `crates/tools/forge-build/src/blockout.rs` (materialising), `crates/extensions/forge/src/piece.rs` (the session). Tests: named per slice under "Slices".
 Switch: none. Two settings of the profile's store, `forge.blockout.grid` and `forge.blockout.dev_view` ("In the monitor").
 
@@ -142,16 +142,40 @@ placements with equal definitions share one set of tags.
 `blockout_kit::install(&mut TagSet, &PieceDef, &Facts) -> Result<Installed>`
 adds a definition's tags to a map's tag set, as `pogo_kit::kit` and
 `stage_kit::kit` add theirs. `Facts` is what is read from the base map
-when it is built: the shader templates (`h1convert::shad::Library`),
-the global material by name and the palette survey ("Materials").
+when it is built: the shader templates (`h1convert::shad::Library`,
+of which the pieces draw with `shad::TEX_BUMP`), the global material
+(`h1objects::rebuild::PIECE_MATERIAL`'s where the map has it, else the
+first). Every tag
+is at the definition's path, and a definition the set already holds is
+refused; so is one that does not generate, whose collision fails its
+check, or whose `Map` material names a shader the set lacks, with
+nothing added. A set made with `TagSet::from_map` takes
+`blockout_kit::make_index_room` first.
 
 | Tag | Made from | With |
 |---|---|---|
-| `bloc` | its definition in `tags::defs`, as `h1objects::rebuild::scenery` writes a `scen` | the `hlmt`, a bounding radius from the size |
-| `hlmt` | `h1objects::rebuild::model` | the `mode`, `coll` and `phmo`; one region, one permutation |
-| `mode` | the shell's faces as triangle lists, through `h1_assets::models::mode::convert_model` as `pogo_kit::kit::install_model` does | one part per material in use; absent when every face is `Nodraw` or `Clip` |
-| `coll` | `collision_build::build` over the shell, `collision_build::coll::encode_collision` | one BSP, one material, no BSP physics slots |
-| `phmo` | `h1objects::rebuild::physics_model` over the hulls | one rigid body, `blockout_kit::PIECE_BODY`: flags 0, motion 5 |
+| `bloc` | its definition in `tags::defs`, as `h1objects::rebuild::scenery` writes a `scen` (`blockout-kit/src/object.rs`) | the `hlmt`, the bounding sphere of the bounds |
+| `hlmt` | `h1objects::rebuild::model` | the `mode` (none for a barrier), `coll` and `phmo`; one region and permutation, `default`; one node, `piece`, at the origin; the collision material `blockout` mapped to the global one |
+| `mode` | the mesh of `blockout_kit::mesh`, through `h1_assets::models::mode::convert_model` as `pogo_kit::kit::install_model` does | one part per shader in use, triangle lists; absent when every face is `Nodraw` or `Clip` |
+| `coll` | `collision_build::build` over the shell, checked by `collision_build::verify::check`, the BSP's eight blocks (`Bsp::encode_blocks`) written as a tag tree so the set interns its names (`blockout_kit::collision`) | one BSP, one material, one node, no BSP physics slots |
+| `phmo` | `h1objects::rebuild::physics_model` over the hulls (`blockout_kit::physics`) | one rigid body on no node, `blockout_kit::piece_body`: flags 0, motion 5, the size class `+0x1e` of the retail band its bounding sphere falls in; a mass of 1,000 kg whatever the size |
+
+**The render mesh** (`blockout_kit::mesh::build`). A face draws with
+its role's material: `Dev` the role's tile, `Map` the named shader,
+`Nodraw` and `Clip` not at all. A `Dev` face that is a rectangle, on a
+shape that is not a rock, carries its plate: the face is cut into four
+frame quads around the plate, drawn with the tile, and the plate's 48
+cell quads, drawn with the font atlas, `v` down. On a wall the plate's
+up is the edge nearest world up and its x runs to the right seen from
+outside; on a floor or a ceiling its x is the edge nearest world x. A
+rock's vertex takes the mean normal of the faces at it within 40
+degrees of its own; any other vertex its face's.
+
+**The dev twin.** A definition whose roles are not all `Dev` also gets
+the `dev` render model, every role `Dev`, at the path of
+`PieceDef::dev(shape, size, param)`, so definitions that differ only in
+materials share one; an all-`Dev` definition's render model is that
+twin. A definition with no drawn face has neither.
 
 A piece is a crate and not scenery because the engine gives a rigid
 body only to bipeds, vehicles, machines, crates and creatures: scenery
@@ -164,8 +188,11 @@ tests (bullets, projectiles, a biped's ground checks); the `phmo`
 stands in front of Havok. A `coll` with a `phmo` beside it has no BSP
 physics slots (**V**, the rule in the same section).
 
-`Installed` lists the tags and `Cost`: the tag memory and the raw bytes
-the definition takes. Tag memory is the scarce one: multiplayer maps
+`Installed` lists the tags and `Cost`: what the install added, the dev
+set included when this install added it. `Cost::tag_memory` is each
+added tag's size as `map::build` lays it out (`blockout_kit::tag_size`:
+the blocks in emission order, each at its alignment),
+`Cost::raw` the raw bytes, `Cost::tags` the index entries. Tag memory is the scarce one: multiplayer maps
 have 0.1 to 1.5 MiB of headroom and one has none
 ([forge-design.md](forge-design.md), "The kit").
 
@@ -183,20 +210,40 @@ engine allows at runtime".
 | The same, with no slot | Rebuild | the piece is **pending**: drawn as a ghost with no collision until **Rebuild map** ([forge-design.md](forge-design.md), "Rebuild map") |
 | Dev view | Live, this machine only | "The dev textures" |
 
-**Materialising.** `forge_build::blockout` collects the definitions of
-the document's live pieces in name order, installs each once, adds one
-row a definition to the scenario's crate palette, and resolves every
-`PIECE_TAG` placement to its definition's row. The kit recipe
-(`forge_kit`) also installs the dev set, the **starter set**
-(`forge_shapes::STARTER`: about two dozen common sizes, so a fresh
-session places pieces with no rebuild) and the slots. A published play
-document has no kit, so it holds only the definitions its pieces use.
+**Materialising.** `forge_build::blockout::definitions` collects the
+definitions of the document's live pieces in name order, once each.
+`blockout::install` installs each on the base map
+(`blockout_kit::install` over `TagSet::from_map`) and writes the
+scenario's crate palette again as a new block: the base's rows, then one
+row a definition. The scenario editor then opens the map that gives, and
+the placement edits go through it as any other: a `PIECE_TAG` palette
+write is the placeholder -1, and `Apply::pieces`
+(`forge_build::placement`) gives every piece's placement its
+definition's row. The kit recipe (`KIT_RECIPE`) also installs the dev
+set first and the **starter set** (`forge_shapes::STARTER`: about two
+dozen common sizes, every role `Dev`, so a fresh session places pieces
+with no rebuild; `forge_build::kit::starter`) after the document's
+definitions, each with a palette row after theirs, and, with slice
+BO10, the slots. A published play document has no kit, so it holds only
+the definitions its pieces use. `Built::blockout` reports each row, its
+`Cost`, what was cut and the headroom. A kit build on a map with nothing
+the pieces draw with (no `tex_bump` template, `Facts::read`) carries no
+block-out set and says why (`Report::unavailable`); a document with a
+piece on such a map is refused.
 
-**The cut order.** A kit that does not fit the map's tag memory drops,
-in this order and so alike on every machine: the slots from the last,
-the starter set from the last, then a definition the document needs is
-refused by name with its `Cost` and the headroom. The dev set is
-dropped last of all; without it a `Dev` material is refused by name.
+**The cut order.** A kit that does not fit the map's tag memory (what
+the tags add, as `Cost::tag_memory`, and the palette block, against
+`blockout::headroom`: `max_metadata_size` less the header's `+0x1c`)
+drops, in this order and so alike on every machine: the slots from the
+last, the starter set from the last, then the kit's own dev set; then
+the first definition the document needs that does not fit, in name
+order, is refused by name with its `Cost` and the headroom left for it
+(`Error::PieceCost`). The dev set is cut only where no definition the
+document needs draws a `Dev` face, since any drawn definition has the
+dev render model; a definition whose install adds the dev set is
+refused with the dev set in its cost, the sentence naming its `Dev`
+material. A `Map` material whose shader the base lacks is refused by
+name before anything is installed (`Error::Piece`).
 
 **Pending pieces.** `Session::pieces` knows each piece's state:
 `live`, `slot` or `pending`. A pending piece has no object. The marker
@@ -245,17 +292,22 @@ A face draws with the material of its role.
 - **`Clip`** on every role is a barrier: no render model at all
   ([forge-features.md](forge-features.md), "Invisible barriers").
 
-**The palette survey.** `blockout_kit::palette::survey(&mut Map)` lists
-the surfaces the level is made of, for the Material picker: for each
-material of the first structure BSP, its shader's key, the area of the
-render triangles drawn with it, the median length in world units of one
-repeat of its texture across those triangles (so a piece tiles at the
-density the level does, rounded to a power of two of units), and its
-class from the collision material's global material name
-(`palette::class`: rock and ground, metal, other). The picker lists
-**Dev** first, then the map's surfaces by area, named by the shader's
-base name. The natural set starts as the largest surface of the rock
-and ground class, or `Dev` on a map with none.
+**The palette survey.** `blockout_kit::palette::survey(&mut Map, raw)`
+lists the surfaces the level is made of, for the Material picker: for
+each shader drawn by the scenario's structure BSPs
+(`scenario_edit::geometry::world_parts`, transparent parts left out),
+its key, the area of the render triangles drawn with it, the median
+length in world units of one repeat of its texture across those
+triangles (each triangle's mean of the lengths a unit step of `u` and
+of `v` spans; `Surface::tile` is that in units rounded to a power of
+two by ratio, so a piece tiles at the density the level does), and its
+class from the global material name of the collision material
+(`sbsp +0x0c`) that names the same shader (`palette::class`: rock and
+ground, metal, other). `palette::rank` does the ranking over invented
+triangles in the tests. The picker lists **Dev** first, then the map's
+surfaces by area, named by the shader's base name. The natural set
+starts as the largest surface of the rock and ground class
+(`palette::natural`), or `Dev` on a map with none.
 
 ## The natural set
 
@@ -380,8 +432,9 @@ and has no plate.
 **How it is made.** A CPU raster when the kit is built, not a shader of
 the renderer: `dev_texture::tile(family) -> Image` and
 `dev_texture::font() -> Image` draw RGBA, and `blockout_kit::dev`
-writes each as a `bitm` (`h1_assets::bitmaps::convert::convert_with`,
-DXT1 with its mips, as `pogo_kit::texture` writes its atlas) with a
+writes each as a `bitm` (`blockout_kit::texture`: DXT5 with its mips
+and opaque alpha through `h1_assets::bitmaps::convert::convert_with`, as
+`pogo_kit::texture` writes its atlas) with a
 `shad` on a template the map has (`h1convert::shad::Library::build`
 over `shad::TEX_BUMP`, our bitmap as the base map). Four tiles (Floor,
 Wall, Ceiling, Trim) and the font are tags, at
@@ -390,8 +443,10 @@ the one form the lifted D3D path, the native renderer, a film and
 another player's machine all draw without code of their own, and the
 game's texture cache and mips serve it as any texture. The rasters are
 a pure function of `dev_texture::VERSION`; a process draws and encodes
-them once (`blockout_kit::dev::encoded`) and keeps the encoded bytes
-under `<data>/cache/forge-blockout/dev-<VERSION>` for the next.
+them once (`blockout_kit::dev::encoded`), and `dev::encoded_in(data)`
+keeps the encoded chains under `<data>/cache/forge-blockout/dev-<VERSION>`
+for the next. The dev set is added the first time a definition draws a
+`Dev` face, and found after that.
 
 **Dev view.** A definition with a material other than `Dev` has two
 render models: `look`, with its materials, and `dev`, every role `Dev`
@@ -439,7 +494,8 @@ skin in their family's colour.
 
 - **Document**: `Forge::Piece`, `forge_doc::PIECE_TAG`,
   `ForgeDoc::pieces` (each live piece's placement and definition).
-- **Materialiser**: `forge_build::blockout::{definitions, install}`;
+- **Materialiser**: `forge_build::blockout::{definitions, install,
+  headroom}`, `Built::blockout`;
   `blockout_kit::{install, dev, slot, palette}`.
 - **Session**: `Session::place_piece`, `set_piece`, `pieces`;
   `World::piece_loaded(name)`, `World::slot_take`, `slot_write`.
@@ -546,6 +602,11 @@ that has not run.
   after the object is made again. BO4's first game run places one
   block; if it fails, the piece becomes a machine, whose body the
   engine keyframes ([collision.md](../formats/collision.md)).
+- That an `hlmt` naming no render model (a barrier) makes an object
+  that collides and is not drawn.
+- That a plate reads upright and unmirrored in the game: the cells map
+  `v` down, as an image's rows are, and the frame quads meet the cells
+  with T-junctions, which may show as specks on the D3D path.
 - That a structure's shader draws correctly on an object, where no
   lightmap reaches it. If it does not, a `Map` material becomes a
   generated `shad` on `shad::TEX_BUMP` binding the surveyed shader's
