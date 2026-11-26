@@ -20,7 +20,7 @@ use crate::net::HOST_SEAT;
 /// The set and the one it was loaded with, beside the document.
 #[derive(Clone, Debug, Default)]
 pub(super) struct Track {
-    set: Option<Def>,
+    pub(super) set: Option<Def>,
     loaded: Option<Def>,
 }
 
