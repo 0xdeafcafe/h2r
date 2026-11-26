@@ -538,6 +538,30 @@ pub fn owned_session(m: &dyn GuestMemory) -> Option<u32> {
         .then_some(s)
 }
 
+/// Whether this console hosts a matchmade match's session now, in any
+/// state: the life cycle matchmaking's (types 6 to 9, networking on,
+/// [`crate::lobby::matchmaking_cycle`]), its target session there with a
+/// state, distributed, and this console its host. Between the lobby's
+/// advertisement going and the first frame this console serves the game
+/// ([`serves_game`]) the session leaves state 5 for arbitration and the
+/// handoff (state 7) while the map loads: a Clankermatch's phantoms are
+/// still its peers then, and its fill holds (docs/game/bots.md §8.4).
+pub fn hosts_match(m: &dyn GuestMemory) -> bool {
+    if !crate::lobby::matchmaking_cycle(m) {
+        return false;
+    }
+    let s = match crate::lobby::game_session(m) {
+        Ok(s) if s != 0 => s,
+        _ => return false,
+    };
+    let read = |a: u32| m.u32(a).ok();
+    let host = read(s + HOST_PEER);
+    read(s + STATE).is_some_and(|state| state != 0)
+        && read(s + PROTOCOL) == Some(PROTOCOL_DISTRIBUTED)
+        && host.is_some()
+        && host == read(s + LOCAL_PEER)
+}
+
 /// The player slots free for a player with no reservation, as the
 /// host's add (`0x60000` → `0x62e30`) counts them: the session's most
 /// players (`+0x4994`) less its players (`+0x1118`) less the

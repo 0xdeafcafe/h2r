@@ -204,6 +204,10 @@ impl hooks::Feature for Bots {
                     // Clankermatch's lobby advertisement is gone by
                     // then, its match not.
                     || bots::phantom::session::serves_game(&*rt.memory()),
+                    // The match session this console hosts: through
+                    // arbitration and the handoff (state 7) before the
+                    // game is served, a Clankermatch's bots stay.
+                    || bots::phantom::session::hosts_match(&*rt.memory()),
                     // Why a Clankermatch lobby sits (docs/game/bots.md
                     // §8.4): the host update's checks, read the same way.
                     || match bots::lobby::match_wait::read(&*rt.memory()).ok()? {

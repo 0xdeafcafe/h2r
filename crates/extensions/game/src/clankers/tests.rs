@@ -926,6 +926,78 @@ fn a_clankermatchs_bots_outlive_the_advertisement_while_the_game_runs() {
     assert!(ph.list().is_empty());
 }
 
+/// The user's ranked Clankermatch (playlist 11): seven phantoms in the
+/// lobby, the advertisement gone at arbitration, the match session in
+/// state 7 while the map loads, and the game served only long after
+/// `FILL_GONE`. The match session this console hosts keeps the bots
+/// through all of it, into the game; once the game is over they go
+/// `FILL_GONE` after it, the session still held or not.
+#[test]
+fn a_clankermatchs_bots_stay_through_arbitration_into_the_match() {
+    use std::time::{Duration, Instant};
+    const SESSION: &str = "00000000000000cb";
+    let (live, ph, d) = clankermatch(SESSION, hopper(11, 8, 0));
+    let t0 = Instant::now();
+    d.set_holds_match(true);
+    d.tick_match(t0);
+    live.answer(0, Ok(roster(SESSION, 7, 0.5)));
+    d.tick_match(t0 + Duration::from_secs(60));
+    assert_eq!(ph.list().len(), 7);
+    // Arbitration: the advertisement goes, the session leaves state 5;
+    // no game served yet, for far longer than `FILL_GONE`.
+    *live.clanker.lock().unwrap() = None;
+    *live.session.lock().unwrap() = None;
+    for s in [61, 80, 100, 200] {
+        let log = d.tick_match(t0 + Duration::from_secs(s));
+        assert!(
+            !log.iter().any(|l| l.contains("the game is over")),
+            "at {s} s: {log:?}"
+        );
+        assert_eq!(ph.list().len(), 7, "the handoff at {s} s");
+    }
+    assert!(ph.match_only());
+    // The game loads with them, and runs.
+    d.set_hosts_game(true);
+    d.tick_match(t0 + Duration::from_secs(210));
+    d.tick_match(t0 + Duration::from_secs(600));
+    assert_eq!(ph.list().len(), 7, "in the game");
+    // The game is over; the match session lingers, but no longer holds.
+    d.set_hosts_game(false);
+    d.tick_match(t0 + Duration::from_secs(601));
+    assert_eq!(ph.list().len(), 7, "not at once");
+    let log = d.tick_match(t0 + Duration::from_secs(602) + FILL_GONE);
+    assert!(
+        log.iter().any(|l| l.contains("the game is over: the bots go")),
+        "{log:?}"
+    );
+    assert!(ph.list().is_empty());
+    assert!(!ph.match_only());
+}
+
+/// A match session this console stops hosting before any game (the
+/// player backed out of the handoff) ends the fill `FILL_GONE` later.
+#[test]
+fn a_clankermatch_left_before_its_game_releases_the_bots() {
+    use std::time::{Duration, Instant};
+    const SESSION: &str = "00000000000000cd";
+    let (live, ph, d) = clankermatch(SESSION, hopper(11, 4, 0));
+    let t0 = Instant::now();
+    d.set_holds_match(true);
+    d.tick_match(t0);
+    live.answer(0, Ok(roster(SESSION, 3, 0.5)));
+    d.tick_match(t0 + Duration::from_secs(60));
+    assert_eq!(ph.list().len(), 3);
+    *live.clanker.lock().unwrap() = None;
+    *live.session.lock().unwrap() = None;
+    d.tick_match(t0 + Duration::from_secs(100));
+    assert_eq!(ph.list().len(), 3, "held");
+    d.set_holds_match(false);
+    d.tick_match(t0 + Duration::from_secs(101));
+    assert_eq!(ph.list().len(), 3, "not at once");
+    d.tick_match(t0 + Duration::from_secs(102) + FILL_GONE);
+    assert!(ph.list().is_empty());
+}
+
 #[test]
 fn a_clankermatch_balances_around_the_hosts_real_team() {
     use std::time::Instant;

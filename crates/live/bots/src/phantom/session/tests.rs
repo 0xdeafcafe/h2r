@@ -1570,6 +1570,38 @@ mod lobby {
         assert_eq!(g.u32(PARTY + PLAYER_COUNT).unwrap(), 1);
     }
 
+    /// The user's ranked Clankermatch (playlist 11): arbitration takes
+    /// the target session from live (5) to 7 while the map loads, and
+    /// the game (type 8) runs on it. This console hosts the match the
+    /// whole way, so the fill holds; the party's lobby, a match another
+    /// console hosts, or no target session is not one.
+    #[test]
+    fn a_clankermatch_this_console_hosts_is_held_through_its_handoff() {
+        let mut g = matchmaking();
+        assert!(hosts_match(&g), "the lobby, live");
+        g.put_u32(S + STATE, 7);
+        assert!(hosts_match(&g), "arbitration and the handoff, state 7");
+        g.put_u32(l::SESSION_TYPE, 8)
+            .put_u32(points::GAME_TIME.base, TIME);
+        assert!(hosts_match(&g), "the game");
+        // The party's custom lobby (type 2) is not a match.
+        let mut party = lobby();
+        assert!(!hosts_match(&party));
+        party.put_u32(S + STATE, 7);
+        assert!(!hosts_match(&party));
+        // Another console hosts the match.
+        let mut joined = matchmaking();
+        joined.put_u32(S + HOST_PEER, 1).put_u32(S + PEER_COUNT, 2);
+        assert!(!hosts_match(&joined));
+        // The match session gone.
+        let mut gone = matchmaking();
+        gone.put_u32(l::TARGET_SESSION, 0);
+        assert!(!hosts_match(&gone));
+        let mut stateless = matchmaking();
+        stateless.put_u32(S + STATE, 0);
+        assert!(!hosts_match(&stateless));
+    }
+
     #[test]
     fn phantoms_stay_retired_while_matchmaking_dismantles_the_lobby() {
         let ph = Phantoms::default();

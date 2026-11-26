@@ -400,6 +400,11 @@ struct Fill {
     /// When this console stopped hosting a session (a handoff, or the
     /// player left): the fill ends [`FILL_GONE`] after.
     gone: Option<std::time::Instant>,
+    /// This console has served the match's game ([`Driver::set_hosts_game`]):
+    /// from then on the match session it still holds
+    /// ([`Driver::set_holds_match`]) no longer keeps the bots, so they go
+    /// [`FILL_GONE`] after the game.
+    played: bool,
     /// The host player's team ([`Driver::set_host_team`]), followed until
     /// the first bot sits, then kept: a bot's team does not change.
     host_team: Option<u8>,
@@ -749,6 +754,9 @@ pub struct Driver {
     /// [`frame`] last read it: a Clankermatch's fill outlives the lobby's
     /// advertisement while it does ([`Driver::tick_match`]).
     hosts_game: AtomicBool,
+    /// This console hosts a matchmade match's session, as [`frame`] last
+    /// read it ([`Driver::set_holds_match`]).
+    holds_match: AtomicBool,
 }
 
 /// Whether a lobby in retail mode `retail` takes the page's Clankers: a
@@ -797,6 +805,7 @@ impl Driver {
             stall: Mutex::default(),
             admits: AtomicBool::new(true),
             hosts_game: AtomicBool::new(false),
+            holds_match: AtomicBool::new(false),
         }
     }
 
@@ -1323,6 +1332,15 @@ impl Driver {
         self.hosts_game.store(hosts, Ordering::Relaxed);
     }
 
+    /// Whether this console hosts a matchmade match's session, in any
+    /// state (`bots::phantom::session::hosts_match`): from the lobby's
+    /// advertisement going until the game is first served, through
+    /// arbitration and the session's state 7, a Clankermatch's fill holds
+    /// while it does. After the game it no longer counts.
+    pub fn set_holds_match(&self, holds: bool) {
+        self.holds_match.store(holds, Ordering::Relaxed);
+    }
+
     /// The lobby up, in retail mode `retail`: the page's bots stand down in
     /// a lobby that does not take them ([`admits_page`]) and come back in
     /// one that does, the last [`Want`] applied again on a change. Lines
@@ -1353,7 +1371,9 @@ impl Driver {
     /// Follows the Clankermatch this console hosts, at `now`: a clanker
     /// hopper's lobby starts a fill, its bots join on their schedule, and
     /// it ends when the console hosts another kind of session, or none and
-    /// no game ([`Driver::set_hosts_game`]) for [`FILL_GONE`]. Applies the last [`Want`] again when that changes
+    /// no game ([`Driver::set_hosts_game`]) for [`FILL_GONE`] (before the
+    /// game, the match session it hosts, [`Driver::set_holds_match`],
+    /// counts as the game). Applies the last [`Want`] again when that changes
     /// what is seated. Lines for the log.
     pub fn tick_match(&self, now: std::time::Instant) -> Vec<String> {
         let Some(rosters) = &self.rosters else {
@@ -1373,6 +1393,7 @@ impl Driver {
                 (Some(h), Some((_, mark))) if h == mark.hopper_id => {
                     let f = fill.as_mut().expect("a fill");
                     f.gone = None;
+                    f.played |= self.hosts_game.load(Ordering::Relaxed);
                     let mut replanned = false;
                     if f.seated == 0 {
                         f.host_team = host_team;
@@ -1434,6 +1455,7 @@ impl Driver {
                         started: now,
                         seated: 0,
                         gone: None,
+                        played: false,
                         host_team,
                     });
                     true
@@ -1446,6 +1468,21 @@ impl Driver {
                 (Some(_), None) if self.hosts_game.load(Ordering::Relaxed) => {
                     // The game deleted the lobby's advertisement when its
                     // match session took over: the match runs on.
+                    let f = fill.as_mut().expect("a fill");
+                    f.gone = None;
+                    f.played = true;
+                    false
+                }
+                (Some(_), None)
+                    if self.holds_match.load(Ordering::Relaxed)
+                        && fill.as_ref().is_some_and(|f| !f.played) =>
+                {
+                    // Arbitration and the handoff into the match: the
+                    // advertisement is gone and the game not yet served,
+                    // its session out of state 5 (7) while the map loads,
+                    // but this console still hosts the match and the
+                    // phantoms are its peers. However long that takes,
+                    // the bots stay for the game.
                     fill.as_mut().expect("a fill").gone = None;
                     false
                 }
@@ -1528,8 +1565,9 @@ pub fn firefight_seat_teams(
 /// (`bots::lobby::party_players`, [`Driver::set_party`]) and `lobby` the
 /// lobby's retail mode (`None` while it cannot be read: left as it was,
 /// [`Driver::set_lobby`]) and `hosts_game` whether this console runs a
-/// multiplayer game as its distributed server ([`Driver::set_hosts_game`]);
-/// each is called twice a second. `match_wait`
+/// multiplayer game as its distributed server ([`Driver::set_hosts_game`])
+/// and `holds_match` whether it hosts a matchmade match's session
+/// ([`Driver::set_holds_match`]); each is called twice a second. `match_wait`
 /// reads why a Clankermatch lobby has not started, only once it has
 /// waited long ([`Driver::stalled`]).
 pub fn frame(
@@ -1538,6 +1576,7 @@ pub fn frame(
     party: impl FnOnce() -> Option<u32>,
     lobby: impl FnOnce() -> Option<crate::lobby_tabs::RetailMode>,
     hosts_game: impl FnOnce() -> bool,
+    holds_match: impl FnOnce() -> bool,
     match_wait: impl FnOnce() -> Option<(String, String)>,
 ) {
     // Twice a second: a Clankermatch's bots join 0.5 to 3 s apart.
@@ -1565,6 +1604,7 @@ pub fn frame(
     d.set_host_team(host_team());
     d.set_party(party());
     d.set_hosts_game(hosts_game());
+    d.set_holds_match(holds_match());
     if let Some(retail) = lobby() {
         for line in d.set_lobby(retail) {
             eprintln!("clankers: {line}");
