@@ -56,6 +56,16 @@ edges come from named points, the engine map, the 68-slot lifecycle table at
 and observed callers. A rewrite replaces code, so the owner is what a phase
 removes.
 
+AI code has its own owners, one per layer, named `ai.<layer>`: `ai.top`
+(`ai_update`, `0x1c7450`), `ai.actors` (`0x1df5d0`), `ai.behav` (behaviours
+`0x1a6f70` and joint behaviours), `ai.cs` (command scripts), `ai.perception`
+(props), `ai.target`, `ai.clumps`, `ai.firepos`, `ai.action` (look/aim, fire,
+movement), `ai.squads` (squads, orders, swarms, flocks), `ai.dialogue`,
+`ai.recanim`, `ai.path` (path build, object refs, search `0x2c0bf0`) and
+`ai.hs` (script builtins for AI, low confidence). The ranges come from the
+AI census's per-function list; `scripts/sim-attribution/test_owner_map.py`
+pins them (`python3 -I scripts/sim-attribution/test_owner_map.py`).
+
 **Driver.** Shared helpers (math, CRT, datum arrays, tag functions) and
 service families (collision, animation, cache, model lookups) are also
 charged to whoever asked. The nearest visible ancestor outside the family
@@ -438,8 +448,8 @@ the sample counts. Record the opening cinematic and the two active
 encounters separately. Record three unprofiled runs over the same route
 for the timing median. Use the profile to assign work within that window.
 
-The owner map groups actor decisions and path searches under `ai` and
-also places some script-facing builtins in that group. To order the two
+The owner map groups actor decisions and path searches under the `ai.*`
+owners and places some script-facing builtins in `ai.hs`. To order the two
 rewrite candidates, inspect the stacks in the campaign capture. Charge
 a sample to the innermost identified operation: VM scheduling and
 evaluation, an engine-facing builtin, actor decisions, or path searches.
