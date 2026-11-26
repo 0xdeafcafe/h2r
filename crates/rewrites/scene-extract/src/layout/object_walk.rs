@@ -62,19 +62,24 @@
 //!   stream in layer 5 (`0x0004d237`); it asks for the stage bitmaps of
 //!   the shader's templates (`0x0004d486`..`0x0004d55d`: `0x0012ccf0`,
 //!   then `0x0012ce00` for one not resident), residency only; with its
-//!   program's flag bit 20 it calls `0x0003bea0`, which, the first time a
-//!   frame (`0x00509430` clear, cleared at `0x0002c0f5`), clears the shader
-//!   cache and copies and binds the structure's target; and the prologue,
+//!   program's flag bit 20 (`0x0004d561`..`0x0004d572`) it calls
+//!   `0x0003bea0`, which, the first time a frame (`0x00509430` clear,
+//!   cleared at `0x0002c0f5`), clears the shader cache (`0x00016b10`,
+//!   which first writes the cached program's restore states) and, when the
+//!   active structure has a parameter block, copies and binds the
+//!   structure's target (`0x000352e0`, `0x00014bc0`); and the prologue,
 //!   when the active structure (`[0x004e0348]`) has a parameter block
 //!   (`+0x214` above 0, the block at `+0x218`), runs `0x0003c650` (the
 //!   bump matrices of stages 1 to 3) and `0x0003d000` (`c[21..25]` and the
-//!   fog colour). The scene carries the case with no target copy to make
-//!   and no structure lightmap
-//!   ([`frame_scene::LayerObjectRefusal::ShaderFlag`],
-//!   [`frame_scene::LayerObjectRefusal::ShaderFlagTarget`]); with a
-//!   parameter block the part also has
-//!   [`PartFlags::STRUCTURE_PARAMETERS`] and its view the upload
-//!   ([`crate::layout::structure_parameters`]).
+//!   fog colour). The scene carries the case with no structure lightmap
+//!   ([`frame_scene::LayerObjectRefusal::ShaderFlag`]); with a parameter
+//!   block the part also has [`PartFlags::STRUCTURE_PARAMETERS`] and its
+//!   view the upload ([`crate::layout::structure_parameters`]). Layer 3's
+//!   walk reads the entry's program and refuses bit 20; a world layer's
+//!   entry is built under the layer draw, so its part has
+//!   [`PartFlags::TARGET_UNCOPIED`] while the frame's copy is not made,
+//!   and the host, which knows the programs of the passes it draws,
+//!   keeps the item whose program has the bit.
 //! - **The item's argument** (`+0xc`: its high byte, the record, the
 //!   part). The high byte is the item's projected size: the pass setup
 //!   `0x0004d9c0` scales it by the part's `+0x2c`, `0x004670e4` and
@@ -116,7 +121,7 @@ const PROGRAM_VERTEX_SHADER: u32 = 0x100;
 const PROGRAM_FLAGS: u32 = 0x118;
 /// The active structure, its parameter block count (`> 0` makes the
 /// prologue upload the block for a flagged shader), and the frame's
-/// structure target copy flag `0x0003bea0` sets.
+/// structure target copy flag `0x0003bea0` sets (a byte).
 const ACTIVE_BSP: u32 = 0x004e_0348;
 const BSP_PARAMETER_COUNT: u32 = 0x214;
 const BSP_TARGET_READY: u32 = 0x0050_9430;
@@ -412,16 +417,18 @@ fn read_part(
 ///   asks for its bitmaps' residency, and the prologue uploads the active
 ///   structure's parameter block when it has one
 ///   ([`PartFlags::STRUCTURE_PARAMETERS`]); the entry's program, which
-///   may make the draw copy the structure's target first, is built under
-///   the layer draw, so that refuses unless the frame's copy is made
-///   ([`LayerObjectRefusal::ShaderFlagTarget`]). In layer 3 a flagged
-///   record with a structure lightmap index refuses too.
+///   with its flag bit 20 makes the draw call `0x0003bea0` first, is
+///   built under the layer draw, so the part has
+///   [`PartFlags::TARGET_UNCOPIED`] while the frame's copy is not made,
+///   for the host to keep an item whose program has the bit. In layer 3 a
+///   flagged record with a structure lightmap index refuses
+///   ([`LayerObjectRefusal::ShaderFlag`]).
 /// - The argument's high byte reaches only the residency the stage
 ///   resolve asks for; its `+0x14` and `+0x15` and a low byte other than
 ///   the key's part refuse ([`LayerObjectRefusal::Argument`]).
 /// - Bits 9 and 6 as in layer 3 ([`record_flags`], [`visible_subparts`]).
 ///
-/// [`LayerObjectRefusal::ShaderFlagTarget`]: frame_scene::LayerObjectRefusal::ShaderFlagTarget
+/// [`LayerObjectRefusal::ShaderFlag`]: frame_scene::LayerObjectRefusal::ShaderFlag
 /// [`LayerObjectRefusal::Argument`]: frame_scene::LayerObjectRefusal::Argument
 pub fn layer_part(
     mem: &dyn GuestRead, layer: u8, item: u32, record: u32, key: ItemKey,
@@ -435,9 +442,12 @@ pub fn layer_part(
     }
     let shader = word(mem, tag_table, 16 * (key.shader & 0xffff) + 8).ok_or(R::Unread)?;
     let flagged = half(mem, shader, SHADER_FLAGS).ok_or(R::Unread)? & 1 != 0;
-    let mut uploads = false;
+    let (mut uploads, mut copied) = (false, true);
     if flagged {
-        uploads = flagged_shader(mem, true)?;
+        uploads = flagged_shader(mem)?;
+        // Whether `0x0003bea0` returns at once for a program with flag bit
+        // 20: the frame's structure target copy is made (a byte).
+        copied = word(mem, BSP_TARGET_READY, 0).ok_or(R::Unread)? & 0xff != 0;
         let record_key = word(mem, record, 0xc).ok_or(R::Unread)?;
         if layer == LIGHTMAP_LAYER as u8 && ((record_key >> 18) & NO_STRUCTURE_LIGHTMAP) != NO_STRUCTURE_LIGHTMAP {
             return Err(R::ShaderFlag);
@@ -488,6 +498,9 @@ pub fn layer_part(
     if uploads {
         out |= PartFlags::STRUCTURE_PARAMETERS;
     }
+    if !copied {
+        out |= PartFlags::TARGET_UNCOPIED;
+    }
     if !matches!(layer, 1 | 3) {
         out = PartFlags(out.0 & !PartFlags::STENCIL_MARK.0);
     }
@@ -501,20 +514,13 @@ pub fn layer_part(
     Ok((out, subparts))
 }
 
-/// Whether a shader with flag bit 0 leaves the draw as the scene draws
-/// it (the module notes), and whether its prologue uploads the active
-/// structure's parameter block (`+0x214` above 0,
-/// [`PartFlags::STRUCTURE_PARAMETERS`]): where the entry's program may
-/// have flag bit 20 (`may_copy_target`), the frame's structure target
-/// copy must be made, so `0x0003bea0` returns at once.
-fn flagged_shader(mem: &dyn GuestRead, may_copy_target: bool) -> Result<bool, frame_scene::LayerObjectRefusal> {
+/// Whether the prologue of a shader with flag bit 0 (the module notes)
+/// uploads the active structure's parameter block (`+0x214` above 0,
+/// [`PartFlags::STRUCTURE_PARAMETERS`]).
+fn flagged_shader(mem: &dyn GuestRead) -> Result<bool, frame_scene::LayerObjectRefusal> {
     use frame_scene::LayerObjectRefusal as R;
     let bsp = word(mem, ACTIVE_BSP, 0).ok_or(R::Unread)?;
-    let uploads = (word(mem, bsp, BSP_PARAMETER_COUNT).ok_or(R::Unread)? as i32) > 0;
-    if may_copy_target && word(mem, BSP_TARGET_READY, 0).ok_or(R::Unread)? & 0xff == 0 {
-        return Err(R::ShaderFlagTarget);
-    }
-    Ok(uploads)
+    Ok((word(mem, bsp, BSP_PARAMETER_COUNT).ok_or(R::Unread)? as i32) > 0)
 }
 
 /// A part whose record draws only its visible subparts: the mask's
@@ -532,8 +538,8 @@ struct Conditional {
 /// its record's fade byte and its shader's flag bit 0 add
 /// ([`PartFlags::FADE`], [`PartFlags::SHADER_FLAG`],
 /// [`PartFlags::STRUCTURE_PARAMETERS`]); `None` when the item's layout or
-/// a check against the guest's choice fails, or the flagged shader's draw
-/// is not the scene's ([`flagged_shader`]; the walk refuses program flag
+/// a check against the guest's choice fails, or the flagged shader's inputs
+/// do not read ([`flagged_shader`]; the walk refuses program flag
 /// bit 20 itself, and a flagged record with a structure lightmap index).
 fn read_part_layout(
     mem: &dyn GuestRead,
@@ -596,7 +602,7 @@ fn read_part_layout(
             return None;
         }
         extra |= PartFlags::SHADER_FLAG;
-        if flagged_shader(mem, false).ok()? {
+        if flagged_shader(mem).ok()? {
             extra |= PartFlags::STRUCTURE_PARAMETERS;
         }
     }
@@ -908,9 +914,8 @@ mod tests {
             assert_eq!(at(&mem, layer), Ok((PartFlags::FADE, None)), "layer {layer}");
         }
         mem.w(record + 0x18, 0xff << 16);
-        // The shader's flag bit 0: drawn once the frame's target copy is
-        // made, with the structure's parameter block where the prologue
-        // uploads it, named otherwise.
+        // The shader's flag bit 0: drawn with the structure's parameter
+        // block where the prologue uploads it.
         let (bsp, target_ready) = (0xd000, 0x0050_9430);
         mem.w(0x004e_0348, bsp);
         mem.w(bsp + 0x214, 0);
@@ -923,10 +928,18 @@ mod tests {
             Ok((PartFlags::SHADER_FLAG | PartFlags::STRUCTURE_PARAMETERS, None)),
             "the prologue uploads the parameter block"
         );
+        // Before the frame's target copy the part says so: the host keeps
+        // an item whose program would make the copy.
         mem.w(target_ready, 0);
-        assert_eq!(at(&mem, 7), Err(R::ShaderFlagTarget), "the draw may copy the structure's target");
+        assert_eq!(
+            at(&mem, 7),
+            Ok((PartFlags::SHADER_FLAG | PartFlags::STRUCTURE_PARAMETERS | PartFlags::TARGET_UNCOPIED, None)),
+            "the draw may copy the structure's target"
+        );
         mem.w(bsp + 0x214, 0);
-        assert_eq!(at(&mem, 7), Err(R::ShaderFlagTarget), "without a block too");
+        assert_eq!(at(&mem, 7), Ok((PartFlags::SHADER_FLAG | PartFlags::TARGET_UNCOPIED, None)), "without a block too");
+        mem.w(target_ready, 0x100);
+        assert_eq!(at(&mem, 7), Ok((PartFlags::SHADER_FLAG | PartFlags::TARGET_UNCOPIED, None)), "the flag is a byte");
         mem.w(target_ready, 1);
         mem.w(record + 0xc, MODEL_RECORD | 5 << 18 | 9 << 9 | 2);
         assert_eq!(at(&mem, 3), Err(R::ShaderFlag), "layer 3 leaves the lightmap unbound");

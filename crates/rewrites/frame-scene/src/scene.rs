@@ -278,7 +278,16 @@ impl PartFlags {
     /// the engine already hold them, so skipping its handler leaves what
     /// the upload would.
     pub const STRUCTURE_PARAMETERS: PartFlags = PartFlags(1 << 6);
-    const NAMES: [(PartFlags, &'static str); 7] = [
+    /// With [`PartFlags::SHADER_FLAG`], outside layer 3's walk: the
+    /// frame's structure target copy is not made at the layer call
+    /// (`0x00509430` clear). The draw of a pass whose program has flag bit
+    /// 20 then calls `0x0003bea0`, which clears the shader cache and, with
+    /// a structure parameter block, copies and binds the structure's
+    /// target, and sets the flag; so the host keeps such an
+    /// item's guest draw (`object_shader_flag_target`); a part whose passes'
+    /// programs lack the bit makes no call and draws.
+    pub const TARGET_UNCOPIED: PartFlags = PartFlags(1 << 7);
+    const NAMES: [(PartFlags, &'static str); 8] = [
         (PartFlags::STENCIL_MARK, "stencil_mark"),
         (PartFlags::STRIP, "strip"),
         (PartFlags::SUBPARTS, "subparts"),
@@ -286,6 +295,7 @@ impl PartFlags {
         (PartFlags::FADE, "fade"),
         (PartFlags::SHADER_FLAG, "shader_flag"),
         (PartFlags::STRUCTURE_PARAMETERS, "structure_parameters"),
+        (PartFlags::TARGET_UNCOPIED, "target_uncopied"),
     ];
 
     pub fn contains(self, other: PartFlags) -> bool {

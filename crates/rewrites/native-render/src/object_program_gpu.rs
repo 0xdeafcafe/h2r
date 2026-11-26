@@ -1888,6 +1888,22 @@ impl<'a> PartInputs<'a> {
     }
 }
 
+/// Whether the guest draw of an item with `flags` whose passes are
+/// `passes` (`None`: a pass whose program is not known) makes the frame's
+/// structure target copy: a shader with flag bit 0 before the copy
+/// ([`PartFlags::TARGET_UNCOPIED`]) calls `0x0003bea0` for a program with
+/// flag bit 20 ([`tags::material::ResolvedImplementation::copies_target`]),
+/// which clears the shader cache and, with a structure parameter block,
+/// copies and binds the structure's target. No native stage does that, so
+/// such an item keeps its guest draw (`object_shader_flag_target`); one
+/// whose programs lack the bit makes no call, and skipping its draw skips
+/// nothing else (docs/graphics/native-objects.md, "Fade, the shader flag
+/// and the item's argument").
+pub fn makes_target_copy<'a>(flags: PartFlags, passes: impl IntoIterator<Item = Option<&'a ObjectPass>>) -> bool {
+    flags.contains(PartFlags::SHADER_FLAG | PartFlags::TARGET_UNCOPIED)
+        && passes.into_iter().any(|p| p.is_none_or(|p| p.implementation.copies_target))
+}
+
 /// What the prologue of a part with `flags` uploads: `structure` with
 /// [`PartFlags::STRUCTURE_PARAMETERS`], refused when that is not given,
 /// nothing without the flag.
@@ -3102,6 +3118,23 @@ mod tests {
         ];
         object_pass(map::TagId(0xe000_0001), &imp, &[], &rigid_program(), crate::program::INPUT_MASK, [shaders::vsh::InputFetch::Float; 16], true)
             .unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// A flagged item before the frame's structure target copy keeps its
+    /// guest draw only where a pass's program has flag bit 20, which makes
+    /// its draw call `0x0003bea0`.
+    #[test]
+    fn a_flagged_item_before_the_target_copy_keeps_its_draw_only_where_a_program_makes_it() {
+        let plain = equal_pass(0);
+        let mut copying = equal_pass(0);
+        copying.implementation.copies_target = true;
+        let pending = PartFlags::SHADER_FLAG | PartFlags::TARGET_UNCOPIED;
+        assert!(makes_target_copy(pending, [Some(&plain), Some(&copying)]), "the second pass's program has the bit");
+        assert!(!makes_target_copy(pending, [Some(&plain), Some(&plain)]), "no program with the bit");
+        assert!(makes_target_copy(pending, [Some(&plain), None]), "a pass whose program is not known");
+        assert!(!makes_target_copy(PartFlags::SHADER_FLAG, [Some(&copying)]), "the frame's copy made");
+        assert!(!makes_target_copy(PartFlags::TARGET_UNCOPIED, [Some(&copying)]), "no shader flag, no call");
+        assert!(!makes_target_copy(pending | PartFlags::STRUCTURE_PARAMETERS, [Some(&plain)]), "an upload is not a copy");
     }
 
     /// The device at the layer-3 call: W-buffered, LessEqual written,

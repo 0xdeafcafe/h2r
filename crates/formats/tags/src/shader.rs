@@ -872,6 +872,8 @@ pub struct Implementation {
     pub vector_inputs: u64,
     /// +0x114: engine integer inputs (state `+0x54`).
     pub int_inputs: u32,
+    /// +0x118: flags. Bit 20 ([`Self::copies_target`]) is the only one a
+    /// draw is known to read.
     pub unknown_118: u32,
     /// +0x11c render states applied when the next implementation replaces this one.
     pub restore_states: IndexRange,
@@ -948,6 +950,16 @@ impl Implementation {
             external_vertex_constants: g(0x124),
             unknown_126: v[0x126..0x132].try_into().expect("12"),
         })
+    }
+    /// Flag bit 20 (`+0x118`): the geometry draw `0x0004d0b0` of a shader
+    /// with flag bit 0 calls `0x0003bea0` for an entry whose program has
+    /// it (`0x0004d561`..`0x0004d572`), which the first time a frame
+    /// clears the shader cache and, when the active structure has a
+    /// parameter block, copies and binds the structure's target
+    /// (docs/graphics/native-objects.md, "Fade, the shader flag and the
+    /// item's argument").
+    pub fn copies_target(&self) -> bool {
+        self.unknown_118 >> 20 & 1 != 0
     }
     /// PSDEF dword `i` (SDK field order).
     pub fn psdef_word(&self, i: usize) -> u32 {

@@ -928,6 +928,24 @@ fn a_vector_binding_keeps_only_what_later_bindings_leave() {
     assert_eq!(pack_engine_colour([2.0, -1.0, 0.25, 1.0], false), 0xffff_0040);
 }
 
+/// An implementation's flag bit 20 (`+0x118`) is what makes a flagged
+/// shader's draw call `0x0003bea0`; the resolved implementation carries it
+/// and no other bit of the word.
+#[test]
+fn the_resolved_implementation_carries_flag_bit_20() {
+    let mut f = fixture();
+    let imp0 = target(&f, spas_pp(&f));
+    let resolved = |f: &Fixture| library(f).material(SHAD_ID, None).unwrap().layers[0].passes[0].implementations[0].copies_target;
+    assert!(!resolved(&f));
+    w32(&mut f.arena.b, imp0 + 0x118, !(1 << 20));
+    assert!(!resolved(&f), "every other bit");
+    w32(&mut f.arena.b, imp0 + 0x118, 1 << 20);
+    assert!(resolved(&f));
+    let mut v = vec![0u8; IMPLEMENTATION];
+    w32(&mut v, 0x118, 1 << 20);
+    assert!(Implementation::decode(&v).unwrap().copies_target());
+}
+
 #[test]
 fn stage_copies_slot_size_before_refresh() {
     let mut f = fixture();
