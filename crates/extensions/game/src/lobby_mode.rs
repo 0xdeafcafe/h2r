@@ -210,7 +210,13 @@ pub struct VariantEntry {
     pub id: Option<content::Sha256>,
     /// The game variant that suggests it ([`crate::map_variant::suggest`]).
     pub suggested_for: Option<String>,
+    /// The variant's document has AI ground: a Firefight lobby takes it
+    /// (`forge::files::variants::Listed::ground`).
+    pub ground: bool,
 }
+
+/// The detail line of a variant a Firefight lobby cannot take.
+pub const NO_GROUND: &str = "No AI ground.";
 
 /// The map variants of the lobby's map `map` (its list id) the picker
 /// lists, saved on this machine, by name: those that pass the store's
@@ -240,9 +246,23 @@ pub fn map_variant_list(data: &Path, map: Option<u32>) -> Result<Vec<VariantEntr
                 detail,
                 id: l.id,
                 suggested_for: None,
+                ground: l.ground,
             }
         })
         .collect())
+}
+
+/// Whether the installed original map `map` has a saved map variant with
+/// AI ground that passes the store's checks: Change Map lists it in a
+/// Firefight lobby.
+pub fn has_ground_variant(data: &Path, map: &crate::map_select::Map) -> bool {
+    let base = map.short_name();
+    let installed = crate::map_variant::installed(&base);
+    ::forge::files::variants::list(data, &base, installed.as_ref()).is_ok_and(|listed| {
+        listed.iter().any(|l| {
+            l.source == ::forge::files::variants::Source::Saved && l.ground && l.problem.is_none()
+        })
+    })
 }
 
 /// [`map_variant_list`] with the suggestions of `game`, the lobby's game
@@ -317,7 +337,25 @@ pub fn map_variant_pick(
     current: Option<&str>,
     choose: Choose,
 ) -> Pick {
+    map_variant_pick_for(listed, current, choose, false)
+}
+
+/// [`map_variant_pick`] for a lobby playing Firefight when `firefight`:
+/// the map needs AI ground (docs/game/forge-firefight.md, "Playing it"),
+/// so Original and a variant without ground are listed with
+/// [`NO_GROUND`] and cannot be chosen, and the picker opens on the held
+/// pick, else the first variant it can take.
+pub fn map_variant_pick_for(
+    listed: Result<Vec<VariantEntry>, String>,
+    current: Option<&str>,
+    choose: Choose,
+    firefight: bool,
+) -> Pick {
     let (listed, description) = match listed {
+        Ok(listed) if firefight => (
+            listed,
+            "Firefight needs a map variant with AI ground.".to_owned(),
+        ),
         Ok(listed) => (
             listed,
             "Original plays the map as it is. A map variant plays its edits.".to_owned(),
@@ -329,14 +367,17 @@ pub fn map_variant_pick(
     };
     let mut values = vec![ORIGINAL.to_owned()];
     values.extend(listed.iter().map(|v| v.name.clone()));
-    let mut details = vec!["Play the map as it is.".to_owned()];
+    let mut details = vec![
+        if firefight { NO_GROUND } else { "Play the map as it is." }.to_owned(),
+    ];
     details.extend(listed.iter().map(|v| match (&v.sentence, &v.suggested_for) {
         (Some(why), _) => why.clone(),
+        (None, _) if firefight && !v.ground => NO_GROUND.to_owned(),
         (None, None) => v.detail.clone(),
         (None, Some(game)) => format!("{} Made for {game}.", v.detail).trim().to_owned(),
     }));
-    let mut blocked = vec![false];
-    blocked.extend(listed.iter().map(|v| v.sentence.is_some()));
+    let mut blocked = vec![firefight];
+    blocked.extend(listed.iter().map(|v| v.sentence.is_some() || (firefight && !v.ground)));
     // The held pick; else the game variant's suggestion, so the picker
     // opens on it (docs/game/forge-map-variants.md, "How a pick names a map variant"); else
     // Original. The order stays Original, then by name.
@@ -346,6 +387,12 @@ pub fn map_variant_pick(
             listed
                 .iter()
                 .position(|v| v.suggested_for.is_some() && v.sentence.is_none())
+                .map(|i| i + 1)
+        })
+        .or_else(|| {
+            firefight
+                .then(|| listed.iter().position(|v| v.sentence.is_none() && v.ground))
+                .flatten()
                 .map(|i| i + 1)
         })
         .unwrap_or(0);
@@ -417,8 +464,8 @@ pub fn firefight_map_lines(kit: KitMaps) -> Option<Vec<String>> {
             "Make one with h2 firefight kit".into(),
         ]),
         (false, true) => Some(vec![
-            "This map does not support Firefight".into(),
-            "Change Map lists the Firefight maps".into(),
+            "This map has no AI ground".into(),
+            "Pick a map variant with AI ground".into(),
         ]),
     }
 }
@@ -551,7 +598,8 @@ pub fn start_refusal(m: &dyn GuestMemory) -> Option<Reason> {
             let id = m.u32(crate::h1_options_row::LOBBY_MAP).ok();
             let wave = variant.as_ref().map(|v| v.ext().script)
                 .filter(|s| s.mode == variants::ext::Mode::Firefight).map(|s| s.prefix);
-            refusal(mode, Some(0), KitMaps::for_wave(catalogue.as_deref(), id, wave))
+            let ground = crate::map_variant::ground_on(id);
+            refusal(mode, Some(0), KitMaps::for_pick(catalogue.as_deref(), id, wave, ground))
         }
     }
 }
@@ -719,10 +767,16 @@ fn row_chosen(c: &mut Call, me: &LobbyMode, request_at: u32) -> Result<Flow, Gue
         let mem = c.ctx.runtime().memory();
         lobby_game_bundle(&*mem)
     };
-    let pick = map_variant_pick(
+    let firefight = {
+        let mem = c.ctx.runtime().memory();
+        let record = crate::pause_change_map::lobby_variant(&*mem);
+        crate::map_select::variant_mode(lobby_start::mode(), record.as_ref()) == Mode::Firefight
+    };
+    let pick = map_variant_pick_for(
         map_variant_list_for(&me.data, lobby_map, game.as_ref()),
         current.as_deref(),
         choose_in_lobby(me.data.clone(), lobby_map),
+        firefight,
     );
     let what = "Map Variant";
     let loader = picker::offer_list(pick).and_then(list_class_loader);

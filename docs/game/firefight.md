@@ -888,10 +888,14 @@ With no compatible kit installed, the map picker is empty and Start
 Game reports the missing kit. Change Rules remains available.
 
 A map variant whose document has the `ai_ground` recipe carries the kit
-once it is built, so the design counts it as a kit map: the lobby's
-check, Change Map and the Map Variant picker take it
-([forge-firefight.md](forge-firefight.md), slice FA1). The lobby takes
-only kit packages until then (`lobby_start::is_kit_map`).
+once it is built, so the lobby counts the map it is held on as a kit map
+(`lobby_start::KitMaps::for_pick`, from `map_variant::ground_on`), as it
+counts a kit package (`lobby_start::is_kit_map`). A base map without such
+a pick is refused with "Pick a map variant with AI ground, or a Firefight
+map." Change Map lists the base maps that have such a variant after the
+kit packages, and the Map Variant picker lists Original and a variant
+without ground with "No AI ground." and does not choose them
+([forge-firefight.md](forge-firefight.md), "Playing it").
 
 ### The HUD
 

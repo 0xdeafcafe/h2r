@@ -468,6 +468,7 @@ pub fn lobby_pick_sample(name: &str) -> Option<crate::ui_kit::picker::Pick> {
                 detail: detail.into(),
                 id: None,
                 suggested_for: None,
+                ground: false,
             };
             Some(crate::lobby_mode::map_variant_pick(
                 Ok(vec![
@@ -483,6 +484,7 @@ pub fn lobby_pick_sample(name: &str) -> Option<crate::ui_kit::picker::Pick> {
                         detail: String::new(),
                         id: None,
                         suggested_for: None,
+                        ground: false,
                     },
                 ]),
                 Some("lockout-towers"),

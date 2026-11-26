@@ -43,6 +43,17 @@ pub fn supports_wave(map: &Map, prefix: [u8; 8]) -> bool {
         wave.map.is_none_or(|base| map.short_name().eq_ignore_ascii_case(base)))
 }
 
+/// Whether a map variant with AI ground on `map` can play the wave set
+/// `wave` (a Firefight game variant's prefix; `None` for the lobby's own
+/// choice): a set made for one base map needs that map, as it does of a
+/// kit package ([`supports_wave`]).
+pub fn supports_ground_wave(map: &Map, wave: Option<[u8; 8]>) -> bool {
+    wave.is_none_or(|prefix| {
+        ::firefight::builtin::variant(prefix).is_some_and(|set|
+            set.map.is_none_or(|base| map.short_name().eq_ignore_ascii_case(base)))
+    })
+}
+
 /// The installed multiplayer maps in catalogue order.
 pub fn forge_maps(catalogue: &Catalogue) -> Vec<Map> {
     catalogue.all().cloned().collect()
@@ -72,6 +83,19 @@ impl KitMaps {
     }
 
     pub fn for_wave(catalogue: Option<&Catalogue>, map: Option<u32>, wave: Option<[u8; 8]>) -> Self {
+        Self::for_pick(catalogue, map, wave, false)
+    }
+
+    /// [`Self::for_wave`] with whether the lobby holds a map variant with
+    /// AI ground on its map (`ground`, [`crate::map_variant::ground_on`]):
+    /// that map plays Firefight as a kit package does, when the wave set
+    /// takes its base map ([`supports_ground_wave`]).
+    pub fn for_pick(
+        catalogue: Option<&Catalogue>,
+        map: Option<u32>,
+        wave: Option<[u8; 8]>,
+        ground: bool,
+    ) -> Self {
         let mut result = Self::default();
         if let Some(catalogue) = catalogue {
             for item in catalogue.all().filter(|m| wave.map_or_else(|| is_kit_map(m), |p| supports_wave(m, p))) {
@@ -80,6 +104,14 @@ impl KitMaps {
                     result.lobby = true;
                     break;
                 }
+            }
+            if ground
+                && !result.lobby
+                && let Some(item) = catalogue.all().find(|m| Some(m.id) == map)
+                && supports_ground_wave(item, wave)
+            {
+                result.installed = true;
+                result.lobby = true;
             }
         }
         result
@@ -90,7 +122,7 @@ impl KitMaps {
     pub fn now(m: &dyn engine::memory::GuestMemory) -> KitMaps {
         let catalogue = crate::map_select::current();
         let map = m.u32(crate::h1_options_row::LOBBY_MAP).ok();
-        KitMaps::of(catalogue.as_deref(), map)
+        KitMaps::for_pick(catalogue.as_deref(), map, None, crate::map_variant::ground_on(map))
     }
 }
 
@@ -409,6 +441,81 @@ mod tests {
         assert_eq!(KitMaps::of(Some(&bare), Some(10)), KitMaps::default());
         assert!(!KitMaps::of(Some(&cat), None).lobby);
         assert_eq!(KitMaps::of(None, Some(12)), KitMaps::default(), "no map list");
+    }
+
+    fn ground_cat() -> Catalogue {
+        Catalogue::new([
+            map(10, "Lockout", r"d:\maps\lockout"),
+            map(11, "Beaver Creek", r"d:\maps\beavercreek"),
+            map(12, "Firefight \u{2013} Lockout", r"t:\$C\12345678\lockout"),
+        ])
+    }
+
+    #[test]
+    fn a_variant_with_ground_is_a_kit_map_for_the_lobby() {
+        let cat = ground_cat();
+        // The held pick is what makes the base map a kit map.
+        assert_eq!(
+            KitMaps::for_pick(Some(&cat), Some(10), None, true),
+            KitMaps { lobby: true, installed: true }
+        );
+        // A kit package needs no pick.
+        assert!(KitMaps::for_pick(Some(&cat), Some(12), None, false).lobby);
+        // A pick on a map the list does not have is no map.
+        assert!(!KitMaps::for_pick(Some(&cat), Some(99), None, true).lobby);
+        assert_eq!(KitMaps::for_pick(None, Some(10), None, true), KitMaps::default());
+    }
+
+    #[test]
+    fn a_base_map_without_a_ground_pick_is_refused_by_name() {
+        use crate::lobby_mode::refusal;
+        use crate::lobby_tabs::Reason;
+        let cat = ground_cat();
+        let kit = KitMaps::for_pick(Some(&cat), Some(10), None, false);
+        assert_eq!(kit, KitMaps { lobby: false, installed: true });
+        assert_eq!(refusal(Mode::Firefight, Some(0), kit), Some(Reason::NotKitMap));
+        assert_eq!(
+            Reason::NotKitMap.text(),
+            "Pick a map variant with AI ground, or a Firefight map."
+        );
+        let picked = KitMaps::for_pick(Some(&cat), Some(10), None, true);
+        assert_eq!(refusal(Mode::Firefight, Some(0), picked), None);
+    }
+
+    #[test]
+    fn change_map_lists_kit_packages_then_maps_with_ground_variants() {
+        let cat = ground_cat();
+        let view = cat.with_ground_maps(|m| m.short_name() == "beavercreek");
+        let listed: Vec<u32> = view.maps(Category::Firefight).iter().map(|m| m.id).collect();
+        assert_eq!(listed, [12, 11], "the kit package, then the base map");
+        // Nothing with ground leaves the list as it was.
+        let none = cat.with_ground_maps(|_| false);
+        assert_eq!(none, cat);
+        // With no kit package the category is made, after the others.
+        let bare = Catalogue::new([map(10, "Lockout", r"d:\maps\lockout")]);
+        let view = bare.with_ground_maps(|_| true);
+        assert_eq!(view.categories().last(), Some(&Category::Firefight));
+        assert_eq!(view.maps(Category::Halo2).len(), 1, "the original stays listed");
+    }
+
+    #[test]
+    fn a_map_specific_set_still_needs_its_own_base() {
+        let cat = ground_cat();
+        let prefix = ::firefight::builtin::variants()
+            .iter()
+            .find(|v| v.map == Some("beavercreek"))
+            .expect("a packaged map set")
+            .prefix;
+        let on = |id| KitMaps::for_pick(Some(&cat), Some(id), Some(prefix), true);
+        assert!(on(11).lobby, "its own base, with ground");
+        assert!(!on(10).lobby, "another base, even with ground");
+        let any = ::firefight::builtin::variants()
+            .iter()
+            .find(|v| v.map.is_none())
+            .unwrap()
+            .prefix;
+        assert!(KitMaps::for_pick(Some(&cat), Some(10), Some(any), true).lobby);
+        assert!(!KitMaps::for_pick(Some(&cat), Some(10), Some(prefix), false).lobby);
     }
 
     #[test]

@@ -279,6 +279,49 @@ impl Catalogue {
         self.clone()
     }
 
+    /// The original maps (Halo 2 category) that `has_ground` says have a
+    /// map variant with AI ground, which a Firefight lobby plays as it
+    /// plays a kit package (docs/game/forge-firefight.md, "Playing it").
+    pub(crate) fn ground_maps(&self, has_ground: impl Fn(&Map) -> bool) -> Vec<Map> {
+        let mut maps: Vec<Map> = self
+            .maps(Category::Halo2)
+            .iter()
+            .filter(|m| has_ground(m))
+            .cloned()
+            .collect();
+        maps.sort_by_key(|m| (m.name.to_lowercase(), m.id));
+        maps
+    }
+
+    /// The catalogue with `maps` listed after the Firefight category's own
+    /// maps, the kit packages. The maps keep their own category in
+    /// [`Map::category`] and stay in theirs too.
+    pub(crate) fn with_firefight_maps(&self, maps: Vec<Map>) -> Catalogue {
+        let mut view = self.clone();
+        if maps.is_empty() {
+            return view;
+        }
+        match view.groups.iter_mut().find(|(c, _)| *c == Category::Firefight) {
+            Some((_, group)) => group.extend(maps),
+            None => {
+                let at = view
+                    .groups
+                    .iter()
+                    .position(|(c, _)| c.index() > Category::Firefight.index())
+                    .unwrap_or(view.groups.len());
+                view.groups.insert(at, (Category::Firefight, maps));
+            }
+        }
+        view
+    }
+
+    /// [`Self::with_firefight_maps`] over [`Self::ground_maps`]: Change Map's
+    /// Firefight list, the kit packages then the maps with ground
+    /// variants.
+    pub fn with_ground_maps(&self, has_ground: impl Fn(&Map) -> bool) -> Catalogue {
+        self.with_firefight_maps(self.ground_maps(has_ground))
+    }
+
     /// The pause dialog uses one value list. Walk the same selectable rows
     /// as the pregame dialog, expanding each pack where its folder appears.
     pub(crate) fn playable_maps(&self, category: Category) -> Vec<Map> {
@@ -501,7 +544,21 @@ impl Selection {
     fn begin_picker(&self, lobby: crate::lobby_start::Mode, record: Option<&variants::GameVariant>) -> OpenList {
         let mode = variant_mode(lobby, record);
         let category = mode_category(mode);
-        let catalogue = self.catalogue().for_variant(mode, record);
+        let base = self.catalogue();
+        let mut catalogue = base.for_variant(mode, record);
+        if mode == crate::lobby_start::Mode::Firefight
+            && let Some(sources) = SOURCES.get()
+        {
+            let wave = record
+                .map(|v| v.ext().script)
+                .filter(|s| s.mode == variants::ext::Mode::Firefight)
+                .map(|s| s.prefix);
+            let ground = base.ground_maps(|m| {
+                crate::lobby_start::supports_ground_wave(m, wave)
+                    && crate::lobby_mode::has_ground_variant(&sources.data_root, m)
+            });
+            catalogue = Arc::new(catalogue.with_firefight_maps(ground));
+        }
         *lock(&self.picker) = Some(catalogue);
         OpenList { mode: category.map_or(Mode::Categories, Mode::Maps), focus: None, from_setup: category.is_some() }
     }

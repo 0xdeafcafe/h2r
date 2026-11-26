@@ -11,6 +11,7 @@ fn listed(file: &str, source: Source, problem: Option<Problem>) -> Listed {
         id: None,
         problem,
         sentence: problem.map(|p| p.sentence(file, "fixture")),
+        ground: false,
     }
 }
 

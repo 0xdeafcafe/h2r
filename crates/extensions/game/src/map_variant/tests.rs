@@ -324,3 +324,58 @@ fn the_lobbys_mode_keeps_the_kit_start_or_drops_it() {
     follow_mode(true, Some(7), Some("fixture"), || "Builder".into());
     assert_eq!(picked(), None);
 }
+
+fn ground_store(title: &str) -> (Dir, String) {
+    let mut d = doc(title);
+    d.recipes.push(
+        forge_doc::GroundRecipe {
+            kit_version: 3,
+            home: 0,
+            probe: false,
+        }
+        .to_recipe(),
+    );
+    d.format = d.required_format();
+    let dir = Dir::new();
+    let file = variants::save(&dir.0, &d, false).unwrap();
+    (dir, file)
+}
+
+#[test]
+fn a_pick_keeps_whether_its_document_has_ground() {
+    clear();
+    let (dir, file) = ground_store("Basin");
+    let maps = library(installed());
+    pick(&dir.0, "fixture", Some(7), &file, &maps).unwrap().join().unwrap();
+    assert!(picked().unwrap().ground);
+    assert!(ground_on(Some(7)));
+    assert!(!ground_on(Some(8)), "another lobby map");
+    let (plain, file) = store("Castle");
+    pick(&plain.0, "fixture", Some(7), &file, &maps).unwrap().join().unwrap();
+    assert!(!picked().unwrap().ground);
+    assert!(!ground_on(Some(7)));
+}
+
+#[test]
+fn clearing_the_pick_refuses_the_start_again() {
+    use crate::lobby_start::KitMaps;
+    use crate::map_select::{Catalogue, Map};
+    clear();
+    let cat = Catalogue::new([Map {
+        id: 7,
+        name: "Fixture".into(),
+        sort: 0,
+        path: r"d:\maps\fixture".into(),
+    }]);
+    let (dir, file) = ground_store("Basin");
+    let maps = library(installed());
+    pick(&dir.0, "fixture", Some(7), &file, &maps).unwrap().join().unwrap();
+    let lobby = || KitMaps::for_pick(Some(&cat), Some(7), None, ground_on(Some(7))).lobby;
+    assert!(lobby(), "the pick makes the map a kit map");
+    clear();
+    assert!(!lobby(), "no pick, no ground");
+    pick(&dir.0, "fixture", Some(7), &file, &maps);
+    assert!(lobby());
+    sync(Some(8));
+    assert!(!lobby(), "a change of map drops the pick");
+}

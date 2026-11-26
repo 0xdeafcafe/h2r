@@ -1,6 +1,6 @@
 # Forge: Firefight maps
 
-Status: Design. Built under it: the ground labels and their palette page, the `ai_ground` recipe, **Build AI ground** with the reload onto the built map, the materialiser's ground build ([forge-map-variants.md](forge-map-variants.md), "AI ground"), the director, the host runtime and the Firefight HUD ([firefight.md](firefight.md)). Slices FA1 to FA8 below are not built.
+Status: Design. Built under it: the ground labels and their palette page, the `ai_ground` recipe, **Build AI ground** with the reload onto the built map, the materialiser's ground build ([forge-map-variants.md](forge-map-variants.md), "AI ground"), the director, the host runtime and the Firefight HUD ([firefight.md](firefight.md)). Slice FA1 is built; FA2 to FA8 below are not.
 Code: `crates/formats/forge-doc/src/ground.rs` (labels, recipe), `crates/tools/forge-build/src/ground.rs` (the build), `crates/tools/firefight-kit/src/ground.rs` (`ground::build`), `crates/extensions/forge/src/session/ground.rs`, `crates/extensions/game/src/forge_glue/ground.rs`, `crates/extensions/game/src/firefight/` (the runtime), `crates/formats/firefight` (`Def`, the director). Tests: named per slice below.
 Switch: none of its own. `forge` and `firefight`, listed in [switches.md](../runtime/switches.md).
 
@@ -28,7 +28,7 @@ What a player does, and what carries each step.
 | 4 | edits the waves, or keeps Holdout's | the wave set in the document (FA2), the Waves screens (FA5) | design |
 | 5 | chooses **Test waves** and fights them in the session | the director over the session's map (FA3) | design; the row builds the ground and does not start a match |
 | 6 | saves the map variant | the variant store; the save builds stale ground first | built; the wave set joins it in FA2 |
-| 7 | in Custom Games picks Firefight, the map and the map variant, and starts | the lobby's kit check takes a variant with ground (FA1); **Map Waves** plays the map's own set (FA4) | design; the lobby takes only `h2 firefight kit` packages |
+| 7 | in Custom Games picks Firefight, the map and the map variant, and starts | the lobby's kit check takes a variant with ground (FA1); **Map Waves** plays the map's own set (FA4) | built (FA1); Map Waves is FA4 |
 
 FA1 alone closes the loop with the built-in wave sets: steps 1 to 3, 6
 and 7. FA2 to FA5 make the waves the author's. FA6 adds the enemy classes
@@ -130,19 +130,22 @@ the `ff_drop_NN` zones, the `ff_class_<name>` record. A map variant
 materialised with the `ai_ground` recipe has all three, so the runtime
 needs no change. The lobby is what stands between.
 
-- **The kit check** (FA1). `lobby_start::KitMaps` counts the lobby's map
+- **The kit check** (FA1). `lobby_start::KitMaps::for_pick` counts the lobby's map
   as a kit map when it is a kit package (`is_kit_map`) or when the held
   map variant's document has a ground recipe
-  (`map_variant::Picked::ground`, from `ForgeDoc::ground_recipe`). `lobby_mode::refusal` reads it as
-  today. The sentences: "Pick a map variant with AI ground, or a
+  (`map_variant::Picked::ground`, from `ForgeDoc::ground_recipe`, read
+  with `map_variant::ground_on`) and the wave set takes its base map
+  (`lobby_start::supports_ground_wave`). `lobby_mode::refusal` reads it as
+  before. The sentences: "Pick a map variant with AI ground, or a
   Firefight map." on a base map with no such pick, and the existing
   line when nothing installed can play.
 - **Change Map** with a Firefight variant selected lists the kit packages
   and, after them, each installed base map that has at least one saved
   map variant with a ground recipe (`forge::files::variants::list`, the
-  entry's `ground`). Choosing a base map sets the lobby's map and opens
-  the Map Variant picker.
-- **Map Variant** in a Firefight lobby lists the variants with ground;
+  entry's `ground`; `Catalogue::with_ground_maps`). Choosing a base map
+  sets the lobby's map; the Map Variant row then picks its variant.
+- **Map Variant** in a Firefight lobby
+  (`lobby_mode::map_variant_pick_for`) lists the variants with ground;
   Original and a variant without ground are listed with "No AI ground."
   and cannot be chosen. A variant with its own set ends its line "Has
   its own waves."
@@ -298,7 +301,8 @@ FA1). FA7 follows FA5, FA8 follows FA4.
 - **Code** The labels, the recipe, the build and the reload: the files in
   the status line. `record_options` turns a lobby match off in Forge mode
   (`crates/extensions/game/src/firefight/runtime.rs`). The lobby's kit
-  check is by package name (`lobby_start::is_kit_map`).
+  check is by package name (`lobby_start::is_kit_map`) or by the held
+  pick's ground (`map_variant::ground_on`).
 - **Code** `read_kit` finds the kit by squad and zone names, not by
   package (`crates/extensions/game/src/firefight/guest.rs`).
 - **Test** A document with markers and a recipe materialises to the

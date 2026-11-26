@@ -210,6 +210,10 @@ pub mod variants {
         pub problem: Option<Problem>,
         /// `problem`'s sentence.
         pub sentence: Option<String>,
+        /// The document has a well-formed AI ground recipe, so the lobby
+        /// takes it as a Firefight map (docs/game/forge-firefight.md,
+        /// "Playing it").
+        pub ground: bool,
     }
 
     fn map_dir(data: &Path, map: &str) -> Result<PathBuf, Error> {
@@ -305,6 +309,9 @@ pub mod variants {
                     ),
                     Err(p) => (file.clone(), String::new(), None, Some(*p)),
                 };
+                let ground = read
+                    .as_ref()
+                    .is_ok_and(|doc| matches!(doc.ground_recipe(), Ok(Some(_))));
                 let sentence = problem.map(|p| p.sentence(&name, map));
                 part.push(Listed {
                     source,
@@ -314,6 +321,7 @@ pub mod variants {
                     id,
                     problem,
                     sentence,
+                    ground,
                 });
             }
             part.sort_by_cached_key(|l| (l.name.to_lowercase(), l.file.clone()));
