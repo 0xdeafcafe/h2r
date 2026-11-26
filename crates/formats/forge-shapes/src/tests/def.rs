@@ -95,10 +95,6 @@ fn each_refusal_is_named() {
             .generate()
             .is_ok()
     );
-    assert_eq!(
-        refused(&PieceDef::dev(Shape::Boulder, [128; 3], 7)),
-        Error::NotGenerated(Shape::Boulder)
-    );
 }
 
 #[test]

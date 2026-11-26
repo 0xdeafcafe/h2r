@@ -10,6 +10,9 @@ pub mod circle;
 mod def;
 mod error;
 mod generate;
+pub mod hull;
+pub mod natural;
+pub mod noise;
 mod solid;
 pub mod units;
 

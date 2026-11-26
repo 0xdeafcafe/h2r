@@ -291,7 +291,7 @@ fn generation_is_repeatable() {
 /// The golden hashes: a SHA-256 of each sample's vertex bits.
 fn golden_lines() -> String {
     let mut out = String::new();
-    for def in sample_defs() {
+    for def in sample_defs().into_iter().chain(natural_defs()) {
         let sum = Sha256::digest(solid(&def).bits());
         let hex: String = sum.iter().map(|b| format!("{b:02x}")).collect();
         out.push_str(&format!("{} {hex}\n", def.name()));

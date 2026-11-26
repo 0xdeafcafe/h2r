@@ -1,6 +1,6 @@
 # Forge block-out: pieces, the natural set and the dev textures
 
-Status: Design, with slice BO1 built: `forge-shapes` has the definition, the canonical name and the structural generators (block, wall, floor plate, ramp, wedge, stairs, cylinder, arch) and `STARTER`. The rest of the page is not built. It is slice F8 of [forge-design.md](forge-design.md), split into slices BO1 to BO12 below.
+Status: Design, with slices BO1 and BO3 built: `forge-shapes` has the definition, the canonical name, the structural generators (block, wall, floor plate, ramp, wedge, stairs, cylinder, arch), `STARTER`, and the natural set (`noise`, `hull` and the five rock generators). The rest of the page is not built. It is slice F8 of [forge-design.md](forge-design.md), split into slices BO1 to BO12 below.
 Code: `crates/formats/forge-shapes` (the definitions and generators), `crates/formats/dev-texture` (the dev textures), `crates/tools/blockout-kit` (a definition as tags), `crates/tools/forge-build/src/blockout.rs` (materialising), `crates/extensions/forge/src/piece.rs` (the session). Tests: named per slice under "Slices".
 Switch: none. Two settings of the profile's store, `forge.blockout.grid` and `forge.blockout.dev_view` ("In the monitor").
 
@@ -259,17 +259,37 @@ Scenery group when F10 lands and is not part of this set.
 
 `forge_shapes::natural::generate` makes each the same way:
 
-1. A point set on a base form for the shape (a subdivided octahedron, a
-   box or a prism), fitted to the unit box.
-2. Each point moved along its direction from the centre by seeded
-   lattice noise (`forge_shapes::noise`: an integer hash of the lattice
-   cell and the seed, blended with a cubic in `f32`), by an amount the
-   shape gives: large on a boulder, small on a slab's top and a wedge's
-   slope, none on a cliff's back.
-3. The convex hull of the points (`forge_shapes::hull`, exact
-   orientation tests on the integer grid the points are rounded to),
-   scaled to the size, then moved down so its lowest face lies on
-   z = 0.
+1. A point set of at most 34 points on a form that suits the shape,
+   each shape drawing its own seeded numbers from
+   `forge_shapes::noise::Stream`:
+   - `Boulder`: the 26 directions of a cube's corners, edges and faces,
+     each turned a little, at a radius that wanders with low-frequency
+     noise and a jitter of its own, drawn in toward the top, the nine
+     lowest directions set on the ground plane as a flat footprint.
+   - `Slab`: three irregular rings of ten (a base drawn in, a belly and a
+     top edge with a small noise in its height) and a crown at the full
+     height, so the top is within a few degrees of level.
+   - `Cliff`: a front lattice of five columns by four rows pushed out to
+     craggy depths by noise, the end columns in the planes x = 0 and
+     x = 1 so cliffs stand side by side, and a back in the plane y = 1.
+   - `TerrainWedge`: six columns by five rows of a surface rising along
+     x with noise on its height, the edge rows in the planes y = 0 and
+     y = 1, the toe at ground level and the back in the plane x = 1.
+   - `Spire`: four rings of eight narrowing upward, each with ragged
+     radii, a ledge of its own and a lean, and an apex at the full
+     height.
+2. Noise is `forge_shapes::noise`: an integer hash of the lattice cell
+   and the seed, blended with a cubic in `f32` (`value`, and `fbm` for
+   octaves). The seed of a rock is a hash of its shape and its param.
+   Round rings take their points from `forge_shapes::circle`, never
+   `sin` or `cos`, so a seed gives the same bits on every host.
+3. The points are stretched so each axis spans the unit box, which puts
+   the lowest point on z = 0 and the bounds at the size, and are rounded
+   to a grid of 4,096 across it. The convex hull of the grid points
+   (`forge_shapes::hull`, exact `i128` sign tests: every plane through
+   three points with the rest on or behind it, its corners the strict
+   two-dimensional hull of the points on it) is scaled to the size. A
+   hull of 34 points has at most 64 faces.
 
 The hull is the shell and the one convex piece, so a rock is one
 polyhedron for Havok and a faceted, low-polygon rock to the eye, with
