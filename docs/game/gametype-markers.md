@@ -338,6 +338,13 @@ seat's monitor keeps its ring (`forge_glue::marker`). A hill's marker
 takes `Area::of_corners` or the default area until the document holds an
 area.
 
+- **Forms and plates.** Each entry draws its marker's edit form with the
+  monitor on ([gametype-marker-forms.md](gametype-marker-forms.md),
+  "When a form shows"): `markers_world::drawn` puts the play form's parts
+  in a group's `edges` at its alpha and the edit-only parts in its `dim`
+  at `form::EDIT_ALPHA` of it. The plate stands on the post, turned about
+  the upright to face the eye and scaled by `form::icon_scale` of the
+  eye's distance with its foot on the post (`markers_world::plate`).
 - **Lines first.** The world-line pass draws lines, with no depth test.
   That is the hologram's frame and is enough to read every marker. The
   native renderer's marker pass (`native_render::markers::Pass`) draws
@@ -428,18 +435,31 @@ make the same document.
   an unused hill type and one area op
   ([forge-editing.md](forge-editing.md), "The object menu").
 - **Radius.** Choose **Edit area** in an aimed or held goal's
-  Properties (X). The left stick grows or shrinks the radius by the
+  Properties (X): a hill, a territory, a site, a flag return, a bomb
+  goal or a siege goal. A flag return, a bomb goal and a siege goal with
+  no area start from `Area::plate()`, the rest from the default circle
+  (`forge_glue::editing::area::default_area`). The left stick grows or
+  shrinks the radius by the
   movement snap, or by 0.25 with snap off. The wall follows the draft.
   X opens the typed **Radius**, **Below** and **Above** rows. Close the
   rows to return to the draft. A writes one `EntryOp::Area`. B cancels.
-- **Path.** Y switches to a path. Fly the monitor and press A to drop
+- **Shapes.** Y cycles the draft's shape: a circle becomes a box of its
+  radius each way, a box a sphere of the same floor, a sphere an empty
+  path, and a path a circle of the same floor
+  ([gametype-marker-forms.md](gametype-marker-forms.md), "Boundaries").
+  The left stick's forward axis steps a box's half length and its right
+  axis its half width, one step a lean; a sphere grows on the forward
+  axis alone. X types a box's **Half length**, **Half width**, **Below**
+  and **Above**, and a sphere's **Radius**: a sphere has no height, so
+  it sets the heights aside and the shape after it takes them back.
+- **Path.** From a sphere, Y makes a path. Fly the monitor and press A to drop
   each point on the floor under the reticle. The closing edge is
   dashed. X removes the last point and holding A on a point drags it.
   Invalid additions and drags leave the last valid points in place
   and show the `AreaError` sentence. Start or a tap of A on the first
   point closes a valid path and writes one area op. B cancels. Y
   makes a circle with the same floor area, or restores the radius
-  from before the switch if the path has fewer than three points.
+  from before the path if it has fewer than three points.
 - **Moving the marker** moves the area with it and writes no area op.
 - **Undo** is the op's inverse, as for any entry op.
 

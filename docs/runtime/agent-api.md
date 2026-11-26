@@ -1804,16 +1804,21 @@ h2 agent render.marks | jq '.presents[] | [.frame, .fraction, .shifted, .anchors
 
 `render.markers` reads the Forge game type markers the window's last
 capture drew ([gametype-markers.md](../game/gametype-markers.md), "The
-game"). Params are `{}` or `{"kind": "spawn"}`, a kind name of
-`game_markers::Kind::name` (`spawn`, `flag_stand`, `hill`, `ff_drop`, ...) or `wall`;
-a name that is not one is refused with `invalid params` and the list of
-names, and so is any other field. The answer is
+game"). Params are `{}`, `{"kind": "spawn"}`, `{"form": "edit"}` or
+both: `kind` is a kind name of
+`game_markers::Kind::name` (`spawn`, `flag_stand`, `hill`, `ff_drop`, ...) or `wall`,
+and `form` is `edit` or `play`. A name that is not one is refused with
+`invalid params` and the list of names, and so is any other field. The
+answer is
 
 ```json
 {"shown": 2, "hidden_by_budget": 0,
  "markers": [{"thing": "starting_locations:0", "kind": "spawn", "team": 0,
-              "anchor": [1.0, 2.0, 0.85], "lines": 38, "faded": false}]}
+              "anchor": [1.0, 2.0, 0.85], "lines": 38, "faded": false,
+              "form": "edit", "icon": "respawn", "plate_scale": 1.0}]}
 ```
+
+A row is `agent_proto::MarkerRow`.
 
 - The walls a running rules script shows in play (`show_area`) are rows
   too: `kind` is `wall`, `thing` is `zone:<hex of the zone object>` and
@@ -1828,8 +1833,18 @@ names, and so is any other field. The answer is
   for a ground label the last build could not honour.
 - `team` is 0 to 7, or null. `anchor` is where the label sits, in world
   units; `render.marks` gives window pixels for the groups the window
-  visited. `lines` is the marker's line count. `faded` is a marker of
-  another game type, drawn at a quarter.
+  visited. `lines` is the marker's line count, its dimmed edit-only
+  parts' included. `faded` is a marker of another game type, drawn at a
+  quarter.
+- `form` is the form it drew ([gametype-marker-forms.md](../game/gametype-marker-forms.md),
+  "When a form shows"): `edit` for every Forge marker with the monitor
+  on, its play form's parts at full strength and the rest at 0.6 of it;
+  a wall is `play`. `icon` is the icon on its plate
+  (`game_markers::Icon::name`), null for a wall and a volume.
+  `plate_scale` is how much its plate, turned to the eye, was scaled
+  with the eye's distance: 1 out to 8 world units, then the distance
+  over 8; null when no plate drew. `kind` and `form` filter only
+  `markers`.
 - With no Forge session (or the monitor off), no wall shown and no present
   since, `shown` is 0 and `markers` is empty. A headless host has no window and draws none.
 
@@ -5077,23 +5092,28 @@ state: it adds `fine` (fine movement on), `ui_up` (a screen is up) and
 `dirty` (edits not saved), and `screen` is the Forge screen of ours that
 is up, with its rows and focus.
 
-Choose **Edit area** in a goal's Properties before sending area
-input. While a draft is active, `forge.status.area_edit` gives
-`{target, shape, below, above, radius?, points?}` with numeric world
-units. It is `null` outside the editor. `forge.things` shows the
-committed area.
+Choose **Edit area** in the Properties of a goal with an area (a hill,
+a territory, a site, a flag return, a bomb goal or a siege goal) before
+sending area input. While a draft is active, `forge.status.area_edit`
+gives `{target, shape, below, above, radius?, half?, points?}` with
+numeric world units: `shape` is `radius`, `box` (with `half`, the half
+length and half width), `sphere` (with `radius`; `below` and `above`
+are 0) or `path`. It is `null` outside the editor. `forge.things` shows
+the committed area.
 
-| Input in the draft | Radius | Path |
-|---|---|---|
-| `accept` | Save | Drop a point, or close at the first point |
-| `properties` | Open the typed dimension rows | Remove the last point |
-| `area_shape` | Switch to an empty path | Switch to an equal-floor radius |
-| `area_close` | | Close and save the path |
-| `area_grab`, `area_release` | | Press or release A for a drag |
-| `back` | Cancel | Cancel |
+| Input in the draft | Radius | Box | Sphere | Path |
+|---|---|---|---|---|
+| `accept` | Save | Save | Save | Drop a point, or close at the first point |
+| `properties` | Open the typed dimension rows | The same | The same (Radius only) | Remove the last point |
+| `area_shape` | Switch to a box of the radius each way | Switch to an equal-floor sphere | Switch to an empty path | Switch to an equal-floor radius |
+| `area_close` | | | | Close and save the path |
+| `area_grab`, `area_release` | | | | Press or release A for a drag |
+| `back` | Cancel | Cancel | Cancel | Cancel |
 
-In a radius draft, the forward axis grows or shrinks the radius. In
-a path draft, use movement and look to aim at the floor.
+In a radius or sphere draft, the forward axis steps the radius; in a box
+draft, the forward axis steps the half length and the right axis the
+half width, one step a lean and again every 0.18 s while held. In a path
+draft, use movement and look to aim at the floor.
 `forge.input` acknowledges the queued input. Read `forge.status.notice`
 for geometry refusals and `forge.log` for the area op written on save.
 

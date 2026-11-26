@@ -181,7 +181,12 @@ fn forge_input_closes_four_points_in_one_op_and_cancel_keeps_the_last_area() {
         panic!("Edit area starts a draft")
     };
     e.choose(2, choice.clone()).unwrap();
-    script.press(&mut e, "area_shape").unwrap();
+    // Y cycles the four shapes: a box, a sphere, then an empty path.
+    for shape in ["box", "sphere", "path"] {
+        script.press(&mut e, "area_shape").unwrap();
+        assert_eq!(e.status()["area_edit"]["shape"], shape);
+    }
+    assert_eq!(e.status()["area_edit"]["below"], json!(0.5), "the path takes the heights back");
 
     let expected = [[0., 0.], [4., 0.], [4., 4.], [0., 4.]];
     for p in expected {
@@ -314,4 +319,152 @@ fn radius_steps_with_movement_snap_and_typed_dimensions_commit_together() {
             above: 2.0
         }
     );
+}
+
+#[test]
+fn forge_input_grows_a_box_on_the_sticks_two_axes_and_saves_it_in_one_op() {
+    let (mut e, id) = hill();
+    let mut script = Script::new();
+    e.choose(2, Choice::EditArea(id)).unwrap();
+    script.press(&mut e, "area_shape").unwrap();
+    assert_eq!(e.status()["area_edit"]["shape"], "box");
+    assert_eq!(e.status()["area_edit"]["half"], json!([1.0, 1.0]), "the circle's radius each way");
+    // Forward steps the half length, right the half width: one step a lean.
+    script.input(&mut e, json!({"movement":[0, 1, 0]})).unwrap();
+    script.input(&mut e, json!({"movement":[1, 0, 0]})).unwrap();
+    script.input(&mut e, json!({"movement":[0, 1, 0]})).unwrap();
+    assert_eq!(e.status()["area_edit"]["half"], json!([1.5, 1.25]));
+    script.press(&mut e, "properties").unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    let sheet = screens::screen(Kind::Properties).sheet();
+    let fields: Vec<_> = sheet.rows.iter().map(|row| row.label.as_str()).collect();
+    assert_eq!(fields, ["Half length", "Half width", "Below", "Above"]);
+    let bad = e
+        .choose(
+            5,
+            Choice::Number(sheet::NumberField::Area(sheet::AreaField::Width), "0.1".into()),
+        )
+        .unwrap_err();
+    assert_eq!(bad, AreaError::Half([1.5, 0.1]).to_string());
+    assert_eq!(e.session.document().ops.len(), 2, "nothing is written in the draft");
+    script.press(&mut e, "accept").unwrap();
+    let ops = &e.session.document().ops;
+    assert_eq!(ops.len(), 3, "one area op");
+    let Edit::Entry(EntryOp::Area {
+        target,
+        area: Some(area),
+    }) = &ops[2].edit
+    else {
+        panic!("accept writes an area op")
+    };
+    assert_eq!(*target, id);
+    assert_eq!(
+        area.marker_area(),
+        Area {
+            shape: Shape::Box { half: [1.5, 1.25] },
+            below: 0.5,
+            above: 1.5
+        }
+    );
+    // Edit area opens the stored box as it is.
+    e.choose(9, Choice::EditArea(id)).unwrap();
+    assert_eq!(e.status()["area_edit"]["half"], json!([1.5, 1.25]));
+}
+
+#[test]
+fn a_box_turns_into_a_sphere_of_its_floor_and_the_sphere_saves_with_no_height() {
+    let (mut e, id) = hill();
+    let mut script = Script::new();
+    e.choose(2, Choice::EditArea(id)).unwrap();
+    script.press(&mut e, "area_shape").unwrap();
+    script.press(&mut e, "area_shape").unwrap();
+    let draft = e.status()["area_edit"].clone();
+    assert_eq!(draft["shape"], "sphere");
+    let radius = draft["radius"].as_f64().unwrap();
+    assert!((radius - (4. / std::f64::consts::PI).sqrt()).abs() < 0.001, "{radius}");
+    assert_eq!((&draft["below"], &draft["above"]), (&json!(0.0), &json!(0.0)));
+    // A sphere grows on the forward axis alone.
+    script.input(&mut e, json!({"movement":[1, 1, 0]})).unwrap();
+    let grown = e.status()["area_edit"]["radius"].as_f64().unwrap();
+    assert!((grown - radius - 0.25).abs() < 0.001, "{grown}");
+    script.press(&mut e, "properties").unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    let sheet = screens::screen(Kind::Properties).sheet();
+    let fields: Vec<_> = sheet.rows.iter().map(|row| row.label.as_str()).collect();
+    assert_eq!(fields, ["Radius"], "a sphere has no height to type");
+    e.choose(
+        5,
+        Choice::Number(sheet::NumberField::Area(sheet::AreaField::Radius), "2".into()),
+    )
+    .unwrap();
+    let refused = e
+        .choose(
+            6,
+            Choice::Number(sheet::NumberField::Area(sheet::AreaField::Below), "1".into()),
+        )
+        .unwrap_err();
+    assert!(refused.contains("no height"), "{refused}");
+    script.press(&mut e, "accept").unwrap();
+    assert_eq!(e.session.document().ops.len(), 3);
+    assert_eq!(e.session.areas().unwrap()[&id].marker_area(), Area::sphere(2.0));
+    // Opened again, Y makes an empty path at the default heights, and Y
+    // again the sphere's radius as a circle.
+    e.choose(12, Choice::EditArea(id)).unwrap();
+    assert_eq!(e.status()["area_edit"]["shape"], "sphere");
+    script.press(&mut e, "area_shape").unwrap();
+    let draft = e.status()["area_edit"].clone();
+    assert_eq!(draft["points"], json!([]));
+    assert_eq!((&draft["below"], &draft["above"]), (&json!(0.5), &json!(1.5)));
+    script.press(&mut e, "area_shape").unwrap();
+    assert_eq!(e.status()["area_edit"]["shape"], "radius");
+    assert_eq!(e.status()["area_edit"]["radius"], json!(2.0));
+}
+
+#[test]
+fn a_flag_return_edits_its_capture_plate() {
+    use crate::forge_glue::editing::area::default_area;
+    assert_eq!(default_area("ctf_flag_return"), Some(Area::plate()));
+    assert_eq!(default_area("assault_bomb_return"), Some(Area::plate()));
+    assert_eq!(default_area("siege_goal"), Some(Area::plate()));
+    assert_eq!(default_area("hill_corner"), Some(Area::default()));
+    assert_eq!(default_area("territory"), Some(Area::default()));
+    assert_eq!(default_area("ctf_flag_spawn"), None);
+
+    // The hill's flag made a flag return, with its area cleared.
+    let (mut e, id) = hill();
+    let mut script = Script::new();
+    e.tool.aimed_thing = Some(id);
+    e.choose(2, Choice::Set(Prop::Role, 1)).unwrap();
+    e.poll(2);
+    e.stage(After::Area, |s, w| s.set_area(w, 3, id, None)).unwrap();
+    e.poll(3);
+    assert!(!e.session.areas().unwrap().contains_key(&id.identity()));
+    assert_eq!(
+        e.marker_entries()[0].marker.kind,
+        game_markers::Kind::FlagReturn(Area::plate())
+    );
+    let ops = e.session.document().ops.len();
+    // Its Properties offer Edit area, which starts from the capture plate.
+    script.press(&mut e, "properties").unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    let sheet = screens::screen(Kind::Properties).sheet();
+    let row = sheet
+        .rows
+        .iter()
+        .find(|row| row.label == "Edit area")
+        .expect("a flag return has Edit area");
+    let sheet::Act::Choose(choice) = &row.act else {
+        panic!("Edit area starts a draft")
+    };
+    e.choose(5, choice.clone()).unwrap();
+    let draft = e.status()["area_edit"].clone();
+    assert_eq!(draft["shape"], "radius");
+    assert_eq!(draft["radius"], json!(0.5));
+    script.press(&mut e, "area_shape").unwrap();
+    script.input(&mut e, json!({"movement":[1, 0, 0]})).unwrap();
+    script.press(&mut e, "accept").unwrap();
+    assert_eq!(e.session.document().ops.len(), ops + 1);
+    let stored = e.session.areas().unwrap()[&id.identity()].marker_area();
+    assert_eq!(stored.shape, Shape::Box { half: [0.5, 0.75] });
+    assert_eq!((stored.below, stored.above), (Area::plate().below, Area::plate().above));
 }

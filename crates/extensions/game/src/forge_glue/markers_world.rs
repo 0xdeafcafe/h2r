@@ -10,6 +10,13 @@
 //! orders them by the eye's distance, builds the lines of the nearest
 //! ([`draw`]) and keeps what it drew for `render.markers`.
 //!
+//! Each entry draws one of its marker's two forms
+//! (docs/game/gametype-marker-forms.md, "When a form shows"): with the
+//! monitor on, the edit form, its play form's parts at full strength and
+//! the edit-only parts at [`EDIT_ALPHA`]; its plate stands on its post
+//! turned about the upright to face the eye and scaled with the distance
+//! ([`plate`]).
+//!
 //! A running game's rules script shows the walls of the areas it names
 //! (`show_area`, docs/game/gametype-markers.md, "The boundary in play"):
 //! the rules runtime publishes them ([`publish_walls`]) and the same
@@ -20,10 +27,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use agent::Access;
-use agent_proto::{MarkersParams, RpcError, code, method};
+use agent_proto::{MarkerRow, MarkersParams, RpcError, code, method};
 use forge::tool::{Show, in_game};
 use forge::{Endpoint, GroundProblem, PlacedMarker, Thing, ThingKind, Value};
-use game_markers::{Area, Item, Kind, Marker, Palette, Place, SpawnUse, Tint, Tri};
+use game_markers::form::{EDIT_ALPHA, PLATE, icon_scale};
+use game_markers::{
+    Area, Form, Item, Kind, LINE_ALPHA, Marker, Mesh, Palette, Part, Place, SpawnUse, Tint, Tri,
+};
 use serde_json::{Value as Json, json};
 
 /// The most markers a view draws; the nearest are kept.
@@ -72,6 +82,11 @@ pub struct Entry {
     pub label: String,
     /// The path is still in hand and has a dashed closing edge.
     pub draft_path: bool,
+    /// Which of the marker's forms draws: the edit form in Forge.
+    pub form: Form,
+    /// The number on its plate: a hill's, a territory's or a site's,
+    /// counted from 1.
+    pub number: Option<u32>,
 }
 
 /// What the markers are made from.
@@ -149,6 +164,19 @@ fn label_of(kind: &Kind, team: Option<u8>, number: Option<i32>) -> String {
     }
 }
 
+/// The number a kind's plate shows of its flag's `number` (from 0): one
+/// more, and a hill with none is Hill 1, as its label says.
+fn plate_number(kind: &Kind, number: Option<i32>) -> Option<u32> {
+    if !kind.numbered() {
+        return None;
+    }
+    match (kind, number) {
+        (_, Some(n)) => u32::try_from(n).ok().map(|n| n + 1),
+        (Kind::Hill(_), None) => Some(1),
+        _ => None,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn entry(
     id: Option<Endpoint>,
@@ -166,10 +194,12 @@ fn entry(
         name,
         label: label_of(&kind, team, number),
         place: Place::facing(at, if kind.area().is_some() { 0.0 } else { yaw }),
+        number: plate_number(&kind, number),
         marker: Marker::new(kind, team),
         tone,
         other_game,
         draft_path: false,
+        form: Form::Edit,
     }
 }
 
@@ -413,7 +443,10 @@ fn published() -> Option<Published> {
 /// are the native renderer's skin ([`gpu::batch`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Group {
+    /// The lines drawn at the group's alpha: the play form's.
     pub edges: Vec<[[f32; 3]; 2]>,
+    /// The lines drawn at [`EDIT_ALPHA`] of it: the edit-only parts.
+    pub dim: Vec<[[f32; 3]; 2]>,
     /// The placed mesh's faces, with their alpha, faded as the marker is.
     pub tris: Vec<Tri>,
     pub anchor: [f32; 3],
@@ -422,6 +455,13 @@ pub struct Group {
     /// The distance fade, or none for a selected marker.
     pub fade: Option<(f32, f32)>,
     pub label: Option<String>,
+}
+
+impl Group {
+    /// The alpha of the [`Group::dim`] lines.
+    pub fn dim_alpha(&self) -> f32 {
+        self.alpha * EDIT_ALPHA
+    }
 }
 
 /// What a view drew, for `render.markers`.
@@ -440,6 +480,12 @@ pub struct Shown {
     pub anchor: [f32; 3],
     pub lines: usize,
     pub faded: bool,
+    pub form: Form,
+    /// The icon on its plate; none for a wall and a volume.
+    pub icon: Option<&'static str>,
+    /// How much its plate is scaled with the eye's distance; none with no
+    /// plate drawn.
+    pub plate_scale: Option<f32>,
 }
 
 static LAST: Mutex<Report> = Mutex::new(Report {
@@ -485,7 +531,8 @@ pub fn draw_walls(walls: &[Wall], eye: Option<[f32; 3]>, palette: &Palette) -> (
         let top = mesh.bounds().map_or(w.at[2], |(_, max)| max[2]);
         let anchor = [w.at[0], w.at[1], top];
         groups.push(Group {
-            edges: mesh.lines.iter().map(|l| [l.a, l.b]).collect(),
+            edges: edges(&mesh),
+            dim: Vec::new(),
             tris: mesh.tris.clone(),
             anchor,
             colour,
@@ -500,6 +547,9 @@ pub fn draw_walls(walls: &[Wall], eye: Option<[f32; 3]>, palette: &Palette) -> (
             anchor,
             lines: mesh.lines.len(),
             faded: false,
+            form: Form::Play,
+            icon: None,
+            plate_scale: None,
         });
     }
     (groups, shown)
@@ -561,23 +611,29 @@ pub fn draw(
         } else {
             1.0
         };
-        let mesh = match e.marker.kind.area().filter(|_| e.draft_path) {
-            Some(area) => area.path_preview(colour),
-            None => e.marker.kind.mesh(colour),
-        }
-        .placed(&e.place)
-        .faded(alpha);
-        let top = mesh.bounds().map_or(e.place.at[2], |(_, max)| max[2]);
+        let shape = drawn(e, colour, eye);
+        let (full, dim) = (shape.full.faded(alpha), shape.dim.faded(alpha));
+        let top = full
+            .bounds()
+            .into_iter()
+            .chain(dim.bounds())
+            .map(|(_, max)| max[2])
+            .reduce(f32::max)
+            .unwrap_or(e.place.at[2]);
         let anchor = [e.place.at[0], e.place.at[1], top + LABEL_LIFT];
         let area = e.marker.kind.area().is_some();
         let near = eye.is_none() || d <= LABEL_RANGE;
-        let lines = mesh.lines.len();
+        let lines = full.lines.len() + dim.lines.len();
+        let (bright, faint) = (edges(&full), edges(&dim));
+        let mut tris = full.tris;
+        tris.extend(dim.tris);
         groups.push(Group {
-            edges: mesh.lines.iter().map(|l| [l.a, l.b]).collect(),
-            tris: mesh.tris.clone(),
+            edges: bright,
+            dim: faint,
+            tris,
             anchor,
             colour,
-            alpha: mesh.lines.first().map_or(alpha, |l| l.colour[3]),
+            alpha: alpha * LINE_ALPHA,
             fade: (!pin).then_some(if area { AREA_FADE } else { FADE }),
             label: (pin || near).then(|| e.label.clone()),
         });
@@ -588,27 +644,121 @@ pub fn draw(
             anchor,
             lines,
             faded: e.other_game,
+            form: e.form,
+            icon: e.marker.kind.icon().map(|i| i.name()),
+            plate_scale: shape.plate_scale,
         });
     }
     report.shown = groups.len();
     (groups, report)
 }
 
+fn edges(mesh: &Mesh) -> Vec<[[f32; 3]; 2]> {
+    mesh.lines.iter().map(|l| [l.a, l.b]).collect()
+}
+
+/// One entry's lines and faces in the world, as seen from one eye.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Drawn {
+    /// What draws at full strength: the play form's parts.
+    pub full: Mesh,
+    /// What draws at [`EDIT_ALPHA`]: the edit form's other parts, already
+    /// faded so.
+    pub dim: Mesh,
+    /// The plate's scale ([`icon_scale`]), when a plate is drawn.
+    pub plate_scale: Option<f32>,
+}
+
+/// What `e` draws in `colour` seen from `eye`
+/// (docs/game/gametype-marker-forms.md, "When a form shows"). In the edit
+/// form the play form's parts are [`Drawn::full`] and the rest dim; in
+/// the play form only the play form draws. The plate ([`plate`]) goes
+/// with the part it is in that kind's play form. A path still in hand
+/// is its preview alone, with no plate.
+pub fn drawn(e: &Entry, colour: [f32; 3], eye: Option<[f32; 3]>) -> Drawn {
+    let kind = &e.marker.kind;
+    if let Some(area) = kind.area().filter(|_| e.draft_path) {
+        return Drawn {
+            full: area.path_preview(colour).placed(&e.place),
+            ..Drawn::default()
+        };
+    }
+    let mut full = kind.mesh_in(Form::Play, colour).placed(&e.place);
+    let mut dim = match e.form {
+        Form::Edit => kind.edit_only(colour).placed(&e.place).faded(EDIT_ALPHA),
+        Form::Play => Mesh::default(),
+    };
+    let plate_in_play = kind.parts(Form::Play).has(Part::Plate);
+    let sign = (e.form == Form::Edit || plate_in_play)
+        .then(|| plate(e, colour, eye))
+        .flatten();
+    let plate_scale = sign.as_ref().map(|(_, scale)| *scale);
+    match sign {
+        Some((mesh, _)) if plate_in_play => full.extend(mesh),
+        Some((mesh, _)) => dim.extend(mesh.faded(EDIT_ALPHA)),
+        None => {}
+    }
+    Drawn {
+        full,
+        dim,
+        plate_scale,
+    }
+}
+
+/// Where `e`'s plate stands seen from `eye`, and its scale: on the
+/// marker's post ([`Kind::plate_at`]), turned about the upright so its
+/// face (the plate's +x) points at the eye, and scaled by
+/// [`icon_scale`] of the eye's distance with its foot kept on the post.
+/// With no eye, or the eye straight over it, it faces the marker's
+/// front. `None` for a kind with no plate.
+pub fn plate_place(e: &Entry, eye: Option<[f32; 3]>) -> Option<(Place, f32)> {
+    let centre = e.place.point(e.marker.kind.plate_at()?);
+    let front = e.place.forward[1].atan2(e.place.forward[0]);
+    let (yaw, scale) = match eye {
+        Some(eye) => {
+            let (dx, dy) = (eye[0] - centre[0], eye[1] - centre[1]);
+            let yaw = if dx.hypot(dy) > 1e-4 { dy.atan2(dx) } else { front };
+            (yaw, icon_scale(distance(eye, centre)))
+        }
+        None => (front, 1.0),
+    };
+    let at = [centre[0], centre[1], centre[2] + PLATE * (scale - 1.0)];
+    Some((Place::facing(at, yaw), scale))
+}
+
+/// `e`'s plate and icon in the world in `colour`, at [`plate_place`], and
+/// its scale.
+pub fn plate(e: &Entry, colour: [f32; 3], eye: Option<[f32; 3]>) -> Option<(Mesh, f32)> {
+    let (place, scale) = plate_place(e, eye)?;
+    let mesh = e.marker.kind.plate(e.number, colour)?;
+    Some((mesh.scaled(scale).placed(&place), scale))
+}
+
 // ---- render.markers ----
 
-/// `render.markers`' answer from `report`, the markers of `kind` only when
-/// one is asked for (the counts cover every marker).
-pub fn report_json(report: &Report, kind: Option<&str>) -> Json {
-    let markers: Vec<Json> = report
+/// `render.markers`' row of one marker.
+pub fn row(m: &Shown) -> MarkerRow {
+    MarkerRow {
+        thing: m.thing.clone(),
+        kind: m.kind.to_owned(),
+        team: m.team,
+        anchor: m.anchor,
+        lines: m.lines,
+        faded: m.faded,
+        form: m.form.name().to_owned(),
+        icon: m.icon.map(str::to_owned),
+        plate_scale: m.plate_scale,
+    }
+}
+
+/// `render.markers`' answer from `report`, the markers of `kind` and of
+/// `form` only when one is asked for (the counts cover every marker).
+pub fn report_json(report: &Report, kind: Option<&str>, form: Option<Form>) -> Json {
+    let markers: Vec<MarkerRow> = report
         .markers
         .iter()
-        .filter(|m| kind.is_none_or(|k| m.kind == k))
-        .map(|m| {
-            json!({
-                "thing": m.thing, "kind": m.kind, "team": m.team,
-                "anchor": m.anchor, "lines": m.lines, "faded": m.faded,
-            })
-        })
+        .filter(|m| kind.is_none_or(|k| m.kind == k) && form.is_none_or(|f| m.form == f))
+        .map(row)
         .collect();
     json!({
         "shown": report.shown,
@@ -631,7 +781,16 @@ fn answer(params: Json, report: &Report) -> Result<Json, RpcError> {
             ));
         }
     }
-    Ok(report_json(report, p.kind.as_deref()))
+    let form = match p.form.as_deref() {
+        None => None,
+        Some(name) => Some(Form::of_name(name).ok_or_else(|| {
+            RpcError::new(
+                code::INVALID_PARAMS,
+                format!("unknown marker form `{name}`; one of: edit, play"),
+            )
+        })?),
+    };
+    Ok(report_json(report, p.kind.as_deref(), form))
 }
 
 /// `render.markers` (docs/runtime/agent-api.md, "render.markers"): what the
@@ -668,7 +827,9 @@ mod gpu {
     /// The groups' faces and lines as the native renderer's batch
     /// (docs/game/gametype-markers.md, "The game"): each vertex's alpha is
     /// the group's, times its fade at the vertex's distance from `eye`
-    /// (none: no fade). A line is the group's colour at the group's alpha.
+    /// (none: no fade). A line is the group's colour at the group's alpha,
+    /// a dim line at [`Group::dim_alpha`]; a group's dim lines follow its
+    /// own.
     pub fn batch(groups: &[Group], eye: Option<[f32; 3]>) -> native_render::markers::Batch {
         let mut batch = native_render::markers::Batch::default();
         for g in groups {
@@ -682,12 +843,14 @@ mod gpu {
                     }
                 }));
             }
-            let line = [g.colour[0], g.colour[1], g.colour[2], g.alpha];
-            for [a, b] in &g.edges {
-                batch.lines.extend([*a, *b].map(|position| native_render::markers::Vertex {
-                    position,
-                    colour: with(line, position),
-                }));
+            for (edges, alpha) in [(&g.edges, g.alpha), (&g.dim, g.dim_alpha())] {
+                let line = [g.colour[0], g.colour[1], g.colour[2], alpha];
+                for [a, b] in edges {
+                    batch.lines.extend([*a, *b].map(|position| native_render::markers::Vertex {
+                        position,
+                        colour: with(line, position),
+                    }));
+                }
             }
         }
         batch
@@ -774,26 +937,38 @@ mod gpu {
 
     impl ImageMarks for Sample {
         fn lines(&self, visitor: &mut dyn FnMut(WorldLine<'_>)) {
+            let style = |g: &Group, alpha: f32| LineStyle {
+                width: 2.0,
+                alpha,
+                fade: g.fade.map(|(start, end)| Fade { start, end }),
+                label_scale: 2.0,
+                label_centered: true,
+                label_face: self.face,
+                ..LineStyle::default()
+            };
             for g in &self.groups {
-                if self.native_lines && g.label.is_none() {
-                    continue;
+                if !self.native_lines || g.label.is_some() {
+                    visitor(WorldLine {
+                        edges: if self.native_lines { &g.edges[..0] } else { &g.edges[..] },
+                        anchor: g.anchor,
+                        color: g.colour,
+                        dashed: false,
+                        label: g.label.as_deref(),
+                        style: style(g, g.alpha),
+                    });
                 }
-                visitor(WorldLine {
-                    edges: if self.native_lines { &g.edges[..0] } else { &g.edges[..] },
-                    anchor: g.anchor,
-                    color: g.colour,
-                    dashed: false,
-                    label: g.label.as_deref(),
-                    style: LineStyle {
-                        width: 2.0,
-                        alpha: g.alpha,
-                        fade: g.fade.map(|(start, end)| Fade { start, end }),
-                        label_scale: 2.0,
-                        label_centered: true,
-                        label_face: self.face,
-                        ..LineStyle::default()
-                    },
-                });
+                // The edit-only parts: their own visit at the dim alpha,
+                // with no label.
+                if !self.native_lines && !g.dim.is_empty() {
+                    visitor(WorldLine {
+                        edges: &g.dim[..],
+                        anchor: g.anchor,
+                        color: g.colour,
+                        dashed: false,
+                        label: None,
+                        style: style(g, g.dim_alpha()),
+                    });
+                }
             }
         }
     }

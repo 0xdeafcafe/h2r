@@ -1594,7 +1594,7 @@ impl Editor {
                             .ok_or("Aim at a thing of the map.")?,
                     )
                 };
-                if self.area_goal(&thing).is_some() {
+                if self.area_default(&thing).is_some() {
                     sheet::add_area_row(&mut sheet, thing.id);
                 }
                 self.coordinates = Some((target, frame));
