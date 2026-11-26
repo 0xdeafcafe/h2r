@@ -613,14 +613,14 @@ fn the_skulls_on_ride_in_the_blob() {
 }
 
 /// A round's skull switched on is a note a client sends from the blob
-/// alone, with the round's: the second round of the test set turns Blind
+/// alone, with the round's: the second round of the test set turns Black Eye
 /// on.
 #[test]
 fn a_rounds_skull_is_a_note_from_the_blob() {
     let played = play(director(small_def(true, 2)), &[0], 0);
     assert_eq!(played.finished, Some(Outcome::Won));
     let at = |t: &str| played.notes.iter().position(|n| n == t);
-    let (round, skull) = (at("Round 2 of 2"), at("Blind skull on"));
+    let (round, skull) = (at("Round 2 of 2"), at("Black Eye skull on"));
     assert!(round.is_some() && skull.is_some(), "{:?}", played.notes);
     assert!(round < skull, "{:?}", played.notes);
 }

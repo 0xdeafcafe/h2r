@@ -173,8 +173,8 @@ output and hashes depend on the definition alone.
   `{"prefer_zone":n}` prefers zone `n` (0 through 11) when present
   and unseen. `{"role":"line"|"flank"|"heavy"}` keeps only the zones
   whose `ZoneSeen::roles` carry the role, then applies the unseen and
-  farther-half rule to them as for `"edge"`; a squad whose role no zone
-  carries is not placed. An auto-built kit tags every zone with all three
+  farther-half rule to them as for `"edge"`; `validate` refuses a squad
+  whose role no zone of the kit carries (`Limits::zone_roles`). An auto-built kit tags every zone with all three
   roles. Weapon tiers range from 0 to 3.
 - **Sets.** `rounds` describes one set. A finite definition (`set.endless`
   false, `scale` 0, no set skulls) plays it once and ends `Won`. An

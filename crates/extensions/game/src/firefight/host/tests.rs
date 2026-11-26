@@ -149,7 +149,7 @@ fn player(slot: u8, team: u8) -> PlayerView {
     }
 }
 
-/// Holdout: 600 warmup ticks, a pool of 12, Blind in round one, 100 points
+/// Holdout: 600 warmup ticks, a pool of 12, Ghost in round one, 100 points
 /// an Elite and a quarter for an assist.
 fn holdout() -> Def {
     builtin::definitions()[0].clone()
@@ -556,7 +556,7 @@ fn expected_calls() -> Vec<Call> {
     vec![
         Call::AiOn,
         Call::Lives(None, 12),
-        Call::Skull(Skull::Blind, true),
+        Call::Skull(Skull::Ghost, true),
         Call::Squad(SquadOp::Place(Placement {
             slot: 0,
             character: ELITE,
@@ -565,7 +565,7 @@ fn expected_calls() -> Vec<Call> {
             team: KIT_TEAM,
             weapon_tier: 0,
         })),
-        // 100 points, normal difficulty, Blind at 1,100 thousandths.
+        // 100 points, normal difficulty, Ghost at 1,100 thousandths.
         Call::Score(0, 110),
         Call::Respawn(0),
         Call::Lives(None, 11),

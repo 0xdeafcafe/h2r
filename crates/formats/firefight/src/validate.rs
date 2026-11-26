@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    Caps, Def, Drop, FORMAT, MAX_CLASSES, MAX_DOC_BYTES, MAX_PLAYERS, MAX_ROUNDS, MAX_SET_SCALE,
+    ALL_ZONE_ROLES, Caps, Def, Drop, FORMAT, MAX_CLASSES, MAX_DOC_BYTES, MAX_PLAYERS, MAX_ROUNDS, MAX_SET_SCALE,
     MAX_SET_SKULLS, MAX_SKULLS, MAX_SQUADS, MAX_TEAMS, MULTIPLIER_SCALE, Refusal, Result,
     SET_ROUNDS, Scoring, WAVES_PER_ROUND, Wave, wire,
 };
@@ -25,13 +25,24 @@ const MAX_MULTIPLIER: u16 = 2 * MULTIPLIER_SCALE;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Limits {
     pub classes: BTreeSet<String>,
+    /// The roles ([`crate::ZoneRole::bit`]) at least one zone of the kit
+    /// carries. A squad's `Drop::Role` needs its role here.
+    pub zone_roles: u8,
 }
 
 impl Limits {
     pub fn new(classes: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self {
             classes: classes.into_iter().map(Into::into).collect(),
+            zone_roles: ALL_ZONE_ROLES,
         }
+    }
+
+    /// The same limits for a kit whose zones carry only `roles`
+    /// (a mask of [`crate::ZoneRole::bit`]s).
+    pub fn with_zone_roles(mut self, roles: u8) -> Self {
+        self.zone_roles = roles;
+        self
     }
 }
 
@@ -41,6 +52,22 @@ pub fn validate(def: &Def, limits: &Limits) -> Result<()> {
     for class in def.scoring.by_class.keys() {
         if !limits.classes.contains(class) {
             return Err(Refusal::UnknownClass(class.clone()));
+        }
+    }
+    // A role squad no zone can host would never be placed: refuse it here.
+    for squad in def
+        .rounds
+        .iter()
+        .flat_map(|round| &round.waves)
+        .flat_map(|wave| &wave.squads)
+    {
+        if let Drop::Role(role) = squad.drop
+            && limits.zone_roles & role.bit() == 0
+        {
+            return Err(invalid(
+                "drop",
+                "a squad's zone role is carried by no zone of the kit",
+            ));
         }
     }
     wire::measure(def, MAX_DOC_BYTES)

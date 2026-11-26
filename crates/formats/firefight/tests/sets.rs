@@ -313,3 +313,19 @@ fn sets_give_the_same_commands() {
     let run = run(&mut director, &mut world, 40_000, random_script(5), |_, _, _, _, _| {});
     assert_eq!(replay(&quick, &settings(5), &run.observed), run.commands);
 }
+
+#[test]
+fn a_role_no_zone_carries_is_refused_by_name() {
+    let mut def = small_def(1, true);
+    def.rounds[0].waves[1].squads[0].drop = Drop::Role(ZoneRole::Heavy);
+    let kit = firefight::Limits::new(["elite"]);
+    firefight::validate(&def, &kit).unwrap();
+    let line_only = kit.with_zone_roles(ZoneRole::Line.bit() | ZoneRole::Flank.bit());
+    assert_eq!(
+        firefight::validate(&def, &line_only),
+        Err(firefight::Refusal::Invalid {
+            field: "drop",
+            reason: "a squad's zone role is carried by no zone of the kit",
+        })
+    );
+}
