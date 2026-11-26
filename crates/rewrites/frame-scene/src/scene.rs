@@ -486,6 +486,14 @@ impl FrameScene {
         slice(&self.layer_items, &pass.items)
     }
 
+    /// The view whose layer draws hold `pass` (one of
+    /// [`Self::layer_passes`], by address); `None` for a pass that is not
+    /// this scene's.
+    pub fn view_of_pass(&self, pass: &LayerPass) -> Option<&View> {
+        let at = self.layer_passes.iter().position(|p| std::ptr::eq(p, pass))? as u32;
+        self.views.iter().find(|v| v.layers.contains(&at))
+    }
+
     /// The part of `view` at `slot` of the guest's list, with its
     /// instance.
     pub fn part_at(&self, view: &View, slot: u32) -> Option<(&Instance, &PartDraw)> {

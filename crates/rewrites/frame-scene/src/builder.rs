@@ -1055,6 +1055,11 @@ mod tests {
         let w = &s.views[1];
         assert_eq!(w.key.to_string(), "first_person:0:0");
         assert_eq!(s.counts(w).layers, [(3, 1, 0)]);
+        // Each pass finds the view it was drawn in; a copy is no pass of
+        // the scene's.
+        assert_eq!(s.view_of_pass(&passes[1]).map(|v| v.key), Some(v.key));
+        assert_eq!(s.view_of_pass(&s.layers_of(w)[0]).map(|v| v.key), Some(w.key));
+        assert!(s.view_of_pass(&passes[0].clone()).is_none());
         let mut bad = (*s).clone();
         bad.layer_items[1].rows = 0..100;
         assert!(bad.check().unwrap_err().contains("rows"));

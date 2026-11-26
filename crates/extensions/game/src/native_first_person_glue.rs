@@ -36,6 +36,17 @@ struct LayerEntry {
     w_buffered: bool,
     w_clip: ([f32; 2], bool),
     view: [[f32; 4]; d3d::VIEW_CONSTANTS],
+    /// What the auxiliary state toggle sets for the first person's view,
+    /// read at the call (`native_render::aux_depth::read`), and only when
+    /// the device holds it off: an item toggling it draws with these, and
+    /// skipping its draw leaves what its epilogue would
+    /// (`native_objects_glue::aux_depth_at_rest`, layer 3's rule).
+    aux: Option<frame_scene::AuxDepth>,
+    /// The texture accumulation target engine texture 3 binds at the call,
+    /// where the pass can be given its level
+    /// (`native_objects_glue::sampled_texaccum`); an item sampling it
+    /// refuses without one.
+    texaccum: Option<native_render::world_layers::Texaccum>,
 }
 
 /// A live shader edit (`native_edits::Edit::Shader`;
@@ -203,6 +214,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 w_buffered: clip.w_buffered == Some(true),
                 w_clip: (clip.range, clip.clamp),
                 view: std::array::from_fn(|register| device.constant(register)),
+                aux: native_render::aux_depth::read(&Ro(mem))
+                    .filter(|aux| crate::native_objects_glue::aux_depth_at_rest(&device, mem, aux)),
+                texaccum: crate::native_objects_glue::sampled_texaccum(&device, mem, true).ok().flatten(),
             }
         };
         if !entry.w_buffered {
@@ -272,9 +286,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         for &index in &plan.drawn {
             drawn[index] = true;
         }
+        let texaccum = entry.texaccum.filter(|_| plan.draws.iter().any(|(_, draw)| draw.texaccum));
         let pass = Box::new(FirstPersonPass {
             models: Arc::clone(&gpu),
             draws: plan.draws,
+            texaccum,
             view: Some(entry.view),
             w_clip: entry.w_clip,
         });
@@ -481,10 +497,10 @@ fn plan_view(
                 return Err("the device's draws are not W-buffered".into());
             }
             let lit = lit.as_ref().ok_or("no first-person model is uploaded")?;
-            let mut draw = lit.plan_item(model, frame, item, &entry.states, time)?;
-            if draw.texaccum {
+            let mut draw = lit.plan_item(model, frame, item, &entry.states, time, entry.aux.as_ref())?;
+            if draw.texaccum && entry.texaccum.is_none() {
                 return Err(
-                    "it samples the texture accumulation target, which this pass does not bind"
+                    "it samples the texture accumulation target, which is not bound or not given to this pass"
                         .into(),
                 );
             }
@@ -522,6 +538,8 @@ fn count_refusal(why: &str) {
 struct FirstPersonPass {
     models: Arc<Models>,
     draws: Vec<(u32, PlannedDraw)>,
+    /// The texture accumulation target, when a draw samples it.
+    texaccum: Option<native_render::world_layers::Texaccum>,
     view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
     w_clip: ([f32; 2], bool),
 }
@@ -562,6 +580,7 @@ impl FirstPersonPass {
             return Err("planned first-person geometry unavailable");
         }
         let view = weapon_view_inputs(constants, request, target.copy, target.size, self.w_clip);
+        let texaccum = crate::native_objects_glue::texaccum_level(target, self.texaccum)?;
         let draws = lit.draws(
             &target.device,
             &target.queue,
@@ -572,7 +591,7 @@ impl FirstPersonPass {
             &view,
             request.projection_factor(target.copy),
             &self.draws,
-            None,
+            texaccum,
         )?;
         crate::native_layers_glue::clip_packets(draws, request, target.size)
     }
@@ -585,6 +604,10 @@ impl d3d::ExternalPass for FirstPersonPass {
 
     fn depth_clip(&mut self, clip: d3d::DepthClip) {
         self.w_clip = (clip.range, clip.clamp);
+    }
+
+    fn sampled(&self) -> Vec<u32> {
+        self.texaccum.iter().map(|target| target.texture).collect()
     }
 
     fn writes(&self) -> d3d::ExternalWrites {

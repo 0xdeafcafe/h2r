@@ -1,6 +1,6 @@
 # Retiring the guest D3D path
 
-Status: Design. Slice R0 (`render.residual` and the three frame counters, [agent-api.md](../runtime/agent-api.md#renderresidual-residual-d3d-work)) is built. Of R1, the structure's static items of layers 1, 5, 7, 8 and 20, and the objects' items of the scene's layers 1, 5, 7, 8 and 20 (layer 5's with the model's PRT stream) and the first person's layers 1, 7, 8 and 20, draw from the scene's plan by default, each item only where skipping its guest draw leaves the device's render states as drawing it would, a pass whose restore list writes back what it sets included (framescene.md slice 4, "The stage"). Layer 3's object parts draw every topology and subpart choice their records make, a strip part's chosen subparts included (framescene.md slice 3, "Bit 9"), and its decorators draw from the scene only where skipping them leaves the device's render states as drawing them would, a pass whose restore list writes back what it sets included (native-decorators.md, "The glue"). Whole groups of layers 10, 11 and 14 also draw from the scene with no geometry handler, and the object filter draws natively (native-shadow-layers.md). The rest of R1 is not built. Of R5, layer 2 and layer 17 draw their structure and object items from the scene's plan as layers 1, 5, 7, 8 and 20 do (layer 2 at the main, alternate and first-person calls). The sky stage draws supported strips with the view's node palette and the material inputs at issue. The parts of R5 earlier stages draw (fog, water, layers 18, 19 and 21, the flares' colour fans, the post) are in "By caller"; no other slice is built. The stages it builds on are in [native-renderer.md](native-renderer.md) and [framescene.md](framescene.md).
+Status: Design. Slice R0 (`render.residual` and the three frame counters, [agent-api.md](../runtime/agent-api.md#renderresidual-residual-d3d-work)) is built. Of R1, the structure's static items of layers 1, 5, 7, 8 and 20, and the objects' items of the scene's layers 1, 5, 7, 8 and 20 (layer 5's with the model's PRT stream) and the first person's layers 1, 7, 8 and 20, draw from the scene's plan by default, each item only where skipping its guest draw leaves the device's render states as drawing it would, a pass whose restore list writes back what it sets included (framescene.md slice 4, "The stage"). Their object items toggling the auxiliary state draw with the rows and clip the toggle sets for their view where the device holds it off, and those sampling the texture accumulation target bind its level outside layer 1; the first person's layer-3 items do both. Layer 3's object parts draw every topology and subpart choice their records make, a strip part's chosen subparts included (framescene.md slice 3, "Bit 9"), and its decorators draw from the scene only where skipping them leaves the device's render states as drawing them would, a pass whose restore list writes back what it sets included (native-decorators.md, "The glue"). Whole groups of layers 10, 11 and 14 also draw from the scene with no geometry handler, and the object filter draws natively (native-shadow-layers.md). The rest of R1 is not built: "R1's remainder" lists what still reaches the guest's draws. Of R5, layer 2 and layer 17 draw their structure and object items from the scene's plan as layers 1, 5, 7, 8 and 20 do (layer 2 at the main, alternate and first-person calls). The sky stage draws supported strips with the view's node palette and the material inputs at issue. The parts of R5 earlier stages draw (fog, water, layers 18, 19 and 21, the flares' colour fans, the post) are in "By caller"; no other slice is built. The stages it builds on are in [native-renderer.md](native-renderer.md) and [framescene.md](framescene.md).
 Code: `crates/platform/d3d/src` (what is deleted), `crates/rewrites/scene-extract/src` and `crates/rewrites/native-render/src` (what replaces it), `crates/rewrites/render-bridge/src` (the frame step and the census). Tests: named per slice below.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md). It is removed with the crate. No slice adds a switch.
 
@@ -519,7 +519,7 @@ D3D entry calls.
 | Slice | What | Size | Needs | Payoff (**Estimate**, ceiling) | Proof |
 |---|---|---|---|---|---|
 | R0 | `render.residual`, the three counters, the baseline on the four maps | S | nothing | none; it orders the rest | the method's tests; `totals.residual` equals `draws` in the same capture |
-| R1 | The opaque block whole: layers 1, 3, 5, 7, 8, 20, objects, decorators, first person. framescene.md slices 3 and 4 | L | R0; zero `walk_unsupported` and `layer_remainder` | 9.4 ms, 2,340 entries | 8.2's four rules; `producers` rows for these layers at zero |
+| R1 | The opaque block whole: layers 1, 3, 5, 7, 8, 20, objects, decorators, first person. framescene.md slices 3 and 4. Built: the per-item skips of every layer (each layer `partial`); not built: "R1's remainder" | L | R0; zero `walk_unsupported` and `layer_remainder` | 9.4 ms, 2,340 entries | 8.2's four rules; `producers` rows for these layers at zero |
 | R2 | Transparents and effects: the sorted dispatch, particles, contrails, decals, effect quads, in Rust | L | R0; the effects seed and `0x00174420` stamps reproduced | 2.6 ms, 1,010 entries | hash gate; order test; parity on explosion frames |
 | R3 | Lights and shadows whole: the gather, per-light passes, object shadows, first-person lights, gels | L | R1 | 3.5 ms plus the per-light passes, 355 entries | hash gate; parity on lit interiors at 1x and 4x |
 | R4 | Visibility and view records in Rust | M | R1 | 0.9 ms, no draws | cluster and object sets equal the guest's on dumped scenes; hash gate |
@@ -530,6 +530,59 @@ D3D entry calls.
 | R9 | Zero gate: the census corpus with `render.residual`; `impl.render.native=off` stops being built by default | S | R8 | none | the gate in "Rules and limits" |
 | R10 | Delete `d3d`'s draw path and the backends that replay it | M | R9, a soak the owner sets | build time and about 30,000 lines | the tree builds; the gate corpus against `d3d-reference` |
 | R11 | Delete the crate | M | R10; the decision on non-draw entries below | the last guest D3D call | no `d3d` in `cargo metadata`; boot to menu on the laptop |
+
+### R1's remainder
+
+Every R1 layer is `partial` (`residual_census::PARTIAL_LAYERS`): its
+stages skip the guest draws of the items they take, and the guest's layer
+draw `0x00044550` still runs for all of them (kind 2 setup included). What
+keeps a guest draw, by the counter that names it (**Code**):
+
+- **The whole-call replacement.** framescene.md slice 4's
+  `render_bridge::frame_step` (the layer draws of 1, 3, 5, 7, 8 and 20
+  returning after the writes of 5.2) is not built, and the mask plans it
+  deletes are the mechanism every stage below uses. 8.2's rule 1 holds
+  for no entry.
+- **Layers 1, 5, 7, 8 and 20** (the scene's, the alternate view's 1 and
+  5, the first person's 1, 7, 8 and 20; `layer_plan_<layer>_refused_*`,
+  `_fp<layer>_*`, `_alt<layer>_*`). Structure items: the plan's causes
+  (`material`, `instance`, `no_pass`, `implementation`, `input`,
+  `animation`, `texture_transform`, `object_animation`, `property`,
+  `wave`, `material_c18`, `time`, `per_draw`), `program`, `palettes`,
+  `state`, `stencil`, `warming`, `device`, `viewport`, `unread`. Object
+  items: extraction's causes (`object_fade`, `object_shader_flag` and
+  `object_argument`, whose guest work is not read; `object_layer5_stream`,
+  `object_subparts`, `object_aux_state`, `object_unread`), then
+  `object_models`, `object_w_buffer`, `object_model`, `object_plan`,
+  `object_texaccum` (layer 1, or no target or level),
+  `object_aux_depth` (the device does not hold the toggle off),
+  `object_state`, `object_prt`, `object_fog`, `object_stencil`,
+  `object_warming`. And `order`: the skip is a prefix of the list
+  (`layer_pass::clear_layer_prefix`), so every item after the first
+  refused one keeps its guest draw.
+- **Layer 3's world** keeps the parts whose material pass does not
+  translate or that lack an input of their program
+  ([native-world.md](native-world.md)).
+- **Layer 3's objects** (`native_objects_walk_*`): the objects the walk
+  returns (`walk_unsupported`: a bit-11 part whose toggle does not read,
+  a bit-6 part with more than 64 subparts or a mask that does not read),
+  a record with a fade byte, the shader's flag bit 0 or a pass-setup
+  argument (whose guest work is not read), and a run declined by
+  `Model`, `Inputs`, `State`, `Unresident` or `Reservation`.
+- **Layer 3's decorators** (`scene_decorator_draws_unready`,
+  `_draws_state`, `_views_declined`, `_remainder`): a material not ready,
+  a pass with an engine-driven state from a per-draw source or a
+  lightmap stage whose globals bitmap is not uniform, a skip that would
+  change a render state, and a view whose W mode, stage palettes,
+  stencil or inherited cull do not read or hold
+  ([native-decorators.md](native-decorators.md)).
+- **The first person's layer 3** (`native-first-person:` log reasons):
+  mixed-list sorting, a part without a compiled pass, a record marking
+  the stencil, a fade byte, a shader flag or an argument, a record
+  toggling the auxiliary state while the device does not hold it off,
+  and a part sampling the texture accumulation target where none is
+  bound or levels are not sampled in place
+  ([native-objects.md](native-objects.md)).
 
 R1, R2 and R6 do not depend on each other and can run as three lanes
 after R0. framescene.md slice 8 (60 and 120 fps from two scenes) is

@@ -1210,12 +1210,17 @@ impl LitObjects {
     /// [`Self::plan`] for a first-person item: the topology and subparts
     /// its record draws ([`ItemDraw::flags`], [`ItemDraw::subparts`]), as
     /// the scene's parts draw theirs ([`plan_item_part`]), an animated
-    /// pass sampled at `time` (the render clock).
+    /// pass sampled at `time` (the render clock). A record toggling the
+    /// auxiliary state draws with `aux`, what the toggle sets for the
+    /// first person's view, and refuses without it.
     pub fn plan_item(
         &self, index: u32, frame: &ObjectFrame, item: &ItemDraw, entry: &EntryStates, time: Option<f64>,
+        aux: Option<&AuxDepth>,
     ) -> Result<PlannedDraw, String> {
-        let inputs = PartInputs { time, ..item_inputs(frame, item)? };
-        self.plan_inputs(index, inputs, &item.key, &item.rows, entry, false)
+        let inputs = PartInputs { time, ..item_inputs(frame, item, aux.is_some())? };
+        let mut draw = self.plan_inputs(index, inputs, &item.key, &item.rows, entry, false)?;
+        draw.aux_depth = toggled(item.flags, aux);
+        Ok(draw)
     }
 
     pub fn plan_scene(&self, index: u32, frame: &ObjectFrame, key: &ItemKey, rows: &[Row], entry: &EntryStates) -> Result<PlannedDraw, String> {
@@ -1264,12 +1269,14 @@ impl LitObjects {
     /// item's lighting, the draw's defaults and the item's rows, and its
     /// state resolved over the device at the layer call (`entry`,
     /// [`object_state::resolve_layer`]); a marked item's in stencil mode 2
-    /// unless the layer draws with the stencil off. A pass drawing nothing
-    /// for the item is left out. An error says why the item keeps its D3D
-    /// draw: extraction's cause ([`LayerItem::refusal`]), the auxiliary
-    /// state toggle (its values are read at the view's layer 3, not here),
-    /// a part or implementation that is not native, or an input or state
-    /// that does not resolve.
+    /// unless the layer draws with the stencil off; an item toggling the
+    /// auxiliary state with the rows and clip its view holds
+    /// (`frame_scene::View::aux_depth`, [`with_aux_depth`]). A pass drawing
+    /// nothing for the item is left out. An error says why the item keeps
+    /// its D3D draw: extraction's cause ([`LayerItem::refusal`]), the
+    /// auxiliary state toggle when its view holds no values, a part or
+    /// implementation that is not native, or an input or state that does
+    /// not resolve.
     pub fn plan_layer_item(
         &self, index: u32, layer: u8, scene: &FrameScene, pass: &LayerPass, item: &LayerItem, entry: &ObjectLayerEntry,
     ) -> Result<Vec<PlannedDraw>, String> {
@@ -1286,7 +1293,11 @@ impl LitObjects {
                 item.key.shader, item.key.section, item.key.part
             ));
         }
-        plan_layer_part_at_entry(&m.layers, at, &|program| m.programs.get(program).map(|p| &p.pass), instance, layer, rows, pass, item, &entry.states, Some(entry.c18))
+        let aux = scene.view_of_pass(pass).and_then(|v| v.aux_depth);
+        plan_layer_part_at_entry(
+            &m.layers, at, &|program| m.programs.get(program).map(|p| &p.pass), instance, layer, rows, pass, item, &entry.states,
+            Some(entry.c18), aux.as_ref(),
+        )
     }
 
     /// Gathers a layer-5 PRT draw's stream (planned with the item's
@@ -1653,22 +1664,43 @@ pub fn plan_item_part<'a>(
     item: &ItemDraw,
     entry: &EntryStates,
 ) -> Result<PlannedDraw, String> {
+    plan_item_part_with(parts, pass_of, frame, item, entry, None)
+}
+
+/// [`plan_item_part`] with `aux`, what the auxiliary state toggle sets for
+/// the item's view ([`LitObjects::plan_item`]).
+pub fn plan_item_part_with<'a>(
+    parts: &[LitPart],
+    pass_of: &dyn Fn(usize) -> Option<&'a ObjectPass>,
+    frame: &ObjectFrame,
+    item: &ItemDraw,
+    entry: &EntryStates,
+    aux: Option<&AuxDepth>,
+) -> Result<PlannedDraw, String> {
     let key = &item.key;
     let part = parts.iter().position(|p| p.section == key.section && p.part == key.part);
-    let inputs = item_inputs(frame, item)?;
-    plan_indexed_part(parts, part, &|i| pass_of(i).map(|p| (p, None)), inputs, key, &item.rows, entry, false)
+    let inputs = item_inputs(frame, item, aux.is_some())?;
+    let mut draw = plan_indexed_part(parts, part, &|i| pass_of(i).map(|p| (p, None)), inputs, key, &item.rows, entry, false)?;
+    draw.aux_depth = toggled(item.flags, aux);
+    Ok(draw)
+}
+
+/// What a draw whose record has `flags` takes of the toggle's values
+/// `aux`: all of them with [`PartFlags::AUX_DEPTH`], none without.
+fn toggled(flags: PartFlags, aux: Option<&AuxDepth>) -> Option<AuxDepth> {
+    aux.filter(|_| flags.contains(PartFlags::AUX_DEPTH)).copied()
 }
 
 /// A first-person item's inputs: its frame's, and the topology and
-/// subparts its record draws. A record marking the stencil or toggling
-/// the auxiliary state refuses: the first-person draw keeps the device's
-/// stencil and reads no auxiliary depth.
-fn item_inputs<'a>(frame: &'a ObjectFrame, item: &ItemDraw) -> Result<PartInputs<'a>, String> {
+/// subparts its record draws. A record marking the stencil refuses: the
+/// first-person draw keeps the device's stencil. One toggling the
+/// auxiliary state refuses unless the toggle's values are given (`aux`).
+fn item_inputs<'a>(frame: &'a ObjectFrame, item: &ItemDraw, aux: bool) -> Result<PartInputs<'a>, String> {
     if item.flags.contains(PartFlags::STENCIL_MARK) {
         return Err("the record marks the stencil, which the first-person draw does not".into());
     }
-    if item.flags.contains(PartFlags::AUX_DEPTH) {
-        return Err("the auxiliary state toggle, which the first-person draw does not read".into());
+    if item.flags.contains(PartFlags::AUX_DEPTH) && !aux {
+        return Err("the auxiliary state toggle, whose values the first-person draw was not given".into());
     }
     Ok(PartInputs { subparts: item.subparts, strip: Some(item.flags.contains(PartFlags::STRIP)), ..PartInputs::of(frame) })
 }
@@ -1691,7 +1723,7 @@ pub fn plan_layer_part<'a>(
     pass_of: &dyn Fn(usize) -> Option<&'a ObjectPass>,
     instance: frame_scene::InstanceKey, layer: u8, rows: &[Row], pass: &LayerPass, item: &LayerItem, entry: &EntryStates,
 ) -> Result<Vec<PlannedDraw>, String> {
-    plan_layer_part_at_entry(layers, at, pass_of, instance, layer, rows, pass, item, entry, None)
+    plan_layer_part_at_entry(layers, at, pass_of, instance, layer, rows, pass, item, entry, None, None)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1699,7 +1731,7 @@ fn plan_layer_part_at_entry<'a>(
     layers: &[LitLayerPart], at: Option<usize>,
     pass_of: &dyn Fn(usize) -> Option<&'a ObjectPass>,
     instance: frame_scene::InstanceKey, layer: u8, rows: &[Row], pass: &LayerPass, item: &LayerItem, entry: &EntryStates,
-    c18: Option<MaterialConstant18>,
+    c18: Option<MaterialConstant18>, aux: Option<&AuxDepth>,
 ) -> Result<Vec<PlannedDraw>, String> {
     if let Some(why) = item.refusal {
         return Err(why.name().into());
@@ -1707,9 +1739,14 @@ fn plan_layer_part_at_entry<'a>(
     if item.prt.is_some() && layer != PRT_LAYER {
         return Err(format!("a PRT stream in layer {layer}"));
     }
-    if item.flags.contains(PartFlags::AUX_DEPTH) {
-        return Err("the auxiliary state toggle outside layer 3".into());
-    }
+    // The prologue turns the toggle on for the item's draw and the
+    // epilogue off (`0x0004d640`, `0x0004d720`), in every layer: the draw
+    // takes the view's rows and clip on.
+    let aux_depth = match (item.flags.contains(PartFlags::AUX_DEPTH), aux) {
+        (false, _) => None,
+        (true, Some(aux)) => Some(*aux),
+        (true, None) => return Err("the auxiliary state toggle, whose values its view does not hold".into()),
+    };
     let key = &item.key;
     let at = at.ok_or_else(|| format!("section {} part {} draws nothing native in layer {layer}", key.section, key.part))?;
     let p = layers.get(at).ok_or("its layer part is missing")?;
@@ -1784,7 +1821,7 @@ fn plan_layer_part_at_entry<'a>(
             buffer,
             indices: p.indices.clone(),
             ranges: ranges.clone(),
-            aux_depth: None,
+            aux_depth,
             vertex,
             pixel,
             state,
@@ -3047,6 +3084,20 @@ mod tests {
         assert_eq!(plan(&item(flagged, Some(chosen))).unwrap().ranges, [15..18], "its chosen subpart");
         assert!(plan(&item(PartFlags::STRIP | PartFlags::STENCIL_MARK, None)).unwrap_err().contains("stencil"));
         assert!(plan(&item(PartFlags::STRIP | PartFlags::AUX_DEPTH, None)).unwrap_err().contains("auxiliary"));
+        // Given the toggle's values for its view, an aux-depth record draws
+        // with them; a record without bit 11 takes none.
+        let aux = AuxDepth {
+            scale: 0.5,
+            rows: [[9.0; 4], [8.0; 4], [7.0; 4], [6.0; 4]],
+            clip: [1.0, 900.0],
+            rest_rows: [[0.0; 4], [1.0; 4], [2.0; 4], [3.0; 4]],
+            rest_clip: [2.0, 900.0],
+        };
+        let given = |item: &ItemDraw| plan_item_part_with(&parts, &pass_of, &f, item, &entry(), Some(&aux));
+        let d = given(&item(PartFlags::STRIP | PartFlags::AUX_DEPTH, None)).unwrap();
+        assert_eq!((d.ranges.clone(), d.aux_depth), (vec![0..9], Some(aux)), "the strip, with the toggle on");
+        assert_eq!(given(&item(PartFlags::STRIP, None)).unwrap().aux_depth, None);
+        assert!(given(&item(PartFlags::STRIP | PartFlags::STENCIL_MARK, None)).is_err(), "the mark still refuses");
     }
 
     #[test]
@@ -3654,7 +3705,7 @@ mod tests {
                 inputs: LayerInputs { defaults: Some(Defaults::default()), ..Default::default() },
             };
             let plan = |dirty| plan_layer_part_at_entry(&parts, Some(0), &|_| Some(&compiled), instance,
-                layer, &[[0.0; 4]; 3], &pass, &item, &states, Some(MaterialConstant18::new(device, stale_bank, dirty)));
+                layer, &[[0.0; 4]; 3], &pass, &item, &states, Some(MaterialConstant18::new(device, stale_bank, dirty)), None);
             assert_eq!(plan(Some(false)).unwrap()[0].vertex.constants[18].map(f32::to_bits), device.map(f32::to_bits));
             assert!(plan(Some(true)).unwrap_err().contains("pending c[18] upload"));
             assert!(plan(None).is_err());
@@ -3825,7 +3876,23 @@ mod tests {
         let streamed = LayerItem { prt: Some(prt), ..item(0) };
         assert!(plan(Some(0), 7, &seven, &streamed, &e).unwrap_err().contains("PRT stream"));
         let aux = LayerItem { flags: PartFlags::AUX_DEPTH, ..item(0) };
-        assert!(plan(Some(0), 7, &seven, &aux, &e).unwrap_err().contains("auxiliary"));
+        assert!(plan(Some(0), 7, &seven, &aux, &e).unwrap_err().contains("auxiliary"), "without the view's values");
+        // With them, every pass draws with the toggle's rows and clip on,
+        // and an item that does not toggle takes none.
+        let toggle = AuxDepth {
+            scale: 0.5,
+            rows: [[9.0; 4], [8.0; 4], [7.0; 4], [6.0; 4]],
+            clip: [1.0, 900.0],
+            rest_rows: [[0.0; 4], [1.0; 4], [2.0; 4], [3.0; 4]],
+            rest_clip: [2.0, 900.0],
+        };
+        let with_view = |item: &LayerItem| {
+            plan_layer_part_at_entry(&layers, Some(0), &pass_of, InstanceKey(1), 7, &rows, &seven, item, &e, None, Some(&toggle))
+        };
+        let d = with_view(&aux).unwrap();
+        assert_eq!(d.len(), 2);
+        assert!(d.iter().all(|d| d.aux_depth == Some(toggle)), "each pass toggles");
+        assert!(with_view(&item(0)).unwrap().iter().all(|d| d.aux_depth.is_none()), "a plain item draws with the device's");
         let no_defaults = LayerPass { inputs: LayerInputs::default(), ..layer_pass(7, false) };
         assert!(plan(Some(0), 7, &no_defaults, &item(0), &e).unwrap_err().contains("defaults"));
         // A marked item draws in mode 2 unless the stencil is off.

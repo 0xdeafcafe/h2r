@@ -325,8 +325,13 @@ implementation. Each item's record is read as the world layers read
 theirs (`object_walk::layer_part` with layer 3, `ItemDraw::flags` and
 `ItemDraw::subparts`): a fade byte, the shader's flag bit 0 or an
 argument the pass setup takes keeps the item on D3D, and so does a record
-marking the stencil or toggling the auxiliary state, which this draw does
-not reproduce. `LitObjects::plan_item` draws the topology and subparts
+marking the stencil, which this draw does not reproduce. A record toggling
+the auxiliary state (bit 11) draws with what the toggle sets for the first
+person's view (`aux_depth::read` at the call, `with_aux_depth`), taken only
+when the device holds the toggle off at the call
+(`native_objects_glue::aux_depth_at_rest`, layer 3's rule), so skipping the
+item leaves what its epilogue would; otherwise it keeps its D3D draw.
+`LitObjects::plan_item` draws the topology and subparts
 the record picks as a scene part does (`part_ranges`; the first-person
 models keep each part's subparts, its strip decoded as a list and a
 strip part's subparts as the list draw joins them), and
@@ -337,7 +342,7 @@ copy is prepared. `prepare_external_bound` validates every model and index
 range; only then does `ItemMasks::apply` select the planned items and
 `ready.commit` release the copies. A refused copy, changed generation or
 failed mask application restores the entire candidate list. Mixed record
-models under one owner are therefore independent draws. Mixed lists request record models for the six first-person layers and retain the guest sort. A material or layer with a compiled pass can draw even if a sibling fails. Parts that require an unavailable texture accumulation target retain their guest draw. Loader
+models under one owner are therefore independent draws. Mixed lists request record models for the six first-person layers and retain the guest sort. A material or layer with a compiled pass can draw even if a sibling fails. A part sampling the texture accumulation target (engine texture 3) binds its level as layer 3's objects do (`native_objects_glue::sampled_texaccum`, `texaccum_level`); where the guest has no target to bind or the device does not sample render-to-texture levels in place, the part retains its guest draw. Loader
 publication is pinned to a map generation, including A → B → A transitions.
 The first-person lights are the lights stage's
 ([native-lights.md](native-lights.md)).

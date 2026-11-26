@@ -1064,10 +1064,18 @@ to the guest's draws (**Code**):
     the implementation it draws for the item, the per-object constants
     from the item's lighting, the pass's defaults and the item's rows,
     its state over the device's at the call,
-    `object_state::resolve_layer`, blending kept) with its fog, sampling
-    no texture accumulation target; the device must draw W-buffered over
-    a single clip equal to the viewport. Packets use that viewport scaled to each target copy. An item toggling the
-    auxiliary state is refused (its values are read at layer 3). An item
+    `object_state::resolve_layer`, blending kept) with its fog; the
+    device must draw W-buffered over a single clip equal to the viewport.
+    Packets use that viewport scaled to each target copy. A pass sampling
+    the texture accumulation target (engine texture 3) binds its level
+    as layer 3's objects do (`native_objects_glue::sampled_texaccum`),
+    outside layer 1, which draws into it. An item toggling the auxiliary
+    state (record bit 11; the prologue `0x0004d640` turns it on and the
+    epilogue off in every layer) draws with the rows and clip the
+    toggle sets for its view, read at the layer call into
+    `View::aux_depth` (`scene_extract::extract::layer`), and is taken only
+    when the device holds the toggle off
+    (`native_objects_glue::aux_depth_at_rest`, layer 3's rule). An item
     with a PRT stream draws each pass's PRT variant with the stream's
     constants from `c[68]` on, written over the item's own as the draw
     sets them after its rows (`0x0004d269`), and is refused when its
@@ -1135,7 +1143,9 @@ to the guest's draws (**Code**):
     palettes changed), `viewport`, `object_w_buffer`,
     `object_model` (the item's model is not uploaded), `object_plan`
     (a pass does not plan; the first of each reason is logged),
-    `object_texaccum`, `object_fog`, `object_stencil`,
+    `object_texaccum` (in layer 1, or no target to bind or level to
+    give), `object_aux_depth` (the device does not hold the toggle off),
+    `object_fog`, `object_stencil`,
     `object_warming` (an object pipeline not built yet),
     `stencil` (the device's stencil does not read, tests or writes it on
     a depth with no stencil aspect, or layer 1's stencil is off and the
@@ -1195,7 +1205,11 @@ to the guest's draws (**Code**):
     `layer_5_compiles_a_prt_variant_whose_stream_feeds_its_registers`,
     `a_prt_item_draws_its_passes_prt_variant_with_its_constants` and
     `a_world_layers_object_item_draws_each_pass_with_the_implementation_it_picks`
-    (`native_render::object_program_gpu`);
+    (`native_render::object_program_gpu`; an aux-depth item with and
+    without its view's values among its cases),
+    `a_pass_sampling_the_accumulation_target_binds_it_only_where_it_is_there_and_sampled_in_place`
+    (`game::native_objects_glue`), `a_views_layer_draws_keep_their_items_and_rows_and_a_first_person_view_is_its_own`
+    (`frame_scene::builder`, each pass's view by `view_of_pass`);
     for the stage, `the_plans_outcomes_count_by_layer_and_cause`,
     `the_stage_takes_the_scenes_layers_and_the_first_persons_besides_layer_3`
     and `the_stage_is_on_with_the_native_renderer_unless_turned_off`

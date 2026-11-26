@@ -36,8 +36,15 @@
 //!   caller's set (the scene's, `native_objects_glue::layer_models`, or
 //!   the first person's, `native_first_person_glue::layer_models`), and
 //!   each of its material's passes in the layer plans
-//!   (`LitObjects::plan_layer_item`) with its fog, sampling no texture
-//!   accumulation target. The skip clears the layer's bit on the run of
+//!   (`LitObjects::plan_layer_item`) with its fog. A pass sampling the
+//!   texture accumulation target (engine texture 3) binds its level as
+//!   layer 3's objects do (`native_objects_glue::sampled_texaccum`), and
+//!   not in layer 1, which draws into it (else `object_texaccum`). An
+//!   item toggling the auxiliary state (record bit 11) draws with the
+//!   rows and clip its view holds (`frame_scene::View::aux_depth`), and
+//!   only when the device holds the toggle off
+//!   (`native_objects_glue::aux_depth_at_rest`; else `object_aux_depth`).
+//!   The skip clears the layer's bit on the run of
 //!   such items from the list's first (`layer_pass::clear_layer_prefix`);
 //!   the rest, and every item after the first refused one, keep their D3D
 //!   draws. One external pass records them, in the list's order.
@@ -236,9 +243,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             }
         }
         let planned = if objects.is_empty() { None } else { plan_objects(&d, mem, l, caller, scene, pass, &objects, &mut outcomes) };
-        let (models, mut object_draws) = match planned {
-            Some((models, draws)) => (Some(models), draws),
-            None => (None, HashMap::new()),
+        let (models, mut object_draws, texaccum) = match planned {
+            Some((models, draws, texaccum)) => (Some(models), draws, texaccum),
+            None => (None, HashMap::new(), None),
         };
         let marked = object_draws.values().any(|o| o.marked);
         let mut stencil = layer_pass::item_stencil(l, pass.stencil_off, device_stencil, marked);
@@ -352,9 +359,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             LayerCaller::Sorted(_) => timeline::native::Stage::Objects,
         };
         let plan = d3d::ExternalPlan { stage, view: view_index, ranges, slots: Vec::new() };
+        // Bound only when a surrendered draw samples it.
+        let texaccum = texaccum.filter(|_| runs.iter().any(|r| matches!(r, LayerRun::Objects(draws) if draws.iter().any(|(_, draw)| draw.texaccum))));
         let pass = Box::new(LayerViewPass {
             ready: ready.clone(),
             objects: models,
+            texaccum,
             layer: l,
             runs,
             samples,
@@ -390,7 +400,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
 fn plan_objects<B: d3d::backend::Backend>(
     d: &d3d::Device<B>, mem: &dyn GuestMemory, layer: u8, caller: LayerCaller, scene: &FrameScene, pass: &LayerPass,
     items: &[&LayerItem], outcomes: &mut BTreeMap<&'static str, u64>,
-) -> Option<(Arc<dyn LayerModels>, HashMap<u32, ObjectItem>)> {
+) -> Option<(Arc<dyn LayerModels>, HashMap<u32, ObjectItem>, Option<native_render::world_layers::Texaccum>)> {
     let mut all = |why: &'static str| {
         *outcomes.entry(why).or_default() += items.len() as u64;
         None
@@ -409,6 +419,11 @@ fn plan_objects<B: d3d::backend::Backend>(
     let specular = crate::native_objects_glue::device_specular(d, mem);
     let device_state = |slot: u32| d.render_state(&read, slot);
     let mut prt_formats: Option<Option<StreamFormats>> = None;
+    // Whether the device holds the auxiliary state toggle off: the view's
+    // values are one per layer call, so asked once.
+    let mut aux_at_rest: Option<bool> = None;
+    // The texture accumulation target, read once when an item samples it.
+    let mut texaccum: Option<Option<native_render::world_layers::Texaccum>> = None;
     let read_bytes = |at: u32, len: usize| -> Option<Vec<u8>> {
         let mut bytes = vec![0; len];
         mem.read(at, &mut bytes).ok()?;
@@ -431,8 +446,22 @@ fn plan_objects<B: d3d::backend::Backend>(
                 continue;
             }
         };
-        if draws.iter().any(|d| d.texaccum) {
+        // Engine texture 3, the texture accumulation target, as layer 3's
+        // objects bind it (`native_objects_glue::sampled_texaccum`): not in
+        // layer 1, which draws into it.
+        if draws.iter().any(|draw| draw.texaccum)
+            && (layer == 1 || texaccum.get_or_insert_with(|| crate::native_objects_glue::sampled_texaccum(d, mem, true).ok().flatten()).is_none())
+        {
             *outcomes.entry("object_texaccum").or_default() += 1;
+            continue;
+        }
+        // An item toggling the auxiliary state: its epilogue leaves the
+        // toggle off, so skipping it is state-neutral only when the device
+        // already holds it off, as layer 3's walk requires.
+        if let Some(aux) = draws.iter().find_map(|draw| draw.aux_depth)
+            && !*aux_at_rest.get_or_insert_with(|| crate::native_objects_glue::aux_depth_at_rest(d, mem, &aux))
+        {
+            *outcomes.entry("object_aux_depth").or_default() += 1;
             continue;
         }
         if !draws.iter().all(|draw| lit.planned_pass(item.model, draw).is_some_and(|p| layer_pass::skip_holds(&p.implementation, &device_state))) {
@@ -470,7 +499,8 @@ fn plan_objects<B: d3d::backend::Backend>(
         out.insert(item.slot, ObjectItem { shader: item.key.shader, marked, draws: with_fog });
     }
     drop(guard);
-    Some((models, out))
+    let texaccum = texaccum.flatten().filter(|_| out.values().any(|o| o.draws.iter().any(|(_, draw)| draw.texaccum)));
+    Some((models, out, texaccum))
 }
 
 /// Guest memory, read only, as the stream formats read it.
@@ -541,6 +571,9 @@ struct LayerViewPass {
     ready: Option<Arc<Ready>>,
     /// The object models the object runs draw from.
     objects: Option<Arc<dyn LayerModels>>,
+    /// The texture accumulation target, when an object draw samples it
+    /// (engine texture 3, bound as layer 3's objects bind it).
+    texaccum: Option<native_render::world_layers::Texaccum>,
     layer: u8,
     /// The surrendered items' runs, in the list's order.
     runs: Vec<LayerRun>,
@@ -592,6 +625,10 @@ impl d3d::ExternalPass for LayerViewPass {
 
     fn depth_clip(&mut self, clip: d3d::DepthClip) {
         self.w_clip = (clip.w_buffered == Some(true)).then_some((clip.range, clip.clamp));
+    }
+
+    fn sampled(&self) -> Vec<u32> {
+        self.texaccum.iter().map(|target| target.texture).collect()
     }
 
     fn prepare_copy(&mut self, t: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
@@ -700,11 +737,12 @@ impl LayerViewPass {
         if draws.iter().any(|(model, d)| !lit.has_draw_assets(*model, d) || d.indices.is_empty()) {
             return Err("layer object geometry or material unavailable");
         }
+        let texaccum = crate::native_objects_glue::texaccum_level(t, self.texaccum)?;
         let copy = lit.view_copy(&t.device, &t.color, t.copy);
         let sampled = native_render::object_program_gpu::Texaccum { view: &copy.view, guest_size: request.surface_size };
         let out = lit.draws_with_view(
             &t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, &view,
-            request.projection_factor(t.copy), &draws, None, Some(sampled),
+            request.projection_factor(t.copy), &draws, texaccum, Some(sampled),
         )?;
         let out = clip_packets(out, request, t.size)?;
         let writes: Vec<(wgpu::Buffer, u64, wgpu::Buffer, u64, u64)> = out
@@ -785,7 +823,7 @@ impl LayerViewPass {
                     }
                     lit.draws(
                         &t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, &view,
-                        request.projection_factor(t.copy), draws, None,
+                        request.projection_factor(t.copy), draws, crate::native_objects_glue::texaccum_level(t, self.texaccum)?,
                     )?
                 }
             };
