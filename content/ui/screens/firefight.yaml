@@ -35,7 +35,7 @@ rows:
     text: "Wave set"
     help: "Which set of waves you fight."
     bind: waveset
-    explain: "The map's own set comes first when it has one. Holdout is steady. Attrition sends more for fewer lives. Last Stand is hardest. Crossfire pits two teams against the waves and each other."
+    explain: "Endless comes first: sets of three rounds, one after another until the team is out. The map's own set follows when it has one. Holdout is steady. Attrition sends more for fewer lives. Last Stand is hardest. Crossfire pits two teams against the waves and each other."
   row.2:
     kind: value
     text: "Teams"
@@ -59,4 +59,4 @@ rows:
     text: "Skulls"
     help: "Whether each round switches on a skull."
     setting: firefight.skulls
-    explain: "Each round switches on another skull, which makes the fight harder and scores a little more. Off keeps every round plain."
+    explain: "Each round switches on another skull, and Endless adds one each new set, which makes the fight harder and scores a little more. Off keeps every round plain."

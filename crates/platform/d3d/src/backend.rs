@@ -296,6 +296,17 @@ pub trait ExternalPass: Send {
     /// and uploads supplied to that recording, with no guest feedback.
     fn replays_scene(&self) -> bool { false }
 
+    /// This pass for the draws it stands in for, then `next`'s: a kept
+    /// scene joins adjacent draws of one state into a single pass
+    /// (`crate::scene_sink`). `next` follows this pass's last packet
+    /// directly, on the same attachments. `None` (the default): the two
+    /// cannot be one pass and each records on its own. Needs
+    /// [`Self::as_any`] on both.
+    fn run_with(&self, _next: &dyn ExternalPass) -> Option<Box<dyn ExternalPass>> { None }
+
+    /// The pass as its concrete type, for [`Self::run_with`] to read `next`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> { None }
+
     /// Selected world ranges that bind a private page whose two lamp states differ.
     fn relit_lightmap_ranges(&self) -> usize { 0 }
 
@@ -1897,6 +1908,11 @@ pub trait Backend: Send {
     /// Checked while the guest still owns all the draws. A sink that keeps
     /// a replay requires the pass to support repeated recording.
     fn accepts_scene_pass(&self, _pass: &dyn ExternalPass) -> bool { true }
+
+    /// Whether the last [`prepare_external`](Self::prepare_external) was
+    /// refused because a scene recorder would not keep the pass, cleared by
+    /// the call. Only a replaying sink says yes.
+    fn take_scene_refusal(&mut self) -> bool { false }
 
     /// Whether [`queue_scene_stage`](Self::queue_scene_stage) takes a
     /// stage now: a render thread whose backend

@@ -223,6 +223,13 @@ pub const ACTIONS: &[u16] = &[
     id::MARK_PLAYER,
     id::MARK_TEAM,
     id::UNMARK,
+    // Kept in the VM's state (`RulesExt::objectives`); the objective HUD is
+    // fed from it every tick (`crate::objective_hud`), so no call is made at
+    // the boundary.
+    id::OBJECTIVE,
+    id::OBJECTIVE_MARK,
+    id::METER,
+    id::COUNTDOWN,
     // Put at the boundary (`super::world::objects`); the VM keeps a mover
     // and tells the game each tick's step.
     id::TELEPORT,
@@ -236,6 +243,10 @@ pub const ACTIONS: &[u16] = &[
     // call is made of the entry's own.
     id::OFFER_PICK,
     id::PICK_ROW,
+    // Kept in the VM's state (`RulesExt::loadout`); the boundary asks the
+    // player from it (`super::world::choice`), so no call is made of the
+    // entry's own.
+    id::OFFER,
 ];
 
 /// Where the `RULES` record lives: the process's `SimExt` blob in the
@@ -284,9 +295,10 @@ pub type Fetch = dyn Fn([u8; 8]) -> Result<Vec<u8>, String> + Send + Sync;
 pub type LocalScripts = dyn Fn([u8; 8]) -> Option<Vec<u8>> + Send + Sync;
 
 /// The loaded game's labelled things, for the start gate's census and the
-/// script's label reads. In the game it is [`census::things`]: the loaded
-/// scenario's netgame flags and starting locations in guest memory.
-pub type CensusSource = dyn Fn(&dyn GuestMemory) -> Result<Vec<LabelledThing>, String> + Send + Sync;
+/// script's label reads. In the game it is [`census::things_for`]: the loaded
+/// scenario's netgame flags and starting locations in guest memory, with the
+/// built-in layout of the script (`census::layout_script`) on the loaded map.
+pub type CensusSource = dyn Fn(&dyn GuestMemory, Option<&str>) -> Result<Vec<LabelledThing>, String> + Send + Sync;
 
 /// The loaded map's tag paths, for the start gate's tag reads and the
 /// script's `tag_int` and `tag_fixed`. In the game it is
@@ -374,6 +386,9 @@ pub enum Call {
     /// `offer_pick`: the value picker opened for one local player with the
     /// offer's rows (`super::world::pick`).
     OfferPick(super::world::pick::Ask),
+    /// `offer`: the loadout picker opened for one local player with the
+    /// rows their window holds (`super::world::choice`).
+    OfferChoice(super::world::pick::Ask),
 }
 
 impl Call {
@@ -400,6 +415,7 @@ impl Call {
             Call::SetLoadout { .. } => "set_loadout",
             Call::Put(_) => "put_object",
             Call::OfferPick(_) => "offer_pick",
+            Call::OfferChoice(_) => "offer",
         }
     }
 }
@@ -717,6 +733,8 @@ pub struct Runtime {
     /// The last tick fed the objective HUDs: the next tick with no script
     /// feeding them hides them.
     hud_on: bool,
+    /// The same for the scripted objective HUD (`crate::objective_hud`).
+    objective_on: bool,
     /// The walls cue last sent on the actor channel, and the tick it was
     /// sent: the list is sent when it changes and again every
     /// `::rules::show::WALLS_REPEAT` ticks while it is not empty, so a
@@ -784,12 +802,13 @@ impl Runtime {
             local: Box::new(|_: [u8; 8]| None),
             fetch,
             context: Context::Custom,
-            census: Box::new(census::things),
+            census: Box::new(census::things_for),
             tags: Box::new(map_tags::current),
             film: false,
             forge: false,
             walled: false,
             hud_on: false,
+            objective_on: false,
             wall_cue: None,
             pick_cue: None,
             show_cue: ShowCue::default(),
@@ -837,7 +856,7 @@ impl Runtime {
     /// check has not passed. A script with neither has nothing to check.
     fn gate(&self, m: &dyn GuestMemory, ir: &Ir, teams: &[u8]) -> (Vec<LabelledThing>, Vec<String>) {
         let unchecked = self.film || (ir.labels.is_empty() && ir.tags.is_empty());
-        match (self.census)(m) {
+        match (self.census)(m, census::layout_script(ir)) {
             Ok(things) if unchecked => (things, Vec::new()),
             Ok(things) => {
                 let census = census::census(&things);
@@ -1258,6 +1277,11 @@ impl Runtime {
         for pick in super::world::pick::take() {
             r.vm.choose(pick.player, pick.slot, pick.row);
         }
+        // The loadout picks, the same way: the VM refuses a row the
+        // player's window does not open.
+        for pick in super::world::choice::take() {
+            r.vm.choose_loadout(pick.player, pick.row);
+        }
         {
             let Running {
                 vm,
@@ -1316,6 +1340,12 @@ impl Runtime {
             && let Some(ask) = super::world::pick::plan(&r.vm, &super::world::pick::seats(m), tick)
         {
             calls.push(Call::OfferPick(ask));
+        }
+        if r.authority == Some(true)
+            && !self.film
+            && let Some(ask) = super::world::choice::plan(&r.vm, &super::world::pick::seats(m), tick)
+        {
+            calls.push(Call::OfferChoice(ask));
         }
         if let Some(ty) = r.start_line
             && super::start_line::players_ready(m)
@@ -1511,7 +1541,7 @@ impl Runtime {
     /// [`data::MAX_DAMAGE`], in the order the game applied it) is told
     /// before the roster's changes, so before `on tick`.
     pub fn post_tick(&mut self, m: &dyn GuestMemory, events: &[SimEvent]) {
-        if self.hud_on && !matches!(self.status, Status::Running(_)) {
+        if (self.hud_on || self.objective_on) && !matches!(self.status, Status::Running(_)) {
             self.publish_hud(None);
         }
         let Some(tick) = bots::guest::game_tick(m) else {

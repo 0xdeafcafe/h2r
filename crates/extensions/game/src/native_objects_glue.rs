@@ -12,7 +12,7 @@ use engine::memory::GuestMemory;
 use render_bridge::native_map_work;
 use render_bridge::native_objects::Host;
 use map::TagId;
-use frame_scene::{FrameScene, InstanceKey, PartFlags, View};
+use frame_scene::{FrameScene, InstanceKey, PartFlags, View, ViewSlot};
 use native_render::gpu::Image;
 use native_render::light_gpu::StaticLightTexture;
 use native_render::load;
@@ -27,7 +27,7 @@ use native_render::object_state::EntryStates;
 use native_render::object_streams::{self, StreamData, StreamFormats};
 use native_render::object_walk::{Entry, Part as WalkPart};
 use tags::model::RenderModelGeometry;
-use timeline::native::ObjectWalk;
+use timeline::native::{ObjectWalk, ReservationCause, Stage as NativeStage};
 use native_render::program::ViewInputs;
 
 use crate::native_map::{self, NativeMap};
@@ -461,8 +461,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     }
 
     fn draw_walk(
-        &self, mem: &mut dyn GuestMemory, view: Option<(&FrameScene, &View)>, first: usize, run: &[Entry],
-        display_lod: Option<render_bridge::native_scene_lists::LodDetail>,
+        &self, mem: &mut dyn GuestMemory, view: Option<(&FrameScene, &View)>, slot: ViewSlot, first: usize,
+        run: &[Entry], display_lod: Option<render_bridge::native_scene_lists::LodDetail>,
         consume: &mut dyn FnMut(&mut dyn GuestMemory) -> bool,
     ) -> Result<(), ObjectWalk> {
         use timeline::native::{Metric, Stage, Timer};
@@ -480,11 +480,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }
         let (models, generation) = self.load(mem).ok_or(ObjectWalk::Model)?;
         self.refresh_edits(mem, &models, generation);
-        let mut device = self.device.lock().map_err(|_| ObjectWalk::Reservation)?;
+        let mut device = self.device.lock().map_err(|_| refused(ReservationCause::Error))?;
         if !device.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem))
-            .map_err(|_| ObjectWalk::Reservation)?
+            .map_err(|_| refused(ReservationCause::Error))?
         {
-            return Err(ObjectWalk::Reservation);
+            return Err(refused(ReservationCause::Declined));
         }
         if !model_palettes_hold(&models, &device, mem) {
             return Err(ObjectWalk::Inputs);
@@ -508,7 +508,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let batch = u64::from(device.swap_count()).wrapping_add(1);
         let pass = |draws: Vec<(u32, PlannedDraw)>| {
             Box::new(ObjectsPass {
-                display_only: false, display_draws: display_draws.clone(),
+                slot, display_only: false, display_draws: display_draws.clone(),
                 models: Arc::clone(&models), draws, texaccum, view: None, w_clip: None, run: batch,
             })
         };
@@ -523,7 +523,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             {
                 Ok(state)
             }
-            _ => Err(ObjectWalk::Reservation),
+            _ => Err(refused(ReservationCause::Stale)),
         };
         // A scene stage: queued now, its packets made when the render
         // thread reaches it. Not taken, the run is reserved here as before.
@@ -531,25 +531,38 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             let reserved = device.reserve_scene_stage(
                 &mut crate::native_lights_glue::DeviceMemory(mem), promise.clone(), pass(draws.clone()),
             );
-            if let Some(reservation) = reserved.map_err(|_| ObjectWalk::Reservation)? {
+            if let Some(reservation) = reserved.map_err(|_| refused(ReservationCause::Error))? {
                 let _state = current()?;
                 if !consume(mem) {
-                    return Err(ObjectWalk::Reservation);
+                    return Err(refused(ReservationCause::Consumed));
                 }
                 reservation.commit();
                 return Ok(());
             }
         }
-        let ready = device.prepare_external_bound(
+        let ready = match device.prepare_external_bound(
             &mut crate::native_lights_glue::DeviceMemory(mem), promise, pass(draws), Vec::new(),
-        ).ok().flatten().ok_or(ObjectWalk::Reservation)?;
+        ) {
+            Ok(Some(ready)) => ready,
+            Ok(None) => return Err(refused(ReservationCause::Unbound)),
+            Err(_) => return Err(refused(ReservationCause::Error)),
+        };
         let _state = current()?;
         if !consume(mem) {
-            return Err(ObjectWalk::Reservation);
+            return Err(refused(ReservationCause::Consumed));
         }
         ready.commit();
         Ok(())
     }
+}
+
+/// A refused reservation of the objects walk: the cause is counted under
+/// `native_objects_walk_refused_reservation_<cause>`, and the returned
+/// [`ObjectWalk::Reservation`] is counted (the sum) where the walk is
+/// handed back to the guest.
+fn refused(cause: ReservationCause) -> ObjectWalk {
+    NativeStage::Objects.reservation_cause(cause);
+    ObjectWalk::Reservation
 }
 
 /// D3D's specular bit selects the colour term in its implicit final combiner.
@@ -732,9 +745,10 @@ fn plan_walk<B: d3d::backend::Backend>(
         draws.push((model, draw));
     }
     let lit = lit.ok_or(ObjectWalk::Model)?;
-    let (gpu, color, depth) = device.external_pipeline_target(&read).ok_or(ObjectWalk::Reservation)?;
+    let (gpu, color, depth) =
+        device.external_pipeline_target(&read).ok_or_else(|| refused(ReservationCause::Unbound))?;
     if !lit.prewarm_draws(&gpu, color, depth, &draws) {
-        return Err(ObjectWalk::Reservation);
+        return Err(refused(ReservationCause::Declined));
     }
     Ok(draws)
 }
@@ -1539,6 +1553,9 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
         // The camouflage handler's layer copies the view
         // (`native_layers_glue`).
         view: true,
+        // and makes the scene copy the camouflage and hologram layers
+        // sample (engine texture 17).
+        scene_copy: true,
         normalization: o.normalization.as_ref().is_some_and(Option::is_some),
         lightmap: o.lightmap.clone().and_then(Result::ok),
     };
@@ -1615,8 +1632,14 @@ fn object_vertex_program(o: &mut Opened, vs: TagId, geometry: u16, influences: u
 }
 
 /// One sorted run's objects: the draws planned at the walk, in the list's
-/// order.
+/// order. The pass replays on a kept scene (`d3d::ExternalPass::replays_scene`):
+/// it owns everything it records from (`models` is an `Arc`; `draws`,
+/// `texaccum`, `view` and `w_clip` are owned values) and reads no guest
+/// state after the walk.
 struct ObjectsPass {
+    /// The view slot the run draws in ([`render_bridge::native_objects::SLOT`]):
+    /// the place in the traced draw order the frame graph orders it by.
+    slot: ViewSlot,
     display_only: bool,
     /// Alternative geometry for the display. The original run still owns
     /// all guest writes and is the only geometry sent to the reference.
@@ -1642,7 +1665,7 @@ struct ObjectsPass {
 impl d3d::ExternalPass for ObjectsPass {
     fn display_only(&self) -> bool { self.display_only }
 
-    fn replays_scene(&self) -> bool { true }
+    fn replays_scene(&self) -> bool { debug_assert_eq!(self.slot, ViewSlot::OpaqueBase); true }
 
     fn batch_key(&self) -> Option<u64> { Some(self.run) }
 
@@ -1873,6 +1896,7 @@ mod tests {
     fn the_lit_parts_clip_w_as_the_device_draws_the_layer() {
         use d3d::ExternalPass;
         let mut pass = ObjectsPass {
+            slot: ViewSlot::OpaqueBase,
             display_only: false,
             display_draws: None,
             models: Arc::new(Models::default()),

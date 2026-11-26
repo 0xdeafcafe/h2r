@@ -103,10 +103,11 @@ fn set(name: &str, class: &str, drops: &[Json]) -> Def {
     let mut by_class = serde_json::Map::new();
     by_class.insert(class.into(), json!(100));
     serde_json::from_value(json!({
-        "format": 2,
+        "format": 3,
         "name": name,
         "teams": 1,
         "rounds": [{"waves": waves, "skulls_on": []}],
+        "set": {"endless": false, "scale": 0, "skulls": []},
         "lives": {"pool_start": 5, "per_round_bonus": 1, "shared": true},
         "caps": {"live_actors_by_players": [[4, 32]]},
         "scoring": {

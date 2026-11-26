@@ -81,7 +81,10 @@
 //!   own target (engine texture 5) is recorded as commands instead: the
 //!   bound colour copied (`LitObjects::view_copy`), then a render pass of
 //!   its own on the same attachments with the draws binding the copy
-//!   (`LitObjects::draws_with_view`).
+//!   (`LitObjects::draws_with_view`). A layer 18 or 21 pass that samples
+//!   the scene copy (engine texture 17) first downsamples the bound colour
+//!   to 320 by 240 times the render scale (`LitObjects::scene_copy`), once
+//!   for the handler's call, and its draws bind that.
 //! - **Sorted handlers** (`LayerCaller::Sorted`): their items are object
 //!   records only, drawn from the scene's models; a record the game gives
 //!   a shader in place of its part's material draws that shader's passes,
@@ -702,11 +705,11 @@ impl LayerViewPass {
         }).map(|(_, d)| d)
     }
 
-    /// Whether a draw samples the view's own target: the pass is then
-    /// recorded as commands with a copy of the bound colour
+    /// Whether a draw samples the view's own target or the scene copy: the
+    /// pass is then recorded as commands with a copy of the bound colour
     /// ([`LayerViewPass::encoded`]).
     fn samples_view(&self) -> bool {
-        self.object_draws().any(|d| d.view)
+        self.object_draws().any(|d| d.view || d.scene_copy)
     }
 }
 
@@ -834,11 +837,25 @@ impl LayerViewPass {
             return Err("layer object geometry or material unavailable");
         }
         let texaccum = crate::native_objects_glue::texaccum_level(t, self.texaccum)?;
-        let copy = lit.view_copy(&t.device, &t.color, t.copy);
-        let sampled = native_render::object_program_gpu::Texaccum { view: &copy.view, guest_size: request.surface_size };
+        let needs_view = draws.iter().any(|(_, d)| d.view);
+        let needs_scene = draws.iter().any(|(_, d)| d.scene_copy);
+        if needs_scene && !t.color.texture().usage().contains(wgpu::TextureUsages::TEXTURE_BINDING) {
+            return Err("the bound colour cannot be sampled for the scene copy");
+        }
+        let copy = needs_view.then(|| lit.view_copy(&t.device, &t.color, t.copy));
+        // Once for the handler's call: its layers 18 and 21 draw from one
+        // downsample, made before they draw (the guest's `0x000352e0`).
+        let scene = needs_scene.then(|| lit.scene_copy(&t.device, &t.color, request.surface_size, t.copy));
+        let sampled = copy
+            .as_ref()
+            .map(|c| native_render::object_program_gpu::Texaccum { view: &c.view, guest_size: request.surface_size });
+        let scene_sampled = scene.as_ref().map(|c| native_render::object_program_gpu::Texaccum {
+            view: &c.view,
+            guest_size: native_render::object_program::SCENE_COPY_SIZE,
+        });
         let out = lit.draws_with_view(
             &t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, &view,
-            request.projection_factor(t.copy), &draws, texaccum, Some(sampled),
+            request.projection_factor(t.copy), &draws, texaccum, sampled, scene_sampled,
         )?;
         let out = clip_packets(out, request, t.size)?;
         let writes: Vec<(wgpu::Buffer, u64, wgpu::Buffer, u64, u64)> = out
@@ -853,12 +870,18 @@ impl LayerViewPass {
         let (ranges, count) = (out.ranges, packets.len());
         let (color, depth) = (t.color.clone(), t.depth.clone());
         let has_stencil = t.depth_format.has_stencil_aspect();
-        let native_render::object_program_gpu::ViewCopy { from, to, extent, .. } = copy;
+        let copy = copy.map(|c| (c.from, c.to, c.extent));
+        let device = t.device.clone();
         let commands = move |encoder: &mut wgpu::CommandEncoder| {
             for (src, at, dst, offset, len) in &writes {
                 encoder.copy_buffer_to_buffer(src, *at, dst, *offset, *len);
             }
-            encoder.copy_texture_to_texture(from.as_image_copy(), to.as_image_copy(), extent);
+            if let Some(scene) = &scene {
+                scene.record(&device, encoder);
+            }
+            if let Some((from, to, extent)) = &copy {
+                encoder.copy_texture_to_texture(from.as_image_copy(), to.as_image_copy(), *extent);
+            }
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("native layer with view copy"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -881,7 +904,8 @@ impl LayerViewPass {
             // counted draw.
             let _ = gfx::renderer::encode_in_pass(&mut pass, &packets);
         };
-        Ok(d3d::backend::ExternalEncoded { ranges, draws: count, passes: 1, commands: Box::new(commands) })
+        let blit = usize::from(needs_scene);
+        Ok(d3d::backend::ExternalEncoded { ranges, draws: count + blit, passes: 1 + blit, commands: Box::new(commands) })
     }
 
     fn record(

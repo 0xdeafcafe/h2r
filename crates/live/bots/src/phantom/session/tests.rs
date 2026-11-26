@@ -1034,6 +1034,43 @@ mod lobby {
         }
     }
 
+    /// A ranked hopper's phantom shows its rank in the lobby's rank fields
+    /// (`+0x84..+0x90`), under the host's hopper index; without a rank, or
+    /// with no hopper index on the host, they stay -1.
+    #[test]
+    fn a_ranked_phantoms_lobby_row_has_its_rank() {
+        let ranked = Phantoms::default();
+        let plain = Phantoms::default();
+        let a = ranked.add(who(1, "Ranked"), None, idle()).unwrap();
+        ranked.set_rank(a, Some(Rank::of_level(12))).unwrap();
+        let b = plain.add(who(2, "Plain"), None, idle()).unwrap();
+        let mut g = lobby();
+        let host = S + PLAYERS;
+        for copy in [P_REQUESTED, P_EFFECTIVE] {
+            g.put_u32(host + copy + 0x84, 8);
+        }
+        ranked.tick(&mut g, 0).unwrap();
+        let c = both_configs(&g, seat_of(&g, a));
+        for c in &c {
+            assert_eq!(u32::from_le_bytes(c[0x84..0x88].try_into().unwrap()), 8);
+            assert_eq!(i16::from_le_bytes(c[0x8a..0x8c].try_into().unwrap()), 11);
+            assert_eq!(
+                u32::from_le_bytes(c[0x8c..0x90].try_into().unwrap()),
+                live_proto::rank::threshold(12)
+            );
+        }
+        // No rank set: the fields stay -1, as before.
+        let mut g = lobby();
+        let host = S + PLAYERS;
+        for copy in [P_REQUESTED, P_EFFECTIVE] {
+            g.put_u32(host + copy + 0x84, 8);
+        }
+        plain.tick(&mut g, 0).unwrap();
+        for c in &both_configs(&g, seat_of(&g, b)) {
+            assert!(c[0x84..].iter().all(|b| *b == 0xff));
+        }
+    }
+
     #[test]
     fn a_hosts_handicap_is_never_a_phantoms_then_or_later() {
         let ph = Phantoms::default();
@@ -1568,6 +1605,38 @@ mod lobby {
         // The party's session is left alone.
         assert_eq!(g.u32(PARTY + PEER_COUNT).unwrap(), 1);
         assert_eq!(g.u32(PARTY + PLAYER_COUNT).unwrap(), 1);
+    }
+
+    /// The user's ranked Clankermatch (playlist 11): arbitration takes
+    /// the target session from live (5) to 7 while the map loads, and
+    /// the game (type 8) runs on it. This console hosts the match the
+    /// whole way, so the fill holds; the party's lobby, a match another
+    /// console hosts, or no target session is not one.
+    #[test]
+    fn a_clankermatch_this_console_hosts_is_held_through_its_handoff() {
+        let mut g = matchmaking();
+        assert!(hosts_match(&g), "the lobby, live");
+        g.put_u32(S + STATE, 7);
+        assert!(hosts_match(&g), "arbitration and the handoff, state 7");
+        g.put_u32(l::SESSION_TYPE, 8)
+            .put_u32(points::GAME_TIME.base, TIME);
+        assert!(hosts_match(&g), "the game");
+        // The party's custom lobby (type 2) is not a match.
+        let mut party = lobby();
+        assert!(!hosts_match(&party));
+        party.put_u32(S + STATE, 7);
+        assert!(!hosts_match(&party));
+        // Another console hosts the match.
+        let mut joined = matchmaking();
+        joined.put_u32(S + HOST_PEER, 1).put_u32(S + PEER_COUNT, 2);
+        assert!(!hosts_match(&joined));
+        // The match session gone.
+        let mut gone = matchmaking();
+        gone.put_u32(l::TARGET_SESSION, 0);
+        assert!(!hosts_match(&gone));
+        let mut stateless = matchmaking();
+        stateless.put_u32(S + STATE, 0);
+        assert!(!hosts_match(&stateless));
     }
 
     #[test]

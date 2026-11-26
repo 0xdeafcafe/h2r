@@ -1943,10 +1943,11 @@ impl State {
             .iter()
             .map(|p| (p.label().to_owned(), round(s.phase_ms[*p as usize])))
             .collect();
-        let counts = timeline::phase::counter_columns()
+        let mut counts: BTreeMap<String, f64> = timeline::phase::counter_columns()
             .filter(|&(i, _)| i < timeline::phase::Counter::ALL.len() || s.count_mean[i] > 0.0)
             .map(|(i, label)| (label.to_owned(), round(s.count_mean[i])))
             .collect();
+        counts.extend(tick_counts(&sim_bridge::tick::ledger()));
         Ok(Counters {
             at: self.at(),
             frames: s.frames,
@@ -1958,6 +1959,27 @@ impl State {
             counts,
         })
     }
+}
+
+/// The tick driver's mean time per tick since the game started
+/// (docs/runtime/agent-api.md, `profile.counters`): `sim_tick_phase_<n>_ns`
+/// for phase `n` (1 to 29, retail order), `sim_tick_ns` for the tick body
+/// and `sim_loop_ms` for the mean entry-to-entry time, which includes the
+/// sound that runs outside the phases. Nothing before the first tick.
+fn tick_counts(l: &engine::sim_tick::Ledger) -> BTreeMap<String, f64> {
+    let mut out = BTreeMap::new();
+    if l.ticks() == 0 {
+        return out;
+    }
+    let per = |ns: u64| round(ns as f64 / l.ticks() as f64);
+    for i in 0..engine::sim_tick::PHASES.len() {
+        out.insert(format!("sim_tick_phase_{}_ns", i + 1), per(l.phase_ns(i)));
+    }
+    out.insert("sim_tick_ns".to_owned(), per(l.tick_ns()));
+    if l.loops() > 0 {
+        out.insert("sim_loop_ms".to_owned(), round(l.loop_ns() as f64 / 1e6 / l.loops() as f64));
+    }
+    out
 }
 
 fn round(v: f64) -> f64 {
@@ -2112,3 +2134,23 @@ pub(crate) fn trim(v: Value, fields: Option<&[String]>) -> Value {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tick_count_tests {
+    use super::tick_counts;
+    use engine::sim_tick::{Ledger, PHASES};
+
+    #[test]
+    fn counters_carry_the_ticks_phase_means() {
+        assert!(tick_counts(&Ledger::new()).is_empty());
+        let mut l = Ledger::new();
+        let mut ns = [0u64; PHASES.len()];
+        ns[0] = 3_000;
+        l.finish_tick(1, &ns, 5_000);
+        l.finish_tick(2, &ns, 5_000);
+        let c = tick_counts(&l);
+        assert_eq!(c["sim_tick_phase_1_ns"], 3_000.0);
+        assert_eq!(c["sim_tick_ns"], 5_000.0);
+        assert!(c.contains_key("sim_tick_phase_29_ns") && !c.contains_key("sim_loop_ms"));
+    }
+}

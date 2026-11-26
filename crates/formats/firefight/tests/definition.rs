@@ -9,19 +9,23 @@ fn golden_hash_for_the_builtin_defs() {
     let expected = [
         (
             "Holdout",
-            "dedccaa6ea2b95d1249a781ebaf9ebc5c98dfdc1e2c4f10027fac038855a0480",
+            "7bf0c136f3fab762783896e1fa2c3694db129a9e6921d55d935dafb69fcc729d",
         ),
         (
             "Attrition",
-            "e230b005449fed422f3a76d5ac1743675853010d2926dc0d3440528a0ba1b967",
+            "8015daa1aa38b500e032a8c02ce74099dd6f043b4e632bb9aa09213b8f01333a",
         ),
         (
             "Last Stand",
-            "45b0a26cea858ce5ff8edf67d97971530060cf7bb2602cf707fea882cf620237",
+            "783cb8551ced1f28ef72de1cc5edb9b202ad0b34dd2a9c4b00ac878f19bae879",
         ),
         (
             "Crossfire",
-            "106899ec8fed2d189a3425766796fba3cf6a3457c8eed8341f399fa5dc47a4cf",
+            "3a953d42aa6c37d35e2da205567e77f96c050affc8c753d079584f248f21ae6f",
+        ),
+        (
+            "Endless",
+            "72538db923ff33c981d1c6c1cae2e39269c0dfbc63e77a99d8765da39ef9a4c1",
         ),
     ];
     let limits = elite_kit();
@@ -115,8 +119,8 @@ fn canonical_form_is_stable_under_key_order() {
     assert!(reordered.starts_with("{\n  \"format\":"));
     // The derived serializer orders skull keys by enum order. Canonical JSON
     // sorts these keys by their spelling as it does for every object.
-    assert!(canonical.find("\"blind\":") < canonical.find("\"thunderstorm\":"));
-    assert!(reordered.find("\"thunderstorm\":") < reordered.find("\"blind\":"));
+    assert!(canonical.find("\"famine\":") < canonical.find("\"thunderstorm\":"));
+    assert!(reordered.find("\"thunderstorm\":") < reordered.find("\"famine\":"));
     let decoded = Def::from_bytes(reordered.as_bytes(), &elite_kit()).unwrap();
     assert_eq!(decoded.canonical_json().unwrap(), canonical);
     assert_eq!(decoded.id().unwrap(), def.id().unwrap());
@@ -198,10 +202,10 @@ fn invalid_headers_and_schedule_are_refused() {
         ),
         (|d| d.rounds[0].waves[0].boss = true, "boss"),
         (|d| d.rounds[0].waves[4].boss = false, "boss"),
-        (|d| d.rounds[0].skulls_on.push(Skull::Blind), "skulls_on"),
-        (|d| d.rounds[1].skulls_on = vec![Skull::Blind], "skulls_on"),
+        (|d| d.rounds[0].skulls_on.push(Skull::Ghost), "skulls_on"),
+        (|d| d.rounds[1].skulls_on = vec![Skull::Ghost], "skulls_on"),
         (
-            |d| d.rounds[0].skulls_on = vec![Skull::Blind; 10],
+            |d| d.rounds[0].skulls_on = vec![Skull::Ghost; 10],
             "skulls_on",
         ),
         (|d| d.lives.pool_start = 1_001, "lives"),
@@ -287,7 +291,7 @@ fn scoring_bounds_are_enforced() {
         ),
         (
             |d| {
-                d.scoring.skull_multipliers.insert(Skull::Blind, 2_001);
+                d.scoring.skull_multipliers.insert(Skull::Ghost, 2_001);
             },
             "scoring multiplier",
         ),
@@ -341,7 +345,7 @@ fn team_counts_and_player_kill_points_are_refused_out_of_range() {
     }
 
     // Two teams admit player kills from nothing to the bound.
-    let [.., mut doc] = builtin::definitions();
+    let [_, _, _, mut doc, _] = builtin::definitions();
     assert_eq!((doc.name.as_str(), doc.teams), ("Crossfire", 2));
     for points in [0, 50, 1_000] {
         doc.scoring.player_kill = points;
@@ -351,7 +355,7 @@ fn team_counts_and_player_kill_points_are_refused_out_of_range() {
 
 #[test]
 fn with_teams_sets_the_team_count_and_player_kill_points() {
-    let [holdout, .., crossfire] = builtin::definitions();
+    let [holdout, _, _, crossfire, _] = builtin::definitions();
     let two = builtin::with_teams(holdout.clone(), 2);
     assert_eq!(
         (two.teams, two.scoring.player_kill),

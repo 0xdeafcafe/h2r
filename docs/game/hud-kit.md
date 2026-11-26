@@ -465,7 +465,7 @@ pub struct Value {
     pub motion: Motion, // how the fill and visibility move after a change, on wall time (below)
     pub from: f32,      // the runtime's: the fill shown when the value changed
 }
-pub enum Motion { None, Ease, Ending, RunOut, Blink }
+pub enum Motion { None, Ease, Ending, RunOut, Blink, Arrive }
 pub struct Values(pub Vec<(&'static str, Value)>);
 
 pub trait Describe {
@@ -543,6 +543,7 @@ pure functions of those milliseconds: `fill_at`, `shown_at` and
 | `Ending` | from `from` to full in 130 ms | off 290 to 360 ms; gone at 600 ms (at 430 ms unscaled) | 130 to 290 ms a swell to 1.12 wide and 1.30 tall and back (a half sine); from 430 ms the width closes to 0 by 600 ms, the height kept |
 | `RunOut` | from `from` to 0 in 200 ms | gone at 300 ms | 1 |
 | `Blink` | the fill | on and off in sixths of 500 ms, three times on; gone at 500 ms | 1 |
+| `Arrive` | the fill | on and off in sixths of 500 ms, three times on; shown from 500 ms for good | 1 |
 
 Every step is at least 60 ms, so at 30 frames a second a blink or the
 swell still gets two frames. `motion::restamp` decides a stamp: a change
@@ -890,7 +891,37 @@ start.
 
 The pictures the kit has are the charge ring's, `font::ring`: nine arcs,
 seven steps each, at U+E2C0 to U+E2FE, after the arrows ("The charge
-segments").
+segments"), and the Firefight HUD's skulls, `font::skulls`: seven slots
+of two steps (off, faint; on, lit), 14 pixels square, at U+E600 to
+U+E60D (slot `s`'s step `k` at `0xE600 + 2s + k`). Each is a skull's glyph,
+the strokes of `font::strokes` (`game::skull_glyphs`) rasterised, so the
+preview, the checks (`hud-edit`'s served fonts) and the game's font rewrite
+(`bot_mark::GearRewrite`) all carry the same pictures. `Glyphs::picture`
+asks the ring first and the skulls after.
+
+### The Firefight HUD
+
+`views::firefight` (`content/modes/huds/firefight.hud.yaml`,
+[firefight.md](firefight.md), "The HUD") is one layout of twelve elements
+at the frame's bottom right, above the retail score plate, in the HUD font,
+offsets from anchor 3 (bottom right) in 14 pixel lines:
+
+| Element | Kind | Place (full) | Screens |
+|---|---|---|---|
+| `ff.score`, `ff.lives`, `ff.progress` | text, right-justified | (0, -58), (0, -72), (0, -86) | score not in a quarter; lives and progress one line lower there |
+| `ff.enemies` | meter, `Art::StripMeter` (92 by 8), registered at its right edge | (0, -94) | not in a quarter |
+| `ff.skull.0` to `ff.skull.6` | gauge of `font::skulls`, two steps | (-(18 i + 15), -113); half (-(14 i + 14), -110) | not in a quarter |
+| `ff.banner` | text, centred, from the frame's top left | (272, 60); half (272, 48) | not in a quarter |
+
+A skull on is `Value::fill(1.0)` with `Motion::Arrive`, so it blinks three
+times when it first shows and stays lit; off is hidden, so a slot never
+moves. The last life's line has `Motion::Arrive` too, no lives left is
+`Style::Flash(TimeWarning)`, and the meter eases. The banner's ease in and
+out is not drawn: it needs the colour hook, so the banner is at full
+strength while it is up. `State` is what the game gives one local user
+(`game::firefight::hud::state_of`, from the layout for that user's screen:
+full for one local user, half for two, quarter for three or four);
+`values` turns it into the kit's `Values`.
 
 ### Cost
 
@@ -1758,6 +1789,34 @@ its strength. The marks are fullscreen only, as the readout is.
 ground ([superbounce.md](superbounce.md#the-jump-cue)), settled by the
 game. The kit writes one of them on the box's label. It carries no
 chance field and shows no percentage beside the call.
+
+## The scripted objective HUD
+
+`crates/rewrites/hud-kit-core/src/views/script_objective.rs` (its elements
+are `content/modes/huds/script-objective.hud.yaml`) shows what a script
+sets with the `hud.objective` capability (`objective(to, text)`,
+`objective_mark(to, zone, kind)`, `meter(to, value, of)`,
+`countdown(to, ticks)`; [rules-engine.md](rules-engine.md#the-engine-api))
+of the viewer's team. The VM keeps the state per team
+(`rules::vm::Objective`, `RulesExt::objectives`); the game's
+`crates/extensions/game/src/objective_hud.rs` makes a `View` of it for each
+local user each tick and publishes its values. A script that does not
+require `hud.objective` draws nothing: the HUD is registered hidden and
+hidden again once a script stops feeding it. It is multiplayer only.
+
+| Element | Kind | Shows |
+|---|---|---|
+| `so.banner` | banner | the objective line, started again by the kit when the text changes (a phase change); a text the banner cannot take (`banner_fault`) is left out |
+| `so.clock` | text, `hud` font, right-justified, top right | `m:ss` of the countdown, rounded up; the help flash from 30 s down |
+| `so.line` | text, `hud` font, right-justified, top right under the clock | the objective line as resting text |
+| `so.meter` | meter, the retail strip, under the grenade row's next pill | `value` of `of`; not drawn for an `of` of 0 or less |
+| `so.nav.1` to `so.nav.3` | navpoint | the first three marked zones, each with its distance in metres from the viewer's unit; the point is the zone's middle |
+
+The banner and the clock have half and quarter places; the line, gauge and
+navpoints are fullscreen only (fullscreen first). The HUD's `never_with`
+lists the HUDs that use the grenade row's next pill. Its states are `idle`,
+`phase`, `capturing`, `defending`, `last-30` and `widest`
+(`script_objective::views`), each checked by the layout and `hud.render`.
 
 ## Interfaces
 

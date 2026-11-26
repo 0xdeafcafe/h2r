@@ -115,7 +115,7 @@ impl Kind {
                 "unplayable",
             ],
             Self::Detail => &[
-                "list", "unplayable", "summary", "players", "confirm-delete",
+                "list", "unplayable", "summary", "players", "roster-only", "confirm-delete",
             ],
             Self::Playback => &[
                 "playing", "paused", "opening", "jumping", "divergence", "unavailable",
@@ -398,9 +398,20 @@ impl Live for Preview {
                 entry.film.scoreboard.clear();
             }
             "players" => {
-                entry.film.scoreboard = (1..=10)
+                entry.film.scoreboard = (1..=16)
                     .map(|i| Player {
                         name: format!("Player {i}"),
+                        ..Player::default()
+                    })
+                    .collect();
+            }
+            "roster-only" => {
+                entry.film.scoreboard.clear();
+                entry.film.roster = [("Alpha", 0), ("Bravo", 1), ("Charlie", 0), ("Delta", 1)]
+                    .into_iter()
+                    .map(|(name, team)| Player {
+                        name: name.into(),
+                        team: Some(super::adapter::team_name(team)),
                         ..Player::default()
                     })
                     .collect();

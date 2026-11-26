@@ -13,6 +13,7 @@ pub mod blend;
 pub mod builder;
 pub mod decorator;
 pub mod display;
+pub mod effect;
 pub mod late;
 pub mod layer;
 pub mod light;
@@ -24,6 +25,8 @@ pub mod pace;
 pub mod overlay;
 pub mod scene;
 pub mod summary;
+pub mod view_slot;
+pub use view_slot::ViewSlot;
 
 // The render camera and the carried part are shared with the guest's
 // device (`d3d`), which sits below this crate: they live in `frame_types`
@@ -57,7 +60,7 @@ pub use node::{NODE_MATRIX_SIZE, NodeMatrix};
 pub use object::{Defaults, ItemKey, LIGHTING_BYTES, LIGHTING_WORDS, Lighting, ObjectFrame, Owner};
 pub use overlay::{
     ClipRect, Combiner, Overlay, OverlayBlend, OverlayBlur, OverlayCamera, OverlayCounts,
-    OverlayError, OverlayGlyph, OverlayItem, OverlayKind, OverlayMaterial, OverlayModelView,
+    OverlayError, OverlayGlyph, OverlayItem, OverlayKind, OverlayMaterial, OverlayModelView, OverlayMovie,
     OverlayTexture, OverlayVertex, Program, Sampler,
 };
 pub use scene::{

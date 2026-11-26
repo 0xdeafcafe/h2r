@@ -2097,6 +2097,25 @@ mod tests {
     }
 
     #[test]
+    fn choose_profile_arm_parts_are_not_culled_by_the_lens_at_21_by_9() {
+        let mut mem = engine::testing::FakeGuest::new();
+        mem.map(FRAME & !0xfff, 0x1000).map(VIEW_INDEX & !0xfff, 0x1000)
+            .put_u32(FRAME, 7).put_u32(VIEW_INDEX, 0);
+        with_step(|step| {
+            step.visibility_lens = VisibilityLens::Guest { projection: 0.55, frustum: 0.55, gather: 1.0 };
+            step.gathered = Some(GatherObjects { key: (7, 0), objects: Some(vec![1]), skipped: Vec::new() });
+        });
+        let before = GUEST_LENS_OBJECTS_SKIPPED.load(Ordering::Relaxed);
+        set_model_view(true);
+        for arm in [20, 21, 22] {
+            assert_eq!(gather_lens_object(&mem, arm), None);
+        }
+        set_model_view(false);
+        assert_eq!(GUEST_LENS_OBJECTS_SKIPPED.load(Ordering::Relaxed), before);
+        with_step(|step| *step = Step::default());
+    }
+
+    #[test]
     fn a_widened_views_undrawn_objects_reach_the_display_once() {
         let mut step = Step::default();
         step.gathered = Some(GatherObjects { key: (4, 0), objects: Some(vec![1, 3]), skipped: vec![9, 5, 9] });

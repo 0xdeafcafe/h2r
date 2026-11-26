@@ -814,6 +814,7 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
     };
     let seat = crate::h1::Seat {
         camera_angles: [0; 5],
+        rates: [0; 2],
         flags: 0x1d,
         label: "CT-driver".into(),
         marker: "driver".into(),
@@ -831,7 +832,6 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
     let markers = vec!["driver".to_string(), "driver enter".to_string(), "camera".to_string()];
     let seats = [crate::rebuild::seat_names(&seat, &markers)];
     let root = crate::rebuild::vehicle(&crate::rebuild::VehicleSpec {
-        physics: None,
         source: &[],
         references: &[],
         object: &obj,
@@ -843,8 +843,6 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
         vehicle_type: ROLE_VEHICLE_TYPE as u16,
         flags: 0xdead_00c0,
         weapons: &[weapon],
-        contacts: None,
-        seat_power: &[],
         points: &[],
         attachments: &[],
         functions: &[],
@@ -875,7 +873,6 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
         },
     )
     .unwrap();
-    want.set("unknown_25c", word(30f32.to_bits())).unwrap();
     want.set("vehicle_type", Val::Enum(ROLE_VEHICLE_TYPE))
         .unwrap();
     let mut s = defs::default_record(def.child(VEHI_SEATS).unwrap());
@@ -940,203 +937,6 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
             "{r}"
         );
     }
-}
-
-/// The authored wheel frame, per-second drag and material scale survive encoding.
-#[test]
-fn rebuilt_vehicle_keeps_source_drag_and_direction_records() {
-    use crate::rebuild::VehicleSpec;
-    use tags::defs::{self, Defs, Target, Val};
-    let obj = crate::h1::Object {
-        texture_override: 0,
-        object_type: 1,
-        acceleration_scale: 0.0,
-        flags: 0,
-        bounding_radius: 2.0,
-        bounding_offset: [0.0; 3],
-        model: None,
-        animation: None,
-        collision: None,
-        physics: None,
-        modifier_shader: None,
-        creation_effect: None,
-        attachments: Vec::new(),
-        widgets: Vec::new(),
-        change_colours: Vec::new(),
-    };
-    let points = [
-        crate::rebuild::Point {
-            sphere: [0.75, 0.0, 0.125, 0.25],
-            antigravity: None,
-            marker: "tire_front_left".into(),
-            region: "left_front_tire".into(),
-            region_index: 2,
-            steered: true,
-        },
-        crate::rebuild::Point {
-            sphere: [0.75, 0.0, 0.125, 0.25],
-            antigravity: None,
-            marker: "tire_back_left".into(),
-            region: String::new(),
-            region_index: -1,
-            steered: false,
-        },
-    ];
-    let contacts = crate::h1::GroundContacts {
-        wheels: points
-            .iter()
-            .map(|p| {
-                (
-                    p.marker.clone(),
-                    tags::object::direct_drive::WheelDrag {
-                        mode: 5,
-                        rate: 2.0,
-                        parallel: 0.75,
-                        perpendicular: 0.45,
-                    },
-                )
-            })
-            .collect(),
-        surfaces: vec![(19, [0.125, 1.0, 1.0, 1.0, 1.0])],
-        equal_slopes: true,
-    };
-    let seat = crate::h1::Seat {
-        camera_angles: [0; 5],
-        flags: 0x14,
-        label: "W-driver".into(),
-        marker: "driver".into(),
-        camera_marker: String::new(),
-        camera_tracks: Vec::new(),
-    };
-    let passenger = crate::h1::Seat {
-        camera_angles: [0; 5],
-        flags: 0x60,
-        label: "W-passenger".into(),
-        marker: "passenger".into(),
-        camera_marker: String::new(),
-        camera_tracks: Vec::new(),
-    };
-    let mut seats = [
-        crate::rebuild::seat_names(&seat, &[]),
-        crate::rebuild::seat_names(&passenger, &[]),
-    ];
-    // The driver's camera track converted; the passenger has none.
-    let track = map::TagId(0xe001_0009);
-    seats[0].camera_track = Some(track);
-    let mut physics = [0; crate::h1::PHYS_SIZE];
-    physics[0x68..0x6c].copy_from_slice(&2u32.to_le_bytes());
-    let spec = VehicleSpec {
-        physics: Some(&physics),
-        source: &[],
-        references: &[],
-        object: &obj,
-        bounds: Some((1.5, [0.1, 0.0, 0.5])),
-        hlmt: None,
-        seats: &seats,
-        predicted: &[],
-        camera_field_of_view: 1.0,
-        vehicle_type: 1,
-        flags: 0x0000_0cd1,
-        weapons: &[],
-        contacts: Some(&contacts),
-        seat_power: &[],
-        points: &points,
-        attachments: &[],
-        functions: &[],
-        creation_effect: None,
-    };
-    let root = crate::rebuild::vehicle(&spec).unwrap();
-    let def = Defs::builtin().group(map::FourCC(*b"vehi")).unwrap();
-    let got = defs::from_built(def, &root).unwrap();
-    let word = |w: u32| Some(Val::Bytes(w.to_le_bytes().to_vec()));
-    assert_eq!(got.at("vehicle_type"), Some(&Val::Enum(1)));
-    assert_eq!(got.at("vehicle_flags"), Some(&Val::Int(0xcd1)));
-    use tags::object::direct_drive::{CONTACT_DATA, CONTACT_HEADER, CONTACT_MAGIC, WHEEL_BYTES};
-    let meta = |offset| got.bytes(&format!("phantom_shapes[0].@{offset:#x}"), 4).map(Val::Bytes);
-    let wheel = CONTACT_DATA + CONTACT_HEADER;
-    let ice = wheel + 2 * WHEEL_BYTES;
-    assert_eq!(meta(CONTACT_DATA), word(CONTACT_MAGIC));
-    assert_eq!(meta(CONTACT_DATA + 4), word(0x10102));
-    assert_eq!(meta(wheel), word(5));
-    assert_eq!(meta(wheel + 4), word(2f32.to_bits()));
-    assert_eq!(meta(wheel + 8), word(0.75f32.to_bits()));
-    assert_eq!(meta(wheel + 12), word(0.45f32.to_bits()));
-    assert_eq!(meta(ice), word(19));
-    assert_eq!(meta(ice + 4), word(0.125f32.to_bits()));
-    assert_eq!(got.bytes("ground_friction", 4).map(Val::Bytes), word(0));
-    assert_eq!(
-        got.bytes("phantom_shapes[0].x0", 4).map(Val::Bytes),
-        word(0.5_f32.to_bits())
-    );
-
-    assert_eq!(got.bytes("ground_maximum_slope_0", 4).map(Val::Bytes), word(0));
-    assert_eq!(got.bytes("ground_maximum_slope_1", 4).map(Val::Bytes), word(0.0f32.next_up().to_bits()));
-    let mut passive = physics;
-    passive[0x68..0x6c].copy_from_slice(&1u32.to_le_bytes());
-    let passive = crate::rebuild::vehicle(&VehicleSpec { physics: Some(&passive), ..spec }).unwrap();
-    let passive = defs::from_built(def, &passive).unwrap();
-    assert_eq!(passive.bytes("engine_moment", 4).map(Val::Bytes), word(0));
-    let Some(Val::Block(gears)) = passive.get("gears") else { panic!("missing direction records") };
-    assert_eq!(gears.len(), 2);
-    assert!(gears.iter().all(|g| g.get("speed_ratio") == Some(&Val::Float(0.0))));
-    // Each seat takes its kind's words.
-    assert_eq!(got.bytes("seats[0].turnover_time", 4).map(Val::Bytes), word(0));
-    assert_eq!(got.bytes("seats[1].turnover_time", 4).map(Val::Bytes), word(0));
-    assert_eq!(got.bytes("seats[0].flags", 4).map(Val::Bytes), word(0x14));
-    assert_eq!(got.bytes("seats[1].flags", 4).map(Val::Bytes), word(0x60));
-    // Halo 1's entry markers face the vehicle's forward: no facing test,
-    // whatever the role's seats hold.
-    for k in 0..2 {
-        assert_eq!(
-            got.bytes(&format!("seats[{k}].entry_marker_cone_angle"), 4).map(Val::Bytes),
-            word(std::f32::consts::PI.to_bits()),
-        );
-    }
-    // The sphere given, not Halo 1's.
-    assert_eq!(got.at("unit.obje.bounding_radius"), Some(&Val::Float(1.5)));
-    assert_eq!(
-        got.at("unit.obje.bounding_offset"),
-        Some(&Val::floats(&[0.1, 0.0, 0.5]))
-    );
-    assert_eq!(
-        got.at("seats[0].label"),
-        Some(&Val::text("warthog_d"))
-    );
-    // The contact marker and region come from the source powered point.
-    assert_eq!(
-        got.at("friction_points[0].marker_name"),
-        Some(&Val::text("tire_front_left"))
-    );
-    assert_eq!(
-        got.at("friction_points[0].region_name"),
-        Some(&Val::text("left_front_tire"))
-    );
-    assert_eq!(got.bytes("friction_points[1].fraction_of_total_mass", 4).map(Val::Bytes), word(0));
-    // Each point's region index is its own, never the role's: the front
-    // point's region is the model's third, the back point names none.
-    assert_eq!(got.bytes("friction_points[0].region_index", 4).map(Val::Bytes), word(2));
-    assert_eq!(got.bytes("friction_points[1].region_index", 4).map(Val::Bytes), word(0xffff_ffff));
-    assert_eq!(got.bytes("control", 2), Some(vec![0, 0]));
-    // Halo 1 countersteers the second powered group.
-    assert_eq!(got.bytes("friction_points[0].flags", 4).map(Val::Bytes), word(6));
-    assert_eq!(got.bytes("friction_points[1].flags", 4).map(Val::Bytes), word(10));
-    assert!(matches!(got.at("anti_gravity_points"), Some(Val::Block(b)) if b.is_empty()));
-    assert_eq!(got.at("gears[0].speed_ratio"), Some(&Val::Float(-1.0)));
-    assert_eq!(got.at("gears[1].speed_ratio"), Some(&Val::Float(1.0)));
-    let again = defs::to_built(def, &got, &mut |_| None).unwrap();
-    assert_eq!(defs::from_built(def, &again).unwrap(), got);
-    // This ground vehicle has no vertical speed.
-    assert_eq!(got.bytes("minimum_flipping_angular_velocity", 4).map(Val::Bytes), word(0));
-    // The driver's seat names its camera track; the passenger's names
-    // none (the engine's default unit track).
-    assert_eq!(
-        got.at("seats[0].camera_tracks[0].track"),
-        Some(&Val::Ref {
-            group: 0,
-            target: Target::Id(track),
-        })
-    );
-    assert!(matches!(got.at("seats[1].camera_tracks"), Some(Val::Block(b)) if b.is_empty()));
 }
 
 /// A Halo 1 camera track becomes a Halo 2 `trak` with the same points, in
@@ -1645,11 +1445,138 @@ fn biped_carries_each_source_word_and_leaves_unmapped_fields_at_default() {
     for (path, at) in BIPED_WORDS {
         assert_eq!(word(path), (*at as f32).to_bits(), "{path}");
     }
+    assert!(
+        BIPED_WORDS
+            .iter()
+            .all(|w| !crate::rebuild::BIPED_LANDING.iter().any(|l| l.0 == w.0)),
+        "landing velocities take the gravity factor, not the plain copy"
+    );
     assert!(matches!(r.at("unit.powered_seats"), Some(Val::Block(entries)) if entries.is_empty()));
     let Some(Val::Block(pr)) = r.at("unit.obje.predicted_resources") else {
         panic!()
     };
     assert_eq!(pr.len(), 1);
+}
+
+/// A Halo 1 biped unit holding `words` (Halo 1 offset, word) and no
+/// collision size.
+fn biped_unit(words: Vec<(usize, u32)>) -> crate::h1::Unit {
+    crate::h1::Unit {
+        hud_interfaces: Vec::new(),
+        group: h1map::Group::new(b"bipd"),
+        object: crate::h1::Object {
+            texture_override: 0,
+            object_type: 0,
+            acceleration_scale: 0.0,
+            flags: 0,
+            bounding_radius: 0.7,
+            bounding_offset: [0.0; 3],
+            model: None,
+            animation: None,
+            collision: None,
+            physics: None,
+            modifier_shader: None,
+            creation_effect: None,
+            attachments: Vec::new(),
+            widgets: Vec::new(),
+            change_colours: Vec::new(),
+        },
+        camera_field_of_view: 1.2,
+        biped_words: words,
+        seats: Vec::new(),
+        camera_tracks: Vec::new(),
+        size: None,
+        references: Vec::new(),
+    }
+}
+
+/// A biped with `jump_velocity` and the landing thresholds set from the
+/// given Halo 1 values (per tick for the jump).
+fn biped_with_fall_words(jump_per_tick: f32, landing: [f32; 3]) -> tags::defs::Record {
+    use crate::rebuild::{BIPED_LANDING, BIPED_RATES};
+    use tags::defs::{self, Defs};
+    let unit = crate::h1::Unit {
+        hud_interfaces: Vec::new(),
+        group: h1map::Group::new(b"bipd"),
+        object: crate::h1::Object {
+            texture_override: 0,
+            object_type: 0,
+            acceleration_scale: 0.0,
+            flags: 0,
+            bounding_radius: 0.7,
+            bounding_offset: [0.0; 3],
+            model: None,
+            animation: None,
+            collision: None,
+            physics: None,
+            modifier_shader: None,
+            creation_effect: None,
+            attachments: Vec::new(),
+            widgets: Vec::new(),
+            change_colours: Vec::new(),
+        },
+        camera_field_of_view: 1.25,
+        biped_words: BIPED_RATES
+            .iter()
+            .filter(|w| w.0 == "jump_velocity")
+            .map(|w| (w.1, jump_per_tick.to_bits()))
+            .chain(BIPED_LANDING.iter().zip(landing).map(|(w, v)| (w.1, v.to_bits())))
+            .collect(),
+        seats: Vec::new(),
+        camera_tracks: Vec::new(),
+        size: None,
+        references: Vec::new(),
+    };
+    let root = crate::rebuild::biped(
+        &unit,
+        None,
+        &[],
+        &crate::rebuild::BipedParts::default(),
+    )
+    .unwrap();
+    defs::from_built(Defs::builtin().group(map::FourCC(*b"bipd")).unwrap(), &root).unwrap()
+}
+
+fn float_word(r: &tags::defs::Record, path: &str) -> f32 {
+    f32::from_le_bytes(r.bytes(path, 4).unwrap()[..4].try_into().unwrap())
+}
+
+/// Halo 2's gravity is 1 / `GRAVITY_RATIO` times Halo 1's. The cyborg's
+/// 0.07 per tick is 2.1 world units per second under Halo 1's gravity;
+/// the rebuilt jump is 2.394 and rises to the same 0.687 under Halo 2's.
+#[test]
+fn jump_reaches_halo1s_apex_under_halo2_gravity() {
+    use crate::rebuild::{GRAVITY_RATIO, SOURCE_GRAVITY};
+    let r = biped_with_fall_words(0.07, [0.0; 3]);
+    let jump = float_word(&r, "jump_velocity");
+    assert!((jump - 2.394).abs() < 0.002, "{jump}");
+    let h2_gravity = SOURCE_GRAVITY / GRAVITY_RATIO;
+    let (h1_apex, h2_apex) = (
+        2.1f32 * 2.1 / (2.0 * SOURCE_GRAVITY),
+        jump * jump / (2.0 * h2_gravity),
+    );
+    assert!((h1_apex - h2_apex).abs() < 1e-4, "{h1_apex} against {h2_apex}");
+    assert!((h2_apex - 0.687).abs() < 0.003, "{h2_apex}");
+}
+
+/// A landing speed is sqrt(2 g h): the same fall height lands at Halo 1's
+/// speed times sqrt(1 / `GRAVITY_RATIO`) under Halo 2's gravity, and
+/// the words are not scaled by the tick rate.
+#[test]
+fn landing_thresholds_keep_halo1s_fall_heights() {
+    use crate::rebuild::{GRAVITY_RATIO, SOURCE_GRAVITY};
+    let from = [0.1f32, 0.18, 0.4];
+    let r = biped_with_fall_words(0.07, from);
+    let h2_gravity = SOURCE_GRAVITY / GRAVITY_RATIO;
+    for ((path, _), v) in crate::rebuild::BIPED_LANDING.iter().zip(from) {
+        let got = float_word(&r, path);
+        let (h1_height, h2_height) = (
+            v * v / (2.0 * SOURCE_GRAVITY),
+            got * got / (2.0 * h2_gravity),
+        );
+        assert!((h1_height - h2_height).abs() < 1e-6, "{path}: {h1_height} against {h2_height}");
+        assert!(got > v, "{path}");
+    }
 }
 
 /// A rebuilt biped's character shapes follow Halo 1's collision size: the
@@ -2209,7 +2136,7 @@ fn halo1_functions_become_halo2_functions_by_their_inputs() {
     let got = convert(&fs, &inputs, &mut notes);
     assert_eq!(got.len(), 4, "A to D only");
     // D's input is unset: not converted, and said so.
-    assert!(got[3].is_none());
+    assert!(got[3].is_err());
     assert_eq!(notes.len(), 1, "{notes:?}");
     let s: Vec<_> = got.iter().flatten().collect();
     assert_eq!(
@@ -2279,9 +2206,16 @@ fn additive_and_orphaned_switch_functions_do_not_convert() {
     switched.turn_off_with = 0;
     let mut notes = Vec::new();
     let got = crate::functions::convert(&[additive, switched], &inputs, &mut notes);
-    assert!(got.iter().all(Option::is_none), "{got:?}");
+    assert!(got.iter().all(Result::is_err), "{got:?}");
     assert_eq!(notes.len(), 2, "{notes:?}");
-    assert!(crate::functions::primary_scale(1, &got).is_err());
+    assert_eq!(
+        crate::functions::primary_scale(1, &got).unwrap_err(),
+        "output 1's function did not convert: additive accumulation, H1 0x8c06d"
+    );
+    assert_eq!(
+        crate::functions::primary_scale(2, &got).unwrap_err(),
+        "output 2's function did not convert: turns off with function 0, which has no converted output"
+    );
 }
 
 #[test]
@@ -2663,79 +2597,6 @@ fn a_weapon_fires_and_reloads_with_halo1_s_effects() {
     assert_eq!(target(&r, "pickup_sound"), None);
 }
 
-/// Each hover marker keeps its authored lift law in either array order.
-#[test]
-fn hover_points_keep_their_source_lift() {
-    use crate::rebuild::{VEHI_HOVER, VehicleSpec};
-    use tags::defs::{self, Defs, Val};
-    let obj = crate::h1::Object {
-        texture_override: 0,
-        object_type: 1,
-        acceleration_scale: 0.0,
-        flags: 0,
-        bounding_radius: 1.0,
-        bounding_offset: [0.0; 3],
-        model: None,
-        animation: None,
-        collision: None,
-        physics: None,
-        modifier_shader: None,
-        creation_effect: None,
-        attachments: Vec::new(),
-        widgets: Vec::new(),
-        change_colours: Vec::new(),
-    };
-    let f = |v: f32| v.to_bits();
-    let point = |m: &str, lift, height| crate::rebuild::Point {
-        sphere: [0.75, 0.0, 0.125, 0.25],
-        antigravity: Some([lift, 0.0, height, 0.01, 0.7, 0.5]),
-        marker: m.into(),
-        region: String::new(),
-        region_index: -1,
-        steered: false,
-    };
-    let def = Defs::builtin().group(map::FourCC(*b"vehi")).unwrap();
-    let build = |points: &[crate::rebuild::Point]| {
-        let root = crate::rebuild::vehicle(&VehicleSpec {
-            physics: None,
-            source: &[],
-            references: &[],
-            object: &obj,
-            bounds: None,
-            hlmt: None,
-            seats: &[],
-            predicted: &[],
-            camera_field_of_view: 1.0,
-            vehicle_type: 4,
-            flags: 0,
-            weapons: &[],
-            contacts: None,
-            seat_power: &[],
-            points,
-            attachments: &[],
-            functions: &[],
-            creation_effect: None,
-        })
-        .unwrap();
-        defs::from_built(def, &root).unwrap()
-    };
-    let word = |w: f32| Some(Val::Bytes(f(w).to_le_bytes().to_vec()));
-    use tags::object::direct_drive::GRAVITY_RATIO;
-    let got = build(&[
-        point("hull", 3.75, 0.0),
-        point("left", 1.85, 0.0),
-        point("right", 1.85, 0.45),
-    ]);
-    let at = |r: &defs::Record, i: usize, k: &str| r.bytes(&format!("{VEHI_HOVER}[{i}].{k}"), 4).map(Val::Bytes);
-    assert_eq!(at(&got, 0, "antigrav_strength"), word(3.75 * GRAVITY_RATIO));
-    assert_eq!(at(&got, 1, "antigrav_strength"), word(1.85 * GRAVITY_RATIO));
-    assert_eq!(at(&got, 2, "antigrav_height"), word(0.45));
-    assert_eq!(at(&got, 1, "antigrav_height"), word(0.0));
-    let got = build(&[point("a", 1.85, 0.45), point("b", 1.85, 0.0)]);
-    assert_eq!(at(&got, 0, "antigrav_strength"), word(1.85 * GRAVITY_RATIO));
-    assert_eq!(at(&got, 1, "antigrav_strength"), word(1.85 * GRAVITY_RATIO));
-}
-
 /// A wheel's pieces are cut at the hull's lowest point and what is left
 /// is one piece; a wheel wholly under it gives none; a hull of no pieces
 /// (an infinite floor) holds no wheel.
@@ -2866,4 +2727,649 @@ fn a_fixture_changes_the_light_emission_and_keeps_the_shape() {
         [channel(&rebuilt, 0x70), channel(&rebuilt, 0x74)],
         [0.25; 2]
     );
+}
+
+/// Every projectile's gravity scales are Halo 1's times `GRAVITY_RATIO`, so
+/// its fall under Halo 2's gravity is Halo 1's: a bullet (scale 1) keeps
+/// Halo 1's drop and a grenade (scale 1.5, water 0.5) its arc.
+#[test]
+fn projectile_gravity_keeps_halo1s_arc() {
+    use tags::defs::{self, Defs};
+    use crate::rebuild::{GRAVITY_RATIO, SOURCE_GRAVITY};
+    let d = Defs::builtin().group(map::FourCC(*b"proj")).unwrap();
+    let h2_gravity = SOURCE_GRAVITY / GRAVITY_RATIO;
+    for (air, water) in [(1.0f32, 1.0f32), (1.5, 0.5), (0.0, 0.0)] {
+        let mut b = [0u8; crate::h1::PROJ_SIZE];
+        b[0x1cc..0x1d0].copy_from_slice(&air.to_le_bytes());
+        b[0x1d8..0x1dc].copy_from_slice(&water.to_le_bytes());
+        let p = crate::h1::Projectile {
+            object: crate::h1::Object {
+                texture_override: 0,
+                object_type: 0,
+                acceleration_scale: 0.0,
+                flags: 0,
+                bounding_radius: 0.1,
+                bounding_offset: [0.0; 3],
+                model: None,
+                animation: None,
+                collision: None,
+                physics: None,
+                modifier_shader: None,
+                creation_effect: None,
+                attachments: Vec::new(),
+                widgets: Vec::new(),
+                change_colours: Vec::new(),
+            },
+            flags: 0,
+            detonation_timer_starts: 0,
+            impact_noise: 0,
+            super_detonation: None,
+            effect: None,
+            ai_perception_radius: 0.0,
+            collision_radius: 0.0,
+            arming_time: 0.0,
+            danger_radius: 0.0,
+            timer: [0.0; 2],
+            minimum_velocity: 0.0,
+            maximum_range: 0.0,
+            air_gravity_scale: air,
+            air_damage_range: [0.0; 2],
+            water_gravity_scale: water,
+            water_damage_range: [0.0; 2],
+            initial_velocity: 0.0,
+            final_velocity: 0.0,
+            guided_angular_velocity: 0.0,
+            detonation_noise: 0,
+            detonation_started: None,
+            flyby_sound: None,
+            attached_detonation_damage: None,
+            impact_damage: None,
+            material_responses: Vec::new(),
+        };
+        let root = crate::arsenal::projectile(&p, &b, &Default::default()).unwrap();
+        let r = defs::from_built(d, &root).unwrap();
+        for (path, h1_scale) in [("air_gravity_scale", air), ("water_gravity_scale", water)] {
+            let got = f32::from_le_bytes(r.bytes(path, 4).unwrap()[..4].try_into().unwrap());
+            assert_eq!(got, h1_scale * GRAVITY_RATIO, "{path}");
+            assert!(
+                (got * h2_gravity - h1_scale * SOURCE_GRAVITY).abs() < 1e-4,
+                "{path}: the pull is Halo 1's"
+            );
+        }
+    }
+}
+
+/// A Halo 1 vehicle built on a counterpart's drive: the drive spans and
+/// gears are the counterpart's word for word; the model, bounding sphere,
+/// seats and the points' markers, regions and radii stay Halo 1's.
+/// `friction` picks the point kind; the counterpart holds `theirs` points.
+fn drive_vehicle_keeps_halo1_and_takes_the_counterpart_drive(
+    path: &str,
+    kind: u16,
+    friction: bool,
+    ours: usize,
+    theirs: usize,
+) {
+    use crate::rebuild::{
+        DRIVE_SPANS, Point, VEHI_FRICTION, VEHI_GEARS, VEHI_HOVER, VEHI_SEATS, VehicleSpec,
+    };
+    use tags::defs::{self, Defs, Val};
+    let def = Defs::builtin().group(map::FourCC(*b"vehi")).unwrap();
+    // The counterpart: every named drive field holds its own number.
+    let mut drive = defs::default_record(def);
+    drive.set("vehicle_type", Val::Enum(kind.into())).unwrap();
+    for (i, name) in [
+        "maximum_forward_speed",
+        "speed_acceleration",
+        "steering_scale",
+        "maximum_left_slide",
+        "engine_moment",
+        "seat_entrance_acceleration_scale",
+        "thrust_multiplier",
+        "ground_depth",
+        "gravity_scale",
+        "vehicle_physics_radius",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        drive.set(name, Val::Float(1.5 + i as f32)).unwrap();
+    }
+    let gear = def.child(VEHI_GEARS).unwrap();
+    let gears = (0..3)
+        .map(|i| {
+            let mut g = defs::default_record(gear);
+            g.set("speed_ratio", Val::Float(i as f32 - 0.5)).unwrap();
+            g
+        })
+        .collect();
+    drive.set(VEHI_GEARS, Val::Block(gears)).unwrap();
+    let block = if friction { VEHI_FRICTION } else { VEHI_HOVER };
+    let point = def.child(block).unwrap();
+    let their_points = (0..theirs)
+        .map(|i| {
+            let mut p = defs::default_record(point);
+            p.set("radius", Val::Float(9.0)).unwrap();
+            if friction {
+                p.set("fraction_of_total_mass", Val::Float(1.0 / theirs as f32)).unwrap();
+                p.set("flags", Val::Flags(0x26 + i as u32)).unwrap();
+            } else {
+                p.set("antigrav_strength", Val::Float(2.0 + i as f32)).unwrap();
+            }
+            p
+        })
+        .collect();
+    drive.set(block, Val::Block(their_points)).unwrap();
+    let seat_def = def.child(VEHI_SEATS).unwrap();
+    let mut their_seat = defs::default_record(seat_def);
+    their_seat.set("flags", Val::Flags(crate::rebuild::SEAT_DRIVER)).unwrap();
+    drive.set(VEHI_SEATS, Val::Block(vec![their_seat])).unwrap();
+
+    let obj = crate::h1::Object {
+        texture_override: 0,
+        object_type: 1,
+        acceleration_scale: 0.0,
+        flags: 0,
+        bounding_radius: 0.9,
+        bounding_offset: [0.0, 0.0, 0.45],
+        model: None,
+        animation: None,
+        collision: None,
+        physics: None,
+        modifier_shader: None,
+        creation_effect: None,
+        attachments: Vec::new(),
+        widgets: Vec::new(),
+        change_colours: Vec::new(),
+    };
+    let seat = crate::h1::Seat {
+        camera_angles: [0; 5],
+        rates: [0; 2],
+        flags: 0x1d,
+        label: "driver".into(),
+        marker: "driver".into(),
+        camera_marker: "camera".into(),
+        camera_tracks: Vec::new(),
+    };
+    let markers = vec!["driver".to_string(), "camera".to_string()];
+    let seats = [crate::rebuild::seat_names(&seat, &markers)];
+    let points: Vec<_> = (0..ours)
+        .map(|i| Point {
+            sphere: [i as f32, 1.0, -2.0, 0.25 + i as f32],
+            hover: !friction,
+            marker: format!("h1 {path} {i}"),
+            region: format!("h1 region {i}"),
+            region_index: i as i16,
+        })
+        .collect();
+    let hlmt = map::TagId(0xe001_0002);
+    let root = crate::rebuild::vehicle_with_tuning(
+        &VehicleSpec {
+            source: &[],
+            references: &[],
+            object: &obj,
+            bounds: None,
+            hlmt: Some(hlmt),
+            seats: &seats,
+            predicted: &[],
+            camera_field_of_view: 1.0,
+            vehicle_type: kind,
+            flags: 0,
+            weapons: &[],
+            points: &points,
+            attachments: &[],
+            functions: &[],
+            creation_effect: None,
+        },
+        None,
+        Some(&drive),
+    )
+    .unwrap();
+    let got = defs::from_built(def, &root).unwrap();
+
+    // The drive is the counterpart's, field for field.
+    let at = |r: &defs::Record, name: &str| r.fields.iter().position(|f| f.0 == name).unwrap();
+    for (first, last) in DRIVE_SPANS {
+        for i in at(&got, first)..=at(&got, last) {
+            assert_eq!(got.fields[i], drive.fields[i], "{path}: {}", got.fields[i].0);
+        }
+    }
+    assert_eq!(got.at(VEHI_GEARS), drive.at(VEHI_GEARS), "{path}: gears");
+    assert_eq!(got.at("vehicle_type"), Some(&Val::Enum(kind.into())));
+
+    // The model, bounds, seats and points are Halo 1's.
+    assert_eq!(got.at("unit.obje.bounding_radius"), Some(&Val::Float(0.9)));
+    assert_eq!(
+        got.at("unit.obje.model"),
+        Some(&Val::Ref { group: 0, target: tags::defs::Target::Id(hlmt) }),
+        "{path}: model"
+    );
+    assert_eq!(got.at(&format!("{VEHI_SEATS}[0].seat_marker_name")), Some(&Val::text("driver")));
+    assert_eq!(got.at(&format!("{VEHI_SEATS}[0].camera_marker_name")), Some(&Val::text("camera")));
+    // A counterpart with no points of the kind (a flier) holds itself up
+    // with its controller, and Halo 1's points are left out.
+    if theirs == 0 {
+        assert!(
+            matches!(got.at(block), Some(Val::Block(b)) if b.is_empty())
+                || matches!(got.at(block), Some(Val::Unresolved { count: 0, .. })),
+            "{path}"
+        );
+    }
+    for (i, p) in points.iter().enumerate().filter(|_| theirs != 0) {
+        assert_eq!(got.at(&format!("{block}[{i}].marker_name")), Some(&Val::text(&p.marker)), "{path}");
+        assert_eq!(got.bytes(&format!("{block}[{i}].radius"), 4), Some(p.sphere[3].to_le_bytes().to_vec()), "{path}");
+        if friction {
+            assert_eq!(got.at(&format!("{block}[{i}].region_name")), Some(&Val::text(&p.region)));
+            assert_eq!(
+                got.bytes(&format!("{block}[{i}].region_index"), 4),
+                Some((i as u32).to_le_bytes().to_vec())
+            );
+            // One for one, a point's tuning is its counterpart's; else
+            // the mass is shared equally.
+            let mass = if ours == theirs { 1.0 / theirs as f32 } else { 1.0 / ours as f32 };
+            assert_eq!(got.at(&format!("{block}[{i}].fraction_of_total_mass")), Some(&Val::Float(mass)));
+            let source = if ours == theirs { i } else { i * theirs / ours };
+            assert_eq!(got.at(&format!("{block}[{i}].flags")), Some(&Val::Flags(0x26 + source as u32)));
+        } else {
+            let source = if ours == theirs { i } else { i * theirs / ours };
+            let strength = 2.0 + source as f32;
+            assert_eq!(got.at(&format!("{block}[{i}].antigrav_strength")), Some(&Val::Float(strength)));
+        }
+    }
+    // Nothing of the Halo 1 drive is left: no source gravity or contact
+    // data in the phantom, no direct-drive engine word.
+    assert_ne!(got.bytes("engine_moment", 4), Some(u32::from_le_bytes(*b"H1dd").to_le_bytes().to_vec()));
+    if friction {
+        // Where the removed Halo 1 contact and power data sat.
+        for at in [0x180u32, 0x288] {
+            assert_eq!(got.bytes(&format!("phantom_shapes[0].@{at:#x}"), 4), Some(vec![0; 4]), "{path}");
+        }
+    }
+}
+
+/// Halo 1's biped flags (`bipd +0x2f4`) set the Halo 2 flags and physics
+/// word they name: bits 0, 5, 7 the `flags` of those names, bits 3, 4, 6
+/// the physics word's bits 0, 1, 3, with the player and flying bits as
+/// before; a bit with no Halo 2 counterpart sets nothing.
+#[test]
+fn biped_flags_carry_halo1s_named_bits() {
+    use tags::defs::{self, Defs, Val};
+    let d = Defs::builtin().group(map::FourCC(*b"bipd")).unwrap();
+    let convert = |h1_flags: u32| {
+        let unit = biped_unit(vec![(0x2f4, h1_flags)]);
+        let root = crate::rebuild::biped(&unit, None, &[], &crate::rebuild::BipedParts::default())
+            .unwrap();
+        let r = defs::from_built(d, &root).unwrap();
+        let physics = u32::from_le_bytes(r.bytes("unknown_264", 4).unwrap()[..4].try_into().unwrap());
+        (r.at("flags").cloned(), physics)
+    };
+    let named = |bits: &[&str]| {
+        let Some(defs::Kind::Flags { bits: names, .. }) = d.field("flags").map(|f| &f.kind) else {
+            panic!("bipd flags");
+        };
+        Val::Flags(bits.iter().map(|b| 1u32 << names.iter().position(|n| n == b).unwrap()).sum())
+    };
+    assert_eq!(
+        convert(1 << 0),
+        (Some(named(&["turns_without_animating"])), 0)
+    );
+    assert_eq!(
+        convert(1 << 5),
+        (Some(named(&["passes_through_other_bipeds"])), 0)
+    );
+    assert_eq!(
+        convert(1 << 7),
+        (Some(named(&["immune_to_falling_damage"])), 0)
+    );
+    assert_eq!(convert(1 << 3), (Some(Val::Flags(0)), 0x1));
+    assert_eq!(convert(1 << 4), (Some(Val::Flags(0)), 0x2));
+    assert_eq!(convert(1 << 6), (Some(Val::Flags(0)), 0x8));
+    // The player bit and the flying bit keep their physics words.
+    assert_eq!(convert(1 << 1), (Some(Val::Flags(0)), 0x4));
+    assert_eq!(convert(1 << 2), (Some(Val::Flags(0)), 0x13));
+    // Halo 1's rotate-while-airborne (8) and limp body (9) are not mapped.
+    assert_eq!(convert(1 << 8 | 1 << 9), (Some(Val::Flags(0)), 0));
+    assert_eq!(
+        convert(0xb1),
+        (
+            Some(named(&[
+                "turns_without_animating",
+                "passes_through_other_bipeds",
+                "immune_to_falling_damage"
+            ])),
+            0x2
+        )
+    );
+}
+
+/// Every biped field Halo 1 has no mapped word for is given a Halo 1 word
+/// (the death landing velocity), a declared value with its reason, or its
+/// node in the converted model; none stays at the definition's zero.
+#[test]
+fn no_converted_biped_field_is_left_at_definition_zero() {
+    use crate::rebuild::{BIPED_DECLARED, BIPED_NODES, BIPED_WORDS, BipedParts, Declared};
+    use tags::defs::{self, Defs, Val};
+    let d = Defs::builtin().group(map::FourCC(*b"bipd")).unwrap();
+    // Every field the audit named is in one of the three tables.
+    for path in [
+        "death_hard_landing_velocity",
+        "living_global_material_name",
+        "dead_global_material_name",
+        "living_global_material_index",
+        "dead_global_material_index",
+        "headshot_acceleration_scale",
+        "physics_control_node_index",
+        "pelvis_node_index",
+        "head_node_index",
+        "contact_points",
+        "stun_duration",
+        "unit.acceleration_range",
+        "unit.look_speed_limit",
+        "unit.look_acceleration_limit",
+    ] {
+        let held = BIPED_WORDS.iter().any(|w| w.0 == path)
+            || BIPED_DECLARED.iter().any(|w| w.0 == path)
+            || BIPED_NODES.iter().any(|w| w.0 == path);
+        assert!(held, "{path} has no Halo 1 word, declared value or node");
+    }
+    assert!(BIPED_DECLARED.iter().all(|w| w.2.len() > 20), "each declared value says why");
+    assert!(BIPED_DECLARED.iter().all(|w| d_has(d, w.0)));
+    // The death landing velocity is Halo 1's (+0x3e8), as its neighbours are.
+    let unit = biped_unit(BIPED_WORDS.iter().map(|w| (w.1, 0.25f32.to_bits())).collect());
+    let build = |nodes: &[&str]| {
+        let parts = BipedParts {
+            nodes: nodes.iter().map(|n| n.to_string()).collect(),
+            ..Default::default()
+        };
+        let root = crate::rebuild::biped(&unit, None, &[], &parts).unwrap();
+        defs::from_built(d, &root).unwrap()
+    };
+    let r = build(&["bip01", "bip01 pelvis", "bip01 spine", "Bip01 Head"]);
+    assert_eq!(r.at("death_hard_landing_velocity"), Some(&Val::Float(0.25)));
+    for (path, declared, _) in BIPED_DECLARED {
+        assert_eq!(r.at(path), Some(&declared.value()), "{path}");
+    }
+    assert_eq!(r.at("living_global_material_index"), Some(&Val::Int(-1)));
+    assert_eq!(r.at("dead_global_material_index"), Some(&Val::Int(-1)));
+    assert_eq!(BIPED_DECLARED.iter().find(|w| w.0 == "contact_points").unwrap().1, Declared::NoElements);
+    assert_eq!(
+        ["physics_control_node_index", "pelvis_node_index", "head_node_index"].map(|p| r.at(p).cloned()),
+        [1, 1, 3].map(|v| Some(Val::Int(v)))
+    );
+    // A model without a pelvis or head (the monitor) has no such node: -1,
+    // not node 0.
+    let r = build(&["monitor body"]);
+    assert_eq!(
+        ["physics_control_node_index", "pelvis_node_index", "head_node_index"].map(|p| r.at(p).cloned()),
+        [-1, -1, -1].map(|v| Some(Val::Int(v)))
+    );
+}
+
+/// Whether the definition has a field at `path`, through embedded structs.
+fn d_has(d: &tags::defs::StructDef, path: &str) -> bool {
+    match path.split_once('.') {
+        None => d.field(path).is_some(),
+        Some((head, rest)) => match d.field(head).map(|f| &f.kind) {
+            Some(tags::defs::Kind::Struct(s)) => d_has(s, rest),
+            _ => false,
+        },
+    }
+}
+
+/// Each Halo 1 vehicle's path picks its counterpart.
+#[test]
+fn drive_counterparts_are_named_per_vehicle() {
+    use crate::rebuild::drive_counterpart;
+    let warthog: &[&str] = &["objects\\vehicles\\warthog\\warthog"];
+    for path in [
+        "vehicles\\warthog\\warthog",
+        "vehicles\\rwarthog\\rwarthog",
+        "vehicles\\rocket_warthog\\rocket_warthog",
+    ] {
+        assert_eq!(drive_counterpart(path), Some(warthog), "{path}");
+    }
+    for path in ["vehicles\\ghost\\ghost_mp", "vehicles\\ghost\\ghost"] {
+        assert_eq!(
+            drive_counterpart(path),
+            Some(&["objects\\vehicles\\ghost\\ghost_mp", "objects\\vehicles\\ghost\\ghost"][..]),
+            "{path}"
+        );
+    }
+    assert_eq!(
+        drive_counterpart("vehicles\\scorpion\\scorpion_mp"),
+        Some(&["objects\\vehicles\\scorpion\\scorpion_mp", "objects\\vehicles\\scorpion\\scorpion"][..])
+    );
+    assert_eq!(
+        drive_counterpart("vehicles\\banshee\\banshee"),
+        Some(&["objects\\vehicles\\banshee\\banshee"][..])
+    );
+    // Props a recorded or cutscene animation moves take none.
+    for path in ["vehicles\\banshee\\banshee_oldplayback", "vehicles\\scorpion\\scorpion_cinematic"] {
+        assert_eq!(drive_counterpart(path), None, "{path}");
+    }
+    assert_eq!(drive_counterpart("vehicles\\pelican\\pelican"), None);
+}
+
+/// The warthog and rocket warthog: four wheels, the H2 warthog's four
+/// friction points.
+#[test]
+fn warthog_drive_is_the_counterparts_and_the_rest_halo_1s() {
+    drive_vehicle_keeps_halo1_and_takes_the_counterpart_drive(
+        "vehicles\\warthog\\warthog",
+        1,
+        true,
+        4,
+        4,
+    );
+}
+
+/// The ghost: three hover points, the H2 ghost's three.
+#[test]
+fn ghost_drive_is_the_counterparts_and_the_rest_halo_1s() {
+    drive_vehicle_keeps_halo1_and_takes_the_counterpart_drive(
+        "vehicles\\ghost\\ghost_mp",
+        4,
+        false,
+        3,
+        3,
+    );
+}
+
+/// The scorpion: eight tread points of Halo 1 on the twelve of Halo 2's,
+/// each taking the tuning at the same fraction of the list.
+#[test]
+fn scorpion_drive_is_the_counterparts_and_the_rest_halo_1s() {
+    drive_vehicle_keeps_halo1_and_takes_the_counterpart_drive(
+        "vehicles\\scorpion\\scorpion_mp",
+        0,
+        true,
+        8,
+        12,
+    );
+}
+
+/// The banshee: the H2 banshee is a flier with no hover points, so none of
+/// Halo 1's three are written and its controller flies it.
+#[test]
+fn banshee_drive_is_the_counterparts_and_the_rest_halo_1s() {
+    drive_vehicle_keeps_halo1_and_takes_the_counterpart_drive(
+        "vehicles\\banshee\\banshee",
+        5,
+        false,
+        3,
+        0,
+    );
+}
+
+/// The rocket warthog is the warthog's drive with Halo 1's own model and
+/// points: its path matches its own row before the warthog's.
+#[test]
+fn rocket_warthog_drive_is_the_counterparts_and_the_rest_halo_1s() {
+    use crate::rebuild::DRIVE_COUNTERPARTS;
+    let row = |path: &str| {
+        let path = path.to_ascii_lowercase().replace('_', " ");
+        DRIVE_COUNTERPARTS
+            .iter()
+            .position(|(words, _)| words.iter().all(|w| path.contains(w)))
+            .unwrap()
+    };
+    assert_eq!(DRIVE_COUNTERPARTS[row("vehicles\\rwarthog\\rwarthog")].0, ["rwarthog"]);
+    assert_eq!(DRIVE_COUNTERPARTS[row("vehicles\\rocket_warthog")].0, ["rocket warthog"]);
+    drive_vehicle_keeps_halo1_and_takes_the_counterpart_drive(
+        "vehicles\\rwarthog\\rwarthog",
+        1,
+        true,
+        4,
+        4,
+    );
+}
+
+/// Halo 1's vehicle drive code is gone: the feature file, its
+/// registration and the tag formats only it read.
+#[test]
+fn no_halo1_drive_code_remains() {
+    let game = include_str!("../../../extensions/game/src/lib.rs");
+    let boot = include_str!("../../../apps/boot/src/registration.rs");
+    let tags = include_str!("../../../formats/tags/src/object/mod.rs");
+    assert!(!game.contains("h1_drive"));
+    assert!(!boot.contains("h1_drive") && !boot.contains("DirectDrive"));
+    assert!(!tags.contains("direct_drive") && !tags.contains("h1_flight"));
+    let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../extensions/game/src/h1_drive.rs");
+    assert!(!std::path::Path::new(file).exists());
+}
+
+/// Builds a vehicle with Halo 1 seats `(flags, [yaw, pitch rate])` on a
+/// counterpart whose seats are `(flags, entry radius, prompt)`, or on none
+/// (a turret).
+#[cfg(test)]
+fn seat_vehicle(
+    h1_seats: &[(u32, [f32; 2])],
+    counterpart: Option<&[(u32, f32, &str)]>,
+) -> tags::defs::Record {
+    use crate::rebuild::{VEHI_SEATS, VehicleSpec};
+    use tags::defs::{self, Defs, Val};
+    let def = Defs::builtin().group(map::FourCC(*b"vehi")).unwrap();
+    let drive = counterpart.map(|seats| {
+        let mut d = defs::default_record(def);
+        d.set("vehicle_type", Val::Enum(1)).unwrap();
+        let seat_def = def.child(VEHI_SEATS).unwrap();
+        let block = seats
+            .iter()
+            .map(|(flags, radius, prompt)| {
+                let mut e = defs::default_record(seat_def);
+                e.set("flags", Val::Flags(*flags)).unwrap();
+                e.set("entry_radius", Val::Float(*radius)).unwrap();
+                e.set("entry_marker_facing_angle", Val::Float(radius * 2.0)).unwrap();
+                e.set("maximum_relative_velocity", Val::Float(radius * 3.0)).unwrap();
+                e.set("enter_seat_string", Val::text(prompt)).unwrap();
+                e.set("ai_seat_role", Val::Enum((*radius as u32).into())).unwrap();
+                e
+            })
+            .collect();
+        d.set(VEHI_SEATS, Val::Block(block)).unwrap();
+        d
+    });
+    let obj = crate::h1::Object {
+        texture_override: 0,
+        object_type: 1,
+        acceleration_scale: 0.0,
+        flags: 0,
+        bounding_radius: 0.9,
+        bounding_offset: [0.0, 0.0, 0.45],
+        model: None,
+        animation: None,
+        collision: None,
+        physics: None,
+        modifier_shader: None,
+        creation_effect: None,
+        attachments: Vec::new(),
+        widgets: Vec::new(),
+        change_colours: Vec::new(),
+    };
+    let seats: Vec<_> = h1_seats
+        .iter()
+        .map(|(flags, rates)| {
+            let seat = crate::h1::Seat {
+                camera_angles: [0; 5],
+                rates: rates.map(f32::to_bits),
+                flags: *flags,
+                label: "seat".into(),
+                marker: "seat".into(),
+                camera_marker: String::new(),
+                camera_tracks: Vec::new(),
+            };
+            crate::rebuild::seat_names(&seat, &[])
+        })
+        .collect();
+    let root = crate::rebuild::vehicle_with_tuning(
+        &VehicleSpec {
+            source: &[],
+            references: &[],
+            object: &obj,
+            bounds: None,
+            hlmt: None,
+            seats: &seats,
+            predicted: &[],
+            camera_field_of_view: 1.0,
+            vehicle_type: 1,
+            flags: 0,
+            weapons: &[],
+            points: &[],
+            attachments: &[],
+            functions: &[],
+            creation_effect: None,
+        },
+        None,
+        drive.as_ref(),
+    )
+    .unwrap();
+    defs::from_built(def, &root).unwrap()
+}
+
+/// A seat takes its entry prompt and AI role from the paired counterpart
+/// seat, and its turn rates from Halo 1.
+#[test]
+fn seats_have_prompts_and_turn_rates() {
+    use crate::rebuild::{SEAT_DRIVER, SEAT_GUNNER};
+    use tags::defs::Val;
+    let got = seat_vehicle(
+        &[(SEAT_DRIVER, [0.0, 0.0]), (SEAT_GUNNER, [1.5, 0.75])],
+        Some(&[(SEAT_GUNNER, 4.0, "gunner prompt"), (SEAT_DRIVER, 2.0, "driver prompt")]),
+    );
+    assert_eq!(got.at("seats[0].enter_seat_string"), Some(&Val::text("driver prompt")));
+    assert_eq!(got.at("seats[1].enter_seat_string"), Some(&Val::text("gunner prompt")));
+    assert_eq!(got.at("seats[1].ai_seat_role"), Some(&Val::Enum(4)));
+    assert_eq!(got.at("seats[1].yaw_rate_bounds"), Some(&Val::floats(&[0.0, 1.5])));
+    assert_eq!(got.at("seats[1].pitch_rate_bounds"), Some(&Val::floats(&[0.0, 0.75])));
+}
+
+/// Seats of one kind pair in order, the extra ones with the last; a
+/// counterpart-driven seat keeps the no-region word and its paired seat's
+/// entry numbers, and a turret holds the turret role whole.
+#[test]
+fn each_seat_gets_its_own_entry_role() {
+    use crate::rebuild::{SEAT_DRIVER, SEAT_GUNNER, SeatKind, TURRET_SEAT_ROLE, seat_kind};
+    assert_eq!(seat_kind(SEAT_DRIVER | SEAT_GUNNER), SeatKind::Driver);
+    assert_eq!(seat_kind(0), SeatKind::Passenger);
+    let ours = [(SEAT_DRIVER, [0.0; 2]), (0, [0.0; 2]), (0, [0.0; 2]), (0, [0.0; 2])];
+    let got = seat_vehicle(
+        &ours,
+        Some(&[(SEAT_DRIVER, 2.0, "d"), (0, 5.0, "p0"), (0, 6.0, "p1")]),
+    );
+    for (i, want) in [2.0f32, 5.0, 6.0, 6.0].into_iter().enumerate() {
+        let word = |name: &str| got.bytes(&format!("seats[{i}].{name}"), 4).unwrap();
+        assert_eq!(word("entry_radius"), want.to_le_bytes().to_vec(), "seat {i}");
+        assert_eq!(word("entry_marker_facing_angle"), (want * 2.0).to_le_bytes().to_vec());
+        assert_eq!(word("invisible_seat_region_index"), u32::MAX.to_le_bytes().to_vec());
+        // The facing test stays open: Halo 1's entry markers face forward.
+        assert_eq!(word("entry_marker_cone_angle"), std::f32::consts::PI.to_le_bytes().to_vec());
+    }
+    // A gunner with no counterpart gunner takes the counterpart's first seat.
+    let got = seat_vehicle(&[(SEAT_GUNNER, [0.0; 2])], Some(&[(SEAT_DRIVER, 2.0, "d")]));
+    assert_eq!(got.bytes("seats[0].entry_radius", 4).unwrap(), 2.0f32.to_le_bytes().to_vec());
+    // A turret has no counterpart and holds the turret role.
+    let got = seat_vehicle(&[(SEAT_GUNNER, [0.0; 2])], None);
+    for (path, word) in TURRET_SEAT_ROLE {
+        assert_eq!(got.bytes(&format!("seats[0].{path}"), 4).unwrap(), word.to_le_bytes().to_vec(), "{path}");
+    }
 }

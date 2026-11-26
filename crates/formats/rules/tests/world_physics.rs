@@ -514,7 +514,7 @@ fn a_scenario_carries_launch_and_grounded() {
             speed: fixed_at(12)
         }
     );
-    assert_eq!(s.ticks[1].events[0].input(), Input::Grounded(0));
+    assert_eq!(s.ticks[1].events[0].input().unwrap(), Input::Grounded(0));
     let (ir, _) = build(RUN).unwrap();
     let r = scenario::run(ir, &s).unwrap();
     let points: Vec<_> = r

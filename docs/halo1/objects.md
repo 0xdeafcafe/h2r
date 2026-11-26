@@ -207,7 +207,7 @@ sounds".
 | `19c`..`1a8` | AI perception radius, collision radius, arming time, danger radius | S, V1 (set on grenades) |
 | `1bc` | f32x2 timer | S |
 | `1c4` | minimum velocity, `1c8` maximum range | S, V1 (equal to the Halo 2 template's on bullets) |
-| `1cc` | air gravity scale, `1d0` air damage range, `1d8` water gravity scale, `1dc` water damage range | S, V1 |
+| `1cc` | air gravity scale, `1d0` air damage range, `1d8` water gravity scale, `1dc` water damage range | S, V1; both gravity scales are written times `GRAVITY_RATIO` (`arsenal::PROJECTILE_GRAVITY`), so the arc and a bullet's drop are Halo 1's under Halo 2's gravity (`projectile_gravity_keeps_halo1s_arc`) |
 | `1e4`, `1e8`, `1ec` | initial velocity, final velocity, guided angular velocity: **per tick** | S; V1: bullet values are a thirtieth of a plausible speed per second |
 | `1f0` | i16 detonation noise; `1f4` detonation started; `204` flyby sound; `214` attached detonation damage; `224` impact damage | V1 |
 | `240` | material responses (`0xa0`, 33 on every projectile) | V1 |
@@ -443,11 +443,32 @@ for `weap`, `eqip` and `proj` only name the Halo 2 counterpart whose
 references (HUD, effects, sounds, melee damage) fill the slots Halo 1
 has nothing converted for.
 
-**Vehicle drive.** Each vehicle comes from the `vehi` definition.
-H1 powered mass points supply ordered friction or hover contacts. Wheeled
-and tracked vehicles drive those contacts directly. H1 physics and globals
-supply tire drag and material response. The aircraft controller follows the
-source type and physics. Vehicles have no template row. [Drive laws and XBE evidence](role-audit.md#native-engine-fields).
+**Vehicle drive.** Each vehicle comes from the `vehi` definition with
+Halo 1's model, collision, seats, markers and powered mass points, on the
+drive tuning of the matching Halo 2 vehicle: the warthog and rocket
+warthog on the warthog, the ghost on the ghost, the scorpion on the
+scorpion, the banshee on the banshee (`rebuild::DRIVE_COUNTERPARTS`,
+declared per vehicle as `SWAPS` is). The counterpart's gears, engine,
+steering, ground and hover laws and point tuning are copied from the base
+map; the powered mass points name and place the points. A vehicle with no
+counterpart is a named error, except a prop a cutscene or recorded
+animation moves, a scripted set piece, a dropship and a turret, which keep
+Halo 1's speeds and turn limits. Vehicles have no template row. [Drive
+counterparts](role-audit.md#native-engine-fields).
+
+**Vehicle seats.** A Halo 1 seat pairs with a counterpart seat by kind
+(driver, gunner, passenger, read from the seat flags) and then order
+within the kind; extra seats take the last of their kind, a kind the
+counterpart lacks takes its first seat (`rebuild::PAIR_SEATS`,
+`rebuild::counterpart_seat`). The seat takes the counterpart's entry
+prompt, HUD interface, AI role and built-in gunner
+(`rebuild::SEAT_PROMPT_FIELDS`), and its entry radius, facing angle and
+relative-velocity limit (`rebuild::SEAT_ENTRY_FIELDS`). Halo 1 supplies
+the turn rates, as the upper bounds of `yaw_rate_bounds` and
+`pitch_rate_bounds` (`h1::Seat::rates`, `+0x7c` and `+0x80`, inferred
+from the camera marker at `+0x84`). The entry cone stays pi on every seat
+(Entry facing, below). Only a turret, a vehicle with no counterpart,
+holds `rebuild::TURRET_SEAT_ROLE`; every seat holds no hidden region.
 
 **Lifepod engine audio.** The a30 entry pod attaches the Halo 1
 `sound\sfx\vehicles\lifeboat` loop. Its marker is empty and its primary
@@ -1212,8 +1233,8 @@ impulse paths. A live hit and aiming check is under "Needs a game run".
 - **Vitality:** Halo 1 `coll` body and shield vitality
   and its damage modifiers; Halo 2 keeps damage in the `hlmt`, whose
   layout is not reviewed. The template's damage info stays.
-- **Unit and vehicle tuning.** The rebuilt vehicle uses H1 speeds, seat
-  data, mass points and inertia. [Current mappings](role-audit.md#native-engine-fields).
+- **Unit and vehicle tuning.** The rebuilt vehicle uses H1 seat data and
+  mass point places, and its Halo 2 counterpart's drive. [Current mappings](role-audit.md#native-engine-fields).
 - **Weapon:** ready time, chamber time and charging (plasma pistol). The
   [HUD conversion](hud.md#weapon-huds) covers the weapon panel and
   crosshairs. Scope masks need the screen effect block.
@@ -1343,8 +1364,7 @@ attachments name a contrail (236 attachments) names the converted one.
   differ: rigid bodies may attach to the wrong nodes or none).
 - That the S offsets above mean what the values suggest (heat, magazine,
   barrel and projectile fields), and the per-tick to per-second factor.
-- Halo 1's tuning on Halo 2's physics: projectile gravity (Halo 1 bullets
-  have gravity scale 1, Halo 2's 0), maximum range 0 on the plasma bolt.
+- Halo 1's tuning on Halo 2's physics: maximum range 0 on the plasma bolt.
 - The `coll` BSP leading word as a node index, and Halo 1 material names
   as Halo 2 materials (the global material table will not know them).
 - That Havok bodies (grenades, vehicles) bounce off scenery, and that the

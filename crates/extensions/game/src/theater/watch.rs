@@ -15,8 +15,13 @@
 //!
 //! The watch ends at the next game boundary after the viewer leaves
 //! (`theater.end`, End Film, which queue the main menu), or when another
-//! game activates. The film's settings are applied when the watch is armed
-//! and the viewer's are put back when it ends. The film's end holds its
+//! game activates. A film whose game never activates fails at the main
+//! menu's next activation: the game fell back to its menu, or the viewer
+//! gave the film up with `theater.end` ([`Session::watch_boundary`]). Every
+//! way out of a film the menu asked for opens the film page again
+//! ([`Session::on_return`]), with the reason when the film failed. The
+//! film's settings are applied when the watch is armed and the viewer's
+//! are put back when it ends. The film's end holds its
 //! last tick and ends nothing: leaving is the viewer's.
 //!
 //! A seek behind the tick shown loads the session ring's latest entry at
@@ -55,10 +60,24 @@ pub(super) struct Hub {
     ticket: Mutex<Option<calls::PendingCall>>,
     /// Why the last watched film stopped on its own.
     failed: Mutex<Option<String>>,
-    /// Told the film's id when a watch ends by leaving, so the menu can
-    /// open the film page again.
-    returned: OnceLock<Box<dyn Fn(&str) + Send + Sync>>,
+    /// A film given up before its game started (`theater.end` while
+    /// armed), and why: its page opens again when the menu activates.
+    returning: Mutex<Option<(String, String)>>,
+    /// Told the film's id, and why it failed if it did, when a watch ends
+    /// at the main menu, so the menu can open the film page again.
+    returned: OnceLock<Returned>,
 }
+
+/// What [`Session::on_return`] is given: the film's id, and why the film
+/// stopped when it failed (`None` when the viewer left it).
+type Returned = Box<dyn Fn(&str, Option<&str>) + Send + Sync>;
+
+/// Why a film whose game never started stopped: its options were queued,
+/// and the game came back to the main menu instead.
+pub(super) const NOT_LOADED: &str = "The film's game did not load";
+/// Why a film given up before its game started stopped (`theater.end`
+/// while it was armed: the menu's 60 s wait ran out, or a caller left it).
+pub(super) const NOT_STARTED: &str = "The film's game did not start";
 
 impl Hub {
     pub(super) fn new(own: Own) -> Self {
@@ -69,6 +88,7 @@ impl Hub {
             calls: OnceLock::new(),
             ticket: Mutex::new(None),
             failed: Mutex::new(None),
+            returning: Mutex::new(None),
             returned: OnceLock::new(),
         }
     }
@@ -130,9 +150,23 @@ impl Session {
         self.watch.calls.get().cloned()
     }
 
-    /// Called with the film's id when a watch ends by the viewer leaving.
-    pub fn on_return(&self, f: impl Fn(&str) + Send + Sync + 'static) {
+    /// Called at the main menu with the film's id, and why it failed if
+    /// it did, when a watch ends there: the viewer left, the film
+    /// diverged, or its game never started.
+    pub fn on_return(&self, f: impl Fn(&str, Option<&str>) + Send + Sync + 'static) {
         let _ = self.watch.returned.set(Box::new(f));
+    }
+
+    /// The id of the film queued and waiting for its game.
+    pub fn armed_film(&self) -> Option<String> {
+        let armed = self.watch.armed.lock().unwrap_or_else(|e| e.into_inner());
+        Some(armed.as_ref()?.state.watch.as_ref()?.film.clone())
+    }
+
+    fn tell_return(&self, film: &str, why: Option<&str>) {
+        if let Some(told) = self.watch.returned.get() {
+            told(film, why);
+        }
     }
 
     /// Whether a film is playing in this session now.
@@ -274,14 +308,14 @@ impl Session {
     }
 
     /// Give up a film that is waiting for its game: the options could not
-    /// be queued, or another game came first.
-    pub fn disarm_watch(&self) {
+    /// be queued, or another game came first. The film's id, when one was
+    /// armed.
+    pub fn disarm_watch(&self) -> Option<String> {
         let armed = self.watch.armed.lock().unwrap_or_else(|e| e.into_inner()).take();
-        if let Some(Armed { state }) = armed
-            && let Some(info) = &state.watch
-        {
-            self.give_back(&info.loaned);
-        }
+        let Armed { state } = armed?;
+        let info = state.watch.as_ref()?;
+        self.give_back(&info.loaned);
+        Some(info.film.clone())
     }
 
     /// Run every setting the film set with the film's value. Returns what
@@ -323,6 +357,14 @@ impl Session {
 
     /// The watch starts or ends at a game boundary. `true` when the
     /// activation was the watch's own and the recorder is to ignore it.
+    ///
+    /// The main menu activating while a film is armed is the film's game
+    /// failing: the menu's Watch queued the film's options over the main
+    /// menu, and the game loaded the menu again instead (a load that
+    /// failed falls back to it, docs/runtime/level-boot.md). The film is
+    /// disarmed and its page opens again with [`NOT_LOADED`]. A film given
+    /// up before its game started (`theater.end`) has its page opened
+    /// here too.
     pub(super) fn watch_boundary(&self, g: &runtime::Guest) -> bool {
         let options = game_start::copy_options(g);
         if options.is_some() {
@@ -330,6 +372,18 @@ impl Session {
             if let Some(armed) = armed {
                 return self.begin_watch(armed, options.as_deref());
             }
+        } else if !self.watching() {
+            if let Some(film) = self.disarm_watch() {
+                eprintln!("theater: film {film} stopped: its game came back to the main menu");
+                *self.watch.failed.lock().unwrap_or_else(|e| e.into_inner()) =
+                    Some(NOT_LOADED.into());
+                self.tell_return(&film, Some(NOT_LOADED));
+            }
+            let given_up = self.watch.returning.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some((film, why)) = given_up {
+                self.tell_return(&film, Some(&why));
+            }
+            return false;
         }
         let mut s = self.lock();
         let Some(info) = &s.watch else {
@@ -396,8 +450,9 @@ impl Session {
         drop(s);
         let info = info?;
         self.give_back(&info.loaned);
-        if left && let Some(told) = self.watch.returned.get() {
-            told(&info.film);
+        if left {
+            let why = self.watch_failure();
+            self.tell_return(&info.film, why.as_deref());
         }
         Some(info.film)
     }
@@ -406,6 +461,7 @@ impl Session {
     /// recorder seals its own games.
     pub(super) fn drop_watch(&self) {
         self.disarm_watch();
+        self.watch.returning.lock().unwrap_or_else(|e| e.into_inner()).take();
         self.finish_watch(false);
     }
 
@@ -449,10 +505,15 @@ impl Session {
     /// Leave the film for the main menu (`theater.end`, End Film). The game
     /// goes back at the next boundary, which is the menu's activation.
     pub fn end_film(&self) -> Result<(), RpcError> {
-        // A film whose game never started is given up: its settings go back
-        // and the menu is queued over the film's options.
-        if !self.watching() && self.watch.armed.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
-            self.disarm_watch();
+        // A film whose game never started is given up: its settings go back,
+        // the menu is queued over the film's options, and the film's page
+        // opens again when the menu activates.
+        if !self.watching()
+            && let Some(film) = self.disarm_watch()
+        {
+            *self.watch.failed.lock().unwrap_or_else(|e| e.into_inner()) = Some(NOT_STARTED.into());
+            *self.watch.returning.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some((film, NOT_STARTED.into()));
             return self.queue(crate::game_menu::steps()).map_err(unavailable);
         }
         {

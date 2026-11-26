@@ -13,7 +13,12 @@ use rules::scenario::{self, RunResult, Scenario, ScenarioEvent, ScenarioLabel, S
 use rules::vm::Arg;
 
 const SIEGE_ATTACKERS_WIN: &str = include_str!("scenarios/siege_attackers_win.json");
+const SPAWN_AREAS_SWITCH: &str = include_str!("scenarios/spawn_areas_switch.json");
 const SIEGE_RESPAWN_WAVES: &str = include_str!("scenarios/siege_respawn_waves.json");
+const SIEGE_PHASES_ORDERED: &str = include_str!("scenarios/siege_phases_ordered.json");
+const SIEGE_LOADOUT_CHOICE: &str = include_str!("scenarios/siege_loadout_choice.json");
+const SIEGE_DEFENDERS_HOLD_PHASE1: &str = include_str!("scenarios/siege_defenders_hold_phase1.json");
+const SIEGE_NO_LAYOUT: &str = include_str!("scenarios/siege_no_layout.json");
 
 /// The scripts of the `core` and `modes` packages, from their folders.
 fn set() -> &'static Registry {
@@ -1075,4 +1080,163 @@ fn the_scripts_of_the_set_are_the_baked_ones() {
     let baked = Registry::baked();
     assert_eq!(baked.problems, Vec::<String>::new());
     assert_eq!(set().scripts(), baked.scripts());
+}
+
+/// A phase switch moves a team's live set: `spawn_areas` is called with
+/// the new number the tick the phase changes, and the team's rule at the
+/// end is the later one.
+#[test]
+fn spawn_areas_follows_a_phase_switch() {
+    let src = "rules \"Switch\" 1\ntype slayer\nteams 2\nrequires player.spawn\n\
+               label start: spawns\nglobal var t: int = 0\n\
+               on round_start { spawn_areas(team 0, start, 0) }\n\
+               on tick { t = t + 1\n if t == 3 { spawn_areas(team 0, start, 1) } }\n";
+    let ir = rules::compile(src).unwrap();
+    let s: Scenario = serde_json::from_str(SPAWN_AREAS_SWITCH).unwrap();
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    let at: Vec<(u32, i64)> = calls(&r, "spawn_areas")
+        .into_iter()
+        .map(|(t, a)| match a {
+            [Arg::Team(Some(0)), Arg::Label(l), Arg::Int(n)] if l == "start" => (t, i64::from(*n)),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(at.iter().map(|(_, n)| *n).collect::<Vec<_>>(), [0, 1]);
+    assert!(at[1].0 > at[0].0, "{at:?}");
+    assert_eq!(
+        r.game.spawns.get(&0),
+        Some(&FakeSpawns::Areas { label: "start".into(), number: 1 })
+    );
+    assert_eq!(r.game.spawns.get(&1), None);
+}
+
+const BEAM_RIFLE: &str = "objects/weapons/rifle/beam_rifle/beam_rifle";
+const PLASMA_PISTOL: &str = "objects/weapons/pistol/plasma_pistol/plasma_pistol";
+const SHOTGUN: &str = "objects/weapons/rifle/shotgun/shotgun";
+
+/// A map with a layout (`siege_site` numbered by phase, `siege_attack` and
+/// `siege_defend` starts) plays ordered phases: each `spawn_areas` call is
+/// logged with the phase it opens, a site of a later phase held early does
+/// nothing (the player stands on one first), the spawns after each phase
+/// carry its loadout tier, and the attackers win at the goal.
+#[test]
+fn siege_plays_a_layouts_phases_in_order() {
+    let (ir, _) = siege(&[]);
+    assert_eq!(rules::verify::unhostable(&ir), None);
+    let s: Scenario = serde_json::from_str(SIEGE_PHASES_ORDERED).unwrap();
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    assert_eq!(
+        lines(&r),
+        [
+            "Sites to take: 2. Then the defenders' flag",
+            "The attackers took a site",
+            "Final assault: the defenders' flag",
+            "The attackers took the flag",
+        ]
+    );
+    let areas: Vec<(u32, Vec<Arg>)> = calls(&r, "spawn_areas").into_iter().map(|(t, a)| (t, a.to_vec())).collect();
+    let made = |team: u8, label: &str, phase: i32| {
+        vec![Arg::Team(Some(team)), Arg::Label(label.into()), Arg::Int(phase)]
+    };
+    let args: Vec<Vec<Arg>> = areas.iter().map(|(_, a)| a.clone()).collect();
+    assert_eq!(
+        args,
+        [
+            made(0, "siege_attack", 0),
+            made(1, "siege_defend", 0),
+            made(0, "siege_attack", 1),
+            made(1, "siege_defend", 1),
+            made(0, "siege_attack", 2),
+            made(1, "siege_defend", 2),
+        ]
+    );
+    // The first phase's calls are the round's start, the others each a
+    // phase later; the phase-1 site held from tick 0 moved nothing before
+    // the phase-0 site fell.
+    assert_eq!(areas[0].0, 0);
+    assert!(areas[2].0 > 500 && areas[2].0 < 960, "{areas:?}");
+    assert!(areas[4].0 > areas[2].0 + 450 && areas[4].0 < 1420 + 460, "{areas:?}");
+    assert!(calls(&r, "spawn_near").is_empty());
+    // Nobody picked: each phase's spawns carry row 0 of their side.
+    let kits: Vec<Vec<Arg>> = calls(&r, "set_loadout").into_iter().map(|(_, a)| a.to_vec()).collect();
+    let kit = |p: u8, a: &str, b: &str| vec![Arg::Player(Some(p)), tag(a), tag(b)];
+    assert_eq!(
+        kits,
+        [
+            kit(0, BR, MAGNUM),
+            kit(1, CARBINE, PLASMA_RIFLE),
+            kit(0, BR, MAGNUM),
+            kit(1, CARBINE, PLASMA_RIFLE),
+            kit(0, BR, MAGNUM),
+            kit(1, CARBINE, PLASMA_RIFLE),
+        ]
+    );
+    assert_eq!(calls(&r, "end_round").len(), 1);
+    assert_eq!(r.game.players[&0].score, 1);
+}
+
+/// A player picks a row of their side before a spawn, among the rows of the
+/// phase's tier: a row above the tier is refused and the last pick stands, a
+/// pick holds across spawns, and the second phase opens the next rows.
+#[test]
+fn siege_lets_a_player_pick_a_loadout_row_of_their_tier() {
+    let (ir, _) = siege(&[]);
+    assert_eq!(rules::verify::unhostable(&ir), None);
+    let s: Scenario = serde_json::from_str(SIEGE_LOADOUT_CHOICE).unwrap();
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    // Tier 0 opens two rows: the defender's row 3 is refused; in phase 1 four
+    // rows are open, so row 3 is taken and the attacker's row 4 is refused.
+    assert_eq!(r.refused_choices, [(1, 1, 3), (600, 0, 4)]);
+    let kits: Vec<(u32, Vec<Arg>)> =
+        calls(&r, "set_loadout").into_iter().map(|(t, a)| (t, a.to_vec())).collect();
+    let kit = |t: u32, p: u8, a: &str, b: &str| (t, vec![Arg::Player(Some(p)), tag(a), tag(b)]);
+    assert_eq!(
+        kits,
+        [
+            kit(0, 0, BR, MAGNUM),
+            kit(0, 1, CARBINE, PLASMA_RIFLE),
+            kit(2, 0, SHOTGUN, MAGNUM),
+            kit(2, 1, CARBINE, PLASMA_RIFLE),
+            kit(4, 0, SHOTGUN, MAGNUM),
+            kit(601, 0, SHOTGUN, MAGNUM),
+            kit(601, 1, BEAM_RIFLE, PLASMA_PISTOL),
+        ]
+    );
+}
+
+/// A phase-1 site held through phase 0 does nothing: no site is taken, no
+/// phase opens and no spawn moves.
+#[test]
+fn siege_ignores_a_later_phases_site_held_early() {
+    let (ir, _) = siege(&[]);
+    let s: Scenario = serde_json::from_str(SIEGE_DEFENDERS_HOLD_PHASE1).unwrap();
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    // Past the 450 ticks of a capture, still the round's one line.
+    assert_eq!(lines(&r), ["Sites to take: 2. Then the defenders' flag"]);
+    assert_eq!(calls(&r, "spawn_areas").len(), 2, "the phase-0 pair only");
+    assert!(calls(&r, "show_area").iter().all(|(_, a)| a != &[Arg::Object(Some(12)), Arg::Team(Some(0))]));
+    assert_eq!(r.ended_at, None);
+}
+
+/// A map with no layout plays as it always did: no `spawn_areas`, spawns
+/// near the flag stands and the sites, the first loadout set.
+#[test]
+fn siege_without_a_layout_keeps_its_lines_and_its_loadout() {
+    let (ir, _) = siege(&[]);
+    let s: Scenario = serde_json::from_str(SIEGE_NO_LAYOUT).unwrap();
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    assert!(calls(&r, "spawn_areas").is_empty());
+    assert_eq!(calls(&r, "spawn_near").len(), 2);
+    assert_eq!(
+        calls(&r, "set_loadout"),
+        [
+            (0, &[Arg::Player(Some(0)), tag(BR), tag(MAGNUM)][..]),
+            (0, &[Arg::Player(Some(1)), tag(CARBINE), tag(PLASMA_RIFLE)][..]),
+        ]
+    );
 }

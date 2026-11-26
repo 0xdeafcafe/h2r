@@ -42,6 +42,18 @@ pub struct Observed {
     /// Players killed by players this tick, in event order. Only a kill
     /// across the two teams scores ([`crate::Scoring::player_kill`]).
     pub player_kills: Vec<PlayerKill>,
+    /// The kit's drop ship and the zones it can fly to.
+    pub ship: ShipSeen,
+}
+
+/// The drop ship as the kit has it (docs/game/firefight.md, "The drop
+/// ship"). A map without a ship reads as the default: not ready, no path.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ShipSeen {
+    /// The kit's ship is a live vehicle in the world.
+    pub ready: bool,
+    /// Each kit zone, in kit order, has a flight path.
+    pub paths: Vec<bool>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,6 +74,9 @@ pub struct ZoneSeen {
     /// Distance from each Firefight team's players' centre, in the same
     /// unit; `u32::MAX` for a team with no unit. Read with two teams only.
     pub team_distance: [u32; MAX_TEAMS],
+    /// The roles the kit tags the zone with ([`crate::ZoneRole::bit`]); a
+    /// zone of an auto-built kit has them all ([`crate::ALL_ZONE_ROLES`]).
+    pub roles: u8,
 }
 
 /// A player killed by a player (`SimEvent` kill of a player's unit).
@@ -93,6 +108,27 @@ pub enum Command {
         zone: u8,
         weapon_tier: u8,
     },
+    /// `PlaceSquad` by drop ship: the ship flies in over the zone and the
+    /// squad is placed into it, up to its free seats; the rest of the squad
+    /// is placed on foot. The host falls back to `PlaceSquad` when the kit
+    /// has no ship or no path for the zone.
+    DropSquad {
+        slot: u8,
+        class: String,
+        count: u16,
+        zone: u8,
+        weapon_tier: u8,
+    },
+    /// The ship's hover hold (`VEHICLE_HOVER`), on while it flies a drop.
+    ShipHover {
+        on: bool,
+    },
+    /// Everyone aboard leaves (`VEHICLE_UNLOAD`).
+    ShipUnload,
+    /// The ship flies from the zone's hover point out along its run-out.
+    ShipLeave {
+        zone: u8,
+    },
     /// With two teams, right after a `PlaceSquad`: the Firefight team the
     /// squad is sent at. Its cleanup `Hunt` goes to that team's base. With
     /// one team there is no `Target` and every squad's target is team 0.
@@ -107,7 +143,13 @@ pub enum Command {
     EraseSquad {
         slot: u8,
     },
-    /// The zero-based round starts.
+    /// The zero-based set starts (endless definitions only). Right after it
+    /// the previous set's round skulls switch off (the match's own stay) and
+    /// the set's skull switches on, then its first `Round` follows.
+    Set {
+        index: u8,
+    },
+    /// The zero-based round of the current set starts.
     Round {
         index: u8,
     },
@@ -142,6 +184,12 @@ pub enum Command {
     Finish {
         outcome: Outcome,
     },
+    /// The bonus round starts (`on`, for `ticks`) or ends. Its squads are
+    /// ordinary `PlaceSquad`s; no `Respawn` is issued between the two.
+    Bonus {
+        on: bool,
+        ticks: u32,
+    },
     /// The HUD's mode blob after the host's step
     /// (docs/game/firefight.md, "The HUD"), when it changed. The host's
     /// runtime appends it, not the director (no script makes it), so a
@@ -154,7 +202,7 @@ pub enum Command {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Outcome {
-    /// The last round's boss wave was cleared (one team).
+    /// The last round's boss wave was cleared (one team, finite set).
     Won,
     /// Every player was dead with no lives left (one team, or the only
     /// team present of two).
@@ -183,6 +231,11 @@ pub enum Phase {
     },
     /// Between waves or rounds, until the tick given.
     Intermission {
+        until: u32,
+    },
+    /// The bonus round, which ends at the tick given or when every player
+    /// is dead.
+    Bonus {
         until: u32,
     },
     Done,
@@ -223,6 +276,8 @@ pub struct PlayerState {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct State {
     pub phase: Phase,
+    /// The zero-based set (always 0 in a finite definition).
+    pub set: u8,
     pub round: u8,
     pub wave: u8,
     /// The next squad of the wave to place; the rest is the reserve.

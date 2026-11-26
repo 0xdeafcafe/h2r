@@ -767,8 +767,63 @@ pub struct Report {
     /// with no tick sampled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guest_census: Option<GuestCensus>,
+    /// Where the game tick's time went, per phase, over the match
+    /// ([`TickPhases`]); `None` when the tick driver did not run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tick_phases: Option<TickPhases>,
     #[serde(default)]
     pub notes: Vec<String>,
+}
+
+/// One phase's mean time per tick.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PhaseMs {
+    pub name: String,
+    pub ms_per_tick: f64,
+}
+
+/// The tick driver's time per phase over a match (docs/engine/sim-rewrite.md,
+/// "The tick driver"; `sim.ledger` reads the same totals live).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TickPhases {
+    /// Ticks the driver ran in the match.
+    pub ticks: u64,
+    /// Mean ms in the tick body; the phases' sum to at most this.
+    pub tick_ms_per_tick: f64,
+    /// Mean ms from one tick's entry to the next's: the tick plus what the
+    /// game thread does between ticks (sound runs outside the 29 phases).
+    /// `None` with fewer than two ticks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_ms_per_tick: Option<f64>,
+    /// The 29 phases in retail order.
+    pub phases: Vec<PhaseMs>,
+}
+
+impl TickPhases {
+    /// The means over `ticks` ticks of the match: `tick_ns` in the body,
+    /// `loop_ns` over `loops` entry-to-entry spans, and `(name, ns)` per
+    /// phase. `None` for no ticks.
+    pub fn over(
+        ticks: u64,
+        tick_ns: u64,
+        loop_ns: u64,
+        loops: u64,
+        phases: impl IntoIterator<Item = (String, u64)>,
+    ) -> Option<Self> {
+        if ticks == 0 {
+            return None;
+        }
+        let ms = |ns: u64, n: u64| ns as f64 / 1e6 / n as f64;
+        Some(TickPhases {
+            ticks,
+            tick_ms_per_tick: ms(tick_ns, ticks),
+            loop_ms_per_tick: (loops > 0).then(|| ms(loop_ns, loops)),
+            phases: phases
+                .into_iter()
+                .map(|(name, ns)| PhaseMs { name, ms_per_tick: ms(ns, ticks) })
+                .collect(),
+        })
+    }
 }
 
 impl Report {
@@ -1432,6 +1487,7 @@ impl Tally {
             firefight: None,
             flat: None,
             guest_census: self.census(),
+            tick_phases: None,
             notes,
         }
     }
@@ -1622,6 +1678,23 @@ impl Report {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tick_phases_are_means_over_the_match() {
+        let t = TickPhases::over(
+            4,
+            8_000_000,
+            12_000_000,
+            3,
+            [("ai".to_owned(), 4_000_000), ("hud".to_owned(), 2_000_000)],
+        )
+        .unwrap();
+        assert_eq!((t.tick_ms_per_tick, t.loop_ms_per_tick), (2.0, Some(4.0)));
+        assert_eq!((t.phases[0].ms_per_tick, t.phases[1].ms_per_tick), (1.0, 0.5));
+        assert!(t.phases.iter().map(|p| p.ms_per_tick).sum::<f64>() <= t.tick_ms_per_tick);
+        assert!(TickPhases::over(0, 1, 1, 1, []).is_none());
+        assert_eq!(TickPhases::over(2, 1, 0, 0, []).unwrap().loop_ms_per_tick, None);
+    }
 
     #[test]
     fn costs_are_per_tick_in_the_json() {

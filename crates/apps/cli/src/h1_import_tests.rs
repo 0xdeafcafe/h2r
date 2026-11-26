@@ -170,6 +170,7 @@ impl Converter for Flaky {
 
 #[test]
 fn a_failing_or_panicking_map_is_recorded_and_the_rest_go_on() {
+    let data = scratch("flaky");
     let todo = jobs(&stems(&["a10", "a30", "bloodgulch", "d40"]));
     let mut s = Stamp::default();
     let conv = Flaky(Default::default());
@@ -177,6 +178,7 @@ fn a_failing_or_panicking_map_is_recorded_and_the_rest_go_on() {
     let mut lines = Vec::new();
     let (sum, times) = run_jobs(
         &todo,
+        &data,
         1,
         &mut s,
         &conv,
@@ -224,10 +226,49 @@ fn a_failing_or_panicking_map_is_recorded_and_the_rest_go_on() {
     );
 }
 
+/// A failed job takes the map an older converter wrote out of play: its
+/// marker is gone (so the store does not list it), the ownership record is
+/// kept for the next conversion, the line says so, the other jobs' maps stay.
+#[test]
+fn a_failed_job_removes_the_map_an_older_converter_wrote() {
+    let data = scratch("stale");
+    let todo = jobs(&stems(&["a10", "a30", "bloodgulch"]));
+    let store = boot::store_status::root(&data);
+    let text = "converter halo1\nfile 00\n";
+    for j in &todo {
+        let m = j.output(&data);
+        std::fs::create_dir_all(m.parent().unwrap()).unwrap();
+        std::fs::write(&m, text).unwrap();
+    }
+    let mut s = Stamp::default();
+    let mut lines = Vec::new();
+    run_jobs(&todo, &data, 1, &mut s, &Flaky(Default::default()), &mut |_| Ok(()), &mut |l| {
+        lines.push(l)
+    });
+    for failed in [Job::Campaign("a30"), Job::Multiplayer("bloodgulch", Sandbox::Halo1)] {
+        let m = failed.output(&data);
+        assert!(!m.exists(), "{} is still offered", failed.key());
+        assert_eq!(
+            std::fs::read_to_string(m.with_extension("converting")).unwrap(),
+            text,
+            "ownership kept"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains(&failed.label()) && l.contains("older converter wrote is removed")),
+            "{lines:?}"
+        );
+    }
+    assert!(Job::Campaign("a10").output(&data).is_file());
+    assert!(Job::Multiplayer("bloodgulch", Sandbox::Halo2).output(&data).is_file());
+    assert!(workspace::converted::marked(&store, &Job::Campaign("a30").stem()).is_none());
+    let _ = std::fs::remove_dir_all(&data);
+}
+
 /// On several workers: every job runs once, each outcome is in the stamp,
 /// a line and a save for each, whatever order they finish in.
 #[test]
 fn jobs_run_on_several_workers_each_once() {
+    let data = scratch("workers");
     let todo = jobs(&stems(&["a10", "a30", "bloodgulch", "d40", "sidewinder"]));
     let mut s = Stamp::default();
     let conv = Flaky(Default::default());
@@ -235,6 +276,7 @@ fn jobs_run_on_several_workers_each_once() {
     let mut lines = Vec::new();
     let (sum, times) = run_jobs(
         &todo,
+        &data,
         4,
         &mut s,
         &conv,
@@ -420,7 +462,7 @@ fn real_import_is_found_by_the_game() {
             .collect();
         let conv = DiscConverter::new(h1.clone(), iso, disc, h2.clone(), data.clone());
         let mut s = Stamp::default();
-        run_jobs(&todo, workers(), &mut s, &conv, &mut |_| Ok(()), &mut |l| {
+        run_jobs(&todo, &data, workers(), &mut s, &conv, &mut |_| Ok(()), &mut |l| {
             eprintln!("{l}");
             lines.push(l)
         })

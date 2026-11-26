@@ -175,7 +175,7 @@ fn a_census_that_cannot_be_read_blocks_a_script_with_labels() {
             Box::new(store.clone()),
             Box::new(move |_: [u8; 8]| Ok::<_, String>(blob.clone())),
         )
-        .with_census(Box::new(|_: &dyn GuestMemory| Err("no scenario".to_string()))),
+        .with_census(Box::new(|_: &dyn GuestMemory, _: Option<&str>| Err("no scenario".to_string()))),
     ));
     let m = mapped(block(prefix(&ir.id()), 0), SLAYER, &[]);
     s.lock().start(&m, false);

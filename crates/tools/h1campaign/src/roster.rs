@@ -105,9 +105,18 @@ pub(crate) fn prepare(
         } else {
             let source = h1.tag(variant.weapon.id)?;
             let stand_in = match retail {
-                Some(set) => crate::h2assets::stand_in(set, source).map_err(|why| {
+                Some(set) => match crate::h2assets::stand_in(set, source).map_err(|why| {
                     invalid(format!("AI weapon {} of {}: {why}", source.name, tag.name))
-                })?,
+                })? {
+                    crate::h2assets::StandIn::Retail(id) => Some(id),
+                    crate::h2assets::StandIn::Own => None,
+                    crate::h2assets::StandIn::Dropped(why) => {
+                        return Err(invalid(format!(
+                            "AI weapon {} of {}: {why}",
+                            source.name, tag.name
+                        )));
+                    }
+                },
                 None => None,
             };
             match stand_in {

@@ -33,22 +33,24 @@ fn a_live_summary_without_a_recording_still_shows_match_details() {
     assert_eq!(detail.rows.len(), 1);
     assert_eq!(detail.rows[0].label, "Save");
     assert_eq!(detail.help.as_deref(), Some("No host film was recorded."));
-    let header: Vec<_> = detail
+    let facts: Vec<_> = detail
         .texts
-        .iter()
-        .take(4)
-        .map(|t| t.text.as_str())
+        .chunks(2)
+        .take(6)
+        .map(|pair| (pair[0].text.as_str(), pair[1].text.as_str()))
         .collect();
-    assert_eq!(
-        header,
-        [
-            "Slayer",
-            "Matchmaking / Team Slayer",
-            "20 Nov 26 / 1:09",
-            "Result: Win"
-        ]
-    );
-    for text in ["Chief", "Red", "25", "25 / 8"] {
+    let labels: Vec<_> = facts.iter().map(|(label, _)| *label).collect();
+    assert_eq!(labels, ["Map", "Game", "Mode", "Date", "Length", "Result"]);
+    for (label, value) in [
+        ("Map", "Lockout"),
+        ("Game", "Slayer"),
+        ("Date", "20 Nov 2026"),
+        ("Length", "1:09"),
+        ("Result", "Win"),
+    ] {
+        assert!(facts.contains(&(label, value)), "{label} {value}");
+    }
+    for text in ["Chief", "Red"] {
         assert!(detail.texts.iter().any(|t| t.text == text));
     }
 }
@@ -74,16 +76,12 @@ fn sparse_summary_keeps_the_known_roster_and_unmatched_scores() {
     let roster: Vec<_> = details
         .texts
         .iter()
-        .skip(6)
+        .skip(12)
         .filter(|t| !t.text.is_empty())
         .map(|t| t.text.as_str())
         .collect();
-    assert_eq!(
-        roster,
-        [
-            "Players", "Team", "Score", "K / D", "Echo", "Red", "Player 2", "8", "7 / 3"
-        ]
-    );
+    // A team game lists the teamed player first, the unteamed one last.
+    assert_eq!(roster, ["Players", "Echo", "Red", "Player 2"]);
 }
 
 #[test]
@@ -212,7 +210,8 @@ fn theater_unplayable_film_can_be_saved_but_cannot_watch() {
     let mut view = live(DETAIL).unwrap();
     assert!(view.go("unplayable"));
     let spec = view.spec();
-    assert!(spec.texts.iter().any(|text| text.text == "Unavailable"));
+    assert!(!spec.texts.iter().any(|text| text.text == "Unavailable"));
+    assert!(spec.rows.iter().all(|row| row.label != "Watch"));
     assert_eq!(
         spec.help.unwrap().split_whitespace().collect::<Vec<_>>().join(" "),
         "Film predates a breaking simulation change."
@@ -224,10 +223,11 @@ fn theater_unplayable_film_can_be_saved_but_cannot_watch() {
 }
 
 #[test]
-fn theater_playable_film_shows_its_state_and_watch_action() {
+fn theater_playable_film_shows_its_facts_and_watch_action() {
     let view = live(DETAIL).unwrap();
     let spec = view.spec();
-    assert!(spec.texts.iter().any(|text| text.text == "Playable"));
+    assert!(!spec.texts.iter().any(|text| text.text == "Playable"));
+    assert!(spec.texts.iter().any(|text| text.text == "Map"));
     assert_eq!(spec.rows[0].label, "Watch");
 }
 
@@ -241,12 +241,33 @@ fn summary_without_players_has_one_roster_message_and_one_action() {
     let roster: Vec<_> = spec
         .texts
         .iter()
-        .skip(6)
+        .skip(12)
         .filter(|t| !t.text.is_empty())
         .map(|t| t.text.as_str())
         .collect();
-    assert_eq!(roster, ["Players", "No players were recorded."]);
+    assert_eq!(roster, ["Player list unavailable."]);
     assert_eq!(spec.help.as_deref(), Some("No host film was recorded."));
+}
+
+#[test]
+fn roster_only_film_lists_its_players_with_team_names() {
+    let mut view = live(DETAIL).unwrap();
+    assert!(view.go("roster-only"));
+    let spec = view.spec();
+    let texts: Vec<_> = spec.texts.iter().map(|t| t.text.as_str()).collect();
+    assert_eq!(texts[12], "Players");
+    // Team games sort by team name: Blue first, then Red; column-major.
+    assert_eq!(&texts[14..18], ["Bravo", "Blue", "Delta", "Blue"]);
+    assert_eq!(&texts[18..20], ["Alpha", "Red"]);
+    assert!(!texts.contains(&"Player list unavailable."));
+}
+
+#[test]
+fn film_page_action_rows_all_fit_the_list() {
+    let view = live(DETAIL).unwrap();
+    let spec = view.spec();
+    assert!(spec.rows.len() <= spec.list.shown());
+    assert!(!spec.scrolls);
 }
 
 #[test]
@@ -269,33 +290,21 @@ fn legacy_clip_only_offers_delete_and_explains_playback_once() {
     assert_eq!(detail.rows.len(), 1);
     assert_eq!(detail.rows[0].label, "Delete");
     assert_eq!(detail.help.as_deref(), Some("No playback track was saved."));
-    assert!(detail.texts.iter().any(|t| t.text.ends_with(" / 0:04")));
+    assert!(detail.texts.iter().any(|t| t.text == "0:04"));
     theater.step_detail(0);
     assert_eq!(pages::spec(&theater, false).rows[0].label, "Confirm delete");
 }
 
 #[test]
-fn roster_headings_and_values_share_column_edges_and_alignment() {
+fn roster_header_and_cells_share_column_edges() {
     let view = live(DETAIL).unwrap();
     let spec = view.spec();
-    for (label, value, right) in [
-        ("Players", "Chief", false),
-        ("Team", "Red", false),
-        ("Score", "21", true),
-        ("K / D", "17 / 8", true),
-    ] {
-        let heading = spec.texts.iter().find(|t| t.text == label).unwrap();
-        let cell = spec.texts.iter().find(|t| t.text == value).unwrap();
-        assert_eq!(
-            (heading.rect[1], heading.rect[3], heading.right),
-            (cell.rect[1], cell.rect[3], right)
-        );
-        assert_eq!(cell.right, right);
-        assert_eq!(
-            heading.rect[0] - cell.rect[0],
-            crate::mods_screen::page_layout::ROW_STEP
-        );
-    }
+    let header = spec.texts.iter().find(|t| t.text == "Players").unwrap();
+    let name = spec.texts.iter().find(|t| t.text == "Chief").unwrap();
+    let team = spec.texts.iter().find(|t| t.text == "Red").unwrap();
+    assert_eq!((header.rect[1], header.right), (name.rect[1], false));
+    assert_eq!((header.rect[0] - name.rect[0]) % 22, 0);
+    assert!(team.right);
 }
 
 #[test]
@@ -305,31 +314,26 @@ fn names_only_roster_pages_without_empty_stat_columns() {
     let roster = |spec: ScreenSpec| {
         spec.texts
             .into_iter()
-            .skip(6)
+            .skip(12)
             .map(|t| t.text)
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
     };
-    assert_eq!(
-        roster(view.spec()),
-        [
-            "Players 1 / 2",
-            "Player 1",
-            "Player 2",
-            "Player 3",
-            "Player 4",
-            "Player 5",
-            "Player 6",
-            "Player 7"
-        ]
-    );
+    let page_one: Vec<String> = ["Players", "1 / 2"]
+        .into_iter()
+        .map(str::to_owned)
+        .chain((1..=10).map(|i| format!("Player {i}")))
+        .collect();
+    assert_eq!(roster(view.spec()), page_one);
     view.press(Input::Right);
-    assert_eq!(
-        roster(view.spec()),
-        ["Players 2 / 2", "Player 8", "Player 9", "Player 10"]
-    );
+    let page_two: Vec<String> = ["Players", "2 / 2"]
+        .into_iter()
+        .map(str::to_owned)
+        .chain((11..=16).map(|i| format!("Player {i}")))
+        .collect();
+    assert_eq!(roster(view.spec()), page_two);
     view.press(Input::Left);
-    assert_eq!(roster(view.spec())[0], "Players 1 / 2");
+    assert_eq!(roster(view.spec())[1], "1 / 2");
 }
 
 #[test]
@@ -478,8 +482,8 @@ fn retail_corners_frame_the_detail_picture_only() {
     let [left, top] = picture.at;
     let [width, height] = picture.size.map(|n| n as i16);
     let side = dialog::FRAME_CORNER_SIZE as i16;
-    assert_eq!(screen.panel.len(), 4);
-    for ((corner, index), at) in screen.panel[2..]
+    assert_eq!(screen.panel.len(), 2);
+    for ((corner, index), at) in screen.panel[..]
         .iter()
         .zip(dialog::FRAME_CORNERS)
         .zip([[left, top], [left + width - side, top - height + side]])

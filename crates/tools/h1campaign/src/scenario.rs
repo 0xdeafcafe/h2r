@@ -1427,15 +1427,24 @@ fn place_objects(
     weapon_palette: &mut Vec<TagId>,
 ) -> Result<HashMap<(i16, i16), (i16, i16)>> {
     let halo2 = assets == crate::h2assets::Assets::Halo2;
-    // The Halo 2-assets variant's retail tag for a Halo 1 object
-    // (`crate::h2assets`): `Ok(Some)` places it, `Ok(None)` converts
-    // Halo 1's own, `Err` leaves it out.
-    let swap = |set: &TagSet, tag: &h1map::Tag| -> std::result::Result<Option<TagId>, String> {
+    // The Halo 2-assets variant's stand-in for a Halo 1 object
+    // (`crate::h2assets`): a retail tag is placed, Halo 1's own is
+    // converted, a dropped one is skipped with a report note, a missing
+    // counterpart is an error.
+    let swap = |set: &TagSet, tag: &h1map::Tag| -> std::result::Result<crate::h2assets::StandIn, String> {
         if !halo2 {
-            return Ok(None);
+            return Ok(crate::h2assets::StandIn::Own);
         }
-        let got = crate::h2assets::stand_in(set, tag)?;
-        Ok(got)
+        crate::h2assets::stand_in(set, tag)
+    };
+    // A retail stand-in's tag, None for Halo 1's own; a dropped one is
+    // refused by name where the caller needs the object.
+    let retail = |s: crate::h2assets::StandIn| -> std::result::Result<Option<TagId>, String> {
+        match s {
+            crate::h2assets::StandIn::Retail(id) => Ok(Some(id)),
+            crate::h2assets::StandIn::Own => Ok(None),
+            crate::h2assets::StandIn::Dropped(why) => Err(format!("left out: {why}")),
+        }
     };
     let mut conv = h1objects::convert::Converter::new(h1, base);
     conv.options.unit_hud_draw_colour = true;
@@ -1470,13 +1479,21 @@ fn place_objects(
                 // Weapons, equipment and vehicles swap; placed bipeds are
                 // the cutscenes' casts and stay Halo 1's.
                 let swappable = matches!(k.h1_type, 1..=3);
-                let swapped = match if swappable { swap(&*set, tag) } else { Ok(None) } {
-                    Ok(Some(id)) => {
+                let swapped = match if swappable {
+                    swap(&*set, tag)
+                } else {
+                    Ok(crate::h2assets::StandIn::Own)
+                } {
+                    Ok(crate::h2assets::StandIn::Retail(id)) => {
                         aliases.insert(FourCC(tag.group.0.to_be_bytes()), &tag.name, id);
                         rep.swapped.push((tag.name.clone(), id));
                         Some(Some(Pal::Retail(id)))
                     }
-                    Ok(None) => None,
+                    Ok(crate::h2assets::StandIn::Own) => None,
+                    Ok(crate::h2assets::StandIn::Dropped(why)) => {
+                        dropped.push(format!("{} left out: {why}", tag.name));
+                        Some(None)
+                    }
                     Err(why) => {
                         return Err(
                             h1convert::Error::no_rebuild(&h1.header().name, &tag.name, why).into(),
@@ -1532,6 +1549,7 @@ fn place_objects(
     {
         let tag = h1.tag(w)?;
         if let Some(id) = swap(set, tag)
+            .and_then(retail)
             .map_err(|why| h1convert::Error::no_rebuild(&h1.header().name, &tag.name, why))?
         {
             aliases.insert(FourCC(*b"weap"), &tag.name, id);
@@ -1564,6 +1582,7 @@ fn place_objects(
     // A swap that leaves the cyborg out is a named error, not Halo 1's.
     let cyborg_swap = match cyborg {
         Some(t) => swap(&*set, t)
+            .and_then(retail)
             .map_err(|why| h1convert::Error::no_rebuild(&h1.header().name, &t.name, why))?,
         None => None,
     };
@@ -1627,7 +1646,13 @@ fn place_objects(
                         .map_err(|e| h1convert::Error::no_rebuild(&h1.header().name, &t.name, e))?;
                 }
                 b"bipd" | b"vehi" | b"mach" | b"weap" | b"scen" => {
-                    if let Some(id) = swap(set, t).map_err(|why| {
+                    let stand_in = swap(set, t).map_err(|why| {
+                        h1convert::Error::no_rebuild(&h1.header().name, &t.name, why)
+                    })?;
+                    if matches!(stand_in, crate::h2assets::StandIn::Dropped(_)) {
+                        continue;
+                    }
+                    if let Some(id) = retail(stand_in).map_err(|why| {
                         h1convert::Error::no_rebuild(&h1.header().name, &t.name, why)
                     })? {
                         aliases.insert(group, &t.name, id);

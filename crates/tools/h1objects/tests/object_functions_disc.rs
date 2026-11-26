@@ -311,3 +311,71 @@ fn converted_vehicles_scale_attachments_by_their_functions() {
     assert_eq!(by("vehicles\\pelican\\pelican", "jetsweet"), "thrust");
     assert!(scaled >= 10, "{scaled}");
 }
+
+/// Every Halo 1 object that attaches something named for the needler's
+/// flare converts each output its attachments scale by. Prints the
+/// object's functions and the converter's notes: the shape of one that
+/// does not convert is the input to modelling it (`functions::one`).
+/// Reads `$H1_ISO`, and `$H1_LEVELS` (default: every map).
+///
+/// ```sh
+/// H1_ISO=... cargo test --release -p h1objects --test it object_functions_disc::needler_flare_functions_convert -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO)"]
+fn needler_flare_functions_convert() {
+    use h1objects::functions::{convert, primary_scale};
+    use h1objects::h1;
+
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(disc("H1_ISO", "halo1.iso")).unwrap())).unwrap();
+    let entries = iso.entries().unwrap();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut failures = Vec::new();
+    for e in h1map::disc::maps(&entries) {
+        let stem = h1map::disc::map_stem(&e).to_ascii_lowercase();
+        if let Ok(only) = std::env::var("H1_LEVELS")
+            && !only.split(',').any(|l| l == stem)
+        {
+            continue;
+        }
+        let Ok(map) = H1Map::from_reader(Cursor::new(iso.read(&e).unwrap())) else { continue };
+        for tag in map.tags() {
+            if !h1::OBJECT_TYPES.iter().any(|g| tag.group == h1map::Group::new(g)) {
+                continue;
+            }
+            let Ok(b) = map.tag_data(tag) else { continue };
+            let Ok(obj) = h1::Object::read(&map, b) else { continue };
+            let Ok(attachments) = h1::elements(&map, b, 0x140, 0x48) else { continue };
+            let flares: Vec<_> = attachments
+                .into_iter()
+                .filter_map(|a| {
+                    let name = h1::reference(&map, a, 0).and_then(|i| map.tag(i).ok())?.name.clone();
+                    let lower = name.to_ascii_lowercase();
+                    (lower.contains("needle") && (lower.contains("flare") || lower.contains("lens") || lower.contains("light")))
+                        .then(|| (name, u16_at(a, 0x30), u16_at(a, 0x32)))
+                })
+                .collect();
+            if flares.is_empty() || !seen.insert(tag.name.clone()) {
+                continue;
+            }
+            let functions = h1::functions(&map, b).unwrap();
+            let mut notes = Vec::new();
+            let got = convert(&functions, &h1::FunctionInputs::read(b, obj.object_type), &mut notes);
+            println!("== {stem} {} ({})", tag.name, tag.group);
+            for (k, f) in functions.iter().enumerate() {
+                println!("  output {} source function: {f:?}", k + 1);
+            }
+            println!("  notes: {notes:?}");
+            for (name, primary, secondary) in flares {
+                println!("  attachment {name}: primary {primary} secondary {secondary}");
+                for (kind, index) in [("primary", primary), ("secondary", secondary)] {
+                    if let Err(why) = primary_scale(index, &got) {
+                        failures.push(format!("{} {name} {kind} scale: {why}", tag.name));
+                    }
+                }
+            }
+        }
+    }
+    assert!(!seen.is_empty(), "no object attaches a needle flare");
+    assert!(failures.is_empty(), "{failures:#?}");
+}

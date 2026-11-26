@@ -323,15 +323,15 @@ async fn publish_show(cx: &Cx) {
 /// One listed player: its roster slot and team, its name and, when it is
 /// this machine's, its local user.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Roster {
-    pub(super) slot: u8,
-    pub(super) team: Option<u8>,
-    pub(super) name: String,
-    pub(super) user: Option<u32>,
+pub(crate) struct Roster {
+    pub(crate) slot: u8,
+    pub(crate) team: Option<u8>,
+    pub(crate) name: String,
+    pub(crate) user: Option<u32>,
 }
 
 /// The listed players: slot, team, name and local user reads.
-pub(super) fn roster(m: &dyn GuestMemory) -> Vec<Roster> {
+pub(crate) fn roster(m: &dyn GuestMemory) -> Vec<Roster> {
     use engine::view::players;
     let Ok(Some(array)) = players::array(m) else {
         return Vec::new();

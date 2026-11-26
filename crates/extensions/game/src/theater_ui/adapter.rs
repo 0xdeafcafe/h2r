@@ -120,6 +120,12 @@ pub(super) fn monitor_sentence(look: &MonitorLookSource) -> String {
 }
 
 impl FilmMeta {
+    /// The players the film page lists: the scoreboard, else the film's own
+    /// roster.
+    pub fn players(&self) -> &[Player] {
+        if self.scoreboard.is_empty() { &self.roster } else { &self.scoreboard }
+    }
+
     pub(super) fn camera_roster(&self) -> &[Player] {
         if self.roster.is_empty() { &self.scoreboard } else { &self.roster }
     }
@@ -367,7 +373,7 @@ pub(super) fn team_colour(team: &str) -> Option<[u8; 3]> {
     })
 }
 
-fn team_name(team: i32) -> String {
+pub fn team_name(team: i32) -> String {
     [
         "Red", "Blue", "Green", "Orange", "Purple", "Gold", "Brown", "Pink",
     ]

@@ -572,8 +572,6 @@ pub(crate) fn register_core_film(
     features
         .add(&crate::h1_command_atoms::CommandAtoms)
         .map_err(|e| anyhow::anyhow!("Halo 1 command lists: {e}"))?;
-    features.add(&crate::h1_drive::DirectDrive)
-        .map_err(|e| anyhow::anyhow!("Halo 1 ground vehicle controller: {e}"))?;
     // Halo 1's health model on Halo 1 maps (docs/halo1/health.md): no body
     // regeneration, health packs, a health meter. Off (Halo 2's) until the
     // map's identity or the H2_HEALTH_MODEL debug override says Halo 1.
@@ -804,6 +802,10 @@ pub(crate) fn register_late_for_profile(
         features.add(&sim_bridge::sim_sound::SimSound)
             .map_err(|e| anyhow::anyhow!("sound simulation: {e}"))?;
     }
+    // The tick itself, from Rust; every hook on GAME_TICK stays around it.
+    features
+        .add(&sim_bridge::tick::TickDriver)
+        .map_err(|e| anyhow::anyhow!("tick driver: {e}"))?;
     features.add(&sim_bridge::sim_physics::NativePhysics)
         .map_err(|e| anyhow::anyhow!("simulation physics: {e}"))?;
     // SimExt, the extension records saved with checkpoints and snapshots

@@ -13,9 +13,10 @@ use crate::{Def, MAX_TEAMS};
 /// by two teams: half an Elite.
 pub const PLAYER_KILL_POINTS: u16 = 50;
 
-/// The `modes` package's built-in wave set files, in menu order: three
-/// for one team, then Crossfire for two.
-pub const SETS: [(&str, &str); 4] = [
+/// The `modes` package's built-in wave set files, in store-value order:
+/// three finite sets for one team, Crossfire for two, then Endless (sets
+/// of three rounds, one after another until the team is out).
+pub const SETS: [(&str, &str); 5] = [
     (
         "firefight/holdout.firefight.json",
         include_str!("../../../../content/modes/firefight/holdout.firefight.json"),
@@ -31,6 +32,10 @@ pub const SETS: [(&str, &str); 4] = [
     (
         "firefight/crossfire.firefight.json",
         include_str!("../../../../content/modes/firefight/crossfire.firefight.json"),
+    ),
+    (
+        "firefight/endless.firefight.json",
+        include_str!("../../../../content/modes/firefight/endless.firefight.json"),
     ),
 ];
 
@@ -49,7 +54,7 @@ pub const MAP_SETS: [(&str, &str, &str); 1] = [(
 pub const MAP_SET_BASE: i64 = SETS.len() as i64;
 
 /// The built-in wave sets, in menu order ([`SETS`]).
-pub fn definitions() -> [Def; 4] {
+pub fn definitions() -> [Def; 5] {
     SETS.map(|(file, text)| {
         serde_json::from_str(text).unwrap_or_else(|e| panic!("{file} is not a Firefight set: {e}"))
     })
@@ -166,8 +171,12 @@ pub fn names_set(value: i64) -> bool {
 
 /// `def` played by `teams` player teams (1 or 2, clamped): with two, a
 /// player kill scores the set's own points, or [`PLAYER_KILL_POINTS`]
-/// when it has none; with one, nothing.
+/// when it has none; with one, nothing. An endless set has one team
+/// ([`crate::validate`] refuses two), so it is returned as it is.
 pub fn with_teams(mut def: Def, teams: u8) -> Def {
+    if def.set.endless {
+        return def;
+    }
     def.teams = teams.clamp(1, MAX_TEAMS as u8);
     def.scoring.player_kill = match (def.teams, def.scoring.player_kill) {
         (1, _) => 0,
@@ -181,12 +190,12 @@ pub fn with_teams(mut def: Def, teams: u8) -> Def {
 mod tests {
     use super::*;
     use crate::{
-        Caps, Count, DifficultyMultipliers, Drop, FORMAT, Lives, Round, Scoring, Skull, SquadSpec,
-        WAVES_PER_ROUND, Wave,
+        Caps, Count, DifficultyMultipliers, Drop, FORMAT, Lives, Round, Scoring, SetRules, Skull,
+        SquadSpec, WAVES_PER_ROUND, Wave,
     };
 
     /// The sets written as Rust: the reference the package files are held to.
-    fn reference() -> [Def; 4] {
+    fn reference() -> [Def; 5] {
         [
             Preset {
                 name: "Holdout",
@@ -195,7 +204,8 @@ mod tests {
                 gap_ticks: 600,
                 pool: 12,
                 bonus: 4,
-                skulls: [Skull::Blind, Skull::Famine, Skull::Thunderstorm],
+                skulls: [Skull::Ghost, Skull::Famine, Skull::Thunderstorm],
+                set: SetRules::finite(),
                 teams: 1,
             },
             Preset {
@@ -206,6 +216,7 @@ mod tests {
                 pool: 8,
                 bonus: 3,
                 skulls: [Skull::Catch, Skull::Angry, Skull::Mythic],
+                set: SetRules::finite(),
                 teams: 1,
             },
             Preset {
@@ -216,6 +227,7 @@ mod tests {
                 pool: 5,
                 bonus: 2,
                 skulls: [Skull::Ghost, Skull::Thunderstorm, Skull::Assassins],
+                set: SetRules::finite(),
                 teams: 1,
             },
             Preset {
@@ -226,7 +238,23 @@ mod tests {
                 pool: 10,
                 bonus: 3,
                 skulls: [Skull::Famine, Skull::Catch, Skull::Angry],
+                set: SetRules::finite(),
                 teams: 2,
+            },
+            Preset {
+                name: "Endless",
+                actors: [16, 16, 16],
+                squad_max: 6,
+                gap_ticks: 450,
+                pool: 7,
+                bonus: 1,
+                skulls: [Skull::Ghost, Skull::Catch, Skull::BlackEye],
+                set: SetRules {
+                    endless: true,
+                    scale: 100,
+                    skulls: vec![Skull::Thunderstorm, Skull::Famine, Skull::Mythic],
+                },
+                teams: 1,
             },
         ]
         .map(Preset::definition)
@@ -251,6 +279,7 @@ mod tests {
             pool: 10,
             bonus: 3,
             skulls: [Skull::Catch, Skull::Angry, Skull::Ghost],
+            set: SetRules::finite(),
             teams: 1,
         }
         .definition()]
@@ -293,6 +322,7 @@ mod tests {
         pool: u16,
         bonus: u16,
         skulls: [Skull; 3],
+        set: SetRules,
         teams: u8,
     }
 
@@ -330,10 +360,12 @@ mod tests {
                 name: self.name.into(),
                 teams: self.teams,
                 rounds,
+                set: self.set.clone(),
                 lives: Lives {
                     pool_start: self.pool,
                     per_round_bonus: self.bonus,
                     shared: true,
+                    zero_holds: false,
                 },
                 caps: Caps {
                     live_actors_by_players: [4, 8, 16].into_iter().zip(self.actors).collect(),
@@ -354,10 +386,12 @@ mod tests {
                     skull_multipliers: self
                         .skulls
                         .into_iter()
+                        .chain(self.set.skulls.iter().copied())
                         .map(|skull| (skull, 1_100))
                         .collect(),
                     assist: 250,
                 },
+                bonus: None,
             }
         }
 

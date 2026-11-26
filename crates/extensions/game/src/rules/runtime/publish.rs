@@ -81,16 +81,21 @@ impl Runtime {
     /// each local user (`crate::rules::world::hud`), and hides them once no
     /// script feeds them. `None` for a game with no guest to read.
     pub(super) fn publish_hud(&mut self, m: Option<&dyn GuestMemory>) {
-        let on = match (&self.status, m) {
-            (Status::Running(r), Some(m)) => {
-                crate::rules::world::hud::publish(m, r.vm.ir(), r.vm.show(), &r.zones)
-            }
-            _ => false,
+        let (on, objective) = match (&self.status, m) {
+            (Status::Running(r), Some(m)) => (
+                crate::rules::world::hud::publish(m, r.vm.ir(), r.vm.show(), &r.zones),
+                crate::objective_hud::publish(m, r.vm.ir(), r.vm.ext(), &r.zones),
+            ),
+            _ => (false, false),
         };
         if self.hud_on && !on {
             crate::rules::world::hud::clear();
         }
+        if self.objective_on && !objective {
+            crate::objective_hud::clear();
+        }
         self.hud_on = on;
+        self.objective_on = objective;
     }
 
     /// Sends the areas the script shows to the clients as a walls cue
@@ -117,14 +122,16 @@ impl Runtime {
     /// sends none: it has no channel.
     pub(super) fn send_picks(&mut self, tick: u32) {
         let offers = match &self.status {
-            Status::Running(r) if r.authority == Some(true) && !self.film => r.vm.picks(),
+            // The loadout pickers are asked through the player's window
+            // (`crate::rules::world::choice`), not as cues.
+            Status::Running(r) if r.authority == Some(true) && !self.film => r.vm.plain_picks(),
             _ => return,
         };
         let (sent, at) = match self.pick_cue.as_ref() {
             Some((sent, at)) => (Some(sent.as_slice()), *at),
             None => (None, tick),
         };
-        let changed = sent != Some(offers);
+        let changed = sent != Some(offers.as_slice());
         let repeat = !offers.is_empty() && tick.wrapping_sub(at) >= ::rules::show::PICK_REPEAT;
         if !changed && !repeat {
             return;
@@ -141,10 +148,10 @@ impl Runtime {
                 );
             }
         }
-        for offer in offers {
+        for offer in &offers {
             crate::rules::world::show::pick_offer(tick, offer.clone());
         }
-        self.pick_cue = Some((offers.to_vec(), tick));
+        self.pick_cue = Some((offers, tick));
     }
 
     /// The walls the running script shows in play (`show_area`), in the

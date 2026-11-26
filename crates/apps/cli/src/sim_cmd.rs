@@ -2225,6 +2225,7 @@ mod tests {
             dispatch_per_tick: None,
             flat: None,
             guest_census: None,
+            tick_phases: None,
             notes: vec![],
             bounce: None,
             drops: None,

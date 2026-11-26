@@ -328,8 +328,7 @@ impl DrawAdmission for Widget<'_> {
         let overlay = Arc::new(overlay);
         *self.captured.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&overlay));
         let pass = WidgetPass {
-            draw: Arc::new(draw.clone()),
-            overlay,
+            members: vec![Member { draw: Arc::new(draw.clone()), overlay }],
             sampled,
         };
         Some((
@@ -344,9 +343,18 @@ impl DrawAdmission for Widget<'_> {
     }
 }
 
-struct WidgetPass {
+/// One widget quad: the guest draw it stands in for and its one-quad overlay.
+#[derive(Clone)]
+struct Member {
     draw: Arc<d3d::ResolvedDraw>,
     overlay: Arc<Overlay>,
+}
+
+/// One widget quad, or a run of adjacent ones that share a target and
+/// sampled textures ([`ExternalPass::run_with`]): recorded as one overlay,
+/// one upload and one render pass, the quads in draw order.
+struct WidgetPass {
+    members: Vec<Member>,
     sampled: [bool; 4],
 }
 
@@ -400,23 +408,32 @@ impl WidgetPass {
                 return Err("HUD texture aliases its render target");
             }
         }
-        let mut overlay = (*self.overlay).clone();
         let (w, h) = request.surface_size;
-        if overlay.size != [w, h] {
-            return Err("HUD surface size");
-        }
         let scale =
             gfx::raster::RenderScale::between(request.surface_size, t.size).ok_or("HUD scale")?;
-        let draw = self.draw.for_copy(t.copy);
-        let transform = draw.ui_fit.map_or([1., 1., 0., 0.], |f| f.transform);
         let shift = scale.shift();
-        for v in &mut overlay.vertices {
-            for i in 0..2 {
-                let p = v.position[i] * transform[i] + transform[i + 2];
-                v.position[i] = raster_position(p, overlay.size[i], shift[i]);
+        let mut overlay = Overlay::new([w, h]);
+        for member in &self.members {
+            let mut one = (*member.overlay).clone();
+            if one.size != [w, h] {
+                return Err("HUD surface size");
+            }
+            let draw = member.draw.for_copy(t.copy);
+            let transform = draw.ui_fit.map_or([1., 1., 0., 0.], |f| f.transform);
+            for v in &mut one.vertices {
+                for i in 0..2 {
+                    let p = v.position[i] * transform[i] + transform[i + 2];
+                    v.position[i] = raster_position(p, one.size[i], shift[i]);
+                }
+            }
+            one.items[0].clip = clip(draw.display_rect(draw.clip.ok_or("HUD clip")?));
+            let base = overlay.vertices.len() as u32;
+            overlay.vertices.extend(one.vertices);
+            for mut item in one.items {
+                item.vertices = item.vertices.start + base..item.vertices.end + base;
+                overlay.items.push(item);
             }
         }
-        overlay.items[0].clip = clip(draw.display_rect(draw.clip.ok_or("HUD clip")?));
         let plan = OverlayPlan::new(&overlay, [t.size.0, t.size.1], &NoGlyphs);
         let mut lock = GPU.lock().unwrap_or_else(|e| e.into_inner());
         if lock
@@ -431,6 +448,8 @@ impl WidgetPass {
         }
         let renderer = lock.as_mut().ok_or("HUD device")?;
         let caps = gfx::translate::Capabilities::from_features(t.device.features());
+        // The run's quads share their sampled stages' samplers (`run_with`).
+        let draw = self.members[0].draw.for_copy(t.copy);
         let samplers = std::array::from_fn(|n| {
             self.sampled[n].then(|| {
                 let key = gfx::translate::SamplerKey::from_stage(&draw.state.stages[n], caps);
@@ -449,9 +468,14 @@ impl WidgetPass {
         let (encoded, stats) = renderer
             .gpu
             .prepare(&t.device, &t.color, &plan, &textures)?;
-        if encoded.ranges != 1 || stats.batches != 1 {
+        // Every quad of the run drew, or none did: a refused one sends
+        // the run back to its packets, in order.
+        let quads = u32::try_from(self.members.len()).map_err(|_| "HUD run length")?;
+        if stats.batches as usize != plan.batches.len() || stats.items != quads || stats.refused_material + stats.refused_texture != 0 {
             return Err("HUD material refused");
         }
+        let mut encoded = encoded;
+        encoded.ranges = self.members.len();
         if t.copy == d3d::TargetCopy::Display {
             native_render::ui_gpu::count_overlay(&stats);
         }
@@ -468,8 +492,46 @@ impl ExternalPass for WidgetPass {
         true
     }
 
+    /// The next quad's pass after this run's last, when both sample the
+    /// same textures through the same samplers on the same target size:
+    /// one overlay, one pass. A texture or sampler change splits the run;
+    /// blend, scissor and shader state are per quad inside it.
+    fn run_with(&self, next: &dyn ExternalPass) -> Option<Box<dyn ExternalPass>> {
+        let next = next.as_any()?.downcast_ref::<WidgetPass>()?;
+        let (a, b) = (self.members.first()?, next.members.first()?);
+        let caps = gfx::translate::Capabilities::from_features(wgpu::Features::empty());
+        let key = |draw: &d3d::ResolvedDraw, n: usize| gfx::translate::SamplerKey::from_stage(&draw.state.stages[n], caps);
+        if self.sampled != next.sampled
+            || a.draw.textures != b.draw.textures
+            || a.overlay.size != b.overlay.size
+            || (0..4).any(|n| self.sampled[n] && key(&a.draw, n) != key(&b.draw, n))
+        {
+            return None;
+        }
+        let mut members = self.members.clone();
+        members.extend(next.members.iter().cloned());
+        Some(Box::new(WidgetPass { members, sampled: self.sampled }))
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    /// The whole guest draw: a run of several has none, and its packets
+    /// are the fallback.
     fn resolved_fallback(&self) -> Option<Arc<d3d::ResolvedDraw>> {
-        Some(Arc::clone(&self.draw))
+        match self.members.as_slice() {
+            [one] => Some(Arc::clone(&one.draw)),
+            _ => None,
+        }
+    }
+
+    fn resolved_packets(&self) -> Vec<Arc<d3d::ResolvedDraw>> {
+        self.members.iter().map(|m| Arc::clone(&m.draw)).collect()
+    }
+
+    fn diagnostic_draw(&self) -> Option<Arc<d3d::ResolvedDraw>> {
+        self.members.first().map(|m| Arc::clone(&m.draw))
     }
 
     fn writes(&self) -> d3d::ExternalWrites {
@@ -939,8 +1001,10 @@ mod tests {
     fn a_widget_pass_replays_from_its_packet() {
         let draw = Arc::new(crate::native_hud_glue::tests::ui_draw());
         let pass = WidgetPass {
-            draw: Arc::clone(&draw),
-            overlay: Arc::new(Overlay::new([draw.target.width, draw.target.height])),
+            members: vec![Member {
+                draw: Arc::clone(&draw),
+                overlay: Arc::new(Overlay::new([draw.target.width, draw.target.height])),
+            }],
             sampled: [true, false, false, false],
         };
         assert!(pass.replays_scene(), "the sink's retain_admission requires it");
@@ -951,6 +1015,57 @@ mod tests {
         assert!(Arc::ptr_eq(&packets[0], &draw));
         assert!(pass.colour_only());
         assert!(!pass.writes().depth_stencil);
+    }
+
+    fn quad_pass(draw: &Arc<d3d::ResolvedDraw>) -> WidgetPass {
+        WidgetPass {
+            members: vec![Member {
+                draw: Arc::clone(draw),
+                overlay: Arc::new(Overlay::new([draw.target.width, draw.target.height])),
+            }],
+            sampled: [true, false, false, false],
+        }
+    }
+
+    /// The kept scene joins adjacent quads of one state: 500 are one pass
+    /// holding every packet in order, so one render pass records them.
+    #[test]
+    fn five_hundred_adjacent_quads_are_one_run() {
+        let base = crate::native_hud_glue::tests::ui_draw();
+        let draws: Vec<_> = (0..500)
+            .map(|n| {
+                let mut d = base.clone();
+                d.vertex_count = base.vertex_count + n;
+                Arc::new(d)
+            })
+            .collect();
+        let mut run: Box<dyn ExternalPass> = Box::new(quad_pass(&draws[0]));
+        for draw in &draws[1..] {
+            run = run.run_with(&quad_pass(draw)).expect("same state joins");
+        }
+        let packets = run.resolved_packets();
+        assert_eq!(packets.len(), 500);
+        assert!(packets.iter().zip(&draws).all(|(p, d)| Arc::ptr_eq(p, d)), "draw order is kept");
+        assert!(run.resolved_fallback().is_none(), "a run has no single fallback");
+        assert!(run.replays_scene());
+    }
+
+    /// A texture change splits the run where it must, and the two runs
+    /// keep their order.
+    #[test]
+    fn a_texture_change_splits_the_run() {
+        let base = crate::native_hud_glue::tests::ui_draw();
+        let with = |header: u32| {
+            let mut d = base.clone();
+            d.textures[0] = Some(header);
+            Arc::new(d)
+        };
+        let (a, b, c) = (with(0x6000), with(0x6000), with(0x7000));
+        let run = quad_pass(&a).run_with(&quad_pass(&b)).expect("same texture joins");
+        assert!(run.run_with(&quad_pass(&c)).is_none(), "another texture is another pass");
+        let after = quad_pass(&c).run_with(&quad_pass(&c)).expect("the second run joins");
+        assert!(Arc::ptr_eq(&run.resolved_packets()[0], &a));
+        assert!(Arc::ptr_eq(&after.resolved_packets()[1], &c));
     }
 
     #[test]
@@ -1105,7 +1220,10 @@ mod tests {
         let ys: Vec<f32> = overlay.vertices.iter().map(|v| v.position[1]).collect();
         assert_eq!(ys, [240.0, 240.0, 480.0, 480.0]);
         let clip = &overlay.items[0].clip;
-        assert_eq!((clip.x, clip.y, clip.width, clip.height), (80, 0, 480, 480));
+        // A clip that is the whole canvas stays the whole display, so a
+        // run clipped to the canvas spans a wide window
+        // (`render_bridge::ui_layout::map_rect`).
+        assert_eq!((clip.x, clip.y, clip.width, clip.height), (0, 0, 640, 480));
         // The plan then stretches the fitted units over the window: the
         // fill's x spans 1440 of 1920, centred.
         let plan = OverlayPlan::new(&overlay, [1920, 1080], &NoGlyphs);

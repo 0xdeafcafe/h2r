@@ -1,6 +1,7 @@
 //! Author scenario AI against the multiplayer map's own tag index.
 use std::io::{Read, Seek};
 
+use firefight::Faction;
 use h1campaign::ai::convert::{ScenarioBlocks, grenade};
 use h1campaign::ai::h2::{AreaRef, Order, ScenarioAi, Squad, StartingLocation, Zone, layout};
 use h1campaign::scripts::compile::{Compiled, add_startup_squad, field};
@@ -28,7 +29,7 @@ const SQUAD_SLOTS: usize = 16;
 pub(crate) const CLASS_PREFIX: &str = "ff_class_";
 /// A squad name is 32 characters with its terminator.
 const MAX_CLASS_NAME: usize = 31 - CLASS_PREFIX.len();
-const COVENANT_TEAM: u16 = 3;
+const COVENANT_TEAM: u16 = Faction::Covenant.team() as u16;
 /// The orders the guest's `hunt` entry finds by name (`AI_SET_ORDERS`,
 /// 0x275cb0): `ff_hunt_NN` sends a squad at base NN.
 pub(crate) const HUNT_PREFIX: &str = "ff_hunt_";
@@ -47,7 +48,7 @@ pub(crate) fn prepare<R: Read + Seek>(
     drops: Vec<Zone>,
     bases: Vec<Zone>,
     elite: TagId,
-    classes: &[(&str, TagId)],
+    classes: &[(&str, TagId, Faction)],
     probe: bool,
 ) -> Result<AiBlocks, String> {
     let location = map
@@ -88,8 +89,8 @@ pub(crate) fn prepare<R: Read + Seek>(
     let weapon_index = weapon_slot(map, &root, weapon, &mut fields)?;
     let mut squads = squads(&drops, weapon_index, probe)?;
     if !probe {
-        let names: Vec<&str> = std::iter::once("elite")
-            .chain(classes.iter().map(|(name, _)| *name))
+        let names: Vec<(&str, Faction)> = std::iter::once(("elite", Faction::Covenant))
+            .chain(classes.iter().map(|(name, _, faction)| (*name, *faction)))
             .collect();
         squads.extend(class_squads(&drops, weapon_index, &names)?);
     }
@@ -104,7 +105,7 @@ pub(crate) fn prepare<R: Read + Seek>(
         zones,
         squads,
         character_palette: std::iter::once(elite)
-            .chain(classes.iter().map(|(_, tag)| *tag))
+            .chain(classes.iter().map(|(_, tag, _)| *tag))
             .collect(),
         ..Default::default()
     };
@@ -263,11 +264,16 @@ fn squads(zones: &[Zone], weapon: i16, probe: bool) -> Result<Vec<Squad>, String
 /// The class record: squad `ff_class_<name>` for each palette row, in
 /// palette order, `names[row]`. They place no one (no count, no slot);
 /// each is shaped like a slot squad so the engine reads them as it does
-/// those.
-fn class_squads(zones: &[Zone], weapon: i16, names: &[&str]) -> Result<Vec<Squad>, String> {
+/// those. A record squad's team is its class's faction's team: the game
+/// reads the faction from it (`firefight::guest::read_kit`).
+fn class_squads(
+    zones: &[Zone],
+    weapon: i16,
+    names: &[(&str, Faction)],
+) -> Result<Vec<Squad>, String> {
     let mut seen = std::collections::BTreeSet::new();
     let mut out = Vec::with_capacity(names.len());
-    for (row, name) in names.iter().enumerate() {
+    for (row, (name, faction)) in names.iter().enumerate() {
         let valid = !name.is_empty()
             && name.len() <= MAX_CLASS_NAME
             && name.as_bytes()[0].is_ascii_lowercase()
@@ -285,6 +291,7 @@ fn class_squads(zones: &[Zone], weapon: i16, names: &[&str]) -> Result<Vec<Squad
         let mut squad = squads(zones, weapon, false)?.swap_remove(0);
         squad.name = format!("{CLASS_PREFIX}{name}");
         squad.character = i16::try_from(row).map_err(|_| "class palette index overflow")?;
+        squad.team = u16::from(faction.team());
         out.push(squad);
     }
     Ok(out)

@@ -538,6 +538,30 @@ pub fn owned_session(m: &dyn GuestMemory) -> Option<u32> {
         .then_some(s)
 }
 
+/// Whether this console hosts a matchmade match's session now, in any
+/// state: the life cycle matchmaking's (types 6 to 9, networking on,
+/// [`crate::lobby::matchmaking_cycle`]), its target session there with a
+/// state, distributed, and this console its host. Between the lobby's
+/// advertisement going and the first frame this console serves the game
+/// ([`serves_game`]) the session leaves state 5 for arbitration and the
+/// handoff (state 7) while the map loads: a Clankermatch's phantoms are
+/// still its peers then, and its fill holds (docs/game/bots.md §8.4).
+pub fn hosts_match(m: &dyn GuestMemory) -> bool {
+    if !crate::lobby::matchmaking_cycle(m) {
+        return false;
+    }
+    let s = match crate::lobby::game_session(m) {
+        Ok(s) if s != 0 => s,
+        _ => return false,
+    };
+    let read = |a: u32| m.u32(a).ok();
+    let host = read(s + HOST_PEER);
+    read(s + STATE).is_some_and(|state| state != 0)
+        && read(s + PROTOCOL) == Some(PROTOCOL_DISTRIBUTED)
+        && host.is_some()
+        && host == read(s + LOCAL_PEER)
+}
+
 /// The player slots free for a player with no reservation, as the
 /// host's add (`0x60000` → `0x62e30`) counts them: the session's most
 /// players (`+0x4994`) less its players (`+0x1118`) less the
@@ -682,12 +706,74 @@ pub fn config_in(
     name: &str,
     team: Option<u8>,
 ) -> R<Option<[u8; CONFIG_SIZE]>> {
+    config_in_ranked(m, s, name, team, None)
+}
+
+/// [`config_in`] with the phantom's `rank` in the lobby's rank fields
+/// ([`with_rank`]), for a phantom of a ranked hopper.
+pub fn config_in_ranked(
+    m: &dyn GuestMemory,
+    s: u32,
+    name: &str,
+    team: Option<u8>,
+    rank: Option<Rank>,
+) -> R<Option<[u8; CONFIG_SIZE]>> {
     let Some(slot) = local_player(m, s)? else {
         return config(m, name, team);
     };
     let mut host = [0; CONFIG_SIZE];
     m.read(player(s, slot) + P_REQUESTED, &mut host)?;
-    Ok(Some(from_host(&host, name, team)))
+    let mut c = from_host(&host, name, team);
+    if let Some(rank) = rank {
+        with_rank(&mut c, &host, rank);
+    }
+    Ok(Some(c))
+}
+
+/// The rank a ranked hopper's lobby row shows for a phantom, as the stats
+/// read gives a person's: the level as stored (0 to 49, the shown level
+/// less 1) and the experience that level starts at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Rank {
+    pub level: u8,
+    pub experience: u32,
+}
+
+impl Rank {
+    /// The rank of shown level `level` (1 to 50, clamped), at the
+    /// experience the server's rules start it at.
+    pub fn of_level(level: u8) -> Rank {
+        let shown = level.clamp(live_proto::rank::MIN_LEVEL, live_proto::rank::MAX_LEVEL);
+        Rank {
+            level: shown - 1,
+            experience: live_proto::rank::threshold(shown),
+        }
+    }
+}
+
+/// The configuration offset of the lobby's hopper index (0 to 15).
+const CONFIG_HOPPER: usize = 0x84;
+/// The two `i16`s after it: the best level (`+0x88`) and the level
+/// (`+0x8a`); then the experience dword (`+0x8c`)
+/// (docs/live/live-matchmaking.md §8.1, "Into the lobby").
+const CONFIG_BEST_LEVEL: usize = 0x88;
+const CONFIG_RANK_LEVEL: usize = 0x8a;
+const CONFIG_EXPERIENCE: usize = 0x8c;
+
+/// Puts `rank` in `c`'s host-side fields (`+0x84..+0x90`), under the
+/// hopper index the host's configuration `host` carries. They are all -1
+/// (no rank shown) when the index is out of range (`0x14bc80`), so a host
+/// with none leaves them as they were.
+fn with_rank(c: &mut [u8; CONFIG_SIZE], host: &[u8; CONFIG_SIZE], rank: Rank) {
+    let index = u32::from_le_bytes(host[CONFIG_HOPPER..CONFIG_HOPPER + 4].try_into().unwrap());
+    if index >= 16 {
+        return;
+    }
+    c[CONFIG_HOPPER..CONFIG_HOPPER + 4].copy_from_slice(&index.to_le_bytes());
+    let level = i16::from(rank.level).to_le_bytes();
+    c[CONFIG_BEST_LEVEL..CONFIG_BEST_LEVEL + 2].copy_from_slice(&level);
+    c[CONFIG_RANK_LEVEL..CONFIG_RANK_LEVEL + 2].copy_from_slice(&level);
+    c[CONFIG_EXPERIENCE..CONFIG_EXPERIENCE + 4].copy_from_slice(&rank.experience.to_le_bytes());
 }
 
 /// A sim with no local profile starts the requested configuration with its

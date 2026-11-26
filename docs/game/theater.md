@@ -281,16 +281,18 @@ its options in reach. The browser geometry lives in
 `crates/extensions/game/src/theater_ui/pages.rs`. Its preview includes an
 empty library and a scrolled 25-film list.
 
-Press A on a film to open its lobby. The header shows its map, variant,
-mode, date, duration and result when known. The Players table shows the
-recorded names and available team, score and kill/death columns. A score
-without a join record uses the numbered player seat. Left
-and Right page through longer rosters. The state line shows **Playable**
-or **Unavailable** for a checked film. An unavailable film shows the
-reason in the action area, including when a film predates a breaking
-simulation change. A summary without a recording also shows its reason
-there. **Watch** appears for playable films and host films awaiting their
-first download.
+Press A on a film to open its lobby. Its actions (Watch, Save, Delete,
+Share, Copy Link) and facts are on the left: clip title, map, game, mode,
+date, length and result, where known. The map picture and the player list
+are on the right. The list shows the scoreboard, else the film's own
+roster, ten players a page in two columns, with each player's team name
+(else score) beside the name; team games sort by team. Left and Right page
+through longer lists. When no players are known the area reads
+"Player list unavailable." An unavailable film has no **Watch** action and
+shows the reason in the status line at the bottom left, including when a film
+predates a breaking simulation change. A summary without a recording also
+shows its reason there. **Watch** appears for playable films and host films
+awaiting their first download.
 
 Recent combines the newest 25 unsaved local games and the signed-in Live
 account's unsaved games. `h2 play` records each game into the local library as a film
@@ -386,7 +388,7 @@ Offline samples are `theater.films`, `theater.film`, `theater.playback`
 and `theater.pause-menu` in `h2 ui preview`. The playback samples include
 jumping, divergence and unavailable states. The browser includes empty Recent,
 Saved, Clips and filtered states. Film details include a summary without
-a recording and a paged roster with names only. The main-menu selection
+a recording, a roster-only film and a two-page roster with names only. The main-menu selection
 dialog reports `kit.picker` through `ui.screen`.
 
 ### Web Theater

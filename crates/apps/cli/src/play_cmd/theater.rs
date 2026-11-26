@@ -6,7 +6,7 @@ use agent_proto::theater::CompatibilityState;
 use boot::theater::Installation;
 use boot::theater_ui::{
     Key, Theater,
-    adapter::{FilmMeta, Library, Player, Source, game_type},
+    adapter::{FilmMeta, Library, Player, Source, game_type, team_name},
     stats,
 };
 use boot::ui_kit::{preview, spec::ScreenSpec};
@@ -67,7 +67,7 @@ pub(crate) fn film_entry(entry: film::LibraryEntry) -> FilmMeta {
             .into_iter()
             .map(|p| Player {
                 name: p.name,
-                team: (p.team >= 0).then(|| p.team.to_string()),
+                team: (p.team >= 0).then(|| team_name(p.team)),
                 ..Player::default()
             })
             .collect(),

@@ -14,7 +14,8 @@
 //!   chain is in the tree, nothing is pinned, and the fields the engine
 //!   reads at unit creation and seat entry are sane.
 //! - `biped_words_match_halo_2s_counterparts`: the camera field of view and
-//!   `BIPED_WORDS` agree with Halo 2's matching biped on five pairs.
+//!   `BIPED_WORDS` and `BIPED_LANDING` (as Halo 1 holds them) agree with Halo
+//!   2's matching biped on five pairs.
 //! - `biped_shapes_follow_the_collision_size`: every retail biped of the
 //!   base with character shapes holds the pills and spheres `biped_shapes`
 //!   builds from its own collision size, and every rigid body of their
@@ -33,7 +34,7 @@ use h1map::H1Map;
 use h1objects::base::Base;
 use h1objects::convert::{Converter, Tree, template_candidates};
 use h1objects::rebuild::{
-    BIPD_HUD, BIPD_PILLS, BIPD_SIZE, BIPED_BODY, BIPED_TYPE, BIPED_WORDS,
+    BIPD_HUD, BIPD_PILLS, BIPD_SIZE, BIPED_BODY, BIPED_LANDING, BIPED_RATES, BIPED_TYPE, BIPED_WORDS, gravity_speed_factor,
     ROLE_VEHICLE_TYPE, TURRET_PHYSICS_ROLE, TURRET_SEAT_ROLE, VEHI_PHYSICS, SEAT_DRIVER,
     VEHI_SEATS, biped_shapes, usable_size,
 };
@@ -516,7 +517,7 @@ fn biped_words_match_halo_2s_counterparts() {
             "{h1_name}: field of view {} vs {fov}",
             u.camera_field_of_view
         );
-        for &(path, h1_at) in BIPED_WORDS {
+        for &(path, h1_at) in BIPED_WORDS.iter().chain(BIPED_LANDING) {
             if path == "crouching_camera_height" || (!h1_name.ends_with("crewman") && !["stationary_turning_threshold", "crouch_transition_time"].contains(&path)) {
                 continue;
             }
@@ -529,8 +530,38 @@ fn biped_words_match_halo_2s_counterparts() {
         }
         println!(
             "{h1_name}: field of view {fov}, {} words agree",
-            BIPED_WORDS.len()
+            BIPED_WORDS.len() + BIPED_LANDING.len()
         );
+    }
+}
+
+/// The cyborg, the elite and the grunt convert holding Halo 1's aim assist
+/// width (`bipd +0x458`), which is non-zero on all three.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn converted_bipeds_have_autoaim_width() {
+    let mut base_map = h2_map("05a_deltaapproach");
+    let base = Base::read(&mut base_map).unwrap();
+    let d = def(b"bipd");
+    for (level, name) in [
+        ("a10", r"characters\cyborg\cyborg"),
+        ("b30", r"characters\elite\elite"),
+        ("b30", r"characters\grunt\grunt"),
+    ] {
+        let h1 = h1_level(level);
+        let t = h1
+            .tags()
+            .iter()
+            .find(|t| t.name == name && t.group.0.to_be_bytes() == *b"bipd")
+            .unwrap_or_else(|| panic!("{name}"));
+        let u = h1::Unit::read(&h1, t).unwrap();
+        let source = f32::from_bits(u.biped_words.iter().find(|w| w.0 == 0x458).unwrap().1);
+        assert!(source > 0.0, "{name}: Halo 1 holds an aim assist width");
+        let mut c = Converter::new(&h1, &base);
+        let id = c.object(t).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let got = local(&c.tree, id).expect("rebuilt bipd in the tree");
+        let r = defs::from_built(d, &got.root).unwrap();
+        assert_eq!(float(&r, "autoaim_width"), source, "{name}");
     }
 }
 
@@ -821,6 +852,24 @@ fn bipeds_rebuilt_from_the_source_unit() {
             for (path, at) in BIPED_WORDS {
                 let h = u.biped_words.iter().find(|x| x.0 == *at).unwrap().1;
                 assert_eq!(w.get(*path), Some(&h), "{}: {path}", t.name);
+            }
+            let factor = gravity_speed_factor();
+            for (path, at) in BIPED_LANDING {
+                let h = f32::from_bits(u.biped_words.iter().find(|x| x.0 == *at).unwrap().1);
+                assert_eq!(
+                    w.get(*path),
+                    Some(&(h * factor).to_bits()),
+                    "{}: {path}",
+                    t.name
+                );
+            }
+            for (path, at) in BIPED_RATES {
+                let Some((_, ticks)) = u.biped_words.iter().find(|x| x.0 == *at) else {
+                    continue;
+                };
+                let scale = if *path == "jump_velocity" { factor } else { 1.0 };
+                let rate = 30.0 * f32::from_bits(*ticks) * scale;
+                assert_eq!(w.get(*path), Some(&rate.to_bits()), "{}: {path}", t.name);
             }
             let size = u.size.expect("a biped's size");
             let sized = usable_size(&size);

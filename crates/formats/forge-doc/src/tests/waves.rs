@@ -32,6 +32,7 @@ fn set_of(name: &str, rounds: usize, squads: &[SquadSpec]) -> waves::Def {
         format: firefight::FORMAT,
         name: name.into(),
         teams: 1,
+        set: firefight::SetRules::finite(),
         rounds: (0..rounds)
             .map(|_| Round {
                 waves: (0..5)
@@ -48,6 +49,7 @@ fn set_of(name: &str, rounds: usize, squads: &[SquadSpec]) -> waves::Def {
             pool_start: 5,
             per_round_bonus: 1,
             shared: true,
+            zero_holds: false,
         },
         caps: Caps {
             live_actors_by_players: vec![(4, 32)],
@@ -64,6 +66,7 @@ fn set_of(name: &str, rounds: usize, squads: &[SquadSpec]) -> waves::Def {
             skull_multipliers: BTreeMap::new(),
             assist: 500,
         },
+        bonus: None,
     }
 }
 

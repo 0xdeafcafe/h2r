@@ -11,7 +11,8 @@ loaded once per map; each frame the CPU hands over only the drawn objects'
 node matrices, read from the game's own computed transforms in guest
 memory. Skinning runs in the vertex shader. The rule that must hold: an
 object draws natively only when its material, state and inputs can be
-reproduced exactly; otherwise its items keep their D3D draws.
+reproduced exactly; otherwise it is a named drop (below), and no D3D draw
+stands in for it.
 
 ## Stage 2: objects and skinning
 
@@ -164,22 +165,56 @@ declared implementation across the model's sections. Material LODs with
 different base passes and parts outside the native object renderer's
 coverage keep the definition partial. Extraction checks the model's
 published upload as well as the selected part's native coverage. A
-failed GPU lookup for a covered part is a residency fallback
+failed GPU lookup for a covered part is a named drop
 (`native_objects_walk_unresident`).
+
+#### Object setup is cut
+
+`OBJECT_RENDER_SETUP` (`0x00133790`) is a cut producer
+(`render_bridge::cut::CUTS`, row `object_setup`): its guest body never
+runs. The producer is `native_scene_lists`' own seam
+(`cut_setup`, listed in `cut::OWN_PRODUCER`), because it builds the whole
+call's output from the call's registers: the render records, the palettes
+and node rows, the lighting bytes, the animation and geometry cache stamps
+and the residency requests, all staged and published in one turn in the
+guest's visit order, with AL and the "not drawn" registers.
+
+A call the setup cannot build (a refusal of `Refusal`: memory, layout,
+x87 or MXCSR state, object model, lighting, palette) takes the "not drawn"
+exit (`setup::not_drawn`: flag bit 0, AL 0), so the object has no render
+records and nothing of it draws in any layer. It is counted
+`native_scene_lists_object_setup_dropped`, under its cause
+(`..._memory`, `..._layout`, `..._unsupported`, `..._object_model`,
+`..._lighting`, `..._palette`) and as `native_objects_scene_dropped`.
+
+One arm stays the guest's: a residency request that needs a new queue
+entry, a priority raise or a wait (`residency_request` returns
+`NeedsGuestService`). Submitting storage I/O is the guest cache's own
+service, so that call runs the body, which issues no draw. It is counted
+`native_scene_lists_object_setup_fallback` and `..._residency`; once the
+request is queued the next frame's setup is native. A resident block, or a
+request already queued, is made by the cut: the cache stamp and the
+structure-miss count (`render_bridge::native_scene_lists::residency_request`;
+test `object_setup_makes_the_guests_residency_requests`).
 
 #### Frame stats
 
-The `native_objects_walk_native` and `native_objects_walk_fallback`
-columns count objects per view. Fallback reason columns have the same
-prefix and end in `unsupported`, `order`, `model`, `inputs`, `state`,
-`reservation` or `unresident`. `walk_unresident` counts the objects
-returned to the guest in a run whose requested model agrees with the
-loader's part coverage but has no uploaded geometry and materials.
-`walk_model` includes unresolved definitions, mismatched models and
-loader lock contention. These planning refusals keep the guest draws.
+The `native_objects_walk_native` column counts the objects drawn per view.
+`walk_unsupported` and `walk_order` count the objects of a span the walk did
+not admit, `walk_reservation`, `walk_model`, `walk_inputs`, `walk_state` and
+`walk_unresident` the objects of a run the host did not take. All of them
+are drops: the walk consumes the handlers of those objects
+(`native_objects::walk_geometry`) and counts `native_objects_scene_dropped`
+with them, so `walk_fallback` no longer rises. The run draws in
+`native_objects::SLOT` (`ViewSlot::OpaqueBase`, slot 1), and the pass
+carries the slot. `walk_unresident` counts the objects in a run whose
+requested model agrees with the loader's part coverage but has no uploaded
+geometry and materials. `walk_model` includes unresolved definitions,
+mismatched models and loader lock contention.
 `walk_unreadable` counts views whose sorted list or
 ownership could not be established. These views may have an unknown
-object count. The `walk_part_*` counters count the parts (not objects)
+object count, so their layer-3 handlers are the one place the guest's
+draws remain. The `walk_part_*` counters count the parts (not objects)
 behind `walk_unsupported` by their cause
 (`scene_extract::layout::object_walk::Refusal`,
 [framescene.md](framescene.md), "Slice 3"): `aux_state` a bit-11 part
@@ -191,7 +226,7 @@ record with a structure lightmap index, `argument` an item's `+0x14` or
 `program` a program with flag bit 20, and `layout` every other refusal
 (the item's layout, a check against the guest's choice, memory that does
 not read). Every refused part is in exactly one, so their sum is what
-keeps the guest's layer-3 object draws.
+the walk drops.
 
 The method for comparing the walk with `impl.render.native=off` is in
 [notes/native-ab.md](notes/native-ab.md).

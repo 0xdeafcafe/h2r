@@ -137,11 +137,14 @@ named by **class** (`grunt`, `elite`, `jackal`, `hunter`, ...) and the
 kit maps each class to a character on the machine.
 
 ```
-Def      { format: 2, name, teams, rounds: [Round], lives: Lives, caps: Caps, scoring: Scoring }
+Def      { format: 3, name, teams, rounds: [Round], set: SetRules, lives: Lives, caps: Caps, scoring: Scoring,
+           bonus: Option<Bonus> }
+SetRules { endless: bool, scale, skulls: [Skull] }
 Round    { waves: [Wave], skulls_on: [Skull] }
 Wave     { squads: [SquadSpec], boss: bool, gap_ticks }
 SquadSpec{ class, count: {per_player, min, max}, drop: Drop, weapon_tier }
-Lives    { pool_start, per_round_bonus, shared: bool }
+Lives    { pool_start, per_round_bonus, shared: bool, zero_holds: bool }
+Bonus    { ticks, squad: SquadSpec, lives_by_points: [(points, lives)] }
 Caps     { live_actors_by_players: [(players, actors)] }
 Scoring  { by_class, player_kill, difficulty_multiplier, skull_multipliers, assist }
 ```
@@ -170,11 +173,37 @@ output and hashes depend on the definition alone.
   in [AI networking](ai-networking.md#cpu-on-the-host).
 - `"edge"` lets the director choose among the kit's edge zones.
   `{"prefer_zone":n}` prefers zone `n` (0 through 11) when present
-  and unseen. Weapon tiers range from 0 to 3.
-- A round's `skulls_on` adds skulls to those already enabled. Each skull
+  and unseen. `{"role":"line"|"flank"|"heavy"}` keeps only the zones
+  whose `ZoneSeen::roles` carry the role, then applies the unseen and
+  farther-half rule to them as for `"edge"`; `validate` refuses a squad
+  whose role no zone of the kit carries (`Limits::zone_roles`). An auto-built kit tags every zone with all three
+  roles. Weapon tiers range from 0 to 3.
+- **Sets.** `rounds` describes one set. A finite definition (`set.endless`
+  false, `scale` 0, no set skulls) plays it once and ends `Won`. An
+  endless one has one team and exactly three rounds. When the last round's
+  boss wave is cleared the next set begins: `Set{index}`, the round
+  skulls switch off, the set's skull switches on, and its first `Round`
+  follows. The game ends only `Lost`. Set *n* (zero-based) scales each
+  squad's count by `1 + n * scale / 1,000`, capped by the actor cap
+  (`scale` is at most 500). `set.skulls` lists up to three skulls that
+  arrive at the start of sets 2, 3 and 4, in that order, and stay on;
+  none arrives after the list ends. A set skull is listed once and is not
+  a round skull. A skull the match began with is never switched off.
+- A round's `skulls_on` adds skulls to those already enabled; in an
+  endless definition a new set switches them off again. Each skull
   appears at most once in the schedule. The JSON names are
-  `assassins`, `thunderstorm`, `famine`, `blind`, `ghost`, `catch`,
-  `mythic`, `angry` and `low_gravity`.
+  `assassins`, `thunderstorm`, `famine`, `black_eye`, `ghost`, `catch`,
+  `mythic`, `angry` and `low_gravity`. Blind is not a Firefight skull.
+- `zero_holds` (default false, left out of the JSON when false) makes a
+  dead player at zero lives wait for the next grant (a round's end, the
+  bonus round's end) instead of returning free at the wave's end.
+- `bonus` (default absent) is the bonus round played after each set
+  ("The bonus round"). `ticks` is 1 to 9,000. `squad` is checked as a
+  wave's squad is: a scored class, bounds, and under the actor cap at
+  every player count. `lives_by_points` has up to six rows, points
+  strictly ascending up to 1,000,000, 1 to 1,000 lives each.
+- `iron` is a JSON skull name too, but only the bonus round turns it on:
+  `skulls_on` and `skull_multipliers` refuse it.
 - Class scores range from 1 to 1,000 points. The four difficulty
   multipliers (`easy`, `normal`, `heroic`, `legendary`) and the optional
   multiplier for each skull are integers in thousandths, from 1 to
@@ -186,14 +215,19 @@ output and hashes depend on the definition alone.
   scoring table holds up to 32 classes.
 
 `firefight::builtin::definitions()` returns Holdout, Attrition and Last
-Stand for one team, then Crossfire for two (a player kill scores 50).
+Stand for one team, Crossfire for two (a player kill scores 50), then
+Endless for one team: round skulls Ghost, Catch and Black Eye, set skulls
+Thunderstorm, Famine and Mythic (two of them stand in for ODST's two
+skulls Halo 2 lacks, so they are data to swap), 7 starting lives, one more
+each round, squads growing 10 percent a set.
 They are files of the `modes` package, `content/modes/firefight/*.firefight.json`
 (`firefight::builtin::SETS` embeds them), and the package lists each as a
 `rules` item: `h2 package check` reads it as a `Def`, builds the director
 script from it (`script::compile`) and refuses a set the lobby would
 refuse (`workspace::wave_sets` lists a set's). The reference test in
 `builtin.rs` holds the files to the sets written as Rust.
-Each has three rounds and uses the stage-one kit's Elite class.
+Each has three rounds and uses the stage-one kit's Elite class. Holdout's
+round skulls are Ghost, Famine and Thunderstorm.
 `builtin::with_teams(def, n)` plays a set with `n` teams: with two, a
 player kill scores the set's own points or `builtin::PLAYER_KILL_POINTS`
 (50); with one, nothing.
@@ -239,11 +273,15 @@ pub struct Observed { players: Vec<PlayerSeen { slot, alive, team }>,
                       actors_alive_by_squad: [u16; 16],
                       zones: Vec<ZoneSeen { seen, distance, team_distance: [u32; 2] }>,
                       kills: Vec<Kill { class, killer, assist }>,
-                      player_kills: Vec<PlayerKill { killer, victim }> }
-pub enum Command { PlaceSquad { slot, class, count, zone, weapon_tier }, Target { slot, team },
+                      player_kills: Vec<PlayerKill { killer, victim }>,
+                      ship: ShipSeen { ready, paths: Vec<bool> } }
+pub enum Command { PlaceSquad { slot, class, count, zone, weapon_tier },
+                   DropSquad { slot, class, count, zone, weapon_tier },
+                   ShipHover { on }, ShipUnload, ShipLeave { zone }, Target { slot, team },
                    Hunt { slot }, EraseSquad { slot }, Round { index }, Wave { index },
                    Skull { id, on }, Lives { player, pool }, TeamLives { team, pool },
-                   Score { player, points, reason }, Respawn { player }, Finish { outcome } }
+                   Score { player, points, reason }, Respawn { player },
+                   Bonus { on, ticks }, Finish { outcome } }
 pub enum Outcome { Won, Lost, TeamWon { team }, Draw }
 ```
 
@@ -349,9 +387,10 @@ a one-team match.
 The runtime loads it with a wave set, and the director's tests are its
 scenarios ([rules-engine.md](rules-engine.md#firefight-ai-and-bounces)).
 
-- `script::load(&def)` validates the definition, supplies the squads,
-  waves, round skull schedule, actor caps, points and multipliers as a
-  data module, then compiles and verifies the script. A definition with
+- `script::load(&def)` validates the definition, supplies the squads
+  (with each one's zone-role mask), waves, round skull schedule, set
+  skulls, set constants (`endless`, `set_scale`), actor caps, points and
+  multipliers as a data module, then compiles and verifies the script. A definition with
   more than 256 squads is refused by name, since a table holds 256 rows.
 - Global variables hold match progress, player variables hold lives
   and registration, and object variables on the host's 16 `ff_slots`
@@ -375,6 +414,15 @@ scenarios ([rules-engine.md](rules-engine.md#firefight-ai-and-bounces)).
 - `ScriptDirector::state` reads `director::State` back from the script's
   variables and the VM generator. `ScriptDirector::resume` continues
   from `RulesExt`.
+
+- Sets run in the script: the global `set_index`, `end_wave` starting the
+  next set when `endless` is 1, and `begin_set` queuing `ff_set(n)`, a
+  `ff_skull(id, false)` for each scheduled skull the match did not begin
+  with (`base_skulls`), and the set's skull. `zone_has_role(z, mask)`
+  reads `ZoneSeen::roles` (every zone fits mask 0). `director::State::set`
+  reads `set_index` back. The director is the script alone, so the sets
+  tests (`tests/sets.rs`) hold it to itself: a fresh script over what a
+  match observed gives the commands the match was played with.
 
 - Two teams run in the script too. Each team's pool and score are
   globals (`pool_0`, `pool_1`, `score_0`, `score_1`), the player's team
@@ -554,8 +602,9 @@ that id, and each machine loads its own build.
 | Sectors in each `sbsp` | `pathfind::generate`, then `pathfind::trim` to the sectors the AI can use ("Sectors the AI can use", below) | the generator the bots' mesh starts from, which has run on every retail multiplayer map (**Code**, `crates/live/bots/src/cache.rs`); the engine has not yet loaded its output (**S**) |
 | Drop zones | the bots' nav mesh (`bots::autonav`): sectors near the map's edge, off the players' spawn clusters, with a path to the middle | 6 to 12 a map; written as zones and areas |
 | Zones, areas, firing positions | sampled from the sectors: cover is a position with a wall toward the middle | the block writers of `h1campaign::ai` (`ScenarioBlocks`) |
-| Squad slots | 16 empty squads the director fills (class, count and zone are set at place time), then the class record: one empty squad `ff_class_<name>` per palette row | the same writers |
+| Squad slots | 16 empty squads the director fills (class, count and zone are set at place time), then the class record: one empty squad `ff_class_<name>` per palette row, on its class's faction's team | the same writers |
 | Characters, stage 1 | `char` tags we author from a tuning table of ours, on bipeds and weapons the multiplayer map already has | Elites only; no tag is copied from another map |
+| Dropship | the Phantom by stage-2 transplant (the map's own Spirit on a Halo 1-built map), one parked `ff_ship` placement, a point set `ff_path_NN` for each drop zone with a clear column ("The dropship", below) | cut before any class when headroom is short |
 | Characters, stage 2 | `firefight_kit::Classes` (`src/transplant.rs`): `tags::schema::transplant` of a donor's `char` tag and its closure, from the player's own campaign maps, with the sound gestalt merge (`h1_assets::sounds::transplant_from`); the retail class table (`src/retail.rs`) names the donors | each class costs tag headroom; the builder refuses a build that does not fit, naming every class's cost, or cuts classes from the end of the list |
 
 Stage 1 runs against a map on the configured disc or extracted disc tree:
@@ -567,6 +616,7 @@ h2 firefight kit beavercreek --home blue --replace
 h2 firefight kit coagulation --probe
 h2 firefight kit beavercreek --classes my-classes.txt --cut
 h2 firefight kit zanzibar --retail-classes --cut
+h2 firefight kit zanzibar --dropship none
 ```
 
 The first command installs `<data>/maps/firefight-coagulation`. `--home
@@ -603,7 +653,41 @@ name record nothing, and a map with no record has no classes: the Elite is
 not assumed. Definitions are admitted against the record. A definition
 whose scoring table, which every wave squad's class must have an entry in,
 names a class the map lacks is refused with that class's name
-(`Refusal::UnknownClass`), so a wave never falls back to the Elite.
+(`Refusal::UnknownClass`), so a wave never falls back to the Elite. A
+caller that knows which classes the build cut (`Package::cut`) passes them
+as `Limits::with_cut`, and the refusal then says the kit cut the class
+(`Refusal::CutClass`) rather than that it never had it.
+
+**Factions.** A class has a faction (`firefight::Faction`: Covenant, Flood,
+Human; `ClassSpec::faction`). The kit writes it as the team of the class's
+record squad: Covenant 3, Flood 4, humans 2, the engine's own numbers
+(`firefight::teams`, [ai.md](../halo1/ai.md)), and the Elite is Covenant.
+`read_kit` reads it back into `KitLayout::factions` by palette row; a
+record on any other team is no class, so the map provides none and a set
+naming it is refused by name. `place_squad` sets the placed squad's team
+from its class's faction (`KitLayout::placement_team`): a Covenant class
+takes the team the host picked for the actors no player holds (the slot
+squads' team, 3), Flood and humans their own. A palette row with no class
+record is an error. Every faction is on its own team, so under Slayer's
+"teams differ" test each is hostile to the others and to the players with
+no table of ours (**V**: that actors choose targets by that test and not
+the campaign allegiance table; the coordinator's run R5 settles it). Enemy
+humans are legal in a custom set; allies are a later slice. The kit version
+(`KIT_VERSION`) is 5, the first whose record carries the faction.
+
+The Flood and human classes are named in `retail::FACTION_CLASSES`, with
+their `char` tags and donor maps as constants in `retail::donors`, every one
+**V** until the census step (P1) reads them off the disc: `flood_combat_elite`
+(**V**: tag-schema.md says the transplant refuses its tree),
+`flood_combat_human`, `flood_carrier`, `marine`. `retail::choose_factions`
+takes each class's first donor on the disc and refuses a class none of whose
+donors is there by its name and donors; nothing stands in for a missing
+class. `retail::KEEP_ORDER` is the whole keep order, last cut first: the
+Elite, `flood_combat_human`, `marine`, the pod, the Phantom and the Pelican,
+`flood_combat_elite`, `flood_carrier`, then the Covenant table; the vehicles
+are not copied yet, and each is cut before the first Flood class. A class
+may name its faction on the command line: `--class NAME@flood=DONOR:CHAR_PATH`
+(`covenant` when omitted).
 
 `h2 firefight kit` builds the list from the player's own disc
 (`crates/apps/h2-tools/src/firefight_cmd.rs`). Each class is `--class
@@ -651,19 +735,91 @@ last class until the build fits, and `Package::cut` names what it cut,
 first cut first. A refusal by the schema (a tag it cannot copy) or a
 missing `char` is an error naming the class, never a cut.
 
-**A drop ship (rules-world-api.md W8, R8).** The same machinery copies
-any group's tree, but three things are missing for a `vehi` root. The
-class takes `char` roots only (`ClassSpec` has no group), so a root group
-and a palette row for it are needed: the scenario's vehicle palette,
-written like the weapon palette row (`ai::weapon_slot`), and a squad's
-`vehicle` index. The schema (`layouts.txt`) must describe every group in
-the ship's closure (vehicle, model, render model, collision, physics,
-animation graph, effects, sounds): the transplant refuses the whole tree
-for one group without a layout, and a census on the player's campaign
-maps says which ship has a closure that copies. And the headroom: a ship
-with its animation graph and physics is far larger than a character, so
-Waterworks, Zanzibar and the other maps with a few KB of room refuse it
-and the cut order drops it first; R8 measures it per map in notes.
+**The dropship (rules-world-api.md, "Vehicles and drop ships").** A kit
+carries a ship the host flies squads in on (`src/ship.rs`,
+`h2 firefight kit MAP --dropship auto|phantom|spirit|none`, `auto` by
+default, `firefight_kit::Config::dropship`):
+
+- **The tag.** The Phantom, `objects\vehicles\phantom\phantom`, copied in by the
+  stage-two transplant from the first donor that carries it
+  (`transplant::add`, a `vehi` root; the command adds Outskirts,
+  `03a_oldmombasa`, as a donor when the disc has it and no class named it).
+  A map built from Halo 1's campaign already holds Halo 1's Covenant
+  dropship (the Spirit, `vehicles\c_dropship\c_dropship`; `h1campaign::h2assets`
+  keeps it as a set piece) and uses it with no donor. `auto` takes the
+  Spirit, then a Phantom the map holds, then a donor's; with none to be had it
+  builds the kit as before and says why. `phantom` and `spirit`
+  fail when their ship cannot be had; `none` writes nothing.
+- **The placement.** One vehicle placement named `ff_ship` (an object name),
+  on a new vehicle palette row for the ship, placed at the start (not
+  "not at start") at the first path's run-in, with that path's yaw. The base's
+  own vehicles, names and palette rows keep their indices; the new ones
+  follow them (`ship::author`).
+- **The paths.** For each drop zone `NN` with a clear column, a point set
+  `ff_path_NN` in the scenario's scripting data with three points,
+  `run_in`, `hover` and `run_out`, in flying order. `hover` is
+  `ship::DROP_HEIGHT` (6 units) over the zone's first area's mean. The
+  runs are at the sky height, 10 units over the tallest collision, and
+  outside the collision's horizontal bounds by at least 20. `ship::plan`
+  casts rays on the arena BSP's collision (`bots::los::Walls::clear`):
+  from just above the zone's floor to the sky (a roof over the zone
+  fails it), and, for the first of eight compass directions (starting
+  away from the map's middle) where both clear, from the run-in down to
+  the hover and from the hover up to the run-out, which lie on opposite sides.
+  A zone with no such direction gets no point set, and its squads spawn on foot.
+  The paths are not placed by hand; a map keeps what the rays find.
+- **Fit.** The ship is cut before any class: with a map short of headroom
+  the builder takes the `Fit` steps with the ship, then tries without it,
+  and only then drops classes (`fit_within`). A kit with no ship has
+  the bytes of the kit before it. `Package::ship` (`ShipReport`) and the
+  command's `dropship:` line say `kept (tag, tags copied, bytes, zone
+  paths)` or `cut (reason)`: over the tag headroom, no donor, or no clear
+  column; `Costs::ship` is the bytes (the copied tags, the placement, the
+  palette row, the name and the point sets). A probe kit has no ship.
+
+The kit only places the ship parked and gives it the points to fly. The
+placement carries no hover flag: the director turns the hold on
+(`ShipHover`), and the host flies and loads the ship ("The drop ship",
+below).
+
+**The drop ship.** The guest reads the kit's ship and paths with the rest
+of the kit (`guest::read_kit`): `KitLayout::ship` is the vehicle placement
+the object name `ff_ship` points at, and `KitLayout::paths` holds, for
+each drop zone in kit order, its `ff_path_NN` point set's `run_in`,
+`hover` and `run_out` (`ship::ShipPath`), or none when the zone has no
+set or the set misses a point. A game reports the ship as live when
+exactly one vehicle of that placement is in the world
+(`ship::placed_ship`); its seats are `ship::SEATS`, since the kit does
+not read the vehicle tag's seat blocks.
+
+The director (`content/modes/rules/firefight.rules`) holds the ship's state
+in three globals, `ship_state` (parked, inbound, unloading, outbound),
+`ship_tick` and `ship_zone`. Each tick the host tells it whether the ship
+is in the world (`Observed::ship.ready`, read `ship_ready()`) and which zones
+have a path (`zone_path(zone)`).
+
+- A squad whose chosen zone has a path, with the ship parked and in the
+  world, is placed by `ff_ship_hover(true)` and `ff_drop_squad(...)`
+  (`Command::ShipHover`, `Command::DropSquad`); the state is inbound.
+  Every other squad, including each squad of a wave while the ship is
+  out, is placed on foot by `place_squad_at` as before, so a wave
+  never waits on the ship, and a map with no ship or no path has the
+  commands it had.
+- `DropSquad` makes the host fly the ship from the path's run-in to its
+  hover point in `ship::FLY_TICKS` (240, 8 s) and place the squad into
+  it (`Game::fly`, `Game::drop_squad`, `ship::drop_squad`): up to the
+  ship's free seats ride, the rest of the squad spawns on foot at the
+  zone. A `DropSquad` for a zone the host finds no ship or path for
+  places on foot, as `PlaceSquad`.
+- 240 ticks after the drop the script calls `ff_ship_unload()`
+  (`ShipUnload`: `VEHICLE_UNLOAD`, every seat); 60 ticks later
+  `ff_ship_leave(zone)` (`ShipLeave`: a flight from the hover point to the
+  run-out in `FLY_TICKS`); 240 ticks after that `ff_ship_hover(false)` and the
+  ship is parked again. The ship's puts come before the tick's other
+  calls so a squad placed into a ship that begins its flight finds it
+  at the run-in.
+- `squad_alive` and the slot timeout read as before: riders are actors the
+  moment they are placed.
 
 The build is `firefight_kit::ground::build`, which takes the labels
 placed on the map and the recipe, and gives each label's place to the
@@ -694,7 +850,49 @@ drops come `ff_base_00` and `ff_base_01`, each one area with up to 8
 firing positions around its base, and the orders `ff_hunt_00` and
 `ff_hunt_01`, whose primary areas are that base's area only, so a squad
 hunted at team N pushes into base N. The kit refuses maps without six
-suitable drops or without the required local tags. `KIT_VERSION` is 3.
+suitable drops or without the required local tags. `KIT_VERSION` is 4.
+
+**Built-in layouts.** A map with an authored layout takes its drops from
+it, not from the generator. Layouts are code in
+`crates/tools/firefight-kit/src/builtin/{mod,coagulation,zanzibar}.rs`;
+`builtin::for_map(name)` finds one and `Config::layout` carries it.
+`Layout { map, home, two_teams, base, drops, cover }` names each drop by an
+`Anchor` on the map's own data, never a coordinate: `Flag { kind, team,
+nth }` (netgame flags, `scnr+0x118`: CTF stand, oddball, teleporter source
+and exit, territory, hill corner), `Starts { team }` (the mean of a team's
+starting locations), `Item { suffix, nth }` (a weapon placement by the end
+of its tag name), `Between(a, b, t)` and `Or(a, b)` (the first that
+resolves). A drop is its anchor, an offset, a snap radius, its `Roles` and
+its `Sides`. The base anchor replaces the home base's point and caps the
+base zone's firing positions (4 on Zanzibar, which is short of headroom).
+
+`nav::choose_zones_with` snaps each drop to the nearest sector within its
+radius that is on the walkable area both bases share, outside the base
+exclusion, not on an earlier drop's sector and with room for two firing
+positions. Drops keep the layout's order (`ff_drop_NN`). A drop that
+resolves nowhere or finds no such sector is refused by name, with the
+reason (`drop 'west_cave': no usable sector within 4.0`, `... (inside the
+base exclusion)`, `... (no path to both bases)`), and the build fails
+with every refusal; the generator never picks in its place. The package
+label carries the layout's digest (`Layout::digest`), so the package id
+changes with the layout, and `KIT_VERSION` 4 changes it for every kit.
+
+Each drop zone carries its roles in its flags above the engine's bits
+(`firefight::roles`: `LINE`, `FLANK`, `HEAVY`, from bit 8). A kit with no
+layout gives every drop zone all three, so a wave set plays as it does
+without roles. The game reads them back into `KitZone::roles`
+(`guest.rs::read_kit`); base zones have none. The director does not filter
+by role yet.
+
+Positions the layouts cannot know without the disc map (the wall offsets,
+pad suffixes, snap radii and which team's stand the Zanzibar base is) are
+named constants marked `V` in the layout files. `h2 firefight kit MAP
+--layout-report` is the census that settles them: every flag, start
+cluster and weapon pad with its kind, team and index, then each anchor's
+resolved point, the sector it snapped to, its distance to each base, each
+refusal and the cost table. `--layout` builds the kit with the map's
+layout. Coagulation's layout has two teams (Crossfire is offered); Zanzibar's
+has one.
 
 **Sectors the AI can use.** The generator gives every walkable collision
 surface a sector, including floors no player reaches: decorative
@@ -751,6 +949,22 @@ Every machine in a session loads the kit map: the host's entities name
 tags by index, so the indices must agree (ai-networking.md, "Rules and
 limits").
 
+#### The Flood pod
+
+Flood squads arrive in a pod of our own, not a disc model: a fleshy seed
+that falls root first and bursts open, drawn in
+[art/flood-pod](../../art/flood-pod/README.md) and built by
+`crates/tools/flood-pod-kit` (`kit::install`) as `bitm`, `shad`, `mode`,
+`phmo`, `hlmt` and `vehi` named `objects\vehicles\flood_pod\flood_pod`.
+The object is a seatless stationary vehicle, the class of Halo 2's
+insertion pod. Its model has a `shell` node and four `petal` nodes hinged
+on it (`flood_pod_kit::RIG` gives each hinge's axis and the open angle),
+an `impact` marker at the tip and `squad_exit_0` to `squad_exit_3` on the
+ground beside it. `h2 flood-pod kit MAP --out FILE` puts it into a disc
+multiplayer map to look at in Studio. `firefight-kit` does not add it to a
+kit map and no arrival uses it; the engine has not loaded the vehicle
+(**S**).
+
 ### Scoring and stats
 
 - `Scoring` gives points by class; the multiplier is difficulty times
@@ -769,7 +983,9 @@ limits").
 - In the stats stream: the host's `Host::post_tick` pairs each `Score`
   command with the class of the kill it was for (`Credit`) and, on
   `Finish`, makes the result (`Ended`: the set's name, the outcome, the
-  team count, each team's score, rounds cleared, respawns issued). The
+  team count, each team's score, rounds cleared, sets cleared, respawns
+  issued; an endless match counts rounds across sets, and a set it was lost
+  in the bonus round of is played through). The
   runtime reports each ([`runtime::Report`]) to Live telemetry, which
   writes two public game events the server takes only from the game's
   host (`live_proto::firefight`):
@@ -778,7 +994,8 @@ limits").
     `class`; an assist and a player kill carry none, and a player kill's
     points are the definition's `player_kill`.
   - `FirefightEnded`: `tick`, `set`, `teams` (1 or 2), `outcome`, `team`,
-    `scores`, `rounds_cleared` and `lives_used`. `scores` has one entry
+    `scores`, `rounds_cleared`, `sets_cleared` (left out when 0) and
+    `lives_used`. `scores` has one entry
     per team, team 0's first. `outcome` is `won` (one team only), `lost`
     (one team out of lives, or the only team present of two),
     `team_won` (two teams, with `team` 0 or 1) or `draw` (two teams);
@@ -792,7 +1009,8 @@ limits").
   composes, so both homes give the same answer) folds them into the
   summary's `firefight` section (`live_proto::firefight::Summary`):
   finished matches (`games`), one-team wins (`won`), rounds cleared,
-  lives used, points (`score`), player kills (`player_kills`, every
+  lives used, sets cleared (`sets_cleared`, with a count in each set's
+  row), points (`score`), player kills (`player_kills`, every
   `player_kill` credit, bots' included), matches by wave set, kills by
   class, and a row per account (score, kills, assists, player kills,
   matches). Every finished match counts in `games`; a two-team match
@@ -805,27 +1023,92 @@ limits").
   is never ranked (`ranks::rank_game`). Bots stay game-only, as today.
   A Firefight match is not multiplayer's kills or deaths.
 
+### The bonus round
+
+A definition with a `bonus` plays it after each set's last round (a set
+is the definition's rounds: `script.rs::set_rounds`), before the next
+set or the finish. It is part of the director script
+(`content/modes/rules/firefight.rules`: `start_bonus`, `end_bonus`,
+`grant_side`), so the host log carries it as commands and a replayed log
+agrees.
+
+- **Start.** When the set's last boss wave is cleared the director emits
+  `Bonus { on: true, ticks }` and the phase is `Phase::Bonus { until }`.
+  No `Wave` or `Round` command follows. The tick's score is noted per
+  team, so the bonus round's points are what is scored after it.
+- **Skulls.** Every skull of `BONUS_SKULLS` (Ghost, Catch, Thunderstorm,
+  Famine, Black Eye, Mythic) that is not already on is switched on with `Skull`,
+  and Iron (`Skull::Iron`, 11) with them. The script remembers which it
+  turned on; at the end it turns exactly those off, so the set's own
+  skulls are what remain. Iron is a director rule, not an engine skull:
+  `Command::Skull { id: Iron }` is not applied to the engine
+  (`host.rs`), and it takes no score multiplier.
+- **Enemies.** The bonus squad is the last row of the script's `squads`
+  and `waves` tables. Whenever the actor cap and a free slot allow, one is
+  placed again, at most one a tick, until the time is up.
+- **Deaths.** Iron means no respawn and no charge: the script issues
+  neither `Respawn` nor `Lives` while it runs, and defeat is not checked.
+  When every player present is dead the bonus round ends, not the game.
+- **End.** On time, or when all players are dead: the squads are erased,
+  the skulls it switched on go off, `Bonus { on: false }` follows, lives
+  are granted by the points the team scored in it, every dead player
+  respawns free, and the director goes on as after a round: the next
+  round, or the finish.
+- **Lives by points.** Each team takes the lives of the last
+  `lives_by_points` row its bonus points reach (rows do not add). A shared
+  pool gets them (`Lives` or `TeamLives`); with each player's own lives,
+  every player of the team gets them (`Lives { player }`).
+
+`tests/bonus.rs` covers the window and its length, the grant table by
+kills, a bonus death, all dead, the skulls on and restored, Iron, two
+teams, `zero_holds`, the validation, and 48 random matches replayed
+through a fresh script for the same commands.
+
 ### Lives, rounds and skulls
 
 - **Lives.** The pool is the director's. A player's death takes one life
   from the pool at respawn (`Respawn`, then `Lives` with the new pool);
   with the pool at zero the player waits for the wave to end and
   respawns then without a charge. Between waves an empty pool does not
-  hold a respawn. `Lives.shared = false` gives each player their own
+  hold a respawn. With `Lives.zero_holds` the player instead waits for
+  the next grant (a round's `per_round_bonus`, or the bonus round's lives,
+  or its end), and between waves an empty pool holds the respawn. `Lives.shared = false` gives each player their own
   count instead, announced when the player first appears. The engine's
   own respawn stays off: the variant's lives setting is 1, so a death
   leaves the player with none and the engine holds the respawn, and
   `Respawn` gives back the one life ("Guest boundary").
 - **Rounds.** Five waves, the last a boss wave; an intermission between
   rounds refills ammunition crates (a kit placement the director
-  re-enables) and adds `per_round_bonus` lives.
+  re-enables) and adds `per_round_bonus` lives. An endless definition's
+  last round is followed by its bonus round, then the next set's first
+  round, with the same bonus.
+- **Sets and the bonus round on the host.** The host runs the definition's
+  rules script (`ScriptDirector`) and applies what it logs
+  (`Host::apply`). `Set { index }` and `Round`, `Wave` change nothing in the
+  engine: the mode blob carries them to the HUD. The round skulls a new
+  set switches off arrive as `Skull { on: false }`, which the guest game
+  takes out of its set and writes to the skull array. `Bonus { on, ticks }`
+  sets the host's bonus flag, and while it is on the host refuses a
+  `Respawn` by name ("no respawn is made in the bonus round (Iron)"): the
+  script issues none and charges no life in it, and the grant at its end
+  comes after `Bonus { on: false }`. `Skull { id: Iron }` is a rule, not an
+  engine skull, and is not written. `Ended.sets_cleared` counts the sets
+  played through (`progress`); `Ended.rounds_cleared` of an endless match
+  counts every set's rounds.
 - **Skulls.** Two kinds ([skulls.md](skulls.md), "Where each effect
   lives"). AI-scoped skulls (Mythic, Angry, Catch, Thunderstorm, Ghost,
   Assassins) change what actors do, and only the host runs actors, so
   only the host applies them: the reader's campaign gate is answered as
   "on" for a Firefight host. Player-scoped skulls reach every machine by
   the path multiplayer skulls already use (`live_proto::skulls`, the
-  session data). The round schedule is in the definition.
+  session data). The round schedule is in the definition, and an endless
+  match's next set switches the previous set's round skulls off. Black
+  Eye (8) is shared and `Reach::Simulation`: every machine answers its
+  gate and holds its array byte whatever its role (`sim_bits`,
+  `black_eye_reaches_every_machine`); Iron is a director rule with no
+  engine byte (`FirefightScope::Rule`). A skull the director switches off
+  leaves the array, the gate set and the multiplayer set's active bits
+  (`a_skull_switched_off_leaves_the_array`).
   `skulls_mp::firefight_scope` names where each takes effect;
   `firefight_ai` gives the set a machine runs (every AI skull on a
   host or a lone machine, none on a guest), `firefight_shared` the
@@ -839,17 +1122,18 @@ limits").
 
 ### Game Setup
 
-A custom game's Game Setup gets a **Firefight Options...** row after the
-Clankers row (`firefight/options.rs`, `ROW_ACTION` 13; the row is added
-the way [bots.md](bots.md)'s Clanker Options row is, to every list that
-has Change Map). In the lobby's Firefight mode the row follows Change
-Map, and in Forge mode it is hidden ([The lobby](#the-lobby)). It opens
+A custom game's Game Setup gets a **Firefight Options...** row
+(`firefight/options.rs`, `ROW_ACTION` 13; the row is added the way
+[bots.md](bots.md)'s Clanker Options row is, to every list that has Change
+Map). `lobby_mode::arrange` keeps it only in the lobby's Firefight mode,
+where it follows Change Map; Multiplayer and Forge modes hide it
+([The lobby](#the-lobby)). It opens
 the Firefight page, a kit screen on Quick
 Options' dialog with six choice rows, each backed by a setting
 (`firefight.*`, in `setting_defs::ALL`): Firefight (on or off), Teams
 (`firefight.teams`: the wave set's own, one team or two), Wave set
-(`firefight.waveset`: the lobby map's own sets first, then the four
-built-ins, Crossfire the fourth — [Map-specific
+(`firefight.waveset`: Endless first, then the lobby map's own sets, then
+the other built-ins in their order (`options::wave_menu`) — [Map-specific
 sets](#map-specific-sets)), Difficulty, Starting
 lives (the wave set's own, or 1 to 30) and Skulls (whether each round
 switches its skull on). A on a row opens the value picker over the page; left and right step
@@ -860,7 +1144,7 @@ that match: `Options::definition` is the wave set the value names on the
 map the game started on (`builtin::resolve`, [Map-specific
 sets](#map-specific-sets)), with the chosen starting
 pool, played with the chosen teams (`builtin::with_teams`) and, with
-skulls off, no round skull; the difficulty goes to the
+skulls off, no round skull and no set skull; the difficulty goes to the
 director's settings, where it scales kill points. Firefight off in Game
 Setup leaves the mode idle with that reason in `firefight.state`. A
 choice the store cannot give refuses the mode with the setting named. The
@@ -889,6 +1173,41 @@ team is never a seat.
 With no compatible kit installed, the map picker is empty and Start
 Game reports the missing kit. Change Rules remains available.
 
+**The built-in kits build themselves.** Coagulation and Zanzibar have
+authored layouts (`firefight_kit::builtin`), so no one runs `h2 firefight
+kit` for them. At the start of `h2 run`, `h2 serve` and `h2 play`,
+`crates/apps/cli/src/firefight_kits.rs` asks
+`firefight_kit::builtin::pending` which of the two packages
+(`<data>/maps/firefight-<map>`) is missing or stale and, if any is, runs
+`firefight_kit::builtin::ensure` on a worker thread while the game boots.
+A package is current when its manifest is on disk and the stamp beside it
+(`<data>/maps/.firefight-kit-<map>.stamp`) names the kit version and the
+layout's hash; a package with no stamp, such as one `h2 firefight kit`
+built, is replaced. Nothing is built, and the disc is not read, when both
+are current. The kits carry the Elite only (no classes), and a map that
+does not fit its tag headroom takes the fit steps of "The kit" before it is
+refused. Each map's result is a report: current, built, or refused with a
+reason short enough for a panel line (`Zanzibar: 6 KB over, sectors`); one
+map's refusal does not stop the other. When the worker is done it reads
+the map list again (`map_select::publish_packages`, which also has the VFS
+read the maps folder), so the packages join the catalogue as a Live
+download does.
+
+While the worker runs (`lobby_start::KitBuild::Building`) a Firefight
+lobby on a map without the kit shows `Reason::KitBuilding` ("Preparing
+Firefight maps.") on the status line and "Preparing Firefight maps" over
+"Start Game works when they are ready" in the variant panel; Start Game is
+held. "No installed map supports Firefight yet" appears only when no kit map
+is installed and no build is running, and after a failed build its second
+line is the first refusal in place of the hint to run `h2 firefight kit`.
+Switching to Firefight puts the lobby on Coagulation's kit, else
+Zanzibar's, else the first kit map (`lobby_start::landing_map`); a lobby
+already on a kit map stays. A lobby that is in Firefight on another map
+when the build finishes lands the same way, once, on the next game tick
+(`map_select`, "land a Firefight lobby on its kit map"), unless the game is
+starting or counting down. Hosts keep the bundle path
+([Live](#live)).
+
 A map variant whose document has the `ai_ground` recipe carries the kit
 once it is built, so the lobby counts the map it is held on as a kit map
 (`lobby_start::KitMaps::for_pick`, from `map_variant::ground_on`), as it
@@ -901,23 +1220,26 @@ without ground with "No AI ground." and does not choose them
 
 ### The HUD
 
-The HUD shows a banner for the stage, the enemies left, the lives and a
-notification for a new round, a skull switched on or a lost life
+The HUD shows the score, the lives, where the match is, a meter of the
+enemies left, a slot for each skull on and a banner for what begins
 (`firefight/hud.rs`). All of it is a function of the **mode blob**,
 `hud::Mode`: the stage (warmup, spawning, fighting, cleanup,
 intermission, won, lost, team 0 won, team 1 won, draw), the round and
 wave with their totals, whether the wave is a boss wave, the actors
 alive plus those still in the reserve while a wave is on, the skulls on
 (a bit a session skull index, only the nine of `hud::FIREFIGHT_SKULLS`),
-the team count, and the lives (the shared pool, each player's own up to eight
-players, or each team's pool). With two teams the blob carries both
-scores and a mask of team 1's slots, so each viewer sees its own team's
-pool. Version 3 encodes to 17 bytes with one shared pool, 40 with eight
-players' own lives, 29 with two team pools and 50 with two teams and
-eight players' own lives, inside the actor channel's 63-byte mode
-state. The banners for the end are "RED TEAM WINS", "BLUE TEAM WINS"
-and "DRAW". The points are the game's own score display's and
-scoreboard's; the HUD draws none of its own.
+the set (and whether the definition is endless), the bonus round's ticks
+left, the wave's total actors (the enemies meter's full length; in a bonus
+round its length in ticks), the one-team score, the team count, and the
+lives (the shared pool, each player's own up to eight players, or each
+team's pool). With two teams the blob carries both scores and a mask of
+team 1's slots, so each viewer sees its own team's pool. Version 3
+encodes to 26 bytes with one shared pool, 49 with eight players' own
+lives, 34 with two team pools and 55 with two teams and eight players'
+own lives, inside the actor channel's 63-byte mode state
+(`blob_v3_round_trips_at_every_size`). `Mode::of` leaves `bonus_left` at
+0 until the host runs a bonus round. The banners for the end are "RED TEAM WINS", "BLUE TEAM WINS"
+and "DRAW".
 
 - **The host** builds the blob after each tick from the director and its
   log (`Mode::of`; the outcome is the last `Finish` in the log) and
@@ -927,38 +1249,92 @@ scoreboard's; the HUD draws none of its own.
 - **A distributed client** keeps the mode state it receives
   (`actor_net::client::Client::mode_state`) and publishes it
   (`hud::received`) at each tick boundary.
-- **Either machine** draws `hud::current(local_slot)`: the blob, decoded
-  and viewed by `view_of`, a pure function of the bytes and the roster slot.
-  A blob the build cannot read (wrong version, wrong length, a field out
+- **Either machine** draws `hud::current()`: the blob, decoded, and
+  `hud::view_on`, a pure function of the bytes, the roster slot, the scope,
+  the screen and the banner up. A blob the build cannot read (wrong version, wrong length, a field out
   of range) is an error, not a guess. `the_hud_reads_only_the_mode_blob`
   plays a whole match and requires the client's view to equal the host's
   at every tick.
 
+**The layout** (`hud/layout.rs`, `hud::layout::layout`) is a pure function
+of the blob, the viewer's roster slot, the scope and the screen (full
+640x480, half 640x240, quarter 320x240). The block sits at the bottom
+right in the frame (x 48..592, y 36..444 at full size), right-justified,
+in 14 px lines stacked up from `PLATE_TOP` (44, assumed) above the retail
+score plate:
+
+| Element | Full and half | Quarter |
+|---|---|---|
+| `score` | `SCORE 1234567`; two teams `RED a BLUE b`; hidden if the plate shows the total (`PLATE_SHOWS_TOTAL`) | hidden |
+| `lives` | `LIVES 7`, `LAST LIFE` at 1, `NO LIVES` (warning look) at 0; the viewer's own count when unshared; none in a test or at the end | one line down |
+| `progress` | endless `SET 2 ROUND 1 WAVE 3`; finite `ROUND 2 OF 3 WAVE 3`; bonus `BONUS 0:42` | `WAVE 3` |
+| `enemies` | a 92 by 8 meter (the battery strip): actors left over the wave's total; in a bonus round the time left | hidden |
+| `skull_0..6` | seven fixed slots, 16 px on an 18 px pitch from the right (14 px on 14 at half): Ghost, Catch, Black Eye, Thunderstorm, Famine, Mythic, Iron (no skull of ours yet). A skull on is shown in its slot, off is hidden; a slot never moves (`a_skull_slot_never_moves`). The picture is 14 px square in either size | none |
+| `banner` | centred at the top, 60 px below the frame's top (48 at half) | hidden |
+
+`Screen::retail` holds the weapon, grenades, tracker and plate
+rectangles, assumed from the census and marked to verify in the code;
+`layout::check` fails a layout with an element outside the frame, on one
+of them or on another, or a skull off its slot
+(`every_state_passes_the_layout_checks`,
+`no_element_overlaps_a_retail_rectangle`). A monitor sees the banner
+alone, a biped no lives.
+
+**Banners** (`hud/banners.rs`). `banners::events` reads what began between
+two blobs, in the order set, round, skull, wave, after what completed
+(`WAVE CLEAR`, `ROUND COMPLETE`, `SET COMPLETE`) and the bonus round
+(`BONUS ROUND`, `BONUS OVER 2 LIVES`); `LAST LIFE` comes before the wave.
+A skull is `CATCH ON`, from its name. The match's end (`VICTORY`,
+`GAME OVER`, `RED TEAM WINS`, `BLUE TEAM WINS`, `DRAW`) stays up.
+`Banners::tick` shows each for 3 s at 30 ticks a second, easing in and
+out over 200 ms; events from a newer tick replace the banner up and the
+queue (`banners_queue_set_round_skull_wave`).
+
 The HUD is the HUD kit's `firefight` HUD
-([forge-firefight-ui.md](forge-firefight-ui.md), "The Firefight HUD";
-`hud_kit_core::huds::firefight`), drawn by Halo 2's own HUD code
-([hud-kit.md](hud-kit.md)). `hud::view_of` turns the blob into the kit's
-`View` for one roster slot and `hud::view` into its `Values`:
+(`hud_kit_core::views::firefight`, `content/modes/huds/firefight.hud.yaml`;
+[hud-kit.md](hud-kit.md), "The Firefight HUD"), drawn by Halo 2's own HUD
+code. It is twelve elements, one layout: `ff.score`, `ff.lives` and
+`ff.progress` (text, right-justified, in the HUD font), `ff.enemies` (the
+battery strip as a meter), `ff.skull.0` to `ff.skull.6` (gauges of two
+pictures, off and on) and `ff.banner` (text, centred). The offsets in the
+YAML are the layout's numbers; the half screen gives the lines the same
+places, a quarter gives only the lives and progress lines, one line lower.
+`hud::state_of` reads the layout's elements into the kit's `State` and
+`hud::view_on` into its `Values`, for one roster slot, scope and screen.
 
-| Element | Shows |
-|---|---|
-| `ff.banner` (`Banner`) | GET READY, WAVE n, BOSS WAVE, FINISH THEM, WAVE COMPLETE, ROUND COMPLETE, VICTORY, GAME OVER, and the two-team ends; none while the wave is fought. The game shows it for three seconds from when it changes |
-| `ff.lives.pill`, `.end`, `.count` | the viewer's lives while the match is on, in a pill cut from the frag pill at the grenade row's next place, the count in the LCD font (99 at most); the time warning's flash at 1 and 0 |
-| `ff.enemies.pill`, `.end`, `.count` | the enemies left while a wave is on, in the same pill 30 pixels on |
-| `ff.note` (`Message`) | "Round 2 of 3" when a round starts, "Mythic skull on" for each skull switched on (the skull menu's name, `hud::skull_name`; the skulls on at the start send none), "A life lost" or "n lives lost", "Bonus life" or "n bonus lives" when the viewer's count rises (the round's bonus), and at the end "Cleared 2/3" (every round for a one-team win, the rounds before the one lost otherwise; the two-team ends send none) (`huds::firefight::notes`) |
+**Skull pictures** are ours. `font::strokes` holds each skull's glyph (the
+strokes the skull menu's model picture also uses, `game::skull_glyphs`);
+`font::skulls` rasterises the seven slots' skulls to 14 px, off faint and on
+lit, at U+E600 to U+E60D, and the font rewrite adds them to every font file
+(`bot_mark::GearRewrite`), as it adds the charge ring
+(`skull_pictures_come_from_our_strokes`). No disc or ODST art.
 
-The kit's checks (`h2 hud preview firefight --state all --mode all`)
-hold it in every state and screen mode, and the kit's runtime draws it.
+**Motion.** A skull switched on blinks three times in half a second and
+stays lit (`Motion::Arrive`; `a_skull_blinks_three_times_when_switched_on`):
+the kit restamps a value whose shown, fill or motion changed, so a skull
+that goes from hidden to shown starts the blink and the others keep their
+own. The line at the last life blinks the same way, no lives left shows in
+the warning colour, and the meter eases. The banner is on for its three
+seconds at full strength: the ease in and out of `Banners` is computed, but
+a fade needs the kit's colour hook, which is not built.
+
+The kit's checks (`h2 hud preview firefight --state all --mode all`) hold
+it in every state and screen mode, and the kit's runtime draws it. The HUD
+is never shown with the superbounce game's HUDs
+(`the_firefight_hud_is_never_shown_with_superbounce`), and it compiles to
+records in every mode (`the_firefight_hud_compiles_to_records_in_every_mode`).
 The feed (`hud::install`, the feature `firefight-hud`, added with the
-`firefight` feature) registers it with the kit and, each tick, views
-`hud::current` at the roster slot of each local user's player
-(`hud::local_slots`), one `hud::Feed` a user (`hud::tick_all`): local
-user 0's values are the HUD's shared ones, which the channels (the
-banner) read, and each other local user's are its own
-(`Handle::publish_for`), so each split-screen player's pill shows its
-own lives. Each user's notes go to that user. With no match, no player
-for the user or a blob it cannot read, that user's elements are hidden;
-the reason for an unreadable blob is logged once. A replica, a
+`firefight` feature) registers it with the kit and, each tick, reads
+`hud::current` once and views it at the roster slot of each local user's
+player (`hud::local_slots`), in the screen the local user count gives (one
+user full, two half, three or four quarter), one `hud::Feed` a user
+(`hud::tick_all`): each feed keeps its user's last blob and banner queue.
+Local user 0's values are the HUD's shared ones and each other local
+user's are its own (`Handle::publish_for`), so each split-screen player
+sees its own lives and its own banners. With no match, no player for the
+user or a blob it cannot read, that user's elements are hidden and its
+banners forgotten; the reason for an unreadable blob is logged once. A
+wave test gives the biped no lives and no "LAST LIFE" banner. A replica, a
 film's playback among them, has no director: it draws the blob of the
 last `ModeState` entry it applied, one tick after the host's own HUD
 shows it, since the entry is for the next tick. A distributed client
@@ -1048,7 +1424,7 @@ log.
 
 | Method | Access | Purpose |
 |---|---|---|
-| `firefight.state` | read | whether the mode runs and why not, the role, round, wave, phase, reserve, pool, live actors against the cap, the log head, and the entries the engine refused |
+| `firefight.state` | read | whether the mode runs and why not, the role, set, round, wave, phase (the bonus round included), reserve, pool, live actors against the cap, the log head, and the entries the engine refused, and the placements no actor was ever seen for |
 | `firefight.command` | act | append one director command to the log on a host, or hold or run the director; refused on a client and in playback |
 | `firefight.kit` | read | whether the loaded map carries the kit, its slots, zones, classes and hunt order |
 
@@ -1068,16 +1444,20 @@ boundary. Every address below is **E** unless the row says otherwise.
 | Entry | Points | Body | State | Evidence |
 |---|---|---|---|---|
 | AI on | `AI_GLOBALS` `+0` | `switch_ai_on` | built | the script switch 278 stores its boolean there (`0x2a4d31`, [ai-control.md](../halo1/ai-control.md)) |
-| Place a squad with a count | `AI_SQUAD_PLACE` (`0x201520`), behind `HS_AI_PLACE_COUNTED` (291) | `place_squad` | traced; run R1 | Evaluator 291 resolves its two arguments, keeps the `ai` value only for a plain squad (top two bits clear, `0x2a5045`), and calls `0x201520` with the count in EAX and four stack words: the squad index, start -1, 0 and 1 (`0x2a5052`); it then stores the `ai` value at AI globals `+0x364`. The one-argument overload (290) reaches the same routine through `0x273480` with the count -1, which takes the squad's normal or legendary count by difficulty (`0x2015c5`). The routine returns at once while AI globals `+1` is clear (`0x20152e`). Start -1 lets `AI_CHOOSE_SQUAD_START` pick each actor's start, and the pool of starts refills when it runs out (`0x203ac5`), so a count over the squad's starts reuses them. The third word, when set, skips the given start's availability check and its emitter's deferred placement action. The fourth goes to `AI_SPAWN_AT_SQUAD_START` as its flags. The later seat attempt chooses a vehicle by palette. [Retail trace](notes/2026-11-24-vehicle-actions.md). |
+| Place a squad with a count | `AI_SQUAD_PLACE` (`0x201520`), behind `HS_AI_PLACE_COUNTED` (291) | `place_squad` | traced; run R1 | Evaluator 291 resolves its two arguments, keeps the `ai` value only for a plain squad (top two bits clear, `0x2a5045`), and calls `0x201520` with the count in EAX and four stack words: the squad index, start -1, 0 and 1 (`0x2a5052`); it then stores the `ai` value at AI globals `+0x364`. The one-argument overload (290) reaches the same routine through `0x273480` with the count -1, which takes the squad's normal or legendary count by difficulty (`0x2015c5`). The routine returns at once while AI globals `+1` is clear (`0x20152e`). Start -1 lets `AI_CHOOSE_SQUAD_START` pick each actor's start, and the pool of starts refills when it runs out (`0x203ac5`), so a count over the squad's starts reuses them. The third word, when set, skips the given start's availability check and its emitter's deferred placement action. The fourth goes to `AI_SPAWN_AT_SQUAD_START` as its flags. The later seat attempt chooses a vehicle by palette. `place_squad` counts the squad's AI units (`sim_state::visit_ai_units`, by scenario squad index, with or without a replication entity, since a local game publishes none) before and after the call and refuses a placement that added none, naming the slot, the class row and the zone; the runtime's `read_actors` counts the same way for `Observed`, and `Host::post_tick` reports a placement whose slot shows no actor 90 ticks later (`placements_unseen`). [Retail trace](notes/2026-11-24-vehicle-actions.md). |
 | ... its character and zone | scenario squad `+0x36` and `+0x38`, its starts' positions | `place_squad` | traced | Nothing chooses them at the call. `AI_SPAWN_AT_SQUAD_START` reads, for each actor, the start's character (`+0x20`) or else the squad's (`+0x36`), as an index into the character palette (scenario `+0x178`, `0x2037cc`); a squad with neither places nobody. The squad's areas while it has no order come from its zone `+0x38` (`0x204f93`), and its actors appear at its starts' positions. So `place_squad` writes the palette index, the zone, and the zone's firing positions into the slot squad's starts, then places: tag memory every applying machine writes the same way. The weapon tier is not applied, since the stage-one kit authors one weapon |
 | Actors' team | `AI_SET_TEAM` (`0x275b60`), behind `HS_AI_SET_TEAM` (322) | `place_squad`, after the placement | traced | The evaluator passes the `ai` value in EAX and the team in BX (`0x2a587a`). The routine accepts a squad or a group, writes the runtime squad's team byte (`+0x76`, `0x275bf4`), then each actor's team (`+0x24`, which `world.ai` reports) and its unit's (`+0x138`, `0x275c99`). Placement copies a nonzero squad team byte onto each new unit (`0x20187a`), but team 0 reads as unset there, so the body sets the team after every placement |
 | Hunt | `AI_SET_ORDERS` (`0x275cb0`), behind `HS_AI_SET_ORDERS` (333) | `hunt` | built | The evaluator passes the `ai` value in EAX and the order index in CX (`0x2a5c39`). The routine ignores an index outside the scenario's order block (`+0x240`, `0x275ce6`) and hands a squad to `0x202e90`, a group to `0x203120`. There is no built-in hunt: it is an order the kit authors, which `hunt` finds by its name `ff_hunt`. The kit writes it as order 0 of an empty block (`ai::hunt_order`): no style, script or follow target, and every area of every drop zone as its primary area set, so a squad sent to it engages from across the arena. A base map that already has orders is refused, since the kit does not merge into another block's child arrays. A kit with no zone areas is refused with the Hunt order named |
 | Erase a squad | `AI_ERASE` (`0x2736c0`), behind `HS_AI_ERASE` (297) | `erase_squad` | traced; run R2 for bodies | `ai_erase` passes the `ai` value as its one stack argument (`0x2a523b`). For each actor the routine deletes the actor (`0x1e2a90`) and then its unit (`OBJECT_DELETE`) or swarm (`0x28e200`); an actor the AI is updating at that moment is marked instead (`+0x0d`, `0x2736fc`). It then walks the objects the squad placed (runtime squad `+0x70`, linked through object `+0x3a4`) and deletes each one `0xbeb30` does not keep. Whether a dead actor's body is still on that list is what R2 settles |
+| Fly a ship along its path | `OBJECT_SET_TRANSFORM` (`0xb7430`), the pose of `rules::vehicles::Flight` | `fly` (`Game::fly`), `Flights` (`rules/world/vehicles/flight.rs`), `put_ship` | built; rules-world R7 and R3 | The host flies the ship along a keyed path with no AI pilot. `Game::fly` hands the match the ship, the path's points and the ticks; the match begins a flight on the tick it applies the entry and every tick after puts the ship at the flight's pose, facing the path's tangent, as a put at the boundary (`put_ship`: the object's own `up` made perpendicular to the tangent, `notify` set). The pose is 16.16 integer math, so every machine and a film put the ship in the same place. A flight that has run its ticks puts the ship on the last point once and is reported as an arrival (`Match::take_arrived`). At most 4 ships fly at once; a second flight of a ship replaces its first with no arrival. The next physics step can move the body again, with riders aboard and with contacts, which only a run settles ([R7](notes/2026-11-24-vehicle-actions.md)). Whether a client sees the ship move is rules-world R3 |
+| Place a squad into a ship | `VEHICLE_LOAD` (`0x11b0c0`), `OBJECT_LIST_FROM_AI` (`0x272ea0`), `OBJECT_DELETE` | `place_squad_in` (`Game::drop_squad` through `drop_squad`) | built; rules-world R7 | Retail placement cannot seat into a given ship ([R6](notes/2026-11-24-vehicle-actions.md)), so the body places `min(count, free seats)` actors with every start of the slot squad at the ship's position, then loads the squad's actor list into the ship through the retail `vehicle_load_magic` body with the all-seats mapping. The free seats are the capacity the caller names less the bipeds attached to the ship. An actor the load left unattached is deleted, so none stands under the ship; a load that seats none is refused. The actors are read from the actors pool and not from the replicated ones, since a new actor has no entity until the tick's replication. The two register and stack layouts of the load and the list cast are read from the call at `0x2a411c` and the HS cast table and are confirmed by the run |
+| Hold the ship, unload it | `VEHICLE_HOVER` (`0xf0fd0`), `VEHICLE_UNLOAD` (`0x11b2b0`, mapping -1) | `ship::hover`, `ship::unload` (`Game::hover`, `Game::unload`) | named; rules-world R7 | The director's `ShipHover` and `ShipUnload`, made at the boundary as the rules runtime makes `hover` and `unload`; each is refused for a ship no longer in the world |
+| Land the rest on foot | `AI_SQUAD_PLACE` | `drop_squad` | built | `drop_squad` places the remainder of the squad (`count` less those aboard) as `place_squad` does, in the same slot squad, so a wave never waits on the ship: a ship with no free seat, not in the world or whose load the engine refuses leaves the whole squad on foot, and the reason is printed |
 | Credit a player's score | `SCORE_ADD` (`0x15b7c0`) | `credit_score` | traced | Slayer's kill callback is its engine's vtable slot `+0x78` (engine 2 at `0x55e4d8`), which `0x15ce70` calls last (`0x15d6a4`); it calls `0x15b7c0` with the score change in EAX and the killer's player datum on the stack (`0x2bc05d`). The routine adds the change's low 16 bits, signed, to row `+0x00` at `+0x308 + 0x1c * slot` of the game engine globals, clamps to ±30,000 (`0x15b849`), marks the statborg entity's player bit for replication (`0x15b88a`), updates the team score in a team game, checks the score limit when it is nonzero, and returns true. It refuses, returning false, without a game engine, while engine `+0x6c` is not 1, and on a machine where engine `+0xc04` is not 1 (unless game globals `+0x0c` is 4). `credit_score` passes the salted player datum and treats false as an error |
 | Lives and respawn | `PLAYER_OUT_OF_LIVES` (`0x15db30`), `PLAYER_RESPAWN_READY` (`0x15dd40`), `PLAYER_ENTITY_DIRTY` (`0xa7840`), `PLAYER_SPAWN` (`0x14f2e0`) | `engine_holds_respawns`, `respawn`; `Lives` writes nothing | traced; run R3 | No routine sets lives: the engine writes player `+0x1ac` itself. Round start sets it to the variant's lives setting (game globals `+0x1b8`, 0 meaning unlimited, `0x157d03`), and a death takes one on the authority (`0x15d01e`, gated by `GAME_ENGINE_AUTHORITATIVE`), then marks the player entity's bit `0x20` for clients (`0x15d03d`; a client applies it at `0x24e257`). The players update spawns a waiting player through `PLAYER_SPAWN` only when `PLAYER_RESPAWN_READY` says so (`0x14d430`), which refuses a player `PLAYER_OUT_OF_LIVES` reports: a positive lives setting, no unit and no lives left. So the hold is the variant's lives setting at 1, and `respawn` gives one life and marks bit `0x20`; the engine respawns the player when its respawn delay runs out and takes the life at the next death. The pool stays in the mode blob, so `Lives` changes nothing in the game. A team whose players are all out of lives leaves the playing-teams mask (`0x1925c6`); whether that ends the Slayer round before the director's `Finish` is part of R3 |
 | End the game | `GAME_END` (`0x1389c0`, no arguments, `ret`) | `end_game` | traced; run R4 | The routine latches game globals `+0x1128` once, sets the end delay at `+0x112c` from the tick rate and clears `+0x1129`; it checks nothing else. The engine's own round-over path ends a game in three steps (`0x15b5f9` to `0x15b624`): engine state `+0xc04` to 2, `GAME_END` unless latched, then the engine's changed flag (`+0`, bit `0x20`), skipping the first two while game globals `+0x0c` is 4. A client ends when the engine globals entity carries bit 4 (`0x24e52a`). `end_game` takes the same three steps and refuses in mode 4; whether a client ends with it is R4 |
 | Line of sight from a player to a point | `AI_LINE_OF_SIGHT` (`0x29dd50`) | `line_of_sight`, from the unit's origin | traced; the eye point is open | The routine takes the two points in ESI and EDI and two objects to ignore in EDX and ECX, and runs the collision query `0x1697c0` with flags `0x1808c2d`: structure, instanced geometry and objects, the set the actor code passes at `0x1c1ab1`, `0x1f970e` and `0x292747` ([sim-rewrite-collision.md](../engine/sim-rewrite-collision.md) 5.4 for the bits). It is true when nothing is hit, or the hit is within about a third of a world unit of the target (`0x29de01`). The engine's own sight cone, `0xcc2b0` behind `objects_can_see_flag` (113), tests only the angle from a marker of the viewer it looks up through `0xb8d30` (**S**: the head). `sees` should start from the same marker; that lookup is not traced, so the sight pass starts from the unit's origin and ignores the unit itself |
-| The kit on the loaded map | scenario blocks at `+0x160` squads, `+0x168` zones, `+0x178` character palette, `+0x240` orders | `read_kit`, `KitLayout::kit` | built | Squads named `ff_slot_00` to `ff_slot_15` give the slots and the team (`+0x24`); zones named `ff_drop_NN` give each zone's point, its first area's mean (`+0x24` of area 0), and its firing positions; squads named `ff_class_<name>` give each class's palette row (`+0x36`), kept only while the row is in the palette's row count. The offsets are the kit builder's (`h1campaign::ai::h2::layout`), and the engine reads them at the addresses cited above. The class names are the kit's, not a table in the game. The `firefight_kit_v1` string ID is not checked: the game has no reader for the loaded map's string IDs |
+| The kit on the loaded map | scenario blocks at `+0x160` squads, `+0x168` zones, `+0x178` character palette, `+0x240` orders | `read_kit`, `KitLayout::kit` | built | Squads named `ff_slot_00` to `ff_slot_15` give the slots and the team (`+0x24`); zones named `ff_drop_NN` give each zone's point, its first area's mean (`+0x24` of area 0), and its firing positions; squads named `ff_class_<name>` give each class's palette row (`+0x36`) and faction (the team, `+0x24`: 2 human, 3 Covenant, 4 Flood), kept only while the row is in the palette's row count and the team is a faction's. The offsets are the kit builder's (`h1campaign::ai::h2::layout`), and the engine reads them at the addresses cited above. The class names are the kit's, not a table in the game. The `firefight_kit_vN` string ID is not checked: the game has no reader for the loaded map's string IDs |
 
 #### What a run settles
 
@@ -1096,6 +1476,15 @@ only the run's own entries reach the game, and append them with
 | R2 | after one Elite is killed, `h2 agent firefight.command '{"command":{"erase_squad":{"slot":0}}}'`, then `h2 agent world.ai` and `h2 agent sim.objects '{"kinds":["biped"]}'` | no actors; whether the dead Elite's biped is gone says if bodies are on the squad's list |
 | R3 | with the variant's lives at 1, kill player 0, read `h2 agent sim.view '{"roots":["player"]}'`, then `h2 agent firefight.command '{"command":{"respawn":{"player":0}}}'` | the player stays dead with `lives` 0 until the command, then respawns after its respawn delay with `lives` 0 again after the next death; with every player dead the round does not end before `Finish` |
 | R4 | `h2 agent firefight.command '{"command":{"finish":{"outcome":"won"}}}'` on a host with one client | both machines show the post-game screen with the scores the statborg held (`score` in `sim.view` on each) |
+
+The drop ship's two checks are the rules world's R7 and R3 ([rules-world-api.md](rules-world-api.md#vehicles-and-drop-ships)),
+run on the lab host with a kit map that carries a ship: R7 flies the ship
+(`Game::fly`) with a squad aboard and reads the ship's position every tick
+(`sim.objects`) against `Flights::step`, and the riders' parents
+(`world.ai`) after the flight; R3 reads whether a second machine shows the
+ship at the flown position. The load's register and stack layout is
+confirmed by the same run: `place_squad_in` seats the free seats and no
+unattached actor stands under the ship.
 
 Kills come from `SimEvent::ActorKilled` (AN6), which is filled only while
 the object update runs in Rust (`impl.sim.native.objects`). The killer's
@@ -1133,7 +1522,7 @@ are slices of [ai-networking.md](ai-networking.md); P numbers its probes.
 | **FF5** | Agent API: `firefight.state`, `firefight.command`, `firefight.kit`; `lives` and `score` on `sim.view`'s `player` root | S | FF4 | `crates/extensions/agent/src/firefight.rs`, `crates/extensions/agent-proto/src/firefight.rs`, `crates/extensions/agent/src/sim/state.rs`, [agent-api.md](../runtime/agent-api.md#firefight) | `state_reports_the_director`, `command_is_refused_on_a_client_and_in_playback`, `kit_reads_the_loaded_scenario`, `the_view_reports_each_players_lives`, `the_view_reports_each_players_score` | the methods answer over a fake game |
 | **FF6** | Stats: `Score` and `ActorKilled` to film events, the Live projection's Firefight summary, the web stats page | M | FF2, AN6 | `crates/live/live-proto/src/{film/events,firefight}.rs`, `crates/live/live-server/`, `crates/live/live-worker/`, `web/` | `a_scripted_match_projects_to_the_golden_summary`, `the_firefight_summary_is_the_golden_one_and_players_cannot_write_it`, `the_firefight_summary_is_the_same_on_the_worker`, `firefight_scores_do_not_touch_ranks`, `a_two_team_match_projects_wins_by_team`, `credits_pair_each_kill_with_its_class_and_assist`, `a_firefight_score_is_a_game_event_and_a_running_objective_score_in_the_film`, `firefight_scores_become_running_objective_scores`, `reads the server's golden summary as it is` (web) | both homes give the same summary |
 | **FF7** | Skulls: the host-only AI set, the round schedule, multipliers, the AI readers' campaign gate | S | FF4 | `crates/extensions/game/src/skulls_mp.rs`, `crates/formats/firefight/tests/skulls.rs`, `crates/hooking/guest-layout/src/points/skull_gates.rs`, `crates/rewrites/engine/src/skull_gate.rs` | `ai_skulls_apply_on_the_host_only`, `a_round_switches_its_skulls_on`, `multipliers_multiply` | skulls.md's "In Firefight" table gives each skull's scope with a test. Built, tests only, with the campaign gate answered at each AI reader's `jne` on the host (`a_hosts_ai_skulls_pass_each_readers_campaign_gate`, `every_ai_skull_gate_has_the_multiplayer_skulls_before_unless_turned_off`, `assassins_cloaks_an_actor_in_the_campaign_and_where_the_gate_is_answered`, and the XBE checks in `crates/apps/boot/tests/skull_gates_xbe.rs`). Also tested: `the_skull_array_gets_exactly_the_hosts_ai_set`, `every_firefight_skull_has_a_scope_and_an_engine_index`, `a_skull_already_on_is_not_switched_on_again`, `a_round_skull_scores_from_its_first_wave` |
-| **FF8** | HUD and screens: wave banner, enemies left, lives, the Game Setup row and its options page | M | FF2, AN4, AN5 | `crates/extensions/game/src/firefight/{hud,options}.rs`, `crates/rewrites/hud-kit-core/src/views/firefight.rs`, `crates/extensions/game/src/ui_kit/` | `Page` tables for the options page (`the_options_page_steps_and_opens_pickers`, `the_wave_set_row_offers_the_maps_set_first_on_its_map`, `a_map_set_value_plays_on_its_map_and_falls_back`); `the_hud_reads_only_the_mode_blob`; the kit's checks in every state and mode (`the_firefight_hud_draws_and_passes_on_the_synthetic_sheet`, `every_blob_gives_the_kits_one_layout`) | a client with only the mode blob draws the same HUD as the host |
+| **FF8** | HUD and screens: wave banner, enemies left, lives, the Game Setup row and its options page | M | FF2, AN4, AN5 | `crates/extensions/game/src/firefight/{hud,options}.rs`, `crates/rewrites/hud-kit-core/src/views/firefight.rs`, `crates/extensions/game/src/ui_kit/` | `Page` tables for the options page (`the_options_page_steps_and_opens_pickers`, `the_wave_set_row_offers_the_maps_set_first_on_its_map`, `a_map_set_value_plays_on_its_map_and_falls_back`); `the_hud_reads_only_the_mode_blob`; the kit's checks in every state and mode (`the_firefight_hud_draws_and_passes_on_the_synthetic_sheet`, `every_blob_gives_the_kits_one_layout`, `the_firefight_hud_compiles_to_records_in_every_mode`) | a client with only the mode blob draws the same HUD as the host |
 | **FF9** | Live: the variant bytes, `NewSession.firefight`, 1-to-4-player hopper entries, the lobby's local kit check | M | FF1 | `crates/formats/variants/src/ext.rs`, `crates/live/live-proto/`, `crates/live/live-server/`, `crates/live/live-worker/`, `crates/tools/hopper-edit/` | `the_mode_bytes_round_trip_and_leave_the_crc_valid`, `a_joiner_without_the_kit_map_is_refused_before_load`, `first_playlist_accepts_one_to_four_players`, `an_oversize_def_is_refused`, the parity suite; built: `firefight_match_round_trips_and_is_left_out_when_none`, `firefight_match_is_validated`, `sessions_carry_the_hosts_firefight_match`, `guests_read_the_firefight_match_their_host_advertises`, `each_multiplayer_start_names_its_match_for_the_session`, `each_builtin_is_found_by_its_hash_prefix`, `a_hopper_takes_the_builtin_firefight_sets`, `a_crossfire_variant_is_accepted_by_its_hash_prefix`, `the_builtin_firefight_sets_are_offered_crossfire_with_teams`, `firefight_seats_balance_two_teams_and_fill_one`, `firefight_sessions_seat_clankers_on_player_teams_only`, `a_firefight_session_seats_balanced_clankers_on_the_worker` | both homes offer 1 to 4 players and refuse unsupported sizes and missing local kits. A retail variant is unchanged |
 | **FF10** | Dedicated host: the Firefight host class and admission, the kit in the host's map set, the strip keeping AI data | S | FF3, FF4, P5 | `crates/live/live-proto/src/{hosts,host_pack}.rs`, `crates/apps/cli/src/host_cmd/{pack,process}.rs`, `crates/apps/cli/src/server_map.rs`, `crates/live/host-data/`, [dedicated-host.md](../live/dedicated-host.md) | `a_firefight_match_takes_a_whole_slot_class`, `strip_keeps_squads_and_sectors`; built: `a_whole_slot_class_needs_an_empty_pack_and_keeps_it`, `a_firefight_lease_takes_the_whole_slot_class`, `the_bundle_carries_each_maps_firefight_kit_and_the_host_places_it`, `only_kit_packages_and_their_index_are_firefight_payload` | admission tests; the coordinator's host run in notes |
 | **FF11** | `h2 sim run` Firefight matches: Clankers as the players, on one team or balanced across two (the `[firefight]` table: `set`, `difficulty`, `teams`, `lives`, `skulls`; examples `docs/runtime/sim-examples/firefight-beavercreek.toml` and `firefight-beavercreek-crossfire.toml`), a report with rounds, score and tick times. `host.metrics` reports `game_cpu_ms_per_tick_p99` over the last 30 steady gameplay seconds from per-tick game-thread CPU deltas | M | FF4 | `crates/live/sim-bench/`, `crates/extensions/game/src/host_metrics.rs`, [sim.md](../runtime/sim.md), [agent-api.md](../runtime/agent-api.md#hostmetrics) | `a_firefight_match_toml_parses`, `firefight_bots_are_on_player_teams_only`, `two_team_firefight_balances_omitted_teams`, `the_report_has_rounds_and_score`, `a_firefight_match_finds_its_kit_package`, `a_firefight_table_becomes_the_pages_choices`, `the_firefight_examples_load`, `rolling_p99_counts_individual_gameplay_intervals_and_expires_at_30s` | a match file runs headless (coordinator) and feeds P5. The p99 comes from individual gameplay samples and resets between matches |
@@ -1182,10 +1571,11 @@ point: it needs the kit, the director and probe P2.
   names on retail maps.
 - That Beaver Creek yields six drops away from both bases.
 - Whether team 1 reads as blue in the game, as the HUD's "BLUE" assumes.
-- The HUD in a game: the banner, the pills and the notes through
-  `hud.render` and a live match on the lab Mac, the pills clear of the
-  retail grenade panel in every screen mode, and the LCD count inside
-  its pill.
+- The HUD in a game: the lines, the meter, the skull slots and the banner
+  through `hud.render` and a live match on the lab Mac, clear of the retail
+  score plate, weapon, grenades and tracker in every screen mode (the
+  rectangles and the plate's 44 px are assumed from the census), and the
+  battery strip's 92 by 8 on a multiplayer map.
 - That team play turned on at `GAME_ACTIVATE` (the scenario is loaded
   then, so the kit reads) makes a team game of a lobby that was free for
   all, which team each person then plays on, and that a guest's game

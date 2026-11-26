@@ -235,3 +235,99 @@ fn range_directory_and_writer_reject_a_missing_first_or_interior_tick() {
     assert!(w.chronological(3, 3, &[3, 1]).is_err());
     w.chronological(2, 3, &[2, 2]).unwrap();
 }
+
+/// A v3 film with the roster and results of `names`, sealed.
+fn film_of(names: &[String], summary_written_first: bool) -> Vec<u8> {
+    let mut h = crate::tests::header(8);
+    h.version = 3;
+    let mut w = Writer::new(Cursor::new(Vec::new()), &h).unwrap();
+    w.chronological_scene(1, 2, true, &[1, 2]).unwrap();
+    let summary = blam::Summary {
+        level: "zanzibar".into(),
+        players: names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| live_proto::film::PlayerSummary {
+                seat: i as u8,
+                name: name.clone(),
+                medals: (0..40).map(|m| (format!("medal {m}"), 1)).collect(),
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let desc = blam::MatchHeader {
+        roster: names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| blam::Seat { seat: i as u8, name: name.clone(), ..Default::default() })
+            .collect(),
+        ..Default::default()
+    };
+    // A game described late has its descriptor after the results.
+    if summary_written_first {
+        w.chunk(blam::SUMM, &summary).unwrap();
+        w.chunk(blam::DESC, &desc).unwrap();
+    } else {
+        w.chunk(blam::DESC, &desc).unwrap();
+        w.chunk(blam::SUMM, &summary).unwrap();
+    }
+    w.chunk(HEAD, &h).unwrap();
+    w.finish().unwrap().into_inner()
+}
+
+#[test]
+fn a_film_described_late_has_a_front_summary() {
+    let bytes = film_of(&["one".into(), "two".into()], true);
+    let front = read_front(&mut Cursor::new(&bytes)).unwrap();
+    assert_eq!(front.summary.level, "zanzibar");
+    assert_eq!(front.roster.len(), 2);
+}
+
+#[test]
+fn an_unsealed_film_has_a_front_naming_its_game() {
+    let mut h = crate::tests::header(9);
+    h.version = 3;
+    let mut out = Cursor::new(Vec::new());
+    {
+        let mut w = Writer::new(&mut out, &h).unwrap();
+        // Not described, and the recording stops here: never finished.
+        w.chronological_scene(1, 2, true, &[1, 2]).unwrap();
+    }
+    let front = read_front(&mut out).unwrap();
+    assert_eq!(front.id, "9");
+    assert!(front.roster.is_empty());
+    // The descriptor, once it arrives, is in the front before any seal.
+    let mut out = Cursor::new(Vec::new());
+    {
+        let mut w = Writer::new(&mut out, &h).unwrap();
+        let seat = blam::Seat { seat: 3, name: "someone".into(), ..Default::default() };
+        w.chunk(blam::DESC, &blam::MatchHeader { roster: vec![seat], ..Default::default() }).unwrap();
+        w.chronological_scene(1, 2, true, &[1, 2]).unwrap();
+    }
+    let front = read_front(&mut out).unwrap();
+    assert_eq!(front.roster[0].name, "someone");
+}
+
+#[test]
+fn a_big_roster_stays_under_the_front_limit() {
+    let names: Vec<String> = (0..blam::MAX_SEATS).map(|i| format!("{i}{}", "x".repeat(6_000))).collect();
+    let bytes = film_of(&names, false);
+    let len = Prefix::decode(&bytes[..PREFIX_BYTES]).unwrap().json_len as usize;
+    assert!(len <= FRONT_CAPACITY);
+    let front = read_front(&mut Cursor::new(&bytes)).unwrap();
+    assert_eq!(front.roster.len(), blam::MAX_SEATS);
+    assert_eq!(front.summary.players.len(), blam::MAX_SEATS);
+    assert_eq!(front.summary.level, "zanzibar");
+}
+
+#[test]
+fn the_prefix_names_why_a_front_is_missing_or_too_big() {
+    let mut bytes = film_of(&["one".into()], false)[..PREFIX_BYTES].to_vec();
+    bytes[16..20].copy_from_slice(&0u32.to_le_bytes());
+    let missing = Prefix::decode(&bytes).unwrap_err();
+    assert!(missing.contains("no front summary") && missing.contains("0 of"), "{missing}");
+    bytes[16..20].copy_from_slice(&(FRONT_CAPACITY as u32 + 1).to_le_bytes());
+    let big = Prefix::decode(&bytes).unwrap_err();
+    assert!(big.contains(&format!("{} bytes", FRONT_CAPACITY + 1)), "{big}");
+}

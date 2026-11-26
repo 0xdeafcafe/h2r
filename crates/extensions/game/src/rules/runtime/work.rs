@@ -77,6 +77,7 @@ pub async fn make_calls(cx: &Cx, work: &Work) -> (Option<bool>, Vec<Refused>) {
             }
             Call::Put(place) => crate::rules::world::objects::put(cx, place).await,
             Call::OfferPick(ref ask) => crate::rules::world::pick::open(cx, ask).await,
+            Call::OfferChoice(ref ask) => crate::rules::world::choice::open(cx, ask).await,
         };
         if let Err(e) = result {
             // The VM is told a refused put, so a barrier it holds open at a

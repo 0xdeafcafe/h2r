@@ -64,6 +64,8 @@ mod emit_cache;
 mod emit_output;
 #[cfg(feature = "desktop")]
 mod pogo_cmd;
+#[cfg(feature = "desktop")]
+mod flood_pod_cmd;
 #[cfg(all(unix, feature = "desktop"))]
 mod follow;
 #[cfg(all(unix, feature = "desktop"))]
@@ -150,6 +152,8 @@ mod lockstep_cmd;
 mod mappack_cmd;
 #[cfg(feature = "desktop")]
 mod maps;
+#[cfg(feature = "desktop")]
+mod firefight_kits;
 #[cfg(feature = "desktop")]
 mod package_prepare;
 #[cfg(feature = "desktop")]
@@ -250,6 +254,10 @@ const USAGE: &str = "usage: h2 <command> [disc]
   pogo kit MAP [--out FILE]  add the pogo stick to a disc multiplayer map and
                           say what it took; pogo models [--out DIR] writes
                           the three looks as OBJ files (content/pogo/README.md)
+  flood-pod kit MAP [--out FILE]  add Firefight's Flood pod to a disc
+                          multiplayer map and say what it took; flood-pod
+                          model [--out DIR] writes its mesh as an OBJ file
+                          (art/flood-pod/README.md)
   forge looks [--disc <iso>] [--json]  the models a Forge monitor can look like
   bitmap <map> <tag>      decode a bitmap tag to PNG (--image N --out DIR --mips)
   bitmap --all <map>      bulk decode check of every bitmap in a map
@@ -427,6 +435,9 @@ fn desktop_command(cmd: String, mut args: impl Iterator<Item = String>) -> Resul
     // The other `maps` commands run in h2-tools (tools::forwards).
     if cmd == "pogo" {
         return pogo_cmd::run(args.collect());
+    }
+    if cmd == "flood-pod" {
+        return flood_pod_cmd::run(args.collect());
     }
     if cmd == "maps" {
         return maps::install(&args.skip(1).collect::<Vec<_>>());

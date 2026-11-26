@@ -35,7 +35,7 @@ fn the_menu_offers_the_maps_sets_first_then_the_built_ins() {
     assert_eq!(creek[0].0, builtin::MAP_SET_BASE, "the map set's value");
     assert_eq!(creek[0].1.name, "Basin");
     assert_eq!(&creek[1..], &none[..], "then the built-ins");
-    assert_eq!(none.len(), 4);
+    assert_eq!(none.len(), 5);
     for (value, def) in &none {
         assert!(
             creek.iter().any(|(v, d)| v == value && d == def),

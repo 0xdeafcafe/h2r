@@ -77,6 +77,34 @@ pub fn kit_maps(catalogue: &Catalogue) -> Vec<Map> {
     catalogue.all().filter(|m| is_kit_map(m)).cloned().collect()
 }
 
+/// The built-in kit maps' names as the catalogue lists them after
+/// [`KIT_NAME_PREFIX`], in the order a Firefight lobby prefers them
+/// (`firefight_kit::builtin::MAPS`).
+pub const BUILTIN_KIT_MAPS: [&str; 2] = ["Coagulation", "Zanzibar"];
+
+/// The kit map a Firefight lobby lands on: the first built-in map in
+/// [`BUILTIN_KIT_MAPS`] order that `kit` has, else its first.
+pub fn preferred_kit_map(kit: &[Map]) -> Option<&Map> {
+    let rank = |m: &Map| {
+        m.name
+            .strip_prefix(KIT_NAME_PREFIX)
+            .and_then(|n| BUILTIN_KIT_MAPS.iter().position(|b| b.eq_ignore_ascii_case(n)))
+            .unwrap_or(BUILTIN_KIT_MAPS.len())
+    };
+    kit.iter().min_by_key(|m| rank(m))
+}
+
+/// The map a Firefight lobby on `current` (its list id) lands on once kit
+/// maps are installed: the preferred kit map ([`preferred_kit_map`]), or
+/// `None` when the lobby is already on a kit map or none is installed.
+pub fn landing_map(catalogue: &Catalogue, current: Option<u32>) -> Option<u32> {
+    let kit = kit_maps(catalogue);
+    if current.is_some_and(|c| kit.iter().any(|m| m.id == c)) {
+        return None;
+    }
+    preferred_kit_map(&kit).map(|m| m.id)
+}
+
 /// What the maps say about a Firefight lobby: whether the lobby's map
 /// carries the kit, and whether any installed map does. Without the map
 /// list (not read yet) neither is known, and both are false.
@@ -272,6 +300,86 @@ thread_local! {
 #[cfg(test)]
 fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> T {
     STATE.with(|s| f(&mut s.lock().unwrap_or_else(|e| e.into_inner())))
+}
+
+// ---- the built-in kits' build ----
+
+/// Where the built-in Firefight kits' build is
+/// (`firefight_kit::builtin::ensure`, run by `h2 run`/`h2 serve` at start).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum KitBuild {
+    /// No build runs: it is done, was not needed, or never started.
+    #[default]
+    Idle,
+    /// A worker is building; the lobby says it is preparing.
+    Building,
+    /// The build is done and a kit could not be made: one line for each,
+    /// the map and why (`Zanzibar: 6 KB over, sectors`).
+    Failed(Vec<String>),
+}
+
+#[derive(Default)]
+struct Kits {
+    build: KitBuild,
+    /// A build finished and a Firefight lobby has not been looked at since
+    /// ([`take_kit_landing`]).
+    landing: bool,
+}
+
+#[cfg(not(test))]
+static KITS: Mutex<Kits> = Mutex::new(Kits {
+    build: KitBuild::Idle,
+    landing: false,
+});
+
+#[cfg(test)]
+thread_local! {
+    static KITS: Mutex<Kits> = const {
+        Mutex::new(Kits {
+            build: KitBuild::Idle,
+            landing: false,
+        })
+    };
+}
+
+fn with_kits<T>(f: impl FnOnce(&mut Kits) -> T) -> T {
+    #[cfg(not(test))]
+    {
+        f(&mut KITS.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+    #[cfg(test)]
+    {
+        KITS.with(|k| f(&mut k.lock().unwrap_or_else(|e| e.into_inner())))
+    }
+}
+
+/// The built-in kits' build as it stands.
+pub fn kit_build() -> KitBuild {
+    with_kits(|k| k.build.clone())
+}
+
+/// A worker began building the built-in kits.
+pub fn kit_build_started() {
+    with_kits(|k| k.build = KitBuild::Building);
+}
+
+/// The worker is done; `failures` has a line for each kit it could not
+/// make. A Firefight lobby is then looked at once to land on a kit map
+/// ([`take_kit_landing`]).
+pub fn kit_build_finished(failures: Vec<String>) {
+    with_kits(|k| {
+        k.build = if failures.is_empty() {
+            KitBuild::Idle
+        } else {
+            KitBuild::Failed(failures)
+        };
+        k.landing = true;
+    });
+}
+
+/// Whether a build finished since this was last asked (and forget it).
+pub fn take_kit_landing() -> bool {
+    with_kits(|k| std::mem::take(&mut k.landing))
 }
 
 /// The lobby as it stands.

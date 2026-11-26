@@ -35,8 +35,15 @@ impl Prefix {
             return Err("unsupported film front header".into());
         }
         let json_len = u32::from_le_bytes(b[16..20].try_into().unwrap());
-        if json_len == 0 || json_len as usize > FRONT_CAPACITY {
-            return Err("missing or oversized front summary".into());
+        if json_len == 0 {
+            return Err(format!(
+                "no front summary: its length is 0 of {FRONT_CAPACITY} bytes, so the recording stopped before the film's front was written"
+            ));
+        }
+        if json_len as usize > FRONT_CAPACITY {
+            return Err(format!(
+                "oversized front summary: {json_len} bytes, over the {FRONT_CAPACITY}-byte capacity"
+            ));
         }
         Ok(Self { json_len })
     }
@@ -76,6 +83,54 @@ pub struct Front {
     pub ticks_per_second: Option<u16>,
     pub roster: Vec<Seat>,
     pub summary: Summary,
+}
+
+/// Longest name the front keeps, in characters, once it is too big as is.
+const SHRUNK_NAME_CHARS: usize = 64;
+
+impl Front {
+    /// The front's JSON, no longer than [`FRONT_CAPACITY`]. A front over it
+    /// (long names, many medals or dropped-sample sources) is shrunk, in
+    /// steps, until it fits: the dropped-sample counts go, names are cut,
+    /// then the medals go. Only a front that still does not fit is an error,
+    /// which names its size.
+    pub fn encode(&self) -> Result<Vec<u8>, String> {
+        let json = |front: &Self| serde_json::to_vec(front).map_err(|e| e.to_string());
+        let bytes = json(self)?;
+        if bytes.len() <= FRONT_CAPACITY {
+            return Ok(bytes);
+        }
+        let mut front = self.clone();
+        front.summary.dropped_samples.clear();
+        front.summary.players.truncate(256);
+        front.roster.truncate(256);
+        let cut = |name: &mut String| {
+            if let Some((at, _)) = name.char_indices().nth(SHRUNK_NAME_CHARS) {
+                name.truncate(at);
+            }
+        };
+        for seat in &mut front.roster {
+            cut(&mut seat.name);
+        }
+        for player in &mut front.summary.players {
+            cut(&mut player.name);
+        }
+        let bytes = json(&front)?;
+        if bytes.len() <= FRONT_CAPACITY {
+            return Ok(bytes);
+        }
+        for player in &mut front.summary.players {
+            player.medals.clear();
+        }
+        let bytes = json(&front)?;
+        if bytes.len() > FRONT_CAPACITY {
+            return Err(format!(
+                "public film header is {} bytes, over the {FRONT_CAPACITY}-byte capacity",
+                bytes.len()
+            ));
+        }
+        Ok(bytes)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

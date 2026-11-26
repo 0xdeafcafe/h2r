@@ -53,10 +53,14 @@ mod sim_objects_differential;
 mod sim_native_differential;
 #[path = "sim_physics_differential.rs"]
 mod sim_physics_differential;
+#[path = "sim_physics_kernel.rs"]
+mod sim_physics_kernel;
 #[path = "sim_seats_differential.rs"]
 mod sim_seats_differential;
 #[path = "sim_sound_differential.rs"]
 mod sim_sound_differential;
+#[path = "sim_tick_differential.rs"]
+mod sim_tick_differential;
 #[path = "sim_tier_differential.rs"]
 mod sim_tier_differential;
 #[path = "states_differential.rs"]

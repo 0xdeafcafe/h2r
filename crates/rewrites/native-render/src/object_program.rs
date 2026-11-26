@@ -189,6 +189,11 @@ pub struct ObjectPass {
     /// empty in `program.stages`; the host binds a copy of the bound
     /// colour made before the pass, in texel coordinates).
     pub view: [bool; 4],
+    /// The stages that sample the scene copy ([`SCENE_COPY_TEXTURE`];
+    /// empty in `program.stages`; the host binds the downsample of the
+    /// bound colour made once per sorted-handler call, in texel
+    /// coordinates of its guest size).
+    pub scene_copy: [bool; 4],
     /// The vertex program's instruction words (four per instruction, no
     /// header) and the translation's options: what the D3D path's draw of
     /// the same part binds.
@@ -270,6 +275,7 @@ fn object_pass_with(
             normalization,
             texaccum,
             view,
+            scene_copy,
         },
     ) = object_look_stages_with(pass, imp, blends)?;
     if !lightmap && look.textures.contains(&crate::look::Stage::Lightmap) {
@@ -286,6 +292,7 @@ fn object_pass_with(
             normalization,
             texaccum,
             view,
+            scene_copy,
         },
         microcode,
         state.alpha_test,
@@ -323,6 +330,7 @@ fn object_pass_with(
         normalization,
         texaccum,
         view,
+        scene_copy,
         words,
         options,
         prt: None,
@@ -422,6 +430,17 @@ pub const TEXACCUM_HEADER: u32 = crate::object_nodes::TEXACCUM_HEADER;
 /// linear texture, read in texels as the texture accumulation target is.
 pub const VIEW_TEXTURE: u8 = 5;
 
+/// The engine texture of the scene copy (Code): the table binds for 17
+/// (`crate::screen_look::engine_texture`: `Target(0x13)`) the target the
+/// guest's `0x000352e0` fills at a sorted handler's entry with a four-stage
+/// copy of the view's colour, 320 by 240. The camouflage layer (18) bumps
+/// its coordinates and the hologram layer (21) projects it; both read it
+/// in texels of that size.
+pub const SCENE_COPY_TEXTURE: u8 = 17;
+
+/// The scene copy's size in guest pixels, before the render scale.
+pub const SCENE_COPY_SIZE: (u32, u32) = (320, 240);
+
 /// The stages of an object pass the host binds an engine texture at
 /// (empty in the look).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -434,6 +453,9 @@ pub struct EngineBound {
     /// The view's own target (engine texture 5, 2D, unbiased): a copy of
     /// the bound colour.
     pub view: [bool; 4],
+    /// The scene copy (engine texture 17, 2D, unbiased): the downsample of
+    /// the bound colour a sorted handler's layers 18 and 21 sample.
+    pub scene_copy: [bool; 4],
 }
 
 /// [`object_look`] with the stages that sample the vector normalization
@@ -469,6 +491,7 @@ fn object_look_stages_with(
             }
             tags::material::TextureSource::Engine(TEXACCUM_TEXTURE) => &mut bound.texaccum[n],
             tags::material::TextureSource::Engine(VIEW_TEXTURE) => &mut bound.view[n],
+            tags::material::TextureSource::Engine(SCENE_COPY_TEXTURE) => &mut bound.scene_copy[n],
             _ => continue,
         };
         *slot = true;
@@ -578,7 +601,7 @@ fn compile_with_layer_constants(
             dims: std::array::from_fn(|n| {
                 if engine.normalization[n] {
                     Some(shaders::psh::TextureDim::Cube)
-                } else if engine.texaccum[n] || engine.view[n] {
+                } else if engine.texaccum[n] || engine.view[n] || engine.scene_copy[n] {
                     Some(shaders::psh::TextureDim::D2)
                 } else {
                     (look.textures[n] != crate::look::Stage::Empty)
@@ -1017,6 +1040,53 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(pass.view, [false, true, false, false]);
         assert_eq!(pass.texaccum, [false; 4]);
+    }
+
+    #[test]
+    fn a_camouflage_pass_binds_the_scene_copy() {
+        use gfx::state::RenderStateType as R;
+        use tags::material::{StageTexture, TextureSource};
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let state = |t: R, value: u32| tags::shader::RenderStateValue {
+            state: (0..=255u8)
+                .find(|&s| R::from_guest_index(&table, u32::from(s)) == Some(t))
+                .expect("a slot"),
+            value,
+        };
+        let mut imp = lit();
+        imp.render_states = vec![state(R::AlphaBlendEnable, 0), state(R::ZWriteEnable, 0)];
+        // The camouflage bump sampled through texture 17 at stage 1.
+        imp.textures[1] = Some(StageTexture {
+            source: TextureSource::Engine(SCENE_COPY_TEXTURE),
+            size: None,
+            stage_size: None,
+        });
+        imp.pixel_shader = shaders::PixelShaderDef {
+            texture_modes: 1 << 5,
+            ..Default::default()
+        }
+        .to_bytes();
+        assert!(
+            crate::look::implementation_look(map::TagId(0xe000_0001), &imp).is_err(),
+            "the world's look refuses it"
+        );
+        let (look, bound) = object_look_stages(map::TagId(0xe000_0001), &imp).unwrap();
+        assert_eq!(bound.scene_copy, [false, true, false, false]);
+        assert_eq!((bound.view, bound.texaccum), ([false; 4], [false; 4]));
+        assert_eq!(look.textures[1], Stage::Empty, "bound by the host");
+        let fetch = [shaders::vsh::InputFetch::Float; 16];
+        let pass = object_layer_pass(
+            map::TagId(0xe000_0001),
+            &imp,
+            &[],
+            &rigid_program(),
+            WORLD,
+            fetch,
+        )
+        .unwrap();
+        assert_eq!(pass.scene_copy, [false, true, false, false]);
+        assert_eq!(pass.view, [false; 4]);
+        assert_eq!(pass.program.dims[1], Some(shaders::psh::TextureDim::D2));
     }
 
     #[test]

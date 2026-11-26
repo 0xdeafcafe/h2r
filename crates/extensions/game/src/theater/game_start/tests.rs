@@ -115,6 +115,52 @@ fn a_reactivation_of_the_game_in_play_is_not_a_new_game() {
     assert!(starts.waiting());
 }
 
+#[test]
+fn a_game_described_after_its_first_update_is_taken_again_and_keeps_its_start() {
+    let dir = Temp::new();
+    let rec = recorder(&dir);
+    let g = game(&block(MODE_MULTIPLAYER, 4), [5, 6]);
+    rec.game_activated(&g);
+    {
+        let mut s = rec.lock();
+        note_first_update(None, &mut s, &g);
+        let Mode::Record(r) = &mut s.mode else { panic!("a recording") };
+        // Not described at the first update: no error, the start waits.
+        assert!(r.starts.release(&mut r.meta).unwrap().is_none());
+        assert!(r.starts.waiting());
+    }
+    {
+        let mut s = rec.lock();
+        note_first_update(None, &mut s, &g);
+        let Mode::Record(r) = &mut s.mode else { panic!("a recording") };
+        r.meta.start_for_test(1, "zanzibar", film::blam::Mode::Custom);
+        let start = r.starts.release(&mut r.meta).unwrap().expect("the described game has its start");
+        assert_eq!(start.random, [5, 6]);
+        assert_eq!(start.game.descriptor.map.name, "zanzibar");
+        assert!(!r.starts.waiting());
+    }
+}
+
+#[test]
+fn a_game_never_described_gives_up_with_a_named_error() {
+    let dir = Temp::new();
+    let rec = recorder(&dir);
+    let g = game(&block(MODE_MULTIPLAYER, 4), [5, 6]);
+    rec.game_activated(&g);
+    let mut s = rec.lock();
+    let mut error = None;
+    for _ in 0..=DESCRIBE_UPDATES {
+        note_first_update(None, &mut s, &g);
+        let Mode::Record(r) = &mut s.mode else { panic!("a recording") };
+        if let Err(e) = r.starts.release(&mut r.meta) {
+            error = Some(e.to_string());
+            break;
+        }
+    }
+    let error = error.expect("a game never described gives up");
+    assert!(error.contains("not described in its first"), "{error}");
+}
+
 /// One game of a synthetic session: activation, which opens its film, the
 /// first update, the observer's description, then `ticks` ticks. Returns
 /// the film tick of the first update.

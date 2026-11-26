@@ -363,6 +363,10 @@ pub struct RulesExt {
     /// spawn in; `None`, their own. The host's spawn hook reads it at each
     /// spawn; it ends at the round's end.
     pub bodies: [Option<Body>; MAX_TEAMS],
+    /// Each team's objective HUD state (`objective`, `objective_mark`,
+    /// `meter`, `countdown`), by team index. The objective HUD reads it on
+    /// every machine that runs the VM; it ends at the round's end.
+    pub objectives: [Objective; MAX_TEAMS],
     /// The areas a script shows in play (`show_area`), in the order it
     /// first showed them, at most [`MAX_SHOWN_AREAS`]: a zone object and
     /// the team whose colour its wall takes (`None` for neutral). Every
@@ -393,6 +397,22 @@ pub struct RulesExt {
     /// picker, in the order made. The host reports a pick
     /// ([`Vm::choose`]); `picked` reads it.
     pub choices: Vec<Choice>,
+    /// Each player's loadout window ([`Window`]): the rows of a picker the
+    /// player may pick from now, and the row last picked. The script sets
+    /// the window (`offer`); the host reports the pick
+    /// ([`Vm::choose_loadout`]); `choice` reads the row. The row outlives a
+    /// round, the window does not.
+    pub loadout: [Window; MAX_PLAYERS],
+}
+
+/// One player's loadout window: the picker whose rows the player picks
+/// from, how many of its first rows are open (0 = none offered) and the
+/// row last picked (0 until one is). A row at or past `count` is refused.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Window {
+    pub picker: u8,
+    pub count: u8,
+    pub row: u8,
 }
 
 /// One picker a script offers: its slot, and its title and rows as indexes
@@ -496,6 +516,86 @@ pub enum Spawns {
     Near { zone: u32, count: u8 },
 }
 
+/// The marks one team's objective HUD shows at most: two sites or the goal.
+pub const MAX_OBJECTIVE_MARKS: usize = 3;
+
+/// What a mark asks a player to do at its zone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkKind {
+    Attack,
+    Defend,
+}
+
+impl MarkKind {
+    /// The kind a script's `objective_mark` number names: 1 attack, 2
+    /// defend; 0 is no mark.
+    pub fn from_code(code: i32) -> Option<MarkKind> {
+        match code {
+            1 => Some(MarkKind::Attack),
+            2 => Some(MarkKind::Defend),
+            _ => None,
+        }
+    }
+
+    pub fn code(self) -> u8 {
+        match self {
+            MarkKind::Attack => 1,
+            MarkKind::Defend => 2,
+        }
+    }
+}
+
+/// One team's objective HUD state (docs/game/hud-kit.md, "The scripted
+/// objective HUD"): the line a script sets, the zones it marks, the gauge
+/// and the clock.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Objective {
+    /// The objective line, an index of the script's string table.
+    pub text: Option<u16>,
+    /// The marked zone objects, in the order they were marked.
+    pub marks: [Option<(u32, MarkKind)>; MAX_OBJECTIVE_MARKS],
+    /// The gauge: its value and what it is of.
+    pub meter: Option<(i32, i32)>,
+    /// The tick the clock reaches zero at.
+    pub ends: Option<u32>,
+}
+
+impl Objective {
+    /// Whether the state asks the HUD to draw nothing.
+    pub fn is_empty(&self) -> bool {
+        *self == Objective::default()
+    }
+
+    /// Ticks left on the clock at `tick`; none when no clock runs.
+    pub fn left(&self, tick: u32) -> Option<u32> {
+        self.ends.map(|e| e.saturating_sub(tick))
+    }
+
+    /// The marked zones with their kinds.
+    pub fn marked(&self) -> impl Iterator<Item = (u32, MarkKind)> + '_ {
+        self.marks.iter().flatten().copied()
+    }
+
+    /// Marks `zone` as `kind`, or lifts its mark for no kind. Whether it
+    /// fits: a fourth mark does not.
+    fn mark(&mut self, zone: u32, kind: Option<MarkKind>) -> bool {
+        let at = self.marks.iter().position(|m| m.is_some_and(|(z, _)| z == zone));
+        match (at, kind) {
+            (Some(i), Some(k)) => self.marks[i] = Some((zone, k)),
+            (Some(i), None) => {
+                self.marks[i] = None;
+                self.marks.sort_by_key(|m| m.is_none());
+            }
+            (None, Some(k)) => match self.marks.iter().position(Option::is_none) {
+                Some(i) => self.marks[i] = Some((zone, k)),
+                None => return false,
+            },
+            (None, None) => {}
+        }
+        true
+    }
+}
+
 /// The most starting locations `spawn_near` keeps.
 pub const MAX_SPAWN_NEAR: i32 = u8::MAX as i32;
 
@@ -524,8 +624,8 @@ const STATE_MAGIC: [u8; 4] = *b"H2RX";
 /// 2 added the `ticks_held` counters; 3 the teams' spawn rules and
 /// bodies; 4 the script role mask and the shown areas; 5 the show state;
 /// 6 the movers; 7 the sight table; 8 the open barriers; 9 the pickers and
-/// what each player picked.
-const STATE_VERSION: u8 = 9;
+/// what each player picked; 10 the loadout windows.
+const STATE_VERSION: u8 = 10;
 
 impl RulesExt {
     /// Whether `player` holds `cap` (an index into `requires`) with uses
@@ -681,6 +781,36 @@ impl RulesExt {
         w.push(self.choices.len() as u8);
         for c in &self.choices {
             w.extend_from_slice(&[c.player, c.slot, c.row]);
+        }
+        for l in &self.loadout {
+            w.extend_from_slice(&[l.picker, l.count, l.row]);
+        }
+        for o in &self.objectives {
+            w.extend_from_slice(&o.text.map_or(u16::MAX, |t| t).to_le_bytes());
+            for m in &o.marks {
+                match m {
+                    None => w.push(0),
+                    Some((zone, kind)) => {
+                        w.push(kind.code());
+                        w.extend_from_slice(&zone.to_le_bytes());
+                    }
+                }
+            }
+            match o.meter {
+                None => w.push(0),
+                Some((value, of)) => {
+                    w.push(1);
+                    w.extend_from_slice(&value.to_le_bytes());
+                    w.extend_from_slice(&of.to_le_bytes());
+                }
+            }
+            match o.ends {
+                None => w.push(0),
+                Some(t) => {
+                    w.push(1);
+                    w.extend_from_slice(&t.to_le_bytes());
+                }
+            }
         }
         w
     }
@@ -939,6 +1069,49 @@ impl RulesExt {
             }
             choices.push(c);
         }
+        let mut loadout = [Window::default(); MAX_PLAYERS];
+        for l in &mut loadout {
+            let at = r.at;
+            *l = Window { picker: r.u8()?, count: r.u8()?, row: r.u8()? };
+            if l.picker as usize >= MAX_PICKS
+                || l.count as usize > MAX_PICK_ROWS
+                || (l.count > 0 && l.row >= l.count)
+                || (l.count == 0 && l.row as usize >= MAX_PICK_ROWS)
+            {
+                return Err(StateError::Malformed(at));
+            }
+        }
+        let mut objectives = [Objective::default(); MAX_TEAMS];
+        for o in &mut objectives {
+            let at = r.at;
+            o.text = match r.u16()? {
+                u16::MAX => None,
+                t => Some(t),
+            };
+            for m in &mut o.marks {
+                let at = r.at;
+                *m = match r.u8()? {
+                    0 => None,
+                    c => {
+                        let kind = [MarkKind::Attack, MarkKind::Defend]
+                            .into_iter()
+                            .find(|k| k.code() == c)
+                            .ok_or(StateError::Malformed(at))?;
+                        Some((r.u32()?, kind))
+                    }
+                };
+            }
+            o.meter = match r.u8()? {
+                0 => None,
+                1 => Some((r.i32()?, r.i32()?)),
+                _ => return Err(StateError::Malformed(at)),
+            };
+            o.ends = match r.u8()? {
+                0 => None,
+                1 => Some(r.u32()?),
+                _ => return Err(StateError::Malformed(at)),
+            };
+        }
         if r.at != bytes.len() {
             return Err(StateError::Malformed(r.at));
         }
@@ -958,6 +1131,7 @@ impl RulesExt {
             held,
             spawns,
             bodies,
+            objectives,
             shown,
             show,
             movers,
@@ -965,6 +1139,7 @@ impl RulesExt {
             gates,
             picks,
             choices,
+            loadout,
         })
     }
 }
@@ -1122,6 +1297,7 @@ impl Vm {
             held: BTreeMap::new(),
             spawns: [None; MAX_TEAMS],
             bodies: [None; MAX_TEAMS],
+            objectives: [Objective::default(); MAX_TEAMS],
             shown: Vec::new(),
             show: crate::show::State::default(),
             movers: Vec::new(),
@@ -1129,6 +1305,7 @@ impl Vm {
             gates: Vec::new(),
             picks: Vec::new(),
             choices: Vec::new(),
+            loadout: [Window::default(); MAX_PLAYERS],
         };
         Ok(Vm {
             role_traits: role_traits(&ir, options),
@@ -1171,6 +1348,10 @@ impl Vm {
                 .picks
                 .iter()
                 .all(|o| (o.title as usize) < ir.strings.len() && o.rows.iter().all(|&t| (t as usize) < ir.strings.len()))
+            && ext.objectives.iter().all(|o| {
+                o.text.is_none_or(|t| (t as usize) < ir.strings.len())
+                    && o.marks.iter().skip_while(|m| m.is_some()).all(|m| m.is_none())
+            })
             && ext.spawns.iter().all(|r| match r {
                 Some(Spawns::Areas { label, .. }) => (*label as usize) < ir.labels.len(),
                 _ => true,
@@ -1557,12 +1738,16 @@ impl Vm {
                 self.ext.held.clear();
                 self.ext.spawns = [None; MAX_TEAMS];
                 self.ext.bodies = [None; MAX_TEAMS];
+                self.ext.objectives = [Objective::default(); MAX_TEAMS];
                 self.ext.shown.clear();
                 self.ext.show = crate::show::State::default();
                 self.ext.movers.clear();
                 self.ext.sight.clear();
                 self.ext.picks.clear();
                 self.ext.choices.clear();
+                for l in &mut self.ext.loadout {
+                    l.count = 0;
+                }
                 // Every barrier still open stands where it closed.
                 for gate in std::mem::take(&mut self.ext.gates) {
                     game.step_object(gate.object, gate.home, [0; 3]);
@@ -1626,6 +1811,42 @@ impl Vm {
     /// What the players picked, in the order made.
     pub fn choices(&self) -> &[Choice] {
         &self.ext.choices
+    }
+
+    /// The pickers some player's loadout window reads its rows from: the
+    /// host asks those players through [`Window`], not as a plain picker.
+    pub fn loadout_pickers(&self) -> Vec<u8> {
+        let mut out: Vec<u8> = self.ext.loadout.iter().filter(|l| l.count > 0).map(|l| l.picker).collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// The pickers that are plain ones: all but [`Vm::loadout_pickers`].
+    pub fn plain_picks(&self) -> Vec<PickOffer> {
+        let held = self.loadout_pickers();
+        self.ext.picks.iter().filter(|o| !held.contains(&o.slot)).cloned().collect()
+    }
+
+    /// A player's loadout window.
+    pub fn window(&self, player: u8) -> Option<Window> {
+        self.ext.loadout.get(player as usize).copied()
+    }
+
+    /// The host reports that `player` picked `row` of the loadout window.
+    /// A row the window does not open (at or past its count, or past the
+    /// rows its picker holds), or a player outside the roster, is refused
+    /// (`false`) and the last pick stands. A pick holds until the next.
+    pub fn choose_loadout(&mut self, player: u8, row: u8) -> bool {
+        let Some(l) = self.ext.loadout.get(player as usize).copied() else {
+            return false;
+        };
+        let rows = self.ext.picks.iter().find(|o| o.slot == l.picker).map_or(0, |o| o.rows.len());
+        if row >= l.count || row as usize >= rows {
+            return false;
+        }
+        self.ext.loadout[player as usize].row = row;
+        true
     }
 
     /// A string of the script's table, as an offer names its title and rows.
@@ -2174,6 +2395,12 @@ impl<'a> Run<'a> {
                             .map_or(-1, |c| i32::from(c.row)),
                         _ => -1,
                     },
+                    // The row the player last picked in the loadout window,
+                    // 0 when none was; -1 for a player out of range.
+                    caps::id::CHOICE => u8::try_from(raw[0])
+                        .ok()
+                        .and_then(|p| self.ext.loadout.get(p as usize))
+                        .map_or(-1, |l| i32::from(l.row)),
                     caps::id::RANDOM => {
                         if raw[0] > 0 {
                             (splitmix64(&mut self.ext.rng) % raw[0] as u64) as i32
@@ -2216,6 +2443,7 @@ impl<'a> Run<'a> {
                         self.mover(game, e.id, &raw)?;
                         self.gate(game, e.id, &raw)?;
                         self.pick(e.id, &raw)?;
+                        self.offer(e.id, &raw)?;
                         self.stand(game, e.id, &raw)?;
                         let mut call = self.resolve(e, &raw);
                         if caps::is_message(e.id) {
@@ -2318,6 +2546,24 @@ impl<'a> Run<'a> {
             }
             _ => {}
         }
+        Ok(())
+    }
+
+    /// `offer(p, picker, count)`: opens the first `count` rows of `picker`
+    /// to the player (1 up to [`MAX_PICK_ROWS`]). A row last picked that the
+    /// window still holds stays the player's; else the player is back on
+    /// row 0. A picker out of range, a count out of range, or a player out
+    /// of the roster is a script error.
+    fn offer(&mut self, entry: u16, raw: &[i32]) -> Result<(), ErrorKind> {
+        let (caps::id::OFFER, &[player, picker, count]) = (entry, raw) else {
+            return Ok(());
+        };
+        let player = usize::try_from(player).ok().filter(|&p| p < MAX_PLAYERS).ok_or(ErrorKind::Picks)?;
+        let picker = u8::try_from(picker).ok().filter(|&s| (s as usize) < MAX_PICKS).ok_or(ErrorKind::Picks)?;
+        let count = u8::try_from(count).ok().filter(|&n| n >= 1 && n as usize <= MAX_PICK_ROWS).ok_or(ErrorKind::Picks)?;
+        let l = &mut self.ext.loadout[player];
+        let row = if l.row < count { l.row } else { 0 };
+        *l = Window { picker, count, row };
         Ok(())
     }
 
@@ -2507,6 +2753,39 @@ impl<'a> Run<'a> {
                     _ => None,
                 };
             }
+            caps::id::OBJECTIVE => {
+                self.ext.objectives[team].text = match raw.get(1) {
+                    Some(&t) => Some(
+                        u16::try_from(t)
+                            .ok()
+                            .filter(|&t| (t as usize) < self.ir.strings.len())
+                            .ok_or(ErrorKind::Hud)?,
+                    ),
+                    None => None,
+                };
+            }
+            caps::id::OBJECTIVE_MARK => {
+                if let (Some(zone), Some(&kind)) = (raw.get(1).and_then(|&z| object_id(z)), raw.get(2)) {
+                    let kind = match kind {
+                        0 => None,
+                        k => Some(MarkKind::from_code(k).ok_or(ErrorKind::Hud)?),
+                    };
+                    if !self.ext.objectives[team].mark(zone, kind) {
+                        return Err(ErrorKind::Hud);
+                    }
+                }
+            }
+            caps::id::METER => {
+                if let (Some(&value), Some(&of)) = (raw.get(1), raw.get(2)) {
+                    self.ext.objectives[team].meter = (of > 0).then_some((value.clamp(0, of), of));
+                }
+            }
+            caps::id::COUNTDOWN => {
+                if let Some(&ticks) = raw.get(1) {
+                    self.ext.objectives[team].ends =
+                        (ticks > 0).then(|| self.ext.tick.saturating_add(ticks as u32));
+                }
+            }
             caps::id::SET_BODY => {
                 let path = raw
                     .get(1)
@@ -2681,6 +2960,16 @@ mod tests {
                 None,
             ],
             bodies: [Some(Body::Elite), Some(Body::Spartan), None, None, None, None, None, None],
+            objectives: {
+                let mut o = [Objective::default(); MAX_TEAMS];
+                o[1] = Objective {
+                    text: None,
+                    marks: [Some((0x4001_0003, MarkKind::Attack)), Some((7, MarkKind::Defend)), None],
+                    meter: Some((12, 30)),
+                    ends: Some(900),
+                };
+                o
+            },
             shown: vec![(0x4001_0003, Some(1)), (0x4001_0007, None)],
             show: {
                 let mut show = crate::show::State::default();
@@ -2715,6 +3004,7 @@ mod tests {
                 Choice { player: 2, slot: 0, row: 2 },
                 Choice { player: 0, slot: 1, row: 0 },
             ],
+            loadout: std::array::from_fn(|i| Window { picker: (i % MAX_PICKS) as u8, count: 3, row: (i % 3) as u8 }),
         }
     }
 
@@ -2768,7 +3058,8 @@ mod tests {
             + (1 + 13 * e.sight.len())
             + (1 + 16 * e.gates.len())
             + (1 + e.picks.iter().map(|o| 4 + 2 * o.rows.len()).sum::<usize>())
-            + (1 + 3 * e.choices.len());
+            + (1 + 3 * e.choices.len())
+            + 3 * MAX_PLAYERS;
         let rules = (1 + 2 + 4) + (MAX_TEAMS - 2) + (1 + 4 + 1);
         let first = bytes.len() - held - MAX_TEAMS - rules;
         assert_eq!(bytes[first], 1, "team 0 has an Areas rule");
@@ -2816,6 +3107,77 @@ mod tests {
         assert!(vm.spawn_rule(0).is_some());
         vm.fire(&mut g, Input::RoundEnd);
         assert_eq!(vm.spawn_rule(0), None);
+    }
+
+    /// The spawn rule is in the record: a checkpoint revert puts an earlier
+    /// record back and the team's rule is the one it held then, a rule
+    /// set since gone and a rule lifted since back.
+    #[test]
+    fn a_reverted_record_restores_the_spawn_rule() {
+        let src = "rules \"Lines\" 1\ntype slayer\nteams 2\nrequires player.spawn\n\
+                   label attack: spawns\nglobal var phase: int = 0\n\
+                   on round_start { spawn_areas(team 0, attack, 0) }\n\
+                   on tick { phase = phase + 1\n if phase == 2 { spawn_areas(team 0, attack, 1) } }\n";
+        let (ir, _) = crate::build(src).unwrap();
+        let mut vm = Vm::new(ir, 0, 0).unwrap();
+        let mut g = crate::fake::FakeGame::with_players(2);
+        vm.begin_tick(0);
+        vm.fire(&mut g, Input::RoundStart);
+        let checkpoint = vm.ext().encode();
+        vm.begin_tick(1);
+        vm.update(&mut g);
+        vm.begin_tick(2);
+        vm.update(&mut g);
+        assert_eq!(vm.spawn_rule(0), Some(SpawnRule::Areas { label: "attack", number: 1 }));
+        let back = Vm::resume(vm.ir().clone(), 0, RulesExt::decode(&checkpoint).unwrap()).unwrap();
+        assert_eq!(back.spawn_rule(0), Some(SpawnRule::Areas { label: "attack", number: 0 }));
+        assert_eq!(back.spawn_rule(1), None);
+    }
+
+    /// The objective entries stand in the state per team until the round
+    /// ends: the line, a mark, the gauge and the clock's end tick; a fourth
+    /// mark or an unknown kind stops the script.
+    #[test]
+    fn objective_entries_stand_in_the_state_until_the_round_ends() {
+        let src = "rules \"Obj\" 1\ntype slayer\nteams 2\nrequires hud.objective\n\
+                   label goal: zone\n\
+                   on round_start { objective(team 1, \"Hold it\")\n objective_mark(team 1, goal, 2)\n\
+                   meter(team 1, 5, 20)\n countdown(team 1, seconds(3)) }\n";
+        let (ir, _) = crate::build(src).unwrap();
+        let mut vm = Vm::new(ir, 0, 0).unwrap();
+        let mut g = crate::fake::FakeGame::with_players(2);
+        g.label("goal", 0x4001_0002, 0, 1);
+        vm.begin_tick(4);
+        vm.fire(&mut g, Input::RoundStart);
+        assert_eq!(g.script_error, None);
+        let o = vm.ext().objectives[1];
+        assert_eq!(o.text.map(|t| vm.ir().strings[t as usize].as_str()), Some("Hold it"));
+        assert_eq!(o.marked().collect::<Vec<_>>(), [(0x4001_0002, MarkKind::Defend)]);
+        assert_eq!(o.meter, Some((5, 20)));
+        assert_eq!(o.left(5), Some(89));
+        assert!(vm.ext().objectives[0].is_empty());
+        // The record keeps it.
+        let back = RulesExt::decode(&vm.ext().encode()).unwrap();
+        assert_eq!(back.objectives, vm.ext().objectives);
+        vm.fire(&mut g, Input::RoundEnd);
+        assert!(vm.ext().objectives.iter().all(Objective::is_empty));
+    }
+
+    #[test]
+    fn a_mark_lifts_by_kind_zero_and_a_fourth_mark_is_refused() {
+        let mut o = Objective::default();
+        assert!(o.mark(1, Some(MarkKind::Attack)));
+        assert!(o.mark(2, Some(MarkKind::Defend)));
+        assert!(o.mark(1, Some(MarkKind::Defend)), "a zone marked again is changed");
+        assert!(o.mark(3, Some(MarkKind::Attack)));
+        assert!(!o.mark(4, Some(MarkKind::Attack)), "a fourth mark does not fit");
+        assert!(o.mark(2, None));
+        assert_eq!(
+            o.marked().collect::<Vec<_>>(),
+            [(1, MarkKind::Defend), (3, MarkKind::Attack)]
+        );
+        assert!(o.mark(4, Some(MarkKind::Attack)));
+        assert!(o.mark(9, None), "lifting an unmarked zone does nothing");
     }
 
     /// `set_body` sets the team's body in the state, `none` gives the
@@ -3009,6 +3371,12 @@ mod tests {
             held: (0..MAX_HELD_ZONES as u32).map(|z| (z, [u32::MAX; MAX_TEAMS])).collect(),
             spawns: [Some(Spawns::Near { zone: u32::MAX, count: u8::MAX }); MAX_TEAMS],
             bodies: [Some(Body::Elite); MAX_TEAMS],
+            objectives: [Objective {
+                text: Some(u16::MAX - 1),
+                marks: [Some((u32::MAX, MarkKind::Defend)); MAX_OBJECTIVE_MARKS],
+                meter: Some((i32::MIN, i32::MAX)),
+                ends: Some(u32::MAX),
+            }; MAX_TEAMS],
             shown: (0..MAX_SHOWN_AREAS as u32).map(|z| (z, Some(7))).collect(),
             show: crate::show::State {
                 widgets: [Some(crate::show::Widget {
@@ -3045,6 +3413,7 @@ mod tests {
             choices: (0..MAX_PICKS as u8)
                 .flat_map(|slot| (0..MAX_PLAYERS as u8).map(move |player| Choice { player, slot, row: MAX_PICK_ROWS as u8 - 1 }))
                 .collect(),
+            loadout: [Window { picker: MAX_PICKS as u8 - 1, count: MAX_PICK_ROWS as u8, row: MAX_PICK_ROWS as u8 - 1 }; MAX_PLAYERS],
         };
         let bytes = e.encode();
         assert!(bytes.len() <= MAX_STATE_BYTES, "{} bytes", bytes.len());

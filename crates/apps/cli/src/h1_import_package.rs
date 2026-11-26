@@ -248,7 +248,7 @@ impl Halo1 {
             s.write(&data)
         };
         let mut say = |s: String| eprintln!("halo1: {s}");
-        run_jobs(&order, workers(), &mut stamp, &conv, &mut save, &mut say);
+        run_jobs(&order, &data, workers(), &mut stamp, &conv, &mut save, &mut say);
         Ok(())
     }
 }

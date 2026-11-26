@@ -1,0 +1,37 @@
+# The scripted objective HUD (docs/game/hud-kit.md, "The scripted objective
+# HUD"): what a script's `objective`, `objective_mark`, `meter` and
+# `countdown` show. The banner and the clock show in every screen mode; the
+# line, the gauge and the navpoints in fullscreen alone. Elements in draw
+# order.
+name: script-objective
+elements:
+  - id: so.banner
+    kind: banner
+    longest: "Phase 3 of 3: take the final site"
+    at: {anchor: top-left, full: [0, 0], half: [0, 0], quarter: [0, 0]}
+  - id: so.clock
+    kind: text
+    font: hud
+    justify: end
+    longest: "99:59"
+    at: {anchor: top-right, full: [-30, 66], half: [-30, 66], quarter: [-30, 66]}
+  - id: so.line
+    kind: text
+    font: hud
+    justify: end
+    longest: "Phase 3 of 3: take the final site"
+    at: {anchor: top-right, full: [-30, 87]}
+  # The capture gauge is the retail strip, under the grenade row's next pill.
+  - id: so.meter
+    kind: meter
+    art: {type: strip-meter}
+    at: {anchor: top-left, full: [0, 21], origin: next-grenade-pill}
+  - id: so.nav.1
+    kind: navpoint
+    longest: "999"
+  - id: so.nav.2
+    kind: navpoint
+    longest: "999"
+  - id: so.nav.3
+    kind: navpoint
+    longest: "999"

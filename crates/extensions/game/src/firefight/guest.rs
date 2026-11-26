@@ -8,11 +8,13 @@
 //! call goes to the engine's own routine, named in `points.rs`; nothing
 //! here writes an actor record.
 
+use ::firefight::Faction;
 use ::firefight::director::SQUAD_SLOTS;
 use engine::entry::{Cx, EntryError, GuestCall, Regs};
 use engine::{GuestMemory, MemFault, points};
 
 use super::host::{AiGlobals, Kit};
+use super::ship::ShipPath;
 use crate::actor_net::squads::Placement;
 
 /// The two AI globals bytes `ai_update` (`0x1c83c0`) gates on
@@ -73,6 +75,8 @@ pub mod scenario {
     /// Starting location: position, then the reference frame `i16`.
     pub const START_POSITION: u32 = 0x04;
     pub const START_REFERENCE_FRAME: u32 = 0x10;
+    /// Zone: flags, `u32`; the kit's roles are above the engine's bits.
+    pub const ZONE_FLAGS: u32 = 0x20;
     /// Zone: firing positions and areas.
     pub const ZONE_FIRING_POSITIONS: (u32, u32) = (0x28, 0x20);
     pub const ZONE_AREAS: (u32, u32) = (0x30, 0x88);
@@ -81,6 +85,20 @@ pub mod scenario {
     pub const FIRING_REFERENCE_FRAME: u32 = 0x0c;
     /// Area: the mean of its firing positions.
     pub const AREA_MEAN: u32 = 0x24;
+    /// Object names (`h1campaign::scenario::OBJECT_NAMES`): the name at
+    /// `+0`, then the object type `u16` and the placement's index in that
+    /// type's placements `u16`.
+    pub const OBJECT_NAMES: (u32, u32) = (0x48, 0x24);
+    pub const OBJECT_NAME_TYPE: u32 = 0x20;
+    pub const OBJECT_NAME_PLACEMENT: u32 = 0x22;
+    /// The vehicle object type in an object name.
+    pub const OBJECT_TYPE_VEHICLE: u16 = 1;
+    /// Scripting data, one element, and in it the point sets and their
+    /// points (`h1campaign::ai::h2::layout`). A point is named at `+0`.
+    pub const SCRIPTING_DATA: (u32, u32) = (0x1d8, 0x80);
+    pub const POINT_SETS: (u32, u32) = (0x00, 0x30);
+    pub const POINTS: (u32, u32) = (0x20, 0x3c);
+    pub const POINT_POSITION: u32 = 0x20;
 }
 
 /// The kit's squad and zone names (`crates/tools/firefight-kit/src/ai.rs`
@@ -93,6 +111,11 @@ const BASE_PREFIX: &str = "ff_base_";
 /// The orders a kit authors for `Hunt`: `ff_hunt_NN` sends a squad at
 /// base NN.
 pub const HUNT_PREFIX: &str = "ff_hunt_";
+/// The kit's parked drop ship, an object name, and a zone's flight path,
+/// the point set `ff_path_NN` for `ff_drop_NN`, with the points
+/// `run_in`, `hover` and `run_out` (`crates/tools/firefight-kit/src/ship.rs`).
+const SHIP_NAME: &str = "ff_ship";
+const PATH_PREFIX: &str = "ff_path_";
 
 /// The name of the order that hunts at `base`.
 pub fn hunt_order_name(base: u8) -> String {
@@ -114,6 +137,9 @@ pub struct KitZone {
     /// Its firing positions and their reference frames: where a squad
     /// placed into the zone starts.
     pub starts: Vec<([f32; 3], u16)>,
+    /// The roles the kit gave the zone (`::firefight::roles`); none for a
+    /// base zone.
+    pub roles: u8,
 }
 
 /// The kit on the loaded map, read from the scenario's AI blocks.
@@ -132,11 +158,22 @@ pub struct KitLayout {
     /// `ff_class_` squads in scenario order. A row outside the palette
     /// is not a class; a name recorded twice keeps its first row.
     pub classes: Vec<(String, u16)>,
+    /// Each recorded class's faction by its palette row: the team the kit
+    /// wrote on its `ff_class_` squad, as [`Faction::team`]. A class
+    /// record on any other team is no class (its faction is not known, and
+    /// none is assumed).
+    pub factions: std::collections::BTreeMap<u16, Faction>,
     /// The team of the first slot's squad.
     pub team: u8,
     /// Each base's hunt order, `ff_hunt_NN`, by base: the scenario
     /// order index, none where the scenario has no order of that name.
     pub hunt_orders: Vec<Option<u16>>,
+    /// The parked drop ship, `ff_ship`: its index among the scenario's
+    /// vehicle placements. None on a map whose kit carries no ship.
+    pub ship: Option<i16>,
+    /// Each drop zone's flight path, by position in `zones`: none for a
+    /// zone with no `ff_path_NN` point set, or one missing a point.
+    pub paths: Vec<Option<ShipPath>>,
 }
 
 impl KitLayout {
@@ -151,8 +188,23 @@ impl KitLayout {
     }
 }
 
+impl KitLayout {
+    /// The team a squad of palette row `character` is placed on, when the
+    /// host picked `host_team` for the actors no player holds: a Covenant
+    /// class takes the host's pick (the kit's slot team, 3 unless a player
+    /// holds it), every other faction its own team ([`Faction::team`]). A
+    /// row the kit recorded no class for is an error, not the host's team.
+    pub fn placement_team(&self, character: u16, host_team: u8) -> anyhow::Result<u8> {
+        match self.factions.get(&character) {
+            Some(Faction::Covenant) => Ok(host_team),
+            Some(faction) => Ok(faction.team()),
+            None => anyhow::bail!("palette row {character} has no class record in the kit"),
+        }
+    }
+}
+
 /// A block's elements: `(address, count)`.
-fn block(m: &dyn GuestMemory, owner: u32, (field, size): (u32, u32)) -> Result<Vec<u32>, MemFault> {
+pub(super) fn block(m: &dyn GuestMemory, owner: u32, (field, size): (u32, u32)) -> Result<Vec<u32>, MemFault> {
     let count = m.u32(owner + field)?;
     let at = m.u32(owner + field + 4)?;
     if at == 0 {
@@ -194,15 +246,20 @@ pub fn read_kit(m: &dyn GuestMemory) -> Result<Option<KitLayout>, MemFault> {
     let mut squads = [None; SQUAD_SLOTS];
     let mut team = None;
     let mut classes: Vec<(String, u16)> = Vec::new();
+    let mut factions = std::collections::BTreeMap::new();
     for (index, at) in block(m, scnr, scenario::SQUADS)?.into_iter().enumerate() {
         let squad_name = name(m, at)?;
         if let Some(class) = squad_name.strip_prefix(CLASS_PREFIX) {
             let row = m.u16(at + scenario::SQUAD_CHARACTER)?;
-            if !class.is_empty()
+            // The record squad's team is the class's faction's team.
+            let faction = Faction::from_team(m.u16(at + scenario::SQUAD_TEAM)? as u8);
+            if let Some(faction) = faction
+                && !class.is_empty()
                 && row < characters
                 && !classes.iter().any(|(known, _)| known == class)
             {
                 classes.push((class.to_string(), row));
+                factions.insert(row, faction);
             }
             continue;
         }
@@ -218,6 +275,8 @@ pub fn read_kit(m: &dyn GuestMemory) -> Result<Option<KitLayout>, MemFault> {
         return Ok(None);
     };
     let mut zones = Vec::new();
+    // Each drop zone's number, `NN` of `ff_drop_NN`, in `zones` order.
+    let mut numbers: Vec<usize> = Vec::new();
     let mut bases = std::collections::BTreeMap::new();
     for (index, at) in block(m, scnr, scenario::ZONES)?.into_iter().enumerate() {
         let zone_name = name(m, at)?;
@@ -241,12 +300,16 @@ pub fn read_kit(m: &dyn GuestMemory) -> Result<Option<KitLayout>, MemFault> {
             index: index as u16,
             point: m.vec3(area + scenario::AREA_MEAN)?,
             starts,
+            roles: ::firefight::roles::unpack(m.u32(at + scenario::ZONE_FLAGS)?),
         };
         match base {
             Some(n) => {
                 bases.entry(n).or_insert(zone);
             }
-            None => zones.push(zone),
+            None => {
+                numbers.push(ordinal(&zone_name, ZONE_PREFIX).unwrap_or(usize::MAX));
+                zones.push(zone);
+            }
         }
     }
     let bases = bases
@@ -265,26 +328,72 @@ pub fn read_kit(m: &dyn GuestMemory) -> Result<Option<KitLayout>, MemFault> {
         }
         hunt_orders[base].get_or_insert(index as u16);
     }
+    let ship = read_ship(m, scnr)?;
+    let found = read_paths(m, scnr)?;
+    let paths = numbers.iter().map(|n| found.get(n).copied()).collect();
     Ok(Some(KitLayout {
         squads,
         zones,
         bases,
         characters,
         classes,
+        factions,
         team,
         hunt_orders,
+        ship,
+        paths,
     }))
 }
 
-fn guest(e: impl Into<EntryError>) -> anyhow::Error {
+/// `ff_ship`: the vehicle placement the object name points at.
+fn read_ship(m: &dyn GuestMemory, scnr: u32) -> Result<Option<i16>, MemFault> {
+    for at in block(m, scnr, scenario::OBJECT_NAMES)? {
+        if name(m, at)? == SHIP_NAME && m.u16(at + scenario::OBJECT_NAME_TYPE)? == scenario::OBJECT_TYPE_VEHICLE {
+            return Ok(Some(m.u16(at + scenario::OBJECT_NAME_PLACEMENT)? as i16));
+        }
+    }
+    Ok(None)
+}
+
+/// The scenario's `ff_path_NN` point sets by zone number: each with its
+/// `run_in`, `hover` and `run_out` points. The first set of a number wins.
+fn read_paths(
+    m: &dyn GuestMemory,
+    scnr: u32,
+) -> Result<std::collections::BTreeMap<usize, ShipPath>, MemFault> {
+    let mut found = std::collections::BTreeMap::new();
+    for data in block(m, scnr, scenario::SCRIPTING_DATA)? {
+        for set in block(m, data, scenario::POINT_SETS)? {
+            let Some(number) = ordinal(&name(m, set)?, PATH_PREFIX) else {
+                continue;
+            };
+            let mut points: [Option<[f32; 3]>; 3] = [None; 3];
+            for point in block(m, set, scenario::POINTS)? {
+                let at = m.vec3(point + scenario::POINT_POSITION)?;
+                match name(m, point)?.as_str() {
+                    "run_in" => points[0].get_or_insert(at),
+                    "hover" => points[1].get_or_insert(at),
+                    "run_out" => points[2].get_or_insert(at),
+                    _ => continue,
+                };
+            }
+            if let [Some(run_in), Some(hover), Some(run_out)] = points {
+                found.entry(number).or_insert(ShipPath { run_in, hover, run_out });
+            }
+        }
+    }
+    Ok(found)
+}
+
+pub(super) fn guest(e: impl Into<EntryError>) -> anyhow::Error {
     anyhow::anyhow!("{}", e.into())
 }
 
-async fn call(cx: &Cx, c: GuestCall) -> anyhow::Result<Regs> {
+pub(super) async fn call(cx: &Cx, c: GuestCall) -> anyhow::Result<Regs> {
     cx.call(c).await.map_err(guest)
 }
 
-fn squad_index(kit: &KitLayout, slot: u8) -> anyhow::Result<u16> {
+pub(super) fn squad_index(kit: &KitLayout, slot: u8) -> anyhow::Result<u16> {
     kit.squads
         .get(usize::from(slot))
         .copied()
@@ -292,13 +401,28 @@ fn squad_index(kit: &KitLayout, slot: u8) -> anyhow::Result<u16> {
         .ok_or_else(|| anyhow::anyhow!("the kit reserves no squad for slot {slot}"))
 }
 
+/// The AI units in scenario squad `squad`, with or without a replication
+/// entity: a local game publishes none.
+fn squad_actors(cx: &Cx, squad: u16) -> anyhow::Result<usize> {
+    cx.read(|m| {
+        let mut n = 0;
+        sim_state::visit_ai_units(m, false, |a| n += usize::from(a.squad == squad))
+            .map_err(|e| anyhow::anyhow!("the actor pool faulted: {e:?}"))?;
+        Ok(n)
+    })
+}
+
 /// Place a squad: set the slot squad's character, zone and starts in the
 /// scenario, place `count` actors through the engine's squad placement as
-/// the counted `ai_place` does, then set their team. The scenario writes
+/// the counted `ai_place` does, then set their team: the class's faction's
+/// ([`KitLayout::placement_team`]). The scenario writes
 /// are the same on every machine that applies the entry. The placement's
-/// weapon tier is not applied: the stage-one kit authors one weapon.
+/// weapon tier is not applied: the stage-one kit authors one weapon. A
+/// placement that adds no actor to the squad is an error naming the slot,
+/// the class row and the zone, so a wave is never silently empty.
 pub async fn place_squad(cx: &Cx, kit: &KitLayout, p: Placement) -> anyhow::Result<()> {
     let squad = squad_index(kit, p.slot)?;
+    let team = kit.placement_team(p.character, p.team)?;
     let zone = kit
         .zones
         .get(usize::from(p.zone))
@@ -338,6 +462,7 @@ pub async fn place_squad(cx: &Cx, kit: &KitLayout, p: Placement) -> anyhow::Resu
         Ok::<_, MemFault>(())
     })
     .map_err(guest)?;
+    let before = squad_actors(cx, squad)?;
     // Any start (-1), not forced, spawn flag 1: the arguments the counted
     // evaluator passes at 0x2a5052.
     call(
@@ -347,11 +472,18 @@ pub async fn place_squad(cx: &Cx, kit: &KitLayout, p: Placement) -> anyhow::Resu
             .args([u32::from(squad), u32::MAX, 0, 1]),
     )
     .await?;
+    anyhow::ensure!(
+        squad_actors(cx, squad)? > before,
+        "the engine placed no actor for slot {}: class row {} at zone {}",
+        p.slot,
+        p.character,
+        p.zone
+    );
     call(
         cx,
         GuestCall::new(points::AI_SET_TEAM.base)
             .eax(u32::from(squad))
-            .ebx(u32::from(p.team)),
+            .ebx(u32::from(team)),
     )
     .await?;
     Ok(())

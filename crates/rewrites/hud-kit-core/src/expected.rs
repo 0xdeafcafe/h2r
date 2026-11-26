@@ -320,61 +320,63 @@ pub mod forge_readout {
 pub mod firefight {
     use super::*;
     use crate::views::firefight::{
-        BANNER, BANNER_LONGEST, COUNT_LONGEST, ENEMIES_COUNT, ENEMIES_END, ENEMIES_PILL,
-        LIVES_COUNT, LIVES_END, LIVES_PILL, NAME, NOTE, NOTE_LONGEST, PILL_STEP,
+        BANNER, BANNER_LONGEST, ENEMIES, LIVES, LIVES_LONGEST, NAME, PROGRESS, PROGRESS_LONGEST,
+        SCORE, SCORE_LONGEST, SKULLS, skull_glyphs,
     };
 
-    const fn row(origin: Origin, dx: i16) -> Place {
-        Place::new(Anchor::TopLeft, (dx, 0))
-            .split((dx, 0), (dx, 0))
-            .from(origin)
+    /// A place with the offsets it has in each mode: none where it is
+    /// not drawn.
+    fn place(
+        anchor: Anchor,
+        full: (i16, i16),
+        half: Option<(i16, i16)>,
+        quarter: Option<(i16, i16)>,
+    ) -> Place {
+        let mut at = Place::new(anchor, full);
+        at.half = half;
+        at.quarter = quarter;
+        at
     }
 
-    const EVERY_MODE: Place = Place::GAME.split((0, 0), (0, 0));
-
-    fn pill(pill: &'static str, end: &'static str, count: &'static str, dx: i16) -> [Element; 3] {
-        [
-            Element::icon(
-                pill,
-                Art::GrenadePill(PillPart::Body),
-                row(Origin::NextGrenadePill, dx),
-            ),
-            Element::icon(
-                end,
-                Art::GrenadePill(PillPart::End),
-                row(Origin::NextGrenadePill, dx + PILL_BODY),
-            ),
-            // Where a pill's count sits, as the grenade counts.
-            Element::text(
-                count,
-                Font::Lcd,
-                Justify::Centre,
-                COUNT_LONGEST,
-                row(Origin::NextGrenadeCount, dx),
-            )
-            .over(pill),
-        ]
+    fn corner(full: (i16, i16), half: Option<(i16, i16)>, quarter: Option<(i16, i16)>) -> Place {
+        place(Anchor::BottomRight, full, half, quarter)
     }
 
     pub fn hud() -> Hud {
-        let mut banner = Element::channel(
+        let line = |id, longest, full: i16, quarter: Option<i16>| {
+            Element::text(
+                id,
+                Font::Hud,
+                Justify::End,
+                longest,
+                corner((0, full), Some((0, full)), quarter.map(|y| (0, y))),
+            )
+        };
+        let mut elements = vec![
+            line(SCORE, SCORE_LONGEST, -58, None),
+            line(LIVES, LIVES_LONGEST, -72, Some(-58)),
+            line(PROGRESS, PROGRESS_LONGEST, -86, Some(-72)),
+            Element::meter(
+                ENEMIES,
+                Art::StripMeter,
+                corner((0, -94), Some((0, -94)), None).registered([1.0, 0.0]),
+            ),
+        ];
+        for (i, id) in SKULLS.into_iter().enumerate() {
+            let i = i as i16;
+            elements.push(Element::gauge(
+                id,
+                skull_glyphs(i as usize),
+                corner((-(18 * i + 15), -113), Some((-(14 * i + 14), -110)), None),
+            ));
+        }
+        elements.push(Element::text(
             BANNER,
-            Kind::Banner {
-                longest: BANNER_LONGEST,
-            },
-        );
-        banner.at = EVERY_MODE;
-        let mut note = Element::channel(
-            NOTE,
-            Kind::Message {
-                longest: NOTE_LONGEST,
-            },
-        );
-        note.at = EVERY_MODE;
-        let mut elements = vec![banner];
-        elements.extend(pill(LIVES_PILL, LIVES_END, LIVES_COUNT, 0));
-        elements.extend(pill(ENEMIES_PILL, ENEMIES_END, ENEMIES_COUNT, PILL_STEP));
-        elements.push(note);
+            Font::Hud,
+            Justify::Centre,
+            BANNER_LONGEST,
+            place(Anchor::TopLeft, (272, 60), Some((272, 48)), None),
+        ));
         Hud {
             name: NAME,
             elements,

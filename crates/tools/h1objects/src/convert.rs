@@ -2508,7 +2508,7 @@ impl<'a> Converter<'a> {
         }
         let hover = powered
             .iter()
-            .filter(|p| p.point.antigravity.is_some())
+            .filter(|p| p.point.hover)
             .count();
         if hover != 0 && hover != powered.len() {
             return Err(h1convert::Error::no_rebuild(
@@ -2607,27 +2607,45 @@ impl<'a> Converter<'a> {
         }
         let (attachments, creation_effect, functions) =
             self.object_attachments(b, &u.object, &mut rep)?;
-        let physics = u.object.physics.map(|id| {
-            h1::tag_bytes(self.h1, self.h1_tag(id)?, b"phys", h1::PHYS_SIZE)
-        }).transpose()?;
-        let fail = |e| h1convert::Error::no_rebuild(&self.h1.header().name, &tag.name, e);
-        let contacts = if !points.is_empty() && hover == 0 {
-            Some(
-                h1::GroundContacts::read(
-                    self.h1,
-                    physics.ok_or(Error::Truncated("wheel physics"))?,
-                    &self.base.materials,
-                )
-                .map_err(fail)?,
-            )
-        } else {
-            None
+        let fail = |why: String| {
+            Error::from(h1convert::Error::no_rebuild(
+                &self.h1.header().name,
+                &tag.name,
+                why,
+            ))
         };
-        let power = h1::powered_seats(self.h1, b).map_err(fail)?;
+        // The Halo 2 vehicle whose drive tuning this one takes.
+        let drive = match crate::rebuild::drive_counterpart(&tag.name) {
+            Some(names) => {
+                let id = names
+                    .iter()
+                    .find_map(|n| self.base.find(b"vehi", n))
+                    .ok_or_else(|| {
+                        fail(format!("the base holds none of its drive counterparts {names:?}"))
+                    })?;
+                let d = tags::defs::Defs::builtin()
+                    .group(FourCC(*b"vehi"))
+                    .expect("vehi definition");
+                Some(self.base.record(d, id)?)
+            }
+            // A prop an animation moves, a scripted set piece, a dropship
+            // or a turret has no drive to take.
+            None if scripted.is_some()
+                || crate::rebuild::drive_exempt(&tag.name)
+                || matches!(vehicle_type, 3 | 6) =>
+            {
+                None
+            }
+            None => {
+                return Err(fail(
+                    "no Halo 2 vehicle is its drive counterpart (rebuild::DRIVE_COUNTERPARTS)"
+                        .into(),
+                ));
+            }
+        };
         let (root, roles) = crate::provenance::capture(|| {
             crate::rebuild::vehicle_with_tuning(&crate::rebuild::VehicleSpec {
                 source: b,
-                physics,
                 references: &references,
                 attachments: &attachments,
                 functions: &functions,
@@ -2641,14 +2659,18 @@ impl<'a> Converter<'a> {
                 vehicle_type,
                 flags,
                 weapons: &weapons,
-                contacts: contacts.as_ref(),
-                seat_power: &power,
                 points: &points,
-            }, scripted.and_then(|kind| kind.flight_tuning(b)))
+            }, scripted.and_then(|kind| kind.flight_tuning(b)), drive.as_ref())
         });
-        let root = root.map_err(fail)?;
+        let root = root?;
+        if drive.is_some() {
+            rep.no_home.push(
+                "vehi: drive tuning (gears, engine, steering, ground and hover laws, friction and hover points' tuning) from the matching Halo 2 vehicle"
+                    .into(),
+            );
+        }
         rep.no_home.push(format!(
-            "vehi: Halo 1's type, flags (low half), camera, {} seats (label as the rider's mode, markers), {} weapons and {} powered mass points as friction or hover points; source contact parameters and Halo 1 drive; {} attachments (looping sounds and effects) and the creation effect from Halo 1; {} seat camera tracks Halo 1's; HUD and damage null; {} Halo 1 references",
+            "vehi: Halo 1's type, flags (low half), camera, {} seats (label as the rider's mode, markers), {} weapons and {} powered mass points as friction or hover points; the counterpart's drive tuning when it has one; {} attachments (looping sounds and effects) and the creation effect from Halo 1; {} seat camera tracks Halo 1's; HUD and damage null; {} Halo 1 references",
             u.seats.len(),
             weapons.len(),
             points.len(),
@@ -2817,13 +2839,13 @@ impl<'a> Converter<'a> {
             out.push(PoweredPoint {
                 point: crate::rebuild::Point {
                     sphere: [m.position[0], m.position[1], m.position[2], m.radius],
-                    antigravity: phys.powered_flags.get(m.powered_mass_point as usize)
-                        .filter(|flags| *flags & (1 << 6) != 0)
-                        .and_then(|_| phys.antigravity.get(m.powered_mass_point as usize).copied()),
+                    hover: phys
+                        .powered_flags
+                        .get(m.powered_mass_point as usize)
+                        .is_some_and(|flags| *flags & (1 << 6) != 0),
                     marker,
                     region,
                     region_index,
-                    steered: m.powered_mass_point == 0,
                 },
                 node,
                 position: local,
@@ -2906,17 +2928,18 @@ impl<'a> Converter<'a> {
         let counterpart_hlmt = counterpart.as_deref().and_then(|r| self.base.reference(r, h2::MODEL));
         let hlmt = self.model(&mut rep, &u.object, &tag.name, None)?;
         self.object_physics(&mut rep, hlmt, &u.object, &tag.name, PhysicsKind::Biped)?;
-        let markers = match u.object.model {
+        let (markers, nodes) = match u.object.model {
             Some(m) => {
-                h1_assets::models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?
-                    .0
+                let model = h1_assets::models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?.0;
+                let markers: Vec<String> = model
                     .markers
                     .into_iter()
                     .filter(|m| !m.instances.is_empty())
                     .map(|m| m.name)
-                    .collect()
+                    .collect();
+                (markers, model.nodes.into_iter().map(|n| n.name).collect())
             }
-            None => Vec::new(),
+            None => (Vec::new(), Vec::new()),
         };
         let player = health_hud::is_player_biped(&tag.name);
         let voices = self.biped_dialogue(tag, b, &mut rep)?;
@@ -3079,8 +3102,8 @@ impl<'a> Converter<'a> {
                 .map_err(|e| named("Halo 2 HUD view", e))?;
             let (id, _) = self.unit_hud(u).map_err(|e| named("unit HUD", e))?;
             // Halo 1's motion sensor centre (unhi +MOTION_SENSOR): the
-            // converted HUD draws the sensor there, so a scaled or short
-            // record stops the conversion.
+            // converted HUD draws the sensor there, so a short record or a
+            // scale that is not finite stops the conversion.
             let centre = self.sensor_centre(u).map_err(|e| named("motion sensor", e))?;
             self.tree.hud_sensor = Some(centre);
             if let Some(other) = native.as_ref().and_then(|ids| ids.first()) {
@@ -3107,7 +3130,7 @@ impl<'a> Converter<'a> {
         });
         let parts = crate::rebuild::BipedParts {
             sentinel: tag.name.eq_ignore_ascii_case(r"characters\sentinel\sentinel"),
-            hud, markers, tracks, weapons, melee, integrated_light, blood, attachments, functions, creation, mass,
+            hud, markers, nodes, tracks, weapons, melee, integrated_light, blood, attachments, functions, creation, mass,
         };
         let root = crate::rebuild::biped(u, hlmt, &predicted, &parts)?;
         let root = self.unit_foot(*b"bipd", root, u, &mut rep)?;
@@ -3542,9 +3565,8 @@ impl Converter<'_> {
         let text_shader = find(b"shad", crate::h1hud::TEXT_SHADER)?;
         let mut widgets = Vec::new();
         for e in &elements {
-            if !crate::h1hud::unscaled(e.scale) {
-                return Err(Error::Invalid(format!("{}: scaled {:?}", e.name, e.scale)));
-            }
+            crate::h1hud::check_scale(e.scale)
+                .map_err(|why| Error::Invalid(format!("{}: {why}", e.name)))?;
             let bt = self.h1.tag(e.bitmap)?.clone();
             let bm = h1map::bitmap::Bitmap::read(self.h1, &bt)?;
             if crate::h1hud::sprite(&bm, e.sequence).is_none() {
@@ -3589,7 +3611,7 @@ impl Converter<'_> {
             let gb = crate::h1::tag_bytes(self.h1, &gt, b"grhi", crate::h1hud::grhi::SIZE)?.to_vec();
             // Its count, a Halo 2 number text on the type's input.
             if let Some(n) = crate::h1hud::grenade_number(&gb)? {
-                if !crate::h1hud::unscaled(n.scale) {
+                if !crate::h1hud::unscaled(crate::h1hud::number_scale(n.scale)) {
                     return Err(Error::Invalid(format!("{} count: scaled {:?}", gt.name, n.scale)));
                 }
                 let w = crate::h1hud::digit_width(self.h1)?;
@@ -3597,9 +3619,8 @@ impl Converter<'_> {
                 texts.push(crate::h1hud::grenade_count(&n, k, w, h, text_shader)?);
             }
             for e in crate::h1hud::grenade_elements(self.h1, &gb)? {
-                if !crate::h1hud::unscaled(e.scale) {
-                    return Err(Error::Invalid(format!("{}: scaled {:?}", gt.name, e.scale)));
-                }
+                crate::h1hud::check_scale(e.scale)
+                    .map_err(|why| Error::Invalid(format!("{}: {why}", gt.name)))?;
                 let bt = self.h1.tag(e.bitmap)?.clone();
                 let bm = h1map::bitmap::Bitmap::read(self.h1, &bt)?;
                 if crate::h1hud::sprite(&bm, e.sequence).is_none() {

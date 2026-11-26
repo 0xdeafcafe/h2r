@@ -539,15 +539,45 @@ the indicator. The point's y is therefore set so the ink is centred on Halo 1's 
 Halo 1's sprite rows 3..15 (`hud_layout_disc`
 `grenade_count_digits_sit_inside_the_indicator`).
 
-## Scale
+## Scale and anchors
 
-**Built for weapon widgets.** H1 multiplies the draw basis by the two
-authored floats at `+4` and `+8` (`0xe15f4`, `0xe15ff`). Placement
-comes separately from `0xe07a0`. The converter writes independent
-constant functions into the native X and Y effect slots. H2 applies
-them at `0x22be12`–`0x22beaa`. In split screen H1 first halves the
-crosshair basis unless overlay `+0x0c` bit 1 is set (`0xdae8f`).
-The boot applies that factor before the native effect.
+Halo 1 multiplies the draw basis by the two authored floats at `+4` and
+`+8` (E `0x000e15f4`, `0x000e15ff`). Placement comes separately from
+`0x000e07a0`: the offset is never scaled, so a scaled sprite keeps its
+anchor corner and grows away from it.
+
+Every element (unit, grenade and weapon bitmaps) is built the same way.
+`h1hud::widget_for` and `h1hud::weapon_widget` put Halo 1's factors in
+`Widget::scale`, and `h1hud::nhdt` writes a scaled widget's effects element
+(`Widget::effects`): scale flag 1 and independent constant functions in the
+native X and Y slots (`+0x10`, `+0x24`), which Halo 2 applies to each basis
+vector about the widget's registration point (E `0x22be12`..`0x22beaa`).
+The registration is the anchor's corner (`h1hud::registration`), so the
+element keeps Halo 1's corner. An element with scale 1 has no effects
+element. In split screen Halo 1 first halves the crosshair basis unless
+overlay `+0x0c` bit 1 is set (`0xdae8f`); the boot applies that factor
+before the native effect.
+
+`h1hud::check_scale` refuses a factor that is not finite or not above 0
+(none on the disc; a named error, not a guess). The motion sensor's
+placement scale does not move its centre and is checked the same way; the
+sweep it would size is not converted. A number's scale is the number
+draw's, not the element's (`h1hud::number_scale`: a factor not above 0 is
+1.0). The weapon numbers pass 0. The grenade count's argument is not read
+from the XBE, so a grenade count whose result is not 1.0 is a named
+conversion error.
+
+### At any aspect
+
+The runtime places a HUD draw in the 640 x 480 frame at the uniform scale
+`min(w / 640, h / 480)` and pins each corner group to its own window corner
+(docs/graphics/high-resolution.md, "HUD and UI"). So at 4:3 and at 21:9 the
+Halo 1 anchors land on the window's corners (`h1hud::hud_corner`: 0 top
+left, 1 top right, 2 bottom left, 3 bottom right, 4 the centre), the offset
+stays Halo 1's HUD pixels, and a sprite's size, scale included, is a fixed
+fraction of the window's height: `size * scale / 480`.
+`h1hud::halo1_screen_rect` (Halo 1's rules) and `h1hud::halo2_screen_rect`
+(the converted widget) model both and the tests compare them.
 
 ## Colours: alpha only; the motion sensor
 
@@ -709,7 +739,13 @@ Not converted, for two reasons:
   both widget types' hide flags in the freshly built Blood Gulch map.
 - `cargo test -p h1objects --lib h1hud` covers all weapon meter sources,
   padding, magazine and target selectors, zoom and screen flags, dormant
-  entries, placement and native scale and flash data.
+  entries, placement and native scale and flash data. It also checks each
+  Halo 1 anchor against its window corner at 4:3 and 21:9
+  (`each_halo1_anchor_maps_to_its_screen_corner_at_4_3_and_21_9`), a scaled
+  element's size as a fixed fraction of the screen height
+  (`a_scaled_element_keeps_its_halo1_size_relative_to_the_screen_height`)
+  and the scale effect an `nhdt` carries
+  (`a_scaled_element_writes_one_scale_effect_and_an_unscaled_one_none`).
 - `cargo test -p boot --lib h1_hud_text::weapon` checks warning predicates,
   clock transitions, input transfer and the draw frame.
 - `H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test -p h1objects --test it hud_layout_disc:: -- --ignored every_retail_weapon_hud_element_is_placed`

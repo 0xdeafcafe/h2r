@@ -717,7 +717,19 @@ allocation order is covered.
   clobber list. `Fast` and `Exact` both; lanes on and off; 1, 2 and 8
   workers.
 - **Per kernel, against the oracles.** `solver.rs` against `havok::solve`
-  on the same stream; `gjk.rs` against `support::vertices`; `weld.rs`
+  on the same stream: `tests/sim_physics_kernel.rs` (a module of
+  `tests/it.rs`, `differential` feature, the owner's image) builds a
+  seeded typed `Stream`, encodes it as the guest's schema, rows,
+  accumulators and impulses, runs the oracle to its return, and compares
+  every body vector, row word and impulse as bits under all four MXCSR
+  rounding modes with the x87 control word `0x027f`
+  (`rows_equal_register_port`, 10,000 cases;
+  `correct_velocities_equal_register_port`, which zeroes inverse mass so
+  the sums and the right-hand-side correction are what moves;
+  `rows_equal_on_non_finite_impulses`, where the kernel declines the
+  stream and the oracle still runs it). `sim-havok`'s
+  `tests/no_mul_add.rs` and its `clippy.toml` keep fused multiply-add out
+  of the kernel; `gjk.rs` against `support::vertices`; `weld.rs`
   against `weld::contacts`. The oracles already match the lifted code.
 - **Seeded sweeps.** Random masses, velocities and contact sets, with
   seeded NaN, infinity, denormal and signed-zero inputs, so `Exact` and

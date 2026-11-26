@@ -740,6 +740,13 @@ fn run_configured(
             vfs.rescan_maps();
         }));
     }
+    // Packages written while the game runs (the built-in Firefight kits)
+    // reach the VFS through `map_select::publish_packages`.
+    if let Some(vfs) = k.vfs() {
+        map_select::on_vfs_rescan(Box::new(move || {
+            vfs.lock().unwrap_or_else(|e| e.into_inner()).rescan_maps();
+        }));
+    }
     let uses = opts
         .stopgaps
         .then(|| stopgaps::install(&k, &loaded.runtime));
@@ -1592,7 +1599,7 @@ fn run_configured(
                 f.attach_calls(calls);
             }
             if let Some(theater) = theater.clone() {
-                f.on_return(move |id| theater.reopen_film(id));
+                f.on_return(move |id, why| theater.reopen_film(id, why));
             }
         }
         theater::library_methods(

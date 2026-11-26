@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Limits, Refusal, Result, Sha256, validate, wire};
 
-pub const FORMAT: u32 = 2;
+pub const FORMAT: u32 = 3;
 pub const MAX_DOC_BYTES: usize = 64 * 1024;
 pub const MAX_PLAYERS: u8 = 16;
 pub const MULTIPLIER_SCALE: u16 = 1_000;
@@ -17,6 +17,27 @@ pub(crate) const WAVES_PER_ROUND: usize = 5;
 pub(crate) const MAX_SQUADS: usize = 16;
 pub(crate) const MAX_CLASSES: usize = 32;
 pub(crate) const MAX_SKULLS: usize = 9;
+/// Rounds in a set that repeats: Firefight's own count.
+pub const SET_ROUNDS: usize = 3;
+/// Set skulls a definition lists: one for each of sets 2 to 4.
+pub(crate) const MAX_SET_SKULLS: usize = 3;
+/// The most a set may scale its squads by, in thousandths per set.
+pub const MAX_SET_SCALE: u16 = 500;
+/// Rows of a bonus round's points-to-lives table.
+pub(crate) const MAX_BONUS_ROWS: usize = 6;
+/// The longest bonus round: five minutes.
+pub(crate) const MAX_BONUS_TICKS: u32 = 5 * 60 * 30;
+/// The skulls (never Iron) the bonus round switches on for its
+/// length: the ODST skull order's slots, each in `script.rs`'s skull list.
+/// Iron is on in the bonus round besides ([`Skull::Iron`]).
+pub const BONUS_SKULLS: [Skull; 6] = [
+    Skull::Ghost,
+    Skull::Catch,
+    Skull::Thunderstorm,
+    Skull::Famine,
+    Skull::BlackEye,
+    Skull::Mythic,
+];
 const MAX_CAPS: usize = MAX_PLAYERS as usize;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,9 +50,15 @@ pub struct Def {
     pub teams: u8,
     #[serde(deserialize_with = "wire::bounded_seq::<_, _, MAX_ROUNDS>")]
     pub rounds: Vec<Round>,
+    /// What happens after the last round: the game ends, or the next set
+    /// begins.
+    pub set: SetRules,
     pub lives: Lives,
     pub caps: Caps,
     pub scoring: Scoring,
+    /// The round after each set: absent, none is played.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bonus: Option<Bonus>,
 }
 
 impl Def {
@@ -57,6 +84,36 @@ impl Def {
     /// SHA-256 of the entire canonical definition, including its version.
     pub fn id(&self) -> Result<Sha256> {
         Ok(Sha256::of(self.canonical_json()?.as_bytes()))
+    }
+}
+
+/// Sets: `rounds` describes one set. A finite definition plays it once and
+/// ends `Won`; an endless one plays it again and again until the team is
+/// out, and ends only `Lost`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetRules {
+    /// The next set begins when the last round's last wave is cleared. Needs
+    /// one team and [`SET_ROUNDS`] rounds.
+    pub endless: bool,
+    /// Squad counts grow by this many thousandths for each set played
+    /// (set 3 is 2 x `scale` over set 1), capped by the actor cap.
+    pub scale: u16,
+    /// Skulls that arrive at the start of sets 2, 3 and 4, in that order, and
+    /// stay on. None arrives after the list ends. Round skulls (`skulls_on`)
+    /// switch off when a new set begins; these do not.
+    #[serde(deserialize_with = "wire::bounded_seq::<_, _, MAX_SET_SKULLS>")]
+    pub skulls: Vec<Skull>,
+}
+
+impl SetRules {
+    /// One set, played once: what a finite definition says.
+    pub fn finite() -> Self {
+        Self {
+            endless: false,
+            scale: 0,
+            skulls: Vec::new(),
+        }
     }
 }
 
@@ -112,7 +169,86 @@ pub enum Drop {
     Edge,
     /// Prefer this zero-based kit zone if available and unseen.
     PreferZone(u8),
+    /// Pick among the kit zones that carry this role, unseen or farther
+    /// half first as for `Edge`.
+    Role(ZoneRole),
 }
+
+/// Who a class fights for. The kit writes it on the class's record squad
+/// as that faction's team, the game reads it back, and a squad is placed
+/// on that team, so each faction is hostile to every other by the engine's
+/// own "teams differ" test (docs/game/firefight.md, "Factions").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Faction {
+    Covenant,
+    Flood,
+    Human,
+}
+
+/// The engine's own team numbers (docs/halo1/ai.md, **S**).
+pub mod teams {
+    /// Enemy humans (allied humans take the player team they serve).
+    pub const HUMAN: u8 = 2;
+    pub const COVENANT: u8 = 3;
+    pub const FLOOD: u8 = 4;
+}
+
+impl Faction {
+    pub const ALL: [Self; 3] = [Self::Covenant, Self::Flood, Self::Human];
+
+    /// The team the faction's squads are placed on.
+    pub const fn team(self) -> u8 {
+        match self {
+            Self::Covenant => teams::COVENANT,
+            Self::Flood => teams::FLOOD,
+            Self::Human => teams::HUMAN,
+        }
+    }
+
+    /// The faction a team number is, if it is one.
+    pub const fn from_team(team: u8) -> Option<Self> {
+        match team {
+            teams::COVENANT => Some(Self::Covenant),
+            teams::FLOOD => Some(Self::Flood),
+            teams::HUMAN => Some(Self::Human),
+            _ => None,
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Covenant => "covenant",
+            Self::Flood => "flood",
+            Self::Human => "human",
+        }
+    }
+}
+
+/// What a kit zone is for: the roles it carries, written with the zone
+/// (`ZoneSeen::roles`). Stage-one `line` squads are Elite tier 0-1,
+/// `flank` tier 1-2, `heavy` tier 3.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZoneRole {
+    Line,
+    Flank,
+    Heavy,
+}
+
+impl ZoneRole {
+    /// The bit of `ZoneSeen::roles` and of the script's role column.
+    pub const fn bit(self) -> u8 {
+        match self {
+            Self::Line => 1,
+            Self::Flank => 2,
+            Self::Heavy => 4,
+        }
+    }
+}
+
+/// Every role bit: a zone of an auto-built kit carries all of them.
+pub const ALL_ZONE_ROLES: u8 = 0b111;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -121,6 +257,31 @@ pub struct Lives {
     pub per_round_bonus: u16,
     /// One pool per team; otherwise each player has their own count.
     pub shared: bool,
+    /// At zero lives a dead player waits for the next grant (a round's
+    /// end, the bonus round's end), not for the wave's end.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub zero_holds: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// The bonus round that follows each set: a timed stretch of one weak
+/// squad without end, every skull on, no life lost and no respawn in it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Bonus {
+    /// How long it runs, in ticks.
+    pub ticks: u32,
+    /// The squad the reserve refills with until the time is up. Its
+    /// `drop` and `weapon_tier` are read as in a wave.
+    pub squad: SquadSpec,
+    /// Ascending `(points, lives)`: a team that scores at least `points`
+    /// in the bonus round is granted the `lives` of the last row it
+    /// reaches (not the sum of the rows).
+    #[serde(deserialize_with = "wire::bounded_seq::<_, _, MAX_BONUS_ROWS>")]
+    pub lives_by_points: Vec<(u32, u16)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -181,9 +342,12 @@ pub enum Skull {
     Assassins = 2,
     Thunderstorm = 3,
     Famine = 4,
-    Blind = 6,
     Ghost = 7,
+    BlackEye = 8,
     Catch = 9,
+    /// Bonus round only: no respawn while it runs. A director rule; the
+    /// engine's skull of this number is never set.
+    Iron = 11,
     Mythic = 12,
     Angry = 13,
     LowGravity = 16,

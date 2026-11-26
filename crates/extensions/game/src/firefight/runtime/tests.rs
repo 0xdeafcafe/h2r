@@ -32,6 +32,8 @@ const PLAYERS: u32 = 0x1003_0000;
 const OBJECTS: u32 = 0x1004_0000;
 const UNIT: u32 = 0x1005_0000;
 const SCRATCH: u32 = 0x1006_0000;
+const ACTOR_POOL: u32 = 0x1007_0000;
+const AI_BODY: u32 = 0x1008_0000;
 /// The variant's flags: `[GAME_GLOBALS] + 8 + 0x17c`, team play in bit 0.
 const VARIANT_FLAGS: u32 = GAME_GLOBALS + 8 + 0x17c;
 /// The Elite's invented character tag datum.
@@ -63,7 +65,6 @@ fn guest(kit: bool, world: u32) -> (FakeGuest, u32) {
         .put_u8(AI + 1, 1)
         .put_u32(points::SIM_GLOBALS.base, WORLD)
         .put_u32(WORLD + 8, world)
-        .put_u32(guest_layout::global::ACTORS.base, 0)
         .put(
             guest_layout::global::CACHE_MAP_NAME.base,
             b"firefight-probe\0",
@@ -77,6 +78,8 @@ fn guest(kit: bool, world: u32) -> (FakeGuest, u32) {
         // The kit's class record: the Elite on palette row 0.
         named(&mut m, SQUADS + 0x74, "ff_class_elite");
         m.put_u16(SQUADS + 0x74 + 0x36, 0);
+        // Its team is its faction's: Covenant, 3.
+        m.put_u16(SQUADS + 0x74 + 0x24, 3);
         m.put_u16(SQUADS + 0x24, 3);
         pair(&mut m, SQUADS + 0x48, 2, STARTS);
         m.map(STARTS, 2 * 0x64);
@@ -95,6 +98,10 @@ fn guest(kit: bool, world: u32) -> (FakeGuest, u32) {
     }
     m.put_u32(points::PLAYERS.base, PLAYERS)
         .put_u32(points::OBJECTS.base, OBJECTS);
+    // An empty actor pool, and the object pool the actors' units live in.
+    let actors = fake::datums::<guest_layout::actor::Actor>(&mut m, ACTOR_POOL, 8);
+    m.put_u32(guest_layout::global::ACTORS.base, actors.array.addr)
+        .put_u32(guest_layout::global::OBJECTS.base, OBJECTS);
     let players = fake::datums::<Player>(&mut m, PLAYERS, 16);
     let objects = fake::datums::<Header>(&mut m, OBJECTS, 8);
     let (unit, header) = fake::push(&mut m, &objects);
@@ -167,6 +174,40 @@ fn crossfire(it: &Arc<Shared>) {
 
 fn wire_command(value: serde_json::Value) -> wire::CommandParams {
     serde_json::from_value(value).unwrap()
+}
+
+/// An AI unit of scenario squad `squad` and no replication entity, as a
+/// local game's actors are.
+fn add_actor(m: &mut FakeGuest, squad: u16) {
+    use guest_layout::{Object, Unit, actor::Actor, view::Datums, view::objects::Header};
+    let actors = Datums::<Actor>::at(ACTOR_POOL);
+    let objects = Datums::<Header>::at(OBJECTS);
+    let (id, actor) = fake::push(m, &actors);
+    let (handle, header) = fake::push(m, &objects);
+    let body = Object::at(AI_BODY);
+    let unit = body.as_unit();
+    m.map(body.addr, Unit::SIZE);
+    actor.set_unit(m, Some(handle)).unwrap();
+    actor.set_squad(m, u32::from(squad)).unwrap();
+    header.set_body(m, body.addr).unwrap();
+    unit.set(m, Unit::ACTOR, Datum(id.raw())).unwrap();
+    unit.set(m, Unit::PLAYER, Datum::NONE).unwrap();
+    body.set(m, Object::ENTITY, u32::MAX).unwrap();
+    body.set(m, Object::PARENT, Datum::NONE).unwrap();
+    body.set(m, Object::POSITION, [0.0; 3]).unwrap();
+}
+
+/// A local game (world mode 1) publishes no replication entities, so its
+/// squads' actors are counted without one.
+#[test]
+fn a_local_game_counts_its_squads_actors() {
+    let (mut m, _) = guest(true, 1);
+    let kit = guest::read_kit(&m).unwrap().expect("the kit");
+    assert_eq!(read_actors(&m, &kit), [0; SQUAD_SLOTS]);
+    add_actor(&mut m, 0);
+    let mut want = [0; SQUAD_SLOTS];
+    want[0] = 1;
+    assert_eq!(read_actors(&m, &kit), want);
 }
 
 #[test]
@@ -336,7 +377,7 @@ fn a_skull_command_reaches_the_skull_writer() {
     let (shared, skulls) = shared(false);
     let (mut m, _) = guest(true, 1);
     shared.lock().start(&mut m, false);
-    for id in ["blind", "mythic"] {
+    for id in ["black_eye", "mythic"] {
         shared
             .lock()
             .command(wire_command(
@@ -351,8 +392,8 @@ fn a_skull_command_reaches_the_skull_writer() {
     assert_eq!(
         *skulls.lock().unwrap(),
         [
-            BTreeSet::from([Skull::Blind]),
-            BTreeSet::from([Skull::Blind, Skull::Mythic])
+            BTreeSet::from([Skull::BlackEye]),
+            BTreeSet::from([Skull::BlackEye, Skull::Mythic])
         ]
     );
 }
@@ -508,6 +549,19 @@ fn every_wire_command_is_the_directors_own() {
                 weapon_tier: 2,
             },
         ),
+        (
+            json!({"drop_squad": {"slot": 1, "class": "elite", "count": 3, "zone": 0, "weapon_tier": 2}}),
+            Command::DropSquad {
+                slot: 1,
+                class: "elite".into(),
+                count: 3,
+                zone: 0,
+                weapon_tier: 2,
+            },
+        ),
+        (json!({"ship_hover": {"on": true}}), Command::ShipHover { on: true }),
+        (json!("ship_unload"), Command::ShipUnload),
+        (json!({"ship_leave": {"zone": 1}}), Command::ShipLeave { zone: 1 }),
         (
             json!({"target": {"slot": 2, "team": 1}}),
             Command::Target { slot: 2, team: 1 },
@@ -737,6 +791,7 @@ fn the_end_report_carries_each_teams_score_and_the_winner() {
         set: "Crossfire".into(),
         outcome,
         rounds_cleared: 2,
+        sets_cleared: 0,
         lives_used: 4,
         teams,
         scores: [300, 150],
@@ -753,6 +808,50 @@ fn the_end_report_carries_each_teams_score_and_the_winner() {
     let one = ended_report(ended(Outcome::Won, 1));
     assert_eq!(one.validate(), Ok(()));
     assert_eq!((one.teams, one.scores.as_slice()), (1, &[300][..]));
+}
+
+/// An endless game's end carries the sets it played through, and the wire
+/// takes the count.
+#[test]
+fn the_end_report_carries_sets_cleared() {
+    let ended = crate::firefight::host::Ended {
+        tick: 9_000,
+        set: "Endless".into(),
+        outcome: Outcome::Lost,
+        rounds_cleared: 7,
+        sets_cleared: 2,
+        lives_used: 9,
+        teams: 1,
+        scores: [4_200, 0],
+    };
+    let report = ended_report(ended);
+    assert_eq!(report.validate(), Ok(()));
+    assert_eq!((report.sets_cleared, report.rounds_cleared), (2, 7));
+    assert_eq!(report.outcome, "lost");
+    let wire = serde_json::to_value(&report).unwrap();
+    assert_eq!(wire["sets_cleared"], 2);
+}
+
+/// `firefight.state` names the set the director is in, and the bonus round
+/// as a phase that runs until its tick.
+#[test]
+fn state_reports_set_and_bonus() {
+    use ::firefight::director::Phase;
+    let (it, _) = shared(false);
+    it.lock().set_options(Box::new(|| {
+        Ok(Options {
+            wave_set: 4,
+            ..Options::default()
+        })
+    }));
+    let (mut m, _) = guest(true, 1);
+    it.lock().start(&mut m, false);
+    let director = it.lock().state().director.expect("the director runs");
+    assert_eq!((director.set, director.round), (0, 0));
+    assert_eq!(director.phase, "warmup");
+    assert_eq!(phase_name(Phase::Bonus { until: 1_830 }), ("bonus", Some(1_830)));
+    let json = serde_json::to_value(&director).unwrap();
+    assert_eq!(json["set"], 0);
 }
 
 /// Two player teams need a team game; with one and the kit's two bases

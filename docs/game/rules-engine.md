@@ -389,7 +389,9 @@ the starting locations' team at `scnr+0x100`) and builds the labelled
 things with `forge_doc::labelled`: each flag with its type's built-in
 label, and what the session's Forge document labels. At a game's start a
 session has no document (a Forge session loads its draft at its first
-tick), so the host's things are the flags' built-in labels. The script
+tick), so the host's things are the flags' built-in labels, with one
+addition: a script that has a built-in map layout reads it as the
+document ("Map layouts" below). The script
 holds a labelled thing by a handle of our own, `0x4000_0000` with the
 placement id (the block's number times 65,536 plus the final index): a
 flag has no object datum. `objects labelled` visits the things with the
@@ -398,6 +400,24 @@ none); `zone.label` is the script's label of that text; `zone.id` the
 placement id; `o.team` a flag's team through its designator
 (`E+0x10 + 2d`), or an objective record's `+4` on CTF and Assault, with
 neutral as `none`.
+
+**Map layouts.** A built-in layout is a labels-only Forge document
+(`Tier::Variant`: label ops on base entries and nothing else), one per
+script and map in `crates/formats/rules/src/builtin/layouts/<script>/<map>.json`
+(`rules::builtin::layout(script, map)`). `census::things_for` applies the
+layout of the running script on the loaded map (`census::layout_script`
+finds Siege by its `siege_site` label; the map's short name is the cache
+header's), so a site gets its number and a starting location its
+`siege_attack` or `siege_defend` label. The lobby's check applies the same
+layout (`gate::Sources::census` takes the script), and a Forge map the lobby
+picked replaces it, so the check and the match agree. A map with no layout
+keeps the flags' built-in labels. A label op on an entry the map lacks is
+skipped (`census::layout_doc`), which is what a placeholder index is: a
+layout names a place it has not yet read off the map (Zanzibar's file is
+all placeholders) and a census fills in the real index later. Readers that
+need only the flags' places (`world/walls.rs` on a client, the HUD
+publisher, the Forge play forms) read `census::things`, which applies no
+layout.
 
 **Zones.** `inside`, `ticks_held`, `on enter` and `on leave` test the
 host's zones (`rules/world/zones.rs`), each one a labelled netgame flag:
@@ -1253,13 +1273,19 @@ objects the author labelled `siege_barrier`, numbered by the phase they
 open in (a barrier numbered 0 is open from the start), are opened with
 `set_open` as each phase begins (`label barrier: objects at most 8`; a
 placement's label is set from Forge's Properties page, and a map with none
-plays as before). The lobby's `kits` option picks each side's weapons from
-three sets (standard, close quarters, long range); each local player also
-picks a set in a select dialog at the round's start (`offer_pick`,
-`pick_row`, `picked`: [rules-world-api.md](rules-world-api.md#pickers)),
-which holds from that player's next spawn and takes the lobby's set's
-place; a player who does not pick, and a player on another machine, gets
-the lobby's set. Siege has no core to carry.
+plays as before). Each side has a table of loadout rows, lightest first
+(`attack_rows`, `defend_rows`), and `tier_rows` says how many a phase
+opens: two in the first, four in the second, all five in the final
+assault (a map with no numbered sites stays on the first). At the round's
+start and as each phase begins the script `offer`s every player the rows of
+their side's tier (`offer(p, picker, count)`; the two sides' labels are
+the pickers 0 and 1), and `on spawn` gives the row `choice(p)` reads. A
+local player picks in a select dialog that opens when their window grows
+(`rules/world/choice.rs`, over the `kit.picker.game` dialog): a row above
+the tier is refused by the VM (`Vm::choose_loadout`) and the last pick
+stands. The pick never blocks a spawn: a player who picks nothing keeps
+their last row, row 0 at first, and so does a player on another machine.
+Siege has no core to carry.
 
 ### A Forge graph is the same IR
 
@@ -1435,7 +1461,8 @@ Reads:
 | per-engine globals (`E+0xfc`): hill, bomb state, territories, Juggernaut mask | `engine::objectives`; `KOTH_GLOBALS` and its siblings in `global.rs` | named |
 | events of the tick | `PLAYER_KILLED` `0x15ce70` for `on kill`; the roster's units each tick for `on spawn` and `on death` (`runtime::tell`); `SimRead::events` once sim-rewrite section 7 exists | named |
 | squads: actors alive, `on squad_dead`, `on actor_kill`, `on actor_assist` | `actor_net::squads::count_by_squad` and the kill list Firefight's `Observed` carries (`crates/extensions/game/src/actor_net/squads.rs`, `crates/formats/firefight/src/director.rs`) | named |
-| `zone_seen(z)`, `zone_distance(z)`, `zone_team_distance(z, team)`: Firefight's drop zones, the objects labelled `ff_drop` in kit order, and a zone's distance from one player team | the zone visibility and distance Firefight's `Observed` carries (`ZoneSeen`) | named |
+| `zone_path(n)`, `ship_ready()`: whether kit zone `n` has a drop ship path and whether the kit's ship is in the world (`ShipSeen`); `ff_drop_squad`, `ff_ship_hover`, `ff_ship_unload`, `ff_ship_leave`: the drop ship's commands | `firefight::director::ShipSeen` and `Command::DropSquad`, `ShipHover`, `ShipUnload`, `ShipLeave` | named |
+| `zone_seen(z)`, `zone_distance(z)`, `zone_has_role(z, mask)` (whether the zone carries a role of the mask; every zone for mask 0), `zone_team_distance(z, team)`: Firefight's drop zones, the objects labelled `ff_drop` in kit order, and a zone's distance from one player team | the zone visibility and distance Firefight's `Observed` carries (`ZoneSeen`) | named |
 | `on bounce(p, spot, chain, monster)`, `on bounced(p)`; `on touchdown(p, down, up)`, `on launch(p, spot, speed)`, `on grounded(p)` | the superbounce mode's medal chain (`superbounce_chain.rs`): its awards, and what each step saw of the player's physics (`Physics`); the touchdown rule and the landing judge of [superbounce.md](superbounce.md#medals) | named; delivered while the superbounce mode runs |
 | bounce and crouch spots, as zones | the scanner's spots per map and BSP (`crates/live/superbounce`); candidates, none traced as a real bounce | named |
 
@@ -1460,7 +1487,7 @@ Actions:
 | barriers and other map changes | `set_open(o, open)` on a labelled barrier object (below); creating and deleting at labels, as above, is not hostable (the host resolves no tag path to a tag datum) | `set_open` named; `create` and `delete` not built | `objects.move`; `objects.create`, `objects.delete` |
 | `set_open(o, open)`: a barrier opened or closed | the VM keeps each open barrier's closed place (`RulesExt::gates`, at most 16) and steps it `GATE_DROP` (64 world units) below it, or back, through the same `OBJECT_SET_TRANSFORM` put a `teleport` makes (`rules/world/objects.rs`); the round's end closes every open one. No call of its own; a put the world refuses (a place outside it) closes the barrier in the state again, so the next `set_open(o, true)` tries again. Whether a barrier parked below the floor stops blocking, and whether a client sees it move, are R2 and R3 | named; whether collision follows the put is not researched | `objects.move` |
 | `place_squad(s, class, n, label)` from the palette with its team, `hunt(s)`, erase | `AI_SQUAD_PLACE` `0x201520`, `AI_SET_TEAM` `0x275b60`, `AI_SET_ORDERS` `0x275cb0`, `AI_ERASE` `0x2736c0`, through `actor_net::squads::SquadEntry` (firefight.md "Guest boundary") | named; game runs R1, R2 pending | `ai.squads` |
-| `fly(v, path, t)`, `hover(v, on)`, `seat(p, v)`, `eject(p)`, `unload(v)`, `place_squad_in(s, class, n, v)`; reads `vehicle_riders(v)`, `vehicle_driver(v)`: a vehicle flown along a labelled `path`, loaded, unloaded and read | [rules-world-api.md](rules-world-api.md#vehicles-and-drop-ships): the host calls the retail hover and unload bodies at the tick boundary | named (`hover`, `unload`), not built (`fly`), traced (the rest) | `vehicles.drive` |
+| `fly(v, path, t)`, `hover(v, on)`, `seat(p, v)`, `eject(p)`, `unload(v)`, `place_squad_in(s, class, n, v)`; reads `vehicle_riders(v)`, `vehicle_driver(v)`: a vehicle flown along a labelled `path`, loaded, unloaded and read | [rules-world-api.md](rules-world-api.md#vehicles-and-drop-ships): the host calls the retail hover and unload bodies at the tick boundary | named (`hover`, `unload`), built in Firefight's host (`fly`, `place_squad_in`), traced (the rest) | `vehicles.drive` |
 | `spawn_areas(team, label, n)`: the team spawns only at the starting locations labelled `label` and numbered `n` | the rule in the VM's state; `SPAWN_LOCATION_FREE` `0x23bb70`, the free-spot test of `PLAYER_SPAWN_LOCATION` `0x14ef00`, answers "taken" for every other location (`rules/world/spawns.rs`); how the chooser weighs a location is not traced and not needed | named | `player.spawn` |
 | `spawn_near(team, zone, n)`: the team spawns only at the `n` starting locations nearest the zone; `none` or 0 lifts it | as `spawn_areas`, over the starting locations' positions (`+0x00`) | named | `player.spawn` |
 | loadout chosen at spawn | `on spawn` and `set_loadout`, with `offer_pick`, `pick_row` and `picked` for the player's own choice ([rules-world-api.md](rules-world-api.md#pickers)) | named; the offer reaches a client as a cue and its pick returns on the tunnel's `ActorPick` frame, so a player on a dedicated host's client picks, and a player on a machine with no tunnel gets the lobby's choice | `player.weapons`, `player.pick` |
@@ -1477,7 +1504,7 @@ Actions:
 | `message(to, text)`: `to` is a player, a team or `all` (everyone); the compiler picks one of three entries by its type (`message`, `message_team`, `message_all`), all spelled `message`. A text written in the call may hold up to four `{name}` holes, each a player, team, int, time or enum in scope (`{{` is a brace); the call reaches the game with the holes' values after its own arguments ([rules-language-types.md](rules-language-types.md#messages)). The host shows it to its local users in the audience through the notification insert (`hud_kit::NOTIFY`) and sends it to clients as a show cue ([rules-world-api.md](rules-world-api.md#the-show-channel)). Scoreboard text, announcer, waypoint | the notification queue (`0x24cbee`), per local user (hud-kit.md "Messages"); the centred text (`0x24cc73`) is not used | named | `hud.message` |
 | `hud_text(w, "…")`, `hud_value(w, n)`, `hud_fill(w, f)`, `hud_style(w, style)`, `hud_show(w, on)`, `hud_value_for(w, p, n)`; `mark(wp, at)`, `mark(wp, at, to)`, `unmark(wp)` | the VM's show state (`RulesExt::show`), drawn from the objective HUDs after each tick (`rules/world/hud.rs`); a mark's audience is a player's slot's bit or the team's seated players' bits, resolved in the VM from the roster (`Game::players_of_team`); the state rides the show channel's `Show` record ([rules-world-api.md](rules-world-api.md#the-show-channel)) | named | `hud.widgets`, `hud.waypoints` |
 | `place_squad_at(s, class, n, zone, tier)`: a squad at a kit zone index with a weapon tier | Firefight's `PlaceSquad` command, through the same squad entry | named | `ai.squads` |
-| `ff_round`, `ff_wave`, `ff_skull`, `ff_lives(p, n)` (`none` for the shared pool), `ff_score`, `ff_respawn`, `ff_finish`; with two player teams `ff_target(s, team)`, `ff_team_lives(team, n)`, `ff_player_score(p, n)`, `ff_team_finish(winner)` (`none` a draw) | Firefight's host log entries (`firefight::Command`), queued with the squad commands so the log keeps program order | named | `firefight.director` |
+| `ff_set`, `ff_round`, `ff_wave`, `ff_skull`, `ff_lives(p, n)` (`none` for the shared pool), `ff_score`, `ff_respawn`, `ff_finish`; with two player teams `ff_target(s, team)`, `ff_team_lives(team, n)`, `ff_player_score(p, n)`, `ff_team_finish(winner)` (`none` a draw); `ff_bonus(on, ticks)` for the bonus round | Firefight's host log entries (`firefight::Command`), queued with the squad commands so the log keeps program order | named | `firefight.director` |
 | `sound_to(s, p)`, `sound_to_team(s, t)`, `sound_to_all(s)`: a `sound` of the map played in the ears of an audience | `SOUND_START_AT_MARKER` `0x1891d0` at each audience player's unit, and a sound cue to every machine (`rules/world/audio.rs`; [rules-world-api.md](rules-world-api.md#audio)). `say`, `sound_at`, `music`, `music_stop` and `announce` are listed and refused by name (R4, R5) | named | `audio.play` |
 | `bot_go(p, at)`, `bot_hold(p, zone)`, `bot_follow(p, q)`, `bot_attack(p, q)`, `bot_free(p)`: an outside order to a phantom bot, its brain's goal while it stands | the phantom registry (`bots::phantom::order`): a hint to the seat's brain on the host, with a zone resolved through the census and the scenario's netgame flags (`rules/world/bots.rs`). No guest entry: the pad replicates as any player's input. An order to a seat no phantom holds is a refused call | named | `bots.orders` |
 | `forge_move(o, at)`, `forge_delete(o)`, `forge_place(tag, at)`, `forge_scale(o, s)`: an edit through the Forge log | a `forge-doc` op, validated and host-stamped (`crates/formats/forge-doc`, `LogHead::stamp`); edit classes in "Roles, powers and capabilities" | named | `forge.move`, `forge.delete`, `forge.place`, `forge.scale` |
@@ -1522,6 +1549,7 @@ plain words each:
 | `bots.orders` | gives bots orders | no |
 | `hud.message` | shows messages | no |
 | `hud.widgets`, `hud.waypoints` | draws on the HUD; marks places and things | no |
+| `hud.objective` | shows objectives, marks and a clock | no |
 | `hud.superbounce` | shows the superbounce guide: a priming HUD, marks over the map and bounce medals | no |
 | `firefight.director` | runs Firefight rounds, waves, lives and scores | no |
 | `forge.move`, `forge.delete`, `forge.place`, `forge.scale` | lets players move, remove, place and resize objects during the match | yes |
@@ -2328,7 +2356,7 @@ The phased mode is the check that the API is wide enough:
 | a core carried to a goal | the objective registry as CTF and Assault | traced |
 | the map opens per phase | `set_open` on the `siege_barrier` objects, numbered by phase (a barrier is put below its place and back; `delete` and `create` are not hostable) | named; the built-in Siege |
 | spawn areas switch per phase | `spawn_areas` over labelled starting locations; `spawn_near` over a zone, which needs no labels | named; the built-in Siege (`spawn_near`) |
-| loadouts per team, chosen at spawn | `on spawn` and `set_loadout`; Halo 2 has no armor abilities, so a loadout is weapons, grenades and traits; the lobby's `kits` option picks the set, and a player's own pick (`offer_pick`, `picked`) takes its place | named; the built-in Siege; a pick is carried for a local player only |
+| loadouts per team, chosen at spawn | `on spawn` and `set_loadout`; Halo 2 has no armor abilities, so a loadout is weapons, grenades and traits; a player picks a row of their side's table among the rows the phase's tier opens (`offer`, `choice`), row 0 until they pick | named; the built-in Siege; a pick is carried for a local player only |
 | team respawn waves | hold respawns with the lives gates, release on a timer | named; the built-in Siege |
 | two species teams | `set_body` per team at the round's start | named; the built-in Siege |
 | the objective and its state on the HUD | the Hill kit's mark, row and banner (`hud_style`, `mark`, `hud_text`) | named; the built-in Siege; the phase clock is the kit's `koth.phase` row |

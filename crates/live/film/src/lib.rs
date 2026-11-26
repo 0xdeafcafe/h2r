@@ -147,6 +147,24 @@ pub struct Entry {
     pub size: u32,
 }
 
+/// The prefix and the front JSON at the start of a v3 file, replacing what
+/// was there. `front` is at most [`range::FRONT_CAPACITY`] bytes
+/// ([`range::Front::encode`]); the unused capacity stays zero, as a front
+/// only grows from the provisional one to the sealed. The stream is left
+/// after the front.
+fn write_front<W: Write + Seek>(out: &mut W, front: &[u8]) -> Result<()> {
+    ensure!(
+        !front.is_empty() && front.len() <= range::FRONT_CAPACITY,
+        "public film header is {} bytes, outside 1 through {}",
+        front.len(),
+        range::FRONT_CAPACITY
+    );
+    out.seek(SeekFrom::Start(0))?;
+    out.write_all(&range::Prefix { json_len: front.len() as u32 }.encode())?;
+    out.write_all(front)?;
+    Ok(())
+}
+
 pub struct Writer<W: Write + Seek> {
     out: W,
     index: Vec<Entry>,
@@ -166,9 +184,14 @@ impl<W: Write + Seek> Writer<W> {
             header.version
         );
         let ranges = if header.version == 3 {
-            out.write_all(&range::Prefix { json_len: 0 }.encode())?;
+            // A provisional front, so a film whose recording stops before it
+            // is sealed still has one to read: the game's identity, with the
+            // roster and results empty until it is described and sealed.
+            let build = range::Build::new(header);
+            let front = build.front.encode().map_err(anyhow::Error::msg)?;
+            write_front(&mut out, &front)?;
             out.seek(SeekFrom::Start(range::DATA_OFFSET))?;
-            Some(Box::new(range::Build::new(header)))
+            Some(Box::new(build))
         } else {
             None
         };
@@ -200,6 +223,10 @@ impl<W: Write + Seek> Writer<W> {
             }
             if tag == blam::DESC {
                 ranges.set_descriptor(bytes)?;
+                let front = ranges.front.encode().map_err(anyhow::Error::msg)?;
+                let at = self.out.stream_position()?;
+                write_front(&mut self.out, &front)?;
+                self.out.seek(SeekFrom::Start(at))?;
             }
             if tag == KEYF {
                 let key = range::key_tick(bytes)?;
@@ -316,11 +343,7 @@ impl<W: Write + Seek> Writer<W> {
                 .context("missing film header")?
                 .offset;
             ensure!(ranges.has_summary, "missing film summary");
-            let front = serde_json::to_vec(&ranges.front)?;
-            ensure!(
-                front.len() <= range::FRONT_CAPACITY,
-                "public film header exceeds capacity"
-            );
+            let front = ranges.front.encode().map_err(anyhow::Error::msg)?;
             let raw = serde_json::to_vec(&ranges.directory)?;
             ensure!(
                 raw.len() <= range::MAX_INDEX_BYTES,
@@ -338,14 +361,7 @@ impl<W: Write + Seek> Writer<W> {
         self.write(INDX, &serde_json::to_vec(&index)?)?;
         if let Some((front, cidx_offset, cidx_raw_size)) = public {
             let end = self.out.stream_position()?;
-            self.out.seek(SeekFrom::Start(0))?;
-            self.out.write_all(
-                &range::Prefix {
-                    json_len: front.len() as u32,
-                }
-                .encode(),
-            )?;
-            self.out.write_all(&front)?;
+            write_front(&mut self.out, &front)?;
             self.out.seek(SeekFrom::Start(end))?;
             let footer = range::Footer {
                 cidx_offset,

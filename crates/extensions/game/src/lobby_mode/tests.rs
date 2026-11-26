@@ -62,7 +62,6 @@ fn game_setup_lists_the_rows_of_each_mode() {
                 "Change Rules...",
                 "Quick Options...",
                 "Clanker Options...",
-                "Firefight Options...",
             ],
         ),
         (
@@ -103,7 +102,7 @@ fn game_setup_lists_the_rows_of_each_mode() {
     );
     assert_eq!(
         Opener::GAME_SETUP_FIREFIGHT.rows,
-        page(Mode::Multiplayer, ALL, &CUSTOM).as_slice()
+        page(Mode::Firefight, ALL, &CUSTOM).as_slice()
     );
 }
 
@@ -199,7 +198,7 @@ fn arrange_drops_the_switch_to_rows() {
 
 #[test]
 fn a_list_with_nothing_to_change_is_left_as_built() {
-    let plain = [CHANGE_MAP, CHANGE_RULES, QUICK_OPTIONS, CLANKERS, FIREFIGHT];
+    let plain = [CHANGE_MAP, CHANGE_RULES, QUICK_OPTIONS, CLANKERS];
     // Map Variant... joins a custom game's list with the `forge` feature on.
     assert!(arrange(Mode::Multiplayer, ALL, &plain).is_some());
     let firefight_only = Offer {
@@ -918,6 +917,8 @@ mod gate {
         prefix: [u8; 8],
         reads: AtomicU32,
         forge_maps: Mutex<Vec<Option<String>>>,
+        /// The layout script each census read named.
+        layouts: Mutex<Vec<Option<String>>>,
     }
 
     impl Fake {
@@ -928,6 +929,7 @@ mod gate {
                 prefix: prefix(ir),
                 reads: AtomicU32::new(0),
                 forge_maps: Mutex::new(Vec::new()),
+                layouts: Mutex::new(Vec::new()),
             }
         }
 
@@ -941,8 +943,9 @@ mod gate {
     }
 
     impl Sources for Fake {
-        fn census(&self, _map: u32, forge_map: Option<&str>) -> Result<Census, String> {
+        fn census(&self, _map: u32, forge_map: Option<&str>, script: Option<&str>) -> Result<Census, String> {
             self.reads.fetch_add(1, Ordering::SeqCst);
+            self.layouts.lock().unwrap().push(script.map(str::to_owned));
             self.forge_maps
                 .lock()
                 .unwrap()
@@ -1052,6 +1055,42 @@ mod gate {
             let offers = g::map_filter_using(&siege.record, &sources).unwrap();
             assert_eq!(offers(MAP), starts, "{what}: the picker agrees with the start");
         }
+    }
+
+    /// Siege's check names its layout to the census; another script's names
+    /// none. A map with no layout keeps the labels its flags carry, so the
+    /// census is what it was without one.
+    #[test]
+    fn no_layout_keeps_builtin_labels() {
+        let siege = crate::community_variants::listed_named("Siege").unwrap();
+        let blob = crate::rules::feature::local_blob(siege.ext().script.prefix).unwrap();
+        let (ir, _) = ::rules::verify::load(&blob).unwrap();
+        let mut guest = lobby(MAP, siege.ext().script.prefix, true);
+        guest.put(VARIANT, siege.record.bytes());
+        let input = g::read(&guest, VARIANT).unwrap();
+        let sources = Fake::new(territory_map(), &ir);
+        assert_eq!(g::check(&input.key, &sources), Verdict::Clear);
+        assert_eq!(*sources.layouts.lock().unwrap(), [Some("siege".to_string())]);
+
+        let ir = script();
+        let sources = Fake::new(territory_map(), &ir);
+        let key = g::key_of(MAP, None, None);
+        assert_eq!(g::check(&key, &sources), Verdict::Clear);
+        let other = lobby(MAP, prefix(&ir), false);
+        let input = g::read(&other, VARIANT).unwrap();
+        let _ = g::check(&input.key, &sources);
+        assert!(sources.layouts.lock().unwrap().iter().all(Option::is_none));
+
+        // A map with no layout reads as it did: the territory keeps its label.
+        let rows = MapRows {
+            counts: [(BlockKind::NetgameFlags, 1)].into_iter().collect(),
+            flags: vec![FlagRow { kind: engine::objectives::kind::TERRITORY, team: 0 }],
+            ..MapRows::default()
+        };
+        assert!(crate::rules::census::layout_doc(Some("siege"), "lockout", &rows.counts).is_none());
+        let things = forge_doc::labelled(&rows, None).unwrap();
+        assert_eq!(things.len(), 1);
+        assert_eq!(things[0].label.text, "territory");
     }
 
     #[test]
@@ -1294,4 +1333,78 @@ fn the_panel_names_the_set_map_waves_plays() {
         panel_lines(Mode::Firefight, None, Some(Ok(o)))[0],
         "Invented Basin waves"
     );
+}
+
+/// Theater is never a Game Setup row, in any mode (the main menu opens it).
+#[test]
+fn theater_is_not_a_game_setup_row() {
+    let mut actions = CUSTOM.to_vec();
+    actions.push(THEATER_ACTION);
+    for mode in Mode::ALL {
+        let rows = arrange(mode, ALL, &actions).unwrap_or_else(|| actions.clone());
+        assert!(!rows.contains(&THEATER_ACTION), "{mode:?}");
+        assert!(!shown(mode, THEATER_ACTION), "{mode:?}");
+    }
+}
+
+/// While the built-in kits build, a Firefight lobby with no kit map says it
+/// is preparing, in the status line and the panel: never "no installed map
+/// supports Firefight". It is refused (Start Game waits) until they land.
+#[test]
+fn the_lobby_says_preparing_while_kits_build() {
+    let none = KitMaps::default();
+    let here = KitMaps {
+        lobby: true,
+        installed: true,
+    };
+    lobby_start::kit_build_started();
+    assert_eq!(
+        refusal(Mode::Firefight, Some(0), none),
+        Some(Reason::KitBuilding)
+    );
+    assert_eq!(Reason::KitBuilding.text(), "Preparing Firefight maps.");
+    let lines = firefight_map_lines(none).unwrap();
+    assert_eq!(lines[0], "Preparing Firefight maps");
+    for l in &lines {
+        assert!(!l.contains("No installed map") && !l.ends_with('.'), "{l:?}");
+    }
+    assert!(lines.len() <= MAX_PANEL_LINES);
+    // A lobby on a kit map is not held by a build still making another.
+    assert_eq!(refusal(Mode::Firefight, Some(0), here), None);
+    // Other modes never wait on the kits.
+    for mode in [Mode::Multiplayer, Mode::Forge] {
+        assert_eq!(refusal(mode, Some(0), none), None);
+    }
+    // Done with no failure: the build is over and the lobby is looked at
+    // once to land on a kit map.
+    lobby_start::kit_build_finished(vec![]);
+    assert_eq!(lobby_start::kit_build(), KitBuild::Idle);
+    assert!(lobby_start::take_kit_landing());
+    assert!(!lobby_start::take_kit_landing(), "asked once");
+    assert_eq!(
+        firefight_map_lines(none).unwrap()[1],
+        "Make one with h2 firefight kit"
+    );
+}
+
+/// A kit that cannot be made is "no map" again, and the panel's second
+/// line is that kit's refusal in place of the hint.
+#[test]
+fn a_failed_build_names_its_reason_in_the_panel() {
+    let none = KitMaps::default();
+    lobby_start::kit_build_started();
+    lobby_start::kit_build_finished(vec![
+        "Zanzibar: 6 KB over, sectors".into(),
+        "Coagulation: the disc has no maps\\coagulation.map".into(),
+    ]);
+    assert_eq!(refusal(Mode::Firefight, Some(0), none), Some(Reason::NoKitMap));
+    let lines = firefight_map_lines(none).unwrap();
+    assert_eq!(
+        lines,
+        ["No installed map supports Firefight yet", "Zanzibar: 6 KB over, sectors"]
+    );
+    assert!(lines.len() <= MAX_PANEL_LINES);
+    // The next build starts clean.
+    lobby_start::kit_build_started();
+    assert_eq!(lobby_start::kit_build(), KitBuild::Building);
 }

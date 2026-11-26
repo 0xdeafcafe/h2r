@@ -328,16 +328,13 @@ definition. There is no vehicle template path: `convert::TEMPLATES` has no
 - **Engine gears** (`+0x268`, stride `0x44`). The two torque
   curves are inline six-float records. The XBE interpolates them at
   `0xf15d0`, blends them at `0xf1540`, reads the speed ratio at
-  `0xf152c` and selects the next gear at `0xf18aa`. Converted H1 wheels
-  and tracks drive the contacts directly. [Current mappings and XBE evidence](role-audit.md).
-- **Contact and flight data.** The converter writes friction and hover
-  points in H1 mass-point order. H2 reads up to sixteen friction contacts
-  (`0x20678d`). Each inline phantom shape holds eight spheres. The loader
-  initializes the active shapes at `0x205550`. On converted vehicles the
-  unused tail stores the H1 wheel or aircraft controller at `+0x180` and
-  the powered-seat header at `+0x288`. Its count word at `+0x28c` holds
-  the channel count in the low byte and the source-gravity flag in bit 8.
-  Excess or conflicting source data reports a conversion error. [Drive equations and disc evidence](role-audit.md#native-engine-fields).
+  `0xf152c` and selects the next gear at `0xf18aa`. A converted vehicle
+  holds its Halo 2 counterpart's gears. [Current mappings and XBE evidence](role-audit.md).
+- **Contact points.** The converter writes friction and hover points in
+  H1 mass-point order, each with the tuning of the counterpart's point
+  ([Drive counterparts](role-audit.md#native-engine-fields)). H2 reads up
+  to sixteen friction contacts (`0x20678d`). Each inline phantom shape holds
+  eight spheres. The loader initializes the active shapes at `0x205550`.
 - **Seat flag bit 15** (`rebuild::SEAT_OPENS`). E: on entering a seat
   the engine tests bit 15 of the seat's flags (`0x000d12b0`, the test at
   `0x000d1302`; called from the seat change at `0x000ea979`, `0x000eab64`,
@@ -407,11 +404,13 @@ Proof (`crates/tools/h1objects/tests/vehicle_rebuild_disc.rs`, lib test
   has 4 friction points and gears, the ghost 3 hover points; each names
   a marker of the converted `mode` (instances on nodes in range) and a
   region of Halo 1's collision. `ghost_keeps_its_source_hover_points`
-  checks the ghost's against Halo 1's `phys`.
+  checks the ghost's markers and radii against Halo 1's `phys`, and
+  `blood_gulch_vehicles_take_their_counterparts_drive_on_both_bases`
+  that each vehicle's drive is its counterpart's.
 
 What only a game run shows: driving (the friction points on Halo 1's
-tire markers with the source velocity controller, the scorpion's eight tread points
-where Halo 2's has twelve), hovering (the ghost's and wraith's points),
+tire markers on the Halo 2 warthog's tuning, the scorpion's eight tread points
+each on the tuning at the same fraction of Halo 2's twelve), hovering (the ghost's and wraith's points),
 flying for the fliers and dropships, whether a vehicle stands on its
 Halo 1 collision hull, boarding (the seat labels as modes, the entry
 markers) and the riders' poses. First suspects if driving fails: the
@@ -494,8 +493,16 @@ Named on the way:
 |---|---|
 | `unit +0xcc` `camera_field_of_view` (`f32`, radians) | V: 70 degrees on every Halo 2 biped and turret with a Halo 1 counterpart, and equal to Halo 1's `unit +0x1a0` on five pairs (cyborg and masterchief, marine_armored and marine, elite, grunt, jackal). Name D: a field of view is the plain reading of 70 degrees on a unit; no reader found yet |
 
-`rebuild::BIPED_WORDS` carries the biped's turning, landing, camera
-height, slope and flying words from Halo 1 as they are. The ones with a
+`rebuild::BIPED_WORDS` carries the biped's turning, landing time, camera
+height, slope, flying and aim assist (`autoaim_width`, `bipd +0x458`) words
+from Halo 1 as they are. Halo 2's gravity
+stays, so Halo 1's jump apex and fall heights are kept by scaling speeds
+with `rebuild::gravity_speed_factor` (sqrt(1 / `GRAVITY_RATIO`), 1.14):
+`jump_velocity` (`BIPED_RATES`, per tick times 30 times the factor; the
+cyborg's 0.07 becomes 2.394 world units per second, apex 0.687) and the
+three landing velocities (`rebuild::BIPED_LANDING`, Halo 1's value times
+the factor, no tick factor: the crewman's agree with its Halo 2
+counterpart's as they are). The ones with a
 Halo 2 pair agree within 1 % on the five pairs above; the crewman's
 distinct cutoff and falloff angles on a30 and 05a_deltaapproach tell the
 slope fields apart, and the c20 monitor and its 04b counterpart agree on
@@ -503,12 +510,42 @@ the three flying accelerations after conversion to seconds. Words that
 hold angles in radians and small ratios whose meaning is not established
 stay unknown spans carried raw.
 
+Halo 1's biped flags (`bipd +0x2f4`) are carried by name
+(`rebuild::BIPED_FLAG_BITS`, `BIPED_PHYSICS_BITS`): turns without
+animating (bit 0), passes through other bipeds (5) and immune to falling
+damage (7) set the Halo 2 `flags` bits of those names; physics centred at
+the origin (3), spherical (4) and climbs any surface (6) set bits 0, 1 and
+3 of the character physics word (`bipd +0x264`), beside the player bit and
+the flying pair already written there. A converted sentinel keeps the
+retail aggressor pair (`flags` `0xe00`, physics `0x13`) over these. Halo
+1's other flag bits have no Halo 2 counterpart and set nothing.
+
+The Halo 2 biped words Halo 1 has no word for are never left at the
+definition's zero. `death_hard_landing_velocity` is Halo 1's `+0x3e8`, in
+`BIPED_WORDS` beside the other landing velocities. The pelvis, head and
+physics control node indices are the converted model's `bip01 pelvis` and
+`bip01 head` nodes (`rebuild::BIPED_NODES`), -1 on a model without them.
+`rebuild::BIPED_DECLARED` gives the rest a value and the reason for it:
+the global material names null and their indices -1 (Halo 1 names a
+material per collision region), headshot scale 1, stun duration 0 (Halo 1
+bipeds are not stunned), no contact points, and zero acceleration range
+and gaze limits (Halo 1 has none; a player's look follows the controller).
+These values are chosen, not read from a Halo 2 biped.
+
 Proof (`crates/tools/h1objects/tests/unit_rebuild_disc.rs`, and the lib tests
-`biped_carries_each_source_word_and_leaves_unmapped_fields_at_default` and
+`biped_carries_each_source_word_and_leaves_unmapped_fields_at_default`,
+`biped_flags_carry_halo1s_named_bits`,
+`no_converted_biped_field_is_left_at_definition_zero` and
 `rebuilt_biped_uses_source_shapes_tracks_weapons_and_hud`):
 
 - `biped_words_match_halo_2s_counterparts`: the camera and the words,
   Halo 1 against Halo 2, on the five pairs.
+- `jump_reaches_halo1s_apex_under_halo2_gravity` and
+  `landing_thresholds_keep_halo1s_fall_heights` (lib tests), and
+  `the_converted_cyborgs_physics_against_the_chiefs`: the jump apex and
+  fall heights under Halo 2's gravity equal Halo 1's.
+- `converted_bipeds_have_autoaim_width`: the cyborg, elite and grunt
+  hold Halo 1's non-zero aim assist width.
 - `biped_shapes_follow_the_collision_size`: the shape rule on the
   retail bipeds of the base with shapes, and `BIPED_BODY` on their 80
   rigid bodies.

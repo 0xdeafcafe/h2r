@@ -21,7 +21,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ::firefight::director::{
-    Kill, PlayerSeen, SQUAD_SLOTS, State, ZoneSeen, firefight_team,
+    Kill, Phase, PlayerSeen, SQUAD_SLOTS, ShipSeen, State, ZoneSeen, firefight_team,
 };
 use ::firefight::{
     Command, Def, Limits, MAX_TEAMS, Observed, Outcome, PlayerKill, ScoreReason, ScriptDirector,
@@ -29,6 +29,7 @@ use ::firefight::{
 };
 use host_log::{Entry, Log, LogHead, Sha256};
 
+use super::ship::{Boarding, FLY_TICKS, Launch, Ship, ShipPath};
 use crate::actor_net::squads::{Placement, SquadEntry, SquadOp};
 
 /// Teams a game can hold.
@@ -140,6 +141,33 @@ pub trait Game: SquadEntry {
     /// applies it: a game that makes its calls later reports their errors
     /// by sequence number.
     fn begin_entry(&mut self, _seq: u32) {}
+    /// `fly`: begin a ship's flight along its keyed path, which the host
+    /// steps every tick (`ship`). A game that holds no ships refuses.
+    fn fly(&mut self, _launch: Launch) -> anyhow::Result<()> {
+        anyhow::bail!("this game flies no ships")
+    }
+    /// `place_squad_in`: place `min(count, free seats)` of the squad in the
+    /// ship and the rest on foot (`ship::drop_squad`).
+    fn drop_squad(&mut self, _boarding: Boarding) -> anyhow::Result<()> {
+        anyhow::bail!("this game has no ships to place a squad in")
+    }
+    /// The kit's ship, when it is a live vehicle in the world.
+    fn ship(&self) -> Option<Ship> {
+        None
+    }
+    /// Each kit zone's flight path, in kit order; none for a zone the ship
+    /// cannot fly to.
+    fn paths(&self) -> Vec<Option<ShipPath>> {
+        Vec::new()
+    }
+    /// `hover`: the ship's hover hold (`VEHICLE_HOVER`).
+    fn hover(&mut self, _ship: u32, _on: bool) -> anyhow::Result<()> {
+        anyhow::bail!("this game has no ships to hold")
+    }
+    /// `unload`: everyone aboard the ship leaves (`VEHICLE_UNLOAD`).
+    fn unload(&mut self, _ship: u32) -> anyhow::Result<()> {
+        anyhow::bail!("this game has no ships to unload")
+    }
 }
 
 /// Why the mode does not start on this map.
@@ -223,8 +251,12 @@ pub struct Ended {
     pub set: String,
     /// With two teams the winner is in it (`TeamWon { team }`).
     pub outcome: Outcome,
-    /// Rounds whose last wave was cleared.
+    /// Rounds whose last wave was cleared (an endless game counts every
+    /// set's).
     pub rounds_cleared: u32,
+    /// Sets played through, bonus round included (an endless game); a
+    /// finite game is one set, cleared when it ends `Won`.
+    pub sets_cleared: u32,
     /// Respawns the director has issued.
     pub lives_used: u32,
     /// The definition's player teams: 1, or 2.
@@ -236,9 +268,13 @@ pub struct Ended {
 /// Where the match was when the director finished it, for [`Ended`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Progress {
-    /// The round it was in (zero-based) and the definition's rounds.
+    /// The rounds cleared before it ended, when it did not clear them all
+    /// (an endless game counts every set's), and the definition's rounds in
+    /// one set.
     round: u32,
     rounds: u32,
+    /// The sets played through when it ended.
+    sets: u32,
     /// The last round's last wave is cleared: no actor of it is alive.
     last_wave_cleared: bool,
     respawns: u32,
@@ -255,6 +291,9 @@ pub struct Host {
     log: Log<Command>,
     /// The sequence number of the last applied entry.
     applied: u32,
+    /// The bonus round is on (`Bonus { on }` applied): no respawn is made
+    /// in it.
+    bonus: bool,
     kit: Kit,
     by_character: BTreeMap<u16, String>,
     team: u8,
@@ -282,7 +321,18 @@ pub struct Host {
     test: bool,
     /// The outcome of the test's `Finish`, until the runtime takes it.
     test_end: Option<Outcome>,
+    /// Placements applied here whose slot has shown no actor yet: the slot
+    /// to the tick it was applied and its class.
+    unseen: BTreeMap<u8, (u32, String)>,
+    /// Placements that showed no actor within [`UNSEEN_AFTER`] ticks.
+    placements_unseen: u32,
+    /// Their error rows, until the runtime takes them.
+    unseen_errors: Vec<ApplyError>,
 }
+
+/// Ticks after a placement is applied at which a slot with no actor counts
+/// as a placement nobody sees: the director's slot timeout (3 s).
+pub const UNSEEN_AFTER: u32 = 90;
 
 impl Host {
     /// Start the mode at map load, or refuse it.
@@ -326,6 +376,7 @@ impl Host {
             director,
             log,
             applied: 0,
+            bonus: false,
             kit,
             by_character,
             team,
@@ -341,6 +392,9 @@ impl Host {
             mode_sent: None,
             test: false,
             test_end: None,
+            unseen: BTreeMap::new(),
+            placements_unseen: 0,
+            unseen_errors: Vec::new(),
         })
     }
 
@@ -495,12 +549,21 @@ impl Host {
         for entry in due {
             self.applied = entry.seq;
             game.begin_entry(entry.seq);
-            if let Err(error) = self.apply(&entry.op, game) {
-                errors.push(ApplyError {
+            match self.apply(&entry.op, game) {
+                Ok(()) => match &entry.op {
+                    Command::PlaceSquad { slot, class, .. } => {
+                        self.unseen.insert(*slot, (entry.tick, class.clone()));
+                    }
+                    Command::EraseSquad { slot } => {
+                        self.unseen.remove(slot);
+                    }
+                    _ => {}
+                },
+                Err(error) => errors.push(ApplyError {
                     seq: Some(entry.seq),
                     tick: entry.tick,
                     error,
-                });
+                }),
             }
         }
         errors
@@ -515,6 +578,7 @@ impl Host {
         }
         let teams = self.director.as_ref().map_or(1, |d| d.def().teams);
         let seen = observe(&self.kit, &self.by_character, teams, game);
+        self.check_unseen(tick, &seen.actors_alive_by_squad);
         let Some(director) = self.director.as_mut() else {
             return Ok(0);
         };
@@ -554,6 +618,42 @@ impl Host {
         Ok(appended)
     }
 
+    /// A placement whose slot shows no actor [`UNSEEN_AFTER`] ticks after it
+    /// was applied is reported once: a counter and one error row. A wave
+    /// whose actors nobody counts would otherwise clear at the director's
+    /// slot timeout with no error.
+    fn check_unseen(&mut self, tick: u32, alive: &[u16]) {
+        self.unseen
+            .retain(|slot, _| alive.get(usize::from(*slot)).is_none_or(|&n| n == 0));
+        let due: Vec<u8> = self
+            .unseen
+            .iter()
+            .filter(|(_, (at, _))| tick >= at.saturating_add(UNSEEN_AFTER))
+            .map(|(slot, _)| *slot)
+            .collect();
+        for slot in due {
+            let Some((at, class)) = self.unseen.remove(&slot) else {
+                continue;
+            };
+            self.placements_unseen = self.placements_unseen.saturating_add(1);
+            self.unseen_errors.push(ApplyError {
+                seq: None,
+                tick,
+                error: anyhow::anyhow!("slot {slot}: {class} placed at tick {at}, none seen"),
+            });
+        }
+    }
+
+    /// Placements that showed no actor, since the game started.
+    pub fn placements_unseen(&self) -> u32 {
+        self.placements_unseen
+    }
+
+    /// The error rows of placements newly found unseen.
+    pub fn take_unseen_errors(&mut self) -> Vec<ApplyError> {
+        std::mem::take(&mut self.unseen_errors)
+    }
+
     /// The scores credited since the last call, in the order the director
     /// issued them.
     pub fn take_credits(&mut self) -> Vec<Credit> {
@@ -588,6 +688,39 @@ impl Host {
         Ok(())
     }
 
+    /// The placement of a squad of `class` at kit zone `zone`.
+    fn placement(
+        &self,
+        slot: u8,
+        class: &str,
+        count: u16,
+        zone: u8,
+        weapon_tier: u8,
+    ) -> anyhow::Result<Placement> {
+        let character = *self
+            .kit
+            .classes
+            .get(class)
+            .ok_or_else(|| anyhow::anyhow!("the kit has no class {class}"))?;
+        anyhow::ensure!(
+            usize::from(zone) < self.kit.zones.len(),
+            "the kit has no zone {zone}"
+        );
+        Ok(Placement {
+            slot,
+            character,
+            count,
+            zone,
+            team: self.team,
+            weapon_tier,
+        })
+    }
+
+    fn ship_of(game: &impl Game) -> anyhow::Result<Ship> {
+        game.ship()
+            .ok_or_else(|| anyhow::anyhow!("the kit's ship is not in the world"))
+    }
+
     fn apply(&mut self, op: &Command, game: &mut impl Game) -> anyhow::Result<()> {
         if self.test {
             match op {
@@ -613,26 +746,55 @@ impl Host {
                 zone,
                 weapon_tier,
             } => {
-                let character = *self
-                    .kit
-                    .classes
-                    .get(class)
-                    .ok_or_else(|| anyhow::anyhow!("the kit has no class {class}"))?;
-                anyhow::ensure!(
-                    usize::from(*zone) < self.kit.zones.len(),
-                    "the kit has no zone {zone}"
-                );
-                squad(
-                    game,
-                    SquadOp::Place(Placement {
-                        slot: *slot,
-                        character,
-                        count: *count,
-                        zone: *zone,
-                        team: self.team,
-                        weapon_tier: *weapon_tier,
-                    }),
-                )
+                let placement = self.placement(*slot, class, *count, *zone, *weapon_tier)?;
+                squad(game, SquadOp::Place(placement))
+            }
+            // By ship when the kit has one and a path to the zone, else on
+            // foot as `PlaceSquad` does.
+            Command::DropSquad {
+                slot,
+                class,
+                count,
+                zone,
+                weapon_tier,
+            } => {
+                let placement = self.placement(*slot, class, *count, *zone, *weapon_tier)?;
+                let path = game.paths().get(usize::from(*zone)).copied().flatten();
+                let Some((ship, path)) = game.ship().zip(path) else {
+                    return squad(game, SquadOp::Place(placement));
+                };
+                game.fly(Launch {
+                    ship: ship.object,
+                    path: path.fly_in(),
+                    ticks: FLY_TICKS,
+                })?;
+                game.drop_squad(Boarding {
+                    placement,
+                    ship: ship.object,
+                    capacity: ship.capacity,
+                })
+            }
+            Command::ShipHover { on } => {
+                let ship = Self::ship_of(&*game)?;
+                game.hover(ship.object, *on)
+            }
+            Command::ShipUnload => {
+                let ship = Self::ship_of(&*game)?;
+                game.unload(ship.object)
+            }
+            Command::ShipLeave { zone } => {
+                let ship = Self::ship_of(&*game)?;
+                let path = game
+                    .paths()
+                    .get(usize::from(*zone))
+                    .copied()
+                    .flatten()
+                    .ok_or_else(|| anyhow::anyhow!("the kit has no ship path for zone {zone}"))?;
+                game.fly(Launch {
+                    ship: ship.object,
+                    path: path.fly_out(),
+                    ticks: FLY_TICKS,
+                })
             }
             Command::Target { slot, team } => {
                 anyhow::ensure!(
@@ -650,8 +812,21 @@ impl Host {
                 squad(game, SquadOp::Hunt { slot: *slot, base })
             }
             Command::EraseSquad { slot } => squad(game, SquadOp::Erase { slot: *slot }),
-            // The HUD reads rounds and waves from the mode blob.
-            Command::Round { .. } | Command::Wave { .. } => Ok(()),
+            // The HUD reads sets, rounds and waves from the mode blob.
+            Command::Set { .. } | Command::Round { .. } | Command::Wave { .. } => Ok(()),
+            // The bonus round is a director rule (docs/game/firefight.md,
+            // "The bonus round"): the host keeps whether it is on, and
+            // [`Command::Respawn`] is refused while it is. Its enemies are
+            // ordinary `PlaceSquad`s and its skulls ordinary `Skull`s.
+            Command::Bonus { on, .. } => {
+                self.bonus = *on;
+                Ok(())
+            }
+            // Iron is a director rule, never an engine skull.
+            Command::Skull {
+                id: ::firefight::Skull::Iron,
+                ..
+            } => Ok(()),
             Command::Skull { id, on } => game.skull(*id, *on),
             // The engine keeps no pool: the director's is the pool its
             // respawns spend, so a `Lives` or `TeamLives` sets it there (the
@@ -675,6 +850,9 @@ impl Host {
                 game.set_team_lives(*team, *pool)
             }
             Command::Score { player, points, .. } => game.credit_score(*player, *points),
+            Command::Respawn { .. } if self.bonus => {
+                anyhow::bail!("no respawn is made in the bonus round (Iron)")
+            }
             Command::Respawn { player } => game.respawn(*player),
             Command::Finish { outcome } => game.end_game(*outcome),
             // The game takes no call: the HUD draws the blob.
@@ -738,9 +916,13 @@ fn credits(
     out
 }
 
-/// Where the director is after a step: the round, whether the last
-/// round's last wave is cleared, and the teams' points. The respawns are
-/// the host's to fill in.
+/// Where the director is after a step: the rounds and sets cleared, whether
+/// the last round's last wave is cleared, and the teams' points. The
+/// respawns are the host's to fill in.
+///
+/// An endless game counts across sets: a set played through is
+/// `rounds` rounds and a set. The bonus round follows a set, so in it the
+/// set is already played through.
 fn progress(director: &ScriptDirector) -> Progress {
     let (state, def) = (director.state(), director.def());
     let rounds = def.rounds.len() as u32;
@@ -749,9 +931,20 @@ fn progress(director: &ScriptDirector) -> Progress {
         .rounds
         .get(usize::from(state.round))
         .map_or(0, |r| r.waves.len());
+    let (sets, cleared) = if def.set.endless {
+        let set = u32::from(state.set);
+        let bonus = matches!(state.phase, Phase::Bonus { .. });
+        (
+            set + u32::from(bonus),
+            set * rounds + if bonus { rounds } else { round },
+        )
+    } else {
+        (0, round)
+    };
     Progress {
-        round,
+        round: cleared,
         rounds,
+        sets,
         last_wave_cleared: round + 1 == rounds
             && usize::from(state.wave) + 1 == waves
             && director.live_actors() == 0,
@@ -780,6 +973,7 @@ fn result(tick: u32, set: String, progress: Progress, commands: &[Command]) -> O
         set,
         outcome,
         rounds_cleared: if all { progress.rounds } else { progress.round },
+        sets_cleared: if progress.sets > 0 { progress.sets } else { u32::from(all) },
         lives_used: progress.respawns,
         teams: progress.teams,
         scores: progress.scores,
@@ -851,6 +1045,8 @@ fn observe(
             seen: game.sees(zone),
             distance: all.map_or(0, |centre| distance(centre, zone)),
             team_distance: by_team.map(|c| c.map_or(u32::MAX, |centre| distance(centre, zone))),
+            // Until the kit's own roles are read back, a zone serves every role.
+            roles: ::firefight::ALL_ZONE_ROLES,
         })
         .collect();
     let kills = game
@@ -877,6 +1073,15 @@ fn observe(
         zones,
         kills,
         player_kills: game.player_kills(),
+        ship: ShipSeen {
+            ready: game.ship().is_some(),
+            paths: {
+                let paths = game.paths();
+                (0..kit.zones.len())
+                    .map(|zone| paths.get(zone).is_some_and(Option::is_some))
+                    .collect()
+            },
+        },
     }
 }
 

@@ -5,10 +5,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use firefight::director::{Kill, PlayerSeen, SQUAD_SLOTS, ZoneSeen};
+use firefight::director::{Kill, PlayerSeen, SQUAD_SLOTS, ShipSeen, ZoneSeen};
 use firefight::{
     Caps, Command, Count, Def, Difficulty, DifficultyMultipliers, Drop, FORMAT, Lives, Observed,
-    Outcome, PlayerKill, Round, Scoring, ScriptDirector, Skull, SquadSpec, Wave, builtin,
+    Outcome, PlayerKill, Round, Scoring, SetRules, ScriptDirector, Skull, SquadSpec, Wave, builtin,
 };
 
 /// One round of five one-actor waves, two ticks apart, with Famine on.
@@ -37,10 +37,12 @@ pub fn small_def(pool: u16, shared: bool) -> Def {
             waves,
             skulls_on: vec![Skull::Famine],
         }],
+        set: SetRules::finite(),
         lives: Lives {
             pool_start: pool,
             per_round_bonus: 0,
             shared,
+            zero_holds: false,
         },
         caps: Caps {
             live_actors_by_players: vec![(4, 4)],
@@ -57,6 +59,7 @@ pub fn small_def(pool: u16, shared: bool) -> Def {
             skull_multipliers: [(Skull::Famine, 1_100)].into(),
             assist: 250,
         },
+        bonus: None,
     }
 }
 
@@ -96,6 +99,8 @@ pub struct World {
     pub finished: Option<Outcome>,
     /// Live actors right after the last apply, before any kill.
     pub applied_live: u16,
+    /// The kit's drop ship and the zones with a path: none by default.
+    pub ship: ShipSeen,
 }
 
 impl World {
@@ -112,6 +117,7 @@ impl World {
             pending: Vec::new(),
             finished: None,
             applied_live: 0,
+            ship: ShipSeen::default(),
         }
     }
 
@@ -119,6 +125,9 @@ impl World {
         for command in std::mem::take(&mut self.pending) {
             match command {
                 Command::PlaceSquad {
+                    slot, class, count, ..
+                }
+                | Command::DropSquad {
                     slot, class, count, ..
                 } => {
                     let slot = usize::from(slot);
@@ -179,6 +188,7 @@ impl World {
             zones: self.zones.clone(),
             kills: std::mem::take(&mut self.kills),
             player_kills: std::mem::take(&mut self.player_kills),
+            ship: self.ship.clone(),
         }
     }
 }
@@ -198,6 +208,7 @@ pub fn zone(seen: bool, distance: u32) -> ZoneSeen {
         seen,
         distance,
         team_distance: [distance; 2],
+        roles: firefight::ALL_ZONE_ROLES,
     }
 }
 
@@ -257,7 +268,7 @@ impl TestRng {
 }
 
 /// The built-in sets with short gaps, so a match takes a few thousand ticks.
-pub fn quick_builtins() -> [Def; 4] {
+pub fn quick_builtins() -> [Def; 5] {
     builtin::definitions().map(|mut def| {
         for wave in def.rounds.iter_mut().flat_map(|round| &mut round.waves) {
             wave.gap_ticks = 10;

@@ -65,6 +65,7 @@ pub const CAPABILITIES: &[Capability] = &[
     cap("audio.play", "plays sounds, dialogue and music", false),
     cap("hud.widgets", "draws on the HUD", false),
     cap("hud.waypoints", "marks places and things", false),
+    cap("hud.objective", "shows objectives, marks and a clock", false),
     cap(
         "hud.superbounce",
         "shows the superbounce guide: a priming HUD, marks over the map and bounce medals",
@@ -353,6 +354,21 @@ pub mod id {
     pub const OFFER_PICK: u16 = 124;
     pub const PICK_ROW: u16 = 125;
     pub const PICKED: u16 = 126;
+    pub const FF_SET: u16 = 127;
+    pub const ZONE_HAS_ROLE: u16 = 128;
+    pub const OFFER: u16 = 129;
+    pub const CHOICE: u16 = 130;
+    pub const OBJECTIVE: u16 = 131;
+    pub const OBJECTIVE_MARK: u16 = 132;
+    pub const METER: u16 = 133;
+    pub const COUNTDOWN: u16 = 134;
+    pub const FF_BONUS: u16 = 135;
+    pub const ZONE_PATH: u16 = 136;
+    pub const SHIP_READY: u16 = 137;
+    pub const FF_DROP_SQUAD: u16 = 138;
+    pub const FF_SHIP_HOVER: u16 = 139;
+    pub const FF_SHIP_UNLOAD: u16 = 140;
+    pub const FF_SHIP_LEAVE: u16 = 141;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -503,6 +519,9 @@ pub const ENTRIES: &[Entry] = &[
     // kill across the teams (`ScoreReason::PlayerKill`), and the end with a
     // winning team, `none` for a draw (`Outcome::TeamWon`, `Outcome::Draw`).
     read(id::ZONE_TEAM_DISTANCE, "zone_team_distance", &[Object, Team], Int, Named),
+    // `firefight::Command::Bonus`: the bonus round begins (`on`, for `ticks`)
+    // or ends. A director rule's host log entry, queued like the rest.
+    act(id::FF_BONUS, "ff_bonus", &[Bool, Int], Some("firefight.director"), Queued, Named),
     act(id::FF_TARGET, "ff_target", &[Squad, Team], Some("firefight.director"), Queued, Named),
     act(id::FF_TEAM_LIVES, "ff_team_lives", &[Team, Int], Some("firefight.director"), Queued, Named),
     act(id::FF_PLAYER_SCORE, "ff_player_score", &[Player, Int], Some("firefight.director"), Queued, Named),
@@ -667,6 +686,46 @@ pub const ENTRIES: &[Entry] = &[
     act(id::OFFER_PICK, "offer_pick", &[Int, Text], Some("player.pick"), Now, Named),
     act(id::PICK_ROW, "pick_row", &[Int, Text], Some("player.pick"), Now, Named),
     vm(id::PICKED, "picked", &[Player, Int], Int),
+    // Firefight's sets and zone roles: `ff_set(n)` is `firefight::Command::Set`
+    // (the zero-based set begins), queued with the other director entries;
+    // `zone_has_role(z, mask)` reads whether the `ff_drop` zone carries any
+    // role of the mask (`ZoneSeen::roles`; true for mask 0).
+    act(id::FF_SET, "ff_set", &[Int], Some("firefight.director"), Queued, Named),
+    read(id::ZONE_HAS_ROLE, "zone_has_role", &[Object, Int], Bool, Named),
+    // `offer(p, picker, count)`: opens the first `count` rows of `picker` to
+    // the player as their loadout window (`vm::Window`); `choice(p)` reads
+    // the row they last picked, 0 until one is. The host asks the player
+    // (`game::rules::world::choice`) and reports the pick
+    // (`vm::Vm::choose_loadout`), which refuses a row the window does not
+    // open. The state holds both, so a film replays them.
+    act(id::OFFER, "offer", &[Player, Int, Int], Some("player.pick"), Now, Named),
+    vm(id::CHOICE, "choice", &[Player], Int),
+    // The scripted objective HUD (docs/game/hud-kit.md, "The scripted
+    // objective HUD"), per team. `objective(to, text)` is the line the HUD
+    // keeps; `objective_mark(to, zone, kind)` marks a zone, kind 1 attack,
+    // 2 defend, 0 lifts it (at most `vm::MAX_OBJECTIVE_MARKS`);
+    // `meter(to, value, of)` is the gauge, none for `of` 0 or less;
+    // `countdown(to, ticks)` is the clock, none for 0 or less. The VM
+    // keeps them (`vm::RulesExt::objectives`) and the HUD reads them: the
+    // host adds no call of its own. A mark is spelled `objective_mark` as
+    // `mark` is the waypoint's.
+    act(id::OBJECTIVE, "objective", &[Team, Text], Some("hud.objective"), Now, Named),
+    act(id::OBJECTIVE_MARK, "objective_mark", &[Team, Object, Int], Some("hud.objective"), Now, Named),
+    act(id::METER, "meter", &[Team, Int, Int], Some("hud.objective"), Now, Named),
+    act(id::COUNTDOWN, "countdown", &[Team, Int], Some("hud.objective"), Now, Named),
+    // Firefight's drop ship (docs/game/firefight.md, "The drop ship"):
+    // whether the kit's zone `n` has a path (`firefight::director::ShipSeen`)
+    // and whether the kit's ship is in the world; `ff_drop_squad` is
+    // `firefight::Command::DropSquad` (a squad flown in), and the ship's
+    // hover hold, unloading and flight out are the commands of the same
+    // names. The host makes the flights and the loads
+    // (`game::firefight::ship`).
+    read(id::ZONE_PATH, "zone_path", &[Int], Bool, Named),
+    read(id::SHIP_READY, "ship_ready", &[], Bool, Named),
+    act(id::FF_DROP_SQUAD, "ff_drop_squad", &[Squad, Class, Int, Int, Int], Some("firefight.director"), Queued, Named),
+    act(id::FF_SHIP_HOVER, "ff_ship_hover", &[Bool], Some("firefight.director"), Queued, Named),
+    act(id::FF_SHIP_UNLOAD, "ff_ship_unload", &[], Some("firefight.director"), Queued, Named),
+    act(id::FF_SHIP_LEAVE, "ff_ship_leave", &[Int], Some("firefight.director"), Queued, Named),
 ];
 
 /// The word `message(to, text)` takes for everyone.
@@ -985,6 +1044,20 @@ mod tests {
 
     /// A host uses `hud.superbounce` to turn its mode on. The capability
     /// table allows it in every kind of game.
+    #[test]
+    fn hud_objective_gates_its_four_entries() {
+        let c = capability("hud.objective", API_VERSION).unwrap();
+        assert!(!c.grantable);
+        let gated: Vec<&str> = ENTRIES.iter().filter(|e| e.cap == Some(c.name)).map(|e| e.name).collect();
+        assert_eq!(gated, ["objective", "objective_mark", "meter", "countdown"]);
+        for name in &gated {
+            let e = entry_named(name).unwrap();
+            assert_eq!((e.kind, e.order, e.status), (Kind::Action, Order::Now, Status::Named), "{name}");
+            assert_eq!(e.args[0], Team, "{name}");
+        }
+        assert_eq!(entry_named("countdown").unwrap().id, id::COUNTDOWN);
+    }
+
     #[test]
     fn hud_superbounce_is_a_declared_host_feature() {
         let c = capability("hud.superbounce", API_VERSION).unwrap();

@@ -4,16 +4,26 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use vfs::Backend;
-use firefight_kit::{ClassSpec, Classes, Config, Donor, Mode, Team};
+use firefight_kit::{ClassSpec, Classes, Config, Donor, Dropship, Faction, Mode, Team};
 use tags::schema::Schema;
 use scenario_edit::{MapSource, recipe};
 
 const USAGE: &str =
     "usage: h2 firefight kit MAP [--home red|blue] [--disc ISO_OR_EXTRACTED_DISC] [--data DIR] [--probe] [--replace]
     [--retail-classes] [--class NAME=DONOR:CHAR_PATH]... [--classes FILE] [--cut]
+    [--layout] [--layout-report]
+    [--dropship auto|phantom|spirit|none]
   builds <data>/maps/firefight-MAP from a multiplayer map on the disc, e.g. beavercreek.
   --home picks the map team whose base is the home base (default red): the
     players' base, or team 0's with two teams. Drops keep off both bases.
+  --layout takes the drops from the map's authored layout (coagulation,
+    zanzibar) instead of the generator's picks. A drop the map has no
+    usable sector for fails the build by name.
+  --layout-report prints, and builds nothing: every netgame flag, start
+    cluster and weapon pad of the map with its kind, team and index; then
+    each of the map's layout anchors with the point it resolves to, the
+    sector it snaps to, its distance to each base, each refusal by name
+    and the build's cost table.
   --probe builds the firefight-probe test map with one squad of two Elites.
   --replace updates an existing package of the same name.
   --class copies a character class from a campaign map on the disc: DONOR is
@@ -23,10 +33,18 @@ const USAGE: &str =
     line from FILE (blank lines and # comments are skipped).
   --retail-classes puts the retail class table first: the Grunt, Jackal,
     Drone, Brute and Hunter, each copied from a campaign map on your disc.
+  --dropship picks the ship squads can arrive by (default auto): the Phantom
+    copied from Outskirts (03a_oldmombasa) on your disc, or on a map built
+    from Halo 1's campaign its Covenant dropship; none leaves it out. The
+    ship is cut before any class when the map is short of tag headroom.
   A map short of tag headroom merges its sectors, then keeps six drops,
     before anything else; the build says which it took.
   --cut drops classes from the end of the list until the build fits, instead
     of refusing it.";
+
+/// The campaign map the Phantom is copied from: the same donor the class
+/// table prefers (`firefight_kit::retail`).
+const SHIP_DONOR: &str = "03a_oldmombasa";
 
 struct Args {
     base: String,
@@ -39,6 +57,8 @@ struct Args {
     /// `--retail-classes`: the retail class table before `classes`.
     retail: bool,
     cut: bool,
+    /// `--layout-report`: print the census and build nothing.
+    report: bool,
 }
 
 /// One requested class: a donor disc map and a `char` tag in it.
@@ -47,12 +67,24 @@ struct Wanted {
     name: String,
     donor: String,
     path: String,
+    faction: Faction,
 }
 
-/// `NAME=DONOR:CHAR_PATH`.
+/// `NAME=DONOR:CHAR_PATH`, or `NAME@FACTION=DONOR:CHAR_PATH` with FACTION
+/// `covenant` (the default), `flood` or `human`.
 fn parse_class(text: &str) -> Result<Wanted> {
     let bad = || format!("a class is NAME=DONOR:CHAR_PATH, got {text:?}");
     let (name, rest) = text.split_once('=').with_context(bad)?;
+    let (name, faction) = match name.split_once('@') {
+        None => (name, Faction::Covenant),
+        Some((name, faction)) => (
+            name,
+            Faction::ALL
+                .into_iter()
+                .find(|f| f.name() == faction.trim())
+                .with_context(bad)?,
+        ),
+    };
     let (donor, path) = rest.split_once(':').with_context(bad)?;
     let (name, donor, path) = (name.trim(), donor.trim().to_ascii_lowercase(), path.trim());
     let donor = donor.strip_suffix(".map").unwrap_or(&donor).to_owned();
@@ -63,6 +95,7 @@ fn parse_class(text: &str) -> Result<Wanted> {
         name: name.to_owned(),
         donor,
         path: path.to_owned(),
+        faction,
     })
 }
 
@@ -85,6 +118,7 @@ fn retail_wanted(on_disc: impl FnMut(&str) -> bool) -> Result<Vec<Wanted>> {
             name: name.to_owned(),
             donor: donor.to_owned(),
             path: path.to_owned(),
+            faction: Faction::Covenant,
         })
         .collect())
 }
@@ -110,6 +144,7 @@ fn plan(wanted: &[Wanted]) -> Result<(Vec<String>, Vec<ClassSpec>)> {
             name: w.name.clone(),
             donor,
             path: w.path.clone(),
+            faction: w.faction,
         });
     }
     Ok((donors, specs))
@@ -159,12 +194,16 @@ fn parse(words: Vec<String>) -> Result<Option<Args>> {
     let mut classes = Vec::new();
     let mut retail = false;
     let mut cut = false;
+    let mut report = false;
+    let mut layout = false;
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "-h" | "--help" => return Ok(None),
             "--probe" => probe = true,
             "--replace" => replace = true,
             "--cut" => cut = true,
+            "--layout" => layout = true,
+            "--layout-report" => report = true,
             "--retail-classes" => retail = true,
             "--class" => {
                 classes.push(parse_class(&it.next().context("--class requires NAME=DONOR:CHAR_PATH")?)?)
@@ -174,6 +213,12 @@ fn parse(words: Vec<String>) -> Result<Option<Args>> {
                 let text = std::fs::read_to_string(&file)
                     .with_context(|| format!("reading the class table {file}"))?;
                 classes.extend(parse_table(&text)?);
+            }
+            "--dropship" => {
+                let kind = it.next().context("--dropship requires auto, phantom, spirit or none")?;
+                config.dropship = Dropship::parse(&kind).with_context(|| {
+                    format!("--dropship takes auto, phantom, spirit or none, got {kind:?}")
+                })?;
             }
             "--home" => {
                 let team = it.next().context("--home requires red or blue")?;
@@ -197,8 +242,15 @@ fn parse(words: Vec<String>) -> Result<Option<Args>> {
             _ => bail!("unexpected argument {arg:?}\n{USAGE}"),
         }
     }
+    let base = base.context(USAGE)?;
+    if layout {
+        config.layout = Some(
+            firefight_kit::builtin::for_map(&base)
+                .with_context(|| format!("{base} has no authored layout"))?,
+        );
+    }
     Ok(Some(Args {
-        base: base.context(USAGE)?,
+        base,
         disc,
         data,
         probe,
@@ -207,6 +259,7 @@ fn parse(words: Vec<String>) -> Result<Option<Args>> {
         classes,
         retail,
         cut,
+        report,
     }))
 }
 
@@ -215,6 +268,15 @@ pub fn run(words: Vec<String>) -> Result<()> {
         println!("{USAGE}");
         return Ok(());
     };
+    if args.report {
+        let disc = args.disc.map(Ok).unwrap_or_else(crate::default_disc)?;
+        let bytes = read_disc_map(&disc, &args.base)?;
+        print!(
+            "{}",
+            firefight_kit::builtin::layout_report(&bytes, &args.base, &args.config)?
+        );
+        return Ok(());
+    }
     let (mode, dir) = if args.probe {
         let recipe = recipe::built_in_named("firefight-probe")?.on_base(&args.base)?;
         (Mode::Probe, recipe.package_dir())
@@ -233,12 +295,24 @@ pub fn run(words: Vec<String>) -> Result<()> {
         wanted = retail_wanted(|donor| files.host_file(&format!("maps\\{donor}.map")).is_some())?;
     }
     wanted.extend(args.classes);
-    let (donor_names, specs) = plan(&wanted)?;
+    let (mut donor_names, specs) = plan(&wanted)?;
+    // The Phantom comes from a campaign map: Outskirts, when the disc has
+    // it and no class already named it.
+    if !args.probe
+        && matches!(args.config.dropship, Dropship::Auto | Dropship::Phantom)
+        && !donor_names.iter().any(|d| d == SHIP_DONOR)
+        && vfs::open_disc(&disc)
+            .with_context(|| format!("opening the disc {}", disc.display()))?
+            .host_file(&format!("maps\\{SHIP_DONOR}.map"))
+            .is_some()
+    {
+        donor_names.push(SHIP_DONOR.to_owned());
+    }
     let donor_bytes = donor_names
         .iter()
         .map(|name| read_disc_map(&disc, name))
         .collect::<Result<Vec<_>>>()?;
-    let classes = (!specs.is_empty())
+    let classes = (!specs.is_empty() || !donor_names.is_empty())
         .then(|| classes_from(Schema::builtin(), &donor_names, &donor_bytes, specs, args.cut));
     let data = args.data.unwrap_or_else(content::store::default_data_root);
     let maps = content::store::maps_dir(&data);
@@ -266,6 +340,9 @@ pub fn run(words: Vec<String>) -> Result<()> {
             "class {}: {} tags, {} sounds, {} bytes of tag memory",
             c.name, c.tags, c.sounds, c.bytes
         );
+    }
+    if let Some(ship) = &saved.ship {
+        println!("{ship}");
     }
     for step in &saved.fitted {
         println!("fit: {step}: {} (short of tag headroom)", step.reason());
@@ -308,6 +385,19 @@ mod tests {
     }
 
     #[test]
+    fn the_layout_options_name_the_maps_authored_layout() {
+        let plain = args("kit coagulation").unwrap().unwrap();
+        assert!(plain.config.layout.is_none() && !plain.report);
+        let a = args("kit coagulation --layout").unwrap().unwrap();
+        assert_eq!(a.config.layout.unwrap().map, "coagulation");
+        let r = args("kit Zanzibar.map --layout-report").unwrap().unwrap();
+        assert!(r.report && r.config.layout.is_none());
+        // A map with no layout is named, not quietly built without one.
+        let err = args("kit lockout --layout").err().unwrap();
+        assert!(format!("{err:#}").contains("lockout has no authored layout"));
+    }
+
+    #[test]
     fn the_home_option_picks_a_team() {
         let a = args("kit beavercreek --home blue").unwrap().unwrap();
         assert_eq!(a.base, "beavercreek");
@@ -330,6 +420,7 @@ mod tests {
                 name: "grunt".into(),
                 donor: "01b_spacestation".into(),
                 path: "characters\\grunt\\grunt".into(),
+                faction: Faction::Covenant,
             }]
         );
         for bad in [
@@ -369,6 +460,17 @@ mod tests {
         // A disc without any of a class's donors is refused by class.
         let error = retail_wanted(|d| d.starts_with("03")).unwrap_err().to_string();
         assert!(error.contains("brute"), "{error}");
+    }
+
+    #[test]
+    fn a_class_may_name_its_faction() {
+        let list = parse_table("g=a:x\nf@flood=b:y\nm@human=a:z\n").unwrap();
+        let factions: Vec<_> = list.iter().map(|w| w.faction).collect();
+        assert_eq!(factions, [Faction::Covenant, Faction::Flood, Faction::Human]);
+        assert_eq!(list[1].name, "f");
+        let (_, specs) = plan(&list).unwrap();
+        assert_eq!(specs[1].faction, Faction::Flood);
+        assert!(parse_table("f@elves=b:y").is_err());
     }
 
     #[test]

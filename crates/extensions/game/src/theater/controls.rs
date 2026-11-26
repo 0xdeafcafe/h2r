@@ -387,6 +387,16 @@ pub fn library_methods(
                         return film.transport(name, p);
                     }
                 }
+                // A film queued in this game whose game has not activated
+                // is loading, not absent: `{active:false}` here would tell
+                // the menu's playback bar the film is loaded.
+                if api::TRANSPORT_METHODS.contains(&name)
+                    && let Some(id) = watch.as_ref().and_then(|film| film.armed_film())
+                {
+                    return Err(unavailable(format!(
+                        "film {id} is loading: its game has not started"
+                    )));
+                }
                 let mut player = player.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(active) = player.as_mut()
                     && active

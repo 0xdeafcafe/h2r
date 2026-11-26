@@ -13,6 +13,7 @@ use h1campaign::scenario::{BSP, BSPS, STARTING_LOCATION, STARTING_LOCATIONS};
 use map::{Map, TagId, build::Block};
 use pathfind::geom::{V3, dot, sub};
 use scenario_edit::scene::metadata_block;
+use firefight::roles;
 use tags::{
     collision::Bsp,
     geometry::TagView,
@@ -21,6 +22,7 @@ use tags::{
 };
 
 use crate::bases::{self, Bases, Config, Team};
+use crate::builtin::{Census, Resolved, Snap};
 use crate::ground::{Labels, Marker, Problem};
 
 pub(crate) struct Navigation {
@@ -38,6 +40,15 @@ pub(crate) struct Navigation {
     pub starts: Vec<Vec<u8>>,
     /// Placed labels the ground cannot honour.
     pub problems: Vec<Problem>,
+    /// The layout's drops and home base that were refused, by name. The
+    /// build fails on any; the layout report prints them.
+    pub refused: Vec<String>,
+    /// Where each of the layout's drops snapped.
+    pub snapped: Vec<Snap>,
+    /// The dropship's run into each drop zone, none where the zone has
+    /// no clear column (`ship::plan`), and the BSP they were planned on.
+    pub ship_runs: Vec<Option<crate::ship::Run>>,
+    pub ship_bsp: i16,
 }
 
 const MIN_ZONES: usize = 6;
@@ -93,8 +104,12 @@ pub(crate) fn prepare<R: Read + Seek>(
     .iter()
     .map(|r| bases::flag_row(r))
     .collect();
-    let found = if labels.bases.is_empty() {
-        bases::find(&rows, &flags, config.home).context(
+    let home = config.layout.map_or(config.home, |l| l.home);
+    let resolved = config
+        .layout
+        .map(|l| l.resolve(&Census::read(map, &scnr, rows.clone(), flags.clone())));
+    let mut found = if labels.bases.is_empty() {
+        bases::find(&rows, &flags, home).context(
             "the map has no two bases: no CTF flag stand or starting location for each of teams 0 and 1, and no two distinct starting locations",
         )?
     } else {
@@ -108,9 +123,16 @@ pub(crate) fn prepare<R: Read + Seek>(
         let (Some(red), Some(blue)) = (team(Team::Red), team(Team::Blue)) else {
             anyhow::bail!("ff_base: place one base for each of the two teams, or none");
         };
-        bases::from_labels(red, blue, config.home)
+        bases::from_labels(red, blue, home)
             .context("the two ff_base labels are less than a unit apart")?
     };
+    // An authored home base replaces the point the flags and starts give.
+    if let Some(point) = resolved.as_ref().and_then(|r| r.base_point)
+        && labels.bases.is_empty()
+        && bases::distance2(point, found.points[1]) >= 1.0
+    {
+        found.points[0] = point;
+    }
     let teams = bases::start_teams(&found.points, &rows);
     let rewritten = start_rows
         .into_iter()
@@ -156,7 +178,8 @@ pub(crate) fn prepare<R: Read + Seek>(
             let cluster = i16::from_le_bytes(row[..2].try_into().unwrap());
             (0..512).contains(&cluster).then_some(cluster)
         };
-        if let Some(arena) = choose_zones(
+        if let Some(arena) = choose_zones_with(
+            resolved.as_ref(),
             &pf,
             &data,
             &starts,
@@ -185,13 +208,27 @@ pub(crate) fn prepare<R: Read + Seek>(
     })?;
     // A lean build keeps the first drops chosen: they alternate between
     // the bases' sides and spread farthest first. Placed drops stay.
-    if lean.fewer_drops && labels.drops.is_empty() {
+    if lean.fewer_drops && labels.drops.is_empty() && config.layout.is_none() {
         arena.zones.truncate(FEWEST_DROPS);
     }
+    // The ship's way into each zone, from the arena's own collision.
+    let ship_runs = match usize::try_from(arena.bsp)
+        .ok()
+        .and_then(|i| generated.get(i))
+    {
+        Some((_, _, data)) => crate::ship::plan(&data.walls, &arena.zones),
+        None => vec![None; arena.zones.len()],
+    };
+    let ship_bsp = arena.bsp;
     // Keep only the sectors the AI can use, then encode each BSP's.
     let mut bsps = Vec::with_capacity(generated.len());
     let mut trim = Trim::default();
     let mut problems = std::mem::take(&mut arena.problems);
+    let mut refused = resolved
+        .as_ref()
+        .map_or_else(Vec::new, |r| r.refused.clone());
+    refused.append(&mut arena.refused);
+    let snapped = std::mem::take(&mut arena.snapped);
     for (index, (id, pf, mut data)) in generated.into_iter().enumerate() {
         bots::autonav::mark_in_map(map, &mut data)
             .map_err(anyhow::Error::msg)
@@ -233,6 +270,10 @@ pub(crate) fn prepare<R: Read + Seek>(
         bases: found,
         starts: rewritten,
         problems,
+        refused,
+        snapped,
+        ship_runs,
+        ship_bsp,
     })
 }
 
@@ -281,6 +322,10 @@ struct Arena {
     bases: Vec<Zone>,
     /// Placed drops and covers this arena cannot honour.
     problems: Vec<Problem>,
+    /// The layout's drops this arena cannot honour, by name.
+    refused: Vec<String>,
+    /// Where the layout's drops snapped.
+    snapped: Vec<Snap>,
 }
 
 impl Arena {
@@ -433,7 +478,26 @@ fn cover_ray(p: V3, toward: V3) -> (V3, V3) {
 /// has a walkable path to each base. Drops keep off the starts and off both
 /// bases, alternate between the bases' sides, and take cover facing the
 /// nearer base.
+#[cfg(test)]
 fn choose_zones(
+    pf: &PathfindingData,
+    data: &MapData,
+    starts: &[V3],
+    bases: &[V3],
+    bsp: i16,
+    cluster: impl Fn(V3) -> Option<i16>,
+    placed: &Labels,
+    why: &mut dyn FnMut(String),
+) -> Option<Arena> {
+    choose_zones_with(None, pf, data, starts, bases, bsp, cluster, placed, why)
+}
+
+/// [`choose_zones`] with a layout: its drops, snapped to the nearest
+/// usable sector within each one's radius, take the place of the
+/// generator's picks. A drop that cannot be placed is named in the arena's
+/// `refused`; the generator never picks another in its place.
+fn choose_zones_with(
+    layout: Option<&Resolved>,
     pf: &PathfindingData,
     data: &MapData,
     starts: &[V3],
@@ -545,12 +609,20 @@ fn choose_zones(
                 }),
             }
         }
+        if let Some(l) = layout {
+            for &p in &l.covers {
+                if let Some(k) = on_area(p) {
+                    covers.push((k, p));
+                }
+            }
+        }
         let sample = ZoneSamples {
             data,
             starts,
             bsp,
             cluster: &cluster,
             covers: &covers,
+            base_positions: layout.map_or(BASE_POSITIONS, |l| l.base_positions),
         };
         let Some(base_zones) = base_polys
             .iter()
@@ -592,6 +664,61 @@ fn choose_zones(
                 });
             }
         }
+        let mut refused = Vec::new();
+        let mut snapped = Vec::new();
+        if placed.drops.is_empty() {
+            for d in layout.map_or(&[][..], |l| &l.drops[..]) {
+                let near = |k: usize| distance2(center(k), d.point);
+                let mut within: Vec<usize> = (0..graph.len())
+                    .filter(|&k| near(k) <= d.radius.powi(2))
+                    .collect();
+                within.sort_by(|&a, &b| near(a).total_cmp(&near(b)).then(a.cmp(&b)));
+                let mut reason = None;
+                let mut chosen = None;
+                for k in within {
+                    if owner[k] != root {
+                        reason.get_or_insert("no path to both bases");
+                    } else if bases
+                        .iter()
+                        .any(|&b| distance2(center(k), b) < clearance.powi(2))
+                    {
+                        reason.get_or_insert("inside the base exclusion");
+                    } else if selected.iter().any(|&p| distance2(center(k), p) < 1.) {
+                        reason.get_or_insert("on the sector of an earlier drop");
+                    } else {
+                        let toward = facing(bases, middle, center(k));
+                        if let Some(zone) =
+                            sample.drop_zone(k, &graph[k], zones.len(), toward, d.roles)
+                        {
+                            chosen = Some((k, zone));
+                            break;
+                        }
+                        reason.get_or_insert("no room for two firing positions");
+                    }
+                }
+                match chosen {
+                    Some((k, zone)) => {
+                        selected.push(center(k));
+                        snapped.push(Snap {
+                            name: d.name,
+                            anchor: d.anchor,
+                            wanted: d.point,
+                            sector: k,
+                            centre: center(k),
+                            radius: d.radius,
+                        });
+                        zones.push(zone);
+                    }
+                    None => refused.push(match reason {
+                        None => format!("drop '{}': no usable sector within {:.1}", d.name, d.radius),
+                        Some(r) => format!(
+                            "drop '{}': no usable sector within {:.1} ({r})",
+                            d.name, d.radius
+                        ),
+                    }),
+                }
+            }
+        }
         let mut candidates: Vec<_> = component
             .iter()
             .copied()
@@ -605,7 +732,7 @@ fn choose_zones(
                     && bases.iter().all(|&b| distance2(c, b) >= clearance.powi(2))
             })
             .collect();
-        if !placed.drops.is_empty() {
+        if !placed.drops.is_empty() || layout.is_some() {
             candidates.clear();
         }
         let side = |k: usize| bases::nearest(bases, center(k));
@@ -633,19 +760,27 @@ fn choose_zones(
                     continue;
                 }
                 let toward = facing(bases, middle, center(k));
-                if let Some(zone) = sample.drop_zone(k, &graph[k], zones.len(), toward) {
+                if let Some(zone) =
+                    sample.drop_zone(k, &graph[k], zones.len(), toward, roles::ALL)
+                {
                     selected.push(center(k));
                     zones.push(zone);
                     break;
                 }
             }
         }
-        let wanted = if placed.drops.is_empty() {
+        let wanted = if placed.drops.is_empty() && layout.is_none() {
             MIN_ZONES
         } else {
             1
         };
-        if zones.len() < wanted {
+        // A layout that placed nothing still returns its refusals, so the
+        // build names them.
+        // (A drop the layout could not resolve on the map is refused too.)
+        if zones.len() < wanted
+            && refused.is_empty()
+            && layout.is_none_or(|l| l.refused.is_empty())
+        {
             why(format!(
                 "the bases' area has room for {} drop zones of {wanted}",
                 zones.len()
@@ -658,6 +793,8 @@ fn choose_zones(
                 zones,
                 bases: base_zones,
                 problems,
+                refused,
+                snapped,
             });
         }
     }
@@ -671,6 +808,8 @@ struct ZoneSamples<'a, C> {
     cluster: &'a C,
     /// Placed `ff_cover` labels on the area: the sector and the point.
     covers: &'a [(usize, V3)],
+    /// Firing positions in a base zone.
+    base_positions: usize,
 }
 
 /// How one zone is sampled.
@@ -686,6 +825,8 @@ struct Spec {
     drop: bool,
     /// A placed drop's own point, in place of its polygon's centre.
     anchor: Option<V3>,
+    /// The roles the zone is written with (`firefight::roles`).
+    roles: u8,
 }
 
 impl<C: Fn(V3) -> Option<i16>> ZoneSamples<'_, C> {
@@ -695,6 +836,7 @@ impl<C: Fn(V3) -> Option<i16>> ZoneSamples<'_, C> {
         neighbours: &[usize],
         ordinal: usize,
         toward: V3,
+        roles: u8,
     ) -> Option<Zone> {
         self.zone(
             sector,
@@ -707,6 +849,7 @@ impl<C: Fn(V3) -> Option<i16>> ZoneSamples<'_, C> {
                 positions: DROP_POSITIONS,
                 drop: true,
                 anchor: None,
+                roles,
             },
         )
     }
@@ -732,6 +875,7 @@ impl<C: Fn(V3) -> Option<i16>> ZoneSamples<'_, C> {
                 positions: DROP_POSITIONS,
                 drop: true,
                 anchor: Some(marker.position),
+                roles: roles::ALL,
             },
         )
     }
@@ -761,9 +905,10 @@ impl<C: Fn(V3) -> Option<i16>> ZoneSamples<'_, C> {
                 area: "base",
                 toward: point,
                 radius: BASE_RADIUS,
-                positions: BASE_POSITIONS,
+                positions: self.base_positions,
                 drop: false,
                 anchor: None,
+                roles: 0,
             },
         )
     }
@@ -876,7 +1021,7 @@ impl<C: Fn(V3) -> Option<i16>> ZoneSamples<'_, C> {
         };
         Some(Zone {
             name: spec.name.clone(),
-            flags: opts.zone_flags,
+            flags: opts.zone_flags | roles::pack(spec.roles),
             manual_bsp: self.bsp,
             firing_positions: positions,
             areas: vec![area],

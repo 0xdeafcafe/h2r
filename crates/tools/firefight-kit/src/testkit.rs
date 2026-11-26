@@ -22,9 +22,28 @@ pub const STARTS: [(f32, f32, i16); 3] = [(3., 13., 0), (25., 15., 1), (14., 14.
 /// `court`: two structure BSPs over the same 7x7 floor, three starts, a
 /// CTF flag stand at each end, and the Elite biped the kit needs.
 pub fn court() -> Vec<u8> {
+    court_with(false)
+}
+
+/// [`court`] holding Halo 1's Covenant dropship, as a map built from the
+/// Halo 1 campaign does: the kit uses it with no donor.
+pub fn court_with_spirit() -> Vec<u8> {
+    court_with(true)
+}
+
+fn court_with(spirit: bool) -> Vec<u8> {
     let mut set = TagSet::new(CacheType::Multiplayer, "court", r"invented\court");
     for group in [b"scnr", b"bipd", b"weap", b"sbsp"] {
         set.add_group(FourCC(*group), None, None);
+    }
+    if spirit {
+        set.add_group(FourCC(*b"vehi"), None, None);
+        set.add_tag(
+            FourCC(*b"vehi"),
+            crate::ship::SPIRIT[0],
+            TagPayload::Built(Block::zeroed(0x20)),
+        )
+        .unwrap();
     }
     // Make the scenario the metadata anchor, so moving it would break the map.
     let scenario = set
@@ -123,6 +142,9 @@ pub fn tight(base: &[u8], room: u32) -> Vec<u8> {
     set.build().unwrap().0
 }
 
+/// The size of the donor's Phantom data block.
+pub const PHANTOM_BULK: usize = 0x6000;
+
 /// The donor map's label.
 pub const DONOR: &str = "donor";
 
@@ -137,7 +159,7 @@ pub const SHARED_WEAPON: &str = r"objects\weapons\rifle\plasma_rifle\plasma_rifl
 /// so the second class pays only for its char and biped.
 pub fn donor() -> Vec<u8> {
     let mut set = TagSet::new(CacheType::Multiplayer, DONOR, r"invented\donor");
-    for group in [b"matg", b"scnr", b"char", b"bipd", b"weap"] {
+    for group in [b"matg", b"scnr", b"char", b"bipd", b"weap", b"vehi"] {
         set.add_group(FourCC(*group), None, None);
     }
     set.globals = set
@@ -164,6 +186,15 @@ pub fn donor() -> Vec<u8> {
     };
     let shared = weapon(SHARED_WEAPON);
     let rail = weapon(r"donor\weapons\rail");
+    // The dropship: a vehicle with a data block of PHANTOM_BULK bytes.
+    let mut phantom = Block::zeroed(0x20);
+    phantom.data(0x10, Block::new(vec![9; PHANTOM_BULK]).aligned(1));
+    set.add_tag(
+        FourCC(*b"vehi"),
+        crate::ship::PHANTOM,
+        TagPayload::Built(phantom),
+    )
+    .unwrap();
     for (name, bulk) in [("grunt", 0x20usize), ("jackal", 0x20), ("hunter", 0x10000)] {
         let mut unit = Block::zeroed(0x10);
         unit.tag_ref(0, rail);
@@ -192,7 +223,7 @@ pub fn donor() -> Vec<u8> {
 pub fn donor_schema() -> tags::schema::Schema {
     use std::collections::BTreeMap;
     use tags::schema::{Field, Schema, Struct};
-    let bytes = Struct {
+    let bytes = || Struct {
         size: 1,
         align: 1,
         fields: BTreeMap::new(),
@@ -211,7 +242,7 @@ pub fn donor_schema() -> tags::schema::Schema {
                     BTreeMap::from([
                         (0, Field::TagRef),
                         (8, Field::TagRef),
-                        (0x10, Field::Block(Box::new(bytes))),
+                        (0x10, Field::Block(Box::new(bytes()))),
                     ]),
                 ),
             ),
@@ -220,11 +251,16 @@ pub fn donor_schema() -> tags::schema::Schema {
                 group(0x10, BTreeMap::from([(0, Field::TagRef)])),
             ),
             (FourCC(*b"weap"), group(0x10, BTreeMap::new())),
+            (
+                FourCC(*b"vehi"),
+                group(0x20, BTreeMap::from([(0x10, Field::Block(Box::new(bytes())))])),
+            ),
         ]),
     }
 }
 
-/// The three classes of [`donor`], in keep order.
+/// The three classes of [`donor`], in keep order: the Jackal stands in for a
+/// Flood class, the others are Covenant.
 pub fn donor_classes() -> Vec<crate::ClassSpec> {
     ["grunt", "jackal", "hunter"]
         .into_iter()
@@ -232,6 +268,11 @@ pub fn donor_classes() -> Vec<crate::ClassSpec> {
             name: name.into(),
             donor: 0,
             path: format!(r"donor\characters\{name}"),
+            faction: if name == "jackal" {
+                firefight::Faction::Flood
+            } else {
+                firefight::Faction::Covenant
+            },
         })
         .collect()
 }

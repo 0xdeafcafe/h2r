@@ -69,6 +69,26 @@ workspace_test(
 )
 
 workspace_test(
+    name = "bonus",
+    crate = "bonus",
+    crate_root = "crates/formats/firefight/tests/bonus.rs",
+    description = "Portable Firefight definitions and admission rules",
+    features = [],
+    manifest = "crates/formats/firefight",
+    package = "firefight",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/formats/content:content",
+        "//crates/formats/rules:rules",
+        "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
+        "//third-party/rust:thiserror",
+        ":firefight",
+    ],
+)
+
+workspace_test(
     name = "definition",
     crate = "definition",
     crate_root = "crates/formats/firefight/tests/definition.rs",
@@ -92,6 +112,26 @@ workspace_test(
     name = "director",
     crate = "director",
     crate_root = "crates/formats/firefight/tests/director.rs",
+    description = "Portable Firefight definitions and admission rules",
+    features = [],
+    manifest = "crates/formats/firefight",
+    package = "firefight",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/formats/content:content",
+        "//crates/formats/rules:rules",
+        "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
+        "//third-party/rust:thiserror",
+        ":firefight",
+    ],
+)
+
+workspace_test(
+    name = "factions",
+    crate = "factions",
+    crate_root = "crates/formats/firefight/tests/factions.rs",
     description = "Portable Firefight definitions and admission rules",
     features = [],
     manifest = "crates/formats/firefight",
@@ -152,6 +192,46 @@ workspace_test(
     name = "script",
     crate = "script",
     crate_root = "crates/formats/firefight/tests/script.rs",
+    description = "Portable Firefight definitions and admission rules",
+    features = [],
+    manifest = "crates/formats/firefight",
+    package = "firefight",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/formats/content:content",
+        "//crates/formats/rules:rules",
+        "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
+        "//third-party/rust:thiserror",
+        ":firefight",
+    ],
+)
+
+workspace_test(
+    name = "sets",
+    crate = "sets",
+    crate_root = "crates/formats/firefight/tests/sets.rs",
+    description = "Portable Firefight definitions and admission rules",
+    features = [],
+    manifest = "crates/formats/firefight",
+    package = "firefight",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/formats/content:content",
+        "//crates/formats/rules:rules",
+        "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
+        "//third-party/rust:thiserror",
+        ":firefight",
+    ],
+)
+
+workspace_test(
+    name = "ship",
+    crate = "ship",
+    crate_root = "crates/formats/firefight/tests/ship.rs",
     description = "Portable Firefight definitions and admission rules",
     features = [],
     manifest = "crates/formats/firefight",

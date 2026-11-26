@@ -9,7 +9,9 @@
 //! random words and the arena hash ([`first_update`]), and holds the start
 //! until the tick's observer has described the game ([`Starts::release`]),
 //! which gives the map's identity and digest, the roster and the mode. The
-//! start is written just before that tick, the film's tick 1.
+//! start is written just before that tick, the film's tick 1. A game the
+//! observer has not described by then is taken again at each following
+//! update until it is, and its start sits before that update's tick.
 use super::{Mode, Session, metadata};
 use anyhow::{Context, Result, ensure};
 use film::start::{Game, GameStart, OPTIONS_BYTES, Settings, Stamp};
@@ -28,7 +30,13 @@ pub(super) struct Starts {
     /// The start taken at the first update, until the observer has
     /// described the game.
     held: Option<GameStart>,
+    /// Updates a game has gone on undescribed, after its first.
+    undescribed: u32,
 }
+
+/// Updates the observer may take to describe a game, counted from its
+/// first. A game still unknown after them is not a match.
+const DESCRIBE_UPDATES: u32 = 600;
 
 impl Starts {
     /// Whether a map activated with these options is a new game: neither
@@ -54,6 +62,12 @@ impl Starts {
         self.activated.is_some()
     }
 
+    /// Whether the waiting game's start was taken before and not yet
+    /// written: a retake at a later update.
+    pub(super) fn retaking(&self) -> bool {
+        self.undescribed > 0
+    }
+
     /// The first update of the waiting game: its start, taken.
     pub(super) fn take_options(&mut self) -> Option<Vec<u8>> {
         let options = self.activated.take()?;
@@ -67,16 +81,24 @@ impl Starts {
 
     /// The held start, once the tick's observer has described the game:
     /// the map's identity (its digest joined), the mode and the roster. A
-    /// game the observer did not take for a match has no start. `None`
-    /// while nothing is held.
+    /// game the observer has not described yet keeps waiting: its start is
+    /// taken again at the next update, so the start sits just before the
+    /// first update that has a description. A game still undescribed after
+    /// [`DESCRIBE_UPDATES`] updates has no start. `None` while nothing is
+    /// held.
     pub(super) fn release(&mut self, meta: &mut metadata::Capture) -> Result<Option<GameStart>> {
         let Some(mut start) = self.held.take() else {
             return Ok(None);
         };
-        ensure!(
-            !meta.descriptor().map.name.is_empty(),
-            "the game was not described at its first update"
-        );
+        if meta.descriptor().map.name.is_empty() {
+            self.undescribed += 1;
+            ensure!(
+                self.undescribed <= DESCRIBE_UPDATES,
+                "the game was not described in its first {DESCRIBE_UPDATES} updates"
+            );
+            self.activated = Some(start.options);
+            return Ok(None);
+        }
         meta.finish_map()?;
         start.game.started_ms = super::autorecord::now_ms();
         start.game.descriptor = meta.descriptor().clone();

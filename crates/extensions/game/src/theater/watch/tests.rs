@@ -140,6 +140,8 @@ struct Viewer {
     options: Vec<u8>,
     queue: calls::Shared,
     returned: Arc<Mutex<Vec<String>>>,
+    /// Why each returned film stopped, beside `returned`.
+    why: Arc<Mutex<Vec<Option<String>>>>,
     first: u64,
 }
 
@@ -155,8 +157,12 @@ fn viewer() -> Viewer {
     calls::lock(&queue).arm();
     rec.attach_calls(queue.clone());
     let returned = Arc::new(Mutex::new(Vec::new()));
-    let seen = returned.clone();
-    rec.on_return(move |id| seen.lock().unwrap().push(id.to_owned()));
+    let why = Arc::new(Mutex::new(Vec::new()));
+    let (seen, told) = (returned.clone(), why.clone());
+    rec.on_return(move |id, reason| {
+        seen.lock().unwrap().push(id.to_owned());
+        told.lock().unwrap().push(reason.map(str::to_owned));
+    });
     let menus = arena();
     for _ in 0..MENUS {
         rec.checkpoint(&menus);
@@ -164,7 +170,7 @@ fn viewer() -> Viewer {
     let options = named(MODE_CAMPAIGN, 1, FIRST);
     let first = record_game(&rec, &options, [11, 12], LENGTH);
     let film = cuts(&rec).pop().expect("the game's film");
-    Viewer { dir, rec, film, options, queue, returned, first }
+    Viewer { dir, rec, film, options, queue, returned, why, first }
 }
 
 impl Viewer {
@@ -475,6 +481,12 @@ fn a_film_armed_but_never_started_is_left_by_end_film() {
     rec.end_film().unwrap();
     assert_eq!(store.get(SETTING), Some(Setting::Bool(false)), "the viewer's setting is back");
     assert_eq!(v.pending(), vec![Call::QueueGame { steps: crate::game_menu::steps() }]);
+    // The menu's activation opens the film's page again, saying why.
+    assert!(v.returned.lock().unwrap().is_empty(), "not before the menu");
+    rec.game_activated(&game(&block(MODE_MAINMENU, 0), [0, 0]));
+    assert_eq!(*v.returned.lock().unwrap(), vec![rec.film_id_of(&v.film)]);
+    assert_eq!(*v.why.lock().unwrap(), vec![Some(NOT_STARTED.to_owned())]);
+    assert_eq!(rec.status().watch_failure.as_deref(), Some(NOT_STARTED));
     // Nothing is armed any more: its game does not start the film.
     rec.game_activated(&machine(&named(MODE_MULTIPLAYER, 3, SECOND), [1, 2]));
     assert!(!rec.watching());
@@ -819,4 +831,95 @@ fn a_film_is_watched_from_no_lobby_so_a_forge_lobby_does_not_reach_its_game() {
     // record, no Forge editor.
     assert_eq!(lobby_start::mode(), LobbyMode::Multiplayer);
     assert!(!lobby_start::forge_session());
+}
+
+#[test]
+fn a_film_whose_game_comes_back_to_the_main_menu_fails_and_its_page_opens_again() {
+    let v = viewer();
+    let rec = &v.rec;
+    let store = store(rec);
+    store.run_as(SETTING, Setting::Bool(false)).unwrap();
+    rec.arm_watch(rec.plan_watch(&v.film, api::InitialView::default()).unwrap());
+    assert_eq!(rec.armed_film(), Some(rec.film_id_of(&v.film)));
+
+    // The film's options were queued over the main menu, and the menu
+    // activated again instead of the film's game.
+    rec.game_activated(&game(&block(MODE_MAINMENU, 0), [0, 0]));
+    assert!(!rec.watching() && rec.armed_film().is_none(), "the film is given up");
+    assert_eq!(store.get(SETTING), Some(Setting::Bool(false)), "the viewer's setting is back");
+    assert_eq!(*v.returned.lock().unwrap(), vec![rec.film_id_of(&v.film)]);
+    assert_eq!(*v.why.lock().unwrap(), vec![Some(NOT_LOADED.to_owned())]);
+    assert_eq!(rec.status().watch_failure.as_deref(), Some(NOT_LOADED));
+    assert!(matches!(rec.lock().mode, Mode::Record(_)), "the recorder goes on");
+
+    // The menu activating again with nothing armed opens nothing.
+    rec.game_activated(&game(&block(MODE_MAINMENU, 0), [0, 0]));
+    assert_eq!(v.returned.lock().unwrap().len(), 1);
+
+    // A film the viewer leaves reopens its page with no reason.
+    let _film = v.watch();
+    rec.end_film().unwrap();
+    rec.game_activated(&game(&block(MODE_MAINMENU, 0), [0, 0]));
+    assert_eq!(v.why.lock().unwrap().last(), Some(&None));
+}
+
+#[test]
+fn watch_from_the_main_menu_queues_the_films_game_and_its_transport_waits_for_it() {
+    struct Empty;
+    impl agent::Reader for Empty {
+        fn status(&mut self) -> agent::GameStatus {
+            Default::default()
+        }
+        fn objects(&mut self) -> Result<Vec<agent_proto::Object>, String> {
+            Ok(Vec::new())
+        }
+    }
+    let v = viewer();
+    let rec = &v.rec;
+    let id = rec.film_id_of(&v.film);
+    let a = agent::Agent::new();
+    let (tx, rx) = std::sync::mpsc::sync_channel(8);
+    let client = a.connect(tx);
+    super::super::library_methods(
+        &a,
+        v.dir.0.clone(),
+        v.dir.0.join("synthetic.xbe"),
+        v.dir.0.clone(),
+        v.dir.0.clone(),
+        Installation::new(b"xbe", vec![], v.dir.0.clone()),
+        Some(rec.clone()),
+    );
+    let state = || {
+        a.submit(
+            client,
+            &json!({"jsonrpc":"2.0","id":1,"method":api::STATE,"params":{}}).to_string(),
+        );
+        a.on_tick(&mut Empty);
+        serde_json::from_str::<Value>(&rx.try_recv().unwrap()).unwrap()
+    };
+
+    // At the main menu Watch queues the film's own options as the next
+    // game, the path every map load from the menu takes, and arms it.
+    rec.game_activated(&game(&block(MODE_MAINMENU, 0), [0, 0]));
+    let planned = rec.plan_watch(&v.film, api::InitialView::default()).unwrap();
+    let steps = level_boot::game_steps(&level_boot::Request::recorded(&v.options).unwrap()).unwrap();
+    assert_eq!(planned.steps(), steps, "the film's map and options");
+    rec.arm_watch(planned);
+    assert_eq!(rec.armed_film(), Some(id.clone()));
+
+    // Until the film's game activates its transport is loading, not
+    // absent: an `active:false` answer would draw the bar over the menu,
+    // take its pads and keep the menu's 60 s wait from running.
+    let loading = state();
+    assert_eq!(loading["error"]["code"], json!(agent_proto::code::UNAVAILABLE), "{loading}");
+    assert!(loading["error"]["message"].as_str().unwrap().contains("loading"), "{loading}");
+
+    // The film's game activates: the film plays and its transport answers.
+    let mut film = machine(&v.options, [999, 888]);
+    rec.game_activated(&film);
+    assert!(rec.watching() && rec.armed_film().is_none());
+    assert!(tick(rec, &mut film, 0));
+    let playing = state();
+    assert_eq!(playing["result"]["id"], json!(id), "{playing}");
+    assert!(v.returned.lock().unwrap().is_empty(), "nothing failed");
 }

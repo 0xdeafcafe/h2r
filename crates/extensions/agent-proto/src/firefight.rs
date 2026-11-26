@@ -79,18 +79,26 @@ pub struct State {
     /// The latest entries (and AI switch) the engine refused, oldest first.
     #[serde(default)]
     pub errors: Vec<Refusal>,
+    /// Placements applied here whose slot showed no actor within 90 ticks
+    /// (each also one row in `errors`).
+    #[serde(default)]
+    pub placements_unseen: u32,
 }
 
 /// The director's mode blob, summarised.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Director {
-    /// `warmup`, `spawning`, `fighting`, `cleanup`, `intermission` or
-    /// `done`.
+    /// `warmup`, `spawning`, `fighting`, `cleanup`, `intermission`, `bonus`
+    /// or `done`.
     pub phase: String,
-    /// The tick a warmup or intermission lasts until, or a cleanup began.
+    /// The tick a warmup, intermission or bonus round lasts until, or a
+    /// cleanup began.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase_tick: Option<u32>,
-    /// Zero-based.
+    /// Zero-based set (always 0 in a finite definition).
+    #[serde(default)]
+    pub set: u8,
+    /// Zero-based round of the set.
     pub round: u8,
     pub wave: u8,
     /// Actors of the wave not placed yet, at the current player count.
@@ -171,6 +179,25 @@ pub enum Command {
         zone: u8,
         weapon_tier: u8,
     },
+    /// `place_squad` by drop ship (up to the ship's free seats, the rest on
+    /// foot), or on foot where the kit has no ship or path for the zone.
+    DropSquad {
+        slot: u8,
+        class: String,
+        count: u16,
+        zone: u8,
+        weapon_tier: u8,
+    },
+    /// The drop ship's hover hold.
+    ShipHover {
+        on: bool,
+    },
+    /// Everyone aboard the drop ship leaves.
+    ShipUnload,
+    /// The drop ship flies from the zone's hover point out along its path.
+    ShipLeave {
+        zone: u8,
+    },
     /// Two teams, after a `place_squad`: the Firefight team the squad is
     /// sent at; its `hunt` goes to that team's base.
     Target {
@@ -182,6 +209,10 @@ pub enum Command {
     },
     EraseSquad {
         slot: u8,
+    },
+    /// An endless definition's zero-based set begins.
+    Set {
+        index: u8,
     },
     Round {
         index: u8,
@@ -211,6 +242,11 @@ pub enum Command {
     Respawn {
         player: u8,
     },
+    /// The bonus round starts (`on`, for `ticks`) or ends.
+    Bonus {
+        on: bool,
+        ticks: u32,
+    },
     Finish {
         outcome: Outcome,
     },
@@ -223,9 +259,11 @@ pub enum Skull {
     Assassins,
     Thunderstorm,
     Famine,
-    Blind,
+    BlackEye,
     Ghost,
     Catch,
+    /// The bonus round's: a director rule, no engine skull.
+    Iron,
     Mythic,
     Angry,
     LowGravity,
@@ -318,12 +356,20 @@ mod tests {
     fn commands_take_the_host_logs_shape_and_nothing_else() {
         for value in [
             json!({"place_squad": {"slot": 0, "class": "elite", "count": 2, "zone": 1, "weapon_tier": 0}}),
+            json!({"drop_squad": {"slot": 0, "class": "elite", "count": 2, "zone": 1, "weapon_tier": 0}}),
+            json!({"ship_hover": {"on": true}}),
+            json!("ship_unload"),
+            json!({"ship_leave": {"zone": 1}}),
             json!({"target": {"slot": 0, "team": 1}}),
             json!({"hunt": {"slot": 3}}),
             json!({"erase_squad": {"slot": 0}}),
+            json!({"set": {"index": 2}}),
             json!({"round": {"index": 1}}),
             json!({"wave": {"index": 4}}),
+            json!({"bonus": {"on": true, "ticks": 1800}}),
             json!({"skull": {"id": "low_gravity", "on": true}}),
+            json!({"skull": {"id": "black_eye", "on": false}}),
+            json!({"skull": {"id": "iron", "on": true}}),
             json!({"lives": {"pool": 3}}),
             json!({"lives": {"player": 1, "pool": 2}}),
             json!({"team_lives": {"team": 1, "pool": 9}}),
@@ -340,7 +386,8 @@ mod tests {
         for value in [
             json!({"hunt": {"slot": 3, "zone": 1}}),
             json!({"skip_wave": {}}),
-            json!({"skull": {"id": "iron", "on": true}}),
+            json!({"skull": {"id": "blind", "on": true}}),
+            json!({"bonus": {"on": true}}),
             json!({"finish": {"outcome": "tie"}}),
             json!({"finish": {"outcome": {"team_won": {}}}}),
             json!({"target": {"slot": 0}}),

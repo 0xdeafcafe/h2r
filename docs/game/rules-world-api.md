@@ -359,10 +359,10 @@ Capability `vehicles.drive` ("flies and loads vehicles").
 | Script | Entry | Engine | Status | Synced by |
 |---|---|---|---|---|
 | `vehicle_riders(v)` (`int`), `vehicle_driver(v)` (`player?`) | reads | the unit's seat iterator (`UNIT_SEATS_BEGIN` and `UNIT_SEATS_NEXT`) | host reads pending | a read |
-| `fly(v, path, t)` | `fly` | a notified transform reaches eligible Havok bodies, which retain velocity | not built | the vehicle entity (type 12) |
+| `fly(v, path, t)` | `fly` | the host flies the ship along the path's points with `Flights` and puts it at each tick's pose through `OBJECT_SET_TRANSFORM` with notify; a notified transform reaches eligible Havok bodies, which retain velocity | **Code** in Firefight (`Game::fly`, `crates/extensions/game/src/firefight/ship.rs`); not built in the rules runtime | the vehicle entity (type 12) |
 | `hover(v, on)` | `hover` | `VEHICLE_HOVER` (`0xf0fd0`) toggles the hold bit and refreshes the physics component on a change | named | vehicle replication unverified |
 | `seat(p, v)`, `eject(p)` | `seat`, `eject` | the vehicle entry routine `0x11ade0` behind `unit_enter_vehicle` and the biped exit action at `0xe68c0` | traced | events 24 and 11 |
-| `place_squad_in(s, class, n, v)` | `place_squad_in` | `AI_SQUAD_PLACE` selects by the scenario's vehicle palette and can leave actors unseated | refused | unit entities with the parent-vehicle flag |
+| `place_squad_in(s, class, n, v)` | `place_squad_in` | places `min(n, free seats)` actors at the ship and seats them through `VEHICLE_LOAD` (`0x11b0c0`); `AI_SQUAD_PLACE` alone selects by the scenario's vehicle palette and can leave actors unseated | **Code** in Firefight (`Game::drop_squad`, `ship::place_squad_in`); not built in the rules runtime | unit entities with the parent-vehicle flag |
 | `unload(v)` | `unload` | `VEHICLE_UNLOAD` (`0x11b2b0`) requests exit from occupied seats with the all-seats mapping | named | event 11 |
 | `on board(p, v)`, `on leave_vehicle(p, v)` | events | observers on the enter and exit events the engine queues (`SIM_EVENT_GENERATE` `0xb5a70`, types 24 and 11) | named | read on the `Authority` |
 
@@ -373,10 +373,10 @@ refuses scripts using them at start. [Retail traces for R6 and R7](notes/2026-11
 
 | Entry | Held back by |
 |---|---|
-| `fly` | W3's mover and verification of the path after physics steps with riders and contacts |
-| `place_squad_in` | needs a seat-limited spawn into the supplied vehicle. Retail placement chooses or creates its own seat vehicle. |
+| `fly` in the rules runtime | the mover's `Flights` state lives in Firefight's match; a plain script's host has none, and the pose after physics steps with riders and contacts is R7 |
+| `place_squad_in` in the rules runtime | the squad entry is Firefight's; the plain rules host has no squad placement |
 | `seat`, `eject`, `vehicle_riders`, `vehicle_driver` | host seat selection, player actions and synchronous seat reads |
-| the kit's ship and paths | R8: the kit's stage 2 (`crates/tools/firefight-kit`, FF12) is not built, so no map carries a ship or a labelled path |
+| the kit's ship and paths in the plain rules host | the kit's ship is `ff_ship` and its paths are the point sets `ff_path_NN`, which the Firefight guest reads (`firefight::guest::read_kit`); a plain script has no label for them. R8 settles headroom per map |
 
 Four choices of the fake are the API's contract, and a host that gives
 different answers is wrong until a run says the engine does:
@@ -402,6 +402,15 @@ different answers is wrong until a run says the engine does:
   The fake reports each flight's end once (`take_arrived`); `on arrive`
   is W3's event, and until it lands a script times the end itself
   (`now()` against the tick it started on, as `tests/vehicles.rs` does).
+
+**Firefight's director flies the ship.** The director script
+(`content/modes/rules/firefight.rules`) does not use the entries above: it
+holds the ship's state (parked, inbound, unloading, outbound) and calls
+the `firefight.director` entries `ff_drop_squad`, `ff_ship_hover`,
+`ff_ship_unload` and `ff_ship_leave`, which the host makes with `Game::fly`,
+`Game::drop_squad`, `Game::hover` and `Game::unload`
+([firefight.md](firefight.md), "The drop ship"). Two reads tell it what
+the kit has: `ship_ready()` and `zone_path(zone)`.
 
 **A drop ship is a vehicle on a keyed path.** The kit places it, parked,
 with a label (`label ship: object`), and labels the run-in as a `path`.
@@ -528,6 +537,9 @@ they read every other record.
 |---|---|---|---|---|
 | `offer_pick(n, title)`, `pick_row(n, label)` | `offer_pick(Int, Text)`, `pick_row(Int, Text)`, now | `offer_pick` makes picker `n` with no rows, replacing a picker of that number and the picks made in it; `pick_row` adds a row. A picker past the second, a row for a picker not offered and a seventh row are script errors (`ErrorKind::Picks`). The round's end takes the offers and the picks. The host adds no call of its own | named (**Code**) | the state blob |
 | `picked(p, n)` | `picked`, a VM read | the row (from 0, in the order the rows were added) player `p` picked in picker `n`; -1 when none was made, none is offered or the player is outside the roster | named (**Code**) | the state blob |
+| `offer(p, picker, count)` | `offer(Player, Int, Int)`, now | opens the first `count` rows (1 to 6) of `picker` (an offered picker's labels) to player `p` as their loadout window (`RulesExt::loadout`, `vm::Window`); a row last picked that the window still holds stays, else the player is back on row 0. A picker or count out of range, or a player outside the roster, is a script error (`ErrorKind::Picks`). The round's end closes every window and keeps each row. The host adds no call of its own | named (**Code**) | the state blob |
+| `choice(p)` | `choice`, a VM read | the row player `p` last picked in their window, 0 until one is; -1 for a player outside the roster | named (**Code**) | the state blob |
+| the host's loadout report | `Vm::choose_loadout(player, row)` | a row at or past the window's count, past the rows of its picker, or a player outside the roster is refused (`false`) and the last pick stands. The pickers a window reads are not asked as plain pickers (`Vm::plain_picks`) and are not sent as cues; the host asks the player from the window (`rules/world/choice.rs`: a `Call::OfferChoice` opens the same value picker over the player's controller once for each new window, with the open rows) | named (**Code**) | the state blob |
 | the host's report | `Vm::choose(player, picker, row)` | a pick of a picker not offered, a row it does not hold or a player outside the roster is refused (`false`); a second pick replaces the first | named (**Code**) | the state blob |
 
 On the host (`rules/world/pick.rs`) the runtime reads the offers at each
@@ -701,6 +713,7 @@ widget or waypoint the script does not declare stops the script
 | `hud_value_for(w, p, n)` | `hud_value_for` | the widget's value for the player in roster slot `p` (0 to 255), kept in the state's per-viewer table (`rules::show::PerViewer`: the widget's number and 16 bytes). `rules::show::view` gives each viewer the entry of its own slot in place of the widget's `value`; the fill, style and text stay shared. One widget at a time reads per viewer, and a second is a script error (`ErrorKind::Hud`); a `none` player sets nothing | named | `Show` (**Code**) |
 | `side_of(p)`, `slot_of(p)` | `side_of`, `slot_of` | the roster: the team's index in a game with teams, 16 and the slot in one without; the slot | named | none: a read |
 | `countdown(w, t)` | `hud_countdown` | the state holds the end tick; each machine counts its own ticks | not built | `Show` |
+| `objective(to, text)`, `objective_mark(to, zone, kind)`, `meter(to, value, of)`, `countdown(to, ticks)` | `objective`, `objective_mark`, `meter`, `countdown`, now, for a `team` | the VM's per-team `Objective` (`RulesExt::objectives`: the line's string, at most `MAX_OBJECTIVE_MARKS` marked zones, the gauge, and the tick the clock ends at; `mark` is the waypoint's name, so a zone's mark is `objective_mark`); a fourth mark or an out-of-range kind is a script error (`ErrorKind::Hud`); the round's end takes it. The host adds no call; the objective HUD reads the record ([hud-kit.md](hud-kit.md#the-scripted-objective-hud)). A machine that runs no VM does not draw it | named | the state blob |
 | `mark(wp, at)`, `mark(wp, at, to)`, `unmark(wp)` | `mark`, `mark_player`, `mark_team`, `unmark` | the object's place through `Handle::navpoint_at`, one navpoint a HUD; the text is the distance from the user's unit. The place is a zone's middle, else the unit of the player who carries the objective (the objective registry, `objectives::carrier`), else the object's origin (`Object::POSITION`, through `engine::view::objects::get`): `hud::place`. A mark's audience is every viewer, or `to`'s: a player's slot's bit or the bits of the team's seated players, resolved in the VM from the roster every machine holds (`Game::players_of_team`); `all` is the two-argument form, and the state carries the mask. The navpoint is the first local user's, as the kit's navpoints are shared. The text form is not built | named | `Show` (**Code**) |
 | `medal(p, "…")`: a line with a medal glyph, counted in the film and on Live | `medal` | the notification queue, as the superbounce medals (hud-kit.md "The medals"); `GAME_MEDAL` (`0x1970a0`) takes only the game's own medal rows | traced | a `Cue` |
 

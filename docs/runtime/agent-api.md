@@ -4605,6 +4605,7 @@ boundary while the game ticks. The wire types are `agent_proto::sim`.
 | `sim.session` | read | the session kind and whether writes are allowed |
 | `sim.objects` | read | `{kinds?, max?}`: every live object in slot order through the simulation's typed views, `{objects, truncated}` |
 | `sim.events` | read | `{kinds?}`: the last tick's simulation events in order (`deleted`, `damage`, `kill`, `actor_killed`), `{events}` |
+| `sim.ledger` | read | `{}`: the guest phases of the game tick the Rust driver still calls, `{tick, ticks, phases: [{entry, name, owner, calls, ns, last_ns}], guest_total, tick_ns, tick_last_ns, loop_ns, loop_last_ns, loops}`, with nanoseconds per phase (total and last tick) and for the whole loop; answered on the connection's thread |
 
 **Brains.** For a brain-driven simulated player, `sim.player.add`,
 `sim.player.list` and the `sim` root of `sim.view` include `brain` when
@@ -4647,6 +4648,33 @@ parent), `velocity` (units a second), `sphere {center, radius}`,
 `vitality {body, shield, depleted}`, `nodes` (node matrix count) and, for
 bipeds and vehicles, `unit {player, actor, team, seat, weapons, held}`.
 The wire types are `agent_proto::sim::objects`.
+
+**`sim.ledger`** reads the tick driver's ledger
+(`sim_bridge::tick::LEDGER`, `engine::sim_tick`,
+[sim-rewrite.md](../engine/sim-rewrite.md) "The tick driver"). `phases`
+lists the 29 phases of `game_tick` in retail order with each phase's guest
+`entry` (`0x` and eight hex digits), `name`, `owner` (`guest` while the
+driver calls the lifted original, `rust` once a Rust body runs it) and
+`calls`, the guest calls made since the game started. `guest_total` is the
+number of phases still owned by the guest, the number
+`crates/rewrites/sim-bridge/tick-ledger.toml` bounds per map kind; the goal
+is 0. `ticks` is how many ticks the driver ran and `tick` the game tick
+count after the last of them. `ns` and `last_ns` are the nanoseconds a
+phase took over every tick and in the last one, on the monotonic clock;
+`tick_ns` and `tick_last_ns` are the same for the tick body, and the phases'
+`ns` sum to at most `tick_ns`. `loop_ns` over `loops` is the whole loop: the
+span from one tick's entry to the next's, which holds what the game thread
+does between ticks (sound runs outside the 29 phases), so ms per tick is
+`loop_ns / loops / 1e6`. A pause or a menu lengthens it; read it over a
+window of play. The driver reads the clock once per phase and three times
+per tick. It reads no guest memory, so it answers at any time, not only at a
+tick boundary.
+
+The same numbers reach `profile.counters` in `counts` as
+`sim_tick_phase_<n>_ns` (phase `n`, 1 to 29, mean ns per tick since the game
+started), `sim_tick_ns` and `sim_loop_ms`, and the sim report's
+`tick_phases` block (`ticks`, `tick_ms_per_tick`, `loop_ms_per_tick`,
+`phases: [{name, ms_per_tick}]`) over the match.
 
 **`sim.events`** reads the simulation's event buffer through `sim-state`
 (`sim_state::events`, [sim-rewrite-objects.md](../engine/sim-rewrite-objects.md)
@@ -5276,7 +5304,7 @@ registered; with the `firefight` feature off
 
 | Method and access | Parameters | Result |
 |---|---|---|
-| `firefight.state` (read) | `{}` or omitted | `{running, test, refused?, map?, role?, team?, director?, log?, errors}` |
+| `firefight.state` (read) | `{}` or omitted | `{running, test, refused?, map?, role?, team?, director?, log?, errors, placements_unseen}` |
 | `firefight.command` (act) | `{command?, director?: "hold" \| "run"}`, at least one | `{appended?: {seq, tick}, held, log}` |
 | `firefight.kit` (read) | `{}` or omitted | `{kit, slots, team?, zones: [{index, point, starts}], classes, bases, characters, hunt_orders}` |
 
@@ -5291,24 +5319,36 @@ session), `replica` (a synchronous peer, or a film's playback) or
 `client` (a distributed client). `team` is the actors' team, never a
 player team (with two player teams it is a third). `director`, on the
 host only: `phase` (`warmup`, `spawning`, `fighting`, `cleanup`,
-`intermission`, `done`) with `phase_tick` for the timed ones, `round`
-and `wave` (zero-based), `reserve` (actors of the wave not yet placed),
+`intermission`, `bonus`, `done`) with `phase_tick` for the timed ones (a
+bonus round: the tick it ends at), `set` (zero-based; always 0 in a finite
+definition), `round` (of the set) and `wave` (zero-based), `reserve` (actors of the wave not yet placed),
 `teams` (the player teams, 1 or 2), `pools` and `scores` (each team's
 shared lives and points, one entry per team), `live_actors` against
 `cap`, `players`, `skulls` and `held`.
 `log` is the head (`seq`, `tick`, `hash` in hex) and `applied`, the last
 entry applied here. `errors` holds the latest 16 entries the engine
 refused, each with its `seq` (none for the AI switch), `tick` and
-`error`.
+`error`. `placements_unseen` counts the squad placements applied here whose
+slot showed no actor within 90 ticks (the director's slot timeout), each
+also one row in `errors` ("slot N: C placed at tick T, none seen"); a wave
+that clears at once with this above 0 means the game never made, or the
+runtime never counted, its actors. A placement the engine answers by adding
+no actor to the squad is an `errors` row of its own ("the engine placed no
+actor for slot N: class row R at zone Z").
 
 **Command.** `command` is one director command in the host log's shape
 (externally tagged, snake_case): `place_squad {slot, class, count, zone,
-weapon_tier}`, `target {slot, team}`, `hunt {slot}`, `erase_squad
-{slot}`, `round {index}`, `wave {index}`, `skull {id, on}`, `lives
+weapon_tier}`, `drop_squad {slot, class, count, zone, weapon_tier}` (by
+drop ship where the kit has a ship and a path to the zone, else on foot),
+`ship_hover {on}`, `ship_unload` and `ship_leave {zone}`, `target {slot, team}`, `hunt {slot}`, `erase_squad
+{slot}`, `set {index}`, `round {index}`, `wave {index}`, `bonus {on,
+ticks}`, `skull {id, on}`, `lives
 {player?, pool}`, `team_lives {team, pool}`, `score {player, points,
 reason: kill | assist | player_kill}`, `respawn {player}` and `finish
 {outcome: won | lost | {team_won: {team}} | draw}`. `target` picks the
-player team a slot's squad goes for, and its next `hunt` heads for that
+player team a slot's squad goes for, `respawn` is refused while a `bonus`
+round is on (the engine error is in `errors`: no respawn in the bonus
+round), and its next `hunt` heads for that
 team's base (team 0's until one is set); `team_lives` sets one team's
 shared pool and `lives` the one-team pool or a player's own lives, in
 the director, so its next respawns spend from the new count (a team at 0

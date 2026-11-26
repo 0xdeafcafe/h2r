@@ -634,6 +634,20 @@ impl Session {
                 self.in_game = false;
                 self.menu = None;
             }
+            (Request::State, Ok(value)) if self.in_game && value["active"] == json!(false) => {
+                // No film plays in this game: its game came back to the
+                // menu before it started, or the film was left. The bar
+                // goes and the film page (opened again at the menu) says
+                // why.
+                if !self.ready {
+                    self.open_error = Some("The film's game did not load".into());
+                }
+                self.track = None;
+                self.ready = false;
+                self.in_game = false;
+                self.opened_at = None;
+                self.menu = None;
+            }
             (Request::State, Ok(value)) => {
                 if let (Some(track), Ok(mut s)) =
                     (&mut self.track, serde_json::from_value::<AgentState>(value))
@@ -1640,5 +1654,34 @@ mod tests {
         assert!(session.stall(start + START_WAIT));
         assert!(session.track.is_none() && !session.in_game);
         assert_eq!(session.open_error.as_deref(), Some("The film's game did not start"));
+    }
+
+    #[test]
+    fn a_queued_film_is_loaded_only_when_its_game_answers_the_transport() {
+        let queued = || Session {
+            track: Some(sample_track()),
+            in_game: true,
+            opened_at: Some(Instant::now()),
+            ..Default::default()
+        };
+        // Loading: the game answers unavailable, and the menu keeps its
+        // pads, draws no bar and its 60 s wait runs on.
+        let mut session = queued();
+        session.answer(Request::State, Err("film test is loading: its game has not started".into()));
+        assert!(!session.loaded() && !session.owns_pads());
+        assert!(session.opened_at.is_some() && session.open_error.is_none());
+
+        // No film plays in the game (it came back to its menu): the bar
+        // goes and the page says why, instead of a bar over the menu.
+        session.answer(Request::State, Ok(json!({"id": null, "active": false})));
+        assert!(session.track.is_none() && !session.in_game && !session.loaded());
+        assert_eq!(session.open_error.as_deref(), Some("The film's game did not load"));
+        assert!(!session.stall(Instant::now() + START_WAIT), "nothing is left waiting");
+
+        // The film's game answers: playback.
+        let mut session = queued();
+        session.answer(Request::State, Ok(json!({"id": "test", "tick": 5, "length_ticks": 100})));
+        assert!(session.loaded() && session.owns_pads());
+        assert_eq!(session.track.as_ref().unwrap().tick, 5);
     }
 }

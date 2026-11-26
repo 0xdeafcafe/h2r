@@ -17,6 +17,10 @@ enum Call {
     Respawn(u8),
     Skull(Skull, bool),
     End(Outcome),
+    Fly(Launch),
+    Drop(Boarding),
+    Hover(u32, bool),
+    Unload(u32),
 }
 
 struct FakeGame {
@@ -27,6 +31,8 @@ struct FakeGame {
     kills: Vec<KillSeen>,
     player_kills: Vec<PlayerKill>,
     calls: Vec<Call>,
+    ship: Option<Ship>,
+    paths: Vec<Option<ShipPath>>,
 }
 
 impl FakeGame {
@@ -42,6 +48,8 @@ impl FakeGame {
             kills: Vec::new(),
             player_kills: Vec::new(),
             calls: Vec::new(),
+            ship: None,
+            paths: Vec::new(),
         }
     }
 
@@ -114,6 +122,28 @@ impl Game for FakeGame {
         self.calls.push(Call::End(outcome));
         Ok(())
     }
+    fn fly(&mut self, launch: Launch) -> anyhow::Result<()> {
+        self.calls.push(Call::Fly(launch));
+        Ok(())
+    }
+    fn drop_squad(&mut self, boarding: Boarding) -> anyhow::Result<()> {
+        self.calls.push(Call::Drop(boarding));
+        Ok(())
+    }
+    fn ship(&self) -> Option<Ship> {
+        self.ship
+    }
+    fn paths(&self) -> Vec<Option<ShipPath>> {
+        self.paths.clone()
+    }
+    fn hover(&mut self, ship: u32, on: bool) -> anyhow::Result<()> {
+        self.calls.push(Call::Hover(ship, on));
+        Ok(())
+    }
+    fn unload(&mut self, ship: u32) -> anyhow::Result<()> {
+        self.calls.push(Call::Unload(ship));
+        Ok(())
+    }
 }
 
 /// One zone, so the director's zone choice draws nothing, and the home
@@ -149,7 +179,7 @@ fn player(slot: u8, team: u8) -> PlayerView {
     }
 }
 
-/// Holdout: 600 warmup ticks, a pool of 12, Blind in round one, 100 points
+/// Holdout: 600 warmup ticks, a pool of 12, Ghost in round one, 100 points
 /// an Elite and a quarter for an assist.
 fn holdout() -> Def {
     builtin::definitions()[0].clone()
@@ -556,7 +586,7 @@ fn expected_calls() -> Vec<Call> {
     vec![
         Call::AiOn,
         Call::Lives(None, 12),
-        Call::Skull(Skull::Blind, true),
+        Call::Skull(Skull::Ghost, true),
         Call::Squad(SquadOp::Place(Placement {
             slot: 0,
             character: ELITE,
@@ -565,7 +595,7 @@ fn expected_calls() -> Vec<Call> {
             team: KIT_TEAM,
             weapon_tier: 0,
         })),
-        // 100 points, normal difficulty, Blind at 1,100 thousandths.
+        // 100 points, normal difficulty, Ghost at 1,100 thousandths.
         Call::Score(0, 110),
         Call::Respawn(0),
         Call::Lives(None, 11),
@@ -730,6 +760,7 @@ fn at_round_three(last_wave_cleared: bool) -> Progress {
     Progress {
         round: 2,
         rounds: 3,
+        sets: 0,
         last_wave_cleared,
         respawns: 4,
         teams: 2,
@@ -757,6 +788,8 @@ fn a_finish_makes_the_result_with_the_rounds_it_cleared() {
     assert_eq!(early.rounds_cleared, 2);
     let draw = result(5, "Crossfire".into(), at_round_three(true), &finish(Outcome::Draw)).unwrap();
     assert_eq!((draw.outcome, draw.rounds_cleared), (Outcome::Draw, 3));
+    // A finite set is one set: cleared when it ends won.
+    assert_eq!((won.sets_cleared, lost.sets_cleared, draw.sets_cleared), (1, 0, 1));
 }
 
 /// A player kill's score is credited with no class: it was for no actor.
@@ -1285,4 +1318,403 @@ fn finish_ends_the_test_and_not_the_game() {
     assert!(host.pre_tick(1, &mut game).is_empty());
     assert_eq!(game.calls, [Call::End(Outcome::Won)]);
     assert_eq!(host.take_test_end(), None);
+}
+
+/// Holdout's first wave to tick 800 on a game where `shows` actors are in
+/// slot 0 from the tick after the squad was placed (601).
+fn first_wave(shows: u16) -> (Host, FakeGame) {
+    let mut game = FakeGame::new();
+    let mut host = start(Role::Host, &game);
+    for tick in 0..=800 {
+        if tick == 601 {
+            assert!(host.pre_tick(tick, &mut game).is_empty());
+            game.actors[0] = shows;
+            host.post_tick(tick, &game).unwrap();
+            continue;
+        }
+        run(&mut host, &mut game, tick);
+    }
+    (host, game)
+}
+
+/// A wave whose actors the game shows stays fought past the director's
+/// slot timeout (3 s after the placement); the same wave with none seen
+/// is cleared at it, which is the loop a local game made.
+#[test]
+fn a_wave_whose_actors_are_seen_is_not_cleared_at_the_slot_timeout() {
+    use ::firefight::director::Phase;
+    let (host, _) = first_wave(1);
+    assert_eq!(host.director().unwrap().state().phase, Phase::Fighting);
+    assert_eq!(host.placements_unseen(), 0);
+    let (host, _) = first_wave(0);
+    assert_ne!(host.director().unwrap().state().phase, Phase::Fighting);
+}
+
+#[test]
+fn a_placement_nobody_sees_is_reported_once() {
+    let (mut host, _) = first_wave(0);
+    assert_eq!(host.placements_unseen(), 1);
+    let rows = host.take_unseen_errors();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].seq, None);
+    assert_eq!(
+        rows[0].error.to_string(),
+        "slot 0: elite placed at tick 601, none seen"
+    );
+    assert!(host.take_unseen_errors().is_empty());
+}
+
+// ---- Endless: sets and the bonus round ----
+
+/// Endless (three-round sets, one after another) with a 60-tick bonus round
+/// of one Elite at a time.
+fn endless() -> Def {
+    use ::firefight::{Bonus, Count, Drop, SquadSpec};
+    let mut def = builtin::definitions()
+        .into_iter()
+        .find(|def| def.set.endless)
+        .expect("Endless is a built-in");
+    def.bonus = Some(Bonus {
+        ticks: 60,
+        squad: SquadSpec {
+            class: "elite".into(),
+            count: Count {
+                per_player: 1,
+                min: 1,
+                max: 1,
+            },
+            drop: Drop::Edge,
+            weapon_tier: 0,
+        },
+        lives_by_points: vec![(100, 1)],
+    });
+    def
+}
+
+/// A match over [`FakeGame`] where every squad dies three ticks after it is
+/// placed, and a respawn brings a dead player back.
+struct Played {
+    tick: u32,
+    placed: BTreeMap<u8, (u32, u16)>,
+    seen: usize,
+}
+
+impl Played {
+    fn new() -> Self {
+        Self {
+            tick: 0,
+            placed: BTreeMap::new(),
+            seen: 0,
+        }
+    }
+
+    fn step(&mut self, host: &mut Host, game: &mut FakeGame) {
+        self.tick += 1;
+        assert!(self.tick < 60_000, "the match never got there");
+        let errors = host.pre_tick(self.tick, game);
+        assert!(errors.is_empty(), "{errors:?}");
+        let mut back = Vec::new();
+        for call in &game.calls[self.seen..] {
+            match call {
+                Call::Squad(SquadOp::Place(p)) => {
+                    self.placed.insert(p.slot, (self.tick, p.count));
+                }
+                Call::Squad(SquadOp::Erase { slot }) => {
+                    self.placed.remove(slot);
+                }
+                Call::Respawn(player) => back.push(*player),
+                _ => {}
+            }
+        }
+        self.seen = game.calls.len();
+        for player in game.players.iter_mut().filter(|p| back.contains(&p.slot)) {
+            player.alive = true;
+        }
+        game.actors = [0; SQUAD_SLOTS];
+        for (&slot, &(at, count)) in &self.placed {
+            if self.tick - at < 3 {
+                game.actors[usize::from(slot)] = count;
+            }
+        }
+        host.post_tick(self.tick, &*game).unwrap();
+    }
+
+    fn until(&mut self, host: &mut Host, game: &mut FakeGame, done: impl Fn(&Host) -> bool) {
+        while !done(host) {
+            self.step(host, game);
+        }
+    }
+}
+
+fn ops(host: &Host) -> Vec<Command> {
+    host.log().since(0).iter().map(|e| e.op.clone()).collect()
+}
+
+/// The skulls on after `calls`, in call order.
+fn skulls_after(calls: &[Call]) -> BTreeSet<Skull> {
+    let mut on = BTreeSet::new();
+    for call in calls {
+        if let Call::Skull(skull, set) = call {
+            if *set {
+                on.insert(*skull);
+            } else {
+                on.remove(skull);
+            }
+        }
+    }
+    on
+}
+
+#[test]
+fn a_scripted_endless_match_makes_the_expected_engine_calls() {
+    let mut game = FakeGame::new();
+    let mut host = Host::start(Role::Host, endless(), settings(), &game).unwrap();
+    let mut played = Played::new();
+    // Through the first set, its bonus round and the first round of the
+    // second set.
+    played.until(&mut host, &mut game, |host| {
+        let ops = ops(host);
+        let set = ops.iter().position(|c| *c == Command::Set { index: 1 });
+        set.is_some_and(|at| ops[at..].contains(&Command::Round { index: 0 }))
+    });
+    // Let its entries apply.
+    for _ in 0..5 {
+        played.step(&mut host, &mut game);
+    }
+    let ops = ops(&host);
+    let at = |wanted: &Command| ops.iter().position(|c| c == wanted).unwrap();
+    // The set, then its bonus round (on, then off), then the next set.
+    let on = ops
+        .iter()
+        .position(|c| matches!(c, Command::Bonus { on: true, .. }))
+        .expect("the bonus round starts");
+    let off = ops
+        .iter()
+        .position(|c| matches!(c, Command::Bonus { on: false, .. }))
+        .expect("the bonus round ends");
+    assert!(at(&Command::Round { index: 2 }) < on && on < off);
+    assert!(off < at(&Command::Set { index: 1 }));
+    assert!(at(&Command::Set { index: 1 }) < ops.iter().rposition(|c| *c == Command::Round { index: 0 }).unwrap());
+    // The game never ends, and no engine call was refused.
+    assert!(!game.calls.iter().any(|c| matches!(c, Call::End(_))));
+    // The second set's first round: the set's own skull and the round's,
+    // none of the first set's round skulls.
+    let on = skulls_after(&game.calls);
+    assert!(on.contains(&Skull::Thunderstorm), "{on:?}");
+    assert!(on.contains(&Skull::Ghost), "{on:?}");
+    assert!(!on.contains(&Skull::Catch) && !on.contains(&Skull::BlackEye), "{on:?}");
+    host.log().verify(host.head()).unwrap();
+}
+
+#[test]
+fn no_respawn_is_issued_in_the_bonus_round() {
+    let mut game = FakeGame::new();
+    let mut host = Host::start(Role::Host, endless(), settings(), &game).unwrap();
+    let mut played = Played::new();
+    played.until(&mut host, &mut game, |host| host.bonus);
+    // The only player dies in the bonus round: it ends the round, not the
+    // game, and nothing is respawned or charged until it is over.
+    game.players[0].alive = false;
+    game.players[0].position = None;
+    let (from, mut inside) = (game.calls.len(), game.calls.len());
+    while host.bonus {
+        inside = game.calls.len();
+        played.step(&mut host, &mut game);
+    }
+    let during = &game.calls[from..inside];
+    assert!(
+        !during
+            .iter()
+            .any(|c| matches!(c, Call::Respawn(_) | Call::Lives(..) | Call::TeamLives(..))),
+        "{during:?}"
+    );
+    assert!(!game.calls.iter().any(|c| matches!(c, Call::End(_))));
+    // Then it grants and respawns: the player is back.
+    for _ in 0..30 {
+        played.step(&mut host, &mut game);
+    }
+    assert!(game.calls[inside..].contains(&Call::Respawn(0)));
+    assert!(game.players[0].alive);
+}
+
+/// The host refuses a respawn the bonus round is on for: an operator's too.
+#[test]
+fn a_respawn_entry_in_the_bonus_round_is_refused_by_name() {
+    let mut game = FakeGame::new();
+    let mut host = Host::start(Role::Host, endless(), settings(), &game).unwrap();
+    let mut played = Played::new();
+    played.until(&mut host, &mut game, |host| host.bonus);
+    host.append(played.tick + 1, Command::Respawn { player: 0 }).unwrap();
+    let errors = host.pre_tick(played.tick + 1, &mut game);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].error.to_string().contains("bonus round"), "{errors:?}");
+    assert!(!game.calls.contains(&Call::Respawn(0)));
+}
+
+/// A game lost in the second set's second round has played one set and
+/// four rounds: the count runs across sets.
+#[test]
+fn an_endless_end_counts_sets_and_rounds() {
+    let mut game = FakeGame::new();
+    let mut host = Host::start(Role::Host, endless(), settings(), &game).unwrap();
+    let mut played = Played::new();
+    played.until(&mut host, &mut game, |host| {
+        host.state().is_some_and(|s| s.set == 1 && s.round == 1)
+    });
+    let lost = [Command::Finish {
+        outcome: Outcome::Lost,
+    }];
+    let ended = result(
+        played.tick,
+        "Endless".into(),
+        progress(host.director().unwrap()),
+        &lost,
+    )
+    .unwrap();
+    assert_eq!((ended.sets_cleared, ended.rounds_cleared), (1, 4));
+    // Lost in the first set's bonus round: that set is played through.
+    let mut game = FakeGame::new();
+    let mut host = Host::start(Role::Host, endless(), settings(), &game).unwrap();
+    let mut played = Played::new();
+    played.until(&mut host, &mut game, |host| {
+        host.state()
+            .is_some_and(|s| matches!(s.phase, Phase::Bonus { .. }))
+    });
+    let ended = result(
+        played.tick,
+        "Endless".into(),
+        progress(host.director().unwrap()),
+        &lost,
+    )
+    .unwrap();
+    assert_eq!((ended.sets_cleared, ended.rounds_cleared), (1, 3));
+}
+
+const SHIP: u32 = 0x8123_0004;
+
+/// A game whose kit has the ship, at 4 seats, and a path for its zone.
+fn ship_game() -> FakeGame {
+    let mut game = FakeGame::new();
+    game.ship = Some(Ship { object: SHIP, capacity: 4 });
+    game.paths = vec![Some(ship_path())];
+    game
+}
+
+fn ship_path() -> ShipPath {
+    ShipPath {
+        run_in: [-200.0, 0.0, 60.0],
+        hover: [40.0, 0.0, 6.0],
+        run_out: [300.0, 0.0, 60.0],
+    }
+}
+
+fn drop_command(count: u16) -> Command {
+    Command::DropSquad {
+        slot: 3,
+        class: "elite".into(),
+        count,
+        zone: 0,
+        weapon_tier: 2,
+    }
+}
+
+fn placement(count: u16) -> Placement {
+    Placement {
+        slot: 3,
+        character: ELITE,
+        count,
+        zone: 0,
+        team: KIT_TEAM,
+        weapon_tier: 2,
+    }
+}
+
+#[test]
+fn a_drop_squad_flies_the_ship_in_and_places_the_squad_into_it() {
+    let mut game = ship_game();
+    let mut host = start(Role::Replica, &game);
+    feed(&mut host, [(1, drop_command(6))]);
+    assert!(host.pre_tick(1, &mut game).is_empty());
+    assert_eq!(
+        game.calls,
+        [
+            Call::Fly(Launch {
+                ship: SHIP,
+                path: vec![ship_path().run_in, ship_path().hover],
+                ticks: FLY_TICKS,
+            }),
+            Call::Drop(Boarding {
+                placement: placement(6),
+                ship: SHIP,
+                capacity: 4,
+            }),
+        ]
+    );
+}
+
+#[test]
+fn a_drop_squad_without_a_ship_or_a_path_places_on_foot() {
+    let mut no_ship = ship_game();
+    no_ship.ship = None;
+    let mut no_path = ship_game();
+    no_path.paths = vec![None];
+    for mut game in [no_ship, no_path] {
+        let mut host = start(Role::Replica, &game);
+        feed(&mut host, [(1, drop_command(6))]);
+        assert!(host.pre_tick(1, &mut game).is_empty());
+        assert_eq!(game.calls, [Call::Squad(SquadOp::Place(placement(6)))]);
+    }
+}
+
+#[test]
+fn the_ships_hold_unload_and_flight_out_are_the_directors_entries() {
+    let mut game = ship_game();
+    let mut host = start(Role::Replica, &game);
+    feed(
+        &mut host,
+        [
+            (1, Command::ShipHover { on: true }),
+            (2, Command::ShipUnload),
+            (3, Command::ShipLeave { zone: 0 }),
+            (4, Command::ShipHover { on: false }),
+        ],
+    );
+    for tick in 1..=4 {
+        assert!(host.pre_tick(tick, &mut game).is_empty());
+    }
+    assert_eq!(
+        game.calls,
+        [
+            Call::Hover(SHIP, true),
+            Call::Unload(SHIP),
+            Call::Fly(Launch {
+                ship: SHIP,
+                path: vec![ship_path().hover, ship_path().run_out],
+                ticks: FLY_TICKS,
+            }),
+            Call::Hover(SHIP, false),
+        ]
+    );
+    // A ship that is not in the world is a refused entry, not a panic.
+    let mut gone = FakeGame::new();
+    let mut host = start(Role::Replica, &gone);
+    feed(&mut host, [(1, Command::ShipUnload)]);
+    let errors = host.pre_tick(1, &mut gone);
+    assert_eq!(errors.len(), 1);
+    assert!(errors[0].error.to_string().contains("not in the world"));
+}
+
+#[test]
+fn the_director_is_told_of_the_ship_and_the_zones_it_can_fly_to() {
+    let mut game = ship_game();
+    game.kit = Some(Kit {
+        zones: vec![[40.0, 0.0, 0.0], [90.0, 0.0, 0.0]],
+        ..kit()
+    });
+    game.paths = vec![Some(ship_path()), None];
+    let kit = game.kit().unwrap();
+    let seen = observe(&kit, &BTreeMap::new(), 1, &game);
+    assert_eq!(seen.ship, ShipSeen { ready: true, paths: vec![true, false] });
+    let seen = observe(&kit, &BTreeMap::new(), 1, &FakeGame::new());
+    assert_eq!(seen.ship, ShipSeen { ready: false, paths: vec![false, false] });
 }

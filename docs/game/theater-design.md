@@ -247,8 +247,11 @@ are not measured. Halo 3 stores 45,000 to 63,000 bytes per player-minute
    the recorder seals the game before it and opens `<id>.h2film` and
    `<id>.h2stats` (`State::open_game`). The game start, with the stamp,
    is written at the first update, which is film tick 1
-   (`actions::note_first_update`). A game gone before its first update
-   leaves no file.
+   (`actions::note_first_update`). A game the observer has not described
+   by then is taken again at each next update, and its start is written
+   before the first update that has a description (`game_start::Starts::release`);
+   one still undescribed after 600 updates keeps no start. A game gone
+   before its first update leaves no file.
 2. **Each update.** The hook at `SIM_UPDATE_APPLY` hands the update's body
    to the film; the observer after `GAME_TICK` adds the tick's digest and
    the stats records (`record::Recording::post_tick`).
@@ -291,12 +294,22 @@ export only.
    game starts from its options alone, and a lobby's Forge mode would move
    a plain Slayer record onto the script index at the activation
    (`rules::record::move_onto_script_index`).
-   The playback bar is drawn only once the film's game answers the
-   transport (`Session::loaded`, `Theater::film_loaded`); until then the
-   menu keeps the pads and nothing is drawn over it. A film whose game has
-   not started after 60 s is given up: the viewer's film page says "The
-   film's game did not start" and `theater.end` disarms it
-   (`Session::stall`, `Session::end_film`).
+   Until the film's game activates, the transport methods answer
+   unavailable ("film ... is loading"), not `{active:false}`
+   (`theater/controls.rs`). The playback bar is drawn only once the film's
+   game answers the transport (`Session::loaded`, `Theater::film_loaded`);
+   until then the menu keeps the pads and nothing is drawn over it. A
+   film whose game has not started after 60 s is given up: `theater.end`
+   disarms it and queues the main menu (`Session::stall`,
+   `Session::end_film`), and the film page opens again over that menu
+   saying "The film's game did not start". The main menu activating while
+   a film is armed is the film's game failing to load (a failed load
+   falls back to the menu, [level-boot.md](../runtime/level-boot.md)): the
+   film is disarmed, its settings go back, `theater.status` keeps "The
+   film's game did not load" as `watch_failure`, and the film page opens
+   again with that line (`Session::watch_boundary`). A transport answer of
+   `{active:false}` while the menu waits for a film's game means the same
+   to the menu: the bar goes and the page says why.
 3. The game tears down, loads the map and activates it as it does for any
    game. At the activation the session moves from recording to playing at
    the game boundary (`Session::game_activated`): the recorder's state is
@@ -316,7 +329,12 @@ export only.
    menu activates: the recorder's state returns, the viewer's settings are
    put back and the film page opens (`Theater::reopen_film`) once the main
    menu is the active game and one screen has been on top of it for 20
-   menu updates in a row (`theater_ui::link`). The Theater list opens
+   menu updates in a row (`theater_ui::link`). Every film the menu's Watch
+   started ends on its page, whether the viewer left it, it diverged or
+   its game never started (`Session::on_return` gives the film's id and
+   the reason, which is the page's status line). The page is the entry
+   Watch played (`Theater::play`), so a Live film, which is not in the
+   local library, opens its page too. The Theater list opens
    first and the film page over it, so B goes back to the list. The next
    game is recorded from the tick the recording stopped at; none of the
    film's ticks are in any film file. A session that ends while a film

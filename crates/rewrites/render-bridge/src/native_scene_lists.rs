@@ -182,10 +182,11 @@ impl Feature for ScaledSceneLists {
         );
         window::install(b);
         let scale = self.0;
+        // A cut (`crate::cut::OWN_PRODUCER`): every call is answered here.
         install(
             b,
             Seam::Function(&points::OBJECT_RENDER_SETUP, 20),
-            move |m, cpu| setup::build(m, cpu, scale.map_or(LodDetail::Retail, |scale| scale.read(m))),
+            move |m, cpu| cut_setup(m, cpu, scale.map_or(LodDetail::Retail, |scale| scale.read(m))),
         );
         install(
             b,
@@ -428,6 +429,67 @@ enum Seam {
     CallSite(&'static Point, u32, SceneList),
 }
 
+/// The counter an unbuilt output is filed under.
+fn result_of(reason: Refusal) -> SceneListResult {
+    match reason {
+        Refusal::Memory => SceneListResult::Memory,
+        Refusal::Layout => SceneListResult::Layout,
+        Refusal::Unsupported => SceneListResult::Unsupported,
+        Refusal::Residency => SceneListResult::Residency,
+        Refusal::Lighting => SceneListResult::Lighting,
+        Refusal::Palette => SceneListResult::Palette,
+        Refusal::ObjectModel => SceneListResult::ObjectModel,
+    }
+}
+
+/// `OBJECT_RENDER_SETUP` as a cut (docs/graphics/native-objects.md, "Object
+/// setup is cut"). A built call publishes its records, stamps and residency
+/// requests. A call that cannot be built is a named drop, not a guest call:
+/// the object takes the "not drawn" exit, counted `dropped` and under its
+/// cause, and the objects stage counts a `scene_dropped`. The one arm that
+/// is still the guest's is a residency request that needs a new queue
+/// entry (`Refusal::Residency`): submitting storage I/O is the guest cache's
+/// own service, so that call runs the body, which draws nothing itself,
+/// and counts under `residency`.
+fn cut_setup(m: &dyn GuestMemory, cpu: &CpuAbi, lod: LodDetail) -> (SceneList, Result<Output>) {
+    let (stage, built) = setup::build(m, cpu, lod);
+    let why = match built {
+        Ok(out) => return (stage, Ok(out)),
+        Err(Refusal::Residency) => return (stage, Err(Refusal::Residency)),
+        Err(why) => why,
+    };
+    match setup::not_drawn(m, cpu) {
+        Ok(out) => {
+            stage.count(SceneListResult::Dropped);
+            stage.count(result_of(why));
+            timeline::native::Stage::Objects.count(timeline::native::Metric::SceneDropped, 1);
+            (stage, Ok(out))
+        }
+        // Nothing to mark: the call's own list does not read.
+        Err(_) => (stage, Err(why)),
+    }
+}
+
+/// What the object setup's residency step does for one geometry resource
+/// (`0x0012de70`'s reproducible arms): the guest words it writes, in order.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ResidencyRequest {
+    /// The block is resident, or its request is already queued: the cache
+    /// stamps and counters the guest would write.
+    Made { resident: bool, writes: Vec<(u32, Vec<u8>)> },
+    /// The request needs a new queue entry, a priority raise or a wait:
+    /// the guest cache's own service, which the setup leaves to the guest.
+    NeedsGuestService,
+    /// The resource or the cache does not read.
+    Unreadable,
+}
+
+/// The residency request the setup makes for `resource` (a geometry
+/// resource record) with `request` as the guest's flags give it.
+pub fn residency_request(m: &dyn GuestMemory, resource: u32, request: bool) -> ResidencyRequest {
+    setup::residency_request(m, resource, request)
+}
+
 /// The stage can depend on the view kind, which is read by the builder.
 fn install(
     b: &mut Builder,
@@ -465,15 +527,7 @@ fn install(
                 Ok(output) => output,
                 Err(reason) => {
                     stage.count(SceneListResult::Fallback);
-                    stage.count(match reason {
-                        Refusal::Memory => SceneListResult::Memory,
-                        Refusal::Layout => SceneListResult::Layout,
-                        Refusal::Unsupported => SceneListResult::Unsupported,
-                        Refusal::Residency => SceneListResult::Residency,
-                        Refusal::Lighting => SceneListResult::Lighting,
-                        Refusal::Palette => SceneListResult::Palette,
-                        Refusal::ObjectModel => SceneListResult::ObjectModel,
-                    });
+                    stage.count(result_of(reason));
                     return Ok(Flow::Continue);
                 }
             };

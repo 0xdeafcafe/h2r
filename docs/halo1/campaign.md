@@ -77,7 +77,7 @@ Pieces:
 | `scnr` scenario | `scnr` | placements, spawn points, trigger volumes, cutscene flags and cameras |
 | `sbsp` structure BSP | `sbsp` + `ltmp` | collision BSP is close to Halo 2's shape. Render geometry becomes cluster sections. Halo 1 lightmap pages become Halo 2 lightmap bitmaps |
 | pathfinding | `sbsp` pathfinding data | Halo 1 maps don't contain the sectors, links and refs that Halo 2's AI needs, so we generate them from the collision BSP |
-| `shdr` family (`senv`, `soso`, `schi`, `scex`, `swat`, `sgla`, `smet`, `spla`) | `shad` written from its definition on a retail `stem` | each Halo 1 shader type (and flags: alpha-tested `senv`, additive `schi`/`sotr`) picks a stem in `shared.map` (sky layers: the sky stems where the base has them) and `h1convert::shad` fills its parameters from Halo 1's maps and tiling; no Halo 2 `shad` bytes are copied. An `senv` with detail maps draws on `tex_bump_detail_blend_detail` where the base has it (Coagulation, Beaver Creek, five campaign maps): the base alpha blends the primary (alpha 0) and secondary (alpha 1) details, then the micro detail, each a biased multiply, as Halo 1 does; elsewhere `tex_bump` with the primary detail. A normal (unblended) `senv` with a reflection cube map (`+0x324`) and a reflection brightness draws on `tex_bump_env`: Halo 1's cube map, its perpendicular and parallel colours (`+0x2a8`, `+0x2b4`) times the specular brightness (`+0x290`) as the facing and grazing tints, and the perpendicular and parallel brightnesses (`+0x2f4`, `+0x2f8`) as the facing and grazing brightness (`env_reflection_is_halo1s_rule`); a blended one keeps its blend without the reflection. Other specular colours are black (a Halo 1 base alpha is a blend or cut-out mask). Proof: `h1convert/tests/shad_rebuild.rs` (`detail_blend_is_halo1s_rule` runs the stem's colour pass on the CPU against Halo 1's rule). Water (`swat`) with a ripple map draws on `water_pool` where the base has it (Delta Approach, Beaver Creek, Coagulation): Halo 1's ripple map (`+0xc8`) as the bump, tiled by the ripple scale (`+0xc4`) and scrolling at the ripple velocity (`+0xc0`) along the ripple angle (`+0xbc`), and its reflection map (`+0x9c`), both offset by the ripple over the scene behind the water and weighed by retail's fresnel ramp (`a_swat_draws_on_water_pool_its_ripple_scrolling_along_the_ripple_angle`); elsewhere `one_alpha_env` with its base map. Halo 1's four extra ripple layers (`+0x124`), base map and tints have no place on `water_pool`. Not converted yet: model (`soso`) reflections (`soso +0x164`). The look will be close, not exact |
+| `shdr` family (`senv`, `soso`, `schi`, `scex`, `swat`, `sgla`, `smet`, `spla`) | `shad` written from its definition on a retail `stem` | each Halo 1 shader type (and flags: alpha-tested `senv`, additive `schi`/`sotr`) picks a stem in `shared.map` (sky layers: the sky stems where the base has them) and `h1convert::shad` fills its parameters from Halo 1's maps and tiling; no Halo 2 `shad` bytes are copied. An `senv` with detail maps draws on `tex_bump_detail_blend_detail` where the base has it (Coagulation, Beaver Creek, five campaign maps): the base alpha blends the primary (alpha 0) and secondary (alpha 1) details, then the micro detail, each a biased multiply, as Halo 1 does; elsewhere `tex_bump` with the primary detail. A normal (unblended) `senv` with a reflection cube map (`+0x324`) and a reflection brightness draws on `tex_bump_env`: Halo 1's cube map, its perpendicular and parallel colours (`+0x2a8`, `+0x2b4`) times the specular brightness (`+0x290`) as the facing and grazing tints, and the perpendicular and parallel brightnesses (`+0x2f4`, `+0x2f8`) as the facing and grazing brightness (`env_reflection_is_halo1s_rule`); a blended one keeps its blend without the reflection. Other specular colours are black (a Halo 1 base alpha is a blend or cut-out mask). Proof: `h1convert/tests/shad_rebuild.rs` (`detail_blend_is_halo1s_rule` runs the stem's colour pass on the CPU against Halo 1's rule). Water (`swat`) with a ripple map draws on `water_pool` where the base has it (Delta Approach, Beaver Creek, Coagulation): Halo 1's ripple map (`+0xc8`) as the bump, tiled by the ripple scale (`+0xc4`) and scrolling at the ripple velocity (`+0xc0`) along the ripple angle (`+0xbc`), and its reflection map (`+0x9c`), both offset by the ripple over the scene behind the water and weighed by retail's fresnel ramp (`a_swat_draws_on_water_pool_its_ripple_scrolling_along_the_ripple_angle`); elsewhere `one_alpha_env` with its base map. Halo 1's four extra ripple layers (`+0x124`), base map and tints have no place on `water_pool`. A `schi`, `scex` or `sotr` with no stage, or only null maps, draws nothing in Halo 1: the structure drops its parts (`textures::drop_no_draw_meshes`), its collision material keeps no shader, and the report's texture notes name it (`sky_shaders::draws_nothing`); a shader with maps that fail to read stays an error. Not converted yet: model (`soso`) reflections (`soso +0x164`). The look will be close, not exact |
 | `bitm` | `bitm` | the same Xbox formats and layouts: pixels copy unchanged (**Built**, [bitmaps.md](bitmaps.md)) |
 | `mod2` + `coll` + `phys` | `mode` + `coll` + `phmo` under an `hlmt` | physics uses Halo 2's (decision 1) |
 | `antr` | `jmad` | animation codecs differ: decode, then re-encode |
@@ -205,12 +205,13 @@ name (`h2assets::find`). No tag list is copied from either game.
 | Pistol | Magnum | Same slot, the user's multiplayer choice |
 | Plasma pistol, plasma rifle, needler, sniper rifle, rocket launcher, shotgun | The same | |
 | Fuel rod (`plasma_cannon`) | Fuel rod gun (`flak_cannon`) | Halo 2's campaign has one (multiplayer's table makes it the rocket launcher only because multiplayer lacks it) |
+| Hunter's fuel rod cannon | Halo 1's, converted | The hunter's own arm; Halo 2 has no hunter weapon to stand in (the row precedes the plain fuel rod's in `h2assets::SWAPS`) |
 | Flamethrower | Shotgun | Close range; Halo 2 has none (multiplayer's choice) |
 | Energy sword | Energy blade | |
 | Frag and plasma grenades | Halo 2's | The globals keep the base's grenade types (Halo 1's are not written) |
 | Health pack | Halo 1's, converted | Halo 1's health model stays whatever the assets (§6) |
 | Overshield, active camouflage | Halo 1's, converted | The engine reads the rebuilt `eqip` type and duration |
-| Ammo pickups | Left out | Halo 2 has none, and the Halo 1 weapons they fill are gone |
+| Ammo pickups | Left out | Halo 2 has none, and the Halo 1 weapons they fill are gone; a placement skips it with a `dropped` report line |
 | Warthog, rocket warthog | Warthog | The gauss warthog is a model variant a campaign placement does not name |
 | Ghost, scorpion, banshee, wraith | The same | |
 | Shade (`c gun turret`) | Covenant turret (`c_turret_ap`) | |
@@ -223,9 +224,12 @@ A Halo 2 tag neither the base nor a donor has is a conversion error
 naming the Halo 1 tag and the map (`h2assets::stand_in`); the Halo 1
 object is never placed in its stead (**Built**: the placements, the
 starting profiles' weapons, the cyborg, the AI's weapons and the actor
-variants' weapons). So is an ammo pickup or AI weapon the swap leaves
-out, and an AI weapon with no retail counterpart (the AI weapon palette
-has no converted Halo 1 weapon path), rather than an unarmed variant.
+variants' weapons). `stand_in` answers `StandIn::Retail`, `StandIn::Own`
+(Halo 1's, converted) or `StandIn::Dropped`. A placement the swap leaves
+out (an ammo pickup) is skipped with a report line, not a map failure.
+An AI weapon it leaves out is a named error, rather than an unarmed
+variant; one it keeps is converted from Halo 1 with the roster
+(`scenario::ai_weapons::retail_tags`, `roster::prepare`), as placements are.
 
 **Kept Halo 1's in both variants:**
 
@@ -951,6 +955,15 @@ whose store marker is gone. Everything is converted again when:
 
 A map that failed is not tried again until one of those: a failure from
 a converter bug stays a failure until the converter changes.
+
+A failed job leaves no playable map. If an older converter had written
+that level, `run_jobs` (`h1_import::withdraw`) renames its store marker
+(`<stem>.converted`) to the `<stem>.converting` ownership record, so the
+level is no longer listed or booted and the next conversion still owns the
+stem, and the line says so: `halo1: [5/36] campaign b40: the map an older
+converter wrote is removed, so it is not offered`. A multiplayer map's other
+sandbox stays; a map with neither sandbox left is not in the multiplayer
+list. The stamp keeps the failure's reason.
 
 **Tests.** `cli` `h1_import::tests`: the job list (campaign in play
 order, then the multiplayer maps the disc has, both sandboxes, then each

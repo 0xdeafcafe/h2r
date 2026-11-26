@@ -75,6 +75,11 @@ fn present_counter(a: &Addrs, g: &mut dyn GuestMemory) -> Result<(), MemFault> {
     g.write(a.present_counter, &v.to_le_bytes())
 }
 
+/// The residency requests are the object setup's: its own producer
+/// (`native_scene_lists`, [`crate::cut::OWN_PRODUCER`]) stages them with the
+/// records it writes, in the guest's visit order, and publishes both in one
+/// turn, so the row's `make` is empty.
+///
 /// The rows, in the order the guest's frame makes them: object code
 /// (seed, stamps, residency) and the particle draws inside the views, then
 /// `render_views`' counter and one-shot byte, then the present's counter.
@@ -108,8 +113,8 @@ pub const ROWS: &[Row] = &[
     },
     Row {
         name: "residency",
-        owner: Owner::Producers(&[]),
-        test: "the_frame_step_makes_the_ticks_writes_in_guest_order",
+        owner: Owner::Producers(&["object_setup"]),
+        test: "object_setup_makes_the_guests_residency_requests",
         make: nothing,
     },
     Row {

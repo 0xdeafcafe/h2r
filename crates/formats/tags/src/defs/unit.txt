@@ -122,7 +122,7 @@ group bipd 0x314
   0x1e4 f32 lipsync_attack_weight
   0x1e8 f32 lipsync_decay_weight
   0x1ec f32 moving_turning_speed unit=degrees
-  0x1f0 flags32 flags
+  0x1f0 flags32 flags bits=turns_without_animating|passes_through_other_bipeds|immune_to_falling_damage|_|uses_limp_body_physics|_|_|_|_|spawn_death_children_on_destroy|stunned_by_emp_damage|dead_physics_when_stunned -- E bit 11 gates the ragdoll body set (collision.md: biped physics set-up), set on the sentinel (0xe00 = bits 9..11) and clear on the Chief (0x10 = bit 4); bits 0..2 are the Halo 1 flags the conversion maps (rebuild.rs BIPED_FLAG_BITS); names D, from the flag labels of the tag editors, other bits unproven
   0x1f4 f32 stationary_turning_threshold unit=degrees
   0x1f8 f32 jump_velocity
   0x1fc f32 maximum_soft_landing_time

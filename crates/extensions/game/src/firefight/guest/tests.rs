@@ -88,8 +88,11 @@ fn scenario() -> FakeGuest {
     {
         named(&mut m, SQUADS + 0x74 * i as u32, name);
     }
+    // Each record squad is on its class's faction's team: the Elite, the
+    // Grunt and the Hunter are Covenant (3).
     for (squad, row) in [(3u32, 0u16), (4, 1), (5, 2), (6, 9)] {
         m.put_u16(SQUADS + 0x74 * squad + 0x36, row);
+        m.put_u16(SQUADS + 0x74 * squad + 0x24, 3);
     }
     let slot0 = SQUADS + 0x74;
     m.put_u16(slot0 + 0x24, 3)
@@ -137,6 +140,51 @@ fn scenario() -> FakeGuest {
 
 fn layout() -> KitLayout {
     read_kit(&scenario()).unwrap().expect("the kit")
+}
+
+const ACTOR_POOL: u32 = 0x7_0000;
+const OBJECT_POOL: u32 = 0x8_0000;
+const BODY: u32 = 0x9_0000;
+
+/// `m` with an actor pool holding one AI unit that belongs to no squad
+/// and has no replication entity, as a local game's actors have none.
+/// The returned actor is the one a placement "creates" by giving it a
+/// squad ([`joins_squad`]).
+fn with_an_idle_actor(mut m: FakeGuest) -> (FakeGuest, guest_layout::actor::Actor) {
+    use guest_layout::{Datum, Object, Unit, actor::Actor, view::fake, view::objects::Header};
+    let actors = fake::datums::<Actor>(&mut m, ACTOR_POOL, 4);
+    let objects = fake::datums::<Header>(&mut m, OBJECT_POOL, 4);
+    m.put_u32(guest_layout::global::ACTORS.base, actors.array.addr)
+        .put_u32(guest_layout::global::OBJECTS.base, objects.array.addr);
+    let (id, actor) = fake::push(&mut m, &actors);
+    let (handle, header) = fake::push(&mut m, &objects);
+    let body = Object::at(BODY);
+    let unit = body.as_unit();
+    m.map(body.addr, Unit::SIZE);
+    actor.set_unit(&mut m, Some(handle)).unwrap();
+    actor.set_squad(&mut m, 0xffff).unwrap();
+    header.set_body(&mut m, body.addr).unwrap();
+    unit.set(&mut m, Unit::ACTOR, Datum(id.raw())).unwrap();
+    unit.set(&mut m, Unit::PLAYER, Datum::NONE).unwrap();
+    body.set(&mut m, Object::ENTITY, u32::MAX).unwrap();
+    body.set(&mut m, Object::PARENT, Datum::NONE).unwrap();
+    body.set(&mut m, Object::POSITION, [0.0; 3]).unwrap();
+    (m, actor)
+}
+
+/// A callee that answers 0, and on its first call (the placement) puts
+/// the idle actor in `squad`.
+fn joins_squad(
+    actor: guest_layout::actor::Actor,
+    squad: u32,
+) -> impl FnMut(&GuestCall, &mut dyn GuestMemory) -> Regs {
+    let mut first = true;
+    move |_, m| {
+        if std::mem::take(&mut first) {
+            actor.set_squad(m, squad).unwrap();
+        }
+        Regs::default()
+    }
 }
 
 fn placement(slot: u8, character: u16, zone: u8) -> Placement {
@@ -197,6 +245,7 @@ fn the_kit_is_read_from_the_scenario_ai_blocks() {
                 ([20.0, 0.0, 0.0], 0xffff),
                 ([30.0, 0.0, 0.0], 0xffff),
             ],
+            roles: 0,
         }]
     );
     assert_eq!((kit.characters, kit.team), (3, 3));
@@ -251,11 +300,13 @@ fn read_kit_finds_the_bases_and_hunt_orders() {
                 index: 3,
                 point: [-90.0, 0.0, 0.0],
                 starts: vec![([50.0, 0.0, 0.0], 0xffff)],
+                roles: 0,
             },
             KitZone {
                 index: 2,
                 point: [90.0, 0.0, 0.0],
                 starts: vec![([40.0, 0.0, 0.0], 0xffff)],
+                roles: 0,
             },
         ]
     );
@@ -274,6 +325,30 @@ fn read_kit_finds_the_bases_and_hunt_orders() {
 }
 
 #[test]
+fn zone_roles_read_back() {
+    use ::firefight::roles;
+    // The kit writes the roles above the engine's flag bits; the engine's
+    // own bit (1) is not a role.
+    let mut m = scenario();
+    let flags = 1 | roles::pack(roles::LINE | roles::HEAVY);
+    m.put_u32(ZONES + 0x38 + 0x20, flags);
+    let kit = read_kit(&m).unwrap().unwrap();
+    assert_eq!(kit.zones[0].roles, roles::LINE | roles::HEAVY);
+
+    // A zone with the engine's bit alone has no role, and so do the bases.
+    m.put_u32(ZONES + 0x38 + 0x20, 1);
+    m.put_u32(ZONES + 0x38 * 2 + 0x20, 1);
+    let kit = read_kit(&m).unwrap().unwrap();
+    assert_eq!(kit.zones[0].roles, 0);
+    assert!(kit.bases.iter().all(|b| b.roles == 0));
+
+    // Every role survives the round trip.
+    for r in 0..=roles::ALL {
+        assert_eq!(roles::unpack(1 | roles::pack(r)), r);
+    }
+}
+
+#[test]
 fn a_map_without_kit_squads_has_no_kit() {
     let mut m = FakeGuest::new();
     m.put_u32(points::SCENARIO.base, 0);
@@ -287,13 +362,14 @@ fn a_map_without_kit_squads_has_no_kit() {
 #[test]
 fn a_placement_sets_the_squad_then_places_and_sets_the_team() {
     let kit = layout();
+    let (guest, actor) = with_an_idle_actor(scenario());
     let (result, calls, m) = drive(
-        scenario(),
+        guest,
         move |cx| {
             let kit = kit.clone();
             Box::pin(async move { place_squad(&cx, &kit, placement(0, 0, 0)).await })
         },
-        returns(0),
+        joins_squad(actor, 1),
     );
     result.unwrap();
     assert_eq!(
@@ -313,6 +389,82 @@ fn a_placement_sets_the_squad_then_places_and_sets_the_team() {
     assert_eq!(m.vec3(STARTS + 4).unwrap(), [10.0, 0.0, 0.0]);
     assert_eq!(m.vec3(STARTS + 0x64 + 4).unwrap(), [20.0, 0.0, 0.0]);
     assert_eq!(m.u16(STARTS + 0x10).unwrap(), 0xffff);
+}
+
+/// A scenario whose record squad of palette row `row` is on `team`.
+fn scenario_with_team(row: u16, team: u16) -> FakeGuest {
+    let mut m = scenario();
+    m.put_u16(SQUADS + 0x74 * (3 + u32::from(row)) + 0x24, team);
+    m
+}
+
+#[test]
+fn the_kit_reads_each_classs_faction_from_its_record_squad() {
+    let mut m = scenario();
+    // Row 1 is Flood (4), row 2 a human (2); row 0 stays Covenant.
+    m.put_u16(SQUADS + 0x74 * 4 + 0x24, 4)
+        .put_u16(SQUADS + 0x74 * 5 + 0x24, 2);
+    let kit = read_kit(&m).unwrap().unwrap();
+    assert_eq!(
+        kit.factions.values().copied().collect::<Vec<_>>(),
+        [Faction::Covenant, Faction::Flood, Faction::Human]
+    );
+    assert_eq!(kit.factions[&1], Faction::Flood);
+    // A record on no faction's team (the player's, 1) is no class.
+    let m = scenario_with_team(2, 1);
+    let kit = read_kit(&m).unwrap().unwrap();
+    assert_eq!(kit.classes.len(), 2);
+    assert!(!kit.factions.contains_key(&2));
+    assert!(!kit.kit().classes.contains_key("hunter"));
+}
+
+#[test]
+fn a_flood_squad_is_placed_on_the_flood_team() {
+    // Row 1 is Flood: the squad takes team 4 whatever team the host picked.
+    let m = scenario_with_team(1, 4);
+    let kit = read_kit(&m).unwrap().unwrap();
+    assert_eq!(kit.placement_team(1, 5).unwrap(), 4);
+    let (result, calls, _) = drive(
+        m,
+        move |cx| {
+            let kit = kit.clone();
+            Box::pin(async move { place_squad(&cx, &kit, placement(0, 1, 0)).await })
+        },
+        returns(0),
+    );
+    result.unwrap();
+    assert_eq!(
+        calls.last(),
+        Some(&GuestCall::new(points::AI_SET_TEAM.base).eax(1).ebx(4))
+    );
+    // A Covenant class takes the host's pick, a human class its own team.
+    let kit = layout();
+    assert_eq!(kit.placement_team(0, 5).unwrap(), 5);
+    let m = scenario_with_team(2, 2);
+    assert_eq!(read_kit(&m).unwrap().unwrap().placement_team(2, 5).unwrap(), 2);
+    // A row the kit recorded no class for is refused, not given the host's team.
+    let error = kit.placement_team(9, 5).unwrap_err().to_string();
+    assert!(error.contains("row 9"), "{error}");
+}
+
+#[test]
+fn a_placement_that_adds_no_actor_is_refused() {
+    let kit = layout();
+    let (guest, _) = with_an_idle_actor(scenario());
+    let (result, calls, _) = drive(
+        guest,
+        move |cx| {
+            let kit = kit.clone();
+            Box::pin(async move { place_squad(&cx, &kit, placement(0, 0, 0)).await })
+        },
+        returns(0),
+    );
+    // The engine was called, made nothing, and the team was not set.
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "the engine placed no actor for slot 0: class row 0 at zone 0"
+    );
 }
 
 #[test]
@@ -490,4 +642,74 @@ fn line_of_sight_passes_both_points_and_reads_al() {
         assert_eq!(m.vec3(SCRATCH).unwrap(), [1.0, 2.0, 3.0]);
         assert_eq!(m.vec3(SCRATCH + 12).unwrap(), [4.0, 5.0, 6.0]);
     }
+}
+
+const NAMES: u32 = 0x2_7000;
+const SCRIPTING: u32 = 0x2_8000;
+const SETS: u32 = 0x2_8100;
+const POINTS: u32 = 0x2_8300;
+
+/// [`scenario`] with the ship's object name (a vehicle at placement 5, and a
+/// scenery of the same name's neighbour), and scripting data whose point
+/// sets are `ff_path_00` and the stray `ff_path_07`, each with `points`
+/// named in order at the positions `x, 1, 2`.
+fn with_ship(points: &[&str]) -> FakeGuest {
+    let mut m = scenario();
+    pair(&mut m, SCNR + 0x48, 2, NAMES);
+    m.map(NAMES, 2 * 0x24);
+    named(&mut m, NAMES, "ff_crate");
+    m.put_u16(NAMES + 0x20, 6).put_u16(NAMES + 0x22, 1);
+    named(&mut m, NAMES + 0x24, "ff_ship");
+    m.put_u16(NAMES + 0x24 + 0x20, 1).put_u16(NAMES + 0x24 + 0x22, 5);
+
+    pair(&mut m, SCNR + 0x1d8, 1, SCRIPTING);
+    m.map(SCRIPTING, 0x80);
+    pair(&mut m, SCRIPTING, 2, SETS);
+    m.map(SETS, 2 * 0x30);
+    m.map(POINTS, 6 * 0x3c);
+    for (set, name) in [(0u32, "ff_path_00"), (1, "ff_path_07")] {
+        let at = SETS + 0x30 * set;
+        named(&mut m, at, name);
+        pair(&mut m, at + 0x20, points.len() as u32, POINTS + 3 * 0x3c * set);
+        for (i, point) in points.iter().enumerate() {
+            let p = POINTS + 3 * 0x3c * set + 0x3c * i as u32;
+            named(&mut m, p, point);
+            for (k, v) in [100.0 * (set + 1) as f32 + i as f32, 1.0, 2.0].into_iter().enumerate() {
+                m.put_f32(p + 0x20 + 4 * k as u32, v);
+            }
+        }
+    }
+    m
+}
+
+#[test]
+fn the_game_reads_the_ship_and_its_paths() {
+    // The base kit carries neither.
+    let kit = layout();
+    assert_eq!((kit.ship, kit.paths.clone()), (None, vec![None]));
+
+    let kit = read_kit(&with_ship(&["run_in", "hover", "run_out"])).unwrap().unwrap();
+    // The vehicle placement `ff_ship` names; the crate of another type is
+    // not it.
+    assert_eq!(kit.ship, Some(5));
+    // One path a drop zone, by its number: `ff_path_00` is `ff_drop_00`'s;
+    // `ff_path_07` has no zone.
+    assert_eq!(
+        kit.paths,
+        [Some(ShipPath {
+            run_in: [100.0, 1.0, 2.0],
+            hover: [101.0, 1.0, 2.0],
+            run_out: [102.0, 1.0, 2.0],
+        })]
+    );
+    // The reads change nothing else of the kit.
+    assert_eq!(kit.kit(), layout().kit());
+
+    // A set missing a point is no path; a ship name on another type is no
+    // ship.
+    let kit = read_kit(&with_ship(&["run_in", "run_out", "hold"])).unwrap().unwrap();
+    assert_eq!(kit.paths, [None]);
+    let mut m = with_ship(&["run_in", "hover", "run_out"]);
+    m.put_u16(NAMES + 0x24 + 0x20, 2);
+    assert_eq!(read_kit(&m).unwrap().unwrap().ship, None);
 }

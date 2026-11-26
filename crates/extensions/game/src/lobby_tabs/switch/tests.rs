@@ -463,3 +463,36 @@ fn run_to_reads_the_lobby_and_runs_the_switch() {
     }
     assert_eq!(store.get(ff::ENABLED.key), Some(Value::Bool(false)));
 }
+
+/// Switching to FIREFIGHT lands on the built-in kit maps first, Coagulation
+/// before Zanzibar before any other kit, and keeps a lobby already on a kit.
+#[test]
+fn firefight_mode_prefers_the_builtin_maps() {
+    let kit = |id, name: &str| map(id, &format!("Firefight \u{2013} {name}"), r"t:\$C\1\kit");
+    let c = Catalogue::new([
+        map(10, "Lockout", r"d:\maps\lockout"),
+        kit(20, "Beavercreek"),
+        kit(21, "zanzibar"),
+        kit(22, "Coagulation"),
+    ]);
+    assert_eq!(map_for(Tab::Firefight, Some(10), Some(&c)), Ok(Some(22)));
+    assert_eq!(map_for(Tab::Firefight, None, Some(&c)), Ok(Some(22)));
+    // Without Coagulation's, Zanzibar's; without either, the first kit.
+    let no_coag = Catalogue::new([
+        map(10, "Lockout", r"d:\maps\lockout"),
+        kit(20, "Beavercreek"),
+        kit(21, "Zanzibar"),
+    ]);
+    assert_eq!(map_for(Tab::Firefight, Some(10), Some(&no_coag)), Ok(Some(21)));
+    let other = Catalogue::new([map(10, "Lockout", r"d:\maps\lockout"), kit(20, "Beavercreek")]);
+    assert_eq!(map_for(Tab::Firefight, Some(10), Some(&other)), Ok(Some(20)));
+    // A lobby already on any kit map stays.
+    for on in [20, 21, 22] {
+        assert_eq!(map_for(Tab::Firefight, Some(on), Some(&c)), Ok(None), "on {on}");
+    }
+    // The landing after a build asks the same question.
+    assert_eq!(crate::lobby_start::landing_map(&c, Some(10)), Some(22));
+    assert_eq!(crate::lobby_start::landing_map(&c, Some(22)), None);
+    let bare = Catalogue::new([map(10, "Lockout", r"d:\maps\lockout")]);
+    assert_eq!(crate::lobby_start::landing_map(&bare, Some(10)), None);
+}

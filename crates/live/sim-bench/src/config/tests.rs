@@ -1214,6 +1214,7 @@ fn the_report_has_rounds_and_score() {
         team: Some(1),
         scores: vec![1200, 1450],
         rounds_cleared: 2,
+        sets_cleared: 0,
         lives_used: 7,
     };
     assert_eq!(

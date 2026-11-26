@@ -12,7 +12,7 @@ option difficulty: int 0..3 = 1 "Difficulty"
 option skull_assassins: bool = false
 option skull_thunderstorm: bool = false
 option skull_famine: bool = false
-option skull_blind: bool = false
+option skull_black_eye: bool = false
 option skull_ghost: bool = false
 option skull_catch: bool = false
 option skull_mythic: bool = false
@@ -25,6 +25,17 @@ const fighting = 2
 const cleanup = 3
 const intermission = 4
 const done = 5
+const bonus_round = 6
+
+// The drop ship's state: away (or none), flying a squad in, unloading it
+// over the zone, flying out. Its flights take fly_time, which is the host's
+// `ship::FLY_TICKS`.
+const ship_parked = 0
+const ship_inbound = 1
+const ship_unloading = 2
+const ship_outbound = 3
+const fly_time = 8s
+const unload_time = 2s
 
 const free = 0
 const placed = 1
@@ -39,6 +50,7 @@ const slot_timeout = 3s
 global var started: bool = false
 global var phase: int = warmup
 global var phase_tick: int = 0
+global var set_index: int = 0
 global var round: int = 0
 global var wave: int = 0
 global var next_squad: int = 0
@@ -48,6 +60,20 @@ global var pool_1: int = second_pool
 global var score_0: int = 0
 global var score_1: int = 0
 global var skulls: int = 0
+// The skulls the match began with: a new set leaves them on.
+global var base_skulls: int = 0
+// The bonus round: the skulls it switched on (a bit mask, so the set's own
+// are kept), each side's score when it began, the shift that points
+// `wave_index()` at the bonus squad's row, and Iron.
+global var bonus_added: int = 0
+global var bonus_base_0: int = 0
+global var bonus_base_1: int = 0
+global var bonus_shift: int = 0
+global var iron: bool = false
+global var extra: int = 0
+global var ship_state: int = ship_parked
+global var ship_tick: int = 0
+global var ship_zone: int = 0
 
 player var registered: bool = false
 player var remaining_lives: int = start_pool
@@ -95,7 +121,7 @@ global var limb_10: int = 0
 global var limb_11: int = 0
 global var limb_12: int = 0
 
-fn wave_index() -> int = round * waves_per_round + wave
+fn wave_index() -> int = round * waves_per_round + wave + bonus_shift
 fn active(s: object) -> bool = s.squad_state == placed or s.squad_state == reported
 
 fn show_pool(side: int, pool: int) {
@@ -119,12 +145,13 @@ on init {
     if skull_assassins { skulls = skulls + 1 }
     if skull_thunderstorm { skulls = skulls + 2 }
     if skull_famine { skulls = skulls + 4 }
-    if skull_blind { skulls = skulls + 8 }
+    if skull_black_eye { skulls = skulls + 8 }
     if skull_ghost { skulls = skulls + 16 }
     if skull_catch { skulls = skulls + 32 }
     if skull_mythic { skulls = skulls + 64 }
     if skull_angry { skulls = skulls + 128 }
     if skull_low_gravity { skulls = skulls + 256 }
+    base_skulls = skulls
 }
 
 on join(p) {
@@ -293,7 +320,7 @@ fn bring_back(p: player) {
 }
 
 fn respawn_players() {
-    let between = phase == warmup or phase == intermission
+    let between = zero_holds == 0 and (phase == warmup or phase == intermission)
     for each players p {
         if p.alive { p.respawning = false }
         else if not p.respawning {
@@ -370,13 +397,25 @@ fn round_bonus() {
     }
 }
 
-fn end_wave(tick: int, here_0: bool, here_1: bool) {
-    for each players p where not p.alive and not p.respawning { bring_back(p) }
-    if wave + 1 < waves_per_round { wave = wave + 1 }
-    else if round + 1 < len(round_data) {
+fn pause(tick: int) {
+    phase = intermission
+    phase_tick = tick + waves[wave_index()].gap
+}
+
+// A round is over and no bonus round follows: the next round, or the end.
+fn next_round(tick: int, here_0: bool, here_1: bool) {
+    if round + 1 < len(round_data) {
         round = round + 1
         wave = 0
         round_bonus()
+        pause(tick)
+    } else if endless == 1 {
+        // The next set begins; the game ends only when the team is out.
+        set_index = set_index + 1
+        round = 0
+        wave = 0
+        round_bonus()
+        pause(tick)
     } else {
         if team_count == 1 { ff_finish(true) }
         else {
@@ -387,9 +426,97 @@ fn end_wave(tick: int, here_0: bool, here_1: bool) {
         }
         phase = done
     }
-    if phase != done {
-        phase = intermission
-        phase_tick = tick + waves[wave_index()].gap
+}
+
+fn bonus_skull(index: int) {
+    if index >= 0 {
+        let skull = skull_data[index]
+        if skulls / skull.bit % 2 == 0 {
+            skulls = skulls + skull.bit
+            bonus_added = bonus_added + skull.bit
+            ff_skull(skull.id, true)
+        }
+    }
+}
+
+fn bonus_restore(index: int) {
+    if index >= 0 {
+        let skull = skull_data[index]
+        if bonus_added / skull.bit % 2 == 1 {
+            skulls = skulls - skull.bit
+            ff_skull(skull.id, false)
+        }
+    }
+}
+
+// Every skull on for the bonus round's length, Iron with them. No life is
+// spent in it and no respawn is issued: `on tick` skips both while it runs.
+fn start_bonus(tick: int) {
+    phase = bonus_round
+    phase_tick = tick + bonus_ticks
+    bonus_shift = len(waves) - 1 - (round * waves_per_round + wave)
+    bonus_base_0 = score_0
+    bonus_base_1 = score_1
+    bonus_added = 0
+    next_squad = 0
+    wave_actors = 0
+    ff_bonus(true, bonus_ticks)
+    let listed = bonus_skulls[0]
+    bonus_skull(listed.s0)
+    bonus_skull(listed.s1)
+    bonus_skull(listed.s2)
+    bonus_skull(listed.s3)
+    bonus_skull(listed.s4)
+    bonus_skull(listed.s5)
+    bonus_skull(listed.s6)
+    bonus_skull(listed.s7)
+    bonus_skull(listed.s8)
+    if not iron {
+        iron = true
+        ff_skull(11, true)
+    }
+}
+
+fn end_wave(tick: int, here_0: bool, here_1: bool) {
+    for each players p where not p.alive and not p.respawning and zero_holds == 0 { bring_back(p) }
+    if wave + 1 < waves_per_round {
+        wave = wave + 1
+        pause(tick)
+    } else if bonus_on == 1 and (round + 1) % set_rounds == 0 { start_bonus(tick) }
+    else { next_round(tick, here_0, here_1) }
+}
+
+// The lives of the last row of the table the points reach.
+fn reach(points: int, need: int, lives_given: int) {
+    if need >= 0 and points >= need { extra = lives_given }
+}
+
+fn grant_side(side: int, points: int) {
+    let t = bonus_rows[0]
+    extra = 0
+    reach(points, t.need0, t.extra0)
+    reach(points, t.need1, t.extra1)
+    reach(points, t.need2, t.extra2)
+    reach(points, t.need3, t.extra3)
+    reach(points, t.need4, t.extra4)
+    reach(points, t.need5, t.extra5)
+    if extra > 0 {
+        if shared_lives == 1 {
+            if side == 0 {
+                pool_0 = pool_0 + extra
+                show_pool(0, pool_0)
+            } else {
+                pool_1 = pool_1 + extra
+                show_pool(1, pool_1)
+            }
+        } else {
+            for each ff_slots s {
+                if let p = player_of(s) and p.registered and p.side == side {
+                    p.remaining_lives = p.remaining_lives + extra
+                    ff_lives(p, p.remaining_lives)
+                }
+            }
+        }
     }
 }
 
@@ -403,8 +530,36 @@ fn enable_skull(index: int) {
     }
 }
 
+// A round skull the set switched on goes off at a new set, unless the
+// match began with it.
+fn reset_skull(index: int) {
+    let skull = skull_data[index]
+    if skull.scheduled == 1 and skulls / skull.bit % 2 == 1 and base_skulls / skull.bit % 2 == 0 {
+        skulls = skulls - skull.bit
+        ff_skull(skull.id, false)
+    }
+}
+
+// Sets 2, 3 and 4 add one set skull each, and it stays.
+fn begin_set() {
+    ff_set(set_index)
+    if set_index > 0 {
+        reset_skull(0)
+        reset_skull(1)
+        reset_skull(2)
+        reset_skull(3)
+        reset_skull(4)
+        reset_skull(5)
+        reset_skull(6)
+        reset_skull(7)
+        reset_skull(8)
+        if set_index - 1 < set_skull_count { enable_skull(set_skulls[set_index - 1].which) }
+    }
+}
+
 fn start_wave() {
     if wave == 0 {
+        if round == 0 and endless == 1 { begin_set() }
         ff_round(round)
         let scheduled = round_data[round]
         enable_skull(scheduled.s0)
@@ -425,17 +580,19 @@ fn start_wave() {
 
 // Prefer a hidden authored zone. Otherwise pick from the farther half
 // of hidden zones (or all zones if exposed), with ties in kit order.
-fn pick_zone(preferred: int, target: team, other: team) {
+// A role (a bit mask; 0 for any) keeps only the zones that carry it.
+fn pick_zone(preferred: int, role: int, target: team, other: team) {
     chosen_zone = -1
     cursor = 0
-    let all_exposed = count(ff_drop z where not zone_seen(z)) == 0
+    let all_exposed = count(ff_drop z where zone_has_role(z, role) and not zone_seen(z)) == 0
     candidate_count = 0
     near_count = 0
     for each ff_drop z {
         let hidden = not zone_seen(z)
+        let fits = zone_has_role(z, role)
         z.zone_index = cursor
-        z.zone_candidate = all_exposed or hidden
-        if hidden and cursor == preferred { chosen_zone = cursor }
+        z.zone_candidate = fits and (all_exposed or hidden)
+        if hidden and fits and cursor == preferred { chosen_zone = cursor }
         if z.zone_candidate {
             candidate_count = candidate_count + 1
             if team_count == 2 {
@@ -465,12 +622,29 @@ fn pick_zone(preferred: int, target: team, other: team) {
     }
 }
 
+fn ship_step(tick: int) {
+    if ship_state == ship_inbound and tick >= ship_tick + ticks(fly_time) {
+        ff_ship_unload()
+        ship_state = ship_unloading
+        ship_tick = tick
+    } else if ship_state == ship_unloading and tick >= ship_tick + ticks(unload_time) {
+        ff_ship_leave(ship_zone)
+        ship_state = ship_outbound
+        ship_tick = tick
+    } else if ship_state == ship_outbound and tick >= ship_tick + ticks(fly_time) {
+        ff_ship_hover(false)
+        ship_state = ship_parked
+    }
+}
+
 fn place_next(tick: int, players_in_match: int, cap: int, here_0: bool, here_1: bool) {
     let current = waves[wave_index()]
     if next_squad < current.count {
         if let s = chosen_slot {
             let entry = squads[current.first + next_squad]
-            let size = clamp(players_in_match * entry.per_player, entry.minimum, entry.maximum)
+            let base_size = clamp(players_in_match * entry.per_player, entry.minimum, entry.maximum)
+            // Each set grows the squads by set_scale thousandths, up to the cap.
+            let size = min(base_size * (1000 + set_scale * set_index) / 1000, cap)
             if live_count + size <= cap {
                 cursor = 0
                 if team_count == 2 {
@@ -489,7 +663,7 @@ fn place_next(tick: int, players_in_match: int, cap: int, here_0: bool, here_1: 
                     target_team = team 1
                     other_team = team 0
                 }
-                pick_zone(entry.preferred, target_team, other_team)
+                pick_zone(entry.preferred, entry.zone_role, target_team, other_team)
                 if chosen_zone >= 0 {
                     let id = squad(s.slot_index)
                     s.squad_state = placed
@@ -497,7 +671,18 @@ fn place_next(tick: int, players_in_match: int, cap: int, here_0: bool, here_1: 
                     s.squad_remaining = size
                     s.squad_tick = tick
                     s.squad_side = target_side
-                    place_squad_at(id, entry.kind, size, chosen_zone, entry.tier)
+                    // A free ship takes the squad to a zone it can fly to;
+                    // every other squad, and a wave's others while the ship
+                    // is out, arrive on foot.
+                    if ship_state == ship_parked and ship_ready() and zone_path(chosen_zone) {
+                        ship_state = ship_inbound
+                        ship_tick = tick
+                        ship_zone = chosen_zone
+                        ff_ship_hover(true)
+                        ff_drop_squad(id, entry.kind, size, chosen_zone, entry.tier)
+                    } else {
+                        place_squad_at(id, entry.kind, size, chosen_zone, entry.tier)
+                    }
                     if team_count == 2 { ff_target(id, target_team) }
                     next_squad = next_squad + 1
                     wave_actors = wave_actors + size
@@ -511,39 +696,83 @@ fn place_next(tick: int, players_in_match: int, cap: int, here_0: bool, here_1: 
     }
 }
 
+fn erase_all(tick: int) {
+    for each ff_slots s where active(s) {
+        erase_squad(squad(s.slot_index))
+        s.squad_state = draining
+        s.squad_tick = tick
+        s.squad_remaining = 0
+    }
+    live_count = 0
+    load_0 = 0
+    load_1 = 0
+    chosen_slot = first(ff_slots s where s.squad_state == free)
+}
+
+// The bonus round ends on time or when every player is dead, never the
+// game: erase, switch its skulls off, grant lives by the points it scored,
+// bring everyone back, and go on as a finished round does.
+fn end_bonus(tick: int, here_0: bool, here_1: bool) {
+    erase_all(tick)
+    let listed = bonus_skulls[0]
+    bonus_restore(listed.s0)
+    bonus_restore(listed.s1)
+    bonus_restore(listed.s2)
+    bonus_restore(listed.s3)
+    bonus_restore(listed.s4)
+    bonus_restore(listed.s5)
+    bonus_restore(listed.s6)
+    bonus_restore(listed.s7)
+    bonus_restore(listed.s8)
+    bonus_added = 0
+    if iron {
+        iron = false
+        ff_skull(11, false)
+    }
+    ff_bonus(false, 0)
+    grant_side(0, score_0 - bonus_base_0)
+    if team_count == 2 { grant_side(1, score_1 - bonus_base_1) }
+    for each players p where not p.alive and not p.respawning { bring_back(p) }
+    bonus_shift = 0
+    next_round(tick, here_0, here_1)
+}
+
 on tick {
     if phase != done {
         let tick = ticks(now())
         observe_squads(tick)
-        respawn_players()
+        ship_step(tick)
         let here_0 = count(players p where p.side == 0) > 0
         let here_1 = count(players p where p.side == 1) > 0
-        check_defeat(here_0, here_1)
+        if phase != bonus_round {
+            respawn_players()
+            check_defeat(here_0, here_1)
+        }
 
         if phase == cleanup and (live_count == 0 or tick >= phase_tick + ticks(cleanup_timeout)) {
-            for each ff_slots s where active(s) {
-                erase_squad(squad(s.slot_index))
-                s.squad_state = draining
-                s.squad_tick = tick
-                s.squad_remaining = 0
-            }
-            live_count = 0
-            load_0 = 0
-            load_1 = 0
-            chosen_slot = first(ff_slots s where s.squad_state == free)
+            erase_all(tick)
             end_wave(tick, here_0, here_1)
         } else if phase == fighting and live_count == 0 {
             end_wave(tick, here_0, here_1)
         }
 
         if (phase == warmup or phase == intermission) and tick >= phase_tick { start_wave() }
-        if phase == spawning {
+        if phase == bonus_round {
+            for each players p where p.alive { p.respawning = false }
+            if tick >= phase_tick or count(players p where p.alive) == 0 { end_bonus(tick, here_0, here_1) }
+        }
+        if phase == spawning or phase == bonus_round {
             let size = clamp(count(players), 1, largest_roster)
             let cap = actor_caps[size - 1].actors
             let before = next_squad
+            // The bonus squad is the last row of the tables: one squad
+            // placed again each time there is room, until time is up.
+            if phase == bonus_round { next_squad = 0 }
             place_next(tick, size, cap, here_0, here_1)
-            if next_squad > before { place_next(tick, size, cap, here_0, here_1) }
-            if next_squad == waves[wave_index()].count { phase = fighting }
+            if phase == spawning {
+                if next_squad > before { place_next(tick, size, cap, here_0, here_1) }
+                if next_squad == waves[wave_index()].count { phase = fighting }
+            }
         }
         if phase == fighting and live_count > 0 and live_count <= cleanup_actors and live_count < wave_actors {
             for each ff_slots s where active(s) { hunt(squad(s.slot_index)) }

@@ -640,6 +640,7 @@ mod tests {
             firefight: None,
             flat: None,
             guest_census: None,
+            tick_phases: None,
             notes: vec![],
         }
     }

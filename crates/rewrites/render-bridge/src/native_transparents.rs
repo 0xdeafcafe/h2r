@@ -14,7 +14,7 @@ use native_render::transparent::{self, Entry};
 
 use hooks::{BuildError, Builder, Feature, Flow, Manifest};
 use runtime::abi::TransferAbi;
-use timeline::native::{Metric, Stage};
+use timeline::native::{Metric, ReservationCause, Stage};
 
 pub const ID: &str = "native-transparents";
 
@@ -52,7 +52,8 @@ pub trait WalkHost: Send + Sync {
     fn sorted_pools(&self, _mem: &dyn GuestMemory) -> Option<Arc<BTreeSet<u32>>> { None }
     fn retire_bsp(&self) {}
 
-    fn draw(&self, mem: &mut dyn GuestMemory, stage: Stage, range: IndexRange) -> bool;
+    /// Draw `range` natively, or name why the reservation did not commit.
+    fn draw(&self, mem: &mut dyn GuestMemory, stage: Stage, range: IndexRange) -> Result<(), ReservationCause>;
 }
 
 static WALK: Mutex<Option<Arc<dyn WalkHost>>> = Mutex::new(None);
@@ -251,10 +252,15 @@ fn walk_range(mem: &mut dyn GuestMemory, stage: Stage, range: IndexRange) -> boo
         return false;
     }
     let host = WALK.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let drawn = host.is_some_and(|host| host.draw(mem, stage, range));
-    let metric = if drawn { Metric::WalkSuppressed } else { Metric::WalkRefusedReservation };
-    stage.count(metric, 1);
-    drawn
+    let result = host.map_or(Err(ReservationCause::Declined), |host| host.draw(mem, stage, range));
+    match result {
+        Ok(()) => stage.count(Metric::WalkSuppressed, 1),
+        Err(cause) => {
+            stage.count(Metric::WalkRefusedReservation, 1);
+            stage.reservation_cause(cause);
+        }
+    }
+    result.is_ok()
 }
 
 /// What the indexed wrapper's tail (`mov al, 1; ret 0xc`, after its

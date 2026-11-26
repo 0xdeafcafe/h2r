@@ -102,7 +102,22 @@ pub struct Noise {
 pub struct Plasma {
     pub noise: [Noise; 2],
     tint: [[f32; 4]; 2],
+    /// Scales the brightness: the intensity source (`+0x2c`) or, when that
+    /// is none, the tint colour source (`+0x80`).
     input: Option<&'static str>,
+    /// The offset source (`+0x34`) and amount (`+0x38`): the vertex moves
+    /// along its normal by amount x the source's output (source none: x 1).
+    offset_source: Option<&'static str>,
+    offset_amount: f32,
+}
+
+/// An object-function source slot: 0 none, 1 to 4 the A to D outputs.
+fn source(data: &[u8], at: usize, what: &'static str) -> Result<Option<&'static str>> {
+    match word(data, at)? {
+        0 => Ok(None),
+        n @ 1..=4 => Ok(Some(["a_out", "b_out", "c_out", "d_out"][usize::from(n - 1)])),
+        _ => Err(Error::Invalid(what)),
+    }
 }
 
 impl Plasma {
@@ -126,17 +141,22 @@ impl Plasma {
                 scale: scalar(data, at + 16)?,
             })
         };
-        if word(data, 0x34)? != 0 || scalar(data, 0x38)? != 0.0 || word(data, 0x80)? != 0 {
-            return Err(Error::Invalid(
-                "unsupported plasma displacement or change colour",
-            ));
-        }
-        let input = match word(data, 0x2c)? {
-            0 => None,
-            n @ 1..=4 if scalar(data, 0x30)? == 1.0 => {
-                Some(["a_out", "b_out", "c_out", "d_out"][usize::from(n - 1)])
+        let offset_source = source(data, 0x34, "unsupported plasma offset source")?;
+        let offset_amount = scalar(data, 0x38)?;
+        let tint_source = source(data, 0x80, "unsupported plasma tint source")?;
+        let intensity = match source(data, 0x2c, "unsupported plasma intensity")? {
+            Some(_) if scalar(data, 0x30)? != 1.0 => {
+                return Err(Error::Invalid("unsupported plasma intensity"));
             }
-            _ => return Err(Error::Invalid("unsupported plasma intensity")),
+            other => other,
+        };
+        let input = match (intensity, tint_source) {
+            (Some(a), Some(b)) if a != b => {
+                return Err(Error::Invalid(
+                    "plasma intensity and tint colour use different sources",
+                ));
+            }
+            (a, b) => a.or(b),
         };
         let tint = |at| -> Result<[f32; 4]> {
             Ok([
@@ -157,7 +177,39 @@ impl Plasma {
             noise: [noise(0xc0)?, noise(0x108)?],
             tint: [perpendicular, grazing],
             input,
+            offset_source,
+            offset_amount,
         })
+    }
+
+    /// The two brightnesses (c[-83] and c[-82] W) and the displacement
+    /// (c[26].w, amount x offset source).
+    fn brightness_and_offset(&self) -> Vec<Property> {
+        let mut out: Vec<Property> = self
+            .tint
+            .iter()
+            .map(|&[_, _, _, brightness]| match self.input {
+                Some(input) => {
+                    property(Some(input), 1.0, FunctionType::Identity, [0.0, brightness])
+                }
+                None => property(None, 1.0, FunctionType::Constant, [brightness; 2]),
+            })
+            .collect();
+        out.push(match self.offset_source {
+            Some(input) => property(
+                Some(input),
+                1.0,
+                FunctionType::Identity,
+                [0.0, self.offset_amount],
+            ),
+            None => property(
+                None,
+                1.0,
+                FunctionType::Constant,
+                [self.offset_amount; 2],
+            ),
+        });
+        out
     }
 
     pub fn instance(&self, template: TagId, bitmaps: [Bound; 2]) -> Result<Block> {
@@ -189,14 +241,7 @@ impl Plasma {
         }
         vectors.extend(self.tint);
         vectors.push([0.0; 4]); // c[26].w, displacement
-        for [_, _, _, brightness] in self.tint {
-            properties.push(match self.input {
-                Some(input) => {
-                    property(Some(input), 1.0, FunctionType::Identity, [0.0, brightness])
-                }
-                None => property(None, 1.0, FunctionType::Constant, [brightness; 2]),
-            });
-        }
+        properties.extend(self.brightness_and_offset());
         let mut record =
             shad::build_record(&layout, template, &bitmaps.map(Some), &[], &vectors, None)?;
         // The retail elite shield likewise has two sampler parameters but
@@ -239,11 +284,12 @@ pub(super) fn property(
 }
 
 // H2 0x17960: mode 3 writes only W, leaving the authored XYZ intact.
-// Six translations in c[18..23], two intensity-scaled brightnesses in v10/11.
+// Six translations in c[18..23], two intensity-scaled brightnesses in v10/11,
+// and the displacement in c[26].w.
 const ANIMATION: AnimTree = AnimTree {
     layers: 25,
     animated_layer: 15,
-    implementation: [(0, 0), (0, 0), (0, 0), (0, 0), (0, 8)],
+    implementation: [(0, 0), (0, 0), (0, 0), (0, 0), (0, 9)],
     bindings: &[
         [0x70, 0, 0, 0],
         [0x71, 0, 0, 1],
@@ -253,6 +299,7 @@ const ANIMATION: AnimTree = AnimTree {
         [0x75, 0, 0, 5],
         [0x6a, 0, 0, 6],
         [0x6b, 0, 0, 7],
+        [0x78, 0, 0, 8],
     ],
 };
 
@@ -481,15 +528,20 @@ mod tests {
         }
     }
 
-    #[test]
-    fn rejects_incomplete_and_unhandled_plasma_definitions() {
-        assert!(Plasma::read(&[0; 8]).is_err());
+    fn plasma_bytes() -> [u8; 0x130] {
         let mut data = [0u8; 0x130];
         for at in [0xc0, 0x108] {
             data[at..at + 4].copy_from_slice(&2f32.to_le_bytes());
             data[at + 20..at + 24].copy_from_slice(&Group::new(b"bitm").0.to_le_bytes());
             data[at + 32..at + 36].copy_from_slice(&17u32.to_le_bytes());
         }
+        data
+    }
+
+    #[test]
+    fn rejects_incomplete_and_unhandled_plasma_definitions() {
+        assert!(Plasma::read(&[0; 8]).is_err());
+        let mut data = plasma_bytes();
         assert_eq!(
             Plasma::read(&data).unwrap().noise[1].bitmap,
             h1map::TagId(17)
@@ -497,7 +549,63 @@ mod tests {
         data[0x128..0x12c].fill(0xff);
         assert!(Plasma::read(&data).is_err());
         data[0x128..0x12c].fill(0);
+        // A source slot past D is a named error, for each of the three.
+        for at in [0x2c, 0x34, 0x80] {
+            let mut bad = data;
+            bad[at] = 5;
+            bad[0x30..0x34].copy_from_slice(&1f32.to_le_bytes());
+            assert!(Plasma::read(&bad).is_err(), "source at {at:#x}");
+        }
+        // Two different sources for the brightness are refused.
+        let mut both = data;
+        both[0x2c] = 1;
+        both[0x30..0x34].copy_from_slice(&1f32.to_le_bytes());
+        both[0x80] = 2;
+        assert!(Plasma::read(&both).is_err());
+        // Offset and tint sources read.
+        data[0x34] = 3;
+        data[0x38..0x3c].copy_from_slice(&0.25f32.to_le_bytes());
         data[0x80] = 1;
-        assert!(Plasma::read(&data).is_err());
+        assert!(Plasma::read(&data).is_ok());
+    }
+
+    #[test]
+    fn plasma_offset_moves_the_vertex_along_its_normal_by_amount_times_source() {
+        let mut data = plasma_bytes();
+        data[0x34] = 2;
+        data[0x38..0x3c].copy_from_slice(&0.05f32.to_le_bytes());
+        let plasma = Plasma::read(&data).unwrap();
+        // c[26].w is the displacement: amount x b_out, the vertex stage
+        // adds normal x c[26].w to the position.
+        let displacement = plasma.brightness_and_offset().pop().unwrap();
+        assert_eq!(
+            displacement,
+            property(Some("b_out"), 1.0, FunctionType::Identity, [0.0, 0.05])
+        );
+        let last = ANIMATION.bindings.last().unwrap();
+        assert_eq!((last[0], last[3]), (0x78, 8));
+        assert_eq!(ANIMATION.implementation[4], (0, 9));
+        // Source none: the amount applies alone (x 1).
+        data[0x34] = 0;
+        let plasma = Plasma::read(&data).unwrap();
+        assert_eq!(
+            plasma.brightness_and_offset().pop().unwrap(),
+            property(None, 1.0, FunctionType::Constant, [0.05; 2])
+        );
+    }
+
+    #[test]
+    fn plasma_tint_source_scales_the_tint() {
+        let mut data = plasma_bytes();
+        data[0x70..0x74].copy_from_slice(&0.5f32.to_le_bytes());
+        data[0x60..0x64].copy_from_slice(&1f32.to_le_bytes());
+        let plain = Plasma::read(&data).unwrap().brightness_and_offset();
+        assert_eq!(plain[0].input, None);
+        data[0x80] = 3;
+        let scaled = Plasma::read(&data).unwrap().brightness_and_offset();
+        for p in &scaled[..2] {
+            assert_eq!(p.input, Some("c_out"));
+        }
+        assert_ne!(scaled[0], plain[0]);
     }
 }

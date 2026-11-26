@@ -166,6 +166,7 @@ pub struct FrameScene {
     pub shadows: Vec<ShadowMap>,
     pub carried: Carried,       // ordered guest ops per slot (4.4)
     pub uploads: Vec<TextureUpload>, // guest-made textures changed this frame (Bink, glyph pages)
+    pub overlay: Overlay,       // one ordered list over the views: Quad, TextRun, Fill, MovieFrame, Blur, ModelView items, each with its clip rectangle (frame-scene/src/overlay.rs)
 }
 
 pub struct View {
@@ -215,6 +216,22 @@ guest pointers. `InstanceKey` is opaque to the renderer.
 Bounds come from the guest's own tables (850 render records, 2,560 layer
 entries, **Code**, `object_walk.rs`), so a scene's typed part is a few
 hundred kilobytes at most (**Estimate**).
+
+### 4.2.1 The view's slots
+
+`frame_scene::view_slot::ViewSlot` is the traced draw order of one game
+view as data (`crates/rewrites/frame-scene/src/view_slot.rs`). Its
+variants are slots 1 to 13 of `render_scene_passes` `0x0002bcd0`, each
+with its guest call site in the doc comment, then the per-frame overlay
+`Hud`, `Fade`, `Ui`. `ViewSlot::decal(mode)` maps decal mode 0 to slot 2,
+mode 1 to slot 5 and modes 2 to 6 to slot 7 (`DecalsLate(mode)`, in mode
+order); other modes have no slot. `Ord` is draw order. `Snapshot`
+(snapshots and layers 18, 19 and 21) is unplaced until research item R-a:
+`placed()` is false and it sorts after slot 13, before the overlay.
+Tests: `view_slots_follow_the_traced_order`, `every_decal_mode_has_a_slot`,
+`the_overlay_draws_hud_then_fade_then_ui`.
+
+A text run is shaped in Rust (`native-render/src/text.rs`: `FontFace::from_tag` reads the font tag, its glyph metrics give the pens, its bitmaps are packed once into `GlyphPages`, never the guest's glyph cache) and is one `TextRun` item, so one draw under its clip's scissor.
 
 ### 4.3 What is extracted, and where from
 
@@ -343,13 +360,13 @@ would have:
 | State | Writer in the guest's frame | Rule for a replaced entry |
 |---|---|---|
 | The shared random seed `[0x004e7408]` | object code the render reaches (`0x001032a0`) | **Blocking.** A replaced entry makes the same draws from the seed in the same order, or it still calls the guest function that makes them. A sim-mode run already differs from a rendered run here |
-| The effects random word | particle draws | the particle producers keep running (they are carried, then typed with the same draws from the word) |
-| Particle system visibility and location stamps | the per-view update `0x00174420`, reached from the object and effect draw paths `0x0003fdf0` and `0x00040e90` | the replaced object entry calls `0x00174420` for the same systems in the same order |
+| The effects random word | particle draws | the particle producers keep running and keep drawing from the word; the typed effect list (`frame_scene::effect`, in the guest's visit order) carries what they produce, not the draws |
+| Particle system visibility and location stamps | the per-view update `0x00174420`, reached from the object and effect draw paths `0x0003fdf0` and `0x00040e90` | the guest keeps calling `0x00174420`: its writes (flag `+0x0d`, `+0x10`, `+0x30`, `+0x44`) are not described by any code in the tree, so a Rust effect pass cannot make them yet |
 | Animation cache use stamps (`+0x14` per entry) | `animation_resource_get` `0x001237e0` | replayed in visit order, as the pipelined prototype does |
 | Present counter `0x00485aa0`, frame timing `0x004e63a8` | `0x00013f10`, the frame wait `0x0012b2e0` | guest code keeps running |
 | Game-time bracket | `0x00146de0` and `0x00146b80` around `render_views` | guest code keeps running |
 | Render frame counter `0x004ba034`, the one-shot byte `0x004e6098` | `render_views`, `0x00223080` | guest code keeps running |
-| Texture, geometry and animation residency, the async I/O pool | the render's cache requests | the Rust object setup keeps making the guest's requests (it does today); the renderer's own resources come from the tags and do not depend on them |
+| Texture, geometry and animation residency, the async I/O pool | the render's cache requests | the cut object setup (`0x00133790`, [native-objects.md](native-objects.md), "Object setup is cut") makes the guest's stamps and requests in its own turn; a request that needs a new queue entry is the guest cache's service; the renderer's own resources come from the tags and do not depend on them |
 | Object visit marks, the object `+0xcc` handle, light render fields | the gathers | not read by the tick (class a); kept while any guest consumer is left, then dropped |
 
 Each slice that replaces an entry adds its row to a table in
@@ -552,8 +569,10 @@ writes the body made, in `frame_step::ROWS` order (guest order: the
 seed, the effects word, the stamps and residency requests inside the
 views, then `render_views`' frame counter and one-shot byte, then the
 present counter). The frame owner runs the `Step::Frame` rows once per
-frame. The rows for the seed, effects word, stamps and residency are
-empty until the slice that cuts their writer fills them, and each row
+frame. The rows for the seed, effects word and stamps are
+empty until the slice that cuts their writer fills them; the residency
+row belongs to the object setup, whose own producer (`cut::OWN_PRODUCER`)
+stages it with the records, and each row
 names its test in `crates/rewrites/render-bridge/tests/cut.rs`. From slice 6 the fallback for a
 stage that is not ready is to stay carried, which costs guest time but
 draws correctly.

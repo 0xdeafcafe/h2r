@@ -129,6 +129,8 @@ struct Phantom {
     samples: u64,
     /// Why it waits for hosting, as last logged ([`waiting_line`]).
     waiting: Option<String>,
+    /// The rank its lobby row shows, when its hopper is a ranked one.
+    rank: Option<session::Rank>,
 }
 
 impl Phantom {
@@ -331,9 +333,32 @@ impl Phantoms {
             shot_range: None,
             samples: 0,
             waiting: None,
+            rank: None,
         });
         self.changed();
         Ok(handle)
+    }
+
+    /// Sets the rank `handle`'s lobby row shows (`None`: none). Read when
+    /// the phantom joins, so set it right after [`Phantoms::add`].
+    pub fn set_rank(&self, handle: PhantomHandle, rank: Option<session::Rank>) -> Result<(), Error> {
+        let mut b = self.lock();
+        let p = b
+            .list
+            .iter_mut()
+            .find(|p| p.info.handle == handle)
+            .ok_or(Error::NoSuchPhantom(handle))?;
+        p.rank = rank;
+        Ok(())
+    }
+
+    /// The rank `handle`'s lobby row shows, if it has one.
+    pub fn rank_of(&self, handle: PhantomHandle) -> Option<session::Rank> {
+        self.lock()
+            .list
+            .iter()
+            .find(|p| p.info.handle == handle)
+            .and_then(|p| p.rank)
     }
 
     /// Whether `machine` is a phantom of these books with a peer in the
@@ -839,7 +864,7 @@ impl Phantoms {
             let name = &p.info.identity.gamertag;
             let config = if playerless {
                 session::playerless_config(name, team)
-            } else if let Some(config) = session::config_in(&*m, s, name, team)? {
+            } else if let Some(config) = session::config_in_ranked(&*m, s, name, team, p.rank)? {
                 config
             } else {
                 continue; // the local player has not joined yet

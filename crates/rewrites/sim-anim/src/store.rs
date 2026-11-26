@@ -2,10 +2,12 @@
 //! address (`element + 0x3c`, in tag data, stable while a map is loaded).
 //!
 //! Each lookup compares the [`Shape`] it was built from, so a key reused
-//! for a different animation rebuilds. The whole store drops when the
-//! [`Epoch`] moves (map load, checkpoint revert and restore, snapshot
-//! load) and when it grows past [`BUDGET`]; a live edit of a `jmad` tag
-//! drops that tag's clips ([`ClipStore::flush_range`],
+//! for a different animation rebuilds. The whole store drops when it is
+//! invalidated ([`ClipStore::invalidate`]: map load, checkpoint revert and
+//! restore, snapshot load), at once, so a map's clips are not held through
+//! a main menu that never looks one up. A lookup also drops it when the
+//! [`Epoch`] has moved, and when it grows past [`BUDGET`]. A live edit of
+//! a `jmad` tag drops that tag's clips ([`ClipStore::flush_range`],
 //! docs/editor/realtime-edits.md, "Realtime coverage"). A clip never changes a
 //! result, only whether the blob is read again, so flushing is always
 //! safe.
@@ -124,6 +126,19 @@ impl ClipStore {
     /// Drop every clip.
     pub fn clear(&self) {
         self.lock().flush();
+    }
+
+    /// Guest memory changed under the store: move the epoch and drop every
+    /// clip now. A lookup already decoding sees the new epoch and does not
+    /// keep its clip.
+    pub fn invalidate(&self) {
+        self.epoch.bump();
+        self.clear();
+    }
+
+    /// The bytes of the clips held now.
+    pub fn bytes(&self) -> usize {
+        self.lock().bytes
     }
 
     pub fn stats(&self) -> Stats {

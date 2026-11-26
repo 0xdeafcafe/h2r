@@ -100,21 +100,33 @@ pub static ENABLED: Setting = setting(
 /// The values the store admits: the built-in definitions' positions
 /// ([`builtin::definitions`]), then the map-specific sets' from
 /// [`builtin::MAP_SET_BASE`]. The row offers the lobby map's own first
-/// ([`builtin::menu`]); a value the map has no set for plays the
-/// built-ins ([`builtin::resolve`]).
+/// ([`wave_menu`]: Endless first, then the map's); a value the map has no
+/// set for plays the built-ins ([`builtin::resolve`]).
 pub static WAVE_SET: Setting = setting(
     "firefight.waveset",
     "Wave set",
     "Which set of waves is fought.",
     Kind::Choice(&[
+        choice(4, "endless", "Endless"),
         choice(0, "holdout", "Holdout"),
         choice(1, "attrition", "Attrition"),
         choice(2, "last_stand", "Last Stand"),
         choice(3, "crossfire", "Crossfire"),
+        choice(4, "endless", "Endless"),
         choice(builtin::MAP_SET_BASE, "basin", "Basin"),
     ]),
     Value::Int(0),
 );
+/// The Wave set row's choices on `map` (`None`: none known), each with the
+/// store value that names it: Endless first, then [`builtin::menu`]'s order
+/// (the map's own sets, then the other built-ins).
+pub fn wave_menu(map: Option<&str>) -> Vec<(i64, Def)> {
+    let mut menu = builtin::menu(map);
+    // Stable: only Endless moves.
+    menu.sort_by_key(|(_, def)| !def.set.endless);
+    menu
+}
+
 /// [`TEAMS`]'s first choice: the wave set's own team count.
 pub const DEFAULT_TEAMS: i64 = 0;
 pub static TEAMS: Setting = setting(
@@ -181,7 +193,7 @@ pub fn page(store: Arc<Store>) -> KitScreen {
     let binds = Bindings::new().menu(
         "waveset",
         || {
-            builtin::menu(lobby_start::kit_map().as_deref())
+            wave_menu(lobby_start::kit_map().as_deref())
                 .into_iter()
                 .map(|(_, def)| def.name)
                 .collect()
@@ -193,7 +205,7 @@ pub fn page(store: Arc<Store>) -> KitScreen {
                     Some(Value::Int(v)) => v,
                     _ => 0,
                 };
-                builtin::menu(lobby_start::kit_map().as_deref())
+                wave_menu(lobby_start::kit_map().as_deref())
                     .iter()
                     .position(|(value, _)| *value == held)
                     .unwrap_or(0)
@@ -202,7 +214,7 @@ pub fn page(store: Arc<Store>) -> KitScreen {
         {
             let store = Arc::clone(&store);
             move |i: usize| {
-                let menu = builtin::menu(lobby_start::kit_map().as_deref());
+                let menu = wave_menu(lobby_start::kit_map().as_deref());
                 let Some((value, def)) = menu.get(i) else {
                     return format!("{}: no choice {i}", WAVE_SET.key);
                 };
@@ -335,7 +347,7 @@ impl Options {
     /// The definition the match plays: the set [`Options::base_set`]
     /// names, played by the teams the
     /// page chose (`builtin::with_teams`), with the starting pool it chose
-    /// and, with skulls off, no skull on any round.
+    /// and, with skulls off, no skull on any round and none a set brings.
     pub fn definition(&self) -> Result<Def, String> {
         let mut def = self
             .base_set()
@@ -350,15 +362,19 @@ impl Options {
             for round in &mut def.rounds {
                 round.skulls_on.clear();
             }
+            def.set.skulls.clear();
         }
         Ok(def)
     }
 
     /// The player teams the match has: the page's choice, else the wave
-    /// set's own (1 for a wave set the build does not have).
+    /// set's own (1 for a wave set the build does not have). An endless
+    /// set is one team whatever the page chose ([`builtin::with_teams`]).
     pub fn player_teams(&self) -> u8 {
-        self.teams
-            .unwrap_or_else(|| self.base_set().map_or(1, |def| def.teams))
+        match self.base_set() {
+            Some(def) if def.set.endless => def.teams,
+            def => self.teams.unwrap_or_else(|| def.map_or(1, |def| def.teams)),
+        }
     }
 
     /// The Wave set row's label: the set the value names on

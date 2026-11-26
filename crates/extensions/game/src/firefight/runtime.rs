@@ -124,6 +124,7 @@ pub fn ended_report(ended: super::host::Ended) -> live_proto::firefight::Firefig
         },
         scores: ended.scores[..teams].to_vec(),
         rounds_cleared: ended.rounds_cleared,
+        sets_cleared: ended.sets_cleared,
         lives_used: ended.lives_used,
     }
 }
@@ -135,6 +136,14 @@ pub enum Call {
     Score { player: u8, points: u32 },
     Respawn(u8),
     End,
+    /// A flying ship put at its place on the path (`super::ship::put_ship`).
+    Ship(super::ship::ShipPut),
+    /// A squad placed into a ship, the rest on foot (`super::ship::drop_squad`).
+    Drop(super::ship::Boarding),
+    /// The ship's hover hold (`VEHICLE_HOVER`).
+    Hover { ship: u32, on: bool },
+    /// Everyone aboard the ship leaves (`VEHICLE_UNLOAD`).
+    Unload { ship: u32 },
 }
 
 /// What the async body before a tick does.
@@ -348,7 +357,7 @@ pub fn read_players(m: &dyn GuestMemory) -> Result<Vec<(PlayerView, Option<u32>)
 /// Live actors by kit slot.
 pub fn read_actors(m: &dyn GuestMemory, kit: &KitLayout) -> [u16; SQUAD_SLOTS] {
     let mut by_squad = [0u16; SQUAD_SLOTS];
-    let _ = sim_state::visit_actors(m, false, |a| {
+    let _ = sim_state::visit_ai_units(m, false, |a| {
         if let Some(slot) = kit.squads.iter().position(|s| *s == Some(a.squad)) {
             by_squad[slot] = by_squad[slot].saturating_add(1);
         }
@@ -367,6 +376,8 @@ pub struct GuestGame<'a> {
     pub kills: Vec<KillSeen>,
     pub player_kills: Vec<PlayerKill>,
     pub calls: Vec<(u32, Call)>,
+    /// The flights the entries began this boundary, for the match to fly.
+    pub launches: Vec<super::ship::Launch>,
     entry: u32,
     pub skulls: &'a mut BTreeSet<Skull>,
     pub sink: &'a SkullSink,
@@ -387,6 +398,7 @@ impl<'a> GuestGame<'a> {
             kills: Vec::new(),
             player_kills: Vec::new(),
             calls: Vec::new(),
+            launches: Vec::new(),
             entry: 0,
             skulls,
             sink,
@@ -474,6 +486,32 @@ impl Game for GuestGame<'_> {
     fn begin_entry(&mut self, seq: u32) {
         self.entry = seq;
     }
+    /// The flight is the match's (it steps every tick); the entry only
+    /// starts it.
+    fn fly(&mut self, launch: super::ship::Launch) -> anyhow::Result<()> {
+        self.launches.push(launch);
+        Ok(())
+    }
+    fn drop_squad(&mut self, boarding: super::ship::Boarding) -> anyhow::Result<()> {
+        self.defer(Call::Drop(boarding))
+    }
+    fn ship(&self) -> Option<super::ship::Ship> {
+        let placement = self.kit?.ship?;
+        let object = super::ship::placed_ship(&*self.m, placement)?;
+        Some(super::ship::Ship {
+            object,
+            capacity: super::ship::SEATS,
+        })
+    }
+    fn paths(&self) -> Vec<Option<super::ship::ShipPath>> {
+        self.kit.map_or_else(Vec::new, |kit| kit.paths.clone())
+    }
+    fn hover(&mut self, ship: u32, on: bool) -> anyhow::Result<()> {
+        self.defer(Call::Hover { ship, on })
+    }
+    fn unload(&mut self, ship: u32) -> anyhow::Result<()> {
+        self.defer(Call::Unload { ship })
+    }
 }
 
 /// The settings a wave test plays at: seed 0 and Normal, no skulls past
@@ -559,9 +597,21 @@ pub struct Match {
     /// What the Clankers were last told of the match
     /// (`bots::firefight::set_context`), to tell them only of a change.
     bots: Option<bots::firefight::Context>,
+    /// The ships in the air (`fly`), stepped every tick.
+    #[cfg(feature = "rules")]
+    flights: crate::rules::world::vehicles::Flights,
+    /// The ships whose flight ended, for the director's `on arrive`.
+    #[cfg(feature = "rules")]
+    arrived: Vec<u32>,
 }
 
 impl Match {
+    /// The ships whose flight ended since the last call, in object order.
+    #[cfg(feature = "rules")]
+    pub fn take_arrived(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.arrived)
+    }
+
     /// The last sight pass, by kit zone.
     pub fn sight(&self) -> &[bool] {
         &self.sight
@@ -889,6 +939,10 @@ impl Runtime {
                     assists: Assists::default(),
                     hud_failed: false,
                     bots: context,
+                    #[cfg(feature = "rules")]
+                    flights: Default::default(),
+                    #[cfg(feature = "rules")]
+                    arrived: Vec::new(),
                 }));
                 line
             }
@@ -998,6 +1052,10 @@ impl Runtime {
             assists: Assists::default(),
             hud_failed: false,
             bots: context,
+            #[cfg(feature = "rules")]
+            flights: Default::default(),
+            #[cfg(feature = "rules")]
+            arrived: Vec::new(),
         }));
         Ok(line)
     }
@@ -1105,10 +1163,14 @@ impl Runtime {
             }
         }
         let before = host.applied();
-        let (mut calls, errors) = {
+        let (mut calls, errors, launches) = {
             let mut g = GuestGame::new(m, Some(&*kit), sight, skulls, &*self.sink);
             let errors = host.pre_tick(tick, &mut g);
-            (std::mem::take(&mut g.calls), errors)
+            (
+                std::mem::take(&mut g.calls),
+                errors,
+                std::mem::take(&mut g.launches),
+            )
         };
         // The entries applied this tick, for the film being recorded; a
         // wave test's are not recorded.
@@ -1140,6 +1202,37 @@ impl Runtime {
             })
             .filter(|s| !s.from.is_empty() && !s.zones.is_empty());
         let kit = game.kit.clone();
+        // The ships in the air: the flights this tick began, then every
+        // ship's place on its path as a put for the async body.
+        #[cfg(feature = "rules")]
+        {
+            for l in launches {
+                if let Err(e) = game.flights.begin(l.ship, &l.path, tick, l.ticks) {
+                    film_errors.push(format!("fly: {e}"));
+                }
+            }
+            let stepped = game.flights.step(tick);
+            // Before the entries' calls: a squad placed into a ship that
+            // starts its flight this tick finds the ship at the run-in.
+            calls.splice(
+                0..0,
+                stepped.steps.into_iter().map(|s| {
+                    (
+                        0,
+                        Call::Ship(super::ship::ShipPut {
+                            object: s.object,
+                            at: s.at,
+                            forward: s.forward,
+                        }),
+                    )
+                }),
+            );
+            game.arrived.extend(stepped.arrived);
+        }
+        #[cfg(not(feature = "rules"))]
+        if !launches.is_empty() {
+            film_errors.push("fly: the rules feature is off, so no ship flies".to_string());
+        }
         for e in errors {
             self.error(e.seq, e.tick, e.error);
         }
@@ -1222,6 +1315,7 @@ impl Runtime {
         // A wave test is no match: it reports no score and no result.
         let credits = host.take_credits();
         let ended = host.take_ended();
+        let unseen = host.take_unseen_errors();
         if !host.test() {
             for credit in credits {
                 (self.reports)(Report::Score(score_report(credit)));
@@ -1261,6 +1355,9 @@ impl Runtime {
             }
             None => {}
         }
+        for e in unseen {
+            self.error(None, e.tick, e.error);
+        }
         if let Err(e) = result {
             self.error(None, tick, format!("the director's entries: {e}"));
         }
@@ -1294,6 +1391,7 @@ impl Runtime {
                 director: game.host.director().map(|d| director(d, game)),
                 log: Some(log(&game.host)),
                 errors,
+                placements_unseen: game.host.placements_unseen(),
             },
         }
     }
@@ -1327,7 +1425,7 @@ impl Runtime {
         let op = p.command.map(command).transpose()?;
         let kit = game.host.kit();
         match &op {
-            Some(Command::PlaceSquad { class, zone, .. }) => {
+            Some(Command::PlaceSquad { class, zone, .. } | Command::DropSquad { class, zone, .. }) => {
                 if !kit.classes.contains_key(class) {
                     return Err(Refused::Invalid(format!("the kit has no class {class}")));
                 }
@@ -1398,7 +1496,10 @@ pub fn bot_context(host: &Host) -> Option<bots::firefight::Context> {
             let phase = match s.phase {
                 Phase::Done => return None,
                 Phase::Warmup { .. } | Phase::Intermission { .. } => BotPhase::Between,
-                Phase::Spawning | Phase::Fighting | Phase::Cleanup { .. } => BotPhase::Fighting,
+                Phase::Spawning
+                | Phase::Fighting
+                | Phase::Cleanup { .. }
+                | Phase::Bonus { .. } => BotPhase::Fighting,
             };
             let shared = d.def().lives.shared;
             let lives = s.pools[..teams]
@@ -1490,21 +1591,29 @@ fn log(host: &Host) -> wire::Log {
     }
 }
 
-fn director(d: &::firefight::ScriptDirector, game: &Match) -> wire::Director {
+/// A phase as `firefight.state` names it, with the tick it runs until (a
+/// cleanup: since).
+fn phase_name(phase: ::firefight::director::Phase) -> (&'static str, Option<u32>) {
     use ::firefight::director::Phase;
-    let s = d.state();
-    let (phase, phase_tick) = match s.phase {
+    match phase {
         Phase::Warmup { until } => ("warmup", Some(until)),
         Phase::Spawning => ("spawning", None),
         Phase::Fighting => ("fighting", None),
         Phase::Cleanup { since } => ("cleanup", Some(since)),
         Phase::Intermission { until } => ("intermission", Some(until)),
+        Phase::Bonus { until } => ("bonus", Some(until)),
         Phase::Done => ("done", None),
-    };
+    }
+}
+
+fn director(d: &::firefight::ScriptDirector, game: &Match) -> wire::Director {
+    let s = d.state();
+    let (phase, phase_tick) = phase_name(s.phase);
     let teams = usize::from(d.def().teams).clamp(1, MAX_TEAMS);
     wire::Director {
         phase: phase.into(),
         phase_tick,
+        set: s.set,
         round: s.round,
         wave: s.wave,
         reserve: d.reserve(game.players),
@@ -1546,6 +1655,10 @@ pub async fn make_calls(
             Call::Score { player, points } => guest::credit_score(cx, player, points).await,
             Call::Respawn(player) => guest::respawn(cx, player).await,
             Call::End => guest::end_game(cx).await,
+            Call::Ship(p) => super::ship::put_ship(cx, p).await,
+            Call::Drop(b) => super::ship::drop_squad(cx, &work.kit, b).await.map(drop),
+            Call::Hover { ship, on } => super::ship::hover(cx, ship, on).await,
+            Call::Unload { ship } => super::ship::unload(cx, ship).await,
         };
         if let Err(e) = result {
             refused.push((*seq, e.to_string()));
