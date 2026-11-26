@@ -81,6 +81,9 @@ fn area_json(a: &Area) -> Value {
     match &a.shape {
         Shape::Radius(r) => json!({"radius": {
             "radius": hex(*r), "below": hex(a.below), "above": hex(a.above)}}),
+        Shape::Box { half } => json!({"box": {
+            "half": [hex(half[0]), hex(half[1])], "below": hex(a.below), "above": hex(a.above)}}),
+        Shape::Sphere(r) => json!({"sphere": {"radius": hex(*r)}}),
         Shape::Path(points) => json!({"path": {
             "points": points.iter().map(|p| [hex(p[0]), hex(p[1])]).collect::<Vec<_>>(),
             "below": hex(a.below), "above": hex(a.above)}}),

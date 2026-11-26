@@ -15,6 +15,9 @@ pub(super) const FLOOR_NORMAL: f32 = 0.5;
 const POINT_AIM: f32 = 0.09;
 const DRAG_THRESHOLD: f32 = 0.025;
 const STICK_REPEAT: f32 = 0.18;
+/// Said when a box or a sphere area is opened for editing: Edit area
+/// handles a radius and a path until the four-shape editor lands.
+const UNEDITABLE: &str = "A box or sphere area cannot be edited here yet.";
 
 #[derive(Clone, Copy)]
 struct Drag {
@@ -57,7 +60,9 @@ impl Draft {
 
     pub fn mode(&self) -> AreaMode {
         match self.area.shape {
-            Shape::Radius(_) => AreaMode::Radius,
+            // A box or a sphere is refused before a draft is made
+            // (`begin_area`), so these never reach a draft.
+            Shape::Radius(_) | Shape::Box { .. } | Shape::Sphere(_) => AreaMode::Radius,
             Shape::Path(_) => AreaMode::Path,
         }
     }
@@ -66,6 +71,8 @@ impl Draft {
         let shape = match &self.area.shape {
             Shape::Radius(radius) => json!({"shape":"radius","radius":radius}),
             Shape::Path(points) => json!({"shape":"path","points":points}),
+            Shape::Box { half } => json!({"shape":"box","half":half}),
+            Shape::Sphere(radius) => json!({"shape":"sphere","radius":radius}),
         };
         let mut state = shape;
         state["target"] = json!(self.id);
@@ -95,6 +102,7 @@ impl Draft {
 
     fn switch_shape(&mut self) -> Result<(), String> {
         match self.area.shape {
+            Shape::Box { .. } | Shape::Sphere(_) => return Err(UNEDITABLE.into()),
             Shape::Radius(radius) => {
                 self.radius = radius;
                 self.area.shape = Shape::Path(Vec::new());
@@ -226,6 +234,7 @@ impl Draft {
                 Ok(Next::Keep)
             }
             action => match self.area.shape {
+                Shape::Box { .. } | Shape::Sphere(_) => Err(UNEDITABLE.into()),
                 Shape::Radius(radius) => {
                     let step = if step > 0. { step } else { 0.25 };
                     self.nudge_radius(radius, input.movement[1], step, seconds)?;
@@ -258,7 +267,7 @@ impl Draft {
     fn points(&self) -> &[[f32; 2]] {
         match &self.area.shape {
             Shape::Path(points) => points,
-            Shape::Radius(_) => &[],
+            Shape::Radius(_) | Shape::Box { .. } | Shape::Sphere(_) => &[],
         }
     }
 }
@@ -298,6 +307,9 @@ impl Editor {
             .get(&id.identity())
             .map(forge_doc::Area::marker_area)
             .unwrap_or_default();
+        if matches!(area.shape, Shape::Box { .. } | Shape::Sphere(_)) {
+            return Err(UNEDITABLE.into());
+        }
         self.tool.clear_selection();
         self.area = Some(Draft::new(thing.id, thing.frame.position, area));
         Ok(())

@@ -1695,6 +1695,8 @@ impl Runtime {
             let mut plain = serde_json::Map::new();
             match &area.shape {
                 game_markers::Shape::Radius(radius) => plain.insert("radius".into(), (*radius).into()),
+                game_markers::Shape::Box { half } => plain.insert("box".into(), serde_json::json!(half)),
+                game_markers::Shape::Sphere(radius) => plain.insert("sphere".into(), (*radius).into()),
                 game_markers::Shape::Path(points) => plain.insert("path".into(), serde_json::json!(points)),
             };
             plain.insert("below".into(), area.below.into());
