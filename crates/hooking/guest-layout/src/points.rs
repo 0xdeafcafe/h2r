@@ -23,6 +23,7 @@
 pub mod game_types;
 pub mod render_aspect;
 pub mod scene_effects;
+pub mod skull_gates;
 
 /// Vertical pixels per projection unit in the current retail view.
 pub const PIXEL_SCALE: u32 = 0x004b_9ed0;

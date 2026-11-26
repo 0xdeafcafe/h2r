@@ -809,8 +809,9 @@ Limits:
 
 ### Switching it off
 
-- `H2_FEATURES=skulls-mp=off`: no multiplayer skull is applied and nothing
-  is advertised (`skulls-mp: off: switched off (H2_FEATURES)`).
+- `H2_FEATURES=skulls-mp=off`: no multiplayer skull is applied, nothing
+  is advertised, and no AI skull's campaign gate is answered in Firefight
+  (`skulls-mp: off: switched off (H2_FEATURES)`).
 - `H2_FEATURES=skulls-mp-row=off`: no Skulls row in the variant editor.
 - `H2_FEATURES=skulls-mp-screen=off`: the row stays, and says the screen
   is off when pressed.
@@ -819,8 +820,8 @@ Limits:
 
 ## In Firefight
 
-Status: the set and its per-machine split are built, tests only; the
-engine's campaign gate is not yet answered for the AI readers.
+Status: built, tests only; not seen running. The set, its per-machine
+split and the answer to every AI reader's campaign gate are in.
 
 A Firefight match ([firefight.md](firefight.md)) runs actors, so the AI
 skulls mean something there, on the host only (`skulls_mp::firefight_ai`:
@@ -842,12 +843,62 @@ Score multipliers come from the definition and the director's active set
 | 16 | Low Gravity | everyone (the multiplayer path) | `every_firefight_skull_has_a_scope_and_an_engine_index` |
 
 `MpSkulls::write_firefight_array` sets the array byte (`0x4f55dc + n`) of
-each AI skull on and clears the others it owns. Each reader still tests
-the campaign gate (`[[0x4e6948]+8] == 1`) before it loads its byte, so a
-reader acts only where that gate is answered "on"; the readers are those
-in "Where each effect lives" and need one hook each. A round's skulls
+each AI skull on and clears the others it owns. A round's skulls
 (`a_round_switches_its_skulls_on`) and multipliers (`multipliers_multiply`)
 are in `crates/formats/firefight/tests/skulls.rs`.
+
+### The campaign gate
+
+Each reader tests the campaign gate (`[[0x4e6948]+8] == 1`, or a register
+already loaded from it) and jumps past its byte with a short `jne` when
+the mode is not the campaign (confirmed, `h2 disasm` at each). The
+`jne` falls through to the load of the skull's byte. So the gate is
+answered at the `jne` itself: a `before` hook of `skulls-mp` at the site
+resumes at the fall-through for a skull this machine runs, and the byte
+decides as in the campaign. Everything the compiler scheduled between
+the compare and the jump (x87 and SSE stores in Famine's, Catch's and
+Angry's readers) has run by then, so no instruction is redone by hand.
+For any other skull, and on a guest, the hook lets the `jne` run.
+
+The sites are `engine::points::skull_gates::GATES`
+(`crates/hooking/guest-layout/src/points/skull_gates.rs`); each site and
+its fall-through is an instruction entry of the image
+(`boot::image_entries`). They are every absolute reference to an AI
+skull's byte in the XBE, less Famine's placed-weapon reader `0xfda54`,
+which the multiplayer path answers at its function's entry:
+
+| n | Skull | `jne` → byte load | Function |
+|---|---|---|---|
+| 2 | Assassins | `0xc683f` → `0xc6841` | `0xc6810`, the active camouflage |
+| 3 | Thunderstorm | `0x203757` → `0x203759` | `0x2036c0` |
+| 4 | Famine | `0x1e2e4e` → `0x1e2e50`, `0x1e2ed4` → `0x1e2ed6` | `0x1e2a90`, the actor's deletion (its drop) |
+| 7 | Ghost | `0xc9869` → `0xc986b` | `0xc9770` |
+| 9 | Catch | `0x1ae51d` → `0x1ae51f`, `0x1ae568` → `0x1ae56a`, `0x1ae76a` → `0x1ae76c`, `0x1ae7af` → `0x1ae7b1` | `0x1aded0`, the grenade decision |
+| 9 | Catch | `0x1e2d59` → `0x1e2d5b` | `0x1e2a90` (its grenades) |
+| 12 | Mythic | `0x1e0576` → `0x1e0578`, `0x1e0eab` → `0x1e0ead` | `0x1e04a0`, `0x1e0dc0` (the mode in `edx`) |
+| 13 | Angry | `0x1fda13` → `0x1fda15` | `0x1fc7e0` |
+
+The set a machine answers is `skulls_mp::gate_bits` (the
+`firefight_ai` set), stored in `engine::skull_gate` at each `Skull`
+command and cleared at every game start. The active camouflage
+`0xc6810` also runs as a native body (`impl.sim.native.objects`,
+`engine::sim_objects::unit_rest::camo`), where the lifted `jne` is never
+reached; the body asks `engine::skull_gate::passes` instead. The hooks
+are optional: an image built without the gates' entries drops them with
+a note, and the install line says how many of the thirteen are placed.
+
+Tests: `a_hosts_ai_skulls_pass_each_readers_campaign_gate`
+(`skulls_mp.rs`),
+`every_ai_skull_gate_has_the_multiplayer_skulls_before_unless_turned_off`
+(boot's plan), `assassins_cloaks_an_actor_in_the_campaign_and_where_the_gate_is_answered`
+(the native body), and against the retail XBE (`H2_XBE`, ignored by
+default) `each_gate_is_a_jne_falling_through_to_its_skulls_byte` and
+`the_gates_cover_every_reader_of_an_ai_skull`
+(`crates/apps/boot/tests/skull_gates_xbe.rs`).
+
+Not verified: what each skull looks like on a host's actors in a match;
+that the fast tier's and clang's images both carry the entries (the
+install line's count says so).
 
 ## Our skulls
 

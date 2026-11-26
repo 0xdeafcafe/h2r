@@ -364,8 +364,10 @@ pub const SKULL_ARRAY: u32 = 0x4f55dc;
 
 /// Skulls whose readers only the actors reach: Assassins, Thunderstorm,
 /// Famine (AI weapon drops), Ghost, Catch, Mythic and Angry. Every reader
-/// tests the campaign gate first, so these act in a Firefight match only
-/// where that gate is answered "on", and the host alone runs actors.
+/// tests the campaign gate first; on a Firefight host the feature's hook at
+/// each reader's gate (`points::skull_gates`, [`gate_resume`]) answers it
+/// "on" for the skulls of [`firefight_ai`], and the native active
+/// camouflage asks `engine::skull_gate`. The host alone runs actors.
 pub const FIREFIGHT_AI_SKULLS: [usize; 7] = [2, 3, 4, 7, 9, 12, 13];
 
 /// Skulls that change what a machine draws or simulates without actors,
@@ -440,6 +442,22 @@ pub fn firefight_shared(on: &BTreeSet<::firefight::Skull>) -> Vec<u8> {
         .collect();
     set.sort_unstable();
     set
+}
+
+/// The AI skulls a machine in `role` answers the campaign gate for, as
+/// bits (bit `n` skull `n`): [`firefight_ai`]'s set.
+pub fn gate_bits(role: &Role, on: &BTreeSet<::firefight::Skull>) -> u32 {
+    firefight_ai(role, on)
+        .iter()
+        .fold(0u32, |b, s| b | 1 << s)
+}
+
+/// Where a reader stopped at `gate`'s `jne` goes when this machine answers
+/// the gate for the skulls in `answered` (bit `n` skull `n`): the
+/// fall-through, the load of the skull's byte, for an answered skull;
+/// nowhere (the `jne` decides, as retail) for any other.
+pub fn gate_resume(gate: &engine::points::skull_gates::Gate, answered: u32) -> Option<u32> {
+    (gate.skull < 32 && answered & (1 << gate.skull) != 0).then_some(gate.resume)
 }
 
 // ---- the shared state ----
@@ -543,6 +561,7 @@ impl MpSkulls {
         let bits = set.iter().fold(0u32, |b, s| b | 1 << s);
         self.active.store(bits, Ordering::SeqCst);
         self.ff_ai.store(0, Ordering::SeqCst);
+        engine::skull_gate::answer(0);
         self.said_blind.store(false, Ordering::Relaxed);
         self.said_famine.store(false, Ordering::Relaxed);
         if let Some(t) = &self.telemetry {
@@ -564,8 +583,11 @@ impl MpSkulls {
     /// command with the director's whole active set.
     pub fn set_firefight(&self, role: &Role, on: &BTreeSet<::firefight::Skull>) {
         let bits = |v: Vec<u8>| v.iter().fold(0u32, |b, s| b | 1 << s);
-        self.ff_ai
-            .store(bits(firefight_ai(role, on)), Ordering::SeqCst);
+        let ai = gate_bits(role, on);
+        self.ff_ai.store(ai, Ordering::SeqCst);
+        // The readers' campaign gate passes for exactly these
+        // ([`gate_resume`], and the native bodies through `skull_gate`).
+        engine::skull_gate::answer(ai);
         if !matches!(role, Role::Guest { .. }) {
             self.active
                 .fetch_or(bits(firefight_shared(on)), Ordering::SeqCst);
@@ -801,6 +823,32 @@ impl hooks::Feature for SkullsMp {
                 }
                 Ok(())
             });
+        // A Firefight host's AI skulls: each reader's campaign gate
+        // (docs/game/skulls.md, "In Firefight"). Optional: an image built
+        // without the gates' entries drops them with a note, and the rest
+        // of the multiplayer skulls stay.
+        for gate in &engine::points::skull_gates::GATES {
+            b.raw()
+                .before(
+                    &gate.site,
+                    "a Firefight host's AI skull passes the campaign gate",
+                    move |c| {
+                        let Some(to) = gate_resume(gate, engine::skull_gate::answered_bits())
+                        else {
+                            return Ok(Flow::Continue);
+                        };
+                        if !c.ctx.runtime().read_dispatch(|d| d.has_resume(to)) {
+                            eprintln!(
+                                "skulls-mp: {}'s fall-through {to:#010x} is not an entry of this image; the campaign gate stands",
+                                gate.site.name
+                            );
+                            return Ok(Flow::Continue);
+                        }
+                        Ok(Flow::Return(runtime::TransferAbi::resume(to)))
+                    },
+                )
+                .optional();
+        }
         let (live, save, load) = (
             Arc::clone(&self.0),
             Arc::clone(&self.0),
@@ -865,14 +913,26 @@ pub fn report(plan: &hooks::Plan, installed: &hooks::Installed) -> String {
             None => format!("{} ({what}, NOT in the plan)", p.name),
         }
     };
+    let gates = &engine::points::skull_gates::GATES;
+    let placed = gates
+        .iter()
+        .filter(|g| {
+            plan.chains.values().any(|c| {
+                std::ptr::eq(c.point, &g.site)
+                    && installed.placed.contains(&c.addr)
+                    && c.hooks().any(|h| h.feature == FEATURE)
+            })
+        })
+        .count();
     format!(
         "skulls-mp: hooks installed via feature plan at {}, {}, {}, {}; offered: {} (each once \
-         the host's profile has collected it)",
+         the host's profile has collected it); Firefight AI skull gates: {placed} of {} placed",
         at(&GAME_ACTIVATE, "multiplayer start"),
         at(&HUD_SHOWN, "Blind: HUD"),
         at(&FIRST_PERSON_RENDER, "Blind: first-person weapon"),
         at(&WEAPON_FROM_PLACEMENT, "Famine: placed weapons"),
         names(&MP.iter().map(|m| m.index as u8).collect::<Vec<_>>()),
+        gates.len(),
     )
 }
 
@@ -1320,6 +1380,49 @@ mod tests {
         // The next game's start clears the AI set.
         mp.activate(&[]);
         assert!(!mp.ff_ai_active(12));
+    }
+
+    /// Each AI skull's readers pass their campaign gate on the machine
+    /// that runs actors and nowhere else: a gate resumes at the load of its
+    /// skull's byte only for a skull of the host's AI set.
+    #[test]
+    fn a_hosts_ai_skulls_pass_each_readers_campaign_gate() {
+        use ::firefight::Skull as S;
+        use engine::points::skull_gates::{GATES, of};
+        let every = ff(&[
+            S::Assassins,
+            S::Thunderstorm,
+            S::Famine,
+            S::Ghost,
+            S::Catch,
+            S::Mythic,
+            S::Angry,
+        ]);
+        let host = gate_bits(&Role::Host { peers: 2 }, &every);
+        assert_eq!(gate_bits(&Role::Alone, &every), host);
+        // Every reader of every AI skull: the scan's thirteen gates.
+        assert_eq!(GATES.len(), 13);
+        for &skull in &FIREFIGHT_AI_SKULLS {
+            let gates: Vec<_> = of(skull as u8).collect();
+            assert!(!gates.is_empty(), "skull {skull}");
+            for g in gates {
+                assert_eq!(gate_resume(g, host), Some(g.site.base + 2), "{}", g.site.name);
+            }
+        }
+        // A guest's actors are the host's: no gate passes there.
+        let guest = gate_bits(&Role::Guest { class: 2 }, &every);
+        assert_eq!(guest, 0);
+        assert!(GATES.iter().all(|g| gate_resume(g, guest).is_none()));
+        // One skull on answers its own readers only.
+        let mythic = gate_bits(&Role::Host { peers: 2 }, &ff(&[S::Mythic, S::Blind]));
+        assert_eq!(mythic, 1 << 12);
+        for g in &GATES {
+            assert_eq!(gate_resume(g, mythic).is_some(), g.skull == 12, "{}", g.site.name);
+        }
+        // The player-scoped skulls have no gate of their own.
+        for skull in [6u8, 16] {
+            assert!(of(skull).next().is_none());
+        }
     }
 
     #[test]

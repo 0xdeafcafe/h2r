@@ -686,6 +686,42 @@ fn the_rules_runtime_puts_in_the_script_index_engine_object_unless_turned_off() 
     assert!(entries.contains(&engine::points::game_types::SPAWN_TYPE_MASK_SLAYER));
 }
 
+/// With the multiplayer skulls on, every AI skull reader's campaign gate
+/// (`engine::points::skull_gates`) has the feature's one `before`, and each
+/// gate's site and fall-through are image entries; off, no gate is hooked.
+#[test]
+fn every_ai_skull_gate_has_the_multiplayer_skulls_before_unless_turned_off() {
+    use engine::points::skull_gates::GATES;
+    let hooked = |switches: &str| {
+        let plan = plan(&Case::full(switches)).unwrap();
+        let mut at: Vec<u32> = plan
+            .chains
+            .values()
+            .filter(|chain| GATES.iter().any(|g| std::ptr::eq(chain.point, &g.site)))
+            .flat_map(|chain| {
+                chain
+                    .hooks()
+                    .filter(|hook| hook.feature == crate::skulls_mp::FEATURE)
+                    .map(move |hook| {
+                        assert_eq!(hook.kind().as_str(), "before", "{}", chain.point.name);
+                        chain.addr
+                    })
+            })
+            .collect();
+        at.sort_unstable();
+        at
+    };
+    let mut want: Vec<u32> = GATES.iter().map(|g| g.site.base).collect();
+    want.sort_unstable();
+    assert_eq!(hooked(""), want);
+    assert!(hooked("-skulls-mp").is_empty());
+    let entries: Vec<u32> = crate::image_entries().collect();
+    for g in &GATES {
+        assert!(entries.contains(&g.site.base), "{}", g.site.name);
+        assert!(entries.contains(&g.resume), "{}", g.site.name);
+    }
+}
+
 /// The features `run_hosted_with_live` adds around `register_core` and
 /// `register_late`, present in the full case's plan.
 #[test]

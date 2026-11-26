@@ -26,7 +26,9 @@
 //! `ebp` the object array global, `edi` the header offset, `esi` the body.
 //! In the campaign with the Assassins skull on, an AI unit (body `+12c`
 //! not none) whose team (`+138`) is none, out of `0..10`, or not friendly
-//! to the player's (`bfe60`) gets body `+134` bit 3. Then the camouflage
+//! to the player's (`bfe60`) gets body `+134` bit 3; outside the campaign
+//! only where the gate is answered ([`crate::skull_gate`], a Firefight
+//! host). Then the camouflage
 //! level `+2b0` moves by `+2b8` times the tick (game time `+4`) toward 1
 //! (bit 3) or 0, and `b58c0(+d4, 800000)` when it hits 1 and the body
 //! has a `+d4` effect; and `+2b4` moves by the tick times a constant
@@ -97,6 +99,8 @@ const PLAYERS: u32 = points::PLAYERS.base;
 const ACTORS: u32 = points::ACTORS.base;
 /// The skull bytes: Envy at `+0`, Assassins at `+2`.
 const SKULLS: u32 = points::SKULLS.base;
+/// Assassins' index in [`SKULLS`].
+const ASSASSINS: u8 = points::skull_gates::ASSASSINS;
 /// Holds the player's record (`+c4` the team record `bfe60` compares).
 const LOCAL_PLAYER: u32 = 0x004f_55ec;
 /// Holds a pointer to a byte `c50a0` tests (L: the game is paused).
@@ -336,7 +340,10 @@ pub(super) fn camo(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
                     0xc6887
                 } else {
                     c.ecx = g.u32(GAME)?;
-                    if g.u32(at(c.ecx, 8))? != 1 {
+                    // The campaign gate; a Firefight host answers it for
+                    // Assassins (`points::skull_gates`, the lifted
+                    // reader's `jne` at `c683f`).
+                    if !crate::skull_gate::passes(g.u32(at(c.ecx, 8))?, ASSASSINS) {
                         0xc6887
                     } else {
                         let al = g.u8(at(SKULLS, 2))?;
@@ -1338,3 +1345,6 @@ pub(super) fn dialogue(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
         };
     }
 }
+
+#[cfg(test)]
+mod tests;
