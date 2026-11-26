@@ -1205,12 +1205,15 @@ fn sync(r: &mut Running, store: &dyn Store) -> Result<(), String> {
     Ok(())
 }
 
-/// Writes the VM's state when it changed.
+/// Writes the VM's state when it changed. The store takes the encoded
+/// bytes and `written` keeps its copy in its own buffer. A write the store
+/// refuses stops the script, so `written` is not read after it.
 fn save(r: &mut Running, store: &mut dyn Store) -> Result<(), String> {
     let bytes = r.vm.ext().encode();
     if bytes != r.written {
-        store.set(bytes.clone())?;
-        r.written = bytes;
+        r.written.clear();
+        r.written.extend_from_slice(&bytes);
+        store.set(bytes)?;
     }
     Ok(())
 }
