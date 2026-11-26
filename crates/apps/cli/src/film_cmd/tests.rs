@@ -51,8 +51,8 @@ fn key(tick: u64) -> Keyframe {
     }
 }
 
-/// A v3 film with a standalone anchor at tick 30, a delta against it at
-/// tick 60 and two recorded capture boundaries.
+/// A v3 film with a standalone anchor at tick 30 and a delta against it at
+/// tick 60.
 fn sample_film() -> Vec<u8> {
     let mut out = film::Writer::new(Cursor::new(Vec::new()), &header(3, 60)).unwrap();
     let mut track = TrackWriter::default();
@@ -75,45 +75,15 @@ fn sample_film() -> Vec<u8> {
             .unwrap();
         match tick {
             30 => track.keyframe(&mut out, &key(tick)).unwrap(),
-            45 => out
-                .chunk(
-                    film::MARK,
-                    &film::tape::Mark::D3dBarrier {
-                        slices: 91,
-                        tick,
-                        saved: false,
-                    },
-                )
+            60 => track
+                .keyframe_against(&mut out, &key(tick), Some(30))
                 .unwrap(),
-            60 => {
-                out.chunk(
-                    film::MARK,
-                    &film::tape::Mark::D3dBarrier {
-                        slices: 130,
-                        tick,
-                        saved: true,
-                    },
-                )
-                .unwrap();
-                track
-                    .keyframe_against(&mut out, &key(tick), Some(30))
-                    .unwrap();
-            }
             _ => {}
         }
     }
     track
         .finish(&mut out, &MatchHeader::default(), &Summary::default())
         .unwrap();
-    out.chunk(
-        film::MARK,
-        &film::tape::Mark::End {
-            slices: 140,
-            tick: 60,
-            calls: 0,
-        },
-    )
-    .unwrap();
     out.finish().unwrap().into_inner()
 }
 
@@ -128,7 +98,7 @@ fn stat_bytes(bytes: Vec<u8>) -> String {
 }
 
 #[test]
-fn film_stat_lists_keyframes_anchors_and_capture_points() {
+fn film_stat_lists_keyframes_and_anchors() {
     let report = stat_bytes(sample_film());
     assert!(report.contains("version: 3"), "{report}");
     assert!(report.contains("source: host"), "{report}");
@@ -148,18 +118,6 @@ fn film_stat_lists_keyframes_anchors_and_capture_points() {
         .find(|line| line.starts_with("KEYF tick=60 "))
         .unwrap();
     assert!(delta.ends_with(" delta anchor=30"), "{delta}");
-    assert!(
-        report.contains("capture_points: 2 (1 saved, 1 failed)"),
-        "{report}"
-    );
-    assert!(
-        report.contains("d3d_barrier tick=45 slices=91 saved=false"),
-        "{report}"
-    );
-    assert!(
-        report.contains("d3d_barrier tick=60 slices=130 saved=true"),
-        "{report}"
-    );
 }
 
 #[test]
@@ -180,14 +138,10 @@ fn film_stat_scans_keyframes_when_the_directory_is_unwritten() {
         .find(|line| line.starts_with("KEYF tick=7 "))
         .unwrap();
     assert!(row.ends_with(" anchor=unknown"), "{row}");
-    assert!(
-        report.contains("capture_points: 0 (0 saved, 0 failed)"),
-        "{report}"
-    );
 }
 
 #[test]
-fn film_stat_reports_a_film_without_keyframes_or_barriers() {
+fn film_stat_reports_a_film_without_keyframes() {
     let out = film::Writer::new(Cursor::new(Vec::new()), &header(2, 0)).unwrap();
     let bytes = out.finish().unwrap().into_inner();
     let report = stat_bytes(bytes);
@@ -195,79 +149,7 @@ fn film_stat_reports_a_film_without_keyframes_or_barriers() {
         report.contains("keyframes: 0 (0 anchors, 0 deltas, 0 stored bytes)"),
         "{report}"
     );
-    assert!(
-        report.contains("capture_points: 0 (0 saved, 0 failed)"),
-        "{report}"
-    );
-}
-
-#[test]
-fn film_stat_counts_tape_batches_bytes_and_operations() {
-    let mut header = header(2, 0);
-    header.meta.source = film::Source::Local;
-    let mut out = film::Writer::new(Cursor::new(Vec::new()), &header).unwrap();
-    let call = |index, op: &str| Call {
-        index,
-        op: op.into(),
-        args: vec![7],
-        thread: 1,
-        result: Ok(0),
-        outputs: vec![vec![23; 8]],
-    };
-    let first = vec![call(1, "Select"), call(2, "Htonl")];
-    let pad = vec![call(3, "XInputGetState")];
-    let second = vec![call(4, "Select")];
-    // One batch holds pad and socket calls in call order.
-    let all: Vec<Call> = first.iter().chain(&pad).chain(&second).cloned().collect();
-    out.chunk_bytes(film::tape::TAPE, &film::tape::encode_batch(&all).unwrap())
-        .unwrap();
-    out.chunk(
-        PDEV,
-        &film::tape::PortChange {
-            sync: 0,
-            ports: [None; 4],
-        },
-    )
-    .unwrap();
-    let bytes = out.finish().unwrap().into_inner();
-    let reader = film::Reader::new(Cursor::new(&bytes)).unwrap();
-    let stored: u64 = reader
-        .entries
-        .iter()
-        .filter(|e| e.tag == film::tape::TAPE)
-        .map(|e| u64::from(e.size) + 8)
-        .sum();
-    let json = |batch: &[Call]| -> u64 {
-        batch
-            .iter()
-            .map(|c| serde_json::to_vec(c).unwrap().len() as u64 + 1)
-            .sum()
-    };
-    let binary = |batch: &[Call]| film::tape::encode_batch(batch).unwrap().len();
-    let net = format!(
-        "NETR calls=3 json={} binary={}\n  \"Htonl\" calls=1\n  \"Select\" calls=2\n",
-        json(&first) + json(&second),
-        binary(&[first.clone(), second.clone()].concat()),
-    );
-    let pad = format!(
-        "PADR calls=1 json={} binary={}\n  \"XInputGetState\" calls=1\n",
-        json(&pad),
-        binary(&pad),
-    );
-    let report = stat_bytes(bytes);
-    assert!(report.contains("source: local"), "{report}");
-    assert!(
-        report.contains(&format!(
-            "TAPE calls=4 inflated={} stored={stored} chunks=1\n",
-            binary(&all)
-        )),
-        "{report}"
-    );
-    assert!(report.contains(&net), "{report}");
-    assert!(report.contains(&pad), "{report}");
-    assert!(report.contains("RAND calls=0 json=0 binary=0"), "{report}");
-    assert!(report.contains("PDEV calls=0 inflated="), "{report}");
-    assert!(!report.contains("outputs"), "{report}");
+    assert!(!report.contains("TAPE"), "{report}");
 }
 
 /// 40 ticks of one seat: it turns 0.25 more every tick and presses a

@@ -138,8 +138,7 @@ read by `sim_bounces::in_fork`), so parts that refuse an ordinary
 snapshot serialise what only a whole-machine fork may carry. The fork
 asks each part for its blockers and skips the machine's part-less checks
 (`sim_bounces::blockers`): in a fork's scope those refuse a signed-in
-Live HLE with no film tape, which every sim has. A
-fork needs no tape. No service call is in flight between two ticks of a
+Live HLE, which every sim has. No service call is in flight between two ticks of a
 running match, and nothing outside the machine is rewound.
 
 A part that is live answers `Busy`: a capture is asked again a row later

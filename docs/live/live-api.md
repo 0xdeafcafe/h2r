@@ -447,7 +447,7 @@ reference the canonical game ID and the original tick range.
 | `PUT /v1/games/{game}/film?part=<n>` | lease `telemetry.ingest` | Submit the next numbered part. Returns 202 while processing and 204 when ready for the next part. With `?object=film`, a part of the film file. |
 | `POST /v1/films/{game}/save` | `films.write` | Save the game for the caller. The caller must have played in it. Returns 204, including a repeated save. |
 | `DELETE /v1/films/{game}/save` | `films.write` | Remove the caller's own pin. The caller must have played in the game. Returns 204 even if the pin is already absent. |
-| `GET /v1/games/{game}/film` without a range | `read` | Streams the host's film file, or the container when the host sent none (up to 2 GiB). The container and a film file with a machine part go only to the game's players; a film file without one goes to any account that can see the game. |
+| `GET /v1/games/{game}/film` without a range | `read` | Streams the host's film file, or the container when the host sent none (up to 2 GiB). The container goes only to the game's players; a film file goes to any account that can see the game. |
 | `GET /v1/films/{game}/clips` | public or `read` | The game's clips, newest first. |
 | `POST /v1/films/{game}/clips` | `films.write` | An account that can see the game can create a clip. Returns the clip with 201. |
 | `GET /v1/clips/{id}` | public or `read` | The clip. |

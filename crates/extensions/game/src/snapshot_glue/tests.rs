@@ -304,7 +304,7 @@ fn a_v4_kernel_keyframe_is_refused_before_the_live_and_guest_parts_run() {
         .unwrap();
     let w = World::new("kcore-version");
     let mut parts = w.machine(0).parts;
-    parts.retain(|part| matches!(part.name(), "guest" | "livefilm"));
+    parts.retain(|part| part.name() == "guest");
     parts.push(Box::new(KernelPart {
         m: &mut machine,
         rebuilders: &rebuilders,
@@ -318,10 +318,8 @@ fn a_v4_kernel_keyframe_is_refused_before_the_live_and_guest_parts_run() {
         presents: 1,
         notes: Vec::new(),
     });
-    for name in ["guest", "livefilm"] {
-        out.section(Tag::new(name), 1, Codec::Stored, 99u64.to_le_bytes().to_vec())
-            .unwrap();
-    }
+    out.section(Tag::new("guest"), 1, Codec::Stored, 99u64.to_le_bytes().to_vec())
+        .unwrap();
     out.section(kernel::snapshot::KCORE, 5, Codec::Zstd, vec![0; 32])
         .unwrap();
     let bytes = out.finish().unwrap();
@@ -329,7 +327,6 @@ fn a_v4_kernel_keyframe_is_refused_before_the_live_and_guest_parts_run() {
     let error = load_parts_with_base(&mut parts, &snap, None, None).unwrap_err();
     assert!(error.contains("kcore has version 5"), "{error}");
     assert!(w.take_log().is_empty());
-    assert_eq!(w.value("livefilm").get(), 0);
     assert_eq!(w.value("guest").get(), 0);
 }
 

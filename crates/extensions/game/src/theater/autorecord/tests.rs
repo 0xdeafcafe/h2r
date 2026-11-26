@@ -98,7 +98,7 @@ fn pruning_keeps_the_newest_default_films_and_every_saved_or_explicit_one() {
     for n in 0..5 {
         let path = dir.0.join(file_name(start + Duration::from_secs(n)));
         // A sealed film, written the way any recording seals.
-        local(&dir, &path, false).finish(1, true).unwrap();
+        local(&dir, &path, false).finish(true).unwrap();
         assert!(film::LibraryEntry::read(&path).is_ok());
         sealed.push(path);
     }
@@ -184,12 +184,12 @@ fn ticks(film: &Session, guest: &runtime::Guest, n: u64) {
 
 /// A game on the tape from tick `start` to now, ended: the next slice's
 /// check cuts it, as boot's slice loop does.
-fn end_game(film: &Session, start: u64, slices: u64) {
-    end_game_as(film, start, slices, film::blam::Mode::Custom, "zanzibar")
+fn end_game(film: &Session, start: u64) {
+    end_game_as(film, start, film::blam::Mode::Custom, "zanzibar")
 }
 
 /// [`end_game`] with the game's mode and level, as the descriptor read them.
-fn end_game_as(film: &Session, start: u64, slices: u64, mode: film::blam::Mode, level: &str) {
+fn end_game_as(film: &Session, start: u64, mode: film::blam::Mode, level: &str) {
     {
         let mut s = film.lock();
         let Mode::Record(rec) = &mut s.mode else { panic!("a recording") };
@@ -197,7 +197,7 @@ fn end_game_as(film: &Session, start: u64, slices: u64, mode: film::blam::Mode, 
         rec.game_started_ms = Some(1_795_000_000_000 + start);
         rec.match_over = true;
     }
-    film.finish(slices, false).unwrap();
+    film.finish(false).unwrap();
 }
 
 /// The sealed default films in `dir`, by their game's start tick.
@@ -220,7 +220,7 @@ fn each_game_is_cut_into_a_film_of_its_own_while_the_tape_records_on() {
     let tape_id = auto.lock().header.meta.id.clone();
     let guest = crate::theater::tests::arena();
     ticks(&auto, &guest, 40);
-    end_game(&auto, 10, 80);
+    end_game(&auto, 10);
     {
         let s = auto.lock();
         let Mode::Record(rec) = &s.mode else { panic!("a recording") };
@@ -228,11 +228,11 @@ fn each_game_is_cut_into_a_film_of_its_own_while_the_tape_records_on() {
         assert!(rec.meta.descriptor().match_start_tick.is_none() && rec.meta.between_games());
     }
     ticks(&auto, &guest, 30);
-    end_game(&auto, 50, 140);
+    end_game(&auto, 50);
     // Menus after the last game.
     ticks(&auto, &guest, 5);
     assert!(film::LibraryEntry::read(&tape).is_err(), "the running tape is never listed");
-    auto.finish(150, true).unwrap();
+    auto.finish(true).unwrap();
     assert!(!tape.exists(), "the tape goes at the session's end");
 
     let films = cut_films(&dir.0);
@@ -260,7 +260,7 @@ fn a_film_cut_after_the_hooks_are_installed_carries_their_digest() {
     // Boot installs the hooks after the tape's first header is written.
     auto.set_simulation_hooks("digest-of-the-installed-hooks".into()).unwrap();
     ticks(&auto, &crate::theater::tests::arena(), 40);
-    end_game(&auto, 10, 80);
+    end_game(&auto, 10);
     let (cut, reader) = cut_films(&dir.0).pop().expect("the game's film");
     assert_eq!(reader.header.simulation_hooks.as_deref(), Some("digest-of-the-installed-hooks"));
     let entry = film::LibraryEntry::read(&cut).unwrap();
@@ -309,25 +309,14 @@ fn a_session_names_the_game_on_its_tape_when_it_starts_and_clears_it_when_it_end
 }
 
 #[test]
-fn a_long_game_with_fragmented_calls_is_listed_and_saved_and_without_a_game_start_does_not_play() {
-    use film::tape::{Call, Tap};
-
+fn a_long_game_is_listed_and_saved_and_without_a_game_start_does_not_play() {
     let dir = Temp::new("replay");
     let auto = local(&dir, &dir.0.join("auto-tape.h2film"), true);
     let guest = crate::theater::tests::arena();
-    let call = |tick: u32| Call {
-        index: 0,
-        op: "Service".into(),
-        args: vec![tick; 40],
-        thread: 1,
-        result: Ok(tick),
-        outputs: if tick % 724 == 0 { vec![vec![17; 65536]; 17] } else { vec![] },
-    };
-    for tick in 1..=2100 {
-        auto.record(call(tick));
+    for _ in 1..=2100 {
         auto.checkpoint(&guest);
     }
-    end_game(&auto, 10, 4200);
+    end_game(&auto, 10);
     let library = film::Library::open(&dir.0).unwrap();
     let rows = library.list().unwrap();
     assert_eq!(rows.len(), 1);
@@ -384,7 +373,7 @@ fn a_session_that_joins_a_link_still_leaves_a_film_of_each_game() {
     auto.outside_change("a Live session link was joined", false);
     assert!(tape.exists(), "the join does not delete the tape");
     ticks(&auto, &guest, 20);
-    end_game_as(&auto, 25, 80, film::blam::Mode::Matchmaking, "lockout");
+    end_game_as(&auto, 25, film::blam::Mode::Matchmaking, "lockout");
     assert_eq!(cut_films(&dir.0).len(), 1);
     // A second link joined with a game in play does not drop that game.
     {
@@ -393,7 +382,7 @@ fn a_session_that_joins_a_link_still_leaves_a_film_of_each_game() {
         rec.meta.start_for_test(35, "zanzibar", film::blam::Mode::Custom);
     }
     auto.outside_change("a Live session link was joined", false);
-    auto.finish(90, true).unwrap();
+    auto.finish(true).unwrap();
     assert!(!tape.exists());
     assert_eq!(cut_films(&dir.0).len(), 2, "the game in play at the join and at exit is kept");
     assert_eq!(auto.status().notes.len(), 2);
@@ -406,7 +395,7 @@ fn an_editor_write_drops_only_the_game_in_play() {
     let auto = local(&dir, &tape, true);
     let guest = crate::theater::tests::arena();
     ticks(&auto, &guest, 30);
-    end_game(&auto, 5, 60);
+    end_game(&auto, 5);
     assert_eq!(cut_films(&dir.0).len(), 1);
     {
         let mut s = auto.lock();
@@ -417,7 +406,7 @@ fn an_editor_write_drops_only_the_game_in_play() {
     let status = auto.status();
     assert!(!status.in_game);
     assert!(status.last_discard.is_some_and(|why| why.contains("an editor changed the game")));
-    auto.finish(90, true).unwrap();
+    auto.finish(true).unwrap();
     assert_eq!(cut_films(&dir.0).len(), 1, "the finished game's film stays; the dropped one is not cut");
 }
 
@@ -437,14 +426,14 @@ fn a_multiplayer_game_left_before_its_end_is_a_film_of_what_was_played() {
         rec.meta.on_map_for_test();
     }
     ticks(&auto, &guest, 30);
-    auto.finish(120, false).unwrap();
+    auto.finish(false).unwrap();
     let films = cut_films(&dir.0);
     assert_eq!(films.len(), 1, "the left game keeps its film");
     assert_eq!(films[0].1.front.as_ref().unwrap().match_start_tick, Some(10));
     assert_eq!(film::LibraryEntry::read(&films[0].0).unwrap().meta.map, "lockout");
     // Then the player quits the app: nothing more is cut and the session
     // reports the film.
-    auto.finish(130, true).unwrap();
+    auto.finish(true).unwrap();
     assert!(!tape.exists());
     assert_eq!(cut_films(&dir.0).len(), 1);
     assert_eq!(auto.status().games_cut.len(), 1);
@@ -462,7 +451,6 @@ fn quitting_in_a_multiplayer_game_cuts_it() {
         let Mode::Record(rec) = &mut s.mode else { panic!("a recording") };
         rec.meta.start_for_test(12, "zanzibar", film::blam::Mode::Custom);
     }
-    seal.advance(79);
     drop(seal);
     assert!(!tape.exists());
     assert_eq!(cut_films(&dir.0).len(), 1, "the game in play at quit is a film");
@@ -478,16 +466,11 @@ fn a_failed_recording_keeps_the_game_in_play() {
         let mut s = auto.lock();
         let Mode::Record(rec) = &mut s.mode else { panic!("a recording") };
         rec.meta.start_for_test(12, "zanzibar", film::blam::Mode::Custom);
+        s.fail("writing the stats stream: disk full".into());
         drop(s);
-        use film::tape::{Call, Tap};
-        let mut call = Call { index: 0, op: "Random".into(), args: vec![],
-            outputs: vec![], result: Ok(0), thread: 0 };
-        auto.record(call.clone());
-        call.op = "x".repeat(65);
-        auto.record(call);
         assert!(auto.status().failure.is_some());
     }
-    auto.finish(80, true).unwrap();
+    auto.finish(true).unwrap();
     assert_eq!(cut_films(&dir.0).len(), 1, "what was recorded is kept");
     assert!(!tape.exists());
 }
@@ -512,7 +495,7 @@ fn the_end_of_the_session_says_what_was_saved_or_why_nothing_was() {
     // A session reports once, and a session with no game reports no film.
     let temp = Temp::new("line");
     let auto = local(&temp, &temp.0.join("auto.h2film"), true);
-    auto.finish(5, true).unwrap();
+    auto.finish(true).unwrap();
     assert!(auto.lock().outcome.reported);
     assert!(auto.status().games_cut.is_empty());
 }
@@ -528,7 +511,7 @@ fn a_game_left_in_play_at_exit_is_cut_at_exit() {
         let Mode::Record(rec) = &mut s.mode else { panic!("a recording") };
         rec.meta.start_for_test(12, "zanzibar", film::blam::Mode::Campaign);
     }
-    auto.finish(80, true).unwrap();
+    auto.finish(true).unwrap();
     assert!(!tape.exists());
     let films = cut_films(&dir.0);
     assert_eq!(films.len(), 1);
@@ -542,12 +525,12 @@ fn each_cut_keeps_the_library_at_its_cap() {
     let mut old = Vec::new();
     for n in 0..KEEP as u64 {
         let path = dir.0.join(file_name(start + Duration::from_secs(n)));
-        local(&dir, &path, false).finish(1, true).unwrap();
+        local(&dir, &path, false).finish(true).unwrap();
         old.push(path);
     }
     let auto = local(&dir, &dir.0.join(file_name(start + Duration::from_secs(1_000))), true);
     ticks(&auto, &crate::theater::tests::arena(), 40);
-    end_game(&auto, 10, 80);
+    end_game(&auto, 10);
     let sealed = fs::read_dir(&dir.0)
         .unwrap()
         .map(|e| e.unwrap().path())
@@ -562,7 +545,7 @@ fn each_cut_keeps_the_library_at_its_cap() {
 fn only_a_cut_opens_at_its_games_start() {
     let dir = Temp::new("open");
     let path = dir.0.join("named.h2film");
-    local(&dir, &path, false).finish(1, true).unwrap();
+    local(&dir, &path, false).finish(true).unwrap();
     let reader = film::Reader::open(&path).unwrap();
     assert_eq!(opening_tick(&reader.header, reader.front.as_ref()), 0);
     let mut cut = reader.header.clone();
@@ -580,11 +563,11 @@ fn only_a_cut_opens_at_its_games_start() {
 fn a_session_that_played_no_game_leaves_no_default_film() {
     let dir = Temp::new("menus");
     let auto_path = dir.0.join("auto.h2film");
-    local(&dir, &auto_path, true).finish(5, true).unwrap();
+    local(&dir, &auto_path, true).finish(true).unwrap();
     assert!(!auto_path.exists(), "menus alone are not listed in Recent");
 
     let named_path = dir.0.join("named.h2film");
-    local(&dir, &named_path, false).finish(5, true).unwrap();
+    local(&dir, &named_path, false).finish(true).unwrap();
     assert!(film::LibraryEntry::read(&named_path).is_ok(), "an explicit film still seals");
 }
 
@@ -594,7 +577,7 @@ fn a_campaign_mission_ends_into_a_film_like_a_multiplayer_game() {
     let tape = dir.0.join("auto-tape.h2film");
     let auto = local(&dir, &tape, true);
     ticks(&auto, &crate::theater::tests::arena(), 40);
-    end_game_as(&auto, 10, 80, film::blam::Mode::Campaign, "deltahalo");
+    end_game_as(&auto, 10, film::blam::Mode::Campaign, "deltahalo");
     let films = cut_films(&dir.0);
     assert_eq!(films.len(), 1, "the mission's film is cut at its end");
     let entry = film::LibraryEntry::read(&films[0].0).unwrap();
@@ -602,9 +585,9 @@ fn a_campaign_mission_ends_into_a_film_like_a_multiplayer_game() {
     assert_eq!(films[0].1.front.as_ref().unwrap().match_start_tick, Some(10));
     // Firefight is a variant of a game, not a mode of its own: the same cut.
     ticks(&auto, &crate::theater::tests::arena(), 10);
-    end_game_as(&auto, 50, 100, film::blam::Mode::Custom, "guardhouse");
+    end_game_as(&auto, 50, film::blam::Mode::Custom, "guardhouse");
     assert_eq!(cut_films(&dir.0).len(), 2);
-    auto.finish(110, true).unwrap();
+    auto.finish(true).unwrap();
     assert!(!tape.exists());
 }
 
@@ -622,7 +605,6 @@ fn a_session_that_goes_away_without_a_teardown_cuts_the_game_in_play() {
         let Mode::Record(rec) = &mut s.mode else { panic!("a recording") };
         rec.meta.start_for_test(12, "zanzibar", film::blam::Mode::Campaign);
     }
-    seal.advance(79);
     drop(seal);
     assert!(!tape.exists(), "the tape goes as a teardown would");
     let films = cut_films(&dir.0);
@@ -654,7 +636,7 @@ fn a_campaign_mission_left_mid_session_is_cut_and_the_next_describes_itself() {
         rec.meta.on_map_for_test();
     }
     ticks(&auto, &guest, 30);
-    auto.finish(140, false).unwrap();
+    auto.finish(false).unwrap();
     let films = cut_films(&dir.0);
     assert_eq!(films.len(), 1, "the left mission keeps its film");
     assert_eq!(films[0].1.front.as_ref().unwrap().match_start_tick, Some(10));
@@ -674,12 +656,12 @@ fn a_campaign_mission_left_mid_session_is_cut_and_the_next_describes_itself() {
         rec.meta.on_map_for_test();
     }
     ticks(&auto, &guest, 10);
-    auto.finish(160, false).unwrap();
+    auto.finish(false).unwrap();
     let films = cut_films(&dir.0);
     assert_eq!(films.len(), 2);
     let entry = film::LibraryEntry::read(&films[1].0).unwrap();
     assert_eq!(entry.meta.map, "scarab");
-    auto.finish(170, true).unwrap();
+    auto.finish(true).unwrap();
     assert!(!tape.exists());
 }
 

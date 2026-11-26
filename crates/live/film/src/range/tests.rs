@@ -1,5 +1,5 @@
 use super::*;
-use crate::{DATA, Writer};
+use crate::Writer;
 use std::io::{self, Cursor};
 use std::ops::Range;
 
@@ -7,7 +7,7 @@ fn film() -> Vec<u8> {
     let mut h = crate::tests::header(7);
     h.version = 3;
     let mut w = Writer::new(Cursor::new(Vec::new()), &h).unwrap();
-    w.chunk(DATA, &"PRIVATE-GUEST-DISK").unwrap();
+    w.chunk(*b"PRIV", &"PRIVATE-GUEST-DISK").unwrap();
     w.chunk(
         blam::DESC,
         &blam::MatchHeader {

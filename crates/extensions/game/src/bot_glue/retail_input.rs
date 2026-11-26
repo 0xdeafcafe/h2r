@@ -23,8 +23,7 @@ mod animation;
 use animation::AnimationRead;
 
 /// Game-thread nanoseconds in [`Builder::sample`] since the process
-/// began: every seat's build, snapshot and reverts included. A film that
-/// replays its builds runs none. `h2 sim` reports the delta over a match
+/// began: every seat's build, snapshot and reverts included. `h2 sim` reports the delta over a match
 /// as `wall.phantom_build_ms_per_tick` (docs/runtime/sim.md §6).
 static BUILD_NS: AtomicU64 = AtomicU64::new(0);
 /// The part of [`BUILD_NS`] in [`SecondExecutor::snapshot`].
@@ -221,37 +220,8 @@ pub(super) async fn gather(
     cpu: CpuAbi,
     seat: SeatInput,
     cx: &engine::entry::Cx,
-    film: Option<&dyn film::tape::Tap>,
 ) -> Option<[u8; ACTION_SIZE]> {
     let attempt = |refresh| {
-        const OP: &str = "Bot.BuildAction";
-        let args = [
-            seat.tick,
-            seat.player.raw(),
-            seat.unit.raw(),
-            u32::from(refresh),
-        ];
-        if let Some(film) = film.filter(|film| film.replaying()) {
-            let Some(call) = film.next(OP, &args, 0) else {
-                return Ok(None);
-            };
-            match (call.result, call.outputs.as_slice()) {
-                (Ok(0), []) => return Ok(None),
-                (Ok(1), [data]) if data.len() == ACTION_SIZE => {
-                    return Ok(data.as_slice().try_into().ok());
-                }
-                (Ok(2), [data]) if data.len() == 12 => {
-                    return Err(AnimationRead::from_film(
-                        data.as_slice().try_into().unwrap(),
-                    ));
-                }
-                _ => {
-                    film.fault("malformed phantom action build".into());
-                    return Ok(None);
-                }
-            }
-        }
-
         let mut guard = input.lock().unwrap_or_else(|e| e.into_inner());
         let builder = guard.get_or_insert_with(|| Builder::new(main, workspace, path));
         if refresh {
@@ -262,23 +232,6 @@ pub(super) async fn gather(
         let outcome = builder.sample_checked(main, cpu, seat);
         BUILD_NS.fetch_add(elapsed_ns(started), Ordering::Relaxed);
         add(&MINOR_FAULTS, minor_faults().saturating_sub(faults));
-        if let Some(film) = film {
-            let (kind, outputs) = match &outcome {
-                Ok(None) => (0, vec![]),
-                Ok(Some(bytes)) => (1, vec![bytes.to_vec()]),
-                Err(cold) => (2, vec![cold.for_film().to_vec()]),
-            };
-            film.record(
-                film::tape::Call {
-                    index: 0,
-                    op: OP.into(),
-                    args: args.to_vec(),
-                    thread: 0,
-                    result: Ok(kind),
-                    outputs,
-                },
-            );
-        }
         outcome
     };
     let read = match attempt(false) {
@@ -410,7 +363,7 @@ impl Builder {
         let idx = seat.player.index();
         let same = match (&ours, &theirs) {
             (Ok(a), Ok(b)) => a == b,
-            (Err(a), Err(b)) => a.for_film() == b.for_film(),
+            (Err(a), Err(b)) => a == b,
             _ => false,
         } && self.history.get(&idx) == other.history.get(&idx);
         CHECKED.fetch_add(1, Ordering::Relaxed);

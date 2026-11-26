@@ -751,11 +751,6 @@ fn pending(error: &tungstenite::Error) -> bool {
 // lazily at the first XNet call and keep the listener for the lease's lifetime.
 static HOST: OnceLock<Option<Arc<TunnelHost>>> = OnceLock::new();
 
-/// Whether a dedicated host's tunnel answers before the socket table.
-pub(super) fn active(network: &Network) -> bool {
-    enabled(network).is_some()
-}
-
 fn enabled(network: &Network) -> Option<&'static TunnelHost> {
     let tunnel = HOST.get_or_init(|| {
         let bind = std::env::var("H2_TUNNEL_LISTEN").ok()?;
@@ -776,7 +771,7 @@ impl crate::Hle {
     fn actor_host_tunnel(&self) -> Option<&'static TunnelHost> {
         HOST.get()?
             .as_deref()
-            .filter(|tunnel| !self.offline_film && tunnel.address == self.network.config.address)
+            .filter(|tunnel| tunnel.address == self.network.config.address)
     }
 
     /// Actor-capable tunnel peer IDs and whether each needs a key at this tick.

@@ -131,15 +131,12 @@ pub(super) fn now_ms() -> u64 {
 /// Seal the game that ended at `tick` as a film of its own, cut from the
 /// running tape `rec` (docs/game/film-format.md, "One film per game"). The
 /// cut is a copy of the tape so far, closed with its own `HEAD`, the game's
-/// description and scores, and an end mark here; it opens at the game's
-/// start. Before it is written the library keeps the `KEEP - 1` newest
+/// description and scores; it opens at the game's start. Before it is written the library keeps the `KEEP - 1` newest
 /// default films. Returns the cut's path.
 pub(super) fn cut(
     rec: &mut super::Recording,
     tape: &film::Header,
-    slices: u64,
     tick: u64,
-    calls: u64,
 ) -> anyhow::Result<PathBuf> {
     use anyhow::Context;
     rec.meta.finish_map()?;
@@ -174,26 +171,15 @@ pub(super) fn cut(
                     .create_new(true)
                     .open(&film_path)
                     .with_context(|| film_path.display().to_string())?;
-                let cut = tape
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .fork(file, &seed)?;
-                let cut = std::sync::Arc::new(std::sync::Mutex::new(cut));
-                writer.set_mirror(Some(film::file::machine_mirror(std::sync::Arc::clone(&cut))));
-                Some(cut)
+                Some(tape.lock().unwrap_or_else(|e| e.into_inner()).fork(file, &seed)?)
             }
             None => None,
         };
         let mut track = rec.track.clone();
         writer.chunk(film::HEAD, &header)?;
         track.finish(&mut writer, rec.meta.descriptor(), &summary)?;
-        writer.chunk(film::MARK, &film::tape::Mark::End { slices, tick, calls })?;
         writer.finish()?.sync_all()?;
         if let Some(cut) = actions {
-            let cut = std::sync::Arc::try_unwrap(cut)
-                .map_err(|_| anyhow::anyhow!("the cut's film file is still shared"))?
-                .into_inner()
-                .unwrap_or_else(|e| e.into_inner());
             cut.finish()?.sync_all()?;
         }
         Ok(())

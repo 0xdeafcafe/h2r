@@ -4,13 +4,11 @@ pub mod columns;
 pub mod file;
 pub mod image;
 mod library;
-pub mod machine;
 pub mod presentation;
 pub mod range;
 pub mod share;
 pub mod side;
 pub mod start;
-pub mod tape;
 use anyhow::{Context, Result, ensure};
 pub use library::{Library, LibraryEntry};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -22,11 +20,6 @@ use std::{
 
 pub type Tag = [u8; 4];
 pub const HEAD: Tag = *b"HEAD";
-pub const DATA: Tag = *b"DATA";
-pub const NETR: Tag = *b"NETR";
-pub const RAND: Tag = *b"RAND";
-pub const HASH: Tag = *b"HASH";
-pub const MARK: Tag = *b"MARK";
 pub const KEYF: Tag = *b"KEYF";
 pub const INDX: Tag = *b"INDX";
 const FOOTER_MAGIC: &[u8; 8] = b"H2FILM2!";
@@ -161,17 +154,12 @@ pub struct Entry {
     pub size: u32,
 }
 
-/// Sees every chunk the writer stores: its tag and the zstd frame that
-/// went to the file ([`Writer::set_mirror`]).
-pub type Mirror = Box<dyn FnMut(Tag, &[u8]) -> Result<()> + Send>;
-
 pub struct Writer<W: Write + Seek> {
     out: W,
     index: Vec<Entry>,
     failed: bool,
     version: u32,
     ranges: Option<Box<range::Build>>,
-    mirror: Option<Mirror>,
 }
 impl<W: Write + Seek> Writer<W> {
     pub fn new(mut out: W, header: &Header) -> Result<Self> {
@@ -197,17 +185,9 @@ impl<W: Write + Seek> Writer<W> {
             failed: false,
             version: header.version,
             ranges,
-            mirror: None,
         };
         w.chunk(HEAD, header)?;
         Ok(w)
-    }
-    /// Hand each chunk stored from now on, with its stored frame, to
-    /// `mirror`, so the film file's machine part ([`file::machine_mirror`])
-    /// is written as the container's is, without a second compression. A
-    /// cut ([`Writer::fork`]) does not inherit it.
-    pub fn set_mirror(&mut self, mirror: Option<Mirror>) {
-        self.mirror = mirror;
     }
     pub fn chunk(&mut self, tag: Tag, value: &impl Serialize) -> Result<()> {
         ensure!(tag != INDX, "finish writes the index");
@@ -324,17 +304,12 @@ impl<W: Write + Seek> Writer<W> {
             });
         Ok(())
     }
-    /// Physical offset of the most recently written chunk, for a tape cursor.
-    pub fn last_chunk_offset(&self) -> Option<u64> {
-        self.index.last().map(|entry| entry.offset)
-    }
-
     /// Continue a copy of this unsealed v3 tape as a film of its own, cut
     /// at this point (docs/game/film-format.md, "One film per game").
     /// `out` holds every byte written so far, and nothing more.
     /// `header.tape_id` names this tape; the cut's ID and start replace the
-    /// tape's in the front. The caller writes the cut's final `HEAD`, track
-    /// and end mark and seals it with [`Writer::finish`]. This tape keeps
+    /// tape's in the front. The caller writes the cut's final `HEAD` and
+    /// track and seals it with [`Writer::finish`]. This tape keeps
     /// recording.
     pub fn fork<V: Write + Seek>(&mut self, mut out: V, header: &Header) -> Result<Writer<V>> {
         ensure!(!self.failed, "film output already failed");
@@ -359,7 +334,6 @@ impl<W: Write + Seek> Writer<W> {
             failed: false,
             version: self.version,
             ranges: Some(ranges),
-            mirror: None,
         })
     }
 
@@ -371,9 +345,6 @@ impl<W: Write + Seek> Writer<W> {
         self.index
             .push(write_envelope(&mut self.out, tag, offset, &bytes)?);
         self.failed = false;
-        if let Some(mirror) = &mut self.mirror {
-            mirror(tag, &bytes)?;
-        }
         Ok(())
     }
     pub fn finish(mut self) -> Result<W> {
@@ -404,12 +375,7 @@ impl<W: Write + Seek> Writer<W> {
         };
         let index = std::mem::take(&mut self.index);
         let offset = self.out.stream_position()?;
-        let directory = if self.version == 3 {
-            machine::encode(&index)?
-        } else {
-            serde_json::to_vec(&index)?
-        };
-        self.write(INDX, &directory)?;
+        self.write(INDX, &serde_json::to_vec(&index)?)?;
         if let Some((front, cidx_offset, cidx_raw_size)) = public {
             let end = self.out.stream_position()?;
             self.out.seek(SeekFrom::Start(0))?;

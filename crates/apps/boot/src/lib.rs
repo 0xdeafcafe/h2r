@@ -370,14 +370,9 @@ fn run_configured(
         .filter(|_| !replaying)
         .map(|_| sim_glue::hosted::Network::reserve())
         .transpose()?;
-    let _live = if let Some(r) = &replay {
-        let header = film::Reader::open(&r.path)?.header;
-        if header.xnet_addr.is_empty() || play_start.is_some() {
-            None
-        } else {
-            let network = live_hle::NetworkConfig::new(header.xnet_addr.parse()?);
-            live_glue::install_film(&loaded.runtime, &k, network, header.live_service)?
-        }
+    // A film plays from its game start: a replay installs no Live network.
+    let _live = if replay.is_some() {
+        None
     } else if let Some(net) = &sim_network {
         let lan = LiveConfig {
             enabled: true,
@@ -464,9 +459,6 @@ fn run_configured(
             }
             result => result?,
         };
-        if let (Some(hle), Some(session)) = (&_live, &session) {
-            hle.set_film_tap(session.clone());
-        }
         if let Some(session) = &session
             && std::env::var("H2_THEATER_MEASURE").as_deref() == Ok("1")
         {
@@ -765,8 +757,7 @@ fn run_configured(
     // (docs/game/settings-menu.md).
     let model = match host.settings.clone() {
         Some(store) => {
-            // The guest draws the picker's labels. Replay those observations
-            // independently of the viewer's presentation size.
+            // A film applies its own settings to the run.
             let menu_size = match &film {
                 Some(session) => session.video_menu_size(native_target.clone(), &store)?,
                 None => native_target.clone(),
@@ -1555,7 +1546,7 @@ fn run_configured(
     }
     if let Some(film) = &film {
         if let Some(x) = &xa {
-            film.install_local_pads(x)?;
+            film.install_neutral_pads(x)?;
         }
         anyhow::ensure!(
             features
@@ -1668,11 +1659,10 @@ fn run_configured(
         bail!("creature probe needs its feature hooks: {why}");
     }
     // After the plan: the keyboard bridge wraps whatever the plan put on
-    // the UI pump (keyboard_glue::install_with_tape).
+    // the UI pump (keyboard_glue::install).
     #[cfg(feature = "desktop-runtime")]
     if let Some(keyboard) = pad.as_ref() {
-        keyboard_glue::install_with_tape(&loaded.runtime, keyboard.clone(), keyboard_glue::PUMP,
-            film.as_ref().and_then(|session| session.keyboard_tape()))
+        keyboard_glue::install(&loaded.runtime, keyboard.clone())
             .context("installing host keyboard entry")?;
     }
     if let Some(session) = &film {
@@ -1960,12 +1950,11 @@ fn run_configured(
     if sampling::seconds_from_env().is_some() {
         sampling::set_game_thread();
     }
-    let mut film_slices = 0;
     let measure_recording = !replaying && std::env::var("H2_THEATER_MEASURE").as_deref() == Ok("1");
     // Cut the game in play and discard the tape even when the loop below
     // exits by error or panic, skipping its teardown
     // (`theater::Session::seal_on_drop`).
-    let film_seal = film.as_ref().and_then(|f| f.seal_on_drop());
+    let _film_seal = film.as_ref().and_then(|f| f.seal_on_drop());
     let first_slice = 0;
     let mut next_slice = 0;
     while next_slice < opts.max_slices {
@@ -1976,16 +1965,12 @@ fn run_configured(
             if measure_recording {
                 f.measure_recording_pages(&loaded.runtime)?;
             }
-            match f.before_slice(slice, &mut m, agent.as_ref(), &loaded.runtime)? {
+            match f.before_slice(&mut m, agent.as_ref(), &loaded.runtime)? {
                 theater::SliceAction::Run => {}
                 theater::SliceAction::Stop => {
                     host_stop = true;
                     break;
                 }
-            }
-            film_slices = slice + 1;
-            if let Some(seal) = &film_seal {
-                seal.advance(film_slices);
             }
         }
         if stop_at.is_some_and(|n| d3d_diag::presents() >= n) {
@@ -2131,7 +2116,7 @@ fn run_configured(
             break;
         }
         if !uploading_sim && let Some(f) = &film {
-            f.finish(film_slices, false)?;
+            f.finish(false)?;
         }
         // Sim mode: the match is over (its end, its limits, match.stop).
         if let Some(s) = &sim_mode
@@ -2149,7 +2134,7 @@ fn run_configured(
         if let Some(t) = &_telemetry {
             t.close_film();
         }
-        f.finish(film_slices, true)?;
+        f.finish(true)?;
     }
     // A shared copy-on-write guest RAM base (`state.load` with
     // "cow": true): census the pages the match wrote over it, so the
@@ -2184,7 +2169,7 @@ fn run_configured(
                         // run's separate private performance report is accepted.
                         telemetry.close_film();
                         film.as_ref().context("missing simulation film")?
-                            .finish_uploaded_sim(film_slices, true)?;
+                            .finish_uploaded_sim(true)?;
                         config.publish_sim_report_after_film(report).map_err(anyhow::Error::msg)
                     } else {
                         telemetry.finish_sim(report).map_err(anyhow::Error::msg)
@@ -2196,7 +2181,7 @@ fn run_configured(
         None => Ok(()),
     };
     if uploading_sim && (film_only_sim.is_none() || sim_upload_result.is_err()) && let Some(f) = &film {
-        f.finish_uploaded_sim(film_slices, sim_upload_result.is_ok())?;
+        f.finish_uploaded_sim(sim_upload_result.is_ok())?;
     }
     if let Some(a) = &ds {
         a.output.halt();

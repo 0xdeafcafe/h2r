@@ -493,29 +493,10 @@ impl Feature for Look {
                 .optional();
         }
         let look = self.clone();
-        if self.arm.film {
-            let save = look.clone();
-            b.snapshot(hooks::SnapshotPolicy::section(
-                move || serde_json::to_vec(&save.state().users).expect("finite co-op look samples"),
-                move |bytes, _| {
-                    if !crate::sim_bounces::in_fork() || bytes.len() > 128 << 10 {
-                        return Err("invalid co-op film look section".into());
-                    }
-                    let users: [User; USERS] = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
-                    if users.iter().any(|u| u.prediction.pending() > prediction::MAX_PENDING ||
-                        u.subject.is_some_and(|s| s.player.index() >= 16 || s.unit == engine::DatumHandle::NONE)) {
-                        return Err("invalid co-op film prediction history".into());
-                    }
-                    look.state().users = users;
-                    Ok(())
-                },
-            ));
-        } else {
-            b.snapshot(hooks::SnapshotPolicy::section(Vec::new, move |_, _| {
-                look.state().users = Default::default();
-                Ok(())
-            }));
-        }
+        b.snapshot(hooks::SnapshotPolicy::section(Vec::new, move |_, _| {
+            look.state().users = Default::default();
+            Ok(())
+        }));
         Ok(())
     }
 }

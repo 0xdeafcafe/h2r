@@ -57,7 +57,7 @@ fn host() -> (Vec<u8>, Forwarder, Vec<Frame>) {
         sent = now.len();
     };
     writer
-        .machine(*b"DATA", &zstd::bulk::compress(b"disk", 3).unwrap())
+        .start_point(&zstd::bulk::compress(b"start", 3).unwrap())
         .unwrap();
     grown(&mut host, &mut frames);
     for tick in 1..=10 * 256 {
@@ -66,8 +66,8 @@ fn host() -> (Vec<u8>, Forwarder, Vec<Frame>) {
             .unwrap();
         grown(&mut host, &mut frames);
     }
-    // A machine envelope too large to forward.
-    writer.machine(*b"TAPE", &vec![7u8; 70 << 10]).unwrap();
+    // A block too large to forward.
+    writer.game_start_frame(&vec![7u8; 70 << 10]).unwrap();
     grown(&mut host, &mut frames);
     writer.finish().unwrap();
     grown(&mut host, &mut frames);
@@ -86,8 +86,8 @@ fn index(frame: &Frame) -> Option<u32> {
 #[test]
 fn a_client_that_drops_three_forwarded_chunks_ends_with_the_hosts_film() {
     let (film, host, frames) = host();
-    // The head, DATA, nine closed chunks, TAPE, then the last chunk and the
-    // trailer.
+    // The head, the start point, nine closed chunks, the large block, then
+    // the last chunk and the trailer.
     let pieces = frames.iter().filter_map(index).max().unwrap() + 1;
     assert_eq!(pieces, 13);
     let dropped = [6, 9, 12];
@@ -109,7 +109,7 @@ fn a_client_that_drops_three_forwarded_chunks_ends_with_the_hosts_film() {
         }
     }
     assert!(client.missing().is_empty());
-    // The envelope the host did not forward, read from its film on Live.
+    // The block the host did not forward, read from its film on Live.
     let wanted = client.wanted();
     assert_eq!(wanted.len(), 1);
     for (i, range) in wanted {

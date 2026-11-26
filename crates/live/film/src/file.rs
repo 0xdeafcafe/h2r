@@ -1,11 +1,11 @@
 //! The film file (docs/game/input-film.md, "Layout"): a seed, the seats'
-//! action columns in chunks of 256 ticks ([`crate::columns`]), the machine
-//! part's envelopes, and a trailer that finds a chunk without a search.
+//! action columns in chunks of 256 ticks ([`crate::columns`]), the game
+//! starts, and a trailer that finds a chunk without a search.
 //!
 //! ```text
 //! header, 64 bytes, little-endian
 //!    0   8  "H2FILM4!"
-//!    8   u16 version (4), u16 flags (bit 0 machine part, bit 1 sealed,
+//!    8   u16 version (4), u16 flags (bit 0 unused, bit 1 sealed,
 //!           bit 2 begins at a start point, bit 3 holds a game start)
 //!   12   u8 ticks per second, u8 seat limit (16), u16 ticks per chunk (256)
 //!   16  16  film id (the first 16 bytes of the SHA-256 of its text id)
@@ -13,12 +13,10 @@
 //!   40   u64 offset of the trailer
 //!   48  16  digest of the dictionary the chunks name, or zero
 //! seed      one zstd frame of JSON: the film header and the match descriptor
-//! blocks    u8 kind (0 tick chunk, 1 machine envelope, 2 start point,
-//!           3 checkpoint, 4 game start), u32 stored bytes, then the
-//!           payload: a tick chunk is its zstd frame; a machine envelope is
-//!           its four-byte tag and the zstd frame it had in the container;
-//!           a start point and a game start ([`crate::start`]) are a zstd
-//!           frame
+//! blocks    u8 kind (0 tick chunk, 2 start point, 3 checkpoint, 4 game
+//!           start), u32 stored bytes, then the payload: a tick chunk is
+//!           its zstd frame; a start point and a game start
+//!           ([`crate::start`]) are a zstd frame
 //! trailer   u32 chunk count, then a u64 offset per tick chunk
 //! ```
 //!
@@ -41,19 +39,16 @@ use std::{
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
 };
 
 pub const MAGIC: &[u8; 8] = b"H2FILM4!";
 pub const VERSION: u16 = 4;
 pub const HEADER_BYTES: usize = 64;
-pub const FLAG_MACHINE: u16 = 1;
 pub const FLAG_SEALED: u16 = 2;
 pub const FLAG_START_POINT: u16 = 4;
 /// The file holds at least one game start ([`crate::start`]).
 pub const FLAG_GAME_START: u16 = 8;
 const KIND_TICKS: u8 = 0;
-const KIND_MACHINE: u8 = 1;
 const KIND_START: u8 = 2;
 const KIND_TAIL: u8 = 3;
 const KIND_GAME: u8 = 4;
@@ -70,8 +65,8 @@ pub const RECORD_LEAVE: u8 = 2;
 pub const TICK_DIGEST: u8 = 1;
 pub const TICK_EVENTS: u8 = 2;
 
-/// Everything a player needs before the first tick besides the machine
-/// part: what the film's header says, and the match.
+/// Everything a player needs before the first tick besides the game
+/// start: what the film's header says, and the match.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Seed {
     pub header: Header,
@@ -222,15 +217,6 @@ impl<W: Write + Seek> FilmWriter<W> {
         self.encoder.seat_record(n - 1, seat, kind, bytes)
     }
 
-    /// A machine envelope: its tag and the zstd frame it is stored as.
-    pub fn machine(&mut self, tag: Tag, frame: &[u8]) -> Result<()> {
-        self.head.flags |= FLAG_MACHINE;
-        let mut payload = Vec::with_capacity(4 + frame.len());
-        payload.extend_from_slice(&tag);
-        payload.extend_from_slice(frame);
-        self.block(KIND_MACHINE, &payload)
-    }
-
     /// Write the open chunk as it stands, as a block a reader of an
     /// unsealed file takes as the file's last chunk until a whole chunk
     /// replaces it. A recording that dies keeps its ticks to here.
@@ -317,8 +303,7 @@ impl<W: Read + Write + Seek> FilmWriter<W> {
     /// Cut a film of its own from this one as it stands, into `out`: the
     /// `seed`'s film (a new ID), every block written so far, and a copy of
     /// the chunk still open. This film keeps recording, untouched. The cut
-    /// takes machine envelopes ([`FilmWriter::machine`]) and
-    /// [`FilmWriter::finish`], but no more ticks.
+    /// takes [`FilmWriter::finish`], but no more ticks.
     pub fn fork<V: Write + Seek>(&mut self, mut out: V, seed: &Seed) -> Result<FilmWriter<V>> {
         ensure!(
             seed.header.meta.id != self.seed_id,
@@ -367,25 +352,9 @@ impl<W: Read + Write + Seek> FilmWriter<W> {
     }
 }
 
-/// The machine envelopes of a container being written, as a [`crate::Mirror`]
-/// into `film`: each chunk the film carries ([`carried`]) is stored in the
-/// film file as the container stores it.
-pub fn machine_mirror<W: Write + Seek + Send + 'static>(
-    film: Arc<Mutex<FilmWriter<W>>>,
-) -> crate::Mirror {
-    Box::new(move |tag, frame| {
-        if carried(tag) {
-            film.lock()
-                .map_err(|_| anyhow::anyhow!("film file writer is poisoned"))?
-                .machine(tag, frame)?;
-        }
-        Ok(())
-    })
-}
-
-/// A machine envelope in the file.
+/// A start point or game start in the file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct MachineBlock {
+pub struct Block {
     pub tag: Tag,
     /// Where the stored frame starts, and its length.
     pub offset: u64,
@@ -402,11 +371,10 @@ pub struct FilmReader<R: Read + Seek> {
     /// the ticks of the whole chunks found.
     pub length_ticks: u64,
     chunks: Vec<(u64, u32)>,
-    pub machine: Vec<MachineBlock>,
-    pub start_points: Vec<MachineBlock>,
+    pub start_points: Vec<Block>,
     /// The game starts, in file order: one for each game the film holds
     /// ([`FilmReader::game_start`]).
-    pub game_starts: Vec<MachineBlock>,
+    pub game_starts: Vec<Block>,
 }
 
 fn read_exact_at<R: Read + Seek>(input: &mut R, at: u64, buf: &mut [u8]) -> Result<()> {
@@ -450,7 +418,6 @@ impl<R: Read + Seek> FilmReader<R> {
             file_len
         };
         let mut chunks = Vec::new();
-        let mut machine = Vec::new();
         let mut start_points = Vec::new();
         let mut game_starts = Vec::new();
         let mut tail = None;
@@ -481,22 +448,9 @@ impl<R: Read + Seek> FilmReader<R> {
                     );
                     tail = Some((body, stored));
                 }
-                KIND_MACHINE => {
-                    ensure!(
-                        stored >= 4 && stored as usize <= crate::MAX_CHUNK + 4,
-                        "film machine envelope has a bad size"
-                    );
-                    let mut tag = [0u8; 4];
-                    read_exact_at(&mut input, body, &mut tag)?;
-                    machine.push(MachineBlock {
-                        tag,
-                        offset: body + 4,
-                        len: stored - 4,
-                    });
-                }
                 KIND_START => {
                     ensure!(stored <= MAX_START, "film start point is too large");
-                    start_points.push(MachineBlock {
+                    start_points.push(Block {
                         tag: *b"STRT",
                         offset: body,
                         len: stored,
@@ -504,7 +458,7 @@ impl<R: Read + Seek> FilmReader<R> {
                 }
                 KIND_GAME => {
                     ensure!(stored <= MAX_GAME_START, "film game start is too large");
-                    game_starts.push(MachineBlock {
+                    game_starts.push(Block {
                         tag: *b"GAME",
                         offset: body,
                         len: stored,
@@ -565,7 +519,6 @@ impl<R: Read + Seek> FilmReader<R> {
             sealed,
             length_ticks,
             chunks,
-            machine,
             start_points,
             game_starts,
         })
@@ -607,24 +560,17 @@ impl<R: Read + Seek> FilmReader<R> {
     }
 
     /// One game start of the file, decoded.
-    pub fn game_start_at(&mut self, block: &MachineBlock) -> Result<GameStart> {
+    pub fn game_start_at(&mut self, block: &Block) -> Result<GameStart> {
         let frame = self.read_block(block)?;
         GameStart::decode(&frame)
     }
 
-    /// The stored frame of a machine envelope, game start or start point.
-    pub fn read_block(&mut self, block: &MachineBlock) -> Result<Vec<u8>> {
+    /// The stored frame of a game start or start point.
+    pub fn read_block(&mut self, block: &Block) -> Result<Vec<u8>> {
         let mut frame = vec![0u8; block.len as usize];
         read_exact_at(&mut self.input, block.offset, &mut frame)?;
         Ok(frame)
     }
-}
-
-/// The container's sections that a film carries: the call tape,
-/// controller ports, bot roster, hash checks and marks. A film holds no
-/// keyframe, and its header goes in the seed.
-pub fn carried(tag: Tag) -> bool {
-    matches!(&tag, b"TAPE" | b"TPAR" | b"PDEV" | b"BOTR" | b"HASH" | b"MARK")
 }
 
 /// What a film file is read from.
@@ -822,7 +768,7 @@ pub fn beside(container: &Path) -> PathBuf {
 }
 
 /// Seal the unsealed film file beside `container`, ending at `end_tick`:
-/// a sealed copy of its machine part, its ticks up to `end_tick` and their
+/// a sealed copy of its game starts, its ticks up to `end_tick` and their
 /// seat records, renamed over it once it is whole. A hard-killed recording
 /// leaves its film file as the recorder last wrote it, with the open chunk
 /// as of the last [`FilmWriter::checkpoint`].
@@ -851,10 +797,6 @@ pub fn recover_beside(container: &Path, end_tick: u64) -> Result<()> {
             if GameStart::decode(&frame)?.game.first_update <= end_tick {
                 out.game_start_frame(&frame)?;
             }
-        }
-        for block in reader.machine.clone() {
-            let frame = reader.read_block(&block)?;
-            out.machine(block.tag, &frame)?;
         }
         let mut decoder = ChunkDecoder::new()?;
         let mut buf = Vec::new();

@@ -27,8 +27,6 @@ struct Entry {
     tag: [u8; 4],
     offset: u64,
     size: u32,
-    #[serde(default)]
-    machine_span: Option<u32>,
 }
 
 impl Entry {
@@ -48,14 +46,9 @@ impl<'de> Visitor<'de> for IndexDigest {
     }
     fn visit_seq<A: SeqAccess<'de>>(self, mut entries: A) -> Result<Self::Value, A::Error> {
         let mut digest = Sha256::new();
-        let mut machine = live_proto::film::machine_index::MachineRuns::default();
         while let Some(entry) = entries.next_element::<Entry>()? {
-            machine
-                .feed(entry.tag, entry.machine_span)
-                .map_err(serde::de::Error::custom)?;
             entry.update(&mut digest);
         }
-        machine.finish().map_err(serde::de::Error::custom)?;
         Ok(digest)
     }
 }
@@ -309,7 +302,6 @@ impl Inspector {
                 tag: self.tag,
                 offset,
                 size: self.packed,
-                machine_span: None,
             }
             .update(&mut self.observed);
             if self.tag == *b"KEYF" {

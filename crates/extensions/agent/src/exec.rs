@@ -32,8 +32,7 @@ use crate::reader::{GameStatus, Reader, TagNames};
 
 mod mirror;
 mod picture;
-mod lobby_tape;
-pub use lobby_tape::LobbyTape;
+mod poll_theater;
 mod snap;
 pub use snap::{SnapshotMachine, Snapshots};
 
@@ -289,8 +288,6 @@ struct State {
     map_lifetime: Option<Arc<AtomicU64>>,
     live_session: Option<fn(&dyn engine::GuestMemory) -> bool>,
     live_edit: Option<LiveEditProbe>,
-    lobby_tape: Option<Arc<dyn LobbyTape>>,
-    lobby_boundary: u64,
     pending: VecDeque<Queued>,
     waits: Vec<Waiting>,
     conns: BTreeMap<ConnId, Conn>,
@@ -905,7 +902,6 @@ impl Agent {
         }
         s.mark_tick();
         s.record_tick(reader);
-        s.lobby_boundary(reader);
         if let Some(marks) = &s.editor_marks {
             marks.on_tick(reader);
         }
@@ -960,7 +956,6 @@ impl Agent {
         }
         s.presents = presents;
         s.pictures.stamp(s.game.tick, presents);
-        s.lobby_boundary(reader);
         // A pause asked for while the game isn't ticking (loading) takes
         // hold at the next tick; its limit still runs out here.
         if s.paused.is_some_and(|until| Instant::now() >= until) {
@@ -1450,12 +1445,8 @@ impl State {
                 return Some(Err(e));
             }
             let at = to_value(self.at());
-            let lobby = self.lobby_record(m, &p);
             let (_, f) = self.host.get_mut(m)?;
             return Some(f(p).map(|mut v| {
-                if let Some((t, b, p)) = lobby {
-                    t.record_lobby(b, m, &p)
-                }
                 if let Value::Object(o) = &mut v {
                     o.entry("at").or_insert(at);
                 }
@@ -1488,7 +1479,6 @@ impl State {
             if let Err(e) = access.check(self.controller, conn) {
                 return Some(Err(e));
             }
-            let lobby = self.lobby_record(m, &p);
             let (_, f) = self.game_methods.get_mut(m)?;
             let mut ctx = GameCtx {
                 conn,
@@ -1503,11 +1493,6 @@ impl State {
                 later: None,
             };
             let out = f(p, &mut ctx);
-            if out.is_ok()
-                && let Some((t, b, p)) = lobby
-            {
-                t.record_lobby(b, m, &p)
-            }
             if let (Ok(_), Some(later)) = (&out, ctx.later.take()) {
                 self.deferred.push(Deferred {
                     conn,

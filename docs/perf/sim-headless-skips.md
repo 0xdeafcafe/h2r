@@ -139,9 +139,8 @@ scan `0x8a090`, the sixteen player records of `0x69a00` and `0x69b50`.
 
 **Films.** A film records inputs and checks, and playback re-simulates
 ([film-format.md](../game/film-format.md)). The recorder reads the action
-block before `SIM_UPDATE_APPLY`, the phantom builder's results
-(`BTAP`), the gameplay digest every tick and the arena hash every 30
-ticks; it reads no camera, HUD, effect, particle, light or sound state
+block before `SIM_UPDATE_APPLY` and the gameplay digest every tick; it
+reads no camera, HUD, effect, particle, light or sound state
 (`crates/extensions/game/src/theater/actions.rs`, `record.rs`). Three
 consequences (**Code**):
 

@@ -25,10 +25,7 @@ impl State {
     }
 
     pub(super) fn length(&self) -> u64 {
-        match &self.mode {
-            Mode::Replay(tape, _) => tape.length,
-            Mode::Record(_) => self.header.meta.length_ticks,
-        }
+        self.header.meta.length_ticks
     }
 
     pub(super) fn set_paused(&mut self, paused: bool) {

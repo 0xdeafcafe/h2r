@@ -87,13 +87,13 @@ fn a_replay_registers_its_controls_reports_its_seek_and_refuses_one_beyond_the_f
     for _ in 0..60 {
         rec.checkpoint(&g);
     }
-    rec.finish(90, true).unwrap();
+    rec.finish(true).unwrap();
     with_game_start(&file, 60);
     let open = |render_every| {
         Session::open(None, Some(replay_of(&file, render_every)), facts(), b"xbe", &opts)
     };
     let replay = || open(0).unwrap().unwrap();
-    assert!(replay().finish(0, true).is_err_and(|e| {
+    assert!(replay().finish(true).is_err_and(|e| {
         e.to_string().contains("playback stopped before the end")
     }));
     let player = replay();
@@ -161,7 +161,7 @@ fn a_replay_registers_its_controls_reports_its_seek_and_refuses_one_beyond_the_f
     let rendered = open(1).unwrap().unwrap();
     rendered.add_methods(&a);
     let camera = match &rendered.lock().mode {
-        Mode::Replay(_, replay) => replay.camera.clone(),
+        Mode::Replay(replay) => replay.camera.clone(),
         Mode::Record(_) => unreachable!(),
     };
     let eyes = [4, 7].map(|seat| camera::ObserverEye {
@@ -256,7 +256,7 @@ fn sealed_film_reinstalls_the_recorders_telemetry_and_impact_hook_chains() {
         for _ in 0..30 {
             rec.checkpoint(&guest);
         }
-        rec.finish(40, true).unwrap();
+        rec.finish(true).unwrap();
         let header = Reader::open(&path).unwrap().header;
         assert_eq!(header.telemetry_hooks, Some(hooks));
         assert_eq!(header.render_hooks, Some(film::RenderHooks::Slim));
@@ -328,7 +328,7 @@ fn a_film_only_host_propagates_publication_failure_at_teardown() {
     Arc::get_mut(&mut film).unwrap().require_upload = true;
     *film.upload.lock().unwrap() =
         Some(std::thread::spawn(|| anyhow::bail!("fixture publication failed")));
-    assert!(film.finish(0, true).is_err_and(|e| e.to_string().contains("fixture publication failed")));
+    assert!(film.finish(true).is_err_and(|e| e.to_string().contains("fixture publication failed")));
     drop(film);
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -370,7 +370,7 @@ fn a_completed_host_match_is_listed_and_uploads_under_its_lease() {
     for _ in 0..30 {
         session.checkpoint(&guest);
     }
-    session.finish(60, false).unwrap();
+    session.finish(false).unwrap();
     assert!(session.upload.lock().unwrap().is_none());
 
     let server = std::thread::spawn(move || {
@@ -431,9 +431,9 @@ fn a_completed_host_match_is_listed_and_uploads_under_its_lease() {
     let observer = session.film_observer().unwrap();
     observer.event(&quit, 30).unwrap();
     assert!(!observer.active(), "a second match in the same batch must not enter this film");
-    session.finish(90, false).unwrap();
+    session.finish(false).unwrap();
     assert!(session.upload.lock().unwrap().is_some());
-    session.finish(90, true).unwrap();
+    session.finish(true).unwrap();
     assert!(session.upload.lock().unwrap().is_none());
     server.join().unwrap();
 
@@ -475,7 +475,7 @@ fn local_film_records_the_consumed_action_and_both_edges_of_a_tickless_pause() {
     rec.record_actions(vec![action]);
     rec.checkpoint(&guest);
     rec.checkpoint(&guest);
-    rec.finish(12, true).unwrap();
+    rec.finish(true).unwrap();
 
     let mut track = TrackReader::open(file).unwrap();
     let first = track.step().unwrap().unwrap();
@@ -573,7 +573,7 @@ fn malformed_viewer_observations_leave_a_seekable_film_and_count_at_seal() {
     session.checkpoint(&guest);
     // A bad final observation still belongs in the sealed summary.
     observer.scene(hill(f64::INFINITY)).unwrap();
-    session.finish(3, true).unwrap();
+    session.finish(true).unwrap();
 
     let mut range = film::range::RangeReader::new(File::open(&path).unwrap()).unwrap();
     assert_eq!(

@@ -114,29 +114,6 @@ impl Storage {
             return Ok(base);
         }
     }
-    pub(crate) fn used_range(
-        &self,
-        claims: &[(u32, u32)],
-        size: u32,
-    ) -> std::result::Result<Option<(u32, u32)>, String> {
-        if self.size != size {
-            return Err("unexpected Live arena size".into());
-        }
-        match self.base {
-            None if self.cursor == 0 => Ok(None),
-            Some(base)
-                if claims.contains(&(base, size))
-                    && (FIRST_TOKEN..=size).contains(&self.cursor)
-                    && self.cursor.is_multiple_of(8) =>
-            {
-                Ok(Some((
-                    base.checked_add(FIRST_TOKEN).ok_or("invalid arena base")?,
-                    base.checked_add(self.cursor).ok_or("invalid arena end")?,
-                )))
-            }
-            _ => Err("invalid Live arena cursor".into()),
-        }
-    }
     pub(crate) fn alloc(&mut self, m: &mut Guest, bytes: u32) -> Option<u32> {
         let base = self.ensure(m).ok()?;
         let end = self.cursor.checked_add(bytes)?.checked_add(7)? & !7;

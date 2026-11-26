@@ -25,7 +25,6 @@ pub(super) struct Verification {
 impl Verification {
     pub(super) fn open(mode: &Mode, length: u64) -> Result<Option<Self>> {
         let Mode::Replay(
-            _,
             Replay {
                 verification: Some(VerificationMode::Worker { request, report }),
                 ..
@@ -97,7 +96,6 @@ impl Session {
                     .bounds(s.header.meta.length_ticks)
                     .map_err(|why| RpcError::new(code::INVALID_PARAMS, why))?;
                 let Mode::Replay(
-                    _,
                     Replay {
                         verification: Some(VerificationMode::Player(launch)),
                         ..

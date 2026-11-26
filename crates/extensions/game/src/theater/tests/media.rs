@@ -22,7 +22,7 @@ impl Fixture {
         for _ in 0..60 {
             session.checkpoint(&guest);
         }
-        session.finish(90, true).unwrap();
+        session.finish(true).unwrap();
         with_game_start(&path.join("synthetic.h2film"), 60);
         Self(path)
     }
@@ -106,7 +106,7 @@ fn headless_replay_emits_the_exact_half_open_clip_at_both_frame_rates() {
                     film_tick(&player, &mut g);
                 }
             }
-            player.finish(if to > 60 { 90 } else { 1 }, true).unwrap();
+            player.finish(true).unwrap();
             capture.finish().unwrap();
             assert!(player.lock().failure.is_none());
             let encoded = encoded.lock().unwrap();

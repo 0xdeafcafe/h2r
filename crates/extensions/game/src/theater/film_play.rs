@@ -287,13 +287,6 @@ pub fn configure_replay_child(header: &film::Header, child: &mut std::process::C
 }
 
 impl Session {
-    /// This boot plays a film from its game start: nothing is restored, no
-    /// call is taped and the game's writes to storage are guarded
-    /// (`Vfs::guard_writes`).
-    pub fn plays_from_start(&self) -> bool {
-        self.from_start
-    }
-
     /// The game start being played.
     pub fn game_start(&self) -> Option<GameStart> {
         self.lock().play.as_ref().map(|play| play.start().clone())

@@ -103,7 +103,7 @@ pub mod variants;
 
 pub use capture::{FrameSource, Sampler, TickMark, summarise, write_csv};
 pub use exec::{
-    Access, Agent, ConnId, DEFER_TICKS_MAX, GameCtx, GameMethod, HostMethod, Later, LobbyTape,
+    Access, Agent, ConnId, DEFER_TICKS_MAX, GameCtx, GameMethod, HostMethod, Later,
     Page, SnapshotMachine, Snapshots, TICK_STALE, TICKER_CONN, Ticker, query,
 };
 pub use live::CameraSource;

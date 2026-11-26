@@ -32,8 +32,7 @@ Addresses are research points in the retail XBE.
 
 `gather` runs at the remote gather hook (`SIMULATION_SLOT_ACTION`,
 `crates/extensions/game/src/bot_glue.rs`), once per phantom slot per
-tick, on the game thread. A film that replays takes the action from its
-`BTAP` tape and builds nothing. Otherwise `Builder::action` does this
+tick, on the game thread. `Builder::action` does this
 (**Code**):
 
 1. **View.** The tick's first seat calls `SecondExecutor::snapshot`: two
@@ -246,7 +245,7 @@ P1's proof, in the order it is run:
 4. **`h2 sim diff`**, switch on against off, arena hashes on, the same
    seeds: every component agrees.
 5. **Films**: a film recorded with the switch at its default verifies
-   (`theater.verify`), and its `BTAP` series equals that of the same
+   (`theater.verify`), and its action columns equal those of the same
    seed recorded with the view.
 
 ## Rules and limits

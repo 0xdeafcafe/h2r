@@ -141,7 +141,7 @@ impl Fixture {
         for _ in 0..30 {
             rec.checkpoint(&menus);
         }
-        rec.finish(90, true).unwrap();
+        rec.finish(true).unwrap();
         let header = film::Reader::open(&file).unwrap().header;
         let second = block(MODE_CAMPAIGN, 2);
         let bytes = film_of(
@@ -232,11 +232,10 @@ fn tick(
 fn a_film_recorded_after_menus_and_a_first_game_plays_its_second_game_to_matching_digests() {
     let fixture = Fixture::new();
     let session = fixture.open();
-    assert!(session.plays_from_start() && session.plays_back());
+    assert!(session.plays_back());
     assert!(session.seal_on_drop().is_none(), "a film player seals nothing");
-    // The player answers the guest's tick count; the call taps are the host's.
+    // The player answers the guest's tick count.
     assert!(session.lock().pacing.is_some());
-    assert!(!film::tape::Tap::replaying(&*session));
     let start = session.game_start().unwrap();
     assert_eq!(start.options, fixture.second);
     assert_eq!(start.game.first_update, fixture.first_update);
@@ -422,7 +421,7 @@ fn body_of(n: u32) -> Vec<u8> {
 fn two_applications_in_one_tick_give_two_records() {
     // Three game ticks; the second applies its update twice.
     let (_dir, file, rec) = recorded(&[&[10], &[11, 12], &[13]]);
-    rec.finish(5, true).unwrap();
+    rec.finish(true).unwrap();
     let mut actions = film::file::FilmActions::open(&film::file::beside(&file)).unwrap();
     assert_eq!(actions.length_ticks(), 4);
     for (tick, n) in [(1, 10), (2, 11), (3, 12), (4, 13)] {
@@ -442,7 +441,7 @@ fn a_stamp_that_skips_cuts_the_film_at_the_tick_before() {
         let Mode::Record(r) = &state.mode else { panic!("a recording") };
         assert!(r.frame.stamp_skipped && r.match_over, "the film is to be cut");
     }
-    rec.finish(5, true).unwrap();
+    rec.finish(true).unwrap();
     let mut actions = film::file::FilmActions::open(&film::file::beside(&file)).unwrap();
     assert_eq!(actions.length_ticks(), 2);
     assert_eq!(actions.row(2).unwrap().inputs, vec![seat_input(11)]);
@@ -502,7 +501,7 @@ fn verification_counts_only_the_requested_ticks_and_reports_the_first_divergence
     let mut g = machine(&fixture.second, [21, 22]);
     while tick(&session, &mut g, |_| ()) {}
     assert!(session.lock().complete);
-    session.finish(90, true).unwrap();
+    session.finish(true).unwrap();
     let clean = result();
     assert_eq!((clean.ticks, clean.digests_checked), (10, 10));
     assert_eq!(clean.first_divergence, None);
@@ -518,7 +517,7 @@ fn verification_counts_only_the_requested_ticks_and_reports_the_first_divergence
             g.set_u8(UPDATE + 12, 0xee).unwrap();
         }
     }) {}
-    assert!(session.finish(90, false).is_err());
+    assert!(session.finish(false).is_err());
     let mismatch = result();
     let at = first + changed - 1;
     assert_eq!((mismatch.ticks, mismatch.digests_checked), (changed - 10, changed - 11));

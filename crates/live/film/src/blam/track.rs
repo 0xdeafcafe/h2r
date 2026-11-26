@@ -291,7 +291,7 @@ impl TrackWriter {
         Ok(())
     }
 
-    /// Call at a quiescent slice boundary after flushing the HLE tape.
+    /// Call at a quiescent slice boundary.
     pub fn keyframe<W: Write + Seek>(
         &mut self,
         out: &mut Writer<W>,
@@ -344,7 +344,7 @@ impl TrackWriter {
     }
 
     /// Flush resolved match settings and scores before the end mark. The
-    /// caller writes the final HEAD, MARK and outer index for the whole tape.
+    /// caller writes the final HEAD and outer index for the whole tape.
     pub fn finish<W: Write + Seek>(
         &mut self,
         out: &mut Writer<W>,
@@ -429,8 +429,15 @@ fn write_block<W: Write + Seek>(
     })
 }
 
+/// The container's one chunk of `tag`: a missing or repeated one is an error.
 fn one<R: Read + Seek>(reader: &Reader<R>, tag: crate::Tag) -> Result<Entry> {
-    Ok(reader.machine_section().unique(tag)?.clone())
+    let mut rows = reader.entries.iter().filter(|e| e.tag == tag);
+    let name = String::from_utf8_lossy(&tag);
+    let row = rows
+        .next()
+        .with_context(|| format!("missing film section {name}"))?;
+    ensure!(rows.next().is_none(), "duplicate film section {name}");
+    Ok(row.clone())
 }
 
 /// A stored machine keyframe as the film's private directory lists it.
@@ -446,7 +453,7 @@ pub struct EmbeddedKeyframeInfo {
 /// The film's stored machine keyframes in tick order, from the TIDX
 /// directory alone. This does not inflate input, HLE or snapshot data.
 pub fn embedded_keyframes<R: Read + Seek>(reader: &mut Reader<R>) -> Result<Option<Vec<EmbeddedKeyframeInfo>>> {
-    if !reader.machine_section().entries().any(|entry| entry.tag == TIDX) {
+    if !reader.entries.iter().any(|entry| entry.tag == TIDX) {
         return Ok(None);
     }
     let directory: Directory = reader.read(&one(reader, TIDX)?)?;

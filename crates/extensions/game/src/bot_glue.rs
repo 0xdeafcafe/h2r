@@ -96,7 +96,6 @@ impl hooks::Feature for Bots {
         let input = Arc::new(std::sync::Mutex::new(None));
         // impl.sim.phantom-alias (docs/perf/sim-phantom-build.md).
         let path = retail_input::path_for(b.switches());
-        let film = self.film.clone();
         b.raw().before(
             &points::SIMULATION_SLOT_ACTION,
             "phantoms: sample the pad for this simulation tick",
@@ -108,7 +107,6 @@ impl hooks::Feature for Bots {
                 }
                 let phantoms = phantoms.clone();
                 let input = Arc::clone(&input);
-                let film = film.clone();
                 let cpu = *c.cpu;
                 c.answer_async(move |cx| {
                     Box::pin(async move {
@@ -122,7 +120,6 @@ impl hooks::Feature for Bots {
                                     cpu,
                                     sample,
                                     &cx,
-                                    film.as_deref().map(|s| s as &dyn film::tape::Tap),
                                 )
                             })
                             .await
@@ -170,7 +167,6 @@ impl hooks::Feature for Bots {
         );
         let reader = MapLoader::new(self.dir.clone());
         let diagnostics = Arc::clone(&self.diagnostics);
-        let film = self.film.clone();
         b.raw().before(
             &points::RENDER_FRAME,
             "phantom pads",
@@ -181,51 +177,41 @@ impl hooks::Feature for Bots {
                 // its roster (docs/game/bots.md stage 6c), and a
                 // Clankermatch lobby its bots.
                 let rt = Arc::clone(c.ctx.runtime());
-                if film
-                    .as_ref()
-                    .is_none_or(|s| !film::tape::Tap::replaying(s.as_ref()))
-                {
-                    crate::clankers::frame(
-                        f,
-                        || {
-                            let mem = rt.memory();
-                            // In the lobby this console hosts, its session
-                            // player's team (no player datum before a game, and a
-                            // stale one after); else its player's.
-                            let s = bots::phantom::session::lobby_host_team(&*mem)
-                                .ok()
-                                .flatten();
-                            s.or_else(|| bots::phantom::session::host_team(&*mem).ok().flatten())
-                        },
-                        // The party a Clankermatch's bots fill around
-                        // (docs/game/bots.md §8.4).
-                        || {
-                            let mem = rt.memory();
-                            let facts = bots::lobby::membership(&*mem).ok()?;
-                            bots::lobby::party_players(&*mem, &facts).ok().flatten()
-                        },
-                        // Co-op and matchmaking lobbies take none of the
-                        // Clanker Options bots (docs/game/party-lobby.md).
-                        || crate::lobby_tabs::header::retail_now(&*rt.memory()),
-                        // A game this console serves (its simulation world
-                        // the distributed server, world mode 4): a
-                        // Clankermatch's lobby advertisement is gone by
-                        // then, its match not.
-                        || bots::phantom::session::serves_game(&*rt.memory()),
-                        // Why a Clankermatch lobby sits (docs/game/bots.md
-                        // §8.4): the host update's checks, read the same way.
-                        || match bots::lobby::match_wait::read(&*rt.memory()).ok()? {
-                            Ok(None) => None,
-                            Ok(Some(w)) => Some((w.reason(), w.line())),
-                            Err(why) => Some((why.clone(), why)),
-                        },
-                    );
-                }
-                if let Some(session) = &film
-                    && let Err(error) = session.bot_boundary()
-                {
-                    film::tape::Tap::fault(session.as_ref(), error.to_string());
-                }
+                crate::clankers::frame(
+                    f,
+                    || {
+                        let mem = rt.memory();
+                        // In the lobby this console hosts, its session
+                        // player's team (no player datum before a game, and a
+                        // stale one after); else its player's.
+                        let s = bots::phantom::session::lobby_host_team(&*mem)
+                            .ok()
+                            .flatten();
+                        s.or_else(|| bots::phantom::session::host_team(&*mem).ok().flatten())
+                    },
+                    // The party a Clankermatch's bots fill around
+                    // (docs/game/bots.md §8.4).
+                    || {
+                        let mem = rt.memory();
+                        let facts = bots::lobby::membership(&*mem).ok()?;
+                        bots::lobby::party_players(&*mem, &facts).ok().flatten()
+                    },
+                    // Co-op and matchmaking lobbies take none of the
+                    // Clanker Options bots (docs/game/party-lobby.md).
+                    || crate::lobby_tabs::header::retail_now(&*rt.memory()),
+                    // A game this console serves (its simulation world
+                    // the distributed server, world mode 4): a
+                    // Clankermatch's lobby advertisement is gone by
+                    // then, its match not.
+                    || bots::phantom::session::serves_game(&*rt.memory()),
+                    // Why a Clankermatch lobby sits (docs/game/bots.md
+                    // §8.4): the host update's checks, read the same way.
+                    || match bots::lobby::match_wait::read(&*rt.memory()).ok()? {
+                        Ok(None) => None,
+                        Ok(Some(w)) => Some((w.reason(), w.line())),
+                        Err(why) => Some((why.clone(), why)),
+                    },
+                );
                 if phantoms.is_empty() {
                     return Ok(Flow::Continue);
                 }
@@ -329,9 +315,8 @@ impl hooks::Feature for Bots {
                 }
             });
 
-        if let Some(session) = &self.film {
-            session.enable_bot_tape();
-            film_state::install(b, &self.frame, session);
+        if self.film.is_some() {
+            film_state::install(b, &self.frame);
         } else {
             b.snapshot(hooks::SnapshotPolicy::Stateless);
         }

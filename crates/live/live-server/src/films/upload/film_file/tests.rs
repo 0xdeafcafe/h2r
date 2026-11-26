@@ -2,9 +2,9 @@ use super::*;
 use sha2::Digest as _;
 
 /// A sealed film file of `game` with `ticks` ticks, in the layout
-/// `film::file` writes. Its tick chunks, tail checkpoints and machine
-/// envelope are not zstd frames: an ingest that inflated one would fail.
-pub(crate) fn build(game: &str, ticks: u32, machine: bool) -> Vec<u8> {
+/// `film::file` writes. Its tick chunks, tail checkpoints and game start
+/// are not zstd frames: an ingest that inflated one would fail.
+pub(crate) fn build(game: &str, ticks: u32, game_start: bool) -> Vec<u8> {
     let seed = serde_json::to_vec(&json!({
         "header": {"meta": {"id": format!("film-of-{game}")}, "game_id": game},
         "descriptor": {},
@@ -23,8 +23,8 @@ pub(crate) fn build(game: &str, ticks: u32, machine: bool) -> Vec<u8> {
         out.extend_from_slice(payload);
         at
     };
-    if machine {
-        block(&mut out, KIND_MACHINE, b"HEADnot a frame, never inflated");
+    if game_start {
+        block(&mut out, KIND_GAME, b"a game start, never inflated");
     }
     let mut chunks = Vec::new();
     for i in 0..ticks.div_ceil(256) {
@@ -44,7 +44,7 @@ pub(crate) fn build(game: &str, ticks: u32, machine: bool) -> Vec<u8> {
     for at in chunks {
         out.extend_from_slice(&at.to_le_bytes());
     }
-    let flags = FLAG_SEALED | if machine { FLAG_MACHINE } else { 0 };
+    let flags = FLAG_SEALED | if game_start { FLAG_GAME_START } else { 0 };
     out[..8].copy_from_slice(MAGIC);
     out[8..10].copy_from_slice(&VERSION.to_le_bytes());
     out[10..12].copy_from_slice(&flags.to_le_bytes());
@@ -88,7 +88,7 @@ async fn a_film_file_is_stored_byte_for_byte_and_only_its_seed_is_inflated() {
     )
     .await
     .unwrap();
-    // Three tick chunks, three tail checkpoints and a machine envelope; one
+    // Three tick chunks, three tail checkpoints and a game start; one
     // inflation, of the seed.
     assert_eq!(inflate.inflated, [seed_len(&film)]);
     assert_eq!(
@@ -97,7 +97,6 @@ async fn a_film_file_is_stored_byte_for_byte_and_only_its_seed_is_inflated() {
             size: film.len() as u64,
             sha256: format!("{:x}", sha2::Sha256::digest(&film)),
             ticks: 3 * 256 - 10,
-            machine: true,
         }
     );
     let stored = store
@@ -116,7 +115,6 @@ fn pieces_of_any_size_walk_to_the_same_result() {
         scan.feed("game-b", &film, &mut Zstd).unwrap();
         scan.finish(film.len() as u64).unwrap()
     };
-    assert!(!whole.machine);
     let first = HEADER + seed_len(&film);
     for step in [1, 2, 3, 4, 5, 7, 9, 13, 64] {
         let mut inflate = Counting::default();
@@ -152,7 +150,7 @@ fn a_damaged_or_foreign_film_file_is_refused() {
             "unsealed",
             Box::new(|f: &mut Vec<u8>| f[10] &= !(FLAG_SEALED as u8)),
         ),
-        ("an unknown flag", Box::new(|f: &mut Vec<u8>| f[10] |= 8)),
+        ("an unknown flag", Box::new(|f: &mut Vec<u8>| f[10] |= 1)),
         ("a dictionary", Box::new(|f: &mut Vec<u8>| f[60] = 1)),
         (
             "another film's seed",
@@ -185,8 +183,14 @@ fn a_damaged_or_foreign_film_file_is_refused() {
         damage(&mut film);
         assert!(check(&film, "game-c").is_err(), "{what}");
     }
-    // A machine envelope in a film whose header says it has none.
+    // A game start in a film whose header says it has none.
     let mut film = good.clone();
-    film[10] &= !(FLAG_MACHINE as u8);
+    film[10] &= !(FLAG_GAME_START as u8);
+    assert!(check(&film, "game-c").is_err());
+    // A block of kind 1, the call tape's old envelope, is of no known kind.
+    let mut film = good.clone();
+    let at = HEADER + seed_len(&film);
+    assert_eq!(film[at], KIND_GAME);
+    film[at] = 1;
     assert!(check(&film, "game-c").is_err());
 }

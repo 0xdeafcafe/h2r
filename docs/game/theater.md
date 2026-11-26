@@ -172,24 +172,9 @@ In the original version 1 layout:
   and 16 MiB total. For larger files, supply an unchanged initial copy
   with `--data DIR`. Every playback and seek restores into a fresh
   private directory. The film supplies no host executable or module path.
-- `NETR` and `RAND` share a monotonically increasing call index. Each
-  entry carries the operation, guest thread, arguments, status/error and
-  output buffers. Receive truncation preserves the partial payload and
-  sender. Select preserves each returned fd set. QoS preserves the
-  allocation and embedded payload pointers. Socket setup, send, close,
-  address translation, last error, connection status, FIONREAD,
-  random bytes and keys all pass through the same HLE dispatcher.
-  Service QoS queries and release, session-id reads and entropy used
-  inside other synchronous Live HLE calls are also taped.
-- Supervisor lobby calls that were accepted by the agent are recorded
-  in `MARK` with the executor boundary that ran them. A state query can
-  itself queue a guest readiness check. The player reissues these
-  calls at the recorded boundaries. A final mark carries the end slice,
-  tick and call count.
-- Every 30th completed tick, `HASH` carries
-  `lockstep::hash_sim(SimRegion::HALO2)` and the call count. A mismatch
-  reports `first divergence at tick T`. A film with no readable arena
-  checkpoints cannot pass verification.
+- No HLE call, network result, random draw, lobby call or arena hash is
+  in the container: a film plays from its game start and checks the
+  digests in its film file ([theater-design.md](theater-design.md#playback)).
 - All tags use four bytes, a little-endian compressed length and one
   zstd frame containing a v1 JSON payload. `INDX` ends a finalized
   file. A scan rebuilds the offsets after interruption and drops an
@@ -219,7 +204,7 @@ and an index. The film stays on disk if the upload fails.
 
 **Experiment 1, original render cadence.** No remote player or running
 Live server is needed for playback. The expected result is status 0 and
-`hashes matched through tick T`. The player checks the final cursors too.
+`hashes matched through tick T`.
 
 ```sh
 h2 theater play "$film_run/match.h2film" --disc "$H2_DISC" --out "$H2_IMAGE" --socket "$film_run/play.sock" --render-every 0 --speed 1
@@ -227,7 +212,7 @@ h2 theater play "$film_run/match.h2film" --disc "$H2_DISC" --out "$H2_IMAGE" --s
 
 **Experiment 2, rendered.** Run the same file and image in a window with
 every world frame rendered. Compare the ending tick or retain the first
-divergence and its expected/actual hash and call count. A mismatch in
+divergence and its expected and actual digest. A mismatch in
 experiment 1 must be resolved before attributing one here to render RNG.
 
 ```sh
@@ -252,10 +237,9 @@ runs forward from the tick shown; a seek behind it queues the film's game
 again in the same process and runs forward from its start. Fast-forward
 checks the film's digests and runs without host pacing. The coordinator
 should also seek backwards across a received packet while paused and
-resume. `h2 film stat FILE` lists embedded keyframes, recorded
-D3D barriers and per-stream tape counts, operations and bytes in the
-JSON and binary encodings, and `h2 film stat --fields FILE...` the change
-rate and stored bytes of each action field. The
+resume. `h2 film stat FILE` lists a stats container's stored keyframes,
+and `h2 film stat --fields FILE...` the change rate and stored bytes of
+each action field. The
 [measurement procedure](notes/theater-seek.md) uses both tools.
 
 At match end the host uploads the sealed recording under the lease's

@@ -179,7 +179,7 @@ fn validate_header(header: &Header, front: &Front) -> Result<()> {
     Ok(())
 }
 
-/// A client interested in a time range never needs the private machine index.
+/// A client interested in a time range never needs the private index.
 pub struct RangeReader<R> {
     input: R,
     pub front: Front,
@@ -231,16 +231,16 @@ pub(super) fn open<R: Read + Seek>(mut input: R, len: u64) -> Result<Reader<R>> 
     ensure!(
         index.tag == INDX
             && len - footer.indx_offset - FOOTER_BYTES as u64 == 8 + u64::from(index.size),
-        "incorrect v3 machine index bounds"
+        "incorrect v3 private index bounds"
     );
-    let entries = crate::machine::decode(&mut input, &index)?;
+    let entries: Vec<Entry> = crate::decode(&mut input, &index)?;
     ensure!(
         entries.len() <= MAX_ENTRIES
             && entries.first().is_some_and(|e| e.tag == HEAD)
             && entries
                 .last()
                 .is_some_and(|e| e.tag == CIDX && e.offset == footer.cidx_offset),
-        "incomplete v3 machine index"
+        "incomplete v3 private index"
     );
     let mut expected = DATA_OFFSET;
     let mut times = ranges.chunks.iter();
