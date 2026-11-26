@@ -361,8 +361,17 @@ mod tunnel {
             peer: 42,
             payload: vec![],
         };
+        // The relay carries every frame kind as bytes, an upstream actor
+        // pick included (the Cloudflare worker forwards the same way).
+        let pick = Frame {
+            kind: Kind::ActorPick,
+            port: 0,
+            peer: 0,
+            payload: vec![2, 0, 0, 0, 0, 9, 3, 0, 1],
+        };
         let expect_hello = hello.clone();
         let send_reply = reply.clone();
+        let expect_pick = pick.clone();
         let peer = member.xuid.to_string();
         let listener_task = tokio::spawn(async move {
             let (tcp, _) = listener.accept().await.unwrap();
@@ -388,6 +397,10 @@ mod tunnel {
                 .send(Message::binary(encode(&send_reply)))
                 .await
                 .unwrap();
+            let Message::Binary(bytes) = socket.next().await.unwrap().unwrap() else {
+                panic!("expected a tunnel pick");
+            };
+            assert_eq!(decode(&bytes).unwrap(), expect_pick);
         });
         let token = h.token(&member.key, &member.author, lxm::SESSIONS_RELAY);
         let mut client = upgrade(addr, &lease.id, Some(&token)).await.unwrap();
@@ -401,6 +414,7 @@ mod tunnel {
             panic!("expected a tunnel hello reply");
         };
         assert_eq!(decode(&bytes).unwrap(), reply);
-        listener_task.await.unwrap();
+        client.send(Message::binary(encode(&pick))).await.unwrap();
+        timeout(Duration::from_secs(5), listener_task).await.unwrap().unwrap();
     }
 }

@@ -1,6 +1,10 @@
 # Game types without carriers
 
+<<<<<<< HEAD
 Status: Design, with GT0 (the reads, [the GT0 note](notes/2026-11-24-game-type-engine-reads.md)), GT1 (the header), GT2 (eligible Slayer scripts on index 6 and script role traits), GT3 (King of the Hill and Territories own their zones), GT4 (the flag, bomb and ball as script objects), GT5 (filing and round-start lines), GT7 (the record mapping and the `GAME_ACTIVATE` swap, "Retail records"), GE1 to GE4 (the record clean-up, the wire codec, the protocol map and the engine object for the script index, with `rules/scoring.rs` gone), GE5 (every record that would score beside a retail engine starts on index 6 at `GAME_ACTIVATE`, whatever started it: a template, a film, a session or a saved record; the base HUD's feed, `rules/base_hud.rs`), GM1 (`crates/tools/firefight-kit/src/ground.rs`), GM2 (Studio's labels, **Build AI ground**, `ground.*` and `ground.save`, `crates/apps/studio/src/app/ground.rs`, and the `map` item's `ground` file, `workspace::GroundFile`) and GM4 (`siege.rules`'s labels, `rules::labels::reads`) built, and GM3's document, session, screens and builder built (the reload of the running map with what the build makes is not, below); "What the carrier supplies" is the state of the code and the slices are the order to change the rest in.
+=======
+Status: Design, with GT0 (the reads, [the GT0 note](notes/2026-11-24-game-type-engine-reads.md)), GT1 (the header), GT2 (eligible Slayer scripts on index 6 and script role traits), GT3 (King of the Hill and Territories own their zones), GT4 (the flag, bomb and ball as script objects), GT5 (filing and round-start lines), GT7 (the record mapping and the `GAME_ACTIVATE` swap, "Retail records"), GE1 to GE4 (the record clean-up, the wire codec, the protocol map and the engine object for the script index, with `rules/scoring.rs` gone), GE5 (every record that would score beside a retail engine starts on index 6 at `GAME_ACTIVATE`, whatever started it: a template, a film, a session or a saved record; the base HUD's feed, `rules/base_hud.rs`), GM1 (`crates/tools/firefight-kit/src/ground.rs`), GM2 (Studio's labels, **Build AI ground** and `ground.*`, `crates/apps/studio/src/app/ground.rs`; the `map` item's `ground` is not built) and GM4 (`siege.rules`'s labels, `rules::labels::reads`) built, and GM3's document, session, screens and builder built (the loader that reloads the built map into the running Forge session is not, below); "What the carrier supplies" is the state of the code and the slices are the order to change the rest in.
+>>>>>>> siege-swap
 Code: `crates/formats/rules/src` (`ir.rs` the header, `types.rs` the type table, `lang/check.rs`, `caps.rs`, `builtin/`), `crates/extensions/game/src/rules/` (`runtime.rs`, `objectives.rs`, `roles.rs`), `crates/formats/variants/src/portable.rs` (`record_for`), `crates/formats/variants/src/record.rs` (`check`, `clean_up`, `protocol`), `crates/formats/variants/src/wire.rs` (the codec), `crates/extensions/game/src/rules/record.rs` (the record hooks), `crates/extensions/game/src/rules/engine_object.rs` (the engine object), `crates/hooking/guest-layout/src/points/game_types.rs` (its image entries), `crates/extensions/game/src/community_variants.rs`. Tests: `crates/formats/rules/tests/engines.rs`, `tests/modes.rs`, `crates/rewrites/engine/tests/variant_record_differential.rs`, `crates/extensions/game/src/rules/runtime/tests/script_index.rs`.
 Switch: none (the `rules` feature).
 
@@ -275,6 +279,13 @@ area zero, and the rest stays. Three kinds of record move:
   dropped; no script writes a type-area setting. A Slayer record saved
   before scripts that ride Slayer took the script index is one.
 
+Siege has no retail type and no disc record. Its record is the script's own
+(`variants::portable::record_for`), made on the script index with team play,
+one life and no starting weapon, so the swap leaves it where it is
+(`script_index.rs`, `the_listed_siege_record_is_on_the_script_index_and_a_slayer_copy_of_it_moves_there`);
+a copy of it on the Slayer index moves with its script reference, options and
+common settings whole.
+
 A record with no script on Slayer, or on a type with no built-in, stays. A
 retail record whose type area holds a value the built-in's option cannot
 (a flag reset time over 300 seconds) is refused by name: it stays on its
@@ -287,8 +298,12 @@ copy made at game start.
 ## Maps for scripted games
 
 A Firefight or Siege map is a map with places the script reads by label
-([rules-engine.md](rules-engine.md), "Forge labels") and, for AI, ground
-the actors can walk. It is made in Forge or in Studio; both write the
+([rules-engine.md](rules-engine.md), "Forge labels") and, for Firefight's
+AI, ground the actors can walk. Siege has no actors and reads no ground: its
+labels reach the start gate and the running script through the Forge
+document's census (`rules::gate::InGame::census`), so a Forge map with
+`siege_*` labels plays Siege with or without a built ground, and the reload
+below is for Forge's own test of Firefight waves. It is made in Forge or in Studio; both write the
 same things and build the same way. Waves, rounds and scoring are the
 game variant's (the script and its options), not the map's.
 

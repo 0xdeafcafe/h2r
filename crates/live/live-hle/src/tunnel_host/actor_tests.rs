@@ -300,4 +300,103 @@ fn no_tunnel_means_no_channel() {
     );
     assert!(hle.drain_actor_tunnel_packets().is_empty());
     assert!(!hle.request_actor_tunnel_key());
+    assert!(!hle.actor_tunnel_upstream());
+    assert!(!hle.send_actor_tunnel_pick(pick_payload([2, 0, 0, 0, 0, 9], [3, 0, 1])));
+    assert!(hle.take_actor_tunnel_picks().is_empty());
+}
+
+const MACHINE_A: [u8; 6] = [2, 0, 0, 0, 0, 9];
+const MACHINE_B: [u8; 6] = [2, 0, 0, 0, 0, 8];
+
+fn pick_payload(machine: [u8; 6], message: [u8; 3]) -> Vec<u8> {
+    let mut payload = machine.to_vec();
+    payload.extend(message);
+    payload
+}
+
+/// A client's pick as the host's reader sees it: queued on the client's
+/// inbox, framed, sent across the simulated link, decoded and checked.
+#[test]
+fn a_clients_pick_crosses_the_link_and_the_host_keeps_it_with_its_machine() {
+    let mut link = ActorLink::new();
+    let mut peers = Peers::default();
+    let (id, _out) = register(&mut peers, true);
+
+    assert!(link.inbox.queue_pick(pick_payload(MACHINE_A, [3, 0, 1])));
+    for payload in link.inbox.take_picks() {
+        let frame = Frame {
+            kind: Kind::ActorPick,
+            port: 0,
+            peer: 0,
+            payload,
+        };
+        link.client.send(&encode(&frame));
+    }
+    link.clock.advance(1_000_000);
+    let mut kept = 0;
+    while let Some(bytes) = link.host.recv() {
+        let frame = decode(&bytes).unwrap();
+        assert_eq!(frame.kind, Kind::ActorPick);
+        assert!(valid_client_frame(&frame));
+        assert!(peers.receive_pick(id, &frame.payload));
+        kept += 1;
+    }
+    assert_eq!(kept, 1);
+    assert_eq!(peers.take_picks(), vec![(id, MACHINE_A, vec![3, 0, 1])]);
+    assert!(peers.take_picks().is_empty());
+}
+
+#[test]
+fn a_peers_first_pick_binds_its_machine_and_no_other_peer_may_take_it() {
+    let mut peers = Peers::default();
+    let (first, _a) = register(&mut peers, true);
+    let (second, _b) = register(&mut peers, true);
+    let (legacy, _c) = register(&mut peers, false);
+
+    assert!(peers.receive_pick(first, &pick_payload(MACHINE_A, [3, 0, 1])));
+    // Another peer cannot speak for the bound machine, and the first
+    // cannot change to another.
+    assert!(!peers.receive_pick(second, &pick_payload(MACHINE_A, [4, 0, 0])));
+    assert!(!peers.receive_pick(first, &pick_payload(MACHINE_B, [3, 0, 2])));
+    assert!(peers.receive_pick(second, &pick_payload(MACHINE_B, [4, 0, 0])));
+    // A peer without the actor channel sends none; a short or long
+    // payload is no pick.
+    assert!(!peers.receive_pick(legacy, &pick_payload([2, 0, 0, 0, 0, 7], [1, 0, 0])));
+    assert!(!peers.receive_pick(first, &MACHINE_A));
+    assert!(!peers.receive_pick(first, &[0; 40]));
+    assert_eq!(
+        peers.take_picks(),
+        vec![
+            (first, MACHINE_A, vec![3, 0, 1]),
+            (second, MACHINE_B, vec![4, 0, 0]),
+        ]
+    );
+}
+
+#[test]
+fn a_gone_peers_picks_and_binding_go_with_it_and_a_full_queue_drops() {
+    let mut peers = Peers::default();
+    let (first, _a) = register(&mut peers, true);
+    let (second, _b) = register(&mut peers, true);
+    assert!(peers.receive_pick(first, &pick_payload(MACHINE_A, [3, 0, 1])));
+    peers.remove(first);
+    assert!(peers.take_picks().is_empty());
+    // The machine is free for the next peer.
+    assert!(peers.receive_pick(second, &pick_payload(MACHINE_A, [3, 0, 0])));
+    for _ in 1..PICK_QUEUE {
+        assert!(peers.receive_pick(second, &pick_payload(MACHINE_A, [3, 0, 0])));
+    }
+    assert!(!peers.receive_pick(second, &pick_payload(MACHINE_A, [3, 0, 0])));
+}
+
+#[test]
+fn the_clients_pick_queue_holds_eight_well_formed_payloads() {
+    let mut inbox = ActorInbox::default();
+    assert!(!inbox.queue_pick(MACHINE_A.to_vec()));
+    for _ in 0..8 {
+        assert!(inbox.queue_pick(pick_payload(MACHINE_A, [3, 0, 1])));
+    }
+    assert!(!inbox.queue_pick(pick_payload(MACHINE_A, [3, 0, 1])));
+    assert_eq!(inbox.take_picks().len(), 8);
+    assert!(inbox.take_picks().is_empty());
 }

@@ -141,7 +141,7 @@ engine does not replicate, is one of two things:
   older or repeated cue for nothing
   (`crates/extensions/game/src/rules/world/show.rs`, `present_walls`).
   The pickers' offer cue (`rules::show::Cue::Pick`, kind 4) holds each
-  picker's offer the same way, for the players a client asks
+  picker's offer the same way, for the players a client would ask
   ([Pickers](#pickers)).
 
 An audience is a 16-bit mask of player slots. A text is an index into
@@ -544,22 +544,51 @@ each picker as an offer cue on the show channel
 ([the show channel](#the-show-channel), `rules::show::Cue::Pick`: the
 picker's number, its title and its rows as string-table indexes, at most
 16 bytes) when the offers change — a picker taken away goes as an empty
-one, which takes the asking off — and again every 90 ticks while any
-stands, so a machine that joins late has them. A client holds them
-(`rules/world/pick.rs`, `client_offer`), asks its own local players one
-at a time at the tick boundary with the same value picker, and sends each
-press back up the actor channel as the pick message
+one — and again every 90 ticks while any stands. A client holds them
+(`rules/world/pick.rs`, `client_offer`) and asks its own local players one
+at a time at the tick boundary with the same value picker, while the
+transport says picks travel upstream (`actor_net/link.rs::pick_upstream`,
+read once a tick into `client_ready`).
+
+A press goes back as the pick message
 (`game/src/actor_net/pick.rs`: the roster slot, the picker and the row,
-three bytes, bounds-checked on both ends). The host decodes it
-(`actor_net/pick.rs::receive`), keeps only picks for players the sending
-peer sits, and hands them to `Vm::choose` like its own local reports, so
-`picked` reads a remote pick as it reads a local one. The tunnel carries
-no frame upstream yet — its only client-to-host frame is the key request,
-which holds no payload — so a client asks nobody until the frame is built
-(`actor_net/link.rs::pick_upstream` answers false), and a player on
-another machine reads -1 from `picked`; a script falls back to the
-lobby's option, as `siege.rules` does. A player who joins after the
-offers were made is asked by the next repeat of the offer cue.
+three bytes, bounds-checked on both ends). On the Live tunnel it rides the
+client-to-host `ActorPick` frame (`live_proto::tunnel::Kind::ActorPick`,
+kind 5, port 0, peer 0), whose payload is this machine's id and then the
+message. The machine id is the machine field of the client's local player
+(`actor_net/pick.rs::read_local_machine`), which the game replicates, so
+the host finds the roster slots by it. The host's tunnel reads the frame
+only from a peer that negotiated the actor channel, within the peer's
+datagram rate, and binds the machine id of a peer's first pick to that
+peer: another peer cannot name it and the peer cannot change it. The
+game thread takes the picks each tick (`actor_net/link.rs::take_picks`),
+resolves the machine id to the remote, listed players that carry it
+(`actor_net/pick.rs::seats_of`), and `actor_net/pick.rs::receive` keeps a
+pick only for those players and hands it to `Vm::choose` like its own
+local reports, so `picked` reads a remote pick as it reads a local one.
+A client that has not yet read its own machine id (no local player in the
+roster) sends nothing, and a full upstream queue (8 on the client, 32 on
+the host) drops the pick; the player's next press replaces it.
+
+Where it travels:
+
+- **A dedicated host**, through the Live tunnel: the host's players are
+  all remote, and every client pick travels. The relay in `live-server`
+  and the Cloudflare worker's host room forward each frame as bytes, so
+  both homes carry the frame as they carry the key request
+  ([dedicated-host.md](../live/dedicated-host.md)).
+- **System Link.** `crates/platform/show-lan` carries the same message as
+  a signed `pick` datagram (kind 4: peer id, a counter newer than the last
+  accepted, the machine id, the message, the channel's tag), which
+  `Host::take_picks` hands back with its machine id. The carrier is not
+  yet wired to the game, so a System Link client's `pick_upstream` is
+  false and its player is not asked.
+- **A Live match with no dedicated host** has no tunnel: its host-run
+  script reads -1 for a remote player, and a script falls back to the
+  lobby's option, as `siege.rules` does.
+
+A player who joins after the offers were made is asked by the next repeat
+of the offer cue.
 
 ### Spawns
 

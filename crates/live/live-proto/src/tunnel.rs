@@ -18,6 +18,24 @@ pub enum Kind {
     Bye = 2,
     Actor = 3,
     ActorKeyRequest = 4,
+    /// Client to host, on a negotiated actor channel: one upstream actor
+    /// message. Its payload is the sending machine's id
+    /// ([`ACTOR_PICK_MACHINE`] bytes) and then the message
+    /// ([`ACTOR_PICK_MESSAGE_MAX`] bytes at most; a loadout pick is three).
+    ActorPick = 5,
+}
+
+/// The machine id that opens an [`Kind::ActorPick`] payload: the six bytes
+/// of the player's machine, which the game replicates to every machine, so
+/// the host finds the roster slots the sender sits in.
+pub const ACTOR_PICK_MACHINE: usize = 6;
+/// The longest message after the machine id.
+pub const ACTOR_PICK_MESSAGE_MAX: usize = 16;
+
+/// Whether `payload` is a well-formed [`Kind::ActorPick`] payload: a
+/// machine id and one to [`ACTOR_PICK_MESSAGE_MAX`] message bytes.
+pub fn actor_pick_fits(payload: &[u8]) -> bool {
+    (ACTOR_PICK_MACHINE + 1..=ACTOR_PICK_MACHINE + ACTOR_PICK_MESSAGE_MAX).contains(&payload.len())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -66,6 +84,7 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, TunnelError> {
         2 => Kind::Bye,
         3 => Kind::Actor,
         4 => Kind::ActorKeyRequest,
+        5 => Kind::ActorPick,
         other => return Err(TunnelError::Kind(other)),
     };
     let port = u16::from_le_bytes([header[2], header[3]]);
@@ -108,6 +127,7 @@ mod tests {
             Kind::Bye,
             Kind::Actor,
             Kind::ActorKeyRequest,
+            Kind::ActorPick,
         ]
         .into_iter()
         .enumerate()
@@ -130,6 +150,26 @@ mod tests {
     }
 
     #[test]
+    fn the_pick_frame_is_kind_five_and_holds_a_machine_then_a_message() {
+        let mut payload = vec![2, 0, 0, 0, 0, 9];
+        payload.extend([3, 0, 1]);
+        let frame = Frame {
+            kind: Kind::ActorPick,
+            port: 0,
+            peer: 0,
+            payload: payload.clone(),
+        };
+        let mut wire = vec![1, 5, 0, 0, 0, 0, 0, 0];
+        wire.extend(&payload);
+        assert_eq!(encode(&frame), wire);
+        assert_eq!(decode(&wire), Ok(frame));
+        assert!(actor_pick_fits(&payload));
+        assert!(!actor_pick_fits(&payload[..ACTOR_PICK_MACHINE]));
+        assert!(!actor_pick_fits(&[0; ACTOR_PICK_MACHINE + ACTOR_PICK_MESSAGE_MAX + 1]));
+        assert!(actor_pick_fits(&[0; ACTOR_PICK_MACHINE + ACTOR_PICK_MESSAGE_MAX]));
+    }
+
+    #[test]
     fn every_short_header_is_truncated() {
         for len in 0..HEADER_LEN {
             assert_eq!(
@@ -148,7 +188,7 @@ mod tests {
                     Err(TunnelError::Version(byte))
                 );
             }
-            if byte > Kind::ActorKeyRequest as u8 {
+            if byte > Kind::ActorPick as u8 {
                 assert_eq!(
                     decode(&[1, byte, 0, 0, 0, 0, 0, 0]),
                     Err(TunnelError::Kind(byte))

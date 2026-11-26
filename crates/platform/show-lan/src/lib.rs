@@ -2,9 +2,9 @@
 //! channel", System Link; slice W11).
 //!
 //! A System Link session has no Live tunnel, so the actor channel's records
-//! ride datagrams of ours beside the game's own. The carrier is one way: a
-//! client sends a hello and nothing else, and the host reads nothing but a
-//! hello. It is the Live channel's handshake and tag over a plain datagram
+//! ride datagrams of ours beside the game's own. The carrier is nearly one way: a
+//! client sends a hello and its players' picks, and the host reads nothing
+//! but those. It is the Live channel's handshake and tag over a plain datagram
 //! socket:
 //!
 //! - the host holds an Ed25519 session key; the client is given its public

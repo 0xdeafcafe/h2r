@@ -431,3 +431,66 @@ fn two_sockets_on_loopback_exchange_a_key_and_a_cue() {
         ]
     );
 }
+
+const MACHINE: [u8; 6] = [2, 0, 0, 0, 0, 9];
+
+/// The rig's LAN as the client's address sends on it.
+fn from_client(r: &Rig) -> Lan {
+    Lan { queues: r.lan.queues.clone(), me: r.client_addr }
+}
+
+#[test]
+fn a_pick_reaches_the_host_with_its_machine_and_a_replay_is_dropped() {
+    let mut r = rig();
+    // No channel yet: nothing is sent.
+    assert!(!r.client.send_pick(MACHINE, &[3, 0, 1]).unwrap());
+    establish(&mut r);
+    assert!(r.client.send_pick(MACHINE, &[3, 0, 1]).unwrap());
+    assert!(r.client.send_pick(MACHINE, &[3, 1, 0]).unwrap());
+    r.host.poll().unwrap();
+    assert_eq!(
+        r.host.take_picks(),
+        vec![(1, MACHINE, vec![3, 0, 1]), (1, MACHINE, vec![3, 1, 0])]
+    );
+    assert!(r.host.take_picks().is_empty());
+
+    // A recorded datagram sent again is stale.
+    assert!(r.client.send_pick(MACHINE, &[3, 0, 2]).unwrap());
+    let recorded = r.lan.queues.borrow().get(&r.host_addr).unwrap().front().unwrap().0.clone();
+    r.host.poll().unwrap();
+    assert_eq!(r.host.take_picks().len(), 1);
+    from_client(&r).send_to(&recorded, r.host_addr).unwrap();
+    r.host.poll().unwrap();
+    assert!(r.host.take_picks().is_empty());
+    assert_eq!(r.host.drops().get(&Reason::Stale), Some(&1));
+}
+
+#[test]
+fn a_forged_wrong_length_or_unknown_peer_pick_is_dropped() {
+    let mut r = rig();
+    establish(&mut r);
+    assert!(!r.client.send_pick(MACHINE, &[]).unwrap());
+    assert!(!r.client.send_pick(MACHINE, &[0; 17]).unwrap());
+    assert!(r.client.send_pick(MACHINE, &[3, 0, 1]).unwrap());
+    let good = r.lan.queues.borrow_mut().get_mut(&r.host_addr).unwrap().pop_front().unwrap().0;
+    // One byte of the message changed: the tag no longer verifies.
+    let mut forged = good.clone();
+    forged[good.len() - 9] ^= 1;
+    from_client(&r).send_to(&forged, r.host_addr).unwrap();
+    // A pick cut short of its smallest size.
+    from_client(&r).send_to(&good[..10], r.host_addr).unwrap();
+    r.host.poll().unwrap();
+    assert!(r.host.take_picks().is_empty());
+    assert_eq!(r.host.drops().get(&Reason::BadTag), Some(&1));
+    assert_eq!(r.host.drops().get(&Reason::Malformed), Some(&1));
+    // The real one still lands.
+    from_client(&r).send_to(&good, r.host_addr).unwrap();
+    r.host.poll().unwrap();
+    assert_eq!(r.host.take_picks(), vec![(1, MACHINE, vec![3, 0, 1])]);
+
+    // A host that knows no peer at that address drops the pick.
+    let mut stranger = rig();
+    from_client(&stranger).send_to(&good, stranger.host_addr).unwrap();
+    stranger.host.poll().unwrap();
+    assert_eq!(stranger.host.drops().get(&Reason::NoChannel), Some(&1));
+}
