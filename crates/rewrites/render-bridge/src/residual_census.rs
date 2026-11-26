@@ -288,6 +288,14 @@ pub const REGISTRY: &[Row] = &[
         status: Status::Native,
         slot: "opaque",
     },
+    // Cut: the scene's first-person parts draw in slot 10 and the guest
+    // body never runs (docs/graphics/native-objects.md, "First person").
+    Row {
+        name: "first_person",
+        entry: 0x0003_fdf0,
+        status: Status::Native,
+        slot: "transparents",
+    },
     Row {
         name: "object_shadows",
         entry: 0x0003_35e0,
@@ -1404,7 +1412,7 @@ mod tests {
         for r in REGISTRY {
             assert_eq!(
                 r.status,
-                if r.name == "object_setup" {
+                if matches!(r.name, "object_setup" | "first_person") {
                     Status::Native
                 } else if matches!(
                     r.name,
