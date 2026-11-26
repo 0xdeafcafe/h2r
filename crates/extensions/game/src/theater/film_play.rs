@@ -200,7 +200,7 @@ pub(super) fn ports(options: &[u8]) -> u32 {
 /// camera has each local user's look set to the film's facing. Each update the
 /// game tick applies takes the next film tick.
 pub(super) fn update(state: &mut State, g: &mut Guest, update: u32) -> Result<()> {
-    let first_person = matches!(&state.mode, super::Mode::Replay(_, o) if o.camera.reads_look());
+    let first_person = matches!(&state.mode, super::Mode::Replay(o) if o.camera.reads_look());
     let play = state.play.as_mut().context("no film is being played")?;
     if play.awaiting {
         return Ok(());

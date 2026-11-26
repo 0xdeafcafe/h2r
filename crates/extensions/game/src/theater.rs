@@ -46,6 +46,7 @@ pub use compatibility::{Installation, NO_GAME_START, hook_digest};
 pub use controls::{library_methods, playback_images};
 use film::{FilmMeta, Header, Reader, Source, Writer};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{
     collections::BTreeSet,
     fs::File,
