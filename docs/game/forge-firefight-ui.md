@@ -374,8 +374,9 @@ camera and tool take no input (`forge_screens::ui_up`, published to
   Save opens the keyboard for a session with no name; Save as the
   keyboard, then the replace question when the name is taken
   ([forge-map-variants-ui.md](forge-map-variants-ui.md), "Saving,
-  loading and renaming"). Rebuild map is refused by name, as the session
-  cannot rebuild yet. Leave Game is retail's, behind the unsaved
+  loading and renaming"). Rebuild map builds the map from the document
+  and reloads onto it ([forge-design.md](forge-design.md), "Rebuild
+  map"). Leave Game is retail's, behind the unsaved
   question. These are the rows Halo 3's Start has (**C**); everything
   else is one screen down so that GAME MENU never scrolls.
 - **Forge options.** Tool settings... ("Rotation snap and the other

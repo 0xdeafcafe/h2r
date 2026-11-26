@@ -30,7 +30,7 @@
 pub mod bots;
 pub mod calls;
 mod edits;
-pub use edits::{MapRebind, PreparedMapReload, ReservedMapReload};
+pub use edits::{MapRebind, MapReload, MapReloader, PreparedMapReload, ReservedMapReload};
 /// The active game's options block, as `map.reload {}` replays it
 /// (`rules.reload`'s restart patches its variant's script reference).
 pub use edits::active_options;

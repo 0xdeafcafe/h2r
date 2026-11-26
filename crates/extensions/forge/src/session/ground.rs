@@ -131,7 +131,7 @@ impl Session {
         self.ground.recipe = recipe;
     }
 
-    fn ground_stamp(&self) -> Result<Sha256, String> {
+    pub(super) fn ground_stamp(&self) -> Result<Sha256, String> {
         self.ground_form()
             .ground_stamp(&self.limits.base_counts)
             .map_err(reason)
@@ -181,9 +181,12 @@ impl Session {
             self.ground.recipe = Some(builder.recipe());
         }
         let stamp = self.ground_stamp();
-        let play = forge_doc::play_form(&self.ground_form());
-        let built =
-            stamp.and_then(|stamp| builder.build(&play).map(|report| Built { stamp, report }));
+        // The live form, so the map the game reloads onto keeps every row
+        // where the session has it (`reload.rs`).
+        let built = stamp.and_then(|stamp| {
+            let play = self.ground_copy_form()?;
+            builder.build(&play).map(|report| Built { stamp, report })
+        });
         match built {
             Ok(built) => {
                 let built = self.ground.built.insert(built);

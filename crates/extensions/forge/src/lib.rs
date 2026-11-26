@@ -24,9 +24,9 @@ pub use forge_doc::{BlockKind, Endpoint, OpId, TagKey, Value};
 pub use forge_doc::{GroundLabel, GroundRecipe, Label, MIN_GROUP_MEMBERS, Prefab};
 pub use links::{Linkable, Teleporter};
 pub use session::{
-    Goal, GroundBuilder, GroundProblem, GroundReceipt, GroundReport, GroundState, GroupInfo,
-    NavBuilder, NavLine, NavProblem, NavReport, NavState, Outgoing, PlacedMarker, SHARED_PROPOSE,
-    SHARED_REDO, Session, SessionAdmit, flag_label,
+    CopyKind, Goal, GroundBuilder, GroundProblem, GroundReceipt, GroundReport, GroundState,
+    GroupInfo, NavBuilder, NavLine, NavProblem, NavReport, NavState, Outgoing, PlacedMarker,
+    Reopened, SHARED_PROPOSE, SHARED_REDO, Session, SessionAdmit, flag_label, live_form,
 };
 pub use things::{BaseRow, BaseRows, LEFT_OUT_SENTENCE, Thing, ThingKind};
 
@@ -138,6 +138,9 @@ mod tests;
 
 #[cfg(test)]
 mod base_tests;
+
+#[cfg(test)]
+mod reload_tests;
 
 #[cfg(test)]
 mod ground_tests;

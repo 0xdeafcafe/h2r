@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use forge_doc::{
     ActiveLink, Area, Before, BlockKind, Edit, Endpoint, Entry, EntryOp, F32, FieldWrite, Forge,
-    ForgeDoc, Limits, Link, Links, LogHead, MarkerArea, Op, Placement, Proposal, Sha256, Value,
+    ForgeDoc, Limits, Links, LogHead, MarkerArea, Op, Placement, Proposal, Sha256, Value,
 };
 
 use crate::things::{self, Kept, Own, OwnMap};
@@ -20,6 +20,7 @@ mod ground;
 mod groups;
 mod prefabs;
 mod nav;
+mod reload;
 mod shared;
 
 pub use area::{Goal, flag_label};
@@ -29,6 +30,7 @@ pub use ground::{
 };
 pub use groups::{GroupInfo, carried};
 pub use nav::{NavBuilder, NavLine, NavProblem, NavReport, NavState};
+pub use reload::{CopyKind, Reopened, live_form};
 pub use shared::{Outgoing, SHARED_PROPOSE, SHARED_REDO, SessionAdmit};
 
 #[derive(Clone, Debug)]
@@ -71,6 +73,9 @@ pub struct Session {
     nav: nav::Track,
     /// The kit of the map the session runs on, when it has one.
     kit: Option<entries::Kit>,
+    /// What the running map holds of the document: the form it was built
+    /// from (**Rebuild map**, [`Session::reopen`]).
+    baked: reload::Baked,
 }
 
 impl Session {
@@ -94,6 +99,8 @@ impl Session {
         }
         forge_doc::validate(&base, &limits).map_err(reason)?;
         let head = LogHead::genesis(&base).map_err(reason)?;
+        // The loaded map is the base: it holds the empty document.
+        let baked = reload::Baked::of(&reload::live_form(&base, &limits.base_counts)?);
         Ok(Self {
             author: base.author.clone(),
             doc: base,
@@ -118,6 +125,7 @@ impl Session {
             ground: ground::Track::default(),
             nav: nav::Track::default(),
             kit: None,
+            baked,
         })
     }
 
@@ -252,14 +260,10 @@ impl Session {
     }
 
     /// Device links reach the game only when the map is materialised again:
-    /// the engine entry that sets a live device group is unproven.
+    /// the engine entry that sets a live device group is unproven. Those
+    /// the running map was rebuilt with are not pending.
     pub fn pending_rebuild(&self) -> usize {
-        self.resolved(&self.doc).map_or(0, |l| {
-            l.active
-                .iter()
-                .filter(|a| matches!(a.link, Link::Device { .. }))
-                .count()
-        })
+        self.unbaked_device_links()
     }
 
     fn resolved(&self, doc: &ForgeDoc) -> Result<Links, String> {

@@ -189,12 +189,20 @@ impl Session {
             live: KitRows::new(),
             repair: None,
         });
+        // The map with the kit holds the empty document in its session form.
+        self.baked = super::reload::Baked::of(&self.rebuild_form()?);
         Ok(self)
     }
 
     /// Whether the session runs on a map with the kit.
     pub fn has_kit(&self) -> bool {
         self.kit.is_some()
+    }
+
+    /// The spare rows each kit block has, as the session opened them; none
+    /// on a map without the kit.
+    pub fn kit_room(&self) -> Option<BTreeMap<BlockKind, u32>> {
+        self.kit.as_ref().map(|kit| kit.room.clone())
     }
 
     /// The rows of `block` the kit still has room for, or none for a map

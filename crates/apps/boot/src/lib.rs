@@ -1357,9 +1357,17 @@ fn run_configured(
             _live.clone(),
         )?;
         // Build AI ground and Test waves: the build over this disc's maps
-        // (ground_builder.rs); it does not load the map it builds.
+        // (ground_builder.rs), whose map the game reloads onto.
         #[cfg(feature = "test-maps")]
-        forge_glue::ground::install(Box::new(ground_builder::AppGround::disc(
+        forge_glue::ground::install(Box::new(
+            ground_builder::AppGround::disc(opts.disc.clone()).after(Box::new(|built| {
+                forge_glue::reload::keep_ground_copy(built.map_bytes().to_vec());
+                Ok(())
+            })),
+        ));
+        // Rebuild map: the session's map built the same way.
+        #[cfg(feature = "test-maps")]
+        forge_glue::reload::install_builder(Box::new(ground_builder::AppCopy::disc(
             opts.disc.clone(),
         )));
         // Generate nav: the bots' nav over the same build (nav_builder.rs).
