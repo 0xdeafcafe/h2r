@@ -290,7 +290,10 @@ length. Web reads just the used prefix and JSON.
 Zero padding reserves room for the final scoreboard and may be sparse
 on disk. The writer puts a provisional front (identity, empty roster and
 results) in the file when it opens it, rewrites it when the descriptor
-arrives, and writes the sealed front, then the footer, last. A front that
+arrives, and again with the roster, map and scores so far when the game is
+described and every 30 ticks (`Writer::refresh_front`), so a recording a
+crash or kill stops still lists. It writes the sealed front, then the
+footer, last. A front that
 would pass the capacity is shrunk until it fits (`Front::encode`): the
 dropped-sample counts go, names are cut to 64 characters, then the medals
 go. A reader names why a front is unusable: length 0 is a recording that

@@ -583,3 +583,95 @@ fn the_end_of_the_session_says_what_was_saved_or_why_nothing_was() {
     outcome.films.push("/films/b.h2film".into());
     assert_eq!(outcome.line(dir, None), "theater: 2 films saved to /films");
 }
+
+/// The front of the stats container beside the film at `path`, read as
+/// Theater's browser reads it.
+fn front_of(path: &Path) -> film::range::Front {
+    film::range::read_front(&mut fs::File::open(film::file::stats_of(path)).unwrap()).unwrap()
+}
+
+#[test]
+fn a_game_has_a_front_naming_it_from_its_start_and_scores_that_grow_while_it_plays() {
+    let dir = Temp::new("front-early");
+    let rec = library(&dir);
+    // Opened at activation, before any tick: the identity is there.
+    rec.game_activated(&game(&block(MODE_MULTIPLAYER, 1), [1, 2]));
+    let live = PathBuf::from(rec.status().recording.expect("a game in play"));
+    let id = film::file::header_of(&live).unwrap().meta.id;
+    assert_eq!(front_of(&live).id, id);
+    play(&rec, &arena(), &block(MODE_MULTIPLAYER, 2), [3, 4], 10);
+    let live = PathBuf::from(rec.status().recording.expect("a game in play"));
+    let front = front_of(&live);
+    assert_eq!(front.summary.level, "zanzibar", "written as the game is described");
+    let early = front.summary.duration_ticks;
+    menus(&rec, &arena(), 60);
+    assert!(front_of(&live).summary.duration_ticks > early, "refreshed every 30 ticks");
+}
+
+#[test]
+fn a_game_that_ends_by_a_match_end_a_quit_a_seal_on_drop_or_a_failure_leaves_a_front() {
+    // Match end: sealed at the next check; the film is in the library.
+    let dir = Temp::new("front-end");
+    let rec = library(&dir);
+    play(&rec, &arena(), &block(MODE_MULTIPLAYER, 1), [1, 2], 40);
+    end_game(&rec, "zanzibar", film::blam::Mode::Custom);
+    let [path] = &films(&dir.0)[..] else { panic!("one film") };
+    assert_eq!(front_of(path).summary.level, "zanzibar");
+    assert!(front_of(path).summary.duration_ticks > 0);
+    rec.finish(true).unwrap();
+
+    // Quit to the menu or app quit: the session's teardown seals the game in play.
+    let dir = Temp::new("front-quit");
+    let rec = library(&dir);
+    play(&rec, &arena(), &block(MODE_MULTIPLAYER, 1), [1, 2], 40);
+    rec.finish(true).unwrap();
+    let [path] = &films(&dir.0)[..] else { panic!("one film") };
+    assert_eq!(front_of(path).summary.level, "zanzibar");
+
+    // An error exit or panic: the seal the boot loop holds drops.
+    let dir = Temp::new("front-drop");
+    let rec = library(&dir);
+    play(&rec, &arena(), &block(MODE_MULTIPLAYER, 1), [1, 2], 40);
+    drop(rec.seal_on_drop().expect("a default recording has a seal"));
+    let [path] = &films(&dir.0)[..] else { panic!("one film") };
+    assert_eq!(front_of(path).summary.level, "zanzibar");
+
+    // A recording that failed keeps what it recorded, with a front.
+    let dir = Temp::new("front-failed");
+    let rec = library(&dir);
+    play(&rec, &arena(), &block(MODE_MULTIPLAYER, 1), [1, 2], 40);
+    rec.lock().fail("fixture failure".into());
+    rec.finish(true).unwrap();
+    let [path] = &films(&dir.0)[..] else { panic!("one film") };
+    assert_eq!(front_of(path).summary.level, "zanzibar");
+
+    // A game that leaves menus for another game: the first is sealed with its front.
+    let dir = Temp::new("front-next");
+    let rec = library(&dir);
+    let guest = arena();
+    play(&rec, &guest, &block(MODE_MULTIPLAYER, 1), [1, 2], 40);
+    play(&rec, &guest, &block(MODE_MULTIPLAYER, 2), [3, 4], 40);
+    rec.finish(true).unwrap();
+    let all = films(&dir.0);
+    assert_eq!(all.len(), 2);
+    for path in &all {
+        assert_eq!(front_of(path).summary.level, "zanzibar");
+    }
+}
+
+#[test]
+fn a_game_killed_mid_play_still_has_a_front_with_its_game() {
+    let dir = Temp::new("front-killed");
+    let rec = library(&dir);
+    play(&rec, &arena(), &block(MODE_MULTIPLAYER, 1), [1, 2], 70);
+    let live = PathBuf::from(rec.status().recording.expect("a game in play"));
+    let killed_dir = dir.0.join("killed");
+    fs::create_dir(&killed_dir).unwrap();
+    let killed = killed_dir.join(live.file_name().unwrap());
+    fs::copy(&live, &killed).unwrap();
+    fs::copy(film::file::stats_of(&live), film::file::stats_of(&killed)).unwrap();
+    let front = front_of(&killed);
+    assert_eq!(front.summary.level, "zanzibar");
+    assert!(front.summary.duration_ticks >= 60, "the last refresh, at tick 60");
+    rec.finish(true).unwrap();
+}
