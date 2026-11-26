@@ -541,11 +541,22 @@ queue that is not `order_exact` or has an unresolved cluster. Tests:
 `a_queue_the_guest_must_order_has_no_runs`. `render.stats` carries
 `layer_plan_15_display_queue_{built,geometry,unresolved_clusters,inexact}`.
 
-Not built: drawing from the plan. The water pass runs before the queue
-exists (layer 6 precedes the sorted dispatch), so it needs the dispatch
-hook described in native-renderer.md; replacing the guest's loop needs the
-handlers' state and the effects seed and `0x00174420` stamps first, so
-the loop's residual count does not drop yet.
+The display water draws from the plan (**Code**):
+`render-bridge/src/native_water/display_runs.rs` plans the queue's water
+parts at the queue's build, draws the head run, and draws the run after
+each ordinal at `TRANSPARENT_DISPATCH_NEXT` (`0x0001e3f9`, the join after
+each entry of the loop `0x0001e370`, handler or null). Tests:
+`runs_draw_in_order_between_the_entries_the_guest_dispatches`,
+`a_refused_queue_draws_nothing_and_leaves_the_old_path`,
+`parts_the_layer_6_pass_drew_and_another_frame_are_not_drawn_again`,
+`a_host_that_refuses_a_run_is_counted_and_the_loop_goes_on`,
+`the_plan_takes_a_late_run_in_order`. `render.stats` carries
+`layer_plan_15_display_queue_{runs_planned,runs_drawn,parts_drawn,runs_refused,runs_undrawn,old_path,hook_foreign_frame}`
+(native-renderer.md).
+
+Not built: replacing the guest's loop. It needs the handlers' state and
+the effects seed and `0x00174420` stamps first, so the loop's residual
+count does not drop yet.
 
 ### R1's remainder
 

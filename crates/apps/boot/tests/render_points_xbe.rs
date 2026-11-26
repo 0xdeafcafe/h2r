@@ -86,6 +86,7 @@ fn the_native_scene_list_sites_are_instruction_boundaries() {
         points::TRANSPARENT_GEOMETRY_QUEUED.base,
         points::TRANSPARENT_ORDER_BEGIN.base,
         points::TRANSPARENT_ORDER_READY.base,
+        points::scene_effects::TRANSPARENT_DISPATCH_NEXT.base,
     ];
     for site in sites.into_iter().chain([points::OBJECT_RECORD_APPENDED]) {
         assert!(

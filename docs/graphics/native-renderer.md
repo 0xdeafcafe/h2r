@@ -295,18 +295,35 @@ ordinal it sorts after, which is the order the display copy draws it in
 ordinals are not `0, 1, 2, ...`. `render.stats` counts each built queue as
 `layer_plan_15_display_queue_{built,geometry,unresolved_clusters,inexact}`.
 
-The native water draw does not consume the queue. The display water pass
-(`native_water_glue`) runs at the layer-6 draw (`0x0002c11b`), before the
-sorted dispatch (`0x0002c19a`) builds the queue, so it draws only a lone
-display part and leaves several to the guest. Consuming the queue means
-drawing the water parts of `runs` from the dispatch, between the guest's
-handlers; that needs a hook at the dispatch loop's per-entry return
-(`0x0001e3f3`) for ordinals that have no geometry handler, and a display
-pass that takes a part list. Neither is built. The guest's own sorted
-loop (`0x0001e370`, 1,010 entries a frame on Old Mombasa) keeps running,
-because each handler's state setup, and the effects seed and
+The display water pass consumes the queue from inside the sorted dispatch
+(`render-bridge/src/native_water/display_runs.rs`). The layer-6 draw
+(`0x0002c11b`) runs before the dispatch (`0x0002c19a`) builds the queue, so
+it keeps drawing its lone display part there. At the queue's build
+(`TRANSPARENT_ORDER_READY`, after the sort and before the loop) the
+display runs plan the queue's parts the water set holds, less the part the
+layer-6 draw already took, with `runs`, and draw the head run
+(`after: None`). The loop (`0x0001e370`) then calls each entry's handler
+or skips a null one, and both fall to `TRANSPARENT_DISPATCH_NEXT`
+(`0x0001e3f9`), where `esi` is the ordinal just done: the run that sorts
+after it is drawn on the display copy. The loop's return from the handler
+(`0x0001e3f3`) is a call's continuation, where a return resumes the
+generated code and no hook runs, so the site is the next instruction.
+`SCENE_TRANSPARENTS_END` drops what the loop did not reach. A run is one
+display pass over the part list (`native_water_glue::Glue::draw_display`),
+with the gates of the layer-6 display branch; the reference view and every
+guest handler are untouched. A queue `runs` refuses draws nothing at the
+hook, so the layer-6 path is then the only display water draw, as without
+the hook. `render.stats` counts the hook as
+`layer_plan_15_display_queue_{runs_planned,runs_drawn,parts_drawn,runs_refused,runs_undrawn,old_path,hook_foreign_frame}`:
+`old_path` is each refused queue, `runs_refused` a run the host did not
+draw, `hook_foreign_frame` a hook whose `esp` is not the dispatch's.
+
+The guest's own sorted loop (1,010 entries a frame on Old Mombasa) keeps
+running, because each handler's state setup, and the effects seed and
 `0x00174420` particle stamps that the effect entries write, are not
-reproduced in Rust (retire-d3d.md, R2).
+reproduced in Rust (retire-d3d.md, R2). The water set holds layer-6 edge
+passes only, not the layer-15 pool programs, so a queue part is drawn with
+its edge passes at its sorted position.
 
 ## Scene list builders
 

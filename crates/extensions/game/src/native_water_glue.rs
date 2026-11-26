@@ -19,7 +19,8 @@ use std::sync::Arc;
 
 use engine::memory::GuestMemory;
 use engine::screen_effect::{TARGET_STRIDE, TARGETS};
-use render_bridge::native_water::Host;
+use render_bridge::native_water::{Host, PartKey};
+use frame_scene::transparent::DisplayTransparentPart;
 use map::{Map, TagId};
 use native_render::fog_gpu::{FogProgram, FogWords};
 use native_render::look::{self, Stage};
@@ -262,11 +263,108 @@ pub fn upload_water(
 struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
     state: State,
+    /// The parts the last `ask` drew on the display copy at layer 6, until
+    /// the view's display runs take them.
+    layer6_display: std::sync::Mutex<Vec<PartKey>>,
+}
+
+/// A queue part as the water set names it.
+fn part_owner(&(cluster, part): &PartKey) -> (Owner, u8) {
+    (Owner::Cluster(u32::from(cluster)), part)
+}
+
+impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+    /// Draws `parts` on the display copy as one pass, from inside the
+    /// sorted dispatch: the gates of [`Host::ask`]'s display branch, with the
+    /// parts the dispatch's queue names rather than a lone layer-6 part.
+    /// `None` leaves them undrawn.
+    fn draw_display(&self, mem: &mut dyn GuestMemory, parts: &[PartKey]) -> Option<usize> {
+        use timeline::native::Stage;
+        let ready = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            Arc::clone(current_ready(&state, mem)?)
+        };
+        let (water, palettes) = ready.water.get()?;
+        let selected: Vec<(Owner, u8)> = parts.iter().map(part_owner).collect();
+        if selected.is_empty() || selected.iter().any(|key| !water.part_set.contains_key(key)) {
+            return None;
+        }
+        let Ok(mut d) = self.device.lock() else { return None };
+        if !d.can_external_pass()
+            || !d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()?
+        {
+            return None;
+        }
+        let read = ReadMemory(mem);
+        if !crate::native_fog_glue::stencil_disabled(|slot| d.render_state(&read, slot))
+            || !palettes_hold(palettes, &|n| d.stage_palette(&read, n))
+        {
+            return None;
+        }
+        let mut headers = Vec::with_capacity(water.targets.len());
+        for &t in &water.targets {
+            headers.push(target_header(mem, t)?);
+        }
+        let device_words = crate::native_fog_glue::device_fog_words(&d, mem);
+        let materials = crate::native_fog_glue::resolve_materials(&water.words, &device_words)?;
+        let writes_depth = water
+            .programs
+            .values()
+            .any(|passes| passes.iter().any(|p| p.state.depth_write));
+        let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
+        let plan = d3d::ExternalPlan { stage: Stage::Water, view, ranges: selected.len(), slots: Vec::new() };
+        let run = u64::from(d.swap_count()).wrapping_add(1);
+        let target = d.external_ready(&ReadMemory(mem), false).ok()?;
+        if d.projection_factor_for_target(target.surface_size) >= 1.0 {
+            return None;
+        }
+        ready.with_pipeline_target(&d, mem, |gpu, device, color, depth| {
+            gpu.prewarm_water(device, color, depth).then_some(())
+        })?;
+        let count = selected.len();
+        let pass = Box::new(WaterViewPass {
+            ready: Arc::clone(&ready),
+            selected,
+            fogs: crate::native_fog_glue::late_fogs(&materials),
+            display_only: true,
+            headers,
+            samples_view: water.samples_view,
+            view: None,
+            w_clip: None,
+            writes_depth,
+            run,
+        });
+        matches!(d.draw_display_stage(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass), Ok(true))
+            .then_some(count)
+    }
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
+    fn draws_display_part(&self, mem: &dyn GuestMemory, part: &DisplayTransparentPart) -> bool {
+        let ready = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            match current_ready(&state, mem) {
+                Some(ready) => Arc::clone(ready),
+                None => return false,
+            }
+        };
+        let Some((water, _)) = ready.water.get() else { return false };
+        // The part's live material is the one the set compiled.
+        water.part_set.get(&part_owner(&(part.cluster, part.part)))
+            == Some(&((part.shader & 0xffff) as u16))
+    }
+
+    fn draw_display_parts(&self, mem: &mut dyn GuestMemory, parts: &[PartKey]) -> usize {
+        self.draw_display(mem, parts).unwrap_or(0)
+    }
+
+    fn take_layer6_display(&self) -> Vec<PartKey> {
+        std::mem::take(&mut *self.layer6_display.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
     fn ask(&self, mem: &mut dyn GuestMemory, display_clusters: &[u16]) -> Option<native_render::skip::Cleared> {
         use timeline::native::{Metric, Stage};
+        self.layer6_display.lock().unwrap_or_else(|e| e.into_inner()).clear();
         let ready = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             Arc::clone(current_ready(&state, mem)?)
@@ -345,7 +443,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                     })?;
                     let plan = plan(1);
                     let display = pass(vec![selected], crate::native_fog_glue::late_fogs(&materials), true);
-                    let _ = d.draw_display_stage(&mut crate::native_lights_glue::DeviceMemory(mem), plan, display);
+                    if matches!(d.draw_display_stage(&mut crate::native_lights_glue::DeviceMemory(mem), plan, display), Ok(true))
+                        && let Owner::Cluster(cluster) = selected.0
+                        && let Ok(cluster) = u16::try_from(cluster)
+                    {
+                        *self.layer6_display.lock().unwrap_or_else(|e| e.into_inner()) = vec![(cluster, selected.1)];
+                    }
                 }
             }
         }
@@ -396,6 +499,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
     render_bridge::native_water::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         state,
+        layer6_display: Default::default(),
     }));
 }
 

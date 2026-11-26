@@ -287,7 +287,7 @@ impl SceneBuilder {
         Ok(())
     }
 
-    pub fn set_display_transparents(&mut self, queue: crate::transparent::DisplayTransparentQueue) -> Result<(), BuildError> {
+    pub fn set_display_transparents(&mut self, queue: impl Into<std::sync::Arc<crate::transparent::DisplayTransparentQueue>>) -> Result<(), BuildError> {
         let (scene, open) = self.open_mut()?;
         scene.views[open].display_transparents = Some(queue.into());
         Ok(())
