@@ -125,16 +125,18 @@ pub const REBUILD_STEP: i16 = PILL_STEP;
 pub enum Tool {
     Objects,
     Links,
+    Nav,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 2] = [Tool::Objects, Tool::Links];
+    pub const ALL: [Tool; 3] = [Tool::Objects, Tool::Links, Tool::Nav];
 
     /// The name in the HUD's top right.
     pub fn name(self) -> &'static str {
         match self {
             Tool::Objects => "OBJECTS",
             Tool::Links => "LINKS",
+            Tool::Nav => "NAV",
         }
     }
 
@@ -143,6 +145,7 @@ impl Tool {
         match self {
             Tool::Objects => &[Hand::Idle, Hand::Aimed, Hand::Placing, Hand::Holding],
             Tool::Links => &[Hand::Idle, Hand::Aimed, Hand::Linking],
+            Tool::Nav => &[Hand::Idle],
         }
     }
 }
@@ -376,6 +379,7 @@ pub fn prompt_text(v: &View, b: &Buttons) -> String {
         (Tool::Links, Hand::Linking) if v.target.is_empty() => "Aim at the thing to link to".into(),
         (Tool::Links, Hand::Linking) => with_name(format!("{a} to link to"), &v.target),
         (Tool::Links, _) => "Aim at a thing to link".into(),
+        (Tool::Nav, _) => format!("{a} to generate the nav"),
     }
 }
 

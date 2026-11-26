@@ -712,6 +712,7 @@ mod gpu {
 
     pub fn register(host: &mut crate::Host) {
         host.add_world_line_source(Arc::new(Source));
+        crate::forge_glue::nav_world::register(host);
     }
 
     /// The first world view's eye in the last frame's scene.

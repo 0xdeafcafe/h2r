@@ -111,6 +111,7 @@ pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
         Kind::Tools => vec![
             ("objects", sheet::tools(Tool::Objects)),
             ("links", sheet::tools(Tool::Links)),
+            ("nav", sheet::tools(Tool::Nav)),
         ],
         Kind::Settings => vec![
             ("open", sheet::settings(2, 0, false)),

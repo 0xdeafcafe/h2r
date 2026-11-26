@@ -63,12 +63,27 @@ pub fn read(bytes: &[u8], solid: impl Fn(BlockKind, usize) -> bool) -> Result<In
         .filter(|m| SOLID_BLOCKS.contains(&m.block) && solid(m.block, m.index))
         .collect();
     let solids = solids(&mut map, &placed);
+    let lifts = lifts(&mut map)?;
     Ok(Input {
         level,
         solids,
         starts,
         teleporters,
+        lifts,
     })
+}
+
+/// The scenario's lifts, read by the bots' own reader.
+fn lifts<R: std::io::Read + std::io::Seek>(
+    map: &mut Map<R>,
+) -> Result<bots::autonav::Lifts, String> {
+    let scenario = map.scenario().ok_or("the map has no scenario")?.clone();
+    let address = scenario
+        .location
+        .ok_or("the scenario has no payload")?
+        .address;
+    let bytes = map.read_tag_bytes(scenario.id).map_err(|e| e.to_string())?;
+    bots::autonav::Lifts::read(&bytes, address, map)
 }
 
 /// The first structure BSP's collision.

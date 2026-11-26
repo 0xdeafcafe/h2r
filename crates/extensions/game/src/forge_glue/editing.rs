@@ -155,6 +155,9 @@ pub(super) struct Editor {
     ground_answer: Option<GroundAnswer>,
     /// The file job is a nav generation (`forge_glue::nav`).
     nav_generating: bool,
+    /// The log head the staged nav mesh was generated at: the bots take
+    /// the mesh only while the document is still this one.
+    nav_staged: Option<LogHead>,
     /// The agent that asked for the running generation.
     nav_answer: Option<NavAnswer>,
 }
@@ -207,6 +210,7 @@ impl Editor {
             ground_building: false,
             ground_answer: None,
             nav_generating: false,
+            nav_staged: None,
             nav_answer: None,
         }
     }
@@ -357,7 +361,7 @@ impl Editor {
             "area_edit":self.area.as_ref().map(area::Draft::status),
             "variant":local_api::variant_status(self.session.document(), self.filename.as_deref(), self.dirty()),
             "screen":screen, "head":self.session.head(), "pending_rebuild":self.session.pending_rebuild(),
-            "tool":if self.tool.links { "links" } else { "objects" }, "fine":controls::fine(),
+            "tool":if self.tool.nav { "nav" } else if self.tool.links { "links" } else { "objects" }, "fine":controls::fine(),
             "rotation_snap":ANGLE_STEPS[self.rotation_step], "movement_snap":sheet::MOVE_STEPS[self.movement_step],
             "axes":self.tool.axes.name(),
             "overlays":Value::Object(Overlay::ALL.iter()
@@ -480,6 +484,24 @@ impl Editor {
         let (tx, rx) = mpsc::channel();
         self.start_nav(self.now, Some(tx))?;
         Ok(rx)
+    }
+
+    /// The staged nav mesh goes when the document has moved on from it.
+    fn retire_nav(&mut self) {
+        if self.nav_staged.is_some_and(|head| head != self.session.head()) {
+            self.nav_staged = None;
+            super::nav::unstage();
+        }
+    }
+
+    /// The lines of the last **Generate nav** the window draws: the
+    /// sectors and links, while the Nav tool is selected with the Nav
+    /// overlay on ([`super::nav_world`]). None otherwise.
+    pub fn nav_lines(&self) -> Option<&[forge::NavLine]> {
+        if !(self.tool.monitor && self.tool.nav && self.overlay(Overlay::Nav)) {
+            return None;
+        }
+        self.session.nav_report().map(|r| r.lines.as_slice())
     }
 
     /// The game type markers of the session: a marker for each spawn,
@@ -751,7 +773,9 @@ impl Editor {
         if !self.tool.monitor {
             return crate::forge_hud::Published::default();
         }
-        let (tool, hand, target) = if self.tool.links {
+        let (tool, hand, target) = if self.tool.nav {
+            (KitTool::Nav, Hand::Idle, String::new())
+        } else if self.tool.links {
             let aimed = self
                 .tool
                 .aimed_link
@@ -849,6 +873,7 @@ impl Editor {
             return Default::default();
         };
         let links = self.tool.links;
+        let nav = self.tool.nav;
         let aimed_link = self
             .tool
             .aimed_link
@@ -867,7 +892,7 @@ impl Editor {
             };
             (at, None)
         };
-        let axes = (!links && show.gizmo)
+        let axes = (!links && !nav && show.gizmo)
             .then(|| {
                 let frame = match self.ghost() {
                     Some((frame, _)) => frame,
@@ -1025,6 +1050,7 @@ impl Editor {
         memory: &dyn engine::GuestMemory,
     ) {
         self.now = tick;
+        self.retire_nav();
         self.bsp = bsp;
         self.ui_up = ui_up;
         if self.tool.game != game {
@@ -1135,6 +1161,7 @@ impl Editor {
             x_properties: self.x_properties(),
             cancel: self.cancellable(),
             select_on_hold: !self.tool.links
+                && !self.tool.nav
                 && self.tool.placing.is_none()
                 && self.tool.held_thing.is_none(),
             area: self.area.as_ref().map(area::Draft::mode),
@@ -1146,7 +1173,9 @@ impl Editor {
             rotation_snap: self.rotation_step,
             movement_snap: self.movement_step,
             local_axes: self.local_axes,
-            tool: Some(if self.tool.links {
+            tool: Some(if self.tool.nav {
+                ToolKind::Nav
+            } else if self.tool.links {
                 ToolKind::Links
             } else {
                 ToolKind::Objects
@@ -1260,6 +1289,11 @@ impl Editor {
                 // session as it was, with the generation recorded.
                 self.session = Arc::new(*done);
                 self.nav_generating = false;
+                // The bots of the loaded map walk the new mesh at once; a
+                // match that loads later takes it while it is current
+                // (`bot_glue`).
+                self.nav_staged = Some(self.session.head());
+                super::nav::offer(&self.session.document().base.map);
                 let text = super::nav::notice(self.session.nav_report());
                 self.notice = Some((text, tick));
                 if let Some(answer) = self.nav_answer.take() {
@@ -1371,6 +1405,7 @@ impl Editor {
             Overlays => screens::open(sheet::overlays(self.tool.overlays))?,
             Menu => return Err("The Forge menu is GAME MENU: press Start.".into()),
             BuildGround => return self.start_ground(tick, false, None),
+            GenerateNav => return self.start_nav(tick, None),
             TestWaves => return self.start_ground(tick, true, None),
             DialogUp | DialogDown | DialogAccept | DialogBack => {
                 return Err("A screen is up; it takes the pad.".into());
@@ -1721,7 +1756,10 @@ impl Editor {
             Choice::BuildGround => return self.command(tick, Command::BuildGround),
             Choice::TestWaves => return self.command(tick, Command::TestWaves),
             Choice::GenerateNav => return self.start_nav(tick, None),
-            Choice::Tool(t) => self.tool.set_links(t == ToolKind::Links),
+            Choice::Tool(t) => {
+                self.tool.set_links(t == ToolKind::Links);
+                self.tool.set_nav(t == ToolKind::Nav);
+            }
             Choice::Set(Prop::RotationSnap, i) => {
                 let step = *ANGLE_STEPS.get(i).ok_or("No such rotation snap.")?;
                 self.rotation_step = i;

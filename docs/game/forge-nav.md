@@ -1,7 +1,7 @@
 # Forge nav
 
-Status: Partly built. **Generate nav**, its problems, their marks and `forge.nav` are built; the Nav tool, drawing the sectors and links in the game, and the bots walking the generated mesh in a match are not.
-Code: `crates/tools/forge-nav/src/lib.rs` (`generate`), `crates/tools/forge-nav/src/read.rs` (`read`), `crates/extensions/forge/src/session/nav.rs` (`Session::generate_nav`), `crates/extensions/game/src/forge_glue/nav.rs`, `crates/apps/boot/src/nav_builder.rs` (`AppNav`). Tests: `crates/tools/forge-nav/src/tests.rs`, `crates/extensions/forge/src/nav_tests.rs`, `crates/extensions/game/src/forge_glue/editing/tests.rs` (`mod nav`), `crates/extensions/agent/src/forge/tests.rs`.
+Status: Built. **Generate nav**, its problems and their marks, `forge.nav`, the Nav tool with the sectors and links drawn in the game, and the bots taking the generated mesh are built. Not yet checked on a retail map in a running match.
+Code: `crates/tools/forge-nav/src/lib.rs` (`generate`), `crates/tools/forge-nav/src/read.rs` (`read`), `crates/extensions/forge/src/session/nav.rs` (`Session::generate_nav`), `crates/extensions/forge/src/tool.rs` (`Tool::update_nav`), `crates/extensions/game/src/forge_glue/nav.rs`, `crates/extensions/game/src/forge_glue/nav_world.rs`, `crates/extensions/game/src/bot_glue.rs` (`MapRead::staged`), `crates/live/bots/src/autonav.rs` (`offer_loaded`, `teleporter_flags`, `link_teleporters`, `Lifts`), `crates/apps/boot/src/nav_builder.rs` (`AppNav`). Tests: `crates/tools/forge-nav/src/tests.rs`, `crates/tools/forge-build/tests/links.rs`, `crates/extensions/forge/src/nav_tests.rs`, `crates/extensions/forge/src/tool_tests.rs`, `crates/extensions/game/src/forge_glue/editing/tests.rs` (`mod nav`), `crates/extensions/game/src/forge_glue/nav_world.rs`, `crates/extensions/agent/src/forge/tests.rs`.
 Switch: none.
 
 The bots walk a nav mesh made from the structure BSP's collision
@@ -43,8 +43,10 @@ generator, so what the overlay shows is what a bot would walk.
    merged BSP: walkable polygons (the sectors), walks between neighbours,
    and step, drop and jump links. The merge keeps the level's polygons
    whole, so a floor has no side where a solid stands on it; `generate`
-   gives each walk that has no way back the reverse walk. Each teleporter pair whose two ends
-   stand on the mesh becomes a `Teleporter` link. `mark_out_of_map` marks
+   gives each walk that has no way back the reverse walk. Each teleporter
+   pair whose two ends stand on the mesh becomes a `Teleporter` link, and
+   the scenario's lifts and elevators are linked by the bots' own reader
+   (`bots::autonav::Lifts`, read by `read::read`). `mark_out_of_map` marks
    the polygons no player start reaches.
 6. **The report.** The session keeps `NavReport` beside the document:
    sectors, links by kind, polygons out of the map, solids merged,
@@ -60,9 +62,39 @@ start off the mesh as a spawn, a teleporter end as that end, a solid left
 out as a cover mark, each named `nav:` and its subject. It draws with the
 Markers overlay off.
 
-The sectors' sides (in the map or out of it) and every link but a walk
-are `Generated::overlay`, in `forge.nav`'s `overlay`; the game does not
-draw them yet.
+## The tool
+
+The Nav tool (the Tools picker's third row, `Tool::nav`) aims at nothing
+and edits nothing in the document. With it selected and the Nav overlay on,
+the last generation's sectors and links are drawn in the world
+(`forge_glue::nav_world`, a world-line source beside the markers'): a
+polygon's sides the starts reach, the sides no start reaches (dashed), and
+each link but a walk from where it is taken to where it lands, each kind in
+a colour of its own (`nav_world::colour`). Lines within 60 units of the eye
+are drawn, the nearest 6000 at most, fading out toward that range. A
+changed report is copied once; the same one is not copied again. The HUD
+names the tool NAV and says A generates the nav; A runs **Generate nav**
+(`Command::GenerateNav`). Link and the object menu return to the Objects
+tool. Another tool draws no sectors; the problems' marks stay with the
+overlay.
+
+## The bots
+
+The generator keeps the mesh it reports (`forge_glue::nav::stage`, called
+by `AppNav`, keyed by the document's base map name). The editor puts it
+under the bots at once when that map is the loaded one
+(`nav::offer`, `bots::autonav::offer_loaded`), and it stays staged for a map
+load: `bot_glue::load_map_data` takes it in place of the mesh built from
+the BSP alone, for the pinned play copy of a Rebuild as for the retail
+file. The editor drops it (`Editor::retire_nav`) as soon as the document's
+log head differs from the one it was generated at, and the session's end
+drops it. The mesh is the bots' own `MapData`, so a bot walks the ramp
+the overlay shows.
+
+Lines of the generated sectors are not in the document or the log, and a
+teleporter link is the one `forge-build` writes
+(`bots::autonav::teleporter_flags` reads the same flags;
+`crates/tools/forge-build/tests/links.rs`).
 
 ## Interfaces
 
@@ -82,14 +114,18 @@ draw them yet.
   structure BSP is read.
 - Islands no link reaches and objectives a team cannot path to are not
   reported.
-- The running match's bots still walk the mesh the boot scan builds from
-  the BSP alone (`bots::autonav::build_map`): taking the Forge solids in
-  there is a change to the bots crate.
+- A mesh offered to a loaded map stays until the map loads again, even
+  when an edit has since made it stale; only a later load goes without it.
+  The nav worker's own build of the retail map may publish after the
+  offer and replace it.
+- The generated mesh has no tactical places and no weapon pads seed the
+  out-of-map marks, as the BSP-only build has none.
 
 ## Not verified
 
 - That a retail object's `coll` compiles back and merges at the sizes
   real maps have, and how long a generation takes on one.
+- That bots walk a Forge map's generated ramp in a running match.
 - That the bots' generator finds a ramp's step onto a ledge on real
   geometry as it does on the invented room.
 
@@ -97,7 +133,7 @@ draw them yet.
 
 - [forge-design.md](forge-design.md), slice F9.
 - [forge-features.md](forge-features.md), "Nav mesh".
-- [forge-editing.md](forge-editing.md), "Overlays".
+- [forge-editing.md](forge-editing.md), "Tools" and "Overlays".
 - [bots.md](bots.md): the bots' nav.
 - [modeling.md](../editor/modeling.md), slice 11: merging a solid into a
   level's collision.

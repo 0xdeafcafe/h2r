@@ -86,6 +86,7 @@ fn input(solids: Vec<Solid>) -> Input {
         solids,
         starts: vec![ON_FLOOR],
         teleporters: vec![],
+        lifts: Default::default(),
     }
 }
 

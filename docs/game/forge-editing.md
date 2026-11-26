@@ -1,6 +1,6 @@
 # Forge editing: the monitor's controls, tools and properties
 
-Status: Partly built. The Halo 3 button table, flying with thrust and fine movement, pick up and drop, manipulating a held object, movement and rotation snap, world or local axes, Coordinates with typing and nudging, hold to delete, undo and redo, the Tools picker with the Objects and Links tools, the object menu, a Properties page with Heading and the spawn, goal and item rows, Tool settings with Movement snap, Rotation snap and Axes, the Overlays page with the Markers, Other monitors, Axes and Nav problems overlays, **Generate nav**, the placed objects browser, the Map limits page, hold A to select, groups (Select, Group selection, Pivot in local sessions, Lock group, Ungroup), labels (Label, Label number, Clear label) and prefabs (Save as prefab, the object menu's Prefabs row) exist. The Nav tool, the nav's sectors drawn in the game, a picker of a script's declared labels and lights are design.
+Status: Partly built. The Halo 3 button table, flying with thrust and fine movement, pick up and drop, manipulating a held object, movement and rotation snap, world or local axes, Coordinates with typing and nudging, hold to delete, undo and redo, the Tools picker with the Objects and Links tools, the object menu, a Properties page with Heading and the spawn, goal and item rows, Tool settings with Movement snap, Rotation snap and Axes, the Overlays page with the Markers, Other monitors, Axes and Nav problems overlays, **Generate nav**, the placed objects browser, the Map limits page, hold A to select, groups (Select, Group selection, Pivot in local sessions, Lock group, Ungroup), labels (Label, Label number, Clear label) and prefabs (Save as prefab, the object menu's Prefabs row) exist. The Nav tool with the nav's sectors and links drawn in the game exist. A picker of a script's declared labels and lights are design.
 Code: `crates/extensions/forge/src/tool.rs` (`Tool`, `Action`, `Input`, `Command`), `crates/extensions/forge/src/session.rs` and `session/groups.rs` (`Session`), `crates/extensions/game/src/forge_controls.rs` and `forge_controls/bindings.rs` (pad, keyboard and agent input; the bindings table), `crates/extensions/game/src/forge_screens/sheet.rs` (the menus' tables), `crates/extensions/game/src/forge_glue/editing.rs` (the host). Tests: `crates/extensions/forge/src/tool_tests.rs`, `link_tests.rs`, `props_tests.rs`, `group_tests.rs`, `tests.rs`; `forge_controls.rs`, `bindings.rs`, `forge_screens/tests.rs` and `forge_glue/editing/tests.rs` in `crates/extensions/game/src`.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
@@ -118,7 +118,7 @@ the tool in use.
 | Emitters | emitters | F7 |
 | AI | squads | F11 |
 | Shape, Paint | faces, textures | F13 |
-| Nav | the nav overlay and its problems | F9 |
+| Nav | nothing: it draws the generated sectors and links, A runs **Generate nav** ([forge-nav.md](forge-nav.md), "The tool") | built (F9) |
 
 A tool that is not built is absent from the picker.
 
@@ -137,8 +137,9 @@ log or the sim (`forge::tool::Overlay`, `Tool::overlays`).
 | Axes | the axes and outline at the held or aimed object (`forge_glue::gizmo`) | no gizmo |
 | Nav problems | a mark at each problem the last **Generate nav** found (`markers_world::nav_problems`, [forge-nav.md](forge-nav.md)) | no marks |
 
-The sectors and links of the nav are in `forge.nav`'s `overlay`; the
-game does not draw them. `forge.status`
+The sectors and links of the nav are in `forge.nav`'s `overlay`; the Nav
+tool draws them in the game while the Nav overlay is on
+(`forge_glue::nav_world`). `forge.status`
 carries `overlays`, a map of each overlay's name to whether it is on;
 `forge.input` takes `overlays` to open the page.
 

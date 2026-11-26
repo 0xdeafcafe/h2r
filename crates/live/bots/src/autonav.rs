@@ -43,6 +43,11 @@ mod pads;
 pub(crate) mod shared_cache;
 mod traversals;
 
+/// The scenario's teleporter flags and lifts, and linking them into a mesh: the
+/// generator's own reader and linker, public so a map made elsewhere (a
+/// Forge document's) is checked against what the bots would pair.
+pub use traversals::{Lifts, Teleporter, link_teleporters, teleporter_flags};
+
 /// The user-level cache of completed builds. The worker still writes the
 /// game's copies to its data directory.
 pub use shared_cache::default_dir as shared_cache_dir;
@@ -1173,6 +1178,11 @@ impl Loaded {
         self.generation = self.generation.wrapping_add(1);
     }
 
+    /// Whether `map` is the loaded one, whichever load of it.
+    pub fn holds(&self, map: &str) -> bool {
+        !self.name.is_empty() && self.name.eq_ignore_ascii_case(map)
+    }
+
     pub fn accepts(&self, map: &str, generation: u64) -> bool {
         !self.name.is_empty()
             && self.generation == generation
@@ -1224,6 +1234,20 @@ pub(crate) fn loaded_change(previous: &str) -> Option<String> {
 pub fn offer(map: &str, data: Arc<MapData>, generation: u64) -> bool {
     let l = LOADED.lock().unwrap_or_else(|e| e.into_inner());
     if !l.accepts(map, generation) {
+        return false;
+    }
+    let retired = cache::replace_current(Some(data));
+    drop(l);
+    drop(retired);
+    true
+}
+
+/// Publish a mesh made elsewhere for the loaded map `map`, whichever load
+/// of it: a Forge session's generated nav (docs/game/forge-nav.md). False
+/// when another map is loaded.
+pub fn offer_loaded(map: &str, data: Arc<MapData>) -> bool {
+    let l = LOADED.lock().unwrap_or_else(|e| e.into_inner());
+    if !l.holds(map) {
         return false;
     }
     let retired = cache::replace_current(Some(data));

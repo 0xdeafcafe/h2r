@@ -7,6 +7,7 @@ pub mod ground;
 mod link;
 pub mod markers_world;
 pub mod nav;
+pub mod nav_world;
 pub mod net;
 
 use std::path::{Path, PathBuf};
@@ -208,6 +209,8 @@ impl Driver {
         self.marks_at = None;
         self.marks_preview = false;
         markers_world::clear();
+        nav_world::clear();
+        nav::unstage();
         self.bodies.clear();
         self.link.reset();
         self.reason = "Waiting for a local multiplayer map.".into();
@@ -358,6 +361,7 @@ impl Driver {
             self.marks_preview = preview;
             let (aimed, held) = e.marker_pins();
             markers_world::publish(&self.marks, aimed, held);
+            nav_world::publish(e.nav_lines());
             self.bodies = e.monitor_draws(now, now);
         }
     }

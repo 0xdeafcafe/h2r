@@ -732,3 +732,39 @@ fn reset_orientation_uprights_the_hold_and_take_up_holds_a_new_thing() {
     assert_eq!(id, second);
     assert_eq!(frame.rotation, [0.25, 0., 0.]);
 }
+
+#[test]
+fn the_nav_tool_aims_at_nothing_and_a_generates_the_nav() {
+    let mut s = session(3);
+    let mut w = Fake::default();
+    let at = Frame {
+        position: [5., 0., 0.],
+        rotation: [0.; 3],
+    };
+    s.place(&mut w, 1, 0, at).unwrap();
+    let mut tool = Tool::default();
+    tool.update(&s, 1, press(Action::Toggle)).unwrap();
+    tool.camera = Some(eye());
+    tool.set_nav(true);
+    let count = s.document().ops.len();
+    assert_eq!(
+        tool.update(&s, 2, press(Action::Accept)).unwrap(),
+        Some(Command::GenerateNav)
+    );
+    assert_eq!(tool.aimed_thing, None, "an object in the reticle is not aimed at");
+    assert_eq!(tool.update(&s, 3, press(Action::Delete)).unwrap(), None);
+    assert_eq!(s.document().ops.len(), count, "the tool edits nothing");
+    // The overlays and the tools picker are still reachable.
+    assert_eq!(
+        tool.update(&s, 4, press(Action::Tools)).unwrap(),
+        Some(Command::Tools)
+    );
+    // Link leaves for the Objects tool; choosing a tool is exclusive.
+    tool.update(&s, 5, press(Action::Link)).unwrap();
+    assert!(!tool.nav && !tool.links);
+    tool.set_nav(true);
+    tool.set_links(true);
+    assert!(tool.links && !tool.nav);
+    tool.set_nav(true);
+    assert!(tool.nav && !tool.links);
+}

@@ -418,14 +418,27 @@ fn load_map_data(
     if usage == MapUse::Never && retired.is_none() {
         return;
     }
-    let auto = autonav::handle().filter(|_| usage == MapUse::Build);
+    // A Forge session's generated nav for this map, while the document is
+    // still the one it was made from (docs/game/forge-nav.md, "The bots").
+    let staged = (usage == MapUse::Build)
+        .then(|| crate::forge_glue::nav::staged(&name))
+        .flatten();
+    let auto = autonav::handle().filter(|_| usage == MapUse::Build && staged.is_none());
     if let Some(h) = &auto && editor.is_none() {
         h.want_active(&name, crate::map_slots::active_file(mem), generation);
         if retired.is_none() {
             return;
         }
     }
-    let read = MapRead { name, usage, generation, retired, auto: auto.is_some(), editor };
+    let read = MapRead {
+        name,
+        usage,
+        generation,
+        retired,
+        auto: auto.is_some(),
+        editor,
+        staged,
+    };
     match reader {
         MapLoader::Worker(Some(tx)) => {
             let _ = tx.send(read);
@@ -442,6 +455,9 @@ struct MapRead {
     retired: Option<Arc<bots::cache::MapData>>,
     auto: bool,
     editor: Option<vfs::HostFile>,
+    /// A Forge session's generated nav for this map: the bots take it in
+    /// place of the one built from the BSP alone.
+    staged: Option<Arc<bots::cache::MapData>>,
 }
 
 /// The receiver sleeps while the map is stable. Rapid transitions retire
@@ -466,10 +482,14 @@ fn map_reader(dir: std::path::PathBuf) -> Option<std::sync::mpsc::Sender<MapRead
 impl MapRead {
     fn load(self, dir: &std::path::Path) {
         use bots::autonav::{self, MapUse};
-        let MapRead { name, usage, generation, retired, auto, editor } = self;
+        let MapRead { name, usage, generation, retired, auto, editor, staged } = self;
         // Free the retired mesh and its many polygon, edge and visibility
         // allocations away from the frame that observed the transition.
         drop(retired);
+        if let Some(mesh) = staged {
+            autonav::offer(&name, mesh, generation);
+            return;
+        }
         if let Some(file) = editor {
             // The ordinary per-map cache can match the retail name and even its
             // XOR checksum. Build from the pinned play copy, in memory only.

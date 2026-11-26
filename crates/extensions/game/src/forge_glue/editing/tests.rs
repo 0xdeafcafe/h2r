@@ -1169,6 +1169,49 @@ mod nav {
     }
 
     #[test]
+    fn the_nav_tool_draws_the_sectors_and_a_generates_the_nav() {
+        use forge::NavLine;
+        let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        struct Lines;
+        impl NavBuilder for Lines {
+            fn generate(
+                &mut self,
+                _: &ForgeDoc,
+                _: &std::collections::BTreeMap<BlockKind, u32>,
+            ) -> Result<NavReport, String> {
+                Ok(NavReport {
+                    sectors: 1,
+                    lines: vec![NavLine {
+                        kind: "sector".into(),
+                        a: [0.; 3],
+                        b: [1., 0., 0.],
+                    }],
+                    ..Default::default()
+                })
+            }
+        }
+        installed::install(Box::new(Lines));
+        let mut e = nav_editor();
+        e.choose(1, Choice::Tool(ToolKind::Nav)).unwrap();
+        assert!(e.tool.nav && !e.tool.links);
+        assert_eq!(e.status()["tool"], "nav");
+        assert_eq!(e.monitor_hud(0.).view.tool, hud_kit_core::views::forge::Tool::Nav);
+        // Nothing is drawn before a generation.
+        assert!(e.nav_lines().is_none());
+
+        e.command(2, Command::GenerateNav).unwrap();
+        finish(&mut e, 3);
+        assert_eq!(e.nav_lines().map(<[_]>::len), Some(1));
+        // The overlay row turns it off; another tool draws no sectors.
+        e.tool.overlays.set(Overlay::Nav, false);
+        assert!(e.nav_lines().is_none());
+        e.tool.overlays.set(Overlay::Nav, true);
+        e.choose(4, Choice::Tool(ToolKind::Objects)).unwrap();
+        assert!(!e.tool.nav && e.nav_lines().is_none());
+        installed::uninstall();
+    }
+
+    #[test]
     fn an_agent_asking_for_nav_is_answered_and_a_failure_changes_nothing() {
         let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         installed::install(Box::new(Gen { refuse: false }));
