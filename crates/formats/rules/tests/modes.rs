@@ -1163,7 +1163,7 @@ fn siege_plays_a_layouts_phases_in_order() {
     // Each phase's spawns carry its tier: the set, then the second tier,
     // then the third.
     let kits: Vec<Vec<Arg>> = calls(&r, "set_loadout").into_iter().map(|(_, a)| a.to_vec()).collect();
-    let kit = |p: u32, a: &str, b: &str| vec![Arg::Player(Some(p)), tag(a), tag(b)];
+    let kit = |p: u8, a: &str, b: &str| vec![Arg::Player(Some(p)), tag(a), tag(b)];
     assert_eq!(
         kits,
         [
