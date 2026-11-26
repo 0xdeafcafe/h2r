@@ -151,7 +151,8 @@ A film is one game, from the activation of its map to its end.
    is the same game.
 2. **The first update** takes the game start, with the random words and
    start hash, and writes it just before tick 1. A game gone before its
-   first update has no film: both files are deleted. A game whose arena came from a saved checkpoint, or one already
+   first update ends, or one whose guest stops inside it, has no film:
+   both files are deleted. A game whose arena came from a saved checkpoint, or one already
    running when recording starts, gets a start point block here.
 3. **Each update** adds a record; every 256 make a tick chunk.
 4. **Seal.** The game-over latch, a map unload or the session's exit

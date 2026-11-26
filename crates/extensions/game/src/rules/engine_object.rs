@@ -144,6 +144,15 @@ pub fn on_script_index(m: &dyn GuestMemory, esi: u32) -> bool {
     m.u32(esi.wrapping_add(ENGINE_INDEX)).ok() == Some(u32::from(::rules::SCRIPT_INDEX))
 }
 
+/// The transfer to the spawn gather's Slayer case, if the image has it.
+/// The case is a registered instruction entry (`boot::image_entries`),
+/// which discovery makes a function entry of the image, not a resume: it
+/// is entered by entry dispatch, and `has_resume` never holds for it.
+pub fn slayer_case(d: &runtime::Dispatch) -> Option<TransferAbi> {
+    d.has_generated(SPAWN_TYPE_MASK_SLAYER)
+        .then(|| TransferAbi::jump(SPAWN_TYPE_MASK_SLAYER))
+}
+
 /// The hooks: the object at each game start, and the spawn gather's jump.
 pub fn register(b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
     use hooks::Flow;
@@ -179,15 +188,15 @@ pub fn register(b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
                 if !index {
                     return Ok(Flow::Continue);
                 }
-                if !rt.read_dispatch(|d| d.has_resume(SPAWN_TYPE_MASK_SLAYER)) {
+                let Some(to) = rt.read_dispatch(slayer_case) else {
                     eprintln!(
                         "rules: the spawn gather's Slayer case {SPAWN_TYPE_MASK_SLAYER:#010x} is not an entry of this image"
                     );
                     return Ok(Flow::Continue);
-                }
+                };
                 // As the game's jump leaves it: ESI the index less one.
                 c.cpu.esi = u32::from(::rules::SCRIPT_INDEX) - 1;
-                Ok(Flow::Return(TransferAbi::resume(SPAWN_TYPE_MASK_SLAYER)))
+                Ok(Flow::Return(to))
             },
         )
         .optional();
@@ -259,5 +268,22 @@ mod tests {
             assert_eq!(on_script_index(&m, E), ours, "{index}");
         }
         assert!(!on_script_index(&m, 0x4000_0000), "an unmapped E");
+    }
+
+    /// The image makes the case a function entry, never a resume
+    /// (`recomp::register_retail_entries`): the hook jumps to it by entry
+    /// dispatch. Checking for a resume refused it on every image, and the
+    /// game's unchecked jump then stopped on the script index's zero.
+    #[test]
+    fn the_spawn_gather_enters_slayers_case_as_the_image_builds_it() {
+        assert_eq!(slayer_case(&runtime::Dispatch::default()), None);
+        let mut d = runtime::Dispatch::default();
+        d.register_generated_rust(SPAWN_TYPE_MASK_SLAYER, |_, _, _| unreachable!())
+            .unwrap();
+        assert!(!d.has_resume(SPAWN_TYPE_MASK_SLAYER));
+        assert_eq!(
+            slayer_case(&d),
+            Some(TransferAbi::jump(SPAWN_TYPE_MASK_SLAYER))
+        );
     }
 }

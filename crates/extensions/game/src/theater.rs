@@ -924,15 +924,20 @@ impl State {
     /// Seal the film of the game a default recording just played, at the
     /// tick it reached, and make ready for the next game, whose film opens
     /// at its activation (docs/game/film-format.md, "Recording every
-    /// game"). A game that never reached its first update has no film: its
-    /// files are deleted. A film that cannot be sealed is logged and kept
-    /// as the last discard reason.
+    /// game"). A game that never completed its first update (one gone
+    /// before it, or a guest stopped inside it) has no film: its files are
+    /// deleted. A film that cannot be sealed is logged and kept as the
+    /// last discard reason.
     fn seal_game(&mut self) {
         let tick = self.tick;
         let Mode::Record(rec) = &mut self.mode else { return };
         rec.match_over = false;
         if let Some(files) = rec.game.take() {
             match files.base {
+                // Base is set as the first update enters; its film tick is
+                // pushed as it ends. The track learns the film's version
+                // from that tick, so a seal before it has nothing to keep.
+                _ if files.track.ticks() == 0 => files.discard(),
                 None => files.discard(),
                 Some(base) => match rec.seal(files, None, tick.saturating_sub(base)) {
                     Ok((path, _)) => {

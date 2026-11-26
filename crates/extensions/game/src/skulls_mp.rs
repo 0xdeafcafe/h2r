@@ -460,6 +460,14 @@ pub fn gate_resume(gate: &engine::points::skull_gates::Gate, answered: u32) -> O
     (gate.skull < 32 && answered & (1 << gate.skull) != 0).then_some(gate.resume)
 }
 
+/// The transfer to a gate's fall-through `to`, if the image has it. Each
+/// is a registered instruction entry (`boot::image_entries`), which
+/// discovery makes a function entry of the image, not a resume: it is
+/// entered by entry dispatch.
+pub fn gate_transfer(d: &runtime::Dispatch, to: u32) -> Option<runtime::TransferAbi> {
+    d.has_generated(to).then(|| runtime::TransferAbi::jump(to))
+}
+
 // ---- the shared state ----
 
 /// The multiplayer skulls of a run: the choice per profile (cached, so the
@@ -813,14 +821,15 @@ impl hooks::Feature for SkullsMp {
                         else {
                             return Ok(Flow::Continue);
                         };
-                        if !c.ctx.runtime().read_dispatch(|d| d.has_resume(to)) {
+                        let Some(transfer) = c.ctx.runtime().read_dispatch(|d| gate_transfer(d, to))
+                        else {
                             eprintln!(
                                 "skulls-mp: {}'s fall-through {to:#010x} is not an entry of this image; the campaign gate stands",
                                 gate.site.name
                             );
                             return Ok(Flow::Continue);
-                        }
-                        Ok(Flow::Return(runtime::TransferAbi::resume(to)))
+                        };
+                        Ok(Flow::Return(transfer))
                     },
                 )
                 .optional();
@@ -1399,6 +1408,20 @@ mod tests {
         for skull in [6u8, 16] {
             assert!(of(skull).next().is_none());
         }
+    }
+
+    /// A gate's fall-through is a function entry of the image, never a
+    /// resume (`recomp::register_retail_entries`): the hook enters it by
+    /// entry dispatch, so a resume check refused it on every image.
+    #[test]
+    fn a_gate_enters_its_fall_through_as_the_image_builds_it() {
+        let to = engine::points::skull_gates::GATES[0].resume;
+        assert_eq!(gate_transfer(&runtime::Dispatch::default(), to), None);
+        let mut d = runtime::Dispatch::default();
+        d.register_generated_rust(to, |_, _, _| unreachable!())
+            .unwrap();
+        assert!(!d.has_resume(to));
+        assert_eq!(gate_transfer(&d, to), Some(runtime::TransferAbi::jump(to)));
     }
 
     #[test]

@@ -89,6 +89,11 @@ impl TrackWriter {
         self
     }
 
+    /// The last tick pushed: 0 before the first.
+    pub fn ticks(&self) -> u64 {
+        self.tick
+    }
+
     /// A fresh input dictionary starts on the next tick.
     pub fn begins_chunk(&self) -> bool {
         self.pending.is_empty()
@@ -213,6 +218,7 @@ impl TrackWriter {
             return Ok(());
         }
         ensure!(!self.finished, "film track already finished");
+        ensure!(self.tick > 0, "closing events before the film's first tick");
         ensure!(self.unified, "closing events require film v3");
         let last = self
             .pending
@@ -239,6 +245,9 @@ impl TrackWriter {
             return Ok(());
         }
         ensure!(!self.finished, "film track already finished");
+        // The film's version is known from its first tick: before it, say
+        // that, not a version the writer has not seen.
+        ensure!(self.tick > 0, "tagged records before the film's first tick");
         ensure!(self.unified, "tagged records require film v3");
         let last = self
             .extra
