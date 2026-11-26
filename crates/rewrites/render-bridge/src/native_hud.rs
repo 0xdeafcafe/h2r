@@ -155,6 +155,19 @@ pub trait Host: Send + Sync {
         false
     }
 
+    /// A model widget's view has been read, with its bounds (`left, top,
+    /// right, bottom`, canvas pixels) and the camera and objects it draws
+    /// ([`model`]). The game still draws the widget; the host may queue a
+    /// pass of its own beside it (the Forge monitor on the Appearance page,
+    /// docs/game/forge-monitor-appearance.md, ML4b).
+    fn model_view(
+        &self,
+        _mem: &mut dyn GuestMemory,
+        _bounds: [u16; 4],
+        _view: &frame_scene::OverlayModelView,
+    ) {
+    }
+
     /// A screen's sorted widget list is ready ([`ui_overlay`]): whether the
     /// host may place overlay passes in it now. `None`: the host does not
     /// draw menus. `Some(false)`: not now (counted as `Pass`); the game

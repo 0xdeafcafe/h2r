@@ -5,7 +5,7 @@
 //! disc, and nothing here is read by the tick. [`MonitorLook`] owns the
 //! value, its bounds and its canonical bytes; [`Refusal`] names every way a
 //! look is turned down; [`census`] lists the models a machine can draw;
-//! [`saved`] keeps a look in the profile's settings; [`body`] and
+//! [`saved`] keeps a look in the profile's settings; [`page`] lists the look page's rows; [`body`] and
 //! [`appearance`] place the drawn body in the world and on the game's
 //! Appearance page.
 pub mod appearance;
@@ -13,6 +13,7 @@ pub mod body;
 pub mod census;
 pub mod film;
 pub mod monitors;
+pub mod page;
 mod refusal;
 pub mod saved;
 pub mod session;
@@ -63,10 +64,12 @@ pub const FIELDS: [&str; 8] = [
     "light_colour",
 ];
 
-/// Whether the build draws a body for a disc model. The marker is always
-/// drawn; until the native renderer draws presentation bodies, a look that
-/// names a disc model is held and shown as the marker with the reason.
-pub const BODIES_DRAWN: bool = false;
+/// Whether the build has a path that draws a body for a disc model (the
+/// native renderer's bodies stage, `native_render::bodies`). The marker is
+/// always drawn; a machine whose native renderer is off holds a look that
+/// names a disc model and shows the marker with the reason, so the game
+/// declares `BODIES_DRAWN` together with that switch.
+pub const BODIES_DRAWN: bool = true;
 
 /// One value per player, the same shape for every use: the picker, the
 /// profile, the network and the film.

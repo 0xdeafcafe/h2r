@@ -873,3 +873,24 @@ fn drawn_as_names_the_reason_for_anything_but_the_asked_look() {
     assert!(drawn_as(&widget, &catalogue, false).reason.is_some());
     assert!(drawn_as(&widget, &[], true).reason.is_some());
 }
+
+#[test]
+fn the_entrys_tag_is_found_in_its_source_maps_biped_names() {
+    let mut e = entry("grunt", &["default"], true);
+    e.name = "grunt".into();
+    let names = [
+        "objects\\characters\\grunt\\grunt_major",
+        "objects\\characters\\grunt\\grunt",
+        "objects\\characters\\other\\grunt",
+        "objects\\characters\\jackal\\jackal",
+    ];
+    // The directory is the key and the base name the entry's.
+    assert_eq!(
+        census::tag_for(&e, names),
+        Some("objects\\characters\\grunt\\grunt")
+    );
+    // A map that lacks it, or an entry named otherwise, finds none.
+    assert_eq!(census::tag_for(&e, ["objects\\characters\\jackal\\jackal"]), None);
+    e.name = "elite".into();
+    assert_eq!(census::tag_for(&e, names), None);
+}
