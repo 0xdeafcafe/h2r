@@ -4,12 +4,15 @@
 
 use std::sync::{Arc, Mutex};
 
-use engine::entry::{EntryFuture, Regs, testing};
+use ::rules::vm::{Arg, Call as VmCall};
+use engine::entry::{Cx, EntryFuture, GuestCall, Regs, Ret, testing};
+use engine::points;
 use engine::testing::FakeGuest;
 use engine::view::fake;
 use engine::view::players::Player;
 use variants::ext::{LEN, Script};
 
+use super::publish::walls_due;
 use super::*;
 use crate::rules::feature::Shared;
 
@@ -25,6 +28,9 @@ mod world;
 mod tag_reads;
 /// A script game on the script index and its engine object.
 mod script_index;
+/// What each tick costs: the record's copies and writes, the roster's
+/// reads, the show state's encodes.
+mod per_tick;
 
 const GAME_GLOBALS: u32 = 0x1000_0000;
 const GAME_TIME: u32 = 0x1000_2000;
@@ -49,6 +55,9 @@ impl Local {
 impl Store for Local {
     fn get(&self) -> Option<Vec<u8>> {
         self.bytes()
+    }
+    fn same(&self, written: &[u8]) -> Option<bool> {
+        self.0.lock().unwrap().as_deref().map(|now| now == written)
     }
     fn set(&mut self, bytes: Vec<u8>) -> Result<(), String> {
         self.put(bytes);
