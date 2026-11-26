@@ -1346,3 +1346,65 @@ fn theater_is_not_a_game_setup_row() {
         assert!(!shown(mode, THEATER_ACTION), "{mode:?}");
     }
 }
+
+/// While the built-in kits build, a Firefight lobby with no kit map says it
+/// is preparing, in the status line and the panel: never "no installed map
+/// supports Firefight". It is refused (Start Game waits) until they land.
+#[test]
+fn the_lobby_says_preparing_while_kits_build() {
+    let none = KitMaps::default();
+    let here = KitMaps {
+        lobby: true,
+        installed: true,
+    };
+    lobby_start::kit_build_started();
+    assert_eq!(
+        refusal(Mode::Firefight, Some(0), none),
+        Some(Reason::KitBuilding)
+    );
+    assert_eq!(Reason::KitBuilding.text(), "Preparing Firefight maps.");
+    let lines = firefight_map_lines(none).unwrap();
+    assert_eq!(lines[0], "Preparing Firefight maps");
+    for l in &lines {
+        assert!(!l.contains("No installed map") && !l.ends_with('.'), "{l:?}");
+    }
+    assert!(lines.len() <= MAX_PANEL_LINES);
+    // A lobby on a kit map is not held by a build still making another.
+    assert_eq!(refusal(Mode::Firefight, Some(0), here), None);
+    // Other modes never wait on the kits.
+    for mode in [Mode::Multiplayer, Mode::Forge] {
+        assert_eq!(refusal(mode, Some(0), none), None);
+    }
+    // Done with no failure: the build is over and the lobby is looked at
+    // once to land on a kit map.
+    lobby_start::kit_build_finished(vec![]);
+    assert_eq!(lobby_start::kit_build(), KitBuild::Idle);
+    assert!(lobby_start::take_kit_landing());
+    assert!(!lobby_start::take_kit_landing(), "asked once");
+    assert_eq!(
+        firefight_map_lines(none).unwrap()[1],
+        "Make one with h2 firefight kit"
+    );
+}
+
+/// A kit that cannot be made is "no map" again, and the panel's second
+/// line is that kit's refusal in place of the hint.
+#[test]
+fn a_failed_build_names_its_reason_in_the_panel() {
+    let none = KitMaps::default();
+    lobby_start::kit_build_started();
+    lobby_start::kit_build_finished(vec![
+        "Zanzibar: 6 KB over, sectors".into(),
+        "Coagulation: the disc has no maps\\coagulation.map".into(),
+    ]);
+    assert_eq!(refusal(Mode::Firefight, Some(0), none), Some(Reason::NoKitMap));
+    let lines = firefight_map_lines(none).unwrap();
+    assert_eq!(
+        lines,
+        ["No installed map supports Firefight yet", "Zanzibar: 6 KB over, sectors"]
+    );
+    assert!(lines.len() <= MAX_PANEL_LINES);
+    // The next build starts clean.
+    lobby_start::kit_build_started();
+    assert_eq!(lobby_start::kit_build(), KitBuild::Building);
+}

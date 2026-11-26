@@ -312,6 +312,9 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     // the game disc (docs/editor/studio-redesign.md, "Conversions").
     #[cfg(feature = "desktop")]
     crate::package_prepare::before_boot(&disc, &data, no_halo1, no_mappack);
+    // The built-in Firefight kits build on a worker while the game boots.
+    #[cfg(feature = "desktop")]
+    crate::firefight_kits::start(&disc, &data);
     let host = boot::Host {
         film_out: film,
         #[cfg(unix)]

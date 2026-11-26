@@ -72,7 +72,7 @@ use settings::Store;
 
 use crate::firefight::options as ff;
 use crate::h1_options_row::{self as h1row, CHANGE_MAP};
-use crate::lobby_start::{self, KitMaps, Mode, Offer};
+use crate::lobby_start::{self, KitBuild, KitMaps, Mode, Offer};
 use crate::lobby_tabs::Reason;
 use crate::ui_kit::ids::{self, Family};
 use crate::ui_kit::picker::{self, Pick};
@@ -478,10 +478,21 @@ pub fn panel_lines(
 pub fn firefight_map_lines(kit: KitMaps) -> Option<Vec<String>> {
     match (kit.lobby, kit.installed) {
         (true, _) => None,
-        (false, false) => Some(vec![
-            "No installed map supports Firefight yet".into(),
-            "Make one with h2 firefight kit".into(),
-        ]),
+        (false, false) => Some(match lobby_start::kit_build() {
+            KitBuild::Building => vec![
+                "Preparing Firefight maps".into(),
+                "Start Game works when they are ready".into(),
+            ],
+            // The refusal of the first kit that could not be made.
+            KitBuild::Failed(failures) if !failures.is_empty() => vec![
+                "No installed map supports Firefight yet".into(),
+                failures[0].clone(),
+            ],
+            KitBuild::Failed(_) | KitBuild::Idle => vec![
+                "No installed map supports Firefight yet".into(),
+                "Make one with h2 firefight kit".into(),
+            ],
+        }),
         (false, true) => Some(vec![
             "This map has no AI ground".into(),
             "Pick a map variant with AI ground".into(),
@@ -597,6 +608,10 @@ pub fn remote_members(m: &dyn GuestMemory) -> Option<u32> {
 pub fn refusal(mode: Mode, remote: Option<u32>, kit: KitMaps) -> Option<Reason> {
     match mode {
         Mode::Forge if remote != Some(0) => Some(Reason::ForgeRemote),
+        // The built-in kits are still being made: wait, never "no map".
+        Mode::Firefight if !kit.lobby && !kit.installed && lobby_start::kit_build() == KitBuild::Building => {
+            Some(Reason::KitBuilding)
+        }
         Mode::Firefight if !kit.lobby && kit.installed => Some(Reason::NotKitMap),
         Mode::Firefight if !kit.lobby => Some(Reason::NoKitMap),
         Mode::Multiplayer | Mode::Forge | Mode::Firefight => None,

@@ -114,12 +114,15 @@ pub fn plan(from: Tab, to: Tab) -> Plan {
 
 /// The map `LOBBY_SET_MAP` puts the lobby on for `to` from its map
 /// `current` (its list id), with `catalogue` the map list: `None` when the
-/// lobby's own is inside the mode's category or the mode takes any map, else
-/// the category's first; or why there is none.
+/// lobby's own is inside the mode's category or the mode takes any map; or
+/// why there is none. FIREFIGHT lands on the built-in kit maps first,
+/// Coagulation's before Zanzibar's, then any kit map
+/// ([`lobby_start::landing_map`]).
 ///
 /// FIREFIGHT never refuses: with no map that carries the kit installed (or
 /// the map list not read yet) the lobby keeps its map, and Start Game says
-/// why it cannot start (`lobby_mode::start_refusal`).
+/// why it cannot start (`lobby_mode::start_refusal`); it lands on a kit map
+/// when the built-in kits are built (`map_select`'s landing).
 pub fn map_for(
     to: Tab,
     current: Option<u32>,
@@ -129,21 +132,10 @@ pub fn map_for(
         Tab::Forge => Ok(None),
         Tab::Firefight => {
             let Some(c) = catalogue else { return Ok(None) };
-            let kit = lobby_start::kit_maps(c);
-            Ok(inside(kit.iter().map(|m| m.id), current).flatten())
+            Ok(lobby_start::landing_map(c, current))
         }
         Tab::Multiplayer | Tab::CustomGames | Tab::CoOp => Ok(None),
     }
-}
-
-/// The map a category of `ids` puts the lobby on from `current`: none
-/// when `current` is in it, else its first; `None` for an empty category.
-fn inside(ids: impl Iterator<Item = u32>, current: Option<u32>) -> Option<Option<u32>> {
-    let ids: Vec<u32> = ids.collect();
-    if current.is_some_and(|c| ids.contains(&c)) {
-        return Some(None);
-    }
-    ids.first().map(|&id| Some(id))
 }
 
 /// The playlist MULTIPLAYER opens on: `saved`, the one this profile last

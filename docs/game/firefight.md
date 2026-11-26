@@ -965,6 +965,41 @@ team is never a seat.
 With no compatible kit installed, the map picker is empty and Start
 Game reports the missing kit. Change Rules remains available.
 
+**The built-in kits build themselves.** Coagulation and Zanzibar have
+authored layouts (`firefight_kit::builtin`), so no one runs `h2 firefight
+kit` for them. At the start of `h2 run`, `h2 serve` and `h2 play`,
+`crates/apps/cli/src/firefight_kits.rs` asks
+`firefight_kit::builtin::pending` which of the two packages
+(`<data>/maps/firefight-<map>`) is missing or stale and, if any is, runs
+`firefight_kit::builtin::ensure` on a worker thread while the game boots.
+A package is current when its manifest is on disk and the stamp beside it
+(`<data>/maps/.firefight-kit-<map>.stamp`) names the kit version and the
+layout's hash; a package with no stamp, such as one `h2 firefight kit`
+built, is replaced. Nothing is built, and the disc is not read, when both
+are current. The kits carry the Elite only (no classes), and a map that
+does not fit its tag headroom takes the fit steps of "The kit" before it is
+refused. Each map's result is a report: current, built, or refused with a
+reason short enough for a panel line (`Zanzibar: 6 KB over, sectors`); one
+map's refusal does not stop the other. When the worker is done it reads
+the map list again (`map_select::publish_packages`, which also has the VFS
+read the maps folder), so the packages join the catalogue as a Live
+download does.
+
+While the worker runs (`lobby_start::KitBuild::Building`) a Firefight
+lobby on a map without the kit shows `Reason::KitBuilding` ("Preparing
+Firefight maps.") on the status line and "Preparing Firefight maps" over
+"Start Game works when they are ready" in the variant panel; Start Game is
+held. "No installed map supports Firefight yet" appears only when no kit map
+is installed and no build is running, and after a failed build its second
+line is the first refusal in place of the hint to run `h2 firefight kit`.
+Switching to Firefight puts the lobby on Coagulation's kit, else
+Zanzibar's, else the first kit map (`lobby_start::landing_map`); a lobby
+already on a kit map stays. A lobby that is in Firefight on another map
+when the build finishes lands the same way, once, on the next game tick
+(`map_select`, "land a Firefight lobby on its kit map"), unless the game is
+starting or counting down. Hosts keep the bundle path
+([Live](#live)).
+
 A map variant whose document has the `ai_ground` recipe carries the kit
 once it is built, so the lobby counts the map it is held on as a kit map
 (`lobby_start::KitMaps::for_pick`, from `map_variant::ground_on`), as it

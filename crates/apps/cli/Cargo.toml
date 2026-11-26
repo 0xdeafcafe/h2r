@@ -32,6 +32,8 @@ h1convert = { path = "../../tools/h1convert", optional = true }
 # `h2 lighting split`: the solver's shadow mask uses the state tables (CPU only).
 gfx = { path = "../../platform/gfx", default-features = false, optional = true }
 scenario-edit = { path = "../../tools/scenario-edit", optional = true }
+# The built-in Firefight kits build themselves at start (firefight_kits.rs).
+firefight-kit = { path = "../../tools/firefight-kit", optional = true }
 pogo-kit = { path = "../../tools/pogo-kit", optional = true }
 forge = { workspace = true, optional = true }
 # `h2 live maps census`: the start gate's census of a map file.
@@ -167,6 +169,7 @@ desktop = [
     "dep:h1map",
     "dep:h1convert",
     "dep:scenario-edit",
+    "dep:firefight-kit",
     "host-data/firefight",
     "dep:pogo-kit",
     "dep:forge",

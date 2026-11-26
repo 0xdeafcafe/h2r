@@ -5,7 +5,8 @@
 //! offset and snaps to the nearest usable sector (`nav::choose_zones`). A
 //! drop that resolves nowhere, has no path to both bases, or sits inside
 //! the kit's base exclusion is refused by name; the kit never quietly
-//! picks another.
+//! picks another. [`ensure`] builds each shipped kit's package on the
+//! player's machine when it is missing or stale.
 //!
 //! The positions a layout cannot know until a census of the disc map has
 //! been read are named constants in its file, each marked `V`;
@@ -20,9 +21,14 @@ use scenario_edit::scene::metadata_block;
 use crate::bases::{FlagRow, StartRow, Team, distance2};
 
 pub mod coagulation;
+mod ensure;
 mod report;
 pub mod zanzibar;
 
+pub use ensure::{
+    DiscMaps, MAPS, Outcome, Report, Target, ensure, ensure_with, pending, pending_with,
+    refusal_line, targets,
+};
 pub use report::layout_report;
 
 /// The kit maps that have an authored layout.
