@@ -95,6 +95,7 @@ mod server;
 pub mod hs_eval;
 pub mod hs_state;
 pub mod shadow;
+pub mod sim_arms;
 pub mod sim;
 mod tap;
 mod trace;

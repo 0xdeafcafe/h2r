@@ -52,6 +52,7 @@ pub mod rules;
 pub mod raw;
 mod render;
 pub mod shadow;
+pub mod sim_arms;
 pub mod sim;
 pub mod state;
 pub mod takeover;

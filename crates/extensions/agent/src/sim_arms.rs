@@ -1,0 +1,297 @@
+//! `sim.arms` (docs/runtime/agent-api.md, "sim.arms"): one read of every
+//! native-sim shadow and authority arm, the gate instrument for turning a
+//! sim phase on by default (docs/engine/sim-rewrite.md, section 3). A game
+//! method, answered at a tick boundary from process counters, so it needs
+//! no guest memory; a subsystem whose switch is off reads zeros.
+//!
+//! Where a source has no counter for a field the field is 0:
+//! * physics and collision count `matched` and `mismatched` only, so
+//!   `checked` is their sum, and `answered` is 0;
+//! * `anim.manager` reports `differed` for `mismatched`, and `answered` 0;
+//! * the shadow ports (`seats`, `effects`) count `skipped` for `declined`
+//!   and `answered` 0.
+
+use crate::{Access, Agent};
+use agent_proto::sim_arms::{Arm, SimArms, Subsystem, method};
+use engine::sim_anim::graph_walk as walk;
+use engine::sim_anim::manager::arm as manager;
+use engine::sim_collision as world;
+use engine::sim_objects::functions::parity as objects;
+use engine::sim_physics::parity as physics;
+use hooks::Switches;
+use hooks::switches::table::{self, Initial};
+use sim_bridge::shadow::{SHADOW, Shadow};
+
+/// Registers `sim.arms` on `agent`.
+pub fn install(agent: &Agent) {
+    agent.add_game_method(method::ARMS, Access::Read, |_, _| {
+        let switches = Switches::from_env().unwrap_or_default();
+        Ok(serde_json::to_value(read(&switches, &SHADOW)).expect("arms serialise"))
+    });
+}
+
+/// Every subsystem's arms from the process counters and `shadow`'s ports.
+fn read(switches: &Switches, shadow: &Shadow) -> SimArms {
+    let ports = shadow.status().ports;
+    let group = |name: &str| -> Vec<Arm> {
+        ports
+            .iter()
+            .filter(|p| p.group == name)
+            .map(|p| Arm {
+                name: p.name.to_owned(),
+                checked: p.checked,
+                matched: p.matched,
+                mismatched: p.mismatched,
+                answered: 0,
+                declined: p.skipped,
+            })
+            .collect()
+    };
+    SimArms {
+        subsystems: vec![
+            subsystem(switches, "physics", physics_arms()),
+            subsystem(switches, "objects", vec![objects_wire(objects::status())]),
+            subsystem(switches, "anim", anim_wire(&walk::arm_stats(), &walk::stats(), manager::stats())),
+            subsystem(switches, "collision", collision_arms(&world::stats())),
+            subsystem(switches, "seats", group(sim_bridge::sim_seats::GROUP)),
+            subsystem(switches, "effects", group(engine::sim_effects::GROUP)),
+        ],
+    }
+}
+
+/// `impl.sim.native.<name>` with its verdict over `arms`.
+fn subsystem(switches: &Switches, name: &str, arms: Vec<Arm>) -> Subsystem {
+    let switch = format!("impl.sim.native.{name}");
+    let default = table::get(&switch).is_some_and(|s| s.initial == Initial::On);
+    let on = switches.implementation(&switch["impl.".len()..], default);
+    verdict(name, switch, on, arms)
+}
+
+fn verdict(name: &str, switch: String, on: bool, arms: Vec<Arm>) -> Subsystem {
+    let checked: u64 = arms.iter().map(|a| a.checked).sum();
+    let mismatched: u64 = arms.iter().map(|a| a.mismatched).sum();
+    Subsystem {
+        name: name.to_owned(),
+        switch,
+        on,
+        arms,
+        clean: checked > 0 && mismatched == 0,
+    }
+}
+
+fn physics_arms() -> Vec<Arm> {
+    physics::status()
+        .into_iter()
+        .map(|(name, matched, mismatched, declined)| Arm {
+            name: name.to_owned(),
+            checked: matched + mismatched,
+            matched,
+            mismatched,
+            answered: 0,
+            declined,
+        })
+        .collect()
+}
+
+fn objects_wire(s: objects::Status) -> Arm {
+    Arm {
+        name: "objects.curve".to_owned(),
+        checked: s.checked,
+        matched: s.matched,
+        mismatched: s.mismatched,
+        answered: s.answered,
+        declined: s.declined_float + s.declined_kind + s.declined_fault,
+    }
+}
+
+fn anim_wire(arm: &walk::ArmStats, body: &walk::Stats, segments: Vec<(u32, manager::Stats)>) -> Vec<Arm> {
+    let mut arms = vec![Arm {
+        name: "anim.graph_walk".to_owned(),
+        checked: arm.checked,
+        matched: arm.matched,
+        mismatched: arm.mismatched,
+        answered: body.native,
+        declined: arm.declined.iter().sum(),
+    }];
+    arms.extend(segments.into_iter().map(|(addr, s)| Arm {
+        name: format!("anim.manager.{addr:08x}"),
+        checked: s.matched + s.differed,
+        matched: s.matched,
+        mismatched: s.differed,
+        answered: 0,
+        declined: s.declined,
+    }));
+    arms
+}
+
+fn collision_arms(s: &world::Stats) -> Vec<Arm> {
+    let vector = |name: &str, p: &world::VectorParity| Arm {
+        name: name.to_owned(),
+        checked: p.matched + p.mismatched,
+        matched: p.matched,
+        mismatched: p.mismatched,
+        answered: 0,
+        declined: p.unverified.iter().sum(),
+    };
+    vec![
+        vector("collision.vector", &s.vector),
+        vector("collision.context", &s.context),
+        vector("collision.instance", &s.instance),
+        vector("collision.query", &s.query),
+        vector("collision.visit", &s.visit),
+        vector("collision.flood", &s.flood),
+        Arm {
+            name: "collision.ray".to_owned(),
+            checked: s.ray.matched + s.ray.mismatched,
+            matched: s.ray.matched,
+            mismatched: s.ray.mismatched,
+            answered: 0,
+            declined: s.ray.unverified.iter().sum(),
+        },
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn arm(name: &str, checked: u64, mismatched: u64) -> Arm {
+        Arm {
+            name: name.into(),
+            checked,
+            matched: checked - mismatched,
+            mismatched,
+            ..Arm::default()
+        }
+    }
+
+    fn registry() -> &'static Shadow {
+        Box::leak(Box::new(Shadow::new()))
+    }
+
+    #[test]
+    fn an_idle_process_reads_zeros_and_is_not_clean() {
+        let shadow = registry();
+        shadow.register("sim.seats_a", sim_bridge::sim_seats::GROUP, "A", 0x1000, true);
+        let r = read(&Switches::default(), shadow);
+        let names: Vec<_> = r.subsystems.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["physics", "objects", "anim", "collision", "seats", "effects"]);
+        for s in &r.subsystems {
+            assert_eq!(s.switch, format!("impl.sim.native.{}", s.name));
+            assert!(!s.clean, "{}", s.name);
+            for a in &s.arms {
+                assert_eq!(
+                    (a.checked, a.matched, a.mismatched, a.answered, a.declined),
+                    (0, 0, 0, 0, 0),
+                    "{}",
+                    a.name
+                );
+            }
+        }
+        let seats = &r.subsystems[4];
+        assert_eq!(seats.arms.len(), 1);
+        assert_eq!(seats.arms[0].name, "sim.seats_a");
+        assert!(r.subsystems[5].arms.is_empty());
+    }
+
+    #[test]
+    fn the_switch_reads_from_the_features() {
+        let s = Switches::parse("impl.sim.native.physics=on").unwrap();
+        let r = read(&s, registry());
+        assert!(r.subsystems[0].on);
+        assert!(!r.subsystems[1].on);
+    }
+
+    #[test]
+    fn a_mismatch_clears_clean_and_a_match_sets_it() {
+        let switch = || "impl.sim.native.x".to_owned();
+        let clean = verdict("x", switch(), true, vec![arm("a", 5, 0), arm("b", 0, 0)]);
+        assert!(clean.clean);
+        let dirty = verdict("x", switch(), true, vec![arm("a", 5, 0), arm("b", 3, 1)]);
+        assert!(!dirty.clean);
+        assert!(!verdict("x", switch(), true, vec![arm("a", 0, 0)]).clean);
+    }
+
+    #[test]
+    fn sources_map_onto_the_arm_fields() {
+        let o = objects_wire(objects::Status {
+            checked: 10,
+            matched: 9,
+            mismatched: 1,
+            answered: 7,
+            declined_float: 1,
+            declined_kind: 2,
+            declined_fault: 3,
+        });
+        assert_eq!((o.checked, o.answered, o.declined), (10, 7, 6));
+        let mut graph = walk::ArmStats {
+            checked: 4,
+            matched: 4,
+            ..Default::default()
+        };
+        graph.declined[0] = 2;
+        let body = walk::Stats {
+            native: 3,
+            ..Default::default()
+        };
+        let seg = manager::Stats {
+            matched: 5,
+            differed: 1,
+            declined: 2,
+            ..Default::default()
+        };
+        let arms = anim_wire(&graph, &body, vec![(0x10100, seg)]);
+        assert_eq!((arms[0].checked, arms[0].answered, arms[0].declined), (4, 3, 2));
+        assert_eq!(arms[1].name, "anim.manager.00010100");
+        assert_eq!((arms[1].checked, arms[1].mismatched, arms[1].declined), (6, 1, 2));
+        let mut stats = world::Stats::default();
+        stats.vector.matched = 2;
+        stats.ray.mismatched = 1;
+        let c = collision_arms(&stats);
+        assert_eq!(c.len(), 7);
+        assert_eq!((c[0].checked, c[6].checked, c[6].mismatched), (2, 1, 1));
+    }
+
+    #[test]
+    fn the_wire_shape_is_stable() {
+        let v = serde_json::to_value(SimArms {
+            subsystems: vec![verdict("seats", "impl.sim.native.seats".into(), true, vec![arm("a", 2, 0)])],
+        })
+        .unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({"subsystems": [{
+                "name": "seats", "switch": "impl.sim.native.seats", "on": true, "clean": true,
+                "arms": [{"name": "a", "checked": 2, "matched": 2, "mismatched": 0, "answered": 0, "declined": 0}]
+            }]})
+        );
+    }
+
+    #[test]
+    fn the_method_is_registered_and_answers_without_a_guest() {
+        use agent_proto::Object;
+        let a = Agent::new();
+        install(&a);
+        let (tx, rx) = std::sync::mpsc::sync_channel(8);
+        let conn = a.connect(tx);
+        struct NoGuest;
+        impl crate::Reader for NoGuest {
+            fn status(&mut self) -> crate::GameStatus {
+                crate::GameStatus::default()
+            }
+            fn objects(&mut self) -> Result<Vec<Object>, String> {
+                Ok(Vec::new())
+            }
+        }
+        a.submit(conn, r#"{"jsonrpc":"2.0","id":1,"method":"session.methods"}"#);
+        a.between_slices(&mut NoGuest, 0);
+        let line = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert!(line.contains("sim.arms"), "{line}");
+        a.submit(conn, r#"{"jsonrpc":"2.0","id":2,"method":"sim.arms"}"#);
+        a.between_slices(&mut NoGuest, 0);
+        let line = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        let reply: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let arms: SimArms = serde_json::from_value(reply["result"].clone()).unwrap();
+        assert_eq!(arms.subsystems.len(), 6);
+    }
+}
