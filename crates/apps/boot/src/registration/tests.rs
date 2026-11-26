@@ -556,10 +556,23 @@ fn the_biggest_plans_leave_room_in_the_guest_arena() {
     for switches in [ALL_ON, native_off.as_str(), forge.as_str()] {
         let mut case = Case::full(switches);
         case.coop_live = true;
-        let used = plan(&case).unwrap().arena_used();
+        let plan = plan(&case).unwrap();
+        let used = plan.arena_used();
+        // The biggest users first, so a failure names what grew.
+        let mut by_feature: Vec<(&str, u32)> = plan
+            .features
+            .iter()
+            .map(|f| {
+                let bytes = plan.mappings(|a| a.feature == f.id).iter().map(|m| m.len).sum();
+                (f.id, bytes)
+            })
+            .filter(|&(_, bytes)| bytes > 0)
+            .collect();
+        by_feature.sort_by_key(|&(_, bytes)| std::cmp::Reverse(bytes));
+        by_feature.truncate(12);
         assert!(
             used <= ARENA_SIZE / 16 * 15,
-            "{used:#x} of the arena's {ARENA_SIZE:#x} bytes used, for {}",
+            "{used:#x} of the arena's {ARENA_SIZE:#x} bytes used, for {}; the biggest: {by_feature:x?}",
             case.describe()
         );
     }
