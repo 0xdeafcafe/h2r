@@ -117,9 +117,10 @@ static INACTIVE: AtomicU64 = AtomicU64::new(0);
 static DECLINED: [AtomicU64; DECLINES] = [const { AtomicU64::new(0) }; DECLINES];
 
 /// Guest memory changed under the store (map load, checkpoint revert or
-/// restore, snapshot load): drop every derived clip.
+/// restore, snapshot load): move the epoch and drop every derived clip now,
+/// not at the next lookup, so a map's clips are not held after it unloads.
 pub fn invalidate() {
-    sim_core::epoch::SIM.bump();
+    STORE.invalidate();
 }
 
 pub fn stats() -> Stats {

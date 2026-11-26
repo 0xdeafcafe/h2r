@@ -191,10 +191,13 @@ unwritten and writes only the record fields the guest writes.
 3. The clip: `ClipStore` keyed by the sizes address, checked against the
    16 sizes bytes and the view's node count, built from the blob the
    first time (`Clip::decode`: the bytes plus per-stream, per-channel
-   `(node, track)` lists). The store is dropped when
-   `sim_core::epoch::SIM` moves: map load (`0x1228f0`), checkpoint revert
-   (`0x123f60`), full restore (`0x124380`), snapshot load (the feature's
-   empty snapshot section), and past 256 MiB.
+   `(node, track)` lists). `engine::sim_anim::invalidate` moves
+   `sim_core::epoch::SIM` and drops the store at once
+   (`ClipStore::invalidate`) on map load (`0x1228f0`), checkpoint revert
+   (`0x123f60`), full restore (`0x124380`) and snapshot load (the
+   feature's empty snapshot section), so a map's clips are not held
+   through a main menu that looks none up. A lookup that finds the epoch
+   moved drops it too, and so does growth past 256 MiB.
 4. `sim_anim::sample` into a copy of the records, no guest access.
 5. Write back the touched fields; MMX effects on x87; `ret 0x28`.
 

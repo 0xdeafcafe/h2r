@@ -536,6 +536,27 @@ fn store_builds_once_and_flushes_on_epoch() {
 }
 
 #[test]
+fn a_map_loaded_twice_holds_the_same_clip_bytes_and_none_between() {
+    static EPOCH: Epoch = Epoch::new();
+    let store = ClipStore::new(&EPOCH);
+    let c = twelve();
+    let load = |store: &ClipStore| {
+        for key in [0x1234, 0x2234, 0x3234] {
+            store.get(key, c.shape, |_| Some(c.bytes().into())).unwrap();
+        }
+        store.bytes()
+    };
+    let first = load(&store);
+    assert_eq!(first, 3 * c.footprint());
+    // Back to the menu: nothing looks a clip up there, and none stays.
+    store.invalidate();
+    assert_eq!((store.len(), store.bytes()), (0, 0));
+    assert_eq!(load(&store), first);
+    store.invalidate();
+    assert_eq!(load(&store), first);
+}
+
+#[test]
 fn a_flushed_clip_is_rebuilt_from_the_edited_bytes() {
     static EPOCH: Epoch = Epoch::new();
     let store = ClipStore::new(&EPOCH);
