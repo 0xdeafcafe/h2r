@@ -164,3 +164,141 @@ on tick {
     );
     assert!(calls.is_empty());
 }
+
+/// Scores a kill, counts kills into a HUD widget (so the show state
+/// changes at each) and counts ticks.
+const TOUR: &str = r#"
+rules "Tour" 1
+type slayer
+requires hud.widgets
+hud held: text at koth.time
+global var kills: int = 0
+global var ticks: int = 0
+on kill(victim, killer) {
+    if killer != none { score(killer, 2) }
+    kills = kills + 1
+    hud_value(held, kills)
+}
+on tick {
+    ticks = ticks + 1
+}
+"#;
+
+#[test]
+fn three_hundred_ticks_keep_the_record_the_calls_and_the_show_state() {
+    let store = Counting::default();
+    let ir = ::rules::compile(TOUR).unwrap();
+    let blob = ir.encode();
+    let s = Arc::new(Shared::new(Runtime::new(
+        Box::new(store.clone()),
+        Box::new(move |_: [u8; 8]| Ok::<_, String>(blob.clone())),
+    )));
+    let (mut m, _) = guest(block(prefix(&ir.id()), 0), SLAYER);
+    let line = s.lock().start(&m, false);
+    assert!(s.lock().state().running, "{line}");
+    let mut works = Vec::new();
+    for n in 1..=300u32 {
+        m.put_u32(GAME_TIME + 8, TICK + n);
+        step(&s, &store, |rt| {
+            if let Some(work) = rt.pre_tick(&m) {
+                rt.finish(work.tick, Some(true), Vec::new());
+                works.push(work);
+            }
+        });
+        if n % 7 == 0 {
+            let killer = ((n / 7) % 2) as u8;
+            step(&s, &store, |rt| rt.kill(&m, 1 - killer, Some(killer)));
+        }
+        step(&s, &store, |rt| rt.post_tick(&m, &[]));
+        // The show state offered this tick is the VM's, encoded.
+        let rt = s.lock();
+        let r = rt.running().unwrap();
+        let offered = rt.show_cue.last.as_ref().map(|(_, bytes)| bytes.clone());
+        assert_eq!(offered, Some(r.vm.show().encode()), "tick {n}");
+    }
+    // The first boundary asks for the authority; each kill's score is
+    // made at the boundary after it, in order.
+    let mut expected = vec![Work {
+        tick: TICK + 2,
+        ask_authority: true,
+        calls: Vec::new(),
+        sight: Vec::new(),
+    }];
+    for k in 1..=42u32 {
+        expected.push(Work {
+            tick: TICK + 7 * k + 2,
+            ask_authority: false,
+            calls: vec![Call::Score {
+                player: (k % 2) as u8,
+                delta: 2,
+            }],
+            sight: Vec::new(),
+        });
+    }
+    assert_eq!(works, expected);
+    let rt = s.lock();
+    let r = rt.running().unwrap();
+    assert_eq!(r.vm.global("kills"), Some(42));
+    assert_eq!(r.vm.global("ticks"), Some(300));
+    assert_eq!(r.vm.ext().tick, TICK + 301);
+    assert_eq!(store.local.bytes(), Some(r.vm.ext().encode()));
+    assert_eq!(store.gets(), 0, "nothing else changed the record");
+    // The show state was encoded at the first tick and again at each
+    // kill, never at a tick that left it as it was.
+    assert_eq!(rt.show_cue.encodes, 43);
+}
+
+#[test]
+fn the_show_state_is_encoded_again_after_a_change_and_after_it_was_forgotten() {
+    let mut vm = Vm::new(::rules::compile(TOUR).unwrap(), 0, 0).unwrap();
+    let mut g = ::rules::fake::FakeGame::with_players(2);
+    vm.begin_tick(0);
+    vm.fire(&mut g, Input::Kill { victim: 0, killer: Some(1) });
+    let (quiet, shown) = (::rules::show::State::default(), vm.show().clone());
+    assert_ne!(quiet, shown);
+    let mut cue = ShowCue::default();
+    assert_eq!(cue.bytes(&quiet), quiet.encode());
+    assert_eq!(cue.bytes(&quiet), quiet.encode());
+    assert_eq!(cue.encodes, 1, "the same state is not encoded again");
+    assert_eq!(cue.bytes(&shown), shown.encode());
+    assert_eq!(cue.encodes, 2, "a changed state is");
+    cue.forget();
+    assert_eq!(cue.bytes(&shown), shown.encode());
+    assert_eq!(cue.encodes, 3, "and so is any state after a forget");
+}
+
+/// Offers one picker at the round's start, and keeps it.
+const OFFER: &str = r#"
+rules "Offer" 1
+type slayer
+requires player.pick
+on round_start {
+    offer_pick(0, "LOADOUT")
+    pick_row(0, "A")
+    pick_row(0, "B")
+}
+"#;
+
+#[test]
+fn a_standing_picker_is_sent_at_once_and_again_every_pick_repeat_ticks() {
+    let store = Local::default();
+    let (s, mut m) = playing(&store, OFFER);
+    let line = s.lock().start(&m, false);
+    assert!(s.lock().state().running, "{line}");
+    let mut last = None;
+    for n in 1..=200u32 {
+        m.put_u32(GAME_TIME + 8, TICK + n);
+        let work = s.lock().pre_tick(&m);
+        if let Some(work) = work {
+            s.lock().finish(work.tick, Some(true), Vec::new());
+        }
+        s.lock().post_tick(&m, &[]);
+        let tick = TICK + n;
+        if last.is_none_or(|at: u32| tick - at >= ::rules::show::PICK_REPEAT) {
+            last = Some(tick);
+        }
+        let sent = s.lock().pick_cue.as_ref().map(|(offers, at)| (offers.len(), *at));
+        assert_eq!(sent, last.map(|at| (1, at)), "tick {n}");
+    }
+    assert_eq!(last, Some(TICK + 1 + 2 * ::rules::show::PICK_REPEAT));
+}

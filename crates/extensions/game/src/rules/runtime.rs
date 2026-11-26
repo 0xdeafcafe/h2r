@@ -1044,6 +1044,9 @@ pub struct Running {
     /// The `uses` script the record names, when `vm` runs the built-in it
     /// uses.
     pub carried: Option<Carried>,
+    /// The program answers `on damage` ([`wants_damage`]): worked out at
+    /// the start and at a swap, not at every tick.
+    wants_damage: bool,
 }
 
 impl Running {
@@ -1064,6 +1067,12 @@ pub struct Carried {
     pub hash: Sha256,
     pub source: Source,
     pub name: String,
+}
+
+/// Whether the program answers `on damage`, so a tick's damage events are
+/// worked out for it.
+fn wants_damage(ir: &Ir) -> bool {
+    ir.handlers.iter().any(|h| h.event == Event::Damage)
 }
 
 /// Whether `hash` is one of the built-in ports ([`builtins`]).
@@ -1177,9 +1186,45 @@ pub struct Runtime {
     /// `::rules::show::PICK_REPEAT` ticks while any stands, so a machine
     /// that joins late has them (`super::world::show::pick_offer`).
     pick_cue: Option<(Vec<::rules::vm::PickOffer>, u32)>,
+    /// The show state last offered to the actor channel and its bytes:
+    /// encoded again only when the state changes ([`ShowCue`]).
+    show_cue: ShowCue,
     /// The players' bodies at the superbounce chain's last step: what
     /// `airborne` and `primed` read (`super::world::physics`).
     bodies: Vec<crate::superbounce_chain::Body>,
+}
+
+/// The script's show state as last encoded for the actor channel's `Show`
+/// record, with its bytes. The record is offered every tick the authority
+/// runs the script (the capture takes it each tick, and a tick with none
+/// retracts it), so the bytes are kept and the state is encoded again only
+/// when it differs from the one they encode.
+#[derive(Default)]
+struct ShowCue {
+    last: Option<(::rules::show::State, Vec<u8>)>,
+    /// How many times a state was encoded.
+    #[cfg(test)]
+    encodes: usize,
+}
+
+impl ShowCue {
+    /// The bytes of `state`, encoded only when it is not the last one.
+    fn bytes(&mut self, state: &::rules::show::State) -> &[u8] {
+        if !matches!(&self.last, Some((last, _)) if last == state) {
+            #[cfg(test)]
+            {
+                self.encodes += 1;
+            }
+            self.last = Some((state.clone(), state.encode()));
+        }
+        &self.last.as_ref().expect("set above").1
+    }
+
+    /// Forgets the last state: nothing is offered, or another program or
+    /// authority starts over.
+    fn forget(&mut self) {
+        self.last = None;
+    }
 }
 
 /// Whether the authority sends the walls cue now: the list changed since
@@ -1252,6 +1297,7 @@ impl Runtime {
             hud_on: false,
             wall_cue: None,
             pick_cue: None,
+            show_cue: ShowCue::default(),
             bodies: Vec::new(),
         }
     }
@@ -1581,6 +1627,7 @@ impl Runtime {
             base
         };
         let name = ir.header.name.clone();
+        let damage = wants_damage(&ir);
         let mut vm = match Vm::new(ir, options, SEED) {
             Ok(vm) => vm,
             Err(e) => return self.refuse(full, format!("the VM refused the blob: {e}")),
@@ -1628,6 +1675,7 @@ impl Runtime {
             teams,
             tags,
             carried,
+            wants_damage: damage,
         };
         if let Err(why) = save(&mut running, &mut *self.store) {
             return self.refuse(full, why);
@@ -1665,6 +1713,7 @@ impl Runtime {
         eprintln!("rules: stopped: {why}");
         self.store.remove();
         self.status = Status::Refused { hash, why };
+        self.show_cue.forget();
     }
 
     /// Before the game tick: the VM's tick begins and its queued calls join
@@ -1968,7 +2017,7 @@ impl Runtime {
             }
             _ => return,
         };
-        let wants_damage = matches!(&self.status, Status::Running(r) if r.vm.ir().handlers.iter().any(|h| h.event == Event::Damage));
+        let wants_damage = matches!(&self.status, Status::Running(r) if r.wants_damage);
         let damage = if wants_damage { data::damage_inputs(events) } else { Vec::new() };
         self.run(m, |vm, g| {
             for input in damage {
@@ -1993,16 +2042,14 @@ impl Runtime {
     /// no channel. Anything else forgets what was offered, so the channel
     /// retracts the last state from its peers.
     fn send_show(&mut self) {
-        if matches!(
-            &self.status,
-            Status::Running(r) if r.authority == Some(true) && !self.film
-        ) {
-            let Status::Running(r) = &self.status else {
-                unreachable!("matched above")
-            };
-            super::world::show::offer_state(r.vm.show().encode());
-        } else {
-            super::world::show::forget_state();
+        match &self.status {
+            Status::Running(r) if r.authority == Some(true) && !self.film => {
+                super::world::show::offer_state(self.show_cue.bytes(r.vm.show()).to_vec());
+            }
+            _ => {
+                self.show_cue.forget();
+                super::world::show::forget_state();
+            }
         }
     }
 
@@ -2025,10 +2072,11 @@ impl Runtime {
     /// script. A film's run sends none: it has no channel.
     fn send_walls(&mut self, tick: u32) {
         let shown = match &self.status {
-            Status::Running(r) if r.authority == Some(true) && !self.film => r.vm.shown_areas().to_vec(),
+            Status::Running(r) if r.authority == Some(true) && !self.film => r.vm.shown_areas(),
             _ => return,
         };
-        if walls_due(self.wall_cue.as_ref(), &shown, tick) {
+        if walls_due(self.wall_cue.as_ref(), shown, tick) {
+            let shown = shown.to_vec();
             super::world::show::walls(tick, shown.clone());
             self.wall_cue = Some((shown, tick));
         }
@@ -2043,14 +2091,14 @@ impl Runtime {
     /// sends none: it has no channel.
     fn send_picks(&mut self, tick: u32) {
         let offers = match &self.status {
-            Status::Running(r) if r.authority == Some(true) && !self.film => r.vm.picks().to_vec(),
+            Status::Running(r) if r.authority == Some(true) && !self.film => r.vm.picks(),
             _ => return,
         };
         let (sent, at) = match self.pick_cue.as_ref() {
-            Some((sent, at)) => (Some(sent), *at),
+            Some((sent, at)) => (Some(sent.as_slice()), *at),
             None => (None, tick),
         };
-        let changed = sent != Some(&offers);
+        let changed = sent != Some(offers);
         let repeat = !offers.is_empty() && tick.wrapping_sub(at) >= ::rules::show::PICK_REPEAT;
         if !changed && !repeat {
             return;
@@ -2067,10 +2115,10 @@ impl Runtime {
                 );
             }
         }
-        for offer in &offers {
+        for offer in offers {
             super::world::show::pick_offer(tick, offer.clone());
         }
-        self.pick_cue = Some((offers, tick));
+        self.pick_cue = Some((offers.to_vec(), tick));
     }
 
     /// The walls the running script shows in play (`show_area`), in the
@@ -2086,6 +2134,12 @@ impl Runtime {
     /// Hands the walls to the window's world-line source: after each
     /// tick, and once more with none when the script's end took them off.
     fn publish_walls(&mut self) {
+        // Nothing shown makes no walls: with none published either, there
+        // is nothing to build or say.
+        let shows = self.running().is_some_and(|r| !r.vm.shown_areas().is_empty());
+        if !shows && !self.walled {
+            return;
+        }
         let walls = self.walls();
         if !walls.is_empty() || self.walled {
             self.walled = !walls.is_empty();
@@ -2123,6 +2177,7 @@ impl Runtime {
                 self.status = Status::Idle(
                     "this machine is not the game engine's authority; the host runs the script",
                 );
+                self.show_cue.forget();
                 eprintln!("rules: idle: this machine is not the game engine's authority");
             }
             None => {}
@@ -2160,6 +2215,7 @@ impl Runtime {
         self.status = Status::Idle("the game ended");
         self.wall_cue = None;
         self.pick_cue = None;
+        self.show_cue.forget();
         self.publish_walls();
         self.publish_hud(None);
     }
@@ -2221,6 +2277,8 @@ impl Runtime {
         }
         r.table = table;
         r.hash = hash;
+        r.wants_damage = wants_damage(r.vm.ir());
+        self.show_cue.forget();
         if let Err(why) = save(r, &mut *self.store) {
             self.stop(why.clone());
             return Err(why);
