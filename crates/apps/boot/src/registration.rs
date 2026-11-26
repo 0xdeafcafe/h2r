@@ -648,8 +648,8 @@ pub(crate) fn register_core_film(
     if i.bots {
         crate::clanker_card::install(features, i.live.clone())
             .context("installing Clanker player options")?;
-        let bot_tape = film.filter(|f| f.has_bot_tape());
-        bots_on = bot_glue::install_for_maps(features, i.data_root, bot_tape, sources.as_deref())
+        let recorded = film.filter(|f| f.has_engine_track());
+        bots_on = bot_glue::install_for_maps(features, i.data_root, recorded, sources.as_deref())
             .context("installing the bots")?;
         // The Clankers page and its Game Setup row (stage 7).
         if let Some(store) = i.settings.as_ref() {
@@ -985,8 +985,7 @@ pub(crate) fn register_late_for_profile(
     // (docs/live/live-coop.md section 9). Added last, so it can see every
     // override placed outside the plan and refuse instead of failing it.
     let probe_on = i.coop_probe.is_some();
-    let taped = i.live.as_ref().is_some_and(|hle| hle.film_service_taped());
-    coop_probe::install_film(i.rt, features, i.coop_probe, i.disc, i.data_root, taped)?;
+    coop_probe::install(i.rt, features, i.coop_probe, i.disc, i.data_root)?;
     // Co-op over Live (docs/live/live-coop.md, "Co-op over Live (built)"):
     // the Xbox Live menu's Co-op Campaign row and screens, and the probe's
     // hooks armed only for a co-op session. With H2_COOP_PROBE on, the
@@ -995,7 +994,7 @@ pub(crate) fn register_late_for_profile(
         let arm = if probe_on {
             None
         } else {
-            coop_probe::install_live_film(i.rt, features, i.data_root, taped)?
+            coop_probe::install_live(i.rt, features, i.data_root)?
         };
         if let Some(arm) = &arm {
             crate::coop_look::install(

@@ -86,7 +86,7 @@ impl Session {
         output: HostView,
         vfs: Arc<Mutex<vfs::Vfs>>,
     ) -> anyhow::Result<()> {
-        if let Mode::Replay(_, replay) = &self.lock().mode {
+        if let Mode::Replay(replay) = &self.lock().mode {
             replay.camera.set_playerless();
         }
         let target = OffscreenTarget::new(
@@ -113,7 +113,7 @@ impl Session {
         let Some(view) = self.view.get() else { return };
         let (tick, every, paused, camera) = {
             let s = self.lock();
-            let Mode::Replay(_, r) = &s.mode else { return };
+            let Mode::Replay(r) = &s.mode else { return };
             if s.seeking.is_some()
                 || s.failure.is_some()
                 || s.restart.is_some()
@@ -164,7 +164,7 @@ impl Session {
     ) -> anyhow::Result<Picture> {
         let camera = {
             let state = self.lock();
-            let Mode::Replay(_, replay) = &state.mode else {
+            let Mode::Replay(replay) = &state.mode else {
                 anyhow::bail!("screenshot needs replay");
             };
             replay.camera.clone()

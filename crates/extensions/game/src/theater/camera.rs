@@ -311,7 +311,7 @@ pub(super) fn install(b: &mut Builder, session: &Session) {
         return;
     }
     let camera = match &state.mode {
-        Mode::Replay(_, replay) => Some(replay.camera.clone()),
+        Mode::Replay(replay) => Some(replay.camera.clone()),
         Mode::Record(_) => None,
     };
     // Keep the recorded dispatch plan intact for existing films.
@@ -357,7 +357,7 @@ pub struct RenderHooks(pub(super) FilmCamera);
 impl Session {
     pub fn camera_render_hooks(&self) -> Option<RenderHooks> {
         let state = self.lock();
-        let Mode::Replay(_, replay) = &state.mode else {
+        let Mode::Replay(replay) = &state.mode else {
             return None;
         };
         (replay.render_every != 0 && !replay.camera.playerless())

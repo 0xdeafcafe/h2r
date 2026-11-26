@@ -58,15 +58,6 @@ pub fn install_configured(
     register_network(rt, k, hle)
 }
 
-pub fn install_film(
-    rt: &runtime::Runtime,
-    k: &kernel::Kernel,
-    network: live_hle::NetworkConfig,
-    live_service: bool,
-) -> anyhow::Result<Option<Arc<Hle>>> {
-    register_network(rt, k, Hle::for_film(network, live_service)?)
-}
-
 fn register_network(
     rt: &runtime::Runtime,
     k: &kernel::Kernel,

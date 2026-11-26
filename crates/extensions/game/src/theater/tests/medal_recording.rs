@@ -71,7 +71,7 @@ fn sealed_menu_medals_match_the_recorded_awards_across_a_seat_replacement() {
         1050,
         json!({"tick":1050,"reason":"finished","players":[]}),
     );
-    session.finish(120, true).unwrap();
+    session.finish(true).unwrap();
 
     let mut reader = film::range::RangeReader::new(std::fs::File::open(&file).unwrap()).unwrap();
     let summary: BTreeMap<_, _> = reader
@@ -186,7 +186,7 @@ fn sealed_menu_counts_the_recorded_bounce_medals() {
         1050,
         json!({"tick":1050,"reason":"finished","players":[]}),
     );
-    session.finish(120, true).unwrap();
+    session.finish(true).unwrap();
 
     let mut reader = film::range::RangeReader::new(std::fs::File::open(&file).unwrap()).unwrap();
     let summary: BTreeMap<_, _> = reader

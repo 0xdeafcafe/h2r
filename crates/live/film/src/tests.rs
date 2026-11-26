@@ -1,5 +1,4 @@
 use super::*;
-use crate::tape::{Call, Check, Mark, Playback};
 use std::{fs, io::Cursor, path::PathBuf};
 
 struct Temp(PathBuf);
@@ -14,10 +13,6 @@ impl Drop for Temp {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
-}
-/// One batch of calls, as the recorder writes it.
-pub(super) fn tape_chunk<W: Write + Seek>(w: &mut Writer<W>, calls: &[Call]) {
-    w.chunk_bytes(tape::TAPE, &tape::encode_batch(calls).unwrap()).unwrap();
 }
 pub(crate) fn header(id: u64) -> Header {
     Header {
@@ -102,39 +97,16 @@ fn render_hook_profiles_round_trip_and_require_the_recorders_groups() {
     }
 }
 
+/// A private chunk of the container's own: any JSON, under any tag.
+const NOTE: Tag = *b"NOTE";
+const DONE: Tag = *b"DONE";
+
 fn encoded() -> Vec<u8> {
     let mut w = Writer::new(Cursor::new(Vec::new()), &header(1)).unwrap();
-    let calls: Vec<Call> = [(0, "Recv"), (1, "Random")]
-        .into_iter()
-        .map(|(index, op)| Call {
-            index,
-            op: op.into(),
-            thread: 7,
-            args: vec![2],
-            result: Ok(1),
-            outputs: vec![vec![42]],
-        })
-        .collect();
-    tape_chunk(&mut w, &calls);
+    w.chunk(NOTE, &vec![42, 1]).unwrap();
     w.chunk(KEYF, &vec![1, 2, 3]).unwrap();
-    w.chunk(
-        HASH,
-        &Check {
-            tick: 30,
-            sim: Some(99),
-            calls: 2,
-        },
-    )
-    .unwrap();
-    w.chunk(
-        MARK,
-        &Mark::End {
-            slices: 100,
-            tick: 30,
-            calls: 2,
-        },
-    )
-    .unwrap();
+    w.chunk(NOTE, &99).unwrap();
+    w.chunk(DONE, &30).unwrap();
     w.finish().unwrap().into_inner()
 }
 #[test]
@@ -147,13 +119,13 @@ fn round_trip_all_chunks_index_and_wrong_stamp() {
     assert!(r.finalized);
     assert_eq!(
         r.entries.iter().map(|e| e.tag).collect::<Vec<_>>(),
-        vec![HEAD, tape::TAPE, KEYF, HASH, MARK]
+        vec![HEAD, NOTE, KEYF, NOTE, DONE]
     );
     for e in &r.entries {
         assert_eq!(b[e.offset as usize..][..4], e.tag);
     }
-    let entry = r.entries.iter().find(|e| e.tag == HASH).unwrap().clone();
-    assert_eq!(r.read::<Check>(&entry).unwrap().sim, Some(99));
+    let entry = r.entries[3].clone();
+    assert_eq!(r.read::<u64>(&entry).unwrap(), 99);
 }
 #[test]
 fn truncated_last_chunk_and_missing_index_rebuild() {
@@ -179,21 +151,6 @@ fn complete_but_damaged_index_is_an_error() {
     let n = b.len();
     b[n - 2] ^= 0xff;
     assert!(Reader::new(Cursor::new(b)).is_err());
-}
-#[test]
-fn calls_require_the_same_order_arguments_and_thread() {
-    let dir = Temp::new();
-    let path = dir.0.join("x");
-    fs::write(&path, encoded()).unwrap();
-    let tape = || Playback::load(Reader::open(&path).unwrap()).unwrap();
-    let mut t = tape();
-    assert_eq!(t.call(0, "Recv", &[2], 7).unwrap().outputs, vec![vec![42]]);
-    assert_eq!(t.call(1, "Random", &[2], 7).unwrap().result, Ok(1));
-    assert!(t.call(2, "Random", &[2], 7).is_err());
-    assert!(tape().call(0, "Random", &[2], 7).is_err());
-    assert!(tape().call(1, "Recv", &[2], 7).is_err());
-    assert!(tape().call(0, "Recv", &[1], 7).is_err());
-    assert!(tape().call(0, "Recv", &[2], 8).is_err());
 }
 #[test]
 fn library_keeps_25_recent_plus_pins_by_header_id() {
@@ -424,95 +381,6 @@ fn v2_requires_a_complete_index_and_footer() {
 }
 
 #[test]
-fn ring_cursor_replays_partial_call_batch_hash_lobby_and_barrier_twice() {
-    let dir = Temp::new();
-    let path = dir.0.join("ring-cursor.h2film");
-    let mut header = header(0);
-    header.version = 2;
-    let mut writer = Writer::new(File::create(&path).unwrap(), &header).unwrap();
-    let call = |index| Call {
-        index,
-        op: "Random".into(),
-        thread: 1,
-        args: vec![1],
-        result: Ok(0),
-        outputs: vec![vec![index as u8]],
-    };
-    let check = Check { tick: 30, calls: 2, sim: Some(7) };
-    tape_chunk(&mut writer, &[call(0), call(1)]);
-    writer.chunk(MARK, &Mark::D3dBarrier { slices: 40, tick: 22, saved: true }).unwrap();
-    writer.chunk(MARK, &Mark::Lobby {
-        boundary: 15, method: "host.lobby.state".into(), params: serde_json::Value::Null,
-    }).unwrap();
-    writer.chunk(HASH, &check).unwrap();
-    writer.chunk(MARK, &Mark::End { slices: 50, tick: 30, calls: 2 }).unwrap();
-    writer.finish().unwrap();
-
-    let mut tape = Playback::load(Reader::open(&path).unwrap()).unwrap();
-    assert_eq!(tape.call(0, "Random", &[1], 1).unwrap(), call(0));
-    let cursor = tape.cursor();
-    for _ in 0..3 {
-        assert_eq!(tape.call(1, "Random", &[1], 1).unwrap(), call(1));
-        assert_eq!(tape.d3d_barrier(40, 22).unwrap(), Some(true));
-        assert_eq!(tape.lobby.pop_front().unwrap().0, 15);
-        assert_eq!(tape.checks.pop_front(), Some(check));
-        assert!(tape.exhausted());
-        tape.resume_cursor(cursor).unwrap();
-    }
-}
-
-#[test]
-fn streams_interleave_in_one_batch_and_a_json_batch_is_refused() {
-    let dir = Temp::new();
-    let call = |index: u64, op: &str| Call {
-        index,
-        op: op.into(),
-        thread: 1,
-        args: vec![index as u32 % 2],
-        result: Ok(0),
-        outputs: vec![vec![index as u8; 4]],
-    };
-    let ops = ["XInputGetState", "Recv", "XInputGetState", "Random", "XInputGetState"];
-    let make = |name: &str, json: bool| {
-        let path = dir.0.join(name);
-        let mut header = header(0);
-        header.version = 2;
-        let mut writer = Writer::new(File::create(&path).unwrap(), &header).unwrap();
-        if json {
-            let calls: Vec<Call> = ops.iter().enumerate().map(|(i, op)| call(i as u64, op)).collect();
-            writer.chunk(tape::TAPE, &calls).unwrap();
-        } else {
-            let mut batch = tape::Batch::default();
-            for (i, op) in ops.iter().enumerate() {
-                batch.append(&mut writer, call(i as u64, op)).unwrap();
-            }
-            batch.flush(&mut writer).unwrap();
-        }
-        writer.chunk(HASH, &Check { tick: 30, calls: 5, sim: Some(1) }).unwrap();
-        writer.chunk(MARK, &Mark::End { slices: 10, tick: 30, calls: 5 }).unwrap();
-        writer.finish().unwrap();
-        path
-    };
-    let path = make("binary.h2film", false);
-    let reader = Reader::open(&path).unwrap();
-    // Pad reads, socket calls and entropy share one chunk: no stream
-    // change closes a batch.
-    assert_eq!(reader.entries.iter().filter(|e| e.tag == tape::TAPE).count(), 1);
-    let mut playback = Playback::load(reader).unwrap();
-    for (i, op) in ops.iter().enumerate() {
-        assert_eq!(playback.call(i as u64, op, &[i as u32 % 2], 1).unwrap(), call(i as u64, op));
-    }
-    // The calls are used up; the hash check is a separate row.
-    assert!(playback.call(5, ops[0], &[1], 1).is_err());
-
-    let path = make("json.h2film", true);
-    let mut playback = Playback::load(Reader::open(&path).unwrap()).unwrap();
-    let error = playback.call(0, ops[0], &[0], 1).unwrap_err().to_string();
-    assert!(error.contains("JSON encoding"), "{error}");
-}
-
-
-#[test]
 fn a_single_chunk_cannot_hide_a_second_zstd_frame() {
     let mut packed = zstd::stream::encode_all(&b"first"[..], 1).unwrap();
     packed.extend(zstd::stream::encode_all(&b""[..], 1).unwrap());
@@ -573,7 +441,6 @@ fn a_cut_of_a_running_tape_reads_as_a_film_of_its_own() {
         ..Default::default()
     };
     cut_track.finish(&mut cut, &game, &Summary::default()).unwrap();
-    cut.chunk(MARK, &Mark::End { slices: 80, tick: 40, calls: 0 }).unwrap();
     let bytes = cut.finish().unwrap().into_inner();
     let reader = Reader::new(Cursor::new(bytes)).unwrap();
     assert_eq!(reader.header.meta.id, "8");

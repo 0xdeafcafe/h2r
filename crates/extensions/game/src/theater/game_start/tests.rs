@@ -136,7 +136,7 @@ fn play(rec: &Session, menus: &runtime::Guest, options: &[u8], words: [u32; 2], 
     first
 }
 
-fn end_game(rec: &Session, start: u64, slices: u64) {
+fn end_game(rec: &Session, start: u64) {
     {
         let mut s = rec.lock();
         let Mode::Record(r) = &mut s.mode else { panic!("a recording") };
@@ -144,7 +144,7 @@ fn end_game(rec: &Session, start: u64, slices: u64) {
         r.game_started_ms = Some(1_795_000_000_000 + start);
         r.match_over = true;
     }
-    rec.finish(slices, false).unwrap();
+    rec.finish(false).unwrap();
 }
 
 fn starts_of(path: &std::path::Path) -> Vec<film::start::GameStart> {
@@ -165,15 +165,15 @@ fn a_session_of_two_games_writes_a_game_start_for_each_at_its_first_update() {
     let first_options = block(MODE_MULTIPLAYER, 1);
     let one = play(&rec, &menus, &first_options, [11, 12], 30);
     assert_eq!(one, 11, "the tick after the menu's ten");
-    end_game(&rec, one, 80);
+    end_game(&rec, one);
     for _ in 0..5 {
         rec.checkpoint(&menus);
     }
     let second_options = block(MODE_CAMPAIGN, 2);
     let two = play(&rec, &menus, &second_options, [21, 22], 20);
     assert_eq!(two, 46);
-    end_game(&rec, two, 200);
-    rec.finish(210, true).unwrap();
+    end_game(&rec, two);
+    rec.finish(true).unwrap();
 
     let films: Vec<_> = fs::read_dir(&dir.0)
         .unwrap()
@@ -225,5 +225,5 @@ fn a_game_whose_first_update_cannot_be_read_still_records_its_ticks() {
         rec.checkpoint(&arena());
     }
     assert!(rec.lock().failure.is_none());
-    rec.finish(10, true).unwrap();
+    rec.finish(true).unwrap();
 }

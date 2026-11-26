@@ -334,12 +334,7 @@ impl hooks::Feature for CoopJip {
         // lines and `ENABLED` is the settings' value read at boot. The
         // lifted check's call is a continuation the machine check sees.
         let arm = Arc::clone(&self.arm);
-        b.snapshot(hooks::SnapshotPolicy::forbid_while(move || {
-            // The conversation with the peer is on the film network tape.
-            // Remaining Track fields affect log messages only. In-flight
-            // guest calls are still rejected by the machine quiescence test.
-            if arm.film && crate::sim_bounces::in_fork() { None } else { arm.snapshot_live() }
-        }));
+        b.snapshot(hooks::SnapshotPolicy::forbid_while(move || arm.snapshot_live()));
 
         if stages.lift {
             let arm = Arc::clone(&self.arm);

@@ -1131,9 +1131,10 @@ async fn a_live_game_sends_its_stats_stream_and_its_film_file_as_two_objects() {
     let whole = read(games.clone(), Some(0), None).await.unwrap();
     assert_eq!(whole.status(), StatusCode::OK);
     assert_eq!(body(whole).await, film);
-    // This film file still has a machine part: it is the players' only.
+    // A film file goes to any signed-in account that can see the game.
     let guest = read(games.clone(), Some(1), None).await.unwrap();
-    assert_eq!(guest.status(), StatusCode::NOT_FOUND);
+    assert_eq!(guest.status(), StatusCode::OK);
+    assert_eq!(body(guest).await, film);
 
     let resumed = read(format!("{films}?object=film"), Some(0), Some("bytes=8-15"))
         .await

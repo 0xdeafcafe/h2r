@@ -76,14 +76,13 @@ pub trait Part {
 
 /// The device first: its save writes guest memory. Guest RAM after every
 /// part that may write it.
-pub const SAVE_ORDER: [&str; 9] = [
-    "d3d", "dsound", "audioout", "wma", "livefilm", "guest", "kernel", "xapi", "features",
+pub const SAVE_ORDER: [&str; 8] = [
+    "d3d", "dsound", "audioout", "wma", "guest", "kernel", "xapi", "features",
 ];
-/// Recreate taped Live HLE claims before guest RAM. The kernel precedes
-/// dsound (its pins adopt the loaded
+/// Guest RAM first. The kernel precedes dsound (its pins adopt the loaded
 /// kernel's references); features last, over a loaded machine.
-pub const LOAD_ORDER: [&str; 9] = [
-    "livefilm", "guest", "kernel", "d3d", "dsound", "audioout", "wma", "xapi", "features",
+pub const LOAD_ORDER: [&str; 8] = [
+    "guest", "kernel", "d3d", "dsound", "audioout", "wma", "xapi", "features",
 ];
 
 /// `lockstep::hash_guest` of the RAM saved.
@@ -354,11 +353,7 @@ impl Host<'_> {
             names.push("bink");
         }
         if self.live.is_some() {
-            names.push(if self.live.is_some_and(|l| l.film_service_taped()) {
-                "livefilm"
-            } else {
-                "live"
-            });
+            names.push("live");
         }
         names
     }
@@ -389,18 +384,16 @@ impl Host<'_> {
             }
         }
         if let Some(l) = self.live {
-            if crate::sim_bounces::in_fork() && !l.film_service_taped() {
-                out.push(("live", "local film has untaped online service state".into()));
+            if crate::sim_bounces::in_fork() {
+                out.push(("live", "the Live service state has no snapshot section".into()));
             }
             for c in 0..4 {
-                if l.user(c) != 0 && !(crate::sim_bounces::in_fork() && l.film_service_taped()) {
+                if l.user(c) != 0 {
                     out.push(("live", format!("signed in on controller {c}")));
                 }
             }
         }
-        if crate::coop_live::lobby().is_some_and(|l| l.in_coop())
-            && !(crate::sim_bounces::in_fork() && self.live.is_some_and(|l| l.film_service_taped()))
-        {
+        if crate::coop_live::lobby().is_some_and(|l| l.in_coop()) {
             out.push(("coop", "hosting or joined to a co-op session".to_owned()));
         }
         out
@@ -409,9 +402,6 @@ impl Host<'_> {
     /// Every part but the kernel and the features.
     fn device_parts(&self) -> Vec<Box<dyn Part + '_>> {
         let mut parts: Vec<Box<dyn Part + '_>> = Vec::new();
-        if let Some(live) = self.live.filter(|l| l.film_service_taped()) {
-            parts.push(Box::new(FilmNetwork(live, self.rt)));
-        }
         parts.push(Box::new(GuestPart(self.rt)));
         if let Some(d) = self.d3d {
             parts.push(Box::new(D3dPart(d, self.rt)));
@@ -459,34 +449,6 @@ impl Host<'_> {
             presents,
             rt: Some(rt),
         }
-    }
-}
-
-/// Recreate dynamic Live HLE claims before Guest::restore verifies the
-/// fixed layout. Loading this section requires an isolated playback HLE.
-struct FilmNetwork<'a>(&'a live_hle::Hle, &'a runtime::Runtime);
-impl Part for FilmNetwork<'_> {
-    fn name(&self) -> &'static str {
-        "livefilm"
-    }
-    fn blockers(&self) -> Vec<String> {
-        if crate::sim_bounces::in_fork() {
-            Vec::new()
-        } else {
-            vec!["the live service cursor belongs to a film keyframe".into()]
-        }
-    }
-    fn save(&mut self, out: &mut SnapshotWriter) -> Result<(), String> {
-        let bytes = self.0.save_film_network(&self.1.memory())?;
-        out.section(Tag::new("livefilm"), 1, Codec::Zstd, bytes)
-            .map_err(|e| e.to_string())?;
-        Ok(())
-    }
-    fn load(&mut self, snapshot: &Snapshot<'_>) -> Result<(), String> {
-        let bytes = snapshot
-            .require(Tag::new("livefilm"), 1..=1)
-            .map_err(|e| e.to_string())?;
-        self.0.load_film_network(&bytes, &mut self.1.memory())
     }
 }
 

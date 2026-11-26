@@ -1,6 +1,5 @@
 //! The menu summary shared by a sealed engine film and its Live listing.
 pub mod events;
-pub mod machine_index;
 pub mod range;
 pub mod privacy;
 pub mod stream;

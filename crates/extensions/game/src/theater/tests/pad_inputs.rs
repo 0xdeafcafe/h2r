@@ -38,7 +38,7 @@ fn controllers(pad: Option<HostPadState>) -> crate::xapi_glue::Shared {
 }
 
 #[test]
-fn recording_reads_the_actual_xinput_packet_from_the_controller_port() {
+fn a_recording_leaves_the_controller_ports_to_the_host() {
     let dir = std::env::temp_dir().join(format!("film-pad-{}", live_proto::sign::random_id()));
     std::fs::create_dir(&dir).unwrap();
     let file = dir.join("local.h2film");
@@ -59,23 +59,17 @@ fn recording_reads_the_actual_xinput_packet_from_the_controller_port() {
         ..Default::default()
     };
     let record_xapi = controllers(Some(pad));
-    record.install_local_pads(&record_xapi).unwrap();
-    let port = PortIndex::new(2).unwrap();
-    let token = 0x5800_0000;
+    record.install_neutral_pads(&record_xapi).unwrap();
     {
         let mut x = record_xapi.lock().unwrap();
-        let mut tap = x.take_input_tap().unwrap();
-        tap.sync(&mut x.input);
-        let open = x.input.open(port).unwrap();
-        tap.sync(&mut x.input);
+        assert!(x.take_input_tap().is_none(), "a recording installs no pad tap");
+        x.input.sync();
+        let open = x.input.open(PortIndex::new(2).unwrap()).unwrap();
         let state = x.input.get_state(open).unwrap();
         assert_eq!(state.gamepad, pad.to_gamepad(&Default::default(), true));
-        let mut packet = state.to_bytes();
-        let mut status = 0;
-        tap.read(token, &mut status, &mut packet);
     }
     record.checkpoint(&g);
-    record.finish(1, true).unwrap();
+    record.finish(true).unwrap();
 
     std::fs::remove_dir_all(dir).unwrap();
 }

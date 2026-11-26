@@ -1,12 +1,10 @@
-//! `h2 film stat FILE`: the keyframes and capture points a seeking player
-//! has, plus the size and operation mix of its HLE tape.
+//! `h2 film stat FILE`: the stats container's header and the keyframes it
+//! stores.
 //! `h2 film stat --fields FILE...`: how often each field of the 92-byte
 //! action changes in the films' tick tracks, and what each predictor of the
 //! column encoder stores it in (docs/game/input-film.md, "The encoding").
 use anyhow::{Context, Result, ensure};
-use film::tape::{BOTR, CALL_STREAMS, Call, Mark, PDEV, TAPE, read_batch, encode_batch, stream_of};
 use std::{
-    collections::BTreeMap,
     fmt::Write as _,
     path::{Path, PathBuf},
 };
@@ -179,7 +177,11 @@ pub fn stat(path: &Path) -> Result<String> {
         Some(list) => list
             .into_iter()
             .map(|key| {
-                let entry = reader.machine_section().keyframe_at(key.offset)?;
+                let entry = reader
+                    .entries
+                    .iter()
+                    .find(|entry| entry.offset == key.offset && entry.tag == film::KEYF)
+                    .context("keyframe offset is absent from the film's index")?;
                 Ok(Row {
                     tick: key.tick,
                     stored: u64::from(entry.size) + 8,
@@ -208,133 +210,7 @@ pub fn stat(path: &Path) -> Result<String> {
         };
         writeln!(out, "KEYF tick={} stored={} {anchor}", row.tick, row.stored)?;
     }
-
-    let mut barriers = Vec::new();
-    let mut streams = BTreeMap::<film::Tag, StreamStat>::new();
-    let mut tape = StreamStat::default();
-    let entries: Vec<_> = reader.machine_section().entries().cloned().collect();
-    for entry in entries {
-        match entry.tag {
-            film::MARK => {
-                if let Mark::D3dBarrier {
-                    slices,
-                    tick,
-                    saved,
-                } = reader.read(&entry)?
-                {
-                    barriers.push((tick, slices, saved));
-                }
-            }
-            TAPE => {
-                let raw = reader.read_bytes(&entry)?;
-                tape.chunks += 1;
-                tape.stored += u64::from(entry.size) + 8;
-                tape.inflated += raw.len() as u64;
-                // Decode one batch at a time and retain only the operation
-                // names, counts and sizes. The report contains no call
-                // arguments or outputs.
-                for call in read_batch(&mut reader, &entry, &raw)
-                    .with_context(|| format!("invalid tape batch at {}", entry.offset))?
-                {
-                    tape.calls += 1;
-                    let stream = streams.entry(stream_of(&call.op)).or_default();
-                    stream.calls += 1;
-                    let json_len = serde_json::to_vec(&call)?.len() as u64 + 1;
-                    stream.json += json_len;
-                    *stream.ops.entry(call.op.clone()).or_default() += 1;
-                    if json_len >= 65536 {
-                        stream.flush()?;
-                        stream.binary += encode_batch(std::slice::from_ref(&call))?.len() as u64;
-                        continue;
-                    }
-                    stream.pending.push(call);
-                    if stream.pending.len() == 128 {
-                        stream.flush()?;
-                    }
-                }
-            }
-            film::tape::TAPE_PART => {
-                tape.chunks += 1;
-                tape.stored += u64::from(entry.size) + 8;
-                tape.inflated += reader.read_bytes(&entry)?.len() as u64;
-            }
-            PDEV | BOTR => {
-                let raw = reader.read_bytes(&entry)?;
-                let stream = streams.entry(entry.tag).or_default();
-                stream.chunks += 1;
-                stream.stored += u64::from(entry.size) + 8;
-                stream.inflated += raw.len() as u64;
-            }
-            _ => {}
-        }
-    }
-    let saved = barriers.iter().filter(|&&(_, _, saved)| saved).count();
-    writeln!(
-        out,
-        "capture_points: {} ({saved} saved, {} failed)",
-        barriers.len(),
-        barriers.len() - saved
-    )?;
-    for (tick, slices, saved) in barriers {
-        writeln!(out, "d3d_barrier tick={tick} slices={slices} saved={saved}")?;
-    }
-    writeln!(out, "tape: stored bytes include the 8-byte chunk prefix")?;
-    writeln!(
-        out,
-        "TAPE calls={} inflated={} stored={} chunks={}",
-        tape.calls, tape.inflated, tape.stored, tape.chunks,
-    )?;
-    writeln!(
-        out,
-        "streams: json is the bytes of the stream's calls in the JSON encoding, \
-         binary the same calls in the binary one, in batches of 128"
-    )?;
-    for tag in CALL_STREAMS {
-        let mut stream = streams.remove(&tag).unwrap_or_default();
-        stream.flush()?;
-        let name = std::str::from_utf8(&tag)?;
-        writeln!(
-            out,
-            "{name} calls={} json={} binary={}",
-            stream.calls, stream.json, stream.binary,
-        )?;
-        for (op, count) in stream.ops {
-            writeln!(out, "  {} calls={count}", serde_json::to_string(&op)?)?;
-        }
-    }
-    for tag in [PDEV, BOTR] {
-        let stream = streams.remove(&tag).unwrap_or_default();
-        let name = std::str::from_utf8(&tag)?;
-        writeln!(
-            out,
-            "{name} calls=0 inflated={} stored={} chunks={}",
-            stream.inflated, stream.stored, stream.chunks,
-        )?;
-    }
     Ok(out)
-}
-
-#[derive(Default)]
-struct StreamStat {
-    chunks: u64,
-    stored: u64,
-    inflated: u64,
-    calls: u64,
-    json: u64,
-    binary: u64,
-    pending: Vec<Call>,
-    ops: BTreeMap<String, u64>,
-}
-
-impl StreamStat {
-    /// Count the pending calls as one binary batch.
-    fn flush(&mut self) -> Result<()> {
-        if !self.pending.is_empty() {
-            self.binary += encode_batch(&self.pending)?.len() as u64;
-            self.pending.clear();
-        }
-        Ok(())
-    }
 }
 
 /// An unfinished film has no TIDX yet: read each KEYF's tick from its
@@ -342,8 +218,8 @@ impl StreamStat {
 fn scan_keyframes(reader: &mut film::Reader<std::fs::File>) -> Result<Vec<Row>> {
     let mut rows = Vec::new();
     let entries: Vec<_> = reader
-        .machine_section()
-        .entries()
+        .entries
+        .iter()
         .filter(|entry| entry.tag == film::KEYF)
         .cloned()
         .collect();

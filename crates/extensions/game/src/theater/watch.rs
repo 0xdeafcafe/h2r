@@ -202,11 +202,10 @@ impl Session {
         });
         let state = State {
             verify: None,
-            mode: Mode::Replay(Playback::empty(reader, length), replay),
+            mode: Mode::Replay(replay),
             play: Some(play),
             header,
             tick: 0,
-            calls: 0,
             paused: false,
             speed: 1.,
             rate: Default::default(),

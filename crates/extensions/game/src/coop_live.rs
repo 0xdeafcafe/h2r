@@ -38,7 +38,6 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-pub mod film;
 
 use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
 use engine::memory::{GuestMemory, MemFault};
@@ -610,7 +609,6 @@ pub type HostSkulls = Box<dyn Fn(&[String]) -> Vec<u8> + Send + Sync>;
 
 pub struct Lobby {
     levels: Vec<Level>,
-    film: Option<film::LobbyFilm>,
     inner: Mutex<Inner>,
     arm: Option<Arc<Arm>>,
     live: Option<Arc<dyn Live>>,
@@ -629,7 +627,6 @@ impl Lobby {
     ) -> Lobby {
         Lobby {
             levels,
-            film: None,
             inner: Mutex::default(),
             arm,
             live,
@@ -817,10 +814,7 @@ impl Lobby {
             rows.truncate(MAX_FRIENDS);
             rows
         };
-        let f = match &self.film {
-            Some(film) => film.read("Coop.Friends", &[], friends).unwrap_or_default(),
-            None => friends(),
-        };
+        let f = friends();
         let n = f.len();
         self.lock().friends = f;
         n
@@ -842,11 +836,7 @@ impl Lobby {
         let Some(live) = &self.live else {
             return "coop-live: Live is off; no invitation sent".into();
         };
-        let invite = || live.invite(f.xuid);
-        let result = match &self.film {
-            Some(film) => film.read("Coop.Invite", &[f.xuid.0 as u32, (f.xuid.0 >> 32) as u32], invite).unwrap_or(Err(u32::MAX)),
-            None => invite(),
-        };
+        let result = live.invite(f.xuid);
         match result {
             Ok(session) => {
                 let mut i = self.lock();
@@ -1130,9 +1120,7 @@ impl Lobby {
     /// pings its host; a host reads its guest's report and advertises it.
     /// Logs when the number moves.
     pub fn ping_once(&self) {
-        if self.film.is_none() {
-            self.sync_retail();
-        }
+        self.sync_retail();
         let Some(live) = &self.live else { return };
         let (role, squad) = {
             let inner = self.lock();
@@ -1156,10 +1144,6 @@ impl Lobby {
                 g.endpoint.and_then(|to| live.ping_host(to, last))
             }
         };
-        if let Some(film) = &self.film {
-            film.stage(film::Change::Ping(ms));
-            return;
-        }
         self.apply_ping(ms);
     }
 
@@ -1665,9 +1649,6 @@ impl hooks::Feature for CoopScreens {
                 ) == Some(2)
             });
             lobby.observe_network(squad, live_network);
-            if let Some(film) = &lobby.film {
-                film.pump(&lobby);
-            }
             lobby.refresh_line();
             let _ = lobby.texts.write(&mut *g);
             lobby.set_profiles(crate::skulls::profiles_or_default(&*g).0);
@@ -1680,11 +1661,7 @@ impl hooks::Feature for CoopScreens {
                 let mut m = rt.memory();
                 let at = c.cpu.esp.wrapping_add(4);
                 let mode = m.u32(at)?;
-                let pick = || lobby_mode(mode, std::time::Instant::now());
-                let want = match &lobby.film {
-                    Some(film) => film.mode(mode, pick),
-                    None => pick(),
-                };
+                let want = lobby_mode(mode, std::time::Instant::now());
                 if want != mode {
                     m.set_u32(at, want)?;
                     eprintln!(
@@ -1743,11 +1720,7 @@ impl hooks::Feature for CoopScreens {
                 .after_feature(crate::skulls_custom::FEATURE);
         }
         let lobby = Arc::clone(&self.lobby);
-        if lobby.film.is_some() {
-            b.snapshot(film::policy(lobby));
-        } else {
-            b.snapshot(hooks::SnapshotPolicy::forbid_while(move || screens_live(&lobby)));
-        }
+        b.snapshot(hooks::SnapshotPolicy::forbid_while(move || screens_live(&lobby)));
         Ok(())
     }
 }
@@ -1828,12 +1801,7 @@ fn watch(lobby: std::sync::Weak<Lobby>, live: Arc<dyn Live>, stop: Arc<AtomicBoo
             .session()
             .is_some_and(|s| s.peers >= 2 && !s.is_host());
         if in_lobby || matches!(lobby.role(), Role::Guest(_)) {
-            let j = live.joined();
-            if let Some(film) = &lobby.film {
-                film.stage(film::Change::Joined(Lobby::joined_guest(&j)));
-            } else {
-                lobby.joined(&j);
-            }
+            lobby.joined(&live.joined());
         }
     }
 }
@@ -1889,12 +1857,8 @@ pub fn install(
             &crate::skulls::custom_selection(store, profiles),
         )
     });
-    let film = hle.film_observation_tap().map(film::LobbyFilm::new);
-    let replay = film.as_ref().is_some_and(|f| f.replaying());
     let live: Arc<dyn Live> = hle;
-    let mut lobby = Lobby::new(levels, arm, Some(Arc::clone(&live)), skulls);
-    lobby.film = film;
-    let lobby = Arc::new(lobby);
+    let lobby = Arc::new(Lobby::new(levels, arm, Some(Arc::clone(&live)), skulls));
     let _ = LOBBY.set(Arc::clone(&lobby));
     for c in classes(&lobby) {
         registry
@@ -1906,7 +1870,6 @@ pub fn install(
             lobby: Arc::clone(&lobby),
         })
         .map_err(|e| anyhow::anyhow!("coop-live: {e}"))?;
-    if replay { return Ok(true) }
     let weak = Arc::downgrade(&lobby);
     let stop = Arc::new(AtomicBool::new(false));
     {

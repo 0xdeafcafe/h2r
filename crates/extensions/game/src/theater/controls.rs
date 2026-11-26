@@ -19,7 +19,7 @@ impl State {
 
     fn camera_request(&mut self, request: api::Camera) -> Result<(), RpcError> {
         use api::CameraMode::*;
-        let Mode::Replay(_, replay) = &self.mode else {
+        let Mode::Replay(replay) = &self.mode else {
             unreachable!()
         };
         let unavailable = |msg| RpcError::new(code::UNAVAILABLE, msg);
@@ -70,7 +70,6 @@ impl State {
 
 impl Session {
     pub fn add_methods(self: &Arc<Self>, a: &agent::Agent) {
-        a.set_lobby_tape(self.clone());
         let session = self.clone();
         a.add_method(api::MEASUREMENTS, Access::Read, move |p| {
             let _: Empty = params(p)?;
@@ -532,7 +531,7 @@ impl Session {
             }
             api::HUD => {
                 let p = params::<api::Hud>(p)?;
-                let Mode::Replay(_, replay) = &s.mode else { unreachable!() };
+                let Mode::Replay(replay) = &s.mode else { unreachable!() };
                 if let Some(visible) = p.game {
                     replay.camera.set_hud(visible);
                     s.presentation.hud = visible;
@@ -547,7 +546,7 @@ impl Session {
             }
             _ => unreachable!(),
         }
-        let Mode::Replay(_, replay) = &s.mode else {
+        let Mode::Replay(replay) = &s.mode else {
             unreachable!()
         };
         let camera = replay.camera.state();

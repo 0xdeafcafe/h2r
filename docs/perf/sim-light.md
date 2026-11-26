@@ -117,7 +117,7 @@ Guest RAM, the heap and the module tables are shared copy-on-write.
 ("dedicated network host"); `sim-metrics` and `bot_glue` save their
 sections (`sim_glue/film_state.rs`, `bot_glue/film_state.rs`: seat
 bindings, machines, the owned squad, the phantom `Books`) only in a film
-session; `FilmNetwork` restores only into an isolated playback HLE; the
+session; the Live HLE has no section; the
 clock-only audio has no section ([host-halving.md](../live/host-halving.md#template-processes)).
 A fork needs none of those sections. It needs:
 

@@ -1,6 +1,6 @@
 # Halo 2 engine films
 
-Status: Design. The film file's tick chunks, the game start block (written for each game the recorder sees), the action and body capture at the simulation update and the stats container are built; the recorder writes a checkpoint of the film file every 150 ticks. Extension blocks and one file for each game are not built, and the file still carries the call tape's chunks and a seed ([theater-design.md](theater-design.md#slices)). It carries no machine keyframe, disk manifest or boot record.
+Status: Design. The film file's tick chunks, the game start block (written for each game the recorder sees), the action and body capture at the simulation update and the stats container are built; the recorder writes a checkpoint of the film file every 150 ticks. Extension blocks and one file for each game are not built, and the file still carries a seed ([theater-design.md](theater-design.md#slices)). It carries no call, machine keyframe, disk manifest or boot record, and the stats container carries no call tape, arena hash or mark.
 Code: `crates/live/film/src/file.rs` (`FilmWriter`, `FilmReader`), `crates/live/film/src/start.rs` (`GameStart`), `crates/live/film/src/blam` (the stats container), `crates/extensions/game/src/theater/record.rs` (the recorder), `crates/extensions/game/src/theater/game_start.rs` (the capture). Tests: `crates/live/film/src/file/tests.rs`, `crates/live/film/src/start/tests.rs`, `crates/live/film/src/tests.rs`, `crates/extensions/game/src/theater/game_start/tests.rs`.
 Switch: `film-autorecord` (on), listed in [switches.md](../runtime/switches.md).
 
@@ -184,8 +184,8 @@ an options block that is not 0x1118 bytes. The file stores it as a block of
 kind 4 (`FilmWriter::game_start`); a film of a session holds one for each
 game it played, each written just before its first update's tick, and
 `FilmReader::game_start` reads the last, the game the film is of. Until the
-seed and the machine part go (slice 7a) the block sits among the other
-blocks and the header's flag bit 3 says the file has one.
+seed goes the block sits among the other blocks and the header's flag bit 3
+says the file has one.
 
 | Section | Holds | Required |
 |---|---|---|

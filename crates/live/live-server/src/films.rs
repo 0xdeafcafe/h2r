@@ -740,12 +740,11 @@ pub(crate) struct HostObject {
 }
 
 /// A download of a host game: the film file the host sent beside its stats
-/// stream, or, for the film when there is none, the container that holds
-/// both. A film file with no machine part goes to any signed-in account
-/// that can see the game. The container, which holds private machine and
-/// network state, and a film file that still has a machine part go only to
-/// the game's players. A catalogue reservation can list the film before a
-/// real start establishes who played.
+/// stream, or, for the film when there is none, the container. A film file
+/// goes to any signed-in account that can see the game. The container,
+/// which holds the stats stream's private envelopes, goes only to the
+/// game's players. A catalogue reservation can list the film before a real
+/// start establishes who played.
 pub(crate) fn host_object(
     model: &Model,
     id: &str,
@@ -761,9 +760,6 @@ pub(crate) fn host_object(
     if part == HostPart::Film
         && let Some(file) = model.films.film_files.get(id)
     {
-        if file.machine && !played {
-            return Err(none());
-        }
         return Ok(HostObject {
             key: file.blob.clone(),
             receipt: Some((file.size, file.sha256.clone())),

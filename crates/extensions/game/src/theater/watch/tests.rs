@@ -120,7 +120,7 @@ fn record_game(rec: &Arc<Session>, options: &[u8], words: [u32; 2], ticks: u64) 
         r.game_started_ms = Some(1_795_000_000_000 + first);
         r.match_over = true;
     }
-    rec.finish(first * 10, false).unwrap();
+    rec.finish(false).unwrap();
     first
 }
 
@@ -248,7 +248,7 @@ fn a_session_records_a_game_watches_it_leaves_and_records_another_and_both_recor
     let second = named(MODE_MULTIPLAYER, 2, SECOND);
     let first = record_game(rec, &second, [21, 22], 20);
     assert_eq!(first, recorded + 5 + 1);
-    rec.finish(900, true).unwrap();
+    rec.finish(true).unwrap();
 
     let films = cuts(rec);
     assert_eq!(films.len(), 2);
@@ -425,7 +425,7 @@ fn the_viewers_settings_come_back_when_the_film_never_starts_or_the_session_ends
     // One film at a time: another is refused until this one is left.
     let refused = rec.plan_watch(&v.film, api::InitialView::default()).err().unwrap();
     assert!(format!("{refused:#}").contains("already being watched"), "{refused:#}");
-    rec.finish(900, true).unwrap();
+    rec.finish(true).unwrap();
     assert!(!rec.watching());
     assert_eq!(store.get(SETTING), Some(Setting::Bool(false)));
 }
@@ -524,14 +524,14 @@ fn a_film_that_diverges_in_the_running_game_ends_like_end_film_and_the_game_goes
 
     // The slice's end turns the failure into leaving the film: no error
     // for the guest, the main menu queued, the film's reason kept.
-    rec.finish(1, false).expect("the guest goes on");
+    rec.finish(false).expect("the guest goes on");
     assert_eq!(v.pending(), vec![Call::QueueGame { steps: crate::game_menu::steps() }]);
     {
         let s = rec.lock();
         assert!(s.watch.is_some() && s.failure.is_none() && !s.holds_in_game());
     }
     assert_eq!(rec.status().watch_failure, Some(why));
-    rec.finish(2, false).expect("and keeps going while the menu loads");
+    rec.finish(false).expect("and keeps going while the menu loads");
     assert_eq!(store.get(SETTING), Some(Setting::Bool(true)), "the film's settings stay until the menu");
 
     rec.game_activated(&game(&block(MODE_MAINMENU, 0), [0, 0]));
@@ -549,7 +549,7 @@ fn a_film_that_diverges_in_the_running_game_ends_like_end_film_and_the_game_goes
         assert!(matches!(s.mode, Mode::Record(_)) && s.watch.is_none() && s.pacing.is_none());
         assert!(!s.complete && s.failure.is_none() && s.restart.is_none() && s.seeking.is_none());
     }
-    rec.finish(3, false).expect("the recorder goes on at the menu");
+    rec.finish(false).expect("the recorder goes on at the menu");
     let menus = arena();
     rec.checkpoint(&menus);
     assert!(!rec.lock().complete);

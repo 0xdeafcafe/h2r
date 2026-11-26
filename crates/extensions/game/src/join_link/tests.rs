@@ -3,14 +3,18 @@ use engine::entry::{EntryFuture, Regs, testing};
 use engine::testing::FakeGuest;
 
 #[test]
-fn films_and_offline_runs_add_no_join_hooks_or_dialog_allocations() {
-    let taped = Hle::for_film(
-        live_hle::NetworkConfig::new("127.0.0.1:3074".parse().unwrap()),
-        true,
+fn unsupported_and_offline_runs_add_no_join_hooks_or_dialog_allocations() {
+    let enabled = Hle::with_address(
+        live_hle::LiveConfig {
+            enabled: true,
+            server_url: Some("https://live.example".into()),
+            ..Default::default()
+        },
+        "127.0.0.1:3074".parse().unwrap(),
     )
     .unwrap();
     for (live, unsupported) in [
-        (Some(taped), true),
+        (Some(enabled), true),
         (None, false),
         (Some(signed_out()), false),
     ] {

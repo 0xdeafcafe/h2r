@@ -4230,7 +4230,7 @@ editor methods wait to be serviced. An agent pause continues to service
 them, and a newly sent mark appears only with the next genuine render.
 The window still expires the plate and marks on wall time
 (`crates/apps/app/src/lifecycle.rs`,
-`crates/extensions/agent/src/exec/lobby_tape.rs`,
+`crates/extensions/agent/src/exec/poll_theater.rs`,
 `crates/extensions/agent/src/exec.rs`, `crates/apps/app/src/shell.rs`).
 
 ### Content previews from the editor

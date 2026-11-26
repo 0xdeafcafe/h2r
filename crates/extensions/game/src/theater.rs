@@ -17,7 +17,6 @@ mod host_view;
 #[cfg(feature = "gpu")]
 pub use host_view::HostView;
 pub use camera::{FilmCamera, RenderHooks};
-pub mod bot_tape;
 mod rig;
 mod controls;
 mod metadata;
@@ -29,7 +28,7 @@ pub mod start_point;
 pub mod start_play;
 pub mod start_point_agent;
 pub mod start_point_state;
-mod local_pads;
+mod neutral_pads;
 mod transport;
 mod pacing;
 mod watch;
@@ -45,20 +44,13 @@ use rig::ReplayCamera;
 pub use agent_proto::theater::CompatibilityState;
 pub use compatibility::{Installation, NO_GAME_START, hook_digest};
 pub use controls::{library_methods, playback_images};
-use film::{
-    FilmMeta, Header, Reader, Source, Writer,
-    tape::{Batch, Call, Check, Mark, Playback, Tap},
-};
+use film::{FilmMeta, Header, Reader, Source, Writer};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::{
     collections::BTreeSet,
     fs::File,
     path::PathBuf,
-    sync::{
-        Arc, Mutex, MutexGuard,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, Mutex, MutexGuard},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -114,13 +106,11 @@ impl Presentation {
 
 struct Recording {
     out: Option<Writer<File>>,
-    batch: Batch,
     file: PathBuf,
     match_over: bool,
     track: film::blam::TrackWriter,
-    /// A default recording's film file: its actions, digests and machine
-    /// part, written as the game is played (docs/game/input-film.md). The
-    /// container's writer mirrors its machine chunks into it.
+    /// A default recording's film file: its actions and digests, written
+    /// as the game is played (docs/game/input-film.md).
     film: Option<Arc<Mutex<film::file::FilmWriter<File>>>>,
     meta: metadata::Capture,
     frame: record::Capture,
@@ -154,7 +144,7 @@ impl UploadTarget {
 
 enum Mode {
     Record(Recording),
-    Replay(Playback, Replay),
+    Replay(Replay),
 }
 /// The jump the player is serving, reported in `theater.state`. It stays
 /// after the target is reached so the route remains visible until another
@@ -168,12 +158,11 @@ struct SeekProgress {
 struct State {
     verify: Option<verify::Verification>,
     mode: Mode,
-    /// The film being played, from its game start ([`film_play`]); the
-    /// replay's tape is empty. `None` while recording.
+    /// The film being played, from its game start ([`film_play`]). `None`
+    /// while recording.
     play: Option<film_play::Play>,
     header: Header,
     tick: u64,
-    calls: u64,
     paused: bool,
     speed: f64,
     rate: transport::PlaybackRate,
@@ -245,9 +234,6 @@ pub struct Facts {
 pub struct Session {
     version: u32,
     replaying: bool,
-    /// The film plays from its game start: no HLE call is taped, so the
-    /// call taps (`Tap::replaying`) answer from the host.
-    from_start: bool,
     state: Mutex<State>,
     video_menu: std::sync::OnceLock<Arc<settings::Store>>,
     capture: std::sync::OnceLock<Arc<ClipCapture>>,
@@ -255,7 +241,6 @@ pub struct Session {
     scaled_screenshot: std::sync::OnceLock<media::ScaledScreenshot>,
     #[cfg(feature = "gpu")]
     view: std::sync::OnceLock<Mutex<host_view::MountedView>>,
-    bots: Mutex<bot_tape::BotTape>,
     upload: Mutex<Option<std::thread::JoinHandle<Result<()>>>>,
     require_upload: bool,
     /// Watching a film in the running game ([`watch`]).
@@ -269,24 +254,14 @@ pub enum SliceAction {
 }
 
 /// Cuts the game in play and discards the tape when it drops
-/// ([`Session::seal_on_drop`]). It only locks the session, as every tap
-/// does.
+/// ([`Session::seal_on_drop`]). It only locks the session.
 pub struct Seal {
     session: Arc<Session>,
-    slices: AtomicU64,
-}
-
-impl Seal {
-    /// Name the last slice the owner finished, so a forced seal cuts
-    /// there. Cheap enough to call every slice.
-    pub fn advance(&self, slices: u64) {
-        self.slices.store(slices, Ordering::Relaxed);
-    }
 }
 
 impl Drop for Seal {
     fn drop(&mut self) {
-        if let Err(error) = self.session.finish(self.slices.load(Ordering::Relaxed), true) {
+        if let Err(error) = self.session.finish(true) {
             eprintln!("theater: sealing the recording on exit: {error:#}");
         }
     }
@@ -320,8 +295,8 @@ impl Session {
             // A film plays from its game start; a film without one is
             // refused, never played some other way.
             let play = film_play::Play::open(&r.path)?.context(NO_GAME_START)?;
-            let tape = Playback::empty(Reader::open(&r.path)?, play.length());
-            let mut h = tape.reader.header.clone();
+            let length = play.length();
+            let mut h = Reader::open(&r.path)?.header;
             let recorded = hooks::Switches::parse(&h.features).map_err(anyhow::Error::msg)?;
             let switches = if recorded.feature(admission, false) {
                 switches.with(admission, true)
@@ -351,12 +326,12 @@ impl Session {
                     "image lacks an observer required by the film telemetry plan"
                 );
             }
-            ensure!(r.seek_tick <= tape.length, "seek beyond film");
-            h.meta.length_ticks = tape.length;
+            ensure!(r.seek_tick <= length, "seek beyond film");
+            h.meta.length_ticks = length;
             // The film has no tick before its game's first update to stop at.
             let target = (r.seek_tick > 0).then(|| r.seek_tick.max(play.start().game.first_update));
             let (speed, paused) = (r.speed, r.paused_at_target);
-            (Mode::Replay(tape, r), h, speed, target, paused, Some(play))
+            (Mode::Replay(r), h, speed, target, paused, Some(play))
         } else if let Some(path) = record {
             let started_ms = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
             let lease_id = std::env::var("H2_LEASE").ok().filter(|id| !id.is_empty());
@@ -444,16 +419,13 @@ impl Session {
                     &seed,
                     30,
                 )?;
-                let writer = Arc::new(Mutex::new(writer));
-                out.set_mirror(Some(film::file::machine_mirror(Arc::clone(&writer))));
-                Some(writer)
+                Some(Arc::new(Mutex::new(writer)))
             } else {
                 None
             };
             (
                 Mode::Record(Recording {
                     out: Some(out),
-                    batch: Batch::default(),
                     file: path,
                     match_over: false,
                     track: if split {
@@ -480,7 +452,7 @@ impl Session {
             return Ok(None);
         };
         let seek = match &mode {
-            Mode::Replay(_, r) if r.seek_tick > 0 => Some(SeekProgress {
+            Mode::Replay(r) if r.seek_tick > 0 => Some(SeekProgress {
                 target: r.seek_tick,
                 from_tick: 0,
                 source: agent_proto::theater::SeekSource::Boot,
@@ -488,18 +460,11 @@ impl Session {
             }),
             _ => None,
         };
-        // A film played from its game start restores no roster: its players
-        // are the options' and its actions are the film's.
-        let bot_tape = if play.is_some() {
-            bot_tape::BotTape::default()
-        } else {
-            bot_tape::BotTape::new(&mode, header.version)
-        };
         let mut presentation = match &mode {
-            Mode::Replay(_, opts) => opts.presentation.clone(),
+            Mode::Replay(opts) => opts.presentation.clone(),
             Mode::Record(_) => Presentation::default(),
         };
-        if let Mode::Replay(_, opts) = &mode {
+        if let Mode::Replay(opts) = &mode {
             if !presentation.camera.initialized {
                 if opts.render_every != 0 && header.meta.source == Source::Host {
                     presentation.camera.mode = agent_proto::theater::CameraMode::Free;
@@ -520,11 +485,9 @@ impl Session {
             capture: Default::default(),
             media: Default::default(),
             scaled_screenshot: Default::default(),
-            replaying: matches!(&mode, Mode::Replay(_, _)),
-            from_start,
+            replaying: matches!(&mode, Mode::Replay(_)),
             require_upload: matches!(&mode, Mode::Record(rec) if rec.upload.is_some())
                 && std::env::var("H2_HOST_ARCHIVE").as_deref() == Ok("film"),
-            bots: Mutex::new(bot_tape),
             #[cfg(feature = "gpu")]
             view: Default::default(),
             state: Mutex::new(State {
@@ -542,7 +505,6 @@ impl Session {
                 paused,
                 presentation,
                 tick: 0,
-                calls: 0,
                 restart: None,
                 failure: None,
                 complete: false,
@@ -646,14 +608,13 @@ impl Session {
     /// loop holds one across its whole slice loop: an error exit or a panic
     /// that skips the final [`Session::finish`] still cuts the game in play
     /// and deletes the tape, where an abandoned unsealed tape would keep
-    /// neither. [`Seal::advance`] names the last finished slice; the seal
-    /// does nothing once the recording completed or failed on its own.
+    /// neither. The seal does nothing once the recording completed or
+    /// failed on its own.
     /// `None` for anything but a default recording.
     pub fn seal_on_drop(self: &Arc<Self>) -> Option<Seal> {
         let s = self.lock();
         (!self.replaying && s.header.player_features && !s.complete).then(|| Seal {
             session: Arc::clone(self),
-            slices: AtomicU64::new(0),
         })
     }
 
@@ -712,8 +673,7 @@ impl Session {
                 s.measure_match_start(tick);
             }
         }
-        // A film's digests are in its ticks; the tape's arena hashes are
-        // written for the recording's own tools, and never replayed.
+        // A film's digests are in its ticks.
         if tick.is_multiple_of(30) && matches!(s.mode, Mode::Record(_)) {
             Self::checkpoint_interval(&mut s, guest);
         }
@@ -757,38 +717,19 @@ impl Session {
         }
     }
 
-    /// A recording's guest-arena hash and HLE call cursor share the
-    /// 30-tick checkpoint.
+    /// A recording reads the game's roster every 30 ticks.
     fn checkpoint_interval(s: &mut State, guest: &runtime::Guest) {
-        let actual = Check {
-            tick: s.tick,
-            sim: lockstep::hash_sim(guest, lockstep::SimRegion::HALO2),
-            calls: s.calls,
-        };
         s.roster(guest);
-        if let Mode::Record(rec) = &mut s.mode
-            && let Some(out) = &mut rec.out
-        {
-            let r = rec
-                .batch
-                .flush(out)
-                .and_then(|()| out.chunk(film::HASH, &actual));
-            if let Err(e) = r {
-                s.fail(e.to_string());
-            }
-        }
     }
 
     /// Poll before executing another slice. The logical clock remains still
     /// during transport pauses. Seeking just removes the host wall-time wait.
     pub fn before_slice(
         &self,
-        slices: u64,
         m: &mut kernel::Machine,
         agent: Option<&crate::agent_glue::AgentGlue>,
         rt: &runtime::Runtime,
     ) -> Result<SliceAction> {
-        self.bot_boundary()?;
         // A film watched in the running game is paced by the guest's own
         // tick count (`pacing.rs`); the scheduler has nothing to hold or
         // stop.
@@ -803,9 +744,8 @@ impl Session {
             }
             {
                 let mut s = self.lock();
-                s.check_end(slices)?;
                 if s.verify_range_ended() { s.complete = true; }
-                let Mode::Replay(_, r) = &s.mode else {
+                let Mode::Replay(r) = &s.mode else {
                     return Ok(SliceAction::Run);
                 };
                 if let Some(e) = &s.failure {
@@ -849,14 +789,14 @@ impl Session {
 
     /// The sim's tick, wall or stop limit may end a match without GAME_END.
     /// A successful report means Live has settled its canonical game row.
-    pub fn finish_uploaded_sim(&self, slices: u64, published: bool) -> Result<()> {
+    pub fn finish_uploaded_sim(&self, published: bool) -> Result<()> {
         if let Mode::Record(r) = &mut self.lock().mode {
             r.match_over = published;
         }
-        self.finish(slices, true)
+        self.finish(true)
     }
 
-    pub fn finish(&self, slices: u64, teardown: bool) -> Result<()> {
+    pub fn finish(&self, teardown: bool) -> Result<()> {
         // A film that diverged while watched ends like End Film; the game
         // goes on (`watch.rs`).
         if !teardown && self.watch_diverged() {
@@ -866,7 +806,7 @@ impl Session {
             // A film still playing is dropped: the recorder seals its own.
             self.drop_watch();
         }
-        self.finish_output(slices, teardown)?;
+        self.finish_output(teardown)?;
         if teardown {
             if let Some(job) = self.upload.lock().unwrap_or_else(|e| e.into_inner()).take() {
                 let result = job.join().unwrap_or_else(|_| Err(anyhow::anyhow!("film upload worker stopped")));
@@ -883,11 +823,10 @@ impl Session {
         Ok(())
     }
 
-    fn finish_output(&self, slices: u64, teardown: bool) -> Result<()> {
+    fn finish_output(&self, teardown: bool) -> Result<()> {
         let mut s = self.lock();
-        if let Mode::Replay(_, replay) = &s.mode {
+        if let Mode::Replay(replay) = &s.mode {
             let window_closed = replay.window_closed.as_ref().is_some_and(|closed| closed());
-            s.check_end(slices)?;
             if s.failure.is_some() || (teardown && s.complete) { s.save_verify_result()?; }
             if let Some(e) = &s.failure {
                 bail!("{e}")
@@ -916,7 +855,7 @@ impl Session {
                 // Keep what was recorded: the game in play is cut up to the
                 // tick the failure stopped the tape at.
                 if s.header.player_features && matches!(&s.mode, Mode::Record(r) if r.out.is_some()) {
-                    s.cut_game(slices);
+                    s.cut_game();
                 }
                 s.report_session_end();
                 s.discard_auto();
@@ -934,7 +873,7 @@ impl Session {
         // if any, and discards the tape (docs/game/film-format.md, "One
         // film per game").
         if s.header.player_features {
-            s.cut_game(slices);
+            s.cut_game();
             if teardown {
                 s.complete = true;
                 s.report_session_end();
@@ -952,7 +891,7 @@ impl Session {
                 name: player.name.clone(), team: player.team, score: player.score
             }).collect();
         }
-        let (tick, calls) = (s.tick, s.calls);
+        let tick = s.tick;
         s.header.meta.length_ticks = tick;
         let header = s.header.clone();
         let Mode::Record(rec) = &mut s.mode else {
@@ -965,21 +904,11 @@ impl Session {
             rec.track.closing_events(std::mem::take(&mut rec.frame.events))?;
             rec.track.append_to_last(rec.unified.take_records(false, false)?)?;
             summary.dropped_samples = rec.unified.drop_counts();
-            rec.batch.flush(&mut out)?;
             out.chunk(film::HEAD, &header)?;
             rec.meta.finish_map()?;
             rec.track.finish(&mut out, rec.meta.descriptor(), &summary)?;
-            out.chunk(
-                film::MARK,
-                &Mark::End {
-                    slices,
-                    tick,
-                    calls,
-                },
-            )?;
             out.finish()?.sync_all()?;
-            // A host's film file, sealed beside its stats stream once the
-            // container's mirror into it has closed.
+            // A host's film file, sealed beside its stats stream.
             if let Some(film) = rec.film.take() {
                 Arc::try_unwrap(film)
                     .map_err(|_| anyhow::anyhow!("the film file is still shared"))?
@@ -1028,25 +957,6 @@ impl Session {
     }
 }
 impl State {
-    fn check_end(&mut self, slices: u64) -> Result<()> {
-        if self.complete || self.failure.is_some() {
-            return Ok(());
-        }
-        if let Mode::Replay(tape, _) = &self.mode
-            && let Some((end, tick, calls)) = tape.end
-            && slices >= end
-        {
-            if self.tick != tick || self.calls != calls || !tape.exhausted() {
-                let why = format!("end of film expected tick {tick}, {calls} calls; got {}", self.calls);
-                self.fail(why);
-                self.save_verify_result()?;
-                if let Some(error) = &self.failure { bail!("{error}"); }
-                return Ok(());
-            }
-            self.complete = true;
-        }
-        Ok(())
-    }
     fn fail(&mut self, why: String) {
         self.fail_at(self.tick, why)
     }
@@ -1074,8 +984,8 @@ impl State {
     /// never started (menus, Theater, settings) has no film. A cut that
     /// cannot be written is logged and kept as the last discard reason; the
     /// tape keeps recording.
-    fn cut_game(&mut self, slices: u64) {
-        let (tick, calls) = (self.tick, self.calls);
+    fn cut_game(&mut self) {
+        let tick = self.tick;
         let tape = self.header.clone();
         let Mode::Record(rec) = &mut self.mode else { return };
         rec.match_over = false;
@@ -1085,14 +995,14 @@ impl State {
             let closed = (|| -> Result<()> {
                 rec.track.closing_events(std::mem::take(&mut rec.frame.events))?;
                 rec.track.append_to_last(rec.unified.take_records(false, false)?)?;
-                let out = rec.out.as_mut().context("film already closed")?;
-                rec.batch.flush(out)
+                rec.out.as_ref().context("film already closed")?;
+                Ok(())
             })();
             if let Err(error) = closed {
                 self.fail(format!("closing a game on the tape: {error:#}"));
                 return;
             }
-            match autorecord::cut(rec, &tape, slices, tick, calls) {
+            match autorecord::cut(rec, &tape, tick) {
                 Ok(path) => {
                     eprintln!("theater: this game's film is {}", path.display());
                     self.outcome.films.push(path);
@@ -1151,7 +1061,7 @@ impl State {
                 rec.frame = Default::default();
                 format!("recording stopped at tick {tick}: {why}")
             }
-            Mode::Replay(_, _) => format!("first divergence at tick {tick}: {why}"),
+            Mode::Replay(_) => format!("first divergence at tick {tick}: {why}"),
         };
         eprintln!("theater: {reason}");
         self.failure = Some(reason);
@@ -1178,90 +1088,6 @@ impl State {
         }
     }
 }
-impl Tap for Session {
-    fn service_calls(&self) -> bool {
-        self.version >= 2
-    }
-    fn replaying(&self) -> bool {
-        self.replaying && !self.from_start
-    }
-    fn next(&self, op: &str, args: &[u32], thread: u32) -> Option<Call> {
-        let mut s = self.lock();
-        if s.failure.is_some() || s.complete {
-            return None;
-        }
-        let i = s.calls;
-        let Mode::Replay(tape, _) = &mut s.mode else {
-            return None;
-        };
-        match tape.call(i, op, args, thread) {
-            Ok(c) => {
-                s.calls += 1;
-                Some(c)
-            }
-            Err(e) => {
-                s.fail(e.to_string());
-                None
-            }
-        }
-    }
-    fn record(&self, mut c: Call) {
-        let mut s = self.lock();
-        if s.complete || s.failure.is_some() {
-            return;
-        }
-        c.index = s.calls;
-        let Mode::Record(rec) = &mut s.mode else {
-            return;
-        };
-        if let Some(out) = &mut rec.out {
-            match rec.batch.append(out, c) {
-                Ok(()) => s.calls += 1,
-                Err(e) => s.fail(e.to_string()),
-            }
-        }
-    }
-    fn fault(&self, reason: String) {
-        self.lock().fail(reason)
-    }
-}
-impl agent::LobbyTape for Session {
-    fn record_lobby(&self, boundary: u64, name: &str, params: &Value) {
-        let mut s = self.lock();
-        if s.complete || s.failure.is_some() {
-            return;
-        }
-        if let Mode::Record(rec) = &mut s.mode
-            && let Some(out) = &mut rec.out
-            && let Err(e) = out.chunk(
-                film::MARK,
-                &Mark::Lobby {
-                    boundary,
-                    method: name.into(),
-                    params: params.clone(),
-                },
-            )
-        {
-            s.fail(e.to_string())
-        }
-    }
-    fn lobby_due(&self, boundary: u64) -> Vec<(String, Value)> {
-        let mut s = self.lock();
-        let Mode::Replay(t, _) = &mut s.mode else {
-            return vec![];
-        };
-        let mut actions = vec![];
-        while t.lobby.front().is_some_and(|(at, _, _)| *at == boundary) {
-            let (_, method, p) = t.lobby.pop_front().unwrap();
-            actions.push((method, p));
-        }
-        actions
-    }
-    fn lobby_error(&self, message: String) {
-        self.lock().fail(message)
-    }
-}
-
 /// The [`Observer`]'s feature id. No other feature may take it: the
 /// in-game Theater's screens are `theater-films` and `theater-film-detail`.
 pub const OBSERVER_FEATURE: &str = "theater-film";
@@ -1305,7 +1131,7 @@ impl hooks::Feature for Observer {
                 session.draw_host_view(o.runtime);
                 {
                     let s = session.lock();
-                    let Mode::Replay(_, r) = &s.mode else { break };
+                    let Mode::Replay(r) = &s.mode else { break };
                     // A film watched in the running game is neither a
                     // process to stop nor a tick to hold: a pause is the
                     // guest's zero-tick frame (`pacing.rs`).

@@ -10,7 +10,6 @@ pub mod clankermatch;
 mod client;
 mod config;
 mod feedback;
-mod film_service;
 pub mod films;
 pub mod game_variants;
 mod invites;
@@ -257,41 +256,11 @@ impl Joined {
 pub type LogonMapCheck = Box<dyn Fn() -> u32 + Send>;
 
 pub struct Hle {
-    offline_film: bool,
-    service_taped: std::sync::OnceLock<bool>,
-    film_side: Mutex<film_service::Side>,
     config: LiveConfig,
     state: Mutex<state::State>,
     network: network::Network,
 }
 impl Hle {
-    fn film_view<T>(&self, mut read: impl FnMut(&film_service::View) -> T) -> Option<T> {
-        (self.offline_film && self.film_service_taped()).then(|| {
-            read(
-                &self
-                    .film_side
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .view,
-            )
-        })
-    }
-    /// Installed once by boot, before any guest thread runs.
-    pub fn set_film_tap(&self, tap: Arc<dyn film::tape::Tap>) {
-        let service_taped = tap.service_calls();
-        assert!(self.network.tap.set(tap).is_ok());
-        assert!(self.service_taped.set(service_taped).is_ok());
-    }
-    /// Game-thread observations made by the co-op lobby use the same cursor
-    /// as the guest's XOnline calls. V1 films did not carry those observations.
-    pub fn film_observation_tap(&self) -> Option<Arc<dyn film::tape::Tap>> {
-        self.network
-            .tap
-            .get()
-            .filter(|_| self.film_service_taped())
-            .cloned()
-    }
-
     /// Fixes the version used by Live QoS admission. Boot calls this once
     /// before starting the guest, with the version of its entity definitions.
     pub fn set_replication_version(&self, version: u16) {
@@ -360,9 +329,6 @@ impl Hle {
             None
         };
         Ok(Arc::new(Self {
-            offline_film: false,
-            film_side: Mutex::default(),
-            service_taped: Default::default(),
             state: Mutex::new(state::State::new(
                 accounts,
                 address,
@@ -371,29 +337,6 @@ impl Hle {
             )),
             config,
             network: network::Network::new(network, version),
-        }))
-    }
-    /// Preserve the dedicated lobby's configured session class, with no HTTP
-    /// worker, accounts or usable remote URL. The guest network uses its tape.
-    pub fn for_film(network: NetworkConfig, live_service: bool) -> Result<Arc<Self>, ConfigError> {
-        network.validate().map_err(ConfigError::Network)?;
-        let config = LiveConfig {
-            enabled: true,
-            server_url: live_service.then(|| "film:offline".to_owned()),
-            ..Default::default()
-        };
-        Ok(Arc::new(Self {
-            offline_film: true,
-            film_side: Mutex::default(),
-            service_taped: Default::default(),
-            state: Mutex::new(state::State::new(
-                Vec::new(),
-                network.address,
-                None,
-                config.clone(),
-            )),
-            config,
-            network: network::Network::new(network, qos::Version::default()),
         }))
     }
     /// Reads the accounts file again (after [`account_setup::save`]), so a
@@ -588,9 +531,6 @@ impl Hle {
     /// `None` for a custom game or when nothing says. Never waits and never
     /// takes guest memory, so the game-start hook may call it.
     pub fn matchmade(&self) -> Option<(u32, String)> {
-        if let Some(value) = self.film_view(|v| v.matchmade.clone()) {
-            return value;
-        }
         let keys = self.network.registered_keys();
         self.lock().matchmade(&keys)
     }
@@ -603,18 +543,10 @@ impl Hle {
     /// Whether Live assigned frame uploads to the host for this match alone.
     /// The uploader reads it when it latches the published session ID.
     pub fn frames_from_host(&self, session_id: &str) -> bool {
-        if let Some(value) = self.film_view(|v| {
-            v.frames_from_host && v.matchmade.as_ref().is_some_and(|(_, id)| id == session_id)
-        }) {
-            return value;
-        }
         self.lock().frames_from_host(session_id)
     }
     /// Map Pack availability, host progress and replication refusals for matchmaking.
     pub fn matchmaking_status(&self) -> Option<String> {
-        if let Some(value) = self.film_view(|v| v.status.clone()) {
-            return value;
-        }
         self.lock().matchmaking_status().map(str::to_owned)
     }
     /// The mounted console has the original Multiplayer Map Pack installed.
@@ -630,9 +562,6 @@ impl Hle {
     /// the playlists the Clankermatch row lists and OptiMatch does not.
     /// Never waits.
     pub fn clanker_hoppers(&self) -> clankermatch::ClankerHoppers {
-        if let Some(value) = self.film_view(|v| v.hoppers.clone()) {
-            return value;
-        }
         self.lock().clanker_hoppers()
     }
     /// Asks the server for its clanker hoppers again (also asked at each
@@ -644,103 +573,27 @@ impl Hle {
     /// hosts a clanker hopper's lobby: a Clankermatch, whose bots the host
     /// adds (§8.4). Never waits.
     pub fn clanker_hosted(&self) -> Option<(String, clankermatch::ClankerHopper)> {
-        if let Some(value) = self.film_view(|v| v.clanker_hosted.clone()) {
-            return value;
-        }
         self.lock().clanker_hosted()
     }
     /// The Live session this console hosts (16 lowercase hex digits),
     /// while its advertisement stands. Never waits on the server.
     pub fn hosted_session(&self) -> Option<String> {
-        self.film_view(|v| v.hosted.clone())
-            .unwrap_or_else(|| self.lock().hosted_session())
+        self.lock().hosted_session()
     }
-    /// The v1 recorder included bot roster polls in its ordered network
-    /// calls. V2 replays bot membership and actions from the film, so even
-    /// an idle roster poll must leave the guest/lobby call cursor alone.
+    /// The hosted session a bot roster poll names.
     pub fn bot_roster_hosted_session(&self) -> Option<String> {
-        if self.network.tap.get().is_some() && !self.film_service_taped() {
-            return self.lobby_hosted_session();
-        }
         self.hosted_session()
     }
-    /// Ordered observation for a pending dedicated lobby request. Legacy bot
-    /// roster polls also use it to retain the v1 network call sequence.
+    /// The hosted session a pending dedicated lobby request names.
     pub fn lobby_hosted_session(&self) -> Option<String> {
-        let Some(tap) = self.network.tap.get() else {
-            return self.lock().hosted_session();
-        };
-        const NAME: &str = "HostedSession";
-        if tap.replaying() {
-            let call = tap.next(NAME, &[], 0)?;
-            match call.outputs.as_slice() {
-                [] => None,
-                [id] if id.len() == 16 && id.iter().all(u8::is_ascii_hexdigit) => {
-                    String::from_utf8(id.clone()).ok()
-                }
-                _ => {
-                    tap.fault("invalid recorded session ID".into());
-                    None
-                }
-            }
-        } else {
-            let id = self.lock().hosted_session();
-            tap.record(
-                film::tape::Call {
-                    index: 0,
-                    op: NAME.into(),
-                    args: vec![],
-                    thread: 0,
-                    result: Ok(0),
-                    outputs: id
-                        .as_ref()
-                        .map(|s| s.as_bytes().to_vec())
-                        .into_iter()
-                        .collect(),
-                },
-            );
-            id
-        }
+        self.lock().hosted_session()
     }
     /// Whether the dedicated host's specific advertisement still exists. A
     /// different lobby can already be current when retail finishes closing.
     pub fn hosts_session(&self, id: &str) -> bool {
-        let present = || {
-            self.local_sessions()
-                .iter()
-                .any(|session| live_proto::sign::hex(&session.id) == id)
-        };
-        let Some(tap) = self.network.tap.get().filter(|t| t.service_calls()) else {
-            return present();
-        };
-        let Ok(id) = u64::from_str_radix(id, 16) else {
-            return false;
-        };
-        let args = [id as u32, (id >> 32) as u32];
-        let op = "HostsSession";
-        if tap.replaying() {
-            return match tap.next(op, &args, 0) {
-                Some(call) if call.outputs.is_empty() && matches!(call.result, Ok(0 | 1)) => {
-                    call.result == Ok(1)
-                }
-                _ => {
-                    tap.fault("invalid hosted session observation".into());
-                    false
-                }
-            };
-        }
-        let exists = present();
-        tap.record(
-            film::tape::Call {
-                op: op.into(),
-                args: args.into(),
-                thread: 0,
-                index: 0,
-                result: Ok(u32::from(exists)),
-                outputs: Vec::new(),
-            },
-        );
-        exists
+        self.local_sessions()
+            .iter()
+            .any(|session| live_proto::sign::hex(&session.id) == id)
     }
     /// Asks the server for a bot roster for this console's session
     /// (`POST /v1/games/bots` with a `games.write` token, docs/game/bots.md
@@ -926,41 +779,14 @@ impl Hle {
         }
     }
     /// The final setting returned to the game after a Live request (including
-    /// any retries). Only this synchronous observation has a film cursor;
-    /// the background transport and elapsed real time do not.
+    /// any retries).
     pub fn game_setting<const N: usize>(
         &self,
-        name: &'static str,
-        args: &[u32],
+        _name: &'static str,
+        _args: &[u32],
         get: impl FnOnce() -> Option<[u8; N]>,
     ) -> Option<[u8; N]> {
-        let Some(tap) = self.film_observation_tap() else {
-            return get();
-        };
-        if tap.replaying() {
-            let call = tap.next(name, args, 0)?;
-            match (call.result, call.outputs.as_slice()) {
-                (Ok(0), []) => None,
-                (Ok(0), [bytes]) if bytes.len() == N => Some(bytes.as_slice().try_into().unwrap()),
-                _ => {
-                    tap.fault(format!("invalid {name} setting"));
-                    None
-                }
-            }
-        } else {
-            let bytes = get();
-            tap.record(
-                film::tape::Call {
-                    index: 0,
-                    op: name.into(),
-                    args: args.to_vec(),
-                    thread: 0,
-                    result: Ok(0),
-                    outputs: bytes.iter().map(|b| b.to_vec()).collect(),
-                },
-            );
-            bytes
-        }
+        get()
     }
     /// The host's variant options for the game it starts (docs/game/
     /// game-options.md section 3): advertisements carry them from now, and
@@ -1071,9 +897,6 @@ impl Hle {
         report: Option<u16>,
         timeout: std::time::Duration,
     ) -> Option<u16> {
-        if self.network.tap.get().is_some_and(|t| t.replaying()) {
-            return None;
-        }
         let qos = std::net::SocketAddrV4::new(*host.ip(), host.port().wrapping_add(2));
         qos::ping(qos, report.unwrap_or(0), timeout).map(qos::round_trip_ms)
     }
@@ -1163,17 +986,6 @@ impl Hle {
 
     /// The signed-in player on controller `controller`, 0 for none.
     pub fn user(&self, controller: usize) -> u64 {
-        if self.offline_film && self.film_service_taped() {
-            return self
-                .film_side
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .view
-                .users
-                .get(controller)
-                .copied()
-                .unwrap_or(0);
-        }
         self.state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1358,12 +1170,8 @@ fn invoke(
     {
         eprintln!("live: matchmaking: could not start QoS responder: {e}");
     }
-    let full_tape = hle.network.tap.get().filter(|_| hle.film_service_taped());
-    let released = e.operation == Operation::QosRelease && hle.network.release_qos(args[0]);
-    if released && full_tape.is_none() {
-        cpu.eax = hle.network.tap.get().map_or(0, |t| {
-            network::film::service_qos(t.as_ref(), e.name, &args, ctx.thread_id, ctx.runtime(), 0)
-        });
+    if e.operation == Operation::QosRelease && hle.network.release_qos(args[0]) {
+        cpu.eax = 0;
         return ctx.memory().ret(cpu, e.stack_words * 4);
     }
     // The accepted-invitation read stamps the record in the guest's clock;
@@ -1386,41 +1194,13 @@ fn invoke(
     let guest_now = (e.operation == Operation::AcceptedInvite)
         .then(|| ctx.runtime().guest_time())
         .flatten();
-    let thread_id = ctx.thread_id;
     let (result, cleanup) = {
         let mut m = ctx.memory();
         let mut state = hle.state.lock().unwrap_or_else(|e| e.into_inner());
         state.set_guest_now(guest_now);
         state.set_read_keys(read_keys);
         let had_match_tunnel = state.has_match_tunnel();
-        let result = if let Some(tap) = full_tape {
-            let mut side = hle.film_side.lock().unwrap_or_else(|e| e.into_inner());
-            film_service::invoke(
-                tap.as_ref(),
-                e,
-                &args,
-                thread_id,
-                &mut m,
-                &mut side,
-                |mem| {
-                    let value = if released {
-                        0
-                    } else {
-                        state.invoke(e.operation, &args, mem, hle)?
-                    };
-                    Ok((
-                        value,
-                        film_service::View::read(&state, &hle.network.registered_keys()),
-                    ))
-                },
-            )
-        } else {
-            let mut invoke = || state.invoke(e.operation, &args, &mut m, hle);
-            match hle.network.tap.get() {
-                Some(tap) => network::film::with_random(tap, e.name, thread_id, invoke),
-                None => invoke(),
-            }
-        };
+        let result = state.invoke(e.operation, &args, &mut m, hle);
         if had_match_tunnel && !state.has_match_tunnel() {
             hle.clear_tunnel();
         }
@@ -1434,21 +1214,6 @@ fn invoke(
     drop(cleanup); // Socket wakeups and QoS responder join run without locks.
     let result = match result {
         Ok(value) => {
-            let value = if full_tape.is_none()
-                && matches!(e.operation, Operation::QosLookup | Operation::QosRelease)
-                && let Some(tap) = hle.network.tap.get()
-            {
-                network::film::service_qos(
-                    tap.as_ref(),
-                    e.name,
-                    &args,
-                    ctx.thread_id,
-                    ctx.runtime(),
-                    value,
-                )
-            } else {
-                value
-            };
             cpu.eax = if e.operation == Operation::WsaCleanup && value != 0 {
                 hle.network.set_error(ctx.thread_id, value);
                 u32::MAX

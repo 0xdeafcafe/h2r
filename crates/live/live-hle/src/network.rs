@@ -1,6 +1,5 @@
 //! Guest Winsock and secure-address translation. Copy inputs/check outputs under
 //! the guest lock, then release it before any host wait or network operation.
-pub(crate) mod film;
 
 // Dedicated host transport selection and channel delivery (contract 6).
 mod tunnel;
@@ -52,22 +51,6 @@ pub(crate) enum Op {
     QosLookup,
 }
 impl Op {
-    /// Computed from the arguments and guest memory alone. Playback
-    /// computes them again, so they are never taped and take no call
-    /// index (docs/game/input-film.md, "What the replay depends on").
-    fn pure(self) -> bool {
-        matches!(self, Op::Htonl | Op::Htons | Op::FdIsSet)
-    }
-    /// Operations on a socket the guest names. Before the guest has made
-    /// a socket there is none to name.
-    fn on_socket(self) -> bool {
-        use Op::*;
-        matches!(
-            self,
-            Bind | ConnectSocket | Send | SendTo | Recv | RecvFrom | Ioctl | SetOption | GetOption
-                | Shutdown | Close
-        )
-    }
     fn winsock(self) -> bool {
         use Op::*;
         matches!(
@@ -217,9 +200,6 @@ struct Socket {
 }
 #[derive(Default)]
 struct State {
-    /// The guest has made a socket. Until it has, the network is the null
-    /// network: no peers, nothing to receive ([`Network::dark`]).
-    opened: bool,
     net: u32,
     wsa: u32,
     next: u32,
@@ -239,7 +219,6 @@ struct State {
 }
 pub(crate) struct Network {
     pub config: NetworkConfig,
-    pub tap: std::sync::OnceLock<Arc<dyn ::film::tape::Tap>>,
     pub version: qos::Version,
     state: Arc<Mutex<State>>,
     listeners: qos::Listeners,
@@ -266,7 +245,6 @@ impl Network {
         Self {
             config,
             version,
-            tap: Default::default(),
             state: Arc::new(Mutex::new(State {
                 next: 0x100,
                 ..State::default()
@@ -316,9 +294,6 @@ impl Network {
     /// Starts the QoS responder if the title has not yet (a co-op host
     /// answers its guest's pings from the lobby on).
     pub fn ensure_responder(&self) -> std::io::Result<()> {
-        if self.tap.get().is_some_and(|t| t.replaying()) {
-            return Ok(());
-        }
         let mut s = lock(&self.state);
         if s.responder.is_none() {
             s.responder = Some(qos::Responder::start(
@@ -387,13 +362,7 @@ impl Network {
         lock(&self.state).qos.release(handle)
     }
     pub fn invoke(&self, op: Op, a: &[u32], thread: u32, rt: &Runtime) -> u32 {
-        let result = match self.tap.get() {
-            Some(tap) if !op.pure() && !self.dark(op) => {
-                self.filmed(tap.as_ref(), op, a, thread, rt)
-            }
-            _ => self.run(op, a, thread, rt),
-        };
-        match result {
+        match self.run(op, a, thread, rt) {
             Ok(v) => v,
             Err(e) if op.winsock() => {
                 self.set_error(thread, e);
@@ -401,15 +370,6 @@ impl Network {
             }
             Err(e) => e,
         }
-    }
-    /// The null network. A game that has made no socket has none for an
-    /// operation to name, so an operation on a socket is refused by the
-    /// guest's own state alone: the same answer in recording and in
-    /// playback, with nothing for the film to hold. The first `Socket`
-    /// call ends it, and every call after is taped. A dedicated host's
-    /// tunnel answers before the socket table, so it is never dark.
-    fn dark(&self, op: Op) -> bool {
-        op.on_socket() && !lock(&self.state).opened && !tunnel_host::active(self)
     }
     fn socket(&self, id: u32) -> Result<Arc<Socket>> {
         lock(&self.state).sockets.get(&id).cloned().ok_or(10038)
@@ -1286,13 +1246,11 @@ pub(crate) fn lookup_line(
     format!("live: join: qos lookup: {}", each.join("; "))
 }
 pub(crate) fn random(len: usize) -> Result<Vec<u8>> {
-    film::state_random(len, || {
-        let mut bytes = vec![0; len];
-        std::fs::File::open("/dev/urandom")
-            .and_then(|mut f| f.read_exact(&mut bytes))
-            .map_err(|_| 10055u32)?;
-        Ok(bytes)
-    })
+    let mut bytes = vec![0; len];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut bytes))
+        .map_err(|_| 10055u32)?;
+    Ok(bytes)
 }
 fn pointers(rt: &Runtime, p: u32, count: u32) -> Result<Vec<u32>> {
     Ok(read(rt, p, count as usize * 4)?

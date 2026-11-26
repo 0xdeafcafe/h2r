@@ -3,7 +3,7 @@
 //! the rest of this module ingests. Live stores it as the bytes it was sent.
 //! It reads the 64-byte header, inflates the seed once to tie the file to
 //! its game, and walks the block lengths and the trailer. No tick chunk,
-//! machine envelope or start point is inflated.
+//! start point or game start is inflated.
 use axum::{
     body::{Body, to_bytes},
     http::StatusCode,
@@ -30,17 +30,18 @@ const MAGIC: &[u8; 8] = b"H2FILM4!";
 const VERSION: u16 = 4;
 const HEADER: usize = 64;
 const MAX_SEED: usize = 1 << 20;
-const FLAG_MACHINE: u16 = 1;
 const FLAG_SEALED: u16 = 2;
 const FLAG_START_POINT: u16 = 4;
+const FLAG_GAME_START: u16 = 8;
 const KIND_TICKS: u8 = 0;
-const KIND_MACHINE: u8 = 1;
 const KIND_START: u8 = 2;
 const KIND_TAIL: u8 = 3;
-/// `film::columns::FRAME_CAP`, `film::MAX_CHUNK` and `film::file::MAX_START`.
+const KIND_GAME: u8 = 4;
+/// `film::columns::FRAME_CAP`, `film::file::MAX_START` and
+/// `film::file::MAX_GAME_START`.
 const MAX_TICK_FRAME: u32 = 192 << 10;
-const MAX_MACHINE: u32 = (80 << 20) + 4;
 const MAX_START: u32 = 4 << 20;
+const MAX_GAME_START: u32 = 8 << 20;
 
 /// What Live keeps of a stored film file.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,9 +50,6 @@ pub(crate) struct FilmFile {
     pub size: u64,
     pub sha256: String,
     pub ticks: u32,
-    /// The film still has a machine part (the host's HLE answers), so it
-    /// goes only to the game's participants.
-    pub machine: bool,
 }
 
 /// The one inflation the ingest makes. Tests count the calls.
@@ -93,7 +91,6 @@ pub(in crate::films) struct Checked {
     pub size: u64,
     pub sha256: String,
     pub ticks: u32,
-    pub machine: bool,
 }
 
 fn bad(m: &str) -> ApiError {
@@ -134,13 +131,15 @@ impl Scan {
                 let stored = u32::from_le_bytes(self.prefix[1..5].try_into().expect("four bytes"));
                 let fits = match kind {
                     KIND_TICKS | KIND_TAIL => (1..=MAX_TICK_FRAME).contains(&stored),
-                    KIND_MACHINE => (4..=MAX_MACHINE).contains(&stored),
                     KIND_START => {
                         self.flags & FLAG_START_POINT != 0 && (1..=MAX_START).contains(&stored)
                     }
+                    KIND_GAME => {
+                        self.flags & FLAG_GAME_START != 0 && (1..=MAX_GAME_START).contains(&stored)
+                    }
                     _ => return Err(bad("a block of unknown kind")),
                 };
-                if !fits || (kind == KIND_MACHINE && self.flags & FLAG_MACHINE == 0) {
+                if !fits {
                     return Err(bad(
                         "a block has a bad size or a kind its header does not name",
                     ));
@@ -191,7 +190,7 @@ impl Scan {
             return Err(bad("not a version 4 film file"));
         }
         let flags = u16_at(10);
-        if flags & FLAG_SEALED == 0 || flags & !(FLAG_MACHINE | FLAG_SEALED | FLAG_START_POINT) != 0
+        if flags & FLAG_SEALED == 0 || flags & !(FLAG_SEALED | FLAG_START_POINT | FLAG_GAME_START) != 0
         {
             return Err(bad("the film is not sealed or has unknown flags"));
         }
@@ -244,7 +243,6 @@ impl Scan {
             size,
             sha256: live_proto::sign::hex(&self.content.clone().finalize()),
             ticks: self.ticks,
-            machine: self.flags & FLAG_MACHINE != 0,
         })
     }
 }
@@ -380,7 +378,6 @@ pub(super) async fn upload(
                 size: checked.size,
                 sha256: checked.sha256,
                 ticks: checked.ticks,
-                machine: checked.machine,
             };
             if let Err(error) = publish(live, id, file).await {
                 let _ = store.delete(&key).await;
@@ -412,7 +409,6 @@ pub(super) async fn upload(
                     size,
                     sha256,
                     ticks: checked.ticks,
-                    machine: checked.machine,
                 },
             )
             .await?;

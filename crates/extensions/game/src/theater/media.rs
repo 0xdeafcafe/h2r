@@ -142,7 +142,7 @@ impl Session {
                 ClipSpan::new(clip.from, clip.to, clip.fps, length)
                     .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?;
                 let mut presentation = state.presentation.clone();
-                if let super::Mode::Replay(_, replay) = &state.mode
+                if let super::Mode::Replay(replay) = &state.mode
                     && state.header.version >= 2
                 {
                     replay.camera.save(&mut presentation);

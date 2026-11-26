@@ -375,10 +375,10 @@ pub enum Forked {
 
 /// Why `machine` can't be saved (or loaded) now: its parts' refusals and
 /// blockers. The checks with no part (`BootMachine::checks`) are left
-/// out: in a keyframe's scope they refuse a signed-in Live HLE with no
-/// film tape, which a sim always has and a fork needs no tape for (no
-/// service call is in flight between two ticks of a running match, and
-/// nothing outside the machine is rewound).
+/// out: in a fork's scope they refuse a signed-in Live HLE, which a sim
+/// always has and a fork can leave alone (no service call is in flight
+/// between two ticks of a running match, and nothing outside the machine
+/// is rewound).
 fn blockers(machine: &BootMachine<'_>, load: bool) -> Option<String> {
     if let Some(why) = machine.parts.iter().find_map(|p| p.refusal()) {
         return Some(why);

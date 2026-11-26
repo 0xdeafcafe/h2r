@@ -699,22 +699,7 @@ impl hooks::Feature for Transport {
                         let Some(h) = &hle else {
                             return Ok(Flow::Continue);
                         };
-                        let answer = if h.film_service_taped() {
-                            h.game_setting("HostVariant", &[own as u32, (own >> 32) as u32], || {
-                                match wait_for_host(own, HOST_WAIT, |w| h.host_variant_ext(w)) {
-                                    Heard::Take(bytes) => Some(bytes),
-                                    Heard::Nothing(why) => {
-                                        eprintln!("variant options: {why}");
-                                        None
-                                    }
-                                    Heard::Wait => None,
-                                }
-                            })
-                            .map(Heard::Take)
-                            .unwrap_or_else(|| Heard::Nothing("no matching options".into()))
-                        } else {
-                            wait_for_host(own, HOST_WAIT, |w| h.host_variant_ext(w))
-                        };
+                        let answer = wait_for_host(own, HOST_WAIT, |w| h.host_variant_ext(w));
                         match answer {
                             Heard::Take(b) => {
                                 if b != block {
@@ -746,29 +731,7 @@ impl hooks::Feature for Transport {
             });
         // The host's block goes to `live_hle`, whose state is the Live
         // subsystem's; a guest keeps the host's block here.
-        if self.hle.as_ref().is_some_and(|h| h.film_service_taped()) {
-            b.snapshot(hooks::SnapshotPolicy::section_forbid_while(
-                || {
-                    if crate::sim_bounces::in_fork() {
-                        None
-                    } else {
-                        transport_live()
-                    }
-                },
-                || from_host().map(|b| b.to_vec()).unwrap_or_default(),
-                |bytes, _| {
-                    let block = if bytes.is_empty() {
-                        None
-                    } else {
-                        Some(bytes.try_into().map_err(|_| "invalid host variant block")?)
-                    };
-                    set_from_host(block);
-                    Ok(())
-                },
-            ));
-        } else {
-            b.snapshot(hooks::SnapshotPolicy::forbid_while(transport_live));
-        }
+        b.snapshot(hooks::SnapshotPolicy::forbid_while(transport_live));
         Ok(())
     }
 }
