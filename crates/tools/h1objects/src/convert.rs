@@ -3102,8 +3102,8 @@ impl<'a> Converter<'a> {
                 .map_err(|e| named("Halo 2 HUD view", e))?;
             let (id, _) = self.unit_hud(u).map_err(|e| named("unit HUD", e))?;
             // Halo 1's motion sensor centre (unhi +MOTION_SENSOR): the
-            // converted HUD draws the sensor there, so a scaled or short
-            // record stops the conversion.
+            // converted HUD draws the sensor there, so a short record or a
+            // scale that is not finite stops the conversion.
             let centre = self.sensor_centre(u).map_err(|e| named("motion sensor", e))?;
             self.tree.hud_sensor = Some(centre);
             if let Some(other) = native.as_ref().and_then(|ids| ids.first()) {
@@ -3565,9 +3565,8 @@ impl Converter<'_> {
         let text_shader = find(b"shad", crate::h1hud::TEXT_SHADER)?;
         let mut widgets = Vec::new();
         for e in &elements {
-            if !crate::h1hud::unscaled(e.scale) {
-                return Err(Error::Invalid(format!("{}: scaled {:?}", e.name, e.scale)));
-            }
+            crate::h1hud::check_scale(e.scale)
+                .map_err(|why| Error::Invalid(format!("{}: {why}", e.name)))?;
             let bt = self.h1.tag(e.bitmap)?.clone();
             let bm = h1map::bitmap::Bitmap::read(self.h1, &bt)?;
             if crate::h1hud::sprite(&bm, e.sequence).is_none() {
@@ -3612,7 +3611,7 @@ impl Converter<'_> {
             let gb = crate::h1::tag_bytes(self.h1, &gt, b"grhi", crate::h1hud::grhi::SIZE)?.to_vec();
             // Its count, a Halo 2 number text on the type's input.
             if let Some(n) = crate::h1hud::grenade_number(&gb)? {
-                if !crate::h1hud::unscaled(n.scale) {
+                if !crate::h1hud::unscaled(crate::h1hud::number_scale(n.scale)) {
                     return Err(Error::Invalid(format!("{} count: scaled {:?}", gt.name, n.scale)));
                 }
                 let w = crate::h1hud::digit_width(self.h1)?;
@@ -3620,9 +3619,8 @@ impl Converter<'_> {
                 texts.push(crate::h1hud::grenade_count(&n, k, w, h, text_shader)?);
             }
             for e in crate::h1hud::grenade_elements(self.h1, &gb)? {
-                if !crate::h1hud::unscaled(e.scale) {
-                    return Err(Error::Invalid(format!("{}: scaled {:?}", gt.name, e.scale)));
-                }
+                crate::h1hud::check_scale(e.scale)
+                    .map_err(|why| Error::Invalid(format!("{}: {why}", gt.name)))?;
                 let bt = self.h1.tag(e.bitmap)?.clone();
                 let bm = h1map::bitmap::Bitmap::read(self.h1, &bt)?;
                 if crate::h1hud::sprite(&bm, e.sequence).is_none() {

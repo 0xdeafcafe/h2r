@@ -129,16 +129,18 @@ pub mod unhi {
 /// placement [`unhi::MOTION_SENSOR`] from the bottom-left corner), as a
 /// Halo 2 offset from the same corner: what Halo 2's blip centre table
 /// (`0x47ff40`, anchor 2) holds, (41, -42) for its own sensor in
-/// fullscreen. A scaled placement is refused, as for the elements.
+/// fullscreen. A scale that is not finite is refused ([`check_scale`]).
 pub fn sensor_centre(b: &[u8]) -> Result<[i16; 2]> {
     let at = unhi::MOTION_SENSOR;
     if b.len() < at + 12 {
         return Err(Error::Truncated("unhi"));
     }
+    // The scale does not move the point: Halo 1 places it from the offset
+    // alone (`0x000e07a0`) and applies the factors to the sprite basis. It
+    // would size the sweep, which the converted HUD does not carry
+    // (docs/halo1/hud.md, "The motion sensor's centre").
     let scale = [f32_at(b, at + 4), f32_at(b, at + 8)];
-    if !unscaled(scale) {
-        return Err(Error::Invalid(format!("motion sensor scaled {scale:?}")));
-    }
+    check_scale(scale).map_err(|e| Error::Invalid(format!("motion sensor: {e}")))?;
     let (x, y) = to_halo2_offset(Anchor::BottomLeft, (i16_at(b, at), i16_at(b, at + 2)));
     Ok([x, y])
 }
@@ -915,6 +917,7 @@ pub fn zoom_widget(
         offset: weapon_offset(e)?,
         registration: registration(e.anchor),
         special: 0,
+        scale: e.scale,
     })
 }
 
@@ -1060,6 +1063,7 @@ pub fn weapon_widget(
         offset: weapon_offset(e)?,
         registration: registration(e.anchor),
         special: 0,
+        scale: e.scale,
     })
 }
 
@@ -1068,6 +1072,25 @@ fn weapon_offset(e: &WeaponEntry) -> std::result::Result<(i16, i16), Skip> {
         return Err(Skip::Scaled(e.scale));
     }
     Ok(to_halo2_offset(e.anchor, e.offset))
+}
+
+/// Whether a Halo 1 element's scale factors can be applied: both finite and
+/// above 0 (a factor of 0 draws nothing and a negative one flips the sprite,
+/// neither found on the disc; they are named errors rather than guesses).
+pub fn check_scale(scale: [f32; 2]) -> std::result::Result<(), String> {
+    if scale.into_iter().all(|f| f.is_finite() && f > 0.0) {
+        Ok(())
+    } else {
+        Err(format!("scale {scale:?} is not finite and above 0"))
+    }
+}
+
+/// A number element's scale as Halo 1's number draw uses it: a factor not
+/// above 0 is 1.0 (E `0x000e1b58`). The weapon HUD passes 0 for it
+/// (`0x000dc0d6`); the grenade HUD's argument is not verified, so a grenade
+/// count whose result is not 1 stays refused.
+pub fn number_scale(scale: [f32; 2]) -> [f32; 2] {
+    scale.map(|f| if f > 0.0 { f } else { 1.0 })
 }
 
 /// Whether the element needs a native scale effect. H1 applies the two
@@ -1252,8 +1275,16 @@ pub struct Widget {
     /// `+0x40..+0x58` registration per screen mode (fractions of the
     /// sprite's width and height).
     pub registration: [f32; 2],
-    /// `+0x58` effects: none. `+0x60` special type, `+0x62` zero.
+    /// `+0x58` effects: none, or one scale effect ([`Widget::effects`]) when
+    /// the source element's scale is not 1. `+0x60` special type, `+0x62`
+    /// zero.
     pub special: u16,
+    /// Halo 1's two scale factors, applied to the sprite's basis. The
+    /// `nhdt` writer ([`nhdt`]) turns a scale other than 1 into the scale
+    /// effect Halo 2 applies about the registration point (E `0x22be12`..
+    /// `0x22beaa`); the registration is the anchor's corner, so the
+    /// element keeps its Halo 1 corner and grows away from it.
+    pub scale: [f32; 2],
 }
 
 impl Widget {
@@ -1278,7 +1309,31 @@ impl Widget {
         w[widget::SPECIAL..widget::SPECIAL + 2].copy_from_slice(&self.special.to_le_bytes());
         w
     }
+
+    /// The widget's effects block element, `None` for an unscaled widget:
+    /// scale flag 1 and Halo 1's two factors as constant functions in the
+    /// effect's X and Y slots (`block_10`, `block_24`), as the weapon
+    /// interface writes them (`h1hud::weapon::Interface::bitmap`).
+    pub fn effects(&self) -> Option<Block> {
+        if unscaled(self.scale) {
+            return None;
+        }
+        let mut effect = Block::new(vec![0; EFFECT_SIZE]);
+        effect.put_u32(EFFECT_SCALE_FLAGS, 1);
+        for (at, factor) in [EFFECT_SCALE_X, EFFECT_SCALE_Y].into_iter().zip(self.scale) {
+            effect.data(at as u32, Block::new(crate::particles::constant_data(factor, None)));
+        }
+        Some(effect)
+    }
 }
+
+/// A bitmap widget's effects element (`nhdt` `+0x58` block), `0x68` bytes.
+const EFFECT_SIZE: usize = 0x68;
+/// Its scale flags (`u32`; bit 0 scales the basis, E `0x22bcaf`).
+const EFFECT_SCALE_FLAGS: usize = 0x00;
+/// Its X and Y scale functions (data references).
+const EFFECT_SCALE_X: usize = 0x10;
+const EFFECT_SCALE_Y: usize = 0x24;
 
 /// What of `bm`'s sequence `seq` a widget draws: its bounds (left, right,
 /// top, bottom, fractions of the image) and registration point, image
@@ -1379,6 +1434,74 @@ pub fn halo2_rect(w: &Widget, (sw, sh): (i32, i32)) -> Rect {
     [x0, y0, x0 + sw, y0 + sh]
 }
 
+/// HUD pixels (the 640 x 480 frame) per display pixel's inverse: the
+/// display pixels one HUD pixel covers, `min(w / 640, h / 480)` for a
+/// `screen` of `w` x `h` display pixels (`render_bridge::ui_layout`'s
+/// uniform scale, docs/graphics/high-resolution.md "HUD and UI").
+pub fn hud_scale((w, h): (f32, f32)) -> f32 {
+    (w / 640.0).min(h / 480.0)
+}
+
+/// Where the anchor's point lies on a `screen` of `w` x `h` display pixels,
+/// in display pixels. A corner group keeps its window corner (the pinned
+/// layout) at the uniform scale, so every corner is the window's own at any
+/// aspect and the centre is the window's centre.
+pub fn hud_corner(anchor: Anchor, (w, h): (f32, f32)) -> (f32, f32) {
+    match anchor {
+        Anchor::TopLeft => (0.0, 0.0),
+        Anchor::TopRight => (w, 0.0),
+        Anchor::BottomLeft => (0.0, h),
+        Anchor::BottomRight => (w, h),
+        Anchor::Centre => (w / 2.0, h / 2.0),
+    }
+}
+
+/// Where Halo 2 draws widget `w` on `screen` (display pixels), its sprite
+/// `size` HUD pixels before the scale: the anchor's corner, plus the offset,
+/// less the registration's share of the scaled sprite, all in HUD pixels
+/// times [`hud_scale`]. Left, top, right, bottom.
+pub fn halo2_screen_rect(w: &Widget, size: (i32, i32), screen: (f32, f32)) -> [f32; 4] {
+    let k = hud_scale(screen);
+    let (cx, cy) = hud_corner(w.anchor, screen);
+    let (sw, sh) = (size.0 as f32 * w.scale[0], size.1 as f32 * w.scale[1]);
+    let x0 = cx + (f32::from(w.offset.0) - w.registration[0] * sw) * k;
+    let y0 = cy + (f32::from(w.offset.1) - w.registration[1] * sh) * k;
+    [x0, y0, x0 + sw * k, y0 + sh * k]
+}
+
+/// Where Halo 1 draws the same element on `screen`: its anchor's corner and
+/// [`halo1_rect`] of the sprite with the two scale factors applied to its
+/// size (E `0x000e15f4`), from Halo 1's own offset. Left, top, right, bottom.
+pub fn halo1_screen_rect(
+    anchor: Anchor,
+    offset: (i16, i16),
+    size: (i32, i32),
+    scale: [f32; 2],
+    screen: (f32, f32),
+) -> [f32; 4] {
+    let k = hud_scale(screen);
+    let (cx, cy) = hud_corner(anchor, screen);
+    let (sw, sh) = (size.0 as f32 * scale[0], size.1 as f32 * scale[1]);
+    // `halo1_rect` takes whole pixels; lay the scaled size out the same way
+    // with the fractional size kept.
+    let [x0, y0, ..] = halo1_rect(anchor, offset, (0, 0));
+    let (x0, y0) = (
+        x0 as f32
+            - match anchor {
+                Anchor::TopRight | Anchor::BottomRight => sw,
+                Anchor::Centre => sw / 2.0,
+                _ => 0.0,
+            },
+        y0 as f32
+            - match anchor {
+                Anchor::BottomLeft | Anchor::BottomRight => sh,
+                Anchor::Centre => sh / 2.0,
+                _ => 0.0,
+            },
+    );
+    [cx + x0 * k, cy + y0 * k, cx + (x0 + sw) * k, cy + (y0 + sh) * k]
+}
+
 /// The widget for Halo 1 element `e`, its bitmap converted as `bitmap`,
 /// drawn with `meter` or `plain` by its role.
 pub fn widget_for(
@@ -1404,6 +1527,7 @@ pub fn widget_for(
         offset: e.offset,
         registration,
         special: 0,
+        scale: e.scale,
     }
 }
 
@@ -1815,6 +1939,9 @@ pub fn nhdt(widgets: &[Widget], texts: &[TextWidget]) -> Block {
         block.string_id(at, &w.name);
         block.tag_ref(at + widget::BITMAP as u32, w.bitmap);
         block.tag_ref(at + widget::SHADER as u32, w.shader);
+        if let Some(effect) = w.effects() {
+            block.block(at + widget::EFFECTS as u32, 1, effect);
+        }
     }
     root.block(NHDT_BITMAP_WIDGETS as u32, widgets.len() as u32, block);
     if !texts.is_empty() {
@@ -2466,6 +2593,135 @@ mod tests {
             sequence: 3,
             colour: 0,
         }
+    }
+
+    fn scaled_element(raw_anchor: u16, scale: [f32; 2]) -> (Element, Widget) {
+        let anchor = Anchor::from_halo1(raw_anchor).unwrap();
+        let e = Element {
+            anchor,
+            offset: to_halo2_offset(anchor, (14, 9)),
+            scale,
+            ..element(Role::Static)
+        };
+        let w = widget_for(&e, TagId(1), registration(anchor), TagId(2), TagId(3));
+        (e, w)
+    }
+
+    const SCREENS: [(f32, f32); 3] = [(640.0, 480.0), (1120.0, 480.0), (2520.0, 1080.0)];
+
+    #[test]
+    fn each_halo1_anchor_maps_to_its_screen_corner_at_4_3_and_21_9() {
+        // Halo 1's enumeration: 0 top left, 1 top right, 2 bottom left,
+        // 3 bottom right, 4 centre (E `0x000e07a0`, `0x000e0330`).
+        let size = (40, 20);
+        for (raw, corner) in [(0u16, "tl"), (1, "tr"), (2, "bl"), (3, "br")] {
+            for screen in [(640.0, 480.0), (1120.0, 480.0)] {
+                let (w, h) = screen;
+                let (e, widget) = scaled_element(raw, [1.0, 1.0]);
+                let rect = halo2_screen_rect(&widget, size, screen);
+                // The sprite's outer corner is the window's corner, 14 and 9
+                // HUD pixels in from it.
+                let (x_edge, y_edge) = match corner {
+                    "tl" => (rect[0], rect[1]),
+                    "tr" => (rect[2], rect[1]),
+                    "bl" => (rect[0], rect[3]),
+                    _ => (rect[2], rect[3]),
+                };
+                let (want_x, want_y) = match corner {
+                    "tl" => (14.0, 9.0),
+                    "tr" => (w - 14.0, 9.0),
+                    "bl" => (14.0, h - 9.0),
+                    _ => (w - 14.0, h - 9.0),
+                };
+                assert_eq!((x_edge, y_edge), (want_x, want_y), "{corner} on {screen:?}");
+                assert_eq!(
+                    rect,
+                    halo1_screen_rect(e.anchor, (14, 9), size, [1.0, 1.0], screen),
+                    "{corner} on {screen:?}"
+                );
+            }
+        }
+        for screen in [(640.0, 480.0), (1120.0, 480.0)] {
+            let (e, widget) = scaled_element(4, [1.0, 1.0]);
+            let rect = halo2_screen_rect(&widget, size, screen);
+            // Centred on the window's centre, moved by the offset.
+            assert_eq!(
+                [(rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0],
+                [screen.0 / 2.0 + 14.0, screen.1 / 2.0 + 9.0]
+            );
+            assert_eq!(rect, halo1_screen_rect(e.anchor, (14, 9), size, [1.0, 1.0], screen));
+        }
+    }
+
+    #[test]
+    fn a_scaled_element_keeps_its_halo1_size_relative_to_the_screen_height() {
+        let size = (40, 20);
+        let scale = [2.0, 0.5];
+        for raw in 0..=4 {
+            let (e, widget) = scaled_element(raw, scale);
+            for screen in SCREENS {
+                let rect = halo2_screen_rect(&widget, size, screen);
+                // The size is the sprite's times the factors, in HUD pixels
+                // of 1/480 of the screen's height.
+                let height = screen.1;
+                let (across, down) = ((rect[2] - rect[0]) / height, (rect[3] - rect[1]) / height);
+                assert!((across - 80.0 / 480.0).abs() < 1e-5, "{raw} on {screen:?}");
+                assert!((down - 10.0 / 480.0).abs() < 1e-5, "{raw} on {screen:?}");
+                // And lies where Halo 1 puts the scaled sprite.
+                let want = halo1_screen_rect(e.anchor, (14, 9), size, scale, screen);
+                for (got, want) in rect.into_iter().zip(want) {
+                    assert!((got - want).abs() < 1e-3, "{raw} on {screen:?}: {rect:?} {want:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_scaled_element_writes_one_scale_effect_and_an_unscaled_one_none() {
+        use tags::effects::function::{Function, FunctionType};
+        let (_, plain) = scaled_element(1, [1.0, 1.0]);
+        assert!(plain.effects().is_none());
+        let (_, scaled) = scaled_element(1, [2.0, 0.25]);
+        let root = nhdt(&[plain, scaled], &[]);
+        let FixupKind::Block { child: widgets, .. } = &root.fixups[0].kind else {
+            panic!("widget block")
+        };
+        let effects: Vec<_> = widgets
+            .fixups
+            .iter()
+            .filter_map(|f| match &f.kind {
+                FixupKind::Block { count, child } => Some((f.offset, *count, child)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(effects.len(), 1, "only the scaled widget has effects");
+        let (at, count, effect) = effects[0];
+        assert_eq!((at as usize, count), (BITMAP_WIDGET_SIZE + widget::EFFECTS, 1));
+        assert_eq!(effect.bytes.len(), 0x68);
+        assert_eq!(effect.bytes[0..4], 1u32.to_le_bytes());
+        for (slot, want) in [(0x10u32, 2.0f32), (0x24, 0.25)] {
+            let data = effect
+                .fixups
+                .iter()
+                .find_map(|f| match &f.kind {
+                    FixupKind::Data(d) if f.offset == slot => Some(d),
+                    _ => None,
+                })
+                .expect("scale function");
+            let function = Function::parse(&data.bytes).unwrap();
+            assert_eq!((function.kind, function.range), (FunctionType::Constant, [want, want]));
+        }
+    }
+
+    #[test]
+    fn scales_are_checked_and_a_number_reads_a_factor_not_above_0_as_1() {
+        assert!(check_scale([1.0, 1.0]).is_ok() && check_scale([2.5, 0.25]).is_ok());
+        for bad in [[0.0, 1.0], [1.0, -1.0], [f32::NAN, 1.0], [1.0, f32::INFINITY]] {
+            assert!(check_scale(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(number_scale([0.0, 0.0]), [1.0, 1.0]);
+        assert_eq!(number_scale([-3.0, 2.0]), [1.0, 2.0]);
+        assert!(unscaled(number_scale([0.0, 0.0])) && !unscaled(number_scale([2.0, 0.0])));
     }
 
     #[test]
