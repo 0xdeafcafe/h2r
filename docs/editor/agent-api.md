@@ -2745,6 +2745,71 @@ refusals, the sheet with every kind in both forms, a box and a sphere
 through `markers.area.set`, and a snapshot whose spawn pixels all lie in the
 spawns' projected boxes.
 
+## Block-out pieces
+
+`blockout.*` is the content render and check of the Forge block-out
+shapes ([forge-blockout.md](../game/forge-blockout.md)); it is in
+`api/blockout.rs`. Both methods need no map and no disc, and every
+material is `Dev`. A definition is a canonical `name` (with its digest,
+checked against a Dev definition's, or without it as
+`<shape>_<x>x<y>x<z>_<param>`) or `shape`, `size` (`[x, y, z]` in
+units) and `param` (steps, sides, voussoirs or seed); both refuse a
+definition `PieceDef::validate` refuses with `INVALID_PARAMS`, the
+sentence led by the param it is about (`shape`, `size`, `param`,
+`name`).
+
+- `blockout.render {name?, shape?, size?, param?, view?, pixels?, plates?,
+  fit?, out?}`: the definition generated, built into the kit's render
+  mesh in the dev view (`blockout_kit::mesh::build`) and drawn offscreen
+  through the viewport's renderer to a PNG under the cache directory's
+  `studio/blockout/` (never into a Git checkout: `REFUSED`). Each face is
+  in its role's family colour (`dev_texture::Family`), its shell edges are
+  dark lines, and each plate is drawn as the kit cuts it: a quad a run of
+  texels of the glyph's cell in `dev_texture::font::font`. The ground
+  is a floor with a grid every 64 units and a heavier line every 256,
+  from the world's origin. `view` is `angled` (default: three-quarter,
+  from the front and the +x side, from above), `top`, `front` or `side`.
+  `pixels` is `[w, h]` (a piece 960 by 720, the sheet 3200 by 2000).
+  `plates` false draws each plate's cells as the face's flat colour, so
+  two renders differ only where a plate projects. The answer is `{path,
+  width, height, view, name, shape, size, param, covered, piece_pixels,
+  vertices, triangles, plates, grid_units}`: `covered` counts the pixels
+  that are not the corner's colour, `piece_pixels` those that differ
+  from the same picture with no piece, and each of `plates` has its
+  `face`, `role`, `width` and `height` in units, the cell size `h`, its
+  three rows of `text`, whether the viewer `visible` faces it, and its
+  `center` and `bounds` in pixels. With no `name` or `shape`, the
+  contact sheet: every structural piece of `forge_shapes::starter()` (a
+  structural shape at each size the starter has), then three seeds of
+  each natural shape, each family from the start of its own row. Each
+  cell is its own picture at one camera angle, with the label under it:
+  the canonical name without its digest, then the family and the digest.
+  `fit` is `sheet` (default: one floor and one distance for every cell,
+  so a size reads against the grid at the same scale in each) or `shape`
+  (one scale a shape, so a small block is not a speck). The sheet's
+  answer has the same fields summed, and `cells`: each cell's `name`,
+  `family`, `shape`, `size`, `param`, `cell` (column, row), `rect` and
+  `center` in pixels, `covered`, `piece_pixels`, `vertices`, `triangles`
+  and `plates`. A sheet that leaves a cell under 96 by 132 pixels is
+  `INVALID_PARAMS`. `NO_GPU` where there is no adapter.
+- `blockout.describe {name?, shape?, size?, param?}`: the definition as
+  text: `name`, `tag_path`, `digest`, `family` (`structural` or
+  `natural`), `label` (the name a plate prints, in capitals with spaces),
+  the shell's `faces`, `hulls`, `hull_points`, `volume` and `bounds` (world
+  units), the dev mesh's `vertices` and `triangles` and its `parts` (a
+  paint each: `tile:<role>` and `font`), and the `plates`: for each
+  rectangular face the kit cuts one in, the face's `width` and `height`
+  in units, its `role`, the cell `h` and the three rows of `text` that
+  `dev_texture::label::layout` gives, with `metres` its second and third
+  rows. `unplated` counts the faces with none (too small, not a rectangle,
+  or a rock). The kit's `Cost` is not in it: it needs a map to lay the tags
+  out in.
+
+`api/tests/blockout_tests.rs` runs describe against `label::layout` and
+the kit's mesh, the refusals, the sheet's items (every shape of every
+family), and, where there is a GPU, a block whose two renders differ only
+where its plates project and a sheet with every definition drawn.
+
 ## Models and customisation
 
 `model.*` is where a content author (an agent building a weapon, an

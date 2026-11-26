@@ -1,6 +1,6 @@
 # Forge block-out: pieces, the natural set and the dev textures
 
-Status: Partly built. Slices BO1 and BO3 are built: `forge-shapes` has the definition, the canonical name, the structural generators (block, wall, floor plate, ramp, wedge, stairs, cylinder, arch), `STARTER`, and the natural set (`noise`, `hull` and the five rock generators). Slice BO2 is built: `crates/formats/dev-texture` has the rasters, the font and the label layout. Slice BO5 is built: `forge-doc` has `Forge::Piece`, `PIECE_TAG`, the validator's rules and `ForgeDoc::pieces` (document format 6). Slice BO4 is built: `crates/tools/blockout-kit` installs a definition as tags with the dev set and its `Cost`, and has an invented map for tests. Slice BO6 is built: `forge_build::blockout` materialises a document's pieces (the definitions, the crate palette rows, the starter set and the cut order in the kit) and `blockout_kit::palette` is the palette survey. The rest of the page is a design. It is slice F8 of [forge-design.md](forge-design.md), split into slices BO1 to BO12 below.
+Status: Partly built. Slices BO1 and BO3 are built: `forge-shapes` has the definition, the canonical name, the structural generators (block, wall, floor plate, ramp, wedge, stairs, cylinder, arch), `STARTER`, and the natural set (`noise`, `hull` and the five rock generators). Slice BO2 is built: `crates/formats/dev-texture` has the rasters, the font and the label layout. Slice BO5 is built: `forge-doc` has `Forge::Piece`, `PIECE_TAG`, the validator's rules and `ForgeDoc::pieces` (document format 6). Slice BO4 is built: `crates/tools/blockout-kit` installs a definition as tags with the dev set and its `Cost`, and has an invented map for tests. Slice BO11 is built: Studio's `blockout.render` (a definition or the contact sheet) and `blockout.describe` in `crates/apps/studio/src/api/blockout.rs`. Slice BO6 is built: `forge_build::blockout` materialises a document's pieces (the definitions, the crate palette rows, the starter set and the cut order in the kit) and `blockout_kit::palette` is the palette survey. The rest of the page is a design. It is slice F8 of [forge-design.md](forge-design.md), split into slices BO1 to BO12 below.
 Code: `crates/formats/forge-shapes` (the definitions and generators), `crates/formats/forge-doc/src/piece.rs` (the document), `crates/formats/dev-texture` (the dev textures), `crates/tools/blockout-kit` (a definition as tags), `crates/tools/forge-build/src/blockout.rs` (materialising), `crates/extensions/forge/src/piece.rs` (the session). Tests: named per slice under "Slices".
 Switch: none. Two settings of the profile's store, `forge.blockout.grid` and `forge.blockout.dev_view` ("In the monitor").
 
@@ -508,13 +508,16 @@ skin in their family's colour.
   `forge.propose` takes the piece op; `forge.capacity` gains the
   block-out set's `Cost` and what the cut order dropped; `forge.status`
   carries `dev_view` and the grid.
-- **Studio agent API**: `blockout.render {shape, size, param?,
-  materials?, view?, out?}` draws one definition and, with no shape,
-  the contact sheet of every shape in every dev family;
-  `blockout.describe {def}` answers its name, counts, hulls, labels as
-  text and `Cost`. Both need no disc while every material is `Dev`.
+- **Studio agent API**: `blockout.render {name | shape, size, param?,
+  view?, pixels?, plates?, fit?, out?}` draws one definition and, with
+  none, the contact sheet of every structural piece of the starter set
+  and three seeds of each natural shape, labelled by canonical name;
+  `blockout.describe {name | shape, size, param?}` answers its name,
+  counts, hulls, bounds and each plate's rows as text. Both need no disc
+  while every material is `Dev` (`Cost` is the kit's, from a map).
   They are the content render and check of this page's shapes, as
-  `markers.render` is the markers'.
+  `markers.render` is the markers'
+  ([agent-api.md](../editor/agent-api.md), "Block-out pieces").
 
 ## Rules and limits
 

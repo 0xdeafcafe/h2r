@@ -28,6 +28,7 @@ use crate::App;
 mod anim;
 mod assets;
 mod bitmaps;
+mod blockout;
 pub(crate) mod checks;
 mod problems;
 mod collision;

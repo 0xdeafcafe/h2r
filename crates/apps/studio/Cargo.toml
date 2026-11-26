@@ -95,6 +95,12 @@ serde_json.workspace = true
 # Playtest's static checks (src/app/playtest_static.rs): the start gate's
 # census of the open scenario (docs/game/rules-start-gate.md).
 forge-doc.workspace = true
+# blockout.render and blockout.describe: a definition's shell, its render
+# mesh with the dev plates and the dev rasters they are drawn from
+# (api/blockout.rs; docs/game/forge-blockout.md).
+forge-shapes = { path = "../../formats/forge-shapes" }
+dev-texture = { path = "../../formats/dev-texture" }
+blockout-kit = { path = "../../tools/blockout-kit" }
 # The map variants on this machine a game variant may suggest
 # (`forge::files::variants::suggestable`; src/api/variants.rs).
 forge.workspace = true

@@ -14,6 +14,7 @@ use crate::app::{Action, PlaylistEdit, Selection};
 
 mod anim_save_tests;
 mod bitmaps_tests;
+mod blockout_tests;
 mod game_tests;
 mod playtest_tests;
 mod image_gen_tests;
@@ -1374,7 +1375,7 @@ fn every_method_in_methods_has_a_test() {
             (Some(_), Ok(v)) => panic!("{} is planned but answered {v}", d.name),
             // No renderer on this machine: the snapshot says so.
             (None, Err(e))
-                if matches!(d.name, m::VIEW_SNAPSHOT | m::MODEL_RENDER | m::MARKERS_RENDER) && e.code == code::NO_GPU => {}
+                if matches!(d.name, m::VIEW_SNAPSHOT | m::MODEL_RENDER | m::MARKERS_RENDER | m::BLOCKOUT_RENDER) && e.code == code::NO_GPU => {}
             // These reads need an active watchdog, recorded samples or sampling.
             (None, Err(e))
                 if matches!(d.name, mem::HISTORY | mem::HEAP | mem::DIFF | mem::POSTMORTEM)

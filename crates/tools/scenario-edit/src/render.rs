@@ -1454,6 +1454,14 @@ impl Viewport {
         self.scene = None;
         self.atmosphere = AtmosphereUniforms::NONE;
     }
+    /// The world as vertices that carry their own colour, lit as the
+    /// world is (`blockout.render`: a piece's faces in their families'
+    /// colours).
+    pub fn set_world_vertices(&mut self, device: &wgpu::Device, vertices: &[Vertex]) {
+        self.world = Self::upload(device, vertices);
+        self.scene = None;
+        self.atmosphere = AtmosphereUniforms::NONE;
+    }
     pub fn set_markers(&mut self, device: &wgpu::Device, v: &[Vertex]) {
         self.markers = Self::upload(device, v);
     }
