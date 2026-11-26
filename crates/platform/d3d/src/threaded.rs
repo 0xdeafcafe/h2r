@@ -1658,8 +1658,10 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         // Pinning attachments records handles and commands, without consuming
         // the results of earlier draws. A general worker query would flush the
         // held commands and disqualify the very frame the light belongs to.
-        if stage.plan.stage != timeline::native::Stage::Lights
-            || !stage.surfaces.sampled.is_empty() || !stage.surfaces.slots.is_empty()
+        // Post reads the frame it is sealed into; its surfaces map on the worker.
+        let lights = stage.plan.stage == timeline::native::Stage::Lights;
+        if !(lights || stage.plan.stage == timeline::native::Stage::Post)
+            || (lights && (!stage.surfaces.sampled.is_empty() || !stage.surfaces.slots.is_empty()))
             || !stage.pass.lock().map_err(|_| "native pass poisoned")?.replays_scene()
         {
             return Ok(None);
