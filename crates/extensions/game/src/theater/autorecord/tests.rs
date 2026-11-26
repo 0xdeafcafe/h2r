@@ -379,6 +379,33 @@ fn a_killed_film_with_no_game_start_is_removed_with_its_stats() {
     assert!(!path.exists() && !film::file::stats_of(&path).exists());
 }
 
+/// A guest stopped inside the game's first update (the spawn gather's stop
+/// on cyclotron) leaves the film open with its base set and no film tick:
+/// the session's end deletes it and reports nothing failed. Sealing it
+/// asked the track for records before its first tick, which it refused as
+/// "tagged records require film v3".
+#[test]
+fn a_game_stopped_inside_its_first_update_has_no_film_and_no_failure() {
+    let dir = Temp::new("first-update");
+    let rec = library(&dir);
+    let guest = arena();
+    play(&rec, &guest, &block(MODE_MULTIPLAYER, 1), [1, 2], 0);
+    {
+        let mut s = rec.lock();
+        let Mode::Record(r) = &mut s.mode else { panic!("a recording") };
+        let game = r.game.as_ref().expect("the game's film is open");
+        assert!(game.base.is_some(), "the first update entered");
+        assert_eq!(game.track.ticks(), 0, "and never ended");
+        // What the game's observers had queued for its film by then.
+        r.unified.marker("cyclotron");
+    }
+    let open = PathBuf::from(rec.status().recording.unwrap());
+    rec.finish(true).unwrap();
+    assert!(!open.exists() && !film::file::stats_of(&open).exists());
+    assert!(films(&dir.0).is_empty());
+    assert_eq!(rec.lock().outcome.discard, None);
+}
+
 #[test]
 fn a_film_recorded_after_the_hooks_are_installed_carries_their_digest() {
     let dir = Temp::new("digest");

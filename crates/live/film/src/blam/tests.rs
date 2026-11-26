@@ -855,3 +855,15 @@ fn a_stats_stream_without_inputs_takes_them_from_the_film_file() {
     }
     assert_eq!(got, ticks);
 }
+
+/// Before its first tick a track has not seen its film's version: records
+/// and closing events then are refused for being early, not for a version.
+#[test]
+fn records_before_the_first_tick_are_refused_as_early() {
+    let mut track = TrackWriter::default();
+    assert_eq!(track.ticks(), 0);
+    let error = track.append_to_last(vec![RecordData::marker("cyclotron")]).unwrap_err();
+    assert_eq!(error.to_string(), "tagged records before the film's first tick");
+    let error = track.closing_events(vec![Event::Quit { seat: 0 }]).unwrap_err();
+    assert_eq!(error.to_string(), "closing events before the film's first tick");
+}
