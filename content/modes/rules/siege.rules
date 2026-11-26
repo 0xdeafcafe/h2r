@@ -28,7 +28,19 @@
 // host opens a picker of three rows at the round's start, and the pick
 // (`picked`) is the set from that player's next spawn; a player who does
 // not pick gets the set the lobby chose.
-// docs/game/rules-engine.md, "Phases: attack and defend" and "Payoff".
+// A map with a layout (`rules::builtin::layout`, or a map variant that
+// labels the same things) plays ordered phases: its `siege_site` flags are
+// numbered by phase, only a site numbered for the phase counts (a later
+// phase's site held early does nothing) and either site of a phase
+// advances it. Its starting locations are labelled `siege_attack` and
+// `siege_defend`, numbered by phase, and each phase's spawns are the
+// starts of its number (`spawn_areas`), the final assault's being the last
+// number. Each phase from the second hands out a heavier loadout tier to
+// both sides at their spawns (a picked set serves tier 0). A map with no
+// numbered site plays as the lines above say: any sites in any order,
+// spawns near them.
+// docs/game/rules-engine.md, "Phases: attack and defend" and "Payoff";
+// docs/game/siege.md.
 //
 // Entries a host cannot make yet (`verify::unhostable`): none.
 rules "Siege" 1
@@ -69,6 +81,9 @@ label goal: zone? = "siege_goal"
 label base: zones = "ctf_flag_spawn"
 label placed_line: zones at most 16 = "siege_line"
 label barrier: objects at most 8 = "siege_barrier"
+// A layout's starting locations, numbered by phase.
+label siege_attack: spawns
+label siege_defend: spawns
 
 option phase_time: time 60s..600s = 180s "Phase time" "How long the attackers have for each phase"
 option capture_time: time 5s..60s = 15s "Capture time" "How long the attackers hold a site or the flag stand alone to take it"
@@ -103,6 +118,18 @@ table close_loadouts: (side: team, primary: weapon, secondary: weapon) = [
     (team 1, "objects/weapons/rifle/brute_plasma_rifle/brute_plasma_rifle", "objects/weapons/pistol/needler/needler"),
 ]
 
+// Tier 1 (the second phase) and tier 2 (the final assault): the weapons
+// each side gains as the phases go on, in place of the set it started with.
+table tier1_loadouts: (side: team, primary: weapon, secondary: weapon) = [
+    (team 0, "objects/weapons/rifle/beam_rifle/beam_rifle", "objects/weapons/pistol/plasma_pistol/plasma_pistol"),
+    (team 1, "objects/weapons/rifle/sniper_rifle/sniper_rifle", "objects/weapons/pistol/magnum/magnum"),
+]
+
+table tier2_loadouts: (side: team, primary: weapon, secondary: weapon) = [
+    (team 0, "objects/weapons/melee/energy_blade/energy_blade", "objects/weapons/rifle/covenant_carbine/covenant_carbine"),
+    (team 1, "objects/weapons/support_high/rocket_launcher/rocket_launcher", "objects/weapons/rifle/battle_rifle/battle_rifle"),
+]
+
 table ranged_loadouts: (side: team, primary: weapon, secondary: weapon) = [
     (team 0, "objects/weapons/rifle/sniper_rifle/sniper_rifle", "objects/weapons/rifle/smg/smg"),
     (team 1, "objects/weapons/rifle/beam_rifle/beam_rifle", "objects/weapons/pistol/plasma_pistol/plasma_pistol"),
@@ -110,6 +137,10 @@ table ranged_loadouts: (side: team, primary: weapon, secondary: weapon) = [
 
 // The phases taken so far, and how many sites come before the final one.
 global var phase: int = 0
+// Whether the map's sites are numbered by phase (a layout), and how many
+// phases of sites it has.
+global var ordered: bool = false
+global var top: int = 0
 global var needed: int = 0
 global var clock: timer
 global var over: bool = false
@@ -137,6 +168,12 @@ global var front: zone? = none
 global var focus: zone? = none
 global var banner_left: int = 0
 global var seen: int = -1
+
+// A layout's spawns: the starts of the phase's number, for each side.
+fn line_up() {
+    spawn_areas(team 0, siege_attack, phase)
+    spawn_areas(team 1, siege_defend, phase)
+}
 
 fn begin(n: int) {
     phase = n
@@ -189,9 +226,9 @@ fn show_front() {
         if focus == none {
             // Capture time accumulates even after attackers leave a site.
             // The mark follows living attackers, including on a contested site.
-            focus = first(site s where not s.taken and
+            focus = first(site s where not s.taken and (not ordered or s.number == phase) and
                 count(players p where p.alive and p.team == team 0 and inside(p, s)) > 0)
-            if focus == none { focus = first(site s where not s.taken) }
+            if focus == none { focus = first(site s where not s.taken and (not ordered or s.number == phase)) }
         }
     } else {
         focus = last_stand
@@ -273,9 +310,13 @@ on round_start {
     set_body(team 0, "objects/characters/masterchief/masterchief_mp")
     set_body(team 1, "objects/characters/elite/elite_mp")
     lights = 0
+    ordered = false
+    top = 0
     for each site s {
         s.taken = false
         s.lit = false
+        if s.number > 0 { ordered = true }
+        if s.number + 1 > top { top = s.number + 1 }
         // A site shows in its holder's colour: the defenders', until it is taken.
         if lights < 6 {
             s.lit = true
@@ -284,6 +325,7 @@ on round_start {
         }
     }
     needed = min(sites, count(site))
+    if ordered { needed = min(sites, top) }
     last_stand = base[team 1]
     if let g = goal { last_stand = g }
     assault = last_stand != none
@@ -291,12 +333,16 @@ on round_start {
     if needed > 0 or assault {
         begin(0)
         open_map()
-        // The attackers start at their own flag stand, when the map has one.
-        spawn_near(team 0, base[team 0], line)
-        if let m = first(placed_line q where q.team == team 0 and q.number == 0) {
-            spawn_near(team 0, m, line)
+        if ordered {
+            line_up()
+        } else {
+            // The attackers start at their own flag stand, when the map has one.
+            spawn_near(team 0, base[team 0], line)
+            if let m = first(placed_line q where q.team == team 0 and q.number == 0) {
+                spawn_near(team 0, m, line)
+            }
+            fall_back()
         }
-        fall_back()
         if assault {
             message(all, "Sites to take: {needed}. Then the defenders' flag")
         } else {
@@ -312,11 +358,15 @@ on round_start {
 on tick {
     if not over and phase < needed {
         for each site s where not s.taken {
-            if phase < needed and ticks_held(s, team 0) >= capture_time {
-                s.taken = true
-                if s.lit { show_area(s, team 0) }
-                begin(phase + 1)
-                front = s
+            // A layout's site counts in its own phase only: a later
+            // phase's site is not asked about, so its time starts then.
+            if not ordered or s.number == phase {
+                if phase < needed and ticks_held(s, team 0) >= capture_time {
+                    s.taken = true
+                    if s.lit { show_area(s, team 0) }
+                    begin(phase + 1)
+                    front = s
+                }
             }
         }
         // The front moves up once a tick, after the sites are counted:
@@ -325,11 +375,15 @@ on tick {
         if let s = front {
             front = none
             open_map()
-            spawn_near(team 0, s, line)
-            if let m = first(placed_line q where q.team == team 0 and q.number == phase) {
-                spawn_near(team 0, m, line)
+            if ordered {
+                line_up()
+            } else {
+                spawn_near(team 0, s, line)
+                if let m = first(placed_line q where q.team == team 0 and q.number == phase) {
+                    spawn_near(team 0, m, line)
+                }
+                fall_back()
             }
-            fall_back()
             if phase < needed {
                 message(all, "The attackers took a site")
                 hud_text(banner_row, "SITE TAKEN")
@@ -397,7 +451,13 @@ on timer(wave1) {
 on spawn(p) {
     // The player's row of the picker, or -1 when none was made.
     let own = picked(p, 0)
-    if own == 1 or (own < 0 and kits == Kits.close) {
+    if ordered and phase == 1 {
+        let kit = tier1_loadouts[p.team]
+        set_loadout(p, kit.primary, kit.secondary)
+    } else if ordered and phase >= 2 {
+        let kit = tier2_loadouts[p.team]
+        set_loadout(p, kit.primary, kit.secondary)
+    } else if own == 1 or (own < 0 and kits == Kits.close) {
         let kit = close_loadouts[p.team]
         set_loadout(p, kit.primary, kit.secondary)
     } else if own == 2 or (own < 0 and kits == Kits.ranged) {
