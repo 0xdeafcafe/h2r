@@ -296,6 +296,17 @@ pub trait ExternalPass: Send {
     /// and uploads supplied to that recording, with no guest feedback.
     fn replays_scene(&self) -> bool { false }
 
+    /// This pass for the draws it stands in for, then `next`'s: a kept
+    /// scene joins adjacent draws of one state into a single pass
+    /// (`crate::scene_sink`). `next` follows this pass's last packet
+    /// directly, on the same attachments. `None` (the default): the two
+    /// cannot be one pass and each records on its own. Needs
+    /// [`Self::as_any`] on both.
+    fn run_with(&self, _next: &dyn ExternalPass) -> Option<Box<dyn ExternalPass>> { None }
+
+    /// The pass as its concrete type, for [`Self::run_with`] to read `next`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> { None }
+
     /// Selected world ranges that bind a private page whose two lamp states differ.
     fn relit_lightmap_ranges(&self) -> usize { 0 }
 
