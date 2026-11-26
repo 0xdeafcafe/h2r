@@ -6,11 +6,14 @@
 pub mod ambience;
 pub mod channel;
 pub mod environment;
+pub mod events;
+pub mod feed;
 pub mod impulse;
 pub mod listener;
 pub mod loops;
 pub mod mix;
 pub mod objects;
+pub mod schedule;
 pub mod scheduling;
 pub mod segments;
 pub mod sources;
