@@ -1,6 +1,6 @@
 # Forge block-out: pieces, the natural set and the dev textures
 
-Status: Design. Slice BO2 (the dev textures: `crates/formats/dev-texture`, the rasters, the font and the label layout) is written, not yet run; nothing else on this page is built. The page is slice F8 of [forge-design.md](forge-design.md), split into slices BO1 to BO12 below.
+Status: Partly built. Slice BO1 is built: `forge-shapes` has the definition, the canonical name and the structural generators (block, wall, floor plate, ramp, wedge, stairs, cylinder, arch) and `STARTER`. Slice BO2 is built: `crates/formats/dev-texture` has the rasters, the font and the label layout. The rest of the page is a design. It is slice F8 of [forge-design.md](forge-design.md), split into slices BO1 to BO12 below.
 Code: `crates/formats/forge-shapes` (the definitions and generators), `crates/formats/dev-texture` (the dev textures), `crates/tools/blockout-kit` (a definition as tags), `crates/tools/forge-build/src/blockout.rs` (materialising), `crates/extensions/forge/src/piece.rs` (the session). Tests: named per slice under "Slices".
 Switch: none. Two settings of the profile's store, `forge.blockout.grid` and `forge.blockout.dev_view` ("In the monitor").
 
@@ -57,7 +57,7 @@ pub enum Material { Dev, Map(TagKey), Nodraw, Clip }
 | `Wedge` | a ramp turned on its side: a right triangle in plan, full height | none | 1 |
 | `Stairs` | `param` equal steps (2 to 32) rising along x | steps | one a step |
 | `Cylinder` | an upright prism of `param` sides (8, 12, 16 or 24) fitted to the bounds | sides | 1 |
-| `Arch` | a wall with a round-headed opening through y: two piers and a ring of `param` voussoirs (4 to 12) | voussoirs | 2 + `param` |
+| `Arch` | a body with a round head and a round-headed opening through y, half the width: two piers and a ring of `param` voussoirs (4 to 12), the outer arc half the width in radius; it needs a height of at least half the width plus one unit, and with an odd `param` the top sits a little under the bounds | voussoirs | 2 + `param` |
 | `Boulder`, `Slab`, `Cliff`, `TerrainWedge`, `Spire` | the natural set (below) | seed | 1 |
 
 `Shape::generate(&PieceDef) -> Result<Solid>` gives the geometry
@@ -83,15 +83,16 @@ pub enum Role { Floor, Wall, Ceiling, Trim }
   piece keeps its roles when it is turned: a face whose normal is
   within 45 degrees of up is `Floor` (a ramp's slope and a stair's
   tread), of down `Ceiling`, any other `Wall`; a generator marks `Trim`
-  itself (a stair's risers, an arch's soffit, a cylinder's caps' rim).
+  itself (a stair's risers, an arch's soffit); a cylinder's caps are `Floor` and `Ceiling` and its sides `Wall`.
 - **Texture coordinates** are aligned to the piece's origin: a face's
   u and v are the position along its two axes in units, divided by the
   material's tile size. Two pieces whose origins are a whole number of
   tiles apart continue one another's texture across the seam.
 - **Arithmetic** is `+`, `-`, `*`, `/` and `sqrt` on `f32` and integer
   work, which IEEE 754 fixes bit for bit. A circle's points come from a
-  table of rational points in `forge_shapes::circle`, never from `sin`
-  or `cos` of the host's library.
+  table of rational points in `forge_shapes::circle` (integers over
+  65,536, symmetric about both axes, exact at the quarter turns), never
+  from `sin` or `cos` of the host's library.
 
 ### In the document
 

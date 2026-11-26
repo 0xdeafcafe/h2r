@@ -1,0 +1,19 @@
+[package]
+name = "forge-shapes"
+description = "Block-out pieces: a piece's definition, its canonical name and the generators that turn it into a closed shell and convex hulls, the same bits on every machine"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.h2]
+doc = ["game/forge-blockout.md"]
+status = "in progress"
+
+[dependencies]
+serde.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

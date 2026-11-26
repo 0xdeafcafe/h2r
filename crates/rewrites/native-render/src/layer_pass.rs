@@ -44,7 +44,7 @@ mod animation;
 mod pixel;
 mod texture_transform;
 
-pub use animation::{PassAnimation, property_value, render_time, sample_constants};
+pub use animation::{PassAnimation, StageFrames, frame_image, property_value, render_time, sample_constants, sample_with_frames};
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -195,6 +195,11 @@ pub enum LayerRefusal {
     Animation { pass: usize, kind: AnimationKind },
     /// A vertex binding needs texture-slot fields the pass does not supply.
     TextureTransform { pass: usize, slot: u8, mode: u8 },
+    /// An animated bitmap frame of `slot` reaches `stage`, whose size an
+    /// engine vertex constant reads: the binding's size refresh
+    /// (`0x00018b31`) takes the animated frame, so the size would follow
+    /// the clock.
+    FrameSize { pass: usize, slot: u8, stage: u8 },
     /// An animated property is driven by an object function, or is ranged
     /// on an object item: its inputs are the lighting record's callbacks.
     ObjectAnimation { property: usize },
@@ -217,6 +222,7 @@ impl LayerRefusal {
             self,
             LayerRefusal::Animation { .. }
                 | LayerRefusal::TextureTransform { .. }
+                | LayerRefusal::FrameSize { .. }
                 | LayerRefusal::ObjectAnimation { .. }
                 | LayerRefusal::Property { .. }
                 | LayerRefusal::Wave { .. }
@@ -237,6 +243,7 @@ impl LayerRefusal {
             LayerRefusal::ObjectAnimation { .. } => "object_animation",
             LayerRefusal::Property { .. } => "property",
             LayerRefusal::TextureTransform { .. } => "texture_transform",
+            LayerRefusal::FrameSize { .. } => "frame_size",
             LayerRefusal::Wave { .. } => "wave",
             LayerRefusal::MaterialConstant18 => "material_c18",
             LayerRefusal::NoTime => "time",
@@ -1020,6 +1027,7 @@ pub(crate) mod tests {
             pixel_register: (kind == AnimationKind::PixelConstant).then_some((false, 0)),
             binding: AnimationBinding { target: 0, b1: 0, b2: 0, properties: 0 },
             properties: refs.iter().map(|&(property, component)| PropertyRef { property, component }).collect(),
+            stages: Vec::new(),
         }
     }
 
@@ -1121,6 +1129,98 @@ pub(crate) mod tests {
         let reg = out.vertex_constants.iter().find(|r| r.index == 22).unwrap();
         assert_eq!(reg.value, [0., 0., 4., 10.]);
         assert_eq!(reg.written, 15);
+    }
+
+    /// `0x0001b0a0`'s frame to image: below 1e-4 image 0, else the floor of
+    /// the remainder over the image count; a negative remainder, a
+    /// non-finite frame or no images bind the rasterizer default texture
+    /// (`None`).
+    #[test]
+    fn a_frame_selects_the_floor_of_its_remainder_over_the_image_count() {
+        assert_eq!(frame_image(0.0, 4), Some(0));
+        assert_eq!(frame_image(5e-5, 4), Some(0), "too small to wrap");
+        assert_eq!(frame_image(-5e-5, 4), Some(0));
+        assert_eq!(frame_image(-0.001, 4), None, "past 1e-4 a negative remainder");
+        assert_eq!(frame_image(2.75, 4), Some(2));
+        assert_eq!(frame_image(5.5, 4), Some(1), "wraps");
+        assert_eq!(frame_image(4.0, 4), Some(0));
+        assert_eq!(frame_image(3.0, 1), Some(0), "a one-image bitmap always binds image 0");
+        assert_eq!(frame_image(0.9, 1), Some(0));
+        assert_eq!(frame_image(-1.5, 4), None, "fmod keeps the sign: the default texture");
+        assert_eq!(frame_image(2.0, 0), None, "no images");
+        assert_eq!(frame_image(f32::NAN, 4), None);
+        assert_eq!(frame_image(f32::INFINITY, 4), None);
+        assert_eq!(frame_image(f32::from_bits(4.0f32.to_bits() - 1), 4), Some(3), "just below the count");
+        assert_eq!(frame_image(1e-5, 0), None, "no images: even image 0 is the default texture");
+    }
+
+    fn frame_target(stages: &[(u8, u32)], refs: &[(i16, i16)]) -> AnimatedTarget {
+        let mut t = animated(AnimationKind::Bitmap, refs);
+        t.binding.target = 5;
+        t.stages = stages.iter().map(|&(stage, images)| tags::material::FrameStage { stage, images }).collect();
+        t
+    }
+
+    /// A bitmap animation's component 0 is each of its stages' frame;
+    /// components 1..7 stay the slot's transform; 8 and 9 (slot `+0x38`,
+    /// `+0x3c`, never read) are taken without effect, even where frames
+    /// are not bound.
+    #[test]
+    fn a_bitmap_animation_mixes_frame_transform_and_unread_components() {
+        let props = [
+            timed(4.0, identity([0.0, 8.0], 0)),
+            timed(2.0, identity([3.0, 5.0], 0)),
+            // Never sampled: a function that does not parse.
+            timed(2.0, vec![0xff; 2]),
+        ];
+        let target = frame_target(&[(0, 6), (2, 6)], &[(0, 0), (1, 1), (2, 8), (2, 9)]);
+        let imp = implementation(0, InputReads::default(), vec![target]);
+        let (_, frames) = sample_with_frames(&imp, &props, Some(2.0), false, 0).unwrap();
+        assert_eq!(frames, [Some(4.0), None, Some(4.0), None], "2 s over 4 s: half of 0..8");
+        // Without frames bound, component 0 refuses as before.
+        assert_eq!(
+            sample_constants(&imp, &props, Some(2.0), false, 0).unwrap_err(),
+            LayerRefusal::Animation { pass: 0, kind: AnimationKind::Bitmap }
+        );
+        // Only the unread components: nothing to bind, nothing refused.
+        let unread = frame_target(&[(0, 6)], &[(2, 8), (2, 9)]);
+        let imp = implementation(0, InputReads::default(), vec![unread]);
+        assert!(sample_constants(&imp, &props, Some(2.0), false, 0).is_ok());
+        let (_, frames) = sample_with_frames(&imp, &props, Some(2.0), false, 0).unwrap();
+        assert_eq!(frames, [None; 4]);
+    }
+
+    /// A pass made for frames samples them per draw and names each frame
+    /// stage's image count; one made without them refuses the frame.
+    #[test]
+    fn a_frame_pass_animation_samples_frames_and_counts_images() {
+        let props = [timed(4.0, identity([0.0, 8.0], 0))];
+        let imp = implementation(0, InputReads::default(), vec![frame_target(&[(1, 3)], &[(0, 0)])]);
+        let (_, animation) = PassAnimation::baseline_with_frames(&imp, &props, true, 0).unwrap();
+        let animation = animation.unwrap();
+        assert_eq!(animation.frame_counts(), [None, Some(3), None, None]);
+        let (_, frames) = animation.sample_with_frames(Some(3.0)).unwrap();
+        assert_eq!(frames[1], Some(6.0));
+        assert_eq!(frame_image(6.0, 3), Some(0));
+        assert_eq!(
+            PassAnimation::baseline(&imp, &props, true, 0).unwrap_err(),
+            LayerRefusal::Animation { pass: 0, kind: AnimationKind::Bitmap }
+        );
+    }
+
+    /// The binding's size refresh reads the animated frame, so a stage
+    /// size an engine constant reads would follow the clock: refused.
+    #[test]
+    fn an_animated_frame_under_a_size_constant_is_refused() {
+        let props = [timed(4.0, identity([0.0, 8.0], 0))];
+        let mut imp = implementation(0, InputReads::default(), vec![frame_target(&[(1, 3)], &[(0, 0)])]);
+        imp.dimension_bindings.push(tags::material::EngineVertexConstant { bank: 1, reg: 2, mode: 9, stage: 2, source: 0 });
+        assert_eq!(
+            sample_with_frames(&imp, &props, Some(1.0), false, 3).unwrap_err(),
+            LayerRefusal::FrameSize { pass: 3, slot: 5, stage: 1 }
+        );
+        imp.dimension_bindings[0].stage = 1; // stage 0's size: not the frame's
+        assert!(sample_with_frames(&imp, &props, Some(1.0), false, 3).is_ok());
     }
 
     /// A list of `layer` in a test memory: render records `(record, flags,

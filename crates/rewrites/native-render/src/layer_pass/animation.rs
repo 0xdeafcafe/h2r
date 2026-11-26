@@ -60,14 +60,91 @@ pub fn property_value(property: &AnimatedProperty, index: usize, time: Option<f6
     Ok(Sample::read(property, index, time, object)?.scalar())
 }
 
+/// A bitmap animation's component 0: the slot's frame (`+0x18`), which
+/// `0x00018afb` copies to each stage bound from the slot and `0x0001b0a0`
+/// turns into the bound image ([`frame_image`]).
+pub const FRAME_COMPONENT: i16 = 0;
+
+/// A bitmap animation's components 8 and 9: the slot's `+0x38` and
+/// `+0x3c`, which `0x00017642` writes (`[ctx + 0x338 + 0x40 slot + 4
+/// component]`) and nothing reads. Every instruction in `.text` that forms
+/// a slot or stage record's address from the setup context
+/// (`0x00485b48`: slots at `+0x320`, stages at `+0x1320`, 0x40 bytes each)
+/// is in the material setup: the bitmap parameters `0x00016fab` write
+/// `+0`, `+0x10`, `+0x14`, `+0x18`; the texture bindings `0x00018ae8`/
+/// `0x00018aef` copy the slot whole (`rep movsd`, `0x00018afb`) and
+/// `0x00018b11`..`0x00018d2e` touch `+0`..`+0x18`; the stage resolve
+/// `0x0001b0d2` reads `+0`, `+4`, `+0x10`, `+0x14`, `+0x18`; the transform
+/// `0x0001b7bd` reads `+0x1c`..`+0x34`. No displacement of `0x358`/`0x35c`
+/// or `0x1358`/`0x135c` from the context occurs. So these writes change
+/// nothing a draw binds and are taken without effect.
+pub const UNREAD_COMPONENTS: [i16; 2] = [8, 9];
+
+/// `[0x0045dbdc]`, 1e-4: a frame closer to zero than this binds image 0
+/// (`0x0001b0e4`..`0x0001b0fe`).
+const SMALL_FRAME: f32 = 1e-4;
+
+/// The image `0x0001b0a0` binds for a stage whose frame is `frame` and
+/// whose bitmap has `count` images: 0 when `|frame|` is below
+/// [`SMALL_FRAME`], else the floor of the CRT `fmod(frame, count)`
+/// (`0x00373b6a`; exact for an f32 frame and an integer count). `None`
+/// when `0x000143c0` binds the rasterizer default texture instead (a
+/// negative remainder keeps the frame's sign; with no images even image 0
+/// is out of range), or when the frame is not finite (the CRT's error
+/// path, which the native world resolver also leaves to the guest).
+pub fn frame_image(frame: f32, count: u32) -> Option<u32> {
+    if !frame.is_finite() || count == 0 {
+        return None;
+    }
+    if SMALL_FRAME > frame.abs() {
+        return Some(0);
+    }
+    let remainder = (f64::from(frame) % f64::from(count)) as f32;
+    let image = remainder.floor();
+    (image >= 0.0 && image < count as f32).then_some(image as u32)
+}
+
+/// The frames a draw's animation writes, per texture stage: `Some` where
+/// a bitmap animation's component 0 reaches the stage
+/// (`tags::material::AnimatedTarget::stages`), the frame before
+/// [`frame_image`] wraps it.
+pub type StageFrames = [Option<f32>; 4];
+
 /// The selected implementation's register image at this clock. Bindings remain
 /// attached so the caller can distinguish a per-frame upload from the baseline.
+/// An animated bitmap frame refuses ([`LayerRefusal::Animation`]): these
+/// callers bind one image per stage ([`sample_with_frames`] binds each).
 pub fn sample_constants(
     imp: &ResolvedImplementation,
     properties: &[AnimatedProperty],
     time: Option<f64>,
     object: bool,
     pass: usize,
+) -> Result<ResolvedImplementation, LayerRefusal> {
+    sample_at(imp, properties, time, object, pass, None)
+}
+
+/// [`sample_constants`] for a caller that binds the image an animated
+/// frame selects: the registers and each stage's frame.
+pub fn sample_with_frames(
+    imp: &ResolvedImplementation,
+    properties: &[AnimatedProperty],
+    time: Option<f64>,
+    object: bool,
+    pass: usize,
+) -> Result<(ResolvedImplementation, StageFrames), LayerRefusal> {
+    let mut frames = StageFrames::default();
+    let out = sample_at(imp, properties, time, object, pass, Some(&mut frames))?;
+    Ok((out, frames))
+}
+
+fn sample_at(
+    imp: &ResolvedImplementation,
+    properties: &[AnimatedProperty],
+    time: Option<f64>,
+    object: bool,
+    pass: usize,
+    mut frames: Option<&mut StageFrames>,
 ) -> Result<ResolvedImplementation, LayerRefusal> {
     let mut out = imp.clone();
     let mut transforms = TextureTransforms::default();
@@ -82,8 +159,24 @@ pub fn sample_constants(
         match target.kind {
             AnimationKind::Bitmap => {
                 for r in &target.properties {
+                    if UNREAD_COMPONENTS.contains(&r.component) {
+                        continue;
+                    }
                     let v = sample(r.property)?.scalar();
-                    transforms.set(binding.target, r.component, v).ok_or_else(unsupported)?;
+                    if r.component != FRAME_COMPONENT {
+                        transforms.set(binding.target, r.component, v).ok_or_else(unsupported)?;
+                        continue;
+                    }
+                    let frames = frames.as_deref_mut().ok_or_else(unsupported)?;
+                    for s in &target.stages {
+                        // The binding's size refresh (`0x00018b31`) reads
+                        // the animated frame too, so a stage size an
+                        // engine constant reads would follow the clock.
+                        if imp.dimension_bindings.iter().any(|d| d.reads_size() && usize::from(d.stage) == usize::from(s.stage) + 1) {
+                            return Err(LayerRefusal::FrameSize { pass, slot: binding.target, stage: s.stage });
+                        }
+                        frames[usize::from(s.stage)] = Some(v);
+                    }
                 }
             }
             AnimationKind::PixelConstant => {
@@ -135,6 +228,9 @@ pub struct PassAnimation {
     properties: Arc<[AnimatedProperty]>,
     object: bool,
     pass: usize,
+    /// The draws bind the image an animated frame selects
+    /// ([`Self::baseline_with_frames`]).
+    frames: bool,
 }
 
 impl PassAnimation {
@@ -151,19 +247,77 @@ impl PassAnimation {
         object: bool,
         pass: usize,
     ) -> Result<(ResolvedImplementation, Option<Self>), LayerRefusal> {
+        Self::baseline_of(imp, properties, object, pass, false)
+    }
+
+    /// [`Self::baseline`] for draws that bind the image an animated frame
+    /// selects ([`Self::sample_with_frames`]): a bitmap animation's
+    /// component 0 does not refuse.
+    pub fn baseline_with_frames(
+        imp: &ResolvedImplementation,
+        properties: &[AnimatedProperty],
+        object: bool,
+        pass: usize,
+    ) -> Result<(ResolvedImplementation, Option<Self>), LayerRefusal> {
+        Self::baseline_of(imp, properties, object, pass, true)
+    }
+
+    fn baseline_of(
+        imp: &ResolvedImplementation,
+        properties: &[AnimatedProperty],
+        object: bool,
+        pass: usize,
+        frames: bool,
+    ) -> Result<(ResolvedImplementation, Option<Self>), LayerRefusal> {
         if imp.animated.is_empty() {
             return Ok((imp.clone(), None));
         }
-        let mut baseline = sample_constants(imp, properties, Some(0.0), object, pass)?;
+        let mut scratch = StageFrames::default();
+        let mut baseline = sample_at(imp, properties, Some(0.0), object, pass, frames.then_some(&mut scratch))?;
         baseline.animated.clear();
-        let animation = Self { implementation: imp.clone(), properties: properties.into(), object, pass };
+        let animation = Self { implementation: imp.clone(), properties: properties.into(), object, pass, frames };
         Ok((baseline, Some(animation)))
     }
 
     /// The pass's registers at `time` (the render clock, `0x004858a0`).
     pub fn sample(&self, time: Option<f64>) -> Result<crate::fog_gpu::LayerConstants, LayerRefusal> {
-        let at = sample_constants(&self.implementation, &self.properties, time, self.object, self.pass)?;
-        Ok(crate::fog_gpu::LayerConstants::from_implementation(&at))
+        self.sample_with_frames(time).map(|(constants, _)| constants)
+    }
+
+    /// [`Self::sample`] and each stage's animated frame (none unless made
+    /// by [`Self::baseline_with_frames`]).
+    pub fn sample_with_frames(
+        &self,
+        time: Option<f64>,
+    ) -> Result<(crate::fog_gpu::LayerConstants, StageFrames), LayerRefusal> {
+        let mut frames = StageFrames::default();
+        let at = sample_at(
+            &self.implementation, &self.properties, time, self.object, self.pass,
+            self.frames.then_some(&mut frames),
+        )?;
+        Ok((crate::fog_gpu::LayerConstants::from_implementation(&at), frames))
+    }
+
+    /// The image count of each stage an animated frame reaches
+    /// (`tags::material::FrameStage::images`, 0 for a slot with no instance
+    /// bitmap), `None` for the others: what a draw wraps the frame by and
+    /// how many images the stage preloads.
+    pub fn frame_counts(&self) -> [Option<u32>; 4] {
+        let mut counts = [None; 4];
+        if !self.frames {
+            return counts;
+        }
+        for target in &self.implementation.animated {
+            if target.kind != AnimationKind::Bitmap
+                || !target.properties.iter().any(|r| r.component == FRAME_COMPONENT)
+            {
+                continue;
+            }
+            for s in &target.stages {
+                counts[usize::from(s.stage)] = Some(s.images);
+            }
+        }
+        counts
     }
 }
 

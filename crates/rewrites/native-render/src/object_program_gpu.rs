@@ -105,6 +105,35 @@ pub struct LitBufferInput {
 pub struct LitProgramInput {
     pub pass: ObjectPass,
     pub images: [Option<Image>; 4],
+    /// Every image of a stage an animated bitmap frame reaches, in image
+    /// order (empty for the others): a draw binds the one its frame
+    /// selects ([`PlannedDraw::frames`]).
+    pub frames: [Vec<Image>; 4],
+}
+
+/// The most images a stage with an animated frame preloads.
+pub const MAX_FRAME_IMAGES: u32 = 256;
+
+/// Every image of stage `k` (bitmap `bitmap`) of `compiled` when an
+/// animated frame reaches it ([`crate::layer_pass::PassAnimation::frame_counts`]),
+/// for the draw to pick from (`0x0001b0a0` binds the frame's image of the
+/// bitmap); empty when none does.
+fn frame_images(compiled: &ObjectPass, k: usize, bitmap: map::TagId, image: &mut StageSource<'_>) -> Result<Vec<Image>, String> {
+    let Some(count) = compiled.animation.as_ref().and_then(|a| a.frame_counts()[k]) else {
+        return Ok(Vec::new());
+    };
+    if count == 0 {
+        return Err(format!("stage {k}'s animated frame wraps a slot with no instance bitmap"));
+    }
+    if compiled.texaccum.contains(&true) || compiled.view.contains(&true) {
+        return Err(format!("stage {k}'s animated frame is in a pass that binds an engine target per encode"));
+    }
+    if count > MAX_FRAME_IMAGES {
+        return Err(format!("stage {k}'s animated frame wraps {count} images, above {MAX_FRAME_IMAGES}"));
+    }
+    (0..count)
+        .map(|i| image(k, bitmap, i).ok_or_else(|| format!("stage {k}'s image {i} of its animated frame does not decode")))
+        .collect()
 }
 
 /// One lit part of a model: its mode section and its index among the
@@ -518,6 +547,12 @@ struct LitProgram {
     textures_layout: wgpu::BindGroupLayout,
     /// The stages' views the program owns, and every stage's sampler.
     views: Vec<(usize, wgpu::TextureView)>,
+    /// Each image's view of a stage an animated frame reaches
+    /// ([`LitProgramInput::frames`]).
+    frame_views: [Vec<wgpu::TextureView>; 4],
+    /// Bind groups by the images the draws' frames chose, the most recent
+    /// [`FRAME_GROUPS`].
+    frame_groups: Vec<([Option<u32>; 4], Option<wgpu::BindGroup>)>,
     samplers: Vec<wgpu::Sampler>,
     /// Its stages' bind group, made once; `None` when a stage samples the
     /// texture accumulation target or the view's copy, whose group is
@@ -564,6 +599,25 @@ fn texture_group(
         entries.push(wgpu::BindGroupEntry { binding: 2 * n as u32 + 1, resource: wgpu::BindingResource::Sampler(&samplers[n]) });
     }
     device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("native object program textures"), layout, entries: &entries })
+}
+
+/// The frame bind groups a program keeps ([`LitProgram::frame_groups`]).
+const FRAME_GROUPS: usize = 8;
+
+/// `views` with stage `n`'s view replaced by `frame_views[n][i]` where
+/// `frames[n]` is `Some(i)`, or `None` when one is missing.
+fn framed_views(
+    views: &[(usize, wgpu::TextureView)],
+    frame_views: &[Vec<wgpu::TextureView>; 4],
+    frames: &[Option<u32>; 4],
+) -> Option<Vec<(usize, wgpu::TextureView)>> {
+    views
+        .iter()
+        .map(|(n, view)| match frames[*n] {
+            Some(i) => frame_views[*n].get(i as usize).map(|v| (*n, v.clone())),
+            None => Some((*n, view.clone())),
+        })
+        .collect()
 }
 
 /// The texture accumulation level an encode binds: its view and its size
@@ -737,7 +791,34 @@ impl Shared {
         n: usize,
         image: Option<Image>,
     ) -> wgpu::TextureView {
-        let key = StageImage::of(program, n);
+        self.keyed_image(device, queue, program, n, StageImage::of(program, n), image)
+    }
+
+    /// Image `i` of stage `n`'s bitmap, for an animated frame
+    /// ([`LitProgram::frame_views`]): kept as the stage's texture of that
+    /// image would be.
+    fn frame_image(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        program: &crate::program::MaterialProgram,
+        n: usize,
+        i: u32,
+        image: Image,
+    ) -> wgpu::TextureView {
+        let key = StageImage::of(program, n).map(|k| StageImage { bitmap: k.bitmap.map(|(b, _)| (b, i)), ..k });
+        self.keyed_image(device, queue, program, n, key, Some(image))
+    }
+
+    fn keyed_image(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        program: &crate::program::MaterialProgram,
+        n: usize,
+        key: Option<StageImage>,
+        image: Option<Image>,
+    ) -> wgpu::TextureView {
         if let Some(view) = key.and_then(|k| self.images.get(&k)) {
             return view.clone();
         }
@@ -788,6 +869,9 @@ pub struct PlannedDraw {
     /// (`frame_scene::PrtStream`), and, once the hook has gathered it
     /// ([`LitObjects::fill_prt`]), its vertices.
     pub prt: Option<(frame_scene::PrtStream, Option<PrtVertices>)>,
+    /// Per stage, the image its animated frame selects at the draw's clock
+    /// ([`animated_blocks`]); `None` binds the compiled image.
+    pub frames: [Option<u32>; 4],
 }
 
 impl LitBufferInput {
@@ -1038,7 +1122,7 @@ impl LitObjects {
     }
 
     fn program(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, input: LitProgramInput) -> Option<LitProgram> {
-        let LitProgramInput { pass, mut images } = input;
+        let LitProgramInput { pass, mut images, frames } = input;
         let p = &pass.program;
         let mut layout_entries = Vec::new();
         let mut views = Vec::new();
@@ -1079,6 +1163,14 @@ impl LitObjects {
             // Checked at load: every sampled stage has its image.
             views.push((n, self.shared.image(device, queue, p, n, images[n].take())));
         }
+        let mut frame_views: [Vec<wgpu::TextureView>; 4] = Default::default();
+        for (n, list) in frames.into_iter().enumerate() {
+            frame_views[n] = list
+                .into_iter()
+                .enumerate()
+                .map(|(i, image)| self.shared.frame_image(device, queue, p, n, i as u32, image))
+                .collect();
+        }
         let textures_layout = self.shared.layout(device, &layout_entries);
         let compiler = self.shared.shader(device, &p.wgsl, &self.uniforms_layout, (&layout_entries, &textures_layout))?;
         let textures = if pass.texaccum.contains(&true) || pass.view.contains(&true) {
@@ -1089,7 +1181,7 @@ impl LitObjects {
             })?)
         };
         Some(LitProgram {
-            pass, compiler, textures_layout, views, samplers, textures,
+            pass, compiler, textures_layout, views, frame_views, frame_groups: Vec::new(), samplers, textures,
             accum_groups: Vec::new(), pipelines: HashMap::new(), inherited: Default::default(),
         })
     }
@@ -1141,6 +1233,15 @@ impl LitObjects {
                     let t = view.texture().clone();
                     if seen.insert(t.clone()) {
                         out.push((t, *n, p.signed[*n]));
+                    }
+                }
+                // An animated frame's images of the same bitmap.
+                for (n, views) in program.frame_views.iter().enumerate() {
+                    let same = matches!(p.stages.get(n), Some(crate::look::Stage::Bitmap { bitmap: b, .. }) if *b == bitmap);
+                    let Some(view) = views.get(image as usize).filter(|_| same) else { continue };
+                    let t = view.texture().clone();
+                    if seen.insert(t.clone()) {
+                        out.push((t, n, p.signed[n]));
                     }
                 }
             }
@@ -1544,6 +1645,23 @@ impl LitObjects {
             let (described, pipeline) = p.pipelines.get(&(color_format, depth_format, b.layout_id, d.state.pipeline_state(), prt_formats))
                 .cloned().ok_or("object pipeline unavailable")?;
             let textures = match &p.textures {
+                // An animated frame's draw: the images its frames chose.
+                Some(_) if d.frames.iter().any(Option::is_some) => {
+                    let slot = if let Some(at) = p.frame_groups.iter().position(|(key, _)| *key == d.frames) {
+                        at
+                    } else {
+                        resident[i] = false;
+                        let views = framed_views(&p.views, &p.frame_views, &d.frames)
+                            .ok_or("object animated frame image unavailable")?;
+                        let group = gfx::program::validated_resource(device, || {
+                            texture_group(device, &p.textures_layout, &views, &[], &p.samplers)
+                        });
+                        if p.frame_groups.len() == FRAME_GROUPS { p.frame_groups.remove(0); }
+                        p.frame_groups.push((d.frames, group));
+                        p.frame_groups.len() - 1
+                    };
+                    p.frame_groups[slot].1.clone().ok_or("object texture group invalid")?
+                }
                 Some(textures) => textures.clone(),
                 None => {
                     let accum = if p.pass.texaccum.contains(&true) {
@@ -1801,7 +1919,7 @@ fn plan_layer_part_at_entry<'a>(
                 None => format!("layer {layer} pass {n} has no native implementation {implementation}"),
             })?;
         let compiled = pass_of(program).ok_or("its program is missing")?;
-        let (vertex_base, pixel_base) = animated_blocks(compiled, pass.inputs.time)?;
+        let (vertex_base, pixel_base, frames) = animated_blocks(compiled, pass.inputs.time)?;
         let mut vertex = object_vertex_uniforms(&vertex_base, &compiled.implementation, &inputs, rows, p.decompression)?;
         if matches!(layer, 1 | 17) && let Some(c18) = c18 {
             c18.apply(compiled, &mut vertex)?;
@@ -1845,6 +1963,7 @@ fn plan_layer_part_at_entry<'a>(
             view: compiled.view.contains(&true),
             default_final: compiled.default_final,
             prt: item.prt.clone().map(|s| (s, None)),
+            frames,
         });
     }
     if out.is_empty() {
@@ -2002,7 +2121,7 @@ fn plan_indexed_part<'a>(
     let ranges = part_ranges(&p.indices, p.subparts.as_ref(), p.listed.as_ref(), frame.strip, frame.subparts)?;
     let defaults = frame.defaults.ok_or("the inputs' defaults do not read")?;
     let inputs = ObjectInputs { layer: None, lighting: frame.lighting, defaults: &defaults, shader: p.shader };
-    let (vertex_base, pixel_base) = animated_blocks(pass, frame.time)?;
+    let (vertex_base, pixel_base, frames) = animated_blocks(pass, frame.time)?;
     let mut vertex = object_vertex_uniforms(&vertex_base, &pass.implementation, &inputs, rows, p.decompression)?;
     let mut pixel = object_pixel_uniforms(&pixel_base, &pass.implementation, &inputs)?;
     with_structure_parameters(pass, frame.structure, &mut vertex, &mut pixel)?;
@@ -2033,6 +2152,7 @@ fn plan_indexed_part<'a>(
         view: pass.view.contains(&true),
         default_final: pass.default_final,
         prt: None,
+        frames,
     })
 }
 
@@ -2397,6 +2517,7 @@ pub fn lit_model(
                         }
                     };
                     let mut images: [Option<Image>; 4] = Default::default();
+                    let mut frames: [Vec<Image>; 4] = Default::default();
                     for (k, d) in compiled.program.dims.iter().enumerate() {
                         if d.is_none() {
                             continue;
@@ -2424,8 +2545,9 @@ pub fn lit_model(
                             return Err(format!("implementation {n} stage {k} samples no bitmap"));
                         };
                         images[k] = Some(image(k, bitmap, i).ok_or_else(|| format!("implementation {n} stage {k}'s bitmap does not decode"))?);
+                        frames[k] = frame_images(&compiled, k, bitmap, &mut *image).map_err(|e| format!("implementation {n} {e}"))?;
                     }
-                    got.push((LitProgramInput { pass: compiled, images }, buffer));
+                    got.push((LitProgramInput { pass: compiled, images, frames }, buffer));
                 }
                 Ok(got)
             };
@@ -2684,6 +2806,7 @@ fn compile_layer_sections(
             }
         };
         let mut images: [Option<Image>; 4] = Default::default();
+        let mut frames: [Vec<Image>; 4] = Default::default();
         for (k, d) in compiled.program.dims.iter().enumerate() {
             if d.is_none() {
                 continue;
@@ -2710,8 +2833,9 @@ fn compile_layer_sections(
                 return Err(format!("stage {k} samples no bitmap"));
             };
             images[k] = Some(image(k, bitmap, i).ok_or_else(|| format!("stage {k}'s bitmap does not decode"))?);
+            frames[k] = frame_images(&compiled, k, bitmap, &mut *image)?;
         }
-        got.push((LitProgramInput { pass: compiled, images }, buffer));
+        got.push((LitProgramInput { pass: compiled, images, frames }, buffer));
     }
     Ok(got)
 }
@@ -3102,6 +3226,36 @@ mod tests {
         assert_eq!(pixel.bump_mat[0], before_p.bump_mat[0], "stage 0 takes none");
         assert_eq!(pixel.bump_mat[1], [0.5, 1.5, 3.5, 2.5]);
         assert_eq!(pixel.bump_mat[3], [20.5, 21.5, 23.5, 22.5]);
+    }
+
+    /// A stage an animated frame reaches preloads every image of its
+    /// bitmap in order; the other stages none. No bitmap images, a pass
+    /// binding an engine target per encode or more than
+    /// [`MAX_FRAME_IMAGES`] images refuse.
+    #[test]
+    fn an_animated_frames_stage_preloads_every_image_of_its_bitmap() {
+        use crate::object_program::tests::frame_pass;
+        let bitmap = map::TagId(0xe000_0040);
+        let p = frame_pass(3);
+        let mut asked = Vec::new();
+        {
+            let mut source = |k: usize, b: map::TagId, i: u32| {
+                asked.push((k, b, i));
+                Some(Image::solid([i as u8, 0, 0, 255]))
+            };
+            let got = frame_images(&p, 0, bitmap, &mut source).unwrap();
+            assert_eq!(got, (0..3u8).map(|i| Image::solid([i, 0, 0, 255])).collect::<Vec<_>>());
+            assert!(frame_images(&p, 1, bitmap, &mut source).unwrap().is_empty(), "no frame reaches stage 1");
+        }
+        assert_eq!(asked, [(0, bitmap, 0), (0, bitmap, 1), (0, bitmap, 2)]);
+        let mut source = |_: usize, _: map::TagId, _: u32| Some(Image::solid([0; 4]));
+        assert!(frame_images(&frame_pass(0), 0, bitmap, &mut source).unwrap_err().contains("no instance bitmap"));
+        assert!(frame_images(&frame_pass(MAX_FRAME_IMAGES + 1), 0, bitmap, &mut source).unwrap_err().contains("above"));
+        let mut accum = frame_pass(3);
+        accum.texaccum[1] = true;
+        assert!(frame_images(&accum, 0, bitmap, &mut source).unwrap_err().contains("per encode"));
+        let mut missing = |_: usize, _: map::TagId, i: u32| (i != 1).then(|| Image::solid([0; 4]));
+        assert!(frame_images(&p, 0, bitmap, &mut missing).unwrap_err().contains("image 1"));
     }
 
     /// An opaque implementation `index` of the lit fixture, setting depth
@@ -4173,7 +4327,7 @@ mod tests {
     fn model_upload_checks_all_geometry_and_material_references() {
         let mut input = LitModelInput {
             parts: vec![part(0, 0, [Some((0, 0)), None, None, None, None])],
-            programs: vec![LitProgramInput { pass: equal_pass(0), images: Default::default() }],
+            programs: vec![LitProgramInput { pass: equal_pass(0), images: Default::default(), frames: Default::default() }],
             buffers: vec![LitBufferInput { indices: vec![0, 1, 2], ..Default::default() }],
             layers: Vec::new(),
         };
@@ -4196,7 +4350,7 @@ mod tests {
         let unused = LitBufferInput { indices: vec![2, 1, 0], ..Default::default() };
         let mut input = LitModelInput {
             parts: vec![part(0, 0, [Some((0, 0)), Some((0, 2)), None, None, None])],
-            programs: vec![LitProgramInput { pass: equal_pass(0), images: Default::default() }],
+            programs: vec![LitProgramInput { pass: equal_pass(0), images: Default::default(), frames: Default::default() }],
             buffers: vec![geometry.clone(), unused, geometry],
             layers: Vec::new(),
         };
@@ -4223,7 +4377,7 @@ mod tests {
             let mut pass = equal_pass(0);
             pass.program.dims[0] = Some(shaders::psh::TextureDim::D2);
             pass.program.stages[0] = stage;
-            LitProgramInput { pass, images: [image, None, None, None] }
+            LitProgramInput { pass, images: [image, None, None, None], frames: Default::default() }
         };
         let solid = || Some(Image::solid([200, 100, 50, 255]));
         let model = |programs: Vec<LitProgramInput>| {
@@ -4288,7 +4442,7 @@ mod tests {
             registers, indices: vec![0, 1, 2],
         };
         objects.add_model(&ctx.device, &ctx.queue, 7, LitModelInput {
-            programs: vec![LitProgramInput { pass, images: Default::default() }],
+            programs: vec![LitProgramInput { pass, images: Default::default(), frames: Default::default() }],
             buffers: vec![buffer],
             parts: vec![part(0, 0, [Some((0, 0)), None, None, None, None])],
             layers: Vec::new(),

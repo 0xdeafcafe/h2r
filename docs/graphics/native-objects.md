@@ -725,6 +725,14 @@ bindings use the same values, including the view's disabled-fog defaults.
   falls back to the rasterizer default texture the pass is refused as any
   default-texture stage is (`DefaultTexture`); when the index does not read
   it stays `EngineTexture(26)`.
+- **Animated bitmap frames** (bitmap animation component 0, Code). A
+  stage whose slot's frame is animated binds every image of its bitmap at
+  compile (`object_program_gpu::frame_images`), and each draw picks one
+  from the render clock's frame with `layer_pass::frame_image`, the rule of
+  `0x0001b0a0` (`object_program::animated_blocks`, `PlannedDraw::frames`).
+  The encode caches a bind group per image choice. Components 8 and 9 are
+  never read and are skipped; the proof and the refusals are in
+  [shader-instances.md](../formats/shader-instances.md#animated-bitmap-frames-and-components).
 - **The lightmap stage** (`object_program::OBJECT_LIGHTMAP`, Code). An
   object's draw binds no lightmap page. The draw (`0x0004d0b0`, draw 3)
   sets the current page `[0x00485a60]` to -1 for every record with a
