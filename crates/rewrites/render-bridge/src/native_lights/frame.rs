@@ -27,12 +27,13 @@ pub(super) fn install(b: &mut Builder) {
                 if addr != points::RENDER_DYNAMIC_LIGHTS.base || Stage::Lights.standing_down() {
                     return original(cpu, ctx, addr);
                 }
-                // The scene's own light path answers the frame: the cut.
-                if super::scene_path_ready() {
-                    if let Some(cut) = crate::cut::cut("dynamic_lights") {
-                        return crate::cut::answer(cut, cpu, ctx);
-                    }
-                }
+                // Under the cut the body still gathers, and each light's
+                // passes put the light and its groups into the scene
+                // ([`super::scene_frame`]); a refused plan is answered as
+                // the cut, never by the guest's body.
+                let cut = super::scene_path_ready()
+                    .then(|| crate::cut::cut("dynamic_lights"))
+                    .flatten();
                 let fpu = Fpu {
                     mxcsr: cpu.mxcsr,
                     x87_control: cpu.x87.control,
@@ -46,6 +47,9 @@ pub(super) fn install(b: &mut Builder) {
                     Ok(plan) => plan,
                     Err(why) => {
                         refused(SceneList::LightFrame, why);
+                        if let Some(cut) = cut {
+                            return crate::cut::answer(cut, cpu, ctx);
+                        }
                         return original(cpu, ctx, addr);
                     }
                 };
