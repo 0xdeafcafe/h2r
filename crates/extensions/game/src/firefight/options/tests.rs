@@ -660,3 +660,19 @@ fn every_row_has_a_help_and_real_picker_copy() {
         assert_eq!(picker::current().expect("a pick").description, e, "{}", r.text);
     }
 }
+
+/// The page lists its six settings in a dialog list that shows all of
+/// them: laid out for every row, inside the 640 x 480 safe area.
+#[test]
+fn the_page_shows_all_its_rows_with_no_scrolling() {
+    use crate::list_class::Rows;
+    use crate::ui_kit::dialog::DialogBase;
+    let s = screen(&store());
+    let rows = Rows::count(&*s);
+    assert_eq!(rows, DEFS.len(), "the full row list");
+    let l = crate::ui_kit::dialog_tag::base_layout(DialogBase::QuickOptions, rows);
+    assert_eq!(l.visible as usize, rows);
+    let bottom = i32::from(l.anchor[1]) - i32::from(l.visible) * 26;
+    assert!(bottom >= i32::from(crate::ui_kit::layout::SAFE.bottom), "bottom {bottom}");
+    assert!(bottom >= -240);
+}

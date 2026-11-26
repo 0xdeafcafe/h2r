@@ -65,6 +65,7 @@ pub const FEATURE: &str = "pause-change-map";
 pub const SETUP_SCREEN: &str = "pause-game-setup";
 pub const CATEGORIES_SCREEN: &str = "pause-map-categories";
 pub const TYPES_SCREEN: &str = "pause-game-types";
+pub const RULES_SCREEN: &str = "pause-game-rules";
 pub const QUICK_SCREEN: &str = "pause-quick-options";
 pub const CLANKERS_SCREEN: &str = "pause-clanker-options";
 
@@ -93,8 +94,18 @@ const CLANKER_SLOTS: u32 = QUICK_SLOTS + quick::Setting::ALL.len() as u32;
 /// Clanker Options' rows: one a setting of `clankers::DEFS` (a static,
 /// which a constant can't read; a test holds the two equal).
 const CLANKER_ROWS: u32 = 8;
+/// Change Rules' list (a game type's variants): its title, the legend of
+/// it and of the game types' list, and a slot per row it shows; a list
+/// longer than the window reuses them as it scrolls.
+const RULES_TITLE_SLOT: u32 = CLANKER_SLOTS + CLANKER_ROWS;
+const FOOTER_SLOT: u32 = RULES_TITLE_SLOT + 1;
+const RULES_SLOTS: u32 = FOOTER_SLOT + 1;
+/// The rows Select Game and Change Rules show at once: Quick Options'
+/// dialog's list (`dialog::QUICK_LIST_ROWS`), the most its panel holds
+/// inside the 640 x 480 safe area. A variant list longer than this scrolls.
+pub const LIST_ROWS: usize = crate::ui_kit::dialog::QUICK_LIST_ROWS;
 /// The slots in use.
-pub const SLOTS: u32 = CLANKER_SLOTS + CLANKER_ROWS;
+pub const SLOTS: u32 = RULES_SLOTS + LIST_ROWS as u32;
 
 pub const ROW_LABEL: &str = "Game Setup";
 const SETUP_TITLE: &str = "Game Setup";
@@ -521,6 +532,8 @@ pub struct VisitState {
     pub draft: Draft,
     /// The categories or game types list a picker was opened from.
     pub list_screen: Option<u32>,
+    /// The game type whose variants Change Rules lists.
+    pub group: Option<game_types::Group>,
     /// Game Setup itself, while the confirm dialog is up.
     pub setup_screen: Option<u32>,
     pub confirm: Option<Confirm>,
@@ -890,7 +903,7 @@ fn read_visit(m: &dyn GuestMemory) -> (Avail, Vec<game_types::Listed>, Option<Ga
     if a.map == Some(Opening::Categories) && !on(CATEGORIES_SCREEN) {
         a.map = None;
     }
-    a.rules &= on(TYPES_SCREEN);
+    a.rules &= on(TYPES_SCREEN) && on(RULES_SCREEN);
     a.quick &= on(QUICK_SCREEN);
     (a, variants, base)
 }

@@ -451,7 +451,11 @@ MENU. **Game Setup** opens a list of ours with the lobby's own rows:
   Change Rules lists, including Research and Devolution, Party Games, Firefight, Siege,
   the community variants and the game-variant store's (Live, imported
   and ported variants, rules-script variants among them). A Firefight
-  lobby has no Change Rules, as in the lobby.
+  lobby has no Change Rules, as in the lobby. Select Game (the game
+  types) and the variants' list are dialogs on Quick Options' panel
+  (`pause_change_map::LIST_ROWS`, eleven rows, which ends inside the
+  640 x 480 safe area), so every game type shows at once with no
+  scrolling; a variants list longer than that scrolls.
 - **Quick Options** offers Score to Win, Time Limit, Lives per Round and
   Respawn Time of the variant the next game plays: the one Change Rules
   picked in this visit, else the lobby's.
@@ -488,7 +492,7 @@ Code: `game::pause_change_map` (`PauseChangeMap`, `install`, from
 `boot::registration`; `setup`, `game_types`, `quick`, `clanker_rows`).
 The `features.pause-change-map` switch turns the row, Game Setup and the
 restart off. Each screen's class is its own feature
-(`pause-game-setup`, `pause-map-categories`, `pause-game-types`,
+(`pause-game-setup`, `pause-map-categories`, `pause-game-types`, `pause-game-rules`,
 `pause-quick-options`, `pause-clanker-options`); a row whose screen is
 off is left out.
 
