@@ -1192,7 +1192,12 @@ impl hooks::Feature for MapSelect {
                     Ok(engine::entry::Ret::new(r.eax, 0))
                 })
             })
-        });
+        })
+        // Outside co-op, sim, Firefight and the rules, like the refresh
+        // above: they run inside the tick this re-enters.
+        .first()
+        .after_feature(agent::sim::calls::FEATURE)
+        .after_feature(crate::skulls_custom::FEATURE);
 
         // The list's array for a Select Map of ours.
         let (nav, sel) = (Arc::clone(&self.navigation), Arc::clone(&self.sel));
