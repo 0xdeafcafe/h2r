@@ -53,6 +53,22 @@ the runner performs all checks applicable to the map on the supplied socket.
 Before changing state it checks the cache name, cache type, live weapon
 datums and names, and the multiplayer player's biped.
 
+## Conversion gate
+
+`scripts/h1-convert-gate.sh` imports the Halo 1 disc with `h2 import halo1
+--force` into a fresh data root under `$TMPDIR`, so no earlier output can
+stand in for a failed map, and deletes the root on exit. It exits non-zero
+unless the import's summary line says `0 failed` and `46 converted` (ten
+levels, 13 multiplayer maps in two sandboxes, ten Halo 2-assets variants),
+and prints the import's own lines so a failure names its map and reason.
+The landing gate runs it for a diff under `crates/tools/h1*` or
+`crates/apps/cli/src/h1_import.rs`.
+
+```sh
+H1_ISO="$PWD/disc/halo1.iso" H2_DISC="$PWD/disc/halo2.iso" \
+scripts/h1-convert-gate.sh
+```
+
 ## What is measured
 
 | Check | Halo 1 reference | Observation and decision |

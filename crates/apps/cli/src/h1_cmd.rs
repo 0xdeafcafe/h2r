@@ -61,8 +61,8 @@ const IMPORT_USAGE: &str = "usage: h2 import halo1 [halo1.iso] [--data DIR] [--d
 Converts the Halo: Combat Evolved disc for the game: its ten campaign levels
 into <data>/campaigns/halo1/ (Campaign, then Halo: Combat Evolved) and each
 multiplayer map, in both sandboxes, into <data>/maps/h1_<map>/ (the
-multiplayer map list). A line per map; a map that fails is reported and the
-rest go on. <data>/campaigns/halo1/import.stamp records the disc's SHA-256
+multiplayer map list). A line per map; a map that fails is reported, any map
+an older converter wrote for it is removed, and the rest go on. <data>/campaigns/halo1/import.stamp records the disc's SHA-256
 and the converter's version, so a rerun converts only what is missing or
 stale; --force converts everything again. `h2 play`, `h2 run` and `h2 serve`
 run this by themselves when halo1.iso is next to the Halo 2 disc.
