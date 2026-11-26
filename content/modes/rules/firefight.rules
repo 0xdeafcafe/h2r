@@ -823,7 +823,9 @@ on tick {
             for each players p where p.alive { p.respawning = false }
             if tick >= phase_tick or count(players p where p.alive) == 0 { end_bonus(tick, here_0, here_1) }
         }
-        if allies_due and phase != done {
+        // Not while a wave is being placed: the zone choice is the tick's
+        // largest cost, and the wave's squads come first.
+        if allies_due and phase != done and phase != spawning {
             let roster = clamp(count(players), 1, largest_roster)
             place_ally(tick, roster, actor_caps[roster - 1].actors)
         }
