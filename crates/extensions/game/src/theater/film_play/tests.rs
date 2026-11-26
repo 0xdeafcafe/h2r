@@ -677,3 +677,119 @@ fn a_record_too_large_to_keep_ends_the_film_at_the_tick_before() {
     let actions = film::file::FilmActions::open(&file).unwrap();
     assert_eq!(actions.length_ticks(), 2);
 }
+
+mod monitor_looks {
+    //! The film's Forge monitor looks and poses, read from its stats
+    //! container a game tick at a time (`Looks`).
+    use super::*;
+    use crate::theater::forge_film::tests::{look_record, pose_record, turn};
+    use crate::theater::forge_film::{active, is_monitor};
+    use film::blam::{MatchHeader, RecordData, Summary, Tick, TrackWriter};
+    use forge::look::MARKER;
+
+    impl Fixture {
+        /// The film's stats container written again with `records`, each a
+        /// game tick and a Forge monitor record, and nothing else.
+        fn with_looks(records: &[(u64, Vec<u8>)]) -> Self {
+            let fixture = Self::new();
+            let stats = film::file::stats_of(&fixture.file);
+            let mut header = film::Reader::open(&stats).unwrap().header;
+            header.version = 3;
+            header.inputs_in_film = true;
+            header.meta.length_ticks = GAME;
+            fs::remove_file(&stats).unwrap();
+            let mut out = film::Writer::new(fs::File::create_new(&stats).unwrap(), &header).unwrap();
+            let mut track = TrackWriter::default().without_inputs();
+            for n in 1..=GAME {
+                let tick = Tick { tick: n, ..Tick::default() };
+                let forge = records
+                    .iter()
+                    .filter(|(at, _)| *at == n)
+                    .map(|(_, payload)| RecordData::forge_payload(payload.clone()))
+                    .collect();
+                track.push_clocked(&mut out, tick, forge, Some(n)).unwrap();
+            }
+            track.finish(&mut out, &MatchHeader::default(), &Summary::default()).unwrap();
+            out.finish().unwrap().sync_all().unwrap();
+            fixture
+        }
+    }
+
+    /// Plays until the session's film tick is `to` or the film stops, and
+    /// says after each game tick whether seat 13 is a monitor.
+    fn play_to(session: &Arc<Session>, g: &mut runtime::Guest, to: u64) -> Vec<(u64, bool)> {
+        let mut seen = Vec::new();
+        while session.lock().tick < to && tick(session, g, |_| ()) {
+            seen.push((session.lock().tick, is_monitor(13)));
+        }
+        seen
+    }
+
+    #[test]
+    fn a_monitor_look_in_the_film_is_shown_from_its_tick() {
+        let _turn = turn();
+        let fixture = Fixture::with_looks(&[
+            (5, look_record(13, MARKER)),
+            (5, pose_record(13, 5, 1., true)),
+        ]);
+        let session = fixture.open();
+        let mut g = machine(&fixture.options, [21, 22]);
+        let seen = play_to(&session, &mut g, GAME);
+        assert_eq!(session.lock().failure, None);
+        assert!(session.lock().complete);
+        let want: Vec<_> = (1..=GAME).map(|n| (n, n >= 5)).collect();
+        assert_eq!(seen, want, "the look is the playback's from game tick 5 on");
+        // The film's player goes: its monitors go with it.
+        drop(session.lock().play.take());
+        assert!(!active());
+    }
+
+    #[test]
+    fn a_film_without_monitor_records_leaves_the_playback_alone() {
+        let _turn = turn();
+        let fixture = Fixture::with_looks(&[]);
+        let session = fixture.open();
+        let mut g = machine(&fixture.options, [21, 22]);
+        play_to(&session, &mut g, GAME);
+        assert_eq!(session.lock().failure, None);
+        assert!(!active());
+    }
+
+    #[test]
+    fn a_start_route_seek_back_across_a_look_reads_it_again_at_its_tick() {
+        let _turn = turn();
+        let fixture = Fixture::with_looks(&[
+            (5, look_record(13, MARKER)),
+            (5, pose_record(13, 5, 1., true)),
+        ]);
+        let session = fixture.open();
+        let mut g = machine(&fixture.options, [21, 22]);
+        play_to(&session, &mut g, 10);
+        assert!(is_monitor(13));
+
+        // Back to tick 3: the film starts over and what was read goes.
+        session.lock().restart_play(3);
+        assert!(!is_monitor(13) && !active());
+        session.lock().play.as_mut().unwrap().activated();
+        let mut again = machine(&fixture.options, [21, 22]);
+        let seen = play_to(&session, &mut again, 3);
+        assert_eq!(seen, vec![(1, false), (2, false), (3, false)]);
+        // Forward across the look: it is shown from its tick again.
+        let seen = play_to(&session, &mut again, 6);
+        assert_eq!(seen, vec![(4, false), (5, true), (6, true)]);
+        assert_eq!(session.lock().failure, None);
+    }
+
+    #[test]
+    fn an_unreadable_monitor_record_is_a_named_film_error_at_its_tick() {
+        let _turn = turn();
+        let fixture = Fixture::with_looks(&[(4, vec![forge::look::film::POSE, 1, 2, 3])]);
+        let session = fixture.open();
+        let mut g = machine(&fixture.options, [21, 22]);
+        play_to(&session, &mut g, GAME);
+        let s = session.lock();
+        let failure = s.failure.clone().expect("the film stops");
+        assert!(failure.contains("Forge monitor"), "{failure}");
+        assert_eq!(s.tick, 4);
+    }
+}

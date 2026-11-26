@@ -133,16 +133,17 @@ enum Dest {
     /// update.
     Library(PathBuf),
     /// A host's or an explicit (`--film`, `H2_FILM_OUT`) recording: one
-    /// film at this path, open from boot; the recording completes at its
-    /// game's end.
-    Named(#[allow(dead_code)] PathBuf),
+    /// film, open from boot at the path its game's files hold
+    /// ([`record::GameFiles::path`]); the recording completes at its game's
+    /// end.
+    Named,
 }
 
 impl Recording {
     fn library(&self) -> Option<&std::path::Path> {
         match &self.dest {
             Dest::Library(dir) => Some(dir),
-            Dest::Named(_) => None,
+            Dest::Named => None,
         }
     }
 }
@@ -174,7 +175,8 @@ struct SeekProgress {
     target: u64,
     from_tick: u64,
     source: agent_proto::theater::SeekSource,
-    #[allow(dead_code)] // `theater.state` does not report the requested route yet.
+    /// The route the caller asked for (`theater.seek`'s `source`), which
+    /// `theater.state` reports beside the route taken.
     requested_source: Option<agent_proto::theater::SeekRoute>,
 }
 struct State {
@@ -415,8 +417,8 @@ impl Session {
             let (dest, game) = if header.player_features {
                 (Dest::Library(path), None)
             } else {
-                let files = record::GameFiles::create(path.clone(), header.clone(), Some(0))?;
-                (Dest::Named(path), Some(files))
+                let files = record::GameFiles::create(path, header.clone(), Some(0))?;
+                (Dest::Named, Some(files))
             };
             (
                 Mode::Record(Recording {

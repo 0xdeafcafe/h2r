@@ -403,6 +403,34 @@ fn the_start_route_can_be_asked_for_and_a_seek_beyond_the_film_is_refused() {
 }
 
 #[test]
+fn theater_state_reports_the_route_asked_for_beside_the_route_taken() {
+    let v = viewer();
+    let rec = &v.rec;
+    let mut g = v.watch();
+    for n in 0..5 {
+        assert!(tick(rec, &mut g, n));
+    }
+    // A seek ahead with no route asked for: forward, and nothing requested.
+    let ahead = v.first + 10;
+    let state = rec.transport(api::SEEK, json!({ "tick": ahead })).unwrap();
+    assert_eq!(state["seek"]["source"], json!("forward"));
+    assert!(state["seek"].get("requested").is_none(), "{state}");
+
+    // The start asked for, though the target is ahead: the route taken and
+    // the route asked for are both reported, by `theater.state` too.
+    let state = rec.transport(api::SEEK, json!({ "tick": ahead + 5, "source": "boot" })).unwrap();
+    assert_eq!(state["seek"]["source"], json!("boot"));
+    assert_eq!(state["seek"]["requested"], json!("boot"));
+    let state = rec.transport(api::STATE, json!({})).unwrap();
+    assert_eq!(state["seek"]["requested"], json!("boot"), "{state}");
+    let seek = rec.lock().seek_info().unwrap();
+    assert_eq!(
+        (seek.source, seek.requested),
+        (api::SeekSource::Boot, Some(api::SeekRoute::Boot))
+    );
+}
+
+#[test]
 fn the_viewers_settings_come_back_when_the_film_never_starts_or_the_session_ends() {
     let v = viewer();
     let rec = &v.rec;

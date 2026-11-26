@@ -142,6 +142,7 @@ impl State {
             target: seek.target,
             from_tick: seek.from_tick,
             source: seek.source,
+            requested: seek.requested_source,
             remaining_ticks: if self.restart.is_some() {
                 seek.target
             } else {

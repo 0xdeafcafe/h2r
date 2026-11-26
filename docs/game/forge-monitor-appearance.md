@@ -417,16 +417,17 @@ item (`forge::net::film`); the look and the pose are 2 and 3
   film holds, at every tick from the checkpoint on.
 - Playback reads the records into the same `Seats` the live session
   draws from (`look::film::Playback`), and draws with `Bodies::draw`.
-  Theater's reader hands each film tick's Forge entry records to
-  `theater::forge_film::deliver` as the tick is read, so the first tick
-  after a seek has its chunk's checkpoint. Only the look and pose
-  subtypes go to the playback; the welcome and the stream items are the
-  edit log, which the simulation's own state carries
-  (`net::film::Replay::feed` routes all four for a consumer that wants the
-  peer). A keyframe restore clears the playback and the checkpoint
-  rebuilds it; a ring entry keeps the playback it held
-  (`replay_cursor::ReplayCursor`). The film's tick is the render clock, 30
-  a second. The records are outside the gameplay digest, so a film
+  The film player reads the stats container beside the film file a game
+  tick at a time (`theater::film_play::Looks`) and hands each tick's
+  Forge entry records to `theater::forge_film::deliver` as the game tick
+  ends. Only the look and pose subtypes go to the playback; the welcome
+  and the stream items are the edit log, which the film file's extension
+  records replay (`theater::extension`; `net::film::Replay::feed` routes
+  all four for a consumer that wants the peer). A start-route seek clears
+  the playback and the container is read again from the game's first
+  update; the film's end clears it. A film whose container is not on the
+  machine (a host's film read from Live) plays with no monitor bodies.
+  The container's tick is the render clock, 30 a second. The records are outside the gameplay digest, so a film
   verifies the same with or without them, and a record that is not
   readable is a named film error. The film reader accepts the subtypes
   (`live_proto::film::stream::FORGE_LOOK`, `FORGE_POSE`); any other is

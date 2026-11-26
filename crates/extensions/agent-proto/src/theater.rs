@@ -363,6 +363,10 @@ pub struct SeekInfo {
     pub target: u64,
     pub from_tick: u64,
     pub source: SeekSource,
+    /// The route the caller asked for (`theater.seek`'s `source`); absent
+    /// when the player chose it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested: Option<SeekRoute>,
     pub remaining_ticks: u64,
 }
 
@@ -556,7 +560,14 @@ mod tests {
         let current: State = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(current.speed_reached, Some(2.25));
         assert_eq!(current.seek.unwrap().source, SeekSource::Boot);
+        assert_eq!(current.seek.unwrap().requested, None);
         assert_eq!(serde_json::to_value(current).unwrap(), wire);
+
+        // A seek the caller routed says so beside the route taken.
+        wire["seek"]["requested"] = json!("boot");
+        let asked: State = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(asked.seek.unwrap().requested, Some(SeekRoute::Boot));
+        assert_eq!(serde_json::to_value(asked).unwrap(), wire);
     }
 }
 

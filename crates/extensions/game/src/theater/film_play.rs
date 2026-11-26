@@ -22,18 +22,25 @@
 //!   tick's, at the game's first update), and each feature applies them in
 //!   the game tick that follows. A film with records of a feature this
 //!   build does not have does not open.
+//! - **Forge monitor looks and poses** are presentation and sit in the
+//!   stats container beside the film file, one container tick for each
+//!   game tick ([`Looks`]): when a game tick ends, the container's ticks up
+//!   to it are handed to `forge_film`, which the camera rig and the
+//!   renderer read. A film with no stats container here plays without them.
 //!
 //! A film with no game start is refused ([`super::NO_GAME_START`]). The
 //! player restores nothing of the recording machine: the data directory
 //! is empty and private, and the guest's storage writes go to a scratch
 //! (`vfs::Vfs::guard_writes`). A seek behind the tick shown queues the
 //! film's options again and runs forward (`Session::requeue`).
-use super::{Session, State, metadata};
+use super::{Session, State, forge_film, metadata};
 use anyhow::{Context, Result, bail, ensure};
+use film::blam::{TrackReader, stream};
 use film::file::FilmActions;
 use film::start::GameStart;
 use runtime::Guest;
-use std::path::Path;
+use std::fs::File;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// The options' count of local players (`OPTIONS_PLAYERS` writes it at
@@ -59,6 +66,107 @@ pub(super) struct Play {
     awaiting: bool,
     /// The mounted maps, to check the game's map against the film's.
     pub(super) map_vfs: Option<Arc<Mutex<vfs::Vfs>>>,
+    /// The Forge monitor records of the film's stats container, when it has
+    /// one here.
+    looks: Option<Looks>,
+}
+
+/// The film's Forge monitor looks and poses (`forge_film`), read from its
+/// stats container a game tick at a time. The container holds one tick for
+/// each game tick, where the film file holds one for each application of
+/// the update, so it is counted in game ticks from the game's first update.
+/// A film whose container is not here (a host's film read from Live) or
+/// cannot be read (a recording killed before its seal) plays without them;
+/// a record that cannot be read is a named film error.
+struct Looks {
+    stats: PathBuf,
+    track: Option<TrackReader<File>>,
+    /// The container tick the last game tick ended on.
+    at: u64,
+    /// The container is read to its end, or could not be opened.
+    done: bool,
+    /// A monitor record has been handed over: the playback's clock follows
+    /// every game tick from here, and the playback is cleared when the film
+    /// starts over or ends. A film with no monitor record leaves it alone.
+    fed: bool,
+}
+
+impl Looks {
+    fn of(film: &Path) -> Option<Self> {
+        let stats = film::file::stats_of(film);
+        stats.is_file().then_some(Self {
+            stats,
+            track: None,
+            at: 0,
+            done: false,
+            fed: false,
+        })
+    }
+
+    /// The film's game takes its first update after container tick `before`.
+    fn begin(&mut self, before: u64) {
+        self.at = before;
+    }
+
+    /// The film starts over (a start-route seek): what the playback read
+    /// goes, and the container is read again from its start.
+    fn restart(&mut self) {
+        self.track = None;
+        self.at = 0;
+        self.done = false;
+        if std::mem::take(&mut self.fed) {
+            forge_film::clear();
+        }
+    }
+
+    /// A game tick ended: hand `forge_film` the records of the container's
+    /// ticks up to it, each with its tick.
+    fn tick_ended(&mut self) -> Result<()> {
+        self.at += 1;
+        if !self.done && self.track.is_none() {
+            match TrackReader::open(&self.stats) {
+                Ok(track) => self.track = Some(track.without_actions()),
+                Err(error) => {
+                    eprintln!("theater: the film's Forge monitor records are not read: {error:#}");
+                    self.done = true;
+                }
+            }
+        }
+        if !self.done
+            && let Some(track) = self.track.as_mut()
+        {
+            loop {
+                let Some(tick) = track.step()? else {
+                    self.done = true;
+                    break;
+                };
+                let monitors = tick.forge.iter().any(|payload| {
+                    matches!(payload.first(), Some(&stream::FORGE_LOOK | &stream::FORGE_POSE))
+                });
+                if monitors || self.fed {
+                    self.fed = true;
+                    forge_film::deliver(tick.tick, &tick.forge)?;
+                }
+                if tick.tick >= self.at {
+                    return Ok(());
+                }
+            }
+        }
+        // Past the container's end the playback's clock goes on.
+        if self.fed {
+            forge_film::deliver(self.at, &[])?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Play {
+    /// The film ends: the monitors it showed go with it.
+    fn drop(&mut self) {
+        if self.looks.as_ref().is_some_and(|looks| looks.fed) {
+            forge_film::clear();
+        }
+    }
 }
 
 impl Play {
@@ -91,6 +199,7 @@ impl Play {
             applied: 0,
             awaiting: false,
             map_vfs: None,
+            looks: Looks::of(path),
         }))
     }
 
@@ -103,6 +212,9 @@ impl Play {
         self.applied = 0;
         self.awaiting = true;
         super::extension::clear();
+        if let Some(looks) = &mut self.looks {
+            looks.restart();
+        }
     }
 
     /// The queued game activated.
@@ -228,6 +340,9 @@ pub(super) fn update(state: &mut State, g: &mut Guest, update: u32) -> Result<()
         state.tick = first - 1;
         play.begin(g)?;
         play.at = first - 1;
+        if let Some(looks) = &mut play.looks {
+            looks.begin(first - 1);
+        }
         play.deliver(first)?;
     }
     let tick = play.at + play.applied + 1;
@@ -277,6 +392,11 @@ pub(super) fn tick_done(state: &mut State, hash: Option<u64>) {
                 hash == Some(whole),
                 "expected gameplay {whole:016x}, observed {hash:?}"
             );
+        }
+        if let Some(looks) = &mut play.looks {
+            looks
+                .tick_ended()
+                .context("the film's Forge monitor records")?;
         }
         if tick < play.length {
             play.deliver(tick + 1)?;

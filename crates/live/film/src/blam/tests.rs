@@ -845,6 +845,21 @@ fn a_stats_stream_without_inputs_takes_them_from_the_film_file() {
 
     let mut alone = TrackReader::new(Reader::new(Cursor::new(&bytes)).unwrap()).unwrap();
     assert!(alone.step().is_err());
+    // Without the actions the stats stream reads alone: its ticks, digests
+    // and events, and no input.
+    let mut presentation = TrackReader::new(Reader::new(Cursor::new(&bytes)).unwrap())
+        .unwrap()
+        .without_actions();
+    let mut read = Vec::new();
+    while let Some(tick) = presentation.step().unwrap() {
+        assert!(tick.inputs.is_empty(), "tick {}", tick.tick);
+        read.push((tick.tick, tick.post_hash, tick.events));
+    }
+    let want: Vec<_> = ticks
+        .iter()
+        .map(|tick| (tick.tick, tick.post_hash, tick.events.clone()))
+        .collect();
+    assert_eq!(read, want);
     let mut merged = TrackReader::new(Reader::new(Cursor::new(&bytes)).unwrap()).unwrap();
     merged
         .attach_film(FilmActions::new(Box::new(Cursor::new(film))).unwrap())

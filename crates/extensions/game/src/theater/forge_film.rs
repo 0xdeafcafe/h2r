@@ -1,16 +1,17 @@
 //! Forge monitor looks and poses at film playback (docs/game/
 //! forge-monitor-appearance.md, "Theater", ML8). The film's Forge entry
 //! records (`live_proto::film::stream::FORGE`) of subtype look and pose are
-//! presentation: the track reader hands them over with the tick that holds
-//! them ([`deliver`]), and they build the `Playback` the camera rig, the
-//! bodies the renderer draws and the Theater bar read. The welcome and the
-//! stream items are the session's edit log, which the simulation's own
-//! state already carries, so playback does not replay them here.
+//! presentation, kept in the stats container: the player reads them a game
+//! tick at a time and hands them over with the tick that holds them
+//! ([`deliver`], from `film_play::Looks`), and they build the `Playback`
+//! the camera rig, the bodies the renderer draws and the Theater bar read.
+//! The welcome and the stream items are the session's edit log, which the
+//! film file's extension records replay (`theater::extension`), so they
+//! are not read here.
 //!
 //! The state is a host static, like `firefight::film`'s: one film plays at a
-//! time. A keyframe restore clears it and the film's own checkpoint records
-//! rebuild it ([`clear`]); a ring restore puts back what its entry held
-//! ([`Snapshot`]).
+//! time. A film that starts over (a start-route seek) clears it and the
+//! records read again from the game's first update rebuild it ([`clear`]).
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -24,41 +25,28 @@ use forge::look::session::CanDraw;
 
 /// What playback has read of the film's monitor records so far, the film
 /// tick it stands at and the seat a first-person camera looks from.
-#[derive(Clone, Debug, Default)]
-pub struct Snapshot {
+#[derive(Debug, Default)]
+struct Monitors {
     playback: Playback,
     tick: u32,
     hide: Option<u8>,
 }
 
-static STATE: Mutex<Option<Snapshot>> = Mutex::new(None);
+static STATE: Mutex<Option<Monitors>> = Mutex::new(None);
 
-fn with<R>(f: impl FnOnce(&mut Snapshot) -> R) -> R {
+fn with<R>(f: impl FnOnce(&mut Monitors) -> R) -> R {
     let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
-    f(state.get_or_insert_with(Snapshot::default))
+    f(state.get_or_insert_with(Monitors::default))
 }
 
-/// A film opens or a keyframe is restored: what was read goes, and the
-/// records that follow (a chunk's checkpoint first) rebuild it.
+/// A film starts over or ends: what was read goes, and the records that
+/// follow rebuild it.
 pub fn clear() {
     *STATE.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
-/// What a ring entry keeps, to put back when it is restored.
-#[allow(dead_code)] // Film playback does not call it yet: Forge edits in a film are recorded but not replayed.
-pub(super) fn snapshot() -> Snapshot {
-    with(|s| s.clone())
-}
-
-/// Put back what [`snapshot`] kept.
-#[allow(dead_code)] // Film playback does not call it yet: Forge edits in a film are recorded but not replayed.
-pub(super) fn restore(snapshot: &Snapshot) {
-    *STATE.lock().unwrap_or_else(|e| e.into_inner()) = Some(snapshot.clone());
-}
-
 /// Read the monitor records of the film tick `tick`, which the playback now
 /// stands at. A record that is not readable is a named film error.
-#[allow(dead_code)] // Film playback does not call it yet: Forge edits in a film are recorded but not replayed.
 pub(super) fn deliver(tick: u64, payloads: &[Vec<u8>]) -> Result<()> {
     with(|s| {
         s.tick = u32::try_from(tick).unwrap_or(u32::MAX);
@@ -186,4 +174,4 @@ fn unseen_of(records: &[Vec<u8>], can: &CanDraw) -> Vec<Unseen> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
