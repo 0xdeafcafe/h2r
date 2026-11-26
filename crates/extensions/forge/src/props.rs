@@ -31,9 +31,9 @@ pub struct Prop {
     source: Source,
 }
 
-use ThingKind::{Goal, ItemSpawner, Object, StartingPoint, Teleporter};
+use ThingKind::{Goal, ItemSpawner, Object, Piece, StartingPoint, Teleporter};
 
-const ALL: &[ThingKind] = &[Object, ItemSpawner, StartingPoint, Goal, Teleporter];
+const ALL: &[ThingKind] = &[Object, ItemSpawner, StartingPoint, Goal, Teleporter, Piece];
 
 /// Every property, in the order a thing shows them.
 pub static PROPS: &[Prop] = &[

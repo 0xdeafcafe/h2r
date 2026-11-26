@@ -252,7 +252,7 @@ pub fn entries(f: &Facts<'_>) -> Vec<Entry> {
         let mut area = f.areas.get(&t.id.identity()).map(forge_doc::Area::marker_area);
         let mut number = None;
         let kind = match t.kind {
-            ThingKind::Object => continue,
+            ThingKind::Object | ThingKind::Piece => continue,
             ThingKind::StartingPoint => Kind::Spawn(SpawnUse::Respawn),
             ThingKind::ItemSpawner => Kind::Item(item_class(t)),
             ThingKind::Goal | ThingKind::Teleporter => {

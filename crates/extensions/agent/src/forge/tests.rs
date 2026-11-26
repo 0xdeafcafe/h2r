@@ -2445,4 +2445,92 @@ mod ground {
         let bad = h.call(&mut game, method::WAVES, json!({"stop": true}));
         assert!(!bad["error"].is_null(), "{bad}");
     }
+
+    /// A world that holds the definitions it is told of.
+    #[derive(Default)]
+    struct Holds {
+        loaded: Vec<String>,
+        next: u32,
+    }
+
+    impl ::forge::World for Holds {
+        fn place(&mut self, _: &PaletteItem, _: Frame) -> Result<u32, String> {
+            self.next += 1;
+            Ok(self.next)
+        }
+        fn respawn(&mut self, item: &PaletteItem, frame: Frame) -> Result<u32, String> {
+            self.place(item, frame)
+        }
+        fn move_object(&mut self, _: u32, _: Frame) -> Result<(), String> {
+            Ok(())
+        }
+        fn delete(&mut self, _: u32) -> Result<(), String> {
+            Ok(())
+        }
+        fn piece_loaded(&self, name: &str) -> bool {
+            self.loaded.iter().any(|n| n == name)
+        }
+    }
+
+    #[test]
+    fn pieces_lists_each_piece_with_its_definition_state_and_bounds() {
+        use ::forge::{PieceDef, Shape};
+        let h = Harness::new();
+        let mut game = game(1);
+        let limits = forge_doc::Limits {
+            world: Some(forge_doc::WorldBounds {
+                min: [-8.0; 3],
+                max: [8.0; 3],
+            }),
+            base_counts: [(BlockKind::Crates, 2)].into(),
+            ..Default::default()
+        };
+        let mut session = Session::new(draft(), limits, vec![], 8).unwrap();
+        let held = PieceDef::dev(Shape::Block, [100, 200, 300], 0);
+        let missing = PieceDef::dev(Shape::Ramp, [128, 128, 64], 0);
+        let mut world = Holds {
+            loaded: vec![held.name()],
+            ..Default::default()
+        };
+        let at = |x: f32| Frame {
+            position: [x, 1., 0.],
+            rotation: [0.; 3],
+        };
+        let live = session.place_piece(&mut world, 1, held.clone(), at(0.)).unwrap();
+        let pending = session
+            .place_piece(&mut world, 2, missing.clone(), at(3.))
+            .unwrap();
+        local::install(
+            &h.agent,
+            Host {
+                session: Mutex::new(Arc::new(session)),
+                builds: None,
+            },
+        );
+        let methods = h.ok(&mut game, agent_proto::method::METHODS, Json::Null);
+        assert!(methods.as_array().unwrap().contains(&json!(method::PIECES)));
+
+        let reply = h.ok(&mut game, method::PIECES, Json::Null);
+        assert_eq!(reply["pending"], 1);
+        assert_eq!(reply["slots"], json!([]));
+        let pieces = reply["pieces"].as_array().unwrap();
+        assert_eq!(pieces.len(), 2);
+        assert_eq!(pieces[0]["target"], json!({"added": live.0}));
+        assert_eq!(pieces[0]["name"], held.name());
+        assert_eq!(pieces[0]["state"], "live");
+        assert_eq!(pieces[0]["def"], json!(held));
+        assert_eq!(
+            pieces[0]["bounds"],
+            json!({"min": [0.0, 1.0, 0.0], "max": [1.0, 3.0, 3.0]})
+        );
+        assert_eq!(pieces[1]["target"], json!({"added": pending.0}));
+        assert_eq!(pieces[1]["state"], "pending");
+
+        // `forge.things` names the kind.
+        let things = h.ok(&mut game, method::THINGS, json!({"kind": "piece"}));
+        assert_eq!(things["things"].as_array().unwrap().len(), 2);
+        assert_eq!(things["things"][0]["kind"], "piece");
+        let refused = h.call(&mut game, method::PIECES, json!({"all": true}));
+        assert!(!refused["error"].is_null(), "{refused}");
+    }
 }

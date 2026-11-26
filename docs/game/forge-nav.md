@@ -112,6 +112,10 @@ teleporter link is the one `forge-build` writes
 - A solid's shapes are not posed by their node: a one-node object at rest
   is the identity. Vehicles move, so they are not solids. Only the first
   structure BSP is read.
+- A block-out piece ([forge-blockout.md](forge-blockout.md)) is a crate
+  with a `coll` and so a solid. A piece the running map has no definition
+  for (pending) is one too: the generator builds the play form, which
+  holds the tags of every definition the document's pieces use.
 - Islands no link reaches and objectives a team cannot path to are not
   reported.
 - A mesh offered to a loaded map stays until the map loads again, even

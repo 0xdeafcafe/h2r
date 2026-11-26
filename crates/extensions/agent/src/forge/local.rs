@@ -157,6 +157,7 @@ fn thing_kind(kind: ::forge::ThingKind) -> &'static str {
         K::StartingPoint => THING_KINDS[2],
         K::Goal => THING_KINDS[3],
         K::Teleporter => THING_KINDS[4],
+        K::Piece => THING_KINDS[5],
     }
 }
 
@@ -713,6 +714,12 @@ pub fn install(agent: &Agent, backend: impl LocalApi) {
         };
         let session = host.session().map_err(super::unavailable)?;
         things_reply(&session, &p)
+    });
+    let host = backend.clone();
+    agent.add_game_method(method::PIECES, Access::Read, move |v, _| {
+        empty(v)?;
+        let session = host.session().map_err(super::unavailable)?;
+        Ok(super::pieces::reply(&session))
     });
     let host = backend.clone();
     agent.add_game_method(method::DOC, Access::Read, move |v, _| {

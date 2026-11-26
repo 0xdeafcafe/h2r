@@ -1,7 +1,7 @@
 # Forge block-out: pieces, the natural set and the dev textures
 
-Status: Partly built. Slices BO1 and BO3 are built: `forge-shapes` has the definition, the canonical name, the structural generators (block, wall, floor plate, ramp, wedge, stairs, cylinder, arch), `STARTER`, and the natural set (`noise`, `hull` and the five rock generators). Slice BO2 is built: `crates/formats/dev-texture` has the rasters, the font and the label layout. Slice BO5 is built: `forge-doc` has `Forge::Piece`, `PIECE_TAG`, the validator's rules and `ForgeDoc::pieces` (document format 6). Slice BO4 is built: `crates/tools/blockout-kit` installs a definition as tags with the dev set and its `Cost`, and has an invented map for tests. Slice BO6 is built: `forge_build::blockout` materialises a document's pieces (the definitions, the crate palette rows, the starter set and the cut order in the kit) and `blockout_kit::palette` is the palette survey. The rest of the page is a design. It is slice F8 of [forge-design.md](forge-design.md), split into slices BO1 to BO12 below.
-Code: `crates/formats/forge-shapes` (the definitions and generators), `crates/formats/forge-doc/src/piece.rs` (the document), `crates/formats/dev-texture` (the dev textures), `crates/tools/blockout-kit` (a definition as tags), `crates/tools/forge-build/src/blockout.rs` (materialising), `crates/extensions/forge/src/piece.rs` (the session). Tests: named per slice under "Slices".
+Status: Partly built. Slices BO1 and BO3 are built: `forge-shapes` has the definition, the canonical name, the structural generators (block, wall, floor plate, ramp, wedge, stairs, cylinder, arch), `STARTER`, and the natural set (`noise`, `hull` and the five rock generators). Slice BO2 is built: `crates/formats/dev-texture` has the rasters, the font and the label layout. Slice BO5 is built: `forge-doc` has `Forge::Piece`, `PIECE_TAG`, the validator's rules and `ForgeDoc::pieces` (document format 6). Slice BO4 is built: `crates/tools/blockout-kit` installs a definition as tags with the dev set and its `Cost`, and has an invented map for tests. Slice BO6 is built: `forge_build::blockout` materialises a document's pieces (the definitions, the crate palette rows, the starter set and the cut order in the kit) and `blockout_kit::palette` is the palette survey. Slice BO7 is built: the session places, changes and drops pieces and knows each one's state (`Session::{place_piece, set_piece, pieces}`, `forge::piece`, `World::piece_loaded`), and `forge.pieces` lists them. The rest of the page is a design. It is slice F8 of [forge-design.md](forge-design.md), split into slices BO1 to BO12 below.
+Code: `crates/formats/forge-shapes` (the definitions and generators), `crates/formats/forge-doc/src/piece.rs` (the document), `crates/formats/dev-texture` (the dev textures), `crates/tools/blockout-kit` (a definition as tags), `crates/tools/forge-build/src/blockout.rs` (materialising), `crates/extensions/forge/src/{piece.rs,session/pieces.rs}` (the session), `crates/extensions/agent/src/forge/pieces.rs` (`forge.pieces`). Tests: named per slice under "Slices".
 Switch: none. Two settings of the profile's store, `forge.blockout.grid` and `forge.blockout.dev_view` ("In the monitor").
 
 A monitor builds a level out of **pieces**: blocks, ramps, stairs,
@@ -245,8 +245,31 @@ refused with the dev set in its cost, the sentence naming its `Dev`
 material. A `Map` material whose shader the base lacks is refused by
 name before anything is installed (`Error::Piece`).
 
+**In the session.** A piece is an object of the session like any added
+crate (`scene::project` gives it the item of its definition's own `bloc`,
+`forge::piece::item`), so the ordinary object edits apply and the
+world is asked for one call each: placing is `Session::place_piece`, two
+ops in one undo step and one `World::place` of the `bloc`; changing is
+`Session::set_piece`, one `Forge::Piece` and, when the origin moved, one
+`Placement::Set` for each of the position and the turn; a drop is
+`forge::piece::drop`, one `EntryOp::Set` for the position or the turn;
+removing and duplicating are `Session::delete` and `Session::duplicate`,
+the duplicate being a placement of the source's definition. A held piece
+does not move in the world, because its body is fixed where its object was
+made; the drop deletes the object and makes it again where it lands, and a
+change of definition does the same, since another definition is another
+`bloc`. A refused definition (`PieceDef::validate`) is refused before any
+op is stamped. A shared session does not place pieces
+(`PIECES_LOCAL_ONLY`): the host takes one op at a time, and the add of the
+piece tag is refused until its definition's op follows.
+
 **Pending pieces.** `Session::pieces` knows each piece's state:
-`live`, `slot` or `pending`. A pending piece has no object. The marker
+`live`, `slot` or `pending`. The state is whether the world has an
+object: the world makes one only for a definition it holds
+(`World::piece_loaded(name)`, false by default), so a piece the map lacks
+makes no engine call and is pending, until **Rebuild map** has the game
+report the objects it made (`Session::adopt_copy`, after which nothing is
+pending). `slot` is the state BO10 gives; nothing here does. A pending piece has no object. The marker
 pass draws its shell as lines and a skin in the pending tint
 (`forge_glue::pieces_world`, through `native_render::markers::Batch`),
 and the **Rebuild map** row counts it (`Session::pending_rebuild`).
@@ -497,14 +520,20 @@ skin in their family's colour.
 - **Materialiser**: `forge_build::blockout::{definitions, install,
   headroom}`, `Built::blockout`;
   `blockout_kit::{install, dev, slot, palette}`.
-- **Session**: `Session::place_piece`, `set_piece`, `pieces`;
-  `World::piece_loaded(name)`, `World::slot_take`, `slot_write`.
+- **Session**: `Session::place_piece`, `set_piece`, `pieces`, `piece`,
+  `pending_pieces`, `forge::piece::{drop, bounds, item, bloc_key}`,
+  `ThingKind::Piece`; `World::piece_loaded(name)`; BO10 adds
+  `World::slot_take` and `slot_write`.
 - **Nav.** A piece is a crate placement with a `coll`, which
   `forge_nav::read` already takes as a solid
-  ([forge-nav.md](forge-nav.md)); a pending piece is given to
-  **Generate nav** as its shell.
+  ([forge-nav.md](forge-nav.md)). **Generate nav** builds the document's
+  play form (`NavBuilder::generate`), whose build installs the tags of
+  every definition its pieces use, so a pending piece is a solid of the
+  generated map as a live one is, and the builder is given nothing more.
 - **Game agent API**: `forge.pieces` lists each piece
-  (`{target, def, name, state, slot?, bounds}`) and the slots in use;
+  (`{target, def, name, state, position, rotation, bounds}`, and `slot`
+  once BO10 gives one), the slots in use and the pending count; its `kind`
+  in `forge.things` is `piece`;
   `forge.propose` takes the piece op; `forge.capacity` gains the
   block-out set's `Cost` and what the cut order dropped; `forge.status`
   carries `dev_view` and the grid.

@@ -34,6 +34,11 @@ pub enum ThingKind {
     Goal,
     /// A netgame flag of the teleporter sender or receiver type.
     Teleporter,
+    /// A block-out piece: a crate placement that holds the piece tag and
+    /// has a definition (docs/game/forge-blockout.md). Only an added crate
+    /// can be one, and [`ThingKind::of`] cannot tell it from any other
+    /// crate: the session names it from the document's piece ops.
+    Piece,
 }
 
 impl ThingKind {
@@ -80,6 +85,7 @@ impl ThingKind {
             Self::StartingPoint => "starting point",
             Self::Goal => "goal",
             Self::Teleporter => "teleporter",
+            Self::Piece => "piece",
         }
     }
 }

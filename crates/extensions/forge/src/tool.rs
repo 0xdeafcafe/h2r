@@ -185,7 +185,10 @@ pub fn in_game(thing: &Thing, game: Option<i32>) -> bool {
             }
             _ => true,
         },
-        ThingKind::StartingPoint | ThingKind::Teleporter | ThingKind::Object => true,
+        ThingKind::StartingPoint
+        | ThingKind::Teleporter
+        | ThingKind::Object
+        | ThingKind::Piece => true,
     }
 }
 
@@ -544,10 +547,16 @@ impl Tool {
         }
     }
 
-    /// A thing's sphere: an object's palette item's, else its mark's, a
+    /// A thing's sphere: an object's palette item's, a piece's from its
+    /// size ([`crate::piece::PieceInfo::extent`]), else its mark's, a
     /// sphere of [`MARK_RADIUS`]. An object whose tag is not in the Objects
     /// palette carries [`Extent::default`].
     pub fn thing_extent(&self, session: &Session, thing: &Thing) -> Extent {
+        if thing.kind == ThingKind::Piece
+            && let Some(piece) = session.piece(thing.id)
+        {
+            return piece.extent();
+        }
         if thing.kind != ThingKind::Object {
             return Extent {
                 radius: MARK_RADIUS,

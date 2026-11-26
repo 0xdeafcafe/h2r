@@ -12,6 +12,7 @@ pub mod kit;
 mod links;
 pub mod look;
 pub mod net;
+pub mod piece;
 pub mod props;
 mod scene;
 mod session;
@@ -22,11 +23,13 @@ pub use budget::{Binds, Budget, noun};
 pub use files::load_prefabs;
 pub use forge_doc::{BlockKind, Endpoint, OpId, TagKey, Value};
 pub use forge_doc::{GroundLabel, GroundRecipe, Label, MIN_GROUP_MEMBERS, Prefab};
+pub use forge_shapes::{Material, Materials, PieceDef, Shape};
 pub use links::{AddedTeleporter, Linkable, Teleporter};
+pub use piece::{PieceInfo, PieceState, PlacedBounds};
 pub use session::{
     CopyKind, Goal, GroundBuilder, GroundProblem, GroundReceipt, GroundReport, GroundState,
     GroupInfo, NavBuilder, NavLine, NavProblem, NavReport, NavState, Outgoing, PlacedMarker,
-    Reopened, SHARED_PROPOSE, SHARED_REDO, Session, SessionAdmit, WAVES_HOST_ONLY, flag_label,
+    PIECES_LOCAL_ONLY, Reopened, SHARED_PROPOSE, SHARED_REDO, Session, SessionAdmit, WAVES_HOST_ONLY, flag_label,
     live_form,
 };
 pub use things::{BaseRow, BaseRows, LEFT_OUT_SENTENCE, Thing, ThingKind};
@@ -76,6 +79,15 @@ pub trait World {
     fn move_object(&mut self, handle: u32, frame: Frame) -> Result<(), String>;
     fn delete(&mut self, handle: u32) -> Result<(), String>;
     fn respawn(&mut self, item: &PaletteItem, frame: Frame) -> Result<u32, String>;
+    /// Whether the loaded map holds the block-out definition `name`
+    /// (`PieceDef::name`), that is a `bloc` at `forge\blockout\<name>`
+    /// (docs/game/forge-blockout.md, "Reaching the game"). A piece whose
+    /// definition is not loaded makes no engine call: it is pending until
+    /// the map is rebuilt. A world that cannot tell holds none.
+    fn piece_loaded(&self, name: &str) -> bool {
+        let _ = name;
+        false
+    }
     /// Set a teleporter netgame flag's identifier, its channel. Flags are
     /// named by their index in the loaded scenario.
     fn channel(&mut self, flag: u32, channel: i16) -> Result<(), String> {
@@ -160,3 +172,6 @@ mod kit_tests;
 
 #[cfg(test)]
 mod waves_tests;
+
+#[cfg(test)]
+mod piece_tests;

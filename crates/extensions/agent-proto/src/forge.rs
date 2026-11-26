@@ -22,16 +22,18 @@ pub mod method {
     pub const GROUND_BUILD: &str = "forge.ground.build";
     pub const NAV: &str = "forge.nav";
     pub const WAVES: &str = "forge.waves";
+    pub const PIECES: &str = "forge.pieces";
 }
 
 /// The kinds of thing `forge.things` names, as its `kind` filter and each
 /// thing's `kind` spell them (docs/game/forge-map-variants.md, "Things").
-pub const THING_KINDS: [&str; 5] = [
+pub const THING_KINDS: [&str; 6] = [
     "object",
     "item_spawner",
     "starting_point",
     "goal",
     "teleporter",
+    "piece",
 ];
 
 /// The names a refused Forge edit carries in its error's `data.code`

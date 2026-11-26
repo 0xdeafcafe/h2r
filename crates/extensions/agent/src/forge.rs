@@ -18,6 +18,7 @@ pub mod ground;
 pub mod local;
 pub mod nav;
 pub mod net;
+pub mod pieces;
 pub mod test;
 pub mod waves;
 

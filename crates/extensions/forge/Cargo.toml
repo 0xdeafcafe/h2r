@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 content.workspace = true
 forge-doc.workspace = true
+forge-shapes = { path = "../../formats/forge-shapes" }
 map.workspace = true
 serde.workspace = true
 serde_json.workspace = true
