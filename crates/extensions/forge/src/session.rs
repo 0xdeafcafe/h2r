@@ -20,6 +20,7 @@ mod ground;
 mod groups;
 mod prefabs;
 mod nav;
+mod pieces;
 mod reload;
 mod shared;
 mod waves;
@@ -34,6 +35,7 @@ pub use groups::GroupInfo;
 #[cfg(test)]
 pub(crate) use groups::carried;
 pub use nav::{NavBuilder, NavLine, NavProblem, NavReport, NavState};
+pub use pieces::PIECES_LOCAL_ONLY;
 pub use reload::{CopyKind, Reopened, live_form};
 pub use shared::{Outgoing, SHARED_PROPOSE, SHARED_REDO, SessionAdmit};
 pub use waves::WAVES_HOST_ONLY;
@@ -306,8 +308,11 @@ impl Session {
     /// Device links reach the game only when the map is materialised again:
     /// the engine entry that sets a live device group is unproven. Those
     /// the running map was rebuilt with are not pending.
+    ///
+    /// A block-out piece the loaded map has no definition for is pending
+    /// too: it has no object until the map is rebuilt.
     pub fn pending_rebuild(&self) -> usize {
-        self.unbaked_device_links()
+        self.unbaked_device_links() + self.pending_pieces()
     }
 
     fn resolved(&self, doc: &ForgeDoc) -> Result<Links, String> {
@@ -394,6 +399,9 @@ impl Session {
     ) -> Result<OpId, String> {
         self.restore(world)?;
         let thing = self.thing(id).ok_or(NO_THING)?;
+        if thing.kind == ThingKind::Piece {
+            return self.duplicate_piece(world, tick, thing.id, frame);
+        }
         if thing.kind != ThingKind::Object {
             let article = if thing.kind == ThingKind::ItemSpawner {
                 "an"
@@ -555,6 +563,12 @@ impl Session {
     fn carry(&mut self, world: &mut impl World, thing: &Thing, frame: Frame) -> Result<(), String> {
         match thing.id {
             Endpoint::Added(_) if crate::kit::is_block(thing.block) => {
+                scene::in_bounds(&self.limits, frame)?;
+                things::frame_writes(thing.block, frame)?;
+            }
+            Endpoint::Added(_) if thing.kind == ThingKind::Piece => {
+                // A piece's body is fixed where its object was made: it
+                // is made again at the drop (`crate::piece::drop`).
                 scene::in_bounds(&self.limits, frame)?;
                 things::frame_writes(thing.block, frame)?;
             }
@@ -1008,15 +1022,20 @@ impl Session {
         value.digest().map(Some).map_err(reason)
     }
 
-    /// An added object and the index its block has it at.
-    fn target(&self, id: OpId) -> Result<(&PlacedObject, u32), String> {
-        let object = self
-            .objects
-            .iter()
-            .find(|o| o.id == id)
-            .ok_or("Aim at a Forge object.")?;
+    /// An added object and the index its block has it at. Its frame is
+    /// the one the world holds when it has an object, else the document's:
+    /// a pending piece has none.
+    fn target(&self, id: OpId) -> Result<(scene::Object, u32), String> {
         let scene = scene::project(&self.doc, &self.limits, &self.palette, self.budget)?;
         let index = *scene.index.get(&id).ok_or("Aim at a Forge object.")?;
+        let mut object = scene
+            .objects
+            .into_iter()
+            .find(|o| o.id == id)
+            .ok_or("Aim at a Forge object.")?;
+        if let Some(live) = self.objects.iter().find(|o| o.id == id) {
+            object.frame = live.frame;
+        }
         Ok((object, index))
     }
 
@@ -1318,7 +1337,11 @@ fn added_thing(object: &scene::Object) -> Thing {
     Thing {
         id: Endpoint::Added(object.id),
         block,
-        kind: ThingKind::of(block, &[]).unwrap_or(ThingKind::Object),
+        kind: if object.piece.is_some() {
+            ThingKind::Piece
+        } else {
+            ThingKind::of(block, &[]).unwrap_or(ThingKind::Object)
+        },
         own: false,
         frame: object.frame,
         fields: added_fields(object),

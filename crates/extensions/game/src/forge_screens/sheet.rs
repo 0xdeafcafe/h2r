@@ -264,6 +264,10 @@ pub enum Prop {
     RespawnTime,
     /// A flag's **Show in play**, On (value 0) or Off (value 1).
     ShowInPlay,
+    /// The block-out grid, a value of [`BLOCK_GRIDS`].
+    BlockGrid,
+    /// Dev view, On (value 0) or Off (value 1).
+    DevView,
 }
 
 /// A tool of the Tools picker.
@@ -365,6 +369,17 @@ pub enum NumberField {
     DuplicateVariant,
     /// The wave set's name (the WAVES page's Name row).
     WavesName,
+    /// A row of the Size page, in block-out units.
+    Size(PieceField),
+}
+
+/// A row of the Size page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PieceField {
+    /// Width, Depth or Height: the size on axis 0, 1 or 2.
+    Axis(usize),
+    /// Steps, Sides, Voussoirs or the seed, by shape.
+    Param,
 }
 
 /// A row that opens the game's keyboard for a number.
@@ -471,6 +486,17 @@ pub enum Choice {
     Waves(super::waves::Edit),
     /// An Enemy types row: ask the AI ground for the class (true) or not.
     EnemyType(String, bool),
+    /// Hold a new block-out piece: the shape at its starting size, and the
+    /// seed of a natural one (the Structure and Natural groups).
+    Piece(forge::Shape, u16),
+    /// **Resize** the piece: begin its draft.
+    Resize(forge::OpId),
+    /// Nudge a Size row left (false) or right (true) by the block-out grid.
+    NudgeSize(PieceField, bool),
+    /// **Reroll**: the piece's next seed.
+    Reroll(forge::OpId),
+    /// Give the piece a material on a role, or on every role with none.
+    Material(forge::OpId, Option<forge_shapes::Role>, forge::Material),
     /// Why a row did nothing, for the HUD's notice.
     Notice(String),
 }
@@ -583,6 +609,11 @@ pub enum Group {
     Teleporters,
     Spawns,
     Goals,
+    /// Block-out pieces: Block, Wall, Floor plate and the rest
+    /// (docs/game/forge-blockout.md, "In the monitor").
+    Structure,
+    /// The five rocks, eight seeds each.
+    Natural,
 }
 
 /// A group's row: its name and what one of it is called in a line.
@@ -641,6 +672,16 @@ pub const GROUPS: &[GroupDef] = &[
         name: "Goals",
         one: "Goal",
     },
+    GroupDef {
+        group: Group::Structure,
+        name: "Structure",
+        one: "Structure",
+    },
+    GroupDef {
+        group: Group::Natural,
+        name: "Natural",
+        one: "Natural",
+    },
 ];
 
 impl Group {
@@ -677,6 +718,9 @@ pub struct Item {
     pub name: String,
     pub placed: usize,
     pub left: usize,
+    /// A palette row the menu leaves out: a block-out definition's `bloc`,
+    /// which the Structure and Natural groups place.
+    pub hidden: bool,
 }
 
 /// An object's line in the object menu: what it is, how many are placed,
@@ -707,7 +751,7 @@ pub fn objects(items: &[Item], selected: usize) -> Option<Sheet> {
             let mut members: Vec<(usize, &Item)> = items
                 .iter()
                 .enumerate()
-                .filter(|(_, i)| i.group == g.group)
+                .filter(|(_, i)| !i.hidden && i.group == g.group)
                 .collect();
             if members.is_empty() {
                 return None;
@@ -1008,7 +1052,7 @@ pub fn with_kit(s: Option<Sheet>, kit: &KitMenu) -> Sheet {
 /// `group`'s row, making the row where the map has none: in the table's
 /// order among the groups, before the AI and objectives page and the
 /// prefabs.
-fn add_pick_rows(sheet: &mut Sheet, group: Group, rows: Vec<(String, String, Choice)>) {
+pub(super) fn add_pick_rows(sheet: &mut Sheet, group: Group, rows: Vec<(String, String, Choice)>) {
     if rows.is_empty() {
         return;
     }
@@ -1319,7 +1363,18 @@ pub const SETTINGS: &[SettingDef] = &[
         label: "Axes",
         description: "World axes, or the object's own axes at pickup.",
     },
+    SettingDef {
+        prop: Prop::BlockGrid,
+        label: "Block-out grid",
+        description: "The grid, in units of a hundredth of a world unit, a block-out piece lands on.",
+    },
 ];
+
+/// The block-out grids in units, as `forge_shapes::units::GRIDS`.
+pub const BLOCK_GRIDS: [u16; 7] = forge_shapes::units::GRIDS;
+
+/// The index of the default block-out grid in [`BLOCK_GRIDS`].
+pub const DEFAULT_GRID_INDEX: usize = 4;
 
 fn snap_text(v: f32, unit: &str) -> String {
     if v == 0.0 {
@@ -1356,6 +1411,16 @@ pub(super) fn text_value_row(
 /// into [`ANGLE_STEPS`], `movement_snap` into [`MOVE_STEPS`], and
 /// `local_axes` whether Local is selected.
 pub fn settings(rotation_snap: usize, movement_snap: usize, local_axes: bool) -> Sheet {
+    settings_with(rotation_snap, movement_snap, local_axes, DEFAULT_GRID_INDEX)
+}
+
+/// [`settings`] with the block-out grid, an index into [`BLOCK_GRIDS`].
+pub fn settings_with(
+    rotation_snap: usize,
+    movement_snap: usize,
+    local_axes: bool,
+    block_grid: usize,
+) -> Sheet {
     let rows = SETTINGS
         .iter()
         .map(|d| match d.prop {
@@ -1381,6 +1446,11 @@ pub fn settings(rotation_snap: usize, movement_snap: usize, local_axes: bool) ->
                     &values,
                     usize::from(local_axes),
                 )
+            }
+            Prop::BlockGrid => {
+                let i = block_grid.min(BLOCK_GRIDS.len() - 1);
+                let values: Vec<String> = BLOCK_GRIDS.iter().map(|v| v.to_string()).collect();
+                text_value_row(d.label, d.description, d.prop, &values, i)
             }
             _ => unreachable!("a property, not a tool setting"),
         })
@@ -1424,6 +1494,11 @@ pub const OVERLAYS: &[OverlayDef] = &[
         label: "Nav problems",
         description: "A mark at each problem the last Generate nav found.",
     },
+    OverlayDef {
+        overlay: forge::tool::Overlay::Blockout,
+        label: "Block-out",
+        description: "Barriers and Nodraw faces, in their family's colour.",
+    },
 ];
 
 /// The Overlays page: a row for each of [`OVERLAYS`], showing On or Off;
@@ -1448,6 +1523,21 @@ pub fn overlays(on: forge::tool::Overlays) -> Sheet {
             .collect(),
         focus: 0,
     }
+}
+
+/// [`overlays`] with the **Dev view** row after the overlays: the block-out
+/// pieces drawn with their dev textures, On or Off.
+pub fn overlays_with(on: forge::tool::Overlays, dev_view: bool) -> Sheet {
+    let mut sheet = overlays(on);
+    let values = vec!["On".to_string(), "Off".to_string()];
+    sheet.rows.push(text_value_row(
+        "Dev view",
+        "Draw every block-out piece with its dev texture, whatever its material.",
+        Prop::DevView,
+        &values,
+        usize::from(!dev_view),
+    ));
+    sheet
 }
 
 /// A row of Forge options: its label, its help (what it opens, for the

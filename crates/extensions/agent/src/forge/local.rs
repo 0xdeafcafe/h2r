@@ -157,6 +157,7 @@ fn thing_kind(kind: ::forge::ThingKind) -> &'static str {
         K::StartingPoint => THING_KINDS[2],
         K::Goal => THING_KINDS[3],
         K::Teleporter => THING_KINDS[4],
+        K::Piece => THING_KINDS[5],
     }
 }
 
@@ -252,6 +253,9 @@ pub struct ForgeWorld {
     made: u16,
     /// The block of each handle the session holds or this edit makes.
     blocks: BTreeMap<u32, BlockKind>,
+    /// The block-out definitions the loaded map holds `bloc`s of: the
+    /// names of the session's palette rows under `forge\\blockout\\`.
+    pieces: std::collections::BTreeSet<String>,
 }
 
 impl ForgeWorld {
@@ -269,6 +273,7 @@ impl ForgeWorld {
                 .iter()
                 .map(|object| (object.handle, object.item.block))
                 .collect(),
+            pieces: ::forge::piece::loaded_names(session.palette()),
             ..Default::default()
         };
         let result = edit(&mut candidate, &mut world)?;
@@ -376,6 +381,12 @@ impl World for ForgeWorld {
 
     fn respawn(&mut self, item: &PaletteItem, frame: Frame) -> Result<u32, String> {
         self.make(item, frame)
+    }
+
+    /// A definition is loaded when the map's palette has its `bloc`: the
+    /// tag index resolves it ([`Staged::Make`]), as it does any palette tag.
+    fn piece_loaded(&self, name: &str) -> bool {
+        self.pieces.contains(name)
     }
 
     /// A teleporter link writes the flag's identifier in the loaded
@@ -729,6 +740,12 @@ pub fn install(agent: &Agent, backend: impl LocalApi) {
         };
         let session = host.session().map_err(super::unavailable)?;
         things_reply(&session, &p)
+    });
+    let host = backend.clone();
+    agent.add_game_method(method::PIECES, Access::Read, move |v, _| {
+        empty(v)?;
+        let session = host.session().map_err(super::unavailable)?;
+        Ok(super::pieces::reply(&session))
     });
     let host = backend.clone();
     agent.add_game_method(method::DOC, Access::Read, move |v, _| {

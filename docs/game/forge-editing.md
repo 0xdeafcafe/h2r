@@ -136,6 +136,7 @@ log or the sim (`forge::tool::Overlay`, `Tool::overlays`).
 | Other monitors | a ring at each other seat's monitor (`Editor::monitor_markers`) | no rings; the seats' bodies stay |
 | Axes | the axes and outline at the held or aimed object (`forge_glue::gizmo`) | no gizmo |
 | Nav problems | a mark at each problem the last **Generate nav** found (`markers_world::nav_problems`, [forge-nav.md](forge-nav.md)) | no marks |
+| Block-out | block-out barriers and `Nodraw` faces in their family's colour (`forge_glue::pieces_world`, [forge-blockout.md](forge-blockout.md)); the same page's **Dev view** row is the setting `forge.blockout.dev_view`, not an overlay | no marks |
 
 The sectors and links of the nav are in `forge.nav`'s `overlay`; the Nav
 tool draws them in the game while the Nav overlay is on
@@ -157,7 +158,7 @@ persist and each has a picker.
 | Axes | World, Local | World |
 | Fine movement | On, Off | Off |
 
-- **Block-out grid** (1 to 64 units in powers of two, 16 by default)
+- **Block-out grid** (`forge.blockout.grid`, 1 to 64 units in powers of two, 16 by default)
   takes the Movement snap's place while a block-out piece is held or
   resized ([forge-blockout.md](forge-blockout.md), "Units and the
   grid").
@@ -204,8 +205,8 @@ block's objects have a group (`Group::of_block`).
 | Teleporters | Sender, Receiver | netgame flags of the two teleporter types (kit session) | built (P2) |
 | Spawns | Starting point, by team | a player starting location (kit session) | built (P2) |
 | Goals | Hill, Territory and Siege site, those the session's game type reads | one centre flag and its default area | built (MK7, P2) |
-| Structure | Block, Wall, Floor plate, Ramp, Wedge, Stairs, Cylinder, Arch and Barrier ([forge-blockout.md](forge-blockout.md), "In the monitor") | a crate placement with a definition | F8 (BO8) |
-| Natural | Boulder, Slab, Cliff, Terrain wedge and Spire, eight seeds each | the same | F8 (BO8) |
+| Structure | Block, Wall, Floor plate, Ramp, Wedge, Stairs, Cylinder, Arch and Barrier ([forge-blockout.md](forge-blockout.md), "In the monitor") | a crate placement with a definition | built (BO8; Barrier is BO12) |
+| Natural | Boulder, Slab, Cliff, Terrain wedge and Spire, eight seeds each | the same | built (BO8) |
 | Lights | the kit's lights | a generated kit tag | P6 |
 | Prefabs | the player's saved prefabs whose every tag this map holds | the pieces as placements, their labels, and a group | built |
 | My imports | the player's converted models | import slots | F12 |

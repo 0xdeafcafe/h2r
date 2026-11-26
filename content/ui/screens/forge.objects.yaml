@@ -8,6 +8,8 @@ states:
     focus: 0
   first:
     focus: 2
+  blockout:
+    focus: 0
 widgets:
   title:
     component: title

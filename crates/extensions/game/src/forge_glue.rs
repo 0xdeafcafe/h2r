@@ -12,6 +12,7 @@ pub mod markers_world;
 pub mod nav;
 pub mod nav_world;
 pub mod net;
+pub mod pieces_world;
 pub mod reload;
 
 use std::path::{Path, PathBuf};
@@ -271,6 +272,7 @@ impl Driver {
         self.marks_at = None;
         self.marks_preview = false;
         markers_world::clear();
+        pieces_world::clear();
         nav_world::clear();
         nav::unstage();
         self.bodies.clear();
@@ -469,7 +471,27 @@ impl Driver {
                 .ok()
                 .flatten()
                 .and_then(|g| g.options().variant().engine(m).ok());
+            // The block-out settings of the profile's store, and the ones the
+            // player changed on a screen written back to it.
+            if let Some(store) = self.store.as_deref() {
+                e.set_block_settings(
+                    store
+                        .get(forge::piece::GRID_KEY)
+                        .and_then(settings::Value::as_int)
+                        .and_then(|v| u16::try_from(v).ok()),
+                    store
+                        .get(forge::piece::DEV_VIEW_KEY)
+                        .and_then(settings::Value::as_bool),
+                );
+            }
             e.tick(tick, bsp, crate::forge_screens::ui_up(m), game, m);
+            if let Some(store) = self.store.as_deref() {
+                for (key, value) in e.take_setting_writes() {
+                    if let Err(why) = store.set(key, value) {
+                        eprintln!("forge: {key} was not saved: {why}");
+                    }
+                }
+            }
             let now = tick as f32 / 30.;
             crate::forge_readout::publish(e.readout_scene(game));
             crate::forge_hud::publish(e.monitor_hud(now));
@@ -482,6 +504,7 @@ impl Driver {
             {
                 self.marks = Arc::new(e.marker_entries());
                 self.marks_at = Some(tick);
+                pieces_world::publish(&e.piece_draws());
             }
             self.marks_preview = preview;
             let (aimed, held) = e.marker_pins();

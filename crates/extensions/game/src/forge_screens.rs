@@ -23,6 +23,7 @@
 //!   session publishes it to `crate::forge_controls`, which hands the pad
 //!   and the keys to the game's UI.
 
+pub mod blockout;
 pub mod game_menu;
 pub mod games;
 pub(crate) mod map_limits;
@@ -70,6 +71,10 @@ pub struct Facts {
     pub movement_snap: usize,
     /// Local rather than World axes.
     pub local_axes: bool,
+    /// The block-out grid in units (0 before the session says).
+    pub block_grid: u16,
+    /// Dev view is on.
+    pub dev_view: bool,
     pub tool: Option<sheet::Tool>,
     /// The map variants of this map, for Load.
     pub variants: Vec<variants::Row>,
@@ -324,7 +329,15 @@ pub(crate) fn prepare(kind: Kind) -> Result<(), String> {
     let f = facts();
     let sheet = match kind {
         Kind::Tools => sheet::tools(f.tool.unwrap_or(sheet::Tool::Objects)),
-        Kind::Settings => sheet::settings(f.rotation_snap, f.movement_snap, f.local_axes),
+        Kind::Settings => sheet::settings_with(
+            f.rotation_snap,
+            f.movement_snap,
+            f.local_axes,
+            sheet::BLOCK_GRIDS
+                .iter()
+                .position(|g| *g == f.block_grid)
+                .unwrap_or(sheet::DEFAULT_GRID_INDEX),
+        ),
         Kind::Options => sheet::options_with_waves(
             &f.folders,
             &f.placed,

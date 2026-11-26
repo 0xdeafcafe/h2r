@@ -252,7 +252,7 @@ pub fn entries(f: &Facts<'_>) -> Vec<Entry> {
         let mut area = f.areas.get(&t.id.identity()).map(forge_doc::Area::marker_area);
         let mut number = None;
         let kind = match t.kind {
-            ThingKind::Object => continue,
+            ThingKind::Object | ThingKind::Piece => continue,
             ThingKind::StartingPoint => Kind::Spawn(SpawnUse::Respawn),
             ThingKind::ItemSpawner => Kind::Item(item_class(t)),
             ThingKind::Goal | ThingKind::Teleporter => {
@@ -1023,7 +1023,8 @@ mod gpu {
             let on = ACTIVE.load(Ordering::Acquire)
                 || WALLS_ACTIVE.load(Ordering::Acquire)
                 || PLAY_ACTIVE.load(Ordering::Acquire)
-                || PLAY_STALE.load(Ordering::Acquire);
+                || PLAY_STALE.load(Ordering::Acquire)
+                || super::pieces_world::active();
             if !on {
                 // Nothing to draw: the frame graph's batch goes too.
                 native_render::markers::publish(None);
@@ -1042,6 +1043,8 @@ mod gpu {
             report.shown += walls.len();
             report.markers.extend(shown);
             groups.extend(walls);
+            // The pending pieces, the ghost and the Block-out overlay.
+            groups.extend(super::pieces_world::published());
             *LAST.lock().unwrap_or_else(|e| e.into_inner()) = report;
             // With the native renderer on, the frame graph draws the faces
             // and the lines (with their X-ray look); the window then draws

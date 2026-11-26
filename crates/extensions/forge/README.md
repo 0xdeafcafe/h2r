@@ -4,7 +4,7 @@ The local in-game Forge session: the monitor camera, an Objects tool, a Links to
 
 ## Where it sits
 
-`extensions` domain. Depends on `content`, `forge-doc`, `map` and `settings`. It has no guest access; `crates/extensions/game` is the host.
+`extensions` domain. Depends on `content`, `forge-doc`, `forge-shapes`, `map` and `settings`. It has no guest access; `crates/extensions/game` is the host.
 
 ## Layout
 

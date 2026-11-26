@@ -30,6 +30,7 @@ use crate::forge_screens::{
 
 mod area;
 mod net;
+mod resize;
 
 pub(crate) use net::MonitorStart;
 
@@ -124,6 +125,14 @@ pub(super) struct Editor {
     /// The Coordinates target and its current frame, while its screen is up.
     coordinates: Option<(CoordinateTarget, forge::Frame)>,
     area: Option<area::Draft>,
+    /// Dev view is on (`forge.blockout.dev_view`, docs/game/forge-blockout.md).
+    dev_view: bool,
+    /// The map's surfaces the Material picker lists after Dev, as shader
+    /// paths (`blockout_kit::palette::survey`); empty until a survey is read.
+    surfaces: Vec<String>,
+    /// Settings the player changed on a screen, for the driver to write to
+    /// the profile's store ([`Editor::take_setting_writes`]).
+    setting_writes: Vec<(&'static str, settings::Value)>,
     notice: Option<(String, u32)>,
     /// The right trigger is held: a held thing is being turned.
     rotating: bool,
@@ -227,6 +236,9 @@ impl Editor {
             local_axes: false,
             coordinates: None,
             area: None,
+            dev_view: false,
+            surfaces: Vec::new(),
+            setting_writes: Vec::new(),
             notice: None,
             rotating: false,
             refusal: None,
@@ -551,6 +563,8 @@ impl Editor {
             "tool":if self.tool.nav { "nav" } else if self.tool.links { "links" } else { "objects" }, "fine":controls::fine(),
             "rotation_snap":ANGLE_STEPS[self.rotation_step], "movement_snap":sheet::MOVE_STEPS[self.movement_step],
             "axes":self.tool.axes.name(),
+            "block_grid":self.tool.block_grid, "dev_view":self.dev_view,
+            "resize":self.tool.draft.as_ref().map(|d| json!({"target":d.id, "def":d.def.name(), "size":d.def.size})),
             "overlays":Value::Object(Overlay::ALL.iter()
                 .map(|o| (o.name().to_string(), Value::Bool(self.tool.overlays.on(*o)))).collect()),
             "ui_up":self.ui_up, "dirty":self.dirty(),
@@ -971,7 +985,10 @@ impl Editor {
     }
 
     pub fn marker_preview(&self) -> bool {
-        self.area.is_some() || self.tool.held_thing.is_some()
+        self.area.is_some()
+            || self.tool.held_thing.is_some()
+            || self.tool.draft.is_some()
+            || self.tool.placing_piece.is_some()
     }
 
     /// The things aimed at and held, which their markers draw selected.
@@ -985,14 +1002,28 @@ impl Editor {
     /// What is placed, held or aimed at: its name, block and frame (the
     /// ghost's while it is carried).
     fn target(&self) -> Option<(String, BlockKind, forge::Frame)> {
+        if let Some(draft) = &self.tool.draft {
+            return Some((self.resize_line(draft), BlockKind::Crates, draft.frame));
+        }
+        if let Some(def) = &self.tool.placing_piece {
+            return Some((
+                screens::blockout::name(def),
+                BlockKind::Crates,
+                self.tool.ghost.unwrap_or_default(),
+            ));
+        }
         if let Some(index) = self.tool.placing {
             let item = self.session.palette().get(index)?;
             return Some((label(item), item.block, self.tool.ghost.unwrap_or_default()));
         }
         let id = self.tool.held_thing.or(self.tool.aimed_thing)?;
         let thing = self.session.thing(id)?;
+        let name = match self.session.piece(id) {
+            Some(piece) => screens::blockout::name(&piece.def),
+            None => thing_name(&thing),
+        };
         Some((
-            thing_name(&thing),
+            name,
             thing.block,
             self.tool.ghost.unwrap_or(thing.frame),
         ))
@@ -1370,7 +1401,7 @@ impl Editor {
     /// What X opens: Properties with something aimed at or held, else the
     /// object menu (the Links tool: the aimed thing's Link dialog).
     fn x_properties(&self) -> bool {
-        if self.area.is_some() {
+        if self.area.is_some() || self.tool.draft.is_some() {
             true
         } else if self.tool.links {
             self.tool.link_from.is_none() && self.tool.aimed_link.is_some()
@@ -1378,14 +1409,17 @@ impl Editor {
             self.tool.aimed_thing.is_some()
                 || self.tool.held_thing.is_some()
                 || self.tool.placing.is_some()
+                || self.tool.placing_piece.is_some()
         }
     }
 
     /// Whether B has something to cancel.
     fn cancellable(&self) -> bool {
         self.area.is_some()
+            || self.tool.draft.is_some()
             || self.tool.held_thing.is_some()
             || self.tool.placing.is_some()
+            || self.tool.placing_piece.is_some()
             || self.tool.link_from.is_some()
     }
 
@@ -1608,6 +1642,8 @@ impl Editor {
             select_on_hold: !self.tool.links
                 && !self.tool.nav
                 && self.tool.placing.is_none()
+                && self.tool.placing_piece.is_none()
+                && self.tool.draft.is_none()
                 && self.tool.held_thing.is_none(),
             area: self.area.as_ref().map(area::Draft::mode),
         });
@@ -1618,6 +1654,8 @@ impl Editor {
             rotation_snap: self.rotation_step,
             movement_snap: self.movement_step,
             local_axes: self.local_axes,
+            block_grid: self.tool.block_grid,
+            dev_view: self.dev_view,
             tool: Some(if self.tool.nav {
                 ToolKind::Nav
             } else if self.tool.links {
@@ -1644,10 +1682,19 @@ impl Editor {
             .session
             .objects()
             .iter()
+            .filter(|o| !forge::piece::is_piece_item(&o.item))
             .filter_map(|o| {
                 let (group, name) = names.get(palette.iter().position(|p| *p == o.item)?)?;
                 Some((o.id, *group, name.clone(), o.frame.position))
             })
+            .chain(self.session.pieces().iter().map(|p| {
+                let group = if p.def.shape.is_natural() {
+                    Group::Natural
+                } else {
+                    Group::Structure
+                };
+                (p.id, group, screens::blockout::name(&p.def), p.frame.position)
+            }))
             .collect();
         sheet::placed_rows(&objects)
     }
@@ -1798,6 +1845,7 @@ impl Editor {
                 if self.session.has_kit() {
                     menu = Some(sheet::with_kit(menu, &self.kit_menu()));
                 }
+                menu = Some(screens::blockout::with_groups(menu));
                 let menu = sheet::with_prefabs(menu, &self.prefab_items());
                 screens::open(menu.ok_or("This map has nothing to place.")?)?;
             }
@@ -1813,6 +1861,9 @@ impl Editor {
                     .ok_or("Not linked. Press A to start a link.")?;
                 screens::open(self.link_sheet(&active))?;
                 self.link_dialog = Some(active.id);
+            }
+            Properties if self.tool.placing_piece.is_some() => {
+                return Err("Place the piece first, then open its Properties.".into());
             }
             Properties => {
                 let (name, block, frame) = self.target().ok_or("Aim at a thing of the map.")?;
@@ -1851,6 +1902,9 @@ impl Editor {
                         .rows
                         .extend(sheet::group_rows(&self.group_facts(thing.id)));
                 }
+                if let Some(facts) = self.piece_facts(thing.id) {
+                    sheet.rows.extend(screens::blockout::piece_rows(&facts));
+                }
                 let target = if let Some(item) = self.tool.placing {
                     CoordinateTarget::New(item)
                 } else {
@@ -1873,7 +1927,8 @@ impl Editor {
             }
             Tools => screens::request(Kind::Tools)?,
             Settings => screens::request(Kind::Settings)?,
-            Overlays => screens::open(sheet::overlays(self.tool.overlays))?,
+            Overlays => screens::open(sheet::overlays_with(self.tool.overlays, self.dev_view))?,
+            PieceSize { .. } => return self.open_size(),
             Menu => return Err("The Forge menu is GAME MENU: press Start.".into()),
             BuildGround => return self.start_ground(tick, false, None),
             GenerateNav => return self.start_nav(tick, None),
@@ -2029,6 +2084,11 @@ impl Editor {
                     .filter(|o| self.session.palette().get(i) == Some(&o.item))
                     .count(),
                 left,
+                hidden: self
+                    .session
+                    .palette()
+                    .get(i)
+                    .is_some_and(forge::piece::is_piece_item),
             })
             .collect()
     }
@@ -2254,6 +2314,33 @@ impl Editor {
                     Axes::World
                 });
             }
+            Choice::Piece(shape, seed) => {
+                self.tool.select_piece(forge::piece::start(shape, seed));
+            }
+            Choice::Resize(id) => return self.begin_resize(id),
+            Choice::NudgeSize(field, right) => return self.nudge_size(field, right),
+            Choice::Reroll(id) => {
+                let def = forge::piece::reroll(&self.piece_of(id)?.def)?;
+                return self.write_piece(tick, id, def);
+            }
+            Choice::Material(id, role, material) => {
+                let def = forge::piece::with_material(&self.piece_of(id)?.def, role, material);
+                return self.write_piece(tick, id, def);
+            }
+            Choice::Set(Prop::BlockGrid, i) => {
+                let grid = *sheet::BLOCK_GRIDS.get(i).ok_or("No such block-out grid.")?;
+                self.tool.set_block_grid(grid);
+                self.setting_writes
+                    .push((forge::piece::GRID_KEY, settings::Value::Int(i64::from(grid))));
+            }
+            Choice::Set(Prop::DevView, i) => {
+                if i > 1 {
+                    return Err("No such value.".into());
+                }
+                self.dev_view = i == 0;
+                self.setting_writes
+                    .push((forge::piece::DEV_VIEW_KEY, settings::Value::Bool(i == 0)));
+            }
             Choice::Set(Prop::Overlay(overlay), i) => {
                 if i > 1 {
                     return Err("No such value.".into());
@@ -2326,6 +2413,7 @@ impl Editor {
                     return self.coordinate_number(tick, axis, &text);
                 }
                 sheet::NumberField::Area(field) => return self.area_number(field, &text),
+                sheet::NumberField::Size(field) => return self.size_number(field, &text),
                 sheet::NumberField::Label => {
                     let id = self.property_target()?;
                     let text = text.to_ascii_lowercase();
@@ -2651,6 +2739,8 @@ fn run(s: &mut Session, w: &mut ForgeWorld, tick: u32, cmd: Command) -> Result<(
     use Command::*;
     match cmd {
         Place { item, frame } => s.place(w, tick, item, frame).map(|_| ()),
+        PlacePiece { def, frame } => s.place_piece(w, tick, def, frame).map(|_| ()),
+        ResizePiece { id, def, origin } => s.set_piece(w, tick, id, def, Some(origin)),
         Move { id, frame } => s.move_object(w, tick, id, frame),
         Delete { id } => s.delete(w, tick, id),
         MoveThing { id, frame } => s.move_thing(w, tick, id, frame),

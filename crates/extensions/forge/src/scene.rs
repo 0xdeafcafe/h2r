@@ -4,7 +4,8 @@
 use std::collections::BTreeMap;
 
 use crate::{BlockKind, Frame, OpId, PaletteItem, PlacedObject, World};
-use forge_doc::{Edit, F32, FieldWrite, ForgeDoc, Limits, Placement, Value};
+use forge_doc::{Edit, Endpoint, F32, FieldWrite, Forge, ForgeDoc, Limits, Placement, Value};
+use forge_shapes::PieceDef;
 use map::scenario_layout as layout;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -12,6 +13,10 @@ pub(crate) struct Object {
     pub id: OpId,
     pub item: PaletteItem,
     pub frame: Frame,
+    /// The definition of a block-out piece, whose `item` is then its
+    /// definition's own `bloc` (`crate::piece::item`). A piece makes an
+    /// object only where the world holds that definition.
+    pub piece: Option<PieceDef>,
 }
 
 impl From<&PlacedObject> for Object {
@@ -20,6 +25,7 @@ impl From<&PlacedObject> for Object {
             id: object.id,
             item: object.item.clone(),
             frame: object.frame,
+            piece: None,
         }
     }
 }
@@ -92,6 +98,22 @@ pub(crate) fn project(
                 Some(placement) => (placement, true),
                 None => continue,
             },
+            // A piece's definition names its placement's object.
+            Edit::Forge(Forge::Piece { target, def }) => {
+                if let Endpoint::Added(id) = target
+                    && let Some(rows) = blocks.get_mut(&crate::BlockKind::Crates)
+                {
+                    for row in rows {
+                        if let Row::Added(object) = row
+                            && object.id == *id
+                        {
+                            object.item = crate::piece::item(def);
+                            object.piece = Some(def.clone());
+                        }
+                    }
+                }
+                continue;
+            }
             // Links and labels are retail data on scenario entries; they
             // place nothing.
             Edit::Forge(_) => continue,
@@ -152,7 +174,12 @@ pub(crate) fn project(
                 let mut frame = Frame::default();
                 for field in fields {
                     if field.field == "palette index" {
-                        item = Some(palette_item(palette, block, &field.value)?);
+                        if is_piece_tag(block, &field.value) {
+                            // The definition comes with its own op.
+                            item = Some(piece_placeholder());
+                        } else {
+                            item = Some(palette_item(palette, block, &field.value)?.clone());
+                        }
                     } else {
                         update(&mut frame, field)?;
                     }
@@ -160,13 +187,17 @@ pub(crate) fn project(
                 in_bounds(limits, frame)?;
                 rows.push(Row::Added(Object {
                     id: op.id,
-                    item: item.ok_or("A Forge object needs a palette tag.")?.clone(),
+                    item: item.ok_or("A Forge object needs a palette tag.")?,
                     frame,
+                    piece: None,
                 }));
             }
             Placement::Set { index, write, .. } => match rows.get_mut(*index as usize) {
                 Some(Row::Added(object)) => {
                     if write.field == "palette index" {
+                        if object.piece.is_some() || is_piece_tag(block, &write.value) {
+                            return Err("A piece's tag is its definition's.".into());
+                        }
                         object.item = palette_item(palette, block, &write.value)?.clone();
                     } else {
                         update(&mut object.frame, write)?;
@@ -207,6 +238,9 @@ pub(crate) fn project(
         for (i, row) in rows.into_iter().enumerate() {
             match row {
                 Row::Added(object) => {
+                    if object.item == piece_placeholder() {
+                        return Err("A piece has no definition.".into());
+                    }
                     scene.index.insert(object.id, i as u32);
                     scene.objects.push(object);
                 }
@@ -251,6 +285,20 @@ pub(crate) fn project(
         return Err(format!("Object budget exceeded ({count} / {budget})."));
     }
     Ok(scene)
+}
+
+/// What a piece's placement holds until its definition's op names the
+/// object (`forge_doc::PIECE_TAG`).
+fn piece_placeholder() -> PaletteItem {
+    PaletteItem {
+        block: crate::BlockKind::Crates,
+        tag: forge_doc::piece_tag(),
+    }
+}
+
+/// Whether `value` is the piece tag written to a palette index of `block`.
+fn is_piece_tag(block: BlockKind, value: &Value) -> bool {
+    block == BlockKind::Crates && *value == forge_doc::piece_value()
 }
 
 /// The palette entry of `block` that a palette index value selects.
@@ -351,7 +399,11 @@ pub(crate) fn reconcile(
     let mut i = 0;
     while i < live.len() {
         let old = &live[i];
-        if wanted.get(&old.id).is_some_and(|row| row.item == old.item) {
+        // A piece that moves is made again where it lands: its body is fixed
+        // where its object was made.
+        if wanted.get(&old.id).is_some_and(|row| {
+            row.item == old.item && (row.piece.is_none() || row.frame == old.frame)
+        }) {
             i += 1;
         } else {
             world.delete(old.handle)?;
@@ -371,6 +423,13 @@ pub(crate) fn reconcile(
                 object.frame = row.frame;
             }
         } else {
+            // A piece the loaded map does not hold has no object: it is
+            // pending until the map is rebuilt.
+            if let Some(def) = &row.piece
+                && !world.piece_loaded(&def.name())
+            {
+                continue;
+            }
             let handle = if respawn {
                 world.respawn(&row.item, row.frame)?
             } else {
