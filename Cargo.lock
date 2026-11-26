@@ -6736,6 +6736,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-world"
+version = "0.1.0"
+dependencies = [
+ "sim-core",
+]
+
+[[package]]
 name = "simd"
 version = "0.1.0"
 dependencies = [

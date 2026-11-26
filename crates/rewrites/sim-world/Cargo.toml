@@ -1,0 +1,16 @@
+[package]
+name = "sim-world"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "The native simulation's World: salted slot pools, canonical save and restore, an incremental hash and the shared RNG stream"
+
+[package.metadata.h2]
+status = "in progress"
+doc = ["engine/sim-world.md", "engine/sim-rewrite.md"]
+
+[dependencies]
+sim-core.workspace = true
+
+[lints]
+workspace = true
