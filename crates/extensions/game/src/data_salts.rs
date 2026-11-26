@@ -57,5 +57,88 @@ pub fn reseed(m: &mut dyn GuestMemory) -> Result<usize, MemFault> {
     Ok(seeds.len())
 }
 
+
+/// Every game load starts from clean object memory, as a fresh process does
+/// (docs/game/theater-design.md, "The start hash"). The object memory pool
+/// is not zeroed when a game frees an object, so a game after another keeps
+/// the bytes of the earlier game's objects in the parts of the pool the new
+/// objects do not write. Before `GAME_ACTIVATE`, when the `object` array
+/// has no live element, the pool's storage is zeroed except the allocator's
+/// first block header ([`lockstep::gameplay::POOL_KEEP`]). With live
+/// objects still in it (the previous game is disposed inside the
+/// activation) nothing is zeroed: the load is counted in
+/// [`object_pool_not_empty_at_load`] and the first is logged with the live
+/// count, so a run shows the hook is too early.
+pub const POOL_FEATURE: &str = "object-pool-clear";
+
+static NOT_EMPTY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Game loads that found live objects, and so left the pool alone.
+pub fn object_pool_not_empty_at_load() -> u64 {
+    NOT_EMPTY.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub struct ObjectPoolClear;
+
+impl hooks::Feature for ObjectPoolClear {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(POOL_FEATURE, "Object memory pool cleared at every game load")
+            .doc("docs/game/theater-design.md")
+    }
+
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
+        b.raw().before(&GAME_ACTIVATE, "clear the object memory pool", |c| {
+            let rt = std::sync::Arc::clone(c.ctx.runtime());
+            let mut mem = rt.memory();
+            match clear_object_pool(&mut *mem) {
+                Ok(Cleared::Zeroed(bytes)) => eprintln!("object pool: {bytes} bytes cleared for the new game"),
+                Ok(Cleared::Live(live)) => {
+                    if NOT_EMPTY.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
+                        eprintln!(
+                            "object pool: {live} objects still live at the game load; not cleared \
+                             (the hook is before the previous game's disposal)"
+                        );
+                    }
+                }
+                Ok(Cleared::NoPool) => {}
+                Err(e) => eprintln!("object pool: arena unreadable ({e:?})"),
+            }
+            Ok(hooks::Flow::Continue)
+        });
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
+        Ok(())
+    }
+}
+
+/// What [`clear_object_pool`] did.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Cleared {
+    Zeroed(usize),
+    /// The `object` array has this many live elements.
+    Live(i32),
+    NoPool,
+}
+
+/// Zero the object memory pool if no object is live.
+pub fn clear_object_pool(m: &mut dyn GuestMemory) -> Result<Cleared, MemFault> {
+    let lockstep::SimRegion::Indirect { pointer, len } = lockstep::SimRegion::HALO2 else {
+        unreachable!()
+    };
+    let base = m.u32(pointer)?;
+    if base == 0 {
+        return Ok(Cleared::NoPool);
+    }
+    let block = m.bytes(base, len as usize)?;
+    let Some(pool) = lockstep::gameplay::object_pool(&block, base) else {
+        return Ok(Cleared::NoPool);
+    };
+    if pool.live != 0 {
+        return Ok(Cleared::Live(pool.live));
+    }
+    let start = pool.storage.start + lockstep::gameplay::POOL_KEEP;
+    m.write(base + start as u32, &vec![0u8; pool.storage.end - start])?;
+    Ok(Cleared::Zeroed(pool.storage.end - start))
+}
+
 #[cfg(test)]
 mod tests;

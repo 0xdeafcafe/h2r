@@ -117,7 +117,12 @@ The start state is the engine's own game options and nothing from disk.
   every `GAME_ACTIVATE` the salt counter of each data array is set to what
   `data_delete_all` seeds it with (`data_salts`, feature `data-salts`),
   because an array a map load empties one datum at a time keeps the salts
-  it had reached, and every handle a game stores carries one. Playback compares it before it applies the first
+  it had reached, and every handle a game stores carries one. The object
+  memory pool (the `loopobjects` header after the `object` array) is not
+  zeroed when objects are freed either, so before `GAME_ACTIVATE` it is
+  zeroed past its first block header when no object is live
+  (`object-pool-clear`); with live objects it is left, counted and logged
+  once. Playback compares it before it applies the first
   record and refuses a film whose start it did not reproduce.
 
 ### The update stream

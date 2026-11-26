@@ -74,6 +74,51 @@ pub fn mask_render(block: &mut [u8]) -> usize {
     zeroed
 }
 
+/// The name of the object memory pool's header (`loopobjects`), which sits
+/// in the arena after the `object` array and its bitmap.
+pub const OBJECT_POOL_NAME: &[u8] = b"loopobjects\0";
+/// The pool header: where the pool's storage is (`+0x28`, a guest
+/// address), how big it is (`+0x2c`) and the bytes used (`+0x30`). The
+/// storage follows the header at `+0x40`, which holds the allocator's first
+/// block header.
+const POOL_STORAGE: usize = 0x28;
+const POOL_SIZE: usize = 0x2c;
+const POOL_STORAGE_AT: usize = 0x40;
+/// Bytes at the start of the pool's storage that are left alone when it is
+/// cleared: the allocator's first block header, whose fields (a size, links
+/// to the neighbouring blocks, a check word) the pool still needs.
+pub const POOL_KEEP: usize = 0x40;
+
+/// The object memory pool of the arena at `base`, where the `object` array
+/// stands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObjectPool {
+    /// Live elements of the `object` array.
+    pub live: i32,
+    /// The pool's storage, as offsets into the block.
+    pub storage: std::ops::Range<usize>,
+}
+
+/// Find the object memory pool in `block` from its header, which lies inside
+/// the `object` array's pool of [`find_pools`]. `None` when the arena has no
+/// `object` array or no such header, or the header is not as expected.
+pub fn object_pool(block: &[u8], base: u32) -> Option<ObjectPool> {
+    let pools = find_pools(block);
+    let objects = pools.iter().find(|p| p.name == "object")?;
+    let word = |at: usize| -> Option<u32> {
+        Some(u32::from_le_bytes(block.get(at..at + 4)?.try_into().ok()?))
+    };
+    let live = word(objects.offset as usize + layout::ACTIVE_COUNT as usize)? as i32;
+    let end = (objects.offset + objects.len) as usize;
+    let header = (objects.offset as usize..end.saturating_sub(POOL_STORAGE_AT))
+        .step_by(4)
+        .find(|&at| block[at..].starts_with(OBJECT_POOL_NAME))?;
+    let start = (word(header + POOL_STORAGE)?.checked_sub(base)?) as usize;
+    let size = word(header + POOL_SIZE)? as usize;
+    (start == header + POOL_STORAGE_AT && size > POOL_KEEP && start + size <= block.len())
+        .then_some(ObjectPool { live, storage: start..start + size })
+}
+
 /// Zero the elements of every data array of `block` that are free (a zero
 /// salt word): `datum_delete` clears the salt and leaves the rest of the
 /// element as it was, so a free slot holds what an earlier game put there.
