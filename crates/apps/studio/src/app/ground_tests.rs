@@ -303,12 +303,20 @@ fn saving_the_ground_writes_a_map_item_to_the_edit_target() {
     let edits = "- tag: 'weap:invented\\other'\n  set:\n  - path: speed\n    value: 1.0\n";
     package_doc::put_edits(&data, "mine", &map, edits).unwrap();
 
+    // One base is not one for each team: refused, nothing written.
     place(&mut app, LabelKind::Drop, [3.0, 3.0, 0.0]);
     place(&mut app, LabelKind::Base, [1.0, 1.0, 0.0]);
+    let lone = api
+        .call(&mut app, m::GROUND_SAVE, json!({"name": "court-ai"}))
+        .unwrap_err();
+    assert_eq!(lone.code, studio_proto::code::REFUSED);
+    assert!(lone.message.contains("one base for each"), "{}", lone.message);
+    assert!(!data.join("packages/mine/maps/court-ai").exists());
+    place(&mut app, LabelKind::Base, [9.0, 9.0, 0.0]);
     let saved = call(&mut api, &mut app, m::GROUND_SAVE, json!({"name": "court-ai"}));
     assert_eq!(saved["package"], "mine");
     assert_eq!(saved["name"], "court-ai");
-    assert_eq!(saved["labels"], 2);
+    assert_eq!(saved["labels"], 3);
     assert_eq!(saved["changed"], true);
     assert_eq!(saved["file"], "maps/court-ai/ground.yaml");
 
@@ -319,7 +327,7 @@ fn saving_the_ground_writes_a_map_item_to_the_edit_target() {
     assert_eq!(spec.ground.as_deref(), Some("maps/court-ai/ground.yaml"));
     let file =
         GroundFile::parse(&std::fs::read(dir.join("maps/court-ai/ground.yaml")).unwrap()).unwrap();
-    assert_eq!(file.labels.len(), 2);
+    assert_eq!(file.labels.len(), 3);
     assert_eq!(
         file,
         super::ground::ground_file_of(&labels_of(app.session.scenario().unwrap()).unwrap())
