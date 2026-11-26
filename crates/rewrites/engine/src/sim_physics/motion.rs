@@ -1,6 +1,8 @@
 //! Guest-first comparison at the two shared unconstrained motion methods.
 //! Capture the motion and its inputs before the call, then compare the
 //! predicted record, including all untouched fields, when the guest returns.
+//! Compare-only: the prediction does not hold the scratch registers retail
+//! leaves, so it is never applied in the guest's place (`parity`).
 use crate::sim_native::SegmentMemory;
 use runtime::{CpuAbi, Guest, guest::Access};
 use sim_core::det;

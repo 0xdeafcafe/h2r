@@ -2,7 +2,7 @@
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 use engine::points;
 use engine::sim_physics::PORTS;
-use runtime::{CpuAbi, Guest};
+use runtime::{CpuAbi, ExecCtx, Guest, GuestFault, TransferAbi};
 
 pub struct NativePhysics;
 
@@ -10,12 +10,14 @@ pub struct NativePhysics;
 /// simulation rewrite (docs/engine/sim-rewrite-havok.md). The step
 /// wrapper, the island collide and the island integrate replay the retail
 /// frame at their resume sites, the world phases and every leaf between
-/// them stay guest code, and the kernels they absorb — the broadphase
-/// batch update, the two unconstrained-motion methods and the integer
-/// MOPP box query — run as capture arms compared with the guest at every
-/// call (`engine::sim_physics::parity`). Retires the per-function
-/// `native_havok_solver`, `native_havok_support_vertices`,
-/// `native_havok_weld` and `native_mopp_box` switches.
+/// them stay guest code, and the kernels they absorb run as capture arms
+/// (`engine::sim_physics::parity`): the broadphase batch update answers
+/// calls itself once proven, with one call in `AUDIT_EVERY` still
+/// compared with the guest; the two unconstrained-motion methods and the
+/// integer MOPP box query are compared with the guest at every call.
+/// Retires the per-function `native_havok_solver`,
+/// `native_havok_support_vertices`, `native_havok_weld` and
+/// `native_mopp_box` switches.
 pub const PHYSICS: &str = "sim.native.physics";
 
 fn physics_on(switches: &hooks::Switches) -> bool {
@@ -72,7 +74,27 @@ impl Feature for NativePhysics {
     }
 }
 
+/// The original at an entry, or its resume at a site.
+fn original(cpu: &mut CpuAbi, ctx: &mut ExecCtx, pc: u32, resume: bool) -> Result<TransferAbi, GuestFault> {
+    let original = if resume {
+        ctx.runtime().resolve_original_resume(pc)
+    } else {
+        ctx.runtime().resolve_original(pc).map(|h| (h, pc))
+    };
+    let (handler, selector) = original.ok_or(GuestFault {
+        addr: pc,
+        len: 1,
+        access: runtime::guest::Access::Execute,
+        reason: runtime::guest::FaultReason::Unmapped,
+    })?;
+    Ok(handler.invoke(cpu, ctx, selector))
+}
+
+/// The map load each arm's take-over proof restarts at.
+const MAP_LOAD: &points::Point = &points::CACHE_TAGS_LOAD;
+
 fn install_physics(b: &mut Builder) {
+    use engine::sim_physics::parity::{self, Step};
     for port in engine::sim_physics::PHYSICS_PORTS {
         b.raw()
             .implement(port.point, PHYSICS, move |cpu, ctx, pc| {
@@ -83,55 +105,58 @@ fn install_physics(b: &mut Builder) {
                         return port.invoke(cpu, &mut mem, pc);
                     }
                 }
-                let original = if resume {
-                    ctx.runtime().resolve_original_resume(pc)
-                } else {
-                    ctx.runtime().resolve_original(pc).map(|h| (h, pc))
-                };
-                let (handler, selector) = original.ok_or(runtime::GuestFault {
-                    addr: pc,
-                    len: 1,
-                    access: runtime::guest::Access::Execute,
-                    reason: runtime::guest::FaultReason::Unmapped,
-                })?;
-                Ok(handler.invoke(cpu, ctx, selector))
+                original(cpu, ctx, pc, resume)
             })
             .resumes(port.resumes)
             .context_only()
             .after_feature("sim-observer-resources")
             .after_feature("sim-submix");
     }
-    // The capture arms: the guest answers each call, and the prediction
-    // is compared with what it left. The MOPP box arm observes phase 2's
-    // entry, which runs guest while the collision switch is off and
-    // natively when it is on; both compare.
+    // The broadphase batch update: `parity::broadphase_enter` decides who
+    // answers. Until the arm is proven since the map load, and at every
+    // audit slot after, the guest answers and the prediction is compared
+    // at its return; a proven call is answered from the prediction.
     let batch = &points::HAVOK_BROADPHASE_BATCH;
     b.raw()
-        .observe_before(batch, "physics-broadphase-begin", move |o| {
-            if o.addr == batch.base {
-                engine::sim_physics::parity::broadphase_begin(o.thread_id, o.cpu, &*o.guest());
+        .implement(batch, PHYSICS, move |cpu, ctx, pc| {
+            if pc == batch.base {
+                let step = {
+                    let mut mem = ctx.memory();
+                    parity::broadphase_enter(cpu, &mut mem)
+                };
+                match step {
+                    Step::Answered { target } => return Ok(TransferAbi::ret(target)),
+                    Step::Audit(prediction) => {
+                        let observed = ctx.observe_guest_return(cpu, parity::BROADPHASE_ARGS, move |c, ctx| {
+                            parity::broadphase_compare(&prediction, c, &*ctx.runtime().memory());
+                        });
+                        if !observed {
+                            parity::uncompared(&parity::BROADPHASE);
+                        }
+                    }
+                    Step::Guest => {}
+                }
             }
+            original(cpu, ctx, pc, false)
         })
+        .context_only()
         .optional();
-    b.raw()
-        .observe_after(batch, "physics-broadphase-end", move |o| {
-            if o.addr == batch.base {
-                engine::sim_physics::parity::broadphase_end(o.thread_id, o.cpu, &*o.guest());
-            }
-        })
-        .optional();
+    // The compare-only arms: the guest answers each call, and the
+    // prediction is compared with what it left. The MOPP box arm observes
+    // phase 2's entry, which runs guest while the collision switch is off
+    // and natively when it is on; both compare.
     let pose = &points::HAVOK_MOTION_POSE;
     b.raw()
         .observe_before(pose, "physics-motion-pose-begin", move |o| {
             if o.addr == pose.base {
-                engine::sim_physics::parity::motion_pose_begin(o.thread_id, o.cpu, &*o.guest());
+                parity::motion_pose_begin(o.thread_id, o.cpu, &*o.guest());
             }
         })
         .optional();
     b.raw()
         .observe_after(pose, "physics-motion-pose-end", move |o| {
             if o.addr == pose.base {
-                engine::sim_physics::parity::motion_pose_end(o.thread_id, o.cpu, &*o.guest());
+                parity::motion_pose_end(o.thread_id, o.cpu, &*o.guest());
             }
         })
         .optional();
@@ -139,14 +164,14 @@ fn install_physics(b: &mut Builder) {
     b.raw()
         .observe_before(forces, "physics-motion-forces-begin", move |o| {
             if o.addr == forces.base {
-                engine::sim_physics::parity::motion_forces_begin(o.thread_id, o.cpu, &*o.guest());
+                parity::motion_forces_begin(o.thread_id, o.cpu, &*o.guest());
             }
         })
         .optional();
     b.raw()
         .observe_after(forces, "physics-motion-forces-end", move |o| {
             if o.addr == forces.base {
-                engine::sim_physics::parity::motion_forces_end(o.thread_id, o.cpu, &*o.guest());
+                parity::motion_forces_end(o.thread_id, o.cpu, &*o.guest());
             }
         })
         .optional();
@@ -154,17 +179,20 @@ fn install_physics(b: &mut Builder) {
     b.raw()
         .observe_before(mopp, "physics-mopp-box-begin", move |o| {
             if o.addr == mopp.base {
-                engine::sim_physics::parity::mopp_box_begin(o.thread_id, o.cpu, &mut *o.guest());
+                parity::mopp_box_begin(o.thread_id, o.cpu, &mut *o.guest());
             }
         })
         .optional();
     b.raw()
         .observe_after(mopp, "physics-mopp-box-end", move |o| {
             if o.addr == mopp.base {
-                engine::sim_physics::parity::mopp_box_end(o.thread_id, o.cpu, &*o.guest());
+                parity::mopp_box_end(o.thread_id, o.cpu, &*o.guest());
             }
         })
         .optional();
+    // Every arm proves itself again at each map load, so lockstep peers
+    // and a film replay take over on the same calls.
+    b.raw().observe_before(MAP_LOAD, "physics-takeover-restart", |_| parity::map_loaded());
 }
 
 #[cfg(test)]
@@ -212,10 +240,12 @@ mod tests {
             assert_eq!(hook.label, PHYSICS);
             assert_eq!(hook.continuation_sites().0, port.resumes);
         }
-        // Four observer pairs: the broadphase batch, both motion methods
-        // and the MOPP box query.
+        // The broadphase batch is one implementation; both motion methods
+        // and the MOPP box query keep their observer pairs.
+        let chain = &plan.chains[&points::HAVOK_BROADPHASE_BATCH.base];
+        assert_eq!(chain.implement.as_ref().unwrap().label, PHYSICS);
+        assert!(chain.observe_before.is_empty() && chain.observe_after.is_empty());
         for point in [
-            &points::HAVOK_BROADPHASE_BATCH,
             &points::HAVOK_MOTION_POSE,
             &points::HAVOK_MOTION_FORCES,
             &points::COLLISION_MOPP_BOX,
@@ -225,9 +255,13 @@ mod tests {
             assert_eq!((chain.observe_before.len(), chain.observe_after.len()), (1, 1), "{:?}", point.name);
             assert!(chain.observe_before[0].optional && chain.observe_after[0].optional);
         }
+        // The proof restarts at the map load.
+        let chain = &plan.chains[&MAP_LOAD.base];
+        assert!(chain.implement.is_none());
+        assert_eq!(chain.observe_before.len(), 1);
         assert_eq!(
             plan.chains.len(),
-            PHYSICS_PORTS.len() + 4,
+            PHYSICS_PORTS.len() + 5,
             "unexpected extra chains"
         );
     }

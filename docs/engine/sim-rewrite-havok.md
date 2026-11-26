@@ -10,7 +10,8 @@ capture arms under `impl.sim.native.physics`
 installed by `sim-bridge/src/sim_physics.rs`; the heap digest
 (`live-telemetry`'s `havok_agents::digest`, `havok.digest`, the sim
 report's `havok.world` component); the shadow's `compare_only` arm for
-guest-authoritative candidates. The per-function `native_havok_solver`,
+guest-authoritative candidates; the broadphase batch update's take-over
+(§9.5). The per-function `native_havok_solver`,
 `native_havok_support_vertices`, `native_havok_weld` and `native_mopp_box`
 switches are retired; their bodies are differential oracles. The ladder
 beyond step 1 (differential per entry, disc sweep, run parity, the
@@ -356,7 +357,7 @@ crates/rewrites/engine/src/sim_physics/   the adapters and the oracle ports
   world.rs                      the step, island collide and island integrate entries
   broadphase.rs                 the batch update's capture arm
   motion.rs                     the two motion methods' capture arms
-  parity.rs                     the arms' open predictions and outcome counters
+  parity.rs                     the arms' counters and the broadphase take-over gate
   (planned)                     boundary.rs, callbacks.rs, spec.rs
 crates/rewrites/engine/tests/sim_havok_differential.rs (planned)
 docs/engine/havok-step.md       the contract page (engine README format; planned)
@@ -752,6 +753,55 @@ allocation order is covered.
   ask about.
 - **Timing.** Three unprofiled medians per arm, and one profiled pair to
   confirm the family's samples dropped.
+
+### 9.5 Capture arms and the take-over
+
+The kernels the world step absorbs run as capture arms in
+`crates/rewrites/engine/src/sim_physics/parity.rs`, installed by
+`crates/rewrites/sim-bridge/src/sim_physics.rs`. `parity::status()`
+gives each arm's matched, mismatched and declined calls since start;
+`parity::takeover()` gives, for the arms that answer, the calls answered
+since start and whether the arm is proven or ended since the map load.
+
+| Arm | Entry | Mode |
+|---|---|---|
+| `physics.broadphase` | `2e0350`, `ret 0x14` | take-over |
+| `physics.motion.forces` | `31b060` | compare-only |
+| `physics.motion.pose` | `31b1c0` | compare-only |
+| `physics.mopp.box` | `300150` | compare-only |
+
+- **Take-over.** The broadphase arm is one `implement` at `2e0350`.
+  `broadphase::capture` predicts the whole `CpuAbi` but `eip` and every
+  byte span the call writes. Until `PROVEN_AFTER` (4096) calls have
+  matched since the map load with no mismatch, the guest answers and the
+  prediction is compared at its return (`ExecCtx::observe_guest_return`).
+  After that, `Prediction::apply` writes the spans and the registers and
+  the call returns to its caller; every `AUDIT_EVERY`th (64th) answerable
+  call still goes to the guest and is compared. A mismatch ends the
+  take-over until the next map load. The pattern is the object function
+  curve arm's (`sim_objects::functions::parity`).
+- **Declines.** A capture that refuses the state (float environment,
+  array capacity, an unknown node), an apply that refuses its spans (an
+  access trap, a read-only page, a span across mappings, two spans on the
+  same physical bytes) and a return the dispatcher cannot observe leave
+  the call to the guest and count as `declined`. A declined call takes no
+  audit slot.
+- **Map load.** An observer at `CACHE_TAGS_LOAD` (`parity::map_loaded`)
+  restarts every arm's proof: the matched count, the audit slot and the
+  mismatch latch. Two lockstep peers and a film replay of a match then
+  answer and audit the same calls whatever their processes ran before.
+  The `status` totals are not reset.
+- **Motion stays compare-only.** A motion prediction holds `esp`, `ebx`,
+  `ebp`, `esi`, `edi` and the body's `0x110` bytes. What retail leaves in
+  `eax`, `ecx`, `edx`, the XMM registers, the x87 stack, status and tag
+  words, the MXCSR flags and `eflags` is not modelled, and no
+  differential test pins it, so an applied motion could not be shown to
+  leave the guest's registers.
+- **Live check.** `impl.sim.native.physics` on against off on Lockout,
+  1,800 ticks: `havok.digest` equal at every tick, `physics.broadphase`
+  answered above zero and mismatched zero. The take-over drops no write
+  only if the spans cover every byte retail writes outside the stack below
+  `esp`; the comparison checks the spans, and this run checks the rest.
 
 ## 10. Threads
 
