@@ -787,6 +787,27 @@ mod retained_admission {
         assert!(refusals.is_empty(), "{refusals:?}");
     }
 
+    /// A sorted pool's guest draw is replaced by its pass and carried as
+    /// that one draw: the device begins a carry for a Water admission of a
+    /// guest draw as it does for the native producer's, so a replaying sink
+    /// keeps one replay draw holding the pass, not the guest's packet and a
+    /// second, and refuses nothing.
+    #[test]
+    fn a_sorted_pools_replacement_is_carried_as_one_replay_draw() {
+        let (begun, ops, refusals) = native_water(Stage::Water, false);
+        assert!(begun);
+        let draws: Vec<_> = ops
+            .iter()
+            .filter_map(|op| match op {
+                ReplayOp::Draw { external: Some(e), .. } => Some((e.plan.ranges, e.plan.stage)),
+                ReplayOp::Draw { external: None, .. } => panic!("the carried draw lost its pass"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(draws, [(1, Stage::Water)]);
+        assert!(refusals.is_empty(), "{refusals:?}");
+    }
+
     #[test]
     fn water_flares_and_ui_commits_are_each_retained_as_an_admitted_draw() {
         for stage in [Stage::Water, Stage::Flares, Stage::Ui] {
