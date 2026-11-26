@@ -498,6 +498,19 @@ A refused reservation also counts under its cause,
 - `consumed`: the guest loop's cursor no longer matched at the commit.
 - `unbound`: the device could not bind the pass's targets or pipeline.
 
+A per-range draw (sorted transparents and object parts, through
+`Device::try_native_indexed_draw_why`) names the first step it did not
+pass (`d3d::NativeRefusal`), counted under:
+
+- `boundary`: the device is not at a producer boundary.
+- `geometry`: the index range's geometry did not resolve.
+- `admission`: the producer's admission returned no pass.
+- `binding`: the pass's targets do not bind as the guest draw's.
+- `resources`: a sampled texture or independent samples are missing.
+- `sink`: the scene sink would not keep the pass
+  (`Backend::take_scene_refusal`).
+- `backend`: the backend did not record every copy, or the guest cursor moved.
+
 1. Use the agent API (`h2 agent`, [agent-api.md](../runtime/agent-api.md)):
    run the same replay or save and input with the default and with
    `H2_FEATURES=impl.render.native=off`, on the same image.

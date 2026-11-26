@@ -101,8 +101,15 @@ pub enum Metric {
     WalkRefusedReservationStale,
     WalkRefusedReservationConsumed,
     WalkRefusedReservationUnbound,
+    WalkRefusedReservationBoundary,
+    WalkRefusedReservationGeometry,
+    WalkRefusedReservationAdmission,
+    WalkRefusedReservationBinding,
+    WalkRefusedReservationResources,
+    WalkRefusedReservationSink,
+    WalkRefusedReservationBackend,
 }
-const METRICS: [&str; 40] = [
+const METRICS: [&str; 47] = [
     "examined",
     "suppressed",
     "refused_ownership",
@@ -143,6 +150,13 @@ const METRICS: [&str; 40] = [
     "walk_refused_reservation_stale",
     "walk_refused_reservation_consumed",
     "walk_refused_reservation_unbound",
+    "walk_refused_reservation_boundary",
+    "walk_refused_reservation_geometry",
+    "walk_refused_reservation_admission",
+    "walk_refused_reservation_binding",
+    "walk_refused_reservation_resources",
+    "walk_refused_reservation_sink",
+    "walk_refused_reservation_backend",
 ];
 
 /// Why a native walk's reservation did not commit. Each cause has its own
@@ -161,11 +175,47 @@ pub enum ReservationCause {
     Consumed,
     /// The device could not bind the pass's targets or pipeline.
     Unbound,
+    /// A per-range draw (`d3d::NativeRefusal`): the device is not at a
+    /// producer boundary.
+    Boundary,
+    /// The index range's geometry did not resolve.
+    Geometry,
+    /// The producer's admission returned no pass for the draw.
+    Admission,
+    /// The pass's targets do not bind as the guest draw's.
+    Binding,
+    /// A sampled texture or independent samples are not available.
+    Resources,
+    /// The scene sink would not keep the pass.
+    Sink,
+    /// The backend did not record every copy, or the guest cursor moved.
+    Backend,
 }
 
 impl ReservationCause {
-    pub const ALL: [ReservationCause; 5] =
-        [Self::Declined, Self::Error, Self::Stale, Self::Consumed, Self::Unbound];
+    pub const ALL: [ReservationCause; 12] = [
+        Self::Declined, Self::Error, Self::Stale, Self::Consumed, Self::Unbound,
+        Self::Boundary, Self::Geometry, Self::Admission, Self::Binding,
+        Self::Resources, Self::Sink, Self::Backend,
+    ];
+
+    /// The column's name suffix.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Declined => "declined",
+            Self::Error => "error",
+            Self::Stale => "stale",
+            Self::Consumed => "consumed",
+            Self::Unbound => "unbound",
+            Self::Boundary => "boundary",
+            Self::Geometry => "geometry",
+            Self::Admission => "admission",
+            Self::Binding => "binding",
+            Self::Resources => "resources",
+            Self::Sink => "sink",
+            Self::Backend => "backend",
+        }
+    }
 
     /// The column this cause counts in.
     pub fn metric(self) -> Metric {
@@ -175,6 +225,13 @@ impl ReservationCause {
             Self::Stale => Metric::WalkRefusedReservationStale,
             Self::Consumed => Metric::WalkRefusedReservationConsumed,
             Self::Unbound => Metric::WalkRefusedReservationUnbound,
+            Self::Boundary => Metric::WalkRefusedReservationBoundary,
+            Self::Geometry => Metric::WalkRefusedReservationGeometry,
+            Self::Admission => Metric::WalkRefusedReservationAdmission,
+            Self::Binding => Metric::WalkRefusedReservationBinding,
+            Self::Resources => Metric::WalkRefusedReservationResources,
+            Self::Sink => Metric::WalkRefusedReservationSink,
+            Self::Backend => Metric::WalkRefusedReservationBackend,
         }
     }
 }
@@ -1039,10 +1096,8 @@ mod tests {
         let columns: Vec<_> = phase::counter_columns().collect();
         let mut seen = std::collections::BTreeSet::new();
         for stage in [Stage::Objects, Stage::Transparents] {
-            for (cause, name) in ReservationCause::ALL
-                .into_iter()
-                .zip(["declined", "error", "stale", "consumed", "unbound"])
-            {
+            for cause in ReservationCause::ALL {
+                let name = cause.name();
                 // The column `Stage::reservation_cause` counts into.
                 let index = phase::Counter::ALL.len() + stage as usize * STRIDE + cause.metric() as usize;
                 let label = format!("native_{}_walk_refused_reservation_{name}", stage.name());
@@ -1051,7 +1106,7 @@ mod tests {
                 assert_ne!(cause.metric() as usize, Metric::WalkRefusedReservation as usize);
             }
         }
-        assert_eq!(seen.len(), 10);
+        assert_eq!(seen.len(), 2 * ReservationCause::ALL.len());
     }
 
     #[test]

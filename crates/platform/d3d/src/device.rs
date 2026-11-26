@@ -957,6 +957,28 @@ enum Fate {
     Observed,
 }
 
+/// Why a native producer's draw did not commit
+/// ([`Device::try_native_indexed_draw_why`]), in the order the draw meets them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeRefusal {
+    /// The device is not at a producer boundary (not created, swallowing,
+    /// a scoped admission, an open immediate draw, undrained work).
+    Boundary,
+    /// The index range's geometry did not resolve.
+    Geometry,
+    /// The producer's admission returned no pass for the draw.
+    Admission,
+    /// The pass's targets do not bind as the guest draw's.
+    Binding,
+    /// A sampled texture or independent samples are not available.
+    Resources,
+    /// The scene sink would not keep the pass
+    /// ([`Backend::take_scene_refusal`]).
+    Sink,
+    /// The backend did not record every copy, or the guest cursor moved.
+    Backend,
+}
+
 /// Why an external pass is not issued ([`Stats::external_refusals`]);
 /// each is logged once per producer and issue boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1153,6 +1175,8 @@ pub struct Device<B: Backend> {
     opaque_world_admission: Option<usize>,
     opaque_targets: Option<PreparedOpaqueTargets>,
     scoped_admission: Option<(Arc<ScopeState>, Arc<dyn crate::DrawAdmission>)>,
+    /// Why the last native producer draw did not commit.
+    native_refusal: Option<NativeRefusal>,
     residual: Residual,
     /// Optional vertex-binding optimization at the resolved indexed draw.
     indexed_geometry: Option<IndexedGeometryHook>,
@@ -1519,6 +1543,7 @@ impl<B: Backend> Device<B> {
             opaque_world_admission: None,
             opaque_targets: None,
             scoped_admission: None,
+            native_refusal: None,
             residual: Residual::default(),
             indexed_geometry: None,
             indexed_geometry_scope: || false,
@@ -6478,6 +6503,7 @@ impl<B: Backend> Device<B> {
             }
         };
         let mut fallback_reason = "packet admission";
+        let mut refusal = native.is_some().then_some(NativeRefusal::Admission);
         let replacement = admission.and_then(|(plan, mut pass)| {
             use timeline::native::Metric;
             if (pass.indexed_tail().is_some_and(|tail| tail.remaining > 1)
@@ -6485,6 +6511,7 @@ impl<B: Backend> Device<B> {
                 && (reads_frame_copy || !self.independent_samples(mem, &sampled))
             {
                 crate::backend::note_declined(plan.stage, "device.rs", line!(), "the pass needs independent samples and the draw reads a frame copy");
+                refusal = Some(NativeRefusal::Resources);
                 plan.stage.count(Metric::RefusedResources, 1);
                 return None;
             }
@@ -6494,6 +6521,7 @@ impl<B: Backend> Device<B> {
                         Some((plan, pass, binding))
                     } else {
                         crate::backend::note_declined(plan.stage, "device.rs", line!(), "a counted draw's writes differ from the guest's");
+                        refusal = Some(NativeRefusal::Binding);
                         plan.stage.count(Metric::RefusedInputs, 1);
                         None
                     }
@@ -6512,11 +6540,13 @@ impl<B: Backend> Device<B> {
                 }
                 Ok(_) => {
                     crate::backend::note_declined(plan.stage, "device.rs", line!(), "the pass's attachments are not the guest draw's target");
+                    refusal = Some(NativeRefusal::Binding);
                     plan.stage.count(Metric::RefusedInputs, 1);
                     None
                 }
                 Err(why) => {
                     fallback_reason = why.describe();
+                    refusal = Some(NativeRefusal::Binding);
                     crate::backend::note_declined(plan.stage, "device.rs", line!(), why.describe());
                     let origin = ExternalOrigin::new(&*pass, "resolved draw binding", Some(plan.stage));
                     self.refuse_external(origin, why, None);
@@ -6544,6 +6574,7 @@ impl<B: Backend> Device<B> {
                 (0..4).any(|i| sampled[i] && draw.textures[i].is_some() && textures[i].is_none());
             if missing {
                 fallback_reason = "sampled texture unavailable";
+                refusal = Some(NativeRefusal::Resources);
                 crate::backend::note_declined(plan.stage, "device.rs", line!(), "a sampled stage has no host texture");
                 let items = pass.items(plan.ranges) as u64;
                 plan.stage.count(timeline::native::Metric::Examined, items);
@@ -6685,10 +6716,12 @@ impl<B: Backend> Device<B> {
                 self.backend.end_native_carry();
             }
             fallback_reason = "backend recording";
+            refusal = Some(if self.backend.take_scene_refusal() { NativeRefusal::Sink } else { NativeRefusal::Backend });
             crate::backend::note_declined(plan.stage, "device.rs", line!(), "the backend did not record every copy");
             self.stats.external_passes_dropped += 1;
         }
         if native.is_some() {
+            self.native_refusal = refusal;
             *streams = draw.streams;
             return Ok(());
         }

@@ -73,15 +73,21 @@ impl<B: d3d::Backend + Send + 'static> native_transparents::WalkHost for Walk<B>
         };
         let cache = self.cache.get();
         let candidate = IndexedRange { stage, water, view, frame: crate::d3d_diag::presents() + 1, cache: &cache };
-        // The device's `Ok(false)` is its refusal: the boundary is not
-        // drained, the geometry did not resolve, or the scene sink would
-        // not keep the pass (`d3d::scene_sink`, `carries_native_stage`).
+        // The device names the first step the draw did not pass.
         let mut device = self.device.lock().map_err(|_| ReservationCause::Error)?;
-        match device.try_native_indexed_draw(
+        match device.try_native_indexed_draw_why(
             &mut crate::native_lights_glue::DeviceMemory(mem), primitive, range.count, range.indices, &candidate,
         ) {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(ReservationCause::Declined),
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(why)) => Err(match why {
+                d3d::NativeRefusal::Boundary => ReservationCause::Boundary,
+                d3d::NativeRefusal::Geometry => ReservationCause::Geometry,
+                d3d::NativeRefusal::Admission => ReservationCause::Admission,
+                d3d::NativeRefusal::Binding => ReservationCause::Binding,
+                d3d::NativeRefusal::Resources => ReservationCause::Resources,
+                d3d::NativeRefusal::Sink => ReservationCause::Sink,
+                d3d::NativeRefusal::Backend => ReservationCause::Backend,
+            }),
             Err(_) => Err(ReservationCause::Error),
         }
     }
