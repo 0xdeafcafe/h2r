@@ -56,6 +56,15 @@ pub struct Config {
     pub layout: Option<&'static crate::builtin::Layout>,
     /// Which dropship the kit carries ([`crate::Dropship`]).
     pub dropship: crate::Dropship,
+    /// Leave the drop pods out: no pod tag, no pools, no falls
+    /// (`crate::sky`).
+    pub no_pods: bool,
+    /// The collision material indices that are sky. A ray's first hit on
+    /// one is no roof (`crate::sky::Roof`); empty counts every surface as
+    /// solid, so a start is open only when nothing is over it. Which
+    /// materials mark sky is unverified (docs/game/firefight.md, "Drop
+    /// pods").
+    pub sky_materials: &'static [u16],
 }
 
 /// Where the two base points came from.
