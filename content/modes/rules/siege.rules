@@ -58,10 +58,11 @@ settings {
 // flags, numbered by phase and given a team, are where a side spawns in
 // that phase (the phase's own site or stand when none is placed), and
 // `siege_barrier` objects, numbered by the phase they open in (a barrier
-// numbered 0 is open from the start). None is required, so every map
-// starts: with no site the assault goes straight to the stand, with no
-// stand the sites are the whole assault, and with neither the round is a
-// draw at its start. A line or barrier label is bounded, so the lookups
+// numbered 0 is open from the start). The script requires no label of its
+// own, but the lobby's start gate (`rules::gate`) refuses a map with no
+// site and no final stand: with no site the assault goes straight to the
+// stand, with no stand the sites are the whole assault, and a run the gate
+// does not guard (a scenario) with neither draws the round at its start. A line or barrier label is bounded, so the lookups
 // of a tick stay small.
 label site: zones = "siege_site"
 label goal: zone? = "siege_goal"

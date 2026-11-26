@@ -1213,9 +1213,14 @@ CTF flag stand (`label base: zones = "ctf_flag_spawn"`, `base[team 1]`). Each ph
 clock, and a clock that runs out wins it for the defenders. Each side
 spawns with its own loadout (`on spawn`, `set_loadout`), and the winners
 score a point each, so the post-game names them. No label states a
-requirement, so every map starts: with no territory the assault goes
-straight to the flag stand, with no flag stand taking every site wins
-it, and with neither the round draws at its start with a message. The
+requirement, but the lobby's start gate refuses a map with neither a
+site (a `siege_site` or a territory) nor a final stand (a `siege_goal` or
+the defenders' flag stand) by name
+([rules-start-gate.md](rules-start-gate.md), `gate.rs` `map_problems`),
+for the picker and for Start Game. On a map with either, with no
+territory the assault goes straight to the flag stand and with no flag
+stand taking every site wins it. A run the gate does not guard (a
+scenario) with neither draws the round at its start with a message. The
 variant's `lives = 1` holds each death's respawn (the engine's own
 lives gate), and each side's dead come back together when its wave
 timer (`wave_time`) runs out (`respawn`). Each side spawns near its
@@ -1458,7 +1463,7 @@ Actions:
 | `fly(v, path, t)`, `hover(v, on)`, `seat(p, v)`, `eject(p)`, `unload(v)`, `place_squad_in(s, class, n, v)`; reads `vehicle_riders(v)`, `vehicle_driver(v)`: a vehicle flown along a labelled `path`, loaded, unloaded and read | [rules-world-api.md](rules-world-api.md#vehicles-and-drop-ships): the host calls the retail hover and unload bodies at the tick boundary | named (`hover`, `unload`), not built (`fly`), traced (the rest) | `vehicles.drive` |
 | `spawn_areas(team, label, n)`: the team spawns only at the starting locations labelled `label` and numbered `n` | the rule in the VM's state; `SPAWN_LOCATION_FREE` `0x23bb70`, the free-spot test of `PLAYER_SPAWN_LOCATION` `0x14ef00`, answers "taken" for every other location (`rules/world/spawns.rs`); how the chooser weighs a location is not traced and not needed | named | `player.spawn` |
 | `spawn_near(team, zone, n)`: the team spawns only at the `n` starting locations nearest the zone; `none` or 0 lifts it | as `spawn_areas`, over the starting locations' positions (`+0x00`) | named | `player.spawn` |
-| loadout chosen at spawn | `on spawn` and `set_loadout`, with `offer_pick`, `pick_row` and `picked` for the player's own choice ([rules-world-api.md](rules-world-api.md#pickers)) | named; a client's players pick from the offer cue and their picks go back up the actor channel, whose upstream frame is not built | `player.weapons`, `player.pick` |
+| loadout chosen at spawn | `on spawn` and `set_loadout`, with `offer_pick`, `pick_row` and `picked` for the player's own choice ([rules-world-api.md](rules-world-api.md#pickers)) | named; the offer reaches a client as a cue, but the actor channel's upstream pick frame is not built, so a client asks nobody and a player on another machine gets the lobby's choice | `player.weapons`, `player.pick` |
 | `give(p, tag)`: a weapon into a living player's hands | no entry proven. The pickup's attach routine `0x10ca80` (item, new unit) is on record as an observer only (**E**, [bots.md](bots.md) "Weapon taken") | untraced | `player.weapons` |
 | `take(p, weapon)` | the inventory removal `0xce920`, reached from the drop path `0xe8de0` (**E**, bots.md, the dual-wield drop); a call outside a drop is not proven | traced | `player.weapons` |
 | `set_body(team, tag)`: the team's players spawn as the Spartan or the Elite; `none` lifts it | the rule in the VM's state; the model byte (player `+0x88`) that `PLAYER_SPAWN` `0x14f2e0` and its representation pick `0x14f040` read, written for the spawn and put back after it (`rules/world/body.rs`) | named | `player.disguise` |

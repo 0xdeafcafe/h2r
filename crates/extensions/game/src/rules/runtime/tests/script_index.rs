@@ -372,3 +372,31 @@ fn a_retail_record_that_cannot_map_stays_and_the_reason_is_named() {
     assert!(matches!(swap, Ok(Swap::Refused(_))), "{swap:?}");
     assert_eq!(record_at(&options), raw);
 }
+
+#[test]
+fn the_listed_siege_record_is_on_the_script_index_and_a_slayer_copy_of_it_moves_there() {
+    // Siege has no retail engine and no disc record: its record is the
+    // script's own (`variants::portable::record_for`), made on the script
+    // index, so the game's start leaves it where it is. A copy of it on
+    // the Slayer index (a record saved or sent before scripts that ride
+    // Slayer took the script index) moves there, with the script
+    // reference, the options and the common settings (team play, one
+    // life, no starting weapon) whole.
+    let siege = crate::community_variants::listed_named("Siege").unwrap();
+    assert!(siege.record.team_play());
+    let was = siege.record.to_bytes();
+    assert_eq!(
+        i32::from_le_bytes(was[variants::record::ENGINE_AT..variants::record::ENGINE_AT + 4].try_into().unwrap()),
+        SCRIPT
+    );
+    let mut options = options_with(was);
+    assert_eq!(crate::rules::record::move_onto_script_index(&mut options, OPTIONS), Ok(Swap::Stayed));
+    assert_eq!(record_at(&options), was);
+
+    let mut old = was;
+    old[variants::record::ENGINE_AT..variants::record::ENGINE_AT + 4].copy_from_slice(&1i32.to_le_bytes());
+    let mut options = options_with(old);
+    let moved = on_script_index(&mut options);
+    assert_eq!(moved[..], was[variants::ext::AT..variants::ext::AT + LEN], "the script reference and options stay");
+    assert_eq!(&record_at(&options)[0x4c..0xe0], &was[0x4c..0xe0], "the common settings stay");
+}

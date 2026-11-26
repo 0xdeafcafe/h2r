@@ -1007,6 +1007,51 @@ mod gate {
         }
     }
 
+    /// A census holding one flag of each `(label, team)`.
+    fn flags_labelled(rows: &[(&str, Option<u8>)]) -> Census {
+        use ::rules::labels::{Class, Member};
+        let mut census = Census::default();
+        for &(label, team) in rows {
+            census.labels.entry(label.into()).or_default().push(Member {
+                class: Class::Flag,
+                number: None,
+                team,
+            });
+        }
+        census
+    }
+
+    /// The gate refuses a map with no site and no final stand (the script
+    /// would draw at its start), and clears one with any of the four
+    /// places the script reads: a territory, a placed site, a placed goal
+    /// or the defenders' flag stand. The attackers' stand alone is none.
+    #[test]
+    fn siege_starts_on_a_site_or_a_final_stand_and_nothing_less() {
+        let siege = crate::community_variants::listed_named("Siege").unwrap();
+        let blob = crate::rules::feature::local_blob(siege.ext().script.prefix).unwrap();
+        let (ir, _) = ::rules::verify::load(&blob).unwrap();
+        let mut guest = lobby(MAP, siege.ext().script.prefix, true);
+        guest.put(VARIANT, siege.record.bytes());
+        let input = g::read(&guest, VARIANT).unwrap();
+
+        let cases: [(&str, Census, bool); 7] = [
+            ("nothing", flags_labelled(&[]), false),
+            ("the attackers' stand alone", flags_labelled(&[("ctf_flag_spawn", Some(0))]), false),
+            ("a territory", flags_labelled(&[("territory", None)]), true),
+            ("a placed site", flags_labelled(&[("siege_site", None)]), true),
+            ("a placed goal", flags_labelled(&[("siege_goal", None)]), true),
+            ("the defenders' stand", flags_labelled(&[("ctf_flag_spawn", Some(1))]), true),
+            ("both stands", flags_labelled(&[("ctf_flag_spawn", Some(0)), ("ctf_flag_spawn", Some(1))]), true),
+        ];
+        for (what, census, starts) in cases {
+            let sources = Fake::new(census, &ir);
+            let verdict = g::check(&input.key, &sources);
+            assert_eq!(verdict == Verdict::Clear, starts, "{what}: {verdict:?}");
+            let offers = g::map_filter_using(&siege.record, &sources).unwrap();
+            assert_eq!(offers(MAP), starts, "{what}: the picker agrees with the start");
+        }
+    }
+
     #[test]
     fn a_changed_map_forge_map_or_variant_runs_the_check_once() {
         fresh(Some(Mode::Multiplayer));

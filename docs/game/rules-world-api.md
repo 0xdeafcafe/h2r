@@ -141,7 +141,7 @@ engine does not replicate, is one of two things:
   older or repeated cue for nothing
   (`crates/extensions/game/src/rules/world/show.rs`, `present_walls`).
   The pickers' offer cue (`rules::show::Cue::Pick`, kind 4) holds each
-  picker's offer the same way, for the players a client asks
+  picker's offer the same way, for the players a client would ask
   ([Pickers](#pickers)).
 
 An audience is a 16-bit mask of player slots. A text is an index into
@@ -539,27 +539,31 @@ after 30 seconds (B on the picker reports nothing). Picks made before the
 round's end reset are still handed over. The picker is the existing
 data-driven one, so no screen of its own and no per-script Rust.
 
-A player on another machine is asked the other way. The authority sends
-each picker as an offer cue on the show channel
+A player on another machine is asked the other way, and is not asked
+yet. The authority sends each picker as an offer cue on the show channel
 ([the show channel](#the-show-channel), `rules::show::Cue::Pick`: the
 picker's number, its title and its rows as string-table indexes, at most
 16 bytes) when the offers change — a picker taken away goes as an empty
-one, which takes the asking off — and again every 90 ticks while any
-stands, so a machine that joins late has them. A client holds them
-(`rules/world/pick.rs`, `client_offer`), asks its own local players one
-at a time at the tick boundary with the same value picker, and sends each
-press back up the actor channel as the pick message
+one — and again every 90 ticks while any stands. A client holds them
+(`rules/world/pick.rs`, `client_offer`) and would ask its own local
+players one at a time at the tick boundary with the same value picker,
+sending each press up the actor channel as the pick message
 (`game/src/actor_net/pick.rs`: the roster slot, the picker and the row,
-three bytes, bounds-checked on both ends). The host decodes it
-(`actor_net/pick.rs::receive`), keeps only picks for players the sending
-peer sits, and hands them to `Vm::choose` like its own local reports, so
-`picked` reads a remote pick as it reads a local one. The tunnel carries
-no frame upstream yet — its only client-to-host frame is the key request,
-which holds no payload — so a client asks nobody until the frame is built
-(`actor_net/link.rs::pick_upstream` answers false), and a player on
-another machine reads -1 from `picked`; a script falls back to the
-lobby's option, as `siege.rules` does. A player who joins after the
-offers were made is asked by the next repeat of the offer cue.
+three bytes, bounds-checked on both ends), which the host decodes
+(`actor_net/pick.rs::receive`), keeps only for players the sending peer
+sits, and hands to `Vm::choose` like its own local reports.
+
+The upstream frame that carries the pick message is missing, in the Live
+tunnel (`crates/live`, not this crate): the tunnel's only client-to-host
+frame is the key request, which holds no payload. Until it exists
+`actor_net/link.rs::pick_upstream` answers false, the client's asking
+never starts (`client_busy`), `take_picks` returns nothing and `send_pick`
+drops the pick, so no client player is shown a picker and a player on
+another machine reads -1 from `picked`. A script falls back to the
+lobby's option, as `siege.rules` does. The host's own local players pick
+as above. The decode, the seat check and the client's asking are tested
+without the tunnel (`actor_net/pick.rs`, `rules/world/pick.rs`); a pick
+crossing a real channel is not.
 
 ### Spawns
 
