@@ -25,7 +25,12 @@ eq "$(portal_csrf "$work/none")" "" "no jar"
 # The netrc file: mode 600, password from stdin only.
 printf 'pa ss\n' | portal_netrc "$work/netrc" 192.168.1.50 afr
 eq "$(cat "$work/netrc")" "machine 192.168.1.50 login afr password pa ss" "netrc"
-eq "$(stat -f %Lp "$work/netrc" 2>/dev/null || stat -c %a "$work/netrc")" "600" "netrc mode"
+# GNU stat first: on Git Bash `stat -f` is the file system flag and
+# succeeds. Windows keeps no Unix mode bits, so the check is skipped there.
+case "$(uname -s)" in
+MINGW* | MSYS* | CYGWIN*) ;;
+*) eq "$(stat -c %a "$work/netrc" 2>/dev/null || stat -f %Lp "$work/netrc")" "600" "netrc mode" ;;
+esac
 
 # Package lookup in the portal's list.
 cat >"$work/pkgs.json" <<'JSON'

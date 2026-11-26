@@ -346,5 +346,6 @@ impl Play {
     }
 }
 
-#[cfg(test)]
+// The tests drive `play::testing::fake`, a Unix-socket game.
+#[cfg(all(test, unix))]
 mod tests;
