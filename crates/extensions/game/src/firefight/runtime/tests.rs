@@ -737,6 +737,7 @@ fn the_end_report_carries_each_teams_score_and_the_winner() {
         set: "Crossfire".into(),
         outcome,
         rounds_cleared: 2,
+        sets_cleared: 0,
         lives_used: 4,
         teams,
         scores: [300, 150],
@@ -753,6 +754,50 @@ fn the_end_report_carries_each_teams_score_and_the_winner() {
     let one = ended_report(ended(Outcome::Won, 1));
     assert_eq!(one.validate(), Ok(()));
     assert_eq!((one.teams, one.scores.as_slice()), (1, &[300][..]));
+}
+
+/// An endless game's end carries the sets it played through, and the wire
+/// takes the count.
+#[test]
+fn the_end_report_carries_sets_cleared() {
+    let ended = crate::firefight::host::Ended {
+        tick: 9_000,
+        set: "Endless".into(),
+        outcome: Outcome::Lost,
+        rounds_cleared: 7,
+        sets_cleared: 2,
+        lives_used: 9,
+        teams: 1,
+        scores: [4_200, 0],
+    };
+    let report = ended_report(ended);
+    assert_eq!(report.validate(), Ok(()));
+    assert_eq!((report.sets_cleared, report.rounds_cleared), (2, 7));
+    assert_eq!(report.outcome, "lost");
+    let wire = serde_json::to_value(&report).unwrap();
+    assert_eq!(wire["sets_cleared"], 2);
+}
+
+/// `firefight.state` names the set the director is in, and the bonus round
+/// as a phase that runs until its tick.
+#[test]
+fn state_reports_set_and_bonus() {
+    use ::firefight::director::Phase;
+    let (it, _) = shared(false);
+    it.lock().set_options(Box::new(|| {
+        Ok(Options {
+            wave_set: 4,
+            ..Options::default()
+        })
+    }));
+    let (mut m, _) = guest(true, 1);
+    it.lock().start(&mut m, false);
+    let director = it.lock().state().director.expect("the director runs");
+    assert_eq!((director.set, director.round), (0, 0));
+    assert_eq!(director.phase, "warmup");
+    assert_eq!(phase_name(Phase::Bonus { until: 1_830 }), ("bonus", Some(1_830)));
+    let json = serde_json::to_value(&director).unwrap();
+    assert_eq!(json["set"], 0);
 }
 
 /// Two player teams need a team game; with one and the kit's two bases

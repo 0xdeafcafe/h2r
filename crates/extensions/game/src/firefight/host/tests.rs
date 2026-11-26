@@ -730,6 +730,7 @@ fn at_round_three(last_wave_cleared: bool) -> Progress {
     Progress {
         round: 2,
         rounds: 3,
+        sets: 0,
         last_wave_cleared,
         respawns: 4,
         teams: 2,
@@ -757,6 +758,8 @@ fn a_finish_makes_the_result_with_the_rounds_it_cleared() {
     assert_eq!(early.rounds_cleared, 2);
     let draw = result(5, "Crossfire".into(), at_round_three(true), &finish(Outcome::Draw)).unwrap();
     assert_eq!((draw.outcome, draw.rounds_cleared), (Outcome::Draw, 3));
+    // A finite set is one set: cleared when it ends won.
+    assert_eq!((won.sets_cleared, lost.sets_cleared, draw.sets_cleared), (1, 0, 1));
 }
 
 /// A player kill's score is credited with no class: it was for no actor.
@@ -1285,4 +1288,230 @@ fn finish_ends_the_test_and_not_the_game() {
     assert!(host.pre_tick(1, &mut game).is_empty());
     assert_eq!(game.calls, [Call::End(Outcome::Won)]);
     assert_eq!(host.take_test_end(), None);
+}
+
+// ---- Endless: sets and the bonus round ----
+
+/// Endless (three-round sets, one after another) with a 60-tick bonus round
+/// of one Elite at a time.
+fn endless() -> Def {
+    use ::firefight::{Bonus, Count, Drop, SquadSpec};
+    let mut def = builtin::definitions()
+        .into_iter()
+        .find(|def| def.set.endless)
+        .expect("Endless is a built-in");
+    def.bonus = Some(Bonus {
+        ticks: 60,
+        squad: SquadSpec {
+            class: "elite".into(),
+            count: Count {
+                per_player: 1,
+                min: 1,
+                max: 1,
+            },
+            drop: Drop::Edge,
+            weapon_tier: 0,
+        },
+        lives_by_points: vec![(100, 1)],
+    });
+    def
+}
+
+/// A match over [`FakeGame`] where every squad dies three ticks after it is
+/// placed, and a respawn brings a dead player back.
+struct Played {
+    tick: u32,
+    placed: BTreeMap<u8, (u32, u16)>,
+    seen: usize,
+}
+
+impl Played {
+    fn new() -> Self {
+        Self {
+            tick: 0,
+            placed: BTreeMap::new(),
+            seen: 0,
+        }
+    }
+
+    fn step(&mut self, host: &mut Host, game: &mut FakeGame) {
+        self.tick += 1;
+        assert!(self.tick < 60_000, "the match never got there");
+        let errors = host.pre_tick(self.tick, game);
+        assert!(errors.is_empty(), "{errors:?}");
+        let mut back = Vec::new();
+        for call in &game.calls[self.seen..] {
+            match call {
+                Call::Squad(SquadOp::Place(p)) => {
+                    self.placed.insert(p.slot, (self.tick, p.count));
+                }
+                Call::Squad(SquadOp::Erase { slot }) => {
+                    self.placed.remove(slot);
+                }
+                Call::Respawn(player) => back.push(*player),
+                _ => {}
+            }
+        }
+        self.seen = game.calls.len();
+        for player in game.players.iter_mut().filter(|p| back.contains(&p.slot)) {
+            player.alive = true;
+        }
+        game.actors = [0; SQUAD_SLOTS];
+        for (&slot, &(at, count)) in &self.placed {
+            if self.tick - at < 3 {
+                game.actors[usize::from(slot)] = count;
+            }
+        }
+        host.post_tick(self.tick, &*game).unwrap();
+    }
+
+    fn until(&mut self, host: &mut Host, game: &mut FakeGame, done: impl Fn(&Host) -> bool) {
+        while !done(host) {
+            self.step(host, game);
+        }
+    }
+}
+
+fn ops(host: &Host) -> Vec<Command> {
+    host.log().since(0).iter().map(|e| e.op.clone()).collect()
+}
+
+/// The skulls on after `calls`, in call order.
+fn skulls_after(calls: &[Call]) -> BTreeSet<Skull> {
+    let mut on = BTreeSet::new();
+    for call in calls {
+        if let Call::Skull(skull, set) = call {
+            if *set {
+                on.insert(*skull);
+            } else {
+                on.remove(skull);
+            }
+        }
+    }
+    on
+}
+
+#[test]
+fn a_scripted_endless_match_makes_the_expected_engine_calls() {
+    let mut game = FakeGame::new();
+    let mut host = Host::start(Role::Host, endless(), settings(), &game).unwrap();
+    let mut played = Played::new();
+    // Through the first set, its bonus round and the first round of the
+    // second set.
+    played.until(&mut host, &mut game, |host| {
+        let ops = ops(host);
+        let set = ops.iter().position(|c| *c == Command::Set { index: 1 });
+        set.is_some_and(|at| ops[at..].contains(&Command::Round { index: 0 }))
+    });
+    // Let its entries apply.
+    for _ in 0..5 {
+        played.step(&mut host, &mut game);
+    }
+    let ops = ops(&host);
+    let at = |wanted: &Command| ops.iter().position(|c| c == wanted).unwrap();
+    // The set, then its bonus round (on, then off), then the next set.
+    let on = ops
+        .iter()
+        .position(|c| matches!(c, Command::Bonus { on: true, .. }))
+        .expect("the bonus round starts");
+    let off = ops
+        .iter()
+        .position(|c| matches!(c, Command::Bonus { on: false, .. }))
+        .expect("the bonus round ends");
+    assert!(at(&Command::Round { index: 2 }) < on && on < off);
+    assert!(off < at(&Command::Set { index: 1 }));
+    assert!(at(&Command::Set { index: 1 }) < ops.iter().rposition(|c| *c == Command::Round { index: 0 }).unwrap());
+    // The game never ends, and no engine call was refused.
+    assert!(!game.calls.iter().any(|c| matches!(c, Call::End(_))));
+    // The second set's first round: the set's own skull and the round's,
+    // none of the first set's round skulls.
+    let on = skulls_after(&game.calls);
+    assert!(on.contains(&Skull::Thunderstorm), "{on:?}");
+    assert!(on.contains(&Skull::Ghost), "{on:?}");
+    assert!(!on.contains(&Skull::Catch) && !on.contains(&Skull::BlackEye), "{on:?}");
+    host.log().verify(host.head()).unwrap();
+}
+
+#[test]
+fn no_respawn_is_issued_in_the_bonus_round() {
+    let mut game = FakeGame::new();
+    let mut host = Host::start(Role::Host, endless(), settings(), &game).unwrap();
+    let mut played = Played::new();
+    played.until(&mut host, &mut game, |host| host.bonus);
+    // The only player dies in the bonus round: it ends the round, not the
+    // game, and nothing is respawned or charged until it is over.
+    game.players[0].alive = false;
+    game.players[0].position = None;
+    let (from, mut inside) = (game.calls.len(), game.calls.len());
+    while host.bonus {
+        inside = game.calls.len();
+        played.step(&mut host, &mut game);
+    }
+    let during = &game.calls[from..inside];
+    assert!(
+        !during
+            .iter()
+            .any(|c| matches!(c, Call::Respawn(_) | Call::Lives(..) | Call::TeamLives(..))),
+        "{during:?}"
+    );
+    assert!(!game.calls.iter().any(|c| matches!(c, Call::End(_))));
+    // Then it grants and respawns: the player is back.
+    for _ in 0..30 {
+        played.step(&mut host, &mut game);
+    }
+    assert!(game.calls[inside..].contains(&Call::Respawn(0)));
+    assert!(game.players[0].alive);
+}
+
+/// The host refuses a respawn the bonus round is on for: an operator's too.
+#[test]
+fn a_respawn_entry_in_the_bonus_round_is_refused_by_name() {
+    let mut game = FakeGame::new();
+    let mut host = Host::start(Role::Host, endless(), settings(), &game).unwrap();
+    let mut played = Played::new();
+    played.until(&mut host, &mut game, |host| host.bonus);
+    host.append(played.tick + 1, Command::Respawn { player: 0 }).unwrap();
+    let errors = host.pre_tick(played.tick + 1, &mut game);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].error.to_string().contains("bonus round"), "{errors:?}");
+    assert!(!game.calls.contains(&Call::Respawn(0)));
+}
+
+/// A game lost in the second set's second round has played one set and
+/// four rounds: the count runs across sets.
+#[test]
+fn an_endless_end_counts_sets_and_rounds() {
+    let mut game = FakeGame::new();
+    let mut host = Host::start(Role::Host, endless(), settings(), &game).unwrap();
+    let mut played = Played::new();
+    played.until(&mut host, &mut game, |host| {
+        host.state().is_some_and(|s| s.set == 1 && s.round == 1)
+    });
+    let lost = [Command::Finish {
+        outcome: Outcome::Lost,
+    }];
+    let ended = result(
+        played.tick,
+        "Endless".into(),
+        progress(host.director().unwrap()),
+        &lost,
+    )
+    .unwrap();
+    assert_eq!((ended.sets_cleared, ended.rounds_cleared), (1, 4));
+    // Lost in the first set's bonus round: that set is played through.
+    let mut game = FakeGame::new();
+    let mut host = Host::start(Role::Host, endless(), settings(), &game).unwrap();
+    let mut played = Played::new();
+    played.until(&mut host, &mut game, |host| {
+        host.state()
+            .is_some_and(|s| matches!(s.phase, Phase::Bonus { .. }))
+    });
+    let ended = result(
+        played.tick,
+        "Endless".into(),
+        progress(host.director().unwrap()),
+        &lost,
+    )
+    .unwrap();
+    assert_eq!((ended.sets_cleared, ended.rounds_cleared), (1, 3));
 }

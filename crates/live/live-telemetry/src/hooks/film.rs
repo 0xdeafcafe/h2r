@@ -476,6 +476,7 @@ mod tests {
             team: None,
             scores: vec![150],
             rounds_cleared: 3,
+            sets_cleared: 1,
             lives_used: 1,
         });
         let kinds = log.events.lock().unwrap().clone();

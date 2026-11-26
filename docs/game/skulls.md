@@ -826,7 +826,8 @@ split and the answer to every AI reader's campaign gate are in.
 A Firefight match ([firefight.md](firefight.md)) runs actors, so the AI
 skulls mean something there, on the host only (`skulls_mp::firefight_ai`:
 every machine but a guest). The director switches each skull on with a
-`Skull` command at its round's first wave, and the active set only grows.
+`Skull` command at its round's first wave; the set grows until an endless
+match's next set switches the previous set's round skulls off.
 Score multipliers come from the definition and the director's active set
 (`firefight::scoring::kill_points`).
 
@@ -835,15 +836,23 @@ Score multipliers come from the definition and the director's active set
 | 2 | Assassins | host's actors | `ai_skulls_apply_on_the_host_only` |
 | 3 | Thunderstorm | host's actors | `ai_skulls_apply_on_the_host_only` |
 | 4 | Famine | host's actors' drops, and placed weapons on every machine (the multiplayer path) | `ai_skulls_apply_on_the_host_only` |
-| 6 | Blind | each machine's own HUD (the multiplayer path) | `every_firefight_skull_has_a_scope_and_an_engine_index` |
 | 7 | Ghost | host's actors | `ai_skulls_apply_on_the_host_only` |
+| 8 | Black Eye | every machine: its gate and its array byte, in any role, and the multiplayer set's active bit off the guest | `black_eye_reaches_every_machine` |
 | 9 | Catch | host's actors | `ai_skulls_apply_on_the_host_only` |
+| 11 | Iron | a director rule (no respawn in the bonus round); no engine byte | `every_firefight_skull_has_a_scope_and_an_engine_index` |
 | 12 | Mythic | host's actors | `ai_skulls_apply_on_the_host_only` |
 | 13 | Angry | host's actors | `ai_skulls_apply_on_the_host_only` |
 | 16 | Low Gravity | everyone (the multiplayer path) | `every_firefight_skull_has_a_scope_and_an_engine_index` |
 
 `MpSkulls::write_firefight_array` sets the array byte (`0x4f55dc + n`) of
-each AI skull on and clears the others it owns. A round's skulls
+each AI skull and each simulation skull (`FIREFIGHT_SIM_SKULLS`: Black Eye)
+on and clears the others it owns, so a skull the director switches off
+(`Skull { on: false }`: a set's round skulls, the bonus round's) leaves the
+array, the gate set and the multiplayer set's active bits
+(`a_skull_switched_off_leaves_the_array`). Black Eye's shield reader has no
+campaign gate of its own in `engine::points::skull_gates`, so its byte is
+the whole of its reach until a run shows the reader (docs/game/firefight.md,
+"Lives, rounds and skulls"). A round's skulls
 (`a_round_switches_its_skulls_on`) and multipliers (`multipliers_multiply`)
 are in `crates/formats/firefight/tests/skulls.rs`.
 
