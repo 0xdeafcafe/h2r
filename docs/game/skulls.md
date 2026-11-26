@@ -863,7 +863,9 @@ For any other skull, and on a guest, the hook lets the `jne` run.
 The sites are `engine::points::skull_gates::GATES`
 (`crates/hooking/guest-layout/src/points/skull_gates.rs`); each site and
 its fall-through is an instruction entry of the image
-(`boot::image_entries`). They are every absolute reference to an AI
+(`boot::image_entries`). Discovery makes such an entry a function entry
+of the image, not a resume, so the hook enters the fall-through by entry
+dispatch (`skulls_mp::gate_transfer`, `has_generated`). They are every absolute reference to an AI
 skull's byte in the XBE, less Famine's placed-weapon reader `0xfda54`,
 which the multiplayer path answers at its function's entry:
 
