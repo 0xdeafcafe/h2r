@@ -264,3 +264,36 @@ fn the_scenario_holds_the_ship_and_its_paths_by_name() {
     assert!(got.zones.iter().enumerate().all(|(i, z)| z.name.starts_with("ff_drop_") == (i < built.zones)));
     assert_eq!(got.placements, 1);
 }
+
+/// A floor inside four cliff walls 40 high, 25 from the origin.
+fn canyon() -> Vec<[V3; 3]> {
+    let wall = |x: f32| {
+        let p = |y, z| [x, y, z];
+        [[p(-200.0, 0.0), p(200.0, 0.0), p(200.0, 40.0)], [p(-200.0, 0.0), p(200.0, 40.0), p(-200.0, 40.0)]]
+    };
+    let mut tris: Vec<_> = square(0.0, -100.0, 100.0).into_iter().collect();
+    for x in [25.0, -25.0] {
+        tris.extend(wall(x));
+        // The same wall turned a quarter: along y at +-x.
+        tris.extend(wall(x).map(|t| t.map(|v| [v[1], v[0], v[2]])));
+    }
+    tris
+}
+
+#[test]
+fn a_column_clear_of_roofs_is_flown_steeply_when_cliffs_block_the_long_run() {
+    // Cliffs 25 round, 40 high: the long shallow run from
+    // the sky at 50 meets them, a dive from 30 away does not.
+    let walls = Walls::new(canyon());
+    let run = plan(&walls, &[zone([0.0, 0.0, 0.0])])[0].expect("a steep run gets in");
+    assert_eq!(run.points[1], [0.0, 0.0, DROP_HEIGHT]);
+    let along = libm::hypotf(run.points[0][0], run.points[0][1]);
+    assert!(along <= STEEP_REACH[0] + 1e-3, "{along}");
+}
+
+#[test]
+fn a_zone_boxed_in_by_a_roof_the_height_of_the_cliffs_has_no_path() {
+    let mut tris = canyon();
+    tris.extend(square(30.0, -30.0, 30.0));
+    assert_eq!(plan(&Walls::new(tris), &[zone([0.0, 0.0, 0.0])]), [None]);
+}
