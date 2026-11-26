@@ -185,6 +185,10 @@ def flatten_multiline_env():
         lines = f.read().split("\n")
     pattern = re.compile(r'"CARGO_PKG_(DESCRIPTION|AUTHORS)": ')
     lines = [re.sub(r"\\[rn]", " ", line) if pattern.search(line) else line for line in lines]
+    # Newer reindeer releases write each crate archive's `size_bytes`; the
+    # devenv's does not. Dropping the line gives the same rules from both.
+    size = re.compile(r"^\s*size_bytes = \d+,$")
+    lines = [line for line in lines if not size.match(line)]
     with open(BUCK, "w", encoding="utf-8", newline="\n") as f:
         f.write("\n".join(lines))
 
