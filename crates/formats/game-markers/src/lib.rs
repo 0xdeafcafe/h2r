@@ -9,8 +9,17 @@
 //! the same mesh, so a marker is one shape in Forge, in Studio and in a
 //! render.
 //!
+//! A marker has two forms (docs/game/gametype-marker-forms.md): the edit
+//! form an author sees ([`Form::Edit`]) and the play form a match draws
+//! ([`Form::Play`]), a part of the edit form at the same place.
+//! [`Marker::mesh_in`] gives either; [`Marker::icon`] gives the plate with
+//! its icon, which a drawer turns to the eye.
+//!
 //! Every shape is generated here from numbers of ours.
 pub mod area;
+pub mod digits;
+pub mod form;
+pub mod icon;
 pub mod kind;
 pub mod mesh;
 pub mod palette;
@@ -21,7 +30,9 @@ pub mod shapes;
 mod tests;
 
 pub use area::{Area, AreaError, Shape};
-pub use kind::{Item, Kind, Solid, Volume};
+pub use form::{Form, Part, Parts};
+pub use icon::Icon;
+pub use kind::{Item, Kind, Solid, SpawnUse, Volume};
 pub use mesh::{Line, Mesh, Place, Tri, Vec3};
 pub use palette::{Palette, Tint};
 
@@ -51,8 +62,20 @@ impl Marker {
         palette.colour(self.kind.tint(), self.team)
     }
 
-    /// The marker's lines and faces in its own space, in its colour.
+    /// The marker's lines and faces in its own space, in its colour:
+    /// the edit form with its plate facing the marker's front.
     pub fn mesh(&self, palette: &Palette) -> Mesh {
         self.kind.mesh(self.colour(palette))
+    }
+
+    /// The marker's lines and faces in `form`, without the plate.
+    pub fn mesh_in(&self, form: Form, palette: &Palette) -> Mesh {
+        self.kind.mesh_in(form, self.colour(palette))
+    }
+
+    /// The marker's plate and icon in the plate's own space, with
+    /// `number` where the kind shows one; `None` for a volume.
+    pub fn icon(&self, palette: &Palette, number: Option<u32>) -> Option<Mesh> {
+        self.kind.plate(number, self.colour(palette))
     }
 }

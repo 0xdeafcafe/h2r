@@ -17,9 +17,11 @@
 //!    [`ABOVE`] over the highest. Each corner names the same zone, and the
 //!    first corner by handle reports its enters and leaves, so a hill
 //!    reports each body once. [`Source::Corners`].
-//! 3. Any other flag: [`Area::default`] round it, an upright cylinder of
-//!    [`RADIUS`] from [`BELOW`] under it to [`ABOVE`] over it.
-//!    [`Source::Default`].
+//! 3. Any other flag: the default area of its label's marker round it
+//!    ([`default_area`]): the capture plate of a flag return, a bomb goal
+//!    or a siege goal (`Area::plate`), so the plate drawn is the plate
+//!    scored; else [`Area::default`], an upright cylinder of [`RADIUS`]
+//!    from [`BELOW`] under it to [`ABOVE`] over it. [`Source::Default`].
 //!
 //! The sizes of the default are ours: retail's capture radius and height
 //! (Territories' marker `T+0/+0x20/+0x40`) are not traced, so they are
@@ -167,6 +169,15 @@ pub fn player_of(m: &dyn GuestMemory, unit: u32) -> Option<u8> {
         .map(|(p, _)| p.slot)
 }
 
+/// The area of a flag labelled `label` with no area of its own and no
+/// corners: the default area of the label's marker
+/// (`game_markers::Kind::of_label`), else [`Area::default`].
+pub fn default_area(label: &str) -> Area {
+    game_markers::Kind::of_label(label)
+        .and_then(|k| k.area().cloned())
+        .unwrap_or_default()
+}
+
 impl Zones {
     /// The zones of `table`'s netgame flags, at `flags`' positions (by
     /// flag index, as `engine::objectives::netgame_flags` reads them). A
@@ -214,7 +225,7 @@ impl Zones {
             let zone = own.or_else(corners).unwrap_or_else(|| Zone {
                 shape: Shape::Area {
                     at: p,
-                    area: Area::default(),
+                    area: default_area(&t.text),
                 },
                 reporter: t.handle(),
                 source: Source::Default,
@@ -538,6 +549,28 @@ mod tests {
         let lone = t.things().iter().find(|t| t.index == 1).unwrap().handle();
         assert_eq!(zones.get(lone).unwrap().source, Source::Default);
         assert!(zones.contains(lone, [30.5, 0.0, 0.0]));
+    }
+
+    /// A flag return with no area of its own is the capture plate its
+    /// marker draws; a territory is still the default cylinder.
+    #[test]
+    fn a_flag_return_with_no_area_is_the_plate_its_marker_draws() {
+        use engine::objectives::kind;
+        let m = flag_map(&[
+            ([0.0; 3], kind::CTF_RETURN, 0),
+            ([20.0, 0.0, 0.0], kind::TERRITORY, 0),
+        ]);
+        let t = table(&m);
+        let zones = Zones::read(&m, &t);
+        let handle = |index| t.things().iter().find(|t| t.index == index).unwrap().handle();
+        let plate = zones.get(handle(0)).unwrap();
+        assert_eq!(plate.source, Source::Default);
+        assert_eq!(plate.shape, Shape::Area { at: [0.0; 3], area: Area::plate() });
+        assert!(zones.contains(handle(0), [0.4, 0.0, 0.0]));
+        assert!(!zones.contains(handle(0), [0.8, 0.0, 0.0]), "inside a cylinder, past the plate");
+        assert_eq!(zones.get(handle(1)).unwrap().shape, cylinder([20.0, 0.0, 0.0]));
+        assert_eq!(default_area("hill_corner"), Area::default());
+        assert_eq!(default_area("assault_bomb_return"), Area::plate());
     }
 
     #[test]

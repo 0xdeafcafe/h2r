@@ -665,7 +665,7 @@ impl Editor {
     /// each problem the last **Generate nav** found
     /// ([`super::markers_world::nav_problems`]). None with the monitor off.
     pub fn marker_entries(&self) -> Vec<super::markers_world::Entry> {
-        use super::markers_world::{Facts, entries, nav_problems, with_area};
+        use super::markers_world::{Facts, entries, nav_problems};
         let nav = match self.session.nav_report() {
             Some(report) if self.tool.monitor && self.overlay(Overlay::Nav) => {
                 nav_problems(&report.problems)
@@ -705,7 +705,7 @@ impl Editor {
         if let Some(draft) = &self.area
             && let Some(entry) = entries.iter_mut().find(|e| e.id == Some(draft.id))
         {
-            entry.marker.kind = with_area(entry.marker.kind.clone(), draft.area.clone());
+            entry.marker.kind = entry.marker.kind.clone().with_area(draft.area.clone());
             entry.draft_path = matches!(draft.area.shape, game_markers::Shape::Path(_));
         }
         entries.extend(nav);

@@ -10,11 +10,23 @@ pub struct Line {
     pub colour: [f32; 4],
 }
 
-/// One filled triangle, drawn from both sides.
+/// One filled triangle, drawn from both sides. Each corner has its own
+/// straight RGBA colour, as a drawer's vertex does, so a face's alpha
+/// can fall across it (a wall, `shapes::wall`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tri {
     pub points: [Vec3; 3],
-    pub colour: [f32; 4],
+    pub colours: [[f32; 4]; 3],
+}
+
+impl Tri {
+    /// A face of one colour.
+    pub fn flat(points: [Vec3; 3], colour: [f32; 4]) -> Self {
+        Self {
+            points,
+            colours: [colour; 3],
+        }
+    }
 }
 
 /// Lines and triangles in one space.
@@ -104,7 +116,31 @@ impl Mesh {
                 .iter()
                 .map(|t| Tri {
                     points: t.points.map(|p| place.point(p)),
-                    colour: t.colour,
+                    colours: t.colours,
+                })
+                .collect(),
+        }
+    }
+
+    /// The same mesh `scale` times the size, round its origin.
+    pub fn scaled(&self, scale: f32) -> Mesh {
+        let s = |p: Vec3| p.map(|c| c * scale);
+        Mesh {
+            lines: self
+                .lines
+                .iter()
+                .map(|l| Line {
+                    a: s(l.a),
+                    b: s(l.b),
+                    colour: l.colour,
+                })
+                .collect(),
+            tris: self
+                .tris
+                .iter()
+                .map(|t| Tri {
+                    points: t.points.map(s),
+                    colours: t.colours,
                 })
                 .collect(),
         }
@@ -122,8 +158,8 @@ impl Mesh {
         for l in &mut self.lines {
             l.colour[3] *= alpha;
         }
-        for t in &mut self.tris {
-            t.colour[3] *= alpha;
+        for c in self.tris.iter_mut().flat_map(|t| &mut t.colours) {
+            c[3] *= alpha;
         }
         self
     }

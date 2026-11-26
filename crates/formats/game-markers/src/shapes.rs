@@ -4,6 +4,8 @@
 //! `tests::every_kind_has_its_lines_faces_and_bounds` counts on.
 use std::f32::consts::TAU;
 
+use crate::area::{Area, Shape};
+use crate::form::{WALL_HIGH, WALL_LOW};
 use crate::mesh::{Line, Mesh, Tri, Vec3};
 use crate::{FILL_ALPHA, LINE_ALPHA};
 
@@ -72,10 +74,10 @@ pub fn path(mesh: &mut Mesh, points: &[Vec3], closed: bool, colour: [f32; 3]) {
 /// point: two fewer triangles than points.
 pub fn fan(mesh: &mut Mesh, points: &[Vec3], colour: [f32; 3]) {
     for i in 1..points.len().saturating_sub(1) {
-        mesh.tris.push(Tri {
-            points: [points[0], points[i], points[i + 1]],
-            colour: fill_colour(colour),
-        });
+        mesh.tris.push(Tri::flat(
+            [points[0], points[i], points[i + 1]],
+            fill_colour(colour),
+        ));
     }
 }
 
@@ -90,17 +92,29 @@ pub fn ring(mesh: &mut Mesh, centre: Vec3, radius: f32, n: usize, plane: Plane, 
 
 /// A filled disc on the floor: `n` triangles round its centre.
 pub fn disc(mesh: &mut Mesh, centre: Vec3, radius: f32, n: usize, colour: [f32; 3]) {
+    disc_in(mesh, centre, radius, n, Plane::Floor, colour);
+}
+
+/// A filled disc in `plane`: `n` triangles round its centre.
+pub fn disc_in(
+    mesh: &mut Mesh,
+    centre: Vec3,
+    radius: f32,
+    n: usize,
+    plane: Plane,
+    colour: [f32; 3],
+) {
     let rim = circle(radius, n);
     for i in 0..n {
         let (a, b) = (rim[i], rim[(i + 1) % n]);
-        mesh.tris.push(Tri {
-            points: [
+        mesh.tris.push(Tri::flat(
+            [
                 centre,
-                Plane::Floor.point(centre, a[0], a[1]),
-                Plane::Floor.point(centre, b[0], b[1]),
+                plane.point(centre, a[0], a[1]),
+                plane.point(centre, b[0], b[1]),
             ],
-            colour: fill_colour(colour),
-        });
+            fill_colour(colour),
+        ));
     }
 }
 
@@ -117,20 +131,107 @@ pub fn pad(mesh: &mut Mesh, radius: f32, n: usize, colour: [f32; 3]) {
 /// bottom, the top and a post at each point) and 2k triangles (the
 /// walls). It has no floor and no lid.
 pub fn prism(mesh: &mut Mesh, outline: &[[f32; 2]], low: f32, high: f32, colour: [f32; 3]) {
-    let at = |z: f32| -> Vec<Vec3> { outline.iter().map(|p| [p[0], p[1], z]).collect() };
-    let (bottom, top) = (at(low), at(high));
-    path(mesh, &bottom, true, colour);
+    path(mesh, &level(outline, low), true, colour);
+    sides(mesh, outline, low, high, colour);
+}
+
+/// A prism with no bottom edge: for an outline of k points, 2k lines (the
+/// top and a post at each point) and 2k triangles. A teleporter's column
+/// stands on the portal's ring, which is drawn once.
+pub fn sides(mesh: &mut Mesh, outline: &[[f32; 2]], low: f32, high: f32, colour: [f32; 3]) {
+    let (bottom, top) = (level(outline, low), level(outline, high));
     path(mesh, &top, true, colour);
     let k = outline.len();
     for i in 0..k {
         line(mesh, bottom[i], top[i], colour);
         let j = (i + 1) % k;
         for points in [[bottom[i], bottom[j], top[j]], [bottom[i], top[j], top[i]]] {
-            mesh.tris.push(Tri {
-                points,
-                colour: fill_colour(colour),
-            });
+            mesh.tris.push(Tri::flat(points, fill_colour(colour)));
         }
+    }
+}
+
+/// The points of `outline` at the height `z`.
+pub fn level(outline: &[[f32; 2]], z: f32) -> Vec<Vec3> {
+    outline.iter().map(|p| [p[0], p[1], z]).collect()
+}
+
+/// The points of `outline` scaled by `scale` round the origin.
+pub fn shrunk(outline: &[[f32; 2]], scale: f32) -> Vec<[f32; 2]> {
+    outline
+        .iter()
+        .map(|p| [p[0] * scale, p[1] * scale])
+        .collect()
+}
+
+/// How often a wall stands a post on the outline of `area`: every
+/// fourth point of a circle, every point (a corner) of anything else.
+pub fn post_step(area: &Area) -> usize {
+    match area.shape {
+        Shape::Radius(_) => 4,
+        _ => 1,
+    }
+}
+
+/// The boundary of `area` (docs/game/gametype-marker-forms.md,
+/// "Boundaries"), the same in the edit and the play form: [`wall_of`]
+/// its outline from its lowest to its highest.
+pub fn wall(mesh: &mut Mesh, area: &Area, colour: [f32; 3]) {
+    wall_of(
+        mesh,
+        &area.outline(),
+        -area.below,
+        area.above,
+        post_step(area),
+        colour,
+    );
+}
+
+/// A wall over the floor outline `outline` between `low` and `high`:
+///
+/// - the outline at `low` at full alpha, the edge on the floor: k lines;
+/// - the outline at `high` at a third of it: k lines;
+/// - a post from `low` to `high` at every `step`th point: k / `step`
+///   lines, rounded up;
+/// - the translucent wall, two triangles an edge, each corner's alpha
+///   [`WALL_LOW`] at `low` and [`WALL_HIGH`] at `high`, so the alpha
+///   falls evenly up the wall: 2k triangles.
+///
+/// It has no floor and no lid.
+pub fn wall_of(
+    mesh: &mut Mesh,
+    outline: &[[f32; 2]],
+    low: f32,
+    high: f32,
+    step: usize,
+    colour: [f32; 3],
+) {
+    let (bottom, top) = (level(outline, low), level(outline, high));
+    let [r, g, b] = colour;
+    path(mesh, &bottom, true, colour);
+    let faint = [r, g, b, LINE_ALPHA / 3.0];
+    let k = outline.len();
+    for i in 0..k {
+        mesh.lines.push(Line {
+            a: top[i],
+            b: top[(i + 1) % k],
+            colour: faint,
+        });
+    }
+    for i in (0..k).step_by(step.max(1)) {
+        line(mesh, bottom[i], top[i], colour);
+    }
+    let (lo, hi) = ([r, g, b, WALL_LOW], [r, g, b, WALL_HIGH]);
+    for i in 0..k {
+        let j = (i + 1) % k;
+        mesh.tris.push(Tri {
+            points: [bottom[i], bottom[j], top[j]],
+            colours: [lo, lo, hi],
+        });
+        mesh.tris.push(Tri {
+            points: [bottom[i], top[j], top[i]],
+            colours: [lo, hi, hi],
+        });
     }
 }
 
@@ -163,10 +264,7 @@ pub fn diamond(mesh: &mut Mesh, centre: Vec3, radius: f32, colour: [f32; 3]) {
         line(mesh, a, top, colour);
         line(mesh, a, bottom, colour);
         for points in [[a, b, top], [b, a, bottom]] {
-            mesh.tris.push(Tri {
-                points,
-                colour: fill_colour(colour),
-            });
+            mesh.tris.push(Tri::flat(points, fill_colour(colour)));
         }
     }
 }

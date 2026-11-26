@@ -160,6 +160,10 @@ fn a_lone_hill_flag_edits_the_default_area_and_a_bomb_spawn_has_none() {
     let mut s = session("lone");
     // The fixture's flag is a bomb spawn: no area to shape.
     assert!(s.editable_area(0).is_none());
+    // A flag return shapes its capture plate, from the plate's default.
+    s.apply(Command::set(FLAGS, 0, "type", Value::Int(1))).unwrap();
+    let (_, area, from) = s.editable_area(0).unwrap();
+    assert_eq!((from, area), (crate::AreaFrom::Default, Area::plate()));
     s.apply(Command::set(FLAGS, 0, "type", Value::Int(11))).unwrap();
     s.apply(Command::set(FLAGS, 0, "identifier", Value::Int(0))).unwrap();
     let (_, area, from) = s.editable_area(0).unwrap();

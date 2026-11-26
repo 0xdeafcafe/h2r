@@ -330,14 +330,11 @@ impl Markers {
             if kinds.iter().all(|k| k.area().is_none()) {
                 return Err(err(
                     code::INVALID_PARAMS,
-                    "area: the kind has no area (hill, territory and siege_site do)",
+                    "area: the kind has no area (flag_return, bomb_goal, hill, territory, siege_site and siege_goal do)",
                 ));
             }
-            for k in &mut kinds {
-                match k {
-                    Kind::Hill(a) | Kind::Territory(a) | Kind::Site(a) => *a = area.clone(),
-                    _ => {}
-                }
+            for a in kinds.iter_mut().filter_map(Kind::area_mut) {
+                *a = area.clone();
             }
         }
         let out = match p.opt_str("out")? {

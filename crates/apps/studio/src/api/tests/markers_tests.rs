@@ -296,10 +296,15 @@ fn markers_render_writes_the_sheet_with_every_kind() {
     for kind in scenario_edit::marker_view::game_markers::Kind::samples() {
         assert!(drawn.contains(kind.name()), "{} is not on the sheet", kind.name());
     }
-    // A kind with a team colour is drawn in red, blue and neutral.
+    // A kind with a team colour is drawn in red, blue and neutral: a
+    // respawn point's three, then a start's.
     let spawns: Vec<_> = v["kinds"].as_array().unwrap().iter().filter(|k| k["kind"] == "spawn").collect();
-    assert_eq!(spawns.iter().map(|k| k["team"].clone()).collect::<Vec<_>>(), [json!(0), json!(1), Value::Null]);
-    assert!(spawns.iter().all(|k| k["lines"].as_u64().unwrap() == 38));
+    let teams = [json!(0), json!(1), Value::Null];
+    assert_eq!(spawns.iter().map(|k| k["team"].clone()).collect::<Vec<_>>(), [teams.clone(), teams].concat());
+    use scenario_edit::marker_view::game_markers::{Kind, SpawnUse};
+    for (k, using) in spawns.iter().zip([SpawnUse::Respawn; 3].into_iter().chain([SpawnUse::Start; 3])) {
+        assert_eq!(k["lines"].as_u64().unwrap(), Kind::Spawn(using).mesh([1.0; 3]).lines.len() as u64);
+    }
     assert!(sheet.exists());
 
     // One kind, one team: the picture is the hill's, and a wider radius

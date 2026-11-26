@@ -486,8 +486,10 @@ document of a map variant and carried by the census (`Thing::area`), a
 radius or a path at its own heights; else the flags that share a label
 and a number, three or more of them (a King of the Hill hill's corners),
 as one zone, `Area::of_corners`: the convex hull of their positions
-across the floor; else `Area::default` around the flag, an upright
-cylinder. `rules.zones` reports each zone's source (`area`, `corners`
+across the floor; else the default area of the flag's marker around
+it (`zones::default_area`): `Area::plate()` for a flag return, a bomb
+goal and a siege goal, the capture plate their marker draws, and
+`Area::default`, an upright cylinder, for any other. `rules.zones` reports each zone's source (`area`, `corners`
 or `default`). The default's sizes are ours ("Not verified"). A body is a living
 player's unit; the event order and the 64 zone events a tick are the
 host runtime's ([rules-engine.md](rules-engine.md#the-host-runtime)).

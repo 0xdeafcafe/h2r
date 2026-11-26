@@ -2,7 +2,7 @@
 //! a flag's area is, setting and clearing it, and converting a retail
 //! hill's corners to one centre flag with an area. Each is one undo step;
 //! a drag of a handle merges into one.
-use game_markers::{Area, Kind};
+use game_markers::Area;
 
 use super::*;
 use crate::edit::{Op, SetField};
@@ -44,9 +44,8 @@ impl Session {
             return Some((m.position, a.clone(), AreaFrom::Stored));
         }
         let ty = Gameplay::of(Some(scenario), m).flag_type?;
-        let has_area = matches!(flag_kind(ty), Some(Kind::Hill(_) | Kind::Territory(_)));
-        (has_area && !scenario.is_hill_corner(index))
-            .then(|| (m.position, Area::default(), AreaFrom::Default))
+        let default = flag_kind(ty).and_then(|k| k.area().cloned())?;
+        (!scenario.is_hill_corner(index)).then(|| (m.position, default, AreaFrom::Default))
     }
 
     /// Sets or clears netgame flag `index`'s area as one undo step, or

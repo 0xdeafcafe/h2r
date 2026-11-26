@@ -11,7 +11,7 @@
 //! stands for.
 use std::collections::BTreeMap;
 
-use game_markers::{Area, Item, Kind, Mesh, Palette, Place, Solid, Volume};
+use game_markers::{Area, Item, Kind, Mesh, Palette, Place, Solid, SpawnUse, Volume};
 
 use crate::BlockKind;
 use crate::geometry::{Gameplay, Marker, Vec3, cross, normalize, scale, sub};
@@ -64,13 +64,15 @@ impl Placed {
 }
 
 /// The marker of a netgame flag's type: the types the game reads
-/// (`flag_type_name`), a hill or a territory with the default area.
+/// (`flag_type_name`), a kind with an area with its default area: the
+/// plate for a flag return and a bomb goal, `Area::default` for a hill and
+/// a territory.
 pub fn flag_kind(flag_type: i64) -> Option<Kind> {
     Some(match flag_type {
         0 => Kind::FlagStand,
-        1 => Kind::FlagReturn,
+        1 => Kind::FlagReturn(Area::plate()),
         2 => Kind::BombSpawn,
-        3 => Kind::BombGoal,
+        3 => Kind::BombGoal(Area::plate()),
         4 => Kind::BallSpawn,
         7 => Kind::TeleporterSender,
         8 => Kind::TeleporterReceiver,
@@ -167,7 +169,7 @@ pub fn placed_with(
             BlockKind::StartingLocations => out.push(Placed {
                 id: id_of(m),
                 layer: LayerId::SpawnPoints,
-                marker: game_markers::Marker::new(Kind::Spawn, team(d.team)),
+                marker: game_markers::Marker::new(Kind::Spawn(SpawnUse::Respawn), team(d.team)),
                 place: place_of(m),
                 members: vec![(m.block, m.index)],
                 volume: None,
@@ -192,11 +194,7 @@ pub fn placed_with(
                     && let Some(kind) = d.flag_type.and_then(flag_kind)
                     && kind.area().is_some()
                 {
-                    let kind = match kind {
-                        Kind::Hill(_) => Kind::Hill(area),
-                        Kind::Territory(_) => Kind::Territory(area),
-                        other => other,
-                    };
+                    let kind = kind.with_area(area);
                     out.push(Placed {
                         id: id_of(m),
                         layer: LayerId::Flags,
@@ -326,11 +324,11 @@ pub fn vertices(mesh: &Mesh) -> (Vec<Vertex>, Vec<Vertex>) {
         } else {
             [0.0, 0.0, 1.0]
         };
-        for p in t.points {
+        for (p, c) in t.points.into_iter().zip(t.colours) {
             faces.push(Vertex {
                 position: p,
                 normal: n,
-                color: rgb(t.colour),
+                color: rgb(c),
                 center: p,
             });
         }

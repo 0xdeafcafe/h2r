@@ -1,6 +1,6 @@
 # Game type markers
 
-Status: Partly built. The marker set and the area model exist (MK1), Studio draws the markers and answers `markers.list` and `markers.render` (MK4), Forge draws them as world lines and answers `render.markers` (MK6), the Forge document stores areas, which `forge.things` and `forge.propose` carry (MK2), a script's zone reads them (MK3), Studio edits them (MK5), Forge places and edits them in the monitor (MK7) and a script shows an area's wall in play (MK8) and the native renderer draws the skin and the X-ray lines of Forge's markers and the walls in play (MK9); Studio's saved map and the wall on a client that does not run the script are design.
+Status: Partly built. The marker set and the area model exist (MK1), Studio draws the markers and answers `markers.list` and `markers.render` (MK4), Forge draws them as world lines and answers `render.markers` (MK6), the Forge document stores areas, which `forge.things` and `forge.propose` carry (MK2), a script's zone reads them (MK3), Studio edits them (MK5), Forge places and edits them in the monitor (MK7) and a script shows an area's wall in play (MK8) and the native renderer draws the skin and the X-ray lines of Forge's markers and the walls in play (MK9), and each marker has an edit and a play form, an icon on a plate and the wall's look, and a flag return, a bomb goal and a siege goal have an area ([gametype-marker-forms.md](gametype-marker-forms.md), MK10); Studio's saved map and the wall on a client that does not run the script are design.
 Code: `crates/formats/game-markers/src/record.rs` (the saved areas), `crates/extensions/game/src/map_areas.rs` (the game reads them), `crates/formats/rules/src/show.rs` (`Cue::Walls`), `crates/formats/game-markers/src/lib.rs` (`Marker::mesh`), `crates/formats/game-markers/src/area.rs` (`Area`), `crates/tools/scenario-edit/src/marker_view.rs` (`placed`, `overlays`), `crates/apps/studio/src/api/markers.rs`, `crates/apps/studio/src/api/markers_check.rs` (the `markers` check), `crates/tools/scenario-edit/src/area_edit.rs` (handles, drag), `crates/tools/scenario-edit/src/session/area.rs` (`set_area`, `convert_hill`), `crates/apps/studio/src/viewport/area.rs`, `crates/apps/studio/src/ui/inspector/area.rs`, `crates/extensions/game/src/forge_glue/markers_world.rs` (Forge's source, `render.markers`, `batch`), `crates/rewrites/native-render/src/markers.rs` (`Batch`, `Pass`), `crates/rewrites/native-render/src/frame_graph/markers.rs` (the stage), `crates/extensions/game/src/forge_glue/editing/area.rs` (Forge's draft area), `crates/formats/forge-doc/src/{area,entry,links}.rs`, `crates/extensions/forge/src/session.rs`, `crates/extensions/agent/src/forge/local.rs`, `crates/extensions/game/src/rules/world/zones.rs` (`Zones::new`), `crates/formats/rules/src/fake.rs` (`FakeGame::set_area`, `move_to`, `shown`), `crates/formats/rules/src/vm.rs` (`RulesExt::shown`), `crates/extensions/game/src/rules/world/walls.rs`, `crates/extensions/game/src/forge_glue/markers_world.rs` (`Wall`, `draw_walls`), `crates/live/bots/src/objective/zones.rs` (`first_hill`), `crates/extensions/agent-proto/src/rules.rs` (`rules.zones`). Tests: `crates/formats/game-markers/src/tests.rs`, `marker_view.rs`, `crates/apps/studio/src/api/tests/markers_tests.rs`, `crates/tools/scenario-edit/src/area_tests.rs`, `area_edit.rs`, `crates/apps/studio/src/viewport/area.rs`, `crates/extensions/game/src/forge_glue/markers_world/tests.rs`, `crates/rewrites/native-render/src/markers.rs` (tests), `crates/rewrites/native-render/tests/markers_gpu.rs`, `crates/extensions/game/src/forge_glue/editing/tests/area.rs`, `crates/formats/forge-doc/src/tests/area.rs`, `crates/extensions/forge/src/base_tests.rs`, `crates/extensions/agent/src/forge/tests.rs`, `zones.rs`' `a_flags_area_is_its_zone_before_corners_and_the_default`, `crates/formats/rules/tests/area_zones.rs`, `crates/formats/rules/tests/modes.rs` (`siege_shows_each_site_in_its_holders_colour`), `crates/extensions/game/src/rules/runtime/tests/world.rs`, `crates/extensions/game/src/rules/world/walls.rs`, `crates/live/bots/src/objective/zones/tests.rs`, `crates/extensions/agent/src/rules/tests.rs`.
 Switch: none.
 
@@ -33,16 +33,22 @@ plus **C**: the retail games as publicly documented.
 
 A script's zone is made of the flags and their areas
 (`game::rules::world::zones`): a flag's own area, else three or more
-flags of one label and number as the convex hull of their places, else a
-cylinder of one world unit ([rules-world-api.md](rules-world-api.md),
-"Zones"). `rules.zones` reports each zone and the step that made it.
+flags of one label and number as the convex hull of their places, else
+the default area of the flag's marker: the capture plate for a flag
+return, a bomb goal or a siege goal, a cylinder of one world unit for
+any other ([rules-world-api.md](rules-world-api.md), "Zones"). `rules.zones` reports each zone and the step that made it.
 
 ## The markers
 
 `game_markers::Kind` is the set. `Marker { kind, team }` is one marker
 and `Marker::mesh(&Palette)` its `Mesh`: `Line`s at full alpha and
-`Tri`s at `FILL_ALPHA`, in the marker's own space, x the way it faces,
-y left, z up, world units, the origin at the placement.
+`Tri`s at `FILL_ALPHA` (a colour a corner, so a wall's alpha falls up
+it), in the marker's own space, x the way it faces, y left, z up, world
+units, the origin at the placement. Each marker has an edit form and a
+play form, `Marker::mesh_in(Form, &Palette)`, and a plate with an icon,
+`Marker::icon(&Palette, number)`; `Marker::mesh` is the edit form with
+its plate facing the marker's front
+([gametype-marker-forms.md](gametype-marker-forms.md)).
 `Mesh::placed(&Place)` puts it in the world. A player stands 0.7 tall
 (**S**: our number for the figure, set by eye against the game), and
 every shape is sized against that. A part that lies on the floor is
@@ -50,29 +56,33 @@ every shape is sized against that. A part that lies on the floor is
 
 | Kind | For | Shape | Parameters | Colour |
 |---|---|---|---|---|
-| `Spawn` | a player starting location | a standing figure's outline on a pad, and an arrow on the floor the way the player faces | none | team |
+| `Spawn(SpawnUse)` | a player starting location | a standing figure's outline on a pad (a double ring for `Start`), and an arrow on the floor the way the player faces | the use | team |
 | `FlagStand` | `ctf_flag_spawn` | a pad, a pole and a pennant | none | team |
-| `FlagReturn` | `ctf_flag_return` | a pad with an inner ring and an arrow down onto it | none | team |
+| `FlagReturn(Area)` | `ctf_flag_return` | the capture plate: the area's ring, an inner ring at half its radius and a rim a tenth of a unit high | the area, `Area::plate()` unshaped | team |
 | `BombSpawn` | `assault_bomb_spawn` | a pad with a diamond over it | none | team |
-| `BombGoal` | `assault_bomb_return` | a target on the floor: two rings and a cross | none | team |
+| `BombGoal(Area)` | `assault_bomb_return` | the plant zone: the area's ring and rim, two target rings and a cross | the area, `Area::plate()` unshaped | team |
 | `BallSpawn` | `oddball_spawn` | a pad with a ball of three rings over it | none | team |
 | `Hill(Area)` | a hill | the area's wall, and a pip at the centre marker | the area | team |
-| `Territory(Area)` | `territory` | the area's wall, and a post with a diamond on it | the area | team |
-| `TeleporterSender` | `teleporter_sender` | a column with an arrow up | none | amber |
-| `TeleporterReceiver` | `teleporter_receiver` | a column with an arrow down and an arrow out the way a player leaves | none | cyan |
+| `Territory(Area)` | `territory` | the area's wall, and the post and plate | the area | team |
+| `TeleporterSender` | `teleporter_sender` | the portal (a ring on the floor and an upright hoop), a column and an arrow up | none | amber |
+| `TeleporterReceiver` | `teleporter_receiver` | the portal, a column, an arrow down and an arrow out the way a player leaves | none | cyan |
 | `Item(Weapon)`, `Item(Vehicle)`, `Item(Equipment)` | a netgame equipment row | a pad and the outline of what it makes: a long gun, a wedge with a cab (on a wider pad, with a facing arrow), a diamond | the class | team, else the class's own |
 | `Volume(Volume, Solid)` | a trigger volume, a kill trigger, a soft boundary, a BSP switch | the solid, translucent: `Box { half }`, `Cylinder { radius, height }` or `Sphere { radius }` | the solid | by what it does: yellow, red, orange, blue |
 | `Drop` | `ff_drop` | a pad, an arrow down and an arrow the way the wave faces | none | green |
 | `Base` | `ff_base` | a ring and a house | none | team |
 | `Cover` | `ff_cover` | a shield and an arrow the way it faces | none | yellow |
 | `Site(Area)` | `siege_site` | a territory's shape | the area | violet |
-| `Goal` | `siege_goal` | a target with a diamond over it | none | violet |
+| `Goal(Area)` | `siege_goal` | a plant zone | the area, `Area::plate()` unshaped | violet |
 | `Line` | `siege_line` | a banner across the way a side faces, and an arrow | none | team, else violet |
 
-- **The wall of an area** is `shapes::prism` over `Area::outline`: the
-  outline at the area's lowest and highest, a post at each point and a
-  translucent wall between, with no floor and no lid, as Halo 3's hill
-  is a ring of light a player walks through (**C**).
+- **Every kind but a volume** has a post from the floor to a plate over
+  its body, and an icon on the plate (`Kind::icon`, `Kind::plate_at`).
+- **The wall of an area** is `shapes::wall` over `Area::outline`: the
+  outline at the area's lowest, a fainter one at its highest, a post at
+  each corner (every fourth point of a circle) and a translucent wall
+  between whose alpha falls from foot to top, with no floor and no lid,
+  as Halo 3's hill is a ring of light a player walks through (**C**);
+  gametype-marker-forms.md, "Boundaries".
 - **An item spawner** in a drawer that has the item's model draws that
   model over the pad as the hologram and leaves the outline out. The
   outline is for a drawer with no model: a render with no map, a
@@ -82,13 +92,16 @@ every shape is sized against that. A part that lies on the floor is
   one marker: a hill's only flag is a `Hill` with its area, and three or
   more corners together are one `Hill` with the area `Area::of_corners`
   gives, drawn at the centre it gives.
-- **Counts.** Each shape's lines and triangles are fixed and are in the
-  comments of `Kind::mesh`; an area's wall is three lines and two
-  triangles a point of its outline, 32 points for a radius. The largest
-  marker is a territory on a radius: 109 lines and 72 triangles.
+- **Counts.** Each shape's lines and triangles in each form are fixed
+  and are in the comments of `Kind::build`; an area's wall is two lines
+  and two triangles a point of its outline and a line a post, 72 lines
+  and 64 triangles for a radius of 32 points. The largest edit form is
+  a plant zone on a radius: 139 lines and 64 triangles, and the plate
+  adds 16 lines and 16 triangles and its icon's.
 - **Original shapes.** Every number is written in
-  `crates/formats/game-markers/src/kind.rs` and
-  `crates/formats/game-markers/src/shapes.rs`. Nothing is read from a
+  `crates/formats/game-markers/src/kind.rs`,
+  `crates/formats/game-markers/src/shapes.rs`, `icon.rs` and
+  `digits.rs`. Nothing is read from a
   disc and no shape is copied from a game's assets: the manner is Halo
   3's, the geometry is ours.
 
@@ -110,7 +123,8 @@ of another game type than the one shown is `Mesh::faded` to a quarter.
 
 ## Areas
 
-`game_markers::Area` is what a hill, a territory or a site covers:
+`game_markers::Area` is what a hill, a territory, a site, a flag
+return, a bomb goal or a siege goal covers:
 
 ```rust
 pub enum Shape {
@@ -236,7 +250,11 @@ shape in this order:
    `zones::Shape::Area { at, area }`, tested with `Area::contains`;
 2. three or more flags of one label and number: the hull, as
    `Area::of_corners` gives it;
-3. any other flag: `Area::default()` round it.
+3. any other flag: the default area of its label's marker round it
+   (`zones::default_area`): `Area::plate()` for a flag return, a bomb
+   goal and a siege goal, the capture plate their marker draws
+   ([gametype-marker-forms.md](gametype-marker-forms.md), "The kinds"),
+   else `Area::default()`.
 
 So one test serves all three, a retail map plays as it does, and a hill
 shaped in Forge is the hill the script scores. `Shape::middle` is
