@@ -37,13 +37,30 @@ pub struct Cut {
 }
 
 /// The cut producers. A slice adds its row here with its test.
-pub const CUTS: &[Cut] = &[];
+pub const CUTS: &[Cut] = &[
+    // The light frame: gather, per-light passes and first-person lights in
+    // one producer. Its gather is `scene_extract::lights::gather`
+    // (docs/graphics/native-lights.md); it ends in `ret` with EAX 0
+    // (`0x00031f4f`).
+    Cut {
+        name: "dynamic_lights",
+        entry: 0x0003_1c80,
+        abi_result: 0,
+        pop: 0,
+    },
+];
 
 /// Cuts whose producer is a feature that builds the call's whole output
 /// from the call's registers, so
 /// [`install`] leaves their points to it. Each still has its row here, so
 /// the census and the table cannot drift.
-pub const OWN_PRODUCER: &[&str] = &[];
+///
+/// `dynamic_lights` is one too: its point also holds the light frame body
+/// ([`crate::native_lights`]), and a point takes one implementation, so
+/// that body answers the cut itself ([`answer`]) when the scene's own
+/// light path runs ([`crate::native_lights::scene_path_ready`]) and
+/// otherwise gathers as before.
+pub const OWN_PRODUCER: &[&str] = &["dynamic_lights"];
 
 /// A world layer draw (`LAYER_DRAW`, `0x00044550`) that draws only from the
 /// scene. The layer draw serves every layer, so these are cut per layer: its
@@ -72,6 +89,29 @@ pub const LAYER_CUTS: &[LayerCut] = &[
     LayerCut { layer: 7, slot: frame_scene::ViewSlot::ShadowsAndLayer7 },
     LayerCut { layer: 2, slot: frame_scene::ViewSlot::Layer2 },
 ];
+
+/// The cut named `name`.
+pub fn cut(name: &str) -> Option<&'static Cut> {
+    CUTS.iter().find(|c| c.name == name)
+}
+
+/// A cut's answer: the frame step's writes for its turn, then the ABI
+/// result and the return, the body never run.
+pub fn answer(
+    cut: &Cut,
+    cpu: &mut runtime::CpuAbi,
+    ctx: &mut runtime::ExecCtx,
+) -> Result<runtime::TransferAbi, GuestFault> {
+    let mut guest = ctx.memory();
+    frame_step::before(&mut *guest, cut.name).map_err(|f| GuestFault {
+        addr: f.addr,
+        len: f.len as usize,
+        access: if f.write { Access::Write } else { Access::Read },
+        reason: FaultReason::Unmapped,
+    })?;
+    cpu.eax = cut.abi_result;
+    guest.ret(cpu, u32::from(cut.pop))
+}
 
 /// Why a cut does not match the census.
 #[derive(Debug, PartialEq, Eq)]
@@ -127,17 +167,7 @@ pub fn install(b: &mut hooks::Builder, cuts: &'static [Cut]) {
             continue;
         }
         b.raw()
-            .implement(point(&cut), cut.name, move |cpu, ctx, _| {
-                let mut guest = ctx.memory();
-                frame_step::before(&mut *guest, cut.name).map_err(|f| GuestFault {
-                    addr: f.addr,
-                    len: f.len as usize,
-                    access: if f.write { Access::Write } else { Access::Read },
-                    reason: FaultReason::Unmapped,
-                })?;
-                cpu.eax = cut.abi_result;
-                guest.ret(cpu, u32::from(cut.pop))
-            })
+            .implement(point(&cut), cut.name, move |cpu, ctx, _| answer(&cut, cpu, ctx))
             .context_only();
     }
 }

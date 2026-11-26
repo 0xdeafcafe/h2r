@@ -3,6 +3,7 @@
 //! light spheres. The guest's ranked and faded draw list is observed
 //! separately at the light-pass entries.
 
+pub mod gather;
 mod volume;
 
 use engine::datum::DatumArray;
@@ -14,8 +15,11 @@ use engine::render::light::{self, LightRecord};
 use engine::shadow_constants as sc;
 use frame_scene::{InstanceKey, Light, LightCandidate, LightConstants, LightProjection, LightVariants};
 
+#[cfg(test)]
 const MAIN_LIGHT_LIST: u32 = 0x0054_7f98;
+#[cfg(test)]
 const HANDLE_COLUMN: u32 = 0xc;
+#[cfg(test)]
 const COUNT: u32 = 4;
 const WEIGHT: u32 = 0x100;
 
@@ -25,6 +29,9 @@ const MIN_DEPTH: u32 = 0x0045_dc68;
 const PIXEL_SCALE: u32 = 0x004b_9ed0;
 const SIZE_FACTOR: u32 = 0x0045_dc0c;
 
+/// The main view's list as the guest left it at `[0x00547f98]`: what
+/// [`gather::main_view`] is compared with in the tests.
+#[cfg(test)]
 fn handles(m: &dyn GuestMemory) -> Option<Vec<u32>> {
     let list = m.u32(MAIN_LIGHT_LIST).ok()?;
     if list == 0 {
@@ -42,19 +49,20 @@ fn handles(m: &dyn GuestMemory) -> Option<Vec<u32>> {
 }
 
 /// Reads the pose and both choices of constants for the view's candidates.
-/// Keep any valid light the guest drew as well, even when the gather list
-/// could not be read. A missing tag or projection leaves the light visible
+/// `gathered` is the view's visible-light list from [`gather::main_view`];
+/// the guest's own list is not read. Keep any valid light the guest drew as
+/// well, even when the gather list could not be built (`None`). A missing tag or projection leaves the light visible
 /// to diagnostics, with its unavailable fields absent.
 /// `eligible` applies the existing view's pre-trim tests to the record's
 /// address, the definition's address and the definition flags.
 pub fn candidates(
     m: &dyn GuestMemory,
     fpu: lc::Fpu,
+    gathered: Option<&[u32]>,
     guest: &[u32],
     eligible: impl Fn(u32, u32, u32) -> Option<bool>,
 ) -> Option<Vec<Light>> {
-    let gathered = handles(m);
-    let list = gathered.as_deref().or_else(|| (!guest.is_empty()).then_some(&[][..]))?;
+        let list = gathered.or_else(|| (!guest.is_empty()).then_some(&[][..]))?;
     if list.is_empty() && guest.is_empty() {
         return Some(Vec::new());
     }

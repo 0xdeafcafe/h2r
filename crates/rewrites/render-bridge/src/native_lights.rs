@@ -84,6 +84,86 @@ pub const FIRST_PERSON_LAYERS: [(u32, u32); 4] = [
     (13, 0x0004_079c),
 ];
 
+/// Where the light layers draw in the view's pass graph: every light's
+/// layers 10, 11, 14, 12 and 13 in slot 4 ([`SCENE_PASSES`]), the
+/// first-person lights' in slot 10. The scene's groups give both orders
+/// whatever the view's render scale ([`native_render::light_scene::passes`]).
+pub const LIGHT_SLOT: frame_scene::ViewSlot = frame_scene::ViewSlot::LightAccumulation;
+pub const FIRST_PERSON_SLOT: frame_scene::ViewSlot = frame_scene::ViewSlot::FirstPerson;
+pub use native_render::light_scene::{PER_LIGHT_LAYERS as SCENE_PASSES, passes as scene_passes};
+
+/// One light layer of the open view, owned, in the slot it draws in.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScenePass {
+    pub slot: frame_scene::ViewSlot,
+    pub light: frame_scene::Light,
+    pub group: SceneGroup,
+}
+
+/// What the host is asked to draw: `view`'s light layers in the order the
+/// game draws them ([`native_render::light_scene::order`]): slot 4's, then
+/// slot 10's.
+pub struct SceneDraw<'a> {
+    pub passes: &'a [ScenePass],
+    pub view_target: [u32; 8],
+    /// The serial of the first pass; pass `n` takes `serial + n`.
+    pub serial: u64,
+}
+
+/// `view`'s light layers, owned, in draw order.
+pub fn gather_scene_passes(scene: &frame_scene::FrameScene, view: &frame_scene::View) -> Vec<ScenePass> {
+    native_render::light_scene::order(scene, view)
+        .into_iter()
+        .map(|(slot, light, group)| {
+            let entries = scene.entries_of(group).to_vec();
+            let rows = entries.iter().map(|e| scene.pose_rows(e).to_vec()).collect();
+            ScenePass {
+                slot,
+                light: scene.lights[light as usize].clone(),
+                group: SceneGroup { group: group.clone(), entries, rows },
+            }
+        })
+        .collect()
+}
+
+/// Whether the scene's own light path runs this frame: the host draws
+/// the scene's light layers, so the guest's light frame is cut
+/// ([`crate::cut`], row `dynamic_lights`). Without it the frame body
+/// gathers and the guest's passes draw.
+pub fn scene_path_ready() -> bool {
+    HOST.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|h| h.draws_scene())
+}
+
+static SCENE_DRAWN: AtomicU64 = AtomicU64::new(0);
+
+/// Light layers the host drew from the scene's groups (slots 4 and 10).
+pub fn scene_drawn() -> u64 {
+    SCENE_DRAWN.load(Ordering::Relaxed)
+}
+
+/// Draws the open view's light layers from the scene, once its light pass
+/// is over: the native producer the cut `dynamic_lights` leaves the frame
+/// to. Returns the layers drawn.
+pub fn draw_scene(mem: &mut dyn GuestMemory, passes: &[ScenePass]) -> usize {
+    if passes.is_empty() || Stage::Lights.standing_down() {
+        return 0;
+    }
+    let Some(view_target) = VIEW_TARGET.get() else {
+        refused("light view target unavailable");
+        return 0;
+    };
+    let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
+        return 0;
+    };
+    let serial = SERIAL.fetch_add(passes.len() as u64, Ordering::Relaxed);
+    let drawn = host.draw_scene(mem, SceneDraw { passes, view_target, serial });
+    SCENE_DRAWN.fetch_add(drawn as u64, Ordering::Relaxed);
+    drawn
+}
+
 /// Whether a layer draw returning to `ret` is the first-person lights'
 /// draw of `layer`.
 pub fn first_person_site(layer: u32, ret: u32) -> bool {
@@ -188,6 +268,18 @@ pub trait Host: Send + Sync {
     /// constants, the geometry it touches the host's to choose. Returns
     /// the lights drawn; a light it keeps draws nothing.
     fn draw_host(&self, _mem: &mut dyn GuestMemory, _draw: host::HostDraw<'_>) -> usize {
+        0
+    }
+    /// Whether the host draws the scene's light layers ([`Self::draw_scene`])
+    /// and the frame fills the scene's groups itself, so the guest's light
+    /// frame can be cut whole.
+    fn draws_scene(&self) -> bool {
+        false
+    }
+    /// Draw `draw`'s light layers from the scene, slot 4's and then slot
+    /// 10's, in the view whose light pass is over. Returns the layers
+    /// drawn; one it keeps draws nothing.
+    fn draw_scene(&self, _mem: &mut dyn GuestMemory, _draw: SceneDraw<'_>) -> usize {
         0
     }
     /// Draw E3's chosen lights beyond the guest's ([`chosen`]) in the view
@@ -1179,5 +1271,82 @@ mod tests {
         enter_layer(&drawing(12, LIGHT_LIST), 0x0004_0718);
         assert_eq!(layers(), Some((RESOLVED_LAYERS, None)), "nor its own");
         CANDIDATE.take();
+    }
+
+    /// Records the slots of the layers it is asked to draw.
+    struct Records(Mutex<Vec<u8>>);
+
+    impl Host for Records {
+        fn submit(&self, _: &mut dyn GuestMemory, _: Dispatch) -> bool {
+            false
+        }
+        fn clear_admission(&self) {}
+        fn checkpoint_gel(&self, _: u64) {}
+        fn target(&self) -> Option<[u32; 8]> {
+            None
+        }
+        fn draws_scene(&self) -> bool {
+            true
+        }
+        fn draw_scene(&self, _: &mut dyn GuestMemory, draw: SceneDraw<'_>) -> usize {
+            let mut slots = self.0.lock().unwrap();
+            slots.extend(draw.passes.iter().filter_map(|p| p.slot.number()));
+            draw.passes.len()
+        }
+    }
+
+    #[test]
+    fn a_scene_with_one_dynamic_light_records_the_slot_4_pass() {
+        use frame_scene::{GroupSite, SceneBuilder, SceneId, SceneLight, Stamp, ViewKey, ViewKind};
+        let mut b = SceneBuilder::default();
+        b.begin(SceneId::default());
+        b.open_view(
+            ViewKey { kind: ViewKind::Game, player: 0, view: 0 },
+            frame_scene::RenderCamera {
+                position: [0.0; 3],
+                forward: [1.0, 0.0, 0.0],
+                up: [0.0, 0.0, 1.0],
+                fov: 1.0,
+                projection_xy: None,
+                viewport: [0, 0, 480, 640],
+                near: 0.1,
+                far: 100.0,
+            },
+        )
+        .unwrap();
+        b.push_light(SceneLight { handle: 1, definition: 2, flags: 7, ..Default::default() }, &[]).unwrap();
+        b.push_light_group(
+            frame_scene::LightGroup {
+                light: 0,
+                layer: 12,
+                site: GroupSite::Light,
+                projection: None,
+                pass: None,
+                entries: 0..0,
+                remainder: 0,
+            },
+            &[],
+        )
+        .unwrap();
+        let scene = b.seal(Stamp::default()).unwrap();
+        let passes = gather_scene_passes(&scene, &scene.views[0]);
+        assert_eq!(passes.len(), 1);
+        let host = Arc::new(Records(Mutex::new(Vec::new())));
+        set_host(host.clone());
+        VIEW_TARGET.set(Some([1; 8]));
+        let mut m = FlatMemory::new(0, 0x1000);
+        assert_eq!(draw_scene(&mut m, &passes), 1);
+        assert_eq!(*host.0.lock().unwrap(), [4], "the light's layer 12 in slot 4");
+    }
+
+    #[test]
+    fn the_light_frame_is_cut_only_while_the_scene_path_runs() {
+        // One implementation at the point: the frame body answers the cut.
+        assert!(crate::cut::OWN_PRODUCER.contains(&"dynamic_lights"));
+        assert_eq!(crate::cut::cut("dynamic_lights").map(|c| c.entry), Some(0x0003_1c80));
+        set_host(Arc::new(Stub(false)));
+        assert!(!scene_path_ready(), "a host that does not draw the scene leaves the frame to the body");
+        set_host(Arc::new(Records(Mutex::new(Vec::new()))));
+        assert!(scene_path_ready());
     }
 }
