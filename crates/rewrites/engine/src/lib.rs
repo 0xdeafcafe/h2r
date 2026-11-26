@@ -50,6 +50,7 @@ pub mod screen_effect;
 pub mod screen_effects;
 pub mod screen_grid;
 pub mod shadow_constants;
+pub mod skull_gate;
 pub mod hs_actions;
 pub mod hs_pool;
 pub mod hs_syntax;

@@ -57,10 +57,23 @@ const DROP_POSITIONS: usize = 4;
 const BASE_RADIUS: f32 = 8.0;
 const BASE_POSITIONS: usize = 8;
 
+/// What a lean build does to fit a map short of tag headroom
+/// (`crate::Fit`): merge coplanar sectors after trimming, and keep the
+/// fewest drops the kit allows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Lean {
+    pub merge: bool,
+    pub fewer_drops: bool,
+}
+
+/// The fewest drop zones a kit has, and so what a lean build keeps.
+pub(crate) const FEWEST_DROPS: usize = MIN_ZONES;
+
 pub(crate) fn prepare<R: Read + Seek>(
     map: &mut Map<R>,
     config: &Config,
     labels: &Labels,
+    lean: Lean,
 ) -> Result<Navigation> {
     let scenario = map.scenario().context("map has no scenario")?;
     let scnr = map.read_tag_bytes(scenario.id)?;
@@ -170,6 +183,11 @@ pub(crate) fn prepare<R: Read + Seek>(
             if why.is_empty() { "no walkable component holds a player start".into() } else { why.join("; ") }
         )
     })?;
+    // A lean build keeps the first drops chosen: they alternate between
+    // the bases' sides and spread farthest first. Placed drops stay.
+    if lean.fewer_drops && labels.drops.is_empty() {
+        arena.zones.truncate(FEWEST_DROPS);
+    }
     // Keep only the sectors the AI can use, then encode each BSP's.
     let mut bsps = Vec::with_capacity(generated.len());
     let mut trim = Trim::default();
@@ -185,14 +203,25 @@ pub(crate) fn prepare<R: Read + Seek>(
             Vec::new()
         };
         let keep = usable_sectors(&pf, &data.nav, &seeds);
-        let (kept, sector_of) =
+        let (kept, mut sector_of) =
             pathfind::trim::keep_sectors(&pf, &keep).map_err(anyhow::Error::msg)?;
+        trim.generated += pf.sectors.len();
+        trim.kept += kept.sectors.len();
+        let kept = if lean.merge {
+            let (merged, merged_of) =
+                pathfind::merge::coplanar(&kept).map_err(anyhow::Error::msg)?;
+            for k in sector_of.iter_mut().filter(|k| **k != pathfind::trim::NONE) {
+                *k = merged_of[usize::from(*k)];
+            }
+            merged
+        } else {
+            kept
+        };
+        trim.merged += kept.sectors.len();
         if on_arena {
             arena.renumber(&sector_of)?;
             problems.extend(siege_problems(labels, &data.nav, &sector_of));
         }
-        trim.generated += pf.sectors.len();
-        trim.kept += kept.sectors.len();
         let element = pathfind::build::element(&kept).map_err(anyhow::Error::msg)?;
         bsps.push((id, element));
     }
@@ -274,7 +303,8 @@ impl Arena {
         sectors
     }
 
-    /// Give each firing position its sector's index after trimming.
+    /// Give each firing position its sector's index after trimming (and
+    /// merging).
     fn renumber(&mut self, sector_of: &[u16]) -> Result<()> {
         for p in self.firing_positions() {
             let new = sector_of
@@ -288,11 +318,14 @@ impl Arena {
     }
 }
 
-/// Sectors generated and kept for the AI ([`usable_sectors`]).
+/// Sectors generated and kept for the AI ([`usable_sectors`]), and how
+/// many the kept ones are once merged (`kept` when the build does not
+/// merge).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Trim {
     pub generated: usize,
     pub kept: usize,
+    pub merged: usize,
 }
 
 /// The sectors the AI can use on one BSP: those the arena's sectors reach

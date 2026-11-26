@@ -10,7 +10,7 @@ use scenario_edit::{MapSource, recipe};
 
 const USAGE: &str =
     "usage: h2 firefight kit MAP [--home red|blue] [--disc ISO_OR_EXTRACTED_DISC] [--data DIR] [--probe] [--replace]
-    [--class NAME=DONOR:CHAR_PATH]... [--classes FILE] [--cut]
+    [--retail-classes] [--class NAME=DONOR:CHAR_PATH]... [--classes FILE] [--cut]
   builds <data>/maps/firefight-MAP from a multiplayer map on the disc, e.g. beavercreek.
   --home picks the map team whose base is the home base (default red): the
     players' base, or team 0's with two teams. Drops keep off both bases.
@@ -20,8 +20,11 @@ const USAGE: &str =
     the disc map's name (e.g. 01b_spacestation), CHAR_PATH the `char` tag's
     name in it. The list is in keep order (the first is the last cut); the
     palette follows it after the Elite. --classes reads one such class per
-    line from FILE (blank lines and # comments are skipped). The class table
-    is yours: read from your own disc maps, never shipped.
+    line from FILE (blank lines and # comments are skipped).
+  --retail-classes puts the retail class table first: the Grunt, Jackal,
+    Drone, Brute and Hunter, each copied from a campaign map on your disc.
+  A map short of tag headroom merges its sectors, then keeps six drops,
+    before anything else; the build says which it took.
   --cut drops classes from the end of the list until the build fits, instead
     of refusing it.";
 
@@ -33,6 +36,8 @@ struct Args {
     replace: bool,
     config: Config,
     classes: Vec<Wanted>,
+    /// `--retail-classes`: the retail class table before `classes`.
+    retail: bool,
     cut: bool,
 }
 
@@ -68,6 +73,20 @@ fn parse_table(text: &str) -> Result<Vec<Wanted>> {
         .filter(|(_, l)| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
         .map(|(i, l)| parse_class(l).with_context(|| format!("class table line {}", i + 1)))
         .collect()
+}
+
+/// The retail class table ([`firefight_kit::retail`]) with each class's
+/// first donor `on_disc` says the disc has.
+fn retail_wanted(on_disc: impl FnMut(&str) -> bool) -> Result<Vec<Wanted>> {
+    Ok(firefight_kit::retail::choose(on_disc)
+        .map_err(anyhow::Error::msg)?
+        .into_iter()
+        .map(|(name, donor, path)| Wanted {
+            name: name.to_owned(),
+            donor: donor.to_owned(),
+            path: path.to_owned(),
+        })
+        .collect())
 }
 
 /// The donor maps the list names, first use first, and each class as a
@@ -138,6 +157,7 @@ fn parse(words: Vec<String>) -> Result<Option<Args>> {
     let mut replace = false;
     let mut config = Config::default();
     let mut classes = Vec::new();
+    let mut retail = false;
     let mut cut = false;
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -145,6 +165,7 @@ fn parse(words: Vec<String>) -> Result<Option<Args>> {
             "--probe" => probe = true,
             "--replace" => replace = true,
             "--cut" => cut = true,
+            "--retail-classes" => retail = true,
             "--class" => {
                 classes.push(parse_class(&it.next().context("--class requires NAME=DONOR:CHAR_PATH")?)?)
             }
@@ -184,6 +205,7 @@ fn parse(words: Vec<String>) -> Result<Option<Args>> {
         replace,
         config,
         classes,
+        retail,
         cut,
     }))
 }
@@ -201,10 +223,17 @@ pub fn run(words: Vec<String>) -> Result<()> {
     };
     let disc = args.disc.map(Ok).unwrap_or_else(crate::default_disc)?;
     let bytes = read_disc_map(&disc, &args.base)?;
-    if args.probe && (!args.classes.is_empty() || args.cut) {
+    if args.probe && (!args.classes.is_empty() || args.retail || args.cut) {
         bail!("--probe takes no classes");
     }
-    let (donor_names, specs) = plan(&args.classes)?;
+    let mut wanted = Vec::new();
+    if args.retail {
+        let mut files = vfs::open_disc(&disc)
+            .with_context(|| format!("opening the disc {}", disc.display()))?;
+        wanted = retail_wanted(|donor| files.host_file(&format!("maps\\{donor}.map")).is_some())?;
+    }
+    wanted.extend(args.classes);
+    let (donor_names, specs) = plan(&wanted)?;
     let donor_bytes = donor_names
         .iter()
         .map(|name| read_disc_map(&disc, name))
@@ -237,6 +266,9 @@ pub fn run(words: Vec<String>) -> Result<()> {
             "class {}: {} tags, {} sounds, {} bytes of tag memory",
             c.name, c.tags, c.sounds, c.bytes
         );
+    }
+    for step in &saved.fitted {
+        println!("fit: {step}: {} (short of tag headroom)", step.reason());
     }
     for name in &saved.cut {
         println!("cut {name} (over the tag headroom)");
@@ -312,6 +344,31 @@ mod tests {
         ] {
             assert!(args(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn the_retail_table_comes_first_from_the_discs_own_maps() {
+        let a = args("kit zanzibar --retail-classes --class mine=03a_oldmombasa:x --cut")
+            .unwrap()
+            .unwrap();
+        assert!(a.retail && a.cut);
+        assert!(!args("kit zanzibar").unwrap().unwrap().retail);
+        let mut wanted = retail_wanted(|_| true).unwrap();
+        let names: Vec<_> = wanted.iter().map(|w| w.name.as_str()).collect();
+        assert_eq!(names, ["grunt", "jackal", "drone", "brute", "hunter"]);
+        assert_eq!(wanted[3].donor, "08a_deltacliffs");
+        assert_eq!(wanted[0].path, r"objects\characters\grunt\ai\grunt");
+        // Outskirts gives four classes: one donor read for them.
+        wanted.extend(a.classes);
+        let (donors, specs) = plan(&wanted).unwrap();
+        assert_eq!(donors, ["03a_oldmombasa", "08a_deltacliffs"]);
+        assert_eq!(specs.len(), 6);
+        // A class listed by hand under a table name is refused.
+        let twice = [retail_wanted(|_| true).unwrap(), parse_table("grunt=a:b").unwrap()].concat();
+        assert!(plan(&twice).is_err());
+        // A disc without any of a class's donors is refused by class.
+        let error = retail_wanted(|d| d.starts_with("03")).unwrap_err().to_string();
+        assert!(error.contains("brute"), "{error}");
     }
 
     #[test]

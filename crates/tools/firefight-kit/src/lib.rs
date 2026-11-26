@@ -22,12 +22,14 @@ mod ai;
 mod bases;
 pub mod ground;
 mod nav;
+pub mod retail;
 mod transplant;
 /// An invented map the kit builds on, for tests here and in other crates.
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;
 
 pub use bases::{Bases, Config, Source, Team};
+pub use retail::RetailClass;
 pub use ground::{Ground, Labels, Problem, Receipt, Recipe};
 pub use transplant::{ClassCost, ClassSpec, Classes, Donor};
 
@@ -50,6 +52,10 @@ pub struct Costs {
     /// them the ones kept: what the AI can use (`nav::usable_sectors`).
     pub sectors_generated: usize,
     pub sectors_kept: usize,
+    /// The kept sectors once coplanar neighbours are merged
+    /// ([`Fit::MergeSectors`]); `sectors_kept` when the build does not
+    /// merge.
+    pub sectors_merged: usize,
     pub zones: usize,
     pub squads: usize,
     pub characters: usize,
@@ -95,9 +101,14 @@ impl Costs {
 
 impl fmt::Display for Costs {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let merged = if self.sectors_merged == self.sectors_kept {
+            String::new()
+        } else {
+            format!(", merged into {}", self.sectors_merged)
+        };
         write!(
             f,
-            "sectors {} B ({} of {} generated kept), zones {} B, squads {} B, characters and palettes {} B, transplanted classes {} B, scripts {} B, starting locations {} B, tag index {} B, padding {} B; tag growth {} B, available {} B",
+            "sectors {} B ({} of {} generated kept{merged}), zones {} B, squads {} B, characters and palettes {} B, transplanted classes {} B, scripts {} B, starting locations {} B, tag index {} B, padding {} B; tag growth {} B, available {} B",
             self.sectors,
             self.sectors_kept,
             self.sectors_generated,
@@ -115,6 +126,55 @@ impl fmt::Display for Costs {
     }
 }
 
+/// A step the kit takes on a map short of tag headroom, in the order it
+/// takes them: each is tried only when the build without it is over the
+/// headroom, and every step before it is kept. Classes are cut
+/// ([`Classes::cut_to_fit`]) only after every step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Fit {
+    /// Coplanar neighbouring sectors become one convex sector
+    /// (`pathfind::merge::coplanar`): the same ground in fewer sectors,
+    /// links and vertices.
+    MergeSectors,
+    /// The first six drop zones chosen are kept, not up to twelve: they
+    /// alternate between the bases' sides and spread farthest first.
+    /// Placed `ff_drop` labels are never dropped.
+    FewerDrops,
+}
+
+impl Fit {
+    /// Every step, in the order the kit takes them.
+    pub const ALL: [Fit; 2] = [Fit::MergeSectors, Fit::FewerDrops];
+
+    /// What the step gives up, for the report.
+    pub fn reason(self) -> &'static str {
+        match self {
+            Fit::MergeSectors => {
+                "coplanar sectors merged into convex ones: the same ground in fewer bytes"
+            }
+            Fit::FewerDrops => "six drop zones kept instead of up to twelve",
+        }
+    }
+
+    /// The lean build these steps make.
+    fn lean(steps: &[Fit]) -> nav::Lean {
+        nav::Lean {
+            merge: steps.contains(&Fit::MergeSectors),
+            fewer_drops: steps.contains(&Fit::FewerDrops),
+        }
+    }
+}
+
+impl fmt::Display for Fit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Fit::MergeSectors => "merge sectors",
+            Fit::FewerDrops => "fewer drops",
+        })
+    }
+}
+
 pub struct Package {
     pub id: MapId,
     pub costs: Costs,
@@ -127,6 +187,8 @@ pub struct Package {
     pub classes: Vec<ClassCost>,
     /// The classes cut to fit the headroom, first cut first.
     pub cut: Vec<String>,
+    /// The steps taken to fit the headroom, in order ([`Fit`]).
+    pub fitted: Vec<Fit>,
 }
 
 struct Built {
@@ -138,6 +200,7 @@ struct Built {
     problems: Vec<Problem>,
     classes: Vec<ClassCost>,
     cut: Vec<String>,
+    fitted: Vec<Fit>,
 }
 
 struct Field {
@@ -243,9 +306,10 @@ fn build_with(
 }
 
 /// [`build_with`] with the transplanted `classes`. A build over the tag
-/// headroom is refused with every class's cost, or, with
-/// `cut_to_fit`, retried without the last class until it fits
-/// (`transplant`).
+/// headroom takes the [`Fit`] steps in order, then, with `cut_to_fit`,
+/// drops the last class and takes them again, until it fits
+/// (`transplant`); otherwise it is refused with every part's and class's
+/// cost after every step.
 fn build_with_classes(
     base: &[u8],
     base_name: &str,
@@ -254,33 +318,62 @@ fn build_with_classes(
     labels: &Labels,
     classes: Option<&Classes<'_>>,
 ) -> Result<Built> {
-    let total = classes.map_or(0, |c| c.specs.len());
-    let mut keep = total;
-    loop {
-        match assemble(base, base_name, mode, config, labels, classes, keep) {
-            Ok(mut built) => {
-                if let Some(c) = classes {
-                    built.cut = c.specs[keep..]
-                        .iter()
-                        .rev()
-                        .map(|s| s.name.clone())
-                        .collect();
-                }
-                return Ok(built);
-            }
-            Err(e)
-                if keep > 0
-                    && classes.is_some_and(|c| c.cut_to_fit)
-                    && e.downcast_ref::<transplant::Overflow>().is_some() =>
-            {
-                keep -= 1;
-            }
-            Err(e) => return Err(e),
-        }
-    }
+    let available = headroom(base)?;
+    fit_within(base, base_name, mode, config, labels, classes, available)
 }
 
-/// One build of the kit with the first `keep` classes.
+/// The tag memory `base` has left: `max_metadata_size(Multiplayer)` less
+/// its `+0x1c`.
+fn headroom(base: &[u8]) -> Result<u32> {
+    let map = Map::from_reader(Cursor::new(base))?;
+    Ok(max_metadata_size(CacheType::Multiplayer)?.saturating_sub(map.header().meta_size))
+}
+
+/// [`build_with_classes`] against `available` bytes of tag headroom.
+fn fit_within(
+    base: &[u8],
+    base_name: &str,
+    mode: Mode,
+    config: &Config,
+    labels: &Labels,
+    classes: Option<&Classes<'_>>,
+    available: u32,
+) -> Result<Built> {
+    let total = classes.map_or(0, |c| c.specs.len());
+    let fewest = if classes.is_some_and(|c| c.cut_to_fit) {
+        0
+    } else {
+        total
+    };
+    let mut over = None;
+    for keep in (fewest..=total).rev() {
+        for steps in 0..=Fit::ALL.len() {
+            let fit = &Fit::ALL[..steps];
+            match assemble(
+                base, base_name, mode, config, labels, classes, keep, fit, available,
+            ) {
+                Ok(mut built) => {
+                    if let Some(c) = classes {
+                        built.cut = c.specs[keep..]
+                            .iter()
+                            .rev()
+                            .map(|s| s.name.clone())
+                            .collect();
+                    }
+                    built.fitted = fit.to_vec();
+                    return Ok(built);
+                }
+                Err(e) if e.downcast_ref::<transplant::Overflow>().is_some() => over = Some(e),
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    Err(over.expect("one build at least"))
+}
+
+/// One build of the kit with the first `keep` classes and the `fit`
+/// steps, refused when its growth is over `available`.
+#[allow(clippy::too_many_arguments)]
 fn assemble(
     base: &[u8],
     base_name: &str,
@@ -289,6 +382,8 @@ fn assemble(
     labels: &Labels,
     classes: Option<&Classes<'_>>,
     keep: usize,
+    fit: &[Fit],
+    available: u32,
 ) -> Result<Built> {
     let mut map = Map::from_reader(Cursor::new(base))?;
     ensure!(
@@ -301,7 +396,7 @@ fn assemble(
     );
     let base_memory = map.header().meta_size;
     let scenario = map.scenario().context("missing scenario")?.id;
-    let nav = nav::prepare(&mut map, config, labels)?;
+    let nav = nav::prepare(&mut map, config, labels, Fit::lean(fit))?;
     let zones = nav.zones.len();
     let bases = nav.bases;
     let problems = nav.problems;
@@ -366,6 +461,7 @@ fn assemble(
     let mut costs = Costs {
         sectors_generated: nav.trim.generated,
         sectors_kept: nav.trim.kept,
+        sectors_merged: nav.trim.merged,
         classes: added.costs.iter().map(|c| c.bytes).sum(),
         ..Costs::default()
     };
@@ -402,11 +498,19 @@ fn assemble(
         .context("pinned map unexpectedly shrank")?;
     costs.padding = (costs.tag_growth as usize)
         .saturating_sub(costs.parts().iter().map(|&(_, bytes)| bytes).sum::<usize>());
-    costs.available = max_metadata_size(CacheType::Multiplayer)?.saturating_sub(base_memory);
+    costs.available = available;
     if costs.tag_growth > costs.available {
         let (biggest, bytes) = costs.parts()[0];
+        let steps = if fit.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " and taking every step to fit ({})",
+                fit.iter().map(|f| f.reason()).collect::<Vec<_>>().join("; ")
+            )
+        };
         return Err(transplant::Overflow(format!(
-            "Firefight kit exceeds tag headroom by {} B; the biggest part is {biggest} ({bytes} B), after trimming the sectors to the {} of {} generated the AI can use: {costs}{}",
+            "Firefight kit exceeds tag headroom by {} B; the biggest part is {biggest} ({bytes} B), after trimming the sectors to the {} of {} generated the AI can use{steps}: {costs}{}",
             costs.tag_growth - costs.available,
             costs.sectors_kept,
             costs.sectors_generated,
@@ -423,6 +527,7 @@ fn assemble(
         problems,
         classes: added.costs,
         cut: Vec::new(),
+        fitted: Vec::new(),
     })
 }
 
@@ -522,6 +627,7 @@ pub fn build_package_with(
         bases: built.bases,
         classes: built.classes,
         cut: built.cut,
+        fitted: built.fitted,
     })
 }
 

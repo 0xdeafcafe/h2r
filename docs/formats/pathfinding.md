@@ -19,7 +19,8 @@ Code:
   structure BSP's collision BSP (the `coll` BSP layout without its leading
   word).
 - `crates/formats/pathfind`: generator (`generate`), comparison metrics
-  (`compare`), and the `map::build` block tree (`build::element`).
+  (`compare`), trimming (`trim`), merging (`merge`), and the `map::build`
+  block tree (`build::element`).
 - `crates/tools/scenario-edit/src/nav_view.rs`: the editor's AI
   pathfinding layer, sectors and links drawn over the level
   ([editor.md](../editor/editor.md), "Navigation").
@@ -198,6 +199,25 @@ read from the engine (S: it has no path to plan). The
 [Firefight kit](../game/firefight.md) uses the trim to keep the sectors
 its AI can use.
 
+## Merging (`pathfind::merge`)
+
+`merge::coplanar(pf)` joins neighbouring sectors that lie in one plane
+(unit normals within a dot of 0.9999, every vertex within
+`PLANE_TOLERANCE`, 0.001 units, of the first sector's plane) while the
+joined polygon stays one convex counter-clockwise ring (collinear
+corners allowed, `geom::is_convex_xy`) of at most `MAX_RING` (16) links,
+and returns each old sector's new index. It walks the two-sided links in
+order and repeats until nothing more joins, so the result is the same on
+every machine. A merged sector keeps its first member's flags, hint and
+place in the order; the links between its members go, and the vertices
+only they used. Each surface's ref names its merged sector directly, as
+retail data does for a sector over several surfaces ("What the sectors
+are"). The ring cap is ours: no engine limit on ring length was read.
+Like the trim, it takes generated data only.
+
+The [Firefight kit](../game/firefight.md) merges after trimming, only on
+a map short of tag headroom.
+
 The encoded size of generated data, per BSP: 8 bytes a sector, 16 a
 link, 12 a vertex, 4 a collision surface (refs, whatever is kept), 4 an
 instanced-geometry placement, `0x74` for the element and `0x48` for the
@@ -263,6 +283,10 @@ gaps, climb, use vehicles' paths or cross instanced-geometry bridges: the
 generator has no hints and no instanced or object sectors.
 
 ## Open questions
+
+- Whether the engine handles merged sectors (several surfaces, collinear
+  corners, rings up to 16 links) as it handles retail ones; the walker's
+  ring iterator has no length limit read so far.
 
 - The branch convention in the surface reference's 2D node lookup still
   needs a matching engine read.
