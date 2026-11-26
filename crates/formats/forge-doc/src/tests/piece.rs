@@ -698,3 +698,29 @@ fn seeded_fuzz_of_piece_documents() {
     assert!((1..4_000).contains(&accepted), "{accepted}");
     assert!(piece_docs > 0);
 }
+
+#[test]
+fn a_document_is_no_stricter_without_the_crate_count() {
+    // Each of these is valid with the count, and the rules that need to
+    // know which crates hold the tag wait for it without one: the file form
+    // and the identity are checked with no map.
+    let ops = [
+        vec![
+            palette(1, 1, piece_value()),
+            define(2, Endpoint::base(CRATES, 1), block_def()),
+        ],
+        vec![add_piece(1), remove(2, 3)],
+        vec![
+            add_piece(1),
+            define(2, added(1), block_def()),
+            add_like(3, 3),
+        ],
+    ];
+    for ops in ops {
+        let doc = with(ops);
+        validate(&doc, &counts(3)).unwrap();
+        doc.canonical_json().unwrap();
+        doc.id().unwrap();
+        validate(&doc, &Limits::default()).unwrap();
+    }
+}
