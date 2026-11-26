@@ -933,6 +933,37 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         ok
     }
 
+    fn draw_scene(
+        &self,
+        mem: &mut dyn GuestMemory,
+        draw: render_bridge::native_lights::SceneDraw<'_>,
+    ) -> usize {
+        let mut drawn = 0;
+        for (n, pass) in draw.passes.iter().enumerate() {
+            let result = match scene_light(&pass.light) {
+                None => Err(Keep::NoConstants),
+                Some((light, gel)) if matches!(pass.group.group.layer, 12 | 13) => self.alone(
+                    mem,
+                    Alone {
+                        light,
+                        serial: draw.serial + n as u64,
+                        layer: u32::from(pass.group.group.layer),
+                        shader_gel: gel,
+                        view_target: draw.view_target,
+                        group: &pass.group,
+                    },
+                ),
+                Some(_) => Err(Keep::Unsupported("a shadow or stencil layer of a scene light")),
+            };
+            drawn += usize::from(result.is_ok());
+            let mut t = self.tally.lock().unwrap_or_else(|e| e.into_inner());
+            for msg in t.count(result) {
+                eprintln!("{msg}");
+            }
+        }
+        drawn
+    }
+
     fn draw_host(
         &self,
         mem: &mut dyn GuestMemory,
@@ -1191,6 +1222,34 @@ fn uses_gel_target(
 /// like any other's: no stencil links them to its layers 10, 11 and 14
 /// (`light_passes`), and a pass sampling the shadow maps is refused by
 /// `light_look` by name.
+/// A scene light as the passes draw it, and its shader gel; `None` when
+/// the scene holds no constants for it. The constants are the shadowed or
+/// the unshadowed choice by the light's flag bit.
+fn scene_light(light: &frame_scene::Light) -> Option<(Light, Option<(u32, u32)>)> {
+    let c = light.candidate.as_ref()?;
+    let variants = c.constants.as_ref()?;
+    let shadow = light.shadowed();
+    let constants = if shadow { variants.shadowed } else { variants.unshadowed };
+    let gel = c.gel_bitmap.zip(c.gel_shader);
+    Some((
+        Light {
+            handle: light.handle,
+            definition: light.definition,
+            position: c.position,
+            forward: c.forward,
+            up: c.up,
+            colour_a: c.colour_a,
+            colour_b: c.colour_b,
+            intensity: c.intensity,
+            bounds: c.bounds,
+            shadow,
+            weight: light.guest_weight.unwrap_or(c.weight),
+            constants: Some(constants),
+        },
+        gel,
+    ))
+}
+
 fn constants(light: &Light) -> Result<LightConstants, Keep> {
     light.constants.ok_or(Keep::NoConstants)
 }
@@ -2568,6 +2627,34 @@ impl RunPass {
 mod tests {
     use super::*;
     use engine::FlatMemory;
+
+    #[test]
+    fn a_scene_light_draws_with_the_constants_of_its_shadow_choice() {
+        let consts = |flags| LightConstants {
+            frame: [0; 36],
+            flags,
+            colour_a: [0.0; 3],
+            colour_b: [0.0; 3],
+            mode: 0,
+            definition_flags: 0,
+            definition_8a: 0,
+            definition_80: 0,
+            falloff_0: 0,
+            gel: None,
+            animated_gel: false,
+        };
+        let mut light = frame_scene::Light::host_light(0, [1.0, 2.0, 3.0], [1.0; 3], 4.0);
+        assert!(scene_light(&light).is_none(), "no constants, no draw");
+        light.candidate.as_mut().unwrap().constants = Some(frame_scene::LightVariants {
+            unshadowed: consts(1),
+            shadowed: consts(5),
+            projection: None,
+        });
+        let (l, gel) = scene_light(&light).unwrap();
+        assert_eq!((l.constants.unwrap().flags, l.position, gel), (1, [1.0, 2.0, 3.0], None));
+        light.flags = 4;
+        assert_eq!(scene_light(&light).unwrap().0.constants.unwrap().flags, 5);
+    }
 
     #[test]
     fn gathered_models_match_the_live_instance_pass_class_and_complete_index_window() {

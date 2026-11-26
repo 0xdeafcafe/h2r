@@ -106,6 +106,8 @@ pub struct ScenePass {
 pub struct SceneDraw<'a> {
     pub passes: &'a [ScenePass],
     pub view_target: [u32; 8],
+    /// The serial of the first pass; pass `n` takes `serial + n`.
+    pub serial: u64,
 }
 
 /// `view`'s light layers, owned, in draw order.
@@ -145,7 +147,8 @@ pub fn draw_scene(mem: &mut dyn GuestMemory, passes: &[ScenePass]) -> usize {
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
         return 0;
     };
-    let drawn = host.draw_scene(mem, SceneDraw { passes, view_target });
+    let serial = SERIAL.fetch_add(passes.len() as u64, Ordering::Relaxed);
+    let drawn = host.draw_scene(mem, SceneDraw { passes, view_target, serial });
     SCENE_DRAWN.fetch_add(drawn as u64, Ordering::Relaxed);
     drawn
 }
