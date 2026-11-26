@@ -708,8 +708,17 @@ impl Session {
         if now == rec.described {
             return;
         }
-        let Some(files) = rec.game.as_mut() else { return };
+        if rec.game.is_none() {
+            return;
+        }
         rec.described = now;
+        // The game's front is written as it is described, so a recording
+        // that stops after this has a front naming it.
+        let game_tick = s.tick;
+        if let Err(e) = rec.refresh_front(game_tick) {
+            eprintln!("theater: could not write this game's front: {e:#}");
+        }
+        let Some(files) = rec.game.as_mut() else { return };
         let mut header = files.header.clone();
         header.meta.map = game.map;
         header.meta.variant = game.variant;
@@ -722,6 +731,14 @@ impl Session {
     /// A recording reads the game's roster every 30 ticks.
     fn checkpoint_interval(s: &mut State, guest: &runtime::Guest) {
         s.roster(guest);
+        // And its front, with the scores so far, so a game that never
+        // reaches its seal still lists with them.
+        let tick = s.tick;
+        if let Mode::Record(rec) = &mut s.mode
+            && let Err(e) = rec.refresh_front(tick)
+        {
+            eprintln!("theater: could not refresh this game's front: {e:#}");
+        }
     }
 
     /// Poll before executing another slice. The logical clock remains still

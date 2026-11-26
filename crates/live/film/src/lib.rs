@@ -205,6 +205,30 @@ impl<W: Write + Seek> Writer<W> {
         w.chunk(HEAD, header)?;
         Ok(w)
     }
+    /// Rewrite the public front with the game as it stands: its descriptor
+    /// and the results so far. A film whose recording stops before it is
+    /// sealed (a crash, a kill) keeps the last front written here; the seal
+    /// writes the final one. The write position is unchanged. A film that
+    /// is not v3 has no front, and this does nothing.
+    pub fn refresh_front(
+        &mut self,
+        descriptor: &blam::MatchHeader,
+        summary: &blam::Summary,
+    ) -> Result<()> {
+        let Some(ranges) = &mut self.ranges else {
+            return Ok(());
+        };
+        let mut next = (**ranges).clone();
+        next.set_descriptor(&serde_json::to_vec(descriptor)?)?;
+        next.front.summary = serde_json::from_slice(&serde_json::to_vec(summary)?)?;
+        live_proto::film::privacy::public_summary(&mut next.front.summary);
+        let front = next.front.encode().map_err(anyhow::Error::msg)?;
+        let at = self.out.stream_position()?;
+        write_front(&mut self.out, &front)?;
+        self.out.seek(SeekFrom::Start(at))?;
+        ranges.front = next.front;
+        Ok(())
+    }
     pub fn chunk(&mut self, tag: Tag, value: &impl Serialize) -> Result<()> {
         ensure!(tag != INDX, "finish writes the index");
         self.chunk_bytes(tag, &serde_json::to_vec(value)?)

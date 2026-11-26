@@ -215,6 +215,20 @@ impl Recording {
         Ok((path, header))
     }
 
+    /// Write the game as it stands into the public front of its stats
+    /// container: its roster, map and scoreboard so far. The seal writes the
+    /// final front; this one is what a crash or kill leaves.
+    pub(super) fn refresh_front(&mut self, session_tick: u64) -> Result<()> {
+        let Some(game) = self.game.as_mut() else { return Ok(()) };
+        let tick = session_tick.saturating_sub(game.base.unwrap_or(0));
+        let mut summary = self.meta.summary(tick);
+        if summary.level.is_empty() {
+            return Ok(());
+        }
+        self.unified.summary_medals(&mut summary.players);
+        game.stats.refresh_front(self.meta.descriptor(), &summary)
+    }
+
     pub(super) fn post_tick(
         &mut self,
         guest: &runtime::Guest,
