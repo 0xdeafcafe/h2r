@@ -243,6 +243,77 @@ run, so a held weapon, a vehicle's driver or a culled crate need no logic
 of ours. A conservative sphere-frustum test runs anyway (cheap, and a
 guard against a stale sphere).
 
+### Fade, the shader flag and the item's argument
+
+The geometry draw `0x0004d0b0` takes three things from an object item
+beyond its material and its record's `+0` bits (**Code**, `h2 disasm`).
+Extraction reads them for layer 3's walk (`object_walk::read_part`), the
+world layers' items and the first person's (`object_walk::layer_part`);
+the module notes of `scene_extract::layout::object_walk` list them with
+their addresses.
+
+- **The fade byte** (record `+0x1a`). Below `0xff` the prologue
+  `0x0004d640` scales it by `0x0045dbb4` and, where that differs from the
+  engine's cached fade `0x004b8494` by more than `0x0045dbdc`, sets the
+  polygon stipple pattern `0x0001c290` picks (one of 17 at `0x00487288`)
+  through `SetStipple` (`0x003f8cc0`) and caches the fade. The epilogue
+  `0x0004d720` does the same for the engine's one (`0x0045dbc0`), and so
+  does the layer end `0x000445d0`. The pattern masks the draw only while
+  the device's stipple is on: the target mode call `0x00015680` turns it
+  on (mode 1) before layers 1 and 3 outside view kinds 4 to 7, and off
+  (mode 0) before layers 5, 8 and 20 (`0x0002be17`..`0x0002bfef`). The
+  part carries `PartFlags::FADE`. The native draw applies no stipple, so
+  it takes the part only where the device's stipple is off
+  (`native_objects_glue::stipple_off`), where the guest's draw is not
+  masked either, and only where the engine caches a fade of exactly one
+  and the device holds the table's pattern for one
+  (`native_objects_glue::stipple_at_rest`,
+  `opaque_material::rest_stipple_table`): from there every faded record's
+  epilogue puts both back, so skipping the draws leaves what drawing them
+  would. Layer 3's walk already requires the stipple off for every run.
+- **The shader's flag bit 0** (`+0x16`). The draw then takes no lightmap
+  in layer 3 (`0x0004d2ab`) and no PRT stream in layer 5 (`0x0004d237`).
+  It asks for residency of the stage bitmaps of the shader's templates
+  (`0x0004d486`..`0x0004d55d`: `0x0012ccf0`, then `0x0012ce00` for one
+  not resident), which sets no device state. With its program's flag bit
+  20 it calls `0x0003bea0`, which the first time a frame (`0x00509430`
+  clear; `0x0002c0f5` clears it) clears the shader cache and copies and
+  binds the structure's target. And when the active structure
+  (`[0x004e0348]`) has a parameter block (`+0x214` above 0, the block at
+  `+0x218`), the prologue runs `0x0003c650` (texture stages and bitmaps)
+  and `0x0003d000` (`c[21..25]` through `SetVertexShaderConstant1` and
+  the fog colour). The part carries `PartFlags::SHADER_FLAG` where none
+  of that sets device state: no parameter block, and in a world layer or
+  the first person's layer 3, whose items' programs are chosen under the
+  layer draw, the frame's target copy made; layer 3's walk refuses
+  program bit 20 itself. A flagged layer-3 record with a structure
+  lightmap index is refused, since the native draw would bind it.
+  Extraction reads no PRT stream for a flagged layer-5 item. The native
+  passes compile only programs whose constants the object pass sets, so
+  none reads `c[21..25]`.
+- **The item's argument** (`+0xc`) and its `+0x14` and `+0x15` bytes. The
+  sorted dispatch passes them to the draw (`0x0003bc7b`..`0x0003bc8d`).
+  The argument's high byte is the item's projected size: `0x0004d9c0`
+  scales it by the part's `+0x2c`, `0x004670e4` and `0x0045dc10`, and the
+  shader begin `0x00016b90` turns it into the distance words at the shader
+  context's `+0x28` and `+0x2c` (`0x00016c6e`..`0x00016cb0`). Only the
+  texture-stage resolve reads them (`0x0001b0a0`), for the level of
+  detail it asks residency for, so the byte changes no state, constant or
+  binding of the draw, and the native draw ignores it. `+0x15` and
+  `+0x14` are the shader level and the pass within the layer that
+  `0x00016b90` selects; the native passes are the first level's from the
+  layer's first pass, so either set, or a low byte other than the key's
+  part, keeps the item on D3D.
+
+What still declines, by name: `object_fade` (the device's stipple is on:
+layers 1 and 3 outside view kinds 4 to 7), `object_stipple` (the cached fade or the
+pattern is not what the epilogue leaves), `object_shader_flag` (a
+parameter block, or in layer 3 a structure lightmap index),
+`object_shader_flag_target` (the target copy not made yet) and
+`object_argument` (another pass, level or part). In layer 3's walk these
+are `walk_unsupported` (extraction) or `State` (the stipple); in the
+first person's layer 3 they are its log reasons.
+
 ### Transform source
 
 Node matrices are read once per view at the hook, from the body
@@ -323,9 +394,11 @@ requiring the body and mode node counts to match. Admission is per item:
 `ItemKey` selects the exact section, geometry part, shader and
 implementation. Each item's record is read as the world layers read
 theirs (`object_walk::layer_part` with layer 3, `ItemDraw::flags` and
-`ItemDraw::subparts`): a fade byte, the shader's flag bit 0 or an
-argument the pass setup takes keeps the item on D3D, and so does a record
-marking the stencil, which this draw does not reproduce. A record toggling
+`ItemDraw::subparts`). A record with a fade byte draws only where the
+device's stipple is off and holds what its epilogue leaves, and a flagged
+shader and the argument's projected size as "Fade, the shader flag and
+the item's argument" says; a record marking the stencil keeps the item on
+D3D, which this draw does not reproduce. A record toggling
 the auxiliary state (bit 11) draws with what the toggle sets for the first
 person's view (`aux_depth::read` at the call, `with_aux_depth`), taken only
 when the device holds the toggle off at the call

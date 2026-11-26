@@ -44,6 +44,12 @@
 //!   rows and clip its view holds (`frame_scene::View::aux_depth`), and
 //!   only when the device holds the toggle off
 //!   (`native_objects_glue::aux_depth_at_rest`; else `object_aux_depth`).
+//!   An item whose record has a fade byte (`frame_scene::PartFlags::FADE`)
+//!   draws unmasked, as the guest's draw does with the device's polygon
+//!   stipple off (`native_objects_glue::stipple_off`; else `object_fade`),
+//!   and only where the device holds the solid pattern and the engine a
+//!   cached fade of one, which its epilogue leaves
+//!   (`native_objects_glue::stipple_at_rest`; else `object_stipple`).
 //!   The skip clears the layer's bit on the run of
 //!   such items from the list's first (`layer_pass::clear_layer_prefix`);
 //!   the rest, and every item after the first refused one, keep their D3D
@@ -424,6 +430,10 @@ fn plan_objects<B: d3d::backend::Backend>(
     let mut aux_at_rest: Option<bool> = None;
     // The texture accumulation target, read once when an item samples it.
     let mut texaccum: Option<Option<native_render::world_layers::Texaccum>> = None;
+    // The device's polygon stipple, read once when an item has a fade
+    // byte: whether it is off, and whether it holds what a faded record's
+    // epilogue leaves.
+    let mut stipple: Option<(bool, bool)> = None;
     let read_bytes = |at: u32, len: usize| -> Option<Vec<u8>> {
         let mut bytes = vec![0; len];
         mem.read(at, &mut bytes).ok()?;
@@ -463,6 +473,23 @@ fn plan_objects<B: d3d::backend::Backend>(
         {
             *outcomes.entry("object_aux_depth").or_default() += 1;
             continue;
+        }
+        // An item with a fade byte: its prologue sets the stipple pattern
+        // the byte picks and its epilogue the solid one. Drawn unmasked
+        // only where the device's stipple is off, and skipped only where
+        // the device and the engine already hold what the epilogue leaves.
+        if item.flags.contains(PartFlags::FADE) {
+            let (off, at_rest) = *stipple.get_or_insert_with(|| {
+                (crate::native_objects_glue::stipple_off(d, mem), crate::native_objects_glue::stipple_at_rest(d, mem))
+            });
+            if !off {
+                *outcomes.entry("object_fade").or_default() += 1;
+                continue;
+            }
+            if !at_rest {
+                *outcomes.entry("object_stipple").or_default() += 1;
+                continue;
+            }
         }
         if !draws.iter().all(|draw| lit.planned_pass(item.model, draw).is_some_and(|p| layer_pass::skip_holds(&p.implementation, &device_state))) {
             *outcomes.entry("object_state").or_default() += 1;

@@ -1,6 +1,6 @@
 # Retiring the guest D3D path
 
-Status: Design. Slice R0 (`render.residual` and the three frame counters, [agent-api.md](../runtime/agent-api.md#renderresidual-residual-d3d-work)) is built. Of R1, the structure's static items of layers 1, 5, 7, 8 and 20, and the objects' items of the scene's layers 1, 5, 7, 8 and 20 (layer 5's with the model's PRT stream) and the first person's layers 1, 7, 8 and 20, draw from the scene's plan by default, each item only where skipping its guest draw leaves the device's render states as drawing it would, a pass whose restore list writes back what it sets included (framescene.md slice 4, "The stage"). Their object items toggling the auxiliary state draw with the rows and clip the toggle sets for their view where the device holds it off, and those sampling the texture accumulation target bind its level outside layer 1; the first person's layer-3 items do both. Layer 3's object parts draw every topology and subpart choice their records make, a strip part's chosen subparts included (framescene.md slice 3, "Bit 9"), and its decorators draw from the scene only where skipping them leaves the device's render states as drawing them would, a pass whose restore list writes back what it sets included (native-decorators.md, "The glue"). Whole groups of layers 10, 11 and 14 also draw from the scene with no geometry handler, and the object filter draws natively (native-shadow-layers.md). The rest of R1 is not built: "R1's remainder" lists what still reaches the guest's draws. Of R5, layer 2 and layer 17 draw their structure and object items from the scene's plan as layers 1, 5, 7, 8 and 20 do (layer 2 at the main, alternate and first-person calls). The sky stage draws supported strips with the view's node palette and the material inputs at issue. The parts of R5 earlier stages draw (fog, water, layers 18, 19 and 21, the flares' colour fans, the post) are in "By caller"; no other slice is built. The stages it builds on are in [native-renderer.md](native-renderer.md) and [framescene.md](framescene.md).
+Status: Design. Slice R0 (`render.residual` and the three frame counters, [agent-api.md](../runtime/agent-api.md#renderresidual-residual-d3d-work)) is built. Of R1, the structure's static items of layers 1, 5, 7, 8 and 20, and the objects' items of the scene's layers 1, 5, 7, 8 and 20 (layer 5's with the model's PRT stream) and the first person's layers 1, 7, 8 and 20, draw from the scene's plan by default, each item only where skipping its guest draw leaves the device's render states as drawing it would, a pass whose restore list writes back what it sets included (framescene.md slice 4, "The stage"). Their object items toggling the auxiliary state draw with the rows and clip the toggle sets for their view where the device holds it off, and those sampling the texture accumulation target bind its level outside layer 1; the first person's layer-3 items do both. Object items with a fade byte draw where the device's polygon stipple is off and holds what their epilogue leaves, those whose shader has flag bit 0 where the prologue uploads nothing, and an item's projected size changes nothing they draw, in every layer named here and layer 3's walk ([native-objects.md](native-objects.md), "Fade, the shader flag and the item's argument"). Layer 3's object parts draw every topology and subpart choice their records make, a strip part's chosen subparts included (framescene.md slice 3, "Bit 9"), and its decorators draw from the scene only where skipping them leaves the device's render states as drawing them would, a pass whose restore list writes back what it sets included (native-decorators.md, "The glue"). Whole groups of layers 10, 11 and 14 also draw from the scene with no geometry handler, and the object filter draws natively (native-shadow-layers.md). The rest of R1 is not built: "R1's remainder" lists what still reaches the guest's draws. Of R5, layer 2 and layer 17 draw their structure and object items from the scene's plan as layers 1, 5, 7, 8 and 20 do (layer 2 at the main, alternate and first-person calls). The sky stage draws supported strips with the view's node palette and the material inputs at issue. The parts of R5 earlier stages draw (fog, water, layers 18, 19 and 21, the flares' colour fans, the post) are in "By caller"; no other slice is built. The stages it builds on are in [native-renderer.md](native-renderer.md) and [framescene.md](framescene.md).
 Code: `crates/platform/d3d/src` (what is deleted), `crates/rewrites/scene-extract/src` and `crates/rewrites/native-render/src` (what replaces it), `crates/rewrites/render-bridge/src` (the frame step and the census). Tests: named per slice below.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md). It is removed with the crate. No slice adds a switch.
 
@@ -550,12 +550,21 @@ keeps a guest draw, by the counter that names it (**Code**):
   `animation`, `texture_transform`, `object_animation`, `property`,
   `wave`, `material_c18`, `time`, `per_draw`), `program`, `palettes`,
   `state`, `stencil`, `warming`, `device`, `viewport`, `unread`. Object
-  items: extraction's causes (`object_fade`, `object_shader_flag` and
-  `object_argument`, whose guest work is not read; `object_layer5_stream`,
-  `object_subparts`, `object_aux_state`, `object_unread`), then
+  items: extraction's causes (`object_shader_flag`: the shader's flag
+  bit 0 with the active structure's parameter block, whose upload
+  `0x0003c650` and `0x0003d000` is not reproduced;
+  `object_shader_flag_target`: the same before the frame's structure
+  target copy, which `0x0003bea0` may make; `object_argument`: another
+  pass, shader level or part in the item's `+0x14`, `+0x15` or its
+  argument's low byte, which the native passes are not; `object_layer5_stream`, `object_subparts`,
+  `object_aux_state`, `object_unread`), then
   `object_models`, `object_w_buffer`, `object_model`, `object_plan`,
   `object_texaccum` (layer 1, or no target or level),
   `object_aux_depth` (the device does not hold the toggle off),
+  `object_fade` (a fade byte with the device's polygon stipple on, which
+  the native object draw does not apply: layers 1 and 3 outside view
+  kinds 4 to 7), `object_stipple` (a fade byte where the engine's cached
+  fade or the device's pattern is not what the epilogue leaves),
   `object_state`, `object_prt`, `object_fog`, `object_stencil`,
   `object_warming`. And `order`: the skip is a prefix of the list
   (`layer_pass::clear_layer_prefix`), so every item after the first
@@ -565,10 +574,12 @@ keeps a guest draw, by the counter that names it (**Code**):
   ([native-world.md](native-world.md)).
 - **Layer 3's objects** (`native_objects_walk_*`): the objects the walk
   returns (`walk_unsupported`: a bit-11 part whose toggle does not read,
-  a bit-6 part with more than 64 subparts or a mask that does not read),
-  a record with a fade byte, the shader's flag bit 0 or a pass-setup
-  argument (whose guest work is not read), and a run declined by
-  `Model`, `Inputs`, `State`, `Unresident` or `Reservation`.
+  a bit-6 part with more than 64 subparts or a mask that does not read,
+  a flagged shader with the structure's parameter block or a structure
+  lightmap index, an item's `+0x14` or `+0x15`), and a run declined by
+  `Model`, `Inputs`, `State` (among its causes the device's stipple on,
+  and a faded part where the device does not hold what its epilogue
+  leaves), `Unresident` or `Reservation`.
 - **Layer 3's decorators** (`scene_decorator_draws_unready`,
   `_draws_state`, `_views_declined`, `_remainder`): a material not ready,
   a pass with an engine-driven state from a per-draw source or a
@@ -578,8 +589,11 @@ keeps a guest draw, by the counter that names it (**Code**):
   ([native-decorators.md](native-decorators.md)).
 - **The first person's layer 3** (`native-first-person:` log reasons):
   mixed-list sorting, a part without a compiled pass, a record marking
-  the stencil, a fade byte, a shader flag or an argument, a record
-  toggling the auxiliary state while the device does not hold it off,
+  the stencil, a fade byte with the device's stipple on or not at rest,
+  a flagged shader with the structure's parameter block, a structure
+  lightmap index or no target copy yet, another pass or level in the
+  item, a record toggling the auxiliary state while the device does not
+  hold it off,
   and a part sampling the texture accumulation target where none is
   bound or levels are not sampled in place
   ([native-objects.md](native-objects.md)).

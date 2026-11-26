@@ -901,12 +901,16 @@ commits. The three parts are built.
   makes the geometry draw `0x0004d0b0` do (`object_walk::layer_part`,
   research points in its module notes): its `PartFlags` (the stencil
   mark only in layers 1 and 3, where the prologue `0x0004d640` sets a
-  stencil mode) and chosen subparts, or a named cause the scene cannot
-  reproduce it (`LayerObjectRefusal`: a fade byte, the shader's flag
-  bit 0, an argument the pass setup takes, layer 5's PRT stream left as
-  the draws before it left it, subparts or auxiliary state that do not
-  read). In layer 5 an object item whose model has a PRT
-  block carries what the draw adds for it (`frame_scene::PrtStream`,
+  stencil mode, the fade byte, and the shader's flag bit 0 where the
+  prologue uploads nothing) and chosen subparts, or a named cause the
+  scene cannot reproduce it (`LayerObjectRefusal`: the shader's flag
+  bit 0 with the structure's parameter block or before the frame's target
+  copy, another pass, level or part in the item's argument, layer 5's PRT
+  stream left as the draws before it left it, subparts or auxiliary
+  state that do not read; [native-objects.md](native-objects.md), "Fade,
+  the shader flag and the item's argument"). In layer 5 an object item
+  whose model has a PRT block, and whose shader has no flag bit 0,
+  carries what the draw adds for it (`frame_scene::PrtStream`,
   read by `scene_extract::layout::prt`, research points in its module
   notes): the stream's type, stride and the guest address of the item's
   section's vertices at the object's level, and the constants from
@@ -1076,6 +1080,10 @@ to the guest's draws (**Code**):
     `View::aux_depth` (`scene_extract::extract::layer`), and is taken only
     when the device holds the toggle off
     (`native_objects_glue::aux_depth_at_rest`, layer 3's rule). An item
+    with a fade byte draws unmasked, taken only where the device's
+    polygon stipple is off and the device and the engine hold the solid
+    pattern and a cached fade of one, which its epilogue leaves
+    (`native_objects_glue::stipple_off`, `stipple_at_rest`). An item
     with a PRT stream draws each pass's PRT variant with the stream's
     constants from `c[68]` on, written over the item's own as the draw
     sets them after its rows (`0x0004d269`), and is refused when its
@@ -1133,7 +1141,10 @@ to the guest's draws (**Code**):
     `layer_plan_sorted<layer>_*`): the plan's causes
     (`LayerRefusal::name`, `per_draw` for a material resolved per draw),
     extraction's object causes (`LayerObjectRefusal::name`,
-    `object_fade` and the rest), `object_prt` (layer 5's PRT stream
+    `object_shader_flag` and the rest), `object_fade` (an item with a
+    fade byte where the device's stipple is on), `object_stipple` (where
+    the device or the engine does not hold what its epilogue leaves),
+    `object_prt` (layer 5's PRT stream
     does not read or is of a format the variant was not compiled for),
     `object_layer` (a layer outside `object_program_gpu::OBJECT_LAYERS`),
     `object_state` and `state` (an object or a structure item whose pass
@@ -1188,7 +1199,10 @@ to the guest's draws (**Code**):
     `layer_1_items_draw_unstenciled_with_the_stencil_off_and_need_mode_1_to_skip`;
     for the objects,
     `a_world_layers_object_item_carries_its_records_flags_or_names_why_not`
+    and `the_walk_takes_a_fade_a_projected_size_and_a_flagged_shader_it_can_draw`
     (`scene_extract::layout::object_walk`),
+    `the_rest_pattern_is_the_entry_for_one_in_every_rounding_mode`
+    (`engine::render_loop::opaque_material`),
     `layer_5_reads_the_objects_constants_and_its_sections_stream_at_its_level`,
     `a_model_without_a_prt_block_adds_nothing` and
     `a_draw_that_leaves_its_stream_or_constants_as_they_were_is_named`
@@ -1206,8 +1220,10 @@ to the guest's draws (**Code**):
     `a_prt_item_draws_its_passes_prt_variant_with_its_constants` and
     `a_world_layers_object_item_draws_each_pass_with_the_implementation_it_picks`
     (`native_render::object_program_gpu`; an aux-depth item with and
-    without its view's values among its cases),
+    without its view's values, and a faded and a flagged item that plan
+    as any other, among its cases),
     `a_pass_sampling_the_accumulation_target_binds_it_only_where_it_is_there_and_sampled_in_place`
+    and `a_faded_record_is_skipped_only_where_the_epilogue_leaves_the_device_as_it_is`
     (`game::native_objects_glue`), `a_views_layer_draws_keep_their_items_and_rows_and_a_first_person_view_is_its_own`
     (`frame_scene::builder`, each pass's view by `view_of_pass`);
     for the stage, `the_plans_outcomes_count_by_layer_and_cause`,

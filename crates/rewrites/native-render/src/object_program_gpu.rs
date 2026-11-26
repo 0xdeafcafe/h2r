@@ -3870,8 +3870,22 @@ mod tests {
         assert!(plan(Some(1), 7, &seven, &item(0), &e).unwrap_err().contains("draws nothing native"), "layer 8's part");
         let other = LayerItem { key: ItemKey { shader: 0xe000_0010, ..key(4, 0, 0) }, ..item(0) };
         assert!(plan(Some(0), 7, &seven, &other, &e).unwrap_err().contains("shader"));
-        let refused = LayerItem { refusal: Some(LayerObjectRefusal::Fade), ..item(0) };
-        assert_eq!(plan(Some(0), 7, &seven, &refused, &e).unwrap_err(), "object_fade", "extraction's cause");
+        let refused = LayerItem { refusal: Some(LayerObjectRefusal::ShaderFlag), ..item(0) };
+        assert_eq!(plan(Some(0), 7, &seven, &refused, &e).unwrap_err(), "object_shader_flag", "extraction's cause");
+        // A faded record's and a flagged shader's item (the case the scene
+        // carries) plan as any other: the stipple is the host's to check,
+        // and the prologue uploads nothing.
+        let plain = plan(Some(0), 7, &seven, &item(1), &e).unwrap();
+        for flags in [PartFlags::FADE, PartFlags::SHADER_FLAG, PartFlags::FADE | PartFlags::SHADER_FLAG] {
+            let marked = LayerItem { flags, ..item(1) };
+            let d = plan(Some(0), 7, &seven, &marked, &e).unwrap();
+            assert_eq!(d.len(), plain.len(), "{flags:?}");
+            for (d, p) in d.iter().zip(&plain) {
+                assert_eq!((d.implementation, d.program, &d.ranges), (p.implementation, p.program, &p.ranges), "{flags:?}");
+                assert_eq!(d.vertex.constants, p.vertex.constants, "{flags:?}: the same constants");
+                assert_eq!(d.state, p.state, "{flags:?}: the same state");
+            }
+        }
         let prt = frame_scene::PrtStream { kind: 0x39, stride: 10, data: 0x8000_0000, constants: vec![[0.0; 4]; 2] };
         let streamed = LayerItem { prt: Some(prt), ..item(0) };
         assert!(plan(Some(0), 7, &seven, &streamed, &e).unwrap_err().contains("PRT stream"));
