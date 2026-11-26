@@ -19,6 +19,10 @@ engine = { path = "../engine", features = ["runtime-glue"] }
 lifted = { path = "../../runtime/lifted" }
 # The extension records the checkpoint hooks move (sim_ext.rs).
 sim-ext.workspace = true
+# The sound schedule, events and the host feed trait (sim_sound.rs).
+sim-sound.workspace = true
+# The host mixer the sound events feed (sim_sound/mixer_feed.rs).
+audio = { path = "../../platform/audio", default-features = false }
 
 [dev-dependencies]
 hs = { workspace = true, features = ["fixture"] }
