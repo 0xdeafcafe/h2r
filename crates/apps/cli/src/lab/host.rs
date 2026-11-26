@@ -226,7 +226,6 @@ pub fn serve(cfg: HostConfig) -> Result<()> {
         for job in &unfinished {
             build_cache::check_abandoned(&shared.cfg.dir("runs").join(&job.id))?;
         }
-        build_cache::migrate(&shared.cfg)?;
         recover(&shared, unfinished);
     }
     eprintln!(
