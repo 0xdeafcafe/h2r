@@ -1168,6 +1168,13 @@ fn run_configured(
     {
         input.add_gate(Box::new(forge_controls::gate()));
     }
+    // While a film plays, the Theater owns the pads: A pauses, the d-pad
+    // skips, the sticks fly the free camera, and the guest sees neutral pads
+    // (`theater_ui::overlay::Gate`). `h2 theater` installs the same gate
+    // itself, on the input it takes from the window.
+    if let (Some(theater), Some(input)) = (&theater, &mut host.input) {
+        input.add_gate(theater.pad_gate(None));
+    }
     // `input.host` (`h2 agent hostpads`) reads the manager's report after
     // the manager moves into XAPI.
     let host_pads = host.input.as_ref().map(input::InputManager::host_report);
