@@ -207,7 +207,7 @@ sounds".
 | `19c`..`1a8` | AI perception radius, collision radius, arming time, danger radius | S, V1 (set on grenades) |
 | `1bc` | f32x2 timer | S |
 | `1c4` | minimum velocity, `1c8` maximum range | S, V1 (equal to the Halo 2 template's on bullets) |
-| `1cc` | air gravity scale, `1d0` air damage range, `1d8` water gravity scale, `1dc` water damage range | S, V1 |
+| `1cc` | air gravity scale, `1d0` air damage range, `1d8` water gravity scale, `1dc` water damage range | S, V1; both gravity scales are written times `GRAVITY_RATIO` (`arsenal::PROJECTILE_GRAVITY`), so the arc and a bullet's drop are Halo 1's under Halo 2's gravity (`projectile_gravity_keeps_halo1s_arc`) |
 | `1e4`, `1e8`, `1ec` | initial velocity, final velocity, guided angular velocity: **per tick** | S; V1: bullet values are a thirtieth of a plausible speed per second |
 | `1f0` | i16 detonation noise; `1f4` detonation started; `204` flyby sound; `214` attached detonation damage; `224` impact damage | V1 |
 | `240` | material responses (`0xa0`, 33 on every projectile) | V1 |
@@ -1343,8 +1343,7 @@ attachments name a contrail (236 attachments) names the converted one.
   differ: rigid bodies may attach to the wrong nodes or none).
 - That the S offsets above mean what the values suggest (heat, magazine,
   barrel and projectile fields), and the per-tick to per-second factor.
-- Halo 1's tuning on Halo 2's physics: projectile gravity (Halo 1 bullets
-  have gravity scale 1, Halo 2's 0), maximum range 0 on the plasma bolt.
+- Halo 1's tuning on Halo 2's physics: maximum range 0 on the plasma bolt.
 - The `coll` BSP leading word as a node index, and Halo 1 material names
   as Halo 2 materials (the global material table will not know them).
 - That Havok bodies (grenades, vehicles) bounce off scenery, and that the

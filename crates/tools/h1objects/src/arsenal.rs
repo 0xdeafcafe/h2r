@@ -82,6 +82,11 @@ pub const BARREL_WORDS: &[(&str, usize)] = &[
     ("age_generated_per_round", 0xbc), // battery age per round
 ];
 
+/// The `proj` gravity scales. Halo 2's gravity is 1 / `GRAVITY_RATIO`
+/// times Halo 1's, so each is Halo 1's scale times `GRAVITY_RATIO`: a
+/// grenade's arc and a bullet's drop (scale 1) are Halo 1's.
+pub const PROJECTILE_GRAVITY: [&str; 2] = ["air_gravity_scale", "water_gravity_scale"];
+
 /// `proj` words from Halo 1 by offset (S, V2; the removed template path's rows):
 /// (path, Halo 1 `proj` offset, per tick to per second). Halo 1 keeps
 /// speeds per tick ([`crate::convert::TICKS_PER_SECOND`]).
@@ -777,6 +782,11 @@ pub fn projectile(
             (f32::from_bits(u32_at(b, *at)) * crate::convert::TICKS_PER_SECOND).to_bits()
         } else {
             u32_at(b, *at)
+        };
+        let w = if PROJECTILE_GRAVITY.contains(path) {
+            (f32::from_bits(w) * tags::object::direct_drive::GRAVITY_RATIO).to_bits()
+        } else {
+            w
         };
         word(&mut r, path, w)?;
     }
