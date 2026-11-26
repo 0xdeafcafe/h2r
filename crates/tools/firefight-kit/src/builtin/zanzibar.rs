@@ -54,7 +54,7 @@ const WIDE: f32 = 6.0;
 const NONE: [f32; 3] = [0.0; 3];
 
 /// Firing positions in a base zone are capped at four on this map, which
-/// is short of tag headroom (132 KiB available).
+/// is the map with the least tag headroom of the built-in two.
 const BASE_POSITIONS: usize = 4;
 
 const fn drop(

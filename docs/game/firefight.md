@@ -799,11 +799,15 @@ default, `firefight_kit::Config::dropship`):
   `ship::DROP_HEIGHT` (6 units) over the zone's first area's mean. The
   runs are at the sky height, 10 units over the tallest collision, and
   outside the collision's horizontal bounds by at least 20. `ship::plan`
-  casts rays on the arena BSP's collision (`bots::los::Walls::clear`):
+  casts rays on the arena BSP's collision without its sky shell
+  (`bots::cache::walls_without_sky`: the lid and walls that reach the
+  highest surface close the world and are no roof) (`bots::los::Walls::clear`):
   from just above the zone's floor to the sky (a roof over the zone
   fails it), and, for the first of eight compass directions (starting
   away from the map's middle) where both clear, from the run-in down to
   the hover and from the hover up to the run-out, which lie on opposite sides.
+  A zone with no clear long run is tried again with runs 80, 50 and 30 units
+  long, steeper dives for a canyon.
   A zone with no such direction gets no point set, and its squads spawn on foot.
   The paths are not placed by hand; a map keeps what the rays find.
 - **Fit.** The ship is cut before any class: with a map short of headroom
@@ -898,8 +902,9 @@ it, not from the generator. Layouts are code in
 `Anchor` on the map's own data, never a coordinate: `Flag { kind, team,
 nth }` (netgame flags, `scnr+0x118`: CTF stand, oddball, teleporter source
 and exit, territory, hill corner), `Starts { team }` (the mean of a team's
-starting locations), `Item { suffix, nth }` (a weapon placement by the end
-of its tag name), `Between(a, b, t)` and `Or(a, b)` (the first that
+starting locations), `Item { suffix, nth }` (a weapon pad by the end of its
+tag name: a netgame equipment entry, `scnr+0x120`, where retail multiplayer
+maps place their weapons, then a scenario weapon placement), `Between(a, b, t)` and `Or(a, b)` (the first that
 resolves). A drop is its anchor, an offset, a snap radius, its `Roles` and
 its `Sides`. The base anchor replaces the home base's point and caps the
 base zone's firing positions (4 on Zanzibar, which is short of headroom).
