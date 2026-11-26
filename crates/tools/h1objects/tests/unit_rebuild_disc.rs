@@ -534,6 +534,36 @@ fn biped_words_match_halo_2s_counterparts() {
     }
 }
 
+/// The cyborg, the elite and the grunt convert holding Halo 1's aim assist
+/// width (`bipd +0x458`), which is non-zero on all three.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn converted_bipeds_have_autoaim_width() {
+    let mut base_map = h2_map("05a_deltaapproach");
+    let base = Base::read(&mut base_map).unwrap();
+    let d = def(b"bipd");
+    for (level, name) in [
+        ("a10", r"characters\cyborg\cyborg"),
+        ("b30", r"characters\elite\elite"),
+        ("b30", r"characters\grunt\grunt"),
+    ] {
+        let h1 = h1_level(level);
+        let t = h1
+            .tags()
+            .iter()
+            .find(|t| t.name == name && t.group.0.to_be_bytes() == *b"bipd")
+            .unwrap_or_else(|| panic!("{name}"));
+        let u = h1::Unit::read(&h1, t).unwrap();
+        let source = f32::from_bits(u.biped_words.iter().find(|w| w.0 == 0x458).unwrap().1);
+        assert!(source > 0.0, "{name}: Halo 1 holds an aim assist width");
+        let mut c = Converter::new(&h1, &base);
+        let id = c.object(t).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let got = local(&c.tree, id).expect("rebuilt bipd in the tree");
+        let r = defs::from_built(d, &got.root).unwrap();
+        assert_eq!(float(&r, "autoaim_width"), source, "{name}");
+    }
+}
+
 /// A field's offset in `d`, through embedded structs.
 fn h2_offset<'d>(d: &'d StructDef, path: &str, at: u32) -> Option<(&'d defs::FieldDef, u32)> {
     let (head, rest) = path

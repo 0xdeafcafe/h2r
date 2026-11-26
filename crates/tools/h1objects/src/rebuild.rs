@@ -2245,6 +2245,9 @@ pub const BIPED_WORDS: &[(&str, usize)] = &[
     ("bank_angle", 0x324), ("bank_apply_time", 0x328), ("bank_decay_time", 0x32c),
     ("pitch_ratio", 0x330), ("maximum_velocity", 0x334), ("maximum_sidestep_velocity", 0x338),
     ("angular_velocity_maximum", 0x344), ("crouch_velocity_modifier", 0x34c),
+    // After the three collision sizes at +0x424 and 40 pad bytes. Zero width
+    // gives a controller no magnetism or reticle friction on the unit.
+    ("autoaim_width", 0x458),
 ];
 
 /// H1 caches these rates per tick. The c20 monitor and its 04b counterpart

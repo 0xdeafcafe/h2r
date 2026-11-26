@@ -495,7 +495,8 @@ Named on the way:
 | `unit +0xcc` `camera_field_of_view` (`f32`, radians) | V: 70 degrees on every Halo 2 biped and turret with a Halo 1 counterpart, and equal to Halo 1's `unit +0x1a0` on five pairs (cyborg and masterchief, marine_armored and marine, elite, grunt, jackal). Name D: a field of view is the plain reading of 70 degrees on a unit; no reader found yet |
 
 `rebuild::BIPED_WORDS` carries the biped's turning, landing, camera
-height, slope and flying words from Halo 1 as they are. The ones with a
+height, slope, flying and aim assist (`autoaim_width`, `bipd +0x458`) words
+from Halo 1 as they are. The ones with a
 Halo 2 pair agree within 1 % on the five pairs above; the crewman's
 distinct cutoff and falloff angles on a30 and 05a_deltaapproach tell the
 slope fields apart, and the c20 monitor and its 04b counterpart agree on
@@ -509,6 +510,8 @@ Proof (`crates/tools/h1objects/tests/unit_rebuild_disc.rs`, and the lib tests
 
 - `biped_words_match_halo_2s_counterparts`: the camera and the words,
   Halo 1 against Halo 2, on the five pairs.
+- `converted_bipeds_have_autoaim_width`: the cyborg, elite and grunt
+  hold Halo 1's non-zero aim assist width.
 - `biped_shapes_follow_the_collision_size`: the shape rule on the
   retail bipeds of the base with shapes, and `BIPED_BODY` on their 80
   rigid bodies.
