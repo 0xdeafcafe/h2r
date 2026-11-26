@@ -126,13 +126,15 @@ reads only AL: non-zero with view kind 1 re-runs the same index.
   multiplies the viewport aspect by the anamorphic factor at `0x0045dfdc`.
   The subsequent test of byte `+5` at `[0x00510c50]` can change the
   vertical tangent or frustum extents independently of this width factor.
-  The caller may also supply off-centre extents. The exact-mode guest gather
-  uses this retail lens. Single-copy play fits the displayed camera at
-  `VIEW_PROJECTION_TERMS` before the builder derives the matrix, CPU
-  pixel scales and frustum bounds. Portal traversal and the geometry
-  projected through each window use the same horizontal extents. The per-object setup can advance gameplay RNG,
-  so a wider host projection can expose regions for which the guest
-  supplied no object records. See [high resolution](high-resolution.md#determinism).
+  The caller may also supply off-centre extents. A game of several
+  machines gathers through this retail lens. A one-machine game fits the
+  displayed camera at `VIEW_PROJECTION_TERMS` before the builder derives
+  the matrix and CPU pixel scales (the window's aspect) and the frustum
+  bounds (the fixed 12:5 gather lens, or a wider window's own). Portal
+  traversal and the objects listed through each window use the bounds.
+  The per-object setup can reach the simulation's state, so the bounds
+  do not follow the window. See
+  [high resolution](high-resolution.md#widescreen-projection).
 - The projection `0x004b9e14` (built by `0x0002fd90`): world-to-view 4x3
   at `+0`, view-to-world at `+0x34`, four frustum bounds at `+0x68`, pixel
   scales at `+0xb8`/`+0xbc` (`0x004b9ed0` is the LOD pixel scale).

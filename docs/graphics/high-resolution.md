@@ -168,8 +168,25 @@ next view. Lockstep and input tapes do not register the fit, and a game
 of more than one machine (System Link, Live, co-op, or a bot's phantom
 machine; `render_rng::networked`) keeps the retail terms at the hook:
 their peers simulate the same world through retail cameras.
-[Determinism](#determinism) says why the fit leaves the simulation alone. The camera matrix, CPU
-pixel scale and root portal bounds derive from these terms. Every wide view
+[Determinism](#determinism) says why the fit leaves the simulation alone.
+
+The fit writes two lenses (`widen_terms`). The projection's bias and
+scale take the window's aspect: the camera matrix and the CPU pixel scale
+derive from them, so the picture is Hor+ at any window shape. The four
+tangent bounds take the **gather lens**, a fixed 12:5 frustum
+(`GATHER_ASPECT`) about the same centre: the root portal bounds, the
+portal walk and the object planes derive from them. In every window up to
+12:5 (4:3, 16:10, 16:9 and the 21:9 monitors: 2560x1080, 3440x1440,
+3840x1600) the guest therefore lists, sets up and draws through all of
+its layers every cluster and object the picture can show, and the same
+ones whatever the window. A window wider than 12:5 (32:9) takes its own
+aspect for the bounds too (`frustum_factor`); the objects it lists
+outside the gather lens come from the display supplement
+([Determinism](#determinism), "Object setup"). The cost is the guest's
+setup and draws for what the gather lens holds outside a narrower
+window.
+
+Every wide view
 starts with the display supplement's lens; the hook swaps in the guest lens
 once it has fitted the view, and a view it does not fit keeps the
 supplement described under exact mode below (`starting_lens`;
@@ -180,7 +197,10 @@ site is one instruction past the builder call's continuation: a return
 resumes the caller's own code, so a hook on a continuation never runs. Water and fog
 geometry built with this camera, the sky and CPU-projected effects share
 its horizontal lens. The BSP flood clips each open portal to its parent
-window. Object spheres must intersect one of their cluster's window frusta.
+window. An object is listed while its sphere intersects one of its
+cluster's window frusta, at the sides, top and bottom alike (test
+`a_sphere_is_listed_until_it_is_wholly_off_a_wide_pitched_screen` in
+`crates/rewrites/scene-extract/src/visibility/frusta.rs`).
 The observer supplies the vertical field of view.
 
 Exact mode keeps the guest gather and visibility readbacks at the retail
@@ -662,8 +682,15 @@ stays valid:
   work in guest pixels. The view scales the result.
 - **HUD and UI.** Widget bounds are in a 640x480 frame ([ui.md](../formats/ui.md)).
   One rule places every draw: `render_bridge::ui_layout` fits the canvas
-  uniformly — `min(w/640, h/480)` display pixels per guest pixel — in a
-  centred safe area, and anchors the HUD's corner groups on top of it.
+  uniformly — `min(w/640, h/480)` display pixels per guest pixel
+  (`uniform_scale`) — in a centred safe area, and anchors the HUD's corner
+  groups on top of it. The same module answers whether a window has the
+  canvas's shape and how far it stretches it (`is_canvas_shape`,
+  `stretch_ratio`); the projection fit and the glyph pages' density take
+  their aspect from it. At 21:9 and 32:9 the menu is the centred 4:3 box
+  at the window's full height, a pinned HUD group keeps its window corner
+  at that scale, and the crosshair stays on the centre (test
+  `ultrawide_windows_keep_the_uniform_scale_and_the_corners`).
   Centered places HUD corners on the safe area's edges. Pinned translates
   the retail corner-anchored HUD groups to their own viewport edges while
   keeping their physical scale. Centre and world-tracked indicators use
@@ -869,8 +896,8 @@ gameplay RNG bit set, the selector writes the shared seed at `0x001dd6e1`.
 The pose evaluation at `0x000bd7b2` computes the object's shared node
 matrices and clears its dirty bit; marker lookup reads those matrices.
 Changing which objects enter that loop can change a later simulation tick.
-A guest camera fitted to the window keeps the simulation's inputs as a
-retail camera leaves them:
+A guest camera fitted to the window keeps the simulation's inputs the
+same in every window:
 
 - **Random numbers.** Every world frame of a one-machine game renders on
   a private random stream (`crates/extensions/game/src/render_rng.rs`):
@@ -879,22 +906,28 @@ retail camera leaves them:
   it for every session that renders, except lockstep and input tapes, so
   a recording and its replay take it alike whatever window either had.
   Theater's camera enters the same stream; a frame is entered once.
-- **Object setup.** The guest's setup of a main-view object outside the
-  retail lens's gather takes the "not drawn" exit before any of it runs
-  (`outside_retail_lens` in
+- **Object setup.** The guest sets up the objects its frustum lists, and
+  the frustum is the gather lens in every window up to 12:5
+  ([Widescreen projection](#widescreen-projection)): a function of the
+  simulation's state and the view alone. In a wider window the frustum is
+  the window's, and the setup of a main-view object outside the gather
+  lens's set takes the "not drawn" exit before any of it runs
+  (`outside_gather_lens` in
   `crates/rewrites/render-bridge/src/native_scene_lists/setup.rs`): no
   section choice, pose evaluation, animation selection, palette or
-  record. The retail set is the Rust visibility at the view record's
-  retail camera (`scene_step::retail_object`), a function of the
-  simulation's state and the view alone. The display supplement draws
-  those objects from the mounted model on a private overlay
-  (`DisplayVisibility::guest_lens`). Objects inside the set keep their
-  retail section choice: the LOD pixel scale `0x004b9ed0` is the
-  projection's `+0xbc` word, and the fit writes only the horizontal
-  terms. `render.scene` counts the objects left undrawn
-  (`scene_guest_lens_objects_skipped`) and the views whose retail set
-  declined (`scene_guest_lens_retail_declined`); such a view's setups
-  run as the widened gather lists them.
+  record. That set is the Rust visibility at the view record's retail
+  camera widened to the gather lens (`scene_step::gather_lens_object`).
+  The display supplement draws those objects from the mounted model on a
+  private overlay (`DisplayVisibility::guest_lens`): their opaque layer
+  alone, each object on its own, so one still compiling its pipelines or
+  with a part the supplement cannot plan is absent without the others.
+  Every object keeps its retail section choice: the LOD pixel scale
+  `0x004b9ed0` is the projection's `+0xbc` word, and the fit writes only
+  the horizontal terms. `render.scene` counts the objects left undrawn
+  (`scene_guest_lens_objects_skipped`, zero in a window up to 12:5) and
+  the views whose gather set declined
+  (`scene_guest_lens_gather_declined`); such a view's setups run as the
+  window's frustum lists them.
 - **Readbacks.** The reference copy draws the guest's camera, so with the
   fit its pixel counts and write-backs see the widened view: the flare
   reader's visibility byte (`0x207b0`) and the push-buffer callback's
@@ -1081,8 +1114,36 @@ ones about the renderer's structure:
   leaving the square targets alone at first.
 
 
+## Open slices
+
+The wide view's remaining work, in order:
+
+1. **Supplement objects past 12:5.** In a 32:9 window the objects outside
+   the gather lens draw their opaque layer alone
+   (`native_objects_glue/display.rs`): no accumulation layer of their own
+   (a part sampling it reads what is behind the object), no dynamic
+   lights, shadows, decals or transparent parts. Either the film records
+   the gather lens it was made with, so each session gathers through its
+   own window, or the supplement draws layer 1 before layer 3.
+2. **Networked games.** A game of several machines keeps the retail
+   gather and shows the sides through the display supplement
+   (`VisibilityLens::Display`), with the same object limits and with
+   clusters left out whole when a layer has no display draw. The gather
+   lens needs every peer to take it.
+3. **One aspect rule in the device.** `d3d::backend::UiFit::about` and
+   `ScaledBackend::anamorphic_guest_frame` repeat the canvas-shape test
+   and the uniform ratio of `render_bridge::ui_layout`; the rule belongs
+   in a crate both can use.
+4. **Windows narrower than 4:3.** The fit narrows the horizontal lens and
+   keeps the vertical one; a portrait window wants the vertical lens to
+   grow instead.
+
 ## Not verified
 
+- The gather lens in a running game: that a guest frustum wider than its
+  projection draws every layer correctly at 4:3, 16:9 and 21:9, what it
+  costs in frame time, and that a film recorded in one window replays in
+  another ([theater.md](../game/theater.md), "Experiment 3").
 - Cross-machine and film tick-hash parity for the same input across window
   sizes and HUD settings. Exact mode isolates the display-dependent inputs;
   it does not establish cross-driver raster equivalence.
