@@ -33,7 +33,14 @@ impl hooks::Feature for DataSalts {
                 Err(e) => eprintln!("data salts: arena unreadable ({e:?})"),
             }
             Ok(hooks::Flow::Continue)
-        });
+        })
+        // Before every other hook on the new game: they read arrays whose
+        // handles the reseed fixes.
+        .first()
+        // The other first hooks here write the options and zoom tables,
+        // not the arrays; the order is only for the plan.
+        .after_feature(crate::game_variants::FEATURE)
+        .after_feature("h1-scope-zoom");
         // The counters are guest memory.
         b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
@@ -104,7 +111,11 @@ impl hooks::Feature for ObjectPoolClear {
                 Err(e) => eprintln!("object pool: arena unreadable ({e:?})"),
             }
             Ok(hooks::Flow::Continue)
-        });
+        })
+        .first()
+        .after_feature(FEATURE)
+        .after_feature(crate::game_variants::FEATURE)
+        .after_feature("h1-scope-zoom");
         b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
     }
