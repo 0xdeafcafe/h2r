@@ -18,6 +18,8 @@
 //!   ([`objects`]).
 //! - `sim.events`: the last tick's simulation events from `sim-state`
 //!   ([`events`]).
+//! - `sim.ledger`: the guest phases of the game tick the Rust driver still
+//!   calls ([`ledger`]); no guest reads.
 //! - `player.mark` / `player.recall`: a player's position and facing saved
 //!   under a slot, and put back through `sim.state.set`'s teleport.
 //!
@@ -36,6 +38,7 @@ pub use edits::{MapRebind, MapReload, MapReloader, PreparedMapReload, ReservedMa
 pub use edits::active_options;
 pub mod events;
 pub mod hashes;
+pub mod ledger;
 pub mod objects;
 pub mod pause;
 pub mod recording;
@@ -232,6 +235,7 @@ pub fn install(agent: &Agent, bots: Box<dyn Bots>, probe: Option<SessionProbe>) 
     add(method::EVENTS, Access::Read, Sim::events_method);
     add(method::PLAYER_MARK, Access::Act, Sim::player_mark);
     add(method::PLAYER_RECALL, Access::Act, Sim::player_recall);
+    ledger::install(agent);
     pause::install(agent, agent_proto::host_pause::hub());
     quit::install(agent, agent_proto::host_quit::hub());
     shot::install(agent, agent_proto::host_shot::hub());

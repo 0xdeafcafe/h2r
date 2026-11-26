@@ -4605,6 +4605,7 @@ boundary while the game ticks. The wire types are `agent_proto::sim`.
 | `sim.session` | read | the session kind and whether writes are allowed |
 | `sim.objects` | read | `{kinds?, max?}`: every live object in slot order through the simulation's typed views, `{objects, truncated}` |
 | `sim.events` | read | `{kinds?}`: the last tick's simulation events in order (`deleted`, `damage`, `kill`, `actor_killed`), `{events}` |
+| `sim.ledger` | read | `{}`: the guest phases of the game tick the Rust driver still calls, `{tick, ticks, phases: [{entry, name, owner, calls}], guest_total}`; answered on the connection's thread |
 
 **Brains.** For a brain-driven simulated player, `sim.player.add`,
 `sim.player.list` and the `sim` root of `sim.view` include `brain` when
@@ -4647,6 +4648,19 @@ parent), `velocity` (units a second), `sphere {center, radius}`,
 `vitality {body, shield, depleted}`, `nodes` (node matrix count) and, for
 bipeds and vehicles, `unit {player, actor, team, seat, weapons, held}`.
 The wire types are `agent_proto::sim::objects`.
+
+**`sim.ledger`** reads the tick driver's ledger
+(`sim_bridge::tick::LEDGER`, `engine::sim_tick`,
+[sim-rewrite.md](../engine/sim-rewrite.md) "The tick driver"). `phases`
+lists the 29 phases of `game_tick` in retail order with each phase's guest
+`entry` (`0x` and eight hex digits), `name`, `owner` (`guest` while the
+driver calls the lifted original, `rust` once a Rust body runs it) and
+`calls`, the guest calls made since the game started. `guest_total` is the
+number of phases still owned by the guest, the number
+`crates/rewrites/sim-bridge/tick-ledger.toml` bounds per map kind; the goal
+is 0. `ticks` is how many ticks the driver ran and `tick` the game tick
+count after the last of them. It reads no guest memory, so it answers at
+any time, not only at a tick boundary.
 
 **`sim.events`** reads the simulation's event buffer through `sim-state`
 (`sim_state::events`, [sim-rewrite-objects.md](../engine/sim-rewrite-objects.md)

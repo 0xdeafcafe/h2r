@@ -728,6 +728,48 @@ The unit animation state `111650` is a body of the object update
 contract](animation-manager.md) describes the channel writes, callback
 frames and sampling view that the phase 1d arms compare.
 
+## The tick driver
+
+`GAME_TICK` (`0x00137fe0`) runs from Rust: `engine::sim_tick::run`, installed
+by `sim_bridge::tick::TickDriver` as the body of the point with
+`implement_async`. There is no switch. It does what the original does, in the
+original's order: the x87 control word through the CRT (`0x003212d6`); the
+`0x4048`-byte update record on the guest stack below the entry `ESP`, built
+by `0x000682e0` and applied by `0x000683a0`; the 29 phases of
+[the sim review](../reviews/2026-11-20-sim.md) section 2.1
+(`engine::sim_tick::PHASES`); the record's close `0x000684e0`; and the tick
+count at game time `+8`.
+
+Each phase has an owner. A guest phase is a guest call (`GuestCall`, awaited,
+with the record's bytes reserved below the call's stack); a Rust phase is a
+body in the driver. Every phase is still a guest call today. The in-place
+call that avoids the unwind per phase is a later speed-up, not a
+prerequisite.
+
+The hooks on `GAME_TICK` run as before: the driver takes the original's place
+in the chain, so each `observe_before`, `before`, `after` and
+`observe_after` hook (lockstep's hash, telemetry, the agent's queued calls,
+actor-net, cheats, skulls, co-op, firefight) fires at the same point around
+it, and a `before` that returns skips the body. `existing_tick_hooks_still_fire`
+(`sim-bridge/src/tick.rs`) pins the order in the plan text.
+
+**The ledger.** `sim_bridge::tick::LEDGER` counts each guest call per phase
+(`engine::sim_tick::Ledger`). `sim.ledger`
+([the agent API](../runtime/agent-api.md)) reads it. The ratchet is
+`crates/rewrites/sim-bridge/tick-ledger.toml`: the number of guest phases per
+map kind, which only falls. `ledger_ratchet_does_not_grow` fails when the
+phase table owns more guest phases than the file allows, and a slice that
+moves a phase to Rust lowers the number in the same commit. The goal is 0:
+only our own simulation.
+
+**Proof.** `tests/sim_tick_differential.rs` (engine, `differential`) runs the
+lifted body on the IR interpreter: `phases_run_in_retail_order` compares its
+calls with `PHASES` (the odd entries `0x00165dc1` and `0x001917b2` are the
+targets the body reaches), and `tick_matches_lifted` compares the
+envelope's registers and stack arguments and the game-time record. The
+record's own run decision is not recovered (`RUN_FLAG`): the driver runs the
+phases on every tick.
+
 ## 6. Threading inside a tick
 
 - One host thread still runs every guest thread. Rust parallelism happens

@@ -4,7 +4,8 @@
 //!
 //! - The wire types of `sim.player.*`, `sim.state.set`, `sim.view`,
 //!   `sim.expect` and `sim.session` (here), `sim.objects`
-//!   ([`objects`]) and `sim.events` ([`events`]).
+//!   ([`objects`]), `sim.events` ([`events`]) and `sim.ledger`
+//!   ([`ledger`]).
 //! - `sim.view`: the game as one JSON document ([`ROOTS`]), which
 //!   `h2 agent run`'s `expect` lines and `sim.expect` check in the same
 //!   [`crate::expect`] format.
@@ -26,6 +27,7 @@ mod edits;
 pub use edits::*;
 pub mod events;
 pub mod hashes;
+pub mod ledger;
 pub mod menu;
 pub mod objects;
 
@@ -70,6 +72,9 @@ pub mod method {
     pub const OBJECTS: &str = "sim.objects";
     /// The last tick's simulation events ([`super::events`]).
     pub const EVENTS: &str = "sim.events";
+    /// The guest phases the Rust tick driver still calls
+    /// ([`super::ledger`]).
+    pub const LEDGER: &str = "sim.ledger";
     /// Save a player's position and facing under a slot
     /// ([`super::MarkParams`], [`super::Mark`]).
     pub const PLAYER_MARK: &str = "player.mark";
@@ -116,6 +121,7 @@ pub mod method {
         RECORDING_PLAY,
         OBJECTS,
         EVENTS,
+        LEDGER,
         PLAYER_MARK,
         PLAYER_RECALL,
         OBJECT_SET,

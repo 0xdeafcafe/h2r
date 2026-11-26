@@ -13,3 +13,4 @@ pub mod sim_physics;
 pub mod sim_seats;
 pub mod sim_status_poll;
 pub mod sim_observer;
+pub mod tick;
