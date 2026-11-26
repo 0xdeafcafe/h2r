@@ -76,6 +76,10 @@ pub const SWAPS: &[(&[u8; 4], &[&str], Swap)] = &[
     // Halo 2's campaign has the fuel rod gun (multiplayer has none, so
     // there it is the rocket launcher).
     (b"weap", &["plasma cannon"], Swap::Retail("flak_cannon")),
+    // The Halo 1 hunter's fuel rod cannon is the hunter's own arm: Halo 2
+    // has no hunter weapon to stand in, so it stays Halo 1's. Before the
+    // plain fuel rod row, which would otherwise take it.
+    (b"weap", &["hunter"], Swap::Keep("the hunter's own fuel rod cannon; Halo 2 has none")),
     (b"weap", &["fuel rod"], Swap::Retail("flak_cannon")),
     // The user's multiplayer rule: the SMG by default (both automatic
     // bullet hoses); a campaign has no game variant to make it precise.
@@ -265,19 +269,30 @@ impl Aliases {
     }
 }
 
-/// The retail tag for the Halo 1 object `tag` in `set`: `Ok(Some)` to place
-/// it, `Ok(None)` to convert Halo 1's own ([`Swap::Keep`]), `Err(why)` for
-/// one the swap leaves out ([`Swap::Drop`]) or whose retail counterpart is
-/// not in `set` (neither the base nor a donor had it): the caller names
-/// the tag and map, never placing Halo 1's in its stead.
-pub fn stand_in(set: &TagSet, tag: &h1map::Tag) -> std::result::Result<Option<TagId>, String> {
+/// What stands in for a Halo 1 object in the Halo 2-assets variant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StandIn {
+    /// Place this retail tag.
+    Retail(TagId),
+    /// Convert Halo 1's own ([`Swap::Keep`]).
+    Own,
+    /// Left out, for this reason ([`Swap::Drop`]).
+    Dropped(String),
+}
+
+/// What stands in for the Halo 1 object `tag` in `set`. `Err(why)` is a
+/// swap whose retail counterpart is not in `set` (neither the base nor a
+/// donor had it): the caller names the tag and map, never placing Halo 1's
+/// in its stead. A dropped object is [`StandIn::Dropped`], not an error:
+/// placements skip it with a report note, and an AI weapon refuses it.
+pub fn stand_in(set: &TagSet, tag: &h1map::Tag) -> std::result::Result<StandIn, String> {
     let group = tag.group.0.to_be_bytes();
     match swap_for(&group, &tag.name) {
         Swap::Retail(last) => find(set, FourCC(group), last)
-            .map(Some)
+            .map(StandIn::Retail)
             .ok_or_else(|| format!("its Halo 2 counterpart {last} is not in the map or a donor")),
-        Swap::Keep(_) => Ok(None),
-        Swap::Drop(why) => Err(why.to_owned()),
+        Swap::Keep(_) => Ok(StandIn::Own),
+        Swap::Drop(why) => Ok(StandIn::Dropped(why.to_owned())),
     }
 }
 
@@ -317,6 +332,13 @@ mod tests {
             swap_for(b"vehi", "vehicles\\banshee\\banshee_oldplayback"),
             Swap::Keep(PLAYBACK)
         );
+        // The hunter's fuel rod cannon stays Halo 1's; a plain fuel rod is
+        // the retail flak cannon.
+        assert!(matches!(
+            w("weapons\\hunter\\fuel rod cannon"),
+            Swap::Keep(_)
+        ));
+        assert_eq!(w("weapons\\fuel rod\\fuel rod"), Swap::Retail("flak_cannon"));
         assert!(matches!(
             swap_for(b"eqip", "powerups\\health pack"),
             Swap::Keep(_)
