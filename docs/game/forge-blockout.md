@@ -1,6 +1,6 @@
 # Forge block-out: pieces, the natural set and the dev textures
 
-Status: Design. Nothing on this page is built; it is slice F8 of [forge-design.md](forge-design.md), split into slices BO1 to BO12 below.
+Status: Design. Slice BO2 (the dev textures: `crates/formats/dev-texture`, the rasters, the font and the label layout) is written, not yet run; nothing else on this page is built. The page is slice F8 of [forge-design.md](forge-design.md), split into slices BO1 to BO12 below.
 Code: `crates/formats/forge-shapes` (the definitions and generators), `crates/formats/dev-texture` (the dev textures), `crates/tools/blockout-kit` (a definition as tags), `crates/tools/forge-build/src/blockout.rs` (materialising), `crates/extensions/forge/src/piece.rs` (the session). Tests: named per slice under "Slices".
 Switch: none. Two settings of the profile's store, `forge.blockout.grid` and `forge.blockout.dev_view` ("In the monitor").
 
@@ -294,8 +294,10 @@ BLOCK
 **The tiles.** One 512 by 512 tile a family, covering 256 units (two
 texels a unit): a checker of 32-unit squares in two tones of the
 family's colour, a faint line every 16 units, a stronger one every 64,
-and a heavy one on the tile's edge every 256. A tile wraps without a
-seam. With origin-aligned coordinates the lines are the block-out grid
+and a heavy one on the tile's edge every 256. A line is one unit wide
+(two texels, more for the heavier ones) and centred on its coordinate,
+darker the heavier it is, so a tile's first and last rows and columns
+are equal and it wraps without a seam (`dev_texture::tile`). With origin-aligned coordinates the lines are the block-out grid
 itself: a 16-unit step lands on a line.
 
 | Family | Colour | Used for |
@@ -307,20 +309,30 @@ itself: a 16-unit step lands on a line.
 | Nodraw | yellow | faces left out of the render model, in the monitor's overlay and Studio's renders |
 | Clip | magenta | barriers, in the same two places |
 
-The colours are numbers in `dev_texture::family`; every pair of
-families differs by more than a set contrast and every family's two
-tones by less, so a role reads at a glance and the grid stays quiet.
+The colours are numbers in `dev_texture::family`; the squared RGB
+distance between the mid colours of any two families is over
+`MIN_FAMILY_CONTRAST` and between one family's two tones under
+`MAX_TONE_SPREAD`, so a role reads at a glance and the grid stays
+quiet.
 
 **The label** is geometry, not pixels, so it is exact at any size and
 needs one small texture for every piece. The font is a 5 by 7 face of
-ours (capitals, digits, the point, the times sign, a blank) in a 128 by
-128 atlas of 16-texel cells. On each rectangular face
+ours (capitals, digits, the point, the times sign, a blank; the shapes
+are a table in `dev_texture::font`, drawn for this repository, and no
+font file or licence is involved) in a 128 by 128 atlas of 16-texel
+cells. Each cell is a dark plate with the glyph on it at twice its size,
+so a row of cells reads as one plate. On each rectangular face
 `dev_texture::label::layout(shape, width, height)` gives a plate of 3
 rows of 16 cells, centred, upright (up on a wall, along x on a floor):
 the shape's name, the face's size in units, and the same in metres to
-two places. A cell is `h` units tall, `h` the largest of 2, 4, 8 and 16
-with the plate inside the face and a margin; a face too small for
-`h` = 2 has no plate. The render mesh cuts the plate out of the face as
+two places (a unit is 3.048 centimetres, rounded half up). A cell is `h`
+units square, `h` the largest of 16, 8, 4 and 2 with the plate inside
+the face and a margin of `h / 2` all round, so the plate needs `17h` by
+`4h`; a face too small for `h` = 2, or whose text is over 16 cells, has
+no plate. Coordinates are the face's own (x along, y up, from its
+lower-left corner); the caller maps them. `label::read_label` reads a
+plate back from the atlas's texels, which the tests compare with the
+text the layout gives. The render mesh cuts the plate out of the face as
 a grid of cell quads, each mapped to its glyph's cell in the atlas, so
 nothing is coplanar with the face behind it and the cell count of a
 face does not change with its size. A face that is not a rectangle (a

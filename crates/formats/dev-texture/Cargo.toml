@@ -1,0 +1,16 @@
+[package]
+name = "dev-texture"
+description = "Forge block-out dev textures: code-drawn family grid tiles, a 5 by 7 font atlas and the face label layout"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[package.metadata.h2]
+status = "in progress"
+doc = ["game/forge-blockout.md"]
+
+[dev-dependencies]
+sha2.workspace = true
+
+[lints]
+workspace = true
