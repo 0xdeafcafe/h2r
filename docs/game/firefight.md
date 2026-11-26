@@ -586,7 +586,7 @@ that id, and each machine loads its own build.
 | Sectors in each `sbsp` | `pathfind::generate`, then `pathfind::trim` to the sectors the AI can use ("Sectors the AI can use", below) | the generator the bots' mesh starts from, which has run on every retail multiplayer map (**Code**, `crates/live/bots/src/cache.rs`); the engine has not yet loaded its output (**S**) |
 | Drop zones | the bots' nav mesh (`bots::autonav`): sectors near the map's edge, off the players' spawn clusters, with a path to the middle | 6 to 12 a map; written as zones and areas |
 | Zones, areas, firing positions | sampled from the sectors: cover is a position with a wall toward the middle | the block writers of `h1campaign::ai` (`ScenarioBlocks`) |
-| Squad slots | 16 empty squads the director fills (class, count and zone are set at place time), then the class record: one empty squad `ff_class_<name>` per palette row | the same writers |
+| Squad slots | 16 empty squads the director fills (class, count and zone are set at place time), then the class record: one empty squad `ff_class_<name>` per palette row, on its class's faction's team | the same writers |
 | Characters, stage 1 | `char` tags we author from a tuning table of ours, on bipeds and weapons the multiplayer map already has | Elites only; no tag is copied from another map |
 | Characters, stage 2 | `firefight_kit::Classes` (`src/transplant.rs`): `tags::schema::transplant` of a donor's `char` tag and its closure, from the player's own campaign maps, with the sound gestalt merge (`h1_assets::sounds::transplant_from`); the retail class table (`src/retail.rs`) names the donors | each class costs tag headroom; the builder refuses a build that does not fit, naming every class's cost, or cuts classes from the end of the list |
 
@@ -635,7 +635,41 @@ name record nothing, and a map with no record has no classes: the Elite is
 not assumed. Definitions are admitted against the record. A definition
 whose scoring table, which every wave squad's class must have an entry in,
 names a class the map lacks is refused with that class's name
-(`Refusal::UnknownClass`), so a wave never falls back to the Elite.
+(`Refusal::UnknownClass`), so a wave never falls back to the Elite. A
+caller that knows which classes the build cut (`Package::cut`) passes them
+as `Limits::with_cut`, and the refusal then says the kit cut the class
+(`Refusal::CutClass`) rather than that it never had it.
+
+**Factions.** A class has a faction (`firefight::Faction`: Covenant, Flood,
+Human; `ClassSpec::faction`). The kit writes it as the team of the class's
+record squad: Covenant 3, Flood 4, humans 2, the engine's own numbers
+(`firefight::teams`, [ai.md](../halo1/ai.md)), and the Elite is Covenant.
+`read_kit` reads it back into `KitLayout::factions` by palette row; a
+record on any other team is no class, so the map provides none and a set
+naming it is refused by name. `place_squad` sets the placed squad's team
+from its class's faction (`KitLayout::placement_team`): a Covenant class
+takes the team the host picked for the actors no player holds (the slot
+squads' team, 3), Flood and humans their own. A palette row with no class
+record is an error. Every faction is on its own team, so under Slayer's
+"teams differ" test each is hostile to the others and to the players with
+no table of ours (**V**: that actors choose targets by that test and not
+the campaign allegiance table; the coordinator's run R5 settles it). Enemy
+humans are legal in a custom set; allies are a later slice. The kit version
+(`KIT_VERSION`) is 5, the first whose record carries the faction.
+
+The Flood and human classes are named in `retail::FACTION_CLASSES`, with
+their `char` tags and donor maps as constants in `retail::donors`, every one
+**V** until the census step (P1) reads them off the disc: `flood_combat_elite`
+(**V**: tag-schema.md says the transplant refuses its tree),
+`flood_combat_human`, `flood_carrier`, `marine`. `retail::choose_factions`
+takes each class's first donor on the disc and refuses a class none of whose
+donors is there by its name and donors; nothing stands in for a missing
+class. `retail::KEEP_ORDER` is the whole keep order, last cut first: the
+Elite, `flood_combat_human`, `marine`, the pod, the Phantom and the Pelican,
+`flood_combat_elite`, `flood_carrier`, then the Covenant table; the vehicles
+are not copied yet, and each is cut before the first Flood class. A class
+may name its faction on the command line: `--class NAME@flood=DONOR:CHAR_PATH`
+(`covenant` when omitted).
 
 `h2 firefight kit` builds the list from the player's own disc
 (`crates/apps/h2-tools/src/firefight_cmd.rs`). Each class is `--class
@@ -1153,7 +1187,7 @@ boundary. Every address below is **E** unless the row says otherwise.
 | Lives and respawn | `PLAYER_OUT_OF_LIVES` (`0x15db30`), `PLAYER_RESPAWN_READY` (`0x15dd40`), `PLAYER_ENTITY_DIRTY` (`0xa7840`), `PLAYER_SPAWN` (`0x14f2e0`) | `engine_holds_respawns`, `respawn`; `Lives` writes nothing | traced; run R3 | No routine sets lives: the engine writes player `+0x1ac` itself. Round start sets it to the variant's lives setting (game globals `+0x1b8`, 0 meaning unlimited, `0x157d03`), and a death takes one on the authority (`0x15d01e`, gated by `GAME_ENGINE_AUTHORITATIVE`), then marks the player entity's bit `0x20` for clients (`0x15d03d`; a client applies it at `0x24e257`). The players update spawns a waiting player through `PLAYER_SPAWN` only when `PLAYER_RESPAWN_READY` says so (`0x14d430`), which refuses a player `PLAYER_OUT_OF_LIVES` reports: a positive lives setting, no unit and no lives left. So the hold is the variant's lives setting at 1, and `respawn` gives one life and marks bit `0x20`; the engine respawns the player when its respawn delay runs out and takes the life at the next death. The pool stays in the mode blob, so `Lives` changes nothing in the game. A team whose players are all out of lives leaves the playing-teams mask (`0x1925c6`); whether that ends the Slayer round before the director's `Finish` is part of R3 |
 | End the game | `GAME_END` (`0x1389c0`, no arguments, `ret`) | `end_game` | traced; run R4 | The routine latches game globals `+0x1128` once, sets the end delay at `+0x112c` from the tick rate and clears `+0x1129`; it checks nothing else. The engine's own round-over path ends a game in three steps (`0x15b5f9` to `0x15b624`): engine state `+0xc04` to 2, `GAME_END` unless latched, then the engine's changed flag (`+0`, bit `0x20`), skipping the first two while game globals `+0x0c` is 4. A client ends when the engine globals entity carries bit 4 (`0x24e52a`). `end_game` takes the same three steps and refuses in mode 4; whether a client ends with it is R4 |
 | Line of sight from a player to a point | `AI_LINE_OF_SIGHT` (`0x29dd50`) | `line_of_sight`, from the unit's origin | traced; the eye point is open | The routine takes the two points in ESI and EDI and two objects to ignore in EDX and ECX, and runs the collision query `0x1697c0` with flags `0x1808c2d`: structure, instanced geometry and objects, the set the actor code passes at `0x1c1ab1`, `0x1f970e` and `0x292747` ([sim-rewrite-collision.md](../engine/sim-rewrite-collision.md) 5.4 for the bits). It is true when nothing is hit, or the hit is within about a third of a world unit of the target (`0x29de01`). The engine's own sight cone, `0xcc2b0` behind `objects_can_see_flag` (113), tests only the angle from a marker of the viewer it looks up through `0xb8d30` (**S**: the head). `sees` should start from the same marker; that lookup is not traced, so the sight pass starts from the unit's origin and ignores the unit itself |
-| The kit on the loaded map | scenario blocks at `+0x160` squads, `+0x168` zones, `+0x178` character palette, `+0x240` orders | `read_kit`, `KitLayout::kit` | built | Squads named `ff_slot_00` to `ff_slot_15` give the slots and the team (`+0x24`); zones named `ff_drop_NN` give each zone's point, its first area's mean (`+0x24` of area 0), and its firing positions; squads named `ff_class_<name>` give each class's palette row (`+0x36`), kept only while the row is in the palette's row count. The offsets are the kit builder's (`h1campaign::ai::h2::layout`), and the engine reads them at the addresses cited above. The class names are the kit's, not a table in the game. The `firefight_kit_v1` string ID is not checked: the game has no reader for the loaded map's string IDs |
+| The kit on the loaded map | scenario blocks at `+0x160` squads, `+0x168` zones, `+0x178` character palette, `+0x240` orders | `read_kit`, `KitLayout::kit` | built | Squads named `ff_slot_00` to `ff_slot_15` give the slots and the team (`+0x24`); zones named `ff_drop_NN` give each zone's point, its first area's mean (`+0x24` of area 0), and its firing positions; squads named `ff_class_<name>` give each class's palette row (`+0x36`) and faction (the team, `+0x24`: 2 human, 3 Covenant, 4 Flood), kept only while the row is in the palette's row count and the team is a faction's. The offsets are the kit builder's (`h1campaign::ai::h2::layout`), and the engine reads them at the addresses cited above. The class names are the kit's, not a table in the game. The `firefight_kit_vN` string ID is not checked: the game has no reader for the loaded map's string IDs |
 
 #### What a run settles
 

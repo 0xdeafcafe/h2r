@@ -8,6 +8,7 @@
 //! call goes to the engine's own routine, named in `points.rs`; nothing
 //! here writes an actor record.
 
+use ::firefight::Faction;
 use ::firefight::director::SQUAD_SLOTS;
 use engine::entry::{Cx, EntryError, GuestCall, Regs};
 use engine::{GuestMemory, MemFault, points};
@@ -137,6 +138,11 @@ pub struct KitLayout {
     /// `ff_class_` squads in scenario order. A row outside the palette
     /// is not a class; a name recorded twice keeps its first row.
     pub classes: Vec<(String, u16)>,
+    /// Each recorded class's faction by its palette row: the team the kit
+    /// wrote on its `ff_class_` squad, as [`Faction::team`]. A class
+    /// record on any other team is no class (its faction is not known, and
+    /// none is assumed).
+    pub factions: std::collections::BTreeMap<u16, Faction>,
     /// The team of the first slot's squad.
     pub team: u8,
     /// Each base's hunt order, `ff_hunt_NN`, by base: the scenario
@@ -152,6 +158,21 @@ impl KitLayout {
             bases: self.bases.iter().map(|z| z.point).collect(),
             classes: self.classes.iter().cloned().collect(),
             team: self.team,
+        }
+    }
+}
+
+impl KitLayout {
+    /// The team a squad of palette row `character` is placed on, when the
+    /// host picked `host_team` for the actors no player holds: a Covenant
+    /// class takes the host's pick (the kit's slot team, 3 unless a player
+    /// holds it), every other faction its own team ([`Faction::team`]). A
+    /// row the kit recorded no class for is an error, not the host's team.
+    pub fn placement_team(&self, character: u16, host_team: u8) -> anyhow::Result<u8> {
+        match self.factions.get(&character) {
+            Some(Faction::Covenant) => Ok(host_team),
+            Some(faction) => Ok(faction.team()),
+            None => anyhow::bail!("palette row {character} has no class record in the kit"),
         }
     }
 }
@@ -199,15 +220,20 @@ pub fn read_kit(m: &dyn GuestMemory) -> Result<Option<KitLayout>, MemFault> {
     let mut squads = [None; SQUAD_SLOTS];
     let mut team = None;
     let mut classes: Vec<(String, u16)> = Vec::new();
+    let mut factions = std::collections::BTreeMap::new();
     for (index, at) in block(m, scnr, scenario::SQUADS)?.into_iter().enumerate() {
         let squad_name = name(m, at)?;
         if let Some(class) = squad_name.strip_prefix(CLASS_PREFIX) {
             let row = m.u16(at + scenario::SQUAD_CHARACTER)?;
-            if !class.is_empty()
+            // The record squad's team is the class's faction's team.
+            let faction = Faction::from_team(m.u16(at + scenario::SQUAD_TEAM)? as u8);
+            if let Some(faction) = faction
+                && !class.is_empty()
                 && row < characters
                 && !classes.iter().any(|(known, _)| known == class)
             {
                 classes.push((class.to_string(), row));
+                factions.insert(row, faction);
             }
             continue;
         }
@@ -277,6 +303,7 @@ pub fn read_kit(m: &dyn GuestMemory) -> Result<Option<KitLayout>, MemFault> {
         bases,
         characters,
         classes,
+        factions,
         team,
         hunt_orders,
     }))
@@ -300,11 +327,13 @@ fn squad_index(kit: &KitLayout, slot: u8) -> anyhow::Result<u16> {
 
 /// Place a squad: set the slot squad's character, zone and starts in the
 /// scenario, place `count` actors through the engine's squad placement as
-/// the counted `ai_place` does, then set their team. The scenario writes
+/// the counted `ai_place` does, then set their team: the class's faction's
+/// ([`KitLayout::placement_team`]). The scenario writes
 /// are the same on every machine that applies the entry. The placement's
 /// weapon tier is not applied: the stage-one kit authors one weapon.
 pub async fn place_squad(cx: &Cx, kit: &KitLayout, p: Placement) -> anyhow::Result<()> {
     let squad = squad_index(kit, p.slot)?;
+    let team = kit.placement_team(p.character, p.team)?;
     let zone = kit
         .zones
         .get(usize::from(p.zone))
@@ -357,7 +386,7 @@ pub async fn place_squad(cx: &Cx, kit: &KitLayout, p: Placement) -> anyhow::Resu
         cx,
         GuestCall::new(points::AI_SET_TEAM.base)
             .eax(u32::from(squad))
-            .ebx(u32::from(p.team)),
+            .ebx(u32::from(team)),
     )
     .await?;
     Ok(())

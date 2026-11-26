@@ -224,7 +224,8 @@ pub fn donor_schema() -> tags::schema::Schema {
     }
 }
 
-/// The three classes of [`donor`], in keep order.
+/// The three classes of [`donor`], in keep order: the Jackal stands in for a
+/// Flood class, the others are Covenant.
 pub fn donor_classes() -> Vec<crate::ClassSpec> {
     ["grunt", "jackal", "hunter"]
         .into_iter()
@@ -232,6 +233,11 @@ pub fn donor_classes() -> Vec<crate::ClassSpec> {
             name: name.into(),
             donor: 0,
             path: format!(r"donor\characters\{name}"),
+            faction: if name == "jackal" {
+                firefight::Faction::Flood
+            } else {
+                firefight::Faction::Covenant
+            },
         })
         .collect()
 }

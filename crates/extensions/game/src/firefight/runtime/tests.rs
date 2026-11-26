@@ -77,6 +77,8 @@ fn guest(kit: bool, world: u32) -> (FakeGuest, u32) {
         // The kit's class record: the Elite on palette row 0.
         named(&mut m, SQUADS + 0x74, "ff_class_elite");
         m.put_u16(SQUADS + 0x74 + 0x36, 0);
+        // Its team is its faction's: Covenant, 3.
+        m.put_u16(SQUADS + 0x74 + 0x24, 3);
         m.put_u16(SQUADS + 0x24, 3);
         pair(&mut m, SQUADS + 0x48, 2, STARTS);
         m.map(STARTS, 2 * 0x64);

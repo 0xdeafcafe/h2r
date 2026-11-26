@@ -25,7 +25,7 @@ pub use validate::{HOST_ACTOR_CAPS, Limits, validate};
 /// The Firefight map kit's version (`firefight_kit` writes it into the map
 /// it builds, so it is part of the package's id). Session data names it
 /// (`live_proto::session::Firefight::kit`) so every machine plays one kit.
-pub const KIT_VERSION: u32 = 4;
+pub const KIT_VERSION: u32 = 5;
 
 /// The roles a kit gives a drop zone, in the zone's flags
 /// (`scnr` zone `+0x20`, above the engine's own low bits). The kit writes
@@ -71,6 +71,8 @@ pub enum Refusal {
     },
     #[error("the kit does not provide class {0}")]
     UnknownClass(String),
+    #[error("the kit cut class {0} to fit the map's tag headroom")]
+    CutClass(String),
     #[error("round {round}, wave {wave} needs {actors} actors for {players} players (cap {cap})")]
     WaveOverCap {
         /// One-based round number.

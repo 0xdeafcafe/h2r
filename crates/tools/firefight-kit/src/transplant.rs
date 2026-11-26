@@ -21,6 +21,7 @@ use h1_assets::sounds::{
     self,
     gestalt::{self, SoundGestalt},
 };
+use firefight::Faction;
 use map::{
     FourCC, Map, TagId, TagQuery,
     build::{TagPayload, TagSet},
@@ -52,6 +53,10 @@ pub struct ClassSpec {
     pub donor: usize,
     /// The `char` tag's name in the donor.
     pub path: String,
+    /// Who the class fights for: the kit writes it with the palette row
+    /// (`ai::class_squads`) and the game places the class's squads on that
+    /// faction's team.
+    pub faction: Faction,
 }
 
 /// The classes a kit build brings in.
@@ -88,6 +93,8 @@ pub struct ClassCost {
 pub(crate) struct Added {
     /// The `char` tags, in palette order.
     pub ids: Vec<TagId>,
+    /// Each class's faction, in palette order.
+    pub factions: Vec<Faction>,
     pub costs: Vec<ClassCost>,
 }
 
@@ -206,6 +213,7 @@ pub(crate) fn add(set: &mut TagSet, all: &Classes<'_>, keep: usize) -> Result<Ad
             }
         }
         out.ids.push(tree.ids[&root]);
+        out.factions.push(spec.faction);
         out.costs.push(ClassCost {
             name: spec.name.clone(),
             tags: tree.added.len(),

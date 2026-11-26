@@ -29,6 +29,7 @@ mod transplant;
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;
 
+pub use firefight::Faction;
 pub use bases::{Bases, Config, Source, Team};
 pub use retail::RetailClass;
 pub use ground::{Ground, Labels, Problem, Receipt, Recipe};
@@ -417,11 +418,11 @@ fn assemble(
         Some(c) => transplant::add(&mut set, c, keep)?,
         None => transplant::Added::default(),
     };
-    let named: Vec<(&str, TagId)> = added
+    let named: Vec<(&str, TagId, firefight::Faction)> = added
         .costs
         .iter()
-        .map(|c| c.name.as_str())
-        .zip(added.ids.iter().copied())
+        .zip(added.ids.iter().zip(&added.factions))
+        .map(|(c, (id, faction))| (c.name.as_str(), *id, *faction))
         .collect();
     let ai = ai::prepare(
         &mut map,
