@@ -152,6 +152,17 @@ pub(super) fn apply(m: &mut dyn GuestMemory, update: u32, inputs: &[SeatInput]) 
     Ok(())
 }
 
+/// The film's facing for each local user, written to its look state on
+/// the update ([`crate::coop_look::follow_film`]), when the picture is a
+/// first-person view. Every other camera leaves the look alone.
+pub(super) fn apply_look(m: &mut dyn GuestMemory, update: u32, first_person: bool) -> usize {
+    if first_person {
+        crate::coop_look::follow_film(m, update)
+    } else {
+        0
+    }
+}
+
 /// A game's first update: take the start the activation left waiting, with
 /// the random words and the arena hash as they are at entry to this update,
 /// and hold it until the tick's observer has described the game
@@ -249,6 +260,19 @@ pub(super) fn install(b: &mut hooks::Builder, session: Arc<Session>) {
 mod tests {
     use super::*;
     use engine::FlatMemory;
+
+    #[test]
+    fn a_camera_that_is_not_first_person_leaves_the_look_alone() {
+        let mut mem = FlatMemory::new(0x8000, 0x4048);
+        let update = mem.base;
+        mem.bytes.fill(0x3c);
+        let before = mem.bytes.clone();
+        assert_eq!(apply_look(&mut mem, update, false), 0);
+        assert_eq!(mem.bytes, before);
+        // First person with no local subject in this memory writes nothing.
+        assert_eq!(apply_look(&mut mem, update, true), 0);
+        assert_eq!(mem.bytes, before);
+    }
 
     #[test]
     fn gathered_actions_follow_sparse_player_slots_and_replay_ignores_pad_only_rows() {

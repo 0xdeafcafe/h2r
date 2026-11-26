@@ -71,6 +71,15 @@ impl FilmCamera {
         }
     }
 
+    /// Whether the picture is a local seat's own first-person view, which
+    /// reads the look state; free, follow and orbit replace the view.
+    pub(super) fn reads_look(&self) -> bool {
+        matches!(
+            self.lock().mode(),
+            CameraMode::Default | CameraMode::FirstPerson
+        )
+    }
+
     pub(super) fn restore(&self, presentation: &Presentation) {
         let mut v = self.lock();
         v.rig = presentation.camera.clone();

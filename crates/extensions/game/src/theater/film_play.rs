@@ -196,9 +196,11 @@ pub(super) fn ports(options: &[u8]) -> u32 {
 /// An update entered `SIM_UPDATE_APPLY`: the film's actions and body for
 /// its film tick are written over the engine's, the film's head and stamp
 /// untouched. The game's first update starts the film ([`Play::begin`]); a
-/// failure there leaves the update as the engine built it. Each update the
+/// failure there leaves the update as the engine built it. A first-person
+/// camera has each local user's look set to the film's facing. Each update the
 /// game tick applies takes the next film tick.
 pub(super) fn update(state: &mut State, g: &mut Guest, update: u32) -> Result<()> {
+    let first_person = matches!(&state.mode, super::Mode::Replay(_, o) if o.camera.reads_look());
     let play = state.play.as_mut().context("no film is being played")?;
     if play.awaiting {
         return Ok(());
@@ -218,7 +220,9 @@ pub(super) fn update(state: &mut State, g: &mut Guest, update: u32) -> Result<()
     let row = play.actions.row(tick)?;
     play.applied += 1;
     super::actions::apply(g, update, &row.inputs)?;
-    super::actions::apply_body(g, update, &row.body)
+    super::actions::apply_body(g, update, &row.body)?;
+    super::actions::apply_look(g, update, first_person);
+    Ok(())
 }
 
 /// A game tick ended (`Session::checkpoint`, with `state.tick` already

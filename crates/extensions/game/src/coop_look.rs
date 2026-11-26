@@ -31,6 +31,48 @@ const USERS: usize = 4;
 const HISTORY: usize = 256;
 const ACTION_BYTES: u32 = 0x5c;
 
+/// A film's update: write each local user's recorded facing to its
+/// player-control look (`PC_YAW`, `PC_PITCH`), so a first-person view
+/// looks where the recording looked (docs/game/theater-design.md,
+/// "What the guest is given while a film plays"). `update` is the
+/// 0x4048-byte record, its action mask at `+8` and the actions from `+0x0c`
+/// by player datum index. A user with no subject (dead, in a vehicle, a
+/// cinematic, a director that is not first person), no action in the mask
+/// or an angle out of range keeps its look. Returns the users written.
+pub fn follow_film(m: &mut dyn GuestMemory, update: u32) -> usize {
+    let Some(mask) = update.checked_add(8).and_then(|at| m.u32(at).ok()) else {
+        return 0;
+    };
+    let mut written = 0;
+    for user in 0..USERS {
+        let Ok(subject) = view::subject(&*m, user) else {
+            continue;
+        };
+        let player = u32::from(subject.player.index());
+        if player >= 16 || mask & (1 << player) == 0 {
+            continue;
+        }
+        let Some(aim) = update
+            .checked_add(0x0c + player * ACTION_BYTES + 4)
+            .and_then(|at| view::angles(&*m, at))
+        else {
+            continue;
+        };
+        let Some(control) = view::control(&*m, user) else {
+            continue;
+        };
+        let yaw = aim.yaw.rem_euclid(std::f32::consts::TAU);
+        if m.write(control + crate::touch_glue::PC_YAW, &yaw.to_le_bytes())
+            .is_ok()
+            && m.write(control + crate::touch_glue::PC_PITCH, &aim.pitch.to_le_bytes())
+                .is_ok()
+        {
+            written += 1;
+        }
+    }
+    written
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct User {
     subject: Option<Subject>,

@@ -527,3 +527,47 @@ fn a_look_prediction_render_hook_runs_on_the_render_thread() {
     assert!(chain.hooks().any(|h| h.feature == "coop-look-prediction"));
     assert!(chain.render_thread().is_ok());
 }
+
+/// A film's update writes the action's facing to the user's look.
+#[test]
+fn a_film_update_writes_the_recorded_facing_to_the_look_state() {
+    let mut m = fixture();
+    let action = UPDATE + 12 + 3 * ACTION_BYTES + 4;
+    m.put_f32(PC + crate::touch_glue::PC_YAW, 1.0)
+        .put_f32(PC + crate::touch_glue::PC_PITCH, 0.5)
+        .put_u32(UPDATE + 8, 1 << 3);
+    for (yaw, pitch) in [(0.25, -0.1), (6.2, 0.3), (3.0, 0.0)] {
+        m.put_f32(action, yaw).put_f32(action + 4, pitch);
+        assert_eq!(follow_film(&mut m, UPDATE), 1);
+        assert_eq!(m.f32(PC + crate::touch_glue::PC_YAW).unwrap(), yaw);
+        assert_eq!(m.f32(PC + crate::touch_glue::PC_PITCH).unwrap(), pitch);
+    }
+}
+
+#[test]
+fn a_film_update_leaves_look_alone_without_an_action_or_a_first_person_subject() {
+    let mut m = fixture();
+    let action = UPDATE + 12 + 3 * ACTION_BYTES + 4;
+    m.put_f32(PC + crate::touch_glue::PC_YAW, 1.0)
+        .put_f32(PC + crate::touch_glue::PC_PITCH, 0.5)
+        .put_f32(action, 2.0)
+        .put_f32(action + 4, 0.1);
+    let look = |m: &FakeGuest| {
+        (
+            m.f32(PC + crate::touch_glue::PC_YAW).unwrap(),
+            m.f32(PC + crate::touch_glue::PC_PITCH).unwrap(),
+        )
+    };
+    // The player has no action in this update.
+    m.put_u32(UPDATE + 8, 1 << 2);
+    assert_eq!(follow_film(&mut m, UPDATE), 0);
+    assert_eq!(look(&m), (1.0, 0.5));
+    // An angle out of range is not a facing.
+    m.put_u32(UPDATE + 8, 1 << 3).put_f32(action + 4, 9.0);
+    assert_eq!(follow_film(&mut m, UPDATE), 0);
+    assert_eq!(look(&m), (1.0, 0.5));
+    // A director that is not first person (a free camera's) is left alone.
+    m.put_f32(action + 4, 0.1).put_u32(0x004e_8c50 + 0x140, 0);
+    assert_eq!(follow_film(&mut m, UPDATE), 0);
+    assert_eq!(look(&m), (1.0, 0.5));
+}
