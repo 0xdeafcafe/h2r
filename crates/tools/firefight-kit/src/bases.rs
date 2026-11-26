@@ -50,6 +50,8 @@ impl Team {
 pub struct Config {
     /// Which map team's base becomes the home base, base 0.
     pub home: Team,
+    /// Which dropship the kit carries ([`crate::Dropship`]).
+    pub dropship: crate::Dropship,
 }
 
 /// Where the two base points came from.

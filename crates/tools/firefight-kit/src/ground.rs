@@ -296,6 +296,8 @@ pub struct Ground {
     pub problems: Vec<Problem>,
     /// The steps taken to fit the map's tag headroom ([`crate::Fit`]).
     pub fitted: Vec<crate::Fit>,
+    /// The dropship, kept or cut ([`crate::ShipReport`]).
+    pub ship: Option<crate::ShipReport>,
     /// What each kept stage-two class added, in palette order after the
     /// Elite; empty for a build with none.
     pub classes: Vec<ClassCost>,
@@ -332,7 +334,10 @@ pub fn build_with(
     );
     labels.check()?;
     let canonical = labels.canonical();
-    let config = Config { home: recipe.home };
+    let config = Config {
+        home: recipe.home,
+        ..Config::default()
+    };
     let built =
         crate::build_with_classes(base, base_name, recipe.mode, &config, &canonical, classes)?;
     Ok(Ground {
@@ -343,6 +348,7 @@ pub fn build_with(
         bases: built.bases,
         problems: built.problems,
         fitted: built.fitted,
+        ship: built.ship,
         classes: built.classes,
         cut: built.cut,
         receipt: Receipt::of(Sha256::of(base), &canonical, recipe),
@@ -383,6 +389,7 @@ impl Ground {
             classes: self.classes.clone(),
             cut: self.cut.clone(),
             fitted: self.fitted.clone(),
+            ship: self.ship.clone(),
         })
     }
 }
