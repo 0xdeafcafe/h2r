@@ -4,6 +4,7 @@
 use crate::circle;
 use crate::def::{PieceDef, Shape};
 use crate::error::{Error, Result};
+use crate::natural;
 use crate::solid::{Axis, Face, Hull, P3, Role, Solid};
 use crate::units::{fraction, world};
 
@@ -28,7 +29,9 @@ impl PieceDef {
             Shape::Stairs => Ok(stairs(self.size, self.param)),
             Shape::Cylinder => Ok(cylinder(self.size, self.param)),
             Shape::Arch => arch(self.size, self.param),
-            shape => Err(Error::NotGenerated(shape)),
+            Shape::Boulder | Shape::Slab | Shape::Cliff | Shape::TerrainWedge | Shape::Spire => {
+                natural::generate(self.shape, self.size, self.param)
+            }
         }
     }
 }

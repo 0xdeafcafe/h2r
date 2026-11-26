@@ -30,7 +30,9 @@ it. It reads no disc and no file.
 - Lengths are `units as f32 / 100.0` and the `+ - * /` of `f32`; a cylinder's
   and an arch's round points come from the rational table in `circle`, not
   from `sin` or `cos`.
-- The five natural shapes are in `Shape` and the name; they have no generator
-  yet and `generate` refuses them by name.
+- The five natural shapes (`natural`) are each one convex hull of at most 34
+  seeded points (`noise`, `hull`): the param is the seed, the bounds are the
+  size, the lowest point is on z = 0 and a rock has at most 64 faces. The hull
+  is exact integer arithmetic on a 4,096 grid.
 - Tests are on invented sizes. The golden hashes of `src/tests/golden.txt` are
   rewritten by running the tests once with `H2_BLESS_GOLDEN=1`.

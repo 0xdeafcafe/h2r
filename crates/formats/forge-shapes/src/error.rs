@@ -18,8 +18,8 @@ pub enum Error {
     EmptyPath,
     #[error("an arch {size_x} units wide must be at least {min_z} units tall")]
     ArchTooLow { size_x: u16, min_z: u16 },
-    #[error("{0} has no generator yet")]
-    NotGenerated(Shape),
+    #[error("{shape} made no rock: {why}")]
+    NoRock { shape: Shape, why: &'static str },
     #[error("piece name {name:?} is not a name: {why}")]
     BadName { name: String, why: &'static str },
 }

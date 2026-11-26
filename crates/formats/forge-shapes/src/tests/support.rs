@@ -19,6 +19,17 @@ pub fn sample_defs() -> Vec<PieceDef> {
     ]
 }
 
+/// One definition of each natural shape, at its starting size.
+pub fn natural_defs() -> Vec<PieceDef> {
+    vec![
+        PieceDef::dev(Shape::Boulder, [96, 96, 64], 1),
+        PieceDef::dev(Shape::Slab, [256, 192, 32], 2),
+        PieceDef::dev(Shape::Cliff, [256, 64, 256], 3),
+        PieceDef::dev(Shape::TerrainWedge, [256, 256, 96], 4),
+        PieceDef::dev(Shape::Spire, [64, 64, 256], 5),
+    ]
+}
+
 pub fn solid(def: &PieceDef) -> Solid {
     def.generate().expect("a sample definition generates")
 }
