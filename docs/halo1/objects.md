@@ -456,6 +456,20 @@ animation moves, a scripted set piece, a dropship and a turret, which keep
 Halo 1's speeds and turn limits. Vehicles have no template row. [Drive
 counterparts](role-audit.md#native-engine-fields).
 
+**Vehicle seats.** A Halo 1 seat pairs with a counterpart seat by kind
+(driver, gunner, passenger, read from the seat flags) and then order
+within the kind; extra seats take the last of their kind, a kind the
+counterpart lacks takes its first seat (`rebuild::PAIR_SEATS`,
+`rebuild::counterpart_seat`). The seat takes the counterpart's entry
+prompt, HUD interface, AI role and built-in gunner
+(`rebuild::SEAT_PROMPT_FIELDS`), and its entry radius, facing angle and
+relative-velocity limit (`rebuild::SEAT_ENTRY_FIELDS`). Halo 1 supplies
+the turn rates, as the upper bounds of `yaw_rate_bounds` and
+`pitch_rate_bounds` (`h1::Seat::rates`, `+0x7c` and `+0x80`, inferred
+from the camera marker at `+0x84`). The entry cone stays pi on every seat
+(Entry facing, below). Only a turret, a vehicle with no counterpart,
+holds `rebuild::TURRET_SEAT_ROLE`; every seat holds no hidden region.
+
 **Lifepod engine audio.** The a30 entry pod attaches the Halo 1
 `sound\sfx\vehicles\lifeboat` loop. Its marker is empty and its primary
 scale is zero. The rebuilt attachment names that level's converted loop,
