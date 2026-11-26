@@ -47,6 +47,8 @@ const SKY_CLEARANCE: f32 = 10.0;
 const RUN_MARGIN: f32 = 20.0;
 /// The column's ray starts this far above the zone's floor.
 const FLOOR_LIFT: f32 = 0.5;
+/// Horizontal run lengths tried after the full reach, longest first.
+const STEEP_REACH: [f32; 3] = [80.0, 50.0, 30.0];
 /// Run directions tried for a zone, evenly round the compass.
 const DIRECTIONS: usize = 8;
 /// The placement's unique ID low word: past the converter's running count.
@@ -207,14 +209,19 @@ pub(crate) fn plan(walls: &Walls, zones: &[Zone]) -> Vec<Option<Run>> {
                 + libm::hypotf(mean[0] - middle[0], mean[1] - middle[1])
                 + RUN_MARGIN;
             let away = libm::atan2f(mean[1] - middle[1], mean[0] - middle[0]);
-            (0..DIRECTIONS).find_map(|k| {
-                let angle = away + k as f32 * std::f32::consts::TAU / DIRECTIONS as f32;
-                let (dy, dx) = libm::sincosf(angle);
-                let end = |sign: f32| [hover[0] + sign * dx * reach, hover[1] + sign * dy * reach, sky];
-                let (run_in, run_out) = (end(1.0), end(-1.0));
-                (walls.clear(run_in, hover) && walls.clear(hover, run_out)).then_some(Run {
-                    points: [run_in, hover, run_out],
-                    yaw: libm::atan2f(-dy, -dx),
+            // The full reach first, then steeper dives for a zone in a
+            // canyon, where a long shallow run meets the cliffs.
+            let reaches = [reach, STEEP_REACH[0], STEEP_REACH[1], STEEP_REACH[2]];
+            reaches.into_iter().find_map(|reach| {
+                (0..DIRECTIONS).find_map(|k| {
+                    let angle = away + k as f32 * std::f32::consts::TAU / DIRECTIONS as f32;
+                    let (dy, dx) = libm::sincosf(angle);
+                    let end = |sign: f32| [hover[0] + sign * dx * reach, hover[1] + sign * dy * reach, sky];
+                    let (run_in, run_out) = (end(1.0), end(-1.0));
+                    (walls.clear(run_in, hover) && walls.clear(hover, run_out)).then_some(Run {
+                        points: [run_in, hover, run_out],
+                        yaw: libm::atan2f(-dy, -dx),
+                    })
                 })
             })
         })
