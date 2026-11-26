@@ -61,6 +61,21 @@ pub fn visit_actors(
     controls: bool,
     mut visit: impl FnMut(ActorView),
 ) -> Result<(), Fault> {
+    visit_ai_units(m, controls, |view| {
+        if view.entity != u32::MAX {
+            visit(view);
+        }
+    })
+}
+
+/// Visit every live AI unit once in pool order, with or without a
+/// replication entity (`ActorView::entity` is `u32::MAX` for none). A local
+/// game publishes no entities, so counting actors reads this.
+pub fn visit_ai_units(
+    m: &dyn GuestMemory,
+    controls: bool,
+    mut visit: impl FnMut(ActorView),
+) -> Result<(), Fault> {
     let Some(actors) = Datums::<Actor>::from_global(m, global::ACTORS.base)? else {
         return Ok(());
     };
@@ -86,9 +101,6 @@ pub fn visit_actors(
             continue;
         }
         let entity = obj.body.entity(m)?;
-        if entity == u32::MAX {
-            continue;
-        }
         // A passenger's position is relative to its parent, while the
         // bounds update keeps its centre in world coordinates.
         let position = if obj.body.parent(m)?.is_none() {
@@ -238,5 +250,33 @@ mod tests {
             )
             .unwrap();
         assert!(sample(&m, false).is_empty());
+    }
+
+    #[test]
+    fn an_ai_unit_without_an_entity_is_visited_and_not_replicated() {
+        let mut m = FakeGuest::new();
+        let actors = fake::datums::<Actor>(&mut m, 0x1_0000, 4);
+        let objects = fake::datums::<Header>(&mut m, 0x2_0000, 4);
+        m.put_u32(global::ACTORS.base, actors.array.addr)
+            .put_u32(global::OBJECTS.base, objects.array.addr);
+        let (id, actor) = fake::push(&mut m, &actors);
+        let (handle, header) = fake::push(&mut m, &objects);
+        let body = Object::at(0x3_0000);
+        let unit = body.as_unit();
+        m.map(body.addr, Unit::SIZE);
+        actor.set_unit(&mut m, Some(handle)).unwrap();
+        actor.set_squad(&mut m, 3).unwrap();
+        header.set_body(&mut m, body.addr).unwrap();
+        unit.set(&mut m, Unit::ACTOR, Datum(id.raw())).unwrap();
+        unit.set(&mut m, Unit::PLAYER, Datum::NONE).unwrap();
+        body.set(&mut m, Object::ENTITY, u32::MAX).unwrap();
+        body.set(&mut m, Object::PARENT, Datum::NONE).unwrap();
+        body.set(&mut m, Object::POSITION, [1.0, 2.0, 3.0]).unwrap();
+        let mut seen = Vec::new();
+        visit_ai_units(&m, false, |v| seen.push(v)).unwrap();
+        assert_eq!((seen.len(), seen[0].entity, seen[0].squad), (1, u32::MAX, 3));
+        let mut replicated = 0;
+        visit_actors(&m, false, |_| replicated += 1).unwrap();
+        assert_eq!(replicated, 0);
     }
 }

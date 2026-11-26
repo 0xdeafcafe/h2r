@@ -10,7 +10,7 @@
 //! not offsets.
 
 mod actors;
-pub use actors::{ActorControl, ActorView, visit_actors};
+pub use actors::{ActorControl, ActorView, visit_actors, visit_ai_units};
 
 use guest_layout::object::{NODE_MATRIX_SIZE, header};
 use guest_layout::{Datum, Fault, Mem, Off, Unit};

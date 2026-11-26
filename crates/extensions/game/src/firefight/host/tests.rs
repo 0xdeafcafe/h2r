@@ -1286,3 +1286,47 @@ fn finish_ends_the_test_and_not_the_game() {
     assert_eq!(game.calls, [Call::End(Outcome::Won)]);
     assert_eq!(host.take_test_end(), None);
 }
+
+/// Holdout's first wave to tick 800 on a game where `shows` actors are in
+/// slot 0 from the tick after the squad was placed (601).
+fn first_wave(shows: u16) -> (Host, FakeGame) {
+    let mut game = FakeGame::new();
+    let mut host = start(Role::Host, &game);
+    for tick in 0..=800 {
+        if tick == 601 {
+            assert!(host.pre_tick(tick, &mut game).is_empty());
+            game.actors[0] = shows;
+            host.post_tick(tick, &game).unwrap();
+            continue;
+        }
+        run(&mut host, &mut game, tick);
+    }
+    (host, game)
+}
+
+/// A wave whose actors the game shows stays fought past the director's
+/// slot timeout (3 s after the placement); the same wave with none seen
+/// is cleared at it, which is the loop a local game made.
+#[test]
+fn a_wave_whose_actors_are_seen_is_not_cleared_at_the_slot_timeout() {
+    use ::firefight::director::Phase;
+    let (host, _) = first_wave(1);
+    assert_eq!(host.director().unwrap().state().phase, Phase::Fighting);
+    assert_eq!(host.placements_unseen(), 0);
+    let (host, _) = first_wave(0);
+    assert_ne!(host.director().unwrap().state().phase, Phase::Fighting);
+}
+
+#[test]
+fn a_placement_nobody_sees_is_reported_once() {
+    let (mut host, _) = first_wave(0);
+    assert_eq!(host.placements_unseen(), 1);
+    let rows = host.take_unseen_errors();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].seq, None);
+    assert_eq!(
+        rows[0].error.to_string(),
+        "slot 0: elite placed at tick 601, none seen"
+    );
+    assert!(host.take_unseen_errors().is_empty());
+}
