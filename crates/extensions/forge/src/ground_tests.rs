@@ -554,6 +554,7 @@ fn wave_problems_name_the_classes_the_ground_built() {
     let mut kit = Kit::default();
     let mut def = forge_doc::waves::default_set();
     def.rounds[0].waves[0].squads[0].class = "grunt".into();
+    def.scoring.by_class.insert("grunt".into(), 100);
     session.set_waves(Some(def)).unwrap();
     let grunts = |s: &Session| {
         s.wave_problems()

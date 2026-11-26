@@ -465,7 +465,11 @@ fn a_malformed_class_is_refused_by_name() {
         (with("class_grunt", "out skirts:00"), "plain map name"),
         (with("class_grunt", "outskirts:00"), "SHA-256"),
         (
-            with("class_grunt", &format!("outskirts:{}", hash.to_uppercase())),
+            // A hash with letters in it: 0x22 bytes have none to upper-case.
+            with(
+                "class_grunt",
+                &format!("outskirts:{}", Sha256([0xab; 32]).to_string().to_uppercase()),
+            ),
             "lowercase",
         ),
         (
