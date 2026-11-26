@@ -60,6 +60,7 @@
 //! or a snapshot load that changed it resumes the VM from it, and a record
 //! that is gone (a full restore) stops the script with a refusal.
 
+use std::cell::OnceCell;
 use std::collections::VecDeque;
 use std::sync::{Arc, OnceLock};
 
@@ -646,7 +647,10 @@ fn runtime_refusal(ir: &Ir) -> Option<String> {
 }
 
 /// The game, as the VM reads and changes it at one moment. Reads are made
-/// at once; actions are kept in `calls` for the next tick boundary.
+/// at once; actions are kept in `calls` for the next tick boundary. Guest
+/// memory does not change while one is held (an action is only kept), so
+/// the roster and the objectives are read once, at the first read that
+/// needs them, and kept for the rest of it.
 pub struct GuestGame<'a> {
     pub m: &'a dyn GuestMemory,
     pub calls: &'a mut Vec<Call>,
@@ -667,6 +671,10 @@ pub struct GuestGame<'a> {
     /// The players' bodies at the last superbounce chain step, for
     /// `airborne`, `crouching` and `primed` (`super::world::physics`); none reads false.
     pub bodies: &'a [crate::superbounce_chain::Body],
+    /// The roster (slot, alive, team), read once ([`GuestGame::roster`]).
+    roster: OnceCell<Vec<(u8, bool, u8)>>,
+    /// The objectives' datums, read once.
+    objectives: OnceCell<Vec<u32>>,
 }
 
 impl<'a> GuestGame<'a> {
@@ -681,6 +689,8 @@ impl<'a> GuestGame<'a> {
             zones: None,
             tags: None,
             bodies: &[],
+            roster: OnceCell::new(),
+            objectives: OnceCell::new(),
         }
     }
 
@@ -721,12 +731,16 @@ impl<'a> GuestGame<'a> {
         }
     }
 
-    fn roster(&self) -> Vec<(u8, bool, u8)> {
-        read_players(self.m)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(p, _)| (p.slot, p.alive, p.team))
-            .collect()
+    /// The roster's (slot, alive, team), read from guest memory at the
+    /// first call and kept for the rest of this moment.
+    fn roster(&self) -> &[(u8, bool, u8)] {
+        self.roster.get_or_init(|| {
+            read_players(self.m)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(p, _)| (p.slot, p.alive, p.team))
+                .collect()
+        })
     }
 }
 
@@ -748,11 +762,11 @@ impl Game for GuestGame<'_> {
     }
 
     fn players(&self) -> Vec<u8> {
-        self.roster().into_iter().map(|(slot, _, _)| slot).collect()
+        self.roster().iter().map(|&(slot, _, _)| slot).collect()
     }
 
     fn teams(&self) -> Vec<u8> {
-        let mut teams: Vec<u8> = self.roster().into_iter().map(|(_, _, t)| t).collect();
+        let mut teams: Vec<u8> = self.roster().iter().map(|&(_, _, t)| t).collect();
         teams.sort_unstable();
         teams.dedup();
         teams
@@ -762,9 +776,9 @@ impl Game for GuestGame<'_> {
     /// (`mark(wp, at, team)`).
     fn players_of_team(&self, team: u8) -> Vec<u8> {
         self.roster()
-            .into_iter()
-            .filter(|&(_, _, t)| t == team)
-            .map(|(slot, _, _)| slot)
+            .iter()
+            .filter(|&&(_, _, t)| t == team)
+            .map(|&(slot, _, _)| slot)
             .collect()
     }
 
@@ -774,7 +788,9 @@ impl Game for GuestGame<'_> {
     }
 
     fn objectives(&self) -> Vec<u32> {
-        super::objectives::objects(self.m).unwrap_or_default()
+        self.objectives
+            .get_or_init(|| super::objectives::objects(self.m).unwrap_or_default())
+            .clone()
     }
 
     fn variant(&self, field: &str) -> i32 {
@@ -807,7 +823,7 @@ impl Game for GuestGame<'_> {
             id::ALIVE => p.is_some_and(|p| self.roster().iter().any(|&(s, alive, _)| s == p && alive))
                 as i32,
             id::TEAM_OF => p
-                .and_then(|p| self.roster().into_iter().find(|&(s, _, _)| s == p))
+                .and_then(|p| self.roster().iter().copied().find(|&(s, _, _)| s == p))
                 .map_or(::rules::ty::NONE, |(_, _, t)| i32::from(t)),
             id::SLOT_OF => p.map_or(::rules::ty::NONE, i32::from),
             id::SIDE_OF => match p {
@@ -815,7 +831,8 @@ impl Game for GuestGame<'_> {
                 Some(p) if self.variant("team_play") == 0 => 16 + i32::from(p),
                 Some(p) => self
                     .roster()
-                    .into_iter()
+                    .iter()
+                    .copied()
                     .find(|&(s, _, _)| s == p)
                     .map_or(::rules::ty::NONE, |(_, _, t)| i32::from(t)),
             },

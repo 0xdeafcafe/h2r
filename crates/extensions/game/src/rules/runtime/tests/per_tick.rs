@@ -90,3 +90,77 @@ fn an_unchanged_record_is_never_copied_and_a_change_is_written_once() {
     assert_eq!(store.gets(), 1, "the changed record is copied once");
     assert_eq!(s.lock().running().unwrap().vm.ext().tick, TICK);
 }
+
+/// Guest memory that counts the reads of the players array's pointer
+/// (`points::PLAYERS`): one per read of the roster.
+struct CountingMemory<'a> {
+    m: &'a dyn GuestMemory,
+    players: std::cell::Cell<usize>,
+}
+
+impl<'a> CountingMemory<'a> {
+    fn new(m: &'a dyn GuestMemory) -> Self {
+        Self {
+            m,
+            players: std::cell::Cell::new(0),
+        }
+    }
+}
+
+impl GuestMemory for CountingMemory<'_> {
+    fn read(&self, addr: u32, buf: &mut [u8]) -> Result<(), engine::MemFault> {
+        if addr == points::PLAYERS.base {
+            self.players.set(self.players.get() + 1);
+        }
+        self.m.read(addr, buf)
+    }
+    fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), engine::MemFault> {
+        Err(engine::MemFault {
+            addr,
+            len: data.len() as u32,
+            write: true,
+        })
+    }
+}
+
+#[test]
+fn a_script_looping_the_players_reads_the_roster_once_per_moment() {
+    let ir = ::rules::compile(
+        r#"
+rules "Roll" 1
+type slayer
+global var n: int = 0
+on tick {
+    for each players p {
+        if p.alive { n = n + 10 }
+        if p.team == team 1 { n = n + 1 }
+        n = n + 100
+    }
+}
+"#,
+    )
+    .unwrap();
+    let (m, _) = guest([0; LEN], SLAYER);
+    // What one roster read costs.
+    let one = CountingMemory::new(&m);
+    assert_eq!(read_players(&one).unwrap().len(), 2);
+    let once = one.players.get();
+    assert!(once > 0);
+    let counted = CountingMemory::new(&m);
+    let mut calls = Vec::new();
+    let mut vm = Vm::new(ir, 0, SEED).unwrap();
+    vm.begin_tick(TICK);
+    {
+        let mut g = GuestGame::new(&counted, &mut calls);
+        vm.update(&mut g);
+        assert_eq!(g.error, None);
+    }
+    // Two players with no unit (so not alive), on teams 0 and 1.
+    assert_eq!(vm.global("n"), Some(201));
+    assert_eq!(
+        counted.players.get(),
+        once,
+        "the players, each one's alive and each one's team: one roster read"
+    );
+    assert!(calls.is_empty());
+}
