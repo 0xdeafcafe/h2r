@@ -393,6 +393,11 @@ struct Pass<'a> {
     tagged: BTreeSet<Endpoint>,
     /// The definition of each piece, with the op that gave it.
     pieces: BTreeMap<Endpoint, (OpId, PieceDef)>,
+    /// A crate edit by running index named an entry the pass cannot resolve
+    /// (the map's crate count is unknown), so which crates hold the piece
+    /// tag is not known. The piece rules that need it wait for a map that
+    /// has the count; a document is no stricter without one than with one.
+    blind: bool,
     /// The active groups, by the op that made each.
     groups: BTreeMap<OpId, Group>,
     /// The group each grouped entry is in.
@@ -437,6 +442,7 @@ impl<'a> Pass<'a> {
             labels: BTreeMap::new(),
             tagged: BTreeSet::new(),
             pieces: BTreeMap::new(),
+            blind: false,
             groups: BTreeMap::new(),
             grouped: BTreeMap::new(),
             areas: BTreeMap::new(),
@@ -660,6 +666,7 @@ impl<'a> Pass<'a> {
             }
             Placement::Remove { index, .. } => {
                 let Some(rows) = self.rows(block) else {
+                    self.blind |= block == piece::PIECE_BLOCK;
                     return Ok(());
                 };
                 // The placement counts refuse an index past the end.
@@ -689,8 +696,9 @@ impl<'a> Pass<'a> {
                     .rows(block)
                     .and_then(|rows| rows.get(index as usize))
                     .copied();
-                if let Some(target) = target {
-                    self.retag(target, piece::is_piece_value(&write.value))?;
+                match target {
+                    Some(target) => self.retag(target, piece::is_piece_value(&write.value))?,
+                    None => self.blind = true,
                 }
             }
             Placement::Set {
@@ -844,6 +852,7 @@ impl<'a> Pass<'a> {
                 .and_then(|rows| rows.get(i as usize))
                 .copied()
         });
+        self.blind |= like.is_some() && source.is_none();
         if let Some(source) = source
             && self.tagged.contains(&source)
         {
@@ -879,7 +888,7 @@ impl<'a> Pass<'a> {
         if !present || self.gone.contains(&target) {
             return Err(invalid("piece", "names no entry"));
         }
-        if !self.tagged.contains(&target) {
+        if !self.blind && !self.tagged.contains(&target) {
             return Err(invalid(
                 "piece",
                 "a definition belongs to a placement of the piece tag",
@@ -891,7 +900,7 @@ impl<'a> Pass<'a> {
 
     /// Every crate that holds the piece tag has a definition.
     fn check_pieces(&self) -> Result<()> {
-        if self.tagged.iter().any(|end| !self.pieces.contains_key(end)) {
+        if !self.blind && self.tagged.iter().any(|end| !self.pieces.contains_key(end)) {
             return Err(invalid(
                 "piece",
                 "a placement of the piece tag has no definition",
