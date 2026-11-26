@@ -905,7 +905,7 @@ pub(crate) fn run_with_theater(
         let (overlay, _) = theater::overlay(
             controller.clone(),
             opts.data_root.join("films/screenshots"),
-            None,
+            Some(opts.disc.as_path()),
         );
         config.theater = Some(overlay);
     }
