@@ -368,6 +368,20 @@ the cached pipelines with their own uniforms and sampled textures.
     target's guest size, as a linear render target is read
     (`texaccum_dimensions`, `texaccum_scale`). In any other layer a stage
     sampling the view refuses at load.
+  - **The scene copy** (engine texture 17,
+    `object_program::SCENE_COPY_TEXTURE`, `EngineBound::scene_copy`,
+    `EngineStages::scene_copy`). The camouflage bump (layer 18) and the
+    hologram projection (layer 21) sample the downsample the guest's
+    `0x000352e0` makes at a sorted handler's entry with a four-stage copy
+    of the view's colour: 320 by 240 times the render scale
+    (`object_program_gpu::scene_copy_extent`). A layer 18 or 21 pass that
+    samples it makes the copy once (`LitObjects::scene_copy`, a linear
+    `gfx::blit::Blitter` read into a scratch texture per target copy,
+    recorded by `SceneCopy::record` ahead of the pass's draws), and every
+    draw of the call binds it, its coordinates texels of 320 by 240
+    (`object_program::SCENE_COPY_SIZE`, `texaccum_scale`). In any other
+    layer a stage sampling it refuses at load.
+
 ## Rules and limits
 
 - The fog pass applies the layer draw's own gate (`[0x0048574c] == 3` or a fog byte set); otherwise it would fog views the game left clear.

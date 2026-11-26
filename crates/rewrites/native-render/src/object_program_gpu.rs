@@ -75,7 +75,7 @@ impl MaterialConstant18 {
             // hardware must already agree to skip it state-neutrally.
             if compiled.implementation.dimension_bindings.iter().any(|c| {
                 c.bank == 1 && c.reg == 0 && (1..=4).contains(&c.stage)
-                    && (compiled.texaccum[usize::from(c.stage - 1)] || compiled.view[usize::from(c.stage - 1)])
+                    && (compiled.texaccum[usize::from(c.stage - 1)] || compiled.view[usize::from(c.stage - 1)] || compiled.scene_copy[usize::from(c.stage - 1)])
             }) {
                 return Err("a c[18] write needs the bound target's dimensions".into());
             }
@@ -125,7 +125,7 @@ fn frame_images(compiled: &ObjectPass, k: usize, bitmap: map::TagId, image: &mut
     if count == 0 {
         return Err(format!("stage {k}'s animated frame wraps a slot with no instance bitmap"));
     }
-    if compiled.texaccum.contains(&true) || compiled.view.contains(&true) {
+    if compiled.texaccum.contains(&true) || compiled.view.contains(&true) || compiled.scene_copy.contains(&true) {
         return Err(format!("stage {k}'s animated frame is in a pass that binds an engine target per encode"));
     }
     if count > MAX_FRAME_IMAGES {
@@ -629,8 +629,9 @@ pub struct Texaccum<'a> {
 }
 
 /// The views a program's per-encode group binds: the texture
-/// accumulation level's and the view copy's, each when it samples one.
-type EncodeViews = (Option<wgpu::TextureView>, Option<wgpu::TextureView>);
+/// accumulation level's, the view copy's and the scene copy's, each when it
+/// samples one.
+type EncodeViews = (Option<wgpu::TextureView>, Option<wgpu::TextureView>, Option<wgpu::TextureView>);
 
 struct LitModel {
     programs: Vec<LitProgram>,
@@ -658,6 +659,49 @@ pub struct LitObjects {
     /// The scratch copies of the bound colour the view stages sample, one
     /// per target copy (reference, display; [`LitObjects::view_copy`]).
     view_copies: [Option<wgpu::TextureView>; 2],
+    /// The scene copies ([`LitObjects::scene_copy`]), one per target copy.
+    scene_copies: [Option<wgpu::TextureView>; 2],
+    /// The downsample's pipeline, shared by the copies recorded later on
+    /// the frame's encoder.
+    blitter: Arc<std::sync::Mutex<Option<gfx::blit::Blitter>>>,
+}
+
+/// The size of the scene copy for a target drawn at `size` whose guest
+/// surface is `guest`: [`crate::object_program::SCENE_COPY_SIZE`] times the
+/// render scale, at least one texel a side.
+pub fn scene_copy_extent(guest: (u32, u32), size: (u32, u32)) -> (u32, u32) {
+    let side = |copy: u32, size: u32, guest: u32| -> u32 {
+        ((u64::from(copy) * u64::from(size) + u64::from(guest.max(1)) / 2) / u64::from(guest.max(1))).max(1) as u32
+    };
+    (
+        side(crate::object_program::SCENE_COPY_SIZE.0, size.0, guest.0),
+        side(crate::object_program::SCENE_COPY_SIZE.1, size.1, guest.1),
+    )
+}
+
+/// The scene copy of one sorted-handler call ([`LitObjects::scene_copy`]):
+/// the downsample of the bound colour `from` into `view`, recorded before
+/// the handler's layers draw.
+pub struct SceneCopy {
+    pub from: wgpu::TextureView,
+    pub view: wgpu::TextureView,
+    pub format: wgpu::TextureFormat,
+    pub extent: (u32, u32),
+    blitter: Arc<std::sync::Mutex<Option<gfx::blit::Blitter>>>,
+}
+
+impl SceneCopy {
+    /// Records the downsample into `encoder`: a linear read of the whole
+    /// colour into the copy, which is [`Self::extent`] texels (the guest's
+    /// four-stage copy averages the same neighbourhood).
+    pub fn record(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder) {
+        let mut guard = self.blitter.lock().unwrap_or_else(|e| e.into_inner());
+        let blitter = guard.get_or_insert_with(|| gfx::blit::Blitter::on_device(device));
+        blitter.blit_on(
+            device, encoder, &self.from, &self.view, self.format,
+            gfx::blit::BlitOptions { linear: true, ..Default::default() },
+        );
+    }
 }
 
 /// A copy of the bound colour for the stages that sample the view's own
@@ -864,6 +908,10 @@ pub struct PlannedDraw {
     /// Whether it samples the view's own target: drawn only with a copy
     /// of the bound colour ([`LitObjects::draws_with_view`]).
     pub view: bool,
+    /// Whether it samples the scene copy: drawn only with the downsample
+    /// of the bound colour a sorted handler's call made
+    /// ([`LitObjects::scene_copy`]).
+    pub scene_copy: bool,
     pub default_final: bool,
     /// A layer-5 PRT variant's draw: where its stream is in guest memory
     /// (`frame_scene::PrtStream`), and, once the hook has gathered it
@@ -987,6 +1035,8 @@ impl LitObjects {
             normalization: None,
             shared: Shared::default(),
             view_copies: [None, None],
+            scene_copies: [None, None],
+            blitter: Default::default(),
         }
     }
 
@@ -1008,6 +1058,8 @@ impl LitObjects {
             normalization: None,
             shared: Shared::default(),
             view_copies: [None, None],
+            scene_copies: [None, None],
+            blitter: Default::default(),
         }
     }
 
@@ -1062,6 +1114,45 @@ impl LitObjects {
                 .create_view(&Default::default())
         });
         ViewCopy { from: texture.clone(), to: view.texture().clone(), view: view.clone(), extent }
+    }
+
+    /// The scene copy of one sorted-handler call: its scratch texture
+    /// ([`scene_copy_extent`] of `guest` and the colour's own size), kept
+    /// per target copy and made again when the extent or format changes,
+    /// and the downsample to record ([`SceneCopy::record`]) before the
+    /// handler's layers draw. Made once a call; every draw of its layers
+    /// 18 and 21 binds it.
+    pub fn scene_copy(
+        &mut self, device: &wgpu::Device, color: &wgpu::TextureView, guest: (u32, u32), copy: gfx::external::TargetCopy,
+    ) -> SceneCopy {
+        let texture = color.texture();
+        let format = texture.format();
+        let extent = scene_copy_extent(guest, (texture.width(), texture.height()));
+        let scratch = match copy {
+            gfx::external::TargetCopy::Reference => &mut self.scene_copies[0],
+            gfx::external::TargetCopy::Display => &mut self.scene_copies[1],
+        };
+        if scratch.as_ref().is_some_and(|view| {
+            let t = view.texture();
+            (t.width(), t.height()) != extent || t.format() != format
+        }) {
+            *scratch = None;
+        }
+        let view = scratch.get_or_insert_with(|| {
+            device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("native object scene copy"),
+                    size: wgpu::Extent3d { width: extent.0, height: extent.1, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                })
+                .create_view(&Default::default())
+        });
+        SceneCopy { from: color.clone(), view: view.clone(), format, extent, blitter: self.blitter.clone() }
     }
 
     /// Uploads the normalization cube the programs' normalization stages
@@ -1156,7 +1247,7 @@ impl LitObjects {
                 views.push((n, self.normalization.clone()?));
                 continue;
             }
-            if pass.texaccum[n] || pass.view[n] {
+            if pass.texaccum[n] || pass.view[n] || pass.scene_copy[n] {
                 // The pass's level or the view's copy, bound per encode.
                 continue;
             }
@@ -1173,7 +1264,7 @@ impl LitObjects {
         }
         let textures_layout = self.shared.layout(device, &layout_entries);
         let compiler = self.shared.shader(device, &p.wgsl, &self.uniforms_layout, (&layout_entries, &textures_layout))?;
-        let textures = if pass.texaccum.contains(&true) || pass.view.contains(&true) {
+        let textures = if pass.texaccum.contains(&true) || pass.view.contains(&true) || pass.scene_copy.contains(&true) {
             None
         } else {
             Some(gfx::program::validated_resource(device, || {
@@ -1463,10 +1554,10 @@ impl LitObjects {
     /// samples the level and there is none.
     fn issued(
         &self, index: u32, d: &PlannedDraw, view: &ViewInputs, projection_factor: f32, texaccum: Option<Texaccum<'_>>,
-        view_copy: Option<Texaccum<'_>>,
+        view_copy: Option<Texaccum<'_>>, scene_copy: Option<Texaccum<'_>>,
     ) -> Option<(VertexUniforms, PixelUniforms)> {
         let pass = &self.models.get(&index)?.programs.get(d.program)?.pass;
-        if (d.texaccum && texaccum.is_none()) || (d.view && view_copy.is_none()) {
+        if (d.texaccum && texaccum.is_none()) || (d.view && view_copy.is_none()) || (d.scene_copy && scene_copy.is_none()) {
             return None;
         }
         let mut vertex = frame_vertex(&d.vertex, view);
@@ -1486,6 +1577,12 @@ impl LitObjects {
         if let Some(t) = view_copy.filter(|_| d.view) {
             texaccum_dimensions(&mut vertex, &pass.implementation, pass.view, t.guest_size);
             texaccum_scale(&mut pixel, pass.view, t.guest_size);
+        }
+        // The scene copy's coordinates are texels of its guest size
+        // (320 by 240), whatever the render scale makes of the texture.
+        if let Some(t) = scene_copy.filter(|_| d.scene_copy) {
+            texaccum_dimensions(&mut vertex, &pass.implementation, pass.scene_copy, t.guest_size);
+            texaccum_scale(&mut pixel, pass.scene_copy, t.guest_size);
         }
         Some((vertex, pixel))
     }
@@ -1581,14 +1678,17 @@ impl LitObjects {
         texaccum: Option<Texaccum<'_>>,
     ) -> Result<ExternalDraws, &'static str> {
         self.draws_with_view(
-            device, queue, uploads, color_format, depth_format, target_size, view, projection_factor, draws, texaccum, None,
+            device, queue, uploads, color_format, depth_format, target_size, view, projection_factor, draws, texaccum, None, None,
         )
     }
 
     /// [`Self::draws`] with `view_copy`, the copy of the bound colour a
     /// draw sampling the view's own target binds ([`Self::view_copy`]),
     /// its size the target's in guest pixels (the programs address it in
-    /// texels, as the level). Such a draw is refused without one.
+    /// texels, as the level), and `scene_copy`, the downsample a draw
+    /// sampling engine texture 17 binds ([`Self::scene_copy`]), its guest
+    /// size [`crate::object_program::SCENE_COPY_SIZE`]. Such a draw is
+    /// refused without its copy.
     #[allow(clippy::too_many_arguments)]
     pub fn draws_with_view(
         &mut self,
@@ -1603,13 +1703,14 @@ impl LitObjects {
         draws: &[(u32, PlannedDraw)],
         texaccum: Option<Texaccum<'_>>,
         view_copy: Option<Texaccum<'_>>,
+        scene_copy: Option<Texaccum<'_>>,
     ) -> Result<ExternalDraws, &'static str> {
         if draws.is_empty() {
             return Err("no object draws");
         }
         let mut issued: Vec<(&(u32, PlannedDraw), (VertexUniforms, PixelUniforms))> = Vec::with_capacity(draws.len());
         for d in draws {
-            let blocks = self.issued(d.0, &d.1, view, projection_factor, texaccum, view_copy).ok_or("object draw inputs unavailable")?;
+            let blocks = self.issued(d.0, &d.1, view, projection_factor, texaccum, view_copy, scene_copy).ok_or("object draw inputs unavailable")?;
             issued.push((d, blocks));
         }
         // Whether each draw found its pipeline and texture group resident.
@@ -1674,7 +1775,12 @@ impl LitObjects {
                     } else {
                         None
                     };
-                    let key: EncodeViews = (accum.cloned(), copy.cloned());
+                    let scene = if p.pass.scene_copy.contains(&true) {
+                        Some(scene_copy.as_ref().ok_or("object scene copy unavailable")?.view)
+                    } else {
+                        None
+                    };
+                    let key: EncodeViews = (accum.cloned(), copy.cloned(), scene.cloned());
                     let slot = if let Some(at) = p.accum_groups.iter().position(|(views, _)| *views == key) {
                         at
                     } else {
@@ -1684,6 +1790,8 @@ impl LitObjects {
                             if let (true, Some(v)) = (p.pass.texaccum[n], accum) {
                                 extra.push((n, v));
                             } else if let (true, Some(v)) = (p.pass.view[n], copy) {
+                                extra.push((n, v));
+                            } else if let (true, Some(v)) = (p.pass.scene_copy[n], scene) {
                                 extra.push((n, v));
                             }
                         }
@@ -1961,6 +2069,7 @@ fn plan_layer_part_at_entry<'a>(
             state,
             texaccum: compiled.texaccum.contains(&true),
             view: compiled.view.contains(&true),
+            scene_copy: compiled.scene_copy.contains(&true),
             default_final: compiled.default_final,
             prt: item.prt.clone().map(|s| (s, None)),
             frames,
@@ -2150,6 +2259,7 @@ fn plan_indexed_part<'a>(
         state,
         texaccum: pass.texaccum.contains(&true),
         view: pass.view.contains(&true),
+        scene_copy: pass.scene_copy.contains(&true),
         default_final: pass.default_final,
         prt: None,
         frames,
@@ -2170,6 +2280,10 @@ pub struct EngineStages {
     pub lightmap: Option<Image>,
     pub texaccum: bool,
     pub view: bool,
+    /// Whether the host binds the scene copy (engine texture 17,
+    /// [`crate::object_program::SCENE_COPY_TEXTURE`]) to a sorted handler's
+    /// layers 18 and 21 ([`LitObjects::scene_copy`]).
+    pub scene_copy: bool,
 }
 
 /// Sets the coordinate scale of the stages in `stages` (those sampling
@@ -2537,6 +2651,9 @@ pub fn lit_model(
                         if compiled.view[k] {
                             return Err(format!("implementation {n} stage {k} samples the view's own target, which layer 3's draw does not copy"));
                         }
+                        if compiled.scene_copy[k] {
+                            return Err(format!("implementation {n} stage {k} samples the scene copy, which layer 3's draw does not make"));
+                        }
                         if compiled.program.stages[k] == Stage::Lightmap {
                             images[k] = engine.lightmap.clone();
                             continue;
@@ -2829,6 +2946,12 @@ fn compile_layer_sections(
                 }
                 continue;
             }
+            if compiled.scene_copy[k] {
+                if !engine.scene_copy || !OVERRIDE_LAYERS.contains(&layer) {
+                    return Err(format!("stage {k} samples the scene copy, which the host makes only for the sorted handlers' layers"));
+                }
+                continue;
+            }
             let Stage::Bitmap { bitmap, image: i } = compiled.program.stages[k] else {
                 return Err(format!("stage {k} samples no bitmap"));
             };
@@ -2966,7 +3089,7 @@ mod tests {
         );
         assert!(without.taken.is_empty());
         assert!(without.refused[0].1.contains("samples the lightmap"), "{:?}", without.refused);
-        let engine = EngineStages { normalization: false, lightmap: Some(grey.clone()), texaccum: false, view: false };
+        let engine = EngineStages { normalization: false, lightmap: Some(grey.clone()), texaccum: false, view: false, scene_copy: false };
         let with = lit_model(&[section], &materials, &formats(), &engine, &mut vertex, &mut image);
         assert_eq!(with.taken, vec![0], "{:?}", with.refused);
         assert_eq!(with.input.programs[0].images[3], Some(grey), "stage 3 binds the object's lightmap");
@@ -3701,6 +3824,99 @@ mod tests {
         assert_eq!((program, buffer), (0, 0));
         assert!(build.input.programs[program].pass.program.state.as_ref().unwrap().blend.is_some(), "its blend kept");
         assert!(build.input.valid_draw_references());
+    }
+
+    #[test]
+    fn the_scene_copy_is_the_guests_size_times_the_render_scale() {
+        assert_eq!(scene_copy_extent((640, 480), (640, 480)), (320, 240));
+        assert_eq!(scene_copy_extent((640, 480), (1280, 960)), (640, 480));
+        assert_eq!(scene_copy_extent((640, 480), (1920, 1080)), (960, 540));
+        assert_eq!(scene_copy_extent((640, 480), (1, 1)), (1, 1), "never empty");
+    }
+
+    #[test]
+    fn a_camouflage_pass_binds_the_scene_copy_in_the_sorted_handlers_layers_only() {
+        use crate::object_program::SCENE_COPY_TEXTURE;
+        use crate::object_program::tests::{lit, rigid_program};
+        use tags::material::{ResolvedLayer, ResolvedPass, StageTexture, TextureSource};
+        let mut bytes = Vec::new();
+        for k in 0..3 {
+            for v in [k as f32, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0, 1.0] {
+                bytes.extend(v.to_le_bytes());
+            }
+        }
+        let section = LitSection {
+            index: 4,
+            geometry: 0,
+            influences: 0,
+            decompression: [[1.0; 4]; 3],
+            streams: vec![Some((1, StreamData { bytes: &bytes, stride: 32 }))],
+            vertex_count: 3,
+            parts: vec![(0, 0, vec![[0, 1, 2]])],
+            subparts: HashMap::new(),
+            listed: HashMap::new(),
+        };
+        let mut vertex = |_: map::TagId, _: u16, _: u8| Ok::<_, String>((rigid_program(), vec![0u16, 3, 2]));
+        let mut image = |_: usize, _: map::TagId, _: u32| -> Option<Image> { None };
+        let engine = EngineStages { scene_copy: true, ..EngineStages::default() };
+        let mut camo = additive(0);
+        camo.textures[1] = Some(StageTexture { source: TextureSource::Engine(SCENE_COPY_TEXTURE), size: None, stage_size: None });
+        camo.pixel_shader = shaders::PixelShaderDef { texture_modes: 1 << 5, ..Default::default() }.to_bytes();
+        let pass = |implementations| ResolvedPass { index: 0, pass: map::TagId(0xe000_0001), implementations };
+        let shader = map::TagId(0xe000_0020);
+        let camouflage = tags::material::Material {
+            shader,
+            template: map::TagId(0xe000_0021),
+            inputs: Default::default(),
+            layers: vec![
+                ResolvedLayer { lod: 0, layer: usize::from(CAMO_LAYER), passes: vec![pass(vec![camo.clone()])] },
+                ResolvedLayer { lod: 0, layer: usize::from(HOLOGRAM_LAYER), passes: vec![pass(vec![camo.clone()])] },
+                ResolvedLayer { lod: 0, layer: 7, passes: vec![pass(vec![camo])] },
+            ],
+        };
+        let overrides = HashMap::from([(OVERRIDE_MATERIAL, LitMaterial { material: camouflage, shader: ShaderValues::default(), properties: Vec::new() })]);
+        let sections = override_sections(std::slice::from_ref(&section));
+        let built = lit_model(&sections, &overrides, &formats(), &engine, &mut vertex, &mut image);
+        let mut layers: Vec<u8> = built.input.layers.iter().map(|p| p.layer).collect();
+        layers.sort_unstable();
+        assert_eq!(layers, [CAMO_LAYER, HOLOGRAM_LAYER], "{:?}", built.layer_refused);
+        let program = built.input.layers[0].passes[0].implementations[0].unwrap().0;
+        let compiled = &built.input.programs[program];
+        assert_eq!(compiled.pass.scene_copy, [false, true, false, false]);
+        assert_eq!(compiled.pass.view, [false; 4]);
+        assert_eq!(compiled.images[1], None, "the copy is bound per encode");
+        assert_eq!(built.layer_refused.len(), 1, "{:?}", built.layer_refused);
+        assert_eq!(built.layer_refused[0].1, 7);
+        assert!(built.layer_refused[0].2.contains("scene copy"), "{}", built.layer_refused[0].2);
+        // Without the host's copy the layers stay on D3D.
+        let without = lit_model(&sections, &overrides, &formats(), &EngineStages::default(), &mut vertex, &mut image);
+        assert!(without.input.layers.is_empty());
+    }
+
+    #[test]
+    fn the_scene_copy_is_made_once_a_call_at_the_scaled_size() {
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let mut lit = LitObjects::new(&ctx.device);
+        let color = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("color"),
+            size: wgpu::Extent3d { width: 1280, height: 960, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let color = color.create_view(&Default::default());
+        let first = lit.scene_copy(&ctx.device, &color, (640, 480), gfx::external::TargetCopy::Reference);
+        assert_eq!(first.extent, (640, 480));
+        assert_eq!((first.view.texture().width(), first.view.texture().height()), (640, 480));
+        let mut encoder = ctx.device.create_command_encoder(&Default::default());
+        first.record(&ctx.device, &mut encoder);
+        ctx.queue.submit([encoder.finish()]);
+        // A different render scale makes the copy again at its size.
+        let other = lit.scene_copy(&ctx.device, &color, (1280, 960), gfx::external::TargetCopy::Reference);
+        assert_eq!((other.view.texture().width(), other.view.texture().height()), (320, 240));
     }
 
     #[test]

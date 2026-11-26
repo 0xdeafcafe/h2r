@@ -545,6 +545,7 @@ fn lit_parts(
     let engine = EngineStages {
         texaccum: false,
         view: false,
+        scene_copy: false,
         normalization: opened.normalization.as_ref().is_some_and(Option::is_some),
         lightmap: opened.lightmap.clone().and_then(Result::ok),
     };

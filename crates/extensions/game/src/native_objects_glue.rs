@@ -1553,6 +1553,9 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
         // The camouflage handler's layer copies the view
         // (`native_layers_glue`).
         view: true,
+        // and makes the scene copy the camouflage and hologram layers
+        // sample (engine texture 17).
+        scene_copy: true,
         normalization: o.normalization.as_ref().is_some_and(Option::is_some),
         lightmap: o.lightmap.clone().and_then(Result::ok),
     };
