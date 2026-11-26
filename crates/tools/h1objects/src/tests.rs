@@ -3143,3 +3143,26 @@ fn banshee_drive_is_the_counterparts_and_the_rest_halo_1s() {
         0,
     );
 }
+
+/// The rocket warthog is the warthog's drive with Halo 1's own model and
+/// points: its path matches its own row before the warthog's.
+#[test]
+fn rocket_warthog_drive_is_the_counterparts_and_the_rest_halo_1s() {
+    use crate::rebuild::DRIVE_COUNTERPARTS;
+    let row = |path: &str| {
+        let path = path.to_ascii_lowercase().replace('_', " ");
+        DRIVE_COUNTERPARTS
+            .iter()
+            .position(|(words, _)| words.iter().all(|w| path.contains(w)))
+            .unwrap()
+    };
+    assert_eq!(DRIVE_COUNTERPARTS[row("vehicles\\rwarthog\\rwarthog")].0, ["rwarthog"]);
+    assert_eq!(DRIVE_COUNTERPARTS[row("vehicles\\rocket_warthog")].0, ["rocket warthog"]);
+    drive_vehicle_keeps_halo1_and_takes_the_counterpart_drive(
+        "vehicles\\rwarthog\\rwarthog",
+        1,
+        true,
+        4,
+        4,
+    );
+}
