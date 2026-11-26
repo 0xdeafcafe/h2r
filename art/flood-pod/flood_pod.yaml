@@ -1,0 +1,197 @@
+# The Flood pod (art/flood-pod/README.md): a fleshy seed that falls root
+# first and bursts open. A ribbed root bulb on a bone tip, a collar where
+# four petals of shell hinge, a sac under them that the squad comes out of,
+# ribs and tendrils down the root. Model space, world units (1 = 3.048 m):
+# +X forward, +Y left, +Z up, the origin the point of the tip, which is
+# where the pod meets the ground. The petals are drawn shut.
+name: flood_pod
+atlas: flood_pod
+nodes:
+  - { name: shell, at: [0, 0, 0] }
+  - { name: petal_0, parent: shell, at: [0.345, 0, 0.54] }
+  - { name: petal_1, parent: shell, at: [0, 0.345, 0.54] }
+  - { name: petal_2, parent: shell, at: [-0.345, 0, 0.54] }
+  - { name: petal_3, parent: shell, at: [0, -0.345, 0.54] }
+markers:
+  - { name: impact, node: shell, at: [0, 0, 0] }
+  - { name: squad_exit_0, node: shell, at: [0.53, 0.53, 0] }
+  - { name: squad_exit_1, node: shell, at: [-0.53, 0.53, 0] }
+  - { name: squad_exit_2, node: shell, at: [-0.53, -0.53, 0] }
+  - { name: squad_exit_3, node: shell, at: [0.53, -0.53, 0] }
+parts:
+  - lathe:
+      what: the tip, a bone nub the pod lands on
+      node: shell
+      region: bone
+      origin: [0, 0, 0]
+      segments: 8
+      profile: [[0, 0], [0.035, 0.01], [0.065, 0.035], [0.07, 0.06], [0.055, 0.075]]
+  - lathe:
+      what: the root, a bulb of flesh in swollen rings
+      node: shell
+      region: flesh
+      origin: [0, 0, 0]
+      segments: 14
+      profile: [[0.05, 0.03], [0.14, 0.07], [0.22, 0.13], [0.24, 0.17], [0.30, 0.22], [0.31, 0.27], [0.36, 0.33], [0.355, 0.39], [0.38, 0.45], [0.35, 0.50], [0.33, 0.53]]
+  - lathe:
+      what: the collar the petals hinge on
+      node: shell
+      region: rib
+      origin: [0, 0, 0]
+      segments: 14
+      closed: true
+      profile: [[0.31, 0.515], [0.345, 0.505], [0.365, 0.53], [0.345, 0.555], [0.31, 0.545]]
+  - lathe:
+      what: the sac under the petals
+      node: shell
+      region: sac
+      origin: [0, 0, 0]
+      segments: 12
+      profile: [[0.29, 0.52], [0.30, 0.62], [0.27, 0.74], [0.20, 0.85], [0.10, 0.93], [0, 0.96]]
+  - sweep:
+      what: petal 0's plate, +X, a quarter of the upper shell
+      node: petal_0
+      region: petal
+      section: { polygon: [[0.103, -0.268], [0.027, -0.143], [0, 0], [0.027, 0.143], [0.103, 0.268], [0.062, 0.135], [0.036, 0], [0.062, -0.135]] }
+      path: [[0.36, 0, 0.54], [0.4, 0, 0.64], [0.405, 0, 0.76], [0.37, 0, 0.9], [0.29, 0, 1.03], [0.17, 0, 1.13], [0.05, 0, 1.19]]
+      scales: [0.9, 1.0, 1.01, 0.925, 0.725, 0.425, 0.125]
+      caps: false
+  - sweep:
+      what: petal 0's spine, a bone ridge down its back to a claw
+      node: petal_0
+      region: bone
+      section: { polygon: [[0.022, 0], [0, 0.03], [-0.022, 0], [0, -0.03]] }
+      path: [[0.378, 0, 0.55], [0.42, 0, 0.64], [0.425, 0, 0.76], [0.39, 0, 0.905], [0.307, 0, 1.04], [0.182, 0, 1.145], [0.04, 0, 1.215]]
+      scales: [1.0, 0.9, 0.8, 0.7, 0.6, 0.45, 0.15]
+  - sweep:
+      what: petal 1's plate, +Y, a quarter of the upper shell
+      node: petal_1
+      region: petal
+      section: { polygon: [[0.103, -0.268], [0.027, -0.143], [0, 0], [0.027, 0.143], [0.103, 0.268], [0.062, 0.135], [0.036, 0], [0.062, -0.135]] }
+      path: [[0, 0.36, 0.54], [0, 0.4, 0.64], [0, 0.405, 0.76], [0, 0.37, 0.9], [0, 0.29, 1.03], [0, 0.17, 1.13], [0, 0.05, 1.19]]
+      scales: [0.9, 1.0, 1.01, 0.925, 0.725, 0.425, 0.125]
+      caps: false
+  - sweep:
+      what: petal 1's spine, a bone ridge down its back to a claw
+      node: petal_1
+      region: bone
+      section: { polygon: [[0.022, 0], [0, 0.03], [-0.022, 0], [0, -0.03]] }
+      path: [[0, 0.378, 0.55], [0, 0.42, 0.64], [0, 0.425, 0.76], [0, 0.39, 0.905], [0, 0.307, 1.04], [0, 0.182, 1.145], [0, 0.04, 1.215]]
+      scales: [1.0, 0.9, 0.8, 0.7, 0.6, 0.45, 0.15]
+  - sweep:
+      what: petal 2's plate, -X, a quarter of the upper shell
+      node: petal_2
+      region: petal
+      section: { polygon: [[0.103, -0.268], [0.027, -0.143], [0, 0], [0.027, 0.143], [0.103, 0.268], [0.062, 0.135], [0.036, 0], [0.062, -0.135]] }
+      path: [[-0.36, 0, 0.54], [-0.4, 0, 0.64], [-0.405, 0, 0.76], [-0.37, 0, 0.9], [-0.29, 0, 1.03], [-0.17, 0, 1.13], [-0.05, 0, 1.19]]
+      scales: [0.9, 1.0, 1.01, 0.925, 0.725, 0.425, 0.125]
+      caps: false
+  - sweep:
+      what: petal 2's spine, a bone ridge down its back to a claw
+      node: petal_2
+      region: bone
+      section: { polygon: [[0.022, 0], [0, 0.03], [-0.022, 0], [0, -0.03]] }
+      path: [[-0.378, 0, 0.55], [-0.42, 0, 0.64], [-0.425, 0, 0.76], [-0.39, 0, 0.905], [-0.307, 0, 1.04], [-0.182, 0, 1.145], [-0.04, 0, 1.215]]
+      scales: [1.0, 0.9, 0.8, 0.7, 0.6, 0.45, 0.15]
+  - sweep:
+      what: petal 3's plate, -Y, a quarter of the upper shell
+      node: petal_3
+      region: petal
+      section: { polygon: [[0.103, -0.268], [0.027, -0.143], [0, 0], [0.027, 0.143], [0.103, 0.268], [0.062, 0.135], [0.036, 0], [0.062, -0.135]] }
+      path: [[0, -0.36, 0.54], [0, -0.4, 0.64], [0, -0.405, 0.76], [0, -0.37, 0.9], [0, -0.29, 1.03], [0, -0.17, 1.13], [0, -0.05, 1.19]]
+      scales: [0.9, 1.0, 1.01, 0.925, 0.725, 0.425, 0.125]
+      caps: false
+  - sweep:
+      what: petal 3's spine, a bone ridge down its back to a claw
+      node: petal_3
+      region: bone
+      section: { polygon: [[0.022, 0], [0, 0.03], [-0.022, 0], [0, -0.03]] }
+      path: [[0, -0.378, 0.55], [0, -0.42, 0.64], [0, -0.425, 0.76], [0, -0.39, 0.905], [0, -0.307, 1.04], [0, -0.182, 1.145], [0, -0.04, 1.215]]
+      scales: [1.0, 0.9, 0.8, 0.7, 0.6, 0.45, 0.15]
+  - sweep:
+      what: a rib down the root between two petals, at 45 degrees
+      node: shell
+      region: rib
+      section: { circle: { radius: 0.028, sides: 5 } }
+      path: [[0.255, 0.255, 0.5], [0.272, 0.272, 0.42], [0.258, 0.258, 0.31], [0.212, 0.212, 0.2], [0.134, 0.134, 0.1], [0.064, 0.064, 0.045]]
+      scales: [1.0, 1.1, 1.0, 0.85, 0.65, 0.4]
+  - sweep:
+      what: a rib down the root between two petals, at 135 degrees
+      node: shell
+      region: rib
+      section: { circle: { radius: 0.028, sides: 5 } }
+      path: [[-0.255, 0.255, 0.5], [-0.272, 0.272, 0.42], [-0.258, 0.258, 0.31], [-0.212, 0.212, 0.2], [-0.134, 0.134, 0.1], [-0.064, 0.064, 0.045]]
+      scales: [1.0, 1.1, 1.0, 0.85, 0.65, 0.4]
+  - sweep:
+      what: a rib down the root between two petals, at 225 degrees
+      node: shell
+      region: rib
+      section: { circle: { radius: 0.028, sides: 5 } }
+      path: [[-0.255, -0.255, 0.5], [-0.272, -0.272, 0.42], [-0.258, -0.258, 0.31], [-0.212, -0.212, 0.2], [-0.134, -0.134, 0.1], [-0.064, -0.064, 0.045]]
+      scales: [1.0, 1.1, 1.0, 0.85, 0.65, 0.4]
+  - sweep:
+      what: a rib down the root between two petals, at 315 degrees
+      node: shell
+      region: rib
+      section: { circle: { radius: 0.028, sides: 5 } }
+      path: [[0.255, -0.255, 0.5], [0.272, -0.272, 0.42], [0.258, -0.258, 0.31], [0.212, -0.212, 0.2], [0.134, -0.134, 0.1], [0.064, -0.064, 0.045]]
+      scales: [1.0, 1.1, 1.0, 0.85, 0.65, 0.4]
+  - sweep:
+      what: tendril 0, trailing from the root to the ground at 20 degrees
+      node: shell
+      region: tendril
+      section: { circle: { radius: 0.03, sides: 5 } }
+      path: [[0.282, 0.103, 0.24], [0.387, 0.164, 0.26], [0.459, 0.244, 0.2], [0.497, 0.336, 0.1], [0.52, 0.468, 0.04], [0.493, 0.63, 0.03]]
+      scales: [1.0, 0.9, 0.75, 0.6, 0.4, 0.2]
+  - sweep:
+      what: tendril 1, trailing from the root to the ground at 95 degrees
+      node: shell
+      region: tendril
+      section: { circle: { radius: 0.03, sides: 5 } }
+      path: [[-0.026, 0.299, 0.24], [-0.014, 0.402, 0.26], [0.025, 0.486, 0.2], [0.087, 0.548, 0.1], [0.187, 0.612, 0.04], [0.329, 0.646, 0.03]]
+      scales: [1.0, 0.9, 0.75, 0.6, 0.4, 0.2]
+  - sweep:
+      what: tendril 2, trailing from the root to the ground at 160 degrees
+      node: shell
+      region: tendril
+      section: { circle: { radius: 0.03, sides: 5 } }
+      path: [[-0.282, 0.103, 0.24], [-0.413, 0.126, 0.26], [-0.53, 0.113, 0.2], [-0.627, 0.066, 0.1], [-0.74, -0.026, 0.04], [-0.831, -0.177, 0.03]]
+      scales: [1.0, 0.9, 0.75, 0.6, 0.4, 0.2]
+  - sweep:
+      what: tendril 3, trailing from the root to the ground at 235 degrees
+      node: shell
+      region: tendril
+      section: { circle: { radius: 0.03, sides: 5 } }
+      path: [[-0.172, -0.246, 0.24], [-0.251, -0.322, 0.26], [-0.34, -0.364, 0.2], [-0.43, -0.374, 0.1], [-0.554, -0.359, 0.04], [-0.69, -0.293, 0.03]]
+      scales: [1.0, 0.9, 0.75, 0.6, 0.4, 0.2]
+  - sweep:
+      what: tendril 4, trailing from the root to the ground at 305 degrees
+      node: shell
+      region: tendril
+      section: { circle: { radius: 0.03, sides: 5 } }
+      path: [[0.172, -0.246, 0.24], [0.259, -0.331, 0.26], [0.355, -0.38, 0.2], [0.453, -0.394, 0.1], [0.587, -0.381, 0.04], [0.736, -0.313, 0.03]]
+      scales: [1.0, 0.9, 0.75, 0.6, 0.4, 0.2]
+  - lathe:
+      what: pustule 0, a blister on the root at 70 degrees
+      node: shell
+      region: sac
+      origin: [0.12, 0.329, 0.36]
+      axis: [0.342, 0.94, 0.2]
+      segments: 7
+      profile: [[0.055, 0], [0.045, 0.03], [0.02, 0.048], [0, 0.052]]
+  - lathe:
+      what: pustule 1, a blister on the root at 200 degrees
+      node: shell
+      region: sac
+      origin: [-0.291, -0.106, 0.26]
+      axis: [-0.94, -0.342, 0.2]
+      segments: 7
+      profile: [[0.055, 0], [0.045, 0.03], [0.02, 0.048], [0, 0.052]]
+  - lathe:
+      what: pustule 2, a blister on the root at 290 degrees
+      node: shell
+      region: sac
+      origin: [0.125, -0.343, 0.42]
+      axis: [0.342, -0.94, 0.2]
+      segments: 7
+      profile: [[0.055, 0], [0.045, 0.03], [0.02, 0.048], [0, 0.052]]
