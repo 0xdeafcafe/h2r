@@ -559,7 +559,7 @@ fn tag_write(write: &TagWrite) -> Result<()> {
     value(&write.value)
 }
 
-fn tag_key(tag: &TagKey) -> Result<()> {
+pub(crate) fn tag_key(tag: &TagKey) -> Result<()> {
     if tag.group.len() != 4
         || !tag.group.bytes().all(|b| b.is_ascii_graphic() || b == b' ')
         || tag.group.trim().is_empty()

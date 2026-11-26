@@ -2296,6 +2296,7 @@ name = "forge-doc"
 version = "0.1.0"
 dependencies = [
  "content",
+ "forge-shapes",
  "game-markers",
  "map",
  "rules",

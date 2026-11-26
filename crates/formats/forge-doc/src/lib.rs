@@ -14,6 +14,7 @@ mod groups;
 mod labels;
 mod links;
 mod log;
+mod piece;
 mod prefab;
 mod resolve;
 mod validate;
@@ -32,6 +33,7 @@ pub use groups::*;
 pub use labels::*;
 pub use links::*;
 pub use log::*;
+pub use piece::{ActivePiece, PIECE_GROUP, PIECE_TAG, Pieces, piece_tag, piece_value};
 pub use prefab::*;
 pub use map::scenario_layout::BlockKind;
 pub use resolve::{Printed, Resolved, resolve};
@@ -47,7 +49,7 @@ pub type Result<T> = std::result::Result<T, Refusal>;
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Refusal {
     #[error(
-        "Forge format {0} is unsupported (this build reads 1, 2 for documents with labels, 3 for documents with entry edits or prints and 4 for documents with groups)"
+        "Forge format {0} is unsupported (this build reads 1, 2 for documents with labels, 3 for documents with entry edits or prints, 4 for documents with groups and 6 for documents with block-out pieces)"
     )]
     Format(u32),
     /// The base entry an edit names is not the one it was made on: its
@@ -150,6 +152,18 @@ pub trait Apply {
         }
     }
 
+    /// Hand over the active block-out pieces, after the groups. Indices are
+    /// the entries' final ones. A piece's definition has no scenario bytes
+    /// of its own: the adapter installs the tags of each definition and
+    /// points the placement at them.
+    fn pieces(&mut self, pieces: &Pieces) -> Result<()> {
+        if pieces.active.is_empty() {
+            Ok(())
+        } else {
+            Err(Refusal::Unsupported("piece".into()))
+        }
+    }
+
     /// Check every base entry the document names with a print, before the
     /// first edit: the entry as the base map has it must give the print
     /// (`check_print`), or the refusal is `Refusal::Print` and nothing is
@@ -175,6 +189,7 @@ pub fn replay(doc: &ForgeDoc, limits: &Limits, target: &mut impl Apply) -> Resul
     let mut linked = false;
     let mut labelled = false;
     let mut grouped = false;
+    let mut pieced = false;
     for op in &doc.ops {
         match &op.edit {
             Edit::Placement(edit) => target.placement(edit)?,
@@ -188,6 +203,7 @@ pub fn replay(doc: &ForgeDoc, limits: &Limits, target: &mut impl Apply) -> Resul
             Edit::Forge(Forge::Group(_) | Forge::Ungroup { .. } | Forge::GroupLock { .. }) => {
                 grouped = true
             }
+            Edit::Forge(Forge::Piece { .. }) => pieced = true,
             Edit::Forge(_) => linked = true,
             edit => return Err(edit.unsupported()),
         }
@@ -200,6 +216,9 @@ pub fn replay(doc: &ForgeDoc, limits: &Limits, target: &mut impl Apply) -> Resul
     }
     if grouped {
         target.groups(&doc.groups(&limits.base_counts)?)?;
+    }
+    if pieced {
+        target.pieces(&doc.pieces(&limits.base_counts)?)?;
     }
     Ok(())
 }

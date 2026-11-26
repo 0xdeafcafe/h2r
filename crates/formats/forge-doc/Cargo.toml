@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 content.workspace = true
+forge-shapes = { path = "../forge-shapes" }
 game-markers = { path = "../game-markers" }
 map.workspace = true
 rules.workspace = true
