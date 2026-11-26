@@ -18,6 +18,10 @@ const waves_per_round = 5
 const endless = 0
 const set_scale = 0
 const set_skull_count = 0
+const zero_holds = 0
+const bonus_on = 0
+const bonus_ticks = 0
+const set_rounds = 1
 table squads: (kind: Class, per_player: int, minimum: int, maximum: int, preferred: int, tier: int, zone_role: int) = [
     ("fixture", 0, 1, 1, 1, 2, 0),
 ]
@@ -31,6 +35,12 @@ table actor_caps: (actors: int) = [(1)]
 table class_points: (kind: Class, value: int) = [("fixture", 7)]
 table difficulties: (multiplier: int) = [(1000), (1500), (1000), (1000)]
 table set_skulls: (which: int) = [(-1)]
+table bonus_skulls: (s0: int, s1: int, s2: int, s3: int, s4: int, s5: int, s6: int, s7: int, s8: int) = [
+    (-1, -1, -1, -1, -1, -1, -1, -1, -1),
+]
+table bonus_rows: (need0: int, extra0: int, need1: int, extra1: int, need2: int, extra2: int, need3: int, extra3: int, need4: int, extra4: int, need5: int, extra5: int) = [
+    (-1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0),
+]
 table skull_data: (id: int, bit: int, multiplier: int, scheduled: int) = [
     (0, 1, 1500, 1), (1, 2, 1000, 0), (2, 4, 1000, 0), (3, 8, 1000, 0), (4, 16, 1000, 0),
     (5, 32, 1000, 0), (6, 64, 1000, 0), (7, 128, 1000, 0), (8, 256, 1000, 0),

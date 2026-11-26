@@ -519,9 +519,6 @@ pub const ENTRIES: &[Entry] = &[
     // kill across the teams (`ScoreReason::PlayerKill`), and the end with a
     // winning team, `none` for a draw (`Outcome::TeamWon`, `Outcome::Draw`).
     read(id::ZONE_TEAM_DISTANCE, "zone_team_distance", &[Object, Team], Int, Named),
-    // `firefight::Command::Bonus`: the bonus round begins (`on`, for `ticks`)
-    // or ends. A director rule's host log entry, queued like the rest.
-    act(id::FF_BONUS, "ff_bonus", &[Bool, Int], Some("firefight.director"), Queued, Named),
     act(id::FF_TARGET, "ff_target", &[Squad, Team], Some("firefight.director"), Queued, Named),
     act(id::FF_TEAM_LIVES, "ff_team_lives", &[Team, Int], Some("firefight.director"), Queued, Named),
     act(id::FF_PLAYER_SCORE, "ff_player_score", &[Player, Int], Some("firefight.director"), Queued, Named),
@@ -713,6 +710,9 @@ pub const ENTRIES: &[Entry] = &[
     act(id::OBJECTIVE_MARK, "objective_mark", &[Team, Object, Int], Some("hud.objective"), Now, Named),
     act(id::METER, "meter", &[Team, Int, Int], Some("hud.objective"), Now, Named),
     act(id::COUNTDOWN, "countdown", &[Team, Int], Some("hud.objective"), Now, Named),
+    // `firefight::Command::Bonus`: the bonus round begins (`on`, for `ticks`)
+    // or ends. A director rule's host log entry, queued like the rest.
+    act(id::FF_BONUS, "ff_bonus", &[Bool, Int], Some("firefight.director"), Queued, Named),
     // Firefight's drop ship (docs/game/firefight.md, "The drop ship"):
     // whether the kit's zone `n` has a path (`firefight::director::ShipSeen`)
     // and whether the kit's ship is in the world; `ff_drop_squad` is

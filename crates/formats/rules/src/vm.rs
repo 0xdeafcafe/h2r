@@ -3059,7 +3059,15 @@ mod tests {
             + (1 + 16 * e.gates.len())
             + (1 + e.picks.iter().map(|o| 4 + 2 * o.rows.len()).sum::<usize>())
             + (1 + 3 * e.choices.len())
-            + 3 * MAX_PLAYERS;
+            + 3 * MAX_PLAYERS
+            + e.objectives
+                .iter()
+                .map(|o| {
+                    2 + o.marks.iter().map(|m| if m.is_some() { 5 } else { 1 }).sum::<usize>()
+                        + if o.meter.is_some() { 9 } else { 1 }
+                        + if o.ends.is_some() { 5 } else { 1 }
+                })
+                .sum::<usize>();
         let rules = (1 + 2 + 4) + (MAX_TEAMS - 2) + (1 + 4 + 1);
         let first = bytes.len() - held - MAX_TEAMS - rules;
         assert_eq!(bytes[first], 1, "team 0 has an Areas rule");

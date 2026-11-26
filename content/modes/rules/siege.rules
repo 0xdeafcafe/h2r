@@ -134,6 +134,7 @@ table tier_rows: (attack: int, defend: int) = [
 global var phase: int = 0
 // The loadout tier the phase opens: 0 on a map with no numbered sites.
 global var tier: int = 0
+global var advanced: bool = false
 // Whether the map's sites are numbered by phase (a layout), and how many
 // phases of sites it has.
 global var ordered: bool = false
@@ -422,10 +423,16 @@ on tick {
                 if phase < needed and ticks_held(s, team 0) >= capture_time {
                     s.taken = true
                     if s.lit { show_area(s, team 0) }
-                    begin(phase + 1)
+                    phase = phase + 1
+                    advanced = true
                     front = s
                 }
             }
+        }
+        // The new phase opens once, after the sites are counted.
+        if advanced {
+            advanced = false
+            begin(phase)
         }
         // The front moves up once a tick, after the sites are counted:
         // the attackers spawn at the site they took, and the defenders
