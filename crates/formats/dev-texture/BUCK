@@ -25,6 +25,8 @@ crate_tree(
     name = "test-tree",
     files = [
         ":all",
+    ],
+)
 
 workspace_library(
     name = "dev-texture",

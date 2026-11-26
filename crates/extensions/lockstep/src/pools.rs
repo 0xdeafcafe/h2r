@@ -162,7 +162,7 @@ pub fn page_owners_of(pools: &[Pool], page: usize, offsets: &[usize]) -> Vec<(St
 /// most pages first (block order among equals), at most `shown` of them.
 pub fn owners_line(owners: &[(String, usize)], shown: usize) -> String {
     let mut sorted: Vec<&(String, usize)> = owners.iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     let mut parts: Vec<String> = sorted
         .iter()
         .take(shown)
