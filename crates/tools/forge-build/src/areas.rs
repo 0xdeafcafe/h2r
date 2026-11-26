@@ -23,13 +23,6 @@ fn invalid(field: &str) -> Error {
         "identifier" => "a netgame flag has no identifier",
         _ => "a netgame flag has no position",
     }))
-    .with_index(index)
-}
-
-impl Error {
-    fn with_index(self, _index: u32) -> Self {
-        self
-    }
 }
 
 /// Whether a flag labelled `text` has a play form to show: a flag whose

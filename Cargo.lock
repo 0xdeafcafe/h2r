@@ -2305,6 +2305,7 @@ dependencies = [
  "firefight-kit",
  "forge-doc",
  "forge-shapes",
+ "game-markers",
  "map",
  "scenario-edit",
  "tags",

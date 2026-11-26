@@ -191,7 +191,7 @@ fn areas_are_saved_in_the_map_and_read_back_onto_their_flags() {
     let bytes = std::fs::read(&out).unwrap();
     let rows = game_markers::record::read_tail(&mut std::io::Cursor::new(&bytes)).unwrap().unwrap();
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].area, Area::radius(3.0));
+    assert_eq!(rows[0].area, Some(Area::radius(3.0)));
 
     let mut again = crate::Session::new();
     again.open(MapSource::file(&out)).unwrap();
