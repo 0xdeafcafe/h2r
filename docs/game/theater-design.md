@@ -110,8 +110,11 @@ The start state is the engine's own game options and nothing from disk.
   states`, `object looping sounds`, `cloth`, `liquid`; `lockstep::gameplay`)
   the free slots of every data array (`datum_delete` clears an element's
   salt and nothing else, so a free slot holds what an earlier game left)
-  and two words the simulation does not read (`+0x28d8`, `+0x28f8` of the
-  arena: the time globals' neighbours) zeroed first. The per-tick digest of
+  two words the simulation does not read (`+0x28d8`, `+0x28f8` of the
+  arena: the time globals' neighbours) and a 45 KB buffer at `+0x3ea000`
+  (2872 records of three floats and a packed word, written as a game
+  plays, in the pool of the last array; its owner is not identified)
+  zeroed first. The per-tick digest of
   a campaign, which is the whole arena's hash, has the same coverage. The
   hash is also of a game that starts from what a fresh process has: before
   every `GAME_ACTIVATE` the salt counter of each data array is set to what
@@ -120,8 +123,9 @@ The start state is the engine's own game options and nothing from disk.
   it had reached, and every handle a game stores carries one. The object
   memory pool (the `loopobjects` header after the `object` array) is not
   zeroed when objects are freed either, so before `GAME_ACTIVATE` it is
-  zeroed past its first block header when no object is live
-  (`object-pool-clear`); with live objects it is left, counted and logged
+  zeroed when no object is live (`object-pool-clear`): the pool is a chain
+  of blocks, each a 0x20-byte header (size, owner, links, check word) and
+  a body, and the bodies are zeroed with every header left as it is; with live objects it is left, counted and logged
   once. The object globals just past the pool (its end `+0x28` to `+0x80`:
   the next object sequence number, which every object's body stores, and
   the placement scratch after it) are zeroed with it, because a map load

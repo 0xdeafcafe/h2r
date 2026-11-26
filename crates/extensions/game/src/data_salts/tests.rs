@@ -45,6 +45,8 @@ const OBJECTS: u32 = ARENA + 0x40;
 const POOL: u32 = ARENA + 0x1000;
 const POOL_STORAGE: u32 = POOL + 0x40;
 const POOL_SIZE: u32 = 0x2000;
+const BLOCKS: [u32; 3] = [0x100, 0x200, 0x1d00];
+const HEADER: u32 = lockstep::gameplay::BLOCK_HEADER as u32;
 
 /// An arena with the `object` array, the object memory pool after it (its
 /// storage full of what an earlier game left) and one array after the pool.
@@ -61,6 +63,12 @@ fn pooled(live: i32) -> FlatMemory {
     m.write(POOL + 0x28, &POOL_STORAGE.to_le_bytes()).unwrap();
     m.write(POOL + 0x2c, &POOL_SIZE.to_le_bytes()).unwrap();
     m.write(POOL_STORAGE, &vec![0x5a; POOL_SIZE as usize]).unwrap();
+    // The storage is a chain of blocks, each starting with its size.
+    let mut at = POOL_STORAGE;
+    for size in BLOCKS {
+        m.write(at, &size.to_le_bytes()).unwrap();
+        at += size;
+    }
     // The object globals past the storage: a sequence number the last game
     // reached, its placement scratch, and a word that is not theirs.
     m.write(POOL_STORAGE + POOL_SIZE + 0x28, &[0x29; 0x58]).unwrap();
@@ -69,20 +77,38 @@ fn pooled(live: i32) -> FlatMemory {
 }
 
 #[test]
-fn an_empty_object_array_gets_a_clean_pool_but_for_the_first_block_header() {
+fn an_empty_object_array_gets_clean_block_bodies_and_keeps_every_block_header() {
     let mut m = pooled(0);
-    let keep = lockstep::gameplay::POOL_KEEP as u32;
-    assert_eq!(clear_object_pool(&mut m).unwrap(), Cleared::Zeroed((POOL_SIZE - keep) as usize + 0x58));
-    let kept = m.bytes(POOL_STORAGE, keep as usize).unwrap();
-    assert!(kept.iter().all(|b| *b == 0x5a), "the first block header stays");
-    let cleared = m.bytes(POOL_STORAGE + keep, (POOL_SIZE - keep) as usize).unwrap();
-    assert!(cleared.iter().all(|b| *b == 0));
-    // The header is as it was. The object globals past the pool are clean
-    // from the sequence number on; the words before it are not touched.
+    let bodies: u32 = BLOCKS.iter().map(|b| b - HEADER).sum();
+    assert_eq!(clear_object_pool(&mut m).unwrap(), Cleared::Zeroed(bodies as usize + 0x58));
+    let mut at = POOL_STORAGE;
+    for size in BLOCKS {
+        let header = m.bytes(at, HEADER as usize).unwrap();
+        assert_eq!(u32::from_le_bytes(header[..4].try_into().unwrap()), size, "the size stays");
+        assert!(header[4..].iter().all(|b| *b == 0x5a), "so does the rest of the header");
+        let body = m.bytes(at + HEADER, (size - HEADER) as usize).unwrap();
+        assert!(body.iter().all(|b| *b == 0), "the body is clean");
+        at += size;
+    }
+    // The pool's own header is as it was. The object globals past the pool
+    // are clean from the sequence number on; the words before it are not
+    // touched.
     assert_eq!(m.u32(POOL + 0x28).unwrap(), POOL_STORAGE);
     let globals = m.bytes(POOL_STORAGE + POOL_SIZE + 0x28, 0x58).unwrap();
     assert!(globals.iter().all(|b| *b == 0), "sequence number and scratch");
     assert_eq!(m.u32(POOL_STORAGE + POOL_SIZE + 0x10).unwrap(), 1);
+}
+
+#[test]
+fn a_chain_that_breaks_is_cleared_as_far_as_it_holds() {
+    let mut m = pooled(0);
+    // The second block's size is garbage: the walk stops after the first.
+    m.write(POOL_STORAGE + BLOCKS[0], &0u32.to_le_bytes()).unwrap();
+    assert_eq!(
+        clear_object_pool(&mut m).unwrap(),
+        Cleared::Zeroed((BLOCKS[0] - HEADER) as usize + 0x58)
+    );
+    assert_eq!(m.u8(POOL_STORAGE + BLOCKS[0] + HEADER).unwrap(), 0x5a, "past the break is left");
 }
 
 #[test]
