@@ -49,13 +49,24 @@ pub const RENDER_ARRAYS: &[&str] = &[
 /// named in the engine's code yet.
 pub const IDLE_WORDS: &[(usize, usize)] = &[(0x28d8, 1), (0x28f8, 4)];
 
+/// Unowned bytes inside an array's pool that a game after another leaves
+/// stale: `(pool name, offset from the pool's header, length)`. The first
+/// is 12 bytes in the pool of the `noncollideable object cluster refs`
+/// array, well past its elements and bitmap; the second is the word after
+/// the `flocks` array's bitmap. A fresh process has zeros in both. Neither
+/// is a structure the engine's code has been read for.
+pub const SLACK: &[(&str, usize, usize)] = &[
+    ("noncollideable object cluster r", 0x7ed4, 12),
+    ("flocks", 0x1e4, 4),
+];
+
 /// Whether the pool `name` (as [`find_pools`] names it) is render-side.
 pub fn is_render(name: &str) -> bool {
     RENDER_ARRAYS.contains(&name.split('#').next().unwrap_or(name))
 }
 
-/// Zero every render-side pool of `block` and the [`IDLE_WORDS`]. Returns
-/// how many bytes of pools.
+/// Zero every render-side pool of `block`, the [`IDLE_WORDS`] and the
+/// [`SLACK`]. Returns how many bytes of pools.
 pub fn mask_render(block: &mut [u8]) -> usize {
     let mut zeroed = 0;
     for &(at, len) in IDLE_WORDS {
@@ -64,6 +75,12 @@ pub fn mask_render(block: &mut [u8]) -> usize {
         }
     }
     for pool in find_pools(block) {
+        for &(name, offset, len) in SLACK {
+            let at = pool.offset as usize + offset;
+            if pool.name == name && offset + len <= pool.len as usize {
+                block[at..at + len].fill(0);
+            }
+        }
         if is_render(&pool.name) {
             let start = (pool.offset as usize).min(block.len());
             let end = (start + pool.len as usize).min(block.len());
@@ -88,6 +105,8 @@ const POOL_STORAGE_AT: usize = 0x40;
 /// cleared: the allocator's first block header, whose fields (a size, links
 /// to the neighbouring blocks, a check word) the pool still needs.
 pub const POOL_KEEP: usize = 0x40;
+const GLOBALS_FROM: usize = 0x28;
+const GLOBALS_TO: usize = 0x80;
 
 /// The object memory pool of the arena at `base`, where the `object` array
 /// stands.
@@ -97,6 +116,12 @@ pub struct ObjectPool {
     pub live: i32,
     /// The pool's storage, as offsets into the block.
     pub storage: std::ops::Range<usize>,
+    /// The object globals just past the storage: the next object sequence
+    /// number (`+0x28`) and the placement scratch after it (to `+0x80`).
+    /// The process zeroes them once, at its start, and a map load does not
+    /// reset them, so a game after another begins with the sequence
+    /// number where the last game left it and its scratch stale.
+    pub globals: std::ops::Range<usize>,
 }
 
 /// Find the object memory pool in `block` from its header, which lies inside
@@ -116,7 +141,14 @@ pub fn object_pool(block: &[u8], base: u32) -> Option<ObjectPool> {
     let start = (word(header + POOL_STORAGE)?.checked_sub(base)?) as usize;
     let size = word(header + POOL_SIZE)? as usize;
     (start == header + POOL_STORAGE_AT && size > POOL_KEEP && start + size <= block.len())
-        .then_some(ObjectPool { live, storage: start..start + size })
+        .then(|| {
+            let end = start + size;
+            ObjectPool {
+                live,
+                storage: start..end,
+                globals: (end + GLOBALS_FROM).min(block.len())..(end + GLOBALS_TO).min(block.len()),
+            }
+        })
 }
 
 /// Zero the elements of every data array of `block` that are free (a zero
@@ -251,6 +283,28 @@ mod tests {
         let seeds = salt_seeds(&fresh);
         assert_eq!(seeds.len(), 3);
         assert_eq!(seeds[0], (0x20 + layout::NEXT_SALT, 0x8000 | u16::from_le_bytes(*b"ob")));
+    }
+
+    #[test]
+    fn the_known_slack_of_a_pool_does_not_reach_the_hash() {
+        let mut block = vec![0u8; 0x9000];
+        for (at, name) in [(0x20usize, "noncollideable object cluster r"), (0x8200, "flocks")] {
+            block[at..at + name.len()].copy_from_slice(name.as_bytes());
+            block[at + SIG_AT..at + SIG_AT + 4]
+                .copy_from_slice(&engine::datum::SIGNATURE.to_le_bytes());
+        }
+        let mut stale = block.clone();
+        stale[0x20 + 0x7ed4..0x20 + 0x7ee0].fill(0x77);
+        stale[0x8200 + 0x1e4..0x8200 + 0x1e6].copy_from_slice(&[0x2a, 0x01]);
+        assert_ne!(block, stale);
+        mask_render(&mut block);
+        mask_render(&mut stale);
+        assert_eq!(block, stale);
+        // A byte next to the slack is not.
+        let mut near = block.clone();
+        near[0x20 + 0x7ee0] = 1;
+        mask_render(&mut near);
+        assert_ne!(near, block);
     }
 
     #[test]

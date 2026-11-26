@@ -61,6 +61,10 @@ fn pooled(live: i32) -> FlatMemory {
     m.write(POOL + 0x28, &POOL_STORAGE.to_le_bytes()).unwrap();
     m.write(POOL + 0x2c, &POOL_SIZE.to_le_bytes()).unwrap();
     m.write(POOL_STORAGE, &vec![0x5a; POOL_SIZE as usize]).unwrap();
+    // The object globals past the storage: a sequence number the last game
+    // reached, its placement scratch, and a word that is not theirs.
+    m.write(POOL_STORAGE + POOL_SIZE + 0x28, &[0x29; 0x58]).unwrap();
+    m.write(POOL_STORAGE + POOL_SIZE + 0x10, &1u32.to_le_bytes()).unwrap();
     m
 }
 
@@ -68,14 +72,17 @@ fn pooled(live: i32) -> FlatMemory {
 fn an_empty_object_array_gets_a_clean_pool_but_for_the_first_block_header() {
     let mut m = pooled(0);
     let keep = lockstep::gameplay::POOL_KEEP as u32;
-    assert_eq!(clear_object_pool(&mut m).unwrap(), Cleared::Zeroed((POOL_SIZE - keep) as usize));
+    assert_eq!(clear_object_pool(&mut m).unwrap(), Cleared::Zeroed((POOL_SIZE - keep) as usize + 0x58));
     let kept = m.bytes(POOL_STORAGE, keep as usize).unwrap();
     assert!(kept.iter().all(|b| *b == 0x5a), "the first block header stays");
     let cleared = m.bytes(POOL_STORAGE + keep, (POOL_SIZE - keep) as usize).unwrap();
     assert!(cleared.iter().all(|b| *b == 0));
-    // The header, and what is after the pool, are as they were.
+    // The header is as it was. The object globals past the pool are clean
+    // from the sequence number on; the words before it are not touched.
     assert_eq!(m.u32(POOL + 0x28).unwrap(), POOL_STORAGE);
-    assert_eq!(m.u8(POOL_STORAGE + POOL_SIZE).unwrap(), 0);
+    let globals = m.bytes(POOL_STORAGE + POOL_SIZE + 0x28, 0x58).unwrap();
+    assert!(globals.iter().all(|b| *b == 0), "sequence number and scratch");
+    assert_eq!(m.u32(POOL_STORAGE + POOL_SIZE + 0x10).unwrap(), 1);
 }
 
 #[test]

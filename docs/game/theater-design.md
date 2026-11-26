@@ -122,7 +122,13 @@ The start state is the engine's own game options and nothing from disk.
   zeroed when objects are freed either, so before `GAME_ACTIVATE` it is
   zeroed past its first block header when no object is live
   (`object-pool-clear`); with live objects it is left, counted and logged
-  once. Playback compares it before it applies the first
+  once. The object globals just past the pool (its end `+0x28` to `+0x80`:
+  the next object sequence number, which every object's body stores, and
+  the placement scratch after it) are zeroed with it, because a map load
+  does not reset them. Twelve bytes in the pool of the `noncollideable
+  object cluster refs` array and a word after the `flocks` array's bitmap
+  are stale slack in a game after another and are masked
+  (`lockstep::gameplay::SLACK`). Playback compares it before it applies the first
   record and refuses a film whose start it did not reproduce.
 
 ### The update stream
