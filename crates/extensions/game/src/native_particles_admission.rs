@@ -241,8 +241,9 @@ impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
     }
     fn arm_effect(&self, mem: &mut dyn GuestMemory, site: Site) -> bool {
         self.arm(Source::Immediate(site));
-        // All vertices are published, but END is not. Drain prior work
-        // without ownership, then own only this leaf's completed draw.
+        // END is not published; the weather layer's last vertex is not
+        // either (its BEGIN is that vertex call's first push). Drain prior
+        // work without ownership, then own only this leaf's completed draw.
         self.publish(mem, Producer::Immediate(site), 0);
         self.admission
             .scope
@@ -253,8 +254,8 @@ impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
     }
     fn arm_flare(&self, mem: &mut dyn GuestMemory, site: flares::Site) {
         let mut device = self.device.lock().unwrap_or_else(|e| e.into_inner());
-        // Drain with no owner. End has yet to submit the fan, even when
-        // its four vertices were already published inline.
+        // Drain with no owner. End has yet to submit the fan, whether its
+        // four vertices are published inline or the last is still to come.
         *self.admission.scope.lock().unwrap_or_else(|e| e.into_inner()) = Scope::default();
         if device.drain_admission_boundary(&mut DeviceMemory(mem)).ok() == Some(true) {
             self.admission.scope.lock().unwrap_or_else(|e| e.into_inner()).issuing =

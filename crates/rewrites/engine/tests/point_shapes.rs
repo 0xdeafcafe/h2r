@@ -15,26 +15,36 @@ mod common;
 
 use engine::point_shapes::{self, DECLARED, Verdict};
 use engine::points::{self, Point, Sig};
+use engine::points::scene_effects::EFFECT_LEAVES;
 
-fn checked(x: &xbe::Xbe, point: &Point, addr: u32) -> Verdict {
-    let read = |va: u32, buf: &mut [u8]| match x.bytes_at(va, buf.len()) {
+fn reader<'a>(x: &'a xbe::Xbe<'_>) -> impl Fn(u32, &mut [u8]) -> bool + 'a {
+    move |va: u32, buf: &mut [u8]| match x.bytes_at(va, buf.len()) {
         Ok(b) => {
             buf.copy_from_slice(b);
             true
         }
         Err(_) => false,
-    };
-    point_shapes::verify(point, addr, &read)
+    }
+}
+
+fn checked(x: &xbe::Xbe, point: &Point, addr: u32) -> Verdict {
+    point_shapes::verify(point, addr, &reader(x))
+}
+
+/// The retail XBE's bytes, or `None` without one.
+fn image() -> Option<Vec<u8>> {
+    let path = common::xbe_path()?;
+    let bytes = std::fs::read(&path).expect("read the XBE");
+    assert_eq!(common::sha256(&bytes), common::IMAGE_SHA256, "not the retail image");
+    Some(bytes)
 }
 
 #[test]
 fn every_point_has_its_shape_in_the_image() {
-    let Some(path) = common::xbe_path() else {
+    let Some(bytes) = image() else {
         eprintln!("SKIPPED every_point_has_its_shape_in_the_image: no XBE (set H2_XBE)");
         return;
     };
-    let bytes = std::fs::read(&path).expect("read the XBE");
-    assert_eq!(common::sha256(&bytes), common::IMAGE_SHA256, "not the retail image");
     let x = xbe::Xbe::parse(&bytes).expect("parse the XBE");
 
     // The table, the declared sites, and the points features make from the
@@ -60,4 +70,25 @@ fn every_point_has_its_shape_in_the_image() {
     }
     assert!(wrong.is_empty(), "{} of the points are not what they say:\n{}", wrong.len(), wrong.join("\n"));
     assert!(held > 300, "only {held} points checked");
+}
+
+/// The immediate effect and flare observers: a site where a call ends is a
+/// call's continuation, which install refuses ("... dropped: ... is a
+/// call's continuation"), so the observer would never run. This reads
+/// only the bytes before each site; install also needs the image's resume
+/// table, which every call's continuation is in.
+#[test]
+fn no_effect_leaf_site_is_a_calls_continuation() {
+    let Some(bytes) = image() else {
+        eprintln!("SKIPPED no_effect_leaf_site_is_a_calls_continuation: no XBE (set H2_XBE)");
+        return;
+    };
+    let x = xbe::Xbe::parse(&bytes).expect("parse the XBE");
+    let read = reader(&x);
+    let wrong: Vec<String> = EFFECT_LEAVES
+        .into_iter()
+        .flat_map(|leaf| [&leaf.begin, &leaf.end])
+        .filter_map(|p| point_shapes::continuation(p, p.base, &read))
+        .collect();
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
