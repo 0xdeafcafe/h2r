@@ -128,6 +128,7 @@ connection to hold `session.claim`.
 | `collision.trace` | read | [`collision`](#collision-the-native-collision-world) |
 | `collision.sources`, `collision.sources.clear` | read, claim | [`collision`](#collision-the-native-collision-world) |
 | `anim.graph_walk`, `anim.manager` | read | [`anim`](#anim-the-animation-graph-walk) |
+| `sim.arms` | read | [`sim.arms`](#simarms-the-native-sim-gate-read) |
 | `input.list`, `input.log.read` | read | [Input logs](#input-act-like-a-player) |
 | `trace.*`, `flight.*` | read | [Tick traces and the flight recorder](#tick-traces-and-the-flight-recorder) |
 | `shadow.enable`, `shadow.disable`, `shadow.status` | act, act, read | [Shadow checks](#shadow-checks) |
@@ -5750,6 +5751,41 @@ the scenario to establish coverage. See [animation-manager.md](../engine/animati
 ```sh
 h2 agent anim.manager
 ```
+
+## `sim.arms`: the native-sim gate read
+
+`sim.arms` reads every native-sim shadow and authority arm in one call:
+the instrument that decides whether a sim phase may be on by default
+([sim-rewrite.md](../engine/sim-rewrite.md#3-determinism-and-exactness)).
+It is a game method answered at a tick boundary from process counters, so
+it needs no guest memory. Code: `crates/extensions/agent/src/sim_arms.rs`,
+wire types in `crates/extensions/agent-proto/src/sim_arms.rs`.
+
+| Method | Access | Params and result |
+|---|---|---|
+| `sim.arms` | read | No parameters. Returns `subsystems`: `physics`, `objects`, `anim`, `collision`, `seats`, `effects`, in that order. |
+
+Each subsystem has `name`, `switch` (`impl.sim.native.<name>`), `on` (the
+switch in this process), `arms` and `clean`: `checked > 0 && mismatched
+== 0`, summed over the arms. Each arm has `name`, `checked`, `matched`,
+`mismatched`, `answered` (calls Rust answered in the guest's place) and
+`declined` (calls left to the guest unchecked, summed over reasons). The
+sources are `sim_physics::parity::status`, `sim_objects::functions::parity::status`,
+the graph walk's `arm_stats` and `stats`, `sim_anim::manager::arm::stats`,
+`sim_collision::WORLD.stats` and the shadow registry's `sim.seats` and
+`sim.effects` groups. A source without a counter reports 0 for that
+field: physics and collision have no `checked` (it is `matched` plus
+`mismatched`) and no `answered`; `anim.manager` has no `answered` and its
+`differed` is `mismatched`; shadow ports have no `answered` and their
+`skipped` is `declined`. A subsystem with its switch off reads zeros, so
+`clean` is false.
+
+```sh
+h2 agent sim.arms
+```
+
+Run the scenario, read `sim.arms`, and flip a phase on only when its
+subsystem is `clean` with `checked` large enough for the scenario.
 
 ## `collision`: the native collision world
 

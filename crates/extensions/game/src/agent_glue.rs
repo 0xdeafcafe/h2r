@@ -259,6 +259,8 @@ impl AgentGlue {
         agent::collision::install(&agent);
         // The animation graph walk's arm and body (impl.sim.native.anim).
         agent::anim::install(&agent);
+        // Every native-sim arm in one read (`sim.arms`, the phase gate).
+        agent::sim_arms::install(&agent);
         agent::raw::install(&agent, &sim);
         agent::havok::install_writes(&agent, &sim);
         // `world.*`'s `physics.standing_fits`: the superbounce mode's
