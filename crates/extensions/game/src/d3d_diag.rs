@@ -555,7 +555,7 @@ pub(crate) fn probe_draw<S: std::fmt::Debug>(
         program: draw.shader.pixel_shader.is_some(),
         blend: st.blend_enable,
         depth_write: st.depth_write,
-        vs: vertex_name(&draw.shader.vertex),
+        vs: vertex_name(&draw.shader.vertex, draw.retail_constants.as_ref().map(|(_, f)| *f)),
         depth_state: Some(depth_record(draw)),
         constants: Some(draw.shader.constants.clone() as Arc<[[f32; 4]]>),
         layout: None,
@@ -563,15 +563,30 @@ pub(crate) fn probe_draw<S: std::fmt::Debug>(
 }
 
 /// The vertex side of a draw for `render.frame`: `fvf 0x…`, or `prog
-/// @start n=slots #hash` (the low 32 bits of the words' FNV-1a hash).
-fn vertex_name(v: &d3d::shader::VertexProcessing) -> String {
+/// @start n=slots #hash clip=<source>` (the low 32 bits of the words'
+/// FNV-1a hash; `clip` is where the clip position comes from, see
+/// `Microcode::clip_text`), then ` lens=x<factor>` when the display lens
+/// widened the draw (`ResolvedDraw::retail_constants`). A program draw on
+/// a wide display with `clip=unknown` or `clip=fixed` and no `lens` is
+/// drawn at the retail 4:3 width.
+fn vertex_name(v: &d3d::shader::VertexProcessing, lens: Option<f32>) -> String {
     match v {
         d3d::shader::VertexProcessing::FixedFunction { fvf } => format!("fvf {fvf:#x}"),
-        d3d::shader::VertexProcessing::Program { start, microcode } => format!(
-            "prog @{start} n={} #{:08x}",
-            microcode.len() / 4,
-            microcode.words_hash() as u32
-        ),
+        d3d::shader::VertexProcessing::Program { start, microcode } => {
+            let mut name = format!(
+                "prog @{start} n={} #{:08x}",
+                microcode.len() / 4,
+                microcode.words_hash() as u32
+            );
+            let clip = microcode.clip_text();
+            if !clip.is_empty() {
+                name.push_str(&format!(" clip={clip}"));
+            }
+            if let Some(factor) = lens {
+                name.push_str(&format!(" lens=x{factor:.3}"));
+            }
+            name
+        }
     }
 }
 
@@ -1884,7 +1899,12 @@ mod tests {
             }
         );
         let hash = d3d::shader::Microcode::hash_words(&[0; 12]) as u32;
-        assert_eq!(info.vs, format!("prog @7 n=3 #{hash:08x}"));
+        assert!(info.vs.starts_with(&format!("prog @7 n=3 #{hash:08x}")), "{}", info.vs);
+        assert!(!info.vs.contains("lens="), "no display lens on this draw: {}", info.vs);
+        let mut wide = depth_draw();
+        wide.retail_constants = Some((wide.shader.constants.clone(), 0.75));
+        let info = probe_draw(1u32, Some(2u32), &wide, &Ok(DrawOutcome::Drawn));
+        assert!(info.vs.ends_with(" lens=x0.750"), "a widened draw says so: {}", info.vs);
         let block = info.constants.expect("constants");
         assert_eq!(block.len(), d3d::shader::CONSTANTS);
         assert_eq!(block[96 - 38], [0.0, 0.0, 16384.0, 1.0]);

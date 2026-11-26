@@ -109,6 +109,24 @@ impl Microcode {
         *self.position.get_or_init(|| crate::clip_space::epilogue::position(&self.words))
     }
 
+    /// Where the program's clip position comes from, for diagnostics:
+    /// `rows(b)` (the matrix `c[b..b + 4]`, the one the display lens
+    /// widens), `fixed` (a pass-through) or `unknown` (the lens leaves the
+    /// draw at its retail width). Empty without the `gpu` feature.
+    pub fn clip_text(&self) -> String {
+        #[cfg(feature = "gpu")]
+        {
+            use crate::interp::epilogue::Position;
+            match self.clip_position() {
+                Position::Rows(b) => format!("rows({b})"),
+                Position::Fixed => "fixed".into(),
+                Position::Unknown => "unknown".into(),
+            }
+        }
+        #[cfg(not(feature = "gpu"))]
+        String::new()
+    }
+
     /// The hash [`new`](Self::new) gives `words`: FNV-1a over the dwords
     /// (only in-process maps use it).
     pub fn hash_words(words: &[u32]) -> u64 {

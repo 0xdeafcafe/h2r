@@ -196,6 +196,9 @@ mod tests {
             ..Default::default()
         };
         let mut world = base.clone();
+        if let VertexProcessing::Program { microcode, .. } = &world.vertex {
+            assert_eq!(microcode.clip_text(), "rows(8)");
+        }
         let retail = projection.for_draw(&mut world, true).unwrap();
         assert!(Arc::ptr_eq(&source, &retail));
         assert_eq!(world.constants[start], source[start].map(|x| x * 0.5));
@@ -223,6 +226,9 @@ mod tests {
             microcode: pass.words().to_vec().into(),
         };
         assert!(projection.for_draw(&mut quad, true).is_none());
+        if let VertexProcessing::Program { microcode, .. } = &quad.vertex {
+            assert_eq!(microcode.clip_text(), "fixed");
+        }
         assert!(Arc::ptr_eq(&quad.constants, &source));
     }
 

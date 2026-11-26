@@ -1179,7 +1179,11 @@ The wide view's remaining work, in order:
   high-contrast surface at the same tick at 4:3 and ultrawide. Use the agent
   API's `render.frame` and `render.capture` to identify the producer of any
   displaced lookup and inspect its projected coordinates after division by W.
-  A correction belongs on the display's screen-space lookup. Asset UVs and
+  `render.frame {"arm":true,"draws":true}` names each program draw's
+  clip source and lens (`vs`: `clip=rows(b)`, `fixed` or `unknown`,
+  `lens=x<f>`), so a scene draw on a wide display that carries no `lens`
+  (water, sky or flare programs whose clip is not read) is the one drawn
+  at the retail width. A correction belongs on the display's screen-space lookup. Asset UVs and
   the retail reference keep their original mapping.
 - Fractional and odd-scale point taps in retail water, fog and feedback
   draws. A half-texel-shifted point sample can select the adjacent texel.

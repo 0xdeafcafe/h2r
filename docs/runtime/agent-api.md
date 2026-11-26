@@ -1399,9 +1399,13 @@ worker's choice of renderer.
   `truncated` says when there were more). Its pass, D3D entry, primitive,
   vertex and index counts, outcome, texture formats, whether it has a
   pixel program, blends or writes depth; `vs`, the vertex side: `fvf 0x...`
-  or `prog @start n=slots #hash` for a vertex program (the low 32 bits of
-  the words' FNV-1a hash, the same in every frame, so one program's draws
-  can be picked out); and `depth`: `mode` (`D3DRS_ZENABLE`: `off`, `z`,
+  or `prog @start n=slots #hash clip=<source>` for a vertex program (the low
+  32 bits of the words' FNV-1a hash, the same in every frame, so one
+  program's draws can be picked out; `clip` is where its clip position
+  comes from: `rows(b)` the matrix `c[b..b+4]`, `fixed` a pass-through,
+  `unknown` anything else; ` lens=x<f>` follows when the display lens
+  widened the draw, so on a wide display a program draw without `lens` is
+  drawn at the retail 4:3 width); and `depth`: `mode` (`D3DRS_ZENABLE`: `off`, `z`,
   `w`), `w` (W-buffered as drawn: `SET_CONTROL0`'s z-perspective bit once
   pushed, else `mode`), `func` and `write` (`D3DRS_ZFUNC`,
   `D3DRS_ZWRITEENABLE`), `viewport` (`[MinZ, MaxZ]`), `scale`
