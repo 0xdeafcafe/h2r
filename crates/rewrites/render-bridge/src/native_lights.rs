@@ -1311,7 +1311,7 @@ mod tests {
         let host = Arc::new(Records(Mutex::new(Vec::new())));
         set_host(host.clone());
         VIEW_TARGET.set(Some([1; 8]));
-        let mut m = FlatMemory::new(0x1000);
+        let mut m = FlatMemory::new(0, 0x1000);
         assert_eq!(draw_scene(&mut m, &passes), 1);
         assert_eq!(*host.0.lock().unwrap(), [4], "the light's layer 12 in slot 4");
     }
