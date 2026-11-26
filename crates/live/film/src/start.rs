@@ -19,6 +19,7 @@
 //! | `SETS` | JSON [`Settings`] |
 //! | `VARI` | the rules script of the variant, when it has one |
 //! | `MAPV` | the Forge map variant, when the game has one |
+//! | `HDET` | what the start hash is made of ([`HashDetail`]), to name what differs when a start does not reproduce |
 use crate::blam::MatchHeader;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -40,9 +41,12 @@ pub const HASH: [u8; 4] = *b"HASH";
 pub const SETS: [u8; 4] = *b"SETS";
 pub const VARI: [u8; 4] = *b"VARI";
 pub const MAPV: [u8; 4] = *b"MAPV";
+pub const HDET: [u8; 4] = *b"HDET";
 
 const REQUIRED: [[u8; 4]; 6] = [STMP, GAME, OPTS, RAND, HASH, SETS];
-const ALL: [[u8; 4]; 8] = [STMP, GAME, OPTS, RAND, HASH, SETS, VARI, MAPV];
+const ALL: [[u8; 4]; 9] = [STMP, GAME, OPTS, RAND, HASH, SETS, VARI, MAPV, HDET];
+/// The arena is hashed in pages of this many bytes for [`HashDetail`].
+pub const DETAIL_PAGE: usize = 4096;
 
 /// What decides whether a build can play the film: the recording's XBE, its
 /// simulation contract and its hook digest.
@@ -83,6 +87,73 @@ pub struct Settings {
     pub switches: String,
 }
 
+/// What the start hash is made of: the digest of the extension records
+/// folded into it, and a hash of each [`DETAIL_PAGE`] of the arena. A start
+/// that does not reproduce is compared part by part, so the report names
+/// the arena pages or the extension state that differ rather than the
+/// whole.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HashDetail {
+    pub ext: Option<u64>,
+    pub pages: Vec<u64>,
+}
+
+impl HashDetail {
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut out = vec![u8::from(self.ext.is_some())];
+        out.extend_from_slice(&self.ext.unwrap_or(0).to_le_bytes());
+        out.extend(self.pages.iter().flat_map(|p| p.to_le_bytes()));
+        out
+    }
+
+    fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        ensure!(
+            bytes.len() >= 9 && (bytes.len() - 9) % 8 == 0 && bytes.len() <= MAX_JSON,
+            "film start hash detail is malformed"
+        );
+        ensure!(bytes[0] <= 1, "film start hash detail has a bad flag");
+        let word = |at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
+        Ok(Self {
+            ext: (bytes[0] == 1).then(|| word(1)),
+            pages: (9..bytes.len()).step_by(8).map(word).collect(),
+        })
+    }
+
+    /// What differs from `now`: the extension digest, and the byte offsets
+    /// of the first few arena pages.
+    pub fn differences(&self, now: &HashDetail) -> String {
+        let pages: Vec<String> = self
+            .pages
+            .iter()
+            .zip(&now.pages)
+            .enumerate()
+            .filter(|(_, (a, b))| a != b)
+            .map(|(i, _)| format!("{:#x}", i * DETAIL_PAGE))
+            .collect();
+        let mut out = Vec::new();
+        if self.pages.len() != now.pages.len() {
+            out.push(format!("the arena is {} pages, not {}", now.pages.len(), self.pages.len()));
+        }
+        if !pages.is_empty() {
+            let shown = pages.iter().take(12).cloned().collect::<Vec<_>>().join(" ");
+            let more = pages.len().saturating_sub(12);
+            out.push(format!(
+                "{} arena page(s) differ, at offsets {shown}{}",
+                pages.len(),
+                if more > 0 { format!(" and {more} more") } else { String::new() }
+            ));
+        }
+        if self.ext != now.ext {
+            out.push(format!("extension records differ (film {:x?}, now {:x?})", self.ext, now.ext));
+        }
+        if out.is_empty() {
+            "arena pages and extension records are the same".into()
+        } else {
+            out.join("; ")
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GameStart {
     pub stamp: Stamp,
@@ -91,11 +162,14 @@ pub struct GameStart {
     pub options: Vec<u8>,
     /// The shared random words at entry to the first update.
     pub random: [u32; 2],
-    /// `lockstep::hash_sim` of the arena at entry to the first update.
+    /// `lockstep::hash_gameplay` of the arena (the simulation's part,
+    /// render-side arrays zeroed) at entry to the first update.
     pub start_hash: u64,
     pub settings: Settings,
     pub variant: Option<Vec<u8>>,
     pub map_variant: Option<Vec<u8>>,
+    /// What `start_hash` is made of, when the recorder could read it.
+    pub hash_detail: Option<HashDetail>,
 }
 
 fn json<T: Serialize>(value: &T) -> Result<Vec<u8>> {
@@ -133,6 +207,9 @@ impl GameStart {
         }
         if let Some(map) = &self.map_variant {
             sections.push((MAPV, map.clone()));
+        }
+        if let Some(detail) = &self.hash_detail {
+            sections.push((HDET, detail.to_bytes()));
         }
         let mut out = Vec::new();
         out.extend_from_slice(&(sections.len() as u32).to_le_bytes());
@@ -216,6 +293,7 @@ impl GameStart {
             settings: from_json(found[&SETS], "settings")?,
             variant: found.get(&VARI).map(|b| b.to_vec()),
             map_variant: found.get(&MAPV).map(|b| b.to_vec()),
+            hash_detail: found.get(&HDET).map(|b| HashDetail::from_bytes(b)).transpose()?,
         })
     }
 }

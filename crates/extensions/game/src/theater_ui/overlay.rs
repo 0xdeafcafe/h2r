@@ -402,6 +402,8 @@ fn step(current: usize, count: usize, forward: bool) -> usize {
 
 enum Request {
     Open,
+    /// `theater.end`: leave the film this game is playing.
+    End,
     Prepare(String),
     PrepareState(String),
     State,
@@ -442,6 +444,11 @@ pub(super) struct Session {
     pub open_error: Option<String>,
     pub screenshot: bool,
     pub leave_requested: bool,
+    /// The film `theater.watch` queued, until its answer comes.
+    opening: Option<Entry>,
+    /// The film plays in this game (`theater.watch`), not in a player
+    /// process: leaving is `theater.end`.
+    in_game: bool,
     pub completed_clip: Option<Clip>,
     held_keys: HashSet<Key>,
     key_skip: SkipHold,
@@ -466,14 +473,22 @@ impl Session {
             return Err("A film is already opening or playing".into());
         }
         let rpc = self.rpc.as_mut().ok_or("Playback agent is unavailable")?;
-        let range = entry
+        // A clip opens at its first tick; the track keeps the viewer in it.
+        let from = entry
             .clip
             .as_ref()
-            .map(|clip| [clip.from_tick, clip.to_tick]);
+            .and_then(|clip| u32::try_from(clip.from_tick).ok())
+            .or(view.and_then(|v| v.tick));
         let id = rpc.send(
-            agent_proto::theater::PLAY,
-            json!({"id": entry.film.id, "range": range, "view": view}),
+            agent_proto::theater::WATCH,
+            json!({
+                "id": entry.film.id,
+                "tick": from,
+                "seat": view.and_then(|v| v.seat),
+                "camera": view.and_then(|v| v.camera),
+            }),
         );
+        self.opening = Some(entry.clone());
         self.pending.insert(id, Request::Open);
         Ok(())
     }
@@ -622,8 +637,41 @@ impl Session {
                 }
             }
             (Request::PrepareState(_), Err(_)) => {}
-            (Request::Open, Ok(_)) => {}
-            (Request::Open, Err(error)) => self.open_error = Some(error),
+            (Request::Open, Ok(value)) if value["queued"].as_bool() == Some(false) => {
+                self.opening = None;
+                self.open_error = Some("The film's game could not be queued".into());
+            }
+            (Request::Open, Ok(_)) => {
+                // The film's game is queued: the bar is this game's own.
+                if let Some(entry) = self.opening.take() {
+                    self.track = Some(Track::from_entry(&entry));
+                    self.ready = false;
+                    self.in_game = true;
+                    self.menu = None;
+                }
+            }
+            (Request::Open, Err(error)) => {
+                self.opening = None;
+                self.open_error = Some(error);
+            }
+            (Request::End, answer) => {
+                if let Err(error) = answer {
+                    self.notice = Some(error);
+                } else {
+                    // The menu is queued; the film page opens when it loads.
+                    self.track = None;
+                    self.ready = false;
+                    self.in_game = false;
+                    self.menu = None;
+                }
+            }
+            (Request::State, Err(_)) if self.in_game && self.ready => {
+                // The game left the film: it is no longer playing.
+                self.track = None;
+                self.ready = false;
+                self.in_game = false;
+                self.menu = None;
+            }
             (Request::State, Ok(value)) => {
                 if let (Some(track), Ok(mut s)) =
                     (&mut self.track, serde_json::from_value::<AgentState>(value))
@@ -816,6 +864,11 @@ impl Session {
                 let id = track.film.clone();
                 let clip = track.clip_range();
                 self.send("theater.share", json!({ "id": id, "visibility": visibility, "clip": clip }), Request::Share);
+            }
+            Command::End if self.in_game => {
+                if !self.pending.values().any(|r| matches!(r, Request::End)) {
+                    self.send(api::END, json!({}), Request::End);
+                }
             }
             Command::End => self.leave_requested = true,
             Command::Cancel => {}

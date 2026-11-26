@@ -53,7 +53,20 @@ pub(super) struct Ready {
     controller: u32,
     generation: u64,
     reply: Option<Reply>,
+    /// A film of this machine's own library (the film page after a film
+    /// watched in the running game): no account selected it.
+    local: bool,
+    /// Menu updates a local page has waited for the menu to settle.
+    waited: u32,
 }
+
+/// A film page reopened after a film watched in the running game waits for
+/// the main menu: its screen is on top, and has been for this many updates.
+/// The page is opened over a menu that is still building its own screens
+/// otherwise, and the check that the page is on top fails. It gives up
+/// waiting after [`MENU_WAIT_UPDATES`].
+const MENU_SETTLE_UPDATES: u32 = 20;
+const MENU_WAIT_UPDATES: u32 = 900;
 
 pub(super) fn share_url(
     archive: &live_hle::films::Archive,
@@ -254,6 +267,8 @@ impl Theater {
                                 controller,
                                 generation,
                                 reply,
+                                local: false,
+                                waited: 0,
                             });
                         } else if let Some(reply) = reply {
                             let _ = reply.send(Err("Theater selection changed".into()));
@@ -270,6 +285,53 @@ impl Theater {
             })
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// The film page of a film of this machine's library, opened from the
+    /// menu the viewer returns to after a film watched in the running game.
+    /// The page opens at the next menu update, as a linked film page does.
+    pub fn reopen_film(&self, film: &str) {
+        let location = self
+            .0
+            .location
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let Some(location) = location else { return };
+        let found = (location.open)(&location.dir)
+            .and_then(|library| library.list(&location.installation))
+            .map(|films| films.into_iter().find(|f| f.id == film));
+        let entry = match found {
+            Ok(Some(film)) => Entry {
+                film,
+                clip: None,
+                archive_clip: None,
+            },
+            Ok(None) => return,
+            Err(error) => {
+                eprintln!("theater: could not reopen the film page: {error}");
+                return;
+            }
+        };
+        let (controller, account, generation) = {
+            let mut state = self.state();
+            state.open_generation = state.open_generation.wrapping_add(1);
+            (
+                state.controller,
+                state.account.unwrap_or(live_proto::Xuid(0)),
+                state.open_generation,
+            )
+        };
+        *self.0.link.lock().unwrap_or_else(|e| e.into_inner()) = Some(Ready {
+            entry,
+            view: api::InitialView::default(),
+            account,
+            controller,
+            generation,
+            reply: None,
+            local: true,
+            waited: 0,
+        });
     }
 
     pub(super) fn pump_external_link(&self) {
@@ -421,7 +483,23 @@ impl Feature for Driver {
                             .and_then(|l| {
                                 l.signed_in.as_ref()?.signed_in_account(ready.controller)
                             });
-                        let result = if account.map(|(id, _)| id) != Some(ready.account)
+                        if ready.local && ready.waited < MENU_WAIT_UPDATES {
+                            let up = cx.read(|m| ui_watch::read(&ReadGm(m)).top.is_some());
+                            if !up || ready.waited < MENU_SETTLE_UPDATES {
+                                {
+                                    let mut slot =
+                                        theater.0.link.lock().unwrap_or_else(|e| e.into_inner());
+                                    if slot.is_none() {
+                                        *slot = Some(Ready { waited: ready.waited + 1, ..ready });
+                                    }
+                                }
+                                let out = cx
+                                    .call(GuestCall::new(points::UI_UPDATE.base).args([elapsed]))
+                                    .await?;
+                                return Ok(Ret::new(out.eax, 4));
+                            }
+                        }
+                        let result = if (!ready.local && account.map(|(id, _)| id) != Some(ready.account))
                             || theater.state().open_generation != ready.generation
                         {
                             Err("Theater account or selection changed".into())

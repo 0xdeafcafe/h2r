@@ -276,6 +276,8 @@ fn a_changed_start_hash_stops_before_the_first_update() {
             && why.contains("start hash"),
         "{why}"
     );
+    // The report names what differs: one page of the arena.
+    assert!(why.contains("1 arena page(s) differ"), "{why}");
     assert!(!s.play.as_ref().unwrap().begun());
     // Nothing was written into the update.
     drop(s);

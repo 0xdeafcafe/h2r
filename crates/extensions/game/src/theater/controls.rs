@@ -106,109 +106,7 @@ impl Session {
                 } else {
                     Access::Act
                 },
-                move |p| {
-                    let mut s = session.lock();
-                    match name {
-                        api::PLAY => {
-                            let p = params::<api::Play>(p)?;
-                            if p.range.is_some() {
-                                return Err(RpcError::new(
-                                    code::INVALID_PARAMS,
-                                    "range is only for opening a film",
-                                ));
-                            }
-                            if p.id.is_some_and(|id| id != s.header.meta.id) {
-                                return Err(RpcError::new(code::GONE, "film is not loaded"));
-                            }
-                            s.set_transport_pause(false);
-                        }
-                        api::PAUSE | api::STATE => {
-                            let _: Empty = params(p)?;
-                            if name == api::PAUSE {
-                                s.set_transport_pause(true);
-                            }
-                        }
-                        api::SPEED => {
-                            let p = params::<api::Speed>(p)?;
-                            if !(0.25..=4.).contains(&p.speed) {
-                                return Err(RpcError::new(
-                                    code::INVALID_PARAMS,
-                                    "speed must be 0.25 to 4",
-                                ));
-                            }
-                            s.set_speed(p.speed);
-                        }
-                        api::SEEK => {
-                            s.seek(params(p)?)?;
-                        }
-                        api::STEP => {
-                            s.step(params(p)?)?;
-                        }
-                        api::HUD => {
-                            let p = params::<api::Hud>(p)?;
-                            let Mode::Replay(_, replay) = &s.mode else { unreachable!() };
-                            if let Some(visible) = p.game {
-                                replay.camera.set_hud(visible);
-                                s.presentation.hud = visible;
-                            }
-                            if let Some(visible) = p.bar {
-                                s.presentation.bar = visible;
-                            }
-                            if p.game.is_some() {
-                                s.request_camera_redraw();
-                            }
-                        }
-                        api::CAMERA => {
-                            let p = params::<api::Camera>(p)?;
-                            s.camera_request(p)?;
-                            s.request_camera_redraw();
-                        }
-                        api::KEYFRAMES => {
-                            let _: Empty = params(p)?;
-                            return Ok(serde_json::json!(api::Keyframes {
-                                film: s
-                                    .engine
-                                    .as_ref()
-                                    .map(|engine| engine.track.keyframe_ticks())
-                                    .unwrap_or_default(),
-                                sidecar: s.engine.as_ref()
-                                    .map(|engine| engine.track.sidecar_ticks())
-                                    .unwrap_or_default(),
-                                ring: s.ring_status.ticks.clone(),
-                                capture_points: s.capture_points.clone(),
-                                ring_bytes: s.ring_status.bytes as u64,
-                                ring_cap: s.ring_status.cap as u64,
-                                sidecar_bytes: s.engine.as_ref()
-                                    .map_or(0, |engine| engine.track.sidecar_bytes()),
-                            }));
-                        }
-                        _ => unreachable!(),
-                    }
-                    let Mode::Replay(_, replay) = &s.mode else {
-                        unreachable!()
-                    };
-                    let camera = replay.camera.state();
-                    Ok(serde_json::json!(api::State {
-                        id: s.header.meta.id.clone(),
-                        tick: s.visible_tick(),
-                        length_ticks: s.length(),
-                        paused: s.visible_pause(),
-                        speed: s.speed,
-                        speed_reached: if s.camera_redraw.is_some() && s.visible_pause() { Some(0.0) } else { s.speed_reached() },
-                        seeking: s.camera_redraw.is_none() && s.jump_in_progress(),
-                        compatibility: api::CompatibilityState::Playable,
-                        camera_seat: camera.seat,
-                        camera: camera.mode,
-                        camera_player: camera.player,
-                        camera_pose: camera.pose,
-                        camera_fallback: camera.fallback,
-                        monitor_looks: monitor_looks(),
-                        hud: s.presentation.hud,
-                        bar: s.presentation.bar,
-                        kills: s.presentation.kills.iter().copied().collect(),
-                        seek: if s.camera_redraw.is_none() { s.seek_info() } else { None },
-                    }))
-                },
+                move |p| session.transport(name, p),
             );
         }
     }
@@ -265,11 +163,20 @@ pub(super) struct LibraryLaunch {
 
 impl LibraryLaunch {
     pub(super) fn entry(&self, id: &str) -> Result<film::LibraryEntry, RpcError> {
-        let unavailable = |e: String| RpcError::new(code::UNAVAILABLE, e);
-        let entry = library_entry(&self.dir, id)?;
+        self.playable(library_entry(&self.dir, id)?)
+    }
+
+    /// The film at `path`, if this build plays it.
+    fn entry_at(&self, path: &std::path::Path) -> Result<film::LibraryEntry, RpcError> {
+        let entry = film::LibraryEntry::read(path)
+            .map_err(|e| RpcError::new(code::INVALID_PARAMS, format!("{}: {e}", path.display())))?;
+        self.playable(entry)
+    }
+
+    fn playable(&self, entry: film::LibraryEntry) -> Result<film::LibraryEntry, RpcError> {
         let compatibility = self.installation.compatibility(&entry);
         if compatibility.state == api::CompatibilityState::Unavailable {
-            return Err(unavailable(compatibility.reasons.join(" ")));
+            return Err(RpcError::new(code::UNAVAILABLE, compatibility.reasons.join(" ")));
         }
         Ok(entry)
     }
@@ -311,6 +218,79 @@ impl LibraryLaunch {
     }
 }
 
+/// `theater.watch`: check the film, queue its options as the next game and
+/// arm it once the game's calls have queued them
+/// (docs/game/theater-design.md, "Starting a film in the running game").
+fn watch_film(
+    film: &Arc<Session>,
+    launch: &LibraryLaunch,
+    p: Value,
+    ctx: &mut agent::GameCtx<'_>,
+) -> Result<Value, RpcError> {
+    use agent::sim::calls::{self, Call};
+    let unavailable = |e: String| RpcError::new(code::UNAVAILABLE, e);
+    let invalid = |e: &str| RpcError::new(code::INVALID_PARAMS, e);
+    let request: api::Watch = params(p)?;
+    request.check().map_err(invalid)?;
+    if request.seat.is_some_and(|n| n >= 16) {
+        return Err(invalid("invalid seat"));
+    }
+    // A co-op or networked session runs one game for every machine.
+    let mut sim_mode = None;
+    if !ctx
+        .reader
+        .with_guest(&mut |g| sim_mode = crate::cheats::sim_mode(&*g))
+    {
+        return Err(unavailable("guest memory unavailable".into()));
+    }
+    if let Some(why) = crate::game_load::session_refusal(sim_mode) {
+        return Err(unavailable(why.into()));
+    }
+    let entry = match (&request.id, &request.path) {
+        (Some(id), _) => {
+            valid_prepare_id(id)?;
+            launch.entry(id)?
+        }
+        (_, Some(path)) => launch.entry_at(std::path::Path::new(path))?,
+        _ => return Err(invalid("name the film by id or by path")),
+    };
+    if let Some(tick) = request.tick
+        && u64::from(tick) > entry.meta.length_ticks
+    {
+        return Err(invalid("invalid starting tick"));
+    }
+    let planned = film
+        .plan_watch(&entry.path, request.view())
+        .map_err(|e| unavailable(format!("{e:#}")))?;
+    let queue = film.calls().ok_or_else(|| {
+        unavailable(
+            "the game's own functions aren't reachable here: the agent-calls feature isn't \
+             installed"
+                .into(),
+        )
+    })?;
+    let ticket = calls::submit(&queue, Call::QueueGame { steps: planned.steps() })
+        .map_err(unavailable)?;
+    let (id, length) = (planned.id().to_owned(), planned.length_ticks());
+    eprintln!("theater.watch: queueing film {id}");
+    let film = film.clone();
+    let mut planned = Some(planned);
+    ctx.defer(
+        30,
+        Box::new(move |_: &mut agent::GameCtx<'_>| {
+            let out = ticket.outcome()?;
+            Some(out.map(|v| {
+                let queued = v["queued"].as_bool().unwrap_or(false);
+                if let Some(planned) = planned.take().filter(|_| queued) {
+                    film.arm_watch(planned);
+                }
+                serde_json::json!(api::Watching { id: id.clone(), length_ticks: length, queued })
+            }))
+        }),
+    );
+    Ok(Value::Null)
+}
+
 fn valid_prepare_id(id: &str) -> Result<(), RpcError> {
     if id.is_empty()
         || id
@@ -322,8 +302,11 @@ fn valid_prepare_id(id: &str) -> Result<(), RpcError> {
     Ok(())
 }
 
-/// In the original game, Watch selects a local or downloaded film and
-/// launches its isolated player. Transport requests follow that player.
+/// A player's game that records its games watches a film in itself
+/// (`theater.watch`, [`Session::plan_watch`]), and answers the transport
+/// there. Any other game launches a film player process for a film
+/// (`theater.play`), and transport requests follow that process.
+/// `watch` is the game's own session, if it can watch.
 pub fn library_methods(
     a: &agent::Agent,
     dir: PathBuf,
@@ -331,6 +314,7 @@ pub fn library_methods(
     out: PathBuf,
     data: PathBuf,
     installation: Installation,
+    watch: Option<Arc<Session>>,
 ) {
     struct PlayerProcess {
         child: std::process::Child,
@@ -360,6 +344,19 @@ pub fn library_methods(
             "saved": entry.saved,
         })).collect()))
     });
+    if let Some(film) = watch.clone().filter(|film| film.can_watch()) {
+        let launch = launch.clone();
+        let watching = film.clone();
+        a.add_game_method(api::WATCH, Access::Act, move |p, ctx| {
+            watch_film(&watching, &launch, p, ctx)
+        });
+        let leaving = film;
+        a.add_method(api::END, Access::Act, move |p| {
+            let _: Empty = params(p)?;
+            leaving.end_film()?;
+            Ok(serde_json::json!({"leaving": true}))
+        });
+    }
     let compat = launch.clone();
     a.add_method(api::COMPAT, Access::Read, move |p| {
         let request = params::<api::Compat>(p)?;
@@ -393,6 +390,7 @@ pub fn library_methods(
         let player = player.clone();
         let launch = launch.clone();
         let jobs = jobs.clone();
+        let watch = watch.clone();
         a.add_method(
             name,
             if matches!(name, api::STATE | api::KEYFRAMES | api::CLIP_STATUS) {
@@ -411,6 +409,16 @@ pub fn library_methods(
                 } else {
                     p
                 };
+                // A film playing in this game answers its own transport.
+                if let Some(film) = watch.as_ref().filter(|film| film.watching()) {
+                    if name == api::EXIT {
+                        film.end_film()?;
+                        return Ok(serde_json::json!({"leaving": true}));
+                    }
+                    if api::TRANSPORT_METHODS.contains(&name) {
+                        return film.transport(name, p);
+                    }
+                }
                 let mut player = player.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(active) = player.as_mut()
                     && active
@@ -497,5 +505,127 @@ pub fn library_methods(
                 })
             },
         );
+    }
+}
+
+impl Session {
+    /// A transport request (`theater.play`, `.pause`, `.state`, ...) of the
+    /// film playing in this session: a film player process answers it from
+    /// its own session; a game that watches a film answers it from the
+    /// state that holds the film ([`watch`]).
+    pub(super) fn transport(&self, name: &str, p: Value) -> Result<Value, RpcError> {
+        let mut s = self.lock();
+        if !matches!(s.mode, Mode::Replay(..)) {
+            return Err(RpcError::new(code::UNAVAILABLE, "no film is playing"));
+        }
+        match name {
+            api::PLAY => {
+                let p = params::<api::Play>(p)?;
+                if p.range.is_some() {
+                    return Err(RpcError::new(
+                        code::INVALID_PARAMS,
+                        "range is only for opening a film",
+                    ));
+                }
+                if p.id.is_some_and(|id| id != s.header.meta.id) {
+                    return Err(RpcError::new(code::GONE, "film is not loaded"));
+                }
+                s.set_transport_pause(false);
+            }
+            api::PAUSE | api::STATE => {
+                let _: Empty = params(p)?;
+                if name == api::PAUSE {
+                    s.set_transport_pause(true);
+                }
+            }
+            api::SPEED => {
+                let p = params::<api::Speed>(p)?;
+                if !(0.25..=4.).contains(&p.speed) {
+                    return Err(RpcError::new(
+                        code::INVALID_PARAMS,
+                        "speed must be 0.25 to 4",
+                    ));
+                }
+                s.set_speed(p.speed);
+            }
+            api::SEEK => {
+                s.seek(params(p)?)?;
+            if s.watch.is_some()
+                && let Some(target) = s.restart
+            {
+                // A start-route seek in the running game queues the film's
+                // options again; the game loads the map and plays on.
+                drop(s);
+                self.requeue(target)?;
+                s = self.lock();
+            }
+            }
+            api::STEP => {
+                s.step(params(p)?)?;
+            }
+            api::HUD => {
+                let p = params::<api::Hud>(p)?;
+                let Mode::Replay(_, replay) = &s.mode else { unreachable!() };
+                if let Some(visible) = p.game {
+                    replay.camera.set_hud(visible);
+                    s.presentation.hud = visible;
+                }
+                if let Some(visible) = p.bar {
+                    s.presentation.bar = visible;
+                }
+                if p.game.is_some() {
+                    s.request_camera_redraw();
+                }
+            }
+            api::CAMERA => {
+                let p = params::<api::Camera>(p)?;
+                s.camera_request(p)?;
+                s.request_camera_redraw();
+            }
+            api::KEYFRAMES => {
+                let _: Empty = params(p)?;
+                return Ok(serde_json::json!(api::Keyframes {
+                    film: s
+                        .engine
+                        .as_ref()
+                        .map(|engine| engine.track.keyframe_ticks())
+                        .unwrap_or_default(),
+                    sidecar: s.engine.as_ref()
+                        .map(|engine| engine.track.sidecar_ticks())
+                        .unwrap_or_default(),
+                    ring: s.ring_status.ticks.clone(),
+                    capture_points: s.capture_points.clone(),
+                    ring_bytes: s.ring_status.bytes as u64,
+                    ring_cap: s.ring_status.cap as u64,
+                    sidecar_bytes: s.engine.as_ref()
+                        .map_or(0, |engine| engine.track.sidecar_bytes()),
+                }));
+            }
+            _ => unreachable!(),
+        }
+        let Mode::Replay(_, replay) = &s.mode else {
+            unreachable!()
+        };
+        let camera = replay.camera.state();
+        Ok(serde_json::json!(api::State {
+            id: s.header.meta.id.clone(),
+            tick: s.visible_tick(),
+            length_ticks: s.length(),
+            paused: s.visible_pause(),
+            speed: s.speed,
+            speed_reached: if s.camera_redraw.is_some() && s.visible_pause() { Some(0.0) } else { s.speed_reached() },
+            seeking: s.camera_redraw.is_none() && s.jump_in_progress(),
+            compatibility: api::CompatibilityState::Playable,
+            camera_seat: camera.seat,
+            camera: camera.mode,
+            camera_player: camera.player,
+            camera_pose: camera.pose,
+            camera_fallback: camera.fallback,
+            monitor_looks: monitor_looks(),
+            hud: s.presentation.hud,
+            bar: s.presentation.bar,
+            kills: s.presentation.kills.iter().copied().collect(),
+            seek: if s.camera_redraw.is_none() { s.seek_info() } else { None },
+        }))
     }
 }

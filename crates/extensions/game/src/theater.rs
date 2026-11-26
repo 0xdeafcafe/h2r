@@ -46,6 +46,8 @@ use warm_transport::{Boundary, RingStatus};
 mod local_pads;
 mod transport;
 mod pacing;
+mod watch;
+pub use watch::Planned;
 pub use transport::Restart;
 pub(crate) use transport::SeekTaps;
 mod video_menu;
@@ -229,6 +231,9 @@ struct State {
     complete: bool,
     /// What a default recording kept and why it kept nothing.
     outcome: Outcome,
+    /// Present while a film plays in the viewer's own session
+    /// ([`watch`]); the recorder is parked meanwhile.
+    watch: Option<watch::WatchInfo>,
 }
 
 /// A default recording's account of itself: the films it cut, the last
@@ -293,6 +298,8 @@ pub struct Session {
     bots: Mutex<bot_tape::BotTape>,
     upload: Mutex<Option<std::thread::JoinHandle<Result<()>>>>,
     require_upload: bool,
+    /// Watching a film in the running game ([`watch`]).
+    watch: watch::Hub,
 }
 
 /// Cuts the game in play and discards the tape when it drops
@@ -581,6 +588,11 @@ impl Session {
         };
         let ring_status = RingStatus::from_warm(warm.as_ref());
         let from_start = play.is_some();
+        let own = watch::Own {
+            xbe_sha256: film::xbe_digest(xbe),
+            title_id,
+            features: header.features.clone(),
+        };
         let session = Arc::new(Self {
             warm: Mutex::new(warm),
             version: header.version,
@@ -620,8 +632,10 @@ impl Session {
                 failure: None,
                 complete: false,
                 outcome: Outcome::default(),
+                watch: None,
             }),
             upload: Mutex::default(),
+            watch: watch::Hub::new(own),
         });
         if from_start {
             // The player answers the guest's tick count itself: no wall
@@ -702,13 +716,14 @@ impl Session {
             Mode::Replay(..) => (None, false),
         };
         agent_proto::theater::Status {
-            default_recording: s.header.player_features && !self.replaying,
+            default_recording: s.header.player_features && !self.replaying && s.watch.is_none(),
             tape,
             in_game,
             games_cut: s.outcome.films.iter().map(|p| p.display().to_string()).collect(),
             last_discard: s.outcome.discard.clone(),
             notes: s.outcome.notes.clone(),
             failure: s.failure.clone(),
+            watch_failure: self.watch_failure(),
         }
     }
 
@@ -874,6 +889,12 @@ impl Session {
         rt: &runtime::Runtime,
     ) -> Result<SliceAction> {
         self.bot_boundary()?;
+        // A film watched in the running game is paced by the guest's own
+        // tick count (`pacing.rs`); the scheduler has nothing to hold, stop
+        // or restart.
+        if self.lock().watch.is_some() {
+            return Ok(SliceAction::Run);
+        }
         loop {
             let clip_done = self.advance_capture()?;
             #[cfg(feature = "gpu")]
@@ -940,6 +961,15 @@ impl Session {
     }
 
     pub fn finish(&self, slices: u64, teardown: bool) -> Result<()> {
+        // A film that diverged while watched ends like End Film; the game
+        // goes on (`watch.rs`).
+        if !teardown && self.watch_diverged() {
+            return Ok(());
+        }
+        if teardown {
+            // A film still playing is dropped: the recorder seals its own.
+            self.drop_watch();
+        }
         self.finish_output(slices, teardown)?;
         if teardown {
             if let Some(job) = self.upload.lock().unwrap_or_else(|e| e.into_inner()).take() {
@@ -1417,6 +1447,12 @@ impl hooks::Feature for Observer {
                     let mut s = session.lock();
                     s.finish_camera_return();
                     let Mode::Replay(_, r) = &s.mode else { break };
+                    // A film watched in the running game is neither a
+                    // process to stop nor a tick to hold: a pause is the
+                    // guest's zero-tick frame (`pacing.rs`).
+                    if s.watch.is_some() {
+                        break;
+                    }
                     if s.failure.is_some()
                         || s.complete
                         || s.restart.is_some()
@@ -1425,7 +1461,7 @@ impl hooks::Feature for Observer {
                         o.runtime.request_preempt(runtime::preempt::REQUEST);
                         break;
                     }
-                    if !s.holding() || s.running_camera_redraw() {
+                    if !s.holding() || s.running_camera_redraw() || s.pacing.is_some() {
                         break;
                     }
                 }

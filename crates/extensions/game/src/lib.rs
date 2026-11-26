@@ -197,6 +197,7 @@ pub mod new_maps;
 pub mod test_maps;
 pub mod pad_lightbar;
 pub mod pad_speaker;
+pub mod data_salts;
 pub mod precision;
 #[cfg(feature = "desktop-runtime")]
 pub mod render_probe;

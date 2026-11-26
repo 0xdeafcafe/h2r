@@ -21,7 +21,7 @@
 //! item: the data directory is empty and private, and the guest's storage
 //! writes go to a scratch (`vfs::Vfs::guard_writes`).
 use super::{Session, State, metadata};
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use film::file::FilmActions;
 use film::start::GameStart;
 use runtime::Guest;
@@ -45,6 +45,10 @@ pub(super) struct Play {
     /// Updates applied in the game tick in progress: each took the film
     /// tick after the last.
     applied: u64,
+    /// The film's game has been queued and has not activated: a start-route
+    /// seek in the running game (`watch`). Updates before the activation
+    /// are the old game's own and are not the film's.
+    awaiting: bool,
     /// The mounted maps, to check the game's map against the film's.
     pub(super) map_vfs: Option<Arc<Mutex<vfs::Vfs>>>,
 }
@@ -75,8 +79,28 @@ impl Play {
             begun: false,
             at: 0,
             applied: 0,
+            awaiting: false,
             map_vfs: None,
         }))
+    }
+
+    /// The film's options are queued again: the game that runs until they
+    /// load is not the film's, and the film starts over at the game's first
+    /// update (`Session::requeue`).
+    pub(super) fn await_activation(&mut self) {
+        self.begun = false;
+        self.at = 0;
+        self.applied = 0;
+        self.awaiting = true;
+    }
+
+    /// The queued game activated.
+    pub(super) fn activated(&mut self) {
+        self.awaiting = false;
+    }
+
+    pub(super) fn awaiting(&self) -> bool {
+        self.awaiting
     }
 
     /// The film's length in ticks.
@@ -137,13 +161,23 @@ impl Play {
             descriptor.match_start_tick = Some(first);
             metadata::verify_start(g, first, &descriptor, Some(vfs))?;
         }
-        let hash = lockstep::hash_sim(g, lockstep::SimRegion::HALO2)
+        super::game_start::dump_arena(g, "watch", first);
+        let hash = lockstep::hash_gameplay(g, lockstep::SimRegion::HALO2)
             .context("the arena has no hash at the game's first update")?;
-        ensure!(
-            hash == self.start.start_hash,
-            "the game's start hash {hash:016x} differs from the film's {:016x}",
-            self.start.start_hash
-        );
+        if hash != self.start.start_hash {
+            // Name what differs, when the film says what it was made of.
+            let detail = self
+                .start
+                .hash_detail
+                .as_ref()
+                .zip(super::game_start::hash_detail(g))
+                .map(|(film, now)| format!(" ({})", film.differences(&now)))
+                .unwrap_or_default();
+            bail!(
+                "the game's start hash {hash:016x} differs from the film's {:016x}{detail}",
+                self.start.start_hash
+            );
+        }
         self.begun = true;
         Ok(())
     }
@@ -164,6 +198,9 @@ pub(super) fn ports(options: &[u8]) -> u32 {
 /// game tick applies takes the next film tick.
 pub(super) fn update(state: &mut State, g: &mut Guest, update: u32) -> Result<()> {
     let play = state.play.as_mut().context("no film is being played")?;
+    if play.awaiting {
+        return Ok(());
+    }
     if !play.begun {
         let first = play.start.game.first_update;
         state.tick = first - 1;

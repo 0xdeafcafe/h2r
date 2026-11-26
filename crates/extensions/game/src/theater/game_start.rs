@@ -87,6 +87,11 @@ impl Session {
     /// A map activated (`GAME_ACTIVATE` returned success): a recording
     /// copies the options block the game starts from.
     pub(super) fn game_activated(&self, g: &Guest) {
+        // A film's game, or the end of one, is the watch's boundary: the
+        // recorder is parked while a film plays and sees none of it.
+        if self.watch_boundary(g) {
+            return;
+        }
         let mut s = self.lock();
         if s.complete || s.failure.is_some() {
             return;
@@ -189,6 +194,7 @@ pub(super) fn first_update(
         "the options block is {} bytes",
         options.len()
     );
+    dump_arena(g, "recorded", film_tick);
     Ok(GameStart {
         stamp: stamp(header),
         game: Game {
@@ -199,12 +205,51 @@ pub(super) fn first_update(
         },
         options,
         random: random_words(g)?,
-        start_hash: lockstep::hash_sim(g, lockstep::SimRegion::HALO2)
+        start_hash: lockstep::hash_gameplay(g, lockstep::SimRegion::HALO2)
             .context("the arena has no hash at the game's first update")?,
+        hash_detail: hash_detail(g),
         settings: settings(store, &header.features),
         variant: script(g),
         map_variant: None,
     })
+}
+
+/// With `H2_THEATER_ARENA_DUMP=<dir>`, write the arena as it stands to
+/// `<dir>/arena-<role>-<tick>-<pid>.bin`: a recording's start, or a
+/// watched film's start, to be compared byte for byte.
+pub(super) fn dump_arena(g: &Guest, role: &str, first_update: u64) {
+    let Some(dir) = std::env::var_os("H2_THEATER_ARENA_DUMP") else { return };
+    let (mut bytes, mut pages) = (Vec::new(), Vec::new());
+    let Some((base, _)) = lockstep::hash_sim_blocks(
+        g,
+        lockstep::SimRegion::HALO2,
+        film::start::DETAIL_PAGE,
+        &mut bytes,
+        &mut pages,
+    ) else {
+        return;
+    };
+    let path = std::path::Path::new(&dir)
+        .join(format!("arena-{role}-{first_update}-{}.bin", std::process::id()));
+    match std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, &bytes)) {
+        Ok(()) => eprintln!("theater: arena at the {role} start ({base:#x}) written to {}", path.display()),
+        Err(e) => eprintln!("theater: could not write {}: {e}", path.display()),
+    }
+}
+
+/// What the arena hash at this moment is made of: the extension records'
+/// digest and a hash of each page of the arena. `None` when the arena is
+/// not readable.
+pub(super) fn hash_detail(g: &Guest) -> Option<film::start::HashDetail> {
+    let (mut bytes, mut pages) = (Vec::new(), Vec::new());
+    lockstep::hash_gameplay_blocks(
+        g,
+        lockstep::SimRegion::HALO2,
+        film::start::DETAIL_PAGE,
+        &mut bytes,
+        &mut pages,
+    )?;
+    Some(film::start::HashDetail { ext: sim_ext::digest(), pages })
 }
 
 #[cfg(test)]
