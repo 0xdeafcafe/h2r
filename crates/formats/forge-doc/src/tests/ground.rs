@@ -408,9 +408,9 @@ fn a_mark_that_moves_or_a_solid_that_changes_changes_the_stamp() {
 #[test]
 fn a_recipe_with_classes_round_trips() {
     let r = with_classes();
-    let recipe = r.to_recipe();
-    assert_eq!(GroundRecipe::of(&recipe).unwrap(), Some(r.clone()));
-    let Recipe::Generate { mut parameters, .. } = recipe else {
+    let generated = r.to_recipe();
+    assert_eq!(GroundRecipe::of(&generated).unwrap(), Some(r.clone()));
+    let Recipe::Generate { mut parameters, .. } = generated else {
         panic!("a generate recipe")
     };
     // Three settings, then one parameter a class, in keep order.
