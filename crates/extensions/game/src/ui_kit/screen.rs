@@ -312,6 +312,42 @@ pub struct SlotTexts {
     pub family: Family,
     pub base: AtomicU32,
     slots: Mutex<Vec<(Vec<u8>, bool)>>,
+    /// With a pool, the slots' places in it: (offset, capacity) per slot,
+    /// each taken when its text first needs the room ([`TextPool`]).
+    pool: Option<Arc<TextPool>>,
+    extents: Mutex<Vec<(u32, u32)>>,
+}
+
+/// One guest region that several [`SlotTexts`] share, each slot holding
+/// only as much of it as its text needs (a capacity of 0x20, 0x40, 0x80
+/// or [`SLOT_LEN`]; growing takes a new place and leaves the old one
+/// unused). Screens that would each reserve `family.len * SLOT_LEN`
+/// bytes for slots mostly short or unused take far less of the arena.
+pub struct TextPool {
+    pub base: AtomicU32,
+    len: u32,
+    next: Mutex<u32>,
+}
+
+impl TextPool {
+    pub fn new(len: u32) -> Self {
+        TextPool {
+            base: AtomicU32::new(0),
+            len,
+            next: Mutex::new(0),
+        }
+    }
+    pub fn len(&self) -> u32 {
+        self.len
+    }
+    fn take(&self, cap: u32) -> Option<u32> {
+        let mut next = self.next.lock().unwrap_or_else(|e| e.into_inner());
+        (*next + cap <= self.len).then(|| {
+            let at = *next;
+            *next += cap;
+            at
+        })
+    }
 }
 
 impl SlotTexts {
@@ -320,7 +356,37 @@ impl SlotTexts {
             family,
             base: AtomicU32::new(0),
             slots: Mutex::new(Vec::new()),
+            pool: None,
+            extents: Mutex::new(Vec::new()),
         }
+    }
+    /// Slots placed in `pool` instead of a region of their own.
+    pub fn pooled(family: Family, pool: Arc<TextPool>) -> Self {
+        SlotTexts {
+            pool: Some(pool),
+            ..SlotTexts::new(family)
+        }
+    }
+    /// Room in the pool for slot `slot`'s `need` bytes: its place, grown
+    /// when the text outgrew it. `None` when the pool is full and the
+    /// slot has none.
+    fn extent(&self, slot: usize, need: u32) -> Option<(u32, u32)> {
+        let pool = self.pool.as_ref()?;
+        let mut ex = self.extents.lock().unwrap_or_else(|e| e.into_inner());
+        if ex.len() <= slot {
+            ex.resize(self.family.len as usize, (0, 0));
+        }
+        let (off, cap) = ex[slot];
+        if cap >= need {
+            return Some((off, cap));
+        }
+        let want = need.next_power_of_two().clamp(0x20, SLOT_LEN);
+        if let Some(at) = pool.take(want) {
+            ex[slot] = (at, want);
+        } else if cap == 0 {
+            return None;
+        }
+        Some(ex[slot])
     }
     pub fn set(&self, slot: u32, text: &str) -> u32 {
         let id = self.family.id(slot);
@@ -334,6 +400,16 @@ impl SlotTexts {
         if slots.len() < self.family.len as usize {
             slots.resize(self.family.len as usize, (vec![0], false));
         }
+        if self.pool.is_some() && slots[slot as usize].0 != b {
+            match self.extent(slot as usize, b.len() as u32) {
+                Some((_, cap)) if (b.len() as u32) > cap => {
+                    b.truncate(cap as usize - 1);
+                    b.push(0);
+                }
+                Some(_) => {}
+                None => return id,
+            }
+        }
         let s = &mut slots[slot as usize];
         if s.0 != b {
             *s = (b, true);
@@ -341,10 +417,27 @@ impl SlotTexts {
         id
     }
     pub fn address(&self, id: u32) -> Option<u32> {
+        if let Some(pool) = &self.pool {
+            let base = pool.base.load(Ordering::SeqCst);
+            if base == 0 || !self.family.owns(id) {
+                return None;
+            }
+            let slot = (id - self.family.base) as usize;
+            let known = self.extents.lock().unwrap_or_else(|e| e.into_inner());
+            let (off, cap) = known.get(slot).copied().unwrap_or((0, 0));
+            drop(known);
+            // A slot never set holds an empty text in the first bytes of
+            // its own place.
+            let (off, _) = if cap == 0 { self.extent(slot, 1)? } else { (off, cap) };
+            return Some(base + off);
+        }
         let base = self.base.load(Ordering::SeqCst);
         (base != 0 && self.family.owns(id)).then(|| base + (id - self.family.base) * SLOT_LEN)
     }
     fn keyboard(&self) -> Option<u32> {
+        if self.pool.is_some() {
+            return None;
+        }
         let base = self.base.load(Ordering::SeqCst);
         (base != 0).then(|| base + self.family.len * SLOT_LEN)
     }
@@ -358,14 +451,26 @@ impl SlotTexts {
         }
     }
     pub fn write(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
-        let base = self.base.load(Ordering::SeqCst);
+        let base = match &self.pool {
+            Some(pool) => pool.base.load(Ordering::SeqCst),
+            None => self.base.load(Ordering::SeqCst),
+        };
         if base == 0 {
             return Ok(());
         }
         let mut slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
         for (i, (b, dirty)) in slots.iter_mut().enumerate() {
             if *dirty {
-                m.write(base + i as u32 * SLOT_LEN, b)?;
+                let at = if self.pool.is_some() {
+                    let ex = self.extents.lock().unwrap_or_else(|e| e.into_inner());
+                    match ex.get(i) {
+                        Some(&(off, cap)) if cap != 0 => base + off,
+                        _ => continue,
+                    }
+                } else {
+                    base + i as u32 * SLOT_LEN
+                };
+                m.write(at, b)?;
                 *dirty = false;
             }
         }

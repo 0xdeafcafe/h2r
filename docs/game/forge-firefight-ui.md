@@ -322,6 +322,11 @@ camera and tool take no input (`forge_screens::ui_up`, published to
   publishes each tick (`forge_screens::Facts`): Tools, Tool settings,
   Forge options and Controls (`forge_screens::request`). One screen of
   ours opens at a time; a second is refused by name.
+- **Guest memory.** Every screen's texts and GAME MENU's labels share one
+  64 KiB guest allocation (`forge_screens::TEXT_POOL_LEN`,
+  `ui_kit::screen::TextPool`). A text slot takes 0x20 to 0x100 bytes of it,
+  as its text needs, so a screen costs what it shows, not its whole
+  family at 0x100 bytes a slot; a full pool truncates the new text.
 - **Choices.** A press sends a `sheet::Choice` to its screen's outbox,
   which the session drains each tick. Yes to Leave Game stays in
   `forge_screens`: it leaves as the title leaves a game

@@ -51,7 +51,7 @@ use crate::layout_glue::ReadGm;
 use crate::list_class;
 use crate::ui_kit::dialog_tag;
 use crate::ui_kit::picker::{self, Pick};
-use crate::ui_kit::screen::{SLOT_LEN, SlotTexts};
+use crate::ui_kit::screen::{SlotTexts, TextPool};
 use game_menu::MenuRow;
 use screen::ForgeScreen;
 use sheet::{Ask, Choice, Kind, Look, NumberField, Sheet, TypeSpec};
@@ -95,6 +95,10 @@ pub struct Facts {
     pub enemy_types: Vec<waves::EnemyType>,
 }
 
+/// Bytes of guest memory for every Forge screen's texts together: slots
+/// take what their text needs ([`TextPool`]), not a full slot each.
+const TEXT_POOL_LEN: u32 = 0x10000;
+
 /// The longest name Save as takes: a map variant's.
 pub const NAME_CHARS: u32 = forge_doc::MAX_VARIANT_NAME as u32;
 
@@ -106,6 +110,9 @@ struct Hub {
     /// Save as's keyboard).
     inbox: Mutex<VecDeque<Choice>>,
     facts: Mutex<Facts>,
+    /// The one guest region every screen's texts and GAME MENU's labels
+    /// are placed in ([`TextPool`]).
+    text_pool: Arc<TextPool>,
     /// GAME MENU's labels.
     menu_texts: SlotTexts,
     /// Save as's UTF-16 buffer, and whether the keyboard is on it.
@@ -134,15 +141,20 @@ struct Hub {
 
 impl Hub {
     fn new() -> Hub {
+        let text_pool = Arc::new(TextPool::new(TEXT_POOL_LEN));
         Hub {
             screens: Kind::ALL
                 .iter()
-                .map(|k| Arc::new(ForgeScreen::new(*k)))
+                .map(|k| Arc::new(ForgeScreen::pooled(*k, Arc::clone(&text_pool))))
                 .collect(),
             request: Mutex::new(None),
             inbox: Mutex::new(VecDeque::new()),
             facts: Mutex::new(Facts::default()),
-            menu_texts: SlotTexts::new(crate::ui_kit::ids::family("forge game menu")),
+            menu_texts: SlotTexts::pooled(
+                crate::ui_kit::ids::family("forge game menu"),
+                Arc::clone(&text_pool),
+            ),
+            text_pool,
             keyboard: AtomicU32::new(0),
             keyboard_request: Mutex::new(None),
             keyboard_field: Mutex::new(None),
@@ -610,20 +622,15 @@ impl Feature for Driver {
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         hub().built.store(true, Ordering::SeqCst);
+        hub()
+            .text_pool
+            .base
+            .store(b.guest_alloc(TEXT_POOL_LEN, Permissions::RW)?, Ordering::SeqCst);
         for s in &hub().screens {
-            let len = s.kind().family().len * SLOT_LEN;
-            s.texts
-                .base
-                .store(b.guest_alloc(len, Permissions::RW)?, Ordering::SeqCst);
             let me = Arc::clone(s);
             b.locale()
                 .source(s.kind().screen(), move |id| me.texts.address(id));
         }
-        let menu_len = hub().menu_texts.family.len * SLOT_LEN;
-        hub()
-            .menu_texts
-            .base
-            .store(b.guest_alloc(menu_len, Permissions::RW)?, Ordering::SeqCst);
         b.locale()
             .source("forge game menu", |id| hub().menu_texts.address(id));
         hub().keyboard.store(

@@ -25,7 +25,7 @@ use crate::ui_kit::dialog::{
 };
 use crate::ui_kit::input::{Glyph, Input, Prompt};
 use crate::ui_kit::picker::{self, Pick, Picker};
-use crate::ui_kit::screen::SlotTexts;
+use crate::ui_kit::screen::{SlotTexts, TextPool};
 use crate::ui_kit::spec::{Describe, ListPlace, Press, RowSpec, ScreenSpec, ValueStyle};
 use crate::ui_kit::view::Opener;
 
@@ -96,6 +96,15 @@ pub struct ForgeScreen {
 
 impl ForgeScreen {
     pub fn new(kind: Kind) -> Self {
+        Self::with_texts(kind, SlotTexts::new(kind.family()))
+    }
+
+    /// With its texts placed in `pool`, shared with the other screens.
+    pub fn pooled(kind: Kind, pool: Arc<TextPool>) -> Self {
+        Self::with_texts(kind, SlotTexts::pooled(kind.family(), pool))
+    }
+
+    fn with_texts(kind: Kind, texts: SlotTexts) -> Self {
         ForgeScreen {
             kind,
             sheet: Arc::new(Mutex::new(Sheet {
@@ -105,7 +114,7 @@ impl ForgeScreen {
                 rows: Vec::new(),
                 focus: 0,
             })),
-            texts: SlotTexts::new(kind.family()),
+            texts,
             outbox: Arc::default(),
             closing: AtomicBool::new(false),
             close_after_pick: Arc::new(AtomicBool::new(false)),
