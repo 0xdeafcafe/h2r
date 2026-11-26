@@ -177,6 +177,10 @@ pub fn post_step(area: &Area) -> usize {
 /// "Boundaries"), the same in the edit and the play form: [`wall_of`]
 /// its outline from its lowest to its highest.
 pub fn wall(mesh: &mut Mesh, area: &Area, colour: [f32; 3]) {
+    if let Shape::Sphere(radius) = area.shape {
+        sphere_wall(mesh, &area.outline(), radius, colour);
+        return;
+    }
     wall_of(
         mesh,
         &area.outline(),
@@ -185,6 +189,25 @@ pub fn wall(mesh: &mut Mesh, area: &Area, colour: [f32; 3]) {
         post_step(area),
         colour,
     );
+}
+
+/// The boundary of a sphere of `radius` whose equator is `equator`: the
+/// equator and two rings at 0.7 of the radius above and below it, each at
+/// [`wall_of`]'s line alpha, and a meridian through the three rings at every
+/// fourth point. A sphere has no floor to stand a wall on, so it has no skin.
+fn sphere_wall(mesh: &mut Mesh, equator: &[[f32; 2]], radius: f32, colour: [f32; 3]) {
+    const RING: f32 = 0.7;
+    let across = (1.0 - RING * RING).sqrt();
+    let upper = level(&shrunk(equator, across), RING * radius);
+    let middle = level(equator, 0.0);
+    let lower = level(&shrunk(equator, across), -RING * radius);
+    for ring in [&upper, &middle, &lower] {
+        path(mesh, ring, true, colour);
+    }
+    for i in (0..equator.len()).step_by(4) {
+        line(mesh, lower[i], middle[i], colour);
+        line(mesh, middle[i], upper[i], colour);
+    }
 }
 
 /// A wall over the floor outline `outline` between `low` and `high`:
