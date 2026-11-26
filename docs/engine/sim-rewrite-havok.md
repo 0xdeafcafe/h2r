@@ -344,7 +344,11 @@ validation of §7.3.
 
 ```
 crates/rewrites/sim-havok/      no runtime dependency; deps: sim-core, simd, x87
-  src/mem.rs                    the pool directory and LIFO overflow blocks
+  src/mem.rs                    the pools, the dispatcher and the LIFO entries over guest words
+  src/fp.rs                     Exact (simd, x87) and Fast (host f32) arithmetic
+  src/layout.rs                 world, island, entity, motion and pool offsets
+  src/view.rs                   GuestRead: u32, u16, bytes over guest memory
+  src/array.rs                  the Havok array header and its growth
   src/motion.rs                 unconstrained motion: forces, pose integration
   src/jacobian.rs               motion accumulators on both sides of the solve
   src/solver.rs                 the sequential-impulse schema interpreter
@@ -352,9 +356,10 @@ crates/rewrites/sim-havok/      no runtime dependency; deps: sim-core, simd, x87
   src/structure.rs              a structure child's polygon and support feature
   src/weld.rs                   the weld candidate selection from captured distances
   src/broadphase.rs             the incremental three-axis endpoint sweep
-  (planned) fp, layout, view, array, shape, gjk, manifold, contact, island, step, fixture
+  (planned) shape, gjk, manifold, contact, island, step, fixture
 crates/rewrites/engine/src/sim_physics/   the adapters and the oracle ports
   world.rs                      the step, island collide and island integrate entries
+  alloc.rs                      the four memory-system entries
   broadphase.rs                 the batch update's capture arm
   motion.rs                     the two motion methods' capture arms
   parity.rs                     the arms' counters and the broadphase take-over gate

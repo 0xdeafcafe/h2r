@@ -1,7 +1,7 @@
 # The Havok step: entries, writes and classes
 
-Status: Partly built. The digest, its agent method and its sim-report component are built; the step's entries are contracts only, ported by the slices of [sim-rewrite-havok.md](sim-rewrite-havok.md) §11.
-Code: `crates/live/live-telemetry/src/havok_agents/digest.rs` (`read`), `crates/extensions/agent/src/havok.rs` (`havok.digest`), `crates/extensions/agent-proto/src/havok.rs` (`Digest`, `DigestParams`), `crates/extensions/game/src/sim_glue.rs` (the `havok.world` component). Tests: the unit tests of those three files.
+Status: Partly built. The digest, its agent method and its sim-report component are built, and so are the four allocator entries (slice 1); the step's other entries are contracts only, ported by the slices of [sim-rewrite-havok.md](sim-rewrite-havok.md) §11.
+Code: `crates/rewrites/sim-havok/src/mem.rs` and `crates/rewrites/engine/src/sim_physics/alloc.rs` (the allocator), `crates/live/live-telemetry/src/havok_agents/digest.rs` (`read`), `crates/extensions/agent/src/havok.rs` (`havok.digest`), `crates/extensions/agent-proto/src/havok.rs` (`Digest`, `DigestParams`), `crates/extensions/game/src/sim_glue.rs` (the `havok.world` component). Tests: the unit tests of those three files.
 Switch: `impl.sim.native.physics`, listed in [switches.md](../runtime/switches.md).
 
 This is the contract page for the world step `0x311100` and everything
@@ -223,6 +223,61 @@ to `W+0x120` (count `+0x124`), gives the phantom the id at `+0x20` from
 the counter `W+0x130`, and inserts it in the broadphase. Its overlap
 lists are written by the broadphase inside collide (**S**: slice 7, step
 0).
+
+## Allocator
+
+Every Havok and Halo allocation goes through the dispatcher `[0x00480118]`
+(`0x004798b0`, vtable `0x0045378c`: allocate `0x001472c0`, free
+`0x00147320`, both `ret 8`/`ret 0xc` with a class word that the pools
+ignore). `0x00146a20` builds three pool objects inside the block
+`0x00146b30` reserves (`[0x00479888]`): the directory pool `[0x00479894]`
+(vtable `0x004576a4`, a 0x15000-byte directory at `+0x30`), the class pool
+`[0x00479898]` (vtable `0x00457620`, built by `0x0022c3e0`, 17 classes
+over 0x76 pages of 0x2000 bytes), and later the borrowed block's directory
+pool `[0x0047989c]`. Which pool answers is `[0x00479890]`. **E**
+
+- Mode 1: allocate goes to the directory pool alone.
+- Other modes: the class pool; a null answer goes to the borrowed
+  directory pool; a null from that goes to the overflow object built by
+  `0x00146e30` (a lazily allocated third pool). Free routes by address
+  range, signed: class pages `[P+0x4340, P+0xf0340]`, the directory
+  `[D+0x30, D+0x15030]`, the borrowed block `[base, base+size]`, else the
+  overflow object. Halo's rebuild stores the mode (`0x001c2741`,
+  `0x001c27c5`).
+
+The four entries, each with every persistent write (**E**, **Code**
+`sim_havok::mem`):
+
+| Entry | Does | Writes |
+|---|---|---|
+| `0x0022c300` (this = directory pool; size, tag; `ret 8`) | forwards to `vt[+8]` `0x0022c0d0` with mode `0x10`: first fit over the directory, 16-byte-aligned offsets. The new block's end must stay below the directory grown by one entry; the end of the last block is tested first | the live count `+0x20`, the new (offset, bytes) slot and every later slot shifted one place toward lower addresses; slot `i` sits at `base + bytes - 8*(i+1)`. Returns `base + offset`, or 0 |
+| `0x0022c320` (this; block, size, tag; `ret 0xc`) | forwards to `vt[+0xc]` `0x0022c280`: the first entry whose address equals the block goes | the count and the slots after the entry, shifted up; the last slot keeps its stale words; no match writes nothing |
+| `0x002d7020` (this; request; `ret 4`) | asks the dispatcher for `max(request, 0x1000) + 0x10` bytes, copies `this+0x08..+0x18` into the block's first 16 bytes, then points the descriptor at the block | `this+0x0c` remaining (`max - request`), `+0x10` block, `+0x14` payload (`block+0x10`), `+0x08` cursor (`payload+request`); the block header; whatever the dispatcher wrote. Returns the payload; a null block is not checked |
+| `0x002d7090` (this; unused; request; `ret 8`) | restores the descriptor from the block header at `payload-0x10` and frees `remaining + request + 0x10` bytes there through the dispatcher | `this+0x08..+0x18`; the dispatcher's writes |
+
+The class pool's allocate (`0x0022c830`, `size > 0x2000` is null with no
+write): the call counter `+0x2e8+4c` is incremented first, even when the
+answer is null; a free-list head is popped (`FREE[c]` falls by one);
+otherwise a block is cut from the bump page (`+0x20` cursor, `+0x1c`
+limit; a new page needs `[0x0f0340] < 0x76` and sets `+0x18/+0x1c/+0x20`,
+`+0x2d0`), and a class whose block is under `0x100` bytes (or under a page
+for the large classes) also threads the following blocks onto its free
+list, raising `CHARGED[c]` and `FREE[c]` for each, then the call counter is
+restored. `CHARGED[c]` rises once for the returned block. Free (`0x0022ca00`)
+pushes the block on its size's list, `FREE[c]` up, the counter down; a size
+over `0x2000` calls an import. Tables: size to class bytes `+0xac`, large
+classes `+0x2b0`, class sizes `+0x68`. **E**
+
+`sim_havok::mem` models all of it over guest words on a write journal
+(`Journal`); the engine adapter `sim_physics/alloc.rs` runs a call on the
+journal first and answers natively only if the model covers the route.
+Not covered, so the guest runs: the overflow object, a class free over
+`0x2000` bytes, a null block under the LIFO push, a vtable other than the
+two above, an unaligned or unmapped word. ecx, edx and the arithmetic
+flags are scratch and left undefined; the callee-saved registers and
+`eax` (allocations) are as retail. Halo calls these too (74 sites above),
+so the entries are installed for every caller, under
+`impl.sim.native.physics`.
 
 ## Floats
 
