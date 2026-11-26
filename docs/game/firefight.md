@@ -839,11 +839,12 @@ limits").
 
 ### Game Setup
 
-A custom game's Game Setup gets a **Firefight Options...** row after the
-Clankers row (`firefight/options.rs`, `ROW_ACTION` 13; the row is added
-the way [bots.md](bots.md)'s Clanker Options row is, to every list that
-has Change Map). In the lobby's Firefight mode the row follows Change
-Map, and in Forge mode it is hidden ([The lobby](#the-lobby)). It opens
+A custom game's Game Setup gets a **Firefight Options...** row
+(`firefight/options.rs`, `ROW_ACTION` 13; the row is added the way
+[bots.md](bots.md)'s Clanker Options row is, to every list that has Change
+Map). `lobby_mode::arrange` keeps it only in the lobby's Firefight mode,
+where it follows Change Map; Multiplayer and Forge modes hide it
+([The lobby](#the-lobby)). It opens
 the Firefight page, a kit screen on Quick
 Options' dialog with six choice rows, each backed by a setting
 (`firefight.*`, in `setting_defs::ALL`): Firefight (on or off), Teams

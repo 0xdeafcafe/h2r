@@ -15,7 +15,7 @@ use native_render::camera::GuestRead;
 use native_render::transparent_streams;
 
 use native_render::world_layers_gpu::{Cache as IndexedCache, IndexedPass};
-use timeline::native::{Metric, Stage};
+use timeline::native::{Metric, ReservationCause, Stage};
 
 struct Walk<B: d3d::Backend> {
     state: crate::native_world_glue::State,
@@ -62,7 +62,9 @@ impl<B: d3d::Backend + Send + 'static> native_transparents::WalkHost for Walk<B>
         }
     }
 
-    fn draw(&self, mem: &mut dyn engine::memory::GuestMemory, stage: Stage, range: native_transparents::IndexRange) -> bool {
+    fn draw(
+        &self, mem: &mut dyn engine::memory::GuestMemory, stage: Stage, range: native_transparents::IndexRange,
+    ) -> Result<(), ReservationCause> {
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
         let (primitive, water) = match &range.topology {
             native_transparents::IndexTopology::List => (PrimitiveType::TriangleList, None),
@@ -71,11 +73,23 @@ impl<B: d3d::Backend + Send + 'static> native_transparents::WalkHost for Walk<B>
         };
         let cache = self.cache.get();
         let candidate = IndexedRange { stage, water, view, frame: crate::d3d_diag::presents() + 1, cache: &cache };
-        self.device.lock().is_ok_and(|mut device| {
-            device.try_native_indexed_draw(
-                &mut crate::native_lights_glue::DeviceMemory(mem), primitive, range.count, range.indices, &candidate,
-            ).ok() == Some(true)
-        })
+        // The device names the first step the draw did not pass.
+        let mut device = self.device.lock().map_err(|_| ReservationCause::Error)?;
+        match device.try_native_indexed_draw_why(
+            &mut crate::native_lights_glue::DeviceMemory(mem), primitive, range.count, range.indices, &candidate,
+        ) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(why)) => Err(match why {
+                d3d::NativeRefusal::Boundary => ReservationCause::Boundary,
+                d3d::NativeRefusal::Geometry => ReservationCause::Geometry,
+                d3d::NativeRefusal::Admission => ReservationCause::Admission,
+                d3d::NativeRefusal::Binding => ReservationCause::Binding,
+                d3d::NativeRefusal::Resources => ReservationCause::Resources,
+                d3d::NativeRefusal::Sink => ReservationCause::Sink,
+                d3d::NativeRefusal::Backend => ReservationCause::Backend,
+            }),
+            Err(_) => Err(ReservationCause::Error),
+        }
     }
 }
 

@@ -574,6 +574,20 @@ fn only_a_custom_games_list_gets_the_row_once() {
     assert!(!wants_row(&[0, ROW_ACTION]), "already there");
 }
 
+/// The row is on a custom game's list only in Firefight mode.
+#[test]
+fn the_row_shows_only_in_firefight_mode() {
+    use crate::lobby_mode::arrange;
+    use crate::lobby_start::Offer;
+    use crate::lobby_start::Mode;
+    let all = Offer { forge: true, firefight: true };
+    let list = [CHANGE_MAP, 1, 2, ROW_ACTION];
+    let has = |m| arrange(m, all, &list).unwrap_or_else(|| list.to_vec()).contains(&ROW_ACTION);
+    assert!(!has(Mode::Multiplayer), "Slayer and the other game types");
+    assert!(!has(Mode::Forge));
+    assert!(has(Mode::Firefight));
+}
+
 /// Our action is past retail's ten and the other rows of ours.
 #[test]
 fn the_rows_action_is_its_own() {
@@ -659,4 +673,20 @@ fn every_row_has_a_help_and_real_picker_copy() {
         assert_eq!(s.press(row as i16), Chosen::Open(picker::NAME), "{}", r.text);
         assert_eq!(picker::current().expect("a pick").description, e, "{}", r.text);
     }
+}
+
+/// The page lists its six settings in a dialog list that shows all of
+/// them: laid out for every row, inside the 640 x 480 safe area.
+#[test]
+fn the_page_shows_all_its_rows_with_no_scrolling() {
+    use crate::list_class::Rows;
+    use crate::ui_kit::dialog::DialogBase;
+    let s = screen(&store());
+    let rows = Rows::count(&*s);
+    assert_eq!(rows, DEFS.len(), "the full row list");
+    let l = crate::ui_kit::dialog_tag::base_layout(DialogBase::QuickOptions, rows);
+    assert_eq!(l.visible as usize, rows);
+    let bottom = i32::from(l.anchor[1]) - i32::from(l.visible) * 26;
+    assert!(bottom >= i32::from(crate::ui_kit::layout::SAFE.bottom), "bottom {bottom}");
+    assert!(bottom >= -240);
 }

@@ -132,12 +132,16 @@ static TEXTS: LazyLock<SlotTexts> = LazyLock::new(|| SlotTexts::new(IDS));
 
 // ---- the rows ----
 
-/// Whether Game Setup shows `action` in `mode`: Forge hides Firefight
-/// Options; Firefight hides the game type row. Clanker Options shows in
-/// every mode of the custom lobby.
+/// Whether Game Setup shows `action` in `mode`: Firefight Options shows
+/// only in Firefight; Firefight hides the game type row. Theater is never a
+/// row (the main menu's Theater entry opens it). Clanker Options shows in
+/// every mode of the custom lobby. There is no Siege options row.
 pub fn shown(mode: Mode, action: i16) -> bool {
+    if action == THEATER_ACTION {
+        return false;
+    }
     match mode {
-        Mode::Multiplayer => true,
+        Mode::Multiplayer => action != ff::ROW_ACTION,
         Mode::Forge => action != ff::ROW_ACTION,
         Mode::Firefight => action != CHANGE_RULES,
     }
@@ -913,7 +917,6 @@ impl hooks::Feature for LobbyMode {
         let scratch = b.guest_alloc(0x1000, Permissions::RW)?;
         crate::lobby_tabs::switch::install(scratch);
         let offer = self.offer;
-        let theater = self.theater.is_some();
         let building: Arc<Mutex<Vec<u32>>> = Arc::default();
         let (noted, live) = (Arc::clone(&building), Arc::clone(&building));
         after_rows(b.raw().before(&CTOR, "note the Game Setup list", move |c| {
@@ -937,10 +940,7 @@ impl hooks::Feature for LobbyMode {
                 let mut mem = rt.memory();
                 let Ok(actions) = h1row::setup_actions(&*mem, list) else { return Ok(()) };
                 let mode = lobby_start::mode();
-                let mut rows = arrange(mode, offer, &actions).unwrap_or_else(|| actions.clone());
-                if theater && !actions.is_empty() && !rows.contains(&THEATER_ACTION) {
-                    rows.push(THEATER_ACTION);
-                }
+                let rows = arrange(mode, offer, &actions).unwrap_or_else(|| actions.clone());
                 if rows == actions {
                     return Ok(());
                 }

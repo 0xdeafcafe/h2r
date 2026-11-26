@@ -15,7 +15,7 @@ use native_render::camera::GuestRead;
 use native_render::object_walk::{self, Entry, Run, SortedObjects};
 use native_render::objects::ItemKey;
 use native_render::world_layers::{Site, layer_site};
-use timeline::native::{Metric, ObjectWalk, Stage, Timer};
+use timeline::native::{Metric, ObjectWalk, ReservationCause, Stage, Timer};
 
 use crate::native_world::Mem;
 use hooks::{BuildError, Builder, Feature, Manifest};
@@ -131,6 +131,7 @@ pub trait Host: Send + Sync {
         _display_lod: Option<LodDetail>,
         _consume: &mut dyn FnMut(&mut dyn GuestMemory) -> bool,
     ) -> Result<(), ObjectWalk> {
+        Stage::Objects.reservation_cause(ReservationCause::Declined);
         Err(ObjectWalk::Reservation)
     }
 }
@@ -249,7 +250,11 @@ fn walk_geometry(c: &mut hooks::Call) -> Result<hooks::Flow, runtime::GuestFault
                     && mem.set_u32(counter, remaining - skipped).is_ok()
             };
             let first = run.slots.start;
-            let result = host().ok_or(ObjectWalk::Reservation).and_then(|host| {
+            let result = host().ok_or_else(|| {
+                // No host installed: nothing took the run.
+                Stage::Objects.reservation_cause(ReservationCause::Declined);
+                ObjectWalk::Reservation
+            }).and_then(|host| {
                 crate::scene_step::with_open(|view| {
                     host.draw_walk(&mut *mem, view, first, &layer.entries[run.slots], layer.display_lod, &mut consume)
                 })

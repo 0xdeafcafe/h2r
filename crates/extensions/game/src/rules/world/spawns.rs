@@ -234,4 +234,29 @@ mod tests {
             None
         );
     }
+
+    /// A team whose live starting locations are all taken has no spawn
+    /// spot: the filter blocks the rest and the engine's own free-spot
+    /// test blocks the live ones, so the chooser answers `0xffff` and the
+    /// engine retries the spawn each tick (the module's doc). The pick
+    /// does not fall back to a start outside the rule.
+    #[test]
+    fn every_live_start_taken_leaves_the_engine_retrying() {
+        let (at, table, zones) = map();
+        let starts = Starts {
+            base: 0x1000,
+            stride: 0x34,
+            at,
+        };
+        let f = filter(Some(SpawnRule::Areas { label: "attack", number: 1 }), &starts, &table, &zones).unwrap();
+        assert_eq!(f.live, BTreeSet::from([0, 2]));
+        let entry = |i: u32| 0x1000 + i * 0x34;
+        // The engine's test says "taken" for the live locations.
+        let engine_free = |i: u32| !f.live.contains(&i);
+        let spots: Vec<u32> = (0..4).filter(|&i| f.passes(entry(i)) && engine_free(i)).collect();
+        assert_eq!(spots, Vec::<u32>::new());
+        // One live location freed, and it is the only spot.
+        let spots: Vec<u32> = (0..4).filter(|&i| f.passes(entry(i)) && i == 2).collect();
+        assert_eq!(spots, [2]);
+    }
 }

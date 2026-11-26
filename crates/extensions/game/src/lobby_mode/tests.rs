@@ -62,7 +62,6 @@ fn game_setup_lists_the_rows_of_each_mode() {
                 "Change Rules...",
                 "Quick Options...",
                 "Clanker Options...",
-                "Firefight Options...",
             ],
         ),
         (
@@ -103,7 +102,7 @@ fn game_setup_lists_the_rows_of_each_mode() {
     );
     assert_eq!(
         Opener::GAME_SETUP_FIREFIGHT.rows,
-        page(Mode::Multiplayer, ALL, &CUSTOM).as_slice()
+        page(Mode::Firefight, ALL, &CUSTOM).as_slice()
     );
 }
 
@@ -199,7 +198,7 @@ fn arrange_drops_the_switch_to_rows() {
 
 #[test]
 fn a_list_with_nothing_to_change_is_left_as_built() {
-    let plain = [CHANGE_MAP, CHANGE_RULES, QUICK_OPTIONS, CLANKERS, FIREFIGHT];
+    let plain = [CHANGE_MAP, CHANGE_RULES, QUICK_OPTIONS, CLANKERS];
     // Map Variant... joins a custom game's list with the `forge` feature on.
     assert!(arrange(Mode::Multiplayer, ALL, &plain).is_some());
     let firefight_only = Offer {
@@ -1294,4 +1293,16 @@ fn the_panel_names_the_set_map_waves_plays() {
         panel_lines(Mode::Firefight, None, Some(Ok(o)))[0],
         "Invented Basin waves"
     );
+}
+
+/// Theater is never a Game Setup row, in any mode (the main menu opens it).
+#[test]
+fn theater_is_not_a_game_setup_row() {
+    let mut actions = CUSTOM.to_vec();
+    actions.push(THEATER_ACTION);
+    for mode in Mode::ALL {
+        let rows = arrange(mode, ALL, &actions).unwrap_or_else(|| actions.clone());
+        assert!(!rows.contains(&THEATER_ACTION), "{mode:?}");
+        assert!(!shown(mode, THEATER_ACTION), "{mode:?}");
+    }
 }
