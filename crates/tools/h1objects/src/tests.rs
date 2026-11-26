@@ -1645,11 +1645,106 @@ fn biped_carries_each_source_word_and_leaves_unmapped_fields_at_default() {
     for (path, at) in BIPED_WORDS {
         assert_eq!(word(path), (*at as f32).to_bits(), "{path}");
     }
+    assert!(
+        BIPED_WORDS
+            .iter()
+            .all(|w| !crate::rebuild::BIPED_LANDING.iter().any(|l| l.0 == w.0)),
+        "landing velocities take the gravity factor, not the plain copy"
+    );
     assert!(matches!(r.at("unit.powered_seats"), Some(Val::Block(entries)) if entries.is_empty()));
     let Some(Val::Block(pr)) = r.at("unit.obje.predicted_resources") else {
         panic!()
     };
     assert_eq!(pr.len(), 1);
+}
+
+/// A biped with `jump_velocity` and the landing thresholds set from the
+/// given Halo 1 values (per tick for the jump).
+fn biped_with_fall_words(jump_per_tick: f32, landing: [f32; 3]) -> tags::defs::Record {
+    use crate::rebuild::{BIPED_LANDING, BIPED_RATES};
+    use tags::defs::{self, Defs};
+    let unit = crate::h1::Unit {
+        hud_interfaces: Vec::new(),
+        group: h1map::Group::new(b"bipd"),
+        object: crate::h1::Object {
+            texture_override: 0,
+            object_type: 0,
+            acceleration_scale: 0.0,
+            flags: 0,
+            bounding_radius: 0.7,
+            bounding_offset: [0.0; 3],
+            model: None,
+            animation: None,
+            collision: None,
+            physics: None,
+            modifier_shader: None,
+            creation_effect: None,
+            attachments: Vec::new(),
+            widgets: Vec::new(),
+            change_colours: Vec::new(),
+        },
+        camera_field_of_view: 1.25,
+        biped_words: BIPED_RATES
+            .iter()
+            .filter(|w| w.0 == "jump_velocity")
+            .map(|w| (w.1, jump_per_tick.to_bits()))
+            .chain(BIPED_LANDING.iter().zip(landing).map(|(w, v)| (w.1, v.to_bits())))
+            .collect(),
+        seats: Vec::new(),
+        camera_tracks: Vec::new(),
+        size: None,
+        references: Vec::new(),
+    };
+    let root = crate::rebuild::biped(
+        &unit,
+        None,
+        &[],
+        &crate::rebuild::BipedParts::default(),
+    )
+    .unwrap();
+    defs::from_built(Defs::builtin().group(map::FourCC(*b"bipd")).unwrap(), &root).unwrap()
+}
+
+fn float_word(r: &tags::defs::Record, path: &str) -> f32 {
+    f32::from_le_bytes(r.bytes(path, 4).unwrap()[..4].try_into().unwrap())
+}
+
+/// Halo 2's gravity is 1 / `GRAVITY_RATIO` times Halo 1's. The cyborg's
+/// 0.07 per tick is 2.1 world units per second under Halo 1's gravity;
+/// the rebuilt jump is 2.394 and rises to the same 0.687 under Halo 2's.
+#[test]
+fn jump_reaches_halo1s_apex_under_halo2_gravity() {
+    use tags::object::direct_drive::{GRAVITY_RATIO, SOURCE_GRAVITY};
+    let r = biped_with_fall_words(0.07, [0.0; 3]);
+    let jump = float_word(&r, "jump_velocity");
+    assert!((jump - 2.394).abs() < 0.002, "{jump}");
+    let h2_gravity = SOURCE_GRAVITY / GRAVITY_RATIO;
+    let (h1_apex, h2_apex) = (
+        2.1f32 * 2.1 / (2.0 * SOURCE_GRAVITY),
+        jump * jump / (2.0 * h2_gravity),
+    );
+    assert!((h1_apex - h2_apex).abs() < 1e-4, "{h1_apex} against {h2_apex}");
+    assert!((h2_apex - 0.687).abs() < 0.003, "{h2_apex}");
+}
+
+/// A landing speed is sqrt(2 g h): the same fall height lands at Halo 1's
+/// speed times sqrt(1 / `GRAVITY_RATIO`) under Halo 2's gravity, and
+/// the words are not scaled by the tick rate.
+#[test]
+fn landing_thresholds_keep_halo1s_fall_heights() {
+    use tags::object::direct_drive::{GRAVITY_RATIO, SOURCE_GRAVITY};
+    let from = [0.1f32, 0.18, 0.4];
+    let r = biped_with_fall_words(0.07, from);
+    let h2_gravity = SOURCE_GRAVITY / GRAVITY_RATIO;
+    for ((path, _), v) in crate::rebuild::BIPED_LANDING.iter().zip(from) {
+        let got = float_word(&r, path);
+        let (h1_height, h2_height) = (
+            v * v / (2.0 * SOURCE_GRAVITY),
+            got * got / (2.0 * h2_gravity),
+        );
+        assert!((h1_height - h2_height).abs() < 1e-6, "{path}: {h1_height} against {h2_height}");
+        assert!(got > v, "{path}");
+    }
 }
 
 /// A rebuilt biped's character shapes follow Halo 1's collision size: the

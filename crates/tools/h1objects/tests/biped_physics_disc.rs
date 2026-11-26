@@ -141,6 +141,24 @@ fn the_converted_cyborgs_physics_against_the_chiefs() {
     let h = defs::from_built(hd, &hl.root).unwrap();
     let p = reference(&h, "physics_model").and_then(|p| local(&c.tree, p));
 
+    // Halo 1's jump apex and fall heights under Halo 2's gravity: the
+    // cyborg's 0.07 per tick is 2.394 world units per second (apex 0.687),
+    // and each landing threshold is Halo 1's times sqrt(1 / GRAVITY_RATIO).
+    let ours_word = |path: &str| match r.bytes(path, 4) {
+        Some(b) => f32::from_le_bytes(b[..4].try_into().unwrap()),
+        None => panic!("{path}"),
+    };
+    let jump = ours_word("jump_velocity");
+    assert!((jump - 2.394).abs() < 0.002, "jump velocity {jump}");
+    let apex = jump * jump / (2.0 * 4.1712594);
+    assert!((apex - 0.687).abs() < 0.003, "apex {apex}");
+    let factor = h1objects::rebuild::gravity_speed_factor();
+    for (path, at) in h1objects::rebuild::BIPED_LANDING {
+        let src = h1objects::h1::Unit::read(&h1, &t).unwrap();
+        let h = f32::from_bits(src.biped_words.iter().find(|x| x.0 == *at).unwrap().1);
+        assert_eq!(ours_word(path), h * factor, "{path}");
+    }
+
     // Every converted body's flags, motion and `+0x1e` are the Chief's.
     let body_words = |rec: &Record| -> Vec<[u16; 3]> {
         let Some(Val::Block(rbs)) = rec.at("rigid_bodies") else {

@@ -2234,8 +2234,7 @@ pub const UNIT_WORDS: &[(&str, usize)] = &[
 /// distinguish the source fields (a30 and 05a_deltaapproach).
 pub const BIPED_WORDS: &[(&str, usize)] = &[
     ("moving_turning_speed", 0x2f0), ("stationary_turning_threshold", 0x2f8),
-    ("maximum_soft_landing_time", 0x3d4), ("maximum_hard_landing_time", 0x3d8), ("minimum_soft_landing_velocity", 0x3dc),
-    ("minimum_hard_landing_velocity", 0x3e0), ("maximum_hard_landing_velocity", 0x3e4),
+    ("maximum_soft_landing_time", 0x3d4), ("maximum_hard_landing_time", 0x3d8),
     ("standing_camera_height", 0x400), ("crouching_camera_height", 0x404), ("crouch_transition_time", 0x408),
     ("cosine_stationary_turning_threshold", 0x4c8), ("maximum_slope_angle", 0x358), ("downhill_falloff_angle", 0x35c),
     ("downhill_cutoff_angle", 0x360), ("uphill_falloff_angle", 0x368), ("uphill_cutoff_angle", 0x36c),
@@ -2247,7 +2246,25 @@ pub const BIPED_WORDS: &[(&str, usize)] = &[
     ("angular_velocity_maximum", 0x344), ("crouch_velocity_modifier", 0x34c),
 ];
 
-/// H1 caches these rates per tick. The c20 monitor and its 04b counterpart
+/// The landing velocity thresholds. A fall of one height lands at
+/// sqrt(2 g h), and Halo 2's gravity is 1 / [`tags::object::direct_drive::GRAVITY_RATIO`]
+/// times Halo 1's, so each is scaled by [`gravity_speed_factor`] to keep
+/// Halo 1's fall heights. The words are in Halo 2's unit already: the
+/// crewman's agree with its Halo 2 counterpart's without a tick factor
+/// (`biped_words_match_halo_2s_counterparts`).
+pub const BIPED_LANDING: &[(&str, usize)] = &[
+    ("minimum_soft_landing_velocity", 0x3dc), ("minimum_hard_landing_velocity", 0x3e0),
+    ("maximum_hard_landing_velocity", 0x3e4),
+];
+
+/// The factor on a Halo 1 speed that keeps its rise or fall height under
+/// Halo 2's stronger gravity: sqrt(1 / `GRAVITY_RATIO`).
+pub fn gravity_speed_factor() -> f32 {
+    (1.0 / tags::object::direct_drive::GRAVITY_RATIO).sqrt()
+}
+
+/// H1 caches these rates per tick. `jump_velocity` also takes
+/// [`gravity_speed_factor`], so the jump reaches Halo 1's apex. The c20 monitor and its 04b counterpart
 /// agree on all three flying accelerations after conversion to seconds.
 pub const BIPED_RATES: &[(&str, usize)] = &[
     ("jump_velocity", 0x3b4), ("crouch_transition_velocity", 0x4cc), ("acceleration", 0x33c),
@@ -2505,9 +2522,16 @@ pub fn biped(
             set(&mut r, path, Val::Bytes(w.to_le_bytes().to_vec()))?;
         }
     }
+    for (path, at) in BIPED_LANDING {
+        if let Some((_, w)) = unit.biped_words.iter().find(|x| x.0 == *at) {
+            let v = f32::from_bits(*w) * gravity_speed_factor();
+            set(&mut r, path, Val::Bytes(v.to_le_bytes().to_vec()))?;
+        }
+    }
     for (path, at) in BIPED_RATES {
         if let Some((_, ticks)) = unit.biped_words.iter().find(|w| w.0 == *at) {
-            let rate = 30.0 * f32::from_bits(*ticks);
+            let scale = if *path == "jump_velocity" { gravity_speed_factor() } else { 1.0 };
+            let rate = 30.0 * f32::from_bits(*ticks) * scale;
             set(&mut r, path, Val::Bytes(rate.to_le_bytes().to_vec()))?;
         }
     }
