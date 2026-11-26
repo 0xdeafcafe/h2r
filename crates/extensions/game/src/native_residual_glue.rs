@@ -196,7 +196,8 @@ mod tests {
     }
 
     /// The pool draws the test's triangle can become: a projective lens of
-    /// the target's size at stage 0, depth tested and never written.
+    /// the target's size at stage 0 that the device resolved as a frame
+    /// sample, depth tested and never written.
     fn pool_draw() -> d3d::ResolvedDraw {
         use shaders::psh::{PixelShaderDef, bits::*};
         let mut draw = indexed_triangle();
@@ -223,6 +224,7 @@ mod tests {
             levels: 1,
         });
         draw.textures[0] = Some(0x1000);
+        draw.extras[0].samples_frame = true;
         draw
     }
 
@@ -264,6 +266,10 @@ mod tests {
         cases.push(("writes_depth", draw));
         let mut draw = tested();
         draw.texture_info[0] = None;
+        cases.push(("no_lens", draw));
+        // A projective bitmap (a ripple) is not a frame sample.
+        let mut draw = tested();
+        draw.extras[0].samples_frame = false;
         cases.push(("no_lens", draw));
         cases.push(("index_count", { let mut d = tested(); d.indices = Some(vec![0, 1, 2, 0, 1, 2].into()); d }));
         for (cause, draw) in cases {

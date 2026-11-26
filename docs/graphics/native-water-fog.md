@@ -203,10 +203,20 @@ the cached pipelines with their own uniforms and sampled textures.
     A draw with no depth buffer (`no_depth`), a disabled or
     always/never test (`depth_not_tested`) or a depth or stencil write
     (`writes_depth`) is refused.
-  - **Lens.** The first sampled projective 2D stage (`pool_lens_stage`; the
-    guest image's size is not compared, its coordinates are normalised by
-    its header) samples a copy of the bound colour made in
-    each Reference and Display recording, immediately before the pool
+  - **Lens.** The first sampled 2D stage the device resolved as a frame
+    sample (`pool_lens_stage`: `StageExtras::samples_frame`, the bound
+    colour, a snapshot of it or a frame-sized render level), whatever its
+    texture mode. The mode does not identify it: `tower_pool` samples its
+    signed ripple bitmap projectively at t0 and reads the refraction target
+    (engine texture 20) at t2 as a bump environment map offset by t0
+    (`h2 shader 05b_deltatowers
+    'scenarios\shaders\solo\deltatemple\tower_pool'`). A copy bound at
+    the projective stage would replace the ripple with the scene, so every
+    bump offset and the Fresnel lookup would follow the scene's colour: a
+    bright patch with a hard curved edge where that colour crosses the
+    signed midpoint. The guest image's size is not compared; its
+    coordinates are normalised by its header. The lens samples a copy of
+    the bound colour made in each Reference and Display recording, immediately before the pool
     draws (`IndexedPass::record_pool`: the copy, then a render pass of the
     pool's packets, as the layer-6 water's `record_encoded` does). It does
     not sample the guest's own resolve, which can predate the native
@@ -223,7 +233,8 @@ the cached pipelines with their own uniforms and sampled textures.
   `no_lens`, `geometry`; recording: the causes above and the pass's
   prepare errors, e.g. `sample_aliases_attachment`), and
   `layer_plan_15_pool_on_d3d` for every pool draw the admission leaves to
-  the guest. The first `no_lens` logs each stage's mode, image and size
+  the guest. The first admitted lens and the first `no_lens` each log
+  every stage's mode, whether it samples the frame, its image and size
   against the guest target once (stderr). Remaining slice: a pool that
   writes depth needs the
   write proven against the world's depth first.

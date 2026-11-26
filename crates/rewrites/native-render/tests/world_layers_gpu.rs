@@ -741,8 +741,14 @@ fn sorted_pool_translates_the_resolved_ripple_and_scene_stages() {
     draw.texture_info = [draw.texture_info[0]; 4];
     draw.textures = [draw.textures[0]; 4];
     draw.extras[2].bump_env_mat = [0.25, -0.1, 0.5, 0.2];
+    // Delta Towers' tower_pool: t0 is the signed ripple bitmap, sampled
+    // projectively; t2 reads the refraction target through it. Only the
+    // frame sample is the lens: the ripple must keep its own image.
+    assert_eq!(pool_lens_stage(&draw), None, "a projective ripple bitmap is not the lens");
+    assert_eq!(IndexedPass::for_pool(&draw, Arc::new(Cache::default()), 1).err(), Some("no_lens"));
+    draw.extras[2].samples_frame = true;
     let pass = IndexedPass::for_pool(&draw, Arc::new(Cache::default()), 1).unwrap();
-    assert_eq!(pool_lens_stage(&draw), Some(0));
+    assert_eq!(pool_lens_stage(&draw), Some(2));
     assert!(pass.replays_scene());
     assert_eq!(pass.resolved_fallback().unwrap().as_ref(), &draw);
     let program = d3d::nv2a::NativeDrawMaterial::resolve(&draw, [true; 4],
@@ -808,10 +814,11 @@ fn sky_strip_draws_the_current_views_palette_and_writes_the_stencil_mark() {
     }
 }
 
-/// A pool the native pass can draw: the lens at stage 0, the target's size,
-/// the depth tested without a write.
+/// A pool the native pass can draw: the lens (a frame sample) at stage 0,
+/// the target's size, the depth tested without a write.
 fn pool_triangle() -> ResolvedDraw {
     let mut draw = triangle(2.0, [1.0; 4], 0, true);
+    draw.extras[0].samples_frame = true;
     draw.state.render.depth_func = CompareFunc::LessEqual;
     draw.state.render.stencil.enable = false;
     draw
@@ -854,6 +861,12 @@ fn a_pool_without_its_inputs_is_a_named_refusal() {
     // No sampled image: no lens.
     let mut draw = pool_triangle();
     draw.texture_info[0] = None;
+    assert_eq!(refused(&draw), Some("no_lens"));
+    // A projective stage whose image is not a frame sample (a ripple
+    // bitmap) is not the lens either.
+    let mut draw = pool_triangle();
+    draw.extras[0].samples_frame = false;
+    assert_eq!(pool_lens_stage(&draw), None);
     assert_eq!(refused(&draw), Some("no_lens"));
 
     assert_eq!(pool_refusal_counter("no lens"), "layer_plan_15_pool_refused_no_lens");
