@@ -246,6 +246,11 @@ static REFUSED: AtomicBool = AtomicBool::new(false);
 /// The seconds since the page first showed a monitor: the turn's clock.
 static SINCE: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 
+/// The name of the screen that is up, when it can be read; none yet.
+fn active_screen(_mem: &dyn GuestMemory) -> Option<String> {
+    None
+}
+
 /// A model widget's view is read (`render_bridge::native_hud::Host::
 /// model_view`), with its `bounds` (`left, top, right, bottom` canvas
 /// pixels): when the profile's saved look is a monitor this machine has
@@ -257,6 +262,14 @@ pub fn appearance_view<B: d3d::backend::Backend + Send + 'static>(
     bounds: [u16; 4],
     view: &frame_scene::OverlayModelView,
 ) {
+    // Only the Appearance page's widget: any other screen's model widget
+    // (the lobby's players, the profile preview) draws nothing. No reader
+    // of the active screen's name exists on the render path yet, so none is
+    // read and the picture draws nowhere until it is
+    // (`super::APPEARANCE_SCREEN`).
+    if !super::appearance_screen(active_screen(&*mem).as_deref()) {
+        return;
+    }
     let Some(beside) = super::beside_bounds(bounds) else {
         return;
     };

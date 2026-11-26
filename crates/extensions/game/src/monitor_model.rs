@@ -16,6 +16,24 @@
 #[cfg(feature = "gpu")]
 pub mod gpu;
 
+/// The screen tag the Appearance page is built on. Not established
+/// statically: none of the repository's screen docs or samples name it, so
+/// it is `None` and the page's picture draws on no screen until the name is
+/// read from a running game (`h2 agent ui.stack` with the page open; see
+/// docs/game/forge-monitor-appearance.md, "Not verified").
+pub const APPEARANCE_SCREEN: Option<&str> = None;
+
+/// Whether `screen`, the name of the screen that is up, is the one named
+/// `want`. Fails closed: no wanted name or no screen read is no.
+pub fn is_screen(want: Option<&str>, screen: Option<&str>) -> bool {
+    matches!((want, screen), (Some(w), Some(s)) if w.eq_ignore_ascii_case(s))
+}
+
+/// Whether the screen that is up is the Appearance page.
+pub fn appearance_screen(screen: Option<&str>) -> bool {
+    is_screen(APPEARANCE_SCREEN, screen)
+}
+
 /// The model widget's canvas: the UI's own 640 by 480 guest pixels.
 pub const CANVAS: (f32, f32) = (640.0, 480.0);
 
@@ -63,6 +81,19 @@ pub fn showcase_tint(highlight: [u8; 4]) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn another_screens_model_widget_draws_nothing() {
+        // The page's own screen matches; any other, none read, or no wanted
+        // name does not.
+        assert!(is_screen(Some("appearance"), Some("Appearance")));
+        assert!(!is_screen(Some("appearance"), Some("lobby_players")));
+        assert!(!is_screen(Some("appearance"), None));
+        assert!(!is_screen(None, Some("appearance")));
+        // Until the name is established nothing matches.
+        assert!(!appearance_screen(Some("appearance")));
+        assert!(!appearance_screen(None));
+    }
 
     #[test]
     fn the_canvas_fills_the_targets_height_and_is_centred_across() {
