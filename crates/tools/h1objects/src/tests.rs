@@ -2867,3 +2867,214 @@ fn a_fixture_changes_the_light_emission_and_keeps_the_shape() {
         [0.25; 2]
     );
 }
+
+/// A Halo 1 vehicle built on a counterpart's drive: the drive spans and
+/// gears are the counterpart's word for word; the model, bounding sphere,
+/// seats and the points' markers, regions and radii stay Halo 1's.
+/// `friction` picks the point kind; the counterpart holds `theirs` points.
+fn drive_vehicle_keeps_halo1_and_takes_the_counterpart_drive(
+    path: &str,
+    kind: u16,
+    friction: bool,
+    ours: usize,
+    theirs: usize,
+) {
+    use crate::rebuild::{
+        DRIVE_SPANS, Point, VEHI_FRICTION, VEHI_GEARS, VEHI_HOVER, VEHI_SEATS, VehicleSpec,
+    };
+    use tags::defs::{self, Defs, Val};
+    let def = Defs::builtin().group(map::FourCC(*b"vehi")).unwrap();
+    // The counterpart: every named drive field holds its own number.
+    let mut drive = defs::default_record(def);
+    drive.set("vehicle_type", Val::Enum(kind.into())).unwrap();
+    for (i, name) in [
+        "maximum_forward_speed",
+        "speed_acceleration",
+        "steering_scale",
+        "maximum_left_slide",
+        "engine_moment",
+        "seat_entrance_acceleration_scale",
+        "thrust_multiplier",
+        "ground_depth",
+        "gravity_scale",
+        "vehicle_physics_radius",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        drive.set(name, Val::Float(1.5 + i as f32)).unwrap();
+    }
+    let gear = def.child(VEHI_GEARS).unwrap();
+    let gears = (0..3)
+        .map(|i| {
+            let mut g = defs::default_record(gear);
+            g.set("speed_ratio", Val::Float(i as f32 - 0.5)).unwrap();
+            g
+        })
+        .collect();
+    drive.set(VEHI_GEARS, Val::Block(gears)).unwrap();
+    let block = if friction { VEHI_FRICTION } else { VEHI_HOVER };
+    let point = def.child(block).unwrap();
+    let their_points = (0..theirs)
+        .map(|i| {
+            let mut p = defs::default_record(point);
+            p.set("radius", Val::Float(9.0)).unwrap();
+            if friction {
+                p.set("fraction_of_total_mass", Val::Float(1.0 / theirs as f32)).unwrap();
+                p.set("flags", Val::Flags(0x26 + i as u32)).unwrap();
+            } else {
+                p.set("antigrav_strength", Val::Float(2.0 + i as f32)).unwrap();
+            }
+            p
+        })
+        .collect();
+    drive.set(block, Val::Block(their_points)).unwrap();
+
+    let obj = crate::h1::Object {
+        texture_override: 0,
+        object_type: 1,
+        acceleration_scale: 0.0,
+        flags: 0,
+        bounding_radius: 0.9,
+        bounding_offset: [0.0, 0.0, 0.45],
+        model: None,
+        animation: None,
+        collision: None,
+        physics: None,
+        modifier_shader: None,
+        creation_effect: None,
+        attachments: Vec::new(),
+        widgets: Vec::new(),
+        change_colours: Vec::new(),
+    };
+    let seat = crate::h1::Seat {
+        camera_angles: [0; 5],
+        flags: 0x1d,
+        label: "driver".into(),
+        marker: "driver".into(),
+        camera_marker: "camera".into(),
+        camera_tracks: Vec::new(),
+    };
+    let markers = vec!["driver".to_string(), "camera".to_string()];
+    let seats = [crate::rebuild::seat_names(&seat, &markers)];
+    let points: Vec<_> = (0..ours)
+        .map(|i| Point {
+            sphere: [i as f32, 1.0, -2.0, 0.25 + i as f32],
+            antigravity: (!friction).then_some([1.0, 0.0, 0.5, 0.01, 0.7, 0.5]),
+            marker: format!("h1 {path} {i}"),
+            region: format!("h1 region {i}"),
+            region_index: i as i16,
+            steered: i < 2,
+        })
+        .collect();
+    let contacts = crate::h1::GroundContacts {
+        wheels: Vec::new(),
+        surfaces: Vec::new(),
+        equal_slopes: false,
+    };
+    let hlmt = map::TagId(0xe001_0002);
+    let root = crate::rebuild::vehicle_with_tuning(
+        &VehicleSpec {
+            physics: None,
+            source: &[],
+            references: &[],
+            object: &obj,
+            bounds: None,
+            hlmt: Some(hlmt),
+            seats: &seats,
+            predicted: &[],
+            camera_field_of_view: 1.0,
+            vehicle_type: kind,
+            flags: 0,
+            weapons: &[],
+            contacts: friction.then_some(&contacts),
+            seat_power: &[],
+            points: &points,
+            attachments: &[],
+            functions: &[],
+            creation_effect: None,
+        },
+        None,
+        Some(&drive),
+    )
+    .unwrap();
+    let got = defs::from_built(def, &root).unwrap();
+
+    // The drive is the counterpart's, field for field.
+    let at = |r: &defs::Record, name: &str| r.fields.iter().position(|f| f.0 == name).unwrap();
+    for (first, last) in DRIVE_SPANS {
+        for i in at(&got, first)..=at(&got, last) {
+            assert_eq!(got.fields[i], drive.fields[i], "{path}: {}", got.fields[i].0);
+        }
+    }
+    assert_eq!(got.at(VEHI_GEARS), drive.at(VEHI_GEARS), "{path}: gears");
+    assert_eq!(got.at("vehicle_type"), Some(&Val::Enum(kind.into())));
+
+    // The model, bounds, seats and points are Halo 1's.
+    assert_eq!(got.at("unit.obje.bounding_radius"), Some(&Val::Float(0.9)));
+    assert_eq!(
+        got.at("unit.obje.model"),
+        Some(&Val::Ref { group: 0, target: tags::defs::Target::Id(hlmt) }),
+        "{path}: model"
+    );
+    assert_eq!(got.at(&format!("{VEHI_SEATS}[0].seat_marker_name")), Some(&Val::text("driver")));
+    assert_eq!(got.at(&format!("{VEHI_SEATS}[0].camera_marker_name")), Some(&Val::text("camera")));
+    for (i, p) in points.iter().enumerate() {
+        assert_eq!(got.at(&format!("{block}[{i}].marker_name")), Some(&Val::text(&p.marker)), "{path}");
+        assert_eq!(got.bytes(&format!("{block}[{i}].radius"), 4), Some(p.sphere[3].to_le_bytes().to_vec()), "{path}");
+        if friction {
+            assert_eq!(got.at(&format!("{block}[{i}].region_name")), Some(&Val::text(&p.region)));
+            assert_eq!(
+                got.bytes(&format!("{block}[{i}].region_index"), 4),
+                Some((i as u32).to_le_bytes().to_vec())
+            );
+            // One for one, a point's tuning is its counterpart's; else
+            // the mass is shared equally.
+            let mass = if ours == theirs { 1.0 / theirs as f32 } else { 1.0 / ours as f32 };
+            assert_eq!(got.at(&format!("{block}[{i}].fraction_of_total_mass")), Some(&Val::Float(mass)));
+            if ours == theirs {
+                assert_eq!(got.at(&format!("{block}[{i}].flags")), Some(&Val::Flags(0x26 + i as u32)));
+            }
+        } else {
+            let strength = 2.0 + if ours == theirs { i as f32 } else { 0.0 };
+            assert_eq!(got.at(&format!("{block}[{i}].antigrav_strength")), Some(&Val::Float(strength)));
+        }
+    }
+    // Nothing of the Halo 1 drive is left: no source gravity or contact
+    // data in the phantom, no direct-drive engine word.
+    assert_ne!(got.bytes("engine_moment", 4), Some(u32::from_le_bytes(*b"H1dd").to_le_bytes().to_vec()));
+    if friction {
+        use tags::object::direct_drive::{CONTACT_DATA, POWER_DATA};
+        for at in [CONTACT_DATA, POWER_DATA] {
+            assert_eq!(got.bytes(&format!("phantom_shapes[0].@{at:#x}"), 4), Some(vec![0; 4]), "{path}");
+        }
+    }
+}
+
+/// Each Halo 1 vehicle's path picks its counterpart.
+#[test]
+fn drive_counterparts_are_named_per_vehicle() {
+    use crate::rebuild::drive_counterpart;
+    let warthog: &[&str] = &["objects\\vehicles\\warthog\\warthog"];
+    for path in [
+        "vehicles\\warthog\\warthog",
+        "vehicles\\rwarthog\\rwarthog",
+        "vehicles\\rocket_warthog\\rocket_warthog",
+    ] {
+        assert_eq!(drive_counterpart(path), Some(warthog), "{path}");
+    }
+    assert_eq!(drive_counterpart("vehicles\\pelican\\pelican"), None);
+}
+
+/// The warthog and rocket warthog: four wheels, the H2 warthog's four
+/// friction points.
+#[test]
+fn warthog_drive_is_the_counterparts_and_the_rest_halo_1s() {
+    drive_vehicle_keeps_halo1_and_takes_the_counterpart_drive(
+        "vehicles\\warthog\\warthog",
+        1,
+        true,
+        4,
+        4,
+    );
+}

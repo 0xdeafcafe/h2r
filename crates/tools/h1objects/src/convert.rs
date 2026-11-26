@@ -2624,6 +2624,26 @@ impl<'a> Converter<'a> {
             None
         };
         let power = h1::powered_seats(self.h1, b).map_err(fail)?;
+        // The Halo 2 vehicle whose drive tuning this one takes.
+        let drive = match crate::rebuild::drive_counterpart(&tag.name) {
+            Some(names) => {
+                let id = names
+                    .iter()
+                    .find_map(|n| self.base.find(b"vehi", n))
+                    .ok_or_else(|| {
+                        Error::from(h1convert::Error::no_rebuild(
+                            &self.h1.header().name,
+                            &tag.name,
+                            format!("the base holds none of its drive counterparts {names:?}"),
+                        ))
+                    })?;
+                let d = tags::defs::Defs::builtin()
+                    .group(FourCC(*b"vehi"))
+                    .expect("vehi definition");
+                Some(self.base.record(d, id)?)
+            }
+            None => None,
+        };
         let (root, roles) = crate::provenance::capture(|| {
             crate::rebuild::vehicle_with_tuning(&crate::rebuild::VehicleSpec {
                 source: b,
@@ -2644,9 +2664,15 @@ impl<'a> Converter<'a> {
                 contacts: contacts.as_ref(),
                 seat_power: &power,
                 points: &points,
-            }, scripted.and_then(|kind| kind.flight_tuning(b)))
+            }, scripted.and_then(|kind| kind.flight_tuning(b)), drive.as_ref())
         });
         let root = root.map_err(fail)?;
+        if drive.is_some() {
+            rep.no_home.push(
+                "vehi: drive tuning (gears, engine, steering, ground and hover laws, friction and hover points' tuning) from the matching Halo 2 vehicle"
+                    .into(),
+            );
+        }
         rep.no_home.push(format!(
             "vehi: Halo 1's type, flags (low half), camera, {} seats (label as the rider's mode, markers), {} weapons and {} powered mass points as friction or hover points; source contact parameters and Halo 1 drive; {} attachments (looping sounds and effects) and the creation effect from Halo 1; {} seat camera tracks Halo 1's; HUD and damage null; {} Halo 1 references",
             u.seats.len(),
