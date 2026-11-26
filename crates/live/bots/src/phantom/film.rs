@@ -65,6 +65,7 @@ impl Phantoms {
                 shot_range: None,
                 samples: 0,
                 waiting: None,
+                rank: None,
             });
         }
         let mut books = self.lock();

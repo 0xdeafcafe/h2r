@@ -1034,6 +1034,43 @@ mod lobby {
         }
     }
 
+    /// A ranked hopper's phantom shows its rank in the lobby's rank fields
+    /// (`+0x84..+0x90`), under the host's hopper index; without a rank, or
+    /// with no hopper index on the host, they stay -1.
+    #[test]
+    fn a_ranked_phantoms_lobby_row_has_its_rank() {
+        let ranked = Phantoms::default();
+        let plain = Phantoms::default();
+        let a = ranked.add(who(1, "Ranked"), None, idle()).unwrap();
+        ranked.set_rank(a, Some(Rank::of_level(12))).unwrap();
+        let b = plain.add(who(2, "Plain"), None, idle()).unwrap();
+        let mut g = lobby();
+        let host = S + PLAYERS;
+        for copy in [P_REQUESTED, P_EFFECTIVE] {
+            g.put_u32(host + copy + 0x84, 8);
+        }
+        ranked.tick(&mut g, 0).unwrap();
+        let c = both_configs(&g, seat_of(&g, a));
+        for c in &c {
+            assert_eq!(u32::from_le_bytes(c[0x84..0x88].try_into().unwrap()), 8);
+            assert_eq!(i16::from_le_bytes(c[0x8a..0x8c].try_into().unwrap()), 11);
+            assert_eq!(
+                u32::from_le_bytes(c[0x8c..0x90].try_into().unwrap()),
+                live_proto::rank::threshold(12)
+            );
+        }
+        // No rank set: the fields stay -1, as before.
+        let mut g = lobby();
+        let host = S + PLAYERS;
+        for copy in [P_REQUESTED, P_EFFECTIVE] {
+            g.put_u32(host + copy + 0x84, 8);
+        }
+        plain.tick(&mut g, 0).unwrap();
+        for c in &both_configs(&g, seat_of(&g, b)) {
+            assert!(c[0x84..].iter().all(|b| *b == 0xff));
+        }
+    }
+
     #[test]
     fn a_hosts_handicap_is_never_a_phantoms_then_or_later() {
         let ph = Phantoms::default();
