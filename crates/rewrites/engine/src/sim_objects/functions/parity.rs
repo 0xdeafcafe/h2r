@@ -136,6 +136,25 @@ pub fn enter(cpu: &mut CpuAbi, guest: &Guest) -> Step {
     Step::Answered { target }
 }
 
+/// Forget everything the arm has seen: the counters, the mismatch and
+/// the audit slot. Called at map load, so a proof earned on one map is
+/// earned again on the next (the curves and the image constants are the
+/// map's), and an arm a mismatch stopped starts over compare-only.
+pub fn reset() {
+    for counter in [
+        &CHECKED,
+        &MATCHED,
+        &MISMATCHED,
+        &ANSWERED,
+        &ANSWERABLE,
+        &DECLINED_FLOAT,
+        &DECLINED_KIND,
+        &DECLINED_FAULT,
+    ] {
+        counter.store(0, Ordering::Relaxed);
+    }
+}
+
 /// Whether the arm has matched enough calls with no mismatch.
 fn proven() -> bool {
     MISMATCHED.load(Ordering::Relaxed) == 0 && MATCHED.load(Ordering::Relaxed) >= PROVEN_AFTER
@@ -221,6 +240,10 @@ fn capture(cpu: &CpuAbi, guest: &Guest) -> Result<Prediction, Miss> {
 mod tests {
     use super::*;
     use runtime::guest::Permissions;
+    use std::sync::Mutex;
+
+    /// The counters are process-wide: tests of the arm run one at a time.
+    static ARM: Mutex<()> = Mutex::new(());
 
     /// The image constants, a reference with a kind-0 blob, and a stack
     /// with the two words of the call.
@@ -273,6 +296,8 @@ mod tests {
     /// and the take-over is a function of them.
     #[test]
     fn the_arm_compares_then_takes_over_audits_and_stops_on_a_mismatch() {
+        let _one = ARM.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
         let (cpu, g) = call(0x1fa0, 0x027f);
         let start = status();
         assert_eq!(start.answered, 0);
@@ -347,5 +372,46 @@ mod tests {
             assert!(matches!(enter(&mut entering, &g), Step::Audit(_)));
         }
         assert_eq!(status().answered, answered);
+    }
+
+    /// A map load puts a proven arm, and one a mismatch stopped, back to
+    /// compare-only.
+    #[test]
+    fn a_reset_puts_a_proven_arm_back_to_comparing() {
+        let _one = ARM.lock().unwrap_or_else(|e| e.into_inner());
+        let (cpu, g) = call(0x1fa0, 0x027f);
+        let prove = || {
+            while status().matched < PROVEN_AFTER {
+                let mut entering = cpu;
+                let Step::Audit(p) = enter(&mut entering, &g) else { panic!("unproven calls are the guest's") };
+                compare(p, &guest_answer(&cpu, WANT));
+            }
+        };
+        reset();
+        prove();
+        let mut entering = cpu;
+        let mut took_over = false;
+        for _ in 0..AUDIT_EVERY {
+            took_over |= matches!(enter(&mut entering, &g), Step::Answered { .. });
+        }
+        assert!(took_over, "a proven arm answers");
+
+        reset();
+        assert_eq!(status(), Status::default());
+        for _ in 0..2 * AUDIT_EVERY {
+            let mut entering = cpu;
+            assert!(matches!(enter(&mut entering, &g), Step::Audit(_)), "after a reset every call is compared");
+        }
+
+        // The proof is earned again, and a mismatch is forgotten too.
+        reset();
+        let mut entering = cpu;
+        let Step::Audit(p) = enter(&mut entering, &g) else { panic!("unproven") };
+        compare(p, &guest_answer(&cpu, 0x3f40_0000));
+        assert_eq!(status().mismatched, 1);
+        reset();
+        prove();
+        let answered = (0..AUDIT_EVERY).filter(|_| matches!(enter(&mut { cpu }, &g), Step::Answered { .. })).count();
+        assert!(answered > 0);
     }
 }
