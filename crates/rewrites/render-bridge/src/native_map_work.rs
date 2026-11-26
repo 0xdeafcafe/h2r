@@ -145,7 +145,6 @@ pub fn reset() {
     crate::native_water::forget_pending();
     crate::native_decorators::forget_pending();
     crate::native_objects::forget_pending();
-    crate::native_first_person::forget_pending();
     MAP.reset();
     BSP_GENERATION.fetch_add(1, Ordering::Release);
     crate::scene_step::map_changed();

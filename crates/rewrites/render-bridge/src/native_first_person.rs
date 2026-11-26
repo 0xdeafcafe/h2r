@@ -1,387 +1,271 @@
-//! The first-person arms and weapon drawn by the native GPU renderer,
-//! on with it (`impl.render.native`).
+//! The first-person arms and weapon, drawn by the native GPU renderer from
+//! the scene (docs/graphics/native-objects.md, "First person").
 //!
-//! One context-only observer before `LAYER_DRAW` acts only on the layer-3
-//! call in `0x0003fdf0` (return `0x00040136`). Both invocations are
-//! independent. A sole supported layer item can skip before the list build.
-//! Mixed lists keep the guest sort and can replace contiguous ranges at
-//! issue through the standard emitter. The light pass at `0x000404b0`
-//! and the subsequent transparent call have their own paths.
+//! `0x0003fdf0` is a cut producer ([`crate::cut`]): for both of its calls,
+//! argument 0 (before the first-person lights `0x000404b0`) and argument 1
+//! (after them), its body never runs, so nothing of it reaches the device,
+//! and this feature answers the call. The answer is the scene's: the
+//! first-person [`View`] holds the parts the arms and weapon draw, and
+//! they draw in [`SLOT`] (slot 10), after the world's transparents
+//! (slot 9) and with the first person's lights and sorted pass.
 //!
-//! Each record's `+4` mode, which can differ from its owner's third-person
-//! definition, keys the loaded model. The owner supplies lighting; the item's
-//! `ItemKey` and record rows select its exact part, implementation and pose.
+//! There is no D3D fallback and no mask edit. A part that cannot be drawn
+//! is a named drop ([`Dropped`]): counted under its cause here and as the
+//! stage's `scene_dropped`, and nothing draws in its place.
+//!
+//! Which call draws a part is the guest's own split (`0x0003fdf0`, the
+//! stack argument at `[esp+0x58]` tested at `0x0003ffa0`): argument 0 draws
+//! layers 1, 3, 8, 20, 7 and then 2 (`0x00040284`, after `0x00044370` with
+//! layer 2 chosen), argument 1 draws layer 16 only (`0x0003ffbf` sets it,
+//! `0x00040010` jumps to the draw at `0x00040284`). Layer 16 is
+//! [`LATE_LAYER`].
 
-use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
-use engine::points;
+use frame_scene::{FrameScene, View, ViewKind, ViewSlot};
+use runtime::guest::{Access, FaultReason};
+use runtime::GuestFault;
 use timeline::native::{Metric, Stage};
-use native_render::camera::{GuestRead, GuestWrite};
-use native_render::object_walk;
-use native_render::objects::{
-    self, ClearedObjects, FIRST_PERSON_LAYER3_RETURN, ItemDraw, ItemKey, ObjectFrame, RECORD_MODEL,
-    RecordOwner,
-};
-use native_render::skip::{
-    CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, LIGHTMAP_LAYER, MaskPlan, MaskPreview,
-    RENDER_RECORD_SIZE, RENDER_RECORDS,
-};
 
-use crate::native_objects::{NativeSet, item_refusal};
-use crate::native_world::Mem;
-use hooks::{BuildError, Builder, Feature, Manifest};
+use crate::cut::{self, Cut};
+use crate::frame_step;
+use crate::native_objects::NativeSet;
+use hooks::{BuildError, Builder, Feature, Flow, Manifest};
 
 pub const ID: &str = "native-first-person";
+
+/// The first-person list the guest built at `0x004c8740` (the transparent
+/// stage still tells it apart from the world's).
 pub(crate) const FIRST_PERSON_ITEMS: u32 = 0x004c_8740;
 
-const FIRST_PERSON_RECORD_COUNT: u32 = 0x0050_943c;
+/// The cut: `0x0003fdf0` takes the view in `eax` and the call (0 or 1) on
+/// the stack, `ret 4`; its answer is `al = 1`, which no caller reads.
+pub const CUT: Cut = Cut {
+    name: "first_person",
+    entry: 0x0003_fdf0,
+    abi_result: 1,
+    pop: 4,
+};
+
+/// The view slot the first person draws in: slot 10, after the world's
+/// transparents (slot 9).
+pub const SLOT: ViewSlot = ViewSlot::FirstPerson;
+
+/// The one layer the second call draws; the first draws the others
+/// (1, 3, 8, 20, 7 and 2).
+pub const LATE_LAYER: u8 = 16;
 
 pub fn on(switches: &hooks::Switches) -> bool {
     hooks::switches::native_render_on(switches)
 }
 
-/// Tentative mask edits and the candidate identities, committed only after
-/// every required GPU copy has been reserved.
-pub struct ItemMasks {
-    plan: MaskPlan,
-    candidates: ClearedObjects,
-    offered: Vec<Option<usize>>,
+/// Why a part is not drawn. Each is a named count, never a D3D draw.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dropped {
+    /// The scene holds no first-person view for the call.
+    NoView,
+    /// No host is installed to draw.
+    NoHost,
+    /// The part's rows, instance or range do not read in the scene.
+    Unreadable,
+    /// The part's model is not resident (it is asked for).
+    Unresident,
+    /// The model is resident but not this part, or its implementation.
+    Unsupported,
+    /// The host could not reserve what the draw needs.
+    Reservation,
 }
 
-impl ItemMasks {
-    pub fn apply(self, mem: &mut dyn GuestMemory, drawn: &[bool]) -> Option<ClearedObjects> {
-        if drawn.len() != self.offered.len() {
-            return None;
+impl Dropped {
+    pub const ALL: [Dropped; 6] = [
+        Dropped::NoView,
+        Dropped::NoHost,
+        Dropped::Unreadable,
+        Dropped::Unresident,
+        Dropped::Unsupported,
+        Dropped::Reservation,
+    ];
+
+    /// The cause's name in `render.scene`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Dropped::NoView => "no_view",
+            Dropped::NoHost => "no_host",
+            Dropped::Unreadable => "unreadable",
+            Dropped::Unresident => "unresident",
+            Dropped::Unsupported => "unsupported",
+            Dropped::Reservation => "reservation",
         }
-        let mut keep = HashSet::new();
-        for (original, &accepted) in self.offered.iter().zip(drawn) {
-            if accepted {
-                keep.insert((*original)?);
-            }
-        }
-        if keep.is_empty() {
-            return None;
-        }
-        let mut guest = Mem(mem);
-        let mut overlay = self.plan.edit(&guest);
-        let mut candidates = self.candidates;
-        objects::keep_items(&mut overlay, &mut candidates, &|index| {
-            keep.contains(&index)
-        });
-        let selected = overlay.finish()?;
-        selected.apply(&mut guest).then_some(candidates)
+    }
+
+    fn index(self) -> usize {
+        Self::ALL.iter().position(|c| *c == self).unwrap_or(0)
     }
 }
 
-/// What draws first-person objects: boot's glue over the object programs.
+/// What one call did: parts drawn, and parts dropped by cause.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Outcome {
+    pub drawn: usize,
+    pub dropped: Vec<(Dropped, usize)>,
+}
+
+impl Outcome {
+    pub fn drop(&mut self, why: Dropped, n: usize) {
+        if n > 0 {
+            self.dropped.push((why, n));
+        }
+    }
+
+    /// Every part the call dropped.
+    pub fn dropped_total(&self) -> usize {
+        self.dropped.iter().map(|(_, n)| n).sum()
+    }
+}
+
+/// What draws the first person: boot's glue over the GPU models.
 pub trait Host: Send + Sync {
     fn retire_map(&self) {}
 
-    /// Activate the model set. Capture the draw entry only for a sole layer-3 item.
+    /// The model set drawn natively now; starts the load on a first call.
     fn native(&self, mem: &mut dyn GuestMemory, prepare_draw: bool) -> Option<Arc<NativeSet>>;
-    /// Load a record's mode met in the first-person list (cheap to repeat).
+    /// Asks for a first-person model that is not resident (cheap to repeat).
     fn want(&self, model: u32);
-    /// Plan every item and reserve every required copy before applying the
-    /// corresponding flags to `masks`. Commit and return the selected items.
+    /// Draws `parts` (indices into `scene.parts`, in the view's order) of
+    /// `view` in `slot` for call `mode`. Every part it does not draw is
+    /// in the outcome's drops; it makes no guest draw.
     fn draw(
         &self,
         mem: &mut dyn GuestMemory,
-        generation: u64,
-        objects: Vec<ObjectFrame>,
-        items: Vec<ItemDraw>,
-        models: HashMap<u16, u32>,
-        masks: ItemMasks,
-    ) -> Option<ClearedObjects>;
+        scene: &FrameScene,
+        view: &View,
+        slot: ViewSlot,
+        mode: u32,
+        parts: &[u32],
+    ) -> Outcome;
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
-static CLEARED: Mutex<Option<(ClearedObjects, Vec<u32>)>> = Mutex::new(None);
 static CALLS: AtomicU64 = AtomicU64::new(0);
 static DRAWN: AtomicU64 = AtomicU64::new(0);
-static OBJECTS: AtomicU64 = AtomicU64::new(0);
-static ITEMS: AtomicU64 = AtomicU64::new(0);
-static REFUSED: AtomicU64 = AtomicU64::new(0);
+static DROPS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
 
 pub fn set_host(host: Arc<dyn Host>) {
     *HOST.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
 }
 
-pub(crate) fn forget_pending() {
-    CLEARED.lock().unwrap_or_else(|e| e.into_inner()).take();
-}
-
 pub(crate) fn retire_map() {
     let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    if let Some(host) = host { host.retire_map(); }
-}
-
-/// First-person layer-3 calls, native draws, objects and suppressed items,
-/// and calls for which the host drew none of the offered items.
-pub fn counts() -> (u64, u64, u64, u64, u64) {
-    (
-        CALLS.load(Ordering::Relaxed),
-        DRAWN.load(Ordering::Relaxed),
-        OBJECTS.load(Ordering::Relaxed),
-        ITEMS.load(Ordering::Relaxed),
-        REFUSED.load(Ordering::Relaxed),
-    )
-}
-
-/// The mode a render record draws.
-fn record_model(m: &dyn GuestRead, record: u16) -> Option<u32> {
-    m.read_u32(RENDER_RECORDS + RENDER_RECORD_SIZE * u32::from(record) + RECORD_MODEL)
-}
-
-/// Reads the whole first-person list before writing any mask and maps every
-/// geometry record to its mode. Any uncertain in-layer item refuses the
-/// entire call; an unsupported part simply keeps its own D3D draw.
-fn admission(m: &dyn GuestRead, set: &NativeSet, host: &dyn Host) -> Option<HashMap<u16, u32>> {
-    const MAX_ITEMS: u32 = 1 << 16;
-    let list = m.read_u32(CURRENT_LIST)?;
-    if list == 0 {
-        return None;
-    }
-    let count = m.read_u32(list + 4)?;
-    let first = m.read_u32(list + 0xc)?;
-    let items = m.read_u32(list + 0x14)?;
-    if items != FIRST_PERSON_ITEMS || first > count || count - first > MAX_ITEMS {
-        return None;
-    }
-    let records = m.read_u32(FIRST_PERSON_RECORD_COUNT)?;
-    let bit = 1u32 << LIGHTMAP_LAYER;
-    let mut models = HashMap::new();
-    for i in first..count {
-        let item = items + ITEM_SIZE * i;
-        let mask = m.read_u32(item + 0x10)?;
-        if mask & bit == 0 {
-            continue;
-        }
-        if m.read_u32(item)? != GEOMETRY_BUILD {
-            return None;
-        }
-        let key = objects::item_key(m, item)?;
-        if u32::from(key.record) >= records {
-            return None;
-        }
-        let model = record_model(m, key.record)?;
-        match objects::item_owner(m, item)? {
-            RecordOwner::World => continue,
-            RecordOwner::Unresolved => return None,
-            RecordOwner::Object(_) => {}
-        }
-        models.insert(key.record, model);
-        if !set.accepts(model, &key) && !set.definitions.contains_key(&(model as u16)) {
-            host.want(model);
-        }
-    }
-    Some(models)
-}
-
-/// The observer before a layer draw. Only `0x0003fdf0`'s layer 3 is owned.
-pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
-    restore_pending(mem);
-    let m = Mem(mem);
-    if ret != FIRST_PERSON_LAYER3_RETURN || m.read_u32(CURRENT_LAYER) != Some(LIGHTMAP_LAYER) {
-        return;
-    }
-    count_call();
-    let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
-        return;
-    };
-    let Some(set) = host.native(m.0, true) else {
-        return;
-    };
-    draw_layer(m, host, set);
-}
-
-fn count_call() {
-    let calls = CALLS.fetch_add(1, Ordering::Relaxed) + 1;
-    if calls % 1800 == 1 {
-        let (_, drawn, objects, items, refused) = counts();
-        eprintln!(
-            "native-first-person: {drawn} native draws of {calls} first-person layer-3 calls, {objects} objects, {items} items skipped, {refused} refused calls"
-        );
+    if let Some(host) = host {
+        host.retire_map();
     }
 }
 
-fn draw_layer(m: Mem<'_>, host: Arc<dyn Host>, set: Arc<NativeSet>) {
-    let Some(models) = admission(&m, &set, &*host) else {
-        return;
-    };
-    let accept = |_handle: u32, _definition: u32, key: &ItemKey| {
-        models
-            .get(&key.record)
-            .is_some_and(|&model| set.accepts(model, key))
-    };
-    let Some(mut preview) = MaskPreview::new(&m) else {
-        return;
-    };
-    let Some(cleared) = objects::clear_objects(&mut preview, LIGHTMAP_LAYER, &accept) else {
-        return;
-    };
-    if cleared.walk.write_failed != 0 || cleared.items.is_empty() {
-        return;
-    }
+/// Calls answered, and parts drawn.
+pub fn counts() -> (u64, u64) {
+    (CALLS.load(Ordering::Relaxed), DRAWN.load(Ordering::Relaxed))
+}
 
-    // Each accepted owner is read once. Its body node count need not match
-    // the first-person mode: the record supplies the actual geometry rows.
-    let mut frames: Vec<ObjectFrame> = Vec::with_capacity(cleared.handles.len());
-    let mut frame_of: HashMap<u32, Option<usize>> = HashMap::new();
-    for &handle in &cleared.handles {
-        let frame = objects::read_object(&m, handle).map(|frame| {
-            frames.push(frame);
-            frames.len() - 1
-        });
-        frame_of.insert(handle, frame);
-    }
-    let mut items = Vec::with_capacity(cleared.items.len());
-    for (i, (&owner, key)) in cleared.owners.iter().zip(&cleared.keys).enumerate() {
-        let object = frame_of.get(&owner).copied().flatten();
-        let Some(&model) = models.get(&key.record) else {
-            continue;
-        };
-        let rows = objects::record_rows(&m, key.record);
-        if item_refusal(&m, &set, model, key, object.is_some(), &rows).is_some() {
-            continue;
-        }
-        let (Some(object), Ok(rows)) = (object, rows) else {
-            continue;
-        };
-        // What the record makes the geometry draw do, as the world layers
-        // read it: the topology and subparts it draws, or the item keeps
-        // its D3D draw.
-        let record = RENDER_RECORDS + RENDER_RECORD_SIZE * u32::from(key.record);
-        let Ok((flags, subparts)) = object_walk::layer_part(&m, LIGHTMAP_LAYER as u8, cleared.items[i], record, *key)
-        else {
-            continue;
-        };
-        items.push(ItemDraw {
-            index: i,
-            object,
-            key: *key,
-            rows,
-            flags,
-            subparts,
-        });
-    }
-    if items.is_empty() {
-        return;
-    }
-    let Some(plan) = preview.finish() else {
-        return;
-    };
-    let masks = ItemMasks {
-        plan,
-        candidates: cleared,
-        offered: items.iter().map(|item| Some(item.index)).collect(),
-    };
-    let Some(cleared) = host.draw(m.0, set.generation, frames, items, models, masks) else {
-        REFUSED.fetch_add(1, Ordering::Relaxed);
-        return;
-    };
-    DRAWN.fetch_add(1, Ordering::Relaxed);
-    OBJECTS.fetch_add(cleared.handles.len() as u64, Ordering::Relaxed);
-    ITEMS.fetch_add(cleared.items.len() as u64, Ordering::Relaxed);
-    let left = cleared
-        .items
+/// Parts dropped, by cause (`render.scene`: `first_person_dropped_<cause>`).
+pub fn drops() -> Vec<(&'static str, u64)> {
+    Dropped::ALL
         .iter()
-        .map(|&item| m.read_u32(item + 0x10).unwrap_or(0))
-        .collect();
-    *CLEARED.lock().unwrap_or_else(|e| e.into_inner()) = Some((cleared, left));
+        .map(|c| (c.name(), DROPS[c.index()].load(Ordering::Relaxed)))
+        .collect()
 }
 
-/// Restores the previous first-person layer-3 skip, unless the list has
-/// since been rebuilt (an item whose mask changed is left alone).
-pub fn restore_pending(mem: &mut dyn GuestMemory) {
-    let Some((cleared, left)) = CLEARED.lock().unwrap_or_else(|e| e.into_inner()).take() else {
-        return;
+/// Whether call `mode` draws a part of `layer`.
+pub fn draws_layer(mode: u32, layer: u8) -> bool {
+    (mode == 1) == (layer == LATE_LAYER)
+}
+
+/// One call, from the scene: the readable parts of `view` that `mode`
+/// draws are offered to the host in the view's order; every other is
+/// dropped under its cause.
+pub fn offer(
+    host: &dyn Host,
+    mem: &mut dyn GuestMemory,
+    scene: &FrameScene,
+    view: &View,
+    mode: u32,
+) -> Outcome {
+    let mut out = Outcome::default();
+    let range = view.order.start as usize..view.order.end as usize;
+    let Some(order) = scene.order.get(range) else {
+        out.drop(Dropped::Unreadable, view.order.len());
+        return out;
     };
-    let mut m = Mem(mem);
-    let bit = 1u32 << cleared.layer;
-    for (&item, &left) in cleared.items.iter().zip(&left) {
-        if m.read_u32(item + 0x10) == Some(left) {
-            let _ = m.write_u32(item + 0x10, left | bit);
-        }
-    }
-}
-
-/// Inventory the record models even when the guest must sort layer 3. The
-/// other first-person layers share these uploads and can name models that
-/// have no item in layer 3.
-fn layer_inventory(m: &dyn GuestRead) -> Option<(bool, Vec<u32>)> {
-    let list = m.read_u32(CURRENT_LIST)?;
-    if list == 0 {
-        return None;
-    }
-    let count = m.read_u32(list.checked_add(4)?)?;
-    let first = m.read_u32(list.checked_add(0xc)?)?;
-    let items = m.read_u32(list.checked_add(0x14)?)?;
-    if items != FIRST_PERSON_ITEMS || count.checked_sub(first)? > 1 << 16 {
-        return None;
-    }
-    let records = m.read_u32(FIRST_PERSON_RECORD_COUNT)?;
-    let mut layer3 = 0;
-    let mut models = Vec::new();
-    const LAYERS: u32 = (1 << 1) | (1 << 2) | (1 << 3) | (1 << 7) | (1 << 8) | (1 << 20);
-    for i in first..count {
-        let at = items.checked_add(ITEM_SIZE.checked_mul(i)?)?;
-        let mask = m.read_u32(at.checked_add(0x10)?)?;
-        if mask & (1 << LIGHTMAP_LAYER) != 0 {
-            layer3 += 1;
-        }
-        if mask & LAYERS == 0 || m.read_u32(at) != Some(GEOMETRY_BUILD) {
+    let set = host.native(mem, false);
+    let mut offered = Vec::with_capacity(order.len());
+    for &index in order {
+        let Some(part) = scene.parts.get(index as usize) else {
+            out.drop(Dropped::Unreadable, 1);
+            continue;
+        };
+        if !draws_layer(mode, part.layer) {
             continue;
         }
-        if let Some(key) = objects::item_key(m, at)
-            && u32::from(key.record) < records
-            && matches!(objects::item_owner(m, at), Some(RecordOwner::Object(_)))
-            && let Some(model) = record_model(m, key.record)
-            && !models.contains(&model)
-        {
-            models.push(model);
+        let rows = part.rows.start as usize..part.rows.end as usize;
+        let (Some(instance), Some(_)) = (scene.instances.get(part.instance as usize), scene.rows.get(rows)) else {
+            out.drop(Dropped::Unreadable, 1);
+            continue;
+        };
+        let Some(set) = set.as_deref() else {
+            out.drop(Dropped::Unresident, 1);
+            continue;
+        };
+        if !set.definitions.contains_key(&(instance.model as u16)) {
+            host.want(instance.model);
+            out.drop(Dropped::Unresident, 1);
+        } else if !set.accepts(instance.model, &part.key) {
+            out.drop(Dropped::Unsupported, 1);
+        } else {
+            offered.push(index);
         }
     }
-    Some((layer3 == 1, models))
+    if offered.is_empty() {
+        return out;
+    }
+    let drawn = host.draw(mem, scene, view, SLOT, mode, &offered);
+    out.drawn += drawn.drawn;
+    out.dropped.extend(drawn.dropped);
+    out
 }
 
-/// Discover models in mixed lists without moving any draw ahead of the
-/// guest sort. Only a sole layer-3 item can commit a mask edit here.
-pub fn observe_layer(mem: &mut dyn GuestMemory, ret: u32) {
-    restore_pending(mem);
-    let m = Mem(mem);
-    if ret != FIRST_PERSON_LAYER3_RETURN || m.read_u32(CURRENT_LAYER) != Some(LIGHTMAP_LAYER) {
-        return;
-    }
-    let Some((single, models)) = layer_inventory(&m) else { return };
-    let skipped = ITEMS.load(Ordering::Relaxed);
-    if single {
-        count_call();
-        Stage::FirstPerson.count(Metric::WalkExamined, 1);
-    }
+/// Answers one call of `0x0003fdf0`: opens the first person's view, offers
+/// its parts, and counts what was drawn and what was dropped.
+pub fn answer(mem: &mut dyn GuestMemory, mode: u32) -> Outcome {
+    CALLS.fetch_add(1, Ordering::Relaxed);
     let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    if !models.is_empty()
-        && let Some(host) = host
-        && let Some(set) = host.native(m.0, single)
-    {
-        for model in models {
-            if !set.definitions.contains_key(&(model as u16)) {
-                host.want(model);
-            }
+    let _ = crate::scene_step::open_kind(&*mem, ViewKind::FirstPerson);
+    let out = crate::scene_step::with_open(|open| match (host.as_deref(), open) {
+        (None, Some((_, view))) => {
+            let mut out = Outcome::default();
+            out.drop(Dropped::NoHost, view.order.len());
+            out
         }
-        if single {
-            draw_layer(m, host, set);
+        (Some(host), Some((scene, view))) if view.key.kind == ViewKind::FirstPerson => {
+            offer(host, mem, scene, view, mode)
         }
-    }
-    if single {
-        let drawn = ITEMS.load(Ordering::Relaxed).saturating_sub(skipped);
-        if drawn > 0 {
-            Stage::FirstPerson.count(Metric::WalkSuppressed, drawn);
-        } else {
-            Stage::FirstPerson.count(Metric::WalkRefusedReservation, 1);
+        // No first-person view: the call has nothing to draw, which is
+        // not a part dropped, but it is counted.
+        _ => {
+            let mut out = Outcome::default();
+            out.drop(Dropped::NoView, 1);
+            out
         }
+    });
+    count(&out);
+    out
+}
+
+fn count(out: &Outcome) {
+    DRAWN.fetch_add(out.drawn as u64, Ordering::Relaxed);
+    for &(why, n) in &out.dropped {
+        DROPS[why.index()].fetch_add(n as u64, Ordering::Relaxed);
+        Stage::FirstPerson.count(Metric::SceneDropped, n as u64);
     }
 }
 
@@ -389,28 +273,49 @@ pub struct NativeFirstPerson;
 
 impl Feature for NativeFirstPerson {
     fn manifest(&self) -> Manifest {
-        Manifest::new(
-            ID,
-            "First-person arms and weapon drawn by the native GPU renderer",
-        )
-        .doc("docs/graphics/native-renderer.md")
+        Manifest::new(ID, "First-person arms and weapon drawn from the scene by the native GPU renderer")
+            .doc("docs/graphics/native-objects.md")
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         if !on(b.switches()) {
             return Ok(());
         }
+        // A cut (`crate::cut::OWN_PRODUCER`): every call is answered here,
+        // after the frame step's writes for it, and the body never runs.
+        let point = cut::point(&CUT);
         b.raw()
-            .observe_before(&points::LAYER_DRAW, "native_first_person_skip", |o| {
-                let mut guest = o.guest();
-                let ret = guest.u32(o.cpu.esp).unwrap_or(0);
-                observe_layer(&mut *guest, ret);
+            .before(point, "native_first_person_skip", move |c| {
+                if c.addr != point.base {
+                    return Ok(Flow::Continue);
+                }
+                let rt = Arc::clone(c.ctx.runtime());
+                let mut mem = rt.memory();
+                frame_step::before(&mut *mem, CUT.name).map_err(|f| GuestFault {
+                    addr: f.addr,
+                    len: f.len as usize,
+                    access: if f.write { Access::Write } else { Access::Read },
+                    reason: FaultReason::Unmapped,
+                })?;
+                // The call is the stack's first argument; one that does not
+                // read is a drop, never a guest draw.
+                match mem.u32(c.cpu.esp.wrapping_add(4)) {
+                    Ok(mode) => {
+                        answer(&mut *mem, mode);
+                    }
+                    Err(_) => count(&Outcome {
+                        drawn: 0,
+                        dropped: vec![(Dropped::Unreadable, 1)],
+                    }),
+                }
+                let transfer = mem.ret(c.cpu, u32::from(CUT.pop))?;
+                c.cpu.eax = CUT.abi_result;
+                Ok(Flow::Return(transfer))
             })
-            .after_feature(crate::render_timing::ID)
-            .after_feature(crate::native_world::ID)
-            .after_feature(crate::native_objects::ID)
-            .context_only();
-        b.snapshot(hooks::SnapshotPolicy::Stateless);
+            .optional()
+            .context_only()
+            .last();
         Ok(())
     }
 }
