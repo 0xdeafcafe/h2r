@@ -904,12 +904,20 @@ pub fn put_map_ground(
         manifest.items.push(Item {
             kind: Kind::Map,
             source: Some(toml_file.clone()),
-            inputs: Vec::new(),
+            inputs: vec![ground.clone()],
             tag: None,
             maps: content::package::Maps::Scope(MapScope::All),
             replaces: None,
             was: None,
         });
+    }
+    // The loader reads only the files items name: the ground file is the map item's input.
+    let mut inputs_changed = false;
+    if let Some(i) = existing
+        && !manifest.items[i].inputs.contains(&ground)
+    {
+        manifest.items[i].inputs.push(ground.clone());
+        inputs_changed = true;
     }
     // The new map takes what the open map's edits change.
     let mut renamed = false;
@@ -925,7 +933,7 @@ pub fn put_map_ground(
             renamed = true;
         }
     }
-    let mut changed = existing.is_none() || renamed;
+    let mut changed = existing.is_none() || renamed || inputs_changed;
     let mut written = Vec::new();
     for (rel, text) in [(&toml_file, toml.as_str()), (&ground, yaml)] {
         let path = dir.join(rel);
