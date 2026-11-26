@@ -317,6 +317,69 @@ pub(crate) mod tests {
         assert!(f.admits([6.0, 0.0, 0.0], 0.5));
     }
 
+    /// A whole-screen window of a lens pitched by `pitch` (radians, up
+    /// positive), its vertical half tangent `t` and the display's `aspect`.
+    fn pitched(pitch: f32, t: f32, aspect: f32) -> (Lens, Frustum) {
+        let lens = Lens::new(&RenderCamera {
+            projection_xy: Some([1.0 / (t * aspect), 1.0 / t, 0.0, 0.0]),
+            ..camera_at([3.0, -2.0, 5.0], [pitch.cos(), 0.0, pitch.sin()])
+        })
+        .unwrap();
+        let [x0, y0] = lens.tangent([-1.0, -1.0]);
+        let [x1, y1] = lens.tangent([1.0, 1.0]);
+        let frustum = Frustum::build([x0, x1, y0, y1], &lens, &INPUTS).unwrap();
+        (lens, frustum)
+    }
+
+    /// The object test is the sphere against the window's planes at every
+    /// display aspect and pitch: an object whose centre is off the screen
+    /// stays listed until its whole sphere is, at the sides, the top, the
+    /// bottom and the corners alike.
+    #[test]
+    fn a_sphere_is_listed_until_it_is_wholly_off_a_wide_pitched_screen() {
+        let t = 28.0f32.to_radians().tan();
+        let r = 0.75;
+        for aspect in [4.0 / 3.0, 16.0 / 9.0, 43.0 / 18.0, 32.0 / 9.0] {
+            for pitch in [-1.2f32, -0.6, 0.0, 0.6, 1.2] {
+                let (lens, f) = pitched(pitch, t, aspect);
+                let [right, up, forward] = lens.axes();
+                // A point 20 units along the ray through a screen point
+                // (tangent units).
+                let ray = |x: f32, y: f32| {
+                    [0, 1, 2].map(|k| lens.position[k] + 20.0 * (forward[k] + x * right[k] + y * up[k]))
+                };
+                let (w, h) = (t * aspect, t);
+                // Each edge's midpoint and the corners it shares, with the
+                // plane (left, right, bottom, top) that edge lies in.
+                let edges = [
+                    (0, [(-w, 0.0), (-w, h), (-w, -h)]),
+                    (1, [(w, 0.0), (w, h), (w, -h)]),
+                    (2, [(0.0, -h), (-w, -h), (w, -h)]),
+                    (3, [(0.0, h), (-w, h), (w, h)]),
+                ];
+                for (plane, points) in edges {
+                    let n = f.planes[plane];
+                    for (x, y) in points {
+                        let on = ray(x, y);
+                        let out = |by: f32| [0, 1, 2].map(|k| on[k] + n[k] * by);
+                        let name = format!("aspect {aspect} pitch {pitch} plane {plane} at ({x}, {y})");
+                        assert!(f.admits(out(r - 0.05), r), "centre off the screen, sphere on it: {name}");
+                        assert!(!f.admits(out(r + 0.05), r), "sphere wholly off the screen: {name}");
+                    }
+                }
+                // A wider display's side planes admit what a 4:3 screen at
+                // the same pitch does not: a sphere on the ray to the wide
+                // screen's right edge.
+                if aspect > 4.0 / 3.0 {
+                    let (_, retail) = pitched(pitch, t, 4.0 / 3.0);
+                    let edge = ray(w * 0.98, 0.0);
+                    assert!(f.admits(edge, 0.01), "aspect {aspect} pitch {pitch}");
+                    assert!(!retail.admits(edge, 0.01), "aspect {aspect} pitch {pitch}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn the_windows_of_a_cluster_admit_its_objects() {
         let lens = lens();

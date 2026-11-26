@@ -28,20 +28,36 @@ pub const IDENTITY: Fit = [1.0, 1.0, 0.0, 0.0];
 /// tracked points': they keep their projected location).
 pub const ANCHOR_CENTRE: u32 = 4;
 
+/// Whether `output` has the canvas's own 4:3 shape, in whole pixels: the
+/// window's stretch is then uniform and nothing needs a fit.
+pub fn is_canvas_shape(output: (u32, u32)) -> bool {
+    u64::from(output.0) * 3 == u64::from(output.1) * 4
+}
+
+/// The window's horizontal stretch of the canvas over its vertical one
+/// (above 1 on a window wider than 4:3). `None` on a canvas-shaped or
+/// degenerate window.
+pub fn stretch_ratio(output: (u32, u32)) -> Option<f32> {
+    let (w, h) = output;
+    (w != 0 && h != 0 && !is_canvas_shape(output))
+        .then(|| (w as f32 / CANVAS[0]) / (h as f32 / CANVAS[1]))
+}
+
+/// Display pixels per guest pixel of the uniform fit on `output`:
+/// `min(w/640, h/480)`.
+pub fn uniform_scale(output: (u32, u32)) -> f32 {
+    (output.0 as f32 / CANVAS[0]).min(output.1 as f32 / CANVAS[1])
+}
+
 /// The guest canvas drawn uniformly on `output` about `pivot` (guest
 /// window units): the scale is `min(w/640, h/480)` display pixels per
 /// guest pixel, so the fitted canvas covers the largest centred 4:3 box
 /// the window holds. `None` on a 4:3 window (the stretch is already
 /// uniform) or a degenerate one: the identity needs no transform.
 pub fn menu_fit(output: (u32, u32), pivot: [f32; 2]) -> Option<Fit> {
-    let (w, h) = output;
-    if w == 0 || h == 0 || u64::from(w) * 3 == u64::from(h) * 4 {
-        return None;
-    }
-    let stretch = [(w as f32 / CANVAS[0]), (h as f32 / CANVAS[1])];
     // Against the stretch the display already applies, each axis of the
     // canvas draws at the smaller stretch divided into its own.
-    about(stretch[1] / stretch[0], pivot)
+    about(stretch_ratio(output)?.recip(), pivot)
 }
 
 /// A uniform fit from a ratio between the axes' stretches, about a pivot
@@ -299,6 +315,56 @@ mod tests {
         assert_eq!(map_rect(IDENTITY, (10, 20, 30, 40)), (10, 20, 30, 40));
         assert_eq!(map_point(fit, [320.0, 240.0]), [320.0, 240.0]);
         assert_eq!(map_point(fit, [0.0, 480.0]), [80.0, 480.0]);
+    }
+
+    /// Ultrawide windows: the menu keeps the centred 4:3 box at the
+    /// window's full height, a pinned HUD group keeps its own window
+    /// corner at that same scale, and the crosshair stays on the centre.
+    #[test]
+    fn ultrawide_windows_keep_the_uniform_scale_and_the_corners() {
+        // Display pixels reach the thousands: compare to a part in ten thousand.
+        let near = |a: f32, b: f32| assert!((a - b).abs() <= 1e-4 * b.abs().max(1.0), "{a} != {b}");
+        for (output, box_width) in [((2560, 1080), 1440.0), ((3440, 1440), 1920.0), ((5120, 1440), 1920.0)] {
+            let (w, h) = (output.0 as f32, output.1 as f32);
+            near(uniform_scale(output), h / 480.0);
+            near(stretch_ratio(output).unwrap(), (w / h) / (4.0 / 3.0));
+            let menu = menu_fit(output, [320.0, 240.0]).unwrap();
+            near(at(menu, output, [0.0, 0.0])[0], (w - box_width) / 2.0);
+            near(at(menu, output, [640.0, 480.0])[0], (w + box_width) / 2.0);
+            near(at(menu, output, [640.0, 480.0])[1], h);
+            // The lens factor of a 4:3 guest on this window.
+            let lens = stretch_ratio(output).unwrap().recip();
+            let view = (0, 0, 640, 480);
+            let corners = [(0, [640.0, 0.0]), (1, [0.0, 0.0]), (2, [0.0, 480.0]), (3, [640.0, 480.0])];
+            for (id, corner) in corners {
+                let fit = hud_fit(output, view, true, lens, true, Some((id, [0.0; 2]))).unwrap();
+                // The corner stays on the window's corner.
+                let [x, y] = at(fit, output, corner);
+                near(x, corner[0] / 640.0 * w);
+                near(y, corner[1] / 480.0 * h);
+                // A 64-pixel meter is 64 uniform pixels wide and tall.
+                let inward = [if corner[0] == 0.0 { 64.0 } else { 576.0 }, if corner[1] == 0.0 { 64.0 } else { 416.0 }];
+                let [mx, my] = at(fit, output, inward);
+                near((mx - x).abs(), 64.0 * uniform_scale(output));
+                near((my - y).abs(), 64.0 * uniform_scale(output));
+            }
+            // The crosshair's art fits about the view's centre, in place.
+            let fit = hud_fit(output, view, true, lens, true, Some((ANCHOR_CENTRE, [320.0, 240.0]))).unwrap();
+            near(at(fit, output, [320.0, 240.0])[0], w / 2.0);
+            near(at(fit, output, [320.0, 240.0])[1], h / 2.0);
+            near(at(fit, output, [352.0, 240.0])[0] - w / 2.0, 32.0 * uniform_scale(output));
+        }
+    }
+
+    #[test]
+    fn a_canvas_shaped_or_degenerate_window_has_no_stretch_ratio() {
+        for output in [(640, 480), (1600, 1200), (0, 480), (640, 0)] {
+            assert_eq!(stretch_ratio(output), None, "{output:?}");
+        }
+        assert!(is_canvas_shape((1280, 960)));
+        assert!(!is_canvas_shape((1280, 961)));
+        close(stretch_ratio((960, 1200)).unwrap(), 0.6);
+        close(uniform_scale((960, 1200)), 1.5);
     }
 
     /// Whatever the aspect, the fitted canvas covers the same display
