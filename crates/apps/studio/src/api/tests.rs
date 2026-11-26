@@ -1403,6 +1403,8 @@ fn every_method_in_methods_has_a_test() {
                         // No sim runner is wired to Studio's own API.
                         | m::PLAYTEST_RUN
                 ) && e.code == code::REFUSED => {}
+            // No edit target is set here; app/ground_tests.rs sets one.
+            (None, Err(e)) if d.name == m::GROUND_SAVE && e.code == code::NO_TARGET => {}
             // The invented map has no hill with corners to convert
             // (markers_tests.rs makes one).
             (None, Err(e)) if d.name == m::MARKERS_AREA_CONVERT && e.code == code::REFUSED => {}
