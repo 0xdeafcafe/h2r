@@ -365,6 +365,7 @@ mod tests {
                     pool_start: self.pool,
                     per_round_bonus: self.bonus,
                     shared: true,
+                    zero_holds: false,
                 },
                 caps: Caps {
                     live_actors_by_players: [4, 8, 16].into_iter().zip(self.actors).collect(),
@@ -390,6 +391,7 @@ mod tests {
                         .collect(),
                     assist: 250,
                 },
+                bonus: None,
             }
         }
 

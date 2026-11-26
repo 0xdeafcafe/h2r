@@ -23,6 +23,21 @@ pub const SET_ROUNDS: usize = 3;
 pub(crate) const MAX_SET_SKULLS: usize = 3;
 /// The most a set may scale its squads by, in thousandths per set.
 pub const MAX_SET_SCALE: u16 = 500;
+/// Rows of a bonus round's points-to-lives table.
+pub(crate) const MAX_BONUS_ROWS: usize = 6;
+/// The longest bonus round: five minutes.
+pub(crate) const MAX_BONUS_TICKS: u32 = 5 * 60 * 30;
+/// The skulls (never Iron) the bonus round switches on for its
+/// length: the ODST skull order's slots, each in `script.rs`'s skull list.
+/// Iron is on in the bonus round besides ([`Skull::Iron`]).
+pub const BONUS_SKULLS: [Skull; 6] = [
+    Skull::Ghost,
+    Skull::Catch,
+    Skull::Thunderstorm,
+    Skull::Famine,
+    Skull::BlackEye,
+    Skull::Mythic,
+];
 const MAX_CAPS: usize = MAX_PLAYERS as usize;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +56,9 @@ pub struct Def {
     pub lives: Lives,
     pub caps: Caps,
     pub scoring: Scoring,
+    /// The round after each set: absent, none is played.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bonus: Option<Bonus>,
 }
 
 impl Def {
@@ -188,6 +206,31 @@ pub struct Lives {
     pub per_round_bonus: u16,
     /// One pool per team; otherwise each player has their own count.
     pub shared: bool,
+    /// At zero lives a dead player waits for the next grant (a round's
+    /// end, the bonus round's end), not for the wave's end.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub zero_holds: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// The bonus round that follows each set: a timed stretch of one weak
+/// squad without end, every skull on, no life lost and no respawn in it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Bonus {
+    /// How long it runs, in ticks.
+    pub ticks: u32,
+    /// The squad the reserve refills with until the time is up. Its
+    /// `drop` and `weapon_tier` are read as in a wave.
+    pub squad: SquadSpec,
+    /// Ascending `(points, lives)`: a team that scores at least `points`
+    /// in the bonus round is granted the `lives` of the last row it
+    /// reaches (not the sum of the rows).
+    #[serde(deserialize_with = "wire::bounded_seq::<_, _, MAX_BONUS_ROWS>")]
+    pub lives_by_points: Vec<(u32, u16)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -251,6 +294,9 @@ pub enum Skull {
     Ghost = 7,
     BlackEye = 8,
     Catch = 9,
+    /// Bonus round only: no respawn while it runs. A director rule; the
+    /// engine's skull of this number is never set.
+    Iron = 11,
     Mythic = 12,
     Angry = 13,
     LowGravity = 16,

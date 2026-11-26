@@ -388,6 +388,8 @@ pub enum FirefightScope {
     HostAiAndShared(Reach),
     /// The multiplayer path: Black Eye and Low Gravity for everyone.
     Shared(Reach),
+    /// A director rule: no engine byte on any machine.
+    Rule,
 }
 
 /// The engine's index of a Firefight skull (its discriminant).
@@ -404,6 +406,8 @@ pub fn firefight_scope(skull: ::firefight::Skull) -> FirefightScope {
         }
         S::Famine => FirefightScope::HostAiAndShared(Reach::Simulation),
         S::BlackEye => FirefightScope::Shared(Reach::Simulation),
+        // A director rule (no respawn in the bonus round), no engine byte.
+        S::Iron => FirefightScope::Rule,
         S::LowGravity => FirefightScope::Shared(Reach::Simulation),
     }
 }

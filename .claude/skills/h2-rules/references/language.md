@@ -329,6 +329,7 @@ outline and folding. A name is the declaration's number, a `const`.
 | `ff_score` | player, int, bool | `firefight.director` | queued | named |
 | `ff_respawn` | player | `firefight.director` | queued | named |
 | `ff_finish` | bool | `firefight.director` | queued | named |
+| `ff_bonus` | bool, int | `firefight.director` | queued | named |
 
 A `message` text written in the call may hold holes: `message(victim,
 "{k} scored, {left} to go")`. A hole is one name in scope (a local, a

@@ -151,6 +151,12 @@ pub enum Command {
     Finish {
         outcome: Outcome,
     },
+    /// The bonus round starts (`on`, for `ticks`) or ends. Its squads are
+    /// ordinary `PlaceSquad`s; no `Respawn` is issued between the two.
+    Bonus {
+        on: bool,
+        ticks: u32,
+    },
     /// The HUD's mode blob after the host's step
     /// (docs/game/firefight.md, "The HUD"), when it changed. The host's
     /// runtime appends it, not the director (no script makes it), so a
@@ -192,6 +198,11 @@ pub enum Phase {
     },
     /// Between waves or rounds, until the tick given.
     Intermission {
+        until: u32,
+    },
+    /// The bonus round, which ends at the tick given or when every player
+    /// is dead.
+    Bonus {
         until: u32,
     },
     Done,

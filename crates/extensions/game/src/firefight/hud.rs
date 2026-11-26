@@ -224,6 +224,7 @@ impl Mode {
             (None, Phase::Fighting) => Stage::Fighting,
             (None, Phase::Cleanup { .. }) => Stage::Cleanup,
             (None, Phase::Intermission { .. }) => Stage::Intermission,
+            (None, Phase::Bonus { .. }) => Stage::Fighting,
             (None, Phase::Done) => Stage::Over,
         };
         let round = def.rounds.get(usize::from(state.round));

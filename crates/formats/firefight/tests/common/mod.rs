@@ -42,6 +42,7 @@ pub fn small_def(pool: u16, shared: bool) -> Def {
             pool_start: pool,
             per_round_bonus: 0,
             shared,
+            zero_holds: false,
         },
         caps: Caps {
             live_actors_by_players: vec![(4, 4)],
@@ -58,6 +59,7 @@ pub fn small_def(pool: u16, shared: bool) -> Def {
             skull_multipliers: [(Skull::Famine, 1_100)].into(),
             assist: 250,
         },
+        bonus: None,
     }
 }
 

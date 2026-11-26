@@ -13,7 +13,10 @@ use crate::director::{
     Command, Observed, Phase, PlayerState, SQUAD_SLOTS, Settings, Slot, State,
 };
 use crate::scoring::ScoreReason;
-use crate::{Def, Difficulty, Drop, MULTIPLIER_SCALE, Outcome, Refusal, Skull, WAVES_PER_ROUND};
+use crate::{
+    BONUS_SKULLS, Def, Difficulty, Drop, MAX_BONUS_ROWS, MULTIPLIER_SCALE, Outcome, Refusal, Skull,
+    WAVES_PER_ROUND,
+};
 
 /// The index of `skull` in [`SKULLS`]: its bit, and its row in the tables.
 fn skull_index(skull: Skull) -> Option<usize> {
@@ -53,6 +56,7 @@ const FIGHTING: i32 = 2;
 const CLEANUP: i32 = 3;
 const INTERMISSION: i32 = 4;
 const DONE: i32 = 5;
+const BONUS: i32 = 6;
 
 /// Why a definition did not load into the director script.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -91,7 +95,8 @@ fn wave_module(def: &Def) -> Result<String, ScriptRefusal> {
         .iter()
         .flat_map(|round| &round.waves)
         .map(|wave| wave.squads.len())
-        .sum();
+        .sum::<usize>()
+        + usize::from(def.bonus.is_some());
     if squad_rows > MAX_TABLE_ROWS {
         return Err(ScriptRefusal::Squads { rows: squad_rows });
     }
@@ -116,6 +121,10 @@ fn wave_module(def: &Def) -> Result<String, ScriptRefusal> {
         ("endless", u32::from(def.set.endless)),
         ("set_scale", u32::from(def.set.scale)),
         ("set_skull_count", def.set.skulls.len() as u32),
+        ("zero_holds", u32::from(def.lives.zero_holds)),
+        ("bonus_on", u32::from(def.bonus.is_some())),
+        ("bonus_ticks", def.bonus.as_ref().map_or(0, |b| b.ticks)),
+        ("set_rounds", set_rounds(def)),
     ];
     for (name, value) in constants {
         writeln!(data, "const {name} = {value}").unwrap();
@@ -139,12 +148,29 @@ fn wave_module(def: &Def) -> Result<String, ScriptRefusal> {
         )
         .unwrap();
     }
+    // The bonus squad is the last row, after every wave's.
+    if let Some(bonus) = &def.bonus {
+        let squad = &bonus.squad;
+        let preferred = match squad.drop {
+            Drop::Edge => -1,
+            Drop::PreferZone(zone) => i32::from(zone),
+        };
+        writeln!(
+            data,
+            "(\"{}\", {}, {}, {}, {preferred}, {}),",
+            squad.class, squad.count.per_player, squad.count.min, squad.count.max, squad.weapon_tier,
+        )
+        .unwrap();
+    }
     data.push_str("]\ntable waves: (first: int, count: int, gap: int) = [\n");
     let mut first = 0;
     for wave in def.rounds.iter().flat_map(|r| &r.waves) {
         let count = wave.squads.len();
         writeln!(data, "({first}, {count}, {}),", wave.gap_ticks).unwrap();
         first += count;
+    }
+    if def.bonus.is_some() {
+        writeln!(data, "({first}, 1, 0),").unwrap();
     }
 
     data.push_str("]\ntable round_data: (s0: int, s1: int, s2: int, s3: int, s4: int, s5: int, s6: int, s7: int, s8: int) = [\n");
@@ -200,8 +226,48 @@ fn wave_module(def: &Def) -> Result<String, ScriptRefusal> {
         )
         .unwrap();
     }
-    data.push_str("]\n");
+
+    // The skulls the bonus round switches on, as places in the skull list.
+    data.push_str("]\ntable bonus_skulls: (s0: int, s1: int, s2: int, s3: int, s4: int, s5: int, s6: int, s7: int, s8: int) = [\n");
+    let listed = BONUS_SKULLS.map(|skull| SKULLS.iter().position(|entry| *entry == skull));
+    let row = std::array::from_fn::<_, 9, _>(|i| {
+        listed
+            .get(i)
+            .copied()
+            .flatten()
+            .map_or(-1, |index| index as i32)
+            .to_string()
+    });
+    writeln!(data, "({}),", row.join(", ")).unwrap();
+
+    // The points-to-lives table in one row, unused places -1.
+    data.push_str("]\ntable bonus_rows: (");
+    let names: Vec<String> = (0..MAX_BONUS_ROWS)
+        .flat_map(|i| [format!("need{i}: int"), format!("extra{i}: int")])
+        .collect();
+    data.push_str(&names.join(", "));
+    data.push_str(") = [\n(");
+    let cells: Vec<String> = (0..MAX_BONUS_ROWS)
+        .flat_map(|i| {
+            let row = def
+                .bonus
+                .as_ref()
+                .and_then(|bonus| bonus.lives_by_points.get(i));
+            match row {
+                Some(&(points, lives)) => [points.to_string(), lives.to_string()],
+                None => ["-1".to_string(), "0".to_string()],
+            }
+        })
+        .collect();
+    data.push_str(&cells.join(", "));
+    data.push_str("),\n]\n");
     Ok(data)
+}
+
+/// Rounds in a set: the bonus round follows each set's last round. A
+/// definition is one set until it grows its own (`Def.set`).
+fn set_rounds(def: &Def) -> u32 {
+    def.rounds.len().max(1) as u32
 }
 
 /// The option bits for a match's settings.
@@ -357,6 +423,7 @@ impl ScriptDirector {
             FIGHTING => Phase::Fighting,
             CLEANUP => Phase::Cleanup { since: at },
             INTERMISSION => Phase::Intermission { until: at },
+            BONUS => Phase::Bonus { until: at },
             DONE => Phase::Done,
             // A phase the script never writes reads as finished.
             _ => Phase::Done,
@@ -397,6 +464,7 @@ impl ScriptDirector {
             .enumerate()
             .filter(|&(k, _)| mask & (1 << k) != 0)
             .map(|(_, &s)| s)
+            .chain((g("iron") == 1).then_some(Skull::Iron))
             .collect();
         State {
             phase,
@@ -651,8 +719,16 @@ fn command(call: &Call) -> Option<Command> {
             index: narrow_u8(*index)?,
         },
         (id::FF_SKULL, [Arg::Int(skull), Arg::Bool(on)]) => Command::Skull {
-            id: *SKULLS.iter().find(|&&s| s as i32 == *skull)?,
+            id: SKULLS
+                .iter()
+                .chain([&Skull::Iron])
+                .find(|&&s| s as i32 == *skull)
+                .copied()?,
             on: *on,
+        },
+        (id::FF_BONUS, [Arg::Bool(on), Arg::Int(ticks)]) => Command::Bonus {
+            on: *on,
+            ticks: u32::try_from(*ticks).ok()?,
         },
         (id::FF_LIVES, [Arg::Player(player), Arg::Int(pool)]) => Command::Lives {
             player: *player,
