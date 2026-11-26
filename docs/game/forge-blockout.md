@@ -1,6 +1,6 @@
 # Forge block-out: pieces, the natural set and the dev textures
 
-Status: Partly built. Slice BO1 is built: `forge-shapes` has the definition, the canonical name and the structural generators (block, wall, floor plate, ramp, wedge, stairs, cylinder, arch) and `STARTER`. Slice BO2 is built: `crates/formats/dev-texture` has the rasters, the font and the label layout. The rest of the page is a design. It is slice F8 of [forge-design.md](forge-design.md), split into slices BO1 to BO12 below.
+Status: Partly built. Slice BO1 is built: `forge-shapes` has the definition, the canonical name and the structural generators (block, wall, floor plate, ramp, wedge, stairs, cylinder, arch) and `STARTER`. Slice BO2 is built: `crates/formats/dev-texture` has the rasters, the font and the label layout. Slice BO4 is built: `crates/tools/blockout-kit` installs a definition as tags with the dev set and its `Cost`, and has an invented map for tests. The rest of the page is a design. It is slice F8 of [forge-design.md](forge-design.md), split into slices BO1 to BO12 below.
 Code: `crates/formats/forge-shapes` (the definitions and generators), `crates/formats/dev-texture` (the dev textures), `crates/tools/blockout-kit` (a definition as tags), `crates/tools/forge-build/src/blockout.rs` (materialising), `crates/extensions/forge/src/piece.rs` (the session). Tests: named per slice under "Slices".
 Switch: none. Two settings of the profile's store, `forge.blockout.grid` and `forge.blockout.dev_view` ("In the monitor").
 
@@ -125,16 +125,40 @@ placements with equal definitions share one set of tags.
 `blockout_kit::install(&mut TagSet, &PieceDef, &Facts) -> Result<Installed>`
 adds a definition's tags to a map's tag set, as `pogo_kit::kit` and
 `stage_kit::kit` add theirs. `Facts` is what is read from the base map
-when it is built: the shader templates (`h1convert::shad::Library`),
-the global material by name and the palette survey ("Materials").
+when it is built: the shader templates (`h1convert::shad::Library`,
+of which the pieces draw with `shad::TEX_BUMP`), the global material
+(`h1objects::rebuild::PIECE_MATERIAL`'s where the map has it, else the
+first) and, with slice BO6, the palette survey ("Materials"). Every tag
+is at the definition's path, and a definition the set already holds is
+refused; so is one that does not generate, whose collision fails its
+check, or whose `Map` material names a shader the set lacks, with
+nothing added. A set made with `TagSet::from_map` takes
+`blockout_kit::make_index_room` first.
 
 | Tag | Made from | With |
 |---|---|---|
-| `bloc` | its definition in `tags::defs`, as `h1objects::rebuild::scenery` writes a `scen` | the `hlmt`, a bounding radius from the size |
-| `hlmt` | `h1objects::rebuild::model` | the `mode`, `coll` and `phmo`; one region, one permutation |
-| `mode` | the shell's faces as triangle lists, through `h1_assets::models::mode::convert_model` as `pogo_kit::kit::install_model` does | one part per material in use; absent when every face is `Nodraw` or `Clip` |
-| `coll` | `collision_build::build` over the shell, `collision_build::coll::encode_collision` | one BSP, one material, no BSP physics slots |
-| `phmo` | `h1objects::rebuild::physics_model` over the hulls | one rigid body, `blockout_kit::PIECE_BODY`: flags 0, motion 5 |
+| `bloc` | its definition in `tags::defs`, as `h1objects::rebuild::scenery` writes a `scen` (`blockout-kit/src/object.rs`) | the `hlmt`, the bounding sphere of the bounds |
+| `hlmt` | `h1objects::rebuild::model` | the `mode` (none for a barrier), `coll` and `phmo`; one region and permutation, `default`; one node, `piece`, at the origin; the collision material `blockout` mapped to the global one |
+| `mode` | the mesh of `blockout_kit::mesh`, through `h1_assets::models::mode::convert_model` as `pogo_kit::kit::install_model` does | one part per shader in use, triangle lists; absent when every face is `Nodraw` or `Clip` |
+| `coll` | `collision_build::build` over the shell, checked by `collision_build::verify::check`, the BSP's eight blocks (`Bsp::encode_blocks`) written as a tag tree so the set interns its names (`blockout_kit::collision`) | one BSP, one material, one node, no BSP physics slots |
+| `phmo` | `h1objects::rebuild::physics_model` over the hulls (`blockout_kit::physics`) | one rigid body on no node, `blockout_kit::piece_body`: flags 0, motion 5, the size class `+0x1e` of the retail band its bounding sphere falls in; a mass of 1,000 kg whatever the size |
+
+**The render mesh** (`blockout_kit::mesh::build`). A face draws with
+its role's material: `Dev` the role's tile, `Map` the named shader,
+`Nodraw` and `Clip` not at all. A `Dev` face that is a rectangle, on a
+shape that is not a rock, carries its plate: the face is cut into four
+frame quads around the plate, drawn with the tile, and the plate's 48
+cell quads, drawn with the font atlas, `v` down. On a wall the plate's
+up is the edge nearest world up and its x runs to the right seen from
+outside; on a floor or a ceiling its x is the edge nearest world x. A
+rock's vertex takes the mean normal of the faces at it within 40
+degrees of its own; any other vertex its face's.
+
+**The dev twin.** A definition whose roles are not all `Dev` also gets
+the `dev` render model, every role `Dev`, at the path of
+`PieceDef::dev(shape, size, param)`, so definitions that differ only in
+materials share one; an all-`Dev` definition's render model is that
+twin. A definition with no drawn face has neither.
 
 A piece is a crate and not scenery because the engine gives a rigid
 body only to bipeds, vehicles, machines, crates and creatures: scenery
@@ -147,8 +171,11 @@ tests (bullets, projectiles, a biped's ground checks); the `phmo`
 stands in front of Havok. A `coll` with a `phmo` beside it has no BSP
 physics slots (**V**, the rule in the same section).
 
-`Installed` lists the tags and `Cost`: the tag memory and the raw bytes
-the definition takes. Tag memory is the scarce one: multiplayer maps
+`Installed` lists the tags and `Cost`: what the install added, the dev
+set included when this install added it. `Cost::tag_memory` is each
+added tag's size as `map::build` lays it out (`blockout_kit::tag_size`:
+the blocks in emission order, each at its alignment),
+`Cost::raw` the raw bytes, `Cost::tags` the index entries. Tag memory is the scarce one: multiplayer maps
 have 0.1 to 1.5 MiB of headroom and one has none
 ([forge-design.md](forge-design.md), "The kit").
 
@@ -343,8 +370,9 @@ and has no plate.
 **How it is made.** A CPU raster when the kit is built, not a shader of
 the renderer: `dev_texture::tile(family) -> Image` and
 `dev_texture::font() -> Image` draw RGBA, and `blockout_kit::dev`
-writes each as a `bitm` (`h1_assets::bitmaps::convert::convert_with`,
-DXT1 with its mips, as `pogo_kit::texture` writes its atlas) with a
+writes each as a `bitm` (`blockout_kit::texture`: DXT5 with its mips
+and opaque alpha through `h1_assets::bitmaps::convert::convert_with`, as
+`pogo_kit::texture` writes its atlas) with a
 `shad` on a template the map has (`h1convert::shad::Library::build`
 over `shad::TEX_BUMP`, our bitmap as the base map). Four tiles (Floor,
 Wall, Ceiling, Trim) and the font are tags, at
@@ -353,8 +381,10 @@ the one form the lifted D3D path, the native renderer, a film and
 another player's machine all draw without code of their own, and the
 game's texture cache and mips serve it as any texture. The rasters are
 a pure function of `dev_texture::VERSION`; a process draws and encodes
-them once (`blockout_kit::dev::encoded`) and keeps the encoded bytes
-under `<data>/cache/forge-blockout/dev-<VERSION>` for the next.
+them once (`blockout_kit::dev::encoded`), and `dev::encoded_in(data)`
+keeps the encoded chains under `<data>/cache/forge-blockout/dev-<VERSION>`
+for the next. The dev set is added the first time a definition draws a
+`Dev` face, and found after that.
 
 **Dev view.** A definition with a material other than `Dev` has two
 render models: `look`, with its materials, and `dev`, every role `Dev`
@@ -509,6 +539,11 @@ that has not run.
   after the object is made again. BO4's first game run places one
   block; if it fails, the piece becomes a machine, whose body the
   engine keyframes ([collision.md](../formats/collision.md)).
+- That an `hlmt` naming no render model (a barrier) makes an object
+  that collides and is not drawn.
+- That a plate reads upright and unmirrored in the game: the cells map
+  `v` down, as an image's rows are, and the frame quads meet the cells
+  with T-junctions, which may show as specks on the D3D path.
 - That a structure's shader draws correctly on an object, where no
   lightmap reaches it. If it does not, a `Map` material becomes a
   generated `shad` on `shad::TEX_BUMP` binding the surveyed shader's
