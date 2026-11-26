@@ -733,12 +733,25 @@ frames and sampling view that the phase 1d arms compare.
 `GAME_TICK` (`0x00137fe0`) runs from Rust: `engine::sim_tick::run`, installed
 by `sim_bridge::tick::TickDriver` as the body of the point with
 `implement_async`. There is no switch. It does what the original does, in the
-original's order: the x87 control word through the CRT (`0x003212d6`); the
-`0x4048`-byte update record on the guest stack below the entry `ESP`, built
-by `0x000682e0` and applied by `0x000683a0`; the 29 phases of
-[the sim review](../reviews/2026-11-20-sim.md) section 2.1
-(`engine::sim_tick::PHASES`); the record's close `0x000684e0`; and the tick
-count at game time `+8`.
+original's order:
+
+1. the x87 control word through the CRT (`0x003212d6`, `_controlfp` with new
+   word `0x9001f` and mask `0xfffff`);
+2. the `0x4048`-byte update record on the guest stack below the entry `ESP`,
+   built by `0x000682e0` and applied by `0x000683a0`;
+3. the run flag, the byte at record `+4` (`RUN_FLAG`). When it is clear the
+   phases and the clock step are skipped;
+4. the 29 phases of [the sim review](../reviews/2026-11-20-sim.md) section 2.1
+   (`engine::sim_tick::PHASES`). Phase 1 (`0x0014d3a0`) takes the record as
+   its one stack argument (`ret 4`) with `ECX` = record; phases 2-29 take no
+   argument and see `EBX` = record (`Form`; `0x00138db0` reads it);
+5. the clock step (`0x001380b4`), inside the run branch: `[*TICK_CLOCK + 0x14]`
+   falls by one to zero and `[*TICK_CLOCK + 4]` gains the f32 tick length
+   `[*GAME_TIME + 4]`;
+6. the record's close `0x000684e0` (`ESI` = record), which runs whether or
+   not the flag was set;
+7. the tick count at game time `+8`, which advances only if the flag is still
+   set after the close.
 
 Each phase has an owner. A guest phase is a guest call (`GuestCall`, awaited,
 with the record's bytes reserved below the call's stack); a Rust phase is a
@@ -766,9 +779,11 @@ only our own simulation.
 lifted body on the IR interpreter: `phases_run_in_retail_order` compares its
 calls with `PHASES` (the odd entries `0x00165dc1` and `0x001917b2` are the
 targets the body reaches), and `tick_matches_lifted` compares the
-envelope's registers and stack arguments and the game-time record. The
-record's own run decision is not recovered (`RUN_FLAG`): the driver runs the
-phases on every tick.
+envelope's registers and stack arguments (the control word's mask included),
+the phases' `ECX`, `EBX` and stack argument, and the game-time page, which
+holds the clock step's writes. Both runs set the run flag at the before step.
+`sim-bridge/src/tick.rs` covers a clear flag (no phases, the close still
+runs, the tick holds) and a close that clears it.
 
 ## 6. Threading inside a tick
 

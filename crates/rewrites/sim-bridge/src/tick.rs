@@ -58,20 +58,38 @@ mod tests {
 
     const STACK: u32 = 0x0030_0000;
     const TIME: u32 = 0x0052_0000;
+    /// The tick clock, where `TICK_CLOCK` points.
+    const CLOCK: u32 = 0x0052_0100;
+    const RECORD: u32 = STACK - sim_tick::RECORD_SIZE;
 
     fn guest(tick: u32) -> FakeGuest {
         let mut g = FakeGuest::new();
         g.map(STACK - 0x8000, 0x10000).map(0x0051_0000, 0x1000).map(TIME, 0x1000);
-        g.put_u32(points::GAME_TIME.base, TIME).put_u32(TIME + 8, tick);
+        g.put_u32(points::GAME_TIME.base, TIME).put_u32(TIME + 8, tick).put_f32(TIME + 4, 0.25);
+        g.put_u32(points::TICK_CLOCK.base, CLOCK).put_f32(CLOCK + 4, 1.0).put_u32(CLOCK + 0x14, 5);
         g
     }
 
-    /// One tick over a fake guest with a fresh ledger.
-    fn tick(from: u32) -> (entry::testing::Run, &'static Mutex<Ledger>) {
+    /// One tick over a fake guest with a fresh ledger. The record's before
+    /// step sets the run flag to `flag`; the close sets it to `after`.
+    fn tick_with(from: u32, flag: u8, after: u8) -> (entry::testing::Run, &'static Mutex<Ledger>) {
         let ledger: &'static Mutex<Ledger> = Box::leak(Box::new(Mutex::new(Ledger::new())));
         let f = move |cx: engine::entry::Cx| -> EntryFuture { Box::pin(sim_tick::run(cx, ledger)) };
         let regs = Regs { esp: STACK, ..Default::default() };
-        (entry::testing::run(&f, guest(from), regs, |_, _| Regs::default()), ledger)
+        let callee = move |c: &engine::entry::GuestCall, m: &mut dyn GuestMemory| {
+            let at = RECORD + sim_tick::RUN_FLAG;
+            if c.target == sim_tick::RECORD_BEFORE {
+                m.set_u8(at, flag).unwrap();
+            } else if c.target == sim_tick::RECORD_AFTER {
+                m.set_u8(at, after).unwrap();
+            }
+            Regs::default()
+        };
+        (entry::testing::run(&f, guest(from), regs, callee), ledger)
+    }
+
+    fn tick(from: u32) -> (entry::testing::Run, &'static Mutex<Ledger>) {
+        tick_with(from, 1, 1)
     }
 
     #[test]
@@ -91,8 +109,49 @@ mod tests {
         assert_eq!(run.guest.u32(TIME + 8), Ok(6), "the tick count moved by one");
         // The record sits below the entry stack and the body's calls below it.
         let build = &run.calls[1];
-        assert_eq!(build.eax, Some(STACK - sim_tick::RECORD_SIZE));
+        assert_eq!(build.eax, Some(RECORD));
         assert!(run.calls.iter().all(|c| c.reserve == sim_tick::RECORD_SIZE));
+        // The control word's mask is retail's.
+        assert_eq!(run.calls[0].args, [sim_tick::CONTROL_WORD_NEW, 0x000f_ffff]);
+        // Phase 1 takes the record on the stack and in ECX; the rest EBX.
+        let phases = &run.calls[3..3 + PHASES.len()];
+        assert_eq!((phases[0].args.clone(), phases[0].ecx, phases[0].ebx), (vec![RECORD], Some(RECORD), None));
+        for c in &phases[1..] {
+            assert_eq!((c.args.len(), c.ecx, c.ebx), (0, None, Some(RECORD)), "{:#x}", c.target);
+        }
+        // The clock step: the counter fell by one, the clock gained 0.25.
+        assert_eq!(run.guest.u32(CLOCK + 0x14), Ok(4));
+        assert_eq!(run.guest.f32(CLOCK + 4), Ok(1.25));
+    }
+
+    /// A clear run flag skips the phases and the clock; the close still runs
+    /// and the tick does not move.
+    #[test]
+    fn a_clear_run_flag_skips_the_phases() {
+        let (run, ledger) = tick_with(5, 0, 0);
+        let targets: Vec<u32> = run.calls.iter().map(|c| c.target).collect();
+        assert_eq!(
+            targets,
+            [
+                sim_tick::CONTROL_WORD_FN,
+                sim_tick::RECORD_BUILD,
+                sim_tick::RECORD_BEFORE,
+                sim_tick::RECORD_AFTER
+            ]
+        );
+        assert_eq!(run.guest.u32(TIME + 8), Ok(5));
+        assert_eq!((run.guest.u32(CLOCK + 0x14), run.guest.f32(CLOCK + 4)), (Ok(5), Ok(1.0)));
+        assert_eq!(ledger.lock().unwrap().tick(), 5);
+    }
+
+    /// A close that clears the flag leaves the tick where it was, though the
+    /// phases and the clock ran.
+    #[test]
+    fn a_close_that_clears_the_flag_holds_the_tick() {
+        let (run, _) = tick_with(5, 1, 0);
+        assert_eq!(run.calls.len(), 4 + PHASES.len());
+        assert_eq!(run.guest.u32(TIME + 8), Ok(5));
+        assert_eq!(run.guest.u32(CLOCK + 0x14), Ok(4));
     }
 
     /// The ledger's phase table is at or under `tick-ledger.toml` for

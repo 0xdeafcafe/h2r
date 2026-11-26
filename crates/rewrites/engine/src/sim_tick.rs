@@ -22,6 +22,17 @@ pub enum Owner {
     Rust,
 }
 
+/// How a phase is called. Retail sets the registers once for the run, so
+/// every phase after the first sees `EBX` = record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Form {
+    /// Phase 1 (`0x14d3a0`): the record as stack argument 0 (`ret 4`) and
+    /// `ECX` = record.
+    StackRecordEcx,
+    /// Phases 2-29: no stack argument, `EBX` = record (`0x138db0` reads it).
+    EbxRecord,
+}
+
 /// One phase of the tick.
 #[derive(Clone, Copy, Debug)]
 pub struct Phase {
@@ -31,19 +42,25 @@ pub struct Phase {
     pub entry: u32,
     pub name: &'static str,
     pub owner: Owner,
+    pub form: Form,
 }
 
 const fn guest(entry: u32, name: &'static str) -> Phase {
-    Phase { entry, name, owner: Owner::Guest }
+    Phase { entry, name, owner: Owner::Guest, form: Form::EbxRecord }
+}
+
+const fn guest_first(entry: u32, name: &'static str) -> Phase {
+    Phase { entry, name, owner: Owner::Guest, form: Form::StackRecordEcx }
 }
 
 /// The 29 phases in the order `game_tick` calls them
-/// (docs/reviews/2026-11-20-sim.md, section 2.1). Phases 26 (`0x165dc1`)
-/// and 28 (`0x1917b2`) are odd addresses; the call form here is the plain
-/// no-argument call and the differential test checks it against the lifted
-/// body.
+/// (docs/reviews/2026-11-20-sim.md, section 2.1). Phase 1 takes the record
+/// as a stack argument with `ECX` = record; phases 2-29 take no argument and
+/// see `EBX` = record ([`Form`]). Phases 26 (`0x165dc1`) and 28
+/// (`0x1917b2`) are odd addresses; the differential test checks the whole
+/// table against the lifted body.
 pub const PHASES: &[Phase] = &[
-    guest(0x0014_d3a0, "players_before"),
+    guest_first(0x0014_d3a0, "players_before"),
     guest(0x0013_8db0, "unknown_138db0"),
     guest(0x001c_83c0, "ai"),
     guest(0x001f_b510, "unknown_1fb510"),
@@ -109,7 +126,8 @@ impl Ledger {
     pub fn record(&mut self, phase: usize) {
         self.calls[phase] = self.calls[phase].saturating_add(1);
     }
-    /// A tick ended; `tick` is the game time's count after it.
+    /// A tick ended; `tick` is the game time's count after it (unchanged
+    /// when the record's run flag was clear at the close).
     pub fn finish_tick(&mut self, tick: u32) {
         self.ticks += 1;
         self.tick = tick;
@@ -138,7 +156,7 @@ pub const CONTROL_WORD_FN: u32 = 0x0032_12d6;
 /// nearest and every exception masked. The differential test checks them
 /// against the lifted call.
 pub const CONTROL_WORD_NEW: u32 = 0x0009_001f;
-pub const CONTROL_WORD_MASK: u32 = 0x0003_831f;
+pub const CONTROL_WORD_MASK: u32 = 0x000f_ffff;
 /// The simulation update record's size.
 pub const RECORD_SIZE: u32 = 0x4048;
 /// Clears the record (`EAX` = record).
@@ -149,9 +167,16 @@ pub const RECORD_BEFORE: u32 = 0x0006_83a0;
 pub const RECORD_AFTER: u32 = 0x0006_84e0;
 /// The tick count in the game-time record.
 pub const TIME_TICK: u32 = 8;
-/// The byte of the record that says the tick does not run its phases, when
-/// the lifted body has one. Not recovered: the phases always run.
-pub const RUN_FLAG: Option<u32> = None;
+/// The record byte (a `u8`) that says the tick runs its phases. Read after
+/// the record's before step (it gates the phases and the clock step) and
+/// again after the close (it gates the tick count).
+pub const RUN_FLAG: u32 = 4;
+/// The tick clock's f32 field (`[TICK_CLOCK] + 4`), which gains the tick length.
+pub const CLOCK_TIME: u32 = 4;
+/// The tick clock's counter (`[TICK_CLOCK] + 0x14`), which falls to zero.
+pub const CLOCK_COUNTER: u32 = 0x14;
+/// The tick length in the game-time record (f32).
+pub const TIME_LENGTH: u32 = 4;
 
 /// The tick body: what `game_tick` does, with `ledger` counting each guest
 /// phase call. Returns as the original does (no value, no argument bytes).
@@ -163,16 +188,19 @@ pub async fn run(cx: Cx, ledger: &'static Mutex<Ledger>) -> EntryResult {
     cx.call(call(CONTROL_WORD_FN).args([CONTROL_WORD_NEW, CONTROL_WORD_MASK])).await?;
     cx.call(call(RECORD_BUILD).eax(record)).await?;
     cx.call(call(RECORD_BEFORE).args([record])).await?;
-    let runs = match RUN_FLAG {
-        Some(at) => cx.read(|m| m.u8(record.wrapping_add(at)))? != 0,
-        None => true,
-    };
+    let flag_at = record.wrapping_add(RUN_FLAG);
+    let runs = cx.read(|m| m.u8(flag_at))? != 0;
     if runs {
         for (i, phase) in PHASES.iter().enumerate() {
             match phase.owner {
                 Owner::Guest => {
                     ledger.lock().unwrap_or_else(|e| e.into_inner()).record(i);
-                    cx.call(call(phase.entry)).await?;
+                    let c = call(phase.entry);
+                    let c = match phase.form {
+                        Form::StackRecordEcx => c.args([record]).ecx(record),
+                        Form::EbxRecord => c.ebx(record),
+                    };
+                    cx.call(c).await?;
                 }
                 Owner::Rust => {
                     return Err(EntryError::IsolatedCall(format!(
@@ -182,12 +210,31 @@ pub async fn run(cx: Cx, ledger: &'static Mutex<Ledger>) -> EntryResult {
                 }
             }
         }
+        // After the phases, still in the run branch (0x1380b4..0x1380db):
+        // the counter falls to zero, the clock gains the tick length.
+        cx.write(|m| {
+            let clock = m.u32(crate::points::TICK_CLOCK.base)?;
+            let counter = clock.wrapping_add(CLOCK_COUNTER);
+            let left = m.u32(counter)?.saturating_sub(1);
+            m.set_u32(counter, left)?;
+            let length = m.f32(m.u32(crate::points::GAME_TIME.base)?.wrapping_add(TIME_LENGTH))?;
+            let at = clock.wrapping_add(CLOCK_TIME);
+            let now = m.f32(at)?;
+            m.set_f32(at, now + length)?;
+            Ok::<_, crate::memory::MemFault>(())
+        })?;
     }
     cx.call(call(RECORD_AFTER).esi(record)).await?;
+    // The close may clear the flag; the tick counts only if it is still set.
+    let advance = cx.read(|m| m.u8(flag_at))? != 0;
     let tick = cx.write(|m| {
         let time = m.u32(crate::points::GAME_TIME.base)?;
         let at = time.wrapping_add(TIME_TICK);
-        let next = m.u32(at)?.wrapping_add(1);
+        let now = m.u32(at)?;
+        if !advance {
+            return Ok::<_, crate::memory::MemFault>(now);
+        }
+        let next = now.wrapping_add(1);
         m.set_u32(at, next)?;
         Ok::<_, crate::memory::MemFault>(next)
     })?;
